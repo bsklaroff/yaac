@@ -2,9 +2,6 @@ FROM docker.io/ubuntu:24.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl git tmux locales neovim openssh-client && \
     sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen && update-locale LANG=en_US.UTF-8 && \
-    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs && \
-    npm install -g @anthropic-ai/claude-code && \
     curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] \
@@ -15,5 +12,7 @@ RUN ssh-keyscan github.com gitlab.com bitbucket.org > /etc/ssh/ssh_known_hosts 2
 RUN userdel -r ubuntu 2>/dev/null; useradd -m -s /bin/bash yaac
 ENV LANG=en_US.UTF-8
 USER yaac
+RUN curl -fsSL https://claude.ai/install.sh | bash
+ENV PATH="/home/yaac/.local/bin:${PATH}"
 WORKDIR /workspace
 ENTRYPOINT ["sleep", "infinity"]
