@@ -9,6 +9,7 @@ import { repoDir, claudeDir, claudeJsonFile, worktreeDir, worktreesDir, projectD
 import { addWorktree, getDefaultBranch, fetchAndPullDefault, getGitUserConfig } from '@/lib/git'
 import { loadProjectConfig } from '@/lib/config'
 import { buildRulesFromConfig } from '@/lib/secret-conventions'
+import { isTmuxSessionAlive, cleanupSession } from '@/lib/session-cleanup'
 import { proxyClient } from '@/lib/proxy-client'
 import { sshAgent, hasSshKeys } from '@/lib/ssh-agent'
 import type { YaacConfig } from '@/types'
@@ -195,4 +196,10 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   execSync(`podman exec -it ${containerName} tmux attach-session -t claude`, {
     stdio: 'inherit',
   })
+
+  // Auto-cleanup if Claude Code exited (tmux session died)
+  if (!isTmuxSessionAlive(containerName)) {
+    console.log('Claude Code exited. Cleaning up session...')
+    await cleanupSession({ containerName, projectSlug, sessionId })
+  }
 }

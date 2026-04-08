@@ -1,11 +1,26 @@
 import { execSync } from 'node:child_process'
-import { resolveContainer } from '@/lib/container-resolve'
+import { resolveContainerAnyState } from '@/lib/container-resolve'
+import { isTmuxSessionAlive, cleanupSession } from '@/lib/session-cleanup'
 
 export async function sessionAttach(containerId: string): Promise<void> {
-  const containerName = await resolveContainer(containerId)
-  if (!containerName) return
+  const resolved = await resolveContainerAnyState(containerId)
+  if (!resolved) return
+
+  const { name: containerName, sessionId, projectSlug, state } = resolved
+
+  if (state !== 'running') {
+    console.error(`Container "${containerName}" is not running (state: ${state}).`)
+    process.exitCode = 1
+    return
+  }
 
   execSync(`podman exec -it ${containerName} tmux attach-session -t claude`, {
     stdio: 'inherit',
   })
+
+  // Auto-cleanup if Claude Code exited (tmux session died)
+  if (!isTmuxSessionAlive(containerName)) {
+    console.log('Claude Code exited. Cleaning up session...')
+    await cleanupSession({ containerName, projectSlug, sessionId })
+  }
 }
