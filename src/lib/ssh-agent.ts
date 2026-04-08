@@ -40,13 +40,14 @@ export class SshAgentClient {
   }
 
   async ensureRunning(): Promise<void> {
-    if (this.running) {
-      try {
-        const info = await podman.getContainer(CONTAINER_NAME).inspect()
-        if (info.State.Running) return
-      } catch {
-        this.running = false
+    try {
+      const info = await podman.getContainer(CONTAINER_NAME).inspect()
+      if (info.State.Running) {
+        this.running = true
+        return
       }
+    } catch {
+      // container doesn't exist
     }
 
     await this.ensureImage()

@@ -1,10 +1,35 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
 // hasSshKeys reads from os.homedir(), so we mock it to use a temp dir
 let tmpHome: string
+
+describe('SshAgentClient.ensureRunning', () => {
+  it('skips startup when container is already running', async () => {
+    const mockInspect = vi.fn().mockResolvedValue({ State: { Running: true } })
+    const mockGetContainer = vi.fn().mockReturnValue({ inspect: mockInspect })
+
+    vi.doMock('@/lib/podman', () => ({
+      podman: { getContainer: mockGetContainer },
+    }))
+
+    const { SshAgentClient } = await import('@/lib/ssh-agent')
+    const client = new SshAgentClient('/fake/.ssh')
+
+    await client.ensureRunning()
+
+    expect(mockGetContainer).toHaveBeenCalledWith('yaac-ssh-agent')
+    expect(mockInspect).toHaveBeenCalled()
+    // Should not have tried to build image or start container — just returned
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.doUnmock('@/lib/podman')
+  })
+})
 
 describe('hasSshKeys', () => {
   let originalHome: string
