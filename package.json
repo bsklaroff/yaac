@@ -17,7 +17,8 @@
     "test": "vitest run",
     "test:unit": "vitest run test/unit",
     "test:e2e": "vitest run test/e2e",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "postinstall": "./setup-git.sh"
   },
   "dependencies": {
     "commander": "14.0.3",

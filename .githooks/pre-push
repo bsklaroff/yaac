@@ -1,0 +1,40 @@
+#!/bin/sh
+
+# Pre-push hook that runs lint check before pushing to main branch
+
+protected_branch='main'
+current_branch=$(git symbolic-ref HEAD | sed -e 's,.*/\(.*\),\1,')
+
+# Check if we're pushing to the protected branch
+while read local_ref local_sha remote_ref remote_sha
+do
+    if [[ "$remote_ref" =~ refs/heads/$protected_branch ]]
+    then
+        echo "Pre-push hook: Running lint check before pushing to $protected_branch..."
+
+        # Run the lint command
+        pnpm run lint
+
+        # Check if lint passed
+        if [ $? -ne 0 ]; then
+            echo "❌ Pre-push hook: Lint check failed! Please fix the errors before pushing to $protected_branch."
+            exit 1
+        fi
+
+        echo "✅ Pre-push hook: Lint check passed!"
+
+        # Run the test command
+        echo "Pre-push hook: Running tests before pushing to $protected_branch..."
+        pnpm test
+
+        # Check if tests passed
+        if [ $? -ne 0 ]; then
+            echo "❌ Pre-push hook: Tests failed! Please fix the errors before pushing to $protected_branch."
+            exit 1
+        fi
+
+        echo "✅ Pre-push hook: Tests passed!"
+    fi
+done
+
+exit 0
