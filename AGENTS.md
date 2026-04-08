@@ -1,0 +1,3 @@
+- Always install dependencies with exact versions: `pnpm add -E <package>` (or `pnpm add -DE <package>` for dev deps).
+- Every exported function must have a unit test in `test/unit/`.
+- Every CLI command argument and option must have an e2e test in `test/e2e/`.

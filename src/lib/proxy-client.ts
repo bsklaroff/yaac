@@ -1,0 +1,230 @@
+import crypto from 'node:crypto'
+import { execFile, spawn } from 'node:child_process'
+import { promisify } from 'node:util'
+import { podman } from '@/lib/podman'
+import { PROXY_DIR } from '@/lib/paths'
+import type { InjectionRule } from '@/lib/secret-conventions'
+
+const execFileAsync = promisify(execFile)
+
+const INTERNAL_PORT = '10255'
+
+export interface ProxyClientConfig {
+  image: string
+  containerName: string
+  hostPort: string
+  network: string
+  authSecret: string
+}
+
+export class ProxyClient {
+  private proxyIp: string | null = null
+  private running = false
+
+  constructor(private config: ProxyClientConfig) {}
+
+  get network(): string {
+    return this.config.network
+  }
+
+  private get baseUrl(): string {
+    return `http://127.0.0.1:${this.config.hostPort}`
+  }
+
+  generateSessionToken(): string {
+    return crypto.randomBytes(32).toString('hex')
+  }
+
+  getProxyEnv(sessionToken: string): string[] {
+    if (!this.proxyIp) throw new Error('Proxy not started — call ensureRunning() first')
+    const proxyUrl = `http://x:${sessionToken}@${this.proxyIp}:${INTERNAL_PORT}`
+    return [
+      `HTTPS_PROXY=${proxyUrl}`,
+      `HTTP_PROXY=${proxyUrl}`,
+      `https_proxy=${proxyUrl}`,
+      `http_proxy=${proxyUrl}`,
+      'NODE_EXTRA_CA_CERTS=/tmp/proxy-ca.pem',
+      'SSL_CERT_FILE=/tmp/proxy-ca.pem',
+      'NODE_USE_ENV_PROXY=1',
+      'GIT_TERMINAL_PROMPT=0',
+      'GIT_HTTP_PROXY_AUTHMETHOD=basic',
+    ]
+  }
+
+  async getCaCert(): Promise<string> {
+    const res = await fetch(`${this.baseUrl}/ca.pem`)
+    if (!res.ok) throw new Error(`Failed to fetch CA cert: ${res.status}`)
+    return res.text()
+  }
+
+  async updateProjectRules(projectId: string, rules: InjectionRule[]): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/projects/${encodeURIComponent(projectId)}/rules`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.config.authSecret}`,
+      },
+      body: JSON.stringify({ rules }),
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Failed to update project rules: ${res.status} ${text}`)
+    }
+  }
+
+  async removeProjectRules(projectId: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/projects/${encodeURIComponent(projectId)}/rules`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${this.config.authSecret}` },
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Failed to remove project rules: ${res.status} ${text}`)
+    }
+  }
+
+  async registerSession(token: string, projectId: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/sessions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.config.authSecret}`,
+      },
+      body: JSON.stringify({ token, projectId }),
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Failed to register session: ${res.status} ${text}`)
+    }
+  }
+
+  async removeSession(token: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/sessions/${encodeURIComponent(token)}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${this.config.authSecret}` },
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Failed to remove session: ${res.status} ${text}`)
+    }
+  }
+
+  async ensureRunning(): Promise<void> {
+    if (this.running) {
+      // Verify still healthy
+      try {
+        const res = await fetch(`${this.baseUrl}/healthz`)
+        if (res.ok) return
+      } catch {
+        this.running = false
+      }
+    }
+    await this.ensureProxyImage()
+    await this.start()
+    this.running = true
+  }
+
+  private async ensureProxyImage(): Promise<void> {
+    try {
+      await execFileAsync('podman', ['image', 'inspect', this.config.image])
+    } catch {
+      console.log('Building proxy sidecar image...')
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn('podman', [
+          'build', '-t', this.config.image, PROXY_DIR,
+        ], { stdio: 'inherit', timeout: 300_000 })
+        child.on('close', (code) => {
+          if (code === 0) resolve()
+          else reject(new Error(`podman build exited with code ${code}`))
+        })
+        child.on('error', reject)
+      })
+    }
+  }
+
+  private async start(): Promise<void> {
+    // Create the internal session network
+    try {
+      await execFileAsync('podman', ['network', 'create', '--internal', '--disable-dns', this.config.network])
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('already exists')) { /* ok */ }
+      else throw err
+    }
+
+    // Remove existing container
+    try {
+      const existing = podman.getContainer(this.config.containerName)
+      await existing.remove({ force: true })
+    } catch {
+      // doesn't exist
+    }
+
+    const container = await podman.createContainer({
+      Image: this.config.image,
+      name: this.config.containerName,
+      ExposedPorts: { [`${INTERNAL_PORT}/tcp`]: {} },
+      Env: [
+        `PORT=${INTERNAL_PORT}`,
+        `PROXY_AUTH_SECRET=${this.config.authSecret}`,
+      ],
+      HostConfig: {
+        PortBindings: { [`${INTERNAL_PORT}/tcp`]: [{ HostPort: this.config.hostPort, HostIp: '127.0.0.1' }] },
+        NetworkMode: `podman,${this.config.network}`,
+      },
+    })
+
+    await container.start()
+
+    // Resolve proxy IP on internal network
+    const info = await container.inspect()
+    const networks = info.NetworkSettings.Networks as Record<string, { IPAddress: string }>
+    this.proxyIp = networks[this.config.network]?.IPAddress
+    if (!this.proxyIp) {
+      throw new Error(`Proxy container has no IP on network ${this.config.network}`)
+    }
+
+    // Wait for healthcheck
+    for (let i = 0; i < 30; i++) {
+      try {
+        const res = await fetch(`${this.baseUrl}/healthz`)
+        if (res.ok) {
+          console.log(`Proxy sidecar running on port ${this.config.hostPort}`)
+          return
+        }
+      } catch {
+        // not ready yet
+      }
+      await new Promise((r) => setTimeout(r, 500))
+    }
+    throw new Error('Proxy sidecar failed to start within 15 seconds')
+  }
+
+  async stop(): Promise<void> {
+    console.log('Stopping proxy...')
+    try {
+      const container = podman.getContainer(this.config.containerName)
+      await container.stop({ t: 5 })
+      await container.remove()
+    } catch {
+      // already stopped or removed
+    }
+    try {
+      await podman.getNetwork(this.config.network).remove()
+    } catch {
+      // ok
+    }
+    this.proxyIp = null
+    this.running = false
+  }
+}
+
+// Default instance
+const PROXY_AUTH_SECRET = crypto.randomBytes(32).toString('hex')
+
+export const proxyClient = new ProxyClient({
+  image: 'yaac-proxy',
+  containerName: 'yaac-proxy',
+  hostPort: INTERNAL_PORT,
+  network: 'yaac-sessions',
+  authSecret: PROXY_AUTH_SECRET,
+})
