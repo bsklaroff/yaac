@@ -14,6 +14,7 @@ import { repoDir, claudeDir, worktreeDir, worktreesDir } from '@/lib/paths'
 import { buildRulesFromConfig } from '@/lib/secret-conventions'
 import { proxyClient } from '@/lib/proxy-client'
 import { shellEscape } from '@/commands/session-create'
+import { sshAgent, hasSshKeys, SshAgentClient } from '@/lib/ssh-agent'
 
 const execFileAsync = promisify(execFile)
 
@@ -61,6 +62,14 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
     networkMode = proxyClient.network
   }
 
+  // SSH agent setup
+  const sshBinds: string[] = []
+  if (hasSshKeys()) {
+    await sshAgent.ensureRunning()
+    env.push(...sshAgent.getSshEnv())
+    sshBinds.push(...sshAgent.getBinds())
+  }
+
   const containerName = `yaac-${projectSlug}-${sessionId}`
   const claude = claudeDir(projectSlug)
 
@@ -79,6 +88,7 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
         `${wtDir}:/workspace:Z`,
         `${repo}/.git:/repo/.git:Z`,
         `${claude}:/home/yaac/.claude:Z`,
+        ...sshBinds,
       ],
       NetworkMode: networkMode,
     },
@@ -328,6 +338,83 @@ describe('yaac session create', () => {
       // Expected — file doesn't exist
     }
   })
+
+  it('has SSH_AUTH_SOCK set when SSH keys exist', async () => {
+    if (!isPodmanAvailable) return
+    if (!hasSshKeys()) return // skip if no SSH keys on host
+
+    const repoPath = path.join(tmpDir, 'ssh-project')
+    await createTestRepo(repoPath)
+    await projectAdd(repoPath)
+
+    const result = await createSessionNonInteractive('ssh-project')
+    containersToCleanup.push(result.containerName)
+
+    // Verify SSH_AUTH_SOCK is set
+    const { stdout: envOut } = await execFileAsync('podman', [
+      'exec', result.containerName, 'env',
+    ])
+    expect(envOut).toContain('SSH_AUTH_SOCK=/ssh-agent/socket')
+
+    // Verify the socket file exists
+    await execFileAsync('podman', [
+      'exec', result.containerName, 'test', '-S', '/ssh-agent/socket',
+    ])
+  })
+
+  it('can list SSH keys from session container via agent', async () => {
+    if (!isPodmanAvailable) return
+
+    // Generate a temporary SSH key for this test
+    const sshDir = path.join(tmpDir, 'dot-ssh')
+    await fs.mkdir(sshDir, { mode: 0o700 })
+    await execFileAsync('ssh-keygen', [
+      '-t', 'ed25519', '-f', path.join(sshDir, 'id_ed25519'), '-N', '', '-q',
+    ])
+
+    // Use a dedicated SshAgentClient pointing at our test keys
+    const testAgent = new SshAgentClient(sshDir)
+    try {
+      await testAgent.ensureRunning()
+
+      const repoPath = path.join(tmpDir, 'ssh-agent-project')
+      await createTestRepo(repoPath)
+      await projectAdd(repoPath)
+
+      const sessionId = crypto.randomBytes(4).toString('hex')
+      const repo = repoDir('ssh-agent-project')
+      const wtDir = worktreeDir('ssh-agent-project', sessionId)
+      await fs.mkdir(worktreesDir('ssh-agent-project'), { recursive: true })
+      await addWorktree(repo, wtDir, `yaac/${sessionId}`)
+
+      const imageName = await ensureImage('ssh-agent-project')
+      const containerName = `yaac-ssh-agent-project-${sessionId}`
+      containersToCleanup.push(containerName)
+
+      const container = await podman.createContainer({
+        Image: imageName,
+        name: containerName,
+        Labels: { 'yaac.test': 'true' },
+        Env: ['TERM=xterm-256color', ...testAgent.getSshEnv()],
+        HostConfig: {
+          Binds: [
+            `${wtDir}:/workspace:Z`,
+            `${repo}/.git:/repo/.git:Z`,
+            ...testAgent.getBinds(),
+          ],
+        },
+      })
+      await container.start()
+
+      // ssh-add -l must succeed and list the test key
+      const { stdout } = await execFileAsync('podman', [
+        'exec', containerName, 'ssh-add', '-l',
+      ])
+      expect(stdout).toMatch(/\d+ SHA256:/)
+    } finally {
+      await testAgent.stop()
+    }
+  }, 60_000)
 
   it('errors gracefully on unknown project', async () => {
     process.exitCode = undefined

@@ -24,6 +24,7 @@ export const PACKAGE_ROOT = process.env.YAAC_BUNDLED
   : findPackageRoot(__dirname)
 export const DOCKERFILES_DIR = path.join(PACKAGE_ROOT, 'dockerfiles')
 export const PROXY_DIR = path.join(PACKAGE_ROOT, 'podman', 'proxy-sidecar')
+export const SSH_AGENT_DIR = path.join(PACKAGE_ROOT, 'podman', 'ssh-agent-sidecar')
 
 let dataDir: string | null = null
 

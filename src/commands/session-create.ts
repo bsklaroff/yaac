@@ -10,6 +10,7 @@ import { addWorktree, getDefaultBranch, fetchAndPullDefault, getGitUserConfig } 
 import { loadProjectConfig } from '@/lib/config'
 import { buildRulesFromConfig } from '@/lib/secret-conventions'
 import { proxyClient } from '@/lib/proxy-client'
+import { sshAgent, hasSshKeys } from '@/lib/ssh-agent'
 import type { YaacConfig } from '@/types'
 
 export function shellEscape(str: string): string {
@@ -117,6 +118,15 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     networkMode = proxyClient.network
   }
 
+  // SSH agent setup (if user has SSH keys)
+  const sshBinds: string[] = []
+  if (hasSshKeys()) {
+    console.log('Starting SSH agent sidecar...')
+    await sshAgent.ensureRunning()
+    env.push(...sshAgent.getSshEnv())
+    sshBinds.push(...sshAgent.getBinds())
+  }
+
   const containerName = `yaac-${projectSlug}-${sessionId}`
   const claude = claudeDir(projectSlug)
   const claudeJson = claudeJsonFile(projectSlug)
@@ -144,6 +154,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
         `${repo}/.git:/repo/.git:Z`,
         `${claude}:/home/yaac/.claude:Z`,
         `${claudeJson}:/home/yaac/.claude.json:Z`,
+        ...sshBinds,
       ],
       NetworkMode: networkMode,
     },
