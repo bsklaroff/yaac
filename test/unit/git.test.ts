@@ -55,6 +55,21 @@ describe('git helpers', () => {
     expect(branch.trim()).toBe('yaac/test-session')
   })
 
+  it('creates a worktree with upstream tracking', async () => {
+    // Clone so we have a remote called "origin"
+    const cloneDir = path.join(tmpDir, 'clone')
+    await cloneRepo(sourceRepo, cloneDir)
+
+    const defaultBranch = await getDefaultBranch(cloneDir)
+    const wtPath = path.join(tmpDir, 'worktree')
+    await addWorktree(cloneDir, wtPath, 'yaac/test-tracked', `origin/${defaultBranch}`)
+
+    // Verify the branch tracks origin/<default>
+    const git = simpleGit(wtPath)
+    const tracking = await git.raw(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])
+    expect(tracking.trim()).toBe(`origin/${defaultBranch}`)
+  })
+
   it('fetchAndPullDefault updates clone from remote', async () => {
     // Clone the source repo
     const cloneDir = path.join(tmpDir, 'clone')

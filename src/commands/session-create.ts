@@ -72,7 +72,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   await fs.mkdir(worktreesDir(projectSlug), { recursive: true })
   const defaultBranch = await getDefaultBranch(repo)
   console.log(`Creating worktree from ${defaultBranch}...`)
-  await addWorktree(repo, wtDir, `yaac/${sessionId}`)
+  await addWorktree(repo, wtDir, `yaac/${sessionId}`, `origin/${defaultBranch}`)
 
   // Load project config
   const config: YaacConfig = await loadProjectConfig(repo) ?? {}
