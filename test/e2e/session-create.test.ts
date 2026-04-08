@@ -122,6 +122,14 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
     'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'claude', tmuxCmd,
   ])
 
+  // Show session ID in tmux status bar
+  await execFileAsync('podman', [
+    'exec', containerName, 'tmux', 'set-option', '-t', 'claude', 'status-right', ` ${sessionId} `,
+  ])
+  await execFileAsync('podman', [
+    'exec', containerName, 'tmux', 'set-option', '-t', 'claude', 'status-right-length', '50',
+  ])
+
   const info = await container.inspect()
   return {
     containerId: info.Id,
@@ -252,6 +260,22 @@ describe('yaac session create', () => {
       'exec', result.containerName, 'tmux', 'list-sessions',
     ])
     expect(stdout).toContain('claude')
+  })
+
+  it('shows session id in tmux status bar', async () => {
+    if (!isPodmanAvailable) return
+
+    const repoPath = path.join(tmpDir, 'statusbar-project')
+    await createTestRepo(repoPath)
+    await projectAdd(repoPath)
+
+    const result = await createSessionNonInteractive('statusbar-project')
+    containersToCleanup.push(result.containerName)
+
+    const { stdout } = await execFileAsync('podman', [
+      'exec', result.containerName, 'tmux', 'show-option', '-t', 'claude', 'status-right',
+    ])
+    expect(stdout).toContain(result.sessionId)
   })
 
   it('passes envPassthrough vars to container', async () => {

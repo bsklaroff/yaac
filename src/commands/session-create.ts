@@ -187,6 +187,10 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     stdio: 'pipe',
   })
 
+  // Show session ID in tmux status bar
+  execSync(`podman exec ${containerName} tmux set-option -t claude status-right ' ${sessionId} '`)
+  execSync(`podman exec ${containerName} tmux set-option -t claude status-right-length 50`)
+
   // Attach the user to the tmux session
   execSync(`podman exec -it ${containerName} tmux attach-session -t claude`, {
     stdio: 'inherit',
