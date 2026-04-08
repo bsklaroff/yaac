@@ -10,7 +10,7 @@ import { podman } from '@/lib/podman'
 import { ensureImage } from '@/lib/image-builder'
 import { addWorktree, getDefaultBranch } from '@/lib/git'
 import { loadProjectConfig } from '@/lib/config'
-import { repoDir, claudeDir, worktreeDir, worktreesDir } from '@/lib/paths'
+import { repoDir, claudeDir, worktreeDir, worktreesDir, getDataDir } from '@/lib/paths'
 import { buildRulesFromConfig } from '@/lib/secret-conventions'
 import { proxyClient } from '@/lib/proxy-client'
 import { shellEscape } from '@/commands/session-create'
@@ -77,9 +77,9 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
     Image: imageName,
     name: containerName,
     Labels: {
-      'yaac.managed': 'true',
       'yaac.project': projectSlug,
       'yaac.session-id': sessionId,
+      'yaac.data-dir': getDataDir(),
       'yaac.test': 'true',
     },
     Env: env,
@@ -116,7 +116,7 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
 
   // Start tmux — use the prompt if provided, otherwise just bash
   const tmuxCmd = options?.prompt
-    ? `echo YAAC_PROMPT=${options.prompt.replace(/'/g, "'\\''")} > /tmp/yaac-prompt && bash`
+    ? `echo 'YAAC_PROMPT=${options.prompt.replace(/'/g, "'\\''")}' > /tmp/yaac-prompt && bash`
     : 'bash'
   await execFileAsync('podman', [
     'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'claude', tmuxCmd,
@@ -173,7 +173,6 @@ describe('yaac session create', () => {
     expect(info.State.Running).toBe(true)
 
     // Verify labels
-    expect(info.Config.Labels['yaac.managed']).toBe('true')
     expect(info.Config.Labels['yaac.project']).toBe('test-project')
     expect(info.Config.Labels['yaac.session-id']).toBe(result.sessionId)
   })

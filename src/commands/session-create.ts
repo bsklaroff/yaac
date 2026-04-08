@@ -5,7 +5,7 @@ import { execSync } from 'node:child_process'
 import simpleGit from 'simple-git'
 import { ensureContainerRuntime, podman } from '@/lib/podman'
 import { ensureImage } from '@/lib/image-builder'
-import { repoDir, claudeDir, claudeJsonFile, worktreeDir, worktreesDir, projectDir } from '@/lib/paths'
+import { repoDir, claudeDir, claudeJsonFile, worktreeDir, worktreesDir, projectDir, getDataDir } from '@/lib/paths'
 import { addWorktree, getDefaultBranch, fetchAndPullDefault, getGitUserConfig } from '@/lib/git'
 import { loadProjectConfig } from '@/lib/config'
 import { buildRulesFromConfig } from '@/lib/secret-conventions'
@@ -56,7 +56,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   console.log('Ensuring container images are built...')
   const imageName = await ensureImage(projectSlug)
 
-  const sessionId = crypto.randomBytes(4).toString('hex')
+  const sessionId = crypto.randomUUID()
   const repo = repoDir(projectSlug)
   const wtDir = worktreeDir(projectSlug, sessionId)
 
@@ -143,9 +143,9 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     Image: imageName,
     name: containerName,
     Labels: {
-      'yaac.managed': 'true',
       'yaac.project': projectSlug,
       'yaac.session-id': sessionId,
+      'yaac.data-dir': getDataDir(),
     },
     Env: env,
     HostConfig: {
@@ -180,8 +180,8 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
 
   // Start Claude Code in a tmux session
   const claudeCmd = options.prompt
-    ? `claude --dangerously-skip-permissions -p ${shellEscape(options.prompt)}`
-    : 'claude --dangerously-skip-permissions'
+    ? `claude --dangerously-skip-permissions --session-id ${sessionId} -p ${shellEscape(options.prompt)}`
+    : `claude --dangerously-skip-permissions --session-id ${sessionId}`
   console.log('Starting Claude Code...')
   execSync(`podman exec ${containerName} tmux -u new-session -d -s claude '${claudeCmd}'`, {
     stdio: 'pipe',

@@ -3,6 +3,7 @@ import { projectAdd } from '@/commands/project-add'
 import { projectList } from '@/commands/project-list'
 import { sessionCreate } from '@/commands/session-create'
 import { sessionList } from '@/commands/session-list'
+import { sessionDelete } from '@/commands/session-delete'
 import { sessionShell } from '@/commands/session-shell'
 import { sessionAttach } from '@/commands/session-attach'
 
@@ -41,7 +42,14 @@ session
   .command('list')
   .description('List active sessions')
   .argument('[project]', 'Filter by project slug')
+  .option('-d, --deleted', 'List deleted sessions from Claude Code history')
   .action(sessionList)
+
+session
+  .command('delete')
+  .description('Delete a session and clean up its resources')
+  .argument('<session-id>', 'Session ID, container name, or container ID')
+  .action(sessionDelete)
 
 session
   .command('shell')

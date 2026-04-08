@@ -7,7 +7,7 @@ import { projectAdd } from '@/commands/project-add'
 import { sessionList } from '@/commands/session-list'
 import { podman } from '@/lib/podman'
 import { ensureImage } from '@/lib/image-builder'
-import { claudeDir, worktreeDir, worktreesDir, repoDir } from '@/lib/paths'
+import { claudeDir, worktreeDir, worktreesDir, repoDir, getDataDir } from '@/lib/paths'
 import { addWorktree, getDefaultBranch } from '@/lib/git'
 
 async function createMinimalContainer(projectSlug: string): Promise<string> {
@@ -24,9 +24,9 @@ async function createMinimalContainer(projectSlug: string): Promise<string> {
     Image: imageName,
     name: containerName,
     Labels: {
-      'yaac.managed': 'true',
       'yaac.project': projectSlug,
       'yaac.session-id': sessionId,
+      'yaac.data-dir': getDataDir(),
       'yaac.test': 'true',
     },
     Env: ['TERM=xterm-256color'],
@@ -178,5 +178,46 @@ describe('yaac session list', () => {
     const output = logs.join('\n')
     expect(output).toContain('stopped-proj')
     expect(output).toContain('exited')
+  })
+
+  it('lists deleted sessions from JSONL files', async () => {
+    const repoPath = path.join(tmpDir, 'deleted-proj')
+    await createTestRepo(repoPath)
+    await projectAdd(repoPath)
+
+    // Create a fake Claude Code session JSONL file
+    const sessionsDir = path.join(claudeDir('deleted-proj'), 'projects', '-workspace')
+    await fs.mkdir(sessionsDir, { recursive: true })
+    const fakeSessionId = crypto.randomUUID()
+    await fs.writeFile(
+      path.join(sessionsDir, `${fakeSessionId}.jsonl`),
+      `{"type":"permission-mode","sessionId":"${fakeSessionId}"}\n`,
+    )
+
+    const logs: string[] = []
+    const origLog = console.log
+    console.log = (msg: string) => logs.push(msg)
+
+    await sessionList('deleted-proj', { deleted: true })
+
+    console.log = origLog
+    const output = logs.join('\n')
+    expect(output).toContain(fakeSessionId)
+    expect(output).toContain('deleted-proj')
+  })
+
+  it('shows empty message when no deleted sessions', async () => {
+    const repoPath = path.join(tmpDir, 'no-deleted')
+    await createTestRepo(repoPath)
+    await projectAdd(repoPath)
+
+    const logs: string[] = []
+    const origLog = console.log
+    console.log = (msg: string) => logs.push(msg)
+
+    await sessionList('no-deleted', { deleted: true })
+
+    console.log = origLog
+    expect(logs.join('\n')).toContain('No deleted sessions')
   })
 })

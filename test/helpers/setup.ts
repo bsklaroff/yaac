@@ -68,8 +68,7 @@ export async function createTestRepo(
 export async function cleanupContainers(): Promise<void> {
   try {
     const { stdout } = await execFileAsync('podman', [
-      'ps', '-a', '--filter', 'label=yaac.managed=true',
-      '--filter', 'label=yaac.test=true',
+      'ps', '-a', '--filter', 'label=yaac.test=true',
       '--format', '{{.ID}}',
     ])
     const ids = stdout.trim().split('\n').filter(Boolean)

@@ -92,7 +92,7 @@ export class SshAgentClient {
     const container = await podman.createContainer({
       Image: IMAGE_NAME,
       name: CONTAINER_NAME,
-      Labels: { 'yaac.managed': 'true' },
+      Labels: {},
       HostConfig: {
         Binds: [
           `${this.sshDir}:/ssh-keys:ro,Z`,

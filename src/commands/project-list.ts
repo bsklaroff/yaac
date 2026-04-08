@@ -22,7 +22,7 @@ export async function projectList(): Promise<void> {
   try {
     const containers = await podman.listContainers({
       all: true,
-      filters: { label: ['yaac.managed=true'] },
+      filters: { label: [`yaac.data-dir=${getDataDir()}`] },
     })
     for (const c of containers) {
       const proj = c.Labels?.['yaac.project']

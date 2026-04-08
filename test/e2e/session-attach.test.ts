@@ -8,7 +8,7 @@ import { projectAdd } from '@/commands/project-add'
 import { podman } from '@/lib/podman'
 import { resolveContainer } from '@/lib/container-resolve'
 import { ensureImage } from '@/lib/image-builder'
-import { claudeDir, worktreeDir, worktreesDir, repoDir } from '@/lib/paths'
+import { claudeDir, worktreeDir, worktreesDir, repoDir, getDataDir } from '@/lib/paths'
 import { addWorktree } from '@/lib/git'
 import crypto from 'node:crypto'
 
@@ -26,9 +26,9 @@ async function createContainerWithTmux(projectSlug: string): Promise<{ container
     Image: imageName,
     name: containerName,
     Labels: {
-      'yaac.managed': 'true',
       'yaac.project': projectSlug,
       'yaac.session-id': sessionId,
+      'yaac.data-dir': getDataDir(),
       'yaac.test': 'true',
     },
     Env: ['TERM=xterm-256color'],
