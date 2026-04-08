@@ -23,3 +23,15 @@ export async function addWorktree(repoPath: string, worktreePath: string, branch
 export async function removeWorktree(repoPath: string, worktreePath: string): Promise<void> {
   await simpleGit(repoPath).raw(['worktree', 'remove', worktreePath])
 }
+
+export async function getGitUserConfig(): Promise<{ name: string; email: string } | null> {
+  try {
+    const git = simpleGit()
+    const name = (await git.getConfig('user.name', 'global')).value
+    const email = (await git.getConfig('user.email', 'global')).value
+    if (name && email) return { name, email }
+    return null
+  } catch {
+    return null
+  }
+}

@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import simpleGit from 'simple-git'
-import { cloneRepo, getDefaultBranch, addWorktree, removeWorktree, fetchAndPullDefault } from '@/lib/git'
+import { cloneRepo, getDefaultBranch, addWorktree, removeWorktree, fetchAndPullDefault, getGitUserConfig } from '@/lib/git'
 
 describe('git helpers', () => {
   let tmpDir: string
@@ -90,6 +90,18 @@ describe('git helpers', () => {
 
     // ff-only merge should fail
     await expect(fetchAndPullDefault(cloneDir)).rejects.toThrow()
+  })
+
+  it('getGitUserConfig returns name and email or null', async () => {
+    const result = await getGitUserConfig()
+    if (result) {
+      expect(result).toHaveProperty('name')
+      expect(result).toHaveProperty('email')
+      expect(typeof result.name).toBe('string')
+      expect(typeof result.email).toBe('string')
+    } else {
+      expect(result).toBeNull()
+    }
   })
 
   it('removes a worktree', async () => {

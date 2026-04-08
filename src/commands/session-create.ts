@@ -1,10 +1,12 @@
 import fs from 'node:fs/promises'
 import crypto from 'node:crypto'
+import readline from 'node:readline/promises'
 import { execSync } from 'node:child_process'
+import simpleGit from 'simple-git'
 import { ensureContainerRuntime, podman } from '@/lib/podman'
 import { ensureImage } from '@/lib/image-builder'
 import { repoDir, claudeDir, claudeJsonFile, worktreeDir, worktreesDir, projectDir } from '@/lib/paths'
-import { addWorktree, getDefaultBranch, fetchAndPullDefault } from '@/lib/git'
+import { addWorktree, getDefaultBranch, fetchAndPullDefault, getGitUserConfig } from '@/lib/git'
 import { loadProjectConfig } from '@/lib/config'
 import { buildRulesFromConfig } from '@/lib/secret-conventions'
 import { proxyClient } from '@/lib/proxy-client'
@@ -29,6 +31,26 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   }
 
   await ensureContainerRuntime()
+
+  // Ensure git user identity is configured (needed for commits inside container)
+  let gitUser = await getGitUserConfig()
+  if (gitUser) {
+    console.log(`Git identity: ${gitUser.name} <${gitUser.email}>`)
+  } else {
+    console.log('No global git user configured. Git commits require a user identity.')
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+    const name = await rl.question('Enter git user.name: ')
+    const email = await rl.question('Enter git user.email: ')
+    rl.close()
+    if (!name || !email) {
+      console.error('Git user.name and user.email are required.')
+      process.exitCode = 1
+      return
+    }
+    await simpleGit().addConfig('user.name', name, false, 'global')
+    await simpleGit().addConfig('user.email', email, false, 'global')
+    gitUser = { name, email }
+  }
 
   console.log('Ensuring container images are built...')
   const imageName = await ensureImage(projectSlug)
@@ -119,6 +141,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     HostConfig: {
       Binds: [
         `${wtDir}:/workspace:Z`,
+        `${repo}/.git:/repo/.git:Z`,
         `${claude}:/home/yaac/.claude:Z`,
         `${claudeJson}:/home/yaac/.claude.json:Z`,
       ],
@@ -135,6 +158,14 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
       input: caCert,
     })
   }
+
+  // Fix worktree git pointers for in-container paths
+  execSync(`podman exec ${containerName} sh -c "echo 'gitdir: /repo/.git/worktrees/${sessionId}' > /workspace/.git"`)
+  execSync(`podman exec ${containerName} sh -c "echo '/workspace/.git' > /repo/.git/worktrees/${sessionId}/gitdir"`)
+
+  // Configure git identity inside container
+  execSync(`podman exec ${containerName} git config --global user.name '${shellEscape(gitUser.name)}'`)
+  execSync(`podman exec ${containerName} git config --global user.email '${shellEscape(gitUser.email)}'`)
 
   // Start Claude Code in a tmux session
   const claudeCmd = options.prompt

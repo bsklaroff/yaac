@@ -13,6 +13,7 @@ import { loadProjectConfig } from '@/lib/config'
 import { repoDir, claudeDir, worktreeDir, worktreesDir } from '@/lib/paths'
 import { buildRulesFromConfig } from '@/lib/secret-conventions'
 import { proxyClient } from '@/lib/proxy-client'
+import { shellEscape } from '@/commands/session-create'
 
 const execFileAsync = promisify(execFile)
 
@@ -76,6 +77,7 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
     HostConfig: {
       Binds: [
         `${wtDir}:/workspace:Z`,
+        `${repo}/.git:/repo/.git:Z`,
         `${claude}:/home/yaac/.claude:Z`,
       ],
       NetworkMode: networkMode,
@@ -83,6 +85,24 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
   })
 
   await container.start()
+
+  // Fix worktree git pointers for in-container paths
+  await execFileAsync('podman', [
+    'exec', containerName, 'sh', '-c',
+    `echo 'gitdir: /repo/.git/worktrees/${sessionId}' > /workspace/.git`,
+  ])
+  await execFileAsync('podman', [
+    'exec', containerName, 'sh', '-c',
+    `echo '/workspace/.git' > /repo/.git/worktrees/${sessionId}/gitdir`,
+  ])
+
+  // Configure git identity inside container
+  await execFileAsync('podman', [
+    'exec', containerName, 'git', 'config', '--global', 'user.name', 'Test',
+  ])
+  await execFileAsync('podman', [
+    'exec', containerName, 'git', 'config', '--global', 'user.email', 'test@test.com',
+  ])
 
   // Start tmux — use the prompt if provided, otherwise just bash
   const tmuxCmd = options?.prompt
@@ -184,6 +204,29 @@ describe('yaac session create', () => {
     await execFileAsync('podman', [
       'exec', result.containerName, 'test', '-d', '/home/yaac/.claude',
     ])
+  })
+
+  it('has a working git repository in /workspace', async () => {
+    if (!isPodmanAvailable) return
+
+    const repoPath = path.join(tmpDir, 'git-project')
+    await createTestRepo(repoPath)
+    await projectAdd(repoPath)
+
+    const result = await createSessionNonInteractive('git-project')
+    containersToCleanup.push(result.containerName)
+
+    // git status should succeed (not "not a git repository")
+    const { stdout } = await execFileAsync('podman', [
+      'exec', '-w', '/workspace', result.containerName, 'git', 'status', '--porcelain',
+    ])
+    expect(stdout.trim()).toBe('')
+
+    // Verify correct branch
+    const { stdout: branchOut } = await execFileAsync('podman', [
+      'exec', '-w', '/workspace', result.containerName, 'git', 'rev-parse', '--abbrev-ref', 'HEAD',
+    ])
+    expect(branchOut.trim()).toBe(`yaac/${result.sessionId}`)
   })
 
   it('has tmux session running inside container', async () => {
