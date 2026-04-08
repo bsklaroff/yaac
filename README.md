@@ -1,4 +1,4 @@
-# yaac: Yet Another Agent Container
+# Yet Another Agent Container
 
 Agent sandbox manager — run Claude Code sessions in isolated Podman containers.
 

@@ -138,8 +138,8 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
 
   // Start Claude Code in a tmux session
   const claudeCmd = options.prompt
-    ? `claude -p ${shellEscape(options.prompt)}`
-    : 'claude'
+    ? `claude --dangerously-skip-permissions -p ${shellEscape(options.prompt)}`
+    : 'claude --dangerously-skip-permissions'
   console.log('Starting Claude Code...')
   execSync(`podman exec ${containerName} tmux -u new-session -d -s claude '${claudeCmd}'`, {
     stdio: 'pipe',
