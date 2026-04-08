@@ -33,7 +33,7 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
   await addWorktree(repo, wtDir, `yaac/${sessionId}`)
 
   const config = await loadProjectConfig(repo) ?? {}
-  const env: string[] = ['TERM=xterm-256color']
+  const env: string[] = ['TERM=xterm-256color', 'EDITOR=nvim']
 
   if (config.envPassthrough) {
     for (const name of config.envPassthrough) {
@@ -122,7 +122,10 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
     'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'claude', tmuxCmd,
   ])
 
-  // Show session ID in tmux status bar
+  // Configure tmux UX
+  await execFileAsync('podman', [
+    'exec', containerName, 'tmux', 'set-option', '-t', 'claude', 'mouse', 'on',
+  ])
   await execFileAsync('podman', [
     'exec', containerName, 'tmux', 'set-option', '-t', 'claude', 'status-right', ` ${sessionId} `,
   ])

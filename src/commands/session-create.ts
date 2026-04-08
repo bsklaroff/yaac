@@ -79,7 +79,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   const config: YaacConfig = await loadProjectConfig(repo) ?? {}
 
   // Build container env
-  const env: string[] = ['TERM=xterm-256color', 'LANG=en_US.UTF-8']
+  const env: string[] = ['TERM=xterm-256color', 'LANG=en_US.UTF-8', 'EDITOR=nvim']
 
   // Passthrough env vars
   if (config.envPassthrough) {
@@ -188,7 +188,8 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     stdio: 'pipe',
   })
 
-  // Show session ID in tmux status bar
+  // Configure tmux UX
+  execSync(`podman exec ${containerName} tmux set-option -t claude mouse on`)
   execSync(`podman exec ${containerName} tmux set-option -t claude status-right ' ${sessionId} '`)
   execSync(`podman exec ${containerName} tmux set-option -t claude status-right-length 50`)
 
