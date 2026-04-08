@@ -78,7 +78,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   const config: YaacConfig = await loadProjectConfig(repo) ?? {}
 
   // Build container env
-  const env: string[] = ['TERM=xterm-256color']
+  const env: string[] = ['TERM=xterm-256color', 'LANG=en_US.UTF-8']
 
   // Passthrough env vars
   if (config.envPassthrough) {
