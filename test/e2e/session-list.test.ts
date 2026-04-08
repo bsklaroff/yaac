@@ -98,7 +98,6 @@ describe('yaac session list', () => {
     console.log = origLog
     const output = logs.join('\n')
     expect(output).toContain('list-project')
-    expect(output).toContain(containerName)
     expect(output).toContain('running')
   })
 
@@ -202,7 +201,7 @@ describe('yaac session list', () => {
 
     console.log = origLog
     const output = logs.join('\n')
-    expect(output).toContain(fakeSessionId)
+    expect(output).toContain(fakeSessionId.slice(0, 8))
     expect(output).toContain('deleted-proj')
   })
 

@@ -36,16 +36,16 @@ export async function sessionList(projectSlug?: string, options: SessionListOpti
   }
 
   console.log('')
-  console.log(`${'SESSION'.padEnd(12)} ${'PROJECT'.padEnd(20)} ${'CONTAINER'.padEnd(35)} ${'STATUS'.padEnd(12)} CREATED`)
-  console.log(`${'-'.repeat(12)} ${'-'.repeat(20)} ${'-'.repeat(35)} ${'-'.repeat(12)} ${'-'.repeat(20)}`)
+  console.log(`${'SESSION'.padEnd(10)} ${'PROJECT'.padEnd(20)} ${'STATUS'.padEnd(12)} CREATED`)
+  console.log(`${'-'.repeat(10)} ${'-'.repeat(20)} ${'-'.repeat(12)} ${'-'.repeat(20)}`)
 
   for (const c of containers) {
     const sessionId = c.Labels?.['yaac.session-id'] ?? '?'
+    const shortId = sessionId.slice(0, 8)
     const project = c.Labels?.['yaac.project'] ?? '?'
-    const name = c.Names?.[0]?.replace(/^\//, '') ?? c.Id.slice(0, 12)
     const status = c.State ?? 'unknown'
     const created = new Date(c.Created * 1000).toISOString().replace('T', ' ').slice(0, 19)
-    console.log(`${sessionId.padEnd(12)} ${project.padEnd(20)} ${name.padEnd(35)} ${status.padEnd(12)} ${created}`)
+    console.log(`${shortId.padEnd(10)} ${project.padEnd(20)} ${status.padEnd(12)} ${created}`)
   }
   console.log('')
 }
@@ -118,11 +118,11 @@ async function listDeletedSessions(projectSlug?: string): Promise<void> {
   deleted.sort((a, b) => b.created.localeCompare(a.created))
 
   console.log('')
-  console.log(`${'SESSION'.padEnd(38)} ${'PROJECT'.padEnd(20)} CREATED`)
-  console.log(`${'-'.repeat(38)} ${'-'.repeat(20)} ${'-'.repeat(20)}`)
+  console.log(`${'SESSION'.padEnd(10)} ${'PROJECT'.padEnd(20)} CREATED`)
+  console.log(`${'-'.repeat(10)} ${'-'.repeat(20)} ${'-'.repeat(20)}`)
 
   for (const s of deleted) {
-    console.log(`${s.sessionId.padEnd(38)} ${s.project.padEnd(20)} ${s.created}`)
+    console.log(`${s.sessionId.slice(0, 8).padEnd(10)} ${s.project.padEnd(20)} ${s.created}`)
   }
   console.log('')
 }
