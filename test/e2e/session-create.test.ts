@@ -126,7 +126,7 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
     'exec', containerName, 'tmux', 'set-option', '-t', 'claude', 'mouse', 'on',
   ])
   await execFileAsync('podman', [
-    'exec', containerName, 'tmux', 'set-option', '-t', 'claude', 'status-right', ` ${sessionId} `,
+    'exec', containerName, 'tmux', 'set-option', '-t', 'claude', 'status-right', ` ${projectSlug} ${sessionId.slice(0, 8)} `,
   ])
   await execFileAsync('podman', [
     'exec', containerName, 'tmux', 'set-option', '-t', 'claude', 'status-right-length', '50',
@@ -242,7 +242,7 @@ describe('yaac session create', () => {
       const { stdout } = await execFileAsync('podman', [
         'exec', result.containerName, 'tmux', 'show-option', '-t', 'claude', 'status-right',
       ])
-      expect(stdout).toContain(result.sessionId)
+      expect(stdout).toContain(result.sessionId.slice(0, 8))
     })
   })
 
