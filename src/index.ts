@@ -67,7 +67,7 @@ session
 session
   .command('stream')
   .description('Stream through waiting sessions, attaching to each in turn')
-  .option('-p, --project <project>', 'Filter by project slug')
+  .argument('[project]', 'Filter by project slug (auto-creates sessions if none waiting)')
   .action(sessionStream)
 
 program.parse()

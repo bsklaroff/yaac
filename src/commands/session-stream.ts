@@ -3,6 +3,7 @@ import { podman } from '@/lib/podman'
 import { getDataDir } from '@/lib/paths'
 import { getSessionClaudeStatus } from '@/lib/claude-status'
 import { isTmuxSessionAlive, cleanupSession } from '@/lib/session-cleanup'
+import { sessionCreate } from '@/commands/session-create'
 
 export interface WaitingSession {
   containerName: string
@@ -50,17 +51,13 @@ export async function getWaitingSessions(
   return results
 }
 
-export interface SessionStreamOptions {
-  project?: string
-}
-
-export async function sessionStream(options: SessionStreamOptions): Promise<void> {
+export async function sessionStream(project?: string): Promise<void> {
   const visited = new Set<string>()
 
   while (true) {
     let sessions: WaitingSession[]
     try {
-      sessions = await getWaitingSessions(options.project, visited)
+      sessions = await getWaitingSessions(project, visited)
     } catch {
       console.error('Failed to connect to Podman. Is the Podman machine running?')
       process.exitCode = 1
@@ -68,6 +65,11 @@ export async function sessionStream(options: SessionStreamOptions): Promise<void
     }
 
     if (sessions.length === 0) {
+      if (project) {
+        console.log(`No waiting sessions. Creating a new session for "${project}"...`)
+        await sessionCreate(project, {})
+        continue
+      }
       console.log('No waiting sessions. Exiting.')
       return
     }

@@ -15,12 +15,18 @@ vi.mock('@/lib/paths', () => ({
   getDataDir: () => '/tmp/yaac-test',
 }))
 
+vi.mock('@/commands/session-create', () => ({
+  sessionCreate: vi.fn(),
+}))
+
 import { podman } from '@/lib/podman'
 import { getSessionClaudeStatus } from '@/lib/claude-status'
+import { sessionCreate } from '@/commands/session-create'
 
 // eslint-disable-next-line @typescript-eslint/unbound-method
 const mockListContainers = vi.mocked(podman.listContainers)
 const mockGetStatus = vi.mocked(getSessionClaudeStatus)
+const mockSessionCreate = vi.mocked(sessionCreate)
 
 describe('getWaitingSessions', () => {
   beforeEach(() => {
@@ -149,7 +155,35 @@ describe('getWaitingSessions', () => {
 })
 
 describe('sessionStream', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
   it('is exported as a function', () => {
     expect(typeof sessionStream).toBe('function')
+  })
+
+  it('calls sessionCreate when no sessions and project is provided', async () => {
+    let callCount = 0
+    mockListContainers.mockImplementation(() => {
+      callCount++
+      if (callCount <= 1) return Promise.resolve([])
+      // After sessionCreate is called, simulate the process exiting
+      // by throwing to break the loop
+      throw new Error('stop')
+    })
+    mockSessionCreate.mockResolvedValue(undefined)
+
+    await sessionStream('my-project')
+
+    expect(mockSessionCreate).toHaveBeenCalledWith('my-project', {})
+  })
+
+  it('exits when no sessions and no project is provided', async () => {
+    mockListContainers.mockResolvedValue([])
+
+    await sessionStream()
+
+    expect(mockSessionCreate).not.toHaveBeenCalled()
   })
 })

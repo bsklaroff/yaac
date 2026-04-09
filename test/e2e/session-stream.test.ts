@@ -138,7 +138,7 @@ describe('yaac session stream', () => {
     const origLog = console.log
     console.log = (msg: string) => logs.push(msg)
 
-    await sessionStream({})
+    await sessionStream()
 
     console.log = origLog
     expect(logs.join('\n')).toContain('No waiting sessions')
