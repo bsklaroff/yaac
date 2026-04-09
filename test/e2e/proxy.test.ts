@@ -1,17 +1,15 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import crypto from 'node:crypto'
-import { podmanAvailable } from '@test/helpers/setup'
+import { requirePodman } from '@test/helpers/setup'
 import { ProxyClient } from '@/lib/proxy-client'
 
 describe('proxy sidecar', () => {
-  let isPodmanAvailable: boolean
   let client: ProxyClient
 
   const testAuthSecret = crypto.randomBytes(32).toString('hex')
 
   beforeAll(async () => {
-    isPodmanAvailable = await podmanAvailable()
-    if (!isPodmanAvailable) return
+    await requirePodman()
 
     client = new ProxyClient({
       image: 'yaac-proxy-test',
@@ -23,7 +21,7 @@ describe('proxy sidecar', () => {
   })
 
   afterAll(async () => {
-    if (!isPodmanAvailable) return
+    if (!client) return
     try {
       await client.stop()
     } catch {
@@ -32,8 +30,6 @@ describe('proxy sidecar', () => {
   })
 
   it('starts proxy and healthcheck responds', async () => {
-    if (!isPodmanAvailable) return
-
     await client.ensureRunning()
 
     const res = await fetch('http://127.0.0.1:19255/healthz')
@@ -42,8 +38,6 @@ describe('proxy sidecar', () => {
   })
 
   it('serves CA certificate', async () => {
-    if (!isPodmanAvailable) return
-
     await client.ensureRunning()
 
     const caCert = await client.getCaCert()
@@ -52,8 +46,6 @@ describe('proxy sidecar', () => {
   })
 
   it('registers session and project rules', async () => {
-    if (!isPodmanAvailable) return
-
     await client.ensureRunning()
 
     const token = client.generateSessionToken()
@@ -77,8 +69,6 @@ describe('proxy sidecar', () => {
   })
 
   it('ensureRunning is idempotent', async () => {
-    if (!isPodmanAvailable) return
-
     // Call twice — should not error or create duplicate containers
     await client.ensureRunning()
     await client.ensureRunning()
@@ -88,8 +78,6 @@ describe('proxy sidecar', () => {
   })
 
   it('stop removes container and network', async () => {
-    if (!isPodmanAvailable) return
-
     await client.ensureRunning()
     await client.stop()
 

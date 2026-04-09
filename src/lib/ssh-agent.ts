@@ -8,9 +8,17 @@ import { SSH_AGENT_DIR } from '@/lib/paths'
 
 const execFileAsync = promisify(execFile)
 
-const VOLUME_NAME = 'yaac-ssh-agent'
-const CONTAINER_NAME = 'yaac-ssh-agent'
-const IMAGE_NAME = 'yaac-ssh-agent'
+export interface SshAgentConfig {
+  containerName: string
+  volumeName: string
+  imageName: string
+}
+
+const DEFAULT_CONFIG: SshAgentConfig = {
+  containerName: 'yaac-ssh-agent',
+  volumeName: 'yaac-ssh-agent',
+  imageName: 'yaac-ssh-agent',
+}
 
 export function hasSshKeys(sshDir?: string): boolean {
   const dir = sshDir ?? path.join(os.homedir(), '.ssh')
@@ -26,9 +34,11 @@ export function hasSshKeys(sshDir?: string): boolean {
 export class SshAgentClient {
   private running = false
   private sshDir: string
+  private config: SshAgentConfig
 
-  constructor(sshDir?: string) {
+  constructor(sshDir?: string, config?: SshAgentConfig) {
     this.sshDir = sshDir ?? path.join(os.homedir(), '.ssh')
+    this.config = config ?? DEFAULT_CONFIG
   }
 
   getSshEnv(): string[] {
@@ -36,12 +46,12 @@ export class SshAgentClient {
   }
 
   getBinds(): string[] {
-    return [`${VOLUME_NAME}:/ssh-agent`]
+    return [`${this.config.volumeName}:/ssh-agent`]
   }
 
   async ensureRunning(): Promise<void> {
     try {
-      const info = await podman.getContainer(CONTAINER_NAME).inspect()
+      const info = await podman.getContainer(this.config.containerName).inspect()
       if (info.State.Running) {
         this.running = true
         return
@@ -57,12 +67,12 @@ export class SshAgentClient {
 
   private async ensureImage(): Promise<void> {
     try {
-      await execFileAsync('podman', ['image', 'inspect', IMAGE_NAME])
+      await execFileAsync('podman', ['image', 'inspect', this.config.imageName])
     } catch {
       console.log('Building SSH agent sidecar image...')
       await new Promise<void>((resolve, reject) => {
         const child = spawn('podman', [
-          'build', '-t', IMAGE_NAME, SSH_AGENT_DIR,
+          'build', '-t', this.config.imageName, SSH_AGENT_DIR,
         ], { stdio: 'inherit', timeout: 120_000 })
         child.on('close', (code) => {
           if (code === 0) resolve()
@@ -76,7 +86,7 @@ export class SshAgentClient {
   private async start(): Promise<void> {
     // Create shared volume for the agent socket
     try {
-      await execFileAsync('podman', ['volume', 'create', VOLUME_NAME])
+      await execFileAsync('podman', ['volume', 'create', this.config.volumeName])
     } catch (err) {
       if (err instanceof Error && err.message.includes('already exists')) { /* ok */ }
       else throw err
@@ -84,20 +94,20 @@ export class SshAgentClient {
 
     // Remove existing container
     try {
-      const existing = podman.getContainer(CONTAINER_NAME)
+      const existing = podman.getContainer(this.config.containerName)
       await existing.remove({ force: true })
     } catch {
       // doesn't exist
     }
 
     const container = await podman.createContainer({
-      Image: IMAGE_NAME,
-      name: CONTAINER_NAME,
+      Image: this.config.imageName,
+      name: this.config.containerName,
       Labels: {},
       HostConfig: {
         Binds: [
           `${this.sshDir}:/ssh-keys:ro,Z`,
-          `${VOLUME_NAME}:/ssh-agent`,
+          `${this.config.volumeName}:/ssh-agent`,
         ],
       },
     })
@@ -108,7 +118,7 @@ export class SshAgentClient {
     for (let i = 0; i < 20; i++) {
       try {
         const { stdout } = await execFileAsync('podman', [
-          'exec', CONTAINER_NAME, 'ssh-add', '-l',
+          'exec', this.config.containerName, 'ssh-add', '-l',
         ], { env: { ...process.env, SSH_AUTH_SOCK: '/ssh-agent/socket' } })
         console.log(`SSH agent ready: ${stdout.trim()}`)
         return
@@ -121,14 +131,14 @@ export class SshAgentClient {
 
   async stop(): Promise<void> {
     try {
-      const container = podman.getContainer(CONTAINER_NAME)
+      const container = podman.getContainer(this.config.containerName)
       await container.stop({ t: 2 })
       await container.remove()
     } catch {
       // already stopped or removed
     }
     try {
-      await execFileAsync('podman', ['volume', 'rm', VOLUME_NAME])
+      await execFileAsync('podman', ['volume', 'rm', this.config.volumeName])
     } catch {
       // ok
     }

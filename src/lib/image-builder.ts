@@ -3,8 +3,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
-import { DOCKERFILES_DIR, getDataDir, repoDir, configOverrideDir } from '@/lib/paths'
-import { resolveProjectConfig } from '@/lib/config'
+import { DOCKERFILES_DIR, getDataDir, configOverrideDir } from '@/lib/paths'
 
 const execFileAsync = promisify(execFile)
 
@@ -65,128 +64,59 @@ async function fileExists(filePath: string): Promise<boolean> {
 }
 
 /**
- * Commits a running container as a cached image.
- */
-async function commitContainer(containerName: string, imageName: string, hash: string): Promise<void> {
-  await execFileAsync('podman', [
-    'commit',
-    '--change', `LABEL yaac.content-hash=${hash}`,
-    '--change', 'ENTRYPOINT ["sleep", "infinity"]',
-    containerName,
-    imageName,
-  ])
-}
-
-/**
- * Runs yaac-setup.sh inside a temporary container and commits the result as a cached image.
- * Returns the cached image name.
- */
-export async function ensureSetupImage(
-  projectSlug: string,
-  baseImageName: string,
-  setupScriptPath: string,
-  cacheVolumes: Record<string, string> = {},
-): Promise<string> {
-  const setupImageName = `yaac-setup-${projectSlug}`
-  const baseHash = await getImageLabel(baseImageName, 'yaac.content-hash') ?? 'unknown'
-  const scriptHash = await fileHash(setupScriptPath)
-  const combinedHash = crypto.createHash('sha256')
-    .update(baseHash)
-    .update(scriptHash)
-    .digest('hex')
-    .slice(0, 16)
-
-  const existingHash = await getImageLabel(setupImageName, 'yaac.content-hash')
-  if (await imageExists(setupImageName) && existingHash === combinedHash) {
-    return setupImageName
-  }
-
-  console.log(`Running yaac-setup.sh for ${projectSlug}...`)
-  const tmpContainer = `yaac-setup-tmp-${projectSlug}-${Date.now()}`
-  const repoPath = repoDir(projectSlug)
-
-  const volumeArgs: string[] = []
-  for (const [key, containerPath] of Object.entries(cacheVolumes)) {
-    volumeArgs.push('-v', `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`)
-  }
-
-  // Create and start a temporary container with the repo mounted.
-  // The setup script is bind-mounted into /workspace so it runs from inside
-  // the workspace regardless of whether it comes from the repo or a local override.
-  await execFileAsync('podman', [
-    'run', '--name', tmpContainer,
-    '-v', `${repoPath}:/workspace:Z`,
-    '-v', `${setupScriptPath}:/workspace/yaac-setup.sh:ro,Z`,
-    ...volumeArgs,
-    '-w', '/workspace',
-    '--entrypoint', '/bin/bash',
-    baseImageName,
-    '/workspace/yaac-setup.sh',
-  ], { timeout: 600_000 })
-
-  // Commit the container as the setup image
-  await commitContainer(tmpContainer, setupImageName, combinedHash)
-
-  // Clean up the temporary container
-  await execFileAsync('podman', ['rm', tmpContainer])
-
-  return setupImageName
-}
-
-/**
  * Ensures the full image chain is built for a project.
  *
- * Layer 1: yaac-default (from Dockerfile.default, or replaced by ~/.yaac/Dockerfile.yaac)
- * Layer 2: yaac-setup-<slug> (optional: runs yaac-setup.sh from project repo, cached)
- * Layer 3: yaac-user-<slug> (optional: from ~/.yaac/Dockerfile.user, builds on top)
+ * Layer 1: yaac-base (from Dockerfile.default, or replaced by ~/.yaac/Dockerfile.yaac)
+ * Layer 2: yaac-user-<slug> (optional: from ~/.yaac/Dockerfile.user, builds on top)
  *
  * Returns the final image name to use for containers.
+ *
+ * @param imagePrefix - Override for image name prefix. Used by tests to
+ *   build isolated images that don't interfere with the running application.
+ * @param requirePrebuilt - When true, throw instead of building if the base
+ *   image is missing or stale. Used by e2e tests so parallel workers fail
+ *   fast instead of racing to build the same image.
  */
-export async function ensureImage(projectSlug: string): Promise<string> {
-  // Layer 1: yaac-default (or replaced by ~/.yaac/Dockerfile.yaac)
-  const yaacDockerfile = path.join(getDataDir(), 'Dockerfile.yaac')
-  const hasYaacDockerfile = await fileExists(yaacDockerfile)
+export async function ensureImage(projectSlug: string, imagePrefix?: string, requirePrebuilt = false): Promise<string> {
+  const prefix = imagePrefix ?? 'yaac'
+  const baseName = `${prefix}-base`
 
-  const baseDockerfile = hasYaacDockerfile
-    ? yaacDockerfile
-    : path.join(DOCKERFILES_DIR, 'Dockerfile.default')
-  const baseContext = hasYaacDockerfile ? getDataDir() : DOCKERFILES_DIR
+  // Layer 1: <prefix>-base (config-override/Dockerfile.yaac > Dockerfile.default)
+  const overrideDockerfile = path.join(configOverrideDir(projectSlug), 'Dockerfile.yaac')
+  const yaacDockerfile = await fileExists(overrideDockerfile) ? overrideDockerfile : null
+  const baseDockerfile = yaacDockerfile ?? path.join(DOCKERFILES_DIR, 'Dockerfile.default')
+  const baseContext = yaacDockerfile ? path.dirname(yaacDockerfile) : DOCKERFILES_DIR
   const baseHash = await fileHash(baseDockerfile)
-  const existingBaseHash = await getImageLabel('yaac-default', 'yaac.content-hash')
-  if (!await imageExists('yaac-default') || existingBaseHash !== baseHash) {
-    console.log(hasYaacDockerfile
-      ? 'Building yaac-default image from Dockerfile.yaac...'
-      : 'Building yaac-default image...')
-    await buildImage('yaac-default', baseDockerfile, baseContext, baseHash)
+  const existingBaseHash = await getImageLabel(baseName, 'yaac.content-hash')
+  if (!await imageExists(baseName) || existingBaseHash !== baseHash) {
+    if (requirePrebuilt) {
+      throw new Error(
+        `Base image ${baseName} is missing or stale. ` +
+        'Restart the test run so the global setup can rebuild it.',
+      )
+    }
+    console.log(yaacDockerfile
+      ? `Building ${baseName} image from Dockerfile.yaac...`
+      : `Building ${baseName} image...`)
+    await buildImage(baseName, baseDockerfile, baseContext, baseHash)
   }
 
-  // Layer 2: yaac-setup-<slug> (optional yaac-setup.sh, local override or from repo)
-  const overrideScript = path.join(configOverrideDir(projectSlug), 'yaac-setup.sh')
-  const repoScript = path.join(repoDir(projectSlug), 'yaac-setup.sh')
-  const setupScript = await fileExists(overrideScript) ? overrideScript : repoScript
-  const hasSetupScript = await fileExists(setupScript)
-  let currentImageName = 'yaac-default'
-
-  if (hasSetupScript) {
-    const config = await resolveProjectConfig(projectSlug) ?? {}
-    currentImageName = await ensureSetupImage(projectSlug, 'yaac-default', setupScript, config.cacheVolumes ?? {})
-  }
-
-  // Layer 3: yaac-user (optional Dockerfile.user in ~/.yaac)
+  // Layer 2: <prefix>-user (optional Dockerfile.user in ~/.yaac)
   // Tag current image so Dockerfile.user can use a stable FROM reference
-  await tagImage(currentImageName, 'yaac-current')
+  const currentTag = `${prefix}-current`
+  await tagImage(baseName, currentTag)
   const userDockerfile = path.join(getDataDir(), 'Dockerfile.user')
-  const finalImageName = `yaac-user-${projectSlug}`
+  const finalImageName = `${prefix}-user-${projectSlug}`
 
   if (await fileExists(userDockerfile)) {
     const userHash = await fileHash(userDockerfile)
     const existingUserHash = await getImageLabel(finalImageName, 'yaac.content-hash')
     if (!await imageExists(finalImageName) || existingUserHash !== userHash) {
-      console.log('Building yaac-user image...')
+      console.log(`Building ${prefix}-user image...`)
       await buildImage(finalImageName, userDockerfile, getDataDir(), userHash)
     }
   } else {
-    await tagImage(currentImageName, finalImageName)
+    await tagImage(baseName, finalImageName)
   }
 
   return finalImageName

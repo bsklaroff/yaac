@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { createTempDataDir, cleanupTempDir, createTestRepo, podmanAvailable } from '@test/helpers/setup'
+import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX } from '@test/helpers/setup'
 import { projectAdd } from '@/commands/project-add'
 import { sessionList } from '@/commands/session-list'
 import { podman } from '@/lib/podman'
@@ -11,7 +11,7 @@ import { claudeDir, worktreeDir, worktreesDir, repoDir, getDataDir } from '@/lib
 import { addWorktree, getDefaultBranch } from '@/lib/git'
 
 async function createMinimalContainer(projectSlug: string): Promise<string> {
-  const imageName = await ensureImage(projectSlug)
+  const imageName = await ensureImage(projectSlug, TEST_IMAGE_PREFIX, true)
   const sessionId = crypto.randomBytes(4).toString('hex')
   const repo = repoDir(projectSlug)
   const wtDir = worktreeDir(projectSlug, sessionId)
@@ -33,7 +33,7 @@ async function createMinimalContainer(projectSlug: string): Promise<string> {
     HostConfig: {
       Binds: [
         `${wtDir}:/workspace:Z`,
-        `${claudeDir(projectSlug)}:/root/.claude:Z`,
+        `${claudeDir(projectSlug)}:/home/yaac/.claude:Z`,
       ],
     },
   })
@@ -42,13 +42,8 @@ async function createMinimalContainer(projectSlug: string): Promise<string> {
 }
 
 describe('yaac session list', () => {
-  let isPodmanAvailable: boolean
   const containersToCleanup: string[] = []
   const tmpDirs: string[] = []
-
-  beforeAll(async () => {
-    isPodmanAvailable = await podmanAvailable()
-  })
 
   afterEach(async () => {
     for (const name of containersToCleanup) {
@@ -87,7 +82,7 @@ describe('yaac session list', () => {
     let containerB: string
 
     beforeAll(async () => {
-      if (!isPodmanAvailable) return
+      await requirePodman()
       tmpDir = await createTempDataDir()
 
       const repoA = path.join(tmpDir, 'proj-a')
@@ -102,8 +97,8 @@ describe('yaac session list', () => {
     })
 
     afterAll(async () => {
-      if (!isPodmanAvailable) return
       for (const name of [containerA, containerB]) {
+        if (!name) continue
         try {
           const c = podman.getContainer(name)
           await c.stop({ t: 1 })
@@ -112,12 +107,10 @@ describe('yaac session list', () => {
           // already gone
         }
       }
-      await cleanupTempDir(tmpDir)
+      if (tmpDir) await cleanupTempDir(tmpDir)
     })
 
     it('lists running sessions with metadata', async () => {
-      if (!isPodmanAvailable) return
-
       const logs: string[] = []
       const origLog = console.log
       console.log = (msg: string) => logs.push(msg)
@@ -131,8 +124,6 @@ describe('yaac session list', () => {
     })
 
     it('filters by project when argument is provided', async () => {
-      if (!isPodmanAvailable) return
-
       const logs: string[] = []
       const origLog = console.log
       console.log = (msg: string) => logs.push(msg)
@@ -146,8 +137,6 @@ describe('yaac session list', () => {
     })
 
     it('shows all sessions when no project filter', async () => {
-      if (!isPodmanAvailable) return
-
       const logs: string[] = []
       const origLog = console.log
       console.log = (msg: string) => logs.push(msg)
@@ -162,7 +151,7 @@ describe('yaac session list', () => {
   })
 
   it('auto-cleans exited containers from the list', async () => {
-    if (!isPodmanAvailable) return
+    await requirePodman()
 
     const tmpDir = await createTempDataDir()
     tmpDirs.push(tmpDir)

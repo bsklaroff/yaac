@@ -4,26 +4,32 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import simpleGit from 'simple-git'
-import { createTempDataDir, cleanupTempDir, createTestRepo, podmanAvailable } from '@test/helpers/setup'
+import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, TEST_SSH_AGENT_CONFIG, TEST_PROXY_CONFIG } from '@test/helpers/setup'
 import { projectAdd } from '@/commands/project-add'
 import { podman } from '@/lib/podman'
 import { ensureImage } from '@/lib/image-builder'
-import { addWorktree, getDefaultBranch, fetchAndPullDefault } from '@/lib/git'
+import { addWorktree, getDefaultBranch } from '@/lib/git'
 import { resolveProjectConfig } from '@/lib/config'
 import { repoDir, claudeDir, worktreeDir, worktreesDir, getDataDir } from '@/lib/paths'
 import { buildRulesFromConfig } from '@/lib/secret-conventions'
-import { proxyClient } from '@/lib/proxy-client'
-import { sshAgent, hasSshKeys, SshAgentClient } from '@/lib/ssh-agent'
+import { ProxyClient } from '@/lib/proxy-client'
+import { hasSshKeys, SshAgentClient } from '@/lib/ssh-agent'
 
 const execFileAsync = promisify(execFile)
+
+// Test-specific sidecar instances — isolated from the running application
+const testProxyClient = new ProxyClient({
+  ...TEST_PROXY_CONFIG,
+  authSecret: crypto.randomBytes(32).toString('hex'),
+})
+const testSshAgent = new SshAgentClient(undefined, TEST_SSH_AGENT_CONFIG)
 
 async function createSessionNonInteractive(projectSlug: string, options?: { prompt?: string }): Promise<{
   containerId: string
   containerName: string
   sessionId: string
 }> {
-  const imageName = await ensureImage(projectSlug)
+  const imageName = await ensureImage(projectSlug, TEST_IMAGE_PREFIX, true)
   const sessionId = crypto.randomBytes(4).toString('hex')
   const repo = repoDir(projectSlug)
   const wtDir = worktreeDir(projectSlug, sessionId)
@@ -48,26 +54,26 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
   const hasSecretProxy = config.envSecretProxy && Object.keys(config.envSecretProxy).length > 0
 
   if (hasSecretProxy) {
-    await proxyClient.ensureRunning()
+    await testProxyClient.ensureRunning()
     const rules = buildRulesFromConfig(config.envSecretProxy!, process.env)
-    await proxyClient.updateProjectRules(projectSlug, rules)
-    const proxyToken = proxyClient.generateSessionToken()
-    await proxyClient.registerSession(proxyToken, projectSlug)
-    env.push(...proxyClient.getProxyEnv(proxyToken))
+    await testProxyClient.updateProjectRules(projectSlug, rules)
+    const proxyToken = testProxyClient.generateSessionToken()
+    await testProxyClient.registerSession(proxyToken, projectSlug)
+    env.push(...testProxyClient.getProxyEnv(proxyToken))
     for (const name of Object.keys(config.envSecretProxy!)) {
       if (process.env[name]) {
         env.push(`${name}=placeholder`)
       }
     }
-    networkMode = proxyClient.network
+    networkMode = testProxyClient.network
   }
 
   // SSH agent setup
   const sshBinds: string[] = []
   if (hasSshKeys()) {
-    await sshAgent.ensureRunning()
-    env.push(...sshAgent.getSshEnv())
-    sshBinds.push(...sshAgent.getBinds())
+    await testSshAgent.ensureRunning()
+    env.push(...testSshAgent.getSshEnv())
+    sshBinds.push(...testSshAgent.getBinds())
   }
 
   const containerName = `yaac-${projectSlug}-${sessionId}`
@@ -87,7 +93,7 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
       Binds: [
         `${wtDir}:/workspace:Z`,
         `${repo}/.git:/repo/.git:Z`,
-        `${claude}:/root/.claude:Z`,
+        `${claude}:/home/yaac/.claude:Z`,
         ...sshBinds,
         ...Object.entries(config.cacheVolumes ?? {}).map(
           ([key, containerPath]) => `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`,
@@ -98,6 +104,13 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
   })
 
   await container.start()
+
+  // Fix ownership of named cache volumes (created as root, but container runs as yaac)
+  for (const containerPath of Object.values(config.cacheVolumes ?? {})) {
+    await execFileAsync('podman', [
+      'exec', '--user', 'root', containerName, 'chown', 'yaac:yaac', containerPath,
+    ])
+  }
 
   // Fix worktree git pointers for in-container paths
   await execFileAsync('podman', [
@@ -154,13 +167,8 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
 }
 
 describe('yaac session create', () => {
-  let isPodmanAvailable: boolean
   const containersToCleanup: string[] = []
   const tmpDirs: string[] = []
-
-  beforeAll(async () => {
-    isPodmanAvailable = await podmanAvailable()
-  })
 
   afterEach(async () => {
     for (const name of containersToCleanup) {
@@ -184,7 +192,7 @@ describe('yaac session create', () => {
     let tmpDir: string
 
     beforeAll(async () => {
-      if (!isPodmanAvailable) return
+      await requirePodman()
       tmpDir = await createTempDataDir()
       const repoPath = path.join(tmpDir, 'basic-project')
       await createTestRepo(repoPath)
@@ -193,19 +201,19 @@ describe('yaac session create', () => {
     })
 
     afterAll(async () => {
-      if (!isPodmanAvailable) return
       try {
-        const c = podman.getContainer(result.containerName)
-        await c.stop({ t: 1 })
-        await c.remove()
+        if (result) {
+          const c = podman.getContainer(result.containerName)
+          await c.stop({ t: 1 })
+          await c.remove()
+        }
       } catch {
         // already gone
       }
-      await cleanupTempDir(tmpDir)
+      if (tmpDir) await cleanupTempDir(tmpDir)
     })
 
     it('creates a container with correct labels', async () => {
-      if (!isPodmanAvailable) return
       const info = await podman.getContainer(result.containerName).inspect()
       expect(info.State.Running).toBe(true)
       expect(info.Config.Labels['yaac.project']).toBe('basic-project')
@@ -213,25 +221,22 @@ describe('yaac session create', () => {
     })
 
     it('creates worktree with correct branch', async () => {
-      if (!isPodmanAvailable) return
       const wtPath = worktreeDir('basic-project', result.sessionId)
       const readme = await fs.readFile(path.join(wtPath, 'README.md'), 'utf8')
       expect(readme).toContain('Test repo')
     })
 
     it('mounts workspace and claude directories', async () => {
-      if (!isPodmanAvailable) return
       const { stdout: lsOutput } = await execFileAsync('podman', [
         'exec', result.containerName, 'ls', '/workspace',
       ])
       expect(lsOutput).toContain('README.md')
       await execFileAsync('podman', [
-        'exec', result.containerName, 'test', '-d', '/root/.claude',
+        'exec', result.containerName, 'test', '-d', '/home/yaac/.claude',
       ])
     })
 
     it('has a working git repository in /workspace', async () => {
-      if (!isPodmanAvailable) return
       const { stdout } = await execFileAsync('podman', [
         'exec', '-w', '/workspace', result.containerName, 'git', 'status', '--porcelain',
       ])
@@ -243,7 +248,6 @@ describe('yaac session create', () => {
     })
 
     it('has tmux session running inside container', async () => {
-      if (!isPodmanAvailable) return
       const { stdout } = await execFileAsync('podman', [
         'exec', result.containerName, 'tmux', 'list-sessions',
       ])
@@ -251,7 +255,6 @@ describe('yaac session create', () => {
     })
 
     it('shows session id in tmux status bar', async () => {
-      if (!isPodmanAvailable) return
       const { stdout } = await execFileAsync('podman', [
         'exec', result.containerName, 'tmux', 'show-option', '-t', 'claude', 'status-right',
       ])
@@ -260,7 +263,7 @@ describe('yaac session create', () => {
   })
 
   it('passes envPassthrough vars to container', async () => {
-    if (!isPodmanAvailable) return
+    await requirePodman()
 
     const tmpDir = await createTempDataDir()
     tmpDirs.push(tmpDir)
@@ -284,7 +287,7 @@ describe('yaac session create', () => {
   })
 
   it('passes prompt to tmux session when --prompt is provided', async () => {
-    if (!isPodmanAvailable) return
+    await requirePodman()
 
     const tmpDir = await createTempDataDir()
     tmpDirs.push(tmpDir)
@@ -302,7 +305,7 @@ describe('yaac session create', () => {
   })
 
   it('handles prompt with special characters', async () => {
-    if (!isPodmanAvailable) return
+    await requirePodman()
 
     const tmpDir = await createTempDataDir()
     tmpDirs.push(tmpDir)
@@ -321,7 +324,7 @@ describe('yaac session create', () => {
   })
 
   it('starts claude without -p when no prompt given', async () => {
-    if (!isPodmanAvailable) return
+    await requirePodman()
 
     const tmpDir = await createTempDataDir()
     tmpDirs.push(tmpDir)
@@ -348,7 +351,7 @@ describe('yaac session create', () => {
   })
 
   it('has SSH_AUTH_SOCK set when SSH keys exist', async () => {
-    if (!isPodmanAvailable) return
+    await requirePodman()
     if (!hasSshKeys()) return // skip if no SSH keys on host
 
     const tmpDir = await createTempDataDir()
@@ -373,7 +376,7 @@ describe('yaac session create', () => {
   })
 
   it('can list SSH keys from session container via agent', async () => {
-    if (!isPodmanAvailable) return
+    await requirePodman()
 
     const tmpDir = await createTempDataDir()
     tmpDirs.push(tmpDir)
@@ -385,8 +388,8 @@ describe('yaac session create', () => {
       '-t', 'ed25519', '-f', path.join(sshDir, 'id_ed25519'), '-N', '', '-q',
     ])
 
-    // Use a dedicated SshAgentClient pointing at our test keys
-    const testAgent = new SshAgentClient(sshDir)
+    // Use a dedicated SshAgentClient pointing at our test keys with isolated names
+    const testAgent = new SshAgentClient(sshDir, TEST_SSH_AGENT_CONFIG)
     try {
       await testAgent.ensureRunning()
 
@@ -400,7 +403,7 @@ describe('yaac session create', () => {
       await fs.mkdir(worktreesDir('ssh-agent-project'), { recursive: true })
       await addWorktree(repo, wtDir, `yaac/${sessionId}`)
 
-      const imageName = await ensureImage('ssh-agent-project')
+      const imageName = await ensureImage('ssh-agent-project', TEST_IMAGE_PREFIX, true)
       const containerName = `yaac-ssh-agent-project-${sessionId}`
       containersToCleanup.push(containerName)
 
@@ -429,58 +432,8 @@ describe('yaac session create', () => {
     }
   }, 60_000)
 
-  it('uses updated yaac-setup.sh from remote when creating session', async () => {
-    if (!isPodmanAvailable) return
-
-    const tmpDir = await createTempDataDir()
-    tmpDirs.push(tmpDir)
-
-    // Create a repo with a yaac-setup.sh that creates a v1 marker
-    const repoPath = path.join(tmpDir, 'setup-fetch-project')
-    await createTestRepo(repoPath)
-    await fs.writeFile(
-      path.join(repoPath, 'yaac-setup.sh'),
-      '#!/bin/bash\ntouch /setup-marker-v1\n',
-    )
-    await fs.writeFile(path.join(repoPath, '.nvmrc'), '22\n')
-    const originGit = simpleGit(repoPath)
-    await originGit.add('.')
-    await originGit.commit('add yaac-setup.sh v1')
-
-    // Add project (clones the repo)
-    await projectAdd(repoPath)
-    const clonedRepo = repoDir('setup-fetch-project')
-
-    // Now update yaac-setup.sh on the "remote" (origin repo) to v2
-    await fs.writeFile(
-      path.join(repoPath, 'yaac-setup.sh'),
-      '#!/bin/bash\ntouch /setup-marker-v2\n',
-    )
-    await originGit.add('.')
-    await originGit.commit('update yaac-setup.sh to v2')
-
-    // Fetch and build image — mirrors the fixed ordering in sessionCreate
-    await fetchAndPullDefault(clonedRepo)
-    const imageName = await ensureImage('setup-fetch-project')
-
-    // Start a container from the image and check for the v2 marker
-    const containerName = `yaac-setup-fetch-project-test-${Date.now()}`
-    containersToCleanup.push(containerName)
-    const container = await podman.createContainer({
-      Image: imageName,
-      name: containerName,
-      Labels: { 'yaac.test': 'true' },
-    })
-    await container.start()
-
-    const { stdout } = await execFileAsync('podman', [
-      'exec', containerName, 'ls', '/setup-marker-v2',
-    ])
-    expect(stdout.trim()).toBe('/setup-marker-v2')
-  }, 120_000)
-
   it('mounts cacheVolumes in container', async () => {
-    if (!isPodmanAvailable) return
+    await requirePodman()
 
     const tmpDir = await createTempDataDir()
     tmpDirs.push(tmpDir)
@@ -513,7 +466,7 @@ describe('yaac session create', () => {
   })
 
   it('runs initCommands at session start', async () => {
-    if (!isPodmanAvailable) return
+    await requirePodman()
 
     const tmpDir = await createTempDataDir()
     tmpDirs.push(tmpDir)
@@ -533,6 +486,64 @@ describe('yaac session create', () => {
       'exec', result.containerName, 'sh', '-c', 'test -f /tmp/init-ran && echo exists',
     ])
     expect(stdout.trim()).toBe('exists')
+  })
+
+  it('pnpm install reuses cached packages from store-dir on cache volume', async () => {
+    await requirePodman()
+
+    const tmpDir = await createTempDataDir()
+    tmpDirs.push(tmpDir)
+    const repoPath = path.join(tmpDir, 'pnpm-cache-project')
+    await createTestRepo(repoPath, {
+      yaacConfig: {
+        cacheVolumes: { 'pnpm-store': '/home/yaac/.pnpm-store' },
+        initCommands: ['pnpm install --store-dir /home/yaac/.pnpm-store'],
+      },
+    })
+
+    // Add a minimal package.json so pnpm has something to install
+    await fs.writeFile(
+      path.join(repoPath, 'package.json'),
+      JSON.stringify({ name: 'test', private: true, dependencies: { 'is-odd': '3.0.1' } }) + '\n',
+    )
+    await execFileAsync('pnpm', ['install', '--lockfile-only'], { cwd: repoPath })
+    const git = (await import('simple-git')).default(repoPath)
+    await git.add('.')
+    await git.commit('add package.json')
+
+    await projectAdd(repoPath)
+
+    const result = await createSessionNonInteractive('pnpm-cache-project')
+    containersToCleanup.push(result.containerName)
+
+    // Verify pnpm resolves the store to our cache volume
+    const { stdout: storePath } = await execFileAsync('podman', [
+      'exec', '-w', '/workspace', result.containerName,
+      'pnpm', 'store', 'path', '--store-dir', '/home/yaac/.pnpm-store',
+    ])
+    expect(storePath.trim()).toMatch(/^\/home\/yaac\/\.pnpm-store\//)
+
+    // Verify the store has content after the init command ran
+    const { stdout: fileCount } = await execFileAsync('podman', [
+      'exec', result.containerName, 'sh', '-c',
+      'find /home/yaac/.pnpm-store -type f | wc -l',
+    ])
+    expect(Number(fileCount.trim())).toBeGreaterThan(0)
+
+    // Wipe node_modules and reinstall — packages should come from cache
+    const { stdout: reinstallOutput } = await execFileAsync('podman', [
+      'exec', '-w', '/workspace', result.containerName, 'sh', '-c',
+      'rm -rf node_modules && pnpm install --store-dir /home/yaac/.pnpm-store 2>&1',
+    ], { timeout: 120_000 })
+    console.log('Reinstall output:\n' + reinstallOutput)
+
+    // "downloaded 0" means everything came from the cache volume
+    expect(reinstallOutput).toContain('downloaded 0')
+
+    // Clean up the test volume
+    try {
+      await execFileAsync('podman', ['volume', 'rm', 'yaac-cache-pnpm-cache-project-pnpm-store'])
+    } catch { /* ignore */ }
   })
 
   it('errors gracefully on unknown project', async () => {

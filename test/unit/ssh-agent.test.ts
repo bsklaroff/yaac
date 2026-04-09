@@ -7,6 +7,12 @@ import path from 'node:path'
 let tmpHome: string
 
 describe('SshAgentClient.ensureRunning', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.doUnmock('@/lib/podman')
+    vi.resetModules()
+  })
+
   it('skips startup when container is already running', async () => {
     const mockInspect = vi.fn().mockResolvedValue({ State: { Running: true } })
     const mockGetContainer = vi.fn().mockReturnValue({ inspect: mockInspect })
@@ -25,9 +31,35 @@ describe('SshAgentClient.ensureRunning', () => {
     // Should not have tried to build image or start container — just returned
   })
 
-  afterEach(() => {
-    vi.restoreAllMocks()
-    vi.doUnmock('@/lib/podman')
+  it('uses custom container name from config', async () => {
+    const mockInspect = vi.fn().mockResolvedValue({ State: { Running: true } })
+    const mockGetContainer = vi.fn().mockReturnValue({ inspect: mockInspect })
+
+    vi.doMock('@/lib/podman', () => ({
+      podman: { getContainer: mockGetContainer },
+    }))
+
+    const { SshAgentClient } = await import('@/lib/ssh-agent')
+    const client = new SshAgentClient('/fake/.ssh', {
+      containerName: 'yaac-test-ssh-agent',
+      volumeName: 'yaac-test-ssh-agent',
+      imageName: 'yaac-test-ssh-agent',
+    })
+
+    await client.ensureRunning()
+
+    expect(mockGetContainer).toHaveBeenCalledWith('yaac-test-ssh-agent')
+  })
+
+  it('uses custom volume name in getBinds', async () => {
+    const { SshAgentClient } = await import('@/lib/ssh-agent')
+    const client = new SshAgentClient('/fake/.ssh', {
+      containerName: 'yaac-test-ssh-agent',
+      volumeName: 'yaac-test-ssh-agent',
+      imageName: 'yaac-test-ssh-agent',
+    })
+
+    expect(client.getBinds()).toEqual(['yaac-test-ssh-agent:/ssh-agent'])
   })
 })
 

@@ -1,6 +1,6 @@
 {
   "cacheVolumes": {
-    "pnpm-store": "/root/.local/share/pnpm/store/v3"
+    "pnpm-store": "/home/yaac/.pnpm-store"
   },
-  "initCommands": ["pnpm install"]
+  "initCommands": ["pnpm install --store-dir /home/yaac/.pnpm-store"]
 }

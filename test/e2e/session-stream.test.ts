@@ -4,7 +4,7 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import crypto from 'node:crypto'
-import { createTempDataDir, cleanupTempDir, createTestRepo, podmanAvailable } from '@test/helpers/setup'
+import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX } from '@test/helpers/setup'
 import { projectAdd } from '@/commands/project-add'
 import { podman } from '@/lib/podman'
 import { ensureImage } from '@/lib/image-builder'
@@ -18,7 +18,7 @@ async function createContainerWithWaitingStatus(projectSlug: string): Promise<{
   containerName: string
   sessionId: string
 }> {
-  const imageName = await ensureImage(projectSlug)
+  const imageName = await ensureImage(projectSlug, TEST_IMAGE_PREFIX, true)
   const sessionId = crypto.randomBytes(4).toString('hex')
   const wtDir = worktreeDir(projectSlug, sessionId)
   await fs.mkdir(worktreesDir(projectSlug), { recursive: true })
@@ -39,7 +39,7 @@ async function createContainerWithWaitingStatus(projectSlug: string): Promise<{
     HostConfig: {
       Binds: [
         `${wtDir}:/workspace:Z`,
-        `${claudeDir(projectSlug)}:/root/.claude:Z`,
+        `${claudeDir(projectSlug)}:/home/yaac/.claude:Z`,
       ],
     },
   })
@@ -65,7 +65,7 @@ async function createContainerWithRunningStatus(projectSlug: string): Promise<{
   containerName: string
   sessionId: string
 }> {
-  const imageName = await ensureImage(projectSlug)
+  const imageName = await ensureImage(projectSlug, TEST_IMAGE_PREFIX, true)
   const sessionId = crypto.randomBytes(4).toString('hex')
   const wtDir = worktreeDir(projectSlug, sessionId)
   await fs.mkdir(worktreesDir(projectSlug), { recursive: true })
@@ -86,7 +86,7 @@ async function createContainerWithRunningStatus(projectSlug: string): Promise<{
     HostConfig: {
       Binds: [
         `${wtDir}:/workspace:Z`,
-        `${claudeDir(projectSlug)}:/root/.claude:Z`,
+        `${claudeDir(projectSlug)}:/home/yaac/.claude:Z`,
       ],
     },
   })
@@ -108,13 +108,8 @@ async function createContainerWithRunningStatus(projectSlug: string): Promise<{
 }
 
 describe('yaac session stream', () => {
-  let isPodmanAvailable: boolean
   const containersToCleanup: string[] = []
   const tmpDirs: string[] = []
-
-  beforeAll(async () => {
-    isPodmanAvailable = await podmanAvailable()
-  })
 
   afterEach(async () => {
     for (const name of containersToCleanup) {
@@ -134,7 +129,7 @@ describe('yaac session stream', () => {
   })
 
   it('exits immediately when no waiting sessions exist', async () => {
-    if (!isPodmanAvailable) return
+    await requirePodman()
 
     const tmpDir = await createTempDataDir()
     tmpDirs.push(tmpDir)
@@ -155,7 +150,7 @@ describe('yaac session stream', () => {
     let containerB: { containerName: string; sessionId: string }
 
     beforeAll(async () => {
-      if (!isPodmanAvailable) return
+      await requirePodman()
       tmpDir = await createTempDataDir()
 
       const repoPath = path.join(tmpDir, 'stream-proj')
@@ -169,8 +164,8 @@ describe('yaac session stream', () => {
     })
 
     afterAll(async () => {
-      if (!isPodmanAvailable) return
       for (const c of [containerA, containerB]) {
+        if (!c) continue
         try {
           const container = podman.getContainer(c.containerName)
           await container.stop({ t: 1 })
@@ -179,12 +174,10 @@ describe('yaac session stream', () => {
           // already gone
         }
       }
-      await cleanupTempDir(tmpDir)
+      if (tmpDir) await cleanupTempDir(tmpDir)
     })
 
     it('returns sessions sorted oldest first', async () => {
-      if (!isPodmanAvailable) return
-
       const sessions = await getWaitingSessions()
       expect(sessions.length).toBeGreaterThanOrEqual(2)
 
@@ -194,8 +187,6 @@ describe('yaac session stream', () => {
     })
 
     it('excludes specified session IDs', async () => {
-      if (!isPodmanAvailable) return
-
       const sessions = await getWaitingSessions(undefined, new Set([containerA.sessionId]))
       const ids = sessions.map((s) => s.sessionId)
       expect(ids).not.toContain(containerA.sessionId)
@@ -209,7 +200,7 @@ describe('yaac session stream', () => {
     let containerB: { containerName: string; sessionId: string }
 
     beforeAll(async () => {
-      if (!isPodmanAvailable) return
+      await requirePodman()
       tmpDir = await createTempDataDir()
 
       const repoA = path.join(tmpDir, 'stream-a')
@@ -224,8 +215,8 @@ describe('yaac session stream', () => {
     })
 
     afterAll(async () => {
-      if (!isPodmanAvailable) return
       for (const c of [containerA, containerB]) {
+        if (!c) continue
         try {
           const container = podman.getContainer(c.containerName)
           await container.stop({ t: 1 })
@@ -234,12 +225,10 @@ describe('yaac session stream', () => {
           // already gone
         }
       }
-      await cleanupTempDir(tmpDir)
+      if (tmpDir) await cleanupTempDir(tmpDir)
     })
 
     it('filters by project slug', async () => {
-      if (!isPodmanAvailable) return
-
       const sessions = await getWaitingSessions('stream-a')
       const slugs = sessions.map((s) => s.projectSlug)
       expect(slugs).toContain('stream-a')
@@ -248,7 +237,7 @@ describe('yaac session stream', () => {
   })
 
   it('skips non-waiting (running status) sessions', async () => {
-    if (!isPodmanAvailable) return
+    await requirePodman()
 
     const tmpDir = await createTempDataDir()
     tmpDirs.push(tmpDir)

@@ -1,6 +1,6 @@
 FROM docker.io/ubuntu:24.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl git tmux locales neovim openssh-client && \
+    ca-certificates curl git tmux locales neovim openssh-client podman sudo xz-utils && \
     sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen && update-locale LANG=en_US.UTF-8 && \
     curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \
@@ -9,8 +9,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     apt-get update && apt-get install -y --no-install-recommends gh && \
     rm -rf /var/lib/apt/lists/*
 RUN ssh-keyscan github.com gitlab.com bitbucket.org > /etc/ssh/ssh_known_hosts 2>/dev/null
+RUN ARCH="$(dpkg --print-architecture)" && if [ "$ARCH" = "amd64" ]; then ARCH=x64; fi && \
+    curl -fsSL "https://nodejs.org/dist/v22.22.2/node-v22.22.2-linux-${ARCH}.tar.xz" | \
+    tar -xJ -C /usr/local --strip-components=1
+RUN corepack enable && corepack prepare pnpm@10.7.0 --activate
+RUN userdel -r ubuntu 2>/dev/null; useradd -m -s /bin/bash yaac && echo 'yaac ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+USER yaac
 ENV LANG=en_US.UTF-8
+ENV TERM=xterm-256color
+ENV HOME=/home/yaac
+ENV PATH="/home/yaac/.local/bin:${PATH}"
+ENV EDITOR=nvim
 RUN curl -fsSL https://claude.ai/install.sh | bash
-ENV PATH="/root/.local/bin:${PATH}"
 WORKDIR /workspace
 ENTRYPOINT ["sleep", "infinity"]

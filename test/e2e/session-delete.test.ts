@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { createTempDataDir, cleanupTempDir, createTestRepo, podmanAvailable } from '@test/helpers/setup'
+import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX } from '@test/helpers/setup'
 import { projectAdd } from '@/commands/project-add'
 import { sessionDelete } from '@/commands/session-delete'
 import { podman } from '@/lib/podman'
@@ -11,7 +11,7 @@ import { claudeDir, worktreeDir, worktreesDir, repoDir, getDataDir } from '@/lib
 import { addWorktree } from '@/lib/git'
 
 async function createMinimalContainer(projectSlug: string): Promise<{ containerName: string; sessionId: string }> {
-  const imageName = await ensureImage(projectSlug)
+  const imageName = await ensureImage(projectSlug, TEST_IMAGE_PREFIX, true)
   const sessionId = crypto.randomUUID()
   const wtDir = worktreeDir(projectSlug, sessionId)
   await fs.mkdir(worktreesDir(projectSlug), { recursive: true })
@@ -31,7 +31,7 @@ async function createMinimalContainer(projectSlug: string): Promise<{ containerN
     HostConfig: {
       Binds: [
         `${wtDir}:/workspace:Z`,
-        `${claudeDir(projectSlug)}:/root/.claude:Z`,
+        `${claudeDir(projectSlug)}:/home/yaac/.claude:Z`,
       ],
     },
   })
@@ -41,12 +41,7 @@ async function createMinimalContainer(projectSlug: string): Promise<{ containerN
 
 describe('yaac session delete', { timeout: 120_000 }, () => {
   let tmpDir: string
-  let isPodmanAvailable: boolean
   const containersToCleanup: string[] = []
-
-  beforeAll(async () => {
-    isPodmanAvailable = await podmanAvailable()
-  })
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
@@ -63,11 +58,11 @@ describe('yaac session delete', { timeout: 120_000 }, () => {
       }
     }
     containersToCleanup.length = 0
-    await cleanupTempDir(tmpDir)
+    if (tmpDir) await cleanupTempDir(tmpDir)
   })
 
   it('deletes a running session', async () => {
-    if (!isPodmanAvailable) return
+    await requirePodman()
 
     const repoPath = path.join(tmpDir, 'del-running')
     await createTestRepo(repoPath)
@@ -91,7 +86,7 @@ describe('yaac session delete', { timeout: 120_000 }, () => {
   })
 
   it('deletes a stopped session', async () => {
-    if (!isPodmanAvailable) return
+    await requirePodman()
 
     const repoPath = path.join(tmpDir, 'del-stopped')
     await createTestRepo(repoPath)

@@ -13,11 +13,11 @@ describe('image-builder prerequisites', () => {
     expect(content).toContain('tmux')
   })
 
-  it('Dockerfile.default runs as root (no non-root user)', async () => {
+  it('Dockerfile.default runs as non-root yaac user', async () => {
     const dockerfilePath = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
     const content = await fs.readFile(dockerfilePath, 'utf8')
-    expect(content).not.toContain('useradd')
-    expect(content).not.toContain('USER yaac')
+    expect(content).toContain('useradd')
+    expect(content).toContain('USER yaac')
   })
 
   it('Dockerfile.default has sleep infinity entrypoint', async () => {

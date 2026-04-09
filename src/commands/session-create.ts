@@ -56,7 +56,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
 
   const repo = repoDir(projectSlug)
 
-  // Fetch latest from remote before building images (so yaac-setup.sh is current)
+  // Fetch latest from remote before building images
   console.log('Fetching latest from remote...')
   try {
     await fetchAndPullDefault(repo)
@@ -80,7 +80,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   const config: YaacConfig = await resolveProjectConfig(projectSlug) ?? {}
 
   // Build container env
-  const env: string[] = ['TERM=xterm-256color', 'LANG=en_US.UTF-8', 'EDITOR=nvim']
+  const env: string[] = []
 
   // Passthrough env vars
   if (config.envPassthrough) {
@@ -154,8 +154,8 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
       Binds: [
         `${wtDir}:/workspace:Z`,
         `${repo}/.git:/repo/.git:Z`,
-        `${claude}:/root/.claude:Z`,
-        `${claudeJson}:/root/.claude.json:Z`,
+        `${claude}:/home/yaac/.claude:Z`,
+        `${claudeJson}:/home/yaac/.claude.json:Z`,
         ...sshBinds,
         ...Object.entries(config.cacheVolumes ?? {}).map(
           ([key, containerPath]) => `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`,
@@ -166,6 +166,11 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   })
 
   await container.start()
+
+  // Fix ownership of named cache volumes (created as root, but container runs as yaac)
+  for (const containerPath of Object.values(config.cacheVolumes ?? {})) {
+    execSync(`podman exec --user root ${containerName} chown yaac:yaac '${shellEscape(containerPath)}'`)
+  }
 
   // Inject CA cert if using proxy
   if (hasSecretProxy) {

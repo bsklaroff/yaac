@@ -56,26 +56,25 @@ Add a `yaac-config.json` to your repo root:
 
 - **envPassthrough** — environment variables passed directly from your host to the container.
 - **envSecretProxy** — environment variables injected via a MITM proxy into HTTPS requests to the listed hosts. The actual secret value never enters the container.
-- **cacheVolumes** — named Podman volumes mounted into the container. Keys are volume names, values are absolute container paths. Volumes persist across sessions and are also available during `yaac-setup.sh`.
+- **cacheVolumes** — named Podman volumes mounted into the container. Keys are volume names, values are absolute container paths. Volumes persist across sessions.
 - **initCommands** — commands run inside the container after it starts (e.g. `pnpm install` against a warm cache volume). These run on every session, not just the first.
 
 ## Custom images
 
-The default image (Ubuntu 24.04 + Claude Code + gh + tmux) can be customized:
+The default image (Ubuntu 24.04 + Node.js + pnpm + Claude Code + gh + tmux) can be customized:
 
-- **`~/.yaac/Dockerfile.yaac`** — replaces the default image entirely (e.g. use a different base distro or toolchain). Must install Claude Code, since the default Dockerfile is not used.
-- **`yaac-setup.sh`** in the project repo root — runs inside `/workspace` for project-specific setup (e.g. install project dependencies). The post-setup container is cached as a podman image; if neither the base image nor the script changes, the cached image is reused. Changes to files in `/workspace` are not cached — only changes to the rest of the container filesystem (installed packages, global configs, etc.) are persisted in the image layer.
+- **`Dockerfile.yaac`** — replaces the default image entirely (e.g. use a different base distro or toolchain). Must install Claude Code, since the default Dockerfile is not used. Place in the project's config-override directory.
 - **`~/.yaac/Dockerfile.user`** — applied on top of whichever base is used (e.g. nvim config, shell customization).
 
-Layer order: default (or Dockerfile.yaac) → yaac-setup.sh → Dockerfile.user.
+Layer order: default (or Dockerfile.yaac) → Dockerfile.user.
 
 ## Local overrides
 
-You can override `yaac-config.json` and `yaac-setup.sh` per-machine without modifying the repo. Place override files in the project's config-override directory:
+You can override project files per-machine without modifying the repo. Place override files in the project's config-override directory:
 
 ```
 ~/.yaac/projects/<slug>/config-override/yaac-config.json
-~/.yaac/projects/<slug>/config-override/yaac-setup.sh
+~/.yaac/projects/<slug>/config-override/Dockerfile.yaac
 ```
 
 If an override file exists, it fully replaces the corresponding file from the repo (no merging). This is useful for machine-specific setup or testing changes to the config without committing them.

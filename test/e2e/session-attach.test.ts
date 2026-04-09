@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { createTempDataDir, cleanupTempDir, createTestRepo, podmanAvailable } from '@test/helpers/setup'
+import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX } from '@test/helpers/setup'
 import { projectAdd } from '@/commands/project-add'
 import { podman } from '@/lib/podman'
 import { resolveContainer } from '@/lib/container-resolve'
@@ -15,7 +15,7 @@ import crypto from 'node:crypto'
 const execFileAsync = promisify(execFile)
 
 async function createContainerWithTmux(projectSlug: string): Promise<{ containerName: string; sessionId: string }> {
-  const imageName = await ensureImage(projectSlug)
+  const imageName = await ensureImage(projectSlug, TEST_IMAGE_PREFIX, true)
   const sessionId = crypto.randomBytes(4).toString('hex')
   const wtDir = worktreeDir(projectSlug, sessionId)
   await fs.mkdir(worktreesDir(projectSlug), { recursive: true })
@@ -35,7 +35,7 @@ async function createContainerWithTmux(projectSlug: string): Promise<{ container
     HostConfig: {
       Binds: [
         `${wtDir}:/workspace:Z`,
-        `${claudeDir(projectSlug)}:/root/.claude:Z`,
+        `${claudeDir(projectSlug)}:/home/yaac/.claude:Z`,
       ],
     },
   })
@@ -50,13 +50,8 @@ async function createContainerWithTmux(projectSlug: string): Promise<{ container
 }
 
 describe('yaac session attach', () => {
-  let isPodmanAvailable: boolean
   const containersToCleanup: string[] = []
   const tmpDirs: string[] = []
-
-  beforeAll(async () => {
-    isPodmanAvailable = await podmanAvailable()
-  })
 
   afterEach(async () => {
     for (const name of containersToCleanup) {
@@ -81,7 +76,7 @@ describe('yaac session attach', () => {
     let tmpDir: string
 
     beforeAll(async () => {
-      if (!isPodmanAvailable) return
+      await requirePodman()
       tmpDir = await createTempDataDir()
       const repoPath = path.join(tmpDir, 'attach-shared')
       await createTestRepo(repoPath)
@@ -92,20 +87,19 @@ describe('yaac session attach', () => {
     })
 
     afterAll(async () => {
-      if (!isPodmanAvailable) return
       try {
-        const c = podman.getContainer(containerName)
-        await c.stop({ t: 1 })
-        await c.remove()
+        if (containerName) {
+          const c = podman.getContainer(containerName)
+          await c.stop({ t: 1 })
+          await c.remove()
+        }
       } catch {
         // already gone
       }
-      await cleanupTempDir(tmpDir)
+      if (tmpDir) await cleanupTempDir(tmpDir)
     })
 
     it('resolves container and verifies tmux session exists', async () => {
-      if (!isPodmanAvailable) return
-
       // Verify container resolves
       const resolved = await resolveContainer(sessionId)
       expect(resolved).toBe(containerName)
@@ -118,15 +112,11 @@ describe('yaac session attach', () => {
     })
 
     it('resolves container by prefix match', async () => {
-      if (!isPodmanAvailable) return
-
       const resolved = await resolveContainer(sessionId.slice(0, 4))
       expect(resolved).toBe(containerName)
     })
 
     it('resolves by full container name', async () => {
-      if (!isPodmanAvailable) return
-
       const resolved = await resolveContainer(containerName)
       expect(resolved).toBe(containerName)
     })
@@ -141,7 +131,7 @@ describe('yaac session attach', () => {
   })
 
   it('errors on stopped container', async () => {
-    if (!isPodmanAvailable) return
+    await requirePodman()
 
     const tmpDir = await createTempDataDir()
     tmpDirs.push(tmpDir)

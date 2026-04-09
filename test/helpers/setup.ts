@@ -5,8 +5,37 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import simpleGit from 'simple-git'
 import { setDataDir, getDataDir } from '@/lib/paths'
+import type { SshAgentConfig } from '@/lib/ssh-agent'
+import type { ProxyClientConfig } from '@/lib/proxy-client'
 
 const execFileAsync = promisify(execFile)
+
+/**
+ * Prefix used for all container images built during e2e tests.
+ * Keeps test images separate from images used by the running application.
+ */
+export const TEST_IMAGE_PREFIX = 'yaac-test'
+
+/**
+ * SSH agent sidecar config for e2e tests.
+ * Uses separate container/volume/image names to avoid interfering with the app's SSH agent.
+ */
+export const TEST_SSH_AGENT_CONFIG: SshAgentConfig = {
+  containerName: 'yaac-test-ssh-agent',
+  volumeName: 'yaac-test-ssh-agent',
+  imageName: 'yaac-test-ssh-agent',
+}
+
+/**
+ * Proxy sidecar config for e2e tests.
+ * Uses separate container/image/network/port to avoid interfering with the app's proxy.
+ */
+export const TEST_PROXY_CONFIG: Omit<ProxyClientConfig, 'authSecret'> = {
+  image: 'yaac-test-proxy',
+  containerName: 'yaac-test-proxy',
+  hostPort: '19256',
+  network: 'yaac-test-sessions',
+}
 
 /**
  * Creates a temporary data dir and sets it as the yaac data dir.
@@ -28,7 +57,7 @@ export async function cleanupTempDir(dir: string): Promise<void> {
 
 /**
  * Creates a local git repo with a single commit for testing.
- * Optionally includes yaac-config.json, Dockerfile.yaac, and yaac-setup.sh.
+ * Optionally includes yaac-config.json and Dockerfile.yaac.
  */
 export async function createTestRepo(
   dir: string,
@@ -93,19 +122,31 @@ export async function cleanupNetwork(networkName = 'yaac-test-sessions'): Promis
 
 /**
  * Check if podman is available and running.
+ * Uses `podman info` on all platforms to verify the daemon is actually reachable
+ * (not just that a machine is listed as running).
  */
 export async function podmanAvailable(): Promise<boolean> {
   try {
-    if (process.platform === 'darwin') {
-      const { stdout } = await execFileAsync('podman', ['machine', 'list', '--format', 'json'])
-      const machines = JSON.parse(stdout) as Array<{ Running: boolean }>
-      return machines.some((m) => m.Running)
-    } else {
-      await execFileAsync('podman', ['info', '--format', 'json'])
-      return true
-    }
+    await execFileAsync('podman', ['info', '--format', 'json'])
+    return true
   } catch {
     return false
+  }
+}
+
+let _podmanChecked: boolean | undefined
+
+/**
+ * Throws if podman is not available. Use in beforeAll/test bodies
+ * so tests fail loudly instead of silently passing.
+ * Result is cached for the lifetime of the worker.
+ */
+export async function requirePodman(): Promise<void> {
+  if (_podmanChecked === undefined) {
+    _podmanChecked = await podmanAvailable()
+  }
+  if (!_podmanChecked) {
+    throw new Error('Podman is not available. Start it with: podman machine start')
   }
 }
 
