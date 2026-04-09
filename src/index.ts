@@ -6,6 +6,7 @@ import { sessionList } from '@/commands/session-list'
 import { sessionDelete } from '@/commands/session-delete'
 import { sessionShell } from '@/commands/session-shell'
 import { sessionAttach } from '@/commands/session-attach'
+import { sessionStream } from '@/commands/session-stream'
 
 const program = new Command()
   .name('yaac')
@@ -62,5 +63,11 @@ session
   .description('Attach to the Claude Code session')
   .argument('<container-id>', 'Session ID or container name')
   .action(sessionAttach)
+
+session
+  .command('stream')
+  .description('Stream through waiting sessions, attaching to each in turn')
+  .option('-p, --project <project>', 'Filter by project slug')
+  .action(sessionStream)
 
 program.parse()
