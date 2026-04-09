@@ -61,7 +61,8 @@ export async function setup(): Promise<void> {
   const nestName = 'yaac-test-base-nestable'
   const nestDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
   const nestContent = await fs.readFile(nestDockerfile, 'utf8')
-  const nestHash = crypto.createHash('sha256').update(nestContent).digest('hex').slice(0, 16)
+  const nestContentHash = crypto.createHash('sha256').update(nestContent).digest('hex').slice(0, 16)
+  const nestHash = crypto.createHash('sha256').update(`${hash}:${nestContentHash}`).digest('hex').slice(0, 16)
 
   let nestNeedsBuild = true
   try {

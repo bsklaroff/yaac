@@ -115,7 +115,8 @@ export async function ensureImage(projectSlug: string, imagePrefix?: string, req
   if (nestedContainers && !yaacDockerfile) {
     const nestName = `${prefix}-base-nestable`
     const nestDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
-    const nestHash = await fileHash(nestDockerfile)
+    const nestContentHash = await fileHash(nestDockerfile)
+    const nestHash = crypto.createHash('sha256').update(`${baseHash}:${nestContentHash}`).digest('hex').slice(0, 16)
     const existingNestHash = await getImageLabel(nestName, 'yaac.content-hash')
     if (!await imageExists(nestName) || existingNestHash !== nestHash) {
       if (requirePrebuilt) {
