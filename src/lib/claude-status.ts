@@ -26,12 +26,12 @@ export async function getClaudeStatus(jsonlPath: string): Promise<'running' | 'w
     if (lines.length === 0) return 'waiting'
 
     const lastLine = lines[lines.length - 1]
-    const entry = JSON.parse(lastLine)
+    const entry = JSON.parse(lastLine) as { type: string; message?: { stop_reason?: string } }
 
     if (entry.type !== 'assistant') return 'running'
 
-    const stopReason = entry.message?.stop_reason ?? null
-    return WAITING_STOP_REASONS.has(stopReason) ? 'waiting' : 'running'
+    const stopReason = entry.message?.stop_reason
+    return stopReason && WAITING_STOP_REASONS.has(stopReason) ? 'waiting' : 'running'
   } catch {
     // File missing or parse error — assume running (safer default)
     return 'running'

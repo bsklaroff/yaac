@@ -2,3 +2,4 @@
 - Every exported function must have a unit test in `test/unit/`.
 - Every CLI command argument and option must have an e2e test in `test/e2e/`.
 - **NEVER take credit for authoring code** — do not add "Co-Authored-By" lines, or any other AI attribution to commit messages, PR descriptions, or code comments
+- Always use `pnpm lint` for linting (runs both `tsc --noEmit` and `eslint`).
