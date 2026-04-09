@@ -70,6 +70,7 @@ async function commitContainer(containerName: string, imageName: string, hash: s
   await execFileAsync('podman', [
     'commit',
     '--change', `LABEL yaac.content-hash=${hash}`,
+    '--change', 'ENTRYPOINT ["sleep", "infinity"]',
     containerName,
     imageName,
   ])
