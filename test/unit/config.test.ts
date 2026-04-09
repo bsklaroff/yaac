@@ -126,6 +126,23 @@ describe('loadProjectConfig', () => {
     await expect(loadProjectConfig(tmpDir)).rejects.toThrow('initCommands must be a string array')
   })
 
+  it('parses valid config with nestedContainers', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ nestedContainers: true }),
+    )
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual({ nestedContainers: true })
+  })
+
+  it('throws on invalid nestedContainers type', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ nestedContainers: 'yes' }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('nestedContainers must be a boolean')
+  })
+
   it('warns on unknown fields', async () => {
     const warns: string[] = []
     const origWarn = console.warn

@@ -3,7 +3,7 @@ import path from 'node:path'
 import type { YaacConfig } from '@/types'
 import { configOverrideDir, repoDir } from '@/lib/paths'
 
-const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy', 'cacheVolumes', 'initCommands'])
+const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'nestedContainers'])
 
 export async function loadProjectConfig(repoPath: string): Promise<YaacConfig | null> {
   const configPath = path.join(repoPath, 'yaac-config.json')
@@ -70,6 +70,13 @@ export async function loadProjectConfig(repoPath: string): Promise<YaacConfig | 
       throw new Error('yaac-config.json: initCommands must be a string array')
     }
     config.initCommands = obj.initCommands
+  }
+
+  if (obj.nestedContainers !== undefined) {
+    if (typeof obj.nestedContainers !== 'boolean') {
+      throw new Error('yaac-config.json: nestedContainers must be a boolean')
+    }
+    config.nestedContainers = obj.nestedContainers
   }
 
   return config
