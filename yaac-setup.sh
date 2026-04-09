@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-export NVM_DIR="/home/yaac/.nvm"
+export NVM_DIR="$HOME/.nvm"
 
 curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
 . "$NVM_DIR/nvm.sh"
