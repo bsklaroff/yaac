@@ -161,7 +161,7 @@ describe('yaac session list', () => {
     })
   })
 
-  it('correctly reports stopped container status', async () => {
+  it('auto-cleans exited containers from the list', async () => {
     if (!isPodmanAvailable) return
 
     const tmpDir = await createTempDataDir()
@@ -172,7 +172,7 @@ describe('yaac session list', () => {
     await projectAdd(repoPath)
 
     const containerName = await createMinimalContainer('stopped-proj')
-    containersToCleanup.push(containerName)
+    // Don't add to containersToCleanup — session-list should auto-remove it
 
     // Stop the container
     const c = podman.getContainer(containerName)
@@ -186,8 +186,9 @@ describe('yaac session list', () => {
 
     console.log = origLog
     const output = logs.join('\n')
-    expect(output).toContain('stopped-proj')
-    expect(output).toContain('exited')
+    expect(output).not.toContain('stopped-proj')
+    expect(output).not.toContain('exited')
+    expect(output).toContain('No active sessions')
   })
 
   it('lists deleted sessions from JSONL files', async () => {

@@ -1,7 +1,9 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { podman } from '@/lib/podman'
-import { claudeDir, getDataDir, getProjectsDir } from '@/lib/paths'
+import { claudeDir, getDataDir, getProjectsDir, repoDir, worktreeDir } from '@/lib/paths'
+import { removeWorktree } from '@/lib/git'
+import { getSessionClaudeStatus } from '@/lib/claude-status'
 
 export interface SessionListOptions {
   deleted?: boolean
@@ -29,21 +31,53 @@ export async function sessionList(projectSlug?: string, options: SessionListOpti
     return
   }
 
-  if (containers.length === 0) {
+  // Auto-cleanup exited containers
+  const running = []
+  for (const c of containers) {
+    if (c.State === 'running') {
+      running.push(c)
+      continue
+    }
+    const name = c.Names?.[0]?.replace(/^\//, '') ?? c.Id
+    const sessionId = c.Labels?.['yaac.session-id'] ?? ''
+    const slug = c.Labels?.['yaac.project'] ?? ''
+    try {
+      const container = podman.getContainer(name)
+      await container.remove()
+      if (slug && sessionId) {
+        await removeWorktree(repoDir(slug), worktreeDir(slug, sessionId)).catch(() => {})
+      }
+    } catch {
+      // container already gone
+    }
+  }
+
+  if (running.length === 0) {
     const suffix = projectSlug ? ` for project "${projectSlug}"` : ''
     console.log(`No active sessions${suffix}. Create one with: yaac session create <project>`)
     return
   }
 
+  // Resolve running/waiting status in parallel
+  const statusResults = await Promise.all(
+    running.map(async (c) => {
+      const sessionId = c.Labels?.['yaac.session-id'] ?? ''
+      const slug = c.Labels?.['yaac.project'] ?? ''
+      if (!sessionId || !slug) return 'running' as const
+      return getSessionClaudeStatus(slug, sessionId)
+    }),
+  )
+
   console.log('')
   console.log(`${'SESSION'.padEnd(10)} ${'PROJECT'.padEnd(20)} ${'STATUS'.padEnd(12)} CREATED`)
   console.log(`${'-'.repeat(10)} ${'-'.repeat(20)} ${'-'.repeat(12)} ${'-'.repeat(20)}`)
 
-  for (const c of containers) {
+  for (let i = 0; i < running.length; i++) {
+    const c = running[i]
     const sessionId = c.Labels?.['yaac.session-id'] ?? '?'
     const shortId = sessionId.slice(0, 8)
     const project = c.Labels?.['yaac.project'] ?? '?'
-    const status = c.State ?? 'unknown'
+    const status = statusResults[i]
     const created = new Date(c.Created * 1000).toISOString().replace('T', ' ').slice(0, 19)
     console.log(`${shortId.padEnd(10)} ${project.padEnd(20)} ${status.padEnd(12)} ${created}`)
   }

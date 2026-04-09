@@ -16,5 +16,5 @@ export interface SessionMeta {
   proxyToken: string | null
   worktreeBranch: string
   createdAt: string
-  status: 'running' | 'stopped'
+  status: 'running' | 'waiting' | 'stopped'
 }
