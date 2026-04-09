@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -42,16 +42,12 @@ async function createMinimalContainer(projectSlug: string): Promise<string> {
 }
 
 describe('yaac session list', () => {
-  let tmpDir: string
   let isPodmanAvailable: boolean
   const containersToCleanup: string[] = []
+  const tmpDirs: string[] = []
 
   beforeAll(async () => {
     isPodmanAvailable = await podmanAvailable()
-  })
-
-  beforeEach(async () => {
-    tmpDir = await createTempDataDir()
   })
 
   afterEach(async () => {
@@ -65,10 +61,16 @@ describe('yaac session list', () => {
       }
     }
     containersToCleanup.length = 0
-    await cleanupTempDir(tmpDir)
+    for (const dir of tmpDirs) {
+      await cleanupTempDir(dir)
+    }
+    tmpDirs.length = 0
   })
 
   it('prints empty message when no sessions exist', async () => {
+    const tmpDir = await createTempDataDir()
+    tmpDirs.push(tmpDir)
+
     const logs: string[] = []
     const origLog = console.log
     console.log = (msg: string) => logs.push(msg)
@@ -79,82 +81,91 @@ describe('yaac session list', () => {
     expect(logs.join('\n')).toContain('No active sessions')
   })
 
-  it('lists running sessions with metadata', async () => {
-    if (!isPodmanAvailable) return
+  describe('with running sessions (shared)', () => {
+    let tmpDir: string
+    let containerA: string
+    let containerB: string
 
-    const repoPath = path.join(tmpDir, 'list-project')
-    await createTestRepo(repoPath)
-    await projectAdd(repoPath)
+    beforeAll(async () => {
+      if (!isPodmanAvailable) return
+      tmpDir = await createTempDataDir()
 
-    const containerName = await createMinimalContainer('list-project')
-    containersToCleanup.push(containerName)
+      const repoA = path.join(tmpDir, 'proj-a')
+      const repoB = path.join(tmpDir, 'proj-b')
+      await createTestRepo(repoA)
+      await createTestRepo(repoB)
+      await projectAdd(repoA)
+      await projectAdd(repoB)
 
-    const logs: string[] = []
-    const origLog = console.log
-    console.log = (msg: string) => logs.push(msg)
+      containerA = await createMinimalContainer('proj-a')
+      containerB = await createMinimalContainer('proj-b')
+    })
 
-    await sessionList()
+    afterAll(async () => {
+      if (!isPodmanAvailable) return
+      for (const name of [containerA, containerB]) {
+        try {
+          const c = podman.getContainer(name)
+          await c.stop({ t: 1 })
+          await c.remove()
+        } catch {
+          // already gone
+        }
+      }
+      await cleanupTempDir(tmpDir)
+    })
 
-    console.log = origLog
-    const output = logs.join('\n')
-    expect(output).toContain('list-project')
-    expect(output).toContain('running')
-  })
+    it('lists running sessions with metadata', async () => {
+      if (!isPodmanAvailable) return
 
-  it('filters by project when argument is provided', async () => {
-    if (!isPodmanAvailable) return
+      const logs: string[] = []
+      const origLog = console.log
+      console.log = (msg: string) => logs.push(msg)
 
-    const repo1 = path.join(tmpDir, 'proj-a')
-    const repo2 = path.join(tmpDir, 'proj-b')
-    await createTestRepo(repo1)
-    await createTestRepo(repo2)
-    await projectAdd(repo1)
-    await projectAdd(repo2)
+      await sessionList()
 
-    const container1 = await createMinimalContainer('proj-a')
-    const container2 = await createMinimalContainer('proj-b')
-    containersToCleanup.push(container1, container2)
+      console.log = origLog
+      const output = logs.join('\n')
+      expect(output).toContain('proj-a')
+      expect(output).toContain('running')
+    })
 
-    const logs: string[] = []
-    const origLog = console.log
-    console.log = (msg: string) => logs.push(msg)
+    it('filters by project when argument is provided', async () => {
+      if (!isPodmanAvailable) return
 
-    await sessionList('proj-a')
+      const logs: string[] = []
+      const origLog = console.log
+      console.log = (msg: string) => logs.push(msg)
 
-    console.log = origLog
-    const output = logs.join('\n')
-    expect(output).toContain('proj-a')
-    expect(output).not.toContain('proj-b')
-  })
+      await sessionList('proj-a')
 
-  it('shows all sessions when no project filter', async () => {
-    if (!isPodmanAvailable) return
+      console.log = origLog
+      const output = logs.join('\n')
+      expect(output).toContain('proj-a')
+      expect(output).not.toContain('proj-b')
+    })
 
-    const repo1 = path.join(tmpDir, 'all-a')
-    const repo2 = path.join(tmpDir, 'all-b')
-    await createTestRepo(repo1)
-    await createTestRepo(repo2)
-    await projectAdd(repo1)
-    await projectAdd(repo2)
+    it('shows all sessions when no project filter', async () => {
+      if (!isPodmanAvailable) return
 
-    const container1 = await createMinimalContainer('all-a')
-    const container2 = await createMinimalContainer('all-b')
-    containersToCleanup.push(container1, container2)
+      const logs: string[] = []
+      const origLog = console.log
+      console.log = (msg: string) => logs.push(msg)
 
-    const logs: string[] = []
-    const origLog = console.log
-    console.log = (msg: string) => logs.push(msg)
+      await sessionList()
 
-    await sessionList()
-
-    console.log = origLog
-    const output = logs.join('\n')
-    expect(output).toContain('all-a')
-    expect(output).toContain('all-b')
+      console.log = origLog
+      const output = logs.join('\n')
+      expect(output).toContain('proj-a')
+      expect(output).toContain('proj-b')
+    })
   })
 
   it('correctly reports stopped container status', async () => {
     if (!isPodmanAvailable) return
+
+    const tmpDir = await createTempDataDir()
+    tmpDirs.push(tmpDir)
 
     const repoPath = path.join(tmpDir, 'stopped-proj')
     await createTestRepo(repoPath)
@@ -180,6 +191,9 @@ describe('yaac session list', () => {
   })
 
   it('lists deleted sessions from JSONL files', async () => {
+    const tmpDir = await createTempDataDir()
+    tmpDirs.push(tmpDir)
+
     const repoPath = path.join(tmpDir, 'deleted-proj')
     await createTestRepo(repoPath)
     await projectAdd(repoPath)
@@ -206,6 +220,9 @@ describe('yaac session list', () => {
   })
 
   it('shows empty message when no deleted sessions', async () => {
+    const tmpDir = await createTempDataDir()
+    tmpDirs.push(tmpDir)
+
     const repoPath = path.join(tmpDir, 'no-deleted')
     await createTestRepo(repoPath)
     await projectAdd(repoPath)

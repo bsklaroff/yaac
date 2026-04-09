@@ -8,7 +8,7 @@ describe('image-builder prerequisites', () => {
     const dockerfilePath = path.join(DOCKERFILES_DIR, 'Dockerfile.base')
     const content = await fs.readFile(dockerfilePath, 'utf8')
     expect(content).toContain('FROM docker.io/ubuntu:24.04')
-    expect(content).toContain('claude-code')
+    expect(content).toContain('claude.ai/install.sh')
     expect(content).toContain('gh')
     expect(content).toContain('tmux')
   })

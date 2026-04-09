@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
@@ -50,16 +50,12 @@ async function createContainerWithTmux(projectSlug: string): Promise<{ container
 }
 
 describe('yaac session attach', () => {
-  let tmpDir: string
   let isPodmanAvailable: boolean
   const containersToCleanup: string[] = []
+  const tmpDirs: string[] = []
 
   beforeAll(async () => {
     isPodmanAvailable = await podmanAvailable()
-  })
-
-  beforeEach(async () => {
-    tmpDir = await createTempDataDir()
   })
 
   afterEach(async () => {
@@ -73,56 +69,67 @@ describe('yaac session attach', () => {
       }
     }
     containersToCleanup.length = 0
-    await cleanupTempDir(tmpDir)
+    for (const dir of tmpDirs) {
+      await cleanupTempDir(dir)
+    }
+    tmpDirs.length = 0
   })
 
-  it('resolves container and verifies tmux session exists', async () => {
-    if (!isPodmanAvailable) return
+  describe('container resolution (shared session)', () => {
+    let containerName: string
+    let sessionId: string
+    let tmpDir: string
 
-    const repoPath = path.join(tmpDir, 'attach-proj')
-    await createTestRepo(repoPath)
-    await projectAdd(repoPath)
+    beforeAll(async () => {
+      if (!isPodmanAvailable) return
+      tmpDir = await createTempDataDir()
+      const repoPath = path.join(tmpDir, 'attach-shared')
+      await createTestRepo(repoPath)
+      await projectAdd(repoPath)
+      const result = await createContainerWithTmux('attach-shared')
+      containerName = result.containerName
+      sessionId = result.sessionId
+    })
 
-    const { containerName, sessionId } = await createContainerWithTmux('attach-proj')
-    containersToCleanup.push(containerName)
+    afterAll(async () => {
+      if (!isPodmanAvailable) return
+      try {
+        const c = podman.getContainer(containerName)
+        await c.stop({ t: 1 })
+        await c.remove()
+      } catch {
+        // already gone
+      }
+      await cleanupTempDir(tmpDir)
+    })
 
-    // Verify container resolves
-    const resolved = await resolveContainer(sessionId)
-    expect(resolved).toBe(containerName)
+    it('resolves container and verifies tmux session exists', async () => {
+      if (!isPodmanAvailable) return
 
-    // Verify tmux session exists (the actual attach would be interactive)
-    const { stdout } = await execFileAsync('podman', [
-      'exec', containerName, 'tmux', 'list-sessions',
-    ])
-    expect(stdout).toContain('claude')
-  })
+      // Verify container resolves
+      const resolved = await resolveContainer(sessionId)
+      expect(resolved).toBe(containerName)
 
-  it('resolves container by prefix match', async () => {
-    if (!isPodmanAvailable) return
+      // Verify tmux session exists (the actual attach would be interactive)
+      const { stdout } = await execFileAsync('podman', [
+        'exec', containerName, 'tmux', 'list-sessions',
+      ])
+      expect(stdout).toContain('claude')
+    })
 
-    const repoPath = path.join(tmpDir, 'attach-prefix')
-    await createTestRepo(repoPath)
-    await projectAdd(repoPath)
+    it('resolves container by prefix match', async () => {
+      if (!isPodmanAvailable) return
 
-    const { containerName, sessionId } = await createContainerWithTmux('attach-prefix')
-    containersToCleanup.push(containerName)
+      const resolved = await resolveContainer(sessionId.slice(0, 4))
+      expect(resolved).toBe(containerName)
+    })
 
-    const resolved = await resolveContainer(sessionId.slice(0, 4))
-    expect(resolved).toBe(containerName)
-  })
+    it('resolves by full container name', async () => {
+      if (!isPodmanAvailable) return
 
-  it('resolves by full container name', async () => {
-    if (!isPodmanAvailable) return
-
-    const repoPath = path.join(tmpDir, 'attach-name')
-    await createTestRepo(repoPath)
-    await projectAdd(repoPath)
-
-    const { containerName } = await createContainerWithTmux('attach-name')
-    containersToCleanup.push(containerName)
-
-    const resolved = await resolveContainer(containerName)
-    expect(resolved).toBe(containerName)
+      const resolved = await resolveContainer(containerName)
+      expect(resolved).toBe(containerName)
+    })
   })
 
   it('errors on unknown container ID', async () => {
@@ -136,6 +143,8 @@ describe('yaac session attach', () => {
   it('errors on stopped container', async () => {
     if (!isPodmanAvailable) return
 
+    const tmpDir = await createTempDataDir()
+    tmpDirs.push(tmpDir)
     const repoPath = path.join(tmpDir, 'attach-stopped')
     await createTestRepo(repoPath)
     await projectAdd(repoPath)

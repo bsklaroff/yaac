@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir, createTestRepo, podmanAvailable } from '@test/helpers/setup'
@@ -40,16 +40,12 @@ async function createMinimalContainer(projectSlug: string): Promise<{ containerN
 }
 
 describe('yaac session shell', () => {
-  let tmpDir: string
   let isPodmanAvailable: boolean
   const containersToCleanup: string[] = []
+  const tmpDirs: string[] = []
 
   beforeAll(async () => {
     isPodmanAvailable = await podmanAvailable()
-  })
-
-  beforeEach(async () => {
-    tmpDir = await createTempDataDir()
   })
 
   afterEach(async () => {
@@ -63,51 +59,62 @@ describe('yaac session shell', () => {
       }
     }
     containersToCleanup.length = 0
-    await cleanupTempDir(tmpDir)
+    for (const dir of tmpDirs) {
+      await cleanupTempDir(dir)
+    }
+    tmpDirs.length = 0
   })
 
-  it('resolves container by session ID', async () => {
-    if (!isPodmanAvailable) return
+  describe('container resolution (shared session)', () => {
+    let containerName: string
+    let sessionId: string
+    let tmpDir: string
 
-    const repoPath = path.join(tmpDir, 'shell-proj')
-    await createTestRepo(repoPath)
-    await projectAdd(repoPath)
+    beforeAll(async () => {
+      if (!isPodmanAvailable) return
+      tmpDir = await createTempDataDir()
+      const repoPath = path.join(tmpDir, 'shared-proj')
+      await createTestRepo(repoPath)
+      await projectAdd(repoPath)
+      const result = await createMinimalContainer('shared-proj')
+      containerName = result.containerName
+      sessionId = result.sessionId
+    })
 
-    const { containerName, sessionId } = await createMinimalContainer('shell-proj')
-    containersToCleanup.push(containerName)
+    afterAll(async () => {
+      if (!isPodmanAvailable) return
+      try {
+        const c = podman.getContainer(containerName)
+        await c.stop({ t: 1 })
+        await c.remove()
+      } catch {
+        // already gone
+      }
+      await cleanupTempDir(tmpDir)
+    })
 
-    const resolved = await resolveContainer(sessionId)
-    expect(resolved).toBe(containerName)
-  })
+    it('resolves container by session ID', async () => {
+      if (!isPodmanAvailable) return
 
-  it('resolves container by prefix match on session ID', async () => {
-    if (!isPodmanAvailable) return
+      const resolved = await resolveContainer(sessionId)
+      expect(resolved).toBe(containerName)
+    })
 
-    const repoPath = path.join(tmpDir, 'prefix-proj')
-    await createTestRepo(repoPath)
-    await projectAdd(repoPath)
+    it('resolves container by prefix match on session ID', async () => {
+      if (!isPodmanAvailable) return
 
-    const { containerName, sessionId } = await createMinimalContainer('prefix-proj')
-    containersToCleanup.push(containerName)
+      // Use first 4 chars as prefix
+      const prefix = sessionId.slice(0, 4)
+      const resolved = await resolveContainer(prefix)
+      expect(resolved).toBe(containerName)
+    })
 
-    // Use first 4 chars as prefix
-    const prefix = sessionId.slice(0, 4)
-    const resolved = await resolveContainer(prefix)
-    expect(resolved).toBe(containerName)
-  })
+    it('resolves container by full container name', async () => {
+      if (!isPodmanAvailable) return
 
-  it('resolves container by full container name', async () => {
-    if (!isPodmanAvailable) return
-
-    const repoPath = path.join(tmpDir, 'name-proj')
-    await createTestRepo(repoPath)
-    await projectAdd(repoPath)
-
-    const { containerName } = await createMinimalContainer('name-proj')
-    containersToCleanup.push(containerName)
-
-    const resolved = await resolveContainer(containerName)
-    expect(resolved).toBe(containerName)
+      const resolved = await resolveContainer(containerName)
+      expect(resolved).toBe(containerName)
+    })
   })
 
   it('errors on unknown container ID', async () => {
@@ -120,6 +127,9 @@ describe('yaac session shell', () => {
 
   it('errors on stopped container', async () => {
     if (!isPodmanAvailable) return
+
+    const tmpDir = await createTempDataDir()
+    tmpDirs.push(tmpDir)
 
     const repoPath = path.join(tmpDir, 'stopped-shell')
     await createTestRepo(repoPath)
