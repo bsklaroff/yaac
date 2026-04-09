@@ -35,7 +35,7 @@ async function createContainerWithTmux(projectSlug: string): Promise<{ container
     HostConfig: {
       Binds: [
         `${wtDir}:/workspace:Z`,
-        `${claudeDir(projectSlug)}:/home/yaac/.claude:Z`,
+        `${claudeDir(projectSlug)}:/root/.claude:Z`,
       ],
     },
   })

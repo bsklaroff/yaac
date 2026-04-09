@@ -86,7 +86,7 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
       Binds: [
         `${wtDir}:/workspace:Z`,
         `${repo}/.git:/repo/.git:Z`,
-        `${claude}:/home/yaac/.claude:Z`,
+        `${claude}:/root/.claude:Z`,
         ...sshBinds,
       ],
       NetworkMode: networkMode,
@@ -213,7 +213,7 @@ describe('yaac session create', () => {
       ])
       expect(lsOutput).toContain('README.md')
       await execFileAsync('podman', [
-        'exec', result.containerName, 'test', '-d', '/home/yaac/.claude',
+        'exec', result.containerName, 'test', '-d', '/root/.claude',
       ])
     })
 

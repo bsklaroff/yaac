@@ -9,10 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     apt-get update && apt-get install -y --no-install-recommends gh && \
     rm -rf /var/lib/apt/lists/*
 RUN ssh-keyscan github.com gitlab.com bitbucket.org > /etc/ssh/ssh_known_hosts 2>/dev/null
-RUN userdel -r ubuntu 2>/dev/null; useradd -m -s /bin/bash yaac
 ENV LANG=en_US.UTF-8
-USER yaac
 RUN curl -fsSL https://claude.ai/install.sh | bash
-ENV PATH="/home/yaac/.local/bin:${PATH}"
+ENV PATH="/root/.local/bin:${PATH}"
 WORKDIR /workspace
 ENTRYPOINT ["sleep", "infinity"]

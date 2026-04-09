@@ -39,7 +39,7 @@ async function createContainerWithWaitingStatus(projectSlug: string): Promise<{
     HostConfig: {
       Binds: [
         `${wtDir}:/workspace:Z`,
-        `${claudeDir(projectSlug)}:/home/yaac/.claude:Z`,
+        `${claudeDir(projectSlug)}:/root/.claude:Z`,
       ],
     },
   })
@@ -86,7 +86,7 @@ async function createContainerWithRunningStatus(projectSlug: string): Promise<{
     HostConfig: {
       Binds: [
         `${wtDir}:/workspace:Z`,
-        `${claudeDir(projectSlug)}:/home/yaac/.claude:Z`,
+        `${claudeDir(projectSlug)}:/root/.claude:Z`,
       ],
     },
   })

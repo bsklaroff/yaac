@@ -153,8 +153,8 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
       Binds: [
         `${wtDir}:/workspace:Z`,
         `${repo}/.git:/repo/.git:Z`,
-        `${claude}:/home/yaac/.claude:Z`,
-        `${claudeJson}:/home/yaac/.claude.json:Z`,
+        `${claude}:/root/.claude:Z`,
+        `${claudeJson}:/root/.claude.json:Z`,
         ...sshBinds,
       ],
       NetworkMode: networkMode,

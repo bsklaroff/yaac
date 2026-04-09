@@ -33,7 +33,7 @@ async function createMinimalContainer(projectSlug: string): Promise<string> {
     HostConfig: {
       Binds: [
         `${wtDir}:/workspace:Z`,
-        `${claudeDir(projectSlug)}:/home/yaac/.claude:Z`,
+        `${claudeDir(projectSlug)}:/root/.claude:Z`,
       ],
     },
   })
