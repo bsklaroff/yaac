@@ -67,8 +67,8 @@ describe('paths', () => {
     expect(stat.isFile()).toBe(true)
   })
 
-  it('DOCKERFILES_DIR contains Dockerfile.base', async () => {
-    const dockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.base')
+  it('DOCKERFILES_DIR contains Dockerfile.default', async () => {
+    const dockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
     const stat = await fs.stat(dockerfile)
     expect(stat.isFile()).toBe(true)
   })

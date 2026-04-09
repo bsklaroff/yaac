@@ -55,12 +55,13 @@ Add a `yaac-config.json` to your repo root:
 
 ## Custom images
 
-The base image (Ubuntu 24.04 + Claude Code + gh + tmux) can be extended:
+The default image (Ubuntu 24.04 + Claude Code + gh + tmux) can be customized:
 
-- **`~/.yaac/Dockerfile.user`** — applied to all projects (e.g. nvim config).
-- **`Dockerfile.yaac`** in the project repo — applied to that project only (e.g. install project dependencies).
+- **`~/.yaac/Dockerfile.yaac`** — replaces the default image entirely (e.g. use a different base distro or toolchain).
+- **`yaac-setup.sh`** in the project repo root — runs on container start for project-specific setup (e.g. install project dependencies). The post-setup container is cached as a podman image; if neither the base image nor the script changes, the cached image is reused.
+- **`~/.yaac/Dockerfile.user`** — applied on top of whichever base is used (e.g. nvim config, shell customization).
 
-Each layer builds on the previous: base → project → user.
+Layer order: default (or Dockerfile.yaac) → yaac-setup.sh → Dockerfile.user.
 
 ## Usage
 

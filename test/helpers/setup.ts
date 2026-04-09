@@ -28,7 +28,7 @@ export async function cleanupTempDir(dir: string): Promise<void> {
 
 /**
  * Creates a local git repo with a single commit for testing.
- * Optionally includes yaac-config.json and Dockerfile.yaac.
+ * Optionally includes yaac-config.json, Dockerfile.yaac, and yaac-setup.sh.
  */
 export async function createTestRepo(
   dir: string,

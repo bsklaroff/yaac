@@ -7,7 +7,7 @@ import { DOCKERFILES_DIR, getDataDir, repoDir } from '@/lib/paths'
 
 const execFileAsync = promisify(execFile)
 
-async function fileHash(filePath: string): Promise<string> {
+export async function fileHash(filePath: string): Promise<string> {
   const content = await fs.readFile(filePath, 'utf8')
   return crypto.createHash('sha256').update(content).digest('hex').slice(0, 16)
 }
@@ -54,54 +54,115 @@ async function tagImage(source: string, target: string): Promise<void> {
   await execFileAsync('podman', ['tag', source, target])
 }
 
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath)
+    return true
+  } catch {
+    return false
+  }
+}
+
 /**
- * Ensures the full image chain is built for a project: base → user → project.
+ * Commits a running container as a cached image.
+ */
+async function commitContainer(containerName: string, imageName: string, hash: string): Promise<void> {
+  await execFileAsync('podman', [
+    'commit',
+    '--change', `LABEL yaac.content-hash=${hash}`,
+    containerName,
+    imageName,
+  ])
+}
+
+/**
+ * Runs yaac-setup.sh inside a temporary container and commits the result as a cached image.
+ * Returns the cached image name.
+ */
+export async function ensureSetupImage(
+  projectSlug: string,
+  baseImageName: string,
+  setupScriptPath: string,
+): Promise<string> {
+  const setupImageName = `yaac-setup-${projectSlug}`
+  const baseHash = await getImageLabel(baseImageName, 'yaac.content-hash') ?? 'unknown'
+  const scriptHash = await fileHash(setupScriptPath)
+  const combinedHash = crypto.createHash('sha256')
+    .update(baseHash)
+    .update(scriptHash)
+    .digest('hex')
+    .slice(0, 16)
+
+  const existingHash = await getImageLabel(setupImageName, 'yaac.content-hash')
+  if (await imageExists(setupImageName) && existingHash === combinedHash) {
+    return setupImageName
+  }
+
+  console.log(`Running yaac-setup.sh for ${projectSlug}...`)
+  const tmpContainer = `yaac-setup-tmp-${projectSlug}-${Date.now()}`
+  const repoPath = repoDir(projectSlug)
+
+  // Create and start a temporary container with the repo mounted
+  await execFileAsync('podman', [
+    'run', '--name', tmpContainer,
+    '-v', `${repoPath}:/workspace:Z`,
+    '--entrypoint', '/bin/bash',
+    baseImageName,
+    '/workspace/yaac-setup.sh',
+  ], { timeout: 600_000 })
+
+  // Commit the container as the setup image
+  await commitContainer(tmpContainer, setupImageName, combinedHash)
+
+  // Clean up the temporary container
+  await execFileAsync('podman', ['rm', tmpContainer])
+
+  return setupImageName
+}
+
+/**
+ * Ensures the full image chain is built for a project.
+ *
+ * Layer 1: yaac-default (from Dockerfile.default, or replaced by ~/.yaac/Dockerfile.yaac)
+ * Layer 2: yaac-setup-<slug> (optional: runs yaac-setup.sh from project repo, cached)
+ * Layer 3: yaac-user-<slug> (optional: from ~/.yaac/Dockerfile.user, builds on top)
+ *
  * Returns the final image name to use for containers.
  */
 export async function ensureImage(projectSlug: string): Promise<string> {
-  // Layer 1: yaac-base
-  const baseDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.base')
+  // Layer 1: yaac-default (or replaced by ~/.yaac/Dockerfile.yaac)
+  const yaacDockerfile = path.join(getDataDir(), 'Dockerfile.yaac')
+  const hasYaacDockerfile = await fileExists(yaacDockerfile)
+
+  const baseDockerfile = hasYaacDockerfile
+    ? yaacDockerfile
+    : path.join(DOCKERFILES_DIR, 'Dockerfile.default')
+  const baseContext = hasYaacDockerfile ? getDataDir() : DOCKERFILES_DIR
   const baseHash = await fileHash(baseDockerfile)
-  const existingBaseHash = await getImageLabel('yaac-base', 'yaac.content-hash')
-  if (!await imageExists('yaac-base') || existingBaseHash !== baseHash) {
-    console.log('Building yaac-base image...')
-    await buildImage('yaac-base', baseDockerfile, DOCKERFILES_DIR, baseHash)
+  const existingBaseHash = await getImageLabel('yaac-default', 'yaac.content-hash')
+  if (!await imageExists('yaac-default') || existingBaseHash !== baseHash) {
+    console.log(hasYaacDockerfile
+      ? 'Building yaac-default image from Dockerfile.yaac...'
+      : 'Building yaac-default image...')
+    await buildImage('yaac-default', baseDockerfile, baseContext, baseHash)
   }
 
-  // Layer 2: yaac-project-<slug> (optional Dockerfile.yaac in project repo)
-  const projectDockerfile = path.join(repoDir(projectSlug), 'Dockerfile.yaac')
-  const projectImageName = `yaac-project-${projectSlug}`
-  let projectDockerfileExists = false
-  try {
-    await fs.access(projectDockerfile)
-    projectDockerfileExists = true
-  } catch {
-    // no project dockerfile
-  }
+  // Layer 2: yaac-setup-<slug> (optional yaac-setup.sh in project repo)
+  const setupScript = path.join(repoDir(projectSlug), 'yaac-setup.sh')
+  const hasSetupScript = await fileExists(setupScript)
+  let currentImageName = 'yaac-default'
 
-  if (projectDockerfileExists) {
-    const projHash = await fileHash(projectDockerfile)
-    const existingProjHash = await getImageLabel(projectImageName, 'yaac.content-hash')
-    if (!await imageExists(projectImageName) || existingProjHash !== projHash) {
-      console.log(`Building ${projectImageName} image...`)
-      await buildImage(projectImageName, projectDockerfile, repoDir(projectSlug), projHash)
-    }
-  } else {
-    await tagImage('yaac-base', projectImageName)
+  if (hasSetupScript) {
+    currentImageName = await ensureSetupImage(projectSlug, 'yaac-default', setupScript)
   }
 
   // Layer 3: yaac-user (optional Dockerfile.user in ~/.yaac)
+  // Tag current image so Dockerfile.user can use a stable FROM reference
+  await tagImage(currentImageName, 'yaac-current')
   const userDockerfile = path.join(getDataDir(), 'Dockerfile.user')
   const finalImageName = `yaac-user-${projectSlug}`
-  let userExists = false
-  try {
-    await fs.access(userDockerfile)
-    userExists = true
-  } catch {
-    // no user dockerfile
-  }
 
-  if (userExists) {
+  if (await fileExists(userDockerfile)) {
     const userHash = await fileHash(userDockerfile)
     const existingUserHash = await getImageLabel(finalImageName, 'yaac.content-hash')
     if (!await imageExists(finalImageName) || existingUserHash !== userHash) {
@@ -109,7 +170,7 @@ export async function ensureImage(projectSlug: string): Promise<string> {
       await buildImage(finalImageName, userDockerfile, getDataDir(), userHash)
     }
   } else {
-    await tagImage(projectImageName, finalImageName)
+    await tagImage(currentImageName, finalImageName)
   }
 
   return finalImageName
