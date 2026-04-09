@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { YaacConfig } from '@/types'
+import { configOverrideDir, repoDir } from '@/lib/paths'
 
 const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy', 'cacheVolumes', 'initCommands'])
 
@@ -72,4 +73,10 @@ export async function loadProjectConfig(repoPath: string): Promise<YaacConfig | 
   }
 
   return config
+}
+
+export async function resolveProjectConfig(projectSlug: string): Promise<YaacConfig | null> {
+  const override = await loadProjectConfig(configOverrideDir(projectSlug))
+  if (override) return override
+  return loadProjectConfig(repoDir(projectSlug))
 }

@@ -3,8 +3,8 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
-import { DOCKERFILES_DIR, getDataDir, repoDir } from '@/lib/paths'
-import { loadProjectConfig } from '@/lib/config'
+import { DOCKERFILES_DIR, getDataDir, repoDir, configOverrideDir } from '@/lib/paths'
+import { resolveProjectConfig } from '@/lib/config'
 
 const execFileAsync = promisify(execFile)
 
@@ -110,11 +110,15 @@ export async function ensureSetupImage(
     volumeArgs.push('-v', `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`)
   }
 
-  // Create and start a temporary container with the repo mounted
+  // Create and start a temporary container with the repo mounted.
+  // The setup script is bind-mounted into /workspace so it runs from inside
+  // the workspace regardless of whether it comes from the repo or a local override.
   await execFileAsync('podman', [
     'run', '--name', tmpContainer,
     '-v', `${repoPath}:/workspace:Z`,
+    '-v', `${setupScriptPath}:/workspace/yaac-setup.sh:ro,Z`,
     ...volumeArgs,
+    '-w', '/workspace',
     '--entrypoint', '/bin/bash',
     baseImageName,
     '/workspace/yaac-setup.sh',
@@ -156,13 +160,15 @@ export async function ensureImage(projectSlug: string): Promise<string> {
     await buildImage('yaac-default', baseDockerfile, baseContext, baseHash)
   }
 
-  // Layer 2: yaac-setup-<slug> (optional yaac-setup.sh in project repo)
-  const setupScript = path.join(repoDir(projectSlug), 'yaac-setup.sh')
+  // Layer 2: yaac-setup-<slug> (optional yaac-setup.sh, local override or from repo)
+  const overrideScript = path.join(configOverrideDir(projectSlug), 'yaac-setup.sh')
+  const repoScript = path.join(repoDir(projectSlug), 'yaac-setup.sh')
+  const setupScript = await fileExists(overrideScript) ? overrideScript : repoScript
   const hasSetupScript = await fileExists(setupScript)
   let currentImageName = 'yaac-default'
 
   if (hasSetupScript) {
-    const config = await loadProjectConfig(repoDir(projectSlug)) ?? {}
+    const config = await resolveProjectConfig(projectSlug) ?? {}
     currentImageName = await ensureSetupImage(projectSlug, 'yaac-default', setupScript, config.cacheVolumes ?? {})
   }
 

@@ -29,7 +29,7 @@ sudo dnf install podman    # Fedora/RHEL
 Clone the repo and install globally:
 
 ```sh
-git clone https://github.com/anthropics/yaac.git
+git clone https://github.com/bsklaroff/yaac.git
 cd yaac
 pnpm install
 pnpm build
@@ -46,22 +46,39 @@ Add a `yaac-config.json` to your repo root:
   "envSecretProxy": {
     "GITHUB_TOKEN": ["api.github.com", "github.com"],
     "ANTHROPIC_API_KEY": ["api.anthropic.com"]
-  }
+  },
+  "cacheVolumes": {
+    "pnpm-store": "/root/.local/share/pnpm/store/v3"
+  },
+  "initCommands": ["pnpm install"]
 }
 ```
 
 - **envPassthrough** — environment variables passed directly from your host to the container.
 - **envSecretProxy** — environment variables injected via a MITM proxy into HTTPS requests to the listed hosts. The actual secret value never enters the container.
+- **cacheVolumes** — named Podman volumes mounted into the container. Keys are volume names, values are absolute container paths. Volumes persist across sessions and are also available during `yaac-setup.sh`.
+- **initCommands** — commands run inside the container after it starts (e.g. `pnpm install` against a warm cache volume). These run on every session, not just the first.
 
 ## Custom images
 
 The default image (Ubuntu 24.04 + Claude Code + gh + tmux) can be customized:
 
-- **`~/.yaac/Dockerfile.yaac`** — replaces the default image entirely (e.g. use a different base distro or toolchain).
-- **`yaac-setup.sh`** in the project repo root — runs on container start for project-specific setup (e.g. install project dependencies). The post-setup container is cached as a podman image; if neither the base image nor the script changes, the cached image is reused.
+- **`~/.yaac/Dockerfile.yaac`** — replaces the default image entirely (e.g. use a different base distro or toolchain). Must install Claude Code, since the default Dockerfile is not used.
+- **`yaac-setup.sh`** in the project repo root — runs inside `/workspace` for project-specific setup (e.g. install project dependencies). The post-setup container is cached as a podman image; if neither the base image nor the script changes, the cached image is reused. Changes to files in `/workspace` are not cached — only changes to the rest of the container filesystem (installed packages, global configs, etc.) are persisted in the image layer.
 - **`~/.yaac/Dockerfile.user`** — applied on top of whichever base is used (e.g. nvim config, shell customization).
 
 Layer order: default (or Dockerfile.yaac) → yaac-setup.sh → Dockerfile.user.
+
+## Local overrides
+
+You can override `yaac-config.json` and `yaac-setup.sh` per-machine without modifying the repo. Place override files in the project's config-override directory:
+
+```
+~/.yaac/projects/<slug>/config-override/yaac-config.json
+~/.yaac/projects/<slug>/config-override/yaac-setup.sh
+```
+
+If an override file exists, it fully replaces the corresponding file from the repo (no merging). This is useful for machine-specific setup or testing changes to the config without committing them.
 
 ## Usage
 

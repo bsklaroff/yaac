@@ -7,7 +7,7 @@ import { ensureContainerRuntime, podman } from '@/lib/podman'
 import { ensureImage } from '@/lib/image-builder'
 import { repoDir, claudeDir, claudeJsonFile, worktreeDir, worktreesDir, projectDir, getDataDir } from '@/lib/paths'
 import { addWorktree, getDefaultBranch, fetchAndPullDefault, getGitUserConfig } from '@/lib/git'
-import { loadProjectConfig } from '@/lib/config'
+import { resolveProjectConfig } from '@/lib/config'
 import { buildRulesFromConfig } from '@/lib/secret-conventions'
 import { isTmuxSessionAlive, cleanupSession } from '@/lib/session-cleanup'
 import { proxyClient } from '@/lib/proxy-client'
@@ -76,8 +76,8 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   console.log(`Creating worktree from ${defaultBranch}...`)
   await addWorktree(repo, wtDir, `yaac/${sessionId}`, `origin/${defaultBranch}`)
 
-  // Load project config
-  const config: YaacConfig = await loadProjectConfig(repo) ?? {}
+  // Load project config (local override at ~/.yaac/projects/<slug>/ takes precedence)
+  const config: YaacConfig = await resolveProjectConfig(projectSlug) ?? {}
 
   // Build container env
   const env: string[] = ['TERM=xterm-256color', 'LANG=en_US.UTF-8', 'EDITOR=nvim']

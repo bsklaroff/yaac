@@ -48,6 +48,10 @@ export function repoDir(slug: string): string {
   return path.join(projectDir(slug), 'repo')
 }
 
+export function configOverrideDir(slug: string): string {
+  return path.join(projectDir(slug), 'config-override')
+}
+
 export function claudeDir(slug: string): string {
   return path.join(projectDir(slug), 'claude')
 }

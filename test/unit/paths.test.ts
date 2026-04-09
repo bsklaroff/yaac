@@ -8,6 +8,7 @@ import {
   getProjectsDir,
   projectDir,
   repoDir,
+  configOverrideDir,
   claudeDir,
   worktreesDir,
   worktreeDir,
@@ -37,6 +38,7 @@ describe('paths', () => {
     setDataDir('/tmp/yaac-test')
     expect(projectDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo')
     expect(repoDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/repo')
+    expect(configOverrideDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/config-override')
     expect(claudeDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/claude')
     expect(worktreesDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/worktrees')
     expect(worktreeDir('my-repo', 'abc123')).toBe('/tmp/yaac-test/projects/my-repo/worktrees/abc123')

@@ -10,7 +10,7 @@ import { projectAdd } from '@/commands/project-add'
 import { podman } from '@/lib/podman'
 import { ensureImage } from '@/lib/image-builder'
 import { addWorktree, getDefaultBranch, fetchAndPullDefault } from '@/lib/git'
-import { loadProjectConfig } from '@/lib/config'
+import { resolveProjectConfig } from '@/lib/config'
 import { repoDir, claudeDir, worktreeDir, worktreesDir, getDataDir } from '@/lib/paths'
 import { buildRulesFromConfig } from '@/lib/secret-conventions'
 import { proxyClient } from '@/lib/proxy-client'
@@ -32,7 +32,7 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
   await getDefaultBranch(repo)
   await addWorktree(repo, wtDir, `yaac/${sessionId}`)
 
-  const config = await loadProjectConfig(repo) ?? {}
+  const config = await resolveProjectConfig(projectSlug) ?? {}
   const env: string[] = ['TERM=xterm-256color', 'EDITOR=nvim']
 
   if (config.envPassthrough) {

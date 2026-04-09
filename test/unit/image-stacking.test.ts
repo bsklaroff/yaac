@@ -7,9 +7,11 @@ import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 describe('ensureImage layer stacking', () => {
   let dataDir: string
   const operations: string[] = []
+  const runArgs: string[][] = []
 
   beforeEach(async () => {
     operations.length = 0
+    runArgs.length = 0
     dataDir = await createTempDataDir()
   })
 
@@ -36,6 +38,7 @@ describe('ensureImage layer stacking', () => {
         }
         if (args[0] === 'run') {
           operations.push(`run-setup ${args[args.indexOf('--name') + 1]}`)
+          runArgs.push(args)
           cb(null, { stdout: '', stderr: '' })
           return
         }
@@ -140,6 +143,79 @@ describe('ensureImage layer stacking', () => {
     expect(operations).toContainEqual(expect.stringContaining('run-setup'))
     expect(operations).toContainEqual(expect.stringContaining('commit yaac-setup-myproject'))
     expect(operations).toContainEqual('build yaac-user-myproject')
+    expect(result).toBe('yaac-user-myproject')
+  })
+
+  it('prefers local yaac-setup.sh over repo yaac-setup.sh', async () => {
+    const overrideDir = path.join(dataDir, 'projects', 'myproject', 'config-override')
+    const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
+    await fs.mkdir(repoPath, { recursive: true })
+    await fs.mkdir(overrideDir, { recursive: true })
+    await fs.writeFile(path.join(repoPath, 'yaac-setup.sh'), '#!/bin/bash\necho repo-setup\n')
+    await fs.writeFile(path.join(overrideDir, 'yaac-setup.sh'), '#!/bin/bash\necho local-setup\n')
+
+    const ensureImage = await loadEnsureImage()
+    const result = await ensureImage('myproject')
+
+    expect(operations).toContainEqual(expect.stringContaining('run-setup'))
+    expect(operations).toContainEqual(expect.stringContaining('commit yaac-setup-myproject'))
+    expect(result).toBe('yaac-user-myproject')
+  })
+
+  it('runs setup script from /workspace with working dir set', async () => {
+    const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
+    await fs.mkdir(repoPath, { recursive: true })
+    await fs.writeFile(path.join(repoPath, 'yaac-setup.sh'), '#!/bin/bash\necho setup\n')
+
+    const ensureImage = await loadEnsureImage()
+    await ensureImage('myproject')
+
+    expect(runArgs).toHaveLength(1)
+    const args = runArgs[0]
+    // Script is mounted and executed at /workspace/yaac-setup.sh
+    expect(args[args.length - 1]).toBe('/workspace/yaac-setup.sh')
+    // Working directory is set to /workspace
+    const wIdx = args.indexOf('-w')
+    expect(wIdx).toBeGreaterThan(-1)
+    expect(args[wIdx + 1]).toBe('/workspace')
+  })
+
+  it('mounts local override script into /workspace/yaac-setup.sh', async () => {
+    const overrideDir = path.join(dataDir, 'projects', 'myproject', 'config-override')
+    const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
+    await fs.mkdir(repoPath, { recursive: true })
+    await fs.mkdir(overrideDir, { recursive: true })
+    await fs.writeFile(path.join(overrideDir, 'yaac-setup.sh'), '#!/bin/bash\necho override\n')
+
+    const ensureImage = await loadEnsureImage()
+    await ensureImage('myproject')
+
+    expect(runArgs).toHaveLength(1)
+    const args = runArgs[0]
+    // Override script is bind-mounted at /workspace/yaac-setup.sh
+    const vFlags = args.filter((_, i) => i > 0 && args[i - 1] === '-v')
+    const scriptMount = vFlags.find((v) => v.includes('/workspace/yaac-setup.sh'))
+    expect(scriptMount).toBeDefined()
+    expect(scriptMount).toContain(path.join(overrideDir, 'yaac-setup.sh'))
+    // Executed from /workspace
+    expect(args[args.length - 1]).toBe('/workspace/yaac-setup.sh')
+    const wIdx = args.indexOf('-w')
+    expect(wIdx).toBeGreaterThan(-1)
+    expect(args[wIdx + 1]).toBe('/workspace')
+  })
+
+  it('uses local yaac-setup.sh when repo has none', async () => {
+    const overrideDir = path.join(dataDir, 'projects', 'myproject', 'config-override')
+    const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
+    await fs.mkdir(repoPath, { recursive: true })
+    await fs.mkdir(overrideDir, { recursive: true })
+    await fs.writeFile(path.join(overrideDir, 'yaac-setup.sh'), '#!/bin/bash\necho local-only\n')
+
+    const ensureImage = await loadEnsureImage()
+    const result = await ensureImage('myproject')
+
+    expect(operations).toContainEqual(expect.stringContaining('run-setup'))
+    expect(operations).toContainEqual(expect.stringContaining('commit yaac-setup-myproject'))
     expect(result).toBe('yaac-user-myproject')
   })
 })
