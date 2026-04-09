@@ -17,7 +17,7 @@ export function hasSshKeys(sshDir?: string): boolean {
   if (!existsSync(dir)) return false
   try {
     const files = readdirSync(dir)
-    return files.some(f => f.startsWith('id_') && !f.endsWith('.pub'))
+    return files.some((f) => f.startsWith('id_') && !f.endsWith('.pub'))
   } catch {
     return false
   }

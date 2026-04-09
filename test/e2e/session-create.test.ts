@@ -13,7 +13,6 @@ import { loadProjectConfig } from '@/lib/config'
 import { repoDir, claudeDir, worktreeDir, worktreesDir, getDataDir } from '@/lib/paths'
 import { buildRulesFromConfig } from '@/lib/secret-conventions'
 import { proxyClient } from '@/lib/proxy-client'
-import { shellEscape } from '@/commands/session-create'
 import { sshAgent, hasSshKeys, SshAgentClient } from '@/lib/ssh-agent'
 
 const execFileAsync = promisify(execFile)

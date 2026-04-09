@@ -73,7 +73,7 @@ describe('yaac session delete', { timeout: 120_000 }, () => {
     await createTestRepo(repoPath)
     await projectAdd(repoPath)
 
-    const { containerName, sessionId } = await createMinimalContainer('del-running')
+    const { sessionId } = await createMinimalContainer('del-running')
     // Don't add to cleanup — sessionDelete should remove it
 
     await sessionDelete(sessionId)

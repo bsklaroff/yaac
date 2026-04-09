@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { getProjectsDir } from '@/lib/paths'
+import { getDataDir, getProjectsDir } from '@/lib/paths'
 import { podman } from '@/lib/podman'
 import type { ProjectMeta } from '@/types'
 
