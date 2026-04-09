@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import simpleGit from 'simple-git'
-import { cloneRepo, getDefaultBranch, addWorktree, removeWorktree, fetchAndPullDefault, getGitUserConfig } from '@/lib/git'
+import { cloneRepo, getDefaultBranch, addWorktree, removeWorktree, fetchOrigin, getGitUserConfig } from '@/lib/git'
 
 describe('git helpers', () => {
   let tmpDir: string
@@ -41,6 +41,20 @@ describe('git helpers', () => {
     expect(['main', 'master']).toContain(branch)
   })
 
+  it('gets default branch from origin/HEAD when available', async () => {
+    // Clone the source so we have an "origin" remote
+    const cloneDir = path.join(tmpDir, 'clone-default')
+    await cloneRepo(sourceRepo, cloneDir)
+
+    // Checkout a different branch so HEAD != default
+    const cloneGit = simpleGit(cloneDir)
+    await cloneGit.checkoutLocalBranch('feature-branch')
+
+    // getDefaultBranch should still return the remote default, not 'feature-branch'
+    const branch = await getDefaultBranch(cloneDir)
+    expect(['main', 'master']).toContain(branch)
+  })
+
   it('creates a worktree with a new branch', async () => {
     const wtPath = path.join(tmpDir, 'worktree')
     await addWorktree(sourceRepo, wtPath, 'yaac/test-session')
@@ -70,7 +84,7 @@ describe('git helpers', () => {
     expect(tracking.trim()).toBe(`origin/${defaultBranch}`)
   })
 
-  it('fetchAndPullDefault updates clone from remote', async () => {
+  it('fetchOrigin updates remote refs', async () => {
     // Clone the source repo
     const cloneDir = path.join(tmpDir, 'clone')
     await cloneRepo(sourceRepo, cloneDir)
@@ -81,30 +95,37 @@ describe('git helpers', () => {
     await srcGit.add('.')
     await srcGit.commit('second commit')
 
-    // fetchAndPullDefault should bring the new commit into the clone
-    await fetchAndPullDefault(cloneDir)
+    // fetchOrigin should update remote refs
+    await fetchOrigin(cloneDir)
 
-    const content = await fs.readFile(path.join(cloneDir, 'new-file.txt'), 'utf8')
-    expect(content).toBe('new content\n')
+    // Verify origin/main has the new commit (even though local branch hasn't moved)
+    const defaultBranch = await getDefaultBranch(cloneDir)
+    const cloneGit = simpleGit(cloneDir)
+    const log = await cloneGit.log([`origin/${defaultBranch}`])
+    expect(log.latest?.message).toBe('second commit')
   })
 
-  it('fetchAndPullDefault fails gracefully on non-ff changes', async () => {
+  it('creates worktree from startPoint with latest remote content', async () => {
+    // Clone the source repo
     const cloneDir = path.join(tmpDir, 'clone')
     await cloneRepo(sourceRepo, cloneDir)
 
-    // Make divergent commits in both source and clone
+    // Add a new commit to the source
     const srcGit = simpleGit(sourceRepo)
-    await fs.writeFile(path.join(sourceRepo, 'src-file.txt'), 'from source\n')
+    await fs.writeFile(path.join(sourceRepo, 'new-file.txt'), 'new content\n')
     await srcGit.add('.')
-    await srcGit.commit('source commit')
+    await srcGit.commit('second commit')
 
-    const cloneGit = simpleGit(cloneDir)
-    await fs.writeFile(path.join(cloneDir, 'clone-file.txt'), 'from clone\n')
-    await cloneGit.add('.')
-    await cloneGit.commit('clone commit')
+    // Fetch so remote refs are updated
+    await fetchOrigin(cloneDir)
 
-    // ff-only merge should fail
-    await expect(fetchAndPullDefault(cloneDir)).rejects.toThrow()
+    // Create worktree from origin/<default> — should include the new commit
+    const defaultBranch = await getDefaultBranch(cloneDir)
+    const wtPath = path.join(tmpDir, 'wt-startpoint')
+    await addWorktree(cloneDir, wtPath, 'yaac/from-origin', `origin/${defaultBranch}`)
+
+    const content = await fs.readFile(path.join(wtPath, 'new-file.txt'), 'utf8')
+    expect(content).toBe('new content\n')
   })
 
   it('getGitUserConfig returns name and email or null', async () => {

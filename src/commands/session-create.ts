@@ -6,7 +6,7 @@ import simpleGit from 'simple-git'
 import { ensureContainerRuntime, podman } from '@/lib/podman'
 import { ensureImage } from '@/lib/image-builder'
 import { repoDir, claudeDir, claudeJsonFile, worktreeDir, worktreesDir, projectDir, getDataDir } from '@/lib/paths'
-import { addWorktree, getDefaultBranch, fetchAndPullDefault, getGitUserConfig } from '@/lib/git'
+import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/lib/git'
 import { resolveProjectConfig } from '@/lib/config'
 import { buildRulesFromConfig } from '@/lib/secret-conventions'
 import { isTmuxSessionAlive, cleanupSession } from '@/lib/session-cleanup'
@@ -62,9 +62,12 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   // Fetch latest from remote before building images
   console.log('Fetching latest from remote...')
   try {
-    await fetchAndPullDefault(repo)
-  } catch {
-    console.warn('Warning: could not fetch from remote, using local state')
+    await fetchOrigin(repo)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`Error: could not fetch from remote: ${msg}`)
+    process.exitCode = 1
+    return
   }
 
   console.log('Ensuring container images are built...')
