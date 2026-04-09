@@ -14,3 +14,4 @@ set -u
 corepack enable
 corepack prepare pnpm@10.7.0 --activate
 ln -s "$NVM_DIR/versions/node/$(cat /workspace/.nvmrc)" "$NVM_DIR/current"
+pnpm install

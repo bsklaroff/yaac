@@ -157,6 +157,9 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
         `${claude}:/root/.claude:Z`,
         `${claudeJson}:/root/.claude.json:Z`,
         ...sshBinds,
+        ...Object.entries(config.cacheVolumes ?? {}).map(
+          ([key, containerPath]) => `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`,
+        ),
       ],
       NetworkMode: networkMode,
     },
@@ -179,6 +182,17 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   // Configure git identity inside container
   execSync(`podman exec ${containerName} git config --global user.name '${shellEscape(gitUser.name)}'`)
   execSync(`podman exec ${containerName} git config --global user.email '${shellEscape(gitUser.email)}'`)
+
+  // Run init commands (e.g., pnpm install against warm cache volumes)
+  if (config.initCommands?.length) {
+    console.log('Running init commands...')
+    for (const cmd of config.initCommands) {
+      execSync(`podman exec ${containerName} sh -c '${shellEscape(cmd)}'`, {
+        stdio: 'inherit',
+        timeout: 300_000,
+      })
+    }
+  }
 
   // Start Claude Code in a tmux session
   const claudeCmd = options.prompt

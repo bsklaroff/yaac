@@ -7,6 +7,8 @@ export interface ProjectMeta {
 export interface YaacConfig {
   envPassthrough?: string[]
   envSecretProxy?: Record<string, string[]>
+  cacheVolumes?: Record<string, string>
+  initCommands?: string[]
 }
 
 export interface SessionMeta {

@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { YaacConfig } from '@/types'
 
-const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy'])
+const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy', 'cacheVolumes', 'initCommands'])
 
 export async function loadProjectConfig(repoPath: string): Promise<YaacConfig | null> {
   const configPath = path.join(repoPath, 'yaac-config.json')
@@ -46,6 +46,29 @@ export async function loadProjectConfig(repoPath: string): Promise<YaacConfig | 
       }
     }
     config.envSecretProxy = proxy as Record<string, string[]>
+  }
+
+  if (obj.cacheVolumes !== undefined) {
+    if (typeof obj.cacheVolumes !== 'object' || obj.cacheVolumes === null || Array.isArray(obj.cacheVolumes)) {
+      throw new Error('yaac-config.json: cacheVolumes must be an object')
+    }
+    const volumes = obj.cacheVolumes as Record<string, unknown>
+    for (const [key, val] of Object.entries(volumes)) {
+      if (typeof val !== 'string') {
+        throw new Error(`yaac-config.json: cacheVolumes.${key} must be a string (absolute container path)`)
+      }
+      if (!val.startsWith('/')) {
+        throw new Error(`yaac-config.json: cacheVolumes.${key} must be an absolute path`)
+      }
+    }
+    config.cacheVolumes = volumes as Record<string, string>
+  }
+
+  if (obj.initCommands !== undefined) {
+    if (!Array.isArray(obj.initCommands) || !obj.initCommands.every((v) => typeof v === 'string')) {
+      throw new Error('yaac-config.json: initCommands must be a string array')
+    }
+    config.initCommands = obj.initCommands
   }
 
   return config

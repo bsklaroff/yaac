@@ -89,6 +89,9 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
         `${repo}/.git:/repo/.git:Z`,
         `${claude}:/root/.claude:Z`,
         ...sshBinds,
+        ...Object.entries(config.cacheVolumes ?? {}).map(
+          ([key, containerPath]) => `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`,
+        ),
       ],
       NetworkMode: networkMode,
     },
@@ -113,6 +116,15 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
   await execFileAsync('podman', [
     'exec', containerName, 'git', 'config', '--global', 'user.email', 'test@test.com',
   ])
+
+  // Run init commands
+  if (config.initCommands?.length) {
+    for (const cmd of config.initCommands) {
+      await execFileAsync('podman', [
+        'exec', containerName, 'sh', '-c', cmd,
+      ], { timeout: 300_000 })
+    }
+  }
 
   // Start tmux — use the prompt if provided, otherwise just bash
   const tmuxCmd = options?.prompt
@@ -466,6 +478,62 @@ describe('yaac session create', () => {
     ])
     expect(stdout.trim()).toBe('/setup-marker-v2')
   }, 120_000)
+
+  it('mounts cacheVolumes in container', async () => {
+    if (!isPodmanAvailable) return
+
+    const tmpDir = await createTempDataDir()
+    tmpDirs.push(tmpDir)
+    const repoPath = path.join(tmpDir, 'cache-vol-project')
+    await createTestRepo(repoPath, {
+      yaacConfig: {
+        cacheVolumes: { 'test-cache': '/tmp/test-cache' },
+      },
+    })
+    await projectAdd(repoPath)
+
+    const result = await createSessionNonInteractive('cache-vol-project')
+    containersToCleanup.push(result.containerName)
+
+    // Write a file to the cache volume
+    await execFileAsync('podman', [
+      'exec', result.containerName, 'sh', '-c', 'echo hello > /tmp/test-cache/marker',
+    ])
+
+    // Verify the file exists
+    const { stdout } = await execFileAsync('podman', [
+      'exec', result.containerName, 'cat', '/tmp/test-cache/marker',
+    ])
+    expect(stdout.trim()).toBe('hello')
+
+    // Clean up the test volume
+    try {
+      await execFileAsync('podman', ['volume', 'rm', 'yaac-cache-cache-vol-project-test-cache'])
+    } catch { /* ignore */ }
+  })
+
+  it('runs initCommands at session start', async () => {
+    if (!isPodmanAvailable) return
+
+    const tmpDir = await createTempDataDir()
+    tmpDirs.push(tmpDir)
+    const repoPath = path.join(tmpDir, 'init-cmd-project')
+    await createTestRepo(repoPath, {
+      yaacConfig: {
+        initCommands: ['touch /tmp/init-ran'],
+      },
+    })
+    await projectAdd(repoPath)
+
+    const result = await createSessionNonInteractive('init-cmd-project')
+    containersToCleanup.push(result.containerName)
+
+    // Verify the init command ran
+    const { stdout } = await execFileAsync('podman', [
+      'exec', result.containerName, 'sh', '-c', 'test -f /tmp/init-ran && echo exists',
+    ])
+    expect(stdout.trim()).toBe('exists')
+  })
 
   it('errors gracefully on unknown project', async () => {
     process.exitCode = undefined

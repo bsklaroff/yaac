@@ -1,0 +1,6 @@
+{
+  "cacheVolumes": {
+    "pnpm-store": "/root/.local/share/pnpm/store/v3"
+  },
+  "initCommands": ["pnpm install"]
+}

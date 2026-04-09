@@ -4,6 +4,7 @@ import crypto from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { DOCKERFILES_DIR, getDataDir, repoDir } from '@/lib/paths'
+import { loadProjectConfig } from '@/lib/config'
 
 const execFileAsync = promisify(execFile)
 
@@ -84,6 +85,7 @@ export async function ensureSetupImage(
   projectSlug: string,
   baseImageName: string,
   setupScriptPath: string,
+  cacheVolumes: Record<string, string> = {},
 ): Promise<string> {
   const setupImageName = `yaac-setup-${projectSlug}`
   const baseHash = await getImageLabel(baseImageName, 'yaac.content-hash') ?? 'unknown'
@@ -103,10 +105,16 @@ export async function ensureSetupImage(
   const tmpContainer = `yaac-setup-tmp-${projectSlug}-${Date.now()}`
   const repoPath = repoDir(projectSlug)
 
+  const volumeArgs: string[] = []
+  for (const [key, containerPath] of Object.entries(cacheVolumes)) {
+    volumeArgs.push('-v', `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`)
+  }
+
   // Create and start a temporary container with the repo mounted
   await execFileAsync('podman', [
     'run', '--name', tmpContainer,
     '-v', `${repoPath}:/workspace:Z`,
+    ...volumeArgs,
     '--entrypoint', '/bin/bash',
     baseImageName,
     '/workspace/yaac-setup.sh',
@@ -154,7 +162,8 @@ export async function ensureImage(projectSlug: string): Promise<string> {
   let currentImageName = 'yaac-default'
 
   if (hasSetupScript) {
-    currentImageName = await ensureSetupImage(projectSlug, 'yaac-default', setupScript)
+    const config = await loadProjectConfig(repoDir(projectSlug)) ?? {}
+    currentImageName = await ensureSetupImage(projectSlug, 'yaac-default', setupScript, config.cacheVolumes ?? {})
   }
 
   // Layer 3: yaac-user (optional Dockerfile.user in ~/.yaac)
