@@ -54,20 +54,21 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     gitUser = { name, email }
   }
 
-  console.log('Ensuring container images are built...')
-  const imageName = await ensureImage(projectSlug)
-
-  const sessionId = crypto.randomUUID()
   const repo = repoDir(projectSlug)
-  const wtDir = worktreeDir(projectSlug, sessionId)
 
-  // Fetch latest from remote before branching
+  // Fetch latest from remote before building images (so yaac-setup.sh is current)
   console.log('Fetching latest from remote...')
   try {
     await fetchAndPullDefault(repo)
   } catch {
     console.warn('Warning: could not fetch from remote, using local state')
   }
+
+  console.log('Ensuring container images are built...')
+  const imageName = await ensureImage(projectSlug)
+
+  const sessionId = crypto.randomUUID()
+  const wtDir = worktreeDir(projectSlug, sessionId)
 
   // Create worktree
   await fs.mkdir(worktreesDir(projectSlug), { recursive: true })

@@ -4,11 +4,12 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import simpleGit from 'simple-git'
 import { createTempDataDir, cleanupTempDir, createTestRepo, podmanAvailable } from '@test/helpers/setup'
 import { projectAdd } from '@/commands/project-add'
 import { podman } from '@/lib/podman'
 import { ensureImage } from '@/lib/image-builder'
-import { addWorktree, getDefaultBranch } from '@/lib/git'
+import { addWorktree, getDefaultBranch, fetchAndPullDefault } from '@/lib/git'
 import { loadProjectConfig } from '@/lib/config'
 import { repoDir, claudeDir, worktreeDir, worktreesDir, getDataDir } from '@/lib/paths'
 import { buildRulesFromConfig } from '@/lib/secret-conventions'
@@ -415,6 +416,56 @@ describe('yaac session create', () => {
       await testAgent.stop()
     }
   }, 60_000)
+
+  it('uses updated yaac-setup.sh from remote when creating session', async () => {
+    if (!isPodmanAvailable) return
+
+    const tmpDir = await createTempDataDir()
+    tmpDirs.push(tmpDir)
+
+    // Create a repo with a yaac-setup.sh that creates a v1 marker
+    const repoPath = path.join(tmpDir, 'setup-fetch-project')
+    await createTestRepo(repoPath)
+    await fs.writeFile(
+      path.join(repoPath, 'yaac-setup.sh'),
+      '#!/bin/bash\ntouch /setup-marker-v1\n',
+    )
+    await fs.writeFile(path.join(repoPath, '.nvmrc'), '22\n')
+    const originGit = simpleGit(repoPath)
+    await originGit.add('.')
+    await originGit.commit('add yaac-setup.sh v1')
+
+    // Add project (clones the repo)
+    await projectAdd(repoPath)
+    const clonedRepo = repoDir('setup-fetch-project')
+
+    // Now update yaac-setup.sh on the "remote" (origin repo) to v2
+    await fs.writeFile(
+      path.join(repoPath, 'yaac-setup.sh'),
+      '#!/bin/bash\ntouch /setup-marker-v2\n',
+    )
+    await originGit.add('.')
+    await originGit.commit('update yaac-setup.sh to v2')
+
+    // Fetch and build image — mirrors the fixed ordering in sessionCreate
+    await fetchAndPullDefault(clonedRepo)
+    const imageName = await ensureImage('setup-fetch-project')
+
+    // Start a container from the image and check for the v2 marker
+    const containerName = `yaac-setup-fetch-project-test-${Date.now()}`
+    containersToCleanup.push(containerName)
+    const container = await podman.createContainer({
+      Image: imageName,
+      name: containerName,
+      Labels: { 'yaac.test': 'true' },
+    })
+    await container.start()
+
+    const { stdout } = await execFileAsync('podman', [
+      'exec', containerName, 'ls', '/setup-marker-v2',
+    ])
+    expect(stdout.trim()).toBe('/setup-marker-v2')
+  }, 120_000)
 
   it('errors gracefully on unknown project', async () => {
     process.exitCode = undefined
