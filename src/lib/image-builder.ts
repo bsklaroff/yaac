@@ -1,9 +1,11 @@
 import fs from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
-import { DOCKERFILES_DIR, getDataDir, configOverrideDir } from '@/lib/paths'
+import { DOCKERFILES_DIR, getDataDir, configOverrideDir, repoDir } from '@/lib/paths'
+import { getDefaultBranch } from '@/lib/git'
 
 const execFileAsync = promisify(execFile)
 
@@ -68,6 +70,15 @@ async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
+async function readFileFromRef(repoPath: string, ref: string, filePath: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync('git', ['show', `${ref}:${filePath}`], { cwd: repoPath })
+    return stdout
+  } catch {
+    return null
+  }
+}
+
 /**
  * Ensures the full image chain is built for a project.
  *
@@ -88,9 +99,29 @@ export async function ensureImage(projectSlug: string, imagePrefix?: string, req
   const prefix = imagePrefix ?? 'yaac'
   const baseName = `${prefix}-base`
 
-  // Layer 1: <prefix>-base (config-override/Dockerfile.yaac > Dockerfile.default)
+  // Layer 1: <prefix>-base
+  // Priority: config-override/Dockerfile.yaac > repo Dockerfile.yaac (from remote ref) > Dockerfile.default
   const overrideDockerfile = path.join(configOverrideDir(projectSlug), 'Dockerfile.yaac')
-  const yaacDockerfile = await fileExists(overrideDockerfile) ? overrideDockerfile : null
+  let yaacDockerfile: string | null = null
+  let tmpDockerfileDir: string | null = null
+
+  if (await fileExists(overrideDockerfile)) {
+    yaacDockerfile = overrideDockerfile
+  } else {
+    try {
+      const repo = repoDir(projectSlug)
+      const defaultBranch = await getDefaultBranch(repo)
+      const content = await readFileFromRef(repo, `origin/${defaultBranch}`, 'Dockerfile.yaac')
+      if (content) {
+        tmpDockerfileDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-dockerfile-'))
+        yaacDockerfile = path.join(tmpDockerfileDir, 'Dockerfile.yaac')
+        await fs.writeFile(yaacDockerfile, content)
+      }
+    } catch {
+      // git not available — fall through to default
+    }
+  }
+
   const baseDockerfile = yaacDockerfile ?? path.join(DOCKERFILES_DIR, 'Dockerfile.default')
   const baseContext = yaacDockerfile ? path.dirname(yaacDockerfile) : DOCKERFILES_DIR
   const baseHash = await fileHash(baseDockerfile)
@@ -147,6 +178,10 @@ export async function ensureImage(projectSlug: string, imagePrefix?: string, req
     }
   } else {
     await tagImage(effectiveBase, finalImageName)
+  }
+
+  if (tmpDockerfileDir) {
+    await fs.rm(tmpDockerfileDir, { recursive: true, force: true })
   }
 
   return finalImageName

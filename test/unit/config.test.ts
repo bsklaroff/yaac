@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { loadProjectConfig, resolveProjectConfig } from '@/lib/config'
+import { loadProjectConfig, parseProjectConfig, resolveProjectConfig } from '@/lib/config'
 import { setDataDir } from '@/lib/paths'
 
 describe('loadProjectConfig', () => {
@@ -141,6 +141,11 @@ describe('loadProjectConfig', () => {
       JSON.stringify({ nestedContainers: 'yes' }),
     )
     await expect(loadProjectConfig(tmpDir)).rejects.toThrow('nestedContainers must be a boolean')
+  })
+
+  it('parseProjectConfig parses raw JSON string', () => {
+    const result = parseProjectConfig(JSON.stringify({ nestedContainers: true, initCommands: ['echo hi'] }))
+    expect(result).toEqual({ nestedContainers: true, initCommands: ['echo hi'] })
   })
 
   it('warns on unknown fields', async () => {

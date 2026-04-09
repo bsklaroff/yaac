@@ -1,19 +1,16 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import type { YaacConfig } from '@/types'
 import { configOverrideDir, repoDir } from '@/lib/paths'
+import { getDefaultBranch } from '@/lib/git'
+
+const execFileAsync = promisify(execFile)
 
 const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'nestedContainers'])
 
-export async function loadProjectConfig(repoPath: string): Promise<YaacConfig | null> {
-  const configPath = path.join(repoPath, 'yaac-config.json')
-  let raw: string
-  try {
-    raw = await fs.readFile(configPath, 'utf8')
-  } catch {
-    return null
-  }
-
+export function parseProjectConfig(raw: string): YaacConfig {
   const parsed: unknown = JSON.parse(raw)
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw new Error('yaac-config.json must be a JSON object')
@@ -82,8 +79,38 @@ export async function loadProjectConfig(repoPath: string): Promise<YaacConfig | 
   return config
 }
 
+export async function loadProjectConfig(repoPath: string): Promise<YaacConfig | null> {
+  const configPath = path.join(repoPath, 'yaac-config.json')
+  let raw: string
+  try {
+    raw = await fs.readFile(configPath, 'utf8')
+  } catch {
+    return null
+  }
+  return parseProjectConfig(raw)
+}
+
+export async function loadProjectConfigFromRef(repoPath: string, ref: string): Promise<YaacConfig | null> {
+  try {
+    const { stdout } = await execFileAsync('git', ['show', `${ref}:yaac-config.json`], { cwd: repoPath })
+    return parseProjectConfig(stdout)
+  } catch {
+    return null
+  }
+}
+
 export async function resolveProjectConfig(projectSlug: string): Promise<YaacConfig | null> {
   const override = await loadProjectConfig(configOverrideDir(projectSlug))
   if (override) return override
-  return loadProjectConfig(repoDir(projectSlug))
+
+  const repo = repoDir(projectSlug)
+  try {
+    const defaultBranch = await getDefaultBranch(repo)
+    const fromRef = await loadProjectConfigFromRef(repo, `origin/${defaultBranch}`)
+    if (fromRef) return fromRef
+  } catch {
+    // git not available or repo not initialized — fall through to filesystem
+  }
+
+  return loadProjectConfig(repo)
 }

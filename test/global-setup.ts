@@ -26,36 +26,34 @@ export async function setup(): Promise<void> {
   const content = await fs.readFile(dockerfile, 'utf8')
   const hash = crypto.createHash('sha256').update(content).digest('hex').slice(0, 16)
 
-  // Check if the image already exists with the correct content hash
+  // Check if the base image already exists with the correct content hash
+  let baseNeedsBuild = true
   try {
     const { stdout } = await execFileAsync('podman', [
       'image', 'inspect', '--format',
       '{{index .Config.Labels "yaac.content-hash"}}', baseName,
     ])
-    if (stdout.trim() === hash) {
-      // Image is current — freeze the hash so workers fail fast if the
-      // Dockerfile changes mid-run instead of triggering a rebuild.
-      process.env.YAAC_FROZEN_BASE_HASH = `${baseName}:${hash}`
-      return
-    }
+    if (stdout.trim() === hash) baseNeedsBuild = false
   } catch {
     // image doesn't exist yet
   }
 
-  console.log('Pre-building yaac-test-base image for test suite...')
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn('podman', [
-      'build', '-t', baseName,
-      '-f', dockerfile,
-      '--label', `yaac.content-hash=${hash}`,
-      DOCKERFILES_DIR,
-    ], { stdio: 'inherit', timeout: 600_000 })
-    child.on('close', (code) => {
-      if (code === 0) resolve()
-      else reject(new Error(`podman build exited with code ${code}`))
+  if (baseNeedsBuild) {
+    console.log('Pre-building yaac-test-base image for test suite...')
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn('podman', [
+        'build', '-t', baseName,
+        '-f', dockerfile,
+        '--label', `yaac.content-hash=${hash}`,
+        DOCKERFILES_DIR,
+      ], { stdio: 'inherit', timeout: 600_000 })
+      child.on('close', (code) => {
+        if (code === 0) resolve()
+        else reject(new Error(`podman build exited with code ${code}`))
+      })
+      child.on('error', reject)
     })
-    child.on('error', reject)
-  })
+  }
 
   // Also pre-build the nestable layer for nested-container tests
   const nestName = 'yaac-test-base-nestable'
@@ -92,7 +90,4 @@ export async function setup(): Promise<void> {
       child.on('error', reject)
     })
   }
-
-  // Freeze the hash so workers fail fast if the Dockerfile changes mid-run
-  process.env.YAAC_FROZEN_BASE_HASH = `${baseName}:${hash}`
 }

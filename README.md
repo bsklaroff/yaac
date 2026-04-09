@@ -64,7 +64,7 @@ Add a `yaac-config.json` to your repo root:
 
 The default image (Ubuntu 24.04 + Node.js + pnpm + Claude Code + gh + tmux) can be customized:
 
-- **`Dockerfile.yaac`** — replaces the default image entirely (e.g. use a different base distro or toolchain). Must install Claude Code, since the default Dockerfile is not used. Place in the project's config-override directory.
+- **`Dockerfile.yaac`** — replaces the default image entirely (e.g. use a different base distro or toolchain). Must install Claude Code, since the default Dockerfile is not used. Place in the repo root or the project's config-override directory (config-override takes precedence).
 - **`~/.yaac/Dockerfile.user`** — applied on top of whichever base is used (e.g. nvim config, shell customization).
 
 Layer order: default → Dockerfile.nestable (if `nestedContainers` is true) → Dockerfile.user.
