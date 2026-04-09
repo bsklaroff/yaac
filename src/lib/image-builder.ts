@@ -68,30 +68,9 @@ export async function ensureImage(projectSlug: string): Promise<string> {
     await buildImage('yaac-base', baseDockerfile, DOCKERFILES_DIR, baseHash)
   }
 
-  // Layer 2: yaac-user (optional Dockerfile.user in ~/.yaac)
-  const userDockerfile = path.join(getDataDir(), 'Dockerfile.user')
-  let userExists = false
-  try {
-    await fs.access(userDockerfile)
-    userExists = true
-  } catch {
-    // no user dockerfile
-  }
-
-  if (userExists) {
-    const userHash = await fileHash(userDockerfile)
-    const existingUserHash = await getImageLabel('yaac-user', 'yaac.content-hash')
-    if (!await imageExists('yaac-user') || existingUserHash !== userHash) {
-      console.log('Building yaac-user image...')
-      await buildImage('yaac-user', userDockerfile, getDataDir(), userHash)
-    }
-  } else {
-    await tagImage('yaac-base', 'yaac-user')
-  }
-
-  // Layer 3: yaac-project-<slug> (optional Dockerfile.dev in project repo)
-  const projectDockerfile = path.join(repoDir(projectSlug), 'Dockerfile.dev')
-  const finalImageName = `yaac-project-${projectSlug}`
+  // Layer 2: yaac-project-<slug> (optional Dockerfile.yaac in project repo)
+  const projectDockerfile = path.join(repoDir(projectSlug), 'Dockerfile.yaac')
+  const projectImageName = `yaac-project-${projectSlug}`
   let projectDockerfileExists = false
   try {
     await fs.access(projectDockerfile)
@@ -102,13 +81,35 @@ export async function ensureImage(projectSlug: string): Promise<string> {
 
   if (projectDockerfileExists) {
     const projHash = await fileHash(projectDockerfile)
-    const existingProjHash = await getImageLabel(finalImageName, 'yaac.content-hash')
-    if (!await imageExists(finalImageName) || existingProjHash !== projHash) {
-      console.log(`Building ${finalImageName} image...`)
-      await buildImage(finalImageName, projectDockerfile, repoDir(projectSlug), projHash)
+    const existingProjHash = await getImageLabel(projectImageName, 'yaac.content-hash')
+    if (!await imageExists(projectImageName) || existingProjHash !== projHash) {
+      console.log(`Building ${projectImageName} image...`)
+      await buildImage(projectImageName, projectDockerfile, repoDir(projectSlug), projHash)
     }
   } else {
-    await tagImage('yaac-user', finalImageName)
+    await tagImage('yaac-base', projectImageName)
+  }
+
+  // Layer 3: yaac-user (optional Dockerfile.user in ~/.yaac)
+  const userDockerfile = path.join(getDataDir(), 'Dockerfile.user')
+  const finalImageName = `yaac-user-${projectSlug}`
+  let userExists = false
+  try {
+    await fs.access(userDockerfile)
+    userExists = true
+  } catch {
+    // no user dockerfile
+  }
+
+  if (userExists) {
+    const userHash = await fileHash(userDockerfile)
+    const existingUserHash = await getImageLabel(finalImageName, 'yaac.content-hash')
+    if (!await imageExists(finalImageName) || existingUserHash !== userHash) {
+      console.log('Building yaac-user image...')
+      await buildImage(finalImageName, userDockerfile, getDataDir(), userHash)
+    }
+  } else {
+    await tagImage(projectImageName, finalImageName)
   }
 
   return finalImageName

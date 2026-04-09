@@ -28,7 +28,7 @@ export async function cleanupTempDir(dir: string): Promise<void> {
 
 /**
  * Creates a local git repo with a single commit for testing.
- * Optionally includes yaac-config.json and Dockerfile.dev.
+ * Optionally includes yaac-config.json and Dockerfile.yaac.
  */
 export async function createTestRepo(
   dir: string,
@@ -53,7 +53,7 @@ export async function createTestRepo(
   }
 
   if (options?.dockerfileDev) {
-    await fs.writeFile(path.join(dir, 'Dockerfile.dev'), options.dockerfileDev)
+    await fs.writeFile(path.join(dir, 'Dockerfile.yaac'), options.dockerfileDev)
   }
 
   await git.add('.')

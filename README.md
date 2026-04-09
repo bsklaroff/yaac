@@ -58,9 +58,9 @@ Add a `yaac-config.json` to your repo root:
 The base image (Ubuntu 24.04 + Claude Code + gh + tmux) can be extended:
 
 - **`~/.yaac/Dockerfile.user`** — applied to all projects (e.g. nvim config).
-- **`Dockerfile.dev`** in the project repo — applied to that project only (e.g. install project dependencies).
+- **`Dockerfile.yaac`** in the project repo — applied to that project only (e.g. install project dependencies).
 
-Each layer builds on the previous: base → user → project.
+Each layer builds on the previous: base → project → user.
 
 ## Usage
 
