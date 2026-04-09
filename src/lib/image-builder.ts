@@ -33,15 +33,20 @@ async function getImageLabel(name: string, label: string): Promise<string | null
   }
 }
 
-async function buildImage(imageName: string, dockerfile: string, context: string, hash: string): Promise<void> {
+async function buildImage(imageName: string, dockerfile: string, context: string, hash: string, buildArgs?: Record<string, string>): Promise<void> {
+  const args = [
+    'build',
+    '-t', imageName,
+    '-f', dockerfile,
+    '--label', `yaac.content-hash=${hash}`,
+  ]
+  for (const [key, value] of Object.entries(buildArgs ?? {})) {
+    args.push('--build-arg', `${key}=${value}`)
+  }
+  args.push(context)
+
   await new Promise<void>((resolve, reject) => {
-    const child = spawn('podman', [
-      'build',
-      '-t', imageName,
-      '-f', dockerfile,
-      '--label', `yaac.content-hash=${hash}`,
-      context,
-    ], { stdio: 'inherit', timeout: 600_000 })
+    const child = spawn('podman', args, { stdio: 'inherit', timeout: 600_000 })
     child.on('close', (code) => {
       if (code === 0) resolve()
       else reject(new Error(`podman build exited with code ${code}`))
@@ -67,6 +72,7 @@ async function fileExists(filePath: string): Promise<boolean> {
  * Ensures the full image chain is built for a project.
  *
  * Layer 1: yaac-base (from Dockerfile.default, or replaced by ~/.yaac/Dockerfile.yaac)
+ * Layer 1.5 (optional): yaac-base-nestable (from Dockerfile.nestable, when nestedContainers is true)
  * Layer 2: yaac-user-<slug> (optional: from ~/.yaac/Dockerfile.user, builds on top)
  *
  * Returns the final image name to use for containers.
@@ -76,8 +82,9 @@ async function fileExists(filePath: string): Promise<boolean> {
  * @param requirePrebuilt - When true, throw instead of building if the base
  *   image is missing or stale. Used by e2e tests so parallel workers fail
  *   fast instead of racing to build the same image.
+ * @param nestedContainers - When true, build the nestable layer (podman-in-podman support).
  */
-export async function ensureImage(projectSlug: string, imagePrefix?: string, requirePrebuilt = false): Promise<string> {
+export async function ensureImage(projectSlug: string, imagePrefix?: string, requirePrebuilt = false, nestedContainers = false): Promise<string> {
   const prefix = imagePrefix ?? 'yaac'
   const baseName = `${prefix}-base`
 
@@ -101,10 +108,32 @@ export async function ensureImage(projectSlug: string, imagePrefix?: string, req
     await buildImage(baseName, baseDockerfile, baseContext, baseHash)
   }
 
+  // Layer 1.5 (optional): <prefix>-base-nestable (podman-in-podman support)
+  // Skipped when Dockerfile.yaac overrides the base — the custom Dockerfile is
+  // responsible for including nested-container support itself.
+  let effectiveBase = baseName
+  if (nestedContainers && !yaacDockerfile) {
+    const nestName = `${prefix}-base-nestable`
+    const nestDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
+    const nestHash = await fileHash(nestDockerfile)
+    const existingNestHash = await getImageLabel(nestName, 'yaac.content-hash')
+    if (!await imageExists(nestName) || existingNestHash !== nestHash) {
+      if (requirePrebuilt) {
+        throw new Error(
+          `Nestable image ${nestName} is missing or stale. ` +
+          'Restart the test run so the global setup can rebuild it.',
+        )
+      }
+      console.log(`Building ${nestName} image (nested containers)...`)
+      await buildImage(nestName, nestDockerfile, DOCKERFILES_DIR, nestHash, { BASE_IMAGE: baseName })
+    }
+    effectiveBase = nestName
+  }
+
   // Layer 2: <prefix>-user (optional Dockerfile.user in ~/.yaac)
   // Tag current image so Dockerfile.user can use a stable FROM reference
   const currentTag = `${prefix}-current`
-  await tagImage(baseName, currentTag)
+  await tagImage(effectiveBase, currentTag)
   const userDockerfile = path.join(getDataDir(), 'Dockerfile.user')
   const finalImageName = `${prefix}-user-${projectSlug}`
 
@@ -116,7 +145,7 @@ export async function ensureImage(projectSlug: string, imagePrefix?: string, req
       await buildImage(finalImageName, userDockerfile, getDataDir(), userHash)
     }
   } else {
-    await tagImage(baseName, finalImageName)
+    await tagImage(effectiveBase, finalImageName)
   }
 
   return finalImageName

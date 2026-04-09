@@ -58,6 +58,7 @@ Add a `yaac-config.json` to your repo root:
 - **envSecretProxy** — environment variables injected via a MITM proxy into HTTPS requests to the listed hosts. The actual secret value never enters the container.
 - **cacheVolumes** — named Podman volumes mounted into the container. Keys are volume names, values are absolute container paths. Volumes persist across sessions.
 - **initCommands** — commands run inside the container after it starts (e.g. `pnpm install` against a warm cache volume). These run on every session, not just the first.
+- **nestedContainers** — when `true`, enables podman-in-podman support so sessions can build and run containers. See [Nested containers](#nested-containers) below.
 
 ## Custom images
 
@@ -66,7 +67,9 @@ The default image (Ubuntu 24.04 + Node.js + pnpm + Claude Code + gh + tmux) can 
 - **`Dockerfile.yaac`** — replaces the default image entirely (e.g. use a different base distro or toolchain). Must install Claude Code, since the default Dockerfile is not used. Place in the project's config-override directory.
 - **`~/.yaac/Dockerfile.user`** — applied on top of whichever base is used (e.g. nvim config, shell customization).
 
-Layer order: default (or Dockerfile.yaac) → Dockerfile.user.
+Layer order: default → Dockerfile.nestable (if `nestedContainers` is true) → Dockerfile.user.
+
+When `Dockerfile.yaac` replaces the default image, the nestable layer is skipped — your custom Dockerfile is responsible for including nested-container support if needed. See `dockerfiles/Dockerfile.nestable` for the required setup.
 
 ## Local overrides
 
@@ -78,6 +81,14 @@ You can override project files per-machine without modifying the repo. Place ove
 ```
 
 If an override file exists, it fully replaces the corresponding file from the repo (no merging). This is useful for machine-specific setup or testing changes to the config without committing them.
+
+## Nested containers
+
+Set `"nestedContainers": true` in `yaac-config.json` to let sessions run `podman` (podman-in-podman). This builds an extra image layer (`Dockerfile.nestable`) on top of the default base that configures rootless podman inside the container.
+
+No `--privileged` flag or extra capabilities are needed. At runtime, yaac adds `--security-opt label=disable` and mounts a per-project named volume for container storage so pulled images persist across sessions.
+
+If your project uses a custom `Dockerfile.yaac`, the nestable layer is skipped. Copy the relevant setup from `dockerfiles/Dockerfile.nestable` into your custom Dockerfile instead.
 
 ## Usage
 

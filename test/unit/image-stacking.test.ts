@@ -98,4 +98,55 @@ describe('ensureImage layer stacking', () => {
     ])
     expect(result).toBe('yaac-user-myproject')
   })
+
+  it('builds nestable layer when nestedContainers is true', async () => {
+    const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
+    await fs.mkdir(repoPath, { recursive: true })
+
+    const ensureImage = await loadEnsureImage()
+    const result = await ensureImage('myproject', undefined, false, true)
+
+    expect(operations).toEqual([
+      'build yaac-base',
+      'build yaac-base-nestable',
+      'tag yaac-base-nestable → yaac-current',
+      'tag yaac-base-nestable → yaac-user-myproject',
+    ])
+    expect(result).toBe('yaac-user-myproject')
+  })
+
+  it('builds nestable + user layers when both are enabled', async () => {
+    const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
+    await fs.mkdir(repoPath, { recursive: true })
+    await fs.writeFile(path.join(dataDir, 'Dockerfile.user'), 'FROM yaac-current\nRUN echo user\n')
+
+    const ensureImage = await loadEnsureImage()
+    const result = await ensureImage('myproject', undefined, false, true)
+
+    expect(operations).toEqual([
+      'build yaac-base',
+      'build yaac-base-nestable',
+      'tag yaac-base-nestable → yaac-current',
+      'build yaac-user-myproject',
+    ])
+    expect(result).toBe('yaac-user-myproject')
+  })
+
+  it('skips nestable layer when Dockerfile.yaac overrides the base', async () => {
+    const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
+    const overrideDir = path.join(dataDir, 'projects', 'myproject', 'config-override')
+    await fs.mkdir(repoPath, { recursive: true })
+    await fs.mkdir(overrideDir, { recursive: true })
+    await fs.writeFile(path.join(overrideDir, 'Dockerfile.yaac'), 'FROM docker.io/ubuntu:24.04\nRUN echo custom\n')
+
+    const ensureImage = await loadEnsureImage()
+    const result = await ensureImage('myproject', undefined, false, true)
+
+    expect(operations).toEqual([
+      'build yaac-base',
+      'tag yaac-base → yaac-current',
+      'tag yaac-base → yaac-user-myproject',
+    ])
+    expect(result).toBe('yaac-user-myproject')
+  })
 })

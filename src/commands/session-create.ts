@@ -56,6 +56,9 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
 
   const repo = repoDir(projectSlug)
 
+  // Load project config (local override at ~/.yaac/projects/<slug>/ takes precedence)
+  const config: YaacConfig = await resolveProjectConfig(projectSlug) ?? {}
+
   // Fetch latest from remote before building images
   console.log('Fetching latest from remote...')
   try {
@@ -65,7 +68,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   }
 
   console.log('Ensuring container images are built...')
-  const imageName = await ensureImage(projectSlug)
+  const imageName = await ensureImage(projectSlug, undefined, false, config.nestedContainers ?? false)
 
   const sessionId = crypto.randomUUID()
   const wtDir = worktreeDir(projectSlug, sessionId)
@@ -75,9 +78,6 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   const defaultBranch = await getDefaultBranch(repo)
   console.log(`Creating worktree from ${defaultBranch}...`)
   await addWorktree(repo, wtDir, `yaac/${sessionId}`, `origin/${defaultBranch}`)
-
-  // Load project config (local override at ~/.yaac/projects/<slug>/ takes precedence)
-  const config: YaacConfig = await resolveProjectConfig(projectSlug) ?? {}
 
   // Build container env
   const env: string[] = []
@@ -160,8 +160,12 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
         ...Object.entries(config.cacheVolumes ?? {}).map(
           ([key, containerPath]) => `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`,
         ),
+        ...(config.nestedContainers
+          ? [`yaac-podmanstorage-${projectSlug}:/home/yaac/.local/share/containers:Z`]
+          : []),
       ],
       NetworkMode: networkMode,
+      ...(config.nestedContainers ? { SecurityOpt: ['label=disable'] } : {}),
     },
   })
 
@@ -170,6 +174,11 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   // Fix ownership of named cache volumes (created as root, but container runs as yaac)
   for (const containerPath of Object.values(config.cacheVolumes ?? {})) {
     execSync(`podman exec --user root ${containerName} chown yaac:yaac '${shellEscape(containerPath)}'`)
+  }
+
+  // Fix ownership of podman storage volume for nested containers
+  if (config.nestedContainers) {
+    execSync(`podman exec --user root ${containerName} chown yaac:yaac /home/yaac/.local/share/containers`)
   }
 
   // Inject CA cert if using proxy

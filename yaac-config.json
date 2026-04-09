@@ -1,4 +1,5 @@
 {
+  "nestedContainers": true,
   "cacheVolumes": {
     "pnpm-store": "/home/yaac/.pnpm-store"
   },

@@ -1,0 +1,25 @@
+ARG BASE_IMAGE=yaac-base
+FROM ${BASE_IMAGE}
+USER root
+
+RUN apt-get update && apt-get install -y --no-install-recommends uidmap libcap2-bin && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN echo "yaac:100000:65536" > /etc/subuid && \
+    echo "yaac:100000:65536" > /etc/subgid
+
+RUN chmod u-s /usr/bin/newuidmap /usr/bin/newgidmap && \
+    setcap cap_setuid+ep /usr/bin/newuidmap && \
+    setcap cap_setgid+ep /usr/bin/newgidmap
+
+RUN printf '[containers]\nnetns="host"\nuserns="host"\nipcns="host"\nutsns="host"\ncgroupns="host"\ncgroups="disabled"\nlog_driver="k8s-file"\n[engine]\ncgroup_manager="cgroupfs"\nevents_logger="file"\nruntime="crun"\n' \
+    > /etc/containers/containers.conf
+
+RUN mkdir -p /home/yaac/.config/containers && \
+    printf '[containers]\nvolumes = ["/proc:/proc"]\ndefault_sysctls = []\n' \
+    > /home/yaac/.config/containers/containers.conf && \
+    mkdir -p /home/yaac/.local/share/containers && \
+    chown yaac:yaac -R /home/yaac/.local/share/containers /home/yaac/.config
+
+USER yaac
+ENV _CONTAINERS_USERNS_CONFIGURED=""

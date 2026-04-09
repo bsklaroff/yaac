@@ -9,6 +9,7 @@ export interface YaacConfig {
   envSecretProxy?: Record<string, string[]>
   cacheVolumes?: Record<string, string>
   initCommands?: string[]
+  nestedContainers?: boolean
 }
 
 export interface SessionMeta {

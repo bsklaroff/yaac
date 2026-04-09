@@ -546,6 +546,62 @@ describe('yaac session create', () => {
     } catch { /* ignore */ }
   })
 
+  it('runs podman inside container when nestedContainers is enabled', async () => {
+    await requirePodman()
+
+    const tmpDir = await createTempDataDir()
+    tmpDirs.push(tmpDir)
+    const repoPath = path.join(tmpDir, 'nested-project')
+    await createTestRepo(repoPath, {
+      yaacConfig: { nestedContainers: true },
+    })
+    await projectAdd(repoPath)
+
+    // Build the nestable image and create container with nested-container flags
+    const imageName = await ensureImage('nested-project', TEST_IMAGE_PREFIX, true, true)
+    const sessionId = crypto.randomBytes(4).toString('hex')
+    const repo = repoDir('nested-project')
+    const wtDir = worktreeDir('nested-project', sessionId)
+    await fs.mkdir(worktreesDir('nested-project'), { recursive: true })
+    await addWorktree(repo, wtDir, `yaac/${sessionId}`)
+
+    const containerName = `yaac-nested-project-${sessionId}`
+    containersToCleanup.push(containerName)
+
+    const storageName = `yaac-test-podmanstorage-nested-project-${sessionId}`
+    const container = await podman.createContainer({
+      Image: imageName,
+      name: containerName,
+      Labels: { 'yaac.test': 'true' },
+      Env: ['TERM=xterm-256color'],
+      HostConfig: {
+        Binds: [
+          `${wtDir}:/workspace:Z`,
+          `${repo}/.git:/repo/.git:Z`,
+          `${storageName}:/home/yaac/.local/share/containers:Z`,
+        ],
+        SecurityOpt: ['label=disable'],
+      },
+    })
+    await container.start()
+
+    // Fix ownership of podman storage volume
+    await execFileAsync('podman', [
+      'exec', '--user', 'root', containerName, 'chown', 'yaac:yaac', '/home/yaac/.local/share/containers',
+    ])
+
+    // Run a nested container — this verifies the full podman-in-podman stack
+    const { stdout } = await execFileAsync('podman', [
+      'exec', containerName, 'podman', 'run', '--rm', 'docker.io/library/alpine', 'echo', 'nested-works',
+    ], { timeout: 120_000 })
+    expect(stdout.trim()).toBe('nested-works')
+
+    // Clean up the test volume
+    try {
+      await execFileAsync('podman', ['volume', 'rm', storageName])
+    } catch { /* ignore */ }
+  }, 180_000)
+
   it('errors gracefully on unknown project', async () => {
     process.exitCode = undefined
     const { sessionCreate } = await import('@/commands/session-create')
