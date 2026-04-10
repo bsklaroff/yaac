@@ -1,6 +1,6 @@
 FROM docker.io/ubuntu:24.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl git tmux locales neovim openssh-client podman sudo xz-utils && \
+    ca-certificates curl git less tmux locales neovim openssh-client podman sudo xz-utils && \
     sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen && update-locale LANG=en_US.UTF-8 && \
     curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \
