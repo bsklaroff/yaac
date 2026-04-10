@@ -130,15 +130,6 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
     'exec', containerName, 'git', 'config', '--global', 'user.email', 'test@test.com',
   ])
 
-  // Run init commands
-  if (config.initCommands?.length) {
-    for (const cmd of config.initCommands) {
-      await execFileAsync('podman', [
-        'exec', containerName, 'sh', '-c', cmd,
-      ], { timeout: 300_000 })
-    }
-  }
-
   // Start tmux — use the prompt if provided, otherwise just bash
   const tmuxCmd = options?.prompt
     ? `echo 'YAAC_PROMPT=${options.prompt.replace(/'/g, "'\\''")}' > /tmp/yaac-prompt && bash`
@@ -146,6 +137,15 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
   await execFileAsync('podman', [
     'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'claude', tmuxCmd,
   ])
+
+  // Run init commands synchronously (production runs them in a background tmux window)
+  if (config.initCommands?.length) {
+    for (const cmd of config.initCommands) {
+      await execFileAsync('podman', [
+        'exec', '-w', '/workspace', containerName, 'sh', '-c', cmd,
+      ], { timeout: 300_000 })
+    }
+  }
 
   // Configure tmux UX
   await execFileAsync('podman', [

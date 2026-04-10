@@ -204,17 +204,6 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   execSync(`podman exec ${containerName} git config --global user.name '${shellEscape(gitUser.name)}'`)
   execSync(`podman exec ${containerName} git config --global user.email '${shellEscape(gitUser.email)}'`)
 
-  // Run init commands (e.g., pnpm install against warm cache volumes)
-  if (config.initCommands?.length) {
-    console.log('Running init commands...')
-    for (const cmd of config.initCommands) {
-      execSync(`podman exec ${containerName} sh -c '${shellEscape(cmd)}'`, {
-        stdio: 'inherit',
-        timeout: 300_000,
-      })
-    }
-  }
-
   // Start Claude Code in a tmux session
   const claudeCmd = options.prompt
     ? `claude --dangerously-skip-permissions --session-id ${sessionId} -p ${shellEscape(options.prompt)}`
@@ -223,6 +212,16 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   execSync(`podman exec ${containerName} tmux -u new-session -d -s claude '${claudeCmd}'`, {
     stdio: 'pipe',
   })
+
+  // Run init commands in a background tmux window (parallel to Claude Code)
+  if (config.initCommands?.length) {
+    const initScript = config.initCommands
+      .map((cmd) => shellEscape(cmd))
+      .join(' && ')
+    execSync(`podman exec ${containerName} tmux new-window -t claude -n init 'cd /workspace && ${initScript}'`, {
+      stdio: 'pipe',
+    })
+  }
 
   // Configure tmux UX
   execSync(`podman exec ${containerName} tmux set-option -t claude mouse on`)
