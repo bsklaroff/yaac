@@ -10,7 +10,12 @@ export interface SessionListOptions {
   deleted?: boolean
 }
 
+/** Promise for the most recent background cleanup, exposed for testing. */
+export let pendingCleanup: Promise<void> | undefined
+
 export async function sessionList(projectSlug?: string, options: SessionListOptions = {}): Promise<void> {
+  pendingCleanup = undefined
+
   if (options.deleted) {
     await listDeletedSessions(projectSlug)
     return
@@ -32,8 +37,9 @@ export async function sessionList(projectSlug?: string, options: SessionListOpti
     return
   }
 
-  // Auto-cleanup exited and zombie containers
+  // Identify running vs stale containers (zombie or exited)
   const running = []
+  const stale: Array<{ name: string; slug: string; sessionId: string; zombie: boolean }> = []
   for (const c of containers) {
     const name = c.Names?.[0]?.replace(/^\//, '') ?? c.Id
     const sessionId = c.Labels?.['yaac.session-id'] ?? ''
@@ -43,52 +49,64 @@ export async function sessionList(projectSlug?: string, options: SessionListOpti
       if (isTmuxSessionAlive(name)) {
         running.push(c)
       } else {
-        await cleanupSession({ containerName: name, projectSlug: slug, sessionId })
+        stale.push({ name, slug, sessionId, zombie: true })
       }
       continue
     }
 
-    try {
-      const container = podman.getContainer(name)
-      await container.remove()
-      if (slug && sessionId) {
-        await removeWorktree(repoDir(slug), worktreeDir(slug, sessionId)).catch(() => {})
-      }
-    } catch {
-      // container already gone
-    }
+    stale.push({ name, slug, sessionId, zombie: false })
   }
 
   if (running.length === 0) {
     const suffix = projectSlug ? ` for project "${projectSlug}"` : ''
     console.log(`No active sessions${suffix}. Create one with: yaac session create <project>`)
-    return
+  } else {
+    // Resolve running/waiting status in parallel
+    const statusResults = await Promise.all(
+      running.map(async (c) => {
+        const sessionId = c.Labels?.['yaac.session-id'] ?? ''
+        const slug = c.Labels?.['yaac.project'] ?? ''
+        if (!sessionId || !slug) return 'running' as const
+        return getSessionClaudeStatus(slug, sessionId)
+      }),
+    )
+
+    console.log('')
+    console.log(`${'SESSION'.padEnd(10)} ${'PROJECT'.padEnd(20)} ${'STATUS'.padEnd(12)} CREATED`)
+    console.log(`${'-'.repeat(10)} ${'-'.repeat(20)} ${'-'.repeat(12)} ${'-'.repeat(20)}`)
+
+    for (let i = 0; i < running.length; i++) {
+      const c = running[i]
+      const sessionId = c.Labels?.['yaac.session-id'] ?? '?'
+      const shortId = sessionId.slice(0, 8)
+      const project = c.Labels?.['yaac.project'] ?? '?'
+      const status = statusResults[i]
+      const created = new Date(c.Created * 1000).toISOString().replace('T', ' ').slice(0, 19)
+      console.log(`${shortId.padEnd(10)} ${project.padEnd(20)} ${status.padEnd(12)} ${created}`)
+    }
+    console.log('')
   }
 
-  // Resolve running/waiting status in parallel
-  const statusResults = await Promise.all(
-    running.map(async (c) => {
-      const sessionId = c.Labels?.['yaac.session-id'] ?? ''
-      const slug = c.Labels?.['yaac.project'] ?? ''
-      if (!sessionId || !slug) return 'running' as const
-      return getSessionClaudeStatus(slug, sessionId)
-    }),
-  )
+  // Clean up stale containers in the background
+  if (stale.length === 0) return
 
-  console.log('')
-  console.log(`${'SESSION'.padEnd(10)} ${'PROJECT'.padEnd(20)} ${'STATUS'.padEnd(12)} CREATED`)
-  console.log(`${'-'.repeat(10)} ${'-'.repeat(20)} ${'-'.repeat(12)} ${'-'.repeat(20)}`)
-
-  for (let i = 0; i < running.length; i++) {
-    const c = running[i]
-    const sessionId = c.Labels?.['yaac.session-id'] ?? '?'
-    const shortId = sessionId.slice(0, 8)
-    const project = c.Labels?.['yaac.project'] ?? '?'
-    const status = statusResults[i]
-    const created = new Date(c.Created * 1000).toISOString().replace('T', ' ').slice(0, 19)
-    console.log(`${shortId.padEnd(10)} ${project.padEnd(20)} ${status.padEnd(12)} ${created}`)
-  }
-  console.log('')
+  pendingCleanup = (async () => {
+    for (const { name, slug, sessionId, zombie } of stale) {
+      if (zombie) {
+        await cleanupSession({ containerName: name, projectSlug: slug, sessionId })
+      } else {
+        try {
+          const container = podman.getContainer(name)
+          await container.remove()
+          if (slug && sessionId) {
+            await removeWorktree(repoDir(slug), worktreeDir(slug, sessionId)).catch(() => {})
+          }
+        } catch {
+          // container already gone
+        }
+      }
+    }
+  })()
 }
 
 async function listDeletedSessions(projectSlug?: string): Promise<void> {

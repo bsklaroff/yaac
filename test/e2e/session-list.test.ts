@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX } from '@test/helpers/setup'
 import { projectAdd } from '@/commands/project-add'
-import { sessionList } from '@/commands/session-list'
+import { sessionList, pendingCleanup } from '@/commands/session-list'
 import { podman } from '@/lib/podman'
 import { ensureImage } from '@/lib/image-builder'
 import { claudeDir, worktreeDir, worktreesDir, repoDir, getDataDir } from '@/lib/paths'
@@ -182,6 +182,7 @@ describe('yaac session list', () => {
     console.log = (msg: string) => logs.push(msg)
 
     await sessionList()
+    await pendingCleanup
 
     console.log = origLog
     const output = logs.join('\n')
@@ -214,6 +215,7 @@ describe('yaac session list', () => {
     console.log = (msg: string) => logs.push(msg)
 
     await sessionList()
+    await pendingCleanup
 
     console.log = origLog
     const output = logs.join('\n')
