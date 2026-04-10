@@ -1,6 +1,6 @@
 FROM docker.io/ubuntu:24.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl gcc git less libc6-dev tmux locales neovim openssh-client podman sudo xz-utils && \
+    ca-certificates curl gcc git less libc6-dev tmux locales openssh-client podman sudo xz-utils && \
     sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen && update-locale LANG=en_US.UTF-8 && \
     curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \
@@ -13,6 +13,11 @@ RUN ARCH="$(dpkg --print-architecture)" && if [ "$ARCH" = "amd64" ]; then ARCH=x
     curl -fsSL "https://nodejs.org/dist/v22.22.2/node-v22.22.2-linux-${ARCH}.tar.xz" | \
     tar -xJ -C /usr/local --strip-components=1
 RUN npm install -g pnpm@10.7.0
+RUN ARCH="$(dpkg --print-architecture)" && \
+    curl -fsSL "https://github.com/neovim/neovim/releases/download/v0.10.4/nvim-linux-${ARCH}.tar.gz" | \
+    tar -xz -C /usr/local --strip-components=1 && \
+    ln -sf /usr/local/bin/nvim /usr/local/bin/vi && \
+    ln -sf /usr/local/bin/nvim /usr/local/bin/vim
 RUN userdel -r ubuntu 2>/dev/null; useradd -m -s /bin/bash yaac && echo 'yaac ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 USER yaac
 ENV LANG=en_US.UTF-8
