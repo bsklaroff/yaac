@@ -4,9 +4,26 @@ import { claudeDir } from '@/lib/paths'
 
 const WAITING_STOP_REASONS = new Set(['end_turn', 'refusal', 'stop_sequence'])
 
+// Metadata entry types that Claude Code appends after a turn completes.
+// These don't represent conversation state and must be skipped when
+// determining whether Claude is running or waiting.
+const METADATA_TYPES = new Set([
+  'system',
+  'last-prompt',
+  'permission-mode',
+  'file-history-snapshot',
+  'agent-name',
+  'custom-title',
+  'queue-operation',
+])
+
 /**
- * Reads the last line of a JSONL session log and determines whether
+ * Reads the tail of a JSONL session log and determines whether
  * Claude Code is actively working or waiting for user input.
+ *
+ * Claude Code appends metadata entries (turn_duration, last-prompt, etc.)
+ * after an assistant turn completes, so we scan backwards past those to
+ * find the last semantically meaningful entry (assistant, user, or attachment).
  */
 export async function getClaudeStatus(jsonlPath: string): Promise<'running' | 'waiting'> {
   let handle: fs.FileHandle | undefined
@@ -15,23 +32,30 @@ export async function getClaudeStatus(jsonlPath: string): Promise<'running' | 'w
     const stat = await handle.stat()
     if (stat.size === 0) return 'waiting'
 
-    // Read the last chunk of the file to find the final line
+    // Read the last chunk of the file to find recent lines
     const chunkSize = Math.min(stat.size, 4096)
     const buf = Buffer.alloc(chunkSize)
     await handle.read(buf, 0, chunkSize, stat.size - chunkSize)
     const chunk = buf.toString('utf8')
 
-    // Find the last non-empty line
     const lines = chunk.split('\n').filter((l) => l.trim().length > 0)
     if (lines.length === 0) return 'waiting'
 
-    const lastLine = lines[lines.length - 1]
-    const entry = JSON.parse(lastLine) as { type: string; message?: { stop_reason?: string } }
+    // Walk backwards, skipping metadata entries, to find the last
+    // entry that reflects actual conversation state.
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const entry = JSON.parse(lines[i]) as { type: string; message?: { stop_reason?: string } }
 
-    if (entry.type !== 'assistant') return 'running'
+      if (METADATA_TYPES.has(entry.type)) continue
 
-    const stopReason = entry.message?.stop_reason
-    return stopReason && WAITING_STOP_REASONS.has(stopReason) ? 'waiting' : 'running'
+      if (entry.type !== 'assistant') return 'running'
+
+      const stopReason = entry.message?.stop_reason
+      return stopReason && WAITING_STOP_REASONS.has(stopReason) ? 'waiting' : 'running'
+    }
+
+    // All lines in the chunk were metadata — session just started
+    return 'waiting'
   } catch {
     // File missing or parse error — assume waiting (session just booted, Claude hasn't started yet)
     return 'waiting'
