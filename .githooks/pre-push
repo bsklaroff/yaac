@@ -10,10 +10,6 @@ while read local_ref local_sha remote_ref remote_sha
 do
     if [[ "$remote_ref" =~ refs/heads/$protected_branch ]]
     then
-        # Unset GIT_DIR/GIT_WORK_TREE so child git processes (e.g. in tests)
-        # don't accidentally operate on the real repo instead of temp dirs.
-        unset GIT_DIR GIT_WORK_TREE
-
         echo "Pre-push hook: Running lint check before pushing to $protected_branch..."
 
         # Run the lint command
