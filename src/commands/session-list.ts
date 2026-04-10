@@ -1,20 +1,15 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { podman } from '@/lib/podman'
-import { claudeDir, getDataDir, getProjectsDir, repoDir, worktreeDir } from '@/lib/paths'
-import { removeWorktree } from '@/lib/git'
+import { claudeDir, getDataDir, getProjectsDir } from '@/lib/paths'
 import { getSessionClaudeStatus } from '@/lib/claude-status'
-import { isTmuxSessionAlive, cleanupSession } from '@/lib/session-cleanup'
+import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session-cleanup'
 
 export interface SessionListOptions {
   deleted?: boolean
 }
 
-/** Promise for the most recent background cleanup, exposed for testing. */
-export let pendingCleanup: Promise<void> | undefined
-
 export async function sessionList(projectSlug?: string, options: SessionListOptions = {}): Promise<void> {
-  pendingCleanup = undefined
 
   if (options.deleted) {
     await listDeletedSessions(projectSlug)
@@ -87,26 +82,13 @@ export async function sessionList(projectSlug?: string, options: SessionListOpti
     console.log('')
   }
 
-  // Clean up stale containers in the background
+  // Clean up stale containers in detached background processes
   if (stale.length === 0) return
 
-  pendingCleanup = (async () => {
-    for (const { name, slug, sessionId, zombie } of stale) {
-      if (zombie) {
-        await cleanupSession({ containerName: name, projectSlug: slug, sessionId })
-      } else {
-        try {
-          const container = podman.getContainer(name)
-          await container.remove()
-          if (slug && sessionId) {
-            await removeWorktree(repoDir(slug), worktreeDir(slug, sessionId)).catch(() => {})
-          }
-        } catch {
-          // container already gone
-        }
-      }
-    }
-  })()
+  console.log(`Cleaning up ${stale.length} stale session(s): ${stale.map((s) => s.sessionId.slice(0, 8)).join(', ')}`)
+  for (const { name, slug, sessionId } of stale) {
+    cleanupSessionDetached({ containerName: name, projectSlug: slug, sessionId })
+  }
 }
 
 async function listDeletedSessions(projectSlug?: string): Promise<void> {

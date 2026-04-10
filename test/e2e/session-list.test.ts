@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX } from '@test/helpers/setup'
 import { projectAdd } from '@/commands/project-add'
-import { sessionList, pendingCleanup } from '@/commands/session-list'
+import { sessionList } from '@/commands/session-list'
 import { podman } from '@/lib/podman'
 import { ensureImage } from '@/lib/image-builder'
 import { claudeDir, worktreeDir, worktreesDir, repoDir, getDataDir } from '@/lib/paths'
@@ -170,7 +170,7 @@ describe('yaac session list', () => {
     await createTestRepo(repoPath)
     await projectAdd(repoPath)
 
-    const { containerName } = await createMinimalContainer('stopped-proj')
+    const { containerName, sessionId } = await createMinimalContainer('stopped-proj')
     // Don't add to containersToCleanup — session-list should auto-remove it
 
     // Stop the container
@@ -182,14 +182,23 @@ describe('yaac session list', () => {
     console.log = (msg: string) => logs.push(msg)
 
     await sessionList()
-    await pendingCleanup
 
     console.log = origLog
     const output = logs.join('\n')
     expect(output).not.toContain('stopped-proj')
     expect(output).not.toContain('exited')
     expect(output).toContain('No active sessions')
-  })
+    expect(output).toContain('Cleaning up')
+
+    // Wait for detached cleanup process to finish
+    await vi.waitFor(async () => {
+      const remaining = await podman.listContainers({
+        all: true,
+        filters: { label: [`yaac.session-id=${sessionId}`] },
+      })
+      expect(remaining).toHaveLength(0)
+    }, { timeout: 15_000, interval: 500 })
+  }, 30_000)
 
   it('auto-cleans zombie containers (running but tmux dead)', async () => {
     await requirePodman()
@@ -215,7 +224,6 @@ describe('yaac session list', () => {
     console.log = (msg: string) => logs.push(msg)
 
     await sessionList()
-    await pendingCleanup
 
     console.log = origLog
     const output = logs.join('\n')
@@ -223,14 +231,17 @@ describe('yaac session list', () => {
     // Should not appear as an active session
     expect(output).not.toContain('zombie-proj')
     // Should show cleanup message
-    expect(output).toContain('cleaned up')
-    // Container should be gone
-    const remaining = await podman.listContainers({
-      all: true,
-      filters: { label: [`yaac.session-id=${sessionId}`] },
-    })
-    expect(remaining).toHaveLength(0)
-  })
+    expect(output).toContain('Cleaning up')
+
+    // Wait for detached cleanup process to finish
+    await vi.waitFor(async () => {
+      const remaining = await podman.listContainers({
+        all: true,
+        filters: { label: [`yaac.session-id=${sessionId}`] },
+      })
+      expect(remaining).toHaveLength(0)
+    }, { timeout: 15_000, interval: 500 })
+  }, 30_000)
 
   it('lists deleted sessions from JSONL files', async () => {
     const tmpDir = await createTempDataDir()

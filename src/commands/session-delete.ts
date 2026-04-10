@@ -1,11 +1,12 @@
 import { resolveContainerAnyState } from '@/lib/container-resolve'
-import { cleanupSession } from '@/lib/session-cleanup'
+import { cleanupSessionDetached } from '@/lib/session-cleanup'
 
 export async function sessionDelete(idOrName: string): Promise<void> {
   const resolved = await resolveContainerAnyState(idOrName)
   if (!resolved) return
 
-  await cleanupSession({
+  console.log(`Session ${resolved.sessionId} scheduled for cleanup.`)
+  cleanupSessionDetached({
     containerName: resolved.name,
     projectSlug: resolved.projectSlug,
     sessionId: resolved.sessionId,

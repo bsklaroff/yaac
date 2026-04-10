@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -73,12 +73,14 @@ describe('yaac session delete', { timeout: 120_000 }, () => {
 
     await sessionDelete(sessionId)
 
-    // Container should be gone
-    const containers = await podman.listContainers({
-      all: true,
-      filters: { label: [`yaac.session-id=${sessionId}`] },
-    })
-    expect(containers).toHaveLength(0)
+    // Wait for detached cleanup process to finish
+    await vi.waitFor(async () => {
+      const containers = await podman.listContainers({
+        all: true,
+        filters: { label: [`yaac.session-id=${sessionId}`] },
+      })
+      expect(containers).toHaveLength(0)
+    }, { timeout: 15_000, interval: 500 })
 
     // Worktree should be gone
     const wtDir = worktreeDir('del-running', sessionId)
@@ -99,12 +101,14 @@ describe('yaac session delete', { timeout: 120_000 }, () => {
 
     await sessionDelete(sessionId)
 
-    // Container should be gone
-    const containers = await podman.listContainers({
-      all: true,
-      filters: { label: [`yaac.session-id=${sessionId}`] },
-    })
-    expect(containers).toHaveLength(0)
+    // Wait for detached cleanup process to finish
+    await vi.waitFor(async () => {
+      const containers = await podman.listContainers({
+        all: true,
+        filters: { label: [`yaac.session-id=${sessionId}`] },
+      })
+      expect(containers).toHaveLength(0)
+    }, { timeout: 15_000, interval: 500 })
   })
 
   it('errors on unknown session ID', async () => {

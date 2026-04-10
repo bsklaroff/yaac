@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process'
 import { resolveContainerAnyState } from '@/lib/container-resolve'
-import { isTmuxSessionAlive, cleanupSession } from '@/lib/session-cleanup'
+import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session-cleanup'
 
 export async function sessionAttach(containerId: string): Promise<void> {
   const resolved = await resolveContainerAnyState(containerId)
@@ -21,6 +21,6 @@ export async function sessionAttach(containerId: string): Promise<void> {
   // Auto-cleanup if Claude Code exited (tmux session died)
   if (!isTmuxSessionAlive(containerName)) {
     console.log('Claude Code exited. Cleaning up session...')
-    await cleanupSession({ containerName, projectSlug, sessionId })
+    cleanupSessionDetached({ containerName, projectSlug, sessionId })
   }
 }

@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process'
+import { execSync, spawn } from 'node:child_process'
 import { podman } from '@/lib/podman'
 import { removeWorktree } from '@/lib/git'
 import { repoDir, worktreeDir } from '@/lib/paths'
@@ -41,4 +41,32 @@ export async function cleanupSession(params: {
   }
 
   console.log(`Session ${sessionId} cleaned up.`)
+}
+
+/**
+ * Spawn a detached background process to clean up a session so the calling
+ * process can exit immediately without waiting for container stop/remove.
+ */
+export function cleanupSessionDetached(params: {
+  containerName: string
+  projectSlug: string
+  sessionId: string
+}): void {
+  const { containerName, projectSlug, sessionId } = params
+  const wtDir = worktreeDir(projectSlug, sessionId)
+  const rDir = repoDir(projectSlug)
+
+  // Build a shell script that stops + removes the container, then removes the worktree.
+  // Each step ignores errors (the resource may already be gone).
+  const script = [
+    `podman stop -t 5 ${containerName} 2>/dev/null || true`,
+    `podman rm ${containerName} 2>/dev/null || true`,
+    `git -C '${rDir}' worktree remove '${wtDir}' 2>/dev/null || true`,
+  ].join('; ')
+
+  const child = spawn('sh', ['-c', script], {
+    detached: true,
+    stdio: 'ignore',
+  })
+  child.unref()
 }
