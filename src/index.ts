@@ -1,4 +1,4 @@
-import { Command } from 'commander'
+import { Command, type Help } from 'commander'
 import { projectAdd } from '@/commands/project-add'
 import { projectList } from '@/commands/project-list'
 import { sessionCreate } from '@/commands/session-create'
@@ -8,6 +8,40 @@ import { sessionShell } from '@/commands/session-shell'
 import { sessionAttach } from '@/commands/session-attach'
 import { sessionStream } from '@/commands/session-stream'
 
+/**
+ * Show subcommand options nested under each subcommand in help output.
+ */
+function nestedHelp(cmd: Command, helper: Help): string {
+  const termWidth = helper.padWidth(cmd, helper)
+  const output: string[] = []
+
+  output.push(`Usage: ${helper.commandUsage(cmd)}`, '')
+
+  const desc = helper.commandDescription(cmd)
+  if (desc) output.push(desc, '')
+
+  const opts = helper.visibleOptions(cmd)
+  if (opts.length) {
+    output.push('Options:')
+    for (const opt of opts)
+      output.push(helper.formatItem(helper.optionTerm(opt), termWidth, helper.optionDescription(opt), helper))
+    output.push('')
+  }
+
+  const cmds = helper.visibleCommands(cmd)
+  if (cmds.length) {
+    output.push('Commands:')
+    for (const sub of cmds) {
+      output.push(helper.formatItem(helper.subcommandTerm(sub), termWidth, helper.subcommandDescription(sub), helper))
+      for (const opt of sub.options.filter((o) => !o.hidden))
+        output.push(helper.formatItem('  ' + helper.optionTerm(opt), termWidth, helper.optionDescription(opt), helper))
+    }
+    output.push('')
+  }
+
+  return output.join('\n')
+}
+
 const program = new Command()
   .name('yaac')
   .description('Agent sandbox manager')
@@ -16,6 +50,7 @@ const program = new Command()
 const project = program
   .command('project')
   .description('Manage projects')
+  .configureHelp({ formatHelp: nestedHelp })
 
 project
   .command('list')
@@ -31,6 +66,7 @@ project
 const session = program
   .command('session')
   .description('Manage sessions')
+  .configureHelp({ formatHelp: nestedHelp })
 
 session
   .command('create')

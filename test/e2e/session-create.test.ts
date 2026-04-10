@@ -549,6 +549,13 @@ describe('yaac session create', () => {
   it('runs podman inside container when nestedContainers is enabled', async () => {
     await requirePodman()
 
+    // 3-level user namespace nesting is not supported by rootless podman.
+    // When this test runs inside a container, skip it.
+    try {
+      await fs.access('/run/.containerenv')
+      return // already inside a container — skip
+    } catch { /* not in a container, proceed */ }
+
     const tmpDir = await createTempDataDir()
     tmpDirs.push(tmpDir)
     const repoPath = path.join(tmpDir, 'nested-project')
@@ -580,7 +587,8 @@ describe('yaac session create', () => {
           `${repo}/.git:/repo/.git:Z`,
           `${storageName}:/home/yaac/.local/share/containers:Z`,
         ],
-        SecurityOpt: ['label=disable'],
+        SecurityOpt: ['label=disable', 'unmask=/proc/sys'],
+        Devices: [{ PathOnHost: '/dev/net/tun', PathInContainer: '/dev/net/tun', CgroupPermissions: 'rwm' }],
       },
     })
     await container.start()
@@ -597,6 +605,95 @@ describe('yaac session create', () => {
     expect(stdout.trim()).toBe('nested-works')
 
     // Clean up the test volume
+    try {
+      await execFileAsync('podman', ['volume', 'rm', storageName])
+    } catch { /* ignore */ }
+  }, 180_000)
+
+  it('creates internal network with internet isolation when nestedContainers is enabled', async () => {
+    await requirePodman()
+
+    // 3-level user namespace nesting is not supported by rootless podman.
+    try {
+      await fs.access('/run/.containerenv')
+      return // already inside a container — skip
+    } catch { /* not in a container, proceed */ }
+
+    const tmpDir = await createTempDataDir()
+    tmpDirs.push(tmpDir)
+    const repoPath = path.join(tmpDir, 'nested-net-project')
+    await createTestRepo(repoPath, {
+      yaacConfig: { nestedContainers: true },
+    })
+    await projectAdd(repoPath)
+
+    const imageName = await ensureImage('nested-net-project', TEST_IMAGE_PREFIX, true, true)
+    const sessionId = crypto.randomBytes(4).toString('hex')
+    const repo = repoDir('nested-net-project')
+    const wtDir = worktreeDir('nested-net-project', sessionId)
+    await fs.mkdir(worktreesDir('nested-net-project'), { recursive: true })
+    await addWorktree(repo, wtDir, `yaac/${sessionId}`)
+
+    const containerName = `yaac-nested-net-${sessionId}`
+    containersToCleanup.push(containerName)
+
+    const storageName = `yaac-test-podmanstorage-nested-net-${sessionId}`
+    const container = await podman.createContainer({
+      Image: imageName,
+      name: containerName,
+      Labels: { 'yaac.test': 'true' },
+      Env: ['TERM=xterm-256color'],
+      HostConfig: {
+        Binds: [
+          `${wtDir}:/workspace:Z`,
+          `${repo}/.git:/repo/.git:Z`,
+          `${storageName}:/home/yaac/.local/share/containers:Z`,
+        ],
+        SecurityOpt: ['label=disable', 'unmask=/proc/sys'],
+        Devices: [{ PathOnHost: '/dev/net/tun', PathInContainer: '/dev/net/tun', CgroupPermissions: 'rwm' }],
+      },
+    })
+    await container.start()
+
+    await execFileAsync('podman', [
+      'exec', '--user', 'root', containerName, 'chown', 'yaac:yaac', '/home/yaac/.local/share/containers',
+    ])
+    await execFileAsync('podman', [
+      'exec', '-d', containerName, 'podman', 'system', 'service', '--time=0',
+      'unix:///run/user/1000/podman/podman.sock',
+    ])
+    // Wait for the podman service socket
+    for (let i = 0; i < 20; i++) {
+      try {
+        await execFileAsync('podman', ['exec', containerName, 'podman', 'info', '--format', '{{.Host.Os}}'])
+        break
+      } catch {
+        await new Promise((r) => setTimeout(r, 500))
+      }
+    }
+
+    // Create an internal network inside the nested container
+    await execFileAsync('podman', [
+      'exec', containerName, 'podman', 'network', 'create', '--internal', '--disable-dns', 'test-internal',
+    ])
+
+    // Verify containers on the internal network cannot reach the internet
+    const { stdout: blocked } = await execFileAsync('podman', [
+      'exec', containerName, 'podman', 'run', '--rm', '--network=test-internal',
+      'docker.io/library/alpine', 'sh', '-c',
+      'wget -qO- --timeout=3 http://1.1.1.1 2>&1 || echo internet-blocked',
+    ], { timeout: 30_000 })
+    expect(blocked.trim()).toContain('internet-blocked')
+
+    // Verify containers on the default bridge CAN reach the internet
+    const { stdout: works } = await execFileAsync('podman', [
+      'exec', containerName, 'podman', 'run', '--rm', '--network=podman',
+      'docker.io/library/alpine', 'sh', '-c',
+      'wget -qO- --timeout=10 http://1.1.1.1 >/dev/null 2>&1 && echo internet-works || echo internet-broken',
+    ], { timeout: 30_000 })
+    expect(works.trim()).toContain('internet-works')
+
+    // Clean up
     try {
       await execFileAsync('podman', ['volume', 'rm', storageName])
     } catch { /* ignore */ }

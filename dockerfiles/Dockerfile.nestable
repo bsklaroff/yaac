@@ -2,7 +2,7 @@ ARG BASE_IMAGE=yaac-base
 FROM ${BASE_IMAGE}
 USER root
 
-RUN apt-get update && apt-get install -y --no-install-recommends uidmap libcap2-bin && \
+RUN apt-get update && apt-get install -y --no-install-recommends uidmap libcap2-bin slirp4netns && \
     rm -rf /var/lib/apt/lists/*
 
 RUN echo "yaac:100000:65536" > /etc/subuid && \
@@ -12,7 +12,7 @@ RUN chmod u-s /usr/bin/newuidmap /usr/bin/newgidmap && \
     setcap cap_setuid+ep /usr/bin/newuidmap && \
     setcap cap_setgid+ep /usr/bin/newgidmap
 
-RUN printf '[containers]\nnetns="host"\nuserns="host"\nipcns="host"\nutsns="host"\ncgroupns="host"\ncgroups="disabled"\nlog_driver="k8s-file"\n[engine]\ncgroup_manager="cgroupfs"\nevents_logger="file"\nruntime="crun"\n' \
+RUN printf '[containers]\nnetns="host"\nuserns="keep-id"\nipcns="host"\nutsns="host"\ncgroupns="host"\ncgroups="disabled"\nlog_driver="k8s-file"\n[engine]\ncgroup_manager="cgroupfs"\nevents_logger="file"\nruntime="crun"\n' \
     > /etc/containers/containers.conf
 
 RUN mkdir -p /home/yaac/.config/containers && \
@@ -20,6 +20,8 @@ RUN mkdir -p /home/yaac/.config/containers && \
     > /home/yaac/.config/containers/containers.conf && \
     mkdir -p /home/yaac/.local/share/containers && \
     chown yaac:yaac -R /home/yaac/.local/share/containers /home/yaac/.config
+
+RUN mkdir -p /run/user/1000/podman && chown yaac:yaac -R /run/user/1000
 
 USER yaac
 ENV _CONTAINERS_USERNS_CONFIGURED=""

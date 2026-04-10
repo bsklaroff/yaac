@@ -168,7 +168,10 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
           : []),
       ],
       NetworkMode: networkMode,
-      ...(config.nestedContainers ? { SecurityOpt: ['label=disable'] } : {}),
+      ...(config.nestedContainers ? {
+        SecurityOpt: ['label=disable', 'unmask=/proc/sys'],
+        Devices: [{ PathOnHost: '/dev/net/tun', PathInContainer: '/dev/net/tun', CgroupPermissions: 'rwm' }],
+      } : {}),
     },
   })
 
@@ -179,9 +182,10 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     execSync(`podman exec --user root ${containerName} chown yaac:yaac '${shellEscape(containerPath)}'`)
   }
 
-  // Fix ownership of podman storage volume for nested containers
+  // Fix ownership of podman storage volume and start API socket for nested containers
   if (config.nestedContainers) {
     execSync(`podman exec --user root ${containerName} chown yaac:yaac /home/yaac/.local/share/containers`)
+    execSync(`podman exec -d ${containerName} podman system service --time=0 unix:///run/user/1000/podman/podman.sock`)
   }
 
   // Inject CA cert if using proxy

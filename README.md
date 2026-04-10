@@ -36,6 +36,33 @@ pnpm build
 npm install -g .
 ```
 
+## Usage
+
+```
+yaac [command]
+
+Commands:
+  project         Manage projects
+  session         Manage sessions
+
+yaac project <command>
+  list              List all projects
+  add <remote-url>  Add a project from a git remote
+
+yaac session <command>
+  create [options] <project>  Create a new session for a project
+    -p, --prompt <prompt>     Initial prompt to pass to Claude Code
+  list [options] [project]    List active sessions
+    -d, --deleted             List deleted sessions from Claude Code history
+  delete <session-id>         Delete a session and clean up its resources
+  shell <container-id>        Open a bash shell in a session container
+  attach <container-id>       Attach to the Claude Code session
+  stream [project]            Stream through waiting sessions, attaching to
+                              each in turn
+```
+
+Detach from a tmux session with `Ctrl-B D`.
+
 ## Project configuration
 
 Add a `yaac-config.json` to your repo root:
@@ -88,27 +115,13 @@ Set `"nestedContainers": true` in `yaac-config.json` to let sessions run `podman
 
 No `--privileged` flag or extra capabilities are needed. At runtime, yaac adds `--security-opt label=disable` and mounts a per-project named volume for container storage so pulled images persist across sessions.
 
+On macOS, the default podman machine memory (2 GB) is not enough for nested container builds. Increase it to at least 4 GB (8 GB recommended):
+
+```sh
+podman machine stop
+podman machine set --memory 8192
+podman machine start
+```
+
 If your project uses a custom `Dockerfile.yaac`, the nestable layer is skipped. Copy the relevant setup from `dockerfiles/Dockerfile.nestable` into your custom Dockerfile instead.
 
-## Usage
-
-```
-yaac [command]
-
-Commands:
-  project         Manage projects
-  session         Manage sessions
-
-yaac project <command>
-  list              List all projects
-  add <remote-url>  Add a project from a git remote
-
-yaac session <command>
-  create [options] <project>  Create a new session for a project
-    -p, --prompt <prompt>     Initial prompt to pass to Claude Code
-  list [project]              List active sessions
-  shell <container-id>        Open a bash shell in a session container
-  attach <container-id>       Attach to the Claude Code session
-```
-
-Detach from a tmux session with `Ctrl-B D`.
