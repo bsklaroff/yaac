@@ -25,15 +25,28 @@ export async function getWaitingSessions(
 
   const containers = await podman.listContainers({ all: true, filters })
 
-  const running = containers.filter((c) => c.State === 'running')
-
   const results: WaitingSession[] = []
-  for (const c of running) {
+  const stale: Array<{ name: string; slug: string; sessionId: string }> = []
+
+  for (const c of containers) {
     const sessionId = c.Labels?.['yaac.session-id'] ?? ''
     const slug = c.Labels?.['yaac.project'] ?? ''
     const name = c.Names?.[0]?.replace(/^\//, '') ?? c.Id
 
     if (!sessionId || !slug) continue
+
+    // Non-running containers are stale
+    if (c.State !== 'running') {
+      stale.push({ name, slug, sessionId })
+      continue
+    }
+
+    // Running containers with a dead tmux session are zombies
+    if (!isTmuxSessionAlive(name)) {
+      stale.push({ name, slug, sessionId })
+      continue
+    }
+
     if (exclude?.has(sessionId)) continue
 
     const status = await getSessionClaudeStatus(slug, sessionId)
@@ -45,6 +58,14 @@ export async function getWaitingSessions(
       projectSlug: slug,
       created: c.Created,
     })
+  }
+
+  // Clean up stale sessions in background
+  if (stale.length > 0) {
+    console.log(`Cleaning up ${stale.length} stale session(s): ${stale.map((s) => s.sessionId.slice(0, 8)).join(', ')}`)
+    for (const { name, slug, sessionId } of stale) {
+      cleanupSessionDetached({ containerName: name, projectSlug: slug, sessionId })
+    }
   }
 
   results.sort((a, b) => a.created - b.created)
