@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX } from '@test/helpers/setup'
 import { projectAdd } from '@/commands/project-add'
 import { sessionList } from '@/commands/session-list'
@@ -10,7 +12,9 @@ import { ensureImage } from '@/lib/image-builder'
 import { claudeDir, worktreeDir, worktreesDir, repoDir, getDataDir } from '@/lib/paths'
 import { addWorktree, getDefaultBranch } from '@/lib/git'
 
-async function createMinimalContainer(projectSlug: string): Promise<string> {
+const execFileAsync = promisify(execFile)
+
+async function createMinimalContainer(projectSlug: string): Promise<{ containerName: string; sessionId: string }> {
   const imageName = await ensureImage(projectSlug, TEST_IMAGE_PREFIX, true)
   const sessionId = crypto.randomBytes(4).toString('hex')
   const repo = repoDir(projectSlug)
@@ -38,7 +42,13 @@ async function createMinimalContainer(projectSlug: string): Promise<string> {
     },
   })
   await container.start()
-  return containerName
+
+  // Start tmux session so isTmuxSessionAlive() returns true
+  await execFileAsync('podman', [
+    'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'claude', 'bash',
+  ])
+
+  return { containerName, sessionId }
 }
 
 describe('yaac session list', () => {
@@ -92,8 +102,8 @@ describe('yaac session list', () => {
       await projectAdd(repoA)
       await projectAdd(repoB)
 
-      containerA = await createMinimalContainer('proj-a')
-      containerB = await createMinimalContainer('proj-b')
+      ;({ containerName: containerA } = await createMinimalContainer('proj-a'))
+      ;({ containerName: containerB } = await createMinimalContainer('proj-b'))
     })
 
     afterAll(async () => {
@@ -160,7 +170,7 @@ describe('yaac session list', () => {
     await createTestRepo(repoPath)
     await projectAdd(repoPath)
 
-    const containerName = await createMinimalContainer('stopped-proj')
+    const { containerName } = await createMinimalContainer('stopped-proj')
     // Don't add to containersToCleanup — session-list should auto-remove it
 
     // Stop the container
@@ -178,6 +188,46 @@ describe('yaac session list', () => {
     expect(output).not.toContain('stopped-proj')
     expect(output).not.toContain('exited')
     expect(output).toContain('No active sessions')
+  })
+
+  it('auto-cleans zombie containers (running but tmux dead)', async () => {
+    await requirePodman()
+
+    const tmpDir = await createTempDataDir()
+    tmpDirs.push(tmpDir)
+
+    const repoPath = path.join(tmpDir, 'zombie-proj')
+    await createTestRepo(repoPath)
+    await projectAdd(repoPath)
+
+    const { containerName, sessionId } = await createMinimalContainer('zombie-proj')
+    // Don't add to containersToCleanup — session-list should auto-remove it
+
+    // Kill the tmux session to simulate a zombie container
+    // The container stays "running" but tmux has-session will fail
+    await execFileAsync('podman', [
+      'exec', containerName, 'tmux', 'kill-session', '-t', 'claude',
+    ])
+
+    const logs: string[] = []
+    const origLog = console.log
+    console.log = (msg: string) => logs.push(msg)
+
+    await sessionList()
+
+    console.log = origLog
+    const output = logs.join('\n')
+
+    // Should not appear as an active session
+    expect(output).not.toContain('zombie-proj')
+    // Should show cleanup message
+    expect(output).toContain('cleaned up')
+    // Container should be gone
+    const remaining = await podman.listContainers({
+      all: true,
+      filters: { label: [`yaac.session-id=${sessionId}`] },
+    })
+    expect(remaining).toHaveLength(0)
   })
 
   it('lists deleted sessions from JSONL files', async () => {

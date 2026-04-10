@@ -4,6 +4,7 @@ import { podman } from '@/lib/podman'
 import { claudeDir, getDataDir, getProjectsDir, repoDir, worktreeDir } from '@/lib/paths'
 import { removeWorktree } from '@/lib/git'
 import { getSessionClaudeStatus } from '@/lib/claude-status'
+import { isTmuxSessionAlive, cleanupSession } from '@/lib/session-cleanup'
 
 export interface SessionListOptions {
   deleted?: boolean
@@ -31,16 +32,22 @@ export async function sessionList(projectSlug?: string, options: SessionListOpti
     return
   }
 
-  // Auto-cleanup exited containers
+  // Auto-cleanup exited and zombie containers
   const running = []
   for (const c of containers) {
-    if (c.State === 'running') {
-      running.push(c)
-      continue
-    }
     const name = c.Names?.[0]?.replace(/^\//, '') ?? c.Id
     const sessionId = c.Labels?.['yaac.session-id'] ?? ''
     const slug = c.Labels?.['yaac.project'] ?? ''
+
+    if (c.State === 'running') {
+      if (isTmuxSessionAlive(name)) {
+        running.push(c)
+      } else {
+        await cleanupSession({ containerName: name, projectSlug: slug, sessionId })
+      }
+      continue
+    }
+
     try {
       const container = podman.getContainer(name)
       await container.remove()
