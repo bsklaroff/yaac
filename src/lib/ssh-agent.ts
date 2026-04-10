@@ -118,8 +118,9 @@ export class SshAgentClient {
     for (let i = 0; i < 20; i++) {
       try {
         const { stdout } = await execFileAsync('podman', [
-          'exec', this.config.containerName, 'ssh-add', '-l',
-        ], { env: { ...process.env, SSH_AUTH_SOCK: '/ssh-agent/socket' } })
+          'exec', '-e', 'SSH_AUTH_SOCK=/ssh-agent/socket',
+          this.config.containerName, 'ssh-add', '-l',
+        ])
         console.log(`SSH agent ready: ${stdout.trim()}`)
         return
       } catch {
