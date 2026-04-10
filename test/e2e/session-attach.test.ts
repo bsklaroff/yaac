@@ -108,7 +108,7 @@ describe('yaac session attach', () => {
       const { stdout } = await execFileAsync('podman', [
         'exec', containerName, 'tmux', 'list-sessions',
       ])
-      expect(stdout).toContain('claude')
+      expect(stdout).toContain('yaac')
     })
 
     it('resolves container by prefix match', async () => {
