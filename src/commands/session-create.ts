@@ -205,6 +205,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   execSync(`podman exec ${containerName} git config --global user.email '${shellEscape(gitUser.email)}'`)
 
   // Start Claude Code in a tmux session
+  execSync(`podman exec ${containerName} sh -c "echo 'set-option -g history-limit 200000' > ~/.tmux.conf"`)
   const claudeCmd = options.prompt
     ? `claude --dangerously-skip-permissions --session-id ${sessionId} -p ${shellEscape(options.prompt)}`
     : `claude --dangerously-skip-permissions --session-id ${sessionId}`
