@@ -140,10 +140,9 @@ export async function ensureImage(projectSlug: string, imagePrefix?: string, req
   }
 
   // Layer 1.5 (optional): <prefix>-base-nestable (podman-in-podman support)
-  // Skipped when Dockerfile.yaac overrides the base — the custom Dockerfile is
-  // responsible for including nested-container support itself.
+  // Applied on top of whatever base was selected (default or Dockerfile.yaac).
   let effectiveBase = baseName
-  if (nestedContainers && !yaacDockerfile) {
+  if (nestedContainers) {
     const nestName = `${prefix}-base-nestable`
     const nestDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
     const nestContentHash = await fileHash(nestDockerfile)

@@ -132,7 +132,7 @@ describe('ensureImage layer stacking', () => {
     expect(result).toBe('yaac-user-myproject')
   })
 
-  it('skips nestable layer when Dockerfile.yaac overrides the base', async () => {
+  it('builds nestable layer on top of Dockerfile.yaac when nestedContainers is true', async () => {
     const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
     const overrideDir = path.join(dataDir, 'projects', 'myproject', 'config-override')
     await fs.mkdir(repoPath, { recursive: true })
@@ -144,8 +144,9 @@ describe('ensureImage layer stacking', () => {
 
     expect(operations).toEqual([
       'build yaac-base',
-      'tag yaac-base → yaac-current',
-      'tag yaac-base → yaac-user-myproject',
+      'build yaac-base-nestable',
+      'tag yaac-base-nestable → yaac-current',
+      'tag yaac-base-nestable → yaac-user-myproject',
     ])
     expect(result).toBe('yaac-user-myproject')
   })
