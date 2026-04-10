@@ -33,8 +33,8 @@ export async function getClaudeStatus(jsonlPath: string): Promise<'running' | 'w
     const stopReason = entry.message?.stop_reason
     return stopReason && WAITING_STOP_REASONS.has(stopReason) ? 'waiting' : 'running'
   } catch {
-    // File missing or parse error — assume running (safer default)
-    return 'running'
+    // File missing or parse error — assume waiting (session just booted, Claude hasn't started yet)
+    return 'waiting'
   } finally {
     await handle?.close()
   }

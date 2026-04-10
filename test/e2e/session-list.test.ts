@@ -120,7 +120,7 @@ describe('yaac session list', () => {
       console.log = origLog
       const output = logs.join('\n')
       expect(output).toContain('proj-a')
-      expect(output).toContain('running')
+      expect(output).toContain('waiting')
     })
 
     it('filters by project when argument is provided', async () => {

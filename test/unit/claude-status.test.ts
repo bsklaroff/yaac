@@ -68,7 +68,7 @@ describe('getClaudeStatus', () => {
 
   it('returns waiting when file does not exist', async () => {
     const missing = path.join(tmpDir, 'nonexistent.jsonl')
-    expect(await getClaudeStatus(missing)).toBe('running')
+    expect(await getClaudeStatus(missing)).toBe('waiting')
   })
 
   it('returns waiting for empty file', async () => {
