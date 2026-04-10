@@ -43,7 +43,7 @@ async function createContainerWithTmux(projectSlug: string): Promise<{ container
 
   // Start tmux session with bash (not claude, since claude isn't installed in test image)
   await execFileAsync('podman', [
-    'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'claude', 'bash',
+    'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'yaac', '-n', 'claude', 'bash',
   ])
 
   return { containerName, sessionId }

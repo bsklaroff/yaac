@@ -5,7 +5,7 @@ import { repoDir, worktreeDir } from '@/lib/paths'
 
 export function isTmuxSessionAlive(containerName: string): boolean {
   try {
-    execSync(`podman exec ${containerName} tmux has-session -t claude`, {
+    execSync(`podman exec ${containerName} tmux has-session -t yaac`, {
       stdio: 'pipe',
     })
     return true

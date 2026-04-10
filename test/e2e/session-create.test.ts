@@ -135,7 +135,7 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
     ? `echo 'YAAC_PROMPT=${options.prompt.replace(/'/g, "'\\''")}' > /tmp/yaac-prompt && bash`
     : 'bash'
   await execFileAsync('podman', [
-    'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'claude', tmuxCmd,
+    'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'yaac', '-n', 'claude', tmuxCmd,
   ])
 
   // Run init commands synchronously (production runs them in a background tmux window)
@@ -149,13 +149,13 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
 
   // Configure tmux UX
   await execFileAsync('podman', [
-    'exec', containerName, 'tmux', 'set-option', '-t', 'claude', 'mouse', 'on',
+    'exec', containerName, 'tmux', 'set-option', '-t', 'yaac', 'mouse', 'on',
   ])
   await execFileAsync('podman', [
-    'exec', containerName, 'tmux', 'set-option', '-t', 'claude', 'status-right', ` ${projectSlug} ${sessionId.slice(0, 8)} `,
+    'exec', containerName, 'tmux', 'set-option', '-t', 'yaac', 'status-right', ` ${projectSlug} ${sessionId.slice(0, 8)} `,
   ])
   await execFileAsync('podman', [
-    'exec', containerName, 'tmux', 'set-option', '-t', 'claude', 'status-right-length', '50',
+    'exec', containerName, 'tmux', 'set-option', '-t', 'yaac', 'status-right-length', '50',
   ])
   await execFileAsync('podman', [
     'exec', containerName, 'tmux', 'bind-key', 'k', 'kill-server',
@@ -254,12 +254,12 @@ describe('yaac session create', () => {
       const { stdout } = await execFileAsync('podman', [
         'exec', result.containerName, 'tmux', 'list-sessions',
       ])
-      expect(stdout).toContain('claude')
+      expect(stdout).toContain('yaac')
     })
 
     it('shows session id in tmux status bar', async () => {
       const { stdout } = await execFileAsync('podman', [
-        'exec', result.containerName, 'tmux', 'show-option', '-t', 'claude', 'status-right',
+        'exec', result.containerName, 'tmux', 'show-option', '-t', 'yaac', 'status-right',
       ])
       expect(stdout).toContain(result.sessionId.slice(0, 8))
     })
@@ -341,7 +341,7 @@ describe('yaac session create', () => {
     const { stdout: tmuxOut } = await execFileAsync('podman', [
       'exec', result.containerName, 'tmux', 'list-sessions',
     ])
-    expect(tmuxOut).toContain('claude')
+    expect(tmuxOut).toContain('yaac')
 
     try {
       await execFileAsync('podman', [

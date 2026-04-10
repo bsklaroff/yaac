@@ -14,7 +14,7 @@ export async function sessionAttach(containerId: string): Promise<void> {
     return
   }
 
-  execSync(`podman exec -it ${containerName} tmux attach-session -t claude`, {
+  execSync(`podman exec -it ${containerName} tmux attach-session -t yaac`, {
     stdio: 'inherit',
   })
 

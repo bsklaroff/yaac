@@ -45,7 +45,7 @@ async function createMinimalContainer(projectSlug: string): Promise<{ containerN
 
   // Start tmux session so isTmuxSessionAlive() returns true
   await execFileAsync('podman', [
-    'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'claude', 'bash',
+    'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'yaac', '-n', 'claude', 'bash',
   ])
 
   return { containerName, sessionId }
@@ -207,7 +207,7 @@ describe('yaac session list', () => {
     // Kill the tmux session to simulate a zombie container
     // The container stays "running" but tmux has-session will fail
     await execFileAsync('podman', [
-      'exec', containerName, 'tmux', 'kill-session', '-t', 'claude',
+      'exec', containerName, 'tmux', 'kill-session', '-t', 'yaac',
     ])
 
     const logs: string[] = []

@@ -209,7 +209,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     ? `claude --dangerously-skip-permissions --session-id ${sessionId} -p ${shellEscape(options.prompt)}`
     : `claude --dangerously-skip-permissions --session-id ${sessionId}`
   console.log('Starting Claude Code...')
-  execSync(`podman exec ${containerName} tmux -u new-session -d -s claude '${claudeCmd}'`, {
+  execSync(`podman exec ${containerName} tmux -u new-session -d -s yaac -n claude '${claudeCmd}'`, {
     stdio: 'pipe',
   })
 
@@ -218,19 +218,19 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     const initScript = config.initCommands
       .map((cmd) => shellEscape(cmd))
       .join(' && ')
-    execSync(`podman exec ${containerName} tmux new-window -t claude -n init 'cd /workspace && ${initScript}'`, {
+    execSync(`podman exec ${containerName} tmux new-window -d -t yaac -n init 'cd /workspace && ${initScript}'`, {
       stdio: 'pipe',
     })
   }
 
   // Configure tmux UX
-  execSync(`podman exec ${containerName} tmux set-option -t claude mouse on`)
-  execSync(`podman exec ${containerName} tmux set-option -t claude status-right ' ${projectSlug} ${sessionId.slice(0, 8)} '`)
-  execSync(`podman exec ${containerName} tmux set-option -t claude status-right-length 50`)
+  execSync(`podman exec ${containerName} tmux set-option -t yaac mouse on`)
+  execSync(`podman exec ${containerName} tmux set-option -t yaac status-right ' ${projectSlug} ${sessionId.slice(0, 8)} '`)
+  execSync(`podman exec ${containerName} tmux set-option -t yaac status-right-length 50`)
   execSync(`podman exec ${containerName} tmux bind-key k kill-server`)
 
   // Attach the user to the tmux session
-  execSync(`podman exec -it ${containerName} tmux attach-session -t claude`, {
+  execSync(`podman exec -it ${containerName} tmux attach-session -t yaac`, {
     stdio: 'inherit',
   })
 

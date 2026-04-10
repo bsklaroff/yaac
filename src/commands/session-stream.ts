@@ -78,7 +78,7 @@ export async function sessionStream(project?: string): Promise<void> {
     const shortId = session.sessionId.slice(0, 8)
     console.log(`Attaching to session ${shortId} (project: ${session.projectSlug})...`)
 
-    execSync(`podman exec -it ${session.containerName} tmux attach-session -t claude`, {
+    execSync(`podman exec -it ${session.containerName} tmux attach-session -t yaac`, {
       stdio: 'inherit',
     })
 
