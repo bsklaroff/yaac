@@ -76,9 +76,9 @@ Add a `yaac-config.json` to your repo root:
     "ANTHROPIC_API_KEY": ["api.anthropic.com"]
   },
   "cacheVolumes": {
-    "pnpm-store": "/root/.local/share/pnpm/store/v3"
+    "pnpm-store": "/home/yaac/.pnpm-store"
   },
-  "initCommands": ["pnpm install"]
+  "initCommands": ["pnpm install --store-dir /home/yaac/.pnpm-store"]
 }
 ```
 
@@ -95,9 +95,7 @@ The default image (Ubuntu 24.04 + Node.js + pnpm + Claude Code + gh + tmux) can 
 - **`Dockerfile.yaac`** — replaces the default image entirely (e.g. use a different base distro or toolchain). Must install Claude Code, since the default Dockerfile is not used. Place in the repo root or the project's config-override directory (config-override takes precedence).
 - **`~/.yaac/Dockerfile.user`** — applied on top of whichever base is used (e.g. nvim config, shell customization). Must start with `FROM yaac-current`.
 
-Layer order: default → Dockerfile.nestable (if `nestedContainers` is true) → Dockerfile.user.
-
-When `Dockerfile.yaac` replaces the default image, the nestable layer is skipped — your custom Dockerfile is responsible for including nested-container support if needed. See `dockerfiles/Dockerfile.nestable` for the required setup.
+Layer order: default (or Dockerfile.yaac) → Dockerfile.nestable (if `nestedContainers` is true) → Dockerfile.user.
 
 ## Local overrides
 
@@ -112,9 +110,14 @@ If an override file exists, it fully replaces the corresponding file from the re
 
 ## Nested containers
 
-Set `"nestedContainers": true` in `yaac-config.json` to let sessions run `podman` (podman-in-podman). This builds an extra image layer (`Dockerfile.nestable`) on top of the default base that configures rootless podman inside the container.
+Set `"nestedContainers": true` in `yaac-config.json` to let sessions run `podman` (podman-in-podman). This builds an extra image layer (`Dockerfile.nestable`) on top of whichever base is used (default or custom `Dockerfile.yaac`) that configures rootless podman inside the container.
 
-No `--privileged` flag or extra capabilities are needed. At runtime, yaac adds `--security-opt label=disable` and mounts a per-project named volume for container storage so pulled images persist across sessions.
+No `--privileged` flag or extra capabilities are needed. At runtime, yaac adds the following security overrides:
+
+- `--security-opt label=disable` — disables SELinux label confinement
+- `--security-opt unmask=/proc/sys` — unmasks `/proc/sys` inside the container
+- `--device /dev/net/tun` — exposes the TUN device for container networking
+- A per-project named volume is mounted for container storage so pulled images persist across sessions.
 
 On macOS, the default podman machine memory (2 GB) is not enough for nested container builds. Increase it to at least 4 GB (8 GB recommended):
 
@@ -123,6 +126,4 @@ podman machine stop
 podman machine set --memory 8192
 podman machine start
 ```
-
-If your project uses a custom `Dockerfile.yaac`, the nestable layer is skipped. Copy the relevant setup from `dockerfiles/Dockerfile.nestable` into your custom Dockerfile instead.
 
