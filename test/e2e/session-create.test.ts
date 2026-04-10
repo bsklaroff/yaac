@@ -157,6 +157,9 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
   await execFileAsync('podman', [
     'exec', containerName, 'tmux', 'set-option', '-t', 'claude', 'status-right-length', '50',
   ])
+  await execFileAsync('podman', [
+    'exec', containerName, 'tmux', 'bind-key', 'k', 'kill-server',
+  ])
 
   const info = await container.inspect()
   return {

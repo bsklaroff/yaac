@@ -61,7 +61,8 @@ yaac session <command>
                               each in turn
 ```
 
-Detach from a tmux session with `Ctrl-B D`.
+Detach from a tmux session with `Ctrl-B D`. Kill the tmux server (and the
+container) with `Ctrl-B K`.
 
 ## Project configuration
 

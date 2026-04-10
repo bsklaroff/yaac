@@ -228,6 +228,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   execSync(`podman exec ${containerName} tmux set-option -t claude mouse on`)
   execSync(`podman exec ${containerName} tmux set-option -t claude status-right ' ${projectSlug} ${sessionId.slice(0, 8)} '`)
   execSync(`podman exec ${containerName} tmux set-option -t claude status-right-length 50`)
+  execSync(`podman exec ${containerName} tmux bind-key k kill-server`)
 
   // Attach the user to the tmux session
   execSync(`podman exec -it ${containerName} tmux attach-session -t claude`, {
