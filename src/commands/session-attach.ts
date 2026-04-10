@@ -14,9 +14,13 @@ export async function sessionAttach(containerId: string): Promise<void> {
     return
   }
 
-  execSync(`podman exec -it ${containerName} tmux attach-session -t yaac`, {
-    stdio: 'inherit',
-  })
+  try {
+    execSync(`podman exec -it ${containerName} tmux attach-session -t yaac`, {
+      stdio: 'inherit',
+    })
+  } catch {
+    // Container or tmux session was killed (e.g. ctrl-b k) — fall through to cleanup
+  }
 
   // Auto-cleanup if Claude Code exited (tmux session died)
   if (!isTmuxSessionAlive(containerName)) {

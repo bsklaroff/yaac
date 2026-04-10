@@ -230,9 +230,13 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   execSync(`podman exec ${containerName} tmux bind-key k kill-server`)
 
   // Attach the user to the tmux session
-  execSync(`podman exec -it ${containerName} tmux attach-session -t yaac`, {
-    stdio: 'inherit',
-  })
+  try {
+    execSync(`podman exec -it ${containerName} tmux attach-session -t yaac`, {
+      stdio: 'inherit',
+    })
+  } catch {
+    // Container or tmux session was killed (e.g. ctrl-b k) — fall through to cleanup
+  }
 
   // Auto-cleanup if Claude Code exited (tmux session died)
   if (!isTmuxSessionAlive(containerName)) {

@@ -105,9 +105,13 @@ export async function sessionStream(project?: string): Promise<void> {
     const shortId = session.sessionId.slice(0, 8)
     console.log(`Attaching to session ${shortId} (project: ${session.projectSlug})...`)
 
-    execSync(`podman exec -it ${session.containerName} tmux attach-session -t yaac`, {
-      stdio: 'inherit',
-    })
+    try {
+      execSync(`podman exec -it ${session.containerName} tmux attach-session -t yaac`, {
+        stdio: 'inherit',
+      })
+    } catch {
+      // Container or tmux session was killed (e.g. ctrl-b k) — fall through to cleanup
+    }
 
     visited.add(session.sessionId)
 
