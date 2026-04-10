@@ -12,11 +12,12 @@ describe('proxy sidecar', () => {
     await requirePodman()
 
     client = new ProxyClient({
-      image: 'yaac-proxy-test',
+      image: 'yaac-test-proxy',
       containerName: 'yaac-proxy-test',
       hostPort: '19255',
       network: 'yaac-test-sessions',
       authSecret: testAuthSecret,
+      requirePrebuilt: true,
     })
   })
 

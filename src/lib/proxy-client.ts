@@ -3,6 +3,7 @@ import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { podman } from '@/lib/podman'
 import { PROXY_DIR } from '@/lib/paths'
+import { contextHash } from '@/lib/image-builder'
 import type { InjectionRule } from '@/lib/secret-conventions'
 
 const execFileAsync = promisify(execFile)
@@ -15,11 +16,13 @@ export interface ProxyClientConfig {
   hostPort: string
   network: string
   authSecret: string
+  requirePrebuilt?: boolean
 }
 
 export class ProxyClient {
   private proxyIp: string | null = null
   private running = false
+  private resolvedImage: string | null = null
 
   constructor(private config: ProxyClientConfig) {}
 
@@ -125,13 +128,22 @@ export class ProxyClient {
   }
 
   private async ensureProxyImage(): Promise<void> {
+    const hash = await contextHash(PROXY_DIR)
+    const taggedImage = `${this.config.image}:${hash}`
     try {
-      await execFileAsync('podman', ['image', 'inspect', this.config.image])
+      await execFileAsync('podman', ['image', 'inspect', taggedImage])
+      this.resolvedImage = taggedImage
     } catch {
+      if (this.config.requirePrebuilt) {
+        throw new Error(
+          `Proxy image ${taggedImage} is missing or stale. ` +
+          'Restart the test run so the global setup can rebuild it.',
+        )
+      }
       console.log('Building proxy sidecar image...')
       await new Promise<void>((resolve, reject) => {
         const child = spawn('podman', [
-          'build', '-t', this.config.image, PROXY_DIR,
+          'build', '-t', taggedImage, PROXY_DIR,
         ], { stdio: 'inherit', timeout: 300_000 })
         child.on('close', (code) => {
           if (code === 0) resolve()
@@ -139,6 +151,7 @@ export class ProxyClient {
         })
         child.on('error', reject)
       })
+      this.resolvedImage = taggedImage
     }
   }
 
@@ -160,7 +173,7 @@ export class ProxyClient {
     }
 
     const container = await podman.createContainer({
-      Image: this.config.image,
+      Image: this.resolvedImage!,
       name: this.config.containerName,
       ExposedPorts: { [`${INTERNAL_PORT}/tcp`]: {} },
       Env: [

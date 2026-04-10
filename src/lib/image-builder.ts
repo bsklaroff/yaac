@@ -14,6 +14,19 @@ export async function fileHash(filePath: string): Promise<string> {
   return crypto.createHash('sha256').update(content).digest('hex').slice(0, 16)
 }
 
+export async function contextHash(dir: string): Promise<string> {
+  const entries = (await fs.readdir(dir, { withFileTypes: true }))
+    .filter((e) => e.isFile())
+    .map((e) => e.name)
+    .sort()
+  const hasher = crypto.createHash('sha256')
+  for (const name of entries) {
+    hasher.update(name)
+    hasher.update(await fs.readFile(path.join(dir, name)))
+  }
+  return hasher.digest('hex').slice(0, 16)
+}
+
 async function imageExists(name: string): Promise<boolean> {
   try {
     await execFileAsync('podman', ['image', 'inspect', name])
@@ -23,24 +36,11 @@ async function imageExists(name: string): Promise<boolean> {
   }
 }
 
-async function getImageLabel(name: string, label: string): Promise<string | null> {
-  try {
-    const { stdout } = await execFileAsync('podman', [
-      'image', 'inspect', '--format', `{{index .Config.Labels "${label}"}}`, name,
-    ])
-    const val = stdout.trim()
-    return val && val !== '<no value>' ? val : null
-  } catch {
-    return null
-  }
-}
-
-async function buildImage(imageName: string, dockerfile: string, context: string, hash: string, buildArgs?: Record<string, string>): Promise<void> {
+async function buildImage(imageName: string, dockerfile: string, context: string, buildArgs?: Record<string, string>): Promise<void> {
   const args = [
     'build',
     '-t', imageName,
     '-f', dockerfile,
-    '--label', `yaac.content-hash=${hash}`,
   ]
   for (const [key, value] of Object.entries(buildArgs ?? {})) {
     args.push('--build-arg', `${key}=${value}`)
@@ -55,6 +55,16 @@ async function buildImage(imageName: string, dockerfile: string, context: string
     })
     child.on('error', reject)
   })
+}
+
+/**
+ * Build an image if a tagged version does not already exist.
+ * Used by test global setup to pre-build images with content-hash tags.
+ */
+export async function ensureImageByTag(tag: string, dockerfile: string, context: string, buildArgs?: Record<string, string>): Promise<void> {
+  if (await imageExists(tag)) return
+  console.log(`Building ${tag}...`)
+  await buildImage(tag, dockerfile, context, buildArgs)
 }
 
 async function tagImage(source: string, target: string): Promise<void> {
@@ -97,7 +107,6 @@ async function readFileFromRef(repoPath: string, ref: string, filePath: string):
  */
 export async function ensureImage(projectSlug: string, imagePrefix?: string, requirePrebuilt = false, nestedContainers = false): Promise<string> {
   const prefix = imagePrefix ?? 'yaac'
-  const baseName = `${prefix}-base`
 
   // Layer 1: <prefix>-base
   // Priority: config-override/Dockerfile.yaac > repo Dockerfile.yaac (from remote ref) > Dockerfile.default
@@ -125,63 +134,71 @@ export async function ensureImage(projectSlug: string, imagePrefix?: string, req
   const baseDockerfile = yaacDockerfile ?? path.join(DOCKERFILES_DIR, 'Dockerfile.default')
   const baseContext = yaacDockerfile ? path.dirname(yaacDockerfile) : DOCKERFILES_DIR
   const baseHash = await fileHash(baseDockerfile)
-  const existingBaseHash = await getImageLabel(baseName, 'yaac.content-hash')
-  if (!await imageExists(baseName) || existingBaseHash !== baseHash) {
+
+  // Layer 1: <prefix>-base:<hash>
+  const baseTag = `${prefix}-base:${baseHash}`
+  if (!await imageExists(baseTag)) {
     if (requirePrebuilt) {
       throw new Error(
-        `Base image ${baseName} is missing or stale. ` +
+        `Base image ${baseTag} is missing or stale. ` +
         'Restart the test run so the global setup can rebuild it.',
       )
     }
     console.log(yaacDockerfile
-      ? `Building ${baseName} image from Dockerfile.yaac...`
-      : `Building ${baseName} image...`)
-    await buildImage(baseName, baseDockerfile, baseContext, baseHash)
+      ? `Building ${baseTag} from Dockerfile.yaac...`
+      : `Building ${baseTag}...`)
+    await buildImage(baseTag, baseDockerfile, baseContext)
   }
 
-  // Layer 1.5 (optional): <prefix>-base-nestable (podman-in-podman support)
+  // Layer 1.5 (optional): <prefix>-base-nestable:<hash> (podman-in-podman support)
   // Applied on top of whatever base was selected (default or Dockerfile.yaac).
-  let effectiveBase = baseName
+  let effectiveTag = baseTag
+  let effectiveHash = baseHash
   if (nestedContainers) {
-    const nestName = `${prefix}-base-nestable`
     const nestDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
     const nestContentHash = await fileHash(nestDockerfile)
     const nestHash = crypto.createHash('sha256').update(`${baseHash}:${nestContentHash}`).digest('hex').slice(0, 16)
-    const existingNestHash = await getImageLabel(nestName, 'yaac.content-hash')
-    if (!await imageExists(nestName) || existingNestHash !== nestHash) {
+    const nestTag = `${prefix}-base-nestable:${nestHash}`
+    if (!await imageExists(nestTag)) {
       if (requirePrebuilt) {
         throw new Error(
-          `Nestable image ${nestName} is missing or stale. ` +
+          `Nestable image ${nestTag} is missing or stale. ` +
           'Restart the test run so the global setup can rebuild it.',
         )
       }
-      console.log(`Building ${nestName} image (nested containers)...`)
-      await buildImage(nestName, nestDockerfile, DOCKERFILES_DIR, nestHash, { BASE_IMAGE: baseName })
+      console.log(`Building ${nestTag} (nested containers)...`)
+      await buildImage(nestTag, nestDockerfile, DOCKERFILES_DIR, { BASE_IMAGE: baseTag })
     }
-    effectiveBase = nestName
+    effectiveTag = nestTag
+    effectiveHash = nestHash
   }
 
-  // Layer 2: <prefix>-user (optional Dockerfile.user in ~/.yaac)
-  // Tag current image so Dockerfile.user can use a stable FROM reference
-  const currentTag = `${prefix}-current`
-  await tagImage(effectiveBase, currentTag)
+  // Layer 2 (optional): <prefix>-user-<slug>:<hash> (from ~/.yaac/Dockerfile.user)
   const userDockerfile = path.join(getDataDir(), 'Dockerfile.user')
-  const finalImageName = `${prefix}-user-${projectSlug}`
-
   if (await fileExists(userDockerfile)) {
-    const userHash = await fileHash(userDockerfile)
-    const existingUserHash = await getImageLabel(finalImageName, 'yaac.content-hash')
-    if (!await imageExists(finalImageName) || existingUserHash !== userHash) {
-      console.log(`Building ${prefix}-user image...`)
-      await buildImage(finalImageName, userDockerfile, getDataDir(), userHash)
+    // Tag so Dockerfile.user can use a stable FROM reference
+    await tagImage(effectiveTag, `${prefix}-current`)
+    const userContentHash = await fileHash(userDockerfile)
+    const userHash = crypto.createHash('sha256').update(`${effectiveHash}:${userContentHash}`).digest('hex').slice(0, 16)
+    const userTag = `${prefix}-user-${projectSlug}:${userHash}`
+    if (!await imageExists(userTag)) {
+      if (requirePrebuilt) {
+        throw new Error(
+          `User image ${userTag} is missing or stale. ` +
+          'Restart the test run so the global setup can rebuild it.',
+        )
+      }
+      console.log(`Building ${userTag}...`)
+      await buildImage(userTag, userDockerfile, getDataDir())
     }
-  } else {
-    await tagImage(effectiveBase, finalImageName)
+    if (tmpDockerfileDir) {
+      await fs.rm(tmpDockerfileDir, { recursive: true, force: true })
+    }
+    return userTag
   }
 
   if (tmpDockerfileDir) {
     await fs.rm(tmpDockerfileDir, { recursive: true, force: true })
   }
-
-  return finalImageName
+  return effectiveTag
 }

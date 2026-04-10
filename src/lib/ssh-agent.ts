@@ -5,6 +5,7 @@ import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { podman } from '@/lib/podman'
 import { SSH_AGENT_DIR } from '@/lib/paths'
+import { contextHash } from '@/lib/image-builder'
 
 const execFileAsync = promisify(execFile)
 
@@ -12,6 +13,7 @@ export interface SshAgentConfig {
   containerName: string
   volumeName: string
   imageName: string
+  requirePrebuilt?: boolean
 }
 
 const DEFAULT_CONFIG: SshAgentConfig = {
@@ -35,6 +37,7 @@ export class SshAgentClient {
   private running = false
   private sshDir: string
   private config: SshAgentConfig
+  private resolvedImage: string | null = null
 
   constructor(sshDir?: string, config?: SshAgentConfig) {
     this.sshDir = sshDir ?? path.join(os.homedir(), '.ssh')
@@ -66,13 +69,22 @@ export class SshAgentClient {
   }
 
   private async ensureImage(): Promise<void> {
+    const hash = await contextHash(SSH_AGENT_DIR)
+    const taggedImage = `${this.config.imageName}:${hash}`
     try {
-      await execFileAsync('podman', ['image', 'inspect', this.config.imageName])
+      await execFileAsync('podman', ['image', 'inspect', taggedImage])
+      this.resolvedImage = taggedImage
     } catch {
+      if (this.config.requirePrebuilt) {
+        throw new Error(
+          `SSH agent image ${taggedImage} is missing or stale. ` +
+          'Restart the test run so the global setup can rebuild it.',
+        )
+      }
       console.log('Building SSH agent sidecar image...')
       await new Promise<void>((resolve, reject) => {
         const child = spawn('podman', [
-          'build', '-t', this.config.imageName, SSH_AGENT_DIR,
+          'build', '-t', taggedImage, SSH_AGENT_DIR,
         ], { stdio: 'inherit', timeout: 120_000 })
         child.on('close', (code) => {
           if (code === 0) resolve()
@@ -80,6 +92,7 @@ export class SshAgentClient {
         })
         child.on('error', reject)
       })
+      this.resolvedImage = taggedImage
     }
   }
 
@@ -101,7 +114,7 @@ export class SshAgentClient {
     }
 
     const container = await podman.createContainer({
-      Image: this.config.imageName,
+      Image: this.resolvedImage!,
       name: this.config.containerName,
       Labels: {},
       HostConfig: {

@@ -24,6 +24,7 @@ export const TEST_SSH_AGENT_CONFIG: SshAgentConfig = {
   containerName: 'yaac-test-ssh-agent',
   volumeName: 'yaac-test-ssh-agent',
   imageName: 'yaac-test-ssh-agent',
+  requirePrebuilt: true,
 }
 
 /**
@@ -35,6 +36,7 @@ export const TEST_PROXY_CONFIG: Omit<ProxyClientConfig, 'authSecret'> = {
   containerName: 'yaac-test-proxy',
   hostPort: '19256',
   network: 'yaac-test-sessions',
+  requirePrebuilt: true,
 }
 
 /**

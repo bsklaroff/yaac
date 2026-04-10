@@ -4,6 +4,8 @@ import path from 'node:path'
 import { EventEmitter } from 'node:events'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 
+const HASH_RE = '[0-9a-f]{16}'
+
 describe('ensureImage layer stacking', () => {
   let dataDir: string
   const operations: string[] = []
@@ -19,7 +21,7 @@ describe('ensureImage layer stacking', () => {
     await cleanupTempDir(dataDir)
   })
 
-  async function loadEnsureImage() {
+  async function loadModule() {
     vi.doMock('node:child_process', () => ({
       execFile: vi.fn((...allArgs: unknown[]) => {
         const args = allArgs[1] as string[]
@@ -46,39 +48,36 @@ describe('ensureImage layer stacking', () => {
       }),
     }))
 
-    const { ensureImage } = await import('@/lib/image-builder')
-    return ensureImage
+    const mod = await import('@/lib/image-builder')
+    return mod
   }
 
-  it('builds default → user when Dockerfile.user exists', async () => {
+  it('builds base → current tag → user when Dockerfile.user exists', async () => {
     const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
     await fs.mkdir(repoPath, { recursive: true })
     await fs.writeFile(path.join(dataDir, 'Dockerfile.user'), 'FROM yaac-base\nRUN echo user\n')
 
-    const ensureImage = await loadEnsureImage()
+    const { ensureImage } = await loadModule()
     const result = await ensureImage('myproject')
 
-    expect(operations).toEqual([
-      'build yaac-base',
-      'tag yaac-base → yaac-current',
-      'build yaac-user-myproject',
-    ])
-    expect(result).toBe('yaac-user-myproject')
+    expect(operations).toHaveLength(3)
+    expect(operations[0]).toMatch(new RegExp(`^build yaac-base:${HASH_RE}$`))
+    expect(operations[1]).toMatch(new RegExp(`^tag yaac-base:${HASH_RE} → yaac-current$`))
+    expect(operations[2]).toMatch(new RegExp(`^build yaac-user-myproject:${HASH_RE}$`))
+    expect(result).toMatch(new RegExp(`^yaac-user-myproject:${HASH_RE}$`))
   })
 
-  it('tags default as final when no Dockerfile.user exists', async () => {
+  it('returns base tag directly when no Dockerfile.user exists', async () => {
     const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
     await fs.mkdir(repoPath, { recursive: true })
 
-    const ensureImage = await loadEnsureImage()
+    const { ensureImage } = await loadModule()
     const result = await ensureImage('myproject')
 
     expect(operations).toEqual([
-      'build yaac-base',
-      'tag yaac-base → yaac-current',
-      'tag yaac-base → yaac-user-myproject',
+      expect.stringMatching(new RegExp(`^build yaac-base:${HASH_RE}$`)),
     ])
-    expect(result).toBe('yaac-user-myproject')
+    expect(result).toMatch(new RegExp(`^yaac-base:${HASH_RE}$`))
   })
 
   it('uses Dockerfile.yaac instead of Dockerfile.default when present', async () => {
@@ -88,31 +87,26 @@ describe('ensureImage layer stacking', () => {
     await fs.mkdir(overrideDir, { recursive: true })
     await fs.writeFile(path.join(overrideDir, 'Dockerfile.yaac'), 'FROM docker.io/ubuntu:24.04\nRUN echo custom\n')
 
-    const ensureImage = await loadEnsureImage()
+    const { ensureImage } = await loadModule()
     const result = await ensureImage('myproject')
 
     expect(operations).toEqual([
-      'build yaac-base',
-      'tag yaac-base → yaac-current',
-      'tag yaac-base → yaac-user-myproject',
+      expect.stringMatching(new RegExp(`^build yaac-base:${HASH_RE}$`)),
     ])
-    expect(result).toBe('yaac-user-myproject')
+    expect(result).toMatch(new RegExp(`^yaac-base:${HASH_RE}$`))
   })
 
   it('builds nestable layer when nestedContainers is true', async () => {
     const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
     await fs.mkdir(repoPath, { recursive: true })
 
-    const ensureImage = await loadEnsureImage()
+    const { ensureImage } = await loadModule()
     const result = await ensureImage('myproject', undefined, false, true)
 
-    expect(operations).toEqual([
-      'build yaac-base',
-      'build yaac-base-nestable',
-      'tag yaac-base-nestable → yaac-current',
-      'tag yaac-base-nestable → yaac-user-myproject',
-    ])
-    expect(result).toBe('yaac-user-myproject')
+    expect(operations).toHaveLength(2)
+    expect(operations[0]).toMatch(new RegExp(`^build yaac-base:${HASH_RE}$`))
+    expect(operations[1]).toMatch(new RegExp(`^build yaac-base-nestable:${HASH_RE}$`))
+    expect(result).toMatch(new RegExp(`^yaac-base-nestable:${HASH_RE}$`))
   })
 
   it('builds nestable + user layers when both are enabled', async () => {
@@ -120,16 +114,15 @@ describe('ensureImage layer stacking', () => {
     await fs.mkdir(repoPath, { recursive: true })
     await fs.writeFile(path.join(dataDir, 'Dockerfile.user'), 'FROM yaac-current\nRUN echo user\n')
 
-    const ensureImage = await loadEnsureImage()
+    const { ensureImage } = await loadModule()
     const result = await ensureImage('myproject', undefined, false, true)
 
-    expect(operations).toEqual([
-      'build yaac-base',
-      'build yaac-base-nestable',
-      'tag yaac-base-nestable → yaac-current',
-      'build yaac-user-myproject',
-    ])
-    expect(result).toBe('yaac-user-myproject')
+    expect(operations).toHaveLength(4)
+    expect(operations[0]).toMatch(new RegExp(`^build yaac-base:${HASH_RE}$`))
+    expect(operations[1]).toMatch(new RegExp(`^build yaac-base-nestable:${HASH_RE}$`))
+    expect(operations[2]).toMatch(new RegExp(`^tag yaac-base-nestable:${HASH_RE} → yaac-current$`))
+    expect(operations[3]).toMatch(new RegExp(`^build yaac-user-myproject:${HASH_RE}$`))
+    expect(result).toMatch(new RegExp(`^yaac-user-myproject:${HASH_RE}$`))
   })
 
   it('builds nestable layer on top of Dockerfile.yaac when nestedContainers is true', async () => {
@@ -139,15 +132,19 @@ describe('ensureImage layer stacking', () => {
     await fs.mkdir(overrideDir, { recursive: true })
     await fs.writeFile(path.join(overrideDir, 'Dockerfile.yaac'), 'FROM docker.io/ubuntu:24.04\nRUN echo custom\n')
 
-    const ensureImage = await loadEnsureImage()
+    const { ensureImage } = await loadModule()
     const result = await ensureImage('myproject', undefined, false, true)
 
-    expect(operations).toEqual([
-      'build yaac-base',
-      'build yaac-base-nestable',
-      'tag yaac-base-nestable → yaac-current',
-      'tag yaac-base-nestable → yaac-user-myproject',
-    ])
-    expect(result).toBe('yaac-user-myproject')
+    expect(operations).toHaveLength(2)
+    expect(operations[0]).toMatch(new RegExp(`^build yaac-base:${HASH_RE}$`))
+    expect(operations[1]).toMatch(new RegExp(`^build yaac-base-nestable:${HASH_RE}$`))
+    expect(result).toMatch(new RegExp(`^yaac-base-nestable:${HASH_RE}$`))
   })
+
+  it('ensureImageByTag builds when image does not exist', async () => {
+    const { ensureImageByTag } = await loadModule()
+    await ensureImageByTag('test-img:abc', '/some/Dockerfile', '/some')
+    expect(operations).toEqual(['build test-img:abc'])
+  })
+
 })

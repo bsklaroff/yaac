@@ -1,17 +1,19 @@
-import { execFile, spawn } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-import fs from 'node:fs/promises'
 import crypto from 'node:crypto'
+import { fileHash, contextHash, ensureImageByTag } from '@/lib/image-builder'
+import { DOCKERFILES_DIR, PROXY_DIR, SSH_AGENT_DIR } from '@/lib/paths'
 
 const execFileAsync = promisify(execFile)
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const DOCKERFILES_DIR = path.resolve(__dirname, '..', 'dockerfiles')
 
 /**
- * Pre-build the yaac-test-base image before test workers start so that
- * parallel e2e tests don't all try to build it simultaneously.
+ * Pre-build all container images used by e2e tests.
+ *
+ * Each image is tagged with a content hash of its source files
+ * (e.g. yaac-test-base:<hash>). This means the tag itself encodes
+ * whether the image is up to date — no label inspection needed.
+ * Test code computes the same hash to derive the expected tag.
  */
 export async function setup(): Promise<void> {
   // Skip when podman is unavailable — tests that need it will fail on their own
@@ -21,73 +23,26 @@ export async function setup(): Promise<void> {
     return
   }
 
-  const baseName = 'yaac-test-base'
-  const dockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
-  const content = await fs.readFile(dockerfile, 'utf8')
-  const hash = crypto.createHash('sha256').update(content).digest('hex').slice(0, 16)
+  // --- Base image (Dockerfile.default) ---
+  const baseDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
+  const baseHash = await fileHash(baseDockerfile)
+  const baseTag = `yaac-test-base:${baseHash}`
+  await ensureImageByTag(baseTag, baseDockerfile, DOCKERFILES_DIR)
 
-  // Check if the base image already exists with the correct content hash
-  let baseNeedsBuild = true
-  try {
-    const { stdout } = await execFileAsync('podman', [
-      'image', 'inspect', '--format',
-      '{{index .Config.Labels "yaac.content-hash"}}', baseName,
-    ])
-    if (stdout.trim() === hash) baseNeedsBuild = false
-  } catch {
-    // image doesn't exist yet
-  }
-
-  if (baseNeedsBuild) {
-    console.log('Pre-building yaac-test-base image for test suite...')
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn('podman', [
-        'build', '-t', baseName,
-        '-f', dockerfile,
-        '--label', `yaac.content-hash=${hash}`,
-        DOCKERFILES_DIR,
-      ], { stdio: 'inherit', timeout: 600_000 })
-      child.on('close', (code) => {
-        if (code === 0) resolve()
-        else reject(new Error(`podman build exited with code ${code}`))
-      })
-      child.on('error', reject)
-    })
-  }
-
-  // Also pre-build the nestable layer for nested-container tests
-  const nestName = 'yaac-test-base-nestable'
+  // --- Nestable layer (Dockerfile.nestable, layered on base) ---
   const nestDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
-  const nestContent = await fs.readFile(nestDockerfile, 'utf8')
-  const nestContentHash = crypto.createHash('sha256').update(nestContent).digest('hex').slice(0, 16)
-  const nestHash = crypto.createHash('sha256').update(`${hash}:${nestContentHash}`).digest('hex').slice(0, 16)
+  const nestContentHash = await fileHash(nestDockerfile)
+  const nestHash = crypto.createHash('sha256').update(`${baseHash}:${nestContentHash}`).digest('hex').slice(0, 16)
+  const nestTag = `yaac-test-base-nestable:${nestHash}`
+  await ensureImageByTag(nestTag, nestDockerfile, DOCKERFILES_DIR, { BASE_IMAGE: baseTag })
 
-  let nestNeedsBuild = true
-  try {
-    const { stdout } = await execFileAsync('podman', [
-      'image', 'inspect', '--format',
-      '{{index .Config.Labels "yaac.content-hash"}}', nestName,
-    ])
-    if (stdout.trim() === nestHash) nestNeedsBuild = false
-  } catch {
-    // image doesn't exist
-  }
+  // --- Proxy sidecar (podman/proxy-sidecar/) ---
+  const proxyHash = await contextHash(PROXY_DIR)
+  const proxyTag = `yaac-test-proxy:${proxyHash}`
+  await ensureImageByTag(proxyTag, path.join(PROXY_DIR, 'Dockerfile'), PROXY_DIR)
 
-  if (nestNeedsBuild) {
-    console.log('Pre-building yaac-test-base-nestable image for test suite...')
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn('podman', [
-        'build', '-t', nestName,
-        '-f', nestDockerfile,
-        '--build-arg', `BASE_IMAGE=${baseName}`,
-        '--label', `yaac.content-hash=${nestHash}`,
-        DOCKERFILES_DIR,
-      ], { stdio: 'inherit', timeout: 600_000 })
-      child.on('close', (code) => {
-        if (code === 0) resolve()
-        else reject(new Error(`podman build exited with code ${code}`))
-      })
-      child.on('error', reject)
-    })
-  }
+  // --- SSH agent sidecar (podman/ssh-agent-sidecar/) ---
+  const sshHash = await contextHash(SSH_AGENT_DIR)
+  const sshTag = `yaac-test-ssh-agent:${sshHash}`
+  await ensureImageByTag(sshTag, path.join(SSH_AGENT_DIR, 'Dockerfile'), SSH_AGENT_DIR)
 }
