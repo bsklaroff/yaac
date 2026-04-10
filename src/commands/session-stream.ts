@@ -80,9 +80,15 @@ export async function sessionStream(project?: string): Promise<void> {
     try {
       sessions = await getWaitingSessions(project, visited)
     } catch {
-      console.error('Failed to connect to Podman. Is the Podman machine running?')
-      process.exitCode = 1
-      return
+      // The podman socket connection may have gone stale while we were
+      // blocked inside execSync (tmux attach). Retry once before giving up.
+      try {
+        sessions = await getWaitingSessions(project, visited)
+      } catch {
+        console.error('Failed to connect to Podman. Is the Podman machine running?')
+        process.exitCode = 1
+        return
+      }
     }
 
     if (sessions.length === 0) {

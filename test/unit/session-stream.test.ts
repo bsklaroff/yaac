@@ -241,6 +241,29 @@ describe('sessionStream', () => {
     expect(mockSessionCreate).toHaveBeenCalledWith('my-project', {})
   })
 
+  it('retries once when podman connection fails after tmux detach', async () => {
+    let callCount = 0
+    mockListContainers.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) return Promise.reject(new Error('socket hang up'))
+      // Retry succeeds but returns no sessions → exits
+      return Promise.resolve([])
+    })
+
+    await sessionStream()
+
+    expect(callCount).toBe(2)
+  })
+
+  it('exits with error when both attempts fail', async () => {
+    mockListContainers.mockRejectedValue(new Error('socket hang up'))
+
+    await sessionStream()
+
+    expect(process.exitCode).toBe(1)
+    process.exitCode = undefined
+  })
+
   it('exits when no sessions and no project is provided', async () => {
     mockListContainers.mockResolvedValue([])
 
