@@ -2,6 +2,7 @@ import fs from 'node:fs/promises'
 import crypto from 'node:crypto'
 import readline from 'node:readline/promises'
 import { execSync } from 'node:child_process'
+import { packTar } from '@/lib/tar-utils'
 import simpleGit from 'simple-git'
 import { ensureContainerRuntime, podman } from '@/lib/podman'
 import { ensureImage } from '@/lib/image-builder'
@@ -226,9 +227,9 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   // Inject CA cert if using proxy
   if (hasSecretProxy) {
     const caCert = await proxyClient.getCaCert()
-    execSync(`podman cp - ${containerName}:/tmp/proxy-ca.pem`, {
-      input: caCert,
-    })
+    const archive = await packTar([{ name: 'proxy-ca.pem', content: caCert }])
+    const container = podman.getContainer(containerName)
+    await container.putArchive(archive, { path: '/tmp' })
   }
 
   // Fix worktree git pointers for in-container paths
