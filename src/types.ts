@@ -39,6 +39,7 @@ export interface YaacConfig {
   nestedContainers?: boolean
   portForward?: PortForwardConfig[]
   bindMounts?: BindMountConfig[]
+  hideInitPane?: boolean
 }
 
 export interface SessionMeta {

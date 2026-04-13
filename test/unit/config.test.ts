@@ -183,6 +183,23 @@ describe('loadProjectConfig', () => {
     await expect(loadProjectConfig(tmpDir)).rejects.toThrow('nestedContainers must be a boolean')
   })
 
+  it('parses valid config with hideInitPane', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ hideInitPane: true }),
+    )
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual({ hideInitPane: true })
+  })
+
+  it('throws on invalid hideInitPane type', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ hideInitPane: 'yes' }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('hideInitPane must be a boolean')
+  })
+
   it('parses valid config with portForward array', async () => {
     const config = {
       portForward: [{ containerPort: 8080, hostPortStart: 9000 }],

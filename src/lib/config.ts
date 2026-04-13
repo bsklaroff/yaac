@@ -8,7 +8,7 @@ import { getDefaultBranch } from '@/lib/git'
 
 const execFileAsync = promisify(execFile)
 
-const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'nestedContainers', 'portForward', 'bindMounts'])
+const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'nestedContainers', 'portForward', 'bindMounts', 'hideInitPane'])
 
 export function parseProjectConfig(raw: string): YaacConfig {
   const parsed: unknown = JSON.parse(raw)
@@ -93,6 +93,13 @@ export function parseProjectConfig(raw: string): YaacConfig {
       throw new Error('yaac-config.json: nestedContainers must be a boolean')
     }
     config.nestedContainers = obj.nestedContainers
+  }
+
+  if (obj.hideInitPane !== undefined) {
+    if (typeof obj.hideInitPane !== 'boolean') {
+      throw new Error('yaac-config.json: hideInitPane must be a boolean')
+    }
+    config.hideInitPane = obj.hideInitPane
   }
 
   if (obj.portForward !== undefined) {

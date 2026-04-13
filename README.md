@@ -138,6 +138,7 @@ Add a `yaac-config.json` to your repo root:
 - **cacheVolumes** — named Podman volumes mounted into the container. Keys are volume names, values are absolute container paths. Volumes persist across sessions.
 - **initCommands** — commands run inside the container after it starts (e.g. `pnpm install` against a warm cache volume). These run on every session, not just the first.
 - **nestedContainers** — when `true`, enables podman-in-podman support so sessions can build and run containers. See [Nested containers](#nested-containers) below.
+- **hideInitPane** — when `true`, the init commands tmux pane is automatically closed after the commands finish or error. By default (`false`), the pane is preserved with `remain-on-exit` so you can inspect the output.
 
 ## Custom images
 
