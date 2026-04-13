@@ -84,8 +84,15 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   console.log(`Creating worktree from ${defaultBranch}...`)
   await addWorktree(repo, wtDir, `yaac/${sessionId}`, `origin/${defaultBranch}`)
 
-  // Build container env
-  const env: string[] = []
+  // Fetch the image's baked-in ENV so we can preserve it.
+  // The container-create API's Env field *replaces* the image ENV rather
+  // than merging, so we start from the image's values and let explicit
+  // overrides win.
+  const imageInfo = await podman.getImage(imageName).inspect()
+  const imageEnv: string[] = (imageInfo.Config?.Env as string[] | undefined) ?? []
+
+  // Build container env — start with image defaults
+  const env: string[] = [...imageEnv]
 
   // Passthrough env vars
   if (config.envPassthrough) {

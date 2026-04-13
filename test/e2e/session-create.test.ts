@@ -25,6 +25,11 @@ const testProxyClient = new ProxyClient({
 })
 const testSshAgent = new SshAgentClient(undefined, TEST_SSH_AGENT_CONFIG)
 
+async function getImageEnv(imageName: string): Promise<string[]> {
+  const info = await podman.getImage(imageName).inspect()
+  return (info.Config?.Env as string[] | undefined) ?? []
+}
+
 async function createSessionNonInteractive(projectSlug: string, options?: { prompt?: string }): Promise<{
   containerId: string
   containerName: string
@@ -41,7 +46,9 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
   await addWorktree(repo, wtDir, `yaac/${sessionId}`)
 
   const config = await resolveProjectConfig(projectSlug) ?? {}
-  const env: string[] = ['TERM=xterm-256color', 'EDITOR=nvim']
+
+  // Preserve image ENV (container-create replaces rather than merges)
+  const env: string[] = [...(await getImageEnv(imageName))]
 
   if (config.envPassthrough) {
     for (const name of config.envPassthrough) {
@@ -436,7 +443,7 @@ describe('yaac session create', () => {
         Image: imageName,
         name: containerName,
         Labels: { 'yaac.test': 'true' },
-        Env: ['TERM=xterm-256color', ...testAgent.getSshEnv()],
+        Env: [...(await getImageEnv(imageName)), ...testAgent.getSshEnv()],
         HostConfig: {
           Binds: [
             `${wtDir}:/workspace:Z`,
@@ -605,7 +612,7 @@ describe('yaac session create', () => {
       Image: imageName,
       name: containerName,
       Labels: { 'yaac.test': 'true' },
-      Env: ['TERM=xterm-256color'],
+      Env: await getImageEnv(imageName),
       HostConfig: {
         Binds: [
           `${wtDir}:/workspace:Z`,
@@ -667,7 +674,7 @@ describe('yaac session create', () => {
       Image: imageName,
       name: containerName,
       Labels: { 'yaac.test': 'true' },
-      Env: ['TERM=xterm-256color'],
+      Env: await getImageEnv(imageName),
       HostConfig: {
         Binds: [
           `${wtDir}:/workspace:Z`,
