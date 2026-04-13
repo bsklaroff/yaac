@@ -67,10 +67,6 @@ export async function ensureImageByTag(tag: string, dockerfile: string, context:
   await buildImage(tag, dockerfile, context, buildArgs)
 }
 
-async function tagImage(source: string, target: string): Promise<void> {
-  await execFileAsync('podman', ['tag', source, target])
-}
-
 async function fileExists(filePath: string): Promise<boolean> {
   try {
     await fs.access(filePath)
@@ -91,10 +87,12 @@ async function readFileFromRef(repoPath: string, ref: string, filePath: string):
 
 /**
  * Check whether a Dockerfile layers on top of the yaac base image.
- * Returns true if it contains `FROM yaac-base` (with optional tag or alias).
+ * A layered Dockerfile must declare `ARG BASE_IMAGE` and use `FROM ${BASE_IMAGE}`
+ * so the parent image is always injected via --build-arg (no shared mutable tags).
  */
-function usesYaacBase(dockerfileContent: string): boolean {
-  return /^FROM\s+yaac-base\b/m.test(dockerfileContent)
+function isLayered(dockerfileContent: string): boolean {
+  return /^ARG\s+BASE_IMAGE\b/m.test(dockerfileContent)
+    && /^FROM\s+\$\{BASE_IMAGE\}/m.test(dockerfileContent)
 }
 
 /**
@@ -102,7 +100,7 @@ function usesYaacBase(dockerfileContent: string): boolean {
  *
  * Layer 1: yaac-base — one of:
  *   - Dockerfile.default alone (no Dockerfile.yaac)
- *   - Dockerfile.yaac layered on Dockerfile.default (when Dockerfile.yaac uses `FROM yaac-base`)
+ *   - Dockerfile.yaac layered on Dockerfile.default (when Dockerfile.yaac uses `ARG BASE_IMAGE` + `FROM ${BASE_IMAGE}`)
  *   - Dockerfile.yaac standalone (when Dockerfile.yaac uses any other FROM, replaces default)
  * Layer 1.5 (optional): yaac-base-nestable (from Dockerfile.nestable, when nestedContainers is true)
  * Layer 2: yaac-user-<slug> (optional: from ~/.yaac/Dockerfile.user, builds on top)
@@ -146,7 +144,7 @@ export async function ensureImage(projectSlug: string, imagePrefix?: string, req
   let yaacIsLayered = false
   if (yaacDockerfile) {
     const yaacContent = await fs.readFile(yaacDockerfile, 'utf8')
-    yaacIsLayered = usesYaacBase(yaacContent)
+    yaacIsLayered = isLayered(yaacContent)
   }
 
   // Build Dockerfile.default first when there's no Dockerfile.yaac or it layers on yaac-base.
@@ -217,8 +215,14 @@ export async function ensureImage(projectSlug: string, imagePrefix?: string, req
   // Layer 2 (optional): <prefix>-user-<slug>:<hash> (from ~/.yaac/Dockerfile.user)
   const userDockerfile = path.join(getDataDir(), 'Dockerfile.user')
   if (await fileExists(userDockerfile)) {
-    // Tag so Dockerfile.user can use a stable FROM reference
-    await tagImage(effectiveTag, `${prefix}-current`)
+    const userContent = await fs.readFile(userDockerfile, 'utf8')
+    if (!isLayered(userContent)) {
+      throw new Error(
+        'Dockerfile.user must use `ARG BASE_IMAGE` and `FROM ${BASE_IMAGE}` ' +
+        'so the parent image is injected via --build-arg. ' +
+        'Example:\n  ARG BASE_IMAGE\n  FROM ${BASE_IMAGE}',
+      )
+    }
     const userContentHash = await fileHash(userDockerfile)
     const userHash = crypto.createHash('sha256').update(`${effectiveHash}:${userContentHash}`).digest('hex').slice(0, 16)
     const userTag = `${prefix}-user-${projectSlug}:${userHash}`
@@ -230,7 +234,7 @@ export async function ensureImage(projectSlug: string, imagePrefix?: string, req
         )
       }
       console.log(`Building ${userTag}...`)
-      await buildImage(userTag, userDockerfile, getDataDir())
+      await buildImage(userTag, userDockerfile, getDataDir(), { BASE_IMAGE: effectiveTag })
     }
     if (tmpDockerfileDir) {
       await fs.rm(tmpDockerfileDir, { recursive: true, force: true })

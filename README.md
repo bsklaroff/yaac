@@ -144,11 +144,21 @@ Add a `yaac-config.json` to your repo root:
 The default image (Ubuntu 24.04 + Node.js + pnpm + Claude Code + gh + tmux) can be customized:
 
 - **`Dockerfile.yaac`** — customizes the base image. Behavior depends on the `FROM` line:
-  - **`FROM yaac-base`** — layers on top of the default image. The default Dockerfile is built first, then Dockerfile.yaac is applied on top. Use this to add packages or config while keeping the standard Ubuntu + Node.js + Claude Code environment.
+  - **Layered (recommended)** — layers on top of the default image. The default Dockerfile is built first, then Dockerfile.yaac is applied on top. Use this to add packages or config while keeping the standard Ubuntu + Node.js + Claude Code environment. Must use `ARG BASE_IMAGE` and `FROM ${BASE_IMAGE}` so the parent image is injected via `--build-arg`:
+    ```dockerfile
+    ARG BASE_IMAGE
+    FROM ${BASE_IMAGE}
+    RUN apt-get update && apt-get install -y --no-install-recommends postgresql-client && \
+        rm -rf /var/lib/apt/lists/*
+    ```
   - **Any other `FROM`** — replaces the default image entirely (e.g. use a different base distro or toolchain). Must install Claude Code yourself, since the default Dockerfile is skipped.
 
   Place in the repo root or the project's config-override directory (config-override takes precedence).
-- **`~/.yaac/Dockerfile.user`** — applied on top of whichever base is used (e.g. nvim config, shell customization). Must start with `FROM yaac-current`.
+- **`~/.yaac/Dockerfile.user`** — applied on top of whichever base is used (e.g. nvim config, shell customization). Must use `ARG BASE_IMAGE` and `FROM ${BASE_IMAGE}` so the parent image is injected via `--build-arg`:
+  ```dockerfile
+  ARG BASE_IMAGE
+  FROM ${BASE_IMAGE}
+  ```
 
 Layer order: default (or Dockerfile.yaac) → Dockerfile.nestable (if `nestedContainers` is true) → Dockerfile.user.
 

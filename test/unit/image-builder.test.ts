@@ -119,10 +119,11 @@ describe('image-builder prerequisites', () => {
     expect(content).toContain('infinity')
   })
 
-  it('Dockerfile.nestable defaults to yaac-base as base image', async () => {
+  it('Dockerfile.nestable uses ARG BASE_IMAGE without a default', async () => {
     const dockerfilePath = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
     const content = await fs.readFile(dockerfilePath, 'utf8')
-    expect(content).toContain('BASE_IMAGE=yaac-base')
+    expect(content).toMatch(/^ARG BASE_IMAGE\n/m)
+    expect(content).not.toContain('BASE_IMAGE=')
   })
 
   it('Dockerfile.nestable configures podman-in-podman support', async () => {
