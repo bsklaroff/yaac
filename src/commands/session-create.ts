@@ -203,14 +203,28 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
 
   await container.start()
 
-  // Wait for container to reach running state before exec-ing into it
+  // Wait for container to be ready to accept exec sessions.
+  // Podman may report Running before exec is actually available,
+  // so we verify by attempting a real exec call.
+  let containerReady = false
   for (let i = 0; i < 30; i++) {
     const info = await container.inspect()
-    if (info.State.Running) break
     if (info.State.Status === 'exited' || info.State.Status === 'dead') {
       throw new Error(`Container exited unexpectedly (exit code ${info.State.ExitCode})`)
     }
+    if (info.State.Running) {
+      try {
+        execSync(`podman exec ${containerName} true`, { stdio: 'pipe' })
+        containerReady = true
+        break
+      } catch {
+        // exec not ready yet — retry
+      }
+    }
     await new Promise((resolve) => setTimeout(resolve, 200))
+  }
+  if (!containerReady) {
+    throw new Error('Container did not become ready for exec within 6 seconds')
   }
 
   // Fix ownership of named cache volumes (created as root, but container runs as yaac)
