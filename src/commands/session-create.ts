@@ -205,7 +205,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   execSync(`podman exec ${containerName} git config --global user.email '${shellEscape(gitUser.email)}'`)
 
   // Start Claude Code in a tmux session
-  execSync(`podman exec ${containerName} sh -c "echo 'set-option -g history-limit 200000' > ~/.tmux.conf"`)
+  execSync(`podman exec ${containerName} sh -c "printf 'set-option -g history-limit 200000\\nset-option -g mouse on\\n' > ~/.tmux.conf"`)
   const claudeCmd = options.prompt
     ? `claude --dangerously-skip-permissions --session-id ${sessionId} -p ${shellEscape(options.prompt)}`
     : `claude --dangerously-skip-permissions --session-id ${sessionId}`
@@ -225,7 +225,6 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   }
 
   // Configure tmux UX
-  execSync(`podman exec ${containerName} tmux set-option -t yaac mouse on`)
   execSync(`podman exec ${containerName} tmux set-option -t yaac status-right ' ${projectSlug} ${sessionId.slice(0, 8)} '`)
   execSync(`podman exec ${containerName} tmux set-option -t yaac status-right-length 50`)
   execSync(`podman exec ${containerName} tmux bind-key k kill-server`)

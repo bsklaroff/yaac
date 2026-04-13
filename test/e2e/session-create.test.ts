@@ -149,9 +149,6 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
 
   // Configure tmux UX
   await execFileAsync('podman', [
-    'exec', containerName, 'tmux', 'set-option', '-t', 'yaac', 'mouse', 'on',
-  ])
-  await execFileAsync('podman', [
     'exec', containerName, 'tmux', 'set-option', '-t', 'yaac', 'status-right', ` ${projectSlug} ${sessionId.slice(0, 8)} `,
   ])
   await execFileAsync('podman', [
