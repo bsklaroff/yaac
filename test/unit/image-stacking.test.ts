@@ -41,7 +41,12 @@ describe('ensureImage layer stacking', () => {
       spawn: vi.fn((_cmd: string, args: string[]) => {
         const tIdx = args.indexOf('-t')
         const imageName = tIdx >= 0 ? args[tIdx + 1] : 'unknown'
-        operations.push(`build ${imageName}`)
+        const buildArgPairs: string[] = []
+        for (let i = 0; i < args.length; i++) {
+          if (args[i] === '--build-arg') buildArgPairs.push(args[i + 1])
+        }
+        const suffix = buildArgPairs.length ? ` [${buildArgPairs.join(',')}]` : ''
+        operations.push(`build ${imageName}${suffix}`)
         const emitter = new EventEmitter()
         process.nextTick(() => emitter.emit('close', 0))
         return emitter
@@ -96,6 +101,23 @@ describe('ensureImage layer stacking', () => {
     expect(result).toMatch(new RegExp(`^yaac-base:${HASH_RE}$`))
   })
 
+  it('layers Dockerfile.yaac on top of default when it uses FROM yaac-base', async () => {
+    const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
+    const overrideDir = path.join(dataDir, 'projects', 'myproject', 'config-override')
+    await fs.mkdir(repoPath, { recursive: true })
+    await fs.mkdir(overrideDir, { recursive: true })
+    await fs.writeFile(path.join(overrideDir, 'Dockerfile.yaac'), 'FROM yaac-base\nRUN echo custom\n')
+
+    const { ensureImage } = await loadModule()
+    const result = await ensureImage('myproject')
+
+    // First builds the default base, then layers Dockerfile.yaac on top (both tagged as yaac-base)
+    expect(operations).toHaveLength(2)
+    expect(operations[0]).toMatch(new RegExp(`^build yaac-base:${HASH_RE}$`))
+    expect(operations[1]).toMatch(new RegExp(`^build yaac-base:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\]$`))
+    expect(result).toMatch(new RegExp(`^yaac-base:${HASH_RE}$`))
+  })
+
   it('builds nestable layer when nestedContainers is true', async () => {
     const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
     await fs.mkdir(repoPath, { recursive: true })
@@ -105,7 +127,7 @@ describe('ensureImage layer stacking', () => {
 
     expect(operations).toHaveLength(2)
     expect(operations[0]).toMatch(new RegExp(`^build yaac-base:${HASH_RE}$`))
-    expect(operations[1]).toMatch(new RegExp(`^build yaac-base-nestable:${HASH_RE}$`))
+    expect(operations[1]).toMatch(new RegExp(`^build yaac-base-nestable:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\]$`))
     expect(result).toMatch(new RegExp(`^yaac-base-nestable:${HASH_RE}$`))
   })
 
@@ -119,13 +141,13 @@ describe('ensureImage layer stacking', () => {
 
     expect(operations).toHaveLength(4)
     expect(operations[0]).toMatch(new RegExp(`^build yaac-base:${HASH_RE}$`))
-    expect(operations[1]).toMatch(new RegExp(`^build yaac-base-nestable:${HASH_RE}$`))
+    expect(operations[1]).toMatch(new RegExp(`^build yaac-base-nestable:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\]$`))
     expect(operations[2]).toMatch(new RegExp(`^tag yaac-base-nestable:${HASH_RE} → yaac-current$`))
     expect(operations[3]).toMatch(new RegExp(`^build yaac-user-myproject:${HASH_RE}$`))
     expect(result).toMatch(new RegExp(`^yaac-user-myproject:${HASH_RE}$`))
   })
 
-  it('builds nestable layer on top of Dockerfile.yaac when nestedContainers is true', async () => {
+  it('builds nestable layer on top of standalone Dockerfile.yaac when nestedContainers is true', async () => {
     const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
     const overrideDir = path.join(dataDir, 'projects', 'myproject', 'config-override')
     await fs.mkdir(repoPath, { recursive: true })
@@ -137,7 +159,24 @@ describe('ensureImage layer stacking', () => {
 
     expect(operations).toHaveLength(2)
     expect(operations[0]).toMatch(new RegExp(`^build yaac-base:${HASH_RE}$`))
-    expect(operations[1]).toMatch(new RegExp(`^build yaac-base-nestable:${HASH_RE}$`))
+    expect(operations[1]).toMatch(new RegExp(`^build yaac-base-nestable:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\]$`))
+    expect(result).toMatch(new RegExp(`^yaac-base-nestable:${HASH_RE}$`))
+  })
+
+  it('builds nestable layer on top of layered Dockerfile.yaac when nestedContainers is true', async () => {
+    const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
+    const overrideDir = path.join(dataDir, 'projects', 'myproject', 'config-override')
+    await fs.mkdir(repoPath, { recursive: true })
+    await fs.mkdir(overrideDir, { recursive: true })
+    await fs.writeFile(path.join(overrideDir, 'Dockerfile.yaac'), 'FROM yaac-base\nRUN echo custom\n')
+
+    const { ensureImage } = await loadModule()
+    const result = await ensureImage('myproject', undefined, false, true)
+
+    expect(operations).toHaveLength(3)
+    expect(operations[0]).toMatch(new RegExp(`^build yaac-base:${HASH_RE}$`))
+    expect(operations[1]).toMatch(new RegExp(`^build yaac-base:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\]$`))
+    expect(operations[2]).toMatch(new RegExp(`^build yaac-base-nestable:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\]$`))
     expect(result).toMatch(new RegExp(`^yaac-base-nestable:${HASH_RE}$`))
   })
 

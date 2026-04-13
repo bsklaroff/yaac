@@ -90,9 +90,20 @@ async function readFileFromRef(repoPath: string, ref: string, filePath: string):
 }
 
 /**
+ * Check whether a Dockerfile layers on top of the yaac base image.
+ * Returns true if it contains `FROM yaac-base` (with optional tag or alias).
+ */
+function usesYaacBase(dockerfileContent: string): boolean {
+  return /^FROM\s+yaac-base\b/m.test(dockerfileContent)
+}
+
+/**
  * Ensures the full image chain is built for a project.
  *
- * Layer 1: yaac-base (from Dockerfile.default, or replaced by ~/.yaac/Dockerfile.yaac)
+ * Layer 1: yaac-base — one of:
+ *   - Dockerfile.default alone (no Dockerfile.yaac)
+ *   - Dockerfile.yaac layered on Dockerfile.default (when Dockerfile.yaac uses `FROM yaac-base`)
+ *   - Dockerfile.yaac standalone (when Dockerfile.yaac uses any other FROM, replaces default)
  * Layer 1.5 (optional): yaac-base-nestable (from Dockerfile.nestable, when nestedContainers is true)
  * Layer 2: yaac-user-<slug> (optional: from ~/.yaac/Dockerfile.user, builds on top)
  *
@@ -131,12 +142,38 @@ export async function ensureImage(projectSlug: string, imagePrefix?: string, req
     }
   }
 
-  const baseDockerfile = yaacDockerfile ?? path.join(DOCKERFILES_DIR, 'Dockerfile.default')
-  const baseContext = yaacDockerfile ? path.dirname(yaacDockerfile) : DOCKERFILES_DIR
-  const baseHash = await fileHash(baseDockerfile)
+  // Determine whether Dockerfile.yaac layers on top of the default base or replaces it.
+  let yaacIsLayered = false
+  if (yaacDockerfile) {
+    const yaacContent = await fs.readFile(yaacDockerfile, 'utf8')
+    yaacIsLayered = usesYaacBase(yaacContent)
+  }
 
-  // Layer 1: <prefix>-base:<hash>
+  // Build Dockerfile.default first when there's no Dockerfile.yaac or it layers on yaac-base.
+  const defaultDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
+  if (!yaacDockerfile || yaacIsLayered) {
+    const defaultHash = await fileHash(defaultDockerfile)
+    const defaultTag = `${prefix}-base:${defaultHash}`
+    if (!await imageExists(defaultTag)) {
+      if (requirePrebuilt) {
+        throw new Error(
+          `Base image ${defaultTag} is missing or stale. ` +
+          'Restart the test run so the global setup can rebuild it.',
+        )
+      }
+      console.log(`Building ${defaultTag}...`)
+      await buildImage(defaultTag, defaultDockerfile, DOCKERFILES_DIR)
+    }
+  }
+
+  // Resolve the base dockerfile / context / hash, and build if needed.
+  const baseDockerfile = yaacDockerfile ?? defaultDockerfile
+  const baseContext = yaacDockerfile ? path.dirname(yaacDockerfile) : DOCKERFILES_DIR
+  const baseHash = yaacIsLayered
+    ? crypto.createHash('sha256').update(`${await fileHash(defaultDockerfile)}:${await fileHash(yaacDockerfile!)}`).digest('hex').slice(0, 16)
+    : await fileHash(baseDockerfile)
   const baseTag = `${prefix}-base:${baseHash}`
+
   if (!await imageExists(baseTag)) {
     if (requirePrebuilt) {
       throw new Error(
@@ -144,10 +181,14 @@ export async function ensureImage(projectSlug: string, imagePrefix?: string, req
         'Restart the test run so the global setup can rebuild it.',
       )
     }
-    console.log(yaacDockerfile
-      ? `Building ${baseTag} from Dockerfile.yaac...`
-      : `Building ${baseTag}...`)
-    await buildImage(baseTag, baseDockerfile, baseContext)
+    if (yaacIsLayered) {
+      const defaultTag = `${prefix}-base:${await fileHash(defaultDockerfile)}`
+      console.log(`Building ${baseTag} from Dockerfile.yaac (layered on base)...`)
+      await buildImage(baseTag, baseDockerfile, baseContext, { BASE_IMAGE: defaultTag })
+    } else if (yaacDockerfile) {
+      console.log(`Building ${baseTag} from Dockerfile.yaac...`)
+      await buildImage(baseTag, baseDockerfile, baseContext)
+    }
   }
 
   // Layer 1.5 (optional): <prefix>-base-nestable:<hash> (podman-in-podman support)
