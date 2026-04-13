@@ -268,6 +268,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
       .map((cmd) => shellEscape(cmd))
       .join(' && ')
     containerExec(containerName, `tmux new-window -d -t yaac -n init 'cd /workspace && ${initScript}'`)
+    containerExec(containerName, 'tmux set-option -t yaac:init remain-on-exit on')
   }
 
   // Configure tmux UX
