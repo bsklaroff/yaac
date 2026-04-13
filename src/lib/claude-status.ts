@@ -15,6 +15,7 @@ interface ContentBlock {
   name?: string
   tool_name?: string
   content?: string | ContentBlock[]
+  input?: { file_path?: string }
 }
 
 interface ConversationEntry {
@@ -42,6 +43,26 @@ function isWaitingForPlanApproval(entry: ConversationEntry): boolean {
       for (const sub of block.content) {
         if (sub.type === 'tool_reference' && sub.tool_name === 'ExitPlanMode') return true
       }
+    }
+  }
+  return false
+}
+
+const PLAN_FILE_RE = /\/\.claude\/plans\//
+
+/**
+ * Checks whether an assistant entry is a Write to a plan file. When Claude
+ * writes or updates a plan, the plan-approval UI blocks before the next API
+ * request, so the assistant tool_use Write is the last entry in the JSONL.
+ */
+function isPlanFileWrite(entry: ConversationEntry): boolean {
+  if (entry.type !== 'assistant') return false
+  const content = entry.message?.content
+  if (!Array.isArray(content)) return false
+
+  for (const block of content) {
+    if (block.type === 'tool_use' && block.name === 'Write' && PLAN_FILE_RE.test(block.input?.file_path ?? '')) {
+      return true
     }
   }
   return false
@@ -96,6 +117,7 @@ export async function getClaudeStatus(jsonlPath: string): Promise<'running' | 'w
         if (!CONVERSATION_TYPES.has(entry.type)) continue
 
         if (isWaitingForPlanApproval(entry)) return 'waiting'
+        if (isPlanFileWrite(entry)) return 'waiting'
 
         if (entry.type !== 'assistant') return 'running'
 
@@ -110,6 +132,7 @@ export async function getClaudeStatus(jsonlPath: string): Promise<'running' | 'w
         const entry = JSON.parse(carryover) as ConversationEntry
         if (CONVERSATION_TYPES.has(entry.type)) {
           if (isWaitingForPlanApproval(entry)) return 'waiting'
+          if (isPlanFileWrite(entry)) return 'waiting'
           if (entry.type !== 'assistant') return 'running'
           const stopReason = entry.message?.stop_reason
           return stopReason && WAITING_STOP_REASONS.has(stopReason) ? 'waiting' : 'running'

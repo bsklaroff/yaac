@@ -78,6 +78,42 @@ describe('getClaudeStatus', () => {
     expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
   })
 
+  it('returns waiting when assistant writes to a plan file', async () => {
+    await writeEntry({
+      type: 'assistant',
+      message: {
+        stop_reason: 'tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_abc',
+            name: 'Write',
+            input: { file_path: '/home/user/.claude/plans/my-plan.md', content: '# Plan' },
+          },
+        ],
+      },
+    })
+    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
+  })
+
+  it('returns running for Write to a non-plan file', async () => {
+    await writeEntry({
+      type: 'assistant',
+      message: {
+        stop_reason: 'tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_abc',
+            name: 'Write',
+            input: { file_path: '/workspace/src/index.ts', content: 'code' },
+          },
+        ],
+      },
+    })
+    expect(await getClaudeStatus(jsonlPath)).toBe('running')
+  })
+
   it('skips non-conversation entry types', async () => {
     await writeEntry({ type: 'system' })
     expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
