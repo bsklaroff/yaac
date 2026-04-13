@@ -39,11 +39,30 @@ export function parseProjectConfig(raw: string): YaacConfig {
     }
     const proxy = obj.envSecretProxy as Record<string, unknown>
     for (const [key, val] of Object.entries(proxy)) {
-      if (!Array.isArray(val) || !val.every((v) => typeof v === 'string')) {
-        throw new Error(`yaac-config.json: envSecretProxy.${key} must be a string array`)
+      if (typeof val !== 'object' || val === null || Array.isArray(val)) {
+        throw new Error(`yaac-config.json: envSecretProxy.${key} must be an object with hosts, and either header or bodyParam`)
+      }
+      const rule = val as Record<string, unknown>
+      if (!Array.isArray(rule.hosts) || !rule.hosts.every((v) => typeof v === 'string') || rule.hosts.length === 0) {
+        throw new Error(`yaac-config.json: envSecretProxy.${key}.hosts must be a non-empty string array`)
+      }
+      if (rule.path !== undefined && typeof rule.path !== 'string') {
+        throw new Error(`yaac-config.json: envSecretProxy.${key}.path must be a string`)
+      }
+      if (rule.header !== undefined && typeof rule.header !== 'string') {
+        throw new Error(`yaac-config.json: envSecretProxy.${key}.header must be a string`)
+      }
+      if (rule.prefix !== undefined && typeof rule.prefix !== 'string') {
+        throw new Error(`yaac-config.json: envSecretProxy.${key}.prefix must be a string`)
+      }
+      if (rule.bodyParam !== undefined && typeof rule.bodyParam !== 'string') {
+        throw new Error(`yaac-config.json: envSecretProxy.${key}.bodyParam must be a string`)
+      }
+      if (rule.header && rule.bodyParam) {
+        throw new Error(`yaac-config.json: envSecretProxy.${key} cannot have both header and bodyParam`)
       }
     }
-    config.envSecretProxy = proxy as Record<string, string[]>
+    config.envSecretProxy = proxy as YaacConfig['envSecretProxy']
   }
 
   if (obj.cacheVolumes !== undefined) {

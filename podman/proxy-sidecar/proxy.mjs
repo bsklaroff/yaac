@@ -154,6 +154,7 @@ function applyInjections(headers, requestPath, rules) {
   for (const rule of rules) {
     if (!pathMatches(requestPath, rule.pathPattern)) continue
     for (const inj of rule.injections) {
+      if (inj.action === 'replace_body_param') continue // handled separately
       const headerLower = inj.name.toLowerCase()
       if (inj.action === 'set_header') {
         headers[headerLower] = inj.value
@@ -170,6 +171,48 @@ function applyInjections(headers, requestPath, rules) {
     }
   }
   return count
+}
+
+function collectBodyInjections(requestPath, rules) {
+  /** @type {Array<{ name: string, value: string }>} */
+  const params = []
+  for (const rule of rules) {
+    if (!pathMatches(requestPath, rule.pathPattern)) continue
+    for (const inj of rule.injections) {
+      if (inj.action === 'replace_body_param') {
+        params.push({ name: inj.name, value: inj.value })
+      }
+    }
+  }
+  return params
+}
+
+function applyBodyInjections(bodyBuffer, contentType, injections) {
+  const bodyStr = bodyBuffer.toString('utf8')
+  const isJson = contentType && contentType.includes('application/json')
+
+  if (isJson) {
+    try {
+      const obj = JSON.parse(bodyStr)
+      for (const { name, value } of injections) {
+        if (name in obj) {
+          obj[name] = value
+        }
+      }
+      return Buffer.from(JSON.stringify(obj), 'utf8')
+    } catch {
+      // Not valid JSON — fall through to form-encoded
+    }
+  }
+
+  // Default: application/x-www-form-urlencoded
+  const params = new URLSearchParams(bodyStr)
+  for (const { name, value } of injections) {
+    if (params.has(name)) {
+      params.set(name, value)
+    }
+  }
+  return Buffer.from(params.toString(), 'utf8')
 }
 
 // ── Token Extraction ───────────────────────────────────────────────────
@@ -204,31 +247,55 @@ function handleMitm(clientSocket, hostname, port, rules) {
     delete headers['proxy-connection']
 
     const injCount = applyInjections(headers, reqPath, rules)
-    if (injCount > 0) {
-      console.log(`[proxy] MITM ${req.method} https://${hostname}${reqPath} (${injCount} injections)`)
+    const bodyInjections = collectBodyInjections(reqPath, rules)
+
+    const totalInj = injCount + bodyInjections.length
+    if (totalInj > 0) {
+      console.log(`[proxy] MITM ${req.method} https://${hostname}${reqPath} (${injCount} header + ${bodyInjections.length} body injections)`)
     }
 
-    const upstream = https.request({
-      hostname,
-      port: parseInt(port, 10) || 443,
-      path: reqPath,
-      method: req.method,
-      headers,
-      rejectUnauthorized: true,
-    }, (upstreamRes) => {
-      res.writeHead(upstreamRes.statusCode, upstreamRes.headers)
-      upstreamRes.pipe(res)
-    })
-
-    upstream.on('error', (err) => {
-      console.error(`[proxy] Upstream error for ${hostname}${reqPath}:`, err.message)
-      if (!res.headersSent) {
-        res.writeHead(502, { 'Content-Type': 'text/plain' })
+    function sendUpstream(body) {
+      if (body !== null) {
+        headers['content-length'] = String(body.length)
       }
-      res.end(err.message)
-    })
+      const upstream = https.request({
+        hostname,
+        port: parseInt(port, 10) || 443,
+        path: reqPath,
+        method: req.method,
+        headers,
+        rejectUnauthorized: true,
+      }, (upstreamRes) => {
+        res.writeHead(upstreamRes.statusCode, upstreamRes.headers)
+        upstreamRes.pipe(res)
+      })
 
-    req.pipe(upstream)
+      upstream.on('error', (err) => {
+        console.error(`[proxy] Upstream error for ${hostname}${reqPath}:`, err.message)
+        if (!res.headersSent) {
+          res.writeHead(502, { 'Content-Type': 'text/plain' })
+        }
+        res.end(err.message)
+      })
+
+      if (body !== null) {
+        upstream.end(body)
+      } else {
+        req.pipe(upstream)
+      }
+    }
+
+    if (bodyInjections.length > 0) {
+      const chunks = []
+      req.on('data', (chunk) => chunks.push(chunk))
+      req.on('end', () => {
+        const rawBody = Buffer.concat(chunks)
+        const modified = applyBodyInjections(rawBody, headers['content-type'], bodyInjections)
+        sendUpstream(modified)
+      })
+    } else {
+      sendUpstream(null)
+    }
   })
 
   mitmServer.emit('connection', tlsSocket)

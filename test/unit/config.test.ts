@@ -33,8 +33,13 @@ describe('loadProjectConfig', () => {
   it('parses valid config with envSecretProxy', async () => {
     const config = {
       envSecretProxy: {
-        GITHUB_TOKEN: ['api.github.com', 'github.com'],
-        ANTHROPIC_API_KEY: ['api.anthropic.com'],
+        GITHUB_TOKEN: {
+          hosts: ['api.github.com', 'github.com'],
+        },
+        ANTHROPIC_API_KEY: {
+          hosts: ['api.anthropic.com'],
+          header: 'x-api-key',
+        },
       },
     }
     await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
@@ -45,7 +50,11 @@ describe('loadProjectConfig', () => {
   it('parses config with both fields', async () => {
     const config = {
       envPassthrough: ['TERM'],
-      envSecretProxy: { GITHUB_TOKEN: ['api.github.com'] },
+      envSecretProxy: {
+        GITHUB_TOKEN: {
+          hosts: ['api.github.com'],
+        },
+      },
     }
     await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
     const result = await loadProjectConfig(tmpDir)
@@ -71,9 +80,40 @@ describe('loadProjectConfig', () => {
   it('throws on invalid envSecretProxy values', async () => {
     await fs.writeFile(
       path.join(tmpDir, 'yaac-config.json'),
-      JSON.stringify({ envSecretProxy: { GITHUB_TOKEN: 'not-an-array' } }),
+      JSON.stringify({ envSecretProxy: { GITHUB_TOKEN: 'not-an-object' } }),
     )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('envSecretProxy.GITHUB_TOKEN must be a string array')
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('envSecretProxy.GITHUB_TOKEN must be an object')
+  })
+
+  it('throws when envSecretProxy entry has both header and bodyParam', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ envSecretProxy: { MY_KEY: { hosts: ['example.com'], header: 'x-key', bodyParam: 'key' } } }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('envSecretProxy.MY_KEY cannot have both header and bodyParam')
+  })
+
+  it('throws when envSecretProxy entry has empty hosts', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ envSecretProxy: { MY_KEY: { hosts: [], header: 'x-key' } } }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('envSecretProxy.MY_KEY.hosts must be a non-empty string array')
+  })
+
+  it('parses envSecretProxy with bodyParam', async () => {
+    const config = {
+      envSecretProxy: {
+        GITHUB_CLIENT_ID: {
+          hosts: ['github.com'],
+          path: '/login/oauth/*',
+          bodyParam: 'client_id',
+        },
+      },
+    }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual(config)
   })
 
   it('parses valid config with cacheVolumes', async () => {

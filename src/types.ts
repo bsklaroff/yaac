@@ -9,9 +9,22 @@ export interface PortForwardConfig {
   hostPortStart: number
 }
 
+export interface SecretProxyRule {
+  /** Hostnames to match (exact or wildcard like *.example.com) */
+  hosts: string[]
+  /** Path pattern to match (default: "/*") */
+  path?: string
+  /** Header name to set with the secret value */
+  header?: string
+  /** Prefix prepended to the value when injecting as a header (e.g. "Bearer ") */
+  prefix?: string
+  /** Form/JSON body parameter name to replace with the secret value */
+  bodyParam?: string
+}
+
 export interface YaacConfig {
   envPassthrough?: string[]
-  envSecretProxy?: Record<string, string[]>
+  envSecretProxy?: Record<string, SecretProxyRule>
   cacheVolumes?: Record<string, string>
   initCommands?: string[]
   nestedContainers?: boolean

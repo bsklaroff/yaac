@@ -74,8 +74,13 @@ Add a `yaac-config.json` to your repo root:
 {
   "envPassthrough": ["TERM", "LANG"],
   "envSecretProxy": {
-    "GITHUB_TOKEN": ["api.github.com", "github.com"],
-    "ANTHROPIC_API_KEY": ["api.anthropic.com"]
+    "GITHUB_TOKEN": {
+      "hosts": ["api.github.com", "github.com"]
+    },
+    "ANTHROPIC_API_KEY": {
+      "hosts": ["api.anthropic.com"],
+      "header": "x-api-key"
+    }
   },
   "cacheVolumes": {
     "pnpm-store": "/home/yaac/.pnpm-store"
@@ -85,7 +90,38 @@ Add a `yaac-config.json` to your repo root:
 ```
 
 - **envPassthrough** — environment variables passed directly from your host to the container.
-- **envSecretProxy** — environment variables injected via a MITM proxy into HTTPS requests to the listed hosts. The actual secret value never enters the container.
+- **envSecretProxy** — environment variables injected via a MITM proxy into HTTPS requests. The actual secret value never enters the container. Each entry specifies how the secret is injected:
+  - **`hosts`** — hostnames to intercept (required).
+  - **`header`** — inject as this HTTP header (default: `"authorization"`). When using the default header, the value is automatically prefixed with `"Bearer "`. Use `prefix` to override.
+  - **`bodyParam`** — instead of a header, replace this form/JSON body parameter. Useful for OAuth client credentials that are sent in POST bodies.
+  - **`path`** — only inject on matching URL paths (default `"/*"`). Supports `*` wildcards.
+
+  Each entry must have either `header` or `bodyParam` (not both).
+
+  **Example: OAuth client credentials** — for APIs that authenticate with a client ID and
+  secret (e.g. GitHub OAuth Apps, Google APIs), use `bodyParam` to inject the real
+  credentials into token exchange requests:
+
+  ```json
+  {
+    "envSecretProxy": {
+      "GITHUB_CLIENT_ID": {
+        "hosts": ["github.com"],
+        "path": "/login/oauth/*",
+        "bodyParam": "client_id"
+      },
+      "GITHUB_CLIENT_SECRET": {
+        "hosts": ["github.com"],
+        "path": "/login/oauth/*",
+        "bodyParam": "client_secret"
+      }
+    }
+  }
+  ```
+
+  The container code performs the OAuth flow normally with placeholder values. The proxy
+  intercepts the token exchange request and replaces the placeholder `client_id` and
+  `client_secret` in the POST body with the real values from your host environment.
 - **cacheVolumes** — named Podman volumes mounted into the container. Keys are volume names, values are absolute container paths. Volumes persist across sessions.
 - **initCommands** — commands run inside the container after it starts (e.g. `pnpm install` against a warm cache volume). These run on every session, not just the first.
 - **nestedContainers** — when `true`, enables podman-in-podman support so sessions can build and run containers. See [Nested containers](#nested-containers) below.
