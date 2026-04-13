@@ -59,6 +59,8 @@ yaac session <command>
   attach <container-id>       Attach to the Claude Code session
   stream [project]            Stream through waiting sessions, attaching to
                               each in turn
+  monitor [options] [project] Poll and display active sessions in real-time
+    -n, --interval <seconds>  Refresh interval in seconds (default: 5)
 ```
 
 Detach from a tmux session with `Ctrl-B D`. Kill the tmux server (and the

@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { podman } from '@/lib/podman'
 import { claudeDir, getDataDir, getProjectsDir } from '@/lib/paths'
-import { getSessionClaudeStatus } from '@/lib/claude-status'
+import { getSessionClaudeStatus, getSessionFirstUserMessage } from '@/lib/claude-status'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session-cleanup'
 
 export interface SessionListOptions {
@@ -56,28 +56,37 @@ export async function sessionList(projectSlug?: string, options: SessionListOpti
     const suffix = projectSlug ? ` for project "${projectSlug}"` : ''
     console.log(`No active sessions${suffix}. Create one with: yaac session create <project>`)
   } else {
-    // Resolve running/waiting status in parallel
-    const statusResults = await Promise.all(
+    // Resolve running/waiting status and first user message in parallel
+    const sessionMeta = await Promise.all(
       running.map(async (c) => {
         const sessionId = c.Labels?.['yaac.session-id'] ?? ''
         const slug = c.Labels?.['yaac.project'] ?? ''
-        if (!sessionId || !slug) return 'running' as const
-        return getSessionClaudeStatus(slug, sessionId)
+        if (!sessionId || !slug) return { status: 'running' as const, prompt: undefined }
+        const [status, prompt] = await Promise.all([
+          getSessionClaudeStatus(slug, sessionId),
+          getSessionFirstUserMessage(slug, sessionId),
+        ])
+        return { status, prompt }
       }),
     )
 
+    const fixedWidth = 10 + 1 + 20 + 1 + 12 + 1 + 19 + 2 // columns + spaces + padding
+    const termWidth = process.stdout.columns || 120
+    const promptWidth = Math.max(10, termWidth - fixedWidth)
+
     console.log('')
-    console.log(`${'SESSION'.padEnd(10)} ${'PROJECT'.padEnd(20)} ${'STATUS'.padEnd(12)} CREATED`)
-    console.log(`${'-'.repeat(10)} ${'-'.repeat(20)} ${'-'.repeat(12)} ${'-'.repeat(20)}`)
+    console.log(`${'SESSION'.padEnd(10)} ${'PROJECT'.padEnd(20)} ${'STATUS'.padEnd(12)} ${'CREATED'.padEnd(19)}  PROMPT`)
+    console.log(`${'-'.repeat(10)} ${'-'.repeat(20)} ${'-'.repeat(12)} ${'-'.repeat(19)}  ${'-'.repeat(Math.min(promptWidth, 40))}`)
 
     for (let i = 0; i < running.length; i++) {
       const c = running[i]
       const sessionId = c.Labels?.['yaac.session-id'] ?? '?'
       const shortId = sessionId.slice(0, 8)
       const project = c.Labels?.['yaac.project'] ?? '?'
-      const status = statusResults[i]
+      const { status, prompt } = sessionMeta[i]
       const created = new Date(c.Created * 1000).toISOString().replace('T', ' ').slice(0, 19)
-      console.log(`${shortId.padEnd(10)} ${project.padEnd(20)} ${status.padEnd(12)} ${created}`)
+      const promptText = truncatePrompt(prompt, promptWidth)
+      console.log(`${shortId.padEnd(10)} ${project.padEnd(20)} ${status.padEnd(12)} ${created}  ${promptText}`)
     }
     console.log('')
   }
@@ -89,6 +98,14 @@ export async function sessionList(projectSlug?: string, options: SessionListOpti
   for (const { name, slug, sessionId } of stale) {
     cleanupSessionDetached({ containerName: name, projectSlug: slug, sessionId })
   }
+}
+
+export function truncatePrompt(prompt: string | undefined, maxWidth: number): string {
+  if (!prompt) return ''
+  // Collapse whitespace and newlines into single spaces
+  const flat = prompt.replace(/\s+/g, ' ').trim()
+  if (flat.length <= maxWidth) return flat
+  return flat.slice(0, maxWidth - 1) + '\u2026'
 }
 
 async function listDeletedSessions(projectSlug?: string): Promise<void> {

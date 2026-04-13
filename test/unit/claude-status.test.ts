@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { getClaudeStatus } from '@/lib/claude-status'
+import { getClaudeStatus, getFirstUserMessage } from '@/lib/claude-status'
 
 describe('getClaudeStatus', () => {
   let tmpDir: string
@@ -160,5 +160,61 @@ describe('getClaudeStatus', () => {
     await writeEntry({ type: 'assistant', message: { stop_reason: 'end_turn' } })
     await writeEntry({ type: 'queue-operation' })
     expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
+  })
+})
+
+describe('getFirstUserMessage', () => {
+  let tmpDir: string
+  let jsonlPath: string
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'first-user-msg-test-'))
+    jsonlPath = path.join(tmpDir, 'session.jsonl')
+  })
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true })
+  })
+
+  function writeEntry(entry: Record<string, unknown>): Promise<void> {
+    return fs.appendFile(jsonlPath, JSON.stringify(entry) + '\n')
+  }
+
+  it('returns string content from first user message', async () => {
+    await writeEntry({ type: 'permission-mode', permissionMode: 'default' })
+    await writeEntry({ type: 'user', message: { role: 'user', content: 'fix the login bug' } })
+    await writeEntry({ type: 'assistant', message: { stop_reason: 'end_turn' } })
+    expect(await getFirstUserMessage(jsonlPath)).toBe('fix the login bug')
+  })
+
+  it('returns text from content block array', async () => {
+    await writeEntry({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'text', text: 'refactor the API' }] },
+    })
+    expect(await getFirstUserMessage(jsonlPath)).toBe('refactor the API')
+  })
+
+  it('returns undefined when no user messages exist', async () => {
+    await writeEntry({ type: 'permission-mode', permissionMode: 'default' })
+    await writeEntry({ type: 'assistant', message: { stop_reason: 'end_turn' } })
+    expect(await getFirstUserMessage(jsonlPath)).toBeUndefined()
+  })
+
+  it('returns undefined for empty file', async () => {
+    await fs.writeFile(jsonlPath, '')
+    expect(await getFirstUserMessage(jsonlPath)).toBeUndefined()
+  })
+
+  it('returns undefined for missing file', async () => {
+    expect(await getFirstUserMessage(path.join(tmpDir, 'nope.jsonl'))).toBeUndefined()
+  })
+
+  it('skips metadata and returns first user message', async () => {
+    await writeEntry({ type: 'system' })
+    await writeEntry({ type: 'permission-mode', permissionMode: 'default' })
+    await writeEntry({ type: 'user', message: { role: 'user', content: 'hello world' } })
+    await writeEntry({ type: 'user', message: { role: 'user', content: 'second message' } })
+    expect(await getFirstUserMessage(jsonlPath)).toBe('hello world')
   })
 })

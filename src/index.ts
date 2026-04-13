@@ -7,6 +7,7 @@ import { sessionDelete } from '@/commands/session-delete'
 import { sessionShell } from '@/commands/session-shell'
 import { sessionAttach } from '@/commands/session-attach'
 import { sessionStream } from '@/commands/session-stream'
+import { sessionMonitor } from '@/commands/session-monitor'
 
 /**
  * Show subcommand options nested under each subcommand in help output.
@@ -105,5 +106,12 @@ session
   .description('Stream through waiting sessions, attaching to each in turn')
   .argument('[project]', 'Filter by project slug (auto-creates sessions if none waiting)')
   .action(sessionStream)
+
+session
+  .command('monitor')
+  .description('Poll and display active sessions in real-time')
+  .argument('[project]', 'Filter by project slug')
+  .option('-n, --interval <seconds>', 'Refresh interval in seconds', '5')
+  .action(sessionMonitor)
 
 program.parse()
