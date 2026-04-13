@@ -250,9 +250,11 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   execSync(`podman exec ${containerName} sh -c "echo 'gitdir: /repo/.git/worktrees/${sessionId}' > /workspace/.git"`)
   execSync(`podman exec ${containerName} sh -c "echo '/workspace/.git' > /repo/.git/worktrees/${sessionId}/gitdir"`)
 
-  // Configure git identity inside container
+  // Configure git identity and trust mounted directories inside container
   execSync(`podman exec ${containerName} git config --global user.name '${shellEscape(gitUser.name)}'`)
   execSync(`podman exec ${containerName} git config --global user.email '${shellEscape(gitUser.email)}'`)
+  execSync(`podman exec ${containerName} git config --global --add safe.directory /workspace`)
+  execSync(`podman exec ${containerName} git config --global --add safe.directory /repo`)
 
   // Start Claude Code in a tmux session
   const claudeCmd = options.prompt
