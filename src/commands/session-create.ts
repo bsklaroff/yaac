@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import crypto from 'node:crypto'
 import readline from 'node:readline/promises'
-import { execSync } from 'node:child_process'
+import { execSyncRetry } from '@/lib/exec'
 import { packTar } from '@/lib/tar-utils'
 import simpleGit from 'simple-git'
 import { ensureContainerRuntime, podman } from '@/lib/podman'
@@ -18,6 +18,20 @@ import type { YaacConfig } from '@/types'
 
 export function shellEscape(str: string): string {
   return str.replace(/'/g, "'\\''")
+}
+
+const podmanRetryPatterns = ['container state improper']
+
+function containerExec(containerName: string, cmd: string): void {
+  execSyncRetry(`podman exec ${containerName} ${cmd}`, {
+    stdio: 'pipe', retryPatterns: podmanRetryPatterns,
+  })
+}
+
+function containerExecRoot(containerName: string, cmd: string): void {
+  execSyncRetry(`podman exec --user root ${containerName} ${cmd}`, {
+    stdio: 'pipe', retryPatterns: podmanRetryPatterns,
+  })
 }
 
 export interface SessionCreateOptions {
@@ -210,39 +224,17 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
 
   await container.start()
 
-  // Wait for container to be ready to accept exec sessions.
-  // Podman may report Running before exec is actually available,
-  // so we verify by attempting a real exec call.
-  let containerReady = false
-  for (let i = 0; i < 30; i++) {
-    const info = await container.inspect()
-    if (info.State.Status === 'exited' || info.State.Status === 'dead') {
-      throw new Error(`Container exited unexpectedly (exit code ${info.State.ExitCode})`)
-    }
-    if (info.State.Running) {
-      try {
-        execSync(`podman exec ${containerName} true`, { stdio: 'pipe' })
-        containerReady = true
-        break
-      } catch {
-        // exec not ready yet — retry
-      }
-    }
-    await new Promise((resolve) => setTimeout(resolve, 200))
-  }
-  if (!containerReady) {
-    throw new Error('Container did not become ready for exec within 6 seconds')
-  }
-
   // Fix ownership of named cache volumes (created as root, but container runs as yaac)
   for (const containerPath of Object.values(config.cacheVolumes ?? {})) {
-    execSync(`podman exec --user root ${containerName} chown yaac:yaac '${shellEscape(containerPath)}'`)
+    containerExecRoot(containerName, `chown yaac:yaac '${shellEscape(containerPath)}'`)
   }
 
   // Fix ownership of podman storage volume and start API socket for nested containers
   if (config.nestedContainers) {
-    execSync(`podman exec --user root ${containerName} chown yaac:yaac /home/yaac/.local/share/containers`)
-    execSync(`podman exec -d ${containerName} podman system service --time=0 unix:///run/user/1000/podman/podman.sock`)
+    containerExecRoot(containerName, 'chown yaac:yaac /home/yaac/.local/share/containers')
+    execSyncRetry(`podman exec -d ${containerName} podman system service --time=0 unix:///run/user/1000/podman/podman.sock`, {
+      stdio: 'pipe', retryPatterns: podmanRetryPatterns,
+    })
   }
 
   // Inject CA cert if using proxy
@@ -254,48 +246,44 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   }
 
   // Fix worktree git pointers for in-container paths
-  execSync(`podman exec ${containerName} sh -c "echo 'gitdir: /repo/.git/worktrees/${sessionId}' > /workspace/.git"`)
-  execSync(`podman exec ${containerName} sh -c "echo '/workspace/.git' > /repo/.git/worktrees/${sessionId}/gitdir"`)
+  containerExec(containerName, `sh -c "echo 'gitdir: /repo/.git/worktrees/${sessionId}' > /workspace/.git"`)
+  containerExec(containerName, `sh -c "echo '/workspace/.git' > /repo/.git/worktrees/${sessionId}/gitdir"`)
 
   // Configure git identity and trust mounted directories inside container
-  execSync(`podman exec ${containerName} git config --global user.name '${shellEscape(gitUser.name)}'`)
-  execSync(`podman exec ${containerName} git config --global user.email '${shellEscape(gitUser.email)}'`)
-  execSync(`podman exec ${containerName} git config --global --add safe.directory /workspace`)
-  execSync(`podman exec ${containerName} git config --global --add safe.directory /repo`)
+  containerExec(containerName, `git config --global user.name '${shellEscape(gitUser.name)}'`)
+  containerExec(containerName, `git config --global user.email '${shellEscape(gitUser.email)}'`)
+  containerExec(containerName, 'git config --global --add safe.directory /workspace')
+  containerExec(containerName, 'git config --global --add safe.directory /repo')
 
   // Start Claude Code in a tmux session
   const claudeCmd = options.prompt
     ? `claude --dangerously-skip-permissions --session-id ${sessionId} -p ${shellEscape(options.prompt)}`
     : `claude --dangerously-skip-permissions --session-id ${sessionId}`
   console.log('Starting Claude Code...')
-  execSync(`podman exec ${containerName} tmux -u new-session -d -s yaac -n claude '${claudeCmd}'`, {
-    stdio: 'pipe',
-  })
+  containerExec(containerName, `tmux -u new-session -d -s yaac -n claude '${claudeCmd}'`)
 
   // Run init commands in a background tmux window (parallel to Claude Code)
   if (config.initCommands?.length) {
     const initScript = config.initCommands
       .map((cmd) => shellEscape(cmd))
       .join(' && ')
-    execSync(`podman exec ${containerName} tmux new-window -d -t yaac -n init 'cd /workspace && ${initScript}'`, {
-      stdio: 'pipe',
-    })
+    containerExec(containerName, `tmux new-window -d -t yaac -n init 'cd /workspace && ${initScript}'`)
   }
 
   // Configure tmux UX
   const portInfo = forwardedPorts.length > 0
     ? ' ' + forwardedPorts.map((p) => `:${p.hostPort}->${p.containerPort}`).join(' ')
     : ''
-  execSync(`podman exec ${containerName} tmux set-option -g history-limit 200000`)
-  execSync(`podman exec ${containerName} tmux set-option -g mouse on`)
-  execSync(`podman exec ${containerName} tmux set-option -t yaac status-right ' ${projectSlug} ${sessionId.slice(0, 8)}${portInfo} '`)
-  execSync(`podman exec ${containerName} tmux set-option -t yaac status-right-length 80`)
-  execSync(`podman exec ${containerName} tmux bind-key k kill-server`)
+  containerExec(containerName, 'tmux set-option -g history-limit 200000')
+  containerExec(containerName, 'tmux set-option -g mouse on')
+  containerExec(containerName, `tmux set-option -t yaac status-right ' ${projectSlug} ${sessionId.slice(0, 8)}${portInfo} '`)
+  containerExec(containerName, 'tmux set-option -t yaac status-right-length 80')
+  containerExec(containerName, 'tmux bind-key k kill-server')
 
   // Attach the user to the tmux session
   try {
-    execSync(`podman exec -it ${containerName} tmux attach-session -t yaac`, {
-      stdio: 'inherit',
+    execSyncRetry(`podman exec -it ${containerName} tmux attach-session -t yaac`, {
+      stdio: 'inherit', retryPatterns: podmanRetryPatterns,
     })
   } catch {
     // Container or tmux session was killed (e.g. ctrl-b k) — fall through to cleanup
