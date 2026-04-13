@@ -25,9 +25,11 @@ describe('sessionMonitor', () => {
 
     await expect(sessionMonitor(undefined, { interval: '1' })).rejects.toThrow('stop')
 
-    expect(writeSpy).toHaveBeenCalledWith('\x1B[2J\x1B[H')
+    expect(writeSpy).toHaveBeenCalledWith('\x1B[2J')
+    expect(writeSpy).toHaveBeenCalledWith('\x1B[H')
+    expect(writeSpy).toHaveBeenCalledWith('\x1B[J')
     expect(sessionList).toHaveBeenCalledTimes(2)
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('yaac monitor'))
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('yaac session monitor'))
   })
 
   it('passes project filter to sessionList', async () => {
