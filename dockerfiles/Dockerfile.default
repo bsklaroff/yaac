@@ -12,8 +12,7 @@ RUN ssh-keyscan github.com gitlab.com bitbucket.org > /etc/ssh/ssh_known_hosts 2
 RUN ARCH="$(dpkg --print-architecture)" && if [ "$ARCH" = "amd64" ]; then ARCH=x64; fi && \
     curl -fsSL "https://nodejs.org/dist/v22.22.2/node-v22.22.2-linux-${ARCH}.tar.xz" | \
     tar -xJ -C /usr/local --strip-components=1
-RUN corepack enable && corepack install -g pnpm@10.33.0
-ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable
 RUN ARCH="$(dpkg --print-architecture)" && \
     curl -fsSL "https://github.com/neovim/neovim/releases/download/v0.10.4/nvim-linux-${ARCH}.tar.gz" | \
     tar -xz -C /usr/local --strip-components=1 && \
@@ -26,6 +25,8 @@ ENV TERM=xterm-256color
 ENV HOME=/home/yaac
 ENV PATH="/home/yaac/.local/bin:${PATH}"
 ENV EDITOR=nvim
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack install -g pnpm@10.33.0
 RUN curl -fsSL https://claude.ai/install.sh | bash
 WORKDIR /workspace
 ENTRYPOINT ["sleep", "infinity"]
