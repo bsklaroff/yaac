@@ -61,6 +61,23 @@ describe('getClaudeStatus', () => {
     expect(await getClaudeStatus(jsonlPath)).toBe('running')
   })
 
+  it('returns waiting when user tool_result references ExitPlanMode', async () => {
+    await writeEntry({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_abc',
+            content: [{ type: 'tool_reference', tool_name: 'ExitPlanMode' }],
+          },
+        ],
+      },
+    })
+    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
+  })
+
   it('skips non-conversation entry types', async () => {
     await writeEntry({ type: 'system' })
     expect(await getClaudeStatus(jsonlPath)).toBe('waiting')

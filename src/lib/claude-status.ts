@@ -10,6 +10,43 @@ const WAITING_STOP_REASONS = new Set(['end_turn', 'refusal', 'stop_sequence'])
 // skipped when determining whether Claude is running or waiting.
 const CONVERSATION_TYPES = new Set(['assistant', 'user'])
 
+interface ContentBlock {
+  type: string
+  name?: string
+  tool_name?: string
+  content?: string | ContentBlock[]
+}
+
+interface ConversationEntry {
+  type: string
+  message?: {
+    stop_reason?: string
+    content?: ContentBlock[]
+  }
+}
+
+/**
+ * Checks whether an entry indicates Claude is waiting for user feedback on a
+ * plan. When Claude finishes writing a plan, it fetches the ExitPlanMode tool
+ * schema via ToolSearch. The plan-approval UI then blocks before the actual
+ * ExitPlanMode call is made, so the ToolSearch result (a user tool_result
+ * containing an ExitPlanMode tool_reference) is the last entry in the JSONL.
+ */
+function isWaitingForPlanApproval(entry: ConversationEntry): boolean {
+  if (entry.type !== 'user') return false
+  const content = entry.message?.content
+  if (!Array.isArray(content)) return false
+
+  for (const block of content) {
+    if (block.type === 'tool_result' && Array.isArray(block.content)) {
+      for (const sub of block.content) {
+        if (sub.type === 'tool_reference' && sub.tool_name === 'ExitPlanMode') return true
+      }
+    }
+  }
+  return false
+}
+
 const CHUNK_SIZE = 4096
 
 /**
@@ -49,14 +86,16 @@ export async function getClaudeStatus(jsonlPath: string): Promise<'running' | 'w
         const line = parts[i].trim()
         if (line.length === 0) continue
 
-        let entry: { type: string; message?: { stop_reason?: string } }
+        let entry: ConversationEntry
         try {
-          entry = JSON.parse(line) as typeof entry
+          entry = JSON.parse(line) as ConversationEntry
         } catch {
           continue // skip unparseable lines
         }
 
         if (!CONVERSATION_TYPES.has(entry.type)) continue
+
+        if (isWaitingForPlanApproval(entry)) return 'waiting'
 
         if (entry.type !== 'assistant') return 'running'
 
@@ -68,8 +107,9 @@ export async function getClaudeStatus(jsonlPath: string): Promise<'running' | 'w
     // Process the final carryover (the very first line in the file)
     if (carryover.trim().length > 0) {
       try {
-        const entry = JSON.parse(carryover) as { type: string; message?: { stop_reason?: string } }
+        const entry = JSON.parse(carryover) as ConversationEntry
         if (CONVERSATION_TYPES.has(entry.type)) {
+          if (isWaitingForPlanApproval(entry)) return 'waiting'
           if (entry.type !== 'assistant') return 'running'
           const stopReason = entry.message?.stop_reason
           return stopReason && WAITING_STOP_REASONS.has(stopReason) ? 'waiting' : 'running'
