@@ -421,7 +421,51 @@ function handleApiRequest(req, res) {
 
 ca = loadOrGenerateCA()
 
-const server = http.createServer(handleApiRequest)
+// ── HTTP Forward Proxy ────────────────────────────────────────────────
+
+function isProxyRequest(req) {
+  return req.url && req.url.startsWith('http://')
+}
+
+function handleHttpForward(req, res) {
+  const target = new URL(req.url)
+
+  const headers = { ...req.headers }
+  delete headers['proxy-authorization']
+  delete headers['proxy-connection']
+  headers.host = target.host
+
+  const upstream = http.request({
+    hostname: target.hostname,
+    port: parseInt(target.port, 10) || 80,
+    path: target.pathname + target.search,
+    method: req.method,
+    headers,
+  }, (upstreamRes) => {
+    res.writeHead(upstreamRes.statusCode, upstreamRes.headers)
+    upstreamRes.pipe(res)
+  })
+
+  upstream.on('error', (err) => {
+    console.error(`[proxy] HTTP forward error for ${req.url}:`, err.message)
+    if (!res.headersSent) {
+      res.writeHead(502, { 'Content-Type': 'text/plain' })
+    }
+    res.end(err.message)
+  })
+
+  req.pipe(upstream)
+}
+
+// ── Server ─────────────────────────────────────────────────────────────
+
+const server = http.createServer((req, res) => {
+  if (isProxyRequest(req)) {
+    handleHttpForward(req, res)
+  } else {
+    handleApiRequest(req, res)
+  }
+})
 
 server.on('connect', (req, clientSocket, head) => {
   const [hostname, port] = req.url.split(':')
