@@ -199,6 +199,16 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
 
   await container.start()
 
+  // Wait for container to reach running state before exec-ing into it
+  for (let i = 0; i < 30; i++) {
+    const info = await container.inspect()
+    if (info.State.Running) break
+    if (info.State.Status === 'exited' || info.State.Status === 'dead') {
+      throw new Error(`Container exited unexpectedly (exit code ${info.State.ExitCode})`)
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200))
+  }
+
   // Fix ownership of named cache volumes (created as root, but container runs as yaac)
   for (const containerPath of Object.values(config.cacheVolumes ?? {})) {
     execSync(`podman exec --user root ${containerName} chown yaac:yaac '${shellEscape(containerPath)}'`)
