@@ -15,10 +15,24 @@ export async function sessionMonitor(projectSlug?: string, options: SessionMonit
     // Move cursor to top-left without clearing (avoids flash)
     process.stdout.write('\x1B[H')
 
-    const now = new Date().toLocaleTimeString()
-    console.log(`yaac session monitor  (every ${intervalSec}s, ${now})  Press Ctrl+C to exit\n`)
+    // Wrap stdout.write so every newline also erases to end-of-line first.
+    // Without this, shorter lines leave stale characters from the previous render.
+    const origWrite = process.stdout.write.bind(process.stdout)
+    process.stdout.write = function (this: NodeJS.WriteStream, str: string | Uint8Array, ...rest: never[]) {
+      if (typeof str === 'string') {
+        str = str.replaceAll('\n', '\x1B[K\n')
+      }
+      return origWrite(str, ...rest)
+    } as typeof origWrite
 
-    await sessionList(projectSlug)
+    try {
+      const now = new Date().toLocaleTimeString()
+      console.log(`yaac session monitor  (every ${intervalSec}s, ${now})  Press Ctrl+C to exit\n`)
+
+      await sessionList(projectSlug)
+    } finally {
+      process.stdout.write = origWrite
+    }
 
     // Clear from cursor to end of screen (remove stale lines from previous render)
     process.stdout.write('\x1B[J')

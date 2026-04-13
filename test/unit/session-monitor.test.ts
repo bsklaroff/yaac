@@ -32,6 +32,47 @@ describe('sessionMonitor', () => {
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('yaac session monitor'))
   })
 
+  it('inserts erase-to-EOL before newlines to clear stale characters', async () => {
+    const { sessionList } = await import('@/commands/session-list')
+    const written: string[] = []
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      if (typeof chunk === 'string') written.push(chunk)
+      return true
+    })
+
+    let iterations = 0
+    vi.mocked(sessionList).mockImplementation(() => {
+      iterations++
+      if (iterations >= 2) throw new Error('stop')
+      // Simulate sessionList writing a line via console.log
+      console.log('session line')
+      return Promise.resolve()
+    })
+
+    // Suppress console.log output from appearing on real stdout
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      // console.log writes to process.stdout.write which is already spied
+      const msg = args.map(String).join(' ') + '\n'
+      process.stdout.write(msg)
+    })
+
+    await expect(sessionMonitor(undefined, { interval: '1' })).rejects.toThrow('stop')
+
+    // Every newline written during rendering should be preceded by \x1B[K (erase to EOL)
+    const renderWrites = written.filter((s) => s.includes('\n'))
+    for (const w of renderWrites) {
+      const newlines = [...w.matchAll(/\n/g)]
+      for (const m of newlines) {
+        const idx = m.index
+        // Check that \x1B[K appears just before this newline
+        expect(w.slice(idx - 3, idx)).toBe('\x1B[K')
+      }
+    }
+
+    // \x1B[J should appear after each completed render cycle
+    expect(written).toContain('\x1B[J')
+  })
+
   it('passes project filter to sessionList', async () => {
     const { sessionList } = await import('@/commands/session-list')
 
