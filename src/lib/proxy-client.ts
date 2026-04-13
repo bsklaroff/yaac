@@ -8,7 +8,7 @@ import type { InjectionRule } from '@/lib/secret-conventions'
 
 const execFileAsync = promisify(execFile)
 
-const INTERNAL_PORT = '10255'
+export const INTERNAL_PORT = '10255'
 
 export interface ProxyClientConfig {
   image: string
@@ -20,7 +20,7 @@ export interface ProxyClientConfig {
 }
 
 export class ProxyClient {
-  private proxyIp: string | null = null
+  private _proxyIp: string | null = null
   private running = false
   private resolvedImage: string | null = null
 
@@ -28,6 +28,11 @@ export class ProxyClient {
 
   get network(): string {
     return this.config.network
+  }
+
+  get proxyIp(): string {
+    if (!this._proxyIp) throw new Error('Proxy not started — call ensureRunning() first')
+    return this._proxyIp
   }
 
   private get baseUrl(): string {
@@ -39,8 +44,8 @@ export class ProxyClient {
   }
 
   getProxyEnv(sessionToken: string): string[] {
-    if (!this.proxyIp) throw new Error('Proxy not started — call ensureRunning() first')
-    const proxyUrl = `http://x:${sessionToken}@${this.proxyIp}:${INTERNAL_PORT}`
+    if (!this._proxyIp) throw new Error('Proxy not started — call ensureRunning() first')
+    const proxyUrl = `http://x:${sessionToken}@${this._proxyIp}:${INTERNAL_PORT}`
     return [
       `HTTPS_PROXY=${proxyUrl}`,
       `HTTP_PROXY=${proxyUrl}`,
@@ -191,8 +196,8 @@ export class ProxyClient {
     // Resolve proxy IP on internal network
     const info = await container.inspect()
     const networks = info.NetworkSettings.Networks as Record<string, { IPAddress: string }>
-    this.proxyIp = networks[this.config.network]?.IPAddress
-    if (!this.proxyIp) {
+    this._proxyIp = networks[this.config.network]?.IPAddress
+    if (!this._proxyIp) {
       throw new Error(`Proxy container has no IP on network ${this.config.network}`)
     }
 
@@ -226,7 +231,7 @@ export class ProxyClient {
     } catch {
       // ok
     }
-    this.proxyIp = null
+    this._proxyIp = null
     this.running = false
   }
 }

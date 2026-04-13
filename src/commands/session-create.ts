@@ -11,7 +11,7 @@ import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/
 import { resolveProjectConfig } from '@/lib/config'
 import { buildRulesFromConfig } from '@/lib/secret-conventions'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session-cleanup'
-import { proxyClient } from '@/lib/proxy-client'
+import { proxyClient, INTERNAL_PORT } from '@/lib/proxy-client'
 import { sshAgent, hasSshKeys } from '@/lib/ssh-agent'
 import { findAvailablePort } from '@/lib/port'
 import type { YaacConfig } from '@/types'
@@ -237,12 +237,19 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     })
   }
 
-  // Inject CA cert if using proxy
+  // Inject CA cert and SSH proxy config if using proxy
   if (hasSecretProxy) {
     const caCert = await proxyClient.getCaCert()
     const archive = await packTar([{ name: 'proxy-ca.pem', content: caCert }])
     const container = podman.getContainer(containerName)
     await container.putArchive(archive, { path: '/tmp' })
+
+    // Configure SSH to tunnel through the proxy via HTTP CONNECT
+    const proxyAddr = `${proxyClient.proxyIp}:${INTERNAL_PORT}`
+    containerExec(containerName, 'mkdir -p /home/yaac/.ssh')
+    containerExec(containerName, `sh -c "cat > /home/yaac/.ssh/config << 'SSHEOF'\nHost *\n    ProxyCommand nc -X connect -x ${proxyAddr} %h %p\nSSHEOF"`)
+    containerExec(containerName, 'chmod 700 /home/yaac/.ssh')
+    containerExec(containerName, 'chmod 600 /home/yaac/.ssh/config')
   }
 
   // Fix worktree git pointers for in-container paths
