@@ -24,6 +24,10 @@ vi.mock('@/commands/session-create', () => ({
   sessionCreate: vi.fn(),
 }))
 
+vi.mock('node:child_process', () => ({
+  execSync: vi.fn(),
+}))
+
 import { podman } from '@/lib/podman'
 import { getSessionClaudeStatus } from '@/lib/claude-status'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session-cleanup'
@@ -270,5 +274,53 @@ describe('sessionStream', () => {
     await sessionStream()
 
     expect(mockSessionCreate).not.toHaveBeenCalled()
+  })
+
+  it('clears visited set (except last) when all waiting sessions have been visited', async () => {
+    // We need to mock execSync so tmux attach doesn't actually run
+    const { execSync } = await import('node:child_process')
+    vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => '')
+
+    mockIsTmuxAlive.mockReturnValue(true)
+    mockGetStatus.mockResolvedValue('waiting')
+
+    const containerA = {
+      State: 'running',
+      Names: ['/yaac-proj-a'],
+      Labels: { 'yaac.session-id': 'aaa', 'yaac.project': 'proj' },
+      Created: 1000,
+      Id: '1',
+    }
+    const containerB = {
+      State: 'running',
+      Names: ['/yaac-proj-b'],
+      Labels: { 'yaac.session-id': 'bbb', 'yaac.project': 'proj' },
+      Created: 2000,
+      Id: '2',
+    }
+
+    let callCount = 0
+    mockListContainers.mockImplementation(() => {
+      callCount++
+      // Calls 1-5: both containers exist and are waiting
+      // Call 6+: return empty to break the loop
+      if (callCount <= 5) return Promise.resolve([containerA, containerB] as never)
+      return Promise.resolve([])
+    })
+
+    await sessionStream()
+
+    // Should have attached to: A (oldest), B, then after clearing visited: A again
+    // Then on the 2nd cycle through, all visited again, clears, tries again
+    // but eventually callCount > 5 returns empty and exits
+    expect(vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(3)
+
+    // First attach should be to A (oldest)
+    const calls = vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>).mock.calls
+    expect(calls[0][0]).toContain('yaac-proj-a')
+    // Second attach should be to B
+    expect(calls[1][0]).toContain('yaac-proj-b')
+    // Third attach should be to A again (visited was cleared, only B excluded as lastVisited)
+    expect(calls[2][0]).toContain('yaac-proj-a')
   })
 })

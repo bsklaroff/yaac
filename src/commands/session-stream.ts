@@ -74,6 +74,7 @@ export async function getWaitingSessions(
 
 export async function sessionStream(project?: string): Promise<void> {
   const visited = new Set<string>()
+  let lastVisited: string | undefined
 
   while (true) {
     let sessions: WaitingSession[]
@@ -88,6 +89,17 @@ export async function sessionStream(project?: string): Promise<void> {
         console.error('Failed to connect to Podman. Is the Podman machine running?')
         process.exitCode = 1
         return
+      }
+    }
+
+    if (sessions.length === 0) {
+      // All waiting sessions have been visited — clear the set so we can
+      // revisit them, but keep the most-recently-visited session excluded
+      // so we never bounce back to the one we just left.
+      if (visited.size > 0 && lastVisited) {
+        visited.clear()
+        visited.add(lastVisited)
+        sessions = await getWaitingSessions(project, visited)
       }
     }
 
@@ -114,6 +126,7 @@ export async function sessionStream(project?: string): Promise<void> {
     }
 
     visited.add(session.sessionId)
+    lastVisited = session.sessionId
 
     if (!isTmuxSessionAlive(session.containerName)) {
       console.log('Claude Code exited. Cleaning up session...')
