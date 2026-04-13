@@ -8,7 +8,7 @@ import { getDefaultBranch } from '@/lib/git'
 
 const execFileAsync = promisify(execFile)
 
-const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'nestedContainers', 'portForward'])
+const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'nestedContainers', 'portForward', 'bindMounts'])
 
 export function parseProjectConfig(raw: string): YaacConfig {
   const parsed: unknown = JSON.parse(raw)
@@ -112,6 +112,33 @@ export function parseProjectConfig(raw: string): YaacConfig {
         throw new Error(`yaac-config.json: portForward[${i}].hostPortStart must be an integer between 1 and 65535`)
       }
       config.portForward.push({ containerPort: entry.containerPort, hostPortStart: entry.hostPortStart })
+    }
+  }
+
+  if (obj.bindMounts !== undefined) {
+    if (!Array.isArray(obj.bindMounts)) {
+      throw new Error('yaac-config.json: bindMounts must be an array of {hostPath, containerPath, readonly?} objects')
+    }
+    config.bindMounts = []
+    for (let i = 0; i < obj.bindMounts.length; i++) {
+      const entry = obj.bindMounts[i] as Record<string, unknown>
+      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+        throw new Error(`yaac-config.json: bindMounts[${i}] must be an object with hostPath and containerPath`)
+      }
+      if (typeof entry.hostPath !== 'string' || !entry.hostPath.startsWith('/')) {
+        throw new Error(`yaac-config.json: bindMounts[${i}].hostPath must be an absolute path`)
+      }
+      if (typeof entry.containerPath !== 'string' || !entry.containerPath.startsWith('/')) {
+        throw new Error(`yaac-config.json: bindMounts[${i}].containerPath must be an absolute path`)
+      }
+      if (entry.readonly !== undefined && typeof entry.readonly !== 'boolean') {
+        throw new Error(`yaac-config.json: bindMounts[${i}].readonly must be a boolean`)
+      }
+      config.bindMounts.push({
+        hostPath: entry.hostPath,
+        containerPath: entry.containerPath,
+        readonly: entry.readonly,
+      })
     }
   }
 

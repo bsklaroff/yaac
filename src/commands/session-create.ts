@@ -184,6 +184,9 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
         ...Object.entries(config.cacheVolumes ?? {}).map(
           ([key, containerPath]) => `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`,
         ),
+        ...(config.bindMounts ?? []).map(
+          ({ hostPath, containerPath, readonly: ro }) => `${hostPath}:${containerPath}:${ro ? 'ro' : 'rw'},Z`,
+        ),
         ...(config.nestedContainers
           ? [`yaac-podmanstorage-${projectSlug}:/home/yaac/.local/share/containers:Z`]
           : []),

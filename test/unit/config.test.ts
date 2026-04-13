@@ -252,6 +252,83 @@ describe('loadProjectConfig', () => {
     await expect(loadProjectConfig(tmpDir)).rejects.toThrow('portForward[0].containerPort must be an integer')
   })
 
+  it('parses valid config with bindMounts', async () => {
+    const config = {
+      bindMounts: [
+        { hostPath: '/home/user/data', containerPath: '/mnt/data' },
+        { hostPath: '/opt/tools', containerPath: '/opt/tools', readonly: false },
+      ],
+    }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual(config)
+  })
+
+  it('parses bindMounts with explicit readonly true', async () => {
+    const config = {
+      bindMounts: [{ hostPath: '/home/user/data', containerPath: '/mnt/data', readonly: true }],
+    }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual(config)
+  })
+
+  it('throws on invalid bindMounts type', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ bindMounts: 'not-an-array' }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts must be an array')
+  })
+
+  it('throws on invalid bindMounts entry', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ bindMounts: ['not-an-object'] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts[0] must be an object')
+  })
+
+  it('throws on relative bindMounts hostPath', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ bindMounts: [{ hostPath: 'relative/path', containerPath: '/mnt/data' }] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts[0].hostPath must be an absolute path')
+  })
+
+  it('throws on relative bindMounts containerPath', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ bindMounts: [{ hostPath: '/home/user/data', containerPath: 'relative/path' }] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts[0].containerPath must be an absolute path')
+  })
+
+  it('throws on non-boolean bindMounts readonly', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ bindMounts: [{ hostPath: '/home/user/data', containerPath: '/mnt/data', readonly: 'yes' }] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts[0].readonly must be a boolean')
+  })
+
+  it('throws on missing bindMounts hostPath', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ bindMounts: [{ containerPath: '/mnt/data' }] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts[0].hostPath must be an absolute path')
+  })
+
+  it('throws on missing bindMounts containerPath', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ bindMounts: [{ hostPath: '/home/user/data' }] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts[0].containerPath must be an absolute path')
+  })
+
   it('parseProjectConfig parses raw JSON string', () => {
     const result = parseProjectConfig(JSON.stringify({ nestedContainers: true, initCommands: ['echo hi'] }))
     expect(result).toEqual({ nestedContainers: true, initCommands: ['echo hi'] })

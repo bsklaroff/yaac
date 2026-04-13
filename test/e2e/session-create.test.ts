@@ -115,6 +115,9 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
         ...Object.entries(config.cacheVolumes ?? {}).map(
           ([key, containerPath]) => `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`,
         ),
+        ...(config.bindMounts ?? []).map(
+          ({ hostPath, containerPath, readonly: ro }) => `${hostPath}:${containerPath}:${ro ? 'ro' : 'rw'},Z`,
+        ),
       ],
       PortBindings: portBindings,
       NetworkMode: networkMode,
@@ -762,6 +765,61 @@ describe('yaac session create', () => {
     ])
     expect(statusRight).toContain(`:${result.forwardedPorts[0].hostPort}->8080`)
     expect(statusRight).toContain(`:${result.forwardedPorts[1].hostPort}->3000`)
+  })
+
+  it('mounts bindMounts as read-only by default and read-write when specified', async () => {
+    await requirePodman()
+
+    const tmpDir = await createTempDataDir()
+    tmpDirs.push(tmpDir)
+
+    // Create host directories to mount
+    const roDir = path.join(tmpDir, 'ro-data')
+    const rwDir = path.join(tmpDir, 'rw-data')
+    await fs.mkdir(roDir, { recursive: true })
+    await fs.mkdir(rwDir, { recursive: true })
+    await fs.writeFile(path.join(roDir, 'readme.txt'), 'read-only content')
+    await fs.writeFile(path.join(rwDir, 'data.txt'), 'writable content')
+
+    const repoPath = path.join(tmpDir, 'bindmount-project')
+    await createTestRepo(repoPath, {
+      yaacConfig: {
+        bindMounts: [
+          { hostPath: roDir, containerPath: '/mnt/ro-data', readonly: true },
+          { hostPath: rwDir, containerPath: '/mnt/rw-data' },
+        ],
+      },
+    })
+    await projectAdd(repoPath)
+
+    const result = await createSessionNonInteractive('bindmount-project')
+    containersToCleanup.push(result.containerName)
+
+    // Verify read-only mount content is accessible
+    const { stdout: roContent } = await execFileAsync('podman', [
+      'exec', result.containerName, 'cat', '/mnt/ro-data/readme.txt',
+    ])
+    expect(roContent.trim()).toBe('read-only content')
+
+    // Verify read-only mount rejects writes
+    await expect(execFileAsync('podman', [
+      'exec', result.containerName, 'sh', '-c', 'echo test > /mnt/ro-data/fail.txt',
+    ])).rejects.toThrow()
+
+    // Verify read-write mount content is accessible
+    const { stdout: rwContent } = await execFileAsync('podman', [
+      'exec', result.containerName, 'cat', '/mnt/rw-data/data.txt',
+    ])
+    expect(rwContent.trim()).toBe('writable content')
+
+    // Verify read-write mount accepts writes
+    await execFileAsync('podman', [
+      'exec', result.containerName, 'sh', '-c', 'echo new-data > /mnt/rw-data/new.txt',
+    ])
+    const { stdout: newContent } = await execFileAsync('podman', [
+      'exec', result.containerName, 'cat', '/mnt/rw-data/new.txt',
+    ])
+    expect(newContent.trim()).toBe('new-data')
   })
 
   it('errors gracefully on unknown project', async () => {

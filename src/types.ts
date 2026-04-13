@@ -9,6 +9,15 @@ export interface PortForwardConfig {
   hostPortStart: number
 }
 
+export interface BindMountConfig {
+  /** Absolute path on the host to mount */
+  hostPath: string
+  /** Absolute path inside the container */
+  containerPath: string
+  /** Whether the mount is read-only (default: false) */
+  readonly?: boolean
+}
+
 export interface SecretProxyRule {
   /** Hostnames to match (exact or wildcard like *.example.com) */
   hosts: string[]
@@ -29,6 +38,7 @@ export interface YaacConfig {
   initCommands?: string[]
   nestedContainers?: boolean
   portForward?: PortForwardConfig[]
+  bindMounts?: BindMountConfig[]
 }
 
 export interface SessionMeta {

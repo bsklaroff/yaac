@@ -122,6 +122,19 @@ Add a `yaac-config.json` to your repo root:
   The container code performs the OAuth flow normally with placeholder values. The proxy
   intercepts the token exchange request and replaces the placeholder `client_id` and
   `client_secret` in the POST body with the real values from your host environment.
+- **bindMounts** — host directories mounted into the container. Each entry specifies:
+  - **`hostPath`** — absolute path on the host (required).
+  - **`containerPath`** — absolute path inside the container (required).
+  - **`readonly`** — mount as read-only when `true` (default: `false`).
+
+  ```json
+  {
+    "bindMounts": [
+      { "hostPath": "/home/user/datasets", "containerPath": "/mnt/datasets" },
+      { "hostPath": "/home/user/models", "containerPath": "/mnt/models", "readonly": true }
+    ]
+  }
+  ```
 - **cacheVolumes** — named Podman volumes mounted into the container. Keys are volume names, values are absolute container paths. Volumes persist across sessions.
 - **initCommands** — commands run inside the container after it starts (e.g. `pnpm install` against a warm cache volume). These run on every session, not just the first.
 - **nestedContainers** — when `true`, enables podman-in-podman support so sessions can build and run containers. See [Nested containers](#nested-containers) below.
