@@ -73,6 +73,41 @@ describe('sessionMonitor', () => {
     expect(written).toContain('\x1B[J')
   })
 
+  it('enables raw mode and swallows stdin when running on a TTY', async () => {
+    const { sessionList } = await import('@/commands/session-list')
+    vi.spyOn(process.stdout, 'write').mockReturnValue(true)
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    const setRawModeSpy = vi.fn()
+    const resumeSpy = vi.fn()
+    const onSpy = vi.fn()
+
+    // Simulate a TTY stdin
+    const origIsTTY = process.stdin.isTTY
+    const origSetRawMode = process.stdin.setRawMode?.bind(process.stdin)
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true })
+    Object.defineProperty(process.stdin, 'setRawMode', { value: setRawModeSpy, configurable: true })
+    vi.spyOn(process.stdin, 'resume').mockImplementation(() => resumeSpy() as never)
+    vi.spyOn(process.stdin, 'on').mockImplementation((...args: unknown[]) => onSpy(...args) as never)
+
+    let iterations = 0
+    vi.mocked(sessionList).mockImplementation(() => {
+      iterations++
+      if (iterations >= 1) throw new Error('stop')
+      return Promise.resolve()
+    })
+
+    await expect(sessionMonitor(undefined, { interval: '1' })).rejects.toThrow('stop')
+
+    expect(setRawModeSpy).toHaveBeenCalledWith(true)
+    expect(resumeSpy).toHaveBeenCalled()
+    expect(onSpy).toHaveBeenCalledWith('data', expect.any(Function))
+
+    // Restore
+    Object.defineProperty(process.stdin, 'isTTY', { value: origIsTTY, configurable: true })
+    Object.defineProperty(process.stdin, 'setRawMode', { value: origSetRawMode, configurable: true })
+  })
+
   it('passes project filter to sessionList', async () => {
     const { sessionList } = await import('@/commands/session-list')
 

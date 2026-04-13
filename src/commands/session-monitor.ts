@@ -7,6 +7,17 @@ export interface SessionMonitorOptions {
 export async function sessionMonitor(projectSlug?: string, options: SessionMonitorOptions = {}): Promise<void> {
   const intervalSec = Math.max(1, parseInt(options.interval ?? '5', 10))
 
+  // Swallow all keyboard input so typed characters don't corrupt the display.
+  // Ctrl+C still exits because we handle it explicitly.
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(true)
+    process.stdin.resume()
+    process.stdin.on('data', (key: Buffer) => {
+      // Ctrl+C
+      if (key[0] === 0x03) process.exit(0)
+    })
+  }
+
   // Clear the screen once on startup, then overwrite in place
   process.stdout.write('\x1B[2J')
 
