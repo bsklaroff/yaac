@@ -4,12 +4,18 @@ export interface ProjectMeta {
   addedAt: string
 }
 
+export interface PortForwardConfig {
+  containerPort: number
+  hostPortStart: number
+}
+
 export interface YaacConfig {
   envPassthrough?: string[]
   envSecretProxy?: Record<string, string[]>
   cacheVolumes?: Record<string, string>
   initCommands?: string[]
   nestedContainers?: boolean
+  portForward?: PortForwardConfig[]
 }
 
 export interface SessionMeta {

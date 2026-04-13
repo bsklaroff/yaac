@@ -8,7 +8,7 @@ import { getDefaultBranch } from '@/lib/git'
 
 const execFileAsync = promisify(execFile)
 
-const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'nestedContainers'])
+const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'nestedContainers', 'portForward'])
 
 export function parseProjectConfig(raw: string): YaacConfig {
   const parsed: unknown = JSON.parse(raw)
@@ -74,6 +74,26 @@ export function parseProjectConfig(raw: string): YaacConfig {
       throw new Error('yaac-config.json: nestedContainers must be a boolean')
     }
     config.nestedContainers = obj.nestedContainers
+  }
+
+  if (obj.portForward !== undefined) {
+    if (!Array.isArray(obj.portForward)) {
+      throw new Error('yaac-config.json: portForward must be an array of {containerPort, hostPortStart} objects')
+    }
+    config.portForward = []
+    for (let i = 0; i < obj.portForward.length; i++) {
+      const entry = obj.portForward[i] as Record<string, unknown>
+      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+        throw new Error(`yaac-config.json: portForward[${i}] must be an object with containerPort and hostPortStart`)
+      }
+      if (typeof entry.containerPort !== 'number' || !Number.isInteger(entry.containerPort) || entry.containerPort < 1 || entry.containerPort > 65535) {
+        throw new Error(`yaac-config.json: portForward[${i}].containerPort must be an integer between 1 and 65535`)
+      }
+      if (typeof entry.hostPortStart !== 'number' || !Number.isInteger(entry.hostPortStart) || entry.hostPortStart < 1 || entry.hostPortStart > 65535) {
+        throw new Error(`yaac-config.json: portForward[${i}].hostPortStart must be an integer between 1 and 65535`)
+      }
+      config.portForward.push({ containerPort: entry.containerPort, hostPortStart: entry.hostPortStart })
+    }
   }
 
   return config

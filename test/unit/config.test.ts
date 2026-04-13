@@ -143,6 +143,75 @@ describe('loadProjectConfig', () => {
     await expect(loadProjectConfig(tmpDir)).rejects.toThrow('nestedContainers must be a boolean')
   })
 
+  it('parses valid config with portForward array', async () => {
+    const config = {
+      portForward: [{ containerPort: 8080, hostPortStart: 9000 }],
+    }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual(config)
+  })
+
+  it('parses portForward with multiple entries', async () => {
+    const config = {
+      portForward: [
+        { containerPort: 8080, hostPortStart: 9000 },
+        { containerPort: 3000, hostPortStart: 13000 },
+      ],
+    }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual(config)
+  })
+
+  it('throws on invalid portForward type', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ portForward: 'not-an-array' }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('portForward must be an array')
+  })
+
+  it('throws on invalid portForward entry', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ portForward: ['not-an-object'] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('portForward[0] must be an object')
+  })
+
+  it('throws on missing portForward[].containerPort', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ portForward: [{ hostPortStart: 9000 }] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('portForward[0].containerPort must be an integer')
+  })
+
+  it('throws on missing portForward[].hostPortStart', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ portForward: [{ containerPort: 8080 }] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('portForward[0].hostPortStart must be an integer')
+  })
+
+  it('throws on out-of-range portForward[].containerPort', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ portForward: [{ containerPort: 70000, hostPortStart: 9000 }] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('portForward[0].containerPort must be an integer')
+  })
+
+  it('throws on non-integer portForward[].containerPort', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ portForward: [{ containerPort: 80.5, hostPortStart: 9000 }] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('portForward[0].containerPort must be an integer')
+  })
+
   it('parseProjectConfig parses raw JSON string', () => {
     const result = parseProjectConfig(JSON.stringify({ nestedContainers: true, initCommands: ['echo hi'] }))
     expect(result).toEqual({ nestedContainers: true, initCommands: ['echo hi'] })

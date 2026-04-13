@@ -14,6 +14,7 @@ import { repoDir, claudeDir, worktreeDir, worktreesDir, getDataDir } from '@/lib
 import { buildRulesFromConfig } from '@/lib/secret-conventions'
 import { ProxyClient } from '@/lib/proxy-client'
 import { hasSshKeys, SshAgentClient } from '@/lib/ssh-agent'
+import { findAvailablePort } from '@/lib/port'
 
 const execFileAsync = promisify(execFile)
 
@@ -28,6 +29,7 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
   containerId: string
   containerName: string
   sessionId: string
+  forwardedPorts: Array<{ containerPort: number; hostPort: number }>
 }> {
   const imageName = await ensureImage(projectSlug, TEST_IMAGE_PREFIX, true)
   const sessionId = crypto.randomBytes(4).toString('hex')
@@ -76,6 +78,20 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
     sshBinds.push(...testSshAgent.getBinds())
   }
 
+  // Port forwarding setup
+  const forwardedPorts: Array<{ containerPort: number; hostPort: number }> = []
+  const portBindings: Record<string, Array<{ HostPort: string; HostIp: string }>> = {}
+  const exposedPorts: Record<string, Record<string, never>> = {}
+  if (config.portForward?.length) {
+    for (const { containerPort, hostPortStart } of config.portForward) {
+      const hostPort = await findAvailablePort(hostPortStart)
+      forwardedPorts.push({ containerPort, hostPort })
+      const portKey = `${containerPort}/tcp`
+      exposedPorts[portKey] = {}
+      portBindings[portKey] = [{ HostPort: String(hostPort), HostIp: '127.0.0.1' }]
+    }
+  }
+
   const containerName = `yaac-${projectSlug}-${sessionId}`
   const claude = claudeDir(projectSlug)
 
@@ -88,6 +104,7 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
       'yaac.data-dir': getDataDir(),
       'yaac.test': 'true',
     },
+    ExposedPorts: exposedPorts,
     Env: env,
     HostConfig: {
       Binds: [
@@ -99,6 +116,7 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
           ([key, containerPath]) => `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`,
         ),
       ],
+      PortBindings: portBindings,
       NetworkMode: networkMode,
     },
   })
@@ -148,11 +166,14 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
   }
 
   // Configure tmux UX
+  const portInfo = forwardedPorts.length > 0
+    ? ' ' + forwardedPorts.map((p) => `:${p.hostPort}->${p.containerPort}`).join(' ')
+    : ''
   await execFileAsync('podman', [
-    'exec', containerName, 'tmux', 'set-option', '-t', 'yaac', 'status-right', ` ${projectSlug} ${sessionId.slice(0, 8)} `,
+    'exec', containerName, 'tmux', 'set-option', '-t', 'yaac', 'status-right', ` ${projectSlug} ${sessionId.slice(0, 8)}${portInfo} `,
   ])
   await execFileAsync('podman', [
-    'exec', containerName, 'tmux', 'set-option', '-t', 'yaac', 'status-right-length', '50',
+    'exec', containerName, 'tmux', 'set-option', '-t', 'yaac', 'status-right-length', '80',
   ])
   await execFileAsync('podman', [
     'exec', containerName, 'tmux', 'bind-key', 'k', 'kill-server',
@@ -163,6 +184,7 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
     containerId: info.Id,
     containerName,
     sessionId,
+    forwardedPorts,
   }
 }
 
@@ -698,6 +720,49 @@ describe('yaac session create', () => {
       await execFileAsync('podman', ['volume', 'rm', storageName])
     } catch { /* ignore */ }
   }, 180_000)
+
+  it('forwards ports from host to container when portForward is configured', async () => {
+    await requirePodman()
+
+    const tmpDir = await createTempDataDir()
+    tmpDirs.push(tmpDir)
+    const repoPath = path.join(tmpDir, 'portfwd-project')
+    await createTestRepo(repoPath, {
+      yaacConfig: {
+        portForward: [
+          { containerPort: 8080, hostPortStart: 18080 },
+          { containerPort: 3000, hostPortStart: 13000 },
+        ],
+      },
+    })
+    await projectAdd(repoPath)
+
+    const result = await createSessionNonInteractive('portfwd-project')
+    containersToCleanup.push(result.containerName)
+
+    expect(result.forwardedPorts).toHaveLength(2)
+    expect(result.forwardedPorts[0].hostPort).toBeGreaterThanOrEqual(18080)
+    expect(result.forwardedPorts[1].hostPort).toBeGreaterThanOrEqual(13000)
+
+    // Verify port bindings are configured on the container
+    const containerInfo = await podman.getContainer(result.containerName).inspect()
+    const bindings = containerInfo.HostConfig.PortBindings as Record<string, Array<{ HostPort: string; HostIp: string }>>
+
+    expect(bindings['8080/tcp']).toBeDefined()
+    expect(bindings['8080/tcp'][0].HostPort).toBe(String(result.forwardedPorts[0].hostPort))
+    expect(bindings['8080/tcp'][0].HostIp).toBe('127.0.0.1')
+
+    expect(bindings['3000/tcp']).toBeDefined()
+    expect(bindings['3000/tcp'][0].HostPort).toBe(String(result.forwardedPorts[1].hostPort))
+    expect(bindings['3000/tcp'][0].HostIp).toBe('127.0.0.1')
+
+    // Verify port info appears in tmux status bar
+    const { stdout: statusRight } = await execFileAsync('podman', [
+      'exec', result.containerName, 'tmux', 'show-option', '-t', 'yaac', 'status-right',
+    ])
+    expect(statusRight).toContain(`:${result.forwardedPorts[0].hostPort}->8080`)
+    expect(statusRight).toContain(`:${result.forwardedPorts[1].hostPort}->3000`)
+  })
 
   it('errors gracefully on unknown project', async () => {
     process.exitCode = undefined

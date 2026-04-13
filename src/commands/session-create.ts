@@ -12,6 +12,7 @@ import { buildRulesFromConfig } from '@/lib/secret-conventions'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session-cleanup'
 import { proxyClient } from '@/lib/proxy-client'
 import { sshAgent, hasSshKeys } from '@/lib/ssh-agent'
+import { findAvailablePort } from '@/lib/port'
 import type { YaacConfig } from '@/types'
 
 export function shellEscape(str: string): string {
@@ -132,6 +133,17 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     sshBinds.push(...sshAgent.getBinds())
   }
 
+  // Port forwarding setup
+  const forwardedPorts: Array<{ containerPort: number; hostPort: number }> = []
+  if (config.portForward?.length) {
+    for (const { containerPort, hostPortStart } of config.portForward) {
+      console.log(`Finding available host port starting from ${hostPortStart} for container port ${containerPort}...`)
+      const hostPort = await findAvailablePort(hostPortStart)
+      forwardedPorts.push({ containerPort, hostPort })
+      console.log(`Forwarding host port ${hostPort} -> container port ${containerPort}`)
+    }
+  }
+
   const containerName = `yaac-${projectSlug}-${sessionId}`
   const claude = claudeDir(projectSlug)
   const claudeJson = claudeJsonFile(projectSlug)
@@ -144,6 +156,14 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   }
 
   console.log(`Creating container ${containerName}...`)
+  const portBindings: Record<string, Array<{ HostPort: string; HostIp: string }>> = {}
+  const exposedPorts: Record<string, Record<string, never>> = {}
+  for (const { containerPort, hostPort } of forwardedPorts) {
+    const portKey = `${containerPort}/tcp`
+    exposedPorts[portKey] = {}
+    portBindings[portKey] = [{ HostPort: String(hostPort), HostIp: '127.0.0.1' }]
+  }
+
   const container = await podman.createContainer({
     Image: imageName,
     name: containerName,
@@ -152,6 +172,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
       'yaac.session-id': sessionId,
       'yaac.data-dir': getDataDir(),
     },
+    ExposedPorts: exposedPorts,
     Env: env,
     HostConfig: {
       Binds: [
@@ -167,6 +188,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
           ? [`yaac-podmanstorage-${projectSlug}:/home/yaac/.local/share/containers:Z`]
           : []),
       ],
+      PortBindings: portBindings,
       NetworkMode: networkMode,
       ...(config.nestedContainers ? {
         SecurityOpt: ['label=disable', 'unmask=/proc/sys'],
@@ -225,8 +247,11 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   }
 
   // Configure tmux UX
-  execSync(`podman exec ${containerName} tmux set-option -t yaac status-right ' ${projectSlug} ${sessionId.slice(0, 8)} '`)
-  execSync(`podman exec ${containerName} tmux set-option -t yaac status-right-length 50`)
+  const portInfo = forwardedPorts.length > 0
+    ? ' ' + forwardedPorts.map((p) => `:${p.hostPort}->${p.containerPort}`).join(' ')
+    : ''
+  execSync(`podman exec ${containerName} tmux set-option -t yaac status-right ' ${projectSlug} ${sessionId.slice(0, 8)}${portInfo} '`)
+  execSync(`podman exec ${containerName} tmux set-option -t yaac status-right-length 80`)
   execSync(`podman exec ${containerName} tmux bind-key k kill-server`)
 
   // Attach the user to the tmux session
