@@ -61,8 +61,14 @@ describe('getClaudeStatus', () => {
     expect(await getClaudeStatus(jsonlPath)).toBe('running')
   })
 
-  it('skips system metadata entry (treated as metadata)', async () => {
+  it('skips non-conversation entry types', async () => {
     await writeEntry({ type: 'system' })
+    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
+  })
+
+  it('skips unknown entry types as non-conversation metadata', async () => {
+    await writeEntry({ type: 'assistant', message: { stop_reason: 'end_turn' } })
+    await writeEntry({ type: 'some-future-metadata-type', data: {} })
     expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
   })
 
@@ -160,6 +166,22 @@ describe('getClaudeStatus', () => {
     await writeEntry({ type: 'assistant', message: { stop_reason: 'end_turn' } })
     await writeEntry({ type: 'queue-operation' })
     expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
+  })
+
+  it('skips unparseable lines instead of returning waiting', async () => {
+    await writeEntry({ type: 'assistant', message: { stop_reason: 'tool_use' } })
+    // Simulate a corrupted/partial line
+    await fs.appendFile(jsonlPath, '{"type":"assistant","message":{"stop_re\n')
+    expect(await getClaudeStatus(jsonlPath)).toBe('running')
+  })
+
+  it('scans across chunk boundaries for large files', async () => {
+    await writeEntry({ type: 'assistant', message: { stop_reason: 'tool_use' } })
+    // Write enough metadata to push the tool_use entry beyond a 4KB window
+    for (let i = 0; i < 80; i++) {
+      await writeEntry({ type: 'system', subtype: 'turn_duration', durationMs: 5000, padding: 'x'.repeat(20) })
+    }
+    expect(await getClaudeStatus(jsonlPath)).toBe('running')
   })
 })
 

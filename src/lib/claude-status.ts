@@ -4,26 +4,21 @@ import { claudeDir } from '@/lib/paths'
 
 const WAITING_STOP_REASONS = new Set(['end_turn', 'refusal', 'stop_sequence'])
 
-// Metadata entry types that Claude Code appends after a turn completes.
-// These don't represent conversation state and must be skipped when
-// determining whether Claude is running or waiting.
-const METADATA_TYPES = new Set([
-  'system',
-  'last-prompt',
-  'permission-mode',
-  'file-history-snapshot',
-  'agent-name',
-  'custom-title',
-  'queue-operation',
-])
+// Only these entry types represent actual conversation state.
+// Everything else (system, last-prompt, permission-mode, file-history-snapshot,
+// agent-name, custom-title, queue-operation, and any future metadata types) is
+// skipped when determining whether Claude is running or waiting.
+const CONVERSATION_TYPES = new Set(['assistant', 'user'])
+
+const CHUNK_SIZE = 4096
 
 /**
- * Reads the tail of a JSONL session log and determines whether
- * Claude Code is actively working or waiting for user input.
+ * Reads lines from the end of a JSONL session log, scanning backwards
+ * until it finds a conversation entry (assistant or user) that reveals
+ * whether Claude Code is actively working or waiting for user input.
  *
- * Claude Code appends metadata entries (turn_duration, last-prompt, etc.)
- * after an assistant turn completes, so we scan backwards past those to
- * find the last semantically meaningful entry (assistant, user, or attachment).
+ * Reads in 4KB chunks from the end, expanding as needed so that an
+ * arbitrary amount of trailing metadata never causes a false "waiting".
  */
 export async function getClaudeStatus(jsonlPath: string): Promise<'running' | 'waiting'> {
   let handle: fs.FileHandle | undefined
@@ -32,32 +27,62 @@ export async function getClaudeStatus(jsonlPath: string): Promise<'running' | 'w
     const stat = await handle.stat()
     if (stat.size === 0) return 'waiting'
 
-    // Read the last chunk of the file to find recent lines
-    const chunkSize = Math.min(stat.size, 4096)
-    const buf = Buffer.alloc(chunkSize)
-    await handle.read(buf, 0, chunkSize, stat.size - chunkSize)
-    const chunk = buf.toString('utf8')
+    let offset = stat.size
+    let carryover = ''
 
-    const lines = chunk.split('\n').filter((l) => l.trim().length > 0)
-    if (lines.length === 0) return 'waiting'
+    while (offset > 0) {
+      const chunkSize = Math.min(offset, CHUNK_SIZE)
+      offset -= chunkSize
+      const buf = Buffer.alloc(chunkSize)
+      await handle.read(buf, 0, chunkSize, offset)
 
-    // Walk backwards, skipping metadata entries, to find the last
-    // entry that reflects actual conversation state.
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const entry = JSON.parse(lines[i]) as { type: string; message?: { stop_reason?: string } }
+      // Prepend to any leftover partial line from the previous iteration
+      const raw = buf.toString('utf8') + carryover
+      const parts = raw.split('\n')
 
-      if (METADATA_TYPES.has(entry.type)) continue
+      // The first element may be a partial line (we landed mid-line).
+      // Save it as carryover for the next chunk read.
+      carryover = parts[0]
 
-      if (entry.type !== 'assistant') return 'running'
+      // Scan the remaining lines (complete) from bottom to top
+      for (let i = parts.length - 1; i >= 1; i--) {
+        const line = parts[i].trim()
+        if (line.length === 0) continue
 
-      const stopReason = entry.message?.stop_reason
-      return stopReason && WAITING_STOP_REASONS.has(stopReason) ? 'waiting' : 'running'
+        let entry: { type: string; message?: { stop_reason?: string } }
+        try {
+          entry = JSON.parse(line) as typeof entry
+        } catch {
+          continue // skip unparseable lines
+        }
+
+        if (!CONVERSATION_TYPES.has(entry.type)) continue
+
+        if (entry.type !== 'assistant') return 'running'
+
+        const stopReason = entry.message?.stop_reason
+        return stopReason && WAITING_STOP_REASONS.has(stopReason) ? 'waiting' : 'running'
+      }
     }
 
-    // All lines in the chunk were metadata — session just started
+    // Process the final carryover (the very first line in the file)
+    if (carryover.trim().length > 0) {
+      try {
+        const entry = JSON.parse(carryover) as { type: string; message?: { stop_reason?: string } }
+        if (CONVERSATION_TYPES.has(entry.type)) {
+          if (entry.type !== 'assistant') return 'running'
+          const stopReason = entry.message?.stop_reason
+          return stopReason && WAITING_STOP_REASONS.has(stopReason) ? 'waiting' : 'running'
+        }
+      } catch {
+        // ignore parse error on first line
+      }
+    }
+
+    // Entire file was metadata — session just started
     return 'waiting'
   } catch {
-    // File missing or parse error — assume waiting (session just booted, Claude hasn't started yet)
+    // File missing or unreadable — assume waiting (session just booted)
     return 'waiting'
   } finally {
     await handle?.close()
