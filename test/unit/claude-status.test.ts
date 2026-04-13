@@ -221,6 +221,29 @@ describe('getClaudeStatus', () => {
     expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
   })
 
+  it('returns waiting when user interrupted the request', async () => {
+    await writeEntry({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }],
+      },
+    })
+    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
+  })
+
+  it('returns waiting when user interrupted after assistant tool_use', async () => {
+    await writeEntry({ type: 'assistant', message: { stop_reason: 'tool_use' } })
+    await writeEntry({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }],
+      },
+    })
+    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
+  })
+
   it('skips unparseable lines instead of returning waiting', async () => {
     await writeEntry({ type: 'assistant', message: { stop_reason: 'tool_use' } })
     // Simulate a corrupted/partial line

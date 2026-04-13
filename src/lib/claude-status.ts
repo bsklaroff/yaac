@@ -14,6 +14,7 @@ interface ContentBlock {
   type: string
   name?: string
   tool_name?: string
+  text?: string
   content?: string | ContentBlock[]
   input?: { file_path?: string }
 }
@@ -44,6 +45,25 @@ function isWaitingForPlanApproval(entry: ConversationEntry): boolean {
         if (sub.type === 'tool_reference' && sub.tool_name === 'ExitPlanMode') return true
       }
     }
+  }
+  return false
+}
+
+const INTERRUPT_TEXT = '[Request interrupted by user for tool use]'
+
+/**
+ * Checks whether an entry is a user interrupt. When the user cancels a
+ * running request, Claude Code appends a user message with the interrupt
+ * text. Claude is no longer processing at that point, so the session is
+ * waiting for new input.
+ */
+function isUserInterrupt(entry: ConversationEntry): boolean {
+  if (entry.type !== 'user') return false
+  const content = entry.message?.content
+  if (!Array.isArray(content)) return false
+
+  for (const block of content) {
+    if (block.type === 'text' && block.text === INTERRUPT_TEXT) return true
   }
   return false
 }
@@ -118,6 +138,7 @@ export async function getClaudeStatus(jsonlPath: string): Promise<'running' | 'w
 
         if (isWaitingForPlanApproval(entry)) return 'waiting'
         if (isPlanFileWrite(entry)) return 'waiting'
+        if (isUserInterrupt(entry)) return 'waiting'
 
         if (entry.type !== 'assistant') return 'running'
 
@@ -133,6 +154,7 @@ export async function getClaudeStatus(jsonlPath: string): Promise<'running' | 'w
         if (CONVERSATION_TYPES.has(entry.type)) {
           if (isWaitingForPlanApproval(entry)) return 'waiting'
           if (isPlanFileWrite(entry)) return 'waiting'
+          if (isUserInterrupt(entry)) return 'waiting'
           if (entry.type !== 'assistant') return 'running'
           const stopReason = entry.message?.stop_reason
           return stopReason && WAITING_STOP_REASONS.has(stopReason) ? 'waiting' : 'running'
