@@ -4,6 +4,7 @@ import { podman } from '@/lib/container/runtime'
 import { claudeDir, getDataDir, getProjectsDir } from '@/lib/project/paths'
 import { getSessionClaudeStatus, getSessionFirstUserMessage } from '@/lib/session/claude-status'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
+import { isPrewarmSession } from '@/lib/prewarm'
 
 export interface SessionListOptions {
   deleted?: boolean
@@ -62,11 +63,12 @@ export async function sessionList(projectSlug?: string, options: SessionListOpti
         const sessionId = c.Labels?.['yaac.session-id'] ?? ''
         const slug = c.Labels?.['yaac.project'] ?? ''
         if (!sessionId || !slug) return { status: 'running' as const, prompt: undefined }
-        const [status, prompt] = await Promise.all([
+        const [status, prompt, isPrewarm] = await Promise.all([
           getSessionClaudeStatus(slug, sessionId),
           getSessionFirstUserMessage(slug, sessionId),
+          isPrewarmSession(slug, sessionId),
         ])
-        return { status, prompt }
+        return { status: isPrewarm ? 'prewarm' as const : status, prompt }
       }),
     )
 

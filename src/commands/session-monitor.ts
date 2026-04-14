@@ -1,7 +1,9 @@
 import { sessionList } from '@/commands/session-list'
+import { ensurePrewarmSession, ensurePrewarmSessions } from '@/lib/prewarm'
 
 export interface SessionMonitorOptions {
   interval?: string
+  noPrewarm?: boolean
 }
 
 export async function sessionMonitor(projectSlug?: string, options: SessionMonitorOptions = {}): Promise<void> {
@@ -20,6 +22,8 @@ export async function sessionMonitor(projectSlug?: string, options: SessionMonit
 
   // Clear the screen once on startup, then overwrite in place
   process.stdout.write('\x1B[2J')
+
+  let prewarmInProgress = false
 
   // Run once immediately, then poll
   while (true) {
@@ -47,6 +51,23 @@ export async function sessionMonitor(projectSlug?: string, options: SessionMonit
 
     // Clear from cursor to end of screen (remove stale lines from previous render)
     process.stdout.write('\x1B[J')
+
+    // Prewarm: run as non-blocking background task with in-progress guard.
+    // When a specific project is given, prewarm just that project.
+    // Otherwise, discover all projects with live sessions and prewarm each.
+    if (!options.noPrewarm && !prewarmInProgress) {
+      prewarmInProgress = true
+      const prewarmTask = projectSlug
+        ? ensurePrewarmSession(projectSlug)
+        : ensurePrewarmSessions()
+      prewarmTask
+        .catch((err) => {
+          console.error(`Prewarm: ${err instanceof Error ? err.message : err}`)
+        })
+        .finally(() => {
+          prewarmInProgress = false
+        })
+    }
 
     await new Promise((resolve) => setTimeout(resolve, intervalSec * 1000))
   }

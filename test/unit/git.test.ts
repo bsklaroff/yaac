@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import simpleGit from 'simple-git'
-import { cloneRepo, getDefaultBranch, addWorktree, removeWorktree, fetchOrigin, getGitUserConfig, injectTokenIntoUrl } from '@/lib/git'
+import { cloneRepo, getDefaultBranch, addWorktree, removeWorktree, fetchOrigin, getGitUserConfig, injectTokenIntoUrl, getRemoteHeadCommit } from '@/lib/git'
 
 describe('git helpers', () => {
   let tmpDir: string
@@ -180,6 +180,39 @@ describe('git helpers', () => {
     const result = injectTokenIntoUrl('https://github.com', 'tok')
     expect(result).toContain('x-access-token')
     expect(result).toContain('tok')
+  })
+
+  it('getRemoteHeadCommit returns the commit sha of origin/default', async () => {
+    const cloneDir = path.join(tmpDir, 'clone-head')
+    await cloneRepo(sourceRepo, cloneDir)
+
+    const commit = await getRemoteHeadCommit(cloneDir)
+    expect(commit).toMatch(/^[0-9a-f]{40}$/)
+
+    // Should match the latest commit on origin/default branch
+    const defaultBranch = await getDefaultBranch(cloneDir)
+    const git = simpleGit(cloneDir)
+    const expected = (await git.revparse([`origin/${defaultBranch}`])).trim()
+    expect(commit).toBe(expected)
+  })
+
+  it('getRemoteHeadCommit reflects new commits after fetch', async () => {
+    const cloneDir = path.join(tmpDir, 'clone-head-fetch')
+    await cloneRepo(sourceRepo, cloneDir)
+
+    const before = await getRemoteHeadCommit(cloneDir)
+
+    // Add a commit to source
+    const srcGit = simpleGit(sourceRepo)
+    await fs.writeFile(path.join(sourceRepo, 'new.txt'), 'new\n')
+    await srcGit.add('.')
+    await srcGit.commit('new commit')
+
+    await fetchOrigin(cloneDir)
+    const after = await getRemoteHeadCommit(cloneDir)
+
+    expect(after).not.toBe(before)
+    expect(after).toMatch(/^[0-9a-f]{40}$/)
   })
 
   it('removes a worktree', async () => {

@@ -4,6 +4,7 @@ import { getDataDir } from '@/lib/project/paths'
 import { getSessionClaudeStatus } from '@/lib/session/claude-status'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 import { sessionCreate } from '@/commands/session-create'
+import { isPrewarmSession } from '@/lib/prewarm'
 
 export interface WaitingSession {
   containerName: string
@@ -49,6 +50,9 @@ export async function getWaitingSessions(
       stale.push({ name, slug, sessionId })
       continue
     }
+
+    // Skip prewarm sessions — they are claimed via sessionCreate, not cycled through
+    if (await isPrewarmSession(slug, sessionId)) continue
 
     const status = await getSessionClaudeStatus(slug, sessionId)
     if (status !== 'waiting') continue

@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process'
 import { resolveContainerAnyState } from '@/lib/container/resolve'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
+import { clearPrewarmSession } from '@/lib/prewarm'
 
 export async function sessionAttach(containerId: string): Promise<void> {
   const resolved = await resolveContainerAnyState(containerId)
@@ -13,6 +14,9 @@ export async function sessionAttach(containerId: string): Promise<void> {
     process.exitCode = 1
     return
   }
+
+  // Clear prewarm state if attaching to a prewarmed session
+  await clearPrewarmSession(projectSlug)
 
   try {
     execSync(`podman exec -it ${containerName} tmux attach-session -t yaac`, {

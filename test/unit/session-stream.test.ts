@@ -24,6 +24,10 @@ vi.mock('@/commands/session-create', () => ({
   sessionCreate: vi.fn(),
 }))
 
+vi.mock('@/lib/prewarm', () => ({
+  isPrewarmSession: vi.fn().mockResolvedValue(false),
+}))
+
 vi.mock('node:child_process', () => ({
   execSync: vi.fn(),
 }))

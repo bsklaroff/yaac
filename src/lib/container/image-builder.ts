@@ -34,9 +34,13 @@ export async function packTar(entries: TarEntry[]): Promise<Buffer> {
   return Buffer.concat(chunks)
 }
 
+export function stringHash(content: string): string {
+  return crypto.createHash('sha256').update(content).digest('hex').slice(0, 16)
+}
+
 export async function fileHash(filePath: string): Promise<string> {
   const content = await fs.readFile(filePath, 'utf8')
-  return crypto.createHash('sha256').update(content).digest('hex').slice(0, 16)
+  return stringHash(content)
 }
 
 export async function contextHash(dir: string): Promise<string> {
@@ -121,6 +125,146 @@ function isLayered(dockerfileContent: string): boolean {
     && /^FROM\s+\$\{BASE_IMAGE\}/m.test(dockerfileContent)
 }
 
+interface ImageLayer {
+  tag: string
+  dockerfile: string
+  context: string
+  buildArgs?: Record<string, string>
+  /** Hash of this layer's content, used for composing downstream hashes */
+  contentHash: string
+}
+
+/**
+ * Resolves the full image layer chain for a project without building anything.
+ * Returns the ordered list of layers and any temp dir that needs cleanup.
+ */
+async function resolveImageChain(
+  projectSlug: string,
+  prefix: string,
+  nestedContainers: boolean,
+): Promise<{ layers: ImageLayer[]; finalTag: string; tmpDir: string | null }> {
+  const layers: ImageLayer[] = []
+
+  // Layer 1: <prefix>-base
+  // Priority: config-override/Dockerfile.yaac > repo Dockerfile.yaac (from remote ref) > Dockerfile.default
+  const overrideDockerfile = path.join(configOverrideDir(projectSlug), 'Dockerfile.yaac')
+  let yaacDockerfile: string | null = null
+  let yaacContent: string | null = null
+  let tmpDockerfileDir: string | null = null
+
+  if (await fileExists(overrideDockerfile)) {
+    yaacDockerfile = overrideDockerfile
+    yaacContent = await fs.readFile(overrideDockerfile, 'utf8')
+  } else {
+    try {
+      const repo = repoDir(projectSlug)
+      const defaultBranch = await getDefaultBranch(repo)
+      const content = await readFileFromRef(repo, `origin/${defaultBranch}`, 'Dockerfile.yaac')
+      if (content) {
+        tmpDockerfileDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-dockerfile-'))
+        yaacDockerfile = path.join(tmpDockerfileDir, 'Dockerfile.yaac')
+        await fs.writeFile(yaacDockerfile, content)
+        yaacContent = content
+      }
+    } catch {
+      // git not available — fall through to default
+    }
+  }
+
+  const yaacIsLayered = yaacContent ? isLayered(yaacContent) : false
+  const defaultDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
+  const defaultHash = await fileHash(defaultDockerfile)
+
+  // When there's no Dockerfile.yaac or it layers on the default, include the default layer.
+  if (!yaacDockerfile || yaacIsLayered) {
+    const defaultTag = `${prefix}-base:${defaultHash}`
+    layers.push({
+      tag: defaultTag,
+      dockerfile: defaultDockerfile,
+      context: DOCKERFILES_DIR,
+      contentHash: defaultHash,
+    })
+  }
+
+  // Resolve the base layer tag (may be default-only, layered yaac, or standalone yaac).
+  const baseHash = yaacIsLayered
+    ? stringHash(`${defaultHash}:${stringHash(yaacContent!)}`)
+    : yaacDockerfile
+      ? stringHash(yaacContent!)
+      : defaultHash
+  const baseTag = `${prefix}-base:${baseHash}`
+
+  if (yaacDockerfile) {
+    const baseContext = path.dirname(yaacDockerfile)
+    layers.push({
+      tag: baseTag,
+      dockerfile: yaacDockerfile,
+      context: baseContext,
+      ...(yaacIsLayered ? { buildArgs: { BASE_IMAGE: `${prefix}-base:${defaultHash}` } } : {}),
+      contentHash: baseHash,
+    })
+  }
+
+  // Layer 1.5 (optional): <prefix>-base-nestable (podman-in-podman support)
+  let effectiveTag = baseTag
+  let effectiveHash = baseHash
+  if (nestedContainers) {
+    const nestDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
+    const nestContentHash = await fileHash(nestDockerfile)
+    const nestHash = stringHash(`${baseHash}:${nestContentHash}`)
+    const nestTag = `${prefix}-base-nestable:${nestHash}`
+    layers.push({
+      tag: nestTag,
+      dockerfile: nestDockerfile,
+      context: DOCKERFILES_DIR,
+      buildArgs: { BASE_IMAGE: baseTag },
+      contentHash: nestHash,
+    })
+    effectiveTag = nestTag
+    effectiveHash = nestHash
+  }
+
+  // Layer 2 (optional): <prefix>-user-<slug> (from ~/.yaac/Dockerfile.user)
+  const userDockerfile = path.join(getDataDir(), 'Dockerfile.user')
+  if (await fileExists(userDockerfile)) {
+    const userContent = await fs.readFile(userDockerfile, 'utf8')
+    if (!isLayered(userContent)) {
+      throw new Error(
+        'Dockerfile.user must use `ARG BASE_IMAGE` and `FROM ${BASE_IMAGE}` ' +
+        'so the parent image is injected via --build-arg. ' +
+        'Example:\n  ARG BASE_IMAGE\n  FROM ${BASE_IMAGE}',
+      )
+    }
+    const userContentHash = stringHash(userContent)
+    const userHash = stringHash(`${effectiveHash}:${userContentHash}`)
+    const userTag = `${prefix}-user-${projectSlug}:${userHash}`
+    layers.push({
+      tag: userTag,
+      dockerfile: userDockerfile,
+      context: getDataDir(),
+      buildArgs: { BASE_IMAGE: effectiveTag },
+      contentHash: userHash,
+    })
+    effectiveTag = userTag
+  }
+
+  return { layers, finalTag: effectiveTag, tmpDir: tmpDockerfileDir }
+}
+
+/**
+ * Resolves the final image tag for a project without building anything.
+ * Useful for fingerprinting — computes what the tag would be based on
+ * current Dockerfile content and config.
+ */
+export async function resolveImageTag(projectSlug: string, imagePrefix?: string, nestedContainers = false): Promise<string> {
+  const prefix = imagePrefix ?? 'yaac'
+  const { finalTag, tmpDir } = await resolveImageChain(projectSlug, prefix, nestedContainers)
+  if (tmpDir) {
+    await fs.rm(tmpDir, { recursive: true, force: true })
+  }
+  return finalTag
+}
+
 /**
  * Ensures the full image chain is built for a project.
  *
@@ -142,134 +286,27 @@ function isLayered(dockerfileContent: string): boolean {
  */
 export async function ensureImage(projectSlug: string, imagePrefix?: string, requirePrebuilt = false, nestedContainers = false): Promise<string> {
   const prefix = imagePrefix ?? 'yaac'
+  const { layers, finalTag, tmpDir } = await resolveImageChain(projectSlug, prefix, nestedContainers)
 
-  // Layer 1: <prefix>-base
-  // Priority: config-override/Dockerfile.yaac > repo Dockerfile.yaac (from remote ref) > Dockerfile.default
-  const overrideDockerfile = path.join(configOverrideDir(projectSlug), 'Dockerfile.yaac')
-  let yaacDockerfile: string | null = null
-  let tmpDockerfileDir: string | null = null
+  try {
+    for (const layer of layers) {
+      if (await imageExists(layer.tag)) continue
 
-  if (await fileExists(overrideDockerfile)) {
-    yaacDockerfile = overrideDockerfile
-  } else {
-    try {
-      const repo = repoDir(projectSlug)
-      const defaultBranch = await getDefaultBranch(repo)
-      const content = await readFileFromRef(repo, `origin/${defaultBranch}`, 'Dockerfile.yaac')
-      if (content) {
-        tmpDockerfileDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-dockerfile-'))
-        yaacDockerfile = path.join(tmpDockerfileDir, 'Dockerfile.yaac')
-        await fs.writeFile(yaacDockerfile, content)
-      }
-    } catch {
-      // git not available — fall through to default
-    }
-  }
-
-  // Determine whether Dockerfile.yaac layers on top of the default base or replaces it.
-  let yaacIsLayered = false
-  if (yaacDockerfile) {
-    const yaacContent = await fs.readFile(yaacDockerfile, 'utf8')
-    yaacIsLayered = isLayered(yaacContent)
-  }
-
-  // Build Dockerfile.default first when there's no Dockerfile.yaac or it layers on yaac-base.
-  const defaultDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
-  if (!yaacDockerfile || yaacIsLayered) {
-    const defaultHash = await fileHash(defaultDockerfile)
-    const defaultTag = `${prefix}-base:${defaultHash}`
-    if (!await imageExists(defaultTag)) {
       if (requirePrebuilt) {
         throw new Error(
-          `Base image ${defaultTag} is missing or stale. ` +
+          `Image ${layer.tag} is missing or stale. ` +
           'Restart the test run so the global setup can rebuild it.',
         )
       }
-      console.log(`Building ${defaultTag}...`)
-      await buildImage(defaultTag, defaultDockerfile, DOCKERFILES_DIR)
+
+      console.log(`Building ${layer.tag}...`)
+      await buildImage(layer.tag, layer.dockerfile, layer.context, layer.buildArgs)
+    }
+  } finally {
+    if (tmpDir) {
+      await fs.rm(tmpDir, { recursive: true, force: true })
     }
   }
 
-  // Resolve the base dockerfile / context / hash, and build if needed.
-  const baseDockerfile = yaacDockerfile ?? defaultDockerfile
-  const baseContext = yaacDockerfile ? path.dirname(yaacDockerfile) : DOCKERFILES_DIR
-  const baseHash = yaacIsLayered
-    ? crypto.createHash('sha256').update(`${await fileHash(defaultDockerfile)}:${await fileHash(yaacDockerfile!)}`).digest('hex').slice(0, 16)
-    : await fileHash(baseDockerfile)
-  const baseTag = `${prefix}-base:${baseHash}`
-
-  if (!await imageExists(baseTag)) {
-    if (requirePrebuilt) {
-      throw new Error(
-        `Base image ${baseTag} is missing or stale. ` +
-        'Restart the test run so the global setup can rebuild it.',
-      )
-    }
-    if (yaacIsLayered) {
-      const defaultTag = `${prefix}-base:${await fileHash(defaultDockerfile)}`
-      console.log(`Building ${baseTag} from Dockerfile.yaac (layered on base)...`)
-      await buildImage(baseTag, baseDockerfile, baseContext, { BASE_IMAGE: defaultTag })
-    } else if (yaacDockerfile) {
-      console.log(`Building ${baseTag} from Dockerfile.yaac...`)
-      await buildImage(baseTag, baseDockerfile, baseContext)
-    }
-  }
-
-  // Layer 1.5 (optional): <prefix>-base-nestable:<hash> (podman-in-podman support)
-  // Applied on top of whatever base was selected (default or Dockerfile.yaac).
-  let effectiveTag = baseTag
-  let effectiveHash = baseHash
-  if (nestedContainers) {
-    const nestDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
-    const nestContentHash = await fileHash(nestDockerfile)
-    const nestHash = crypto.createHash('sha256').update(`${baseHash}:${nestContentHash}`).digest('hex').slice(0, 16)
-    const nestTag = `${prefix}-base-nestable:${nestHash}`
-    if (!await imageExists(nestTag)) {
-      if (requirePrebuilt) {
-        throw new Error(
-          `Nestable image ${nestTag} is missing or stale. ` +
-          'Restart the test run so the global setup can rebuild it.',
-        )
-      }
-      console.log(`Building ${nestTag} (nested containers)...`)
-      await buildImage(nestTag, nestDockerfile, DOCKERFILES_DIR, { BASE_IMAGE: baseTag })
-    }
-    effectiveTag = nestTag
-    effectiveHash = nestHash
-  }
-
-  // Layer 2 (optional): <prefix>-user-<slug>:<hash> (from ~/.yaac/Dockerfile.user)
-  const userDockerfile = path.join(getDataDir(), 'Dockerfile.user')
-  if (await fileExists(userDockerfile)) {
-    const userContent = await fs.readFile(userDockerfile, 'utf8')
-    if (!isLayered(userContent)) {
-      throw new Error(
-        'Dockerfile.user must use `ARG BASE_IMAGE` and `FROM ${BASE_IMAGE}` ' +
-        'so the parent image is injected via --build-arg. ' +
-        'Example:\n  ARG BASE_IMAGE\n  FROM ${BASE_IMAGE}',
-      )
-    }
-    const userContentHash = await fileHash(userDockerfile)
-    const userHash = crypto.createHash('sha256').update(`${effectiveHash}:${userContentHash}`).digest('hex').slice(0, 16)
-    const userTag = `${prefix}-user-${projectSlug}:${userHash}`
-    if (!await imageExists(userTag)) {
-      if (requirePrebuilt) {
-        throw new Error(
-          `User image ${userTag} is missing or stale. ` +
-          'Restart the test run so the global setup can rebuild it.',
-        )
-      }
-      console.log(`Building ${userTag}...`)
-      await buildImage(userTag, userDockerfile, getDataDir(), { BASE_IMAGE: effectiveTag })
-    }
-    if (tmpDockerfileDir) {
-      await fs.rm(tmpDockerfileDir, { recursive: true, force: true })
-    }
-    return userTag
-  }
-
-  if (tmpDockerfileDir) {
-    await fs.rm(tmpDockerfileDir, { recursive: true, force: true })
-  }
-  return effectiveTag
+  return finalTag
 }

@@ -58,6 +58,11 @@ export async function removeWorktree(repoPath: string, worktreePath: string): Pr
   await simpleGit(repoPath).raw(['worktree', 'remove', worktreePath])
 }
 
+export async function getRemoteHeadCommit(repoPath: string): Promise<string> {
+  const defaultBranch = await getDefaultBranch(repoPath)
+  return (await simpleGit(repoPath).revparse([`origin/${defaultBranch}`])).trim()
+}
+
 export async function getGitUserConfig(): Promise<{ name: string; email: string } | null> {
   try {
     const git = simpleGit()

@@ -84,7 +84,7 @@ session
   .option('-p, --prompt <prompt>', 'Initial prompt to pass to Claude Code')
   .option('--add-dir <path>', 'Mount a host directory as read-only (repeatable)', collect, [])
   .option('--add-dir-rw <path>', 'Mount a host directory as read-write (repeatable)', collect, [])
-  .action(sessionCreate)
+  .action(async (...args: Parameters<typeof sessionCreate>) => { await sessionCreate(...args) })
 
 session
   .command('list')
@@ -117,6 +117,7 @@ session
   .description('Poll and display active sessions in real-time')
   .argument('[project]', 'Filter by project slug')
   .option('-n, --interval <seconds>', 'Refresh interval in seconds', '5')
+  .option('--no-prewarm', 'Disable automatic session prewarming')
   .action(sessionMonitor)
 
 const auth = program

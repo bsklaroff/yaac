@@ -477,6 +477,15 @@ export class ProxyClient {
   }
 }
 
+/**
+ * Compute the proxy sidecar image tag without starting or building anything.
+ * Useful for fingerprinting — the tag encodes the content of podman/proxy-sidecar/.
+ */
+export async function resolveProxyImageTag(image = 'yaac-proxy'): Promise<string> {
+  const hash = await contextHash(PROXY_DIR)
+  return `${image}:${hash}`
+}
+
 // Default singleton — resolved state is populated by ensureRunning()
 export const proxyClient = new ProxyClient({
   image: 'yaac-proxy',

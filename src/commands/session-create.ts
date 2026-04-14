@@ -17,6 +17,7 @@ import { resolveProjectConfig } from '@/lib/project/config'
 import { resolveTokenForUrl } from '@/lib/project/credentials'
 import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/lib/git'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
+import { claimPrewarmSession } from '@/lib/prewarm'
 import type { YaacConfig } from '@/types'
 
 export function shellEscape(str: string): string {
@@ -35,6 +36,7 @@ export interface SessionCreateOptions {
   prompt?: string
   addDir?: string[]
   addDirRw?: string[]
+  createPrewarm?: boolean
 }
 
 interface ContainerSetupParams {
@@ -178,7 +180,7 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
   containerExec(containerName, 'tmux bind-key k kill-server')
 }
 
-export async function sessionCreate(projectSlug: string, options: SessionCreateOptions): Promise<void> {
+export async function sessionCreate(projectSlug: string, options: SessionCreateOptions): Promise<string | undefined> {
   // Verify project exists
   try {
     await fs.access(projectDir(projectSlug))
@@ -204,12 +206,44 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     }
   }
 
+  // Try to claim a prewarmed session — it already has everything set up.
+  // Skip when createPrewarm is true, since that's the prewarm creation path itself.
+  const claimed = !options.createPrewarm ? await claimPrewarmSession(projectSlug) : null
+  if (claimed) {
+    console.log(`Claiming prewarmed session ${claimed.sessionId.slice(0, 8)}...`)
+
+    // Start host-side port forwarders would go here if the prewarmed session
+    // had port forwarding, but for now we just attach directly.
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn('podman', ['exec', '-it', claimed.containerName, 'tmux', 'attach-session', '-t', 'yaac'], {
+          stdio: 'inherit',
+        })
+        child.on('close', () => resolve())
+        child.on('error', reject)
+      })
+    } catch {
+      // Container or tmux session was killed
+    }
+
+    if (!isTmuxSessionAlive(claimed.containerName)) {
+      console.log('Claude Code exited. Cleaning up session...')
+      cleanupSessionDetached({ containerName: claimed.containerName, projectSlug, sessionId: claimed.sessionId })
+    }
+
+    return claimed.sessionId
+  }
+
   await ensureContainerRuntime()
 
   // Ensure git user identity is configured (needed for commits inside container)
   let gitUser = await getGitUserConfig()
   if (gitUser) {
     console.log(`Git identity: ${gitUser.name} <${gitUser.email}>`)
+  } else if (options.createPrewarm) {
+    console.error('Git user.name and user.email must be configured globally for non-interactive session creation.')
+    process.exitCode = 1
+    return
   } else {
     console.log('No global git user configured. Git commits require a user identity.')
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -390,6 +424,10 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     }
   }
 
+  if (options.createPrewarm) {
+    return sessionId
+  }
+
   // Start host-side port forwarders that relay into the container via
   // `podman exec nc`.  This connects to localhost inside the container so the
   // target service can listen on any address (IPv4 or IPv6, including loopback).
@@ -423,4 +461,6 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     console.log('Claude Code exited. Cleaning up session...')
     cleanupSessionDetached({ containerName, projectSlug, sessionId })
   }
+
+  return sessionId
 }
