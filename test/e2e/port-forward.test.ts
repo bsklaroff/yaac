@@ -68,21 +68,22 @@ describe('port forwarding via podman exec relay', () => {
   })
 
   /**
-   * Start a container with an HTTP server listening on 127.0.0.1 (localhost
-   * only).  This is the common case for dev servers and is the scenario that
-   * the old CONNECT-based forwarder could not handle.
+   * Start a container with an HTTP server listening on the given bind address.
+   * Defaults to 127.0.0.1 (IPv4 loopback), which is the common case for dev
+   * servers and the scenario the old CONNECT-based forwarder could not handle.
    */
-  async function startHttpContainer(): Promise<{ name: string }> {
+  async function startHttpContainer(
+    bindAddress: '127.0.0.1' | '::1' = '127.0.0.1',
+  ): Promise<{ name: string }> {
     const name = `yaac-portfwd-test-${crypto.randomBytes(4).toString('hex')}`
     containers.push(name)
 
-    // Deliberately bind to 127.0.0.1 — not 0.0.0.0
     const echoScript = `
       const http = require('http');
       http.createServer((req, res) => {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('hello from container');
-      }).listen(${containerPort}, '127.0.0.1', () => console.log('ready'));
+      }).listen(${containerPort}, '${bindAddress}', () => console.log('ready'));
     `
 
     // Use the base image — it has both node and nc (netcat-openbsd)
@@ -103,11 +104,12 @@ describe('port forwarding via podman exec relay', () => {
     await container.start()
 
     // Wait for the HTTP server to be ready inside the container
+    const curlHost = bindAddress === '::1' ? '[::1]' : bindAddress
     for (let i = 0; i < 30; i++) {
       try {
         const { stdout } = await execFileAsync('podman', [
           'exec', name, 'sh', '-c',
-          `curl -sf http://127.0.0.1:${containerPort}/`,
+          `curl -sf http://${curlHost}:${containerPort}/`,
         ], { timeout: 3000 })
         if (stdout) break
       } catch {
@@ -129,6 +131,26 @@ describe('port forwarding via podman exec relay', () => {
 
     try {
       // Give the TCP server a moment to bind
+      await new Promise((r) => setTimeout(r, 100))
+
+      const result = await httpGet(`http://127.0.0.1:${hostPort}/`)
+      expect(result.status).toBe(200)
+      expect(result.body).toBe('hello from container')
+    } finally {
+      stop()
+    }
+  }, 30_000)
+
+  it('forwards HTTP request from host to IPv6-only container server', async () => {
+    const { name } = await startHttpContainer('::1')
+
+    const hostPort = await findAvailablePort(19400)
+    const stop = startPortForwarders(
+      podmanRelay(name),
+      [{ containerPort, hostPort }],
+    )
+
+    try {
       await new Promise((r) => setTimeout(r, 100))
 
       const result = await httpGet(`http://127.0.0.1:${hostPort}/`)

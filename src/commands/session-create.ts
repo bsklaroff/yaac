@@ -288,8 +288,8 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   }
 
   // Start host-side port forwarders that relay into the container via
-  // `podman exec nc`.  This connects to 127.0.0.1 inside the container so the
-  // target service can listen on any address (including localhost).
+  // `podman exec nc`.  This connects to localhost inside the container so the
+  // target service can listen on any address (IPv4 or IPv6, including loopback).
   let stopPortForwarders: (() => void) | null = null
   if (hasSecretProxy && forwardedPorts.length > 0) {
     stopPortForwarders = startPortForwarders(

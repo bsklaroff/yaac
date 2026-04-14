@@ -11,15 +11,15 @@ export type RelayFactory = (containerPort: number) => ChildProcess
 
 /**
  * Create a RelayFactory that uses `podman exec` + `nc` to connect to
- * 127.0.0.1 inside the given container.  Because the connection originates
- * inside the container's network namespace, the target service can listen on
- * any address — including localhost — and the forwarding will work.
+ * localhost inside the given container.  Using `localhost` instead of a
+ * literal IP lets nc reach services bound to either IPv4 (127.0.0.1) or
+ * IPv6 (::1) loopback.
  */
 export function podmanRelay(containerName: string): RelayFactory {
   return (containerPort) =>
     spawn('podman', [
       'exec', '-i', containerName,
-      'nc', '127.0.0.1', String(containerPort),
+      'nc', 'localhost', String(containerPort),
     ], { stdio: ['pipe', 'pipe', 'ignore'] })
 }
 
