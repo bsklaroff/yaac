@@ -118,7 +118,6 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
     })
     await testPgRelay.ensureRunning(pgConfig)
     pgRelayIp = testPgRelay.ip
-    env.push(...testPgRelay.getEnv())
   }
 
   // Port forwarding setup
@@ -186,11 +185,15 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
     ])
   }
 
-  // Add pg-relay hostname to /etc/hosts
+  // Forward localhost:<pgPort> inside the container to the pg-relay sidecar (IPv4 + IPv6)
   if (pgRelayIp && testPgRelay) {
     await podmanExecRetry('podman', [
-      'exec', '--user', 'root', containerName, 'sh', '-c',
-      `echo '${pgRelayIp} ${testPgRelay.hostname}' >> /etc/hosts`,
+      'exec', '-d', '--user', 'root', containerName,
+      'socat', `TCP4-LISTEN:${testPgRelay.containerPort},fork,reuseaddr,bind=127.0.0.1`, `TCP:${pgRelayIp}:${testPgRelay.containerPort}`,
+    ])
+    await podmanExecRetry('podman', [
+      'exec', '-d', '--user', 'root', containerName,
+      'socat', `TCP6-LISTEN:${testPgRelay.containerPort},fork,reuseaddr,bind=::1`, `TCP:${pgRelayIp}:${testPgRelay.containerPort}`,
     ])
   }
 
@@ -887,7 +890,7 @@ describe('yaac session create', () => {
     const repoPath = path.join(tmpDir, 'pg-relay-project')
     await createTestRepo(repoPath, {
       yaacConfig: {
-        postgres: { hostname: 'db' },
+        postgres: {},
       },
     })
     await addTestProject(repoPath)
@@ -897,18 +900,18 @@ describe('yaac session create', () => {
       const result = await createSessionNonInteractive('pg-relay-project')
       containersToCleanup.push(result.containerName)
 
-      // Verify PGHOST and PGPORT env vars are set
-      const { stdout: envOut } = await execFileAsync('podman', [
-        'exec', result.containerName, 'env',
+      // Verify socat is forwarding localhost:5432 inside the container
+      const { stdout: socatOut } = await execFileAsync('podman', [
+        'exec', result.containerName, 'sh', '-c', 'ps aux | grep socat',
       ])
-      expect(envOut).toContain('PGHOST=db')
-      expect(envOut).toContain('PGPORT=5432')
+      expect(socatOut).toContain('TCP4-LISTEN:5432')
+      expect(socatOut).toContain('TCP6-LISTEN:5432')
 
-      // Verify the hostname resolves inside the container via /etc/hosts
-      const { stdout: hostsOut } = await execFileAsync('podman', [
-        'exec', result.containerName, 'getent', 'hosts', 'db',
-      ])
-      expect(hostsOut).toContain('db')
+      // Verify localhost:5432 is reachable inside the container
+      const { exitCode } = await execFileAsync('podman', [
+        'exec', result.containerName, 'nc', '-z', 'localhost', '5432',
+      ]).then(() => ({ exitCode: 0 })).catch(() => ({ exitCode: 1 }))
+      expect(exitCode).toBe(0)
 
       // Verify the session container is on the yaac-sessions network
       const info = await podman.getContainer(result.containerName).inspect()

@@ -195,12 +195,6 @@ export function parseProjectConfig(raw: string): YaacConfig {
       }
       pgConfig.containerPort = pg.containerPort
     }
-    if (pg.hostname !== undefined) {
-      if (typeof pg.hostname !== 'string' || pg.hostname.length === 0) {
-        throw new Error('yaac-config.json: postgres.hostname must be a non-empty string')
-      }
-      pgConfig.hostname = pg.hostname
-    }
     config.postgres = pgConfig
   }
 

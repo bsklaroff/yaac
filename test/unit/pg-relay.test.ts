@@ -29,7 +29,7 @@ describe('PgRelayClient', () => {
     expect(client.ip).toBe('10.89.0.5')
   })
 
-  it('returns correct default env vars', async () => {
+  it('uses default containerPort', async () => {
     const mockInspect = vi.fn().mockResolvedValue({
       State: { Running: true },
       NetworkSettings: {
@@ -45,13 +45,10 @@ describe('PgRelayClient', () => {
 
     await client.ensureRunning()
 
-    expect(client.getEnv()).toEqual([
-      'PGHOST=pg-relay',
-      'PGPORT=5432',
-    ])
+    expect(client.containerPort).toBe(5432)
   })
 
-  it('uses custom hostname and containerPort from config', async () => {
+  it('uses custom containerPort from config', async () => {
     const mockInspect = vi.fn().mockResolvedValue({
       State: { Running: true },
       NetworkSettings: {
@@ -65,14 +62,9 @@ describe('PgRelayClient', () => {
     const { PgRelayClient } = await import('@/lib/pg-relay')
     const client = new PgRelayClient()
 
-    await client.ensureRunning({ hostname: 'db', containerPort: 5433 })
+    await client.ensureRunning({ containerPort: 5433 })
 
-    expect(client.hostname).toBe('db')
     expect(client.containerPort).toBe(5433)
-    expect(client.getEnv()).toEqual([
-      'PGHOST=db',
-      'PGPORT=5433',
-    ])
   })
 
   it('throws when accessing ip before ensureRunning', async () => {

@@ -8,7 +8,6 @@ const execFileAsync = promisify(execFile)
 const SOCAT_IMAGE = 'docker.io/alpine/socat:1.8.0.3'
 const DEFAULT_HOST_PORT = 5432
 const DEFAULT_CONTAINER_PORT = 5432
-const DEFAULT_HOSTNAME = 'pg-relay'
 
 export const PG_RELAY_CONTAINER = 'yaac-pg-relay'
 export const SESSION_NETWORK = 'yaac-sessions'
@@ -21,7 +20,6 @@ export interface PgRelayClientConfig {
 export class PgRelayClient {
   private running = false
   private _ip: string | null = null
-  private _hostname: string = DEFAULT_HOSTNAME
   private _containerPort: number = DEFAULT_CONTAINER_PORT
   private _containerName: string
   private _network: string
@@ -36,23 +34,11 @@ export class PgRelayClient {
     return this._ip
   }
 
-  get hostname(): string {
-    return this._hostname
-  }
-
   get containerPort(): number {
     return this._containerPort
   }
 
-  getEnv(): string[] {
-    return [
-      `PGHOST=${this._hostname}`,
-      `PGPORT=${String(this._containerPort)}`,
-    ]
-  }
-
   async ensureRunning(config?: PostgresRelayConfig): Promise<void> {
-    this._hostname = config?.hostname ?? DEFAULT_HOSTNAME
     this._containerPort = config?.containerPort ?? DEFAULT_CONTAINER_PORT
 
     try {
@@ -128,7 +114,7 @@ export class PgRelayClient {
         await execFileAsync('podman', [
           'exec', this._containerName, 'sh', '-c', `nc -z 127.0.0.1 ${containerPort}`,
         ])
-        console.log(`PostgreSQL relay running (${this._hostname}:${containerPort} -> host:${hostPort})`)
+        console.log(`PostgreSQL relay running (localhost:${containerPort} -> host:${hostPort})`)
         return
       } catch {
         await new Promise((r) => setTimeout(r, 500))

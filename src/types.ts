@@ -38,8 +38,6 @@ export interface PostgresRelayConfig {
   hostPort?: number
   /** Port to expose inside the relay container (default: 5432) */
   containerPort?: number
-  /** Container alias on the session network (default: "pg-relay") */
-  hostname?: string
 }
 
 export interface YaacConfig {

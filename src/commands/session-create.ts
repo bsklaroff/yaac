@@ -110,10 +110,10 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
     containerExecRoot(containerName, `chown yaac:yaac '${shellEscape(containerPath)}'`)
   }
 
-  // Add pg-relay hostname to /etc/hosts (the yaac-sessions network
-  // has --disable-dns so container-name DNS resolution is unavailable)
+  // Forward localhost:<pgPort> inside the container to the pg-relay sidecar (IPv4 + IPv6)
   if (pgRelayIp) {
-    containerExecRoot(containerName, `sh -c "echo '${pgRelayIp} ${pgRelay.hostname}' >> /etc/hosts"`)
+    execSync(`podman exec -d --user root ${containerName} socat TCP4-LISTEN:${pgRelay.containerPort},fork,reuseaddr,bind=127.0.0.1 TCP:${pgRelayIp}:${pgRelay.containerPort}`, { stdio: 'pipe' })
+    execSync(`podman exec -d --user root ${containerName} socat TCP6-LISTEN:${pgRelay.containerPort},fork,reuseaddr,bind=::1 TCP:${pgRelayIp}:${pgRelay.containerPort}`, { stdio: 'pipe' })
   }
 
   // Fix ownership of podman storage volume and start API socket for nested containers
@@ -349,7 +349,6 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     console.log('Starting PostgreSQL relay sidecar...')
     await pgRelay.ensureRunning(pgConfig)
     pgRelayIp = pgRelay.ip
-    env.push(...pgRelay.getEnv())
   }
 
 
