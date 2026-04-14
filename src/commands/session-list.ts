@@ -70,23 +70,29 @@ export async function sessionList(projectSlug?: string, options: SessionListOpti
       }),
     )
 
-    const fixedWidth = 10 + 1 + 20 + 1 + 12 + 1 + 19 + 2 // columns + spaces + padding
+    // Compute dynamic column widths based on actual data
+    const rows = running.map((c, i) => ({
+      shortId: (c.Labels?.['yaac.session-id'] ?? '?').slice(0, 8),
+      project: c.Labels?.['yaac.project'] ?? '?',
+      status: sessionMeta[i].status,
+      created: new Date(c.Created * 1000).toISOString().replace('T', ' ').slice(0, 19),
+      prompt: sessionMeta[i].prompt,
+    }))
+
+    const projectWidth = Math.max('PROJECT'.length, ...rows.map((r) => r.project.length))
+    const statusWidth = Math.max('STATUS'.length, ...rows.map((r) => r.status.length))
+
+    const fixedWidth = 10 + 1 + projectWidth + 1 + statusWidth + 1 + 19 + 2
     const termWidth = process.stdout.columns || 120
     const promptWidth = Math.max(10, termWidth - fixedWidth)
 
     console.log('')
-    console.log(`${'SESSION'.padEnd(10)} ${'PROJECT'.padEnd(20)} ${'STATUS'.padEnd(12)} ${'CREATED'.padEnd(19)}  PROMPT`)
-    console.log(`${'-'.repeat(10)} ${'-'.repeat(20)} ${'-'.repeat(12)} ${'-'.repeat(19)}  ${'-'.repeat(Math.min(promptWidth, 40))}`)
+    console.log(`${'SESSION'.padEnd(10)} ${'PROJECT'.padEnd(projectWidth)} ${'STATUS'.padEnd(statusWidth)} ${'CREATED'.padEnd(19)}  PROMPT`)
+    console.log(`${'-'.repeat(10)} ${'-'.repeat(projectWidth)} ${'-'.repeat(statusWidth)} ${'-'.repeat(19)}  ${'-'.repeat(Math.min(promptWidth, 40))}`)
 
-    for (let i = 0; i < running.length; i++) {
-      const c = running[i]
-      const sessionId = c.Labels?.['yaac.session-id'] ?? '?'
-      const shortId = sessionId.slice(0, 8)
-      const project = c.Labels?.['yaac.project'] ?? '?'
-      const { status, prompt } = sessionMeta[i]
-      const created = new Date(c.Created * 1000).toISOString().replace('T', ' ').slice(0, 19)
-      const promptText = truncatePrompt(prompt, promptWidth)
-      console.log(`${shortId.padEnd(10)} ${project.padEnd(20)} ${status.padEnd(12)} ${created}  ${promptText}`)
+    for (const row of rows) {
+      const promptText = truncatePrompt(row.prompt, promptWidth)
+      console.log(`${row.shortId.padEnd(10)} ${row.project.padEnd(projectWidth)} ${row.status.padEnd(statusWidth)} ${row.created}  ${promptText}`)
     }
     console.log('')
   }
@@ -175,12 +181,14 @@ async function listDeletedSessions(projectSlug?: string): Promise<void> {
   // Sort newest first
   deleted.sort((a, b) => b.created.localeCompare(a.created))
 
+  const projectWidth = Math.max('PROJECT'.length, ...deleted.map((s) => s.project.length))
+
   console.log('')
-  console.log(`${'SESSION'.padEnd(10)} ${'PROJECT'.padEnd(20)} CREATED`)
-  console.log(`${'-'.repeat(10)} ${'-'.repeat(20)} ${'-'.repeat(20)}`)
+  console.log(`${'SESSION'.padEnd(10)} ${'PROJECT'.padEnd(projectWidth)} CREATED`)
+  console.log(`${'-'.repeat(10)} ${'-'.repeat(projectWidth)} ${'-'.repeat(20)}`)
 
   for (const s of deleted) {
-    console.log(`${s.sessionId.slice(0, 8).padEnd(10)} ${s.project.padEnd(20)} ${s.created}`)
+    console.log(`${s.sessionId.slice(0, 8).padEnd(10)} ${s.project.padEnd(projectWidth)} ${s.created}`)
   }
   console.log('')
 }
