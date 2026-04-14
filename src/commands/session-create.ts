@@ -2,8 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import readline from 'node:readline/promises'
-import { spawn } from 'node:child_process'
-import { execSyncRetry } from '@/lib/exec'
+import { spawn, execSync } from 'node:child_process'
 import { packTar } from '@/lib/tar-utils'
 import simpleGit from 'simple-git'
 import { ensureContainerRuntime, podman } from '@/lib/podman'
@@ -25,24 +24,159 @@ export function shellEscape(str: string): string {
   return str.replace(/'/g, "'\\''")
 }
 
-const podmanRetryPatterns = ['container state improper', 'no such container']
-
 function containerExec(containerName: string, cmd: string): void {
-  execSyncRetry(`podman exec ${containerName} ${cmd}`, {
-    stdio: 'pipe', retries: 8, retryPatterns: podmanRetryPatterns,
-  })
+  execSync(`podman exec ${containerName} ${cmd}`, { stdio: 'pipe' })
 }
 
 function containerExecRoot(containerName: string, cmd: string): void {
-  execSyncRetry(`podman exec --user root ${containerName} ${cmd}`, {
-    stdio: 'pipe', retries: 8, retryPatterns: podmanRetryPatterns,
-  })
+  execSync(`podman exec --user root ${containerName} ${cmd}`, { stdio: 'pipe' })
 }
 
 export interface SessionCreateOptions {
   prompt?: string
   addDir?: string[]
   addDirRw?: string[]
+}
+
+interface ContainerSetupParams {
+  imageName: string
+  containerName: string
+  projectSlug: string
+  sessionId: string
+  env: string[]
+  wtDir: string
+  repo: string
+  claude: string
+  claudeJson: string
+  config: YaacConfig
+  options: SessionCreateOptions
+  networkMode: string
+  pgRelayIp: string | null
+  gitUser: { name: string; email: string }
+  forwardedPorts: Array<{ containerPort: number; hostPort: number }>
+}
+
+async function startContainerWithSetup(params: ContainerSetupParams): Promise<void> {
+  const {
+    imageName, containerName, projectSlug, sessionId, env,
+    wtDir, repo, claude, claudeJson, config, options,
+    networkMode, pgRelayIp, gitUser, forwardedPorts,
+  } = params
+
+  const container = await podman.createContainer({
+    Image: imageName,
+    name: containerName,
+    Labels: {
+      'yaac.project': projectSlug,
+      'yaac.session-id': sessionId,
+      'yaac.data-dir': getDataDir(),
+      'yaac.proxy-container': proxyClient.containerName,
+    },
+    Env: env,
+    HostConfig: {
+      Binds: [
+        `${wtDir}:/workspace:Z`,
+        `${repo}/.git:/repo/.git:Z`,
+        `${claude}:/home/yaac/.claude:Z`,
+        `${claudeJson}:/home/yaac/.claude.json:Z`,
+        ...Object.entries(config.cacheVolumes ?? {}).map(
+          ([key, containerPath]) => `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`,
+        ),
+        ...(config.bindMounts ?? []).map(
+          ({ hostPath, containerPath, readonly: ro }) => `${hostPath}:${containerPath}:${ro ? 'ro' : 'rw'},Z`,
+        ),
+        ...(options.addDir ?? []).map(
+          (p) => `${p}:/add-dir${p}:ro,Z`,
+        ),
+        ...(options.addDirRw ?? []).map(
+          (p) => `${p}:/add-dir${p}:rw,Z`,
+        ),
+        ...(config.nestedContainers
+          ? [`yaac-podmanstorage-${projectSlug}:/home/yaac/.local/share/containers:Z`]
+          : []),
+      ],
+      NetworkMode: networkMode,
+      ...(config.nestedContainers ? {
+        SecurityOpt: ['label=disable', 'unmask=/proc/sys'],
+        Devices: [{ PathOnHost: '/dev/net/tun', PathInContainer: '/dev/net/tun', CgroupPermissions: 'rwm' }],
+      } : {}),
+    },
+  })
+
+  await container.start()
+
+  // Fix ownership of named cache volumes (created as root, but container runs as yaac)
+  for (const containerPath of Object.values(config.cacheVolumes ?? {})) {
+    containerExecRoot(containerName, `chown yaac:yaac '${shellEscape(containerPath)}'`)
+  }
+
+  // Add pg-relay hostname to /etc/hosts (the yaac-sessions network
+  // has --disable-dns so container-name DNS resolution is unavailable)
+  if (pgRelayIp) {
+    containerExecRoot(containerName, `sh -c "echo '${pgRelayIp} ${pgRelay.hostname}' >> /etc/hosts"`)
+  }
+
+  // Fix ownership of podman storage volume and start API socket for nested containers
+  if (config.nestedContainers) {
+    containerExecRoot(containerName, 'chown yaac:yaac /home/yaac/.local/share/containers')
+    execSync(`podman exec -d ${containerName} podman system service --time=0 unix:///run/user/1000/podman/podman.sock`, {
+      stdio: 'pipe',
+    })
+  }
+
+  // Inject CA cert for HTTPS MITM (proxy is always active)
+  const caCert = await proxyClient.getCaCert()
+  const archive = await packTar([{ name: 'proxy-ca.pem', content: caCert }])
+  const containerRef = podman.getContainer(containerName)
+  await containerRef.putArchive(archive, { path: '/tmp' })
+
+  // Fix worktree git pointers for in-container paths
+  containerExec(containerName, `sh -c "echo 'gitdir: /repo/.git/worktrees/${sessionId}' > /workspace/.git"`)
+  containerExec(containerName, `sh -c "echo '/workspace/.git' > /repo/.git/worktrees/${sessionId}/gitdir"`)
+
+  // Configure git identity and trust mounted directories inside container
+  containerExec(containerName, `git config --global user.name '${shellEscape(gitUser.name)}'`)
+  containerExec(containerName, `git config --global user.email '${shellEscape(gitUser.email)}'`)
+  containerExec(containerName, 'git config --global --add safe.directory /workspace')
+  containerExec(containerName, 'git config --global --add safe.directory /repo')
+
+  // Rewrite any SSH-style GitHub URLs to HTTPS (handled by the proxy)
+  containerExec(containerName, `git config --global url.'https://github.com/'.insteadOf 'git@github.com:'`)
+
+  // Start Claude Code in a tmux session
+  const addDirFlags = [...(options.addDir ?? []), ...(options.addDirRw ?? [])]
+    .map((p) => `--add-dir /add-dir${shellEscape(p)}`)
+    .join(' ')
+  const claudeCmd = [
+    'claude --dangerously-skip-permissions',
+    `--session-id ${sessionId}`,
+    addDirFlags,
+    options.prompt ? `-p ${shellEscape(options.prompt)}` : '',
+  ].filter(Boolean).join(' ')
+  console.log('Starting Claude Code...')
+  containerExec(containerName, `tmux -u new-session -d -s yaac -n claude '${claudeCmd}'`)
+
+  // Run init commands in a background tmux window (parallel to Claude Code)
+  if (config.initCommands?.length) {
+    const initScript = config.initCommands
+      .map((cmd) => shellEscape(cmd))
+      .join(' && ')
+    containerExec(containerName, `tmux new-window -d -t yaac -n init 'cd /workspace && ${initScript}'`)
+    if (!config.hideInitPane) {
+      containerExec(containerName, 'tmux set-option -t yaac:init remain-on-exit on')
+    }
+  }
+
+  // Configure tmux UX
+  const portInfo = forwardedPorts.length > 0
+    ? ' ' + forwardedPorts.map((p) => `:${p.hostPort}->${p.containerPort}`).join(' ')
+    : ''
+  containerExec(containerName, 'tmux set-option -g history-limit 200000')
+  containerExec(containerName, 'tmux set-option -g mouse on')
+  containerExec(containerName, 'tmux set-option -g focus-events on')
+  containerExec(containerName, `tmux set-option -t yaac status-right ' ${projectSlug} ${sessionId.slice(0, 8)}${portInfo} '`)
+  containerExec(containerName, 'tmux set-option -t yaac status-right-length 80')
+  containerExec(containerName, 'tmux bind-key k kill-server')
 }
 
 export async function sessionCreate(projectSlug: string, options: SessionCreateOptions): Promise<void> {
@@ -230,111 +364,29 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     await fs.writeFile(claudeJson, '{}')
   }
 
+  // Retry the entire container create + setup so that if the container dies
+  // immediately after creation we start fresh instead of futilely retrying
+  // individual exec calls against a dead container.
+  const maxStartAttempts = 3
+  const setupParams: ContainerSetupParams = {
+    imageName, containerName, projectSlug, sessionId, env,
+    wtDir, repo, claude, claudeJson, config, options,
+    networkMode, pgRelayIp, gitUser, forwardedPorts,
+  }
+
   console.log(`Creating container ${containerName}...`)
-  // Port bindings are not used on the session container — the internal proxy
-  // network has no host route. Ports are forwarded via podman exec relay instead.
 
-  const container = await podman.createContainer({
-    Image: imageName,
-    name: containerName,
-    Labels: {
-      'yaac.project': projectSlug,
-      'yaac.session-id': sessionId,
-      'yaac.data-dir': getDataDir(),
-      'yaac.proxy-container': proxyClient.containerName,
-    },
-    Env: env,
-    HostConfig: {
-      Binds: [
-        `${wtDir}:/workspace:Z`,
-        `${repo}/.git:/repo/.git:Z`,
-        `${claude}:/home/yaac/.claude:Z`,
-        `${claudeJson}:/home/yaac/.claude.json:Z`,
-        ...Object.entries(config.cacheVolumes ?? {}).map(
-          ([key, containerPath]) => `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`,
-        ),
-        ...(config.bindMounts ?? []).map(
-          ({ hostPath, containerPath, readonly: ro }) => `${hostPath}:${containerPath}:${ro ? 'ro' : 'rw'},Z`,
-        ),
-        ...(options.addDir ?? []).map(
-          (p) => `${p}:/add-dir${p}:ro,Z`,
-        ),
-        ...(options.addDirRw ?? []).map(
-          (p) => `${p}:/add-dir${p}:rw,Z`,
-        ),
-        ...(config.nestedContainers
-          ? [`yaac-podmanstorage-${projectSlug}:/home/yaac/.local/share/containers:Z`]
-          : []),
-      ],
-      NetworkMode: networkMode,
-      ...(config.nestedContainers ? {
-        SecurityOpt: ['label=disable', 'unmask=/proc/sys'],
-        Devices: [{ PathOnHost: '/dev/net/tun', PathInContainer: '/dev/net/tun', CgroupPermissions: 'rwm' }],
-      } : {}),
-    },
-  })
-
-  await container.start()
-
-  // Fix ownership of named cache volumes (created as root, but container runs as yaac)
-  for (const containerPath of Object.values(config.cacheVolumes ?? {})) {
-    containerExecRoot(containerName, `chown yaac:yaac '${shellEscape(containerPath)}'`)
-  }
-
-  // Add pg-relay hostname to /etc/hosts (the yaac-sessions network
-  // has --disable-dns so container-name DNS resolution is unavailable)
-  if (pgRelayIp) {
-    containerExecRoot(containerName, `sh -c "echo '${pgRelayIp} ${pgRelay.hostname}' >> /etc/hosts"`)
-  }
-
-  // Fix ownership of podman storage volume and start API socket for nested containers
-  if (config.nestedContainers) {
-    containerExecRoot(containerName, 'chown yaac:yaac /home/yaac/.local/share/containers')
-    execSyncRetry(`podman exec -d ${containerName} podman system service --time=0 unix:///run/user/1000/podman/podman.sock`, {
-      stdio: 'pipe', retries: 8, retryPatterns: podmanRetryPatterns,
-    })
-  }
-
-  // Inject CA cert for HTTPS MITM (proxy is always active)
-  const caCert = await proxyClient.getCaCert()
-  const archive = await packTar([{ name: 'proxy-ca.pem', content: caCert }])
-  const containerRef = podman.getContainer(containerName)
-  await containerRef.putArchive(archive, { path: '/tmp' })
-
-  // Fix worktree git pointers for in-container paths
-  containerExec(containerName, `sh -c "echo 'gitdir: /repo/.git/worktrees/${sessionId}' > /workspace/.git"`)
-  containerExec(containerName, `sh -c "echo '/workspace/.git' > /repo/.git/worktrees/${sessionId}/gitdir"`)
-
-  // Configure git identity and trust mounted directories inside container
-  containerExec(containerName, `git config --global user.name '${shellEscape(gitUser.name)}'`)
-  containerExec(containerName, `git config --global user.email '${shellEscape(gitUser.email)}'`)
-  containerExec(containerName, 'git config --global --add safe.directory /workspace')
-  containerExec(containerName, 'git config --global --add safe.directory /repo')
-
-  // Rewrite any SSH-style GitHub URLs to HTTPS (handled by the proxy)
-  containerExec(containerName, `git config --global url.'https://github.com/'.insteadOf 'git@github.com:'`)
-
-  // Start Claude Code in a tmux session
-  const addDirFlags = [...(options.addDir ?? []), ...(options.addDirRw ?? [])]
-    .map((p) => `--add-dir /add-dir${shellEscape(p)}`)
-    .join(' ')
-  const claudeCmd = [
-    'claude --dangerously-skip-permissions',
-    `--session-id ${sessionId}`,
-    addDirFlags,
-    options.prompt ? `-p ${shellEscape(options.prompt)}` : '',
-  ].filter(Boolean).join(' ')
-  console.log('Starting Claude Code...')
-  containerExec(containerName, `tmux -u new-session -d -s yaac -n claude '${claudeCmd}'`)
-
-  // Run init commands in a background tmux window (parallel to Claude Code)
-  if (config.initCommands?.length) {
-    const initScript = config.initCommands
-      .map((cmd) => shellEscape(cmd))
-      .join(' && ')
-    containerExec(containerName, `tmux new-window -d -t yaac -n init 'cd /workspace && ${initScript}'`)
-    if (!config.hideInitPane) {
-      containerExec(containerName, 'tmux set-option -t yaac:init remain-on-exit on')
+  for (let attempt = 1; attempt <= maxStartAttempts; attempt++) {
+    try {
+      await startContainerWithSetup(setupParams)
+      break
+    } catch (err) {
+      if (attempt < maxStartAttempts) {
+        console.warn(`Container startup failed (attempt ${attempt}/${maxStartAttempts}), retrying...`)
+        try { execSync(`podman rm -f ${containerName}`, { stdio: 'pipe' }) } catch { /* already gone */ }
+        continue
+      }
+      throw err
     }
   }
 
@@ -348,17 +400,6 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
       forwardedPorts,
     )
   }
-
-  // Configure tmux UX
-  const portInfo = forwardedPorts.length > 0
-    ? ' ' + forwardedPorts.map((p) => `:${p.hostPort}->${p.containerPort}`).join(' ')
-    : ''
-  containerExec(containerName, 'tmux set-option -g history-limit 200000')
-  containerExec(containerName, 'tmux set-option -g mouse on')
-  containerExec(containerName, 'tmux set-option -g focus-events on')
-  containerExec(containerName, `tmux set-option -t yaac status-right ' ${projectSlug} ${sessionId.slice(0, 8)}${portInfo} '`)
-  containerExec(containerName, 'tmux set-option -t yaac status-right-length 80')
-  containerExec(containerName, 'tmux bind-key k kill-server')
 
   // Attach the user to the tmux session.
   // Use spawn (not execSync) so the Node.js event loop remains free to
