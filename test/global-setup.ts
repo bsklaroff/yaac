@@ -3,7 +3,7 @@ import { promisify } from 'node:util'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileHash, contextHash, ensureImageByTag } from '@/lib/image-builder'
-import { DOCKERFILES_DIR, PROXY_DIR, SSH_AGENT_DIR } from '@/lib/paths'
+import { DOCKERFILES_DIR, PROXY_DIR } from '@/lib/paths'
 
 const execFileAsync = promisify(execFile)
 
@@ -48,9 +48,4 @@ export async function setup(): Promise<void> {
   const proxyHash = await contextHash(PROXY_DIR)
   const proxyTag = `yaac-test-proxy:${proxyHash}`
   await ensureImageByTag(proxyTag, path.join(PROXY_DIR, 'Dockerfile'), PROXY_DIR)
-
-  // --- SSH agent sidecar (podman/ssh-agent-sidecar/) ---
-  const sshHash = await contextHash(SSH_AGENT_DIR)
-  const sshTag = `yaac-test-ssh-agent:${sshHash}`
-  await ensureImageByTag(sshTag, path.join(SSH_AGENT_DIR, 'Dockerfile'), SSH_AGENT_DIR)
 }

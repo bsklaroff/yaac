@@ -5,7 +5,6 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import simpleGit from 'simple-git'
 import { setDataDir, getDataDir } from '@/lib/paths'
-import type { SshAgentConfig } from '@/lib/ssh-agent'
 import type { ProxyClientConfig } from '@/lib/proxy-client'
 
 const execFileAsync = promisify(execFile)
@@ -15,17 +14,6 @@ const execFileAsync = promisify(execFile)
  * Keeps test images separate from images used by the running application.
  */
 export const TEST_IMAGE_PREFIX = 'yaac-test'
-
-/**
- * SSH agent sidecar config for e2e tests.
- * Uses separate container/volume/image names to avoid interfering with the app's SSH agent.
- */
-export const TEST_SSH_AGENT_CONFIG: SshAgentConfig = {
-  containerName: 'yaac-test-ssh-agent',
-  volumeName: 'yaac-test-ssh-agent',
-  imageName: 'yaac-test-ssh-agent',
-  requirePrebuilt: true,
-}
 
 /**
  * Proxy sidecar config for e2e tests.

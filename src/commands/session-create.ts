@@ -12,10 +12,11 @@ import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/
 import { resolveProjectConfig } from '@/lib/config'
 import { buildRulesFromConfig } from '@/lib/secret-conventions'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session-cleanup'
-import { proxyClient, INTERNAL_PORT } from '@/lib/proxy-client'
-import { sshAgent, hasSshKeys } from '@/lib/ssh-agent'
+import { proxyClient } from '@/lib/proxy-client'
+import { getGithubToken } from '@/lib/credentials'
 import { findAvailablePort } from '@/lib/port'
 import { startPortForwarders, podmanRelay } from '@/lib/port-forwarder'
+import type { InjectionRule } from '@/lib/secret-conventions'
 import type { YaacConfig } from '@/types'
 
 export function shellEscape(str: string): string {
@@ -78,9 +79,10 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   const config: YaacConfig = await resolveProjectConfig(projectSlug) ?? {}
 
   // Fetch latest from remote before building images
+  const githubToken = await getGithubToken()
   console.log('Fetching latest from remote...')
   try {
-    await fetchOrigin(repo)
+    await fetchOrigin(repo, githubToken ?? undefined)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error(`Error: could not fetch from remote: ${msg}`)
@@ -120,33 +122,48 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     }
   }
 
-  // Proxy setup
-  let proxyToken: string | null = null
-  const hasSecretProxy = config.envSecretProxy && Object.keys(config.envSecretProxy).length > 0
-  let networkMode = 'podman'
+  // Proxy is always required — injects GITHUB_TOKEN for all GitHub HTTPS requests
+  console.log('Starting proxy sidecar...')
+  await proxyClient.ensureRunning()
 
-  if (hasSecretProxy) {
-    console.log('Starting proxy sidecar...')
-    await proxyClient.ensureRunning()
+  // Build GitHub token injection rules
+  const githubRules: InjectionRule[] = githubToken
+    ? [
+        {
+          hostPattern: 'github.com',
+          pathPattern: '/*',
+          injections: [{ action: 'set_header', name: 'authorization', value: `Bearer ${githubToken}` }],
+        },
+        {
+          hostPattern: '*.github.com',
+          pathPattern: '/*',
+          injections: [{ action: 'set_header', name: 'authorization', value: `Bearer ${githubToken}` }],
+        },
+      ]
+    : []
 
-    const rules = buildRulesFromConfig(config.envSecretProxy!, process.env)
-    await proxyClient.updateProjectRules(projectSlug, rules)
+  // Merge with any additional envSecretProxy rules from config
+  const additionalRules = config.envSecretProxy
+    ? buildRulesFromConfig(config.envSecretProxy, process.env)
+    : []
+  await proxyClient.updateProjectRules(projectSlug, [...githubRules, ...additionalRules])
 
-    proxyToken = proxyClient.generateSessionToken()
-    await proxyClient.registerSession(proxyToken, projectSlug)
+  const proxyToken = proxyClient.generateSessionToken()
+  await proxyClient.registerSession(proxyToken, projectSlug)
 
-    // Add proxy env vars
-    env.push(...proxyClient.getProxyEnv(proxyToken))
+  // Add proxy env vars
+  env.push(...proxyClient.getProxyEnv(proxyToken))
 
-    // Add placeholder values for proxied secrets so tools detect them
-    for (const name of Object.keys(config.envSecretProxy!)) {
+  // Add placeholder values for proxied secrets so tools detect them
+  if (config.envSecretProxy) {
+    for (const name of Object.keys(config.envSecretProxy)) {
       if (process.env[name]) {
         env.push(`${name}=placeholder`)
       }
     }
-
-    networkMode = proxyClient.network
   }
+
+  const networkMode = proxyClient.network
 
   // Port forwarding setup
   const forwardedPorts: Array<{ containerPort: number; hostPort: number }> = []
@@ -157,15 +174,6 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
       forwardedPorts.push({ containerPort, hostPort })
       console.log(`Forwarding host port ${hostPort} -> container port ${containerPort}`)
     }
-  }
-
-  // SSH agent setup (if user has SSH keys)
-  const sshBinds: string[] = []
-  if (hasSshKeys()) {
-    console.log('Starting SSH agent sidecar...')
-    await sshAgent.ensureRunning()
-    env.push(...sshAgent.getSshEnv())
-    sshBinds.push(...sshAgent.getBinds())
   }
 
   const containerName = `yaac-${projectSlug}-${sessionId}`
@@ -180,18 +188,8 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   }
 
   console.log(`Creating container ${containerName}...`)
-  // When using the proxy network, port bindings on the session container won't
-  // work (the internal network has no host route). We'll forward ports through
-  // the proxy sidecar instead, after the container starts.
-  const portBindings: Record<string, Array<{ HostPort: string; HostIp: string }>> = {}
-  const exposedPorts: Record<string, Record<string, never>> = {}
-  if (!hasSecretProxy) {
-    for (const { containerPort, hostPort } of forwardedPorts) {
-      const portKey = `${containerPort}/tcp`
-      exposedPorts[portKey] = {}
-      portBindings[portKey] = [{ HostPort: String(hostPort), HostIp: '127.0.0.1' }]
-    }
-  }
+  // Port bindings are not used on the session container — the internal proxy
+  // network has no host route. Ports are forwarded via podman exec relay instead.
 
   const container = await podman.createContainer({
     Image: imageName,
@@ -201,7 +199,6 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
       'yaac.session-id': sessionId,
       'yaac.data-dir': getDataDir(),
     },
-    ExposedPorts: exposedPorts,
     Env: env,
     HostConfig: {
       Binds: [
@@ -209,7 +206,6 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
         `${repo}/.git:/repo/.git:Z`,
         `${claude}:/home/yaac/.claude:Z`,
         `${claudeJson}:/home/yaac/.claude.json:Z`,
-        ...sshBinds,
         ...Object.entries(config.cacheVolumes ?? {}).map(
           ([key, containerPath]) => `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`,
         ),
@@ -220,7 +216,6 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
           ? [`yaac-podmanstorage-${projectSlug}:/home/yaac/.local/share/containers:Z`]
           : []),
       ],
-      PortBindings: portBindings,
       NetworkMode: networkMode,
       ...(config.nestedContainers ? {
         SecurityOpt: ['label=disable', 'unmask=/proc/sys'],
@@ -244,20 +239,11 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     })
   }
 
-  // Inject CA cert and SSH proxy config if using proxy
-  if (hasSecretProxy) {
-    const caCert = await proxyClient.getCaCert()
-    const archive = await packTar([{ name: 'proxy-ca.pem', content: caCert }])
-    const container = podman.getContainer(containerName)
-    await container.putArchive(archive, { path: '/tmp' })
-
-    // Configure SSH to tunnel through the proxy via HTTP CONNECT
-    const proxyAddr = `${proxyClient.proxyIp}:${INTERNAL_PORT}`
-    containerExec(containerName, 'mkdir -p /home/yaac/.ssh')
-    containerExec(containerName, `sh -c "cat > /home/yaac/.ssh/config << 'SSHEOF'\nHost *\n    ProxyCommand nc -X connect -x ${proxyAddr} %h %p\nSSHEOF"`)
-    containerExec(containerName, 'chmod 700 /home/yaac/.ssh')
-    containerExec(containerName, 'chmod 600 /home/yaac/.ssh/config')
-  }
+  // Inject CA cert for HTTPS MITM (proxy is always active)
+  const caCert = await proxyClient.getCaCert()
+  const archive = await packTar([{ name: 'proxy-ca.pem', content: caCert }])
+  const containerRef = podman.getContainer(containerName)
+  await containerRef.putArchive(archive, { path: '/tmp' })
 
   // Fix worktree git pointers for in-container paths
   containerExec(containerName, `sh -c "echo 'gitdir: /repo/.git/worktrees/${sessionId}' > /workspace/.git"`)
@@ -268,6 +254,9 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   containerExec(containerName, `git config --global user.email '${shellEscape(gitUser.email)}'`)
   containerExec(containerName, 'git config --global --add safe.directory /workspace')
   containerExec(containerName, 'git config --global --add safe.directory /repo')
+
+  // Rewrite any SSH-style GitHub URLs to HTTPS (handled by the proxy)
+  containerExec(containerName, `git config --global url.'https://github.com/'.insteadOf 'git@github.com:'`)
 
   // Start Claude Code in a tmux session
   const claudeCmd = options.prompt
@@ -291,7 +280,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   // `podman exec nc`.  This connects to localhost inside the container so the
   // target service can listen on any address (IPv4 or IPv6, including loopback).
   let stopPortForwarders: (() => void) | null = null
-  if (hasSecretProxy && forwardedPorts.length > 0) {
+  if (forwardedPorts.length > 0) {
     stopPortForwarders = startPortForwarders(
       podmanRelay(containerName),
       forwardedPorts,

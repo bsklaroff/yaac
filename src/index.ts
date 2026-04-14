@@ -8,6 +8,9 @@ import { sessionShell } from '@/commands/session-shell'
 import { sessionAttach } from '@/commands/session-attach'
 import { sessionStream } from '@/commands/session-stream'
 import { sessionMonitor } from '@/commands/session-monitor'
+import { authUpdate } from '@/commands/auth-update'
+import { authClear } from '@/commands/auth-clear'
+import { ensureGithubToken } from '@/lib/credentials'
 
 /**
  * Show subcommand options nested under each subcommand in help output.
@@ -113,5 +116,34 @@ session
   .argument('[project]', 'Filter by project slug')
   .option('-n, --interval <seconds>', 'Refresh interval in seconds', '5')
   .action(sessionMonitor)
+
+const auth = program
+  .command('auth')
+  .description('Manage GitHub credentials')
+  .configureHelp({ formatHelp: nestedHelp })
+
+auth
+  .command('update')
+  .description('Set or replace your GitHub Personal Access Token')
+  .action(authUpdate)
+
+auth
+  .command('clear')
+  .description('Remove stored GitHub credentials')
+  .action(authClear)
+
+// Ensure GitHub token exists before any command (except auth commands)
+program.hook('preAction', async (thisCommand) => {
+  const chain: string[] = []
+  let cmd: Command | null = thisCommand
+  while (cmd) {
+    const name = cmd.name()
+    if (name) chain.unshift(name)
+    cmd = cmd.parent
+  }
+  // Skip credential check for auth subcommands (they manage credentials themselves)
+  if (chain.includes('auth')) return
+  await ensureGithubToken()
+})
 
 program.parse()

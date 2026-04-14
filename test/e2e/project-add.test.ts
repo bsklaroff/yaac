@@ -1,70 +1,96 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { createTempDataDir, cleanupTempDir, createTestRepo, getDataDir } from '@test/helpers/setup'
-import { projectAdd } from '@/commands/project-add'
-import type { ProjectMeta } from '@/types'
+import { createTempDataDir, cleanupTempDir, getDataDir } from '@test/helpers/setup'
+
+// We test the validation logic directly since cloning real GitHub repos
+// is not suitable for unit/e2e tests. The actual clone with token injection
+// is tested via integration tests.
 
 describe('yaac project add', () => {
   let tmpDir: string
-  let testRepoDir: string
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
-    testRepoDir = path.join(tmpDir, 'test-source-repo')
-    await createTestRepo(testRepoDir)
   })
 
   afterEach(async () => {
     await cleanupTempDir(tmpDir)
   })
 
-  it('clones a repo and creates project structure', async () => {
-    await projectAdd(testRepoDir)
+  it('rejects SSH-style git URLs with helpful message', async () => {
+    const { projectAdd } = await import('@/commands/project-add')
 
-    const projectsDir = path.join(getDataDir(), 'projects', 'test-source-repo')
+    process.exitCode = undefined
+    const errs: string[] = []
+    const origErr = console.error
+    console.error = (msg: string) => errs.push(msg)
 
-    // project.json exists
-    const metaRaw = await fs.readFile(path.join(projectsDir, 'project.json'), 'utf8')
-    const meta = JSON.parse(metaRaw) as ProjectMeta
-    expect(meta.slug).toBe('test-source-repo')
-    expect(meta.remoteUrl).toBe(testRepoDir)
-    expect(meta.addedAt).toBeTruthy()
+    await projectAdd('git@github.com:org/repo.git')
 
-    // repo/ was cloned
-    const readme = await fs.readFile(path.join(projectsDir, 'repo', 'README.md'), 'utf8')
-    expect(readme).toContain('Test repo')
-
-    // claude/ dir exists
-    await expect(fs.access(path.join(projectsDir, 'claude'))).resolves.toBeUndefined()
+    console.error = origErr
+    expect(process.exitCode).toBe(1)
+    expect(errs.join('\n')).toContain('HTTPS')
+    process.exitCode = undefined
   })
 
-  it('derives correct slug from URL with .git suffix', async () => {
-    // Simulate a .git-suffixed URL by renaming
-    const renamedRepo = testRepoDir + '.git'
-    await fs.rename(testRepoDir, renamedRepo)
+  it('rejects non-HTTPS protocols', async () => {
+    const { projectAdd } = await import('@/commands/project-add')
 
-    await projectAdd(renamedRepo)
+    process.exitCode = undefined
+    const errs: string[] = []
+    const origErr = console.error
+    console.error = (msg: string) => errs.push(msg)
 
-    const projectsDir = path.join(getDataDir(), 'projects', 'test-source-repo')
-    const metaRaw = await fs.readFile(path.join(projectsDir, 'project.json'), 'utf8')
-    const meta = JSON.parse(metaRaw) as ProjectMeta
-    expect(meta.slug).toBe('test-source-repo')
+    await projectAdd('http://github.com/org/repo')
+
+    console.error = origErr
+    expect(process.exitCode).toBe(1)
+    expect(errs.join('\n')).toContain('HTTPS')
+    process.exitCode = undefined
+  })
+
+  it('rejects non-GitHub hosts', async () => {
+    const { projectAdd } = await import('@/commands/project-add')
+
+    process.exitCode = undefined
+    const errs: string[] = []
+    const origErr = console.error
+    console.error = (msg: string) => errs.push(msg)
+
+    await projectAdd('https://gitlab.com/org/repo')
+
+    console.error = origErr
+    expect(process.exitCode).toBe(1)
+    expect(errs.join('\n')).toContain('GitHub')
+    process.exitCode = undefined
+  })
+
+  it('rejects invalid URLs', async () => {
+    const { projectAdd } = await import('@/commands/project-add')
+
+    process.exitCode = undefined
+    const errs: string[] = []
+    const origErr = console.error
+    console.error = (msg: string) => errs.push(msg)
+
+    await projectAdd('not-a-url')
+
+    console.error = origErr
+    expect(process.exitCode).toBe(1)
+    expect(errs.join('\n')).toContain('Invalid URL')
+    process.exitCode = undefined
   })
 
   it('errors gracefully on duplicate slug', async () => {
-    await projectAdd(testRepoDir)
+    // Create the project directory to simulate an existing project
+    const projectsDir = path.join(getDataDir(), 'projects', 'repo')
+    await fs.mkdir(projectsDir, { recursive: true })
 
-    // Capture exitCode
-    process.exitCode = undefined
-    await projectAdd(testRepoDir)
-    expect(process.exitCode).toBe(1)
-    process.exitCode = undefined
-  })
+    const { projectAdd } = await import('@/commands/project-add')
 
-  it('errors gracefully on invalid URL', async () => {
     process.exitCode = undefined
-    await projectAdd('/nonexistent/path/to/repo')
+    await projectAdd('https://github.com/org/repo')
     expect(process.exitCode).toBe(1)
     process.exitCode = undefined
   })

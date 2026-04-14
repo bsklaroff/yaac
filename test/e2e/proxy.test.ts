@@ -116,7 +116,7 @@ describe('proxy sidecar', () => {
     await expect(fetch('http://127.0.0.1:19255/healthz')).rejects.toThrow()
   })
 
-  describe('CONNECT tunnel for SSH', () => {
+  describe('CONNECT tunnel', () => {
     const tunnelContainers: string[] = []
 
     afterEach(async () => {
@@ -172,88 +172,6 @@ describe('proxy sidecar', () => {
       // A successful CONNECT to port 443 will get some TLS bytes or a timeout,
       // but it won't say "connection-blocked". If we get any data, the tunnel worked.
       expect(tunneled.trim()).not.toContain('connection-blocked')
-    }, 30_000)
-
-    it('tunnels SSH connections via CONNECT from internal network', async () => {
-      await client.ensureRunning()
-
-      const containerName = `yaac-proxy-ssh-test-${crypto.randomBytes(4).toString('hex')}`
-      tunnelContainers.push(containerName)
-
-      const { stdout: images } = await execFileAsync('podman', [
-        'images', '--format', '{{.Repository}}:{{.Tag}}', '--filter', 'reference=yaac-test-base',
-      ])
-      const baseImage = images.trim().split('\n')[0]
-
-      const container = await podman.createContainer({
-        Image: baseImage,
-        name: containerName,
-        Labels: { 'yaac.test': 'true' },
-        HostConfig: {
-          NetworkMode: client.network,
-        },
-      })
-      await container.start()
-
-      // Tunnel to github.com:22 via the proxy and check for SSH banner.
-      // Use sleep to keep stdin open long enough to receive the banner.
-      const proxyAddr = `${client.proxyIp}:${INTERNAL_PORT}`
-      const { stdout: banner } = await execFileAsync('podman', [
-        'exec', containerName, 'sh', '-c',
-        `sleep 2 | nc -w 5 -X connect -x ${proxyAddr} github.com 22 | head -1`,
-      ], { timeout: 15_000 })
-      expect(banner).toContain('SSH')
-    }, 30_000)
-
-    it('writes SSH proxy config when proxy is active in session', async () => {
-      await client.ensureRunning()
-
-      const containerName = `yaac-proxy-sshcfg-test-${crypto.randomBytes(4).toString('hex')}`
-      tunnelContainers.push(containerName)
-
-      const { stdout: images } = await execFileAsync('podman', [
-        'images', '--format', '{{.Repository}}:{{.Tag}}', '--filter', 'reference=yaac-test-base',
-      ])
-      const baseImage = images.trim().split('\n')[0]
-
-      const container = await podman.createContainer({
-        Image: baseImage,
-        name: containerName,
-        Labels: { 'yaac.test': 'true' },
-        HostConfig: {
-          NetworkMode: client.network,
-        },
-      })
-      await container.start()
-
-      // Simulate what session-create does: write SSH config
-      const proxyAddr = `${client.proxyIp}:${INTERNAL_PORT}`
-      await execFileAsync('podman', [
-        'exec', containerName, 'mkdir', '-p', '/home/yaac/.ssh',
-      ])
-      await execFileAsync('podman', [
-        'exec', containerName, 'sh', '-c',
-        `cat > /home/yaac/.ssh/config << 'SSHEOF'\nHost *\n    ProxyCommand nc -X connect -x ${proxyAddr} %h %p\nSSHEOF`,
-      ])
-      await execFileAsync('podman', [
-        'exec', containerName, 'chmod', '700', '/home/yaac/.ssh',
-      ])
-      await execFileAsync('podman', [
-        'exec', containerName, 'chmod', '600', '/home/yaac/.ssh/config',
-      ])
-
-      // Verify the SSH config was written correctly
-      const { stdout: sshConfig } = await execFileAsync('podman', [
-        'exec', containerName, 'cat', '/home/yaac/.ssh/config',
-      ])
-      expect(sshConfig).toContain('Host *')
-      expect(sshConfig).toContain(`ProxyCommand nc -X connect -x ${proxyAddr} %h %p`)
-
-      // Verify permissions
-      const { stdout: perms } = await execFileAsync('podman', [
-        'exec', containerName, 'stat', '-c', '%a', '/home/yaac/.ssh/config',
-      ])
-      expect(perms.trim()).toBe('600')
     }, 30_000)
   })
 })

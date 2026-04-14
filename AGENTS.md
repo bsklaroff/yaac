@@ -15,7 +15,6 @@ All container images used by e2e tests are pre-built in `test/global-setup.ts` b
 | `yaac-test-base:<hash>` | `dockerfiles/Dockerfile.default` |
 | `yaac-test-base-nestable:<hash>` | `dockerfiles/Dockerfile.nestable` (layered on base) |
 | `yaac-test-proxy:<hash>` | `podman/proxy-sidecar/` (all files in directory) |
-| `yaac-test-ssh-agent:<hash>` | `podman/ssh-agent-sidecar/` (all files in directory) |
 
 **Rules:**
 - Never build images inside individual test workers — all builds belong in `test/global-setup.ts`.

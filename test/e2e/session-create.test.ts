@@ -4,7 +4,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, TEST_SSH_AGENT_CONFIG, TEST_PROXY_CONFIG } from '@test/helpers/setup'
+import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, TEST_PROXY_CONFIG } from '@test/helpers/setup'
 import { projectAdd } from '@/commands/project-add'
 import { podman } from '@/lib/podman'
 import { ensureImage } from '@/lib/image-builder'
@@ -13,7 +13,6 @@ import { resolveProjectConfig } from '@/lib/config'
 import { repoDir, claudeDir, worktreeDir, worktreesDir, getDataDir } from '@/lib/paths'
 import { buildRulesFromConfig } from '@/lib/secret-conventions'
 import { ProxyClient } from '@/lib/proxy-client'
-import { hasSshKeys, SshAgentClient } from '@/lib/ssh-agent'
 import { findAvailablePort } from '@/lib/port'
 
 const execFileAsync = promisify(execFile)
@@ -38,12 +37,21 @@ async function podmanExecRetry(
   throw new Error('podmanExecRetry: unexpected fall-through')
 }
 
-// Test-specific sidecar instances — isolated from the running application
-const testProxyClient = new ProxyClient({
-  ...TEST_PROXY_CONFIG,
-  authSecret: crypto.randomBytes(32).toString('hex'),
-})
-const testSshAgent = new SshAgentClient(undefined, TEST_SSH_AGENT_CONFIG)
+// Test-specific sidecar instances — initialized in createSessionNonInteractive
+// with a dynamic port to avoid conflicts with other test suites.
+let testProxyClient: ProxyClient | null = null
+
+async function getTestProxy(): Promise<ProxyClient> {
+  if (testProxyClient) return testProxyClient
+  const port = await findAvailablePort(19258)
+  testProxyClient = new ProxyClient({
+    ...TEST_PROXY_CONFIG,
+    containerName: `yaac-test-proxy-session-${port}`,
+    hostPort: String(port),
+    authSecret: crypto.randomBytes(32).toString('hex'),
+  })
+  return testProxyClient
+}
 
 async function getImageEnv(imageName: string): Promise<string[]> {
   const info = await podman.getImage(imageName).inspect()
@@ -79,31 +87,28 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
     }
   }
 
-  let networkMode = 'podman'
-  const hasSecretProxy = config.envSecretProxy && Object.keys(config.envSecretProxy).length > 0
+  // Proxy is always on — start it and register GitHub token rules
+  const proxy = await getTestProxy()
+  await proxy.ensureRunning()
 
-  if (hasSecretProxy) {
-    await testProxyClient.ensureRunning()
-    const rules = buildRulesFromConfig(config.envSecretProxy!, process.env)
-    await testProxyClient.updateProjectRules(projectSlug, rules)
-    const proxyToken = testProxyClient.generateSessionToken()
-    await testProxyClient.registerSession(proxyToken, projectSlug)
-    env.push(...testProxyClient.getProxyEnv(proxyToken))
-    for (const name of Object.keys(config.envSecretProxy!)) {
+  const additionalRules = config.envSecretProxy
+    ? buildRulesFromConfig(config.envSecretProxy, process.env)
+    : []
+  await proxy.updateProjectRules(projectSlug, additionalRules)
+
+  const proxyToken = proxy.generateSessionToken()
+  await proxy.registerSession(proxyToken, projectSlug)
+  env.push(...proxy.getProxyEnv(proxyToken))
+
+  if (config.envSecretProxy) {
+    for (const name of Object.keys(config.envSecretProxy)) {
       if (process.env[name]) {
         env.push(`${name}=placeholder`)
       }
     }
-    networkMode = testProxyClient.network
   }
 
-  // SSH agent setup
-  const sshBinds: string[] = []
-  if (hasSshKeys()) {
-    await testSshAgent.ensureRunning()
-    env.push(...testSshAgent.getSshEnv())
-    sshBinds.push(...testSshAgent.getBinds())
-  }
+  const networkMode = proxy.network
 
   // Port forwarding setup
   const forwardedPorts: Array<{ containerPort: number; hostPort: number }> = []
@@ -138,7 +143,6 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
         `${wtDir}:/workspace:Z`,
         `${repo}/.git:/repo/.git:Z`,
         `${claude}:/home/yaac/.claude:Z`,
-        ...sshBinds,
         ...Object.entries(config.cacheVolumes ?? {}).map(
           ([key, containerPath]) => `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`,
         ),
@@ -401,88 +405,6 @@ describe('yaac session create', () => {
       // Expected — file doesn't exist
     }
   })
-
-  it('has SSH_AUTH_SOCK set when SSH keys exist', async () => {
-    await requirePodman()
-    if (!hasSshKeys()) return // skip if no SSH keys on host
-
-    const tmpDir = await createTempDataDir()
-    tmpDirs.push(tmpDir)
-    const repoPath = path.join(tmpDir, 'ssh-project')
-    await createTestRepo(repoPath)
-    await projectAdd(repoPath)
-
-    const result = await createSessionNonInteractive('ssh-project')
-    containersToCleanup.push(result.containerName)
-
-    // Verify SSH_AUTH_SOCK is set
-    const { stdout: envOut } = await execFileAsync('podman', [
-      'exec', result.containerName, 'env',
-    ])
-    expect(envOut).toContain('SSH_AUTH_SOCK=/ssh-agent/socket')
-
-    // Verify the socket file exists
-    await execFileAsync('podman', [
-      'exec', result.containerName, 'test', '-S', '/ssh-agent/socket',
-    ])
-  })
-
-  it('can list SSH keys from session container via agent', async () => {
-    await requirePodman()
-
-    const tmpDir = await createTempDataDir()
-    tmpDirs.push(tmpDir)
-
-    // Generate a temporary SSH key for this test
-    const sshDir = path.join(tmpDir, 'dot-ssh')
-    await fs.mkdir(sshDir, { mode: 0o700 })
-    await execFileAsync('ssh-keygen', [
-      '-t', 'ed25519', '-f', path.join(sshDir, 'id_ed25519'), '-N', '', '-q',
-    ])
-
-    // Use a dedicated SshAgentClient pointing at our test keys with isolated names
-    const testAgent = new SshAgentClient(sshDir, TEST_SSH_AGENT_CONFIG)
-    try {
-      await testAgent.ensureRunning()
-
-      const repoPath = path.join(tmpDir, 'ssh-agent-project')
-      await createTestRepo(repoPath)
-      await projectAdd(repoPath)
-
-      const sessionId = crypto.randomBytes(4).toString('hex')
-      const repo = repoDir('ssh-agent-project')
-      const wtDir = worktreeDir('ssh-agent-project', sessionId)
-      await fs.mkdir(worktreesDir('ssh-agent-project'), { recursive: true })
-      await addWorktree(repo, wtDir, `yaac/${sessionId}`)
-
-      const imageName = await ensureImage('ssh-agent-project', TEST_IMAGE_PREFIX, true)
-      const containerName = `yaac-ssh-agent-project-${sessionId}`
-      containersToCleanup.push(containerName)
-
-      const container = await podman.createContainer({
-        Image: imageName,
-        name: containerName,
-        Labels: { 'yaac.test': 'true' },
-        Env: [...(await getImageEnv(imageName)), ...testAgent.getSshEnv()],
-        HostConfig: {
-          Binds: [
-            `${wtDir}:/workspace:Z`,
-            `${repo}/.git:/repo/.git:Z`,
-            ...testAgent.getBinds(),
-          ],
-        },
-      })
-      await container.start()
-
-      // ssh-add -l must succeed and list the test key
-      const { stdout } = await execFileAsync('podman', [
-        'exec', containerName, 'ssh-add', '-l',
-      ])
-      expect(stdout).toMatch(/\d+ SHA256:/)
-    } finally {
-      await testAgent.stop()
-    }
-  }, 60_000)
 
   it('mounts cacheVolumes in container', async () => {
     await requirePodman()

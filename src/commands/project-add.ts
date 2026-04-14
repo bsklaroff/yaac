@@ -2,6 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ensureDataDir, projectDir, repoDir, claudeDir } from '@/lib/paths'
 import { cloneRepo } from '@/lib/git'
+import { getGithubToken } from '@/lib/credentials'
 import type { ProjectMeta } from '@/types'
 
 function deriveSlug(remoteUrl: string): string {
@@ -9,7 +10,52 @@ function deriveSlug(remoteUrl: string): string {
   return lastSegment.replace(/\.git$/, '')
 }
 
+export function isLocalPath(url: string): boolean {
+  return url.startsWith('/') || url.startsWith('./') || url.startsWith('../')
+}
+
+export function validateGithubHttpsUrl(url: string): void {
+  // Allow local file paths (used in development and testing)
+  if (isLocalPath(url)) return
+
+  // Detect SSH-style URLs first (git@github.com:org/repo)
+  if (url.match(/^[\w-]+@[\w.-]+:/)) {
+    throw new Error(
+      'Only HTTPS GitHub URLs are supported. Use https://github.com/org/repo instead of SSH URLs.',
+    )
+  }
+
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    throw new Error(
+      `Invalid URL: "${url}". Use an HTTPS GitHub URL like https://github.com/org/repo`,
+    )
+  }
+
+  if (parsed.protocol !== 'https:') {
+    throw new Error(
+      'Only HTTPS GitHub URLs are supported. Use https://github.com/org/repo instead.',
+    )
+  }
+
+  if (parsed.hostname !== 'github.com' && !parsed.hostname.endsWith('.github.com')) {
+    throw new Error(
+      'Only GitHub repositories are supported (github.com).',
+    )
+  }
+}
+
 export async function projectAdd(remoteUrl: string): Promise<void> {
+  try {
+    validateGithubHttpsUrl(remoteUrl)
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err))
+    process.exitCode = 1
+    return
+  }
+
   const slug = deriveSlug(remoteUrl)
   const dir = projectDir(slug)
 
@@ -25,11 +71,13 @@ export async function projectAdd(remoteUrl: string): Promise<void> {
     // doesn't exist — good
   }
 
+  const token = await getGithubToken()
+
   console.log(`Cloning ${remoteUrl} into ${slug}...`)
   await fs.mkdir(dir, { recursive: true })
 
   try {
-    await cloneRepo(remoteUrl, repoDir(slug))
+    await cloneRepo(remoteUrl, repoDir(slug), token ?? undefined)
   } catch (err) {
     await fs.rm(dir, { recursive: true, force: true })
     const message = err instanceof Error ? err.message : String(err)

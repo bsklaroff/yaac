@@ -27,6 +27,22 @@ podman machine start
 sudo apt install podman
 ```
 
+## Authentication
+
+yaac requires a GitHub Personal Access Token (PAT) for git operations and GitHub API access inside session containers.
+
+On first run, yaac prompts for your token and stores it in `~/.yaac/.credentials.json` (file permissions `0600`). The token is used for:
+
+- **Host-side git operations** — clone and fetch use HTTPS with the token embedded in the request.
+- **Container-side GitHub requests** — a MITM proxy sidecar injects the token as an `Authorization` header into all HTTPS requests to `github.com` and `*.github.com`. The token is never written into the container filesystem.
+
+To update or remove your stored credentials:
+
+```sh
+yaac auth update    # Set or replace your GitHub PAT
+yaac auth clear     # Remove stored credentials (with confirmation)
+```
+
 ## Usage
 
 ```
@@ -35,10 +51,11 @@ yaac [command]
 Commands:
   project         Manage projects
   session         Manage sessions
+  auth            Manage GitHub credentials
 
 yaac project <command>
   list              List all projects
-  add <remote-url>  Add a project from a git remote
+  add <remote-url>  Add a project from a GitHub HTTPS URL
 
 yaac session <command>
   create [options] <project>  Create a new session for a project
@@ -52,6 +69,10 @@ yaac session <command>
                               each in turn
   monitor [options] [project] Poll and display active sessions in real-time
     -n, --interval <seconds>  Refresh interval in seconds (default: 5)
+
+yaac auth <command>
+  update              Set or replace your GitHub Personal Access Token
+  clear               Remove stored GitHub credentials
 ```
 
 Detach from a tmux session with `Ctrl-B D`. Kill the tmux server (and the
@@ -114,6 +135,8 @@ Add a `yaac-config.json` to your repo root. Example with all options:
   - **`path`** — only inject on matching URL paths (default `"/*"`). Supports `*` wildcards.
 
   Each entry must have either `header` or `bodyParam` (not both).
+
+  Note: GitHub authentication (`github.com` and `*.github.com`) is handled automatically using your stored PAT — you do not need to add `GITHUB_TOKEN` to `envSecretProxy`.
 - **bindMounts** — host directories mounted into the container. Each entry specifies:
   - **`hostPath`** — absolute path on the host (required).
   - **`containerPath`** — absolute path inside the container (required).
@@ -175,4 +198,3 @@ podman machine stop
 podman machine set --memory 8192
 podman machine start
 ```
-

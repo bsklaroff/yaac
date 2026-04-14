@@ -1,7 +1,21 @@
 import simpleGit from 'simple-git'
 
-export async function cloneRepo(remoteUrl: string, destPath: string): Promise<void> {
-  await simpleGit().clone(remoteUrl, destPath)
+export function injectTokenIntoUrl(url: string, token: string): string {
+  const parsed = new URL(url)
+  parsed.username = 'x-access-token'
+  parsed.password = token
+  return parsed.toString()
+}
+
+export async function cloneRepo(remoteUrl: string, destPath: string, githubToken?: string): Promise<void> {
+  if (githubToken) {
+    const authedUrl = injectTokenIntoUrl(remoteUrl, githubToken)
+    await simpleGit().clone(authedUrl, destPath)
+    // Strip credentials from the stored remote URL
+    await simpleGit(destPath).remote(['set-url', 'origin', remoteUrl])
+  } else {
+    await simpleGit().clone(remoteUrl, destPath)
+  }
 }
 
 export async function getDefaultBranch(repoPath: string): Promise<string> {
@@ -20,8 +34,15 @@ export async function getDefaultBranch(repoPath: string): Promise<string> {
   return branch.trim()
 }
 
-export async function fetchOrigin(repoPath: string): Promise<void> {
-  await simpleGit(repoPath).fetch('origin')
+export async function fetchOrigin(repoPath: string, githubToken?: string): Promise<void> {
+  if (githubToken) {
+    const git = simpleGit(repoPath)
+    const remoteUrl = (await git.remote(['get-url', 'origin']))!.trim()
+    const authedUrl = injectTokenIntoUrl(remoteUrl, githubToken)
+    await git.fetch(authedUrl, ['+refs/heads/*:refs/remotes/origin/*', '--update-head-ok'])
+  } else {
+    await simpleGit(repoPath).fetch('origin')
+  }
 }
 
 export async function addWorktree(repoPath: string, worktreePath: string, branchName: string, startPoint?: string): Promise<void> {

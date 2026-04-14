@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import simpleGit from 'simple-git'
-import { cloneRepo, getDefaultBranch, addWorktree, removeWorktree, fetchOrigin, getGitUserConfig } from '@/lib/git'
+import { cloneRepo, getDefaultBranch, addWorktree, removeWorktree, fetchOrigin, getGitUserConfig, injectTokenIntoUrl } from '@/lib/git'
 
 describe('git helpers', () => {
   let tmpDir: string
@@ -138,6 +138,22 @@ describe('git helpers', () => {
     } else {
       expect(result).toBeNull()
     }
+  })
+
+  it('injectTokenIntoUrl embeds credentials in HTTPS URL', () => {
+    const result = injectTokenIntoUrl('https://github.com/org/repo.git', 'ghp_abc123')
+    const parsed = new URL(result)
+    expect(parsed.username).toBe('x-access-token')
+    expect(parsed.password).toBe('ghp_abc123')
+    expect(parsed.hostname).toBe('github.com')
+    expect(parsed.pathname).toBe('/org/repo.git')
+    expect(parsed.protocol).toBe('https:')
+  })
+
+  it('injectTokenIntoUrl handles URL without path', () => {
+    const result = injectTokenIntoUrl('https://github.com', 'tok')
+    expect(result).toContain('x-access-token')
+    expect(result).toContain('tok')
   })
 
   it('removes a worktree', async () => {
