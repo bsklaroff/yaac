@@ -30,6 +30,10 @@ export class ProxyClient {
     return this.config.network
   }
 
+  get hostPort(): string {
+    return this.config.hostPort
+  }
+
   get proxyIp(): string {
     if (!this._proxyIp) throw new Error('Proxy not started — call ensureRunning() first')
     return this._proxyIp

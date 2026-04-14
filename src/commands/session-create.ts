@@ -14,6 +14,7 @@ import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session-cleanu
 import { proxyClient, INTERNAL_PORT } from '@/lib/proxy-client'
 import { sshAgent, hasSshKeys } from '@/lib/ssh-agent'
 import { findAvailablePort } from '@/lib/port'
+import { startPortForwarders } from '@/lib/port-forwarder'
 import type { YaacConfig } from '@/types'
 
 export function shellEscape(str: string): string {
@@ -146,15 +147,6 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     networkMode = proxyClient.network
   }
 
-  // SSH agent setup (if user has SSH keys)
-  const sshBinds: string[] = []
-  if (hasSshKeys()) {
-    console.log('Starting SSH agent sidecar...')
-    await sshAgent.ensureRunning()
-    env.push(...sshAgent.getSshEnv())
-    sshBinds.push(...sshAgent.getBinds())
-  }
-
   // Port forwarding setup
   const forwardedPorts: Array<{ containerPort: number; hostPort: number }> = []
   if (config.portForward?.length) {
@@ -164,6 +156,15 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
       forwardedPorts.push({ containerPort, hostPort })
       console.log(`Forwarding host port ${hostPort} -> container port ${containerPort}`)
     }
+  }
+
+  // SSH agent setup (if user has SSH keys)
+  const sshBinds: string[] = []
+  if (hasSshKeys()) {
+    console.log('Starting SSH agent sidecar...')
+    await sshAgent.ensureRunning()
+    env.push(...sshAgent.getSshEnv())
+    sshBinds.push(...sshAgent.getBinds())
   }
 
   const containerName = `yaac-${projectSlug}-${sessionId}`
@@ -178,12 +179,17 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   }
 
   console.log(`Creating container ${containerName}...`)
+  // When using the proxy network, port bindings on the session container won't
+  // work (the internal network has no host route). We'll forward ports through
+  // the proxy sidecar instead, after the container starts.
   const portBindings: Record<string, Array<{ HostPort: string; HostIp: string }>> = {}
   const exposedPorts: Record<string, Record<string, never>> = {}
-  for (const { containerPort, hostPort } of forwardedPorts) {
-    const portKey = `${containerPort}/tcp`
-    exposedPorts[portKey] = {}
-    portBindings[portKey] = [{ HostPort: String(hostPort), HostIp: '127.0.0.1' }]
+  if (!hasSecretProxy) {
+    for (const { containerPort, hostPort } of forwardedPorts) {
+      const portKey = `${containerPort}/tcp`
+      exposedPorts[portKey] = {}
+      portBindings[portKey] = [{ HostPort: String(hostPort), HostIp: '127.0.0.1' }]
+    }
   }
 
   const container = await podman.createContainer({
@@ -280,6 +286,24 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     }
   }
 
+  // Start host-side port forwarders that tunnel through the proxy sidecar
+  let stopPortForwarders: (() => void) | null = null
+  if (hasSecretProxy && forwardedPorts.length > 0) {
+    const sessionInfo = await podman.getContainer(containerName).inspect()
+    const networks = sessionInfo.NetworkSettings.Networks as Record<string, { IPAddress: string }>
+    const sessionIp = networks[proxyClient.network]?.IPAddress
+    if (!sessionIp) {
+      console.error(`Warning: could not resolve session container IP on ${proxyClient.network} — port forwarding disabled`)
+    } else {
+      stopPortForwarders = startPortForwarders(
+        '127.0.0.1',
+        parseInt(proxyClient.hostPort, 10),
+        sessionIp,
+        forwardedPorts,
+      )
+    }
+  }
+
   // Configure tmux UX
   const portInfo = forwardedPorts.length > 0
     ? ' ' + forwardedPorts.map((p) => `:${p.hostPort}->${p.containerPort}`).join(' ')
@@ -297,6 +321,8 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     })
   } catch {
     // Container or tmux session was killed (e.g. ctrl-b k) — fall through to cleanup
+  } finally {
+    stopPortForwarders?.()
   }
 
   // Auto-cleanup if Claude Code exited (tmux session died)
