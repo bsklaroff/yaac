@@ -339,7 +339,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
 
   // PostgreSQL relay setup
   const pgConfig = config.postgres
-  const pgEnabled = !!(pgConfig && pgConfig.enabled !== false)
+  const pgEnabled = !!(pgConfig && pgConfig.enabled)
   let pgRelayIp: string | null = null
 
   if (pgEnabled) {

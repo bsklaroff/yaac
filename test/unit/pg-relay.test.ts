@@ -62,7 +62,7 @@ describe('PgRelayClient', () => {
     const { PgRelayClient } = await import('@/lib/container/pg-relay')
     const client = new PgRelayClient()
 
-    await client.ensureRunning({ containerPort: 5433 })
+    await client.ensureRunning({ enabled: true, containerPort: 5433 })
 
     expect(client.containerPort).toBe(5433)
   })

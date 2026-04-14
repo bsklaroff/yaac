@@ -32,8 +32,8 @@ export interface SecretProxyRule {
 }
 
 export interface PostgresRelayConfig {
-  /** Whether to enable the PostgreSQL relay (default: true if section present) */
-  enabled?: boolean
+  /** Whether to enable the PostgreSQL relay (default: false) */
+  enabled: boolean
   /** Port PostgreSQL listens on the host (default: 5432) */
   hostPort?: number
   /** Port to expose inside the relay container (default: 5432) */

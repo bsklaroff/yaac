@@ -888,7 +888,7 @@ describe('yaac session create', () => {
     const repoPath = path.join(tmpDir, 'pg-relay-project')
     await createTestRepo(repoPath, {
       yaacConfig: {
-        postgres: {},
+        postgres: { enabled: true },
       },
     })
     await addTestProject(repoPath)
@@ -900,7 +900,7 @@ describe('yaac session create', () => {
 
       // Verify socat is forwarding localhost:5432 inside the container
       const { stdout: socatOut } = await execFileAsync('podman', [
-        'exec', result.containerName, 'sh', '-c', 'ps aux | grep socat',
+        'exec', result.containerName, 'sh', '-c', 'cat /proc/*/cmdline 2>/dev/null | tr "\\0" " "',
       ])
       expect(socatOut).toContain('TCP4-LISTEN:5432')
       expect(socatOut).toContain('TCP6-LISTEN:5432')

@@ -175,14 +175,14 @@ export function parseProjectConfig(raw: string): YaacConfig {
       throw new Error('yaac-config.json: postgres must be an object')
     }
     const pg = obj.postgres as Record<string, unknown>
-    const pgConfig: PostgresRelayConfig = {}
 
-    if (pg.enabled !== undefined) {
-      if (typeof pg.enabled !== 'boolean') {
-        throw new Error('yaac-config.json: postgres.enabled must be a boolean')
-      }
-      pgConfig.enabled = pg.enabled
+    if (pg.enabled === undefined) {
+      throw new Error('yaac-config.json: postgres.enabled is required')
     }
+    if (typeof pg.enabled !== 'boolean') {
+      throw new Error('yaac-config.json: postgres.enabled must be a boolean')
+    }
+    const pgConfig: PostgresRelayConfig = { enabled: pg.enabled }
     if (pg.hostPort !== undefined) {
       if (typeof pg.hostPort !== 'number' || !Number.isInteger(pg.hostPort) || pg.hostPort < 1 || pg.hostPort > 65535) {
         throw new Error('yaac-config.json: postgres.hostPort must be an integer between 1 and 65535')

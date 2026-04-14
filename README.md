@@ -147,7 +147,12 @@ Add a `yaac-config.json` to your repo root. Example with all options:
   },
   "initCommands": ["pnpm install --store-dir /home/yaac/.pnpm-store"],
   "nestedContainers": false,
-  "hideInitPane": false
+  "hideInitPane": false,
+  "postgres": {
+    "enabled": true,
+    "hostPort": 5432,
+    "containerPort": 5432
+  }
 }
 ```
 
@@ -171,6 +176,10 @@ Add a `yaac-config.json` to your repo root. Example with all options:
 - **initCommands** — commands run inside the container after it starts (e.g. `pnpm install` against a warm cache volume). These run on every session, not just the first.
 - **nestedContainers** — when `true`, enables podman-in-podman support so sessions can build and run containers (default: `false`). See [Nested containers](#nested-containers) below.
 - **hideInitPane** — when `true`, the init commands tmux pane is automatically closed after the commands finish or error (default: `false`). When `false`, the pane is preserved with `remain-on-exit` so you can inspect the output.
+- **postgres** — configures a PostgreSQL relay sidecar that forwards connections from inside the container to a PostgreSQL instance on the host. The relay uses `socat` to proxy TCP traffic so that `localhost` connections inside the session reach your host database.
+  - **`enabled`** — must be set to `true` to start the relay (default: `false`). The relay will not run unless this is explicitly enabled.
+  - **`hostPort`** — port PostgreSQL listens on the host (default: `5432`).
+  - **`containerPort`** — port exposed inside the container for the relay (default: `5432`).
 
 ## Custom images
 
