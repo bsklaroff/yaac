@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { requirePodman, TEST_PROXY_CONFIG } from '@test/helpers/setup'
 import { ProxyClient } from '@/lib/proxy-client'
-import { startPortForwarders } from '@/lib/port-forwarder'
+import { startPortForwarders, podmanRelay } from '@/lib/port-forwarder'
 import { findAvailablePort } from '@/lib/port'
 import { podman } from '@/lib/podman'
 
@@ -28,10 +28,9 @@ function httpGet(url: string, timeoutMs = 5000): Promise<{ status: number; body:
   })
 }
 
-describe('port forwarding through proxy sidecar', () => {
+describe('port forwarding via podman exec relay', () => {
   let client: ProxyClient
   const testAuthSecret = crypto.randomBytes(32).toString('hex')
-  let proxyPort: number
   const containerPort = 8080
 
   const containers: string[] = []
@@ -39,7 +38,9 @@ describe('port forwarding through proxy sidecar', () => {
   beforeAll(async () => {
     await requirePodman()
 
-    proxyPort = await findAvailablePort(19350)
+    // We still use the proxy network to simulate the real session topology
+    // (container on an internal network with no host route).
+    const proxyPort = await findAvailablePort(19350)
 
     client = new ProxyClient({
       ...TEST_PROXY_CONFIG,
@@ -66,40 +67,40 @@ describe('port forwarding through proxy sidecar', () => {
     containers.length = 0
   })
 
-  async function startHttpContainer(): Promise<{ name: string; ip: string }> {
+  /**
+   * Start a container with an HTTP server listening on 127.0.0.1 (localhost
+   * only).  This is the common case for dev servers and is the scenario that
+   * the old CONNECT-based forwarder could not handle.
+   */
+  async function startHttpContainer(): Promise<{ name: string }> {
     const name = `yaac-portfwd-test-${crypto.randomBytes(4).toString('hex')}`
     containers.push(name)
 
+    // Deliberately bind to 127.0.0.1 — not 0.0.0.0
     const echoScript = `
       const http = require('http');
       http.createServer((req, res) => {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('hello from container');
-      }).listen(${containerPort}, '0.0.0.0', () => console.log('ready'));
+      }).listen(${containerPort}, '127.0.0.1', () => console.log('ready'));
     `
 
-    // Use the proxy image since it has node available
+    // Use the base image — it has both node and nc (netcat-openbsd)
     const { stdout: images } = await execFileAsync('podman', [
-      'images', '--format', '{{.Repository}}:{{.Tag}}', '--filter', 'reference=yaac-test-proxy',
+      'images', '--format', '{{.Repository}}:{{.Tag}}', '--filter', 'reference=yaac-test-base',
     ])
-    const proxyImage = images.trim().split('\n')[0]
+    const baseImage = images.trim().split('\n')[0]
 
     const container = await podman.createContainer({
-      Image: proxyImage,
+      Image: baseImage,
       name,
-      Cmd: ['node', '-e', echoScript],
+      Entrypoint: ['node', '-e', echoScript],
       Labels: { 'yaac.test': 'true' },
       HostConfig: {
         NetworkMode: client.network,
       },
     })
     await container.start()
-
-    // Get container IP on the internal network
-    const info = await container.inspect()
-    const networks = info.NetworkSettings.Networks as Record<string, { IPAddress: string }>
-    const ip = networks[client.network]?.IPAddress
-    if (!ip) throw new Error(`Container has no IP on ${client.network}`)
 
     // Wait for the HTTP server to be ready inside the container
     for (let i = 0; i < 30; i++) {
@@ -114,17 +115,15 @@ describe('port forwarding through proxy sidecar', () => {
       }
     }
 
-    return { name, ip }
+    return { name }
   }
 
-  it('forwards HTTP request from host to container through proxy CONNECT tunnel', async () => {
-    const { ip } = await startHttpContainer()
+  it('forwards HTTP request from host to container via podman exec relay', async () => {
+    const { name } = await startHttpContainer()
 
     const hostPort = await findAvailablePort(19400)
     const stop = startPortForwarders(
-      '127.0.0.1',
-      proxyPort,
-      ip,
+      podmanRelay(name),
       [{ containerPort, hostPort }],
     )
 
@@ -151,31 +150,26 @@ describe('port forwarding through proxy sidecar', () => {
       http.createServer((req, res) => {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('hello from container');
-      }).listen(${containerPort}, '0.0.0.0');
+      }).listen(${containerPort}, '127.0.0.1');
       http.createServer((req, res) => {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('second server');
-      }).listen(${secondPort}, '0.0.0.0');
+      }).listen(${secondPort}, '127.0.0.1');
     `
 
     const { stdout: images } = await execFileAsync('podman', [
-      'images', '--format', '{{.Repository}}:{{.Tag}}', '--filter', 'reference=yaac-test-proxy',
+      'images', '--format', '{{.Repository}}:{{.Tag}}', '--filter', 'reference=yaac-test-base',
     ])
-    const proxyImage = images.trim().split('\n')[0]
+    const baseImage = images.trim().split('\n')[0]
 
     const container = await podman.createContainer({
-      Image: proxyImage,
+      Image: baseImage,
       name,
-      Cmd: ['node', '-e', dualScript],
+      Entrypoint: ['node', '-e', dualScript],
       Labels: { 'yaac.test': 'true' },
       HostConfig: { NetworkMode: client.network },
     })
     await container.start()
-
-    const info = await container.inspect()
-    const networks = info.NetworkSettings.Networks as Record<string, { IPAddress: string }>
-    const ip = networks[client.network]?.IPAddress
-    if (!ip) throw new Error(`Container has no IP on ${client.network}`)
 
     // Wait for both servers
     for (const port of [containerPort, secondPort]) {
@@ -195,9 +189,7 @@ describe('port forwarding through proxy sidecar', () => {
     const hostPort2 = await findAvailablePort(hostPort1 + 1)
 
     const stop = startPortForwarders(
-      '127.0.0.1',
-      proxyPort,
-      ip,
+      podmanRelay(name),
       [
         { containerPort, hostPort: hostPort1 },
         { containerPort: secondPort, hostPort: hostPort2 },
@@ -221,17 +213,15 @@ describe('port forwarding through proxy sidecar', () => {
     }
   }, 30_000)
 
-  it('port forwarder works while event loop processes other tasks', async () => {
+  it('relay works while event loop processes other tasks', async () => {
     // Regression test: startPortForwarders relies on the Node.js event loop
     // to accept TCP connections. If the event loop is blocked (e.g. by
     // execSync), no connections can be accepted.
-    const { ip } = await startHttpContainer()
+    const { name } = await startHttpContainer()
 
     const hostPort = await findAvailablePort(19420)
     const stop = startPortForwarders(
-      '127.0.0.1',
-      proxyPort,
-      ip,
+      podmanRelay(name),
       [{ containerPort, hostPort }],
     )
 

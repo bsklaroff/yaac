@@ -15,7 +15,7 @@ import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session-cleanu
 import { proxyClient, INTERNAL_PORT } from '@/lib/proxy-client'
 import { sshAgent, hasSshKeys } from '@/lib/ssh-agent'
 import { findAvailablePort } from '@/lib/port'
-import { startPortForwarders } from '@/lib/port-forwarder'
+import { startPortForwarders, podmanRelay } from '@/lib/port-forwarder'
 import type { YaacConfig } from '@/types'
 
 export function shellEscape(str: string): string {
@@ -287,22 +287,15 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     }
   }
 
-  // Start host-side port forwarders that tunnel through the proxy sidecar
+  // Start host-side port forwarders that relay into the container via
+  // `podman exec nc`.  This connects to 127.0.0.1 inside the container so the
+  // target service can listen on any address (including localhost).
   let stopPortForwarders: (() => void) | null = null
   if (hasSecretProxy && forwardedPorts.length > 0) {
-    const sessionInfo = await podman.getContainer(containerName).inspect()
-    const networks = sessionInfo.NetworkSettings.Networks as Record<string, { IPAddress: string }>
-    const sessionIp = networks[proxyClient.network]?.IPAddress
-    if (!sessionIp) {
-      console.error(`Warning: could not resolve session container IP on ${proxyClient.network} — port forwarding disabled`)
-    } else {
-      stopPortForwarders = startPortForwarders(
-        '127.0.0.1',
-        parseInt(proxyClient.hostPort, 10),
-        sessionIp,
-        forwardedPorts,
-      )
-    }
+    stopPortForwarders = startPortForwarders(
+      podmanRelay(containerName),
+      forwardedPorts,
+    )
   }
 
   // Configure tmux UX

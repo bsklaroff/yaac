@@ -1,89 +1,62 @@
 import net from 'node:net'
+import { type ChildProcess, spawn } from 'node:child_process'
 
 interface ForwardedPort {
   containerPort: number
   hostPort: number
 }
 
+/** A function that spawns a relay process bridging stdin/stdout to a TCP port. */
+export type RelayFactory = (containerPort: number) => ChildProcess
+
 /**
- * Establish a TCP connection through an HTTP CONNECT proxy.
- * Returns the connected socket after the CONNECT handshake completes.
+ * Create a RelayFactory that uses `podman exec` + `nc` to connect to
+ * 127.0.0.1 inside the given container.  Because the connection originates
+ * inside the container's network namespace, the target service can listen on
+ * any address — including localhost — and the forwarding will work.
  */
-function connectViaProxy(
-  proxyHost: string,
-  proxyPort: number,
-  targetHost: string,
-  targetPort: number,
-): Promise<net.Socket> {
-  return new Promise((resolve, reject) => {
-    const socket = net.connect(proxyPort, proxyHost)
-
-    socket.once('error', reject)
-
-    let buffer = Buffer.alloc(0)
-
-    function onData(chunk: Buffer) {
-      buffer = Buffer.concat([buffer, chunk])
-      const idx = buffer.indexOf('\r\n\r\n')
-      if (idx === -1) return
-
-      socket.removeListener('data', onData)
-      socket.removeListener('error', reject)
-
-      const statusLine = buffer.subarray(0, idx).toString().split('\r\n')[0]
-      if (!statusLine.startsWith('HTTP/1.1 200')) {
-        socket.destroy()
-        reject(new Error(`CONNECT failed: ${statusLine}`))
-        return
-      }
-
-      const remaining = buffer.subarray(idx + 4)
-      if (remaining.length > 0) {
-        socket.unshift(remaining)
-      }
-
-      resolve(socket)
-    }
-
-    socket.on('data', onData)
-
-    socket.once('connect', () => {
-      socket.write(
-        `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\n` +
-        `Host: ${targetHost}:${targetPort}\r\n\r\n`,
-      )
-    })
-  })
+export function podmanRelay(containerName: string): RelayFactory {
+  return (containerPort) =>
+    spawn('podman', [
+      'exec', '-i', containerName,
+      'nc', '127.0.0.1', String(containerPort),
+    ], { stdio: ['pipe', 'pipe', 'ignore'] })
 }
 
 /**
- * Start TCP servers on the host that forward connections through the proxy
- * sidecar's CONNECT handler to a container on the internal network.
+ * Start TCP servers on the host that forward connections into a container
+ * by spawning a relay process (typically `podman exec nc`) per connection.
  *
  * Returns a cleanup function that closes all listeners.
  */
 export function startPortForwarders(
-  proxyHost: string,
-  proxyPort: number,
-  targetIp: string,
+  spawnRelay: RelayFactory,
   ports: ForwardedPort[],
 ): () => void {
   const servers: net.Server[] = []
+  const activeRelays = new Set<ChildProcess>()
 
   for (const { containerPort, hostPort } of ports) {
     const server = net.createServer((client) => {
-      connectViaProxy(proxyHost, proxyPort, targetIp, containerPort)
-        .then((tunnel) => {
-          tunnel.pipe(client)
-          client.pipe(tunnel)
-          tunnel.on('error', () => client.destroy())
-          client.on('error', () => tunnel.destroy())
-          client.on('close', () => tunnel.destroy())
-          tunnel.on('close', () => client.destroy())
-        })
-        .catch(() => {
-          client.destroy()
-        })
+      const child = spawnRelay(containerPort)
+
+      if (!child.stdin || !child.stdout) {
+        client.destroy()
+        child.kill()
+        return
+      }
+
+      activeRelays.add(child)
+      child.on('close', () => activeRelays.delete(child))
+
+      child.stdout.pipe(client)
+      client.pipe(child.stdin)
+
+      child.stdin.on('error', () => client.destroy())
+      child.on('error', () => client.destroy())
+      child.on('close', () => client.destroy())
+      client.on('error', () => { child.stdin?.destroy(); child.kill() })
+      client.on('close', () => { child.stdin?.destroy(); child.kill() })
     })
 
     server.listen(hostPort, '127.0.0.1')
@@ -94,5 +67,9 @@ export function startPortForwarders(
     for (const server of servers) {
       server.close()
     }
+    for (const child of activeRelays) {
+      child.kill()
+    }
+    activeRelays.clear()
   }
 }
