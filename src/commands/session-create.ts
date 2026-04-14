@@ -166,7 +166,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
       injections: [{ action: 'set_header', name: 'authorization', value: gitBasicAuth }],
     },
     {
-      hostPattern: '*.github.com',
+      hostPattern: 'api.github.com',
       pathPattern: '/*',
       injections: [{ action: 'set_header', name: 'authorization', value: gitBasicAuth }],
     },
