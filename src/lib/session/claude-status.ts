@@ -25,6 +25,10 @@ interface ConversationEntry {
     stop_reason?: string
     content?: ContentBlock[]
   }
+  toolUseResult?: {
+    type?: string
+    filePath?: string
+  }
 }
 
 /**
@@ -105,6 +109,21 @@ function isPlanFileWrite(entry: ConversationEntry): boolean {
 }
 
 /**
+ * Checks whether a user entry is the tool_result for a Write to a plan file.
+ * After Claude writes or updates a plan, the plan-approval UI blocks before
+ * the next API request. If the Write result is the last conversation entry
+ * (e.g. no subsequent ExitPlanMode call), the session is waiting for approval.
+ */
+const FILE_WRITE_TYPES = new Set(['create', 'update'])
+
+function isPlanFileWriteResult(entry: ConversationEntry): boolean {
+  if (entry.type !== 'user') return false
+  const result = entry.toolUseResult
+  if (!result || !FILE_WRITE_TYPES.has(result.type ?? '')) return false
+  return PLAN_FILE_RE.test(result.filePath ?? '')
+}
+
+/**
  * Checks whether an assistant entry is calling ExitPlanMode. The plan-approval
  * UI blocks before executing this tool, so the session is waiting for user
  * input, not running.
@@ -170,6 +189,7 @@ export async function getClaudeStatus(jsonlPath: string): Promise<'running' | 'w
 
         if (isWaitingForPlanApproval(entry)) return 'waiting'
         if (isPlanFileWrite(entry)) return 'waiting'
+        if (isPlanFileWriteResult(entry)) return 'waiting'
         if (isExitPlanModeCall(entry)) return 'waiting'
         if (isUserInterrupt(entry)) return 'waiting'
         if (isAskingUserQuestion(entry)) return 'waiting'
@@ -188,6 +208,7 @@ export async function getClaudeStatus(jsonlPath: string): Promise<'running' | 'w
         if (CONVERSATION_TYPES.has(entry.type)) {
           if (isWaitingForPlanApproval(entry)) return 'waiting'
           if (isPlanFileWrite(entry)) return 'waiting'
+          if (isPlanFileWriteResult(entry)) return 'waiting'
           if (isExitPlanModeCall(entry)) return 'waiting'
           if (isUserInterrupt(entry)) return 'waiting'
           if (isAskingUserQuestion(entry)) return 'waiting'

@@ -96,6 +96,57 @@ describe('getClaudeStatus', () => {
     expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
   })
 
+  it('returns waiting when user tool_result is for a plan file Write', async () => {
+    await writeEntry({
+      type: 'assistant',
+      message: {
+        stop_reason: 'tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_abc',
+            name: 'Write',
+            input: { file_path: '/home/user/.claude/plans/my-plan.md', content: '# Plan' },
+          },
+        ],
+      },
+    })
+    await writeEntry({
+      type: 'user',
+      toolUseResult: { type: 'update', filePath: '/home/user/.claude/plans/my-plan.md' },
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_abc' }],
+      },
+    })
+    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
+  })
+
+  it('returns waiting when plan Write result is followed by attachment metadata', async () => {
+    await writeEntry({
+      type: 'assistant',
+      message: {
+        stop_reason: 'tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_abc',
+            name: 'Write',
+            input: { file_path: '/home/user/.claude/plans/my-plan.md', content: '# Plan' },
+          },
+        ],
+      },
+    })
+    await writeEntry({
+      type: 'user',
+      toolUseResult: { type: 'update', filePath: '/home/user/.claude/plans/my-plan.md' },
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_abc' }],
+      },
+    })
+    await writeEntry({ type: 'attachment', attachment: { type: 'task_reminder', content: [] } })
+    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
+  })
+
   it('returns running for Write to a non-plan file', async () => {
     await writeEntry({
       type: 'assistant',
