@@ -58,7 +58,7 @@ async function getImageEnv(imageName: string): Promise<string[]> {
   return (info.Config?.Env as string[] | undefined) ?? []
 }
 
-async function createSessionNonInteractive(projectSlug: string, options?: { prompt?: string }): Promise<{
+async function createSessionNonInteractive(projectSlug: string, options?: { prompt?: string; addDir?: string[]; addDirRw?: string[] }): Promise<{
   containerId: string
   containerName: string
   sessionId: string
@@ -164,6 +164,12 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
         ),
         ...(config.bindMounts ?? []).map(
           ({ hostPath, containerPath, readonly: ro }) => `${hostPath}:${containerPath}:${ro ? 'ro' : 'rw'},Z`,
+        ),
+        ...(options?.addDir ?? []).map(
+          (p) => `${p}:/add-dir${p}:ro,Z`,
+        ),
+        ...(options?.addDirRw ?? []).map(
+          (p) => `${p}:/add-dir${p}:rw,Z`,
         ),
       ],
       PortBindings: portBindings,
@@ -800,6 +806,68 @@ describe('yaac session create', () => {
     ])
     const { stdout: newContent } = await execFileAsync('podman', [
       'exec', result.containerName, 'cat', '/mnt/rw-data/new.txt',
+    ])
+    expect(newContent.trim()).toBe('new-data')
+  })
+
+  it('--add-dir mounts host directory as read-only', async () => {
+    await requirePodman()
+
+    const tmpDir = await createTempDataDir()
+    tmpDirs.push(tmpDir)
+
+    const hostDir = path.join(tmpDir, 'ro-extra')
+    await fs.mkdir(hostDir, { recursive: true })
+    await fs.writeFile(path.join(hostDir, 'hello.txt'), 'read-only extra')
+
+    const repoPath = path.join(tmpDir, 'adddir-ro-project')
+    await createTestRepo(repoPath)
+    await addTestProject(repoPath)
+
+    const result = await createSessionNonInteractive('adddir-ro-project', { addDir: [hostDir] })
+    containersToCleanup.push(result.containerName)
+
+    // Verify content is readable at /add-dir/<hostDir>
+    const { stdout: content } = await execFileAsync('podman', [
+      'exec', result.containerName, 'cat', `/add-dir${hostDir}/hello.txt`,
+    ])
+    expect(content.trim()).toBe('read-only extra')
+
+    // Verify writes are rejected
+    await expect(execFileAsync('podman', [
+      'exec', result.containerName, 'sh', '-c', `echo test > /add-dir${hostDir}/fail.txt`,
+    ])).rejects.toThrow()
+  })
+
+  it('--add-dir-rw mounts host directory as read-write', async () => {
+    await requirePodman()
+
+    const tmpDir = await createTempDataDir()
+    tmpDirs.push(tmpDir)
+
+    const hostDir = path.join(tmpDir, 'rw-extra')
+    await fs.mkdir(hostDir, { recursive: true })
+    await fs.writeFile(path.join(hostDir, 'data.txt'), 'writable extra')
+
+    const repoPath = path.join(tmpDir, 'adddir-rw-project')
+    await createTestRepo(repoPath)
+    await addTestProject(repoPath)
+
+    const result = await createSessionNonInteractive('adddir-rw-project', { addDirRw: [hostDir] })
+    containersToCleanup.push(result.containerName)
+
+    // Verify content is readable at /add-dir/<hostDir>
+    const { stdout: content } = await execFileAsync('podman', [
+      'exec', result.containerName, 'cat', `/add-dir${hostDir}/data.txt`,
+    ])
+    expect(content.trim()).toBe('writable extra')
+
+    // Verify writes succeed
+    await execFileAsync('podman', [
+      'exec', result.containerName, 'sh', '-c', `echo new-data > /add-dir${hostDir}/new.txt`,
+    ])
+    const { stdout: newContent } = await execFileAsync('podman', [
+      'exec', result.containerName, 'cat', `/add-dir${hostDir}/new.txt`,
     ])
     expect(newContent.trim()).toBe('new-data')
   })

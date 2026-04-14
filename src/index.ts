@@ -73,11 +73,18 @@ const session = program
   .description('Manage sessions')
   .configureHelp({ formatHelp: nestedHelp })
 
+function collect(val: string, arr: string[]): string[] {
+  arr.push(val)
+  return arr
+}
+
 session
   .command('create')
   .description('Create a new session for a project')
   .argument('<project>', 'Project slug')
   .option('-p, --prompt <prompt>', 'Initial prompt to pass to Claude Code')
+  .option('--add-dir <path>', 'Mount a host directory as read-only (repeatable)', collect, [])
+  .option('--add-dir-rw <path>', 'Mount a host directory as read-write (repeatable)', collect, [])
   .action(sessionCreate)
 
 session

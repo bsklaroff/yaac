@@ -81,6 +81,8 @@ yaac project <command>
 yaac session <command>
   create [options] <project>  Create a new session for a project
     -p, --prompt <prompt>     Initial prompt to pass to Claude Code
+    --add-dir <path>          Mount a host directory read-only (repeatable)
+    --add-dir-rw <path>       Mount a host directory read-write (repeatable)
   list [options] [project]    List active sessions
     -d, --deleted             List deleted sessions from Claude Code history
   delete <session-id>         Delete a session and clean up its resources
@@ -163,6 +165,8 @@ Add a `yaac-config.json` to your repo root. Example with all options:
   - **`hostPath`** — absolute path on the host (required). Environment variables like `$HOME` or `${HOME}` are expanded.
   - **`containerPath`** — absolute path inside the container (required).
   - **`readonly`** — mount as read-only when `true` (default: `false`).
+
+  For ad-hoc mounts at session creation time, use the `--add-dir` / `--add-dir-rw` CLI flags instead. These mount the host directory under `/add-dir/<host-path>` inside the container and automatically pass it to Claude Code via `--add-dir`.
 - **cacheVolumes** — named Podman volumes mounted into the container. Keys are volume names, values are absolute container paths. Volumes persist across sessions.
 - **initCommands** — commands run inside the container after it starts (e.g. `pnpm install` against a warm cache volume). These run on every session, not just the first.
 - **nestedContainers** — when `true`, enables podman-in-podman support so sessions can build and run containers (default: `false`). See [Nested containers](#nested-containers) below.

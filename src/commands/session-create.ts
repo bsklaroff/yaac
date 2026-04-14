@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises'
+import path from 'node:path'
 import crypto from 'node:crypto'
 import readline from 'node:readline/promises'
 import { spawn } from 'node:child_process'
@@ -40,6 +41,8 @@ function containerExecRoot(containerName: string, cmd: string): void {
 
 export interface SessionCreateOptions {
   prompt?: string
+  addDir?: string[]
+  addDirRw?: string[]
 }
 
 export async function sessionCreate(projectSlug: string, options: SessionCreateOptions): Promise<void> {
@@ -50,6 +53,22 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     console.error(`Project "${projectSlug}" not found. Run "yaac project list" to see available projects.`)
     process.exitCode = 1
     return
+  }
+
+  // Validate --add-dir / --add-dir-rw paths
+  for (const dirPath of [...(options.addDir ?? []), ...(options.addDirRw ?? [])]) {
+    if (!path.isAbsolute(dirPath)) {
+      console.error(`--add-dir path must be absolute: "${dirPath}"`)
+      process.exitCode = 1
+      return
+    }
+    try {
+      await fs.access(dirPath)
+    } catch {
+      console.error(`--add-dir path not found: "${dirPath}"`)
+      process.exitCode = 1
+      return
+    }
   }
 
   await ensureContainerRuntime()
@@ -236,6 +255,12 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
         ...(config.bindMounts ?? []).map(
           ({ hostPath, containerPath, readonly: ro }) => `${hostPath}:${containerPath}:${ro ? 'ro' : 'rw'},Z`,
         ),
+        ...(options.addDir ?? []).map(
+          (p) => `${p}:/add-dir${p}:ro,Z`,
+        ),
+        ...(options.addDirRw ?? []).map(
+          (p) => `${p}:/add-dir${p}:rw,Z`,
+        ),
         ...(config.nestedContainers
           ? [`yaac-podmanstorage-${projectSlug}:/home/yaac/.local/share/containers:Z`]
           : []),
@@ -289,9 +314,15 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   containerExec(containerName, `git config --global url.'https://github.com/'.insteadOf 'git@github.com:'`)
 
   // Start Claude Code in a tmux session
-  const claudeCmd = options.prompt
-    ? `claude --dangerously-skip-permissions --session-id ${sessionId} -p ${shellEscape(options.prompt)}`
-    : `claude --dangerously-skip-permissions --session-id ${sessionId}`
+  const addDirFlags = [...(options.addDir ?? []), ...(options.addDirRw ?? [])]
+    .map((p) => `--add-dir /add-dir${shellEscape(p)}`)
+    .join(' ')
+  const claudeCmd = [
+    'claude --dangerously-skip-permissions',
+    `--session-id ${sessionId}`,
+    addDirFlags,
+    options.prompt ? `-p ${shellEscape(options.prompt)}` : '',
+  ].filter(Boolean).join(' ')
   console.log('Starting Claude Code...')
   containerExec(containerName, `tmux -u new-session -d -s yaac -n claude '${claudeCmd}'`)
 
