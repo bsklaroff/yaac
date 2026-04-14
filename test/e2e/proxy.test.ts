@@ -113,8 +113,20 @@ describe('proxy sidecar', () => {
     const port = client.hostPort
     await client.stop()
 
-    // Healthcheck should fail
-    await expect(fetch(`http://127.0.0.1:${port}/healthz`)).rejects.toThrow()
+    // Healthcheck should fail — podman may take a moment to release the
+    // host port binding after container removal, so retry briefly.
+    let reachable = true
+    for (let i = 0; i < 10; i++) {
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/healthz`)
+        await res.body?.cancel()
+      } catch {
+        reachable = false
+        break
+      }
+      await new Promise((r) => setTimeout(r, 200))
+    }
+    expect(reachable).toBe(false)
   })
 
   describe('CONNECT tunnel', () => {
