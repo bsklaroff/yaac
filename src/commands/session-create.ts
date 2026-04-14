@@ -138,17 +138,18 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   console.log('Starting proxy sidecar...')
   await proxyClient.ensureRunning()
 
-  // Build GitHub token injection rules
+  // Build GitHub token injection rules — git smart HTTP requires Basic auth
+  const gitBasicAuth = `Basic ${Buffer.from(`x-access-token:${githubToken}`).toString('base64')}`
   const githubRules: InjectionRule[] = [
     {
       hostPattern: 'github.com',
       pathPattern: '/*',
-      injections: [{ action: 'set_header', name: 'authorization', value: `Bearer ${githubToken}` }],
+      injections: [{ action: 'set_header', name: 'authorization', value: gitBasicAuth }],
     },
     {
       hostPattern: '*.github.com',
       pathPattern: '/*',
-      injections: [{ action: 'set_header', name: 'authorization', value: `Bearer ${githubToken}` }],
+      injections: [{ action: 'set_header', name: 'authorization', value: gitBasicAuth }],
     },
   ]
 
