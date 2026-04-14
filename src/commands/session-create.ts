@@ -17,6 +17,7 @@ import { getGithubToken } from '@/lib/credentials'
 import { findAvailablePort } from '@/lib/port'
 import { startPortForwarders, podmanRelay } from '@/lib/port-forwarder'
 import type { InjectionRule } from '@/lib/secret-conventions'
+import { pgRelay } from '@/lib/pg-relay'
 import type { YaacConfig } from '@/types'
 
 export function shellEscape(str: string): string {
@@ -176,6 +177,19 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     }
   }
 
+  // PostgreSQL relay setup
+  const pgConfig = config.postgres
+  const pgEnabled = !!(pgConfig && pgConfig.enabled !== false)
+  let pgRelayIp: string | null = null
+
+  if (pgEnabled) {
+    console.log('Starting PostgreSQL relay sidecar...')
+    await pgRelay.ensureRunning(pgConfig)
+    pgRelayIp = pgRelay.ip
+    env.push(...pgRelay.getEnv())
+  }
+
+
   const containerName = `yaac-${projectSlug}-${sessionId}`
   const claude = claudeDir(projectSlug)
   const claudeJson = claudeJsonFile(projectSlug)
@@ -229,6 +243,12 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   // Fix ownership of named cache volumes (created as root, but container runs as yaac)
   for (const containerPath of Object.values(config.cacheVolumes ?? {})) {
     containerExecRoot(containerName, `chown yaac:yaac '${shellEscape(containerPath)}'`)
+  }
+
+  // Add pg-relay hostname to /etc/hosts (the yaac-sessions network
+  // has --disable-dns so container-name DNS resolution is unavailable)
+  if (pgRelayIp) {
+    containerExecRoot(containerName, `sh -c "echo '${pgRelayIp} ${pgRelay.hostname}' >> /etc/hosts"`)
   }
 
   // Fix ownership of podman storage volume and start API socket for nested containers

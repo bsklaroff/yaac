@@ -13,6 +13,7 @@ import { resolveProjectConfig } from '@/lib/config'
 import { repoDir, claudeDir, worktreeDir, worktreesDir, getDataDir } from '@/lib/paths'
 import { buildRulesFromConfig } from '@/lib/secret-conventions'
 import { ProxyClient } from '@/lib/proxy-client'
+import { PgRelayClient } from '@/lib/pg-relay'
 import { findAvailablePort } from '@/lib/port'
 
 const execFileAsync = promisify(execFile)
@@ -110,6 +111,22 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
 
   const networkMode = proxy.network
 
+  // PostgreSQL relay setup
+  const pgConfig = config.postgres
+  const pgEnabled = !!(pgConfig && pgConfig.enabled !== false)
+  let pgRelayIp: string | null = null
+  let testPgRelay: PgRelayClient | null = null
+
+  if (pgEnabled) {
+    testPgRelay = new PgRelayClient({
+      containerName: 'yaac-test-pg-relay',
+      network: TEST_PROXY_CONFIG.network,
+    })
+    await testPgRelay.ensureRunning(pgConfig)
+    pgRelayIp = testPgRelay.ip
+    env.push(...testPgRelay.getEnv())
+  }
+
   // Port forwarding setup
   const forwardedPorts: Array<{ containerPort: number; hostPort: number }> = []
   const portBindings: Record<string, Array<{ HostPort: string; HostIp: string }>> = {}
@@ -161,6 +178,14 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
   for (const containerPath of Object.values(config.cacheVolumes ?? {})) {
     await podmanExecRetry('podman', [
       'exec', '--user', 'root', containerName, 'chown', 'yaac:yaac', containerPath,
+    ])
+  }
+
+  // Add pg-relay hostname to /etc/hosts
+  if (pgRelayIp && testPgRelay) {
+    await podmanExecRetry('podman', [
+      'exec', '--user', 'root', containerName, 'sh', '-c',
+      `echo '${pgRelayIp} ${testPgRelay.hostname}' >> /etc/hosts`,
     ])
   }
 
@@ -769,6 +794,46 @@ describe('yaac session create', () => {
       'exec', result.containerName, 'cat', '/mnt/rw-data/new.txt',
     ])
     expect(newContent.trim()).toBe('new-data')
+  })
+
+  it('sets up pg-relay when postgres config is present', async () => {
+    await requirePodman()
+
+    const tmpDir = await createTempDataDir()
+    tmpDirs.push(tmpDir)
+    const repoPath = path.join(tmpDir, 'pg-relay-project')
+    await createTestRepo(repoPath, {
+      yaacConfig: {
+        postgres: { hostname: 'db' },
+      },
+    })
+    await projectAdd(repoPath)
+
+    const pgRelay = new PgRelayClient()
+    try {
+      const result = await createSessionNonInteractive('pg-relay-project')
+      containersToCleanup.push(result.containerName)
+
+      // Verify PGHOST and PGPORT env vars are set
+      const { stdout: envOut } = await execFileAsync('podman', [
+        'exec', result.containerName, 'env',
+      ])
+      expect(envOut).toContain('PGHOST=db')
+      expect(envOut).toContain('PGPORT=5432')
+
+      // Verify the hostname resolves inside the container via /etc/hosts
+      const { stdout: hostsOut } = await execFileAsync('podman', [
+        'exec', result.containerName, 'getent', 'hosts', 'db',
+      ])
+      expect(hostsOut).toContain('db')
+
+      // Verify the session container is on the yaac-sessions network
+      const info = await podman.getContainer(result.containerName).inspect()
+      const networks = Object.keys(info.NetworkSettings.Networks as Record<string, unknown>)
+      expect(networks).toContain(TEST_PROXY_CONFIG.network)
+    } finally {
+      await pgRelay.stop()
+    }
   })
 
   it('errors gracefully on unknown project', async () => {

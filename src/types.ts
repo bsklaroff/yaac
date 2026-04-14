@@ -31,6 +31,17 @@ export interface SecretProxyRule {
   bodyParam?: string
 }
 
+export interface PostgresRelayConfig {
+  /** Whether to enable the PostgreSQL relay (default: true if section present) */
+  enabled?: boolean
+  /** Port PostgreSQL listens on the host (default: 5432) */
+  hostPort?: number
+  /** Port to expose inside the relay container (default: 5432) */
+  containerPort?: number
+  /** Container alias on the session network (default: "pg-relay") */
+  hostname?: string
+}
+
 export interface YaacConfig {
   envPassthrough?: string[]
   envSecretProxy?: Record<string, SecretProxyRule>
@@ -40,6 +51,7 @@ export interface YaacConfig {
   portForward?: PortForwardConfig[]
   bindMounts?: BindMountConfig[]
   hideInitPane?: boolean
+  postgres?: PostgresRelayConfig
 }
 
 export interface SessionMeta {

@@ -403,6 +403,87 @@ describe('loadProjectConfig', () => {
     }
   })
 
+  it('parses valid config with postgres section (empty object)', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ postgres: {} }),
+    )
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual({ postgres: {} })
+  })
+
+  it('parses valid config with postgres section (all fields)', async () => {
+    const config = {
+      postgres: { enabled: true, hostPort: 5433, containerPort: 5434, hostname: 'db' },
+    }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual(config)
+  })
+
+  it('parses postgres with enabled false', async () => {
+    const config = { postgres: { enabled: false } }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual(config)
+  })
+
+  it('throws on invalid postgres type', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ postgres: 'not-an-object' }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('postgres must be an object')
+  })
+
+  it('throws on invalid postgres.enabled type', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ postgres: { enabled: 'yes' } }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('postgres.enabled must be a boolean')
+  })
+
+  it('throws on invalid postgres.hostPort', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ postgres: { hostPort: 70000 } }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('postgres.hostPort must be an integer between 1 and 65535')
+  })
+
+  it('throws on non-integer postgres.hostPort', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ postgres: { hostPort: 54.32 } }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('postgres.hostPort must be an integer between 1 and 65535')
+  })
+
+  it('throws on invalid postgres.containerPort', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ postgres: { containerPort: 0 } }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('postgres.containerPort must be an integer between 1 and 65535')
+  })
+
+  it('throws on invalid postgres.hostname type', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ postgres: { hostname: 123 } }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('postgres.hostname must be a non-empty string')
+  })
+
+  it('throws on empty postgres.hostname', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ postgres: { hostname: '' } }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('postgres.hostname must be a non-empty string')
+  })
+
   it('parseProjectConfig parses raw JSON string', () => {
     const result = parseProjectConfig(JSON.stringify({ nestedContainers: true, initCommands: ['echo hi'] }))
     expect(result).toEqual({ nestedContainers: true, initCommands: ['echo hi'] })
