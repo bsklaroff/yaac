@@ -104,6 +104,22 @@ function isPlanFileWrite(entry: ConversationEntry): boolean {
   return false
 }
 
+/**
+ * Checks whether an assistant entry is calling ExitPlanMode. The plan-approval
+ * UI blocks before executing this tool, so the session is waiting for user
+ * input, not running.
+ */
+function isExitPlanModeCall(entry: ConversationEntry): boolean {
+  if (entry.type !== 'assistant') return false
+  const content = entry.message?.content
+  if (!Array.isArray(content)) return false
+
+  for (const block of content) {
+    if (block.type === 'tool_use' && block.name === 'ExitPlanMode') return true
+  }
+  return false
+}
+
 const CHUNK_SIZE = 4096
 
 /**
@@ -154,6 +170,7 @@ export async function getClaudeStatus(jsonlPath: string): Promise<'running' | 'w
 
         if (isWaitingForPlanApproval(entry)) return 'waiting'
         if (isPlanFileWrite(entry)) return 'waiting'
+        if (isExitPlanModeCall(entry)) return 'waiting'
         if (isUserInterrupt(entry)) return 'waiting'
         if (isAskingUserQuestion(entry)) return 'waiting'
 
@@ -171,6 +188,7 @@ export async function getClaudeStatus(jsonlPath: string): Promise<'running' | 'w
         if (CONVERSATION_TYPES.has(entry.type)) {
           if (isWaitingForPlanApproval(entry)) return 'waiting'
           if (isPlanFileWrite(entry)) return 'waiting'
+          if (isExitPlanModeCall(entry)) return 'waiting'
           if (isUserInterrupt(entry)) return 'waiting'
           if (isAskingUserQuestion(entry)) return 'waiting'
           if (entry.type !== 'assistant') return 'running'

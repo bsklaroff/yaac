@@ -258,6 +258,43 @@ describe('getClaudeStatus', () => {
     expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
   })
 
+  it('returns waiting when assistant calls ExitPlanMode', async () => {
+    await writeEntry({
+      type: 'assistant',
+      message: {
+        stop_reason: 'tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_abc',
+            name: 'ExitPlanMode',
+            input: {},
+          },
+        ],
+      },
+    })
+    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
+  })
+
+  it('returns waiting when ExitPlanMode follows metadata', async () => {
+    await writeEntry({
+      type: 'assistant',
+      message: {
+        stop_reason: 'tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_abc',
+            name: 'ExitPlanMode',
+            input: {},
+          },
+        ],
+      },
+    })
+    await writeEntry({ type: 'system', subtype: 'turn_duration', durationMs: 5000 })
+    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
+  })
+
   it('returns waiting when user interrupted the request', async () => {
     await writeEntry({
       type: 'user',
