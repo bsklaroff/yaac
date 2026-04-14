@@ -12,6 +12,7 @@ import { resolveProjectConfig } from '@/lib/config'
 import { repoDir, claudeDir, worktreeDir, worktreesDir, getDataDir } from '@/lib/paths'
 import { buildRulesFromConfig } from '@/lib/secret-conventions'
 import { ProxyClient } from '@/lib/proxy-client'
+import { packTar } from '@/lib/tar-utils'
 import { PgRelayClient } from '@/lib/pg-relay'
 import { findAvailablePort } from '@/lib/port'
 
@@ -178,6 +179,11 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
   })
 
   await container.start()
+
+  // Inject CA cert for HTTPS MITM (matches production session-create)
+  const caCert = await proxy.getCaCert()
+  const archive = await packTar([{ name: 'proxy-ca.pem', content: caCert }])
+  await container.putArchive(archive, { path: '/tmp' })
 
   // Fix ownership of named cache volumes (created as root, but container runs as yaac)
   for (const containerPath of Object.values(config.cacheVolumes ?? {})) {
@@ -503,6 +509,13 @@ describe('yaac session create', () => {
 
   it('pnpm install reuses cached packages from store-dir on cache volume', async () => {
     await requirePodman()
+
+    // Nested podman containers cannot resolve external DNS when running
+    // inside a yaac session container — skip in that environment.
+    try {
+      await fs.access('/run/.containerenv')
+      return // already inside a container — skip
+    } catch { /* not in a container, proceed */ }
 
     const volName = 'yaac-cache-pnpm-cache-project-pnpm-store'
     // Remove stale volume from prior runs to avoid podman lock conflicts
