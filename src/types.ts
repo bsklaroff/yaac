@@ -50,7 +50,7 @@ export interface YaacConfig {
   bindMounts?: BindMountConfig[]
   hideInitPane?: boolean
   pgRelay?: PostgresRelayConfig
-  additionalAllowedUrls?: string[]
+  addAllowedUrls?: string[]
   setAllowedUrls?: string[]
 }
 

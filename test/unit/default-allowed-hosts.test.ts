@@ -35,8 +35,8 @@ describe('resolveAllowedHosts', () => {
     expect(result).not.toContain('api.anthropic.com')
   })
 
-  it('returns merged list when additionalAllowedUrls is set', () => {
-    const config: YaacConfig = { additionalAllowedUrls: ['extra.example.com'] }
+  it('returns merged list when addAllowedUrls is set', () => {
+    const config: YaacConfig = { addAllowedUrls: ['extra.example.com'] }
     const result = resolveAllowedHosts(config)
     expect(result).toContain('api.anthropic.com')
     expect(result).toContain('extra.example.com')
@@ -57,7 +57,7 @@ describe('resolveAllowedHosts', () => {
 
   it('throws when both fields are set', () => {
     const config: YaacConfig = {
-      additionalAllowedUrls: ['a.com'],
+      addAllowedUrls: ['a.com'],
       setAllowedUrls: ['b.com'],
     }
     expect(() => resolveAllowedHosts(config)).toThrow('mutually exclusive')

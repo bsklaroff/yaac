@@ -467,8 +467,8 @@ describe('loadProjectConfig', () => {
   })
 
 
-  it('parses valid config with additionalAllowedUrls', async () => {
-    const config = { additionalAllowedUrls: ['extra.example.com', '*.corp.example.com'] }
+  it('parses valid config with addAllowedUrls', async () => {
+    const config = { addAllowedUrls: ['extra.example.com', '*.corp.example.com'] }
     await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
     const result = await loadProjectConfig(tmpDir)
     expect(result).toEqual(config)
@@ -481,8 +481,8 @@ describe('loadProjectConfig', () => {
     expect(result).toEqual(config)
   })
 
-  it('parses empty additionalAllowedUrls array', async () => {
-    const config = { additionalAllowedUrls: [] }
+  it('parses empty addAllowedUrls array', async () => {
+    const config = { addAllowedUrls: [] }
     await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
     const result = await loadProjectConfig(tmpDir)
     expect(result).toEqual(config)
@@ -495,20 +495,20 @@ describe('loadProjectConfig', () => {
     expect(result).toEqual(config)
   })
 
-  it('throws on invalid additionalAllowedUrls type', async () => {
+  it('throws on invalid addAllowedUrls type', async () => {
     await fs.writeFile(
       path.join(tmpDir, 'yaac-config.json'),
-      JSON.stringify({ additionalAllowedUrls: 'not-an-array' }),
+      JSON.stringify({ addAllowedUrls: 'not-an-array' }),
     )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('additionalAllowedUrls must be a string array')
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('addAllowedUrls must be a string array')
   })
 
-  it('throws on non-string additionalAllowedUrls entries', async () => {
+  it('throws on non-string addAllowedUrls entries', async () => {
     await fs.writeFile(
       path.join(tmpDir, 'yaac-config.json'),
-      JSON.stringify({ additionalAllowedUrls: [123] }),
+      JSON.stringify({ addAllowedUrls: [123] }),
     )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('additionalAllowedUrls must be a string array')
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('addAllowedUrls must be a string array')
   })
 
   it('throws on invalid setAllowedUrls type', async () => {
@@ -519,12 +519,12 @@ describe('loadProjectConfig', () => {
     await expect(loadProjectConfig(tmpDir)).rejects.toThrow('setAllowedUrls must be a string array')
   })
 
-  it('throws when both additionalAllowedUrls and setAllowedUrls are set', async () => {
+  it('throws when both addAllowedUrls and setAllowedUrls are set', async () => {
     await fs.writeFile(
       path.join(tmpDir, 'yaac-config.json'),
-      JSON.stringify({ additionalAllowedUrls: ['a.com'], setAllowedUrls: ['b.com'] }),
+      JSON.stringify({ addAllowedUrls: ['a.com'], setAllowedUrls: ['b.com'] }),
     )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('additionalAllowedUrls and setAllowedUrls are mutually exclusive')
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('addAllowedUrls and setAllowedUrls are mutually exclusive')
   })
 
   it('parseProjectConfig parses raw JSON string', () => {

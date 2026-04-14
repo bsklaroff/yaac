@@ -8,7 +8,7 @@ import { getDefaultBranch } from '@/lib/git'
 
 const execFileAsync = promisify(execFile)
 
-const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'nestedContainers', 'portForward', 'bindMounts', 'hideInitPane', 'pgRelay', 'additionalAllowedUrls', 'setAllowedUrls'])
+const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'nestedContainers', 'portForward', 'bindMounts', 'hideInitPane', 'pgRelay', 'addAllowedUrls', 'setAllowedUrls'])
 
 /** Expand `$VAR` and `${VAR}` references in a string using `process.env`. */
 export function expandEnvVars(s: string): string {
@@ -198,11 +198,11 @@ export function parseProjectConfig(raw: string): YaacConfig {
     config.pgRelay = pgConfig
   }
 
-  if (obj.additionalAllowedUrls !== undefined) {
-    if (!Array.isArray(obj.additionalAllowedUrls) || !obj.additionalAllowedUrls.every((v) => typeof v === 'string')) {
-      throw new Error('yaac-config.json: additionalAllowedUrls must be a string array')
+  if (obj.addAllowedUrls !== undefined) {
+    if (!Array.isArray(obj.addAllowedUrls) || !obj.addAllowedUrls.every((v) => typeof v === 'string')) {
+      throw new Error('yaac-config.json: addAllowedUrls must be a string array')
     }
-    config.additionalAllowedUrls = obj.additionalAllowedUrls
+    config.addAllowedUrls = obj.addAllowedUrls
   }
 
   if (obj.setAllowedUrls !== undefined) {
@@ -212,8 +212,8 @@ export function parseProjectConfig(raw: string): YaacConfig {
     config.setAllowedUrls = obj.setAllowedUrls
   }
 
-  if (config.additionalAllowedUrls && config.setAllowedUrls) {
-    throw new Error('yaac-config.json: additionalAllowedUrls and setAllowedUrls are mutually exclusive')
+  if (config.addAllowedUrls && config.setAllowedUrls) {
+    throw new Error('yaac-config.json: addAllowedUrls and setAllowedUrls are mutually exclusive')
   }
 
   return config

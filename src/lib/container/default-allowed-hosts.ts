@@ -293,19 +293,19 @@ const CRITICAL_HOSTS = [
  * Resolve the effective allowed hosts list from project config.
  *
  * - Neither field set → DEFAULT_ALLOWED_HOSTS
- * - additionalAllowedUrls → DEFAULT_ALLOWED_HOSTS + additional
+ * - addAllowedUrls → DEFAULT_ALLOWED_HOSTS + additional
  * - setAllowedUrls → replaces defaults entirely
  */
 export function resolveAllowedHosts(config: YaacConfig): string[] {
-  if (config.additionalAllowedUrls && config.setAllowedUrls) {
-    throw new Error('additionalAllowedUrls and setAllowedUrls are mutually exclusive')
+  if (config.addAllowedUrls && config.setAllowedUrls) {
+    throw new Error('addAllowedUrls and setAllowedUrls are mutually exclusive')
   }
 
   let resolved: string[]
   if (config.setAllowedUrls) {
     resolved = config.setAllowedUrls
-  } else if (config.additionalAllowedUrls) {
-    resolved = [...DEFAULT_ALLOWED_HOSTS, ...config.additionalAllowedUrls]
+  } else if (config.addAllowedUrls) {
+    resolved = [...DEFAULT_ALLOWED_HOSTS, ...config.addAllowedUrls]
   } else {
     resolved = DEFAULT_ALLOWED_HOSTS
   }
