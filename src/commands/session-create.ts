@@ -25,13 +25,13 @@ const podmanRetryPatterns = ['container state improper']
 
 function containerExec(containerName: string, cmd: string): void {
   execSyncRetry(`podman exec ${containerName} ${cmd}`, {
-    stdio: 'pipe', retryPatterns: podmanRetryPatterns,
+    stdio: 'pipe', retries: 8, retryPatterns: podmanRetryPatterns,
   })
 }
 
 function containerExecRoot(containerName: string, cmd: string): void {
   execSyncRetry(`podman exec --user root ${containerName} ${cmd}`, {
-    stdio: 'pipe', retryPatterns: podmanRetryPatterns,
+    stdio: 'pipe', retries: 8, retryPatterns: podmanRetryPatterns,
   })
 }
 
@@ -239,7 +239,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   if (config.nestedContainers) {
     containerExecRoot(containerName, 'chown yaac:yaac /home/yaac/.local/share/containers')
     execSyncRetry(`podman exec -d ${containerName} podman system service --time=0 unix:///run/user/1000/podman/podman.sock`, {
-      stdio: 'pipe', retryPatterns: podmanRetryPatterns,
+      stdio: 'pipe', retries: 8, retryPatterns: podmanRetryPatterns,
     })
   }
 

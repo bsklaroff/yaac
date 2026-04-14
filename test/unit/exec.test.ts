@@ -34,8 +34,9 @@ describe('execSyncRetry', () => {
       retryPatterns: ['container state improper'],
     })
     expect(result).toEqual(Buffer.from('ok'))
-    // call 1: failed exec, call 2: sleep, call 3: successful retry
+    // call 1: failed exec, call 2: sleep (0.2s), call 3: successful retry
     expect(mockExecSync).toHaveBeenCalledTimes(3)
+    expect(mockExecSync).toHaveBeenNthCalledWith(2, 'sleep 0.2')
   })
 
   it('throws on non-matching stderr', () => {
@@ -69,6 +70,36 @@ describe('execSyncRetry', () => {
     ).toThrow('fail')
     // 3 attempts + 2 sleeps between them
     expect(mockExecSync).toHaveBeenCalledTimes(5)
+  })
+
+  it('uses exponential backoff with cap at 3200ms', () => {
+    const err = Object.assign(new Error('fail'), {
+      stderr: Buffer.from('container state improper'),
+    })
+    const sleepCalls: string[] = []
+    mockExecSync.mockImplementation((cmd) => {
+      if (typeof cmd === 'string' && cmd.startsWith('sleep')) {
+        sleepCalls.push(cmd)
+        return Buffer.from('')
+      }
+      throw err
+    })
+
+    expect(() =>
+      execSyncRetry('podman exec ctr true', {
+        retries: 6,
+        retryPatterns: ['container state improper'],
+      }),
+    ).toThrow('fail')
+    // 6 attempts + 5 sleeps = 11 calls
+    expect(mockExecSync).toHaveBeenCalledTimes(11)
+    expect(sleepCalls).toEqual([
+      'sleep 0.2',   // 200ms
+      'sleep 0.4',   // 400ms
+      'sleep 0.8',   // 800ms
+      'sleep 1.6',   // 1600ms
+      'sleep 3.2',   // 3200ms (cap)
+    ])
   })
 
   it('works with no retry options (no retries)', () => {

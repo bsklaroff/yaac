@@ -18,6 +18,26 @@ import { findAvailablePort } from '@/lib/port'
 
 const execFileAsync = promisify(execFile)
 
+async function podmanExecRetry(
+  cmd: string,
+  args: string[],
+  opts?: { timeout?: number },
+): Promise<{ stdout: string; stderr: string }> {
+  for (let attempt = 1; attempt <= 8; attempt++) {
+    try {
+      return await execFileAsync(cmd, args, opts ?? {})
+    } catch (err: unknown) {
+      const stderr = (err as { stderr?: string })?.stderr ?? ''
+      if (attempt < 8 && stderr.includes('container state improper')) {
+        await new Promise((r) => setTimeout(r, Math.min(200 * 2 ** (attempt - 1), 3200)))
+        continue
+      }
+      throw err
+    }
+  }
+  throw new Error('podmanExecRetry: unexpected fall-through')
+}
+
 // Test-specific sidecar instances — isolated from the running application
 const testProxyClient = new ProxyClient({
   ...TEST_PROXY_CONFIG,
@@ -135,26 +155,26 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
 
   // Fix ownership of named cache volumes (created as root, but container runs as yaac)
   for (const containerPath of Object.values(config.cacheVolumes ?? {})) {
-    await execFileAsync('podman', [
+    await podmanExecRetry('podman', [
       'exec', '--user', 'root', containerName, 'chown', 'yaac:yaac', containerPath,
     ])
   }
 
   // Fix worktree git pointers for in-container paths
-  await execFileAsync('podman', [
+  await podmanExecRetry('podman', [
     'exec', containerName, 'sh', '-c',
     `echo 'gitdir: /repo/.git/worktrees/${sessionId}' > /workspace/.git`,
   ])
-  await execFileAsync('podman', [
+  await podmanExecRetry('podman', [
     'exec', containerName, 'sh', '-c',
     `echo '/workspace/.git' > /repo/.git/worktrees/${sessionId}/gitdir`,
   ])
 
   // Configure git identity inside container
-  await execFileAsync('podman', [
+  await podmanExecRetry('podman', [
     'exec', containerName, 'git', 'config', '--global', 'user.name', 'Test',
   ])
-  await execFileAsync('podman', [
+  await podmanExecRetry('podman', [
     'exec', containerName, 'git', 'config', '--global', 'user.email', 'test@test.com',
   ])
 
@@ -162,14 +182,14 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
   const tmuxCmd = options?.prompt
     ? `echo 'YAAC_PROMPT=${options.prompt.replace(/'/g, "'\\''")}' > /tmp/yaac-prompt && bash`
     : 'bash'
-  await execFileAsync('podman', [
+  await podmanExecRetry('podman', [
     'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'yaac', '-n', 'claude', tmuxCmd,
   ])
 
   // Run init commands synchronously (production runs them in a background tmux window)
   if (config.initCommands?.length) {
     for (const cmd of config.initCommands) {
-      await execFileAsync('podman', [
+      await podmanExecRetry('podman', [
         'exec', '-w', '/workspace', containerName, 'sh', '-c', cmd,
       ], { timeout: 300_000 })
     }
@@ -179,13 +199,13 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
   const portInfo = forwardedPorts.length > 0
     ? ' ' + forwardedPorts.map((p) => `:${p.hostPort}->${p.containerPort}`).join(' ')
     : ''
-  await execFileAsync('podman', [
+  await podmanExecRetry('podman', [
     'exec', containerName, 'tmux', 'set-option', '-t', 'yaac', 'status-right', ` ${projectSlug} ${sessionId.slice(0, 8)}${portInfo} `,
   ])
-  await execFileAsync('podman', [
+  await podmanExecRetry('podman', [
     'exec', containerName, 'tmux', 'set-option', '-t', 'yaac', 'status-right-length', '80',
   ])
-  await execFileAsync('podman', [
+  await podmanExecRetry('podman', [
     'exec', containerName, 'tmux', 'bind-key', 'k', 'kill-server',
   ])
 
