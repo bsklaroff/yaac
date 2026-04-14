@@ -8,7 +8,7 @@ import { getDefaultBranch } from '@/lib/git'
 
 const execFileAsync = promisify(execFile)
 
-const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'nestedContainers', 'portForward', 'bindMounts', 'hideInitPane', 'postgres'])
+const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'nestedContainers', 'portForward', 'bindMounts', 'hideInitPane', 'pgRelay'])
 
 /** Expand `$VAR` and `${VAR}` references in a string using `process.env`. */
 export function expandEnvVars(s: string): string {
@@ -170,32 +170,32 @@ export function parseProjectConfig(raw: string): YaacConfig {
     }
   }
 
-  if (obj.postgres !== undefined) {
-    if (typeof obj.postgres !== 'object' || obj.postgres === null || Array.isArray(obj.postgres)) {
-      throw new Error('yaac-config.json: postgres must be an object')
+  if (obj.pgRelay !== undefined) {
+    if (typeof obj.pgRelay !== 'object' || obj.pgRelay === null || Array.isArray(obj.pgRelay)) {
+      throw new Error('yaac-config.json: pgRelay must be an object')
     }
-    const pg = obj.postgres as Record<string, unknown>
+    const pg = obj.pgRelay as Record<string, unknown>
 
     if (pg.enabled === undefined) {
-      throw new Error('yaac-config.json: postgres.enabled is required')
+      throw new Error('yaac-config.json: pgRelay.enabled is required')
     }
     if (typeof pg.enabled !== 'boolean') {
-      throw new Error('yaac-config.json: postgres.enabled must be a boolean')
+      throw new Error('yaac-config.json: pgRelay.enabled must be a boolean')
     }
     const pgConfig: PostgresRelayConfig = { enabled: pg.enabled }
     if (pg.hostPort !== undefined) {
       if (typeof pg.hostPort !== 'number' || !Number.isInteger(pg.hostPort) || pg.hostPort < 1 || pg.hostPort > 65535) {
-        throw new Error('yaac-config.json: postgres.hostPort must be an integer between 1 and 65535')
+        throw new Error('yaac-config.json: pgRelay.hostPort must be an integer between 1 and 65535')
       }
       pgConfig.hostPort = pg.hostPort
     }
     if (pg.containerPort !== undefined) {
       if (typeof pg.containerPort !== 'number' || !Number.isInteger(pg.containerPort) || pg.containerPort < 1 || pg.containerPort > 65535) {
-        throw new Error('yaac-config.json: postgres.containerPort must be an integer between 1 and 65535')
+        throw new Error('yaac-config.json: pgRelay.containerPort must be an integer between 1 and 65535')
       }
       pgConfig.containerPort = pg.containerPort
     }
-    config.postgres = pgConfig
+    config.pgRelay = pgConfig
   }
 
   return config

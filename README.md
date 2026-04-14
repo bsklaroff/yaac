@@ -90,7 +90,7 @@ First match wins, so put more specific patterns before broader ones. On first ru
 
 Tokens are used for:
 - **Host-side git operations** — clone and fetch use HTTPS with the matching token embedded in the request.
-- **Container-side GitHub requests** — a MITM proxy sidecar injects the token as an `Authorization` header into all HTTPS requests to `github.com` and `*.github.com`. The token is never written into the container filesystem. Each session uses the single token that matches its project's remote URL.
+- **Container-side GitHub requests** — a MITM proxy sidecar injects the token as an `Authorization` header into all HTTPS requests to `github.com` and `api.github.com`. The token is never written into the container filesystem. Each session uses the single token that matches its project's remote URL.
 
 Token injection only happens over HTTPS. Plain HTTP requests through the proxy never receive credentials.
 
@@ -140,7 +140,7 @@ Add a `yaac-config.json` to your repo root. Example with all options:
   "initCommands": ["pnpm install --store-dir /home/yaac/.pnpm-store"],
   "nestedContainers": false,
   "hideInitPane": false,
-  "postgres": {
+  "pgRelay": {
     "enabled": true,
     "hostPort": 5432,
     "containerPort": 5432
@@ -157,7 +157,7 @@ Add a `yaac-config.json` to your repo root. Example with all options:
 
   Each entry must have either `header` or `bodyParam` (not both).
 
-  Note: GitHub authentication (`github.com` and `*.github.com`) is handled automatically using your stored PAT — you do not need to add `GITHUB_TOKEN` to `envSecretProxy`.
+  Note: GitHub authentication (`github.com` and `api.github.com`) is handled automatically using your stored PAT — you do not need to add `GITHUB_TOKEN` to `envSecretProxy`.
 - **bindMounts** — host directories mounted into the container. Each entry specifies:
   - **`hostPath`** — absolute path on the host (required). Environment variables like `$HOME` or `${HOME}` are expanded.
   - **`containerPath`** — absolute path inside the container (required).
@@ -168,7 +168,7 @@ Add a `yaac-config.json` to your repo root. Example with all options:
 - **initCommands** — commands run inside the container after it starts (e.g. `pnpm install` against a warm cache volume). These run on every session, not just the first.
 - **nestedContainers** — when `true`, enables podman-in-podman support so sessions can build and run containers (default: `false`). See [Nested containers](#nested-containers) below.
 - **hideInitPane** — when `true`, the init commands tmux pane is automatically closed after the commands finish or error (default: `false`). When `false`, the pane is preserved with `remain-on-exit` so you can inspect the output.
-- **postgres** — configures a PostgreSQL relay sidecar that forwards connections from inside the container to a PostgreSQL instance on the host. The relay uses `socat` to proxy TCP traffic so that `localhost` connections inside the session reach your host database.
+- **pgRelay** — configures a PostgreSQL relay sidecar that forwards connections from inside the container to a PostgreSQL instance on the host. The relay uses `socat` to proxy TCP traffic so that `localhost` connections inside the session reach your host database.
   - **`enabled`** — must be set to `true` to start the relay (default: `false`). The relay will not run unless this is explicitly enabled.
   - **`hostPort`** — port PostgreSQL listens on the host (default: `5432`).
   - **`containerPort`** — port exposed inside the container for the relay (default: `5432`).

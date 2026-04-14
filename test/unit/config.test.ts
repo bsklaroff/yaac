@@ -402,68 +402,68 @@ describe('loadProjectConfig', () => {
     }
   })
 
-  it('throws on postgres section without enabled', async () => {
+  it('throws on pgRelay section without enabled', async () => {
     await fs.writeFile(
       path.join(tmpDir, 'yaac-config.json'),
-      JSON.stringify({ postgres: {} }),
+      JSON.stringify({ pgRelay: {} }),
     )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('postgres.enabled is required')
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('pgRelay.enabled is required')
   })
 
-  it('parses valid config with postgres section (all fields)', async () => {
+  it('parses valid config with pgRelay section (all fields)', async () => {
     const config = {
-      postgres: { enabled: true, hostPort: 5433, containerPort: 5434 },
+      pgRelay: { enabled: true, hostPort: 5433, containerPort: 5434 },
     }
     await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
     const result = await loadProjectConfig(tmpDir)
     expect(result).toEqual(config)
   })
 
-  it('parses postgres with enabled false', async () => {
-    const config = { postgres: { enabled: false } }
+  it('parses pgRelay with enabled false', async () => {
+    const config = { pgRelay: { enabled: false } }
     await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
     const result = await loadProjectConfig(tmpDir)
     expect(result).toEqual(config)
   })
 
-  it('throws on invalid postgres type', async () => {
+  it('throws on invalid pgRelay type', async () => {
     await fs.writeFile(
       path.join(tmpDir, 'yaac-config.json'),
-      JSON.stringify({ postgres: 'not-an-object' }),
+      JSON.stringify({ pgRelay: 'not-an-object' }),
     )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('postgres must be an object')
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('pgRelay must be an object')
   })
 
-  it('throws on invalid postgres.enabled type', async () => {
+  it('throws on invalid pgRelay.enabled type', async () => {
     await fs.writeFile(
       path.join(tmpDir, 'yaac-config.json'),
-      JSON.stringify({ postgres: { enabled: 'yes' } }),
+      JSON.stringify({ pgRelay: { enabled: 'yes' } }),
     )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('postgres.enabled must be a boolean')
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('pgRelay.enabled must be a boolean')
   })
 
-  it('throws on invalid postgres.hostPort', async () => {
+  it('throws on invalid pgRelay.hostPort', async () => {
     await fs.writeFile(
       path.join(tmpDir, 'yaac-config.json'),
-      JSON.stringify({ postgres: { enabled: true, hostPort: 70000 } }),
+      JSON.stringify({ pgRelay: { enabled: true, hostPort: 70000 } }),
     )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('postgres.hostPort must be an integer between 1 and 65535')
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('pgRelay.hostPort must be an integer between 1 and 65535')
   })
 
-  it('throws on non-integer postgres.hostPort', async () => {
+  it('throws on non-integer pgRelay.hostPort', async () => {
     await fs.writeFile(
       path.join(tmpDir, 'yaac-config.json'),
-      JSON.stringify({ postgres: { enabled: true, hostPort: 54.32 } }),
+      JSON.stringify({ pgRelay: { enabled: true, hostPort: 54.32 } }),
     )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('postgres.hostPort must be an integer between 1 and 65535')
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('pgRelay.hostPort must be an integer between 1 and 65535')
   })
 
-  it('throws on invalid postgres.containerPort', async () => {
+  it('throws on invalid pgRelay.containerPort', async () => {
     await fs.writeFile(
       path.join(tmpDir, 'yaac-config.json'),
-      JSON.stringify({ postgres: { enabled: true, containerPort: 0 } }),
+      JSON.stringify({ pgRelay: { enabled: true, containerPort: 0 } }),
     )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('postgres.containerPort must be an integer between 1 and 65535')
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('pgRelay.containerPort must be an integer between 1 and 65535')
   })
 
 

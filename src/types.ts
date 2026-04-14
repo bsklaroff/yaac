@@ -49,7 +49,7 @@ export interface YaacConfig {
   portForward?: PortForwardConfig[]
   bindMounts?: BindMountConfig[]
   hideInitPane?: boolean
-  postgres?: PostgresRelayConfig
+  pgRelay?: PostgresRelayConfig
 }
 
 export interface GithubTokenEntry {

@@ -104,7 +104,7 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
   const networkMode = proxy.network
 
   // PostgreSQL relay setup
-  const pgConfig = config.postgres
+  const pgConfig = config.pgRelay
   const pgEnabled = !!(pgConfig && pgConfig.enabled !== false)
   let pgRelayIp: string | null = null
   let testPgRelay: PgRelayClient | null = null
@@ -881,7 +881,7 @@ describe('yaac session create', () => {
     expect(newContent.trim()).toBe('new-data')
   })
 
-  it('sets up pg-relay when postgres config is present', async () => {
+  it('sets up pg-relay when pgRelay config is present', async () => {
     await requirePodman()
 
     const tmpDir = await createTempDataDir()
@@ -889,7 +889,7 @@ describe('yaac session create', () => {
     const repoPath = path.join(tmpDir, 'pg-relay-project')
     await createTestRepo(repoPath, {
       yaacConfig: {
-        postgres: { enabled: true },
+        pgRelay: { enabled: true },
       },
     })
     await addTestProject(repoPath)
