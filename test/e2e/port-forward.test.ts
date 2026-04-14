@@ -3,7 +3,7 @@ import crypto from 'node:crypto'
 import http from 'node:http'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { requirePodman, TEST_PROXY_CONFIG } from '@test/helpers/setup'
+import { requirePodman, TEST_PROXY_CONFIG, TEST_RUN_ID } from '@test/helpers/setup'
 import { ProxyClient } from '@/lib/proxy-client'
 import { startPortForwarders, podmanRelay } from '@/lib/port-forwarder'
 import { findAvailablePort } from '@/lib/port'
@@ -44,7 +44,7 @@ describe('port forwarding via podman exec relay', () => {
 
     client = new ProxyClient({
       ...TEST_PROXY_CONFIG,
-      containerName: 'yaac-proxy-portfwd-test',
+      containerName: `yaac-proxy-portfwd-test-${TEST_RUN_ID}`,
       hostPort: String(proxyPort),
       authSecret: testAuthSecret,
     })

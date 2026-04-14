@@ -24,7 +24,7 @@ export function shellEscape(str: string): string {
   return str.replace(/'/g, "'\\''")
 }
 
-const podmanRetryPatterns = ['container state improper']
+const podmanRetryPatterns = ['container state improper', 'no such container']
 
 function containerExec(containerName: string, cmd: string): void {
   execSyncRetry(`podman exec ${containerName} ${cmd}`, {

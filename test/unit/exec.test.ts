@@ -31,7 +31,7 @@ describe('execSyncRetry', () => {
       .mockReturnValue(Buffer.from('ok'))
 
     const result = execSyncRetry('podman exec ctr true', {
-      retryPatterns: ['container state improper'],
+      retryPatterns: ['container state improper', 'no such container'],
     })
     expect(result).toEqual(Buffer.from('ok'))
     // call 1: failed exec, call 2: sleep (0.2s), call 3: successful retry
@@ -39,15 +39,31 @@ describe('execSyncRetry', () => {
     expect(mockExecSync).toHaveBeenNthCalledWith(2, 'sleep 0.2')
   })
 
-  it('throws on non-matching stderr', () => {
+  it('retries on no such container error', () => {
     const err = Object.assign(new Error('fail'), {
       stderr: Buffer.from('no such container'),
+    })
+    mockExecSync
+      .mockImplementationOnce(() => { throw err })
+      .mockImplementationOnce(() => Buffer.from('')) // sleep
+      .mockReturnValue(Buffer.from('ok'))
+
+    const result = execSyncRetry('podman exec ctr true', {
+      retryPatterns: ['container state improper', 'no such container'],
+    })
+    expect(result).toEqual(Buffer.from('ok'))
+    expect(mockExecSync).toHaveBeenCalledTimes(3)
+  })
+
+  it('throws on non-matching stderr', () => {
+    const err = Object.assign(new Error('fail'), {
+      stderr: Buffer.from('unexpected EOF'),
     })
     mockExecSync.mockImplementation(() => { throw err })
 
     expect(() =>
       execSyncRetry('podman exec ctr true', {
-        retryPatterns: ['container state improper'],
+        retryPatterns: ['container state improper', 'no such container'],
       }),
     ).toThrow('fail')
     expect(mockExecSync).toHaveBeenCalledTimes(1)
@@ -65,7 +81,7 @@ describe('execSyncRetry', () => {
     expect(() =>
       execSyncRetry('podman exec ctr true', {
         retries: 3,
-        retryPatterns: ['container state improper'],
+        retryPatterns: ['container state improper', 'no such container'],
       }),
     ).toThrow('fail')
     // 3 attempts + 2 sleeps between them
@@ -88,7 +104,7 @@ describe('execSyncRetry', () => {
     expect(() =>
       execSyncRetry('podman exec ctr true', {
         retries: 6,
-        retryPatterns: ['container state improper'],
+        retryPatterns: ['container state improper', 'no such container'],
       }),
     ).toThrow('fail')
     // 6 attempts + 5 sleeps = 11 calls

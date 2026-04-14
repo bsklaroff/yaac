@@ -4,7 +4,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, TEST_PROXY_CONFIG, addTestProject } from '@test/helpers/setup'
+import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, TEST_PROXY_CONFIG, TEST_RUN_ID, addTestProject } from '@test/helpers/setup'
 import { podman } from '@/lib/podman'
 import { ensureImage } from '@/lib/image-builder'
 import { addWorktree, getDefaultBranch } from '@/lib/git'
@@ -27,7 +27,7 @@ async function podmanExecRetry(
       return await execFileAsync(cmd, args, opts ?? {})
     } catch (err: unknown) {
       const stderr = (err as { stderr?: string })?.stderr ?? ''
-      if (attempt < 8 && stderr.includes('container state improper')) {
+      if (attempt < 8 && (stderr.includes('container state improper') || stderr.includes('no such container'))) {
         await new Promise((r) => setTimeout(r, Math.min(200 * 2 ** (attempt - 1), 3200)))
         continue
       }
@@ -118,7 +118,7 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
 
   if (pgEnabled) {
     testPgRelay = new PgRelayClient({
-      containerName: 'yaac-test-pg-relay',
+      containerName: `yaac-test-pg-relay-${TEST_RUN_ID}`,
       network: TEST_PROXY_CONFIG.network,
     })
     await testPgRelay.ensureRunning(pgConfig)

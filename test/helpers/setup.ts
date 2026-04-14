@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -18,14 +19,21 @@ const execFileAsync = promisify(execFile)
 export const TEST_IMAGE_PREFIX = 'yaac-test'
 
 /**
+ * Unique suffix per test worker to avoid container/network name collisions
+ * when multiple test runs execute concurrently.
+ */
+export const TEST_RUN_ID = crypto.randomBytes(4).toString('hex')
+
+/**
  * Proxy sidecar config for e2e tests.
  * Uses separate container/image/network/port to avoid interfering with the app's proxy.
+ * Container and network names include a random suffix so concurrent runs don't collide.
  */
 export const TEST_PROXY_CONFIG: Omit<ProxyClientConfig, 'authSecret'> = {
   image: 'yaac-test-proxy',
-  containerName: 'yaac-test-proxy',
+  containerName: `yaac-test-proxy-${TEST_RUN_ID}`,
   hostPort: '19256',
-  network: 'yaac-test-sessions',
+  network: `yaac-test-sessions-${TEST_RUN_ID}`,
   requirePrebuilt: true,
 }
 
