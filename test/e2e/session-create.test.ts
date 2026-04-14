@@ -216,10 +216,10 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
     'exec', containerName, 'git', 'config', '--global', 'user.email', 'test@test.com',
   ])
 
-  // Start tmux — use the prompt if provided, otherwise just bash
+  // Start tmux — use the prompt if provided, otherwise just zsh
   const tmuxCmd = options?.prompt
-    ? `echo 'YAAC_PROMPT=${options.prompt.replace(/'/g, "'\\''")}' > /tmp/yaac-prompt && bash`
-    : 'bash'
+    ? `echo 'YAAC_PROMPT=${options.prompt.replace(/'/g, "'\\''")}' > /tmp/yaac-prompt && zsh`
+    : 'zsh'
   await podmanExecRetry('podman', [
     'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'yaac', '-n', 'claude', tmuxCmd,
   ])

@@ -44,7 +44,7 @@ async function createMinimalContainer(projectSlug: string): Promise<{ containerN
 
   // Start tmux session so isTmuxSessionAlive() returns true
   await execFileAsync('podman', [
-    'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'yaac', '-n', 'claude', 'bash',
+    'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'yaac', '-n', 'claude', 'zsh',
   ])
 
   return { containerName, sessionId }

@@ -5,7 +5,7 @@ export async function sessionShell(containerId: string): Promise<void> {
   const containerName = await resolveContainer(containerId)
   if (!containerName) return
 
-  execSync(`podman exec -it ${containerName} bash`, {
+  execSync(`podman exec -it ${containerName} zsh`, {
     stdio: 'inherit',
   })
 }

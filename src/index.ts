@@ -102,7 +102,7 @@ session
 
 session
   .command('shell')
-  .description('Open a bash shell in a session container')
+  .description('Open a zsh shell in a session container')
   .argument('<container-id>', 'Session ID or container name')
   .action(sessionShell)
 

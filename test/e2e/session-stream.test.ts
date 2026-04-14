@@ -44,9 +44,9 @@ async function createContainerWithWaitingStatus(projectSlug: string): Promise<{
   })
   await container.start()
 
-  // Start tmux session with bash
+  // Start tmux session with zsh
   await execFileAsync('podman', [
-    'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'yaac', '-n', 'claude', 'bash',
+    'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'yaac', '-n', 'claude', 'zsh',
   ])
 
   // Write JSONL to simulate "waiting" status
@@ -93,7 +93,7 @@ async function createContainerWithRunningStatus(projectSlug: string): Promise<{
 
   // Start tmux but write a "running" JSONL (tool_use stop_reason)
   await execFileAsync('podman', [
-    'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'yaac', '-n', 'claude', 'bash',
+    'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'yaac', '-n', 'claude', 'zsh',
   ])
 
   const sessionsDir = path.join(claudeDir(projectSlug), 'projects', '-workspace')

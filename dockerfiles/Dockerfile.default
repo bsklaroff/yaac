@@ -1,7 +1,7 @@
 FROM docker.io/ubuntu:24.04
 ARG SSL_CERT_FILE
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl gcc git less libc6-dev netcat-openbsd python3 socat tmux locales podman sudo xz-utils && \
+    ca-certificates curl gcc git less libc6-dev netcat-openbsd python3 socat tmux locales podman sudo xz-utils zsh && \
     sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen && update-locale LANG=en_US.UTF-8 && \
     if [ -n "$SSL_CERT_FILE" ] && [ -f "$SSL_CERT_FILE" ]; then \
       cp "$SSL_CERT_FILE" /usr/local/share/ca-certificates/proxy-ca.crt && update-ca-certificates; \
@@ -21,7 +21,7 @@ RUN ARCH="$(dpkg --print-architecture)" && \
     tar -xz -C /usr/local --strip-components=1 && \
     ln -sf /usr/local/bin/nvim /usr/local/bin/vi && \
     ln -sf /usr/local/bin/nvim /usr/local/bin/vim
-RUN userdel -r ubuntu 2>/dev/null; useradd -m -s /bin/bash yaac && \
+RUN userdel -r ubuntu 2>/dev/null; useradd -m -s /bin/zsh yaac && \
     echo 'Defaults env_keep += "HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy SSL_CERT_FILE NODE_EXTRA_CA_CERTS GIT_SSL_CAINFO"' >> /etc/sudoers && \
     echo 'yaac ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 USER yaac
@@ -30,6 +30,7 @@ ENV TERM=xterm-256color
 ENV HOME=/home/yaac
 ENV PATH="/home/yaac/.local/bin:${PATH}"
 ENV EDITOR=nvim
+ENV SHELL=/bin/zsh
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN corepack install -g pnpm@10.33.0
 RUN curl -fsSL https://claude.ai/install.sh | bash

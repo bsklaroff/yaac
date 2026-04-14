@@ -49,7 +49,7 @@ yaac session <command>
   list [options] [project]    List active sessions
     -d, --deleted             List deleted sessions from Claude Code history
   delete <session-id>         Delete a session and clean up its resources
-  shell <container-id>        Open a bash shell in a session container
+  shell <container-id>        Open a zsh shell in a session container
   attach <container-id>       Attach to the Claude Code session
   stream [project]            Stream through waiting sessions, attaching to
                               each in turn
