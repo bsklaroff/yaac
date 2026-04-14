@@ -63,10 +63,10 @@ Each session runs in an isolated container with the following mounts:
 
 | Host | Container | Description |
 |------|-----------|-------------|
-| Git worktree (per-session) | `/workspace` | Project code (working directory) |
-| `<project>/repo/.git` | `/repo/.git` | Repository metadata |
-| `<project>/claude/` | `/home/yaac/.claude` | Claude Code configuration |
-| `<project>/claude.json` | `/home/yaac/.claude.json` | Claude Code project settings |
+| `~/.yaac/projects/<project>/worktrees/<session-id>` | `/workspace` | Project code (working directory) |
+| `~/.yaac/projects/<project>/repo/.git` | `/repo/.git` | Repository metadata |
+| `~/.yaac/projects/<project>/claude/` | `/home/yaac/.claude` | Claude Code configuration |
+| `~/.yaac/projects/<project>/claude.json` | `/home/yaac/.claude.json` | Claude Code project settings |
 
 The container runs as user `yaac` with home directory `/home/yaac`. All project data is stored under `~/.yaac/projects/<repo-name>/`. The repo, Claude config, and Claude project settings are shared across all sessions within a project (but isolated between projects). Each session gets its own git worktree.
 
