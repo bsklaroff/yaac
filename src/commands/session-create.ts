@@ -80,7 +80,7 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
           ([key, containerPath]) => `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`,
         ),
         ...(config.bindMounts ?? []).map(
-          ({ hostPath, containerPath, readonly: ro }) => `${hostPath}:${containerPath}:${ro ? 'ro' : 'rw'},Z`,
+          ({ hostPath, containerPath, writable }) => `${hostPath}:${containerPath}:${writable ? 'rw' : 'ro'},Z`,
         ),
         ...(options.addDir ?? []).map(
           (p) => `${p}:/add-dir${p}:ro,Z`,

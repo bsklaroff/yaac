@@ -273,7 +273,7 @@ describe('loadProjectConfig', () => {
     const config = {
       bindMounts: [
         { hostPath: '/home/user/data', containerPath: '/mnt/data' },
-        { hostPath: '/opt/tools', containerPath: '/opt/tools', readonly: false },
+        { hostPath: '/opt/tools', containerPath: '/opt/tools', writable: true },
       ],
     }
     await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
@@ -281,9 +281,9 @@ describe('loadProjectConfig', () => {
     expect(result).toEqual(config)
   })
 
-  it('parses bindMounts with explicit readonly true', async () => {
+  it('parses bindMounts with explicit writable false', async () => {
     const config = {
-      bindMounts: [{ hostPath: '/home/user/data', containerPath: '/mnt/data', readonly: true }],
+      bindMounts: [{ hostPath: '/home/user/data', containerPath: '/mnt/data', writable: false }],
     }
     await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
     const result = await loadProjectConfig(tmpDir)
@@ -322,12 +322,12 @@ describe('loadProjectConfig', () => {
     await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts[0].containerPath must be an absolute path')
   })
 
-  it('throws on non-boolean bindMounts readonly', async () => {
+  it('throws on non-boolean bindMounts writable', async () => {
     await fs.writeFile(
       path.join(tmpDir, 'yaac-config.json'),
-      JSON.stringify({ bindMounts: [{ hostPath: '/home/user/data', containerPath: '/mnt/data', readonly: 'yes' }] }),
+      JSON.stringify({ bindMounts: [{ hostPath: '/home/user/data', containerPath: '/mnt/data', writable: 'yes' }] }),
     )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts[0].readonly must be a boolean')
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts[0].writable must be a boolean')
   })
 
   it('throws on missing bindMounts hostPath', async () => {

@@ -14,8 +14,8 @@ export interface BindMountConfig {
   hostPath: string
   /** Absolute path inside the container */
   containerPath: string
-  /** Whether the mount is read-only (default: false) */
-  readonly?: boolean
+  /** Whether the mount is writable (default: false — mounts are read-only by default) */
+  writable?: boolean
 }
 
 export interface SecretProxyRule {

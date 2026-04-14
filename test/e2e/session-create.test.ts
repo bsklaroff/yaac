@@ -155,7 +155,7 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
           ([key, containerPath]) => `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`,
         ),
         ...(config.bindMounts ?? []).map(
-          ({ hostPath, containerPath, readonly: ro }) => `${hostPath}:${containerPath}:${ro ? 'ro' : 'rw'},Z`,
+          ({ hostPath, containerPath, writable }) => `${hostPath}:${containerPath}:${writable ? 'rw' : 'ro'},Z`,
         ),
         ...(options?.addDir ?? []).map(
           (p) => `${p}:/add-dir${p}:ro,Z`,
@@ -781,8 +781,8 @@ describe('yaac session create', () => {
     await createTestRepo(repoPath, {
       yaacConfig: {
         bindMounts: [
-          { hostPath: roDir, containerPath: '/mnt/ro-data', readonly: true },
-          { hostPath: rwDir, containerPath: '/mnt/rw-data' },
+          { hostPath: roDir, containerPath: '/mnt/ro-data' },
+          { hostPath: rwDir, containerPath: '/mnt/rw-data', writable: true },
         ],
       },
     })
