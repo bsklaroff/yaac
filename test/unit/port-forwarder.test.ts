@@ -1,17 +1,14 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import net from 'node:net'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { startPortForwarders, type RelayFactory } from '@/lib/container/port'
+import { startPortForwarders, reserveAvailablePort, type RelayFactory } from '@/lib/container/port'
 
 describe('startPortForwarders', () => {
   const cleanups: Array<() => void> = []
-  const servers: net.Server[] = []
 
   afterEach(() => {
     for (const fn of cleanups) fn()
     cleanups.length = 0
-    for (const s of servers) s.close()
-    servers.length = 0
   })
 
   /** Start a TCP echo server on a random port. */
@@ -21,7 +18,6 @@ describe('startPortForwarders', () => {
         socket.pipe(socket)
       })
       server.listen(0, '127.0.0.1', () => {
-        servers.push(server)
         const addr = server.address() as net.AddressInfo
         resolve({ server, port: addr.port })
       })
@@ -69,37 +65,40 @@ describe('startPortForwarders', () => {
 
   it('forwards TCP through relay to target', async () => {
     const echo = await startEchoServer()
+    cleanups.push(() => echo.server.close())
 
-    const hostPort = 19300
+    const reserved = await reserveAvailablePort(echo.port, 19300)
     const stop = startPortForwarders(
       localRelay(),
-      [{ containerPort: echo.port, hostPort }],
+      [reserved],
     )
     cleanups.push(stop)
 
-    const result = await connectAndSend(hostPort, 'hello')
+    const result = await connectAndSend(reserved.hostPort, 'hello')
     expect(result).toBe('hello')
   })
 
   it('forwards multiple ports', async () => {
     const echo1 = await startEchoServer()
     const echo2 = await startEchoServer()
+    cleanups.push(() => echo1.server.close())
+    cleanups.push(() => echo2.server.close())
+
+    const r1 = await reserveAvailablePort(echo1.port, 19310)
+    const r2 = await reserveAvailablePort(echo2.port, 19311)
 
     const stop = startPortForwarders(
       localRelay(),
-      [
-        { containerPort: echo1.port, hostPort: 19310 },
-        { containerPort: echo2.port, hostPort: 19311 },
-      ],
+      [r1, r2],
     )
     cleanups.push(stop)
 
-    const [r1, r2] = await Promise.all([
-      connectAndSend(19310, 'port1'),
-      connectAndSend(19311, 'port2'),
+    const [res1, res2] = await Promise.all([
+      connectAndSend(r1.hostPort, 'port1'),
+      connectAndSend(r2.hostPort, 'port2'),
     ])
-    expect(r1).toBe('port1')
-    expect(r2).toBe('port2')
+    expect(res1).toBe('port1')
+    expect(res2).toBe('port2')
   })
 
   it('destroys client when relay fails', async () => {
@@ -110,15 +109,16 @@ describe('startPortForwarders', () => {
       ], { stdio: ['pipe', 'pipe', 'ignore'] })
     }
 
+    const reserved = await reserveAvailablePort(59999, 19320)
     const stop = startPortForwarders(
       failRelay,
-      [{ containerPort: 59999, hostPort: 19320 }],
+      [reserved],
     )
     cleanups.push(stop)
 
     // Connection should be destroyed — client sees a close/reset
     const result = await new Promise<string>((resolve, reject) => {
-      const client = net.connect(19320, '127.0.0.1')
+      const client = net.connect(reserved.hostPort, '127.0.0.1')
       client.on('close', () => resolve('closed'))
       client.on('error', () => resolve('error'))
       client.setTimeout(3000, () => {
@@ -131,15 +131,17 @@ describe('startPortForwarders', () => {
 
   it('cleanup function closes all listeners', async () => {
     const echo = await startEchoServer()
+    cleanups.push(() => echo.server.close())
 
+    const reserved = await reserveAvailablePort(echo.port, 19330)
     const stop = startPortForwarders(
       localRelay(),
-      [{ containerPort: echo.port, hostPort: 19330 }],
+      [reserved],
     )
 
     stop()
 
     // Port should be free now — connecting should fail
-    await expect(connectAndSend(19330, 'test')).rejects.toThrow()
+    await expect(connectAndSend(reserved.hostPort, 'test')).rejects.toThrow()
   })
 })

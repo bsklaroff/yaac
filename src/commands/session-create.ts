@@ -8,7 +8,8 @@ import { ensureContainerRuntime, podman } from '@/lib/container/runtime'
 import { ensureImage, packTar } from '@/lib/container/image-builder'
 import { proxyClient, buildRulesFromConfig } from '@/lib/container/proxy-client'
 import type { InjectionRule } from '@/lib/container/proxy-client'
-import { findAvailablePort, startPortForwarders, podmanRelay } from '@/lib/container/port'
+import { reserveAvailablePort, startPortForwarders, podmanRelay } from '@/lib/container/port'
+import type { ReservedPort } from '@/lib/container/port'
 import { pgRelay } from '@/lib/container/pg-relay'
 import { repoDir, claudeDir, claudeJsonFile, worktreeDir, worktreesDir, projectDir, getDataDir } from '@/lib/project/paths'
 import { resolveProjectConfig } from '@/lib/project/config'
@@ -50,7 +51,7 @@ interface ContainerSetupParams {
   networkMode: string
   pgRelayIp: string | null
   gitUser: { name: string; email: string }
-  forwardedPorts: Array<{ containerPort: number; hostPort: number }>
+  forwardedPorts: ReservedPort[]
 }
 
 async function startContainerWithSetup(params: ContainerSetupParams): Promise<void> {
@@ -326,14 +327,15 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
 
   const networkMode = proxyClient.network
 
-  // Port forwarding setup
-  const forwardedPorts: Array<{ containerPort: number; hostPort: number }> = []
+  // Port forwarding setup — reserve ports immediately so a concurrent session
+  // cannot claim the same host port between discovery and actual use.
+  const forwardedPorts: ReservedPort[] = []
   if (config.portForward?.length) {
     for (const { containerPort, hostPortStart } of config.portForward) {
       console.log(`Finding available host port starting from ${hostPortStart} for container port ${containerPort}...`)
-      const hostPort = await findAvailablePort(hostPortStart)
-      forwardedPorts.push({ containerPort, hostPort })
-      console.log(`Forwarding host port ${hostPort} -> container port ${containerPort}`)
+      const reserved = await reserveAvailablePort(containerPort, hostPortStart)
+      forwardedPorts.push(reserved)
+      console.log(`Forwarding host port ${reserved.hostPort} -> container port ${containerPort}`)
     }
   }
 

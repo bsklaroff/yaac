@@ -1,24 +1,24 @@
 import net from 'node:net'
 import { type ChildProcess, spawn } from 'node:child_process'
 
-interface ForwardedPort {
+export interface ReservedPort {
   containerPort: number
   hostPort: number
+  /** Pre-bound server holding the port so no other process can claim it. */
+  server: net.Server
 }
 
 /** A function that spawns a relay process bridging stdin/stdout to a TCP port. */
 export type RelayFactory = (containerPort: number) => ChildProcess
 
 /**
- * Check if a TCP port is available on the host by attempting to listen on it.
+ * Try to listen on a port.  Returns the bound server on success, null on failure.
  */
-function isPortAvailable(port: number): Promise<boolean> {
+function tryListen(port: number): Promise<net.Server | null> {
   return new Promise((resolve) => {
     const server = net.createServer()
-    server.once('error', () => resolve(false))
-    server.once('listening', () => {
-      server.close(() => resolve(true))
-    })
+    server.once('error', () => resolve(null))
+    server.once('listening', () => resolve(server))
     server.listen(port, '127.0.0.1')
   })
 }
@@ -26,14 +26,41 @@ function isPortAvailable(port: number): Promise<boolean> {
 /**
  * Scan for an available TCP port on the host, starting from `startPort`.
  * Tries up to 100 consecutive ports before throwing.
+ *
+ * NOTE: This releases the port immediately after finding it, so there is a
+ * small TOCTOU window.  Prefer {@link reserveAvailablePort} when the caller
+ * needs to guarantee the port stays available until it is handed off.
  */
 export async function findAvailablePort(startPort: number): Promise<number> {
   const maxAttempts = 100
   for (let offset = 0; offset < maxAttempts; offset++) {
     const port = startPort + offset
     if (port > 65535) break
-    if (await isPortAvailable(port)) {
+    const server = await tryListen(port)
+    if (server) {
+      server.close()
       return port
+    }
+  }
+  throw new Error(`No available port found starting from ${startPort} (tried ${maxAttempts} ports)`)
+}
+
+/**
+ * Find an available TCP port and **keep it bound** so no other process can
+ * claim it between discovery and actual use.  The returned `server` should be
+ * passed to {@link startPortForwarders} which will take ownership of it.
+ */
+export async function reserveAvailablePort(
+  containerPort: number,
+  startPort: number,
+): Promise<ReservedPort> {
+  const maxAttempts = 100
+  for (let offset = 0; offset < maxAttempts; offset++) {
+    const port = startPort + offset
+    if (port > 65535) break
+    const server = await tryListen(port)
+    if (server) {
+      return { containerPort, hostPort: port, server }
     }
   }
   throw new Error(`No available port found starting from ${startPort} (tried ${maxAttempts} ports)`)
@@ -57,17 +84,20 @@ export function podmanRelay(containerName: string): RelayFactory {
  * Start TCP servers on the host that forward connections into a container
  * by spawning a relay process (typically `podman exec nc`) per connection.
  *
+ * Accepts only {@link ReservedPort} entries whose `server` is already bound,
+ * guaranteeing that the port cannot be stolen between discovery and use.
+ *
  * Returns a cleanup function that closes all listeners.
  */
 export function startPortForwarders(
   spawnRelay: RelayFactory,
-  ports: ForwardedPort[],
+  ports: ReservedPort[],
 ): () => void {
   const servers: net.Server[] = []
   const activeRelays = new Set<ChildProcess>()
 
-  for (const { containerPort, hostPort } of ports) {
-    const server = net.createServer((client) => {
+  for (const { containerPort, server } of ports) {
+    server.on('connection', (client: net.Socket) => {
       const child = spawnRelay(containerPort)
 
       if (!child.stdin || !child.stdout) {
@@ -89,7 +119,6 @@ export function startPortForwarders(
       client.on('close', () => { child.stdin?.destroy(); child.kill() })
     })
 
-    server.listen(hostPort, '127.0.0.1')
     servers.push(server)
   }
 

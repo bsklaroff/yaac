@@ -118,7 +118,8 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
     pgRelayIp = testPgRelay.ip
   }
 
-  // Port forwarding setup
+  // Port forwarding setup (test helper uses podman PortBindings directly,
+  // not startPortForwarders, so findAvailablePort is fine here)
   const forwardedPorts: Array<{ containerPort: number; hostPort: number }> = []
   const portBindings: Record<string, Array<{ HostPort: string; HostIp: string }>> = {}
   const exposedPorts: Record<string, Record<string, never>> = {}

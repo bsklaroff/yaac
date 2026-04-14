@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { requirePodman, TEST_RUN_ID } from '@test/helpers/setup'
 import { ProxyClient } from '@/lib/container/proxy-client'
-import { startPortForwarders, podmanRelay, findAvailablePort } from '@/lib/container/port'
+import { startPortForwarders, podmanRelay, reserveAvailablePort } from '@/lib/container/port'
 import { podman } from '@/lib/container/runtime'
 
 const execFileAsync = promisify(execFile)
@@ -116,17 +116,14 @@ describe('port forwarding via podman exec relay', () => {
   it('forwards HTTP request from host to container via podman exec relay', async () => {
     const { name } = await startHttpContainer()
 
-    const hostPort = await findAvailablePort(19400)
+    const reserved = await reserveAvailablePort(containerPort, 19400)
     const stop = startPortForwarders(
       podmanRelay(name),
-      [{ containerPort, hostPort }],
+      [reserved],
     )
 
     try {
-      // Give the TCP server a moment to bind
-      await new Promise((r) => setTimeout(r, 100))
-
-      const result = await httpGet(`http://127.0.0.1:${hostPort}/`)
+      const result = await httpGet(`http://127.0.0.1:${reserved.hostPort}/`)
       expect(result.status).toBe(200)
       expect(result.body).toBe('hello from container')
     } finally {
@@ -137,16 +134,14 @@ describe('port forwarding via podman exec relay', () => {
   it('forwards HTTP request from host to IPv6-only container server', async () => {
     const { name } = await startHttpContainer('::1')
 
-    const hostPort = await findAvailablePort(19400)
+    const reserved = await reserveAvailablePort(containerPort, 19400)
     const stop = startPortForwarders(
       podmanRelay(name),
-      [{ containerPort, hostPort }],
+      [reserved],
     )
 
     try {
-      await new Promise((r) => setTimeout(r, 100))
-
-      const result = await httpGet(`http://127.0.0.1:${hostPort}/`)
+      const result = await httpGet(`http://127.0.0.1:${reserved.hostPort}/`)
       expect(result.status).toBe(200)
       expect(result.body).toBe('hello from container')
     } finally {
@@ -200,23 +195,18 @@ describe('port forwarding via podman exec relay', () => {
       }
     }
 
-    const hostPort1 = await findAvailablePort(19410)
-    const hostPort2 = await findAvailablePort(hostPort1 + 1)
+    const reserved1 = await reserveAvailablePort(containerPort, 19410)
+    const reserved2 = await reserveAvailablePort(secondPort, reserved1.hostPort + 1)
 
     const stop = startPortForwarders(
       podmanRelay(name),
-      [
-        { containerPort, hostPort: hostPort1 },
-        { containerPort: secondPort, hostPort: hostPort2 },
-      ],
+      [reserved1, reserved2],
     )
 
     try {
-      await new Promise((r) => setTimeout(r, 100))
-
       const [r1, r2] = await Promise.all([
-        httpGet(`http://127.0.0.1:${hostPort1}/`),
-        httpGet(`http://127.0.0.1:${hostPort2}/`),
+        httpGet(`http://127.0.0.1:${reserved1.hostPort}/`),
+        httpGet(`http://127.0.0.1:${reserved2.hostPort}/`),
       ])
 
       expect(r1.status).toBe(200)
@@ -234,18 +224,16 @@ describe('port forwarding via podman exec relay', () => {
     // execSync), no connections can be accepted.
     const { name } = await startHttpContainer()
 
-    const hostPort = await findAvailablePort(19420)
+    const reserved = await reserveAvailablePort(containerPort, 19420)
     const stop = startPortForwarders(
       podmanRelay(name),
-      [{ containerPort, hostPort }],
+      [reserved],
     )
 
     try {
-      await new Promise((r) => setTimeout(r, 100))
-
       // Make multiple sequential requests to confirm stability
       for (let i = 0; i < 3; i++) {
-        const result = await httpGet(`http://127.0.0.1:${hostPort}/`)
+        const result = await httpGet(`http://127.0.0.1:${reserved.hostPort}/`)
         expect(result.status).toBe(200)
         expect(result.body).toBe('hello from container')
       }
