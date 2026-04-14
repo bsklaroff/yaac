@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import crypto from 'node:crypto'
 import readline from 'node:readline/promises'
+import { spawn } from 'node:child_process'
 import { execSyncRetry } from '@/lib/exec'
 import { packTar } from '@/lib/tar-utils'
 import simpleGit from 'simple-git'
@@ -314,10 +315,16 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   containerExec(containerName, 'tmux set-option -t yaac status-right-length 80')
   containerExec(containerName, 'tmux bind-key k kill-server')
 
-  // Attach the user to the tmux session
+  // Attach the user to the tmux session.
+  // Use spawn (not execSync) so the Node.js event loop remains free to
+  // process TCP connections for port forwarding.
   try {
-    execSyncRetry(`podman exec -it ${containerName} tmux attach-session -t yaac`, {
-      stdio: 'inherit', retryPatterns: podmanRetryPatterns,
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn('podman', ['exec', '-it', containerName, 'tmux', 'attach-session', '-t', 'yaac'], {
+        stdio: 'inherit',
+      })
+      child.on('close', () => resolve())
+      child.on('error', reject)
     })
   } catch {
     // Container or tmux session was killed (e.g. ctrl-b k) — fall through to cleanup
