@@ -139,8 +139,8 @@ Add a `yaac-config.json` to your repo root. Example with all options:
     }
   },
   "bindMounts": [
-    { "hostPath": "$HOME/datasets", "containerPath": "/mnt/datasets" },
-    { "hostPath": "$HOME/models", "containerPath": "/mnt/models", "writable": true }
+    { "hostPath": "$HOME/datasets", "containerPath": "/mnt/datasets", "mode": "ro" },
+    { "hostPath": "$HOME/models", "containerPath": "/mnt/models", "mode": "rw" }
   ],
   "cacheVolumes": {
     "pnpm-store": "/home/yaac/.pnpm-store"
@@ -169,7 +169,7 @@ Add a `yaac-config.json` to your repo root. Example with all options:
 - **bindMounts** — host directories mounted into the container. Each entry specifies:
   - **`hostPath`** — absolute path on the host (required). Environment variables like `$HOME` or `${HOME}` are expanded.
   - **`containerPath`** — absolute path inside the container (required).
-  - **`writable`** — mount as read-write when `true` (default: `false` — mounts are read-only by default).
+  - **`mode`** — `"ro"` for read-only or `"rw"` for read-write (required).
 
   For ad-hoc mounts at session creation time, use the `--add-dir` / `--add-dir-rw` CLI flags instead. These mount the host directory under `/add-dir/<host-path>` inside the container and automatically pass it to Claude Code via `--add-dir`.
 - **cacheVolumes** — named Podman volumes mounted into the container. Keys are volume names, values are absolute container paths. Volumes persist across sessions.

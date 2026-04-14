@@ -272,18 +272,9 @@ describe('loadProjectConfig', () => {
   it('parses valid config with bindMounts', async () => {
     const config = {
       bindMounts: [
-        { hostPath: '/home/user/data', containerPath: '/mnt/data' },
-        { hostPath: '/opt/tools', containerPath: '/opt/tools', writable: true },
+        { hostPath: '/home/user/data', containerPath: '/mnt/data', mode: 'ro' },
+        { hostPath: '/opt/tools', containerPath: '/opt/tools', mode: 'rw' },
       ],
-    }
-    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
-    const result = await loadProjectConfig(tmpDir)
-    expect(result).toEqual(config)
-  })
-
-  it('parses bindMounts with explicit writable false', async () => {
-    const config = {
-      bindMounts: [{ hostPath: '/home/user/data', containerPath: '/mnt/data', writable: false }],
     }
     await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
     const result = await loadProjectConfig(tmpDir)
@@ -322,12 +313,20 @@ describe('loadProjectConfig', () => {
     await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts[0].containerPath must be an absolute path')
   })
 
-  it('throws on non-boolean bindMounts writable', async () => {
+  it('throws on invalid bindMounts mode', async () => {
     await fs.writeFile(
       path.join(tmpDir, 'yaac-config.json'),
-      JSON.stringify({ bindMounts: [{ hostPath: '/home/user/data', containerPath: '/mnt/data', writable: 'yes' }] }),
+      JSON.stringify({ bindMounts: [{ hostPath: '/home/user/data', containerPath: '/mnt/data', mode: 'yes' }] }),
     )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts[0].writable must be a boolean')
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts[0].mode must be "ro" or "rw"')
+  })
+
+  it('throws on missing bindMounts mode', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ bindMounts: [{ hostPath: '/home/user/data', containerPath: '/mnt/data' }] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts[0].mode must be "ro" or "rw"')
   })
 
   it('throws on missing bindMounts hostPath', async () => {
@@ -351,12 +350,12 @@ describe('loadProjectConfig', () => {
     process.env.HOME = '/home/testuser'
     try {
       const config = {
-        bindMounts: [{ hostPath: '$HOME/datasets', containerPath: '/mnt/datasets' }],
+        bindMounts: [{ hostPath: '$HOME/datasets', containerPath: '/mnt/datasets', mode: 'ro' }],
       }
       await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
       const result = await loadProjectConfig(tmpDir)
       expect(result!.bindMounts).toEqual([
-        { hostPath: '/home/testuser/datasets', containerPath: '/mnt/datasets' },
+        { hostPath: '/home/testuser/datasets', containerPath: '/mnt/datasets', mode: 'ro' },
       ])
     } finally {
       process.env.HOME = origHome
@@ -367,12 +366,12 @@ describe('loadProjectConfig', () => {
     process.env.YAAC_TEST_DIR = '/opt/data'
     try {
       const config = {
-        bindMounts: [{ hostPath: '${YAAC_TEST_DIR}/models', containerPath: '/mnt/models' }],
+        bindMounts: [{ hostPath: '${YAAC_TEST_DIR}/models', containerPath: '/mnt/models', mode: 'rw' }],
       }
       await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
       const result = await loadProjectConfig(tmpDir)
       expect(result!.bindMounts).toEqual([
-        { hostPath: '/opt/data/models', containerPath: '/mnt/models' },
+        { hostPath: '/opt/data/models', containerPath: '/mnt/models', mode: 'rw' },
       ])
     } finally {
       delete process.env.YAAC_TEST_DIR

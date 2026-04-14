@@ -136,7 +136,7 @@ export function parseProjectConfig(raw: string): YaacConfig {
 
   if (obj.bindMounts !== undefined) {
     if (!Array.isArray(obj.bindMounts)) {
-      throw new Error('yaac-config.json: bindMounts must be an array of {hostPath, containerPath, writable?} objects')
+      throw new Error('yaac-config.json: bindMounts must be an array of {hostPath, containerPath, mode} objects')
     }
     config.bindMounts = []
     for (let i = 0; i < obj.bindMounts.length; i++) {
@@ -159,13 +159,13 @@ export function parseProjectConfig(raw: string): YaacConfig {
       if (typeof entry.containerPath !== 'string' || !entry.containerPath.startsWith('/')) {
         throw new Error(`yaac-config.json: bindMounts[${i}].containerPath must be an absolute path`)
       }
-      if (entry.writable !== undefined && typeof entry.writable !== 'boolean') {
-        throw new Error(`yaac-config.json: bindMounts[${i}].writable must be a boolean`)
+      if (entry.mode !== 'ro' && entry.mode !== 'rw') {
+        throw new Error(`yaac-config.json: bindMounts[${i}].mode must be "ro" or "rw"`)
       }
       config.bindMounts.push({
         hostPath: resolvedHostPath,
         containerPath: entry.containerPath,
-        writable: entry.writable,
+        mode: entry.mode,
       })
     }
   }
