@@ -2,8 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX } from '@test/helpers/setup'
-import { projectAdd } from '@/commands/project-add'
+import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject } from '@test/helpers/setup'
 import { sessionDelete } from '@/commands/session-delete'
 import { podman } from '@/lib/podman'
 import { ensureImage } from '@/lib/image-builder'
@@ -66,7 +65,7 @@ describe('yaac session delete', { timeout: 120_000 }, () => {
 
     const repoPath = path.join(tmpDir, 'del-running')
     await createTestRepo(repoPath)
-    await projectAdd(repoPath)
+    await addTestProject(repoPath)
 
     const { sessionId } = await createMinimalContainer('del-running')
     // Don't add to cleanup — sessionDelete should remove it
@@ -92,7 +91,7 @@ describe('yaac session delete', { timeout: 120_000 }, () => {
 
     const repoPath = path.join(tmpDir, 'del-stopped')
     await createTestRepo(repoPath)
-    await projectAdd(repoPath)
+    await addTestProject(repoPath)
 
     const { containerName, sessionId } = await createMinimalContainer('del-stopped')
 

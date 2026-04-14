@@ -4,8 +4,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, TEST_PROXY_CONFIG } from '@test/helpers/setup'
-import { projectAdd } from '@/commands/project-add'
+import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, TEST_PROXY_CONFIG, addTestProject } from '@test/helpers/setup'
 import { podman } from '@/lib/podman'
 import { ensureImage } from '@/lib/image-builder'
 import { addWorktree, getDefaultBranch } from '@/lib/git'
@@ -286,7 +285,7 @@ describe('yaac session create', () => {
       tmpDir = await createTempDataDir()
       const repoPath = path.join(tmpDir, 'basic-project')
       await createTestRepo(repoPath)
-      await projectAdd(repoPath)
+      await addTestProject(repoPath)
       result = await createSessionNonInteractive('basic-project')
     })
 
@@ -364,7 +363,7 @@ describe('yaac session create', () => {
 
     process.env.YAAC_TEST_VAR = 'hello-from-host'
 
-    await projectAdd(repoPath)
+    await addTestProject(repoPath)
     const result = await createSessionNonInteractive('passthrough-project')
     containersToCleanup.push(result.containerName)
 
@@ -383,7 +382,7 @@ describe('yaac session create', () => {
     tmpDirs.push(tmpDir)
     const repoPath = path.join(tmpDir, 'prompt-project')
     await createTestRepo(repoPath)
-    await projectAdd(repoPath)
+    await addTestProject(repoPath)
 
     const result = await createSessionNonInteractive('prompt-project', { prompt: 'fix the login bug' })
     containersToCleanup.push(result.containerName)
@@ -401,7 +400,7 @@ describe('yaac session create', () => {
     tmpDirs.push(tmpDir)
     const repoPath = path.join(tmpDir, 'special-prompt')
     await createTestRepo(repoPath)
-    await projectAdd(repoPath)
+    await addTestProject(repoPath)
 
     const prompt = "fix the user's login & add \"tests\""
     const result = await createSessionNonInteractive('special-prompt', { prompt })
@@ -420,7 +419,7 @@ describe('yaac session create', () => {
     tmpDirs.push(tmpDir)
     const repoPath = path.join(tmpDir, 'noprompt-project')
     await createTestRepo(repoPath)
-    await projectAdd(repoPath)
+    await addTestProject(repoPath)
 
     const result = await createSessionNonInteractive('noprompt-project')
     containersToCleanup.push(result.containerName)
@@ -456,7 +455,7 @@ describe('yaac session create', () => {
         cacheVolumes: { 'test-cache': '/tmp/test-cache' },
       },
     })
-    await projectAdd(repoPath)
+    await addTestProject(repoPath)
 
     const result = await createSessionNonInteractive('cache-vol-project')
     containersToCleanup.push(result.containerName)
@@ -484,7 +483,7 @@ describe('yaac session create', () => {
         initCommands: ['touch /tmp/init-ran'],
       },
     })
-    await projectAdd(repoPath)
+    await addTestProject(repoPath)
 
     const result = await createSessionNonInteractive('init-cmd-project')
     containersToCleanup.push(result.containerName)
@@ -524,7 +523,7 @@ describe('yaac session create', () => {
     await git.add('.')
     await git.commit('add package.json')
 
-    await projectAdd(repoPath)
+    await addTestProject(repoPath)
 
     const result = await createSessionNonInteractive('pnpm-cache-project')
     containersToCleanup.push(result.containerName)
@@ -570,7 +569,7 @@ describe('yaac session create', () => {
     await createTestRepo(repoPath, {
       yaacConfig: { nestedContainers: true },
     })
-    await projectAdd(repoPath)
+    await addTestProject(repoPath)
 
     // Build the nestable image and create container with nested-container flags
     const imageName = await ensureImage('nested-project', TEST_IMAGE_PREFIX, true, true)
@@ -633,7 +632,7 @@ describe('yaac session create', () => {
     await createTestRepo(repoPath, {
       yaacConfig: { nestedContainers: true },
     })
-    await projectAdd(repoPath)
+    await addTestProject(repoPath)
 
     const imageName = await ensureImage('nested-net-project', TEST_IMAGE_PREFIX, true, true)
     const sessionId = crypto.randomBytes(4).toString('hex')
@@ -721,7 +720,7 @@ describe('yaac session create', () => {
         ],
       },
     })
-    await projectAdd(repoPath)
+    await addTestProject(repoPath)
 
     const result = await createSessionNonInteractive('portfwd-project')
     containersToCleanup.push(result.containerName)
@@ -773,7 +772,7 @@ describe('yaac session create', () => {
         ],
       },
     })
-    await projectAdd(repoPath)
+    await addTestProject(repoPath)
 
     const result = await createSessionNonInteractive('bindmount-project')
     containersToCleanup.push(result.containerName)
@@ -816,7 +815,7 @@ describe('yaac session create', () => {
         postgres: { hostname: 'db' },
       },
     })
-    await projectAdd(repoPath)
+    await addTestProject(repoPath)
 
     const pgRelay = new PgRelayClient()
     try {

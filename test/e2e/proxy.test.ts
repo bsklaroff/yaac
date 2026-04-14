@@ -317,4 +317,33 @@ describe('proxy HTTP forwarding', () => {
     expect(res.ok).toBe(true)
     expect(await res.text()).toBe('ok')
   })
+
+  it('does not inject tokens into plain HTTP requests (security)', async () => {
+    // Register project rules that would match the echo server's host
+    await client.updateProjectRules('project-secret', [
+      {
+        hostPattern: echoIp,
+        pathPattern: '/*',
+        injections: [{ action: 'set_header', name: 'authorization', value: 'Bearer secret-token' }],
+      },
+    ])
+
+    const sessionToken = client.generateSessionToken()
+    await client.registerSession(sessionToken, 'project-secret')
+
+    // Send a plain HTTP request through the proxy with valid session credentials
+    const auth = Buffer.from(`x:${sessionToken}`).toString('base64')
+    const result = await proxyRequest(proxyPort, `http://${echoIp}:${echoPort}/test`, {
+      headers: { 'Proxy-Authorization': `Basic ${auth}` },
+    })
+
+    expect(result.status).toBe(200)
+    const echo = JSON.parse(result.body) as { headers: Record<string, string> }
+    // Token must NOT be injected over plain HTTP — only HTTPS CONNECT+MITM
+    expect(echo.headers['authorization']).toBeUndefined()
+
+    // Clean up
+    await client.removeSession(sessionToken)
+    await client.removeProjectRules('project-secret')
+  })
 })

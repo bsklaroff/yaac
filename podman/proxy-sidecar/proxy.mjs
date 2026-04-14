@@ -427,6 +427,9 @@ function isProxyRequest(req) {
   return req.url && req.url.startsWith('http://')
 }
 
+// Security: token injection is deliberately NOT applied to plain HTTP requests.
+// Injecting credentials over unencrypted connections would expose them to
+// network observers. Only HTTPS CONNECT+MITM requests get token injection.
 function handleHttpForward(req, res) {
   const target = new URL(req.url)
 

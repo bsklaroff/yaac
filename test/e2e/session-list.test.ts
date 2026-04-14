@@ -4,8 +4,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX } from '@test/helpers/setup'
-import { projectAdd } from '@/commands/project-add'
+import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject } from '@test/helpers/setup'
 import { sessionList } from '@/commands/session-list'
 import { podman } from '@/lib/podman'
 import { ensureImage } from '@/lib/image-builder'
@@ -99,8 +98,8 @@ describe('yaac session list', () => {
       const repoB = path.join(tmpDir, 'proj-b')
       await createTestRepo(repoA)
       await createTestRepo(repoB)
-      await projectAdd(repoA)
-      await projectAdd(repoB)
+      await addTestProject(repoA)
+      await addTestProject(repoB)
 
       ;({ containerName: containerA } = await createMinimalContainer('proj-a'))
       ;({ containerName: containerB } = await createMinimalContainer('proj-b'))
@@ -168,7 +167,7 @@ describe('yaac session list', () => {
 
     const repoPath = path.join(tmpDir, 'stopped-proj')
     await createTestRepo(repoPath)
-    await projectAdd(repoPath)
+    await addTestProject(repoPath)
 
     const { containerName, sessionId } = await createMinimalContainer('stopped-proj')
     // Don't add to containersToCleanup — session-list should auto-remove it
@@ -208,7 +207,7 @@ describe('yaac session list', () => {
 
     const repoPath = path.join(tmpDir, 'zombie-proj')
     await createTestRepo(repoPath)
-    await projectAdd(repoPath)
+    await addTestProject(repoPath)
 
     const { containerName, sessionId } = await createMinimalContainer('zombie-proj')
     // Don't add to containersToCleanup — session-list should auto-remove it
@@ -249,7 +248,7 @@ describe('yaac session list', () => {
 
     const repoPath = path.join(tmpDir, 'deleted-proj')
     await createTestRepo(repoPath)
-    await projectAdd(repoPath)
+    await addTestProject(repoPath)
 
     // Create a fake Claude Code session JSONL file
     const sessionsDir = path.join(claudeDir('deleted-proj'), 'projects', '-workspace')
@@ -278,7 +277,7 @@ describe('yaac session list', () => {
 
     const repoPath = path.join(tmpDir, 'no-deleted')
     await createTestRepo(repoPath)
-    await projectAdd(repoPath)
+    await addTestProject(repoPath)
 
     const logs: string[] = []
     const origLog = console.log

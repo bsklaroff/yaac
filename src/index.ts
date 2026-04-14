@@ -10,6 +10,7 @@ import { sessionStream } from '@/commands/session-stream'
 import { sessionMonitor } from '@/commands/session-monitor'
 import { authUpdate } from '@/commands/auth-update'
 import { authClear } from '@/commands/auth-clear'
+import { authList } from '@/commands/auth-list'
 import { ensureGithubToken } from '@/lib/credentials'
 
 /**
@@ -123,8 +124,13 @@ const auth = program
   .configureHelp({ formatHelp: nestedHelp })
 
 auth
+  .command('list')
+  .description('List configured GitHub tokens')
+  .action(authList)
+
+auth
   .command('update')
-  .description('Set or replace your GitHub Personal Access Token')
+  .description('Add or replace a GitHub Personal Access Token')
   .action(authUpdate)
 
 auth

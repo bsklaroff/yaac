@@ -2,16 +2,13 @@ import fs from 'node:fs/promises'
 import readline from 'node:readline/promises'
 import path from 'node:path'
 import { getDataDir, ensureDataDir } from '@/lib/paths'
-
-interface Credentials {
-  GITHUB_TOKEN: string
-}
+import type { CredentialsFile, GithubTokenEntry } from '@/types'
 
 export function credentialsPath(): string {
   return path.join(getDataDir(), '.credentials.json')
 }
 
-export async function loadCredentials(): Promise<Credentials | null> {
+export async function loadCredentials(): Promise<CredentialsFile> {
   try {
     const raw = await fs.readFile(credentialsPath(), 'utf8')
     const parsed: unknown = JSON.parse(raw)
@@ -19,44 +16,187 @@ export async function loadCredentials(): Promise<Credentials | null> {
       typeof parsed === 'object' &&
       parsed !== null &&
       !Array.isArray(parsed) &&
-      typeof (parsed as Record<string, unknown>).GITHUB_TOKEN === 'string' &&
-      (parsed as Record<string, unknown>).GITHUB_TOKEN !== ''
+      Array.isArray((parsed as Record<string, unknown>).tokens)
     ) {
-      return parsed as Credentials
+      const tokens = (parsed as Record<string, unknown>).tokens as unknown[]
+      const valid = tokens.filter(
+        (t): t is GithubTokenEntry =>
+          typeof t === 'object' &&
+          t !== null &&
+          typeof (t as Record<string, unknown>).pattern === 'string' &&
+          typeof (t as Record<string, unknown>).token === 'string' &&
+          (t as Record<string, unknown>).token !== '',
+      )
+      return { tokens: valid }
     }
-    return null
+    return { tokens: [] }
   } catch {
-    return null
+    return { tokens: [] }
   }
 }
 
-export async function getGithubToken(): Promise<string | null> {
-  const creds = await loadCredentials()
-  return creds?.GITHUB_TOKEN ?? null
+export async function saveCredentials(creds: CredentialsFile): Promise<void> {
+  await ensureDataDir()
+  await fs.writeFile(
+    credentialsPath(),
+    JSON.stringify(creds, null, 2) + '\n',
+    { mode: 0o600 },
+  )
 }
 
+/**
+ * Validate a token pattern. Valid forms:
+ * - "*" (catch-all)
+ * - "<owner>/*" (all repos for an owner)
+ * - "<owner>/<repo>" (specific repo)
+ */
+export function validatePattern(pattern: string): boolean {
+  if (pattern === '*') return true
+  const parts = pattern.split('/')
+  if (parts.length !== 2) return false
+  const [owner, repo] = parts
+  if (!owner || owner === '*') return false
+  if (repo === '') return false
+  // owner must be a literal name (no wildcards)
+  if (owner.includes('*')) return false
+  // repo must be either "*" or a literal name
+  if (repo.includes('*') && repo !== '*') return false
+  return true
+}
+
+/**
+ * Extract owner and repo from a GitHub HTTPS URL.
+ * Handles https://github.com/owner/repo.git and https://github.com/owner/repo
+ */
+export function parseRepoPath(remoteUrl: string): { owner: string; repo: string } {
+  const url = new URL(remoteUrl)
+  const segments = url.pathname.replace(/^\//, '').replace(/\.git$/, '').split('/')
+  if (segments.length < 2 || !segments[0] || !segments[1]) {
+    throw new Error(`Cannot parse owner/repo from URL: ${remoteUrl}`)
+  }
+  return { owner: segments[0], repo: segments[1] }
+}
+
+/**
+ * Check if a pattern matches a given owner/repo pair.
+ */
+export function matchPattern(pattern: string, owner: string, repo: string): boolean {
+  if (pattern === '*') return true
+  const parts = pattern.split('/')
+  if (parts.length !== 2) return false
+  const [patOwner, patRepo] = parts
+  if (patOwner !== owner) return false
+  if (patRepo === '*') return true
+  return patRepo === repo
+}
+
+/**
+ * Resolve a token for a given remote URL by walking the token list
+ * and returning the first match.
+ */
+export async function resolveTokenForUrl(remoteUrl: string): Promise<string | null> {
+  const creds = await loadCredentials()
+  if (creds.tokens.length === 0) return null
+  const { owner, repo } = parseRepoPath(remoteUrl)
+  for (const entry of creds.tokens) {
+    if (matchPattern(entry.pattern, owner, repo)) {
+      return entry.token
+    }
+  }
+  return null
+}
+
+/**
+ * Get the first available GitHub token (first token matching github.com or fallback *).
+ * Backwards-compatible wrapper for callers that don't have a specific URL.
+ */
+export async function getGithubToken(): Promise<string | null> {
+  const creds = await loadCredentials()
+  return creds.tokens.length > 0 ? creds.tokens[0].token : null
+}
+
+/**
+ * Add or replace a token entry. If the pattern already exists, replaces
+ * the token. Otherwise inserts before the catch-all "*" entry (if any),
+ * or appends.
+ */
+export async function addToken(pattern: string, token: string): Promise<void> {
+  const creds = await loadCredentials()
+  const existingIdx = creds.tokens.findIndex((t) => t.pattern === pattern)
+  if (existingIdx >= 0) {
+    creds.tokens[existingIdx].token = token
+  } else {
+    const catchAllIdx = creds.tokens.findIndex((t) => t.pattern === '*')
+    if (catchAllIdx >= 0 && pattern !== '*') {
+      creds.tokens.splice(catchAllIdx, 0, { pattern, token })
+    } else {
+      creds.tokens.push({ pattern, token })
+    }
+  }
+  await saveCredentials(creds)
+}
+
+/**
+ * Remove a token entry by exact pattern match. Returns true if found.
+ */
+export async function removeToken(pattern: string): Promise<boolean> {
+  const creds = await loadCredentials()
+  const idx = creds.tokens.findIndex((t) => t.pattern === pattern)
+  if (idx < 0) return false
+  creds.tokens.splice(idx, 1)
+  await saveCredentials(creds)
+  return true
+}
+
+/**
+ * List all tokens with masked values (last 4 chars visible).
+ */
+export async function listTokens(): Promise<Array<{ pattern: string; tokenPreview: string }>> {
+  const creds = await loadCredentials()
+  return creds.tokens.map((t) => ({
+    pattern: t.pattern,
+    tokenPreview: t.token.length > 4
+      ? '***' + t.token.slice(-4)
+      : '****',
+  }))
+}
+
+/**
+ * Interactive prompt: ask for pattern and token, then save.
+ */
 export async function promptForGithubToken(): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-  console.log('Enter your GitHub Personal Access Token.')
-  console.log('It will be used for all git operations and available (via proxy) to all requests to github.com in yaac.')
-  const token = await rl.question('GitHub PAT: ')
+  console.log('Add a GitHub Personal Access Token.')
+  console.log('Pattern examples: * (default), owner/*, owner/repo')
+  const pattern = (await rl.question('Repo pattern: ')).trim()
+  if (!pattern) {
+    rl.close()
+    console.error('Pattern cannot be empty.')
+    process.exit(1)
+  }
+  if (!validatePattern(pattern)) {
+    rl.close()
+    console.error('Invalid pattern. Use *, owner/*, or owner/repo.')
+    process.exit(1)
+  }
+  const token = (await rl.question('GitHub PAT: ')).trim()
   rl.close()
-
-  if (!token.trim()) {
+  if (!token) {
     console.error('Token cannot be empty.')
     process.exit(1)
   }
 
-  await ensureDataDir()
-  const filePath = credentialsPath()
-  await fs.writeFile(filePath, JSON.stringify({ GITHUB_TOKEN: token.trim() }, null, 2) + '\n', { mode: 0o600 })
-  console.log(`Credentials saved to ${filePath}`)
-
-  return token.trim()
+  await addToken(pattern, token)
+  console.log(`Token saved for pattern "${pattern}".`)
+  return token
 }
 
+/**
+ * Ensure at least one GitHub token is configured.
+ * If none exist, prompts the user interactively.
+ */
 export async function ensureGithubToken(): Promise<string> {
-  const existing = await getGithubToken()
-  if (existing) return existing
+  const creds = await loadCredentials()
+  if (creds.tokens.length > 0) return creds.tokens[0].token
   return promptForGithubToken()
 }

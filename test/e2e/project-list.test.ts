@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import path from 'node:path'
-import { createTempDataDir, cleanupTempDir, createTestRepo } from '@test/helpers/setup'
-import { projectAdd } from '@/commands/project-add'
+import { createTempDataDir, cleanupTempDir, createTestRepo, addTestProject } from '@test/helpers/setup'
 import { projectList } from '@/commands/project-list'
 
 describe('yaac project list', () => {
@@ -32,8 +31,8 @@ describe('yaac project list', () => {
     await createTestRepo(repo1)
     await createTestRepo(repo2)
 
-    await projectAdd(repo1)
-    await projectAdd(repo2)
+    await addTestProject(repo1)
+    await addTestProject(repo2)
 
     const logs: string[] = []
     const origLog = console.log
@@ -52,7 +51,7 @@ describe('yaac project list', () => {
   it('shows 0 sessions when no containers are running', async () => {
     const repo = path.join(tmpDir, 'repo-gamma')
     await createTestRepo(repo)
-    await projectAdd(repo)
+    await addTestProject(repo)
 
     const logs: string[] = []
     const origLog = console.log

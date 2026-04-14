@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX } from '@test/helpers/setup'
-import { projectAdd } from '@/commands/project-add'
+import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject } from '@test/helpers/setup'
 import { podman } from '@/lib/podman'
 import { resolveContainer } from '@/lib/container-resolve'
 import { ensureImage } from '@/lib/image-builder'
@@ -70,7 +69,7 @@ describe('yaac session shell', () => {
       tmpDir = await createTempDataDir()
       const repoPath = path.join(tmpDir, 'shared-proj')
       await createTestRepo(repoPath)
-      await projectAdd(repoPath)
+      await addTestProject(repoPath)
       const result = await createMinimalContainer('shared-proj')
       containerName = result.containerName
       sessionId = result.sessionId
@@ -123,7 +122,7 @@ describe('yaac session shell', () => {
 
     const repoPath = path.join(tmpDir, 'stopped-shell')
     await createTestRepo(repoPath)
-    await projectAdd(repoPath)
+    await addTestProject(repoPath)
 
     const { containerName, sessionId } = await createMinimalContainer('stopped-shell')
     containersToCleanup.push(containerName)

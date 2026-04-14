@@ -54,6 +54,16 @@ export interface YaacConfig {
   postgres?: PostgresRelayConfig
 }
 
+export interface GithubTokenEntry {
+  /** Pattern: "*", "<owner>/*", or "<owner>/<repo>" */
+  pattern: string
+  token: string
+}
+
+export interface CredentialsFile {
+  tokens: GithubTokenEntry[]
+}
+
 export interface SessionMeta {
   id: string
   containerId: string

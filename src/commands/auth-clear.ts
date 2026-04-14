@@ -1,26 +1,40 @@
-import fs from 'node:fs/promises'
 import readline from 'node:readline/promises'
-import { credentialsPath } from '@/lib/credentials'
+import { listTokens, removeToken, saveCredentials } from '@/lib/credentials'
 
 export async function authClear(): Promise<void> {
-  const filePath = credentialsPath()
-
-  try {
-    await fs.access(filePath)
-  } catch {
-    console.log('No credentials file found.')
+  const tokens = await listTokens()
+  if (tokens.length === 0) {
+    console.log('No tokens configured.')
     return
   }
 
+  console.log('Configured tokens:')
+  for (let i = 0; i < tokens.length; i++) {
+    const { pattern, tokenPreview } = tokens[i]
+    const num = String(i + 1).padEnd(2)
+    const pat = pattern.padEnd(27)
+    console.log(`  ${num} ${pat} ${tokenPreview}`)
+  }
+
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-  const answer = await rl.question('Are you sure you want to clear your stored credentials? (y/N) ')
+  const answer = (await rl.question('Remove which entry? (number, or "all"): ')).trim()
   rl.close()
 
-  if (answer.trim().toLowerCase() !== 'y') {
+  if (answer.toLowerCase() === 'all') {
+    await saveCredentials({ tokens: [] })
+    console.log('All tokens removed.')
+    return
+  }
+
+  const idx = parseInt(answer, 10)
+  if (isNaN(idx) || idx < 1 || idx > tokens.length) {
     console.log('Cancelled.')
     return
   }
 
-  await fs.rm(filePath)
-  console.log(`Credentials removed from ${filePath}`)
+  const pattern = tokens[idx - 1].pattern
+  const removed = await removeToken(pattern)
+  if (removed) {
+    console.log(`Removed token for pattern "${pattern}".`)
+  }
 }

@@ -13,7 +13,7 @@ import { resolveProjectConfig } from '@/lib/config'
 import { buildRulesFromConfig } from '@/lib/secret-conventions'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session-cleanup'
 import { proxyClient } from '@/lib/proxy-client'
-import { getGithubToken } from '@/lib/credentials'
+import { resolveTokenForUrl } from '@/lib/credentials'
 import { findAvailablePort } from '@/lib/port'
 import { startPortForwarders, podmanRelay } from '@/lib/port-forwarder'
 import type { InjectionRule } from '@/lib/secret-conventions'
@@ -79,11 +79,22 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   // Load project config (local override at ~/.yaac/projects/<slug>/ takes precedence)
   const config: YaacConfig = await resolveProjectConfig(projectSlug) ?? {}
 
-  // Fetch latest from remote before building images
-  const githubToken = await getGithubToken()
+  // Resolve the correct GitHub token for this project's remote URL
+  const remoteUrl = (await simpleGit(repo).remote(['get-url', 'origin']))?.trim()
+  if (!remoteUrl) {
+    console.error('Error: could not determine remote URL for this project.')
+    process.exitCode = 1
+    return
+  }
+  const githubToken = await resolveTokenForUrl(remoteUrl)
+  if (!githubToken) {
+    console.error(`No GitHub token configured for ${remoteUrl}. Run "yaac auth update" to add one.`)
+    process.exitCode = 1
+    return
+  }
   console.log('Fetching latest from remote...')
   try {
-    await fetchOrigin(repo, githubToken ?? undefined)
+    await fetchOrigin(repo, githubToken)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error(`Error: could not fetch from remote: ${msg}`)
@@ -128,20 +139,18 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   await proxyClient.ensureRunning()
 
   // Build GitHub token injection rules
-  const githubRules: InjectionRule[] = githubToken
-    ? [
-        {
-          hostPattern: 'github.com',
-          pathPattern: '/*',
-          injections: [{ action: 'set_header', name: 'authorization', value: `Bearer ${githubToken}` }],
-        },
-        {
-          hostPattern: '*.github.com',
-          pathPattern: '/*',
-          injections: [{ action: 'set_header', name: 'authorization', value: `Bearer ${githubToken}` }],
-        },
-      ]
-    : []
+  const githubRules: InjectionRule[] = [
+    {
+      hostPattern: 'github.com',
+      pathPattern: '/*',
+      injections: [{ action: 'set_header', name: 'authorization', value: `Bearer ${githubToken}` }],
+    },
+    {
+      hostPattern: '*.github.com',
+      pathPattern: '/*',
+      injections: [{ action: 'set_header', name: 'authorization', value: `Bearer ${githubToken}` }],
+    },
+  ]
 
   // Merge with any additional envSecretProxy rules from config
   const additionalRules = config.envSecretProxy

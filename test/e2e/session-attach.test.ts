@@ -3,8 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX } from '@test/helpers/setup'
-import { projectAdd } from '@/commands/project-add'
+import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject } from '@test/helpers/setup'
 import { podman } from '@/lib/podman'
 import { resolveContainer } from '@/lib/container-resolve'
 import { ensureImage } from '@/lib/image-builder'
@@ -80,7 +79,7 @@ describe('yaac session attach', () => {
       tmpDir = await createTempDataDir()
       const repoPath = path.join(tmpDir, 'attach-shared')
       await createTestRepo(repoPath)
-      await projectAdd(repoPath)
+      await addTestProject(repoPath)
       const result = await createContainerWithTmux('attach-shared')
       containerName = result.containerName
       sessionId = result.sessionId
@@ -137,7 +136,7 @@ describe('yaac session attach', () => {
     tmpDirs.push(tmpDir)
     const repoPath = path.join(tmpDir, 'attach-stopped')
     await createTestRepo(repoPath)
-    await projectAdd(repoPath)
+    await addTestProject(repoPath)
 
     const { containerName, sessionId } = await createContainerWithTmux('attach-stopped')
     containersToCleanup.push(containerName)

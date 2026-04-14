@@ -4,8 +4,7 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import crypto from 'node:crypto'
-import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX } from '@test/helpers/setup'
-import { projectAdd } from '@/commands/project-add'
+import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject } from '@test/helpers/setup'
 import { podman } from '@/lib/podman'
 import { ensureImage } from '@/lib/image-builder'
 import { claudeDir, worktreeDir, worktreesDir, repoDir, getDataDir } from '@/lib/paths'
@@ -155,7 +154,7 @@ describe('yaac session stream', () => {
 
       const repoPath = path.join(tmpDir, 'stream-proj')
       await createTestRepo(repoPath)
-      await projectAdd(repoPath)
+      await addTestProject(repoPath)
 
       containerA = await createContainerWithWaitingStatus('stream-proj')
       // Small delay to ensure different Created timestamps
@@ -207,8 +206,8 @@ describe('yaac session stream', () => {
       const repoB = path.join(tmpDir, 'stream-b')
       await createTestRepo(repoA)
       await createTestRepo(repoB)
-      await projectAdd(repoA)
-      await projectAdd(repoB)
+      await addTestProject(repoA)
+      await addTestProject(repoB)
 
       containerA = await createContainerWithWaitingStatus('stream-a')
       containerB = await createContainerWithWaitingStatus('stream-b')
@@ -244,7 +243,7 @@ describe('yaac session stream', () => {
 
     const repoPath = path.join(tmpDir, 'stream-running')
     await createTestRepo(repoPath)
-    await projectAdd(repoPath)
+    await addTestProject(repoPath)
 
     const { containerName } = await createContainerWithRunningStatus('stream-running')
     containersToCleanup.push(containerName)

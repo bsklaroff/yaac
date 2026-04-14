@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ensureDataDir, projectDir, repoDir, claudeDir } from '@/lib/paths'
 import { cloneRepo } from '@/lib/git'
-import { getGithubToken } from '@/lib/credentials'
+import { resolveTokenForUrl } from '@/lib/credentials'
 import type { ProjectMeta } from '@/types'
 
 function deriveSlug(remoteUrl: string): string {
@@ -10,18 +10,25 @@ function deriveSlug(remoteUrl: string): string {
   return lastSegment.replace(/\.git$/, '')
 }
 
-export function isLocalPath(url: string): boolean {
-  return url.startsWith('/') || url.startsWith('./') || url.startsWith('../')
+/**
+ * Expand owner/repo shorthand to a full GitHub HTTPS URL.
+ * Returns the input unchanged if it's already a URL.
+ */
+export function expandOwnerRepo(input: string): string {
+  // If it looks like a URL or SSH-style, don't expand
+  if (input.includes('://') || input.includes('@')) return input
+  const parts = input.split('/')
+  if (parts.length === 2 && parts[0] && parts[1]) {
+    return `https://github.com/${parts[0]}/${parts[1]}`
+  }
+  return input
 }
 
 export function validateGithubHttpsUrl(url: string): void {
-  // Allow local file paths (used in development and testing)
-  if (isLocalPath(url)) return
-
   // Detect SSH-style URLs first (git@github.com:org/repo)
   if (url.match(/^[\w-]+@[\w.-]+:/)) {
     throw new Error(
-      'Only HTTPS GitHub URLs are supported. Use https://github.com/org/repo instead of SSH URLs.',
+      'Only HTTPS GitHub URLs are supported. Use https://github.com/owner/repo or owner/repo instead of SSH URLs.',
     )
   }
 
@@ -30,13 +37,13 @@ export function validateGithubHttpsUrl(url: string): void {
     parsed = new URL(url)
   } catch {
     throw new Error(
-      `Invalid URL: "${url}". Use an HTTPS GitHub URL like https://github.com/org/repo`,
+      `Invalid URL: "${url}". Use an HTTPS GitHub URL like https://github.com/owner/repo, or just owner/repo.`,
     )
   }
 
   if (parsed.protocol !== 'https:') {
     throw new Error(
-      'Only HTTPS GitHub URLs are supported. Use https://github.com/org/repo instead.',
+      'Only HTTPS GitHub URLs are supported. Use https://github.com/owner/repo or owner/repo instead.',
     )
   }
 
@@ -47,7 +54,9 @@ export function validateGithubHttpsUrl(url: string): void {
   }
 }
 
-export async function projectAdd(remoteUrl: string): Promise<void> {
+export async function projectAdd(input: string): Promise<void> {
+  const remoteUrl = expandOwnerRepo(input)
+
   try {
     validateGithubHttpsUrl(remoteUrl)
   } catch (err) {
@@ -71,13 +80,18 @@ export async function projectAdd(remoteUrl: string): Promise<void> {
     // doesn't exist — good
   }
 
-  const token = await getGithubToken()
+  const token = await resolveTokenForUrl(remoteUrl)
+  if (!token) {
+    console.error(`No GitHub token configured for ${remoteUrl}. Run "yaac auth update" to add one.`)
+    process.exitCode = 1
+    return
+  }
 
   console.log(`Cloning ${remoteUrl} into ${slug}...`)
   await fs.mkdir(dir, { recursive: true })
 
   try {
-    await cloneRepo(remoteUrl, repoDir(slug), token ?? undefined)
+    await cloneRepo(remoteUrl, repoDir(slug), token)
   } catch (err) {
     await fs.rm(dir, { recursive: true, force: true })
     const message = err instanceof Error ? err.message : String(err)

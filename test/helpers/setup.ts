@@ -4,7 +4,9 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import simpleGit from 'simple-git'
-import { setDataDir, getDataDir } from '@/lib/paths'
+import { setDataDir, getDataDir, projectDir, repoDir, claudeDir } from '@/lib/paths'
+import { cloneRepo } from '@/lib/git'
+import type { ProjectMeta } from '@/types'
 import type { ProxyClientConfig } from '@/lib/proxy-client'
 
 const execFileAsync = promisify(execFile)
@@ -138,6 +140,25 @@ export async function requirePodman(): Promise<void> {
   if (!_podmanChecked) {
     throw new Error('Podman is not available. Start it with: podman machine start')
   }
+}
+
+/**
+ * Add a local test repo as a yaac project, bypassing URL validation and
+ * token resolution (which only apply to real GitHub URLs).
+ */
+export async function addTestProject(localRepoPath: string): Promise<void> {
+  const slug = path.basename(localRepoPath)
+  const dir = projectDir(slug)
+  await fs.mkdir(dir, { recursive: true })
+  await cloneRepo(localRepoPath, repoDir(slug))
+  await fs.mkdir(claudeDir(slug), { recursive: true })
+
+  const meta: ProjectMeta = {
+    slug,
+    remoteUrl: localRepoPath,
+    addedAt: new Date().toISOString(),
+  }
+  await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(meta, null, 2) + '\n')
 }
 
 /**

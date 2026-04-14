@@ -29,18 +29,39 @@ sudo apt install podman
 
 ## Authentication
 
-yaac requires a GitHub Personal Access Token (PAT) for git operations and GitHub API access inside session containers.
+yaac requires one or more GitHub Personal Access Tokens (PATs) for git operations and GitHub API access inside session containers. Multiple tokens can be scoped to different owners so you can use separate tokens for different orgs or personal repos.
 
-On first run, yaac prompts for your token and stores it in `~/.yaac/.credentials.json` (file permissions `0600`). The token is used for:
+Tokens are stored in `~/.yaac/.credentials.json` (file permissions `0600`) as an ordered list. When yaac needs a token for a given repo, it walks the list and uses the first matching entry:
 
-- **Host-side git operations** — clone and fetch use HTTPS with the token embedded in the request.
-- **Container-side GitHub requests** — a MITM proxy sidecar injects the token as an `Authorization` header into all HTTPS requests to `github.com` and `*.github.com`. The token is never written into the container filesystem.
+```json
+{
+  "tokens": [
+    { "pattern": "acme-corp/*", "token": "ghp_org_scoped_token" },
+    { "pattern": "my-user/private-repo", "token": "ghp_repo_scoped_token" },
+    { "pattern": "*", "token": "ghp_fallback_token" }
+  ]
+}
+```
 
-To update or remove your stored credentials:
+Each pattern takes one of three forms:
+- `*` — catch-all default, matches any repo
+- `<owner>/*` — matches all repos under an owner (org or personal account)
+- `<owner>/<repo>` — matches a specific repo
+
+First match wins, so put more specific patterns before broader ones. On first run, yaac prompts for a token if none are configured.
+
+Tokens are used for:
+- **Host-side git operations** — clone and fetch use HTTPS with the matching token embedded in the request.
+- **Container-side GitHub requests** — a MITM proxy sidecar injects the token as an `Authorization` header into all HTTPS requests to `github.com` and `*.github.com`. The token is never written into the container filesystem. Each session uses the single token that matches its project's remote URL.
+
+Token injection only happens over HTTPS. Plain HTTP requests through the proxy never receive credentials.
+
+To manage your tokens:
 
 ```sh
-yaac auth update    # Set or replace your GitHub PAT
-yaac auth clear     # Remove stored credentials (with confirmation)
+yaac auth list      # List configured tokens (masked)
+yaac auth update    # Add or replace a token (interactive)
+yaac auth clear     # Remove a token (interactive)
 ```
 
 ## Usage
@@ -55,7 +76,7 @@ Commands:
 
 yaac project <command>
   list              List all projects
-  add <remote-url>  Add a project from a GitHub HTTPS URL
+  add <remote-url>  Add a project (GitHub HTTPS URL or owner/repo)
 
 yaac session <command>
   create [options] <project>  Create a new session for a project
@@ -71,7 +92,8 @@ yaac session <command>
     -n, --interval <seconds>  Refresh interval in seconds (default: 5)
 
 yaac auth <command>
-  update              Set or replace your GitHub Personal Access Token
+  list                List configured GitHub tokens
+  update              Add or replace a GitHub Personal Access Token
   clear               Remove stored GitHub credentials
 ```
 
