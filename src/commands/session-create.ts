@@ -293,6 +293,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     : ''
   containerExec(containerName, 'tmux set-option -g history-limit 200000')
   containerExec(containerName, 'tmux set-option -g mouse on')
+  containerExec(containerName, 'tmux set-option -g focus-events on')
   containerExec(containerName, `tmux set-option -t yaac status-right ' ${projectSlug} ${sessionId.slice(0, 8)}${portInfo} '`)
   containerExec(containerName, 'tmux set-option -t yaac status-right-length 80')
   containerExec(containerName, 'tmux bind-key k kill-server')
