@@ -68,6 +68,22 @@ function isUserInterrupt(entry: ConversationEntry): boolean {
   return false
 }
 
+/**
+ * Checks whether an assistant entry is an AskUserQuestion tool call.
+ * When Claude invokes AskUserQuestion the session blocks until the user
+ * responds, so the status should be "waiting", not "running".
+ */
+function isAskingUserQuestion(entry: ConversationEntry): boolean {
+  if (entry.type !== 'assistant') return false
+  const content = entry.message?.content
+  if (!Array.isArray(content)) return false
+
+  for (const block of content) {
+    if (block.type === 'tool_use' && block.name === 'AskUserQuestion') return true
+  }
+  return false
+}
+
 const PLAN_FILE_RE = /\/\.claude\/plans\//
 
 /**
@@ -139,6 +155,7 @@ export async function getClaudeStatus(jsonlPath: string): Promise<'running' | 'w
         if (isWaitingForPlanApproval(entry)) return 'waiting'
         if (isPlanFileWrite(entry)) return 'waiting'
         if (isUserInterrupt(entry)) return 'waiting'
+        if (isAskingUserQuestion(entry)) return 'waiting'
 
         if (entry.type !== 'assistant') return 'running'
 
@@ -155,6 +172,7 @@ export async function getClaudeStatus(jsonlPath: string): Promise<'running' | 'w
           if (isWaitingForPlanApproval(entry)) return 'waiting'
           if (isPlanFileWrite(entry)) return 'waiting'
           if (isUserInterrupt(entry)) return 'waiting'
+          if (isAskingUserQuestion(entry)) return 'waiting'
           if (entry.type !== 'assistant') return 'running'
           const stopReason = entry.message?.stop_reason
           return stopReason && WAITING_STOP_REASONS.has(stopReason) ? 'waiting' : 'running'

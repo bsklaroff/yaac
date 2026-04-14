@@ -113,19 +113,34 @@ export class SshAgentClient {
       // doesn't exist
     }
 
-    const container = await podman.createContainer({
-      Image: this.resolvedImage!,
-      name: this.config.containerName,
-      Labels: {},
-      HostConfig: {
-        Binds: [
-          `${this.sshDir}:/ssh-keys:ro,Z`,
-          `${this.config.volumeName}:/ssh-agent`,
-        ],
-      },
-    })
-
-    await container.start()
+    // Podman's rootless lock allocator can assign the same lock ID to
+    // a container and volume, causing a deadlock on start. Retry with a
+    // brief pause so podman can reassign locks after the old container is
+    // fully cleaned up.
+    let container: Awaited<ReturnType<typeof podman.createContainer>>
+    for (let attempt = 0; ; attempt++) {
+      try {
+        container = await podman.createContainer({
+          Image: this.resolvedImage!,
+          name: this.config.containerName,
+          Labels: {},
+          HostConfig: {
+            Binds: [
+              `${this.sshDir}:/ssh-keys:ro,Z`,
+              `${this.config.volumeName}:/ssh-agent`,
+            ],
+          },
+        })
+        await container.start()
+        break
+      } catch (err) {
+        if (attempt >= 3 || !(err instanceof Error) || !err.message.includes('deadlock')) {
+          throw err
+        }
+        try { await podman.getContainer(this.config.containerName).remove({ force: true }) } catch { /* ok */ }
+        await new Promise((r) => setTimeout(r, 1000))
+      }
+    }
 
     // Wait for agent to be ready (socket file created)
     for (let i = 0; i < 20; i++) {

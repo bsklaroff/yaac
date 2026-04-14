@@ -173,7 +173,7 @@ export class ProxyClient {
       else throw err
     }
 
-    // Remove existing container
+    // Remove existing container (force-remove to handle running state)
     try {
       const existing = podman.getContainer(this.config.containerName)
       await existing.remove({ force: true })
@@ -181,21 +181,36 @@ export class ProxyClient {
       // doesn't exist
     }
 
-    const container = await podman.createContainer({
-      Image: this.resolvedImage!,
-      name: this.config.containerName,
-      ExposedPorts: { [`${INTERNAL_PORT}/tcp`]: {} },
-      Env: [
-        `PORT=${INTERNAL_PORT}`,
-        `PROXY_AUTH_SECRET=${this.config.authSecret}`,
-      ],
-      HostConfig: {
-        PortBindings: { [`${INTERNAL_PORT}/tcp`]: [{ HostPort: this.config.hostPort, HostIp: '127.0.0.1' }] },
-        NetworkMode: `podman,${this.config.network}`,
-      },
-    })
-
-    await container.start()
+    // After force-removing a container, podman's rootlessport process may
+    // still hold the host port for a brief moment. Retry create+start to
+    // ride out the delay rather than failing immediately.
+    let container: Awaited<ReturnType<typeof podman.createContainer>>
+    for (let attempt = 0; ; attempt++) {
+      try {
+        container = await podman.createContainer({
+          Image: this.resolvedImage!,
+          name: this.config.containerName,
+          ExposedPorts: { [`${INTERNAL_PORT}/tcp`]: {} },
+          Env: [
+            `PORT=${INTERNAL_PORT}`,
+            `PROXY_AUTH_SECRET=${this.config.authSecret}`,
+          ],
+          HostConfig: {
+            PortBindings: { [`${INTERNAL_PORT}/tcp`]: [{ HostPort: this.config.hostPort, HostIp: '127.0.0.1' }] },
+            NetworkMode: `podman,${this.config.network}`,
+          },
+        })
+        await container.start()
+        break
+      } catch (err) {
+        if (attempt >= 5 || !(err instanceof Error) || !err.message.includes('address already in use')) {
+          throw err
+        }
+        // Clean up the created-but-not-started container before retrying
+        try { await podman.getContainer(this.config.containerName).remove({ force: true }) } catch { /* ok */ }
+        await new Promise((r) => setTimeout(r, 1000))
+      }
+    }
 
     // Resolve proxy IP on internal network
     const info = await container.inspect()
