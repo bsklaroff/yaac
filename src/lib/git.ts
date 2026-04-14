@@ -39,7 +39,7 @@ export async function fetchOrigin(repoPath: string, githubToken?: string): Promi
     const git = simpleGit(repoPath)
     const remoteUrl = (await git.remote(['get-url', 'origin']))!.trim()
     const authedUrl = injectTokenIntoUrl(remoteUrl, githubToken)
-    await git.fetch(authedUrl, ['+refs/heads/*:refs/remotes/origin/*', '--update-head-ok'])
+    await git.raw(['fetch', authedUrl, '+refs/heads/*:refs/remotes/origin/*', '--update-head-ok'])
   } else {
     await simpleGit(repoPath).fetch('origin')
   }

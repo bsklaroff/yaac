@@ -140,6 +140,32 @@ describe('git helpers', () => {
     }
   })
 
+  it('fetchOrigin with token uses authenticated URL', async () => {
+    // Clone the source repo so we have an origin remote with an https-like URL
+    const cloneDir = path.join(tmpDir, 'clone-token')
+    await cloneRepo(sourceRepo, cloneDir)
+
+    // Add a new commit to the source
+    const srcGit = simpleGit(sourceRepo)
+    await fs.writeFile(path.join(sourceRepo, 'token-file.txt'), 'token content\n')
+    await srcGit.add('.')
+    await srcGit.commit('token commit')
+
+    // Set the origin to an https URL so injectTokenIntoUrl can parse it
+    const cloneGit = simpleGit(cloneDir)
+    await cloneGit.remote(['set-url', 'origin', 'https://localhost/test/repo'])
+
+    // fetchOrigin with a token should fail to connect (no server) but should
+    // NOT fail with "does not appear to be a git repository" — that would mean
+    // the refspec was passed as the remote instead of the URL.
+    try {
+      await fetchOrigin(cloneDir, 'fake-token')
+    } catch (err) {
+      const msg = (err as Error).message
+      expect(msg).not.toContain('does not appear to be a git repository')
+    }
+  })
+
   it('injectTokenIntoUrl embeds credentials in HTTPS URL', () => {
     const result = injectTokenIntoUrl('https://github.com/org/repo.git', 'ghp_abc123')
     const parsed = new URL(result)
