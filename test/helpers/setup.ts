@@ -26,13 +26,12 @@ export const TEST_RUN_ID = crypto.randomBytes(4).toString('hex')
 
 /**
  * Proxy sidecar config for e2e tests.
- * Uses separate container/image/network/port to avoid interfering with the app's proxy.
- * Container and network names include a random suffix so concurrent runs don't collide.
+ * Uses separate image/network to avoid interfering with the app's proxy.
+ * Network name includes a random suffix so concurrent runs don't collide.
+ * Container name, host port, and auth secret are auto-resolved by ProxyClient.
  */
-export const TEST_PROXY_CONFIG: Omit<ProxyClientConfig, 'authSecret'> = {
+export const TEST_PROXY_CONFIG: ProxyClientConfig = {
   image: 'yaac-test-proxy',
-  containerName: `yaac-test-proxy-${TEST_RUN_ID}`,
-  hostPort: '19256',
   network: `yaac-test-sessions-${TEST_RUN_ID}`,
   requirePrebuilt: true,
 }

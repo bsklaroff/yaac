@@ -3,10 +3,9 @@ import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import http from 'node:http'
-import { requirePodman, TEST_PROXY_CONFIG } from '@test/helpers/setup'
-import { ProxyClient, INTERNAL_PORT } from '@/lib/proxy-client'
+import { requirePodman } from '@test/helpers/setup'
+import { ProxyClient, PROXY_CONTAINER_PORT } from '@/lib/proxy-client'
 import { podman } from '@/lib/podman'
-import { findAvailablePort } from '@/lib/port'
 
 const execFileAsync = promisify(execFile)
 
@@ -41,20 +40,14 @@ function proxyRequest(
 
 describe('proxy sidecar', () => {
   let client: ProxyClient
-  let proxyPort: number
-
-  const testAuthSecret = crypto.randomBytes(32).toString('hex')
 
   beforeAll(async () => {
     await requirePodman()
 
-    proxyPort = await findAvailablePort(19255)
     client = new ProxyClient({
-      ...TEST_PROXY_CONFIG,
-      containerName: `yaac-proxy-test-${RUN_ID}`,
-      hostPort: String(proxyPort),
+      image: 'yaac-test-proxy',
       network: `yaac-test-sidecar-${RUN_ID}`,
-      authSecret: testAuthSecret,
+      requirePrebuilt: true,
     })
   })
 
@@ -70,7 +63,7 @@ describe('proxy sidecar', () => {
   it('starts proxy and healthcheck responds', async () => {
     await client.ensureRunning()
 
-    const res = await fetch(`http://127.0.0.1:${proxyPort}/healthz`)
+    const res = await fetch(`http://127.0.0.1:${client.hostPort}/healthz`)
     expect(res.ok).toBe(true)
     expect(await res.text()).toBe('ok')
   })
@@ -111,16 +104,17 @@ describe('proxy sidecar', () => {
     await client.ensureRunning()
     await client.ensureRunning()
 
-    const res = await fetch(`http://127.0.0.1:${proxyPort}/healthz`)
+    const res = await fetch(`http://127.0.0.1:${client.hostPort}/healthz`)
     expect(res.ok).toBe(true)
   })
 
   it('stop removes container and network', async () => {
     await client.ensureRunning()
+    const port = client.hostPort
     await client.stop()
 
     // Healthcheck should fail
-    await expect(fetch(`http://127.0.0.1:${proxyPort}/healthz`)).rejects.toThrow()
+    await expect(fetch(`http://127.0.0.1:${port}/healthz`)).rejects.toThrow()
   })
 
   describe('CONNECT tunnel', () => {
@@ -171,7 +165,7 @@ describe('proxy sidecar', () => {
       expect(blocked.trim()).toContain('connection-blocked')
 
       // Verify the container CAN reach external hosts via CONNECT tunnel through proxy
-      const proxyAddr = `${client.proxyIp}:${INTERNAL_PORT}`
+      const proxyAddr = `${client.proxyIp}:${PROXY_CONTAINER_PORT}`
       const { stdout: tunneled } = await execFileAsync('podman', [
         'exec', containerName, 'sh', '-c',
         `echo '' | nc -w 5 -X connect -x ${proxyAddr} github.com 443 | head -c 1 || echo tunnel-open`,
@@ -187,21 +181,14 @@ describe('proxy HTTP forwarding', () => {
   let client: ProxyClient
   let echoContainerName: string
   let echoIp: string
-  let proxyPort: number
   const echoPort = 8080
-
-  const testAuthSecret = crypto.randomBytes(32).toString('hex')
 
   beforeAll(async () => {
     await requirePodman()
 
-    proxyPort = await findAvailablePort(19257)
     client = new ProxyClient({
       image: 'yaac-test-proxy',
-      containerName: `yaac-proxy-http-test-${RUN_ID}`,
-      hostPort: String(proxyPort),
       network: `yaac-test-http-${RUN_ID}`,
-      authSecret: testAuthSecret,
       requirePrebuilt: true,
     })
     await client.ensureRunning()
@@ -277,7 +264,7 @@ describe('proxy HTTP forwarding', () => {
 
   it('forwards a plain HTTP GET request', async () => {
     const targetUrl = `http://${echoIp}:${echoPort}/hello?foo=bar`
-    const result = await proxyRequest(proxyPort, targetUrl)
+    const result = await proxyRequest(Number(client.hostPort), targetUrl)
 
     expect(result.status).toBe(200)
     const echo = JSON.parse(result.body) as { method: string; url: string; headers: Record<string, string> }
@@ -289,7 +276,7 @@ describe('proxy HTTP forwarding', () => {
   it('forwards a POST request with body', async () => {
     const targetUrl = `http://${echoIp}:${echoPort}/submit`
     const body = 'key=value&other=data'
-    const result = await proxyRequest(proxyPort, targetUrl, {
+    const result = await proxyRequest(Number(client.hostPort), targetUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body,
@@ -305,7 +292,7 @@ describe('proxy HTTP forwarding', () => {
   it('strips proxy-authorization header before forwarding', async () => {
     const token = Buffer.from('x:my-session-token').toString('base64')
     const targetUrl = `http://${echoIp}:${echoPort}/check`
-    const result = await proxyRequest(proxyPort, targetUrl, {
+    const result = await proxyRequest(Number(client.hostPort), targetUrl, {
       headers: { 'Proxy-Authorization': `Basic ${token}` },
     })
 
@@ -316,12 +303,12 @@ describe('proxy HTTP forwarding', () => {
 
   it('returns 502 when upstream is unreachable', async () => {
     const targetUrl = `http://${echoIp}:19399/nope`
-    const result = await proxyRequest(proxyPort, targetUrl)
+    const result = await proxyRequest(Number(client.hostPort), targetUrl)
     expect(result.status).toBe(502)
   })
 
   it('still serves API endpoints on non-proxy requests', async () => {
-    const res = await fetch(`http://127.0.0.1:${proxyPort}/healthz`)
+    const res = await fetch(`http://127.0.0.1:${client.hostPort}/healthz`)
     expect(res.ok).toBe(true)
     expect(await res.text()).toBe('ok')
   })
@@ -341,7 +328,7 @@ describe('proxy HTTP forwarding', () => {
 
     // Send a plain HTTP request through the proxy with valid session credentials
     const auth = Buffer.from(`x:${sessionToken}`).toString('base64')
-    const result = await proxyRequest(proxyPort, `http://${echoIp}:${echoPort}/test`, {
+    const result = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/test`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
 

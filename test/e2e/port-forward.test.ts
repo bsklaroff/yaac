@@ -3,7 +3,7 @@ import crypto from 'node:crypto'
 import http from 'node:http'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { requirePodman, TEST_PROXY_CONFIG, TEST_RUN_ID } from '@test/helpers/setup'
+import { requirePodman, TEST_RUN_ID } from '@test/helpers/setup'
 import { ProxyClient } from '@/lib/proxy-client'
 import { startPortForwarders, podmanRelay } from '@/lib/port-forwarder'
 import { findAvailablePort } from '@/lib/port'
@@ -30,7 +30,6 @@ function httpGet(url: string, timeoutMs = 5000): Promise<{ status: number; body:
 
 describe('port forwarding via podman exec relay', () => {
   let client: ProxyClient
-  const testAuthSecret = crypto.randomBytes(32).toString('hex')
   const containerPort = 8080
 
   const containers: string[] = []
@@ -38,15 +37,10 @@ describe('port forwarding via podman exec relay', () => {
   beforeAll(async () => {
     await requirePodman()
 
-    // We still use the proxy network to simulate the real session topology
-    // (container on an internal network with no host route).
-    const proxyPort = await findAvailablePort(19350)
-
     client = new ProxyClient({
-      ...TEST_PROXY_CONFIG,
-      containerName: `yaac-proxy-portfwd-test-${TEST_RUN_ID}`,
-      hostPort: String(proxyPort),
-      authSecret: testAuthSecret,
+      image: 'yaac-test-proxy',
+      network: `yaac-test-portfwd-${TEST_RUN_ID}`,
+      requirePrebuilt: true,
     })
 
     await client.ensureRunning()

@@ -42,15 +42,9 @@ async function podmanExecRetry(
 // with a dynamic port to avoid conflicts with other test suites.
 let testProxyClient: ProxyClient | null = null
 
-async function getTestProxy(): Promise<ProxyClient> {
+function getTestProxy(): ProxyClient {
   if (testProxyClient) return testProxyClient
-  const port = await findAvailablePort(19258)
-  testProxyClient = new ProxyClient({
-    ...TEST_PROXY_CONFIG,
-    containerName: `yaac-test-proxy-session-${port}`,
-    hostPort: String(port),
-    authSecret: crypto.randomBytes(32).toString('hex'),
-  })
+  testProxyClient = new ProxyClient(TEST_PROXY_CONFIG)
   return testProxyClient
 }
 
@@ -89,7 +83,7 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
   }
 
   // Proxy is always on — start it and register GitHub token rules
-  const proxy = await getTestProxy()
+  const proxy = getTestProxy()
   await proxy.ensureRunning()
 
   const additionalRules = config.envSecretProxy

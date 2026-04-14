@@ -241,6 +241,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
       'yaac.project': projectSlug,
       'yaac.session-id': sessionId,
       'yaac.data-dir': getDataDir(),
+      'yaac.proxy-container': proxyClient.containerName,
     },
     Env: env,
     HostConfig: {

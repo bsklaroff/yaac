@@ -4,25 +4,40 @@ import { promisify } from 'node:util'
 import { podman } from '@/lib/podman'
 import { PROXY_DIR } from '@/lib/paths'
 import { contextHash } from '@/lib/image-builder'
+import { findAvailablePort } from '@/lib/port'
 import type { InjectionRule } from '@/lib/secret-conventions'
 
 const execFileAsync = promisify(execFile)
 
-export const INTERNAL_PORT = '10255'
+/** Port the proxy server listens on inside its container (fixed). */
+export const PROXY_CONTAINER_PORT = '10255'
+
+/**
+ * @deprecated Use PROXY_CONTAINER_PORT instead.
+ */
+export const INTERNAL_PORT = PROXY_CONTAINER_PORT
 
 export interface ProxyClientConfig {
   image: string
+  network: string
+  requirePrebuilt?: boolean
+}
+
+/**
+ * Resolved state after ensureRunning() — always has concrete values
+ * for container name, host port, and auth secret.
+ */
+interface ResolvedState {
   containerName: string
   hostPort: string
-  network: string
   authSecret: string
-  requirePrebuilt?: boolean
 }
 
 export class ProxyClient {
   private _proxyIp: string | null = null
   private running = false
   private resolvedImage: string | null = null
+  private resolved: ResolvedState | null = null
 
   constructor(private config: ProxyClientConfig) {}
 
@@ -31,7 +46,11 @@ export class ProxyClient {
   }
 
   get hostPort(): string {
-    return this.config.hostPort
+    return this.requireResolved().hostPort
+  }
+
+  get containerName(): string {
+    return this.requireResolved().containerName
   }
 
   get proxyIp(): string {
@@ -40,7 +59,16 @@ export class ProxyClient {
   }
 
   private get baseUrl(): string {
-    return `http://127.0.0.1:${this.config.hostPort}`
+    return `http://127.0.0.1:${this.requireResolved().hostPort}`
+  }
+
+  private get authSecret(): string {
+    return this.requireResolved().authSecret
+  }
+
+  private requireResolved(): ResolvedState {
+    if (!this.resolved) throw new Error('Proxy not started — call ensureRunning() first')
+    return this.resolved
   }
 
   generateSessionToken(): string {
@@ -49,7 +77,7 @@ export class ProxyClient {
 
   getProxyEnv(sessionToken: string): string[] {
     if (!this._proxyIp) throw new Error('Proxy not started — call ensureRunning() first')
-    const proxyUrl = `http://x:${sessionToken}@${this._proxyIp}:${INTERNAL_PORT}`
+    const proxyUrl = `http://x:${sessionToken}@${this._proxyIp}:${PROXY_CONTAINER_PORT}`
     return [
       `HTTPS_PROXY=${proxyUrl}`,
       `HTTP_PROXY=${proxyUrl}`,
@@ -78,7 +106,7 @@ export class ProxyClient {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.config.authSecret}`,
+        'Authorization': `Bearer ${this.authSecret}`,
       },
       body: JSON.stringify({ rules }),
     })
@@ -91,7 +119,7 @@ export class ProxyClient {
   async removeProjectRules(projectId: string): Promise<void> {
     const res = await fetch(`${this.baseUrl}/projects/${encodeURIComponent(projectId)}/rules`, {
       method: 'DELETE',
-      headers: { 'Authorization': `Bearer ${this.config.authSecret}` },
+      headers: { 'Authorization': `Bearer ${this.authSecret}` },
     })
     if (!res.ok) {
       const text = await res.text()
@@ -104,7 +132,7 @@ export class ProxyClient {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.config.authSecret}`,
+        'Authorization': `Bearer ${this.authSecret}`,
       },
       body: JSON.stringify({ token, projectId }),
     })
@@ -117,7 +145,7 @@ export class ProxyClient {
   async removeSession(token: string): Promise<void> {
     const res = await fetch(`${this.baseUrl}/sessions/${encodeURIComponent(token)}`, {
       method: 'DELETE',
-      headers: { 'Authorization': `Bearer ${this.config.authSecret}` },
+      headers: { 'Authorization': `Bearer ${this.authSecret}` },
     })
     if (!res.ok) {
       const text = await res.text()
@@ -126,8 +154,8 @@ export class ProxyClient {
   }
 
   async ensureRunning(): Promise<void> {
+    // Fast path: already verified in this process
     if (this.running) {
-      // Verify still healthy
       try {
         const res = await fetch(`${this.baseUrl}/healthz`)
         if (res.ok) return
@@ -135,14 +163,90 @@ export class ProxyClient {
         this.running = false
       }
     }
-    await this.ensureProxyImage()
-    await this.start()
-    this.running = true
-  }
 
-  private async ensureProxyImage(): Promise<void> {
     const hash = await contextHash(PROXY_DIR)
     const taggedImage = `${this.config.image}:${hash}`
+
+    // Try to reuse an existing proxy container for this image hash
+    const existing = await this.discoverExistingProxy(hash)
+    if (existing) {
+      this.resolved = {
+        containerName: existing.containerName,
+        hostPort: existing.hostPort,
+        authSecret: existing.authSecret,
+      }
+      this._proxyIp = existing.proxyIp
+      this.resolvedImage = taggedImage
+      this.running = true
+      this.gcStaleProxies(hash).catch(() => {})
+      return
+    }
+
+    // No reusable proxy — build image if needed and start a new one
+    await this.ensureProxyImage(taggedImage)
+    await this.start(hash)
+    this.running = true
+    this.gcStaleProxies(hash).catch(() => {})
+  }
+
+  private async discoverExistingProxy(hash: string): Promise<{
+    containerName: string
+    hostPort: string
+    authSecret: string
+    proxyIp: string
+  } | null> {
+    let containers
+    try {
+      containers = await podman.listContainers({
+        all: true,
+        filters: { label: ['yaac.proxy=true'] },
+      })
+    } catch {
+      return null
+    }
+
+    for (const c of containers) {
+      if (c.Labels?.['yaac.proxy.image-hash'] !== hash) continue
+      if (c.State !== 'running') continue
+
+      try {
+        const name = c.Names?.[0]?.replace(/^\//, '') ?? c.Id
+        const info = await podman.getContainer(name).inspect()
+
+        // Recover host port from port bindings
+        const ports = info.NetworkSettings?.Ports as
+          Record<string, Array<{ HostPort: string }>> | undefined
+        const bindings = ports?.[`${PROXY_CONTAINER_PORT}/tcp`]
+        const hostPort = bindings?.[0]?.HostPort
+        if (!hostPort) continue
+
+        // Recover auth secret from container env
+        const envArr: string[] = info.Config?.Env ?? []
+        const secretEntry = envArr.find((e) => e.startsWith('PROXY_AUTH_SECRET='))
+        if (!secretEntry) continue
+        const authSecret = secretEntry.slice('PROXY_AUTH_SECRET='.length)
+        if (!authSecret) continue
+
+        // Recover proxy IP on session network
+        const networks = info.NetworkSettings?.Networks as
+          Record<string, { IPAddress: string }> | undefined
+        const proxyIp = networks?.[this.config.network]?.IPAddress
+        if (!proxyIp) continue
+
+        // Verify health
+        const res = await fetch(`http://127.0.0.1:${hostPort}/healthz`)
+        if (!res.ok) continue
+
+        return { containerName: name, hostPort, authSecret, proxyIp }
+      } catch {
+        continue
+      }
+    }
+
+    return null
+  }
+
+  private async ensureProxyImage(taggedImage: string): Promise<void> {
     try {
       await execFileAsync('podman', ['image', 'inspect', taggedImage])
       this.resolvedImage = taggedImage
@@ -168,7 +272,21 @@ export class ProxyClient {
     }
   }
 
-  private async start(): Promise<void> {
+  /**
+   * Derive a stable container name from the image hash and network name.
+   * Including the network ensures isolation between concurrent test runs
+   * (each uses a unique network name) while remaining stable across CLI
+   * invocations within the same environment.
+   */
+  private containerNameFor(imageHash: string): string {
+    const netHash = crypto.createHash('sha256')
+      .update(this.config.network)
+      .digest('hex')
+      .slice(0, 8)
+    return `yaac-proxy-${imageHash.slice(0, 8)}-${netHash}`
+  }
+
+  private async start(hash: string): Promise<void> {
     // Create the internal session network
     try {
       await execFileAsync('podman', ['network', 'create', '--internal', '--disable-dns', this.config.network])
@@ -177,10 +295,13 @@ export class ProxyClient {
       else throw err
     }
 
-    // Remove existing container (force-remove to handle running state)
+    const containerName = this.containerNameFor(hash)
+    const authSecret = crypto.randomBytes(32).toString('hex')
+    let hostPort = String(await findAvailablePort(10255))
+
+    // Remove leftover container with same name (e.g. exited/dead)
     try {
-      const existing = podman.getContainer(this.config.containerName)
-      await existing.remove({ force: true })
+      await podman.getContainer(containerName).remove({ force: true })
     } catch {
       // doesn't exist
     }
@@ -188,33 +309,47 @@ export class ProxyClient {
     // After force-removing a container, podman's rootlessport process may
     // still hold the host port for a brief moment. Retry create+start to
     // ride out the delay rather than failing immediately.
+    // Podman reports port conflicts as either "address already in use" or
+    // "proxy already running" (rootlessport variant).
     let container: Awaited<ReturnType<typeof podman.createContainer>>
     for (let attempt = 0; ; attempt++) {
       try {
         container = await podman.createContainer({
           Image: this.resolvedImage!,
-          name: this.config.containerName,
-          ExposedPorts: { [`${INTERNAL_PORT}/tcp`]: {} },
+          name: containerName,
+          Labels: {
+            'yaac.proxy': 'true',
+            'yaac.proxy.image-hash': hash,
+          },
+          ExposedPorts: { [`${PROXY_CONTAINER_PORT}/tcp`]: {} },
           Env: [
-            `PORT=${INTERNAL_PORT}`,
-            `PROXY_AUTH_SECRET=${this.config.authSecret}`,
+            `PORT=${PROXY_CONTAINER_PORT}`,
+            `PROXY_AUTH_SECRET=${authSecret}`,
           ],
           HostConfig: {
-            PortBindings: { [`${INTERNAL_PORT}/tcp`]: [{ HostPort: this.config.hostPort, HostIp: '127.0.0.1' }] },
+            PortBindings: {
+              [`${PROXY_CONTAINER_PORT}/tcp`]: [{ HostPort: hostPort, HostIp: '127.0.0.1' }],
+            },
             NetworkMode: `podman,${this.config.network}`,
           },
         })
         await container.start()
         break
       } catch (err) {
-        if (attempt >= 5 || !(err instanceof Error) || !err.message.includes('address already in use')) {
+        const msg = err instanceof Error ? err.message : ''
+        const isPortConflict = msg.includes('address already in use') || msg.includes('proxy already running')
+        if (attempt >= 5 || !isPortConflict) {
           throw err
         }
         // Clean up the created-but-not-started container before retrying
-        try { await podman.getContainer(this.config.containerName).remove({ force: true }) } catch { /* ok */ }
-        await new Promise((r) => setTimeout(r, 1000))
+        try { await podman.getContainer(containerName).remove({ force: true }) } catch { /* ok */ }
+        // Port may have been grabbed; find a new one
+        hostPort = String(await findAvailablePort(Number(hostPort) + 1))
+        await new Promise((r) => setTimeout(r, 500))
       }
     }
+
+    this.resolved = { containerName, hostPort, authSecret }
 
     // Resolve proxy IP on internal network
     const info = await container.inspect()
@@ -229,7 +364,7 @@ export class ProxyClient {
       try {
         const res = await fetch(`${this.baseUrl}/healthz`)
         if (res.ok) {
-          console.log(`Proxy sidecar running on port ${this.config.hostPort}`)
+          console.log(`Proxy sidecar running on port ${hostPort}`)
           return
         }
       } catch {
@@ -240,14 +375,49 @@ export class ProxyClient {
     throw new Error('Proxy sidecar failed to start within 15 seconds')
   }
 
+  /**
+   * Remove proxy containers whose image hash differs from `currentHash`
+   * and that have no session containers referencing them.
+   */
+  private async gcStaleProxies(currentHash: string): Promise<void> {
+    const proxies = await podman.listContainers({
+      all: true,
+      filters: { label: ['yaac.proxy=true'] },
+    })
+
+    for (const p of proxies) {
+      if (p.Labels?.['yaac.proxy.image-hash'] === currentHash) continue
+
+      const proxyName = p.Names?.[0]?.replace(/^\//, '') ?? p.Id
+
+      // Check if any session containers still reference this proxy
+      const sessions = await podman.listContainers({
+        all: true,
+        filters: { label: [`yaac.proxy-container=${proxyName}`] },
+      })
+      if (sessions.length > 0) continue
+
+      console.log(`Removing stale proxy ${proxyName}...`)
+      try {
+        const container = podman.getContainer(proxyName)
+        await container.stop({ t: 5 })
+        await container.remove()
+      } catch {
+        // already gone
+      }
+    }
+  }
+
   async stop(): Promise<void> {
     console.log('Stopping proxy...')
-    try {
-      const container = podman.getContainer(this.config.containerName)
-      await container.stop({ t: 5 })
-      await container.remove()
-    } catch {
-      // already stopped or removed
+    if (this.resolved) {
+      try {
+        const container = podman.getContainer(this.resolved.containerName)
+        await container.stop({ t: 5 })
+        await container.remove()
+      } catch {
+        // already stopped or removed
+      }
     }
     try {
       await podman.getNetwork(this.config.network).remove()
@@ -256,16 +426,12 @@ export class ProxyClient {
     }
     this._proxyIp = null
     this.running = false
+    this.resolved = null
   }
 }
 
-// Default instance
-const PROXY_AUTH_SECRET = crypto.randomBytes(32).toString('hex')
-
+// Default singleton — resolved state is populated by ensureRunning()
 export const proxyClient = new ProxyClient({
   image: 'yaac-proxy',
-  containerName: 'yaac-proxy',
-  hostPort: INTERNAL_PORT,
   network: 'yaac-sessions',
-  authSecret: PROXY_AUTH_SECRET,
 })
