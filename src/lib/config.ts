@@ -10,6 +10,18 @@ const execFileAsync = promisify(execFile)
 
 const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'nestedContainers', 'portForward', 'bindMounts', 'hideInitPane'])
 
+/** Expand `$VAR` and `${VAR}` references in a string using `process.env`. */
+export function expandEnvVars(s: string): string {
+  return s.replace(/\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_match, braced, plain) => {
+    const name = (braced ?? plain) as string
+    const value = process.env[name]
+    if (value === undefined) {
+      throw new Error(`environment variable "${name}" is not set`)
+    }
+    return value
+  })
+}
+
 export function parseProjectConfig(raw: string): YaacConfig {
   const parsed: unknown = JSON.parse(raw)
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
@@ -132,8 +144,17 @@ export function parseProjectConfig(raw: string): YaacConfig {
       if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
         throw new Error(`yaac-config.json: bindMounts[${i}] must be an object with hostPath and containerPath`)
       }
-      if (typeof entry.hostPath !== 'string' || !entry.hostPath.startsWith('/')) {
+      if (typeof entry.hostPath !== 'string' || entry.hostPath.length === 0) {
         throw new Error(`yaac-config.json: bindMounts[${i}].hostPath must be an absolute path`)
+      }
+      let resolvedHostPath: string
+      try {
+        resolvedHostPath = expandEnvVars(entry.hostPath)
+      } catch (err) {
+        throw new Error(`yaac-config.json: bindMounts[${i}].hostPath: ${(err as Error).message}`)
+      }
+      if (!resolvedHostPath.startsWith('/')) {
+        throw new Error(`yaac-config.json: bindMounts[${i}].hostPath must be an absolute path (after expanding env vars: "${resolvedHostPath}")`)
       }
       if (typeof entry.containerPath !== 'string' || !entry.containerPath.startsWith('/')) {
         throw new Error(`yaac-config.json: bindMounts[${i}].containerPath must be an absolute path`)
@@ -142,7 +163,7 @@ export function parseProjectConfig(raw: string): YaacConfig {
         throw new Error(`yaac-config.json: bindMounts[${i}].readonly must be a boolean`)
       }
       config.bindMounts.push({
-        hostPath: entry.hostPath,
+        hostPath: resolvedHostPath,
         containerPath: entry.containerPath,
         readonly: entry.readonly,
       })

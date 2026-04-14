@@ -115,8 +115,8 @@ Add a `yaac-config.json` to your repo root. Example with all options:
     }
   },
   "bindMounts": [
-    { "hostPath": "/home/user/datasets", "containerPath": "/mnt/datasets" },
-    { "hostPath": "/home/user/models", "containerPath": "/mnt/models", "readonly": true }
+    { "hostPath": "$HOME/datasets", "containerPath": "/mnt/datasets" },
+    { "hostPath": "$HOME/models", "containerPath": "/mnt/models", "readonly": true }
   ],
   "cacheVolumes": {
     "pnpm-store": "/home/yaac/.pnpm-store"
@@ -138,7 +138,7 @@ Add a `yaac-config.json` to your repo root. Example with all options:
 
   Note: GitHub authentication (`github.com` and `*.github.com`) is handled automatically using your stored PAT — you do not need to add `GITHUB_TOKEN` to `envSecretProxy`.
 - **bindMounts** — host directories mounted into the container. Each entry specifies:
-  - **`hostPath`** — absolute path on the host (required).
+  - **`hostPath`** — absolute path on the host (required). Environment variables like `$HOME` or `${HOME}` are expanded.
   - **`containerPath`** — absolute path inside the container (required).
   - **`readonly`** — mount as read-only when `true` (default: `false`).
 - **cacheVolumes** — named Podman volumes mounted into the container. Keys are volume names, values are absolute container paths. Volumes persist across sessions.

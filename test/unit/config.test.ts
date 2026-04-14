@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { loadProjectConfig, parseProjectConfig, resolveProjectConfig } from '@/lib/config'
+import { expandEnvVars, loadProjectConfig, parseProjectConfig, resolveProjectConfig } from '@/lib/config'
 import { setDataDir } from '@/lib/paths'
 
 describe('loadProjectConfig', () => {
@@ -346,6 +346,63 @@ describe('loadProjectConfig', () => {
     await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts[0].containerPath must be an absolute path')
   })
 
+  it('expands $VAR in bindMounts hostPath', async () => {
+    const origHome = process.env.HOME
+    process.env.HOME = '/home/testuser'
+    try {
+      const config = {
+        bindMounts: [{ hostPath: '$HOME/datasets', containerPath: '/mnt/datasets' }],
+      }
+      await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+      const result = await loadProjectConfig(tmpDir)
+      expect(result!.bindMounts).toEqual([
+        { hostPath: '/home/testuser/datasets', containerPath: '/mnt/datasets' },
+      ])
+    } finally {
+      process.env.HOME = origHome
+    }
+  })
+
+  it('expands ${VAR} in bindMounts hostPath', async () => {
+    process.env.YAAC_TEST_DIR = '/opt/data'
+    try {
+      const config = {
+        bindMounts: [{ hostPath: '${YAAC_TEST_DIR}/models', containerPath: '/mnt/models' }],
+      }
+      await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+      const result = await loadProjectConfig(tmpDir)
+      expect(result!.bindMounts).toEqual([
+        { hostPath: '/opt/data/models', containerPath: '/mnt/models' },
+      ])
+    } finally {
+      delete process.env.YAAC_TEST_DIR
+    }
+  })
+
+  it('throws on unset env var in bindMounts hostPath', async () => {
+    delete process.env.YAAC_NONEXISTENT_VAR
+    const config = {
+      bindMounts: [{ hostPath: '$YAAC_NONEXISTENT_VAR/data', containerPath: '/mnt/data' }],
+    }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow(
+      'bindMounts[0].hostPath: environment variable "YAAC_NONEXISTENT_VAR" is not set',
+    )
+  })
+
+  it('throws when env var expansion results in non-absolute path', async () => {
+    process.env.YAAC_TEST_REL = 'relative/path'
+    try {
+      const config = {
+        bindMounts: [{ hostPath: '$YAAC_TEST_REL/data', containerPath: '/mnt/data' }],
+      }
+      await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+      await expect(loadProjectConfig(tmpDir)).rejects.toThrow('must be an absolute path (after expanding env vars')
+    } finally {
+      delete process.env.YAAC_TEST_REL
+    }
+  })
+
   it('parseProjectConfig parses raw JSON string', () => {
     const result = parseProjectConfig(JSON.stringify({ nestedContainers: true, initCommands: ['echo hi'] }))
     expect(result).toEqual({ nestedContainers: true, initCommands: ['echo hi'] })
@@ -431,5 +488,45 @@ describe('resolveProjectConfig', () => {
       JSON.stringify({ envPassthrough: 'not-an-array' }),
     )
     await expect(resolveProjectConfig(slug)).rejects.toThrow('envPassthrough must be a string array')
+  })
+})
+
+describe('expandEnvVars', () => {
+  it('expands $VAR syntax', () => {
+    process.env.YAAC_TEST_A = '/foo'
+    try {
+      expect(expandEnvVars('$YAAC_TEST_A/bar')).toBe('/foo/bar')
+    } finally {
+      delete process.env.YAAC_TEST_A
+    }
+  })
+
+  it('expands ${VAR} syntax', () => {
+    process.env.YAAC_TEST_B = '/baz'
+    try {
+      expect(expandEnvVars('${YAAC_TEST_B}/qux')).toBe('/baz/qux')
+    } finally {
+      delete process.env.YAAC_TEST_B
+    }
+  })
+
+  it('expands multiple variables', () => {
+    process.env.YAAC_TEST_C = '/a'
+    process.env.YAAC_TEST_D = 'b'
+    try {
+      expect(expandEnvVars('$YAAC_TEST_C/${YAAC_TEST_D}')).toBe('/a/b')
+    } finally {
+      delete process.env.YAAC_TEST_C
+      delete process.env.YAAC_TEST_D
+    }
+  })
+
+  it('returns string unchanged when no variables present', () => {
+    expect(expandEnvVars('/plain/path')).toBe('/plain/path')
+  })
+
+  it('throws on unset variable', () => {
+    delete process.env.YAAC_UNSET_VAR
+    expect(() => expandEnvVars('$YAAC_UNSET_VAR')).toThrow('environment variable "YAAC_UNSET_VAR" is not set')
   })
 })
