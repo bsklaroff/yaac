@@ -130,31 +130,6 @@ describe('getWaitingSessions', () => {
     })
   })
 
-  it('excludes specified session IDs', async () => {
-    mockIsTmuxAlive.mockReturnValue(true)
-    mockListContainers.mockResolvedValue([
-      {
-        State: 'running',
-        Names: ['/yaac-proj-abc'],
-        Labels: { 'yaac.session-id': 'abc', 'yaac.project': 'proj' },
-        Created: 1000,
-        Id: '1',
-      },
-      {
-        State: 'running',
-        Names: ['/yaac-proj-def'],
-        Labels: { 'yaac.session-id': 'def', 'yaac.project': 'proj' },
-        Created: 2000,
-        Id: '2',
-      },
-    ] as never)
-    mockGetStatus.mockResolvedValue('waiting')
-
-    const result = await getWaitingSessions(undefined, new Set(['abc']))
-    expect(result).toHaveLength(1)
-    expect(result[0].sessionId).toBe('def')
-  })
-
   it('filters out zombie containers and cleans them up', async () => {
     mockListContainers.mockResolvedValue([
       {
@@ -203,6 +178,36 @@ describe('getWaitingSessions', () => {
       projectSlug: 'proj',
       sessionId: 'exited-id',
     })
+  })
+
+  it('skips sessions in alreadyCleaning set without triggering cleanup', async () => {
+    mockIsTmuxAlive.mockReturnValue(true)
+    mockListContainers.mockResolvedValue([
+      {
+        State: 'running',
+        Names: ['/yaac-proj-cleaning'],
+        Labels: { 'yaac.session-id': 'cleaning-id', 'yaac.project': 'proj' },
+        Created: 1000,
+        Id: '1',
+      },
+      {
+        State: 'running',
+        Names: ['/yaac-proj-normal'],
+        Labels: { 'yaac.session-id': 'normal-id', 'yaac.project': 'proj' },
+        Created: 2000,
+        Id: '2',
+      },
+    ] as never)
+    mockGetStatus.mockResolvedValue('waiting')
+
+    const result = await getWaitingSessions(undefined, new Set(['cleaning-id']))
+    expect(result).toHaveLength(1)
+    expect(result[0].sessionId).toBe('normal-id')
+    // Should not have called isTmuxSessionAlive for the cleaning session
+    expect(mockIsTmuxAlive).toHaveBeenCalledTimes(1)
+    expect(mockIsTmuxAlive).toHaveBeenCalledWith('yaac-proj-normal')
+    // Should not trigger cleanup for it
+    expect(mockCleanupDetached).not.toHaveBeenCalled()
   })
 
   it('skips containers without session ID or project labels', async () => {
@@ -302,17 +307,17 @@ describe('sessionStream', () => {
     let callCount = 0
     mockListContainers.mockImplementation(() => {
       callCount++
-      // Calls 1-5: both containers exist and are waiting
-      // Call 6+: return empty to break the loop
-      if (callCount <= 5) return Promise.resolve([containerA, containerB] as never)
+      // Calls 1-3: both containers exist and are waiting
+      // Call 4+: return empty to break the loop
+      if (callCount <= 3) return Promise.resolve([containerA, containerB] as never)
       return Promise.resolve([])
     })
 
     await sessionStream()
 
-    // Should have attached to: A (oldest), B, then after clearing visited: A again
-    // Then on the 2nd cycle through, all visited again, clears, tries again
-    // but eventually callCount > 5 returns empty and exits
+    // Should have attached to: A (oldest), B, then after clearing visited: A again.
+    // Visited filtering now happens locally (no extra listContainers call on
+    // wrap-around), so 3 listContainers calls yield 3 attaches.
     expect(vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(3)
 
     // First attach should be to A (oldest)
@@ -322,5 +327,94 @@ describe('sessionStream', () => {
     expect(calls[1][0]).toContain('yaac-proj-b')
     // Third attach should be to A again (visited was cleared, only B excluded as lastVisited)
     expect(calls[2][0]).toContain('yaac-proj-a')
+  })
+
+  it('revisits a session after wrap-around instead of repeatedly creating new ones', async () => {
+    // Scenario: session A is the only waiting session. After visiting A, the
+    // wrap-around excludes it (lastVisited). That triggers sessionCreate. On
+    // the next iteration A is still the only session. If lastVisited was
+    // cleared after the first wrap-around, the second wrap-around sees
+    // visited={} and re-attaches to A. Without clearing, A stays permanently
+    // excluded and we just keep calling sessionCreate.
+    const { execSync } = await import('node:child_process')
+    vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => '')
+
+    mockIsTmuxAlive.mockReturnValue(true)
+    mockGetStatus.mockResolvedValue('waiting')
+
+    const containerA = {
+      State: 'running',
+      Names: ['/yaac-proj-a'],
+      Labels: { 'yaac.session-id': 'aaa', 'yaac.project': 'proj' },
+      Created: 1000,
+      Id: '1',
+    }
+
+    // Always return A as a waiting session
+    mockListContainers.mockResolvedValue([containerA] as never)
+
+    // Cap sessionCreate at 2 calls then throw to break the loop.
+    // With the fix:   visit A → create(1) → visit A → create(2) → throw  (2 attaches)
+    // Without the fix: visit A → create(1) → create(2) → throw            (1 attach)
+    let createCount = 0
+    mockSessionCreate.mockImplementation(() => {
+      createCount++
+      if (createCount >= 2) throw new Error('stop')
+      return Promise.resolve(undefined)
+    })
+
+    await sessionStream('my-project').catch(() => {})
+
+    const calls = vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>).mock.calls
+    // A must be visited a second time between the two sessionCreate calls,
+    // proving that clearing lastVisited allowed the wrap-around to unblock A.
+    expect(calls).toHaveLength(2)
+    expect(calls[0][0]).toContain('yaac-proj-a')
+    expect(calls[1][0]).toContain('yaac-proj-a')
+  })
+
+  it('does not double-cleanup a killed session on the next loop iteration', async () => {
+    const { execSync } = await import('node:child_process')
+    vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => '')
+
+    const containerA = {
+      State: 'running',
+      Names: ['/yaac-proj-a'],
+      Labels: { 'yaac.session-id': 'aaa', 'yaac.project': 'proj' },
+      Created: 1000,
+      Id: '1',
+    }
+
+    // First call: return containerA (will be attached + killed)
+    // Second call: containerA still shows as running (cleanup in progress)
+    // Third call: return empty to exit
+    let callCount = 0
+    mockListContainers.mockImplementation(() => {
+      callCount++
+      if (callCount <= 2) return Promise.resolve([containerA] as never)
+      return Promise.resolve([])
+    })
+
+    // First getWaitingSessions: alive, second (after kill): dead
+    let tmuxCheckCount = 0
+    mockIsTmuxAlive.mockImplementation(() => {
+      tmuxCheckCount++
+      // First two calls (getWaitingSessions filter + post-attach check): alive then dead
+      // The bug was that the third call (next getWaitingSessions filter) would also
+      // detect the zombie and trigger a second cleanup.
+      return tmuxCheckCount <= 1
+    })
+    mockGetStatus.mockResolvedValue('waiting')
+
+    await sessionStream()
+
+    // cleanupSessionDetached should be called exactly once (from the post-attach
+    // dead check), not a second time from getWaitingSessions on the next iteration
+    expect(mockCleanupDetached).toHaveBeenCalledTimes(1)
+    expect(mockCleanupDetached).toHaveBeenCalledWith({
+      containerName: 'yaac-proj-a',
+      projectSlug: 'proj',
+      sessionId: 'aaa',
+    })
   })
 })

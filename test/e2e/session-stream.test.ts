@@ -186,7 +186,7 @@ describe('yaac session stream', () => {
       expect(idxA).toBeLessThan(idxB)
     })
 
-    it('excludes specified session IDs', async () => {
+    it('skips sessions with cleanup already in progress', async () => {
       const sessions = await getWaitingSessions(undefined, new Set([containerA.sessionId]))
       const ids = sessions.map((s) => s.sessionId)
       expect(ids).not.toContain(containerA.sessionId)

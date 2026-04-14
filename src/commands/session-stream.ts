@@ -14,7 +14,7 @@ export interface WaitingSession {
 
 export async function getWaitingSessions(
   projectSlug?: string,
-  exclude?: Set<string>,
+  alreadyCleaning?: Set<string>,
 ): Promise<WaitingSession[]> {
   const filters: Record<string, string[]> = {
     label: [`yaac.data-dir=${getDataDir()}`],
@@ -35,6 +35,9 @@ export async function getWaitingSessions(
 
     if (!sessionId || !slug) continue
 
+    // Skip sessions that already have cleanup in progress
+    if (alreadyCleaning?.has(sessionId)) continue
+
     // Non-running containers are stale
     if (c.State !== 'running') {
       stale.push({ name, slug, sessionId })
@@ -46,8 +49,6 @@ export async function getWaitingSessions(
       stale.push({ name, slug, sessionId })
       continue
     }
-
-    if (exclude?.has(sessionId)) continue
 
     const status = await getSessionClaudeStatus(slug, sessionId)
     if (status !== 'waiting') continue
@@ -74,17 +75,18 @@ export async function getWaitingSessions(
 
 export async function sessionStream(project?: string): Promise<void> {
   const visited = new Set<string>()
+  const cleaning = new Set<string>()
   let lastVisited: string | undefined
 
   while (true) {
-    let sessions: WaitingSession[]
+    let allSessions: WaitingSession[]
     try {
-      sessions = await getWaitingSessions(project, visited)
+      allSessions = await getWaitingSessions(project, cleaning)
     } catch {
       // The podman socket connection may have gone stale while we were
       // blocked inside execSync (tmux attach). Retry once before giving up.
       try {
-        sessions = await getWaitingSessions(project, visited)
+        allSessions = await getWaitingSessions(project, cleaning)
       } catch {
         console.error('Failed to connect to Podman. Is the Podman machine running?')
         process.exitCode = 1
@@ -92,15 +94,16 @@ export async function sessionStream(project?: string): Promise<void> {
       }
     }
 
-    if (sessions.length === 0) {
+    let sessions = allSessions.filter((s) => !visited.has(s.sessionId))
+
+    if (sessions.length === 0 && allSessions.length > 0) {
       // All waiting sessions have been visited — clear the set so we can
       // revisit them, but keep the most-recently-visited session excluded
       // so we never bounce back to the one we just left.
-      if (visited.size > 0 && lastVisited) {
-        visited.clear()
-        visited.add(lastVisited)
-        sessions = await getWaitingSessions(project, visited)
-      }
+      visited.clear()
+      if (lastVisited) visited.add(lastVisited)
+      lastVisited = undefined
+      sessions = allSessions.filter((s) => !visited.has(s.sessionId))
     }
 
     if (sessions.length === 0) {
@@ -130,6 +133,7 @@ export async function sessionStream(project?: string): Promise<void> {
 
     if (!isTmuxSessionAlive(session.containerName)) {
       console.log('Claude Code exited. Cleaning up session...')
+      cleaning.add(session.sessionId)
       cleanupSessionDetached({
         containerName: session.containerName,
         projectSlug: session.projectSlug,
