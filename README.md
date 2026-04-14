@@ -138,6 +138,7 @@ Add a `yaac-config.json` to your repo root. Example with all options:
     "pnpm-store": "/home/yaac/.pnpm-store"
   },
   "initCommands": ["pnpm install --store-dir /home/yaac/.pnpm-store"],
+  "additionalAllowedUrls": ["internal.corp.example.com", "*.mycdn.example.com"],
   "nestedContainers": false,
   "hideInitPane": false,
   "pgRelay": {
@@ -172,6 +173,8 @@ Add a `yaac-config.json` to your repo root. Example with all options:
   - **`enabled`** — must be set to `true` to start the relay (default: `false`). The relay will not run unless this is explicitly enabled.
   - **`hostPort`** — port PostgreSQL listens on the host (default: `5432`).
   - **`containerPort`** — port exposed inside the container for the relay (default: `5432`).
+- **additionalAllowedUrls** — additional host patterns to allow on top of the [default allowlist](src/lib/container/default-allowed-hosts.ts). By default, the proxy blocks outbound requests to hosts not on the default list. Use this to add extra hosts without replacing the defaults. Supports exact hostnames (`api.example.com`) and wildcards (`*.example.com`).
+- **setAllowedUrls** — completely replaces the default allowlist with the given list of host patterns. Cannot be used together with `additionalAllowedUrls`. Set to `["*"]` to allow all outbound URLs (disables filtering), or `[]` to block all external network access. If the resolved list does not include `api.anthropic.com` or `github.com`, a warning is printed since sessions require these to function.
 
 ## Custom images
 

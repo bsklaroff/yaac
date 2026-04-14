@@ -8,6 +8,7 @@ import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_
 import { podman } from '@/lib/container/runtime'
 import { ensureImage, packTar } from '@/lib/container/image-builder'
 import { ProxyClient, buildRulesFromConfig } from '@/lib/container/proxy-client'
+import { resolveAllowedHosts } from '@/lib/container/default-allowed-hosts'
 import { PgRelayClient } from '@/lib/container/pg-relay'
 import { findAvailablePort } from '@/lib/container/port'
 import { addWorktree, getDefaultBranch } from '@/lib/git'
@@ -87,7 +88,8 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
   const additionalRules = config.envSecretProxy
     ? buildRulesFromConfig(config.envSecretProxy, process.env)
     : []
-  await proxy.updateProjectRules(projectSlug, additionalRules)
+  const allowedHosts = resolveAllowedHosts(config)
+  await proxy.updateProjectRules(projectSlug, additionalRules, allowedHosts)
 
   const proxyToken = proxy.generateSessionToken()
   await proxy.registerSession(proxyToken, projectSlug)

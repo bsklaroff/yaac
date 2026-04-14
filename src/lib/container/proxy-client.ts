@@ -148,14 +148,14 @@ export class ProxyClient {
     return res.text()
   }
 
-  async updateProjectRules(projectId: string, rules: InjectionRule[]): Promise<void> {
+  async updateProjectRules(projectId: string, rules: InjectionRule[], allowedHosts: string[]): Promise<void> {
     const res = await fetch(`${this.baseUrl}/projects/${encodeURIComponent(projectId)}/rules`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${this.authSecret}`,
       },
-      body: JSON.stringify({ rules }),
+      body: JSON.stringify({ rules, allowedHosts }),
     })
     if (!res.ok) {
       const text = await res.text()

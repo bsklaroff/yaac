@@ -50,6 +50,8 @@ export interface YaacConfig {
   bindMounts?: BindMountConfig[]
   hideInitPane?: boolean
   pgRelay?: PostgresRelayConfig
+  additionalAllowedUrls?: string[]
+  setAllowedUrls?: string[]
 }
 
 export interface GithubTokenEntry {

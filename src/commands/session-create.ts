@@ -7,6 +7,7 @@ import simpleGit from 'simple-git'
 import { ensureContainerRuntime, podman } from '@/lib/container/runtime'
 import { ensureImage, packTar } from '@/lib/container/image-builder'
 import { proxyClient, buildRulesFromConfig } from '@/lib/container/proxy-client'
+import { resolveAllowedHosts } from '@/lib/container/default-allowed-hosts'
 import type { InjectionRule } from '@/lib/container/proxy-client'
 import { reserveAvailablePort, startPortForwarders, podmanRelay } from '@/lib/container/port'
 import type { ReservedPort } from '@/lib/container/port'
@@ -308,7 +309,8 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   const additionalRules = config.envSecretProxy
     ? buildRulesFromConfig(config.envSecretProxy, process.env)
     : []
-  await proxyClient.updateProjectRules(projectSlug, [...githubRules, ...additionalRules])
+  const allowedHosts = resolveAllowedHosts(config)
+  await proxyClient.updateProjectRules(projectSlug, [...githubRules, ...additionalRules], allowedHosts)
 
   const proxyToken = proxyClient.generateSessionToken()
   await proxyClient.registerSession(proxyToken, projectSlug)

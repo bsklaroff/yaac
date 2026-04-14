@@ -8,7 +8,7 @@ import { getDefaultBranch } from '@/lib/git'
 
 const execFileAsync = promisify(execFile)
 
-const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'nestedContainers', 'portForward', 'bindMounts', 'hideInitPane', 'pgRelay'])
+const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'nestedContainers', 'portForward', 'bindMounts', 'hideInitPane', 'pgRelay', 'additionalAllowedUrls', 'setAllowedUrls'])
 
 /** Expand `$VAR` and `${VAR}` references in a string using `process.env`. */
 export function expandEnvVars(s: string): string {
@@ -196,6 +196,24 @@ export function parseProjectConfig(raw: string): YaacConfig {
       pgConfig.containerPort = pg.containerPort
     }
     config.pgRelay = pgConfig
+  }
+
+  if (obj.additionalAllowedUrls !== undefined) {
+    if (!Array.isArray(obj.additionalAllowedUrls) || !obj.additionalAllowedUrls.every((v) => typeof v === 'string')) {
+      throw new Error('yaac-config.json: additionalAllowedUrls must be a string array')
+    }
+    config.additionalAllowedUrls = obj.additionalAllowedUrls
+  }
+
+  if (obj.setAllowedUrls !== undefined) {
+    if (!Array.isArray(obj.setAllowedUrls) || !obj.setAllowedUrls.every((v) => typeof v === 'string')) {
+      throw new Error('yaac-config.json: setAllowedUrls must be a string array')
+    }
+    config.setAllowedUrls = obj.setAllowedUrls
+  }
+
+  if (config.additionalAllowedUrls && config.setAllowedUrls) {
+    throw new Error('yaac-config.json: additionalAllowedUrls and setAllowedUrls are mutually exclusive')
   }
 
   return config

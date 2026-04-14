@@ -121,6 +121,10 @@ const projectRules = new Map()
 /** @type {Map<string, string>} */
 const tokenToProject = new Map()
 
+/** projectId -> allowed host patterns (null means allow all for backward compat) */
+/** @type {Map<string, string[]>} */
+const projectAllowedHosts = new Map()
+
 // ── Injection Logic ────────────────────────────────────────────────────
 
 function pathMatches(requestPath, pattern) {
@@ -147,6 +151,15 @@ function findRulesForHost(token, hostname) {
   const rules = projectRules.get(projectId)
   if (!rules) return []
   return rules.filter((r) => hostMatches(hostname, r.hostPattern))
+}
+
+function isHostAllowed(token, hostname) {
+  const projectId = token ? tokenToProject.get(token) : undefined
+  if (!projectId) return true // no session = no filtering
+  const allowed = projectAllowedHosts.get(projectId)
+  if (!allowed) return true // no allowlist registered = allow all (backward compat)
+  if (allowed.length === 1 && allowed[0] === '*') return true
+  return allowed.some((pattern) => hostMatches(hostname, pattern))
 }
 
 function applyInjections(headers, requestPath, rules) {
@@ -358,9 +371,15 @@ function handleApiRequest(req, res) {
     req.on('data', (chunk) => { body += chunk })
     req.on('end', () => {
       try {
-        const { rules } = JSON.parse(body)
+        const { rules, allowedHosts } = JSON.parse(body)
         if (!Array.isArray(rules)) { res.writeHead(400); res.end('Invalid body: need rules array'); return }
         projectRules.set(projectId, rules)
+        if (Array.isArray(allowedHosts)) {
+          projectAllowedHosts.set(projectId, allowedHosts)
+          console.log(`[proxy] Updated allowlist (${allowedHosts.length} patterns) for project ${projectId.slice(0, 8)}...`)
+        } else {
+          projectAllowedHosts.delete(projectId)
+        }
         console.log(`[proxy] Updated ${rules.length} rules for project ${projectId.slice(0, 8)}...`)
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
@@ -376,6 +395,7 @@ function handleApiRequest(req, res) {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
     const projectId = decodeURIComponent(req.url.split('/')[2])
     const deleted = projectRules.delete(projectId)
+    projectAllowedHosts.delete(projectId)
     console.log(`[proxy] Removed rules for project ${projectId.slice(0, 8)}... (found: ${deleted})`)
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ ok: true, deleted }))
@@ -432,6 +452,14 @@ function isProxyRequest(req) {
 // network observers. Only HTTPS CONNECT+MITM requests get token injection.
 function handleHttpForward(req, res) {
   const target = new URL(req.url)
+  const token = extractToken(req.headers['proxy-authorization'])
+
+  if (!isHostAllowed(token, target.hostname)) {
+    console.log(`[proxy] BLOCKED HTTP forward to ${target.hostname} (not in allowlist)`)
+    res.writeHead(403, { 'Content-Type': 'text/plain' })
+    res.end(`Blocked by URL allowlist: ${target.hostname} is not in the allowed hosts`)
+    return
+  }
 
   const headers = { ...req.headers }
   delete headers['proxy-authorization']
@@ -473,6 +501,14 @@ const server = http.createServer((req, res) => {
 server.on('connect', (req, clientSocket, head) => {
   const [hostname, port] = req.url.split(':')
   const token = extractToken(req.headers['proxy-authorization'])
+
+  if (!isHostAllowed(token, hostname)) {
+    console.log(`[proxy] BLOCKED CONNECT to ${hostname}:${port} (not in allowlist)`)
+    clientSocket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
+    clientSocket.end()
+    return
+  }
+
   const rules = token ? findRulesForHost(token, hostname) : []
 
   clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
