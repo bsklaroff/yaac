@@ -249,6 +249,7 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
 
 describe('yaac session create', () => {
   const containersToCleanup: string[] = []
+  const volumesToCleanup: string[] = []
   const tmpDirs: string[] = []
 
   afterEach(async () => {
@@ -262,6 +263,14 @@ describe('yaac session create', () => {
       }
     }
     containersToCleanup.length = 0
+    for (const vol of volumesToCleanup) {
+      try {
+        await execFileAsync('podman', ['volume', 'rm', vol])
+      } catch {
+        // already gone
+      }
+    }
+    volumesToCleanup.length = 0
     for (const dir of tmpDirs) {
       await cleanupTempDir(dir)
     }
@@ -434,6 +443,11 @@ describe('yaac session create', () => {
   it('mounts cacheVolumes in container', async () => {
     await requirePodman()
 
+    const volName = 'yaac-cache-cache-vol-project-test-cache'
+    // Remove stale volume from prior runs to avoid podman lock conflicts
+    try { await execFileAsync('podman', ['volume', 'rm', volName]) } catch { /* ignore */ }
+    volumesToCleanup.push(volName)
+
     const tmpDir = await createTempDataDir()
     tmpDirs.push(tmpDir)
     const repoPath = path.join(tmpDir, 'cache-vol-project')
@@ -457,11 +471,6 @@ describe('yaac session create', () => {
       'exec', result.containerName, 'cat', '/tmp/test-cache/marker',
     ])
     expect(stdout.trim()).toBe('hello')
-
-    // Clean up the test volume
-    try {
-      await execFileAsync('podman', ['volume', 'rm', 'yaac-cache-cache-vol-project-test-cache'])
-    } catch { /* ignore */ }
   })
 
   it('runs initCommands at session start', async () => {
@@ -489,6 +498,11 @@ describe('yaac session create', () => {
 
   it('pnpm install reuses cached packages from store-dir on cache volume', async () => {
     await requirePodman()
+
+    const volName = 'yaac-cache-pnpm-cache-project-pnpm-store'
+    // Remove stale volume from prior runs to avoid podman lock conflicts
+    try { await execFileAsync('podman', ['volume', 'rm', volName]) } catch { /* ignore */ }
+    volumesToCleanup.push(volName)
 
     const tmpDir = await createTempDataDir()
     tmpDirs.push(tmpDir)
@@ -538,11 +552,6 @@ describe('yaac session create', () => {
 
     // "downloaded 0" means everything came from the cache volume
     expect(reinstallOutput).toContain('downloaded 0')
-
-    // Clean up the test volume
-    try {
-      await execFileAsync('podman', ['volume', 'rm', 'yaac-cache-pnpm-cache-project-pnpm-store'])
-    } catch { /* ignore */ }
   })
 
   it('runs podman inside container when nestedContainers is enabled', async () => {
