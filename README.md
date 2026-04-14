@@ -2,28 +2,6 @@
 
 Agent sandbox manager — run Claude Code sessions in isolated Podman containers.
 
-## Prerequisites
-
-- [Node.js](https://nodejs.org/) v22+
-- [pnpm](https://pnpm.io/) v10+
-- [Podman](https://podman.io/) v4+
-
-### macOS
-
-```sh
-brew install podman
-sudo /opt/homebrew/Cellar/podman/$(podman --version | cut -d' ' -f3)/bin/podman-mac-helper install
-podman machine init
-podman machine start
-```
-
-### Linux
-
-```sh
-sudo apt install podman    # Debian/Ubuntu
-sudo dnf install podman    # Fedora/RHEL
-```
-
 ## Install
 
 Clone the repo and install globally:
@@ -34,6 +12,19 @@ cd yaac
 pnpm install
 pnpm build
 npm install -g .
+```
+
+Install [Podman](https://podman.io/) for containerization:
+
+```sh
+# macOS
+brew install podman
+sudo /opt/homebrew/Cellar/podman/$(podman --version | cut -d' ' -f3)/bin/podman-mac-helper install
+podman machine init
+podman machine start
+
+# Debian / Ubuntu
+sudo apt install podman
 ```
 
 ## Usage
@@ -66,26 +57,52 @@ yaac session <command>
 Detach from a tmux session with `Ctrl-B D`. Kill the tmux server (and the
 container) with `Ctrl-B K`.
 
+## Container layout
+
+Each session runs in an isolated container with the following mounts:
+
+| Host | Container | Description |
+|------|-----------|-------------|
+| Git worktree (per-session) | `/workspace` | Project code (working directory) |
+| `<project>/repo/.git` | `/repo/.git` | Repository metadata |
+| `<project>/claude/` | `/home/yaac/.claude` | Claude Code configuration |
+| `<project>/claude.json` | `/home/yaac/.claude.json` | Claude Code project settings |
+
+The container runs as user `yaac` with home directory `/home/yaac`. All project data is stored under `~/.yaac/projects/<repo-name>/`. The repo, Claude config, and Claude project settings are shared across all sessions within a project (but isolated between projects). Each session gets its own git worktree.
+
 ## Project configuration
 
-Add a `yaac-config.json` to your repo root:
+Add a `yaac-config.json` to your repo root. Example with all options:
 
 ```json
 {
   "envPassthrough": ["TERM", "LANG"],
   "envSecretProxy": {
-    "GITHUB_TOKEN": {
-      "hosts": ["api.github.com", "github.com"]
-    },
-    "ANTHROPIC_API_KEY": {
-      "hosts": ["api.anthropic.com"],
+    "MY_API_KEY": {
+      "hosts": ["api.example.com"],
       "header": "x-api-key"
+    },
+    "OAUTH_CLIENT_ID": {
+      "hosts": ["auth.example.com"],
+      "path": "/oauth/*",
+      "bodyParam": "client_id"
+    },
+    "OAUTH_CLIENT_SECRET": {
+      "hosts": ["auth.example.com"],
+      "path": "/oauth/*",
+      "bodyParam": "client_secret"
     }
   },
+  "bindMounts": [
+    { "hostPath": "/home/user/datasets", "containerPath": "/mnt/datasets" },
+    { "hostPath": "/home/user/models", "containerPath": "/mnt/models", "readonly": true }
+  ],
   "cacheVolumes": {
     "pnpm-store": "/home/yaac/.pnpm-store"
   },
-  "initCommands": ["pnpm install --store-dir /home/yaac/.pnpm-store"]
+  "initCommands": ["pnpm install --store-dir /home/yaac/.pnpm-store"],
+  "nestedContainers": false,
+  "hideInitPane": false
 }
 ```
 
@@ -97,48 +114,14 @@ Add a `yaac-config.json` to your repo root:
   - **`path`** — only inject on matching URL paths (default `"/*"`). Supports `*` wildcards.
 
   Each entry must have either `header` or `bodyParam` (not both).
-
-  **Example: OAuth client credentials** — for APIs that authenticate with a client ID and
-  secret (e.g. GitHub OAuth Apps, Google APIs), use `bodyParam` to inject the real
-  credentials into token exchange requests:
-
-  ```json
-  {
-    "envSecretProxy": {
-      "GITHUB_CLIENT_ID": {
-        "hosts": ["github.com"],
-        "path": "/login/oauth/*",
-        "bodyParam": "client_id"
-      },
-      "GITHUB_CLIENT_SECRET": {
-        "hosts": ["github.com"],
-        "path": "/login/oauth/*",
-        "bodyParam": "client_secret"
-      }
-    }
-  }
-  ```
-
-  The container code performs the OAuth flow normally with placeholder values. The proxy
-  intercepts the token exchange request and replaces the placeholder `client_id` and
-  `client_secret` in the POST body with the real values from your host environment.
 - **bindMounts** — host directories mounted into the container. Each entry specifies:
   - **`hostPath`** — absolute path on the host (required).
   - **`containerPath`** — absolute path inside the container (required).
   - **`readonly`** — mount as read-only when `true` (default: `false`).
-
-  ```json
-  {
-    "bindMounts": [
-      { "hostPath": "/home/user/datasets", "containerPath": "/mnt/datasets" },
-      { "hostPath": "/home/user/models", "containerPath": "/mnt/models", "readonly": true }
-    ]
-  }
-  ```
 - **cacheVolumes** — named Podman volumes mounted into the container. Keys are volume names, values are absolute container paths. Volumes persist across sessions.
 - **initCommands** — commands run inside the container after it starts (e.g. `pnpm install` against a warm cache volume). These run on every session, not just the first.
-- **nestedContainers** — when `true`, enables podman-in-podman support so sessions can build and run containers. See [Nested containers](#nested-containers) below.
-- **hideInitPane** — when `true`, the init commands tmux pane is automatically closed after the commands finish or error. By default (`false`), the pane is preserved with `remain-on-exit` so you can inspect the output.
+- **nestedContainers** — when `true`, enables podman-in-podman support so sessions can build and run containers (default: `false`). See [Nested containers](#nested-containers) below.
+- **hideInitPane** — when `true`, the init commands tmux pane is automatically closed after the commands finish or error (default: `false`). When `false`, the pane is preserved with `remain-on-exit` so you can inspect the output.
 
 ## Custom images
 
@@ -149,8 +132,7 @@ The default image (Ubuntu 24.04 + Node.js + pnpm + Claude Code + gh + tmux) can 
     ```dockerfile
     ARG BASE_IMAGE
     FROM ${BASE_IMAGE}
-    RUN apt-get update && apt-get install -y --no-install-recommends postgresql-client && \
-        rm -rf /var/lib/apt/lists/*
+    # Rest of Dockerfile...
     ```
   - **Any other `FROM`** — replaces the default image entirely (e.g. use a different base distro or toolchain). Must install Claude Code yourself, since the default Dockerfile is skipped.
 
@@ -159,6 +141,7 @@ The default image (Ubuntu 24.04 + Node.js + pnpm + Claude Code + gh + tmux) can 
   ```dockerfile
   ARG BASE_IMAGE
   FROM ${BASE_IMAGE}
+  # Rest of Dockerfile...
   ```
 
 Layer order: default (or Dockerfile.yaac) → Dockerfile.nestable (if `nestedContainers` is true) → Dockerfile.user.
@@ -168,8 +151,8 @@ Layer order: default (or Dockerfile.yaac) → Dockerfile.nestable (if `nestedCon
 You can override project files per-machine without modifying the repo. Place override files in the project's config-override directory:
 
 ```
-~/.yaac/projects/<slug>/config-override/yaac-config.json
-~/.yaac/projects/<slug>/config-override/Dockerfile.yaac
+~/.yaac/projects/<repo-name>/config-override/yaac-config.json
+~/.yaac/projects/<repo-name>/config-override/Dockerfile.yaac
 ```
 
 If an override file exists, it fully replaces the corresponding file from the repo (no merging). This is useful for machine-specific setup or testing changes to the config without committing them.
