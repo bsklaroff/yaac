@@ -4,10 +4,9 @@ import http from 'node:http'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { requirePodman, TEST_RUN_ID } from '@test/helpers/setup'
-import { ProxyClient } from '@/lib/proxy-client'
-import { startPortForwarders, podmanRelay } from '@/lib/port-forwarder'
-import { findAvailablePort } from '@/lib/port'
-import { podman } from '@/lib/podman'
+import { ProxyClient } from '@/lib/container/proxy-client'
+import { startPortForwarders, podmanRelay, findAvailablePort } from '@/lib/container/port'
+import { podman } from '@/lib/container/runtime'
 
 const execFileAsync = promisify(execFile)
 

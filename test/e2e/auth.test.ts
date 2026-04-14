@@ -9,7 +9,7 @@ import {
   listTokens,
   resolveTokenForUrl,
   saveCredentials,
-} from '@/lib/credentials'
+} from '@/lib/project/credentials'
 
 describe('yaac auth', () => {
   let tmpDir: string

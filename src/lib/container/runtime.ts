@@ -2,7 +2,7 @@ import Docker from 'dockerode'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
-const execFileAsync = promisify(execFile)
+export const execFileAsync = promisify(execFile)
 
 function getSocketPath(): string | undefined {
   if (process.platform === 'darwin') return undefined // podman-mac-helper symlinks to /var/run/docker.sock
@@ -62,5 +62,29 @@ async function ensurePodmanLinux(): Promise<void> {
       + '  sudo dnf install podman    # Fedora/RHEL\n',
     )
     process.exit(1)
+  }
+}
+
+/**
+ * Create a podman network if it doesn't already exist.
+ */
+export async function ensureNetwork(name: string): Promise<void> {
+  try {
+    await execFileAsync('podman', ['network', 'create', '--internal', '--disable-dns', name])
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('already exists')) { /* ok */ }
+    else throw err
+  }
+}
+
+/**
+ * Check whether a container image exists locally.
+ */
+export async function imageExists(name: string): Promise<boolean> {
+  try {
+    await execFileAsync('podman', ['image', 'inspect', name])
+    return true
+  } catch {
+    return false
   }
 }

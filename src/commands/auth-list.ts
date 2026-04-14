@@ -1,4 +1,4 @@
-import { listTokens } from '@/lib/credentials'
+import { listTokens } from '@/lib/project/credentials'
 
 export async function authList(): Promise<void> {
   const tokens = await listTokens()

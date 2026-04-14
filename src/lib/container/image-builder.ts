@@ -2,12 +2,36 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { execFile, spawn } from 'node:child_process'
-import { promisify } from 'node:util'
-import { DOCKERFILES_DIR, getDataDir, configOverrideDir, repoDir } from '@/lib/paths'
+import { spawn } from 'node:child_process'
+import { pack } from 'tar-stream'
+import { DOCKERFILES_DIR, getDataDir, configOverrideDir, repoDir } from '@/lib/project/paths'
 import { getDefaultBranch } from '@/lib/git'
+import { execFileAsync, imageExists } from '@/lib/container/runtime'
 
-const execFileAsync = promisify(execFile)
+interface TarEntry {
+  name: string
+  content: string
+}
+
+export async function packTar(entries: TarEntry[]): Promise<Buffer> {
+  const p = pack()
+  const chunks: Buffer[] = []
+  p.on('data', (chunk: Buffer) => chunks.push(chunk))
+
+  for (const entry of entries) {
+    await new Promise<void>((resolve, reject) => {
+      p.entry({ name: entry.name }, entry.content, (err) => {
+        if (err) reject(err)
+        else resolve()
+      })
+    })
+  }
+
+  p.finalize()
+  await new Promise<void>((resolve) => p.on('end', resolve))
+
+  return Buffer.concat(chunks)
+}
 
 export async function fileHash(filePath: string): Promise<string> {
   const content = await fs.readFile(filePath, 'utf8')
@@ -25,15 +49,6 @@ export async function contextHash(dir: string): Promise<string> {
     hasher.update(await fs.readFile(path.join(dir, name)))
   }
   return hasher.digest('hex').slice(0, 16)
-}
-
-async function imageExists(name: string): Promise<boolean> {
-  try {
-    await execFileAsync('podman', ['image', 'inspect', name])
-    return true
-  } catch {
-    return false
-  }
 }
 
 async function buildImage(imageName: string, dockerfile: string, context: string, buildArgs?: Record<string, string>): Promise<void> {

@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import net from 'node:net'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { startPortForwarders, type RelayFactory } from '@/lib/port-forwarder'
+import { startPortForwarders, type RelayFactory } from '@/lib/container/port'
 
 describe('startPortForwarders', () => {
   const cleanups: Array<() => void> = []

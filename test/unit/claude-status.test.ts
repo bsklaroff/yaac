@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { getClaudeStatus, getFirstUserMessage } from '@/lib/claude-status'
+import { getClaudeStatus, getFirstUserMessage } from '@/lib/session/claude-status'
 
 describe('getClaudeStatus', () => {
   let tmpDir: string

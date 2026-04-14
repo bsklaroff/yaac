@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildRulesFromConfig } from '@/lib/secret-conventions'
+import { buildRulesFromConfig } from '@/lib/container/proxy-client'
 
 describe('buildRulesFromConfig', () => {
   it('defaults to Authorization: Bearer when no header/prefix specified', () => {

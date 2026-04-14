@@ -1,21 +1,67 @@
 import crypto from 'node:crypto'
-import { execFile, spawn } from 'node:child_process'
-import { promisify } from 'node:util'
-import { podman } from '@/lib/podman'
-import { PROXY_DIR } from '@/lib/paths'
-import { contextHash } from '@/lib/image-builder'
-import { findAvailablePort } from '@/lib/port'
-import type { InjectionRule } from '@/lib/secret-conventions'
+import { spawn } from 'node:child_process'
+import type { SecretProxyRule } from '@/types'
+import { podman, ensureNetwork, imageExists } from '@/lib/container/runtime'
+import { PROXY_DIR } from '@/lib/project/paths'
+import { contextHash } from '@/lib/container/image-builder'
+import { findAvailablePort } from '@/lib/container/port'
 
-const execFileAsync = promisify(execFile)
+// --- Secret convention types & builder (merged from secret-conventions.ts) ---
+
+export interface Injection {
+  action: 'set_header' | 'replace_header' | 'remove_header' | 'replace_body_param'
+  name: string
+  value?: string
+}
+
+export interface InjectionRule {
+  hostPattern: string
+  pathPattern: string
+  injections: Injection[]
+}
+
+/**
+ * Build proxy injection rules from yaac-config.json's envSecretProxy field.
+ * Each entry maps an env var name to a SecretProxyRule that describes how to
+ * inject the secret (as a header or body parameter).
+ */
+export function buildRulesFromConfig(
+  envSecretProxy: Record<string, SecretProxyRule>,
+  env: Record<string, string | undefined>,
+): InjectionRule[] {
+  const rules: InjectionRule[] = []
+
+  for (const [envVar, rule] of Object.entries(envSecretProxy)) {
+    const value = env[envVar]
+    if (!value) {
+      console.warn(`Warning: ${envVar} is not set in the environment, skipping proxy rule`)
+      continue
+    }
+
+    const pathPattern = rule.path ?? '/*'
+
+    let injections: Injection[]
+    if (rule.bodyParam) {
+      injections = [{ action: 'replace_body_param', name: rule.bodyParam, value }]
+    } else {
+      const headerName = rule.header ?? 'authorization'
+      const prefix = rule.prefix ?? (rule.header ? '' : 'Bearer ')
+      const headerValue = `${prefix}${value}`
+      injections = [{ action: 'set_header', name: headerName, value: headerValue }]
+    }
+
+    for (const host of rule.hosts) {
+      rules.push({ hostPattern: host, pathPattern, injections })
+    }
+  }
+
+  return rules
+}
+
+// --- ProxyClient ---
 
 /** Port the proxy server listens on inside its container (fixed). */
 export const PROXY_CONTAINER_PORT = '10255'
-
-/**
- * @deprecated Use PROXY_CONTAINER_PORT instead.
- */
-export const INTERNAL_PORT = PROXY_CONTAINER_PORT
 
 export interface ProxyClientConfig {
   image: string
@@ -247,29 +293,29 @@ export class ProxyClient {
   }
 
   private async ensureProxyImage(taggedImage: string): Promise<void> {
-    try {
-      await execFileAsync('podman', ['image', 'inspect', taggedImage])
+    if (await imageExists(taggedImage)) {
       this.resolvedImage = taggedImage
-    } catch {
-      if (this.config.requirePrebuilt) {
-        throw new Error(
-          `Proxy image ${taggedImage} is missing or stale. ` +
-          'Restart the test run so the global setup can rebuild it.',
-        )
-      }
-      console.log('Building proxy sidecar image...')
-      await new Promise<void>((resolve, reject) => {
-        const child = spawn('podman', [
-          'build', '-t', taggedImage, PROXY_DIR,
-        ], { stdio: 'inherit', timeout: 300_000 })
-        child.on('close', (code) => {
-          if (code === 0) resolve()
-          else reject(new Error(`podman build exited with code ${code}`))
-        })
-        child.on('error', reject)
-      })
-      this.resolvedImage = taggedImage
+      return
     }
+
+    if (this.config.requirePrebuilt) {
+      throw new Error(
+        `Proxy image ${taggedImage} is missing or stale. ` +
+        'Restart the test run so the global setup can rebuild it.',
+      )
+    }
+    console.log('Building proxy sidecar image...')
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn('podman', [
+        'build', '-t', taggedImage, PROXY_DIR,
+      ], { stdio: 'inherit', timeout: 300_000 })
+      child.on('close', (code) => {
+        if (code === 0) resolve()
+        else reject(new Error(`podman build exited with code ${code}`))
+      })
+      child.on('error', reject)
+    })
+    this.resolvedImage = taggedImage
   }
 
   /**
@@ -288,12 +334,7 @@ export class ProxyClient {
 
   private async start(hash: string): Promise<void> {
     // Create the internal session network
-    try {
-      await execFileAsync('podman', ['network', 'create', '--internal', '--disable-dns', this.config.network])
-    } catch (err) {
-      if (err instanceof Error && err.message.includes('already exists')) { /* ok */ }
-      else throw err
-    }
+    await ensureNetwork(this.config.network)
 
     const containerName = this.containerNameFor(hash)
     const authSecret = crypto.randomBytes(32).toString('hex')

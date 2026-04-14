@@ -2,8 +2,8 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { fileHash, contextHash, ensureImageByTag } from '@/lib/image-builder'
-import { DOCKERFILES_DIR, PROXY_DIR } from '@/lib/paths'
+import { fileHash, contextHash, ensureImageByTag } from '@/lib/container/image-builder'
+import { DOCKERFILES_DIR, PROXY_DIR } from '@/lib/project/paths'
 
 const execFileAsync = promisify(execFile)
 

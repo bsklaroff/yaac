@@ -1,8 +1,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { ensureDataDir, projectDir, repoDir, claudeDir } from '@/lib/paths'
+import { ensureDataDir, projectDir, repoDir, claudeDir } from '@/lib/project/paths'
 import { cloneRepo } from '@/lib/git'
-import { resolveTokenForUrl } from '@/lib/credentials'
+import { resolveTokenForUrl } from '@/lib/project/credentials'
 import type { ProjectMeta } from '@/types'
 
 function deriveSlug(remoteUrl: string): string {

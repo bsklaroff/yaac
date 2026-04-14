@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { expandEnvVars, loadProjectConfig, parseProjectConfig, resolveProjectConfig } from '@/lib/config'
-import { setDataDir } from '@/lib/paths'
+import { expandEnvVars, loadProjectConfig, parseProjectConfig, resolveProjectConfig } from '@/lib/project/config'
+import { setDataDir } from '@/lib/project/paths'
 
 describe('loadProjectConfig', () => {
   let tmpDir: string

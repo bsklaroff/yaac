@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process'
-import { resolveContainerAnyState } from '@/lib/container-resolve'
-import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session-cleanup'
+import { resolveContainerAnyState } from '@/lib/container/resolve'
+import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 
 export async function sessionAttach(containerId: string): Promise<void> {
   const resolved = await resolveContainerAnyState(containerId)

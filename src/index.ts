@@ -11,7 +11,7 @@ import { sessionMonitor } from '@/commands/session-monitor'
 import { authUpdate } from '@/commands/auth-update'
 import { authClear } from '@/commands/auth-clear'
 import { authList } from '@/commands/auth-list'
-import { ensureGithubToken } from '@/lib/credentials'
+import { ensureGithubToken } from '@/lib/project/credentials'
 
 /**
  * Show subcommand options nested under each subcommand in help output.

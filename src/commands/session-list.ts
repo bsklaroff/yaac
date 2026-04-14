@@ -1,9 +1,9 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { podman } from '@/lib/podman'
-import { claudeDir, getDataDir, getProjectsDir } from '@/lib/paths'
-import { getSessionClaudeStatus, getSessionFirstUserMessage } from '@/lib/claude-status'
-import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session-cleanup'
+import { podman } from '@/lib/container/runtime'
+import { claudeDir, getDataDir, getProjectsDir } from '@/lib/project/paths'
+import { getSessionClaudeStatus, getSessionFirstUserMessage } from '@/lib/session/claude-status'
+import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 
 export interface SessionListOptions {
   deleted?: boolean

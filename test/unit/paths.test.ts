@@ -16,7 +16,7 @@ import {
   PACKAGE_ROOT,
   DOCKERFILES_DIR,
   PROXY_DIR,
-} from '@/lib/paths'
+} from '@/lib/project/paths'
 
 describe('paths', () => {
   afterEach(() => {

@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { claudeDir } from '@/lib/paths'
+import { claudeDir } from '@/lib/project/paths'
 
 const WAITING_STOP_REASONS = new Set(['end_turn', 'refusal', 'stop_sequence'])
 

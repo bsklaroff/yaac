@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { getDataDir, getProjectsDir } from '@/lib/paths'
-import { podman } from '@/lib/podman'
+import { getDataDir, getProjectsDir } from '@/lib/project/paths'
+import { podman } from '@/lib/container/runtime'
 import type { ProjectMeta } from '@/types'
 
 export async function projectList(): Promise<void> {

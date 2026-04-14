@@ -1,21 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { getWaitingSessions, sessionStream } from '@/commands/session-stream'
 
-vi.mock('@/lib/podman', () => ({
+vi.mock('@/lib/container/runtime', () => ({
   podman: {
     listContainers: vi.fn(),
   },
 }))
 
-vi.mock('@/lib/claude-status', () => ({
+vi.mock('@/lib/session/claude-status', () => ({
   getSessionClaudeStatus: vi.fn(),
 }))
 
-vi.mock('@/lib/paths', () => ({
+vi.mock('@/lib/project/paths', () => ({
   getDataDir: () => '/tmp/yaac-test',
 }))
 
-vi.mock('@/lib/session-cleanup', () => ({
+vi.mock('@/lib/session/cleanup', () => ({
   isTmuxSessionAlive: vi.fn().mockReturnValue(true),
   cleanupSessionDetached: vi.fn(),
 }))
@@ -28,9 +28,9 @@ vi.mock('node:child_process', () => ({
   execSync: vi.fn(),
 }))
 
-import { podman } from '@/lib/podman'
-import { getSessionClaudeStatus } from '@/lib/claude-status'
-import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session-cleanup'
+import { podman } from '@/lib/container/runtime'
+import { getSessionClaudeStatus } from '@/lib/session/claude-status'
+import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 import { sessionCreate } from '@/commands/session-create'
 
 // eslint-disable-next-line @typescript-eslint/unbound-method

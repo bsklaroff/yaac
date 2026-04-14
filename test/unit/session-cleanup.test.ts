@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isTmuxSessionAlive, cleanupSession, cleanupSessionDetached } from '@/lib/session-cleanup'
+import { isTmuxSessionAlive, cleanupSession, cleanupSessionDetached } from '@/lib/session/cleanup'
 
 describe('isTmuxSessionAlive', () => {
   it('is exported as a function', () => {

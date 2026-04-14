@@ -1,8 +1,8 @@
 import { execSync } from 'node:child_process'
-import { podman } from '@/lib/podman'
-import { getDataDir } from '@/lib/paths'
-import { getSessionClaudeStatus } from '@/lib/claude-status'
-import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session-cleanup'
+import { podman } from '@/lib/container/runtime'
+import { getDataDir } from '@/lib/project/paths'
+import { getSessionClaudeStatus } from '@/lib/session/claude-status'
+import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 import { sessionCreate } from '@/commands/session-create'
 
 export interface WaitingSession {

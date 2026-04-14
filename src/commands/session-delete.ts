@@ -1,5 +1,5 @@
-import { resolveContainerAnyState } from '@/lib/container-resolve'
-import { cleanupSessionDetached } from '@/lib/session-cleanup'
+import { resolveContainerAnyState } from '@/lib/container/resolve'
+import { cleanupSessionDetached } from '@/lib/session/cleanup'
 
 export async function sessionDelete(idOrName: string): Promise<void> {
   const resolved = await resolveContainerAnyState(idOrName)

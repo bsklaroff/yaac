@@ -1,7 +1,7 @@
 import { execSync, spawn } from 'node:child_process'
-import { podman } from '@/lib/podman'
+import { podman } from '@/lib/container/runtime'
 import { removeWorktree } from '@/lib/git'
-import { repoDir, worktreeDir } from '@/lib/paths'
+import { repoDir, worktreeDir } from '@/lib/project/paths'
 
 export function isTmuxSessionAlive(containerName: string): boolean {
   try {

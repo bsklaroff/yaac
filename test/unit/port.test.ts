@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import net from 'node:net'
-import { findAvailablePort } from '@/lib/port'
+import { findAvailablePort } from '@/lib/container/port'
 
 describe('findAvailablePort', () => {
   const servers: net.Server[] = []

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { fileHash } from '@/lib/image-builder'
+import { fileHash } from '@/lib/container/image-builder'
 
 describe('fileHash', () => {
   it('returns a 16-character hex hash of file contents', async () => {

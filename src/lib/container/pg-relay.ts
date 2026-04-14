@@ -1,9 +1,5 @@
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
-import { podman } from '@/lib/podman'
+import { podman, ensureNetwork, imageExists, execFileAsync } from '@/lib/container/runtime'
 import type { PostgresRelayConfig } from '@/types'
-
-const execFileAsync = promisify(execFile)
 
 const SOCAT_IMAGE = 'docker.io/alpine/socat:1.8.0.3'
 const DEFAULT_HOST_PORT = 5432
@@ -64,17 +60,10 @@ export class PgRelayClient {
     const containerPort = config?.containerPort ?? DEFAULT_CONTAINER_PORT
 
     // Ensure the session network exists
-    try {
-      await execFileAsync('podman', ['network', 'create', '--internal', '--disable-dns', this._network])
-    } catch (err) {
-      if (err instanceof Error && err.message.includes('already exists')) { /* ok */ }
-      else throw err
-    }
+    await ensureNetwork(this._network)
 
     // Pull socat image if needed
-    try {
-      await execFileAsync('podman', ['image', 'inspect', SOCAT_IMAGE])
-    } catch {
+    if (!await imageExists(SOCAT_IMAGE)) {
       console.log('Pulling socat image...')
       await execFileAsync('podman', ['pull', SOCAT_IMAGE], { timeout: 120_000 })
     }

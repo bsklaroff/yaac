@@ -14,7 +14,7 @@ import {
   parseRepoPath,
   matchPattern,
   saveCredentials,
-} from '@/lib/credentials'
+} from '@/lib/project/credentials'
 
 describe('credentials', () => {
   let tmpDir: string

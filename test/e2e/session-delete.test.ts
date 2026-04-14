@@ -4,9 +4,9 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject } from '@test/helpers/setup'
 import { sessionDelete } from '@/commands/session-delete'
-import { podman } from '@/lib/podman'
-import { ensureImage } from '@/lib/image-builder'
-import { claudeDir, worktreeDir, worktreesDir, repoDir, getDataDir } from '@/lib/paths'
+import { podman } from '@/lib/container/runtime'
+import { ensureImage } from '@/lib/container/image-builder'
+import { claudeDir, worktreeDir, worktreesDir, repoDir, getDataDir } from '@/lib/project/paths'
 import { addWorktree } from '@/lib/git'
 
 async function createMinimalContainer(projectSlug: string): Promise<{ containerName: string; sessionId: string }> {

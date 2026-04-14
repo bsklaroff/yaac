@@ -1,5 +1,5 @@
 import readline from 'node:readline/promises'
-import { listTokens, removeToken, saveCredentials } from '@/lib/credentials'
+import { listTokens, removeToken, saveCredentials } from '@/lib/project/credentials'
 
 export async function authClear(): Promise<void> {
   const tokens = await listTokens()

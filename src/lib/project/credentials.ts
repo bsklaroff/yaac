@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import readline from 'node:readline/promises'
 import path from 'node:path'
-import { getDataDir, ensureDataDir } from '@/lib/paths'
+import { getDataDir, ensureDataDir } from '@/lib/project/paths'
 import type { CredentialsFile, GithubTokenEntry } from '@/types'
 
 export function credentialsPath(): string {

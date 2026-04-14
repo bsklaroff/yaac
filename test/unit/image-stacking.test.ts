@@ -48,7 +48,7 @@ describe('ensureImage layer stacking', () => {
       }),
     }))
 
-    const mod = await import('@/lib/image-builder')
+    const mod = await import('@/lib/container/image-builder')
     return mod
   }
 

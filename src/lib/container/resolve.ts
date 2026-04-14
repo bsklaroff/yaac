@@ -1,5 +1,5 @@
-import { podman } from '@/lib/podman'
-import { getDataDir } from '@/lib/paths'
+import { podman } from '@/lib/container/runtime'
+import { getDataDir } from '@/lib/project/paths'
 
 export interface ResolvedContainer {
   name: string

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { extract } from 'tar-stream'
 import { Readable } from 'node:stream'
-import { packTar } from '@/lib/tar-utils'
+import { packTar } from '@/lib/container/image-builder'
 
 function extractEntries(buf: Buffer): Promise<{ name: string; content: string }[]> {
   return new Promise((resolve, reject) => {

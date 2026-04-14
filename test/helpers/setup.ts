@@ -5,10 +5,10 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import simpleGit from 'simple-git'
-import { setDataDir, getDataDir, projectDir, repoDir, claudeDir } from '@/lib/paths'
+import { setDataDir, getDataDir, projectDir, repoDir, claudeDir } from '@/lib/project/paths'
 import { cloneRepo } from '@/lib/git'
 import type { ProjectMeta } from '@/types'
-import type { ProxyClientConfig } from '@/lib/proxy-client'
+import type { ProxyClientConfig } from '@/lib/container/proxy-client'
 
 const execFileAsync = promisify(execFile)
 
