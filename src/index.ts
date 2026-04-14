@@ -132,17 +132,17 @@ const auth = program
 
 auth
   .command('list')
-  .description('List configured GitHub tokens')
+  .description('List configured GitHub tokens (masked)')
   .action(authList)
 
 auth
   .command('update')
-  .description('Add or replace a GitHub Personal Access Token')
+  .description('Add or replace a GitHub Personal Access Token (interactive)')
   .action(authUpdate)
 
 auth
   .command('clear')
-  .description('Remove stored GitHub credentials')
+  .description('Remove stored GitHub credentials (interactive)')
   .action(authClear)
 
 // Ensure GitHub token exists before any command (except auth commands)
