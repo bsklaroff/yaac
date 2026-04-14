@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import type { SecretProxyRule } from '@/types'
 import { podman, ensureNetwork, imageExists } from '@/lib/container/runtime'
@@ -306,9 +307,14 @@ export class ProxyClient {
     }
     console.log('Building proxy sidecar image...')
     await new Promise<void>((resolve, reject) => {
-      const child = spawn('podman', [
-        'build', '-t', taggedImage, PROXY_DIR,
-      ], { stdio: 'inherit', timeout: 300_000 })
+      const buildArgs = ['build', '-t', taggedImage]
+      const certFile = process.env.SSL_CERT_FILE
+      if (certFile && existsSync(certFile)) {
+        buildArgs.push('--volume', `${certFile}:${certFile}:ro`)
+        buildArgs.push('--build-arg', `SSL_CERT_FILE=${certFile}`)
+      }
+      buildArgs.push(PROXY_DIR)
+      const child = spawn('podman', buildArgs, { stdio: 'inherit', timeout: 300_000 })
       child.on('close', (code) => {
         if (code === 0) resolve()
         else reject(new Error(`podman build exited with code ${code}`))

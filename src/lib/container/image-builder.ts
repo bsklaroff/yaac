@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -57,6 +58,16 @@ async function buildImage(imageName: string, dockerfile: string, context: string
     '-t', imageName,
     '-f', dockerfile,
   ]
+
+  // When running behind a TLS-intercepting proxy (e.g. inside a yaac
+  // session), mount the custom CA cert so curl/apt inside the build
+  // can verify connections through the proxy.
+  const certFile = process.env.SSL_CERT_FILE
+  if (certFile && existsSync(certFile)) {
+    args.push('--volume', `${certFile}:${certFile}:ro`)
+    args.push('--build-arg', `SSL_CERT_FILE=${certFile}`)
+  }
+
   for (const [key, value] of Object.entries(buildArgs ?? {})) {
     args.push('--build-arg', `${key}=${value}`)
   }

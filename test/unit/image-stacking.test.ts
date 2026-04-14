@@ -38,7 +38,7 @@ describe('ensureImage layer stacking', () => {
         const imageName = tIdx >= 0 ? args[tIdx + 1] : 'unknown'
         const buildArgPairs: string[] = []
         for (let i = 0; i < args.length; i++) {
-          if (args[i] === '--build-arg') buildArgPairs.push(args[i + 1])
+          if (args[i] === '--build-arg' && !args[i + 1]?.startsWith('SSL_CERT_FILE=')) buildArgPairs.push(args[i + 1])
         }
         const suffix = buildArgPairs.length ? ` [${buildArgPairs.join(',')}]` : ''
         operations.push(`build ${imageName}${suffix}`)

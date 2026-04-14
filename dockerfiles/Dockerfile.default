@@ -1,7 +1,11 @@
 FROM docker.io/ubuntu:24.04
+ARG SSL_CERT_FILE
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl gcc git less libc6-dev netcat-openbsd python3 socat tmux locales podman sudo xz-utils && \
     sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen && update-locale LANG=en_US.UTF-8 && \
+    if [ -n "$SSL_CERT_FILE" ] && [ -f "$SSL_CERT_FILE" ]; then \
+      cp "$SSL_CERT_FILE" /usr/local/share/ca-certificates/proxy-ca.crt && update-ca-certificates; \
+    fi && \
     curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] \
