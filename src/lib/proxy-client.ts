@@ -59,6 +59,7 @@ export class ProxyClient {
       'SSL_CERT_FILE=/tmp/proxy-ca.pem',
       'GIT_SSL_CAINFO=/tmp/proxy-ca.pem',
       'NODE_USE_ENV_PROXY=1',
+      'NODE_OPTIONS=--disable-warning=UNDICI-EHPA',
       'GIT_TERMINAL_PROMPT=0',
       'GIT_HTTP_PROXY_AUTHMETHOD=basic',
     ]
