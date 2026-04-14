@@ -4,7 +4,6 @@ import { projectList } from '@/commands/project-list'
 import { sessionCreate } from '@/commands/session-create'
 import { sessionList } from '@/commands/session-list'
 import { sessionDelete } from '@/commands/session-delete'
-import { sessionShell } from '@/commands/session-shell'
 import { sessionAttach } from '@/commands/session-attach'
 import { sessionStream } from '@/commands/session-stream'
 import { sessionMonitor } from '@/commands/session-monitor'
@@ -101,15 +100,10 @@ session
   .action(sessionDelete)
 
 session
-  .command('shell')
-  .description('Open a zsh shell in a session container')
-  .argument('<container-id>', 'Session ID or container name')
-  .action(sessionShell)
-
-session
   .command('attach')
-  .description('Attach to the Claude Code session')
+  .description('Attach to the Claude Code tmux session')
   .argument('<container-id>', 'Session ID or container name')
+  .addHelpText('after', '\nTmux shortcuts:\n  Ctrl-B C  Open a new shell\n  Ctrl-B N  Switch to the next window\n  Ctrl-B P  Switch to the previous window')
   .action(sessionAttach)
 
 session

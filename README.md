@@ -49,8 +49,7 @@ yaac session <command>
   list [options] [project]    List active sessions
     -d, --deleted             List deleted sessions from Claude Code history
   delete <session-id>         Delete a session and clean up its resources
-  shell <container-id>        Open a zsh shell in a session container
-  attach <container-id>       Attach to the Claude Code session
+  attach <container-id>       Attach to the Claude Code tmux session
   stream [project]            Stream through waiting sessions, attaching to
                               each in turn
   monitor [options] [project] Poll and display active sessions in real-time
@@ -62,8 +61,10 @@ yaac auth <command>
   clear               Remove stored GitHub credentials (interactive)
 ```
 
-Detach from a tmux session with `Ctrl-B D`. Kill the tmux server (and the
-container) with `Ctrl-B K`.
+Detach from a tmux session with `Ctrl-B D`. Kill the tmux session (and the
+container) with `Ctrl-B K` (custom binding, not standard tmux). Open a new
+shell in the tmux session with `Ctrl-B C`, and switch between shells with `Ctrl-B N` (next) and
+`Ctrl-B P` (previous).
 
 ## Authentication
 
