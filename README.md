@@ -14,7 +14,7 @@ pnpm build
 npm install -g .
 ```
 
-Install [Podman](https://podman.io/) for containerization:
+Install [Podman](https://podman.io/) (version 5.0+) for containerization:
 
 ```sh
 # macOS
@@ -23,8 +23,13 @@ sudo /opt/homebrew/Cellar/podman/$(podman --version | cut -d' ' -f3)/bin/podman-
 podman machine init
 podman machine start
 
-# Debian / Ubuntu
+# Debian / Ubuntu (25.04+)
 sudo apt install podman
+
+# Ubuntu 24.04 — pin podman from 25.04 (plucky):
+echo 'deb http://archive.ubuntu.com/ubuntu plucky main universe' | sudo tee /etc/apt/sources.list.d/plucky.list
+printf 'Package: *\nPin: release n=plucky\nPin-Priority: 100\n' | sudo tee /etc/apt/preferences.d/plucky
+sudo apt update && sudo apt install -t plucky podman crun
 ```
 
 ## Usage

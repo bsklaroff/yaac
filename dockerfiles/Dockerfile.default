@@ -39,12 +39,14 @@ ENV EDITOR=nvim
 ENV SHELL=/bin/zsh
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
-RUN printf '%s\n' \
-    'HISTSIZE=10000' \
-    'SAVEHIST=10000' \
-    'setopt appendhistory' \
-    "PS1='%n@%m:%~\$ '" \
-    > ~/.zshrc
+RUN cat <<'EOF' > ~/.zshrc
+HISTSIZE=10000
+SAVEHIST=10000
+setopt appendhistory
+PS1='%n %~ $ '
+alias ls='ls --color=auto'
+alias grep='grep --color=auto'
+EOF
 
 WORKDIR /workspace
 ENTRYPOINT ["sleep", "infinity"]

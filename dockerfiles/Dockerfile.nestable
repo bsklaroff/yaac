@@ -2,7 +2,21 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 USER root
 
-RUN apt-get update && apt-get install -y --no-install-recommends uidmap libcap2-bin slirp4netns && \
+RUN cat <<'EOF' > /etc/apt/sources.list.d/ubuntu-plucky.sources
+Types: deb
+URIs: http://archive.ubuntu.com/ubuntu/
+Suites: plucky plucky-updates
+Components: main universe
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+EOF
+RUN cat <<'EOF' > /etc/apt/preferences.d/ubuntu-plucky
+Package: *
+Pin: release n=plucky
+Pin-Priority: 100
+EOF
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends -t plucky podman crun && \
+    apt-get install -y --no-install-recommends uidmap libcap2-bin slirp4netns && \
     rm -rf /var/lib/apt/lists/*
 
 RUN echo "yaac:100000:65536" > /etc/subuid && \
@@ -12,14 +26,29 @@ RUN chmod u-s /usr/bin/newuidmap /usr/bin/newgidmap && \
     setcap cap_setuid+ep /usr/bin/newuidmap && \
     setcap cap_setgid+ep /usr/bin/newgidmap
 
-RUN printf '[containers]\nnetns="host"\nuserns="keep-id"\nipcns="host"\nutsns="host"\ncgroupns="host"\ncgroups="disabled"\nlog_driver="k8s-file"\n[engine]\ncgroup_manager="cgroupfs"\nevents_logger="file"\nruntime="crun"\n' \
-    > /etc/containers/containers.conf
+RUN cat <<'EOF' > /etc/containers/containers.conf
+[containers]
+netns="host"
+userns="keep-id"
+ipcns="host"
+utsns="host"
+cgroupns="host"
+cgroups="disabled"
+log_driver="k8s-file"
+[engine]
+cgroup_manager="cgroupfs"
+events_logger="file"
+runtime="crun"
+EOF
 
 RUN mkdir -p /home/yaac/.config/containers && \
-    printf '[containers]\nvolumes = ["/proc:/proc"]\ndefault_sysctls = []\n' \
-    > /home/yaac/.config/containers/containers.conf && \
-    mkdir -p /home/yaac/.local/share/containers && \
-    chown yaac:yaac -R /home/yaac/.local/share/containers /home/yaac/.config
+    mkdir -p /home/yaac/.local/share/containers
+RUN cat <<'EOF' > /home/yaac/.config/containers/containers.conf
+[containers]
+volumes = ["/proc:/proc"]
+default_sysctls = []
+EOF
+RUN chown yaac:yaac -R /home/yaac/.local/share/containers /home/yaac/.config
 
 RUN mkdir -p /run/user/1000/podman && chown yaac:yaac -R /run/user/1000
 
