@@ -88,6 +88,10 @@ export async function sessionList(projectSlug?: string, options: SessionListOpti
     const toolWidth = Math.max('TOOL'.length, ...rows.map((r) => r.tool.length))
     const statusWidth = Math.max('STATUS'.length, ...rows.map((r) => r.status.length))
 
+    // Sort: waiting first, then running, then prewarm
+    const statusOrder: Record<string, number> = { waiting: 0, running: 1, prewarm: 2 }
+    rows.sort((a, b) => (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9) || a.created.localeCompare(b.created))
+
     const fixedWidth = 10 + 1 + projectWidth + 1 + toolWidth + 1 + statusWidth + 1 + 19 + 2
     const termWidth = process.stdout.columns || 120
     const promptWidth = Math.max(10, termWidth - fixedWidth)
