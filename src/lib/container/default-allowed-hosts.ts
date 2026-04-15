@@ -45,6 +45,7 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'www.docker.com',
   'production.cloudflare.docker.com',
   'download.docker.com',
+  'podman.io',
   'gcr.io',
   '*.gcr.io',
   'ghcr.io',
@@ -203,6 +204,7 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'launchpad.net',
   'www.launchpad.net',
   '*.nixos.org',
+  'download.opensuse.org',
 
   // Kubernetes
   'dl.k8s.io',
@@ -244,6 +246,7 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   // Other dev tools
   'developer.apple.com',
   'developer.android.com',
+  'developers.openai.com',
   'pkg.stainless.com',
   'binaries.prisma.sh',
 
