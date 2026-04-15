@@ -164,7 +164,7 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
   let agentCmd: string
   if (tool === 'codex') {
     agentCmd = [
-      'codex --full-auto',
+      'codex --yolo',
       addDirFlags,
       options.prompt ? `-p ${shellEscape(options.prompt)}` : '',
     ].filter(Boolean).join(' ')
