@@ -708,9 +708,9 @@ describe('yaac session create', () => {
     ], { timeout: 30_000 })
     expect(blocked.trim()).toContain('internet-blocked')
 
-    // Verify containers on the default bridge CAN reach the internet
+    // Verify containers on the default (host) network CAN reach the internet
     const { stdout: works } = await execFileAsync('podman', [
-      'exec', containerName, 'podman', 'run', '--rm', '--network=podman',
+      'exec', containerName, 'podman', 'run', '--rm',
       'docker.io/library/alpine', 'sh', '-c',
       'wget -qO- --timeout=10 http://1.1.1.1 >/dev/null 2>&1 && echo internet-works || echo internet-broken',
     ], { timeout: 30_000 })

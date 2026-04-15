@@ -5,6 +5,17 @@ vi.mock('@/commands/session-list', () => ({
   sessionList: vi.fn().mockResolvedValue(undefined),
 }))
 
+vi.mock('@/lib/container/proxy-client', () => ({
+  proxyClient: {
+    ensureRunning: vi.fn().mockRejectedValue(new Error('mock')),
+  },
+}))
+
+vi.mock('@/lib/prewarm', () => ({
+  ensurePrewarmSession: vi.fn().mockResolvedValue(undefined),
+  ensurePrewarmSessions: vi.fn().mockResolvedValue(undefined),
+}))
+
 describe('sessionMonitor', () => {
   afterEach(() => {
     vi.restoreAllMocks()

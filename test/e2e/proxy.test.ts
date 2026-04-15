@@ -115,7 +115,7 @@ describe('proxy sidecar', () => {
     // Healthcheck should fail — podman may take a moment to release the
     // host port binding after container removal, so retry briefly.
     let reachable = true
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 20; i++) {
       try {
         const res = await fetch(`http://127.0.0.1:${port}/healthz`)
         await res.body?.cancel()
@@ -123,7 +123,7 @@ describe('proxy sidecar', () => {
         reachable = false
         break
       }
-      await new Promise((r) => setTimeout(r, 200))
+      await new Promise((r) => setTimeout(r, 500))
     }
     expect(reachable).toBe(false)
   })
