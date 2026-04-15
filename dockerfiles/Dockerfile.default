@@ -15,16 +15,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN ARCH="$(dpkg --print-architecture)" && if [ "$ARCH" = "amd64" ]; then ARCH=x64; fi && \
     curl -fsSL "https://nodejs.org/dist/v22.22.2/node-v22.22.2-linux-${ARCH}.tar.xz" | \
     tar -xJ -C /usr/local --strip-components=1
-RUN corepack enable
 RUN ARCH="$(dpkg --print-architecture)" && \
     curl -fsSL "https://github.com/neovim/neovim/releases/download/v0.10.4/nvim-linux-${ARCH}.tar.gz" | \
     tar -xz -C /usr/local --strip-components=1 && \
     ln -sf /usr/local/bin/nvim /usr/local/bin/vi && \
     ln -sf /usr/local/bin/nvim /usr/local/bin/vim
+RUN corepack enable
 RUN userdel -r ubuntu 2>/dev/null; useradd -m -s /bin/zsh yaac && \
     echo 'Defaults env_keep += "HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy SSL_CERT_FILE NODE_EXTRA_CA_CERTS GIT_SSL_CAINFO"' >> /etc/sudoers && \
     echo 'yaac ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 USER yaac
+RUN curl -fsSL https://claude.ai/install.sh | bash
 ENV LANG=en_US.UTF-8
 ENV TERM=xterm-256color
 ENV HOME=/home/yaac
@@ -33,6 +34,5 @@ ENV EDITOR=nvim
 ENV SHELL=/bin/zsh
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN corepack install -g pnpm@10.33.0
-RUN curl -fsSL https://claude.ai/install.sh | bash
 WORKDIR /workspace
 ENTRYPOINT ["sleep", "infinity"]
