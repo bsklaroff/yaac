@@ -25,6 +25,27 @@ export function shellEscape(str: string): string {
   return str.replace(/'/g, "'\\''")
 }
 
+export function buildAgentCmd(
+  tool: AgentTool,
+  sessionId: string,
+  addDirFlags: string,
+  prompt?: string,
+): string {
+  if (tool === 'codex') {
+    return [
+      'codex --yolo',
+      addDirFlags,
+      prompt ? `-- "${shellEscape(prompt)}"` : '',
+    ].filter(Boolean).join(' ')
+  }
+  return [
+    'claude --dangerously-skip-permissions',
+    `--session-id ${sessionId}`,
+    addDirFlags,
+    prompt ? `-p ${shellEscape(prompt)}` : '',
+  ].filter(Boolean).join(' ')
+}
+
 function containerExec(containerName: string, cmd: string): void {
   execSync(`podman exec ${containerName} ${cmd}`, { stdio: 'pipe' })
 }
@@ -161,21 +182,7 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
     .map((p) => `--add-dir /add-dir${shellEscape(p)}`)
     .join(' ')
 
-  let agentCmd: string
-  if (tool === 'codex') {
-    agentCmd = [
-      'codex --yolo',
-      addDirFlags,
-      options.prompt ? `-p ${shellEscape(options.prompt)}` : '',
-    ].filter(Boolean).join(' ')
-  } else {
-    agentCmd = [
-      'claude --dangerously-skip-permissions',
-      `--session-id ${sessionId}`,
-      addDirFlags,
-      options.prompt ? `-p ${shellEscape(options.prompt)}` : '',
-    ].filter(Boolean).join(' ')
-  }
+  const agentCmd = buildAgentCmd(tool, sessionId, addDirFlags, options.prompt)
   const toolLabel = tool === 'codex' ? 'Codex' : 'Claude Code'
   console.log(`Starting ${toolLabel}...`)
   containerExec(containerName, `tmux -u new-session -d -s yaac -n ${tool} '${agentCmd}'`)
