@@ -117,13 +117,17 @@ function getLeafCert(hostname) {
 /** @type {Map<string, Array<{ hostPattern: string, pathPattern: string, injections: Array<{ action: string, name: string, value?: string }> }>>} */
 const projectRules = new Map()
 
-/** session token -> projectId */
+/** sessionId -> projectId (sessionId is used as proxy-auth credential) */
 /** @type {Map<string, string>} */
-const tokenToProject = new Map()
+const sessionToProject = new Map()
 
 /** projectId -> allowed host patterns (null means allow all for backward compat) */
 /** @type {Map<string, string[]>} */
 const projectAllowedHosts = new Map()
+
+/** sessionId -> Set of blocked hostnames */
+/** @type {Map<string, Set<string>>} */
+const blockedHostsBySession = new Map()
 
 // ── Injection Logic ────────────────────────────────────────────────────
 
@@ -145,21 +149,31 @@ function hostMatches(hostname, pattern) {
   return false
 }
 
-function findRulesForHost(token, hostname) {
-  const projectId = tokenToProject.get(token)
+function findRulesForHost(sessionId, hostname) {
+  const projectId = sessionToProject.get(sessionId)
   if (!projectId) return []
   const rules = projectRules.get(projectId)
   if (!rules) return []
   return rules.filter((r) => hostMatches(hostname, r.hostPattern))
 }
 
-function isHostAllowed(token, hostname) {
-  const projectId = token ? tokenToProject.get(token) : undefined
+function isHostAllowed(sessionId, hostname) {
+  const projectId = sessionId ? sessionToProject.get(sessionId) : undefined
   if (!projectId) return true // no session = no filtering
   const allowed = projectAllowedHosts.get(projectId)
   if (!allowed) return true // no allowlist registered = allow all (backward compat)
   if (allowed.length === 1 && allowed[0] === '*') return true
   return allowed.some((pattern) => hostMatches(hostname, pattern))
+}
+
+function recordBlockedHost(sessionId, hostname) {
+  if (!sessionId) return
+  let hosts = blockedHostsBySession.get(sessionId)
+  if (!hosts) {
+    hosts = new Set()
+    blockedHostsBySession.set(sessionId, hosts)
+  }
+  hosts.add(hostname)
 }
 
 function applyInjections(headers, requestPath, rules) {
@@ -228,9 +242,9 @@ function applyBodyInjections(bodyBuffer, contentType, injections) {
   return Buffer.from(params.toString(), 'utf8')
 }
 
-// ── Token Extraction ───────────────────────────────────────────────────
+// ── Session ID Extraction ─────────────────────────────────────────────
 
-function extractToken(proxyAuthHeader) {
+function extractSessionId(proxyAuthHeader) {
   if (!proxyAuthHeader) return null
   const match = proxyAuthHeader.match(/^Basic\s+(.+)$/i)
   if (!match) return null
@@ -402,17 +416,17 @@ function handleApiRequest(req, res) {
     return
   }
 
-  // Register a session token → project mapping
+  // Register a session → project mapping
   if (req.method === 'POST' && req.url === '/sessions') {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
     let body = ''
     req.on('data', (chunk) => { body += chunk })
     req.on('end', () => {
       try {
-        const { token, projectId } = JSON.parse(body)
-        if (!token || !projectId) { res.writeHead(400); res.end('Invalid body: need token and projectId'); return }
-        tokenToProject.set(token, projectId)
-        console.log(`[proxy] Registered session ${token.slice(0, 8)}... → project ${projectId.slice(0, 8)}...`)
+        const { sessionId, projectId } = JSON.parse(body)
+        if (!sessionId || !projectId) { res.writeHead(400); res.end('Invalid body: need sessionId and projectId'); return }
+        sessionToProject.set(sessionId, projectId)
+        console.log(`[proxy] Registered session ${sessionId.slice(0, 8)}... → project ${projectId.slice(0, 8)}...`)
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
       } catch (err) {
@@ -422,14 +436,29 @@ function handleApiRequest(req, res) {
     return
   }
 
-  // Remove a session token mapping
+  // Remove a session mapping
   if (req.method === 'DELETE' && req.url?.startsWith('/sessions/')) {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
-    const token = decodeURIComponent(req.url.slice('/sessions/'.length))
-    const deleted = tokenToProject.delete(token)
-    console.log(`[proxy] Removed session ${token.slice(0, 8)}... (found: ${deleted})`)
+    const sessionId = decodeURIComponent(req.url.slice('/sessions/'.length))
+    const deleted = sessionToProject.delete(sessionId)
+    blockedHostsBySession.delete(sessionId)
+    console.log(`[proxy] Removed session ${sessionId.slice(0, 8)}... (found: ${deleted})`)
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ ok: true, deleted }))
+    return
+  }
+
+  // Return blocked hosts for all sessions
+  if (req.method === 'GET' && req.url === '/blocked-hosts') {
+    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
+    const result = {}
+    for (const [sid, hosts] of blockedHostsBySession) {
+      if (hosts.size > 0) {
+        result[sid] = [...hosts]
+      }
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(result))
     return
   }
 
@@ -452,10 +481,11 @@ function isProxyRequest(req) {
 // network observers. Only HTTPS CONNECT+MITM requests get token injection.
 function handleHttpForward(req, res) {
   const target = new URL(req.url)
-  const token = extractToken(req.headers['proxy-authorization'])
+  const sessionId = extractSessionId(req.headers['proxy-authorization'])
 
-  if (!isHostAllowed(token, target.hostname)) {
+  if (!isHostAllowed(sessionId, target.hostname)) {
     console.log(`[proxy] BLOCKED HTTP forward to ${target.hostname} (not in allowlist)`)
+    recordBlockedHost(sessionId, target.hostname)
     res.writeHead(403, { 'Content-Type': 'text/plain' })
     res.end(`Blocked by URL allowlist: ${target.hostname} is not in the allowed hosts`)
     return
@@ -500,7 +530,7 @@ const server = http.createServer((req, res) => {
 
 server.on('connect', (req, clientSocket, head) => {
   const [hostname, port] = req.url.split(':')
-  const token = extractToken(req.headers['proxy-authorization'])
+  const sessionId = extractSessionId(req.headers['proxy-authorization'])
 
   clientSocket.on('error', (err) => {
     if (err.code !== 'ECONNRESET') {
@@ -508,14 +538,15 @@ server.on('connect', (req, clientSocket, head) => {
     }
   })
 
-  if (!isHostAllowed(token, hostname)) {
+  if (!isHostAllowed(sessionId, hostname)) {
     console.log(`[proxy] BLOCKED CONNECT to ${hostname}:${port} (not in allowlist)`)
+    recordBlockedHost(sessionId, hostname)
     clientSocket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
     clientSocket.end()
     return
   }
 
-  const rules = token ? findRulesForHost(token, hostname) : []
+  const rules = sessionId ? findRulesForHost(sessionId, hostname) : []
 
   clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
 

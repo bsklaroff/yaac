@@ -1,5 +1,9 @@
 import { sessionList } from '@/commands/session-list'
 import { ensurePrewarmSession, ensurePrewarmSessions } from '@/lib/prewarm'
+import { proxyClient } from '@/lib/container/proxy-client'
+import { fetchAndPersistBlockedHosts } from '@/lib/session/blocked-hosts'
+import { podman } from '@/lib/container/runtime'
+import { getDataDir } from '@/lib/project/paths'
 
 export interface SessionMonitorOptions {
   interval?: string
@@ -51,6 +55,25 @@ export async function sessionMonitor(projectSlug?: string, options: SessionMonit
 
     // Clear from cursor to end of screen (remove stale lines from previous render)
     process.stdout.write('\x1B[J')
+
+    // Persist blocked hosts from proxy to .yaac directory (best-effort)
+    try {
+      await proxyClient.ensureRunning()
+      const containers = await podman.listContainers({
+        all: true,
+        filters: { label: [`yaac.data-dir=${getDataDir()}`] },
+      })
+      const sessions = containers
+        .filter((c) => c.State === 'running')
+        .map((c) => ({
+          sessionId: c.Labels?.['yaac.session-id'] ?? '',
+          projectSlug: c.Labels?.['yaac.project'] ?? '',
+        }))
+        .filter((s) => s.sessionId && s.projectSlug)
+      await fetchAndPersistBlockedHosts(proxyClient, sessions)
+    } catch {
+      // Proxy may not be running — skip silently
+    }
 
     // Prewarm: run as non-blocking background task with in-progress guard.
     // When a specific project is given, prewarm just that project.

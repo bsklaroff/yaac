@@ -346,11 +346,10 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   const allowedHosts = resolveAllowedHosts(config)
   await proxyClient.updateProjectRules(projectSlug, [...githubRules, ...additionalRules], allowedHosts)
 
-  const proxyToken = proxyClient.generateSessionToken()
-  await proxyClient.registerSession(proxyToken, projectSlug)
+  await proxyClient.registerSession(sessionId, projectSlug)
 
   // Add proxy env vars
-  env.push(...proxyClient.getProxyEnv(proxyToken))
+  env.push(...proxyClient.getProxyEnv(sessionId))
 
   // Add placeholder values for proxied secrets so tools detect them
   if (config.envSecretProxy) {

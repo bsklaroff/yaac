@@ -118,13 +118,9 @@ export class ProxyClient {
     return this.resolved
   }
 
-  generateSessionToken(): string {
-    return crypto.randomBytes(32).toString('hex')
-  }
-
-  getProxyEnv(sessionToken: string): string[] {
+  getProxyEnv(sessionId: string): string[] {
     if (!this._proxyIp) throw new Error('Proxy not started — call ensureRunning() first')
-    const proxyUrl = `http://x:${sessionToken}@${this._proxyIp}:${PROXY_CONTAINER_PORT}`
+    const proxyUrl = `http://x:${sessionId}@${this._proxyIp}:${PROXY_CONTAINER_PORT}`
     return [
       `HTTPS_PROXY=${proxyUrl}`,
       `HTTP_PROXY=${proxyUrl}`,
@@ -174,14 +170,14 @@ export class ProxyClient {
     }
   }
 
-  async registerSession(token: string, projectId: string): Promise<void> {
+  async registerSession(sessionId: string, projectId: string): Promise<void> {
     const res = await fetch(`${this.baseUrl}/sessions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${this.authSecret}`,
       },
-      body: JSON.stringify({ token, projectId }),
+      body: JSON.stringify({ sessionId, projectId }),
     })
     if (!res.ok) {
       const text = await res.text()
@@ -189,8 +185,8 @@ export class ProxyClient {
     }
   }
 
-  async removeSession(token: string): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/sessions/${encodeURIComponent(token)}`, {
+  async removeSession(sessionId: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/sessions/${encodeURIComponent(sessionId)}`, {
       method: 'DELETE',
       headers: { 'Authorization': `Bearer ${this.authSecret}` },
     })
@@ -198,6 +194,17 @@ export class ProxyClient {
       const text = await res.text()
       throw new Error(`Failed to remove session: ${res.status} ${text}`)
     }
+  }
+
+  async getBlockedHosts(): Promise<Record<string, string[]>> {
+    const res = await fetch(`${this.baseUrl}/blocked-hosts`, {
+      headers: { 'Authorization': `Bearer ${this.authSecret}` },
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Failed to get blocked hosts: ${res.status} ${text}`)
+    }
+    return res.json() as Promise<Record<string, string[]>>
   }
 
   async ensureRunning(): Promise<void> {

@@ -12,6 +12,8 @@ import {
   claudeDir,
   worktreesDir,
   worktreeDir,
+  blockedHostsDir,
+  blockedHostsFile,
   ensureDataDir,
   PACKAGE_ROOT,
   DOCKERFILES_DIR,
@@ -42,6 +44,8 @@ describe('paths', () => {
     expect(claudeDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/claude')
     expect(worktreesDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/worktrees')
     expect(worktreeDir('my-repo', 'abc123')).toBe('/tmp/yaac-test/projects/my-repo/worktrees/abc123')
+    expect(blockedHostsDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/blocked-hosts')
+    expect(blockedHostsFile('my-repo', 'abc123')).toBe('/tmp/yaac-test/projects/my-repo/blocked-hosts/abc123.json')
   })
 
   it('ensureDataDir creates projects directory', async () => {

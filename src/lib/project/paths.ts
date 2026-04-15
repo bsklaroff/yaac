@@ -67,6 +67,14 @@ export function worktreeDir(slug: string, sessionId: string): string {
   return path.join(worktreesDir(slug), sessionId)
 }
 
+export function blockedHostsDir(slug: string): string {
+  return path.join(projectDir(slug), 'blocked-hosts')
+}
+
+export function blockedHostsFile(slug: string, sessionId: string): string {
+  return path.join(blockedHostsDir(slug), `${sessionId}.json`)
+}
+
 export async function ensureDataDir(): Promise<void> {
   await fs.mkdir(getProjectsDir(), { recursive: true })
 }

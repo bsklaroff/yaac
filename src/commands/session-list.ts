@@ -4,6 +4,7 @@ import { podman } from '@/lib/container/runtime'
 import { claudeDir, getDataDir, getProjectsDir } from '@/lib/project/paths'
 import { getSessionClaudeStatus, getSessionFirstUserMessage } from '@/lib/session/claude-status'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
+import { readAllBlockedHosts } from '@/lib/session/blocked-hosts'
 import { isPrewarmSession } from '@/lib/prewarm'
 
 export interface SessionListOptions {
@@ -97,6 +98,25 @@ export async function sessionList(projectSlug?: string, options: SessionListOpti
       console.log(`${row.shortId.padEnd(10)} ${row.project.padEnd(projectWidth)} ${row.status.padEnd(statusWidth)} ${row.created}  ${promptText}`)
     }
     console.log('')
+
+    // Show blocked hosts section
+    const sessionInfos = running.map((c) => ({
+      sessionId: c.Labels?.['yaac.session-id'] ?? '',
+      projectSlug: c.Labels?.['yaac.project'] ?? '',
+    })).filter((s) => s.sessionId && s.projectSlug)
+
+    const blockedHosts = await readAllBlockedHosts(sessionInfos)
+    const sessionsWithBlocked = Object.entries(blockedHosts).filter(([, hosts]) => hosts.length > 0)
+    if (sessionsWithBlocked.length > 0) {
+      console.log('Blocked hosts:')
+      for (const [sessionId, hosts] of sessionsWithBlocked) {
+        console.log(`  ${sessionId.slice(0, 8)}`)
+        for (const host of hosts) {
+          console.log(`    ${host}`)
+        }
+      }
+      console.log('')
+    }
   }
 
   // Clean up stale containers in detached background processes

@@ -91,9 +91,8 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
   const allowedHosts = resolveAllowedHosts(config)
   await proxy.updateProjectRules(projectSlug, additionalRules, allowedHosts)
 
-  const proxyToken = proxy.generateSessionToken()
-  await proxy.registerSession(proxyToken, projectSlug)
-  env.push(...proxy.getProxyEnv(proxyToken))
+  await proxy.registerSession(sessionId, projectSlug)
+  env.push(...proxy.getProxyEnv(sessionId))
 
   if (config.envSecretProxy) {
     for (const name of Object.keys(config.envSecretProxy)) {

@@ -79,8 +79,7 @@ describe('proxy sidecar', () => {
   it('registers session and project rules', async () => {
     await client.ensureRunning()
 
-    const token = client.generateSessionToken()
-    expect(token).toHaveLength(64) // 32 bytes hex
+    const sessionId = crypto.randomUUID()
 
     // Register rules
     await client.updateProjectRules('test-project', [
@@ -92,10 +91,10 @@ describe('proxy sidecar', () => {
     ], ['*'])
 
     // Register session
-    await client.registerSession(token, 'test-project')
+    await client.registerSession(sessionId, 'test-project')
 
     // Clean up
-    await client.removeSession(token)
+    await client.removeSession(sessionId)
     await client.removeProjectRules('test-project')
   })
 
@@ -334,11 +333,11 @@ describe('proxy HTTP forwarding', () => {
       },
     ], [echoIp])
 
-    const sessionToken = client.generateSessionToken()
-    await client.registerSession(sessionToken, 'allowlist-test')
+    const sessionId = crypto.randomUUID()
+    await client.registerSession(sessionId, 'allowlist-test')
 
     // Request to the echo server (allowed)
-    const auth = Buffer.from(`x:${sessionToken}`).toString('base64')
+    const auth = Buffer.from(`x:${sessionId}`).toString('base64')
     const allowed = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/test`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
@@ -351,23 +350,23 @@ describe('proxy HTTP forwarding', () => {
     expect(blocked.status).toBe(403)
     expect(blocked.body).toContain('not in the allowed hosts')
 
-    await client.removeSession(sessionToken)
+    await client.removeSession(sessionId)
     await client.removeProjectRules('allowlist-test')
   })
 
   it('allows all hosts when allowedHosts includes wildcard', async () => {
     await client.updateProjectRules('allowlist-wildcard', [], ['*'])
 
-    const sessionToken = client.generateSessionToken()
-    await client.registerSession(sessionToken, 'allowlist-wildcard')
+    const sessionId = crypto.randomUUID()
+    await client.registerSession(sessionId, 'allowlist-wildcard')
 
-    const auth = Buffer.from(`x:${sessionToken}`).toString('base64')
+    const auth = Buffer.from(`x:${sessionId}`).toString('base64')
     const result = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/test`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(result.status).toBe(200)
 
-    await client.removeSession(sessionToken)
+    await client.removeSession(sessionId)
     await client.removeProjectRules('allowlist-wildcard')
   })
 
@@ -375,16 +374,16 @@ describe('proxy HTTP forwarding', () => {
     // The echo container IP is like 10.x.x.x — use a wildcard that won't match it
     await client.updateProjectRules('allowlist-pattern', [], ['*.example.com'])
 
-    const sessionToken = client.generateSessionToken()
-    await client.registerSession(sessionToken, 'allowlist-pattern')
+    const sessionId = crypto.randomUUID()
+    await client.registerSession(sessionId, 'allowlist-pattern')
 
-    const auth = Buffer.from(`x:${sessionToken}`).toString('base64')
+    const auth = Buffer.from(`x:${sessionId}`).toString('base64')
     const blocked = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/test`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(blocked.status).toBe(403)
 
-    await client.removeSession(sessionToken)
+    await client.removeSession(sessionId)
     await client.removeProjectRules('allowlist-pattern')
   })
 
@@ -392,32 +391,32 @@ describe('proxy HTTP forwarding', () => {
     // Register rules without allowedHosts field
     await client.updateProjectRules('no-allowlist', [], ['*'])
 
-    const sessionToken = client.generateSessionToken()
-    await client.registerSession(sessionToken, 'no-allowlist')
+    const sessionId = crypto.randomUUID()
+    await client.registerSession(sessionId, 'no-allowlist')
 
-    const auth = Buffer.from(`x:${sessionToken}`).toString('base64')
+    const auth = Buffer.from(`x:${sessionId}`).toString('base64')
     const result = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/test`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(result.status).toBe(200)
 
-    await client.removeSession(sessionToken)
+    await client.removeSession(sessionId)
     await client.removeProjectRules('no-allowlist')
   })
 
   it('blocks all traffic when allowedHosts is empty', async () => {
     await client.updateProjectRules('allowlist-empty', [], [])
 
-    const sessionToken = client.generateSessionToken()
-    await client.registerSession(sessionToken, 'allowlist-empty')
+    const sessionId = crypto.randomUUID()
+    await client.registerSession(sessionId, 'allowlist-empty')
 
-    const auth = Buffer.from(`x:${sessionToken}`).toString('base64')
+    const auth = Buffer.from(`x:${sessionId}`).toString('base64')
     const blocked = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/test`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(blocked.status).toBe(403)
 
-    await client.removeSession(sessionToken)
+    await client.removeSession(sessionId)
     await client.removeProjectRules('allowlist-empty')
   })
 
@@ -431,11 +430,11 @@ describe('proxy HTTP forwarding', () => {
       },
     ], ['*'])
 
-    const sessionToken = client.generateSessionToken()
-    await client.registerSession(sessionToken, 'project-secret')
+    const sessionId = crypto.randomUUID()
+    await client.registerSession(sessionId, 'project-secret')
 
     // Send a plain HTTP request through the proxy with valid session credentials
-    const auth = Buffer.from(`x:${sessionToken}`).toString('base64')
+    const auth = Buffer.from(`x:${sessionId}`).toString('base64')
     const result = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/test`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
@@ -446,7 +445,40 @@ describe('proxy HTTP forwarding', () => {
     expect(echo.headers['authorization']).toBeUndefined()
 
     // Clean up
-    await client.removeSession(sessionToken)
+    await client.removeSession(sessionId)
     await client.removeProjectRules('project-secret')
+  })
+
+  it('tracks blocked hosts per session via /blocked-hosts endpoint', async () => {
+    await client.updateProjectRules('blocked-tracking', [], [echoIp])
+
+    const sessionId = crypto.randomUUID()
+    await client.registerSession(sessionId, 'blocked-tracking')
+
+    // Make a request to a blocked host
+    const auth = Buffer.from(`x:${sessionId}`).toString('base64')
+    const blocked = await proxyRequest(Number(client.hostPort), 'http://192.0.2.1:80/test', {
+      headers: { 'Proxy-Authorization': `Basic ${auth}` },
+    })
+    expect(blocked.status).toBe(403)
+
+    // Also block a second host
+    const blocked2 = await proxyRequest(Number(client.hostPort), 'http://198.51.100.1:80/test', {
+      headers: { 'Proxy-Authorization': `Basic ${auth}` },
+    })
+    expect(blocked2.status).toBe(403)
+
+    // Fetch blocked hosts
+    const blockedHosts = await client.getBlockedHosts()
+    expect(blockedHosts[sessionId]).toBeDefined()
+    expect(blockedHosts[sessionId]).toContain('192.0.2.1')
+    expect(blockedHosts[sessionId]).toContain('198.51.100.1')
+
+    // After removing session, blocked hosts should be cleaned up
+    await client.removeSession(sessionId)
+    const afterRemoval = await client.getBlockedHosts()
+    expect(afterRemoval[sessionId]).toBeUndefined()
+
+    await client.removeProjectRules('blocked-tracking')
   })
 })
