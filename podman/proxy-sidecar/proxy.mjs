@@ -502,6 +502,12 @@ server.on('connect', (req, clientSocket, head) => {
   const [hostname, port] = req.url.split(':')
   const token = extractToken(req.headers['proxy-authorization'])
 
+  clientSocket.on('error', (err) => {
+    if (err.code !== 'ECONNRESET') {
+      console.error(`[proxy] Client socket error for ${hostname}:${port}:`, err.message)
+    }
+  })
+
   if (!isHostAllowed(token, hostname)) {
     console.log(`[proxy] BLOCKED CONNECT to ${hostname}:${port} (not in allowlist)`)
     clientSocket.write('HTTP/1.1 403 Forbidden\r\n\r\n')

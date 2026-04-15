@@ -7,6 +7,7 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   // Anthropic services
   'api.anthropic.com',
   'statsig.anthropic.com',
+  'mcp-proxy.anthropic.com',
   'docs.claude.com',
   'platform.claude.com',
   'code.claude.com',
@@ -16,6 +17,7 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'github.com',
   'www.github.com',
   'api.github.com',
+  'cli.github.com',
   'npm.pkg.github.com',
   'raw.githubusercontent.com',
   'pkg-npm.githubusercontent.com',
