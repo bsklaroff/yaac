@@ -12,6 +12,7 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'platform.claude.com',
   'code.claude.com',
   'claude.ai',
+  'downloads.claude.ai',
 
   // Version control — GitHub
   'github.com',
