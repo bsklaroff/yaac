@@ -140,7 +140,7 @@ describe('yaac session stream', () => {
     await sessionStream()
 
     console.log = origLog
-    expect(logs.join('\n')).toContain('No waiting sessions')
+    expect(logs.join('\n')).toContain('No projects found')
   })
 
   describe('getWaitingSessions with real containers (shared)', () => {

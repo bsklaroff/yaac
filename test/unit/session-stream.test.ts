@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { getWaitingSessions, sessionStream } from '@/commands/session-stream'
+import { getWaitingSessions, sessionStream, promptForProject } from '@/commands/session-stream'
 
 vi.mock('@/lib/container/runtime', () => ({
   podman: {
@@ -13,6 +13,7 @@ vi.mock('@/lib/session/claude-status', () => ({
 
 vi.mock('@/lib/project/paths', () => ({
   getDataDir: () => '/tmp/yaac-test',
+  getProjectsDir: () => '/tmp/yaac-test/projects',
 }))
 
 vi.mock('@/lib/session/cleanup', () => ({
@@ -32,10 +33,34 @@ vi.mock('node:child_process', () => ({
   execSync: vi.fn(),
 }))
 
+vi.mock('node:fs/promises', () => ({
+  default: {
+    readdir: vi.fn().mockRejectedValue(new Error('no dir')),
+  },
+}))
+
+vi.mock('node:readline/promises', () => {
+  const mockQuestion = vi.fn()
+  const mockClose = vi.fn()
+  return {
+    default: {
+      createInterface: vi.fn().mockReturnValue({
+        question: mockQuestion,
+        close: mockClose,
+      }),
+    },
+  }
+})
+
 import { podman } from '@/lib/container/runtime'
 import { getSessionClaudeStatus } from '@/lib/session/claude-status'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 import { sessionCreate } from '@/commands/session-create'
+import fs from 'node:fs/promises'
+import readline from 'node:readline/promises'
+
+const mockReaddir = vi.mocked(fs.readdir)
+const mockCreateInterface = vi.mocked(readline.createInterface)
 
 // eslint-disable-next-line @typescript-eslint/unbound-method
 const mockListContainers = vi.mocked(podman.listContainers)
@@ -259,13 +284,15 @@ describe('sessionStream', () => {
     mockListContainers.mockImplementation(() => {
       callCount++
       if (callCount === 1) return Promise.reject(new Error('socket hang up'))
-      // Retry succeeds but returns no sessions → exits
+      // Retry succeeds but returns no sessions → resolveProject also
+      // calls listContainers via getActiveProjects (call 3)
       return Promise.resolve([])
     })
 
     await sessionStream()
 
-    expect(callCount).toBe(2)
+    // 1: initial (fails), 2: retry (empty), 3: getActiveProjects in resolveProject
+    expect(callCount).toBe(3)
   })
 
   it('exits with error when both attempts fail', async () => {
@@ -420,5 +447,138 @@ describe('sessionStream', () => {
       projectSlug: 'proj',
       sessionId: 'aaa',
     })
+  })
+
+  it('auto-selects project when only one has active containers', async () => {
+    // First call (getWaitingSessions): no waiting sessions
+    // Second call (getActiveProjects): one project with a running container
+    // Third call (getWaitingSessions with project set): still empty → creates session
+    // Fourth call: throw to exit loop
+    let callCount = 0
+    mockListContainers.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) return Promise.resolve([])
+      if (callCount === 2) {
+        return Promise.resolve([
+          {
+            State: 'running',
+            Names: ['/yaac-proj-abc'],
+            Labels: { 'yaac.session-id': 'abc', 'yaac.project': 'my-proj', 'yaac.tool': 'claude' },
+            Created: 1000,
+            Id: '1',
+          },
+        ] as never)
+      }
+      if (callCount === 3) return Promise.resolve([])
+      throw new Error('stop')
+    })
+    mockIsTmuxAlive.mockReturnValue(true)
+    mockSessionCreate.mockResolvedValue(undefined)
+
+    await sessionStream()
+
+    expect(mockSessionCreate).toHaveBeenCalledWith('my-proj', {})
+  })
+
+  it('prompts user when multiple projects have active containers', async () => {
+    // First call (getWaitingSessions): no waiting sessions
+    // Second call (getActiveProjects): two projects
+    let callCount = 0
+    mockListContainers.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) return Promise.resolve([])
+      if (callCount === 2) {
+        return Promise.resolve([
+          {
+            State: 'running',
+            Names: ['/yaac-a-abc'],
+            Labels: { 'yaac.session-id': 'abc', 'yaac.project': 'proj-a', 'yaac.tool': 'claude' },
+            Created: 1000,
+            Id: '1',
+          },
+          {
+            State: 'running',
+            Names: ['/yaac-b-def'],
+            Labels: { 'yaac.session-id': 'def', 'yaac.project': 'proj-b', 'yaac.tool': 'claude' },
+            Created: 2000,
+            Id: '2',
+          },
+        ] as never)
+      }
+      if (callCount === 3) return Promise.resolve([])
+      throw new Error('stop')
+    })
+    mockIsTmuxAlive.mockReturnValue(true)
+    mockSessionCreate.mockResolvedValue(undefined)
+
+    const mockQuestion = vi.fn().mockResolvedValue('2')
+    mockCreateInterface.mockReturnValue({
+      question: mockQuestion,
+      close: vi.fn(),
+    } as never)
+
+    await sessionStream()
+
+    expect(mockSessionCreate).toHaveBeenCalledWith('proj-b', {})
+  })
+
+  it('falls back to all projects when no active containers exist', async () => {
+    mockListContainers.mockResolvedValue([])
+    mockReaddir.mockResolvedValue(['alpha', 'beta'] as never)
+
+    const mockQuestion = vi.fn().mockResolvedValue('1')
+    mockCreateInterface.mockReturnValue({
+      question: mockQuestion,
+      close: vi.fn(),
+    } as never)
+    mockSessionCreate.mockImplementation(() => {
+      // After creating session, throw to break loop
+      throw new Error('stop')
+    })
+
+    await sessionStream().catch(() => {})
+
+    expect(mockSessionCreate).toHaveBeenCalledWith('alpha', {})
+  })
+
+  it('exits when no projects are configured and no active containers', async () => {
+    mockListContainers.mockResolvedValue([])
+    mockReaddir.mockRejectedValue(new Error('ENOENT'))
+
+    await sessionStream()
+
+    expect(mockSessionCreate).not.toHaveBeenCalled()
+  })
+})
+
+describe('promptForProject', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
+  it('returns undefined for empty list', async () => {
+    expect(await promptForProject([], 'pick one')).toBeUndefined()
+  })
+
+  it('returns selected project by number', async () => {
+    const mockQuestion = vi.fn().mockResolvedValue('2')
+    mockCreateInterface.mockReturnValue({
+      question: mockQuestion,
+      close: vi.fn(),
+    } as never)
+
+    const result = await promptForProject(['a', 'b', 'c'], 'pick one')
+    expect(result).toBe('b')
+  })
+
+  it('returns undefined for invalid selection', async () => {
+    const mockQuestion = vi.fn().mockResolvedValue('99')
+    mockCreateInterface.mockReturnValue({
+      question: mockQuestion,
+      close: vi.fn(),
+    } as never)
+
+    const result = await promptForProject(['a', 'b'], 'pick one')
+    expect(result).toBeUndefined()
   })
 })

@@ -1,6 +1,8 @@
 import { execSync } from 'node:child_process'
+import fs from 'node:fs/promises'
+import readline from 'node:readline/promises'
 import { podman } from '@/lib/container/runtime'
-import { getDataDir } from '@/lib/project/paths'
+import { getDataDir, getProjectsDir } from '@/lib/project/paths'
 import { getSessionStatus, getToolFromContainer } from '@/lib/session/status'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 import { sessionCreate } from '@/commands/session-create'
@@ -79,6 +81,93 @@ export async function getWaitingSessions(
   return results
 }
 
+async function getActiveProjects(): Promise<string[]> {
+  const filters: Record<string, string[]> = {
+    label: [`yaac.data-dir=${getDataDir()}`],
+  }
+  const containers = await podman.listContainers({ all: true, filters })
+  const projects = new Set<string>()
+  for (const c of containers) {
+    const slug = c.Labels?.['yaac.project']
+    if (!slug) continue
+    if (c.State !== 'running') continue
+    const name = c.Names?.[0]?.replace(/^\//, '') ?? c.Id
+    if (!isTmuxSessionAlive(name)) continue
+    if (await isPrewarmSession(slug, c.Labels?.['yaac.session-id'] ?? '')) continue
+    projects.add(slug)
+  }
+  return [...projects].sort()
+}
+
+async function getAllProjects(): Promise<string[]> {
+  const projectsDir = getProjectsDir()
+  try {
+    const entries = await fs.readdir(projectsDir)
+    return entries.sort()
+  } catch {
+    return []
+  }
+}
+
+export async function promptForProject(projects: string[], message: string): Promise<string | undefined> {
+  if (projects.length === 0) return undefined
+  console.log(`\n${message}`)
+  for (let i = 0; i < projects.length; i++) {
+    console.log(`  ${i + 1}) ${projects[i]}`)
+  }
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    const answer = await rl.question('\nSelect a project (number): ')
+    const index = parseInt(answer.trim(), 10) - 1
+    if (index >= 0 && index < projects.length) return projects[index]
+    console.log('Invalid selection.')
+    return undefined
+  } finally {
+    rl.close()
+  }
+}
+
+async function resolveProject(): Promise<string | undefined> {
+  // Check which projects have active (running/waiting) containers
+  let activeProjects: string[]
+  try {
+    activeProjects = await getActiveProjects()
+  } catch {
+    activeProjects = []
+  }
+
+  if (activeProjects.length === 1) {
+    console.log(`Starting session stream for "${activeProjects[0]}" (only project with active sessions)...`)
+    return activeProjects[0]
+  }
+
+  if (activeProjects.length > 1) {
+    const selected = await promptForProject(
+      activeProjects,
+      'Multiple projects have active sessions:',
+    )
+    return selected
+  }
+
+  // No active containers — fall back to all configured projects
+  const allProjects = await getAllProjects()
+  if (allProjects.length === 0) {
+    console.log('No projects found. Add one with: yaac project add <remote-url>')
+    return undefined
+  }
+
+  if (allProjects.length === 1) {
+    console.log(`Starting session stream for "${allProjects[0]}" (only configured project)...`)
+    return allProjects[0]
+  }
+
+  const selected = await promptForProject(
+    allProjects,
+    'No active sessions. Select a project:',
+  )
+  return selected
+}
+
 export async function sessionStream(project?: string, tool?: AgentTool): Promise<void> {
   const visited = new Set<string>()
   const cleaning = new Set<string>()
@@ -118,8 +207,12 @@ export async function sessionStream(project?: string, tool?: AgentTool): Promise
         await sessionCreate(project, { tool })
         continue
       }
-      console.log('No waiting sessions. Exiting.')
-      return
+
+      // No project specified — try to infer or prompt
+      const selected = await resolveProject()
+      if (!selected) return
+      project = selected
+      continue
     }
 
     const session = sessions[0]
