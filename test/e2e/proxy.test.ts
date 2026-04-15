@@ -109,23 +109,21 @@ describe('proxy sidecar', () => {
 
   it('stop removes container and network', async () => {
     await client.ensureRunning()
-    const port = client.hostPort
+    const containerName = client.containerName
+    const networkName = client.network
     await client.stop()
 
-    // Healthcheck should fail — podman may take a moment to release the
-    // host port binding after container removal, so retry briefly.
-    let reachable = true
-    for (let i = 0; i < 20; i++) {
-      try {
-        const res = await fetch(`http://127.0.0.1:${port}/healthz`)
-        await res.body?.cancel()
-      } catch {
-        reachable = false
-        break
-      }
-      await new Promise((r) => setTimeout(r, 500))
-    }
-    expect(reachable).toBe(false)
+    // Verify the container was removed
+    const { ExitCode: containerExit } = await execFileAsync('podman', [
+      'container', 'exists', containerName,
+    ]).then(() => ({ ExitCode: 0 }), () => ({ ExitCode: 1 }))
+    expect(containerExit).toBe(1)
+
+    // Verify the network was removed
+    const { ExitCode: networkExit } = await execFileAsync('podman', [
+      'network', 'exists', networkName,
+    ]).then(() => ({ ExitCode: 0 }), () => ({ ExitCode: 1 }))
+    expect(networkExit).toBe(1)
   })
 
   describe('CONNECT tunnel', () => {
