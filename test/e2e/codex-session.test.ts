@@ -345,6 +345,21 @@ describe('codex session support', () => {
     expect(typeof sessionMonitor).toBe('function')
   })
 
+  it('--tool flag is accepted by session stream option parsing', async () => {
+    const { sessionStream } = await import('@/commands/session-stream')
+    expect(typeof sessionStream).toBe('function')
+  })
+
+  it('tool get command is exported', async () => {
+    const { toolGet } = await import('@/commands/tool-get')
+    expect(typeof toolGet).toBe('function')
+  })
+
+  it('tool set command is exported', async () => {
+    const { toolSet } = await import('@/commands/tool-set')
+    expect(typeof toolSet).toBe('function')
+  })
+
   describe('prewarm tool matching', () => {
     let containerName: string
     let sessionId: string

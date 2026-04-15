@@ -1,6 +1,6 @@
 # Yet Another Agent Container
 
-Agent sandbox manager — run Claude Code sessions in isolated Podman containers.
+Agent sandbox manager — run many parallel agent sessions in isolated Podman containers. Supports Claude Code and Codex CLI.
 
 ## Install
 
@@ -48,17 +48,24 @@ yaac project <command>
 
 yaac session <command>
   create [options] <project>  Create a new session for a project
-    -p, --prompt <prompt>     Initial prompt to pass to Claude Code
+    -p, --prompt <prompt>     Initial prompt to pass to the agent
+    -t, --tool <tool>         Agent tool to use (claude or codex)
     --add-dir <path>          Mount a host directory read-only (repeatable)
     --add-dir-rw <path>       Mount a host directory read-write (repeatable)
   list [options] [project]    List active sessions
-    -d, --deleted             List deleted sessions from Claude Code history
+    -d, --deleted             List deleted sessions from agent history
   delete <session-id>         Delete a session and clean up its resources
-  attach <container-id>       Attach to the Claude Code tmux session
-  stream [project]            Stream through waiting sessions, attaching to
+  attach <container-id>       Attach to the agent tmux session
+  stream [options] [project]  Stream through waiting sessions, attaching to
                               each in turn
+    -t, --tool <tool>         Agent tool for new sessions (claude or codex)
   monitor [options] [project] Poll and display active sessions in real-time
     -n, --interval <seconds>  Refresh interval in seconds (default: 5)
+    --prewarm-tool <tool>     Agent tool for prewarmed sessions
+
+yaac tool <command>
+  get                 Show the current default agent tool
+  set <tool>          Set the default agent tool (claude or codex)
 
 yaac auth <command>
   list                List configured GitHub tokens (masked)

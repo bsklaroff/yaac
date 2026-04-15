@@ -10,7 +10,12 @@ import { sessionMonitor } from '@/commands/session-monitor'
 import { authUpdate } from '@/commands/auth-update'
 import { authClear } from '@/commands/auth-clear'
 import { authList } from '@/commands/auth-list'
+import { toolGet } from '@/commands/tool-get'
+import { toolSet } from '@/commands/tool-set'
 import { ensureGithubToken } from '@/lib/project/credentials'
+import { ensureDefaultTool, getDefaultTool } from '@/lib/project/preferences'
+import type { AgentTool } from '@/types'
+import type { SessionMonitorOptions } from '@/commands/session-monitor'
 
 /**
  * Show subcommand options nested under each subcommand in help output.
@@ -82,10 +87,13 @@ session
   .description('Create a new session for a project')
   .argument('<project>', 'Project slug')
   .option('-p, --prompt <prompt>', 'Initial prompt to pass to the agent')
-  .option('-t, --tool <tool>', 'Agent tool to use (claude or codex)', 'claude')
+  .option('-t, --tool <tool>', 'Agent tool to use (claude or codex)')
   .option('--add-dir <path>', 'Mount a host directory as read-only (repeatable)', collect, [])
   .option('--add-dir-rw <path>', 'Mount a host directory as read-write (repeatable)', collect, [])
-  .action(async (...args: Parameters<typeof sessionCreate>) => { await sessionCreate(...args) })
+  .action(async (project: string, options: Parameters<typeof sessionCreate>[1]) => {
+    if (!options.tool) options.tool = await getDefaultTool() ?? 'claude'
+    await sessionCreate(project, options)
+  })
 
 session
   .command('list')
@@ -111,7 +119,11 @@ session
   .command('stream')
   .description('Stream through waiting sessions, attaching to each in turn')
   .argument('[project]', 'Filter by project slug (auto-creates sessions if none waiting)')
-  .action(sessionStream)
+  .option('-t, --tool <tool>', 'Agent tool for newly created sessions (claude or codex)')
+  .action(async (project: string | undefined, options: { tool?: string }) => {
+    const tool = options.tool ?? await getDefaultTool() ?? 'claude'
+    await sessionStream(project, tool as AgentTool)
+  })
 
 session
   .command('monitor')
@@ -119,8 +131,27 @@ session
   .argument('[project]', 'Filter by project slug')
   .option('-n, --interval <seconds>', 'Refresh interval in seconds', '5')
   .option('--no-prewarm', 'Disable automatic session prewarming')
-  .option('--prewarm-tool <tool>', 'Agent tool for prewarmed sessions (claude or codex)', 'claude')
-  .action(sessionMonitor)
+  .option('--prewarm-tool <tool>', 'Agent tool for prewarmed sessions (claude or codex)')
+  .action(async (project: string | undefined, options: SessionMonitorOptions) => {
+    if (!options.prewarmTool) options.prewarmTool = await getDefaultTool() ?? 'claude'
+    await sessionMonitor(project, options)
+  })
+
+const tool = program
+  .command('tool')
+  .description('Manage default agent tool')
+  .configureHelp({ formatHelp: nestedHelp })
+
+tool
+  .command('get')
+  .description('Show the current default agent tool')
+  .action(toolGet)
+
+tool
+  .command('set')
+  .description('Set the default agent tool')
+  .argument('<tool>', 'Agent tool to use (claude or codex)')
+  .action(toolSet)
 
 const auth = program
   .command('auth')
@@ -142,7 +173,8 @@ auth
   .description('Remove stored GitHub credentials (interactive)')
   .action(authClear)
 
-// Ensure GitHub token exists before any command (except auth commands)
+// Ensure default tool and GitHub token exist before any command
+// (except auth/tool subcommands which manage their own state)
 program.hook('preAction', async (thisCommand) => {
   const chain: string[] = []
   let cmd: Command | null = thisCommand
@@ -151,8 +183,8 @@ program.hook('preAction', async (thisCommand) => {
     if (name) chain.unshift(name)
     cmd = cmd.parent
   }
-  // Skip credential check for auth subcommands (they manage credentials themselves)
-  if (chain.includes('auth')) return
+  if (chain.includes('auth') || chain.includes('tool')) return
+  await ensureDefaultTool()
   await ensureGithubToken()
 })
 

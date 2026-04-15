@@ -5,6 +5,7 @@ import { getSessionStatus, getToolFromContainer } from '@/lib/session/status'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 import { sessionCreate } from '@/commands/session-create'
 import { isPrewarmSession } from '@/lib/prewarm'
+import type { AgentTool } from '@/types'
 
 export interface WaitingSession {
   containerName: string
@@ -78,7 +79,7 @@ export async function getWaitingSessions(
   return results
 }
 
-export async function sessionStream(project?: string): Promise<void> {
+export async function sessionStream(project?: string, tool?: AgentTool): Promise<void> {
   const visited = new Set<string>()
   const cleaning = new Set<string>()
   let lastVisited: string | undefined
@@ -114,7 +115,7 @@ export async function sessionStream(project?: string): Promise<void> {
     if (sessions.length === 0) {
       if (project) {
         console.log(`No waiting sessions. Creating a new session for "${project}"...`)
-        await sessionCreate(project, {})
+        await sessionCreate(project, { tool })
         continue
       }
       console.log('No waiting sessions. Exiting.')
