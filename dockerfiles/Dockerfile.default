@@ -1,4 +1,5 @@
 FROM docker.io/ubuntu:24.04
+
 ARG SSL_CERT_FILE
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl gcc git less libc6-dev netcat-openbsd python3 socat tmux locales podman sudo xz-utils zsh && \
@@ -21,11 +22,15 @@ RUN ARCH="$(dpkg --print-architecture)" && \
     ln -sf /usr/local/bin/nvim /usr/local/bin/vi && \
     ln -sf /usr/local/bin/nvim /usr/local/bin/vim
 RUN corepack enable
+
 RUN userdel -r ubuntu 2>/dev/null; useradd -m -s /bin/zsh yaac && \
     echo 'Defaults env_keep += "HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy SSL_CERT_FILE NODE_EXTRA_CA_CERTS GIT_SSL_CAINFO"' >> /etc/sudoers && \
     echo 'yaac ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 USER yaac
+
 RUN curl -fsSL https://claude.ai/install.sh | bash
+RUN corepack install -g pnpm@10.33.0
+
 ENV LANG=en_US.UTF-8
 ENV TERM=xterm-256color
 ENV HOME=/home/yaac
@@ -33,6 +38,13 @@ ENV PATH="/home/yaac/.local/bin:${PATH}"
 ENV EDITOR=nvim
 ENV SHELL=/bin/zsh
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-RUN corepack install -g pnpm@10.33.0
+
+RUN cat > ~/.zshrc <<'ZSHRC'
+HISTSIZE=10000
+SAVEHIST=10000
+setopt appendhistory
+PS1='%n@%m:%~$ '
+ZSHRC
+
 WORKDIR /workspace
 ENTRYPOINT ["sleep", "infinity"]
