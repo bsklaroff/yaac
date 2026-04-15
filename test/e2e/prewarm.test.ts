@@ -169,7 +169,7 @@ describe('prewarm session lifecycle', () => {
   })
 
   it('claiming a creating prewarm session waits for it to become ready', async () => {
-    // Create a container that's already running (simulates "creating" that finishes)
+    // Create a container that's already running but mark state as "creating"
     const entry = await createPrewarmContainer(projectSlug, 'test-fp', 'creating')
     containersToCleanup.push(entry.containerName)
 

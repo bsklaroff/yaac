@@ -169,26 +169,26 @@ export async function ensurePrewarmSession(projectSlug: string): Promise<void> {
     await clearPrewarmSession(projectSlug)
   }
 
-  // Create new prewarm session — sessionCreate generates its own sessionId
-  // We write "creating" state first, then update with the real sessionId after creation
-  const placeholderId = crypto.randomUUID()
-  const placeholderName = `yaac-${projectSlug}-${placeholderId}`
+  // Pre-generate the sessionId so the "creating" entry has the real
+  // container name. This lets claimPrewarmSession clear the entry
+  // immediately and poll for the container by name.
+  const sessionId = crypto.randomUUID()
+  const containerName = `yaac-${projectSlug}-${sessionId}`
 
   await setPrewarmSession(projectSlug, {
-    sessionId: placeholderId,
-    containerName: placeholderName,
+    sessionId,
+    containerName,
     fingerprint,
     state: 'creating',
     verifiedAt: Date.now(),
   })
 
   try {
-    const sessionId = await sessionCreate(projectSlug, { createPrewarm: true })
-    if (!sessionId) {
+    const createdId = await sessionCreate(projectSlug, { createPrewarm: true, sessionId })
+    if (!createdId) {
       await clearPrewarmSession(projectSlug)
       return
     }
-    const containerName = `yaac-${projectSlug}-${sessionId}`
     await setPrewarmSession(projectSlug, {
       sessionId,
       containerName,
@@ -220,7 +220,7 @@ export async function claimPrewarmSession(
   // Clear immediately so monitor can start creating a new prewarm session
   await clearPrewarmSession(projectSlug)
 
-  // If still creating, wait for it to become ready
+  // If still creating, wait for the container to become ready
   if (entry.state === 'creating') {
     const ready = await waitForContainer(containerName, 120_000)
     if (!ready) return null

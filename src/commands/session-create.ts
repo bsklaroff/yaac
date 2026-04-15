@@ -37,6 +37,8 @@ export interface SessionCreateOptions {
   addDir?: string[]
   addDirRw?: string[]
   createPrewarm?: boolean
+  /** Pre-generated session ID (used by prewarm to know the container name upfront). */
+  sessionId?: string
 }
 
 interface ContainerSetupParams {
@@ -291,7 +293,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   console.log('Ensuring container images are built...')
   const imageName = await ensureImage(projectSlug, undefined, false, config.nestedContainers ?? false)
 
-  const sessionId = crypto.randomUUID()
+  const sessionId = options.sessionId ?? crypto.randomUUID()
   const wtDir = worktreeDir(projectSlug, sessionId)
 
   // Create worktree
