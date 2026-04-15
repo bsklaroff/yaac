@@ -208,6 +208,14 @@ export async function ensurePrewarmSession(projectSlug: string): Promise<void> {
       await clearPrewarmSession(projectSlug)
       return
     }
+    // Re-check whether the entry was claimed while we were creating.
+    // claimPrewarmSession() clears the entry immediately, so if it's gone
+    // (or belongs to a different session), the session was already claimed
+    // and we must not re-register it as a prewarm.
+    const current = await getPrewarmSession(projectSlug)
+    if (!current || current.sessionId !== sessionId) {
+      return
+    }
     await setPrewarmSession(projectSlug, {
       sessionId,
       containerName,
@@ -216,13 +224,17 @@ export async function ensurePrewarmSession(projectSlug: string): Promise<void> {
       verifiedAt: Date.now(),
     })
   } catch (err) {
-    await setPrewarmSession(projectSlug, {
-      sessionId,
-      containerName,
-      fingerprint,
-      state: 'failed',
-      verifiedAt: Date.now(),
-    })
+    // Only mark as failed if the entry wasn't claimed in the meantime
+    const current = await getPrewarmSession(projectSlug)
+    if (current && current.sessionId === sessionId) {
+      await setPrewarmSession(projectSlug, {
+        sessionId,
+        containerName,
+        fingerprint,
+        state: 'failed',
+        verifiedAt: Date.now(),
+      })
+    }
     throw err
   }
 }
