@@ -17,7 +17,7 @@ Pin-Priority: 100
 EOF
 RUN apt-get update && \
     apt-get install -y --no-install-recommends -t plucky podman crun && \
-    apt-get install -y --no-install-recommends uidmap libcap2-bin passt slirp4netns && \
+    apt-get install -y --no-install-recommends uidmap libcap2-bin slirp4netns && \
     rm -rf /var/lib/apt/lists/*
 
 RUN echo "yaac:100000:65536" > /etc/subuid && \

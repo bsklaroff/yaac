@@ -283,16 +283,24 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
 
   // Model Context Protocol
   '*.modelcontextprotocol.io',
+
+  // Container image storage
+  'docker-images-prod.*.r2.cloudflarestorage.com',
 ]
 
-/** Check if a hostname matches a pattern (exact or *.suffix wildcard). */
-function hostMatchesPattern(hostname: string, pattern: string): boolean {
+/** Check if a hostname matches a pattern (exact, *.suffix, or interior wildcard). */
+export function hostMatchesPattern(hostname: string, pattern: string): boolean {
   if (pattern === hostname) return true
-  if (pattern.startsWith('*.')) {
+  if (!pattern.includes('*')) return false
+  if (pattern.startsWith('*.') && !pattern.slice(2).includes('*')) {
     const suffix = pattern.slice(1) // e.g. ".example.com"
     return hostname.endsWith(suffix) && hostname.length > suffix.length
   }
-  return false
+  // Interior or multi-segment wildcard: match segment-by-segment
+  const patternParts = pattern.split('.')
+  const hostParts = hostname.split('.')
+  if (patternParts.length !== hostParts.length) return false
+  return patternParts.every((p, i) => p === '*' || p === hostParts[i])
 }
 
 const CRITICAL_HOSTS = [

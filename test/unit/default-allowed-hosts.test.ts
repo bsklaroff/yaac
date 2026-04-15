@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { DEFAULT_ALLOWED_HOSTS, resolveAllowedHosts } from '@/lib/container/default-allowed-hosts'
+import { DEFAULT_ALLOWED_HOSTS, hostMatchesPattern, resolveAllowedHosts } from '@/lib/container/default-allowed-hosts'
 import type { YaacConfig } from '@/types'
 
 describe('DEFAULT_ALLOWED_HOSTS', () => {
@@ -15,6 +15,46 @@ describe('DEFAULT_ALLOWED_HOSTS', () => {
     expect(DEFAULT_ALLOWED_HOSTS).toContain('api.anthropic.com')
     expect(DEFAULT_ALLOWED_HOSTS).toContain('github.com')
     expect(DEFAULT_ALLOWED_HOSTS).toContain('api.github.com')
+  })
+})
+
+describe('hostMatchesPattern', () => {
+  it('matches exact hostnames', () => {
+    expect(hostMatchesPattern('example.com', 'example.com')).toBe(true)
+  })
+
+  it('rejects non-matching exact hostnames', () => {
+    expect(hostMatchesPattern('other.com', 'example.com')).toBe(false)
+  })
+
+  it('matches leading wildcard patterns', () => {
+    expect(hostMatchesPattern('foo.example.com', '*.example.com')).toBe(true)
+    expect(hostMatchesPattern('bar.example.com', '*.example.com')).toBe(true)
+  })
+
+  it('rejects bare domain for leading wildcard', () => {
+    expect(hostMatchesPattern('example.com', '*.example.com')).toBe(false)
+  })
+
+  it('matches interior wildcard patterns', () => {
+    expect(hostMatchesPattern(
+      'docker-images-prod.abc123.r2.cloudflarestorage.com',
+      'docker-images-prod.*.r2.cloudflarestorage.com',
+    )).toBe(true)
+  })
+
+  it('rejects interior wildcard when other segments differ', () => {
+    expect(hostMatchesPattern(
+      'docker-images-dev.abc123.r2.cloudflarestorage.com',
+      'docker-images-prod.*.r2.cloudflarestorage.com',
+    )).toBe(false)
+  })
+
+  it('rejects interior wildcard when segment count differs', () => {
+    expect(hostMatchesPattern(
+      'docker-images-prod.a.b.r2.cloudflarestorage.com',
+      'docker-images-prod.*.r2.cloudflarestorage.com',
+    )).toBe(false)
   })
 })
 

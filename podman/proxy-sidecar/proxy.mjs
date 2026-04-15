@@ -142,11 +142,16 @@ function pathMatches(requestPath, pattern) {
 
 function hostMatches(hostname, pattern) {
   if (pattern === hostname) return true
-  if (pattern.startsWith('*.')) {
+  if (!pattern.includes('*')) return false
+  if (pattern.startsWith('*.') && !pattern.slice(2).includes('*')) {
     const suffix = pattern.slice(1) // e.g. ".example.com"
     return hostname.endsWith(suffix) && hostname.length > suffix.length
   }
-  return false
+  // Interior or multi-segment wildcard: match segment-by-segment
+  const patternParts = pattern.split('.')
+  const hostParts = hostname.split('.')
+  if (patternParts.length !== hostParts.length) return false
+  return patternParts.every((p, i) => p === '*' || p === hostParts[i])
 }
 
 function findRulesForHost(sessionId, hostname) {
