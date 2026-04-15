@@ -8,6 +8,7 @@ import {
   getPrewarmSession,
   setPrewarmSession,
   clearPrewarmSession,
+  clearFailedPrewarmSessions,
   isPrewarmSession,
   MAX_STALE_MS,
 } from '@/lib/prewarm'
@@ -89,5 +90,77 @@ describe('prewarm state helpers', () => {
 
   it('MAX_STALE_MS is 30 seconds', () => {
     expect(MAX_STALE_MS).toBe(30_000)
+  })
+
+  it('getPrewarmSession returns failed entry', async () => {
+    const failedEntry: PrewarmEntry = {
+      ...entry,
+      state: 'failed',
+    }
+    await setPrewarmSession('my-project', failedEntry)
+    const result = await getPrewarmSession('my-project')
+    expect(result).toEqual(failedEntry)
+    expect(result?.state).toBe('failed')
+  })
+
+  it('isPrewarmSession returns true for failed entry with matching sessionId', async () => {
+    const failedEntry: PrewarmEntry = {
+      ...entry,
+      state: 'failed',
+    }
+    await setPrewarmSession('my-project', failedEntry)
+    expect(await isPrewarmSession('my-project', 'test-session-id')).toBe(true)
+  })
+
+  it('failed entry preserves fingerprint for retry gating', async () => {
+    const failedEntry: PrewarmEntry = {
+      ...entry,
+      state: 'failed',
+      fingerprint: 'fail-fp-123',
+    }
+    await setPrewarmSession('my-project', failedEntry)
+    const result = await getPrewarmSession('my-project')
+    expect(result?.fingerprint).toBe('fail-fp-123')
+    expect(result?.state).toBe('failed')
+  })
+
+  it('clearFailedPrewarmSessions removes only failed entries', async () => {
+    const readyEntry: PrewarmEntry = { ...entry, state: 'ready' }
+    const failedEntry: PrewarmEntry = { ...entry, state: 'failed', sessionId: 'failed-id' }
+    await setPrewarmSession('project-ok', readyEntry)
+    await setPrewarmSession('project-bad', failedEntry)
+
+    await clearFailedPrewarmSessions()
+
+    const data = await readPrewarmSessions()
+    expect(data['project-ok']).toEqual(readyEntry)
+    expect(data['project-bad']).toBeUndefined()
+  })
+
+  it('clearFailedPrewarmSessions is a no-op when no failed entries', async () => {
+    await setPrewarmSession('my-project', entry)
+    await clearFailedPrewarmSessions()
+    const result = await getPrewarmSession('my-project')
+    expect(result).toEqual(entry)
+  })
+
+  it('failed entry is replaced when fingerprint changes', async () => {
+    const failedEntry: PrewarmEntry = {
+      ...entry,
+      state: 'failed',
+      fingerprint: 'old-fp',
+    }
+    await setPrewarmSession('my-project', failedEntry)
+
+    const newEntry: PrewarmEntry = {
+      ...entry,
+      state: 'creating',
+      fingerprint: 'new-fp',
+    }
+    await setPrewarmSession('my-project', newEntry)
+
+    const result = await getPrewarmSession('my-project')
+    expect(result?.state).toBe('creating')
+    expect(result?.fingerprint).toBe('new-fp')
   })
 })

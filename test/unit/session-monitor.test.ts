@@ -14,6 +14,7 @@ vi.mock('@/lib/container/proxy-client', () => ({
 vi.mock('@/lib/prewarm', () => ({
   ensurePrewarmSession: vi.fn().mockResolvedValue(undefined),
   ensurePrewarmSessions: vi.fn().mockResolvedValue(undefined),
+  clearFailedPrewarmSessions: vi.fn().mockResolvedValue(undefined),
 }))
 
 describe('sessionMonitor', () => {

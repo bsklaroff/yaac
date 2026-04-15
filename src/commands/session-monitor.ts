@@ -1,5 +1,5 @@
 import { sessionList } from '@/commands/session-list'
-import { ensurePrewarmSession, ensurePrewarmSessions } from '@/lib/prewarm'
+import { ensurePrewarmSession, ensurePrewarmSessions, clearFailedPrewarmSessions } from '@/lib/prewarm'
 import { proxyClient } from '@/lib/container/proxy-client'
 import { fetchAndPersistBlockedHosts } from '@/lib/session/blocked-hosts'
 import { podman } from '@/lib/container/runtime'
@@ -23,6 +23,9 @@ export async function sessionMonitor(projectSlug?: string, options: SessionMonit
       if (key[0] === 0x03) process.exit(0)
     })
   }
+
+  // Give failed prewarms a fresh chance on monitor (re)start
+  await clearFailedPrewarmSessions()
 
   // Clear the screen once on startup, then overwrite in place
   process.stdout.write('\x1B[2J')

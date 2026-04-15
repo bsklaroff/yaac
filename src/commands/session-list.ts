@@ -5,7 +5,7 @@ import { claudeDir, getDataDir, getProjectsDir } from '@/lib/project/paths'
 import { getSessionClaudeStatus, getSessionFirstUserMessage } from '@/lib/session/claude-status'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 import { readAllBlockedHosts } from '@/lib/session/blocked-hosts'
-import { isPrewarmSession } from '@/lib/prewarm'
+import { isPrewarmSession, readPrewarmSessions } from '@/lib/prewarm'
 
 export interface SessionListOptions {
   deleted?: boolean
@@ -117,6 +117,20 @@ export async function sessionList(projectSlug?: string, options: SessionListOpti
       }
       console.log('')
     }
+  }
+
+  // Show failed prewarm sessions
+  const prewarmData = await readPrewarmSessions()
+  const failedPrewarms = Object.entries(prewarmData)
+    .filter(([, entry]) => entry.state === 'failed')
+    .filter(([slug]) => !projectSlug || slug === projectSlug)
+  if (failedPrewarms.length > 0) {
+    console.log('Failed prewarms (will retry when fingerprint changes or monitor restarts):')
+    for (const [slug, entry] of failedPrewarms) {
+      const failedAt = new Date(entry.verifiedAt).toISOString().replace('T', ' ').slice(0, 19)
+      console.log(`  ${slug}  fingerprint=${entry.fingerprint}  failed=${failedAt}`)
+    }
+    console.log('')
   }
 
   // Clean up stale containers in detached background processes

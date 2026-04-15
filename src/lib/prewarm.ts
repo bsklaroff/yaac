@@ -18,7 +18,7 @@ export interface PrewarmEntry {
   sessionId: string
   containerName: string
   fingerprint: string
-  state: 'creating' | 'ready'
+  state: 'creating' | 'ready' | 'failed'
   verifiedAt: number
 }
 
@@ -55,6 +55,18 @@ export async function clearPrewarmSession(slug: string): Promise<void> {
   if (!(slug in data)) return
   delete data[slug]
   await writePrewarmSessions(data)
+}
+
+export async function clearFailedPrewarmSessions(): Promise<void> {
+  const data = await readPrewarmSessions()
+  let changed = false
+  for (const slug of Object.keys(data)) {
+    if (data[slug].state === 'failed') {
+      delete data[slug]
+      changed = true
+    }
+  }
+  if (changed) await writePrewarmSessions(data)
 }
 
 export async function isPrewarmSession(slug: string, sessionId: string): Promise<boolean> {
@@ -155,6 +167,11 @@ export async function ensurePrewarmSession(projectSlug: string): Promise<void> {
         return
       }
 
+      if (existing.state === 'failed') {
+        // Already failed for this fingerprint — don't retry
+        return
+      }
+
       // State is "ready" — verify container is still alive
       const alive = isContainerRunning(existing.containerName) && isTmuxSessionAlive(existing.containerName)
       if (alive) {
@@ -165,7 +182,9 @@ export async function ensurePrewarmSession(projectSlug: string): Promise<void> {
     }
 
     // Stale or dead — clean up
-    await cleanupPrewarmSession(existing, projectSlug)
+    if (existing.state !== 'failed') {
+      await cleanupPrewarmSession(existing, projectSlug)
+    }
     await clearPrewarmSession(projectSlug)
   }
 
@@ -197,7 +216,13 @@ export async function ensurePrewarmSession(projectSlug: string): Promise<void> {
       verifiedAt: Date.now(),
     })
   } catch (err) {
-    await clearPrewarmSession(projectSlug)
+    await setPrewarmSession(projectSlug, {
+      sessionId,
+      containerName,
+      fingerprint,
+      state: 'failed',
+      verifiedAt: Date.now(),
+    })
     throw err
   }
 }
@@ -206,7 +231,7 @@ export async function claimPrewarmSession(
   projectSlug: string,
 ): Promise<{ sessionId: string; containerName: string } | null> {
   const entry = await getPrewarmSession(projectSlug)
-  if (!entry) return null
+  if (!entry || entry.state === 'failed') return null
 
   // Check verifiedAt freshness — if the monitor stopped, don't use stale sessions
   if (Date.now() - entry.verifiedAt > MAX_STALE_MS) {
