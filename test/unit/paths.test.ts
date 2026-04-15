@@ -10,6 +10,9 @@ import {
   repoDir,
   configOverrideDir,
   claudeDir,
+  codexDir,
+  codexTranscriptDir,
+  codexTranscriptFile,
   worktreesDir,
   worktreeDir,
   blockedHostsDir,
@@ -42,6 +45,9 @@ describe('paths', () => {
     expect(repoDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/repo')
     expect(configOverrideDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/config-override')
     expect(claudeDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/claude')
+    expect(codexDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/codex')
+    expect(codexTranscriptDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/codex/.yaac-transcripts')
+    expect(codexTranscriptFile('my-repo', 'abc123')).toBe('/tmp/yaac-test/projects/my-repo/codex/.yaac-transcripts/abc123.jsonl')
     expect(worktreesDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/worktrees')
     expect(worktreeDir('my-repo', 'abc123')).toBe('/tmp/yaac-test/projects/my-repo/worktrees/abc123')
     expect(blockedHostsDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/blocked-hosts')

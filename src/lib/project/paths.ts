@@ -59,6 +59,18 @@ export function claudeJsonFile(slug: string): string {
   return path.join(projectDir(slug), 'claude.json')
 }
 
+export function codexDir(slug: string): string {
+  return path.join(projectDir(slug), 'codex')
+}
+
+export function codexTranscriptDir(slug: string): string {
+  return path.join(codexDir(slug), '.yaac-transcripts')
+}
+
+export function codexTranscriptFile(slug: string, sessionId: string): string {
+  return path.join(codexTranscriptDir(slug), `${sessionId}.jsonl`)
+}
+
 export function worktreesDir(slug: string): string {
   return path.join(projectDir(slug), 'worktrees')
 }

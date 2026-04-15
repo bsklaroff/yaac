@@ -14,6 +14,11 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'claude.ai',
   'downloads.claude.ai',
 
+  // OpenAI services
+  'api.openai.com',
+  'openai.com',
+  'cdn.openai.com',
+
   // Version control — GitHub
   'github.com',
   'www.github.com',

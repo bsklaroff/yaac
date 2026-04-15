@@ -1,3 +1,5 @@
+export type AgentTool = 'claude' | 'codex'
+
 export interface ProjectMeta {
   slug: string
   remoteUrl: string

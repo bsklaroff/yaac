@@ -1,8 +1,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { podman } from '@/lib/container/runtime'
-import { claudeDir, getDataDir, getProjectsDir } from '@/lib/project/paths'
-import { getSessionClaudeStatus, getSessionFirstUserMessage } from '@/lib/session/claude-status'
+import { claudeDir, codexTranscriptDir, getDataDir, getProjectsDir } from '@/lib/project/paths'
+import { getSessionStatus, getSessionFirstMessage, getToolFromContainer } from '@/lib/session/status'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 import { readAllBlockedHosts } from '@/lib/session/blocked-hosts'
 import { isPrewarmSession, readPrewarmSessions } from '@/lib/prewarm'
@@ -63,13 +63,14 @@ export async function sessionList(projectSlug?: string, options: SessionListOpti
       running.map(async (c) => {
         const sessionId = c.Labels?.['yaac.session-id'] ?? ''
         const slug = c.Labels?.['yaac.project'] ?? ''
-        if (!sessionId || !slug) return { status: 'running' as const, prompt: undefined }
+        const tool = getToolFromContainer(c)
+        if (!sessionId || !slug) return { status: 'running' as const, prompt: undefined, tool }
         const [status, prompt, isPrewarm] = await Promise.all([
-          getSessionClaudeStatus(slug, sessionId),
-          getSessionFirstUserMessage(slug, sessionId),
+          getSessionStatus(slug, sessionId, tool),
+          getSessionFirstMessage(slug, sessionId, tool),
           isPrewarmSession(slug, sessionId),
         ])
-        return { status: isPrewarm ? 'prewarm' as const : status, prompt }
+        return { status: isPrewarm ? 'prewarm' as const : status, prompt, tool }
       }),
     )
 
@@ -77,25 +78,27 @@ export async function sessionList(projectSlug?: string, options: SessionListOpti
     const rows = running.map((c, i) => ({
       shortId: (c.Labels?.['yaac.session-id'] ?? '?').slice(0, 8),
       project: c.Labels?.['yaac.project'] ?? '?',
+      tool: sessionMeta[i].tool,
       status: sessionMeta[i].status,
       created: new Date(c.Created * 1000).toISOString().replace('T', ' ').slice(0, 19),
       prompt: sessionMeta[i].prompt,
     }))
 
     const projectWidth = Math.max('PROJECT'.length, ...rows.map((r) => r.project.length))
+    const toolWidth = Math.max('TOOL'.length, ...rows.map((r) => r.tool.length))
     const statusWidth = Math.max('STATUS'.length, ...rows.map((r) => r.status.length))
 
-    const fixedWidth = 10 + 1 + projectWidth + 1 + statusWidth + 1 + 19 + 2
+    const fixedWidth = 10 + 1 + projectWidth + 1 + toolWidth + 1 + statusWidth + 1 + 19 + 2
     const termWidth = process.stdout.columns || 120
     const promptWidth = Math.max(10, termWidth - fixedWidth)
 
     console.log('')
-    console.log(`${'SESSION'.padEnd(10)} ${'PROJECT'.padEnd(projectWidth)} ${'STATUS'.padEnd(statusWidth)} ${'CREATED'.padEnd(19)}  PROMPT`)
-    console.log(`${'-'.repeat(10)} ${'-'.repeat(projectWidth)} ${'-'.repeat(statusWidth)} ${'-'.repeat(19)}  ${'-'.repeat(Math.min(promptWidth, 40))}`)
+    console.log(`${'SESSION'.padEnd(10)} ${'PROJECT'.padEnd(projectWidth)} ${'TOOL'.padEnd(toolWidth)} ${'STATUS'.padEnd(statusWidth)} ${'CREATED'.padEnd(19)}  PROMPT`)
+    console.log(`${'-'.repeat(10)} ${'-'.repeat(projectWidth)} ${'-'.repeat(toolWidth)} ${'-'.repeat(statusWidth)} ${'-'.repeat(19)}  ${'-'.repeat(Math.min(promptWidth, 40))}`)
 
     for (const row of rows) {
       const promptText = truncatePrompt(row.prompt, promptWidth)
-      console.log(`${row.shortId.padEnd(10)} ${row.project.padEnd(projectWidth)} ${row.status.padEnd(statusWidth)} ${row.created}  ${promptText}`)
+      console.log(`${row.shortId.padEnd(10)} ${row.project.padEnd(projectWidth)} ${row.tool.padEnd(toolWidth)} ${row.status.padEnd(statusWidth)} ${row.created}  ${promptText}`)
     }
     console.log('')
 
@@ -180,31 +183,49 @@ async function listDeletedSessions(projectSlug?: string): Promise<void> {
     // podman not available — treat all as deleted
   }
 
-  // Collect deleted sessions from Claude Code JSONL files
-  const deleted: Array<{ sessionId: string; project: string; created: string }> = []
+  // Collect deleted sessions from Claude Code JSONL files and Codex session dirs
+  const deleted: Array<{ sessionId: string; project: string; tool: string; created: string }> = []
 
   for (const slug of slugs) {
-    const sessionsDir = path.join(claudeDir(slug), 'projects', '-workspace')
-    let files: string[]
+    // Scan Claude Code sessions
+    const claudeSessionsDir = path.join(claudeDir(slug), 'projects', '-workspace')
     try {
-      files = await fs.readdir(sessionsDir)
+      const files = await fs.readdir(claudeSessionsDir)
+      for (const file of files) {
+        if (!file.endsWith('.jsonl')) continue
+        const sessionId = file.replace('.jsonl', '')
+        if (activeSessionIds.has(sessionId)) continue
+        try {
+          const stat = await fs.stat(path.join(claudeSessionsDir, file))
+          const created = stat.birthtime.toISOString().replace('T', ' ').slice(0, 19)
+          deleted.push({ sessionId, project: slug, tool: 'claude', created })
+        } catch {
+          continue
+        }
+      }
     } catch {
-      continue
+      // No Claude sessions dir
     }
 
-    for (const file of files) {
-      if (!file.endsWith('.jsonl')) continue
-      const sessionId = file.replace('.jsonl', '')
-      if (activeSessionIds.has(sessionId)) continue
-
-      const filePath = path.join(sessionsDir, file)
-      try {
-        const stat = await fs.stat(filePath)
-        const created = stat.birthtime.toISOString().replace('T', ' ').slice(0, 19)
-        deleted.push({ sessionId, project: slug, created })
-      } catch {
-        continue
+    // Scan Codex transcript symlinks (one per session, named {sessionId}.jsonl)
+    const codexTranscripts = codexTranscriptDir(slug)
+    try {
+      const entries = await fs.readdir(codexTranscripts)
+      for (const entry of entries) {
+        if (!entry.endsWith('.jsonl')) continue
+        const sessionId = entry.replace('.jsonl', '')
+        if (activeSessionIds.has(sessionId)) continue
+        const filePath = path.join(codexTranscripts, entry)
+        try {
+          const stat = await fs.lstat(filePath)
+          const created = stat.birthtime.toISOString().replace('T', ' ').slice(0, 19)
+          deleted.push({ sessionId, project: slug, tool: 'codex', created })
+        } catch {
+          continue
+        }
       }
+    } catch {
+      // No Codex transcript dir
     }
   }
 
@@ -218,13 +239,14 @@ async function listDeletedSessions(projectSlug?: string): Promise<void> {
   deleted.sort((a, b) => b.created.localeCompare(a.created))
 
   const projectWidth = Math.max('PROJECT'.length, ...deleted.map((s) => s.project.length))
+  const toolWidth = Math.max('TOOL'.length, ...deleted.map((s) => s.tool.length))
 
   console.log('')
-  console.log(`${'SESSION'.padEnd(10)} ${'PROJECT'.padEnd(projectWidth)} CREATED`)
-  console.log(`${'-'.repeat(10)} ${'-'.repeat(projectWidth)} ${'-'.repeat(20)}`)
+  console.log(`${'SESSION'.padEnd(10)} ${'PROJECT'.padEnd(projectWidth)} ${'TOOL'.padEnd(toolWidth)} CREATED`)
+  console.log(`${'-'.repeat(10)} ${'-'.repeat(projectWidth)} ${'-'.repeat(toolWidth)} ${'-'.repeat(20)}`)
 
   for (const s of deleted) {
-    console.log(`${s.sessionId.slice(0, 8).padEnd(10)} ${s.project.padEnd(projectWidth)} ${s.created}`)
+    console.log(`${s.sessionId.slice(0, 8).padEnd(10)} ${s.project.padEnd(projectWidth)} ${s.tool.padEnd(toolWidth)} ${s.created}`)
   }
   console.log('')
 }

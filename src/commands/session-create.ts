@@ -12,13 +12,14 @@ import type { InjectionRule } from '@/lib/container/proxy-client'
 import { reserveAvailablePort, startPortForwarders, podmanRelay } from '@/lib/container/port'
 import type { ReservedPort } from '@/lib/container/port'
 import { pgRelay } from '@/lib/container/pg-relay'
-import { repoDir, claudeDir, claudeJsonFile, worktreeDir, worktreesDir, projectDir, getDataDir } from '@/lib/project/paths'
+import { repoDir, claudeDir, claudeJsonFile, codexDir, codexTranscriptDir, worktreeDir, worktreesDir, projectDir, getDataDir } from '@/lib/project/paths'
 import { resolveProjectConfig } from '@/lib/project/config'
 import { resolveTokenForUrl } from '@/lib/project/credentials'
 import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/lib/git'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 import { claimPrewarmSession } from '@/lib/prewarm'
-import type { YaacConfig } from '@/types'
+import { ensureCodexHooksJson, ensureCodexConfigToml } from '@/lib/session/codex-hooks'
+import type { YaacConfig, AgentTool } from '@/types'
 
 export function shellEscape(str: string): string {
   return str.replace(/'/g, "'\\''")
@@ -39,6 +40,8 @@ export interface SessionCreateOptions {
   createPrewarm?: boolean
   /** Pre-generated session ID (used by prewarm to know the container name upfront). */
   sessionId?: string
+  /** Agent tool to run inside the container (default: 'claude'). */
+  tool?: AgentTool
 }
 
 interface ContainerSetupParams {
@@ -51,6 +54,8 @@ interface ContainerSetupParams {
   repo: string
   claude: string
   claudeJson: string
+  codex: string
+  tool: AgentTool
   config: YaacConfig
   options: SessionCreateOptions
   networkMode: string
@@ -62,7 +67,7 @@ interface ContainerSetupParams {
 async function startContainerWithSetup(params: ContainerSetupParams): Promise<void> {
   const {
     imageName, containerName, projectSlug, sessionId, env,
-    wtDir, repo, claude, claudeJson, config, options,
+    wtDir, repo, claude, claudeJson, codex, tool, config, options,
     networkMode, pgRelayIp, gitUser, forwardedPorts,
   } = params
 
@@ -74,14 +79,19 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
       'yaac.session-id': sessionId,
       'yaac.data-dir': getDataDir(),
       'yaac.proxy-container': proxyClient.containerName,
+      'yaac.tool': tool,
     },
     Env: env,
     HostConfig: {
       Binds: [
         `${wtDir}:/workspace:Z`,
         `${repo}/.git:/repo/.git:Z`,
-        `${claude}:/home/yaac/.claude:Z`,
-        `${claudeJson}:/home/yaac/.claude.json:Z`,
+        ...(tool === 'claude' ? [
+          `${claude}:/home/yaac/.claude:Z`,
+          `${claudeJson}:/home/yaac/.claude.json:Z`,
+        ] : [
+          `${codex}:/home/yaac/.codex:Z`,
+        ]),
         ...Object.entries(config.cacheVolumes ?? {}).map(
           ([key, containerPath]) => `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`,
         ),
@@ -146,18 +156,29 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
   // Rewrite any SSH-style GitHub URLs to HTTPS (handled by the proxy)
   containerExec(containerName, `git config --global url.'https://github.com/'.insteadOf 'git@github.com:'`)
 
-  // Start Claude Code in a tmux session
+  // Start the agent tool in a tmux session
   const addDirFlags = [...(options.addDir ?? []), ...(options.addDirRw ?? [])]
     .map((p) => `--add-dir /add-dir${shellEscape(p)}`)
     .join(' ')
-  const claudeCmd = [
-    'claude --dangerously-skip-permissions',
-    `--session-id ${sessionId}`,
-    addDirFlags,
-    options.prompt ? `-p ${shellEscape(options.prompt)}` : '',
-  ].filter(Boolean).join(' ')
-  console.log('Starting Claude Code...')
-  containerExec(containerName, `tmux -u new-session -d -s yaac -n claude '${claudeCmd}'`)
+
+  let agentCmd: string
+  if (tool === 'codex') {
+    agentCmd = [
+      'codex --full-auto',
+      addDirFlags,
+      options.prompt ? `-p ${shellEscape(options.prompt)}` : '',
+    ].filter(Boolean).join(' ')
+  } else {
+    agentCmd = [
+      'claude --dangerously-skip-permissions',
+      `--session-id ${sessionId}`,
+      addDirFlags,
+      options.prompt ? `-p ${shellEscape(options.prompt)}` : '',
+    ].filter(Boolean).join(' ')
+  }
+  const toolLabel = tool === 'codex' ? 'Codex' : 'Claude Code'
+  console.log(`Starting ${toolLabel}...`)
+  containerExec(containerName, `tmux -u new-session -d -s yaac -n ${tool} '${agentCmd}'`)
 
   // Run init commands in a background tmux window (parallel to Claude Code)
   if (config.initCommands?.length) {
@@ -312,6 +333,9 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   // Build container env — start with image defaults
   const env: string[] = [...imageEnv]
 
+  // YAAC session ID — used by the Codex SessionStart hook to record the transcript path
+  env.push(`YAAC_SESSION_ID=${sessionId}`)
+
   // Passthrough env vars
   if (config.envPassthrough) {
     for (const name of config.envPassthrough) {
@@ -388,15 +412,46 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   }
 
 
+  const tool: AgentTool = options.tool ?? 'claude'
   const containerName = `yaac-${projectSlug}-${sessionId}`
   const claude = claudeDir(projectSlug)
   const claudeJson = claudeJsonFile(projectSlug)
+  const codex = codexDir(projectSlug)
 
-  // Ensure claude.json exists so Podman mounts it as a file, not a directory
-  try {
-    await fs.access(claudeJson)
-  } catch {
-    await fs.writeFile(claudeJson, '{}')
+  if (tool === 'claude') {
+    // Ensure claude.json exists so Podman mounts it as a file, not a directory
+    try {
+      await fs.access(claudeJson)
+    } catch {
+      await fs.writeFile(claudeJson, '{}')
+    }
+  } else {
+    // Ensure codex dir and transcript symlink dir exist
+    const transcriptDir = codexTranscriptDir(projectSlug)
+    await fs.mkdir(transcriptDir, { recursive: true })
+
+    // Write a SessionStart hook that symlinks the transcript into a
+    // directory keyed by YAAC session ID, so yaac can read it directly.
+    const codex_ = codexDir(projectSlug)
+    const hookScript = path.join(codex_, '.yaac-hook.sh')
+    await fs.writeFile(hookScript, [
+      '#!/bin/sh',
+      '# Reads JSON from stdin (Codex SessionStart hook) and symlinks the',
+      '# transcript so yaac can find the right JSONL for this session.',
+      '# Uses a relative symlink so it resolves on both host and container.',
+      'INPUT=$(cat)',
+      'TRANSCRIPT=$(echo "$INPUT" | sed -n \'s/.*"transcript_path"\\s*:\\s*"\\([^"]*\\)".*/\\1/p\')',
+      'if [ -n "$TRANSCRIPT" ] && [ -n "$YAAC_SESSION_ID" ]; then',
+      '  LINK_DIR=/home/yaac/.codex/.yaac-transcripts',
+      '  mkdir -p "$LINK_DIR"',
+      '  REL=$(python3 -c "import os.path; print(os.path.relpath(\'$TRANSCRIPT\', \'$LINK_DIR\'))")',
+      '  ln -sf "$REL" "$LINK_DIR/$YAAC_SESSION_ID.jsonl"',
+      'fi',
+    ].join('\n') + '\n')
+    await fs.chmod(hookScript, 0o755)
+
+    await ensureCodexHooksJson(codex_)
+    await ensureCodexConfigToml(codex_)
   }
 
   // Retry the entire container create + setup so that if the container dies
@@ -405,7 +460,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   const maxStartAttempts = 3
   const setupParams: ContainerSetupParams = {
     imageName, containerName, projectSlug, sessionId, env,
-    wtDir, repo, claude, claudeJson, config, options,
+    wtDir, repo, claude, claudeJson, codex, tool, config, options,
     networkMode, pgRelayIp, gitUser, forwardedPorts,
   }
 
@@ -459,7 +514,8 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
 
   // Auto-cleanup if Claude Code exited (tmux session died)
   if (!isTmuxSessionAlive(containerName)) {
-    console.log('Claude Code exited. Cleaning up session...')
+    const toolLabel = tool === 'codex' ? 'Codex' : 'Claude Code'
+    console.log(`${toolLabel} exited. Cleaning up session...`)
     cleanupSessionDetached({ containerName, projectSlug, sessionId })
   }
 

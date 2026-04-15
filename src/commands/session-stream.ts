@@ -1,7 +1,7 @@
 import { execSync } from 'node:child_process'
 import { podman } from '@/lib/container/runtime'
 import { getDataDir } from '@/lib/project/paths'
-import { getSessionClaudeStatus } from '@/lib/session/claude-status'
+import { getSessionStatus, getToolFromContainer } from '@/lib/session/status'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 import { sessionCreate } from '@/commands/session-create'
 import { isPrewarmSession } from '@/lib/prewarm'
@@ -54,7 +54,8 @@ export async function getWaitingSessions(
     // Skip prewarm sessions — they are claimed via sessionCreate, not cycled through
     if (await isPrewarmSession(slug, sessionId)) continue
 
-    const status = await getSessionClaudeStatus(slug, sessionId)
+    const tool = getToolFromContainer(c)
+    const status = await getSessionStatus(slug, sessionId, tool)
     if (status !== 'waiting') continue
 
     results.push({
@@ -136,7 +137,7 @@ export async function sessionStream(project?: string): Promise<void> {
     lastVisited = session.sessionId
 
     if (!isTmuxSessionAlive(session.containerName)) {
-      console.log('Claude Code exited. Cleaning up session...')
+      console.log('Agent exited. Cleaning up session...')
       cleaning.add(session.sessionId)
       cleanupSessionDetached({
         containerName: session.containerName,
