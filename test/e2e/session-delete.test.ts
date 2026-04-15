@@ -81,9 +81,11 @@ describe('yaac session delete', { timeout: 120_000 }, () => {
       expect(containers).toHaveLength(0)
     }, { timeout: 15_000, interval: 500 })
 
-    // Worktree should be gone
+    // Worktree should be gone (removed after container, so poll for it)
     const wtDir = worktreeDir('del-running', sessionId)
-    await expect(fs.access(wtDir)).rejects.toThrow()
+    await vi.waitFor(async () => {
+      await expect(fs.access(wtDir)).rejects.toThrow()
+    }, { timeout: 15_000, interval: 500 })
   })
 
   it('deletes a stopped session', async () => {
