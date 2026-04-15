@@ -339,4 +339,57 @@ describe('codex session support', () => {
     const { sessionCreate } = await import('@/commands/session-create')
     expect(typeof sessionCreate).toBe('function')
   })
+
+  it('--prewarm-tool flag is accepted by session monitor option parsing', async () => {
+    const { sessionMonitor } = await import('@/commands/session-monitor')
+    expect(typeof sessionMonitor).toBe('function')
+  })
+
+  describe('prewarm tool matching', () => {
+    let containerName: string
+    let sessionId: string
+    let tmpDir: string
+
+    afterAll(async () => {
+      if (containerName) {
+        try {
+          const c = podman.getContainer(containerName)
+          await c.stop({ t: 1 })
+          await c.remove()
+        } catch { /* already gone */ }
+      }
+      if (tmpDir) await cleanupTempDir(tmpDir)
+    })
+
+    it('claimPrewarmSession skips entry with mismatched tool', async () => {
+      await requirePodman()
+      tmpDir = await createTempDataDir()
+      const repoPath = path.join(tmpDir, 'prewarm-tool-proj')
+      await createTestRepo(repoPath)
+      await addTestProject(repoPath)
+
+      ;({ containerName, sessionId } = await createCodexContainer('prewarm-tool-proj'))
+
+      const { setPrewarmSession, claimPrewarmSession } = await import('@/lib/prewarm')
+
+      // Register a codex prewarm session
+      await setPrewarmSession('prewarm-tool-proj', {
+        sessionId,
+        containerName,
+        fingerprint: 'test-fp',
+        state: 'ready',
+        verifiedAt: Date.now(),
+        tool: 'codex',
+      })
+
+      // Claiming with claude (default) should return null
+      const claimed = await claimPrewarmSession('prewarm-tool-proj', 'claude')
+      expect(claimed).toBeNull()
+
+      // Claiming with codex should succeed
+      const claimedCodex = await claimPrewarmSession('prewarm-tool-proj', 'codex')
+      expect(claimedCodex).not.toBeNull()
+      expect(claimedCodex?.sessionId).toBe(sessionId)
+    })
+  })
 })

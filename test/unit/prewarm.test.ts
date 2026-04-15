@@ -144,6 +144,19 @@ describe('prewarm state helpers', () => {
     expect(result).toEqual(entry)
   })
 
+  it('setPrewarmSession stores tool field', async () => {
+    const codexEntry: PrewarmEntry = { ...entry, tool: 'codex' }
+    await setPrewarmSession('my-project', codexEntry)
+    const result = await getPrewarmSession('my-project')
+    expect(result?.tool).toBe('codex')
+  })
+
+  it('tool defaults to undefined for legacy entries', async () => {
+    await setPrewarmSession('my-project', entry)
+    const result = await getPrewarmSession('my-project')
+    expect(result?.tool).toBeUndefined()
+  })
+
   it('failed entry is replaced when fingerprint changes', async () => {
     const failedEntry: PrewarmEntry = {
       ...entry,

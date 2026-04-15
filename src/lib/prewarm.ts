@@ -9,6 +9,7 @@ import { isTmuxSessionAlive, cleanupSession } from '@/lib/session/cleanup'
 import { fetchOrigin } from '@/lib/git'
 import { resolveTokenForUrl } from '@/lib/project/credentials'
 import { sessionCreate } from '@/commands/session-create'
+import type { AgentTool } from '@/types'
 import simpleGit from 'simple-git'
 
 /** Maximum age of verifiedAt before a prewarm session is considered stale (30s). */
@@ -20,6 +21,8 @@ export interface PrewarmEntry {
   fingerprint: string
   state: 'creating' | 'ready' | 'failed'
   verifiedAt: number
+  /** Agent tool this prewarm session was created with (default: 'claude'). */
+  tool?: AgentTool
 }
 
 function prewarmFilePath(): string {
@@ -102,7 +105,7 @@ async function hasLiveSessions(projectSlug: string, prewarmContainerName?: strin
  * Discover all projects with live sessions and ensure a prewarm session
  * exists for each. Used when the monitor is watching all projects.
  */
-export async function ensurePrewarmSessions(): Promise<void> {
+export async function ensurePrewarmSessions(tool: AgentTool = 'claude'): Promise<void> {
   // List all managed containers to discover active project slugs
   const containers = await podman.listContainers({
     all: true,
@@ -124,14 +127,14 @@ export async function ensurePrewarmSessions(): Promise<void> {
 
   for (const slug of projectSlugs) {
     try {
-      await ensurePrewarmSession(slug)
+      await ensurePrewarmSession(slug, tool)
     } catch (err) {
       console.error(`Prewarm [${slug}]: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 }
 
-export async function ensurePrewarmSession(projectSlug: string): Promise<void> {
+export async function ensurePrewarmSession(projectSlug: string, tool: AgentTool = 'claude'): Promise<void> {
   const existing = await getPrewarmSession(projectSlug)
 
   // Only prewarm if the project has at least one live non-prewarm session
@@ -161,7 +164,7 @@ export async function ensurePrewarmSession(projectSlug: string): Promise<void> {
   const { fingerprint } = await resolveSessionFingerprint(projectSlug)
 
   if (existing) {
-    if (existing.fingerprint === fingerprint) {
+    if (existing.fingerprint === fingerprint && (existing.tool ?? 'claude') === tool) {
       if (existing.state === 'creating') {
         // Creation in progress for correct fingerprint — skip
         return
@@ -200,10 +203,11 @@ export async function ensurePrewarmSession(projectSlug: string): Promise<void> {
     fingerprint,
     state: 'creating',
     verifiedAt: Date.now(),
+    tool,
   })
 
   try {
-    const createdId = await sessionCreate(projectSlug, { createPrewarm: true, sessionId })
+    const createdId = await sessionCreate(projectSlug, { createPrewarm: true, sessionId, tool })
     if (!createdId) {
       await clearPrewarmSession(projectSlug)
       return
@@ -222,6 +226,7 @@ export async function ensurePrewarmSession(projectSlug: string): Promise<void> {
       fingerprint,
       state: 'ready',
       verifiedAt: Date.now(),
+      tool,
     })
   } catch (err) {
     // Only mark as failed if the entry wasn't claimed in the meantime
@@ -233,6 +238,7 @@ export async function ensurePrewarmSession(projectSlug: string): Promise<void> {
         fingerprint,
         state: 'failed',
         verifiedAt: Date.now(),
+        tool,
       })
     }
     throw err
@@ -241,9 +247,13 @@ export async function ensurePrewarmSession(projectSlug: string): Promise<void> {
 
 export async function claimPrewarmSession(
   projectSlug: string,
+  tool: AgentTool = 'claude',
 ): Promise<{ sessionId: string; containerName: string } | null> {
   const entry = await getPrewarmSession(projectSlug)
   if (!entry || entry.state === 'failed') return null
+
+  // Only claim if the requested tool matches the prewarmed tool
+  if ((entry.tool ?? 'claude') !== tool) return null
 
   // Check verifiedAt freshness — if the monitor stopped, don't use stale sessions
   if (Date.now() - entry.verifiedAt > MAX_STALE_MS) {

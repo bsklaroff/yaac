@@ -4,10 +4,12 @@ import { proxyClient } from '@/lib/container/proxy-client'
 import { fetchAndPersistBlockedHosts } from '@/lib/session/blocked-hosts'
 import { podman } from '@/lib/container/runtime'
 import { getDataDir } from '@/lib/project/paths'
+import type { AgentTool } from '@/types'
 
 export interface SessionMonitorOptions {
   interval?: string
   noPrewarm?: boolean
+  prewarmTool?: AgentTool
 }
 
 export async function sessionMonitor(projectSlug?: string, options: SessionMonitorOptions = {}): Promise<void> {
@@ -83,9 +85,10 @@ export async function sessionMonitor(projectSlug?: string, options: SessionMonit
     // Otherwise, discover all projects with live sessions and prewarm each.
     if (!options.noPrewarm && !prewarmInProgress) {
       prewarmInProgress = true
+      const prewarmTool = options.prewarmTool ?? 'claude'
       const prewarmTask = projectSlug
-        ? ensurePrewarmSession(projectSlug)
-        : ensurePrewarmSessions()
+        ? ensurePrewarmSession(projectSlug, prewarmTool)
+        : ensurePrewarmSessions(prewarmTool)
       prewarmTask
         .catch((err) => {
           console.error(`Prewarm: ${err instanceof Error ? err.message : err}`)

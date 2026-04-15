@@ -230,8 +230,10 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   }
 
   // Try to claim a prewarmed session — it already has everything set up.
-  // Skip when createPrewarm is true, since that's the prewarm creation path itself.
-  const claimed = !options.createPrewarm ? await claimPrewarmSession(projectSlug) : null
+  // Skip when createPrewarm is true (prewarm creation path itself).
+  // claimPrewarmSession checks that the requested tool matches the prewarmed tool.
+  const tool: AgentTool = options.tool ?? 'claude'
+  const claimed = !options.createPrewarm ? await claimPrewarmSession(projectSlug, tool) : null
   if (claimed) {
     console.log(`Claiming prewarmed session ${claimed.sessionId.slice(0, 8)}...`)
 
@@ -412,7 +414,6 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   }
 
 
-  const tool: AgentTool = options.tool ?? 'claude'
   const containerName = `yaac-${projectSlug}-${sessionId}`
   const claude = claudeDir(projectSlug)
   const claudeJson = claudeJsonFile(projectSlug)

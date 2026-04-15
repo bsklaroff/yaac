@@ -119,6 +119,7 @@ session
   .argument('[project]', 'Filter by project slug')
   .option('-n, --interval <seconds>', 'Refresh interval in seconds', '5')
   .option('--no-prewarm', 'Disable automatic session prewarming')
+  .option('--prewarm-tool <tool>', 'Agent tool for prewarmed sessions (claude or codex)', 'claude')
   .action(sessionMonitor)
 
 const auth = program
