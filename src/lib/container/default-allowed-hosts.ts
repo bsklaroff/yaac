@@ -18,6 +18,9 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'api.openai.com',
   'openai.com',
   'cdn.openai.com',
+  'auth.openai.com',
+  'chatgpt.com',
+  'ab.chatgpt.com',
 
   // Version control — GitHub
   'github.com',
