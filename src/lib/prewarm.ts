@@ -226,8 +226,11 @@ export async function claimPrewarmSession(
     if (!ready) return null
   }
 
-  // Verify the container is alive
-  if (!isContainerRunning(containerName) || !isTmuxSessionAlive(containerName)) {
+  // The monitor already verified container + tmux liveness when it set
+  // verifiedAt (within MAX_STALE_MS, checked above). Skip the expensive
+  // podman exec tmux check and just do a cheap container-running check
+  // in case it crashed since the last monitor tick.
+  if (!isContainerRunning(containerName)) {
     return null
   }
 
