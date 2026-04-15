@@ -2,13 +2,14 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 USER root
 
-RUN cat <<'EOF' > /etc/apt/sources.list.d/ubuntu-plucky.sources
-Types: deb
-URIs: http://archive.ubuntu.com/ubuntu/
-Suites: plucky plucky-updates
-Components: main universe
-Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-EOF
+RUN ARCH="$(dpkg --print-architecture)" && \
+    if [ "$ARCH" = "arm64" ]; then \
+      MIRROR="http://ports.ubuntu.com/ubuntu-ports"; \
+    else \
+      MIRROR="http://archive.ubuntu.com/ubuntu"; \
+    fi && \
+    printf 'Types: deb\nURIs: %s\nSuites: plucky plucky-updates\nComponents: main universe\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' "$MIRROR" \
+      > /etc/apt/sources.list.d/ubuntu-plucky.sources
 RUN cat <<'EOF' > /etc/apt/preferences.d/ubuntu-plucky
 Package: *
 Pin: release n=plucky
