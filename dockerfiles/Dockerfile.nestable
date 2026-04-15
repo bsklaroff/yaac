@@ -40,6 +40,8 @@ log_driver="k8s-file"
 cgroup_manager="cgroupfs"
 events_logger="file"
 runtime="crun"
+[network]
+default_rootless_network_cmd="slirp4netns"
 EOF
 
 RUN mkdir -p /home/yaac/.config/containers && \
