@@ -368,7 +368,7 @@ describe('sessionStream', () => {
     expect(calls[2][0]).toContain('yaac-proj-a')
   })
 
-  it('revisits a session after wrap-around instead of repeatedly creating new ones', async () => {
+  it('revisits a session after wrap-around instead of repeatedly creating new ones when it has a prompt', async () => {
     // Scenario: session A is the only waiting session. After visiting A, the
     // wrap-around excludes it (lastVisited). That triggers sessionCreate. On
     // the next iteration A is still the only session. If lastVisited was
@@ -380,6 +380,7 @@ describe('sessionStream', () => {
 
     mockIsTmuxAlive.mockReturnValue(true)
     mockGetStatus.mockResolvedValue('waiting')
+    mockGetFirstMessage.mockResolvedValue('fix the login bug')
 
     const containerA = {
       State: 'running',
@@ -521,6 +522,83 @@ describe('sessionStream', () => {
 
     expect(mockSessionCreate).not.toHaveBeenCalled()
     expect(mockReaddir).not.toHaveBeenCalled()
+  })
+
+  it('exits after detaching the only waiting blank session instead of creating a new one', async () => {
+    const { execSync } = await import('node:child_process')
+    vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => '')
+
+    const containerA = {
+      State: 'running',
+      Names: ['/yaac-proj-a'],
+      Labels: { 'yaac.session-id': 'aaa', 'yaac.project': 'proj' },
+      Created: 1000,
+      Id: '1',
+    }
+
+    mockListContainers.mockResolvedValue([containerA] as never)
+
+    let tmuxCheckCount = 0
+    mockIsTmuxAlive.mockImplementation(() => {
+      tmuxCheckCount++
+      return tmuxCheckCount === 1
+    })
+    mockGetStatus.mockResolvedValue('waiting')
+    mockGetFirstMessage.mockResolvedValue(undefined)
+
+    await sessionStream('my-project')
+
+    expect(mockGetFirstMessage).toHaveBeenCalledWith('proj', 'aaa', 'claude')
+    expect(mockSessionCreate).not.toHaveBeenCalled()
+  })
+
+  it('exits on wrap-around when the only visited waiting session is blank', async () => {
+    const { execSync } = await import('node:child_process')
+    vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => '')
+
+    const containerA = {
+      State: 'running',
+      Names: ['/yaac-proj-a'],
+      Labels: { 'yaac.session-id': 'aaa', 'yaac.project': 'proj' },
+      Created: 1000,
+      Id: '1',
+    }
+
+    mockListContainers.mockResolvedValue([containerA] as never)
+    mockIsTmuxAlive.mockReturnValue(true)
+    mockGetStatus.mockResolvedValue('waiting')
+    mockGetFirstMessage.mockResolvedValue(undefined)
+
+    await sessionStream('my-project')
+
+    expect(mockGetFirstMessage).toHaveBeenCalledWith('proj', 'aaa', 'claude')
+    expect(mockSessionCreate).not.toHaveBeenCalled()
+  })
+
+  it('creates a new session on wrap-around when the only visited waiting session has a prompt', async () => {
+    const { execSync } = await import('node:child_process')
+    vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => '')
+
+    const containerA = {
+      State: 'running',
+      Names: ['/yaac-proj-a'],
+      Labels: { 'yaac.session-id': 'aaa', 'yaac.project': 'proj' },
+      Created: 1000,
+      Id: '1',
+    }
+
+    mockListContainers.mockResolvedValue([containerA] as never)
+    mockIsTmuxAlive.mockReturnValue(true)
+    mockGetStatus.mockResolvedValue('waiting')
+    mockGetFirstMessage.mockResolvedValue('fix the login bug')
+    mockSessionCreate.mockImplementation(() => {
+      throw new Error('stop')
+    })
+
+    await sessionStream('my-project').catch(() => {})
+
+    expect(mockGetFirstMessage).toHaveBeenCalledWith('proj', 'aaa', 'claude')
+    expect(mockSessionCreate).toHaveBeenCalledWith('my-project', {})
   })
 
   it('creates a new session after a closed session with a recorded prompt', async () => {

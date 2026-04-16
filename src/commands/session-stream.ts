@@ -205,7 +205,17 @@ export async function sessionStream(project?: string, tool?: AgentTool): Promise
     }
 
     if (sessions.length === 0) {
-      if (justClosedBlankSession) {
+      const shouldExitForOnlyVisitedBlankSession = (
+        allSessions.length === 1 &&
+        visited.has(allSessions[0].sessionId) &&
+        !await getSessionFirstMessage(
+          allSessions[0].projectSlug,
+          allSessions[0].sessionId,
+          allSessions[0].tool,
+        )
+      )
+
+      if (justClosedBlankSession || shouldExitForOnlyVisitedBlankSession) {
         console.log('Closed blank session and found no waiting sessions. Exiting session stream.')
         return
       }
