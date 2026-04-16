@@ -122,6 +122,7 @@ import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/
 const mockSpawn = vi.mocked(spawn)
 const mockAccess = vi.mocked(fs.access)
 const mockMkdir = vi.mocked(fs.mkdir)
+const mockWriteFile = vi.mocked(fs.writeFile)
 // eslint-disable-next-line @typescript-eslint/unbound-method
 const mockCreateContainer = vi.mocked(podman.createContainer)
 // eslint-disable-next-line @typescript-eslint/unbound-method
@@ -143,6 +144,7 @@ describe('createSession', () => {
 
     mockAccess.mockResolvedValue(undefined)
     mockMkdir.mockResolvedValue(undefined)
+    mockWriteFile.mockResolvedValue(undefined)
     vi.mocked(ensureContainerRuntime).mockResolvedValue(undefined)
     vi.mocked(ensureImage).mockResolvedValue('yaac-test-image')
     vi.mocked(packTar).mockResolvedValue(Buffer.from('archive'))
@@ -209,6 +211,40 @@ describe('createSession', () => {
       tool: 'codex',
     })
   })
+
+  it('mounts shared Claude and Codex state for Claude sessions', async () => {
+    await createSession('demo', { tool: 'claude' })
+
+    const binds = mockCreateContainer.mock.calls[0]?.[0].HostConfig?.Binds
+    expect(binds).toEqual(expect.arrayContaining([
+      '/tmp/demo/claude:/home/yaac/.claude:Z',
+      '/tmp/demo/claude.json:/home/yaac/.claude.json:Z',
+      '/tmp/demo/codex:/home/yaac/.codex:Z',
+    ]))
+    expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/claude', { recursive: true })
+    expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/codex', { recursive: true })
+  })
+
+  it('mounts shared Claude and Codex state for Codex sessions', async () => {
+    mockAccess.mockImplementation((target) => {
+      if (target === '/tmp/demo/claude.json') {
+        return Promise.reject(new Error('missing'))
+      }
+      return Promise.resolve(undefined)
+    })
+
+    await createSession('demo', { tool: 'codex' })
+
+    const binds = mockCreateContainer.mock.calls[0]?.[0].HostConfig?.Binds
+    expect(binds).toEqual(expect.arrayContaining([
+      '/tmp/demo/claude:/home/yaac/.claude:Z',
+      '/tmp/demo/claude.json:/home/yaac/.claude.json:Z',
+      '/tmp/demo/codex:/home/yaac/.codex:Z',
+    ]))
+    expect(mockWriteFile).toHaveBeenCalledWith('/tmp/demo/claude.json', '{}')
+    expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/claude', { recursive: true })
+    expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/codex', { recursive: true })
+  })
 })
 
 describe('sessionCreate', () => {
@@ -217,6 +253,7 @@ describe('sessionCreate', () => {
 
     mockAccess.mockResolvedValue(undefined)
     mockMkdir.mockResolvedValue(undefined)
+    mockWriteFile.mockResolvedValue(undefined)
     vi.mocked(ensureContainerRuntime).mockResolvedValue(undefined)
     vi.mocked(ensureImage).mockResolvedValue('yaac-test-image')
     vi.mocked(packTar).mockResolvedValue(Buffer.from('archive'))

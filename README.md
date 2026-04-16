@@ -116,8 +116,9 @@ Each session runs in an isolated container with the following mounts:
 | `~/.yaac/projects/<project>/repo/.git` | `/repo/.git` | Repository metadata |
 | `~/.yaac/projects/<project>/claude/` | `/home/yaac/.claude` | Claude Code configuration |
 | `~/.yaac/projects/<project>/claude.json` | `/home/yaac/.claude.json` | Claude Code project settings |
+| `~/.yaac/projects/<project>/codex/` | `/home/yaac/.codex` | Codex configuration and transcripts |
 
-The container runs as user `yaac` with home directory `/home/yaac`. All project data is stored under `~/.yaac/projects/<repo-name>/`. The repo, Claude config, and Claude project settings are shared across all sessions within a project (but isolated between projects). Each session gets its own git worktree.
+The container runs as user `yaac` with home directory `/home/yaac`. All project data is stored under `~/.yaac/projects/<repo-name>/`. The repo plus both tool state directories are shared across all sessions within a project (but isolated between projects), so Claude and Codex sessions can inspect each other's history. Each session gets its own git worktree.
 
 ## Project configuration
 

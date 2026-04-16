@@ -109,12 +109,9 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
       Binds: [
         `${wtDir}:/workspace:Z`,
         `${repo}/.git:/repo/.git:Z`,
-        ...(tool === 'claude' ? [
-          `${claude}:/home/yaac/.claude:Z`,
-          `${claudeJson}:/home/yaac/.claude.json:Z`,
-        ] : [
-          `${codex}:/home/yaac/.codex:Z`,
-        ]),
+        `${claude}:/home/yaac/.claude:Z`,
+        `${claudeJson}:/home/yaac/.claude.json:Z`,
+        `${codex}:/home/yaac/.codex:Z`,
         ...Object.entries(config.cacheVolumes ?? {}).map(
           ([key, containerPath]) => `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`,
         ),
@@ -430,14 +427,17 @@ export async function createSession(projectSlug: string, options: SessionCreateO
   const claudeJson = claudeJsonFile(projectSlug)
   const codex = codexDir(projectSlug)
 
-  if (tool === 'claude') {
-    // Ensure claude.json exists so Podman mounts it as a file, not a directory
-    try {
-      await fs.access(claudeJson)
-    } catch {
-      await fs.writeFile(claudeJson, '{}')
-    }
-  } else {
+  await fs.mkdir(claude, { recursive: true })
+  await fs.mkdir(codex, { recursive: true })
+
+  // Ensure claude.json exists so Podman mounts it as a file, not a directory.
+  try {
+    await fs.access(claudeJson)
+  } catch {
+    await fs.writeFile(claudeJson, '{}')
+  }
+
+  if (tool === 'codex') {
     // Ensure codex dir and transcript symlink dir exist
     const transcriptDir = codexTranscriptDir(projectSlug)
     await fs.mkdir(transcriptDir, { recursive: true })

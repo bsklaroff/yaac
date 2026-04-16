@@ -13,7 +13,7 @@ import { PgRelayClient } from '@/lib/container/pg-relay'
 import { findAvailablePort } from '@/lib/container/port'
 import { addWorktree, getDefaultBranch } from '@/lib/git'
 import { resolveProjectConfig } from '@/lib/project/config'
-import { repoDir, claudeDir, worktreeDir, worktreesDir, getDataDir } from '@/lib/project/paths'
+import { repoDir, claudeDir, claudeJsonFile, codexDir, worktreeDir, worktreesDir, getDataDir } from '@/lib/project/paths'
 
 const execFileAsync = promisify(execFile)
 
@@ -52,7 +52,10 @@ async function getImageEnv(imageName: string): Promise<string[]> {
   return (info.Config?.Env as string[] | undefined) ?? []
 }
 
-async function createSessionNonInteractive(projectSlug: string, options?: { addDir?: string[]; addDirRw?: string[] }): Promise<{
+async function createSessionNonInteractive(
+  projectSlug: string,
+  options?: { tool?: 'claude' | 'codex'; addDir?: string[]; addDirRw?: string[] },
+): Promise<{
   containerId: string
   containerName: string
   sessionId: string
@@ -136,6 +139,17 @@ async function createSessionNonInteractive(projectSlug: string, options?: { addD
 
   const containerName = `yaac-${projectSlug}-${sessionId}`
   const claude = claudeDir(projectSlug)
+  const claudeJson = claudeJsonFile(projectSlug)
+  const codex = codexDir(projectSlug)
+  const tool = options?.tool ?? 'claude'
+
+  await fs.mkdir(claude, { recursive: true })
+  await fs.mkdir(codex, { recursive: true })
+  try {
+    await fs.access(claudeJson)
+  } catch {
+    await fs.writeFile(claudeJson, '{}')
+  }
 
   const container = await podman.createContainer({
     Image: imageName,
@@ -144,6 +158,7 @@ async function createSessionNonInteractive(projectSlug: string, options?: { addD
       'yaac.project': projectSlug,
       'yaac.session-id': sessionId,
       'yaac.data-dir': getDataDir(),
+      'yaac.tool': tool,
       'yaac.test': 'true',
     },
     ExposedPorts: exposedPorts,
@@ -153,6 +168,8 @@ async function createSessionNonInteractive(projectSlug: string, options?: { addD
         `${wtDir}:/workspace:Z`,
         `${repo}/.git:/repo/.git:Z`,
         `${claude}:/home/yaac/.claude:Z`,
+        `${claudeJson}:/home/yaac/.claude.json:Z`,
+        `${codex}:/home/yaac/.codex:Z`,
         ...Object.entries(config.cacheVolumes ?? {}).map(
           ([key, containerPath]) => `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`,
         ),
@@ -218,7 +235,7 @@ async function createSessionNonInteractive(projectSlug: string, options?: { addD
   // Start tmux shell for the session
   const tmuxCmd = 'zsh'
   await podmanExecRetry('podman', [
-    'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'yaac', '-n', 'claude', tmuxCmd,
+    'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'yaac', '-n', tool, tmuxCmd,
   ])
 
   // Run init commands synchronously (production runs them in a background tmux window)
@@ -322,13 +339,19 @@ describe('yaac session create', () => {
       expect(readme).toContain('Test repo')
     })
 
-    it('mounts workspace and claude directories', async () => {
+    it('mounts workspace plus shared Claude and Codex state', async () => {
       const { stdout: lsOutput } = await execFileAsync('podman', [
         'exec', result.containerName, 'ls', '/workspace',
       ])
       expect(lsOutput).toContain('README.md')
       await execFileAsync('podman', [
         'exec', result.containerName, 'test', '-d', '/home/yaac/.claude',
+      ])
+      await execFileAsync('podman', [
+        'exec', result.containerName, 'test', '-f', '/home/yaac/.claude.json',
+      ])
+      await execFileAsync('podman', [
+        'exec', result.containerName, 'test', '-d', '/home/yaac/.codex',
       ])
     })
 
@@ -380,6 +403,32 @@ describe('yaac session create', () => {
     expect(stdout).toContain('YAAC_TEST_VAR=hello-from-host')
 
     delete process.env.YAAC_TEST_VAR
+  })
+
+  it('mounts shared Claude and Codex state in Codex sessions too', async () => {
+    await requirePodman()
+
+    const tmpDir = await createTempDataDir()
+    tmpDirs.push(tmpDir)
+    const repoPath = path.join(tmpDir, 'shared-tool-state-project')
+    await createTestRepo(repoPath)
+    await addTestProject(repoPath)
+
+    const result = await createSessionNonInteractive('shared-tool-state-project', { tool: 'codex' })
+    containersToCleanup.push(result.containerName)
+
+    const info = await podman.getContainer(result.containerName).inspect()
+    expect(info.Config.Labels['yaac.tool']).toBe('codex')
+
+    await execFileAsync('podman', [
+      'exec', result.containerName, 'test', '-d', '/home/yaac/.claude',
+    ])
+    await execFileAsync('podman', [
+      'exec', result.containerName, 'test', '-f', '/home/yaac/.claude.json',
+    ])
+    await execFileAsync('podman', [
+      'exec', result.containerName, 'test', '-d', '/home/yaac/.codex',
+    ])
   })
 
   it('starts tmux without creating prompt state', async () => {
