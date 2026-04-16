@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises'
 import { codexTranscriptFile } from '@/lib/project/paths'
+import { scanJsonlForward } from '@/lib/session/jsonl'
 
 interface CodexEntry {
   type: string
@@ -140,34 +141,7 @@ export async function getSessionCodexStatus(projectSlug: string, sessionId: stri
  * the first user message, or undefined if none is found.
  */
 export async function getCodexFirstUserMessage(jsonlPath: string): Promise<string | undefined> {
-  let handle: fs.FileHandle | undefined
-  try {
-    handle = await fs.open(jsonlPath, 'r')
-    const stat = await handle.stat()
-    if (stat.size === 0) return undefined
-
-    const chunkSize = Math.min(stat.size, 8192)
-    const buf = Buffer.alloc(chunkSize)
-    await handle.read(buf, 0, chunkSize, 0)
-    const chunk = buf.toString('utf8')
-
-    const lines = chunk.split('\n').filter((l) => l.trim().length > 0)
-    for (const line of lines) {
-      let entry: CodexEntry
-      try {
-        entry = JSON.parse(line) as CodexEntry
-      } catch {
-        continue
-      }
-      const userMessage = getUserMessageText(entry)
-      if (userMessage) return userMessage
-    }
-    return undefined
-  } catch {
-    return undefined
-  } finally {
-    await handle?.close()
-  }
+  return scanJsonlForward(jsonlPath, (entry) => getUserMessageText(entry as CodexEntry))
 }
 
 /**

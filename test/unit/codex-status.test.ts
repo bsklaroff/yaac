@@ -124,6 +124,49 @@ describe('getCodexFirstUserMessage', () => {
     expect(await getCodexFirstUserMessage(jsonlPath)).toBe('second prompt')
   })
 
+  it('ignores bootstrap response_item user messages and reads the user_message event', async () => {
+    await writeEntry({ type: 'session_meta', payload: { id: 'abc' } })
+    await writeEntry({
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: '# AGENTS.md instructions for /workspace' }],
+      },
+    })
+    await writeEntry({
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'fix the login bug' }],
+      },
+    })
+    await writeEntry({ type: 'event_msg', payload: { type: 'user_message', message: 'fix the login bug' } })
+    expect(await getCodexFirstUserMessage(jsonlPath)).toBe('fix the login bug')
+  })
+
+  it('finds the first user_message beyond the first 8KB of the file', async () => {
+    await writeEntry({
+      type: 'session_meta',
+      payload: {
+        id: 'abc',
+        base_instructions: { text: 'x'.repeat(12000) },
+      },
+    })
+    await writeEntry({
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: '# AGENTS.md instructions for /workspace' }],
+      },
+    })
+    await writeEntry({ type: 'event_msg', payload: { type: 'user_message', message: 'fix the login bug' } })
+
+    expect(await getCodexFirstUserMessage(jsonlPath)).toBe('fix the login bug')
+  })
+
   it('ignores the legacy top-level event_msg message shape', async () => {
     await writeEntry({ type: 'event_msg', message: 'legacy prompt', images: [] })
     expect(await getCodexFirstUserMessage(jsonlPath)).toBeUndefined()

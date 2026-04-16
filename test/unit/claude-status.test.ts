@@ -440,4 +440,12 @@ describe('getFirstUserMessage', () => {
     await writeEntry({ type: 'user', message: { role: 'user', content: 'second message' } })
     expect(await getFirstUserMessage(jsonlPath)).toBe('hello world')
   })
+
+  it('finds the first user message beyond the first 8KB of the file', async () => {
+    await writeEntry({ type: 'system', content: 'x'.repeat(12000) })
+    await writeEntry({ type: 'permission-mode', permissionMode: 'default' })
+    await writeEntry({ type: 'user', message: { role: 'user', content: 'hello world' } })
+
+    expect(await getFirstUserMessage(jsonlPath)).toBe('hello world')
+  })
 })

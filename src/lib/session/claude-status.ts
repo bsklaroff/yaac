@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { claudeDir } from '@/lib/project/paths'
+import { scanJsonlForward } from '@/lib/session/jsonl'
 
 const WAITING_STOP_REASONS = new Set(['end_turn', 'refusal', 'stop_sequence'])
 
@@ -244,39 +245,21 @@ export async function getSessionClaudeStatus(projectSlug: string, sessionId: str
  * of the first user message, or undefined if none is found.
  */
 export async function getFirstUserMessage(jsonlPath: string): Promise<string | undefined> {
-  let handle: fs.FileHandle | undefined
-  try {
-    handle = await fs.open(jsonlPath, 'r')
-    const stat = await handle.stat()
-    if (stat.size === 0) return undefined
+  return scanJsonlForward(jsonlPath, (entry) => {
+    const parsed = entry as {
+      type: string
+      message?: { role?: string; content?: string | Array<{ type: string; text?: string }> }
+    }
+    if (parsed.type !== 'user') return undefined
 
-    // Read the first chunk — user message is typically near the top
-    const chunkSize = Math.min(stat.size, 8192)
-    const buf = Buffer.alloc(chunkSize)
-    await handle.read(buf, 0, chunkSize, 0)
-    const chunk = buf.toString('utf8')
-
-    const lines = chunk.split('\n').filter((l) => l.trim().length > 0)
-    for (const line of lines) {
-      const entry = JSON.parse(line) as {
-        type: string
-        message?: { role?: string; content?: string | Array<{ type: string; text?: string }> }
-      }
-      if (entry.type !== 'user') continue
-
-      const content = entry.message?.content
-      if (typeof content === 'string') return content
-      if (Array.isArray(content)) {
-        const textBlock = content.find((b) => b.type === 'text')
-        if (textBlock?.text) return textBlock.text
-      }
+    const content = parsed.message?.content
+    if (typeof content === 'string') return content
+    if (Array.isArray(content)) {
+      const textBlock = content.find((b) => b.type === 'text')
+      if (textBlock?.text) return textBlock.text
     }
     return undefined
-  } catch {
-    return undefined
-  } finally {
-    await handle?.close()
-  }
+  })
 }
 
 /**
