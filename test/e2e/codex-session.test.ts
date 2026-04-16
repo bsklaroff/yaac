@@ -253,11 +253,15 @@ describe('codex session support', () => {
       ])
       await podmanExecRetry('podman', [
         'exec', containerName, 'sh', '-c',
-        `echo '{"type":"event_msg","payload":{"type":"agent_message","message":"done","phase":"commentary"}}' >> ${transcriptContainerPath}`,
+        `echo '{"type":"event_msg","payload":{"type":"agent_message","message":"done","phase":"final_answer"}}' >> ${transcriptContainerPath}`,
       ])
       await podmanExecRetry('podman', [
         'exec', containerName, 'sh', '-c',
-        `echo '{"type":"response_item","payload":{"type":"message","role":"assistant"}}' >> ${transcriptContainerPath}`,
+        `echo '{"type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer"}}' >> ${transcriptContainerPath}`,
+      ])
+      await podmanExecRetry('podman', [
+        'exec', containerName, 'sh', '-c',
+        `echo '{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1"}}' >> ${transcriptContainerPath}`,
       ])
 
       // Simulate the SessionStart hook invocation
@@ -298,7 +302,7 @@ describe('codex session support', () => {
     })
 
     it('getCodexStatus reads through the symlink', async () => {
-      // The transcript has turn.completed as last entry, so status should be waiting
+      // The transcript has task_complete as last entry, so status should be waiting
       const hostSymlink = codexTranscriptFile(projectSlug, sessionId)
       const status = await getCodexStatus(hostSymlink)
       expect(status).toBe('waiting')

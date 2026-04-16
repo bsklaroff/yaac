@@ -46,8 +46,9 @@ describe('getCodexStatus', () => {
     await writeEntry({ type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'call-1' } })
     await writeEntry({ type: 'event_msg', payload: { type: 'exec_command_end', call_id: 'call-1', turn_id: 'turn-1' } })
     await writeEntry({ type: 'response_item', payload: { type: 'function_call_output', call_id: 'call-1' } })
-    await writeEntry({ type: 'event_msg', payload: { type: 'agent_message', message: 'done', phase: 'commentary' } })
-    await writeEntry({ type: 'response_item', payload: { type: 'message', role: 'assistant' } })
+    await writeEntry({ type: 'event_msg', payload: { type: 'agent_message', message: 'done', phase: 'final_answer' } })
+    await writeEntry({ type: 'response_item', payload: { type: 'message', role: 'assistant', phase: 'final_answer' } })
+    await writeEntry({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-1' } })
     expect(await getCodexStatus(jsonlPath)).toBe('waiting')
   })
 
@@ -61,20 +62,39 @@ describe('getCodexStatus', () => {
   })
 
   it('returns running when a user message follows earlier waiting-state events', async () => {
-    await writeEntry({ type: 'event_msg', payload: { type: 'agent_message', message: 'done', phase: 'commentary' } })
-    await writeEntry({ type: 'response_item', payload: { type: 'message', role: 'assistant' } })
+    await writeEntry({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-1' } })
     await writeEntry({ type: 'event_msg', payload: { type: 'user_message', message: 'next task' } })
     expect(await getCodexStatus(jsonlPath)).toBe('running')
   })
 
-  it('ignores non-user event_msg entries when determining running state', async () => {
+  it('ignores commentary-only event_msg entries when determining running state', async () => {
     await writeEntry({ type: 'event_msg', payload: { type: 'agent_message', message: 'working on it' } })
     expect(await getCodexStatus(jsonlPath)).toBe('waiting')
   })
 
-  it('returns waiting for an assistant message without pending work', async () => {
-    await writeEntry({ type: 'event_msg', payload: { type: 'agent_message', message: 'all set', phase: 'commentary' } })
-    await writeEntry({ type: 'response_item', payload: { type: 'message', role: 'assistant' } })
+  it('returns waiting for a completed turn without pending work', async () => {
+    await writeEntry({ type: 'event_msg', payload: { type: 'agent_message', message: 'all set', phase: 'final_answer' } })
+    await writeEntry({ type: 'response_item', payload: { type: 'message', role: 'assistant', phase: 'final_answer' } })
+    await writeEntry({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-1' } })
+    expect(await getCodexStatus(jsonlPath)).toBe('waiting')
+  })
+
+  it('treats a final assistant response as waiting even before task_complete arrives', async () => {
+    await writeEntry({ type: 'event_msg', payload: { type: 'agent_message', message: 'all set', phase: 'final_answer' } })
+    await writeEntry({ type: 'response_item', payload: { type: 'message', role: 'assistant', phase: 'final_answer' } })
+    expect(await getCodexStatus(jsonlPath)).toBe('waiting')
+  })
+
+  it('does not treat commentary-only assistant messages as waiting when work is still pending', async () => {
+    await writeEntry({ type: 'event_msg', payload: { type: 'agent_message', message: 'still working', phase: 'commentary' } })
+    await writeEntry({ type: 'response_item', payload: { type: 'message', role: 'assistant', phase: 'commentary' } })
+    await writeEntry({ type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'call-1' } })
+    expect(await getCodexStatus(jsonlPath)).toBe('running')
+  })
+
+  it('returns waiting when the prior turn was interrupted', async () => {
+    await writeEntry({ type: 'response_item', payload: { type: 'message', role: 'user' } })
+    await writeEntry({ type: 'event_msg', payload: { type: 'turn_aborted', turn_id: 'turn-1', reason: 'interrupted' } })
     expect(await getCodexStatus(jsonlPath)).toBe('waiting')
   })
 })

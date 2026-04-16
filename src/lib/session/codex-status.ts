@@ -10,6 +10,7 @@ interface CodexEntry {
     role?: string
     name?: string
     call_id?: string
+    phase?: string
   }
   item?: {
     type?: string
@@ -46,7 +47,7 @@ function getCodexEntryStatus(
     }
 
     if (entry.payload?.type === 'message') {
-      if (entry.payload.role === 'assistant') return 'waiting'
+      if (entry.payload.role === 'assistant' && entry.payload.phase === 'final_answer') return 'waiting'
       if (entry.payload.role === 'user') return 'running'
     }
 
@@ -55,9 +56,10 @@ function getCodexEntryStatus(
 
   if (entry.type === 'event_msg') {
     if (entry.payload?.type === 'user_message' || entry.payload?.type === 'task_started') return 'running'
-    if (entry.payload?.type === 'agent_message' || entry.payload?.type === 'task_complete' || entry.payload?.type === 'task_completed') {
+    if (entry.payload?.type === 'task_complete' || entry.payload?.type === 'turn_aborted') {
       return 'waiting'
     }
+    if (entry.payload?.type === 'agent_message' && entry.payload.phase === 'final_answer') return 'waiting'
   }
 
   return 'continue'
