@@ -1,5 +1,14 @@
 export type AgentTool = 'claude' | 'codex'
 
+export type ToolAuthKind = 'api-key' | 'oauth'
+
+export interface ToolAuthEntry {
+  tool: AgentTool
+  kind: ToolAuthKind
+  apiKey: string
+  savedAt: string
+}
+
 export interface ProjectMeta {
   slug: string
   remoteUrl: string
@@ -64,6 +73,7 @@ export interface GithubTokenEntry {
 
 export interface CredentialsFile {
   tokens: GithubTokenEntry[]
+  toolAuth?: ToolAuthEntry[]
 }
 
 export interface SessionMeta {

@@ -86,6 +86,7 @@ vi.mock('@/lib/project/config', () => ({
 
 vi.mock('@/lib/project/credentials', () => ({
   resolveTokenForUrl: vi.fn().mockResolvedValue('token'),
+  loadCredentials: vi.fn().mockResolvedValue({ tokens: [], toolAuth: [] }),
 }))
 
 vi.mock('@/lib/git', () => ({
@@ -116,7 +117,7 @@ import { claimPrewarmSession } from '@/lib/prewarm'
 import { ensureImage, packTar } from '@/lib/container/image-builder'
 import { proxyClient } from '@/lib/container/proxy-client'
 import { resolveProjectConfig } from '@/lib/project/config'
-import { resolveTokenForUrl } from '@/lib/project/credentials'
+import { resolveTokenForUrl, loadCredentials } from '@/lib/project/credentials'
 import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/lib/git'
 
 const mockSpawn = vi.mocked(spawn)
@@ -150,6 +151,7 @@ describe('createSession', () => {
     vi.mocked(packTar).mockResolvedValue(Buffer.from('archive'))
     vi.mocked(resolveProjectConfig).mockResolvedValue({})
     vi.mocked(resolveTokenForUrl).mockResolvedValue('token')
+    vi.mocked(loadCredentials).mockResolvedValue({ tokens: [], toolAuth: [] })
     vi.mocked(addWorktree).mockResolvedValue(undefined)
     vi.mocked(getDefaultBranch).mockResolvedValue('main')
     vi.mocked(fetchOrigin).mockResolvedValue(undefined)
@@ -259,6 +261,7 @@ describe('sessionCreate', () => {
     vi.mocked(packTar).mockResolvedValue(Buffer.from('archive'))
     vi.mocked(resolveProjectConfig).mockResolvedValue({})
     vi.mocked(resolveTokenForUrl).mockResolvedValue('token')
+    vi.mocked(loadCredentials).mockResolvedValue({ tokens: [], toolAuth: [] })
     vi.mocked(addWorktree).mockResolvedValue(undefined)
     vi.mocked(getDefaultBranch).mockResolvedValue('main')
     vi.mocked(fetchOrigin).mockResolvedValue(undefined)

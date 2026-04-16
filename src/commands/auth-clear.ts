@@ -1,19 +1,54 @@
 import readline from 'node:readline/promises'
-import { listTokens, removeToken, saveCredentials } from '@/lib/project/credentials'
+import { listTokens, removeToken, saveCredentials, loadCredentials } from '@/lib/project/credentials'
+import { loadToolAuthEntry, removeToolAuth } from '@/lib/project/tool-auth'
 
 export async function authClear(): Promise<void> {
   const tokens = await listTokens()
-  if (tokens.length === 0) {
-    console.log('No tokens configured.')
+  const claude = await loadToolAuthEntry('claude')
+  const codex = await loadToolAuthEntry('codex')
+
+  if (tokens.length === 0 && !claude && !codex) {
+    console.log('No credentials configured.')
     return
   }
 
-  console.log('Configured tokens:')
-  for (let i = 0; i < tokens.length; i++) {
-    const { pattern, tokenPreview } = tokens[i]
-    const num = String(i + 1).padEnd(2)
-    const pat = pattern.padEnd(27)
-    console.log(`  ${num} ${pat} ${tokenPreview}`)
+  const entries: Array<{ label: string; action: () => Promise<void> }> = []
+
+  for (const { pattern, tokenPreview } of tokens) {
+    entries.push({
+      label: `GitHub token: ${pattern} (${tokenPreview})`,
+      action: async () => {
+        const removed = await removeToken(pattern)
+        if (removed) console.log(`Removed GitHub token for pattern "${pattern}".`)
+      },
+    })
+  }
+
+  if (claude) {
+    const preview = claude.apiKey.length > 4 ? '***' + claude.apiKey.slice(-4) : '****'
+    entries.push({
+      label: `Claude Code credentials (${preview})`,
+      action: async () => {
+        await removeToolAuth('claude')
+        console.log('Removed Claude Code credentials.')
+      },
+    })
+  }
+
+  if (codex) {
+    const preview = codex.apiKey.length > 4 ? '***' + codex.apiKey.slice(-4) : '****'
+    entries.push({
+      label: `Codex credentials (${preview})`,
+      action: async () => {
+        await removeToolAuth('codex')
+        console.log('Removed Codex credentials.')
+      },
+    })
+  }
+
+  console.log('Configured credentials:')
+  for (let i = 0; i < entries.length; i++) {
+    console.log(`  ${String(i + 1).padEnd(2)} ${entries[i].label}`)
   }
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -21,20 +56,19 @@ export async function authClear(): Promise<void> {
   rl.close()
 
   if (answer.toLowerCase() === 'all') {
-    await saveCredentials({ tokens: [] })
-    console.log('All tokens removed.')
+    const creds = await loadCredentials()
+    creds.tokens = []
+    creds.toolAuth = []
+    await saveCredentials(creds)
+    console.log('All credentials removed.')
     return
   }
 
   const idx = parseInt(answer, 10)
-  if (isNaN(idx) || idx < 1 || idx > tokens.length) {
+  if (isNaN(idx) || idx < 1 || idx > entries.length) {
     console.log('Cancelled.')
     return
   }
 
-  const pattern = tokens[idx - 1].pattern
-  const removed = await removeToken(pattern)
-  if (removed) {
-    console.log(`Removed token for pattern "${pattern}".`)
-  }
+  await entries[idx - 1].action()
 }

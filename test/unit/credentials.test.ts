@@ -34,7 +34,7 @@ describe('credentials', () => {
   describe('loadCredentials', () => {
     it('returns empty tokens when file is missing', async () => {
       const result = await loadCredentials()
-      expect(result).toEqual({ tokens: [] })
+      expect(result).toEqual({ tokens: [], toolAuth: [] })
     })
 
     it('returns tokens from valid file', async () => {
@@ -43,7 +43,7 @@ describe('credentials', () => {
         JSON.stringify({ tokens: [{ pattern: '*', token: 'ghp_test123' }] }),
       )
       const result = await loadCredentials()
-      expect(result).toEqual({ tokens: [{ pattern: '*', token: 'ghp_test123' }] })
+      expect(result.tokens).toEqual([{ pattern: '*', token: 'ghp_test123' }])
     })
 
     it('filters out entries with empty tokens', async () => {
@@ -55,19 +55,66 @@ describe('credentials', () => {
         ] }),
       )
       const result = await loadCredentials()
-      expect(result).toEqual({ tokens: [{ pattern: 'org/*', token: 'ghp_valid' }] })
+      expect(result.tokens).toEqual([{ pattern: 'org/*', token: 'ghp_valid' }])
     })
 
     it('returns empty tokens for invalid JSON', async () => {
       await fs.writeFile(credentialsPath(), 'not json')
       const result = await loadCredentials()
-      expect(result).toEqual({ tokens: [] })
+      expect(result).toEqual({ tokens: [], toolAuth: [] })
     })
 
     it('returns empty tokens when tokens field is not an array', async () => {
       await fs.writeFile(credentialsPath(), JSON.stringify({ tokens: 'not-array' }))
       const result = await loadCredentials()
-      expect(result).toEqual({ tokens: [] })
+      expect(result).toEqual({ tokens: [], toolAuth: [] })
+    })
+
+    it('preserves toolAuth field when present', async () => {
+      await fs.writeFile(
+        credentialsPath(),
+        JSON.stringify({
+          tokens: [{ pattern: '*', token: 'ghp_test' }],
+          toolAuth: [{
+            tool: 'claude',
+            kind: 'oauth',
+            apiKey: 'sk-ant-oat01-test',
+            savedAt: '2026-01-01T00:00:00Z',
+          }],
+        }),
+      )
+      const result = await loadCredentials()
+      expect(result.tokens).toEqual([{ pattern: '*', token: 'ghp_test' }])
+      expect(result.toolAuth).toEqual([{
+        tool: 'claude',
+        kind: 'oauth',
+        apiKey: 'sk-ant-oat01-test',
+        savedAt: '2026-01-01T00:00:00Z',
+      }])
+    })
+
+    it('returns empty toolAuth when field is missing', async () => {
+      await fs.writeFile(
+        credentialsPath(),
+        JSON.stringify({ tokens: [{ pattern: '*', token: 'ghp_test' }] }),
+      )
+      const result = await loadCredentials()
+      expect(result.toolAuth).toEqual([])
+    })
+
+    it('round-trips both tokens and toolAuth', async () => {
+      const creds = {
+        tokens: [{ pattern: '*', token: 'ghp_test' }],
+        toolAuth: [{
+          tool: 'claude' as const,
+          kind: 'oauth' as const,
+          apiKey: 'sk-ant-oat01-test',
+          savedAt: '2026-01-01T00:00:00Z',
+        }],
+      }
+      await saveCredentials(creds)
+      const loaded = await loadCredentials()
+      expect(loaded).toEqual(creds)
     })
   })
 
