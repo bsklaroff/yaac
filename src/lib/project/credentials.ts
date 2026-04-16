@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import readline from 'node:readline/promises'
 import path from 'node:path'
 import { getDataDir, ensureDataDir } from '@/lib/project/paths'
-import type { CredentialsFile, GithubTokenEntry } from '@/types'
+import type { CredentialsFile, GithubTokenEntry, ToolAuthEntry } from '@/types'
 
 export function credentialsPath(): string {
   return path.join(getDataDir(), '.credentials.json')
@@ -27,11 +27,24 @@ export async function loadCredentials(): Promise<CredentialsFile> {
           typeof (t as Record<string, unknown>).token === 'string' &&
           (t as Record<string, unknown>).token !== '',
       )
-      return { tokens: valid }
+      const rawToolAuth = (parsed as Record<string, unknown>).toolAuth
+      const toolAuth = Array.isArray(rawToolAuth)
+        ? rawToolAuth.filter(
+          (t): t is ToolAuthEntry =>
+            typeof t === 'object' &&
+            t !== null &&
+            typeof (t as Record<string, unknown>).tool === 'string' &&
+            typeof (t as Record<string, unknown>).kind === 'string' &&
+            typeof (t as Record<string, unknown>).apiKey === 'string' &&
+            (t as Record<string, unknown>).apiKey !== '' &&
+            typeof (t as Record<string, unknown>).savedAt === 'string',
+        )
+        : []
+      return { tokens: valid, toolAuth }
     }
-    return { tokens: [] }
+    return { tokens: [], toolAuth: [] }
   } catch {
-    return { tokens: [] }
+    return { tokens: [], toolAuth: [] }
   }
 }
 

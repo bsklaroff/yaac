@@ -14,6 +14,7 @@ import { toolGet } from '@/commands/tool-get'
 import { toolSet } from '@/commands/tool-set'
 import { ensureGithubToken } from '@/lib/project/credentials'
 import { ensureDefaultTool, getDefaultTool } from '@/lib/project/preferences'
+import { ensureToolAuth } from '@/lib/project/tool-auth'
 import type { AgentTool } from '@/types'
 import type { SessionMonitorOptions } from '@/commands/session-monitor'
 
@@ -154,22 +155,22 @@ tool
 
 const auth = program
   .command('auth')
-  .description('Manage GitHub credentials')
+  .description('Manage credentials (GitHub tokens and tool API keys)')
   .configureHelp({ formatHelp: nestedHelp })
 
 auth
   .command('list')
-  .description('List configured GitHub tokens (masked)')
+  .description('List configured credentials (masked)')
   .action(authList)
 
 auth
   .command('update')
-  .description('Add or replace a GitHub Personal Access Token (interactive)')
+  .description('Add or update credentials (GitHub, Claude Code, or Codex)')
   .action(authUpdate)
 
 auth
   .command('clear')
-  .description('Remove stored GitHub credentials (interactive)')
+  .description('Remove stored credentials (interactive)')
   .action(authClear)
 
 // Ensure default tool and GitHub token exist before any command
@@ -183,8 +184,9 @@ program.hook('preAction', async (thisCommand) => {
     cmd = cmd.parent
   }
   if (chain.includes('auth') || chain.includes('tool')) return
-  await ensureDefaultTool()
+  const tool = await ensureDefaultTool()
   await ensureGithubToken()
+  await ensureToolAuth(tool)
 })
 
 program.parse()

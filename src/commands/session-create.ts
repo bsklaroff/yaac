@@ -15,6 +15,7 @@ import { pgRelay } from '@/lib/container/pg-relay'
 import { repoDir, claudeDir, claudeJsonFile, codexDir, codexTranscriptDir, worktreeDir, worktreesDir, projectDir, getDataDir } from '@/lib/project/paths'
 import { resolveProjectConfig } from '@/lib/project/config'
 import { resolveTokenForUrl } from '@/lib/project/credentials'
+import { loadToolAuthEntry } from '@/lib/project/tool-auth'
 import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/lib/git'
 import { finalizeAttachedSession } from '@/lib/session/finalize-attached-session'
 import { claimPrewarmSession } from '@/lib/prewarm'
@@ -378,12 +379,34 @@ export async function createSession(projectSlug: string, options: SessionCreateO
     },
   ]
 
+  // Build tool auth injection rules — proxy the active tool's API key
+  const toolAuth = await loadToolAuthEntry(tool)
+  const toolAuthRules: InjectionRule[] = []
+  if (toolAuth) {
+    if (tool === 'claude') {
+      // Both API keys (sk-ant-api03-*) and OAuth tokens (sk-ant-oat-*)
+      // use x-api-key header with the raw token value
+      toolAuthRules.push({
+        hostPattern: 'api.anthropic.com',
+        pathPattern: '/*',
+        injections: [{ action: 'set_header', name: 'x-api-key', value: toolAuth.apiKey }],
+      })
+    } else {
+      // OpenAI: Authorization: Bearer <token>
+      toolAuthRules.push({
+        hostPattern: 'api.openai.com',
+        pathPattern: '/*',
+        injections: [{ action: 'set_header', name: 'authorization', value: `Bearer ${toolAuth.apiKey}` }],
+      })
+    }
+  }
+
   // Merge with any additional envSecretProxy rules from config
   const additionalRules = config.envSecretProxy
     ? buildRulesFromConfig(config.envSecretProxy, process.env)
     : []
   const allowedHosts = resolveAllowedHosts(config)
-  await proxyClient.updateProjectRules(projectSlug, [...githubRules, ...additionalRules], allowedHosts)
+  await proxyClient.updateProjectRules(projectSlug, [...githubRules, ...toolAuthRules, ...additionalRules], allowedHosts)
 
   await proxyClient.registerSession(sessionId, projectSlug)
 
@@ -396,6 +419,20 @@ export async function createSession(projectSlug: string, options: SessionCreateO
       if (process.env[name]) {
         env.push(`${name}=placeholder`)
       }
+    }
+  }
+
+  // Add placeholder env var for the active tool so it doesn't prompt for login
+  // inside the container. The proxy injects the real credentials on API calls.
+  if (toolAuth) {
+    if (tool === 'claude') {
+      if (toolAuth.kind === 'oauth') {
+        env.push('CLAUDE_CODE_OAUTH_TOKEN=placeholder')
+      } else {
+        env.push('ANTHROPIC_API_KEY=placeholder')
+      }
+    } else {
+      env.push('OPENAI_API_KEY=placeholder')
     }
   }
 

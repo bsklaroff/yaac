@@ -21,6 +21,8 @@
     "postinstall": "./setup-git.sh"
   },
   "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.111",
+    "@openai/codex": "0.121.0",
     "commander": "14.0.3",
     "dockerode": "4.0.10",
     "simple-git": "3.35.2",
