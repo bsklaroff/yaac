@@ -7,8 +7,10 @@ vi.mock('@/lib/container/runtime', () => ({
   },
 }))
 
-vi.mock('@/lib/session/claude-status', () => ({
-  getSessionClaudeStatus: vi.fn(),
+vi.mock('@/lib/session/status', () => ({
+  getSessionStatus: vi.fn(),
+  getSessionFirstMessage: vi.fn(),
+  getToolFromContainer: vi.fn(() => 'claude'),
 }))
 
 vi.mock('@/lib/project/paths', () => ({
@@ -53,7 +55,7 @@ vi.mock('node:readline/promises', () => {
 })
 
 import { podman } from '@/lib/container/runtime'
-import { getSessionClaudeStatus } from '@/lib/session/claude-status'
+import { getSessionFirstMessage, getSessionStatus, getToolFromContainer } from '@/lib/session/status'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 import { sessionCreate } from '@/commands/session-create'
 import fs from 'node:fs/promises'
@@ -64,7 +66,9 @@ const mockCreateInterface = vi.mocked(readline.createInterface)
 
 // eslint-disable-next-line @typescript-eslint/unbound-method
 const mockListContainers = vi.mocked(podman.listContainers)
-const mockGetStatus = vi.mocked(getSessionClaudeStatus)
+const mockGetStatus = vi.mocked(getSessionStatus)
+const mockGetFirstMessage = vi.mocked(getSessionFirstMessage)
+const mockGetToolFromContainer = vi.mocked(getToolFromContainer)
 const mockIsTmuxAlive = vi.mocked(isTmuxSessionAlive)
 const mockCleanupDetached = vi.mocked(cleanupSessionDetached)
 const mockSessionCreate = vi.mocked(sessionCreate)
@@ -72,6 +76,7 @@ const mockSessionCreate = vi.mocked(sessionCreate)
 describe('getWaitingSessions', () => {
   beforeEach(() => {
     vi.resetAllMocks()
+    mockGetToolFromContainer.mockReturnValue('claude')
   })
 
   it('returns empty array when no containers exist', async () => {
@@ -135,6 +140,8 @@ describe('getWaitingSessions', () => {
     expect(result).toHaveLength(2)
     expect(result[0].sessionId).toBe('older-id')
     expect(result[1].sessionId).toBe('newer-id')
+    expect(result[0].tool).toBe('claude')
+    expect(result[1].tool).toBe('claude')
   })
 
   it('respects project filter', async () => {
@@ -257,6 +264,7 @@ describe('getWaitingSessions', () => {
 describe('sessionStream', () => {
   beforeEach(() => {
     vi.resetAllMocks()
+    mockGetToolFromContainer.mockReturnValue('claude')
   })
 
   it('is exported as a function', () => {
@@ -447,6 +455,158 @@ describe('sessionStream', () => {
       projectSlug: 'proj',
       sessionId: 'aaa',
     })
+  })
+
+  it('exits instead of creating a new session after a blank session closes', async () => {
+    const { execSync } = await import('node:child_process')
+    vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => '')
+
+    const containerA = {
+      State: 'running',
+      Names: ['/yaac-proj-a'],
+      Labels: { 'yaac.session-id': 'aaa', 'yaac.project': 'proj' },
+      Created: 1000,
+      Id: '1',
+    }
+
+    let callCount = 0
+    mockListContainers.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) return Promise.resolve([containerA] as never)
+      return Promise.resolve([])
+    })
+
+    let tmuxCheckCount = 0
+    mockIsTmuxAlive.mockImplementation(() => {
+      tmuxCheckCount++
+      return tmuxCheckCount === 1
+    })
+    mockGetStatus.mockResolvedValue('waiting')
+    mockGetFirstMessage.mockResolvedValue(undefined)
+
+    await sessionStream('my-project')
+
+    expect(mockGetFirstMessage).toHaveBeenCalledWith('proj', 'aaa', 'claude')
+    expect(mockSessionCreate).not.toHaveBeenCalled()
+  })
+
+  it('exits after a blank session closes when no project was specified', async () => {
+    const { execSync } = await import('node:child_process')
+    vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => '')
+
+    const containerA = {
+      State: 'running',
+      Names: ['/yaac-proj-a'],
+      Labels: { 'yaac.session-id': 'aaa', 'yaac.project': 'proj' },
+      Created: 1000,
+      Id: '1',
+    }
+
+    let callCount = 0
+    mockListContainers.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) return Promise.resolve([containerA] as never)
+      return Promise.resolve([])
+    })
+
+    let tmuxCheckCount = 0
+    mockIsTmuxAlive.mockImplementation(() => {
+      tmuxCheckCount++
+      return tmuxCheckCount === 1
+    })
+    mockGetStatus.mockResolvedValue('waiting')
+    mockGetFirstMessage.mockResolvedValue(undefined)
+
+    await sessionStream()
+
+    expect(mockSessionCreate).not.toHaveBeenCalled()
+    expect(mockReaddir).not.toHaveBeenCalled()
+  })
+
+  it('creates a new session after a closed session with a recorded prompt', async () => {
+    const { execSync } = await import('node:child_process')
+    vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => '')
+
+    const containerA = {
+      State: 'running',
+      Names: ['/yaac-proj-a'],
+      Labels: { 'yaac.session-id': 'aaa', 'yaac.project': 'proj' },
+      Created: 1000,
+      Id: '1',
+    }
+
+    let callCount = 0
+    mockListContainers.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) return Promise.resolve([containerA] as never)
+      if (callCount === 2) return Promise.resolve([])
+      throw new Error('stop')
+    })
+
+    let tmuxCheckCount = 0
+    mockIsTmuxAlive.mockImplementation(() => {
+      tmuxCheckCount++
+      return tmuxCheckCount === 1
+    })
+    mockGetStatus.mockResolvedValue('waiting')
+    mockGetFirstMessage.mockResolvedValue('fix the login bug')
+    mockSessionCreate.mockResolvedValue(undefined)
+
+    await sessionStream('my-project')
+
+    expect(mockSessionCreate).toHaveBeenCalledWith('my-project', {})
+  })
+
+  it('attaches to another waiting session instead of exiting after a blank session closes', async () => {
+    const { execSync } = await import('node:child_process')
+    const mockedExecSync = vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>)
+    mockedExecSync.mockImplementation(() => '')
+
+    const containerA = {
+      State: 'running',
+      Names: ['/yaac-proj-a'],
+      Labels: { 'yaac.session-id': 'aaa', 'yaac.project': 'proj', 'yaac.tool': 'codex' },
+      Created: 1000,
+      Id: '1',
+    }
+    const containerB = {
+      State: 'running',
+      Names: ['/yaac-proj-b'],
+      Labels: { 'yaac.session-id': 'bbb', 'yaac.project': 'proj', 'yaac.tool': 'claude' },
+      Created: 2000,
+      Id: '2',
+    }
+
+    let callCount = 0
+    mockListContainers.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) return Promise.resolve([containerA, containerB] as never)
+      if (callCount === 2) return Promise.resolve([containerA, containerB] as never)
+      throw new Error('stop')
+    })
+
+    let tmuxCheckCount = 0
+    mockIsTmuxAlive.mockImplementation(() => {
+      tmuxCheckCount++
+      if (tmuxCheckCount === 1) return true
+      if (tmuxCheckCount === 2) return true
+      if (tmuxCheckCount === 3) return false
+      if (tmuxCheckCount === 4) return true
+      return false
+    })
+    mockGetStatus.mockResolvedValue('waiting')
+    mockGetToolFromContainer.mockImplementation((container) => container.Labels?.['yaac.tool'] === 'codex' ? 'codex' : 'claude')
+    mockGetFirstMessage
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+
+    await sessionStream('my-project')
+
+    expect(mockGetFirstMessage).toHaveBeenCalledWith('proj', 'aaa', 'codex')
+    expect(mockedExecSync).toHaveBeenCalledTimes(2)
+    expect(mockedExecSync.mock.calls[0][0]).toContain('yaac-proj-a')
+    expect(mockedExecSync.mock.calls[1][0]).toContain('yaac-proj-b')
+    expect(mockSessionCreate).not.toHaveBeenCalled()
   })
 
   it('auto-selects project when only one has active containers', async () => {

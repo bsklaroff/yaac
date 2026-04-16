@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import readline from 'node:readline/promises'
 import { podman } from '@/lib/container/runtime'
 import { getDataDir, getProjectsDir } from '@/lib/project/paths'
-import { getSessionStatus, getToolFromContainer } from '@/lib/session/status'
+import { getSessionFirstMessage, getSessionStatus, getToolFromContainer } from '@/lib/session/status'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 import { sessionCreate } from '@/commands/session-create'
 import { isPrewarmSession } from '@/lib/prewarm'
@@ -14,6 +14,7 @@ export interface WaitingSession {
   sessionId: string
   projectSlug: string
   created: number
+  tool: AgentTool
 }
 
 export async function getWaitingSessions(
@@ -66,6 +67,7 @@ export async function getWaitingSessions(
       sessionId,
       projectSlug: slug,
       created: c.Created,
+      tool,
     })
   }
 
@@ -172,6 +174,7 @@ export async function sessionStream(project?: string, tool?: AgentTool): Promise
   const visited = new Set<string>()
   const cleaning = new Set<string>()
   let lastVisited: string | undefined
+  let justClosedBlankSession = false
 
   while (true) {
     let allSessions: WaitingSession[]
@@ -202,6 +205,11 @@ export async function sessionStream(project?: string, tool?: AgentTool): Promise
     }
 
     if (sessions.length === 0) {
+      if (justClosedBlankSession) {
+        console.log('Closed blank session and found no waiting sessions. Exiting session stream.')
+        return
+      }
+
       if (project) {
         console.log(`No waiting sessions. Creating a new session for "${project}"...`)
         await sessionCreate(project, { tool })
@@ -214,6 +222,8 @@ export async function sessionStream(project?: string, tool?: AgentTool): Promise
       project = selected
       continue
     }
+
+    justClosedBlankSession = false
 
     const session = sessions[0]
     const shortId = session.sessionId.slice(0, 8)
@@ -231,6 +241,7 @@ export async function sessionStream(project?: string, tool?: AgentTool): Promise
     lastVisited = session.sessionId
 
     if (!isTmuxSessionAlive(session.containerName)) {
+      justClosedBlankSession = !await getSessionFirstMessage(session.projectSlug, session.sessionId, session.tool)
       console.log('Agent exited. Cleaning up session...')
       cleaning.add(session.sessionId)
       cleanupSessionDetached({
