@@ -405,25 +405,15 @@ describe('prewarm session lifecycle', () => {
     }
   })
 
-  // --- session attach clearing prewarm state ---
-
-  it('session attach clears prewarm state for the project', async () => {
-    // Create a prewarm session
+  it('tracks only the registered prewarm session when another session exists', async () => {
     const prewarm = await createPrewarmContainer(projectSlug)
     containersToCleanup.push(prewarm.containerName)
 
-    // Verify prewarm state exists
-    expect(await getPrewarmSession(projectSlug)).not.toBeNull()
+    const regular = await createMinimalContainer(projectSlug)
+    containersToCleanup.push(regular.containerName)
 
-    // clearPrewarmSession is called by sessionAttach before attaching.
-    // We can't easily test the full interactive attach in e2e, but we can
-    // verify the integration by calling clearPrewarmSession directly
-    // (which is what sessionAttach calls)
-    await clearPrewarmSession(projectSlug)
-
-    expect(await getPrewarmSession(projectSlug)).toBeNull()
-
-    // Container should still be running (clearing state doesn't kill it)
+    expect(await isPrewarmSession(projectSlug, prewarm.sessionId)).toBe(true)
+    expect(await isPrewarmSession(projectSlug, regular.sessionId)).toBe(false)
     expect(isTmuxSessionAlive(prewarm.containerName)).toBe(true)
   })
 })
