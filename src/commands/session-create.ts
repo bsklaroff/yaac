@@ -16,10 +16,11 @@ import { repoDir, claudeDir, claudeJsonFile, codexDir, codexTranscriptDir, workt
 import { resolveProjectConfig } from '@/lib/project/config'
 import { resolveTokenForUrl } from '@/lib/project/credentials'
 import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/lib/git'
-import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
+import { finalizeAttachedSession } from '@/lib/session/finalize-attached-session'
 import { claimPrewarmSession } from '@/lib/prewarm'
 import { ensureCodexHooksJson, ensureCodexConfigToml } from '@/lib/session/codex-hooks'
 import type { YaacConfig, AgentTool } from '@/types'
+import type { AttachOutcome } from '@/lib/session/finalize-attached-session'
 
 export function shellEscape(str: string): string {
   return str.replace(/'/g, "'\\''")
@@ -59,6 +60,11 @@ export interface SessionCreateOptions {
   sessionId?: string
   /** Agent tool to run inside the container (default: 'claude'). */
   tool?: AgentTool
+}
+
+export interface SessionCreateResult {
+  sessionId?: string
+  attachOutcome?: AttachOutcome
 }
 
 interface ContainerSetupParams {
@@ -206,7 +212,7 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
   containerExec(containerName, 'tmux bind-key k kill-server')
 }
 
-export async function sessionCreate(projectSlug: string, options: SessionCreateOptions): Promise<string | undefined> {
+export async function createSession(projectSlug: string, options: SessionCreateOptions): Promise<SessionCreateResult | undefined> {
   // Verify project exists
   try {
     await fs.access(projectDir(projectSlug))
@@ -254,12 +260,14 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
       // Container or tmux session was killed
     }
 
-    if (!isTmuxSessionAlive(claimed.containerName)) {
-      console.log('Claude Code exited. Cleaning up session...')
-      cleanupSessionDetached({ containerName: claimed.containerName, projectSlug, sessionId: claimed.sessionId })
-    }
+    const attachOutcome = await finalizeAttachedSession({
+      containerName: claimed.containerName,
+      projectSlug,
+      sessionId: claimed.sessionId,
+      tool,
+    })
 
-    return claimed.sessionId
+    return { sessionId: claimed.sessionId, attachOutcome }
   }
 
   await ensureContainerRuntime()
@@ -485,7 +493,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   }
 
   if (options.createPrewarm) {
-    return sessionId
+    return { sessionId }
   }
 
   // Start host-side port forwarders that relay into the container via
@@ -516,12 +524,17 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     stopPortForwarders?.()
   }
 
-  // Auto-cleanup if Claude Code exited (tmux session died)
-  if (!isTmuxSessionAlive(containerName)) {
-    const toolLabel = tool === 'codex' ? 'Codex' : 'Claude Code'
-    console.log(`${toolLabel} exited. Cleaning up session...`)
-    cleanupSessionDetached({ containerName, projectSlug, sessionId })
-  }
+  const attachOutcome = await finalizeAttachedSession({
+    containerName,
+    projectSlug,
+    sessionId,
+    tool,
+  })
 
-  return sessionId
+  return { sessionId, attachOutcome }
+}
+
+export async function sessionCreate(projectSlug: string, options: SessionCreateOptions): Promise<string | undefined> {
+  const result = await createSession(projectSlug, options)
+  return result?.sessionId
 }
