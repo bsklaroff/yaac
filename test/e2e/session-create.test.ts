@@ -52,7 +52,7 @@ async function getImageEnv(imageName: string): Promise<string[]> {
   return (info.Config?.Env as string[] | undefined) ?? []
 }
 
-async function createSessionNonInteractive(projectSlug: string, options?: { prompt?: string; addDir?: string[]; addDirRw?: string[] }): Promise<{
+async function createSessionNonInteractive(projectSlug: string, options?: { addDir?: string[]; addDirRw?: string[] }): Promise<{
   containerId: string
   containerName: string
   sessionId: string
@@ -215,10 +215,8 @@ async function createSessionNonInteractive(projectSlug: string, options?: { prom
     'exec', containerName, 'git', 'config', '--global', 'user.email', 'test@test.com',
   ])
 
-  // Start tmux — use the prompt if provided, otherwise just zsh
-  const tmuxCmd = options?.prompt
-    ? `echo 'YAAC_PROMPT=${options.prompt.replace(/'/g, "'\\''")}' > /tmp/yaac-prompt && zsh`
-    : 'zsh'
+  // Start tmux shell for the session
+  const tmuxCmd = 'zsh'
   await podmanExecRetry('podman', [
     'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'yaac', '-n', 'claude', tmuxCmd,
   ])
@@ -384,44 +382,7 @@ describe('yaac session create', () => {
     delete process.env.YAAC_TEST_VAR
   })
 
-  it('passes prompt to tmux session when --prompt is provided', async () => {
-    await requirePodman()
-
-    const tmpDir = await createTempDataDir()
-    tmpDirs.push(tmpDir)
-    const repoPath = path.join(tmpDir, 'prompt-project')
-    await createTestRepo(repoPath)
-    await addTestProject(repoPath)
-
-    const result = await createSessionNonInteractive('prompt-project', { prompt: 'fix the login bug' })
-    containersToCleanup.push(result.containerName)
-
-    const { stdout } = await execFileAsync('podman', [
-      'exec', result.containerName, 'cat', '/tmp/yaac-prompt',
-    ])
-    expect(stdout).toContain('YAAC_PROMPT=fix the login bug')
-  })
-
-  it('handles prompt with special characters', async () => {
-    await requirePodman()
-
-    const tmpDir = await createTempDataDir()
-    tmpDirs.push(tmpDir)
-    const repoPath = path.join(tmpDir, 'special-prompt')
-    await createTestRepo(repoPath)
-    await addTestProject(repoPath)
-
-    const prompt = "fix the user's login & add \"tests\""
-    const result = await createSessionNonInteractive('special-prompt', { prompt })
-    containersToCleanup.push(result.containerName)
-
-    const { stdout } = await execFileAsync('podman', [
-      'exec', result.containerName, 'cat', '/tmp/yaac-prompt',
-    ])
-    expect(stdout).toContain('fix the user')
-  })
-
-  it('starts claude without -p when no prompt given', async () => {
+  it('starts tmux without creating prompt state', async () => {
     await requirePodman()
 
     const tmpDir = await createTempDataDir()

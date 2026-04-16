@@ -86,7 +86,6 @@ session
   .command('create')
   .description('Create a new session for a project')
   .argument('<project>', 'Project slug')
-  .option('-p, --prompt <prompt>', 'Initial prompt to pass to the agent')
   .option('-t, --tool <tool>', 'Agent tool to use (claude or codex)')
   .option('--add-dir <path>', 'Mount a host directory as read-only (repeatable)', collect, [])
   .option('--add-dir-rw <path>', 'Mount a host directory as read-write (repeatable)', collect, [])

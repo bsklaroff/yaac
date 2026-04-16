@@ -29,20 +29,17 @@ export function buildAgentCmd(
   tool: AgentTool,
   sessionId: string,
   addDirFlags: string,
-  prompt?: string,
 ): string {
   if (tool === 'codex') {
     return [
       'codex --yolo',
       addDirFlags,
-      prompt ? `-- "${shellEscape(prompt)}"` : '',
     ].filter(Boolean).join(' ')
   }
   return [
     'claude --dangerously-skip-permissions',
     `--session-id ${sessionId}`,
     addDirFlags,
-    prompt ? `-p ${shellEscape(prompt)}` : '',
   ].filter(Boolean).join(' ')
 }
 
@@ -55,7 +52,6 @@ function containerExecRoot(containerName: string, cmd: string): void {
 }
 
 export interface SessionCreateOptions {
-  prompt?: string
   addDir?: string[]
   addDirRw?: string[]
   createPrewarm?: boolean
@@ -182,7 +178,7 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
     .map((p) => `--add-dir /add-dir${shellEscape(p)}`)
     .join(' ')
 
-  const agentCmd = buildAgentCmd(tool, sessionId, addDirFlags, options.prompt)
+  const agentCmd = buildAgentCmd(tool, sessionId, addDirFlags)
   const toolLabel = tool === 'codex' ? 'Codex' : 'Claude Code'
   console.log(`Starting ${toolLabel}...`)
   containerExec(containerName, `tmux -u new-session -d -s yaac -n ${tool} '${agentCmd}'`)

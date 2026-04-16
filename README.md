@@ -48,7 +48,6 @@ yaac project <command>
 
 yaac session <command>
   create [options] <project>  Create a new session for a project
-    -p, --prompt <prompt>     Initial prompt to pass to the agent
     -t, --tool <tool>         Agent tool to use (claude or codex)
     --add-dir <path>          Mount a host directory read-only (repeatable)
     --add-dir-rw <path>       Mount a host directory read-write (repeatable)
