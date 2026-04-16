@@ -3,7 +3,13 @@ import { codexTranscriptFile } from '@/lib/project/paths'
 
 interface CodexEntry {
   type: string
-  message?: string
+  payload?: {
+    type?: string
+    message?: string
+    role?: string
+    name?: string
+    call_id?: string
+  }
   item?: {
     type?: string
     status?: string
@@ -11,6 +17,50 @@ interface CodexEntry {
 }
 
 const CHUNK_SIZE = 4096
+
+function getUserMessageText(entry: CodexEntry): string | undefined {
+  if (entry.payload?.type === 'user_message' && typeof entry.payload.message === 'string' && entry.payload.message.length > 0) {
+    return entry.payload.message
+  }
+  return undefined
+}
+
+function getCodexEntryStatus(
+  entry: CodexEntry,
+  resolvedCalls: Set<string>,
+): 'running' | 'waiting' | 'continue' {
+  if (entry.type === 'response_item') {
+    if (entry.payload?.type === 'function_call_output') {
+      if (entry.payload.call_id) resolvedCalls.add(entry.payload.call_id)
+      return 'continue'
+    }
+
+    if (entry.payload?.type === 'function_call') {
+      const callId = entry.payload.call_id
+      if (callId && resolvedCalls.has(callId)) {
+        resolvedCalls.delete(callId)
+        return 'continue'
+      }
+      return entry.payload.name === 'request_user_input' ? 'waiting' : 'running'
+    }
+
+    if (entry.payload?.type === 'message') {
+      if (entry.payload.role === 'assistant') return 'waiting'
+      if (entry.payload.role === 'user') return 'running'
+    }
+
+    return 'continue'
+  }
+
+  if (entry.type === 'event_msg') {
+    if (entry.payload?.type === 'user_message' || entry.payload?.type === 'task_started') return 'running'
+    if (entry.payload?.type === 'agent_message' || entry.payload?.type === 'task_complete' || entry.payload?.type === 'task_completed') {
+      return 'waiting'
+    }
+  }
+
+  return 'continue'
+}
 
 /**
  * Reads lines from the end of a Codex JSONL session log and determines
@@ -28,6 +78,7 @@ export async function getCodexStatus(jsonlPath: string): Promise<'running' | 'wa
 
     let offset = stat.size
     let carryover = ''
+    const resolvedCalls = new Set<string>()
 
     while (offset > 0) {
       const chunkSize = Math.min(offset, CHUNK_SIZE)
@@ -51,16 +102,8 @@ export async function getCodexStatus(jsonlPath: string): Promise<'running' | 'wa
           continue
         }
 
-        // turn.completed means Codex finished processing — waiting for input
-        if (entry.type === 'turn.completed') return 'waiting'
-        // turn.failed also means Codex stopped
-        if (entry.type === 'turn.failed') return 'waiting'
-        // turn.started or item events mean Codex is actively working
-        if (entry.type === 'turn.started') return 'running'
-        if (entry.type === 'item.started') return 'running'
-        if (entry.type === 'item.updated') return 'running'
-        // event_msg is user input — Codex should be processing after this
-        if (entry.type === 'event_msg') return 'running'
+        const status = getCodexEntryStatus(entry, resolvedCalls)
+        if (status !== 'continue') return status
       }
     }
 
@@ -68,8 +111,8 @@ export async function getCodexStatus(jsonlPath: string): Promise<'running' | 'wa
     if (carryover.trim().length > 0) {
       try {
         const entry = JSON.parse(carryover) as CodexEntry
-        if (entry.type === 'turn.completed' || entry.type === 'turn.failed') return 'waiting'
-        if (entry.type === 'turn.started' || entry.type === 'item.started' || entry.type === 'event_msg') return 'running'
+        const status = getCodexEntryStatus(entry, resolvedCalls)
+        if (status !== 'continue') return status
       } catch {
         // ignore
       }
@@ -110,16 +153,14 @@ export async function getCodexFirstUserMessage(jsonlPath: string): Promise<strin
 
     const lines = chunk.split('\n').filter((l) => l.trim().length > 0)
     for (const line of lines) {
-      let entry: { type: string; message?: string }
+      let entry: CodexEntry
       try {
-        entry = JSON.parse(line) as { type: string; message?: string }
+        entry = JSON.parse(line) as CodexEntry
       } catch {
         continue
       }
-      // event_msg entries contain user messages
-      if (entry.type === 'event_msg' && entry.message) {
-        return entry.message
-      }
+      const userMessage = getUserMessageText(entry)
+      if (userMessage) return userMessage
     }
     return undefined
   } catch {

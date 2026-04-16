@@ -21,40 +21,34 @@ describe('getCodexStatus', () => {
     return fs.appendFile(jsonlPath, JSON.stringify(entry) + '\n')
   }
 
-  it('returns waiting for turn.completed', async () => {
-    await writeEntry({ type: 'turn.started' })
-    await writeEntry({ type: 'item.completed', item: { type: 'agent_message' } })
-    await writeEntry({ type: 'turn.completed', usage: { input_tokens: 100, output_tokens: 50 } })
-    expect(await getCodexStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('returns waiting for turn.failed', async () => {
-    await writeEntry({ type: 'turn.started' })
-    await writeEntry({ type: 'turn.failed', error: 'something went wrong' })
-    expect(await getCodexStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('returns running for turn.started', async () => {
-    await writeEntry({ type: 'turn.started' })
-    expect(await getCodexStatus(jsonlPath)).toBe('running')
-  })
-
-  it('returns running for item.started', async () => {
-    await writeEntry({ type: 'turn.started' })
-    await writeEntry({ type: 'item.started', item: { type: 'command_execution', status: 'in_progress' } })
-    expect(await getCodexStatus(jsonlPath)).toBe('running')
-  })
-
-  it('returns running for item.updated', async () => {
-    await writeEntry({ type: 'turn.started' })
-    await writeEntry({ type: 'item.updated', item: { type: 'command_execution', status: 'in_progress' } })
-    expect(await getCodexStatus(jsonlPath)).toBe('running')
-  })
-
   it('returns running for event_msg (user input)', async () => {
-    await writeEntry({ type: 'turn.completed', usage: {} })
-    await writeEntry({ type: 'event_msg', message: 'fix the bug' })
+    await writeEntry({ type: 'event_msg', payload: { type: 'user_message', message: 'fix the bug' } })
     expect(await getCodexStatus(jsonlPath)).toBe('running')
+  })
+
+  it('returns running for a pending exec_command function call', async () => {
+    await writeEntry({ type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } })
+    await writeEntry({ type: 'event_msg', payload: { type: 'user_message', message: 'inspect the repo' } })
+    await writeEntry({ type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'call-1' } })
+    expect(await getCodexStatus(jsonlPath)).toBe('running')
+  })
+
+  it('returns waiting for a pending request_user_input function call', async () => {
+    await writeEntry({ type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } })
+    await writeEntry({ type: 'event_msg', payload: { type: 'agent_message', message: 'choose an option', phase: 'commentary' } })
+    await writeEntry({ type: 'response_item', payload: { type: 'message', role: 'assistant' } })
+    await writeEntry({ type: 'response_item', payload: { type: 'function_call', name: 'request_user_input', call_id: 'call-1' } })
+    expect(await getCodexStatus(jsonlPath)).toBe('waiting')
+  })
+
+  it('returns waiting after a completed tool call followed by an assistant message', async () => {
+    await writeEntry({ type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } })
+    await writeEntry({ type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'call-1' } })
+    await writeEntry({ type: 'event_msg', payload: { type: 'exec_command_end', call_id: 'call-1', turn_id: 'turn-1' } })
+    await writeEntry({ type: 'response_item', payload: { type: 'function_call_output', call_id: 'call-1' } })
+    await writeEntry({ type: 'event_msg', payload: { type: 'agent_message', message: 'done', phase: 'commentary' } })
+    await writeEntry({ type: 'response_item', payload: { type: 'message', role: 'assistant' } })
+    expect(await getCodexStatus(jsonlPath)).toBe('waiting')
   })
 
   it('returns waiting for empty file', async () => {
@@ -66,17 +60,22 @@ describe('getCodexStatus', () => {
     expect(await getCodexStatus(path.join(tmpDir, 'nonexistent.jsonl'))).toBe('waiting')
   })
 
-  it('reads only the last entry when multiple entries exist', async () => {
-    await writeEntry({ type: 'turn.started' })
-    await writeEntry({ type: 'item.completed', item: { type: 'agent_message' } })
-    await writeEntry({ type: 'turn.completed', usage: {} })
+  it('returns running when a user message follows earlier waiting-state events', async () => {
+    await writeEntry({ type: 'event_msg', payload: { type: 'agent_message', message: 'done', phase: 'commentary' } })
+    await writeEntry({ type: 'response_item', payload: { type: 'message', role: 'assistant' } })
+    await writeEntry({ type: 'event_msg', payload: { type: 'user_message', message: 'next task' } })
+    expect(await getCodexStatus(jsonlPath)).toBe('running')
+  })
+
+  it('ignores non-user event_msg entries when determining running state', async () => {
+    await writeEntry({ type: 'event_msg', payload: { type: 'agent_message', message: 'working on it' } })
     expect(await getCodexStatus(jsonlPath)).toBe('waiting')
   })
 
-  it('returns running when event_msg follows turn.completed', async () => {
-    await writeEntry({ type: 'turn.completed', usage: {} })
-    await writeEntry({ type: 'event_msg', message: 'next task' })
-    expect(await getCodexStatus(jsonlPath)).toBe('running')
+  it('returns waiting for an assistant message without pending work', async () => {
+    await writeEntry({ type: 'event_msg', payload: { type: 'agent_message', message: 'all set', phase: 'commentary' } })
+    await writeEntry({ type: 'response_item', payload: { type: 'message', role: 'assistant' } })
+    expect(await getCodexStatus(jsonlPath)).toBe('waiting')
   })
 })
 
@@ -99,14 +98,13 @@ describe('getCodexFirstUserMessage', () => {
 
   it('returns message from event_msg entry', async () => {
     await writeEntry({ type: 'session_start', session_id: 'abc', model: 'gpt-4' })
-    await writeEntry({ type: 'event_msg', message: 'fix the login bug', images: [] })
-    await writeEntry({ type: 'turn.started' })
+    await writeEntry({ type: 'event_msg', payload: { type: 'user_message', message: 'fix the login bug' } })
     expect(await getCodexFirstUserMessage(jsonlPath)).toBe('fix the login bug')
   })
 
   it('returns undefined when no event_msg exists', async () => {
     await writeEntry({ type: 'session_start', session_id: 'abc' })
-    await writeEntry({ type: 'turn.started' })
+    await writeEntry({ type: 'response_item', payload: { type: 'message', role: 'assistant' } })
     expect(await getCodexFirstUserMessage(jsonlPath)).toBeUndefined()
   })
 
@@ -121,8 +119,18 @@ describe('getCodexFirstUserMessage', () => {
 
   it('skips non-event_msg entries', async () => {
     await writeEntry({ type: 'session_start', session_id: 'abc' })
-    await writeEntry({ type: 'turn.started' })
-    await writeEntry({ type: 'event_msg', message: 'second prompt', images: [] })
+    await writeEntry({ type: 'response_item', payload: { type: 'message', role: 'assistant' } })
+    await writeEntry({ type: 'event_msg', payload: { type: 'user_message', message: 'second prompt' } })
     expect(await getCodexFirstUserMessage(jsonlPath)).toBe('second prompt')
+  })
+
+  it('ignores the legacy top-level event_msg message shape', async () => {
+    await writeEntry({ type: 'event_msg', message: 'legacy prompt', images: [] })
+    expect(await getCodexFirstUserMessage(jsonlPath)).toBeUndefined()
+  })
+
+  it('ignores non-user event_msg payloads', async () => {
+    await writeEntry({ type: 'event_msg', payload: { type: 'agent_message', message: 'internal note' } })
+    expect(await getCodexFirstUserMessage(jsonlPath)).toBeUndefined()
   })
 })

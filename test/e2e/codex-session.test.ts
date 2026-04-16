@@ -245,15 +245,19 @@ describe('codex session support', () => {
       // Write a sample transcript
       await podmanExecRetry('podman', [
         'exec', containerName, 'sh', '-c',
-        `echo '{"type":"turn.started"}' > ${transcriptContainerPath}`,
+        `echo '{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}' > ${transcriptContainerPath}`,
       ])
       await podmanExecRetry('podman', [
         'exec', containerName, 'sh', '-c',
-        `echo '{"type":"event_msg","message":"hello codex"}' >> ${transcriptContainerPath}`,
+        `echo '{"type":"event_msg","payload":{"type":"user_message","message":"hello codex"}}' >> ${transcriptContainerPath}`,
       ])
       await podmanExecRetry('podman', [
         'exec', containerName, 'sh', '-c',
-        `echo '{"type":"turn.completed","usage":{}}' >> ${transcriptContainerPath}`,
+        `echo '{"type":"event_msg","payload":{"type":"agent_message","message":"done","phase":"commentary"}}' >> ${transcriptContainerPath}`,
+      ])
+      await podmanExecRetry('podman', [
+        'exec', containerName, 'sh', '-c',
+        `echo '{"type":"response_item","payload":{"type":"message","role":"assistant"}}' >> ${transcriptContainerPath}`,
       ])
 
       // Simulate the SessionStart hook invocation
@@ -305,17 +309,34 @@ describe('codex session support', () => {
       expect(status).toBe('waiting')
     })
 
+    it('treats a pending request_user_input call as waiting', async () => {
+      const transcriptContainerPath = '/home/yaac/.codex/sessions/2026/04/15/rollout-test.jsonl'
+      await podmanExecRetry('podman', [
+        'exec', containerName, 'sh', '-c',
+        [
+          `echo '{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}' > ${transcriptContainerPath}`,
+          `echo '{"type":"event_msg","payload":{"type":"user_message","message":"pick one"}}' >> ${transcriptContainerPath}`,
+          `echo '{"type":"event_msg","payload":{"type":"agent_message","message":"choose an option","phase":"commentary"}}' >> ${transcriptContainerPath}`,
+          `echo '{"type":"response_item","payload":{"type":"message","role":"assistant"}}' >> ${transcriptContainerPath}`,
+          `echo '{"type":"response_item","payload":{"type":"function_call","name":"request_user_input","call_id":"call-1"}}' >> ${transcriptContainerPath}`,
+        ].join(' && '),
+      ])
+
+      const status = await getSessionCodexStatus(projectSlug, sessionId)
+      expect(status).toBe('waiting')
+    })
+
     it('transcript file is readable on the host through the symlink', async () => {
       const hostSymlink = codexTranscriptFile(projectSlug, sessionId)
       const content = await fs.readFile(hostSymlink, 'utf8')
       expect(content).toContain('event_msg')
-      expect(content).toContain('hello codex')
+      expect(content).toContain('pick one')
     })
 
     it('getCodexFirstUserMessage reads through the symlink', async () => {
       const hostSymlink = codexTranscriptFile(projectSlug, sessionId)
       const msg = await getCodexFirstUserMessage(hostSymlink)
-      expect(msg).toBe('hello codex')
+      expect(msg).toBe('pick one')
     })
 
     it('session list shows codex tool', async () => {
@@ -329,6 +350,7 @@ describe('codex session support', () => {
       const output = logs.join('\n')
       expect(output).toContain('codex')
       expect(output).toContain('waiting')
+      expect(output).toContain('pick one')
     })
   })
 
