@@ -40,7 +40,7 @@ yaac [command]
 Commands:
   project         Manage projects
   session         Manage sessions
-  auth            Manage GitHub credentials
+  auth            Manage credentials (GitHub tokens and tool API keys)
 
 yaac project <command>
   list              List all projects
@@ -67,9 +67,9 @@ yaac tool <command>
   set <tool>          Set the default agent tool (claude or codex)
 
 yaac auth <command>
-  list                List configured GitHub tokens (masked)
-  update              Add or replace a GitHub Personal Access Token (interactive)
-  clear               Remove stored GitHub credentials (interactive)
+  list                List configured credentials (masked)
+  update              Add or update credentials (GitHub, Claude Code, or Codex)
+  clear               Remove stored credentials (interactive)
 ```
 
 Detach from a tmux session with `Ctrl-B D`. Kill the tmux session (and the
@@ -79,9 +79,13 @@ shell in the tmux session with `Ctrl-B C`, and switch between shells with `Ctrl-
 
 ## Authentication
 
+yaac centralizes credentials on the host and injects them into container traffic through the proxy sidecar. Nothing is ever written into the container filesystem. All credentials live in `~/.yaac/.credentials.json` (file permissions `0600`). Use `yaac auth update` to add or update entries interactively.
+
+### GitHub tokens
+
 yaac requires one or more GitHub Personal Access Tokens (PATs) for git operations and GitHub API access inside session containers. Multiple tokens can be scoped to different owners so you can use separate tokens for different orgs or personal repos.
 
-Tokens are stored in `~/.yaac/.credentials.json` (file permissions `0600`) as an ordered list. When yaac needs a token for a given repo, it walks the list and uses the first matching entry:
+Tokens are stored as an ordered list. When yaac needs a token for a given repo, it walks the list and uses the first matching entry:
 
 ```json
 {
@@ -105,6 +109,10 @@ Tokens are used for:
 - **Container-side GitHub requests** — a MITM proxy sidecar injects the token as an `Authorization` header into all HTTPS requests to `github.com` and `api.github.com`. The token is never written into the container filesystem. Each session uses the single token that matches its project's remote URL.
 
 Token injection only happens over HTTPS. Plain HTTP requests through the proxy never receive credentials.
+
+### Claude Code and Codex credentials
+
+yaac also manages the API credentials for the agent tool itself, so Claude Code and Codex don't need to authenticate inside each container. On first run (or via `yaac auth update`), yaac runs the tool's native login flow on the host and stores the resulting token. The proxy then injects it into outbound API calls — the token never enters the container filesystem.
 
 ## Container layout
 
