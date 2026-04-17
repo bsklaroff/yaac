@@ -141,6 +141,13 @@ describe('proxy sidecar', () => {
     it('tunnels TCP connections via CONNECT from internal network', async () => {
       await client.ensureRunning()
 
+      // Register a session with an allowlist covering github.com so the CONNECT
+      // tunnel can be authorized. (The proxy blocks by default when no session
+      // or allowlist is registered.)
+      await client.updateProjectRules('tunnel-test', [], ['github.com'])
+      const sessionId = crypto.randomUUID()
+      await client.registerSession(sessionId, 'tunnel-test')
+
       // Create a container on the internal-only network (same as a real session)
       const containerName = `yaac-proxy-tunnel-test-${crypto.randomBytes(4).toString('hex')}`
       tunnelContainers.push(containerName)
@@ -169,15 +176,23 @@ describe('proxy sidecar', () => {
       ], { timeout: 10_000 })
       expect(blocked.trim()).toContain('connection-blocked')
 
-      // Verify the container CAN reach external hosts via CONNECT tunnel through proxy
-      const proxyAddr = `${client.proxyIp}:${PROXY_CONTAINER_PORT}`
+      // Verify the container CAN open a CONNECT tunnel through the proxy when
+      // authenticated as a registered session. We send a raw CONNECT request
+      // and check the proxy's response line. A successful tunnel returns
+      // "HTTP/1.1 200 Connection Established"; a blocked tunnel returns 403.
+      const proxyAuth = Buffer.from(`x:${sessionId}`).toString('base64')
+      const connectReq =
+        'CONNECT github.com:443 HTTP/1.1\r\n' +
+        'Host: github.com:443\r\n' +
+        `Proxy-Authorization: Basic ${proxyAuth}\r\n\r\n`
       const { stdout: tunneled } = await podmanRetry([
         'exec', containerName, 'sh', '-c',
-        `echo '' | nc -w 5 -X connect -x ${proxyAddr} github.com 443 | head -c 1 || echo tunnel-open`,
-      ], { timeout: 15_000 })
-      // A successful CONNECT to port 443 will get some TLS bytes or a timeout,
-      // but it won't say "connection-blocked". If we get any data, the tunnel worked.
-      expect(tunneled.trim()).not.toContain('connection-blocked')
+        `printf '${connectReq}' | nc -w 3 ${client.proxyIp} ${PROXY_CONTAINER_PORT} | head -c 40`,
+      ], { timeout: 10_000 })
+      expect(tunneled).toContain('200 Connection Established')
+
+      await client.removeSession(sessionId)
+      await client.removeProjectRules('tunnel-test')
     }, 30_000)
   })
 })
@@ -187,6 +202,13 @@ describe('proxy HTTP forwarding', () => {
   let echoContainerName: string
   let echoIp: string
   const echoPort = 8080
+  // Default session/project used by tests that exercise forwarding (as opposed
+  // to allowlist enforcement). Since the proxy fails closed, every forwarding
+  // test needs an authenticated session with a permissive allowlist.
+  const defaultProjectId = 'http-forward-default'
+  const defaultSessionId = crypto.randomUUID()
+  const defaultAuth = Buffer.from(`x:${defaultSessionId}`).toString('base64')
+  const defaultAuthHeader = { 'Proxy-Authorization': `Basic ${defaultAuth}` }
 
   beforeAll(async () => {
     await requirePodman()
@@ -197,6 +219,11 @@ describe('proxy HTTP forwarding', () => {
       requirePrebuilt: true,
     })
     await client.ensureRunning()
+
+    // Register a default session with a wildcard allowlist so the basic
+    // forwarding tests can proceed without setting up their own session.
+    await client.updateProjectRules(defaultProjectId, [], ['*'])
+    await client.registerSession(defaultSessionId, defaultProjectId)
 
     // Run an echo HTTP server inside a container on the podman network
     // (same network the proxy container is also connected to).
@@ -269,7 +296,9 @@ describe('proxy HTTP forwarding', () => {
 
   it('forwards a plain HTTP GET request', async () => {
     const targetUrl = `http://${echoIp}:${echoPort}/hello?foo=bar`
-    const result = await proxyRequest(Number(client.hostPort), targetUrl)
+    const result = await proxyRequest(Number(client.hostPort), targetUrl, {
+      headers: defaultAuthHeader,
+    })
 
     expect(result.status).toBe(200)
     const echo = JSON.parse(result.body) as { method: string; url: string; headers: Record<string, string> }
@@ -283,7 +312,7 @@ describe('proxy HTTP forwarding', () => {
     const body = 'key=value&other=data'
     const result = await proxyRequest(Number(client.hostPort), targetUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...defaultAuthHeader },
       body,
     })
 
@@ -295,10 +324,9 @@ describe('proxy HTTP forwarding', () => {
   })
 
   it('strips proxy-authorization header before forwarding', async () => {
-    const token = Buffer.from('x:my-session-token').toString('base64')
     const targetUrl = `http://${echoIp}:${echoPort}/check`
     const result = await proxyRequest(Number(client.hostPort), targetUrl, {
-      headers: { 'Proxy-Authorization': `Basic ${token}` },
+      headers: defaultAuthHeader,
     })
 
     expect(result.status).toBe(200)
@@ -308,7 +336,9 @@ describe('proxy HTTP forwarding', () => {
 
   it('returns 502 when upstream is unreachable', async () => {
     const targetUrl = `http://${echoIp}:19399/nope`
-    const result = await proxyRequest(Number(client.hostPort), targetUrl)
+    const result = await proxyRequest(Number(client.hostPort), targetUrl, {
+      headers: defaultAuthHeader,
+    })
     expect(result.status).toBe(502)
   })
 
@@ -381,21 +411,23 @@ describe('proxy HTTP forwarding', () => {
     await client.removeProjectRules('allowlist-pattern')
   })
 
-  it('allows all traffic when no allowedHosts is registered (backward compat)', async () => {
-    // Register rules without allowedHosts field
-    await client.updateProjectRules('no-allowlist', [], ['*'])
+  it('blocks traffic when no session is registered (fail closed)', async () => {
+    // No Proxy-Authorization header → proxy has no session mapping and must
+    // block the request. Previously this would allow all traffic.
+    const blocked = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/test`)
+    expect(blocked.status).toBe(403)
+    expect(blocked.body).toContain('not in the allowed hosts')
+  })
 
-    const sessionId = crypto.randomUUID()
-    await client.registerSession(sessionId, 'no-allowlist')
-
-    const auth = Buffer.from(`x:${sessionId}`).toString('base64')
-    const result = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/test`, {
+  it('blocks traffic when session is registered but session is unknown (fail closed)', async () => {
+    // A random session ID that was never registered → no project lookup
+    // succeeds, so the proxy must block.
+    const unknownSessionId = crypto.randomUUID()
+    const auth = Buffer.from(`x:${unknownSessionId}`).toString('base64')
+    const blocked = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/test`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
-    expect(result.status).toBe(200)
-
-    await client.removeSession(sessionId)
-    await client.removeProjectRules('no-allowlist')
+    expect(blocked.status).toBe(403)
   })
 
   it('blocks all traffic when allowedHosts is empty', async () => {

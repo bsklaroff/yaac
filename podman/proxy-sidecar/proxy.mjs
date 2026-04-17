@@ -121,7 +121,7 @@ const projectRules = new Map()
 /** @type {Map<string, string>} */
 const sessionToProject = new Map()
 
-/** projectId -> allowed host patterns (null means allow all for backward compat) */
+/** projectId -> allowed host patterns (absent means block all — fail closed) */
 /** @type {Map<string, string[]>} */
 const projectAllowedHosts = new Map()
 
@@ -164,9 +164,9 @@ function findRulesForHost(sessionId, hostname) {
 
 function isHostAllowed(sessionId, hostname) {
   const projectId = sessionId ? sessionToProject.get(sessionId) : undefined
-  if (!projectId) return true // no session = no filtering
+  if (!projectId) return false // no session/project = block by default (fail closed)
   const allowed = projectAllowedHosts.get(projectId)
-  if (!allowed) return true // no allowlist registered = allow all (backward compat)
+  if (!allowed) return false // no allowlist registered = block by default (fail closed)
   if (allowed.length === 1 && allowed[0] === '*') return true
   return allowed.some((pattern) => hostMatches(hostname, pattern))
 }
