@@ -22,7 +22,6 @@ function findMatch(containers: Awaited<ReturnType<typeof listManagedContainers>>
     return sessionId === idOrName
       || name === idOrName
       || sessionId.startsWith(idOrName)
-      || name.startsWith(idOrName)
       || c.Id.startsWith(idOrName)
   })
 }

@@ -115,6 +115,22 @@ describe('yaac session attach', () => {
       const resolved = await resolveContainer(containerName)
       expect(resolved).toBe(containerName)
     })
+
+    it('does not resolve by project-name prefix', async () => {
+      process.exitCode = undefined
+      const resolved = await resolveContainer('attach-shared')
+      expect(resolved).toBeNull()
+      expect(process.exitCode).toBe(1)
+      process.exitCode = undefined
+    })
+
+    it('does not resolve by the "yaac-" container-name prefix', async () => {
+      process.exitCode = undefined
+      const resolved = await resolveContainer('yaac')
+      expect(resolved).toBeNull()
+      expect(process.exitCode).toBe(1)
+      process.exitCode = undefined
+    })
   })
 
   it('errors on unknown container ID', async () => {
