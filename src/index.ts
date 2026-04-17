@@ -14,7 +14,7 @@ import { authList } from '@/commands/auth-list'
 import { toolGet } from '@/commands/tool-get'
 import { toolSet } from '@/commands/tool-set'
 import { ensureGithubToken } from '@/lib/project/credentials'
-import { ensureDefaultTool, getDefaultTool } from '@/lib/project/preferences'
+import { ensureDefaultTool, getDefaultTool, isValidTool } from '@/lib/project/preferences'
 import { ensureToolAuth } from '@/lib/project/tool-auth'
 import type { AgentTool } from '@/types'
 import type { SessionMonitorOptions } from '@/commands/session-monitor'
@@ -181,7 +181,10 @@ auth
   .action(authClear)
 
 // Ensure default tool and GitHub token exist before any command
-// (except auth/tool subcommands which manage their own state)
+// (except auth/tool subcommands which manage their own state).
+// Tool auth is checked against the tool the command will actually use —
+// honoring --tool / --prewarm-tool overrides — so an unconfigured tool
+// triggers its login flow even when it isn't the configured default.
 program.hook('preAction', async (thisCommand) => {
   const chain: string[] = []
   let cmd: Command | null = thisCommand
@@ -191,9 +194,24 @@ program.hook('preAction', async (thisCommand) => {
     cmd = cmd.parent
   }
   if (chain.includes('auth') || chain.includes('tool')) return
-  const tool = await ensureDefaultTool()
+  const defaultTool = await ensureDefaultTool()
+  const opts = thisCommand.opts()
+  // session monitor --no-prewarm won't launch a tool — skip the tool auth check.
+  const skipToolAuth = chain.includes('monitor') && opts.prewarm === false
+  if (!skipToolAuth) {
+    const rawOverride: unknown = opts.tool ?? opts.prewarmTool
+    let tool: AgentTool = defaultTool
+    if (rawOverride !== undefined) {
+      if (typeof rawOverride !== 'string' || !isValidTool(rawOverride)) {
+        const asString = typeof rawOverride === 'string' ? rawOverride : JSON.stringify(rawOverride)
+        console.error(`Invalid tool "${asString}". Must be one of: claude, codex`)
+        process.exit(1)
+      }
+      tool = rawOverride
+    }
+    await ensureToolAuth(tool)
+  }
   await ensureGithubToken()
-  await ensureToolAuth(tool)
 })
 
 program.parse()
