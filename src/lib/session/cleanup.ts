@@ -24,14 +24,23 @@ async function removeSessionFromProxy(sessionId: string): Promise<void> {
 /**
  * Check whether tmux session "yaac" is alive inside the given container.
  *
- * Uses `execPodmanWithRetry` so transient podman/OCI errors (container
- * state improper, conmon churn, etc.) do not masquerade as "session is
- * dead" — which would otherwise trigger destructive cleanup of a live
- * session.  After retries are exhausted, a genuine failure returns false.
+ * Uses `execPodmanWithRetry` with a tight budget so transient podman/OCI
+ * errors (container state improper, conmon churn, etc.) do not masquerade
+ * as "session is dead" — which would otherwise trigger destructive cleanup
+ * of a live session.  The default retry budget (8 attempts, ~12.6s) is
+ * much too long here: this function is called from hot paths in
+ * `getWaitingSessions` (once per container) and in
+ * `finalizeAttachedSession` (right after the user exits a session, when
+ * the container is often truly gone).  A tight budget keeps stale-session
+ * detection effectively asynchronous without losing protection against
+ * short state-transition races.
  */
 export function isTmuxSessionAlive(containerName: string): boolean {
   try {
-    execPodmanWithRetry(`podman exec ${containerName} tmux has-session -t yaac`)
+    execPodmanWithRetry(`podman exec ${containerName} tmux has-session -t yaac`, {
+      maxAttempts: 3,
+      baseDelay: 100,
+    })
     return true
   } catch {
     return false
