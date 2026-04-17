@@ -2,16 +2,12 @@ import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
-import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject } from '@test/helpers/setup'
+import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject, podmanRetry } from '@test/helpers/setup'
 import { sessionList } from '@/commands/session-list'
 import { podman } from '@/lib/container/runtime'
 import { ensureImage } from '@/lib/container/image-builder'
 import { claudeDir, worktreeDir, worktreesDir, repoDir, getDataDir } from '@/lib/project/paths'
 import { addWorktree, getDefaultBranch } from '@/lib/git'
-
-const execFileAsync = promisify(execFile)
 
 async function createMinimalContainer(projectSlug: string): Promise<{ containerName: string; sessionId: string }> {
   const imageName = await ensureImage(projectSlug, TEST_IMAGE_PREFIX, true)
@@ -43,7 +39,7 @@ async function createMinimalContainer(projectSlug: string): Promise<{ containerN
   await container.start()
 
   // Start tmux session so isTmuxSessionAlive() returns true
-  await execFileAsync('podman', [
+  await podmanRetry([
     'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'yaac', '-n', 'claude', 'zsh',
   ])
 
@@ -214,7 +210,7 @@ describe('yaac session list', () => {
 
     // Kill the tmux session to simulate a zombie container
     // The container stays "running" but tmux has-session will fail
-    await execFileAsync('podman', [
+    await podmanRetry([
       'exec', containerName, 'tmux', 'kill-session', '-t', 'yaac',
     ])
 

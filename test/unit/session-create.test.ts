@@ -25,6 +25,7 @@ vi.mock('simple-git', () => ({
 
 vi.mock('@/lib/container/runtime', () => ({
   ensureContainerRuntime: vi.fn().mockResolvedValue(undefined),
+  execPodmanWithRetry: vi.fn(),
   podman: {
     createContainer: vi.fn(),
     getContainer: vi.fn(),

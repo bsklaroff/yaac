@@ -1,13 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import crypto from 'node:crypto'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import http from 'node:http'
-import { requirePodman } from '@test/helpers/setup'
+import { requirePodman, podmanRetry } from '@test/helpers/setup'
 import { ProxyClient, PROXY_CONTAINER_PORT } from '@/lib/container/proxy-client'
 import { podman } from '@/lib/container/runtime'
-
-const execFileAsync = promisify(execFile)
 
 // Unique suffix per test run to avoid container/network name collisions
 const RUN_ID = crypto.randomBytes(4).toString('hex')
@@ -114,13 +110,13 @@ describe('proxy sidecar', () => {
     await client.stop()
 
     // Verify the container was removed
-    const { ExitCode: containerExit } = await execFileAsync('podman', [
+    const { ExitCode: containerExit } = await podmanRetry([
       'container', 'exists', containerName,
     ]).then(() => ({ ExitCode: 0 }), () => ({ ExitCode: 1 }))
     expect(containerExit).toBe(1)
 
     // Verify the network was removed
-    const { ExitCode: networkExit } = await execFileAsync('podman', [
+    const { ExitCode: networkExit } = await podmanRetry([
       'network', 'exists', networkName,
     ]).then(() => ({ ExitCode: 0 }), () => ({ ExitCode: 1 }))
     expect(networkExit).toBe(1)
@@ -150,7 +146,7 @@ describe('proxy sidecar', () => {
       tunnelContainers.push(containerName)
 
       // Find the test base image
-      const { stdout: images } = await execFileAsync('podman', [
+      const { stdout: images } = await podmanRetry([
         'images', '--format', '{{.Repository}}:{{.Tag}}', '--filter', 'reference=yaac-test-base',
       ])
       const baseImage = images.trim().split('\n')[0]
@@ -167,7 +163,7 @@ describe('proxy sidecar', () => {
       await container.start()
 
       // Verify the container CANNOT reach external hosts directly
-      const { stdout: blocked } = await execFileAsync('podman', [
+      const { stdout: blocked } = await podmanRetry([
         'exec', containerName, 'sh', '-c',
         'curl -sf --connect-timeout 3 http://github.com 2>&1 || echo connection-blocked',
       ], { timeout: 10_000 })
@@ -175,7 +171,7 @@ describe('proxy sidecar', () => {
 
       // Verify the container CAN reach external hosts via CONNECT tunnel through proxy
       const proxyAddr = `${client.proxyIp}:${PROXY_CONTAINER_PORT}`
-      const { stdout: tunneled } = await execFileAsync('podman', [
+      const { stdout: tunneled } = await podmanRetry([
         'exec', containerName, 'sh', '-c',
         `echo '' | nc -w 5 -X connect -x ${proxyAddr} github.com 443 | head -c 1 || echo tunnel-open`,
       ], { timeout: 15_000 })
@@ -224,7 +220,7 @@ describe('proxy HTTP forwarding', () => {
     `
 
     // Find the proxy image (has node)
-    const { stdout: images } = await execFileAsync('podman', [
+    const { stdout: images } = await podmanRetry([
       'images', '--format', '{{.Repository}}:{{.Tag}}', '--filter', 'reference=yaac-test-proxy',
     ])
     const proxyImage = images.trim().split('\n')[0]
@@ -249,7 +245,7 @@ describe('proxy HTTP forwarding', () => {
     // Wait for echo server to be ready
     for (let i = 0; i < 20; i++) {
       try {
-        const { stdout } = await execFileAsync('podman', [
+        const { stdout } = await podmanRetry([
           'exec', echoContainerName, 'sh', '-c',
           `curl -sf http://127.0.0.1:${echoPort}/ping`,
         ], { timeout: 3000 })

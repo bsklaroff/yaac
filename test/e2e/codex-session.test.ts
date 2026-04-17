@@ -4,7 +4,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject } from '@test/helpers/setup'
+import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject, podmanRetry } from '@test/helpers/setup'
 import { podman } from '@/lib/container/runtime'
 import { ensureImage } from '@/lib/container/image-builder'
 import { codexDir, codexTranscriptDir, codexTranscriptFile, worktreeDir, worktreesDir, repoDir, getDataDir } from '@/lib/project/paths'
@@ -157,7 +157,7 @@ describe('codex session support', () => {
       expect(info.Config.Labels['yaac.session-id']).toBe(sessionId)
 
       // YAAC_SESSION_ID env var should be set
-      const { stdout: envOut } = await execFileAsync('podman', [
+      const { stdout: envOut } = await podmanRetry([
         'exec', containerName, 'env',
       ])
       expect(envOut).toContain(`YAAC_SESSION_ID=${sessionId}`)
@@ -165,13 +165,13 @@ describe('codex session support', () => {
 
     it('mounts the codex directory', async () => {
       // codex dir should be mounted at /home/yaac/.codex
-      await execFileAsync('podman', [
+      await podmanRetry([
         'exec', containerName, 'test', '-d', '/home/yaac/.codex',
       ])
     })
 
     it('has hooks.json inside the container', async () => {
-      const { stdout } = await execFileAsync('podman', [
+      const { stdout } = await podmanRetry([
         'exec', containerName, 'cat', '/home/yaac/.codex/hooks.json',
       ])
       const hooks = JSON.parse(stdout) as { hooks: { SessionStart: Array<{ hooks: Array<{ command: string }> }> } }
@@ -182,21 +182,21 @@ describe('codex session support', () => {
     })
 
     it('has config.toml with hooks enabled inside the container', async () => {
-      const { stdout } = await execFileAsync('podman', [
+      const { stdout } = await podmanRetry([
         'exec', containerName, 'cat', '/home/yaac/.codex/config.toml',
       ])
       expect(stdout).toContain('codex_hooks')
     })
 
     it('has codex CLI available in the container', async () => {
-      const { stdout } = await execFileAsync('podman', [
+      const { stdout } = await podmanRetry([
         'exec', containerName, 'which', 'codex',
       ])
       expect(stdout.trim()).toBeTruthy()
     })
 
     it('has the hook script executable in the container', async () => {
-      const { stdout } = await execFileAsync('podman', [
+      const { stdout } = await podmanRetry([
         'exec', containerName, 'sh', '-c',
         'test -x /home/yaac/.codex/.yaac-hook.sh; echo $?',
       ])

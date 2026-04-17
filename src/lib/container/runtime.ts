@@ -1,8 +1,101 @@
 import Docker from 'dockerode'
-import { execFile } from 'node:child_process'
+import { execFile, execSync, type ExecSyncOptions } from 'node:child_process'
 import { promisify } from 'node:util'
 
 export const execFileAsync = promisify(execFile)
+
+/**
+ * Stderr patterns that indicate a transient podman failure worth retrying.
+ * These are NOT "the container is actually gone" — they're podman/OCI runtime
+ * state races that usually resolve on their own (e.g. container transitioning,
+ * conmon still wiring up, OCI exit file not yet written).
+ */
+const TRANSIENT_EXEC_PATTERNS = [
+  'container state improper',
+  'no such container', // appears briefly during container state transitions
+  'timed out waiting for file', // OCI runtime exit file race
+  'conmon exited prematurely', // conmon lost, retry may pick up a fresh one
+  'OCI runtime error',
+  'error getting exit code',
+  'connection refused', // podman socket briefly unavailable during renumber etc.
+  'resource temporarily unavailable', // EAGAIN under PID/resource pressure
+]
+
+export function isTransientPodmanError(stderr: string): boolean {
+  const lower = stderr.toLowerCase()
+  return TRANSIENT_EXEC_PATTERNS.some((p) => lower.includes(p.toLowerCase()))
+}
+
+export interface PodmanExecOptions {
+  timeout?: number
+  maxAttempts?: number
+  /** Base delay in ms; each attempt doubles up to 3200ms. */
+  baseDelay?: number
+}
+
+/**
+ * Run `podman` with retries on transient errors (container state improper,
+ * OCI runtime races, conmon death, etc.).  Non-transient failures throw
+ * immediately, preserving the original error.
+ */
+export async function podmanExecWithRetry(
+  args: string[],
+  opts: PodmanExecOptions = {},
+): Promise<{ stdout: string; stderr: string }> {
+  const maxAttempts = opts.maxAttempts ?? 8
+  const baseDelay = opts.baseDelay ?? 200
+  const execOpts: { timeout?: number } = opts.timeout ? { timeout: opts.timeout } : {}
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await execFileAsync('podman', args, execOpts)
+    } catch (err: unknown) {
+      const stderr = (err as { stderr?: string })?.stderr ?? ''
+      if (attempt < maxAttempts && isTransientPodmanError(stderr)) {
+        const delay = Math.min(baseDelay * 2 ** (attempt - 1), 3200)
+        await new Promise((r) => setTimeout(r, delay))
+        continue
+      }
+      throw err
+    }
+  }
+  throw new Error('podmanExecWithRetry: unexpected fall-through')
+}
+
+/**
+ * Synchronous podman exec with retries on transient errors.  Used by call
+ * sites that already operate synchronously (e.g. container-setup helpers
+ * that run a series of `podman exec` commands in sequence).  Accepts the
+ * full shell command string — the caller is responsible for escaping.
+ */
+export function execPodmanWithRetry(
+  command: string,
+  opts: PodmanExecOptions & { execOpts?: ExecSyncOptions } = {},
+): Buffer {
+  const maxAttempts = opts.maxAttempts ?? 8
+  const baseDelay = opts.baseDelay ?? 200
+  const execOpts: ExecSyncOptions = { stdio: 'pipe', ...(opts.execOpts ?? {}) }
+  if (opts.timeout) execOpts.timeout = opts.timeout
+
+  const sharedBuf = new Int32Array(new SharedArrayBuffer(4))
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return execSync(command, execOpts) as Buffer
+    } catch (err: unknown) {
+      const stderr = ((err as { stderr?: Buffer | string })?.stderr ?? '').toString()
+        + ((err as Error)?.message ?? '')
+      if (attempt < maxAttempts && isTransientPodmanError(stderr)) {
+        const delay = Math.min(baseDelay * 2 ** (attempt - 1), 3200)
+        // Synchronous sleep without blocking the thread via busy-loop.
+        Atomics.wait(sharedBuf, 0, 0, delay)
+        continue
+      }
+      throw err
+    }
+  }
+  throw new Error('execPodmanWithRetry: unexpected fall-through')
+}
 
 function getSocketPath(): string | undefined {
   if (process.platform === 'darwin') return undefined // podman-mac-helper symlinks to /var/run/docker.sock

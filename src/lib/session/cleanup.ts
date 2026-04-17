@@ -1,13 +1,19 @@
-import { execSync, spawn } from 'node:child_process'
-import { podman } from '@/lib/container/runtime'
+import { spawn } from 'node:child_process'
+import { execPodmanWithRetry, podman } from '@/lib/container/runtime'
 import { removeWorktree } from '@/lib/git'
 import { repoDir, worktreeDir } from '@/lib/project/paths'
 
+/**
+ * Check whether tmux session "yaac" is alive inside the given container.
+ *
+ * Uses `execPodmanWithRetry` so transient podman/OCI errors (container
+ * state improper, conmon churn, etc.) do not masquerade as "session is
+ * dead" — which would otherwise trigger destructive cleanup of a live
+ * session.  After retries are exhausted, a genuine failure returns false.
+ */
 export function isTmuxSessionAlive(containerName: string): boolean {
   try {
-    execSync(`podman exec ${containerName} tmux has-session -t yaac`, {
-      stdio: 'pipe',
-    })
+    execPodmanWithRetry(`podman exec ${containerName} tmux has-session -t yaac`)
     return true
   } catch {
     return false

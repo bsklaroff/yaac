@@ -1,17 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import crypto from 'node:crypto'
-import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject } from '@test/helpers/setup'
+import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject, podmanRetry } from '@test/helpers/setup'
 import { podman } from '@/lib/container/runtime'
 import { ensureImage } from '@/lib/container/image-builder'
 import { claudeDir, worktreeDir, worktreesDir, repoDir, getDataDir } from '@/lib/project/paths'
 import { addWorktree, getDefaultBranch } from '@/lib/git'
 import { getWaitingSessions, sessionStream } from '@/commands/session-stream'
-
-const execFileAsync = promisify(execFile)
 
 async function createContainerWithWaitingStatus(projectSlug: string): Promise<{
   containerName: string
@@ -45,7 +41,7 @@ async function createContainerWithWaitingStatus(projectSlug: string): Promise<{
   await container.start()
 
   // Start tmux session with zsh
-  await execFileAsync('podman', [
+  await podmanRetry([
     'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'yaac', '-n', 'claude', 'zsh',
   ])
 
@@ -92,7 +88,7 @@ async function createContainerWithRunningStatus(projectSlug: string): Promise<{
   await container.start()
 
   // Start tmux but write a "running" JSONL (tool_use stop_reason)
-  await execFileAsync('podman', [
+  await podmanRetry([
     'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'yaac', '-n', 'claude', 'zsh',
   ])
 

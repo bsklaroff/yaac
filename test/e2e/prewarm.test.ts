@@ -2,11 +2,9 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import {
   createTempDataDir, cleanupTempDir, createTestRepo, requirePodman,
-  TEST_IMAGE_PREFIX, addTestProject,
+  TEST_IMAGE_PREFIX, addTestProject, podmanRetry,
 } from '@test/helpers/setup'
 import { podman } from '@/lib/container/runtime'
 import { ensureImage } from '@/lib/container/image-builder'
@@ -19,8 +17,6 @@ import {
 } from '@/lib/prewarm'
 import type { PrewarmEntry } from '@/lib/prewarm'
 import { isTmuxSessionAlive } from '@/lib/session/cleanup'
-
-const execFileAsync = promisify(execFile)
 
 /**
  * Create a minimal running container with tmux for a project.
@@ -56,7 +52,7 @@ async function createMinimalContainer(projectSlug: string): Promise<{ containerN
   await container.start()
 
   // Start tmux session so isTmuxSessionAlive() returns true
-  await execFileAsync('podman', [
+  await podmanRetry([
     'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'yaac', '-n', 'claude', 'bash',
   ])
 
@@ -202,8 +198,8 @@ describe('prewarm session lifecycle', () => {
 
     // Kill the container
     try {
-      await execFileAsync('podman', ['stop', '-t', '1', entry.containerName])
-      await execFileAsync('podman', ['rm', entry.containerName])
+      await podmanRetry(['stop', '-t', '1', entry.containerName])
+      await podmanRetry(['rm', entry.containerName])
     } catch {
       // may already be gone
     }
@@ -321,8 +317,8 @@ describe('prewarm session lifecycle', () => {
     // Create a prewarm container then kill it
     const prewarm = await createPrewarmContainer(projectSlug, fingerprint)
     try {
-      await execFileAsync('podman', ['stop', '-t', '1', prewarm.containerName])
-      await execFileAsync('podman', ['rm', prewarm.containerName])
+      await podmanRetry(['stop', '-t', '1', prewarm.containerName])
+      await podmanRetry(['rm', prewarm.containerName])
     } catch {
       // may already be gone
     }

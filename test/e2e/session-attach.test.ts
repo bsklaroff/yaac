@@ -1,17 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
-import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject } from '@test/helpers/setup'
+import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject, podmanRetry } from '@test/helpers/setup'
 import { podman } from '@/lib/container/runtime'
 import { resolveContainer } from '@/lib/container/resolve'
 import { ensureImage } from '@/lib/container/image-builder'
 import { claudeDir, worktreeDir, worktreesDir, repoDir, getDataDir } from '@/lib/project/paths'
 import { addWorktree } from '@/lib/git'
 import crypto from 'node:crypto'
-
-const execFileAsync = promisify(execFile)
 
 async function createContainerWithTmux(projectSlug: string): Promise<{ containerName: string; sessionId: string }> {
   const imageName = await ensureImage(projectSlug, TEST_IMAGE_PREFIX, true)
@@ -41,7 +37,7 @@ async function createContainerWithTmux(projectSlug: string): Promise<{ container
   await container.start()
 
   // Start tmux session with zsh (not claude, since claude isn't installed in test image)
-  await execFileAsync('podman', [
+  await podmanRetry([
     'exec', containerName, 'tmux', 'new-session', '-d', '-s', 'yaac', '-n', 'claude', 'zsh',
   ])
 
@@ -104,7 +100,7 @@ describe('yaac session attach', () => {
       expect(resolved).toBe(containerName)
 
       // Verify tmux session exists (the actual attach would be interactive)
-      const { stdout } = await execFileAsync('podman', [
+      const { stdout } = await podmanRetry([
         'exec', containerName, 'tmux', 'list-sessions',
       ])
       expect(stdout).toContain('yaac')

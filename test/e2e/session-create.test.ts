@@ -4,7 +4,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, TEST_PROXY_CONFIG, TEST_RUN_ID, addTestProject } from '@test/helpers/setup'
+import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, TEST_PROXY_CONFIG, TEST_RUN_ID, addTestProject, podmanRetry } from '@test/helpers/setup'
 import { podman } from '@/lib/container/runtime'
 import { ensureImage, packTar } from '@/lib/container/image-builder'
 import { ProxyClient, buildRulesFromConfig } from '@/lib/container/proxy-client'
@@ -288,7 +288,7 @@ describe('yaac session create', () => {
     containersToCleanup.length = 0
     for (const vol of volumesToCleanup) {
       try {
-        await execFileAsync('podman', ['volume', 'rm', vol])
+        await podmanRetry(['volume', 'rm', vol])
       } catch {
         // already gone
       }
@@ -340,41 +340,41 @@ describe('yaac session create', () => {
     })
 
     it('mounts workspace plus shared Claude and Codex state', async () => {
-      const { stdout: lsOutput } = await execFileAsync('podman', [
+      const { stdout: lsOutput } = await podmanRetry([
         'exec', result.containerName, 'ls', '/workspace',
       ])
       expect(lsOutput).toContain('README.md')
-      await execFileAsync('podman', [
+      await podmanRetry([
         'exec', result.containerName, 'test', '-d', '/home/yaac/.claude',
       ])
-      await execFileAsync('podman', [
+      await podmanRetry([
         'exec', result.containerName, 'test', '-f', '/home/yaac/.claude.json',
       ])
-      await execFileAsync('podman', [
+      await podmanRetry([
         'exec', result.containerName, 'test', '-d', '/home/yaac/.codex',
       ])
     })
 
     it('has a working git repository in /workspace', async () => {
-      const { stdout } = await execFileAsync('podman', [
+      const { stdout } = await podmanRetry([
         'exec', '-w', '/workspace', result.containerName, 'git', 'status', '--porcelain',
       ])
       expect(stdout.trim()).toBe('')
-      const { stdout: branchOut } = await execFileAsync('podman', [
+      const { stdout: branchOut } = await podmanRetry([
         'exec', '-w', '/workspace', result.containerName, 'git', 'rev-parse', '--abbrev-ref', 'HEAD',
       ])
       expect(branchOut.trim()).toBe(`yaac/${result.sessionId}`)
     })
 
     it('has tmux session running inside container', async () => {
-      const { stdout } = await execFileAsync('podman', [
+      const { stdout } = await podmanRetry([
         'exec', result.containerName, 'tmux', 'list-sessions',
       ])
       expect(stdout).toContain('yaac')
     })
 
     it('shows session id in tmux status bar', async () => {
-      const { stdout } = await execFileAsync('podman', [
+      const { stdout } = await podmanRetry([
         'exec', result.containerName, 'tmux', 'show-option', '-t', 'yaac', 'status-right',
       ])
       expect(stdout).toContain(result.sessionId.slice(0, 8))
@@ -397,7 +397,7 @@ describe('yaac session create', () => {
     const result = await createSessionNonInteractive('passthrough-project')
     containersToCleanup.push(result.containerName)
 
-    const { stdout } = await execFileAsync('podman', [
+    const { stdout } = await podmanRetry([
       'exec', result.containerName, 'env',
     ])
     expect(stdout).toContain('YAAC_TEST_VAR=hello-from-host')
@@ -420,13 +420,13 @@ describe('yaac session create', () => {
     const info = await podman.getContainer(result.containerName).inspect()
     expect(info.Config.Labels['yaac.tool']).toBe('codex')
 
-    await execFileAsync('podman', [
+    await podmanRetry([
       'exec', result.containerName, 'test', '-d', '/home/yaac/.claude',
     ])
-    await execFileAsync('podman', [
+    await podmanRetry([
       'exec', result.containerName, 'test', '-f', '/home/yaac/.claude.json',
     ])
-    await execFileAsync('podman', [
+    await podmanRetry([
       'exec', result.containerName, 'test', '-d', '/home/yaac/.codex',
     ])
   })
@@ -443,13 +443,13 @@ describe('yaac session create', () => {
     const result = await createSessionNonInteractive('noprompt-project')
     containersToCleanup.push(result.containerName)
 
-    const { stdout: tmuxOut } = await execFileAsync('podman', [
+    const { stdout: tmuxOut } = await podmanRetry([
       'exec', result.containerName, 'tmux', 'list-sessions',
     ])
     expect(tmuxOut).toContain('yaac')
 
     try {
-      await execFileAsync('podman', [
+      await podmanRetry([
         'exec', result.containerName, 'cat', '/tmp/yaac-prompt',
       ])
       expect.fail('Expected /tmp/yaac-prompt to not exist')
@@ -463,7 +463,7 @@ describe('yaac session create', () => {
 
     const volName = 'yaac-cache-cache-vol-project-test-cache'
     // Remove stale volume from prior runs to avoid podman lock conflicts
-    try { await execFileAsync('podman', ['volume', 'rm', volName]) } catch { /* ignore */ }
+    try { await podmanRetry(['volume', 'rm', volName]) } catch { /* ignore */ }
     volumesToCleanup.push(volName)
 
     const tmpDir = await createTempDataDir()
@@ -480,12 +480,12 @@ describe('yaac session create', () => {
     containersToCleanup.push(result.containerName)
 
     // Write a file to the cache volume
-    await execFileAsync('podman', [
+    await podmanRetry([
       'exec', result.containerName, 'sh', '-c', 'echo hello > /tmp/test-cache/marker',
     ])
 
     // Verify the file exists
-    const { stdout } = await execFileAsync('podman', [
+    const { stdout } = await podmanRetry([
       'exec', result.containerName, 'cat', '/tmp/test-cache/marker',
     ])
     expect(stdout.trim()).toBe('hello')
@@ -508,7 +508,7 @@ describe('yaac session create', () => {
     containersToCleanup.push(result.containerName)
 
     // Verify the init command ran
-    const { stdout } = await execFileAsync('podman', [
+    const { stdout } = await podmanRetry([
       'exec', result.containerName, 'sh', '-c', 'test -f /tmp/init-ran && echo exists',
     ])
     expect(stdout.trim()).toBe('exists')
@@ -526,7 +526,7 @@ describe('yaac session create', () => {
 
     const volName = 'yaac-cache-pnpm-cache-project-pnpm-store'
     // Remove stale volume from prior runs to avoid podman lock conflicts
-    try { await execFileAsync('podman', ['volume', 'rm', volName]) } catch { /* ignore */ }
+    try { await podmanRetry(['volume', 'rm', volName]) } catch { /* ignore */ }
     volumesToCleanup.push(volName)
 
     const tmpDir = await createTempDataDir()
@@ -555,21 +555,21 @@ describe('yaac session create', () => {
     containersToCleanup.push(result.containerName)
 
     // Verify pnpm resolves the store to our cache volume
-    const { stdout: storePath } = await execFileAsync('podman', [
+    const { stdout: storePath } = await podmanRetry([
       'exec', '-w', '/workspace', result.containerName,
       'pnpm', 'store', 'path', '--store-dir', '/home/yaac/.pnpm-store',
     ])
     expect(storePath.trim()).toMatch(/^\/home\/yaac\/\.pnpm-store\//)
 
     // Verify the store has content after the init command ran
-    const { stdout: fileCount } = await execFileAsync('podman', [
+    const { stdout: fileCount } = await podmanRetry([
       'exec', result.containerName, 'sh', '-c',
       'find /home/yaac/.pnpm-store -type f | wc -l',
     ])
     expect(Number(fileCount.trim())).toBeGreaterThan(0)
 
     // Wipe node_modules and reinstall — packages should come from cache
-    const { stdout: reinstallOutput } = await execFileAsync('podman', [
+    const { stdout: reinstallOutput } = await podmanRetry([
       'exec', '-w', '/workspace', result.containerName, 'sh', '-c',
       'rm -rf node_modules && pnpm install --store-dir /home/yaac/.pnpm-store 2>&1',
     ], { timeout: 120_000 })
@@ -627,19 +627,19 @@ describe('yaac session create', () => {
     await container.start()
 
     // Fix ownership of podman storage volume
-    await execFileAsync('podman', [
+    await podmanRetry([
       'exec', '--user', 'root', containerName, 'chown', 'yaac:yaac', '/home/yaac/.local/share/containers',
     ])
 
     // Run a nested container — this verifies the full podman-in-podman stack
-    const { stdout } = await execFileAsync('podman', [
+    const { stdout } = await podmanRetry([
       'exec', containerName, 'podman', 'run', '--rm', 'docker.io/library/alpine', 'echo', 'nested-works',
     ], { timeout: 120_000 })
     expect(stdout.trim()).toBe('nested-works')
 
     // Clean up the test volume
     try {
-      await execFileAsync('podman', ['volume', 'rm', storageName])
+      await podmanRetry(['volume', 'rm', storageName])
     } catch { /* ignore */ }
   }, 180_000)
 
@@ -688,17 +688,17 @@ describe('yaac session create', () => {
     })
     await container.start()
 
-    await execFileAsync('podman', [
+    await podmanRetry([
       'exec', '--user', 'root', containerName, 'chown', 'yaac:yaac', '/home/yaac/.local/share/containers',
     ])
-    await execFileAsync('podman', [
+    await podmanRetry([
       'exec', '-d', containerName, 'podman', 'system', 'service', '--time=0',
       'unix:///run/user/1000/podman/podman.sock',
     ])
     // Wait for the podman service socket
     for (let i = 0; i < 20; i++) {
       try {
-        await execFileAsync('podman', ['exec', containerName, 'podman', 'info', '--format', '{{.Host.Os}}'])
+        await podmanRetry(['exec', containerName, 'podman', 'info', '--format', '{{.Host.Os}}'])
         break
       } catch {
         await new Promise((r) => setTimeout(r, 500))
@@ -706,12 +706,12 @@ describe('yaac session create', () => {
     }
 
     // Create an internal network inside the nested container
-    await execFileAsync('podman', [
+    await podmanRetry([
       'exec', containerName, 'podman', 'network', 'create', '--internal', '--disable-dns', 'test-internal',
     ])
 
     // Verify containers on the internal network cannot reach the internet
-    const { stdout: blocked } = await execFileAsync('podman', [
+    const { stdout: blocked } = await podmanRetry([
       'exec', containerName, 'podman', 'run', '--rm', '--network=test-internal',
       'docker.io/library/alpine', 'sh', '-c',
       'wget -qO- --timeout=3 http://1.1.1.1 2>&1 || echo internet-blocked',
@@ -719,7 +719,7 @@ describe('yaac session create', () => {
     expect(blocked.trim()).toContain('internet-blocked')
 
     // Verify containers on the default (host) network CAN reach the internet
-    const { stdout: works } = await execFileAsync('podman', [
+    const { stdout: works } = await podmanRetry([
       'exec', containerName, 'podman', 'run', '--rm',
       'docker.io/library/alpine', 'sh', '-c',
       'wget -qO- --timeout=10 http://1.1.1.1 >/dev/null 2>&1 && echo internet-works || echo internet-broken',
@@ -728,7 +728,7 @@ describe('yaac session create', () => {
 
     // Clean up
     try {
-      await execFileAsync('podman', ['volume', 'rm', storageName])
+      await podmanRetry(['volume', 'rm', storageName])
     } catch { /* ignore */ }
   }, 180_000)
 
@@ -768,7 +768,7 @@ describe('yaac session create', () => {
     expect(bindings['3000/tcp'][0].HostIp).toBe('127.0.0.1')
 
     // Verify port info appears in tmux status bar
-    const { stdout: statusRight } = await execFileAsync('podman', [
+    const { stdout: statusRight } = await podmanRetry([
       'exec', result.containerName, 'tmux', 'show-option', '-t', 'yaac', 'status-right',
     ])
     expect(statusRight).toContain(`:${result.forwardedPorts[0].hostPort}->8080`)
@@ -804,27 +804,27 @@ describe('yaac session create', () => {
     containersToCleanup.push(result.containerName)
 
     // Verify read-only mount content is accessible
-    const { stdout: roContent } = await execFileAsync('podman', [
+    const { stdout: roContent } = await podmanRetry([
       'exec', result.containerName, 'cat', '/mnt/ro-data/readme.txt',
     ])
     expect(roContent.trim()).toBe('read-only content')
 
     // Verify read-only mount rejects writes
-    await expect(execFileAsync('podman', [
+    await expect(podmanRetry([
       'exec', result.containerName, 'sh', '-c', 'echo test > /mnt/ro-data/fail.txt',
     ])).rejects.toThrow()
 
     // Verify read-write mount content is accessible
-    const { stdout: rwContent } = await execFileAsync('podman', [
+    const { stdout: rwContent } = await podmanRetry([
       'exec', result.containerName, 'cat', '/mnt/rw-data/data.txt',
     ])
     expect(rwContent.trim()).toBe('writable content')
 
     // Verify read-write mount accepts writes
-    await execFileAsync('podman', [
+    await podmanRetry([
       'exec', result.containerName, 'sh', '-c', 'echo new-data > /mnt/rw-data/new.txt',
     ])
-    const { stdout: newContent } = await execFileAsync('podman', [
+    const { stdout: newContent } = await podmanRetry([
       'exec', result.containerName, 'cat', '/mnt/rw-data/new.txt',
     ])
     expect(newContent.trim()).toBe('new-data')
@@ -848,13 +848,13 @@ describe('yaac session create', () => {
     containersToCleanup.push(result.containerName)
 
     // Verify content is readable at /add-dir/<hostDir>
-    const { stdout: content } = await execFileAsync('podman', [
+    const { stdout: content } = await podmanRetry([
       'exec', result.containerName, 'cat', `/add-dir${hostDir}/hello.txt`,
     ])
     expect(content.trim()).toBe('read-only extra')
 
     // Verify writes are rejected
-    await expect(execFileAsync('podman', [
+    await expect(podmanRetry([
       'exec', result.containerName, 'sh', '-c', `echo test > /add-dir${hostDir}/fail.txt`,
     ])).rejects.toThrow()
   })
@@ -877,16 +877,16 @@ describe('yaac session create', () => {
     containersToCleanup.push(result.containerName)
 
     // Verify content is readable at /add-dir/<hostDir>
-    const { stdout: content } = await execFileAsync('podman', [
+    const { stdout: content } = await podmanRetry([
       'exec', result.containerName, 'cat', `/add-dir${hostDir}/data.txt`,
     ])
     expect(content.trim()).toBe('writable extra')
 
     // Verify writes succeed
-    await execFileAsync('podman', [
+    await podmanRetry([
       'exec', result.containerName, 'sh', '-c', `echo new-data > /add-dir${hostDir}/new.txt`,
     ])
-    const { stdout: newContent } = await execFileAsync('podman', [
+    const { stdout: newContent } = await podmanRetry([
       'exec', result.containerName, 'cat', `/add-dir${hostDir}/new.txt`,
     ])
     expect(newContent.trim()).toBe('new-data')
@@ -911,14 +911,14 @@ describe('yaac session create', () => {
       containersToCleanup.push(result.containerName)
 
       // Verify socat is forwarding localhost:5432 inside the container
-      const { stdout: socatOut } = await execFileAsync('podman', [
+      const { stdout: socatOut } = await podmanRetry([
         'exec', result.containerName, 'sh', '-c', 'cat /proc/*/cmdline 2>/dev/null | tr "\\0" " "',
       ])
       expect(socatOut).toContain('TCP4-LISTEN:5432')
       expect(socatOut).toContain('TCP6-LISTEN:5432')
 
       // Verify localhost:5432 is reachable inside the container
-      const { exitCode } = await execFileAsync('podman', [
+      const { exitCode } = await podmanRetry([
         'exec', result.containerName, 'nc', '-z', 'localhost', '5432',
       ]).then(() => ({ exitCode: 0 })).catch(() => ({ exitCode: 1 }))
       expect(exitCode).toBe(0)

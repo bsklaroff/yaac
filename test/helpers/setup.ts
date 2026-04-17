@@ -7,10 +7,24 @@ import { promisify } from 'node:util'
 import simpleGit from 'simple-git'
 import { setDataDir, getDataDir, projectDir, repoDir, claudeDir } from '@/lib/project/paths'
 import { cloneRepo } from '@/lib/git'
+import { podmanExecWithRetry } from '@/lib/container/runtime'
 import type { ProjectMeta } from '@/types'
 import type { ProxyClientConfig } from '@/lib/container/proxy-client'
 
 const execFileAsync = promisify(execFile)
+
+/**
+ * Run `podman <args>` with retries on transient podman errors (container
+ * state improper, OCI runtime races, conmon churn).  Tests share this helper
+ * so that transient errors from parallel workers don't cause spurious
+ * failures.
+ */
+export async function podmanRetry(
+  args: string[],
+  opts?: { timeout?: number },
+): Promise<{ stdout: string; stderr: string }> {
+  return await podmanExecWithRetry(args, opts)
+}
 
 /**
  * Prefix used for all container images built during e2e tests.

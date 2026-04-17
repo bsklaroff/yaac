@@ -2,7 +2,7 @@ FROM docker.io/ubuntu:24.04
 
 ARG SSL_CERT_FILE
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl gcc git less libc6-dev netcat-openbsd python3 socat tmux locales podman sudo xz-utils zsh && \
+    ca-certificates catatonit curl gcc git less libc6-dev netcat-openbsd python3 socat tmux locales podman sudo xz-utils zsh && \
     sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen && update-locale LANG=en_US.UTF-8 && \
     if [ -n "$SSL_CERT_FILE" ] && [ -f "$SSL_CERT_FILE" ]; then \
       cp "$SSL_CERT_FILE" /usr/local/share/ca-certificates/proxy-ca.crt && update-ca-certificates; \
@@ -63,4 +63,7 @@ alias grep='grep --color=auto'
 EOF
 
 WORKDIR /workspace
-ENTRYPOINT ["sleep", "infinity"]
+# catatonit acts as PID 1, reaping zombies (orphaned conmon etc.) and
+# forwarding signals.  Without a real init, rootless podman leaks zombie
+# conmon processes under PID 1 and eventually hits RLIMIT_NPROC.
+ENTRYPOINT ["catatonit", "--", "sleep", "infinity"]

@@ -1,14 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import crypto from 'node:crypto'
 import http from 'node:http'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
-import { requirePodman, TEST_RUN_ID } from '@test/helpers/setup'
+import { requirePodman, TEST_RUN_ID, podmanRetry } from '@test/helpers/setup'
 import { ProxyClient } from '@/lib/container/proxy-client'
 import { startPortForwarders, podmanRelay, reserveAvailablePort } from '@/lib/container/port'
 import { podman } from '@/lib/container/runtime'
-
-const execFileAsync = promisify(execFile)
 
 /** Make a simple HTTP GET request and return the response body. */
 function httpGet(url: string, timeoutMs = 5000): Promise<{ status: number; body: string }> {
@@ -80,7 +76,7 @@ describe('port forwarding via podman exec relay', () => {
     `
 
     // Use the base image — it has both node and nc (netcat-openbsd)
-    const { stdout: images } = await execFileAsync('podman', [
+    const { stdout: images } = await podmanRetry([
       'images', '--format', '{{.Repository}}:{{.Tag}}', '--filter', 'reference=yaac-test-base',
     ])
     const baseImage = images.trim().split('\n')[0]
@@ -100,7 +96,7 @@ describe('port forwarding via podman exec relay', () => {
     const curlHost = bindAddress === '::1' ? '[::1]' : bindAddress
     for (let i = 0; i < 30; i++) {
       try {
-        const { stdout } = await execFileAsync('podman', [
+        const { stdout } = await podmanRetry([
           'exec', name, 'sh', '-c',
           `curl -sf http://${curlHost}:${containerPort}/`,
         ], { timeout: 3000 })
@@ -167,7 +163,7 @@ describe('port forwarding via podman exec relay', () => {
       }).listen(${secondPort}, '127.0.0.1');
     `
 
-    const { stdout: images } = await execFileAsync('podman', [
+    const { stdout: images } = await podmanRetry([
       'images', '--format', '{{.Repository}}:{{.Tag}}', '--filter', 'reference=yaac-test-base',
     ])
     const baseImage = images.trim().split('\n')[0]
@@ -185,7 +181,7 @@ describe('port forwarding via podman exec relay', () => {
     for (const port of [containerPort, secondPort]) {
       for (let i = 0; i < 30; i++) {
         try {
-          await execFileAsync('podman', [
+          await podmanRetry([
             'exec', name, 'sh', '-c', `curl -sf http://127.0.0.1:${port}/`,
           ], { timeout: 3000 })
           break

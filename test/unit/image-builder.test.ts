@@ -112,9 +112,12 @@ describe('image-builder prerequisites', () => {
     expect(content).toContain('USER yaac')
   })
 
-  it('Dockerfile.default has sleep infinity entrypoint', async () => {
+  it('Dockerfile.default uses catatonit as PID 1 to reap zombies', async () => {
     const dockerfilePath = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
     const content = await fs.readFile(dockerfilePath, 'utf8')
+    expect(content).toContain('catatonit')
+    expect(content).toMatch(/ENTRYPOINT \[.*"catatonit".*\]/)
+    // catatonit runs sleep infinity as PID 2 so the container stays up
     expect(content).toContain('sleep')
     expect(content).toContain('infinity')
   })

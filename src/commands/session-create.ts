@@ -2,9 +2,9 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import readline from 'node:readline/promises'
-import { spawn, execSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import simpleGit from 'simple-git'
-import { ensureContainerRuntime, podman } from '@/lib/container/runtime'
+import { ensureContainerRuntime, execPodmanWithRetry, podman } from '@/lib/container/runtime'
 import { ensureImage, packTar } from '@/lib/container/image-builder'
 import { proxyClient, buildRulesFromConfig } from '@/lib/container/proxy-client'
 import { resolveAllowedHosts } from '@/lib/container/default-allowed-hosts'
@@ -46,11 +46,11 @@ export function buildAgentCmd(
 }
 
 function containerExec(containerName: string, cmd: string): void {
-  execSync(`podman exec ${containerName} ${cmd}`, { stdio: 'pipe' })
+  execPodmanWithRetry(`podman exec ${containerName} ${cmd}`)
 }
 
 function containerExecRoot(containerName: string, cmd: string): void {
-  execSync(`podman exec --user root ${containerName} ${cmd}`, { stdio: 'pipe' })
+  execPodmanWithRetry(`podman exec --user root ${containerName} ${cmd}`)
 }
 
 export interface SessionCreateOptions {
@@ -146,16 +146,14 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
 
   // Forward localhost:<pgPort> inside the container to the pg-relay sidecar (IPv4 + IPv6)
   if (pgRelayIp) {
-    execSync(`podman exec -d --user root ${containerName} socat TCP4-LISTEN:${pgRelay.containerPort},fork,reuseaddr,bind=127.0.0.1 TCP:${pgRelayIp}:${pgRelay.containerPort}`, { stdio: 'pipe' })
-    execSync(`podman exec -d --user root ${containerName} socat TCP6-LISTEN:${pgRelay.containerPort},fork,reuseaddr,bind=::1 TCP:${pgRelayIp}:${pgRelay.containerPort}`, { stdio: 'pipe' })
+    execPodmanWithRetry(`podman exec -d --user root ${containerName} socat TCP4-LISTEN:${pgRelay.containerPort},fork,reuseaddr,bind=127.0.0.1 TCP:${pgRelayIp}:${pgRelay.containerPort}`)
+    execPodmanWithRetry(`podman exec -d --user root ${containerName} socat TCP6-LISTEN:${pgRelay.containerPort},fork,reuseaddr,bind=::1 TCP:${pgRelayIp}:${pgRelay.containerPort}`)
   }
 
   // Fix ownership of podman storage volume and start API socket for nested containers
   if (config.nestedContainers) {
     containerExecRoot(containerName, 'chown yaac:yaac /home/yaac/.local/share/containers')
-    execSync(`podman exec -d ${containerName} podman system service --time=0 unix:///run/user/1000/podman/podman.sock`, {
-      stdio: 'pipe',
-    })
+    execPodmanWithRetry(`podman exec -d ${containerName} podman system service --time=0 unix:///run/user/1000/podman/podman.sock`)
   }
 
   // Inject CA cert for HTTPS MITM (proxy is always active)
@@ -522,7 +520,7 @@ export async function createSession(projectSlug: string, options: SessionCreateO
     } catch (err) {
       if (attempt < maxStartAttempts) {
         console.warn(`Container startup failed (attempt ${attempt}/${maxStartAttempts}), retrying...`)
-        try { execSync(`podman rm -f ${containerName}`, { stdio: 'pipe' }) } catch { /* already gone */ }
+        try { execPodmanWithRetry(`podman rm -f ${containerName}`) } catch { /* already gone */ }
         continue
       }
       throw err
