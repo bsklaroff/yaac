@@ -8,7 +8,7 @@ RUN if [ -n "$SSL_CERT_FILE" ] && [ -f "$SSL_CERT_FILE" ]; then \
     else \
       npm install --omit=dev; \
     fi
-COPY proxy.mjs /app/proxy.mjs
+COPY proxy.ts /app/proxy.ts
 USER node
 EXPOSE 10255
-CMD ["node", "proxy.mjs"]
+CMD ["./node_modules/.bin/tsx", "proxy.ts"]

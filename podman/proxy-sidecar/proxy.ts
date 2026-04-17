@@ -20,6 +20,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import zlib from 'node:zlib'
+import type { Duplex } from 'node:stream'
 import forge from 'node-forge'
 
 const PORT = process.env.PORT
@@ -44,18 +45,53 @@ const ANTHROPIC_API_HOST = 'api.anthropic.com'
 const GITHUB_HOSTS = new Set(['github.com', 'api.github.com'])
 const OPENAI_API_HOST = 'api.openai.com'
 
+// ── Types ──────────────────────────────────────────────────────────────
+
+type CA = {
+  key: forge.pki.rsa.PrivateKey
+  cert: forge.pki.Certificate
+  pem: string
+}
+
+type LeafEntry = { key: string; cert: string; expires: number }
+
+type ClaudeOAuthBundle = {
+  accessToken: string
+  refreshToken: string
+  expiresAt: number
+  scopes: string[]
+  subscriptionType?: string
+}
+
+type ClaudeCreds =
+  | { kind: 'oauth'; bundle: ClaudeOAuthBundle }
+  | { kind: 'api-key'; apiKey: string }
+
+type GithubTokenEntry = { pattern: string; token: string }
+
+type Injection =
+  | { action: 'set_header'; name: string; value: string }
+  | { action: 'replace_header'; name: string; value: string }
+  | { action: 'remove_header'; name: string }
+  | { action: 'replace_body_param'; name: string; value: string }
+
+type InjectionRule = {
+  pathPattern: string
+  injections: Injection[]
+}
+
+type HostInjectionRule = InjectionRule & { hostPattern: string }
+
 // ── CA Certificate Management ──────────────────────────────────────────
 
-/** @type {{ key: forge.pki.PrivateKey, cert: forge.pki.Certificate, pem: string } | null} */
-let ca = null
+let ca: CA | null = null
 
-/** @type {Map<string, { key: string, cert: string, expires: number }>} */
-const leafCache = new Map()
+const leafCache = new Map<string, LeafEntry>()
 
 const LEAF_VALIDITY_MS = 24 * 60 * 60 * 1000
 const LEAF_REFRESH_MS = 60 * 60 * 1000
 
-function loadOrGenerateCA() {
+function loadOrGenerateCA(): CA {
   const keyPath = path.join(DATA_DIR, 'ca.key')
   const certPath = path.join(DATA_DIR, 'ca.pem')
 
@@ -97,12 +133,14 @@ function loadOrGenerateCA() {
   return { key: keys.privateKey, cert, pem: certPem }
 }
 
-function getLeafCert(hostname) {
+function getLeafCert(hostname: string): { key: string; cert: string } {
   const cached = leafCache.get(hostname)
   const now = Date.now()
   if (cached && (cached.expires - LEAF_REFRESH_MS) > now) {
     return { key: cached.key, cert: cached.cert }
   }
+
+  if (!ca) throw new Error('CA not initialized')
 
   const keys = forge.pki.rsa.generateKeyPair(2048)
   const cert = forge.pki.createCertificate()
@@ -133,29 +171,32 @@ function getLeafCert(hostname) {
 // ── Credential Readers ─────────────────────────────────────────────────
 
 /**
- * @typedef {{accessToken: string, refreshToken: string, expiresAt: number, scopes: string[], subscriptionType?: string}} ClaudeOAuthBundle
- */
-
-/**
  * Parse the host-mounted claude.json. Returns either an OAuth bundle or an
  * api-key entry, depending on the file's `kind` field.
- * @returns {{ kind: 'oauth', bundle: ClaudeOAuthBundle } | { kind: 'api-key', apiKey: string } | null}
  */
-function readClaudeCreds() {
+function readClaudeCreds(): ClaudeCreds | null {
   try {
     const raw = fs.readFileSync(CLAUDE_CREDS_FILE, 'utf8')
-    const parsed = JSON.parse(raw)
+    const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return null
-    if (parsed.kind === 'oauth' && parsed.claudeAiOauth) {
-      const b = parsed.claudeAiOauth
+    const o = parsed as Record<string, unknown>
+    if (o.kind === 'oauth' && o.claudeAiOauth && typeof o.claudeAiOauth === 'object') {
+      const b = o.claudeAiOauth as Record<string, unknown>
       if (typeof b.accessToken === 'string' && typeof b.refreshToken === 'string'
         && typeof b.expiresAt === 'number' && Array.isArray(b.scopes)) {
-        return { kind: 'oauth', bundle: b }
+        const bundle: ClaudeOAuthBundle = {
+          accessToken: b.accessToken,
+          refreshToken: b.refreshToken,
+          expiresAt: b.expiresAt,
+          scopes: b.scopes as string[],
+          subscriptionType: typeof b.subscriptionType === 'string' ? b.subscriptionType : undefined,
+        }
+        return { kind: 'oauth', bundle }
       }
       return null
     }
-    if (parsed.kind === 'api-key' && typeof parsed.apiKey === 'string' && parsed.apiKey) {
-      return { kind: 'api-key', apiKey: parsed.apiKey }
+    if (o.kind === 'api-key' && typeof o.apiKey === 'string' && o.apiKey) {
+      return { kind: 'api-key', apiKey: o.apiKey }
     }
     return null
   } catch {
@@ -163,19 +204,19 @@ function readClaudeCreds() {
   }
 }
 
-/** @returns {ClaudeOAuthBundle | null} */
-function readClaudeOAuthBundle() {
+function readClaudeOAuthBundle(): ClaudeOAuthBundle | null {
   const creds = readClaudeCreds()
   return creds && creds.kind === 'oauth' ? creds.bundle : null
 }
 
-/** @returns {{ apiKey: string } | null} */
-function readCodexCreds() {
+function readCodexCreds(): { apiKey: string } | null {
   try {
     const raw = fs.readFileSync(CODEX_CREDS_FILE, 'utf8')
-    const parsed = JSON.parse(raw)
-    if (parsed && typeof parsed === 'object' && typeof parsed.apiKey === 'string' && parsed.apiKey) {
-      return { apiKey: parsed.apiKey }
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return null
+    const o = parsed as Record<string, unknown>
+    if (typeof o.apiKey === 'string' && o.apiKey) {
+      return { apiKey: o.apiKey }
     }
     return null
   } catch {
@@ -183,15 +224,23 @@ function readCodexCreds() {
   }
 }
 
-/** @returns {Array<{ pattern: string, token: string }>} */
-function readGithubTokens() {
+function readGithubTokens(): GithubTokenEntry[] {
   try {
     const raw = fs.readFileSync(GITHUB_CREDS_FILE, 'utf8')
-    const parsed = JSON.parse(raw)
-    if (!parsed || !Array.isArray(parsed.tokens)) return []
-    return parsed.tokens.filter((t) =>
-      t && typeof t.pattern === 'string' && typeof t.token === 'string' && t.token !== '',
-    )
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return []
+    const o = parsed as Record<string, unknown>
+    if (!Array.isArray(o.tokens)) return []
+    const result: GithubTokenEntry[] = []
+    for (const entry of o.tokens as unknown[]) {
+      if (entry && typeof entry === 'object') {
+        const e = entry as Record<string, unknown>
+        if (typeof e.pattern === 'string' && typeof e.token === 'string' && e.token !== '') {
+          result.push({ pattern: e.pattern, token: e.token })
+        }
+      }
+    }
+    return result
   } catch {
     return []
   }
@@ -201,7 +250,7 @@ function readGithubTokens() {
  * Mirrors `matchPattern` / `resolveTokenForUrl` from src/lib/project/credentials.ts.
  * Patterns: "*", "owner/*", "owner/repo".
  */
-function matchGithubPattern(pattern, owner, repo) {
+function matchGithubPattern(pattern: string, owner: string, repo: string): boolean {
   if (pattern === '*') return true
   const parts = pattern.split('/')
   if (parts.length !== 2) return false
@@ -212,7 +261,7 @@ function matchGithubPattern(pattern, owner, repo) {
 }
 
 /** Extract owner/repo from a GitHub remote URL. Returns null on failure. */
-function parseRepoUrl(remoteUrl) {
+function parseRepoUrl(remoteUrl: string | undefined): { owner: string; repo: string } | null {
   if (!remoteUrl || typeof remoteUrl !== 'string') return null
   try {
     const url = new URL(remoteUrl)
@@ -225,7 +274,7 @@ function parseRepoUrl(remoteUrl) {
 }
 
 /** Resolve the GitHub token for a given repo URL using the on-disk token list. */
-function resolveGithubToken(repoUrl) {
+function resolveGithubToken(repoUrl: string | undefined): string | null {
   const tokens = readGithubTokens()
   if (tokens.length === 0) return null
   const parsed = parseRepoUrl(repoUrl)
@@ -243,8 +292,7 @@ function resolveGithubToken(repoUrl) {
 }
 
 /** Atomic write via rename — keeps the inode path valid for concurrent readers. */
-/** @param {ClaudeOAuthBundle} bundle */
-function writeClaudeOAuthBundle(bundle) {
+function writeClaudeOAuthBundle(bundle: ClaudeOAuthBundle): void {
   const payload = {
     kind: 'oauth',
     savedAt: new Date().toISOString(),
@@ -258,32 +306,26 @@ function writeClaudeOAuthBundle(bundle) {
 // ── Secret Store ───────────────────────────────────────────────────────
 
 /** projectId -> injection rules */
-/** @type {Map<string, Array<{ hostPattern: string, pathPattern: string, injections: Array<{ action: string, name: string, value?: string }> }>>} */
-const projectRules = new Map()
+const projectRules = new Map<string, HostInjectionRule[]>()
 
 /** sessionId -> projectId (sessionId is used as proxy-auth credential) */
-/** @type {Map<string, string>} */
-const sessionToProject = new Map()
+const sessionToProject = new Map<string, string>()
 
 /** projectId -> allowed host patterns (absent means block all — fail closed) */
-/** @type {Map<string, string[]>} */
-const projectAllowedHosts = new Map()
+const projectAllowedHosts = new Map<string, string[]>()
 
 /** projectId -> repo URL (drives GitHub token resolution against github.json) */
-/** @type {Map<string, string>} */
-const projectRepoUrl = new Map()
+const projectRepoUrl = new Map<string, string>()
 
 /** projectId -> active agent tool ('claude' | 'codex') */
-/** @type {Map<string, string>} */
-const projectTool = new Map()
+const projectTool = new Map<string, string>()
 
 /** sessionId -> Set of blocked hostnames */
-/** @type {Map<string, Set<string>>} */
-const blockedHostsBySession = new Map()
+const blockedHostsBySession = new Map<string, Set<string>>()
 
 // ── Injection Logic ────────────────────────────────────────────────────
 
-function pathMatches(requestPath, pattern) {
+function pathMatches(requestPath: string, pattern: string): boolean {
   if (pattern === '/*' || pattern === '*') return true
   if (pattern.endsWith('/*')) {
     const prefix = pattern.slice(0, -2)
@@ -292,7 +334,7 @@ function pathMatches(requestPath, pattern) {
   return requestPath === pattern
 }
 
-function hostMatches(hostname, pattern) {
+function hostMatches(hostname: string, pattern: string): boolean {
   if (pattern === hostname) return true
   if (!pattern.includes('*')) return false
   if (pattern.startsWith('*.') && !pattern.slice(2).includes('*')) {
@@ -306,7 +348,7 @@ function hostMatches(hostname, pattern) {
   return patternParts.every((p, i) => p === '*' || p === hostParts[i])
 }
 
-function findRulesForHost(sessionId, hostname) {
+function findRulesForHost(sessionId: string, hostname: string): HostInjectionRule[] {
   const projectId = sessionToProject.get(sessionId)
   if (!projectId) return []
   const rules = projectRules.get(projectId)
@@ -314,7 +356,7 @@ function findRulesForHost(sessionId, hostname) {
   return rules.filter((r) => hostMatches(hostname, r.hostPattern))
 }
 
-function isHostAllowed(sessionId, hostname) {
+function isHostAllowed(sessionId: string | null, hostname: string): boolean {
   const projectId = sessionId ? sessionToProject.get(sessionId) : undefined
   if (!projectId) return false // no session/project = block by default (fail closed)
   const allowed = projectAllowedHosts.get(projectId)
@@ -323,7 +365,7 @@ function isHostAllowed(sessionId, hostname) {
   return allowed.some((pattern) => hostMatches(hostname, pattern))
 }
 
-function recordBlockedHost(sessionId, hostname) {
+function recordBlockedHost(sessionId: string | null, hostname: string): void {
   if (!sessionId) return
   let hosts = blockedHostsBySession.get(sessionId)
   if (!hosts) {
@@ -333,7 +375,11 @@ function recordBlockedHost(sessionId, hostname) {
   hosts.add(hostname)
 }
 
-function applyInjections(headers, requestPath, rules) {
+function applyInjections(
+  headers: http.OutgoingHttpHeaders,
+  requestPath: string,
+  rules: InjectionRule[],
+): number {
   let count = 0
   for (const rule of rules) {
     if (!pathMatches(requestPath, rule.pathPattern)) continue
@@ -357,9 +403,11 @@ function applyInjections(headers, requestPath, rules) {
   return count
 }
 
-function collectBodyInjections(requestPath, rules) {
-  /** @type {Array<{ name: string, value: string }>} */
-  const params = []
+function collectBodyInjections(
+  requestPath: string,
+  rules: InjectionRule[],
+): Array<{ name: string; value: string }> {
+  const params: Array<{ name: string; value: string }> = []
   for (const rule of rules) {
     if (!pathMatches(requestPath, rule.pathPattern)) continue
     for (const inj of rule.injections) {
@@ -371,19 +419,26 @@ function collectBodyInjections(requestPath, rules) {
   return params
 }
 
-function applyBodyInjections(bodyBuffer, contentType, injections) {
+function applyBodyInjections(
+  bodyBuffer: Buffer,
+  contentType: string | undefined,
+  injections: Array<{ name: string; value: string }>,
+): Buffer {
   const bodyStr = bodyBuffer.toString('utf8')
   const isJson = contentType && contentType.includes('application/json')
 
   if (isJson) {
     try {
-      const obj = JSON.parse(bodyStr)
-      for (const { name, value } of injections) {
-        if (name in obj) {
-          obj[name] = value
+      const parsed: unknown = JSON.parse(bodyStr)
+      if (parsed && typeof parsed === 'object') {
+        const obj = parsed as Record<string, unknown>
+        for (const { name, value } of injections) {
+          if (name in obj) {
+            obj[name] = value
+          }
         }
+        return Buffer.from(JSON.stringify(obj), 'utf8')
       }
-      return Buffer.from(JSON.stringify(obj), 'utf8')
     } catch {
       // Not valid JSON — fall through to form-encoded
     }
@@ -406,7 +461,7 @@ function applyBodyInjections(bodyBuffer, contentType, injections) {
  * read from the mounted credentials dir. Rule-based / per-project MITM is
  * still applied on top of this set.
  */
-function hostNeedsDynamicMitm(hostname) {
+function hostNeedsDynamicMitm(hostname: string): boolean {
   if (hostname === ANTHROPIC_API_HOST) return true
   if (hostname === CLAUDE_TOKEN_URL_HOST) return true
   if (GITHUB_HOSTS.has(hostname)) return true
@@ -420,16 +475,15 @@ function hostNeedsDynamicMitm(hostname) {
  * updates via `yaac auth update` propagate without needing to restart
  * containers. The rules slot into the same pipeline as statically-configured
  * rules — no separate mutation path.
- *
- * @param {string | null} sessionId
- * @param {string} hostname
- * @param {ClaudeOAuthBundle | null} claudeTokenBundle
- * @returns {InjectionRule[]}
  */
-function buildDynamicRules(sessionId, hostname, claudeTokenBundle) {
+function buildDynamicRules(
+  sessionId: string | null,
+  hostname: string,
+  claudeTokenBundle: ClaudeOAuthBundle | null,
+): InjectionRule[] {
   const projectId = sessionId ? sessionToProject.get(sessionId) : undefined
   if (!projectId) return []
-  const rules = []
+  const rules: InjectionRule[] = []
 
   if (GITHUB_HOSTS.has(hostname)) {
     const token = resolveGithubToken(projectRepoUrl.get(projectId))
@@ -497,7 +551,7 @@ function buildDynamicRules(sessionId, hostname, claudeTokenBundle) {
 // ── Claude OAuth Swap ──────────────────────────────────────────────────
 
 /** Parse JSON body in a response, falling back to null for non-JSON. */
-function tryParseJsonBody(buf) {
+function tryParseJsonBody(buf: Buffer): unknown {
   try {
     return JSON.parse(buf.toString('utf8'))
   } catch {
@@ -510,9 +564,9 @@ function tryParseJsonBody(buf) {
  * for unknown encodings so the caller can pass the original bytes through
  * unchanged.
  */
-function decodeBody(raw, encoding) {
+function decodeBody(raw: Buffer, encoding: string | string[] | undefined): Buffer | null {
   if (!encoding) return raw
-  const enc = encoding.toLowerCase()
+  const enc = Array.isArray(encoding) ? encoding[0].toLowerCase() : encoding.toLowerCase()
   if (enc === 'identity') return raw
   if (enc === 'gzip' || enc === 'x-gzip') return zlib.gunzipSync(raw)
   if (enc === 'br') return zlib.brotliDecompressSync(raw)
@@ -521,9 +575,9 @@ function decodeBody(raw, encoding) {
 }
 
 /** Re-encode a buffer with the given Content-Encoding. */
-function encodeBody(raw, encoding) {
+function encodeBody(raw: Buffer, encoding: string | string[] | undefined): Buffer {
   if (!encoding) return raw
-  const enc = encoding.toLowerCase()
+  const enc = Array.isArray(encoding) ? encoding[0].toLowerCase() : encoding.toLowerCase()
   if (enc === 'identity') return raw
   if (enc === 'gzip' || enc === 'x-gzip') return zlib.gzipSync(raw)
   if (enc === 'br') return zlib.brotliCompressSync(raw)
@@ -534,13 +588,20 @@ function encodeBody(raw, encoding) {
 const PLACEHOLDER_ACCESS_TOKEN = 'yaac-ph-access'
 const PLACEHOLDER_REFRESH_TOKEN = 'yaac-ph-refresh'
 
+type TokenResponseBody = {
+  access_token?: unknown
+  refresh_token?: unknown
+  expires_in?: unknown
+  scope?: unknown
+}
+
 /**
  * Rewrite a Claude OAuth token response body so that the real access/refresh
  * tokens are replaced with placeholders. `expires_in` / `scope` flow through
  * unchanged so Claude Code inside the container tracks the correct expiry.
  */
-function rewriteTokenResponseBody(parsed) {
-  const rewritten = { ...parsed }
+function rewriteTokenResponseBody(parsed: TokenResponseBody): TokenResponseBody {
+  const rewritten: TokenResponseBody = { ...parsed }
   if (typeof rewritten.access_token === 'string') {
     rewritten.access_token = PLACEHOLDER_ACCESS_TOKEN
   }
@@ -559,14 +620,14 @@ function rewriteTokenResponseBody(parsed) {
  * values. Falls back to forwarding the raw upstream bytes when the encoding
  * is unknown, decoding fails, or the body isn't a recognizable success
  * response.
- *
- * @param {import('node:http').IncomingMessage} upstreamRes
- * @param {import('node:http').ServerResponse} res
- * @param {ClaudeOAuthBundle} claudeTokenBundle
  */
-function handleClaudeTokenResponse(upstreamRes, res, claudeTokenBundle) {
-  const chunks = []
-  upstreamRes.on('data', (c) => chunks.push(c))
+function handleClaudeTokenResponse(
+  upstreamRes: http.IncomingMessage,
+  res: http.ServerResponse,
+  claudeTokenBundle: ClaudeOAuthBundle,
+): void {
+  const chunks: Buffer[] = []
+  upstreamRes.on('data', (c: Buffer) => chunks.push(c))
   upstreamRes.on('end', () => {
     const raw = Buffer.concat(chunks)
     const encoding = upstreamRes.headers['content-encoding']
@@ -574,20 +635,22 @@ function handleClaudeTokenResponse(upstreamRes, res, claudeTokenBundle) {
     // Base outgoing headers: preserve everything from upstream, but drop
     // transfer-encoding since we always send a single buffer with a fixed
     // content-length.
-    const outHeaders = { ...upstreamRes.headers }
+    const outHeaders: http.OutgoingHttpHeaders = { ...upstreamRes.headers }
     delete outHeaders['transfer-encoding']
 
-    const passThrough = () => {
+    const statusCode = upstreamRes.statusCode ?? 200
+
+    const passThrough = (): void => {
       outHeaders['content-length'] = String(raw.length)
-      res.writeHead(upstreamRes.statusCode, outHeaders)
+      res.writeHead(statusCode, outHeaders)
       res.end(raw)
     }
 
-    let decoded
+    let decoded: Buffer | null
     try {
       decoded = decodeBody(raw, encoding)
     } catch (err) {
-      console.error('[proxy] Failed to decode Claude token response body:', err.message)
+      console.error('[proxy] Failed to decode Claude token response body:', (err as Error).message)
       passThrough()
       return
     }
@@ -598,51 +661,57 @@ function handleClaudeTokenResponse(upstreamRes, res, claudeTokenBundle) {
     }
 
     const parsed = tryParseJsonBody(decoded)
-    if (!parsed || typeof parsed !== 'object' || typeof parsed.access_token !== 'string') {
+    if (!parsed || typeof parsed !== 'object') {
+      passThrough()
+      return
+    }
+    const body = parsed as TokenResponseBody
+    if (typeof body.access_token !== 'string') {
       // Not a success response — pass through unchanged.
       passThrough()
       return
     }
     // Success: capture refreshed tokens on the host.
     try {
-      const fresh = {
-        accessToken: parsed.access_token,
-        refreshToken: typeof parsed.refresh_token === 'string' && parsed.refresh_token
-          ? parsed.refresh_token
+      const fresh: ClaudeOAuthBundle = {
+        accessToken: body.access_token,
+        refreshToken: typeof body.refresh_token === 'string' && body.refresh_token
+          ? body.refresh_token
           : claudeTokenBundle.refreshToken,
-        expiresAt: typeof parsed.expires_in === 'number'
-          ? Date.now() + parsed.expires_in * 1000
+        expiresAt: typeof body.expires_in === 'number'
+          ? Date.now() + body.expires_in * 1000
           : claudeTokenBundle.expiresAt,
-        scopes: typeof parsed.scope === 'string' ? parsed.scope.split(' ').filter(Boolean) : claudeTokenBundle.scopes,
+        scopes: typeof body.scope === 'string' ? body.scope.split(' ').filter(Boolean) : claudeTokenBundle.scopes,
         subscriptionType: claudeTokenBundle.subscriptionType,
       }
       writeClaudeOAuthBundle(fresh)
       console.log('[proxy] Captured refreshed Claude OAuth tokens (expires in ' + Math.floor((fresh.expiresAt - Date.now()) / 1000) + 's)')
     } catch (err) {
-      console.error('[proxy] Failed to persist refreshed Claude OAuth tokens:', err.message)
+      console.error('[proxy] Failed to persist refreshed Claude OAuth tokens:', (err as Error).message)
     }
 
-    const rewritten = rewriteTokenResponseBody(parsed)
+    const rewritten = rewriteTokenResponseBody(body)
     const rewrittenJson = Buffer.from(JSON.stringify(rewritten), 'utf8')
-    let outBody
+    let outBody: Buffer
     try {
       outBody = encodeBody(rewrittenJson, encoding)
     } catch (err) {
-      console.error('[proxy] Failed to re-encode Claude token response body:', err.message)
+      console.error('[proxy] Failed to re-encode Claude token response body:', (err as Error).message)
       outBody = rewrittenJson
       delete outHeaders['content-encoding']
     }
     outHeaders['content-length'] = String(outBody.length)
-    res.writeHead(upstreamRes.statusCode, outHeaders)
+    res.writeHead(statusCode, outHeaders)
     res.end(outBody)
   })
 }
 
 // ── Session ID Extraction ─────────────────────────────────────────────
 
-function extractSessionId(proxyAuthHeader) {
+function extractSessionId(proxyAuthHeader: string | string[] | undefined): string | null {
   if (!proxyAuthHeader) return null
-  const match = proxyAuthHeader.match(/^Basic\s+(.+)$/i)
+  const header = Array.isArray(proxyAuthHeader) ? proxyAuthHeader[0] : proxyAuthHeader
+  const match = /^Basic\s+(.+)$/i.exec(header)
   if (!match) return null
   const decoded = Buffer.from(match[1], 'base64').toString()
   const colonIdx = decoded.indexOf(':')
@@ -653,19 +722,26 @@ function extractSessionId(proxyAuthHeader) {
 
 // ── MITM Handler ───────────────────────────────────────────────────────
 
-function handleMitm(clientSocket, hostname, port, sessionId, rules) {
+function handleMitm(
+  clientSocket: Duplex,
+  hostname: string,
+  port: string | undefined,
+  sessionId: string | null,
+  rules: HostInjectionRule[],
+): void {
+  if (!ca) throw new Error('CA not initialized')
   const leaf = getLeafCert(hostname)
 
-  const tlsSocket = new tls.TLSSocket(clientSocket, {
+  const tlsSocket = new tls.TLSSocket(clientSocket as net.Socket, {
     isServer: true,
     key: leaf.key,
     cert: leaf.cert + ca.pem,
   })
 
   const mitmServer = http.createServer((req, res) => {
-    const reqPath = req.url || '/'
+    const reqPath = req.url ?? '/'
 
-    const headers = { ...req.headers }
+    const headers: http.OutgoingHttpHeaders = { ...req.headers }
     delete headers['proxy-authorization']
     delete headers['proxy-connection']
 
@@ -683,7 +759,7 @@ function handleMitm(clientSocket, hostname, port, sessionId, rules) {
     // merged into the statically-configured rules so a single injection
     // pipeline handles both.
     const dynamicRules = buildDynamicRules(sessionId, hostname, claudeTokenBundle)
-    const allRules = rules.concat(dynamicRules)
+    const allRules: InjectionRule[] = [...rules, ...dynamicRules]
     const injCount = applyInjections(headers, reqPath, allRules)
     const bodyInjections = collectBodyInjections(reqPath, allRules)
 
@@ -693,13 +769,13 @@ function handleMitm(clientSocket, hostname, port, sessionId, rules) {
       console.log(`[proxy] MITM ${req.method} https://${hostname}${reqPath} (${injCount} header + ${bodyInjections.length} body injections${dynSuffix})`)
     }
 
-    function sendUpstream(body) {
+    function sendUpstream(body: Buffer | null): void {
       if (body !== null) {
         headers['content-length'] = String(body.length)
       }
       const upstream = https.request({
         hostname,
-        port: parseInt(port, 10) || 443,
+        port: parseInt(port ?? '', 10) || 443,
         path: reqPath,
         method: req.method,
         headers,
@@ -708,17 +784,17 @@ function handleMitm(clientSocket, hostname, port, sessionId, rules) {
         if (claudeTokenBundle) {
           handleClaudeTokenResponse(upstreamRes, res, claudeTokenBundle)
         } else {
-          res.writeHead(upstreamRes.statusCode, upstreamRes.headers)
+          res.writeHead(upstreamRes.statusCode ?? 200, upstreamRes.headers)
           upstreamRes.pipe(res)
         }
-        upstreamRes.on('error', (err) => {
+        upstreamRes.on('error', (err: Error) => {
           console.error('[proxy] Upstream response error for ' + hostname + reqPath + ':', err.message)
           if (!res.headersSent) res.writeHead(502)
           res.end(err.message)
         })
       })
 
-      upstream.on('error', (err) => {
+      upstream.on('error', (err: Error) => {
         console.error(`[proxy] Upstream error for ${hostname}${reqPath}:`, err.message)
         if (!res.headersSent) {
           res.writeHead(502, { 'Content-Type': 'text/plain' })
@@ -734,12 +810,16 @@ function handleMitm(clientSocket, hostname, port, sessionId, rules) {
     }
 
     if (bodyInjections.length > 0) {
-      const chunks = []
-      req.on('data', (chunk) => chunks.push(chunk))
+      const chunks: Buffer[] = []
+      req.on('data', (chunk: Buffer) => chunks.push(chunk))
       req.on('end', () => {
+        const contentTypeHeader = headers['content-type']
+        const contentType = typeof contentTypeHeader === 'string'
+          ? contentTypeHeader
+          : Array.isArray(contentTypeHeader) ? contentTypeHeader[0] : undefined
         const rawBody = applyBodyInjections(
           Buffer.concat(chunks),
-          headers['content-type'],
+          contentType,
           bodyInjections,
         )
         sendUpstream(rawBody)
@@ -751,7 +831,7 @@ function handleMitm(clientSocket, hostname, port, sessionId, rules) {
 
   mitmServer.emit('connection', tlsSocket)
 
-  tlsSocket.on('error', (err) => {
+  tlsSocket.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code !== 'ECONNRESET') {
       console.error(`[proxy] TLS error for ${hostname}:`, err.message)
     }
@@ -760,13 +840,13 @@ function handleMitm(clientSocket, hostname, port, sessionId, rules) {
 
 // ── Tunnel Handler ─────────────────────────────────────────────────────
 
-function handleTunnel(clientSocket, hostname, port) {
-  const upstream = net.connect(parseInt(port, 10) || 443, hostname, () => {
+function handleTunnel(clientSocket: Duplex, hostname: string, port: string | undefined): void {
+  const upstream = net.connect(parseInt(port ?? '', 10) || 443, hostname, () => {
     clientSocket.pipe(upstream)
     upstream.pipe(clientSocket)
   })
 
-  upstream.on('error', (err) => {
+  upstream.on('error', (err: Error) => {
     console.error(`[proxy] Tunnel error for ${hostname}:`, err.message)
     clientSocket.end()
   })
@@ -778,12 +858,12 @@ function handleTunnel(clientSocket, hostname, port) {
 
 // ── API Request Handler ────────────────────────────────────────────────
 
-function checkAuth(req) {
+function checkAuth(req: http.IncomingMessage): boolean {
   const auth = req.headers.authorization
   return auth === `Bearer ${PROXY_AUTH_SECRET}`
 }
 
-function handleApiRequest(req, res) {
+function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
   if (req.method === 'GET' && req.url === '/healthz') {
     res.writeHead(200)
     res.end('ok')
@@ -802,29 +882,35 @@ function handleApiRequest(req, res) {
   }
 
   // Register or update injection rules for a project
-  if (req.method === 'PUT' && req.url?.match(/^\/projects\/[^/]+\/rules$/)) {
+  if (req.method === 'PUT' && req.url && /^\/projects\/[^/]+\/rules$/.exec(req.url)) {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
     const projectId = decodeURIComponent(req.url.split('/')[2])
     let body = ''
-    req.on('data', (chunk) => { body += chunk })
+    req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
     req.on('end', () => {
       try {
-        const { rules, allowedHosts, repoUrl, tool } = JSON.parse(body)
+        const parsed: unknown = JSON.parse(body)
+        if (!parsed || typeof parsed !== 'object') {
+          res.writeHead(400); res.end('Invalid body'); return
+        }
+        const o = parsed as Record<string, unknown>
+        const rules = o.rules
         if (!Array.isArray(rules)) { res.writeHead(400); res.end('Invalid body: need rules array'); return }
-        projectRules.set(projectId, rules)
-        if (Array.isArray(allowedHosts)) {
+        projectRules.set(projectId, rules as HostInjectionRule[])
+        if (Array.isArray(o.allowedHosts)) {
+          const allowedHosts = o.allowedHosts as string[]
           projectAllowedHosts.set(projectId, allowedHosts)
           console.log(`[proxy] Updated allowlist (${allowedHosts.length} patterns) for project ${projectId.slice(0, 8)}...`)
         } else {
           projectAllowedHosts.delete(projectId)
         }
-        if (typeof repoUrl === 'string' && repoUrl) {
-          projectRepoUrl.set(projectId, repoUrl)
+        if (typeof o.repoUrl === 'string' && o.repoUrl) {
+          projectRepoUrl.set(projectId, o.repoUrl)
         } else {
           projectRepoUrl.delete(projectId)
         }
-        if (typeof tool === 'string' && tool) {
-          projectTool.set(projectId, tool)
+        if (typeof o.tool === 'string' && o.tool) {
+          projectTool.set(projectId, o.tool)
         } else {
           projectTool.delete(projectId)
         }
@@ -832,14 +918,14 @@ function handleApiRequest(req, res) {
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
       } catch (err) {
-        res.writeHead(400); res.end(`Invalid JSON: ${err.message}`)
+        res.writeHead(400); res.end(`Invalid JSON: ${(err as Error).message}`)
       }
     })
     return
   }
 
   // Remove all rules for a project
-  if (req.method === 'DELETE' && req.url?.match(/^\/projects\/[^/]+\/rules$/)) {
+  if (req.method === 'DELETE' && req.url && /^\/projects\/[^/]+\/rules$/.exec(req.url)) {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
     const projectId = decodeURIComponent(req.url.split('/')[2])
     const deleted = projectRules.delete(projectId)
@@ -856,17 +942,23 @@ function handleApiRequest(req, res) {
   if (req.method === 'POST' && req.url === '/sessions') {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
     let body = ''
-    req.on('data', (chunk) => { body += chunk })
+    req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
     req.on('end', () => {
       try {
-        const { sessionId, projectId } = JSON.parse(body)
-        if (!sessionId || !projectId) { res.writeHead(400); res.end('Invalid body: need sessionId and projectId'); return }
-        sessionToProject.set(sessionId, projectId)
-        console.log(`[proxy] Registered session ${sessionId.slice(0, 8)}... → project ${projectId.slice(0, 8)}...`)
+        const parsed: unknown = JSON.parse(body)
+        if (!parsed || typeof parsed !== 'object') {
+          res.writeHead(400); res.end('Invalid body'); return
+        }
+        const o = parsed as Record<string, unknown>
+        if (typeof o.sessionId !== 'string' || typeof o.projectId !== 'string' || !o.sessionId || !o.projectId) {
+          res.writeHead(400); res.end('Invalid body: need sessionId and projectId'); return
+        }
+        sessionToProject.set(o.sessionId, o.projectId)
+        console.log(`[proxy] Registered session ${o.sessionId.slice(0, 8)}... → project ${o.projectId.slice(0, 8)}...`)
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
       } catch (err) {
-        res.writeHead(400); res.end(`Invalid JSON: ${err.message}`)
+        res.writeHead(400); res.end(`Invalid JSON: ${(err as Error).message}`)
       }
     })
     return
@@ -887,7 +979,7 @@ function handleApiRequest(req, res) {
   // Return blocked hosts for all sessions
   if (req.method === 'GET' && req.url === '/blocked-hosts') {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
-    const result = {}
+    const result: Record<string, string[]> = {}
     for (const [sid, hosts] of blockedHostsBySession) {
       if (hosts.size > 0) {
         result[sid] = [...hosts]
@@ -908,14 +1000,17 @@ ca = loadOrGenerateCA()
 
 // ── HTTP Forward Proxy ────────────────────────────────────────────────
 
-function isProxyRequest(req) {
-  return req.url && req.url.startsWith('http://')
+function isProxyRequest(req: http.IncomingMessage): boolean {
+  return !!req.url && req.url.startsWith('http://')
 }
 
 // Security: token injection is deliberately NOT applied to plain HTTP requests.
 // Injecting credentials over unencrypted connections would expose them to
 // network observers. Only HTTPS CONNECT+MITM requests get token injection.
-function handleHttpForward(req, res) {
+function handleHttpForward(req: http.IncomingMessage, res: http.ServerResponse): void {
+  if (!req.url) {
+    res.writeHead(400); res.end('Bad request'); return
+  }
   const target = new URL(req.url)
   const sessionId = extractSessionId(req.headers['proxy-authorization'])
 
@@ -927,7 +1022,7 @@ function handleHttpForward(req, res) {
     return
   }
 
-  const headers = { ...req.headers }
+  const headers: http.OutgoingHttpHeaders = { ...req.headers }
   delete headers['proxy-authorization']
   delete headers['proxy-connection']
   headers.host = target.host
@@ -939,11 +1034,11 @@ function handleHttpForward(req, res) {
     method: req.method,
     headers,
   }, (upstreamRes) => {
-    res.writeHead(upstreamRes.statusCode, upstreamRes.headers)
+    res.writeHead(upstreamRes.statusCode ?? 200, upstreamRes.headers)
     upstreamRes.pipe(res)
   })
 
-  upstream.on('error', (err) => {
+  upstream.on('error', (err: Error) => {
     console.error(`[proxy] HTTP forward error for ${req.url}:`, err.message)
     if (!res.headersSent) {
       res.writeHead(502, { 'Content-Type': 'text/plain' })
@@ -964,11 +1059,11 @@ const server = http.createServer((req, res) => {
   }
 })
 
-server.on('connect', (req, clientSocket, head) => {
-  const [hostname, port] = req.url.split(':')
+server.on('connect', (req: http.IncomingMessage, clientSocket: Duplex, head: Buffer) => {
+  const [hostname, port] = (req.url ?? '').split(':')
   const sessionId = extractSessionId(req.headers['proxy-authorization'])
 
-  clientSocket.on('error', (err) => {
+  clientSocket.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code !== 'ECONNRESET') {
       console.error(`[proxy] Client socket error for ${hostname}:${port}:`, err.message)
     }
@@ -1002,11 +1097,11 @@ server.on('connect', (req, clientSocket, head) => {
   }
 })
 
-server.on('error', (err) => {
+server.on('error', (err: Error) => {
   console.error('[proxy] Server error:', err)
 })
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(parseInt(PORT, 10), '0.0.0.0', () => {
   console.log(`[proxy] MITM proxy listening on port ${PORT}`)
 })
 

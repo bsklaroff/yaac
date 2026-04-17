@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 
 /**
  * Tests for the proxy's body injection logic.
- * These functions mirror the implementation in podman/proxy-sidecar/proxy.mjs.
+ * These functions mirror the implementation in podman/proxy-sidecar/proxy.ts.
  */
 
 function applyBodyInjections(

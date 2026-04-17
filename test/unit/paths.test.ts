@@ -85,8 +85,8 @@ describe('paths', () => {
     expect(stat.isFile()).toBe(true)
   })
 
-  it('PROXY_DIR contains proxy.mjs', async () => {
-    const proxyScript = path.join(PROXY_DIR, 'proxy.mjs')
+  it('PROXY_DIR contains proxy.ts', async () => {
+    const proxyScript = path.join(PROXY_DIR, 'proxy.ts')
     const stat = await fs.stat(proxyScript)
     expect(stat.isFile()).toBe(true)
   })
