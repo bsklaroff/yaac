@@ -1,8 +1,5 @@
 {
   "nestedContainers": true,
-  "cacheVolumes": {
-    "pnpm-store": "/home/yaac/.pnpm-store"
-  },
-  "initCommands": ["pnpm install --store-dir /home/yaac/.pnpm-store"],
+  "initCommands": ["pnpm install"],
   "hideInitPane": true
 }

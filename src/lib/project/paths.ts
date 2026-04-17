@@ -95,6 +95,10 @@ export function codexDir(slug: string): string {
   return path.join(projectDir(slug), 'codex')
 }
 
+export function cachedPackagesDir(slug: string): string {
+  return path.join(projectDir(slug), '.cached-packages')
+}
+
 export function codexTranscriptDir(slug: string): string {
   return path.join(codexDir(slug), '.yaac-transcripts')
 }

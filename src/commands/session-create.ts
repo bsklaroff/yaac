@@ -11,7 +11,7 @@ import { resolveAllowedHosts } from '@/lib/container/default-allowed-hosts'
 import { reserveAvailablePort, startPortForwarders, podmanRelay } from '@/lib/container/port'
 import type { ReservedPort } from '@/lib/container/port'
 import { pgRelay } from '@/lib/container/pg-relay'
-import { repoDir, claudeDir, claudeJsonFile, codexDir, codexTranscriptDir, worktreeDir, worktreesDir, projectDir, getDataDir } from '@/lib/project/paths'
+import { repoDir, claudeDir, claudeJsonFile, codexDir, codexTranscriptDir, cachedPackagesDir, worktreeDir, worktreesDir, projectDir, getDataDir } from '@/lib/project/paths'
 import { resolveProjectConfig } from '@/lib/project/config'
 import { resolveTokenForUrl } from '@/lib/project/credentials'
 import { loadToolAuthEntry, loadClaudeCredentialsFile, writeProjectClaudePlaceholder } from '@/lib/project/tool-auth'
@@ -78,6 +78,7 @@ interface ContainerSetupParams {
   claude: string
   claudeJson: string
   codex: string
+  cachedPackages: string
   tool: AgentTool
   config: YaacConfig
   options: SessionCreateOptions
@@ -90,7 +91,7 @@ interface ContainerSetupParams {
 async function startContainerWithSetup(params: ContainerSetupParams): Promise<void> {
   const {
     imageName, containerName, projectSlug, sessionId, env,
-    wtDir, repo, claude, claudeJson, codex, tool, config, options,
+    wtDir, repo, claude, claudeJson, codex, cachedPackages, tool, config, options,
     networkMode, pgRelayIp, gitUser, forwardedPorts,
   } = params
 
@@ -112,6 +113,7 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
         `${claude}:/home/yaac/.claude:Z`,
         `${claudeJson}:/home/yaac/.claude.json:Z`,
         `${codex}:/home/yaac/.codex:Z`,
+        `${cachedPackages}:/home/yaac/.cached-packages:Z`,
         ...Object.entries(config.cacheVolumes ?? {}).map(
           ([key, containerPath]) => `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`,
         ),
@@ -443,9 +445,11 @@ export async function createSession(projectSlug: string, options: SessionCreateO
   const claude = claudeDir(projectSlug)
   const claudeJson = claudeJsonFile(projectSlug)
   const codex = codexDir(projectSlug)
+  const cachedPackages = cachedPackagesDir(projectSlug)
 
   await fs.mkdir(claude, { recursive: true })
   await fs.mkdir(codex, { recursive: true })
+  await fs.mkdir(cachedPackages, { recursive: true })
 
   // Refresh the per-project placeholder .credentials.json from the current
   // host OAuth bundle. Picks up expiresAt changes since the last session.
@@ -498,7 +502,7 @@ export async function createSession(projectSlug: string, options: SessionCreateO
   const maxStartAttempts = 3
   const setupParams: ContainerSetupParams = {
     imageName, containerName, projectSlug, sessionId, env,
-    wtDir, repo, claude, claudeJson, codex, tool, config, options,
+    wtDir, repo, claude, claudeJson, codex, cachedPackages, tool, config, options,
     networkMode, pgRelayIp, gitUser, forwardedPorts,
   }
 

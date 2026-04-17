@@ -133,8 +133,11 @@ Each session runs in an isolated container with the following mounts:
 | `~/.yaac/projects/<project>/claude/` | `/home/yaac/.claude` | Claude Code configuration |
 | `~/.yaac/projects/<project>/claude.json` | `/home/yaac/.claude.json` | Claude Code project settings |
 | `~/.yaac/projects/<project>/codex/` | `/home/yaac/.codex` | Codex configuration and transcripts |
+| `~/.yaac/projects/<project>/.cached-packages` | `/home/yaac/.cached-packages` | Per-project package-manager caches |
 
 The container runs as user `yaac` with home directory `/home/yaac`. All project data is stored under `~/.yaac/projects/<repo-name>/`. The repo plus both tool state directories are shared across all sessions within a project (but isolated between projects), so Claude and Codex sessions can inspect each other's history. Each session gets its own git worktree.
+
+The `.cached-packages` directory is shared by every session within the project, so package-manager caches survive session teardown and are reused across sessions. pnpm's default `store-dir` is pre-configured to `/home/yaac/.cached-packages/pnpm-store`, so `pnpm install` populates the per-project store automatically with no extra configuration.
 
 ## Project configuration
 
@@ -164,9 +167,9 @@ Add a `yaac-config.json` to your repo root. Example with all options:
     { "hostPath": "$HOME/models", "containerPath": "/mnt/models", "mode": "rw" }
   ],
   "cacheVolumes": {
-    "pnpm-store": "/home/yaac/.pnpm-store"
+    "cargo-registry": "/home/yaac/.cargo/registry"
   },
-  "initCommands": ["pnpm install --store-dir /home/yaac/.pnpm-store"],
+  "initCommands": ["pnpm install"],
   "addAllowedUrls": ["internal.corp.example.com", "*.mycdn.example.com"],
   "nestedContainers": false,
   "hideInitPane": false,
@@ -194,8 +197,8 @@ Add a `yaac-config.json` to your repo root. Example with all options:
   - **`mode`** — `"ro"` for read-only or `"rw"` for read-write (required).
 
   For ad-hoc mounts at session creation time, use the `--add-dir` / `--add-dir-rw` CLI flags instead. These mount the host directory under `/add-dir/<host-path>` inside the container and automatically pass it to Claude Code via `--add-dir`.
-- **cacheVolumes** — named Podman volumes mounted into the container. Keys are volume names, values are absolute container paths. Volumes persist across sessions.
-- **initCommands** — commands run inside the container after it starts (e.g. `pnpm install` against a warm cache volume). These run on every session, not just the first.
+- **cacheVolumes** — named Podman volumes mounted into the container. Keys are volume names, values are absolute container paths. Volumes persist across sessions. Note: a per-project `~/.yaac/projects/<project>/.cached-packages` directory is already bind-mounted at `/home/yaac/.cached-packages` on every container for pnpm (and other package-manager caches you want to share across sessions), so you don't need a `cacheVolumes` entry for pnpm's store.
+- **initCommands** — commands run inside the container after it starts (e.g. `pnpm install` against the warm shared cache). These run on every session, not just the first.
 - **nestedContainers** — when `true`, enables podman-in-podman support so sessions can build and run containers (default: `false`). See [Nested containers](#nested-containers) below.
 - **hideInitPane** — when `true`, the init commands tmux pane is automatically closed after the commands finish or error (default: `false`). When `false`, the pane is preserved with `remain-on-exit` so you can inspect the output.
 - **pgRelay** — configures a PostgreSQL relay sidecar that forwards connections from inside the container to a PostgreSQL instance on the host. The relay uses `socat` to proxy TCP traffic so that `localhost` connections inside the session reach your host database.

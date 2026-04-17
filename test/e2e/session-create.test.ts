@@ -13,7 +13,7 @@ import { PgRelayClient } from '@/lib/container/pg-relay'
 import { findAvailablePort } from '@/lib/container/port'
 import { addWorktree, getDefaultBranch } from '@/lib/git'
 import { resolveProjectConfig } from '@/lib/project/config'
-import { repoDir, claudeDir, claudeJsonFile, codexDir, worktreeDir, worktreesDir, getDataDir } from '@/lib/project/paths'
+import { repoDir, claudeDir, claudeJsonFile, codexDir, cachedPackagesDir, worktreeDir, worktreesDir, getDataDir } from '@/lib/project/paths'
 
 const execFileAsync = promisify(execFile)
 
@@ -142,10 +142,12 @@ async function createSessionNonInteractive(
   const claude = claudeDir(projectSlug)
   const claudeJson = claudeJsonFile(projectSlug)
   const codex = codexDir(projectSlug)
+  const cachedPackages = cachedPackagesDir(projectSlug)
   const tool = options?.tool ?? 'claude'
 
   await fs.mkdir(claude, { recursive: true })
   await fs.mkdir(codex, { recursive: true })
+  await fs.mkdir(cachedPackages, { recursive: true })
   try {
     await fs.access(claudeJson)
   } catch {
@@ -171,6 +173,7 @@ async function createSessionNonInteractive(
         `${claude}:/home/yaac/.claude:Z`,
         `${claudeJson}:/home/yaac/.claude.json:Z`,
         `${codex}:/home/yaac/.codex:Z`,
+        `${cachedPackages}:/home/yaac/.cached-packages:Z`,
         ...Object.entries(config.cacheVolumes ?? {}).map(
           ([key, containerPath]) => `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`,
         ),
@@ -515,7 +518,7 @@ describe('yaac session create', () => {
     expect(stdout.trim()).toBe('exists')
   })
 
-  it('pnpm install reuses cached packages from store-dir on cache volume', async () => {
+  it('pnpm install reuses cached packages from the per-project cached-packages dir', async () => {
     await requirePodman()
 
     // Nested podman containers cannot resolve external DNS when running
@@ -525,18 +528,12 @@ describe('yaac session create', () => {
       return // already inside a container — skip
     } catch { /* not in a container, proceed */ }
 
-    const volName = 'yaac-cache-pnpm-cache-project-pnpm-store'
-    // Remove stale volume from prior runs to avoid podman lock conflicts
-    try { await podmanRetry(['volume', 'rm', volName]) } catch { /* ignore */ }
-    volumesToCleanup.push(volName)
-
     const tmpDir = await createTempDataDir()
     tmpDirs.push(tmpDir)
     const repoPath = path.join(tmpDir, 'pnpm-cache-project')
     await createTestRepo(repoPath, {
       yaacConfig: {
-        cacheVolumes: { 'pnpm-store': '/home/yaac/.pnpm-store' },
-        initCommands: ['pnpm install --store-dir /home/yaac/.pnpm-store'],
+        initCommands: ['pnpm install'],
       },
     })
 
@@ -555,24 +552,24 @@ describe('yaac session create', () => {
     const result = await createSessionNonInteractive('pnpm-cache-project')
     containersToCleanup.push(result.containerName)
 
-    // Verify pnpm resolves the store to our cache volume
+    // Verify pnpm's default store resolves to the shared cached-packages volume
     const { stdout: storePath } = await podmanRetry([
       'exec', '-w', '/workspace', result.containerName,
-      'pnpm', 'store', 'path', '--store-dir', '/home/yaac/.pnpm-store',
+      'pnpm', 'store', 'path',
     ])
-    expect(storePath.trim()).toMatch(/^\/home\/yaac\/\.pnpm-store\//)
+    expect(storePath.trim()).toMatch(/^\/home\/yaac\/\.cached-packages\/pnpm-store\//)
 
     // Verify the store has content after the init command ran
     const { stdout: fileCount } = await podmanRetry([
       'exec', result.containerName, 'sh', '-c',
-      'find /home/yaac/.pnpm-store -type f | wc -l',
+      'find /home/yaac/.cached-packages/pnpm-store -type f | wc -l',
     ])
     expect(Number(fileCount.trim())).toBeGreaterThan(0)
 
     // Wipe node_modules and reinstall — packages should come from cache
     const { stdout: reinstallOutput } = await podmanRetry([
       'exec', '-w', '/workspace', result.containerName, 'sh', '-c',
-      'rm -rf node_modules && pnpm install --store-dir /home/yaac/.pnpm-store 2>&1',
+      'rm -rf node_modules && pnpm install 2>&1',
     ], { timeout: 120_000 })
     console.log('Reinstall output:\n' + reinstallOutput)
 

@@ -73,6 +73,7 @@ vi.mock('@/lib/project/paths', () => ({
   claudeDir: vi.fn((slug: string) => `/tmp/${slug}/claude`),
   claudeJsonFile: vi.fn((slug: string) => `/tmp/${slug}/claude.json`),
   codexDir: vi.fn((slug: string) => `/tmp/${slug}/codex`),
+  cachedPackagesDir: vi.fn((slug: string) => `/tmp/${slug}/.cached-packages`),
   codexTranscriptDir: vi.fn((slug: string) => `/tmp/${slug}/transcripts`),
   worktreeDir: vi.fn((slug: string, sessionId: string) => `/tmp/${slug}/worktrees/${sessionId}`),
   worktreesDir: vi.fn((slug: string) => `/tmp/${slug}/worktrees`),
