@@ -145,45 +145,27 @@ export class ProxyClient {
     return res.text()
   }
 
-  async updateProjectRules(
-    projectId: string,
-    rules: InjectionRule[],
-    allowedHosts: string[],
-    options: { repoUrl?: string; tool?: 'claude' | 'codex' } = {},
+  async registerSession(
+    sessionId: string,
+    state: {
+      rules: InjectionRule[]
+      allowedHosts: string[]
+      repoUrl?: string
+      tool?: 'claude' | 'codex'
+    },
   ): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/projects/${encodeURIComponent(projectId)}/rules`, {
+    const res = await fetch(`${this.baseUrl}/sessions/${encodeURIComponent(sessionId)}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${this.authSecret}`,
       },
-      body: JSON.stringify({ rules, allowedHosts, repoUrl: options.repoUrl, tool: options.tool }),
-    })
-    if (!res.ok) {
-      const text = await res.text()
-      throw new Error(`Failed to update project rules: ${res.status} ${text}`)
-    }
-  }
-
-  async removeProjectRules(projectId: string): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/projects/${encodeURIComponent(projectId)}/rules`, {
-      method: 'DELETE',
-      headers: { 'Authorization': `Bearer ${this.authSecret}` },
-    })
-    if (!res.ok) {
-      const text = await res.text()
-      throw new Error(`Failed to remove project rules: ${res.status} ${text}`)
-    }
-  }
-
-  async registerSession(sessionId: string, projectId: string): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/sessions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.authSecret}`,
-      },
-      body: JSON.stringify({ sessionId, projectId }),
+      body: JSON.stringify({
+        rules: state.rules,
+        allowedHosts: state.allowedHosts,
+        repoUrl: state.repoUrl,
+        tool: state.tool,
+      }),
     })
     if (!res.ok) {
       const text = await res.text()
@@ -200,6 +182,35 @@ export class ProxyClient {
       const text = await res.text()
       throw new Error(`Failed to remove session: ${res.status} ${text}`)
     }
+  }
+
+  /**
+   * Attach to an already-running proxy sidecar for this image hash without
+   * starting a new one. Returns true if the sidecar was found and the
+   * instance is ready to issue requests, false otherwise. Used by cleanup
+   * paths that want to talk to the proxy only if it already exists.
+   */
+  async attachIfRunning(): Promise<boolean> {
+    if (this.running && this.resolved) {
+      try {
+        const res = await fetch(`${this.baseUrl}/healthz`)
+        if (res.ok) return true
+      } catch {
+        this.running = false
+      }
+    }
+    const hash = await contextHash(PROXY_DIR)
+    const existing = await this.discoverExistingProxy(hash)
+    if (!existing) return false
+    this.resolved = {
+      containerName: existing.containerName,
+      hostPort: existing.hostPort,
+      authSecret: existing.authSecret,
+    }
+    this._proxyIp = existing.proxyIp
+    this.resolvedImage = `${this.config.image}:${hash}`
+    this.running = true
+    return true
   }
 
   async getBlockedHosts(): Promise<Record<string, string[]>> {

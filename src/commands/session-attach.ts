@@ -32,6 +32,6 @@ export async function sessionAttach(containerId: string): Promise<void> {
   // Auto-cleanup if Claude Code exited (tmux session died)
   if (!isTmuxSessionAlive(containerName)) {
     console.log('Claude Code exited. Cleaning up session...')
-    cleanupSessionDetached({ containerName, projectSlug, sessionId })
+    await cleanupSessionDetached({ containerName, projectSlug, sessionId })
   }
 }

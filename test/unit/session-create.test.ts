@@ -43,7 +43,6 @@ vi.mock('@/lib/container/proxy-client', () => ({
     containerName: 'yaac-proxy',
     network: 'bridge',
     ensureRunning: vi.fn().mockResolvedValue(undefined),
-    updateProjectRules: vi.fn().mockResolvedValue(undefined),
     registerSession: vi.fn().mockResolvedValue(undefined),
     getProxyEnv: vi.fn().mockReturnValue(['HTTPS_PROXY=http://proxy']),
     getCaCert: vi.fn().mockResolvedValue('cert'),
@@ -166,8 +165,6 @@ describe('createSession', () => {
     // eslint-disable-next-line @typescript-eslint/unbound-method
     vi.mocked(proxyClient.ensureRunning).mockResolvedValue(undefined)
     // eslint-disable-next-line @typescript-eslint/unbound-method
-    vi.mocked(proxyClient.updateProjectRules).mockResolvedValue(undefined)
-    // eslint-disable-next-line @typescript-eslint/unbound-method
     vi.mocked(proxyClient.registerSession).mockResolvedValue(undefined)
     // eslint-disable-next-line @typescript-eslint/unbound-method
     vi.mocked(proxyClient.getProxyEnv).mockReturnValue(['HTTPS_PROXY=http://proxy'])
@@ -275,8 +272,6 @@ describe('sessionCreate', () => {
     vi.mocked(getGitUserConfig).mockResolvedValue({ name: 'Test User', email: 'test@example.com' })
     // eslint-disable-next-line @typescript-eslint/unbound-method
     vi.mocked(proxyClient.ensureRunning).mockResolvedValue(undefined)
-    // eslint-disable-next-line @typescript-eslint/unbound-method
-    vi.mocked(proxyClient.updateProjectRules).mockResolvedValue(undefined)
     // eslint-disable-next-line @typescript-eslint/unbound-method
     vi.mocked(proxyClient.registerSession).mockResolvedValue(undefined)
     // eslint-disable-next-line @typescript-eslint/unbound-method

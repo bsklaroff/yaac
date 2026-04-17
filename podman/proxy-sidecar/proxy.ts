@@ -2,7 +2,7 @@
  * MITM proxy sidecar for agent session containers.
  *
  * - Generates a self-signed CA on startup (persisted to /data/)
- * - Accepts project rules + session mappings via HTTP API
+ * - Accepts per-session rules and allowlists via HTTP API
  * - Handles CONNECT tunneling: MITMs TLS when rules match, tunnels otherwise
  * - Reads GitHub / Claude / Codex credentials directly from the host-mounted
  *   `/yaac-credentials/` directory at request time, so updates to tokens via
@@ -304,21 +304,23 @@ function writeClaudeOAuthBundle(bundle: ClaudeOAuthBundle): void {
 }
 
 // ── Secret Store ───────────────────────────────────────────────────────
+//
+// All per-tenant state is keyed by sessionId (the same credential the
+// container sends in the Proxy-Authorization header). A session is
+// registered once via PUT /sessions/:id with its full state payload and
+// removed via DELETE /sessions/:id when the container is torn down.
 
-/** projectId -> injection rules */
-const projectRules = new Map<string, HostInjectionRule[]>()
+/** sessionId -> injection rules */
+const sessionRules = new Map<string, HostInjectionRule[]>()
 
-/** sessionId -> projectId (sessionId is used as proxy-auth credential) */
-const sessionToProject = new Map<string, string>()
+/** sessionId -> allowed host patterns (absent means block all — fail closed) */
+const sessionAllowedHosts = new Map<string, string[]>()
 
-/** projectId -> allowed host patterns (absent means block all — fail closed) */
-const projectAllowedHosts = new Map<string, string[]>()
+/** sessionId -> repo URL (drives GitHub token resolution against github.json) */
+const sessionRepoUrl = new Map<string, string>()
 
-/** projectId -> repo URL (drives GitHub token resolution against github.json) */
-const projectRepoUrl = new Map<string, string>()
-
-/** projectId -> active agent tool ('claude' | 'codex') */
-const projectTool = new Map<string, string>()
+/** sessionId -> active agent tool ('claude' | 'codex') */
+const sessionTool = new Map<string, string>()
 
 /** sessionId -> Set of blocked hostnames */
 const blockedHostsBySession = new Map<string, Set<string>>()
@@ -349,17 +351,14 @@ function hostMatches(hostname: string, pattern: string): boolean {
 }
 
 function findRulesForHost(sessionId: string, hostname: string): HostInjectionRule[] {
-  const projectId = sessionToProject.get(sessionId)
-  if (!projectId) return []
-  const rules = projectRules.get(projectId)
+  const rules = sessionRules.get(sessionId)
   if (!rules) return []
   return rules.filter((r) => hostMatches(hostname, r.hostPattern))
 }
 
 function isHostAllowed(sessionId: string | null, hostname: string): boolean {
-  const projectId = sessionId ? sessionToProject.get(sessionId) : undefined
-  if (!projectId) return false // no session/project = block by default (fail closed)
-  const allowed = projectAllowedHosts.get(projectId)
+  if (!sessionId) return false // no session = block by default (fail closed)
+  const allowed = sessionAllowedHosts.get(sessionId)
   if (!allowed) return false // no allowlist registered = block by default (fail closed)
   if (allowed.length === 1 && allowed[0] === '*') return true
   return allowed.some((pattern) => hostMatches(hostname, pattern))
@@ -458,7 +457,7 @@ function applyBodyInjections(
 
 /**
  * Hosts the proxy always MITMs so it can inject agent-tool credentials
- * read from the mounted credentials dir. Rule-based / per-project MITM is
+ * read from the mounted credentials dir. Rule-based / per-session MITM is
  * still applied on top of this set.
  */
 function hostNeedsDynamicMitm(hostname: string): boolean {
@@ -481,12 +480,11 @@ function buildDynamicRules(
   hostname: string,
   claudeTokenBundle: ClaudeOAuthBundle | null,
 ): InjectionRule[] {
-  const projectId = sessionId ? sessionToProject.get(sessionId) : undefined
-  if (!projectId) return []
+  if (!sessionId) return []
   const rules: InjectionRule[] = []
 
   if (GITHUB_HOSTS.has(hostname)) {
-    const token = resolveGithubToken(projectRepoUrl.get(projectId))
+    const token = resolveGithubToken(sessionRepoUrl.get(sessionId))
     if (token) {
       const basic = 'Basic ' + Buffer.from(`x-access-token:${token}`).toString('base64')
       rules.push({
@@ -517,7 +515,7 @@ function buildDynamicRules(
     }
   }
 
-  if (hostname === OPENAI_API_HOST && projectTool.get(projectId) === 'codex') {
+  if (hostname === OPENAI_API_HOST && sessionTool.get(sessionId) === 'codex') {
     const creds = readCodexCreds()
     if (creds) {
       rules.push({
@@ -881,10 +879,10 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     return
   }
 
-  // Register or update injection rules for a project
-  if (req.method === 'PUT' && req.url && /^\/projects\/[^/]+\/rules$/.exec(req.url)) {
+  // Register or update all state for a session
+  if (req.method === 'PUT' && req.url && /^\/sessions\/[^/]+$/.exec(req.url)) {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
-    const projectId = decodeURIComponent(req.url.split('/')[2])
+    const sessionId = decodeURIComponent(req.url.slice('/sessions/'.length))
     let body = ''
     req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
     req.on('end', () => {
@@ -896,25 +894,21 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
         const o = parsed as Record<string, unknown>
         const rules = o.rules
         if (!Array.isArray(rules)) { res.writeHead(400); res.end('Invalid body: need rules array'); return }
-        projectRules.set(projectId, rules as HostInjectionRule[])
-        if (Array.isArray(o.allowedHosts)) {
-          const allowedHosts = o.allowedHosts as string[]
-          projectAllowedHosts.set(projectId, allowedHosts)
-          console.log(`[proxy] Updated allowlist (${allowedHosts.length} patterns) for project ${projectId.slice(0, 8)}...`)
-        } else {
-          projectAllowedHosts.delete(projectId)
-        }
+        if (!Array.isArray(o.allowedHosts)) { res.writeHead(400); res.end('Invalid body: need allowedHosts array'); return }
+        sessionRules.set(sessionId, rules as HostInjectionRule[])
+        const allowedHosts = o.allowedHosts as string[]
+        sessionAllowedHosts.set(sessionId, allowedHosts)
         if (typeof o.repoUrl === 'string' && o.repoUrl) {
-          projectRepoUrl.set(projectId, o.repoUrl)
+          sessionRepoUrl.set(sessionId, o.repoUrl)
         } else {
-          projectRepoUrl.delete(projectId)
+          sessionRepoUrl.delete(sessionId)
         }
         if (typeof o.tool === 'string' && o.tool) {
-          projectTool.set(projectId, o.tool)
+          sessionTool.set(sessionId, o.tool)
         } else {
-          projectTool.delete(projectId)
+          sessionTool.delete(sessionId)
         }
-        console.log(`[proxy] Updated ${rules.length} rules for project ${projectId.slice(0, 8)}...`)
+        console.log(`[proxy] Registered session ${sessionId.slice(0, 8)}... (${rules.length} rules, ${allowedHosts.length} allowed host patterns)`)
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
       } catch (err) {
@@ -924,51 +918,14 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     return
   }
 
-  // Remove all rules for a project
-  if (req.method === 'DELETE' && req.url && /^\/projects\/[^/]+\/rules$/.exec(req.url)) {
-    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
-    const projectId = decodeURIComponent(req.url.split('/')[2])
-    const deleted = projectRules.delete(projectId)
-    projectAllowedHosts.delete(projectId)
-    projectRepoUrl.delete(projectId)
-    projectTool.delete(projectId)
-    console.log(`[proxy] Removed rules for project ${projectId.slice(0, 8)}... (found: ${deleted})`)
-    res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ ok: true, deleted }))
-    return
-  }
-
-  // Register a session → project mapping
-  if (req.method === 'POST' && req.url === '/sessions') {
-    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
-    let body = ''
-    req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
-    req.on('end', () => {
-      try {
-        const parsed: unknown = JSON.parse(body)
-        if (!parsed || typeof parsed !== 'object') {
-          res.writeHead(400); res.end('Invalid body'); return
-        }
-        const o = parsed as Record<string, unknown>
-        if (typeof o.sessionId !== 'string' || typeof o.projectId !== 'string' || !o.sessionId || !o.projectId) {
-          res.writeHead(400); res.end('Invalid body: need sessionId and projectId'); return
-        }
-        sessionToProject.set(o.sessionId, o.projectId)
-        console.log(`[proxy] Registered session ${o.sessionId.slice(0, 8)}... → project ${o.projectId.slice(0, 8)}...`)
-        res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ ok: true }))
-      } catch (err) {
-        res.writeHead(400); res.end(`Invalid JSON: ${(err as Error).message}`)
-      }
-    })
-    return
-  }
-
-  // Remove a session mapping
+  // Remove all state for a session
   if (req.method === 'DELETE' && req.url?.startsWith('/sessions/')) {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
     const sessionId = decodeURIComponent(req.url.slice('/sessions/'.length))
-    const deleted = sessionToProject.delete(sessionId)
+    const deleted = sessionRules.delete(sessionId)
+    sessionAllowedHosts.delete(sessionId)
+    sessionRepoUrl.delete(sessionId)
+    sessionTool.delete(sessionId)
     blockedHostsBySession.delete(sessionId)
     console.log(`[proxy] Removed session ${sessionId.slice(0, 8)}... (found: ${deleted})`)
     res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -1080,7 +1037,7 @@ server.on('connect', (req: http.IncomingMessage, clientSocket: Duplex, head: Buf
   const rules = sessionId ? findRulesForHost(sessionId, hostname) : []
 
   // Always MITM well-known tool-auth hosts so we can inject credentials
-  // read from the host-mounted credentials dir, even when no per-project
+  // read from the host-mounted credentials dir, even when no per-session
   // rule-based injections apply.
   const needsDynMitm = hostNeedsDynamicMitm(hostname)
 

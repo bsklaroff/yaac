@@ -6,7 +6,7 @@ export async function sessionDelete(idOrName: string): Promise<void> {
   if (!resolved) return
 
   console.log(`Session ${resolved.sessionId} scheduled for cleanup.`)
-  cleanupSessionDetached({
+  await cleanupSessionDetached({
     containerName: resolved.name,
     projectSlug: resolved.projectSlug,
     sessionId: resolved.sessionId,

@@ -92,9 +92,10 @@ async function createSessionNonInteractive(
     ? buildRulesFromConfig(config.envSecretProxy, process.env)
     : []
   const allowedHosts = resolveAllowedHosts(config)
-  await proxy.updateProjectRules(projectSlug, additionalRules, allowedHosts)
-
-  await proxy.registerSession(sessionId, projectSlug)
+  await proxy.registerSession(sessionId, {
+    rules: additionalRules,
+    allowedHosts,
+  })
   env.push(...proxy.getProxyEnv(sessionId))
 
   if (config.envSecretProxy) {

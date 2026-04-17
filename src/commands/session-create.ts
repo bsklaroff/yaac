@@ -372,19 +372,20 @@ export async function createSession(projectSlug: string, options: SessionCreateO
   // per-project placeholder refresh below.
   const toolAuth = await loadToolAuthEntry(tool)
 
-  // Forward project-scoped rules from config (envSecretProxy) to the proxy.
-  // GitHub / Claude / Codex auth is handled dynamically by the proxy from
-  // the mounted credentials dir — no per-session rule is needed for those.
+  // Forward rules from config (envSecretProxy) to the proxy along with the
+  // rest of this session's state. GitHub / Claude / Codex auth is handled
+  // dynamically by the proxy from the mounted credentials dir — no per-
+  // session rule is needed for those.
   const additionalRules = config.envSecretProxy
     ? buildRulesFromConfig(config.envSecretProxy, process.env)
     : []
   const allowedHosts = resolveAllowedHosts(config)
-  await proxyClient.updateProjectRules(projectSlug, additionalRules, allowedHosts, {
+  await proxyClient.registerSession(sessionId, {
+    rules: additionalRules,
+    allowedHosts,
     repoUrl: remoteUrl,
     tool,
   })
-
-  await proxyClient.registerSession(sessionId, projectSlug)
 
   // Add proxy env vars
   env.push(...proxyClient.getProxyEnv(sessionId))

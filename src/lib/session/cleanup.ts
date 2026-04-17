@@ -1,7 +1,25 @@
 import { spawn } from 'node:child_process'
 import { execPodmanWithRetry, podman } from '@/lib/container/runtime'
+import { proxyClient } from '@/lib/container/proxy-client'
 import { removeWorktree } from '@/lib/git'
 import { repoDir, worktreeDir } from '@/lib/project/paths'
+
+/**
+ * Best-effort removal of the session's state from the proxy sidecar. If
+ * the sidecar isn't running there's nothing to clean up. Errors are
+ * swallowed so cleanup never blocks container teardown on a sidecar hiccup.
+ */
+async function removeSessionFromProxy(sessionId: string): Promise<void> {
+  try {
+    const attached = await proxyClient.attachIfRunning()
+    if (!attached) return
+    await proxyClient.removeSession(sessionId)
+  } catch (err) {
+    console.warn(
+      `Failed to remove session ${sessionId} from proxy: ${(err as Error).message}`,
+    )
+  }
+}
 
 /**
  * Check whether tmux session "yaac" is alive inside the given container.
@@ -28,6 +46,8 @@ export async function cleanupSession(params: {
   const { containerName, projectSlug, sessionId } = params
   const container = podman.getContainer(containerName)
 
+  await removeSessionFromProxy(sessionId)
+
   try {
     await container.stop({ t: 5 })
   } catch {
@@ -50,17 +70,20 @@ export async function cleanupSession(params: {
 }
 
 /**
- * Spawn a detached background process to clean up a session so the calling
- * process can exit immediately without waiting for container stop/remove.
+ * Remove the session's state from the proxy sidecar (in-process, fast),
+ * then spawn a detached background process to do the slow container +
+ * worktree teardown so the calling process can exit immediately.
  */
-export function cleanupSessionDetached(params: {
+export async function cleanupSessionDetached(params: {
   containerName: string
   projectSlug: string
   sessionId: string
-}): void {
+}): Promise<void> {
   const { containerName, projectSlug, sessionId } = params
   const wtDir = worktreeDir(projectSlug, sessionId)
   const rDir = repoDir(projectSlug)
+
+  await removeSessionFromProxy(sessionId)
 
   // Build a shell script that stops + removes the container, then removes the worktree.
   // Each step ignores errors (the resource may already be gone).

@@ -87,9 +87,9 @@ export async function getWaitingSessions(
   // Clean up stale sessions in background
   if (stale.length > 0) {
     console.log(`Cleaning up ${stale.length} stale session(s): ${stale.map((s) => s.sessionId.slice(0, 8)).join(', ')}`)
-    for (const { name, slug, sessionId } of stale) {
-      cleanupSessionDetached({ containerName: name, projectSlug: slug, sessionId })
-    }
+    await Promise.all(stale.map(({ name, slug, sessionId }) =>
+      cleanupSessionDetached({ containerName: name, projectSlug: slug, sessionId }),
+    ))
   }
 
   results.sort((a, b) => a.created - b.created)

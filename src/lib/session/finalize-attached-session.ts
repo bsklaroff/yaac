@@ -23,7 +23,7 @@ export async function finalizeAttachedSession(params: FinalizeAttachedSessionPar
   const toolLabel = tool === 'codex' ? 'Codex' : 'Claude Code'
   console.log(`${toolLabel} exited. Cleaning up session...`)
   cleaning?.add(sessionId)
-  cleanupSessionDetached({ containerName, projectSlug, sessionId })
+  await cleanupSessionDetached({ containerName, projectSlug, sessionId })
 
   return firstMessage ? 'closed_prompted' : 'closed_blank'
 }

@@ -72,26 +72,23 @@ describe('proxy sidecar', () => {
     expect(caCert).toContain('END CERTIFICATE')
   })
 
-  it('registers session and project rules', async () => {
+  it('registers session with rules and allowlist', async () => {
     await client.ensureRunning()
 
     const sessionId = crypto.randomUUID()
 
-    // Register rules
-    await client.updateProjectRules('test-project', [
-      {
-        hostPattern: 'api.github.com',
-        pathPattern: '/*',
-        injections: [{ action: 'set_header', name: 'authorization', value: 'Bearer test-token' }],
-      },
-    ], ['*'])
+    await client.registerSession(sessionId, {
+      rules: [
+        {
+          hostPattern: 'api.github.com',
+          pathPattern: '/*',
+          injections: [{ action: 'set_header', name: 'authorization', value: 'Bearer test-token' }],
+        },
+      ],
+      allowedHosts: ['*'],
+    })
 
-    // Register session
-    await client.registerSession(sessionId, 'test-project')
-
-    // Clean up
     await client.removeSession(sessionId)
-    await client.removeProjectRules('test-project')
   })
 
   it('ensureRunning is idempotent', async () => {
@@ -144,9 +141,11 @@ describe('proxy sidecar', () => {
       // Register a session with an allowlist covering github.com so the CONNECT
       // tunnel can be authorized. (The proxy blocks by default when no session
       // or allowlist is registered.)
-      await client.updateProjectRules('tunnel-test', [], ['github.com'])
       const sessionId = crypto.randomUUID()
-      await client.registerSession(sessionId, 'tunnel-test')
+      await client.registerSession(sessionId, {
+        rules: [],
+        allowedHosts: ['github.com'],
+      })
 
       // Create a container on the internal-only network (same as a real session)
       const containerName = `yaac-proxy-tunnel-test-${crypto.randomBytes(4).toString('hex')}`
@@ -192,7 +191,6 @@ describe('proxy sidecar', () => {
       expect(tunneled).toContain('200 Connection Established')
 
       await client.removeSession(sessionId)
-      await client.removeProjectRules('tunnel-test')
     }, 30_000)
   })
 })
@@ -202,10 +200,9 @@ describe('proxy HTTP forwarding', () => {
   let echoContainerName: string
   let echoIp: string
   const echoPort = 8080
-  // Default session/project used by tests that exercise forwarding (as opposed
-  // to allowlist enforcement). Since the proxy fails closed, every forwarding
+  // Default session used by tests that exercise forwarding (as opposed to
+  // allowlist enforcement). Since the proxy fails closed, every forwarding
   // test needs an authenticated session with a permissive allowlist.
-  const defaultProjectId = 'http-forward-default'
   const defaultSessionId = crypto.randomUUID()
   const defaultAuth = Buffer.from(`x:${defaultSessionId}`).toString('base64')
   const defaultAuthHeader = { 'Proxy-Authorization': `Basic ${defaultAuth}` }
@@ -222,8 +219,7 @@ describe('proxy HTTP forwarding', () => {
 
     // Register a default session with a wildcard allowlist so the basic
     // forwarding tests can proceed without setting up their own session.
-    await client.updateProjectRules(defaultProjectId, [], ['*'])
-    await client.registerSession(defaultSessionId, defaultProjectId)
+    await client.registerSession(defaultSessionId, { rules: [], allowedHosts: ['*'] })
 
     // Run an echo HTTP server inside a container on the podman network
     // (same network the proxy container is also connected to).
@@ -349,16 +345,17 @@ describe('proxy HTTP forwarding', () => {
   })
 
   it('blocks HTTP forward when host is not in allowlist', async () => {
-    await client.updateProjectRules('allowlist-test', [
-      {
-        hostPattern: echoIp,
-        pathPattern: '/*',
-        injections: [],
-      },
-    ], [echoIp])
-
     const sessionId = crypto.randomUUID()
-    await client.registerSession(sessionId, 'allowlist-test')
+    await client.registerSession(sessionId, {
+      rules: [
+        {
+          hostPattern: echoIp,
+          pathPattern: '/*',
+          injections: [],
+        },
+      ],
+      allowedHosts: [echoIp],
+    })
 
     // Request to the echo server (allowed)
     const auth = Buffer.from(`x:${sessionId}`).toString('base64')
@@ -375,14 +372,11 @@ describe('proxy HTTP forwarding', () => {
     expect(blocked.body).toContain('not in the allowed hosts')
 
     await client.removeSession(sessionId)
-    await client.removeProjectRules('allowlist-test')
   })
 
   it('allows all hosts when allowedHosts includes wildcard', async () => {
-    await client.updateProjectRules('allowlist-wildcard', [], ['*'])
-
     const sessionId = crypto.randomUUID()
-    await client.registerSession(sessionId, 'allowlist-wildcard')
+    await client.registerSession(sessionId, { rules: [], allowedHosts: ['*'] })
 
     const auth = Buffer.from(`x:${sessionId}`).toString('base64')
     const result = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/test`, {
@@ -391,15 +385,12 @@ describe('proxy HTTP forwarding', () => {
     expect(result.status).toBe(200)
 
     await client.removeSession(sessionId)
-    await client.removeProjectRules('allowlist-wildcard')
   })
 
   it('supports wildcard patterns in allowlist', async () => {
     // The echo container IP is like 10.x.x.x — use a wildcard that won't match it
-    await client.updateProjectRules('allowlist-pattern', [], ['*.example.com'])
-
     const sessionId = crypto.randomUUID()
-    await client.registerSession(sessionId, 'allowlist-pattern')
+    await client.registerSession(sessionId, { rules: [], allowedHosts: ['*.example.com'] })
 
     const auth = Buffer.from(`x:${sessionId}`).toString('base64')
     const blocked = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/test`, {
@@ -408,7 +399,6 @@ describe('proxy HTTP forwarding', () => {
     expect(blocked.status).toBe(403)
 
     await client.removeSession(sessionId)
-    await client.removeProjectRules('allowlist-pattern')
   })
 
   it('blocks traffic when no session is registered (fail closed)', async () => {
@@ -420,8 +410,8 @@ describe('proxy HTTP forwarding', () => {
   })
 
   it('blocks traffic when session is registered but session is unknown (fail closed)', async () => {
-    // A random session ID that was never registered → no project lookup
-    // succeeds, so the proxy must block.
+    // A random session ID that was never registered → no session state
+    // exists, so the proxy must block.
     const unknownSessionId = crypto.randomUUID()
     const auth = Buffer.from(`x:${unknownSessionId}`).toString('base64')
     const blocked = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/test`, {
@@ -431,10 +421,8 @@ describe('proxy HTTP forwarding', () => {
   })
 
   it('blocks all traffic when allowedHosts is empty', async () => {
-    await client.updateProjectRules('allowlist-empty', [], [])
-
     const sessionId = crypto.randomUUID()
-    await client.registerSession(sessionId, 'allowlist-empty')
+    await client.registerSession(sessionId, { rules: [], allowedHosts: [] })
 
     const auth = Buffer.from(`x:${sessionId}`).toString('base64')
     const blocked = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/test`, {
@@ -443,21 +431,21 @@ describe('proxy HTTP forwarding', () => {
     expect(blocked.status).toBe(403)
 
     await client.removeSession(sessionId)
-    await client.removeProjectRules('allowlist-empty')
   })
 
   it('does not inject tokens into plain HTTP requests (security)', async () => {
-    // Register project rules that would match the echo server's host
-    await client.updateProjectRules('project-secret', [
-      {
-        hostPattern: echoIp,
-        pathPattern: '/*',
-        injections: [{ action: 'set_header', name: 'authorization', value: 'Bearer secret-token' }],
-      },
-    ], ['*'])
-
     const sessionId = crypto.randomUUID()
-    await client.registerSession(sessionId, 'project-secret')
+    // Register session rules that would match the echo server's host
+    await client.registerSession(sessionId, {
+      rules: [
+        {
+          hostPattern: echoIp,
+          pathPattern: '/*',
+          injections: [{ action: 'set_header', name: 'authorization', value: 'Bearer secret-token' }],
+        },
+      ],
+      allowedHosts: ['*'],
+    })
 
     // Send a plain HTTP request through the proxy with valid session credentials
     const auth = Buffer.from(`x:${sessionId}`).toString('base64')
@@ -472,14 +460,11 @@ describe('proxy HTTP forwarding', () => {
 
     // Clean up
     await client.removeSession(sessionId)
-    await client.removeProjectRules('project-secret')
   })
 
   it('tracks blocked hosts per session via /blocked-hosts endpoint', async () => {
-    await client.updateProjectRules('blocked-tracking', [], [echoIp])
-
     const sessionId = crypto.randomUUID()
-    await client.registerSession(sessionId, 'blocked-tracking')
+    await client.registerSession(sessionId, { rules: [], allowedHosts: [echoIp] })
 
     // Make a request to a blocked host
     const auth = Buffer.from(`x:${sessionId}`).toString('base64')
@@ -504,7 +489,56 @@ describe('proxy HTTP forwarding', () => {
     await client.removeSession(sessionId)
     const afterRemoval = await client.getBlockedHosts()
     expect(afterRemoval[sessionId]).toBeUndefined()
+  })
 
-    await client.removeProjectRules('blocked-tracking')
+  it('isolates rules between concurrent sessions', async () => {
+    // Two sessions, same hostPattern but different injected values. Session
+    // keying means the two sets of rules cannot bleed into each other —
+    // which is the behaviour this refactor was designed to unlock.
+    const sessionA = crypto.randomUUID()
+    const sessionB = crypto.randomUUID()
+
+    await client.registerSession(sessionA, {
+      rules: [],
+      allowedHosts: ['*'],
+    })
+    await client.registerSession(sessionB, {
+      rules: [],
+      allowedHosts: [],
+    })
+
+    const authA = Buffer.from(`x:${sessionA}`).toString('base64')
+    const authB = Buffer.from(`x:${sessionB}`).toString('base64')
+
+    const allowed = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/a`, {
+      headers: { 'Proxy-Authorization': `Basic ${authA}` },
+    })
+    expect(allowed.status).toBe(200)
+
+    const blocked = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/b`, {
+      headers: { 'Proxy-Authorization': `Basic ${authB}` },
+    })
+    expect(blocked.status).toBe(403)
+
+    await client.removeSession(sessionA)
+    await client.removeSession(sessionB)
+  })
+
+  it('blocks requests after session removal (fail closed)', async () => {
+    const sessionId = crypto.randomUUID()
+    await client.registerSession(sessionId, { rules: [], allowedHosts: ['*'] })
+
+    const auth = Buffer.from(`x:${sessionId}`).toString('base64')
+    const before = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/before`, {
+      headers: { 'Proxy-Authorization': `Basic ${auth}` },
+    })
+    expect(before.status).toBe(200)
+
+    await client.removeSession(sessionId)
+
+    const after = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/after`, {
+      headers: { 'Proxy-Authorization': `Basic ${auth}` },
+    })
+    expect(after.status).toBe(403)
   })
 })
