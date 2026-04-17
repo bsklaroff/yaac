@@ -29,13 +29,26 @@ RUN userdel -r ubuntu 2>/dev/null; useradd -m -s /bin/zsh yaac && \
     echo 'yaac ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 USER yaac
 
+RUN ARCH="$(dpkg --print-architecture)" && \
+    case "$ARCH" in \
+      amd64) TRIPLE="x86_64-unknown-linux-gnu" ;; \
+      arm64) TRIPLE="aarch64-unknown-linux-gnu" ;; \
+      *) echo "unsupported arch: $ARCH" >&2; exit 1 ;; \
+    esac && \
+    curl --proto '=https' --tlsv1.2 -fsSL \
+      "https://static.rust-lang.org/rustup/dist/${TRIPLE}/rustup-init" \
+      -o /tmp/rustup-init && \
+    chmod +x /tmp/rustup-init && \
+    /tmp/rustup-init -y --no-modify-path --profile minimal && \
+    rm /tmp/rustup-init && \
+    ~/.cargo/bin/rustup component add rustfmt clippy
 RUN curl -fsSL https://claude.ai/install.sh | bash
 RUN corepack install -g pnpm@10.33.0
 
 ENV LANG=en_US.UTF-8
 ENV TERM=xterm-256color
 ENV HOME=/home/yaac
-ENV PATH="/home/yaac/.local/bin:${PATH}"
+ENV PATH="/home/yaac/.local/bin:/home/yaac/.cargo/bin:${PATH}"
 ENV EDITOR=nvim
 ENV SHELL=/bin/zsh
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
