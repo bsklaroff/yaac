@@ -1,12 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
+import { loadCredentials, addToken } from '@/lib/project/credentials'
 import {
-  credentialsPath,
-  loadCredentials,
-  saveCredentials,
-  addToken,
-} from '@/lib/project/credentials'
+  claudeCredentialsPath,
+  codexCredentialsPath,
+} from '@/lib/project/paths'
 import {
   loadToolAuthEntry,
   saveToolAuth,
@@ -25,26 +24,27 @@ describe('yaac auth tool-auth e2e', () => {
     await cleanupTempDir(tmpDir)
   })
 
-  it('auth list shows tool credentials as not configured initially', async () => {
+  it('tool credentials are not configured initially', async () => {
     const claude = await loadToolAuthEntry('claude')
     const codex = await loadToolAuthEntry('codex')
     expect(claude).toBeNull()
     expect(codex).toBeNull()
   })
 
-  it('saves and loads tool credentials alongside github tokens', async () => {
+  it('stores tool credentials independently from github tokens', async () => {
     await addToken('*', 'ghp_github_token')
     await saveToolAuth('claude', 'sk-ant-oat01-abc123', 'oauth')
 
     const creds = await loadCredentials()
     expect(creds.tokens).toHaveLength(1)
     expect(creds.tokens[0].token).toBe('ghp_github_token')
-    expect(creds.toolAuth).toHaveLength(1)
-    expect(creds.toolAuth![0].tool).toBe('claude')
-    expect(creds.toolAuth![0].apiKey).toBe('sk-ant-oat01-abc123')
+
+    const claudeEntry = await loadToolAuthEntry('claude')
+    expect(claudeEntry?.tool).toBe('claude')
+    expect(claudeEntry?.apiKey).toBe('sk-ant-oat01-abc123')
   })
 
-  it('tool credentials survive read-write round trip with github tokens', async () => {
+  it('tool credentials survive github token modifications', async () => {
     await addToken('acme/*', 'ghp_acme')
     await saveToolAuth('claude', 'sk-ant-oat01-test', 'oauth')
     await saveToolAuth('codex', 'sk-proj-test', 'api-key')
@@ -54,12 +54,14 @@ describe('yaac auth tool-auth e2e', () => {
 
     const creds = await loadCredentials()
     expect(creds.tokens).toHaveLength(2)
-    expect(creds.toolAuth).toHaveLength(2)
-    expect(creds.toolAuth![0].tool).toBe('claude')
-    expect(creds.toolAuth![1].tool).toBe('codex')
+
+    const claudeEntry = await loadToolAuthEntry('claude')
+    const codexEntry = await loadToolAuthEntry('codex')
+    expect(claudeEntry?.tool).toBe('claude')
+    expect(codexEntry?.tool).toBe('codex')
   })
 
-  it('auth clear removes tool credentials while preserving github tokens', async () => {
+  it('removeToolAuth removes tool credentials while preserving github tokens', async () => {
     await addToken('*', 'ghp_keep')
     await saveToolAuth('claude', 'sk-ant-oat01-test', 'oauth')
 
@@ -68,26 +70,30 @@ describe('yaac auth tool-auth e2e', () => {
     const creds = await loadCredentials()
     expect(creds.tokens).toHaveLength(1)
     expect(creds.tokens[0].token).toBe('ghp_keep')
-    expect(creds.toolAuth).toHaveLength(0)
+    expect(await loadToolAuthEntry('claude')).toBeNull()
   })
 
-  it('auth clear all removes everything', async () => {
+  it('removing both tools leaves github tokens intact', async () => {
     await addToken('*', 'ghp_test')
     await saveToolAuth('claude', 'sk-ant-oat01-test', 'oauth')
     await saveToolAuth('codex', 'sk-proj-test', 'api-key')
 
-    await saveCredentials({ tokens: [], toolAuth: [] })
+    await removeToolAuth('claude')
+    await removeToolAuth('codex')
 
     const creds = await loadCredentials()
-    expect(creds.tokens).toHaveLength(0)
-    expect(creds.toolAuth).toHaveLength(0)
+    expect(creds.tokens).toHaveLength(1)
+    expect(await loadToolAuthEntry('claude')).toBeNull()
+    expect(await loadToolAuthEntry('codex')).toBeNull()
   })
 
-  it('credentials file has restrictive permissions after tool auth save', async () => {
-    await saveToolAuth('claude', 'sk-ant-oat01-secret', 'oauth')
-    const stats = await fs.stat(credentialsPath())
-    const mode = stats.mode & 0o777
-    expect(mode).toBe(0o600)
+  it('credentials files have restrictive permissions after tool auth save', async () => {
+    await saveToolAuth('claude', 'sk-ant-api03-secret', 'api-key')
+    await saveToolAuth('codex', 'sk-proj-secret', 'api-key')
+    const claudeStats = await fs.stat(claudeCredentialsPath())
+    const codexStats = await fs.stat(codexCredentialsPath())
+    expect(claudeStats.mode & 0o777).toBe(0o600)
+    expect(codexStats.mode & 0o777).toBe(0o600)
   })
 
   it('detects oauth vs api-key for anthropic tokens', () => {

@@ -1,5 +1,5 @@
 import readline from 'node:readline/promises'
-import { listTokens, removeToken, saveCredentials, loadCredentials } from '@/lib/project/credentials'
+import { listTokens, removeToken, saveCredentials } from '@/lib/project/credentials'
 import { loadToolAuthEntry, removeToolAuth } from '@/lib/project/tool-auth'
 
 export async function authClear(): Promise<void> {
@@ -56,10 +56,9 @@ export async function authClear(): Promise<void> {
   rl.close()
 
   if (answer.toLowerCase() === 'all') {
-    const creds = await loadCredentials()
-    creds.tokens = []
-    creds.toolAuth = []
-    await saveCredentials(creds)
+    await saveCredentials({ tokens: [] })
+    await removeToolAuth('claude')
+    await removeToolAuth('codex')
     console.log('All credentials removed.')
     return
   }

@@ -1,14 +1,18 @@
 import fs from 'node:fs/promises'
 import readline from 'node:readline/promises'
-import path from 'node:path'
-import { getDataDir, ensureDataDir } from '@/lib/project/paths'
-import type { CredentialsFile, GithubTokenEntry, ToolAuthEntry } from '@/types'
+import { credentialsDir, githubCredentialsPath, ensureDataDir } from '@/lib/project/paths'
+import type { GithubCredentialsFile, GithubTokenEntry } from '@/types'
 
 export function credentialsPath(): string {
-  return path.join(getDataDir(), '.credentials.json')
+  return githubCredentialsPath()
 }
 
-export async function loadCredentials(): Promise<CredentialsFile> {
+async function ensureCredentialsDir(): Promise<void> {
+  await ensureDataDir()
+  await fs.mkdir(credentialsDir(), { recursive: true, mode: 0o700 })
+}
+
+export async function loadCredentials(): Promise<GithubCredentialsFile> {
   try {
     const raw = await fs.readFile(credentialsPath(), 'utf8')
     const parsed: unknown = JSON.parse(raw)
@@ -27,29 +31,16 @@ export async function loadCredentials(): Promise<CredentialsFile> {
           typeof (t as Record<string, unknown>).token === 'string' &&
           (t as Record<string, unknown>).token !== '',
       )
-      const rawToolAuth = (parsed as Record<string, unknown>).toolAuth
-      const toolAuth = Array.isArray(rawToolAuth)
-        ? rawToolAuth.filter(
-          (t): t is ToolAuthEntry =>
-            typeof t === 'object' &&
-            t !== null &&
-            typeof (t as Record<string, unknown>).tool === 'string' &&
-            typeof (t as Record<string, unknown>).kind === 'string' &&
-            typeof (t as Record<string, unknown>).apiKey === 'string' &&
-            (t as Record<string, unknown>).apiKey !== '' &&
-            typeof (t as Record<string, unknown>).savedAt === 'string',
-        )
-        : []
-      return { tokens: valid, toolAuth }
+      return { tokens: valid }
     }
-    return { tokens: [], toolAuth: [] }
+    return { tokens: [] }
   } catch {
-    return { tokens: [], toolAuth: [] }
+    return { tokens: [] }
   }
 }
 
-export async function saveCredentials(creds: CredentialsFile): Promise<void> {
-  await ensureDataDir()
+export async function saveCredentials(creds: GithubCredentialsFile): Promise<void> {
+  await ensureCredentialsDir()
   await fs.writeFile(
     credentialsPath(),
     JSON.stringify(creds, null, 2) + '\n',

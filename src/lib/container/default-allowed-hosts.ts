@@ -11,6 +11,8 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'docs.claude.com',
   'platform.claude.com',
   'code.claude.com',
+  'claude.com',
+  'www.claude.com',
   'claude.ai',
   'downloads.claude.ai',
 

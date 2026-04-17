@@ -8,14 +8,13 @@ import { ensureContainerRuntime, execPodmanWithRetry, podman } from '@/lib/conta
 import { ensureImage, packTar } from '@/lib/container/image-builder'
 import { proxyClient, buildRulesFromConfig } from '@/lib/container/proxy-client'
 import { resolveAllowedHosts } from '@/lib/container/default-allowed-hosts'
-import type { InjectionRule } from '@/lib/container/proxy-client'
 import { reserveAvailablePort, startPortForwarders, podmanRelay } from '@/lib/container/port'
 import type { ReservedPort } from '@/lib/container/port'
 import { pgRelay } from '@/lib/container/pg-relay'
 import { repoDir, claudeDir, claudeJsonFile, codexDir, codexTranscriptDir, worktreeDir, worktreesDir, projectDir, getDataDir } from '@/lib/project/paths'
 import { resolveProjectConfig } from '@/lib/project/config'
 import { resolveTokenForUrl } from '@/lib/project/credentials'
-import { loadToolAuthEntry } from '@/lib/project/tool-auth'
+import { loadToolAuthEntry, loadClaudeCredentialsFile, writeProjectClaudePlaceholder } from '@/lib/project/tool-auth'
 import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/lib/git'
 import { finalizeAttachedSession } from '@/lib/session/finalize-attached-session'
 import { claimPrewarmSession } from '@/lib/prewarm'
@@ -361,53 +360,29 @@ export async function createSession(projectSlug: string, options: SessionCreateO
     }
   }
 
-  // Proxy is always required — injects GITHUB_TOKEN for all GitHub HTTPS requests
+  // Proxy is always required — it reads the host-mounted credentials dir
+  // directly and injects GitHub / Claude / Codex tokens into outbound HTTPS
+  // requests. Credential updates via `yaac auth update` propagate to every
+  // running session without needing to restart containers.
   console.log('Starting proxy sidecar...')
   await proxyClient.ensureRunning()
 
-  // Build GitHub token injection rules — git smart HTTP requires Basic auth
-  const gitBasicAuth = `Basic ${Buffer.from(`x-access-token:${githubToken}`).toString('base64')}`
-  const githubRules: InjectionRule[] = [
-    {
-      hostPattern: 'github.com',
-      pathPattern: '/*',
-      injections: [{ action: 'set_header', name: 'authorization', value: gitBasicAuth }],
-    },
-    {
-      hostPattern: 'api.github.com',
-      pathPattern: '/*',
-      injections: [{ action: 'set_header', name: 'authorization', value: gitBasicAuth }],
-    },
-  ]
-
-  // Build tool auth injection rules — proxy the active tool's API key
+  // Check that tool credentials exist on the host so the container can
+  // authenticate via the proxy. For Claude OAuth this also drives the
+  // per-project placeholder refresh below.
   const toolAuth = await loadToolAuthEntry(tool)
-  const toolAuthRules: InjectionRule[] = []
-  if (toolAuth) {
-    if (tool === 'claude') {
-      // Both API keys (sk-ant-api03-*) and OAuth tokens (sk-ant-oat-*)
-      // use x-api-key header with the raw token value
-      toolAuthRules.push({
-        hostPattern: 'api.anthropic.com',
-        pathPattern: '/*',
-        injections: [{ action: 'set_header', name: 'x-api-key', value: toolAuth.apiKey }],
-      })
-    } else {
-      // OpenAI: Authorization: Bearer <token>
-      toolAuthRules.push({
-        hostPattern: 'api.openai.com',
-        pathPattern: '/*',
-        injections: [{ action: 'set_header', name: 'authorization', value: `Bearer ${toolAuth.apiKey}` }],
-      })
-    }
-  }
 
-  // Merge with any additional envSecretProxy rules from config
+  // Forward project-scoped rules from config (envSecretProxy) to the proxy.
+  // GitHub / Claude / Codex auth is handled dynamically by the proxy from
+  // the mounted credentials dir — no per-session rule is needed for those.
   const additionalRules = config.envSecretProxy
     ? buildRulesFromConfig(config.envSecretProxy, process.env)
     : []
   const allowedHosts = resolveAllowedHosts(config)
-  await proxyClient.updateProjectRules(projectSlug, [...githubRules, ...toolAuthRules, ...additionalRules], allowedHosts)
+  await proxyClient.updateProjectRules(projectSlug, additionalRules, allowedHosts, {
+    repoUrl: remoteUrl,
+    tool,
+  })
 
   await proxyClient.registerSession(sessionId, projectSlug)
 
@@ -427,11 +402,11 @@ export async function createSession(projectSlug: string, options: SessionCreateO
   // inside the container. The proxy injects the real credentials on API calls.
   if (toolAuth) {
     if (tool === 'claude') {
-      if (toolAuth.kind === 'oauth') {
-        env.push('CLAUDE_CODE_OAUTH_TOKEN=placeholder')
-      } else {
+      if (toolAuth.kind === 'api-key') {
         env.push('ANTHROPIC_API_KEY=placeholder')
       }
+      // OAuth: Claude Code reads the placeholder bundle from the mounted
+      // .claude/.credentials.json, so no env var is needed.
     } else {
       env.push('OPENAI_API_KEY=placeholder')
     }
@@ -470,6 +445,15 @@ export async function createSession(projectSlug: string, options: SessionCreateO
 
   await fs.mkdir(claude, { recursive: true })
   await fs.mkdir(codex, { recursive: true })
+
+  // Refresh the per-project placeholder .credentials.json from the current
+  // host OAuth bundle. Picks up expiresAt changes since the last session.
+  if (tool === 'claude' && toolAuth?.kind === 'oauth') {
+    const hostClaudeCreds = await loadClaudeCredentialsFile()
+    if (hostClaudeCreds?.kind === 'oauth') {
+      await writeProjectClaudePlaceholder(projectSlug, hostClaudeCreds.claudeAiOauth)
+    }
+  }
 
   // Ensure claude.json exists so Podman mounts it as a file, not a directory.
   try {

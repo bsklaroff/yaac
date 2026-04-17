@@ -27,26 +27,24 @@ describe('credentials', () => {
     await cleanupTempDir(tmpDir)
   })
 
-  it('credentialsPath returns path inside data dir', () => {
-    expect(credentialsPath()).toBe(path.join(getDataDir(), '.credentials.json'))
+  it('credentialsPath returns path inside data dir credentials subdirectory', () => {
+    expect(credentialsPath()).toBe(path.join(getDataDir(), '.credentials', 'github.json'))
   })
 
   describe('loadCredentials', () => {
     it('returns empty tokens when file is missing', async () => {
       const result = await loadCredentials()
-      expect(result).toEqual({ tokens: [], toolAuth: [] })
+      expect(result).toEqual({ tokens: [] })
     })
 
     it('returns tokens from valid file', async () => {
-      await fs.writeFile(
-        credentialsPath(),
-        JSON.stringify({ tokens: [{ pattern: '*', token: 'ghp_test123' }] }),
-      )
+      await saveCredentials({ tokens: [{ pattern: '*', token: 'ghp_test123' }] })
       const result = await loadCredentials()
       expect(result.tokens).toEqual([{ pattern: '*', token: 'ghp_test123' }])
     })
 
     it('filters out entries with empty tokens', async () => {
+      await fs.mkdir(path.dirname(credentialsPath()), { recursive: true })
       await fs.writeFile(
         credentialsPath(),
         JSON.stringify({ tokens: [
@@ -59,59 +57,21 @@ describe('credentials', () => {
     })
 
     it('returns empty tokens for invalid JSON', async () => {
+      await fs.mkdir(path.dirname(credentialsPath()), { recursive: true })
       await fs.writeFile(credentialsPath(), 'not json')
       const result = await loadCredentials()
-      expect(result).toEqual({ tokens: [], toolAuth: [] })
+      expect(result).toEqual({ tokens: [] })
     })
 
     it('returns empty tokens when tokens field is not an array', async () => {
+      await fs.mkdir(path.dirname(credentialsPath()), { recursive: true })
       await fs.writeFile(credentialsPath(), JSON.stringify({ tokens: 'not-array' }))
       const result = await loadCredentials()
-      expect(result).toEqual({ tokens: [], toolAuth: [] })
+      expect(result).toEqual({ tokens: [] })
     })
 
-    it('preserves toolAuth field when present', async () => {
-      await fs.writeFile(
-        credentialsPath(),
-        JSON.stringify({
-          tokens: [{ pattern: '*', token: 'ghp_test' }],
-          toolAuth: [{
-            tool: 'claude',
-            kind: 'oauth',
-            apiKey: 'sk-ant-oat01-test',
-            savedAt: '2026-01-01T00:00:00Z',
-          }],
-        }),
-      )
-      const result = await loadCredentials()
-      expect(result.tokens).toEqual([{ pattern: '*', token: 'ghp_test' }])
-      expect(result.toolAuth).toEqual([{
-        tool: 'claude',
-        kind: 'oauth',
-        apiKey: 'sk-ant-oat01-test',
-        savedAt: '2026-01-01T00:00:00Z',
-      }])
-    })
-
-    it('returns empty toolAuth when field is missing', async () => {
-      await fs.writeFile(
-        credentialsPath(),
-        JSON.stringify({ tokens: [{ pattern: '*', token: 'ghp_test' }] }),
-      )
-      const result = await loadCredentials()
-      expect(result.toolAuth).toEqual([])
-    })
-
-    it('round-trips both tokens and toolAuth', async () => {
-      const creds = {
-        tokens: [{ pattern: '*', token: 'ghp_test' }],
-        toolAuth: [{
-          tool: 'claude' as const,
-          kind: 'oauth' as const,
-          apiKey: 'sk-ant-oat01-test',
-          savedAt: '2026-01-01T00:00:00Z',
-        }],
-      }
+    it('round-trips github tokens', async () => {
+      const creds = { tokens: [{ pattern: '*', token: 'ghp_test' }] }
       await saveCredentials(creds)
       const loaded = await loadCredentials()
       expect(loaded).toEqual(creds)
@@ -120,6 +80,7 @@ describe('credentials', () => {
 
   describe('getGithubToken', () => {
     it('returns first token from file', async () => {
+      await fs.mkdir(path.dirname(credentialsPath()), { recursive: true })
       await fs.writeFile(
         credentialsPath(),
         JSON.stringify({ tokens: [
@@ -137,6 +98,7 @@ describe('credentials', () => {
     })
 
     it('returns null when tokens array is empty', async () => {
+      await fs.mkdir(path.dirname(credentialsPath()), { recursive: true })
       await fs.writeFile(credentialsPath(), JSON.stringify({ tokens: [] }))
       const token = await getGithubToken()
       expect(token).toBeNull()

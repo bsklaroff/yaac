@@ -3,6 +3,7 @@ import path from 'node:path'
 import { ensureDataDir, projectDir, repoDir, claudeDir } from '@/lib/project/paths'
 import { cloneRepo } from '@/lib/git'
 import { resolveTokenForUrl } from '@/lib/project/credentials'
+import { loadClaudeCredentialsFile, writeProjectClaudePlaceholder } from '@/lib/project/tool-auth'
 import type { ProjectMeta } from '@/types'
 
 function deriveSlug(remoteUrl: string): string {
@@ -101,6 +102,14 @@ export async function projectAdd(input: string): Promise<void> {
   }
 
   await fs.mkdir(claudeDir(slug), { recursive: true })
+
+  // Seed a placeholder .credentials.json if the host has Claude OAuth creds,
+  // so Claude Code inside the new session finds a bundle without ever seeing
+  // the real tokens.
+  const claudeCreds = await loadClaudeCredentialsFile()
+  if (claudeCreds?.kind === 'oauth') {
+    await writeProjectClaudePlaceholder(slug, claudeCreds.claudeAiOauth)
+  }
 
   const meta: ProjectMeta = {
     slug,

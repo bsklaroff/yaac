@@ -79,7 +79,13 @@ shell in the tmux session with `Ctrl-B C`, and switch between shells with `Ctrl-
 
 ## Authentication
 
-yaac centralizes credentials on the host and injects them into container traffic through the proxy sidecar. Nothing is ever written into the container filesystem. All credentials live in `~/.yaac/.credentials.json` (file permissions `0600`). Use `yaac auth update` to add or update entries interactively.
+yaac centralizes credentials on the host and injects them into container traffic through the proxy sidecar. Real tokens are never written into the container filesystem. Credentials live under `~/.yaac/.credentials/` (directory permissions `0700`, files `0600`), split by service:
+
+- `~/.yaac/.credentials/github.json` — GitHub tokens
+- `~/.yaac/.credentials/claude.json` — Claude Code credentials (OAuth bundle or API key)
+- `~/.yaac/.credentials/codex.json` — Codex credentials
+
+The proxy sidecar bind-mounts this directory RW and reads credentials at request time, so updates via `yaac auth update` propagate to every running session immediately without needing to restart containers.
 
 ### GitHub tokens
 
@@ -112,7 +118,9 @@ Token injection only happens over HTTPS. Plain HTTP requests through the proxy n
 
 ### Claude Code and Codex credentials
 
-yaac also manages the API credentials for the agent tool itself, so Claude Code and Codex don't need to authenticate inside each container. On first run (or via `yaac auth update`), yaac runs the tool's native login flow on the host and stores the resulting token. The proxy then injects it into outbound API calls — the token never enters the container filesystem.
+yaac also manages the API credentials for the agent tool itself, so Claude Code and Codex don't need to authenticate inside each container. On first run (or via `yaac auth update`), yaac runs the tool's native login flow on the host and stores the resulting credentials.
+
+For Claude Code OAuth, each project's `.claude/.credentials.json` inside the container holds placeholder tokens (`yaac-ph-access` / `yaac-ph-refresh`) together with the real `expiresAt` and scopes. The proxy sidecar transparently rewrites outbound API calls, swaps the placeholder refresh token on refresh requests, and writes refreshed bundles back to the host file — so real tokens never enter the container filesystem. For API-key mode (both tools) the proxy injects the key as an outbound header.
 
 ## Container layout
 

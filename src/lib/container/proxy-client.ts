@@ -3,7 +3,8 @@ import { existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import type { SecretProxyRule } from '@/types'
 import { podman, ensureNetwork, imageExists } from '@/lib/container/runtime'
-import { PROXY_DIR } from '@/lib/project/paths'
+import fs from 'node:fs/promises'
+import { PROXY_DIR, credentialsDir } from '@/lib/project/paths'
 import { contextHash } from '@/lib/container/image-builder'
 import { findAvailablePort } from '@/lib/container/port'
 
@@ -144,14 +145,19 @@ export class ProxyClient {
     return res.text()
   }
 
-  async updateProjectRules(projectId: string, rules: InjectionRule[], allowedHosts: string[]): Promise<void> {
+  async updateProjectRules(
+    projectId: string,
+    rules: InjectionRule[],
+    allowedHosts: string[],
+    options: { repoUrl?: string; tool?: 'claude' | 'codex' } = {},
+  ): Promise<void> {
     const res = await fetch(`${this.baseUrl}/projects/${encodeURIComponent(projectId)}/rules`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${this.authSecret}`,
       },
-      body: JSON.stringify({ rules, allowedHosts }),
+      body: JSON.stringify({ rules, allowedHosts, repoUrl: options.repoUrl, tool: options.tool }),
     })
     if (!res.ok) {
       const text = await res.text()
@@ -353,6 +359,13 @@ export class ProxyClient {
     const authSecret = crypto.randomBytes(32).toString('hex')
     let hostPort = String(await findAvailablePort(10255))
 
+    // Ensure the host-side credentials dir exists so the bind-mount succeeds
+    // even before the user has logged in. The entire directory is mounted
+    // RW so the proxy can read GitHub / Codex / Claude credentials at
+    // request time and write refreshed Claude OAuth bundles back.
+    const credsDir = credentialsDir()
+    await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
+
     // Remove leftover container with same name (e.g. exited/dead)
     try {
       await podman.getContainer(containerName).remove({ force: true })
@@ -385,6 +398,9 @@ export class ProxyClient {
               [`${PROXY_CONTAINER_PORT}/tcp`]: [{ HostPort: hostPort, HostIp: '127.0.0.1' }],
             },
             NetworkMode: `podman,${this.config.network}`,
+            Binds: [
+              `${credsDir}:/yaac-credentials:Z`,
+            ],
           },
         })
         await container.start()

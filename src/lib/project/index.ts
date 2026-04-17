@@ -1,7 +1,9 @@
 export {
   PACKAGE_ROOT, DOCKERFILES_DIR, PROXY_DIR,
   getDataDir, setDataDir, getProjectsDir, projectDir, repoDir,
-  configOverrideDir, claudeDir, claudeJsonFile,
+  configOverrideDir, claudeDir, claudeJsonFile, projectClaudeCredentialsFile,
+  credentialsDir, githubCredentialsPath, claudeCredentialsPath,
+  codexCredentialsPath,
   worktreesDir, worktreeDir, ensureDataDir,
 } from './paths'
 export { expandEnvVars, parseProjectConfig, loadProjectConfig, loadProjectConfigFromRef, resolveProjectConfig } from './config'

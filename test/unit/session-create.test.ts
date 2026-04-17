@@ -87,7 +87,13 @@ vi.mock('@/lib/project/config', () => ({
 
 vi.mock('@/lib/project/credentials', () => ({
   resolveTokenForUrl: vi.fn().mockResolvedValue('token'),
-  loadCredentials: vi.fn().mockResolvedValue({ tokens: [], toolAuth: [] }),
+  loadCredentials: vi.fn().mockResolvedValue({ tokens: [] }),
+}))
+
+vi.mock('@/lib/project/tool-auth', () => ({
+  loadToolAuthEntry: vi.fn().mockResolvedValue(null),
+  loadClaudeCredentialsFile: vi.fn().mockResolvedValue(null),
+  writeProjectClaudePlaceholder: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@/lib/git', () => ({
@@ -152,7 +158,7 @@ describe('createSession', () => {
     vi.mocked(packTar).mockResolvedValue(Buffer.from('archive'))
     vi.mocked(resolveProjectConfig).mockResolvedValue({})
     vi.mocked(resolveTokenForUrl).mockResolvedValue('token')
-    vi.mocked(loadCredentials).mockResolvedValue({ tokens: [], toolAuth: [] })
+    vi.mocked(loadCredentials).mockResolvedValue({ tokens: [] })
     vi.mocked(addWorktree).mockResolvedValue(undefined)
     vi.mocked(getDefaultBranch).mockResolvedValue('main')
     vi.mocked(fetchOrigin).mockResolvedValue(undefined)
@@ -262,7 +268,7 @@ describe('sessionCreate', () => {
     vi.mocked(packTar).mockResolvedValue(Buffer.from('archive'))
     vi.mocked(resolveProjectConfig).mockResolvedValue({})
     vi.mocked(resolveTokenForUrl).mockResolvedValue('token')
-    vi.mocked(loadCredentials).mockResolvedValue({ tokens: [], toolAuth: [] })
+    vi.mocked(loadCredentials).mockResolvedValue({ tokens: [] })
     vi.mocked(addWorktree).mockResolvedValue(undefined)
     vi.mocked(getDefaultBranch).mockResolvedValue('main')
     vi.mocked(fetchOrigin).mockResolvedValue(undefined)

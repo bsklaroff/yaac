@@ -1,6 +1,6 @@
 import readline from 'node:readline/promises'
 import { promptForGithubToken } from '@/lib/project/credentials'
-import { runToolLogin, saveToolAuth } from '@/lib/project/tool-auth'
+import { runToolLogin, persistToolLogin } from '@/lib/project/tool-auth'
 
 export async function authUpdate(): Promise<void> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -17,15 +17,15 @@ export async function authUpdate(): Promise<void> {
   }
 
   if (answer === '2') {
-    const { apiKey, kind } = await runToolLogin('claude')
-    await saveToolAuth('claude', apiKey, kind)
+    const result = await runToolLogin('claude')
+    await persistToolLogin('claude', result)
     console.log('Claude Code credentials saved.')
     return
   }
 
   if (answer === '3') {
-    const { apiKey, kind } = await runToolLogin('codex')
-    await saveToolAuth('codex', apiKey, kind)
+    const result = await runToolLogin('codex')
+    await persistToolLogin('codex', result)
     console.log('Codex credentials saved.')
     return
   }

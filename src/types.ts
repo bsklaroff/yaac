@@ -2,11 +2,61 @@ export type AgentTool = 'claude' | 'codex'
 
 export type ToolAuthKind = 'api-key' | 'oauth'
 
+/**
+ * Claude Code's native OAuth bundle. Stored under the "claudeAiOauth" key in
+ * both Claude's `.credentials.json` and yaac's host-side mirror.
+ */
+export interface ClaudeOAuthBundle {
+  accessToken: string
+  refreshToken: string
+  /** Unix epoch in milliseconds. */
+  expiresAt: number
+  scopes: string[]
+  subscriptionType?: string
+}
+
+/**
+ * Shape of `~/.yaac/.credentials/claude/claude.json`. Either OAuth (with a
+ * full bundle) or API-key (a single sk-ant-api03-… key).
+ */
+export type ClaudeCredentialsFile =
+  | {
+    kind: 'oauth'
+    savedAt: string
+    claudeAiOauth: ClaudeOAuthBundle
+  }
+  | {
+    kind: 'api-key'
+    savedAt: string
+    apiKey: string
+  }
+
+/**
+ * Shape of `~/.yaac/.credentials/codex.json`.
+ */
+export interface CodexCredentialsFile {
+  kind: ToolAuthKind
+  savedAt: string
+  apiKey: string
+}
+
+/**
+ * Summary view over per-tool credential files — used by `auth list`, etc.
+ */
 export interface ToolAuthEntry {
   tool: AgentTool
   kind: ToolAuthKind
+  /** Access token (OAuth) or raw API key. */
   apiKey: string
   savedAt: string
+  /** OAuth only. */
+  refreshToken?: string
+  /** OAuth only. Unix epoch ms. */
+  expiresAt?: number
+  /** OAuth only. */
+  scopes?: string[]
+  /** OAuth only. */
+  subscriptionType?: string
 }
 
 export interface ProjectMeta {
@@ -71,9 +121,11 @@ export interface GithubTokenEntry {
   token: string
 }
 
-export interface CredentialsFile {
+/**
+ * Shape of `~/.yaac/.credentials/github.json`.
+ */
+export interface GithubCredentialsFile {
   tokens: GithubTokenEntry[]
-  toolAuth?: ToolAuthEntry[]
 }
 
 export interface SessionMeta {
