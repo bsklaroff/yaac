@@ -29,6 +29,7 @@ interface ConversationEntry {
   toolUseResult?: {
     type?: string
     filePath?: string
+    structuredPatch?: unknown
   }
 }
 
@@ -90,11 +91,12 @@ function isAskingUserQuestion(entry: ConversationEntry): boolean {
 }
 
 const PLAN_FILE_RE = /\/\.claude\/plans\//
+const PLAN_WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit'])
 
 /**
- * Checks whether an assistant entry is a Write to a plan file. When Claude
- * writes or updates a plan, the plan-approval UI blocks before the next API
- * request, so the assistant tool_use Write is the last entry in the JSONL.
+ * Checks whether an assistant entry is a Write/Edit/MultiEdit to a plan file.
+ * When Claude writes or updates a plan, the plan-approval UI blocks before the
+ * next API request, so the assistant tool_use is the last entry in the JSONL.
  */
 function isPlanFileWrite(entry: ConversationEntry): boolean {
   if (entry.type !== 'assistant') return false
@@ -102,7 +104,11 @@ function isPlanFileWrite(entry: ConversationEntry): boolean {
   if (!Array.isArray(content)) return false
 
   for (const block of content) {
-    if (block.type === 'tool_use' && block.name === 'Write' && PLAN_FILE_RE.test(block.input?.file_path ?? '')) {
+    if (
+      block.type === 'tool_use' &&
+      PLAN_WRITE_TOOLS.has(block.name ?? '') &&
+      PLAN_FILE_RE.test(block.input?.file_path ?? '')
+    ) {
       return true
     }
   }
@@ -110,18 +116,26 @@ function isPlanFileWrite(entry: ConversationEntry): boolean {
 }
 
 /**
- * Checks whether a user entry is the tool_result for a Write to a plan file.
- * After Claude writes or updates a plan, the plan-approval UI blocks before
- * the next API request. If the Write result is the last conversation entry
- * (e.g. no subsequent ExitPlanMode call), the session is waiting for approval.
+ * Checks whether a user entry is the tool_result for a Write/Edit/MultiEdit
+ * to a plan file. After Claude writes or updates a plan, the plan-approval UI
+ * blocks before the next API request. If the result is the last conversation
+ * entry (e.g. no subsequent ExitPlanMode call), the session is waiting for
+ * approval.
+ *
+ * Write results have `type: 'create' | 'update'`. Edit/MultiEdit results omit
+ * the type field but include a `structuredPatch`. Either shape, targeting a
+ * plan-file path, counts as a plan-file write.
  */
 const FILE_WRITE_TYPES = new Set(['create', 'update'])
 
 function isPlanFileWriteResult(entry: ConversationEntry): boolean {
   if (entry.type !== 'user') return false
   const result = entry.toolUseResult
-  if (!result || !FILE_WRITE_TYPES.has(result.type ?? '')) return false
-  return PLAN_FILE_RE.test(result.filePath ?? '')
+  if (!result) return false
+  if (!PLAN_FILE_RE.test(result.filePath ?? '')) return false
+  if (FILE_WRITE_TYPES.has(result.type ?? '')) return true
+  if (result.structuredPatch !== undefined) return true
+  return false
 }
 
 /**

@@ -147,6 +147,121 @@ describe('getClaudeStatus', () => {
     expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
   })
 
+  it('returns waiting when assistant edits a plan file', async () => {
+    await writeEntry({
+      type: 'assistant',
+      message: {
+        stop_reason: 'tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_abc',
+            name: 'Edit',
+            input: {
+              file_path: '/home/user/.claude/plans/my-plan.md',
+              old_string: 'foo',
+              new_string: 'bar',
+            },
+          },
+        ],
+      },
+    })
+    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
+  })
+
+  it('returns waiting when user tool_result is for a plan file Edit', async () => {
+    await writeEntry({
+      type: 'assistant',
+      message: {
+        stop_reason: 'tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_abc',
+            name: 'Edit',
+            input: {
+              file_path: '/home/user/.claude/plans/my-plan.md',
+              old_string: 'foo',
+              new_string: 'bar',
+            },
+          },
+        ],
+      },
+    })
+    // Edit tool results have no `type` field — they carry `filePath` plus
+    // `structuredPatch`, `oldString`, `newString`, etc.
+    await writeEntry({
+      type: 'user',
+      toolUseResult: {
+        filePath: '/home/user/.claude/plans/my-plan.md',
+        oldString: 'foo',
+        newString: 'bar',
+        structuredPatch: [],
+        userModified: false,
+        replaceAll: false,
+      },
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_abc' }],
+      },
+    })
+    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
+  })
+
+  it('returns waiting when assistant MultiEdits a plan file', async () => {
+    await writeEntry({
+      type: 'assistant',
+      message: {
+        stop_reason: 'tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_abc',
+            name: 'MultiEdit',
+            input: {
+              file_path: '/home/user/.claude/plans/my-plan.md',
+              edits: [{ old_string: 'foo', new_string: 'bar' }],
+            },
+          },
+        ],
+      },
+    })
+    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
+  })
+
+  it('returns running for Edit to a non-plan file', async () => {
+    await writeEntry({
+      type: 'assistant',
+      message: {
+        stop_reason: 'tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_abc',
+            name: 'Edit',
+            input: {
+              file_path: '/workspace/src/index.ts',
+              old_string: 'foo',
+              new_string: 'bar',
+            },
+          },
+        ],
+      },
+    })
+    await writeEntry({
+      type: 'user',
+      toolUseResult: {
+        filePath: '/workspace/src/index.ts',
+        oldString: 'foo',
+        newString: 'bar',
+        structuredPatch: [],
+      },
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_abc' }],
+      },
+    })
+    expect(await getClaudeStatus(jsonlPath)).toBe('running')
+  })
+
   it('returns running for Write to a non-plan file', async () => {
     await writeEntry({
       type: 'assistant',
