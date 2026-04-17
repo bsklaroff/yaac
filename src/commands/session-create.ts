@@ -203,6 +203,12 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
   containerExec(containerName, 'tmux set-option -g history-limit 200000')
   containerExec(containerName, 'tmux set-option -g mouse on')
   containerExec(containerName, 'tmux set-option -g focus-events on')
+  // Propagate terminal bells (\a) from any window through to the attached
+  // client so the user's terminal emulator can surface notifications.
+  containerExec(containerName, 'tmux set-option -g monitor-bell on')
+  containerExec(containerName, 'tmux set-option -g bell-action any')
+  containerExec(containerName, 'tmux set-option -g visual-bell off')
+  containerExec(containerName, 'tmux set-option -g allow-passthrough on')
   containerExec(containerName, `tmux set-option -t yaac status-right ' ${projectSlug} ${sessionId.slice(0, 8)}${portInfo} '`)
   containerExec(containerName, 'tmux set-option -t yaac status-right-length 80')
   containerExec(containerName, 'tmux bind-key k kill-server')
