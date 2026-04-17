@@ -208,6 +208,7 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'ubuntu.com',
   'www.ubuntu.com',
   '*.ubuntu.com',
+  'deb.debian.org',
   'ppa.launchpad.net',
   'launchpad.net',
   'www.launchpad.net',
