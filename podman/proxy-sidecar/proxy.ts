@@ -44,6 +44,9 @@ const CLAUDE_TOKEN_URL_PATH = '/v1/oauth/token'
 const ANTHROPIC_API_HOST = 'api.anthropic.com'
 const GITHUB_HOSTS = new Set(['github.com', 'api.github.com'])
 const OPENAI_API_HOST = 'api.openai.com'
+const OPENAI_TOKEN_URL_HOST = 'auth.openai.com'
+const OPENAI_TOKEN_URL_PATH = '/oauth/token'
+const CODEX_DEFAULT_REFRESH_WINDOW_MS = 28 * 24 * 60 * 60 * 1000
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -65,6 +68,19 @@ type ClaudeOAuthBundle = {
 
 type ClaudeCreds =
   | { kind: 'oauth'; bundle: ClaudeOAuthBundle }
+  | { kind: 'api-key'; apiKey: string }
+
+type CodexOAuthBundle = {
+  accessToken: string
+  refreshToken: string
+  idTokenRawJwt: string
+  expiresAt: number
+  lastRefresh: string
+  accountId?: string
+}
+
+type CodexCreds =
+  | { kind: 'oauth'; bundle: CodexOAuthBundle }
   | { kind: 'api-key'; apiKey: string }
 
 type GithubTokenEntry = { pattern: string; token: string }
@@ -209,16 +225,55 @@ function readClaudeOAuthBundle(): ClaudeOAuthBundle | null {
   return creds && creds.kind === 'oauth' ? creds.bundle : null
 }
 
-function readCodexCreds(): { apiKey: string } | null {
+function readCodexCreds(): CodexCreds | null {
   try {
     const raw = fs.readFileSync(CODEX_CREDS_FILE, 'utf8')
     const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return null
     const o = parsed as Record<string, unknown>
-    if (typeof o.apiKey === 'string' && o.apiKey) {
-      return { apiKey: o.apiKey }
+    if (o.kind === 'oauth' && o.codexOauth && typeof o.codexOauth === 'object') {
+      const b = o.codexOauth as Record<string, unknown>
+      if (typeof b.accessToken === 'string' && b.accessToken
+        && typeof b.refreshToken === 'string' && b.refreshToken
+        && typeof b.idTokenRawJwt === 'string' && b.idTokenRawJwt
+        && typeof b.expiresAt === 'number'
+        && typeof b.lastRefresh === 'string') {
+        const bundle: CodexOAuthBundle = {
+          accessToken: b.accessToken,
+          refreshToken: b.refreshToken,
+          idTokenRawJwt: b.idTokenRawJwt,
+          expiresAt: b.expiresAt,
+          lastRefresh: b.lastRefresh,
+          accountId: typeof b.accountId === 'string' ? b.accountId : undefined,
+        }
+        return { kind: 'oauth', bundle }
+      }
+      return null
+    }
+    if (o.kind === 'api-key' && typeof o.apiKey === 'string' && o.apiKey) {
+      return { kind: 'api-key', apiKey: o.apiKey }
     }
     return null
+  } catch {
+    return null
+  }
+}
+
+function readCodexOAuthBundle(): CodexOAuthBundle | null {
+  const creds = readCodexCreds()
+  return creds && creds.kind === 'oauth' ? creds.bundle : null
+}
+
+/** Decode a JWT's payload and return `exp` as unix epoch ms, or null. */
+function decodeJwtExp(jwt: string): number | null {
+  try {
+    const parts = jwt.split('.')
+    if (parts.length !== 3) return null
+    const payload: unknown = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'))
+    if (!payload || typeof payload !== 'object') return null
+    const exp = (payload as Record<string, unknown>).exp
+    if (typeof exp !== 'number') return null
+    return exp * 1000
   } catch {
     return null
   }
@@ -301,6 +356,17 @@ function writeClaudeOAuthBundle(bundle: ClaudeOAuthBundle): void {
   const tmp = CLAUDE_CREDS_FILE + '.tmp-' + crypto.randomBytes(6).toString('hex')
   fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', { mode: 0o600 })
   fs.renameSync(tmp, CLAUDE_CREDS_FILE)
+}
+
+function writeCodexOAuthBundle(bundle: CodexOAuthBundle): void {
+  const payload = {
+    kind: 'oauth',
+    savedAt: new Date().toISOString(),
+    codexOauth: bundle,
+  }
+  const tmp = CODEX_CREDS_FILE + '.tmp-' + crypto.randomBytes(6).toString('hex')
+  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', { mode: 0o600 })
+  fs.renameSync(tmp, CODEX_CREDS_FILE)
 }
 
 // ── Secret Store ───────────────────────────────────────────────────────
@@ -465,6 +531,7 @@ function hostNeedsDynamicMitm(hostname: string): boolean {
   if (hostname === CLAUDE_TOKEN_URL_HOST) return true
   if (GITHUB_HOSTS.has(hostname)) return true
   if (hostname === OPENAI_API_HOST) return true
+  if (hostname === OPENAI_TOKEN_URL_HOST) return true
   return false
 }
 
@@ -479,6 +546,7 @@ function buildDynamicRules(
   sessionId: string | null,
   hostname: string,
   claudeTokenBundle: ClaudeOAuthBundle | null,
+  codexTokenBundle: CodexOAuthBundle | null,
 ): InjectionRule[] {
   if (!sessionId) return []
   const rules: InjectionRule[] = []
@@ -517,13 +585,26 @@ function buildDynamicRules(
 
   if (hostname === OPENAI_API_HOST && sessionTool.get(sessionId) === 'codex') {
     const creds = readCodexCreds()
-    if (creds) {
+    if (creds && creds.kind === 'api-key') {
       rules.push({
         pathPattern: '*',
         injections: [{
           action: 'set_header',
           name: 'Authorization',
           value: 'Bearer ' + creds.apiKey,
+        }],
+      })
+    } else if (creds && creds.kind === 'oauth') {
+      // Container sees a placeholder Bearer; swap it for the real access
+      // token. `ChatGPT-Account-Id` is populated by Codex from the real
+      // top-level `account_id` in the mounted auth.json, so it passes
+      // through unchanged.
+      rules.push({
+        pathPattern: '*',
+        injections: [{
+          action: 'replace_header',
+          name: 'Authorization',
+          value: 'Bearer ' + creds.bundle.accessToken,
         }],
       })
     }
@@ -539,6 +620,18 @@ function buildDynamicRules(
         action: 'replace_body_param',
         name: 'refresh_token',
         value: claudeTokenBundle.refreshToken,
+      }],
+    })
+  }
+
+  // Codex OAuth token endpoint: same placeholder-swap shape.
+  if (codexTokenBundle) {
+    rules.push({
+      pathPattern: '*',
+      injections: [{
+        action: 'replace_body_param',
+        name: 'refresh_token',
+        value: codexTokenBundle.refreshToken,
       }],
     })
   }
@@ -591,12 +684,47 @@ type TokenResponseBody = {
   refresh_token?: unknown
   expires_in?: unknown
   scope?: unknown
+  id_token?: unknown
 }
 
 /**
- * Rewrite a Claude OAuth token response body so that the real access/refresh
- * tokens are replaced with placeholders. `expires_in` / `scope` flow through
- * unchanged so Claude Code inside the container tracks the correct expiry.
+ * Peek at the inbound request body for a `refresh_token` field and return
+ * whether it matches our placeholder sentinel. Used to gate response-level
+ * token write-back so an unrelated `authorization_code` exchange that happens
+ * to hit the same endpoint can't clobber the host bundle.
+ *
+ * Supports both JSON and form-encoded bodies. An empty / unparseable body
+ * returns false — the caller treats that as "not our refresh" and passes
+ * through.
+ */
+function bodyHasPlaceholderRefreshToken(body: Buffer, contentType: string | undefined): boolean {
+  if (body.length === 0) return false
+  const bodyStr = body.toString('utf8')
+  const isJson = contentType && contentType.includes('application/json')
+  if (isJson) {
+    try {
+      const parsed: unknown = JSON.parse(bodyStr)
+      if (parsed && typeof parsed === 'object') {
+        const rt = (parsed as Record<string, unknown>).refresh_token
+        return rt === PLACEHOLDER_REFRESH_TOKEN
+      }
+    } catch {
+      // fall through to form-encoded
+    }
+  }
+  try {
+    const params = new URLSearchParams(bodyStr)
+    return params.get('refresh_token') === PLACEHOLDER_REFRESH_TOKEN
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Rewrite an OAuth token response body so the real bearer access/refresh
+ * tokens are replaced with placeholders. Other fields (`expires_in`,
+ * `scope`, `id_token`) pass through unchanged — the container needs real
+ * values for them.
  */
 function rewriteTokenResponseBody(parsed: TokenResponseBody): TokenResponseBody {
   const rewritten: TokenResponseBody = { ...parsed }
@@ -704,6 +832,95 @@ function handleClaudeTokenResponse(
   })
 }
 
+/**
+ * Same shape as `handleClaudeTokenResponse`, but for Codex's token endpoint.
+ * Differences: response carries `id_token` instead of `expires_in`/`scope`;
+ * expiry is derived from the new access_token's JWT `exp` claim; the real
+ * `id_token` passes through to the container so Codex's display claims stay
+ * fresh.
+ */
+function handleCodexTokenResponse(
+  upstreamRes: http.IncomingMessage,
+  res: http.ServerResponse,
+  codexTokenBundle: CodexOAuthBundle,
+): void {
+  const chunks: Buffer[] = []
+  upstreamRes.on('data', (c: Buffer) => chunks.push(c))
+  upstreamRes.on('end', () => {
+    const raw = Buffer.concat(chunks)
+    const encoding = upstreamRes.headers['content-encoding']
+
+    const outHeaders: http.OutgoingHttpHeaders = { ...upstreamRes.headers }
+    delete outHeaders['transfer-encoding']
+
+    const statusCode = upstreamRes.statusCode ?? 200
+
+    const passThrough = (): void => {
+      outHeaders['content-length'] = String(raw.length)
+      res.writeHead(statusCode, outHeaders)
+      res.end(raw)
+    }
+
+    let decoded: Buffer | null
+    try {
+      decoded = decodeBody(raw, encoding)
+    } catch (err) {
+      console.error('[proxy] Failed to decode Codex token response body:', (err as Error).message)
+      passThrough()
+      return
+    }
+    if (!decoded) {
+      passThrough()
+      return
+    }
+
+    const parsed = tryParseJsonBody(decoded)
+    if (!parsed || typeof parsed !== 'object') {
+      passThrough()
+      return
+    }
+    const body = parsed as TokenResponseBody
+    if (typeof body.access_token !== 'string') {
+      passThrough()
+      return
+    }
+    try {
+      const newIdToken = typeof body.id_token === 'string' && body.id_token
+        ? body.id_token
+        : codexTokenBundle.idTokenRawJwt
+      const exp = decodeJwtExp(body.access_token)
+      const fresh: CodexOAuthBundle = {
+        accessToken: body.access_token,
+        refreshToken: typeof body.refresh_token === 'string' && body.refresh_token
+          ? body.refresh_token
+          : codexTokenBundle.refreshToken,
+        idTokenRawJwt: newIdToken,
+        expiresAt: exp ?? (Date.now() + CODEX_DEFAULT_REFRESH_WINDOW_MS),
+        lastRefresh: new Date().toISOString(),
+        accountId: codexTokenBundle.accountId,
+      }
+      writeCodexOAuthBundle(fresh)
+      console.log('[proxy] Captured refreshed Codex OAuth tokens (expires in ' + Math.floor((fresh.expiresAt - Date.now()) / 1000) + 's)')
+    } catch (err) {
+      console.error('[proxy] Failed to persist refreshed Codex OAuth tokens:', (err as Error).message)
+    }
+
+    const rewritten = rewriteTokenResponseBody(body)
+    const rewrittenJson = Buffer.from(JSON.stringify(rewritten), 'utf8')
+    let outBody: Buffer
+    try {
+      outBody = encodeBody(rewrittenJson, encoding)
+    } catch (err) {
+      console.error('[proxy] Failed to re-encode Codex token response body:', (err as Error).message)
+      outBody = rewrittenJson
+      delete outHeaders['content-encoding']
+    }
+    outHeaders['content-length'] = String(outBody.length)
+    res.writeHead(statusCode, outHeaders)
+    res.end(outBody)
+  })
+}
+
 // ── Session ID Extraction ─────────────────────────────────────────────
 
 function extractSessionId(proxyAuthHeader: string | string[] | undefined): string | null {
@@ -743,20 +960,24 @@ function handleMitm(
     delete headers['proxy-authorization']
     delete headers['proxy-connection']
 
-    // Claude OAuth token endpoint needs multi-step body capture + response
-    // rewrite: swap placeholder refresh_token outbound, then capture real
-    // tokens + swap placeholders inbound. Null when this isn't the token
-    // endpoint or when no OAuth bundle is on disk (nothing to swap).
+    // OAuth token endpoints need multi-step body capture + response rewrite:
+    // swap placeholder refresh_token outbound, then capture real tokens +
+    // swap placeholders inbound. Null when this isn't the token endpoint or
+    // when no OAuth bundle is on disk (nothing to swap).
     const claudeTokenBundle =
       hostname === CLAUDE_TOKEN_URL_HOST && reqPath === CLAUDE_TOKEN_URL_PATH
         ? readClaudeOAuthBundle()
+        : null
+    const codexTokenBundle =
+      hostname === OPENAI_TOKEN_URL_HOST && reqPath === OPENAI_TOKEN_URL_PATH
+        ? readCodexOAuthBundle()
         : null
 
     // Dynamic rules (GitHub / Codex / Claude auth + OAuth refresh swap) are
     // derived from the host-mounted credentials dir on every request and
     // merged into the statically-configured rules so a single injection
     // pipeline handles both.
-    const dynamicRules = buildDynamicRules(sessionId, hostname, claudeTokenBundle)
+    const dynamicRules = buildDynamicRules(sessionId, hostname, claudeTokenBundle, codexTokenBundle)
     const allRules: InjectionRule[] = [...rules, ...dynamicRules]
     const injCount = applyInjections(headers, reqPath, allRules)
     const bodyInjections = collectBodyInjections(reqPath, allRules)
@@ -767,7 +988,7 @@ function handleMitm(
       console.log(`[proxy] MITM ${req.method} https://${hostname}${reqPath} (${injCount} header + ${bodyInjections.length} body injections${dynSuffix})`)
     }
 
-    function sendUpstream(body: Buffer | null): void {
+    function sendUpstream(body: Buffer | null, shouldCaptureTokenResponse: boolean): void {
       if (body !== null) {
         headers['content-length'] = String(body.length)
       }
@@ -779,8 +1000,10 @@ function handleMitm(
         headers,
         rejectUnauthorized: true,
       }, (upstreamRes) => {
-        if (claudeTokenBundle) {
+        if (claudeTokenBundle && shouldCaptureTokenResponse) {
           handleClaudeTokenResponse(upstreamRes, res, claudeTokenBundle)
+        } else if (codexTokenBundle && shouldCaptureTokenResponse) {
+          handleCodexTokenResponse(upstreamRes, res, codexTokenBundle)
         } else {
           res.writeHead(upstreamRes.statusCode ?? 200, upstreamRes.headers)
           upstreamRes.pipe(res)
@@ -815,15 +1038,19 @@ function handleMitm(
         const contentType = typeof contentTypeHeader === 'string'
           ? contentTypeHeader
           : Array.isArray(contentTypeHeader) ? contentTypeHeader[0] : undefined
-        const rawBody = applyBodyInjections(
-          Buffer.concat(chunks),
-          contentType,
-          bodyInjections,
-        )
-        sendUpstream(rawBody)
+        const inboundBody = Buffer.concat(chunks)
+        // Only capture + persist token-endpoint responses when the inbound
+        // request body carried our placeholder refresh_token. Otherwise an
+        // unrelated authorization_code exchange through the same endpoint
+        // would clobber the host OAuth bundle with wrong credentials.
+        const shouldCaptureTokenResponse =
+          (claudeTokenBundle !== null || codexTokenBundle !== null) &&
+          bodyHasPlaceholderRefreshToken(inboundBody, contentType)
+        const rawBody = applyBodyInjections(inboundBody, contentType, bodyInjections)
+        sendUpstream(rawBody, shouldCaptureTokenResponse)
       })
     } else {
-      sendUpstream(null)
+      sendUpstream(null, false)
     }
   })
 

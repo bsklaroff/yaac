@@ -5,13 +5,46 @@ import { loadCredentials, addToken } from '@/lib/project/credentials'
 import {
   claudeCredentialsPath,
   codexCredentialsPath,
+  projectClaudeCredentialsFile,
+  projectCodexAuthFile,
+  projectDir,
 } from '@/lib/project/paths'
 import {
   loadToolAuthEntry,
   saveToolAuth,
   removeToolAuth,
   detectAuthKind,
+  writeProjectClaudePlaceholder,
+  writeProjectCodexPlaceholder,
+  cleanupProjectClaudePlaceholders,
+  cleanupProjectCodexPlaceholders,
 } from '@/lib/project/tool-auth'
+import type { ClaudeOAuthBundle, CodexOAuthBundle } from '@/types'
+
+const CLAUDE_BUNDLE: ClaudeOAuthBundle = {
+  accessToken: 'sk-ant-oat01-real',
+  refreshToken: 'sk-ant-ort01-real',
+  expiresAt: 9_999_999_999_000,
+  scopes: ['user:inference'],
+}
+
+const CODEX_BUNDLE: CodexOAuthBundle = {
+  accessToken: 'access-real',
+  refreshToken: 'refresh-real',
+  idTokenRawJwt: 'h.p.s',
+  expiresAt: 9_999_999_999_000,
+  lastRefresh: '2026-04-10T00:00:00.000Z',
+  accountId: 'acct-1',
+}
+
+async function exists(p: string): Promise<boolean> {
+  try {
+    await fs.stat(p)
+    return true
+  } catch {
+    return false
+  }
+}
 
 describe('yaac auth tool-auth e2e', () => {
   let tmpDir: string
@@ -105,5 +138,35 @@ describe('yaac auth tool-auth e2e', () => {
   it('defaults to api-key for openai tokens', () => {
     expect(detectAuthKind('codex', 'sk-proj-abcdef')).toBe('api-key')
     expect(detectAuthKind('codex', 'sk-live-abcdef')).toBe('api-key')
+  })
+
+  it('auth clear cleans up per-project Claude placeholders', async () => {
+    await fs.mkdir(projectDir('alpha'), { recursive: true })
+    await fs.mkdir(projectDir('beta'), { recursive: true })
+    await writeProjectClaudePlaceholder('alpha', CLAUDE_BUNDLE)
+    await writeProjectClaudePlaceholder('beta', CLAUDE_BUNDLE)
+    expect(await exists(projectClaudeCredentialsFile('alpha'))).toBe(true)
+    expect(await exists(projectClaudeCredentialsFile('beta'))).toBe(true)
+
+    await removeToolAuth('claude')
+    await cleanupProjectClaudePlaceholders()
+
+    expect(await exists(projectClaudeCredentialsFile('alpha'))).toBe(false)
+    expect(await exists(projectClaudeCredentialsFile('beta'))).toBe(false)
+  })
+
+  it('auth clear cleans up per-project Codex placeholders', async () => {
+    await fs.mkdir(projectDir('alpha'), { recursive: true })
+    await fs.mkdir(projectDir('beta'), { recursive: true })
+    await writeProjectCodexPlaceholder('alpha', CODEX_BUNDLE)
+    await writeProjectCodexPlaceholder('beta', CODEX_BUNDLE)
+    expect(await exists(projectCodexAuthFile('alpha'))).toBe(true)
+    expect(await exists(projectCodexAuthFile('beta'))).toBe(true)
+
+    await removeToolAuth('codex')
+    await cleanupProjectCodexPlaceholders()
+
+    expect(await exists(projectCodexAuthFile('alpha'))).toBe(false)
+    expect(await exists(projectCodexAuthFile('beta'))).toBe(false)
   })
 })

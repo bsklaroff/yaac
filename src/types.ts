@@ -32,13 +32,43 @@ export type ClaudeCredentialsFile =
   }
 
 /**
- * Shape of `~/.yaac/.credentials/codex.json`.
+ * Codex's "Sign in with ChatGPT" OAuth bundle. Stored under the "codexOauth"
+ * key in yaac's host-side `codex.json`. Mirrors the bits of Codex's native
+ * `~/.codex/auth.json` that the proxy needs to swap placeholders and refresh.
  */
-export interface CodexCredentialsFile {
-  kind: ToolAuthKind
-  savedAt: string
-  apiKey: string
+export interface CodexOAuthBundle {
+  accessToken: string
+  refreshToken: string
+  /** Full signed JWT — identity assertion, not a bearer credential. Flows
+   *  through the proxy into the container's auth.json unmodified. */
+  idTokenRawJwt: string
+  /** Unix epoch ms, derived from access_token JWT `exp` (best-effort; falls
+   *  back to now + 28d to mirror Codex's proactive-refresh window). */
+  expiresAt: number
+  /** ISO timestamp matching Codex's `last_refresh`. */
+  lastRefresh: string
+  /** Top-level `tokens.account_id` from Codex's auth.json — distinct from
+   *  id_token's `chatgpt_account_id` claim. Codex uses this to populate the
+   *  `ChatGPT-Account-Id` request header on api.openai.com, so it must flow
+   *  through to the container unchanged. */
+  accountId?: string
 }
+
+/**
+ * Shape of `~/.yaac/.credentials/codex.json`. Either OAuth (with a full
+ * bundle) or API-key.
+ */
+export type CodexCredentialsFile =
+  | {
+    kind: 'oauth'
+    savedAt: string
+    codexOauth: CodexOAuthBundle
+  }
+  | {
+    kind: 'api-key'
+    savedAt: string
+    apiKey: string
+  }
 
 /**
  * Summary view over per-tool credential files — used by `auth list`, etc.
@@ -53,10 +83,13 @@ export interface ToolAuthEntry {
   refreshToken?: string
   /** OAuth only. Unix epoch ms. */
   expiresAt?: number
-  /** OAuth only. */
+  /** Claude OAuth only. */
   scopes?: string[]
-  /** OAuth only. */
+  /** Claude OAuth only. */
   subscriptionType?: string
+  /** Codex OAuth only — the full bundle, carried here so consumers like
+   *  `auth list` can render plan type / email from the id_token. */
+  codexBundle?: CodexOAuthBundle
 }
 
 export interface ProjectMeta {

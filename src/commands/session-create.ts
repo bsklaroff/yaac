@@ -14,7 +14,13 @@ import { pgRelay } from '@/lib/container/pg-relay'
 import { repoDir, claudeDir, claudeJsonFile, codexDir, codexTranscriptDir, cachedPackagesDir, worktreeDir, worktreesDir, projectDir, getDataDir } from '@/lib/project/paths'
 import { resolveProjectConfig } from '@/lib/project/config'
 import { resolveTokenForUrl } from '@/lib/project/credentials'
-import { loadToolAuthEntry, loadClaudeCredentialsFile, writeProjectClaudePlaceholder } from '@/lib/project/tool-auth'
+import {
+  loadToolAuthEntry,
+  loadClaudeCredentialsFile,
+  loadCodexCredentialsFile,
+  writeProjectClaudePlaceholder,
+  writeProjectCodexPlaceholder,
+} from '@/lib/project/tool-auth'
 import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/lib/git'
 import { finalizeAttachedSession } from '@/lib/session/finalize-attached-session'
 import { claimPrewarmSession } from '@/lib/prewarm'
@@ -410,9 +416,12 @@ export async function createSession(projectSlug: string, options: SessionCreateO
       }
       // OAuth: Claude Code reads the placeholder bundle from the mounted
       // .claude/.credentials.json, so no env var is needed.
-    } else {
+    } else if (toolAuth.kind === 'api-key') {
       env.push('OPENAI_API_KEY=placeholder')
     }
+    // Codex OAuth: Codex reads the placeholder bundle from the mounted
+    // .codex/auth.json. Setting OPENAI_API_KEY here would risk steering
+    // Codex into api-key mode instead of ChatGPT OAuth.
   }
 
   const networkMode = proxyClient.network
@@ -457,6 +466,12 @@ export async function createSession(projectSlug: string, options: SessionCreateO
     const hostClaudeCreds = await loadClaudeCredentialsFile()
     if (hostClaudeCreds?.kind === 'oauth') {
       await writeProjectClaudePlaceholder(projectSlug, hostClaudeCreds.claudeAiOauth)
+    }
+  }
+  if (tool === 'codex' && toolAuth?.kind === 'oauth') {
+    const hostCodexCreds = await loadCodexCredentialsFile()
+    if (hostCodexCreds?.kind === 'oauth') {
+      await writeProjectCodexPlaceholder(projectSlug, hostCodexCreds.codexOauth)
     }
   }
 

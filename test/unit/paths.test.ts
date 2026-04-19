@@ -11,7 +11,9 @@ import {
   configOverrideDir,
   cachedPackagesDir,
   claudeDir,
+  projectClaudeCredentialsFile,
   codexDir,
+  projectCodexAuthFile,
   codexTranscriptDir,
   codexTranscriptFile,
   worktreesDir,
@@ -46,7 +48,9 @@ describe('paths', () => {
     expect(repoDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/repo')
     expect(configOverrideDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/config-override')
     expect(claudeDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/claude')
+    expect(projectClaudeCredentialsFile('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/claude/.credentials.json')
     expect(codexDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/codex')
+    expect(projectCodexAuthFile('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/codex/auth.json')
     expect(cachedPackagesDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/.cached-packages')
     expect(codexTranscriptDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/codex/.yaac-transcripts')
     expect(codexTranscriptFile('my-repo', 'abc123')).toBe('/tmp/yaac-test/projects/my-repo/codex/.yaac-transcripts/abc123.jsonl')

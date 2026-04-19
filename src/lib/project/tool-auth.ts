@@ -10,7 +10,9 @@ import {
   ensureDataDir,
   getProjectsDir,
   claudeDir,
+  codexDir,
   projectClaudeCredentialsFile,
+  projectCodexAuthFile,
 } from '@/lib/project/paths'
 import type {
   AgentTool,
@@ -19,6 +21,7 @@ import type {
   ClaudeCredentialsFile,
   ClaudeOAuthBundle,
   CodexCredentialsFile,
+  CodexOAuthBundle,
 } from '@/types'
 
 /** Placeholder tokens written into project-local Claude credentials. */
@@ -87,19 +90,28 @@ export async function saveClaudeCredentialsFile(creds: ClaudeCredentialsFile): P
   )
 }
 
-async function loadCodexCredentialsFile(): Promise<CodexCredentialsFile | null> {
+function isCodexOAuthBundle(v: unknown): v is CodexOAuthBundle {
+  if (!v || typeof v !== 'object') return false
+  const o = v as Record<string, unknown>
+  return typeof o.accessToken === 'string' && o.accessToken !== ''
+    && typeof o.refreshToken === 'string' && o.refreshToken !== ''
+    && typeof o.idTokenRawJwt === 'string' && o.idTokenRawJwt !== ''
+    && typeof o.expiresAt === 'number'
+    && typeof o.lastRefresh === 'string'
+    && (o.accountId === undefined || typeof o.accountId === 'string')
+}
+
+export async function loadCodexCredentialsFile(): Promise<CodexCredentialsFile | null> {
   try {
     const raw = await fs.readFile(codexCredentialsPath(), 'utf8')
     const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return null
     const o = parsed as Record<string, unknown>
-    if (
-      (o.kind === 'api-key' || o.kind === 'oauth') &&
-      typeof o.savedAt === 'string' &&
-      typeof o.apiKey === 'string' &&
-      o.apiKey !== ''
-    ) {
-      return { kind: o.kind, savedAt: o.savedAt, apiKey: o.apiKey }
+    if (o.kind === 'oauth' && typeof o.savedAt === 'string' && isCodexOAuthBundle(o.codexOauth)) {
+      return { kind: 'oauth', savedAt: o.savedAt, codexOauth: o.codexOauth }
+    }
+    if (o.kind === 'api-key' && typeof o.savedAt === 'string' && typeof o.apiKey === 'string' && o.apiKey !== '') {
+      return { kind: 'api-key', savedAt: o.savedAt, apiKey: o.apiKey }
     }
     return null
   } catch {
@@ -107,13 +119,24 @@ async function loadCodexCredentialsFile(): Promise<CodexCredentialsFile | null> 
   }
 }
 
-async function saveCodexCredentialsFile(creds: CodexCredentialsFile): Promise<void> {
+export async function saveCodexCredentialsFile(creds: CodexCredentialsFile): Promise<void> {
   await ensureCredentialsDir()
   await fs.writeFile(
     codexCredentialsPath(),
     JSON.stringify(creds, null, 2) + '\n',
     { mode: 0o600 },
   )
+}
+
+/**
+ * Save a full Codex OAuth bundle (with refresh token + expiry + id_token).
+ */
+export async function saveCodexOAuthBundle(bundle: CodexOAuthBundle): Promise<void> {
+  await saveCodexCredentialsFile({
+    kind: 'oauth',
+    savedAt: new Date().toISOString(),
+    codexOauth: bundle,
+  })
 }
 
 /**
@@ -140,7 +163,18 @@ export async function loadToolAuthEntry(tool: AgentTool): Promise<ToolAuthEntry 
   }
   const f = await loadCodexCredentialsFile()
   if (!f) return null
-  return { tool: 'codex', kind: f.kind, apiKey: f.apiKey, savedAt: f.savedAt }
+  if (f.kind === 'oauth') {
+    return {
+      tool: 'codex',
+      kind: 'oauth',
+      apiKey: f.codexOauth.accessToken,
+      savedAt: f.savedAt,
+      refreshToken: f.codexOauth.refreshToken,
+      expiresAt: f.codexOauth.expiresAt,
+      codexBundle: f.codexOauth,
+    }
+  }
+  return { tool: 'codex', kind: 'api-key', apiKey: f.apiKey, savedAt: f.savedAt }
 }
 
 /**
@@ -170,7 +204,14 @@ export async function saveToolAuth(tool: AgentTool, apiKey: string, kind: ToolAu
     await saveClaudeCredentialsFile({ kind: 'api-key', savedAt, apiKey })
     return
   }
-  await saveCodexCredentialsFile({ kind, savedAt, apiKey })
+  if (kind === 'oauth') {
+    // OAuth without a bundle can't be refreshed — callers should use
+    // saveCodexOAuthBundle. Fall through to api-key so the proxy still
+    // injects the token until the user re-runs `yaac auth update`.
+    await saveCodexCredentialsFile({ kind: 'api-key', savedAt, apiKey })
+    return
+  }
+  await saveCodexCredentialsFile({ kind: 'api-key', savedAt, apiKey })
 }
 
 /**
@@ -258,6 +299,90 @@ export async function readClaudeOAuthFromHost(): Promise<ClaudeOAuthBundle | nul
 }
 
 /**
+ * Decode a JWT's middle segment (payload) and return `exp` as unix epoch ms.
+ * Returns null for malformed JWTs or missing `exp`. No dep on a JWT library —
+ * this is two base64url decodes and a JSON parse, all in a try/catch.
+ */
+export function decodeJwtExp(jwt: string): number | null {
+  try {
+    const parts = jwt.split('.')
+    if (parts.length !== 3) return null
+    const payload: unknown = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'))
+    if (!payload || typeof payload !== 'object') return null
+    const exp = (payload as Record<string, unknown>).exp
+    if (typeof exp !== 'number') return null
+    return exp * 1000
+  } catch {
+    return null
+  }
+}
+
+const CODEX_DEFAULT_REFRESH_WINDOW_MS = 28 * 24 * 60 * 60 * 1000
+
+/**
+ * Parse a raw Codex `auth.json` blob into a full OAuth bundle. Returns null
+ * unless `auth_mode === "ChatGPT"` and the nested tokens are all present.
+ * Computes `expiresAt` from the access_token JWT `exp`, falling back to
+ * now + 28d so the proxy still treats the bundle as live.
+ */
+export function extractCodexOAuthBundle(raw: string): CodexOAuthBundle | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object') return null
+  const o = parsed as Record<string, unknown>
+  if (o.auth_mode !== 'ChatGPT') return null
+  const tokens = o.tokens
+  if (!tokens || typeof tokens !== 'object') return null
+  const t = tokens as Record<string, unknown>
+  const accessToken = typeof t.access_token === 'string' ? t.access_token : null
+  const refreshToken = typeof t.refresh_token === 'string' ? t.refresh_token : null
+  if (!accessToken || !refreshToken) return null
+
+  const idTokenRaw = t.id_token
+  let idTokenRawJwt: string | null = null
+  if (idTokenRaw && typeof idTokenRaw === 'object') {
+    const itr = (idTokenRaw as Record<string, unknown>).raw_jwt
+    if (typeof itr === 'string' && itr !== '') idTokenRawJwt = itr
+  }
+  if (!idTokenRawJwt) return null
+
+  const accountId = typeof t.account_id === 'string' ? t.account_id : undefined
+  const lastRefresh = typeof o.last_refresh === 'string' && o.last_refresh
+    ? o.last_refresh
+    : new Date().toISOString()
+  const exp = decodeJwtExp(accessToken)
+  const expiresAt = exp ?? (Date.now() + CODEX_DEFAULT_REFRESH_WINDOW_MS)
+
+  return {
+    accessToken,
+    refreshToken,
+    idTokenRawJwt,
+    expiresAt,
+    lastRefresh,
+    accountId,
+  }
+}
+
+/**
+ * Read Codex's native `~/.codex/auth.json`. Returns a full OAuth bundle when
+ * the file is in ChatGPT mode, otherwise null. Callers fall back to the
+ * api-key extractor.
+ */
+export async function readCodexOAuthFromHost(): Promise<CodexOAuthBundle | null> {
+  try {
+    const authPath = path.join(os.homedir(), '.codex', 'auth.json')
+    const raw = await fs.readFile(authPath, 'utf8')
+    return extractCodexOAuthBundle(raw)
+  } catch {
+    return null
+  }
+}
+
+/**
  * Read Codex's stored API key from its native config.
  */
 export async function readCodexCredentials(): Promise<string | null> {
@@ -297,6 +422,8 @@ export interface ToolLoginResult {
   kind: ToolAuthKind
   /** Present when Claude OAuth login succeeded — the full bundle. */
   claudeBundle?: ClaudeOAuthBundle
+  /** Present when Codex OAuth login succeeded — the full bundle. */
+  codexBundle?: CodexOAuthBundle
 }
 
 /**
@@ -324,6 +451,11 @@ export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult> {
   const code = await runInteractive('codex', ['login'])
   if (code !== 0) {
     console.warn(`Codex login exited with code ${code}.`)
+  }
+
+  const codexBundle = await readCodexOAuthFromHost()
+  if (codexBundle) {
+    return { apiKey: codexBundle.accessToken, kind: 'oauth', codexBundle }
   }
 
   const token = await readCodexCredentials()
@@ -358,6 +490,11 @@ export async function persistToolLogin(tool: AgentTool, result: ToolLoginResult)
   if (tool === 'claude' && result.kind === 'oauth' && result.claudeBundle) {
     await saveClaudeOAuthBundle(result.claudeBundle)
     await fanOutClaudePlaceholders(result.claudeBundle)
+    return
+  }
+  if (tool === 'codex' && result.kind === 'oauth' && result.codexBundle) {
+    await saveCodexOAuthBundle(result.codexBundle)
+    await fanOutCodexPlaceholders(result.codexBundle)
     return
   }
   await saveToolAuth(tool, result.apiKey, result.kind)
@@ -429,6 +566,125 @@ export async function fanOutClaudePlaceholders(bundle: ClaudeOAuthBundle): Promi
       await writeProjectClaudePlaceholder(slug, bundle)
     } catch (err) {
       console.warn(`Warning: failed to seed placeholder creds for project "${slug}": ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+}
+
+/**
+ * Build the placeholder Codex bundle written into a project's `auth.json`.
+ * Only `accessToken` and `refreshToken` get sentineled — `idTokenRawJwt`,
+ * `expiresAt`, `lastRefresh`, and `accountId` stay real so Codex's Rust
+ * deserializer accepts the bundle and so the top-level `account_id` drives
+ * the correct `ChatGPT-Account-Id` header on api.openai.com.
+ */
+export function buildCodexPlaceholderBundle(bundle: CodexOAuthBundle): CodexOAuthBundle {
+  return {
+    accessToken: PLACEHOLDER_ACCESS_TOKEN,
+    refreshToken: PLACEHOLDER_REFRESH_TOKEN,
+    idTokenRawJwt: bundle.idTokenRawJwt,
+    expiresAt: bundle.expiresAt,
+    lastRefresh: bundle.lastRefresh,
+    accountId: bundle.accountId,
+  }
+}
+
+/**
+ * Write a placeholder Codex `auth.json` to a single project's codex dir.
+ * The on-disk shape matches Codex's `AuthDotJson` deserializer: nested
+ * `tokens` with `id_token.raw_jwt` only (Codex re-parses the JWT claims at
+ * load time), `access_token`, `refresh_token`, and a top-level
+ * `account_id` + `last_refresh`.
+ */
+export async function writeProjectCodexPlaceholder(
+  slug: string,
+  bundle: CodexOAuthBundle,
+): Promise<void> {
+  await fs.mkdir(codexDir(slug), { recursive: true })
+  const placeholder = buildCodexPlaceholderBundle(bundle)
+  const payload: Record<string, unknown> = {
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: { raw_jwt: placeholder.idTokenRawJwt },
+      access_token: placeholder.accessToken,
+      refresh_token: placeholder.refreshToken,
+      account_id: placeholder.accountId ?? null,
+    },
+    last_refresh: placeholder.lastRefresh,
+  }
+  await fs.writeFile(
+    projectCodexAuthFile(slug),
+    JSON.stringify(payload, null, 2) + '\n',
+    { mode: 0o600 },
+  )
+}
+
+/**
+ * After a successful Codex OAuth login, seed every existing project's
+ * `codex/auth.json` with a placeholder bundle.
+ */
+export async function fanOutCodexPlaceholders(bundle: CodexOAuthBundle): Promise<void> {
+  let projects: string[]
+  try {
+    projects = await fs.readdir(getProjectsDir())
+  } catch {
+    return
+  }
+  for (const slug of projects) {
+    try {
+      await writeProjectCodexPlaceholder(slug, bundle)
+    } catch (err) {
+      console.warn(`Warning: failed to seed Codex placeholder for project "${slug}": ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+}
+
+async function unlinkIgnoreMissing(filePath: string): Promise<void> {
+  try {
+    await fs.unlink(filePath)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+  }
+}
+
+/**
+ * Remove the project-local `.claude/.credentials.json` placeholder from
+ * every tracked project. Used by `auth clear` to make sure running
+ * containers don't keep using a placeholder that the proxy will no longer
+ * swap for a real token.
+ */
+export async function cleanupProjectClaudePlaceholders(): Promise<void> {
+  let projects: string[]
+  try {
+    projects = await fs.readdir(getProjectsDir())
+  } catch {
+    return
+  }
+  for (const slug of projects) {
+    try {
+      await unlinkIgnoreMissing(projectClaudeCredentialsFile(slug))
+    } catch (err) {
+      console.warn(`Warning: failed to remove Claude placeholder for project "${slug}": ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+}
+
+/**
+ * Remove the project-local `codex/auth.json` placeholder from every tracked
+ * project. Leaves the rest of the codex dir (hooks, config.toml, transcripts)
+ * in place.
+ */
+export async function cleanupProjectCodexPlaceholders(): Promise<void> {
+  let projects: string[]
+  try {
+    projects = await fs.readdir(getProjectsDir())
+  } catch {
+    return
+  }
+  for (const slug of projects) {
+    try {
+      await unlinkIgnoreMissing(projectCodexAuthFile(slug))
+    } catch (err) {
+      console.warn(`Warning: failed to remove Codex placeholder for project "${slug}": ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 }

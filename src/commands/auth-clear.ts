@@ -1,6 +1,11 @@
 import readline from 'node:readline/promises'
 import { listTokens, removeToken, saveCredentials } from '@/lib/project/credentials'
-import { loadToolAuthEntry, removeToolAuth } from '@/lib/project/tool-auth'
+import {
+  cleanupProjectClaudePlaceholders,
+  cleanupProjectCodexPlaceholders,
+  loadToolAuthEntry,
+  removeToolAuth,
+} from '@/lib/project/tool-auth'
 
 export async function authClear(): Promise<void> {
   const tokens = await listTokens()
@@ -30,6 +35,7 @@ export async function authClear(): Promise<void> {
       label: `Claude Code credentials (${preview})`,
       action: async () => {
         await removeToolAuth('claude')
+        await cleanupProjectClaudePlaceholders()
         console.log('Removed Claude Code credentials.')
       },
     })
@@ -41,6 +47,7 @@ export async function authClear(): Promise<void> {
       label: `Codex credentials (${preview})`,
       action: async () => {
         await removeToolAuth('codex')
+        await cleanupProjectCodexPlaceholders()
         console.log('Removed Codex credentials.')
       },
     })
@@ -59,6 +66,8 @@ export async function authClear(): Promise<void> {
     await saveCredentials({ tokens: [] })
     await removeToolAuth('claude')
     await removeToolAuth('codex')
+    await cleanupProjectClaudePlaceholders()
+    await cleanupProjectCodexPlaceholders()
     console.log('All credentials removed.')
     return
   }

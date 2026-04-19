@@ -99,6 +99,16 @@ export function cachedPackagesDir(slug: string): string {
   return path.join(projectDir(slug), '.cached-packages')
 }
 
+/**
+ * Path to the project-local `auth.json` that gets mounted into the
+ * container at `/home/yaac/.codex/auth.json`. Seeded with placeholder
+ * bearer tokens so Codex finds a valid bundle without ever seeing the
+ * real access/refresh tokens.
+ */
+export function projectCodexAuthFile(slug: string): string {
+  return path.join(codexDir(slug), 'auth.json')
+}
+
 export function codexTranscriptDir(slug: string): string {
   return path.join(codexDir(slug), '.yaac-transcripts')
 }
