@@ -13,6 +13,7 @@ import { authClear } from '@/commands/auth-clear'
 import { authList } from '@/commands/auth-list'
 import { toolGet } from '@/commands/tool-get'
 import { toolSet } from '@/commands/tool-set'
+import { runDaemon } from '@/commands/daemon'
 import { ensureGithubToken } from '@/lib/project/credentials'
 import { ensureDefaultTool, getDefaultTool, isValidTool } from '@/lib/project/preferences'
 import { ensureToolAuth } from '@/lib/project/tool-auth'
@@ -53,10 +54,20 @@ function nestedHelp(cmd: Command, helper: Help): string {
   return output.join('\n')
 }
 
+const YAAC_VERSION = '0.0.1'
+
 const program = new Command()
   .name('yaac')
   .description('Agent sandbox manager')
-  .version('0.0.1')
+  .version(YAAC_VERSION)
+
+program
+  .command('daemon')
+  .description('Run the yaac daemon (HTTP server the CLI talks to)')
+  .option('-p, --port <port>', 'Port to bind on 127.0.0.1 (default: ephemeral)', (v) => Number.parseInt(v, 10))
+  .action(async (options: { port?: number }) => {
+    await runDaemon({ port: options.port, version: YAAC_VERSION })
+  })
 
 const project = program
   .command('project')
@@ -193,7 +204,7 @@ program.hook('preAction', async (_thisCommand, actionCommand) => {
     if (name) chain.unshift(name)
     cmd = cmd.parent
   }
-  if (chain.includes('auth') || chain.includes('tool')) return
+  if (chain.includes('auth') || chain.includes('tool') || chain.includes('daemon')) return
   const defaultTool = await ensureDefaultTool()
   const opts = actionCommand.opts()
   // session monitor --no-prewarm won't launch a tool — skip the tool auth check.

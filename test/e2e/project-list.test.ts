@@ -1,16 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir, createTestRepo, addTestProject } from '@test/helpers/setup'
+import { bootInProcessDaemon, type InProcessDaemon } from '@test/helpers/daemon'
 import { projectList } from '@/commands/project-list'
 
 describe('yaac project list', () => {
   let tmpDir: string
+  let daemon: InProcessDaemon
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
+    daemon = await bootInProcessDaemon()
   })
 
   afterEach(async () => {
+    await daemon.stop()
     await cleanupTempDir(tmpDir)
   })
 
