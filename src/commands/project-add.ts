@@ -1,5 +1,4 @@
-import { toClientError } from '@/lib/daemon-client'
-import { getRpcClient } from '@/lib/daemon-rpc-client'
+import { getRpcClient, toClientError } from '@/lib/daemon-client'
 import { expandOwnerRepo } from '@/lib/project/add'
 
 export { expandOwnerRepo, validateGithubHttpsUrl } from '@/lib/project/add'

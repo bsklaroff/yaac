@@ -1,5 +1,4 @@
-import { toClientError } from '@/lib/daemon-client'
-import { getRpcClient } from '@/lib/daemon-rpc-client'
+import { getRpcClient, toClientError } from '@/lib/daemon-client'
 import type { ToolAuthSummary } from '@/lib/auth/list'
 
 export async function authList(): Promise<void> {

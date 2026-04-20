@@ -255,11 +255,17 @@ describe('createSession', () => {
   })
 })
 
-vi.mock('@/lib/daemon-rpc-client', () => ({
-  getRpcClient: vi.fn(),
-}))
+import type * as daemonClientModule from '@/lib/daemon-client'
 
-import { getRpcClient } from '@/lib/daemon-rpc-client'
+vi.mock('@/lib/daemon-client', async (importOriginal) => {
+  const actual = await importOriginal<typeof daemonClientModule>()
+  return {
+    ...actual,
+    getRpcClient: vi.fn(),
+  }
+})
+
+import { getRpcClient } from '@/lib/daemon-client'
 import { startPortForwarders, reserveAvailablePort } from '@/lib/container/port'
 
 describe('sessionCreate (CLI shim)', () => {

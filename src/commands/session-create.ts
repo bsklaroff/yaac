@@ -26,8 +26,7 @@ import { finalizeAttachedSession } from '@/lib/session/finalize-attached-session
 import { claimPrewarmSession } from '@/lib/prewarm'
 import { ensureCodexHooksJson, ensureCodexConfigToml } from '@/lib/session/codex-hooks'
 import { DaemonError } from '@/lib/daemon/errors'
-import { toClientError } from '@/lib/daemon-client'
-import { getRpcClient } from '@/lib/daemon-rpc-client'
+import { getRpcClient, toClientError } from '@/lib/daemon-client'
 import type { YaacConfig, AgentTool } from '@/types'
 import type { AttachOutcome } from '@/lib/session/finalize-attached-session'
 

@@ -1,6 +1,5 @@
 import readline from 'node:readline/promises'
-import { toClientError } from '@/lib/daemon-client'
-import { getRpcClient } from '@/lib/daemon-rpc-client'
+import { getRpcClient, toClientError } from '@/lib/daemon-client'
 import {
   promptForApiKey,
   runToolLogin,

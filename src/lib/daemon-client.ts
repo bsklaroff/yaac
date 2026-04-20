@@ -1,6 +1,8 @@
+import { hc } from 'hono/client'
 import { readBuildId } from '@/lib/build-id'
 import { isLockLive, readLock, type DaemonLock } from '@/lib/daemon/lock'
 import type { DaemonErrorBody } from '@/lib/daemon/errors'
+import type { AppType } from '@/lib/daemon/server'
 import { authUpdate } from '@/commands/auth-update'
 
 export interface GetClientOptions {
@@ -24,8 +26,7 @@ export interface GetClientOptions {
  * resolves (and caches) the lock, injects the bearer header, and
  * handles BAD_BEARER / AUTH_REQUIRED retry. Input paths may be a
  * bare pathname or a full URL — only the path+search are used; the
- * host is always the current live daemon. Consumed by the typed
- * Hono RPC client in `daemon-rpc-client.ts`.
+ * host is always the current live daemon. Consumed by `getRpcClient`.
  */
 export async function createDaemonFetch(
   opts: GetClientOptions = {},
@@ -168,4 +169,34 @@ export function exitOnClientError(err: unknown): never {
   const message = err instanceof Error ? err.message : String(err)
   console.error(message)
   process.exit(1)
+}
+
+/**
+ * Typed Hono RPC client for the daemon. Returns an `hc<AppType>(...)`
+ * proxy whose route methods infer request bodies, params, and
+ * response shapes directly from the server's route handlers.
+ *
+ * The underlying fetch is produced by `createDaemonFetch`, so lock
+ * resolution and AUTH_REQUIRED / BAD_BEARER retry logic are shared.
+ *
+ * Usage:
+ *   const client = await getRpcClient()
+ *   const res = await client.project.list.$get()
+ */
+export async function getRpcClient(opts: GetClientOptions = {}) {
+  const daemonFetch = await createDaemonFetch(opts)
+
+  // `hc` bakes the base URL into every request. We discard it via
+  // `extractPathAndSearch` and route to the live daemon's port, so
+  // this host is just a placeholder.
+  return hc<AppType>('http://daemon.local/', {
+    fetch: (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url
+      return daemonFetch(url, init)
+    },
+  })
 }
