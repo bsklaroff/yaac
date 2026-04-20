@@ -1,8 +1,9 @@
-import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject, podmanRetry, removeContainer } from '@test/helpers/setup'
+import { bootInProcessDaemon, type InProcessDaemon } from '@test/helpers/daemon'
 import { sessionList } from '@/commands/session-list'
 import { podman } from '@/lib/container/runtime'
 import { ensureImage } from '@/lib/container/image-builder'
@@ -49,8 +50,14 @@ async function createMinimalContainer(projectSlug: string): Promise<{ containerN
 describe('yaac session list', () => {
   const containersToCleanup: string[] = []
   const tmpDirs: string[] = []
+  let daemon: InProcessDaemon
+
+  beforeEach(async () => {
+    daemon = await bootInProcessDaemon()
+  })
 
   afterEach(async () => {
+    await daemon.stop()
     for (const name of containersToCleanup) {
       await removeContainer(name)
     }

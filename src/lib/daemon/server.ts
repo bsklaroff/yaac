@@ -3,6 +3,10 @@ import type { Context } from 'hono'
 import { bearerAuth, denyBrowserCors, requestLogger } from '@/lib/daemon/auth'
 import { toErrorBody } from '@/lib/daemon/errors'
 import { projectApp } from '@/lib/daemon/routes/project'
+import { sessionApp } from '@/lib/daemon/routes/session'
+import { toolApp } from '@/lib/daemon/routes/tool'
+import { authApp } from '@/lib/daemon/routes/auth'
+import { readPrewarmSessions } from '@/lib/prewarm'
 
 export interface DaemonAppDeps {
   secret: string
@@ -27,7 +31,11 @@ export function buildApp(deps: DaemonAppDeps): Hono {
   })
 
   app.get('/health', (c) => c.json({ ok: true, buildId: deps.buildId }))
+  app.get('/prewarm', async (c) => c.json(await readPrewarmSessions()))
   app.route('/project', projectApp)
+  app.route('/session', sessionApp)
+  app.route('/tool', toolApp)
+  app.route('/auth', authApp)
 
   app.notFound((c) => c.json(
     { error: { code: 'NOT_FOUND', message: `no route ${c.req.method} ${c.req.path}` } },

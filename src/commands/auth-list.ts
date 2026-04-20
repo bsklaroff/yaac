@@ -1,15 +1,21 @@
-import { listTokens } from '@/lib/project/credentials'
-import { loadToolAuthEntry } from '@/lib/project/tool-auth'
+import { getClient, exitOnClientError } from '@/lib/daemon-client'
+import type { AuthListResult, ToolAuthSummary } from '@/lib/auth/list'
 
 export async function authList(): Promise<void> {
-  const tokens = await listTokens()
+  let result: AuthListResult
+  try {
+    const client = await getClient()
+    result = await client.get<AuthListResult>('/auth/list')
+  } catch (err) {
+    exitOnClientError(err)
+  }
 
   console.log('GitHub tokens:')
-  if (tokens.length === 0) {
+  if (result.githubTokens.length === 0) {
     console.log('  (none configured)')
   } else {
-    for (let i = 0; i < tokens.length; i++) {
-      const { pattern, tokenPreview } = tokens[i]
+    for (let i = 0; i < result.githubTokens.length; i++) {
+      const { pattern, tokenPreview } = result.githubTokens[i]
       const num = String(i + 1).padEnd(2)
       const pat = pattern.padEnd(27)
       console.log(`  ${num} ${pat} ${tokenPreview}`)
@@ -18,26 +24,16 @@ export async function authList(): Promise<void> {
 
   console.log('')
   console.log('Tool credentials:')
+  printToolAuth('claude', result.toolAuth.find((t) => t.tool === 'claude'))
+  printToolAuth('codex', result.toolAuth.find((t) => t.tool === 'codex'))
+}
 
-  const claude = await loadToolAuthEntry('claude')
-  if (claude) {
-    const preview = claude.apiKey.length > 4
-      ? '***' + claude.apiKey.slice(-4)
-      : '****'
-    const kindLabel = claude.kind === 'oauth' ? 'oauth' : 'api-key'
-    console.log(`  claude    ${preview}  (${kindLabel}, saved ${claude.savedAt.slice(0, 10)})`)
-  } else {
-    console.log('  claude    not configured')
+function printToolAuth(label: 'claude' | 'codex', entry: ToolAuthSummary | undefined): void {
+  const padded = label.padEnd(9)
+  if (!entry) {
+    console.log(`  ${padded} not configured`)
+    return
   }
-
-  const codex = await loadToolAuthEntry('codex')
-  if (codex) {
-    const preview = codex.apiKey.length > 4
-      ? '***' + codex.apiKey.slice(-4)
-      : '****'
-    const kindLabel = codex.kind === 'oauth' ? 'oauth' : 'api-key'
-    console.log(`  codex     ${preview}  (${kindLabel}, saved ${codex.savedAt.slice(0, 10)})`)
-  } else {
-    console.log('  codex     not configured')
-  }
+  const kindLabel = entry.kind === 'oauth' ? 'oauth' : 'api-key'
+  console.log(`  ${padded} ${entry.keyPreview}  (${kindLabel}, saved ${entry.savedAt.slice(0, 10)})`)
 }

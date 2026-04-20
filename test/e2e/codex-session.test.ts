@@ -13,6 +13,7 @@ import { addWorktree, getDefaultBranch } from '@/lib/git'
 import { getCodexStatus, getCodexFirstUserMessage, getSessionCodexStatus } from '@/lib/session/codex-status'
 import { getToolFromContainer } from '@/lib/session/status'
 import { sessionList } from '@/commands/session-list'
+import { bootInProcessDaemon, type InProcessDaemon } from '@test/helpers/daemon'
 
 const execFileAsync = promisify(execFile)
 
@@ -326,13 +327,18 @@ describe('codex session support', () => {
     })
 
     it('session list shows codex tool', async () => {
+      let daemon: InProcessDaemon | null = null
       const logs: string[] = []
       const origLog = console.log
       console.log = (msg: string) => logs.push(msg)
 
-      await sessionList(projectSlug)
-
-      console.log = origLog
+      try {
+        daemon = await bootInProcessDaemon()
+        await sessionList(projectSlug)
+      } finally {
+        console.log = origLog
+        if (daemon) await daemon.stop()
+      }
       const output = logs.join('\n')
       expect(output).toContain('codex')
       expect(output).toContain('waiting')

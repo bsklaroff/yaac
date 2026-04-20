@@ -134,4 +134,50 @@ describe('yaac daemon (subprocess)', () => {
     const raw = await fs.readFile(daemonLockPath(), 'utf8')
     expect(JSON.parse(raw)).toEqual(daemon.lock)
   })
+
+  async function authedFetch(url: string): Promise<Response> {
+    if (!daemon) throw new Error('daemon not started')
+    return fetch(url, { headers: { authorization: `Bearer ${daemon.lock.secret}` } })
+  }
+
+  it('GET /session/list?project=missing returns 404 NOT_FOUND', async () => {
+    daemon = await startDaemon(env)
+    const res = await authedFetch(`http://127.0.0.1:${daemon.lock.port}/session/list?project=missing`)
+    expect(res.status).toBe(404)
+    const body = await res.json() as { error: { code: string } }
+    expect(body.error.code).toBe('NOT_FOUND')
+  })
+
+  it('GET /session/:id/blocked-hosts returns 404 for an unknown session', async () => {
+    daemon = await startDaemon(env)
+    const res = await authedFetch(`http://127.0.0.1:${daemon.lock.port}/session/deadbeef/blocked-hosts`)
+    expect(res.status).toBe(404)
+  })
+
+  it('GET /prewarm returns {} on a clean data dir', async () => {
+    daemon = await startDaemon(env)
+    const res = await authedFetch(`http://127.0.0.1:${daemon.lock.port}/prewarm`)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({})
+  })
+
+  it('GET /tool/get returns {tool:null} when no default is configured', async () => {
+    daemon = await startDaemon(env)
+    const res = await authedFetch(`http://127.0.0.1:${daemon.lock.port}/tool/get`)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ tool: null })
+  })
+
+  it('GET /auth/list returns empty arrays when nothing is configured', async () => {
+    daemon = await startDaemon(env)
+    const res = await authedFetch(`http://127.0.0.1:${daemon.lock.port}/auth/list`)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ githubTokens: [], toolAuth: [] })
+  })
+
+  it('GET /project/:slug 404s for an unknown project', async () => {
+    daemon = await startDaemon(env)
+    const res = await authedFetch(`http://127.0.0.1:${daemon.lock.port}/project/nope`)
+    expect(res.status).toBe(404)
+  })
 })
