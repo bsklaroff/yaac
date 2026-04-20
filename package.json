@@ -11,7 +11,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup && cp -r dockerfiles podman dist/",
+    "build": "tsup && cp -r dockerfiles podman dist/ && tsx scripts/write-build-id.ts",
     "dev": "tsx src/index.ts",
     "lint": "tsc --noEmit && eslint .",
     "test": "vitest run",

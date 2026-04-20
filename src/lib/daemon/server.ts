@@ -6,7 +6,7 @@ import { projectApp } from '@/lib/daemon/routes/project'
 
 export interface DaemonAppDeps {
   secret: string
-  version: string
+  buildId: string
 }
 
 /**
@@ -26,7 +26,7 @@ export function buildApp(deps: DaemonAppDeps): Hono {
     return c.json(body, status as 400 | 401 | 404 | 409 | 500 | 503)
   })
 
-  app.get('/health', (c) => c.json({ ok: true, version: deps.version }))
+  app.get('/health', (c) => c.json({ ok: true, buildId: deps.buildId }))
   app.route('/project', projectApp)
 
   app.notFound((c) => c.json(

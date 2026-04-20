@@ -7,6 +7,7 @@ export interface DaemonLock {
   port: number
   secret: string
   startedAt: number
+  buildId: string
 }
 
 export function daemonLockPath(): string {
@@ -85,5 +86,6 @@ function isDaemonLock(value: unknown): value is DaemonLock {
     && typeof v.port === 'number'
     && typeof v.secret === 'string'
     && typeof v.startedAt === 'number'
+    && typeof v.buildId === 'string'
   )
 }

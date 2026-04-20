@@ -19,7 +19,7 @@ describe('DaemonClientError', () => {
 })
 
 describe('getClient', () => {
-  const lock = { pid: 1, port: 4242, secret: 'shh', startedAt: 0 }
+  const lock = { pid: 1, port: 4242, secret: 'shh', startedAt: 0, buildId: 'test' }
 
   it('issues a GET with the bearer header from the lock', async () => {
     const fetchImpl = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {

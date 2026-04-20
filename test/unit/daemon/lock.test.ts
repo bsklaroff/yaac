@@ -38,7 +38,7 @@ describe('daemon lock', () => {
     })
 
     it('returns the parsed lock when valid', async () => {
-      const lock: DaemonLock = { pid: 1, port: 2, secret: 's', startedAt: 3 }
+      const lock: DaemonLock = { pid: 1, port: 2, secret: 's', startedAt: 3, buildId: 'b' }
       await fs.writeFile(daemonLockPath(), JSON.stringify(lock))
       expect(await readLock()).toEqual(lock)
     })
@@ -46,7 +46,7 @@ describe('daemon lock', () => {
 
   describe('writeLock', () => {
     it('writes the lock with mode 0600', async () => {
-      const lock: DaemonLock = { pid: 1, port: 2, secret: 'shh', startedAt: 3 }
+      const lock: DaemonLock = { pid: 1, port: 2, secret: 'shh', startedAt: 3, buildId: 'b' }
       await writeLock(lock)
       const stat = await fs.stat(daemonLockPath())
       // Bottom 9 bits of mode are the rwxrwxrwx triplet.
@@ -55,15 +55,15 @@ describe('daemon lock', () => {
     })
 
     it('overwrites an existing lock atomically', async () => {
-      await writeLock({ pid: 1, port: 2, secret: 'a', startedAt: 3 })
-      await writeLock({ pid: 9, port: 8, secret: 'b', startedAt: 7 })
-      expect(await readLock()).toEqual({ pid: 9, port: 8, secret: 'b', startedAt: 7 })
+      await writeLock({ pid: 1, port: 2, secret: 'a', startedAt: 3, buildId: 'b1' })
+      await writeLock({ pid: 9, port: 8, secret: 'b', startedAt: 7, buildId: 'b2' })
+      expect(await readLock()).toEqual({ pid: 9, port: 8, secret: 'b', startedAt: 7, buildId: 'b2' })
     })
   })
 
   describe('removeLock', () => {
     it('unlinks the lock', async () => {
-      await writeLock({ pid: 1, port: 2, secret: 's', startedAt: 3 })
+      await writeLock({ pid: 1, port: 2, secret: 's', startedAt: 3, buildId: 'b' })
       await removeLock()
       expect(await readLock()).toBeNull()
     })
@@ -75,13 +75,13 @@ describe('daemon lock', () => {
 
   describe('isLockLive', () => {
     it('returns false for a dead pid', async () => {
-      const lock: DaemonLock = { pid: 999_999, port: 1, secret: 's', startedAt: 0 }
+      const lock: DaemonLock = { pid: 999_999, port: 1, secret: 's', startedAt: 0, buildId: 'b' }
       expect(await isLockLive(lock)).toBe(false)
     })
 
     it('returns false when the pid is alive but no server listens', async () => {
       // Use the test runner pid (definitely alive) with an unbound port.
-      const lock: DaemonLock = { pid: process.pid, port: 1, secret: 's', startedAt: 0 }
+      const lock: DaemonLock = { pid: process.pid, port: 1, secret: 's', startedAt: 0, buildId: 'b' }
       expect(await isLockLive(lock)).toBe(false)
     })
 
@@ -98,7 +98,7 @@ describe('daemon lock', () => {
       const addr = server.address()
       if (!addr || typeof addr === 'string') throw new Error('bad address')
       try {
-        const lock: DaemonLock = { pid: process.pid, port: addr.port, secret: 's', startedAt: 0 }
+        const lock: DaemonLock = { pid: process.pid, port: addr.port, secret: 's', startedAt: 0, buildId: 'b' }
         expect(await isLockLive(lock)).toBe(true)
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()))

@@ -16,21 +16,21 @@ describe('buildApp', () => {
     await cleanupTempDir(tmpDir)
   })
 
-  it('GET /health returns version + ok without auth', async () => {
-    const app = buildApp({ secret: 'shh', version: '9.9.9' })
+  it('GET /health returns buildId + ok without auth', async () => {
+    const app = buildApp({ secret: 'shh', buildId: 'abc123' })
     const res = await app.request('/health')
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ ok: true, version: '9.9.9' })
+    expect(await res.json()).toEqual({ ok: true, buildId: 'abc123' })
   })
 
   it('GET /project/list requires bearer auth', async () => {
-    const app = buildApp({ secret: 'shh', version: '0.0.1' })
+    const app = buildApp({ secret: 'shh', buildId: 'test-build-id' })
     const res = await app.request('/project/list')
     expect(res.status).toBe(401)
   })
 
   it('GET /project/list returns [] on a fresh data dir', async () => {
-    const app = buildApp({ secret: 'shh', version: '0.0.1' })
+    const app = buildApp({ secret: 'shh', buildId: 'test-build-id' })
     const res = await app.request('/project/list', {
       headers: { authorization: 'Bearer shh' },
     })
@@ -39,7 +39,7 @@ describe('buildApp', () => {
   })
 
   it('unknown routes return uniform 404 NOT_FOUND', async () => {
-    const app = buildApp({ secret: 'shh', version: '0.0.1' })
+    const app = buildApp({ secret: 'shh', buildId: 'test-build-id' })
     const res = await app.request('/no/such/route', {
       headers: { authorization: 'Bearer shh' },
     })
@@ -50,7 +50,7 @@ describe('buildApp', () => {
   })
 
   it('handler exceptions are mapped to the uniform error body', async () => {
-    const app = buildApp({ secret: 'shh', version: '0.0.1' })
+    const app = buildApp({ secret: 'shh', buildId: 'test-build-id' })
     app.get('/boom', () => { throw new Error('kaboom') })
     const res = await app.request('/boom', { headers: { authorization: 'Bearer shh' } })
     expect(res.status).toBe(500)

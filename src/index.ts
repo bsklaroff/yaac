@@ -66,7 +66,7 @@ program
   .description('Run the yaac daemon (HTTP server the CLI talks to)')
   .option('-p, --port <port>', 'Port to bind on 127.0.0.1 (default: ephemeral)', (v) => Number.parseInt(v, 10))
   .action(async (options: { port?: number }) => {
-    await runDaemon({ port: options.port, version: YAAC_VERSION })
+    await runDaemon({ port: options.port })
   })
 
 const project = program

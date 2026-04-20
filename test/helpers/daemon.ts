@@ -18,7 +18,7 @@ export interface InProcessDaemon {
  */
 export async function bootInProcessDaemon(): Promise<InProcessDaemon> {
   const secret = crypto.randomBytes(32).toString('hex')
-  const app = buildApp({ secret, version: 'test' })
+  const app = buildApp({ secret, buildId: 'test' })
 
   const { server, port } = await new Promise<{ server: ServerType; port: number }>(
     (resolve, reject) => {

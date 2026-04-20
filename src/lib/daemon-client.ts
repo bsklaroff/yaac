@@ -2,7 +2,8 @@ import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { readLock, isLockLive, type DaemonLock } from '@/lib/daemon/lock'
+import { readBuildId } from '@/lib/build-id'
+import { daemonLockPath, readLock, isLockLive, removeLock, type DaemonLock } from '@/lib/daemon/lock'
 import {
   exitCodeForError,
   type DaemonErrorBody,
@@ -78,13 +79,18 @@ async function toClientError(res: Response): Promise<DaemonClientError> {
 }
 
 /**
- * Discover a running daemon or spawn one. Returns a live lock.
+ * Discover a running daemon or spawn one. Returns a live lock whose
+ * `buildId` matches the CLI's installed build.
  *
  * - If `YAAC_DAEMON_URL` + `YAAC_DAEMON_SECRET` are set, use them
  *   directly. This is the test injection hook: tests boot an
  *   in-process daemon and point the CLI at it without writing the
  *   shared `~/.yaac/.daemon.lock`. Production never sets these.
- * - Otherwise read `~/.yaac/.daemon.lock`. If live, return it.
+ * - Otherwise read `~/.yaac/.daemon.lock`. If live and the `buildId`
+ *   matches, return it.
+ * - If the lock is live but its `buildId` doesn't match our install,
+ *   SIGTERM the stale daemon, wait for it to release the lock, then
+ *   spawn a fresh one.
  * - Otherwise spawn `yaac daemon` detached and poll the lock for
  *   up to 5s.
  */
@@ -93,14 +99,59 @@ async function defaultResolveLock(): Promise<DaemonLock> {
   const envSecret = process.env.YAAC_DAEMON_SECRET
   if (envUrl && envSecret) {
     const url = new URL(envUrl)
-    return { pid: -1, port: Number(url.port), secret: envSecret, startedAt: 0 }
+    return {
+      pid: -1,
+      port: Number(url.port),
+      secret: envSecret,
+      startedAt: 0,
+      buildId: process.env.YAAC_DAEMON_BUILD_ID ?? '',
+    }
   }
 
+  const buildId = await readBuildId()
   const existing = await readLock()
-  if (existing && await isLockLive(existing)) return existing
+  if (existing && await isLockLive(existing)) {
+    if (existing.buildId === buildId) return existing
+    await stopStaleDaemon(existing)
+  }
 
   await spawnDaemon()
-  return waitForLiveLock(5000)
+  const fresh = await waitForLiveLock(5000)
+  if (fresh.buildId !== buildId) {
+    throw new DaemonClientError(
+      'INTERNAL',
+      `daemon buildId ${fresh.buildId} does not match CLI buildId ${buildId}`,
+    )
+  }
+  return fresh
+}
+
+/**
+ * Terminate a stale daemon and wait for its lock file to disappear
+ * (the daemon's shutdown handler unlinks it on SIGTERM). If the
+ * daemon doesn't exit cleanly within the deadline, force-remove the
+ * lock so the next spawn isn't confused by leftover state.
+ */
+async function stopStaleDaemon(lock: DaemonLock): Promise<void> {
+  try {
+    process.kill(lock.pid, 'SIGTERM')
+  } catch {
+    // Process already gone — still need to clear the lock below.
+  }
+  const deadline = Date.now() + 2000
+  while (Date.now() < deadline) {
+    const cur = await readLock()
+    if (!cur || cur.pid !== lock.pid) return
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  // Daemon didn't clean up in time. Remove the lock ourselves so the
+  // next spawn sees a clean slate — the old process is either gone or
+  // wedged, either way it's no longer the source of truth.
+  const cur = await readLock()
+  if (cur && cur.pid === lock.pid) {
+    await removeLock()
+    console.error(`[yaac] force-removed stale lock at ${daemonLockPath()} (pid ${lock.pid})`)
+  }
 }
 
 async function spawnDaemon(): Promise<void> {

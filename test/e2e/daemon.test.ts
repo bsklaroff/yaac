@@ -66,7 +66,7 @@ describe('yaac daemon (subprocess)', () => {
     dataDir = path.join(homeDir, '.yaac')
     await fs.mkdir(path.join(dataDir, 'projects'), { recursive: true })
     setDataDir(dataDir)
-    env = { ...process.env, HOME: homeDir }
+    env = { ...process.env, HOME: homeDir, YAAC_BUILD_ID: 'test-build-id' }
   })
 
   afterEach(async () => {

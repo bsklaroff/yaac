@@ -1,12 +1,12 @@
 import crypto from 'node:crypto'
 import { serve, type ServerType } from '@hono/node-server'
 import { buildApp } from '@/lib/daemon/server'
+import { readBuildId } from '@/lib/build-id'
 import { daemonLockPath, isLockLive, readLock, removeLock, writeLock } from '@/lib/daemon/lock'
 import { ensureDataDir } from '@/lib/project/paths'
 
 export interface DaemonStartOptions {
   port?: number
-  version: string
 }
 
 /**
@@ -20,6 +20,10 @@ export interface DaemonStartOptions {
 export async function runDaemon(opts: DaemonStartOptions): Promise<void> {
   await ensureDataDir()
 
+  // Read build-id up front so a broken install fails loudly before we
+  // bind a port or write a lock file.
+  const buildId = await readBuildId()
+
   const existing = await readLock()
   if (existing && await isLockLive(existing)) {
     console.error(`[daemon] already running pid=${existing.pid} port=${existing.port}`)
@@ -27,7 +31,7 @@ export async function runDaemon(opts: DaemonStartOptions): Promise<void> {
   }
 
   const secret = crypto.randomBytes(32).toString('hex')
-  const app = buildApp({ secret, version: opts.version })
+  const app = buildApp({ secret, buildId })
 
   const { server, port } = await new Promise<{ server: ServerType; port: number }>(
     (resolve, reject) => {
@@ -38,7 +42,7 @@ export async function runDaemon(opts: DaemonStartOptions): Promise<void> {
     },
   )
 
-  await writeLock({ pid: process.pid, port, secret, startedAt: Date.now() })
+  await writeLock({ pid: process.pid, port, secret, startedAt: Date.now(), buildId })
   console.error(`[daemon] listening on 127.0.0.1:${port} lock=${daemonLockPath()}`)
 
   const shutdown = async (signal: string): Promise<void> => {
