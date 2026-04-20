@@ -181,11 +181,11 @@ async function spawnDaemonDetached(): Promise<void> {
 /**
  * Figure out how to relaunch ourselves as `yaac daemon run`.
  *
- * - Production build (`dist/index.js`): `process.execPath` is node and
+ * - Production build (`dist/cli.js`): `process.execPath` is node and
  *   `argv[1]` is the bundled entry — just reuse both.
  * - Dev (source `.ts` files): we're running under tsx. tsx strips its
  *   own CLI script from argv before running the target, so `argv[1]`
- *   is the source entry (`src/index.ts`). Respawn via tsx's CLI so the
+ *   is the source entry (`src/cli.ts`). Respawn via tsx's CLI so the
  *   loader is set up again in the child.
  */
 function resolveDaemonInvocation(): { bin: string; args: string[] } {

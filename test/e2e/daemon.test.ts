@@ -7,7 +7,7 @@ import { setDataDir } from '@/lib/project/paths'
 import { daemonLockPath, readLock, type DaemonLock } from '@/lib/daemon/lock'
 
 const TSX_CLI = path.resolve(__dirname, '..', '..', 'node_modules', 'tsx', 'dist', 'cli.mjs')
-const ENTRY = path.resolve(__dirname, '..', '..', 'src', 'index.ts')
+const ENTRY = path.resolve(__dirname, '..', '..', 'src', 'cli.ts')
 
 interface SpawnedDaemon {
   child: ChildProcess
