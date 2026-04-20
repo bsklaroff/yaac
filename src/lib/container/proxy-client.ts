@@ -250,7 +250,9 @@ export class ProxyClient {
       this.resolvedImage = taggedImage
       this.running = true
       this.gcStaleProxies(hash).catch(() => {})
-      this.gcStaleNetworks().catch(() => {})
+      this.gcStaleTestContainers()
+        .then(() => this.gcStaleNetworks())
+        .catch(() => {})
       return
     }
 
@@ -488,6 +490,32 @@ export class ProxyClient {
       console.log(`Removing stale proxy ${proxyName}...`)
       try {
         await podman.getContainer(proxyName).remove({ force: true })
+      } catch {
+        // already gone
+      }
+    }
+  }
+
+  /**
+   * Remove exited `yaac.test=true` containers older than 1 hour. Tests
+   * clean these up in afterEach, but a crashed or killed test run leaks
+   * them — and the leftover exited containers pin their per-test network,
+   * blocking gcStaleNetworks. The 1-hour grace period avoids racing a
+   * long-running test suite.
+   */
+  private async gcStaleTestContainers(): Promise<void> {
+    const cutoff = Math.floor(Date.now() / 1000) - 60 * 60
+    const containers = await podman.listContainers({
+      all: true,
+      filters: { label: ['yaac.test=true'], status: ['exited'] },
+    })
+
+    for (const c of containers) {
+      if (typeof c.Created !== 'number' || c.Created > cutoff) continue
+      const name = c.Names?.[0]?.replace(/^\//, '') ?? c.Id
+      console.log(`Removing stale test container ${name}...`)
+      try {
+        await podman.getContainer(c.Id).remove({ force: true })
       } catch {
         // already gone
       }
