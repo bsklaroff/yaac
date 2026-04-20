@@ -97,9 +97,10 @@ describe('ensureCodexConfigToml', () => {
     const raw = await fs.readFile(path.join(tmpDir, 'config.toml'), 'utf8')
     const parsed = TOML.parse(raw) as Record<string, Record<string, unknown>>
     expect(parsed.features.codex_hooks).toBe(true)
+    expect(parsed.features.apps).toBe(false)
   })
 
-  it('preserves existing config and adds codex_hooks', async () => {
+  it('preserves existing config and adds feature flags', async () => {
     await fs.writeFile(path.join(tmpDir, 'config.toml'), [
       'model = "o3"',
       '',
@@ -114,9 +115,10 @@ describe('ensureCodexConfigToml', () => {
     expect(parsed.model).toBe('o3')
     expect((parsed.history as Record<string, unknown>).persistence).toBe('none')
     expect((parsed.features as Record<string, unknown>).codex_hooks).toBe(true)
+    expect((parsed.features as Record<string, unknown>).apps).toBe(false)
   })
 
-  it('preserves existing features and adds codex_hooks', async () => {
+  it('preserves existing features and adds feature flags', async () => {
     await fs.writeFile(path.join(tmpDir, 'config.toml'), [
       '[features]',
       'some_other_feature = true',
@@ -128,12 +130,14 @@ describe('ensureCodexConfigToml', () => {
 
     expect(parsed.features.some_other_feature).toBe(true)
     expect(parsed.features.codex_hooks).toBe(true)
+    expect(parsed.features.apps).toBe(false)
   })
 
-  it('does not rewrite when codex_hooks already enabled', async () => {
+  it('does not rewrite when both flags already set correctly', async () => {
     await fs.writeFile(path.join(tmpDir, 'config.toml'), [
       '[features]',
       'codex_hooks = true',
+      'apps = false',
     ].join('\n'))
 
     const beforeStat = await fs.stat(path.join(tmpDir, 'config.toml'))
@@ -145,6 +149,20 @@ describe('ensureCodexConfigToml', () => {
     expect(afterStat.mtimeMs).toBe(beforeStat.mtimeMs)
   })
 
+  it('rewrites when codex_hooks is set but apps is not', async () => {
+    await fs.writeFile(path.join(tmpDir, 'config.toml'), [
+      '[features]',
+      'codex_hooks = true',
+    ].join('\n'))
+
+    await ensureCodexConfigToml(tmpDir)
+    const raw = await fs.readFile(path.join(tmpDir, 'config.toml'), 'utf8')
+    const parsed = TOML.parse(raw) as Record<string, Record<string, unknown>>
+
+    expect(parsed.features.codex_hooks).toBe(true)
+    expect(parsed.features.apps).toBe(false)
+  })
+
   it('handles invalid existing config.toml gracefully', async () => {
     await fs.writeFile(path.join(tmpDir, 'config.toml'), 'not [valid toml {{')
     await ensureCodexConfigToml(tmpDir)
@@ -152,5 +170,6 @@ describe('ensureCodexConfigToml', () => {
     const raw = await fs.readFile(path.join(tmpDir, 'config.toml'), 'utf8')
     const parsed = TOML.parse(raw) as Record<string, Record<string, unknown>>
     expect(parsed.features.codex_hooks).toBe(true)
+    expect(parsed.features.apps).toBe(false)
   })
 })

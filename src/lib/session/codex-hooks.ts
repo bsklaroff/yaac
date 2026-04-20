@@ -58,8 +58,14 @@ export async function ensureCodexHooksJson(codexPath: string): Promise<void> {
 }
 
 /**
- * Ensures the codex config.toml has codex_hooks enabled under [features],
+ * Ensures the codex config.toml has the [features] flags we need,
  * merging with any existing configuration rather than overwriting it.
+ *
+ * - codex_hooks = true: enables the hooks we install via hooks.json
+ * - apps = false: disables the codex_apps MCP server, which fails to
+ *   handshake against chatgpt.com/backend-api/wham/apps and surfaces a
+ *   startup warning on every session.
+ *   See https://github.com/openai/codex/issues/16550
  */
 export async function ensureCodexConfigToml(codexPath: string): Promise<void> {
   const configPath = path.join(codexPath, 'config.toml')
@@ -73,9 +79,10 @@ export async function ensureCodexConfigToml(codexPath: string): Promise<void> {
   }
 
   const features = (config.features ?? {}) as Record<string, unknown>
-  if (features.codex_hooks === true) return
+  if (features.codex_hooks === true && features.apps === false) return
 
   features.codex_hooks = true
+  features.apps = false
   config.features = features
   await fs.writeFile(configPath, TOML.stringify(config))
 }
