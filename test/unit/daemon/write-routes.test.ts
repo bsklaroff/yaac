@@ -204,7 +204,6 @@ describe('write routes', () => {
       const body = await res.json() as { sessionId: string }
       expect(body).toMatchObject({ sessionId: 'sess-x' })
       expect(mockCreateSession).toHaveBeenCalledWith('demo', expect.objectContaining({
-        noAttach: true,
         gitUser: { name: 'A', email: 'a@b' },
         portReservations: [{ containerPort: 3000, hostPort: 3042 }],
       }))

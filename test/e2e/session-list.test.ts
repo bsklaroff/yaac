@@ -5,6 +5,7 @@ import crypto from 'node:crypto'
 import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject, podmanRetry, removeContainer } from '@test/helpers/setup'
 import { bootInProcessDaemon, type InProcessDaemon } from '@test/helpers/daemon'
 import { sessionList } from '@/commands/session-list'
+import { reconcileStaleSessions } from '@/lib/session/list'
 import { podman } from '@/lib/container/runtime'
 import { ensureImage } from '@/lib/container/image-builder'
 import { claudeDir, worktreeDir, worktreesDir, repoDir, getDataDir } from '@/lib/project/paths'
@@ -179,9 +180,11 @@ describe('yaac session list', () => {
     expect(output).not.toContain('stopped-proj')
     expect(output).not.toContain('exited')
     expect(output).toContain('No active sessions')
-    expect(output).toContain('Cleaning up')
 
-    // Wait for detached cleanup process to finish
+    // The background loop owns stale-container reaping. Run a single tick of its
+    // reconcile step to simulate the loop catching this container.
+    await reconcileStaleSessions()
+
     await vi.waitFor(async () => {
       const remaining = await podman.listContainers({
         all: true,
@@ -222,10 +225,10 @@ describe('yaac session list', () => {
 
     // Should not appear as an active session
     expect(output).not.toContain('zombie-proj')
-    // Should show cleanup message
-    expect(output).toContain('Cleaning up')
 
-    // Wait for detached cleanup process to finish
+    // Background loop reaps; simulate a single tick.
+    await reconcileStaleSessions()
+
     await vi.waitFor(async () => {
       const remaining = await podman.listContainers({
         all: true,

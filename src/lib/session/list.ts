@@ -3,7 +3,7 @@ import path from 'node:path'
 import { podman } from '@/lib/container/runtime'
 import { claudeDir, codexTranscriptDir, getDataDir, getProjectsDir, projectDir } from '@/lib/project/paths'
 import { getSessionStatus, getSessionFirstMessage, getToolFromContainer } from '@/lib/session/status'
-import { isTmuxSessionAlive } from '@/lib/session/cleanup'
+import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 import { readBlockedHosts } from '@/lib/session/blocked-hosts'
 import { isPrewarmSession, readPrewarmSessions } from '@/lib/prewarm'
 import { DaemonError } from '@/lib/daemon/errors'
@@ -190,6 +190,35 @@ export async function listActiveSessions(projectFilter?: string): Promise<Active
     }))
 
   return { sessions, stale, failedPrewarms }
+}
+
+/**
+ * Tear down stale session containers (stopped, or running with a dead
+ * tmux session) across every project. Swallows individual failures so
+ * one broken container can't block the rest; designed to be called from
+ * the daemon background loop.
+ */
+export async function reconcileStaleSessions(): Promise<void> {
+  let containers
+  try {
+    containers = await podman.listContainers({
+      all: true,
+      filters: { label: [`yaac.data-dir=${getDataDir()}`] },
+    })
+  } catch {
+    return
+  }
+  const { stale } = classifySessionContainers(
+    containers, Date.now(), isTmuxSessionAlive, resolveStartingGraceMs(),
+  )
+  if (stale.length === 0) return
+  await Promise.all(stale.map((s) =>
+    cleanupSessionDetached({
+      containerName: s.containerName,
+      projectSlug: s.projectSlug,
+      sessionId: s.sessionId,
+    }).catch(() => { /* best-effort */ }),
+  ))
 }
 
 /**

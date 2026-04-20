@@ -6,6 +6,9 @@ import { getSessionDetail, getSessionBlockedHosts, getSessionPrompt } from '@/li
 import { deleteSession } from '@/lib/session/delete'
 import { createSession, type SessionCreateOptions } from '@/commands/session-create'
 import { DaemonError } from '@/lib/daemon/errors'
+import { resolveSessionContainer } from '@/lib/daemon/session-resolve'
+import { getPrewarmSession, clearPrewarmSession } from '@/lib/prewarm'
+import { pickNextStreamSession } from '@/lib/daemon/stream-picker'
 
 export const sessionApp = new Hono()
   .get(
@@ -45,7 +48,7 @@ export const sessionApp = new Hono()
       if (body.tool) opts.tool = body.tool
       if (body.gitUser) opts.gitUser = body.gitUser
       if (body.portReservations) opts.portReservations = body.portReservations
-      const result = await createSession(body.project, { ...opts, noAttach: true })
+      const result = await createSession(body.project, opts)
       if (!result) throw new DaemonError('INTERNAL', 'session creation returned no result')
       return c.json(result)
     },
@@ -59,6 +62,37 @@ export const sessionApp = new Hono()
       return c.json(info)
     },
   )
+  .post(
+    '/stream/next',
+    zValidator('json', z.object({
+      project: z.string().optional(),
+      tool: z.enum(['claude', 'codex']).optional(),
+      visited: z.array(z.string()).default([]),
+      lastVisited: z.string().optional(),
+      lastProjectSlug: z.string().optional(),
+      lastTool: z.enum(['claude', 'codex']).optional(),
+      lastOutcome: z.enum(['detached', 'closed_blank', 'closed_prompted', 'none']).default('none'),
+    })),
+    async (c) => {
+      const body = c.req.valid('json')
+      const result = await pickNextStreamSession(body)
+      return c.json(result)
+    },
+  )
+  .get('/:id/attach-info', async (c) => {
+    const resolved = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
+    if (resolved.projectSlug && resolved.sessionId) {
+      const prewarm = await getPrewarmSession(resolved.projectSlug)
+      if (prewarm?.sessionId === resolved.sessionId) {
+        await clearPrewarmSession(resolved.projectSlug)
+      }
+    }
+    return c.json({ containerName: resolved.containerName, tmuxSession: 'yaac' as const })
+  })
+  .get('/:id/shell-info', async (c) => {
+    const resolved = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
+    return c.json({ containerName: resolved.containerName })
+  })
   .get('/:id', async (c) => c.json(await getSessionDetail(c.req.param('id'))))
   .get('/:id/blocked-hosts', async (c) => c.json(await getSessionBlockedHosts(c.req.param('id'))))
   .get('/:id/prompt', async (c) => {

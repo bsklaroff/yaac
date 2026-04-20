@@ -113,14 +113,9 @@ vi.mock('@/lib/session/codex-hooks', () => ({
   ensureCodexConfigToml: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('@/lib/session/finalize-attached-session', () => ({
-  finalizeAttachedSession: vi.fn().mockResolvedValue('closed_prompted'),
-}))
-
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import { podman, ensureContainerRuntime } from '@/lib/container/runtime'
-import { finalizeAttachedSession } from '@/lib/session/finalize-attached-session'
 import { claimPrewarmSession } from '@/lib/prewarm'
 import { ensureImage, packTar } from '@/lib/container/image-builder'
 import { proxyClient } from '@/lib/container/proxy-client'
@@ -138,7 +133,6 @@ const mockCreateContainer = vi.mocked(podman.createContainer)
 const mockGetContainer = vi.mocked(podman.getContainer)
 // eslint-disable-next-line @typescript-eslint/unbound-method
 const mockGetImage = vi.mocked(podman.getImage)
-const mockFinalizeAttachedSession = vi.mocked(finalizeAttachedSession)
 const mockClaimPrewarmSession = vi.mocked(claimPrewarmSession)
 
 function mockAttachedChild(): EventEmitter {
@@ -174,7 +168,6 @@ describe('createSession', () => {
     vi.mocked(proxyClient.getCaCert).mockResolvedValue('cert')
     mockSpawn.mockImplementation(() => mockAttachedChild() as never)
     mockClaimPrewarmSession.mockResolvedValue(null)
-    mockFinalizeAttachedSession.mockResolvedValue('closed_prompted')
     mockCreateContainer.mockResolvedValue({
       start: vi.fn().mockResolvedValue(undefined),
     } as never)
@@ -186,7 +179,7 @@ describe('createSession', () => {
     } as never)
   })
 
-  it('finalizes a claimed prewarmed session through the shared attach finalizer', async () => {
+  it('returns the claimed prewarmed session without starting a new container', async () => {
     mockClaimPrewarmSession.mockResolvedValue({
       sessionId: 'prewarm-session',
       containerName: 'yaac-demo-prewarm-session',
@@ -196,28 +189,22 @@ describe('createSession', () => {
 
     expect(result).toEqual({
       sessionId: 'prewarm-session',
-      attachOutcome: 'closed_prompted',
-    })
-    expect(mockFinalizeAttachedSession).toHaveBeenCalledWith({
       containerName: 'yaac-demo-prewarm-session',
-      projectSlug: 'demo',
-      sessionId: 'prewarm-session',
+      forwardedPorts: [],
       tool: 'claude',
+      claimedPrewarm: true,
     })
+    expect(mockCreateContainer).not.toHaveBeenCalled()
   })
 
-  it('finalizes a newly created session through the shared attach finalizer', async () => {
+  it('returns a newly created session descriptor without attaching', async () => {
     const result = await createSession('demo', { tool: 'codex' })
 
     expect(result).toBeDefined()
     expect(result?.sessionId).toEqual(expect.any(String))
-    expect(result?.attachOutcome).toBe('closed_prompted')
+    expect(result?.tool).toBe('codex')
+    expect(result?.claimedPrewarm).toBe(false)
     expect(mockCreateContainer).toHaveBeenCalledTimes(1)
-    expect(mockFinalizeAttachedSession).toHaveBeenCalledTimes(1)
-    expect(mockFinalizeAttachedSession.mock.calls[0][0]).toMatchObject({
-      projectSlug: 'demo',
-      tool: 'codex',
-    })
   })
 
   it('mounts shared Claude and Codex state for Claude sessions', async () => {
@@ -283,7 +270,6 @@ describe('sessionCreate (CLI shim)', () => {
     vi.mocked(getGitUserConfig).mockResolvedValue({ name: 'Test', email: 't@x.io' })
     mockStartPortForwarders.mockReturnValue(vi.fn())
     mockSpawn.mockImplementation(() => mockAttachedChild() as never)
-    mockFinalizeAttachedSession.mockResolvedValue('closed_prompted')
     vi.mocked(getRpcClient).mockResolvedValue({
       session: {
         create: { $post: mockPost },
@@ -312,7 +298,6 @@ describe('sessionCreate (CLI shim)', () => {
         gitUser: { name: 'Test', email: 't@x.io' },
       }) as unknown,
     }))
-    expect(mockFinalizeAttachedSession).toHaveBeenCalledTimes(1)
   })
 
   it('reserves host ports locally and passes them to the daemon', async () => {

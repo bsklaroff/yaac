@@ -1,5 +1,4 @@
 import { getRpcClient, toClientError } from '@/lib/daemon-client'
-import { cleanupSessionDetached } from '@/lib/session/cleanup'
 import type {
   DeletedSessionEntry,
   FailedPrewarmInfo,
@@ -37,14 +36,6 @@ export async function sessionList(projectSlug?: string, options: SessionListOpti
   }
 
   renderFailedPrewarms(result.failedPrewarms)
-
-  if (result.stale.length === 0) return
-
-  const ids = result.stale.map((s) => s.sessionId.slice(0, 8)).join(', ')
-  console.log(`Cleaning up ${result.stale.length} stale session(s): ${ids}`)
-  await Promise.all(result.stale.map(({ containerName, projectSlug: slug, sessionId }) =>
-    cleanupSessionDetached({ containerName, projectSlug: slug, sessionId }),
-  ))
 }
 
 function renderRunning(sessions: SessionListEntry[]): void {

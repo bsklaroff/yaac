@@ -1,21 +1,15 @@
-import { execSync } from 'node:child_process'
-import { resolveContainerAnyState } from '@/lib/container/resolve'
+import { spawn } from 'node:child_process'
+import { getRpcClient, toClientError } from '@/lib/daemon-client'
 
 export async function sessionShell(containerId: string): Promise<void> {
-  const resolved = await resolveContainerAnyState(containerId)
-  if (!resolved) return
+  const client = await getRpcClient()
+  const res = await client.session[':id']['shell-info'].$get({ param: { id: containerId } })
+  if (!res.ok) throw await toClientError(res)
+  const { containerName } = await res.json()
 
-  const { name: containerName, state } = resolved
-
-  if (state !== 'running') {
-    console.error(`Container "${containerName}" is not running (state: ${state}).`)
-    process.exitCode = 1
-    return
-  }
-
-  try {
-    execSync(`podman exec -it ${containerName} zsh`, { stdio: 'inherit' })
-  } catch {
-    // Shell exited non-zero (e.g. user exited with non-zero status) — nothing to do.
-  }
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn('podman', ['exec', '-it', containerName, 'zsh'], { stdio: 'inherit' })
+    child.on('close', () => resolve())
+    child.on('error', reject)
+  })
 }

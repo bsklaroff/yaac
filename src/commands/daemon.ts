@@ -15,6 +15,7 @@ import {
   type DaemonLock,
 } from '@/lib/daemon/lock'
 import { ensureDataDir } from '@/lib/project/paths'
+import { startBackgroundLoop } from '@/lib/daemon/background-loop'
 
 const __filename = fileURLToPath(import.meta.url)
 
@@ -58,8 +59,17 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
   await writeLock({ pid: process.pid, port, secret, startedAt: Date.now(), buildId })
   console.error(`[daemon] listening on 127.0.0.1:${port} lock=${daemonLockPath()}`)
 
+  const abortCtrl = new AbortController()
+  const loopDone = startBackgroundLoop({ signal: abortCtrl.signal })
+
   const shutdown = async (signal: string): Promise<void> => {
     console.error(`[daemon] ${signal} — shutting down`)
+    abortCtrl.abort()
+    try {
+      await loopDone
+    } catch (err) {
+      console.error('[daemon] loop exit error:', err)
+    }
     // @hono/node-server wraps a Node http.Server; close() refuses new
     // connections, drains in-flight requests, then fires the callback.
     await new Promise<void>((resolve) => server.close(() => resolve()))

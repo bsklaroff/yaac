@@ -1,93 +1,73 @@
+import { EventEmitter } from 'node:events'
+import { spawn } from 'node:child_process'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { execSync } from 'node:child_process'
 import { sessionAttach } from '@/commands/session-attach'
-import { resolveContainerAnyState } from '@/lib/container/resolve'
-import { getPrewarmSession, clearPrewarmSession } from '@/lib/prewarm'
+import { getRpcClient } from '@/lib/daemon-client'
+import type * as daemonClientModule from '@/lib/daemon-client'
 
 vi.mock('node:child_process', () => ({
-  execSync: vi.fn(),
+  spawn: vi.fn(),
 }))
 
-vi.mock('@/lib/container/resolve', () => ({
-  resolveContainerAnyState: vi.fn(),
-}))
+vi.mock('@/lib/daemon-client', async (importOriginal) => {
+  const actual = await importOriginal<typeof daemonClientModule>()
+  return {
+    ...actual,
+    getRpcClient: vi.fn(),
+    toClientError: vi.fn().mockImplementation(async (res: Response) => {
+      const body = await res.json() as { error?: { message?: string } }
+      return new Error(body.error?.message ?? `daemon ${res.status}`)
+    }),
+  }
+})
 
-vi.mock('@/lib/session/cleanup', () => ({
-  isTmuxSessionAlive: vi.fn().mockReturnValue(true),
-  cleanupSessionDetached: vi.fn(),
-}))
-
-vi.mock('@/lib/prewarm', () => ({
-  getPrewarmSession: vi.fn().mockResolvedValue(null),
-  clearPrewarmSession: vi.fn().mockResolvedValue(undefined),
-}))
+function mockAttachedChild(): EventEmitter {
+  const child = new EventEmitter()
+  process.nextTick(() => child.emit('close', 0))
+  return child
+}
 
 describe('sessionAttach', () => {
   beforeEach(() => {
-    process.exitCode = undefined
-  })
-
-  afterEach(() => {
     vi.clearAllMocks()
     process.exitCode = undefined
   })
 
-  it('clears prewarm state when attaching to the tracked prewarm session', async () => {
-    vi.mocked(resolveContainerAnyState).mockResolvedValue({
-      name: 'yaac-demo-prewarm',
-      sessionId: 'prewarm-session',
-      projectSlug: 'demo',
-      state: 'running',
-    })
-    vi.mocked(getPrewarmSession).mockResolvedValue({
-      sessionId: 'prewarm-session',
-      containerName: 'yaac-demo-prewarm',
-      fingerprint: 'fp',
-      state: 'ready',
-      verifiedAt: Date.now(),
-    })
+  afterEach(() => {
+    process.exitCode = undefined
+  })
 
-    await sessionAttach('prewarm-session')
+  it('fetches attach-info and spawns podman exec tmux attach', async () => {
+    vi.mocked(spawn).mockImplementation(() => mockAttachedChild() as never)
+    const mockGet = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ containerName: 'yaac-demo-abc', tmuxSession: 'yaac' }),
+    })
+    vi.mocked(getRpcClient).mockResolvedValue({
+      session: { ':id': { 'attach-info': { $get: mockGet } } },
+    } as unknown as Awaited<ReturnType<typeof getRpcClient>>)
 
-    expect(clearPrewarmSession).toHaveBeenCalledWith('demo')
-    expect(execSync).toHaveBeenCalledWith(
-      'podman exec -it yaac-demo-prewarm tmux attach-session -t yaac',
+    await sessionAttach('abc')
+
+    expect(mockGet).toHaveBeenCalledWith({ param: { id: 'abc' } })
+    expect(spawn).toHaveBeenCalledWith(
+      'podman',
+      ['exec', '-it', 'yaac-demo-abc', 'tmux', 'attach-session', '-t', 'yaac'],
       { stdio: 'inherit' },
     )
   })
 
-  it('does not clear prewarm state when attaching to another session in the same project', async () => {
-    vi.mocked(resolveContainerAnyState).mockResolvedValue({
-      name: 'yaac-demo-active',
-      sessionId: 'active-session',
-      projectSlug: 'demo',
-      state: 'running',
+  it('throws when the daemon returns a non-ok response', async () => {
+    const mockGet = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: () => Promise.resolve({ error: { code: 'NOT_FOUND', message: 'session bogus not found' } }),
     })
-    vi.mocked(getPrewarmSession).mockResolvedValue({
-      sessionId: 'prewarm-session',
-      containerName: 'yaac-demo-prewarm',
-      fingerprint: 'fp',
-      state: 'ready',
-      verifiedAt: Date.now(),
-    })
+    vi.mocked(getRpcClient).mockResolvedValue({
+      session: { ':id': { 'attach-info': { $get: mockGet } } },
+    } as unknown as Awaited<ReturnType<typeof getRpcClient>>)
 
-    await sessionAttach('active-session')
-
-    expect(clearPrewarmSession).not.toHaveBeenCalled()
-  })
-
-  it('returns an error for non-running containers without touching prewarm state', async () => {
-    vi.mocked(resolveContainerAnyState).mockResolvedValue({
-      name: 'yaac-demo-exited',
-      sessionId: 'dead-session',
-      projectSlug: 'demo',
-      state: 'exited',
-    })
-
-    await sessionAttach('dead-session')
-
-    expect(getPrewarmSession).not.toHaveBeenCalled()
-    expect(clearPrewarmSession).not.toHaveBeenCalled()
-    expect(process.exitCode).toBe(1)
+    await expect(sessionAttach('bogus')).rejects.toThrow('session bogus not found')
+    expect(spawn).not.toHaveBeenCalled()
   })
 })

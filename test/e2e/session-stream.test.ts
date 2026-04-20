@@ -3,11 +3,13 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject, podmanRetry, removeContainer } from '@test/helpers/setup'
+import { bootInProcessDaemon, type InProcessDaemon } from '@test/helpers/daemon'
 import { podman } from '@/lib/container/runtime'
 import { ensureImage } from '@/lib/container/image-builder'
 import { claudeDir, worktreeDir, worktreesDir, repoDir, getDataDir } from '@/lib/project/paths'
 import { addWorktree, getDefaultBranch } from '@/lib/git'
-import { getWaitingSessions, sessionStream } from '@/commands/session-stream'
+import { getWaitingSessions } from '@/lib/session/waiting'
+import { sessionStream } from '@/commands/session-stream'
 
 async function createContainerWithWaitingStatus(projectSlug: string): Promise<{
   containerName: string
@@ -123,13 +125,18 @@ describe('yaac session stream', () => {
     const tmpDir = await createTempDataDir()
     tmpDirs.push(tmpDir)
 
+    let daemon: InProcessDaemon | undefined
     const logs: string[] = []
     const origLog = console.log
-    console.log = (msg: string) => logs.push(msg)
+    try {
+      daemon = await bootInProcessDaemon()
+      console.log = (msg: string) => logs.push(msg)
+      await sessionStream()
+    } finally {
+      console.log = origLog
+      await daemon?.stop()
+    }
 
-    await sessionStream()
-
-    console.log = origLog
     expect(logs.join('\n')).toContain('No projects found')
   })
 

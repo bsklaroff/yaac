@@ -19,7 +19,7 @@ import type { PrewarmEntry } from '@/lib/prewarm'
 import { isTmuxSessionAlive } from '@/lib/session/cleanup'
 import { resolveSessionFingerprint } from '@/lib/session/fingerprint'
 import { sessionCreate } from '@/commands/session-create'
-import { getWaitingSessions } from '@/commands/session-stream'
+import { getWaitingSessions } from '@/lib/session/waiting'
 
 /**
  * Create a minimal running container with tmux for a project.

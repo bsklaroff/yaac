@@ -1,5 +1,7 @@
 import fs from 'node:fs/promises'
-import { blockedHostsDir, blockedHostsFile } from '@/lib/project/paths'
+import { blockedHostsDir, blockedHostsFile, getDataDir } from '@/lib/project/paths'
+import { podman } from '@/lib/container/runtime'
+import { proxyClient } from '@/lib/container/proxy-client'
 import type { ProxyClient } from '@/lib/container/proxy-client'
 
 export async function fetchAndPersistBlockedHosts(
@@ -43,6 +45,37 @@ export async function readBlockedHosts(slug: string, sessionId: string): Promise
   } catch {
     return []
   }
+}
+
+/**
+ * List running managed containers and persist their blocked-host state
+ * from the proxy sidecar to disk. No-op if the proxy isn't running.
+ * Replaces the hand-rolled block at the bottom of the old
+ * `session monitor` command.
+ */
+export async function persistAllBlockedHosts(): Promise<void> {
+  try {
+    await proxyClient.ensureRunning()
+  } catch {
+    return
+  }
+  let containers
+  try {
+    containers = await podman.listContainers({
+      all: true,
+      filters: { label: [`yaac.data-dir=${getDataDir()}`] },
+    })
+  } catch {
+    return
+  }
+  const sessions = containers
+    .filter((c) => c.State === 'running')
+    .map((c) => ({
+      sessionId: c.Labels?.['yaac.session-id'] ?? '',
+      projectSlug: c.Labels?.['yaac.project'] ?? '',
+    }))
+    .filter((s) => s.sessionId && s.projectSlug)
+  await fetchAndPersistBlockedHosts(proxyClient, sessions)
 }
 
 export async function readAllBlockedHosts(
