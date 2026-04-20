@@ -228,12 +228,20 @@ async function createSessionNonInteractive(
     `echo '/workspace/.git' > /repo/.git/worktrees/${sessionId}/gitdir`,
   ])
 
-  // Configure git identity inside container
+  // Configure git identity and trust mounted dirs (mirrors session-create.ts —
+  // without safe.directory, rootless podman UID mapping can make git refuse
+  // to operate in /workspace under parallel e2e load).
   await podmanExecRetry('podman', [
     'exec', containerName, 'git', 'config', '--global', 'user.name', 'Test',
   ])
   await podmanExecRetry('podman', [
     'exec', containerName, 'git', 'config', '--global', 'user.email', 'test@test.com',
+  ])
+  await podmanExecRetry('podman', [
+    'exec', containerName, 'git', 'config', '--global', '--add', 'safe.directory', '/workspace',
+  ])
+  await podmanExecRetry('podman', [
+    'exec', containerName, 'git', 'config', '--global', '--add', 'safe.directory', '/repo',
   ])
 
   // Start tmux shell for the session
