@@ -116,7 +116,7 @@ describe('yaac daemon (subprocess)', () => {
     const res = await fetch(`http://127.0.0.1:${daemon.lock.port}/project/list`)
     expect(res.status).toBe(401)
     const body = await res.json() as { error: { code: string } }
-    expect(body.error.code).toBe('AUTH_REQUIRED')
+    expect(body.error.code).toBe('BAD_BEARER')
   })
 
   it('returns the empty project list with the correct bearer', async () => {

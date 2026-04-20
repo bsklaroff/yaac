@@ -1,0 +1,442 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
+import { buildApp } from '@/lib/daemon/server'
+import { configOverrideDir, getProjectsDir, projectDir, claudeDir, codexDir } from '@/lib/project/paths'
+import { addToken, loadCredentials } from '@/lib/project/credentials'
+import {
+  loadClaudeCredentialsFile,
+  saveClaudeOAuthBundle,
+} from '@/lib/project/tool-auth'
+import { loadPreferences } from '@/lib/project/preferences'
+import type * as projectAddModule from '@/lib/project/add'
+import type { ProjectMeta, ClaudeOAuthBundle } from '@/types'
+
+vi.mock('@/commands/session-create', () => ({
+  createSession: vi.fn(),
+}))
+
+vi.mock('@/lib/session/delete', () => ({
+  deleteSession: vi.fn(),
+}))
+
+vi.mock('@/lib/project/add', async () => {
+  const actual = await vi.importActual<typeof projectAddModule>('@/lib/project/add')
+  return {
+    ...actual,
+    addProject: vi.fn(),
+  }
+})
+
+vi.mock('@/lib/project/remove', () => ({
+  removeProject: vi.fn(),
+}))
+
+import { createSession } from '@/commands/session-create'
+import { deleteSession } from '@/lib/session/delete'
+import { addProject } from '@/lib/project/add'
+import { removeProject } from '@/lib/project/remove'
+
+const mockCreateSession = vi.mocked(createSession)
+const mockDeleteSession = vi.mocked(deleteSession)
+const mockAddProject = vi.mocked(addProject)
+const mockRemoveProject = vi.mocked(removeProject)
+
+const SAMPLE_BUNDLE: ClaudeOAuthBundle = {
+  accessToken: 'sk-ant-oat01-real',
+  refreshToken: 'sk-ant-ort01-real',
+  expiresAt: 9999999999999,
+  scopes: ['user:inference'],
+}
+
+function withAuth(init: RequestInit = {}): RequestInit {
+  const headers = new Headers(init.headers ?? {})
+  headers.set('authorization', 'Bearer shh')
+  if (init.body !== undefined) headers.set('content-type', 'application/json')
+  return { ...init, headers }
+}
+
+async function writeProject(slug: string): Promise<void> {
+  const dir = path.join(getProjectsDir(), slug)
+  await fs.mkdir(dir, { recursive: true })
+  const meta: ProjectMeta = {
+    slug,
+    remoteUrl: 'https://example.com/foo',
+    addedAt: '2026-01-01T00:00:00.000Z',
+  }
+  await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(meta))
+}
+
+describe('write routes', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+    vi.resetAllMocks()
+  })
+
+  afterEach(async () => {
+    await cleanupTempDir(tmpDir)
+  })
+
+  describe('POST /project/add', () => {
+    it('rejects requests with no body', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/project/add', withAuth({ method: 'POST' }))
+      expect(res.status).toBe(400)
+    })
+
+    it('rejects requests with a missing remoteUrl', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/project/add', withAuth({
+        method: 'POST',
+        body: JSON.stringify({}),
+      }))
+      expect(res.status).toBe(400)
+    })
+
+    it('delegates to addProject and returns 200 on success', async () => {
+      mockAddProject.mockResolvedValue({
+        project: { slug: 'foo', remoteUrl: 'https://github.com/x/foo', addedAt: 'now' },
+      })
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/project/add', withAuth({
+        method: 'POST',
+        body: JSON.stringify({ remoteUrl: 'x/foo' }),
+      }))
+      expect(res.status).toBe(200)
+      expect(mockAddProject).toHaveBeenCalledWith('x/foo')
+    })
+  })
+
+  describe('DELETE /project/:slug', () => {
+    it('delegates to removeProject and returns 204', async () => {
+      mockRemoveProject.mockResolvedValue(undefined)
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/project/demo', withAuth({ method: 'DELETE' }))
+      expect(res.status).toBe(204)
+      expect(mockRemoveProject).toHaveBeenCalledWith('demo')
+    })
+  })
+
+  describe('PUT /project/:slug/config', () => {
+    it('rejects requests with no config field', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/project/demo/config', withAuth({
+        method: 'PUT',
+        body: JSON.stringify({}),
+      }))
+      expect(res.status).toBe(400)
+    })
+
+    it('writes the config and returns it', async () => {
+      await writeProject('demo')
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/project/demo/config', withAuth({
+        method: 'PUT',
+        body: JSON.stringify({ config: { envPassthrough: ['X'] } }),
+      }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ config: { envPassthrough: ['X'] } })
+      const raw = await fs.readFile(
+        path.join(configOverrideDir('demo'), 'yaac-config.json'),
+        'utf8',
+      )
+      expect(JSON.parse(raw)).toEqual({ envPassthrough: ['X'] })
+    })
+  })
+
+  describe('DELETE /project/:slug/config-override', () => {
+    it('returns 204 when the project exists', async () => {
+      await writeProject('demo')
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/project/demo/config-override', withAuth({ method: 'DELETE' }))
+      expect(res.status).toBe(204)
+    })
+
+    it('returns 404 for an unknown project', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/project/nope/config-override', withAuth({ method: 'DELETE' }))
+      expect(res.status).toBe(404)
+    })
+  })
+
+  describe('POST /session/create', () => {
+    it('rejects missing project', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/session/create', withAuth({
+        method: 'POST',
+        body: JSON.stringify({}),
+      }))
+      expect(res.status).toBe(400)
+    })
+
+    it('rejects an unknown tool with VALIDATION', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/session/create', withAuth({
+        method: 'POST',
+        body: JSON.stringify({ project: 'demo', tool: 'mystery' }),
+      }))
+      expect(res.status).toBe(400)
+      const body = await res.json() as { error: { code: string } }
+      expect(body.error.code).toBe('VALIDATION')
+    })
+
+    it('forwards noAttach:true and returns the createSession result', async () => {
+      mockCreateSession.mockResolvedValue({
+        sessionId: 'sess-x',
+        containerName: 'yaac-demo-sess-x',
+        forwardedPorts: [],
+        tool: 'claude',
+        claimedPrewarm: false,
+      })
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/session/create', withAuth({
+        method: 'POST',
+        body: JSON.stringify({
+          project: 'demo',
+          gitUser: { name: 'A', email: 'a@b' },
+          portReservations: [{ containerPort: 3000, hostPort: 3042 }],
+        }),
+      }))
+      expect(res.status).toBe(200)
+      const body = await res.json() as { sessionId: string }
+      expect(body).toMatchObject({ sessionId: 'sess-x' })
+      expect(mockCreateSession).toHaveBeenCalledWith('demo', expect.objectContaining({
+        noAttach: true,
+        gitUser: { name: 'A', email: 'a@b' },
+        portReservations: [{ containerPort: 3000, hostPort: 3042 }],
+      }))
+    })
+
+    it('rejects a malformed portReservations entry', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/session/create', withAuth({
+        method: 'POST',
+        body: JSON.stringify({
+          project: 'demo',
+          portReservations: [{ containerPort: 'nope' }],
+        }),
+      }))
+      expect(res.status).toBe(400)
+    })
+  })
+
+  describe('POST /session/delete', () => {
+    it('rejects missing sessionId', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/session/delete', withAuth({
+        method: 'POST',
+        body: JSON.stringify({}),
+      }))
+      expect(res.status).toBe(400)
+    })
+
+    it('delegates to deleteSession and returns the result', async () => {
+      mockDeleteSession.mockResolvedValue({
+        sessionId: 'sess-x',
+        projectSlug: 'demo',
+        containerName: 'yaac-demo-sess-x',
+      })
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/session/delete', withAuth({
+        method: 'POST',
+        body: JSON.stringify({ sessionId: 'sess-x' }),
+      }))
+      expect(res.status).toBe(200)
+      expect(mockDeleteSession).toHaveBeenCalledWith('sess-x')
+    })
+  })
+
+  describe('POST /tool/set', () => {
+    it('rejects a missing tool field', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/tool/set', withAuth({
+        method: 'POST',
+        body: JSON.stringify({}),
+      }))
+      expect(res.status).toBe(400)
+    })
+
+    it('rejects an unknown tool value with VALIDATION', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/tool/set', withAuth({
+        method: 'POST',
+        body: JSON.stringify({ tool: 'gemini' }),
+      }))
+      expect(res.status).toBe(400)
+      const body = await res.json() as { error: { code: string } }
+      expect(body.error.code).toBe('VALIDATION')
+    })
+
+    it('persists the tool and returns the saved value', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/tool/set', withAuth({
+        method: 'POST',
+        body: JSON.stringify({ tool: 'codex' }),
+      }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ tool: 'codex' })
+      expect((await loadPreferences()).defaultTool).toBe('codex')
+    })
+  })
+
+  describe('POST /auth/clear', () => {
+    it('rejects an unknown service', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/auth/clear', withAuth({
+        method: 'POST',
+        body: JSON.stringify({ service: 'mystery' }),
+      }))
+      expect(res.status).toBe(400)
+    })
+
+    it('clears claude credentials when service=claude', async () => {
+      await saveClaudeOAuthBundle(SAMPLE_BUNDLE)
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/auth/clear', withAuth({
+        method: 'POST',
+        body: JSON.stringify({ service: 'claude' }),
+      }))
+      expect(res.status).toBe(204)
+      expect(await loadClaudeCredentialsFile()).toBeNull()
+    })
+  })
+
+  describe('POST /auth/github/tokens', () => {
+    it('rejects a missing pattern', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/auth/github/tokens', withAuth({
+        method: 'POST',
+        body: JSON.stringify({ token: 'ghp_x' }),
+      }))
+      expect(res.status).toBe(400)
+    })
+
+    it('adds a token', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/auth/github/tokens', withAuth({
+        method: 'POST',
+        body: JSON.stringify({ pattern: 'acme/*', token: 'ghp_new' }),
+      }))
+      expect(res.status).toBe(204)
+      expect((await loadCredentials()).tokens).toEqual([
+        { pattern: 'acme/*', token: 'ghp_new' },
+      ])
+    })
+
+    it('surfaces invalid patterns as VALIDATION', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/auth/github/tokens', withAuth({
+        method: 'POST',
+        body: JSON.stringify({ pattern: '*/*', token: 'ghp_x' }),
+      }))
+      expect(res.status).toBe(400)
+    })
+  })
+
+  describe('DELETE /auth/github/tokens/:pattern', () => {
+    it('removes an existing token', async () => {
+      await addToken('acme/*', 'ghp_acme')
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request(
+        `/auth/github/tokens/${encodeURIComponent('acme/*')}`,
+        withAuth({ method: 'DELETE' }),
+      )
+      expect(res.status).toBe(204)
+      expect((await loadCredentials()).tokens).toEqual([])
+    })
+
+    it('returns 404 for an unknown pattern', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/auth/github/tokens/unknown', withAuth({ method: 'DELETE' }))
+      expect(res.status).toBe(404)
+    })
+  })
+
+  describe('PUT /auth/github/tokens', () => {
+    it('replaces the entire token list', async () => {
+      await addToken('old/*', 'ghp_old')
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/auth/github/tokens', withAuth({
+        method: 'PUT',
+        body: JSON.stringify({ tokens: [{ pattern: 'new/*', token: 'ghp_new' }] }),
+      }))
+      expect(res.status).toBe(204)
+      expect((await loadCredentials()).tokens).toEqual([
+        { pattern: 'new/*', token: 'ghp_new' },
+      ])
+    })
+
+    it('rejects non-array body', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/auth/github/tokens', withAuth({
+        method: 'PUT',
+        body: JSON.stringify({ tokens: 'no' }),
+      }))
+      expect(res.status).toBe(400)
+    })
+  })
+
+  describe('PUT /auth/:tool', () => {
+    it('persists a claude api-key payload', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/auth/claude', withAuth({
+        method: 'PUT',
+        body: JSON.stringify({ kind: 'api-key', apiKey: 'sk-ant-api03-new' }),
+      }))
+      expect(res.status).toBe(204)
+      const entry = await loadClaudeCredentialsFile()
+      expect(entry?.kind).toBe('api-key')
+    })
+
+    it('rejects an unknown tool', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/auth/gemini', withAuth({
+        method: 'PUT',
+        body: JSON.stringify({ kind: 'api-key', apiKey: 'x' }),
+      }))
+      expect(res.status).toBe(400)
+    })
+
+    it('rejects api-key payloads with empty apiKey', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/auth/claude', withAuth({
+        method: 'PUT',
+        body: JSON.stringify({ kind: 'api-key', apiKey: '' }),
+      }))
+      expect(res.status).toBe(400)
+    })
+  })
+
+  describe('body parsing', () => {
+    it('malformed JSON maps to VALIDATION 400', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/project/add', withAuth({
+        method: 'POST',
+        body: '{not-json',
+      }))
+      expect(res.status).toBe(400)
+      const body = await res.json() as { error: { code: string } }
+      expect(body.error.code).toBe('VALIDATION')
+    })
+
+    it('array body is rejected as VALIDATION', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/project/add', withAuth({
+        method: 'POST',
+        body: JSON.stringify([]),
+      }))
+      expect(res.status).toBe(400)
+    })
+  })
+
+  // Ensure the helper path fixtures don't leak if we add them later.
+  it('write routes do not touch state before invocation', async () => {
+    expect(await fs.readdir(getProjectsDir()).catch(() => [])).toEqual([])
+    expect(projectDir('never')).toContain('never')
+    expect(claudeDir('never')).toContain('claude')
+    expect(codexDir('never')).toContain('codex')
+  })
+})

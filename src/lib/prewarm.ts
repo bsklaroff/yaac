@@ -8,7 +8,7 @@ import { resolveSessionFingerprint } from '@/lib/session/fingerprint'
 import { isTmuxSessionAlive, cleanupSession } from '@/lib/session/cleanup'
 import { fetchOrigin } from '@/lib/git'
 import { resolveTokenForUrl } from '@/lib/project/credentials'
-import { sessionCreate } from '@/commands/session-create'
+import { createSession } from '@/commands/session-create'
 import type { AgentTool } from '@/types'
 import simpleGit from 'simple-git'
 
@@ -207,8 +207,8 @@ export async function ensurePrewarmSession(projectSlug: string, tool: AgentTool 
   })
 
   try {
-    const createdId = await sessionCreate(projectSlug, { createPrewarm: true, sessionId, tool })
-    if (!createdId) {
+    const createdResult = await createSession(projectSlug, { createPrewarm: true, sessionId, tool })
+    if (!createdResult?.sessionId) {
       await clearPrewarmSession(projectSlug)
       return
     }

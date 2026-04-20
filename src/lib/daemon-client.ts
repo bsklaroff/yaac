@@ -23,6 +23,9 @@ export class DaemonClientError extends Error {
 
 export interface DaemonClient {
   get<T>(path: string): Promise<T>
+  post<T>(path: string, body?: unknown): Promise<T>
+  put<T>(path: string, body?: unknown): Promise<T>
+  delete<T>(path: string): Promise<T>
 }
 
 export interface GetClientOptions {
@@ -32,26 +35,46 @@ export interface GetClientOptions {
    */
   resolveLock?: () => Promise<DaemonLock>
   fetchImpl?: typeof fetch
+  /**
+   * Interactive "please re-authenticate" handler. Invoked once when the
+   * daemon replies with `AUTH_REQUIRED`; after it resolves the request
+   * is retried once. The CLI wires this to `authUpdate`; tests inject
+   * their own.
+   */
+  onAuthRequired?: () => Promise<void>
 }
 
 export async function getClient(opts: GetClientOptions = {}): Promise<DaemonClient> {
   const resolveLock = opts.resolveLock ?? defaultResolveLock
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch
+  const onAuthRequired = opts.onAuthRequired ?? defaultAuthUpdate
 
   let lock = await resolveLock()
 
   async function request<T>(pathname: string, init: RequestInit): Promise<T> {
-    const url = `http://127.0.0.1:${lock.port}${pathname}`
-    let res = await fetchImpl(url, withAuth(init, lock.secret))
-    // Stale-secret recovery: the daemon may have restarted between our
-    // lock read and our request. Re-read the lock once and retry.
+    const send = async (): Promise<Response> => fetchImpl(
+      `http://127.0.0.1:${lock.port}${pathname}`,
+      withAuth(init, lock.secret),
+    )
+
+    let res = await send()
+
     if (res.status === 401) {
-      const refreshed = await resolveLock()
-      if (refreshed.secret !== lock.secret || refreshed.port !== lock.port) {
-        lock = refreshed
-        res = await fetchImpl(`http://127.0.0.1:${lock.port}${pathname}`, withAuth(init, lock.secret))
+      const body = await peekErrorBody(res)
+      if (body?.error.code === 'BAD_BEARER') {
+        const refreshed = await resolveLock()
+        if (refreshed.secret !== lock.secret || refreshed.port !== lock.port) {
+          lock = refreshed
+          res = await send()
+        }
+      } else if (body?.error.code === 'AUTH_REQUIRED') {
+        await onAuthRequired()
+        res = await send()
+        // A second AUTH_REQUIRED is fatal — fall through to the normal
+        // error-mapping path below so the user sees the daemon's message.
       }
     }
+
     if (!res.ok) throw await toClientError(res)
     const text = await res.text()
     return text ? (JSON.parse(text) as T) : (undefined as T)
@@ -59,6 +82,18 @@ export async function getClient(opts: GetClientOptions = {}): Promise<DaemonClie
 
   return {
     get: <T>(p: string) => request<T>(p, { method: 'GET' }),
+    post: <T>(p: string, body?: unknown) => request<T>(p, jsonInit('POST', body)),
+    put: <T>(p: string, body?: unknown) => request<T>(p, jsonInit('PUT', body)),
+    delete: <T>(p: string) => request<T>(p, { method: 'DELETE' }),
+  }
+}
+
+function jsonInit(method: string, body: unknown): RequestInit {
+  if (body === undefined) return { method }
+  return {
+    method,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
   }
 }
 
@@ -69,6 +104,16 @@ function withAuth(init: RequestInit, secret: string): RequestInit {
   return { ...init, headers }
 }
 
+async function peekErrorBody(res: Response): Promise<DaemonErrorBody | null> {
+  try {
+    // `Response.json()` consumes the body — clone so the fall-through
+    // error path can still read it.
+    return await res.clone().json() as DaemonErrorBody
+  } catch {
+    return null
+  }
+}
+
 async function toClientError(res: Response): Promise<DaemonClientError> {
   try {
     const body = await res.json() as DaemonErrorBody
@@ -76,6 +121,17 @@ async function toClientError(res: Response): Promise<DaemonClientError> {
   } catch {
     return new DaemonClientError('INTERNAL', `daemon returned ${res.status}`)
   }
+}
+
+/**
+ * Default `AUTH_REQUIRED` recovery: run the interactive `auth update`
+ * flow. Imported lazily so the daemon process (which also links this
+ * module for the shared error taxonomy) doesn't pull the readline-using
+ * command into its bundle unless the CLI path actually needs it.
+ */
+async function defaultAuthUpdate(): Promise<void> {
+  const mod = await import('@/commands/auth-update')
+  await mod.authUpdate()
 }
 
 /**

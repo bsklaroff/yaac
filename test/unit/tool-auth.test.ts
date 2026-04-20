@@ -15,15 +15,18 @@ import {
   saveToolAuth,
   saveClaudeOAuthBundle,
   loadClaudeCredentialsFile,
+  loadCodexCredentialsFile,
   removeToolAuth,
   buildPlaceholderBundle,
   writeProjectClaudePlaceholder,
   fanOutClaudePlaceholders,
   extractClaudeOAuthBundle,
+  persistToolAuthPayload,
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_REFRESH_TOKEN,
 } from '@/lib/project/tool-auth'
-import type { ClaudeOAuthBundle } from '@/types'
+import { DaemonError } from '@/lib/daemon/errors'
+import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '@/types'
 
 const SAMPLE_BUNDLE: ClaudeOAuthBundle = {
   accessToken: 'sk-ant-oat01-real',
@@ -207,6 +210,81 @@ describe('tool-auth', () => {
     it('fan-out is a no-op when no projects exist', async () => {
       await fanOutClaudePlaceholders(SAMPLE_BUNDLE)
       // should not throw
+    })
+  })
+
+  describe('persistToolAuthPayload', () => {
+    const SAMPLE_CODEX_BUNDLE: CodexOAuthBundle = {
+      accessToken: 'codex-access',
+      refreshToken: 'codex-refresh',
+      idTokenRawJwt: 'eyJhbGciOiJub25lIn0.eyJleHAiOjE3MDB9.',
+      expiresAt: 9999999999999,
+      lastRefresh: '2026-04-20T00:00:00.000Z',
+      accountId: 'acct_x',
+    }
+
+    it('saves a claude api-key payload', async () => {
+      await persistToolAuthPayload('claude', {
+        kind: 'api-key',
+        apiKey: 'sk-ant-api03-new',
+      })
+      const entry = await loadToolAuthEntry('claude')
+      expect(entry?.kind).toBe('api-key')
+      expect(entry?.apiKey).toBe('sk-ant-api03-new')
+    })
+
+    it('saves a claude oauth bundle', async () => {
+      await persistToolAuthPayload('claude', {
+        kind: 'oauth',
+        bundle: SAMPLE_BUNDLE,
+      })
+      const file = await loadClaudeCredentialsFile()
+      expect(file?.kind).toBe('oauth')
+      if (file?.kind === 'oauth') {
+        expect(file.claudeAiOauth.accessToken).toBe(SAMPLE_BUNDLE.accessToken)
+      }
+    })
+
+    it('saves a codex oauth bundle', async () => {
+      await persistToolAuthPayload('codex', {
+        kind: 'oauth',
+        bundle: SAMPLE_CODEX_BUNDLE,
+      })
+      const file = await loadCodexCredentialsFile()
+      expect(file?.kind).toBe('oauth')
+      if (file?.kind === 'oauth') {
+        expect(file.codexOauth.refreshToken).toBe('codex-refresh')
+      }
+    })
+
+    it('rejects an unknown tool', async () => {
+      await expect(
+        persistToolAuthPayload('gemini' as unknown as AgentTool, { kind: 'api-key', apiKey: 'x' }),
+      ).rejects.toMatchObject({ code: 'VALIDATION' })
+    })
+
+    it('rejects a non-object payload', async () => {
+      await expect(
+        persistToolAuthPayload('claude', null),
+      ).rejects.toBeInstanceOf(DaemonError)
+    })
+
+    it('rejects api-key with an empty key', async () => {
+      await expect(
+        persistToolAuthPayload('claude', { kind: 'api-key', apiKey: '' }),
+      ).rejects.toMatchObject({ code: 'VALIDATION' })
+    })
+
+    it('rejects an oauth payload with a malformed bundle', async () => {
+      await expect(
+        persistToolAuthPayload('claude', { kind: 'oauth', bundle: { accessToken: 'x' } }),
+      ).rejects.toMatchObject({ code: 'VALIDATION' })
+    })
+
+    it('rejects an unknown kind', async () => {
+      await expect(
+        persistToolAuthPayload('claude', { kind: 'mystery' }),
+      ).rejects.toMatchObject({ code: 'VALIDATION' })
     })
   })
 })

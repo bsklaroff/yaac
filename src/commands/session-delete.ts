@@ -1,14 +1,13 @@
-import { resolveContainerAnyState } from '@/lib/container/resolve'
-import { cleanupSessionDetached } from '@/lib/session/cleanup'
+import { getClient, exitOnClientError } from '@/lib/daemon-client'
+import type { DeletedSessionInfo } from '@/lib/session/delete'
 
 export async function sessionDelete(idOrName: string): Promise<void> {
-  const resolved = await resolveContainerAnyState(idOrName)
-  if (!resolved) return
-
-  console.log(`Session ${resolved.sessionId} scheduled for cleanup.`)
-  await cleanupSessionDetached({
-    containerName: resolved.name,
-    projectSlug: resolved.projectSlug,
-    sessionId: resolved.sessionId,
-  })
+  let info: DeletedSessionInfo
+  try {
+    const client = await getClient()
+    info = await client.post<DeletedSessionInfo>('/session/delete', { sessionId: idOrName })
+  } catch (err) {
+    exitOnClientError(err)
+  }
+  console.log(`Session ${info.sessionId} scheduled for cleanup.`)
 }

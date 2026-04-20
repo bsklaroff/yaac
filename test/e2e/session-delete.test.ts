@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject, removeContainer } from '@test/helpers/setup'
+import { bootInProcessDaemon, type InProcessDaemon } from '@test/helpers/daemon'
 import { sessionDelete } from '@/commands/session-delete'
 import { podman } from '@/lib/container/runtime'
 import { ensureImage } from '@/lib/container/image-builder'
@@ -40,10 +41,12 @@ async function createMinimalContainer(projectSlug: string): Promise<{ containerN
 
 describe('yaac session delete', { timeout: 120_000 }, () => {
   let tmpDir: string
+  let daemon: InProcessDaemon
   const containersToCleanup: string[] = []
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
+    daemon = await bootInProcessDaemon()
   })
 
   afterEach(async () => {
@@ -51,6 +54,7 @@ describe('yaac session delete', { timeout: 120_000 }, () => {
       await removeContainer(name)
     }
     containersToCleanup.length = 0
+    await daemon.stop()
     if (tmpDir) await cleanupTempDir(tmpDir)
   })
 
@@ -107,9 +111,18 @@ describe('yaac session delete', { timeout: 120_000 }, () => {
   })
 
   it('errors on unknown session ID', async () => {
-    process.exitCode = undefined
-    await sessionDelete('nonexistent-id')
-    expect(process.exitCode).toBe(1)
-    process.exitCode = undefined
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code ?? 0})`)
+    }) as never)
+    const origErr = console.error
+    console.error = () => {}
+    try {
+      await sessionDelete('nonexistent-id')
+    } catch {
+      // exit spy throws
+    }
+    console.error = origErr
+    expect(exitSpy).toHaveBeenCalledWith(1)
+    exitSpy.mockRestore()
   })
 })

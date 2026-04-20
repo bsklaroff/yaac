@@ -16,7 +16,7 @@ describe('bearerAuth', () => {
     const res = await buildTestApp().request('/protected')
     expect(res.status).toBe(401)
     const body = await res.json() as { error: { code: string } }
-    expect(body.error.code).toBe('AUTH_REQUIRED')
+    expect(body.error.code).toBe('BAD_BEARER')
   })
 
   it('rejects requests with the wrong secret', async () => {

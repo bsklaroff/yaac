@@ -14,6 +14,7 @@ import {
   projectClaudeCredentialsFile,
   projectCodexAuthFile,
 } from '@/lib/project/paths'
+import { DaemonError } from '@/lib/daemon/errors'
 import type {
   AgentTool,
   ToolAuthKind,
@@ -495,6 +496,51 @@ export async function persistToolLogin(tool: AgentTool, result: ToolLoginResult)
     return
   }
   await saveToolAuth(tool, result.apiKey, result.kind)
+}
+
+/**
+ * Validate and persist a tool-auth payload the CLI sent after running
+ * the native login flow locally. Throws `VALIDATION` for anything we
+ * don't recognize.
+ */
+export async function persistToolAuthPayload(tool: AgentTool, payload: unknown): Promise<void> {
+  if (tool !== 'claude' && tool !== 'codex') {
+    throw new DaemonError('VALIDATION', `Unknown tool "${String(tool)}".`)
+  }
+  if (!payload || typeof payload !== 'object') {
+    throw new DaemonError('VALIDATION', 'Expected { kind, ... } body.')
+  }
+  const p = payload as Record<string, unknown>
+  if (p.kind === 'api-key') {
+    if (typeof p.apiKey !== 'string' || p.apiKey === '') {
+      throw new DaemonError('VALIDATION', 'api-key payload requires a non-empty apiKey.')
+    }
+    await persistToolLogin(tool, { apiKey: p.apiKey, kind: 'api-key' })
+    return
+  }
+  if (p.kind === 'oauth') {
+    if (tool === 'claude') {
+      if (!isClaudeOAuthBundle(p.bundle)) {
+        throw new DaemonError('VALIDATION', 'Claude oauth payload needs a valid bundle.')
+      }
+      await persistToolLogin('claude', {
+        apiKey: p.bundle.accessToken,
+        kind: 'oauth',
+        claudeBundle: p.bundle,
+      })
+      return
+    }
+    if (!isCodexOAuthBundle(p.bundle)) {
+      throw new DaemonError('VALIDATION', 'Codex oauth payload needs a valid bundle.')
+    }
+    await persistToolLogin('codex', {
+      apiKey: p.bundle.accessToken,
+      kind: 'oauth',
+      codexBundle: p.bundle,
+    })
+    return
+  }
+  throw new DaemonError('VALIDATION', `Unknown payload kind "${String(p.kind)}".`)
 }
 
 /**

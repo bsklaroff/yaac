@@ -8,8 +8,10 @@ import {
   savePreferences,
   getDefaultTool,
   setDefaultTool,
+  setDefaultToolChecked,
   isValidTool,
 } from '@/lib/project/preferences'
+import { DaemonError } from '@/lib/daemon/errors'
 
 describe('preferences', () => {
   let tmpDir: string
@@ -112,6 +114,22 @@ describe('preferences', () => {
       expect(isValidTool('invalid')).toBe(false)
       expect(isValidTool('')).toBe(false)
       expect(isValidTool('Claude')).toBe(false)
+    })
+  })
+
+  describe('setDefaultToolChecked', () => {
+    it('persists a valid tool and returns it', async () => {
+      const saved = await setDefaultToolChecked('codex')
+      expect(saved).toBe('codex')
+      const prefs = await loadPreferences()
+      expect(prefs.defaultTool).toBe('codex')
+    })
+
+    it('throws VALIDATION for an unknown tool', async () => {
+      await expect(setDefaultToolChecked('gemini')).rejects.toBeInstanceOf(DaemonError)
+      await expect(setDefaultToolChecked('gemini')).rejects.toMatchObject({
+        code: 'VALIDATION',
+      })
     })
   })
 })

@@ -2,6 +2,7 @@ import fs from 'node:fs/promises'
 import readline from 'node:readline/promises'
 import path from 'node:path'
 import { getDataDir, ensureDataDir } from '@/lib/project/paths'
+import { DaemonError } from '@/lib/daemon/errors'
 import type { AgentTool } from '@/types'
 
 export interface PreferencesFile {
@@ -53,6 +54,18 @@ const VALID_TOOLS: AgentTool[] = ['claude', 'codex']
 
 export function isValidTool(value: string): value is AgentTool {
   return VALID_TOOLS.includes(value as AgentTool)
+}
+
+/**
+ * Validate the incoming string and set the default tool. Throws
+ * `VALIDATION` for anything that isn't a known tool name.
+ */
+export async function setDefaultToolChecked(toolName: string): Promise<AgentTool> {
+  if (!isValidTool(toolName)) {
+    throw new DaemonError('VALIDATION', `Invalid tool "${toolName}". Must be one of: ${VALID_TOOLS.join(', ')}`)
+  }
+  await setDefaultTool(toolName)
+  return toolName
 }
 
 /**

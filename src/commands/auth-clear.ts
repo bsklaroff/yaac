@@ -1,54 +1,46 @@
 import readline from 'node:readline/promises'
-import { listTokens, removeToken, saveCredentials } from '@/lib/project/credentials'
-import {
-  cleanupProjectClaudePlaceholders,
-  cleanupProjectCodexPlaceholders,
-  loadToolAuthEntry,
-  removeToolAuth,
-} from '@/lib/project/tool-auth'
+import { getClient, exitOnClientError, type DaemonClient } from '@/lib/daemon-client'
+import type { AuthListResult } from '@/lib/auth/list'
 
 export async function authClear(): Promise<void> {
-  const tokens = await listTokens()
-  const claude = await loadToolAuthEntry('claude')
-  const codex = await loadToolAuthEntry('codex')
+  let client: DaemonClient
+  let summary: AuthListResult
+  try {
+    client = await getClient()
+    summary = await client.get<AuthListResult>('/auth/list')
+  } catch (err) {
+    exitOnClientError(err)
+  }
 
-  if (tokens.length === 0 && !claude && !codex) {
+  const { githubTokens, toolAuth } = summary
+
+  if (githubTokens.length === 0 && toolAuth.length === 0) {
     console.log('No credentials configured.')
     return
   }
 
-  const entries: Array<{ label: string; action: () => Promise<void> }> = []
+  interface Entry {
+    label: string
+    run: () => Promise<void>
+  }
 
-  for (const { pattern, tokenPreview } of tokens) {
+  const entries: Entry[] = []
+  for (const { pattern, tokenPreview } of githubTokens) {
     entries.push({
       label: `GitHub token: ${pattern} (${tokenPreview})`,
-      action: async () => {
-        const removed = await removeToken(pattern)
-        if (removed) console.log(`Removed GitHub token for pattern "${pattern}".`)
+      run: async () => {
+        await client.delete(`/auth/github/tokens/${encodeURIComponent(pattern)}`)
+        console.log(`Removed GitHub token for pattern "${pattern}".`)
       },
     })
   }
-
-  if (claude) {
-    const preview = claude.apiKey.length > 4 ? '***' + claude.apiKey.slice(-4) : '****'
+  for (const entry of toolAuth) {
+    const label = entry.tool === 'claude' ? 'Claude Code' : 'Codex'
     entries.push({
-      label: `Claude Code credentials (${preview})`,
-      action: async () => {
-        await removeToolAuth('claude')
-        await cleanupProjectClaudePlaceholders()
-        console.log('Removed Claude Code credentials.')
-      },
-    })
-  }
-
-  if (codex) {
-    const preview = codex.apiKey.length > 4 ? '***' + codex.apiKey.slice(-4) : '****'
-    entries.push({
-      label: `Codex credentials (${preview})`,
-      action: async () => {
-        await removeToolAuth('codex')
-        await cleanupProjectCodexPlaceholders()
-        console.log('Removed Codex credentials.')
+      label: `${label} credentials (${entry.keyPreview})`,
+      run: async () => {
+        await client.post('/auth/clear', { service: entry.tool })
+        console.log(`Removed ${label} credentials.`)
       },
     })
   }
@@ -62,21 +54,23 @@ export async function authClear(): Promise<void> {
   const answer = (await rl.question('Remove which entry? (number, or "all"): ')).trim()
   rl.close()
 
-  if (answer.toLowerCase() === 'all') {
-    await saveCredentials({ tokens: [] })
-    await removeToolAuth('claude')
-    await removeToolAuth('codex')
-    await cleanupProjectClaudePlaceholders()
-    await cleanupProjectCodexPlaceholders()
-    console.log('All credentials removed.')
-    return
-  }
+  try {
+    if (answer.toLowerCase() === 'all') {
+      await client.post('/auth/clear', { service: 'all' })
+      // Remaining GitHub tokens get cleared by `all`, but the daemon's
+      // `clearAuth('all')` already wipes them — nothing extra to do.
+      console.log('All credentials removed.')
+      return
+    }
 
-  const idx = parseInt(answer, 10)
-  if (isNaN(idx) || idx < 1 || idx > entries.length) {
-    console.log('Cancelled.')
-    return
-  }
+    const idx = parseInt(answer, 10)
+    if (isNaN(idx) || idx < 1 || idx > entries.length) {
+      console.log('Cancelled.')
+      return
+    }
 
-  await entries[idx - 1].action()
+    await entries[idx - 1].run()
+  } catch (err) {
+    exitOnClientError(err)
+  }
 }

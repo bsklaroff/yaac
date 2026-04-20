@@ -9,12 +9,15 @@ import {
   resolveTokenForUrl,
   addToken,
   removeToken,
+  removeTokenChecked,
+  replaceTokens,
   listTokens,
   validatePattern,
   parseRepoPath,
   matchPattern,
   saveCredentials,
 } from '@/lib/project/credentials'
+import { DaemonError } from '@/lib/daemon/errors'
 
 describe('credentials', () => {
   let tmpDir: string
@@ -278,6 +281,48 @@ describe('credentials', () => {
       await addToken('*', 'ghp_default')
       const removed = await removeToken('nonexistent/*')
       expect(removed).toBe(false)
+    })
+  })
+
+  describe('removeTokenChecked', () => {
+    it('removes an existing token', async () => {
+      await addToken('acme/*', 'ghp_acme')
+      await removeTokenChecked('acme/*')
+      expect((await loadCredentials()).tokens).toEqual([])
+    })
+
+    it('throws NOT_FOUND when the pattern is unknown', async () => {
+      await expect(removeTokenChecked('missing/*')).rejects.toMatchObject({
+        code: 'NOT_FOUND',
+      })
+    })
+  })
+
+  describe('replaceTokens', () => {
+    it('writes the provided list verbatim', async () => {
+      await addToken('old/*', 'ghp_old')
+      await replaceTokens([{ pattern: 'new/*', token: 'ghp_new' }])
+      expect((await loadCredentials()).tokens).toEqual([
+        { pattern: 'new/*', token: 'ghp_new' },
+      ])
+    })
+
+    it('accepts an empty list to clear everything', async () => {
+      await addToken('*', 'ghp_x')
+      await replaceTokens([])
+      expect((await loadCredentials()).tokens).toEqual([])
+    })
+
+    it('rejects entries with an invalid pattern', async () => {
+      await expect(replaceTokens([
+        { pattern: '*/*', token: 'ghp_x' },
+      ])).rejects.toBeInstanceOf(DaemonError)
+    })
+
+    it('rejects non-string entries', async () => {
+      await expect(replaceTokens([
+        { pattern: 'acme/*', token: 123 as unknown as string },
+      ])).rejects.toMatchObject({ code: 'VALIDATION' })
     })
   })
 

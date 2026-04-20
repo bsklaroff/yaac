@@ -1,9 +1,12 @@
 import net from 'node:net'
 import { type ChildProcess, spawn } from 'node:child_process'
 
-export interface ReservedPort {
+export interface PortMapping {
   containerPort: number
   hostPort: number
+}
+
+export interface ReservedPort extends PortMapping {
   /** Pre-bound server holding the port so no other process can claim it. */
   server: net.Server
 }

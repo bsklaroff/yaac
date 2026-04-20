@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import readline from 'node:readline/promises'
 import { credentialsDir, githubCredentialsPath, ensureDataDir } from '@/lib/project/paths'
+import { DaemonError } from '@/lib/daemon/errors'
 import type { GithubCredentialsFile, GithubTokenEntry } from '@/types'
 
 export function credentialsPath(): string {
@@ -125,6 +126,12 @@ export async function getGithubToken(): Promise<string | null> {
  * or appends.
  */
 export async function addToken(pattern: string, token: string): Promise<void> {
+  if (!validatePattern(pattern)) {
+    throw new DaemonError('VALIDATION', 'Invalid pattern. Use *, owner/*, or owner/repo.')
+  }
+  if (!token) {
+    throw new DaemonError('VALIDATION', 'Token cannot be empty.')
+  }
   const creds = await loadCredentials()
   const existingIdx = creds.tokens.findIndex((t) => t.pattern === pattern)
   if (existingIdx >= 0) {
@@ -150,6 +157,32 @@ export async function removeToken(pattern: string): Promise<boolean> {
   creds.tokens.splice(idx, 1)
   await saveCredentials(creds)
   return true
+}
+
+/**
+ * Remove a token or throw `NOT_FOUND`. Used by the daemon so callers
+ * see a structured error for an unknown pattern.
+ */
+export async function removeTokenChecked(pattern: string): Promise<void> {
+  const removed = await removeToken(pattern)
+  if (!removed) {
+    throw new DaemonError('NOT_FOUND', `No GitHub token found for pattern "${pattern}".`)
+  }
+}
+
+/**
+ * Replace the full token list (PUT semantics). Validates every entry.
+ */
+export async function replaceTokens(tokens: GithubTokenEntry[]): Promise<void> {
+  for (const entry of tokens) {
+    if (!entry || typeof entry.pattern !== 'string' || typeof entry.token !== 'string') {
+      throw new DaemonError('VALIDATION', 'Each token entry needs a pattern and a token string.')
+    }
+    if (!validatePattern(entry.pattern)) {
+      throw new DaemonError('VALIDATION', `Invalid pattern "${entry.pattern}".`)
+    }
+  }
+  await saveCredentials({ tokens })
 }
 
 /**

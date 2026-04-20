@@ -19,7 +19,7 @@ export function bearerAuth(secret: string): MiddlewareHandler {
     const match = /^Bearer\s+(.+)$/i.exec(header)
     if (!match || !constantTimeEqual(match[1], secret)) {
       return c.json(
-        { error: { code: 'AUTH_REQUIRED', message: 'missing or invalid bearer token' } },
+        { error: { code: 'BAD_BEARER', message: 'missing or invalid bearer token' } },
         401,
       )
     }

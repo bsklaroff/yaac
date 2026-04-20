@@ -9,7 +9,7 @@ import { ensureImage, packTar } from '@/lib/container/image-builder'
 import { proxyClient, buildRulesFromConfig } from '@/lib/container/proxy-client'
 import { resolveAllowedHosts } from '@/lib/container/default-allowed-hosts'
 import { reserveAvailablePort, startPortForwarders, podmanRelay } from '@/lib/container/port'
-import type { ReservedPort } from '@/lib/container/port'
+import type { ReservedPort, PortMapping } from '@/lib/container/port'
 import { pgRelay } from '@/lib/container/pg-relay'
 import { repoDir, claudeDir, claudeJsonFile, codexDir, codexTranscriptDir, cachedPackagesDir, worktreeDir, worktreesDir, projectDir, getDataDir } from '@/lib/project/paths'
 import { resolveProjectConfig } from '@/lib/project/config'
@@ -25,6 +25,7 @@ import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/
 import { finalizeAttachedSession } from '@/lib/session/finalize-attached-session'
 import { claimPrewarmSession } from '@/lib/prewarm'
 import { ensureCodexHooksJson, ensureCodexConfigToml } from '@/lib/session/codex-hooks'
+import { DaemonError } from '@/lib/daemon/errors'
 import type { YaacConfig, AgentTool } from '@/types'
 import type { AttachOutcome } from '@/lib/session/finalize-attached-session'
 
@@ -66,11 +67,34 @@ export interface SessionCreateOptions {
   sessionId?: string
   /** Agent tool to run inside the container (default: 'claude'). */
   tool?: AgentTool
+  /**
+   * When true, skip interactive attach + port-forwarder startup + the
+   * post-attach finalize hook. Used by the daemon to provision a
+   * session on the user's behalf while leaving interactive lifecycle
+   * management to the CLI.
+   */
+  noAttach?: boolean
+  /**
+   * Git identity to use inside the container. When provided we skip the
+   * interactive readline prompt — the CLI has already resolved it.
+   */
+  gitUser?: { name: string; email: string }
+  /**
+   * Host↔container port mappings the caller has already reserved.
+   * When provided we skip the in-process `reserveAvailablePort` loop —
+   * the CLI binds the `net.Server`s in its own process so it can run
+   * host-side port forwarders after the daemon returns.
+   */
+  portReservations?: PortMapping[]
 }
 
 export interface SessionCreateResult {
   sessionId?: string
   attachOutcome?: AttachOutcome
+  containerName?: string
+  forwardedPorts?: PortMapping[]
+  tool?: AgentTool
+  claimedPrewarm?: boolean
 }
 
 interface ContainerSetupParams {
@@ -91,7 +115,7 @@ interface ContainerSetupParams {
   networkMode: string
   pgRelayIp: string | null
   gitUser: { name: string; email: string }
-  forwardedPorts: ReservedPort[]
+  forwardedPorts: PortMapping[]
 }
 
 async function startContainerWithSetup(params: ContainerSetupParams): Promise<void> {
@@ -255,6 +279,16 @@ export async function createSession(projectSlug: string, options: SessionCreateO
   if (claimed) {
     console.log(`Claiming prewarmed session ${claimed.sessionId.slice(0, 8)}...`)
 
+    if (options.noAttach) {
+      return {
+        sessionId: claimed.sessionId,
+        containerName: claimed.containerName,
+        forwardedPorts: [],
+        tool,
+        claimedPrewarm: true,
+      }
+    }
+
     // Start host-side port forwarders would go here if the prewarmed session
     // had port forwarding, but for now we just attach directly.
     try {
@@ -282,13 +316,17 @@ export async function createSession(projectSlug: string, options: SessionCreateO
   await ensureContainerRuntime()
 
   // Ensure git user identity is configured (needed for commits inside container)
-  let gitUser = await getGitUserConfig()
-  if (gitUser) {
+  let gitUser: { name: string; email: string } | null = options.gitUser ?? null
+  if (!gitUser) gitUser = await getGitUserConfig()
+  if (options.gitUser) {
+    gitUser = options.gitUser
+  } else if (gitUser) {
     console.log(`Git identity: ${gitUser.name} <${gitUser.email}>`)
-  } else if (options.createPrewarm) {
-    console.error('Git user.name and user.email must be configured globally for non-interactive session creation.')
-    process.exitCode = 1
-    return
+  } else if (options.createPrewarm || options.noAttach) {
+    throw new DaemonError(
+      'VALIDATION',
+      'Git user.name and user.email must be configured globally for non-interactive session creation.',
+    )
   } else {
     console.log('No global git user configured. Git commits require a user identity.')
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -428,8 +466,16 @@ export async function createSession(projectSlug: string, options: SessionCreateO
 
   // Port forwarding setup — reserve ports immediately so a concurrent session
   // cannot claim the same host port between discovery and actual use.
+  // When `portReservations` is supplied the caller has already bound the
+  // host ports in its own process (daemon path) and we just record the
+  // mappings for the tmux status bar.
   const forwardedPorts: ReservedPort[] = []
-  if (config.portForward?.length) {
+  const providedReservations = options.portReservations ?? null
+  if (providedReservations && providedReservations.length > 0) {
+    for (const mapping of providedReservations) {
+      forwardedPorts.push(mapping as ReservedPort)
+    }
+  } else if (config.portForward?.length) {
     for (const { containerPort, hostPortStart } of config.portForward) {
       console.log(`Finding available host port starting from ${hostPortStart} for container port ${containerPort}...`)
       const reserved = await reserveAvailablePort(containerPort, hostPortStart)
@@ -541,6 +587,16 @@ export async function createSession(projectSlug: string, options: SessionCreateO
     return { sessionId }
   }
 
+  if (options.noAttach) {
+    return {
+      sessionId,
+      containerName,
+      forwardedPorts: forwardedPorts.map(({ containerPort, hostPort }) => ({ containerPort, hostPort })),
+      tool,
+      claimedPrewarm: false,
+    }
+  }
+
   // Start host-side port forwarders that relay into the container via
   // `podman exec nc`.  This connects to localhost inside the container so the
   // target service can listen on any address (IPv4 or IPv6, including loopback).
@@ -579,7 +635,124 @@ export async function createSession(projectSlug: string, options: SessionCreateO
   return { sessionId, attachOutcome }
 }
 
+/**
+ * CLI entry point for `yaac session create`. Reads project config
+ * + git identity locally, reserves host ports in this process (so a
+ * concurrent session can't steal them), then hands provisioning off to
+ * the daemon via `POST /session/create`. The daemon returns the
+ * session metadata, after which we start host-side port forwarders,
+ * attach the user to tmux interactively, and run the post-attach
+ * finalize hook.
+ */
 export async function sessionCreate(projectSlug: string, options: SessionCreateOptions): Promise<string | undefined> {
-  const result = await createSession(projectSlug, options)
-  return result?.sessionId
+  // Lazy imports keep the daemon process free of the interactive CLI
+  // dependencies (readline, attached terminals).
+  const { getClient, exitOnClientError } = await import('@/lib/daemon-client')
+
+  try {
+    await fs.access(projectDir(projectSlug))
+  } catch {
+    console.error(`Project "${projectSlug}" not found. Run "yaac project list" to see available projects.`)
+    process.exitCode = 1
+    return
+  }
+
+  for (const dirPath of [...(options.addDir ?? []), ...(options.addDirRw ?? [])]) {
+    if (!path.isAbsolute(dirPath)) {
+      console.error(`--add-dir path must be absolute: "${dirPath}"`)
+      process.exitCode = 1
+      return
+    }
+    try {
+      await fs.access(dirPath)
+    } catch {
+      console.error(`--add-dir path not found: "${dirPath}"`)
+      process.exitCode = 1
+      return
+    }
+  }
+
+  // Resolve git identity locally so we can prompt when it's missing.
+  // The daemon gets the already-resolved pair.
+  let gitUser = await getGitUserConfig()
+  if (gitUser) {
+    console.log(`Git identity: ${gitUser.name} <${gitUser.email}>`)
+  } else {
+    console.log('No global git user configured. Git commits require a user identity.')
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+    const name = await rl.question('Enter git user.name: ')
+    const email = await rl.question('Enter git user.email: ')
+    rl.close()
+    if (!name || !email) {
+      console.error('Git user.name and user.email are required.')
+      process.exitCode = 1
+      return
+    }
+    await simpleGit().addConfig('user.name', name, false, 'global')
+    await simpleGit().addConfig('user.email', email, false, 'global')
+    gitUser = { name, email }
+  }
+
+  const config: YaacConfig = await resolveProjectConfig(projectSlug) ?? {}
+
+  // Reserve host ports HERE so the net.Server lives in this process
+  // and can accept incoming connections; the daemon only needs the
+  // numbers for the tmux status bar.
+  const reservedPorts: ReservedPort[] = []
+  if (config.portForward?.length) {
+    for (const { containerPort, hostPortStart } of config.portForward) {
+      console.log(`Finding available host port starting from ${hostPortStart} for container port ${containerPort}...`)
+      const reserved = await reserveAvailablePort(containerPort, hostPortStart)
+      reservedPorts.push(reserved)
+      console.log(`Forwarding host port ${reserved.hostPort} -> container port ${containerPort}`)
+    }
+  }
+
+  const tool: AgentTool = options.tool ?? 'claude'
+
+  let result!: SessionCreateResult
+  try {
+    const client = await getClient()
+    result = await client.post<SessionCreateResult>('/session/create', {
+      project: projectSlug,
+      tool,
+      addDir: options.addDir,
+      addDirRw: options.addDirRw,
+      gitUser,
+      portReservations: reservedPorts.map(({ containerPort, hostPort }) => ({ containerPort, hostPort })),
+    })
+  } catch (err) {
+    for (const p of reservedPorts) p.server.close()
+    exitOnClientError(err)
+  }
+
+  const { sessionId, containerName } = result
+  if (!sessionId || !containerName) {
+    for (const p of reservedPorts) p.server.close()
+    console.error('Daemon did not return a sessionId/containerName.')
+    process.exitCode = 1
+    return
+  }
+
+  let stopPortForwarders: (() => void) | null = null
+  if (reservedPorts.length > 0) {
+    stopPortForwarders = startPortForwarders(podmanRelay(containerName), reservedPorts)
+  }
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn('podman', ['exec', '-it', containerName, 'tmux', 'attach-session', '-t', 'yaac'], {
+        stdio: 'inherit',
+      })
+      child.on('close', () => resolve())
+      child.on('error', reject)
+    })
+  } catch {
+    // Container or tmux session was killed (e.g. ctrl-b k) — fall through to cleanup
+  } finally {
+    stopPortForwarders?.()
+  }
+
+  await finalizeAttachedSession({ containerName, projectSlug, sessionId, tool })
+  return sessionId
 }

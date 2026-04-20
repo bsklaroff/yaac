@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import type { Server } from 'node:net'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createSession, sessionCreate } from '@/commands/session-create'
 
@@ -254,49 +255,74 @@ describe('createSession', () => {
   })
 })
 
-describe('sessionCreate', () => {
+vi.mock('@/lib/daemon-client', () => ({
+  getClient: vi.fn(),
+  exitOnClientError: vi.fn((err: unknown) => {
+    throw err instanceof Error ? err : new Error(String(err))
+  }),
+}))
+
+import { getClient } from '@/lib/daemon-client'
+import { startPortForwarders, reserveAvailablePort } from '@/lib/container/port'
+
+describe('sessionCreate (CLI shim)', () => {
+  const mockPost = vi.fn()
+  const mockReserveAvailablePort = vi.mocked(reserveAvailablePort)
+  const mockStartPortForwarders = vi.mocked(startPortForwarders)
+
   beforeEach(() => {
     vi.resetAllMocks()
 
     mockAccess.mockResolvedValue(undefined)
     mockMkdir.mockResolvedValue(undefined)
     mockWriteFile.mockResolvedValue(undefined)
-    vi.mocked(ensureContainerRuntime).mockResolvedValue(undefined)
-    vi.mocked(ensureImage).mockResolvedValue('yaac-test-image')
-    vi.mocked(packTar).mockResolvedValue(Buffer.from('archive'))
     vi.mocked(resolveProjectConfig).mockResolvedValue({})
-    vi.mocked(resolveTokenForUrl).mockResolvedValue('token')
-    vi.mocked(loadCredentials).mockResolvedValue({ tokens: [] })
-    vi.mocked(addWorktree).mockResolvedValue(undefined)
-    vi.mocked(getDefaultBranch).mockResolvedValue('main')
-    vi.mocked(fetchOrigin).mockResolvedValue(undefined)
-    vi.mocked(getGitUserConfig).mockResolvedValue({ name: 'Test User', email: 'test@example.com' })
-    // eslint-disable-next-line @typescript-eslint/unbound-method
-    vi.mocked(proxyClient.ensureRunning).mockResolvedValue(undefined)
-    // eslint-disable-next-line @typescript-eslint/unbound-method
-    vi.mocked(proxyClient.registerSession).mockResolvedValue(undefined)
-    // eslint-disable-next-line @typescript-eslint/unbound-method
-    vi.mocked(proxyClient.getProxyEnv).mockReturnValue(['HTTPS_PROXY=http://proxy'])
-    // eslint-disable-next-line @typescript-eslint/unbound-method
-    vi.mocked(proxyClient.getCaCert).mockResolvedValue('cert')
+    vi.mocked(getGitUserConfig).mockResolvedValue({ name: 'Test', email: 't@x.io' })
+    mockStartPortForwarders.mockReturnValue(vi.fn())
     mockSpawn.mockImplementation(() => mockAttachedChild() as never)
-    mockClaimPrewarmSession.mockResolvedValue(null)
     mockFinalizeAttachedSession.mockResolvedValue('closed_prompted')
-    mockCreateContainer.mockResolvedValue({
-      start: vi.fn().mockResolvedValue(undefined),
-    } as never)
-    mockGetContainer.mockReturnValue({
-      putArchive: vi.fn().mockResolvedValue(undefined),
-    } as never)
-    mockGetImage.mockReturnValue({
-      inspect: vi.fn().mockResolvedValue({ Config: { Env: [] } }),
-    } as never)
+    vi.mocked(getClient).mockResolvedValue({
+      get: vi.fn(),
+      post: mockPost,
+      put: vi.fn(),
+      delete: vi.fn(),
+    })
+    mockPost.mockResolvedValue({
+      sessionId: 'sess-123',
+      containerName: 'yaac-demo-sess-123',
+      forwardedPorts: [],
+      tool: 'claude',
+      claimedPrewarm: false,
+    })
   })
 
-  it('returns only the session id from the underlying create flow', async () => {
+  it('POSTs /session/create with pre-resolved gitUser and returns the sessionId', async () => {
     const result = await sessionCreate('demo', {})
-
-    expect(result).toEqual(expect.any(String))
+    expect(result).toBe('sess-123')
+    expect(mockPost).toHaveBeenCalledTimes(1)
+    expect(mockPost).toHaveBeenCalledWith('/session/create', expect.objectContaining({
+      project: 'demo',
+      tool: 'claude',
+      gitUser: { name: 'Test', email: 't@x.io' },
+    }))
     expect(mockFinalizeAttachedSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('reserves host ports locally and passes them to the daemon', async () => {
+    vi.mocked(resolveProjectConfig).mockResolvedValue({
+      portForward: [{ containerPort: 3000, hostPortStart: 3000 }],
+    })
+    mockReserveAvailablePort.mockResolvedValue({
+      containerPort: 3000,
+      hostPort: 3042,
+      server: { close: vi.fn() } as unknown as Server,
+    })
+
+    await sessionCreate('demo', {})
+
+    expect(mockPost).toHaveBeenCalledWith('/session/create', expect.objectContaining({
+      portReservations: [{ containerPort: 3000, hostPort: 3042 }],
+    }))
+    expect(mockStartPortForwarders).toHaveBeenCalledTimes(1)
   })
 })

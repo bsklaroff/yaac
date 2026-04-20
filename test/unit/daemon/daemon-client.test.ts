@@ -37,13 +37,13 @@ describe('getClient', () => {
     expect(url).toBe('http://127.0.0.1:4242/project/list')
   })
 
-  it('on 401 re-resolves the lock and retries once', async () => {
+  it('on BAD_BEARER re-resolves the lock and retries once', async () => {
     const newLock = { ...lock, secret: 'rotated', port: 4243 }
     const resolveLock = vi.fn()
       .mockResolvedValueOnce(lock)
       .mockResolvedValueOnce(newLock)
     const fetchImpl = vi.fn()
-      .mockResolvedValueOnce(jsonResponse('{"error":{"code":"AUTH_REQUIRED","message":"x"}}', 401))
+      .mockResolvedValueOnce(jsonResponse('{"error":{"code":"BAD_BEARER","message":"x"}}', 401))
       .mockResolvedValueOnce(jsonResponse('[]'))
     const client = await getClient({ resolveLock, fetchImpl: fetchImpl as unknown as typeof fetch })
     expect(await client.get('/project/list')).toEqual([])
@@ -53,6 +53,43 @@ describe('getClient', () => {
     const auth = new Headers(second[1].headers ?? {}).get('authorization')
     expect(auth).toBe('Bearer rotated')
     expect(second[0]).toBe('http://127.0.0.1:4243/project/list')
+  })
+
+  it('on AUTH_REQUIRED invokes onAuthRequired and retries once', async () => {
+    const onAuthRequired = vi.fn().mockResolvedValue(undefined)
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(
+        '{"error":{"code":"AUTH_REQUIRED","message":"need login"}}',
+        401,
+      ))
+      .mockResolvedValueOnce(jsonResponse('{"ok":true}'))
+    const client = await getClient({
+      resolveLock: () => Promise.resolve(lock),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      onAuthRequired,
+    })
+    expect(await client.post('/auth/github/tokens', { pattern: '*', token: 'x' })).toEqual({ ok: true })
+    expect(onAuthRequired).toHaveBeenCalledTimes(1)
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  it('surfaces a second AUTH_REQUIRED as a DaemonClientError', async () => {
+    const onAuthRequired = vi.fn().mockResolvedValue(undefined)
+    const fetchImpl = vi.fn(() => Promise.resolve(jsonResponse(
+      '{"error":{"code":"AUTH_REQUIRED","message":"still need login"}}',
+      401,
+    )))
+    const client = await getClient({
+      resolveLock: () => Promise.resolve(lock),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      onAuthRequired,
+    })
+    await expect(client.get('/tool/default')).rejects.toMatchObject({
+      code: 'AUTH_REQUIRED',
+      message: 'still need login',
+    })
+    expect(onAuthRequired).toHaveBeenCalledTimes(1)
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 
   it('throws DaemonClientError with the daemon-supplied code', async () => {
