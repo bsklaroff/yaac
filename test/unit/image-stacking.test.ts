@@ -22,6 +22,14 @@ describe('ensureImage layer stacking', () => {
   })
 
   async function loadModule() {
+    // Reset the module cache so runtime.ts re-evaluates `promisify(execFile)`
+    // against the mocked child_process below. Without this, execFileAsync keeps
+    // the real execFile captured on first load and imageExists hits real podman
+    // — which can return true for yaac-base:<hash> images that exist on the
+    // dev machine, causing layers to be silently skipped. The reset also
+    // wipes the paths.ts data-dir singleton, so we re-apply setDataDir on the
+    // freshly-imported module below.
+    vi.resetModules()
     vi.doMock('node:child_process', () => ({
       execFile: vi.fn((...allArgs: unknown[]) => {
         const args = allArgs[1] as string[]
@@ -48,6 +56,8 @@ describe('ensureImage layer stacking', () => {
       }),
     }))
 
+    const paths = await import('@/lib/project/paths')
+    paths.setDataDir(dataDir)
     const mod = await import('@/lib/container/image-builder')
     return mod
   }
