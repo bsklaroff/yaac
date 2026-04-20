@@ -3,9 +3,10 @@
 A desktop app that puts a GUI over everything yaac does today from
 the CLI. This plan covers the frontend **architecture**: process
 layout, data flow, tech choices, and delivery phases. UI/UX design
-lives in `tauri-ux.md`; the backend it talks to is in
-`tauri-daemon.md`, and this plan assumes the daemon is already
-implemented and its HTTP + WebSocket API is stable.
+lives in `tauri-ux.md`. The HTTP half of the daemon backend is
+already implemented (see `src/daemon/`); the WebSocket event stream
+and PTY bridge this plan relies on are tracked in
+`tauri-daemon-follow-up.md` and must ship before Phase A here.
 
 ## Goals
 
@@ -53,7 +54,7 @@ implemented and its HTTP + WebSocket API is stable.
                       PTY WS                  ▼
                                     ┌─────────────────────┐
                                     │  yaac daemon        │
-                                    │  (tauri-daemon.md)  │
+                                    │  (src/daemon/)      │
                                     └─────────────────────┘
 ```
 
@@ -90,8 +91,11 @@ implemented and its HTTP + WebSocket API is stable.
 
 ## Daemon integration
 
-Three transports, all described in full in `tauri-daemon.md`. This
-section maps the frontend's interaction model to those transports.
+Three transports. The HTTP transport is already implemented (see
+`src/daemon/routes/`); the events WebSocket and PTY WebSockets are
+defined in `tauri-daemon-follow-up.md` and must land before the
+frontend can consume them. This section maps the frontend's
+interaction model to those transports.
 
 ### HTTP (proxied via Rust IPC)
 
@@ -168,7 +172,8 @@ tool switcher, deleted-sessions view.
 
 File browser + inline editor, diff sidebar, port preview tabs,
 split-pane terminals, monitor dashboard. Most of these require new
-daemon endpoints (track in `tauri-daemon.md` once scoped).
+daemon endpoints (spec them alongside the daemon source in
+`src/daemon/` once scoped).
 
 Ship Phase A behind a feature flag / side binary. Phase B is the
 first version users install. Phase C reaches CLI parity. Phase D is
@@ -206,10 +211,9 @@ the reason the GUI exists beyond the CLI.
   new-session happy path, attach tab reads a known echo from the
   PTY, delete-session reflects on the `session.exited` event.
 - **Node tests unaffected.** No new CLI arguments or exported
-  functions in `src/**` (the daemon adds its own; see
-  `tauri-daemon.md`), so the unit/e2e coverage rules in `CLAUDE.md`
-  don't add requirements here — anything the GUI calls is already
-  a daemon endpoint with its own test.
+  functions in `src/**`, so the unit/e2e coverage rules in
+  `CLAUDE.md` don't add requirements here — anything the GUI calls
+  is already a daemon endpoint with its own test.
 
 ## Open questions
 
@@ -217,7 +221,7 @@ the reason the GUI exists beyond the CLI.
    string leaks it into webview history / Rust logs. Using
    `Sec-WebSocket-Protocol` requires the daemon to accept arbitrary
    subprotocol tokens. Pick one and document it in
-   `tauri-daemon.md` during Phase A.
+   `tauri-daemon-follow-up.md` during Phase A.
 2. **Port preview isolation**. Iframing a forwarded port in the
    main window means relaxing CSP site-wide. A secondary webview or
    native window per preview keeps the main window strict; this is
@@ -230,6 +234,8 @@ the reason the GUI exists beyond the CLI.
    separate `yaac-gui-daemon` that shares state with the CLI. Punt
    to Phase C.
 4. **Daemon spawn ownership**. Spawn-per-app-launch (die when the
-   last window closes) vs. persistent auto-start service. First
-   version: spawn-per-launch; revisit once the monitor/prewarm
-   story is concrete (see `tauri-daemon.md` prewarm coordination).
+   last window closes) vs. persistent auto-start service. The
+   daemon already owns the prewarm loop, so a spawn-per-launch
+   model would start/stop prewarming with the GUI window — probably
+   not what users want. First version: spawn-per-launch and
+   tolerate the churn; revisit once we have real usage data.

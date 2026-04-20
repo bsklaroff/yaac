@@ -2,9 +2,11 @@
 
 Standalone UI/UX design for the yaac desktop app. This doc is only
 about what the user sees and does — architecture and data flow live
-in `tauri-frontend.md`, and the backend in `tauri-daemon.md`.
-Iterate here freely; the other two docs should only need updating
-when a design change implies new capabilities on the backend.
+in `tauri-frontend.md`. The daemon backend is already implemented
+in `src/daemon/` (HTTP), with events and PTY work tracked in
+`tauri-daemon-follow-up.md`. Iterate here freely; the other docs
+should only need updating when a design change implies new
+capabilities on the backend.
 
 ## Guiding principles
 

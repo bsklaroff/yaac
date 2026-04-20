@@ -1,9 +1,9 @@
-# yaac daemon — follow-up: events, PTY, Tauri
+# yaac daemon — events, PTY, Tauri
 
-Builds on `tauri-daemon.md`. Assumes that plan has shipped: the CLI
-is a thin pass-through over the daemon's HTTP API, the daemon owns
-all `src/lib/**` state access, and the 5-s background loop already
-runs inside the daemon.
+The daemon shipped in four phases: foundation, reads, writes, and
+interactive + background loop. Today the CLI is a thin pass-through
+over the daemon's HTTP API, the daemon owns all `src/lib/**` state
+access, and the 5-s background loop runs inside the daemon.
 
 This plan adds the pieces a richer client (the Tauri frontend in
 `tauri-frontend.md`, or an ambitious TUI) needs: a push event
@@ -27,8 +27,8 @@ interactive CLI commands onto that bridge.
 ## Non-goals
 
 - Remote access. Still 127.0.0.1 + bearer auth only.
-- Replacing HTTP. The read / write / interactive endpoints from
-  `tauri-daemon.md` stay as they are; this plan adds WS alongside.
+- Replacing HTTP. The existing read / write / interactive endpoints
+  stay as they are; this plan adds WS alongside.
 - Long-term message persistence. Event subscribers that miss a
   window reconnect and re-hydrate from the `snapshot` frame (see
   "Backfill on connect").
@@ -130,9 +130,9 @@ attach` too — state stays consistent between GUI and CLI.
 ### Interactive CLI commands on the PTY bridge
 
 After the bridge is available, the CLI stops doing `podman exec -it`
-directly. The HTTP endpoints from `tauri-daemon.md` that returned
-`attach-info` / `shell-info` stay as a convenience for scripts, but
-the CLI wrappers now open the WS and pipe the local TTY:
+directly. The existing `attach-info` / `shell-info` HTTP endpoints
+stay as a convenience for scripts, but the CLI wrappers now open
+the WS and pipe the local TTY:
 
 | CLI | Implementation |
 |---|---|
