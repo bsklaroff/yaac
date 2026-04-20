@@ -46,6 +46,10 @@ const GITHUB_HOSTS = new Set(['github.com', 'api.github.com'])
 const OPENAI_API_HOST = 'api.openai.com'
 const OPENAI_TOKEN_URL_HOST = 'auth.openai.com'
 const OPENAI_TOKEN_URL_PATH = '/oauth/token'
+// Codex in ChatGPT auth mode routes inference to chatgpt.com/backend-api, not
+// api.openai.com — so we must MITM it too and apply the same Authorization
+// swap for codex sessions.
+const CHATGPT_HOST = 'chatgpt.com'
 const CODEX_DEFAULT_REFRESH_WINDOW_MS = 28 * 24 * 60 * 60 * 1000
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -532,6 +536,7 @@ function hostNeedsDynamicMitm(hostname: string): boolean {
   if (GITHUB_HOSTS.has(hostname)) return true
   if (hostname === OPENAI_API_HOST) return true
   if (hostname === OPENAI_TOKEN_URL_HOST) return true
+  if (hostname === CHATGPT_HOST) return true
   return false
 }
 
@@ -583,7 +588,8 @@ function buildDynamicRules(
     }
   }
 
-  if (hostname === OPENAI_API_HOST && sessionTool.get(sessionId) === 'codex') {
+  if ((hostname === OPENAI_API_HOST || hostname === CHATGPT_HOST)
+    && sessionTool.get(sessionId) === 'codex') {
     const creds = readCodexCreds()
     if (creds && creds.kind === 'api-key') {
       rules.push({
