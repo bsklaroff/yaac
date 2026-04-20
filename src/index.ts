@@ -185,9 +185,9 @@ auth
 // Tool auth is checked against the tool the command will actually use —
 // honoring --tool / --prewarm-tool overrides — so an unconfigured tool
 // triggers its login flow even when it isn't the configured default.
-program.hook('preAction', async (thisCommand) => {
+program.hook('preAction', async (_thisCommand, actionCommand) => {
   const chain: string[] = []
-  let cmd: Command | null = thisCommand
+  let cmd: Command | null = actionCommand
   while (cmd) {
     const name = cmd.name()
     if (name) chain.unshift(name)
@@ -195,7 +195,7 @@ program.hook('preAction', async (thisCommand) => {
   }
   if (chain.includes('auth') || chain.includes('tool')) return
   const defaultTool = await ensureDefaultTool()
-  const opts = thisCommand.opts()
+  const opts = actionCommand.opts()
   // session monitor --no-prewarm won't launch a tool — skip the tool auth check.
   const skipToolAuth = chain.includes('monitor') && opts.prewarm === false
   if (!skipToolAuth) {

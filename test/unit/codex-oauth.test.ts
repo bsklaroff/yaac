@@ -95,12 +95,7 @@ describe('codex oauth helpers', () => {
       OPENAI_API_KEY: null,
       auth_mode: 'chatgpt',
       tokens: {
-        id_token: {
-          raw_jwt: SAMPLE_ID_JWT,
-          email: 'user@example.com',
-          chatgpt_plan_type: 'plus',
-          chatgpt_account_id: 'claim-acct',
-        },
+        id_token: SAMPLE_ID_JWT,
         access_token: SAMPLE_ACCESS_JWT,
         refresh_token: 'refresh-token-real',
         account_id: 'top-level-acct',
@@ -164,12 +159,17 @@ describe('codex oauth helpers', () => {
       expect(extractCodexOAuthBundle(JSON.stringify(copy))).toBeNull()
     })
 
-    it('returns null when id_token.raw_jwt is missing', () => {
-      const copy = {
+    it('returns null when id_token is missing or not a string', () => {
+      const missing = {
         ...NATIVE_AUTH_JSON,
-        tokens: { ...NATIVE_AUTH_JSON.tokens, id_token: { email: 'x' } },
+        tokens: { ...NATIVE_AUTH_JSON.tokens, id_token: undefined },
       }
-      expect(extractCodexOAuthBundle(JSON.stringify(copy))).toBeNull()
+      expect(extractCodexOAuthBundle(JSON.stringify(missing))).toBeNull()
+      const nested = {
+        ...NATIVE_AUTH_JSON,
+        tokens: { ...NATIVE_AUTH_JSON.tokens, id_token: { raw_jwt: SAMPLE_ID_JWT } },
+      }
+      expect(extractCodexOAuthBundle(JSON.stringify(nested))).toBeNull()
     })
 
     it('returns null on malformed input', () => {
@@ -269,22 +269,21 @@ describe('codex oauth helpers', () => {
       const raw = await fs.readFile(projectCodexAuthFile('demo'), 'utf8')
       const parsed = JSON.parse(raw) as Record<string, unknown>
       expect(parsed.OPENAI_API_KEY).toBeNull()
+      expect(parsed.auth_mode).toBe('chatgpt')
       const tokens = parsed.tokens as Record<string, unknown>
       expect(tokens.access_token).toBe(PLACEHOLDER_ACCESS_TOKEN)
       expect(tokens.refresh_token).toBe(PLACEHOLDER_REFRESH_TOKEN)
-      expect((tokens.id_token as Record<string, unknown>).raw_jwt).toBe(SAMPLE_BUNDLE.idTokenRawJwt)
+      expect(tokens.id_token).toBe(SAMPLE_BUNDLE.idTokenRawJwt)
       expect(tokens.account_id).toBe(SAMPLE_BUNDLE.accountId)
       expect(parsed.last_refresh).toBe(SAMPLE_BUNDLE.lastRefresh)
     })
 
-    it('sets auth_mode:"ChatGPT"-compatible shape (no auth_mode required on disk)', async () => {
-      // Codex's deserializer infers mode from presence of tokens vs OPENAI_API_KEY.
-      // The file we write has OPENAI_API_KEY:null and tokens:{…}, so Codex treats
-      // it as ChatGPT-mode. We guard against writing an api-key-style shape.
+    it('writes auth_mode:"chatgpt" so Codex enters ChatGPT mode', async () => {
       await fs.mkdir(projectDir('alpha'), { recursive: true })
       await writeProjectCodexPlaceholder('alpha', SAMPLE_BUNDLE)
       const raw = await fs.readFile(projectCodexAuthFile('alpha'), 'utf8')
       const parsed = JSON.parse(raw) as Record<string, unknown>
+      expect(parsed.auth_mode).toBe('chatgpt')
       expect(parsed.tokens).toBeTruthy()
       expect(parsed.OPENAI_API_KEY).toBeNull()
     })

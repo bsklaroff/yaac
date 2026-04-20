@@ -344,12 +344,7 @@ export function extractCodexOAuthBundle(raw: string): CodexOAuthBundle | null {
   const refreshToken = typeof t.refresh_token === 'string' ? t.refresh_token : null
   if (!accessToken || !refreshToken) return null
 
-  const idTokenRaw = t.id_token
-  let idTokenRawJwt: string | null = null
-  if (idTokenRaw && typeof idTokenRaw === 'object') {
-    const itr = (idTokenRaw as Record<string, unknown>).raw_jwt
-    if (typeof itr === 'string' && itr !== '') idTokenRawJwt = itr
-  }
+  const idTokenRawJwt = typeof t.id_token === 'string' ? t.id_token : null
   if (!idTokenRawJwt) return null
 
   const accountId = typeof t.account_id === 'string' ? t.account_id : undefined
@@ -592,10 +587,10 @@ export function buildCodexPlaceholderBundle(bundle: CodexOAuthBundle): CodexOAut
 
 /**
  * Write a placeholder Codex `auth.json` to a single project's codex dir.
- * The on-disk shape matches Codex's `AuthDotJson` deserializer: nested
- * `tokens` with `id_token.raw_jwt` only (Codex re-parses the JWT claims at
- * load time), `access_token`, `refresh_token`, and a top-level
- * `account_id` + `last_refresh`.
+ * The on-disk shape matches Codex's `AuthDotJson` deserializer: `auth_mode:
+ * "chatgpt"`, `tokens.id_token` as a plain JWT string, plus `access_token`,
+ * `refresh_token`, `account_id`, and a top-level `last_refresh`. Codex
+ * re-parses the JWT claims at load time.
  */
 export async function writeProjectCodexPlaceholder(
   slug: string,
@@ -605,8 +600,9 @@ export async function writeProjectCodexPlaceholder(
   const placeholder = buildCodexPlaceholderBundle(bundle)
   const payload: Record<string, unknown> = {
     OPENAI_API_KEY: null,
+    auth_mode: 'chatgpt',
     tokens: {
-      id_token: { raw_jwt: placeholder.idTokenRawJwt },
+      id_token: placeholder.idTokenRawJwt,
       access_token: placeholder.accessToken,
       refresh_token: placeholder.refreshToken,
       account_id: placeholder.accountId ?? null,
