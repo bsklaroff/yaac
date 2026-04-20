@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest'
+import { HTTPException } from 'hono/http-exception'
 import {
   DaemonError,
   exitCodeForError,
+  rewriteZValidatorBody,
   toErrorBody,
 } from '@/lib/daemon/errors'
 
@@ -48,10 +50,61 @@ describe('daemon errors', () => {
       expect(result.body.error.message).toBe('boom')
     })
 
+    it('maps HTTPException 400 to VALIDATION so validator-body errors surface uniformly', () => {
+      const result = toErrorBody(new HTTPException(400, { message: 'Malformed JSON in request body' }))
+      expect(result.status).toBe(400)
+      expect(result.body.error.code).toBe('VALIDATION')
+      expect(result.body.error.message).toBe('Malformed JSON in request body')
+    })
+
     it('handles non-Error values', () => {
       const result = toErrorBody('string thrown directly')
       expect(result.status).toBe(500)
       expect(result.body.error.message).toBe('string thrown directly')
+    })
+  })
+
+  describe('rewriteZValidatorBody', () => {
+    it('reshapes zValidator 400 payloads into { error: { code: VALIDATION, message } }', () => {
+      const zValidatorPayload = {
+        success: false,
+        error: {
+          name: 'ZodError',
+          message: JSON.stringify([
+            { path: ['remoteUrl'], message: 'Invalid input: expected string' },
+          ]),
+        },
+      }
+      expect(rewriteZValidatorBody(zValidatorPayload)).toEqual({
+        error: { code: 'VALIDATION', message: 'remoteUrl: Invalid input: expected string' },
+      })
+    })
+
+    it('omits the path prefix for top-level issues', () => {
+      const payload = {
+        success: false,
+        error: {
+          name: 'ZodError',
+          message: JSON.stringify([{ path: [], message: 'bad' }]),
+        },
+      }
+      expect(rewriteZValidatorBody(payload)).toEqual({
+        error: { code: 'VALIDATION', message: 'bad' },
+      })
+    })
+
+    it('falls back to a generic message if the inner payload is not parseable', () => {
+      const payload = { success: false, error: { message: 'not-json' } }
+      expect(rewriteZValidatorBody(payload)).toEqual({
+        error: { code: 'VALIDATION', message: 'not-json' },
+      })
+    })
+
+    it('returns null for non-matching shapes (our own DaemonError 400s)', () => {
+      expect(rewriteZValidatorBody({ error: { code: 'VALIDATION', message: 'x' } })).toBeNull()
+      expect(rewriteZValidatorBody({ success: true })).toBeNull()
+      expect(rewriteZValidatorBody(null)).toBeNull()
+      expect(rewriteZValidatorBody('hi')).toBeNull()
     })
   })
 

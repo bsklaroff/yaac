@@ -15,14 +15,16 @@ import {
   projectCodexAuthFile,
 } from '@/lib/project/paths'
 import { DaemonError } from '@/lib/daemon/errors'
-import type {
-  AgentTool,
-  ToolAuthKind,
-  ToolAuthEntry,
-  ClaudeCredentialsFile,
-  ClaudeOAuthBundle,
-  CodexCredentialsFile,
-  CodexOAuthBundle,
+import {
+  claudeOAuthBundleSchema,
+  codexOAuthBundleSchema,
+  type AgentTool,
+  type ToolAuthKind,
+  type ToolAuthEntry,
+  type ClaudeCredentialsFile,
+  type ClaudeOAuthBundle,
+  type CodexCredentialsFile,
+  type CodexOAuthBundle,
 } from '@/types'
 
 /** Placeholder tokens written into project-local Claude credentials. */
@@ -49,16 +51,7 @@ async function ensureCredentialsDir(): Promise<void> {
 }
 
 function isClaudeOAuthBundle(v: unknown): v is ClaudeOAuthBundle {
-  if (!v || typeof v !== 'object') return false
-  const o = v as Record<string, unknown>
-  // refreshToken + expiresAt may be empty/zero when saveToolAuth was called
-  // with a bare OAuth access token — the proxy will refresh on first use and
-  // fill in real values. The file is still a valid yaac-managed OAuth entry.
-  return typeof o.accessToken === 'string' && o.accessToken !== ''
-    && typeof o.refreshToken === 'string'
-    && typeof o.expiresAt === 'number'
-    && Array.isArray(o.scopes)
-    && o.scopes.every((s) => typeof s === 'string')
+  return claudeOAuthBundleSchema.safeParse(v).success
 }
 
 /**
@@ -92,14 +85,7 @@ export async function saveClaudeCredentialsFile(creds: ClaudeCredentialsFile): P
 }
 
 function isCodexOAuthBundle(v: unknown): v is CodexOAuthBundle {
-  if (!v || typeof v !== 'object') return false
-  const o = v as Record<string, unknown>
-  return typeof o.accessToken === 'string' && o.accessToken !== ''
-    && typeof o.refreshToken === 'string' && o.refreshToken !== ''
-    && typeof o.idTokenRawJwt === 'string' && o.idTokenRawJwt !== ''
-    && typeof o.expiresAt === 'number'
-    && typeof o.lastRefresh === 'string'
-    && (o.accountId === undefined || typeof o.accountId === 'string')
+  return codexOAuthBundleSchema.safeParse(v).success
 }
 
 export async function loadCodexCredentialsFile(): Promise<CodexCredentialsFile | null> {

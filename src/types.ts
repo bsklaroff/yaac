@@ -1,3 +1,5 @@
+import { z } from 'zod'
+
 export type AgentTool = 'claude' | 'codex'
 
 export type ToolAuthKind = 'api-key' | 'oauth'
@@ -5,15 +7,20 @@ export type ToolAuthKind = 'api-key' | 'oauth'
 /**
  * Claude Code's native OAuth bundle. Stored under the "claudeAiOauth" key in
  * both Claude's `.credentials.json` and yaac's host-side mirror.
+ *
+ * Source of truth for both the TS type and the runtime validator. Fields
+ * accept empty `refreshToken`/`expiresAt` because `saveToolAuth` may be
+ * called with a bare OAuth access token — the proxy refreshes on first use.
  */
-export interface ClaudeOAuthBundle {
-  accessToken: string
-  refreshToken: string
+export const claudeOAuthBundleSchema = z.object({
+  accessToken: z.string().min(1),
+  refreshToken: z.string(),
   /** Unix epoch in milliseconds. */
-  expiresAt: number
-  scopes: string[]
-  subscriptionType?: string
-}
+  expiresAt: z.number(),
+  scopes: z.array(z.string()),
+  subscriptionType: z.string().optional(),
+})
+export type ClaudeOAuthBundle = z.infer<typeof claudeOAuthBundleSchema>
 
 /**
  * Shape of `~/.yaac/.credentials/claude/claude.json`. Either OAuth (with a
@@ -36,23 +43,24 @@ export type ClaudeCredentialsFile =
  * key in yaac's host-side `codex.json`. Mirrors the bits of Codex's native
  * `~/.codex/auth.json` that the proxy needs to swap placeholders and refresh.
  */
-export interface CodexOAuthBundle {
-  accessToken: string
-  refreshToken: string
+export const codexOAuthBundleSchema = z.object({
+  accessToken: z.string().min(1),
+  refreshToken: z.string().min(1),
   /** Full signed JWT — identity assertion, not a bearer credential. Flows
    *  through the proxy into the container's auth.json unmodified. */
-  idTokenRawJwt: string
+  idTokenRawJwt: z.string().min(1),
   /** Unix epoch ms, derived from access_token JWT `exp` (best-effort; falls
    *  back to now + 28d to mirror Codex's proactive-refresh window). */
-  expiresAt: number
+  expiresAt: z.number(),
   /** ISO timestamp matching Codex's `last_refresh`. */
-  lastRefresh: string
+  lastRefresh: z.string(),
   /** Top-level `tokens.account_id` from Codex's auth.json — distinct from
    *  id_token's `chatgpt_account_id` claim. Codex uses this to populate the
    *  `ChatGPT-Account-Id` request header on api.openai.com, so it must flow
    *  through to the container unchanged. */
-  accountId?: string
-}
+  accountId: z.string().optional(),
+})
+export type CodexOAuthBundle = z.infer<typeof codexOAuthBundleSchema>
 
 /**
  * Shape of `~/.yaac/.credentials/codex.json`. Either OAuth (with a full

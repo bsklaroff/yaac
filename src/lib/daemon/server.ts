@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { bearerAuth, denyBrowserCors, requestLogger } from '@/lib/daemon/auth'
-import { toErrorBody } from '@/lib/daemon/errors'
+import { toErrorBody, rewriteZValidatorBody } from '@/lib/daemon/errors'
 import { projectApp } from '@/lib/daemon/routes/project'
 import { sessionApp } from '@/lib/daemon/routes/session'
 import { toolApp } from '@/lib/daemon/routes/tool'
@@ -24,6 +24,14 @@ export function buildApp(deps: DaemonAppDeps): Hono {
   app.use('*', requestLogger())
   app.use('*', denyBrowserCors())
   app.use('*', bearerAuth(deps.secret))
+  app.use('*', async (c, next) => {
+    await next()
+    if (c.res.status !== 400) return
+    if (!c.res.headers.get('content-type')?.includes('application/json')) return
+    const raw: unknown = await c.res.clone().json().catch(() => null)
+    const reshaped = rewriteZValidatorBody(raw)
+    if (reshaped) c.res = c.json(reshaped, 400)
+  })
 
   app.onError((err: Error, c: Context) => {
     const { status, body } = toErrorBody(err)
