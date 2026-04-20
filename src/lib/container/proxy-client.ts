@@ -505,7 +505,6 @@ export class ProxyClient {
     const networks = await podman.listNetworks() as Array<{
       Name?: string
       Created?: string
-      Containers?: Record<string, unknown>
     }>
 
     for (const n of networks) {
@@ -515,13 +514,21 @@ export class ProxyClient {
       const created = Date.parse(n.Created ?? '')
       if (!Number.isFinite(created) || created > cutoff) continue
 
-      if (n.Containers && Object.keys(n.Containers).length > 0) continue
+      // The compat /networks endpoint's Containers field only lists *running*
+      // containers, but podman refuses to remove a network that still has
+      // stopped/exited containers attached. Query for all attached containers
+      // directly so we skip silently instead of logging + failing each run.
+      const attached = await podman.listContainers({
+        all: true,
+        filters: { network: [n.Name] },
+      })
+      if (attached.length > 0) continue
 
       console.log(`Removing stale network ${n.Name}...`)
       try {
         await podman.getNetwork(n.Name).remove()
       } catch {
-        // already gone or still in use
+        // already gone
       }
     }
   }
