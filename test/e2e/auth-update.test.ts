@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 import { bootInProcessDaemon, type InProcessDaemon } from '@test/helpers/daemon'
+import { authUpdate } from '@/commands/auth-update'
+import { loadCredentials } from '@/lib/project/credentials'
 import type * as toolAuth from '@/lib/project/tool-auth'
 import { loadClaudeCredentialsFile, type ToolLoginResult } from '@/lib/project/tool-auth'
 import type { ClaudeOAuthBundle } from '@/types'
@@ -61,7 +63,6 @@ describe('yaac auth update — happy path', () => {
       claudeBundle: bundle,
     })
 
-    const { authUpdate } = await import('@/commands/auth-update')
     await authUpdate()
 
     expect(mockRunToolLogin).toHaveBeenCalledWith('claude')
@@ -78,10 +79,8 @@ describe('yaac auth update — happy path', () => {
       .mockResolvedValueOnce('acme/*')
       .mockResolvedValueOnce('ghp_a_fake_token')
 
-    const { authUpdate } = await import('@/commands/auth-update')
     await authUpdate()
 
-    const { loadCredentials } = await import('@/lib/project/credentials')
     const creds = await loadCredentials()
     expect(creds.tokens).toEqual([{ pattern: 'acme/*', token: 'ghp_a_fake_token' }])
   })
@@ -92,7 +91,6 @@ describe('yaac auth update — happy path', () => {
     const origLog = console.log
     console.log = (msg: string) => logs.push(msg)
 
-    const { authUpdate } = await import('@/commands/auth-update')
     await authUpdate()
 
     console.log = origLog

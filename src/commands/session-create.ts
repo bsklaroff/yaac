@@ -26,6 +26,8 @@ import { finalizeAttachedSession } from '@/lib/session/finalize-attached-session
 import { claimPrewarmSession } from '@/lib/prewarm'
 import { ensureCodexHooksJson, ensureCodexConfigToml } from '@/lib/session/codex-hooks'
 import { DaemonError } from '@/lib/daemon/errors'
+import { toClientError } from '@/lib/daemon-client'
+import { getRpcClient } from '@/lib/daemon-rpc-client'
 import type { YaacConfig, AgentTool } from '@/types'
 import type { AttachOutcome } from '@/lib/session/finalize-attached-session'
 
@@ -645,11 +647,6 @@ export async function createSession(projectSlug: string, options: SessionCreateO
  * finalize hook.
  */
 export async function sessionCreate(projectSlug: string, options: SessionCreateOptions): Promise<string | undefined> {
-  // Lazy imports keep the daemon process free of the interactive CLI
-  // dependencies (readline, attached terminals).
-  const { toClientError } = await import('@/lib/daemon-client')
-  const { getRpcClient } = await import('@/lib/daemon-rpc-client')
-
   try {
     await fs.access(projectDir(projectSlug))
   } catch {

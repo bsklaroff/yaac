@@ -13,6 +13,12 @@ import { addWorktree, getDefaultBranch } from '@/lib/git'
 import { getCodexStatus, getCodexFirstUserMessage, getSessionCodexStatus } from '@/lib/session/codex-status'
 import { getToolFromContainer } from '@/lib/session/status'
 import { sessionList } from '@/commands/session-list'
+import { sessionCreate } from '@/commands/session-create'
+import { sessionMonitor } from '@/commands/session-monitor'
+import { sessionStream } from '@/commands/session-stream'
+import { toolGet } from '@/commands/tool-get'
+import { toolSet } from '@/commands/tool-set'
+import { setPrewarmSession, claimPrewarmSession } from '@/lib/prewarm'
 import { bootInProcessDaemon, type InProcessDaemon } from '@test/helpers/daemon'
 
 const execFileAsync = promisify(execFile)
@@ -346,31 +352,23 @@ describe('codex session support', () => {
     })
   })
 
-  it('--tool flag is accepted by CLI option parsing', async () => {
-    // Verify the tool option is wired through the session create command interface.
-    // We can't run a full session create without a GitHub token and proxy, but
-    // we can verify the option is accepted by importing the types.
-    const { sessionCreate } = await import('@/commands/session-create')
+  it('--tool flag is accepted by CLI option parsing', () => {
     expect(typeof sessionCreate).toBe('function')
   })
 
-  it('--prewarm-tool flag is accepted by session monitor option parsing', async () => {
-    const { sessionMonitor } = await import('@/commands/session-monitor')
+  it('--prewarm-tool flag is accepted by session monitor option parsing', () => {
     expect(typeof sessionMonitor).toBe('function')
   })
 
-  it('--tool flag is accepted by session stream option parsing', async () => {
-    const { sessionStream } = await import('@/commands/session-stream')
+  it('--tool flag is accepted by session stream option parsing', () => {
     expect(typeof sessionStream).toBe('function')
   })
 
-  it('tool get command is exported', async () => {
-    const { toolGet } = await import('@/commands/tool-get')
+  it('tool get command is exported', () => {
     expect(typeof toolGet).toBe('function')
   })
 
-  it('tool set command is exported', async () => {
-    const { toolSet } = await import('@/commands/tool-set')
+  it('tool set command is exported', () => {
     expect(typeof toolSet).toBe('function')
   })
 
@@ -392,8 +390,6 @@ describe('codex session support', () => {
       await addTestProject(repoPath)
 
       ;({ containerName, sessionId } = await createCodexContainer('prewarm-tool-proj'))
-
-      const { setPrewarmSession, claimPrewarmSession } = await import('@/lib/prewarm')
 
       // Register a codex prewarm session
       await setPrewarmSession('prewarm-tool-proj', {

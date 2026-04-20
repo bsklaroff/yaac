@@ -1,10 +1,18 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
+import { PgRelayClient } from '@/lib/container/pg-relay'
+import { podman } from '@/lib/container/runtime'
+
+vi.mock('@/lib/container/runtime', () => ({
+  podman: { getContainer: vi.fn() },
+}))
+
+// eslint-disable-next-line @typescript-eslint/unbound-method
+const mockGetContainer = vi.mocked(podman.getContainer)
 
 describe('PgRelayClient', () => {
   afterEach(() => {
     vi.restoreAllMocks()
-    vi.doUnmock('@/lib/container/runtime')
-    vi.resetModules()
+    mockGetContainer.mockReset()
   })
 
   it('skips startup when container is already running', async () => {
@@ -14,13 +22,8 @@ describe('PgRelayClient', () => {
         Networks: { 'yaac-sessions': { IPAddress: '10.89.0.5' } },
       },
     })
-    const mockGetContainer = vi.fn().mockReturnValue({ inspect: mockInspect })
+    mockGetContainer.mockReturnValue({ inspect: mockInspect } as never)
 
-    vi.doMock('@/lib/container/runtime', () => ({
-      podman: { getContainer: mockGetContainer },
-    }))
-
-    const { PgRelayClient } = await import('@/lib/container/pg-relay')
     const client = new PgRelayClient()
 
     await client.ensureRunning()
@@ -36,11 +39,8 @@ describe('PgRelayClient', () => {
         Networks: { 'yaac-sessions': { IPAddress: '10.89.0.5' } },
       },
     })
-    vi.doMock('@/lib/container/runtime', () => ({
-      podman: { getContainer: vi.fn().mockReturnValue({ inspect: mockInspect }) },
-    }))
+    mockGetContainer.mockReturnValue({ inspect: mockInspect } as never)
 
-    const { PgRelayClient } = await import('@/lib/container/pg-relay')
     const client = new PgRelayClient()
 
     await client.ensureRunning()
@@ -55,11 +55,8 @@ describe('PgRelayClient', () => {
         Networks: { 'yaac-sessions': { IPAddress: '10.89.0.5' } },
       },
     })
-    vi.doMock('@/lib/container/runtime', () => ({
-      podman: { getContainer: vi.fn().mockReturnValue({ inspect: mockInspect }) },
-    }))
+    mockGetContainer.mockReturnValue({ inspect: mockInspect } as never)
 
-    const { PgRelayClient } = await import('@/lib/container/pg-relay')
     const client = new PgRelayClient()
 
     await client.ensureRunning({ enabled: true, containerPort: 5433 })
@@ -67,8 +64,7 @@ describe('PgRelayClient', () => {
     expect(client.containerPort).toBe(5433)
   })
 
-  it('throws when accessing ip before ensureRunning', async () => {
-    const { PgRelayClient } = await import('@/lib/container/pg-relay')
+  it('throws when accessing ip before ensureRunning', () => {
     const client = new PgRelayClient()
 
     expect(() => client.ip).toThrow('PG relay not started')
@@ -77,11 +73,8 @@ describe('PgRelayClient', () => {
   it('stop handles already-stopped containers gracefully', async () => {
     const mockStop = vi.fn().mockRejectedValue(new Error('no such container'))
     const mockRemove = vi.fn()
-    vi.doMock('@/lib/container/runtime', () => ({
-      podman: { getContainer: vi.fn().mockReturnValue({ stop: mockStop, remove: mockRemove }) },
-    }))
+    mockGetContainer.mockReturnValue({ stop: mockStop, remove: mockRemove } as never)
 
-    const { PgRelayClient } = await import('@/lib/container/pg-relay')
     const client = new PgRelayClient()
 
     // Should not throw

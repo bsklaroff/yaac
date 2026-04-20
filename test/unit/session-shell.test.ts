@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { execSync } from 'node:child_process'
 import { sessionShell } from '@/commands/session-shell'
+import { resolveContainerAnyState } from '@/lib/container/resolve'
 
 vi.mock('node:child_process', () => ({
   execSync: vi.fn(),
@@ -20,9 +22,6 @@ describe('sessionShell', () => {
   })
 
   it('execs zsh interactively inside a running container', async () => {
-    const { execSync } = await import('node:child_process')
-    const { resolveContainerAnyState } = await import('@/lib/container/resolve')
-
     vi.mocked(resolveContainerAnyState).mockResolvedValue({
       name: 'yaac-demo-abc',
       sessionId: 'abc',
@@ -40,9 +39,6 @@ describe('sessionShell', () => {
   })
 
   it('returns an error for non-running containers without execing', async () => {
-    const { execSync } = await import('node:child_process')
-    const { resolveContainerAnyState } = await import('@/lib/container/resolve')
-
     vi.mocked(resolveContainerAnyState).mockResolvedValue({
       name: 'yaac-demo-dead',
       sessionId: 'dead',
@@ -57,9 +53,6 @@ describe('sessionShell', () => {
   })
 
   it('does nothing when the container cannot be resolved', async () => {
-    const { execSync } = await import('node:child_process')
-    const { resolveContainerAnyState } = await import('@/lib/container/resolve')
-
     vi.mocked(resolveContainerAnyState).mockResolvedValue(null)
 
     await sessionShell('missing')
@@ -68,9 +61,6 @@ describe('sessionShell', () => {
   })
 
   it('swallows execSync errors (shell exited non-zero)', async () => {
-    const { execSync } = await import('node:child_process')
-    const { resolveContainerAnyState } = await import('@/lib/container/resolve')
-
     vi.mocked(resolveContainerAnyState).mockResolvedValue({
       name: 'yaac-demo-abc',
       sessionId: 'abc',

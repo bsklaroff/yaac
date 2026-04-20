@@ -17,6 +17,9 @@ import {
 } from '@/lib/prewarm'
 import type { PrewarmEntry } from '@/lib/prewarm'
 import { isTmuxSessionAlive } from '@/lib/session/cleanup'
+import { resolveSessionFingerprint } from '@/lib/session/fingerprint'
+import { sessionCreate } from '@/commands/session-create'
+import { getWaitingSessions } from '@/commands/session-stream'
 
 /**
  * Create a minimal running container with tmux for a project.
@@ -227,7 +230,6 @@ describe('prewarm session lifecycle', () => {
     containersToCleanup.push(live.containerName)
 
     // Create a prewarm session — we need a real fingerprint for the match
-    const { resolveSessionFingerprint } = await import('@/lib/session/fingerprint')
     const { fingerprint } = await resolveSessionFingerprint(projectSlug)
 
     const prewarm = await createPrewarmContainer(projectSlug, fingerprint)
@@ -252,7 +254,6 @@ describe('prewarm session lifecycle', () => {
     const live = await createMinimalContainer(projectSlug)
     containersToCleanup.push(live.containerName)
 
-    const { resolveSessionFingerprint } = await import('@/lib/session/fingerprint')
     const { fingerprint } = await resolveSessionFingerprint(projectSlug)
 
     // Write "creating" state with matching fingerprint
@@ -305,7 +306,6 @@ describe('prewarm session lifecycle', () => {
     const live = await createMinimalContainer(projectSlug)
     containersToCleanup.push(live.containerName)
 
-    const { resolveSessionFingerprint } = await import('@/lib/session/fingerprint')
     const { fingerprint } = await resolveSessionFingerprint(projectSlug)
 
     // Create a prewarm container then kill it
@@ -358,7 +358,6 @@ describe('prewarm session lifecycle', () => {
     // sessionCreate with createPrewarm should NOT claim it (that's the prewarm creation path)
     // It will fail due to no GitHub token, but that's expected — the important thing
     // is that the prewarm entry is untouched
-    const { sessionCreate } = await import('@/commands/session-create')
     try {
       await sessionCreate(projectSlug, { createPrewarm: true })
     } catch {
@@ -382,7 +381,6 @@ describe('prewarm session lifecycle', () => {
     const regular = await createMinimalContainer(projectSlug)
     containersToCleanup.push(regular.containerName)
 
-    const { getWaitingSessions } = await import('@/commands/session-stream')
     const sessions = await getWaitingSessions(projectSlug)
 
     // Prewarm session should be excluded, regular session should be included

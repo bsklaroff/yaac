@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { readBuildId } from '@/lib/build-id'
+import { authUpdate } from '@/commands/auth-update'
 import { daemonLockPath, readLock, isLockLive, removeLock, type DaemonLock } from '@/lib/daemon/lock'
 import type { DaemonErrorBody } from '@/lib/daemon/errors'
 
@@ -101,15 +102,8 @@ export async function toClientError(
   }
 }
 
-/**
- * Default `AUTH_REQUIRED` recovery: run the interactive `auth update`
- * flow. Imported lazily so the daemon process (which also links this
- * module for the shared error taxonomy) doesn't pull the readline-using
- * command into its bundle unless the CLI path actually needs it.
- */
 async function defaultAuthUpdate(): Promise<void> {
-  const mod = await import('@/commands/auth-update')
-  await mod.authUpdate()
+  await authUpdate()
 }
 
 /**

@@ -61,6 +61,7 @@ import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanu
 import { createSession } from '@/commands/session-create'
 import fs from 'node:fs/promises'
 import readline from 'node:readline/promises'
+import { execSync } from 'node:child_process'
 
 const mockReaddir = vi.mocked(fs.readdir)
 const mockCreateInterface = vi.mocked(readline.createInterface)
@@ -333,7 +334,6 @@ describe('sessionStream', () => {
 
   it('clears visited set (except last) when all waiting sessions have been visited', async () => {
     // We need to mock execSync so tmux attach doesn't actually run
-    const { execSync } = await import('node:child_process')
     vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => '')
 
     mockIsTmuxAlive.mockReturnValue(true)
@@ -386,7 +386,6 @@ describe('sessionStream', () => {
     // cleared after the first wrap-around, the second wrap-around sees
     // visited={} and re-attaches to A. Without clearing, A stays permanently
     // excluded and we just keep calling createSession.
-    const { execSync } = await import('node:child_process')
     vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => '')
 
     mockIsTmuxAlive.mockReturnValue(true)
@@ -425,7 +424,6 @@ describe('sessionStream', () => {
   })
 
   it('tracks the newly created session as lastVisited so the prior waiting session can be revisited immediately', async () => {
-    const { execSync } = await import('node:child_process')
     vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => '')
 
     const containerA = {
@@ -457,7 +455,6 @@ describe('sessionStream', () => {
   })
 
   it('does not double-cleanup a killed session on the next loop iteration', async () => {
-    const { execSync } = await import('node:child_process')
     vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => '')
 
     const containerA = {
@@ -502,7 +499,6 @@ describe('sessionStream', () => {
   })
 
   it('exits instead of creating a new session after a blank session closes', async () => {
-    const { execSync } = await import('node:child_process')
     vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => '')
 
     const containerA = {
@@ -535,7 +531,6 @@ describe('sessionStream', () => {
   })
 
   it('exits after a blank session closes when no project was specified', async () => {
-    const { execSync } = await import('node:child_process')
     vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => '')
 
     const containerA = {
@@ -568,7 +563,6 @@ describe('sessionStream', () => {
   })
 
   it('exits after detaching the only waiting blank session instead of creating a new one', async () => {
-    const { execSync } = await import('node:child_process')
     vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => '')
 
     const containerA = {
@@ -596,7 +590,6 @@ describe('sessionStream', () => {
   })
 
   it('exits on wrap-around when the only visited waiting session is blank', async () => {
-    const { execSync } = await import('node:child_process')
     vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => '')
 
     const containerA = {
@@ -619,7 +612,6 @@ describe('sessionStream', () => {
   })
 
   it('creates a new session on wrap-around when the only visited waiting session has a prompt', async () => {
-    const { execSync } = await import('node:child_process')
     vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => '')
 
     const containerA = {
@@ -645,7 +637,6 @@ describe('sessionStream', () => {
   })
 
   it('creates a new session after a closed session with a recorded prompt', async () => {
-    const { execSync } = await import('node:child_process')
     vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => '')
 
     const containerA = {
@@ -689,7 +680,6 @@ describe('sessionStream', () => {
   })
 
   it('cleans up before resolving and recreating after a prompted session closes with no project set', async () => {
-    const { execSync } = await import('node:child_process')
     vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => '')
 
     const closedSession = {
@@ -743,7 +733,6 @@ describe('sessionStream', () => {
   })
 
   it('attaches to another waiting session instead of exiting after a blank session closes', async () => {
-    const { execSync } = await import('node:child_process')
     const mockedExecSync = vi.mocked(execSync as unknown as ReturnType<typeof vi.fn>)
     mockedExecSync.mockImplementation(() => '')
 

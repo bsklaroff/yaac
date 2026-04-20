@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { execSync } from 'node:child_process'
 import { sessionAttach } from '@/commands/session-attach'
+import { resolveContainerAnyState } from '@/lib/container/resolve'
+import { getPrewarmSession, clearPrewarmSession } from '@/lib/prewarm'
 
 vi.mock('node:child_process', () => ({
   execSync: vi.fn(),
@@ -30,10 +33,6 @@ describe('sessionAttach', () => {
   })
 
   it('clears prewarm state when attaching to the tracked prewarm session', async () => {
-    const { execSync } = await import('node:child_process')
-    const { resolveContainerAnyState } = await import('@/lib/container/resolve')
-    const { getPrewarmSession, clearPrewarmSession } = await import('@/lib/prewarm')
-
     vi.mocked(resolveContainerAnyState).mockResolvedValue({
       name: 'yaac-demo-prewarm',
       sessionId: 'prewarm-session',
@@ -58,9 +57,6 @@ describe('sessionAttach', () => {
   })
 
   it('does not clear prewarm state when attaching to another session in the same project', async () => {
-    const { resolveContainerAnyState } = await import('@/lib/container/resolve')
-    const { getPrewarmSession, clearPrewarmSession } = await import('@/lib/prewarm')
-
     vi.mocked(resolveContainerAnyState).mockResolvedValue({
       name: 'yaac-demo-active',
       sessionId: 'active-session',
@@ -81,9 +77,6 @@ describe('sessionAttach', () => {
   })
 
   it('returns an error for non-running containers without touching prewarm state', async () => {
-    const { resolveContainerAnyState } = await import('@/lib/container/resolve')
-    const { getPrewarmSession, clearPrewarmSession } = await import('@/lib/prewarm')
-
     vi.mocked(resolveContainerAnyState).mockResolvedValue({
       name: 'yaac-demo-exited',
       sessionId: 'dead-session',

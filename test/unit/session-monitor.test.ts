@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { sessionMonitor } from '@/commands/session-monitor'
+import { sessionList } from '@/commands/session-list'
 
 vi.mock('@/commands/session-list', () => ({
   sessionList: vi.fn().mockResolvedValue(undefined),
@@ -23,7 +24,6 @@ describe('sessionMonitor', () => {
   })
 
   it('clears screen and calls sessionList on each tick', async () => {
-    const { sessionList } = await import('@/commands/session-list')
     const writeSpy = vi.spyOn(process.stdout, 'write').mockReturnValue(true)
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
 
@@ -45,7 +45,6 @@ describe('sessionMonitor', () => {
   })
 
   it('inserts erase-to-EOL before newlines to clear stale characters', async () => {
-    const { sessionList } = await import('@/commands/session-list')
     const written: string[] = []
     vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
       if (typeof chunk === 'string') written.push(chunk)
@@ -86,7 +85,6 @@ describe('sessionMonitor', () => {
   })
 
   it('enables raw mode and swallows stdin when running on a TTY', async () => {
-    const { sessionList } = await import('@/commands/session-list')
     vi.spyOn(process.stdout, 'write').mockReturnValue(true)
     vi.spyOn(console, 'log').mockImplementation(() => {})
 
@@ -121,8 +119,6 @@ describe('sessionMonitor', () => {
   })
 
   it('passes project filter to sessionList', async () => {
-    const { sessionList } = await import('@/commands/session-list')
-
     let iterations = 0
     vi.mocked(sessionList).mockImplementation(() => {
       iterations++

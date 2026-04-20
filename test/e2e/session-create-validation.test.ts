@@ -4,6 +4,7 @@ import path from 'node:path'
 import { createTempDataDir, cleanupTempDir, createTestRepo, addTestProject } from '@test/helpers/setup'
 import { bootInProcessDaemon, type InProcessDaemon } from '@test/helpers/daemon'
 import { exitOnClientError } from '@/lib/daemon-client'
+import { sessionCreate } from '@/commands/session-create'
 import type * as gitModule from '@/lib/git'
 
 // Provide a deterministic git identity so sessionCreate doesn't try to
@@ -41,8 +42,6 @@ describe('yaac session create — validation failures', () => {
     await createTestRepo(repo)
     await addTestProject(repo)
 
-    const { sessionCreate } = await import('@/commands/session-create')
-
     const errs: string[] = []
     const origErr = console.error
     console.error = (msg: string) => errs.push(msg)
@@ -60,8 +59,6 @@ describe('yaac session create — validation failures', () => {
   })
 
   it('exits 1 when the project does not exist', async () => {
-    const { sessionCreate } = await import('@/commands/session-create')
-
     // Suppress console output
     const origErr = console.error
     const origLog = console.log

@@ -24,6 +24,7 @@ export default tseslint.config(
         'error',
         { patterns: [{ group: ['..*'], message: 'Relative parent imports are not allowed.' }] },
       ],
+      'no-restricted-syntax': ['error', 'ImportExpression'],
       '@stylistic/quotes': ['error', 'single', { avoidEscape: true, allowTemplateLiterals: 'avoidEscape' }],
       '@stylistic/semi': ['error', 'never'],
       '@stylistic/comma-dangle': ['error', 'always-multiline'],

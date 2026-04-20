@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@test/helpers/setup'
 import { bootInProcessDaemon, type InProcessDaemon } from '@test/helpers/daemon'
-import { expandOwnerRepo, validateGithubHttpsUrl } from '@/commands/project-add'
+import { expandOwnerRepo, projectAdd, validateGithubHttpsUrl } from '@/commands/project-add'
 import { exitOnClientError } from '@/lib/daemon-client'
 
 // Stub the interactive auth-update flow the daemon-client invokes on
@@ -33,7 +33,6 @@ describe('yaac project add', () => {
   })
 
   async function run(input: string): Promise<{ errs: string[] }> {
-    const { projectAdd } = await import('@/commands/project-add')
     const errs: string[] = []
     const origErr = console.error
     console.error = (msg: string) => errs.push(msg)

@@ -4,7 +4,9 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import simpleGit from 'simple-git'
 import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, TEST_PROXY_CONFIG, TEST_RUN_ID, addTestProject, podmanRetry, removeContainer } from '@test/helpers/setup'
+import { sessionCreate } from '@/commands/session-create'
 import { podman } from '@/lib/container/runtime'
 import { ensureImage, packTar } from '@/lib/container/image-builder'
 import { ProxyClient, buildRulesFromConfig } from '@/lib/container/proxy-client'
@@ -560,7 +562,7 @@ describe('yaac session create', () => {
       JSON.stringify({ name: 'test', private: true, dependencies: { 'is-odd': '3.0.1' } }) + '\n',
     )
     await execFileAsync('pnpm', ['install', '--lockfile-only'], { cwd: repoPath })
-    const git = (await import('simple-git')).default(repoPath)
+    const git = simpleGit(repoPath)
     await git.add('.')
     await git.commit('add package.json')
 
@@ -949,7 +951,6 @@ describe('yaac session create', () => {
 
   it('errors gracefully on unknown project', async () => {
     process.exitCode = undefined
-    const { sessionCreate } = await import('@/commands/session-create')
 
     // Mock to avoid actual container runtime check
     const errs: string[] = []
