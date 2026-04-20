@@ -2,3 +2,7 @@ node_modules/
 dist/
 .env
 .eslintcache
+
+# Tauri / Rust
+src-tauri/target/
+src-tauri/gen/schemas/

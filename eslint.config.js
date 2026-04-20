@@ -8,11 +8,11 @@ export default tseslint.config(
     extends: [
       ...tseslint.configs.recommendedTypeChecked,
     ],
-    files: ['**/*.ts'],
+    files: ['**/*.ts', '**/*.tsx'],
     languageOptions: {
       globals: globals.node,
       parserOptions: {
-        project: ['./tsconfig.json'],
+        project: ['./tsconfig.json', './tsconfig.frontend.json'],
         tsconfigRootDir: import.meta.dirname,
       },
     },
