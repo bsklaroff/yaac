@@ -57,6 +57,7 @@ describe('yaac session list', () => {
   })
 
   afterEach(async () => {
+    vi.unstubAllEnvs()
     await daemon.stop()
     for (const name of containersToCleanup) {
       await removeContainer(name)
@@ -151,6 +152,7 @@ describe('yaac session list', () => {
 
   it('auto-cleans exited containers from the list', async () => {
     await requirePodman()
+    vi.stubEnv('YAAC_STARTING_GRACE_MS', '0')
 
     const tmpDir = await createTempDataDir()
     tmpDirs.push(tmpDir)
@@ -191,6 +193,7 @@ describe('yaac session list', () => {
 
   it('auto-cleans zombie containers (running but tmux dead)', async () => {
     await requirePodman()
+    vi.stubEnv('YAAC_STARTING_GRACE_MS', '0')
 
     const tmpDir = await createTempDataDir()
     tmpDirs.push(tmpDir)

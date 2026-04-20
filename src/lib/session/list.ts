@@ -41,6 +41,66 @@ export interface ActiveSessionsResult {
   failedPrewarms: FailedPrewarmInfo[]
 }
 
+/**
+ * Default grace window that protects freshly-created session containers
+ * from the stale-session reaper. session-create's retry loop recreates
+ * the container between attempts and does not start tmux until the last
+ * step, so without a grace period a concurrent `listActiveSessions` call
+ * can classify the container as a zombie — firing cleanupSessionDetached,
+ * which removes the session's allowedHosts from the proxy mid-creation.
+ * Tests override this with YAAC_STARTING_GRACE_MS so they can provoke
+ * cleanup on containers they just created.
+ */
+export const STARTING_GRACE_MS = 60_000
+
+export function resolveStartingGraceMs(): number {
+  const raw = process.env.YAAC_STARTING_GRACE_MS
+  if (raw === undefined || raw === '') return STARTING_GRACE_MS
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : STARTING_GRACE_MS
+}
+
+interface ClassifiableContainer {
+  Id?: string
+  Names?: string[]
+  Labels?: Record<string, string>
+  State?: string
+  /** Unix epoch seconds, as returned by podman.listContainers. */
+  Created?: number
+}
+
+/**
+ * Split the container list into the ones the renderer should show as
+ * active sessions, the ones the caller should tear down, and implicitly
+ * (by omission) the ones that are still inside the startup grace window.
+ */
+export function classifySessionContainers<T extends ClassifiableContainer>(
+  containers: T[],
+  nowMs: number,
+  isTmuxAlive: (name: string) => boolean,
+  graceMs: number = STARTING_GRACE_MS,
+): { running: T[]; stale: StaleSessionInfo[] } {
+  const running: T[] = []
+  const stale: StaleSessionInfo[] = []
+  for (const c of containers) {
+    const name = c.Names?.[0]?.replace(/^\//, '') ?? c.Id ?? ''
+    const sessionId = c.Labels?.['yaac.session-id'] ?? ''
+    const slug = c.Labels?.['yaac.project'] ?? ''
+
+    if (c.State === 'running' && isTmuxAlive(name)) {
+      running.push(c)
+      continue
+    }
+
+    const ageMs = typeof c.Created === 'number' ? nowMs - c.Created * 1000 : Infinity
+    if (ageMs < graceMs) continue
+
+    const zombie = c.State === 'running'
+    stale.push({ containerName: name, projectSlug: slug, sessionId, zombie })
+  }
+  return { running, stale }
+}
+
 export interface DeletedSessionEntry {
   sessionId: string
   projectSlug: string
@@ -82,23 +142,9 @@ export async function listActiveSessions(projectFilter?: string): Promise<Active
     throw new DaemonError('PODMAN_UNAVAILABLE', err instanceof Error ? err.message : String(err))
   }
 
-  const running: typeof containers = []
-  const stale: StaleSessionInfo[] = []
-  for (const c of containers) {
-    const name = c.Names?.[0]?.replace(/^\//, '') ?? c.Id
-    const sessionId = c.Labels?.['yaac.session-id'] ?? ''
-    const slug = c.Labels?.['yaac.project'] ?? ''
-
-    if (c.State === 'running') {
-      if (isTmuxSessionAlive(name)) {
-        running.push(c)
-      } else {
-        stale.push({ containerName: name, projectSlug: slug, sessionId, zombie: true })
-      }
-      continue
-    }
-    stale.push({ containerName: name, projectSlug: slug, sessionId, zombie: false })
-  }
+  const { running, stale } = classifySessionContainers(
+    containers, Date.now(), isTmuxSessionAlive, resolveStartingGraceMs(),
+  )
 
   const sessions: SessionListEntry[] = await Promise.all(
     running.map(async (c): Promise<SessionListEntry> => {
