@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest'
-import { createDaemonFetch, exitOnClientError, toClientError } from '@/lib/daemon-client'
+import {
+  createDaemonFetch,
+  describeLockMismatch,
+  exitOnClientError,
+  toClientError,
+} from '@/lib/daemon-client'
 
 function jsonResponse(body: string, status = 200): Response {
   return new Response(body, { status, headers: { 'content-type': 'application/json' } })
@@ -94,6 +99,34 @@ describe('createDaemonFetch', () => {
     })
     await daemonFetch('http://daemon.local/project/list?foo=bar')
     expect(fetchImpl.mock.calls[0][0]).toBe('http://127.0.0.1:4242/project/list?foo=bar')
+  })
+})
+
+describe('describeLockMismatch', () => {
+  const lock = { pid: 1, port: 4242, secret: 'shh', startedAt: 0, buildId: 'abc' }
+
+  it('returns a "not running" message when there is no lock', () => {
+    const msg = describeLockMismatch(null, false, 'abc')
+    expect(msg).toMatch(/not running/)
+    expect(msg).toMatch(/yaac daemon start/)
+  })
+
+  it('returns a "not running" message when the lock is stale (not live)', () => {
+    const msg = describeLockMismatch(lock, false, 'abc')
+    expect(msg).toMatch(/not running/)
+    expect(msg).toMatch(/yaac daemon start/)
+  })
+
+  it('returns a version-mismatch message when buildIds differ', () => {
+    const msg = describeLockMismatch(lock, true, 'xyz')
+    expect(msg).toMatch(/outdated version/)
+    expect(msg).toMatch(/abc/)
+    expect(msg).toMatch(/xyz/)
+    expect(msg).toMatch(/yaac daemon restart/)
+  })
+
+  it('returns null when the live daemon matches the CLI buildId', () => {
+    expect(describeLockMismatch(lock, true, 'abc')).toBeNull()
   })
 })
 

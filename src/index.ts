@@ -14,7 +14,7 @@ import { authClear } from '@/commands/auth-clear'
 import { authList } from '@/commands/auth-list'
 import { toolGet } from '@/commands/tool-get'
 import { toolSet } from '@/commands/tool-set'
-import { runDaemon } from '@/commands/daemon'
+import { runDaemon, startDaemon, stopDaemon, restartDaemon } from '@/commands/daemon'
 import { ensureGithubToken } from '@/lib/project/credentials'
 import { ensureDefaultTool, getDefaultTool, isValidTool } from '@/lib/project/preferences'
 import { ensureToolAuth } from '@/lib/project/tool-auth'
@@ -62,13 +62,33 @@ const program = new Command()
   .description('Agent sandbox manager')
   .version(YAAC_VERSION)
 
-program
+const daemon = program
   .command('daemon')
-  .description('Run the yaac daemon (HTTP server the CLI talks to)')
+  .description('Manage the yaac daemon (HTTP server the CLI talks to)')
+  .configureHelp({ formatHelp: nestedHelp })
+
+daemon
+  .command('run')
+  .description('Run the daemon in the foreground (used internally by `start`)')
   .option('-p, --port <port>', 'Port to bind on 127.0.0.1 (default: ephemeral)', (v) => Number.parseInt(v, 10))
   .action(async (options: { port?: number }) => {
     await runDaemon({ port: options.port })
   })
+
+daemon
+  .command('start')
+  .description('Start the daemon in the background')
+  .action(startDaemon)
+
+daemon
+  .command('stop')
+  .description('Stop the running daemon')
+  .action(stopDaemon)
+
+daemon
+  .command('restart')
+  .description('Restart the daemon (stop, then start)')
+  .action(restartDaemon)
 
 const project = program
   .command('project')

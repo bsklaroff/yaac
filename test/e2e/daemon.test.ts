@@ -16,7 +16,7 @@ interface SpawnedDaemon {
 }
 
 async function startDaemon(env: NodeJS.ProcessEnv): Promise<SpawnedDaemon> {
-  const child = spawn(process.execPath, [TSX_CLI, ENTRY, 'daemon', '--port', '0'], {
+  const child = spawn(process.execPath, [TSX_CLI, ENTRY, 'daemon', 'run', '--port', '0'], {
     env,
     stdio: ['ignore', 'ignore', 'pipe'],
   })
@@ -51,7 +51,7 @@ async function waitForLock(timeoutMs: number): Promise<DaemonLock> {
   throw new Error('daemon did not write the lock within timeout')
 }
 
-describe('yaac daemon (subprocess)', () => {
+describe('yaac daemon run (subprocess)', () => {
   let homeDir: string
   let dataDir: string
   let daemon: SpawnedDaemon | null = null
@@ -85,11 +85,11 @@ describe('yaac daemon (subprocess)', () => {
     expect(await res.json()).toMatchObject({ ok: true })
   })
 
-  it('a second `yaac daemon` invocation is idempotent', async () => {
+  it('a second `yaac daemon run` invocation is idempotent', async () => {
     daemon = await startDaemon(env)
     const firstPort = daemon.lock.port
 
-    const second = spawn(process.execPath, [TSX_CLI, ENTRY, 'daemon', '--port', '0'], {
+    const second = spawn(process.execPath, [TSX_CLI, ENTRY, 'daemon', 'run', '--port', '0'], {
       env,
       stdio: ['ignore', 'ignore', 'pipe'],
     })
@@ -179,5 +179,126 @@ describe('yaac daemon (subprocess)', () => {
     daemon = await startDaemon(env)
     const res = await authedFetch(`http://127.0.0.1:${daemon.lock.port}/project/nope`)
     expect(res.status).toBe(404)
+  })
+})
+
+async function runCli(env: NodeJS.ProcessEnv, ...args: string[]): Promise<{
+  exitCode: number | null
+  stderr: string
+}> {
+  const child = spawn(process.execPath, [TSX_CLI, ENTRY, ...args], {
+    env,
+    stdio: ['ignore', 'ignore', 'pipe'],
+  })
+  let stderr = ''
+  child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+  const exitCode = await new Promise<number | null>((resolve) => {
+    child.once('exit', (code) => resolve(code))
+  })
+  return { exitCode, stderr }
+}
+
+async function killDaemonByLock(): Promise<void> {
+  const lock = await readLock()
+  if (!lock) return
+  try {
+    process.kill(lock.pid, 'SIGTERM')
+  } catch {
+    // already gone
+  }
+  // Wait for the lock to be unlinked by the daemon's shutdown handler.
+  const deadline = Date.now() + 3000
+  while (Date.now() < deadline) {
+    const cur = await readLock()
+    if (!cur || cur.pid !== lock.pid) return
+    await new Promise((r) => setTimeout(r, 50))
+  }
+}
+
+describe('yaac daemon start / stop / restart (subprocess)', () => {
+  let homeDir: string
+  let dataDir: string
+  let env: NodeJS.ProcessEnv
+
+  beforeEach(async () => {
+    homeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-daemon-lifecycle-'))
+    dataDir = path.join(homeDir, '.yaac')
+    await fs.mkdir(path.join(dataDir, 'projects'), { recursive: true })
+    setDataDir(dataDir)
+    env = { ...process.env, HOME: homeDir, YAAC_BUILD_ID: 'test-build-id' }
+  })
+
+  afterEach(async () => {
+    await killDaemonByLock()
+    await fs.rm(homeDir, { recursive: true, force: true })
+  })
+
+  it('`daemon start` spawns a background daemon that writes the lock', async () => {
+    expect(await readLock()).toBeNull()
+    const { exitCode } = await runCli(env, 'daemon', 'start')
+    expect(exitCode).toBe(0)
+    const lock = await readLock()
+    expect(lock).not.toBeNull()
+    const res = await fetch(`http://127.0.0.1:${lock!.port}/health`)
+    expect(res.status).toBe(200)
+  })
+
+  it('`daemon start` is idempotent when the running version matches', async () => {
+    const first = await runCli(env, 'daemon', 'start')
+    expect(first.exitCode).toBe(0)
+    const firstLock = await readLock()
+    const second = await runCli(env, 'daemon', 'start')
+    expect(second.exitCode).toBe(0)
+    expect(second.stderr).toMatch(/already running/)
+    const secondLock = await readLock()
+    expect(secondLock?.pid).toBe(firstLock?.pid)
+  })
+
+  it('`daemon start` errors when a running daemon has a mismatched buildId', async () => {
+    const startEnv = { ...env, YAAC_BUILD_ID: 'old-build' }
+    const first = await runCli(startEnv, 'daemon', 'start')
+    expect(first.exitCode).toBe(0)
+
+    const second = await runCli(env, 'daemon', 'start')
+    expect(second.exitCode).toBe(1)
+    expect(second.stderr).toMatch(/outdated version/)
+    expect(second.stderr).toMatch(/yaac daemon restart/)
+  })
+
+  it('`daemon stop` SIGTERMs the daemon and clears the lock', async () => {
+    await runCli(env, 'daemon', 'start')
+    expect(await readLock()).not.toBeNull()
+    const { exitCode, stderr } = await runCli(env, 'daemon', 'stop')
+    expect(exitCode).toBe(0)
+    expect(stderr).toMatch(/daemon stopped/)
+    expect(await readLock()).toBeNull()
+  })
+
+  it('`daemon stop` is a no-op when no daemon is running', async () => {
+    const { exitCode, stderr } = await runCli(env, 'daemon', 'stop')
+    expect(exitCode).toBe(0)
+    expect(stderr).toMatch(/not running/)
+  })
+
+  it('`daemon restart` replaces the running daemon with a fresh one', async () => {
+    await runCli(env, 'daemon', 'start')
+    const before = await readLock()
+    expect(before).not.toBeNull()
+
+    const { exitCode } = await runCli(env, 'daemon', 'restart')
+    expect(exitCode).toBe(0)
+
+    const after = await readLock()
+    expect(after).not.toBeNull()
+    expect(after!.pid).not.toBe(before!.pid)
+    const res = await fetch(`http://127.0.0.1:${after!.port}/health`)
+    expect(res.status).toBe(200)
+  })
+
+  it('`daemon restart` starts a daemon even when none was running', async () => {
+    expect(await readLock()).toBeNull()
+    const { exitCode } = await runCli(env, 'daemon', 'restart')
+    expect(exitCode).toBe(0)
+    expect(await readLock()).not.toBeNull()
   })
 })
