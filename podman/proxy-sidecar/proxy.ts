@@ -1060,6 +1060,86 @@ function handleMitm(
     }
   })
 
+  // WebSocket upgrades (e.g. Codex's `transport="responses_websocket"` path
+  // on chatgpt.com/backend-api/responses). Without an explicit 'upgrade'
+  // handler, Node's http.Server buffers upgrade requests until the 15s
+  // timeout — Codex retries 5x before falling back to HTTP. Open a TLS
+  // upgrade request upstream, swap the Authorization header the same way
+  // as regular requests, then pipe the two sockets raw.
+  mitmServer.on('upgrade', (req: http.IncomingMessage, wsClientSocket: Duplex, head: Buffer) => {
+    const reqPath = req.url ?? '/'
+    const headers: http.OutgoingHttpHeaders = { ...req.headers }
+    delete headers['proxy-authorization']
+    delete headers['proxy-connection']
+
+    const dynamicRules = buildDynamicRules(sessionId, hostname, null, null)
+    const allRules: InjectionRule[] = [...rules, ...dynamicRules]
+    const injCount = applyInjections(headers, reqPath, allRules)
+
+    if (injCount > 0) {
+      const dynSuffix = dynamicRules.length > 0 ? ` + dynamic(${dynamicRules.length})` : ''
+      console.log(`[proxy] MITM UPGRADE wss://${hostname}${reqPath} (${injCount} header injections${dynSuffix})`)
+    }
+
+    const upstreamReq = https.request({
+      hostname,
+      port: parseInt(port ?? '', 10) || 443,
+      path: reqPath,
+      method: req.method,
+      headers,
+      rejectUnauthorized: true,
+    })
+
+    upstreamReq.on('upgrade', (upstreamRes, upstreamSocket, upstreamHead) => {
+      const statusLine = `HTTP/1.1 ${upstreamRes.statusCode ?? 101} ${upstreamRes.statusMessage ?? 'Switching Protocols'}`
+      const lines = [statusLine]
+      for (const [k, v] of Object.entries(upstreamRes.headers)) {
+        if (v === undefined) continue
+        const values = Array.isArray(v) ? v : [v]
+        for (const value of values) {
+          lines.push(`${k}: ${value}`)
+        }
+      }
+      wsClientSocket.write(lines.join('\r\n') + '\r\n\r\n')
+      if (upstreamHead.length > 0) wsClientSocket.write(upstreamHead)
+      if (head.length > 0) upstreamSocket.write(head)
+
+      wsClientSocket.pipe(upstreamSocket)
+      upstreamSocket.pipe(wsClientSocket)
+
+      upstreamSocket.on('error', (err: NodeJS.ErrnoException) => {
+        if (err.code !== 'ECONNRESET') {
+          console.error(`[proxy] WS upstream socket error for ${hostname}:`, err.message)
+        }
+        wsClientSocket.destroy()
+      })
+      wsClientSocket.on('error', () => {
+        upstreamSocket.destroy()
+      })
+    })
+
+    upstreamReq.on('response', (upstreamRes) => {
+      const statusLine = `HTTP/1.1 ${upstreamRes.statusCode ?? 502} ${upstreamRes.statusMessage ?? ''}`
+      const lines = [statusLine]
+      for (const [k, v] of Object.entries(upstreamRes.headers)) {
+        if (v === undefined) continue
+        const values = Array.isArray(v) ? v : [v]
+        for (const value of values) {
+          lines.push(`${k}: ${value}`)
+        }
+      }
+      wsClientSocket.write(lines.join('\r\n') + '\r\n\r\n')
+      upstreamRes.pipe(wsClientSocket)
+    })
+
+    upstreamReq.on('error', (err: Error) => {
+      console.error(`[proxy] WS upstream error for ${hostname}${reqPath}:`, err.message)
+      wsClientSocket.destroy()
+    })
+
+    upstreamReq.end()
+  })
+
   mitmServer.emit('connection', tlsSocket)
 
   tlsSocket.on('error', (err: NodeJS.ErrnoException) => {
