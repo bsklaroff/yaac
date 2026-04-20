@@ -2,17 +2,8 @@ import { HTTPException } from 'hono/http-exception'
 
 /**
  * Uniform error taxonomy the daemon returns on every non-2xx response.
- *
- * The CLI translates the `code` into a process exit status so that the
- * end-user experience of the old direct-to-lib CLI is preserved:
- *
- *   NOT_FOUND           → exit 1 (e.g. "No such session/project")
- *   VALIDATION          → exit 2 (input rejected — bad shape / unknown tool)
- *   CONFLICT            → exit 1 (e.g. duplicate `project add`)
- *   PODMAN_UNAVAILABLE  → exit 1 (the old "Failed to connect to Podman")
- *   AUTH_REQUIRED       → CLI invokes `auth update` inline and retries
- *   BAD_BEARER          → client re-resolves the lock and retries once
- *   INTERNAL            → exit 1 (everything else)
+ * The fetch adapter reads `AUTH_REQUIRED` / `BAD_BEARER` to drive its
+ * retry logic; all other codes surface as plain `Error` messages.
  */
 export type ErrorCode =
   | 'NOT_FOUND'
@@ -109,9 +100,3 @@ export function rewriteZValidatorBody(raw: unknown): DaemonErrorBody | null {
   return { error: { code: 'VALIDATION', message } }
 }
 
-export function exitCodeForError(code: ErrorCode): number {
-  switch (code) {
-    case 'VALIDATION': return 2
-    default: return 1
-  }
-}

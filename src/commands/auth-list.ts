@@ -1,14 +1,12 @@
-import { getClient, exitOnClientError } from '@/lib/daemon-client'
-import type { AuthListResult, ToolAuthSummary } from '@/lib/auth/list'
+import { toClientError } from '@/lib/daemon-client'
+import { getRpcClient } from '@/lib/daemon-rpc-client'
+import type { ToolAuthSummary } from '@/lib/auth/list'
 
 export async function authList(): Promise<void> {
-  let result: AuthListResult
-  try {
-    const client = await getClient()
-    result = await client.get<AuthListResult>('/auth/list')
-  } catch (err) {
-    exitOnClientError(err)
-  }
+  const client = await getRpcClient()
+  const res = await client.auth.list.$get()
+  if (!res.ok) throw await toClientError(res)
+  const result = await res.json()
 
   console.log('GitHub tokens:')
   if (result.githubTokens.length === 0) {

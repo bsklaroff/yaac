@@ -647,7 +647,8 @@ export async function createSession(projectSlug: string, options: SessionCreateO
 export async function sessionCreate(projectSlug: string, options: SessionCreateOptions): Promise<string | undefined> {
   // Lazy imports keep the daemon process free of the interactive CLI
   // dependencies (readline, attached terminals).
-  const { getClient, exitOnClientError } = await import('@/lib/daemon-client')
+  const { toClientError } = await import('@/lib/daemon-client')
+  const { getRpcClient } = await import('@/lib/daemon-rpc-client')
 
   try {
     await fs.access(projectDir(projectSlug))
@@ -710,20 +711,24 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
 
   const tool: AgentTool = options.tool ?? 'claude'
 
-  let result!: SessionCreateResult
+  let result: SessionCreateResult
   try {
-    const client = await getClient()
-    result = await client.post<SessionCreateResult>('/session/create', {
-      project: projectSlug,
-      tool,
-      addDir: options.addDir,
-      addDirRw: options.addDirRw,
-      gitUser,
-      portReservations: reservedPorts.map(({ containerPort, hostPort }) => ({ containerPort, hostPort })),
+    const client = await getRpcClient()
+    const res = await client.session.create.$post({
+      json: {
+        project: projectSlug,
+        tool,
+        addDir: options.addDir,
+        addDirRw: options.addDirRw,
+        gitUser,
+        portReservations: reservedPorts.map(({ containerPort, hostPort }) => ({ containerPort, hostPort })),
+      },
     })
+    if (!res.ok) throw await toClientError(res)
+    result = await res.json()
   } catch (err) {
     for (const p of reservedPorts) p.server.close()
-    exitOnClientError(err)
+    throw err
   }
 
   const { sessionId, containerName } = result

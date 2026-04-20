@@ -1,37 +1,25 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest'
-import {
-  DaemonClientError,
-  exitOnClientError,
-  getClient,
-} from '@/lib/daemon-client'
+import { createDaemonFetch, exitOnClientError, toClientError } from '@/lib/daemon-client'
 
 function jsonResponse(body: string, status = 200): Response {
   return new Response(body, { status, headers: { 'content-type': 'application/json' } })
 }
 
-describe('DaemonClientError', () => {
-  it('preserves code + message', () => {
-    const err = new DaemonClientError('NOT_FOUND', 'project foo not found')
-    expect(err.code).toBe('NOT_FOUND')
-    expect(err.message).toBe('project foo not found')
-    expect(err.name).toBe('DaemonClientError')
-  })
-})
-
-describe('getClient', () => {
+describe('createDaemonFetch', () => {
   const lock = { pid: 1, port: 4242, secret: 'shh', startedAt: 0, buildId: 'test' }
 
-  it('issues a GET with the bearer header from the lock', async () => {
+  it('issues requests against the locked port with the bearer header', async () => {
     const fetchImpl = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
       const auth = new Headers(init?.headers ?? {}).get('authorization')
       expect(auth).toBe('Bearer shh')
       return Promise.resolve(jsonResponse('[]'))
     })
-    const client = await getClient({
+    const daemonFetch = await createDaemonFetch({
       resolveLock: () => Promise.resolve(lock),
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
-    expect(await client.get('/project/list')).toEqual([])
+    const res = await daemonFetch('/project/list')
+    expect(await res.json()).toEqual([])
     expect(fetchImpl).toHaveBeenCalledTimes(1)
     const url = fetchImpl.mock.calls[0][0] as string
     expect(url).toBe('http://127.0.0.1:4242/project/list')
@@ -45,8 +33,12 @@ describe('getClient', () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(jsonResponse('{"error":{"code":"BAD_BEARER","message":"x"}}', 401))
       .mockResolvedValueOnce(jsonResponse('[]'))
-    const client = await getClient({ resolveLock, fetchImpl: fetchImpl as unknown as typeof fetch })
-    expect(await client.get('/project/list')).toEqual([])
+    const daemonFetch = await createDaemonFetch({
+      resolveLock,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    const res = await daemonFetch('/project/list')
+    expect(await res.json()).toEqual([])
     expect(resolveLock).toHaveBeenCalledTimes(2)
     expect(fetchImpl).toHaveBeenCalledTimes(2)
     const second = fetchImpl.mock.calls[1] as [string, RequestInit]
@@ -63,60 +55,63 @@ describe('getClient', () => {
         401,
       ))
       .mockResolvedValueOnce(jsonResponse('{"ok":true}'))
-    const client = await getClient({
+    const daemonFetch = await createDaemonFetch({
       resolveLock: () => Promise.resolve(lock),
       fetchImpl: fetchImpl as unknown as typeof fetch,
       onAuthRequired,
     })
-    expect(await client.post('/auth/github/tokens', { pattern: '*', token: 'x' })).toEqual({ ok: true })
+    const res = await daemonFetch('/auth/github/tokens', { method: 'POST' })
+    expect(await res.json()).toEqual({ ok: true })
     expect(onAuthRequired).toHaveBeenCalledTimes(1)
     expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 
-  it('surfaces a second AUTH_REQUIRED as a DaemonClientError', async () => {
+  it('returns a second AUTH_REQUIRED response unchanged for the caller to surface', async () => {
     const onAuthRequired = vi.fn().mockResolvedValue(undefined)
     const fetchImpl = vi.fn(() => Promise.resolve(jsonResponse(
       '{"error":{"code":"AUTH_REQUIRED","message":"still need login"}}',
       401,
     )))
-    const client = await getClient({
+    const daemonFetch = await createDaemonFetch({
       resolveLock: () => Promise.resolve(lock),
       fetchImpl: fetchImpl as unknown as typeof fetch,
       onAuthRequired,
     })
-    await expect(client.get('/tool/default')).rejects.toMatchObject({
-      code: 'AUTH_REQUIRED',
-      message: 'still need login',
-    })
+    const res = await daemonFetch('/tool/default')
+    expect(res.status).toBe(401)
+    expect(res.ok).toBe(false)
     expect(onAuthRequired).toHaveBeenCalledTimes(1)
     expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 
-  it('throws DaemonClientError with the daemon-supplied code', async () => {
-    const fetchImpl = vi.fn(() => Promise.resolve(jsonResponse(
-      '{"error":{"code":"NOT_FOUND","message":"project foo"}}',
-      404,
-    )))
-    const client = await getClient({
+  it('accepts a full URL input and uses only path+search', async () => {
+    const fetchImpl = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(jsonResponse('[]')),
+    )
+    const daemonFetch = await createDaemonFetch({
       resolveLock: () => Promise.resolve(lock),
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
-    await expect(client.get('/project/missing')).rejects.toMatchObject({
-      code: 'NOT_FOUND',
-      message: 'project foo',
+    await daemonFetch('http://daemon.local/project/list?foo=bar')
+    expect(fetchImpl.mock.calls[0][0]).toBe('http://127.0.0.1:4242/project/list?foo=bar')
+  })
+})
+
+describe('toClientError', () => {
+  it('extracts the daemon-supplied message from a JSON error body', async () => {
+    const res = new Response('{"error":{"code":"NOT_FOUND","message":"project foo"}}', {
+      status: 404,
+      headers: { 'content-type': 'application/json' },
     })
+    const err = await toClientError(res)
+    expect(err).toBeInstanceOf(Error)
+    expect(err.message).toBe('project foo')
   })
 
-  it('falls back to INTERNAL when the daemon returns a non-JSON error', async () => {
-    const fetchImpl = vi.fn(() => Promise.resolve(new Response('not json', { status: 502 })))
-    const client = await getClient({
-      resolveLock: () => Promise.resolve(lock),
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-    })
-    await expect(client.get('/x')).rejects.toMatchObject({
-      code: 'INTERNAL',
-      message: 'daemon returned 502',
-    })
+  it('falls back to a status-carrying message when the body is not JSON', async () => {
+    const res = new Response('not json', { status: 502 })
+    const err = await toClientError(res)
+    expect(err.message).toBe('daemon returned 502')
   })
 })
 
@@ -141,20 +136,15 @@ describe('exitOnClientError', () => {
     errorSpy.mockRestore()
   })
 
-  it('exits 2 for VALIDATION', () => {
-    expect(() => exitOnClientError(new DaemonClientError('VALIDATION', 'bad input'))).toThrow()
-    expect(exitSpy).toHaveBeenCalledWith(2)
-    expect(errorSpy).toHaveBeenCalledWith('bad input')
-  })
-
-  it('exits 1 for NOT_FOUND', () => {
-    expect(() => exitOnClientError(new DaemonClientError('NOT_FOUND', 'missing'))).toThrow()
-    expect(exitSpy).toHaveBeenCalledWith(1)
-  })
-
-  it('exits 1 for an unknown error type', () => {
+  it('prints the message and exits 1 for any Error', () => {
     expect(() => exitOnClientError(new Error('boom'))).toThrow()
     expect(exitSpy).toHaveBeenCalledWith(1)
     expect(errorSpy).toHaveBeenCalledWith('boom')
+  })
+
+  it('stringifies non-Error rejections', () => {
+    expect(() => exitOnClientError('oops')).toThrow()
+    expect(exitSpy).toHaveBeenCalledWith(1)
+    expect(errorSpy).toHaveBeenCalledWith('oops')
   })
 })

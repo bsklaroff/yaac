@@ -10,15 +10,18 @@ import { DaemonError } from '@/lib/daemon/errors'
 export const sessionApp = new Hono()
   .get(
     '/list',
-    zValidator('query', z.object({
-      project: z.string().optional(),
-      deleted: z.string().optional(),
-    })),
+    zValidator('query', z.object({ project: z.string().optional() })),
     async (c) => {
-      const { project, deleted } = c.req.valid('query')
-      const filter = project || undefined
-      if (deleted === 'true') return c.json(await listDeletedSessions(filter))
-      return c.json(await listActiveSessions(filter))
+      const { project } = c.req.valid('query')
+      return c.json(await listActiveSessions(project || undefined))
+    },
+  )
+  .get(
+    '/list-deleted',
+    zValidator('query', z.object({ project: z.string().optional() })),
+    async (c) => {
+      const { project } = c.req.valid('query')
+      return c.json(await listDeletedSessions(project || undefined))
     },
   )
   .post(

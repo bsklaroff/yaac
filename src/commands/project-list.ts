@@ -1,14 +1,11 @@
-import { getClient, exitOnClientError } from '@/lib/daemon-client'
-import type { ProjectListEntry } from '@/lib/project/list'
+import { toClientError } from '@/lib/daemon-client'
+import { getRpcClient } from '@/lib/daemon-rpc-client'
 
 export async function projectList(): Promise<void> {
-  let projects: ProjectListEntry[]
-  try {
-    const client = await getClient()
-    projects = await client.get<ProjectListEntry[]>('/project/list')
-  } catch (err) {
-    exitOnClientError(err)
-  }
+  const client = await getRpcClient()
+  const res = await client.project.list.$get()
+  if (!res.ok) throw await toClientError(res)
+  const projects = await res.json()
 
   if (projects.length === 0) {
     console.log('No projects found. Add one with: yaac project add <remote-url>')

@@ -4,6 +4,7 @@ import path from 'node:path'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@test/helpers/setup'
 import { bootInProcessDaemon, type InProcessDaemon } from '@test/helpers/daemon'
 import { expandOwnerRepo, validateGithubHttpsUrl } from '@/commands/project-add'
+import { exitOnClientError } from '@/lib/daemon-client'
 
 // Stub the interactive auth-update flow the daemon-client invokes on
 // AUTH_REQUIRED. In an e2e test with no stdin, the real readline prompt
@@ -38,8 +39,10 @@ describe('yaac project add', () => {
     console.error = (msg: string) => errs.push(msg)
     try {
       await projectAdd(input)
-    } catch {
-      // process.exit spy throws — that's expected for failure paths
+    } catch (err) {
+      // Mirror the CLI entry point: surface thrown errors via
+      // exitOnClientError so the exitSpy fires with code 1.
+      try { exitOnClientError(err) } catch { /* exitSpy throws */ }
     }
     console.error = origErr
     return { errs }
@@ -47,25 +50,25 @@ describe('yaac project add', () => {
 
   it('rejects SSH-style git URLs with helpful message', async () => {
     const { errs } = await run('git@github.com:org/repo.git')
-    expect(exitSpy).toHaveBeenCalledWith(2)
+    expect(exitSpy).toHaveBeenCalledWith(1)
     expect(errs.join('\n')).toContain('HTTPS')
   })
 
   it('rejects non-HTTPS protocols', async () => {
     const { errs } = await run('http://github.com/org/repo')
-    expect(exitSpy).toHaveBeenCalledWith(2)
+    expect(exitSpy).toHaveBeenCalledWith(1)
     expect(errs.join('\n')).toContain('HTTPS')
   })
 
   it('rejects non-GitHub hosts', async () => {
     const { errs } = await run('https://gitlab.com/org/repo')
-    expect(exitSpy).toHaveBeenCalledWith(2)
+    expect(exitSpy).toHaveBeenCalledWith(1)
     expect(errs.join('\n')).toContain('GitHub')
   })
 
   it('rejects invalid URLs', async () => {
     const { errs } = await run('not-a-url')
-    expect(exitSpy).toHaveBeenCalledWith(2)
+    expect(exitSpy).toHaveBeenCalledWith(1)
     expect(errs.join('\n')).toContain('Invalid URL')
   })
 
@@ -106,7 +109,7 @@ describe('yaac project add', () => {
 
   it('rejects local file paths', async () => {
     const { errs } = await run('/tmp/some-local-repo')
-    expect(exitSpy).toHaveBeenCalledWith(2)
+    expect(exitSpy).toHaveBeenCalledWith(1)
     expect(errs.length).toBeGreaterThan(0)
   })
 })

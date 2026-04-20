@@ -1,18 +1,12 @@
 import readline from 'node:readline/promises'
-import { getClient, exitOnClientError, type DaemonClient } from '@/lib/daemon-client'
-import type { AuthListResult } from '@/lib/auth/list'
+import { toClientError } from '@/lib/daemon-client'
+import { getRpcClient } from '@/lib/daemon-rpc-client'
 
 export async function authClear(): Promise<void> {
-  let client: DaemonClient
-  let summary: AuthListResult
-  try {
-    client = await getClient()
-    summary = await client.get<AuthListResult>('/auth/list')
-  } catch (err) {
-    exitOnClientError(err)
-  }
-
-  const { githubTokens, toolAuth } = summary
+  const client = await getRpcClient()
+  const summaryRes = await client.auth.list.$get()
+  if (!summaryRes.ok) throw await toClientError(summaryRes)
+  const { githubTokens, toolAuth } = await summaryRes.json()
 
   if (githubTokens.length === 0 && toolAuth.length === 0) {
     console.log('No credentials configured.')
@@ -29,7 +23,8 @@ export async function authClear(): Promise<void> {
     entries.push({
       label: `GitHub token: ${pattern} (${tokenPreview})`,
       run: async () => {
-        await client.delete(`/auth/github/tokens/${encodeURIComponent(pattern)}`)
+        const res = await client.auth.github.tokens[':pattern'].$delete({ param: { pattern } })
+        if (!res.ok) throw await toClientError(res)
         console.log(`Removed GitHub token for pattern "${pattern}".`)
       },
     })
@@ -39,7 +34,8 @@ export async function authClear(): Promise<void> {
     entries.push({
       label: `${label} credentials (${entry.keyPreview})`,
       run: async () => {
-        await client.post('/auth/clear', { service: entry.tool })
+        const res = await client.auth.clear.$post({ json: { service: entry.tool } })
+        if (!res.ok) throw await toClientError(res)
         console.log(`Removed ${label} credentials.`)
       },
     })
@@ -54,23 +50,18 @@ export async function authClear(): Promise<void> {
   const answer = (await rl.question('Remove which entry? (number, or "all"): ')).trim()
   rl.close()
 
-  try {
-    if (answer.toLowerCase() === 'all') {
-      await client.post('/auth/clear', { service: 'all' })
-      // Remaining GitHub tokens get cleared by `all`, but the daemon's
-      // `clearAuth('all')` already wipes them — nothing extra to do.
-      console.log('All credentials removed.')
-      return
-    }
-
-    const idx = parseInt(answer, 10)
-    if (isNaN(idx) || idx < 1 || idx > entries.length) {
-      console.log('Cancelled.')
-      return
-    }
-
-    await entries[idx - 1].run()
-  } catch (err) {
-    exitOnClientError(err)
+  if (answer.toLowerCase() === 'all') {
+    const res = await client.auth.clear.$post({ json: { service: 'all' } })
+    if (!res.ok) throw await toClientError(res)
+    console.log('All credentials removed.')
+    return
   }
+
+  const idx = parseInt(answer, 10)
+  if (isNaN(idx) || idx < 1 || idx > entries.length) {
+    console.log('Cancelled.')
+    return
+  }
+
+  await entries[idx - 1].run()
 }

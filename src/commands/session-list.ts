@@ -1,7 +1,7 @@
-import { getClient, exitOnClientError } from '@/lib/daemon-client'
+import { toClientError } from '@/lib/daemon-client'
+import { getRpcClient } from '@/lib/daemon-rpc-client'
 import { cleanupSessionDetached } from '@/lib/session/cleanup'
 import type {
-  ActiveSessionsResult,
   DeletedSessionEntry,
   FailedPrewarmInfo,
   SessionListEntry,
@@ -12,20 +12,22 @@ export interface SessionListOptions {
 }
 
 export async function sessionList(projectSlug?: string, options: SessionListOptions = {}): Promise<void> {
-  const client = await getClient()
+  const client = await getRpcClient()
 
   if (options.deleted) {
-    await renderDeleted(client, projectSlug)
+    const res = await client.session['list-deleted'].$get({
+      query: projectSlug ? { project: projectSlug } : {},
+    })
+    if (!res.ok) throw await toClientError(res)
+    renderDeleted(await res.json(), projectSlug)
     return
   }
 
-  let result: ActiveSessionsResult
-  try {
-    const query = projectSlug ? `?project=${encodeURIComponent(projectSlug)}` : ''
-    result = await client.get<ActiveSessionsResult>(`/session/list${query}`)
-  } catch (err) {
-    exitOnClientError(err)
-  }
+  const res = await client.session.list.$get({
+    query: projectSlug ? { project: projectSlug } : {},
+  })
+  if (!res.ok) throw await toClientError(res)
+  const result = await res.json()
 
   if (result.sessions.length === 0) {
     const suffix = projectSlug ? ` for project "${projectSlug}"` : ''
@@ -103,20 +105,10 @@ function renderFailedPrewarms(failed: FailedPrewarmInfo[]): void {
   console.log('')
 }
 
-async function renderDeleted(
-  client: Awaited<ReturnType<typeof getClient>>,
+function renderDeleted(
+  deleted: DeletedSessionEntry[],
   projectSlug: string | undefined,
-): Promise<void> {
-  let deleted: DeletedSessionEntry[]
-  try {
-    const query = projectSlug
-      ? `?deleted=true&project=${encodeURIComponent(projectSlug)}`
-      : '?deleted=true'
-    deleted = await client.get<DeletedSessionEntry[]>(`/session/list${query}`)
-  } catch (err) {
-    exitOnClientError(err)
-  }
-
+): void {
   if (deleted.length === 0) {
     const suffix = projectSlug ? ` for project "${projectSlug}"` : ''
     console.log(`No deleted sessions${suffix}.`)

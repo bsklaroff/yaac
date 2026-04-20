@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest'
 import { HTTPException } from 'hono/http-exception'
 import {
   DaemonError,
-  exitCodeForError,
   rewriteZValidatorBody,
   toErrorBody,
 } from '@/lib/daemon/errors'
@@ -108,14 +107,4 @@ describe('daemon errors', () => {
     })
   })
 
-  describe('exitCodeForError', () => {
-    it('VALIDATION → 2', () => {
-      expect(exitCodeForError('VALIDATION')).toBe(2)
-    })
-
-    it('every other code → 1', () => {
-      const codes = ['NOT_FOUND', 'CONFLICT', 'PODMAN_UNAVAILABLE', 'AUTH_REQUIRED', 'INTERNAL'] as const
-      for (const code of codes) expect(exitCodeForError(code)).toBe(1)
-    })
-  })
 })

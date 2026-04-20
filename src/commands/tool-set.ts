@@ -1,14 +1,10 @@
-import { getClient, exitOnClientError } from '@/lib/daemon-client'
-import type { AgentTool } from '@/types'
+import { toClientError } from '@/lib/daemon-client'
+import { getRpcClient } from '@/lib/daemon-rpc-client'
 
 export async function toolSet(toolName: string): Promise<void> {
-  let saved: AgentTool
-  try {
-    const client = await getClient()
-    const res = await client.post<{ tool: AgentTool }>('/tool/set', { tool: toolName })
-    saved = res.tool
-  } catch (err) {
-    exitOnClientError(err)
-  }
-  console.log(`Default tool set to "${saved}".`)
+  const client = await getRpcClient()
+  const res = await client.tool.set.$post({ json: { tool: toolName } })
+  if (!res.ok) throw await toClientError(res)
+  const { tool } = await res.json()
+  console.log(`Default tool set to "${tool}".`)
 }

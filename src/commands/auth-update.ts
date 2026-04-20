@@ -1,12 +1,17 @@
 import readline from 'node:readline/promises'
-import { getClient, exitOnClientError } from '@/lib/daemon-client'
+import { toClientError } from '@/lib/daemon-client'
+import { getRpcClient } from '@/lib/daemon-rpc-client'
 import {
   promptForApiKey,
   runToolLogin,
   type ToolLoginResult,
 } from '@/lib/project/tool-auth'
 import { validatePattern } from '@/lib/project/credentials'
-import type { AgentTool } from '@/types'
+import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '@/types'
+
+type ToolAuthPayload =
+  | { kind: 'api-key'; apiKey: string }
+  | { kind: 'oauth'; bundle: ClaudeOAuthBundle | CodexOAuthBundle }
 
 export async function authUpdate(): Promise<void> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -53,12 +58,9 @@ async function runGithubUpdate(): Promise<void> {
     console.error('Token cannot be empty.')
     process.exit(1)
   }
-  try {
-    const client = await getClient()
-    await client.post('/auth/github/tokens', { pattern, token })
-  } catch (err) {
-    exitOnClientError(err)
-  }
+  const client = await getRpcClient()
+  const res = await client.auth.github.tokens.$post({ json: { pattern, token } })
+  if (!res.ok) throw await toClientError(res)
   console.log(`Token saved for pattern "${pattern}".`)
 }
 
@@ -78,22 +80,22 @@ async function runToolUpdate(tool: AgentTool): Promise<void> {
   }
 
   const payload = buildAuthPayload(tool, result)
-  try {
-    const client = await getClient()
-    await client.put(`/auth/${tool}`, payload)
-  } catch (err) {
-    exitOnClientError(err)
-  }
+  const client = await getRpcClient()
+  const res = await client.auth[':tool'].$put({ param: { tool }, json: payload })
+  if (!res.ok) throw await toClientError(res)
   const label = tool === 'claude' ? 'Claude Code' : 'Codex'
   console.log(`${label} credentials saved.`)
 }
 
-function buildAuthPayload(tool: AgentTool, result: ToolLoginResult): Record<string, unknown> {
+function buildAuthPayload(tool: AgentTool, result: ToolLoginResult): ToolAuthPayload {
   if (tool === 'claude' && result.kind === 'oauth' && result.claudeBundle) {
     return { kind: 'oauth', bundle: result.claudeBundle }
   }
   if (tool === 'codex' && result.kind === 'oauth' && result.codexBundle) {
     return { kind: 'oauth', bundle: result.codexBundle }
+  }
+  if (!result.apiKey) {
+    throw new Error('No credentials captured from tool login.')
   }
   return { kind: 'api-key', apiKey: result.apiKey }
 }

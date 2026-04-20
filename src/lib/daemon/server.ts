@@ -18,7 +18,7 @@ export interface DaemonAppDeps {
  * without actually binding a TCP socket (hono apps expose `fetch` which
  * can be driven with `new Request(...)` directly).
  */
-export function buildApp(deps: DaemonAppDeps): Hono {
+export function buildApp(deps: DaemonAppDeps) {
   const app = new Hono()
 
   app.use('*', requestLogger())
@@ -38,17 +38,18 @@ export function buildApp(deps: DaemonAppDeps): Hono {
     return c.json(body, status as 400 | 401 | 404 | 409 | 500 | 503)
   })
 
-  app.get('/health', (c) => c.json({ ok: true, buildId: deps.buildId }))
-  app.get('/prewarm', async (c) => c.json(await readPrewarmSessions()))
-  app.route('/project', projectApp)
-  app.route('/session', sessionApp)
-  app.route('/tool', toolApp)
-  app.route('/auth', authApp)
-
   app.notFound((c) => c.json(
     { error: { code: 'NOT_FOUND', message: `no route ${c.req.method} ${c.req.path}` } },
     404,
   ))
 
   return app
+    .get('/health', (c) => c.json({ ok: true, buildId: deps.buildId }))
+    .get('/prewarm', async (c) => c.json(await readPrewarmSessions()))
+    .route('/project', projectApp)
+    .route('/session', sessionApp)
+    .route('/tool', toolApp)
+    .route('/auth', authApp)
 }
+
+export type AppType = ReturnType<typeof buildApp>

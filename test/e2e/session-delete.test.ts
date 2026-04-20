@@ -5,6 +5,7 @@ import crypto from 'node:crypto'
 import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject, removeContainer } from '@test/helpers/setup'
 import { bootInProcessDaemon, type InProcessDaemon } from '@test/helpers/daemon'
 import { sessionDelete } from '@/commands/session-delete'
+import { exitOnClientError } from '@/lib/daemon-client'
 import { podman } from '@/lib/container/runtime'
 import { ensureImage } from '@/lib/container/image-builder'
 import { claudeDir, worktreeDir, worktreesDir, repoDir, getDataDir } from '@/lib/project/paths'
@@ -118,8 +119,8 @@ describe('yaac session delete', { timeout: 120_000 }, () => {
     console.error = () => {}
     try {
       await sessionDelete('nonexistent-id')
-    } catch {
-      // exit spy throws
+    } catch (err) {
+      try { exitOnClientError(err) } catch { /* exit spy throws */ }
     }
     console.error = origErr
     expect(exitSpy).toHaveBeenCalledWith(1)

@@ -1,18 +1,11 @@
-import { getClient, exitOnClientError } from '@/lib/daemon-client'
-import type { AgentTool } from '@/types'
-
-interface ToolGetResponse {
-  tool: AgentTool | null
-}
+import { toClientError } from '@/lib/daemon-client'
+import { getRpcClient } from '@/lib/daemon-rpc-client'
 
 export async function toolGet(): Promise<void> {
-  let result: ToolGetResponse
-  try {
-    const client = await getClient()
-    result = await client.get<ToolGetResponse>('/tool/get')
-  } catch (err) {
-    exitOnClientError(err)
-  }
+  const client = await getRpcClient()
+  const res = await client.tool.get.$get()
+  if (!res.ok) throw await toClientError(res)
+  const result = await res.json()
   if (result.tool) {
     console.log(result.tool)
   } else {

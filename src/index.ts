@@ -1,4 +1,5 @@
 import { Command, type Help } from 'commander'
+import { exitOnClientError } from '@/lib/daemon-client'
 import { projectAdd } from '@/commands/project-add'
 import { projectList } from '@/commands/project-list'
 import { sessionCreate } from '@/commands/session-create'
@@ -225,4 +226,4 @@ program.hook('preAction', async (_thisCommand, actionCommand) => {
   await ensureGithubToken()
 })
 
-program.parse()
+program.parseAsync().catch(exitOnClientError)

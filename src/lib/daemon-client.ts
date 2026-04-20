@@ -4,29 +4,9 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { readBuildId } from '@/lib/build-id'
 import { daemonLockPath, readLock, isLockLive, removeLock, type DaemonLock } from '@/lib/daemon/lock'
-import {
-  exitCodeForError,
-  type DaemonErrorBody,
-  type ErrorCode,
-} from '@/lib/daemon/errors'
+import type { DaemonErrorBody } from '@/lib/daemon/errors'
 
 const __filename = fileURLToPath(import.meta.url)
-
-export class DaemonClientError extends Error {
-  readonly code: ErrorCode
-  constructor(code: ErrorCode, message: string) {
-    super(message)
-    this.code = code
-    this.name = 'DaemonClientError'
-  }
-}
-
-export interface DaemonClient {
-  get<T>(path: string): Promise<T>
-  post<T>(path: string, body?: unknown): Promise<T>
-  put<T>(path: string, body?: unknown): Promise<T>
-  delete<T>(path: string): Promise<T>
-}
 
 export interface GetClientOptions {
   /**
@@ -44,57 +24,53 @@ export interface GetClientOptions {
   onAuthRequired?: () => Promise<void>
 }
 
-export async function getClient(opts: GetClientOptions = {}): Promise<DaemonClient> {
+/**
+ * Returns a fetch-shaped function that targets the local daemon:
+ * resolves (and caches) the lock, injects the bearer header, and
+ * handles BAD_BEARER / AUTH_REQUIRED retry. Input paths may be a
+ * bare pathname or a full URL — only the path+search are used; the
+ * host is always the current live daemon. Consumed by the typed
+ * Hono RPC client in `daemon-rpc-client.ts`.
+ */
+export async function createDaemonFetch(
+  opts: GetClientOptions = {},
+): Promise<(input: string, init?: RequestInit) => Promise<Response>> {
   const resolveLock = opts.resolveLock ?? defaultResolveLock
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch
   const onAuthRequired = opts.onAuthRequired ?? defaultAuthUpdate
 
   let lock = await resolveLock()
 
-  async function request<T>(pathname: string, init: RequestInit): Promise<T> {
-    const send = async (): Promise<Response> => fetchImpl(
-      `http://127.0.0.1:${lock.port}${pathname}`,
+  return async (input, init = {}) => {
+    const pathAndSearch = extractPathAndSearch(input)
+    const send = () => fetchImpl(
+      `http://127.0.0.1:${lock.port}${pathAndSearch}`,
       withAuth(init, lock.secret),
     )
 
     let res = await send()
+    if (res.status !== 401) return res
 
-    if (res.status === 401) {
-      const body = await peekErrorBody(res)
-      if (body?.error.code === 'BAD_BEARER') {
-        const refreshed = await resolveLock()
-        if (refreshed.secret !== lock.secret || refreshed.port !== lock.port) {
-          lock = refreshed
-          res = await send()
-        }
-      } else if (body?.error.code === 'AUTH_REQUIRED') {
-        await onAuthRequired()
+    const body = await peekErrorBody(res)
+    if (body?.error.code === 'BAD_BEARER') {
+      const refreshed = await resolveLock()
+      if (refreshed.secret !== lock.secret || refreshed.port !== lock.port) {
+        lock = refreshed
         res = await send()
-        // A second AUTH_REQUIRED is fatal — fall through to the normal
-        // error-mapping path below so the user sees the daemon's message.
       }
+    } else if (body?.error.code === 'AUTH_REQUIRED') {
+      await onAuthRequired()
+      res = await send()
+      // A second AUTH_REQUIRED is fatal — let the caller surface it.
     }
-
-    if (!res.ok) throw await toClientError(res)
-    const text = await res.text()
-    return text ? (JSON.parse(text) as T) : (undefined as T)
-  }
-
-  return {
-    get: <T>(p: string) => request<T>(p, { method: 'GET' }),
-    post: <T>(p: string, body?: unknown) => request<T>(p, jsonInit('POST', body)),
-    put: <T>(p: string, body?: unknown) => request<T>(p, jsonInit('PUT', body)),
-    delete: <T>(p: string) => request<T>(p, { method: 'DELETE' }),
+    return res
   }
 }
 
-function jsonInit(method: string, body: unknown): RequestInit {
-  if (body === undefined) return { method }
-  return {
-    method,
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  }
+function extractPathAndSearch(input: string): string {
+  if (input.startsWith('/')) return input
+  const url = new URL(input)
+  return `${url.pathname}${url.search}`
 }
 
 function withAuth(init: RequestInit, secret: string): RequestInit {
@@ -114,12 +90,14 @@ async function peekErrorBody(res: Response): Promise<DaemonErrorBody | null> {
   }
 }
 
-async function toClientError(res: Response): Promise<DaemonClientError> {
+export async function toClientError(
+  res: { status: number; json(): Promise<unknown> },
+): Promise<Error> {
   try {
     const body = await res.json() as DaemonErrorBody
-    return new DaemonClientError(body.error.code, body.error.message)
+    return new Error(body.error.message)
   } catch {
-    return new DaemonClientError('INTERNAL', `daemon returned ${res.status}`)
+    return new Error(`daemon returned ${res.status}`)
   }
 }
 
@@ -174,8 +152,7 @@ async function defaultResolveLock(): Promise<DaemonLock> {
   await spawnDaemon()
   const fresh = await waitForLiveLock(5000)
   if (fresh.buildId !== buildId) {
-    throw new DaemonClientError(
-      'INTERNAL',
+    throw new Error(
       `daemon buildId ${fresh.buildId} does not match CLI buildId ${buildId}`,
     )
   }
@@ -271,18 +248,14 @@ async function waitForLiveLock(timeoutMs: number): Promise<DaemonLock> {
     if (lock && await isLockLive(lock)) return lock
     await new Promise((r) => setTimeout(r, 100))
   }
-  throw new DaemonClientError('INTERNAL', 'daemon did not start within 5s')
+  throw new Error('daemon did not start within 5s')
 }
 
 /**
- * Print the error and exit with the code the original in-process CLI
- * would have used. Calls `process.exit` — never returns.
+ * Print the error's message and exit 1. Calls `process.exit` —
+ * never returns.
  */
 export function exitOnClientError(err: unknown): never {
-  if (err instanceof DaemonClientError) {
-    console.error(err.message)
-    process.exit(exitCodeForError(err.code))
-  }
   const message = err instanceof Error ? err.message : String(err)
   console.error(message)
   process.exit(1)

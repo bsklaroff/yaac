@@ -255,14 +255,11 @@ describe('createSession', () => {
   })
 })
 
-vi.mock('@/lib/daemon-client', () => ({
-  getClient: vi.fn(),
-  exitOnClientError: vi.fn((err: unknown) => {
-    throw err instanceof Error ? err : new Error(String(err))
-  }),
+vi.mock('@/lib/daemon-rpc-client', () => ({
+  getRpcClient: vi.fn(),
 }))
 
-import { getClient } from '@/lib/daemon-client'
+import { getRpcClient } from '@/lib/daemon-rpc-client'
 import { startPortForwarders, reserveAvailablePort } from '@/lib/container/port'
 
 describe('sessionCreate (CLI shim)', () => {
@@ -281,18 +278,20 @@ describe('sessionCreate (CLI shim)', () => {
     mockStartPortForwarders.mockReturnValue(vi.fn())
     mockSpawn.mockImplementation(() => mockAttachedChild() as never)
     mockFinalizeAttachedSession.mockResolvedValue('closed_prompted')
-    vi.mocked(getClient).mockResolvedValue({
-      get: vi.fn(),
-      post: mockPost,
-      put: vi.fn(),
-      delete: vi.fn(),
-    })
+    vi.mocked(getRpcClient).mockResolvedValue({
+      session: {
+        create: { $post: mockPost },
+      },
+    } as unknown as Awaited<ReturnType<typeof getRpcClient>>)
     mockPost.mockResolvedValue({
-      sessionId: 'sess-123',
-      containerName: 'yaac-demo-sess-123',
-      forwardedPorts: [],
-      tool: 'claude',
-      claimedPrewarm: false,
+      ok: true,
+      json: () => Promise.resolve({
+        sessionId: 'sess-123',
+        containerName: 'yaac-demo-sess-123',
+        forwardedPorts: [],
+        tool: 'claude',
+        claimedPrewarm: false,
+      }),
     })
   })
 
@@ -300,10 +299,12 @@ describe('sessionCreate (CLI shim)', () => {
     const result = await sessionCreate('demo', {})
     expect(result).toBe('sess-123')
     expect(mockPost).toHaveBeenCalledTimes(1)
-    expect(mockPost).toHaveBeenCalledWith('/session/create', expect.objectContaining({
-      project: 'demo',
-      tool: 'claude',
-      gitUser: { name: 'Test', email: 't@x.io' },
+    expect(mockPost).toHaveBeenCalledWith(expect.objectContaining({
+      json: expect.objectContaining({
+        project: 'demo',
+        tool: 'claude',
+        gitUser: { name: 'Test', email: 't@x.io' },
+      }) as unknown,
     }))
     expect(mockFinalizeAttachedSession).toHaveBeenCalledTimes(1)
   })
@@ -320,8 +321,10 @@ describe('sessionCreate (CLI shim)', () => {
 
     await sessionCreate('demo', {})
 
-    expect(mockPost).toHaveBeenCalledWith('/session/create', expect.objectContaining({
-      portReservations: [{ containerPort: 3000, hostPort: 3042 }],
+    expect(mockPost).toHaveBeenCalledWith(expect.objectContaining({
+      json: expect.objectContaining({
+        portReservations: [{ containerPort: 3000, hostPort: 3042 }],
+      }) as unknown,
     }))
     expect(mockStartPortForwarders).toHaveBeenCalledTimes(1)
   })

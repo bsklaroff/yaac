@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir, createTestRepo, addTestProject } from '@test/helpers/setup'
 import { bootInProcessDaemon, type InProcessDaemon } from '@test/helpers/daemon'
+import { exitOnClientError } from '@/lib/daemon-client'
 import type * as gitModule from '@/lib/git'
 
 // Provide a deterministic git identity so sessionCreate doesn't try to
@@ -34,7 +35,7 @@ describe('yaac session create — validation failures', () => {
     await cleanupTempDir(tmpDir)
   })
 
-  it('rejects unknown tool with VALIDATION (exit 2)', async () => {
+  it('rejects unknown tool with VALIDATION', async () => {
     // Set up a project so sessionCreate gets past the projectDir() check.
     const repo = path.join(tmpDir, 'demo')
     await createTestRepo(repo)
@@ -49,12 +50,12 @@ describe('yaac session create — validation failures', () => {
       // Cast to bypass the AgentTool type check — at runtime we want to
       // drive the daemon-side validation.
       await sessionCreate('demo', { tool: 'mystery' as unknown as 'claude' })
-    } catch {
-      // exit spy throws
+    } catch (err) {
+      try { exitOnClientError(err) } catch { /* exit spy throws */ }
     }
     console.error = origErr
 
-    expect(exitSpy).toHaveBeenCalledWith(2)
+    expect(exitSpy).toHaveBeenCalledWith(1)
     expect(errs.join('\n').toLowerCase()).toContain('tool')
   })
 
