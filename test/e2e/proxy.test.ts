@@ -3,7 +3,7 @@ import crypto from 'node:crypto'
 import http from 'node:http'
 import { requirePodman, podmanRetry, removeContainer } from '@test/helpers/setup'
 import { ProxyClient, PROXY_CONTAINER_PORT } from '@/lib/container/proxy-client'
-import { podman } from '@/lib/container/runtime'
+import { createAndStartContainerWithRetry } from '@/lib/container/runtime'
 
 // Unique suffix per test run to avoid container/network name collisions
 const RUN_ID = crypto.randomBytes(4).toString('hex')
@@ -152,7 +152,7 @@ describe('proxy sidecar', () => {
       const baseImage = images.trim().split('\n')[0]
       expect(baseImage).toBeTruthy()
 
-      const container = await podman.createContainer({
+      await createAndStartContainerWithRetry({
         Image: baseImage,
         name: containerName,
         Labels: { 'yaac.test': 'true' },
@@ -160,7 +160,6 @@ describe('proxy sidecar', () => {
           NetworkMode: client.network,
         },
       })
-      await container.start()
 
       // Verify the container CANNOT reach external hosts directly
       const { stdout: blocked } = await podmanRetry([
@@ -242,7 +241,7 @@ describe('proxy HTTP forwarding', () => {
     ])
     const proxyImage = images.trim().split('\n')[0]
 
-    const echoContainer = await podman.createContainer({
+    const echoContainer = await createAndStartContainerWithRetry({
       Image: proxyImage,
       name: echoContainerName,
       Cmd: ['node', '-e', echoScript],
@@ -251,7 +250,6 @@ describe('proxy HTTP forwarding', () => {
         NetworkMode: 'podman',
       },
     })
-    await echoContainer.start()
 
     // Get the echo container's IP on the podman network
     const info = await echoContainer.inspect()

@@ -106,6 +106,41 @@ function getSocketPath(): string | undefined {
 const socketPath = getSocketPath()
 export const podman = socketPath ? new Docker({ socketPath }) : new Docker()
 
+/**
+ * Create and start a container with retries on transient OCI/podman errors
+ * (e.g. `crun: mount devpts: Invalid argument`).  The dockerode path sidesteps
+ * `podmanExecWithRetry`, so callers that go through the API get no retries by
+ * default.  Any partially-created container is removed before each retry so
+ * name conflicts don't mask the real failure.
+ */
+export async function createAndStartContainerWithRetry(
+  opts: Docker.ContainerCreateOptions,
+  retryOpts: { maxAttempts?: number; baseDelay?: number } = {},
+): Promise<Docker.Container> {
+  const maxAttempts = retryOpts.maxAttempts ?? 5
+  const baseDelay = retryOpts.baseDelay ?? 300
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let container: Docker.Container | undefined
+    try {
+      container = await podman.createContainer(opts)
+      await container.start()
+      return container
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (container) {
+        try { await container.remove({ force: true }) } catch { /* ok */ }
+      } else if (opts.name) {
+        try { await podman.getContainer(opts.name).remove({ force: true }) } catch { /* ok */ }
+      }
+      if (attempt >= maxAttempts || !isTransientPodmanError(msg)) throw err
+      const delay = Math.min(baseDelay * 2 ** (attempt - 1), 3200)
+      await new Promise((r) => setTimeout(r, delay))
+    }
+  }
+  throw new Error('createAndStartContainerWithRetry: unexpected fall-through')
+}
+
 export async function ensureContainerRuntime(): Promise<void> {
   if (process.platform === 'darwin') {
     await ensurePodmanMachine()
