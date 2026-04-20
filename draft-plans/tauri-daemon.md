@@ -1,21 +1,23 @@
 # yaac daemon
 
 A long-running Node process that wraps the existing `src/lib/**` layer
-behind a local HTTP + WebSocket API. It's the thing the Tauri frontend
-(see `tauri-frontend.md`) talks to, but it stands on its own — any
-client (a CLI, a TUI, a second frontend) can use it.
+behind a local HTTP API. The `yaac` CLI is the only client in this
+plan: every `yaac <command>` invocation routes through the daemon.
+The Tauri frontend and the WebSocket surface it needs (events, PTY
+bridge) are deferred to `tauri-daemon-follow-up.md`.
 
 ## Goals
 
 - Expose every read and write yaac performs today through a stable,
-  versioned localhost API.
-- Emit live change events so UIs don't have to poll the filesystem
-  and `podman ps`.
-- Provide per-session PTY streams so UIs can embed a terminal without
-  re-implementing the `podman exec -it … tmux attach` dance.
+  localhost HTTP API.
+- Make the CLI a pass-through: each `yaac <command>` call resolves to
+  one (or a few) HTTP requests against the corresponding daemon
+  routes. No `src/lib/**` state reads or writes happen in the CLI
+  process.
 - Reuse `src/lib/**` unchanged. No forked logic.
-- Coexist with the CLI: starting or stopping the daemon must never
-  disturb a running `yaac session …` invocation.
+- Run the background work that `yaac session monitor` used to do
+  (5-s reconciliation, `ensurePrewarmSessions`,
+  `clearFailedPrewarmSessions`) inside the daemon.
 
 ## Non-goals
 
@@ -24,7 +26,10 @@ client (a CLI, a TUI, a second frontend) can use it.
 - Multi-user / multi-tenant. One daemon per host user.
 - Auth beyond a per-start bearer secret (same pattern the proxy
   sidecar uses with `PROXY_AUTH_SECRET`).
-- Replacing the CLI. The CLI stays the automation-friendly surface.
+- Standalone CLI mode. Once this plan lands, the CLI requires a
+  running daemon; it does not read Podman or `~/.yaac/` directly.
+- WebSockets, change-event streams, PTY-over-WS, and the Tauri
+  frontend. All of that is in `tauri-daemon-follow-up.md`.
 
 ## Architecture
 
@@ -32,11 +37,9 @@ client (a CLI, a TUI, a second frontend) can use it.
 ┌──────────────────────────────────────────────────────────────────┐
 │ yaac daemon (Node, one process)                                  │
 │                                                                  │
-│   HTTP server (hono)          WebSocket server                   │
-│     │                           │ /events      (change fan-out)  │
-│     │                           │ /sessions/:id/ptys/:ptyId      │
-│     │                           │              (PTY bridge)      │
-│     ▼                           ▼                                │
+│   HTTP server (hono)                                             │
+│     │                                                            │
+│     ▼                                                            │
 │   handler layer ─── bearer auth ─── request logging              │
 │     │                                                            │
 │     ▼                                                            │
@@ -44,46 +47,77 @@ client (a CLI, a TUI, a second frontend) can use it.
 │     │                         │                                  │
 │     ▼                         ▼                                  │
 │   dockerode              fs (~/.yaac/...)                        │
+│                                                                  │
+│   background loop: 5-s poll + `podman events` subscriber         │
+│     drives prewarm + podman-state reconciliation (internal only) │
 └──────────────────────────────────────────────────────────────────┘
+          ▲
+          │ HTTP
+          │
+┌─────────┴────────────┐
+│ yaac CLI             │
+│ (commander → fetch)  │
+└──────────────────────┘
 ```
 
-Single process, single port. HTTP and WebSocket share the port.
+Single daemon process, single port. Everything over HTTP.
+
+Interactive CLI commands (`session attach`, `session shell`,
+`session stream`, `auth update`) still need a local PTY. For this
+plan those commands run their PTY work in the CLI process — the
+daemon resolves the container name and any other data they need,
+and the CLI shells out to `podman exec -it` locally. The daemon's
+own background loop picks up the resulting state changes like it
+does for any other container transition.
 
 ## Entry point and lifecycle
 
 New CLI subcommand (`src/commands/daemon.ts`):
 
 ```
-yaac daemon [--port <n>] [--socket <path>]
+yaac daemon [--port <n>]
 ```
 
-- Default: bind `127.0.0.1:<ephemeral>`, print one machine-readable
-  line on stdout:
-  `yaac-daemon: port=<n> secret=<hex>` then keep stderr for logs.
-- `--socket` variant binds a unix domain socket instead of a TCP port
-  (cleaner for Tauri sidecar spawn on macOS/Linux). Bearer auth still
-  required on the socket — uds permissions alone aren't enough once
-  a malicious process on the same user account is in scope.
-- Stdout line is the handshake. The Tauri shell reads it and uses the
-  values for all subsequent requests. If the line doesn't appear
-  within a few seconds, the shell treats the daemon as failed to
-  start.
-- SIGTERM: refuse new HTTP requests, drain open WS, then exit.
-  Running containers are untouched; the CLI continues to work.
+- Default: bind `127.0.0.1:<ephemeral>`, write the handshake to
+  `~/.yaac/.daemon.lock` (see "Daemon discovery"), and keep stderr
+  for logs.
+- Binds TCP only. Unix sockets are out of scope.
+- Once started, the daemon runs until it's explicitly stopped
+  (SIGTERM / SIGINT, machine shutdown). It does not auto-exit when
+  idle; it outlives the CLI invocation that started it so subsequent
+  invocations reuse the same process.
+- SIGTERM: refuse new HTTP requests, finish in-flight handlers, then
+  exit. Running containers are untouched.
 - Crash recovery: on restart the daemon re-reads state from Podman
   labels and the filesystem. No in-memory state needs persistence.
 
 Register the command alongside the existing commands in
-`src/index.ts`. Unlike session and auth commands it should *not* run
-the `preAction` credential-check hook — the daemon is how a user
-resolves missing credentials (via a proxied `auth update` endpoint),
-so requiring credentials at startup would be a chicken/egg.
+`src/index.ts`. The `daemon` subcommand does *not* run the `preAction`
+credential-check hook — the daemon is how a user resolves missing
+credentials (via `POST /auth/*`), so requiring credentials at startup
+would be a chicken/egg.
+
+### CLI → daemon bootstrap
+
+Every non-`daemon` CLI invocation resolves a daemon before doing
+anything else:
+
+1. Read `~/.yaac/.daemon.lock` to learn the port and secret of a
+   running daemon.
+2. If no lock exists or `GET /health` fails, the CLI spawns
+   `yaac daemon` as a detached background process, waits for the
+   lock to appear, and then continues.
+3. Issue the HTTP request for the command. Translate `error.code`
+   into the process exit status the CLI used to produce directly.
+
+Users who run `yaac session list` on a fresh machine transparently
+get a daemon. There is no user-visible "start the daemon first" step.
 
 ## State ownership
 
 The daemon owns nothing that isn't already on disk or in Podman.
 Every endpoint resolves state from the authoritative sources each
-call, same as the CLI:
+call:
 
 | Concern | Source |
 |---|---|
@@ -96,49 +130,105 @@ call, same as the CLI:
 | Blocked hosts | `~/.yaac/projects/<slug>/blocked-hosts/<id>.json` via `readBlockedHosts` |
 
 Because state is external, (a) the daemon can be killed at any time
-without losing work, (b) the CLI works identically when the daemon
-is running or not, (c) multiple daemons would technically work but
-are not supported — the first successful bind wins.
+without losing work, (b) a restart brings back full state without
+coordination, (c) multiple daemons would technically work but are not
+supported — the first successful bind wins.
 
 ## HTTP API surface
 
-Versioned under `/v1`. Content type `application/json`. Bearer auth
-on every route via `Authorization: Bearer <secret>`.
+Routes mirror the CLI commands one-for-one. No version prefix — the
+daemon ships in lockstep with the CLI in this repo, so the API and
+the client that speaks it are always deployed together. Content type
+`application/json`. Bearer auth on every route via
+`Authorization: Bearer <secret>`.
 
 ### Read endpoints (GET, side-effect free)
 
-| Path | Response | Wraps |
-|---|---|---|
-| `/v1/health` | `{ok:true, version}` | — |
-| `/v1/projects` | `[{slug, remoteUrl, addedAt, sessionCount}]` | `projectList()` |
-| `/v1/projects/:slug` | `{meta, config, resolvedAllowedHosts}` | `resolveProjectConfig` + meta |
-| `/v1/projects/:slug/config` | raw `yaac-config.json` + source (`repo` / `override`) | `loadProjectConfig` |
-| `/v1/sessions` | `[{id, project, tool, status, prompt, createdAt, forwardedPorts, containerName}]` | same shape as `sessionList` |
-| `/v1/sessions/deleted` | `[{sessionId, project, tool, created}]` | `sessionList({deleted:true})` |
-| `/v1/sessions/:id` | session detail incl. labels and blocked-hosts count | combines above |
-| `/v1/sessions/:id/blocked-hosts` | `string[]` | `readBlockedHosts` |
-| `/v1/sessions/:id/prompt` | `{prompt:string}` | `getSessionFirstMessage` |
-| `/v1/prewarm` | `{[slug]: PrewarmEntry}` | `readPrewarmSessions` |
-| `/v1/credentials` | masked listing | `authList` equivalent |
-| `/v1/tool/default` | `{tool}` | `getDefaultTool` |
+| CLI | Method + path | Response | Wraps |
+|---|---|---|---|
+| — | `GET /health` | `{ok:true, version}` | — |
+| `project list` | `GET /project/list` | `[{slug, remoteUrl, addedAt, sessionCount}]` | `projectList()` |
+| `session list` | `GET /session/list?project=&deleted=` | `[{id, project, tool, status, prompt, createdAt, forwardedPorts, containerName}]` | `sessionList` |
+| `tool get` | `GET /tool/get` | `{tool}` | `getDefaultTool` |
+| `auth list` | `GET /auth/list` | masked listing | `authList` |
 
-### Write endpoints
+### Write endpoints (POST / DELETE)
 
-| Method + path | Body | Wraps |
-|---|---|---|
-| `POST /v1/projects` | `{remoteUrl}` | `projectAdd` |
-| `DELETE /v1/projects/:slug` | — | new: calls `sessionDelete` for each live session then `fs.rm(-rf)` of `projectDir(slug)` |
-| `PUT /v1/projects/:slug/config` | raw JSON body | writes `config-override/yaac-config.json` |
-| `DELETE /v1/projects/:slug/config-override` | — | removes override |
-| `POST /v1/sessions` | `{project, tool?, addDir?[], addDirRw?[]}` | `sessionCreate` |
-| `DELETE /v1/sessions/:id` | — | `sessionDelete` |
-| `PUT /v1/credentials/github` | `{tokens: GithubTokenEntry[]}` | `saveCredentials` |
-| `POST /v1/credentials/github` | `{pattern, token}` | `addToken` |
-| `DELETE /v1/credentials/github/:pattern` | — | `removeToken` |
-| `PUT /v1/credentials/:tool` | `{kind:'api-key', apiKey}` or `{kind:'oauth', bundle}` | `persistToolLogin` |
-| `POST /v1/credentials/:tool/login` | — → returns `{ptyId}` | `runToolLogin` wired through PTY bridge (see below) |
-| `DELETE /v1/credentials/:service` | — | `authClear` equivalent |
-| `PUT /v1/tool/default` | `{tool}` | `setDefaultTool` |
+| CLI | Method + path | Body | Wraps |
+|---|---|---|---|
+| `project add <url>` | `POST /project/add` | `{remoteUrl}` | `projectAdd` |
+| `session create <project>` | `POST /session/create` | `{project, tool?, addDir?[], addDirRw?[]}` | `sessionCreate` |
+| `session delete <id>` | `POST /session/delete` | `{sessionId}` | `sessionDelete` |
+| `tool set <tool>` | `POST /tool/set` | `{tool}` | `setDefaultTool` |
+| `auth clear` | `POST /auth/clear` | `{service}` | `authClear` |
+| `auth update` (various) | see "Auth update routes" | — | pieces of `authUpdate` |
+
+### Endpoints for interactive CLI commands
+
+These exist so the CLI can do its local TTY work without reading the
+filesystem or Podman itself. They're plain HTTP — no WS.
+
+| CLI | Method + path | Response | Notes |
+|---|---|---|---|
+| `session attach <id>` | `GET /session/:id/attach-info` | `{containerName, tmuxSession}` | CLI then runs `podman exec -it` locally |
+| `session shell <id>` | `GET /session/:id/shell-info` | `{containerName}` | CLI then runs `podman exec -it … zsh` locally |
+| `session stream [project]` | `POST /session/stream/next` body `{project?, tool?}` | `{sessionId, containerName, tmuxSession}` or `{done:true}` | Daemon picks the next waiting session or creates one, returns the attach info. CLI attaches locally, loops. |
+| `session monitor [project]` | `GET /session/list?…` + `GET /prewarm` on an interval | — | CLI polls at its configured cadence and renders locally. See "Monitor" below. |
+
+### Auth update routes
+
+`yaac auth update` is an interactive flow today: prompt for service
+(GitHub / Claude / Codex), then either paste a token or drive an
+OAuth handoff. For the CLI-only daemon, the CLI runs all prompts and
+shell-outs locally and calls the daemon only to read current state
+and to write results.
+
+| CLI step | Method + path | Body / response | Wraps |
+|---|---|---|---|
+| Add a GitHub token | `POST /auth/github/tokens` | `{pattern, token}` | `addToken` |
+| Remove a GitHub token | `DELETE /auth/github/tokens/:pattern` | — | `removeToken` |
+| Replace all GitHub tokens | `PUT /auth/github/tokens` | `{tokens: GithubTokenEntry[]}` | `saveCredentials` |
+| Store a tool API key | `PUT /auth/:tool` | `{kind:'api-key', apiKey}` | `persistToolLogin` |
+| Import a tool OAuth bundle | `PUT /auth/:tool` | `{kind:'oauth', bundle}` | `persistToolLogin` |
+
+OAuth flows that currently shell out to the tool's own login CLI
+(`claude login`, `codex login`) keep running in the CLI process for
+this plan — they write to `~/.claude/` or `~/.codex/`, and the CLI
+then reads the resulting bundle and `PUT`s it via
+`/auth/:tool`. Moving those login shell-outs into the daemon requires
+the PTY bridge and is part of the follow-up.
+
+### Monitor
+
+`yaac session monitor` used to do two things: (1) render the session
+list on a 5-s loop, (2) run `ensurePrewarmSessions` and
+`clearFailedPrewarmSessions` on the same loop.
+
+In the daemon world, (2) moves into the daemon's internal background
+loop (runs whether anyone is watching or not, so prewarm stays warm
+even with no client attached). (1) becomes a thin CLI poller: `GET
+/session/list` + `GET /prewarm` on the user-configured interval,
+render a table, sleep, repeat.
+
+The `--no-prewarm` flag is dropped. Prewarm is a daemon-wide concern;
+a flag on one CLI invocation shouldn't disable it.
+
+### Endpoints with no direct CLI analogue
+
+Not strictly needed for the CLI but cheap to ship alongside the rest
+and used by the follow-up Tauri work:
+
+| Method + path | Purpose |
+|---|---|
+| `GET /project/:slug` | Project detail incl. resolved config and allowed hosts |
+| `GET /project/:slug/config` | Raw `yaac-config.json` + source (`repo` / `override`) |
+| `PUT /project/:slug/config` | Writes `config-override/yaac-config.json` |
+| `DELETE /project/:slug/config-override` | Removes override |
+| `DELETE /project/:slug` | Tears down live sessions, then `fs.rm(-rf)` of `projectDir(slug)` |
+| `GET /session/:id` | Session detail incl. labels and blocked-hosts count |
+| `GET /session/:id/blocked-hosts` | `string[]` |
+| `GET /session/:id/prompt` | `{prompt:string}` via `getSessionFirstMessage` |
+| `GET /prewarm` | `{[slug]: PrewarmEntry}` via `readPrewarmSessions` |
 
 ### Error shape
 
@@ -148,186 +238,99 @@ Uniform:
 { "error": { "code": "NOT_FOUND", "message": "project foo not found" } }
 ```
 
-Codes mirror the CLI's exit behaviors:
-- `NOT_FOUND` → the CLI's "No such session/project" paths.
-- `VALIDATION` → input schema rejections.
-- `CONFLICT` → e.g. creating a project that exists (`project-add` dup check).
-- `PODMAN_UNAVAILABLE` → the CLI's "Failed to connect to Podman" branch.
-- `AUTH_REQUIRED` → missing GitHub / tool credentials.
-- `INTERNAL` → everything else.
+The CLI translates these into exit statuses that match the old
+behavior:
+- `NOT_FOUND` → the old "No such session/project" path, exit 1.
+- `VALIDATION` → input schema rejection, exit 2.
+- `CONFLICT` → e.g. duplicate `project add`, exit 1.
+- `PODMAN_UNAVAILABLE` → the old "Failed to connect to Podman" branch.
+- `AUTH_REQUIRED` → CLI invokes `auth update` flow inline and retries.
+- `INTERNAL` → everything else, exit 1.
 
-## Event stream
+## CLI command mapping
 
-One WebSocket, `/v1/events`. Bearer auth via subprotocol header or
-`?token=`. Multiplexed messages, each a single JSON object with a
-`type`:
+| CLI | Implementation |
+|---|---|
+| `yaac daemon` | Starts the daemon (only command that doesn't talk to one) |
+| `yaac project list` | `GET /project/list`, print table |
+| `yaac project add <url>` | `POST /project/add` |
+| `yaac session list [project]` | `GET /session/list?project=…`, print table |
+| `yaac session create <project>` | `POST /session/create` |
+| `yaac session delete <id>` | `POST /session/delete` |
+| `yaac session attach <id>` | `GET /session/:id/attach-info` → local `podman exec -it` |
+| `yaac session shell <id>` | `GET /session/:id/shell-info` → local `podman exec -it … zsh` |
+| `yaac session stream [project]` | Loop: `POST /session/stream/next` → local attach → repeat |
+| `yaac session monitor [project]` | Poll `GET /session/list` + `GET /prewarm`, render |
+| `yaac tool get` / `tool set` | `GET /tool/get` / `POST /tool/set` |
+| `yaac auth list` | `GET /auth/list`, print table |
+| `yaac auth update` | Local prompts + local tool-login shell-outs, then `PUT /auth/…` |
+| `yaac auth clear` | Local prompt, then `POST /auth/clear` |
 
-- `session.created` — container first observed; payload includes the
-  same shape as `GET /v1/sessions/:id`.
-- `session.status` — transitions between `running` / `waiting` /
-  `prewarm`.
-- `session.prompt` — first user message appeared (or changed, e.g.
-  after `claude resume`; matches the plan in
-  `link-claude-session-log-after-resume.md`).
-- `session.blocked-hosts` — new host blocked by the proxy.
-- `session.exited` — tmux died / container removed. Payload carries
-  the `AttachOutcome` enum (`detached` / `closed_blank` /
-  `closed_prompted`) from `finalize-attached-session.ts` when
-  available.
-- `prewarm.state` — create / ready / claimed / failed, keyed by
-  project.
-- `project.added`, `project.removed`, `project.config-changed`.
-- `credentials.changed` — keyed by service (`github` / `claude` /
-  `codex`).
+## Background loop
 
-### Sources of events
+Even without a client event stream, the daemon runs the same 5-s
+poll + `podman events` subscription that `session-monitor.ts` runs
+today, used exclusively for its own side effects:
 
-Three producers, merged before fan-out:
+- `ensurePrewarmSessions` / `clearFailedPrewarmSessions` keep the
+  prewarm pool healthy.
+- Session transitions observed in Podman events trigger the same
+  filesystem writes `session-monitor.ts` would (prompt link, status
+  files, etc., per `link-claude-session-log-after-resume.md`).
 
-1. **Podman event stream.** Spawn `podman events --format=json`
-   once per daemon start, filter by our `yaac.data-dir=<dir>` label,
-   and translate `create` / `start` / `die` / `remove` into
-   `session.*` events. This is the primary source for session
-   lifecycle.
-2. **Filesystem watchers.** `fs.watch` on:
-   - `~/.yaac/projects/<slug>/claude/.yaac-transcripts/` — drives
-     `session.prompt` and `session.status` (waiting ↔ running).
-   - `~/.yaac/projects/<slug>/codex/.yaac-transcripts/` — same.
-   - `~/.yaac/projects/<slug>/blocked-hosts/` — drives
-     `session.blocked-hosts`.
-   - `~/.yaac/.prewarm-sessions.json` — drives `prewarm.state`.
-   - `~/.yaac/.credentials/` — drives `credentials.changed`.
-   - `~/.yaac/projects/` directory entries — drives `project.added`
-     / `project.removed`.
-   Watchers debounce and then re-derive the affected slice from the
-   source of truth rather than trying to interpret raw fs events.
-3. **5-s safety-net poll.** Same cadence as `session-monitor.ts`.
-   Reconciles any event sources that missed a change (podman
-   `events` can drop under load; `fs.watch` behavior differs across
-   platforms). The same loop also runs `clearFailedPrewarmSessions`
-   and — when enabled — `ensurePrewarmSessions`, subsuming
-   `yaac session monitor`'s responsibilities. Driving this from the
-   daemon means the CLI's monitor can delegate prewarm to the
-   daemon when one is running (see "Prewarm coordination" below).
-
-Every subscriber gets the full stream. Filtering is the client's
-responsibility; the volume is low (a few events per minute in a busy
-session) so server-side filtering isn't worth the complexity.
-
-### Backfill on connect
-
-On connect, the server sends a synthetic `snapshot` event with the
-current list of sessions and prewarm state so the client doesn't
-need a separate `GET /sessions` round-trip to hydrate. This also
-makes reconnects after a daemon restart idempotent.
-
-## PTY bridge
-
-Each terminal tab in a client is one PTY. Exposed as
-`WS /v1/sessions/:id/ptys/:ptyId`:
-
-- If `:ptyId` matches an existing PTY owned by this daemon, the
-  socket attaches to it (same output stream, multiple clients
-  allowed — tee stdout, serialize stdin). Useful for taking a second
-  window over the same terminal.
-- If `:ptyId` is new, the mode is derived from `?mode=`:
-
-| mode | spawns | equivalent CLI path |
-|---|---|---|
-| `attach` (default) | `podman exec -it <container> tmux attach -t yaac` | `yaac session attach` (`session-attach.ts:25`) |
-| `window` | `podman exec -it <container> sh -c 'tmux new-window -t yaac -a && tmux attach -t yaac'` | user hits `Ctrl-B C` after attach |
-| `shell` | `podman exec -it <container> zsh` | `yaac session shell` (`session-shell.ts:17`) |
-
-Extra tabs opened via `window` show up as additional tmux windows,
-so they're discoverable from a CLI `yaac session attach` too — state
-stays consistent between GUI and CLI.
-
-### Wire protocol
-
-Binary WS frames carry raw PTY bytes in both directions (no base64
-overhead). JSON frames on the same socket carry control messages:
-
-- `{type:"resize", cols, rows}` — forwarded to `node-pty.resize()`.
-- `{type:"signal", name:"SIGINT"|"SIGTERM"}` — forwarded to the PTY
-  process group (rare; mostly `Ctrl-C` should go through stdin).
-- `{type:"ping"}` / `{type:"pong"}` — liveness.
-
-Frames are disambiguated by WS frame kind: binary = data, text =
-control. Simple and zero-overhead.
-
-### Close semantics
-
-- Client closes the socket → PTY detaches but keeps running. For
-  `attach` / `window` this is "Ctrl-B D" style detach; tmux keeps
-  the window open and the container alive. For `shell` it kills the
-  zsh (detaching an unbound shell is meaningless).
-- PTY process exits → server closes the socket with a payload
-  describing the exit.
-- Container dies → server closes all PTY sockets for that session
-  and emits a `session.exited` event.
-- Daemon restart → all sockets close; on reconnect, the client
-  re-opens with `?mode=attach` to the same session and tmux happily
-  reattaches. Scrollback survives because tmux runs inside the
-  container, which outlives the daemon.
-
-### Why not ttyd
-
-We considered running ttyd in every session container and iframing
-it in the UI. Rejected because:
-
-- ttyd isn't in the default image; installing it pushes two more
-  binaries (ttyd + its libwebsockets) into every container.
-- ttyd owns the terminal. The desired first-tab behavior is "attach
-  an existing tmux session", not "spawn a new login shell". Getting
-  ttyd to `tmux attach` is possible but awkward.
-- Auth/token sharing with the Tauri client would be rolled-from-
-  scratch anyway.
-- `node-pty` + `podman exec -it` is ~40 LOC against an API we
-  already depend on.
+Nothing in this loop is observable to clients in this plan — its
+output is state changes on disk and in Podman that a subsequent
+`GET /session/list` will pick up. The loop is a prerequisite for the
+follow-up event stream.
 
 ## Auth
 
 - Bearer secret generated via `crypto.randomBytes(32).toString('hex')`
-  at daemon start. Printed on the stdout handshake line; never
-  logged, never persisted.
-- Every HTTP request and WS upgrade requires the secret. Missing or
-  wrong secret → 401 before any handler runs.
+  at daemon start. Written to the lock file (`chmod 600`); never
+  logged elsewhere.
+- Every HTTP request requires the secret. Missing or wrong secret →
+  401 before any handler runs.
 - Because the daemon is 127.0.0.1-only, the secret defends against
   other processes on the same host; it is **not** a defense against
   a compromised user account (which already owns the filesystem and
   the Podman socket).
-- Rotate per start — losing the secret is equivalent to restarting
-  the daemon, which takes under a second.
+- Rotated per daemon start. If the CLI's cached secret becomes
+  invalid (daemon restarted), the CLI re-reads the lock and retries.
 
-## Prewarm coordination
+## Daemon discovery
 
-The CLI's `yaac session monitor` runs `ensurePrewarmSessions` on a
-loop. So does the daemon. If both run simultaneously they'd race to
-create prewarm containers.
+A single lock file at `~/.yaac/.daemon.lock` serves two purposes:
 
-Resolution: a tiny lock file at
-`~/.yaac/.daemon.lock` containing `{pid, port, startedAt}`. The
-daemon writes it on start (checks it's stale or absent first) and
-unlinks on graceful shutdown. The CLI monitor checks the file; if a
-live daemon owns the lock, the monitor prints a one-liner and skips
-its own prewarm loop while still polling for display. Stale detection
-is "process doesn't exist or started more than N seconds ago and
-handshake port doesn't answer".
+1. **Discovery.** The CLI reads it to find the daemon's port and
+   bearer secret.
+2. **Mutual exclusion.** A second `yaac daemon` checks the file; if a
+   live daemon already owns the lock, it exits 0 after printing the
+   existing handshake. This makes "start daemon" idempotent.
+
+Format:
+
+```json
+{ "pid": 1234, "port": 51734, "secret": "…", "startedAt": 17… }
+```
+
+Write on start (after successful bind), unlink on graceful shutdown.
+Stale detection is "process doesn't exist OR `/health` doesn't answer
+within 500ms".
+
+Because prewarm is owned entirely by the daemon now, there is no CLI
+vs. daemon race. The `session monitor` CLI no longer runs a prewarm
+loop of its own.
 
 ## Security and trust
 
-- 127.0.0.1 only. No TCP listener on any other interface. `--socket`
-  is preferred when the client is local.
-- Bearer auth on everything, including WS.
+- 127.0.0.1 only. No TCP listener on any other interface.
+- Bearer auth on every route.
 - CORS explicitly denied for browser origins — browser `fetch` is
-  not allowed to talk to the daemon. The Tauri webview sends
-  requests via Rust IPC (for HTTP) and through Tauri's permission-
-  gated WebSocket APIs, so no HTTP origin is involved.
-- The daemon's dependencies and native modules (`node-pty`) increase
-  the binary surface vs. the CLI-only baseline; pin exact versions
-  per `CLAUDE.md`.
+  not allowed to talk to the daemon.
+- The daemon's dependency surface vs. the CLI-only baseline is small
+  in this plan (hono + its deps); pin exact versions per `CLAUDE.md`.
 - Log scrubbing: request logs include paths and status codes but
-  never request/response bodies — token values in `PUT /credentials`
+  never request/response bodies — token values in `PUT /auth/*`
   must never be printed.
 
 ## Test strategy
@@ -338,56 +341,42 @@ Per `CLAUDE.md`:
   `test/unit/daemon/`. Handlers mostly delegate to `src/lib/**`, so
   most tests verify input parsing, error-mapping, and serialization.
   Heavy coverage for the underlying logic already exists.
-- **Event fan-out**: unit test the event merger in isolation with a
-  fake Podman event stream, fake fs events, and a fake poll tick.
-  Assert exactly one fan-out per logical transition regardless of
-  which source observed it first.
-- **E2E**: new e2e suite under `test/e2e/daemon.test.ts`:
-  - Daemon starts, prints handshake line, responds to `/v1/health`.
-  - Create a session via the CLI while the daemon is running; the
-    daemon emits `session.created` then `session.status` on the WS.
-  - Delete the session via the CLI; emits `session.exited`.
-  - `POST /v1/sessions` then attach a PTY WS, write `echo hi`,
-    assert the bytes come back through the WS.
-  - `DELETE /v1/projects/:slug` tears down live sessions and the
-    project directory.
-  - Two concurrent PTY WS clients on the same ptyId both receive
-    the same output.
+- **E2E**: the existing CLI e2e suites must keep passing — since they
+  invoke the CLI, they now implicitly exercise the daemon end-to-end.
+  A new `test/e2e/daemon.test.ts` covers daemon-specific surface:
+  - Daemon starts, writes the lock file, responds to `/health`.
+  - A second `yaac daemon` invocation is idempotent (exits 0, reuses
+    the lock).
+  - CLI auto-starts a daemon when none is running.
+  - Error mapping: `GET /session/list?project=missing` → 404 with
+    `NOT_FOUND` → CLI exits 1 with the expected message.
+  - Prewarm loop runs without any connected client (create a project,
+    wait, expect a prewarmed container to exist).
 - **Image management**: no new container images; the pre-built
   image rules in `test/global-setup.ts` are unaffected.
 
 ## Delivery
 
-One phase, deliverable end-to-end before any frontend work starts:
+Lands in a single PR. There's no intermediate state where half the
+CLI talks to the daemon and half still reads `src/lib/**` directly —
+that intermediate state would double the surface to reason about (two
+code paths per command, two sets of error modes) for no user-visible
+benefit. All of the below goes together:
 
-1. `src/commands/daemon.ts` + `yaac daemon` subcommand + handshake.
-2. HTTP server (hono) with all read endpoints and the health route.
-3. Event stream with the three sources merged and the `snapshot`
-   backfill on connect.
-4. Write endpoints wrapping the existing CLI commands.
-5. PTY bridge with `attach` / `window` / `shell` modes.
-6. Prewarm coordination lock file + CLI monitor awareness.
-7. `credentials/login` PTY bridge for the interactive tool-login
-   flows.
-
-Each step lands behind its own PR with unit + e2e tests. Once 1–5
-are in, a separate client (CLI script, curl, a tiny TUI) can
-exercise the full surface; the frontend plan can then proceed
-against a stable backend.
-
-## Open questions
-
-1. **TCP port vs. unix socket default.** `--socket` is cleaner on
-   POSIX but Tauri's sidecar IPC has better defaults for stdio /
-   TCP. Pick TCP for v1, add `--socket` as opt-in.
-2. **Multi-daemon handling.** The lock file treats "daemon already
-   running" as an error. Should a second `yaac daemon` instead
-   discover the running one and exit 0 with its port? That would
-   make GUI "start daemon" idempotent.
-3. **Access control for `credentials/login`.** Interactive OAuth
-   flows produce real tokens in memory briefly. Scope this to the
-   handshake-secret holder only (same as everything else), or add a
-   per-request confirmation?
-4. **API versioning policy.** Start at `/v1`; bump on breaking
-   schema changes. Worth documenting a deprecation window (e.g.
-   `/v1` and `/v2` coexist for one minor yaac release).
+- `src/commands/daemon.ts` + `yaac daemon` subcommand + handshake +
+  lock file.
+- Shared CLI client in `src/lib/daemon-client.ts`: auto-start,
+  reading the lock, bearer auth, error mapping.
+- All HTTP routes listed above (read, write, interactive-command
+  helpers, auth, no-CLI-analogue).
+- Daemon background loop: `ensurePrewarmSessions` +
+  `clearFailedPrewarmSessions` on a 5-s tick, plus the
+  `podman events` subscription.
+- Every CLI command ported to the daemon client. `session monitor`
+  loses `--no-prewarm` and becomes a pure poller over
+  `/session/list` + `/prewarm`. Interactive commands (`session
+  attach`, `session shell`, `session stream`, `auth update`) use
+  HTTP helpers and do their local TTY work in the CLI process.
+- Unit tests for every handler and CLI client helper.
+- New `test/e2e/daemon.test.ts` plus the existing CLI e2e suites
+  passing end-to-end through the daemon.
