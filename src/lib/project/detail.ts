@@ -4,7 +4,7 @@ import { getDataDir, projectDir, configOverrideDir, repoDir } from '@/lib/projec
 import { podman } from '@/lib/container/runtime'
 import { loadProjectConfig, loadProjectConfigFromRef } from '@/lib/project/config'
 import { getDefaultBranch } from '@/lib/git'
-import { DaemonError } from '@/lib/daemon/errors'
+import { DaemonError } from '@/daemon/errors'
 import type { ProjectMeta, YaacConfig } from '@/types'
 
 export interface ProjectDetail {

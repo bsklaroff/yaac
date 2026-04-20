@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import { buildApp } from '@/lib/daemon/server'
+import { buildApp } from '@/daemon/server'
 
 function withAuth(init: RequestInit = {}): RequestInit {
   const headers = new Headers(init.headers ?? {})

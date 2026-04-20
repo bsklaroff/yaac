@@ -24,7 +24,7 @@ import {
 import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/lib/git'
 import { claimPrewarmSession } from '@/lib/prewarm'
 import { ensureCodexHooksJson, ensureCodexConfigToml } from '@/lib/session/codex-hooks'
-import { DaemonError } from '@/lib/daemon/errors'
+import { DaemonError } from '@/daemon/errors'
 import { getRpcClient, toClientError } from '@/lib/daemon-client'
 import type { YaacConfig, AgentTool } from '@/types'
 

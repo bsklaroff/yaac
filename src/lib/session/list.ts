@@ -6,7 +6,7 @@ import { getSessionStatus, getSessionFirstMessage, getToolFromContainer } from '
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 import { readBlockedHosts } from '@/lib/session/blocked-hosts'
 import { isPrewarmSession, readPrewarmSessions } from '@/lib/prewarm'
-import { DaemonError } from '@/lib/daemon/errors'
+import { DaemonError } from '@/daemon/errors'
 import type { AgentTool } from '@/types'
 
 export interface SessionListEntry {

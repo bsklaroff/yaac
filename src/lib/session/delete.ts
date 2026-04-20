@@ -1,7 +1,7 @@
 import { podman } from '@/lib/container/runtime'
 import { getDataDir } from '@/lib/project/paths'
 import { cleanupSessionDetached } from '@/lib/session/cleanup'
-import { DaemonError } from '@/lib/daemon/errors'
+import { DaemonError } from '@/daemon/errors'
 
 export interface DeletedSessionInfo {
   sessionId: string

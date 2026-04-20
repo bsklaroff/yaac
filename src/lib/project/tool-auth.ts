@@ -14,7 +14,7 @@ import {
   projectClaudeCredentialsFile,
   projectCodexAuthFile,
 } from '@/lib/project/paths'
-import { DaemonError } from '@/lib/daemon/errors'
+import { DaemonError } from '@/daemon/errors'
 import {
   claudeOAuthBundleSchema,
   codexOAuthBundleSchema,

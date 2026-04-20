@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import { resolveSessionContainer } from '@/lib/daemon/session-resolve'
-import { DaemonError } from '@/lib/daemon/errors'
+import { resolveSessionContainer } from '@/daemon/session-resolve'
+import { DaemonError } from '@/daemon/errors'
 
 describe('resolveSessionContainer', () => {
   let tmpDir: string

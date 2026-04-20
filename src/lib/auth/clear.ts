@@ -4,7 +4,7 @@ import {
   cleanupProjectCodexPlaceholders,
   removeToolAuth,
 } from '@/lib/project/tool-auth'
-import { DaemonError } from '@/lib/daemon/errors'
+import { DaemonError } from '@/daemon/errors'
 
 export type ClearAuthTarget = 'all' | 'claude' | 'codex'
 

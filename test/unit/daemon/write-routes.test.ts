@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import { buildApp } from '@/lib/daemon/server'
+import { buildApp } from '@/daemon/server'
 import { configOverrideDir, getProjectsDir, projectDir, claudeDir, codexDir } from '@/lib/project/paths'
 import { addToken, loadCredentials } from '@/lib/project/credentials'
 import {

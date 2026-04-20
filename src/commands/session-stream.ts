@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import readline from 'node:readline/promises'
 import { getRpcClient, toClientError } from '@/lib/daemon-client'
-import type { StreamOutcome } from '@/lib/daemon/stream-picker'
+import type { StreamOutcome } from '@/daemon/stream-picker'
 import type { AgentTool } from '@/types'
 
 async function promptForProject(projects: string[], message: string): Promise<string | undefined> {

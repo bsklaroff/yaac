@@ -5,10 +5,10 @@ import { listActiveSessions, listDeletedSessions } from '@/lib/session/list'
 import { getSessionDetail, getSessionBlockedHosts, getSessionPrompt } from '@/lib/session/detail'
 import { deleteSession } from '@/lib/session/delete'
 import { createSession, type SessionCreateOptions } from '@/commands/session-create'
-import { DaemonError } from '@/lib/daemon/errors'
-import { resolveSessionContainer } from '@/lib/daemon/session-resolve'
+import { DaemonError } from '@/daemon/errors'
+import { resolveSessionContainer } from '@/daemon/session-resolve'
 import { getPrewarmSession, clearPrewarmSession } from '@/lib/prewarm'
-import { pickNextStreamSession } from '@/lib/daemon/stream-picker'
+import { pickNextStreamSession } from '@/daemon/stream-picker'
 
 export const sessionApp = new Hono()
   .get(

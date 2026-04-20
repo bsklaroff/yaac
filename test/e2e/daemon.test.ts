@@ -4,7 +4,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { setDataDir } from '@/lib/project/paths'
-import { daemonLockPath, readLock, type DaemonLock } from '@/lib/daemon/lock'
+import { daemonLockPath, readLock, type DaemonLock } from '@/daemon/lock'
 
 const TSX_CLI = path.resolve(__dirname, '..', '..', 'node_modules', 'tsx', 'dist', 'cli.mjs')
 const ENTRY = path.resolve(__dirname, '..', '..', 'src', 'cli.ts')

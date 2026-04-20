@@ -1,6 +1,6 @@
 import { podman } from '@/lib/container/runtime'
 import { getDataDir } from '@/lib/project/paths'
-import { DaemonError } from '@/lib/daemon/errors'
+import { DaemonError } from '@/daemon/errors'
 
 export interface ResolvedSession {
   containerName: string

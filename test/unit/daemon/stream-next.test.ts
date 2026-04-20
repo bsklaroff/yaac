@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 import { getProjectsDir, projectDir } from '@/lib/project/paths'
-import { pickNextStreamSession } from '@/lib/daemon/stream-picker'
+import { pickNextStreamSession } from '@/daemon/stream-picker'
 import type { WaitingSession } from '@/lib/session/waiting'
 import type { ProjectMeta } from '@/types'
 

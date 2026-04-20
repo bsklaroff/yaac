@@ -6,7 +6,7 @@ import { isPrewarmSession } from '@/lib/prewarm'
 import { getSessionFirstMessage } from '@/lib/session/status'
 import { getWaitingSessions } from '@/lib/session/waiting'
 import { createSession } from '@/commands/session-create'
-import { DaemonError } from '@/lib/daemon/errors'
+import { DaemonError } from '@/daemon/errors'
 import type { AgentTool } from '@/types'
 
 export type StreamOutcome = 'detached' | 'closed_blank' | 'closed_prompted' | 'none'

@@ -25,7 +25,7 @@ import {
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_REFRESH_TOKEN,
 } from '@/lib/project/tool-auth'
-import { DaemonError } from '@/lib/daemon/errors'
+import { DaemonError } from '@/daemon/errors'
 import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '@/types'
 
 const SAMPLE_BUNDLE: ClaudeOAuthBundle = {

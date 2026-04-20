@@ -4,7 +4,7 @@ import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 import { claudeDir, getProjectsDir, projectDir } from '@/lib/project/paths'
 import { listActiveSessions, listDeletedSessions } from '@/lib/session/list'
-import { DaemonError } from '@/lib/daemon/errors'
+import { DaemonError } from '@/daemon/errors'
 import type { ProjectMeta } from '@/types'
 
 async function writeProject(slug: string, meta: Partial<ProjectMeta> = {}): Promise<void> {

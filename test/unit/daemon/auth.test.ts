@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { Hono } from 'hono'
-import { bearerAuth, denyBrowserCors, requestLogger } from '@/lib/daemon/auth'
+import { bearerAuth, denyBrowserCors, requestLogger } from '@/daemon/auth'
 
 function buildTestApp(secret = 'shh'): Hono {
   const app = new Hono()

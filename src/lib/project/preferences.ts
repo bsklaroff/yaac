@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import readline from 'node:readline/promises'
 import path from 'node:path'
 import { getDataDir, ensureDataDir } from '@/lib/project/paths'
-import { DaemonError } from '@/lib/daemon/errors'
+import { DaemonError } from '@/daemon/errors'
 import type { AgentTool } from '@/types'
 
 export interface PreferencesFile {

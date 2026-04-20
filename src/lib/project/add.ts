@@ -9,7 +9,7 @@ import {
   writeProjectClaudePlaceholder,
   writeProjectCodexPlaceholder,
 } from '@/lib/project/tool-auth'
-import { DaemonError } from '@/lib/daemon/errors'
+import { DaemonError } from '@/daemon/errors'
 import type { ProjectMeta } from '@/types'
 
 function deriveSlug(remoteUrl: string): string {

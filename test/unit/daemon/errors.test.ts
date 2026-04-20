@@ -4,7 +4,7 @@ import {
   DaemonError,
   rewriteZValidatorBody,
   toErrorBody,
-} from '@/lib/daemon/errors'
+} from '@/daemon/errors'
 
 describe('daemon errors', () => {
   describe('DaemonError', () => {

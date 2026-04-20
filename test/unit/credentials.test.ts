@@ -17,7 +17,7 @@ import {
   matchPattern,
   saveCredentials,
 } from '@/lib/project/credentials'
-import { DaemonError } from '@/lib/daemon/errors'
+import { DaemonError } from '@/daemon/errors'
 
 describe('credentials', () => {
   let tmpDir: string

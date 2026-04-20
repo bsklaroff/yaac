@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
 import { serve, type ServerType } from '@hono/node-server'
-import { buildApp } from '@/lib/daemon/server'
+import { buildApp } from '@/daemon/server'
 
 export interface InProcessDaemon {
   baseUrl: string

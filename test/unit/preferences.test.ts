@@ -11,7 +11,7 @@ import {
   setDefaultToolChecked,
   isValidTool,
 } from '@/lib/project/preferences'
-import { DaemonError } from '@/lib/daemon/errors'
+import { DaemonError } from '@/daemon/errors'
 
 describe('preferences', () => {
   let tmpDir: string

@@ -3,7 +3,7 @@ import path from 'node:path'
 import { podman } from '@/lib/container/runtime'
 import { getDataDir, projectDir } from '@/lib/project/paths'
 import { cleanupSession } from '@/lib/session/cleanup'
-import { DaemonError } from '@/lib/daemon/errors'
+import { DaemonError } from '@/daemon/errors'
 
 /**
  * Tear down every live session for a project, then remove the project

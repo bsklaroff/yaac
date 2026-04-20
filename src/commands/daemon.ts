@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { serve, type ServerType } from '@hono/node-server'
-import { buildApp } from '@/lib/daemon/server'
+import { buildApp } from '@/daemon/server'
 import { readBuildId } from '@/lib/build-id'
 import {
   daemonLockPath,
@@ -13,9 +13,9 @@ import {
   removeLock,
   writeLock,
   type DaemonLock,
-} from '@/lib/daemon/lock'
+} from '@/daemon/lock'
 import { ensureDataDir } from '@/lib/project/paths'
-import { startBackgroundLoop } from '@/lib/daemon/background-loop'
+import { startBackgroundLoop } from '@/daemon/background-loop'
 
 const __filename = fileURLToPath(import.meta.url)
 

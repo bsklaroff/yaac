@@ -1,11 +1,11 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
-import { bearerAuth, denyBrowserCors, requestLogger } from '@/lib/daemon/auth'
-import { toErrorBody, rewriteZValidatorBody } from '@/lib/daemon/errors'
-import { projectApp } from '@/lib/daemon/routes/project'
-import { sessionApp } from '@/lib/daemon/routes/session'
-import { toolApp } from '@/lib/daemon/routes/tool'
-import { authApp } from '@/lib/daemon/routes/auth'
+import { bearerAuth, denyBrowserCors, requestLogger } from '@/daemon/auth'
+import { toErrorBody, rewriteZValidatorBody } from '@/daemon/errors'
+import { projectApp } from '@/daemon/routes/project'
+import { sessionApp } from '@/daemon/routes/session'
+import { toolApp } from '@/daemon/routes/tool'
+import { authApp } from '@/daemon/routes/auth'
 import { readPrewarmSessions } from '@/lib/prewarm'
 
 export interface DaemonAppDeps {

@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import readline from 'node:readline/promises'
 import { credentialsDir, githubCredentialsPath, ensureDataDir } from '@/lib/project/paths'
-import { DaemonError } from '@/lib/daemon/errors'
+import { DaemonError } from '@/daemon/errors'
 import type { GithubCredentialsFile, GithubTokenEntry } from '@/types'
 
 export function credentialsPath(): string {

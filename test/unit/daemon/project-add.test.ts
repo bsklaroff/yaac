@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { expandOwnerRepo, validateGithubHttpsUrl } from '@/lib/project/add'
-import { DaemonError } from '@/lib/daemon/errors'
+import { DaemonError } from '@/daemon/errors'
 
 describe('expandOwnerRepo', () => {
   it('expands owner/repo shorthand', () => {

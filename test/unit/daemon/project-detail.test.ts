@@ -4,7 +4,7 @@ import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 import { configOverrideDir, getProjectsDir, repoDir } from '@/lib/project/paths'
 import { getProjectDetail, resolveProjectConfigWithSource } from '@/lib/project/detail'
-import { DaemonError } from '@/lib/daemon/errors'
+import { DaemonError } from '@/daemon/errors'
 import type { ProjectMeta } from '@/types'
 
 async function writeProject(slug: string, meta: ProjectMeta): Promise<void> {

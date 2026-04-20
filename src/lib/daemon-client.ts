@@ -1,8 +1,8 @@
 import { hc } from 'hono/client'
 import { readBuildId } from '@/lib/build-id'
-import { isLockLive, readLock, type DaemonLock } from '@/lib/daemon/lock'
-import type { DaemonErrorBody } from '@/lib/daemon/errors'
-import type { AppType } from '@/lib/daemon/server'
+import { isLockLive, readLock, type DaemonLock } from '@/daemon/lock'
+import type { DaemonErrorBody } from '@/daemon/errors'
+import type { AppType } from '@/daemon/server'
 import { authUpdate } from '@/commands/auth-update'
 
 export interface GetClientOptions {
