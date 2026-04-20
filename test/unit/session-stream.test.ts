@@ -289,6 +289,15 @@ describe('sessionStream', () => {
     expect(mockCreateSession).toHaveBeenCalledWith('my-project', { tool: undefined })
   })
 
+  it('exits when createSession returns undefined (e.g. project not found)', async () => {
+    mockListContainers.mockResolvedValue([])
+    mockCreateSession.mockResolvedValue(undefined)
+
+    await sessionStream('nonexistent-project')
+
+    expect(mockCreateSession).toHaveBeenCalledTimes(1)
+  })
+
   it('retries once when podman connection fails after tmux detach', async () => {
     let callCount = 0
     mockListContainers.mockImplementation(() => {

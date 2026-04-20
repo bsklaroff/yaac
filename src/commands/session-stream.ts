@@ -298,11 +298,12 @@ export async function sessionStream(project?: string, tool?: AgentTool): Promise
         console.log(`No waiting sessions. Creating a new session for "${action.project}"...`)
         currentProject = action.project
         const createdSession = await createSession(action.project, { tool })
-        if (createdSession?.sessionId) {
+        if (!createdSession) return
+        if (createdSession.sessionId) {
           state.visited.add(createdSession.sessionId)
           state.lastVisited = createdSession.sessionId
         }
-        state.lastAttachOutcome = createdSession?.attachOutcome ?? 'none'
+        state.lastAttachOutcome = createdSession.attachOutcome ?? 'none'
         break
     }
   }
