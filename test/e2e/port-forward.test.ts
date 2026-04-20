@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import crypto from 'node:crypto'
 import http from 'node:http'
-import { requirePodman, TEST_RUN_ID, podmanRetry } from '@test/helpers/setup'
+import { requirePodman, TEST_RUN_ID, podmanRetry, removeContainer } from '@test/helpers/setup'
 import { ProxyClient } from '@/lib/container/proxy-client'
 import { startPortForwarders, podmanRelay, reserveAvailablePort } from '@/lib/container/port'
 import { podman } from '@/lib/container/runtime'
@@ -47,11 +47,7 @@ describe('port forwarding via podman exec relay', () => {
 
   afterEach(async () => {
     for (const name of containers) {
-      try {
-        const c = podman.getContainer(name)
-        await c.stop({ t: 1 })
-        await c.remove()
-      } catch { /* already gone */ }
+      await removeContainer(name)
     }
     containers.length = 0
   })

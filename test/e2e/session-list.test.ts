@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject, podmanRetry } from '@test/helpers/setup'
+import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject, podmanRetry, removeContainer } from '@test/helpers/setup'
 import { sessionList } from '@/commands/session-list'
 import { podman } from '@/lib/container/runtime'
 import { ensureImage } from '@/lib/container/image-builder'
@@ -52,13 +52,7 @@ describe('yaac session list', () => {
 
   afterEach(async () => {
     for (const name of containersToCleanup) {
-      try {
-        const c = podman.getContainer(name)
-        await c.stop({ t: 1 })
-        await c.remove()
-      } catch {
-        // already gone
-      }
+      await removeContainer(name)
     }
     containersToCleanup.length = 0
     for (const dir of tmpDirs) {
@@ -103,14 +97,7 @@ describe('yaac session list', () => {
 
     afterAll(async () => {
       for (const name of [containerA, containerB]) {
-        if (!name) continue
-        try {
-          const c = podman.getContainer(name)
-          await c.stop({ t: 1 })
-          await c.remove()
-        } catch {
-          // already gone
-        }
+        if (name) await removeContainer(name)
       }
       if (tmpDir) await cleanupTempDir(tmpDir)
     })

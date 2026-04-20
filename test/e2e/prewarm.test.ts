@@ -4,7 +4,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import {
   createTempDataDir, cleanupTempDir, createTestRepo, requirePodman,
-  TEST_IMAGE_PREFIX, addTestProject, podmanRetry,
+  TEST_IMAGE_PREFIX, addTestProject, podmanRetry, removeContainer,
 } from '@test/helpers/setup'
 import { podman } from '@/lib/container/runtime'
 import { ensureImage } from '@/lib/container/image-builder'
@@ -99,13 +99,7 @@ describe('prewarm session lifecycle', () => {
 
   afterEach(async () => {
     for (const name of containersToCleanup) {
-      try {
-        const c = podman.getContainer(name)
-        await c.stop({ t: 1 }).catch(() => {})
-        await c.remove().catch(() => {})
-      } catch {
-        // already gone
-      }
+      await removeContainer(name)
     }
     containersToCleanup.length = 0
     await clearPrewarmSession(projectSlug)

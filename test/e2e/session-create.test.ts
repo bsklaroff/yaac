@@ -4,7 +4,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, TEST_PROXY_CONFIG, TEST_RUN_ID, addTestProject, podmanRetry } from '@test/helpers/setup'
+import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, TEST_PROXY_CONFIG, TEST_RUN_ID, addTestProject, podmanRetry, removeContainer } from '@test/helpers/setup'
 import { podman } from '@/lib/container/runtime'
 import { ensureImage, packTar } from '@/lib/container/image-builder'
 import { ProxyClient, buildRulesFromConfig } from '@/lib/container/proxy-client'
@@ -40,6 +40,7 @@ async function podmanExecRetry(
 // Test-specific sidecar instances — initialized in createSessionNonInteractive
 // with a dynamic port to avoid conflicts with other test suites.
 let testProxyClient: ProxyClient | null = null
+let testPgRelayClient: PgRelayClient | null = null
 
 function getTestProxy(): ProxyClient {
   if (testProxyClient) return testProxyClient
@@ -115,10 +116,13 @@ async function createSessionNonInteractive(
   let testPgRelay: PgRelayClient | null = null
 
   if (pgEnabled) {
-    testPgRelay = new PgRelayClient({
-      containerName: `yaac-test-pg-relay-${TEST_RUN_ID}`,
-      network: TEST_PROXY_CONFIG.network,
-    })
+    if (!testPgRelayClient) {
+      testPgRelayClient = new PgRelayClient({
+        containerName: `yaac-test-pg-relay-${TEST_RUN_ID}`,
+        network: TEST_PROXY_CONFIG.network,
+      })
+    }
+    testPgRelay = testPgRelayClient
     await testPgRelay.ensureRunning(pgConfig)
     pgRelayIp = testPgRelay.ip
   }
@@ -289,13 +293,7 @@ describe('yaac session create', () => {
 
   afterEach(async () => {
     for (const name of containersToCleanup) {
-      try {
-        const c = podman.getContainer(name)
-        await c.stop({ t: 1 })
-        await c.remove()
-      } catch {
-        // already gone
-      }
+      await removeContainer(name)
     }
     containersToCleanup.length = 0
     for (const vol of volumesToCleanup) {
@@ -312,6 +310,25 @@ describe('yaac session create', () => {
     tmpDirs.length = 0
   })
 
+  afterAll(async () => {
+    if (testPgRelayClient) {
+      try {
+        await testPgRelayClient.stop()
+      } catch {
+        // already stopped
+      }
+      testPgRelayClient = null
+    }
+    if (testProxyClient) {
+      try {
+        await testProxyClient.stop()
+      } catch {
+        // already stopped
+      }
+      testProxyClient = null
+    }
+  })
+
   describe('container basics (shared session)', () => {
     let result: { containerId: string; containerName: string; sessionId: string }
     let tmpDir: string
@@ -326,15 +343,7 @@ describe('yaac session create', () => {
     })
 
     afterAll(async () => {
-      try {
-        if (result) {
-          const c = podman.getContainer(result.containerName)
-          await c.stop({ t: 1 })
-          await c.remove()
-        }
-      } catch {
-        // already gone
-      }
+      if (result) await removeContainer(result.containerName)
       if (tmpDir) await cleanupTempDir(tmpDir)
     })
 

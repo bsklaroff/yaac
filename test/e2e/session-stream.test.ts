@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject, podmanRetry } from '@test/helpers/setup'
+import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject, podmanRetry, removeContainer } from '@test/helpers/setup'
 import { podman } from '@/lib/container/runtime'
 import { ensureImage } from '@/lib/container/image-builder'
 import { claudeDir, worktreeDir, worktreesDir, repoDir, getDataDir } from '@/lib/project/paths'
@@ -108,13 +108,7 @@ describe('yaac session stream', () => {
 
   afterEach(async () => {
     for (const name of containersToCleanup) {
-      try {
-        const c = podman.getContainer(name)
-        await c.stop({ t: 1 })
-        await c.remove()
-      } catch {
-        // already gone
-      }
+      await removeContainer(name)
     }
     containersToCleanup.length = 0
     for (const dir of tmpDirs) {
@@ -160,14 +154,7 @@ describe('yaac session stream', () => {
 
     afterAll(async () => {
       for (const c of [containerA, containerB]) {
-        if (!c) continue
-        try {
-          const container = podman.getContainer(c.containerName)
-          await container.stop({ t: 1 })
-          await container.remove()
-        } catch {
-          // already gone
-        }
+        if (c) await removeContainer(c.containerName)
       }
       if (tmpDir) await cleanupTempDir(tmpDir)
     })
@@ -211,14 +198,7 @@ describe('yaac session stream', () => {
 
     afterAll(async () => {
       for (const c of [containerA, containerB]) {
-        if (!c) continue
-        try {
-          const container = podman.getContainer(c.containerName)
-          await container.stop({ t: 1 })
-          await container.remove()
-        } catch {
-          // already gone
-        }
+        if (c) await removeContainer(c.containerName)
       }
       if (tmpDir) await cleanupTempDir(tmpDir)
     })

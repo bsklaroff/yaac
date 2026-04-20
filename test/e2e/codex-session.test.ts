@@ -4,7 +4,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject, podmanRetry } from '@test/helpers/setup'
+import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject, podmanRetry, removeContainer } from '@test/helpers/setup'
 import { podman } from '@/lib/container/runtime'
 import { ensureImage } from '@/lib/container/image-builder'
 import { codexDir, codexTranscriptDir, codexTranscriptFile, worktreeDir, worktreesDir, repoDir, getDataDir } from '@/lib/project/paths'
@@ -111,13 +111,7 @@ describe('codex session support', () => {
 
   afterEach(async () => {
     for (const name of containersToCleanup) {
-      try {
-        const c = podman.getContainer(name)
-        await c.stop({ t: 1 })
-        await c.remove()
-      } catch {
-        // already gone
-      }
+      await removeContainer(name)
     }
     containersToCleanup.length = 0
     for (const dir of tmpDirs) {
@@ -132,13 +126,7 @@ describe('codex session support', () => {
     let tmpDir: string
 
     afterAll(async () => {
-      if (containerName) {
-        try {
-          const c = podman.getContainer(containerName)
-          await c.stop({ t: 1 })
-          await c.remove()
-        } catch { /* already gone */ }
-      }
+      if (containerName) await removeContainer(containerName)
       if (tmpDir) await cleanupTempDir(tmpDir)
     })
 
@@ -216,13 +204,7 @@ describe('codex session support', () => {
     let projectSlug: string
 
     afterAll(async () => {
-      if (containerName) {
-        try {
-          const c = podman.getContainer(containerName)
-          await c.stop({ t: 1 })
-          await c.remove()
-        } catch { /* already gone */ }
-      }
+      if (containerName) await removeContainer(containerName)
       if (tmpDir) await cleanupTempDir(tmpDir)
     })
 
@@ -392,13 +374,7 @@ describe('codex session support', () => {
     let tmpDir: string
 
     afterAll(async () => {
-      if (containerName) {
-        try {
-          const c = podman.getContainer(containerName)
-          await c.stop({ t: 1 })
-          await c.remove()
-        } catch { /* already gone */ }
-      }
+      if (containerName) await removeContainer(containerName)
       if (tmpDir) await cleanupTempDir(tmpDir)
     })
 

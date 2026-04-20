@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import crypto from 'node:crypto'
 import http from 'node:http'
-import { requirePodman, podmanRetry } from '@test/helpers/setup'
+import { requirePodman, podmanRetry, removeContainer } from '@test/helpers/setup'
 import { ProxyClient, PROXY_CONTAINER_PORT } from '@/lib/container/proxy-client'
 import { podman } from '@/lib/container/runtime'
 
@@ -124,13 +124,7 @@ describe('proxy sidecar', () => {
 
     afterEach(async () => {
       for (const name of tunnelContainers) {
-        try {
-          const c = podman.getContainer(name)
-          await c.stop({ t: 1 })
-          await c.remove()
-        } catch {
-          // already gone
-        }
+        await removeContainer(name)
       }
       tunnelContainers.length = 0
     })
@@ -281,13 +275,7 @@ describe('proxy HTTP forwarding', () => {
 
   afterAll(async () => {
     try { await client?.stop() } catch { /* ok */ }
-    if (echoContainerName) {
-      try {
-        const c = podman.getContainer(echoContainerName)
-        await c.stop({ t: 1 })
-        await c.remove()
-      } catch { /* ok */ }
-    }
+    if (echoContainerName) await removeContainer(echoContainerName)
   })
 
   it('forwards a plain HTTP GET request', async () => {

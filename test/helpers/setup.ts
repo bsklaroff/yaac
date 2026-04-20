@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 import simpleGit from 'simple-git'
 import { setDataDir, getDataDir, projectDir, repoDir, claudeDir } from '@/lib/project/paths'
 import { cloneRepo } from '@/lib/git'
-import { podmanExecWithRetry } from '@/lib/container/runtime'
+import { podman, podmanExecWithRetry } from '@/lib/container/runtime'
 import type { ProjectMeta } from '@/types'
 import type { ProxyClientConfig } from '@/lib/container/proxy-client'
 
@@ -24,6 +24,19 @@ export async function podmanRetry(
   opts?: { timeout?: number },
 ): Promise<{ stdout: string; stderr: string }> {
   return await podmanExecWithRetry(args, opts)
+}
+
+/**
+ * Remove a container by name, swallowing errors if it's already gone.
+ * Stop and remove each have their own try/catch so `stop()` throwing
+ * HTTP 304 on an already-exited container doesn't skip the remove.
+ * A short 1s stop grace period is faster than `remove({ force: true })`
+ * for well-behaved test containers that exit on SIGTERM.
+ */
+export async function removeContainer(name: string): Promise<void> {
+  const c = podman.getContainer(name)
+  try { await c.stop({ t: 1 }) } catch { /* already stopped */ }
+  try { await c.remove() } catch { /* already gone */ }
 }
 
 /**

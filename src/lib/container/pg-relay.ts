@@ -115,9 +115,7 @@ export class PgRelayClient {
 
   async stop(): Promise<void> {
     try {
-      const container = podman.getContainer(this._containerName)
-      await container.stop({ t: 2 })
-      await container.remove()
+      await podman.getContainer(this._containerName).remove({ force: true })
     } catch {
       // already stopped or removed
     }

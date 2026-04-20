@@ -250,6 +250,7 @@ export class ProxyClient {
       this.resolvedImage = taggedImage
       this.running = true
       this.gcStaleProxies(hash).catch(() => {})
+      this.gcStaleNetworks().catch(() => {})
       return
     }
 
@@ -457,8 +458,12 @@ export class ProxyClient {
   }
 
   /**
-   * Remove proxy containers whose image hash differs from `currentHash`
-   * and that have no session containers referencing them.
+   * Remove proxy containers that are no longer useful:
+   *   - image hash differs from `currentHash` (stale build), OR
+   *   - container is in `exited` state (orphaned from a prior run — e.g. a
+   *     test worker on a one-off network that finished without calling stop)
+   * Proxies with sessions still referencing them are always preserved, as are
+   * `running`/`created` proxies (which may belong to a concurrent worker).
    */
   private async gcStaleProxies(currentHash: string): Promise<void> {
     const proxies = await podman.listContainers({
@@ -467,7 +472,9 @@ export class ProxyClient {
     })
 
     for (const p of proxies) {
-      if (p.Labels?.['yaac.proxy.image-hash'] === currentHash) continue
+      const hashMatches = p.Labels?.['yaac.proxy.image-hash'] === currentHash
+      const isExited = p.State === 'exited'
+      if (hashMatches && !isExited) continue
 
       const proxyName = p.Names?.[0]?.replace(/^\//, '') ?? p.Id
 
@@ -480,11 +487,41 @@ export class ProxyClient {
 
       console.log(`Removing stale proxy ${proxyName}...`)
       try {
-        const container = podman.getContainer(proxyName)
-        await container.stop({ t: 5 })
-        await container.remove()
+        await podman.getContainer(proxyName).remove({ force: true })
       } catch {
         // already gone
+      }
+    }
+  }
+
+  /**
+   * Remove yaac-prefixed networks that are older than 1 hour, have no
+   * attached containers, and are not the network this ProxyClient manages.
+   * The 1-hour grace period avoids racing concurrent test workers that have
+   * just created their network but not yet attached a container.
+   */
+  private async gcStaleNetworks(): Promise<void> {
+    const cutoff = Date.now() - 60 * 60 * 1000
+    const networks = await podman.listNetworks() as Array<{
+      Name?: string
+      Created?: string
+      Containers?: Record<string, unknown>
+    }>
+
+    for (const n of networks) {
+      if (!n.Name?.startsWith('yaac-')) continue
+      if (n.Name === this.config.network) continue
+
+      const created = Date.parse(n.Created ?? '')
+      if (!Number.isFinite(created) || created > cutoff) continue
+
+      if (n.Containers && Object.keys(n.Containers).length > 0) continue
+
+      console.log(`Removing stale network ${n.Name}...`)
+      try {
+        await podman.getNetwork(n.Name).remove()
+      } catch {
+        // already gone or still in use
       }
     }
   }
@@ -493,9 +530,7 @@ export class ProxyClient {
     console.log('Stopping proxy...')
     if (this.resolved) {
       try {
-        const container = podman.getContainer(this.resolved.containerName)
-        await container.stop({ t: 5 })
-        await container.remove()
+        await podman.getContainer(this.resolved.containerName).remove({ force: true })
       } catch {
         // already stopped or removed
       }
