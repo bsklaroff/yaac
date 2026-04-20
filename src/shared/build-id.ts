@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { PACKAGE_ROOT } from '@/lib/project/paths'
+import { PACKAGE_ROOT } from '@/shared/paths'
 
 const BUILD_ID_FILENAME = '.build-id'
 

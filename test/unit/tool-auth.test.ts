@@ -26,7 +26,7 @@ import {
   PLACEHOLDER_REFRESH_TOKEN,
 } from '@/lib/project/tool-auth'
 import { DaemonError } from '@/daemon/errors'
-import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '@/types'
+import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '@/shared/types'
 
 const SAMPLE_BUNDLE: ClaudeOAuthBundle = {
   accessToken: 'sk-ant-oat01-real',

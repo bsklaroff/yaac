@@ -3,7 +3,7 @@ import { getDataDir } from '@/lib/project/paths'
 import { DaemonError } from '@/daemon/errors'
 import { getSessionFirstMessage, getToolFromContainer } from '@/lib/session/status'
 import { readBlockedHosts } from '@/lib/session/blocked-hosts'
-import type { AgentTool } from '@/types'
+import type { AgentTool } from '@/shared/types'
 
 export interface SessionDetail {
   sessionId: string

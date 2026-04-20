@@ -8,7 +8,7 @@ import simpleGit from 'simple-git'
 import { setDataDir, getDataDir, projectDir, repoDir, claudeDir } from '@/lib/project/paths'
 import { cloneRepo } from '@/lib/git'
 import { podman, podmanExecWithRetry } from '@/lib/container/runtime'
-import type { ProjectMeta } from '@/types'
+import type { ProjectMeta } from '@/shared/types'
 import type { ProxyClientConfig } from '@/lib/container/proxy-client'
 
 const execFileAsync = promisify(execFile)

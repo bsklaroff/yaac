@@ -4,7 +4,7 @@ import { resolveProxyImageTag } from '@/lib/container/proxy-client'
 import { resolveProjectConfig, hashConfig } from '@/lib/project/config'
 import { getRemoteHeadCommit } from '@/lib/git'
 import { repoDir } from '@/lib/project/paths'
-import type { YaacConfig } from '@/types'
+import type { YaacConfig } from '@/shared/types'
 
 export interface FingerprintInputs {
   imageTag: string

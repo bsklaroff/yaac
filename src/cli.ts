@@ -1,5 +1,5 @@
 import { Command, type Help } from 'commander'
-import { exitOnClientError } from '@/lib/daemon-client'
+import { exitOnClientError } from '@/shared/daemon-client'
 import { projectAdd } from '@/commands/project-add'
 import { projectList } from '@/commands/project-list'
 import { sessionCreate } from '@/commands/session-create'
@@ -14,9 +14,9 @@ import { authClear } from '@/commands/auth-clear'
 import { authList } from '@/commands/auth-list'
 import { toolGet } from '@/commands/tool-get'
 import { toolSet } from '@/commands/tool-set'
-import { runDaemon, startDaemon, stopDaemon, restartDaemon } from '@/commands/daemon'
+import { runDaemon, startDaemon, stopDaemon, restartDaemon } from '@/daemon/cli'
 import { getDefaultTool } from '@/lib/project/preferences'
-import type { AgentTool } from '@/types'
+import type { AgentTool } from '@/shared/types'
 import type { SessionMonitorOptions } from '@/commands/session-monitor'
 
 /**

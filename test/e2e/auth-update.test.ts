@@ -3,9 +3,10 @@ import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 import { bootInProcessDaemon, type InProcessDaemon } from '@test/helpers/daemon'
 import { authUpdate } from '@/commands/auth-update'
 import { loadCredentials } from '@/lib/project/credentials'
-import type * as toolAuth from '@/lib/project/tool-auth'
-import { loadClaudeCredentialsFile, type ToolLoginResult } from '@/lib/project/tool-auth'
-import type { ClaudeOAuthBundle } from '@/types'
+import type * as toolAuthInteractive from '@/shared/tool-auth-interactive'
+import { loadClaudeCredentialsFile } from '@/lib/project/tool-auth'
+import type { ClaudeOAuthBundle } from '@/shared/types'
+import type { ToolLoginResult } from '@/shared/tool-auth-interactive'
 
 const { mockQuestion, mockClose, mockRunToolLogin } = vi.hoisted(() => ({
   mockQuestion: vi.fn<(prompt: string) => Promise<string>>(),
@@ -22,8 +23,8 @@ vi.mock('node:readline/promises', () => ({
   },
 }))
 
-vi.mock('@/lib/project/tool-auth', async () => {
-  const actual = await vi.importActual<typeof toolAuth>('@/lib/project/tool-auth')
+vi.mock('@/shared/tool-auth-interactive', async () => {
+  const actual = await vi.importActual<typeof toolAuthInteractive>('@/shared/tool-auth-interactive')
   return {
     ...actual,
     runToolLogin: mockRunToolLogin,

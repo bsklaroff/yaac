@@ -20,7 +20,7 @@ import {
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_REFRESH_TOKEN,
 } from '@/lib/project/tool-auth'
-import type { CodexOAuthBundle } from '@/types'
+import type { CodexOAuthBundle } from '@/shared/types'
 
 /**
  * Build a fake JWT with a given `exp` claim (seconds since epoch). Header /

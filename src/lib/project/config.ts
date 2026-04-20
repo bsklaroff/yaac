@@ -3,7 +3,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import type { YaacConfig, PostgresRelayConfig } from '@/types'
+import type { YaacConfig, PostgresRelayConfig } from '@/shared/types'
 import { configOverrideDir, repoDir } from '@/lib/project/paths'
 import { getDefaultBranch } from '@/lib/git'
 

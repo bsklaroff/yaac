@@ -2,14 +2,14 @@ import { EventEmitter } from 'node:events'
 import { spawn } from 'node:child_process'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { sessionStream } from '@/commands/session-stream'
-import { getRpcClient } from '@/lib/daemon-client'
-import type * as daemonClientModule from '@/lib/daemon-client'
+import { getRpcClient } from '@/shared/daemon-client'
+import type * as daemonClientModule from '@/shared/daemon-client'
 
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }))
 
-vi.mock('@/lib/daemon-client', async (importOriginal) => {
+vi.mock('@/shared/daemon-client', async (importOriginal) => {
   const actual = await importOriginal<typeof daemonClientModule>()
   return {
     ...actual,

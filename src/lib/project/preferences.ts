@@ -3,7 +3,7 @@ import readline from 'node:readline/promises'
 import path from 'node:path'
 import { getDataDir, ensureDataDir } from '@/lib/project/paths'
 import { DaemonError } from '@/daemon/errors'
-import type { AgentTool } from '@/types'
+import type { AgentTool } from '@/shared/types'
 
 export interface PreferencesFile {
   defaultTool?: AgentTool

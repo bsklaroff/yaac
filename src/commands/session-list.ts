@@ -1,9 +1,9 @@
-import { getRpcClient, toClientError } from '@/lib/daemon-client'
+import { getRpcClient, toClientError } from '@/commands/rpc'
 import type {
   DeletedSessionEntry,
   FailedPrewarmInfo,
   SessionListEntry,
-} from '@/lib/session/list'
+} from '@/shared/types'
 
 export interface SessionListOptions {
   deleted?: boolean

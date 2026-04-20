@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
-import type { SecretProxyRule } from '@/types'
+import type { SecretProxyRule } from '@/shared/types'
 import { podman, ensureNetwork, imageExists } from '@/lib/container/runtime'
 import fs from 'node:fs/promises'
 import { PROXY_DIR, credentialsDir } from '@/lib/project/paths'

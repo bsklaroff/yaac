@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir, createTestRepo, addTestProject } from '@test/helpers/setup'
 import { bootInProcessDaemon, type InProcessDaemon } from '@test/helpers/daemon'
-import { exitOnClientError } from '@/lib/daemon-client'
+import { exitOnClientError } from '@/shared/daemon-client'
 import { sessionCreate } from '@/commands/session-create'
 import type * as gitModule from '@/lib/git'
 

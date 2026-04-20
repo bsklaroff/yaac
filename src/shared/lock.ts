@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { getDataDir } from '@/lib/project/paths'
+import { getDataDir } from '@/shared/paths'
 
 export interface DaemonLock {
   pid: number

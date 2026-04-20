@@ -5,7 +5,7 @@ import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 import { getProjectsDir, projectDir } from '@/lib/project/paths'
 import { pickNextStreamSession } from '@/daemon/stream-picker'
 import type { WaitingSession } from '@/lib/session/waiting'
-import type { ProjectMeta } from '@/types'
+import type { ProjectMeta } from '@/shared/types'
 
 import type * as waitingModule from '@/lib/session/waiting'
 import type * as statusModule from '@/lib/session/status'
@@ -15,14 +15,14 @@ vi.mock('@/lib/session/waiting', async () => {
   return { ...actual, getWaitingSessions: vi.fn() }
 })
 
-vi.mock('@/commands/session-create', () => ({ createSession: vi.fn() }))
+vi.mock('@/daemon/session-create', () => ({ createSession: vi.fn() }))
 vi.mock('@/lib/session/status', async () => {
   const actual = await vi.importActual<typeof statusModule>('@/lib/session/status')
   return { ...actual, getSessionFirstMessage: vi.fn() }
 })
 
 import { getWaitingSessions } from '@/lib/session/waiting'
-import { createSession } from '@/commands/session-create'
+import { createSession } from '@/daemon/session-create'
 import { getSessionFirstMessage } from '@/lib/session/status'
 
 const mockGetWaiting = vi.mocked(getWaitingSessions)

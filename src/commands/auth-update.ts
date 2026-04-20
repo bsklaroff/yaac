@@ -1,12 +1,12 @@
 import readline from 'node:readline/promises'
-import { getRpcClient, toClientError } from '@/lib/daemon-client'
+import { getRpcClient, toClientError } from '@/shared/daemon-client'
 import {
   promptForApiKey,
   runToolLogin,
   type ToolLoginResult,
-} from '@/lib/project/tool-auth'
-import { validatePattern } from '@/lib/project/credentials'
-import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '@/types'
+} from '@/shared/tool-auth-interactive'
+import { validatePattern } from '@/shared/credentials'
+import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '@/shared/types'
 
 type ToolAuthPayload =
   | { kind: 'api-key'; apiKey: string }

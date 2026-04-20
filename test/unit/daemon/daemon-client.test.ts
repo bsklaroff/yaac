@@ -4,7 +4,7 @@ import {
   describeLockMismatch,
   exitOnClientError,
   toClientError,
-} from '@/lib/daemon-client'
+} from '@/shared/daemon-client'
 
 function jsonResponse(body: string, status = 200): Response {
   return new Response(body, { status, headers: { 'content-type': 'application/json' } })

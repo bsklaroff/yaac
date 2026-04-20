@@ -18,7 +18,7 @@ import {
   projectCodexAuthFile,
   projectDir,
 } from '@/lib/project/paths'
-import type { ClaudeOAuthBundle, CodexOAuthBundle } from '@/types'
+import type { ClaudeOAuthBundle, CodexOAuthBundle } from '@/shared/types'
 
 const SAMPLE_CLAUDE: ClaudeOAuthBundle = {
   accessToken: 'sk-ant-oat01-real',

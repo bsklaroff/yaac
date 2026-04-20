@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { getDataDir, getProjectsDir } from '@/lib/project/paths'
 import { podman } from '@/lib/container/runtime'
-import type { ProjectMeta } from '@/types'
+import type { ProjectMeta } from '@/shared/types'
 
 export interface ProjectListEntry {
   slug: string

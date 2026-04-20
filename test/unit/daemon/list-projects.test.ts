@@ -4,7 +4,7 @@ import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 import { getProjectsDir } from '@/lib/project/paths'
 import { listProjects } from '@/lib/project/list'
-import type { ProjectMeta } from '@/types'
+import type { ProjectMeta } from '@/shared/types'
 
 async function writeProject(slug: string, meta: ProjectMeta): Promise<void> {
   const dir = path.join(getProjectsDir(), slug)

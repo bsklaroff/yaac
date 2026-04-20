@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shellEscape } from '@/commands/session-create'
+import { shellEscape } from '@/daemon/session-create'
 
 describe('shellEscape', () => {
   it('returns simple strings unchanged', () => {

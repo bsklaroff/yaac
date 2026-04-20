@@ -11,9 +11,9 @@ import {
 } from '@/lib/project/tool-auth'
 import { loadPreferences } from '@/lib/project/preferences'
 import type * as projectAddModule from '@/lib/project/add'
-import type { ProjectMeta, ClaudeOAuthBundle } from '@/types'
+import type { ProjectMeta, ClaudeOAuthBundle } from '@/shared/types'
 
-vi.mock('@/commands/session-create', () => ({
+vi.mock('@/daemon/session-create', () => ({
   createSession: vi.fn(),
 }))
 
@@ -33,7 +33,7 @@ vi.mock('@/lib/project/remove', () => ({
   removeProject: vi.fn(),
 }))
 
-import { createSession } from '@/commands/session-create'
+import { createSession } from '@/daemon/session-create'
 import { deleteSession } from '@/lib/session/delete'
 import { addProject } from '@/lib/project/add'
 import { removeProject } from '@/lib/project/remove'
@@ -183,7 +183,7 @@ describe('write routes', () => {
       expect(body.error.code).toBe('VALIDATION')
     })
 
-    it('forwards noAttach:true and returns the createSession result', async () => {
+    it('forwards the call to createSession and returns its result', async () => {
       mockCreateSession.mockResolvedValue({
         sessionId: 'sess-x',
         containerName: 'yaac-demo-sess-x',
@@ -197,7 +197,6 @@ describe('write routes', () => {
         body: JSON.stringify({
           project: 'demo',
           gitUser: { name: 'A', email: 'a@b' },
-          portReservations: [{ containerPort: 3000, hostPort: 3042 }],
         }),
       }))
       expect(res.status).toBe(200)
@@ -205,20 +204,7 @@ describe('write routes', () => {
       expect(body).toMatchObject({ sessionId: 'sess-x' })
       expect(mockCreateSession).toHaveBeenCalledWith('demo', expect.objectContaining({
         gitUser: { name: 'A', email: 'a@b' },
-        portReservations: [{ containerPort: 3000, hostPort: 3042 }],
       }))
-    })
-
-    it('rejects a malformed portReservations entry', async () => {
-      const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/session/create', withAuth({
-        method: 'POST',
-        body: JSON.stringify({
-          project: 'demo',
-          portReservations: [{ containerPort: 'nope' }],
-        }),
-      }))
-      expect(res.status).toBe(400)
     })
   })
 

@@ -63,14 +63,4 @@ export async function getRemoteHeadCommit(repoPath: string): Promise<string> {
   return (await simpleGit(repoPath).revparse([`origin/${defaultBranch}`])).trim()
 }
 
-export async function getGitUserConfig(): Promise<{ name: string; email: string } | null> {
-  try {
-    const git = simpleGit()
-    const name = (await git.getConfig('user.name', 'global')).value
-    const email = (await git.getConfig('user.email', 'global')).value
-    if (name && email) return { name, email }
-    return null
-  } catch {
-    return null
-  }
-}
+export { getGitUserConfig } from '@/shared/git'

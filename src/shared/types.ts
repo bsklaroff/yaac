@@ -178,3 +178,114 @@ export interface SessionMeta {
   createdAt: string
   status: 'running' | 'waiting' | 'stopped'
 }
+
+// ---------------------------------------------------------------------------
+// Wire types — RPC request/response shapes used across the daemon/CLI
+// boundary. Lib and daemon modules return these; commands receive them via
+// the Hono RPC client.
+// ---------------------------------------------------------------------------
+
+/** Host↔container port mapping returned by `/session/create`. */
+export interface PortMapping {
+  containerPort: number
+  hostPort: number
+}
+
+// --- auth/list ---
+
+export interface GithubTokenSummary {
+  pattern: string
+  tokenPreview: string
+}
+
+export interface ToolAuthSummary {
+  tool: AgentTool
+  kind: ToolAuthKind
+  /** Masked preview of the access token / API key (last 4 chars). */
+  keyPreview: string
+  savedAt: string
+}
+
+export interface AuthListResult {
+  githubTokens: GithubTokenSummary[]
+  toolAuth: ToolAuthSummary[]
+}
+
+// --- session/list ---
+
+export interface SessionListEntry {
+  sessionId: string
+  projectSlug: string
+  tool: AgentTool
+  status: 'running' | 'waiting' | 'prewarm'
+  /** Container created time as 'YYYY-MM-DD HH:MM:SS' (UTC). */
+  createdAt: string
+  prompt?: string
+  blockedHosts: string[]
+}
+
+export interface StaleSessionInfo {
+  containerName: string
+  projectSlug: string
+  sessionId: string
+  /** True when the container is still running but tmux is gone. */
+  zombie: boolean
+}
+
+export interface FailedPrewarmInfo {
+  slug: string
+  fingerprint: string
+  /** Unix epoch ms. */
+  verifiedAt: number
+}
+
+export interface ActiveSessionsResult {
+  sessions: SessionListEntry[]
+  stale: StaleSessionInfo[]
+  failedPrewarms: FailedPrewarmInfo[]
+}
+
+export interface DeletedSessionEntry {
+  sessionId: string
+  projectSlug: string
+  tool: AgentTool
+  /** 'YYYY-MM-DD HH:MM:SS' (UTC). */
+  createdAt: string
+}
+
+// --- session stream picker ---
+
+export type StreamOutcome = 'detached' | 'closed_blank' | 'closed_prompted' | 'none'
+
+export interface PickNextInput {
+  project?: string
+  tool?: AgentTool
+  visited: string[]
+  lastVisited?: string
+  /**
+   * Project slug of the last-attached session. The daemon uses it to
+   * look up the session transcript if the session disappeared between
+   * this call and the previous one — which tells us whether the user
+   * closed a blank session.
+   */
+  lastProjectSlug?: string
+  lastTool?: AgentTool
+  lastOutcome: StreamOutcome
+}
+
+export type PickNextResult =
+  | {
+      done: false
+      sessionId: string
+      containerName: string
+      tmuxSession: 'yaac'
+      projectSlug: string
+      tool: AgentTool
+      visited: string[]
+      lastVisited: string
+    }
+  | {
+      done: true
+      reason: 'no_active' | 'closed_blank' | 'needs_project'
+      candidates?: string[]
+    }

@@ -1,9 +1,8 @@
 import { hc } from 'hono/client'
-import { readBuildId } from '@/lib/build-id'
-import { isLockLive, readLock, type DaemonLock } from '@/daemon/lock'
+import { readBuildId } from '@/shared/build-id'
+import { isLockLive, readLock, type DaemonLock } from '@/shared/lock'
 import type { DaemonErrorBody } from '@/daemon/errors'
 import type { AppType } from '@/daemon/server'
-import { authUpdate } from '@/commands/auth-update'
 
 export interface GetClientOptions {
   /**
@@ -15,8 +14,10 @@ export interface GetClientOptions {
   /**
    * Interactive "please re-authenticate" handler. Invoked once when the
    * daemon replies with `AUTH_REQUIRED`; after it resolves the request
-   * is retried once. The CLI wires this to `authUpdate`; tests inject
-   * their own.
+   * is retried once. Provided by the caller so this shared module has
+   * no value-level dependency on the interactive `authUpdate` command
+   * (which would create a `shared → @/commands` edge). The CLI wires
+   * this to `authUpdate` once in `src/cli.ts`; tests inject their own.
    */
   onAuthRequired?: () => Promise<void>
 }
@@ -33,7 +34,7 @@ export async function createDaemonFetch(
 ): Promise<(input: string, init?: RequestInit) => Promise<Response>> {
   const resolveLock = opts.resolveLock ?? defaultResolveLock
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch
-  const onAuthRequired = opts.onAuthRequired ?? defaultAuthUpdate
+  const onAuthRequired = opts.onAuthRequired ?? (async () => { /* no-op */ })
 
   let lock = await resolveLock()
 
@@ -95,14 +96,6 @@ export async function toClientError(
   } catch {
     return new Error(`daemon returned ${res.status}`)
   }
-}
-
-/**
- * Default `AUTH_REQUIRED` recovery: run the interactive `auth update`
- * flow.
- */
-async function defaultAuthUpdate(): Promise<void> {
-  await authUpdate()
 }
 
 /**

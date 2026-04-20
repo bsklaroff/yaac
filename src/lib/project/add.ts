@@ -10,7 +10,7 @@ import {
   writeProjectCodexPlaceholder,
 } from '@/lib/project/tool-auth'
 import { DaemonError } from '@/daemon/errors'
-import type { ProjectMeta } from '@/types'
+import type { ProjectMeta } from '@/shared/types'
 
 function deriveSlug(remoteUrl: string): string {
   const lastSegment = remoteUrl.split('/').pop() ?? remoteUrl

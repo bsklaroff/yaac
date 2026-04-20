@@ -3,8 +3,9 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@test/helpers/setup'
 import { bootInProcessDaemon, type InProcessDaemon } from '@test/helpers/daemon'
-import { expandOwnerRepo, projectAdd, validateGithubHttpsUrl } from '@/commands/project-add'
-import { exitOnClientError } from '@/lib/daemon-client'
+import { projectAdd } from '@/commands/project-add'
+import { expandOwnerRepo, validateGithubHttpsUrl } from '@/lib/project/add'
+import { exitOnClientError } from '@/shared/daemon-client'
 
 // Stub the interactive auth-update flow the daemon-client invokes on
 // AUTH_REQUIRED. In an e2e test with no stdin, the real readline prompt

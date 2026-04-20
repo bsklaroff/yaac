@@ -1,4 +1,4 @@
-import type { AgentTool } from '@/types'
+import type { AgentTool } from '@/shared/types'
 import { getSessionClaudeStatus, getSessionFirstUserMessage as getSessionClaudeFirstMessage } from '@/lib/session/claude-status'
 import { getSessionCodexStatus, getSessionCodexFirstUserMessage } from '@/lib/session/codex-status'
 

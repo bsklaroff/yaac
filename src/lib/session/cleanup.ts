@@ -3,6 +3,7 @@ import { execPodmanWithRetry, podman } from '@/lib/container/runtime'
 import { proxyClient } from '@/lib/container/proxy-client'
 import { removeWorktree } from '@/lib/git'
 import { repoDir, worktreeDir } from '@/lib/project/paths'
+import { stopSessionForwarders } from '@/lib/session/port-forwarders'
 
 /**
  * Best-effort removal of the session's state from the proxy sidecar. If
@@ -55,6 +56,7 @@ export async function cleanupSession(params: {
   const { containerName, projectSlug, sessionId } = params
   const container = podman.getContainer(containerName)
 
+  stopSessionForwarders(sessionId)
   await removeSessionFromProxy(sessionId)
 
   try {
@@ -92,6 +94,7 @@ export async function cleanupSessionDetached(params: {
   const wtDir = worktreeDir(projectSlug, sessionId)
   const rDir = repoDir(projectSlug)
 
+  stopSessionForwarders(sessionId)
   await removeSessionFromProxy(sessionId)
 
   // Build a shell script that stops + removes the container, then removes the worktree.

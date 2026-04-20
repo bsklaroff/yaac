@@ -1,5 +1,5 @@
 import readline from 'node:readline/promises'
-import { getRpcClient, toClientError } from '@/lib/daemon-client'
+import { getRpcClient, toClientError } from '@/commands/rpc'
 
 export async function authClear(): Promise<void> {
   const client = await getRpcClient()

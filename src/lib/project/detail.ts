@@ -5,7 +5,7 @@ import { podman } from '@/lib/container/runtime'
 import { loadProjectConfig, loadProjectConfigFromRef } from '@/lib/project/config'
 import { getDefaultBranch } from '@/lib/git'
 import { DaemonError } from '@/daemon/errors'
-import type { ProjectMeta, YaacConfig } from '@/types'
+import type { ProjectMeta, YaacConfig } from '@/shared/types'
 
 export interface ProjectDetail {
   slug: string

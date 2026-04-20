@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { computeBuildId, writeBuildId } from '@/lib/build-id'
+import { computeBuildId, writeBuildId } from '@/shared/build-id'
 
 const __filename = fileURLToPath(import.meta.url)
 const repoRoot = path.resolve(path.dirname(__filename), '..')

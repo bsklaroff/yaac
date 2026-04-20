@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { computeBuildId, readBuildId, writeBuildId, buildIdPath } from '@/lib/build-id'
+import { computeBuildId, readBuildId, writeBuildId, buildIdPath } from '@/shared/build-id'
 
 describe('build-id', () => {
   let dir: string

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { computeFingerprint } from '@/lib/session/fingerprint'
 import { hashConfig } from '@/lib/project/config'
 import type { FingerprintInputs } from '@/lib/session/fingerprint'
-import type { YaacConfig } from '@/types'
+import type { YaacConfig } from '@/shared/types'
 
 describe('computeFingerprint', () => {
   const baseInputs: FingerprintInputs = {

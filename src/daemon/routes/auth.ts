@@ -5,7 +5,7 @@ import { listAuth } from '@/lib/auth/list'
 import { clearAuth } from '@/lib/auth/clear'
 import { addToken, removeTokenChecked, replaceTokens } from '@/lib/project/credentials'
 import { persistToolAuthPayload } from '@/lib/project/tool-auth'
-import { claudeOAuthBundleSchema, codexOAuthBundleSchema } from '@/types'
+import { claudeOAuthBundleSchema, codexOAuthBundleSchema } from '@/shared/types'
 
 export const authApp = new Hono()
   .get('/list', async (c) => c.json(await listAuth()))

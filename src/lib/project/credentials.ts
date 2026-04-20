@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import readline from 'node:readline/promises'
 import { credentialsDir, githubCredentialsPath, ensureDataDir } from '@/lib/project/paths'
 import { DaemonError } from '@/daemon/errors'
-import type { GithubCredentialsFile, GithubTokenEntry } from '@/types'
+import type { GithubCredentialsFile, GithubTokenEntry } from '@/shared/types'
 
 export function credentialsPath(): string {
   return githubCredentialsPath()
@@ -49,25 +49,8 @@ export async function saveCredentials(creds: GithubCredentialsFile): Promise<voi
   )
 }
 
-/**
- * Validate a token pattern. Valid forms:
- * - "*" (catch-all)
- * - "<owner>/*" (all repos for an owner)
- * - "<owner>/<repo>" (specific repo)
- */
-export function validatePattern(pattern: string): boolean {
-  if (pattern === '*') return true
-  const parts = pattern.split('/')
-  if (parts.length !== 2) return false
-  const [owner, repo] = parts
-  if (!owner || owner === '*') return false
-  if (repo === '') return false
-  // owner must be a literal name (no wildcards)
-  if (owner.includes('*')) return false
-  // repo must be either "*" or a literal name
-  if (repo.includes('*') && repo !== '*') return false
-  return true
-}
+export { validatePattern } from '@/shared/credentials'
+import { validatePattern } from '@/shared/credentials'
 
 /**
  * Extract owner and repo from a GitHub HTTPS URL.

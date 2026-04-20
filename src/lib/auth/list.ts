@@ -1,24 +1,13 @@
 import { listTokens } from '@/lib/project/credentials'
 import { loadToolAuthEntry } from '@/lib/project/tool-auth'
-import type { AgentTool, ToolAuthKind } from '@/types'
+import type {
+  AgentTool,
+  AuthListResult,
+  GithubTokenSummary,
+  ToolAuthSummary,
+} from '@/shared/types'
 
-export interface GithubTokenSummary {
-  pattern: string
-  tokenPreview: string
-}
-
-export interface ToolAuthSummary {
-  tool: AgentTool
-  kind: ToolAuthKind
-  /** Masked preview of the access token / API key (last 4 chars). */
-  keyPreview: string
-  savedAt: string
-}
-
-export interface AuthListResult {
-  githubTokens: GithubTokenSummary[]
-  toolAuth: ToolAuthSummary[]
-}
+export type { AuthListResult, GithubTokenSummary, ToolAuthSummary }
 
 function maskKey(key: string): string {
   return key.length > 4 ? '***' + key.slice(-4) : '****'

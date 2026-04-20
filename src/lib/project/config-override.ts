@@ -3,7 +3,7 @@ import path from 'node:path'
 import { configOverrideDir, projectDir } from '@/lib/project/paths'
 import { parseProjectConfig } from '@/lib/project/config'
 import { DaemonError } from '@/daemon/errors'
-import type { YaacConfig } from '@/types'
+import type { YaacConfig } from '@/shared/types'
 
 async function ensureProjectExists(slug: string): Promise<void> {
   try {

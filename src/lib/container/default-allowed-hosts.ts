@@ -1,4 +1,4 @@
-import type { YaacConfig } from '@/types'
+import type { YaacConfig } from '@/shared/types'
 
 // Default allowed host patterns for the proxy URL allowlist.
 // Based on https://code.claude.com/docs/en/claude-code-on-the-web#default-allowed-domains

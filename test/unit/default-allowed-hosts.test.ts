@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { DEFAULT_ALLOWED_HOSTS, hostMatchesPattern, resolveAllowedHosts } from '@/lib/container/default-allowed-hosts'
-import type { YaacConfig } from '@/types'
+import type { YaacConfig } from '@/shared/types'
 
 describe('DEFAULT_ALLOWED_HOSTS', () => {
   it('is a non-empty array of strings', () => {

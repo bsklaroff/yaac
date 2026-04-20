@@ -14,7 +14,7 @@ import {
   writeProjectClaudePlaceholder,
   writeProjectCodexPlaceholder,
 } from '@/lib/project/tool-auth'
-import type { ClaudeOAuthBundle, CodexOAuthBundle } from '@/types'
+import type { ClaudeOAuthBundle, CodexOAuthBundle } from '@/shared/types'
 
 const CLAUDE_BUNDLE: ClaudeOAuthBundle = {
   accessToken: 'sk-ant-oat01-real',

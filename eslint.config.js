@@ -36,4 +36,33 @@ export default tseslint.config(
       '@typescript-eslint/consistent-type-imports': 'error',
     },
   },
+  {
+    files: ['src/commands/**/*'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          patterns: [{
+            group: ['@/*', '!@/commands', '!@/shared'],
+            message: 'src/commands only allowed to import from src/commands or src/shared',
+          }],
+        },
+      ],
+    },
+  },
+  {
+    files: ['src/shared/**/*'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          patterns: [{
+            group: ['@/*', '!@/shared'],
+            allowTypeImports: true,
+            message: 'src/shared only allowed to import types from outside src/shared',
+          }],
+        },
+      ],
+    },
+  },
 )

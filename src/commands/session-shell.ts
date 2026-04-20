@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { getRpcClient, toClientError } from '@/lib/daemon-client'
+import { getRpcClient, toClientError } from '@/commands/rpc'
 
 export async function sessionShell(containerId: string): Promise<void> {
   const client = await getRpcClient()

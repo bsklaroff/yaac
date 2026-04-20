@@ -5,44 +5,16 @@ import { isTmuxSessionAlive } from '@/lib/session/cleanup'
 import { isPrewarmSession } from '@/lib/prewarm'
 import { getSessionFirstMessage } from '@/lib/session/status'
 import { getWaitingSessions } from '@/lib/session/waiting'
-import { createSession } from '@/commands/session-create'
+import { createSession } from '@/daemon/session-create'
 import { DaemonError } from '@/daemon/errors'
-import type { AgentTool } from '@/types'
+import type {
+  AgentTool,
+  PickNextInput,
+  PickNextResult,
+  StreamOutcome,
+} from '@/shared/types'
 
-export type StreamOutcome = 'detached' | 'closed_blank' | 'closed_prompted' | 'none'
-
-export interface PickNextInput {
-  project?: string
-  tool?: AgentTool
-  visited: string[]
-  lastVisited?: string
-  /**
-   * Project slug of the last-attached session. The daemon uses it to
-   * look up the session transcript if the session disappeared between
-   * this call and the previous one — which tells us whether the user
-   * closed a blank session.
-   */
-  lastProjectSlug?: string
-  lastTool?: AgentTool
-  lastOutcome: StreamOutcome
-}
-
-export type PickNextResult =
-  | {
-      done: false
-      sessionId: string
-      containerName: string
-      tmuxSession: 'yaac'
-      projectSlug: string
-      tool: AgentTool
-      visited: string[]
-      lastVisited: string
-    }
-  | {
-      done: true
-      reason: 'no_active' | 'closed_blank' | 'needs_project'
-      candidates?: string[]
-    }
+export type { PickNextInput, PickNextResult, StreamOutcome }
 
 async function getActiveProjects(): Promise<string[]> {
   const containers = await podman.listContainers({

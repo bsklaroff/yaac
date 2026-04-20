@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
-import type { Server } from 'node:net'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createSession, sessionCreate } from '@/commands/session-create'
+import { createSession } from '@/daemon/session-create'
+import { sessionCreate } from '@/commands/session-create'
 
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
@@ -101,6 +101,10 @@ vi.mock('@/lib/git', () => ({
   addWorktree: vi.fn().mockResolvedValue(undefined),
   getDefaultBranch: vi.fn().mockResolvedValue('main'),
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
+  getGitUserConfig: vi.fn().mockResolvedValue({ name: 'Test User', email: 'test@example.com' }),
+}))
+
+vi.mock('@/shared/git', () => ({
   getGitUserConfig: vi.fn().mockResolvedValue({ name: 'Test User', email: 'test@example.com' }),
 }))
 
@@ -242,9 +246,9 @@ describe('createSession', () => {
   })
 })
 
-import type * as daemonClientModule from '@/lib/daemon-client'
+import type * as daemonClientModule from '@/shared/daemon-client'
 
-vi.mock('@/lib/daemon-client', async (importOriginal) => {
+vi.mock('@/shared/daemon-client', async (importOriginal) => {
   const actual = await importOriginal<typeof daemonClientModule>()
   return {
     ...actual,
@@ -252,13 +256,11 @@ vi.mock('@/lib/daemon-client', async (importOriginal) => {
   }
 })
 
-import { getRpcClient } from '@/lib/daemon-client'
-import { startPortForwarders, reserveAvailablePort } from '@/lib/container/port'
+import { getRpcClient } from '@/shared/daemon-client'
+import { getGitUserConfig as getGitUserConfigShared } from '@/shared/git'
 
 describe('sessionCreate (CLI shim)', () => {
   const mockPost = vi.fn()
-  const mockReserveAvailablePort = vi.mocked(reserveAvailablePort)
-  const mockStartPortForwarders = vi.mocked(startPortForwarders)
 
   beforeEach(() => {
     vi.resetAllMocks()
@@ -267,8 +269,7 @@ describe('sessionCreate (CLI shim)', () => {
     mockMkdir.mockResolvedValue(undefined)
     mockWriteFile.mockResolvedValue(undefined)
     vi.mocked(resolveProjectConfig).mockResolvedValue({})
-    vi.mocked(getGitUserConfig).mockResolvedValue({ name: 'Test', email: 't@x.io' })
-    mockStartPortForwarders.mockReturnValue(vi.fn())
+    vi.mocked(getGitUserConfigShared).mockResolvedValue({ name: 'Test', email: 't@x.io' })
     mockSpawn.mockImplementation(() => mockAttachedChild() as never)
     vi.mocked(getRpcClient).mockResolvedValue({
       session: {
@@ -298,25 +299,5 @@ describe('sessionCreate (CLI shim)', () => {
         gitUser: { name: 'Test', email: 't@x.io' },
       }) as unknown,
     }))
-  })
-
-  it('reserves host ports locally and passes them to the daemon', async () => {
-    vi.mocked(resolveProjectConfig).mockResolvedValue({
-      portForward: [{ containerPort: 3000, hostPortStart: 3000 }],
-    })
-    mockReserveAvailablePort.mockResolvedValue({
-      containerPort: 3000,
-      hostPort: 3042,
-      server: { close: vi.fn() } as unknown as Server,
-    })
-
-    await sessionCreate('demo', {})
-
-    expect(mockPost).toHaveBeenCalledWith(expect.objectContaining({
-      json: expect.objectContaining({
-        portReservations: [{ containerPort: 3000, hostPort: 3042 }],
-      }) as unknown,
-    }))
-    expect(mockStartPortForwarders).toHaveBeenCalledTimes(1)
   })
 })

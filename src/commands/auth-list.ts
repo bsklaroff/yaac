@@ -1,5 +1,5 @@
-import { getRpcClient, toClientError } from '@/lib/daemon-client'
-import type { ToolAuthSummary } from '@/lib/auth/list'
+import { getRpcClient, toClientError } from '@/commands/rpc'
+import type { ToolAuthSummary } from '@/shared/types'
 
 export async function authList(): Promise<void> {
   const client = await getRpcClient()

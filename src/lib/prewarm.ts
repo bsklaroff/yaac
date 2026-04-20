@@ -8,8 +8,8 @@ import { resolveSessionFingerprint } from '@/lib/session/fingerprint'
 import { isTmuxSessionAlive, cleanupSession } from '@/lib/session/cleanup'
 import { fetchOrigin } from '@/lib/git'
 import { resolveTokenForUrl } from '@/lib/project/credentials'
-import { createSession } from '@/commands/session-create'
-import type { AgentTool } from '@/types'
+import { createSession } from '@/daemon/session-create'
+import type { AgentTool } from '@/shared/types'
 import simpleGit from 'simple-git'
 
 /** Maximum age of verifiedAt before a prewarm session is considered stale (30s). */

@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { serve, type ServerType } from '@hono/node-server'
 import { buildApp } from '@/daemon/server'
-import { readBuildId } from '@/lib/build-id'
+import { readBuildId } from '@/shared/build-id'
 import {
   daemonLockPath,
   isLockLive,
@@ -13,7 +13,7 @@ import {
   removeLock,
   writeLock,
   type DaemonLock,
-} from '@/daemon/lock'
+} from '@/shared/lock'
 import { ensureDataDir } from '@/lib/project/paths'
 import { startBackgroundLoop } from '@/daemon/background-loop'
 
@@ -211,7 +211,7 @@ function resolveDaemonInvocation(): { bin: string; args: string[] } {
 
 function findTsxCli(): string | null {
   const here = path.dirname(__filename)
-  // Walk up from src/commands/ looking for node_modules/tsx/dist/cli.mjs (or
+  // Walk up from src/daemon/ looking for node_modules/tsx/dist/cli.mjs (or
   // the pnpm-flattened equivalent).
   let dir = here
   for (let i = 0; i < 10; i++) {

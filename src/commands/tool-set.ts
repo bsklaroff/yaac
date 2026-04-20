@@ -1,4 +1,4 @@
-import { getRpcClient, toClientError } from '@/lib/daemon-client'
+import { getRpcClient, toClientError } from '@/commands/rpc'
 
 export async function toolSet(toolName: string): Promise<void> {
   const client = await getRpcClient()

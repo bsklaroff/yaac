@@ -3,7 +3,7 @@ import { getDataDir } from '@/lib/project/paths'
 import { getSessionStatus, getToolFromContainer } from '@/lib/session/status'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 import { isPrewarmSession } from '@/lib/prewarm'
-import type { AgentTool } from '@/types'
+import type { AgentTool } from '@/shared/types'
 
 export interface WaitingSession {
   containerName: string

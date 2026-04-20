@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { listActiveSessions, listDeletedSessions } from '@/lib/session/list'
 import { getSessionDetail, getSessionBlockedHosts, getSessionPrompt } from '@/lib/session/detail'
 import { deleteSession } from '@/lib/session/delete'
-import { createSession, type SessionCreateOptions } from '@/commands/session-create'
+import { createSession, type SessionCreateOptions } from '@/daemon/session-create'
 import { DaemonError } from '@/daemon/errors'
 import { resolveSessionContainer } from '@/daemon/session-resolve'
 import { getPrewarmSession, clearPrewarmSession } from '@/lib/prewarm'
@@ -35,10 +35,6 @@ export const sessionApp = new Hono()
       addDirRw: z.array(z.string()).optional(),
       tool: z.enum(['claude', 'codex']).optional(),
       gitUser: z.object({ name: z.string(), email: z.string() }).optional(),
-      portReservations: z.array(z.object({
-        containerPort: z.number(),
-        hostPort: z.number(),
-      })).optional(),
     })),
     async (c) => {
       const body = c.req.valid('json')
@@ -47,7 +43,6 @@ export const sessionApp = new Hono()
       if (body.addDirRw) opts.addDirRw = body.addDirRw
       if (body.tool) opts.tool = body.tool
       if (body.gitUser) opts.gitUser = body.gitUser
-      if (body.portReservations) opts.portReservations = body.portReservations
       const result = await createSession(body.project, opts)
       if (!result) throw new DaemonError('INTERNAL', 'session creation returned no result')
       return c.json(result)

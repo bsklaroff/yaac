@@ -359,7 +359,7 @@ describe('prewarm session lifecycle', () => {
     // It will fail due to no GitHub token, but that's expected — the important thing
     // is that the prewarm entry is untouched
     try {
-      await sessionCreate(projectSlug, { createPrewarm: true })
+      await sessionCreate(projectSlug, {})
     } catch {
       // Expected failure
     }

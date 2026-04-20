@@ -4,7 +4,7 @@ import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 import { configOverrideDir, getProjectsDir } from '@/lib/project/paths'
 import { writeConfigOverride, removeConfigOverride } from '@/lib/project/config-override'
-import type { ProjectMeta } from '@/types'
+import type { ProjectMeta } from '@/shared/types'
 
 async function writeProject(slug: string): Promise<void> {
   const dir = path.join(getProjectsDir(), slug)

@@ -9,7 +9,7 @@ import {
   removeLock,
   isLockLive,
   type DaemonLock,
-} from '@/daemon/lock'
+} from '@/shared/lock'
 
 describe('daemon lock', () => {
   let tmpDir: string

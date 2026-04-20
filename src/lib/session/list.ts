@@ -7,38 +7,20 @@ import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanu
 import { readBlockedHosts } from '@/lib/session/blocked-hosts'
 import { isPrewarmSession, readPrewarmSessions } from '@/lib/prewarm'
 import { DaemonError } from '@/daemon/errors'
-import type { AgentTool } from '@/types'
+import type {
+  ActiveSessionsResult,
+  DeletedSessionEntry,
+  FailedPrewarmInfo,
+  SessionListEntry,
+  StaleSessionInfo,
+} from '@/shared/types'
 
-export interface SessionListEntry {
-  sessionId: string
-  projectSlug: string
-  tool: AgentTool
-  status: 'running' | 'waiting' | 'prewarm'
-  /** Container created time as 'YYYY-MM-DD HH:MM:SS' (UTC). */
-  createdAt: string
-  prompt?: string
-  blockedHosts: string[]
-}
-
-export interface StaleSessionInfo {
-  containerName: string
-  projectSlug: string
-  sessionId: string
-  /** True when the container is still running but tmux is gone. */
-  zombie: boolean
-}
-
-export interface FailedPrewarmInfo {
-  slug: string
-  fingerprint: string
-  /** Unix epoch ms. */
-  verifiedAt: number
-}
-
-export interface ActiveSessionsResult {
-  sessions: SessionListEntry[]
-  stale: StaleSessionInfo[]
-  failedPrewarms: FailedPrewarmInfo[]
+export type {
+  ActiveSessionsResult,
+  DeletedSessionEntry,
+  FailedPrewarmInfo,
+  SessionListEntry,
+  StaleSessionInfo,
 }
 
 /**
@@ -99,14 +81,6 @@ export function classifySessionContainers<T extends ClassifiableContainer>(
     stale.push({ containerName: name, projectSlug: slug, sessionId, zombie })
   }
   return { running, stale }
-}
-
-export interface DeletedSessionEntry {
-  sessionId: string
-  projectSlug: string
-  tool: AgentTool
-  /** 'YYYY-MM-DD HH:MM:SS' (UTC). */
-  createdAt: string
 }
 
 async function ensureProjectExists(slug: string): Promise<void> {

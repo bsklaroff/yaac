@@ -1,5 +1,5 @@
 import { podman, ensureNetwork, imageExists, execFileAsync } from '@/lib/container/runtime'
-import type { PostgresRelayConfig } from '@/types'
+import type { PostgresRelayConfig } from '@/shared/types'
 
 const SOCAT_IMAGE = 'docker.io/alpine/socat:1.8.0.3'
 const DEFAULT_HOST_PORT = 5432
