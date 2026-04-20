@@ -93,7 +93,7 @@ describe('codex oauth helpers', () => {
   describe('extractCodexOAuthBundle', () => {
     const NATIVE_AUTH_JSON = {
       OPENAI_API_KEY: null,
-      auth_mode: 'ChatGPT',
+      auth_mode: 'chatgpt',
       tokens: {
         id_token: {
           raw_jwt: SAMPLE_ID_JWT,
@@ -139,8 +139,13 @@ describe('codex oauth helpers', () => {
       expect(extractCodexOAuthBundle(JSON.stringify(apiKeyMode))).toBeNull()
     })
 
+    it('accepts "ChatGPT" auth_mode for back-compat with older codex-cli', () => {
+      const pascalCase = { ...NATIVE_AUTH_JSON, auth_mode: 'ChatGPT' }
+      expect(extractCodexOAuthBundle(JSON.stringify(pascalCase))).not.toBeNull()
+    })
+
     it('returns null when tokens is missing', () => {
-      expect(extractCodexOAuthBundle(JSON.stringify({ auth_mode: 'ChatGPT' }))).toBeNull()
+      expect(extractCodexOAuthBundle(JSON.stringify({ auth_mode: 'chatgpt' }))).toBeNull()
     })
 
     it('returns null when access_token is missing', () => {

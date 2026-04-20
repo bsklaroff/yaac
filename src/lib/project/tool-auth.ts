@@ -321,9 +321,11 @@ const CODEX_DEFAULT_REFRESH_WINDOW_MS = 28 * 24 * 60 * 60 * 1000
 
 /**
  * Parse a raw Codex `auth.json` blob into a full OAuth bundle. Returns null
- * unless `auth_mode === "ChatGPT"` and the nested tokens are all present.
- * Computes `expiresAt` from the access_token JWT `exp`, falling back to
- * now + 28d so the proxy still treats the bundle as live.
+ * unless `auth_mode` is the ChatGPT mode (case-insensitive — codex-cli 0.121+
+ * writes `"chatgpt"` lowercase, older versions used `"ChatGPT"`) and the
+ * nested tokens are all present. Computes `expiresAt` from the access_token
+ * JWT `exp`, falling back to now + 28d so the proxy still treats the bundle
+ * as live.
  */
 export function extractCodexOAuthBundle(raw: string): CodexOAuthBundle | null {
   let parsed: unknown
@@ -334,7 +336,7 @@ export function extractCodexOAuthBundle(raw: string): CodexOAuthBundle | null {
   }
   if (!parsed || typeof parsed !== 'object') return null
   const o = parsed as Record<string, unknown>
-  if (o.auth_mode !== 'ChatGPT') return null
+  if (typeof o.auth_mode !== 'string' || o.auth_mode.toLowerCase() !== 'chatgpt') return null
   const tokens = o.tokens
   if (!tokens || typeof tokens !== 'object') return null
   const t = tokens as Record<string, unknown>
