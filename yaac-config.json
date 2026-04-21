@@ -1,4 +1,5 @@
 {
   "nestedContainers": true,
-  "initCommands": ["pnpm install"]
+  "initCommands": ["pnpm install"],
+  "hideInitPane": true
 }
