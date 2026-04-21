@@ -47,6 +47,19 @@ RUN ARCH="$(dpkg --print-architecture)" && \
     /tmp/rustup-init -y --no-modify-path --profile minimal && \
     rm /tmp/rustup-init && \
     ~/.cargo/bin/rustup component add rustfmt clippy
+RUN ARCH="$(dpkg --print-architecture)" && \
+    case "$ARCH" in \
+      amd64) TRIPLE="x86_64-unknown-linux-musl" ;; \
+      arm64) TRIPLE="aarch64-unknown-linux-musl" ;; \
+      *) echo "unsupported arch: $ARCH" >&2; exit 1 ;; \
+    esac && \
+    SCCACHE_VERSION="v0.8.2" && \
+    mkdir -p /tmp/sccache-extract && \
+    curl -fsSL "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VERSION}/sccache-${SCCACHE_VERSION}-${TRIPLE}.tar.gz" | \
+      tar -xz -C /tmp/sccache-extract --strip-components=1 && \
+    mv /tmp/sccache-extract/sccache ~/.cargo/bin/sccache && \
+    chmod +x ~/.cargo/bin/sccache && \
+    rm -rf /tmp/sccache-extract
 RUN curl -fsSL https://claude.ai/install.sh | bash
 RUN corepack install -g pnpm@10.33.0 && \
     pnpm config set store-dir /home/yaac/.cached-packages/pnpm-store
@@ -60,6 +73,9 @@ ENV SHELL=/bin/zsh
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 ENV DISPLAY=:0
 ENV LIBGL_ALWAYS_SOFTWARE=1
+ENV RUSTC_WRAPPER=sccache
+ENV SCCACHE_DIR=/home/yaac/.cached-packages/sccache
+ENV CARGO_INCREMENTAL=0
 
 RUN cat <<'EOF' > ~/.zshrc
 HISTSIZE=10000

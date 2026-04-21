@@ -2,8 +2,7 @@
   "nestedContainers": true,
   "cacheVolumes": {
     "cargo-registry": "/home/yaac/.cargo/registry",
-    "cargo-git": "/home/yaac/.cargo/git",
-    "cargo-target": "/workspace/src-tauri/target"
+    "cargo-git": "/home/yaac/.cargo/git"
   },
   "initCommands": [
     "pnpm install",
