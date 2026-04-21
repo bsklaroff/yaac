@@ -167,7 +167,7 @@ Add a `yaac-config.json` to your repo root. Example with all options:
     { "hostPath": "$HOME/models", "containerPath": "/mnt/models", "mode": "rw" }
   ],
   "cacheVolumes": {
-    "cargo-registry": "/home/yaac/.cargo/registry"
+    "pip-cache": "/home/yaac/.cache/pip"
   },
   "initCommands": ["pnpm install"],
   "addAllowedUrls": ["internal.corp.example.com", "*.mycdn.example.com"],

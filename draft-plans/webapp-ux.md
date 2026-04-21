@@ -1,10 +1,10 @@
-# Tauri UX
+# Webapp UX
 
-Standalone UI/UX design for the yaac desktop app. This doc is only
-about what the user sees and does — architecture and data flow live
-in `tauri-frontend.md`. The daemon backend is already implemented
-in `src/daemon/` (HTTP), with events and PTY work tracked in
-`tauri-daemon-follow-up.md`. Iterate here freely; the other docs
+Standalone UI/UX design for the yaac webapp. This doc is only about
+what the user sees and does — architecture and data flow live in
+`webapp-frontend.md`. The daemon backend is already implemented in
+`src/daemon/` (HTTP), with events and PTY work tracked in
+`webapp-daemon-follow-up.md`. Iterate here freely; the other docs
 should only need updating when a design change implies new
 capabilities on the backend.
 
@@ -17,15 +17,15 @@ capabilities on the backend.
   tmux session. Config editing, file browsing, diffs — secondary.
 - **Never hide session state.** Status, prompt, blocked hosts,
   forwarded ports, prewarm failures — all visible without a click.
-  If it shows up in `yaac session list`, it shows up in the GUI.
+  If it shows up in `yaac session list`, it shows up in the webapp.
 - **Confirm destructive actions.** Session delete, project delete,
   credential wipe, "open in external editor" first-time.
-- **Keyboard-reachable.** The CLI is the escape hatch; the GUI
+- **Keyboard-reachable.** The CLI is the escape hatch; the webapp
   should still be fast for the common loop — create session, attach,
   detach, delete.
 - **One event loop from the backend, live updates everywhere.** No
   "refresh" button. If state changes (CLI creates a session while
-  the GUI is open), the GUI reflects it within a tick.
+  the webapp is open), the webapp reflects it within a tick.
 
 ## Overall layout
 
@@ -48,6 +48,9 @@ capabilities on the backend.
 Fixed-width sidebar on the left (resizable). Main area swaps
 between three modes: session view (terminal tabs), project view
 (config + meta), or a welcome / empty state.
+
+The chrome is the browser's, not a native window. No custom
+titlebar; the app fills whatever tab or window the user opens it in.
 
 ## Sidebar
 
@@ -97,9 +100,11 @@ Sort order within a project: `waiting` first, then `running`, then
 
 - Tool dropdown, default = user's preferred tool.
 - Add-directory pickers for read-only (`--add-dir`) and read-write
-  (`--add-dir-rw`). Native OS file picker for each; selected paths
-  shown as chips with a trash icon. Absolute-path validation with
-  inline error.
+  (`--add-dir-rw`). Paths are typed (or pasted) into absolute-path
+  inputs — browser file pickers can't return directory paths on
+  the host. Inline absolute-path validation with an error message.
+  A future "browse" button can shell out to a daemon-side native
+  picker if typing friction bites.
 - Submit → modal closes, sidebar shows a "creating…" placeholder
   row with a spinner; the real row replaces it once the session
   lands. Auto-selects the new session and opens an attach tab.
@@ -156,15 +161,20 @@ bar):
 - Tool name.
 - Status pill (same as sidebar).
 - Forwarded-port chips: each chip shows `hostPort → containerPort`;
-  click opens `http://127.0.0.1:<hostPort>` externally (in a future
-  phase, inside an in-app iframe tab — see Future UX).
+  click opens `http://127.0.0.1:<hostPort>` in a new browser tab.
+  Users preview forwarded ports in a real tab; we don't iframe
+  arbitrary port content from the main origin (see Security in
+  `webapp-frontend.md`).
 - Blocked-hosts chip: count; click expands the list as a popover.
 
 ### Kebab menu (session actions)
 
 - Copy session id.
-- Open worktree in external editor. First use prompts to confirm
-  and pick the editor (VSCode by default). Preference persisted.
+- Open worktree in external editor — triggers the daemon-side
+  endpoint that spawns the configured editor on the host machine
+  (browsers can't launch external processes). First use prompts to
+  confirm and pick the editor (VSCode by default). Preference
+  persisted on the daemon.
 - Copy worktree path.
 - Delete session — confirm modal listing the session id and first
   user message. On submit, the row grays out optimistically and
@@ -259,10 +269,11 @@ branches:
 ### Claude Code tab
 
 - Two options: "Log in with OAuth" or "Use API key".
-- OAuth: button starts the native `claude login` flow inline in an
-  embedded terminal panel within the modal. The user follows
-  prompts (paste code, confirm, etc.) exactly as they would in the
-  CLI. On success the summary updates.
+- OAuth: button starts the native `claude login` flow inside an
+  embedded terminal panel within the modal (the daemon runs the
+  login CLI over the same PTY bridge session views use). The user
+  follows prompts exactly as they would in the CLI. On success the
+  summary updates.
 - API key: password input + save.
 - Current credential displayed above with "remove" action.
 
@@ -286,8 +297,8 @@ Accessed via sidebar ⚙ prefs. Single scrolling pane:
 - Default agent tool (Claude / Codex) — affects "+ new session"
   defaults and prewarm behavior.
 - Theme: system / light / dark.
-- External editor for "open worktree in editor" (default VSCode;
-  customizable command template).
+- External editor command template for "open worktree in editor"
+  (default VSCode). The daemon, not the browser, runs the command.
 - Terminal font family / size, cursor style.
 - "Show prewarm entries in the sidebar" toggle (on by default).
 - Advanced: "reveal daemon logs", "restart daemon".
@@ -297,7 +308,7 @@ Accessed via sidebar ⚙ prefs. Single scrolling pane:
 - **Jump to next waiting session** — a single shortcut cycles
   selection to the next `waiting` session in the sidebar. Replaces
   the CLI's `yaac session stream` mode without needing a dedicated
-  GUI surface.
+  webapp surface.
 
 ## Future UX
 
@@ -310,10 +321,6 @@ Designed for but not in v1:
 - **Diff sidebar.** A collapsible right-hand panel in session view
   showing `git status` for the worktree and per-file diffs against
   the merge base. Clicking a file opens it in the file browser.
-- **Port preview tabs.** Forwarded-port chips in the header gain a
-  second action: "preview in tab", which opens the URL inside an
-  in-app iframe tab (in a separate webview to keep the main CSP
-  strict — see `tauri-frontend.md` for the architecture question).
 - **Split panes.** Drag a tab to the edge of the terminal area to
   create a horizontal or vertical split. Each pane is independent.
   Useful for running an attached agent and a shell side by side.
@@ -325,6 +332,6 @@ Designed for but not in v1:
   timeline of the session's user turns shown in a collapsible panel.
   Useful for quickly finding a session in a large list.
 - **Notifications.** When a session transitions from `running` to
-  `waiting` while the window is backgrounded, a native OS
-  notification fires so users can context-switch on signal.
-
+  `waiting` while the tab is backgrounded, fire a Web Notifications
+  API notification (requires one-time user permission). For users
+  who pin the tab and context-switch on signal.
