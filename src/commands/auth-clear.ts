@@ -22,7 +22,12 @@ export async function authClear(): Promise<void> {
     entries.push({
       label: `GitHub token: ${pattern} (${tokenPreview})`,
       run: async () => {
-        const res = await client.auth.github.tokens[':pattern'].$delete({ param: { pattern } })
+        // Path segment must be URL-encoded: patterns like "acme/*" carry a
+        // literal slash that the Hono client would otherwise pass through,
+        // breaking the :pattern route match.
+        const res = await client.auth.github.tokens[':pattern'].$delete({
+          param: { pattern: encodeURIComponent(pattern) },
+        })
         if (!res.ok) throw await toClientError(res)
         console.log(`Removed GitHub token for pattern "${pattern}".`)
       },

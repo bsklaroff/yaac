@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 import { bootInProcessDaemon, type InProcessDaemon } from '@test/helpers/daemon'
 import { authUpdate } from '@/commands/auth-update'
-import { loadCredentials } from '@/lib/project/credentials'
 import type * as toolAuthInteractive from '@/shared/tool-auth-interactive'
 import { loadClaudeCredentialsFile } from '@/lib/project/tool-auth'
 import type { ClaudeOAuthBundle } from '@/shared/types'
@@ -31,7 +30,15 @@ vi.mock('@/shared/tool-auth-interactive', async () => {
   }
 })
 
-describe('yaac auth update — happy path', () => {
+/**
+ * The menu-cancel and GitHub-token paths are covered by
+ * `test/e2e-cli/auth-update.test.ts` via piped stdin. What's unique
+ * here is the Claude OAuth save path: runToolLogin() shells out to
+ * `claude login` in production, which a spawned CLI can't drive
+ * without a real Claude-side OAuth server. Mocking the login lets us
+ * exercise the CLI → daemon wiring for OAuth-bundle persistence.
+ */
+describe('yaac auth update — tool OAuth save', () => {
   let tmpDir: string
   let daemon: InProcessDaemon
 
@@ -72,30 +79,5 @@ describe('yaac auth update — happy path', () => {
     if (saved?.kind === 'oauth') {
       expect(saved.claudeAiOauth).toEqual(bundle)
     }
-  })
-
-  it('saves a GitHub token via POST /auth/github/tokens', async () => {
-    mockQuestion
-      .mockResolvedValueOnce('1')
-      .mockResolvedValueOnce('acme/*')
-      .mockResolvedValueOnce('ghp_a_fake_token')
-
-    await authUpdate()
-
-    const creds = await loadCredentials()
-    expect(creds.tokens).toEqual([{ pattern: 'acme/*', token: 'ghp_a_fake_token' }])
-  })
-
-  it('prints "Cancelled." on an invalid menu choice and does not persist', async () => {
-    mockQuestion.mockResolvedValueOnce('x')
-    const logs: string[] = []
-    const origLog = console.log
-    console.log = (msg: string) => logs.push(msg)
-
-    await authUpdate()
-
-    console.log = origLog
-    expect(logs).toContain('Cancelled.')
-    expect(mockRunToolLogin).not.toHaveBeenCalled()
   })
 })

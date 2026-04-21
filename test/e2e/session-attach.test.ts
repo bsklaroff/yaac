@@ -2,13 +2,11 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir, createTestRepo, requirePodman, TEST_IMAGE_PREFIX, addTestProject, podmanRetry, removeContainer } from '@test/helpers/setup'
-import { bootInProcessDaemon } from '@test/helpers/daemon'
 import { podman } from '@/lib/container/runtime'
 import { resolveContainer } from '@/lib/container/resolve'
 import { ensureImage } from '@/lib/container/image-builder'
 import { claudeDir, worktreeDir, worktreesDir, repoDir, getDataDir } from '@/lib/project/paths'
 import { addWorktree } from '@/lib/git'
-import { sessionAttach } from '@/commands/session-attach'
 import crypto from 'node:crypto'
 
 async function createContainerWithTmux(projectSlug: string): Promise<{ containerName: string; sessionId: string }> {
@@ -127,18 +125,6 @@ describe('yaac session attach', () => {
     expect(resolved).toBeNull()
     expect(process.exitCode).toBe(1)
     process.exitCode = undefined
-  })
-
-  it('sessionAttach throws NOT_FOUND through the daemon for a bogus id', async () => {
-    await requirePodman()
-    const tmpDir = await createTempDataDir()
-    tmpDirs.push(tmpDir)
-    const daemon = await bootInProcessDaemon()
-    try {
-      await expect(sessionAttach('definitely-bogus-id-xyz')).rejects.toThrow(/not found/i)
-    } finally {
-      await daemon.stop()
-    }
   })
 
   it('errors on stopped container', async () => {

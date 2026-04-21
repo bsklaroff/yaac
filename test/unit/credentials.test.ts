@@ -326,6 +326,12 @@ describe('credentials', () => {
     })
   })
 
+  it('saveCredentials writes the file with 0o600 permissions', async () => {
+    await addToken('*', 'ghp_secret')
+    const stats = await fs.stat(credentialsPath())
+    expect(stats.mode & 0o777).toBe(0o600)
+  })
+
   describe('listTokens', () => {
     it('returns masked tokens', async () => {
       await addToken('acme/*', 'ghp_abcdef1234')

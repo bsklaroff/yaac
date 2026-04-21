@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createYaacTestEnv, spawnYaacDaemon, runYaac, type YaacTestEnv, type SpawnedDaemon } from '@test/helpers/cli'
 import { createTestRepo, addTestProject } from '@test/helpers/setup'
@@ -78,5 +79,17 @@ describe('yaac project (real CLI + real daemon)', () => {
     )
     expect(exitCode).not.toBe(0)
     expect(stderr).toMatch(/Invalid URL|HTTPS|GitHub/)
+  })
+
+  it('project add returns CONFLICT when a project with the same slug exists', async () => {
+    // Pre-create the project dir so the daemon's `fs.access` check throws
+    // CONFLICT before it reaches token resolution.
+    await fs.mkdir(path.join(testEnv.dataDir, 'projects', 'repo'), { recursive: true })
+
+    const { stderr, exitCode } = await runYaac(
+      testEnv.env, 'project', 'add', 'https://github.com/org/repo',
+    )
+    expect(exitCode).not.toBe(0)
+    expect(stderr).toContain('already exists')
   })
 })

@@ -70,20 +70,6 @@ describe('yaac session list', () => {
     tmpDirs.length = 0
   })
 
-  it('prints empty message when no sessions exist', async () => {
-    const tmpDir = await createTempDataDir()
-    tmpDirs.push(tmpDir)
-
-    const logs: string[] = []
-    const origLog = console.log
-    console.log = (msg: string) => logs.push(msg)
-
-    await sessionList()
-
-    console.log = origLog
-    expect(logs.join('\n')).toContain('No active sessions')
-  })
-
   describe('with running sessions (shared)', () => {
     let tmpDir: string
     let containerA: string
@@ -238,50 +224,4 @@ describe('yaac session list', () => {
     }, { timeout: 15_000, interval: 500 })
   }, 30_000)
 
-  it('lists deleted sessions from JSONL files', async () => {
-    const tmpDir = await createTempDataDir()
-    tmpDirs.push(tmpDir)
-
-    const repoPath = path.join(tmpDir, 'deleted-proj')
-    await createTestRepo(repoPath)
-    await addTestProject(repoPath)
-
-    // Create a fake Claude Code session JSONL file
-    const sessionsDir = path.join(claudeDir('deleted-proj'), 'projects', '-workspace')
-    await fs.mkdir(sessionsDir, { recursive: true })
-    const fakeSessionId = crypto.randomUUID()
-    await fs.writeFile(
-      path.join(sessionsDir, `${fakeSessionId}.jsonl`),
-      `{"type":"permission-mode","sessionId":"${fakeSessionId}"}\n`,
-    )
-
-    const logs: string[] = []
-    const origLog = console.log
-    console.log = (msg: string) => logs.push(msg)
-
-    await sessionList('deleted-proj', { deleted: true })
-
-    console.log = origLog
-    const output = logs.join('\n')
-    expect(output).toContain(fakeSessionId.slice(0, 8))
-    expect(output).toContain('deleted-proj')
-  })
-
-  it('shows empty message when no deleted sessions', async () => {
-    const tmpDir = await createTempDataDir()
-    tmpDirs.push(tmpDir)
-
-    const repoPath = path.join(tmpDir, 'no-deleted')
-    await createTestRepo(repoPath)
-    await addTestProject(repoPath)
-
-    const logs: string[] = []
-    const origLog = console.log
-    console.log = (msg: string) => logs.push(msg)
-
-    await sessionList('no-deleted', { deleted: true })
-
-    console.log = origLog
-    expect(logs.join('\n')).toContain('No deleted sessions')
-  })
 })

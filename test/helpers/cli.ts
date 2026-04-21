@@ -123,6 +123,32 @@ export interface RunYaacResult {
   exitCode: number | null
 }
 
+export interface RunYaacOptions {
+  /**
+   * Data to write to stdin. Pipes stdin instead of /dev/null.
+   *
+   * As a single string, the whole payload is written and stdin is
+   * closed immediately. That works for commands that use a single
+   * readline interface, but fails for `auth update` / `auth clear` /
+   * `session stream` which open a fresh readline per prompt: once the
+   * stream ends, the first readline's flowing-mode reader eats all
+   * remaining bytes before the next interface can see them.
+   *
+   * Pass an array of chunks to insert a delay between prompts — the
+   * helper writes each chunk, waits `chunkDelayMs`, then writes the
+   * next. That gives each close()→createInterface() cycle time to hand
+   * off the stream. Stdin is closed after the final chunk.
+   */
+  stdin?: string | string[]
+  /**
+   * Delay between chunks when `stdin` is an array. Default 1500 ms.
+   * Needs to be long enough that the CLI has closed one readline
+   * interface and opened the next before the chunk arrives, including
+   * daemon-RPC round-trips and parallel-test-worker jitter.
+   */
+  chunkDelayMs?: number
+}
+
 /**
  * Spawn a `yaac <args>` CLI subprocess with the given env, capture
  * stdout/stderr, and resolve once it exits. The caller is responsible
@@ -131,12 +157,32 @@ export interface RunYaacResult {
  */
 export async function runYaac(
   env: NodeJS.ProcessEnv,
-  ...args: string[]
+  ...argsWithOpts: (string | RunYaacOptions)[]
 ): Promise<RunYaacResult> {
+  const last = argsWithOpts[argsWithOpts.length - 1]
+  const opts: RunYaacOptions =
+    typeof last === 'object' && last !== null ? (argsWithOpts.pop() as RunYaacOptions) : {}
+  const args = argsWithOpts as string[]
+
+  const stdinMode: 'pipe' | 'ignore' = opts.stdin !== undefined ? 'pipe' : 'ignore'
   const child = spawn(process.execPath, [TSX_CLI, ENTRY, ...args], {
     env,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: [stdinMode, 'pipe', 'pipe'],
   })
+  if (opts.stdin !== undefined && child.stdin) {
+    const delay = opts.chunkDelayMs ?? 1500
+    if (Array.isArray(opts.stdin)) {
+      void (async () => {
+        for (let i = 0; i < opts.stdin!.length; i++) {
+          if (i > 0) await new Promise((r) => setTimeout(r, delay))
+          child.stdin!.write(opts.stdin![i])
+        }
+        child.stdin!.end()
+      })()
+    } else {
+      child.stdin.end(opts.stdin)
+    }
+  }
   let stdout = ''
   let stderr = ''
   child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
