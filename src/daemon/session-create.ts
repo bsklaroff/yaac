@@ -559,9 +559,12 @@ export async function createSession(
       await startContainerWithSetup(setupParams)
       break
     } catch (err) {
+      // Always remove the half-created container. Otherwise a container
+      // left running (e.g. tmux up but a later exec failed) gets picked up
+      // by listActiveSessions as a bogus waiting session.
+      try { await shellPodmanWithRetry(`podman rm -f ${containerName}`) } catch { /* already gone */ }
       if (attempt < maxStartAttempts) {
         emit(`Container startup failed (attempt ${attempt}/${maxStartAttempts}), retrying...`, options)
-        try { await shellPodmanWithRetry(`podman rm -f ${containerName}`) } catch { /* already gone */ }
         continue
       }
       // Release any pre-bound host ports so a retry (or the reaper) can

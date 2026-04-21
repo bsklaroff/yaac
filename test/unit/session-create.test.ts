@@ -125,7 +125,7 @@ vi.mock('@/lib/session/port-forwarders', () => ({
 
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
-import { podman, ensureContainerRuntime } from '@/lib/container/runtime'
+import { podman, ensureContainerRuntime, shellPodmanWithRetry } from '@/lib/container/runtime'
 import { claimPrewarmSession } from '@/lib/prewarm'
 import { ensureImage, packTar } from '@/lib/container/image-builder'
 import { proxyClient } from '@/lib/container/proxy-client'
@@ -324,6 +324,22 @@ describe('createSession', () => {
     expect(messages).toEqual([
       'Claiming prewarmed session prewarm-...',
     ])
+  })
+
+  it('force-removes the container after every failed startup attempt, including the last', async () => {
+    mockCreateContainer.mockResolvedValue({
+      start: vi.fn().mockRejectedValue(new Error('container refused to start')),
+    } as never)
+
+    await expect(createSession('demo', {})).rejects.toThrow('container refused to start')
+
+    const rmCalls = vi.mocked(shellPodmanWithRetry).mock.calls
+      .map((args) => args[0])
+      .filter((cmd) => typeof cmd === 'string' && cmd.startsWith('podman rm -f '))
+    expect(rmCalls).toHaveLength(3)
+    for (const cmd of rmCalls) {
+      expect(cmd).toMatch(/^podman rm -f yaac-demo-/)
+    }
   })
 
   it('mounts shared Claude and Codex state for Codex sessions', async () => {

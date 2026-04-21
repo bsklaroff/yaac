@@ -61,14 +61,21 @@ export async function clearPrewarmSession(slug: string): Promise<void> {
 
 export async function clearFailedPrewarmSessions(): Promise<void> {
   const data = await readPrewarmSessions()
-  let changed = false
+  const failed: Array<[string, PrewarmEntry]> = []
   for (const slug of Object.keys(data)) {
     if (data[slug].state === 'failed') {
+      failed.push([slug, data[slug]])
       delete data[slug]
-      changed = true
     }
   }
-  if (changed) await writePrewarmSessions(data)
+  if (failed.length === 0) return
+  await writePrewarmSessions(data)
+  // Safety net: if the failure path didn't tear down the container (older
+  // entries, or crashes between cleanup and setPrewarmSession), make sure
+  // nothing leaks past the state-file entry.
+  for (const [slug, entry] of failed) {
+    await cleanupPrewarmSession(entry, slug)
+  }
 }
 
 export async function isPrewarmSession(slug: string, sessionId: string): Promise<boolean> {
@@ -228,9 +235,15 @@ export async function ensurePrewarmSession(projectSlug: string, tool: AgentTool 
       tool,
     })
   } catch (err) {
-    // Only mark as failed if the entry wasn't claimed in the meantime
+    // Only mark as failed if the entry wasn't claimed in the meantime.
+    // If it was claimed, the claimer now owns the container — leave it alone.
     const current = await getPrewarmSession(projectSlug)
     if (current && current.sessionId === sessionId) {
+      // Tear down the half-created container before marking failed. Otherwise
+      // the container lives on, isPrewarmSession returns false once the failed
+      // entry is cleared, and listActiveSessions reports it as a waiting
+      // session.
+      await cleanupPrewarmSession({ sessionId, containerName, fingerprint, state: 'creating', verifiedAt: Date.now(), tool }, projectSlug)
       await setPrewarmSession(projectSlug, {
         sessionId,
         containerName,

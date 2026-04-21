@@ -1,7 +1,20 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+
+vi.mock('@/lib/session/cleanup', () => ({
+  cleanupSession: vi.fn(),
+  isTmuxSessionAlive: vi.fn().mockResolvedValue(false),
+  cleanupSessionDetached: vi.fn(),
+}))
+
+vi.mock('@/lib/container/runtime', () => ({
+  podman: { listContainers: vi.fn().mockResolvedValue([]), getContainer: vi.fn() },
+  podmanExecWithRetry: vi.fn(),
+  shellPodmanWithRetry: vi.fn(),
+}))
+
 import { setDataDir } from '@/lib/project/paths'
 import {
   readPrewarmSessions,
@@ -12,7 +25,10 @@ import {
   isPrewarmSession,
   MAX_STALE_MS,
 } from '@/lib/prewarm'
+import { cleanupSession } from '@/lib/session/cleanup'
 import type { PrewarmEntry } from '@/lib/prewarm'
+
+const mockCleanupSession = vi.mocked(cleanupSession)
 
 describe('prewarm state helpers', () => {
   let tmpDir: string
@@ -20,6 +36,8 @@ describe('prewarm state helpers', () => {
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-prewarm-test-'))
     setDataDir(tmpDir)
+    mockCleanupSession.mockReset()
+    mockCleanupSession.mockResolvedValue(undefined)
   })
 
   afterEach(async () => {
@@ -142,6 +160,51 @@ describe('prewarm state helpers', () => {
     await clearFailedPrewarmSessions()
     const result = await getPrewarmSession('my-project')
     expect(result).toEqual(entry)
+    expect(mockCleanupSession).not.toHaveBeenCalled()
+  })
+
+  it('clearFailedPrewarmSessions tears down each failed container', async () => {
+    const failedA: PrewarmEntry = {
+      ...entry,
+      state: 'failed',
+      sessionId: 'sess-a',
+      containerName: 'yaac-proj-a-sess-a',
+    }
+    const failedB: PrewarmEntry = {
+      ...entry,
+      state: 'failed',
+      sessionId: 'sess-b',
+      containerName: 'yaac-proj-b-sess-b',
+    }
+    const ready: PrewarmEntry = { ...entry, state: 'ready' }
+    await setPrewarmSession('proj-a', failedA)
+    await setPrewarmSession('proj-b', failedB)
+    await setPrewarmSession('proj-ok', ready)
+
+    await clearFailedPrewarmSessions()
+
+    expect(mockCleanupSession).toHaveBeenCalledTimes(2)
+    expect(mockCleanupSession).toHaveBeenCalledWith({
+      containerName: 'yaac-proj-a-sess-a',
+      projectSlug: 'proj-a',
+      sessionId: 'sess-a',
+    })
+    expect(mockCleanupSession).toHaveBeenCalledWith({
+      containerName: 'yaac-proj-b-sess-b',
+      projectSlug: 'proj-b',
+      sessionId: 'sess-b',
+    })
+  })
+
+  it('clearFailedPrewarmSessions swallows cleanup errors', async () => {
+    mockCleanupSession.mockRejectedValue(new Error('podman blew up'))
+    const failed: PrewarmEntry = { ...entry, state: 'failed' }
+    await setPrewarmSession('my-project', failed)
+
+    await expect(clearFailedPrewarmSessions()).resolves.toBeUndefined()
+
+    const result = await getPrewarmSession('my-project')
+    expect(result).toBeNull()
   })
 
   it('setPrewarmSession stores tool field', async () => {
