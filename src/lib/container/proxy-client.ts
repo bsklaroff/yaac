@@ -23,6 +23,17 @@ export interface InjectionRule {
 }
 
 /**
+ * Test-only: redirect the post-MITM upstream call for `hostname` to a mock
+ * on the proxy's network. Credential injection and TLS termination still
+ * run normally; only the final upstream hop is diverted.
+ */
+export interface UpstreamRedirect {
+  host: string
+  port: number
+  tls?: boolean
+}
+
+/**
  * Build proxy injection rules from yaac-config.json's envSecretProxy field.
  * Each entry maps an env var name to a SecretProxyRule that describes how to
  * inject the secret (as a header or body parameter).
@@ -152,6 +163,7 @@ export class ProxyClient {
       allowedHosts: string[]
       repoUrl?: string
       tool?: 'claude' | 'codex'
+      upstreamRedirects?: Record<string, UpstreamRedirect>
     },
   ): Promise<void> {
     const res = await fetch(`${this.baseUrl}/sessions/${encodeURIComponent(sessionId)}`, {
@@ -165,6 +177,7 @@ export class ProxyClient {
         allowedHosts: state.allowedHosts,
         repoUrl: state.repoUrl,
         tool: state.tool,
+        upstreamRedirects: state.upstreamRedirects,
       }),
     })
     if (!res.ok) {

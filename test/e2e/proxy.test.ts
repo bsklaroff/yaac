@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import crypto from 'node:crypto'
 import http from 'node:http'
+import net from 'node:net'
+import tls from 'node:tls'
 import { requirePodman, podmanRetry, removeContainer } from '@test/helpers/setup'
 import { ProxyClient, PROXY_CONTAINER_PORT } from '@/lib/container/proxy-client'
 import { createAndStartContainerWithRetry } from '@/lib/container/runtime'
@@ -527,4 +529,263 @@ describe('proxy HTTP forwarding', () => {
     })
     expect(after.status).toBe(403)
   })
+})
+
+/**
+ * Send a proxied HTTPS request: CONNECT through the proxy, TLS-wrap the
+ * tunnel (trusting the proxy's self-signed leaf cert), then ride an
+ * `http.request` over the TLS socket so node handles chunked encoding,
+ * content-length parsing, and response framing. Mirrors what a real CLI
+ * inside a session container does, minus CA-cert verification —
+ * `rejectUnauthorized: false` avoids the CA-cert plumbing dance for tests
+ * that only exercise the forwarding path.
+ */
+async function proxiedHttpsRequest(
+  proxyHostPort: number,
+  targetHost: string,
+  sessionId: string,
+  request: { method: string; path: string; body?: string; headers?: Record<string, string> },
+): Promise<{ status: number; body: string; headers: http.IncomingHttpHeaders }> {
+  const tcp = await new Promise<net.Socket>((resolve, reject) => {
+    const s = net.connect(proxyHostPort, '127.0.0.1')
+    s.once('connect', () => resolve(s))
+    s.once('error', reject)
+  })
+
+  const auth = Buffer.from(`x:${sessionId}`).toString('base64')
+  tcp.write(
+    `CONNECT ${targetHost}:443 HTTP/1.1\r\n` +
+    `Host: ${targetHost}:443\r\n` +
+    `Proxy-Authorization: Basic ${auth}\r\n\r\n`,
+  )
+
+  await new Promise<void>((resolve, reject) => {
+    let buf = ''
+    const onData = (chunk: Buffer): void => {
+      buf += chunk.toString('utf8')
+      if (buf.includes('\r\n\r\n')) {
+        tcp.off('data', onData)
+        if (/^HTTP\/1\.1 200/.test(buf)) resolve()
+        else reject(new Error(`CONNECT failed: ${buf.split('\r\n')[0]}`))
+      }
+    }
+    tcp.on('data', onData)
+    tcp.once('error', reject)
+  })
+
+  const tlsSocket = await new Promise<tls.TLSSocket>((resolve, reject) => {
+    const t = tls.connect({
+      socket: tcp,
+      servername: targetHost,
+      rejectUnauthorized: false,
+    })
+    t.once('secureConnect', () => resolve(t))
+    t.once('error', reject)
+  })
+
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      createConnection: () => tlsSocket,
+      host: targetHost,
+      method: request.method,
+      path: request.path,
+      headers: { host: targetHost, ...(request.headers ?? {}) },
+    }, (res) => {
+      const chunks: Buffer[] = []
+      res.on('data', (c: Buffer) => chunks.push(c))
+      res.once('end', () => {
+        resolve({
+          status: res.statusCode ?? 0,
+          body: Buffer.concat(chunks).toString('utf8'),
+          headers: res.headers,
+        })
+      })
+      res.once('error', reject)
+    })
+    req.once('error', reject)
+    if (request.body) req.write(request.body)
+    req.end()
+  })
+}
+
+describe('proxy upstream redirect', () => {
+  let client: ProxyClient
+  let echoContainerName: string
+  let echoIp: string
+  const echoPort = 8080
+
+  beforeAll(async () => {
+    await requirePodman()
+
+    client = new ProxyClient({
+      image: 'yaac-test-proxy',
+      network: `yaac-test-redirect-${RUN_ID}`,
+      requirePrebuilt: true,
+    })
+    await client.ensureRunning()
+
+    // Echo server on the proxy's network — mirrors what a mock-remotes
+    // sidecar will look like. Runs on the yaac-test-proxy image (which
+    // has node), bound to the proxy network so the proxy container can
+    // reach it by IP.
+    echoContainerName = `yaac-redirect-echo-${crypto.randomBytes(4).toString('hex')}`
+    const echoScript = `
+      const http = require('http');
+      http.createServer((req, res) => {
+        const chunks = [];
+        req.on('data', c => chunks.push(c));
+        req.on('end', () => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            method: req.method,
+            url: req.url,
+            headers: req.headers,
+            body: Buffer.concat(chunks).toString('utf8'),
+          }));
+        });
+      }).listen(${echoPort}, '0.0.0.0');
+    `
+
+    const { stdout: images } = await podmanRetry([
+      'images', '--format', '{{.Repository}}:{{.Tag}}', '--filter', 'reference=yaac-test-proxy',
+    ])
+    const proxyImage = images.trim().split('\n')[0]
+
+    const container = await createAndStartContainerWithRetry({
+      Image: proxyImage,
+      name: echoContainerName,
+      Cmd: ['node', '-e', echoScript],
+      Labels: { 'yaac.test': 'true' },
+      HostConfig: {
+        NetworkMode: client.network,
+      },
+    })
+    const info = await container.inspect()
+    const networks = info.NetworkSettings.Networks as Record<string, { IPAddress: string }>
+    echoIp = networks[client.network]?.IPAddress
+    if (!echoIp) throw new Error('Echo container has no IP on redirect test network')
+
+    // Wait for echo server to be ready
+    for (let i = 0; i < 20; i++) {
+      try {
+        const { stdout } = await podmanRetry([
+          'exec', echoContainerName, 'sh', '-c',
+          `curl -sf http://127.0.0.1:${echoPort}/ping`,
+        ], { timeout: 3000 })
+        if (stdout) break
+      } catch {
+        await new Promise((r) => setTimeout(r, 250))
+      }
+    }
+  })
+
+  afterAll(async () => {
+    try { await client?.stop() } catch { /* ok */ }
+    if (echoContainerName) await removeContainer(echoContainerName)
+  })
+
+  it('redirects MITMed upstream to the registered target', async () => {
+    const sessionId = crypto.randomUUID()
+    await client.registerSession(sessionId, {
+      rules: [],
+      allowedHosts: ['api.anthropic.com'],
+      upstreamRedirects: {
+        'api.anthropic.com': { host: echoIp, port: echoPort, tls: false },
+      },
+    })
+
+    const result = await proxiedHttpsRequest(
+      Number(client.hostPort),
+      'api.anthropic.com',
+      sessionId,
+      { method: 'POST', path: '/v1/messages', body: '{"hello":"world"}' },
+    )
+
+    expect(result.status).toBe(200)
+    const echo = JSON.parse(result.body) as {
+      method: string; url: string; headers: Record<string, string>; body: string
+    }
+    expect(echo.method).toBe('POST')
+    expect(echo.url).toBe('/v1/messages')
+    expect(echo.body).toBe('{"hello":"world"}')
+    // Host header is what the client sent; the redirect leaves it intact so
+    // the mock can route on virtual-host basis if it wants to.
+    expect(echo.headers.host).toBe('api.anthropic.com')
+
+    await client.removeSession(sessionId)
+  }, 30_000)
+
+  it('does not redirect for hosts that have no redirect registered', async () => {
+    // Same session, but request a host not in the redirect map. Since we
+    // allow all hosts here and don't set a redirect for api.openai.com, the
+    // proxy would try to forward to the real api.openai.com — which on the
+    // session network either fails (no DNS) or reaches something we don't
+    // want to hit. The invariant we check: the request did NOT land at our
+    // echo server (path wouldn't match).
+    const sessionId = crypto.randomUUID()
+    await client.registerSession(sessionId, {
+      rules: [],
+      allowedHosts: ['api.anthropic.com', 'api.openai.com'],
+      upstreamRedirects: {
+        'api.anthropic.com': { host: echoIp, port: echoPort, tls: false },
+      },
+    })
+
+    // api.anthropic.com → echo (redirected, succeeds)
+    const redirected = await proxiedHttpsRequest(
+      Number(client.hostPort),
+      'api.anthropic.com',
+      sessionId,
+      { method: 'GET', path: '/mapped' },
+    )
+    expect(redirected.status).toBe(200)
+    const echoBody = JSON.parse(redirected.body) as { url: string }
+    expect(echoBody.url).toBe('/mapped')
+
+    // api.openai.com → real upstream (isolated in-container network has no
+    // route to it, so expect a 502 Bad Gateway from the proxy, not a
+    // successful echo).
+    const unredirected = await proxiedHttpsRequest(
+      Number(client.hostPort),
+      'api.openai.com',
+      sessionId,
+      { method: 'GET', path: '/not-mapped' },
+    ).catch((err: Error) => ({ status: -1, body: err.message, headers: {} as http.IncomingHttpHeaders }))
+    expect(unredirected.status).not.toBe(200)
+
+    await client.removeSession(sessionId)
+  }, 30_000)
+
+  it('clears redirect map when a session is re-registered without redirects', async () => {
+    const sessionId = crypto.randomUUID()
+    await client.registerSession(sessionId, {
+      rules: [],
+      allowedHosts: ['api.anthropic.com'],
+      upstreamRedirects: {
+        'api.anthropic.com': { host: echoIp, port: echoPort, tls: false },
+      },
+    })
+    const first = await proxiedHttpsRequest(
+      Number(client.hostPort),
+      'api.anthropic.com',
+      sessionId,
+      { method: 'GET', path: '/v1/before' },
+    )
+    expect(first.status).toBe(200)
+
+    // Re-register without redirects
+    await client.registerSession(sessionId, {
+      rules: [],
+      allowedHosts: ['api.anthropic.com'],
+    })
+    const second = await proxiedHttpsRequest(
+      Number(client.hostPort),
+      'api.anthropic.com',
+      sessionId,
+      { method: 'GET', path: '/v1/after' },
+    ).catch((err: Error) => ({ status: -1, body: err.message, headers: {} as http.IncomingHttpHeaders }))
+    expect(second.status).not.toBe(200)
+
+    await client.removeSession(sessionId)
+  }, 30_000)
 })

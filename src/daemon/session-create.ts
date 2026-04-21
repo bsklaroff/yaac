@@ -5,6 +5,7 @@ import simpleGit from 'simple-git'
 import { ensureContainerRuntime, podman, shellPodmanWithRetry } from '@/lib/container/runtime'
 import { ensureImage, packTar } from '@/lib/container/image-builder'
 import { proxyClient, buildRulesFromConfig } from '@/lib/container/proxy-client'
+import type { UpstreamRedirect } from '@/lib/container/proxy-client'
 import { resolveAllowedHosts } from '@/lib/container/default-allowed-hosts'
 import { reserveAvailablePort, startPortForwarders, podmanRelay } from '@/lib/container/port'
 import type { ReservedPort } from '@/lib/container/port'
@@ -43,6 +44,38 @@ import type { AgentTool, PortMapping, YaacConfig } from '@/shared/types'
 
 export function shellEscape(str: string): string {
   return str.replace(/'/g, "'\\''")
+}
+
+/**
+ * Parse the `YAAC_E2E_UPSTREAM_REDIRECTS` env var into a redirect map for the
+ * proxy. Test-only — lets e2e-cli tests rewire `api.anthropic.com` etc. to a
+ * mock container without adding user-facing config. Expects a JSON object
+ * keyed by hostname with values `{host, port, tls?}`. Returns undefined when
+ * the env var is unset, empty, or unparseable.
+ */
+export function parseUpstreamRedirectsEnv(
+  raw: string | undefined,
+): Record<string, UpstreamRedirect> | undefined {
+  if (!raw) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  if (!parsed || typeof parsed !== 'object') return undefined
+  const result: Record<string, UpstreamRedirect> = {}
+  for (const [host, val] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!val || typeof val !== 'object') continue
+    const v = val as Record<string, unknown>
+    if (typeof v.host !== 'string' || typeof v.port !== 'number') continue
+    result[host] = {
+      host: v.host,
+      port: v.port,
+      tls: typeof v.tls === 'boolean' ? v.tls : undefined,
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined
 }
 
 function emit(message: string, options: SessionCreateOptions): void {
@@ -347,12 +380,17 @@ export async function createSession(
       `No GitHub token configured for ${remoteUrl}. Run "yaac auth update" to add one.`,
     )
   }
-  emit('Fetching latest from remote...', options)
-  try {
-    await fetchOrigin(repo, githubToken)
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    throw new DaemonError('INTERNAL', `could not fetch from remote: ${msg}`)
+  // Test-only: e2e fixtures pre-populate the bare repo, so skip the host-side
+  // fetchOrigin (which would try to reach the real remote from the daemon
+  // process — outside the proxy's reach).
+  if (process.env.YAAC_E2E_SKIP_FETCH !== '1') {
+    emit('Fetching latest from remote...', options)
+    try {
+      await fetchOrigin(repo, githubToken)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      throw new DaemonError('INTERNAL', `could not fetch from remote: ${msg}`)
+    }
   }
 
   emit('Ensuring container images are built...', options)
@@ -415,11 +453,13 @@ export async function createSession(
     ? buildRulesFromConfig(config.envSecretProxy, process.env)
     : []
   const allowedHosts = resolveAllowedHosts(config)
+  const upstreamRedirects = parseUpstreamRedirectsEnv(process.env.YAAC_E2E_UPSTREAM_REDIRECTS)
   await proxyClient.registerSession(sessionId, {
     rules: additionalRules,
     allowedHosts,
     repoUrl: remoteUrl,
     tool,
+    upstreamRedirects,
   })
 
   // Add proxy env vars

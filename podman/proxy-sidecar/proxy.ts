@@ -102,6 +102,16 @@ type InjectionRule = {
 
 type HostInjectionRule = InjectionRule & { hostPattern: string }
 
+/**
+ * Per-session upstream redirect: when the client MITMs `hostname`, forward
+ * the inner HTTP request to this target instead of the real upstream. Only
+ * applied inside the MITM path — the client still sees a TLS handshake for
+ * the original hostname, and credential-injection still runs before forward.
+ * Test-only: lets e2e-cli route "api.anthropic.com" to a mock container on
+ * the proxy network.
+ */
+type UpstreamRedirect = { host: string; port: number; tls?: boolean }
+
 // ── CA Certificate Management ──────────────────────────────────────────
 
 let ca: CA | null = null
@@ -391,6 +401,13 @@ const sessionRepoUrl = new Map<string, string>()
 
 /** sessionId -> active agent tool ('claude' | 'codex') */
 const sessionTool = new Map<string, string>()
+
+/**
+ * sessionId -> (hostname -> upstream redirect target). Test-only: redirects
+ * the post-MITM upstream call to a mock while leaving TLS termination and
+ * credential injection intact.
+ */
+const sessionUpstreamRedirects = new Map<string, Record<string, UpstreamRedirect>>()
 
 /** sessionId -> Set of blocked hostnames */
 const blockedHostsBySession = new Map<string, Set<string>>()
@@ -949,6 +966,7 @@ function handleMitm(
   port: string | undefined,
   sessionId: string | null,
   rules: HostInjectionRule[],
+  upstreamRedirect: UpstreamRedirect | null,
 ): void {
   if (!ca) throw new Error('CA not initialized')
   const leaf = getLeafCert(hostname)
@@ -998,13 +1016,19 @@ function handleMitm(
       if (body !== null) {
         headers['content-length'] = String(body.length)
       }
-      const upstream = https.request({
-        hostname,
-        port: parseInt(port ?? '', 10) || 443,
+      // Route to the redirect target when one is registered for this host.
+      // Test-mode mocks serve plain HTTP, so tls defaults to false when
+      // redirecting; the client still gets a real TLS handshake with the
+      // proxy's leaf cert for `hostname`.
+      const useHttp = upstreamRedirect !== null && upstreamRedirect.tls !== true
+      const upstreamModule = useHttp ? http : https
+      const upstream = upstreamModule.request({
+        hostname: upstreamRedirect?.host ?? hostname,
+        port: upstreamRedirect?.port ?? (parseInt(port ?? '', 10) || 443),
         path: reqPath,
         method: req.method,
         headers,
-        rejectUnauthorized: true,
+        ...(useHttp ? {} : { rejectUnauthorized: true }),
       }, (upstreamRes) => {
         if (claudeTokenBundle && shouldCaptureTokenResponse) {
           handleClaudeTokenResponse(upstreamRes, res, claudeTokenBundle)
@@ -1221,7 +1245,28 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
         } else {
           sessionTool.delete(sessionId)
         }
-        console.log(`[proxy] Registered session ${sessionId.slice(0, 8)}... (${rules.length} rules, ${allowedHosts.length} allowed host patterns)`)
+        if (o.upstreamRedirects && typeof o.upstreamRedirects === 'object') {
+          const parsed: Record<string, UpstreamRedirect> = {}
+          for (const [host, target] of Object.entries(o.upstreamRedirects as Record<string, unknown>)) {
+            if (!target || typeof target !== 'object') continue
+            const t = target as Record<string, unknown>
+            if (typeof t.host === 'string' && typeof t.port === 'number') {
+              parsed[host] = {
+                host: t.host,
+                port: t.port,
+                tls: typeof t.tls === 'boolean' ? t.tls : undefined,
+              }
+            }
+          }
+          sessionUpstreamRedirects.set(sessionId, parsed)
+        } else {
+          sessionUpstreamRedirects.delete(sessionId)
+        }
+        const redirectCount = sessionUpstreamRedirects.get(sessionId)
+          ? Object.keys(sessionUpstreamRedirects.get(sessionId)!).length
+          : 0
+        const redirectSuffix = redirectCount > 0 ? `, ${redirectCount} upstream redirects` : ''
+        console.log(`[proxy] Registered session ${sessionId.slice(0, 8)}... (${rules.length} rules, ${allowedHosts.length} allowed host patterns${redirectSuffix})`)
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
       } catch (err) {
@@ -1239,6 +1284,7 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     sessionAllowedHosts.delete(sessionId)
     sessionRepoUrl.delete(sessionId)
     sessionTool.delete(sessionId)
+    sessionUpstreamRedirects.delete(sessionId)
     blockedHostsBySession.delete(sessionId)
     console.log(`[proxy] Removed session ${sessionId.slice(0, 8)}... (found: ${deleted})`)
     res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -1354,14 +1400,20 @@ server.on('connect', (req: http.IncomingMessage, clientSocket: Duplex, head: Buf
   // rule-based injections apply.
   const needsDynMitm = hostNeedsDynamicMitm(hostname)
 
+  // A registered redirect for this hostname forces MITM — without it, the
+  // proxy would tunnel bytes unchanged and the redirect could never apply.
+  const redirect = sessionId
+    ? (sessionUpstreamRedirects.get(sessionId)?.[hostname] ?? null)
+    : null
+
   clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
 
   if (head.length > 0) {
     clientSocket.unshift(head)
   }
 
-  if (rules.length > 0 || needsDynMitm) {
-    handleMitm(clientSocket, hostname, port, sessionId, rules)
+  if (rules.length > 0 || needsDynMitm || redirect) {
+    handleMitm(clientSocket, hostname, port, sessionId, rules, redirect)
   } else {
     handleTunnel(clientSocket, hostname, port)
   }
