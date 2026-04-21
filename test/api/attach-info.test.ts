@@ -1,12 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 import { buildApp } from '@/daemon/server'
-
-function withAuth(init: RequestInit = {}): RequestInit {
-  const headers = new Headers(init.headers ?? {})
-  headers.set('authorization', 'Bearer shh')
-  return { ...init, headers }
-}
+import { makeTestRpcClient } from '@test/helpers/rpc'
 
 describe('GET /session/:id/attach-info', () => {
   let tmpDir: string
@@ -20,10 +15,10 @@ describe('GET /session/:id/attach-info', () => {
   })
 
   it('returns 404 NOT_FOUND when no container matches the id', async () => {
-    const app = buildApp({ secret: 'shh', buildId: 'test' })
-    const res = await app.request('/session/bogus-id/attach-info', withAuth())
+    const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+    const res = await client.session[':id']['attach-info'].$get({ param: { id: 'bogus-id' } })
     expect(res.status).toBe(404)
-    const body = await res.json() as { error: { code: string } }
+    const body = await res.json() as unknown as { error: { code: string } }
     expect(body.error.code).toBe('NOT_FOUND')
   })
 })
@@ -40,10 +35,10 @@ describe('GET /session/:id/shell-info', () => {
   })
 
   it('returns 404 NOT_FOUND when no container matches the id', async () => {
-    const app = buildApp({ secret: 'shh', buildId: 'test' })
-    const res = await app.request('/session/bogus-id/shell-info', withAuth())
+    const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+    const res = await client.session[':id']['shell-info'].$get({ param: { id: 'bogus-id' } })
     expect(res.status).toBe(404)
-    const body = await res.json() as { error: { code: string } }
+    const body = await res.json() as unknown as { error: { code: string } }
     expect(body.error.code).toBe('NOT_FOUND')
   })
 })
