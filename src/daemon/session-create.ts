@@ -34,7 +34,11 @@ import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/
 import { claimPrewarmSession } from '@/lib/prewarm'
 import { ensureCodexHooksJson, ensureCodexConfigToml } from '@/lib/session/codex-hooks'
 import { DaemonError } from '@/daemon/errors'
-import { registerSessionForwarders } from '@/lib/session/port-forwarders'
+import {
+  buildStatusRight,
+  provisionSessionForwarders,
+  registerSessionForwarders,
+} from '@/lib/session/port-forwarders'
 import type { AgentTool, PortMapping, YaacConfig } from '@/shared/types'
 
 export function shellEscape(str: string): string {
@@ -233,9 +237,6 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
   }
 
   // Configure tmux UX
-  const portInfo = forwardedPorts.length > 0
-    ? ' ' + forwardedPorts.map((p) => `:${p.hostPort}->${p.containerPort}`).join(' ')
-    : ''
   containerExec(containerName, 'tmux set-option -g history-limit 200000')
   containerExec(containerName, 'tmux set-option -g mouse on')
   containerExec(containerName, 'tmux set-option -g focus-events on')
@@ -245,7 +246,8 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
   containerExec(containerName, 'tmux set-option -g bell-action any')
   containerExec(containerName, 'tmux set-option -g visual-bell off')
   containerExec(containerName, 'tmux set-option -g allow-passthrough on')
-  containerExec(containerName, `tmux set-option -t yaac status-right ' ${projectSlug} ${sessionId.slice(0, 8)}${portInfo} '`)
+  const statusRight = buildStatusRight(projectSlug, sessionId, forwardedPorts)
+  containerExec(containerName, `tmux set-option -t yaac status-right '${shellEscape(statusRight)}'`)
   containerExec(containerName, 'tmux set-option -t yaac status-right-length 80')
   containerExec(containerName, 'tmux bind-key k kill-server')
 }
@@ -287,10 +289,29 @@ export async function createSession(
   const claimed = !options.createPrewarm ? await claimPrewarmSession(projectSlug, tool) : null
   if (claimed) {
     emit(`Claiming prewarmed session ${claimed.sessionId.slice(0, 8)}...`, options)
+    // Prewarm containers don't get port forwarders at creation time
+    // (we don't yet know which host ports will be free when the session
+    // is claimed). Provision them now so the claimed session actually
+    // forwards the ports advertised in its tmux status bar.
+    const claimedConfig: YaacConfig = await resolveProjectConfig(projectSlug) ?? {}
+    let forwardedPorts: PortMapping[] = []
+    try {
+      forwardedPorts = await provisionSessionForwarders(
+        projectSlug,
+        claimed.sessionId,
+        claimed.containerName,
+        claimedConfig.portForward,
+      )
+    } catch (err) {
+      console.error(
+        `Failed to provision port forwarders for claimed prewarm ${claimed.sessionId.slice(0, 8)}: `
+        + (err instanceof Error ? err.message : String(err)),
+      )
+    }
     return {
       sessionId: claimed.sessionId,
       containerName: claimed.containerName,
-      forwardedPorts: [],
+      forwardedPorts,
       tool,
       claimedPrewarm: true,
     }
@@ -432,8 +453,14 @@ export async function createSession(
   // starting up. The daemon owns the forwarders for the container's
   // lifetime; they are torn down by `deleteSession` and the stale-
   // container reaper.
+  //
+  // Prewarm containers skip this step: we can't know which host ports
+  // will be free when the session is eventually claimed, so reserving
+  // them now (and then releasing before the claim) just bakes stale
+  // port info into tmux status-right. Ports are provisioned on the
+  // claim path instead.
   const forwardedPorts: ReservedPort[] = []
-  if (config.portForward?.length) {
+  if (!options.createPrewarm && config.portForward?.length) {
     for (const { containerPort, hostPortStart } of config.portForward) {
       emit(`Finding available host port starting from ${hostPortStart} for container port ${containerPort}...`, options)
       const reserved = await reserveAvailablePort(containerPort, hostPortStart)
@@ -545,10 +572,9 @@ export async function createSession(
   }
 
   if (options.createPrewarm) {
-    // Prewarmed sessions aren't attached immediately; close any reserved
-    // ports so they aren't held while the container sits idle. The
-    // claimer will recreate forwarders when it boots the real session.
-    for (const p of forwardedPorts) p.server.close()
+    // Prewarmed sessions aren't attached immediately. Port forwarders
+    // are provisioned on the claim path (see above); nothing to hand
+    // off here.
     return { sessionId }
   }
 

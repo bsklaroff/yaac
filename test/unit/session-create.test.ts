@@ -117,6 +117,12 @@ vi.mock('@/lib/session/codex-hooks', () => ({
   ensureCodexConfigToml: vi.fn().mockResolvedValue(undefined),
 }))
 
+vi.mock('@/lib/session/port-forwarders', () => ({
+  buildStatusRight: vi.fn().mockReturnValue(' stub-status '),
+  provisionSessionForwarders: vi.fn().mockResolvedValue([]),
+  registerSessionForwarders: vi.fn(),
+}))
+
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import { podman, ensureContainerRuntime } from '@/lib/container/runtime'
@@ -126,6 +132,12 @@ import { proxyClient } from '@/lib/container/proxy-client'
 import { resolveProjectConfig } from '@/lib/project/config'
 import { resolveTokenForUrl, loadCredentials } from '@/lib/project/credentials'
 import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/lib/git'
+import { reserveAvailablePort } from '@/lib/container/port'
+import {
+  buildStatusRight,
+  provisionSessionForwarders,
+  registerSessionForwarders,
+} from '@/lib/session/port-forwarders'
 
 const mockSpawn = vi.mocked(spawn)
 const mockAccess = vi.mocked(fs.access)
@@ -138,6 +150,10 @@ const mockGetContainer = vi.mocked(podman.getContainer)
 // eslint-disable-next-line @typescript-eslint/unbound-method
 const mockGetImage = vi.mocked(podman.getImage)
 const mockClaimPrewarmSession = vi.mocked(claimPrewarmSession)
+const mockReserveAvailablePort = vi.mocked(reserveAvailablePort)
+const mockProvisionSessionForwarders = vi.mocked(provisionSessionForwarders)
+const mockRegisterSessionForwarders = vi.mocked(registerSessionForwarders)
+const mockBuildStatusRight = vi.mocked(buildStatusRight)
 
 function mockAttachedChild(): EventEmitter {
   const child = new EventEmitter()
@@ -172,6 +188,13 @@ describe('createSession', () => {
     vi.mocked(proxyClient.getCaCert).mockResolvedValue('cert')
     mockSpawn.mockImplementation(() => mockAttachedChild() as never)
     mockClaimPrewarmSession.mockResolvedValue(null)
+    mockReserveAvailablePort.mockResolvedValue({
+      containerPort: 3000,
+      hostPort: 3000,
+      server: { close: vi.fn() },
+    } as never)
+    mockProvisionSessionForwarders.mockResolvedValue([])
+    mockBuildStatusRight.mockReturnValue(' stub-status ')
     mockCreateContainer.mockResolvedValue({
       start: vi.fn().mockResolvedValue(undefined),
     } as never)
@@ -199,6 +222,59 @@ describe('createSession', () => {
       claimedPrewarm: true,
     })
     expect(mockCreateContainer).not.toHaveBeenCalled()
+  })
+
+  it('provisions forwarders for claimed prewarm sessions and returns the mappings', async () => {
+    mockClaimPrewarmSession.mockResolvedValue({
+      sessionId: 'prewarm-session',
+      containerName: 'yaac-demo-prewarm-session',
+    })
+    vi.mocked(resolveProjectConfig).mockResolvedValue({
+      portForward: [{ containerPort: 3000, hostPortStart: 3000 }],
+    })
+    mockProvisionSessionForwarders.mockResolvedValue([
+      { containerPort: 3000, hostPort: 3000 },
+    ])
+
+    const result = await createSession('demo', {})
+
+    expect(mockProvisionSessionForwarders).toHaveBeenCalledTimes(1)
+    expect(mockProvisionSessionForwarders).toHaveBeenCalledWith(
+      'demo', 'prewarm-session', 'yaac-demo-prewarm-session',
+      [{ containerPort: 3000, hostPortStart: 3000 }],
+    )
+    expect(result?.forwardedPorts).toEqual([{ containerPort: 3000, hostPort: 3000 }])
+    expect(result?.claimedPrewarm).toBe(true)
+  })
+
+  it('does not reserve ports when creating a prewarm session', async () => {
+    vi.mocked(resolveProjectConfig).mockResolvedValue({
+      portForward: [{ containerPort: 3000, hostPortStart: 3000 }],
+    })
+
+    await createSession('demo', { createPrewarm: true, sessionId: 'new-prewarm' })
+
+    expect(mockReserveAvailablePort).not.toHaveBeenCalled()
+    expect(mockRegisterSessionForwarders).not.toHaveBeenCalled()
+    expect(mockProvisionSessionForwarders).not.toHaveBeenCalled()
+  })
+
+  it('reserves and registers forwarders on a fresh non-prewarm session', async () => {
+    vi.mocked(resolveProjectConfig).mockResolvedValue({
+      portForward: [{ containerPort: 3000, hostPortStart: 3000 }],
+    })
+    mockReserveAvailablePort.mockResolvedValueOnce({
+      containerPort: 3000,
+      hostPort: 3001,
+      server: { close: vi.fn() },
+    } as never)
+
+    const result = await createSession('demo', {})
+
+    expect(mockReserveAvailablePort).toHaveBeenCalledWith(3000, 3000)
+    expect(mockRegisterSessionForwarders).toHaveBeenCalledTimes(1)
+    expect(result?.forwardedPorts).toEqual([{ containerPort: 3000, hostPort: 3001 }])
+    expect(result?.claimedPrewarm).toBe(false)
   })
 
   it('returns a newly created session descriptor without attaching', async () => {

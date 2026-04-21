@@ -16,6 +16,7 @@ import {
 } from '@/shared/lock'
 import { ensureDataDir } from '@/lib/project/paths'
 import { startBackgroundLoop } from '@/daemon/background-loop'
+import { restoreAllSessionForwarders } from '@/lib/session/restore-forwarders'
 
 const __filename = fileURLToPath(import.meta.url)
 
@@ -58,6 +59,17 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
 
   await writeLock({ pid: process.pid, port, secret, startedAt: Date.now(), buildId })
   console.error(`[daemon] listening on 127.0.0.1:${port} lock=${daemonLockPath()}`)
+
+  // A daemon restart loses the in-memory forwarder registry while
+  // running containers keep their tmux `status-right` advertising
+  // ports that aren't actually forwarded anymore. Rebuild forwarders
+  // for every live session container before we process RPCs so the
+  // displayed port mapping matches reality.
+  try {
+    await restoreAllSessionForwarders()
+  } catch (err) {
+    console.error('[daemon] restore forwarders failed:', err)
+  }
 
   const abortCtrl = new AbortController()
   const loopDone = startBackgroundLoop({ signal: abortCtrl.signal })
