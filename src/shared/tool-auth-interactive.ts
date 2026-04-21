@@ -216,6 +216,21 @@ export interface ToolLoginResult {
  * Run the tool's native login CLI and extract the resulting credentials.
  */
 export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult> {
+  // Test-only hook: e2e-cli can't drive the native `claude login` /
+  // `codex login` OAuth flow end-to-end, so these env vars short-circuit
+  // with a JSON-serialised bundle. The CLI → daemon persistence path is
+  // still exercised exactly as in production.
+  const hookVar = tool === 'claude' ? 'YAAC_E2E_CLAUDE_LOGIN' : 'YAAC_E2E_CODEX_LOGIN'
+  const hookRaw = process.env[hookVar]
+  if (hookRaw) {
+    if (tool === 'claude') {
+      const bundle = claudeOAuthBundleSchema.parse(JSON.parse(hookRaw))
+      return { apiKey: bundle.accessToken, kind: 'oauth', claudeBundle: bundle }
+    }
+    const bundle = JSON.parse(hookRaw) as CodexOAuthBundle
+    return { apiKey: bundle.accessToken, kind: 'oauth', codexBundle: bundle }
+  }
+
   const toolLabel = tool === 'claude' ? 'Claude Code' : 'Codex'
   console.log(`Starting ${toolLabel} login flow...`)
 

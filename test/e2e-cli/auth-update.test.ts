@@ -55,4 +55,25 @@ describe('yaac auth update (real CLI + real daemon)', () => {
     expect(exitCode).toBe(1)
     expect(stderr).toMatch(/Pattern cannot be empty/)
   })
+
+  it('persists a Claude OAuth bundle end-to-end via the test-only login hook', async () => {
+    const bundle = {
+      accessToken: 'sk-ant-oat01-fake-access',
+      refreshToken: 'sk-ant-ort01-fake-refresh',
+      expiresAt: Date.now() + 60_000,
+      scopes: ['user:inference'],
+      subscriptionType: 'pro',
+    }
+
+    const env = { ...testEnv.env, YAAC_E2E_CLAUDE_LOGIN: JSON.stringify(bundle) }
+    const { stdout, exitCode } = await runYaac(env, 'auth', 'update', { stdin: '2\n' })
+    expect(exitCode).toBe(0)
+    expect(stdout).toContain('Claude Code credentials saved.')
+
+    const credsPath = path.join(testEnv.dataDir, '.credentials', 'claude.json')
+    const raw = await fs.readFile(credsPath, 'utf8')
+    const parsed = JSON.parse(raw) as { kind: string; claudeAiOauth?: typeof bundle }
+    expect(parsed.kind).toBe('oauth')
+    expect(parsed.claudeAiOauth).toEqual(bundle)
+  })
 })
