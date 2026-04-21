@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-// Mock node:child_process so the promisified execFile is controllable.
+// Mock node:child_process so the promisified execFile / exec are controllable.
 // Must be hoisted before importing the module under test.
 type ExecResult = { stdout: string; stderr: string }
 type ExecCallback = (err: unknown, res?: ExecResult) => void
 const execFileMock = vi.fn<(file: string, args: readonly string[]) => Promise<ExecResult>>()
+const execMock = vi.fn<(command: string) => Promise<ExecResult>>()
 vi.mock('node:child_process', () => ({
   execFile: (
     file: string,
@@ -16,6 +17,13 @@ vi.mock('node:child_process', () => ({
     // Our mock looks at the call record to decide whether to succeed or fail.
     const actualCb = (typeof opts === 'function' ? opts : cb) as ExecCallback
     void execFileMock(file, args).then(
+      (res) => actualCb(null, res),
+      (err: unknown) => actualCb(err),
+    )
+  },
+  exec: (command: string, opts: unknown, cb?: ExecCallback) => {
+    const actualCb = (typeof opts === 'function' ? opts : cb) as ExecCallback
+    void execMock(command).then(
       (res) => actualCb(null, res),
       (err: unknown) => actualCb(err),
     )
@@ -39,6 +47,7 @@ vi.mock('dockerode', () => {
 import {
   isTransientPodmanError,
   podmanExecWithRetry,
+  shellPodmanWithRetry,
   createAndStartContainerWithRetry,
 } from '@/lib/container/runtime'
 
@@ -134,6 +143,58 @@ describe('podmanExecWithRetry', () => {
       podmanExecWithRetry(['exec', 'c', 'true'], { baseDelay: 1, maxAttempts: 3 }),
     ).rejects.toThrow('still transient')
     expect(execFileMock).toHaveBeenCalledTimes(3)
+  })
+})
+
+describe('shellPodmanWithRetry', () => {
+  beforeEach(() => {
+    execMock.mockReset()
+  })
+
+  it('returns stdout/stderr on first successful call', async () => {
+    execMock.mockResolvedValue({ stdout: 'ok', stderr: '' })
+    const result = await shellPodmanWithRetry('podman version')
+    expect(result.stdout).toBe('ok')
+    expect(execMock).toHaveBeenCalledTimes(1)
+    expect(execMock).toHaveBeenCalledWith('podman version')
+  })
+
+  it('retries on transient errors and eventually succeeds', async () => {
+    const transient = Object.assign(new Error('exec failed'), {
+      stderr: 'container state improper',
+    })
+    execMock
+      .mockRejectedValueOnce(transient)
+      .mockRejectedValueOnce(transient)
+      .mockResolvedValue({ stdout: 'finally', stderr: '' })
+    const result = await shellPodmanWithRetry('podman exec c true', {
+      baseDelay: 1,
+      maxAttempts: 5,
+    })
+    expect(result.stdout).toBe('finally')
+    expect(execMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not retry on non-transient errors', async () => {
+    const fatal = Object.assign(new Error('fatal'), {
+      stderr: 'permission denied',
+    })
+    execMock.mockRejectedValue(fatal)
+    await expect(
+      shellPodmanWithRetry('podman exec c true', { baseDelay: 1, maxAttempts: 5 }),
+    ).rejects.toThrow('fatal')
+    expect(execMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('throws after maxAttempts even if errors remain transient', async () => {
+    const transient = Object.assign(new Error('still transient'), {
+      stderr: 'OCI runtime error',
+    })
+    execMock.mockRejectedValue(transient)
+    await expect(
+      shellPodmanWithRetry('podman exec c true', { baseDelay: 1, maxAttempts: 3 }),
+    ).rejects.toThrow('still transient')
+    expect(execMock).toHaveBeenCalledTimes(3)
   })
 })
 

@@ -10,7 +10,7 @@
  * prewarm-claim paths can't double-register.
  */
 
-import { execPodmanWithRetry } from '@/lib/container/runtime'
+import { shellPodmanWithRetry } from '@/lib/container/runtime'
 import { podmanRelay, reserveAvailablePort, startPortForwarders } from '@/lib/container/port'
 import type { ReservedPort } from '@/lib/container/port'
 import type { PortForwardConfig, PortMapping } from '@/shared/types'
@@ -67,14 +67,14 @@ export function buildStatusRight(
  * ports are provisioned after container creation (prewarm claim, daemon
  * restart) so the displayed port mapping matches the live forwarders.
  */
-export function setSessionStatusRight(
+export async function setSessionStatusRight(
   containerName: string,
   projectSlug: string,
   sessionId: string,
   ports: ReadonlyArray<PortMapping>,
-): void {
+): Promise<void> {
   const value = buildStatusRight(projectSlug, sessionId, ports)
-  execPodmanWithRetry(
+  await shellPodmanWithRetry(
     `podman exec ${containerName} tmux set-option -t yaac status-right '${shellEscape(value)}'`,
   )
 }
@@ -104,7 +104,7 @@ export async function provisionSessionForwarders(
   // Always refresh status-right — even with no port forwards, the
   // prewarm container's baked-in string may include stale info we
   // want cleared.
-  setSessionStatusRight(containerName, projectSlug, sessionId, reserved)
+  await setSessionStatusRight(containerName, projectSlug, sessionId, reserved)
 
   if (reserved.length === 0) return []
 

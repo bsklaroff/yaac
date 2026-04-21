@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
-import { ensureContainerRuntime, execPodmanWithRetry, podman } from '@/lib/container/runtime'
+import { ensureContainerRuntime, podman, shellPodmanWithRetry } from '@/lib/container/runtime'
 import { ensureImage, packTar } from '@/lib/container/image-builder'
 import { proxyClient, buildRulesFromConfig } from '@/lib/container/proxy-client'
 import { resolveAllowedHosts } from '@/lib/container/default-allowed-hosts'
@@ -68,12 +68,12 @@ export function buildAgentCmd(
   ].filter(Boolean).join(' ')
 }
 
-function containerExec(containerName: string, cmd: string): void {
-  execPodmanWithRetry(`podman exec ${containerName} ${cmd}`)
+async function containerExec(containerName: string, cmd: string): Promise<void> {
+  await shellPodmanWithRetry(`podman exec ${containerName} ${cmd}`)
 }
 
-function containerExecRoot(containerName: string, cmd: string): void {
-  execPodmanWithRetry(`podman exec --user root ${containerName} ${cmd}`)
+async function containerExecRoot(containerName: string, cmd: string): Promise<void> {
+  await shellPodmanWithRetry(`podman exec --user root ${containerName} ${cmd}`)
 }
 
 export interface SessionCreateOptions {
@@ -181,19 +181,19 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
 
   // Fix ownership of named cache volumes (created as root, but container runs as yaac)
   for (const containerPath of Object.values(config.cacheVolumes ?? {})) {
-    containerExecRoot(containerName, `chown yaac:yaac '${shellEscape(containerPath)}'`)
+    await containerExecRoot(containerName, `chown yaac:yaac '${shellEscape(containerPath)}'`)
   }
 
   // Forward localhost:<pgPort> inside the container to the pg-relay sidecar (IPv4 + IPv6)
   if (pgRelayIp) {
-    execPodmanWithRetry(`podman exec -d --user root ${containerName} socat TCP4-LISTEN:${pgRelay.containerPort},fork,reuseaddr,bind=127.0.0.1 TCP:${pgRelayIp}:${pgRelay.containerPort}`)
-    execPodmanWithRetry(`podman exec -d --user root ${containerName} socat TCP6-LISTEN:${pgRelay.containerPort},fork,reuseaddr,bind=::1 TCP:${pgRelayIp}:${pgRelay.containerPort}`)
+    await shellPodmanWithRetry(`podman exec -d --user root ${containerName} socat TCP4-LISTEN:${pgRelay.containerPort},fork,reuseaddr,bind=127.0.0.1 TCP:${pgRelayIp}:${pgRelay.containerPort}`)
+    await shellPodmanWithRetry(`podman exec -d --user root ${containerName} socat TCP6-LISTEN:${pgRelay.containerPort},fork,reuseaddr,bind=::1 TCP:${pgRelayIp}:${pgRelay.containerPort}`)
   }
 
   // Fix ownership of podman storage volume and start API socket for nested containers
   if (config.nestedContainers) {
-    containerExecRoot(containerName, 'chown yaac:yaac /home/yaac/.local/share/containers')
-    execPodmanWithRetry(`podman exec -d ${containerName} podman system service --time=0 unix:///run/user/1000/podman/podman.sock`)
+    await containerExecRoot(containerName, 'chown yaac:yaac /home/yaac/.local/share/containers')
+    await shellPodmanWithRetry(`podman exec -d ${containerName} podman system service --time=0 unix:///run/user/1000/podman/podman.sock`)
   }
 
   // Inject CA cert for HTTPS MITM (proxy is always active)
@@ -203,17 +203,17 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
   await containerRef.putArchive(archive, { path: '/tmp' })
 
   // Fix worktree git pointers for in-container paths
-  containerExec(containerName, `sh -c "echo 'gitdir: /repo/.git/worktrees/${sessionId}' > /workspace/.git"`)
-  containerExec(containerName, `sh -c "echo '/workspace/.git' > /repo/.git/worktrees/${sessionId}/gitdir"`)
+  await containerExec(containerName, `sh -c "echo 'gitdir: /repo/.git/worktrees/${sessionId}' > /workspace/.git"`)
+  await containerExec(containerName, `sh -c "echo '/workspace/.git' > /repo/.git/worktrees/${sessionId}/gitdir"`)
 
   // Configure git identity and trust mounted directories inside container
-  containerExec(containerName, `git config --global user.name '${shellEscape(gitUser.name)}'`)
-  containerExec(containerName, `git config --global user.email '${shellEscape(gitUser.email)}'`)
-  containerExec(containerName, 'git config --global --add safe.directory /workspace')
-  containerExec(containerName, 'git config --global --add safe.directory /repo')
+  await containerExec(containerName, `git config --global user.name '${shellEscape(gitUser.name)}'`)
+  await containerExec(containerName, `git config --global user.email '${shellEscape(gitUser.email)}'`)
+  await containerExec(containerName, 'git config --global --add safe.directory /workspace')
+  await containerExec(containerName, 'git config --global --add safe.directory /repo')
 
   // Rewrite any SSH-style GitHub URLs to HTTPS (handled by the proxy)
-  containerExec(containerName, `git config --global url.'https://github.com/'.insteadOf 'git@github.com:'`)
+  await containerExec(containerName, `git config --global url.'https://github.com/'.insteadOf 'git@github.com:'`)
 
   // Start the agent tool in a tmux session
   const addDirFlags = [...(options.addDir ?? []), ...(options.addDirRw ?? [])]
@@ -223,33 +223,33 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
   const agentCmd = buildAgentCmd(tool, sessionId, addDirFlags)
   const toolLabel = tool === 'codex' ? 'Codex' : 'Claude Code'
   emit(`Starting ${toolLabel}...`, options)
-  containerExec(containerName, `tmux -u new-session -d -s yaac -n ${tool} '${agentCmd}'`)
+  await containerExec(containerName, `tmux -u new-session -d -s yaac -n ${tool} '${agentCmd}'`)
 
   // Run init commands in a background tmux window (parallel to Claude Code)
   if (config.initCommands?.length) {
     const initScript = config.initCommands
       .map((cmd) => shellEscape(cmd))
       .join(' && ')
-    containerExec(containerName, `tmux new-window -d -t yaac -n init 'cd /workspace && ${initScript}'`)
+    await containerExec(containerName, `tmux new-window -d -t yaac -n init 'cd /workspace && ${initScript}'`)
     if (!config.hideInitPane) {
-      containerExec(containerName, 'tmux set-option -t yaac:init remain-on-exit on')
+      await containerExec(containerName, 'tmux set-option -t yaac:init remain-on-exit on')
     }
   }
 
   // Configure tmux UX
-  containerExec(containerName, 'tmux set-option -g history-limit 200000')
-  containerExec(containerName, 'tmux set-option -g mouse on')
-  containerExec(containerName, 'tmux set-option -g focus-events on')
+  await containerExec(containerName, 'tmux set-option -g history-limit 200000')
+  await containerExec(containerName, 'tmux set-option -g mouse on')
+  await containerExec(containerName, 'tmux set-option -g focus-events on')
   // Propagate terminal bells (\a) from any window through to the attached
   // client so the user's terminal emulator can surface notifications.
-  containerExec(containerName, 'tmux set-option -g monitor-bell on')
-  containerExec(containerName, 'tmux set-option -g bell-action any')
-  containerExec(containerName, 'tmux set-option -g visual-bell off')
-  containerExec(containerName, 'tmux set-option -g allow-passthrough on')
+  await containerExec(containerName, 'tmux set-option -g monitor-bell on')
+  await containerExec(containerName, 'tmux set-option -g bell-action any')
+  await containerExec(containerName, 'tmux set-option -g visual-bell off')
+  await containerExec(containerName, 'tmux set-option -g allow-passthrough on')
   const statusRight = buildStatusRight(projectSlug, sessionId, forwardedPorts)
-  containerExec(containerName, `tmux set-option -t yaac status-right '${shellEscape(statusRight)}'`)
-  containerExec(containerName, 'tmux set-option -t yaac status-right-length 80')
-  containerExec(containerName, 'tmux bind-key k kill-server')
+  await containerExec(containerName, `tmux set-option -t yaac status-right '${shellEscape(statusRight)}'`)
+  await containerExec(containerName, 'tmux set-option -t yaac status-right-length 80')
+  await containerExec(containerName, 'tmux bind-key k kill-server')
 }
 
 /**
@@ -561,7 +561,7 @@ export async function createSession(
     } catch (err) {
       if (attempt < maxStartAttempts) {
         emit(`Container startup failed (attempt ${attempt}/${maxStartAttempts}), retrying...`, options)
-        try { execPodmanWithRetry(`podman rm -f ${containerName}`) } catch { /* already gone */ }
+        try { await shellPodmanWithRetry(`podman rm -f ${containerName}`) } catch { /* already gone */ }
         continue
       }
       // Release any pre-bound host ports so a retry (or the reaper) can

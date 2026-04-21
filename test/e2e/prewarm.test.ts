@@ -153,7 +153,7 @@ describe('prewarm session lifecycle', () => {
     expect(await getPrewarmSession(projectSlug)).toBeNull()
 
     // Container should still be running
-    expect(isTmuxSessionAlive(claimed!.containerName)).toBe(true)
+    expect(await isTmuxSessionAlive(claimed!.containerName)).toBe(true)
   })
 
   it('claiming returns null when no prewarm session exists', async () => {
@@ -402,6 +402,6 @@ describe('prewarm session lifecycle', () => {
 
     expect(await isPrewarmSession(projectSlug, prewarm.sessionId)).toBe(true)
     expect(await isPrewarmSession(projectSlug, regular.sessionId)).toBe(false)
-    expect(isTmuxSessionAlive(prewarm.containerName)).toBe(true)
+    expect(await isTmuxSessionAlive(prewarm.containerName)).toBe(true)
   })
 })

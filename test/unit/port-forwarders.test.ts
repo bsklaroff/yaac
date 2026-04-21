@@ -3,7 +3,7 @@ import type net from 'node:net'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
 vi.mock('@/lib/container/runtime', () => ({
-  execPodmanWithRetry: vi.fn(),
+  shellPodmanWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
   podman: {
     listContainers: vi.fn(),
   },
@@ -15,7 +15,7 @@ vi.mock('@/lib/container/port', () => ({
   podmanRelay: vi.fn(),
 }))
 
-import { execPodmanWithRetry } from '@/lib/container/runtime'
+import { shellPodmanWithRetry } from '@/lib/container/runtime'
 import { podmanRelay, reserveAvailablePort, startPortForwarders } from '@/lib/container/port'
 import type { ReservedPort } from '@/lib/container/port'
 import {
@@ -27,7 +27,7 @@ import {
   stopSessionForwarders,
 } from '@/lib/session/port-forwarders'
 
-const mockExecPodman = vi.mocked(execPodmanWithRetry)
+const mockExecPodman = vi.mocked(shellPodmanWithRetry)
 const mockReserve = vi.mocked(reserveAvailablePort)
 const mockStartForwarders = vi.mocked(startPortForwarders)
 const mockPodmanRelay = vi.mocked(podmanRelay)
@@ -60,8 +60,8 @@ describe('setSessionStatusRight', () => {
     vi.resetAllMocks()
   })
 
-  it('issues a podman exec tmux set-option command with the rendered value', () => {
-    setSessionStatusRight('yaac-proj-123', 'proj', 'abcdef0123456789', [
+  it('issues a podman exec tmux set-option command with the rendered value', async () => {
+    await setSessionStatusRight('yaac-proj-123', 'proj', 'abcdef0123456789', [
       { hostPort: 19001, containerPort: 3000 },
     ])
     expect(mockExecPodman).toHaveBeenCalledTimes(1)

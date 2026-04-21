@@ -44,7 +44,7 @@ export async function restoreAllSessionForwarders(): Promise<void> {
     const containerName = c.Names?.[0]?.replace(/^\//, '') ?? c.Id
     if (!containerName) continue
     if (hasSessionForwarders(sessionId)) continue
-    if (!isTmuxSessionAlive(containerName)) continue
+    if (!(await isTmuxSessionAlive(containerName))) continue
     candidates.push({ containerName, projectSlug, sessionId })
   }
 

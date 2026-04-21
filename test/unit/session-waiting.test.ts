@@ -15,7 +15,7 @@ vi.mock('@/lib/project/paths', () => ({
 }))
 
 vi.mock('@/lib/session/cleanup', () => ({
-  isTmuxSessionAlive: vi.fn().mockReturnValue(true),
+  isTmuxSessionAlive: vi.fn().mockResolvedValue(true),
   cleanupSessionDetached: vi.fn(),
 }))
 
@@ -38,7 +38,7 @@ describe('getWaitingSessions', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     mockGetToolFromContainer.mockReturnValue('claude')
-    mockIsTmuxAlive.mockReturnValue(true)
+    mockIsTmuxAlive.mockResolvedValue(true)
   })
 
   it('returns sessions with status=waiting sorted oldest first', async () => {

@@ -41,6 +41,10 @@ describe('ensureImage layer stacking', () => {
         }
         cb(null, { stdout: '', stderr: '' })
       }),
+      exec: vi.fn((_cmd: string, optsOrCb: unknown, maybeCb?: unknown) => {
+        const cb = (typeof optsOrCb === 'function' ? optsOrCb : maybeCb) as (...cbArgs: unknown[]) => void
+        cb(null, { stdout: '', stderr: '' })
+      }),
       spawn: vi.fn((_cmd: string, args: string[]) => {
         const tIdx = args.indexOf('-t')
         const imageName = tIdx >= 0 ? args[tIdx + 1] : 'unknown'

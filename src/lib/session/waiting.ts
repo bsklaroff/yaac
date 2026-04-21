@@ -43,7 +43,7 @@ export async function getWaitingSessions(
       continue
     }
 
-    if (!isTmuxSessionAlive(name)) {
+    if (!(await isTmuxSessionAlive(name))) {
       stale.push({ name, slug, sessionId })
       continue
     }

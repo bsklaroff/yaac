@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { execPodmanWithRetry, podman } from '@/lib/container/runtime'
+import { podman, shellPodmanWithRetry } from '@/lib/container/runtime'
 import { proxyClient } from '@/lib/container/proxy-client'
 import { removeWorktree } from '@/lib/git'
 import { repoDir, worktreeDir } from '@/lib/project/paths'
@@ -25,7 +25,7 @@ async function removeSessionFromProxy(sessionId: string): Promise<void> {
 /**
  * Check whether tmux session "yaac" is alive inside the given container.
  *
- * Uses `execPodmanWithRetry` with a tight budget so transient podman/OCI
+ * Uses `shellPodmanWithRetry` with a tight budget so transient podman/OCI
  * errors (container state improper, conmon churn, etc.) do not masquerade
  * as "session is dead" — which would otherwise trigger destructive cleanup
  * of a live session.  The default retry budget (8 attempts, ~12.6s) is
@@ -36,9 +36,9 @@ async function removeSessionFromProxy(sessionId: string): Promise<void> {
  * detection effectively asynchronous without losing protection against
  * short state-transition races.
  */
-export function isTmuxSessionAlive(containerName: string): boolean {
+export async function isTmuxSessionAlive(containerName: string): Promise<boolean> {
   try {
-    execPodmanWithRetry(`podman exec ${containerName} tmux has-session -t yaac`, {
+    await shellPodmanWithRetry(`podman exec ${containerName} tmux has-session -t yaac`, {
       maxAttempts: 3,
       baseDelay: 100,
     })

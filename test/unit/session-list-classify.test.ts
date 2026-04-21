@@ -28,66 +28,66 @@ function container(overrides: {
 }
 
 describe('classifySessionContainers', () => {
-  it('puts running containers with live tmux into the running bucket', () => {
+  it('puts running containers with live tmux into the running bucket', async () => {
     const c = container({})
-    const result = classifySessionContainers([c], now(), () => true)
+    const result = await classifySessionContainers([c], now(), () => Promise.resolve(true))
     expect(result.running).toEqual([c])
     expect(result.stale).toEqual([])
   })
 
-  it('classifies old running-but-no-tmux containers as zombie stale', () => {
+  it('classifies old running-but-no-tmux containers as zombie stale', async () => {
     const c = container({ name: 'yaac-proj-zombie', sessionId: 'z1' })
-    const result = classifySessionContainers([c], now(), () => false)
+    const result = await classifySessionContainers([c], now(), () => Promise.resolve(false))
     expect(result.running).toEqual([])
     expect(result.stale).toEqual([
       { containerName: 'yaac-proj-zombie', projectSlug: 'proj', sessionId: 'z1', zombie: true },
     ])
   })
 
-  it('classifies old exited containers as non-zombie stale', () => {
+  it('classifies old exited containers as non-zombie stale', async () => {
     const c = container({ name: 'yaac-proj-dead', sessionId: 'd1', state: 'exited' })
-    const result = classifySessionContainers([c], now(), () => true)
+    const result = await classifySessionContainers([c], now(), () => Promise.resolve(true))
     expect(result.running).toEqual([])
     expect(result.stale).toEqual([
       { containerName: 'yaac-proj-dead', projectSlug: 'proj', sessionId: 'd1', zombie: false },
     ])
   })
 
-  it('skips young running-but-no-tmux containers during the startup grace window', () => {
+  it('skips young running-but-no-tmux containers during the startup grace window', async () => {
     // Simulates session-create attempt N with the container up but tmux
     // not yet started. Reaping this would clobber the proxy session.
     const c = container({ name: 'yaac-proj-new', state: 'running', ageMs: STARTING_GRACE_MS - 1_000 })
-    const isTmuxAlive = vi.fn().mockReturnValue(false)
-    const result = classifySessionContainers([c], now(), isTmuxAlive)
+    const isTmuxAlive = vi.fn().mockResolvedValue(false)
+    const result = await classifySessionContainers([c], now(), isTmuxAlive)
     expect(result.running).toEqual([])
     expect(result.stale).toEqual([])
   })
 
-  it('skips young exited containers so a retry can recreate them safely', () => {
+  it('skips young exited containers so a retry can recreate them safely', async () => {
     // Simulates the window between attempt N dying and the retry loop
     // firing `podman rm -f`. The reaper must not race with it.
     const c = container({ state: 'exited', ageMs: STARTING_GRACE_MS - 1_000 })
-    const result = classifySessionContainers([c], now(), () => true)
+    const result = await classifySessionContainers([c], now(), () => Promise.resolve(true))
     expect(result.running).toEqual([])
     expect(result.stale).toEqual([])
   })
 
-  it('reaps a container that has been running without tmux past the grace window', () => {
+  it('reaps a container that has been running without tmux past the grace window', async () => {
     const c = container({ name: 'yaac-proj-stuck', ageMs: STARTING_GRACE_MS + 5_000 })
-    const result = classifySessionContainers([c], now(), () => false)
+    const result = await classifySessionContainers([c], now(), () => Promise.resolve(false))
     expect(result.stale).toEqual([
       { containerName: 'yaac-proj-stuck', projectSlug: 'proj', sessionId: 's1', zombie: true },
     ])
   })
 
-  it('treats missing Created as old so legacy entries do not leak forever', () => {
+  it('treats missing Created as old so legacy entries do not leak forever', async () => {
     const c = { ...container({ state: 'exited' }), Created: undefined as number | undefined }
-    const result = classifySessionContainers([c], now(), () => true)
+    const result = await classifySessionContainers([c], now(), () => Promise.resolve(true))
     expect(result.stale).toHaveLength(1)
     expect(result.stale[0].zombie).toBe(false)
   })
 
-  it('falls back to Id when Names is missing, and tolerates empty labels', () => {
+  it('falls back to Id when Names is missing, and tolerates empty labels', async () => {
     const c = {
       Id: 'abc123',
       Names: undefined as string[] | undefined,
@@ -95,24 +95,24 @@ describe('classifySessionContainers', () => {
       State: 'exited',
       Created: Math.floor((NOW - STARTING_GRACE_MS - 1_000) / 1000),
     }
-    const result = classifySessionContainers([c], now(), () => true)
+    const result = await classifySessionContainers([c], now(), () => Promise.resolve(true))
     expect(result.stale).toEqual([
       { containerName: 'abc123', projectSlug: '', sessionId: '', zombie: false },
     ])
   })
 
-  it('strips the leading slash from container names', () => {
+  it('strips the leading slash from container names', async () => {
     const c = container({ name: 'yaac-proj-s1' })
-    const isTmuxAlive = vi.fn().mockReturnValue(true)
-    classifySessionContainers([c], now(), isTmuxAlive)
+    const isTmuxAlive = vi.fn().mockResolvedValue(true)
+    await classifySessionContainers([c], now(), isTmuxAlive)
     expect(isTmuxAlive).toHaveBeenCalledWith('yaac-proj-s1')
   })
 
-  it('honors an explicit graceMs override', () => {
+  it('honors an explicit graceMs override', async () => {
     const c = container({ state: 'exited', ageMs: 500 })
-    const zeroGrace = classifySessionContainers([c], now(), () => true, 0)
+    const zeroGrace = await classifySessionContainers([c], now(), () => Promise.resolve(true), 0)
     expect(zeroGrace.stale).toHaveLength(1)
-    const largeGrace = classifySessionContainers([c], now(), () => true, 10_000)
+    const largeGrace = await classifySessionContainers([c], now(), () => Promise.resolve(true), 10_000)
     expect(largeGrace.stale).toEqual([])
   })
 })

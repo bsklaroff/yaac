@@ -27,7 +27,7 @@ async function getActiveProjects(): Promise<string[]> {
     if (!slug) continue
     if (c.State !== 'running') continue
     const name = c.Names?.[0]?.replace(/^\//, '') ?? c.Id
-    if (!isTmuxSessionAlive(name)) continue
+    if (!(await isTmuxSessionAlive(name))) continue
     if (await isPrewarmSession(slug, c.Labels?.['yaac.session-id'] ?? '')) continue
     projects.add(slug)
   }

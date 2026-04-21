@@ -56,12 +56,12 @@ interface ClassifiableContainer {
  * active sessions, the ones the caller should tear down, and implicitly
  * (by omission) the ones that are still inside the startup grace window.
  */
-export function classifySessionContainers<T extends ClassifiableContainer>(
+export async function classifySessionContainers<T extends ClassifiableContainer>(
   containers: T[],
   nowMs: number,
-  isTmuxAlive: (name: string) => boolean,
+  isTmuxAlive: (name: string) => Promise<boolean>,
   graceMs: number = STARTING_GRACE_MS,
-): { running: T[]; stale: StaleSessionInfo[] } {
+): Promise<{ running: T[]; stale: StaleSessionInfo[] }> {
   const running: T[] = []
   const stale: StaleSessionInfo[] = []
   for (const c of containers) {
@@ -69,7 +69,7 @@ export function classifySessionContainers<T extends ClassifiableContainer>(
     const sessionId = c.Labels?.['yaac.session-id'] ?? ''
     const slug = c.Labels?.['yaac.project'] ?? ''
 
-    if (c.State === 'running' && isTmuxAlive(name)) {
+    if (c.State === 'running' && await isTmuxAlive(name)) {
       running.push(c)
       continue
     }
@@ -116,7 +116,7 @@ export async function listActiveSessions(projectFilter?: string): Promise<Active
     throw new DaemonError('PODMAN_UNAVAILABLE', err instanceof Error ? err.message : String(err))
   }
 
-  const { running, stale } = classifySessionContainers(
+  const { running, stale } = await classifySessionContainers(
     containers, Date.now(), isTmuxSessionAlive, resolveStartingGraceMs(),
   )
 
@@ -182,7 +182,7 @@ export async function reconcileStaleSessions(): Promise<void> {
   } catch {
     return
   }
-  const { stale } = classifySessionContainers(
+  const { stale } = await classifySessionContainers(
     containers, Date.now(), isTmuxSessionAlive, resolveStartingGraceMs(),
   )
   if (stale.length === 0) return

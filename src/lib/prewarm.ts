@@ -1,8 +1,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { execSync } from 'node:child_process'
-import { podman } from '@/lib/container/runtime'
+import { podman, podmanExecWithRetry, shellPodmanWithRetry } from '@/lib/container/runtime'
 import { getDataDir, repoDir } from '@/lib/project/paths'
 import { resolveSessionFingerprint } from '@/lib/session/fingerprint'
 import { isTmuxSessionAlive, cleanupSession } from '@/lib/session/cleanup'
@@ -95,7 +94,7 @@ async function hasLiveSessions(projectSlug: string, prewarmContainerName?: strin
     const name = c.Names?.[0]?.replace(/^\//, '') ?? c.Id
     if (name === prewarmContainerName) continue
     if (c.State !== 'running') continue
-    if (isTmuxSessionAlive(name)) return true
+    if (await isTmuxSessionAlive(name)) return true
   }
 
   return false
@@ -176,7 +175,7 @@ export async function ensurePrewarmSession(projectSlug: string, tool: AgentTool 
       }
 
       // State is "ready" — verify container is still alive
-      const alive = isContainerRunning(existing.containerName) && isTmuxSessionAlive(existing.containerName)
+      const alive = await isContainerRunning(existing.containerName) && await isTmuxSessionAlive(existing.containerName)
       if (alive) {
         // Fresh prewarm session — update verifiedAt
         await setPrewarmSession(projectSlug, { ...existing, verifiedAt: Date.now() })
@@ -277,17 +276,20 @@ export async function claimPrewarmSession(
   // verifiedAt (within MAX_STALE_MS, checked above). Skip the expensive
   // podman exec tmux check and just do a cheap container-running check
   // in case it crashed since the last monitor tick.
-  if (!isContainerRunning(containerName)) {
+  if (!(await isContainerRunning(containerName))) {
     return null
   }
 
   return { sessionId, containerName }
 }
 
-function isContainerRunning(containerName: string): boolean {
+async function isContainerRunning(containerName: string): Promise<boolean> {
   try {
-    const result = execSync(`podman inspect --format '{{.State.Running}}' ${containerName}`, { stdio: 'pipe' })
-    return result.toString().trim() === 'true'
+    const result = await podmanExecWithRetry(
+      ['inspect', '--format', '{{.State.Running}}', containerName],
+      { maxAttempts: 1 },
+    )
+    return result.stdout.trim() === 'true'
   } catch {
     return false
   }
@@ -296,7 +298,7 @@ function isContainerRunning(containerName: string): boolean {
 async function waitForContainer(containerName: string, timeoutMs: number): Promise<boolean> {
   const start = Date.now()
   while (Date.now() - start < timeoutMs) {
-    if (isContainerRunning(containerName) && isTmuxSessionAlive(containerName)) {
+    if (await isContainerRunning(containerName) && await isTmuxSessionAlive(containerName)) {
       return true
     }
     await new Promise((resolve) => setTimeout(resolve, 1000))
@@ -314,7 +316,7 @@ async function cleanupPrewarmSession(entry: PrewarmEntry, projectSlug: string): 
   } catch {
     // Force remove if normal cleanup fails
     try {
-      execSync(`podman rm -f ${entry.containerName}`, { stdio: 'pipe' })
+      await shellPodmanWithRetry(`podman rm -f ${entry.containerName}`, { maxAttempts: 1 })
     } catch {
       // already gone
     }

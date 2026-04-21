@@ -1,8 +1,9 @@
 import Docker from 'dockerode'
-import { execFile, execSync, type ExecSyncOptions } from 'node:child_process'
+import { exec, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
 export const execFileAsync = promisify(execFile)
+const execAsync = promisify(exec)
 
 /**
  * Stderr patterns that indicate a transient podman failure worth retrying.
@@ -63,38 +64,37 @@ export async function podmanExecWithRetry(
 }
 
 /**
- * Synchronous podman exec with retries on transient errors.  Used by call
- * sites that already operate synchronously (e.g. container-setup helpers
- * that run a series of `podman exec` commands in sequence).  Accepts the
- * full shell command string — the caller is responsible for escaping.
+ * Async podman exec with retries, matching `podmanExecWithRetry`'s retry
+ * behavior but accepting a full shell command string so callers that rely
+ * on shell features (sh -c "...", single-quoted args, redirection) don't
+ * have to split args manually. Runs in the Node event loop — does not
+ * block, so it's safe to call from the daemon process while its HTTP
+ * server is serving /health.
  */
-export function execPodmanWithRetry(
+export async function shellPodmanWithRetry(
   command: string,
-  opts: PodmanExecOptions & { execOpts?: ExecSyncOptions } = {},
-): Buffer {
+  opts: PodmanExecOptions = {},
+): Promise<{ stdout: string; stderr: string }> {
   const maxAttempts = opts.maxAttempts ?? 8
   const baseDelay = opts.baseDelay ?? 200
-  const execOpts: ExecSyncOptions = { stdio: 'pipe', ...(opts.execOpts ?? {}) }
-  if (opts.timeout) execOpts.timeout = opts.timeout
-
-  const sharedBuf = new Int32Array(new SharedArrayBuffer(4))
+  const execOpts: { timeout?: number } = opts.timeout ? { timeout: opts.timeout } : {}
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      return execSync(command, execOpts) as Buffer
+      const res = await execAsync(command, execOpts)
+      return { stdout: res.stdout.toString(), stderr: res.stderr.toString() }
     } catch (err: unknown) {
       const stderr = ((err as { stderr?: Buffer | string })?.stderr ?? '').toString()
         + ((err as Error)?.message ?? '')
       if (attempt < maxAttempts && isTransientPodmanError(stderr)) {
         const delay = Math.min(baseDelay * 2 ** (attempt - 1), 3200)
-        // Synchronous sleep without blocking the thread via busy-loop.
-        Atomics.wait(sharedBuf, 0, 0, delay)
+        await new Promise((r) => setTimeout(r, delay))
         continue
       }
       throw err
     }
   }
-  throw new Error('execPodmanWithRetry: unexpected fall-through')
+  throw new Error('shellPodmanWithRetry: unexpected fall-through')
 }
 
 function getSocketPath(): string | undefined {

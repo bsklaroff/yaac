@@ -59,7 +59,7 @@ describe('restoreAllSessionForwarders', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     mockReadPrewarm.mockResolvedValue({})
-    mockTmuxAlive.mockReturnValue(true)
+    mockTmuxAlive.mockResolvedValue(true)
     mockHasForwarders.mockReturnValue(false)
     mockResolveConfig.mockResolvedValue({
       portForward: [{ containerPort: 3000, hostPortStart: 3000 }],
@@ -122,7 +122,7 @@ describe('restoreAllSessionForwarders', () => {
   })
 
   it('skips containers with a dead tmux session', async () => {
-    mockTmuxAlive.mockReturnValue(false)
+    mockTmuxAlive.mockResolvedValue(false)
     mockListContainers.mockResolvedValue([container()] as never)
     await restoreAllSessionForwarders()
     expect(mockProvision).not.toHaveBeenCalled()
