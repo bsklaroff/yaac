@@ -2,7 +2,7 @@
   "nestedContainers": true,
   "initCommands": [
     "pnpm install",
-    "Xvfb :0 -screen 0 1920x1080x24 +extension RANDR -ac >/tmp/xvfb.log 2>&1 & sleep 1 && x11vnc -display :0 -nopw -forever -shared -rfbport 5900 -xrandr resize -bg -o /tmp/x11vnc.log && websockify -D --web=/usr/share/novnc 6080 localhost:5900"
+    "Xvnc :0 -geometry 1920x1080 -depth 24 -SecurityTypes None -rfbport 5900 -AlwaysShared -AcceptSetDesktopSize -desktop yaac >/tmp/xvnc.log 2>&1 & until [ -S /tmp/.X11-unix/X0 ]; do sleep 0.1; done && (while true; do matchbox-window-manager -use_titlebar no >>/tmp/matchbox.log 2>&1; sleep 1; done) & websockify -D --web=/usr/share/novnc 6080 localhost:5900"
   ],
   "hideInitPane": true,
   "portForward": [
