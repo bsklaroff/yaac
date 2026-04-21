@@ -25,6 +25,7 @@ import {
   DOCKERFILES_DIR,
   PROXY_DIR,
 } from '@/lib/project/paths'
+import { daemonLogPath } from '@/shared/paths'
 
 describe('paths', () => {
   afterEach(() => {
@@ -40,6 +41,11 @@ describe('paths', () => {
   it('returns correct projects dir', () => {
     setDataDir('/tmp/yaac-test')
     expect(getProjectsDir()).toBe('/tmp/yaac-test/projects')
+  })
+
+  it('returns correct daemon log path', () => {
+    setDataDir('/tmp/yaac-test')
+    expect(daemonLogPath()).toBe('/tmp/yaac-test/daemon.log')
   })
 
   it('returns correct project subdirectories', () => {

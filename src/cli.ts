@@ -14,7 +14,7 @@ import { authClear } from '@/commands/auth-clear'
 import { authList } from '@/commands/auth-list'
 import { toolGet } from '@/commands/tool-get'
 import { toolSet } from '@/commands/tool-set'
-import { runDaemon, startDaemon, stopDaemon, restartDaemon } from '@/daemon/cli'
+import { runDaemon, startDaemon, stopDaemon, restartDaemon, daemonLogs } from '@/daemon/cli'
 import { getDefaultTool } from '@/lib/project/preferences'
 import type { AgentTool } from '@/shared/types'
 import type { SessionMonitorOptions } from '@/commands/session-monitor'
@@ -87,6 +87,15 @@ daemon
   .command('restart')
   .description('Restart the daemon (stop, then start)')
   .action(restartDaemon)
+
+daemon
+  .command('logs')
+  .description('Print the daemon log (~/.yaac/daemon.log)')
+  .option('-f, --follow', 'Keep printing new lines as they are appended')
+  .option('-n, --lines <n>', 'Print only the last N lines', (v) => Number.parseInt(v, 10))
+  .action(async (options: { follow?: boolean; lines?: number }) => {
+    await daemonLogs(options)
+  })
 
 const project = program
   .command('project')

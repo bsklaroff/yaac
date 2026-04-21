@@ -37,6 +37,10 @@ export function getProjectsDir(): string {
   return path.join(getDataDir(), 'projects')
 }
 
+export function daemonLogPath(): string {
+  return path.join(getDataDir(), 'daemon.log')
+}
+
 export async function ensureDataDir(): Promise<void> {
   await fs.mkdir(getProjectsDir(), { recursive: true })
 }

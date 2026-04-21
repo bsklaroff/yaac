@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import fs from 'node:fs/promises'
+import { createReadStream, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { serve, type ServerType } from '@hono/node-server'
@@ -15,8 +16,10 @@ import {
   type DaemonLock,
 } from '@/shared/lock'
 import { ensureDataDir } from '@/lib/project/paths'
+import { daemonLogPath } from '@/shared/paths'
 import { startBackgroundLoop } from '@/daemon/background-loop'
 import { restoreAllSessionForwarders } from '@/lib/session/restore-forwarders'
+import { daemonLog } from '@/daemon/log'
 
 const __filename = fileURLToPath(import.meta.url)
 
@@ -41,7 +44,7 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
 
   const existing = await readLock()
   if (existing && await isLockLive(existing)) {
-    console.error(`[daemon] already running pid=${existing.pid} port=${existing.port}`)
+    daemonLog(`[daemon] already running pid=${existing.pid} port=${existing.port}`)
     return
   }
 
@@ -58,7 +61,7 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
   )
 
   await writeLock({ pid: process.pid, port, secret, startedAt: Date.now(), buildId })
-  console.error(`[daemon] listening on 127.0.0.1:${port} lock=${daemonLockPath()}`)
+  daemonLog(`[daemon] listening on 127.0.0.1:${port} lock=${daemonLockPath()}`)
 
   // A daemon restart loses the in-memory forwarder registry while
   // running containers keep their tmux `status-right` advertising
@@ -68,19 +71,19 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
   try {
     await restoreAllSessionForwarders()
   } catch (err) {
-    console.error('[daemon] restore forwarders failed:', err)
+    daemonLog(`[daemon] restore forwarders failed: ${String(err)}`)
   }
 
   const abortCtrl = new AbortController()
   const loopDone = startBackgroundLoop({ signal: abortCtrl.signal })
 
   const shutdown = async (signal: string): Promise<void> => {
-    console.error(`[daemon] ${signal} — shutting down`)
+    daemonLog(`[daemon] ${signal} — shutting down`)
     abortCtrl.abort()
     try {
       await loopDone
     } catch (err) {
-      console.error('[daemon] loop exit error:', err)
+      daemonLog(`[daemon] loop exit error: ${String(err)}`)
     }
     // @hono/node-server wraps a Node http.Server; close() refuses new
     // connections, drains in-flight requests, then fires the callback.
@@ -244,4 +247,98 @@ async function waitForLiveLock(timeoutMs: number): Promise<DaemonLock> {
     await new Promise((r) => setTimeout(r, 100))
   }
   throw new Error('daemon did not start within 5s')
+}
+
+export interface DaemonLogsOptions {
+  /** Keep printing as new lines are appended to the log file. */
+  follow?: boolean
+  /** Print only the last N lines (before following, if combined with follow). */
+  lines?: number
+}
+
+/**
+ * Entry point for `yaac daemon logs`. Prints ~/.yaac/daemon.log to stdout.
+ *
+ * - No options: prints the whole file.
+ * - `--lines N`: prints only the last N lines.
+ * - `--follow`: after the initial print, keeps printing new content as it
+ *   is appended. Polls at 200ms since fs.watch is flaky across platforms
+ *   and log throughput is tiny — polling is simpler and plenty fast.
+ */
+export async function daemonLogs(opts: DaemonLogsOptions = {}): Promise<void> {
+  const logPath = daemonLogPath()
+
+  let position = 0
+  if (existsSync(logPath)) {
+    position = opts.lines !== undefined
+      ? await lastNLinesOffset(logPath, opts.lines)
+      : 0
+    await writeRangeToStdout(logPath, position)
+    position = (await fs.stat(logPath)).size
+  } else if (!opts.follow) {
+    console.error(`[yaac] no daemon log at ${logPath}`)
+    return
+  } else {
+    console.error(`[yaac] no daemon log at ${logPath} yet — waiting for it`)
+  }
+
+  if (!opts.follow) return
+  await followLog(logPath, position)
+}
+
+/**
+ * Return the byte offset that begins the last `n` lines of `logPath`.
+ * Assumes lines end in '\n'. For n=0 returns the end of the file.
+ */
+async function lastNLinesOffset(logPath: string, n: number): Promise<number> {
+  if (n <= 0) return (await fs.stat(logPath)).size
+  const content = await fs.readFile(logPath, 'utf8')
+  if (content.length === 0) return 0
+  // Strip a single trailing newline so splitting doesn't create a bogus
+  // empty last element.
+  const trimmed = content.endsWith('\n') ? content.slice(0, -1) : content
+  const lines = trimmed.split('\n')
+  if (lines.length <= n) return 0
+  const skipped = lines.slice(0, lines.length - n).join('\n') + '\n'
+  return Buffer.byteLength(skipped, 'utf8')
+}
+
+async function writeRangeToStdout(logPath: string, start: number): Promise<void> {
+  const stat = await fs.stat(logPath)
+  if (start >= stat.size) return
+  await new Promise<void>((resolve, reject) => {
+    const stream = createReadStream(logPath, { start, end: stat.size - 1 })
+    stream.on('data', (chunk) => process.stdout.write(chunk as Buffer))
+    stream.on('end', () => resolve())
+    stream.on('error', reject)
+  })
+}
+
+async function followLog(logPath: string, fromPosition: number): Promise<void> {
+  let position = fromPosition
+  await new Promise<void>((resolve) => {
+    const onSigint = (): void => {
+      clearInterval(timer)
+      process.off('SIGINT', onSigint)
+      resolve()
+    }
+    process.on('SIGINT', onSigint)
+    const timer = setInterval(() => {
+      void (async () => {
+        try {
+          if (!existsSync(logPath)) return
+          const stat = await fs.stat(logPath)
+          if (stat.size > position) {
+            await writeRangeToStdout(logPath, position)
+            position = stat.size
+          } else if (stat.size < position) {
+            // File was truncated or replaced — resync from the top.
+            position = 0
+          }
+        } catch {
+          // Ignore transient FS errors; the next tick will retry.
+        }
+      })()
+    }, 200)
+  })
 }

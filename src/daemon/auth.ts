@@ -1,4 +1,5 @@
 import type { Context, MiddlewareHandler } from 'hono'
+import { daemonLog } from '@/daemon/log'
 
 /**
  * Bearer middleware for the daemon. Every request must carry
@@ -51,6 +52,6 @@ export function requestLogger(): MiddlewareHandler {
     const t0 = Date.now()
     await next()
     const dur = Date.now() - t0
-    console.error(`[daemon] ${c.req.method} ${c.req.path} ${c.res.status} ${dur}ms`)
+    daemonLog(`[daemon] ${c.req.method} ${c.req.path} ${c.res.status} ${dur}ms`)
   }
 }

@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { setDataDir } from '@/lib/project/paths'
 import { daemonLockPath, readLock, type DaemonLock } from '@/shared/lock'
+import { daemonLogPath } from '@/shared/paths'
 
 const TSX_CLI = path.resolve(__dirname, '..', '..', 'node_modules', 'tsx', 'dist', 'cli.mjs')
 const ENTRY = path.resolve(__dirname, '..', '..', 'src', 'cli.ts')
@@ -185,17 +186,20 @@ describe('yaac daemon run (subprocess)', () => {
 async function runCli(env: NodeJS.ProcessEnv, ...args: string[]): Promise<{
   exitCode: number | null
   stderr: string
+  stdout: string
 }> {
   const child = spawn(process.execPath, [TSX_CLI, ENTRY, ...args], {
     env,
-    stdio: ['ignore', 'ignore', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe'],
   })
   let stderr = ''
+  let stdout = ''
   child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+  child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
   const exitCode = await new Promise<number | null>((resolve) => {
     child.once('exit', (code) => resolve(code))
   })
-  return { exitCode, stderr }
+  return { exitCode, stderr, stdout }
 }
 
 async function killDaemonByLock(): Promise<void> {
@@ -302,3 +306,95 @@ describe('yaac daemon start / stop / restart (subprocess)', () => {
     expect(await readLock()).not.toBeNull()
   })
 })
+
+describe('yaac daemon logs (subprocess)', () => {
+  let homeDir: string
+  let dataDir: string
+  let env: NodeJS.ProcessEnv
+
+  beforeEach(async () => {
+    homeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-daemon-logs-'))
+    dataDir = path.join(homeDir, '.yaac')
+    await fs.mkdir(path.join(dataDir, 'projects'), { recursive: true })
+    setDataDir(dataDir)
+    env = { ...process.env, HOME: homeDir, YAAC_BUILD_ID: 'test-build-id' }
+  })
+
+  afterEach(async () => {
+    await killDaemonByLock()
+    await fs.rm(homeDir, { recursive: true, force: true })
+  })
+
+  it('tells the user when no log file exists yet', async () => {
+    const { exitCode, stderr, stdout } = await runCli(env, 'daemon', 'logs')
+    expect(exitCode).toBe(0)
+    expect(stderr).toMatch(/no daemon log at/)
+    expect(stdout).toBe('')
+  })
+
+  it('prints the daemon log after `daemon start` has written to it', async () => {
+    const started = await runCli(env, 'daemon', 'start')
+    expect(started.exitCode).toBe(0)
+
+    // Hit /health to guarantee the request logger has flushed at least
+    // one line, plus the initial "listening on …" line from startup.
+    const lock = await readLock()
+    await fetch(`http://127.0.0.1:${lock!.port}/health`)
+
+    const { exitCode, stdout } = await runCli(env, 'daemon', 'logs')
+    expect(exitCode).toBe(0)
+    expect(stdout).toMatch(/\[daemon\] listening on 127\.0\.0\.1:/)
+    expect(stdout).toMatch(/GET \/health 200/)
+  })
+
+  it('`-n 1` prints only the last line', async () => {
+    // Seed the log file directly so the assertion is deterministic
+    // regardless of how many lines the daemon itself wrote.
+    await fs.writeFile(daemonLogPath(), 'first\nsecond\nthird\n')
+    const { exitCode, stdout } = await runCli(env, 'daemon', 'logs', '-n', '1')
+    expect(exitCode).toBe(0)
+    expect(stdout).toBe('third\n')
+  })
+
+  it('`--lines 2` prints only the last 2 lines', async () => {
+    await fs.writeFile(daemonLogPath(), 'a\nb\nc\nd\n')
+    const { exitCode, stdout } = await runCli(env, 'daemon', 'logs', '--lines', '2')
+    expect(exitCode).toBe(0)
+    expect(stdout).toBe('c\nd\n')
+  })
+
+  it('`-f` keeps printing new lines until interrupted', async () => {
+    await fs.writeFile(daemonLogPath(), 'initial\n')
+
+    const child = spawn(process.execPath, [TSX_CLI, ENTRY, 'daemon', 'logs', '-f'], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    try {
+      let stdout = ''
+      child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
+
+      // Wait for the initial content to be flushed.
+      await waitFor(() => stdout.includes('initial\n'), 3000)
+
+      // Append more — the follow loop polls at 200ms, so 500ms is plenty.
+      await fs.appendFile(daemonLogPath(), 'appended\n')
+      await waitFor(() => stdout.includes('appended\n'), 3000)
+
+      expect(stdout).toContain('initial\n')
+      expect(stdout).toContain('appended\n')
+    } finally {
+      child.kill('SIGINT')
+      await new Promise<void>((resolve) => child.once('exit', () => resolve()))
+    }
+  })
+})
+
+async function waitFor(cond: () => boolean, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (cond()) return
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  throw new Error('waitFor timed out')
+}

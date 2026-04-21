@@ -1,6 +1,7 @@
 import { ensurePrewarmSessions, clearFailedPrewarmSessions } from '@/lib/prewarm'
 import { reconcileStaleSessions } from '@/lib/session/list'
 import { persistAllBlockedHosts } from '@/lib/session/blocked-hosts'
+import { daemonLog } from '@/daemon/log'
 
 export interface BackgroundLoopDeps {
   signal: AbortSignal
@@ -64,7 +65,7 @@ export async function startBackgroundLoop(deps: BackgroundLoopDeps): Promise<voi
       try {
         await step()
       } catch (err) {
-        console.error(`[daemon] loop step ${step.name || 'anon'} failed:`, err)
+        daemonLog(`[daemon] loop step ${step.name || 'anon'} failed: ${String(err)}`)
       }
     }
   }
