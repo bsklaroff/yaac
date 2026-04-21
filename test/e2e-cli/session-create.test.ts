@@ -71,4 +71,28 @@ describe('yaac session create (real CLI + real daemon)', () => {
     expect(exitCode).not.toBe(0)
     expect(stderr).toMatch(/No GitHub token configured/)
   })
+
+  it('rejects an unknown --tool value via daemon VALIDATION', async () => {
+    const repo = path.join(testEnv.scratchDir, 'repo-demo')
+    await createTestRepo(repo)
+    await addTestProject(repo)
+
+    const { stderr, exitCode } = await runYaac(
+      testEnv.env, 'session', 'create', 'repo-demo', '--tool', 'mystery',
+    )
+    expect(exitCode).not.toBe(0)
+    expect(stderr.toLowerCase()).toContain('tool')
+  })
+
+  it('rejects a relative --add-dir path with an absolute-path error', async () => {
+    const repo = path.join(testEnv.scratchDir, 'repo-demo')
+    await createTestRepo(repo)
+    await addTestProject(repo)
+
+    const { stderr, exitCode } = await runYaac(
+      testEnv.env, 'session', 'create', 'repo-demo', '--add-dir', 'relative/path',
+    )
+    expect(exitCode).not.toBe(0)
+    expect(stderr).toMatch(/absolute/i)
+  })
 })
