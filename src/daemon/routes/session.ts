@@ -1,11 +1,12 @@
 import { Hono } from 'hono'
+import { stream } from 'hono/streaming'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { listActiveSessions, listDeletedSessions } from '@/lib/session/list'
 import { getSessionDetail, getSessionBlockedHosts, getSessionPrompt } from '@/lib/session/detail'
 import { deleteSession } from '@/lib/session/delete'
 import { createSession, type SessionCreateOptions } from '@/daemon/session-create'
-import { DaemonError } from '@/daemon/errors'
+import { DaemonError, toErrorBody } from '@/daemon/errors'
 import { resolveSessionContainer } from '@/daemon/session-resolve'
 import { getPrewarmSession, clearPrewarmSession } from '@/lib/prewarm'
 import { pickNextStreamSession } from '@/daemon/stream-picker'
@@ -36,16 +37,30 @@ export const sessionApp = new Hono()
       tool: z.enum(['claude', 'codex']).optional(),
       gitUser: z.object({ name: z.string(), email: z.string() }).optional(),
     })),
-    async (c) => {
+    (c) => {
+      // NDJSON stream of {type:'progress'|'result'|'error'} events so the
+      // CLI can render provisioning progress live. Errors thrown inside
+      // the stream callback are swallowed by hono; catch and emit them.
       const body = c.req.valid('json')
-      const opts: SessionCreateOptions = {}
-      if (body.addDir) opts.addDir = body.addDir
-      if (body.addDirRw) opts.addDirRw = body.addDirRw
-      if (body.tool) opts.tool = body.tool
-      if (body.gitUser) opts.gitUser = body.gitUser
-      const result = await createSession(body.project, opts)
-      if (!result) throw new DaemonError('INTERNAL', 'session creation returned no result')
-      return c.json(result)
+      c.header('Content-Type', 'application/x-ndjson')
+      return stream(c, async (s) => {
+        const write = (event: unknown) => s.writeln(JSON.stringify(event))
+        const opts: SessionCreateOptions = {
+          onProgress: (message) => { void write({ type: 'progress', message }) },
+        }
+        if (body.addDir) opts.addDir = body.addDir
+        if (body.addDirRw) opts.addDirRw = body.addDirRw
+        if (body.tool) opts.tool = body.tool
+        if (body.gitUser) opts.gitUser = body.gitUser
+        try {
+          const result = await createSession(body.project, opts)
+          if (!result) throw new DaemonError('INTERNAL', 'session creation returned no result')
+          await write({ type: 'result', result })
+        } catch (err) {
+          const { body: errBody } = toErrorBody(err)
+          await write({ type: 'error', error: errBody.error })
+        }
+      })
     },
   )
   .post(

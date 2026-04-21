@@ -14,6 +14,55 @@ export interface SessionCreateOptions {
   tool?: AgentTool
 }
 
+interface SessionCreateResult {
+  sessionId?: string
+  containerName?: string
+}
+
+type StreamEvent =
+  | { type: 'progress'; message: string }
+  | { type: 'result'; result: SessionCreateResult }
+  | { type: 'error'; error: { code: string; message: string } }
+
+/**
+ * Read the NDJSON event stream returned by `POST /session/create`,
+ * printing progress lines and returning the terminal `result` event.
+ * Throws with the daemon's message if the stream carries an `error`
+ * event or ends without a result.
+ */
+async function consumeSessionCreateStream(res: Response): Promise<SessionCreateResult> {
+  if (!res.body) throw new Error('daemon returned an empty response body')
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  let result: SessionCreateResult | null = null
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (value) buf += decoder.decode(value, { stream: true })
+    if (done) {
+      buf += decoder.decode()
+      break
+    }
+    const lines = buf.split('\n')
+    buf = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line) continue
+      const event = JSON.parse(line) as StreamEvent
+      if (event.type === 'progress') console.log(event.message)
+      else if (event.type === 'result') result = event.result
+      else if (event.type === 'error') throw new Error(event.error.message)
+    }
+  }
+  if (buf) {
+    const event = JSON.parse(buf) as StreamEvent
+    if (event.type === 'progress') console.log(event.message)
+    else if (event.type === 'result') result = event.result
+    else if (event.type === 'error') throw new Error(event.error.message)
+  }
+  if (!result) throw new Error('daemon stream ended without a result event')
+  return result
+}
+
 /**
  * CLI entry point for `yaac session create`. Prompts for git identity
  * when the global config is missing, then hands provisioning off to
@@ -78,7 +127,8 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     },
   })
   if (!res.ok) throw await toClientError(res)
-  const result = await res.json()
+
+  const result = await consumeSessionCreateStream(res)
 
   const { sessionId, containerName } = result
   if (!sessionId || !containerName) {

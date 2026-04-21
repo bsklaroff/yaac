@@ -12,6 +12,7 @@ import {
 import { loadPreferences } from '@/lib/project/preferences'
 import type * as projectAddModule from '@/lib/project/add'
 import type { ProjectMeta, ClaudeOAuthBundle } from '@/shared/types'
+import { DaemonError } from '@/daemon/errors'
 
 vi.mock('@/daemon/session-create', () => ({
   createSession: vi.fn(),
@@ -183,13 +184,17 @@ describe('write routes', () => {
       expect(body.error.code).toBe('VALIDATION')
     })
 
-    it('forwards the call to createSession and returns its result', async () => {
-      mockCreateSession.mockResolvedValue({
-        sessionId: 'sess-x',
-        containerName: 'yaac-demo-sess-x',
-        forwardedPorts: [],
-        tool: 'claude',
-        claimedPrewarm: false,
+    it('streams progress and a terminal result event from createSession', async () => {
+      mockCreateSession.mockImplementation((_slug, opts) => {
+        opts.onProgress?.('Fetching latest from remote...')
+        opts.onProgress?.('Creating container yaac-demo-sess-x...')
+        return Promise.resolve({
+          sessionId: 'sess-x',
+          containerName: 'yaac-demo-sess-x',
+          forwardedPorts: [],
+          tool: 'claude',
+          claimedPrewarm: false,
+        })
       })
       const app = buildApp({ secret: 'shh', buildId: 'test' })
       const res = await app.request('/session/create', withAuth({
@@ -200,11 +205,40 @@ describe('write routes', () => {
         }),
       }))
       expect(res.status).toBe(200)
-      const body = await res.json() as { sessionId: string }
-      expect(body).toMatchObject({ sessionId: 'sess-x' })
+      expect(res.headers.get('content-type')).toBe('application/x-ndjson')
+      const text = await res.text()
+      const events = text.trim().split('\n').map((line) => JSON.parse(line) as unknown)
+      expect(events).toEqual([
+        { type: 'progress', message: 'Fetching latest from remote...' },
+        { type: 'progress', message: 'Creating container yaac-demo-sess-x...' },
+        {
+          type: 'result',
+          result: {
+            sessionId: 'sess-x',
+            containerName: 'yaac-demo-sess-x',
+            forwardedPorts: [],
+            tool: 'claude',
+            claimedPrewarm: false,
+          },
+        },
+      ])
       expect(mockCreateSession).toHaveBeenCalledWith('demo', expect.objectContaining({
         gitUser: { name: 'A', email: 'a@b' },
       }))
+    })
+
+    it('emits a terminal error event when createSession throws', async () => {
+      mockCreateSession.mockRejectedValue(new DaemonError('VALIDATION', 'no github token'))
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/session/create', withAuth({
+        method: 'POST',
+        body: JSON.stringify({ project: 'demo' }),
+      }))
+      expect(res.status).toBe(200)
+      const events = (await res.text()).trim().split('\n').map((l) => JSON.parse(l) as unknown)
+      expect(events).toEqual([
+        { type: 'error', error: { code: 'VALIDATION', message: 'no github token' } },
+      ])
     })
   })
 

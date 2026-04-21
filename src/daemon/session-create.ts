@@ -41,6 +41,11 @@ export function shellEscape(str: string): string {
   return str.replace(/'/g, "'\\''")
 }
 
+function emit(message: string, options: SessionCreateOptions): void {
+  console.log(message)
+  options.onProgress?.(message)
+}
+
 export function buildAgentCmd(
   tool: AgentTool,
   sessionId: string,
@@ -80,6 +85,13 @@ export interface SessionCreateOptions {
    * up-front (prompting when missing) and passes it in.
    */
   gitUser?: { name: string; email: string }
+  /**
+   * Called for each user-visible progress message during provisioning.
+   * The HTTP route forwards these to the CLI as NDJSON events so
+   * `yaac session create` can show what the daemon is doing. Prewarm
+   * and stream-picker callers omit this.
+   */
+  onProgress?: (message: string) => void
 }
 
 export interface SessionCreateResult {
@@ -206,7 +218,7 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
 
   const agentCmd = buildAgentCmd(tool, sessionId, addDirFlags)
   const toolLabel = tool === 'codex' ? 'Codex' : 'Claude Code'
-  console.log(`Starting ${toolLabel}...`)
+  emit(`Starting ${toolLabel}...`, options)
   containerExec(containerName, `tmux -u new-session -d -s yaac -n ${tool} '${agentCmd}'`)
 
   // Run init commands in a background tmux window (parallel to Claude Code)
@@ -274,7 +286,7 @@ export async function createSession(
   const tool: AgentTool = options.tool ?? 'claude'
   const claimed = !options.createPrewarm ? await claimPrewarmSession(projectSlug, tool) : null
   if (claimed) {
-    console.log(`Claiming prewarmed session ${claimed.sessionId.slice(0, 8)}...`)
+    emit(`Claiming prewarmed session ${claimed.sessionId.slice(0, 8)}...`, options)
     return {
       sessionId: claimed.sessionId,
       containerName: claimed.containerName,
@@ -314,7 +326,7 @@ export async function createSession(
       `No GitHub token configured for ${remoteUrl}. Run "yaac auth update" to add one.`,
     )
   }
-  console.log('Fetching latest from remote...')
+  emit('Fetching latest from remote...', options)
   try {
     await fetchOrigin(repo, githubToken)
   } catch (err) {
@@ -322,7 +334,7 @@ export async function createSession(
     throw new DaemonError('INTERNAL', `could not fetch from remote: ${msg}`)
   }
 
-  console.log('Ensuring container images are built...')
+  emit('Ensuring container images are built...', options)
   const imageName = await ensureImage(projectSlug, undefined, false, config.nestedContainers ?? false)
 
   const sessionId = options.sessionId ?? crypto.randomUUID()
@@ -331,7 +343,7 @@ export async function createSession(
   // Create worktree
   await fs.mkdir(worktreesDir(projectSlug), { recursive: true })
   const defaultBranch = await getDefaultBranch(repo)
-  console.log(`Creating worktree from ${defaultBranch}...`)
+  emit(`Creating worktree from ${defaultBranch}...`, options)
   await addWorktree(repo, wtDir, `yaac/${sessionId}`, `origin/${defaultBranch}`)
 
   // Fetch the image's baked-in ENV so we can preserve it.
@@ -361,7 +373,7 @@ export async function createSession(
   // directly and injects GitHub / Claude / Codex tokens into outbound HTTPS
   // requests. Credential updates via `yaac auth update` propagate to every
   // running session without needing to restart containers.
-  console.log('Starting proxy sidecar...')
+  emit('Starting proxy sidecar...', options)
   await proxyClient.ensureRunning()
 
   // Check that tool credentials exist on the host so the container can
@@ -423,10 +435,10 @@ export async function createSession(
   const forwardedPorts: ReservedPort[] = []
   if (config.portForward?.length) {
     for (const { containerPort, hostPortStart } of config.portForward) {
-      console.log(`Finding available host port starting from ${hostPortStart} for container port ${containerPort}...`)
+      emit(`Finding available host port starting from ${hostPortStart} for container port ${containerPort}...`, options)
       const reserved = await reserveAvailablePort(containerPort, hostPortStart)
       forwardedPorts.push(reserved)
-      console.log(`Forwarding host port ${reserved.hostPort} -> container port ${containerPort}`)
+      emit(`Forwarding host port ${reserved.hostPort} -> container port ${containerPort}`, options)
     }
   }
 
@@ -436,7 +448,7 @@ export async function createSession(
   let pgRelayIp: string | null = null
 
   if (pgEnabled) {
-    console.log('Starting PostgreSQL relay sidecar...')
+    emit('Starting PostgreSQL relay sidecar...', options)
     await pgRelay.ensureRunning(pgConfig)
     pgRelayIp = pgRelay.ip
   }
@@ -513,7 +525,7 @@ export async function createSession(
     networkMode, pgRelayIp, gitUser, forwardedPorts,
   }
 
-  console.log(`Creating container ${containerName}...`)
+  emit(`Creating container ${containerName}...`, options)
 
   for (let attempt = 1; attempt <= maxStartAttempts; attempt++) {
     try {
@@ -521,7 +533,7 @@ export async function createSession(
       break
     } catch (err) {
       if (attempt < maxStartAttempts) {
-        console.warn(`Container startup failed (attempt ${attempt}/${maxStartAttempts}), retrying...`)
+        emit(`Container startup failed (attempt ${attempt}/${maxStartAttempts}), retrying...`, options)
         try { execPodmanWithRetry(`podman rm -f ${containerName}`) } catch { /* already gone */ }
         continue
       }

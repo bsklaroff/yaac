@@ -224,6 +224,32 @@ describe('createSession', () => {
     expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/codex', { recursive: true })
   })
 
+  it('calls onProgress with stage messages during provisioning', async () => {
+    const messages: string[] = []
+    await createSession('demo', {
+      tool: 'claude',
+      onProgress: (m) => messages.push(m),
+    })
+    expect(messages).toContain('Fetching latest from remote...')
+    expect(messages).toContain('Ensuring container images are built...')
+    expect(messages).toContain('Creating worktree from main...')
+    expect(messages).toContain('Starting proxy sidecar...')
+    expect(messages.some((m) => m.startsWith('Creating container yaac-demo-'))).toBe(true)
+    expect(messages).toContain('Starting Claude Code...')
+  })
+
+  it('emits a claim-prewarm message when claiming a prewarmed session', async () => {
+    mockClaimPrewarmSession.mockResolvedValue({
+      sessionId: 'prewarm-0123456789abcdef',
+      containerName: 'yaac-demo-prewarm-0123456789abcdef',
+    })
+    const messages: string[] = []
+    await createSession('demo', { onProgress: (m) => messages.push(m) })
+    expect(messages).toEqual([
+      'Claiming prewarmed session prewarm-...',
+    ])
+  })
+
   it('mounts shared Claude and Codex state for Codex sessions', async () => {
     mockAccess.mockImplementation((target) => {
       if (target === '/tmp/demo/claude.json') {
@@ -259,11 +285,26 @@ vi.mock('@/shared/daemon-client', async (importOriginal) => {
 import { getRpcClient } from '@/shared/daemon-client'
 import { getGitUserConfig as getGitUserConfigShared } from '@/shared/git'
 
+function streamingResponse(lines: string[]): { ok: true; body: ReadableStream<Uint8Array> } {
+  const enc = new TextEncoder()
+  return {
+    ok: true,
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const line of lines) controller.enqueue(enc.encode(line + '\n'))
+        controller.close()
+      },
+    }),
+  }
+}
+
 describe('sessionCreate (CLI shim)', () => {
   const mockPost = vi.fn()
+  const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
 
   beforeEach(() => {
     vi.resetAllMocks()
+    logSpy.mockClear()
 
     mockAccess.mockResolvedValue(undefined)
     mockMkdir.mockResolvedValue(undefined)
@@ -276,16 +317,20 @@ describe('sessionCreate (CLI shim)', () => {
         create: { $post: mockPost },
       },
     } as unknown as Awaited<ReturnType<typeof getRpcClient>>)
-    mockPost.mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve({
-        sessionId: 'sess-123',
-        containerName: 'yaac-demo-sess-123',
-        forwardedPorts: [],
-        tool: 'claude',
-        claimedPrewarm: false,
+    mockPost.mockResolvedValue(streamingResponse([
+      JSON.stringify({ type: 'progress', message: 'Fetching latest from remote...' }),
+      JSON.stringify({ type: 'progress', message: 'Creating container yaac-demo-sess-123...' }),
+      JSON.stringify({
+        type: 'result',
+        result: {
+          sessionId: 'sess-123',
+          containerName: 'yaac-demo-sess-123',
+          forwardedPorts: [],
+          tool: 'claude',
+          claimedPrewarm: false,
+        },
       }),
-    })
+    ]))
   })
 
   it('POSTs /session/create with pre-resolved gitUser and returns the sessionId', async () => {
@@ -299,5 +344,20 @@ describe('sessionCreate (CLI shim)', () => {
         gitUser: { name: 'Test', email: 't@x.io' },
       }) as unknown,
     }))
+  })
+
+  it('prints each progress message from the NDJSON stream', async () => {
+    await sessionCreate('demo', {})
+    const logged = logSpy.mock.calls.map((args) => args[0] as unknown).filter((v) => typeof v === 'string')
+    expect(logged).toContain('Fetching latest from remote...')
+    expect(logged).toContain('Creating container yaac-demo-sess-123...')
+  })
+
+  it('throws with the daemon error message when the stream carries an error event', async () => {
+    mockPost.mockResolvedValue(streamingResponse([
+      JSON.stringify({ type: 'progress', message: 'Fetching latest from remote...' }),
+      JSON.stringify({ type: 'error', error: { code: 'VALIDATION', message: 'no github token' } }),
+    ]))
+    await expect(sessionCreate('demo', {})).rejects.toThrow('no github token')
   })
 })
