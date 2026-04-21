@@ -26,7 +26,9 @@ export const PACKAGE_ROOT = process.env.YAAC_BUNDLED
 let dataDir: string | null = null
 
 export function getDataDir(): string {
-  return dataDir ?? path.join(os.homedir(), '.yaac')
+  if (dataDir) return dataDir
+  if (process.env.YAAC_DATA_DIR) return process.env.YAAC_DATA_DIR
+  return path.join(os.homedir(), '.yaac')
 }
 
 export function setDataDir(dir: string): void {

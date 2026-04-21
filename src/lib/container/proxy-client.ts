@@ -590,8 +590,12 @@ export async function resolveProxyImageTag(image = 'yaac-proxy'): Promise<string
   return `${image}:${hash}`
 }
 
-// Default singleton — resolved state is populated by ensureRunning()
+// Default singleton — resolved state is populated by ensureRunning().
+// YAAC_PROXY_IMAGE / YAAC_PROXY_NETWORK are test-only hooks that let the
+// e2e-cli suite point a daemon subprocess at pre-built test images and an
+// isolated sidecar network. Unset in production.
 export const proxyClient = new ProxyClient({
-  image: 'yaac-proxy',
-  network: 'yaac-sessions',
+  image: process.env.YAAC_PROXY_IMAGE ?? 'yaac-proxy',
+  network: process.env.YAAC_PROXY_NETWORK ?? 'yaac-sessions',
+  requirePrebuilt: process.env.YAAC_REQUIRE_PREBUILT_IMAGES === '1',
 })

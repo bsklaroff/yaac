@@ -356,7 +356,12 @@ export async function createSession(
   }
 
   emit('Ensuring container images are built...', options)
-  const imageName = await ensureImage(projectSlug, undefined, false, config.nestedContainers ?? false)
+  const imageName = await ensureImage(
+    projectSlug,
+    process.env.YAAC_IMAGE_PREFIX,
+    process.env.YAAC_REQUIRE_PREBUILT_IMAGES === '1',
+    config.nestedContainers ?? false,
+  )
 
   const sessionId = options.sessionId ?? crypto.randomUUID()
   const wtDir = worktreeDir(projectSlug, sessionId)

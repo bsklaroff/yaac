@@ -17,6 +17,7 @@
     "test": "vitest run",
     "test:unit": "vitest run test/unit",
     "test:e2e": "vitest run test/e2e",
+    "test:e2e-cli": "vitest run test/e2e-cli",
     "test:watch": "vitest",
     "frontend:dev": "vite",
     "frontend:build": "vite build",
