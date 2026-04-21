@@ -73,7 +73,7 @@ describe('yaac daemon run (subprocess)', () => {
   afterEach(async () => {
     if (daemon) await daemon.stop()
     daemon = null
-    await fs.rm(homeDir, { recursive: true, force: true })
+    await fs.rm(homeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   })
 
   it('binds, writes the lock, and /health responds', async () => {
@@ -234,7 +234,7 @@ describe('yaac daemon start / stop / restart (subprocess)', () => {
 
   afterEach(async () => {
     await killDaemonByLock()
-    await fs.rm(homeDir, { recursive: true, force: true })
+    await fs.rm(homeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   })
 
   it('`daemon start` spawns a background daemon that writes the lock', async () => {
@@ -322,7 +322,7 @@ describe('yaac daemon logs (subprocess)', () => {
 
   afterEach(async () => {
     await killDaemonByLock()
-    await fs.rm(homeDir, { recursive: true, force: true })
+    await fs.rm(homeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   })
 
   it('tells the user when no log file exists yet', async () => {

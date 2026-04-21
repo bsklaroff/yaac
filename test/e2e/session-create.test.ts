@@ -20,23 +20,11 @@ import { repoDir, claudeDir, claudeJsonFile, codexDir, cachedPackagesDir, worktr
 const execFileAsync = promisify(execFile)
 
 async function podmanExecRetry(
-  cmd: string,
+  _cmd: 'podman',
   args: string[],
   opts?: { timeout?: number },
 ): Promise<{ stdout: string; stderr: string }> {
-  for (let attempt = 1; attempt <= 8; attempt++) {
-    try {
-      return await execFileAsync(cmd, args, opts ?? {})
-    } catch (err: unknown) {
-      const stderr = (err as { stderr?: string })?.stderr ?? ''
-      if (attempt < 8 && (stderr.includes('container state improper') || stderr.includes('no such container'))) {
-        await new Promise((r) => setTimeout(r, Math.min(200 * 2 ** (attempt - 1), 3200)))
-        continue
-      }
-      throw err
-    }
-  }
-  throw new Error('podmanExecRetry: unexpected fall-through')
+  return await podmanRetry(args, opts)
 }
 
 // Test-specific sidecar instances — initialized in createSessionNonInteractive

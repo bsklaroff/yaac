@@ -20,6 +20,8 @@ const TRANSIENT_EXEC_PATTERNS = [
   'error getting exit code',
   'connection refused', // podman socket briefly unavailable during renumber etc.
   'resource temporarily unavailable', // EAGAIN under PID/resource pressure
+  'exec died event', // "exec died event for session ... not found" — conmon/event log race
+  'unable to find event', // sibling of "exec died event" — podman event retrieval race
 ]
 
 export function isTransientPodmanError(stderr: string): boolean {

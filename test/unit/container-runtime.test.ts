@@ -88,6 +88,12 @@ describe('isTransientPodmanError', () => {
     expect(isTransientPodmanError('crun: cannot fork: Resource temporarily unavailable: OCI runtime error')).toBe(true)
   })
 
+  it('matches conmon/event-log races on exec result', () => {
+    expect(isTransientPodmanError(
+      'exec died event for session abc123 (container def456) not found: unable to find event',
+    )).toBe(true)
+  })
+
   it('does not match unrelated errors', () => {
     expect(isTransientPodmanError('permission denied')).toBe(false)
     expect(isTransientPodmanError('image not found')).toBe(false)
