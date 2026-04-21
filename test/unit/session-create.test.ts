@@ -259,6 +259,23 @@ describe('createSession', () => {
     expect(mockProvisionSessionForwarders).not.toHaveBeenCalled()
   })
 
+  it('does not bake a status-right value into the prewarm container', async () => {
+    // Prewarm containers would always get an empty-ports status-right, so
+    // leaving it unset avoids racing with the claim path's own write.
+    await createSession('demo', { createPrewarm: true, sessionId: 'new-prewarm' })
+    expect(mockBuildStatusRight).not.toHaveBeenCalled()
+  })
+
+  it('propagates provisionSessionForwarders failures when claiming a prewarm', async () => {
+    mockClaimPrewarmSession.mockResolvedValue({
+      sessionId: 'prewarm-session',
+      containerName: 'yaac-demo-prewarm-session',
+    })
+    mockProvisionSessionForwarders.mockRejectedValueOnce(new Error('no ports available'))
+
+    await expect(createSession('demo', {})).rejects.toThrow('no ports available')
+  })
+
   it('reserves and registers forwarders on a fresh non-prewarm session', async () => {
     vi.mocked(resolveProjectConfig).mockResolvedValue({
       portForward: [{ containerPort: 3000, hostPortStart: 3000 }],

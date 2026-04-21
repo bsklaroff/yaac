@@ -246,9 +246,15 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
   await containerExec(containerName, 'tmux set-option -g bell-action any')
   await containerExec(containerName, 'tmux set-option -g visual-bell off')
   await containerExec(containerName, 'tmux set-option -g allow-passthrough on')
-  const statusRight = buildStatusRight(projectSlug, sessionId, forwardedPorts)
-  await containerExec(containerName, `tmux set-option -t yaac status-right '${shellEscape(statusRight)}'`)
   await containerExec(containerName, 'tmux set-option -t yaac status-right-length 80')
+  // Prewarm containers skip the status-right write: the claim path's
+  // setSessionStatusRight races with this call, and since prewarm
+  // forwardedPorts is always empty, an unlucky ordering would clobber the
+  // claim's real port info with a no-ports string.
+  if (!options.createPrewarm) {
+    const statusRight = buildStatusRight(projectSlug, sessionId, forwardedPorts)
+    await containerExec(containerName, `tmux set-option -t yaac status-right '${shellEscape(statusRight)}'`)
+  }
   await containerExec(containerName, 'tmux bind-key k kill-server')
 }
 
@@ -292,22 +298,16 @@ export async function createSession(
     // Prewarm containers don't get port forwarders at creation time
     // (we don't yet know which host ports will be free when the session
     // is claimed). Provision them now so the claimed session actually
-    // forwards the ports advertised in its tmux status bar.
+    // forwards the ports advertised in its tmux status bar. Failures
+    // propagate — a session returned with no forwarders looks healthy
+    // in the status bar but silently drops connections.
     const claimedConfig: YaacConfig = await resolveProjectConfig(projectSlug) ?? {}
-    let forwardedPorts: PortMapping[] = []
-    try {
-      forwardedPorts = await provisionSessionForwarders(
-        projectSlug,
-        claimed.sessionId,
-        claimed.containerName,
-        claimedConfig.portForward,
-      )
-    } catch (err) {
-      console.error(
-        `Failed to provision port forwarders for claimed prewarm ${claimed.sessionId.slice(0, 8)}: `
-        + (err instanceof Error ? err.message : String(err)),
-      )
-    }
+    const forwardedPorts = await provisionSessionForwarders(
+      projectSlug,
+      claimed.sessionId,
+      claimed.containerName,
+      claimedConfig.portForward,
+    )
     return {
       sessionId: claimed.sessionId,
       containerName: claimed.containerName,
