@@ -147,6 +147,7 @@ describe('yaac session create (mocked remotes, happy path)', () => {
       ...testEnv.env,
       YAAC_E2E_UPSTREAM_REDIRECTS: JSON.stringify(redirects),
       YAAC_E2E_SKIP_FETCH: '1',
+      YAAC_E2E_NO_ATTACH: '1',
     }
     daemon = await spawnYaacDaemon(daemonEnv)
 

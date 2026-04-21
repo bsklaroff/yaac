@@ -137,17 +137,23 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     return
   }
 
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn('podman', ['exec', '-it', containerName, 'tmux', 'attach-session', '-t', 'yaac'], {
-        stdio: 'inherit',
+  // Test-only hook: e2e-cli tests drive sessions without a TTY, where
+  // `podman exec -it` hangs waiting for terminal capabilities. Setting
+  // this env var returns after provisioning and lets the test drive the
+  // container directly via `podman exec`.
+  if (process.env.YAAC_E2E_NO_ATTACH !== '1') {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn('podman', ['exec', '-it', containerName, 'tmux', 'attach-session', '-t', 'yaac'], {
+          stdio: 'inherit',
+        })
+        child.on('close', () => resolve())
+        child.on('error', reject)
       })
-      child.on('close', () => resolve())
-      child.on('error', reject)
-    })
-  } catch {
-    // Container or tmux session was killed (e.g. ctrl-b k) — the
-    // daemon's background loop will reap the dead container.
+    } catch {
+      // Container or tmux session was killed (e.g. ctrl-b k) — the
+      // daemon's background loop will reap the dead container.
+    }
   }
 
   return sessionId
