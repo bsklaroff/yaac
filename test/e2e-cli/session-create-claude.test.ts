@@ -21,17 +21,22 @@ import {
 } from '@test/helpers/mock-remotes'
 
 /**
- * Boots real claude-code inside a mocked session and drives it through its
- * first-run UI + a single prompt, asserting the mock LLM saw the
- * `/v1/messages` call and claude rendered the mock's response text in its
- * pane. This is the strongest test of the mocking infrastructure: it
- * exercises the real tool, not just a curl stand-in.
+ * Boots real claude-code inside a mocked session, types a single prompt,
+ * and asserts the mock LLM saw the `/v1/messages` call and claude rendered
+ * the mock's response text in its pane. This is the strongest test of the
+ * mocking infrastructure: it exercises the real tool, not a curl stand-in.
  *
- * The first-run navigation below is coupled to claude-code v2.1.x's
- * wizard order (theme → api-key-detected → security-notes → trust-folder
- * → bypass-permissions). When claude-code changes that flow this test
- * will need updating; the `session-create-happy.test.ts` curl test
- * doesn't have that coupling and will keep working regardless.
+ * First-run wizard is skipped by pre-seeding the two files claude-code
+ * writes when onboarding completes: `~/.claude.json` (onboarding flags,
+ * approved api-key list, per-project trust) and `~/.claude/settings.json`
+ * (bypass-permissions auto-accept). Keys used:
+ *   - hasCompletedOnboarding = true           — skips theme + security
+ *   - customApiKeyResponses.approved          — skips "detected api key"
+ *   - projects["/repo"].hasTrustDialogAccepted — skips trust-folder
+ *   - settings.json.skipDangerousModePermissionPrompt — skips bypass-perms
+ * `/repo` (not `/workspace`) is the key claude uses because the session
+ * worktree's .git file points at /repo/.git and git resolves the repo
+ * root to /repo.
  */
 describe('yaac session create drives real claude-code through mocked remotes', () => {
   const networkName = `yaac-test-sessions-${TEST_RUN_ID}`
@@ -69,10 +74,11 @@ describe('yaac session create drives real claude-code through mocked remotes', (
     await testEnv.cleanup()
   })
 
-  it('boots claude-code, navigates first-run, and round-trips a prompt through the mock LLM', async () => {
+  it('boots claude-code and round-trips a prompt through the mock LLM', async () => {
     const projectDir = path.join(testEnv.dataDir, 'projects', 'repo-demo')
     const repoDir = path.join(projectDir, 'repo')
-    await fs.mkdir(path.join(projectDir, 'claude'), { recursive: true })
+    const claudeHostDir = path.join(projectDir, 'claude')
+    await fs.mkdir(claudeHostDir, { recursive: true })
     await cloneRepo(path.join(mockGit!.reposDir, 'repo-demo.git'), repoDir)
     await simpleGit(repoDir).remote(['set-url', 'origin', 'https://github.com/test-org/repo-demo.git'])
     await fs.writeFile(path.join(projectDir, 'project.json'), JSON.stringify({
@@ -90,6 +96,22 @@ describe('yaac session create drives real claude-code through mocked remotes', (
       kind: 'api-key', savedAt: new Date().toISOString(), apiKey: 'sk-ant-fake-real-key',
     }) + '\n')
     await fs.writeFile(testEnv.gitConfigPath, '[user]\n\tname = Test User\n\temail = test@example.com\n')
+
+    // Pre-seed claude-code's onboarding state so the first-run wizard is
+    // skipped. These mount as /home/yaac/.claude.json and
+    // /home/yaac/.claude/settings.json in the session container.
+    await fs.writeFile(path.join(projectDir, 'claude.json'), JSON.stringify({
+      hasCompletedOnboarding: true,
+      lastOnboardingVersion: '2.1.116',
+      customApiKeyResponses: { approved: ['placeholder'], rejected: [] },
+      projects: {
+        '/repo': { hasTrustDialogAccepted: true },
+        '/workspace': { hasTrustDialogAccepted: true },
+      },
+    }) + '\n')
+    await fs.writeFile(path.join(claudeHostDir, 'settings.json'), JSON.stringify({
+      skipDangerousModePermissionPrompt: true,
+    }) + '\n')
 
     // Redirect every Anthropic / Claude / statsig host claude-code's
     // startup touches. Missing any of these causes claude's background
@@ -132,8 +154,10 @@ describe('yaac session create drives real claude-code through mocked remotes', (
       .map((row) => row.split('|')[0])[0]
     expect(containerName).toBeDefined()
 
-    // Give claude-code time to show the first-run theme prompt.
-    await new Promise((r) => setTimeout(r, 3000))
+    // Wait for claude-code to show its main chat prompt. With the
+    // pre-seeded onboarding state this happens directly on startup, no
+    // wizard navigation needed.
+    await new Promise((r) => setTimeout(r, 4000))
 
     const send = async (...keys: string[]): Promise<void> => {
       for (const k of keys) {
@@ -152,20 +176,6 @@ describe('yaac session create drives real claude-code through mocked remotes', (
       return stdout
     }
 
-    // Claude-code v2.1.x first-run sequence. Defaults in parens; arrows
-    // change selection, Enter confirms.
-    await send('Enter')           // theme    → Dark (default)
-    await new Promise((r) => setTimeout(r, 1500))
-    await send('Up', 'Enter')     // api-key  → "Yes" (default is "No")
-    await new Promise((r) => setTimeout(r, 1500))
-    await send('Enter')           // security → continue
-    await new Promise((r) => setTimeout(r, 1500))
-    await send('Enter')           // trust    → "Yes" (default)
-    await new Promise((r) => setTimeout(r, 1500))
-    await send('Down', 'Enter')   // bypass   → "Yes, I accept" (default "No, exit")
-    await new Promise((r) => setTimeout(r, 2500))
-
-    // At the main chat prompt now — type a prompt and send it.
     await send('hello mock')
     await new Promise((r) => setTimeout(r, 500))
     await send('Enter')
