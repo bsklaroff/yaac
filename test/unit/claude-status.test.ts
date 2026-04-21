@@ -78,6 +78,23 @@ describe('getClaudeStatus', () => {
     expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
   })
 
+  it('returns waiting when user tool_result references AskUserQuestion', async () => {
+    await writeEntry({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_abc',
+            content: [{ type: 'tool_reference', tool_name: 'AskUserQuestion' }],
+          },
+        ],
+      },
+    })
+    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
+  })
+
   it('returns waiting when assistant writes to a plan file', async () => {
     await writeEntry({
       type: 'assistant',

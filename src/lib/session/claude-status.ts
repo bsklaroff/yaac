@@ -33,14 +33,20 @@ interface ConversationEntry {
   }
 }
 
+// Deferred tools whose schema must be fetched via ToolSearch before they can
+// be invoked. When the schema fetch returns, the UI blocks before the actual
+// call lands in the JSONL, so a tool_reference for any of these names is the
+// last conversation entry while the session waits for user input.
+const BLOCKING_DEFERRED_TOOLS = new Set(['ExitPlanMode', 'AskUserQuestion'])
+
 /**
- * Checks whether an entry indicates Claude is waiting for user feedback on a
- * plan. When Claude finishes writing a plan, it fetches the ExitPlanMode tool
- * schema via ToolSearch. The plan-approval UI then blocks before the actual
- * ExitPlanMode call is made, so the ToolSearch result (a user tool_result
- * containing an ExitPlanMode tool_reference) is the last entry in the JSONL.
+ * Checks whether an entry is a ToolSearch result whose tool_reference points
+ * at a blocking deferred tool (e.g. ExitPlanMode for plan approval, or
+ * AskUserQuestion for an inline question). The UI blocks between the schema
+ * fetch returning and the actual tool call, so this entry shape signals that
+ * the session is waiting on user input.
  */
-function isWaitingForPlanApproval(entry: ConversationEntry): boolean {
+function isBlockingDeferredToolFetch(entry: ConversationEntry): boolean {
   if (entry.type !== 'user') return false
   const content = entry.message?.content
   if (!Array.isArray(content)) return false
@@ -48,7 +54,9 @@ function isWaitingForPlanApproval(entry: ConversationEntry): boolean {
   for (const block of content) {
     if (block.type === 'tool_result' && Array.isArray(block.content)) {
       for (const sub of block.content) {
-        if (sub.type === 'tool_reference' && sub.tool_name === 'ExitPlanMode') return true
+        if (sub.type === 'tool_reference' && BLOCKING_DEFERRED_TOOLS.has(sub.tool_name ?? '')) {
+          return true
+        }
       }
     }
   }
@@ -202,7 +210,7 @@ export async function getClaudeStatus(jsonlPath: string): Promise<'running' | 'w
 
         if (!CONVERSATION_TYPES.has(entry.type)) continue
 
-        if (isWaitingForPlanApproval(entry)) return 'waiting'
+        if (isBlockingDeferredToolFetch(entry)) return 'waiting'
         if (isPlanFileWrite(entry)) return 'waiting'
         if (isPlanFileWriteResult(entry)) return 'waiting'
         if (isExitPlanModeCall(entry)) return 'waiting'
@@ -221,7 +229,7 @@ export async function getClaudeStatus(jsonlPath: string): Promise<'running' | 'w
       try {
         const entry = JSON.parse(carryover) as ConversationEntry
         if (CONVERSATION_TYPES.has(entry.type)) {
-          if (isWaitingForPlanApproval(entry)) return 'waiting'
+          if (isBlockingDeferredToolFetch(entry)) return 'waiting'
           if (isPlanFileWrite(entry)) return 'waiting'
           if (isPlanFileWriteResult(entry)) return 'waiting'
           if (isExitPlanModeCall(entry)) return 'waiting'
