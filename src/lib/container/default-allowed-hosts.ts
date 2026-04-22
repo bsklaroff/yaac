@@ -33,6 +33,7 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'raw.githubusercontent.com',
   'pkg-npm.githubusercontent.com',
   'objects.githubusercontent.com',
+  'pkg-containers.githubusercontent.com',
   'release-assets.githubusercontent.com',
   'codeload.github.com',
   'avatars.githubusercontent.com',
