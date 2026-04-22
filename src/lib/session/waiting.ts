@@ -2,6 +2,7 @@ import { podman } from '@/lib/container/runtime'
 import { getDataDir } from '@/lib/project/paths'
 import { getSessionStatus, getToolFromContainer } from '@/lib/session/status'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
+import { resolveStartingGraceMs } from '@/lib/session/list'
 import { isPrewarmSession } from '@/lib/prewarm'
 import type { AgentTool } from '@/shared/types'
 
@@ -25,6 +26,8 @@ export async function getWaitingSessions(
   }
 
   const containers = await podman.listContainers({ all: true, filters })
+  const nowMs = Date.now()
+  const graceMs = resolveStartingGraceMs()
 
   const results: WaitingSession[] = []
   const stale: Array<{ name: string; slug: string; sessionId: string }> = []
@@ -38,17 +41,25 @@ export async function getWaitingSessions(
 
     if (alreadyCleaning?.has(sessionId)) continue
 
-    if (c.State !== 'running') {
-      stale.push({ name, slug, sessionId })
-      continue
-    }
-
-    if (!(await isTmuxSessionAlive(name))) {
-      stale.push({ name, slug, sessionId })
-      continue
-    }
-
+    // Prewarm lifecycle is owned by ensurePrewarmSession. Skip before the
+    // state/tmux checks so a prewarm container still mid-creation (or one
+    // whose tmux hasn't come up) doesn't get swept — that would fire
+    // cleanupSessionDetached, which awaits removeSessionFromProxy and drops
+    // the allowlist for a session that pickNextStreamSession is about to
+    // claim, turning the next outbound request into a 403.
     if (await isPrewarmSession(slug, sessionId)) continue
+
+    const running = c.State === 'running' && await isTmuxSessionAlive(name)
+    if (!running) {
+      // Mirror classifySessionContainers' grace window: session-create's
+      // retry loop recreates the container between attempts and does not
+      // start tmux until the last step, so a young stopped / tmux-less
+      // container is almost certainly mid-creation, not stale.
+      const ageMs = typeof c.Created === 'number' ? nowMs - c.Created * 1000 : Infinity
+      if (ageMs < graceMs) continue
+      stale.push({ name, slug, sessionId })
+      continue
+    }
 
     const tool = getToolFromContainer(c)
     const status = await getSessionStatus(slug, sessionId, tool)
