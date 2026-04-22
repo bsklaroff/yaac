@@ -3,6 +3,7 @@ import { promisify } from 'node:util'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileHash, contextHash, ensureImageByTag } from '@/lib/container/image-builder'
+import { ensurePodmanSocket, getSocketPath } from '@/lib/container/runtime'
 import { DOCKERFILES_DIR, PROXY_DIR } from '@/lib/project/paths'
 
 const execFileAsync = promisify(execFile)
@@ -16,12 +17,24 @@ const execFileAsync = promisify(execFile)
  * Test code computes the same hash to derive the expected tag.
  */
 export async function setup(): Promise<void> {
-  // Skip when podman is unavailable — tests that need it will fail on their own
+  // Skip when podman is unavailable — tests that need it will fail on their own.
+  // On Linux, revive a crashed socket from a previous run before probing, since
+  // nothing else supervises `podman system service` in rootless containers.
+  let podmanAvailable = false
   try {
     await execFileAsync('podman', ['info', '--format', 'json'])
+    podmanAvailable = true
   } catch {
-    return
+    const socketPath = getSocketPath()
+    if (socketPath) {
+      try {
+        await ensurePodmanSocket(socketPath, { timeoutMs: 5_000 })
+        await execFileAsync('podman', ['info', '--format', 'json'])
+        podmanAvailable = true
+      } catch { /* not installed or revive failed */ }
+    }
   }
+  if (!podmanAvailable) return
 
   // Reassign podman lock IDs to prevent deadlocks caused by stale state
   // from previous test runs (containers removed but locks not reclaimed).

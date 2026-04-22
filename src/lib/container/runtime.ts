@@ -1,5 +1,6 @@
 import Docker from 'dockerode'
-import { exec, execFile } from 'node:child_process'
+import { exec, execFile, spawn } from 'node:child_process'
+import net from 'node:net'
 import { promisify } from 'node:util'
 
 export const execFileAsync = promisify(execFile)
@@ -99,7 +100,7 @@ export async function shellPodmanWithRetry(
   throw new Error('shellPodmanWithRetry: unexpected fall-through')
 }
 
-function getSocketPath(): string | undefined {
+export function getSocketPath(): string | undefined {
   if (process.platform === 'darwin') return undefined // podman-mac-helper symlinks to /var/run/docker.sock
   const uid = process.getuid?.()
   return `/run/user/${uid}/podman/podman.sock`
@@ -185,14 +186,70 @@ async function ensurePodmanMachine(): Promise<void> {
 async function ensurePodmanLinux(): Promise<void> {
   try {
     await execFileAsync('podman', ['info', '--format', 'json'])
-  } catch {
-    console.error(
-      '\nPodman is not installed or not running. Install it with your package manager:\n\n'
-      + '  sudo apt install podman    # Debian/Ubuntu\n'
-      + '  sudo dnf install podman    # Fedora/RHEL\n',
-    )
-    process.exit(1)
+    return
+  } catch { /* fall through — maybe the socket died and we can revive it */ }
+
+  const socketPath = getSocketPath()
+  if (socketPath) {
+    try {
+      await ensurePodmanSocket(socketPath)
+      await execFileAsync('podman', ['info', '--format', 'json'])
+      return
+    } catch { /* revive failed — fall through to install-instructions error */ }
   }
+
+  console.error(
+    '\nPodman is not installed or not running. Install it with your package manager:\n\n'
+    + '  sudo apt install podman    # Debian/Ubuntu\n'
+    + '  sudo dnf install podman    # Fedora/RHEL\n',
+  )
+  process.exit(1)
+}
+
+async function socketAccepts(socketPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = net.connect(socketPath)
+    sock.once('connect', () => { sock.end(); resolve(true) })
+    sock.once('error', () => resolve(false))
+  })
+}
+
+/**
+ * Ensure the podman socket at `socketPath` is accepting connections.
+ * If it isn't, spawn a detached `podman system service` and poll until
+ * the socket comes up, or throw on timeout.
+ *
+ * In rootless container environments with no systemd socket activation
+ * and no supervisor, nothing restarts `podman system service` if it
+ * crashes — so one flaky run leaves every subsequent run hitting
+ * ECONNREFUSED. This helper is the supervisor of last resort.
+ */
+export async function ensurePodmanSocket(
+  socketPath: string,
+  opts: { timeoutMs?: number; pollMs?: number } = {},
+): Promise<void> {
+  if (await socketAccepts(socketPath)) return
+
+  const child = spawn(
+    'podman',
+    ['system', 'service', '--time=0', `unix://${socketPath}`],
+    { detached: true, stdio: 'ignore' },
+  )
+  // Swallow spawn errors (e.g. ENOENT if podman isn't installed); the poll
+  // below will fail with a clearer timeout message than an uncaught 'error'.
+  child.on('error', () => { /* ok */ })
+  child.unref()
+
+  const timeoutMs = opts.timeoutMs ?? 10_000
+  const pollMs = opts.pollMs ?? 100
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await socketAccepts(socketPath)) return
+    await new Promise((r) => setTimeout(r, pollMs))
+  }
+  throw new Error(
+    `Podman socket ${socketPath} did not become ready within ${timeoutMs}ms`,
+  )
 }
 
 /**
