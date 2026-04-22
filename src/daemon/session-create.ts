@@ -227,6 +227,7 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
           : []),
       ],
       NetworkMode: networkMode,
+      Memory: 8 * 1024 ** 3,
       ...(config.nestedContainers ? {
         SecurityOpt: ['label=disable', 'unmask=/proc/sys'],
         Devices: [{ PathOnHost: '/dev/net/tun', PathInContainer: '/dev/net/tun', CgroupPermissions: 'rwm' }],
