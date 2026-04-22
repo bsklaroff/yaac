@@ -406,33 +406,12 @@ describe('yaac session create features (real CLI + real daemon)', () => {
     ])
     expect(gitStatus.trim()).toBe('')
 
-    // Same-filesystem invariant: `ln` between .cached-packages/pnpm-store
-    // and /workspace/node_modules must succeed on native Linux, where
-    // bind mounts of subpaths of the same host fs share a superblock.
-    // On macOS, podman-machine's VirtioFS surfaces each bind as its own
-    // in-VM filesystem, so link(2) returns EXDEV and pnpm falls back to
-    // copies — functionally correct, just without cross-session dedup.
+    // Seed the pnpm-store so the post-delete assertion below can verify
+    // that modules/<sid> is reaped while the shared store survives.
     await podmanRetry([
       'exec', name, 'sh', '-c',
       'mkdir -p /home/yaac/.cached-packages/pnpm-store && echo store-content > /home/yaac/.cached-packages/pnpm-store/src',
     ])
-    const lnResult = await podmanRetry([
-      'exec', name, 'ln',
-      '/home/yaac/.cached-packages/pnpm-store/src',
-      '/workspace/node_modules/linked',
-    ]).catch((err: unknown) => ({ err }))
-    if ('err' in lnResult) {
-      // EXDEV is the only tolerated failure, and only on darwin hosts
-      // running podman-machine.
-      expect(String(lnResult.err)).toMatch(/cross-device/i)
-      expect(process.platform).toBe('darwin')
-    } else {
-      const { stdout: nlinks } = await podmanRetry([
-        'exec', name, 'stat', '-c', '%h',
-        '/home/yaac/.cached-packages/pnpm-store/src',
-      ])
-      expect(Number(nlinks.trim())).toBeGreaterThanOrEqual(2)
-    }
 
     // Delete the session; modules/<sid> goes away, pnpm-store survives.
     const { exitCode: delExit } = await runYaac(

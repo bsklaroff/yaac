@@ -236,7 +236,10 @@ export async function listDeletedSessions(
     // podman not available — treat all as deleted
   }
 
-  const deleted: DeletedSessionEntry[] = []
+  // Track ms-precision birthtime alongside each entry so the sort is
+  // stable across files created in the same second (createdAt is
+  // truncated to second precision for display).
+  const collected: Array<{ entry: DeletedSessionEntry; birthtimeMs: number }> = []
 
   for (const slug of slugs) {
     const claudeSessionsDir = path.join(claudeDir(slug), 'projects', '-workspace')
@@ -248,11 +251,14 @@ export async function listDeletedSessions(
         if (activeSessionIds.has(sessionId)) continue
         try {
           const stat = await fs.stat(path.join(claudeSessionsDir, file))
-          deleted.push({
-            sessionId,
-            projectSlug: slug,
-            tool: 'claude',
-            createdAt: stat.birthtime.toISOString().replace('T', ' ').slice(0, 19),
+          collected.push({
+            entry: {
+              sessionId,
+              projectSlug: slug,
+              tool: 'claude',
+              createdAt: stat.birthtime.toISOString().replace('T', ' ').slice(0, 19),
+            },
+            birthtimeMs: stat.birthtimeMs,
           })
         } catch {
           continue
@@ -272,11 +278,14 @@ export async function listDeletedSessions(
         const filePath = path.join(codexTranscripts, entry)
         try {
           const stat = await fs.lstat(filePath)
-          deleted.push({
-            sessionId,
-            projectSlug: slug,
-            tool: 'codex',
-            createdAt: stat.birthtime.toISOString().replace('T', ' ').slice(0, 19),
+          collected.push({
+            entry: {
+              sessionId,
+              projectSlug: slug,
+              tool: 'codex',
+              createdAt: stat.birthtime.toISOString().replace('T', ' ').slice(0, 19),
+            },
+            birthtimeMs: stat.birthtimeMs,
           })
         } catch {
           continue
@@ -287,8 +296,9 @@ export async function listDeletedSessions(
     }
   }
 
-  deleted.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-  const capped = limit && limit > 0 ? deleted.slice(0, limit) : deleted
+  collected.sort((a, b) => b.birthtimeMs - a.birthtimeMs)
+  const slice = limit && limit > 0 ? collected.slice(0, limit) : collected
+  const capped = slice.map((r) => r.entry)
   await Promise.all(capped.map(async (entry) => {
     entry.prompt = await getSessionFirstMessage(entry.projectSlug, entry.sessionId, entry.tool)
   }))

@@ -115,9 +115,9 @@ describe('listDeletedSessions', () => {
     for (let i = 0; i < 5; i++) {
       const p = path.join(sessionsDir, `s${i}.jsonl`)
       await fs.writeFile(p, '{}\n')
-      // Age each successive file a day further in the past so the sort is deterministic.
-      const d = new Date(Date.UTC(2026, 0, 1 + i))
-      await fs.utimes(p, d, d)
+      // On Linux fs.utimes does not affect birthtime, so rely on actual
+      // creation order with a small gap to keep ms-level sort deterministic.
+      await new Promise((r) => setTimeout(r, 5))
     }
     const result = await listDeletedSessions('demo', 2)
     expect(result.map((r) => r.sessionId)).toEqual(['s4', 's3'])
