@@ -53,6 +53,9 @@ volumes = ["/proc:/proc"]
 default_sysctls = []
 EOF
 RUN cat <<'EOF' > /home/yaac/.config/containers/storage.conf
+[storage]
+driver = "overlay"
+
 [storage.options]
 additionalimagestores = ["/var/lib/shared-images"]
 EOF
