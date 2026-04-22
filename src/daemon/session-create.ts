@@ -214,7 +214,7 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
         ...(config.nestedContainers
           ? [
               `${sessionGraphrootVolumeName(sessionId)}:/home/yaac/.local/share/containers:Z`,
-              `${projectImageCacheVolumeName(projectSlug)}:${SHARED_IMAGE_STORE_PATH}:ro,Z`,
+              `${projectImageCacheVolumeName(projectSlug)}:${SHARED_IMAGE_STORE_PATH}:Z`,
             ]
           : []),
       ],

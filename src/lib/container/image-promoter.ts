@@ -16,7 +16,14 @@ export const GRAPHROOT_LABEL = 'yaac.podmanstorage'
  */
 export const IMAGECACHE_LABEL = 'yaac.imagecache'
 
-/** In-container mount point for the shared image-cache volume (read-only). */
+/**
+ * In-container mount point for the shared image-cache volume. Mounted rw
+ * because podman's `additionalimagestores` unconditionally creates lock-file
+ * directories inside the store path (containers/storage#1733, podman#22784),
+ * so an `:ro` bind fails with "mkdir .../overlay-layers: read-only file
+ * system" the first time the inner podman is invoked. The promoter is the
+ * only intentional writer; session-side writes are lock files only.
+ */
 export const SHARED_IMAGE_STORE_PATH = '/var/lib/shared-images'
 
 export function sessionGraphrootVolumeName(sessionId: string): string {
