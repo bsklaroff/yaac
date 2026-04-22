@@ -104,9 +104,20 @@ export async function removeProjectImageCacheVolume(projectSlug: string): Promis
 }
 
 /**
- * Inner shell script for the promoter: take an exclusive flock on the shared
- * store, then skopeo-copy every image present in the source graphroot
- * (tagged and dangling) into the shared store unless it's already there.
+ * Inner shell script for the promoter. Runs in three passes under an
+ * exclusive flock on the shared store:
+ *
+ *   1. Copy every image (tagged + dangling build intermediates) from the
+ *      source graphroot to `/dst` by id, so layer blobs are available for
+ *      cross-session reuse.
+ *   2. Restore tags on `/dst` for every tagged source image. Skopeo's
+ *      `containers-storage:@<id>` transport drops names, so without this
+ *      pass a `FROM alpine:3.20` in a later session would miss the
+ *      additionalimagestores lookup and fall back to a registry pull.
+ *   3. Prune dangling images on `/dst` older than 7d. Tag re-points
+ *      (session-N rebuilds `myapp:v1` to a new id → old id goes dangling)
+ *      accumulate otherwise; the 7d window keeps recent build intermediates
+ *      around so podman's build cache still hits across sessions.
  *
  * The source graphroot must be mounted at the session's original storage
  * path (`/home/yaac/.local/share/containers`). Podman's sqlite db records
@@ -121,16 +132,27 @@ export const PROMOTER_SCRIPT = [
   'touch /dst/.yaac-promoter.lock',
   'exec 9>/dst/.yaac-promoter.lock',
   'flock -x 9',
-  // `podman image ls -q --no-trunc` emits ids prefixed with "sha256:".
-  // Skopeo's containers-storage transport parses a bare `sha256:<hex>` as
-  // a name+tag (→ docker.io/library/sha256:<hex>), so strip the prefix
-  // and pass the id through `@<hex>` which the transport reads as an
-  // unambiguous image-id reference.
+  // Pass 1 — copy by id. `podman image ls -q --no-trunc` emits ids
+  // prefixed with "sha256:"; skopeo's containers-storage transport parses
+  // a bare `sha256:<hex>` as a name+tag (→ docker.io/library/sha256:<hex>),
+  // so strip the prefix and pass through `@<hex>` for an unambiguous
+  // image-id reference.
   'ids=$(podman image ls -a -q --no-trunc 2>/dev/null | sed -e "s/^sha256://" || true)',
   'for id in $ids; do',
   '  if podman --root /dst --runroot /tmp/dst-run image exists "$id" 2>/dev/null; then continue; fi',
   '  skopeo copy --quiet "containers-storage:@$id" "containers-storage:[overlay@/dst+/tmp/dst-run]@$id" || true',
   'done',
+  // Pass 2 — restore tags so FROM refs and `podman run <name>` resolve
+  // from additionalimagestores without a registry round-trip. Drop the
+  // `<none>:<none>` rows (dangling images) already handled by-id in pass 1.
+  `podman image ls --no-trunc --format '{{.ID}}|{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -v '|<none>:<none>$' | while IFS='|' read -r tid tref; do`,
+  '  [ -z "$tid" ] && continue',
+  '  podman --root /dst --runroot /tmp/dst-run tag "$tid" "$tref" 2>/dev/null || true',
+  'done',
+  // Pass 3 — GC dangling images on /dst older than 7d (168h). Catches
+  // ex-tagged images orphaned by later tag re-points; 168h is long enough
+  // that recent build intermediates still back podman's build cache.
+  `podman --root /dst --runroot /tmp/dst-run image prune --filter 'dangling=true' --filter 'until=168h' -f 2>/dev/null || true`,
 ].join('\n')
 
 /**

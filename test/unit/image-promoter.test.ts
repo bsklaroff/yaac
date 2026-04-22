@@ -292,4 +292,27 @@ describe('PROMOTER_SCRIPT and SHARED_IMAGE_STORE_PATH constants', () => {
     expect(PROMOTER_SCRIPT).toContain('podman --root /dst --runroot /tmp/dst-run')
     expect(PROMOTER_SCRIPT).toContain('containers-storage:[overlay@/dst+/tmp/dst-run]')
   })
+
+  it('restores tags on the destination store so FROM refs resolve by name', () => {
+    // Pass 2 walks `id|repo:tag` rows, drops dangling (`<none>:<none>`),
+    // and re-tags by id on /dst. Without this, skopeo's `@<id>` copy in
+    // pass 1 leaves every promoted image untagged and a `FROM foo:bar`
+    // in a later session falls back to a registry manifest fetch.
+    expect(PROMOTER_SCRIPT).toContain(
+      "podman image ls --no-trunc --format '{{.ID}}|{{.Repository}}:{{.Tag}}'",
+    )
+    expect(PROMOTER_SCRIPT).toContain("grep -v '|<none>:<none>$'")
+    expect(PROMOTER_SCRIPT).toContain(
+      'podman --root /dst --runroot /tmp/dst-run tag',
+    )
+  })
+
+  it('prunes dangling images on /dst older than 7d', () => {
+    // Tag re-points (rebuild `foo:bar` to a new id) orphan the old id as
+    // dangling; without a sweep the shared cache grows unbounded. 168h
+    // keeps recent build intermediates alive for cross-session layer reuse.
+    expect(PROMOTER_SCRIPT).toContain(
+      "podman --root /dst --runroot /tmp/dst-run image prune --filter 'dangling=true' --filter 'until=168h' -f",
+    )
+  })
 })
