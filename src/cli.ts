@@ -5,6 +5,7 @@ import { projectList } from '@/commands/project-list'
 import { sessionCreate } from '@/commands/session-create'
 import { sessionList } from '@/commands/session-list'
 import { sessionDelete } from '@/commands/session-delete'
+import { sessionRestart } from '@/commands/session-restart'
 import { sessionAttach } from '@/commands/session-attach'
 import { sessionShell } from '@/commands/session-shell'
 import { sessionStream } from '@/commands/session-stream'
@@ -147,6 +148,16 @@ session
   .description('Delete a session and clean up its resources')
   .argument('<session-id>', 'Session ID, container name, or container ID')
   .action(sessionDelete)
+
+session
+  .command('restart')
+  .description('Restart a session: kill its container, reuse its worktree, resume the agent')
+  .argument('<session-id>', 'Session ID, container name, or container ID')
+  .option('--add-dir <path>', 'Mount a host directory as read-only (repeatable)', collect, [])
+  .option('--add-dir-rw <path>', 'Mount a host directory as read-write (repeatable)', collect, [])
+  .action(async (sessionId: string, options: Parameters<typeof sessionRestart>[1]) => {
+    await sessionRestart(sessionId, options)
+  })
 
 session
   .command('attach')

@@ -23,6 +23,10 @@ vi.mock('@/lib/session/delete', () => ({
   deleteSession: vi.fn(),
 }))
 
+vi.mock('@/lib/session/restart', () => ({
+  restartSession: vi.fn(),
+}))
+
 vi.mock('@/lib/project/add', async () => {
   const actual = await vi.importActual<typeof projectAddModule>('@/lib/project/add')
   return {
@@ -37,11 +41,13 @@ vi.mock('@/lib/project/remove', () => ({
 
 import { createSession } from '@/daemon/session-create'
 import { deleteSession } from '@/lib/session/delete'
+import { restartSession } from '@/lib/session/restart'
 import { addProject } from '@/lib/project/add'
 import { removeProject } from '@/lib/project/remove'
 
 const mockCreateSession = vi.mocked(createSession)
 const mockDeleteSession = vi.mocked(deleteSession)
+const mockRestartSession = vi.mocked(restartSession)
 const mockAddProject = vi.mocked(addProject)
 const mockRemoveProject = vi.mocked(removeProject)
 
@@ -235,6 +241,71 @@ describe('write routes', () => {
       const events = (await res.text()).trim().split('\n').map((l) => JSON.parse(l) as unknown)
       expect(events).toEqual([
         { type: 'error', error: { code: 'VALIDATION', message: 'no github token' } },
+      ])
+    })
+  })
+
+  describe('POST /session/restart', () => {
+    it('rejects missing sessionId', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/session/restart', withAuth({
+        method: 'POST',
+        body: JSON.stringify({}),
+      }))
+      expect(res.status).toBe(400)
+    })
+
+    it('streams progress and a result event from restartSession', async () => {
+      mockRestartSession.mockImplementation((_id, opts) => {
+        opts?.onProgress?.('Stopping container yaac-demo-sess-x...')
+        opts?.onProgress?.('Reusing existing worktree at /wt/sess-x')
+        return Promise.resolve({
+          sessionId: 'sess-x',
+          containerName: 'yaac-demo-sess-x',
+          forwardedPorts: [],
+          tool: 'claude',
+          claimedPrewarm: false,
+        })
+      })
+      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const res = await client.session.restart.$post({
+        json: {
+          sessionId: 'sess-x',
+          addDir: ['/tmp/ro'],
+          gitUser: { name: 'A', email: 'a@b' },
+        },
+      })
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type')).toBe('application/x-ndjson')
+      const events = (await res.text()).trim().split('\n').map((line) => JSON.parse(line) as unknown)
+      expect(events).toEqual([
+        { type: 'progress', message: 'Stopping container yaac-demo-sess-x...' },
+        { type: 'progress', message: 'Reusing existing worktree at /wt/sess-x' },
+        {
+          type: 'result',
+          result: {
+            sessionId: 'sess-x',
+            containerName: 'yaac-demo-sess-x',
+            forwardedPorts: [],
+            tool: 'claude',
+            claimedPrewarm: false,
+          },
+        },
+      ])
+      expect(mockRestartSession).toHaveBeenCalledWith('sess-x', expect.objectContaining({
+        addDir: ['/tmp/ro'],
+        gitUser: { name: 'A', email: 'a@b' },
+      }))
+    })
+
+    it('emits a terminal error event when restartSession throws', async () => {
+      mockRestartSession.mockRejectedValue(new DaemonError('NOT_FOUND', 'missing'))
+      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const res = await client.session.restart.$post({ json: { sessionId: 'nope' } })
+      expect(res.status).toBe(200)
+      const events = (await res.text()).trim().split('\n').map((l) => JSON.parse(l) as unknown)
+      expect(events).toEqual([
+        { type: 'error', error: { code: 'NOT_FOUND', message: 'missing' } },
       ])
     })
   })

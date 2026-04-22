@@ -401,6 +401,42 @@ describe('createSession', () => {
     }
   })
 
+  describe('resume mode', () => {
+    it('throws VALIDATION when resume is true but no sessionId is given', async () => {
+      await expect(createSession('demo', { resume: true })).rejects.toMatchObject({
+        code: 'VALIDATION',
+      })
+    })
+
+    it('skips the prewarm claim when resuming', async () => {
+      await createSession('demo', { resume: true, sessionId: 'abcd1234' })
+      expect(mockClaimPrewarmSession).not.toHaveBeenCalled()
+    })
+
+    it('reuses an existing worktree instead of calling addWorktree', async () => {
+      mockAccess.mockResolvedValue(undefined)
+      const messages: string[] = []
+      await createSession('demo', {
+        resume: true,
+        sessionId: 'abcd1234',
+        onProgress: (m) => messages.push(m),
+      })
+      expect(addWorktree).not.toHaveBeenCalled()
+      expect(messages.some((m) => m.includes('Reusing existing worktree'))).toBe(true)
+    })
+
+    it('still calls addWorktree when the worktree directory is missing', async () => {
+      mockAccess.mockImplementation((target) => {
+        if (typeof target === 'string' && target.includes('/worktrees/abcd1234')) {
+          return Promise.reject(new Error('missing'))
+        }
+        return Promise.resolve(undefined)
+      })
+      await createSession('demo', { resume: true, sessionId: 'abcd1234' })
+      expect(addWorktree).toHaveBeenCalledTimes(1)
+    })
+  })
+
   it('mounts shared Claude and Codex state for Codex sessions', async () => {
     mockAccess.mockImplementation((target) => {
       if (target === '/tmp/demo/claude.json') {

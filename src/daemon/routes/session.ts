@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { listActiveSessions, listDeletedSessions } from '@/lib/session/list'
 import { getSessionDetail, getSessionBlockedHosts, getSessionPrompt } from '@/lib/session/detail'
 import { deleteSession } from '@/lib/session/delete'
+import { restartSession } from '@/lib/session/restart'
 import { createSession, type SessionCreateOptions } from '@/daemon/session-create'
 import { DaemonError, toErrorBody } from '@/daemon/errors'
 import { resolveSessionContainer } from '@/daemon/session-resolve'
@@ -55,6 +56,34 @@ export const sessionApp = new Hono()
         try {
           const result = await createSession(body.project, opts)
           if (!result) throw new DaemonError('INTERNAL', 'session creation returned no result')
+          await write({ type: 'result', result })
+        } catch (err) {
+          const { body: errBody } = toErrorBody(err)
+          await write({ type: 'error', error: errBody.error })
+        }
+      })
+    },
+  )
+  .post(
+    '/restart',
+    zValidator('json', z.object({
+      sessionId: z.string().min(1),
+      addDir: z.array(z.string()).optional(),
+      addDirRw: z.array(z.string()).optional(),
+      gitUser: z.object({ name: z.string(), email: z.string() }).optional(),
+    })),
+    (c) => {
+      const body = c.req.valid('json')
+      c.header('Content-Type', 'application/x-ndjson')
+      return stream(c, async (s) => {
+        const write = (event: unknown) => s.writeln(JSON.stringify(event))
+        try {
+          const result = await restartSession(body.sessionId, {
+            addDir: body.addDir,
+            addDirRw: body.addDirRw,
+            gitUser: body.gitUser,
+            onProgress: (message) => { void write({ type: 'progress', message }) },
+          })
           await write({ type: 'result', result })
         } catch (err) {
           const { body: errBody } = toErrorBody(err)

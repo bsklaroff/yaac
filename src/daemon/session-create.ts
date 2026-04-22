@@ -93,16 +93,18 @@ export function buildAgentCmd(
   tool: AgentTool,
   sessionId: string,
   addDirFlags: string,
+  resume = false,
 ): string {
   if (tool === 'codex') {
     return [
       'codex --yolo',
+      resume ? `resume ${sessionId}` : '',
       addDirFlags,
     ].filter(Boolean).join(' ')
   }
   return [
     'claude --dangerously-skip-permissions',
-    `--session-id ${sessionId}`,
+    resume ? `--resume ${sessionId}` : `--session-id ${sessionId}`,
     addDirFlags,
   ].filter(Boolean).join(' ')
 }
@@ -123,6 +125,12 @@ export interface SessionCreateOptions {
   sessionId?: string
   /** Agent tool to run inside the container (default: 'claude'). */
   tool?: AgentTool
+  /**
+   * Resume an existing session: reuse the worktree at
+   * `worktreeDir(projectSlug, sessionId)` if present and launch the agent
+   * with `--resume` so it loads the prior transcript. Requires `sessionId`.
+   */
+  resume?: boolean
   /**
    * Git identity to use inside the container. The CLI resolves this
    * up-front (prompting when missing) and passes it in.
@@ -269,7 +277,7 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
     .map((p) => `--add-dir /add-dir${shellEscape(p)}`)
     .join(' ')
 
-  const agentCmd = buildAgentCmd(tool, sessionId, addDirFlags)
+  const agentCmd = buildAgentCmd(tool, sessionId, addDirFlags, options.resume === true)
   const toolLabel = tool === 'codex' ? 'Codex' : 'Claude Code'
   emit(`Starting ${toolLabel}...`, options)
   await containerExec(containerName, `tmux -u new-session -d -s yaac -n ${tool} '${agentCmd}'`)
@@ -337,15 +345,21 @@ export async function createSession(
     }
   }
 
+  if (options.resume && !options.sessionId) {
+    throw new DaemonError('VALIDATION', 'resume requires a sessionId')
+  }
+
   // Try to claim a prewarmed session — it already has everything set up.
   // Skip when createPrewarm is true (prewarm creation path itself).
   // Skip when --add-dir / --add-dir-rw is set: prewarm containers are
   // created without those mounts and the fingerprint doesn't encode them,
   // so claiming one would silently drop the user's requested directories.
+  // Skip when resuming: the caller has a specific sessionId and worktree
+  // to reuse.
   // claimPrewarmSession checks that the requested tool matches the prewarmed tool.
   const tool: AgentTool = options.tool ?? 'claude'
   const hasAddDir = (options.addDir?.length ?? 0) > 0 || (options.addDirRw?.length ?? 0) > 0
-  const canClaim = !options.createPrewarm && !hasAddDir
+  const canClaim = !options.createPrewarm && !hasAddDir && !options.resume
   const claimed = canClaim ? await claimPrewarmSession(projectSlug, tool) : null
   if (claimed) {
     emit(`Claiming prewarmed session ${claimed.sessionId.slice(0, 8)}...`, options)
@@ -425,11 +439,16 @@ export async function createSession(
   const sessionId = options.sessionId ?? crypto.randomUUID()
   const wtDir = worktreeDir(projectSlug, sessionId)
 
-  // Create worktree
+  // Create worktree (or reuse an existing one when resuming)
   await fs.mkdir(worktreesDir(projectSlug), { recursive: true })
-  const defaultBranch = await getDefaultBranch(repo)
-  emit(`Creating worktree from ${defaultBranch}...`, options)
-  await addWorktree(repo, wtDir, `yaac/${sessionId}`, `origin/${defaultBranch}`)
+  const worktreeExists = await fs.access(wtDir).then(() => true).catch(() => false)
+  if (options.resume && worktreeExists) {
+    emit(`Reusing existing worktree at ${wtDir}`, options)
+  } else {
+    const defaultBranch = await getDefaultBranch(repo)
+    emit(`Creating worktree from ${defaultBranch}...`, options)
+    await addWorktree(repo, wtDir, `yaac/${sessionId}`, `origin/${defaultBranch}`)
+  }
 
   // Fetch the image's baked-in ENV so we can preserve it.
   // The container-create API's Env field *replaces* the image ENV rather
