@@ -9,7 +9,36 @@ import { getDefaultBranch } from '@/lib/git'
 
 const execFileAsync = promisify(execFile)
 
-const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'nestedContainers', 'portForward', 'bindMounts', 'hideInitPane', 'pgRelay', 'addAllowedUrls', 'setAllowedUrls'])
+const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'nestedContainers', 'portForward', 'bindMounts', 'hideInitPane', 'pgRelay', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths'])
+
+/** Default when `ephemeralModulesPaths` is unset — redirect the root
+ *  node_modules only. Set to `[]` in yaac-config.json to opt out. */
+export const DEFAULT_EPHEMERAL_MODULES_PATHS: readonly string[] = ['node_modules']
+
+/**
+ * Return the effective ephemeral-modules list:
+ *   unset → ["node_modules"]
+ *   []    → []   (feature disabled)
+ *   [...] → as given
+ */
+export function resolveEphemeralModulesPaths(config: YaacConfig | null): string[] {
+  if (!config || config.ephemeralModulesPaths === undefined) {
+    return [...DEFAULT_EPHEMERAL_MODULES_PATHS]
+  }
+  return [...config.ephemeralModulesPaths]
+}
+
+/**
+ * Derive the per-path subdirectory name under `modules/<sessionId>/`.
+ * Root "node_modules" → "root" (keeps the symlink target cleanly named
+ * and avoids node_modules-inside-node_modules on disk). Nested paths
+ * collapse slashes to underscores, e.g. "packages/web/node_modules" →
+ * "packages_web_node_modules".
+ */
+export function ephemeralModulesSlotKey(relPath: string): string {
+  if (relPath === 'node_modules') return 'root'
+  return relPath.replace(/\//g, '_')
+}
 
 /** Expand `$VAR` and `${VAR}` references in a string using `process.env`. */
 export function expandEnvVars(s: string): string {
@@ -215,6 +244,28 @@ export function parseProjectConfig(raw: string): YaacConfig {
 
   if (config.addAllowedUrls && config.setAllowedUrls) {
     throw new Error('yaac-config.json: addAllowedUrls and setAllowedUrls are mutually exclusive')
+  }
+
+  if (obj.ephemeralModulesPaths !== undefined) {
+    if (!Array.isArray(obj.ephemeralModulesPaths) || !obj.ephemeralModulesPaths.every((v) => typeof v === 'string')) {
+      throw new Error('yaac-config.json: ephemeralModulesPaths must be a string array')
+    }
+    const normalized: string[] = []
+    for (let i = 0; i < obj.ephemeralModulesPaths.length; i++) {
+      const raw = obj.ephemeralModulesPaths[i]
+      if (raw.startsWith('/')) {
+        throw new Error(`yaac-config.json: ephemeralModulesPaths[${i}] must be relative to /workspace (no leading slash)`)
+      }
+      const trimmed = raw.replace(/^\/+|\/+$/g, '')
+      if (trimmed.length === 0) {
+        throw new Error(`yaac-config.json: ephemeralModulesPaths[${i}] must not be empty`)
+      }
+      if (trimmed.split('/').some((seg) => seg === '..' || seg === '.')) {
+        throw new Error(`yaac-config.json: ephemeralModulesPaths[${i}] must not contain "." or ".." segments`)
+      }
+      normalized.push(trimmed)
+    }
+    config.ephemeralModulesPaths = normalized
   }
 
   return config

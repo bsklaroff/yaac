@@ -2,7 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { expandEnvVars, loadProjectConfig, parseProjectConfig, resolveProjectConfig } from '@/lib/project/config'
+import {
+  ephemeralModulesSlotKey,
+  expandEnvVars,
+  loadProjectConfig,
+  parseProjectConfig,
+  resolveEphemeralModulesPaths,
+  resolveProjectConfig,
+} from '@/lib/project/config'
 import { setDataDir } from '@/lib/project/paths'
 
 describe('loadProjectConfig', () => {
@@ -545,6 +552,98 @@ describe('loadProjectConfig', () => {
 
     console.warn = origWarn
     expect(warns).toContain('yaac-config.json: unknown field "unknownField"')
+  })
+})
+
+describe('parseProjectConfig — ephemeralModulesPaths', () => {
+  it('accepts a valid string array and strips trailing slashes', () => {
+    const result = parseProjectConfig(JSON.stringify({
+      ephemeralModulesPaths: ['node_modules', 'packages/web/node_modules/', 'apps/api/node_modules'],
+    }))
+    expect(result.ephemeralModulesPaths).toEqual([
+      'node_modules',
+      'packages/web/node_modules',
+      'apps/api/node_modules',
+    ])
+  })
+
+  it('accepts an empty array (feature disabled)', () => {
+    const result = parseProjectConfig(JSON.stringify({ ephemeralModulesPaths: [] }))
+    expect(result.ephemeralModulesPaths).toEqual([])
+  })
+
+  it('treats an absent field as not-set', () => {
+    const result = parseProjectConfig('{}')
+    expect(result.ephemeralModulesPaths).toBeUndefined()
+  })
+
+  it('rejects non-array values', () => {
+    expect(() => parseProjectConfig(JSON.stringify({ ephemeralModulesPaths: 'node_modules' })))
+      .toThrow(/must be a string array/)
+  })
+
+  it('rejects non-string entries', () => {
+    expect(() => parseProjectConfig(JSON.stringify({ ephemeralModulesPaths: ['node_modules', 5] })))
+      .toThrow(/must be a string array/)
+  })
+
+  it('rejects absolute paths', () => {
+    expect(() => parseProjectConfig(JSON.stringify({ ephemeralModulesPaths: ['/etc/passwd'] })))
+      .toThrow(/relative to \/workspace/)
+  })
+
+  it('rejects empty entries after normalization', () => {
+    expect(() => parseProjectConfig(JSON.stringify({ ephemeralModulesPaths: ['/'] })))
+      .toThrow(/must be relative to \/workspace|must not be empty/)
+    expect(() => parseProjectConfig(JSON.stringify({ ephemeralModulesPaths: [''] })))
+      .toThrow(/must not be empty/)
+  })
+
+  it('rejects entries containing .. or . segments', () => {
+    expect(() => parseProjectConfig(JSON.stringify({ ephemeralModulesPaths: ['../escape'] })))
+      .toThrow(/must not contain/)
+    expect(() => parseProjectConfig(JSON.stringify({ ephemeralModulesPaths: ['a/./b'] })))
+      .toThrow(/must not contain/)
+    expect(() => parseProjectConfig(JSON.stringify({ ephemeralModulesPaths: ['packages/../escape'] })))
+      .toThrow(/must not contain/)
+  })
+})
+
+describe('resolveEphemeralModulesPaths', () => {
+  it('returns ["node_modules"] when config is null', () => {
+    expect(resolveEphemeralModulesPaths(null)).toEqual(['node_modules'])
+  })
+
+  it('returns ["node_modules"] when field is unset', () => {
+    expect(resolveEphemeralModulesPaths({})).toEqual(['node_modules'])
+  })
+
+  it('returns the user list when set', () => {
+    expect(resolveEphemeralModulesPaths({
+      ephemeralModulesPaths: ['node_modules', 'packages/web/node_modules'],
+    })).toEqual(['node_modules', 'packages/web/node_modules'])
+  })
+
+  it('returns [] when explicitly disabled', () => {
+    expect(resolveEphemeralModulesPaths({ ephemeralModulesPaths: [] })).toEqual([])
+  })
+
+  it('returns a fresh array each call (not a shared reference)', () => {
+    const a = resolveEphemeralModulesPaths({})
+    a.push('mutated')
+    const b = resolveEphemeralModulesPaths({})
+    expect(b).toEqual(['node_modules'])
+  })
+})
+
+describe('ephemeralModulesSlotKey', () => {
+  it('maps "node_modules" to "root"', () => {
+    expect(ephemeralModulesSlotKey('node_modules')).toBe('root')
+  })
+
+  it('collapses slashes to underscores for nested paths', () => {
+    expect(ephemeralModulesSlotKey('packages/web/node_modules')).toBe('packages_web_node_modules')
+    expect(ephemeralModulesSlotKey('apps/api/node_modules')).toBe('apps_api_node_modules')
   })
 })
 

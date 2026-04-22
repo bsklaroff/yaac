@@ -72,9 +72,15 @@ describe('yaac session create features (real CLI + real daemon)', () => {
 
   async function setupProject(
     slug: string,
-    opts: { yaacConfig?: Record<string, unknown> } = {},
+    opts: {
+      yaacConfig?: Record<string, unknown>
+      files?: Record<string, string>
+    } = {},
   ): Promise<void> {
-    const files: Record<string, string> = { 'README.md': '# demo\n' }
+    const files: Record<string, string> = {
+      'README.md': '# demo\n',
+      ...(opts.files ?? {}),
+    }
     if (opts.yaacConfig) {
       files['yaac-config.json'] = JSON.stringify(opts.yaacConfig, null, 2) + '\n'
     }
@@ -347,6 +353,120 @@ describe('yaac session create features (real CLI + real daemon)', () => {
       'exec', name, 'cat', '/mnt/rw-data/new.txt',
     ])
     expect(newContent.trim()).toBe('new-data')
+  }, 90_000)
+
+  it('redirects /workspace/node_modules through .cached-packages and cleans up on delete', async () => {
+    // Real Node projects gitignore node_modules; seed the same so
+    // `git status` stays clean once the bind mount is populated.
+    await setupProject('ephemeral-modules', {
+      files: { '.gitignore': 'node_modules\n' },
+    })
+    const name = await createSession('ephemeral-modules')
+
+    const info = await podman.getContainer(name).inspect()
+    const sessionId = info.Config.Labels['yaac.session-id']
+    expect(sessionId).toBeTruthy()
+
+    // Inside the container: /workspace/node_modules is a real directory
+    // backed by a bind mount — not a symlink (Node's fs.mkdir would
+    // reject a symlink-to-dir with ENOTDIR, breaking pnpm).
+    await expect(podmanRetry([
+      'exec', name, 'readlink', '/workspace/node_modules',
+    ])).rejects.toThrow()
+    const { stdout: ftype } = await podmanRetry([
+      'exec', name, 'stat', '-c', '%F', '/workspace/node_modules',
+    ])
+    expect(ftype.trim()).toBe('directory')
+
+    // Write to the bind mount and confirm the bytes land in the
+    // host-side .cached-packages tree, NOT in the worktree.
+    await podmanRetry([
+      'exec', name, 'sh', '-c',
+      'echo hello > /workspace/node_modules/marker.txt',
+    ])
+    const hostBacking = path.join(
+      testEnv.dataDir, 'projects', 'ephemeral-modules',
+      '.cached-packages', 'modules', sessionId, 'root', 'marker.txt',
+    )
+    const hostMarker = await fs.readFile(hostBacking, 'utf8')
+    expect(hostMarker.trim()).toBe('hello')
+
+    // Host worktree's node_modules has no leaked content — the bind
+    // mount shadows it from the container side only.
+    const worktreeMarker = path.join(
+      testEnv.dataDir, 'projects', 'ephemeral-modules',
+      'worktrees', sessionId, 'node_modules', 'marker.txt',
+    )
+    await expect(fs.access(worktreeMarker)).rejects.toThrow()
+
+    // node_modules is gitignored (via the seeded .gitignore), so a
+    // populated bind mount doesn't surface in `git status`.
+    const { stdout: gitStatus } = await podmanRetry([
+      'exec', '-w', '/workspace', name, 'git', 'status', '--porcelain',
+    ])
+    expect(gitStatus.trim()).toBe('')
+
+    // Same-filesystem invariant: `ln` between .cached-packages/pnpm-store
+    // and /workspace/node_modules must succeed (no EXDEV). This is the
+    // whole reason we bind-mount from under .cached-packages rather than
+    // using a separate named volume.
+    await podmanRetry([
+      'exec', name, 'sh', '-c',
+      'mkdir -p /home/yaac/.cached-packages/pnpm-store && echo store-content > /home/yaac/.cached-packages/pnpm-store/src',
+    ])
+    await podmanRetry([
+      'exec', name, 'ln',
+      '/home/yaac/.cached-packages/pnpm-store/src',
+      '/workspace/node_modules/linked',
+    ])
+    const { stdout: nlinks } = await podmanRetry([
+      'exec', name, 'stat', '-c', '%h',
+      '/home/yaac/.cached-packages/pnpm-store/src',
+    ])
+    expect(Number(nlinks.trim())).toBeGreaterThanOrEqual(2)
+
+    // Delete the session; modules/<sid> goes away, pnpm-store survives.
+    const { exitCode: delExit } = await runYaac(
+      daemonEnv, 'session', 'delete', sessionId,
+    )
+    expect(delExit).toBe(0)
+
+    const modulesRoot = path.join(
+      testEnv.dataDir, 'projects', 'ephemeral-modules',
+      '.cached-packages', 'modules', sessionId,
+    )
+    // Cleanup is detached — poll briefly.
+    let gone = false
+    for (let i = 0; i < 40; i++) {
+      try {
+        await fs.access(modulesRoot)
+        await new Promise((r) => setTimeout(r, 250))
+      } catch {
+        gone = true
+        break
+      }
+    }
+    expect(gone).toBe(true)
+
+    const pnpmStoreSrc = path.join(
+      testEnv.dataDir, 'projects', 'ephemeral-modules',
+      '.cached-packages', 'pnpm-store', 'src',
+    )
+    await expect(fs.access(pnpmStoreSrc)).resolves.toBeUndefined()
+  }, 120_000)
+
+  it('disables node_modules redirect when ephemeralModulesPaths is []', async () => {
+    await setupProject('no-ephemeral', {
+      yaacConfig: { ephemeralModulesPaths: [] },
+    })
+    const name = await createSession('no-ephemeral')
+
+    // /workspace/node_modules should not exist at all when the feature
+    // is disabled — the worktree is a fresh git checkout with no
+    // node_modules in it and no bind mount is installed.
+    await expect(podmanRetry([
+      'exec', name, 'test', '-e', '/workspace/node_modules',
+    ])).rejects.toThrow()
   }, 90_000)
 
   it('--add-dir mounts read-only, --add-dir-rw mounts read-write', async () => {

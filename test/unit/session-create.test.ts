@@ -84,6 +84,8 @@ vi.mock('@/lib/project/paths', () => ({
 
 vi.mock('@/lib/project/config', () => ({
   resolveProjectConfig: vi.fn().mockResolvedValue({}),
+  resolveEphemeralModulesPaths: () => [],
+  ephemeralModulesSlotKey: (p: string) => (p === 'node_modules' ? 'root' : p.replace(/\//g, '_')),
 }))
 
 vi.mock('@/lib/project/credentials', () => ({

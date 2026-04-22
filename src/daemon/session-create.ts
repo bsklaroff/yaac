@@ -28,7 +28,11 @@ import {
   projectDir,
   getDataDir,
 } from '@/lib/project/paths'
-import { resolveProjectConfig } from '@/lib/project/config'
+import {
+  resolveProjectConfig,
+  resolveEphemeralModulesPaths,
+  ephemeralModulesSlotKey,
+} from '@/lib/project/config'
 import { resolveTokenForUrl } from '@/lib/project/credentials'
 import {
   loadToolAuthEntry,
@@ -117,6 +121,50 @@ async function containerExecRoot(containerName: string, cmd: string): Promise<vo
   await shellPodmanWithRetry(`podman exec --user root ${containerName} ${cmd}`)
 }
 
+interface EphemeralMount {
+  /** Relative path under /workspace (e.g. "node_modules"). */
+  rel: string
+  /** Host backing dir — the bind-mount source. */
+  hostBacking: string
+  /** Absolute in-container path — the bind-mount target. */
+  containerPath: string
+}
+
+/**
+ * Resolve per-session ephemeral-module mount descriptors and ensure
+ * each backing directory exists on the host before container create.
+ *
+ * Each `rel` becomes a bind mount from
+ * `<cachedPackages>/modules/<sessionId>/<slotKey>` on host to
+ * `/workspace/<rel>` inside the container. Keeping the backing dirs
+ * under the same `.cached-packages` bind as the pnpm store preserves
+ * hardlink affinity (same superblock → `link(2)` does not hit EXDEV),
+ * and nothing lands on the host worktree.
+ *
+ * A plain bind mount (rather than a symlink) avoids Node.js's
+ * `fs.mkdir({recursive:true})` quirk where an existing symlink-to-dir
+ * is reported as ENOTDIR — pnpm's installer calls exactly that.
+ */
+async function prepareEphemeralMounts(
+  cachedPackages: string,
+  sessionId: string,
+  relPaths: string[],
+): Promise<EphemeralMount[]> {
+  const mounts: EphemeralMount[] = []
+  for (const rel of relPaths) {
+    const slot = ephemeralModulesSlotKey(rel)
+    const hostBacking = path.join(cachedPackages, 'modules', sessionId, slot)
+    await fs.mkdir(hostBacking, { recursive: true })
+    mounts.push({
+      rel,
+      hostBacking,
+      containerPath: `/workspace/${rel}`,
+    })
+  }
+  return mounts
+}
+
+
 export interface SessionCreateOptions {
   addDir?: string[]
   addDirRw?: string[]
@@ -188,6 +236,18 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
     await ensureNestedStorageVolumes(projectSlug, sessionId)
   }
 
+  // Create per-session backing dirs under .cached-packages/modules/<sid>/
+  // and mount each into /workspace/<relPath>. Same underlying filesystem
+  // as the pnpm store → hardlinks work; nothing lands on the worktree.
+  // Real projects already gitignore node_modules, so no info/exclude
+  // bookkeeping is needed here — an empty bind-mount dir is not reported
+  // by `git status` either.
+  const ephemeralMounts = await prepareEphemeralMounts(
+    cachedPackages,
+    sessionId,
+    resolveEphemeralModulesPaths(config),
+  )
+
   const container = await podman.createContainer({
     Image: imageName,
     name: containerName,
@@ -219,6 +279,9 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
         ...(options.addDirRw ?? []).map(
           (p) => `${p}:/add-dir${p}:rw,Z`,
         ),
+        ...ephemeralMounts.map(
+          (m) => `${m.hostBacking}:${m.containerPath}:Z`,
+        ),
         ...(config.nestedContainers
           ? [
               `${sessionGraphrootVolumeName(sessionId)}:/home/yaac/.local/share/containers:Z`,
@@ -240,6 +303,13 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
   // Fix ownership of named cache volumes (created as root, but container runs as yaac)
   for (const containerPath of Object.values(config.cacheVolumes ?? {})) {
     await containerExecRoot(containerName, `chown yaac:yaac '${shellEscape(containerPath)}'`)
+  }
+
+  // Fix ownership of the ephemeral-module bind mounts — the host
+  // backing dirs may have been created by the daemon process with a
+  // different UID than the container's yaac user.
+  for (const m of ephemeralMounts) {
+    await containerExecRoot(containerName, `chown yaac:yaac '${shellEscape(m.containerPath)}'`)
   }
 
   // Forward localhost:<pgPort> inside the container to the pg-relay sidecar (IPv4 + IPv6)

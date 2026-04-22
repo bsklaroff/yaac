@@ -19,6 +19,7 @@ import { ensureDataDir } from '@/lib/project/paths'
 import { daemonLogPath } from '@/shared/paths'
 import { startBackgroundLoop } from '@/daemon/background-loop'
 import { gcOrphanSessionVolumes } from '@/lib/container/image-promoter'
+import { gcOrphanEphemeralModuleDirs } from '@/lib/session/cleanup'
 import { restoreAllSessionForwarders } from '@/lib/session/restore-forwarders'
 import { daemonLog } from '@/daemon/log'
 
@@ -82,6 +83,15 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     await gcOrphanSessionVolumes()
   } catch (err) {
     daemonLog(`[daemon] orphan volume GC failed: ${String(err)}`)
+  }
+
+  // Remove per-session `.cached-packages/modules/<sid>` dirs whose
+  // session container is gone. Same rationale as graphroot GC above —
+  // catches leftovers from crashes and host reboots.
+  try {
+    await gcOrphanEphemeralModuleDirs()
+  } catch (err) {
+    daemonLog(`[daemon] orphan modules GC failed: ${String(err)}`)
   }
 
   const abortCtrl = new AbortController()

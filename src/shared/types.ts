@@ -154,6 +154,14 @@ export interface YaacConfig {
   pgRelay?: PostgresRelayConfig
   addAllowedUrls?: string[]
   setAllowedUrls?: string[]
+  /**
+   * Paths (relative to /workspace) whose directory should be redirected
+   * to `.cached-packages/modules/<sessionId>/<slotKey>` via a symlink,
+   * so package-manager writes don't land on the host worktree. Sharing
+   * a filesystem with pnpm-store keeps hardlinks across sessions.
+   * Unset → `["node_modules"]`. Empty array disables the feature.
+   */
+  ephemeralModulesPaths?: string[]
 }
 
 export interface GithubTokenEntry {

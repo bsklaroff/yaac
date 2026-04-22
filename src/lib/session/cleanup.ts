@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process'
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import { podman, shellPodmanWithRetry } from '@/lib/container/runtime'
 import { proxyClient } from '@/lib/container/proxy-client'
 import { resolveImageTag } from '@/lib/container/image-builder'
@@ -9,7 +11,19 @@ import {
   sessionGraphrootVolumeName,
 } from '@/lib/container/image-promoter'
 import { resolveProjectConfig } from '@/lib/project/config'
+import { cachedPackagesDir } from '@/lib/project/paths'
+import { getProjectsDir, getDataDir } from '@/shared/paths'
 import { stopSessionForwarders } from '@/lib/session/port-forwarders'
+
+/**
+ * Absolute host path to `<cachedPackages>/modules/<sessionId>` — the
+ * per-session ephemeral-modules root whose subdirs back the
+ * `/workspace/<relPath>` symlinks installed at session start. See
+ * `installEphemeralModuleLinks` in `src/daemon/session-create.ts`.
+ */
+export function sessionModulesDir(projectSlug: string, sessionId: string): string {
+  return path.join(cachedPackagesDir(projectSlug), 'modules', sessionId)
+}
 
 /**
  * Best-effort removal of the session's state from the proxy sidecar. If
@@ -85,7 +99,7 @@ export async function cleanupSession(params: {
     const config = await resolveProjectConfig(projectSlug)
     if (config?.nestedContainers) {
       try {
-        const imageRef = await resolveImageTag(projectSlug, undefined, true)
+        const imageRef = await resolveImageTag(projectSlug, process.env.YAAC_IMAGE_PREFIX, true)
         await promoteSessionImages(projectSlug, sessionId, imageRef)
       } catch (err) {
         console.warn(`Promoter for session ${sessionId} failed: ${(err as Error).message}`)
@@ -95,6 +109,14 @@ export async function cleanupSession(params: {
   } catch {
     // config resolution failed — skip promotion silently
   }
+
+  // Remove the per-session ephemeral-modules backing dir from
+  // `.cached-packages/modules/<sid>`. No-op if the feature was disabled
+  // for this session (dir won't exist).
+  await fs.rm(sessionModulesDir(projectSlug, sessionId), {
+    recursive: true,
+    force: true,
+  })
 
   console.log(`Session ${sessionId} cleaned up.`)
 }
@@ -124,7 +146,7 @@ export async function cleanupSessionDetached(params: {
   try {
     const config = await resolveProjectConfig(projectSlug)
     if (config?.nestedContainers) {
-      const imageRef = await resolveImageTag(projectSlug, undefined, true)
+      const imageRef = await resolveImageTag(projectSlug, process.env.YAAC_IMAGE_PREFIX, true)
       promoterCmd = `${buildPromoterShellCommand(projectSlug, sessionId, imageRef)} 2>/dev/null || true`
       graphrootRm = `podman volume rm -f ${sessionGraphrootVolumeName(sessionId)} 2>/dev/null || true`
     }
@@ -133,11 +155,15 @@ export async function cleanupSessionDetached(params: {
     // orphan-GC on next daemon start will clean up the volume.
   }
 
+  const modulesDir = sessionModulesDir(projectSlug, sessionId)
+  const ephemeralModulesRm = `rm -rf '${modulesDir.replace(/'/g, `'\\''`)}' 2>/dev/null || true`
+
   const script = [
     `podman stop -t 5 ${containerName} 2>/dev/null || true`,
     `podman rm ${containerName} 2>/dev/null || true`,
     ...(promoterCmd ? [promoterCmd] : []),
     ...(graphrootRm ? [graphrootRm] : []),
+    ephemeralModulesRm,
   ].join('; ')
 
   const child = spawn('sh', ['-c', script], {
@@ -145,4 +171,58 @@ export async function cleanupSessionDetached(params: {
     stdio: 'ignore',
   })
   child.unref()
+}
+
+/**
+ * Daemon-startup sweep: remove `.cached-packages/modules/<sid>`
+ * directories whose session container is no longer alive. Catches
+ * leftovers from crashes, killed daemons, and host reboots. Mirrors
+ * `gcOrphanSessionVolumes` (`src/lib/container/image-promoter.ts`)
+ * but operates on host directories rather than podman volumes.
+ */
+export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
+  const dataDir = getDataDir()
+
+  let liveSessionIds: Set<string>
+  try {
+    const containers = await podman.listContainers({
+      all: true,
+      filters: { label: [`yaac.data-dir=${dataDir}`] },
+    })
+    liveSessionIds = new Set(
+      containers
+        .map((c) => c.Labels?.['yaac.session-id'])
+        .filter((id): id is string => !!id),
+    )
+  } catch (err) {
+    console.warn(`Orphan modules GC: failed to list containers: ${(err as Error).message}`)
+    return
+  }
+
+  let projectSlugs: string[]
+  try {
+    projectSlugs = await fs.readdir(getProjectsDir())
+  } catch {
+    return
+  }
+
+  for (const slug of projectSlugs) {
+    const modulesRoot = path.join(cachedPackagesDir(slug), 'modules')
+    let entries: string[]
+    try {
+      entries = await fs.readdir(modulesRoot)
+    } catch {
+      continue
+    }
+    for (const sid of entries) {
+      if (liveSessionIds.has(sid)) continue
+      const dir = path.join(modulesRoot, sid)
+      try {
+        await fs.rm(dir, { recursive: true, force: true })
+        console.log(`Removed orphan ephemeral modules dir ${dir}`)
+      } catch (err) {
+        console.warn(`Orphan modules GC: failed to remove ${dir}: ${(err as Error).message}`)
+      }
+    }
+  }
 }
