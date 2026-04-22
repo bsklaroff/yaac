@@ -59,7 +59,7 @@ driver = "overlay"
 [storage.options]
 additionalimagestores = ["/var/lib/shared-images"]
 EOF
-RUN chown yaac:yaac -R /home/yaac/.local/share/containers /home/yaac/.config
+RUN chown yaac:yaac -R /home/yaac/.local/share/containers /home/yaac/.config /var/lib/shared-images
 
 RUN mkdir -p /run/user/1000/podman && chown yaac:yaac -R /run/user/1000
 
