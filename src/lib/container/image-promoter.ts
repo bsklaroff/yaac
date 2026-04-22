@@ -1,4 +1,4 @@
-import { podman } from '@/lib/container/runtime'
+import { podman, shellPodmanWithRetry } from '@/lib/container/runtime'
 import { getDataDir } from '@/lib/project/paths'
 
 /**
@@ -73,22 +73,27 @@ export async function ensureNestedStorageVolumes(
   return { graphroot, imageCache }
 }
 
-export async function removeSessionGraphrootVolume(sessionId: string): Promise<void> {
-  const name = sessionGraphrootVolumeName(sessionId)
+/**
+ * Force-remove a podman volume via the CLI. Podman's Docker-compat
+ * `DELETE /volumes/{name}` endpoint ignores the force parameter, so
+ * dockerode's `volume.remove({ force: true })` silently no-ops when the
+ * volume has any attachment history (even if no container is currently
+ * using it). Shell out to `podman volume rm -f` instead.
+ */
+async function forceRemoveVolume(name: string): Promise<void> {
   try {
-    await podman.getVolume(name).remove({ force: true })
-  } catch {
-    // already gone or in use by a doomed container — next sweep will catch it
-  }
-}
-
-export async function removeProjectImageCacheVolume(projectSlug: string): Promise<void> {
-  const name = projectImageCacheVolumeName(projectSlug)
-  try {
-    await podman.getVolume(name).remove({ force: true })
+    await shellPodmanWithRetry(`podman volume rm -f ${name}`)
   } catch {
     // already gone
   }
+}
+
+export async function removeSessionGraphrootVolume(sessionId: string): Promise<void> {
+  await forceRemoveVolume(sessionGraphrootVolumeName(sessionId))
+}
+
+export async function removeProjectImageCacheVolume(projectSlug: string): Promise<void> {
+  await forceRemoveVolume(projectImageCacheVolumeName(projectSlug))
 }
 
 /**
@@ -128,8 +133,9 @@ export async function promoteSessionImages(
   const graphroot = sessionGraphrootVolumeName(sessionId)
   const imageCache = projectImageCacheVolumeName(projectSlug)
 
+  let container: Awaited<ReturnType<typeof podman.createContainer>> | null = null
   try {
-    const container = await podman.createContainer({
+    container = await podman.createContainer({
       Image: imageRef,
       Cmd: ['sh', '-c', PROMOTER_SCRIPT],
       User: 'root',
@@ -140,7 +146,9 @@ export async function promoteSessionImages(
         'yaac.data-dir': getDataDir(),
       },
       HostConfig: {
-        AutoRemove: true,
+        // No AutoRemove: we need to block until the container is fully
+        // gone (not just exited) before returning, so that the shared
+        // cache volume is free to be removed in the same teardown flow.
         SecurityOpt: ['label=disable'],
         Binds: [
           `${graphroot}:/src:rw`,
@@ -154,6 +162,9 @@ export async function promoteSessionImages(
     console.warn(
       `Image promoter for session ${sessionId} failed: ${(err as Error).message}`,
     )
+  }
+  if (container) {
+    try { await container.remove({ force: true }) } catch { /* already gone */ }
   }
 }
 
@@ -232,11 +243,7 @@ export async function gcOrphanSessionVolumes(): Promise<void> {
     const sessionId = v.Labels?.['yaac.session-id']
     if (!sessionId) continue
     if (liveSessionIds.has(sessionId)) continue
-    try {
-      await podman.getVolume(v.Name).remove({ force: true })
-      console.log(`Removed orphan session graphroot volume ${v.Name}`)
-    } catch {
-      // already gone or briefly in use — not worth retrying here
-    }
+    await forceRemoveVolume(v.Name)
+    console.log(`Removed orphan session graphroot volume ${v.Name}`)
   }
 }

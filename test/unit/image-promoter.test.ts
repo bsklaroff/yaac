@@ -8,13 +8,14 @@ vi.mock('@/lib/container/runtime', () => ({
     listContainers: vi.fn(),
     createContainer: vi.fn(),
   },
+  shellPodmanWithRetry: vi.fn(),
 }))
 
 vi.mock('@/lib/project/paths', () => ({
   getDataDir: () => '/tmp/yaac-data',
 }))
 
-import { podman } from '@/lib/container/runtime'
+import { podman, shellPodmanWithRetry } from '@/lib/container/runtime'
 import {
   sessionGraphrootVolumeName,
   projectImageCacheVolumeName,
@@ -37,6 +38,7 @@ const mockListVolumes = vi.mocked(podman.listVolumes)
 const mockListContainers = vi.mocked(podman.listContainers)
 const mockCreateContainer = vi.mocked(podman.createContainer)
 /* eslint-enable @typescript-eslint/unbound-method */
+const mockShellPodman = vi.mocked(shellPodmanWithRetry)
 
 beforeEach(() => {
   mockGetVolume.mockReset()
@@ -44,6 +46,7 @@ beforeEach(() => {
   mockListVolumes.mockReset()
   mockListContainers.mockReset()
   mockCreateContainer.mockReset()
+  mockShellPodman.mockReset()
 })
 
 afterEach(() => {
@@ -116,31 +119,31 @@ describe('ensureNestedStorageVolumes', () => {
 })
 
 describe('removeSessionGraphrootVolume / removeProjectImageCacheVolume', () => {
-  it('calls force-remove on the matching volume name', async () => {
-    const remove = vi.fn().mockResolvedValue(undefined)
-    mockGetVolume.mockReturnValue({ remove } as never)
+  it('shells out to podman volume rm -f for the per-session graphroot', async () => {
+    mockShellPodman.mockResolvedValue({ stdout: '', stderr: '' })
 
     await removeSessionGraphrootVolume('sess-y')
 
-    expect(mockGetVolume).toHaveBeenCalledWith('yaac-podmanstorage-sess-y')
-    expect(remove).toHaveBeenCalledWith({ force: true })
+    expect(mockShellPodman).toHaveBeenCalledWith(
+      'podman volume rm -f yaac-podmanstorage-sess-y',
+    )
   })
 
-  it('swallows errors (volume already gone)', async () => {
-    const remove = vi.fn().mockRejectedValue(new Error('no such volume'))
-    mockGetVolume.mockReturnValue({ remove } as never)
-
-    await expect(removeSessionGraphrootVolume('sess-y')).resolves.toBeUndefined()
-    await expect(removeProjectImageCacheVolume('slug-x')).resolves.toBeUndefined()
-  })
-
-  it('removes the project image cache volume by name', async () => {
-    const remove = vi.fn().mockResolvedValue(undefined)
-    mockGetVolume.mockReturnValue({ remove } as never)
+  it('shells out to podman volume rm -f for the shared image cache', async () => {
+    mockShellPodman.mockResolvedValue({ stdout: '', stderr: '' })
 
     await removeProjectImageCacheVolume('slug-x')
 
-    expect(mockGetVolume).toHaveBeenCalledWith('yaac-imagecache-slug-x')
+    expect(mockShellPodman).toHaveBeenCalledWith(
+      'podman volume rm -f yaac-imagecache-slug-x',
+    )
+  })
+
+  it('swallows errors (volume already gone)', async () => {
+    mockShellPodman.mockRejectedValue(new Error('no such volume'))
+
+    await expect(removeSessionGraphrootVolume('sess-y')).resolves.toBeUndefined()
+    await expect(removeProjectImageCacheVolume('slug-x')).resolves.toBeUndefined()
   })
 })
 
@@ -156,15 +159,20 @@ describe('gcOrphanSessionVolumes', () => {
         { Name: 'yaac-podmanstorage-dead-2', Labels: { 'yaac.session-id': 'dead-2' } },
       ],
     } as never)
-    const remove = vi.fn().mockResolvedValue(undefined)
-    mockGetVolume.mockReturnValue({ remove } as never)
+    mockShellPodman.mockResolvedValue({ stdout: '', stderr: '' })
 
     await gcOrphanSessionVolumes()
 
-    expect(mockGetVolume).toHaveBeenCalledWith('yaac-podmanstorage-dead-1')
-    expect(mockGetVolume).toHaveBeenCalledWith('yaac-podmanstorage-dead-2')
-    expect(mockGetVolume).not.toHaveBeenCalledWith('yaac-podmanstorage-live-1')
-    expect(remove).toHaveBeenCalledTimes(2)
+    expect(mockShellPodman).toHaveBeenCalledWith(
+      'podman volume rm -f yaac-podmanstorage-dead-1',
+    )
+    expect(mockShellPodman).toHaveBeenCalledWith(
+      'podman volume rm -f yaac-podmanstorage-dead-2',
+    )
+    expect(mockShellPodman).not.toHaveBeenCalledWith(
+      'podman volume rm -f yaac-podmanstorage-live-1',
+    )
+    expect(mockShellPodman).toHaveBeenCalledTimes(2)
   })
 
   it('returns quietly if container listing fails', async () => {
@@ -179,7 +187,7 @@ describe('gcOrphanSessionVolumes', () => {
     mockListVolumes.mockRejectedValue(new Error('podman volume endpoint broken'))
 
     await expect(gcOrphanSessionVolumes()).resolves.toBeUndefined()
-    expect(mockGetVolume).not.toHaveBeenCalled()
+    expect(mockShellPodman).not.toHaveBeenCalled()
   })
 
   it('filters by data-dir and graphroot label so other yaac installs are not touched', async () => {
@@ -216,7 +224,10 @@ describe('promoteSessionImages', () => {
   it('runs a one-shot promoter container mounting both volumes', async () => {
     const start = vi.fn().mockResolvedValue(undefined)
     const waitCall = vi.fn().mockResolvedValue({ StatusCode: 0 })
-    mockCreateContainer.mockResolvedValue({ start, wait: waitCall } as never)
+    const remove = vi.fn().mockResolvedValue(undefined)
+    mockCreateContainer.mockResolvedValue(
+      { start, wait: waitCall, remove } as never,
+    )
 
     await promoteSessionImages('slug-x', 'sess-y', 'yaac-base-nestable:abc')
 
@@ -224,19 +235,22 @@ describe('promoteSessionImages', () => {
       Image: string
       User: string
       HostConfig: {
-        AutoRemove: boolean
+        AutoRemove?: boolean
         SecurityOpt: string[]
         Binds: string[]
       }
     }
     expect(call.Image).toBe('yaac-base-nestable:abc')
     expect(call.User).toBe('root')
-    expect(call.HostConfig.AutoRemove).toBe(true)
+    // AutoRemove must NOT be set — we explicitly remove after wait() so the
+    // shared cache volume is free for removal in the same teardown flow.
+    expect(call.HostConfig.AutoRemove).toBeUndefined()
     expect(call.HostConfig.SecurityOpt).toContain('label=disable')
     expect(call.HostConfig.Binds).toContain('yaac-podmanstorage-sess-y:/src:rw')
     expect(call.HostConfig.Binds).toContain('yaac-imagecache-slug-x:/dst:rw')
     expect(start).toHaveBeenCalled()
     expect(waitCall).toHaveBeenCalled()
+    expect(remove).toHaveBeenCalledWith({ force: true })
   })
 
   it('swallows container-create failures', async () => {
