@@ -56,7 +56,11 @@ function spawnService(socketPath: string): ReturnType<typeof spawn> {
   return child
 }
 
-describe('ensurePodmanSocket revives a dead podman service (real podman)', () => {
+// `podman system service` only exists inside the podman machine VM on
+// darwin — the CLI rejects it on the host. ensurePodmanSocket is only
+// called on Linux (getSocketPath returns undefined on darwin), so skip
+// this test anywhere the command isn't directly invokable.
+describe.skipIf(process.platform === 'darwin')('ensurePodmanSocket revives a dead podman service (real podman)', () => {
   let tmpDir: string
   let socketPath: string
 
