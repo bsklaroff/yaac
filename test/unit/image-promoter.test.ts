@@ -1,0 +1,260 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+
+vi.mock('@/lib/container/runtime', () => ({
+  podman: {
+    getVolume: vi.fn(),
+    createVolume: vi.fn(),
+    listVolumes: vi.fn(),
+    listContainers: vi.fn(),
+    createContainer: vi.fn(),
+  },
+}))
+
+vi.mock('@/lib/project/paths', () => ({
+  getDataDir: () => '/tmp/yaac-data',
+}))
+
+import { podman } from '@/lib/container/runtime'
+import {
+  sessionGraphrootVolumeName,
+  projectImageCacheVolumeName,
+  ensureNestedStorageVolumes,
+  removeSessionGraphrootVolume,
+  removeProjectImageCacheVolume,
+  gcOrphanSessionVolumes,
+  buildPromoterShellCommand,
+  promoteSessionImages,
+  PROMOTER_SCRIPT,
+  SHARED_IMAGE_STORE_PATH,
+  GRAPHROOT_LABEL,
+  IMAGECACHE_LABEL,
+} from '@/lib/container/image-promoter'
+
+/* eslint-disable @typescript-eslint/unbound-method */
+const mockGetVolume = vi.mocked(podman.getVolume)
+const mockCreateVolume = vi.mocked(podman.createVolume)
+const mockListVolumes = vi.mocked(podman.listVolumes)
+const mockListContainers = vi.mocked(podman.listContainers)
+const mockCreateContainer = vi.mocked(podman.createContainer)
+/* eslint-enable @typescript-eslint/unbound-method */
+
+beforeEach(() => {
+  mockGetVolume.mockReset()
+  mockCreateVolume.mockReset()
+  mockListVolumes.mockReset()
+  mockListContainers.mockReset()
+  mockCreateContainer.mockReset()
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+describe('sessionGraphrootVolumeName / projectImageCacheVolumeName', () => {
+  it('derives a per-session graphroot volume name', () => {
+    expect(sessionGraphrootVolumeName('abc-123')).toBe('yaac-podmanstorage-abc-123')
+  })
+
+  it('derives a project image-cache volume name', () => {
+    expect(projectImageCacheVolumeName('my-proj')).toBe('yaac-imagecache-my-proj')
+  })
+})
+
+describe('ensureNestedStorageVolumes', () => {
+  it('creates both volumes with labels when neither exists', async () => {
+    mockGetVolume.mockImplementation(() => ({
+      inspect: vi.fn().mockRejectedValue(new Error('no such volume')),
+    }) as never)
+    mockCreateVolume.mockResolvedValue({} as never)
+
+    const result = await ensureNestedStorageVolumes('slug-x', 'sess-y')
+
+    expect(result).toEqual({
+      graphroot: 'yaac-podmanstorage-sess-y',
+      imageCache: 'yaac-imagecache-slug-x',
+    })
+    expect(mockCreateVolume).toHaveBeenCalledTimes(2)
+    const graphrootCall = mockCreateVolume.mock.calls.find(
+      ([arg]) => (arg as { Name: string }).Name === 'yaac-podmanstorage-sess-y',
+    )
+    const imageCacheCall = mockCreateVolume.mock.calls.find(
+      ([arg]) => (arg as { Name: string }).Name === 'yaac-imagecache-slug-x',
+    )
+    expect(graphrootCall).toBeDefined()
+    expect(imageCacheCall).toBeDefined()
+    const graphrootLabels = (graphrootCall![0] as { Labels: Record<string, string> }).Labels
+    expect(graphrootLabels[GRAPHROOT_LABEL]).toBe('true')
+    expect(graphrootLabels['yaac.project']).toBe('slug-x')
+    expect(graphrootLabels['yaac.session-id']).toBe('sess-y')
+    expect(graphrootLabels['yaac.data-dir']).toBe('/tmp/yaac-data')
+    const imageCacheLabels = (imageCacheCall![0] as { Labels: Record<string, string> }).Labels
+    expect(imageCacheLabels[IMAGECACHE_LABEL]).toBe('true')
+    expect(imageCacheLabels['yaac.project']).toBe('slug-x')
+    expect(imageCacheLabels['yaac.data-dir']).toBe('/tmp/yaac-data')
+  })
+
+  it('skips creation when volumes already exist', async () => {
+    mockGetVolume.mockImplementation(() => ({
+      inspect: vi.fn().mockResolvedValue({}),
+    }) as never)
+
+    await ensureNestedStorageVolumes('slug-x', 'sess-y')
+
+    expect(mockCreateVolume).not.toHaveBeenCalled()
+  })
+
+  it('swallows "already exists" races on createVolume', async () => {
+    mockGetVolume.mockImplementation(() => ({
+      inspect: vi.fn().mockRejectedValue(new Error('no such volume')),
+    }) as never)
+    mockCreateVolume.mockRejectedValue(new Error('volume already exists'))
+
+    await expect(
+      ensureNestedStorageVolumes('slug-x', 'sess-y'),
+    ).resolves.toBeDefined()
+  })
+})
+
+describe('removeSessionGraphrootVolume / removeProjectImageCacheVolume', () => {
+  it('calls force-remove on the matching volume name', async () => {
+    const remove = vi.fn().mockResolvedValue(undefined)
+    mockGetVolume.mockReturnValue({ remove } as never)
+
+    await removeSessionGraphrootVolume('sess-y')
+
+    expect(mockGetVolume).toHaveBeenCalledWith('yaac-podmanstorage-sess-y')
+    expect(remove).toHaveBeenCalledWith({ force: true })
+  })
+
+  it('swallows errors (volume already gone)', async () => {
+    const remove = vi.fn().mockRejectedValue(new Error('no such volume'))
+    mockGetVolume.mockReturnValue({ remove } as never)
+
+    await expect(removeSessionGraphrootVolume('sess-y')).resolves.toBeUndefined()
+    await expect(removeProjectImageCacheVolume('slug-x')).resolves.toBeUndefined()
+  })
+
+  it('removes the project image cache volume by name', async () => {
+    const remove = vi.fn().mockResolvedValue(undefined)
+    mockGetVolume.mockReturnValue({ remove } as never)
+
+    await removeProjectImageCacheVolume('slug-x')
+
+    expect(mockGetVolume).toHaveBeenCalledWith('yaac-imagecache-slug-x')
+  })
+})
+
+describe('gcOrphanSessionVolumes', () => {
+  it('removes volumes whose session container is gone', async () => {
+    mockListContainers.mockResolvedValue([
+      { Labels: { 'yaac.session-id': 'live-1' } },
+    ] as never)
+    mockListVolumes.mockResolvedValue({
+      Volumes: [
+        { Name: 'yaac-podmanstorage-live-1', Labels: { 'yaac.session-id': 'live-1' } },
+        { Name: 'yaac-podmanstorage-dead-1', Labels: { 'yaac.session-id': 'dead-1' } },
+        { Name: 'yaac-podmanstorage-dead-2', Labels: { 'yaac.session-id': 'dead-2' } },
+      ],
+    } as never)
+    const remove = vi.fn().mockResolvedValue(undefined)
+    mockGetVolume.mockReturnValue({ remove } as never)
+
+    await gcOrphanSessionVolumes()
+
+    expect(mockGetVolume).toHaveBeenCalledWith('yaac-podmanstorage-dead-1')
+    expect(mockGetVolume).toHaveBeenCalledWith('yaac-podmanstorage-dead-2')
+    expect(mockGetVolume).not.toHaveBeenCalledWith('yaac-podmanstorage-live-1')
+    expect(remove).toHaveBeenCalledTimes(2)
+  })
+
+  it('returns quietly if container listing fails', async () => {
+    mockListContainers.mockRejectedValue(new Error('podman offline'))
+
+    await expect(gcOrphanSessionVolumes()).resolves.toBeUndefined()
+    expect(mockListVolumes).not.toHaveBeenCalled()
+  })
+
+  it('returns quietly if volume listing fails', async () => {
+    mockListContainers.mockResolvedValue([] as never)
+    mockListVolumes.mockRejectedValue(new Error('podman volume endpoint broken'))
+
+    await expect(gcOrphanSessionVolumes()).resolves.toBeUndefined()
+    expect(mockGetVolume).not.toHaveBeenCalled()
+  })
+
+  it('filters by data-dir and graphroot label so other yaac installs are not touched', async () => {
+    mockListContainers.mockResolvedValue([] as never)
+    mockListVolumes.mockResolvedValue({ Volumes: [] } as never)
+
+    await gcOrphanSessionVolumes()
+
+    const containerFilters = mockListContainers.mock.calls[0]?.[0] as
+      | { filters?: { label?: string[] } } | undefined
+    expect(containerFilters?.filters?.label).toContain('yaac.data-dir=/tmp/yaac-data')
+
+    const volumeFilters = mockListVolumes.mock.calls[0]?.[0] as
+      | { filters?: { label?: string[] } } | undefined
+    expect(volumeFilters?.filters?.label).toContain(`${GRAPHROOT_LABEL}=true`)
+    expect(volumeFilters?.filters?.label).toContain('yaac.data-dir=/tmp/yaac-data')
+  })
+})
+
+describe('buildPromoterShellCommand', () => {
+  it('includes volume binds, label=disable, and the inline script', () => {
+    const cmd = buildPromoterShellCommand('slug-x', 'sess-y', 'yaac-base-nestable:abcdef')
+    expect(cmd).toContain('-v yaac-podmanstorage-sess-y:/src:rw')
+    expect(cmd).toContain('-v yaac-imagecache-slug-x:/dst:rw')
+    expect(cmd).toContain('--security-opt label=disable')
+    expect(cmd).toContain('--user root')
+    expect(cmd).toContain('yaac-base-nestable:abcdef')
+    expect(cmd).toContain('skopeo copy')
+    expect(cmd).toContain('flock -x 9')
+  })
+})
+
+describe('promoteSessionImages', () => {
+  it('runs a one-shot promoter container mounting both volumes', async () => {
+    const start = vi.fn().mockResolvedValue(undefined)
+    const waitCall = vi.fn().mockResolvedValue({ StatusCode: 0 })
+    mockCreateContainer.mockResolvedValue({ start, wait: waitCall } as never)
+
+    await promoteSessionImages('slug-x', 'sess-y', 'yaac-base-nestable:abc')
+
+    const call = mockCreateContainer.mock.calls[0]?.[0] as {
+      Image: string
+      User: string
+      HostConfig: {
+        AutoRemove: boolean
+        SecurityOpt: string[]
+        Binds: string[]
+      }
+    }
+    expect(call.Image).toBe('yaac-base-nestable:abc')
+    expect(call.User).toBe('root')
+    expect(call.HostConfig.AutoRemove).toBe(true)
+    expect(call.HostConfig.SecurityOpt).toContain('label=disable')
+    expect(call.HostConfig.Binds).toContain('yaac-podmanstorage-sess-y:/src:rw')
+    expect(call.HostConfig.Binds).toContain('yaac-imagecache-slug-x:/dst:rw')
+    expect(start).toHaveBeenCalled()
+    expect(waitCall).toHaveBeenCalled()
+  })
+
+  it('swallows container-create failures', async () => {
+    mockCreateContainer.mockRejectedValue(new Error('oci boom'))
+    await expect(
+      promoteSessionImages('slug-x', 'sess-y', 'img:tag'),
+    ).resolves.toBeUndefined()
+  })
+})
+
+describe('PROMOTER_SCRIPT and SHARED_IMAGE_STORE_PATH constants', () => {
+  it('exposes a shared image store path used by session binds', () => {
+    expect(SHARED_IMAGE_STORE_PATH).toBe('/var/lib/shared-images')
+  })
+
+  it('flocks the shared store and walks source images', () => {
+    expect(PROMOTER_SCRIPT).toContain('flock -x 9')
+    expect(PROMOTER_SCRIPT).toContain('podman --root /src/storage')
+    expect(PROMOTER_SCRIPT).toContain('containers-storage:[overlay@/dst+/tmp/dst-run]')
+  })
+})

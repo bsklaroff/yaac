@@ -4,6 +4,12 @@ import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
 import { ensureContainerRuntime, podman, shellPodmanWithRetry } from '@/lib/container/runtime'
 import { ensureImage, packTar } from '@/lib/container/image-builder'
+import {
+  ensureNestedStorageVolumes,
+  sessionGraphrootVolumeName,
+  projectImageCacheVolumeName,
+  SHARED_IMAGE_STORE_PATH,
+} from '@/lib/container/image-promoter'
 import { proxyClient, buildRulesFromConfig } from '@/lib/container/proxy-client'
 import type { UpstreamRedirect } from '@/lib/container/proxy-client'
 import { resolveAllowedHosts } from '@/lib/container/default-allowed-hosts'
@@ -167,6 +173,13 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
     networkMode, pgRelayIp, gitUser, forwardedPorts,
   } = params
 
+  // Pre-create the per-session graphroot and project image-cache volumes
+  // with identifying labels so orphan GC can distinguish them from other
+  // yaac installs' volumes. Auto-created-on-mount volumes would be unlabeled.
+  if (config.nestedContainers) {
+    await ensureNestedStorageVolumes(projectSlug, sessionId)
+  }
+
   const container = await podman.createContainer({
     Image: imageName,
     name: containerName,
@@ -199,7 +212,10 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
           (p) => `${p}:/add-dir${p}:rw,Z`,
         ),
         ...(config.nestedContainers
-          ? [`yaac-podmanstorage-${projectSlug}:/home/yaac/.local/share/containers:Z`]
+          ? [
+              `${sessionGraphrootVolumeName(sessionId)}:/home/yaac/.local/share/containers:Z`,
+              `${projectImageCacheVolumeName(projectSlug)}:${SHARED_IMAGE_STORE_PATH}:ro,Z`,
+            ]
           : []),
       ],
       NetworkMode: networkMode,

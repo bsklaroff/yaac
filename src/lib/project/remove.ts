@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { podman } from '@/lib/container/runtime'
+import { removeProjectImageCacheVolume } from '@/lib/container/image-promoter'
 import { getDataDir, projectDir } from '@/lib/project/paths'
 import { cleanupSession } from '@/lib/session/cleanup'
 import { DaemonError } from '@/daemon/errors'
@@ -36,6 +37,10 @@ export async function removeProject(slug: string): Promise<void> {
       // best-effort cleanup — continue with the next container
     }
   }
+
+  // All sessions (and their per-session graphroot volumes) are gone, so
+  // nothing still needs the project-shared image cache.
+  await removeProjectImageCacheVolume(slug)
 
   await fs.rm(dir, { recursive: true, force: true })
 }

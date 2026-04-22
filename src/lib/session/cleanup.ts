@@ -1,7 +1,15 @@
 import { spawn } from 'node:child_process'
 import { podman, shellPodmanWithRetry } from '@/lib/container/runtime'
 import { proxyClient } from '@/lib/container/proxy-client'
+import { resolveImageTag } from '@/lib/container/image-builder'
+import {
+  buildPromoterShellCommand,
+  promoteSessionImages,
+  removeSessionGraphrootVolume,
+  sessionGraphrootVolumeName,
+} from '@/lib/container/image-promoter'
 import { removeWorktree } from '@/lib/git'
+import { resolveProjectConfig } from '@/lib/project/config'
 import { repoDir, worktreeDir } from '@/lib/project/paths'
 import { stopSessionForwarders } from '@/lib/session/port-forwarders'
 
@@ -71,6 +79,25 @@ export async function cleanupSession(params: {
     // container may already be removed
   }
 
+  // For nestedContainers sessions: salvage image layers from the session's
+  // per-session podman graphroot into the project's shared image cache,
+  // then drop the now-obsolete graphroot volume. Best-effort — never blocks
+  // teardown on cache salvage or volume removal.
+  try {
+    const config = await resolveProjectConfig(projectSlug)
+    if (config?.nestedContainers) {
+      try {
+        const imageRef = await resolveImageTag(projectSlug, undefined, true)
+        await promoteSessionImages(projectSlug, sessionId, imageRef)
+      } catch (err) {
+        console.warn(`Promoter for session ${sessionId} failed: ${(err as Error).message}`)
+      }
+      await removeSessionGraphrootVolume(sessionId)
+    }
+  } catch {
+    // config resolution failed — skip promotion silently
+  }
+
   try {
     await removeWorktree(repoDir(projectSlug), worktreeDir(projectSlug, sessionId))
   } catch {
@@ -97,11 +124,33 @@ export async function cleanupSessionDetached(params: {
   stopSessionForwarders(sessionId)
   await removeSessionFromProxy(sessionId)
 
-  // Build a shell script that stops + removes the container, then removes the worktree.
-  // Each step ignores errors (the resource may already be gone).
+  // For nestedContainers projects, include promoter + per-session volume
+  // removal in the detached script so the caller can exit immediately but
+  // the cache still gets salvaged and the volume cleaned up in the
+  // background. Image ref is resolved in-process — cheap and avoids
+  // needing config access inside the detached shell.
+  let promoterCmd = ''
+  let graphrootRm = ''
+  try {
+    const config = await resolveProjectConfig(projectSlug)
+    if (config?.nestedContainers) {
+      const imageRef = await resolveImageTag(projectSlug, undefined, true)
+      promoterCmd = `${buildPromoterShellCommand(projectSlug, sessionId, imageRef)} 2>/dev/null || true`
+      graphrootRm = `podman volume rm -f ${sessionGraphrootVolumeName(sessionId)} 2>/dev/null || true`
+    }
+  } catch {
+    // config or image-tag resolution failed — skip the promoter bits; the
+    // orphan-GC on next daemon start will clean up the volume.
+  }
+
+  // Build a shell script that stops + removes the container, optionally
+  // runs the promoter + drops the graphroot volume, then removes the
+  // worktree. Each step ignores errors (the resource may already be gone).
   const script = [
     `podman stop -t 5 ${containerName} 2>/dev/null || true`,
     `podman rm ${containerName} 2>/dev/null || true`,
+    ...(promoterCmd ? [promoterCmd] : []),
+    ...(graphrootRm ? [graphrootRm] : []),
     `git -C '${rDir}' worktree remove '${wtDir}' 2>/dev/null || true`,
   ].join('; ')
 

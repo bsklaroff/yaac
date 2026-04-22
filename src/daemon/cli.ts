@@ -18,6 +18,7 @@ import {
 import { ensureDataDir } from '@/lib/project/paths'
 import { daemonLogPath } from '@/shared/paths'
 import { startBackgroundLoop } from '@/daemon/background-loop'
+import { gcOrphanSessionVolumes } from '@/lib/container/image-promoter'
 import { restoreAllSessionForwarders } from '@/lib/session/restore-forwarders'
 import { daemonLog } from '@/daemon/log'
 
@@ -72,6 +73,15 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     await restoreAllSessionForwarders()
   } catch (err) {
     daemonLog(`[daemon] restore forwarders failed: ${String(err)}`)
+  }
+
+  // Remove per-session podman graphroot volumes whose session container
+  // is gone (crashed session, killed daemon, host reboot). No layer
+  // salvage — cache missed at crash time is forfeit.
+  try {
+    await gcOrphanSessionVolumes()
+  } catch (err) {
+    daemonLog(`[daemon] orphan volume GC failed: ${String(err)}`)
   }
 
   const abortCtrl = new AbortController()
