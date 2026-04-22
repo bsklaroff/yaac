@@ -266,6 +266,48 @@ describe('createSession', () => {
     expect(mockBuildStatusRight).not.toHaveBeenCalled()
   })
 
+  it('skips the prewarm claim when --add-dir is set and creates a fresh container with the mount', async () => {
+    mockClaimPrewarmSession.mockResolvedValue({
+      sessionId: 'prewarm-session',
+      containerName: 'yaac-demo-prewarm-session',
+    })
+
+    const result = await createSession('demo', { addDir: ['/host/extra'] })
+
+    expect(mockClaimPrewarmSession).not.toHaveBeenCalled()
+    expect(result?.claimedPrewarm).toBe(false)
+    expect(mockCreateContainer).toHaveBeenCalledTimes(1)
+    const binds = mockCreateContainer.mock.calls[0]?.[0].HostConfig?.Binds
+    expect(binds).toEqual(expect.arrayContaining(['/host/extra:/add-dir/host/extra:ro,Z']))
+  })
+
+  it('skips the prewarm claim when --add-dir-rw is set and creates a fresh container with the mount', async () => {
+    mockClaimPrewarmSession.mockResolvedValue({
+      sessionId: 'prewarm-session',
+      containerName: 'yaac-demo-prewarm-session',
+    })
+
+    const result = await createSession('demo', { addDirRw: ['/host/rw'] })
+
+    expect(mockClaimPrewarmSession).not.toHaveBeenCalled()
+    expect(result?.claimedPrewarm).toBe(false)
+    const binds = mockCreateContainer.mock.calls[0]?.[0].HostConfig?.Binds
+    expect(binds).toEqual(expect.arrayContaining(['/host/rw:/add-dir/host/rw:rw,Z']))
+  })
+
+  it('still claims a prewarm when addDir/addDirRw are empty arrays', async () => {
+    mockClaimPrewarmSession.mockResolvedValue({
+      sessionId: 'prewarm-session',
+      containerName: 'yaac-demo-prewarm-session',
+    })
+
+    const result = await createSession('demo', { addDir: [], addDirRw: [] })
+
+    expect(mockClaimPrewarmSession).toHaveBeenCalledTimes(1)
+    expect(result?.claimedPrewarm).toBe(true)
+    expect(mockCreateContainer).not.toHaveBeenCalled()
+  })
+
   it('propagates provisionSessionForwarders failures when claiming a prewarm', async () => {
     mockClaimPrewarmSession.mockResolvedValue({
       sessionId: 'prewarm-session',

@@ -323,9 +323,14 @@ export async function createSession(
 
   // Try to claim a prewarmed session — it already has everything set up.
   // Skip when createPrewarm is true (prewarm creation path itself).
+  // Skip when --add-dir / --add-dir-rw is set: prewarm containers are
+  // created without those mounts and the fingerprint doesn't encode them,
+  // so claiming one would silently drop the user's requested directories.
   // claimPrewarmSession checks that the requested tool matches the prewarmed tool.
   const tool: AgentTool = options.tool ?? 'claude'
-  const claimed = !options.createPrewarm ? await claimPrewarmSession(projectSlug, tool) : null
+  const hasAddDir = (options.addDir?.length ?? 0) > 0 || (options.addDirRw?.length ?? 0) > 0
+  const canClaim = !options.createPrewarm && !hasAddDir
+  const claimed = canClaim ? await claimPrewarmSession(projectSlug, tool) : null
   if (claimed) {
     emit(`Claiming prewarmed session ${claimed.sessionId.slice(0, 8)}...`, options)
     // Prewarm containers don't get port forwarders at creation time
