@@ -622,10 +622,19 @@ function buildDynamicRules(
     }
   }
 
+  // Codex credential swap is gated on the inbound Authorization header
+  // matching our placeholder sentinel — either the api-key sentinel (codex
+  // reads OPENAI_API_KEY and sends `Bearer <key>`) or the OAuth access-token
+  // sentinel from the mounted auth.json. Requests that don't match pass
+  // through unmodified. `ChatGPT-Account-Id` is populated by Codex from the
+  // real top-level `account_id` in the mounted auth.json, so it passes
+  // through unchanged.
   if ((hostname === OPENAI_API_HOST || hostname === CHATGPT_HOST)
     && sessionTool.get(sessionId) === 'codex') {
     const creds = readCodexCreds()
-    if (creds && creds.kind === 'api-key') {
+    const incomingAuth = headerValue(reqHeaders, 'authorization')
+    if (creds && creds.kind === 'api-key'
+      && incomingAuth === 'Bearer ' + PLACEHOLDER_API_KEY) {
       rules.push({
         pathPattern: '*',
         injections: [{
@@ -634,11 +643,8 @@ function buildDynamicRules(
           value: 'Bearer ' + creds.apiKey,
         }],
       })
-    } else if (creds && creds.kind === 'oauth') {
-      // Container sees a placeholder Bearer; swap it for the real access
-      // token. `ChatGPT-Account-Id` is populated by Codex from the real
-      // top-level `account_id` in the mounted auth.json, so it passes
-      // through unchanged.
+    } else if (creds && creds.kind === 'oauth'
+      && incomingAuth === 'Bearer ' + PLACEHOLDER_ACCESS_TOKEN) {
       rules.push({
         pathPattern: '*',
         injections: [{

@@ -596,7 +596,7 @@ export async function createSession(
       // OAuth: Claude Code reads the placeholder bundle from the mounted
       // .claude/.credentials.json, so no env var is needed.
     } else if (toolAuth.kind === 'api-key') {
-      env.push('OPENAI_API_KEY=placeholder')
+      env.push(`OPENAI_API_KEY=${PLACEHOLDER_API_KEY}`)
     }
     // Codex OAuth: Codex reads the placeholder bundle from the mounted
     // .codex/auth.json. Setting OPENAI_API_KEY here would risk steering

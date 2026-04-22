@@ -52,9 +52,10 @@ export type { ToolLoginResult }
 export const PLACEHOLDER_ACCESS_TOKEN = 'yaac-ph-access'
 export const PLACEHOLDER_REFRESH_TOKEN = 'yaac-ph-refresh'
 /**
- * Placeholder api-key seeded into session containers (via ANTHROPIC_API_KEY).
- * The proxy only swaps `x-api-key` on api.anthropic.com requests whose header
- * equals this value — requests with any other key pass through unchanged.
+ * Placeholder api-key seeded into session containers (via ANTHROPIC_API_KEY or
+ * OPENAI_API_KEY). The proxy only swaps the inbound credential header on
+ * api.anthropic.com / api.openai.com when it equals this value — requests
+ * carrying a user-supplied key pass through unchanged.
  */
 export const PLACEHOLDER_API_KEY = 'yaac-ph-api-key'
 
