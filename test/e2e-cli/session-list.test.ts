@@ -60,7 +60,7 @@ describe('yaac session list (real CLI + real daemon)', () => {
     expect(stdout).toContain('No deleted sessions for project "proj-nodel"')
   })
 
-  it('session list --deleted renders seeded Claude Code JSONL entries', async () => {
+  it('session list --deleted renders seeded Claude Code JSONL entries with prompts', async () => {
     const slug = 'proj-del'
     const repo = path.join(testEnv.scratchDir, slug)
     await createTestRepo(repo)
@@ -72,9 +72,17 @@ describe('yaac session list (real CLI + real daemon)', () => {
     )
     await fs.mkdir(sessionsDir, { recursive: true })
     const sessionId = crypto.randomUUID()
+    const firstMsg = JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: 'port the lexer to rust' },
+    })
     await fs.writeFile(
       path.join(sessionsDir, `${sessionId}.jsonl`),
-      `{"type":"permission-mode","sessionId":"${sessionId}"}\n`,
+      [
+        `{"type":"permission-mode","sessionId":"${sessionId}"}`,
+        firstMsg,
+        '',
+      ].join('\n'),
     )
 
     const { stdout, exitCode } = await runYaac(
@@ -84,5 +92,60 @@ describe('yaac session list (real CLI + real daemon)', () => {
     expect(stdout).toContain(sessionId.slice(0, 8))
     expect(stdout).toContain(slug)
     expect(stdout).toContain('claude')
+    expect(stdout).toContain('PROMPT')
+    expect(stdout).toContain('port the lexer to rust')
+  })
+
+  it('session list --deleted -n caps the rendered rows and hints at the cap', async () => {
+    const slug = 'proj-del-many'
+    const repo = path.join(testEnv.scratchDir, slug)
+    await createTestRepo(repo)
+    await addTestProject(repo)
+
+    const sessionsDir = path.join(
+      testEnv.dataDir, 'projects', slug, 'claude', 'projects', '-workspace',
+    )
+    await fs.mkdir(sessionsDir, { recursive: true })
+    const ids = Array.from({ length: 5 }, (_, i) => `${String(i).padStart(8, '0')}-aaaa-bbbb-cccc-dddddddddddd`)
+    for (const id of ids) {
+      await fs.writeFile(
+        path.join(sessionsDir, `${id}.jsonl`),
+        '{"type":"permission-mode"}\n',
+      )
+    }
+
+    const { stdout, exitCode } = await runYaac(
+      testEnv.env, 'session', 'list', slug, '--deleted', '-n', '2',
+    )
+    expect(exitCode).toBe(0)
+    const matches = ids.filter((id) => stdout.includes(id.slice(0, 8)))
+    expect(matches).toHaveLength(2)
+    expect(stdout).toMatch(/showing most recent 2/)
+  })
+
+  it('session list --deleted --all omits the cap hint', async () => {
+    const slug = 'proj-del-all'
+    const repo = path.join(testEnv.scratchDir, slug)
+    await createTestRepo(repo)
+    await addTestProject(repo)
+
+    const sessionsDir = path.join(
+      testEnv.dataDir, 'projects', slug, 'claude', 'projects', '-workspace',
+    )
+    await fs.mkdir(sessionsDir, { recursive: true })
+    const ids = Array.from({ length: 3 }, () => crypto.randomUUID())
+    for (const id of ids) {
+      await fs.writeFile(
+        path.join(sessionsDir, `${id}.jsonl`),
+        '{"type":"permission-mode"}\n',
+      )
+    }
+
+    const { stdout, exitCode } = await runYaac(
+      testEnv.env, 'session', 'list', slug, '--deleted', '--all',
+    )
+    expect(exitCode).toBe(0)
+    for (const id of ids) expect(stdout).toContain(id.slice(0, 8))
+    expect(stdout).not.toMatch(/showing most recent/)
   })
 })

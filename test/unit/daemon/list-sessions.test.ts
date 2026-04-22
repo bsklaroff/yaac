@@ -107,6 +107,44 @@ describe('listDeletedSessions', () => {
     const result = await listDeletedSessions('demo')
     expect(result.map((r) => r.sessionId)).toEqual(['new', 'old'])
   })
+
+  it('caps results to the requested limit after sorting newest-first', async () => {
+    await writeProject('demo')
+    const sessionsDir = path.join(claudeDir('demo'), 'projects', '-workspace')
+    await fs.mkdir(sessionsDir, { recursive: true })
+    for (let i = 0; i < 5; i++) {
+      const p = path.join(sessionsDir, `s${i}.jsonl`)
+      await fs.writeFile(p, '{}\n')
+      // Age each successive file a day further in the past so the sort is deterministic.
+      const d = new Date(Date.UTC(2026, 0, 1 + i))
+      await fs.utimes(p, d, d)
+    }
+    const result = await listDeletedSessions('demo', 2)
+    expect(result.map((r) => r.sessionId)).toEqual(['s4', 's3'])
+  })
+
+  it('returns all entries when limit is 0 or undefined', async () => {
+    await writeProject('demo')
+    const sessionsDir = path.join(claudeDir('demo'), 'projects', '-workspace')
+    await fs.mkdir(sessionsDir, { recursive: true })
+    for (const id of ['a', 'b', 'c']) {
+      await fs.writeFile(path.join(sessionsDir, `${id}.jsonl`), '{}\n')
+    }
+    const noLimit = await listDeletedSessions('demo')
+    const zeroLimit = await listDeletedSessions('demo', 0)
+    expect(noLimit).toHaveLength(3)
+    expect(zeroLimit).toHaveLength(3)
+  })
+
+  it('populates prompt from the first user message in the Claude transcript', async () => {
+    await writeProject('demo')
+    const sessionsDir = path.join(claudeDir('demo'), 'projects', '-workspace')
+    await fs.mkdir(sessionsDir, { recursive: true })
+    const first = JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello there' } })
+    await fs.writeFile(path.join(sessionsDir, 'a.jsonl'), `${first}\n`)
+    const result = await listDeletedSessions('demo')
+    expect(result[0]?.prompt).toBe('hello there')
+  })
 })
 
 describe('listActiveSessions project filter', () => {

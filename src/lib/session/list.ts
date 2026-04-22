@@ -199,8 +199,15 @@ export async function reconcileStaleSessions(): Promise<void> {
  * Scan the Claude Code JSONL dirs and Codex transcript dirs for session
  * ids that no longer have a matching container. If podman is down, every
  * saved session is treated as deleted.
+ *
+ * Entries are sorted newest-first and sliced to `limit` before prompts
+ * are read — parsing each JSONL only for the rows the caller will render.
+ * Pass `undefined` / `0` to disable the limit.
  */
-export async function listDeletedSessions(projectFilter?: string): Promise<DeletedSessionEntry[]> {
+export async function listDeletedSessions(
+  projectFilter?: string,
+  limit?: number,
+): Promise<DeletedSessionEntry[]> {
   if (projectFilter) await ensureProjectExists(projectFilter)
 
   const slugs: string[] = []
@@ -281,5 +288,9 @@ export async function listDeletedSessions(projectFilter?: string): Promise<Delet
   }
 
   deleted.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-  return deleted
+  const capped = limit && limit > 0 ? deleted.slice(0, limit) : deleted
+  await Promise.all(capped.map(async (entry) => {
+    entry.prompt = await getSessionFirstMessage(entry.projectSlug, entry.sessionId, entry.tool)
+  }))
+  return capped
 }

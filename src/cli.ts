@@ -141,6 +141,8 @@ session
   .description('List active sessions')
   .argument('[project]', 'Filter by project slug')
   .option('-d, --deleted', 'List deleted sessions from Claude Code history')
+  .option('-n, --num <n>', 'With -d, cap deleted results to N rows (default 25)', (v) => Number.parseInt(v, 10))
+  .option('-a, --all', 'With -d, show all deleted rows without a cap')
   .action(sessionList)
 
 session

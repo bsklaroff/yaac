@@ -23,10 +23,13 @@ export const sessionApp = new Hono()
   )
   .get(
     '/list-deleted',
-    zValidator('query', z.object({ project: z.string().optional() })),
+    zValidator('query', z.object({
+      project: z.string().optional(),
+      limit: z.coerce.number().int().positive().optional(),
+    })),
     async (c) => {
-      const { project } = c.req.valid('query')
-      return c.json(await listDeletedSessions(project || undefined))
+      const { project, limit } = c.req.valid('query')
+      return c.json(await listDeletedSessions(project || undefined, limit))
     },
   )
   .post(

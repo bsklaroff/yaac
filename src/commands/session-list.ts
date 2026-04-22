@@ -7,17 +7,23 @@ import type {
 
 export interface SessionListOptions {
   deleted?: boolean
+  num?: number
+  all?: boolean
 }
+
+export const DELETED_DEFAULT_LIMIT = 25
 
 export async function sessionList(projectSlug?: string, options: SessionListOptions = {}): Promise<void> {
   const client = await getRpcClient()
 
   if (options.deleted) {
-    const res = await client.session['list-deleted'].$get({
-      query: projectSlug ? { project: projectSlug } : {},
-    })
+    const limit = resolveDeletedLimit(options)
+    const query: { project?: string; limit?: string } = {}
+    if (projectSlug) query.project = projectSlug
+    if (limit !== undefined) query.limit = String(limit)
+    const res = await client.session['list-deleted'].$get({ query })
     if (!res.ok) throw await toClientError(res)
-    renderDeleted(await res.json(), projectSlug)
+    renderDeleted(await res.json(), projectSlug, limit)
     return
   }
 
@@ -95,9 +101,22 @@ function renderFailedPrewarms(failed: FailedPrewarmInfo[]): void {
   console.log('')
 }
 
+/**
+ * Compute the deleted-list limit from CLI options. `--all` wins and returns
+ * `undefined` (no cap); an explicit `-n` wins over the default of 25.
+ */
+export function resolveDeletedLimit(options: SessionListOptions): number | undefined {
+  if (options.all) return undefined
+  if (typeof options.num === 'number' && Number.isFinite(options.num) && options.num > 0) {
+    return Math.floor(options.num)
+  }
+  return DELETED_DEFAULT_LIMIT
+}
+
 function renderDeleted(
   deleted: DeletedSessionEntry[],
   projectSlug: string | undefined,
+  limit: number | undefined,
 ): void {
   if (deleted.length === 0) {
     const suffix = projectSlug ? ` for project "${projectSlug}"` : ''
@@ -108,12 +127,20 @@ function renderDeleted(
   const projectWidth = Math.max('PROJECT'.length, ...deleted.map((s) => s.projectSlug.length))
   const toolWidth = Math.max('TOOL'.length, ...deleted.map((s) => s.tool.length))
 
+  const fixedWidth = 10 + 1 + projectWidth + 1 + toolWidth + 1 + 19 + 2
+  const termWidth = process.stdout.columns || 120
+  const promptWidth = Math.max(10, termWidth - fixedWidth)
+
   console.log('')
-  console.log(`${'SESSION'.padEnd(10)} ${'PROJECT'.padEnd(projectWidth)} ${'TOOL'.padEnd(toolWidth)} CREATED`)
-  console.log(`${'-'.repeat(10)} ${'-'.repeat(projectWidth)} ${'-'.repeat(toolWidth)} ${'-'.repeat(20)}`)
+  console.log(`${'SESSION'.padEnd(10)} ${'PROJECT'.padEnd(projectWidth)} ${'TOOL'.padEnd(toolWidth)} ${'CREATED'.padEnd(19)}  PROMPT`)
+  console.log(`${'-'.repeat(10)} ${'-'.repeat(projectWidth)} ${'-'.repeat(toolWidth)} ${'-'.repeat(19)}  ${'-'.repeat(Math.min(promptWidth, 40))}`)
 
   for (const s of deleted) {
-    console.log(`${s.sessionId.slice(0, 8).padEnd(10)} ${s.projectSlug.padEnd(projectWidth)} ${s.tool.padEnd(toolWidth)} ${s.createdAt}`)
+    const promptText = truncatePrompt(s.prompt, promptWidth)
+    console.log(`${s.sessionId.slice(0, 8).padEnd(10)} ${s.projectSlug.padEnd(projectWidth)} ${s.tool.padEnd(toolWidth)} ${s.createdAt}  ${promptText}`)
+  }
+  if (limit !== undefined && deleted.length >= limit) {
+    console.log(`(showing most recent ${limit}; pass --all or -n <num> to see more)`)
   }
   console.log('')
 }

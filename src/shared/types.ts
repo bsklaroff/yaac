@@ -251,6 +251,8 @@ export interface DeletedSessionEntry {
   tool: AgentTool
   /** 'YYYY-MM-DD HH:MM:SS' (UTC). */
   createdAt: string
+  /** First user message from the transcript, if any. */
+  prompt?: string
 }
 
 // --- session stream picker ---
