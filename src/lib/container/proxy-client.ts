@@ -404,8 +404,11 @@ export class ProxyClient {
     // still hold the host port for a brief moment. Retry create+start to
     // ride out the delay rather than failing immediately.
     // Podman reports port conflicts as either "address already in use" or
-    // "proxy already running" (rootlessport variant).
-    let container: Awaited<ReturnType<typeof podman.createContainer>>
+    // "proxy already running" (rootlessport variant). Name conflicts have a
+    // separate message ("container name ... is already in use") and a
+    // separate fix: adopt the existing proxy if it matches our hash, or
+    // force-remove and retry if it doesn't.
+    let container: Awaited<ReturnType<typeof podman.createContainer>> | null = null
     for (let attempt = 0; ; attempt++) {
       try {
         container = await podman.createContainer({
@@ -435,15 +438,47 @@ export class ProxyClient {
       } catch (err) {
         const msg = err instanceof Error ? err.message : ''
         const isPortConflict = msg.includes('address already in use') || msg.includes('proxy already running')
-        if (attempt >= 5 || !isPortConflict) {
+        const isNameConflict = !isPortConflict
+          && msg.includes('already in use')
+          && msg.includes('container name')
+        if (attempt >= 5 || (!isPortConflict && !isNameConflict)) {
           throw err
         }
-        // Clean up the created-but-not-started container before retrying
+
+        if (isNameConflict) {
+          // Another caller (concurrent worker, daemon restart race, stale
+          // container from a prior run) holds the name. Prefer adopting a
+          // healthy existing proxy over stomping it — if discovery finds
+          // one with our hash and it answers /healthz, reuse it.
+          const existing = await this.discoverExistingProxy(hash)
+          if (existing) {
+            this.resolved = {
+              containerName: existing.containerName,
+              hostPort: existing.hostPort,
+              authSecret: existing.authSecret,
+            }
+            this._proxyIp = existing.proxyIp
+            return
+          }
+          // Can't adopt — force-remove and retry, with a short delay so
+          // podman can finish its asynchronous cleanup before we try again.
+          try { await podman.getContainer(containerName).remove({ force: true }) } catch { /* ok */ }
+          await new Promise((r) => setTimeout(r, 500))
+          continue
+        }
+
+        // Port conflict: remove the created-but-not-started container, pick
+        // a fresh host port, and retry.
         try { await podman.getContainer(containerName).remove({ force: true }) } catch { /* ok */ }
-        // Port may have been grabbed; find a new one
         hostPort = String(await findAvailablePort(Number(hostPort) + 1))
         await new Promise((r) => setTimeout(r, 500))
       }
+    }
+
+    if (!container) {
+      // Unreachable: the loop either breaks (with `container` populated) or
+      // throws / returns from the adopt path. The guard makes TS happy.
+      throw new Error('proxy container never created')
     }
 
     this.resolved = { containerName, hostPort, authSecret }
