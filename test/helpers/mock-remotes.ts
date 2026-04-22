@@ -67,8 +67,33 @@ async function resolveTestBaseImage(): Promise<string> {
 const MOCK_LLM_SCRIPT = `
   const http = require('http');
   const fs = require('fs');
+  const zlib = require('zlib');
   const TRANSCRIPT = '/tmp/transcript.ndjson';
   fs.writeFileSync(TRANSCRIPT, '');
+
+  // Best-effort decode of the inbound body so the test transcript stores
+  // plain UTF-8 JSON rather than gzip/brotli-compressed bytes. Codex ships
+  // its prompts with Content-Encoding: zstd or gzip; failing to decode
+  // means tests can't grep for prompt text in the request body.
+  function decodeBody(raw, encoding) {
+    if (!encoding || encoding === 'identity') return raw.toString('utf8');
+    try {
+      const enc = String(encoding).toLowerCase();
+      if (enc === 'gzip' || enc === 'x-gzip') return zlib.gunzipSync(raw).toString('utf8');
+      if (enc === 'br') return zlib.brotliDecompressSync(raw).toString('utf8');
+      if (enc === 'deflate') return zlib.inflateSync(raw).toString('utf8');
+      // zstd was added in Node 22.15 as zlib.zstdDecompressSync. Fall back
+      // to the raw bytes (losslessly round-tripped as a latin1 string) if
+      // we can't decode, so body-shaped assertions still have something
+      // to match against — just not guaranteed to be human-readable.
+      if (enc === 'zstd' && typeof zlib.zstdDecompressSync === 'function') {
+        return zlib.zstdDecompressSync(raw).toString('utf8');
+      }
+    } catch (err) {
+      // fall through
+    }
+    return raw.toString('utf8');
+  }
 
   // Minimal Anthropic SSE response: enough for claude-code to parse a single
   // assistant turn and exit cleanly. Not a full conversation — tests that
@@ -103,11 +128,52 @@ const MOCK_LLM_SCRIPT = `
     return parts.map(([ev, d]) => 'event: ' + ev + '\\ndata: ' + JSON.stringify(d) + '\\n\\n').join('');
   }
 
+  // OpenAI Responses API SSE response: the shape codex-cli consumes on
+  // chatgpt.com/backend-api/responses. Enough events for codex to render a
+  // single assistant message and finish its turn. Event names / field
+  // structure mirror the public Responses API documentation.
+  function responsesSSE(text) {
+    const responseId = 'resp_mock_' + Math.random().toString(36).slice(2, 10);
+    const itemId = 'msg_mock_' + Math.random().toString(36).slice(2, 10);
+    const baseResponse = {
+      id: responseId, object: 'response', created_at: Math.floor(Date.now() / 1000),
+      status: 'in_progress', model: 'gpt-5-codex',
+      output: [], usage: null, error: null, incomplete_details: null,
+    };
+    const completedResponse = {
+      ...baseResponse,
+      status: 'completed',
+      output: [{
+        id: itemId, type: 'message', role: 'assistant', status: 'completed',
+        content: [{ type: 'output_text', text, annotations: [] }],
+      }],
+      usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+    };
+    const parts = [
+      ['response.created', { type: 'response.created', response: baseResponse }],
+      ['response.in_progress', { type: 'response.in_progress', response: baseResponse }],
+      ['response.output_item.added', { type: 'response.output_item.added', output_index: 0, item: {
+        id: itemId, type: 'message', role: 'assistant', status: 'in_progress', content: [],
+      } }],
+      ['response.content_part.added', { type: 'response.content_part.added', item_id: itemId, output_index: 0, content_index: 0, part: { type: 'output_text', text: '', annotations: [] } }],
+      ['response.output_text.delta', { type: 'response.output_text.delta', item_id: itemId, output_index: 0, content_index: 0, delta: text }],
+      ['response.output_text.done', { type: 'response.output_text.done', item_id: itemId, output_index: 0, content_index: 0, text }],
+      ['response.content_part.done', { type: 'response.content_part.done', item_id: itemId, output_index: 0, content_index: 0, part: { type: 'output_text', text, annotations: [] } }],
+      ['response.output_item.done', { type: 'response.output_item.done', output_index: 0, item: {
+        id: itemId, type: 'message', role: 'assistant', status: 'completed',
+        content: [{ type: 'output_text', text, annotations: [] }],
+      } }],
+      ['response.completed', { type: 'response.completed', response: completedResponse }],
+    ];
+    return parts.map(([ev, d]) => 'event: ' + ev + '\\ndata: ' + JSON.stringify(d) + '\\n\\n').join('');
+  }
+
   const server = http.createServer((req, res) => {
     const chunks = [];
     req.on('data', c => chunks.push(c));
     req.on('end', () => {
-      const body = Buffer.concat(chunks).toString('utf8');
+      const raw = Buffer.concat(chunks);
+      const body = decodeBody(raw, req.headers['content-encoding']);
       fs.appendFileSync(TRANSCRIPT, JSON.stringify({
         method: req.method, url: req.url, body, headers: req.headers,
       }) + '\\n');
@@ -120,6 +186,14 @@ const MOCK_LLM_SCRIPT = `
           'anthropic-version': '2023-06-01',
         });
         res.end(anthropicSSE('Hello from mock!'));
+        return;
+      }
+      if (req.method === 'POST' && pathOnly === '/backend-api/codex/responses') {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+        });
+        res.end(responsesSSE('Hello from mock!'));
         return;
       }
       // Catch-all: return an empty JSON object so any tool-probing request

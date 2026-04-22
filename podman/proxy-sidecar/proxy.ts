@@ -1105,13 +1105,18 @@ function handleMitm(
       console.log(`[proxy] MITM UPGRADE wss://${hostname}${reqPath} (${injCount} header injections${dynSuffix})`)
     }
 
-    const upstreamReq = https.request({
-      hostname,
-      port: parseInt(port ?? '', 10) || 443,
+    // Same redirect handling as non-upgrade requests: route to the mock
+    // when one is registered for this host. Mocks don't speak WS, so they
+    // will return a plain 200 and the client will fall back to HTTP.
+    const useHttp = upstreamRedirect !== null && upstreamRedirect.tls !== true
+    const upstreamModule = useHttp ? http : https
+    const upstreamReq = upstreamModule.request({
+      hostname: upstreamRedirect?.host ?? hostname,
+      port: upstreamRedirect?.port ?? (parseInt(port ?? '', 10) || 443),
       path: reqPath,
       method: req.method,
       headers,
-      rejectUnauthorized: true,
+      ...(useHttp ? {} : { rejectUnauthorized: true }),
     })
 
     upstreamReq.on('upgrade', (upstreamRes, upstreamSocket, upstreamHead) => {
