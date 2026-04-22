@@ -8,9 +8,7 @@ import {
   removeSessionGraphrootVolume,
   sessionGraphrootVolumeName,
 } from '@/lib/container/image-promoter'
-import { removeWorktree } from '@/lib/git'
 import { resolveProjectConfig } from '@/lib/project/config'
-import { repoDir, worktreeDir } from '@/lib/project/paths'
 import { stopSessionForwarders } from '@/lib/session/port-forwarders'
 
 /**
@@ -98,19 +96,13 @@ export async function cleanupSession(params: {
     // config resolution failed — skip promotion silently
   }
 
-  try {
-    await removeWorktree(repoDir(projectSlug), worktreeDir(projectSlug, sessionId))
-  } catch {
-    // worktree may not exist
-  }
-
   console.log(`Session ${sessionId} cleaned up.`)
 }
 
 /**
  * Remove the session's state from the proxy sidecar (in-process, fast),
- * then spawn a detached background process to do the slow container +
- * worktree teardown so the calling process can exit immediately.
+ * then spawn a detached background process to do the slow container
+ * teardown so the calling process can exit immediately.
  */
 export async function cleanupSessionDetached(params: {
   containerName: string
@@ -118,8 +110,6 @@ export async function cleanupSessionDetached(params: {
   sessionId: string
 }): Promise<void> {
   const { containerName, projectSlug, sessionId } = params
-  const wtDir = worktreeDir(projectSlug, sessionId)
-  const rDir = repoDir(projectSlug)
 
   stopSessionForwarders(sessionId)
   await removeSessionFromProxy(sessionId)
@@ -143,15 +133,11 @@ export async function cleanupSessionDetached(params: {
     // orphan-GC on next daemon start will clean up the volume.
   }
 
-  // Build a shell script that stops + removes the container, optionally
-  // runs the promoter + drops the graphroot volume, then removes the
-  // worktree. Each step ignores errors (the resource may already be gone).
   const script = [
     `podman stop -t 5 ${containerName} 2>/dev/null || true`,
     `podman rm ${containerName} 2>/dev/null || true`,
     ...(promoterCmd ? [promoterCmd] : []),
     ...(graphrootRm ? [graphrootRm] : []),
-    `git -C '${rDir}' worktree remove '${wtDir}' 2>/dev/null || true`,
   ].join('; ')
 
   const child = spawn('sh', ['-c', script], {
