@@ -296,23 +296,47 @@ export async function claimPrewarmSession(
   return { sessionId, containerName }
 }
 
-async function isContainerRunning(containerName: string): Promise<boolean> {
+async function inspectContainerState(
+  containerName: string,
+): Promise<{ exists: boolean; running: boolean }> {
   try {
     const result = await podmanExecWithRetry(
       ['inspect', '--format', '{{.State.Running}}', containerName],
       { maxAttempts: 1 },
     )
-    return result.stdout.trim() === 'true'
+    return { exists: true, running: result.stdout.trim() === 'true' }
   } catch {
-    return false
+    return { exists: false, running: false }
   }
 }
 
+async function isContainerRunning(containerName: string): Promise<boolean> {
+  return (await inspectContainerState(containerName)).running
+}
+
+/**
+ * Poll for a prewarm container to become ready (running + tmux session up).
+ *
+ * The claim path clears the prewarm state file before calling this, so the
+ * creator can't signal failure through the state — if creation aborts
+ * mid-flight, the creator's error handler `podman rm -f`s the half-created
+ * container and throws. We detect that by tracking whether the container
+ * was ever observed; once it transitions from seen → gone, we know
+ * creation was abandoned and return false immediately instead of burning
+ * the full timeoutMs polling a container that will never come back.
+ */
 async function waitForContainer(containerName: string, timeoutMs: number): Promise<boolean> {
   const start = Date.now()
+  let sawContainer = false
   while (Date.now() - start < timeoutMs) {
-    if (await isContainerRunning(containerName) && await isTmuxSessionAlive(containerName)) {
-      return true
+    const state = await inspectContainerState(containerName)
+    if (state.exists) {
+      sawContainer = true
+      if (state.running && await isTmuxSessionAlive(containerName)) {
+        return true
+      }
+    } else if (sawContainer) {
+      return false
     }
     await new Promise((resolve) => setTimeout(resolve, 1000))
   }

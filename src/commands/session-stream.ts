@@ -79,6 +79,12 @@ export async function sessionStream(project?: string, tool?: AgentTool): Promise
     const shortId = body.sessionId.slice(0, 8)
     console.log(`Attaching to session ${shortId} (project: ${body.projectSlug})...`)
 
+    // Test-only hook: e2e-cli tests drive sessions without a TTY, where
+    // `podman exec -it` hangs waiting for terminal capabilities. Setting
+    // this env var returns after the first pick so the test can drive the
+    // container directly via `podman exec`.
+    if (process.env.YAAC_E2E_NO_ATTACH === '1') return
+
     await new Promise<void>((resolve, reject) => {
       const child = spawn(
         'podman',

@@ -22,13 +22,17 @@ import {
   setPrewarmSession,
   clearPrewarmSession,
   clearFailedPrewarmSessions,
+  claimPrewarmSession,
   isPrewarmSession,
   MAX_STALE_MS,
 } from '@/lib/prewarm'
-import { cleanupSession } from '@/lib/session/cleanup'
+import { cleanupSession, isTmuxSessionAlive } from '@/lib/session/cleanup'
+import { podmanExecWithRetry } from '@/lib/container/runtime'
 import type { PrewarmEntry } from '@/lib/prewarm'
 
 const mockCleanupSession = vi.mocked(cleanupSession)
+const mockPodmanExec = vi.mocked(podmanExecWithRetry)
+const mockIsTmuxSessionAlive = vi.mocked(isTmuxSessionAlive)
 
 describe('prewarm state helpers', () => {
   let tmpDir: string
@@ -238,5 +242,51 @@ describe('prewarm state helpers', () => {
     const result = await getPrewarmSession('my-project')
     expect(result?.state).toBe('creating')
     expect(result?.fingerprint).toBe('new-fp')
+  })
+
+  /**
+   * When a prewarm creation is in flight (state='creating') and a claimer
+   * races in, the claimer clears the state and polls the container via
+   * waitForContainer. If creation later aborts and `podman rm -f`s the
+   * half-created container, waitForContainer must return immediately
+   * instead of polling a now-deleted container for the full 120s timeout.
+   * The previous behavior burned the full 2-minute budget and surfaced as
+   * a user-visible hang on `yaac session stream` after an exited container.
+   */
+  it('claimPrewarmSession aborts fast when creation is abandoned', async () => {
+    const creatingEntry: PrewarmEntry = {
+      ...entry,
+      state: 'creating',
+      verifiedAt: Date.now(),
+    }
+    await setPrewarmSession('my-project', creatingEntry)
+
+    // First two inspects: container exists+running. Then it's removed, so
+    // inspect throws (dockerode surfaces the "no such container" errno via
+    // podmanExecWithRetry rejecting). Tmux is never alive — the claude
+    // crash path that motivates this test means tmux exits right after
+    // the container came up.
+    let inspectCalls = 0
+    mockPodmanExec.mockImplementation((args) => {
+      if (args[0] === 'inspect') {
+        inspectCalls += 1
+        if (inspectCalls <= 2) {
+          return Promise.resolve({ stdout: 'true\n', stderr: '' })
+        }
+        return Promise.reject(new Error('no such container'))
+      }
+      return Promise.resolve({ stdout: '', stderr: '' })
+    })
+    mockIsTmuxSessionAlive.mockResolvedValue(false)
+
+    const started = Date.now()
+    const result = await claimPrewarmSession('my-project')
+    const elapsed = Date.now() - started
+
+    expect(result).toBeNull()
+    // Two "exists" polls + one "gone" poll = ~3 seconds of sleeps, well
+    // under the 120s timeout the old behavior would hit.
+    expect(elapsed).toBeLessThan(15_000)
+    expect(inspectCalls).toBeGreaterThanOrEqual(3)
   })
 })
