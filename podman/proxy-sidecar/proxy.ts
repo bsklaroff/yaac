@@ -557,6 +557,16 @@ function hostNeedsDynamicMitm(hostname: string): boolean {
   return false
 }
 
+function headerValue(
+  headers: http.IncomingHttpHeaders,
+  name: string,
+): string | undefined {
+  const v = headers[name.toLowerCase()]
+  if (typeof v === 'string') return v
+  if (Array.isArray(v)) return v[0]
+  return undefined
+}
+
 /**
  * Build a list of injection rules derived from the host-mounted credentials
  * dir, scoped to the current hostname. Reading on every request means
@@ -569,6 +579,7 @@ function buildDynamicRules(
   hostname: string,
   claudeTokenBundle: ClaudeOAuthBundle | null,
   codexTokenBundle: CodexOAuthBundle | null,
+  reqHeaders: http.IncomingHttpHeaders,
 ): InjectionRule[] {
   if (!sessionId) return []
   const rules: InjectionRule[] = []
@@ -584,16 +595,22 @@ function buildDynamicRules(
     }
   }
 
+  // Anthropic credential swap is gated on the inbound request carrying our
+  // placeholder sentinel. Requests that don't match (e.g. a user manually
+  // passing their own API key through the proxy) pass through unmodified —
+  // the proxy only rewrites traffic it knows it originated the placeholder
+  // for.
   if (hostname === ANTHROPIC_API_HOST) {
     const creds = readClaudeCreds()
-    if (creds && creds.kind === 'api-key') {
+    const incomingApiKey = headerValue(reqHeaders, 'x-api-key')
+    const incomingAuth = headerValue(reqHeaders, 'authorization')
+    if (creds && creds.kind === 'api-key' && incomingApiKey === PLACEHOLDER_API_KEY) {
       rules.push({
         pathPattern: '*',
         injections: [{ action: 'set_header', name: 'x-api-key', value: creds.apiKey }],
       })
-    } else if (creds && creds.kind === 'oauth') {
-      // The container only ever sees the placeholder, so any outbound
-      // Authorization header is ours to swap to the real Bearer token.
+    } else if (creds && creds.kind === 'oauth'
+      && incomingAuth === 'Bearer ' + PLACEHOLDER_ACCESS_TOKEN) {
       rules.push({
         pathPattern: '*',
         injections: [{
@@ -701,6 +718,7 @@ function encodeBody(raw: Buffer, encoding: string | string[] | undefined): Buffe
 
 const PLACEHOLDER_ACCESS_TOKEN = 'yaac-ph-access'
 const PLACEHOLDER_REFRESH_TOKEN = 'yaac-ph-refresh'
+const PLACEHOLDER_API_KEY = 'yaac-ph-api-key'
 
 type TokenResponseBody = {
   access_token?: unknown
@@ -1001,7 +1019,9 @@ function handleMitm(
     // derived from the host-mounted credentials dir on every request and
     // merged into the statically-configured rules so a single injection
     // pipeline handles both.
-    const dynamicRules = buildDynamicRules(sessionId, hostname, claudeTokenBundle, codexTokenBundle)
+    const dynamicRules = buildDynamicRules(
+      sessionId, hostname, claudeTokenBundle, codexTokenBundle, req.headers,
+    )
     const allRules: InjectionRule[] = [...rules, ...dynamicRules]
     const injCount = applyInjections(headers, reqPath, allRules)
     const bodyInjections = collectBodyInjections(reqPath, allRules)
@@ -1096,7 +1116,7 @@ function handleMitm(
     delete headers['proxy-authorization']
     delete headers['proxy-connection']
 
-    const dynamicRules = buildDynamicRules(sessionId, hostname, null, null)
+    const dynamicRules = buildDynamicRules(sessionId, hostname, null, null, req.headers)
     const allRules: InjectionRule[] = [...rules, ...dynamicRules]
     const injCount = applyInjections(headers, reqPath, allRules)
 

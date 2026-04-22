@@ -40,6 +40,7 @@ import {
   loadCodexCredentialsFile,
   writeProjectClaudePlaceholder,
   writeProjectCodexPlaceholder,
+  PLACEHOLDER_API_KEY,
 } from '@/lib/project/tool-auth'
 import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/lib/git'
 import { claimPrewarmSession } from '@/lib/prewarm'
@@ -590,7 +591,7 @@ export async function createSession(
   if (toolAuth) {
     if (tool === 'claude') {
       if (toolAuth.kind === 'api-key') {
-        env.push('ANTHROPIC_API_KEY=placeholder')
+        env.push(`ANTHROPIC_API_KEY=${PLACEHOLDER_API_KEY}`)
       }
       // OAuth: Claude Code reads the placeholder bundle from the mounted
       // .claude/.credentials.json, so no env var is needed.

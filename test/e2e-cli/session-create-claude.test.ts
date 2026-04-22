@@ -103,7 +103,7 @@ describe('yaac session create drives real claude-code through mocked remotes', (
     await fs.writeFile(path.join(projectDir, 'claude.json'), JSON.stringify({
       hasCompletedOnboarding: true,
       lastOnboardingVersion: '2.1.116',
-      customApiKeyResponses: { approved: ['placeholder'], rejected: [] },
+      customApiKeyResponses: { approved: ['yaac-ph-api-key'], rejected: [] },
       projects: {
         '/repo': { hasTrustDialogAccepted: true },
         '/workspace': { hasTrustDialogAccepted: true },

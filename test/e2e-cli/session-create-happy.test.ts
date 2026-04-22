@@ -181,13 +181,14 @@ describe('yaac session create (mocked remotes, happy path)', () => {
     // through the proxy: `curl -k` because we don't ship the proxy's CA
     // into the curl invocation (the proxy already installed it into the
     // container's trust store, but `-k` keeps the test deterministic).
-    // We send a placeholder x-api-key that the proxy should SWAP for the
-    // real credential ('sk-ant-fake-real-key').
+    // We send the placeholder x-api-key sentinel that the proxy gates
+    // credential injection on — the proxy swaps it for the real value
+    // ('sk-ant-fake-real-key') on match.
     const { stdout: curlOut, stderr: curlErr } = await podmanRetry([
       'exec', containerName, 'curl', '-sS', '-k',
       '--max-time', '10',
       '-X', 'POST',
-      '-H', 'x-api-key: placeholder',
+      '-H', 'x-api-key: yaac-ph-api-key',
       '-H', 'content-type: application/json',
       '-d', '{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}]}',
       'https://api.anthropic.com/v1/messages',
@@ -202,10 +203,11 @@ describe('yaac session create (mocked remotes, happy path)', () => {
     expect(curlOut).toContain('Hello from mock')
 
     // Mock transcript should show the swapped credential. The container
-    // sent `x-api-key: placeholder`; the proxy's dynamic MITM rule
-    // (buildDynamicRules, hostname === ANTHROPIC_API_HOST) swaps it to the
-    // on-disk api-key before forwarding. That's the piece upstream-redirect
-    // composes with: MITM + inject + redirect.
+    // sent the placeholder sentinel; the proxy's dynamic MITM rule
+    // (buildDynamicRules, hostname === ANTHROPIC_API_HOST) matches the
+    // placeholder and swaps it to the on-disk api-key before forwarding.
+    // That's the piece upstream-redirect composes with: MITM + inject +
+    // redirect.
     const transcript = await mockLLM!.transcript()
     const messagesCall = transcript.find((e) => e.method === 'POST' && e.url.startsWith('/v1/messages'))
     expect(messagesCall).toBeDefined()

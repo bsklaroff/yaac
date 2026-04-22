@@ -167,7 +167,7 @@ describe('yaac session stream (container exited + remote HEAD changed)', () => {
         'exec', containerName, 'curl', '-sS', '-k', '-v',
         '--max-time', '10',
         '-X', 'POST',
-        '-H', 'x-api-key: placeholder',
+        '-H', 'x-api-key: yaac-ph-api-key',
         '-H', 'content-type: application/json',
         '-d', '{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}]}',
         'https://api.anthropic.com/v1/messages',
