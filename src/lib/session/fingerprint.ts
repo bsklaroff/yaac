@@ -24,8 +24,8 @@ export async function resolveSessionFingerprint(
   const config: YaacConfig = await resolveProjectConfig(projectSlug) ?? {}
 
   const [imageTag, proxyImageTag, remoteHead] = await Promise.all([
-    resolveImageTag(projectSlug, undefined, config.nestedContainers ?? false),
-    resolveProxyImageTag(),
+    resolveImageTag(projectSlug, process.env.YAAC_IMAGE_PREFIX, config.nestedContainers ?? false),
+    resolveProxyImageTag(process.env.YAAC_PROXY_IMAGE),
     getRemoteHeadCommit(repoDir(projectSlug)),
   ])
 

@@ -107,17 +107,29 @@ export async function removeProjectImageCacheVolume(projectSlug: string): Promis
  * Inner shell script for the promoter: take an exclusive flock on the shared
  * store, then skopeo-copy every image present in the source graphroot
  * (tagged and dangling) into the shared store unless it's already there.
+ *
+ * The source graphroot must be mounted at the session's original storage
+ * path (`/home/yaac/.local/share/containers`). Podman's sqlite db records
+ * the static dir it was created under and refuses to open it from a
+ * different path ("database configuration mismatch"), so remounting at
+ * `/src` is not viable. The destination store is fresh, so it can live
+ * anywhere — we use `/dst` with an explicit `--root` override.
  */
 export const PROMOTER_SCRIPT = [
   'set -u',
-  'mkdir -p /dst /tmp/src-run /tmp/dst-run',
+  'mkdir -p /dst /tmp/dst-run',
   'touch /dst/.yaac-promoter.lock',
   'exec 9>/dst/.yaac-promoter.lock',
   'flock -x 9',
-  'ids=$(podman --root /src/storage --runroot /tmp/src-run image ls -a -q --no-trunc 2>/dev/null || true)',
+  // `podman image ls -q --no-trunc` emits ids prefixed with "sha256:".
+  // Skopeo's containers-storage transport parses a bare `sha256:<hex>` as
+  // a name+tag (→ docker.io/library/sha256:<hex>), so strip the prefix
+  // and pass the id through `@<hex>` which the transport reads as an
+  // unambiguous image-id reference.
+  'ids=$(podman image ls -a -q --no-trunc 2>/dev/null | sed -e "s/^sha256://" || true)',
   'for id in $ids; do',
   '  if podman --root /dst --runroot /tmp/dst-run image exists "$id" 2>/dev/null; then continue; fi',
-  '  skopeo copy --quiet "containers-storage:[overlay@/src/storage+/tmp/src-run]$id" "containers-storage:[overlay@/dst+/tmp/dst-run]$id" || true',
+  '  skopeo copy --quiet "containers-storage:@$id" "containers-storage:[overlay@/dst+/tmp/dst-run]@$id" || true',
   'done',
 ].join('\n')
 
@@ -144,8 +156,17 @@ export async function promoteSessionImages(
   try {
     container = await podman.createContainer({
       Image: imageRef,
-      Cmd: ['sh', '-c', PROMOTER_SCRIPT],
-      User: 'root',
+      // The nestable base image's ENTRYPOINT is `catatonit -- sleep infinity`
+      // (PID 1 reaper + idle hold). Passing only a `Cmd` appends the script
+      // args to that entrypoint, which makes `sleep` try to parse `-c` as
+      // an option. Override the entrypoint so Cmd drives the container.
+      Entrypoint: ['/bin/sh'],
+      Cmd: ['-c', PROMOTER_SCRIPT],
+      // Run as the `yaac` user so the source graphroot (owned by yaac in
+      // the original session) is readable and the sqlite db's recorded
+      // static dir matches. Root would see the same paths but would also
+      // invalidate the userns mapping skopeo reads layer files through.
+      User: 'yaac',
       Labels: {
         'yaac.promoter': 'true',
         'yaac.project': projectSlug,
@@ -158,7 +179,10 @@ export async function promoteSessionImages(
         // cache volume is free to be removed in the same teardown flow.
         SecurityOpt: ['label=disable'],
         Binds: [
-          `${graphroot}:/src:rw`,
+          // The source graphroot must live at the session's original path:
+          // podman's sqlite db has that path baked in and rejects
+          // `--root` overrides with a "database configuration mismatch".
+          `${graphroot}:/home/yaac/.local/share/containers:rw`,
           `${imageCache}:/dst:rw`,
         ],
       },
@@ -194,12 +218,20 @@ export function buildPromoterShellCommand(
   const inner = PROMOTER_SCRIPT.replace(/'/g, `'\\''`)
   return [
     'podman run --rm',
-    '--user root',
+    // The source graphroot must live at the session's original path:
+    // podman's sqlite db has that path baked in and rejects `--root`
+    // overrides with a "database configuration mismatch". Run as yaac
+    // (the session's user) so the on-disk ownership matches.
+    '--user yaac',
     '--security-opt label=disable',
-    `-v ${graphroot}:/src:rw`,
+    // The nestable base image has an ENTRYPOINT of `catatonit -- sleep
+    // infinity`. Override it so our `-c '<script>'` args are passed to sh,
+    // not appended after `sleep infinity`.
+    '--entrypoint /bin/sh',
+    `-v ${graphroot}:/home/yaac/.local/share/containers:rw`,
     `-v ${imageCache}:/dst:rw`,
     imageRef,
-    `sh -c '${inner}'`,
+    `-c '${inner}'`,
   ].join(' ')
 }
 

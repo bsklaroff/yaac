@@ -210,10 +210,16 @@ describe('gcOrphanSessionVolumes', () => {
 describe('buildPromoterShellCommand', () => {
   it('includes volume binds, label=disable, and the inline script', () => {
     const cmd = buildPromoterShellCommand('slug-x', 'sess-y', 'yaac-base-nestable:abcdef')
-    expect(cmd).toContain('-v yaac-podmanstorage-sess-y:/src:rw')
+    // Source graphroot mounts at the session's original path so podman's
+    // sqlite db's recorded static dir matches — remounting at /src causes
+    // "database configuration mismatch".
+    expect(cmd).toContain('-v yaac-podmanstorage-sess-y:/home/yaac/.local/share/containers:rw')
     expect(cmd).toContain('-v yaac-imagecache-slug-x:/dst:rw')
     expect(cmd).toContain('--security-opt label=disable')
-    expect(cmd).toContain('--user root')
+    expect(cmd).toContain('--user yaac')
+    // The base image's ENTRYPOINT is `catatonit -- sleep infinity`; the
+    // promoter overrides it so `-c '<script>'` reaches sh, not sleep.
+    expect(cmd).toContain('--entrypoint /bin/sh')
     expect(cmd).toContain('yaac-base-nestable:abcdef')
     expect(cmd).toContain('skopeo copy')
     expect(cmd).toContain('flock -x 9')
@@ -234,6 +240,8 @@ describe('promoteSessionImages', () => {
     const call = mockCreateContainer.mock.calls[0]?.[0] as {
       Image: string
       User: string
+      Entrypoint: string[]
+      Cmd: string[]
       HostConfig: {
         AutoRemove?: boolean
         SecurityOpt: string[]
@@ -241,12 +249,21 @@ describe('promoteSessionImages', () => {
       }
     }
     expect(call.Image).toBe('yaac-base-nestable:abc')
-    expect(call.User).toBe('root')
+    // Run as `yaac` (the session's user) so ownership and podman's baked-in
+    // paths match the source graphroot.
+    expect(call.User).toBe('yaac')
+    // The base image's ENTRYPOINT is `catatonit -- sleep infinity`; override
+    // it so Cmd's `-c '<script>'` reaches sh instead of being appended after
+    // `sleep infinity`.
+    expect(call.Entrypoint).toEqual(['/bin/sh'])
+    expect(call.Cmd[0]).toBe('-c')
     // AutoRemove must NOT be set — we explicitly remove after wait() so the
     // shared cache volume is free for removal in the same teardown flow.
     expect(call.HostConfig.AutoRemove).toBeUndefined()
     expect(call.HostConfig.SecurityOpt).toContain('label=disable')
-    expect(call.HostConfig.Binds).toContain('yaac-podmanstorage-sess-y:/src:rw')
+    // Source graphroot mounts at its session-original path (the podman
+    // sqlite db rejects `--root` overrides with a config mismatch).
+    expect(call.HostConfig.Binds).toContain('yaac-podmanstorage-sess-y:/home/yaac/.local/share/containers:rw')
     expect(call.HostConfig.Binds).toContain('yaac-imagecache-slug-x:/dst:rw')
     expect(start).toHaveBeenCalled()
     expect(waitCall).toHaveBeenCalled()
@@ -268,7 +285,11 @@ describe('PROMOTER_SCRIPT and SHARED_IMAGE_STORE_PATH constants', () => {
 
   it('flocks the shared store and walks source images', () => {
     expect(PROMOTER_SCRIPT).toContain('flock -x 9')
-    expect(PROMOTER_SCRIPT).toContain('podman --root /src/storage')
+    // The source side uses podman's default storage (the mount lands at
+    // /home/yaac/.local/share/containers); only the destination passes
+    // --root so the fresh /dst store is isolated from the source db.
+    expect(PROMOTER_SCRIPT).toContain('podman image ls -a -q --no-trunc')
+    expect(PROMOTER_SCRIPT).toContain('podman --root /dst --runroot /tmp/dst-run')
     expect(PROMOTER_SCRIPT).toContain('containers-storage:[overlay@/dst+/tmp/dst-run]')
   })
 })

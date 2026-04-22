@@ -97,6 +97,11 @@ export class ProxyClient {
   private running = false
   private resolvedImage: string | null = null
   private resolved: ResolvedState | null = null
+  // In-flight ensureRunning() promise used as a mutex so concurrent
+  // callers (session-create + the background loop's persistAllBlockedHosts)
+  // don't race into two parallel `start()` calls, which would cause
+  // name-conflict and stomping between force-remove and createContainer.
+  private ensureInflight: Promise<void> | null = null
 
   constructor(private config: ProxyClientConfig) {}
 
@@ -238,6 +243,14 @@ export class ProxyClient {
   }
 
   async ensureRunning(): Promise<void> {
+    if (this.ensureInflight) return this.ensureInflight
+    this.ensureInflight = this.ensureRunningImpl().finally(() => {
+      this.ensureInflight = null
+    })
+    return this.ensureInflight
+  }
+
+  private async ensureRunningImpl(): Promise<void> {
     // Fast path: already verified in this process
     if (this.running) {
       try {
@@ -384,7 +397,12 @@ export class ProxyClient {
 
     const containerName = this.containerNameFor(hash)
     const authSecret = crypto.randomBytes(32).toString('hex')
-    let hostPort = String(await findAvailablePort(10255))
+    // Spread the initial port pick across a 1000-port window so concurrent
+    // test workers don't all land on 10255 and spend the retry budget
+    // fighting over the same port. Each worker still verifies the port is
+    // actually free via findAvailablePort, just from a different offset.
+    const portBase = 10255 + Math.floor(Math.random() * 1000)
+    let hostPort = String(await findAvailablePort(portBase))
 
     // Ensure the host-side credentials dir exists so the bind-mount succeeds
     // even before the user has logged in. The entire directory is mounted
@@ -438,10 +456,18 @@ export class ProxyClient {
       } catch (err) {
         const msg = err instanceof Error ? err.message : ''
         const isPortConflict = msg.includes('address already in use') || msg.includes('proxy already running')
+        // Podman's wording for name collisions varies by version / endpoint:
+        //   - "container name \"...\" is already in use"
+        //   - "name \"...\" is in use: container already exists"
+        // Match both — any "in use" error that isn't a port conflict is a
+        // name collision worth retrying (or adopting).
         const isNameConflict = !isPortConflict
-          && msg.includes('already in use')
-          && msg.includes('container name')
-        if (attempt >= 5 || (!isPortConflict && !isNameConflict)) {
+          && (msg.includes('already in use') || msg.includes('is in use'))
+          && (msg.includes('container name') || msg.includes('container already exists'))
+        // With many parallel test workers racing for host ports, port
+        // conflicts can take several retries to clear — bump the budget
+        // well past the 5-worker rule of thumb.
+        if (attempt >= 20 || (!isPortConflict && !isNameConflict)) {
           throw err
         }
 
@@ -468,10 +494,13 @@ export class ProxyClient {
         }
 
         // Port conflict: remove the created-but-not-started container, pick
-        // a fresh host port, and retry.
+        // a fresh host port, and retry. Re-randomize the search offset so a
+        // swarm of workers stuck on consecutive ports breaks up instead of
+        // all marching in lockstep.
         try { await podman.getContainer(containerName).remove({ force: true }) } catch { /* ok */ }
-        hostPort = String(await findAvailablePort(Number(hostPort) + 1))
-        await new Promise((r) => setTimeout(r, 500))
+        const retryBase = Number(hostPort) + 1 + Math.floor(Math.random() * 500)
+        hostPort = String(await findAvailablePort(retryBase))
+        await new Promise((r) => setTimeout(r, 200))
       }
     }
 

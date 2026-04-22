@@ -65,6 +65,40 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
   await writeLock({ pid: process.pid, port, secret, startedAt: Date.now(), buildId })
   daemonLog(`[daemon] listening on 127.0.0.1:${port} lock=${daemonLockPath()}`)
 
+  // Register signal handlers BEFORE the async startup steps below. Node's
+  // default SIGTERM/SIGINT action is to terminate immediately, bypassing
+  // removeLock(); a test or supervisor that signals while restore/GC is
+  // still running would otherwise leak the lock file.
+  const abortCtrl = new AbortController()
+  let loopDone: Promise<void> | null = null
+  let shuttingDown = false
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return
+    shuttingDown = true
+    daemonLog(`[daemon] ${signal} — shutting down`)
+    abortCtrl.abort()
+    if (loopDone) {
+      try {
+        await loopDone
+      } catch (err) {
+        daemonLog(`[daemon] loop exit error: ${String(err)}`)
+      }
+    }
+    // @hono/node-server wraps a Node http.Server; close() refuses new
+    // connections, drains in-flight requests, then fires the callback.
+    // Bound to 3s so a wedged long-poll can't block lock removal; the
+    // daemon is going away either way, and the lock file is the thing
+    // the CLI watches to decide whether to restart.
+    await Promise.race([
+      new Promise<void>((resolve) => server.close(() => resolve())),
+      new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+    ])
+    await removeLock()
+    process.exit(0)
+  }
+  process.on('SIGTERM', () => void shutdown('SIGTERM'))
+  process.on('SIGINT', () => void shutdown('SIGINT'))
+
   // A daemon restart loses the in-memory forwarder registry while
   // running containers keep their tmux `status-right` advertising
   // ports that aren't actually forwarded anymore. Rebuild forwarders
@@ -94,25 +128,7 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     daemonLog(`[daemon] orphan modules GC failed: ${String(err)}`)
   }
 
-  const abortCtrl = new AbortController()
-  const loopDone = startBackgroundLoop({ signal: abortCtrl.signal })
-
-  const shutdown = async (signal: string): Promise<void> => {
-    daemonLog(`[daemon] ${signal} — shutting down`)
-    abortCtrl.abort()
-    try {
-      await loopDone
-    } catch (err) {
-      daemonLog(`[daemon] loop exit error: ${String(err)}`)
-    }
-    // @hono/node-server wraps a Node http.Server; close() refuses new
-    // connections, drains in-flight requests, then fires the callback.
-    await new Promise<void>((resolve) => server.close(() => resolve()))
-    await removeLock()
-    process.exit(0)
-  }
-  process.on('SIGTERM', () => void shutdown('SIGTERM'))
-  process.on('SIGINT', () => void shutdown('SIGINT'))
+  loopDone = startBackgroundLoop({ signal: abortCtrl.signal })
 }
 
 /**
