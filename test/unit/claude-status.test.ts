@@ -2,519 +2,107 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { getClaudeStatus, getFirstUserMessage } from '@/lib/session/claude-status'
+import { classifyClaudePane, getFirstUserMessage } from '@/lib/session/claude-status'
 
-describe('getClaudeStatus', () => {
-  let tmpDir: string
-  let jsonlPath: string
-
-  beforeEach(async () => {
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-status-test-'))
-    jsonlPath = path.join(tmpDir, 'session.jsonl')
+describe('classifyClaudePane', () => {
+  it('returns running when the pane shows "esc to interrupt"', () => {
+    const pane = [
+      '● Let me run the tests.',
+      '',
+      '  ⎿  Running…',
+      '',
+      '✳ Brewing… (12s · ↓ 340 tokens · esc to interrupt)',
+    ].join('\n')
+    expect(classifyClaudePane(pane)).toBe('running')
   })
 
-  afterEach(async () => {
-    await fs.rm(tmpDir, { recursive: true, force: true })
+  it('returns running when the pane shows "ctrl+c to interrupt"', () => {
+    const pane = [
+      '● Working on it.',
+      '',
+      '* (ctrl+c to interrupt)',
+    ].join('\n')
+    expect(classifyClaudePane(pane)).toBe('running')
   })
 
-  function writeEntry(entry: Record<string, unknown>): Promise<void> {
-    return fs.appendFile(jsonlPath, JSON.stringify(entry) + '\n')
-  }
-
-  it('returns waiting for assistant with end_turn', async () => {
-    await writeEntry({ type: 'assistant', message: { stop_reason: 'end_turn' } })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
+  it('returns waiting for the idle ready prompt', () => {
+    const pane = [
+      '● Done.',
+      '',
+      '─────────────────────────',
+      '❯ ',
+      '─────────────────────────',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(classifyClaudePane(pane)).toBe('waiting')
   })
 
-  it('returns waiting for assistant with refusal', async () => {
-    await writeEntry({ type: 'assistant', message: { stop_reason: 'refusal' } })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
+  it('returns waiting for the AskUserQuestion selector UI', () => {
+    const pane = [
+      '● Before I draft the plan I want to pin down a few design choices:',
+      '─────────────────────────',
+      '←  ☐ Selection  ☐ Container  ☐ V1 scope  ✔ Submit  →',
+      '',
+      'How should the user pick which agent backend to use?',
+      '',
+      '❯ 1. Per-session picker at creation',
+      '  2. Global env flag only',
+      '  3. Per-project setting',
+      '  4. Type something.',
+      '─────────────────────────',
+      '  5. Chat about this',
+      '  6. Skip interview and plan immediately',
+      '',
+      'Enter to select · Tab/Arrow keys to navigate · Esc to cancel',
+    ].join('\n')
+    expect(classifyClaudePane(pane)).toBe('waiting')
   })
 
-  it('returns waiting for assistant with stop_sequence', async () => {
-    await writeEntry({ type: 'assistant', message: { stop_reason: 'stop_sequence' } })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
+  it('returns waiting for the ExitPlanMode approval UI', () => {
+    const pane = [
+      ' Claude has written up a plan and is ready to execute. Would you like to proceed?',
+      '',
+      ' ❯ 1. Yes, and use auto mode',
+      '   2. Yes, manually approve edits',
+      '   3. No, refine with Ultraplan on Claude Code on the web',
+      '   4. Tell Claude what to change',
+      '      shift+tab to approve with this feedback',
+      '',
+      ' ctrl-g to edit in Nvim · ~/.claude/plans/my-plan.md',
+    ].join('\n')
+    expect(classifyClaudePane(pane)).toBe('waiting')
   })
 
-  it('returns running for assistant with tool_use', async () => {
-    await writeEntry({ type: 'assistant', message: { stop_reason: 'tool_use' } })
-    expect(await getClaudeStatus(jsonlPath)).toBe('running')
+  it('returns waiting for a [y/n] permission prompt', () => {
+    const pane = [
+      '● Bash(rm -rf node_modules)',
+      'Delete files? [y/n]',
+    ].join('\n')
+    expect(classifyClaudePane(pane)).toBe('waiting')
   })
 
-  it('returns running for assistant with max_tokens', async () => {
-    await writeEntry({ type: 'assistant', message: { stop_reason: 'max_tokens' } })
-    expect(await getClaudeStatus(jsonlPath)).toBe('running')
+  it('returns waiting for an empty pane', () => {
+    expect(classifyClaudePane('')).toBe('waiting')
   })
 
-  it('returns running for assistant with null stop_reason', async () => {
-    await writeEntry({ type: 'assistant', message: { stop_reason: null } })
-    expect(await getClaudeStatus(jsonlPath)).toBe('running')
+  it('returns waiting for an unrecognized pane', () => {
+    expect(classifyClaudePane('some arbitrary text with nothing special')).toBe('waiting')
   })
 
-  it('returns running for assistant with no message field', async () => {
-    await writeEntry({ type: 'assistant' })
-    expect(await getClaudeStatus(jsonlPath)).toBe('running')
+  it('matches the interrupt hint case-insensitively', () => {
+    expect(classifyClaudePane('ESC TO INTERRUPT')).toBe('running')
+    expect(classifyClaudePane('Ctrl+C To Interrupt')).toBe('running')
   })
 
-  it('returns running for user message', async () => {
-    await writeEntry({ type: 'user', message: { role: 'user', content: 'hello' } })
-    expect(await getClaudeStatus(jsonlPath)).toBe('running')
+  it('does not match partial phrases that lack "to interrupt"', () => {
+    // The user's own prompt mentioning esc or ctrl+c should not be
+    // misread as Claude actively working.
+    expect(classifyClaudePane('please use esc when done')).toBe('waiting')
+    expect(classifyClaudePane('I pressed ctrl+c earlier')).toBe('waiting')
   })
 
-  it('returns waiting when user tool_result references ExitPlanMode', async () => {
-    await writeEntry({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [
-          {
-            type: 'tool_result',
-            tool_use_id: 'toolu_abc',
-            content: [{ type: 'tool_reference', tool_name: 'ExitPlanMode' }],
-          },
-        ],
-      },
-    })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('returns waiting when user tool_result references AskUserQuestion', async () => {
-    await writeEntry({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [
-          {
-            type: 'tool_result',
-            tool_use_id: 'toolu_abc',
-            content: [{ type: 'tool_reference', tool_name: 'AskUserQuestion' }],
-          },
-        ],
-      },
-    })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('returns waiting when assistant writes to a plan file', async () => {
-    await writeEntry({
-      type: 'assistant',
-      message: {
-        stop_reason: 'tool_use',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'toolu_abc',
-            name: 'Write',
-            input: { file_path: '/home/user/.claude/plans/my-plan.md', content: '# Plan' },
-          },
-        ],
-      },
-    })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('returns waiting when user tool_result is for a plan file Write', async () => {
-    await writeEntry({
-      type: 'assistant',
-      message: {
-        stop_reason: 'tool_use',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'toolu_abc',
-            name: 'Write',
-            input: { file_path: '/home/user/.claude/plans/my-plan.md', content: '# Plan' },
-          },
-        ],
-      },
-    })
-    await writeEntry({
-      type: 'user',
-      toolUseResult: { type: 'update', filePath: '/home/user/.claude/plans/my-plan.md' },
-      message: {
-        content: [{ type: 'tool_result', tool_use_id: 'toolu_abc' }],
-      },
-    })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('returns waiting when plan Write result is followed by attachment metadata', async () => {
-    await writeEntry({
-      type: 'assistant',
-      message: {
-        stop_reason: 'tool_use',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'toolu_abc',
-            name: 'Write',
-            input: { file_path: '/home/user/.claude/plans/my-plan.md', content: '# Plan' },
-          },
-        ],
-      },
-    })
-    await writeEntry({
-      type: 'user',
-      toolUseResult: { type: 'update', filePath: '/home/user/.claude/plans/my-plan.md' },
-      message: {
-        content: [{ type: 'tool_result', tool_use_id: 'toolu_abc' }],
-      },
-    })
-    await writeEntry({ type: 'attachment', attachment: { type: 'task_reminder', content: [] } })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('returns waiting when assistant edits a plan file', async () => {
-    await writeEntry({
-      type: 'assistant',
-      message: {
-        stop_reason: 'tool_use',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'toolu_abc',
-            name: 'Edit',
-            input: {
-              file_path: '/home/user/.claude/plans/my-plan.md',
-              old_string: 'foo',
-              new_string: 'bar',
-            },
-          },
-        ],
-      },
-    })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('returns waiting when user tool_result is for a plan file Edit', async () => {
-    await writeEntry({
-      type: 'assistant',
-      message: {
-        stop_reason: 'tool_use',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'toolu_abc',
-            name: 'Edit',
-            input: {
-              file_path: '/home/user/.claude/plans/my-plan.md',
-              old_string: 'foo',
-              new_string: 'bar',
-            },
-          },
-        ],
-      },
-    })
-    // Edit tool results have no `type` field — they carry `filePath` plus
-    // `structuredPatch`, `oldString`, `newString`, etc.
-    await writeEntry({
-      type: 'user',
-      toolUseResult: {
-        filePath: '/home/user/.claude/plans/my-plan.md',
-        oldString: 'foo',
-        newString: 'bar',
-        structuredPatch: [],
-        userModified: false,
-        replaceAll: false,
-      },
-      message: {
-        content: [{ type: 'tool_result', tool_use_id: 'toolu_abc' }],
-      },
-    })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('returns waiting when assistant MultiEdits a plan file', async () => {
-    await writeEntry({
-      type: 'assistant',
-      message: {
-        stop_reason: 'tool_use',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'toolu_abc',
-            name: 'MultiEdit',
-            input: {
-              file_path: '/home/user/.claude/plans/my-plan.md',
-              edits: [{ old_string: 'foo', new_string: 'bar' }],
-            },
-          },
-        ],
-      },
-    })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('returns running for Edit to a non-plan file', async () => {
-    await writeEntry({
-      type: 'assistant',
-      message: {
-        stop_reason: 'tool_use',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'toolu_abc',
-            name: 'Edit',
-            input: {
-              file_path: '/workspace/src/index.ts',
-              old_string: 'foo',
-              new_string: 'bar',
-            },
-          },
-        ],
-      },
-    })
-    await writeEntry({
-      type: 'user',
-      toolUseResult: {
-        filePath: '/workspace/src/index.ts',
-        oldString: 'foo',
-        newString: 'bar',
-        structuredPatch: [],
-      },
-      message: {
-        content: [{ type: 'tool_result', tool_use_id: 'toolu_abc' }],
-      },
-    })
-    expect(await getClaudeStatus(jsonlPath)).toBe('running')
-  })
-
-  it('returns running for Write to a non-plan file', async () => {
-    await writeEntry({
-      type: 'assistant',
-      message: {
-        stop_reason: 'tool_use',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'toolu_abc',
-            name: 'Write',
-            input: { file_path: '/workspace/src/index.ts', content: 'code' },
-          },
-        ],
-      },
-    })
-    expect(await getClaudeStatus(jsonlPath)).toBe('running')
-  })
-
-  it('skips non-conversation entry types', async () => {
-    await writeEntry({ type: 'system' })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('skips unknown entry types as non-conversation metadata', async () => {
-    await writeEntry({ type: 'assistant', message: { stop_reason: 'end_turn' } })
-    await writeEntry({ type: 'some-future-metadata-type', data: {} })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('returns waiting when file does not exist', async () => {
-    const missing = path.join(tmpDir, 'nonexistent.jsonl')
-    expect(await getClaudeStatus(missing)).toBe('waiting')
-  })
-
-  it('returns waiting for empty file', async () => {
-    await fs.writeFile(jsonlPath, '')
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('reads only the last entry when multiple entries exist', async () => {
-    await writeEntry({ type: 'user', message: { role: 'user', content: 'hello' } })
-    await writeEntry({ type: 'assistant', message: { stop_reason: 'end_turn' } })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('returns running when last entry follows a waiting entry', async () => {
-    await writeEntry({ type: 'assistant', message: { stop_reason: 'end_turn' } })
-    await writeEntry({ type: 'user', message: { role: 'user', content: 'do something' } })
-    expect(await getClaudeStatus(jsonlPath)).toBe('running')
-  })
-
-  it('handles trailing newlines', async () => {
-    await fs.writeFile(jsonlPath, JSON.stringify({ type: 'assistant', message: { stop_reason: 'end_turn' } }) + '\n\n\n')
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('skips system turn_duration metadata after end_turn', async () => {
-    await writeEntry({ type: 'assistant', message: { stop_reason: 'end_turn' } })
-    await writeEntry({ type: 'system', subtype: 'turn_duration', durationMs: 5000 })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('skips last-prompt metadata after end_turn', async () => {
-    await writeEntry({ type: 'assistant', message: { stop_reason: 'end_turn' } })
-    await writeEntry({ type: 'last-prompt', lastPrompt: 'hello', sessionId: 'abc' })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('skips permission-mode metadata after end_turn', async () => {
-    await writeEntry({ type: 'assistant', message: { stop_reason: 'end_turn' } })
-    await writeEntry({ type: 'permission-mode', permissionMode: 'default', sessionId: 'abc' })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('skips file-history-snapshot metadata after end_turn', async () => {
-    await writeEntry({ type: 'assistant', message: { stop_reason: 'end_turn' } })
-    await writeEntry({ type: 'file-history-snapshot', messageId: 'abc', snapshot: {} })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('skips multiple trailing metadata entries', async () => {
-    await writeEntry({ type: 'assistant', message: { stop_reason: 'end_turn' } })
-    await writeEntry({ type: 'system', subtype: 'turn_duration', durationMs: 5000 })
-    await writeEntry({ type: 'file-history-snapshot', messageId: 'abc', snapshot: {} })
-    await writeEntry({ type: 'last-prompt', lastPrompt: 'hello', sessionId: 'abc' })
-    await writeEntry({ type: 'permission-mode', permissionMode: 'default', sessionId: 'abc' })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('returns running when user message follows metadata after end_turn', async () => {
-    await writeEntry({ type: 'assistant', message: { stop_reason: 'end_turn' } })
-    await writeEntry({ type: 'system', subtype: 'turn_duration', durationMs: 5000 })
-    await writeEntry({ type: 'user', message: { role: 'user', content: 'next question' } })
-    expect(await getClaudeStatus(jsonlPath)).toBe('running')
-  })
-
-  it('returns running for tool_use even with trailing metadata', async () => {
-    await writeEntry({ type: 'assistant', message: { stop_reason: 'tool_use' } })
-    await writeEntry({ type: 'system', subtype: 'turn_duration', durationMs: 5000 })
-    expect(await getClaudeStatus(jsonlPath)).toBe('running')
-  })
-
-  it('returns waiting when only metadata entries exist', async () => {
-    await writeEntry({ type: 'permission-mode', permissionMode: 'default', sessionId: 'abc' })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('skips agent-name metadata', async () => {
-    await writeEntry({ type: 'assistant', message: { stop_reason: 'end_turn' } })
-    await writeEntry({ type: 'agent-name' })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('skips custom-title metadata', async () => {
-    await writeEntry({ type: 'assistant', message: { stop_reason: 'end_turn' } })
-    await writeEntry({ type: 'custom-title' })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('skips queue-operation metadata', async () => {
-    await writeEntry({ type: 'assistant', message: { stop_reason: 'end_turn' } })
-    await writeEntry({ type: 'queue-operation' })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('returns waiting when assistant calls AskUserQuestion', async () => {
-    await writeEntry({
-      type: 'assistant',
-      message: {
-        stop_reason: 'tool_use',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'toolu_abc',
-            name: 'AskUserQuestion',
-            input: { questions: [{ question: 'Which approach?' }] },
-          },
-        ],
-      },
-    })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('returns waiting when AskUserQuestion follows metadata', async () => {
-    await writeEntry({
-      type: 'assistant',
-      message: {
-        stop_reason: 'tool_use',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'toolu_abc',
-            name: 'AskUserQuestion',
-            input: { questions: [{ question: 'Which approach?' }] },
-          },
-        ],
-      },
-    })
-    await writeEntry({ type: 'system', subtype: 'turn_duration', durationMs: 5000 })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('returns waiting when assistant calls ExitPlanMode', async () => {
-    await writeEntry({
-      type: 'assistant',
-      message: {
-        stop_reason: 'tool_use',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'toolu_abc',
-            name: 'ExitPlanMode',
-            input: {},
-          },
-        ],
-      },
-    })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('returns waiting when ExitPlanMode follows metadata', async () => {
-    await writeEntry({
-      type: 'assistant',
-      message: {
-        stop_reason: 'tool_use',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'toolu_abc',
-            name: 'ExitPlanMode',
-            input: {},
-          },
-        ],
-      },
-    })
-    await writeEntry({ type: 'system', subtype: 'turn_duration', durationMs: 5000 })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('returns waiting when user interrupted the request', async () => {
-    await writeEntry({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }],
-      },
-    })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('returns waiting when user interrupted after assistant tool_use', async () => {
-    await writeEntry({ type: 'assistant', message: { stop_reason: 'tool_use' } })
-    await writeEntry({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }],
-      },
-    })
-    expect(await getClaudeStatus(jsonlPath)).toBe('waiting')
-  })
-
-  it('skips unparseable lines instead of returning waiting', async () => {
-    await writeEntry({ type: 'assistant', message: { stop_reason: 'tool_use' } })
-    // Simulate a corrupted/partial line
-    await fs.appendFile(jsonlPath, '{"type":"assistant","message":{"stop_re\n')
-    expect(await getClaudeStatus(jsonlPath)).toBe('running')
-  })
-
-  it('scans across chunk boundaries for large files', async () => {
-    await writeEntry({ type: 'assistant', message: { stop_reason: 'tool_use' } })
-    // Write enough metadata to push the tool_use entry beyond a 4KB window
-    for (let i = 0; i < 80; i++) {
-      await writeEntry({ type: 'system', subtype: 'turn_duration', durationMs: 5000, padding: 'x'.repeat(20) })
-    }
-    expect(await getClaudeStatus(jsonlPath)).toBe('running')
+  it('tolerates extra whitespace between the modifier and "to interrupt"', () => {
+    expect(classifyClaudePane('esc   to   interrupt')).toBe('running')
   })
 })
 

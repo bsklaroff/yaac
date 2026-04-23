@@ -12,9 +12,10 @@ export async function getSessionStatus(
   projectSlug: string,
   sessionId: string,
   tool: AgentTool,
+  containerName: string,
 ): Promise<'running' | 'waiting'> {
   if (tool === 'codex') return getSessionCodexStatus(projectSlug, sessionId)
-  return getSessionClaudeStatus(projectSlug, sessionId)
+  return getSessionClaudeStatus(projectSlug, sessionId, containerName)
 }
 
 export async function getSessionFirstMessage(

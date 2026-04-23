@@ -124,6 +124,7 @@ export async function listActiveSessions(projectFilter?: string): Promise<Active
     running.map(async (c): Promise<SessionListEntry> => {
       const sessionId = c.Labels?.['yaac.session-id'] ?? ''
       const slug = c.Labels?.['yaac.project'] ?? ''
+      const containerName = c.Names?.[0]?.replace(/^\//, '') ?? c.Id ?? ''
       const tool = getToolFromContainer(c)
       if (!sessionId || !slug) {
         return {
@@ -136,7 +137,7 @@ export async function listActiveSessions(projectFilter?: string): Promise<Active
         }
       }
       const [status, prompt, prewarm, blockedHosts] = await Promise.all([
-        getSessionStatus(slug, sessionId, tool),
+        getSessionStatus(slug, sessionId, tool, containerName),
         getSessionFirstMessage(slug, sessionId, tool),
         isPrewarmSession(slug, sessionId),
         readBlockedHosts(slug, sessionId),

@@ -62,7 +62,7 @@ export async function getWaitingSessions(
     }
 
     const tool = getToolFromContainer(c)
-    const status = await getSessionStatus(slug, sessionId, tool)
+    const status = await getSessionStatus(slug, sessionId, tool, name)
     if (status !== 'waiting') continue
 
     results.push({
