@@ -28,7 +28,28 @@ function prewarmFilePath(): string {
   return path.join(getDataDir(), '.prewarm-sessions.json')
 }
 
-export async function readPrewarmSessions(): Promise<Record<string, PrewarmEntry>> {
+/**
+ * Chained-promise mutex that serializes read-modify-write cycles on the
+ * state file. All callers live in the daemon process (the daemon is
+ * single-instance via `~/.yaac/.daemon.lock`), so in-process is enough.
+ *
+ * Without this, `ensurePrewarmSession`'s verifiedAt refresh could race
+ * `claimPrewarmSession`: the monitor reads the entry, does a slow
+ * alive-check, then blindly writes the entry back — resurrecting a
+ * claimed session in the state file as a ghost prewarm. The claimed
+ * container is then stuck labeled `prewarm` forever, and subsequent
+ * claims can hand the same container to a second caller.
+ */
+let stateFileMutex: Promise<unknown> = Promise.resolve()
+
+function withStateLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = (): Promise<T> => fn()
+  const result = stateFileMutex.then(run, run)
+  stateFileMutex = result.catch(() => undefined)
+  return result
+}
+
+async function readStateUnlocked(): Promise<Record<string, PrewarmEntry>> {
   try {
     const raw = await fs.readFile(prewarmFilePath(), 'utf8')
     return JSON.parse(raw) as Record<string, PrewarmEntry>
@@ -37,8 +58,12 @@ export async function readPrewarmSessions(): Promise<Record<string, PrewarmEntry
   }
 }
 
-async function writePrewarmSessions(data: Record<string, PrewarmEntry>): Promise<void> {
+async function writeStateUnlocked(data: Record<string, PrewarmEntry>): Promise<void> {
   await fs.writeFile(prewarmFilePath(), JSON.stringify(data, null, 2) + '\n')
+}
+
+export async function readPrewarmSessions(): Promise<Record<string, PrewarmEntry>> {
+  return withStateLock(readStateUnlocked)
 }
 
 export async function getPrewarmSession(slug: string): Promise<PrewarmEntry | null> {
@@ -47,32 +72,62 @@ export async function getPrewarmSession(slug: string): Promise<PrewarmEntry | nu
 }
 
 export async function setPrewarmSession(slug: string, entry: PrewarmEntry): Promise<void> {
-  const data = await readPrewarmSessions()
-  data[slug] = entry
-  await writePrewarmSessions(data)
+  return withStateLock(async () => {
+    const data = await readStateUnlocked()
+    data[slug] = entry
+    await writeStateUnlocked(data)
+  })
 }
 
 export async function clearPrewarmSession(slug: string): Promise<void> {
-  const data = await readPrewarmSessions()
-  if (!(slug in data)) return
-  delete data[slug]
-  await writePrewarmSessions(data)
+  return withStateLock(async () => {
+    const data = await readStateUnlocked()
+    if (!(slug in data)) return
+    delete data[slug]
+    await writeStateUnlocked(data)
+  })
+}
+
+/**
+ * Atomic compare-and-set. Updates the state-file entry for `slug` only if
+ * the current entry's sessionId matches `expectedSessionId`. Returns true
+ * on success, false if the entry was cleared or replaced concurrently
+ * (typically by `claimPrewarmSession`). Callers use this whenever they
+ * are about to write an entry derived from a state snapshot that might be
+ * stale by the time they write — the monitor's verifiedAt refresh, and
+ * the creation path's state='ready' / state='failed' writes.
+ */
+export async function updatePrewarmSessionIfMatch(
+  slug: string,
+  expectedSessionId: string,
+  entry: PrewarmEntry,
+): Promise<boolean> {
+  return withStateLock(async () => {
+    const data = await readStateUnlocked()
+    if (data[slug]?.sessionId !== expectedSessionId) return false
+    data[slug] = entry
+    await writeStateUnlocked(data)
+    return true
+  })
 }
 
 export async function clearFailedPrewarmSessions(): Promise<void> {
-  const data = await readPrewarmSessions()
-  const failed: Array<[string, PrewarmEntry]> = []
-  for (const slug of Object.keys(data)) {
-    if (data[slug].state === 'failed') {
-      failed.push([slug, data[slug]])
-      delete data[slug]
+  const failed = await withStateLock(async () => {
+    const data = await readStateUnlocked()
+    const removed: Array<[string, PrewarmEntry]> = []
+    for (const slug of Object.keys(data)) {
+      if (data[slug].state === 'failed') {
+        removed.push([slug, data[slug]])
+        delete data[slug]
+      }
     }
-  }
-  if (failed.length === 0) return
-  await writePrewarmSessions(data)
+    if (removed.length > 0) await writeStateUnlocked(data)
+    return removed
+  })
   // Safety net: if the failure path didn't tear down the container (older
   // entries, or crashes between cleanup and setPrewarmSession), make sure
-  // nothing leaks past the state-file entry.
+  // nothing leaks past the state-file entry. Runs outside the state-file
+  // lock — cleanup is I/O-heavy and independent of the file state.
   for (const [slug, entry] of failed) {
     await cleanupPrewarmSession(entry, slug)
   }
@@ -184,8 +239,15 @@ export async function ensurePrewarmSession(projectSlug: string, tool: AgentTool 
       // State is "ready" — verify container is still alive
       const alive = await isContainerRunning(existing.containerName) && await isTmuxSessionAlive(existing.containerName)
       if (alive) {
-        // Fresh prewarm session — update verifiedAt
-        await setPrewarmSession(projectSlug, { ...existing, verifiedAt: Date.now() })
+        // CAS the refresh: a concurrent claimPrewarmSession may have
+        // cleared the entry while we were running the alive-check, and
+        // a blind setPrewarmSession would resurrect the claimed session
+        // as a ghost prewarm. updatePrewarmSessionIfMatch returns false
+        // in that case — we just return, the claimer owns it now.
+        await updatePrewarmSessionIfMatch(projectSlug, existing.sessionId, {
+          ...existing,
+          verifiedAt: Date.now(),
+        })
         return
       }
     }
@@ -218,15 +280,10 @@ export async function ensurePrewarmSession(projectSlug: string, tool: AgentTool 
       await clearPrewarmSession(projectSlug)
       return
     }
-    // Re-check whether the entry was claimed while we were creating.
-    // claimPrewarmSession() clears the entry immediately, so if it's gone
-    // (or belongs to a different session), the session was already claimed
-    // and we must not re-register it as a prewarm.
-    const current = await getPrewarmSession(projectSlug)
-    if (!current || current.sessionId !== sessionId) {
-      return
-    }
-    await setPrewarmSession(projectSlug, {
+    // CAS: a concurrent claimPrewarmSession may have cleared our 'creating'
+    // entry while createSession ran. If so, the claimer now owns the
+    // container and we must not re-register it as a prewarm.
+    await updatePrewarmSessionIfMatch(projectSlug, sessionId, {
       sessionId,
       containerName,
       fingerprint,
@@ -235,23 +292,24 @@ export async function ensurePrewarmSession(projectSlug: string, tool: AgentTool 
       tool,
     })
   } catch (err) {
-    // Only mark as failed if the entry wasn't claimed in the meantime.
-    // If it was claimed, the claimer now owns the container — leave it alone.
-    const current = await getPrewarmSession(projectSlug)
-    if (current && current.sessionId === sessionId) {
-      // Tear down the half-created container before marking failed. Otherwise
-      // the container lives on, isPrewarmSession returns false once the failed
-      // entry is cleared, and listActiveSessions reports it as a waiting
-      // session.
+    // CAS: only mark failed (and tear down the half-created container) if
+    // the entry wasn't claimed in the meantime. If it was claimed, the
+    // claimer now owns the container — leave it alone. Marking failed
+    // before teardown means a concurrent claim racing the teardown sees
+    // state='failed' and bails out cleanly.
+    const applied = await updatePrewarmSessionIfMatch(projectSlug, sessionId, {
+      sessionId,
+      containerName,
+      fingerprint,
+      state: 'failed',
+      verifiedAt: Date.now(),
+      tool,
+    })
+    if (applied) {
+      // Tear down the half-created container. Otherwise the container
+      // lives on, isPrewarmSession returns false once the failed entry is
+      // cleared, and listActiveSessions reports it as a waiting session.
       await cleanupPrewarmSession({ sessionId, containerName, fingerprint, state: 'creating', verifiedAt: Date.now(), tool }, projectSlug)
-      await setPrewarmSession(projectSlug, {
-        sessionId,
-        containerName,
-        fingerprint,
-        state: 'failed',
-        verifiedAt: Date.now(),
-        tool,
-      })
     }
     throw err
   }

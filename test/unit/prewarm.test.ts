@@ -24,6 +24,7 @@ import {
   clearFailedPrewarmSessions,
   claimPrewarmSession,
   isPrewarmSession,
+  updatePrewarmSessionIfMatch,
   MAX_STALE_MS,
 } from '@/lib/prewarm'
 import { cleanupSession, isTmuxSessionAlive } from '@/lib/session/cleanup'
@@ -242,6 +243,52 @@ describe('prewarm state helpers', () => {
     const result = await getPrewarmSession('my-project')
     expect(result?.state).toBe('creating')
     expect(result?.fingerprint).toBe('new-fp')
+  })
+
+  /**
+   * Core invariant for the monitor refresh + claim race. Without a
+   * compare-and-set guard, `ensurePrewarmSession`'s verifiedAt refresh
+   * could read `existing`, do a slow alive-check, and then blindly
+   * re-write `existing` — resurrecting an entry that a concurrent
+   * `claimPrewarmSession` cleared between the read and the write. The
+   * claimed container would then stay labeled `prewarm` forever.
+   */
+  it('updatePrewarmSessionIfMatch no-ops when the entry was cleared', async () => {
+    await setPrewarmSession('my-project', entry)
+    await clearPrewarmSession('my-project')
+
+    const applied = await updatePrewarmSessionIfMatch('my-project', entry.sessionId, {
+      ...entry,
+      verifiedAt: Date.now() + 10_000,
+    })
+
+    expect(applied).toBe(false)
+    expect(await getPrewarmSession('my-project')).toBeNull()
+  })
+
+  it('updatePrewarmSessionIfMatch no-ops when the sessionId no longer matches', async () => {
+    const replaced: PrewarmEntry = { ...entry, sessionId: 'replacement-id' }
+    await setPrewarmSession('my-project', replaced)
+
+    const applied = await updatePrewarmSessionIfMatch('my-project', 'old-sess-id', {
+      ...replaced,
+      verifiedAt: Date.now() + 10_000,
+    })
+
+    expect(applied).toBe(false)
+    const current = await getPrewarmSession('my-project')
+    expect(current?.sessionId).toBe('replacement-id')
+  })
+
+  it('updatePrewarmSessionIfMatch writes when the sessionId still matches', async () => {
+    await setPrewarmSession('my-project', entry)
+    const refreshed: PrewarmEntry = { ...entry, verifiedAt: entry.verifiedAt + 10_000 }
+
+    const applied = await updatePrewarmSessionIfMatch('my-project', entry.sessionId, refreshed)
+
+    expect(applied).toBe(true)
+    const current = await getPrewarmSession('my-project')
+    expect(current?.verifiedAt).toBe(refreshed.verifiedAt)
   })
 
   /**
