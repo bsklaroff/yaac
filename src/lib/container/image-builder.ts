@@ -56,6 +56,14 @@ export async function contextHash(dir: string): Promise<string> {
   return hasher.digest('hex').slice(0, 16)
 }
 
+// We shell out to `podman build` instead of calling dockerode's buildImage
+// (which would hit podman's Docker-compat /build endpoint) for two reasons:
+//   1. The compat endpoint writes Docker v2 manifests while `podman build`
+//      writes OCI manifests. Layer digests differ across formats, so a
+//      dockerode build cannot reuse cache from a CLI build and vice versa.
+//   2. The compat endpoint defaults to layers=false, discarding intermediate
+//      layers — so even back-to-back dockerode builds rebuild from scratch.
+// Staying on the CLI keeps one shared OCI cache chain across all builders.
 async function buildImage(imageName: string, dockerfile: string, context: string, buildArgs?: Record<string, string>): Promise<void> {
   const args = [
     'build',
