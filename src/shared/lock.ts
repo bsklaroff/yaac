@@ -95,7 +95,23 @@ export async function acquireLock(
   throw new Error('failed to acquire daemon lock after retries')
 }
 
-export async function removeLock(): Promise<void> {
+/**
+ * Remove the daemon lock file.
+ *
+ * With `expectedPid`, only unlink when the on-disk lock still names that
+ * pid. This guards against a zombified shutdown (e.g. a previous daemon
+ * that hung past `stopDaemon`'s 3s force-remove timeout) clobbering a
+ * successor daemon's lock when it eventually unblocks.
+ *
+ * Without `expectedPid`, unlink unconditionally — appropriate for callers
+ * that have already classified the lock as stale (dead pid / unresponsive
+ * /health) and simply need to clear the file before a fresh spawn.
+ */
+export async function removeLock(expectedPid?: number): Promise<void> {
+  if (expectedPid !== undefined) {
+    const cur = await readLock()
+    if (!cur || cur.pid !== expectedPid) return
+  }
   try {
     await fs.unlink(daemonLockPath())
   } catch {

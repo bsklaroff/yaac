@@ -106,7 +106,10 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
       new Promise<void>((resolve) => server.close(() => resolve())),
       new Promise<void>((resolve) => setTimeout(resolve, 3000)),
     ])
-    await removeLock()
+    // Pass our pid so a shutdown that dragged past stopDaemon's 3s
+    // force-remove window (e.g. wedged background loop) can't unlink a
+    // successor daemon's lock.
+    await removeLock(process.pid)
     process.exit(0)
   }
   process.on('SIGTERM', () => void shutdown('SIGTERM'))

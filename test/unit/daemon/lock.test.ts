@@ -72,6 +72,24 @@ describe('daemon lock', () => {
     it('is a no-op when the lock is missing', async () => {
       await expect(removeLock()).resolves.toBeUndefined()
     })
+
+    it('unlinks when the pid matches expectedPid', async () => {
+      const lock: DaemonLock = { pid: 42, port: 2, secret: 's', startedAt: 3, buildId: 'b' }
+      await writeLock(lock)
+      await removeLock(42)
+      expect(await readLock()).toBeNull()
+    })
+
+    it('leaves the lock alone when expectedPid does not match', async () => {
+      const lock: DaemonLock = { pid: 42, port: 2, secret: 's', startedAt: 3, buildId: 'b' }
+      await writeLock(lock)
+      await removeLock(999)
+      expect(await readLock()).toEqual(lock)
+    })
+
+    it('is a no-op with expectedPid when the lock is missing', async () => {
+      await expect(removeLock(42)).resolves.toBeUndefined()
+    })
   })
 
   describe('isLockLive', () => {
