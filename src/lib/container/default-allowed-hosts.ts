@@ -261,6 +261,8 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'developers.openai.com',
   'pkg.stainless.com',
   'binaries.prisma.sh',
+  'cdn.playwright.dev',
+  'playwright.download.prss.microsoft.com',
 
   // Cloud services and monitoring
   'statsig.com',
