@@ -186,7 +186,7 @@ describe('proxy sidecar', () => {
       expect(tunneled).toContain('200 Connection Established')
 
       await client.removeSession(sessionId)
-    }, 30_000)
+    }, 60_000)
   })
 })
 

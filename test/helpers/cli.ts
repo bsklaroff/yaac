@@ -9,6 +9,79 @@ import { TEST_RUN_ID } from '@test/helpers/setup'
 const TSX_CLI = path.resolve(__dirname, '..', '..', 'node_modules', 'tsx', 'dist', 'cli.mjs')
 const ENTRY = path.resolve(__dirname, '..', '..', 'src', 'cli.ts')
 
+/**
+ * Cross-worker mutex so only one `yaac daemon run` is live at a time
+ * across all vitest workers. Multiple daemons racing the same podman
+ * socket under load was overloading it — every daemon runs its own
+ * prewarm tick, so N workers meant N concurrent prewarms fighting for
+ * the same container store.
+ *
+ * Lock file holds the owner's PID so a crashed holder doesn't wedge
+ * the suite forever. fs.open(wx) is atomic across processes.
+ */
+const DAEMON_LOCK_FILE = path.join(os.tmpdir(), 'yaac-test-daemon-mutex.lock')
+
+// Process-reentrant: if this worker already owns the file lock, a
+// nested acquire just bumps a refcount. The file lock is only released
+// when the refcount drops back to zero. Prevents a file-level mutex
+// (e.g. daemon.test.ts's beforeAll) from deadlocking against per-test
+// spawnYaacDaemon acquires in the same worker.
+let localDepth = 0
+let pendingFileUnlink: Promise<void> | null = null
+
+export async function acquireDaemonMutex(): Promise<() => Promise<void>> {
+  if (localDepth > 0) {
+    localDepth += 1
+    let released = false
+    return async (): Promise<void> => {
+      if (released) return
+      released = true
+      localDepth -= 1
+      if (localDepth === 0 && pendingFileUnlink) {
+        await pendingFileUnlink
+        pendingFileUnlink = null
+      }
+    }
+  }
+
+  for (;;) {
+    try {
+      const fh = await fs.open(DAEMON_LOCK_FILE, 'wx')
+      await fh.writeFile(String(process.pid))
+      await fh.close()
+      localDepth = 1
+      let released = false
+      return async (): Promise<void> => {
+        if (released) return
+        released = true
+        localDepth -= 1
+        if (localDepth === 0) {
+          pendingFileUnlink = fs.unlink(DAEMON_LOCK_FILE).catch(() => { /* already gone */ })
+          await pendingFileUnlink
+          pendingFileUnlink = null
+        }
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+      // Existing lock — check if the holder is still alive.
+      try {
+        const raw = await fs.readFile(DAEMON_LOCK_FILE, 'utf8')
+        const holderPid = parseInt(raw.trim(), 10)
+        if (!Number.isNaN(holderPid)) {
+          try {
+            process.kill(holderPid, 0)
+          } catch {
+            // Holder is gone — steal the lock.
+            await fs.unlink(DAEMON_LOCK_FILE).catch(() => { /* raced */ })
+            continue
+          }
+        }
+      } catch { /* lock vanished between readdir and read; retry */ }
+      await new Promise((r) => setTimeout(r, 50))
+    }
+  }
+}
+
 export interface YaacTestEnv {
   scratchDir: string
   dataDir: string
@@ -66,42 +139,66 @@ export interface SpawnedDaemon {
  * Spawn a real `yaac daemon run` subprocess under the given env. Polls
  * for the lock file (5s budget) so the caller can read `.lock.port`
  * without races. `stop()` SIGTERMs, falling back to SIGKILL after 3s.
+ *
+ * Acquires the cross-worker daemon mutex before spawning so only one
+ * yaac daemon exists across all parallel vitest workers at any time.
+ * `stop()` releases it after the child has exited.
  */
 export async function spawnYaacDaemon(env: NodeJS.ProcessEnv): Promise<SpawnedDaemon> {
-  const child = spawn(process.execPath, [TSX_CLI, ENTRY, 'daemon', 'run', '--port', '0'], {
-    env,
-    stdio: ['ignore', 'ignore', 'pipe'],
-  })
-
-  // Forward daemon stderr to the test worker's stderr when the debug
-  // flag is set — invaluable when a daemon subprocess dies before the
-  // CLI can observe a coherent error.
-  if (process.env.YAAC_TEST_DEBUG_DAEMON === '1') {
-    child.stderr?.on('data', (chunk: Buffer) => {
-      process.stderr.write(`[daemon] ${chunk.toString()}`)
-    })
+  const releaseMutex = await acquireDaemonMutex()
+  let mutexReleased = false
+  const releaseOnce = async (): Promise<void> => {
+    if (mutexReleased) return
+    mutexReleased = true
+    await releaseMutex()
   }
 
-  const lock = await waitForLock(5000)
+  let child: ChildProcess
+  let lock: DaemonLock
+  try {
+    child = spawn(process.execPath, [TSX_CLI, ENTRY, 'daemon', 'run', '--port', '0'], {
+      env,
+      stdio: ['ignore', 'ignore', 'pipe'],
+    })
+
+    // Forward daemon stderr to the test worker's stderr when the debug
+    // flag is set — invaluable when a daemon subprocess dies before the
+    // CLI can observe a coherent error.
+    if (process.env.YAAC_TEST_DEBUG_DAEMON === '1') {
+      child.stderr?.on('data', (chunk: Buffer) => {
+        process.stderr.write(`[daemon] ${chunk.toString()}`)
+      })
+    }
+
+    lock = await waitForLock(5000)
+  } catch (err) {
+    await releaseOnce()
+    throw err
+  }
 
   const stop = async (): Promise<void> => {
-    if (child.exitCode !== null) return
-    child.kill('SIGTERM')
-    await new Promise<void>((resolve) => {
-      // Give the daemon up to 15s to finish its current background-loop
-      // tick (prewarm upkeep, blocked-host persist) before we force-kill.
-      // SIGKILL bypasses the shutdown handler's `removeLock()` call, so a
-      // too-short timeout leaves stale lock files and flakes tests that
-      // assert on lock cleanup.
-      const t = setTimeout(() => {
-        child.kill('SIGKILL')
-        resolve()
-      }, 15000)
-      child.once('exit', () => {
-        clearTimeout(t)
-        resolve()
-      })
-    })
+    try {
+      if (child.exitCode === null) {
+        child.kill('SIGTERM')
+        await new Promise<void>((resolve) => {
+          // Give the daemon up to 15s to finish its current background-loop
+          // tick (prewarm upkeep, blocked-host persist) before we force-kill.
+          // SIGKILL bypasses the shutdown handler's `removeLock()` call, so a
+          // too-short timeout leaves stale lock files and flakes tests that
+          // assert on lock cleanup.
+          const t = setTimeout(() => {
+            child.kill('SIGKILL')
+            resolve()
+          }, 15000)
+          child.once('exit', () => {
+            clearTimeout(t)
+            resolve()
+          })
+        })
+      }
+    } finally {
+      await releaseOnce()
+    }
   }
 
   return { child, lock, stop }

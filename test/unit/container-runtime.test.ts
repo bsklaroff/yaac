@@ -6,6 +6,7 @@ type ExecResult = { stdout: string; stderr: string }
 type ExecCallback = (err: unknown, res?: ExecResult) => void
 const execFileMock = vi.fn<(file: string, args: readonly string[]) => Promise<ExecResult>>()
 const execMock = vi.fn<(command: string) => Promise<ExecResult>>()
+const spawnMock = vi.fn<(file: string, args: readonly string[]) => { unref: () => void; on: () => void }>()
 vi.mock('node:child_process', () => ({
   execFile: (
     file: string,
@@ -27,6 +28,29 @@ vi.mock('node:child_process', () => ({
       (res) => actualCb(null, res),
       (err: unknown) => actualCb(err),
     )
+  },
+  spawn: (file: string, args: readonly string[]) => spawnMock(file, args),
+}))
+
+// Mock node:net so ensurePodmanSocket's socket-accepts probe is controllable.
+// Each call emits either a 'connect' (accepting) or 'error' (refused) based
+// on the queued response.
+const socketAcceptQueue: boolean[] = []
+vi.mock('node:net', () => ({
+  default: {
+    connect: () => {
+      type Handler = () => void
+      const listeners: { connect: Handler[]; error: Handler[] } = { connect: [], error: [] }
+      const accepts = socketAcceptQueue.shift() ?? false
+      queueMicrotask(() => {
+        const which = accepts ? 'connect' : 'error'
+        for (const fn of listeners[which]) fn()
+      })
+      return {
+        once: (event: 'connect' | 'error', fn: Handler) => { listeners[event].push(fn) },
+        end: () => {},
+      }
+    },
   },
 }))
 
@@ -80,6 +104,12 @@ describe('isTransientPodmanError', () => {
     expect(isTransientPodmanError('connection refused')).toBe(true)
   })
 
+  it('matches dockerode-style ECONNREFUSED', () => {
+    expect(isTransientPodmanError(
+      'connect ECONNREFUSED /run/user/1000/podman/podman.sock',
+    )).toBe(true)
+  })
+
   it('matches EAGAIN under process pressure (lowercase)', () => {
     expect(isTransientPodmanError('fork/exec /usr/bin/conmon: resource temporarily unavailable')).toBe(true)
   })
@@ -104,6 +134,9 @@ describe('isTransientPodmanError', () => {
 describe('podmanExecWithRetry', () => {
   beforeEach(() => {
     execFileMock.mockReset()
+    spawnMock.mockReset()
+    socketAcceptQueue.length = 0
+    spawnMock.mockReturnValue({ unref: () => {}, on: () => {} })
   })
 
   it('returns stdout/stderr on first successful call', async () => {
@@ -150,11 +183,62 @@ describe('podmanExecWithRetry', () => {
     ).rejects.toThrow('still transient')
     expect(execFileMock).toHaveBeenCalledTimes(3)
   })
+
+  it('revives a dead podman socket between retries on connection-refused', async () => {
+    const refused = Object.assign(new Error('socket refused'), {
+      stderr: 'Cannot connect to Podman: connection refused',
+    })
+    // First retry sees the socket as dead (shouldAccept=false), so
+    // ensurePodmanSocket spawns a new service. The next accept check
+    // returns true (shouldAccept=true) so the revive resolves, then
+    // the retry-attempt succeeds.
+    socketAcceptQueue.push(false, true)
+    execFileMock
+      .mockRejectedValueOnce(refused)
+      .mockResolvedValue({ stdout: 'back', stderr: '' })
+
+    const result = await podmanExecWithRetry(['exec', 'c', 'true'], {
+      baseDelay: 1,
+      maxAttempts: 3,
+    })
+
+    expect(result.stdout).toBe('back')
+    // Non-darwin worker → getSocketPath is defined, so revive spawns a
+    // service. On darwin the path is undefined and revive is a no-op;
+    // we check for spawn calls only when the platform exercises revive.
+    if (process.platform !== 'darwin') {
+      expect(spawnMock).toHaveBeenCalledWith(
+        'podman',
+        expect.arrayContaining(['system', 'service']),
+      )
+    }
+  })
+
+  it('matches dockerode ECONNREFUSED too and triggers revive', async () => {
+    const refused = Object.assign(new Error('ECONNREFUSED'), {
+      stderr: 'connect ECONNREFUSED /run/user/1000/podman/podman.sock',
+    })
+    socketAcceptQueue.push(true) // revive fast-paths — socket already accepts
+    execFileMock
+      .mockRejectedValueOnce(refused)
+      .mockResolvedValue({ stdout: 'ok', stderr: '' })
+
+    const result = await podmanExecWithRetry(['ps'], {
+      baseDelay: 1,
+      maxAttempts: 3,
+    })
+
+    expect(result.stdout).toBe('ok')
+    expect(execFileMock).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('shellPodmanWithRetry', () => {
   beforeEach(() => {
     execMock.mockReset()
+    spawnMock.mockReset()
+    socketAcceptQueue.length = 0
+    spawnMock.mockReturnValue({ unref: () => {}, on: () => {} })
   })
 
   it('returns stdout/stderr on first successful call', async () => {
@@ -208,6 +292,9 @@ describe('createAndStartContainerWithRetry', () => {
   beforeEach(() => {
     createContainerMock.mockReset()
     getContainerMock.mockReset()
+    spawnMock.mockReset()
+    socketAcceptQueue.length = 0
+    spawnMock.mockReturnValue({ unref: () => {}, on: () => {} })
   })
 
   it('returns the container on first-attempt success', async () => {

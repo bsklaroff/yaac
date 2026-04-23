@@ -9,24 +9,30 @@ import { DOCKERFILES_DIR, PROXY_DIR } from '@/lib/project/paths'
 const execFileAsync = promisify(execFile)
 
 /**
- * Each test worker spawns its own proxy sidecar (unique network per
- * TEST_RUN_ID), and they're never removed by per-test afterEach hooks
- * (those only target session containers via `yaac.data-dir`). Each proxy
- * publishes host port 10255+, so after a few runs the 100-port search
- * window used by ProxyClient exhausts and subsequent runs fail with
- * "No available port found starting from 10255".
+ * Prune every container built from a `yaac-test-*` image. Covers proxy
+ * sidecars (yaac-test-proxy:*), mock remotes / test session containers
+ * (yaac-test-base:*, yaac-test-base-nestable:*), and anything else the
+ * suite tags under the `yaac-test-` prefix.
  *
- * Prune every container built from a `yaac-test-proxy:*` image — these
- * are unambiguously test artifacts, separate from the user's real
- * `yaac-proxy:*` sidecar.
+ * Why an image-prefix filter rather than a label filter: an interrupted
+ * test run leaves behind orphan containers whose conmons have died
+ * (`conmon exited prematurely — internal libpod error`). Those orphans
+ * accumulate across runs, drag down the shared podman service, and
+ * eventually trigger the socket cascade. A label filter misses any
+ * container whose create-time label we haven't explicitly set; the
+ * image prefix catches every test artifact unambiguously.
+ *
+ * Safe by construction: production images use the `yaac-` prefix
+ * without `-test-` (e.g. yaac-base, yaac-proxy, yaac-user-<slug>), so
+ * a running real daemon's containers are never matched. See
+ * `src/lib/container/image-builder.ts` — the test suite opts into
+ * `imagePrefix: 'yaac-test'` to get this namespace separation.
  */
-async function pruneTestProxyContainers(): Promise<void> {
+async function pruneTestContainers(): Promise<void> {
   let stdout: string
   try {
     const result = await execFileAsync('podman', [
-      'ps', '-a',
-      '--filter', 'label=yaac.proxy=true',
-      '--format', '{{.Names}}\t{{.Image}}',
+      'ps', '-a', '--format', '{{.Names}}\t{{.Image}}',
     ])
     stdout = result.stdout
   } catch { return /* podman not ready — main setup will probe again */ }
@@ -35,7 +41,7 @@ async function pruneTestProxyContainers(): Promise<void> {
     .split('\n')
     .filter(Boolean)
     .map((line) => line.split('\t'))
-    .filter(([, image]) => image?.includes('yaac-test-proxy'))
+    .filter(([, image]) => image?.includes('yaac-test-'))
     .map(([name]) => name)
     .filter((name): name is string => !!name)
 
@@ -78,9 +84,11 @@ export async function setup(): Promise<void> {
   }
   if (!podmanAvailable) return
 
-  // Reclaim host ports held by leaked test proxies from prior runs before
-  // any test tries to find an available port in the 10255+ range.
-  await pruneTestProxyContainers()
+  // Wipe leaked test containers from prior runs. Reclaims the 10255+ host
+  // ports held by leaked proxies, and flushes orphan mock/session
+  // containers whose conmons died — those orphans hang the podman
+  // service under subsequent test load.
+  await pruneTestContainers()
 
   // Reassign podman lock IDs to prevent deadlocks caused by stale state
   // from previous test runs (containers removed but locks not reclaimed).
@@ -110,5 +118,5 @@ export async function setup(): Promise<void> {
 }
 
 export async function teardown(): Promise<void> {
-  await pruneTestProxyContainers()
+  await pruneTestContainers()
 }

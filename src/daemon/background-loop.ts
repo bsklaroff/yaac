@@ -62,6 +62,12 @@ export async function startBackgroundLoop(deps: BackgroundLoopDeps): Promise<voi
 
   const runTick = async (): Promise<void> => {
     for (const step of steps) {
+      // Bail out of the tick as soon as shutdown signals. A step that's
+      // already in flight still runs to completion — that's the point of
+      // the shutdown's bounded `Promise.race` — but we don't start another
+      // one after abort, which keeps shutdown from piling up podman-bound
+      // work behind a signal the daemon has already seen.
+      if (signal.aborted) return
       try {
         await step()
       } catch (err) {

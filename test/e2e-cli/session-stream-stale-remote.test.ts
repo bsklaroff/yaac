@@ -281,5 +281,8 @@ describe('yaac session stream (container exited + remote HEAD changed)', () => {
       expect(next).not.toBe(prev)
       await probeProxyAccess(next)
     }
-  }, 180_000)
+    // 5 iterations of stop → advance-HEAD → stream → probe can legitimately
+    // take >3 min under the full parallel e2e load, so the budget has
+    // headroom over the observed worst-case ~240s.
+  }, 360_000)
 })

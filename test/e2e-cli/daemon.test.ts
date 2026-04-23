@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
 import fs from 'node:fs/promises'
 import {
   createYaacTestEnv,
   spawnYaacDaemon,
   runYaac,
+  acquireDaemonMutex,
   type YaacTestEnv,
   type SpawnedDaemon,
 } from '@test/helpers/cli'
@@ -11,6 +12,20 @@ import { readLock, daemonLockPath } from '@/shared/lock'
 import { daemonLogPath } from '@/shared/paths'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
+
+// Hold the cross-worker daemon mutex for the whole file: these tests
+// exercise `yaac daemon start`/`stop`/`restart` which spawn detached
+// daemons via the CLI (not spawnYaacDaemon), so there's no per-test
+// hook to wrap. Acquiring at the file level serializes this suite
+// with every other daemon-using test.
+let releaseDaemonMutex: (() => Promise<void>) | null = null
+beforeAll(async () => {
+  releaseDaemonMutex = await acquireDaemonMutex()
+})
+afterAll(async () => {
+  await releaseDaemonMutex?.()
+  releaseDaemonMutex = null
+})
 
 describe('yaac daemon lifecycle (real CLI + real daemon)', () => {
   let testEnv: YaacTestEnv

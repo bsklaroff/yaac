@@ -11,10 +11,11 @@ export default defineConfig({
   test: {
     include: ['test/**/*.test.ts'],
     testTimeout: 120_000,
-    // E2e beforeAll hooks start containers on cold caches, which exceeds the
-    // vitest default of 10s. Match testTimeout so hook-bound container setup
-    // doesn't fail spuriously before the first test runs.
-    hookTimeout: 120_000,
+    // E2e beforeAll/beforeEach hooks start containers on cold caches AND
+    // wait their turn on the cross-worker daemon mutex — with many
+    // workers queued, a waiter can sit well past vitest's 10s default.
+    // Raised to 600s so queued hooks don't false-fail as flakes.
+    hookTimeout: 600_000,
     globalSetup: ['test/global-setup.ts'],
     setupFiles: ['test/setup.ts'],
   },

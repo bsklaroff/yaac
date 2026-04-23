@@ -35,7 +35,7 @@ import {
  * podman-exec relay works against a real yaac session container.
  */
 
-function httpGet(url: string, timeoutMs = 5000): Promise<{ status: number; body: string }> {
+function httpGet(url: string, timeoutMs = 15_000): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const req = http.get(url, (res) => {
       const chunks: Buffer[] = []
@@ -178,7 +178,7 @@ describe('yaac session create honors portForward in yaac-config.json', () => {
       .sort((a, b) => a.split('|')[1].localeCompare(b.split('|')[1]))
       .map((row) => row.split('|')[0])[0]
     expect(containerName).toMatch(/^yaac-repo-demo-/)
-  }, 120_000)
+  }, 180_000)
 
   afterAll(async () => {
     if (daemon) await daemon.stop()

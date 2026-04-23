@@ -217,7 +217,7 @@ describe('yaac session create features (real CLI + real daemon)', () => {
     await expect(podmanRetry([
       'exec', name, 'test', '-f', '/tmp/yaac-prompt',
     ])).rejects.toThrow()
-  }, 90_000)
+  }, 180_000)
 
   it('passes envPassthrough vars to the container', async () => {
     await setupProject('passthrough', {
@@ -227,7 +227,7 @@ describe('yaac session create features (real CLI + real daemon)', () => {
 
     const { stdout } = await podmanRetry(['exec', name, 'env'])
     expect(stdout).toContain('YAAC_TEST_VAR=hello-from-host')
-  }, 90_000)
+  }, 180_000)
 
   it('mounts shared Claude and Codex state in Codex sessions', async () => {
     await setupProject('shared-codex')
@@ -244,7 +244,7 @@ describe('yaac session create features (real CLI + real daemon)', () => {
     await podmanRetry(['exec', name, 'test', '-d', '/home/yaac/.claude'])
     await podmanRetry(['exec', name, 'test', '-f', '/home/yaac/.claude.json'])
     await podmanRetry(['exec', name, 'test', '-d', '/home/yaac/.codex'])
-  }, 90_000)
+  }, 180_000)
 
   it('mounts named cacheVolumes from config', async () => {
     const volName = 'yaac-cache-cache-vol-test-cache'
@@ -263,7 +263,7 @@ describe('yaac session create features (real CLI + real daemon)', () => {
       'exec', name, 'cat', '/tmp/test-cache/marker',
     ])
     expect(stdout.trim()).toBe('hello')
-  }, 90_000)
+  }, 180_000)
 
   it('runs initCommands at session start', async () => {
     await setupProject('init-cmd', {
@@ -288,7 +288,7 @@ describe('yaac session create features (real CLI + real daemon)', () => {
       }
     }
     expect(ran).toBe(true)
-  }, 90_000)
+  }, 180_000)
 
   it('forwards configured host ports and surfaces them in tmux status bar', async () => {
     await setupProject('portfwd', {
@@ -314,7 +314,7 @@ describe('yaac session create features (real CLI + real daemon)', () => {
     expect(match3000).not.toBeNull()
     expect(Number(match8080![1])).toBeGreaterThanOrEqual(29080)
     expect(Number(match3000![1])).toBeGreaterThanOrEqual(24000)
-  }, 90_000)
+  }, 180_000)
 
   it('mounts bindMounts read-only and read-write per config mode', async () => {
     const roDir = path.join(testEnv.scratchDir, 'ro-data')
@@ -353,7 +353,7 @@ describe('yaac session create features (real CLI + real daemon)', () => {
       'exec', name, 'cat', '/mnt/rw-data/new.txt',
     ])
     expect(newContent.trim()).toBe('new-data')
-  }, 90_000)
+  }, 180_000)
 
   it('redirects /workspace/node_modules through .cached-packages and cleans up on delete', async () => {
     // Real Node projects gitignore node_modules; seed the same so
@@ -455,7 +455,7 @@ describe('yaac session create features (real CLI + real daemon)', () => {
     await expect(podmanRetry([
       'exec', name, 'test', '-e', '/workspace/node_modules',
     ])).rejects.toThrow()
-  }, 90_000)
+  }, 180_000)
 
   it('--add-dir mounts read-only, --add-dir-rw mounts read-write', async () => {
     const roDir = path.join(testEnv.scratchDir, 'ro-extra')
@@ -489,5 +489,5 @@ describe('yaac session create features (real CLI + real daemon)', () => {
       'exec', name, 'cat', `/add-dir${rwDir}/new.txt`,
     ])
     expect(newOut.trim()).toBe('new-data')
-  }, 90_000)
+  }, 180_000)
 })

@@ -91,11 +91,15 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     daemonLog(`[daemon] ${signal} — shutting down`)
     abortCtrl.abort()
     if (loopDone) {
-      try {
-        await loopDone
-      } catch (err) {
-        daemonLog(`[daemon] loop exit error: ${String(err)}`)
-      }
+      // Bound the loop drain the same way we bound server.close() below.
+      // Under parallel-test podman pressure, an in-flight prewarm or
+      // reap tick can stack retries for many seconds — long enough to
+      // blow `yaac daemon stop`'s observation window and make the CLI
+      // fall back to "force-removed stale lock".
+      await Promise.race([
+        loopDone.catch((err) => daemonLog(`[daemon] loop exit error: ${String(err)}`)),
+        new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+      ])
     }
     // @hono/node-server wraps a Node http.Server; close() refuses new
     // connections, drains in-flight requests, then fires the callback.
@@ -211,7 +215,11 @@ export async function stopDaemon(): Promise<void> {
     // Process already gone — still need to clear the lock below.
   }
 
-  const deadline = Date.now() + 3000
+  // The daemon's shutdown path is bounded to ~6s worst case (3s loop
+  // drain + 3s server close) under heavy parallel load. Poll with
+  // headroom so a healthy SIGTERM-driven exit isn't misreported as a
+  // "force-removed stale lock".
+  const deadline = Date.now() + 10_000
   while (Date.now() < deadline) {
     const cur = await readLock()
     if (!cur || cur.pid !== existing.pid) {

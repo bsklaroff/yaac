@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 import simpleGit from 'simple-git'
 import { setDataDir, getDataDir, projectDir, repoDir, claudeDir } from '@/lib/project/paths'
 import { cloneRepo } from '@/lib/git'
-import { podman, podmanExecWithRetry } from '@/lib/container/runtime'
+import { podman, podmanExecWithRetry, ensurePodmanSocket, getSocketPath } from '@/lib/container/runtime'
 import type { ProjectMeta } from '@/shared/types'
 import type { ProxyClientConfig } from '@/lib/container/proxy-client'
 
@@ -160,20 +160,28 @@ export async function podmanAvailable(): Promise<boolean> {
   }
 }
 
-let _podmanChecked: boolean | undefined
+let _podmanAlive = false
 
 /**
  * Throws if podman is not available. Use in beforeAll/test bodies
  * so tests fail loudly instead of silently passing.
- * Result is cached for the lifetime of the worker.
+ *
+ * Only a prior success is cached — failures always re-probe and try to
+ * revive a dead `podman system service` before giving up. This prevents
+ * one flaky test that takes out the shared socket from cascading to
+ * every later test in the same worker.
  */
 export async function requirePodman(): Promise<void> {
-  if (_podmanChecked === undefined) {
-    _podmanChecked = await podmanAvailable()
+  if (_podmanAlive) return
+  if (await podmanAvailable()) { _podmanAlive = true; return }
+  const socketPath = getSocketPath()
+  if (socketPath) {
+    try {
+      await ensurePodmanSocket(socketPath, { timeoutMs: 5_000 })
+    } catch { /* fall through to the second probe */ }
+    if (await podmanAvailable()) { _podmanAlive = true; return }
   }
-  if (!_podmanChecked) {
-    throw new Error('Podman is not available. Start it with: podman machine start')
-  }
+  throw new Error('Podman is not available. Start it with: podman machine start')
 }
 
 /**

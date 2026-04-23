@@ -352,7 +352,16 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
   const agentCmd = buildAgentCmd(tool, sessionId, addDirFlags, options.resume === true)
   const toolLabel = tool === 'codex' ? 'Codex' : 'Claude Code'
   emit(`Starting ${toolLabel}...`, options)
-  await containerExec(containerName, `tmux -u new-session -d -s yaac -n ${tool} '${agentCmd}'`)
+  // Open the tmux session with a placeholder keepalive (`sleep infinity`)
+  // instead of the agent directly. If we launched the agent here, a
+  // fast-failing process — common under heavy test-suite load — would
+  // end the session before the set-option calls below could reach it,
+  // and every subsequent `tmux ...` exec would fail with "no such
+  // session: yaac" or "no server running" and burn the 120s hook
+  // timeout. Once the tmux config below is in place, we respawn-window
+  // to swap the keepalive for the real agent. The placeholder never
+  // reaches the user — they attach after setup completes.
+  await containerExec(containerName, `tmux -u new-session -d -s yaac -n ${tool} 'sleep infinity'`)
 
   // Run init commands in a background tmux window (parallel to Claude Code)
   if (config.initCommands?.length) {
@@ -385,6 +394,12 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
     await containerExec(containerName, `tmux set-option -t yaac status-right '${shellEscape(statusRight)}'`)
   }
   await containerExec(containerName, 'tmux bind-key k kill-server')
+
+  // Now that the window's tmux options are settled, replace the keepalive
+  // `sleep infinity` with the real agent. respawn-window -k kills the
+  // placeholder and starts the agent in the same window, preserving the
+  // tmux state we just built.
+  await containerExec(containerName, `tmux respawn-window -k -t yaac:${tool} '${agentCmd}'`)
 }
 
 /**

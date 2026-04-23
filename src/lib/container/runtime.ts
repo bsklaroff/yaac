@@ -20,6 +20,9 @@ const TRANSIENT_EXEC_PATTERNS = [
   'OCI runtime error',
   'error getting exit code',
   'connection refused', // podman socket briefly unavailable during renumber etc.
+  'econnrefused', // dockerode / node net surfaces refusal as ECONNREFUSED
+  'econnreset', // podman service reset a live connection (load / busy)
+  'socket hang up', // podman service closed the connection before responding
   'resource temporarily unavailable', // EAGAIN under PID/resource pressure
   'exec died event', // "exec died event for session ... not found" — conmon/event log race
   'unable to find event', // sibling of "exec died event" — podman event retrieval race
@@ -28,6 +31,27 @@ const TRANSIENT_EXEC_PATTERNS = [
 export function isTransientPodmanError(stderr: string): boolean {
   const lower = stderr.toLowerCase()
   return TRANSIENT_EXEC_PATTERNS.some((p) => lower.includes(p.toLowerCase()))
+}
+
+function isConnectionRefused(msg: string): boolean {
+  const lower = msg.toLowerCase()
+  return lower.includes('connection refused') || lower.includes('econnrefused')
+}
+
+/**
+ * If the retry-worthy error is "podman socket is refusing connections," the
+ * service is dead and plain exponential backoff won't help — nothing
+ * supervises `podman system service` in rootless container envs. Try to
+ * revive it in-band so the next attempt lands on a live service. Swallows
+ * revive errors; the outer retry loop still decides whether to keep going.
+ */
+async function reviveSocketIfRefused(stderr: string): Promise<void> {
+  if (!isConnectionRefused(stderr)) return
+  const socketPath = getSocketPath()
+  if (!socketPath) return
+  try {
+    await ensurePodmanSocket(socketPath, { timeoutMs: 3_000 })
+  } catch { /* next attempt will surface the failure */ }
 }
 
 export interface PodmanExecOptions {
@@ -56,6 +80,7 @@ export async function podmanExecWithRetry(
     } catch (err: unknown) {
       const stderr = (err as { stderr?: string })?.stderr ?? ''
       if (attempt < maxAttempts && isTransientPodmanError(stderr)) {
+        await reviveSocketIfRefused(stderr)
         const delay = Math.min(baseDelay * 2 ** (attempt - 1), 3200)
         await new Promise((r) => setTimeout(r, delay))
         continue
@@ -90,6 +115,7 @@ export async function shellPodmanWithRetry(
       const stderr = ((err as { stderr?: Buffer | string })?.stderr ?? '').toString()
         + ((err as Error)?.message ?? '')
       if (attempt < maxAttempts && isTransientPodmanError(stderr)) {
+        await reviveSocketIfRefused(stderr)
         const delay = Math.min(baseDelay * 2 ** (attempt - 1), 3200)
         await new Promise((r) => setTimeout(r, delay))
         continue
@@ -108,6 +134,49 @@ export function getSocketPath(): string | undefined {
 
 const socketPath = getSocketPath()
 export const podman = socketPath ? new Docker({ socketPath }) : new Docker()
+
+/**
+ * Wrap `podman.modem.dial` so every dockerode HTTP call auto-retries on
+ * transient podman socket errors. Dockerode routes listContainers /
+ * getContainer / inspect / remove etc. through `modem.dial`, so hooking
+ * this one function covers the whole surface without touching 40+ call
+ * sites.
+ *
+ * Two distinct failure shapes are folded in here:
+ *   - ECONNREFUSED: podman service is dead. Try to revive the socket
+ *     before the next attempt.
+ *   - ECONNRESET / "socket hang up": service is alive but busy/overloaded
+ *     (common under heavy parallel test load). Just retry — reviving
+ *     would spawn a second `podman system service` racing the live one.
+ *
+ * Up to 3 attempts with no backoff; the cheapest retry is one that lands
+ * on a service that's already recovered.
+ */
+type DialCallback = (err: Error | null, data: unknown) => void
+type DialFn = (options: unknown, callback: DialCallback) => void
+{
+  const modem = (podman as unknown as { modem?: { dial?: DialFn } }).modem
+  if (modem && typeof modem.dial === 'function') {
+    const originalDial: DialFn = modem.dial.bind(modem)
+    const maxAttempts = 3
+    modem.dial = function dialWithRetry(options, callback): void {
+      let attempt = 0
+      const tryOnce = (): void => {
+        attempt += 1
+        originalDial(options, (err, data) => {
+          if (!err || attempt >= maxAttempts) { callback(err, data); return }
+          const msg = err.message ?? String(err)
+          if (!isTransientPodmanError(msg)) { callback(err, data); return }
+          const prelude = isConnectionRefused(msg)
+            ? reviveSocketIfRefused(msg)
+            : Promise.resolve()
+          void prelude.finally(tryOnce)
+        })
+      }
+      tryOnce()
+    }
+  }
+}
 
 /**
  * Create and start a container with retries on transient OCI/podman errors
@@ -137,6 +206,7 @@ export async function createAndStartContainerWithRetry(
         try { await podman.getContainer(opts.name).remove({ force: true }) } catch { /* ok */ }
       }
       if (attempt >= maxAttempts || !isTransientPodmanError(msg)) throw err
+      await reviveSocketIfRefused(msg)
       const delay = Math.min(baseDelay * 2 ** (attempt - 1), 3200)
       await new Promise((r) => setTimeout(r, delay))
     }

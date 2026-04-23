@@ -213,5 +213,5 @@ describe('yaac session create (mocked remotes, happy path)', () => {
     expect(messagesCall).toBeDefined()
     expect(messagesCall!.headers['x-api-key']).toBe('sk-ant-fake-real-key')
     expect(messagesCall!.body).toContain('claude-sonnet-4-6')
-  }, 90_000)
+  }, 180_000)
 })

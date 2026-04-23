@@ -325,7 +325,10 @@ describe('yaac nested containers: cross-session image cache', () => {
     )
     expect(delRes.status).toBe(204)
 
-    // Shared cache volume must be gone after project removal.
-    await waitForVolumeGone(sharedCacheVolume, 30_000)
+    // Shared cache volume must be gone after project removal. Podman's
+    // volume reap happens after the last referencing container is
+    // removed, and both of those operations slow substantially under
+    // the parallel e2e + e2e-cli load.
+    await waitForVolumeGone(sharedCacheVolume, 60_000)
   }, 600_000)
 })
