@@ -35,6 +35,66 @@ export async function writeLock(lock: DaemonLock): Promise<void> {
   await fs.rename(tmp, p)
 }
 
+/**
+ * Atomically acquire the daemon lock. POSIX `O_EXCL` guarantees only one
+ * process wins the create, even when two `yaac daemon run` invocations race
+ * past the pre-bind fast-path check in runDaemon and both try to take the
+ * lock at the same moment.
+ *
+ * Returns `{ acquired: true }` when this process now owns the lock — the
+ * file has been written with `lock`'s contents and mode 0600.
+ *
+ * Returns `{ acquired: false, existing }` when another live daemon holds
+ * the lock. The caller is responsible for tearing down any resources it
+ * allocated (e.g. a bound server) and exiting idempotently.
+ *
+ * A stale lock (dead pid, or `/health` unresponsive) is reclaimed: the
+ * file is unlinked only if it still matches the stale lock we observed —
+ * a pid+startedAt compare-and-delete — so a fresh lock that raced into
+ * place between our read and unlink isn't clobbered. The create is then
+ * retried.
+ */
+export async function acquireLock(
+  lock: DaemonLock,
+): Promise<{ acquired: true } | { acquired: false; existing: DaemonLock }> {
+  const p = daemonLockPath()
+  await fs.mkdir(path.dirname(p), { recursive: true })
+  const payload = JSON.stringify(lock)
+  const maxAttempts = 10
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      const h = await fs.open(p, 'wx', 0o600)
+      try {
+        await h.writeFile(payload)
+      } finally {
+        await h.close()
+      }
+      return { acquired: true }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+    }
+    const existing = await readLock()
+    if (existing && await isLockLive(existing)) {
+      return { acquired: false, existing }
+    }
+    // Stale lock (or garbage mid-write). Compare-and-delete so we don't
+    // clobber a fresh lock that landed between readLock() and unlink().
+    // A null `existing` here means readLock() couldn't parse the file —
+    // unlink unconditionally in that case so we can retry.
+    try {
+      const cur = await readLock()
+      const stillStale = !existing || !cur
+        || (cur.pid === existing.pid && cur.startedAt === existing.startedAt)
+      if (stillStale) {
+        await fs.unlink(p)
+      }
+    } catch {
+      // already gone — retry
+    }
+  }
+  throw new Error('failed to acquire daemon lock after retries')
+}
+
 export async function removeLock(): Promise<void> {
   try {
     await fs.unlink(daemonLockPath())

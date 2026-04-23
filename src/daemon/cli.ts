@@ -8,11 +8,11 @@ import { serve, type ServerType } from '@hono/node-server'
 import { buildApp } from '@/daemon/server'
 import { readBuildId } from '@/shared/build-id'
 import {
+  acquireLock,
   daemonLockPath,
   isLockLive,
   readLock,
   removeLock,
-  writeLock,
   type DaemonLock,
 } from '@/shared/lock'
 import { ensureDataDir } from '@/lib/project/paths'
@@ -44,9 +44,13 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
   // bind a port or write a lock file.
   const buildId = await readBuildId()
 
-  const existing = await readLock()
-  if (existing && await isLockLive(existing)) {
-    daemonLog(`[daemon] already running pid=${existing.pid} port=${existing.port}`)
+  // Fast path: if a live daemon already holds the lock, exit idempotently
+  // without binding a port. This is only a best-effort check — the
+  // acquireLock call below is the authoritative race-safe guard for two
+  // `daemon run` invocations starting concurrently.
+  const preExisting = await readLock()
+  if (preExisting && await isLockLive(preExisting)) {
+    daemonLog(`[daemon] already running pid=${preExisting.pid} port=${preExisting.port}`)
     return
   }
 
@@ -62,7 +66,16 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     },
   )
 
-  await writeLock({ pid: process.pid, port, secret, startedAt: Date.now(), buildId })
+  // Race-safe acquire via O_EXCL. Another daemon may have slipped past
+  // the pre-bind fast-path check above; atomic create ensures exactly one
+  // winner. Loser closes its server and exits 0 so the existing daemon
+  // stays the source of truth.
+  const outcome = await acquireLock({ pid: process.pid, port, secret, startedAt: Date.now(), buildId })
+  if (!outcome.acquired) {
+    daemonLog(`[daemon] already running pid=${outcome.existing.pid} port=${outcome.existing.port}`)
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    return
+  }
   daemonLog(`[daemon] listening on 127.0.0.1:${port} lock=${daemonLockPath()}`)
 
   // Register signal handlers BEFORE the async startup steps below. Node's
