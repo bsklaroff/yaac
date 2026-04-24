@@ -108,7 +108,7 @@ export function buildAgentCmd(
     ].filter(Boolean).join(' ')
   }
   return [
-    'claude --dangerously-skip-permissions',
+    'CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions',
     resume ? `--resume ${sessionId}` : `--session-id ${sessionId}`,
     addDirFlags,
   ].filter(Boolean).join(' ')
