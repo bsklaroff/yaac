@@ -90,14 +90,6 @@ export async function setup(): Promise<void> {
   // service under subsequent test load.
   await pruneTestContainers()
 
-  // Reassign podman lock IDs to prevent deadlocks caused by stale state
-  // from previous test runs (containers removed but locks not reclaimed).
-  try {
-    await execFileAsync('podman', ['system', 'renumber'])
-  } catch {
-    // best-effort — may fail if containers are still running
-  }
-
   // --- Base image (Dockerfile.default) ---
   const baseDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
   const baseHash = await fileHash(baseDockerfile)
