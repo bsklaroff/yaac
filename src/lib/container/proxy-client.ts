@@ -296,106 +296,86 @@ export class ProxyClient {
     authSecret: string
     proxyIp: string
   } | null> {
-    // Diagnostic logging: when the slow path runs, record exactly why each
-    // candidate was rejected. If this returns null while a healthy proxy
-    // exists, the subsequent start() will force-remove that proxy and
-    // every existing session loses network access (session containers
-    // have HTTPS_PROXY baked in at create time pointing at the old IP).
-    // These logs let us tell post-hoc which branch fired in the field.
-    let containers
+    // Look up the proxy by its deterministic name
+    // (`containerNameFor(hash)` is a pure function of hash + network).
+    // A direct `getContainer(name).inspect()` — single object, not an
+    // enumeration — sidesteps the podman `listContainers` race where a
+    // sibling container being removed mid-call makes the whole list fail
+    // with "container not known" (see containers/storage#1864). That race
+    // used to drop us into start()'s force-remove path, destroying a
+    // healthy running proxy and breaking every session's network access.
+    // If `inspect()` here fails, it fails for a reason specific to the
+    // target container — not because of unrelated concurrent churn.
+    const name = this.containerNameFor(hash)
+
+    let info
     try {
-      containers = await podman.listContainers({
-        all: true,
-        filters: { label: ['yaac.proxy=true'] },
-      })
+      info = await podman.getContainer(name).inspect()
     } catch (err) {
-      daemonLog(`[daemon] proxy-discover: listContainers threw: ${String(err)}`)
+      daemonLog(`[daemon] proxy-discover: ${name} inspect failed (likely absent): ${String(err)}`)
       return null
     }
-    daemonLog(
-      `[daemon] proxy-discover: hash=${hash.slice(0, 8)} network=${this.config.network} `
-      + `candidates=${containers.length}`,
-    )
 
-    for (const c of containers) {
-      const name = c.Names?.[0]?.replace(/^\//, '') ?? c.Id
-      const theirHash = c.Labels?.['yaac.proxy.image-hash']
-      if (theirHash !== hash) {
-        daemonLog(
-          `[daemon] proxy-discover: skip ${name}: hash=${String(theirHash).slice(0, 8)} `
-          + `!= ${hash.slice(0, 8)}`,
-        )
-        continue
-      }
-      if (c.State !== 'running') {
-        daemonLog(`[daemon] proxy-discover: skip ${name}: state=${c.State}`)
-        continue
-      }
-
-      try {
-        const info = await podman.getContainer(name).inspect()
-
-        // Recover host port from port bindings
-        const ports = info.NetworkSettings?.Ports as
-          Record<string, Array<{ HostPort: string }>> | undefined
-        const bindings = ports?.[`${PROXY_CONTAINER_PORT}/tcp`]
-        const hostPort = bindings?.[0]?.HostPort
-        if (!hostPort) {
-          daemonLog(`[daemon] proxy-discover: skip ${name}: no host port binding`)
-          continue
-        }
-
-        // Recover auth secret from container env
-        const envArr: string[] = info.Config?.Env ?? []
-        const secretEntry = envArr.find((e) => e.startsWith('PROXY_AUTH_SECRET='))
-        if (!secretEntry) {
-          daemonLog(`[daemon] proxy-discover: skip ${name}: no PROXY_AUTH_SECRET env`)
-          continue
-        }
-        const authSecret = secretEntry.slice('PROXY_AUTH_SECRET='.length)
-        if (!authSecret) {
-          daemonLog(`[daemon] proxy-discover: skip ${name}: empty PROXY_AUTH_SECRET`)
-          continue
-        }
-
-        // Recover proxy IP on session network
-        const networks = info.NetworkSettings?.Networks as
-          Record<string, { IPAddress: string }> | undefined
-        const proxyIp = networks?.[this.config.network]?.IPAddress
-        if (!proxyIp) {
-          const attached = networks ? Object.keys(networks).join(',') : '(none)'
-          daemonLog(
-            `[daemon] proxy-discover: skip ${name}: no IP on network `
-            + `${this.config.network} (attached: ${attached})`,
-          )
-          continue
-        }
-
-        // Verify health
-        let res: Response
-        try {
-          res = await fetch(`http://127.0.0.1:${hostPort}/healthz`)
-        } catch (err) {
-          daemonLog(
-            `[daemon] proxy-discover: skip ${name}: /healthz fetch failed: ${String(err)}`,
-          )
-          continue
-        }
-        if (!res.ok) {
-          daemonLog(`[daemon] proxy-discover: skip ${name}: /healthz status=${res.status}`)
-          continue
-        }
-
-        daemonLog(`[daemon] proxy-discover: adopted ${name} ip=${proxyIp} port=${hostPort}`)
-        return { containerName: name, hostPort, authSecret, proxyIp }
-      } catch (err) {
-        daemonLog(`[daemon] proxy-discover: skip ${name}: inspect/adopt threw: ${String(err)}`)
-        continue
-      }
+    // Defense in depth: verify the container is actually ours and current.
+    // Name includes the hash, so mismatches here would be a podman or
+    // disk-state anomaly rather than normal operation.
+    if (info.Config?.Labels?.['yaac.proxy.image-hash'] !== hash) {
+      daemonLog(
+        `[daemon] proxy-discover: ${name} has mismatched image-hash label — ignoring`,
+      )
+      return null
+    }
+    if (!info.State?.Running) {
+      daemonLog(`[daemon] proxy-discover: ${name} state=${info.State?.Status ?? '?'} (not running)`)
+      return null
     }
 
-    daemonLog('[daemon] proxy-discover: no adoptable proxy found — will start() a new one')
-    return null
+    // Recover host port from port bindings
+    const ports = info.NetworkSettings?.Ports as
+      Record<string, Array<{ HostPort: string }>> | undefined
+    const hostPort = ports?.[`${PROXY_CONTAINER_PORT}/tcp`]?.[0]?.HostPort
+    if (!hostPort) {
+      daemonLog(`[daemon] proxy-discover: ${name}: no host port binding`)
+      return null
+    }
+
+    // Recover auth secret from container env
+    const envArr: string[] = info.Config?.Env ?? []
+    const secretEntry = envArr.find((e) => e.startsWith('PROXY_AUTH_SECRET='))
+    const authSecret = secretEntry?.slice('PROXY_AUTH_SECRET='.length)
+    if (!authSecret) {
+      daemonLog(`[daemon] proxy-discover: ${name}: missing PROXY_AUTH_SECRET env`)
+      return null
+    }
+
+    // Recover proxy IP on session network
+    const networks = info.NetworkSettings?.Networks as
+      Record<string, { IPAddress: string }> | undefined
+    const proxyIp = networks?.[this.config.network]?.IPAddress
+    if (!proxyIp) {
+      const attached = networks ? Object.keys(networks).join(',') : '(none)'
+      daemonLog(
+        `[daemon] proxy-discover: ${name}: no IP on network `
+        + `${this.config.network} (attached: ${attached})`,
+      )
+      return null
+    }
+
+    // Verify health
+    let res: Response
+    try {
+      res = await fetch(`http://127.0.0.1:${hostPort}/healthz`)
+    } catch (err) {
+      daemonLog(`[daemon] proxy-discover: ${name}: /healthz fetch failed: ${String(err)}`)
+      return null
+    }
+    if (!res.ok) {
+      daemonLog(`[daemon] proxy-discover: ${name}: /healthz status=${res.status}`)
+      return null
+    }
+
+    daemonLog(`[daemon] proxy-discover: adopted ${name} ip=${proxyIp} port=${hostPort}`)
+    return { containerName: name, hostPort, authSecret, proxyIp }
   }
 
   private async ensureProxyImage(taggedImage: string): Promise<void> {

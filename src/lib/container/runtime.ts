@@ -22,10 +22,25 @@ const TRANSIENT_EXEC_PATTERNS = [
   'connection refused', // podman socket briefly unavailable during renumber etc.
   'econnrefused', // dockerode / node net surfaces refusal as ECONNREFUSED
   'econnreset', // podman service reset a live connection (load / busy)
+  'epipe', // podman service hung up mid-write (load / busy) — sibling of econnreset
   'socket hang up', // podman service closed the connection before responding
   'resource temporarily unavailable', // EAGAIN under PID/resource pressure
   'exec died event', // "exec died event for session ... not found" — conmon/event log race
   'unable to find event', // sibling of "exec died event" — podman event retrieval race
+  // Podman's listContainers enumerates IDs then inspects each; if another
+  // container is removed between the two steps, the whole call 500s with
+  // this message. Observed in daemon-restart-during-session-cleanup
+  // scenarios where detached `podman rm` scripts race the new daemon's
+  // first tick. Retry puts us past the race window.
+  'container not known',
+  // Rootless user-namespace pause-process race on concurrent createContainer.
+  // Kernel's "one-shot" rule for /proc/PID/uid_map (user_namespaces(7)) rejects
+  // the second of two workers racing to write the map, and crun surfaces it as
+  //   "crun: write file `/proc/NNN/uid_map`: Operation not permitted"
+  // Retry after the first worker finishes; the pause process is primed and
+  // subsequent creates only join it. Same race shape for gid_map.
+  'uid_map',
+  'gid_map',
 ]
 
 export function isTransientPodmanError(stderr: string): boolean {
