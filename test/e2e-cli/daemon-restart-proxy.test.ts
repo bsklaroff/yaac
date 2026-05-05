@@ -353,11 +353,24 @@ async function expectReachable(fromContainer: string, proxyIp: string): Promise<
   // Use the proxy's /healthz endpoint on the internal network — same path
   // a session container's HTTPS_PROXY would tunnel to. We're checking the
   // network reachability, not credentialed forwarding.
-  const { stdout } = await podmanRetry([
-    'exec', fromContainer, 'sh', '-c',
-    `curl -sf --connect-timeout 5 http://${proxyIp}:10255/healthz || echo UNREACHABLE`,
-  ], { timeout: 15_000 })
-  expect(stdout.trim()).toBe('ok')
+  // --noproxy '*' bypasses any http_proxy/HTTP_PROXY env that podman
+  // inherited from the host (e.g. when running tests inside a yaac dev
+  // container behind an egress proxy). Without it, curl tunnels through
+  // the egress proxy and gets 403'd on the internal-network IP.
+  // Retry: the proxy container may be marked Running before its HTTP
+  // listener is up (it generates a CA on first start).
+  const deadline = Date.now() + 20_000
+  let lastStdout = ''
+  while (Date.now() < deadline) {
+    const { stdout } = await podmanRetry([
+      'exec', fromContainer, 'sh', '-c',
+      `curl -sf --noproxy '*' --connect-timeout 2 http://${proxyIp}:10255/healthz || echo UNREACHABLE`,
+    ], { timeout: 10_000 })
+    lastStdout = stdout.trim()
+    if (lastStdout === 'ok') return
+    await new Promise((r) => setTimeout(r, 500))
+  }
+  expect(lastStdout).toBe('ok')
 }
 
 async function killDaemonByLock(): Promise<void> {
