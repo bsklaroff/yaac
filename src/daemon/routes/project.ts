@@ -5,7 +5,7 @@ import { listProjects } from '@/lib/project/list'
 import { getProjectDetail, resolveProjectConfigWithSource } from '@/lib/project/detail'
 import { addProject } from '@/lib/project/add'
 import { removeProject } from '@/lib/project/remove'
-import { writeConfigOverride, removeConfigOverride } from '@/lib/project/config-override'
+import { writeProjectConfig, removeProjectConfig } from '@/lib/project/local-config'
 
 export const projectApp = new Hono()
   .get('/list', async (c) => c.json(await listProjects()))
@@ -31,11 +31,11 @@ export const projectApp = new Hono()
     )),
     async (c) => {
       const { config } = c.req.valid('json')
-      const saved = await writeConfigOverride(c.req.param('slug'), config)
+      const saved = await writeProjectConfig(c.req.param('slug'), config)
       return c.json({ config: saved })
     },
   )
-  .delete('/:slug/config-override', async (c) => {
-    await removeConfigOverride(c.req.param('slug'))
+  .delete('/:slug/config', async (c) => {
+    await removeProjectConfig(c.req.param('slug'))
     return c.body(null, 204)
   })

@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import { configOverrideDir, getProjectsDir } from '@/lib/project/paths'
-import { writeConfigOverride, removeConfigOverride } from '@/lib/project/config-override'
+import { projectConfigDir, getProjectsDir } from '@/lib/project/paths'
+import { writeProjectConfig, removeProjectConfig } from '@/lib/project/local-config'
 import type { ProjectMeta } from '@/shared/types'
 
 async function writeProject(slug: string): Promise<void> {
@@ -17,7 +17,7 @@ async function writeProject(slug: string): Promise<void> {
   await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(meta))
 }
 
-describe('writeConfigOverride', () => {
+describe('writeProjectConfig', () => {
   let tmpDir: string
 
   beforeEach(async () => {
@@ -29,17 +29,17 @@ describe('writeConfigOverride', () => {
   })
 
   it('throws NOT_FOUND when the project does not exist', async () => {
-    await expect(writeConfigOverride('missing', {})).rejects.toMatchObject({
+    await expect(writeProjectConfig('missing', {})).rejects.toMatchObject({
       code: 'NOT_FOUND',
     })
   })
 
   it('writes the parsed config to disk and returns it', async () => {
     await writeProject('demo')
-    const saved = await writeConfigOverride('demo', { envPassthrough: ['A'] })
+    const saved = await writeProjectConfig('demo', { envPassthrough: ['A'] })
     expect(saved).toEqual({ envPassthrough: ['A'] })
     const raw = await fs.readFile(
-      path.join(configOverrideDir('demo'), 'yaac-config.json'),
+      path.join(projectConfigDir('demo'), 'yaac-config.json'),
       'utf8',
     )
     expect(JSON.parse(raw)).toEqual({ envPassthrough: ['A'] })
@@ -47,12 +47,12 @@ describe('writeConfigOverride', () => {
 
   it('throws VALIDATION for malformed config', async () => {
     await writeProject('demo')
-    await expect(writeConfigOverride('demo', { envPassthrough: 'not-array' }))
+    await expect(writeProjectConfig('demo', { envPassthrough: 'not-array' }))
       .rejects.toMatchObject({ code: 'VALIDATION' })
   })
 })
 
-describe('removeConfigOverride', () => {
+describe('removeProjectConfig', () => {
   let tmpDir: string
 
   beforeEach(async () => {
@@ -64,20 +64,20 @@ describe('removeConfigOverride', () => {
   })
 
   it('throws NOT_FOUND when the project does not exist', async () => {
-    await expect(removeConfigOverride('missing')).rejects.toMatchObject({
+    await expect(removeProjectConfig('missing')).rejects.toMatchObject({
       code: 'NOT_FOUND',
     })
   })
 
-  it('removes an existing override directory', async () => {
+  it('removes an existing config directory', async () => {
     await writeProject('demo')
-    await writeConfigOverride('demo', { envPassthrough: ['B'] })
-    await removeConfigOverride('demo')
-    await expect(fs.access(configOverrideDir('demo'))).rejects.toThrow()
+    await writeProjectConfig('demo', { envPassthrough: ['B'] })
+    await removeProjectConfig('demo')
+    await expect(fs.access(projectConfigDir('demo'))).rejects.toThrow()
   })
 
-  it('is a no-op when no override exists', async () => {
+  it('is a no-op when no config dir exists', async () => {
     await writeProject('demo')
-    await removeConfigOverride('demo')
+    await removeProjectConfig('demo')
   })
 })

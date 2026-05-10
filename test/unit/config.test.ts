@@ -661,53 +661,36 @@ describe('resolveProjectConfig', () => {
     await fs.rm(dataDir, { recursive: true, force: true })
   })
 
-  it('returns override config when present in config-override dir', async () => {
-    await fs.mkdir(path.join(dataDir, 'projects', slug, 'config-override'), { recursive: true })
+  it('returns config when present in the per-project config dir', async () => {
+    await fs.mkdir(path.join(dataDir, 'projects', slug, 'config'), { recursive: true })
     await fs.writeFile(
-      path.join(dataDir, 'projects', slug, 'config-override', 'yaac-config.json'),
-      JSON.stringify({ initCommands: ['echo override'] }),
-    )
-    await fs.writeFile(
-      path.join(dataDir, 'projects', slug, 'repo', 'yaac-config.json'),
-      JSON.stringify({ initCommands: ['echo repo'] }),
+      path.join(dataDir, 'projects', slug, 'config', 'yaac-config.json'),
+      JSON.stringify({ initCommands: ['echo local'] }),
     )
     const result = await resolveProjectConfig(slug)
-    expect(result).toEqual({ initCommands: ['echo override'] })
+    expect(result).toEqual({ initCommands: ['echo local'] })
   })
 
-  it('falls back to repo config when no override exists', async () => {
+  it('returns null when no local config exists', async () => {
+    const result = await resolveProjectConfig(slug)
+    expect(result).toBeNull()
+  })
+
+  it('ignores yaac-config.json checked into the cloned repo', async () => {
+    // Regression guard: previously the repo working tree was a config
+    // source. After the rename, only the per-project config dir is read.
     await fs.writeFile(
       path.join(dataDir, 'projects', slug, 'repo', 'yaac-config.json'),
       JSON.stringify({ envPassthrough: ['FOO'] }),
     )
     const result = await resolveProjectConfig(slug)
-    expect(result).toEqual({ envPassthrough: ['FOO'] })
-  })
-
-  it('returns null when neither config exists', async () => {
-    const result = await resolveProjectConfig(slug)
     expect(result).toBeNull()
   })
 
-  it('fully replaces repo config (no merging)', async () => {
-    await fs.mkdir(path.join(dataDir, 'projects', slug, 'config-override'), { recursive: true })
+  it('validates the local config file', async () => {
+    await fs.mkdir(path.join(dataDir, 'projects', slug, 'config'), { recursive: true })
     await fs.writeFile(
-      path.join(dataDir, 'projects', slug, 'config-override', 'yaac-config.json'),
-      JSON.stringify({ initCommands: ['echo override'] }),
-    )
-    await fs.writeFile(
-      path.join(dataDir, 'projects', slug, 'repo', 'yaac-config.json'),
-      JSON.stringify({ envPassthrough: ['FOO'], initCommands: ['echo repo'] }),
-    )
-    const result = await resolveProjectConfig(slug)
-    expect(result).toEqual({ initCommands: ['echo override'] })
-    expect(result?.envPassthrough).toBeUndefined()
-  })
-
-  it('validates override config the same way', async () => {
-    await fs.mkdir(path.join(dataDir, 'projects', slug, 'config-override'), { recursive: true })
-    await fs.writeFile(
-      path.join(dataDir, 'projects', slug, 'config-override', 'yaac-config.json'),
+      path.join(dataDir, 'projects', slug, 'config', 'yaac-config.json'),
       JSON.stringify({ envPassthrough: 'not-an-array' }),
     )
     await expect(resolveProjectConfig(slug)).rejects.toThrow('envPassthrough must be a string array')

@@ -1,9 +1,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { getDataDir, projectDir, configOverrideDir, repoDir } from '@/lib/project/paths'
+import { getDataDir, projectDir, projectConfigDir } from '@/lib/project/paths'
 import { podman } from '@/lib/container/runtime'
-import { loadProjectConfig, loadProjectConfigFromRef } from '@/lib/project/config'
-import { getDefaultBranch } from '@/lib/git'
+import { loadProjectConfig } from '@/lib/project/config'
 import { DaemonError } from '@/daemon/errors'
 import type { ProjectMeta, YaacConfig } from '@/shared/types'
 
@@ -13,12 +12,10 @@ export interface ProjectDetail {
   addedAt: string
   sessionCount: number
   config: YaacConfig | null
-  configSource: 'repo' | 'override' | null
 }
 
-export interface ProjectConfigWithSource {
+export interface ProjectConfigResult {
   config: YaacConfig | null
-  source: 'repo' | 'override' | null
 }
 
 async function loadProjectMeta(slug: string): Promise<ProjectMeta> {
@@ -33,28 +30,13 @@ async function loadProjectMeta(slug: string): Promise<ProjectMeta> {
 }
 
 /**
- * Same resolution order as `resolveProjectConfig`, but also records which
- * layer the returned config came from so callers can distinguish a repo-level
- * config from a user-supplied override.
+ * Resolve the project's config from the per-machine config directory.
+ * Mirrors `resolveProjectConfig` but throws NOT_FOUND when the project
+ * itself is unknown (the daemon route relies on this).
  */
-export async function resolveProjectConfigWithSource(slug: string): Promise<ProjectConfigWithSource> {
+export async function resolveProjectConfigWithSource(slug: string): Promise<ProjectConfigResult> {
   await loadProjectMeta(slug)
-
-  const override = await loadProjectConfig(configOverrideDir(slug))
-  if (override) return { config: override, source: 'override' }
-
-  const repo = repoDir(slug)
-  try {
-    const defaultBranch = await getDefaultBranch(repo)
-    const fromRef = await loadProjectConfigFromRef(repo, `origin/${defaultBranch}`)
-    if (fromRef) return { config: fromRef, source: 'repo' }
-  } catch {
-    // git not available or repo not initialized — fall through to filesystem
-  }
-
-  const fromDisk = await loadProjectConfig(repo)
-  if (fromDisk) return { config: fromDisk, source: 'repo' }
-  return { config: null, source: null }
+  return { config: await loadProjectConfig(projectConfigDir(slug)) }
 }
 
 async function countSessionsForProject(slug: string): Promise<number> {
@@ -81,6 +63,5 @@ export async function getProjectDetail(slug: string): Promise<ProjectDetail> {
     addedAt: meta.addedAt,
     sessionCount,
     config: configResult.config,
-    configSource: configResult.source,
   }
 }

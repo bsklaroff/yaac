@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 import { buildApp } from '@/daemon/server'
-import { configOverrideDir, getProjectsDir, projectDir, claudeDir, codexDir } from '@/lib/project/paths'
+import { projectConfigDir, getProjectsDir, projectDir, claudeDir, codexDir } from '@/lib/project/paths'
 import { addToken, loadCredentials } from '@/lib/project/credentials'
 import {
   loadClaudeCredentialsFile,
@@ -148,24 +148,24 @@ describe('write routes', () => {
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ config: { envPassthrough: ['X'] } })
       const raw = await fs.readFile(
-        path.join(configOverrideDir('demo'), 'yaac-config.json'),
+        path.join(projectConfigDir('demo'), 'yaac-config.json'),
         'utf8',
       )
       expect(JSON.parse(raw)).toEqual({ envPassthrough: ['X'] })
     })
   })
 
-  describe('DELETE /project/:slug/config-override', () => {
+  describe('DELETE /project/:slug/config', () => {
     it('returns 204 when the project exists', async () => {
       await writeProject('demo')
       const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.project[':slug']['config-override'].$delete({ param: { slug: 'demo' } })
+      const res = await client.project[':slug'].config.$delete({ param: { slug: 'demo' } })
       expect(res.status).toBe(204)
     })
 
     it('returns 404 for an unknown project', async () => {
       const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.project[':slug']['config-override'].$delete({ param: { slug: 'nope' } })
+      const res = await client.project[':slug'].config.$delete({ param: { slug: 'nope' } })
       expect(res.status).toBe(404)
     })
   })

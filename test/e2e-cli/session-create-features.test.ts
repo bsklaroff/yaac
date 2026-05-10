@@ -81,9 +81,6 @@ describe('yaac session create features (real CLI + real daemon)', () => {
       'README.md': '# demo\n',
       ...(opts.files ?? {}),
     }
-    if (opts.yaacConfig) {
-      files['yaac-config.json'] = JSON.stringify(opts.yaacConfig, null, 2) + '\n'
-    }
     await seedMockGitRepo(mockGit!, slug, { files })
 
     const projectPath = path.join(testEnv.dataDir, 'projects', slug)
@@ -97,6 +94,15 @@ describe('yaac session create features (real CLI + real daemon)', () => {
       remoteUrl: fakeRemote,
       addedAt: new Date().toISOString(),
     }) + '\n')
+
+    if (opts.yaacConfig) {
+      const configDir = path.join(projectPath, 'config')
+      await fs.mkdir(configDir, { recursive: true })
+      await fs.writeFile(
+        path.join(configDir, 'yaac-config.json'),
+        JSON.stringify(opts.yaacConfig, null, 2) + '\n',
+      )
+    }
   }
 
   async function findContainerName(slug: string): Promise<string> {

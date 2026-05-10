@@ -74,10 +74,8 @@ describe('yaac session create honors portForward in yaac-config.json', () => {
     mockLLM = await startMockLLM(networkName)
     mockGit = await startMockGit(networkName)
 
-    // Commit the portForward entries into the bare repo so
-    // `resolveProjectConfig` picks them up from origin/main. 20000+ host
-    // port range avoids collisions with the 19xxx ports used by
-    // test/unit/port*.ts that may run concurrently in other workers.
+    // 20000+ host port range avoids collisions with the 19xxx ports
+    // used by test/unit/port*.ts that may run concurrently in other workers.
     const portForward = [
       { containerPort: 8080, hostPortStart: 20000 },
       { containerPort: 8081, hostPortStart: 20010 },
@@ -86,10 +84,7 @@ describe('yaac session create honors portForward in yaac-config.json', () => {
       { containerPort: 8084, hostPortStart: 20040 },
     ]
     await seedMockGitRepo(mockGit, 'repo-demo', {
-      files: {
-        'README.md': '# demo\n',
-        'yaac-config.json': JSON.stringify({ portForward }, null, 2) + '\n',
-      },
+      files: { 'README.md': '# demo\n' },
     })
 
     // Stage the project exactly as `yaac project add` would leave it.
@@ -97,7 +92,9 @@ describe('yaac session create honors portForward in yaac-config.json', () => {
     const projectDir = path.join(projectsDir, 'repo-demo')
     const repoDir = path.join(projectDir, 'repo')
     const claudeDir = path.join(projectDir, 'claude')
+    const configDir = path.join(projectDir, 'config')
     await fs.mkdir(claudeDir, { recursive: true })
+    await fs.mkdir(configDir, { recursive: true })
     const localBare = path.join(mockGit.reposDir, 'repo-demo.git')
     await cloneRepo(localBare, repoDir)
     const fakeRemote = 'https://github.com/test-org/repo-demo.git'
@@ -109,6 +106,10 @@ describe('yaac session create honors portForward in yaac-config.json', () => {
         remoteUrl: fakeRemote,
         addedAt: new Date().toISOString(),
       }) + '\n',
+    )
+    await fs.writeFile(
+      path.join(configDir, 'yaac-config.json'),
+      JSON.stringify({ portForward }, null, 2) + '\n',
     )
 
     const credsDir = path.join(testEnv.dataDir, '.credentials')

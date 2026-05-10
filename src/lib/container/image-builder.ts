@@ -1,13 +1,11 @@
 import fs from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { pack } from 'tar-stream'
-import { DOCKERFILES_DIR, getDataDir, configOverrideDir, repoDir } from '@/lib/project/paths'
-import { getDefaultBranch } from '@/lib/git'
-import { execFileAsync, imageExists } from '@/lib/container/runtime'
+import { DOCKERFILES_DIR, getDataDir, projectConfigDir } from '@/lib/project/paths'
+import { imageExists } from '@/lib/container/runtime'
 
 interface TarEntry {
   name: string
@@ -114,15 +112,6 @@ async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
-async function readFileFromRef(repoPath: string, ref: string, filePath: string): Promise<string | null> {
-  try {
-    const { stdout } = await execFileAsync('git', ['show', `${ref}:${filePath}`], { cwd: repoPath })
-    return stdout
-  } catch {
-    return null
-  }
-}
-
 /**
  * Check whether a Dockerfile layers on top of the yaac base image.
  * A layered Dockerfile must declare `ARG BASE_IMAGE` and use `FROM ${BASE_IMAGE}`
@@ -144,39 +133,24 @@ interface ImageLayer {
 
 /**
  * Resolves the full image layer chain for a project without building anything.
- * Returns the ordered list of layers and any temp dir that needs cleanup.
+ * Returns the ordered list of layers.
  */
 async function resolveImageChain(
   projectSlug: string,
   prefix: string,
   nestedContainers: boolean,
-): Promise<{ layers: ImageLayer[]; finalTag: string; tmpDir: string | null }> {
+): Promise<{ layers: ImageLayer[]; finalTag: string }> {
   const layers: ImageLayer[] = []
 
   // Layer 1: <prefix>-base
-  // Priority: config-override/Dockerfile.yaac > repo Dockerfile.yaac (from remote ref) > Dockerfile.default
-  const overrideDockerfile = path.join(configOverrideDir(projectSlug), 'Dockerfile.yaac')
+  // Read Dockerfile.yaac from the per-machine config dir, or fall back to Dockerfile.default.
+  const localDockerfile = path.join(projectConfigDir(projectSlug), 'Dockerfile.yaac')
   let yaacDockerfile: string | null = null
   let yaacContent: string | null = null
-  let tmpDockerfileDir: string | null = null
 
-  if (await fileExists(overrideDockerfile)) {
-    yaacDockerfile = overrideDockerfile
-    yaacContent = await fs.readFile(overrideDockerfile, 'utf8')
-  } else {
-    try {
-      const repo = repoDir(projectSlug)
-      const defaultBranch = await getDefaultBranch(repo)
-      const content = await readFileFromRef(repo, `origin/${defaultBranch}`, 'Dockerfile.yaac')
-      if (content) {
-        tmpDockerfileDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-dockerfile-'))
-        yaacDockerfile = path.join(tmpDockerfileDir, 'Dockerfile.yaac')
-        await fs.writeFile(yaacDockerfile, content)
-        yaacContent = content
-      }
-    } catch {
-      // git not available — fall through to default
-    }
+  if (await fileExists(localDockerfile)) {
+    yaacDockerfile = localDockerfile
+    yaacContent = await fs.readFile(localDockerfile, 'utf8')
   }
 
   const yaacIsLayered = yaacContent ? isLayered(yaacContent) : false
@@ -256,7 +230,7 @@ async function resolveImageChain(
     effectiveTag = userTag
   }
 
-  return { layers, finalTag: effectiveTag, tmpDir: tmpDockerfileDir }
+  return { layers, finalTag: effectiveTag }
 }
 
 /**
@@ -266,10 +240,7 @@ async function resolveImageChain(
  */
 export async function resolveImageTag(projectSlug: string, imagePrefix?: string, nestedContainers = false): Promise<string> {
   const prefix = imagePrefix ?? 'yaac'
-  const { finalTag, tmpDir } = await resolveImageChain(projectSlug, prefix, nestedContainers)
-  if (tmpDir) {
-    await fs.rm(tmpDir, { recursive: true, force: true })
-  }
+  const { finalTag } = await resolveImageChain(projectSlug, prefix, nestedContainers)
   return finalTag
 }
 
@@ -294,26 +265,20 @@ export async function resolveImageTag(projectSlug: string, imagePrefix?: string,
  */
 export async function ensureImage(projectSlug: string, imagePrefix?: string, requirePrebuilt = false, nestedContainers = false): Promise<string> {
   const prefix = imagePrefix ?? 'yaac'
-  const { layers, finalTag, tmpDir } = await resolveImageChain(projectSlug, prefix, nestedContainers)
+  const { layers, finalTag } = await resolveImageChain(projectSlug, prefix, nestedContainers)
 
-  try {
-    for (const layer of layers) {
-      if (await imageExists(layer.tag)) continue
+  for (const layer of layers) {
+    if (await imageExists(layer.tag)) continue
 
-      if (requirePrebuilt) {
-        throw new Error(
-          `Image ${layer.tag} is missing or stale. ` +
-          'Restart the test run so the global setup can rebuild it.',
-        )
-      }
-
-      console.log(`Building ${layer.tag}...`)
-      await buildImage(layer.tag, layer.dockerfile, layer.context, layer.buildArgs)
+    if (requirePrebuilt) {
+      throw new Error(
+        `Image ${layer.tag} is missing or stale. ` +
+        'Restart the test run so the global setup can rebuild it.',
+      )
     }
-  } finally {
-    if (tmpDir) {
-      await fs.rm(tmpDir, { recursive: true, force: true })
-    }
+
+    console.log(`Building ${layer.tag}...`)
+    await buildImage(layer.tag, layer.dockerfile, layer.context, layer.buildArgs)
   }
 
   return finalTag

@@ -8,7 +8,7 @@ import {
   getProjectsDir,
   projectDir,
   repoDir,
-  configOverrideDir,
+  projectConfigDir,
   cachedPackagesDir,
   claudeDir,
   projectClaudeCredentialsFile,
@@ -52,7 +52,7 @@ describe('paths', () => {
     setDataDir('/tmp/yaac-test')
     expect(projectDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo')
     expect(repoDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/repo')
-    expect(configOverrideDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/config-override')
+    expect(projectConfigDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/config')
     expect(claudeDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/claude')
     expect(projectClaudeCredentialsFile('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/claude/.credentials.json')
     expect(codexDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/codex')

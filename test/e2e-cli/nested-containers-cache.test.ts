@@ -71,10 +71,7 @@ describe('yaac nested containers: cross-session image cache', () => {
 
   async function setupProject(slug: string): Promise<void> {
     await seedMockGitRepo(mockGit!, slug, {
-      files: {
-        'README.md': '# demo\n',
-        'yaac-config.json': JSON.stringify({ nestedContainers: true }, null, 2) + '\n',
-      },
+      files: { 'README.md': '# demo\n' },
     })
     const projectPath = path.join(testEnv.dataDir, 'projects', slug)
     const repoPath = path.join(projectPath, 'repo')
@@ -85,6 +82,12 @@ describe('yaac nested containers: cross-session image cache', () => {
     await fs.writeFile(path.join(projectPath, 'project.json'), JSON.stringify({
       slug, remoteUrl: fakeRemote, addedAt: new Date().toISOString(),
     }) + '\n')
+    const configDir = path.join(projectPath, 'config')
+    await fs.mkdir(configDir, { recursive: true })
+    await fs.writeFile(
+      path.join(configDir, 'yaac-config.json'),
+      JSON.stringify({ nestedContainers: true }, null, 2) + '\n',
+    )
   }
 
   async function listProjectSessions(

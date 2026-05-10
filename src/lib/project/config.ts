@@ -1,13 +1,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import type { YaacConfig, PostgresRelayConfig } from '@/shared/types'
-import { configOverrideDir, repoDir } from '@/lib/project/paths'
-import { getDefaultBranch } from '@/lib/git'
-
-const execFileAsync = promisify(execFile)
+import { projectConfigDir } from '@/lib/project/paths'
 
 const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'nestedContainers', 'portForward', 'bindMounts', 'hideInitPane', 'pgRelay', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths'])
 
@@ -282,29 +277,8 @@ export async function loadProjectConfig(repoPath: string): Promise<YaacConfig | 
   return parseProjectConfig(raw)
 }
 
-export async function loadProjectConfigFromRef(repoPath: string, ref: string): Promise<YaacConfig | null> {
-  try {
-    const { stdout } = await execFileAsync('git', ['show', `${ref}:yaac-config.json`], { cwd: repoPath })
-    return parseProjectConfig(stdout)
-  } catch {
-    return null
-  }
-}
-
 export async function resolveProjectConfig(projectSlug: string): Promise<YaacConfig | null> {
-  const override = await loadProjectConfig(configOverrideDir(projectSlug))
-  if (override) return override
-
-  const repo = repoDir(projectSlug)
-  try {
-    const defaultBranch = await getDefaultBranch(repo)
-    const fromRef = await loadProjectConfigFromRef(repo, `origin/${defaultBranch}`)
-    if (fromRef) return fromRef
-  } catch {
-    // git not available or repo not initialized — fall through to filesystem
-  }
-
-  return loadProjectConfig(repo)
+  return loadProjectConfig(projectConfigDir(projectSlug))
 }
 
 function sortKeys(obj: unknown): unknown {

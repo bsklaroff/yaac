@@ -100,10 +100,10 @@ describe('ensureImage layer stacking', () => {
 
   it('uses Dockerfile.yaac instead of Dockerfile.default when present', async () => {
     const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
-    const overrideDir = path.join(dataDir, 'projects', 'myproject', 'config-override')
+    const configDir = path.join(dataDir, 'projects', 'myproject', 'config')
     await fs.mkdir(repoPath, { recursive: true })
-    await fs.mkdir(overrideDir, { recursive: true })
-    await fs.writeFile(path.join(overrideDir, 'Dockerfile.yaac'), 'FROM docker.io/ubuntu:24.04\nRUN echo custom\n')
+    await fs.mkdir(configDir, { recursive: true })
+    await fs.writeFile(path.join(configDir, 'Dockerfile.yaac'), 'FROM docker.io/ubuntu:24.04\nRUN echo custom\n')
 
     const { ensureImage } = await loadModule()
     const result = await ensureImage('myproject')
@@ -116,10 +116,10 @@ describe('ensureImage layer stacking', () => {
 
   it('layers Dockerfile.yaac on top of default when it uses FROM ${BASE_IMAGE}', async () => {
     const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
-    const overrideDir = path.join(dataDir, 'projects', 'myproject', 'config-override')
+    const configDir = path.join(dataDir, 'projects', 'myproject', 'config')
     await fs.mkdir(repoPath, { recursive: true })
-    await fs.mkdir(overrideDir, { recursive: true })
-    await fs.writeFile(path.join(overrideDir, 'Dockerfile.yaac'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo custom\n')
+    await fs.mkdir(configDir, { recursive: true })
+    await fs.writeFile(path.join(configDir, 'Dockerfile.yaac'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo custom\n')
 
     const { ensureImage } = await loadModule()
     const result = await ensureImage('myproject')
@@ -133,10 +133,10 @@ describe('ensureImage layer stacking', () => {
 
   it('treats Dockerfile.yaac with FROM yaac-base (no ARG) as standalone', async () => {
     const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
-    const overrideDir = path.join(dataDir, 'projects', 'myproject', 'config-override')
+    const configDir = path.join(dataDir, 'projects', 'myproject', 'config')
     await fs.mkdir(repoPath, { recursive: true })
-    await fs.mkdir(overrideDir, { recursive: true })
-    await fs.writeFile(path.join(overrideDir, 'Dockerfile.yaac'), 'FROM yaac-base\nRUN echo custom\n')
+    await fs.mkdir(configDir, { recursive: true })
+    await fs.writeFile(path.join(configDir, 'Dockerfile.yaac'), 'FROM yaac-base\nRUN echo custom\n')
 
     const { ensureImage } = await loadModule()
     const result = await ensureImage('myproject')
@@ -187,10 +187,10 @@ describe('ensureImage layer stacking', () => {
 
   it('builds nestable layer on top of standalone Dockerfile.yaac when nestedContainers is true', async () => {
     const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
-    const overrideDir = path.join(dataDir, 'projects', 'myproject', 'config-override')
+    const configDir = path.join(dataDir, 'projects', 'myproject', 'config')
     await fs.mkdir(repoPath, { recursive: true })
-    await fs.mkdir(overrideDir, { recursive: true })
-    await fs.writeFile(path.join(overrideDir, 'Dockerfile.yaac'), 'FROM docker.io/ubuntu:24.04\nRUN echo custom\n')
+    await fs.mkdir(configDir, { recursive: true })
+    await fs.writeFile(path.join(configDir, 'Dockerfile.yaac'), 'FROM docker.io/ubuntu:24.04\nRUN echo custom\n')
 
     const { ensureImage } = await loadModule()
     const result = await ensureImage('myproject', undefined, false, true)
@@ -203,10 +203,10 @@ describe('ensureImage layer stacking', () => {
 
   it('builds nestable layer on top of layered Dockerfile.yaac when nestedContainers is true', async () => {
     const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
-    const overrideDir = path.join(dataDir, 'projects', 'myproject', 'config-override')
+    const configDir = path.join(dataDir, 'projects', 'myproject', 'config')
     await fs.mkdir(repoPath, { recursive: true })
-    await fs.mkdir(overrideDir, { recursive: true })
-    await fs.writeFile(path.join(overrideDir, 'Dockerfile.yaac'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo custom\n')
+    await fs.mkdir(configDir, { recursive: true })
+    await fs.writeFile(path.join(configDir, 'Dockerfile.yaac'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo custom\n')
 
     const { ensureImage } = await loadModule()
     const result = await ensureImage('myproject', undefined, false, true)

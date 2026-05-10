@@ -39,6 +39,10 @@ export function getProjectsDir(): string {
   return path.join(getDataDir(), 'projects')
 }
 
+export function projectConfigDir(slug: string): string {
+  return path.join(getProjectsDir(), slug, 'config')
+}
+
 export function daemonLogPath(): string {
   return path.join(getDataDir(), 'daemon.log')
 }

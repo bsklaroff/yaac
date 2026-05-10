@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import { configOverrideDir, getProjectsDir, repoDir } from '@/lib/project/paths'
+import { projectConfigDir, getProjectsDir, repoDir } from '@/lib/project/paths'
 import { getProjectDetail, resolveProjectConfigWithSource } from '@/lib/project/detail'
 import { DaemonError } from '@/daemon/errors'
 import type { ProjectMeta } from '@/shared/types'
@@ -41,7 +41,6 @@ describe('getProjectDetail', () => {
       remoteUrl: 'https://example.com/foo',
       addedAt: '2026-01-01T00:00:00.000Z',
       config: null,
-      configSource: null,
     })
     expect(typeof detail.sessionCount).toBe('number')
   })
@@ -62,24 +61,18 @@ describe('resolveProjectConfigWithSource', () => {
     await expect(resolveProjectConfigWithSource('nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 
-  it('returns override when both override and repo configs exist', async () => {
+  it('returns the local config when it exists', async () => {
     await writeProject('foo', { slug: 'foo', remoteUrl: 'x', addedAt: '2026-01-01T00:00:00.000Z' })
-    await fs.mkdir(repoDir('foo'), { recursive: true })
+    await fs.mkdir(projectConfigDir('foo'), { recursive: true })
     await fs.writeFile(
-      path.join(repoDir('foo'), 'yaac-config.json'),
-      JSON.stringify({ envPassthrough: ['A'] }),
-    )
-    await fs.mkdir(configOverrideDir('foo'), { recursive: true })
-    await fs.writeFile(
-      path.join(configOverrideDir('foo'), 'yaac-config.json'),
+      path.join(projectConfigDir('foo'), 'yaac-config.json'),
       JSON.stringify({ envPassthrough: ['B'] }),
     )
     const result = await resolveProjectConfigWithSource('foo')
-    expect(result.source).toBe('override')
     expect(result.config).toEqual({ envPassthrough: ['B'] })
   })
 
-  it('falls back to the repo filesystem config when no override and no git', async () => {
+  it('ignores yaac-config.json checked into the cloned repo', async () => {
     await writeProject('foo', { slug: 'foo', remoteUrl: 'x', addedAt: '2026-01-01T00:00:00.000Z' })
     await fs.mkdir(repoDir('foo'), { recursive: true })
     await fs.writeFile(
@@ -87,14 +80,12 @@ describe('resolveProjectConfigWithSource', () => {
       JSON.stringify({ initCommands: ['echo hi'] }),
     )
     const result = await resolveProjectConfigWithSource('foo')
-    expect(result.source).toBe('repo')
-    expect(result.config).toEqual({ initCommands: ['echo hi'] })
+    expect(result.config).toBeNull()
   })
 
-  it('returns null source when no config anywhere', async () => {
+  it('returns null when no config exists', async () => {
     await writeProject('empty', { slug: 'empty', remoteUrl: 'x', addedAt: '2026-01-01T00:00:00.000Z' })
-    await fs.mkdir(repoDir('empty'), { recursive: true })
     const result = await resolveProjectConfigWithSource('empty')
-    expect(result).toEqual({ config: null, source: null })
+    expect(result).toEqual({ config: null })
   })
 })

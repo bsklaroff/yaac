@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { configOverrideDir, projectDir } from '@/lib/project/paths'
+import { projectConfigDir, projectDir } from '@/lib/project/paths'
 import { parseProjectConfig } from '@/lib/project/config'
 import { DaemonError } from '@/daemon/errors'
 import type { YaacConfig } from '@/shared/types'
@@ -14,11 +14,11 @@ async function ensureProjectExists(slug: string): Promise<void> {
 }
 
 /**
- * Write (or replace) the per-project config-override/yaac-config.json.
- * Validates the incoming config with the same parser the repo-level
- * config goes through so malformed input fails at the edge.
+ * Write (or replace) the per-project config/yaac-config.json. Validates
+ * the incoming config with the same parser used at load time so malformed
+ * input fails at the edge.
  */
-export async function writeConfigOverride(slug: string, rawConfig: unknown): Promise<YaacConfig> {
+export async function writeProjectConfig(slug: string, rawConfig: unknown): Promise<YaacConfig> {
   await ensureProjectExists(slug)
 
   let config: YaacConfig
@@ -28,7 +28,7 @@ export async function writeConfigOverride(slug: string, rawConfig: unknown): Pro
     throw new DaemonError('VALIDATION', err instanceof Error ? err.message : String(err))
   }
 
-  const dir = configOverrideDir(slug)
+  const dir = projectConfigDir(slug)
   await fs.mkdir(dir, { recursive: true })
   await fs.writeFile(
     path.join(dir, 'yaac-config.json'),
@@ -38,9 +38,9 @@ export async function writeConfigOverride(slug: string, rawConfig: unknown): Pro
 }
 
 /**
- * Remove the config-override directory for a project. No-op if absent.
+ * Remove the per-project config directory. No-op if absent.
  */
-export async function removeConfigOverride(slug: string): Promise<void> {
+export async function removeProjectConfig(slug: string): Promise<void> {
   await ensureProjectExists(slug)
-  await fs.rm(configOverrideDir(slug), { recursive: true, force: true })
+  await fs.rm(projectConfigDir(slug), { recursive: true, force: true })
 }

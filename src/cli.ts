@@ -15,6 +15,9 @@ import { authClear } from '@/commands/auth-clear'
 import { authList } from '@/commands/auth-list'
 import { toolGet } from '@/commands/tool-get'
 import { toolSet } from '@/commands/tool-set'
+import { configEdit } from '@/commands/config-edit'
+import { configEditDockerfile } from '@/commands/config-edit-dockerfile'
+import { configEditUserDockerfile } from '@/commands/config-edit-user-dockerfile'
 import { runDaemon, startDaemon, stopDaemon, restartDaemon, daemonLogs } from '@/daemon/cli'
 import { getDefaultTool } from '@/lib/project/preferences'
 import type { AgentTool } from '@/shared/types'
@@ -208,6 +211,28 @@ tool
   .description('Set the default agent tool')
   .argument('<tool>', 'Agent tool to use (claude or codex)')
   .action(toolSet)
+
+const config = program
+  .command('config')
+  .description('Edit per-machine project configuration files')
+  .configureHelp({ formatHelp: nestedHelp })
+
+config
+  .command('edit')
+  .description("Open the project's yaac-config.json in $EDITOR")
+  .argument('<project>', 'Project slug')
+  .action(configEdit)
+
+config
+  .command('edit-dockerfile')
+  .description("Open the project's Dockerfile.yaac in $EDITOR")
+  .argument('<project>', 'Project slug')
+  .action(configEditDockerfile)
+
+config
+  .command('edit-user-dockerfile')
+  .description('Open the global ~/.yaac/Dockerfile.user in $EDITOR')
+  .action(configEditUserDockerfile)
 
 const auth = program
   .command('auth')

@@ -40,6 +40,7 @@ yaac [command]
 Commands:
   project         Manage projects
   session         Manage sessions
+  config          Edit per-machine project configuration files
   auth            Manage credentials (GitHub tokens and tool API keys)
 
 yaac project <command>
@@ -65,6 +66,11 @@ yaac session <command>
 yaac tool <command>
   get                 Show the current default agent tool
   set <tool>          Set the default agent tool (claude or codex)
+
+yaac config <command>
+  edit <project>              Open the project's yaac-config.json in $EDITOR
+  edit-dockerfile <project>   Open the project's Dockerfile.yaac in $EDITOR
+  edit-user-dockerfile        Open the global ~/.yaac/Dockerfile.user in $EDITOR
 
 yaac auth <command>
   list                List configured credentials (masked)
@@ -221,7 +227,7 @@ The default image (Ubuntu 24.04 + Node.js + pnpm + Claude Code + gh + tmux) can 
     ```
   - **Any other `FROM`** — replaces the default image entirely (e.g. use a different base distro or toolchain). Must install Claude Code yourself, since the default Dockerfile is skipped.
 
-  Place in the repo root or the project's config-override directory (config-override takes precedence).
+  Place at `~/.yaac/projects/<repo-name>/config/Dockerfile.yaac`, or open it in `$EDITOR` with `yaac config edit-dockerfile <project>`.
 - **`~/.yaac/Dockerfile.user`** — applied on top of whichever base is used (e.g. nvim config, shell customization). Must use `ARG BASE_IMAGE` and `FROM ${BASE_IMAGE}` so the parent image is injected via `--build-arg`:
   ```dockerfile
   ARG BASE_IMAGE
@@ -231,16 +237,25 @@ The default image (Ubuntu 24.04 + Node.js + pnpm + Claude Code + gh + tmux) can 
 
 Layer order: default (or Dockerfile.yaac) → Dockerfile.nestable (if `nestedContainers` is true) → Dockerfile.user.
 
-## Local overrides
+## Project config
 
-You can override project files per-machine without modifying the repo. Place override files in the project's config-override directory:
+Per-machine, per-project configuration lives under each project's data dir:
 
 ```
-~/.yaac/projects/<repo-name>/config-override/yaac-config.json
-~/.yaac/projects/<repo-name>/config-override/Dockerfile.yaac
+~/.yaac/projects/<repo-name>/config/yaac-config.json
+~/.yaac/projects/<repo-name>/config/Dockerfile.yaac
+~/.yaac/Dockerfile.user
 ```
 
-If an override file exists, it fully replaces the corresponding file from the repo (no merging). This is useful for machine-specific setup or testing changes to the config without committing them.
+The easiest way to populate these is in `$EDITOR`:
+
+```
+yaac config edit <project>             # yaac-config.json
+yaac config edit-dockerfile <project>  # Dockerfile.yaac
+yaac config edit-user-dockerfile       # ~/.yaac/Dockerfile.user (global)
+```
+
+Each command resolves `$EDITOR` (then `$VISUAL`, then `vi`) and creates the parent directory if it doesn't exist yet.
 
 ## Nested containers
 

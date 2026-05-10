@@ -4,10 +4,11 @@ import {
   ensureDataDir,
   getDataDir,
   getProjectsDir,
+  projectConfigDir,
   setDataDir,
 } from '@/shared/paths'
 
-export { PACKAGE_ROOT, ensureDataDir, getDataDir, getProjectsDir, setDataDir }
+export { PACKAGE_ROOT, ensureDataDir, getDataDir, getProjectsDir, projectConfigDir, setDataDir }
 
 export const DOCKERFILES_DIR = path.join(PACKAGE_ROOT, 'dockerfiles')
 export const PROXY_DIR = path.join(PACKAGE_ROOT, 'podman', 'proxy-sidecar')
@@ -40,10 +41,6 @@ export function projectDir(slug: string): string {
 
 export function repoDir(slug: string): string {
   return path.join(projectDir(slug), 'repo')
-}
-
-export function configOverrideDir(slug: string): string {
-  return path.join(projectDir(slug), 'config-override')
 }
 
 export function claudeDir(slug: string): string {
