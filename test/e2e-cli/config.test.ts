@@ -23,7 +23,7 @@ describe('yaac config (real CLI + real daemon)', () => {
   // the right file path was opened without spawning a real editor.
   async function writeMarkerEditor(marker: string): Promise<string> {
     const editorPath = path.join(testEnv.scratchDir, `editor-${marker}.sh`)
-    await fs.writeFile(editorPath, `#!/bin/sh\necho -n '${marker}' > "$1"\n`, { mode: 0o755 })
+    await fs.writeFile(editorPath, `#!/bin/sh\nprintf %s '${marker}' > "$1"\n`, { mode: 0o755 })
     return editorPath
   }
 

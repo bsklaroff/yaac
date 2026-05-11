@@ -43,7 +43,7 @@ describe('editFile', () => {
   }
 
   it('creates the parent directory and invokes the editor on the file path', async () => {
-    const editor = await writeFakeEditor('marker-editor', 'echo -n hello > "$1"')
+    const editor = await writeFakeEditor('marker-editor', 'printf %s hello > "$1"')
     const target = path.join(tmpDir, 'nested', 'deep', 'config.json')
     await editFile(target, { EDITOR: editor })
     expect(await fs.readFile(target, 'utf8')).toBe('hello')
@@ -67,7 +67,7 @@ describe('editFile', () => {
     // first arg of "--write" and writes the marker on the second arg.
     const editor = await writeFakeEditor(
       'flagged-editor',
-      'test "$1" = "--write" && echo -n flagged > "$2"',
+      'test "$1" = "--write" && printf %s flagged > "$2"',
     )
     const target = path.join(tmpDir, 'flagged.txt')
     await editFile(target, { EDITOR: `${editor} --write` })
