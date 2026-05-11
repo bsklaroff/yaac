@@ -43,6 +43,45 @@ async function removeSessionFromProxy(sessionId: string): Promise<void> {
 }
 
 /**
+ * Short-TTL cache for `isTmuxSessionAlive` results, keyed by container
+ * name. Each entry holds either a settled (boolean, expiresAt) row or
+ * an in-flight Promise so concurrent callers coalesce onto the same
+ * `podman exec`. Without this, /session/list (called every ~5s by the
+ * UI), the background loop's `hasLiveSessions`, and the stream-picker
+ * each run the same has-session check independently for every
+ * container, generating N podman exec calls per second.
+ */
+const TMUX_ALIVE_TTL_MS = 2_000
+
+type TmuxAliveEntry =
+  | { kind: 'settled'; value: boolean; expiresAt: number }
+  | { kind: 'inflight'; promise: Promise<boolean> }
+
+const tmuxAliveCache = new Map<string, TmuxAliveEntry>()
+
+/**
+ * Test-only: drop every cached entry. Production callers never need to
+ * invalidate because the TTL is short and `cleanupSession` already
+ * removes the container — but tests that mock `shellPodmanWithRetry`
+ * across multiple cases need to start each case from a clean slate.
+ */
+export function _clearTmuxAliveCacheForTests(): void {
+  tmuxAliveCache.clear()
+}
+
+async function probeTmuxSessionAlive(containerName: string): Promise<boolean> {
+  try {
+    await shellPodmanWithRetry(`podman exec ${containerName} tmux has-session -t yaac`, {
+      maxAttempts: 3,
+      baseDelay: 100,
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * Check whether tmux session "yaac" is alive inside the given container.
  *
  * Uses `shellPodmanWithRetry` with a tight budget so transient podman/OCI
@@ -55,17 +94,27 @@ async function removeSessionFromProxy(sessionId: string): Promise<void> {
  * the container is often truly gone).  A tight budget keeps stale-session
  * detection effectively asynchronous without losing protection against
  * short state-transition races.
+ *
+ * Results are cached for `TMUX_ALIVE_TTL_MS` and concurrent callers for
+ * the same container share one in-flight probe.
  */
 export async function isTmuxSessionAlive(containerName: string): Promise<boolean> {
-  try {
-    await shellPodmanWithRetry(`podman exec ${containerName} tmux has-session -t yaac`, {
-      maxAttempts: 3,
-      baseDelay: 100,
-    })
-    return true
-  } catch {
-    return false
+  const now = Date.now()
+  const cached = tmuxAliveCache.get(containerName)
+  if (cached) {
+    if (cached.kind === 'inflight') return cached.promise
+    if (cached.expiresAt > now) return cached.value
   }
+  const promise = probeTmuxSessionAlive(containerName).then((value) => {
+    tmuxAliveCache.set(containerName, {
+      kind: 'settled',
+      value,
+      expiresAt: Date.now() + TMUX_ALIVE_TTL_MS,
+    })
+    return value
+  })
+  tmuxAliveCache.set(containerName, { kind: 'inflight', promise })
+  return promise
 }
 
 export async function cleanupSession(params: {
@@ -75,6 +124,10 @@ export async function cleanupSession(params: {
 }): Promise<void> {
   const { containerName, projectSlug, sessionId } = params
   const container = podman.getContainer(containerName)
+
+  // Drop any cached tmux-alive entry so a subsequent caller doesn't see
+  // a stale `true` from this container's previous probe.
+  tmuxAliveCache.delete(containerName)
 
   stopSessionForwarders(sessionId)
   await removeSessionFromProxy(sessionId)
@@ -132,6 +185,8 @@ export async function cleanupSessionDetached(params: {
   sessionId: string
 }): Promise<void> {
   const { containerName, projectSlug, sessionId } = params
+
+  tmuxAliveCache.delete(containerName)
 
   stopSessionForwarders(sessionId)
   await removeSessionFromProxy(sessionId)

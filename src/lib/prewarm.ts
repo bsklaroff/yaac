@@ -163,10 +163,38 @@ async function hasLiveSessions(projectSlug: string, prewarmContainerName?: strin
 }
 
 /**
+ * In-flight `ensurePrewarmSessions` calls keyed by tool. The background
+ * loop kicks one off every 5s and the inner per-project work hits
+ * podman heavily — if a tick takes longer than the interval (during a
+ * podman freeze), the next tick must NOT start a second concurrent
+ * pass on top.
+ */
+const ensurePrewarmInflight = new Map<AgentTool, Promise<void>>()
+
+/**
+ * Test-only: clear in-flight state between cases.
+ */
+export function _clearEnsurePrewarmInflightForTests(): void {
+  ensurePrewarmInflight.clear()
+}
+
+/**
  * Discover all projects with live sessions and ensure a prewarm session
  * exists for each. Used when the monitor is watching all projects.
+ *
+ * Concurrent calls for the same `tool` share one in-flight Promise.
  */
 export async function ensurePrewarmSessions(tool: AgentTool = 'claude'): Promise<void> {
+  const existing = ensurePrewarmInflight.get(tool)
+  if (existing) return existing
+  const promise = ensurePrewarmSessionsImpl(tool).finally(() => {
+    ensurePrewarmInflight.delete(tool)
+  })
+  ensurePrewarmInflight.set(tool, promise)
+  return promise
+}
+
+async function ensurePrewarmSessionsImpl(tool: AgentTool): Promise<void> {
   // List all managed containers to discover active project slugs
   const containers = await podman.listContainers({
     all: true,

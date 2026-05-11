@@ -24,6 +24,7 @@ import {
   provisionSessionForwarders,
   registerSessionForwarders,
   setSessionStatusRight,
+  stopAllSessionForwarders,
   stopSessionForwarders,
 } from '@/lib/session/port-forwarders'
 
@@ -100,6 +101,46 @@ describe('registry: register/stop/hasSessionForwarders', () => {
     stopSessionForwarders('sess-reg-1')
     expect(stop).toHaveBeenCalledTimes(1)
     expect(hasSessionForwarders('sess-reg-1')).toBe(false)
+  })
+})
+
+describe('stopAllSessionForwarders', () => {
+  afterEach(() => {
+    stopAllSessionForwarders()
+  })
+
+  it('is a no-op when nothing is registered', () => {
+    expect(() => stopAllSessionForwarders()).not.toThrow()
+  })
+
+  it('stops every registered forwarder and clears the registry', () => {
+    const stopA = vi.fn()
+    const stopB = vi.fn()
+    registerSessionForwarders('sess-all-1', stopA)
+    registerSessionForwarders('sess-all-2', stopB)
+    expect(hasSessionForwarders('sess-all-1')).toBe(true)
+    expect(hasSessionForwarders('sess-all-2')).toBe(true)
+
+    stopAllSessionForwarders()
+
+    expect(stopA).toHaveBeenCalledTimes(1)
+    expect(stopB).toHaveBeenCalledTimes(1)
+    expect(hasSessionForwarders('sess-all-1')).toBe(false)
+    expect(hasSessionForwarders('sess-all-2')).toBe(false)
+  })
+
+  it('keeps stopping the rest even if one stop fn throws', () => {
+    const stopA = vi.fn(() => { throw new Error('stuck relay') })
+    const stopB = vi.fn()
+    registerSessionForwarders('sess-all-3', stopA)
+    registerSessionForwarders('sess-all-4', stopB)
+
+    expect(() => stopAllSessionForwarders()).not.toThrow()
+
+    expect(stopA).toHaveBeenCalledTimes(1)
+    expect(stopB).toHaveBeenCalledTimes(1)
+    expect(hasSessionForwarders('sess-all-3')).toBe(false)
+    expect(hasSessionForwarders('sess-all-4')).toBe(false)
   })
 })
 

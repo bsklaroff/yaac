@@ -96,12 +96,43 @@ function formatCreated(epochSeconds: number): string {
 }
 
 /**
+ * In-flight `listActiveSessions` calls keyed by `projectFilter ?? ''`.
+ * The UI polls /session/list every ~5s and `listActiveSessions` is the
+ * heaviest read path (listContainers + N tmux-alive probes + N status
+ * reads), so overlapping requests must share one execution. Each entry
+ * is cleared when its Promise settles.
+ */
+const listActiveInflight = new Map<string, Promise<ActiveSessionsResult>>()
+
+/**
+ * Test-only: drop in-flight state so test cases that mock different
+ * underlying behavior don't see each other's shared promise.
+ */
+export function _clearListActiveInflightForTests(): void {
+  listActiveInflight.clear()
+}
+
+/**
  * Enumerate managed containers for a project (or all projects), splitting
  * them into the active-session rows the renderer displays and the stale
  * set the caller is expected to tear down. Also collects failed-prewarm
  * entries so the renderer can surface them.
+ *
+ * Concurrent calls with the same `projectFilter` share one in-flight
+ * Promise (see `listActiveInflight`).
  */
 export async function listActiveSessions(projectFilter?: string): Promise<ActiveSessionsResult> {
+  const key = projectFilter ?? ''
+  const existing = listActiveInflight.get(key)
+  if (existing) return existing
+  const promise = listActiveSessionsImpl(projectFilter).finally(() => {
+    listActiveInflight.delete(key)
+  })
+  listActiveInflight.set(key, promise)
+  return promise
+}
+
+async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSessionsResult> {
   if (projectFilter) await ensureProjectExists(projectFilter)
 
   const filters: Record<string, string[]> = {

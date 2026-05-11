@@ -161,14 +161,23 @@ export const podman = socketPath ? new Docker({ socketPath }) : new Docker()
  *   - ECONNREFUSED: podman service is dead. Try to revive the socket
  *     before the next attempt.
  *   - ECONNRESET / "socket hang up": service is alive but busy/overloaded
- *     (common under heavy parallel test load). Just retry — reviving
+ *     (common under heavy parallel test load). Brief backoff between
+ *     attempts so we don't slam an already-overloaded socket — reviving
  *     would spawn a second `podman system service` racing the live one.
  *
- * Up to 3 attempts with no backoff; the cheapest retry is one that lands
- * on a service that's already recovered.
+ * Up to 3 attempts with 75ms / 150ms backoff. The backoff is small
+ * because the socket usually recovers within a few hundred ms; bigger
+ * waits would just delay every UI poll during the freeze window.
  */
 type DialCallback = (err: Error | null, data: unknown) => void
 type DialFn = (options: unknown, callback: DialCallback) => void
+
+/** Exported for unit tests. attempt is 1-based and is the failed try. */
+export function dialBackoffDelayMs(attempt: number): number {
+  const base = 75
+  return Math.min(base * 2 ** (attempt - 1), 600)
+}
+
 {
   const modem = (podman as unknown as { modem?: { dial?: DialFn } }).modem
   if (modem && typeof modem.dial === 'function') {
@@ -184,7 +193,7 @@ type DialFn = (options: unknown, callback: DialCallback) => void
           if (!isTransientPodmanError(msg)) { callback(err, data); return }
           const prelude = isConnectionRefused(msg)
             ? reviveSocketIfRefused(msg)
-            : Promise.resolve()
+            : new Promise<void>((r) => setTimeout(r, dialBackoffDelayMs(attempt)))
           void prelude.finally(tryOnce)
         })
       }

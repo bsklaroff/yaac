@@ -73,6 +73,7 @@ import {
   podmanExecWithRetry,
   shellPodmanWithRetry,
   createAndStartContainerWithRetry,
+  dialBackoffDelayMs,
 } from '@/lib/container/runtime'
 
 describe('isTransientPodmanError', () => {
@@ -285,6 +286,20 @@ describe('shellPodmanWithRetry', () => {
       shellPodmanWithRetry('podman exec c true', { baseDelay: 1, maxAttempts: 3 }),
     ).rejects.toThrow('still transient')
     expect(execMock).toHaveBeenCalledTimes(3)
+  })
+})
+
+describe('dialBackoffDelayMs', () => {
+  it('grows roughly exponentially from a small base', () => {
+    const first = dialBackoffDelayMs(1)
+    const second = dialBackoffDelayMs(2)
+    expect(first).toBeGreaterThan(0)
+    expect(second).toBeGreaterThan(first)
+    expect(second).toBe(first * 2)
+  })
+
+  it('caps so a third or later attempt cannot block a UI poll indefinitely', () => {
+    expect(dialBackoffDelayMs(10)).toBeLessThanOrEqual(600)
   })
 })
 

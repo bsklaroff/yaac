@@ -11,23 +11,93 @@ vi.mock('@/lib/container/runtime', () => ({
   shellPodmanWithRetry: vi.fn(),
 }))
 
-import { podman } from '@/lib/container/runtime'
+import { podman, shellPodmanWithRetry } from '@/lib/container/runtime'
 import {
   isTmuxSessionAlive,
   cleanupSession,
   cleanupSessionDetached,
   sessionModulesDir,
   gcOrphanEphemeralModuleDirs,
+  _clearTmuxAliveCacheForTests,
 } from '@/lib/session/cleanup'
 import { setDataDir } from '@/lib/project/paths'
 
 /* eslint-disable @typescript-eslint/unbound-method */
 const mockListContainers = vi.mocked(podman.listContainers)
+const mockShellPodman = vi.mocked(shellPodmanWithRetry)
+const mockGetContainer = vi.mocked(podman.getContainer)
 /* eslint-enable @typescript-eslint/unbound-method */
 
 describe('isTmuxSessionAlive', () => {
+  beforeEach(() => {
+    _clearTmuxAliveCacheForTests()
+    mockShellPodman.mockReset()
+  })
+
   it('is exported as a function', () => {
     expect(typeof isTmuxSessionAlive).toBe('function')
+  })
+
+  it('returns true when the underlying podman exec succeeds', async () => {
+    mockShellPodman.mockResolvedValue({ stdout: '', stderr: '' })
+    await expect(isTmuxSessionAlive('c-1')).resolves.toBe(true)
+    expect(mockShellPodman).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns false when the underlying podman exec fails', async () => {
+    mockShellPodman.mockRejectedValue(new Error('no such container'))
+    await expect(isTmuxSessionAlive('c-dead')).resolves.toBe(false)
+  })
+
+  it('serves repeat calls from the TTL cache without re-probing', async () => {
+    mockShellPodman.mockResolvedValue({ stdout: '', stderr: '' })
+    await isTmuxSessionAlive('c-cache')
+    await isTmuxSessionAlive('c-cache')
+    await isTmuxSessionAlive('c-cache')
+    expect(mockShellPodman).toHaveBeenCalledTimes(1)
+  })
+
+  it('coalesces concurrent callers onto a single in-flight probe', async () => {
+    let resolveProbe: (() => void) | undefined
+    mockShellPodman.mockReturnValue(new Promise((res) => {
+      resolveProbe = () => res({ stdout: '', stderr: '' })
+    }))
+
+    const p1 = isTmuxSessionAlive('c-coalesce')
+    const p2 = isTmuxSessionAlive('c-coalesce')
+    const p3 = isTmuxSessionAlive('c-coalesce')
+
+    expect(mockShellPodman).toHaveBeenCalledTimes(1)
+    resolveProbe!()
+    await expect(Promise.all([p1, p2, p3])).resolves.toEqual([true, true, true])
+    expect(mockShellPodman).toHaveBeenCalledTimes(1)
+  })
+
+  it('caches per container name, not globally', async () => {
+    mockShellPodman.mockResolvedValue({ stdout: '', stderr: '' })
+    await isTmuxSessionAlive('c-A')
+    await isTmuxSessionAlive('c-B')
+    expect(mockShellPodman).toHaveBeenCalledTimes(2)
+  })
+
+  it('cleanupSession evicts the cache entry for that container', async () => {
+    mockShellPodman.mockResolvedValue({ stdout: '', stderr: '' })
+    await isTmuxSessionAlive('c-evict')
+    expect(mockShellPodman).toHaveBeenCalledTimes(1)
+
+    mockGetContainer.mockReturnValue({
+      stop: vi.fn().mockResolvedValue(undefined),
+      remove: vi.fn().mockResolvedValue(undefined),
+    } as never)
+    await cleanupSession({
+      containerName: 'c-evict',
+      projectSlug: 'p',
+      sessionId: 's-evict',
+    })
+
+    // Cache cleared — next probe re-runs the podman exec.
+    await isTmuxSessionAlive('c-evict')
+    expect(mockShellPodman).toHaveBeenCalledTimes(2)
   })
 })
 

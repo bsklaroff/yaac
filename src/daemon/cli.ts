@@ -21,6 +21,7 @@ import { startBackgroundLoop } from '@/daemon/background-loop'
 import { gcOrphanSessionVolumes } from '@/lib/container/image-promoter'
 import { gcOrphanEphemeralModuleDirs } from '@/lib/session/cleanup'
 import { restoreAllSessionForwarders } from '@/lib/session/restore-forwarders'
+import { stopAllSessionForwarders } from '@/lib/session/port-forwarders'
 import { daemonLog } from '@/daemon/log'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -101,6 +102,13 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
         new Promise<void>((resolve) => setTimeout(resolve, 3000)),
       ])
     }
+    // Tear down every active port-forwarder before closing the server.
+    // Each forwarder owns a listener server and a set of long-lived
+    // `podman exec nc` relay children; without this they survive the
+    // daemon (orphaned to PID 1) and the next daemon stacks new ones on
+    // top via restoreAllSessionForwarders.
+    stopAllSessionForwarders()
+
     // @hono/node-server wraps a Node http.Server; close() refuses new
     // connections, drains in-flight requests, then fires the callback.
     // Bound to 3s so a wedged long-poll can't block lock removal; the
@@ -130,25 +138,25 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     daemonLog(`[daemon] restore forwarders failed: ${String(err)}`)
   }
 
+  // Start the background loop before running orphan GC. Both GC passes
+  // hit the podman socket, and during a freeze cluster (saturated VM,
+  // user restarting repeatedly) they can take minutes — blocking the
+  // first prewarm tick that whole time. Running them concurrently with
+  // the loop lets the daemon serve the prewarm/reconcile path right
+  // away while the GC drains in the background.
+  loopDone = startBackgroundLoop({ signal: abortCtrl.signal })
+
   // Remove per-session podman graphroot volumes whose session container
   // is gone (crashed session, killed daemon, host reboot). No layer
   // salvage — cache missed at crash time is forfeit.
-  try {
-    await gcOrphanSessionVolumes()
-  } catch (err) {
-    daemonLog(`[daemon] orphan volume GC failed: ${String(err)}`)
-  }
+  void gcOrphanSessionVolumes()
+    .catch((err) => daemonLog(`[daemon] orphan volume GC failed: ${String(err)}`))
 
   // Remove per-session `.cached-packages/modules/<sid>` dirs whose
   // session container is gone. Same rationale as graphroot GC above —
   // catches leftovers from crashes and host reboots.
-  try {
-    await gcOrphanEphemeralModuleDirs()
-  } catch (err) {
-    daemonLog(`[daemon] orphan modules GC failed: ${String(err)}`)
-  }
-
-  loopDone = startBackgroundLoop({ signal: abortCtrl.signal })
+  void gcOrphanEphemeralModuleDirs()
+    .catch((err) => daemonLog(`[daemon] orphan modules GC failed: ${String(err)}`))
 }
 
 /**

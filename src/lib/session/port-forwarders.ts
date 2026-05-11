@@ -42,6 +42,20 @@ export function hasSessionForwarders(sessionId: string): boolean {
   return forwarders.has(sessionId)
 }
 
+/**
+ * Stop every registered forwarder. Called from the daemon's shutdown
+ * handler so each relay's listener server is closed and each in-flight
+ * `podman exec` child is signalled before the daemon exits. Without
+ * this, relay children survive the daemon (orphaned to PID 1) and the
+ * next daemon's `restoreAllSessionForwarders` adds new ones on top —
+ * every restart compounds the count of live `podman exec` slots.
+ */
+export function stopAllSessionForwarders(): void {
+  for (const sessionId of [...forwarders.keys()]) {
+    stopSessionForwarders(sessionId)
+  }
+}
+
 function shellEscape(str: string): string {
   return str.replace(/'/g, "'\\''")
 }
