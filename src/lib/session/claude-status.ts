@@ -38,14 +38,73 @@ async function captureClaudePane(containerName: string): Promise<string | undefi
   }
 }
 
+/**
+ * Short-TTL cache for `getSessionClaudeStatus` results, keyed by
+ * container name. Same shape as `tmuxAliveCache` in cleanup.ts: each
+ * entry holds either a settled (status, expiresAt) row or an in-flight
+ * Promise so concurrent callers coalesce onto one `tmux capture-pane`
+ * exec. Without this, `/session/list` (UI polls every ~5s, both with
+ * and without a project filter), `getWaitingSessions` (called from the
+ * stream-picker), and any overlap between them each fire an independent
+ * capture-pane exec per claude container — and each capture-pane is a
+ * 5-call exec lifecycle on the podman API. A 2s window matches the
+ * tmux-alive cache TTL and keeps the displayed status well within the
+ * UI's 5s poll cadence.
+ */
+const CLAUDE_STATUS_TTL_MS = 2_000
+
+type ClaudeStatusEntry =
+  | { kind: 'settled'; value: 'running' | 'waiting'; expiresAt: number }
+  | { kind: 'inflight'; promise: Promise<'running' | 'waiting'> }
+
+const claudeStatusCache = new Map<string, ClaudeStatusEntry>()
+
+/**
+ * Test-only: drop every cached entry. Production callers never need to
+ * invalidate because the TTL is short and `cleanupSession` already
+ * removes the container — but tests that mock `podmanExecWithRetry`
+ * across multiple cases need a clean slate per case.
+ */
+export function _clearClaudeStatusCacheForTests(): void {
+  claudeStatusCache.clear()
+}
+
+/**
+ * Drop the cached entry for one container. Called from cleanup.ts when
+ * a session is torn down so a subsequent caller doesn't see a stale
+ * status from the previous container with the same name.
+ */
+export function evictClaudeStatusCache(containerName: string): void {
+  claudeStatusCache.delete(containerName)
+}
+
+async function probeClaudeStatus(containerName: string): Promise<'running' | 'waiting'> {
+  const pane = await captureClaudePane(containerName)
+  if (pane === undefined) return 'waiting'
+  return classifyClaudePane(pane)
+}
+
 export async function getSessionClaudeStatus(
   _projectSlug: string,
   _sessionId: string,
   containerName: string,
 ): Promise<'running' | 'waiting'> {
-  const pane = await captureClaudePane(containerName)
-  if (pane === undefined) return 'waiting'
-  return classifyClaudePane(pane)
+  const now = Date.now()
+  const cached = claudeStatusCache.get(containerName)
+  if (cached) {
+    if (cached.kind === 'inflight') return cached.promise
+    if (cached.expiresAt > now) return cached.value
+  }
+  const promise = probeClaudeStatus(containerName).then((value) => {
+    claudeStatusCache.set(containerName, {
+      kind: 'settled',
+      value,
+      expiresAt: Date.now() + CLAUDE_STATUS_TTL_MS,
+    })
+    return value
+  })
+  claudeStatusCache.set(containerName, { kind: 'inflight', promise })
+  return promise
 }
 
 /**

@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { podman, shellPodmanWithRetry } from '@/lib/container/runtime'
+import { evictClaudeStatusCache } from '@/lib/session/claude-status'
 import { proxyClient } from '@/lib/container/proxy-client'
 import { resolveImageTag } from '@/lib/container/image-builder'
 import {
@@ -125,9 +126,12 @@ export async function cleanupSession(params: {
   const { containerName, projectSlug, sessionId } = params
   const container = podman.getContainer(containerName)
 
-  // Drop any cached tmux-alive entry so a subsequent caller doesn't see
-  // a stale `true` from this container's previous probe.
+  // Drop any cached tmux-alive / claude-status entry so a subsequent
+  // caller doesn't see a stale value from this container's previous
+  // probe (or, in the worst case, a value belonging to a brand-new
+  // container that reuses the name).
   tmuxAliveCache.delete(containerName)
+  evictClaudeStatusCache(containerName)
 
   stopSessionForwarders(sessionId)
   await removeSessionFromProxy(sessionId)
@@ -187,6 +191,7 @@ export async function cleanupSessionDetached(params: {
   const { containerName, projectSlug, sessionId } = params
 
   tmuxAliveCache.delete(containerName)
+  evictClaudeStatusCache(containerName)
 
   stopSessionForwarders(sessionId)
   await removeSessionFromProxy(sessionId)

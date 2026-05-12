@@ -1,8 +1,22 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { classifyClaudePane, getFirstUserMessage } from '@/lib/session/claude-status'
+
+vi.mock('@/lib/container/runtime', () => ({
+  podmanExecWithRetry: vi.fn(),
+}))
+
+import { podmanExecWithRetry } from '@/lib/container/runtime'
+import {
+  classifyClaudePane,
+  getFirstUserMessage,
+  getSessionClaudeStatus,
+  evictClaudeStatusCache,
+  _clearClaudeStatusCacheForTests,
+} from '@/lib/session/claude-status'
+
+const mockPodmanExec = vi.mocked(podmanExecWithRetry)
 
 describe('classifyClaudePane', () => {
   it('returns running when the pane shows "esc to interrupt"', () => {
@@ -103,6 +117,83 @@ describe('classifyClaudePane', () => {
 
   it('tolerates extra whitespace between the modifier and "to interrupt"', () => {
     expect(classifyClaudePane('esc   to   interrupt')).toBe('running')
+  })
+})
+
+describe('getSessionClaudeStatus', () => {
+  beforeEach(() => {
+    _clearClaudeStatusCacheForTests()
+    mockPodmanExec.mockReset()
+  })
+
+  it('returns running when the pane shows the interrupt hint', async () => {
+    mockPodmanExec.mockResolvedValue({ stdout: 'esc to interrupt', stderr: '' })
+    await expect(getSessionClaudeStatus('p', 's', 'c-run')).resolves.toBe('running')
+    expect(mockPodmanExec).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns waiting when the pane has no interrupt hint', async () => {
+    mockPodmanExec.mockResolvedValue({ stdout: '❯ ', stderr: '' })
+    await expect(getSessionClaudeStatus('p', 's', 'c-wait')).resolves.toBe('waiting')
+  })
+
+  it('returns waiting when the capture exec fails', async () => {
+    mockPodmanExec.mockRejectedValue(new Error('no such session'))
+    await expect(getSessionClaudeStatus('p', 's', 'c-dead')).resolves.toBe('waiting')
+  })
+
+  it('serves repeat calls from the TTL cache without re-capturing', async () => {
+    mockPodmanExec.mockResolvedValue({ stdout: '❯ ', stderr: '' })
+    await getSessionClaudeStatus('p', 's', 'c-cache')
+    await getSessionClaudeStatus('p', 's', 'c-cache')
+    await getSessionClaudeStatus('p', 's', 'c-cache')
+    expect(mockPodmanExec).toHaveBeenCalledTimes(1)
+  })
+
+  it('coalesces concurrent callers onto a single in-flight probe', async () => {
+    let resolveProbe: (() => void) | undefined
+    mockPodmanExec.mockReturnValue(new Promise((res) => {
+      resolveProbe = () => res({ stdout: 'esc to interrupt', stderr: '' })
+    }))
+
+    const p1 = getSessionClaudeStatus('p', 's', 'c-coalesce')
+    const p2 = getSessionClaudeStatus('p', 's', 'c-coalesce')
+    const p3 = getSessionClaudeStatus('p', 's', 'c-coalesce')
+
+    expect(mockPodmanExec).toHaveBeenCalledTimes(1)
+    resolveProbe!()
+    await expect(Promise.all([p1, p2, p3])).resolves.toEqual(['running', 'running', 'running'])
+    expect(mockPodmanExec).toHaveBeenCalledTimes(1)
+  })
+
+  it('caches per container name, not globally', async () => {
+    mockPodmanExec.mockResolvedValue({ stdout: '❯ ', stderr: '' })
+    await getSessionClaudeStatus('p', 's', 'c-A')
+    await getSessionClaudeStatus('p', 's', 'c-B')
+    expect(mockPodmanExec).toHaveBeenCalledTimes(2)
+  })
+
+  it('evictClaudeStatusCache clears the entry for that container', async () => {
+    mockPodmanExec.mockResolvedValue({ stdout: '❯ ', stderr: '' })
+    await getSessionClaudeStatus('p', 's', 'c-evict')
+    expect(mockPodmanExec).toHaveBeenCalledTimes(1)
+
+    evictClaudeStatusCache('c-evict')
+
+    await getSessionClaudeStatus('p', 's', 'c-evict')
+    expect(mockPodmanExec).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('evictClaudeStatusCache', () => {
+  it('is exported as a function', () => {
+    expect(typeof evictClaudeStatusCache).toBe('function')
+  })
+})
+
+describe('_clearClaudeStatusCacheForTests', () => {
+  it('is exported as a function', () => {
+    expect(typeof _clearClaudeStatusCacheForTests).toBe('function')
   })
 })
 
