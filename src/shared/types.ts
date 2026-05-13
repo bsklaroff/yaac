@@ -144,6 +144,7 @@ export interface PostgresRelayConfig {
 
 export interface YaacConfig {
   envPassthrough?: string[]
+  env?: Record<string, string>
   envSecretProxy?: Record<string, SecretProxyRule>
   cacheVolumes?: Record<string, string>
   initCommands?: string[]

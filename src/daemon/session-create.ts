@@ -560,6 +560,14 @@ export async function createSession(
     }
   }
 
+  // Hardcoded env vars from config — applied after passthrough so literal
+  // values win on conflict.
+  if (config.env) {
+    for (const [name, val] of Object.entries(config.env)) {
+      env.push(`${name}=${val}`)
+    }
+  }
+
   // Proxy is always required — it reads the host-mounted credentials dir
   // directly and injects GitHub / Claude / Codex tokens into outbound HTTPS
   // requests. Credential updates via `yaac auth update` propagate to every

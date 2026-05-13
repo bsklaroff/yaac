@@ -4,7 +4,7 @@ import crypto from 'node:crypto'
 import type { YaacConfig, PostgresRelayConfig } from '@/shared/types'
 import { projectConfigDir } from '@/lib/project/paths'
 
-const KNOWN_KEYS = new Set(['envPassthrough', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'nestedContainers', 'portForward', 'bindMounts', 'hideInitPane', 'pgRelay', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths'])
+const KNOWN_KEYS = new Set(['envPassthrough', 'env', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'nestedContainers', 'portForward', 'bindMounts', 'hideInitPane', 'pgRelay', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths'])
 
 /** Default when `ephemeralModulesPaths` is unset — redirect the root
  *  node_modules only. Set to `[]` in yaac-config.json to opt out. */
@@ -68,6 +68,19 @@ export function parseProjectConfig(raw: string): YaacConfig {
       throw new Error('yaac-config.json: envPassthrough must be a string array')
     }
     config.envPassthrough = obj.envPassthrough
+  }
+
+  if (obj.env !== undefined) {
+    if (typeof obj.env !== 'object' || obj.env === null || Array.isArray(obj.env)) {
+      throw new Error('yaac-config.json: env must be an object of string values')
+    }
+    const envObj = obj.env as Record<string, unknown>
+    for (const [key, val] of Object.entries(envObj)) {
+      if (typeof val !== 'string') {
+        throw new Error(`yaac-config.json: env.${key} must be a string`)
+      }
+    }
+    config.env = envObj as Record<string, string>
   }
 
   if (obj.envSecretProxy !== undefined) {

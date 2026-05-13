@@ -68,6 +68,48 @@ describe('loadProjectConfig', () => {
     expect(result).toEqual(config)
   })
 
+  it('parses valid config with env', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ env: { FOO: 'bar', BAZ: 'qux' } }),
+    )
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual({ env: { FOO: 'bar', BAZ: 'qux' } })
+  })
+
+  it('throws on invalid env type (array)', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ env: ['FOO=bar'] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('env must be an object of string values')
+  })
+
+  it('throws on invalid env type (string)', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ env: 'FOO=bar' }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('env must be an object of string values')
+  })
+
+  it('throws on non-string env value', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ env: { FOO: 42 } }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('env.FOO must be a string')
+  })
+
+  it('does not expand $VAR references in env values', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ env: { LITERAL: '$HOME/stuff' } }),
+    )
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual({ env: { LITERAL: '$HOME/stuff' } })
+  })
+
   it('throws on invalid envPassthrough type', async () => {
     await fs.writeFile(
       path.join(tmpDir, 'yaac-config.json'),

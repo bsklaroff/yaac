@@ -152,6 +152,10 @@ Add a `yaac-config.json` to your repo root. Example with all options:
 ```json
 {
   "envPassthrough": ["TERM", "LANG"],
+  "env": {
+    "NODE_ENV": "development",
+    "MY_FLAG": "1"
+  },
   "envSecretProxy": {
     "MY_API_KEY": {
       "hosts": ["api.example.com"],
@@ -188,6 +192,7 @@ Add a `yaac-config.json` to your repo root. Example with all options:
 ```
 
 - **envPassthrough** — environment variables passed directly from your host to the container.
+- **env** — environment variables hardcoded with literal values, baked into the container at session creation. Applied after `envPassthrough`, so a name listed in both takes the literal value here. Values are not expanded — `"$HOME"` is passed through as the literal string `$HOME`.
 - **envSecretProxy** — environment variables injected via a MITM proxy into HTTPS requests. The actual secret value never enters the container. Each entry specifies how the secret is injected:
   - **`hosts`** — hostnames to intercept (required).
   - **`header`** — inject as this HTTP header (default: `"authorization"`). When using the default header, the value is automatically prefixed with `"Bearer "`. Use `prefix` to override.
