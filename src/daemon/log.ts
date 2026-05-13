@@ -22,3 +22,30 @@ export function daemonLog(message: string): void {
     // swallow — stderr already got the message
   }
 }
+
+/**
+ * Forward a child process's stdout/stderr stream to `daemonLog`, one
+ * line at a time with `prefix` prepended. Used so noisy subprocess
+ * output (e.g. `podman build`) lands in `~/.yaac/daemon.log` instead of
+ * being dropped when the daemon runs detached with `stdio: 'ignore'`.
+ */
+export function pipeToDaemonLog(
+  stream: NodeJS.ReadableStream | null,
+  prefix: string,
+): void {
+  if (!stream) return
+  let buf = ''
+  stream.setEncoding('utf8')
+  stream.on('data', (chunk: string) => {
+    buf += chunk
+    let idx: number
+    while ((idx = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, idx)
+      buf = buf.slice(idx + 1)
+      if (line.length > 0) daemonLog(`${prefix}${line}`)
+    }
+  })
+  stream.on('end', () => {
+    if (buf.length > 0) daemonLog(`${prefix}${buf}`)
+  })
+}

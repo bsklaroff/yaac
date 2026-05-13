@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { PassThrough } from 'node:stream'
 import { setDataDir, daemonLogPath } from '@/shared/paths'
-import { daemonLog } from '@/daemon/log'
+import { daemonLog, pipeToDaemonLog } from '@/daemon/log'
 import { daemonLogs } from '@/daemon/cli'
 
 describe('daemonLog', () => {
@@ -108,5 +109,71 @@ describe('daemonLogs', () => {
     await fs.writeFile(daemonLogPath(), 'a\nb\nc')
     await daemonLogs({ lines: 2 })
     expect(stdoutContent()).toBe('b\nc')
+  })
+})
+
+describe('pipeToDaemonLog', () => {
+  let dataDir: string
+  const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+  beforeEach(async () => {
+    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-pipe-log-test-'))
+    setDataDir(dataDir)
+    consoleErrorSpy.mockClear()
+  })
+
+  afterEach(async () => {
+    await fs.rm(dataDir, { recursive: true, force: true })
+  })
+
+  async function readLogMessages(): Promise<string[]> {
+    const contents = await fs.readFile(daemonLogPath(), 'utf8')
+    // Strip the leading "<ISO timestamp> " from each line.
+    return contents
+      .trimEnd()
+      .split('\n')
+      .map((l) => l.replace(/^\S+ /, ''))
+  }
+
+  it('logs one daemon-log entry per newline-terminated chunk', async () => {
+    const s = new PassThrough()
+    pipeToDaemonLog(s, '[build foo] ')
+    s.write('alpha\nbeta\n')
+    s.end()
+    await new Promise((r) => s.on('end', r))
+    expect(await readLogMessages()).toEqual(['[build foo] alpha', '[build foo] beta'])
+  })
+
+  it('buffers across chunk boundaries until a newline arrives', async () => {
+    const s = new PassThrough()
+    pipeToDaemonLog(s, 'p ')
+    s.write('hel')
+    s.write('lo\nwor')
+    s.write('ld\n')
+    s.end()
+    await new Promise((r) => s.on('end', r))
+    expect(await readLogMessages()).toEqual(['p hello', 'p world'])
+  })
+
+  it('flushes a trailing partial line on stream end', async () => {
+    const s = new PassThrough()
+    pipeToDaemonLog(s, 'p ')
+    s.write('no-newline-here')
+    s.end()
+    await new Promise((r) => s.on('end', r))
+    expect(await readLogMessages()).toEqual(['p no-newline-here'])
+  })
+
+  it('skips empty lines between consecutive newlines', async () => {
+    const s = new PassThrough()
+    pipeToDaemonLog(s, 'p ')
+    s.write('a\n\nb\n')
+    s.end()
+    await new Promise((r) => s.on('end', r))
+    expect(await readLogMessages()).toEqual(['p a', 'p b'])
+  })
+
+  it('is a no-op when the stream is null', () => {
+    expect(() => pipeToDaemonLog(null, 'p ')).not.toThrow()
   })
 })

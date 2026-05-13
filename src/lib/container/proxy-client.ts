@@ -7,7 +7,7 @@ import fs from 'node:fs/promises'
 import { PROXY_DIR, credentialsDir } from '@/lib/project/paths'
 import { contextHash } from '@/lib/container/image-builder'
 import { findAvailablePort } from '@/lib/container/port'
-import { daemonLog } from '@/daemon/log'
+import { daemonLog, pipeToDaemonLog } from '@/daemon/log'
 
 // --- Secret convention types & builder (merged from secret-conventions.ts) ---
 
@@ -390,7 +390,7 @@ export class ProxyClient {
         'Restart the test run so the global setup can rebuild it.',
       )
     }
-    console.log('Building proxy sidecar image...')
+    daemonLog(`[build] starting ${taggedImage} (proxy sidecar)`)
     await new Promise<void>((resolve, reject) => {
       const buildArgs = ['build', '-t', taggedImage]
       const certFile = process.env.SSL_CERT_FILE
@@ -399,7 +399,13 @@ export class ProxyClient {
         buildArgs.push('--build-arg', `SSL_CERT_FILE=${certFile}`)
       }
       buildArgs.push(PROXY_DIR)
-      const child = spawn('podman', buildArgs, { stdio: 'inherit', timeout: 300_000 })
+      const child = spawn('podman', buildArgs, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 300_000,
+      })
+      const prefix = `[build ${taggedImage}] `
+      pipeToDaemonLog(child.stdout, prefix)
+      pipeToDaemonLog(child.stderr, prefix)
       child.on('close', (code) => {
         if (code === 0) resolve()
         else reject(new Error(`podman build exited with code ${code}`))

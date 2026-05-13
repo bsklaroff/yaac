@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process'
 import { pack } from 'tar-stream'
 import { DOCKERFILES_DIR, getDataDir, projectConfigDir } from '@/lib/project/paths'
 import { imageExists } from '@/lib/container/runtime'
+import { daemonLog, pipeToDaemonLog } from '@/daemon/log'
 
 interface TarEntry {
   name: string
@@ -84,7 +85,13 @@ async function buildImage(imageName: string, dockerfile: string, context: string
   args.push(context)
 
   await new Promise<void>((resolve, reject) => {
-    const child = spawn('podman', args, { stdio: 'inherit', timeout: 600_000 })
+    const child = spawn('podman', args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 600_000,
+    })
+    const prefix = `[build ${imageName}] `
+    pipeToDaemonLog(child.stdout, prefix)
+    pipeToDaemonLog(child.stderr, prefix)
     child.on('close', (code) => {
       if (code === 0) resolve()
       else reject(new Error(`podman build exited with code ${code}`))
@@ -99,7 +106,7 @@ async function buildImage(imageName: string, dockerfile: string, context: string
  */
 export async function ensureImageByTag(tag: string, dockerfile: string, context: string, buildArgs?: Record<string, string>): Promise<void> {
   if (await imageExists(tag)) return
-  console.log(`Building ${tag}...`)
+  daemonLog(`[build] starting ${tag}`)
   await buildImage(tag, dockerfile, context, buildArgs)
 }
 
@@ -277,7 +284,7 @@ export async function ensureImage(projectSlug: string, imagePrefix?: string, req
       )
     }
 
-    console.log(`Building ${layer.tag}...`)
+    daemonLog(`[build] starting ${layer.tag}`)
     await buildImage(layer.tag, layer.dockerfile, layer.context, layer.buildArgs)
   }
 
