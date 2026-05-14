@@ -1,0 +1,6 @@
+allowBuilds:
+  cpu-features: false
+  esbuild: false
+  protobufjs: false
+  ssh2: false
+minimumReleaseAge: 10080

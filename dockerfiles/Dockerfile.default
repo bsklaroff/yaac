@@ -42,7 +42,7 @@ RUN npm config set prefix /home/yaac/.local
 RUN npm install -g chrome-devtools-mcp@0.24.0
 RUN npm install -g @openai/codex
 RUN curl -fsSL https://claude.ai/install.sh | bash
-RUN corepack install -g pnpm@10.33.0 && \
+RUN corepack install -g pnpm@11.1.2 && \
     pnpm config set store-dir /home/yaac/.cached-packages/pnpm-store
 
 ENV LANG=en_US.UTF-8
