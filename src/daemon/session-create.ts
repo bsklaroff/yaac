@@ -32,7 +32,6 @@ import {
 import {
   CONTAINER_TMUX_DIR,
   CONTAINER_TMUX_SOCK,
-  CONTAINER_TMUX_PANE_LOG,
 } from '@/shared/paths'
 import {
   resolveProjectConfig,
@@ -237,10 +236,9 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
   } = params
 
   // Every in-container `tmux` invocation routes through this prefix so
-  // the server socket and pipe-pane log land on a host-bind-mounted dir.
-  // The daemon reads the pane log directly from the host without
-  // `podman exec`; liveness still goes through `podman exec has-session`
-  // because UNIX socket connect()s don't cross virtio-fs.
+  // the server socket lands on a host-bind-mounted dir. Liveness and
+  // pane-content probes still go through `podman exec` because UNIX
+  // socket connect()s don't cross virtio-fs.
   const TMUX = `tmux -S ${CONTAINER_TMUX_SOCK}`
 
   // Pre-create the per-session graphroot and project image-cache volumes
@@ -334,7 +332,7 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
 
   // Same fix for the tmux bind mount — the host dir was created by the
   // daemon process and the in-container yaac user needs to own it so
-  // it can write the tmux socket and pipe-pane log.
+  // it can write the tmux socket.
   await containerExecRoot(containerName, `chown yaac:yaac '${CONTAINER_TMUX_DIR}'`)
 
   // Forward localhost:<pgPort> inside the container to the pg-relay sidecar (IPv4 + IPv6)
@@ -432,16 +430,6 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
   // placeholder and starts the agent in the same window, preserving the
   // tmux state we just built.
   await containerExec(containerName, `${TMUX} respawn-window -k -t yaac:${tool} '${agentCmd}'`)
-
-  // Pipe the agent pane's output to a host-readable log file. The daemon
-  // reads (and truncates) this file to detect Claude's "running" vs
-  // "waiting" state without `podman exec tmux capture-pane`. Must run
-  // AFTER respawn-window so pipe-pane attaches to the agent pane, not
-  // the now-defunct keepalive pane.
-  await containerExec(
-    containerName,
-    `${TMUX} pipe-pane -t yaac:${tool}.0 -o 'cat >> ${CONTAINER_TMUX_PANE_LOG}'`,
-  )
 }
 
 /**

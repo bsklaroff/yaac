@@ -1,7 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
+
+vi.mock('@/lib/container/runtime', () => ({
+  shellPodmanWithRetry: vi.fn(),
+}))
 
 import {
   classifyClaudePane,
@@ -10,11 +14,9 @@ import {
   evictClaudeStatusCache,
   _clearClaudeStatusCacheForTests,
 } from '@/lib/session/claude-status'
-import {
-  setDataDir,
-  sessionTmuxDir,
-  sessionTmuxPaneLogPath,
-} from '@/lib/project/paths'
+import { shellPodmanWithRetry } from '@/lib/container/runtime'
+
+const mockExec = vi.mocked(shellPodmanWithRetry)
 
 describe('classifyClaudePane', () => {
   it('returns running when the pane shows "esc to interrupt"', () => {
@@ -33,6 +35,19 @@ describe('classifyClaudePane', () => {
       '● Working on it.',
       '',
       '* (ctrl+c to interrupt)',
+    ].join('\n')
+    expect(classifyClaudePane(pane)).toBe('running')
+  })
+
+  it('returns running when the bottom bar embeds the interrupt hint', () => {
+    // Claude Code's newer TUI moves the interrupt hint into the
+    // status bar alongside the bypass-permissions toggle and the
+    // tasks panel shortcut. `capture-pane -p` renders the bar as
+    // a single visible line, separators and all.
+    const pane = [
+      '● Working on it.',
+      '',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ctrl+t to hide tasks',
     ].join('\n')
     expect(classifyClaudePane(pane)).toBe('running')
   })
@@ -119,94 +134,79 @@ describe('classifyClaudePane', () => {
 })
 
 describe('getSessionClaudeStatus', () => {
-  let dataDir: string
-
-  beforeEach(async () => {
+  beforeEach(() => {
     _clearClaudeStatusCacheForTests()
-    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-claude-status-'))
-    setDataDir(dataDir)
+    mockExec.mockReset()
   })
 
-  afterEach(async () => {
-    await fs.rm(dataDir, { recursive: true, force: true })
-  })
-
-  async function writePane(slug: string, sid: string, content: string): Promise<void> {
-    await fs.mkdir(sessionTmuxDir(slug, sid), { recursive: true })
-    await fs.writeFile(sessionTmuxPaneLogPath(slug, sid), content)
+  function mockPane(content: string): void {
+    mockExec.mockResolvedValue({ stdout: content, stderr: '' })
   }
 
-  async function readPane(slug: string, sid: string): Promise<string> {
-    return fs.readFile(sessionTmuxPaneLogPath(slug, sid), 'utf8')
-  }
-
-  it('returns running when the pane log shows the interrupt hint', async () => {
-    await writePane('p', 's-run', 'doing things… (esc to interrupt)')
+  it('returns running when capture-pane includes the interrupt hint', async () => {
+    mockPane('doing things… (esc to interrupt)')
     await expect(getSessionClaudeStatus('p', 's-run', 'c-run')).resolves.toBe('running')
   })
 
-  it('returns waiting when the pane log lacks the interrupt hint', async () => {
-    await writePane('p', 's-wait', '❯ ')
+  it('returns waiting when capture-pane lacks the interrupt hint', async () => {
+    mockPane('❯ ')
     await expect(getSessionClaudeStatus('p', 's-wait', 'c-wait')).resolves.toBe('waiting')
   })
 
-  it('returns waiting when the pane log file does not exist yet', async () => {
+  it('returns waiting when capture-pane fails (container not ready)', async () => {
+    mockExec.mockRejectedValue(new Error('no such container'))
     await expect(getSessionClaudeStatus('p', 's-absent', 'c-absent')).resolves.toBe('waiting')
   })
 
-  it('truncates the pane log after a successful read', async () => {
-    await writePane('p', 's-trunc', 'some pane content')
-    await getSessionClaudeStatus('p', 's-trunc', 'c-trunc')
-    await expect(readPane('p', 's-trunc')).resolves.toBe('')
+  it('invokes capture-pane against the named container and claude pane', async () => {
+    mockPane('esc to interrupt')
+    await getSessionClaudeStatus('p', 's-cmd', 'yaac-proj-cmd')
+    expect(mockExec).toHaveBeenCalledTimes(1)
+    const cmd = mockExec.mock.calls[0][0]
+    expect(cmd).toContain('podman exec yaac-proj-cmd')
+    expect(cmd).toContain('capture-pane -pJ -t yaac:claude.0')
   })
 
-  it('reads only the trailing window of a large pane log', async () => {
-    // Pad the front of the file with content that does NOT match, and
-    // put the interrupt hint at the very end. The probe should still
-    // detect "running" because it reads from the tail.
-    const padding = 'x'.repeat(20000)
-    await writePane('p', 's-tail', `${padding}\nfinally: esc to interrupt`)
-    await expect(getSessionClaudeStatus('p', 's-tail', 'c-tail')).resolves.toBe('running')
-  })
-
-  it('serves repeat calls from the TTL cache without re-reading', async () => {
-    await writePane('p', 's-cache', '❯ ')
+  it('serves repeat calls from the TTL cache without re-invoking podman', async () => {
+    mockPane('❯ ')
     expect(await getSessionClaudeStatus('p', 's-cache', 'c-cache')).toBe('waiting')
-    // The file was truncated; without caching, a subsequent call would
-    // see an empty file and re-classify (still 'waiting' incidentally,
-    // but the file would also stay empty). Write 'running' content and
-    // verify the cached 'waiting' wins.
-    await writePane('p', 's-cache', 'esc to interrupt')
+    // A second call within the TTL must NOT call podman again — verify
+    // by switching the mock to throw; if the cache were bypassed the
+    // call would now return 'waiting' for a different reason but
+    // would also bump the mock counter.
+    mockExec.mockRejectedValue(new Error('should not be called'))
     expect(await getSessionClaudeStatus('p', 's-cache', 'c-cache')).toBe('waiting')
+    expect(mockExec).toHaveBeenCalledTimes(1)
   })
 
   it('coalesces concurrent callers onto a single in-flight probe', async () => {
-    await writePane('p', 's-coalesce', 'esc to interrupt')
+    mockPane('esc to interrupt')
     const p1 = getSessionClaudeStatus('p', 's-coalesce', 'c1')
     const p2 = getSessionClaudeStatus('p', 's-coalesce', 'c1')
     const p3 = getSessionClaudeStatus('p', 's-coalesce', 'c1')
     await expect(Promise.all([p1, p2, p3])).resolves.toEqual(['running', 'running', 'running'])
-    // The shared probe means we read+truncate exactly once.
-    await expect(readPane('p', 's-coalesce')).resolves.toBe('')
+    expect(mockExec).toHaveBeenCalledTimes(1)
   })
 
   it('caches per (slug, sid), not globally', async () => {
-    await writePane('p', 's-A', 'esc to interrupt')
-    await writePane('p', 's-B', '❯ ')
+    mockExec.mockImplementation((cmd: string) => {
+      if (cmd.includes('c-A')) return Promise.resolve({ stdout: 'esc to interrupt', stderr: '' })
+      return Promise.resolve({ stdout: '❯ ', stderr: '' })
+    })
     expect(await getSessionClaudeStatus('p', 's-A', 'c-A')).toBe('running')
     expect(await getSessionClaudeStatus('p', 's-B', 'c-B')).toBe('waiting')
   })
 
   it('evictClaudeStatusCache clears the entry for that session', async () => {
-    await writePane('p', 's-evict', '❯ ')
+    mockPane('❯ ')
     expect(await getSessionClaudeStatus('p', 's-evict', 'c-evict')).toBe('waiting')
 
     evictClaudeStatusCache('p', 's-evict')
 
-    // Cache cleared — write 'running' content and confirm the next
-    // probe re-reads it.
-    await writePane('p', 's-evict', 'esc to interrupt')
+    // Cache cleared — a fresh probe re-runs capture-pane.
+    mockPane('esc to interrupt')
     expect(await getSessionClaudeStatus('p', 's-evict', 'c-evict')).toBe('running')
+    expect(mockExec).toHaveBeenCalledTimes(2)
   })
 })
 

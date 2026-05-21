@@ -190,9 +190,8 @@ export async function cleanupSession(params: {
     force: true,
   })
 
-  // Remove the per-session tmux dir holding the server socket and
-  // pipe-pane log. The container is gone; the bind-mount source is
-  // garbage now.
+  // Remove the per-session tmux dir holding the server socket. The
+  // container is gone; the bind-mount source is garbage now.
   await fs.rm(sessionTmuxDir(projectSlug, sessionId), {
     recursive: true,
     force: true,
