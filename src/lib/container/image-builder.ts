@@ -42,15 +42,31 @@ export async function fileHash(filePath: string): Promise<string> {
   return stringHash(content)
 }
 
+// node_modules is a dev-only artifact created by pnpm workspace installs; it
+// is also excluded via .containerignore in contexts that contain it.
+const CONTEXT_HASH_IGNORE = new Set(['node_modules'])
+
+async function collectContextFiles(root: string, rel: string): Promise<string[]> {
+  const entries = await fs.readdir(path.join(root, rel), { withFileTypes: true })
+  const out: string[] = []
+  for (const entry of entries) {
+    if (CONTEXT_HASH_IGNORE.has(entry.name)) continue
+    const childRel = rel ? `${rel}/${entry.name}` : entry.name
+    if (entry.isDirectory()) {
+      out.push(...await collectContextFiles(root, childRel))
+    } else if (entry.isFile()) {
+      out.push(childRel)
+    }
+  }
+  return out
+}
+
 export async function contextHash(dir: string): Promise<string> {
-  const entries = (await fs.readdir(dir, { withFileTypes: true }))
-    .filter((e) => e.isFile())
-    .map((e) => e.name)
-    .sort()
+  const files = (await collectContextFiles(dir, '')).sort()
   const hasher = crypto.createHash('sha256')
-  for (const name of entries) {
-    hasher.update(name)
-    hasher.update(await fs.readFile(path.join(dir, name)))
+  for (const rel of files) {
+    hasher.update(rel)
+    hasher.update(await fs.readFile(path.join(dir, rel)))
   }
   return hasher.digest('hex').slice(0, 16)
 }

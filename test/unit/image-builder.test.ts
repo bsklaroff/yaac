@@ -78,7 +78,7 @@ describe('contextHash', () => {
     }
   })
 
-  it('ignores subdirectories', async () => {
+  it('changes when a file is added in a subdirectory', async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-ctx-'))
     try {
       await fs.writeFile(path.join(tmpDir, 'a.txt'), 'hello')
@@ -86,6 +86,22 @@ describe('contextHash', () => {
 
       await fs.mkdir(path.join(tmpDir, 'subdir'))
       await fs.writeFile(path.join(tmpDir, 'subdir', 'b.txt'), 'world')
+      const hash2 = await contextHash(tmpDir)
+
+      expect(hash2).not.toBe(hash1)
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('ignores node_modules', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-ctx-'))
+    try {
+      await fs.writeFile(path.join(tmpDir, 'a.txt'), 'hello')
+      const hash1 = await contextHash(tmpDir)
+
+      await fs.mkdir(path.join(tmpDir, 'node_modules'))
+      await fs.writeFile(path.join(tmpDir, 'node_modules', 'pkg.txt'), 'noise')
       const hash2 = await contextHash(tmpDir)
 
       expect(hash2).toBe(hash1)
