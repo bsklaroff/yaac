@@ -1,0 +1,3 @@
+SocksPort 127.0.0.1:9050
+DataDirectory /data/tor
+Log notice file /data/tor/notices.log

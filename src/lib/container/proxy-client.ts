@@ -492,6 +492,7 @@ export class ProxyClient {
           Env: [
             `PORT=${PROXY_CONTAINER_PORT}`,
             `PROXY_AUTH_SECRET=${authSecret}`,
+            ...(process.env.YAAC_USE_TOR === '1' ? ['USE_TOR=1'] : []),
           ],
           HostConfig: {
             PortBindings: {

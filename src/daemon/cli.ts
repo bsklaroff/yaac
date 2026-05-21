@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import net from 'node:net'
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import { createReadStream, existsSync } from 'node:fs'
@@ -30,6 +31,32 @@ export interface DaemonRunOptions {
   port?: number
 }
 
+// When YAAC_USE_TOR=1 is set, the daemon routes its own git fetch/clone
+// through a host-machine Tor SOCKS endpoint (default 127.0.0.1:9050).
+// Fail loud at startup if it's unreachable rather than letting the first
+// git operation fail with an opaque connection-refused.
+async function preflightHostTor(): Promise<void> {
+  if (process.env.YAAC_USE_TOR !== '1') return
+  const url = new URL(process.env.YAAC_HOST_TOR_SOCKS_URL ?? 'socks5h://127.0.0.1:9050')
+  const host = url.hostname
+  const port = parseInt(url.port || '9050', 10)
+  await new Promise<void>((resolve, reject) => {
+    const sock = net.connect({ host, port })
+    const timer = setTimeout(() => {
+      sock.destroy()
+      reject(new Error(`timeout connecting to ${host}:${port}`))
+    }, 2000)
+    sock.once('connect', () => { clearTimeout(timer); sock.destroy(); resolve() })
+    sock.once('error', (err) => { clearTimeout(timer); reject(err) })
+  }).catch((err: Error) => {
+    throw new Error(
+      `YAAC_USE_TOR=1 is set but host Tor at ${url.href} is not reachable `
+      + `(${err.message}). Start Tor ('sudo systemctl start tor' on Linux, `
+      + `'brew services start tor' on macOS) or unset YAAC_USE_TOR.`,
+    )
+  })
+}
+
 /**
  * Entry point for `yaac daemon run` — the foreground HTTP server.
  *
@@ -39,6 +66,7 @@ export interface DaemonRunOptions {
  *   until SIGTERM / SIGINT, then unlink the lock and exit.
  */
 export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
+  await preflightHostTor()
   await ensureDataDir()
 
   // Read build-id up front so a broken install fails loudly before we
@@ -169,6 +197,7 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
  *   and wait up to 5s for the new lock to appear.
  */
 export async function startDaemon(): Promise<void> {
+  await preflightHostTor()
   await ensureDataDir()
   const cliBuildId = await readBuildId()
 

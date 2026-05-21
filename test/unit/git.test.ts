@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import simpleGit from 'simple-git'
-import { cloneRepo, getDefaultBranch, addWorktree, removeWorktree, fetchOrigin, getGitUserConfig, injectTokenIntoUrl, getRemoteHeadCommit } from '@/lib/git'
+import { cloneRepo, getDefaultBranch, addWorktree, removeWorktree, fetchOrigin, getGitUserConfig, injectTokenIntoUrl, getRemoteHeadCommit, torEnv } from '@/lib/git'
 
 describe('git helpers', () => {
   let tmpDir: string
@@ -222,5 +222,51 @@ describe('git helpers', () => {
 
     // Verify directory is gone
     await expect(fs.access(wtPath)).rejects.toThrow()
+  })
+})
+
+describe('torEnv', () => {
+  const originalUseTor = process.env.YAAC_USE_TOR
+  const originalUrl = process.env.YAAC_HOST_TOR_SOCKS_URL
+
+  afterEach(() => {
+    if (originalUseTor === undefined) delete process.env.YAAC_USE_TOR
+    else process.env.YAAC_USE_TOR = originalUseTor
+    if (originalUrl === undefined) delete process.env.YAAC_HOST_TOR_SOCKS_URL
+    else process.env.YAAC_HOST_TOR_SOCKS_URL = originalUrl
+  })
+
+  it('returns undefined when YAAC_USE_TOR is unset', () => {
+    delete process.env.YAAC_USE_TOR
+    expect(torEnv()).toBeUndefined()
+  })
+
+  it('returns undefined when YAAC_USE_TOR is not "1"', () => {
+    process.env.YAAC_USE_TOR = 'true'
+    expect(torEnv()).toBeUndefined()
+  })
+
+  it('returns env with default ALL_PROXY when YAAC_USE_TOR=1', () => {
+    process.env.YAAC_USE_TOR = '1'
+    delete process.env.YAAC_HOST_TOR_SOCKS_URL
+    const env = torEnv()
+    expect(env).toBeDefined()
+    expect(env!.ALL_PROXY).toBe('socks5h://127.0.0.1:9050')
+    expect(env!.NO_PROXY).toBe('localhost,127.0.0.1')
+  })
+
+  it('honors YAAC_HOST_TOR_SOCKS_URL override', () => {
+    process.env.YAAC_USE_TOR = '1'
+    process.env.YAAC_HOST_TOR_SOCKS_URL = 'socks5h://127.0.0.1:9150'
+    const env = torEnv()
+    expect(env!.ALL_PROXY).toBe('socks5h://127.0.0.1:9150')
+  })
+
+  it('preserves other process.env vars', () => {
+    process.env.YAAC_USE_TOR = '1'
+    process.env.YAAC_TORENV_TEST_MARKER = 'present'
+    const env = torEnv()
+    expect(env!.YAAC_TORENV_TEST_MARKER).toBe('present')
+    delete process.env.YAAC_TORENV_TEST_MARKER
   })
 })

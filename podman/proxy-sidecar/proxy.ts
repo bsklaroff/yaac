@@ -22,6 +22,8 @@ import crypto from 'node:crypto'
 import zlib from 'node:zlib'
 import type { Duplex } from 'node:stream'
 import forge from 'node-forge'
+import { SocksClient } from 'socks'
+import { SocksProxyAgent } from 'socks-proxy-agent'
 
 const PORT = process.env.PORT
 const PROXY_AUTH_SECRET = process.env.PROXY_AUTH_SECRET
@@ -30,6 +32,15 @@ if (!PORT || !PROXY_AUTH_SECRET) {
   process.exit(1)
 }
 const DATA_DIR = '/data'
+
+// When USE_TOR=1, route every upstream connection through the Tor SOCKS
+// listener started by entrypoint.sh on container loopback. socks5h://
+// resolves DNS at the Tor exit so the proxy's hostname lookups don't
+// leak to the container's resolver.
+const USE_TOR = process.env.USE_TOR === '1'
+const TOR_SOCKS_URL = 'socks5h://127.0.0.1:9050'
+const torAgent = USE_TOR ? new SocksProxyAgent(TOR_SOCKS_URL) : null
+const torProxy = { host: '127.0.0.1', port: 9050, type: 5 as const }
 
 // Host-mounted credentials directory. The entire `~/.yaac/.credentials/`
 // directory is bind-mounted RW so the proxy can read every service's
@@ -1048,6 +1059,9 @@ function handleMitm(
       // proxy's leaf cert for `hostname`.
       const useHttp = upstreamRedirect !== null && upstreamRedirect.tls !== true
       const upstreamModule = useHttp ? http : https
+      // Skip Tor when redirected to a loopback test mock — Tor refuses
+      // loopback destinations.
+      const useTorAgent = torAgent !== null && upstreamRedirect === null
       const upstream = upstreamModule.request({
         hostname: upstreamRedirect?.host ?? hostname,
         port: upstreamRedirect?.port ?? (parseInt(port ?? '', 10) || 443),
@@ -1055,6 +1069,7 @@ function handleMitm(
         method: req.method,
         headers,
         ...(useHttp ? {} : { rejectUnauthorized: true }),
+        ...(useTorAgent ? { agent: torAgent } : {}),
       }, (upstreamRes) => {
         if (claudeTokenBundle && shouldCaptureTokenResponse) {
           handleClaudeTokenResponse(upstreamRes, res, claudeTokenBundle)
@@ -1136,6 +1151,7 @@ function handleMitm(
     // will return a plain 200 and the client will fall back to HTTP.
     const useHttp = upstreamRedirect !== null && upstreamRedirect.tls !== true
     const upstreamModule = useHttp ? http : https
+    const useTorAgent = torAgent !== null && upstreamRedirect === null
     const upstreamReq = upstreamModule.request({
       hostname: upstreamRedirect?.host ?? hostname,
       port: upstreamRedirect?.port ?? (parseInt(port ?? '', 10) || 443),
@@ -1143,6 +1159,7 @@ function handleMitm(
       method: req.method,
       headers,
       ...(useHttp ? {} : { rejectUnauthorized: true }),
+      ...(useTorAgent ? { agent: torAgent } : {}),
     })
 
     upstreamReq.on('upgrade', (upstreamRes, upstreamSocket, upstreamHead) => {
@@ -1207,7 +1224,32 @@ function handleMitm(
 // ── Tunnel Handler ─────────────────────────────────────────────────────
 
 function handleTunnel(clientSocket: Duplex, hostname: string, port: string | undefined): void {
-  const upstream = net.connect(parseInt(port ?? '', 10) || 443, hostname, () => {
+  const destPort = parseInt(port ?? '', 10) || 443
+
+  if (USE_TOR) {
+    void SocksClient.createConnection({
+      proxy: torProxy,
+      command: 'connect',
+      destination: { host: hostname, port: destPort },
+    }, (err, info) => {
+      if (err || !info) {
+        console.error(`[proxy] Tor tunnel error for ${hostname}:`, err?.message ?? 'no socket')
+        clientSocket.end()
+        return
+      }
+      const upstream = info.socket
+      clientSocket.pipe(upstream)
+      upstream.pipe(clientSocket)
+      upstream.on('error', (uerr: Error) => {
+        console.error(`[proxy] Tunnel error for ${hostname}:`, uerr.message)
+        clientSocket.end()
+      })
+      clientSocket.on('error', () => { upstream.destroy() })
+    })
+    return
+  }
+
+  const upstream = net.connect(destPort, hostname, () => {
     clientSocket.pipe(upstream)
     upstream.pipe(clientSocket)
   })
@@ -1231,6 +1273,11 @@ function checkAuth(req: http.IncomingMessage): boolean {
 
 function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
   if (req.method === 'GET' && req.url === '/healthz') {
+    if (USE_TOR && !fs.existsSync('/data/tor-ready')) {
+      res.writeHead(503)
+      res.end('tor not ready')
+      return
+    }
     res.writeHead(200)
     res.end('ok')
     return
@@ -1380,6 +1427,7 @@ function handleHttpForward(req: http.IncomingMessage, res: http.ServerResponse):
     path: target.pathname + target.search,
     method: req.method,
     headers,
+    ...(torAgent ? { agent: torAgent } : {}),
   }, (upstreamRes) => {
     res.writeHead(upstreamRes.statusCode ?? 200, upstreamRes.headers)
     upstreamRes.pipe(res)
@@ -1455,7 +1503,7 @@ server.on('error', (err: Error) => {
 })
 
 server.listen(parseInt(PORT, 10), '0.0.0.0', () => {
-  console.log(`[proxy] MITM proxy listening on port ${PORT}`)
+  console.log(`[proxy] MITM proxy listening on port ${PORT}${USE_TOR ? ' (Tor: enabled)' : ''}`)
 })
 
 process.on('SIGTERM', () => {
