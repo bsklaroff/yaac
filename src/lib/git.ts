@@ -7,15 +7,25 @@ export function injectTokenIntoUrl(url: string, token: string): string {
   return parsed.toString()
 }
 
-// When YAAC_USE_TOR=1 is set on the daemon process, route the git
-// subprocess through the user's host-machine Tor (assumed already running
-// at YAAC_HOST_TOR_SOCKS_URL, default socks5h://127.0.0.1:9050). Returns
+// Parses YAAC_USE_TOR with permissive truthy semantics: unset, empty,
+// "0", and "false" (case-insensitive) are off; everything else is on.
+export function isTorEnabled(): boolean {
+  const raw = process.env.YAAC_USE_TOR
+  if (raw === undefined) return false
+  const v = raw.trim().toLowerCase()
+  if (v === '' || v === '0' || v === 'false') return false
+  return true
+}
+
+// When Tor is enabled on the daemon process, route the git subprocess
+// through the user's host-machine Tor (assumed already running at
+// YAAC_HOST_TOR_SOCKS_URL, default socks5h://127.0.0.1:9050). Returns
 // undefined when the toggle is off so simple-git uses its default env.
 //
 // simple-git's `.env(obj)` replaces the child's env wholesale, so we must
 // spread process.env to preserve PATH, HOME, etc.
 export function torEnv(): NodeJS.ProcessEnv | undefined {
-  if (process.env.YAAC_USE_TOR !== '1') return undefined
+  if (!isTorEnabled()) return undefined
   const url = process.env.YAAC_HOST_TOR_SOCKS_URL ?? 'socks5h://127.0.0.1:9050'
   return { ...process.env, ALL_PROXY: url, NO_PROXY: 'localhost,127.0.0.1' }
 }

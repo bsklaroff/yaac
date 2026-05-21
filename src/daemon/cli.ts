@@ -24,6 +24,7 @@ import { gcOrphanEphemeralModuleDirs } from '@/lib/session/cleanup'
 import { restoreAllSessionForwarders } from '@/lib/session/restore-forwarders'
 import { stopAllSessionForwarders } from '@/lib/session/port-forwarders'
 import { daemonLog } from '@/daemon/log'
+import { isTorEnabled } from '@/lib/git'
 
 const __filename = fileURLToPath(import.meta.url)
 
@@ -31,12 +32,12 @@ export interface DaemonRunOptions {
   port?: number
 }
 
-// When YAAC_USE_TOR=1 is set, the daemon routes its own git fetch/clone
+// When YAAC_USE_TOR is set, the daemon routes its own git fetch/clone
 // through a host-machine Tor SOCKS endpoint (default 127.0.0.1:9050).
 // Fail loud at startup if it's unreachable rather than letting the first
 // git operation fail with an opaque connection-refused.
 async function preflightHostTor(): Promise<void> {
-  if (process.env.YAAC_USE_TOR !== '1') return
+  if (!isTorEnabled()) return
   const url = new URL(process.env.YAAC_HOST_TOR_SOCKS_URL ?? 'socks5h://127.0.0.1:9050')
   const host = url.hostname
   const port = parseInt(url.port || '9050', 10)
@@ -50,7 +51,7 @@ async function preflightHostTor(): Promise<void> {
     sock.once('error', (err) => { clearTimeout(timer); reject(err) })
   }).catch((err: Error) => {
     throw new Error(
-      `YAAC_USE_TOR=1 is set but host Tor at ${url.href} is not reachable `
+      `YAAC_USE_TOR is set but host Tor at ${url.href} is not reachable `
       + `(${err.message}). Start Tor ('sudo systemctl start tor' on Linux, `
       + `'brew services start tor' on macOS) or unset YAAC_USE_TOR.`,
     )
@@ -105,7 +106,8 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     await new Promise<void>((resolve) => server.close(() => resolve()))
     return
   }
-  daemonLog(`[daemon] listening on 127.0.0.1:${port} lock=${daemonLockPath()}`)
+  const torPrefix = isTorEnabled() ? '(using tor) ' : ''
+  daemonLog(`[daemon] ${torPrefix}listening on 127.0.0.1:${port} lock=${daemonLockPath()}`)
 
   // Register signal handlers BEFORE the async startup steps below. Node's
   // default SIGTERM/SIGINT action is to terminate immediately, bypassing

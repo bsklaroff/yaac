@@ -8,6 +8,7 @@ import { PROXY_DIR, credentialsDir } from '@/lib/project/paths'
 import { contextHash } from '@/lib/container/image-builder'
 import { findAvailablePort } from '@/lib/container/port'
 import { daemonLog, pipeToDaemonLog } from '@/daemon/log'
+import { isTorEnabled } from '@/lib/git'
 
 // --- Secret convention types & builder (merged from secret-conventions.ts) ---
 
@@ -492,7 +493,7 @@ export class ProxyClient {
           Env: [
             `PORT=${PROXY_CONTAINER_PORT}`,
             `PROXY_AUTH_SECRET=${authSecret}`,
-            ...(process.env.YAAC_USE_TOR === '1' ? ['USE_TOR=1'] : []),
+            ...(isTorEnabled() ? ['USE_TOR=1'] : []),
           ],
           HostConfig: {
             PortBindings: {

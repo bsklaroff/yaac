@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import simpleGit from 'simple-git'
-import { cloneRepo, getDefaultBranch, addWorktree, removeWorktree, fetchOrigin, getGitUserConfig, injectTokenIntoUrl, getRemoteHeadCommit, torEnv } from '@/lib/git'
+import { cloneRepo, getDefaultBranch, addWorktree, removeWorktree, fetchOrigin, getGitUserConfig, injectTokenIntoUrl, getRemoteHeadCommit, torEnv, isTorEnabled } from '@/lib/git'
 
 describe('git helpers', () => {
   let tmpDir: string
@@ -225,6 +225,36 @@ describe('git helpers', () => {
   })
 })
 
+describe('isTorEnabled', () => {
+  const originalUseTor = process.env.YAAC_USE_TOR
+
+  afterEach(() => {
+    if (originalUseTor === undefined) delete process.env.YAAC_USE_TOR
+    else process.env.YAAC_USE_TOR = originalUseTor
+  })
+
+  it('returns false when YAAC_USE_TOR is unset', () => {
+    delete process.env.YAAC_USE_TOR
+    expect(isTorEnabled()).toBe(false)
+  })
+
+  it.each(['', '0', 'false', 'FALSE', 'False', '  false  '])(
+    'returns false when YAAC_USE_TOR=%j',
+    (value) => {
+      process.env.YAAC_USE_TOR = value
+      expect(isTorEnabled()).toBe(false)
+    },
+  )
+
+  it.each(['1', 'true', 'TRUE', 'yes', 'on', 'anything'])(
+    'returns true when YAAC_USE_TOR=%j',
+    (value) => {
+      process.env.YAAC_USE_TOR = value
+      expect(isTorEnabled()).toBe(true)
+    },
+  )
+})
+
 describe('torEnv', () => {
   const originalUseTor = process.env.YAAC_USE_TOR
   const originalUrl = process.env.YAAC_HOST_TOR_SOCKS_URL
@@ -241,8 +271,8 @@ describe('torEnv', () => {
     expect(torEnv()).toBeUndefined()
   })
 
-  it('returns undefined when YAAC_USE_TOR is not "1"', () => {
-    process.env.YAAC_USE_TOR = 'true'
+  it('returns undefined when YAAC_USE_TOR=false', () => {
+    process.env.YAAC_USE_TOR = 'false'
     expect(torEnv()).toBeUndefined()
   })
 
@@ -253,6 +283,14 @@ describe('torEnv', () => {
     expect(env).toBeDefined()
     expect(env!.ALL_PROXY).toBe('socks5h://127.0.0.1:9050')
     expect(env!.NO_PROXY).toBe('localhost,127.0.0.1')
+  })
+
+  it('returns env when YAAC_USE_TOR=true', () => {
+    process.env.YAAC_USE_TOR = 'true'
+    delete process.env.YAAC_HOST_TOR_SOCKS_URL
+    const env = torEnv()
+    expect(env).toBeDefined()
+    expect(env!.ALL_PROXY).toBe('socks5h://127.0.0.1:9050')
   })
 
   it('honors YAAC_HOST_TOR_SOCKS_URL override', () => {
