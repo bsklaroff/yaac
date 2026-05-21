@@ -13,6 +13,7 @@
 import { shellPodmanWithRetry } from '@/lib/container/runtime'
 import { podmanRelay, reserveAvailablePort, startPortForwarders } from '@/lib/container/port'
 import type { ReservedPort } from '@/lib/container/port'
+import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
 import type { PortForwardConfig, PortMapping } from '@/shared/types'
 
 const forwarders = new Map<string, () => void>()
@@ -89,7 +90,7 @@ export async function setSessionStatusRight(
 ): Promise<void> {
   const value = buildStatusRight(projectSlug, sessionId, ports)
   await shellPodmanWithRetry(
-    `podman exec ${containerName} tmux set-option -t yaac status-right '${shellEscape(value)}'`,
+    `podman exec ${containerName} tmux -S ${CONTAINER_TMUX_SOCK} set-option -t yaac status-right '${shellEscape(value)}'`,
   )
 }
 

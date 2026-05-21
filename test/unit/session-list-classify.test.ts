@@ -101,11 +101,11 @@ describe('classifySessionContainers', () => {
     ])
   })
 
-  it('strips the leading slash from container names', async () => {
-    const c = container({ name: 'yaac-proj-s1' })
+  it('passes (slug, sessionId) from container labels to isTmuxAlive', async () => {
+    const c = container({ name: 'yaac-proj-s1', project: 'proj', sessionId: 's1' })
     const isTmuxAlive = vi.fn().mockResolvedValue(true)
     await classifySessionContainers([c], now(), isTmuxAlive)
-    expect(isTmuxAlive).toHaveBeenCalledWith('yaac-proj-s1')
+    expect(isTmuxAlive).toHaveBeenCalledWith('proj', 's1')
   })
 
   it('honors an explicit graceMs override', async () => {

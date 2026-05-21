@@ -2,16 +2,31 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import type ChildProcessModule from 'node:child_process'
 
 vi.mock('@/lib/container/runtime', () => ({
   podman: {
     getContainer: vi.fn(),
     listContainers: vi.fn(),
   },
-  shellPodmanWithRetry: vi.fn(),
 }))
 
-import { podman, shellPodmanWithRetry } from '@/lib/container/runtime'
+const execFileMock = vi.fn<(cmd: string, args: string[], opts: unknown) => Promise<void>>()
+vi.mock('node:child_process', async () => {
+  const actual = await vi.importActual<typeof ChildProcessModule>('node:child_process')
+  return {
+    ...actual,
+    execFile: (cmd: string, args: string[], opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
+      // promisify(execFile) always invokes the 4-arg form with opts.
+      execFileMock(cmd, args, opts).then(
+        () => { cb(null, '', '') },
+        (err: Error) => { cb(err, '', '') },
+      )
+    },
+  }
+})
+
+import { podman } from '@/lib/container/runtime'
 import {
   isTmuxSessionAlive,
   cleanupSession,
@@ -24,66 +39,82 @@ import { setDataDir } from '@/lib/project/paths'
 
 /* eslint-disable @typescript-eslint/unbound-method */
 const mockListContainers = vi.mocked(podman.listContainers)
-const mockShellPodman = vi.mocked(shellPodmanWithRetry)
 const mockGetContainer = vi.mocked(podman.getContainer)
 /* eslint-enable @typescript-eslint/unbound-method */
 
 describe('isTmuxSessionAlive', () => {
-  beforeEach(() => {
+  let dataDir: string
+
+  beforeEach(async () => {
     _clearTmuxAliveCacheForTests()
-    mockShellPodman.mockReset()
+    execFileMock.mockReset()
+    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-tmuxalive-'))
+    setDataDir(dataDir)
   })
+
+  afterEach(async () => {
+    await fs.rm(dataDir, { recursive: true, force: true })
+  })
+
+  function setProbeResult(slug: string, sid: string, alive: boolean): void {
+    const name = `yaac-${slug}-${sid}`
+    execFileMock.mockImplementation((_cmd: string, args: string[]) => {
+      if (args[0] === 'exec' && args[1] === name) {
+        return alive ? Promise.resolve() : Promise.reject(new Error('has-session: no such session'))
+      }
+      return Promise.reject(new Error('unexpected execFile call'))
+    })
+  }
 
   it('is exported as a function', () => {
     expect(typeof isTmuxSessionAlive).toBe('function')
   })
 
-  it('returns true when the underlying podman exec succeeds', async () => {
-    mockShellPodman.mockResolvedValue({ stdout: '', stderr: '' })
-    await expect(isTmuxSessionAlive('c-1')).resolves.toBe(true)
-    expect(mockShellPodman).toHaveBeenCalledTimes(1)
+  it('returns true when has-session exits 0', async () => {
+    setProbeResult('p', 's-up', true)
+    await expect(isTmuxSessionAlive('p', 's-up')).resolves.toBe(true)
+    expect(execFileMock).toHaveBeenCalledWith(
+      'podman',
+      ['exec', 'yaac-p-s-up', 'tmux', '-S', '/tmp/yaac-tmux/server', 'has-session', '-t', 'yaac'],
+      expect.objectContaining({ timeout: expect.any(Number) as number }),
+    )
   })
 
-  it('returns false when the underlying podman exec fails', async () => {
-    mockShellPodman.mockRejectedValue(new Error('no such container'))
-    await expect(isTmuxSessionAlive('c-dead')).resolves.toBe(false)
+  it('returns false when has-session exits non-zero', async () => {
+    setProbeResult('p', 's-absent', false)
+    await expect(isTmuxSessionAlive('p', 's-absent')).resolves.toBe(false)
   })
 
   it('serves repeat calls from the TTL cache without re-probing', async () => {
-    mockShellPodman.mockResolvedValue({ stdout: '', stderr: '' })
-    await isTmuxSessionAlive('c-cache')
-    await isTmuxSessionAlive('c-cache')
-    await isTmuxSessionAlive('c-cache')
-    expect(mockShellPodman).toHaveBeenCalledTimes(1)
+    setProbeResult('p', 's-cache', true)
+    expect(await isTmuxSessionAlive('p', 's-cache')).toBe(true)
+    // Flip the probe result — the cache should still return the old value within TTL.
+    setProbeResult('p', 's-cache', false)
+    expect(await isTmuxSessionAlive('p', 's-cache')).toBe(true)
   })
 
   it('coalesces concurrent callers onto a single in-flight probe', async () => {
-    let resolveProbe: (() => void) | undefined
-    mockShellPodman.mockReturnValue(new Promise((res) => {
-      resolveProbe = () => res({ stdout: '', stderr: '' })
-    }))
-
-    const p1 = isTmuxSessionAlive('c-coalesce')
-    const p2 = isTmuxSessionAlive('c-coalesce')
-    const p3 = isTmuxSessionAlive('c-coalesce')
-
-    expect(mockShellPodman).toHaveBeenCalledTimes(1)
-    resolveProbe!()
+    setProbeResult('p', 's-coalesce', true)
+    const p1 = isTmuxSessionAlive('p', 's-coalesce')
+    const p2 = isTmuxSessionAlive('p', 's-coalesce')
+    const p3 = isTmuxSessionAlive('p', 's-coalesce')
     await expect(Promise.all([p1, p2, p3])).resolves.toEqual([true, true, true])
-    expect(mockShellPodman).toHaveBeenCalledTimes(1)
+    expect(execFileMock).toHaveBeenCalledTimes(1)
   })
 
-  it('caches per container name, not globally', async () => {
-    mockShellPodman.mockResolvedValue({ stdout: '', stderr: '' })
-    await isTmuxSessionAlive('c-A')
-    await isTmuxSessionAlive('c-B')
-    expect(mockShellPodman).toHaveBeenCalledTimes(2)
+  it('caches per (slug, sid), not globally', async () => {
+    execFileMock.mockImplementation((_cmd: string, args: string[]) => {
+      return args[1] === 'yaac-p-s-A'
+        ? Promise.resolve()
+        : Promise.reject(new Error('no session'))
+    })
+    expect(await isTmuxSessionAlive('p', 's-A')).toBe(true)
+    expect(await isTmuxSessionAlive('p', 's-B')).toBe(false)
   })
 
-  it('cleanupSession evicts the cache entry for that container', async () => {
-    mockShellPodman.mockResolvedValue({ stdout: '', stderr: '' })
-    await isTmuxSessionAlive('c-evict')
-    expect(mockShellPodman).toHaveBeenCalledTimes(1)
+  it('cleanupSession evicts the cache entry for that session', async () => {
+    setProbeResult('p', 's-evict', true)
+    expect(await isTmuxSessionAlive('p', 's-evict')).toBe(true)
 
     mockGetContainer.mockReturnValue({
       stop: vi.fn().mockResolvedValue(undefined),
@@ -95,9 +126,9 @@ describe('isTmuxSessionAlive', () => {
       sessionId: 's-evict',
     })
 
-    // Cache cleared — next probe re-runs the podman exec.
-    await isTmuxSessionAlive('c-evict')
-    expect(mockShellPodman).toHaveBeenCalledTimes(2)
+    // Cache is gone — flip the probe and observe that the next call re-runs.
+    setProbeResult('p', 's-evict', false)
+    expect(await isTmuxSessionAlive('p', 's-evict')).toBe(false)
   })
 })
 
@@ -152,6 +183,12 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     return dir
   }
 
+  async function seedSessionsDir(slug: string, sid: string): Promise<string> {
+    const dir = path.join(dataDir, 'projects', slug, 'sessions', sid)
+    await fs.mkdir(dir, { recursive: true })
+    return dir
+  }
+
   it('removes dirs whose session container is gone and leaves live ones', async () => {
     const live = await seedModulesDir('proj-a', 'live-1')
     const deadA = await seedModulesDir('proj-a', 'dead-1')
@@ -166,6 +203,20 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     await expect(fs.access(live)).resolves.toBeUndefined()
     await expect(fs.access(deadA)).rejects.toThrow()
     await expect(fs.access(deadB)).rejects.toThrow()
+  })
+
+  it('also removes orphan per-session tmux dirs', async () => {
+    const liveTmux = await seedSessionsDir('proj-a', 'live-1')
+    const deadTmux = await seedSessionsDir('proj-a', 'dead-1')
+
+    mockListContainers.mockResolvedValue([
+      { Labels: { 'yaac.session-id': 'live-1' } },
+    ] as never)
+
+    await gcOrphanEphemeralModuleDirs()
+
+    await expect(fs.access(liveTmux)).resolves.toBeUndefined()
+    await expect(fs.access(deadTmux)).rejects.toThrow()
   })
 
   it('is a no-op when the projects dir does not exist', async () => {

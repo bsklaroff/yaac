@@ -1,7 +1,8 @@
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
+import { promisify } from 'node:util'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { podman, shellPodmanWithRetry } from '@/lib/container/runtime'
+import { podman } from '@/lib/container/runtime'
 import { evictClaudeStatusCache } from '@/lib/session/claude-status'
 import { proxyClient } from '@/lib/container/proxy-client'
 import { resolveImageTag } from '@/lib/container/image-builder'
@@ -12,9 +13,15 @@ import {
   sessionGraphrootVolumeName,
 } from '@/lib/container/image-promoter'
 import { resolveProjectConfig } from '@/lib/project/config'
-import { cachedPackagesDir } from '@/lib/project/paths'
-import { getProjectsDir, getDataDir } from '@/shared/paths'
+import {
+  cachedPackagesDir,
+  projectDir,
+  sessionTmuxDir,
+} from '@/lib/project/paths'
+import { CONTAINER_TMUX_SOCK, getProjectsDir, getDataDir } from '@/shared/paths'
 import { stopSessionForwarders } from '@/lib/session/port-forwarders'
+
+const execFileAsync = promisify(execFile)
 
 /**
  * Absolute host path to `<cachedPackages>/modules/<sessionId>` — the
@@ -44,15 +51,16 @@ async function removeSessionFromProxy(sessionId: string): Promise<void> {
 }
 
 /**
- * Short-TTL cache for `isTmuxSessionAlive` results, keyed by container
- * name. Each entry holds either a settled (boolean, expiresAt) row or
- * an in-flight Promise so concurrent callers coalesce onto the same
- * `podman exec`. Without this, /session/list (called every ~5s by the
- * UI), the background loop's `hasLiveSessions`, and the stream-picker
- * each run the same has-session check independently for every
- * container, generating N podman exec calls per second.
+ * Short-TTL cache for `isTmuxSessionAlive` results, keyed by
+ * `${slug}/${sessionId}`. Each entry holds either a settled
+ * (boolean, expiresAt) row or an in-flight Promise so concurrent
+ * callers coalesce onto the same probe. Without this, /session/list
+ * (called every ~5s by the UI), the background loop's
+ * `hasLiveSessions`, and the stream-picker each run the same
+ * has-session check independently for every container.
  */
 const TMUX_ALIVE_TTL_MS = 2_000
+const TMUX_PROBE_TIMEOUT_MS = 2_000
 
 type TmuxAliveEntry =
   | { kind: 'settled'; value: boolean; expiresAt: number }
@@ -60,22 +68,38 @@ type TmuxAliveEntry =
 
 const tmuxAliveCache = new Map<string, TmuxAliveEntry>()
 
+function tmuxAliveKey(slug: string, sessionId: string): string {
+  return `${slug}/${sessionId}`
+}
+
 /**
  * Test-only: drop every cached entry. Production callers never need to
  * invalidate because the TTL is short and `cleanupSession` already
- * removes the container — but tests that mock `shellPodmanWithRetry`
- * across multiple cases need to start each case from a clean slate.
+ * removes the cache entry — but tests that mock different probe
+ * behavior across cases need to start each case from a clean slate.
  */
 export function _clearTmuxAliveCacheForTests(): void {
   tmuxAliveCache.clear()
 }
 
-async function probeTmuxSessionAlive(containerName: string): Promise<boolean> {
+/**
+ * Probe tmux liveness by running `tmux has-session` inside the container
+ * via `podman exec`. We can't connect to the bind-mounted UNIX socket
+ * from the host: on podman-machine (macOS) the socket file appears on
+ * the host via virtio-fs/9p but the listening kernel state lives in the
+ * VM, so host-side `connect()` always fails with ECONNREFUSED. Running
+ * the client inside the container is the only portable signal.
+ *
+ * Exit 0 → session present. Non-zero / timeout / missing container → false.
+ */
+async function probeTmuxSessionAlive(slug: string, sessionId: string): Promise<boolean> {
+  const containerName = `yaac-${slug}-${sessionId}`
   try {
-    await shellPodmanWithRetry(`podman exec ${containerName} tmux has-session -t yaac`, {
-      maxAttempts: 3,
-      baseDelay: 100,
-    })
+    await execFileAsync(
+      'podman',
+      ['exec', containerName, 'tmux', '-S', CONTAINER_TMUX_SOCK, 'has-session', '-t', 'yaac'],
+      { timeout: TMUX_PROBE_TIMEOUT_MS },
+    )
     return true
   } catch {
     return false
@@ -83,38 +107,29 @@ async function probeTmuxSessionAlive(containerName: string): Promise<boolean> {
 }
 
 /**
- * Check whether tmux session "yaac" is alive inside the given container.
+ * Check whether tmux session "yaac" is alive for the given session.
  *
- * Uses `shellPodmanWithRetry` with a tight budget so transient podman/OCI
- * errors (container state improper, conmon churn, etc.) do not masquerade
- * as "session is dead" — which would otherwise trigger destructive cleanup
- * of a live session.  The default retry budget (8 attempts, ~12.6s) is
- * much too long here: this function is called from hot paths in
- * `getWaitingSessions` (once per container) and in
- * `finalizeAttachedSession` (right after the user exits a session, when
- * the container is often truly gone).  A tight budget keeps stale-session
- * detection effectively asynchronous without losing protection against
- * short state-transition races.
- *
- * Results are cached for `TMUX_ALIVE_TTL_MS` and concurrent callers for
- * the same container share one in-flight probe.
+ * Results are cached for `TMUX_ALIVE_TTL_MS` and concurrent callers
+ * for the same session share one in-flight probe, so the underlying
+ * `podman exec` runs at most once per session per TTL window.
  */
-export async function isTmuxSessionAlive(containerName: string): Promise<boolean> {
+export async function isTmuxSessionAlive(slug: string, sessionId: string): Promise<boolean> {
+  const key = tmuxAliveKey(slug, sessionId)
   const now = Date.now()
-  const cached = tmuxAliveCache.get(containerName)
+  const cached = tmuxAliveCache.get(key)
   if (cached) {
     if (cached.kind === 'inflight') return cached.promise
     if (cached.expiresAt > now) return cached.value
   }
-  const promise = probeTmuxSessionAlive(containerName).then((value) => {
-    tmuxAliveCache.set(containerName, {
+  const promise = probeTmuxSessionAlive(slug, sessionId).then((value) => {
+    tmuxAliveCache.set(key, {
       kind: 'settled',
       value,
       expiresAt: Date.now() + TMUX_ALIVE_TTL_MS,
     })
     return value
   })
-  tmuxAliveCache.set(containerName, { kind: 'inflight', promise })
+  tmuxAliveCache.set(key, { kind: 'inflight', promise })
   return promise
 }
 
@@ -127,11 +142,11 @@ export async function cleanupSession(params: {
   const container = podman.getContainer(containerName)
 
   // Drop any cached tmux-alive / claude-status entry so a subsequent
-  // caller doesn't see a stale value from this container's previous
+  // caller doesn't see a stale value from this session's previous
   // probe (or, in the worst case, a value belonging to a brand-new
-  // container that reuses the name).
-  tmuxAliveCache.delete(containerName)
-  evictClaudeStatusCache(containerName)
+  // session with the same id).
+  tmuxAliveCache.delete(tmuxAliveKey(projectSlug, sessionId))
+  evictClaudeStatusCache(projectSlug, sessionId)
 
   stopSessionForwarders(sessionId)
   await removeSessionFromProxy(sessionId)
@@ -175,6 +190,14 @@ export async function cleanupSession(params: {
     force: true,
   })
 
+  // Remove the per-session tmux dir holding the server socket and
+  // pipe-pane log. The container is gone; the bind-mount source is
+  // garbage now.
+  await fs.rm(sessionTmuxDir(projectSlug, sessionId), {
+    recursive: true,
+    force: true,
+  })
+
   console.log(`Session ${sessionId} cleaned up.`)
 }
 
@@ -190,8 +213,8 @@ export async function cleanupSessionDetached(params: {
 }): Promise<void> {
   const { containerName, projectSlug, sessionId } = params
 
-  tmuxAliveCache.delete(containerName)
-  evictClaudeStatusCache(containerName)
+  tmuxAliveCache.delete(tmuxAliveKey(projectSlug, sessionId))
+  evictClaudeStatusCache(projectSlug, sessionId)
 
   stopSessionForwarders(sessionId)
   await removeSessionFromProxy(sessionId)
@@ -218,12 +241,16 @@ export async function cleanupSessionDetached(params: {
   const modulesDir = sessionModulesDir(projectSlug, sessionId)
   const ephemeralModulesRm = `rm -rf '${modulesDir.replace(/'/g, `'\\''`)}' 2>/dev/null || true`
 
+  const tmuxDir = sessionTmuxDir(projectSlug, sessionId)
+  const tmuxDirRm = `rm -rf '${tmuxDir.replace(/'/g, `'\\''`)}' 2>/dev/null || true`
+
   const script = [
     `podman stop -t 5 ${containerName} 2>/dev/null || true`,
     `podman rm ${containerName} 2>/dev/null || true`,
     ...(promoterCmd ? [promoterCmd] : []),
     ...(graphrootRm ? [graphrootRm] : []),
     ephemeralModulesRm,
+    tmuxDirRm,
   ].join('; ')
 
   const child = spawn('sh', ['-c', script], {
@@ -268,12 +295,10 @@ export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
 
   for (const slug of projectSlugs) {
     const modulesRoot = path.join(cachedPackagesDir(slug), 'modules')
-    let entries: string[]
+    let entries: string[] = []
     try {
       entries = await fs.readdir(modulesRoot)
-    } catch {
-      continue
-    }
+    } catch { /* missing modules dir → nothing to sweep there */ }
     for (const sid of entries) {
       if (liveSessionIds.has(sid)) continue
       const dir = path.join(modulesRoot, sid)
@@ -282,6 +307,25 @@ export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
         console.log(`Removed orphan ephemeral modules dir ${dir}`)
       } catch (err) {
         console.warn(`Orphan modules GC: failed to remove ${dir}: ${(err as Error).message}`)
+      }
+    }
+
+    // Per-session tmux bind-mount dirs live under <projectDir>/sessions/<sid>/tmux.
+    // The parent `sessions/` dir is unique to this feature, so a flat
+    // readdir of `sessions/` gives us the session id list directly.
+    const sessionsRoot = path.join(projectDir(slug), 'sessions')
+    let sessionEntries: string[] = []
+    try {
+      sessionEntries = await fs.readdir(sessionsRoot)
+    } catch { /* missing sessions dir → nothing to sweep there */ }
+    for (const sid of sessionEntries) {
+      if (liveSessionIds.has(sid)) continue
+      const dir = path.join(sessionsRoot, sid)
+      try {
+        await fs.rm(dir, { recursive: true, force: true })
+        console.log(`Removed orphan session dir ${dir}`)
+      } catch (err) {
+        console.warn(`Orphan session GC: failed to remove ${dir}: ${(err as Error).message}`)
       }
     }
   }

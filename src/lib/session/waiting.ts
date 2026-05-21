@@ -49,7 +49,7 @@ export async function getWaitingSessions(
     // claim, turning the next outbound request into a 403.
     if (await isPrewarmSession(slug, sessionId)) continue
 
-    const running = c.State === 'running' && await isTmuxSessionAlive(name)
+    const running = c.State === 'running' && await isTmuxSessionAlive(slug, sessionId)
     if (!running) {
       // Mirror classifySessionContainers' grace window: session-create's
       // retry loop recreates the container between attempts and does not

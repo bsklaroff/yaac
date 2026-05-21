@@ -73,6 +73,7 @@ import {
   podmanExecWithRetry,
   shellPodmanWithRetry,
   createAndStartContainerWithRetry,
+  createSemaphore,
   dialBackoffDelayMs,
 } from '@/lib/container/runtime'
 
@@ -300,6 +301,84 @@ describe('dialBackoffDelayMs', () => {
 
   it('caps so a third or later attempt cannot block a UI poll indefinitely', () => {
     expect(dialBackoffDelayMs(10)).toBeLessThanOrEqual(600)
+  })
+})
+
+describe('createSemaphore', () => {
+  it('admits up to maxConcurrent acquirers without blocking', async () => {
+    const sem = createSemaphore(3)
+    const r1 = await sem.acquire()
+    const r2 = await sem.acquire()
+    const r3 = await sem.acquire()
+    expect(sem.held).toBe(3)
+    r1(); r2(); r3()
+    expect(sem.held).toBe(0)
+  })
+
+  it('queues additional acquirers and hands the slot off on release', async () => {
+    const sem = createSemaphore(2)
+    const r1 = await sem.acquire()
+    const r2 = await sem.acquire()
+
+    let r3Held = false
+    const r3Promise = sem.acquire().then((release) => {
+      r3Held = true
+      return release
+    })
+
+    // Microtask flush — r3 must NOT resolve while both slots are held.
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(r3Held).toBe(false)
+
+    r1()
+    const r3 = await r3Promise
+    expect(r3Held).toBe(true)
+    // Held count stays at maxConcurrent — the released slot transferred
+    // to r3, it wasn't decremented and then re-incremented.
+    expect(sem.held).toBe(2)
+
+    r2()
+    r3()
+    expect(sem.held).toBe(0)
+  })
+
+  it('caps in-flight work at maxConcurrent under heavy parallel load', async () => {
+    const sem = createSemaphore(4)
+    const observed: number[] = []
+    let inFlight = 0
+
+    const tasks = Array.from({ length: 25 }, async () => {
+      const release = await sem.acquire()
+      inFlight += 1
+      observed.push(inFlight)
+      // Yield so the next acquirer races us.
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      inFlight -= 1
+      release()
+    })
+
+    await Promise.all(tasks)
+    expect(Math.max(...observed)).toBeLessThanOrEqual(4)
+    expect(sem.held).toBe(0)
+  })
+
+  it('does not strand a slot if the caller releases after the user rejects', async () => {
+    // Simulates the dial wrapper's release-on-error path: even when the
+    // wrapped operation rejects, the slot must be returned.
+    const sem = createSemaphore(1)
+    const release = await sem.acquire()
+    try {
+      await Promise.reject(new Error('boom'))
+    } catch {
+      release()
+    }
+    // Next acquire should proceed immediately.
+    const r2 = await Promise.race([
+      sem.acquire(),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('stuck')), 50)),
+    ])
+    r2()
+    expect(sem.held).toBe(0)
   })
 })
 

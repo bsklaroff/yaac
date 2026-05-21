@@ -110,7 +110,7 @@ describe('sessionStream', () => {
     expect(spawn).toHaveBeenCalledTimes(1)
     expect(spawn).toHaveBeenCalledWith(
       'podman',
-      ['exec', '-it', 'yaac-demo-abc', 'tmux', 'attach-session', '-t', 'yaac'],
+      ['exec', '-it', 'yaac-demo-abc', 'tmux', '-S', '/tmp/yaac-tmux/server', 'attach-session', '-t', 'yaac'],
       { stdio: 'inherit' },
     )
     expect(post).toHaveBeenCalledTimes(2)

@@ -95,6 +95,24 @@ export function worktreeDir(slug: string, sessionId: string): string {
   return path.join(worktreesDir(slug), sessionId)
 }
 
+/**
+ * Per-session host directory bind-mounted into the container at
+ * `CONTAINER_TMUX_DIR`. Holds the tmux server socket and the
+ * `pipe-pane`-captured pane log so the daemon can probe liveness and
+ * read pane content without hitting the podman API.
+ */
+export function sessionTmuxDir(slug: string, sessionId: string): string {
+  return path.join(projectDir(slug), 'sessions', sessionId, 'tmux')
+}
+
+export function sessionTmuxSockPath(slug: string, sessionId: string): string {
+  return path.join(sessionTmuxDir(slug, sessionId), 'server')
+}
+
+export function sessionTmuxPaneLogPath(slug: string, sessionId: string): string {
+  return path.join(sessionTmuxDir(slug, sessionId), 'pane.log')
+}
+
 export function blockedHostsDir(slug: string): string {
   return path.join(projectDir(slug), 'blocked-hosts')
 }

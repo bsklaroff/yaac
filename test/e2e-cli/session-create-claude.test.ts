@@ -11,6 +11,7 @@ import {
   type SpawnedDaemon,
 } from '@test/helpers/cli'
 import { requirePodman, TEST_RUN_ID, podmanRetry } from '@test/helpers/setup'
+import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
 import {
   startMockLLM,
   startMockGit,
@@ -162,7 +163,8 @@ describe('yaac session create drives real claude-code through mocked remotes', (
     const send = async (...keys: string[]): Promise<void> => {
       for (const k of keys) {
         await podmanRetry([
-          'exec', '-w', '/', containerName, 'tmux', 'send-keys',
+          'exec', '-w', '/', containerName,
+          'tmux', '-S', CONTAINER_TMUX_SOCK, 'send-keys',
           '-t', 'yaac:claude', k,
         ])
         await new Promise((r) => setTimeout(r, 400))
@@ -171,7 +173,7 @@ describe('yaac session create drives real claude-code through mocked remotes', (
     const capturePane = async (): Promise<string> => {
       const { stdout } = await podmanRetry([
         'exec', '-w', '/', containerName, 'sh', '-c',
-        'tmux capture-pane -t yaac:claude -p -S - -E - 2>&1',
+        `tmux -S ${CONTAINER_TMUX_SOCK} capture-pane -t yaac:claude -p -S - -E - 2>&1`,
       ])
       return stdout
     }

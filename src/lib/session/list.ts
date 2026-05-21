@@ -59,7 +59,7 @@ interface ClassifiableContainer {
 export async function classifySessionContainers<T extends ClassifiableContainer>(
   containers: T[],
   nowMs: number,
-  isTmuxAlive: (name: string) => Promise<boolean>,
+  isTmuxAlive: (slug: string, sessionId: string) => Promise<boolean>,
   graceMs: number = STARTING_GRACE_MS,
 ): Promise<{ running: T[]; stale: StaleSessionInfo[] }> {
   const running: T[] = []
@@ -69,7 +69,7 @@ export async function classifySessionContainers<T extends ClassifiableContainer>
     const sessionId = c.Labels?.['yaac.session-id'] ?? ''
     const slug = c.Labels?.['yaac.project'] ?? ''
 
-    if (c.State === 'running' && await isTmuxAlive(name)) {
+    if (c.State === 'running' && slug && sessionId && await isTmuxAlive(slug, sessionId)) {
       running.push(c)
       continue
     }

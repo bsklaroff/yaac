@@ -12,6 +12,7 @@ import {
   type SpawnedDaemon,
 } from '@test/helpers/cli'
 import { requirePodman, TEST_RUN_ID, podmanRetry } from '@test/helpers/setup'
+import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
 import {
   startMockLLM,
   startMockGit,
@@ -212,11 +213,12 @@ describe('yaac session create features (real CLI + real daemon)', () => {
     expect(branch.trim()).toBe(`yaac/${sessionId}`)
 
     const { stdout: tmuxList } = await podmanRetry([
-      'exec', name, 'tmux', 'list-sessions',
+      'exec', name, 'tmux', '-S', CONTAINER_TMUX_SOCK, 'list-sessions',
     ])
     expect(tmuxList).toContain('yaac')
     const { stdout: statusRight } = await podmanRetry([
-      'exec', name, 'tmux', 'show-option', '-t', 'yaac', 'status-right',
+      'exec', name, 'tmux', '-S', CONTAINER_TMUX_SOCK,
+      'show-option', '-t', 'yaac', 'status-right',
     ])
     expect(statusRight).toContain(sessionId.slice(0, 8))
 
@@ -312,7 +314,8 @@ describe('yaac session create features (real CLI + real daemon)', () => {
     // has no port map — status-right is the user-facing surface for the
     // chosen host ports.
     const { stdout: statusRight } = await podmanRetry([
-      'exec', name, 'tmux', 'show-option', '-t', 'yaac', 'status-right',
+      'exec', name, 'tmux', '-S', CONTAINER_TMUX_SOCK,
+      'show-option', '-t', 'yaac', 'status-right',
     ])
     const match8080 = statusRight.match(/:(\d+)->8080/)
     const match3000 = statusRight.match(/:(\d+)->3000/)

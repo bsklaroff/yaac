@@ -52,7 +52,7 @@ describe('sessionAttach', () => {
     expect(mockGet).toHaveBeenCalledWith({ param: { id: 'abc' } })
     expect(spawn).toHaveBeenCalledWith(
       'podman',
-      ['exec', '-it', 'yaac-demo-abc', 'tmux', 'attach-session', '-t', 'yaac'],
+      ['exec', '-it', 'yaac-demo-abc', 'tmux', '-S', '/tmp/yaac-tmux/server', 'attach-session', '-t', 'yaac'],
       { stdio: 'inherit' },
     )
   })

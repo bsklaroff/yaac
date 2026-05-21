@@ -156,7 +156,9 @@ async function hasLiveSessions(projectSlug: string, prewarmContainerName?: strin
     const name = c.Names?.[0]?.replace(/^\//, '') ?? c.Id
     if (name === prewarmContainerName) continue
     if (c.State !== 'running') continue
-    if (await isTmuxSessionAlive(name)) return true
+    const sid = c.Labels?.['yaac.session-id']
+    if (!sid) continue
+    if (await isTmuxSessionAlive(projectSlug, sid)) return true
   }
 
   return false
@@ -265,7 +267,7 @@ export async function ensurePrewarmSession(projectSlug: string, tool: AgentTool 
       }
 
       // State is "ready" — verify container is still alive
-      const alive = await isContainerRunning(existing.containerName) && await isTmuxSessionAlive(existing.containerName)
+      const alive = await isContainerRunning(existing.containerName) && await isTmuxSessionAlive(projectSlug, existing.sessionId)
       if (alive) {
         // CAS the refresh: a concurrent claimPrewarmSession may have
         // cleared the entry while we were running the alive-check, and
@@ -367,7 +369,7 @@ export async function claimPrewarmSession(
 
   // If still creating, wait for the container to become ready
   if (entry.state === 'creating') {
-    const ready = await waitForContainer(containerName, 120_000)
+    const ready = await waitForContainer(projectSlug, sessionId, containerName, 120_000)
     if (!ready) return null
   }
 
@@ -411,14 +413,19 @@ async function isContainerRunning(containerName: string): Promise<boolean> {
  * creation was abandoned and return false immediately instead of burning
  * the full timeoutMs polling a container that will never come back.
  */
-async function waitForContainer(containerName: string, timeoutMs: number): Promise<boolean> {
+async function waitForContainer(
+  projectSlug: string,
+  sessionId: string,
+  containerName: string,
+  timeoutMs: number,
+): Promise<boolean> {
   const start = Date.now()
   let sawContainer = false
   while (Date.now() - start < timeoutMs) {
     const state = await inspectContainerState(containerName)
     if (state.exists) {
       sawContainer = true
-      if (state.running && await isTmuxSessionAlive(containerName)) {
+      if (state.running && await isTmuxSessionAlive(projectSlug, sessionId)) {
         return true
       }
     } else if (sawContainer) {

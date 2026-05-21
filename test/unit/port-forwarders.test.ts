@@ -67,7 +67,7 @@ describe('setSessionStatusRight', () => {
     ])
     expect(mockExecPodman).toHaveBeenCalledTimes(1)
     const arg = mockExecPodman.mock.calls[0]?.[0]
-    expect(arg).toContain('podman exec yaac-proj-123 tmux set-option -t yaac status-right')
+    expect(arg).toContain('podman exec yaac-proj-123 tmux -S /tmp/yaac-tmux/server set-option -t yaac status-right')
     expect(arg).toContain(':19001->3000')
   })
 })

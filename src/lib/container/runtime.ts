@@ -178,6 +178,64 @@ export function dialBackoffDelayMs(attempt: number): number {
   return Math.min(base * 2 ** (attempt - 1), 600)
 }
 
+/**
+ * Cap on concurrent in-flight podman API calls from this process. The
+ * libpod state DB inside `podman machine` serializes on a single mutex,
+ * so when bursts (e.g. the background loop's four steps + a /session/list
+ * fanout) hit it simultaneously, the service stalls — sometimes
+ * permanently, since nothing supervises the wedged inner goroutines on
+ * the host side. A small cap keeps the queue depth bounded without
+ * meaningfully slowing the steady-state poll cadence (most calls return
+ * in <50ms).
+ *
+ * Override at runtime with `YAAC_PODMAN_MAX_INFLIGHT` so we can tune
+ * without a rebuild during freeze investigations.
+ */
+function resolvePodmanMaxInflight(): number {
+  const raw = process.env.YAAC_PODMAN_MAX_INFLIGHT
+  if (raw === undefined || raw === '') return 4
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : 4
+}
+
+interface Semaphore {
+  acquire(): Promise<() => void>
+  /** Current count of held slots; exported for tests. */
+  readonly held: number
+}
+
+/** FIFO semaphore. `acquire()` resolves with a one-shot release fn. */
+export function createSemaphore(maxConcurrent: number): Semaphore {
+  let held = 0
+  const waiters: Array<() => void> = []
+  const release = (): void => {
+    const next = waiters.shift()
+    if (next) {
+      // Slot count stays the same — passing the slot to the next waiter.
+      next()
+    } else {
+      held -= 1
+    }
+  }
+  return {
+    acquire(): Promise<() => void> {
+      if (held < maxConcurrent) {
+        held += 1
+        return Promise.resolve(release)
+      }
+      return new Promise<() => void>((resolve) => {
+        waiters.push(() => resolve(release))
+      })
+    },
+    get held(): number {
+      return held
+    },
+  }
+}
+
+/** Exported so tests can drain / inspect it. */
+export const dialSemaphore: Semaphore = createSemaphore(resolvePodmanMaxInflight())
+
 {
   const modem = (podman as unknown as { modem?: { dial?: DialFn } }).modem
   if (modem && typeof modem.dial === 'function') {
@@ -187,14 +245,32 @@ export function dialBackoffDelayMs(attempt: number): number {
       let attempt = 0
       const tryOnce = (): void => {
         attempt += 1
-        originalDial(options, (err, data) => {
-          if (!err || attempt >= maxAttempts) { callback(err, data); return }
-          const msg = err.message ?? String(err)
-          if (!isTransientPodmanError(msg)) { callback(err, data); return }
-          const prelude = isConnectionRefused(msg)
-            ? reviveSocketIfRefused(msg)
-            : new Promise<void>((r) => setTimeout(r, dialBackoffDelayMs(attempt)))
-          void prelude.finally(tryOnce)
+        // Acquire a slot for the duration of one dial attempt (and its
+        // backoff, if any). Holding the slot across the backoff is
+        // intentional: an immediate retry of a wedged service just
+        // re-saturates the queue, but the queued waiters proceed when
+        // this slot is finally released.
+        void dialSemaphore.acquire().then((release) => {
+          originalDial(options, (err, data) => {
+            if (!err || attempt >= maxAttempts) {
+              release()
+              callback(err, data)
+              return
+            }
+            const msg = err.message ?? String(err)
+            if (!isTransientPodmanError(msg)) {
+              release()
+              callback(err, data)
+              return
+            }
+            const prelude = isConnectionRefused(msg)
+              ? reviveSocketIfRefused(msg)
+              : new Promise<void>((r) => setTimeout(r, dialBackoffDelayMs(attempt)))
+            void prelude.finally(() => {
+              release()
+              tryOnce()
+            })
+          })
         })
       }
       tryOnce()

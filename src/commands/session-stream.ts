@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import readline from 'node:readline/promises'
 import { getRpcClient, toClientError } from '@/commands/rpc'
+import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
 import type { AgentTool, StreamOutcome } from '@/shared/types'
 
 async function promptForProject(projects: string[], message: string): Promise<string | undefined> {
@@ -88,7 +89,7 @@ export async function sessionStream(project?: string, tool?: AgentTool): Promise
     await new Promise<void>((resolve, reject) => {
       const child = spawn(
         'podman',
-        ['exec', '-it', body.containerName, 'tmux', 'attach-session', '-t', body.tmuxSession],
+        ['exec', '-it', body.containerName, 'tmux', '-S', CONTAINER_TMUX_SOCK, 'attach-session', '-t', body.tmuxSession],
         { stdio: 'inherit' },
       )
       child.on('close', () => resolve())

@@ -1,13 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 
-vi.mock('@/lib/container/runtime', () => ({
-  podmanExecWithRetry: vi.fn(),
-}))
-
-import { podmanExecWithRetry } from '@/lib/container/runtime'
 import {
   classifyClaudePane,
   getFirstUserMessage,
@@ -15,8 +10,11 @@ import {
   evictClaudeStatusCache,
   _clearClaudeStatusCacheForTests,
 } from '@/lib/session/claude-status'
-
-const mockPodmanExec = vi.mocked(podmanExecWithRetry)
+import {
+  setDataDir,
+  sessionTmuxDir,
+  sessionTmuxPaneLogPath,
+} from '@/lib/project/paths'
 
 describe('classifyClaudePane', () => {
   it('returns running when the pane shows "esc to interrupt"', () => {
@@ -121,67 +119,94 @@ describe('classifyClaudePane', () => {
 })
 
 describe('getSessionClaudeStatus', () => {
-  beforeEach(() => {
+  let dataDir: string
+
+  beforeEach(async () => {
     _clearClaudeStatusCacheForTests()
-    mockPodmanExec.mockReset()
+    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-claude-status-'))
+    setDataDir(dataDir)
   })
 
-  it('returns running when the pane shows the interrupt hint', async () => {
-    mockPodmanExec.mockResolvedValue({ stdout: 'esc to interrupt', stderr: '' })
-    await expect(getSessionClaudeStatus('p', 's', 'c-run')).resolves.toBe('running')
-    expect(mockPodmanExec).toHaveBeenCalledTimes(1)
+  afterEach(async () => {
+    await fs.rm(dataDir, { recursive: true, force: true })
   })
 
-  it('returns waiting when the pane has no interrupt hint', async () => {
-    mockPodmanExec.mockResolvedValue({ stdout: '❯ ', stderr: '' })
-    await expect(getSessionClaudeStatus('p', 's', 'c-wait')).resolves.toBe('waiting')
+  async function writePane(slug: string, sid: string, content: string): Promise<void> {
+    await fs.mkdir(sessionTmuxDir(slug, sid), { recursive: true })
+    await fs.writeFile(sessionTmuxPaneLogPath(slug, sid), content)
+  }
+
+  async function readPane(slug: string, sid: string): Promise<string> {
+    return fs.readFile(sessionTmuxPaneLogPath(slug, sid), 'utf8')
+  }
+
+  it('returns running when the pane log shows the interrupt hint', async () => {
+    await writePane('p', 's-run', 'doing things… (esc to interrupt)')
+    await expect(getSessionClaudeStatus('p', 's-run', 'c-run')).resolves.toBe('running')
   })
 
-  it('returns waiting when the capture exec fails', async () => {
-    mockPodmanExec.mockRejectedValue(new Error('no such session'))
-    await expect(getSessionClaudeStatus('p', 's', 'c-dead')).resolves.toBe('waiting')
+  it('returns waiting when the pane log lacks the interrupt hint', async () => {
+    await writePane('p', 's-wait', '❯ ')
+    await expect(getSessionClaudeStatus('p', 's-wait', 'c-wait')).resolves.toBe('waiting')
   })
 
-  it('serves repeat calls from the TTL cache without re-capturing', async () => {
-    mockPodmanExec.mockResolvedValue({ stdout: '❯ ', stderr: '' })
-    await getSessionClaudeStatus('p', 's', 'c-cache')
-    await getSessionClaudeStatus('p', 's', 'c-cache')
-    await getSessionClaudeStatus('p', 's', 'c-cache')
-    expect(mockPodmanExec).toHaveBeenCalledTimes(1)
+  it('returns waiting when the pane log file does not exist yet', async () => {
+    await expect(getSessionClaudeStatus('p', 's-absent', 'c-absent')).resolves.toBe('waiting')
+  })
+
+  it('truncates the pane log after a successful read', async () => {
+    await writePane('p', 's-trunc', 'some pane content')
+    await getSessionClaudeStatus('p', 's-trunc', 'c-trunc')
+    await expect(readPane('p', 's-trunc')).resolves.toBe('')
+  })
+
+  it('reads only the trailing window of a large pane log', async () => {
+    // Pad the front of the file with content that does NOT match, and
+    // put the interrupt hint at the very end. The probe should still
+    // detect "running" because it reads from the tail.
+    const padding = 'x'.repeat(20000)
+    await writePane('p', 's-tail', `${padding}\nfinally: esc to interrupt`)
+    await expect(getSessionClaudeStatus('p', 's-tail', 'c-tail')).resolves.toBe('running')
+  })
+
+  it('serves repeat calls from the TTL cache without re-reading', async () => {
+    await writePane('p', 's-cache', '❯ ')
+    expect(await getSessionClaudeStatus('p', 's-cache', 'c-cache')).toBe('waiting')
+    // The file was truncated; without caching, a subsequent call would
+    // see an empty file and re-classify (still 'waiting' incidentally,
+    // but the file would also stay empty). Write 'running' content and
+    // verify the cached 'waiting' wins.
+    await writePane('p', 's-cache', 'esc to interrupt')
+    expect(await getSessionClaudeStatus('p', 's-cache', 'c-cache')).toBe('waiting')
   })
 
   it('coalesces concurrent callers onto a single in-flight probe', async () => {
-    let resolveProbe: (() => void) | undefined
-    mockPodmanExec.mockReturnValue(new Promise((res) => {
-      resolveProbe = () => res({ stdout: 'esc to interrupt', stderr: '' })
-    }))
-
-    const p1 = getSessionClaudeStatus('p', 's', 'c-coalesce')
-    const p2 = getSessionClaudeStatus('p', 's', 'c-coalesce')
-    const p3 = getSessionClaudeStatus('p', 's', 'c-coalesce')
-
-    expect(mockPodmanExec).toHaveBeenCalledTimes(1)
-    resolveProbe!()
+    await writePane('p', 's-coalesce', 'esc to interrupt')
+    const p1 = getSessionClaudeStatus('p', 's-coalesce', 'c1')
+    const p2 = getSessionClaudeStatus('p', 's-coalesce', 'c1')
+    const p3 = getSessionClaudeStatus('p', 's-coalesce', 'c1')
     await expect(Promise.all([p1, p2, p3])).resolves.toEqual(['running', 'running', 'running'])
-    expect(mockPodmanExec).toHaveBeenCalledTimes(1)
+    // The shared probe means we read+truncate exactly once.
+    await expect(readPane('p', 's-coalesce')).resolves.toBe('')
   })
 
-  it('caches per container name, not globally', async () => {
-    mockPodmanExec.mockResolvedValue({ stdout: '❯ ', stderr: '' })
-    await getSessionClaudeStatus('p', 's', 'c-A')
-    await getSessionClaudeStatus('p', 's', 'c-B')
-    expect(mockPodmanExec).toHaveBeenCalledTimes(2)
+  it('caches per (slug, sid), not globally', async () => {
+    await writePane('p', 's-A', 'esc to interrupt')
+    await writePane('p', 's-B', '❯ ')
+    expect(await getSessionClaudeStatus('p', 's-A', 'c-A')).toBe('running')
+    expect(await getSessionClaudeStatus('p', 's-B', 'c-B')).toBe('waiting')
   })
 
-  it('evictClaudeStatusCache clears the entry for that container', async () => {
-    mockPodmanExec.mockResolvedValue({ stdout: '❯ ', stderr: '' })
-    await getSessionClaudeStatus('p', 's', 'c-evict')
-    expect(mockPodmanExec).toHaveBeenCalledTimes(1)
+  it('evictClaudeStatusCache clears the entry for that session', async () => {
+    await writePane('p', 's-evict', '❯ ')
+    expect(await getSessionClaudeStatus('p', 's-evict', 'c-evict')).toBe('waiting')
 
-    evictClaudeStatusCache('c-evict')
+    evictClaudeStatusCache('p', 's-evict')
 
-    await getSessionClaudeStatus('p', 's', 'c-evict')
-    expect(mockPodmanExec).toHaveBeenCalledTimes(2)
+    // Cache cleared — write 'running' content and confirm the next
+    // probe re-reads it.
+    await writePane('p', 's-evict', 'esc to interrupt')
+    expect(await getSessionClaudeStatus('p', 's-evict', 'c-evict')).toBe('running')
   })
 })
 

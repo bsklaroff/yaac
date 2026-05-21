@@ -39,6 +39,20 @@ export function getProjectsDir(): string {
   return path.join(getDataDir(), 'projects')
 }
 
+/**
+ * Path inside the session container where the bind-mounted tmux server
+ * socket lives. Pairs with `sessionTmuxDir()` on the host side. Every
+ * in-container `tmux` invocation passes `-S ${CONTAINER_TMUX_SOCK}` so
+ * the server lands on this shared dir. The socket file itself isn't
+ * connectable from the host (virtio-fs/9p doesn't share UNIX socket
+ * kernel state) — liveness probes still go through `podman exec` —
+ * but the colocated `pane.log` is a regular file and is read directly
+ * from the host by the daemon's claude-status path.
+ */
+export const CONTAINER_TMUX_DIR = '/tmp/yaac-tmux'
+export const CONTAINER_TMUX_SOCK = `${CONTAINER_TMUX_DIR}/server`
+export const CONTAINER_TMUX_PANE_LOG = `${CONTAINER_TMUX_DIR}/pane.log`
+
 export function projectConfigDir(slug: string): string {
   return path.join(getProjectsDir(), slug, 'config')
 }

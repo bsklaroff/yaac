@@ -27,7 +27,13 @@ import {
   worktreesDir,
   projectDir,
   getDataDir,
+  sessionTmuxDir,
 } from '@/lib/project/paths'
+import {
+  CONTAINER_TMUX_DIR,
+  CONTAINER_TMUX_SOCK,
+  CONTAINER_TMUX_PANE_LOG,
+} from '@/shared/paths'
 import {
   resolveProjectConfig,
   resolveEphemeralModulesPaths,
@@ -230,6 +236,13 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
     networkMode, pgRelayIp, gitUser, forwardedPorts,
   } = params
 
+  // Every in-container `tmux` invocation routes through this prefix so
+  // the server socket and pipe-pane log land on a host-bind-mounted dir.
+  // The daemon reads the pane log directly from the host without
+  // `podman exec`; liveness still goes through `podman exec has-session`
+  // because UNIX socket connect()s don't cross virtio-fs.
+  const TMUX = `tmux -S ${CONTAINER_TMUX_SOCK}`
+
   // Pre-create the per-session graphroot and project image-cache volumes
   // with identifying labels so orphan GC can distinguish them from other
   // yaac installs' volumes. Auto-created-on-mount volumes would be unlabeled.
@@ -248,6 +261,11 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
     sessionId,
     resolveEphemeralModulesPaths(config),
   )
+
+  // Per-session host dir holding the tmux server socket and pane log.
+  // Created here so the bind mount below has a stable source path.
+  const tmuxHostDir = sessionTmuxDir(projectSlug, sessionId)
+  await fs.mkdir(tmuxHostDir, { recursive: true })
 
   const container = await podman.createContainer({
     Image: imageName,
@@ -268,6 +286,7 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
         `${claudeJson}:/home/yaac/.claude.json:Z`,
         `${codex}:/home/yaac/.codex:Z`,
         `${cachedPackages}:/home/yaac/.cached-packages:Z`,
+        `${tmuxHostDir}:${CONTAINER_TMUX_DIR}:Z`,
         ...Object.entries(config.cacheVolumes ?? {}).map(
           ([key, containerPath]) => `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`,
         ),
@@ -312,6 +331,11 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
   for (const m of ephemeralMounts) {
     await containerExecRoot(containerName, `chown yaac:yaac '${shellEscape(m.containerPath)}'`)
   }
+
+  // Same fix for the tmux bind mount — the host dir was created by the
+  // daemon process and the in-container yaac user needs to own it so
+  // it can write the tmux socket and pipe-pane log.
+  await containerExecRoot(containerName, `chown yaac:yaac '${CONTAINER_TMUX_DIR}'`)
 
   // Forward localhost:<pgPort> inside the container to the pg-relay sidecar (IPv4 + IPv6)
   if (pgRelayIp) {
@@ -361,45 +385,63 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
   // timeout. Once the tmux config below is in place, we respawn-window
   // to swap the keepalive for the real agent. The placeholder never
   // reaches the user — they attach after setup completes.
-  await containerExec(containerName, `tmux -u new-session -d -s yaac -n ${tool} 'sleep infinity'`)
+  //
+  // `-x`/`-y` set generous initial dimensions so the respawned agent
+  // inherits a window larger than any realistic terminal. On attach,
+  // tmux shrinks the window to fit the client — shrink-then-render is
+  // reliable for TUI apps. Without this, the session is created at
+  // tmux's default 80x24 and a race against the agent's startup render
+  // can leave Claude stuck at 80x24 until the user resizes the host
+  // terminal to force a fresh SIGWINCH.
+  await containerExec(containerName, `${TMUX} -u new-session -d -s yaac -n ${tool} -x 500 -y 200 'sleep infinity'`)
 
   // Run init commands in a background tmux window (parallel to Claude Code)
   if (config.initCommands?.length) {
     const initScript = config.initCommands
       .map((cmd) => shellEscape(cmd))
       .join(' && ')
-    await containerExec(containerName, `tmux new-window -d -t yaac -n init 'cd /workspace && ${initScript}'`)
+    await containerExec(containerName, `${TMUX} new-window -d -t yaac -n init 'cd /workspace && ${initScript}'`)
     if (!config.hideInitPane) {
-      await containerExec(containerName, 'tmux set-option -t yaac:init remain-on-exit on')
+      await containerExec(containerName, `${TMUX} set-option -t yaac:init remain-on-exit on`)
     }
   }
 
   // Configure tmux UX
-  await containerExec(containerName, 'tmux set-option -g history-limit 200000')
-  await containerExec(containerName, 'tmux set-option -g mouse on')
-  await containerExec(containerName, 'tmux set-option -g focus-events on')
+  await containerExec(containerName, `${TMUX} set-option -g history-limit 200000`)
+  await containerExec(containerName, `${TMUX} set-option -g mouse on`)
+  await containerExec(containerName, `${TMUX} set-option -g focus-events on`)
   // Propagate terminal bells (\a) from any window through to the attached
   // client so the user's terminal emulator can surface notifications.
-  await containerExec(containerName, 'tmux set-option -g monitor-bell on')
-  await containerExec(containerName, 'tmux set-option -g bell-action any')
-  await containerExec(containerName, 'tmux set-option -g visual-bell off')
-  await containerExec(containerName, 'tmux set-option -g allow-passthrough on')
-  await containerExec(containerName, 'tmux set-option -t yaac status-right-length 80')
+  await containerExec(containerName, `${TMUX} set-option -g monitor-bell on`)
+  await containerExec(containerName, `${TMUX} set-option -g bell-action any`)
+  await containerExec(containerName, `${TMUX} set-option -g visual-bell off`)
+  await containerExec(containerName, `${TMUX} set-option -g allow-passthrough on`)
+  await containerExec(containerName, `${TMUX} set-option -t yaac status-right-length 80`)
   // Prewarm containers skip the status-right write: the claim path's
   // setSessionStatusRight races with this call, and since prewarm
   // forwardedPorts is always empty, an unlucky ordering would clobber the
   // claim's real port info with a no-ports string.
   if (!options.createPrewarm) {
     const statusRight = buildStatusRight(projectSlug, sessionId, forwardedPorts)
-    await containerExec(containerName, `tmux set-option -t yaac status-right '${shellEscape(statusRight)}'`)
+    await containerExec(containerName, `${TMUX} set-option -t yaac status-right '${shellEscape(statusRight)}'`)
   }
-  await containerExec(containerName, 'tmux bind-key k kill-server')
+  await containerExec(containerName, `${TMUX} bind-key k kill-server`)
 
   // Now that the window's tmux options are settled, replace the keepalive
   // `sleep infinity` with the real agent. respawn-window -k kills the
   // placeholder and starts the agent in the same window, preserving the
   // tmux state we just built.
-  await containerExec(containerName, `tmux respawn-window -k -t yaac:${tool} '${agentCmd}'`)
+  await containerExec(containerName, `${TMUX} respawn-window -k -t yaac:${tool} '${agentCmd}'`)
+
+  // Pipe the agent pane's output to a host-readable log file. The daemon
+  // reads (and truncates) this file to detect Claude's "running" vs
+  // "waiting" state without `podman exec tmux capture-pane`. Must run
+  // AFTER respawn-window so pipe-pane attaches to the agent pane, not
+  // the now-defunct keepalive pane.
+  await containerExec(
+    containerName,
+    `${TMUX} pipe-pane -t yaac:${tool}.0 -o 'cat >> ${CONTAINER_TMUX_PANE_LOG}'`,
+  )
 }
 
 /**

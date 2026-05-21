@@ -79,6 +79,7 @@ vi.mock('@/lib/project/paths', () => ({
   worktreeDir: vi.fn((slug: string, sessionId: string) => `/tmp/${slug}/worktrees/${sessionId}`),
   worktreesDir: vi.fn((slug: string) => `/tmp/${slug}/worktrees`),
   projectDir: vi.fn((slug: string) => `/tmp/${slug}`),
+  sessionTmuxDir: vi.fn((slug: string, sid: string) => `/tmp/${slug}/sessions/${sid}/tmux`),
   getDataDir: vi.fn(() => '/tmp/yaac-data'),
 }))
 

@@ -4,6 +4,7 @@ import readline from 'node:readline/promises'
 import { spawn } from 'node:child_process'
 import simpleGit from 'simple-git'
 import { getRpcClient, toClientError } from '@/commands/rpc'
+import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
 import { getGitUserConfig } from '@/shared/git'
 
 export interface SessionRestartOptions {
@@ -121,7 +122,7 @@ export async function sessionRestart(
   if (process.env.YAAC_E2E_NO_ATTACH !== '1') {
     try {
       await new Promise<void>((resolve, reject) => {
-        const child = spawn('podman', ['exec', '-it', containerName, 'tmux', 'attach-session', '-t', 'yaac'], {
+        const child = spawn('podman', ['exec', '-it', containerName, 'tmux', '-S', CONTAINER_TMUX_SOCK, 'attach-session', '-t', 'yaac'], {
           stdio: 'inherit',
         })
         child.on('close', () => resolve())
