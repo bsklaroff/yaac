@@ -228,7 +228,8 @@ export async function startDaemon(): Promise<void> {
       `daemon buildId ${fresh.buildId} does not match CLI buildId ${cliBuildId}`,
     )
   }
-  console.error(`[yaac] daemon started pid=${fresh.pid} port=${fresh.port}`)
+  const torPrefix = isTorEnabled() ? '(using tor) ' : ''
+  console.error(`[yaac] ${torPrefix}daemon started pid=${fresh.pid} port=${fresh.port}`)
 }
 
 /**
