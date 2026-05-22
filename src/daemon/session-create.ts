@@ -22,6 +22,7 @@ import {
   claudeJsonFile,
   codexDir,
   codexTranscriptDir,
+  opencodeConfigDir,
   opencodeDataDir,
   opencodeMetaDir,
   cachedPackagesDir,
@@ -245,6 +246,7 @@ interface ContainerSetupParams {
   claudeJson: string
   codex: string
   opencodeData: string
+  opencodeConfig: string
   cachedPackages: string
   tool: AgentTool
   config: YaacConfig
@@ -260,7 +262,7 @@ interface ContainerSetupParams {
 async function startContainerWithSetup(params: ContainerSetupParams): Promise<void> {
   const {
     imageName, containerName, projectSlug, sessionId, env,
-    wtDir, repo, claude, claudeJson, codex, opencodeData, cachedPackages, tool,
+    wtDir, repo, claude, claudeJson, codex, opencodeData, opencodeConfig, cachedPackages, tool,
     config, options, networkMode, pgRelayIp, gitUser, forwardedPorts, extraBinds,
   } = params
 
@@ -313,6 +315,7 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
         `${claudeJson}:/home/yaac/.claude.json:Z`,
         `${codex}:/home/yaac/.codex:Z`,
         `${opencodeData}:/home/yaac/.local/share/opencode:Z`,
+        `${opencodeConfig}:/home/yaac/.config/opencode:Z`,
         `${cachedPackages}:/home/yaac/.cached-packages:Z`,
         `${tmuxHostDir}:${CONTAINER_TMUX_DIR}:Z`,
         ...Object.entries(config.cacheVolumes ?? {}).map(
@@ -784,6 +787,7 @@ export async function createSession(
   const claudeJson = claudeJsonFile(projectSlug)
   const codex = codexDir(projectSlug)
   const opencodeData = opencodeDataDir(projectSlug, sessionId)
+  const opencodeConfig = opencodeConfigDir(projectSlug)
   const cachedPackages = cachedPackagesDir(projectSlug)
 
   await fs.mkdir(claude, { recursive: true })
@@ -793,6 +797,7 @@ export async function createSession(
   // Also create the meta dir so opencode-status helpers can write first-
   // message snapshots without racing on parent-dir creation.
   await fs.mkdir(opencodeData, { recursive: true })
+  await fs.mkdir(opencodeConfig, { recursive: true })
   await fs.mkdir(opencodeMetaDir(projectSlug), { recursive: true })
   await fs.mkdir(cachedPackages, { recursive: true })
 
@@ -853,7 +858,7 @@ export async function createSession(
   const maxStartAttempts = 3
   const setupParams: ContainerSetupParams = {
     imageName, containerName, projectSlug, sessionId, env,
-    wtDir, repo, claude, claudeJson, codex, opencodeData, cachedPackages, tool,
+    wtDir, repo, claude, claudeJson, codex, opencodeData, opencodeConfig, cachedPackages, tool,
     config, options, networkMode, pgRelayIp, gitUser, forwardedPorts,
     extraBinds: sshExtraBinds,
   }

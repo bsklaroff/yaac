@@ -80,6 +80,7 @@ vi.mock('@/lib/project/paths', () => ({
   claudeDir: vi.fn((slug: string) => `/tmp/${slug}/claude`),
   claudeJsonFile: vi.fn((slug: string) => `/tmp/${slug}/claude.json`),
   codexDir: vi.fn((slug: string) => `/tmp/${slug}/codex`),
+  opencodeConfigDir: vi.fn((slug: string) => `/tmp/${slug}/opencode-config`),
   opencodeDataDir: vi.fn((slug: string, sessionId: string) => `/tmp/${slug}/opencode-data/${sessionId}`),
   opencodeMetaDir: vi.fn((slug: string) => `/tmp/${slug}/opencode-meta`),
   cachedPackagesDir: vi.fn((slug: string) => `/tmp/${slug}/.cached-packages`),
@@ -499,6 +500,14 @@ describe('createSession', () => {
       { recursive: true },
     )
     expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/opencode-meta', { recursive: true })
+
+    // Verify the shared opencode config dir is mounted and created on every
+    // session
+    const configMount = (binds ?? []).find(
+      (b: string) => b.endsWith(':/home/yaac/.config/opencode:Z'),
+    )
+    expect(configMount).toBe('/tmp/demo/opencode-config:/home/yaac/.config/opencode:Z')
+    expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/opencode-config', { recursive: true })
   })
 })
 

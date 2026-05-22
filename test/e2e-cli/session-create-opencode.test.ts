@@ -179,5 +179,25 @@ describe('yaac session create -t opencode (real CLI + real daemon + real opencod
     const status: unknown = JSON.parse(statusOut.trim() || '{}')
     expect(typeof status).toBe('object')
     expect(Array.isArray(status)).toBe(false)
+
+    // Verify the shared opencode-config directory is mounted inside the
+    // container. This directory persists across sessions so that model
+    // selection, permissions, and other settings written to
+    // ~/.config/opencode/opencode.json via Config.updateGlobal() survive
+    // container teardown.
+    const hostOcConfigDir = path.join(projectDir, 'opencode-config')
+    const hostConfigStat = await fs.stat(hostOcConfigDir)
+    expect(hostConfigStat.isDirectory()).toBe(true)
+
+    // Write a config on the host and verify it's visible inside the container
+    await fs.writeFile(
+      path.join(hostOcConfigDir, 'opencode.json'),
+      JSON.stringify({ model: 'anthropic/claude-sonnet-4-5' }),
+    )
+    const { stdout: catOut } = await podmanRetry([
+      'exec', containerName, 'cat', '/home/yaac/.config/opencode/opencode.json',
+    ])
+    const inside: unknown = JSON.parse(catOut.trim())
+    expect(inside).toEqual({ model: 'anthropic/claude-sonnet-4-5' })
   }, 180_000)
 })

@@ -16,6 +16,7 @@ import {
   projectCodexAuthFile,
   codexTranscriptDir,
   codexTranscriptFile,
+  opencodeConfigDir,
   worktreesDir,
   worktreeDir,
   blockedHostsDir,
@@ -60,6 +61,7 @@ describe('paths', () => {
     expect(cachedPackagesDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/.cached-packages')
     expect(codexTranscriptDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/codex/.yaac-transcripts')
     expect(codexTranscriptFile('my-repo', 'abc123')).toBe('/tmp/yaac-test/projects/my-repo/codex/.yaac-transcripts/abc123.jsonl')
+    expect(opencodeConfigDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/opencode-config')
     expect(worktreesDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/worktrees')
     expect(worktreeDir('my-repo', 'abc123')).toBe('/tmp/yaac-test/projects/my-repo/worktrees/abc123')
     expect(blockedHostsDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/blocked-hosts')

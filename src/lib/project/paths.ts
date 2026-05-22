@@ -92,6 +92,18 @@ export function codexTranscriptFile(slug: string, sessionId: string): string {
 }
 
 /**
+ * Per-project shared opencode config root. Bind-mounted at
+ * `/home/yaac/.config/opencode/` inside the container. Shared across
+ * sessions within the same project so that model selection, permissions,
+ * and other opencode settings (written via `Config.updateGlobal()`)
+ * persist across session restarts without affecting per-session data
+ * isolation (the SQLite DB in `~/.local/share/opencode/`).
+ */
+export function opencodeConfigDir(slug: string): string {
+  return path.join(projectDir(slug), 'opencode-config')
+}
+
+/**
  * Per-yaac-session opencode data root. Bind-mounted at
  * `/home/yaac/.local/share/opencode/` inside the container. Per-session
  * isolation sidesteps opencode upstream concurrent-write issues
