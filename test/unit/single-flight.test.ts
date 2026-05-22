@@ -30,6 +30,10 @@ vi.mock('@/lib/session/status', () => ({
   getToolFromContainer: vi.fn().mockReturnValue('claude'),
 }))
 
+vi.mock('@/lib/project/preferences', () => ({
+  getDefaultTool: vi.fn().mockResolvedValue(undefined),
+}))
+
 import { podman } from '@/lib/container/runtime'
 import {
   listActiveSessions,
@@ -131,6 +135,7 @@ describe('ensurePrewarmSessions single-flight', () => {
 
     const a = ensurePrewarmSessions()
     const b = ensurePrewarmSessions()
+    await Promise.resolve()
     expect(mockListContainers).toHaveBeenCalledTimes(1)
 
     resolveList!([])

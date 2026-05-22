@@ -7,6 +7,7 @@ import { resolveSessionFingerprint } from '@/lib/session/fingerprint'
 import { isTmuxSessionAlive, cleanupSession } from '@/lib/session/cleanup'
 import { fetchOrigin } from '@/lib/git'
 import { resolveCredentialForUrl } from '@/lib/project/credentials'
+import { getDefaultTool } from '@/lib/project/preferences'
 import { createSession } from '@/daemon/session-create'
 import type { AgentTool } from '@/shared/types'
 import simpleGit from 'simple-git'
@@ -171,28 +172,25 @@ async function hasLiveSessions(projectSlug: string, prewarmContainerName?: strin
  * podman freeze), the next tick must NOT start a second concurrent
  * pass on top.
  */
-const ensurePrewarmInflight = new Map<AgentTool, Promise<void>>()
+let ensurePrewarmInflight: Promise<void> | null = null
 
-/**
- * Test-only: clear in-flight state between cases.
- */
 export function _clearEnsurePrewarmInflightForTests(): void {
-  ensurePrewarmInflight.clear()
+  ensurePrewarmInflight = null
 }
 
 /**
  * Discover all projects with live sessions and ensure a prewarm session
- * exists for each. Used when the monitor is watching all projects.
+ * exists for each. Uses the user's configured default tool.
  *
- * Concurrent calls for the same `tool` share one in-flight Promise.
+ * Concurrent calls share one in-flight Promise.
  */
-export async function ensurePrewarmSessions(tool: AgentTool = 'claude'): Promise<void> {
-  const existing = ensurePrewarmInflight.get(tool)
-  if (existing) return existing
+export async function ensurePrewarmSessions(): Promise<void> {
+  const tool = (await getDefaultTool()) ?? 'claude'
+  if (ensurePrewarmInflight) return ensurePrewarmInflight
   const promise = ensurePrewarmSessionsImpl(tool).finally(() => {
-    ensurePrewarmInflight.delete(tool)
+    ensurePrewarmInflight = null
   })
-  ensurePrewarmInflight.set(tool, promise)
+  ensurePrewarmInflight = promise
   return promise
 }
 
@@ -225,7 +223,7 @@ async function ensurePrewarmSessionsImpl(tool: AgentTool): Promise<void> {
   }
 }
 
-export async function ensurePrewarmSession(projectSlug: string, tool: AgentTool = 'claude'): Promise<void> {
+export async function ensurePrewarmSession(projectSlug: string, tool: AgentTool): Promise<void> {
   const existing = await getPrewarmSession(projectSlug)
 
   // Only prewarm if the project has at least one live non-prewarm session
