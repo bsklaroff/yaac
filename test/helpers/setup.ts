@@ -174,7 +174,7 @@ export async function addTestProject(localRepoPath: string): Promise<void> {
   const slug = path.basename(localRepoPath)
   const dir = projectDir(slug)
   await fs.mkdir(dir, { recursive: true })
-  await cloneRepo(localRepoPath, repoDir(slug))
+  await cloneRepo(localRepoPath, repoDir(slug), null)
   await fs.mkdir(claudeDir(slug), { recursive: true })
 
   const meta: ProjectMeta = {

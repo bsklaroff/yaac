@@ -4,7 +4,7 @@ import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 import { buildApp } from '@/daemon/server'
 import { projectConfigDir, getProjectsDir, projectDir, claudeDir, codexDir } from '@/lib/project/paths'
-import { addToken, loadCredentials } from '@/lib/project/credentials'
+import { addEntry, loadCredentials } from '@/lib/project/credentials'
 import {
   loadClaudeCredentialsFile,
   saveClaudeOAuthBundle,
@@ -381,42 +381,42 @@ describe('write routes', () => {
     })
   })
 
-  describe('POST /auth/github/tokens', () => {
+  describe('POST /auth/git/credentials', () => {
     it('rejects a missing pattern', async () => {
       const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/auth/github/tokens', withAuth({
+      const res = await app.request('/auth/git/credentials', withAuth({
         method: 'POST',
-        body: JSON.stringify({ token: 'ghp_x' }),
+        body: JSON.stringify({ kind: 'https', token: 'ghp_x' }),
       }))
       expect(res.status).toBe(400)
     })
 
-    it('adds a token', async () => {
+    it('adds an https credential', async () => {
       const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.auth.github.tokens.$post({
-        json: { pattern: 'acme/*', token: 'ghp_new' },
+      const res = await client.auth.git.credentials.$post({
+        json: { kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_new' },
       })
       expect(res.status).toBe(204)
       expect((await loadCredentials()).tokens).toEqual([
-        { pattern: 'acme/*', token: 'ghp_new' },
+        { kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_new' },
       ])
     })
 
     it('surfaces invalid patterns as VALIDATION', async () => {
       const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.auth.github.tokens.$post({
-        json: { pattern: '*/*', token: 'ghp_x' },
+      const res = await client.auth.git.credentials.$post({
+        json: { kind: 'https', pattern: '*', token: 'ghp_x' },
       })
       expect(res.status).toBe(400)
     })
   })
 
-  describe('DELETE /auth/github/tokens/:pattern', () => {
-    it('removes an existing token', async () => {
-      await addToken('acme/*', 'ghp_acme')
+  describe('DELETE /auth/git/credentials/:pattern', () => {
+    it('removes an existing credential', async () => {
+      await addEntry({ kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_acme' })
       const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.auth.github.tokens[':pattern'].$delete({
-        param: { pattern: encodeURIComponent('acme/*') },
+      const res = await client.auth.git.credentials[':pattern'].$delete({
+        param: { pattern: encodeURIComponent('github.com/acme/*') },
       })
       expect(res.status).toBe(204)
       expect((await loadCredentials()).tokens).toEqual([])
@@ -424,31 +424,31 @@ describe('write routes', () => {
 
     it('returns 404 for an unknown pattern', async () => {
       const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.auth.github.tokens[':pattern'].$delete({
+      const res = await client.auth.git.credentials[':pattern'].$delete({
         param: { pattern: 'unknown' },
       })
       expect(res.status).toBe(404)
     })
   })
 
-  describe('PUT /auth/github/tokens', () => {
-    it('replaces the entire token list', async () => {
-      await addToken('old/*', 'ghp_old')
+  describe('PUT /auth/git/credentials', () => {
+    it('replaces the entire credential list', async () => {
+      await addEntry({ kind: 'https', pattern: 'github.com/old/*', token: 'ghp_old' })
       const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
-      const res = await client.auth.github.tokens.$put({
-        json: { tokens: [{ pattern: 'new/*', token: 'ghp_new' }] },
+      const res = await client.auth.git.credentials.$put({
+        json: { credentials: [{ kind: 'https', pattern: 'github.com/new/*', token: 'ghp_new' }] },
       })
       expect(res.status).toBe(204)
       expect((await loadCredentials()).tokens).toEqual([
-        { pattern: 'new/*', token: 'ghp_new' },
+        { kind: 'https', pattern: 'github.com/new/*', token: 'ghp_new' },
       ])
     })
 
     it('rejects non-array body', async () => {
       const app = buildApp({ secret: 'shh', buildId: 'test' })
-      const res = await app.request('/auth/github/tokens', withAuth({
+      const res = await app.request('/auth/git/credentials', withAuth({
         method: 'PUT',
-        body: JSON.stringify({ tokens: 'no' }),
+        body: JSON.stringify({ credentials: 'no' }),
       }))
       expect(res.status).toBe(400)
     })

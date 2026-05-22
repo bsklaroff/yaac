@@ -20,6 +20,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import zlib from 'node:zlib'
+import { spawn } from 'node:child_process'
 import type { Duplex } from 'node:stream'
 import forge from 'node-forge'
 import { SocksClient } from 'socks'
@@ -53,7 +54,6 @@ const CODEX_CREDS_FILE = path.join(CREDENTIALS_DIR, 'codex.json')
 const CLAUDE_TOKEN_URL_HOST = 'platform.claude.com'
 const CLAUDE_TOKEN_URL_PATH = '/v1/oauth/token'
 const ANTHROPIC_API_HOST = 'api.anthropic.com'
-const GITHUB_HOSTS = new Set(['github.com', 'api.github.com'])
 const OPENAI_API_HOST = 'api.openai.com'
 const OPENAI_TOKEN_URL_HOST = 'auth.openai.com'
 const OPENAI_TOKEN_URL_PATH = '/oauth/token'
@@ -98,7 +98,19 @@ type CodexCreds =
   | { kind: 'oauth'; bundle: CodexOAuthBundle }
   | { kind: 'api-key'; apiKey: string }
 
-type GithubTokenEntry = { pattern: string; token: string }
+// NOTE: keep in sync with src/shared/credentials.ts and
+// src/lib/project/credentials.ts. The proxy bundles independently and can't
+// import from src/.
+type HttpsCredentialEntry = { kind: 'https'; pattern: string; token: string }
+type SshCredentialEntry = {
+  kind: 'ssh'
+  pattern: string
+  privateKeyPath: string
+  knownHostsEntry: string
+}
+type GitCredentialEntry = HttpsCredentialEntry | SshCredentialEntry
+
+type ParsedPattern = { host: string; owner: string; repo: string }
 
 type Injection =
   | { action: 'set_header'; name: string; value: string }
@@ -304,20 +316,103 @@ function decodeJwtExp(jwt: string): number | null {
   }
 }
 
-function readGithubTokens(): GithubTokenEntry[] {
+function isHostSegment(s: string): boolean {
+  return s.includes('.') || s === 'localhost'
+}
+
+/** Read-time normalization of legacy entries — mirrors lib/project/credentials.ts. */
+function normalizeLegacyPattern(pattern: string): string {
+  if (pattern === '*') return 'github.com/*'
+  const parts = pattern.split('/')
+  if (parts.length === 2 && parts[0] && !isHostSegment(parts[0])) {
+    return `github.com/${pattern}`
+  }
+  return pattern
+}
+
+function parsePattern(pattern: string): ParsedPattern | null {
+  if (!pattern || pattern.includes(' ')) return null
+  const parts = pattern.split('/')
+  if (parts.length < 2 || parts.length > 3) return null
+  const host = parts[0]
+  if (!host || host.includes('*')) return null
+  if (parts.length === 2) {
+    if (parts[1] !== '*') return null
+    return { host, owner: '*', repo: '*' }
+  }
+  const owner = parts[1]
+  const repo = parts[2]
+  if (!owner || owner.includes('*')) return null
+  if (!repo || (repo.includes('*') && repo !== '*')) return null
+  return { host, owner, repo }
+}
+
+function matchPattern(pattern: string, host: string, owner: string, repo: string): boolean {
+  const p = parsePattern(pattern)
+  if (!p) return false
+  if (p.host !== host) return false
+  if (p.owner !== '*' && p.owner !== owner) return false
+  if (p.repo !== '*' && p.repo !== repo) return false
+  return true
+}
+
+/** Parse a git remote URL. Accepts https:// and SCP-style only. */
+function parseGitRemote(remoteUrl: string | undefined): {
+  scheme: 'https' | 'ssh'
+  host: string
+  owner: string
+  repo: string
+} | null {
+  if (!remoteUrl || typeof remoteUrl !== 'string') return null
+  if (remoteUrl.startsWith('https://')) {
+    try {
+      const url = new URL(remoteUrl)
+      const segments = url.pathname.replace(/^\//, '').replace(/\.git$/, '').split('/')
+      if (segments.length < 2 || !segments[0] || !segments[1]) return null
+      return { scheme: 'https', host: url.hostname, owner: segments[0], repo: segments[1] }
+    } catch {
+      return null
+    }
+  }
+  const m = /^(?:([\w._-]+)@)?([\w.-]+):(?!\/)(.+)$/.exec(remoteUrl)
+  if (m) {
+    const host = m[2]
+    const tail = m[3].replace(/\.git$/, '')
+    const segments = tail.split('/')
+    if (segments.length < 2 || !segments[0] || !segments[1]) return null
+    return { scheme: 'ssh', host, owner: segments[0], repo: segments[1] }
+  }
+  return null
+}
+
+function readGitCredentials(): GitCredentialEntry[] {
   try {
     const raw = fs.readFileSync(GITHUB_CREDS_FILE, 'utf8')
     const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return []
     const o = parsed as Record<string, unknown>
     if (!Array.isArray(o.tokens)) return []
-    const result: GithubTokenEntry[] = []
+    const result: GitCredentialEntry[] = []
     for (const entry of o.tokens as unknown[]) {
-      if (entry && typeof entry === 'object') {
-        const e = entry as Record<string, unknown>
-        if (typeof e.pattern === 'string' && typeof e.token === 'string' && e.token !== '') {
-          result.push({ pattern: e.pattern, token: e.token })
-        }
+      if (!entry || typeof entry !== 'object') continue
+      const e = entry as Record<string, unknown>
+      const kind = e.kind ?? 'https'
+      if (kind === 'https') {
+        if (typeof e.pattern !== 'string' || typeof e.token !== 'string' || !e.token) continue
+        const pattern = normalizeLegacyPattern(e.pattern)
+        if (!parsePattern(pattern)) continue
+        result.push({ kind: 'https', pattern, token: e.token })
+      } else if (kind === 'ssh') {
+        if (typeof e.pattern !== 'string'
+          || typeof e.privateKeyPath !== 'string' || !e.privateKeyPath
+          || typeof e.knownHostsEntry !== 'string' || !e.knownHostsEntry) continue
+        if (!parsePattern(e.pattern)) continue
+        result.push({
+          kind: 'ssh',
+          pattern: e.pattern,
+          privateKeyPath: e.privateKeyPath,
+          knownHostsEntry: e.knownHostsEntry,
+        })
       }
     }
     return result
@@ -327,45 +422,21 @@ function readGithubTokens(): GithubTokenEntry[] {
 }
 
 /**
- * Mirrors `matchPattern` / `resolveTokenForUrl` from src/lib/project/credentials.ts.
- * Patterns: "*", "owner/*", "owner/repo".
+ * Resolve the HTTPS credential for a session's repoUrl, returning the matched
+ * token along with the (host, owner, repo) it matched on so callers can guard
+ * against cross-host token leakage.
  */
-function matchGithubPattern(pattern: string, owner: string, repo: string): boolean {
-  if (pattern === '*') return true
-  const parts = pattern.split('/')
-  if (parts.length !== 2) return false
-  const [patOwner, patRepo] = parts
-  if (patOwner !== owner) return false
-  if (patRepo === '*') return true
-  return patRepo === repo
-}
-
-/** Extract owner/repo from a GitHub remote URL. Returns null on failure. */
-function parseRepoUrl(remoteUrl: string | undefined): { owner: string; repo: string } | null {
-  if (!remoteUrl || typeof remoteUrl !== 'string') return null
-  try {
-    const url = new URL(remoteUrl)
-    const segments = url.pathname.replace(/^\//, '').replace(/\.git$/, '').split('/')
-    if (segments.length < 2 || !segments[0] || !segments[1]) return null
-    return { owner: segments[0], repo: segments[1] }
-  } catch {
-    return null
-  }
-}
-
-/** Resolve the GitHub token for a given repo URL using the on-disk token list. */
-function resolveGithubToken(repoUrl: string | undefined): string | null {
-  const tokens = readGithubTokens()
-  if (tokens.length === 0) return null
-  const parsed = parseRepoUrl(repoUrl)
-  if (!parsed) {
-    // No repo context — fall back to the first catch-all entry if present.
-    const catchAll = tokens.find((t) => t.pattern === '*')
-    return catchAll?.token ?? null
-  }
-  for (const entry of tokens) {
-    if (matchGithubPattern(entry.pattern, parsed.owner, parsed.repo)) {
-      return entry.token
+function resolveHttpsCredentialForRepo(repoUrl: string | undefined): {
+  token: string; host: string; owner: string; repo: string
+} | null {
+  const creds = readGitCredentials()
+  if (creds.length === 0) return null
+  const parsed = parseGitRemote(repoUrl)
+  if (!parsed || parsed.scheme !== 'https') return null
+  for (const entry of creds) {
+    if (entry.kind !== 'https') continue
+    if (matchPattern(entry.pattern, parsed.host, parsed.owner, parsed.repo)) {
+      return { token: entry.token, host: parsed.host, owner: parsed.owner, repo: parsed.repo }
     }
   }
   return null
@@ -554,18 +625,25 @@ function applyBodyInjections(
 // ── Dynamic Auth (GitHub / Codex / Claude api-key) ─────────────────────
 
 /**
- * Hosts the proxy always MITMs so it can inject agent-tool credentials
- * read from the mounted credentials dir. Rule-based / per-session MITM is
- * still applied on top of this set.
+ * Hosts the proxy MITMs so it can inject agent-tool credentials read from
+ * the mounted credentials dir, plus any HTTPS host for which the current
+ * session has a matching git credential. SSH (port 22) is always tunneled,
+ * never MITM'd. Rule-based per-session MITM is still applied on top of this.
  */
-function hostNeedsDynamicMitm(hostname: string): boolean {
+function hostNeedsDynamicMitm(sessionId: string | null, hostname: string, port: number): boolean {
+  if (port === 22) return false
   if (hostname === ANTHROPIC_API_HOST) return true
   if (hostname === CLAUDE_TOKEN_URL_HOST) return true
-  if (GITHUB_HOSTS.has(hostname)) return true
   if (hostname === OPENAI_API_HOST) return true
   if (hostname === OPENAI_TOKEN_URL_HOST) return true
   if (hostname === CHATGPT_HOST) return true
+  if (sessionId && sessionHasHttpsCredentialForHost(sessionId, hostname)) return true
   return false
+}
+
+function sessionHasHttpsCredentialForHost(sessionId: string, hostname: string): boolean {
+  const cred = resolveHttpsCredentialForRepo(sessionRepoUrl.get(sessionId))
+  return cred?.host === hostname
 }
 
 function headerValue(
@@ -595,15 +673,17 @@ function buildDynamicRules(
   if (!sessionId) return []
   const rules: InjectionRule[] = []
 
-  if (GITHUB_HOSTS.has(hostname)) {
-    const token = resolveGithubToken(sessionRepoUrl.get(sessionId))
-    if (token) {
-      const basic = 'Basic ' + Buffer.from(`x-access-token:${token}`).toString('base64')
-      rules.push({
-        pathPattern: '*',
-        injections: [{ action: 'set_header', name: 'Authorization', value: basic }],
-      })
-    }
+  // HTTPS git credential injection: only fires when the session's repoUrl
+  // host matches the current MITM hostname. The host equality guard keeps a
+  // token scoped to e.g. github.com from leaking into a request to
+  // chatgpt.com (which is also MITM'd for other reasons).
+  const httpsCred = resolveHttpsCredentialForRepo(sessionRepoUrl.get(sessionId))
+  if (httpsCred && httpsCred.host === hostname) {
+    const basic = 'Basic ' + Buffer.from(`x-access-token:${httpsCred.token}`).toString('base64')
+    rules.push({
+      pathPattern: '*',
+      injections: [{ action: 'set_header', name: 'Authorization', value: basic }],
+    })
   }
 
   // Anthropic credential swap is gated on the inbound request carrying our
@@ -1384,8 +1464,126 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     return
   }
 
+  // ssh-agent management. The daemon uploads keys here at startup and on
+  // every `yaac auth update` SSH add/remove. Key bytes live only in the
+  // agent's memory — never persisted to the proxy filesystem.
+  if (req.method === 'PUT' && req.url === '/agent/keys') {
+    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
+    let body = ''
+    req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
+    req.on('end', () => {
+      let parsed: { host?: unknown; keyPem?: unknown }
+      try {
+        parsed = JSON.parse(body) as { host?: unknown; keyPem?: unknown }
+      } catch {
+        res.writeHead(400); res.end('Invalid JSON'); return
+      }
+      if (typeof parsed.host !== 'string' || !parsed.host
+        || typeof parsed.keyPem !== 'string' || !parsed.keyPem) {
+        res.writeHead(400); res.end('Need {host, keyPem}'); return
+      }
+      void sshAddKey(parsed.host, parsed.keyPem).then(
+        () => { res.writeHead(200); res.end('ok') },
+        (err: Error) => { res.writeHead(400); res.end(err.message) },
+      )
+    })
+    return
+  }
+
+  if (req.method === 'DELETE' && req.url === '/agent/keys') {
+    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
+    void sshClearAgent().then(
+      () => { res.writeHead(200); res.end('ok') },
+      (err: Error) => { res.writeHead(500); res.end(err.message) },
+    )
+    return
+  }
+
+  if (req.method === 'GET' && req.url === '/agent/keys') {
+    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
+    void sshListAgent().then(
+      (rows) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(rows))
+      },
+      (err: Error) => { res.writeHead(500); res.end(err.message) },
+    )
+    return
+  }
+
   res.writeHead(404)
   res.end('Not found')
+}
+
+// ── ssh-agent management ──────────────────────────────────────────────
+
+function sshAddKey(host: string, keyPem: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('ssh-add', ['-h', host, '-'], {
+      env: {
+        ...process.env,
+        SSH_AUTH_SOCK: '/ssh-agent/socket',
+        SSH_ASKPASS: '/bin/false',
+        SSH_ASKPASS_REQUIRE: 'force',
+        DISPLAY: 'none:0',
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    let stderr = ''
+    child.stderr.on('data', (c: Buffer) => { stderr += c.toString('utf8') })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      if (code === 0) resolve()
+      else reject(new Error(`ssh-add exited with code ${code ?? '?'}: ${stderr.trim()}`))
+    })
+    child.stdin.end(keyPem)
+  })
+}
+
+function sshClearAgent(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('ssh-add', ['-D'], {
+      env: { ...process.env, SSH_AUTH_SOCK: '/ssh-agent/socket' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stderr = ''
+    child.stderr.on('data', (c: Buffer) => { stderr += c.toString('utf8') })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      // ssh-add -D exits 0 even when empty.
+      if (code === 0) resolve()
+      else reject(new Error(`ssh-add -D exited with code ${code ?? '?'}: ${stderr.trim()}`))
+    })
+  })
+}
+
+function sshListAgent(): Promise<Array<{ fingerprint: string; comment: string }>> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('ssh-add', ['-l'], {
+      env: { ...process.env, SSH_AUTH_SOCK: '/ssh-agent/socket' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    child.stdout.on('data', (c: Buffer) => { stdout += c.toString('utf8') })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      // Exit 1 = "The agent has no identities." — return empty.
+      if (code !== 0 && code !== 1) {
+        reject(new Error(`ssh-add -l exited with code ${code ?? '?'}`))
+        return
+      }
+      const rows: Array<{ fingerprint: string; comment: string }> = []
+      for (const line of stdout.split('\n')) {
+        const trimmed = line.trim()
+        if (!trimmed || trimmed === 'The agent has no identities.') continue
+        // Format: "<bits> <fingerprint> <comment> (<algo>)"
+        const parts = trimmed.split(/\s+/)
+        if (parts.length < 3) continue
+        rows.push({ fingerprint: parts[1], comment: parts.slice(2, -1).join(' ') })
+      }
+      resolve(rows)
+    })
+  })
 }
 
 // ── Server ─────────────────────────────────────────────────────────────
@@ -1476,8 +1674,9 @@ server.on('connect', (req: http.IncomingMessage, clientSocket: Duplex, head: Buf
 
   // Always MITM well-known tool-auth hosts so we can inject credentials
   // read from the host-mounted credentials dir, even when no per-session
-  // rule-based injections apply.
-  const needsDynMitm = hostNeedsDynamicMitm(hostname)
+  // rule-based injections apply. Port-aware: SSH (22) always tunnels.
+  const destPort = parseInt(port ?? '', 10) || 443
+  const needsDynMitm = hostNeedsDynamicMitm(sessionId, hostname, destPort)
 
   // A registered redirect for this hostname forces MITM — without it, the
   // proxy would tunnel bytes unchanged and the redirect could never apply.

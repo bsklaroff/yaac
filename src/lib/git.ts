@@ -1,4 +1,9 @@
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
+import type { ResolvedGitCredential } from '@/lib/project/credentials'
 
 export function injectTokenIntoUrl(url: string, token: string): string {
   const parsed = new URL(url)
@@ -7,14 +12,13 @@ export function injectTokenIntoUrl(url: string, token: string): string {
   return parsed.toString()
 }
 
-// Parses YAAC_USE_TOR with permissive truthy semantics: unset, empty,
-// "0", and "false" (case-insensitive) are off; everything else is on.
-export function isTorEnabled(): boolean {
-  const raw = process.env.YAAC_USE_TOR
-  if (raw === undefined) return false
-  const v = raw.trim().toLowerCase()
-  if (v === '' || v === '0' || v === 'false') return false
-  return true
+export { isTorEnabled, torSshOpts } from '@/shared/git'
+import { isTorEnabled } from '@/shared/git'
+
+export function expandTilde(p: string): string {
+  if (p === '~') return os.homedir()
+  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2))
+  return p
 }
 
 // When Tor is enabled on the daemon process, route the git subprocess
@@ -30,48 +34,131 @@ export function torEnv(): NodeJS.ProcessEnv | undefined {
   return { ...process.env, ALL_PROXY: url, NO_PROXY: 'localhost,127.0.0.1' }
 }
 
-function gitWithTorEnv(baseDir?: string): ReturnType<typeof simpleGit> {
+import { torSshOpts } from '@/shared/git'
+
+/**
+ * Build the host-side GIT_SSH_COMMAND for a registered SSH key. The daemon
+ * has filesystem access to the key, so it uses `-i <keyPath>` directly.
+ * The session container never sees this string — its own GIT_SSH_COMMAND is
+ * built separately and uses the proxy's ssh-agent instead of `-i`.
+ */
+export function buildHostSideGitSshCommand(keyPath: string, knownHostsPath: string): string {
+  const args = [
+    'ssh', '-F', '/dev/null',
+    '-i', keyPath,
+    '-o', `UserKnownHostsFile=${knownHostsPath}`,
+    '-o', 'StrictHostKeyChecking=yes',
+    '-o', 'IdentitiesOnly=yes',
+    ...torSshOpts(),
+  ]
+  return args.join(' ')
+}
+
+/**
+ * Write a known_hosts file atomically with mode 0600. Idempotent.
+ */
+export async function writeKnownHostsFile(entries: string[], destPath: string): Promise<void> {
+  const content = entries.join('\n') + (entries.length ? '\n' : '')
+  await fs.mkdir(path.dirname(destPath), { recursive: true })
+  const tmp = `${destPath}.tmp-${crypto.randomBytes(6).toString('hex')}`
+  await fs.writeFile(tmp, content, { mode: 0o600 })
+  await fs.rename(tmp, destPath)
+}
+
+/**
+ * Build the env object to pass to `simpleGit.env(...)` for a given
+ * credential. For SSH, we also need a known_hosts path on disk so the
+ * GIT_SSH_COMMAND can point at it. Caller is responsible for writing
+ * the file first.
+ */
+export function gitEnvForCredential(
+  credential: ResolvedGitCredential | null,
+  knownHostsPath?: string,
+): NodeJS.ProcessEnv | undefined {
+  const base = torEnv() ?? { ...process.env }
+  if (credential?.kind === 'ssh') {
+    if (!knownHostsPath) throw new Error('SSH credentials require a knownHostsPath')
+    base.GIT_SSH_COMMAND = buildHostSideGitSshCommand(credential.privateKeyPath, knownHostsPath)
+    return base
+  }
+  // HTTPS or no credential: Tor env (if any) is enough; otherwise simple-git
+  // can use process.env directly.
+  return torEnv()
+}
+
+async function ensureKnownHostsFileForCredential(
+  credential: ResolvedGitCredential | null,
+): Promise<string | undefined> {
+  if (credential?.kind !== 'ssh') return undefined
+  // Per-credential known_hosts under the OS tmp dir, keyed by content hash.
+  // Stable so concurrent clones reuse the same file.
+  const hash = crypto.createHash('sha256').update(credential.knownHostsEntry).digest('hex').slice(0, 12)
+  const dest = path.join(os.tmpdir(), `yaac-known_hosts-${hash}`)
+  await writeKnownHostsFile([credential.knownHostsEntry], dest)
+  return dest
+}
+
+function gitWithCredentialEnv(
+  baseDir: string | undefined,
+  env: NodeJS.ProcessEnv | undefined,
+): ReturnType<typeof simpleGit> {
   const git = baseDir ? simpleGit(baseDir) : simpleGit()
-  const env = torEnv()
   return env ? git.env(env) : git
 }
 
-export async function cloneRepo(remoteUrl: string, destPath: string, githubToken?: string): Promise<void> {
-  if (githubToken) {
-    const authedUrl = injectTokenIntoUrl(remoteUrl, githubToken)
-    await gitWithTorEnv().clone(authedUrl, destPath)
-    // Strip credentials from the stored remote URL
+export async function cloneRepo(
+  remoteUrl: string,
+  destPath: string,
+  credential: ResolvedGitCredential | null,
+): Promise<void> {
+  if (credential?.kind === 'https') {
+    const authedUrl = injectTokenIntoUrl(remoteUrl, credential.token)
+    await gitWithCredentialEnv(undefined, torEnv()).clone(authedUrl, destPath)
+    // Strip credentials from the stored remote URL.
     await simpleGit(destPath).remote(['set-url', 'origin', remoteUrl])
-  } else {
-    await gitWithTorEnv().clone(remoteUrl, destPath)
+    return
   }
+  if (credential?.kind === 'ssh') {
+    const knownHostsPath = await ensureKnownHostsFileForCredential(credential)
+    const env = gitEnvForCredential(credential, knownHostsPath)
+    await gitWithCredentialEnv(undefined, env).clone(remoteUrl, destPath)
+    return
+  }
+  // No credential: unauthenticated clone (works for public HTTPS repos).
+  await gitWithCredentialEnv(undefined, torEnv()).clone(remoteUrl, destPath)
 }
 
 export async function getDefaultBranch(repoPath: string): Promise<string> {
   const git = simpleGit(repoPath)
   try {
-    // Prefer the remote HEAD symref (e.g. "refs/remotes/origin/main")
     const ref = await git.raw(['symbolic-ref', 'refs/remotes/origin/HEAD'])
-    // Returns something like "refs/remotes/origin/main"
     const match = ref.trim().match(/^refs\/remotes\/origin\/(.+)$/)
     if (match) return match[1]
   } catch {
     // Fallback: origin/HEAD may not be set (e.g. local-only repos)
   }
-  // Fall back to whatever branch is checked out locally
   const branch = await git.revparse(['--abbrev-ref', 'HEAD'])
   return branch.trim()
 }
 
-export async function fetchOrigin(repoPath: string, githubToken?: string): Promise<void> {
-  if (githubToken) {
-    const git = gitWithTorEnv(repoPath)
+export async function fetchOrigin(
+  repoPath: string,
+  credential: ResolvedGitCredential | null,
+): Promise<void> {
+  if (credential?.kind === 'https') {
+    const git = gitWithCredentialEnv(repoPath, torEnv())
     const remoteUrl = (await git.remote(['get-url', 'origin']))!.trim()
-    const authedUrl = injectTokenIntoUrl(remoteUrl, githubToken)
+    const authedUrl = injectTokenIntoUrl(remoteUrl, credential.token)
     await git.raw(['fetch', authedUrl, '+refs/heads/*:refs/remotes/origin/*', '--update-head-ok'])
-  } else {
-    await gitWithTorEnv(repoPath).fetch('origin')
+    return
   }
+  if (credential?.kind === 'ssh') {
+    const knownHostsPath = await ensureKnownHostsFileForCredential(credential)
+    const env = gitEnvForCredential(credential, knownHostsPath)
+    await gitWithCredentialEnv(repoPath, env).fetch('origin')
+    return
+  }
+  await gitWithCredentialEnv(repoPath, torEnv()).fetch('origin')
 }
 
 export async function addWorktree(repoPath: string, worktreePath: string, branchName: string, startPoint?: string): Promise<void> {

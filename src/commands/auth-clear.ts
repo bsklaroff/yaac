@@ -5,9 +5,9 @@ export async function authClear(): Promise<void> {
   const client = await getRpcClient()
   const summaryRes = await client.auth.list.$get()
   if (!summaryRes.ok) throw await toClientError(summaryRes)
-  const { githubTokens, toolAuth } = await summaryRes.json()
+  const { gitCredentials, toolAuth } = await summaryRes.json()
 
-  if (githubTokens.length === 0 && toolAuth.length === 0) {
+  if (gitCredentials.length === 0 && toolAuth.length === 0) {
     console.log('No credentials configured.')
     return
   }
@@ -18,18 +18,18 @@ export async function authClear(): Promise<void> {
   }
 
   const entries: Entry[] = []
-  for (const { pattern, tokenPreview } of githubTokens) {
+  for (const { kind, pattern, preview } of gitCredentials) {
     entries.push({
-      label: `GitHub token: ${pattern} (${tokenPreview})`,
+      label: `Git ${kind}: ${pattern} (${preview})`,
       run: async () => {
-        // Path segment must be URL-encoded: patterns like "acme/*" carry a
-        // literal slash that the Hono client would otherwise pass through,
-        // breaking the :pattern route match.
-        const res = await client.auth.github.tokens[':pattern'].$delete({
+        // Path segment must be URL-encoded: patterns like "github.com/acme/*"
+        // carry literal slashes that the Hono client would otherwise pass
+        // through, breaking the :pattern route match.
+        const res = await client.auth.git.credentials[':pattern'].$delete({
           param: { pattern: encodeURIComponent(pattern) },
         })
         if (!res.ok) throw await toClientError(res)
-        console.log(`Removed GitHub token for pattern "${pattern}".`)
+        console.log(`Removed git credential for pattern "${pattern}".`)
       },
     })
   }

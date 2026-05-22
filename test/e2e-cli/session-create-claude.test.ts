@@ -80,7 +80,7 @@ describe('yaac session create drives real claude-code through mocked remotes', (
     const repoDir = path.join(projectDir, 'repo')
     const claudeHostDir = path.join(projectDir, 'claude')
     await fs.mkdir(claudeHostDir, { recursive: true })
-    await cloneRepo(path.join(mockGit!.reposDir, 'repo-demo.git'), repoDir)
+    await cloneRepo(path.join(mockGit!.reposDir, 'repo-demo.git'), repoDir, null)
     await simpleGit(repoDir).remote(['set-url', 'origin', 'https://github.com/test-org/repo-demo.git'])
     await fs.writeFile(path.join(projectDir, 'project.json'), JSON.stringify({
       slug: 'repo-demo',

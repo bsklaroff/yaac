@@ -147,11 +147,11 @@ describe('tool-auth', () => {
       expect(JSON.parse(raw)).toMatchObject({ kind: 'api-key', apiKey: 'sk-proj-openai' })
     })
 
-    it('leaves github tokens untouched', async () => {
-      await saveCredentials({ tokens: [{ pattern: '*', token: 'ghp_test' }] })
+    it('leaves git credentials untouched', async () => {
+      await saveCredentials({ tokens: [{ kind: 'https', pattern: 'github.com/*', token: 'ghp_test' }] })
       await saveToolAuth('claude', 'sk-ant-api03-xyz', 'api-key')
       const creds = await loadCredentials()
-      expect(creds.tokens).toEqual([{ pattern: '*', token: 'ghp_test' }])
+      expect(creds.tokens).toEqual([{ kind: 'https', pattern: 'github.com/*', token: 'ghp_test' }])
     })
   })
 

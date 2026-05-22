@@ -68,7 +68,7 @@ describe('yaac daemon HTTP surface (real daemon)', () => {
   it('GET /auth/list returns empty arrays when nothing is configured', async () => {
     const res = await client.auth.list.$get()
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ githubTokens: [], toolAuth: [] })
+    expect(await res.json()).toEqual({ gitCredentials: [], toolAuth: [] })
   })
 
   it('GET /project/:slug 404s for an unknown project', async () => {

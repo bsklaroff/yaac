@@ -46,23 +46,30 @@ describe('yaac project (real CLI + real daemon)', () => {
     expect(stdout).toMatch(/repo-beta\s+\S.*\s+0/)
   })
 
-  it('project add rejects a non-GitHub URL with a validation error', async () => {
-    const { stderr, exitCode } = await runYaac(
-      testEnv.env,
-      'project',
-      'add',
-      'https://gitlab.com/foo/bar',
+  it('project add accepts a non-GitHub HTTPS URL (no longer rejected on host)', async () => {
+    // Without credentials the CLI drops into the interactive auth flow.
+    // Cancel out of that flow with a single newline; we just need to assert
+    // that URL validation did NOT reject the non-github host.
+    const { stdout, stderr } = await runYaac(
+      testEnv.env, 'project', 'add', 'https://gitlab.example.com/foo/bar',
+      { stdin: '\n' },
     )
-    expect(exitCode).not.toBe(0)
-    expect(stderr).toMatch(/github/i)
+    const combined = stdout + stderr
+    // The old "Only GitHub repositories are supported" error must be gone.
+    expect(combined).not.toMatch(/only github/i)
+    // The interactive auth-update menu must have been shown — proves the
+    // URL reached the daemon (rather than being blocked by validation).
+    expect(combined).toMatch(/What would you like to authenticate\?/)
   })
 
-  it('project add rejects SSH-style URLs pointing at HTTPS instead', async () => {
-    const { stderr, exitCode } = await runYaac(
+  it('project add accepts SCP-style SSH URLs', async () => {
+    const { stdout, stderr } = await runYaac(
       testEnv.env, 'project', 'add', 'git@github.com:org/repo.git',
+      { stdin: '\n' },
     )
-    expect(exitCode).not.toBe(0)
-    expect(stderr).toMatch(/HTTPS/)
+    const combined = stdout + stderr
+    expect(combined).not.toMatch(/SSH URLs are not supported/i)
+    expect(combined).toMatch(/What would you like to authenticate\?/)
   })
 
   it('project add rejects plain HTTP URLs', async () => {
@@ -70,7 +77,15 @@ describe('yaac project (real CLI + real daemon)', () => {
       testEnv.env, 'project', 'add', 'http://github.com/org/repo',
     )
     expect(exitCode).not.toBe(0)
-    expect(stderr).toMatch(/HTTPS/)
+    expect(stderr).toMatch(/HTTPS/i)
+  })
+
+  it('project add rejects ssh:// URLs pointing at SCP-style instead', async () => {
+    const { stderr, exitCode } = await runYaac(
+      testEnv.env, 'project', 'add', 'ssh://git@github.com/org/repo',
+    )
+    expect(exitCode).not.toBe(0)
+    expect(stderr).toMatch(/SCP-style/)
   })
 
   it('project add rejects unparseable URLs', async () => {
@@ -78,7 +93,7 @@ describe('yaac project (real CLI + real daemon)', () => {
       testEnv.env, 'project', 'add', 'not-a-url',
     )
     expect(exitCode).not.toBe(0)
-    expect(stderr).toMatch(/Invalid URL|HTTPS|GitHub/)
+    expect(stderr).toMatch(/Unrecognized|Invalid|HTTPS/i)
   })
 
   it('project add returns CONFLICT when a project with the same slug exists', async () => {

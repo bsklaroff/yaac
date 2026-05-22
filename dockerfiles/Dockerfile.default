@@ -6,8 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     less libasound2t64 libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 \
     libcairo2 libcups2t64 libdbus-1-3 libgbm1 libnspr4 libnss3 libpango-1.0-0 \
     libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
-    libxkbcommon0 libxrandr2 locales netcat-openbsd podman python3 socat sudo \
-    tmux wget xz-utils zsh && \
+    libxkbcommon0 libxrandr2 locales ncat netcat-openbsd openssh-client \
+    podman python3 socat sudo tmux wget xz-utils zsh && \
     sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen && update-locale LANG=en_US.UTF-8 && \
     if [ -n "$SSL_CERT_FILE" ] && [ -f "$SSL_CERT_FILE" ]; then \
       cp "$SSL_CERT_FILE" /usr/local/share/ca-certificates/proxy-ca.crt && update-ca-certificates; \

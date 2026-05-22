@@ -10,7 +10,10 @@ export { expandEnvVars, parseProjectConfig, loadProjectConfig, resolveProjectCon
 export { listProjects, type ProjectListEntry } from './list'
 export {
   credentialsPath, loadCredentials, saveCredentials,
-  validatePattern, parseRepoPath, matchPattern,
-  resolveTokenForUrl, getGithubToken, addToken, removeToken,
-  listTokens, promptForGithubToken, ensureGithubToken,
+  validatePattern, parsePattern, matchPattern, parseGitRemote,
+  resolveCredentialForUrl, loadKnownHostsEntryForHost,
+  addEntry, removeEntry, removeEntryChecked, replaceEntries,
+  listEntries, listSshEntries, summarizeEntries,
+  promptForHttpsCredential, ensureFirstCredential, assertKeyHasNoPassphrase,
+  type ResolvedGitCredential, type ParsedGitRemote,
 } from './credentials'

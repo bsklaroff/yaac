@@ -7,15 +7,16 @@ export async function authList(): Promise<void> {
   if (!res.ok) throw await toClientError(res)
   const result = await res.json()
 
-  console.log('GitHub tokens:')
-  if (result.githubTokens.length === 0) {
+  console.log('Git credentials:')
+  if (result.gitCredentials.length === 0) {
     console.log('  (none configured)')
   } else {
-    for (let i = 0; i < result.githubTokens.length; i++) {
-      const { pattern, tokenPreview } = result.githubTokens[i]
+    for (let i = 0; i < result.gitCredentials.length; i++) {
+      const { kind, pattern, preview } = result.gitCredentials[i]
       const num = String(i + 1).padEnd(2)
-      const pat = pattern.padEnd(27)
-      console.log(`  ${num} ${pat} ${tokenPreview}`)
+      const kindCol = kind.padEnd(5)
+      const pat = pattern.padEnd(35)
+      console.log(`  ${num} ${kindCol} ${pat} ${preview}`)
     }
   }
 

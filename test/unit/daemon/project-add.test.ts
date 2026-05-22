@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { expandOwnerRepo, validateGithubHttpsUrl } from '@/lib/project/add'
+import { expandOwnerRepo, validateGitRemoteUrl } from '@/lib/project/add'
 import { DaemonError } from '@/daemon/errors'
 
 describe('expandOwnerRepo', () => {
-  it('expands owner/repo shorthand', () => {
+  it('expands owner/repo shorthand to github.com', () => {
     expect(expandOwnerRepo('acme/foo')).toBe('https://github.com/acme/foo')
   })
 
@@ -12,7 +12,7 @@ describe('expandOwnerRepo', () => {
     expect(expandOwnerRepo(url)).toBe(url)
   })
 
-  it('leaves ssh-style URLs unchanged (validation catches them later)', () => {
+  it('leaves SCP-style ssh URLs unchanged', () => {
     const url = 'git@github.com:acme/foo.git'
     expect(expandOwnerRepo(url)).toBe(url)
   })
@@ -23,27 +23,41 @@ describe('expandOwnerRepo', () => {
   })
 })
 
-describe('validateGithubHttpsUrl', () => {
+describe('validateGitRemoteUrl', () => {
   it('accepts a github.com https URL', () => {
-    expect(() => validateGithubHttpsUrl('https://github.com/acme/foo')).not.toThrow()
+    expect(() => validateGitRemoteUrl('https://github.com/acme/foo')).not.toThrow()
   })
 
-  it('rejects ssh-style URLs', () => {
-    expect(() => validateGithubHttpsUrl('git@github.com:acme/foo'))
-      .toThrow(DaemonError)
+  it('accepts a non-github https URL', () => {
+    expect(() => validateGitRemoteUrl('https://git.example.com/team/repo')).not.toThrow()
+  })
+
+  it('accepts SCP-style ssh URLs', () => {
+    expect(() => validateGitRemoteUrl('git@github.com:acme/foo')).not.toThrow()
+    expect(() => validateGitRemoteUrl('git@git.example.com:acme/foo.git')).not.toThrow()
   })
 
   it('rejects non-https URLs', () => {
-    expect(() => validateGithubHttpsUrl('http://github.com/acme/foo'))
-      .toThrow(/HTTPS/)
+    expect(() => validateGitRemoteUrl('http://github.com/acme/foo'))
+      .toThrow(DaemonError)
   })
 
-  it('rejects non-github hosts', () => {
-    expect(() => validateGithubHttpsUrl('https://gitlab.com/acme/foo'))
-      .toThrow(/GitHub/)
+  it('rejects ssh:// URLs with a clear pointer to SCP-style', () => {
+    expect(() => validateGitRemoteUrl('ssh://git@github.com/acme/foo'))
+      .toThrow(/SCP-style/)
+  })
+
+  it('rejects custom HTTPS ports', () => {
+    expect(() => validateGitRemoteUrl('https://git.example.com:8443/a/b'))
+      .toThrow(DaemonError)
+  })
+
+  it('rejects HTTPS URL with no owner/repo', () => {
+    expect(() => validateGitRemoteUrl('https://github.com/acme'))
+      .toThrow(DaemonError)
   })
 
   it('rejects garbage strings', () => {
-    expect(() => validateGithubHttpsUrl('not a url')).toThrow(DaemonError)
+    expect(() => validateGitRemoteUrl('not a url')).toThrow(DaemonError)
   })
 })

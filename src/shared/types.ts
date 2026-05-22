@@ -165,17 +165,31 @@ export interface YaacConfig {
   ephemeralModulesPaths?: string[]
 }
 
-export interface GithubTokenEntry {
-  /** Pattern: "*", "<owner>/*", or "<owner>/<repo>" */
+export interface HttpsGitCredentialEntry {
+  kind: 'https'
+  /** Pattern: "<host>/*", "<host>/<owner>/*", or "<host>/<owner>/<repo>" */
   pattern: string
+  /** PAT used as the password in basic auth with username 'x-access-token'. */
   token: string
 }
 
+export interface SshGitCredentialEntry {
+  kind: 'ssh'
+  pattern: string
+  /** Host path to the private key; may start with '~'. yaac never copies it. */
+  privateKeyPath: string
+  /** One OpenSSH known_hosts line: '<host>[:port] <keytype> <base64>'. */
+  knownHostsEntry: string
+}
+
+export type GitCredentialEntry = HttpsGitCredentialEntry | SshGitCredentialEntry
+
 /**
- * Shape of `~/.yaac/.credentials/github.json`.
+ * Shape of `~/.yaac/.credentials/github.json` (path retained for back-compat).
+ * Legacy entries (no `kind`, bare-pattern) are normalized on load.
  */
-export interface GithubCredentialsFile {
-  tokens: GithubTokenEntry[]
+export interface GitCredentialsFile {
+  tokens: GitCredentialEntry[]
 }
 
 export interface SessionMeta {
@@ -202,9 +216,11 @@ export interface PortMapping {
 
 // --- auth/list ---
 
-export interface GithubTokenSummary {
+export interface GitCredentialSummary {
+  kind: 'https' | 'ssh'
   pattern: string
-  tokenPreview: string
+  /** Masked token suffix for https; un-expanded key path for ssh. */
+  preview: string
 }
 
 export interface ToolAuthSummary {
@@ -216,7 +232,7 @@ export interface ToolAuthSummary {
 }
 
 export interface AuthListResult {
-  githubTokens: GithubTokenSummary[]
+  gitCredentials: GitCredentialSummary[]
   toolAuth: ToolAuthSummary[]
 }
 

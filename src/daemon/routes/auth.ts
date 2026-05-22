@@ -3,9 +3,28 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { listAuth } from '@/lib/auth/list'
 import { clearAuth } from '@/lib/auth/clear'
-import { addToken, removeTokenChecked, replaceTokens } from '@/lib/project/credentials'
+import { addEntry, removeEntryChecked, replaceEntries } from '@/lib/project/credentials'
 import { persistToolAuthPayload } from '@/lib/project/tool-auth'
+import { proxyClient } from '@/lib/container/proxy-client'
 import { claudeOAuthBundleSchema, codexOAuthBundleSchema } from '@/shared/types'
+
+const httpsCredentialSchema = z.object({
+  kind: z.literal('https'),
+  pattern: z.string(),
+  token: z.string().min(1),
+})
+
+const sshCredentialSchema = z.object({
+  kind: z.literal('ssh'),
+  pattern: z.string(),
+  privateKeyPath: z.string().min(1),
+  knownHostsEntry: z.string().min(1),
+})
+
+const credentialSchema = z.discriminatedUnion('kind', [
+  httpsCredentialSchema,
+  sshCredentialSchema,
+])
 
 export const authApp = new Hono()
   .get('/list', async (c) => c.json(await listAuth()))
@@ -19,27 +38,53 @@ export const authApp = new Hono()
     },
   )
   .post(
-    '/github/tokens',
-    zValidator('json', z.object({ pattern: z.string(), token: z.string() })),
+    '/git/credentials',
+    zValidator('json', credentialSchema),
     async (c) => {
-      const { pattern, token } = c.req.valid('json')
-      await addToken(pattern, token)
+      const entry = c.req.valid('json')
+      await addEntry(entry)
+      // SSH entries are useless without the proxy's ssh-agent knowing about
+      // the key. Sync immediately so a running proxy picks the change up
+      // without needing a restart. Failure to sync is non-fatal — the daemon
+      // will retry on next ensureRunning().
+      if (entry.kind === 'ssh') {
+        try {
+          await proxyClient.syncSshKeysFromCredentials()
+        } catch (err) {
+          console.warn(
+            '[auth] Saved SSH credential but failed to push to proxy ssh-agent: '
+            + (err instanceof Error ? err.message : String(err)),
+          )
+        }
+      }
       return c.body(null, 204)
     },
   )
-  .delete('/github/tokens/:pattern', async (c) => {
+  .delete('/git/credentials/:pattern', async (c) => {
     const pattern = decodeURIComponent(c.req.param('pattern'))
-    await removeTokenChecked(pattern)
+    await removeEntryChecked(pattern)
+    // Removing any entry may leave a stale identity in the agent. Clear-and-
+    // reload the agent's full set.
+    try {
+      await proxyClient.syncSshKeysFromCredentials()
+    } catch {
+      // non-fatal — daemon will retry on next ensureRunning()
+    }
     return c.body(null, 204)
   })
   .put(
-    '/github/tokens',
+    '/git/credentials',
     zValidator('json', z.object({
-      tokens: z.array(z.object({ pattern: z.string(), token: z.string() })),
+      credentials: z.array(credentialSchema),
     })),
     async (c) => {
-      const { tokens } = c.req.valid('json')
-      await replaceTokens(tokens)
+      const { credentials } = c.req.valid('json')
+      await replaceEntries(credentials)
+      try {
+        await proxyClient.syncSshKeysFromCredentials()
+      } catch {
+        // non-fatal
+      }
       return c.body(null, 204)
     },
   )

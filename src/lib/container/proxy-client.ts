@@ -1,14 +1,18 @@
 import crypto from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { spawn } from 'node:child_process'
+import { spawn, execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import type { SecretProxyRule } from '@/shared/types'
 import { podman, ensureNetwork, imageExists } from '@/lib/container/runtime'
 import fs from 'node:fs/promises'
 import { PROXY_DIR, credentialsDir } from '@/lib/project/paths'
 import { contextHash } from '@/lib/container/image-builder'
 import { findAvailablePort } from '@/lib/container/port'
+import { listSshEntries } from '@/lib/project/credentials'
 import { daemonLog, pipeToDaemonLog } from '@/daemon/log'
 import { isTorEnabled } from '@/lib/git'
+
+const execFileAsync = promisify(execFile)
 
 // --- Secret convention types & builder (merged from secret-conventions.ts) ---
 
@@ -78,6 +82,21 @@ export function buildRulesFromConfig(
 /** Port the proxy server listens on inside its container (fixed). */
 export const PROXY_CONTAINER_PORT = '10255'
 
+/** Path inside session and proxy containers where the ssh-agent socket lives. */
+export const SSH_AGENT_SOCKET_PATH = '/ssh-agent/socket'
+/** Mount point inside containers for the shared agent socket volume. */
+export const SSH_AGENT_MOUNT = '/ssh-agent'
+
+/**
+ * Deterministic volume name for the proxy's ssh-agent socket. Encodes the
+ * proxy image hash so old volumes don't get mounted into newer proxies (and
+ * vice versa) — the agent socket protocol can drift across openssh-client
+ * versions and rotating the volume on image-hash change is a clean reset.
+ */
+export function sshAgentVolumeName(imageHash: string): string {
+  return `yaac-ssh-agent-${imageHash.slice(0, 8)}`
+}
+
 export interface ProxyClientConfig {
   image: string
   network: string
@@ -92,6 +111,8 @@ interface ResolvedState {
   containerName: string
   hostPort: string
   authSecret: string
+  /** Named volume that holds the proxy ssh-agent socket. */
+  agentVolume: string
 }
 
 export class ProxyClient {
@@ -117,6 +138,10 @@ export class ProxyClient {
 
   get containerName(): string {
     return this.requireResolved().containerName
+  }
+
+  get agentVolume(): string {
+    return this.requireResolved().agentVolume
   }
 
   get proxyIp(): string {
@@ -226,11 +251,76 @@ export class ProxyClient {
       containerName: existing.containerName,
       hostPort: existing.hostPort,
       authSecret: existing.authSecret,
+      agentVolume: sshAgentVolumeName(hash),
     }
     this._proxyIp = existing.proxyIp
     this.resolvedImage = `${this.config.image}:${hash}`
     this.running = true
     return true
+  }
+
+  /** Upload an SSH private key to the proxy's ssh-agent. */
+  async uploadSshKey(host: string, keyPath: string): Promise<void> {
+    const keyPem = await fs.readFile(keyPath, 'utf8')
+    const res = await fetch(`${this.baseUrl}/agent/keys`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.authSecret}`,
+      },
+      body: JSON.stringify({ host, keyPem }),
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Failed to upload ssh key for ${host}: ${res.status} ${text}`)
+    }
+  }
+
+  /** Clear every identity from the proxy's ssh-agent. */
+  async clearSshKeys(): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/agent/keys`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${this.authSecret}` },
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Failed to clear ssh keys: ${res.status} ${text}`)
+    }
+  }
+
+  /** List identities currently loaded into the proxy's ssh-agent. */
+  async listAgentKeys(): Promise<Array<{ fingerprint: string; comment: string }>> {
+    const res = await fetch(`${this.baseUrl}/agent/keys`, {
+      headers: { 'Authorization': `Bearer ${this.authSecret}` },
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Failed to list ssh keys: ${res.status} ${text}`)
+    }
+    return res.json() as Promise<Array<{ fingerprint: string; comment: string }>>
+  }
+
+  /**
+   * Clear-and-reload every SSH entry from the on-disk credentials file into
+   * the proxy's ssh-agent. Idempotent. Called from ensureRunning() after the
+   * proxy is healthy (handles cold start + agent identity loss on restart)
+   * and from auth-update handlers when credentials change.
+   *
+   * Failures uploading individual keys are logged but don't abort the loop —
+   * a broken key shouldn't prevent the others from loading.
+   */
+  async syncSshKeysFromCredentials(): Promise<void> {
+    if (!this.resolved) return
+    const entries = await listSshEntries()
+    await this.clearSshKeys()
+    for (const entry of entries) {
+      try {
+        await this.uploadSshKey(entry.host, entry.privateKeyPath)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        daemonLog(`[daemon] proxy ssh-agent: failed to load key for ${entry.host}: ${msg}`)
+      }
+    }
   }
 
   async getBlockedHosts(): Promise<Record<string, string[]>> {
@@ -273,6 +363,7 @@ export class ProxyClient {
         containerName: existing.containerName,
         hostPort: existing.hostPort,
         authSecret: existing.authSecret,
+        agentVolume: sshAgentVolumeName(hash),
       }
       this._proxyIp = existing.proxyIp
       this.resolvedImage = taggedImage
@@ -281,6 +372,10 @@ export class ProxyClient {
       this.gcStaleTestContainers()
         .then(() => this.gcStaleNetworks())
         .catch(() => {})
+      // Re-sync ssh-agent in case the proxy was restarted out-of-band.
+      this.syncSshKeysFromCredentials().catch((err: Error) => {
+        daemonLog(`[daemon] proxy ssh-agent sync failed: ${err.message}`)
+      })
       return
     }
 
@@ -289,6 +384,10 @@ export class ProxyClient {
     await this.start(hash)
     this.running = true
     this.gcStaleProxies(hash).catch(() => {})
+    // Cold start: agent has no identities; load them.
+    this.syncSshKeysFromCredentials().catch((err: Error) => {
+      daemonLog(`[daemon] proxy ssh-agent sync failed: ${err.message}`)
+    })
   }
 
   private async discoverExistingProxy(hash: string): Promise<{
@@ -450,6 +549,18 @@ export class ProxyClient {
     const credsDir = credentialsDir()
     await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
 
+    // Create the ssh-agent named volume (shared between proxy and session
+    // containers). Idempotent.
+    const agentVolume = sshAgentVolumeName(hash)
+    try {
+      await execFileAsync('podman', ['volume', 'create', agentVolume])
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (!msg.includes('already exists')) {
+        daemonLog(`[daemon] proxy-start: ssh-agent volume create failed: ${msg}`)
+      }
+    }
+
     // Remove leftover container with same name (e.g. exited/dead).
     // Log the state before we destroy it — if the bug "daemon restart
     // kills network access" fires, this line tells us whether we just
@@ -502,6 +613,7 @@ export class ProxyClient {
             NetworkMode: `podman,${this.config.network}`,
             Binds: [
               `${credsDir}:/yaac-credentials:Z`,
+              `${agentVolume}:${SSH_AGENT_MOUNT}`,
             ],
           },
         })
@@ -536,6 +648,7 @@ export class ProxyClient {
               containerName: existing.containerName,
               hostPort: existing.hostPort,
               authSecret: existing.authSecret,
+              agentVolume: sshAgentVolumeName(hash),
             }
             this._proxyIp = existing.proxyIp
             return
@@ -564,7 +677,7 @@ export class ProxyClient {
       throw new Error('proxy container never created')
     }
 
-    this.resolved = { containerName, hostPort, authSecret }
+    this.resolved = { containerName, hostPort, authSecret, agentVolume }
 
     // Resolve proxy IP on internal network
     const info = await container.inspect()

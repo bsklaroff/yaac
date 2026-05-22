@@ -87,7 +87,7 @@ describe('yaac session create features (real CLI + real daemon)', () => {
     const projectPath = path.join(testEnv.dataDir, 'projects', slug)
     const repoPath = path.join(projectPath, 'repo')
     await fs.mkdir(path.join(projectPath, 'claude'), { recursive: true })
-    await cloneRepo(path.join(mockGit!.reposDir, `${slug}.git`), repoPath)
+    await cloneRepo(path.join(mockGit!.reposDir, `${slug}.git`), repoPath, null)
     const fakeRemote = `https://github.com/test-org/${slug}.git`
     await simpleGit(repoPath).remote(['set-url', 'origin', fakeRemote])
     await fs.writeFile(path.join(projectPath, 'project.json'), JSON.stringify({

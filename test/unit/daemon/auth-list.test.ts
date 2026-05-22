@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import { addToken } from '@/lib/project/credentials'
+import { addEntry } from '@/lib/project/credentials'
 import { saveClaudeCredentialsFile } from '@/lib/project/tool-auth'
 import { listAuth } from '@/lib/auth/list'
 
@@ -17,16 +17,16 @@ describe('listAuth', () => {
 
   it('returns empty lists when nothing is configured', async () => {
     const result = await listAuth()
-    expect(result).toEqual({ githubTokens: [], toolAuth: [] })
+    expect(result).toEqual({ gitCredentials: [], toolAuth: [] })
   })
 
-  it('lists GitHub tokens with masked previews', async () => {
-    await addToken('acme/*', 'ghp_abcdef123456')
-    await addToken('*', 'ghp_fallback_xxyz')
+  it('lists git credentials with masked previews', async () => {
+    await addEntry({ kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_abcdef123456' })
+    await addEntry({ kind: 'https', pattern: 'github.com/*', token: 'ghp_fallback_xxyz' })
     const result = await listAuth()
-    expect(result.githubTokens).toEqual([
-      { pattern: 'acme/*', tokenPreview: '***3456' },
-      { pattern: '*', tokenPreview: '***xxyz' },
+    expect(result.gitCredentials).toEqual([
+      { kind: 'https', pattern: 'github.com/acme/*', preview: '***3456' },
+      { kind: 'https', pattern: 'github.com/*', preview: '***xxyz' },
     ])
   })
 

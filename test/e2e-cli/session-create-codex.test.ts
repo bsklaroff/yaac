@@ -80,7 +80,7 @@ describe('yaac session create drives real codex-cli through mocked remotes', () 
     const repoDir = path.join(projectDir, 'repo')
     const codexHostDir = path.join(projectDir, 'codex')
     await fs.mkdir(codexHostDir, { recursive: true })
-    await cloneRepo(path.join(mockGit!.reposDir, 'repo-demo.git'), repoDir)
+    await cloneRepo(path.join(mockGit!.reposDir, 'repo-demo.git'), repoDir, null)
     await simpleGit(repoDir).remote(['set-url', 'origin', 'https://github.com/test-org/repo-demo.git'])
     await fs.writeFile(path.join(projectDir, 'project.json'), JSON.stringify({
       slug: 'repo-demo',
@@ -199,6 +199,7 @@ describe('yaac session create drives real codex-cli through mocked remotes', () 
     // pane and dispatch until the chat-composer prompt appears.
     let sawTrust = false
     let sawUpgrade = false
+    let sawHooks = false
     let inChat = false
     let lastPane = ''
     for (let i = 0; i < 60 && !inChat; i++) {
@@ -207,6 +208,12 @@ describe('yaac session create drives real codex-cli through mocked remotes', () 
         if (!sawTrust) {
           await send('Enter')
           sawTrust = true
+        }
+      } else if (/Hooks need review|Trust all and continue/i.test(lastPane)) {
+        if (!sawHooks) {
+          // Pick "Trust all and continue" (option 2).
+          await send('Down', 'Enter')
+          sawHooks = true
         }
       } else if (/Introducing GPT|Try new model|Use existing model/i.test(lastPane)) {
         if (!sawUpgrade) {
@@ -220,7 +227,7 @@ describe('yaac session create drives real codex-cli through mocked remotes', () 
       await new Promise((r) => setTimeout(r, 500))
     }
     if (!inChat) {
-      console.error('chat composer never appeared (trust=' + sawTrust + ', upgrade=' + sawUpgrade + ')')
+      console.error('chat composer never appeared (trust=' + sawTrust + ', hooks=' + sawHooks + ', upgrade=' + sawUpgrade + ')')
       console.error('final pane:\n' + lastPane)
     }
     expect(inChat).toBe(true)

@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ensureDataDir, projectDir, repoDir, claudeDir } from '@/lib/project/paths'
 import { cloneRepo } from '@/lib/git'
-import { resolveTokenForUrl } from '@/lib/project/credentials'
+import { parseGitRemote, resolveCredentialForUrl } from '@/lib/project/credentials'
 import {
   loadClaudeCredentialsFile,
   loadCodexCredentialsFile,
@@ -18,8 +18,8 @@ function deriveSlug(remoteUrl: string): string {
 }
 
 /**
- * Expand owner/repo shorthand to a full GitHub HTTPS URL.
- * Returns the input unchanged if it's already a URL.
+ * Expand `owner/repo` shorthand to a full GitHub HTTPS URL. Unchanged from
+ * the github-only era — this is a CLI ergonomic convenience, not a default.
  */
 export function expandOwnerRepo(input: string): string {
   if (input.includes('://') || input.includes('@')) return input
@@ -30,35 +30,19 @@ export function expandOwnerRepo(input: string): string {
   return input
 }
 
-export function validateGithubHttpsUrl(url: string): void {
-  if (url.match(/^[\w-]+@[\w.-]+:/)) {
-    throw new DaemonError(
-      'VALIDATION',
-      'Only HTTPS GitHub URLs are supported. Use https://github.com/owner/repo or owner/repo instead of SSH URLs.',
-    )
-  }
-
-  let parsed: URL
+/**
+ * Validate a git remote URL. Accepts the two `parseGitRemote` forms:
+ *   - https://<host>/<owner>/<repo>[.git]
+ *   - SCP-style: git@<host>:<owner>/<repo>[.git]
+ * Rejects http://, ssh://, custom ports, and unparseable input.
+ */
+export function validateGitRemoteUrl(url: string): void {
   try {
-    parsed = new URL(url)
-  } catch {
+    parseGitRemote(url)
+  } catch (err) {
     throw new DaemonError(
       'VALIDATION',
-      `Invalid URL: "${url}". Use an HTTPS GitHub URL like https://github.com/owner/repo, or just owner/repo.`,
-    )
-  }
-
-  if (parsed.protocol !== 'https:') {
-    throw new DaemonError(
-      'VALIDATION',
-      'Only HTTPS GitHub URLs are supported. Use https://github.com/owner/repo or owner/repo instead.',
-    )
-  }
-
-  if (parsed.hostname !== 'github.com' && !parsed.hostname.endsWith('.github.com')) {
-    throw new DaemonError(
-      'VALIDATION',
-      'Only GitHub repositories are supported (github.com).',
+      err instanceof Error ? err.message : `Invalid git remote URL: "${url}"`,
     )
   }
 }
@@ -68,14 +52,14 @@ export interface AddProjectResult {
 }
 
 /**
- * Clone a GitHub repo into the data dir as a yaac project. Throws
+ * Clone a git repo into the data dir as a yaac project. Throws
  * `DaemonError` for user-facing failures (bad URL, duplicate slug,
- * missing GitHub token, clone failure) so the daemon can map them to
+ * missing credential, clone failure) so the daemon can map them to
  * the right HTTP status and CLI exit code.
  */
 export async function addProject(input: string): Promise<AddProjectResult> {
   const remoteUrl = expandOwnerRepo(input)
-  validateGithubHttpsUrl(remoteUrl)
+  validateGitRemoteUrl(remoteUrl)
 
   const slug = deriveSlug(remoteUrl)
   const dir = projectDir(slug)
@@ -90,18 +74,18 @@ export async function addProject(input: string): Promise<AddProjectResult> {
     // doesn't exist — good
   }
 
-  const token = await resolveTokenForUrl(remoteUrl)
-  if (!token) {
+  const credential = await resolveCredentialForUrl(remoteUrl)
+  if (!credential) {
     throw new DaemonError(
       'AUTH_REQUIRED',
-      `No GitHub token configured for ${remoteUrl}. Run "yaac auth update" to add one.`,
+      `No git credential configured for ${remoteUrl}. Run "yaac auth update" to add one.`,
     )
   }
 
   await fs.mkdir(dir, { recursive: true })
 
   try {
-    await cloneRepo(remoteUrl, repoDir(slug), token)
+    await cloneRepo(remoteUrl, repoDir(slug), credential)
   } catch (err) {
     await fs.rm(dir, { recursive: true, force: true })
     const message = err instanceof Error ? err.message : String(err)

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 import { clearAuth } from '@/lib/auth/clear'
-import { addToken, loadCredentials } from '@/lib/project/credentials'
+import { addEntry, loadCredentials } from '@/lib/project/credentials'
 import {
   loadClaudeCredentialsFile,
   loadCodexCredentialsFile,
@@ -48,7 +48,7 @@ describe('clearAuth', () => {
   })
 
   it('clear "all" wipes github tokens + both tool bundles + placeholders', async () => {
-    await addToken('*', 'ghp_x')
+    await addEntry({ kind: 'https', pattern: 'github.com/*', token: 'ghp_x' })
     await saveClaudeOAuthBundle(SAMPLE_CLAUDE)
     await saveCodexCredentialsFile({
       kind: 'oauth',
@@ -71,7 +71,7 @@ describe('clearAuth', () => {
   })
 
   it('clear "claude" only touches claude bundle + placeholders', async () => {
-    await addToken('*', 'ghp_x')
+    await addEntry({ kind: 'https', pattern: 'github.com/*', token: 'ghp_x' })
     await saveClaudeOAuthBundle(SAMPLE_CLAUDE)
     await saveCodexCredentialsFile({
       kind: 'oauth',
@@ -86,7 +86,9 @@ describe('clearAuth', () => {
 
     await clearAuth('claude')
 
-    expect((await loadCredentials()).tokens).toEqual([{ pattern: '*', token: 'ghp_x' }])
+    expect((await loadCredentials()).tokens).toEqual([
+      { kind: 'https', pattern: 'github.com/*', token: 'ghp_x' },
+    ])
     expect(await loadClaudeCredentialsFile()).toBeNull()
     expect(await loadCodexCredentialsFile()).not.toBeNull()
     await expect(fs.access(projectClaudeCredentialsFile('demo'))).rejects.toThrow()

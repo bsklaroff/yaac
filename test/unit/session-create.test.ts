@@ -51,9 +51,15 @@ vi.mock('@/lib/container/proxy-client', () => ({
   buildRulesFromConfig: vi.fn().mockReturnValue([]),
 }))
 
-vi.mock('@/lib/container/default-allowed-hosts', () => ({
-  resolveAllowedHosts: vi.fn().mockReturnValue([]),
-}))
+vi.mock('@/lib/container/default-allowed-hosts', async (importOriginal) => {
+  const actual = await importOriginal<typeof allowedHostsModule>()
+  return {
+    ...actual,
+    // Default to '*' so session-create's allowlist hard-check passes.
+    // Tests that need a specific allowlist can override per-test.
+    resolveAllowedHosts: vi.fn().mockReturnValue(['*']),
+  }
+})
 
 vi.mock('@/lib/container/port', () => ({
   reserveAvailablePort: vi.fn(),
@@ -90,8 +96,19 @@ vi.mock('@/lib/project/config', () => ({
 }))
 
 vi.mock('@/lib/project/credentials', () => ({
-  resolveTokenForUrl: vi.fn().mockResolvedValue('token'),
+  resolveCredentialForUrl: vi.fn().mockResolvedValue({ kind: 'https', token: 'token' }),
   loadCredentials: vi.fn().mockResolvedValue({ tokens: [] }),
+  parseGitRemote: (url: string) => {
+    if (url.startsWith('https://')) {
+      const u = new URL(url)
+      const segs = u.pathname.replace(/^\//, '').replace(/\.git$/, '').split('/')
+      return { scheme: 'https', host: u.hostname, owner: segs[0], repo: segs[1] }
+    }
+    const m = /^(?:[\w._-]+@)?([\w.-]+):(.+)$/.exec(url)!
+    const segs = m[2].replace(/\.git$/, '').split('/')
+    return { scheme: 'ssh', host: m[1], owner: segs[0], repo: segs[1] }
+  },
+  loadKnownHostsEntryForHost: vi.fn().mockResolvedValue(null),
 }))
 
 vi.mock('@/lib/project/tool-auth', () => ({
@@ -133,7 +150,8 @@ import { claimPrewarmSession } from '@/lib/prewarm'
 import { ensureImage, packTar } from '@/lib/container/image-builder'
 import { proxyClient } from '@/lib/container/proxy-client'
 import { resolveProjectConfig } from '@/lib/project/config'
-import { resolveTokenForUrl, loadCredentials } from '@/lib/project/credentials'
+import { resolveCredentialForUrl, loadCredentials } from '@/lib/project/credentials'
+import { resolveAllowedHosts } from '@/lib/container/default-allowed-hosts'
 import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/lib/git'
 import { reserveAvailablePort } from '@/lib/container/port'
 import {
@@ -175,8 +193,9 @@ describe('createSession', () => {
     vi.mocked(ensureImage).mockResolvedValue('yaac-test-image')
     vi.mocked(packTar).mockResolvedValue(Buffer.from('archive'))
     vi.mocked(resolveProjectConfig).mockResolvedValue({})
-    vi.mocked(resolveTokenForUrl).mockResolvedValue('token')
+    vi.mocked(resolveCredentialForUrl).mockResolvedValue({ kind: 'https', token: 'token' })
     vi.mocked(loadCredentials).mockResolvedValue({ tokens: [] })
+    vi.mocked(resolveAllowedHosts).mockReturnValue(['*'])
     vi.mocked(addWorktree).mockResolvedValue(undefined)
     vi.mocked(getDefaultBranch).mockResolvedValue('main')
     vi.mocked(fetchOrigin).mockResolvedValue(undefined)
@@ -463,6 +482,7 @@ describe('createSession', () => {
 })
 
 import type * as daemonClientModule from '@/shared/daemon-client'
+import type * as allowedHostsModule from '@/lib/container/default-allowed-hosts'
 
 vi.mock('@/shared/daemon-client', async (importOriginal) => {
   const actual = await importOriginal<typeof daemonClientModule>()

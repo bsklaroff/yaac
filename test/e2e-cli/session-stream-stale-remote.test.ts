@@ -87,7 +87,7 @@ describe('yaac session stream (container exited + remote HEAD changed)', () => {
     await fs.mkdir(claudeDir, { recursive: true })
 
     const localBare = path.join(mockGit!.reposDir, 'repo-demo.git')
-    await cloneRepo(localBare, repoDir)
+    await cloneRepo(localBare, repoDir, null)
     const fakeRemote = 'https://github.com/test-org/repo-demo.git'
     await simpleGit(repoDir).remote(['set-url', 'origin', fakeRemote])
 

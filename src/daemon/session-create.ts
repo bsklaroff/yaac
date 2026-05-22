@@ -38,7 +38,18 @@ import {
   resolveEphemeralModulesPaths,
   ephemeralModulesSlotKey,
 } from '@/lib/project/config'
-import { resolveTokenForUrl } from '@/lib/project/credentials'
+import {
+  resolveCredentialForUrl,
+  parseGitRemote,
+  loadKnownHostsEntryForHost,
+} from '@/lib/project/credentials'
+import { writeKnownHostsFile } from '@/lib/git'
+import { hostMatchesPattern } from '@/lib/container/default-allowed-hosts'
+import {
+  PROXY_CONTAINER_PORT,
+  SSH_AGENT_MOUNT,
+  SSH_AGENT_SOCKET_PATH,
+} from '@/lib/container/proxy-client'
 import {
   loadToolAuthEntry,
   loadClaudeCredentialsFile,
@@ -226,13 +237,15 @@ interface ContainerSetupParams {
   pgRelayIp: string | null
   gitUser: { name: string; email: string }
   forwardedPorts: ReservedPort[]
+  /** Extra Binds (ssh-agent volume, known_hosts) when project remote is SSH. */
+  extraBinds: string[]
 }
 
 async function startContainerWithSetup(params: ContainerSetupParams): Promise<void> {
   const {
     imageName, containerName, projectSlug, sessionId, env,
     wtDir, repo, claude, claudeJson, codex, cachedPackages, tool, config, options,
-    networkMode, pgRelayIp, gitUser, forwardedPorts,
+    networkMode, pgRelayIp, gitUser, forwardedPorts, extraBinds,
   } = params
 
   // Every in-container `tmux` invocation routes through this prefix so
@@ -306,6 +319,7 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
               `${projectImageCacheVolumeName(projectSlug)}:${SHARED_IMAGE_STORE_PATH}:Z`,
             ]
           : []),
+        ...extraBinds,
       ],
       NetworkMode: networkMode,
       Memory: 8 * 1024 ** 3,
@@ -362,9 +376,6 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
   await containerExec(containerName, `git config --global user.email '${shellEscape(gitUser.email)}'`)
   await containerExec(containerName, 'git config --global --add safe.directory /workspace')
   await containerExec(containerName, 'git config --global --add safe.directory /repo')
-
-  // Rewrite any SSH-style GitHub URLs to HTTPS (handled by the proxy)
-  await containerExec(containerName, `git config --global url.'https://github.com/'.insteadOf 'git@github.com:'`)
 
   // Start the agent tool in a tmux session
   const addDirFlags = [...(options.addDir ?? []), ...(options.addDirRw ?? [])]
@@ -520,25 +531,42 @@ export async function createSession(
   // Load project config (local override at ~/.yaac/projects/<slug>/ takes precedence)
   const config: YaacConfig = await resolveProjectConfig(projectSlug) ?? {}
 
-  // Resolve the correct GitHub token for this project's remote URL
+  // Resolve the git credential (HTTPS token or SSH key) for this project's
+  // remote URL and parse the remote so we know the scheme and host.
   const remoteUrl = (await simpleGit(repo).remote(['get-url', 'origin']))?.trim()
   if (!remoteUrl) {
     throw new DaemonError('VALIDATION', 'could not determine remote URL for this project.')
   }
-  const githubToken = await resolveTokenForUrl(remoteUrl)
-  if (!githubToken) {
+  const parsedRemote = parseGitRemote(remoteUrl)
+  const credential = await resolveCredentialForUrl(remoteUrl)
+  if (!credential) {
     throw new DaemonError(
       'VALIDATION',
-      `No GitHub token configured for ${remoteUrl}. Run "yaac auth update" to add one.`,
+      `No git credential configured for ${remoteUrl}. Run "yaac auth update" to add one.`,
     )
   }
+
+  // Hard error if the project's remote host isn't in the resolved allowlist —
+  // sessions would otherwise produce a confusing in-container 403 from the
+  // proxy when the agent tries to fetch.
+  const allowedHosts = resolveAllowedHosts(config)
+  const hostAllowed = allowedHosts.length === 1 && allowedHosts[0] === '*'
+    || allowedHosts.some((pattern) => hostMatchesPattern(parsedRemote.host, pattern))
+  if (!hostAllowed) {
+    throw new DaemonError(
+      'VALIDATION',
+      `Project remote host "${parsedRemote.host}" is not in the resolved allowlist. `
+      + `Add "${parsedRemote.host}" to addAllowedUrls in yaac-config.json.`,
+    )
+  }
+
   // Test-only: e2e fixtures pre-populate the bare repo, so skip the host-side
   // fetchOrigin (which would try to reach the real remote from the daemon
   // process — outside the proxy's reach).
   if (process.env.YAAC_E2E_SKIP_FETCH !== '1') {
     emit('Fetching latest from remote...', options)
     try {
-      await fetchOrigin(repo, githubToken)
+      await fetchOrigin(repo, credential)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       throw new DaemonError('INTERNAL', `could not fetch from remote: ${msg}`)
@@ -617,7 +645,6 @@ export async function createSession(
   const additionalRules = config.envSecretProxy
     ? buildRulesFromConfig(config.envSecretProxy, process.env)
     : []
-  const allowedHosts = resolveAllowedHosts(config)
   const upstreamRedirects = parseUpstreamRedirectsEnv(process.env.YAAC_E2E_UPSTREAM_REDIRECTS)
   await proxyClient.registerSession(sessionId, {
     rules: additionalRules,
@@ -629,6 +656,40 @@ export async function createSession(
 
   // Add proxy env vars
   env.push(...proxyClient.getProxyEnv(sessionId))
+
+  // SSH provisioning: when the project's remote is SSH, expose the proxy's
+  // ssh-agent into the container (no private key inside the container) and
+  // configure git's SSH transport to (a) use the agent for identity, (b)
+  // verify with our project-scoped known_hosts, (c) tunnel through the MITM
+  // proxy via HTTP CONNECT so the allowlist still applies.
+  const sshExtraBinds: string[] = []
+  if (parsedRemote.scheme === 'ssh') {
+    const knownHostsEntry = await loadKnownHostsEntryForHost(parsedRemote.host)
+    if (!knownHostsEntry) {
+      throw new DaemonError(
+        'VALIDATION',
+        `No SSH known_hosts entry for ${parsedRemote.host}. Run "yaac auth update" to register one.`,
+      )
+    }
+    const knownHostsFile = path.join(projectDir(projectSlug), 'known_hosts')
+    await writeKnownHostsFile([knownHostsEntry], knownHostsFile)
+    const containerKnownHosts = '/home/yaac/.ssh/yaac/known_hosts'
+    sshExtraBinds.push(
+      `${proxyClient.agentVolume}:${SSH_AGENT_MOUNT}`,
+      `${knownHostsFile}:${containerKnownHosts}:ro,Z`,
+    )
+    const proxyCommand = `ncat --proxy ${proxyClient.proxyIp}:${PROXY_CONTAINER_PORT}`
+      + ` --proxy-type http --proxy-auth x:${sessionId} %h %p`
+    const gitSshCmd = [
+      'ssh', '-F', '/dev/null',
+      '-o', `UserKnownHostsFile=${containerKnownHosts}`,
+      '-o', 'StrictHostKeyChecking=yes',
+      '-o', 'IdentitiesOnly=no',
+      '-o', `ProxyCommand=${proxyCommand}`,
+    ].join(' ')
+    env.push(`SSH_AUTH_SOCK=${SSH_AGENT_SOCKET_PATH}`)
+    env.push(`GIT_SSH_COMMAND=${gitSshCmd}`)
+  }
 
   // Add placeholder values for proxied secrets so tools detect them
   if (config.envSecretProxy) {
@@ -759,7 +820,7 @@ export async function createSession(
   const setupParams: ContainerSetupParams = {
     imageName, containerName, projectSlug, sessionId, env,
     wtDir, repo, claude, claudeJson, codex, cachedPackages, tool, config, options,
-    networkMode, pgRelayIp, gitUser, forwardedPorts,
+    networkMode, pgRelayIp, gitUser, forwardedPorts, extraBinds: sshExtraBinds,
   }
 
   emit(`Creating container ${containerName}...`, options)

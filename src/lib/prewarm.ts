@@ -6,7 +6,7 @@ import { getDataDir, repoDir } from '@/lib/project/paths'
 import { resolveSessionFingerprint } from '@/lib/session/fingerprint'
 import { isTmuxSessionAlive, cleanupSession } from '@/lib/session/cleanup'
 import { fetchOrigin } from '@/lib/git'
-import { resolveTokenForUrl } from '@/lib/project/credentials'
+import { resolveCredentialForUrl } from '@/lib/project/credentials'
 import { createSession } from '@/daemon/session-create'
 import type { AgentTool } from '@/shared/types'
 import simpleGit from 'simple-git'
@@ -242,10 +242,10 @@ export async function ensurePrewarmSession(projectSlug: string, tool: AgentTool 
   const repo = repoDir(projectSlug)
   const remoteUrl = (await simpleGit(repo).remote(['get-url', 'origin']))?.trim()
   if (remoteUrl) {
-    const token = await resolveTokenForUrl(remoteUrl)
-    if (token) {
+    const credential = await resolveCredentialForUrl(remoteUrl)
+    if (credential) {
       try {
-        await fetchOrigin(repo, token)
+        await fetchOrigin(repo, credential)
       } catch {
         // non-fatal — use whatever remote state we have
       }

@@ -10,12 +10,12 @@ export type ClearAuthTarget = 'all' | 'claude' | 'codex'
 
 /**
  * Remove the stored credentials identified by `target`. `all` wipes
- * every GitHub token plus both tool bundles; individual tool values
+ * every git credential plus both tool bundles; individual tool values
  * only touch that tool's bundle + its per-project placeholders.
  *
- * GitHub token removal by pattern goes through the dedicated
- * `DELETE /auth/github/tokens/:pattern` route so this helper doesn't
- * need to care about partial-github clears.
+ * Per-pattern git credential removal goes through the dedicated
+ * `DELETE /auth/git/credentials/:pattern` route so this helper doesn't
+ * need to care about partial git clears.
  */
 export async function clearAuth(target: ClearAuthTarget): Promise<void> {
   if (target === 'all') {

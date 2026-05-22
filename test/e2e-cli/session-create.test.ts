@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import simpleGit from 'simple-git'
 import { createYaacTestEnv, spawnYaacDaemon, runYaac, type YaacTestEnv, type SpawnedDaemon } from '@test/helpers/cli'
 import { addTestProject, createTestRepo, requirePodman } from '@test/helpers/setup'
 
@@ -55,10 +56,15 @@ describe('yaac session create (real CLI + real daemon)', () => {
     expect(stderr).toMatch(/Project "nope" not found/)
   })
 
-  it('surfaces the daemon "no GitHub token" validation error via stderr + nonzero exit', async () => {
+  it('surfaces the daemon "no git credential" validation error via stderr + nonzero exit', async () => {
     const repo = path.join(testEnv.scratchDir, 'repo-demo')
     await createTestRepo(repo)
     await addTestProject(repo)
+    // Override the cloned origin with a URL-shaped value so parseGitRemote
+    // succeeds; the credential lookup against an empty store is the real
+    // assertion target.
+    await simpleGit(path.join(testEnv.dataDir, 'projects', 'repo-demo', 'repo'))
+      .remote(['set-url', 'origin', 'https://github.com/test-org/repo-demo.git'])
 
     const { stderr, exitCode } = await runYaac(
       testEnv.env,
@@ -69,7 +75,7 @@ describe('yaac session create (real CLI + real daemon)', () => {
       'claude',
     )
     expect(exitCode).not.toBe(0)
-    expect(stderr).toMatch(/No GitHub token configured/)
+    expect(stderr).toMatch(/No git credential configured/)
   })
 
   it('rejects an unknown --tool value via daemon VALIDATION', async () => {

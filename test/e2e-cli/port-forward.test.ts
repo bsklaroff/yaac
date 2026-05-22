@@ -96,7 +96,7 @@ describe('yaac session create honors portForward in yaac-config.json', () => {
     await fs.mkdir(claudeDir, { recursive: true })
     await fs.mkdir(configDir, { recursive: true })
     const localBare = path.join(mockGit.reposDir, 'repo-demo.git')
-    await cloneRepo(localBare, repoDir)
+    await cloneRepo(localBare, repoDir, null)
     const fakeRemote = 'https://github.com/test-org/repo-demo.git'
     await simpleGit(repoDir).remote(['set-url', 'origin', fakeRemote])
     await fs.writeFile(

@@ -23,7 +23,7 @@ describe('yaac auth clear (real CLI + real daemon)', () => {
     await testEnv.cleanup()
   })
 
-  async function seedTokens(tokens: Array<{ pattern: string; token: string }>): Promise<void> {
+  async function seedTokens(tokens: Array<Record<string, unknown>>): Promise<void> {
     const credsDir = path.join(testEnv.dataDir, '.credentials')
     await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
     await fs.writeFile(
@@ -38,30 +38,30 @@ describe('yaac auth clear (real CLI + real daemon)', () => {
     expect(stdout).toContain('No credentials configured.')
   })
 
-  it('removes a specific GitHub token by menu index', async () => {
+  it('removes a specific git credential by menu index', async () => {
     await seedTokens([
-      { pattern: 'acme/*', token: 'ghp_acme_token_xxxx' },
-      { pattern: '*', token: 'ghp_fallback_token_yy' },
+      { kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_acme_token_xxxx' },
+      { kind: 'https', pattern: 'github.com/*', token: 'ghp_fallback_token_yy' },
     ])
 
     const { stdout, exitCode } = await runYaac(
       testEnv.env, 'auth', 'clear', { stdin: '1\n' },
     )
     expect(exitCode).toBe(0)
-    expect(stdout).toContain('Removed GitHub token for pattern "acme/*"')
+    expect(stdout).toContain('Removed git credential for pattern "github.com/acme/*"')
 
     const raw = await fs.readFile(
       path.join(testEnv.dataDir, '.credentials', 'github.json'), 'utf8',
     )
     expect(JSON.parse(raw)).toEqual({
-      tokens: [{ pattern: '*', token: 'ghp_fallback_token_yy' }],
+      tokens: [{ kind: 'https', pattern: 'github.com/*', token: 'ghp_fallback_token_yy' }],
     })
   })
 
   it('removes every credential when the user answers "all"', async () => {
     await seedTokens([
-      { pattern: 'acme/*', token: 'ghp_acme_token_xxxx' },
-      { pattern: '*', token: 'ghp_fallback_token_yy' },
+      { kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_acme_token_xxxx' },
+      { kind: 'https', pattern: 'github.com/*', token: 'ghp_fallback_token_yy' },
     ])
 
     const { stdout, exitCode } = await runYaac(
@@ -77,7 +77,9 @@ describe('yaac auth clear (real CLI + real daemon)', () => {
   })
 
   it('prints "Cancelled." on an out-of-range menu choice', async () => {
-    await seedTokens([{ pattern: 'acme/*', token: 'ghp_acme_token_xxxx' }])
+    await seedTokens([
+      { kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_acme_token_xxxx' },
+    ])
 
     const { stdout, exitCode } = await runYaac(
       testEnv.env, 'auth', 'clear', { stdin: '99\n' },

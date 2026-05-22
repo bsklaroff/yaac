@@ -26,16 +26,18 @@ describe('yaac auth (real CLI + real daemon)', () => {
   it('auth list on a clean data dir reports no credentials configured', async () => {
     const { stdout, exitCode } = await runYaac(testEnv.env, 'auth', 'list')
     expect(exitCode).toBe(0)
-    expect(stdout).toContain('GitHub tokens:')
+    expect(stdout).toContain('Git credentials:')
     expect(stdout).toContain('(none configured)')
     expect(stdout).toContain('Tool credentials:')
     expect(stdout).toMatch(/claude\s+not configured/)
     expect(stdout).toMatch(/codex\s+not configured/)
   })
 
-  it('auth list renders seeded GitHub tokens and tool credentials with masked previews', async () => {
+  it('auth list normalizes legacy github.json entries and renders masked previews', async () => {
     const credsDir = path.join(testEnv.dataDir, '.credentials')
     await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
+    // Legacy on-disk shape (pre host-prefix era). Read-time normalization
+    // should upgrade these to github.com/* prefixes without rewriting the file.
     await fs.writeFile(
       path.join(credsDir, 'github.json'),
       JSON.stringify({
@@ -65,7 +67,8 @@ describe('yaac auth (real CLI + real daemon)', () => {
     const { stdout, exitCode } = await runYaac(testEnv.env, 'auth', 'list')
     expect(exitCode).toBe(0)
 
-    expect(stdout).toContain('acme/*')
+    expect(stdout).toContain('github.com/acme/*')
+    expect(stdout).toContain('github.com/*')
     expect(stdout).toContain('***3456')
     expect(stdout).toContain('***oken')
     expect(stdout).not.toContain('ghp_abcdef123456')
@@ -75,5 +78,28 @@ describe('yaac auth (real CLI + real daemon)', () => {
     expect(stdout).toMatch(/codex\s+\*\*\*-key.*api-key.*2026-02-20/)
     expect(stdout).not.toContain('sk-ant-api03-fake-claude-key')
     expect(stdout).not.toContain('sk-fake-codex-key')
+  })
+
+  it('auth list renders ssh credentials with the key path as preview', async () => {
+    const credsDir = path.join(testEnv.dataDir, '.credentials')
+    await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
+    await fs.writeFile(
+      path.join(credsDir, 'github.json'),
+      JSON.stringify({
+        tokens: [
+          {
+            kind: 'ssh',
+            pattern: 'git.example.com/*',
+            privateKeyPath: '/home/me/.ssh/yaac-key',
+            knownHostsEntry: 'git.example.com ssh-ed25519 AAAA',
+          },
+        ],
+      }) + '\n',
+    )
+    const { stdout, exitCode } = await runYaac(testEnv.env, 'auth', 'list')
+    expect(exitCode).toBe(0)
+    expect(stdout).toContain('ssh')
+    expect(stdout).toContain('git.example.com/*')
+    expect(stdout).toContain('/home/me/.ssh/yaac-key')
   })
 })
