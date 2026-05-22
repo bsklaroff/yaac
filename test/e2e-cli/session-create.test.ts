@@ -99,6 +99,8 @@ describe('yaac session create (real CLI + real daemon)', () => {
     const repo = path.join(testEnv.scratchDir, 'repo-demo')
     await createTestRepo(repo)
     await addTestProject(repo)
+    await simpleGit(path.join(testEnv.dataDir, 'projects', 'repo-demo', 'repo'))
+      .remote(['set-url', 'origin', 'https://github.com/test-org/repo-demo.git'])
 
     const { stderr, exitCode } = await runYaac(
       testEnv.env, 'session', 'create', 'repo-demo', '--tool', 'opencode',

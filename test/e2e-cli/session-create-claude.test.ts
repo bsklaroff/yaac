@@ -183,12 +183,18 @@ describe('yaac session create drives real claude-code through mocked remotes', (
     await send('Enter')
 
     // Poll for claude rendering the mock's response text in its pane.
-    // The mock always replies with "Hello from mock!" text_delta.
+    // The mock always replies with "Hello from mock!" text_delta. The
+    // initial Enter can land while claude-code is still finishing its
+    // startup render — the "hello mock" characters always make it into
+    // the prompt but the Enter is silently dropped in that window. Re-
+    // sending Enter periodically keeps the test deterministic without
+    // forcing every run to wait for a worst-case startup.
     let pane = ''
     let hitMockText = false
     for (let i = 0; i < 30; i++) {
       pane = await capturePane()
       if (pane.includes('Hello from mock')) { hitMockText = true; break }
+      if (i > 0 && i % 3 === 0) await send('Enter')
       await new Promise((r) => setTimeout(r, 500))
     }
 
