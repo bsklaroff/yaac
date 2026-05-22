@@ -4,12 +4,14 @@ import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 
 vi.mock('@/lib/container/runtime', () => ({
   podmanExecWithRetry: vi.fn(),
+  shellPodmanWithRetry: vi.fn(),
 }))
 
-import { podmanExecWithRetry } from '@/lib/container/runtime'
+import { podmanExecWithRetry, shellPodmanWithRetry } from '@/lib/container/runtime'
 import { opencodeMetaDir, opencodeMetaFile } from '@/lib/project/paths'
 import {
   pickOpencodeSession,
+  classifyOpencodePane,
   getSessionOpencodeStatus,
   getSessionOpencodeFirstUserMessage,
   getDeletedSessionOpencodeFirstUserMessage,
@@ -17,14 +19,12 @@ import {
 } from '@/lib/session/opencode-status'
 
 const mockedExec = vi.mocked(podmanExecWithRetry)
+const mockedShell = vi.mocked(shellPodmanWithRetry)
 
-const SEP = '<<<yaac-opencode-probe-sep>>>'
-
-function probeStdout(
+function sessionsStdout(
   sessions: Array<{ id: string; title?: string; parentID?: string; updated?: number }>,
-  statusByteId: Record<string, { type: string }>,
 ): { stdout: string; stderr: string } {
-  const sessionsJson = JSON.stringify(
+  const json = JSON.stringify(
     sessions.map((s) => ({
       id: s.id,
       title: s.title,
@@ -33,8 +33,11 @@ function probeStdout(
       time: { created: 0, updated: s.updated ?? 0 },
     })),
   )
-  const statusJson = JSON.stringify(statusByteId)
-  return { stdout: `${sessionsJson}\n${SEP}\n${statusJson}\n`, stderr: '' }
+  return { stdout: json + '\n', stderr: '' }
+}
+
+function paneStdout(content: string): { stdout: string; stderr: string } {
+  return { stdout: content, stderr: '' }
 }
 
 describe('opencode-status', () => {
@@ -43,6 +46,7 @@ describe('opencode-status', () => {
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
     mockedExec.mockReset()
+    mockedShell.mockReset()
     _clearOpencodeProbeCacheForTests()
   })
 
@@ -58,7 +62,6 @@ describe('opencode-status', () => {
           { id: 's2', time: { created: 0, updated: 500 } },
           { id: 's3', time: { created: 0, updated: 200 } },
         ],
-        status: {},
       })
       expect(result?.id).toBe('s2')
     })
@@ -69,7 +72,6 @@ describe('opencode-status', () => {
           { id: 'fork', parentID: 's-root', time: { created: 0, updated: 1000 } },
           { id: 's-root', time: { created: 0, updated: 100 } },
         ],
-        status: {},
       })
       expect(result?.id).toBe('s-root')
     })
@@ -80,93 +82,100 @@ describe('opencode-status', () => {
           { id: 'fork-a', parentID: 'missing', time: { created: 0, updated: 100 } },
           { id: 'fork-b', parentID: 'missing', time: { created: 0, updated: 500 } },
         ],
-        status: {},
       })
       expect(result?.id).toBe('fork-b')
     })
 
     it('returns undefined for an empty session list', () => {
-      const result = pickOpencodeSession({ sessions: [], status: {} })
+      const result = pickOpencodeSession({ sessions: [] })
       expect(result).toBeUndefined()
     })
   })
 
+  describe('classifyOpencodePane', () => {
+    it('classifies "esc interrupt" as running', () => {
+      expect(classifyOpencodePane('Some output here\n  esc interrupt\n')).toBe('running')
+    })
+
+    it('classifies "esc again to interrupt" (after one ESC) as running', () => {
+      expect(classifyOpencodePane('  esc again to interrupt\n')).toBe('running')
+    })
+
+    it('classifies an idle pane (no markers) as waiting', () => {
+      expect(classifyOpencodePane('> _\nReady\n')).toBe('waiting')
+    })
+
+    it('classifies "Permission required" as waiting even with esc-interrupt visible', () => {
+      // The permission overlay is rendered on top of the prompt area, so
+      // the busy hint underneath can still be present in the pane.
+      expect(classifyOpencodePane(
+        '△ Permission required\n  ⚙ Call tool bash\n  esc interrupt\n',
+      )).toBe('waiting')
+    })
+
+    it('classifies "esc dismiss" (question overlay) as waiting', () => {
+      expect(classifyOpencodePane(
+        '  enter submit  esc dismiss\n  esc interrupt\n',
+      )).toBe('waiting')
+    })
+
+    it('matches the permission hint case-insensitively', () => {
+      expect(classifyOpencodePane('PERMISSION REQUIRED\n')).toBe('waiting')
+    })
+  })
+
   describe('getSessionOpencodeStatus', () => {
-    it('maps busy -> running', async () => {
-      mockedExec.mockResolvedValueOnce(probeStdout(
-        [{ id: 'ses_1', title: 'hi', updated: 1 }],
-        { ses_1: { type: 'busy' } },
-      ))
+    it('maps a pane with the interrupt hint to running', async () => {
+      mockedShell.mockResolvedValueOnce(paneStdout('working...\n  esc interrupt\n'))
       const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
       expect(status).toBe('running')
     })
 
-    it('maps retry -> running', async () => {
-      mockedExec.mockResolvedValueOnce(probeStdout(
-        [{ id: 'ses_1', title: 'hi', updated: 1 }],
-        { ses_1: { type: 'retry' } },
-      ))
-      const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
-      expect(status).toBe('running')
-    })
-
-    it('maps idle -> waiting', async () => {
-      mockedExec.mockResolvedValueOnce(probeStdout(
-        [{ id: 'ses_1', title: 'hi', updated: 1 }],
-        { ses_1: { type: 'idle' } },
+    it('maps a pane with the permission overlay to waiting', async () => {
+      mockedShell.mockResolvedValueOnce(paneStdout(
+        '△ Permission required\n  $ rm -rf /\n  esc interrupt\n',
       ))
       const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
       expect(status).toBe('waiting')
     })
 
-    it('returns waiting when the session has no status entry', async () => {
-      mockedExec.mockResolvedValueOnce(probeStdout(
-        [{ id: 'ses_1', title: 'hi', updated: 1 }],
-        {},
+    it('maps a pane with the question overlay to waiting', async () => {
+      mockedShell.mockResolvedValueOnce(paneStdout(
+        'Pick one:\n  > A\n    B\n  enter submit  esc dismiss\n',
       ))
       const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
       expect(status).toBe('waiting')
     })
 
-    it('returns waiting when no sessions exist yet (TUI still empty)', async () => {
-      mockedExec.mockResolvedValueOnce(probeStdout([], {}))
+    it('maps an idle pane (no markers) to waiting', async () => {
+      mockedShell.mockResolvedValueOnce(paneStdout('Ready.\n> _\n'))
       const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
       expect(status).toBe('waiting')
     })
 
-    it('returns waiting when the probe fails (container gone / HTTP server down)', async () => {
-      mockedExec.mockRejectedValueOnce(new Error('exec failed'))
+    it('returns waiting when capture-pane fails (container gone / tmux not up yet)', async () => {
+      mockedShell.mockRejectedValueOnce(new Error('exec failed'))
       const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
       expect(status).toBe('waiting')
     })
 
-    it('returns waiting when stdout is malformed JSON', async () => {
-      mockedExec.mockResolvedValueOnce({ stdout: `not-json\n${SEP}\n{}`, stderr: '' })
-      const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
-      expect(status).toBe('waiting')
-    })
-
-    it('coalesces concurrent probes into one exec via the cache', async () => {
-      mockedExec.mockResolvedValueOnce(probeStdout(
-        [{ id: 'ses_1', title: 't', updated: 1 }],
-        { ses_1: { type: 'busy' } },
-      ))
+    it('coalesces concurrent probes into one capture-pane exec via the cache', async () => {
+      mockedShell.mockResolvedValueOnce(paneStdout('  esc interrupt\n'))
       const [a, b, c] = await Promise.all([
         getSessionOpencodeStatus('proj', 'sid', 'container'),
         getSessionOpencodeStatus('proj', 'sid', 'container'),
         getSessionOpencodeStatus('proj', 'sid', 'container'),
       ])
       expect([a, b, c]).toEqual(['running', 'running', 'running'])
-      expect(mockedExec).toHaveBeenCalledTimes(1)
+      expect(mockedShell).toHaveBeenCalledTimes(1)
     })
   })
 
   describe('getSessionOpencodeFirstUserMessage', () => {
     it('returns the title from the probe and caches it to the meta file', async () => {
       await fs.mkdir(opencodeMetaDir('proj'), { recursive: true })
-      mockedExec.mockResolvedValueOnce(probeStdout(
+      mockedExec.mockResolvedValueOnce(sessionsStdout(
         [{ id: 'ses_1', title: 'Refactor auth flow', updated: 1 }],
-        { ses_1: { type: 'idle' } },
       ))
       const msg = await getSessionOpencodeFirstUserMessage('proj', 'sid', 'container')
       expect(msg).toBe('Refactor auth flow')
@@ -184,7 +193,7 @@ describe('opencode-status', () => {
         opencodeMetaFile('proj', 'sid'),
         JSON.stringify({ firstMessage: 'stale-but-useful', capturedAt: '2026-01-01' }),
       )
-      mockedExec.mockResolvedValueOnce(probeStdout([], {}))
+      mockedExec.mockResolvedValueOnce(sessionsStdout([]))
       const msg = await getSessionOpencodeFirstUserMessage('proj', 'sid', 'container')
       expect(msg).toBe('stale-but-useful')
     })

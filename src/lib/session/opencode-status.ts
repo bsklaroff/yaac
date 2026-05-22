@@ -1,30 +1,31 @@
 import fs from 'node:fs/promises'
-import { podmanExecWithRetry } from '@/lib/container/runtime'
+import { podmanExecWithRetry, shellPodmanWithRetry } from '@/lib/container/runtime'
 import { opencodeMetaFile } from '@/lib/project/paths'
+import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
 import type { OpencodeSessionMeta } from '@/shared/types'
 
 /**
  * Status + first-message lookup for opencode sessions.
  *
- * opencode's TUI has no stable "interrupt" hint we can pane-scrape for
- * busy/idle classification, and no JSONL transcript file we can tail.
- * It does run a built-in HTTP server when launched with `--port` (see
- * buildAgentCmd in daemon/session-create.ts), so we query its
- * `/session` and `/session/status` endpoints via `podman exec curl` for
- * both status and first-message lookup.
+ * Status is read from the rendered tmux pane (window `yaac:opencode.0`),
+ * not opencode's `/session/status` HTTP endpoint. The HTTP `type` field
+ * (`idle` | `busy` | `retry`) stays at `busy` while opencode is paused on
+ * a tool-permission prompt or a question-tool prompt — both states where
+ * yaac should report `waiting`. Pane content carries unambiguous markers
+ * for each.
  *
- * `first-message` is cached to `opencodeMetaFile(slug, sessionId)` on
- * each successful capture so `yaac session list -d` (deleted sessions,
- * container gone) still has something to show.
+ * First-message lookup still goes through the HTTP server: opencode
+ * auto-populates `session.title` from the first user prompt, which is
+ * what the TUI's own switcher displays — using it here keeps the two
+ * views consistent.
  */
 
+const OPENCODE_PROBE_TTL_MS = 2_000
 const OPENCODE_STATUS_TTL_MS = 2_000
 const PROBE_TIMEOUT_MS = 3000
-const PROBE_SEPARATOR = '<<<yaac-opencode-probe-sep>>>'
 
 interface OpencodeProbe {
   sessions: OpencodeSessionRow[]
-  status: Record<string, OpencodeStatus>
 }
 
 interface OpencodeSessionRow {
@@ -35,52 +36,101 @@ interface OpencodeSessionRow {
   time?: { created?: number; updated?: number }
 }
 
-interface OpencodeStatus {
-  // opencode's documented states are 'idle' | 'busy' | 'retry'. Typed as
-  // `string` so an upstream addition like 'starting' doesn't make the
-  // probe parser return null — unknown states fall through to 'waiting'
-  // in classifyStatus.
-  type: string
-}
-
 type ProbeEntry =
   | { kind: 'settled'; value: OpencodeProbe | null; expiresAt: number }
   | { kind: 'inflight'; promise: Promise<OpencodeProbe | null> }
+
+type StatusEntry =
+  | { kind: 'settled'; value: 'running' | 'waiting'; expiresAt: number }
+  | { kind: 'inflight'; promise: Promise<'running' | 'waiting'> }
 
 function probeCacheKey(slug: string, sessionId: string): string {
   return `${slug}/${sessionId}`
 }
 
 const probeCache = new Map<string, ProbeEntry>()
+const statusCache = new Map<string, StatusEntry>()
 
 /**
  * Test-only: drop every cached entry between cases.
  */
 export function _clearOpencodeProbeCacheForTests(): void {
   probeCache.clear()
+  statusCache.clear()
 }
 
 /**
- * Drop the cached entry for one session. Called from cleanup.ts when
+ * Drop the cached entries for one session. Called from cleanup.ts when
  * a session is torn down so a subsequent caller doesn't see a stale
  * probe from a brand-new session that reuses the same id (e.g. on
  * restart). Keyed by (slug, sessionId) — matches the
  * claude-status / tmux-alive eviction signature.
  */
 export function evictOpencodeProbeCache(slug: string, sessionId: string): void {
-  probeCache.delete(probeCacheKey(slug, sessionId))
+  const key = probeCacheKey(slug, sessionId)
+  probeCache.delete(key)
+  statusCache.delete(key)
+}
+
+/**
+ * Classify a captured opencode tmux pane into `running` / `waiting`.
+ *
+ * Signals (checked in priority order):
+ *   1. `Permission required` — the permission overlay is up. Rendered
+ *      from `routes/session/permission.tsx` as both a header label and
+ *      the prompt title; appears twice. → `waiting`.
+ *   2. `esc dismiss` — the question-tool overlay is up. Rendered from
+ *      `routes/session/question.tsx` as the footer hint; unique to
+ *      that component in opencode's TUI. → `waiting`.
+ *   3. `esc interrupt` (or `esc again to interrupt` after one ESC) —
+ *      rendered from `prompt/index.tsx` whenever opencode's session
+ *      status is non-idle (the model/tool is actively working).
+ *      → `running`.
+ *   4. Otherwise → `waiting` (idle, or any state where opencode hasn't
+ *      rendered a busy/dialog marker yet, e.g. mid-startup).
+ *
+ * Overlays render on top of the prompt area, so the busy hint can be
+ * visible underneath them — that's why the dialog signals take
+ * precedence over the interrupt hint.
+ */
+const PERMISSION_HINT = /Permission required/i
+const QUESTION_HINT = /esc\s+dismiss/i
+const INTERRUPT_HINT = /esc\s+(?:again\s+to\s+)?interrupt/i
+
+export function classifyOpencodePane(paneContent: string): 'running' | 'waiting' {
+  if (PERMISSION_HINT.test(paneContent)) return 'waiting'
+  if (QUESTION_HINT.test(paneContent)) return 'waiting'
+  if (INTERRUPT_HINT.test(paneContent)) return 'running'
+  return 'waiting'
+}
+
+/**
+ * Capture the visible portion of the opencode agent pane as plain text
+ * via `tmux capture-pane -p`. The `-J` flag joins wrapped lines so
+ * wide-terminal wrapping never splits a hint across rows. Returns
+ * `undefined` if the container or tmux session isn't ready yet (e.g.
+ * mid-startup) — caller falls back to `waiting`.
+ */
+async function captureOpencodePane(containerName: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await shellPodmanWithRetry(
+      `podman exec ${containerName} tmux -S ${CONTAINER_TMUX_SOCK} capture-pane -pJ -t yaac:opencode.0`,
+      { maxAttempts: 1 },
+    )
+    return stdout
+  } catch {
+    return undefined
+  }
 }
 
 async function runProbe(containerName: string): Promise<OpencodeProbe | null> {
-  // One podman exec, two curl calls, split by a unique separator so we
-  // can deserialize both JSON blobs in a single round-trip. -sf suppresses
-  // output on curl failure (HTTP server not up yet, etc.); we then see
-  // empty/non-JSON below and return null.
-  const cmd = `curl -sf http://127.0.0.1:4096/session; echo '${PROBE_SEPARATOR}'; curl -sf http://127.0.0.1:4096/session/status`
+  // One podman exec → curl /session. -sf suppresses output on curl
+  // failure (HTTP server not up yet, etc.); we then see empty/non-JSON
+  // below and return null.
   let stdout: string
   try {
     const result = await podmanExecWithRetry(
-      ['exec', containerName, 'sh', '-c', cmd],
+      ['exec', containerName, 'curl', '-sf', 'http://127.0.0.1:4096/session'],
       { maxAttempts: 2, baseDelay: 100, timeout: PROBE_TIMEOUT_MS },
     )
     stdout = result.stdout
@@ -88,31 +138,21 @@ async function runProbe(containerName: string): Promise<OpencodeProbe | null> {
     return null
   }
 
-  const [sessionsRaw, statusRaw] = stdout.split(PROBE_SEPARATOR)
-  if (!sessionsRaw || !statusRaw) return null
-
-  let sessions: OpencodeSessionRow[]
-  let status: Record<string, OpencodeStatus>
+  if (!stdout) return null
   try {
-    const parsedSessions: unknown = JSON.parse(sessionsRaw.trim())
-    if (!Array.isArray(parsedSessions)) return null
-    sessions = parsedSessions as OpencodeSessionRow[]
-
-    const parsedStatus: unknown = JSON.parse(statusRaw.trim())
-    if (!parsedStatus || typeof parsedStatus !== 'object' || Array.isArray(parsedStatus)) return null
-    status = parsedStatus as Record<string, OpencodeStatus>
+    const parsed: unknown = JSON.parse(stdout.trim())
+    if (!Array.isArray(parsed)) return null
+    return { sessions: parsed as OpencodeSessionRow[] }
   } catch {
     return null
   }
-  return { sessions, status }
 }
 
 /**
- * Coalesce concurrent probes against the same session into one exec
- * and cache the result for OPENCODE_STATUS_TTL_MS. Mirrors the
- * Claude-status caching pattern — keyed by (slug, sessionId) so a
- * restart that reuses the same container name doesn't accidentally
- * read a previous-session probe.
+ * Coalesce concurrent /session probes against the same session into one
+ * exec and cache the result for OPENCODE_PROBE_TTL_MS. Keyed by
+ * (slug, sessionId) so a restart that reuses the same container name
+ * doesn't accidentally read a previous-session probe.
  */
 async function probeOpencode(
   slug: string,
@@ -130,7 +170,7 @@ async function probeOpencode(
     probeCache.set(key, {
       kind: 'settled',
       value,
-      expiresAt: Date.now() + OPENCODE_STATUS_TTL_MS,
+      expiresAt: Date.now() + OPENCODE_PROBE_TTL_MS,
     })
     return value
   })
@@ -152,29 +192,45 @@ export function pickOpencodeSession(probe: OpencodeProbe): OpencodeSessionRow | 
   )[0]
 }
 
-function classifyStatus(s: OpencodeStatus | undefined): 'running' | 'waiting' {
-  if (!s) return 'waiting'
-  if (s.type === 'busy' || s.type === 'retry') return 'running'
-  return 'waiting'
+async function probeOpencodeStatus(containerName: string): Promise<'running' | 'waiting'> {
+  const pane = await captureOpencodePane(containerName)
+  if (pane === undefined) return 'waiting'
+  return classifyOpencodePane(pane)
 }
 
 /**
- * Status for an opencode session. Maps opencode's session.status (busy /
- * retry / idle) to yaac's (running / waiting). When the HTTP server
- * isn't reachable (container just started, probe failed, etc.) defaults
- * to 'waiting' — matches the Claude-status fallback when pane capture
- * fails.
+ * Status for an opencode session, derived from the rendered tmux pane.
+ * When pane capture fails (container just started, tmux server not up
+ * yet, etc.) defaults to 'waiting' — matches the claude-status fallback.
+ *
+ * Concurrent callers coalesce onto one capture-pane exec via the
+ * short-TTL `statusCache`. Without this, `/session/list` (UI polls
+ * every ~5s), `getWaitingSessions` (called from the stream picker),
+ * and any overlap between them each drive their own `podman exec`
+ * independently for every opencode session.
  */
 export async function getSessionOpencodeStatus(
   projectSlug: string,
   sessionId: string,
   containerName: string,
 ): Promise<'running' | 'waiting'> {
-  const probe = await probeOpencode(projectSlug, sessionId, containerName)
-  if (!probe) return 'waiting'
-  const session = pickOpencodeSession(probe)
-  if (!session) return 'waiting'
-  return classifyStatus(probe.status[session.id])
+  const key = probeCacheKey(projectSlug, sessionId)
+  const now = Date.now()
+  const cached = statusCache.get(key)
+  if (cached) {
+    if (cached.kind === 'inflight') return cached.promise
+    if (cached.expiresAt > now) return cached.value
+  }
+  const promise = probeOpencodeStatus(containerName).then((value) => {
+    statusCache.set(key, {
+      kind: 'settled',
+      value,
+      expiresAt: Date.now() + OPENCODE_STATUS_TTL_MS,
+    })
+    return value
+  })
+  statusCache.set(key, { kind: 'inflight', promise })
+  return promise
 }
 
 async function loadOpencodeMeta(
