@@ -115,4 +115,20 @@ describe('yaac auth update (real CLI + real daemon)', () => {
     expect(parsed.kind).toBe('oauth')
     expect(parsed.claudeAiOauth).toEqual(bundle)
   })
+
+  it('persists an OpenCode (OpenRouter) api key via the test-only login hook', async () => {
+    // YAAC_E2E_OPENCODE_LOGIN holds a raw api key string — opencode is
+    // api-key-only in v1 and skips any native CLI spawn.
+    const env = { ...testEnv.env, YAAC_E2E_OPENCODE_LOGIN: 'sk-or-v1-test-key' }
+    const { stdout, exitCode } = await runYaac(env, 'auth', 'update', { stdin: '4\n' })
+    expect(exitCode).toBe(0)
+    expect(stdout).toContain('OpenCode credentials saved.')
+
+    const credsPath = path.join(testEnv.dataDir, '.credentials', 'opencode.json')
+    const raw = await fs.readFile(credsPath, 'utf8')
+    const parsed = JSON.parse(raw) as { kind: string; apiKey?: string; savedAt?: string }
+    expect(parsed.kind).toBe('api-key')
+    expect(parsed.apiKey).toBe('sk-or-v1-test-key')
+    expect(typeof parsed.savedAt).toBe('string')
+  })
 })

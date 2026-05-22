@@ -83,5 +83,5 @@ export async function getSessionBlockedHosts(idOrName: string): Promise<string[]
 export async function getSessionPrompt(idOrName: string): Promise<string | undefined> {
   const match = await findSessionContainer(idOrName)
   if (!match.sessionId || !match.projectSlug) return undefined
-  return getSessionFirstMessage(match.projectSlug, match.sessionId, match.tool)
+  return getSessionFirstMessage(match.projectSlug, match.sessionId, match.tool, match.name)
 }

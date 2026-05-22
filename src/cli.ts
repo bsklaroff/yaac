@@ -131,7 +131,7 @@ session
   .command('create')
   .description('Create a new session for a project')
   .argument('<project>', 'Project slug')
-  .option('-t, --tool <tool>', 'Agent tool to use (claude or codex)')
+  .option('-t, --tool <tool>', 'Agent tool to use (claude, codex, or opencode)')
   .option('--add-dir <path>', 'Mount a host directory as read-only (repeatable)', collect, [])
   .option('--add-dir-rw <path>', 'Mount a host directory as read-write (repeatable)', collect, [])
   .action(async (project: string, options: Parameters<typeof sessionCreate>[1]) => {
@@ -181,7 +181,7 @@ session
   .command('stream')
   .description('Stream through waiting sessions, attaching to each in turn')
   .argument('[project]', 'Filter by project slug (auto-creates sessions if none waiting)')
-  .option('-t, --tool <tool>', 'Agent tool for newly created sessions (claude or codex)')
+  .option('-t, --tool <tool>', 'Agent tool for newly created sessions (claude, codex, or opencode)')
   .action(async (project: string | undefined, options: { tool?: string }) => {
     const tool = options.tool ?? await getDefaultTool() ?? 'claude'
     await sessionStream(project, tool as AgentTool)
@@ -209,7 +209,7 @@ tool
 tool
   .command('set')
   .description('Set the default agent tool')
-  .argument('<tool>', 'Agent tool to use (claude or codex)')
+  .argument('<tool>', 'Agent tool to use (claude, codex, or opencode)')
   .action(toolSet)
 
 const config = program

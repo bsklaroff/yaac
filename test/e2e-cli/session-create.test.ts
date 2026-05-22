@@ -90,6 +90,23 @@ describe('yaac session create (real CLI + real daemon)', () => {
     expect(stderr.toLowerCase()).toContain('tool')
   })
 
+  it('accepts --tool opencode (validation passes through to the git-credential check)', async () => {
+    // Mirrors the "no git credential" case above for --tool claude —
+    // confirms opencode passes the daemon's tool-validation gate, then
+    // trips the same missing-credential check downstream. Cheap proof
+    // that the new tool value is wired through the validator without
+    // standing up a real opencode container.
+    const repo = path.join(testEnv.scratchDir, 'repo-demo')
+    await createTestRepo(repo)
+    await addTestProject(repo)
+
+    const { stderr, exitCode } = await runYaac(
+      testEnv.env, 'session', 'create', 'repo-demo', '--tool', 'opencode',
+    )
+    expect(exitCode).not.toBe(0)
+    expect(stderr).toMatch(/No git credential configured/)
+  })
+
   it('rejects a relative --add-dir path with an absolute-path error', async () => {
     const repo = path.join(testEnv.scratchDir, 'repo-demo')
     await createTestRepo(repo)

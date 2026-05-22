@@ -287,4 +287,48 @@ describe('tool-auth', () => {
       ).rejects.toMatchObject({ code: 'VALIDATION' })
     })
   })
+
+  describe('opencode (OpenRouter)', () => {
+    it('detectAuthKind always returns api-key for opencode', () => {
+      expect(detectAuthKind('opencode', 'sk-or-anything')).toBe('api-key')
+      expect(detectAuthKind('opencode', 'sk-ant-oat01-claude-looking')).toBe('api-key')
+    })
+
+    it('persists an opencode api-key and round-trips through loadToolAuthEntry', async () => {
+      await persistToolAuthPayload('opencode', {
+        kind: 'api-key',
+        apiKey: 'sk-or-v1-roundtrip',
+      })
+      const entry = await loadToolAuthEntry('opencode')
+      expect(entry).toMatchObject({
+        tool: 'opencode',
+        kind: 'api-key',
+        apiKey: 'sk-or-v1-roundtrip',
+      })
+      expect(typeof entry?.savedAt).toBe('string')
+    })
+
+    it('loadToolAuthEntry returns null when no opencode creds are saved', async () => {
+      expect(await loadToolAuthEntry('opencode')).toBeNull()
+    })
+
+    it('removeToolAuth deletes opencode credentials and returns true', async () => {
+      await persistToolAuthPayload('opencode', { kind: 'api-key', apiKey: 'sk-or-rm' })
+      expect(await removeToolAuth('opencode')).toBe(true)
+      expect(await loadToolAuthEntry('opencode')).toBeNull()
+    })
+
+    it('removeToolAuth returns false when no opencode creds exist', async () => {
+      expect(await removeToolAuth('opencode')).toBe(false)
+    })
+
+    it('rejects an oauth payload for opencode (api-key only)', async () => {
+      await expect(
+        persistToolAuthPayload('opencode', {
+          kind: 'oauth',
+          bundle: { accessToken: 'x', refreshToken: 'y', expiresAt: 1, scopes: [] },
+        }),
+      ).rejects.toMatchObject({ code: 'VALIDATION' })
+    })
+  })
 })

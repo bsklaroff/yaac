@@ -89,6 +89,7 @@ export async function pickNextStreamSession(input: PickNextInput): Promise<PickN
       allSessions[0].projectSlug,
       allSessions[0].sessionId,
       allSessions[0].tool,
+      allSessions[0].containerName,
     ))
 
   // If the last-attached session has disappeared from the waiting list

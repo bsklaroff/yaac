@@ -169,7 +169,7 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
       }
       const [status, prompt, prewarm, blockedHosts] = await Promise.all([
         getSessionStatus(slug, sessionId, tool, containerName),
-        getSessionFirstMessage(slug, sessionId, tool),
+        getSessionFirstMessage(slug, sessionId, tool, containerName),
         isPrewarmSession(slug, sessionId),
         readBlockedHosts(slug, sessionId),
       ])

@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createSession } from '@/daemon/session-create'
+import { buildAgentCmd, createSession } from '@/daemon/session-create'
 import { sessionCreate } from '@/commands/session-create'
 
 vi.mock('node:child_process', () => ({
@@ -80,6 +80,8 @@ vi.mock('@/lib/project/paths', () => ({
   claudeDir: vi.fn((slug: string) => `/tmp/${slug}/claude`),
   claudeJsonFile: vi.fn((slug: string) => `/tmp/${slug}/claude.json`),
   codexDir: vi.fn((slug: string) => `/tmp/${slug}/codex`),
+  opencodeDataDir: vi.fn((slug: string, sessionId: string) => `/tmp/${slug}/opencode-data/${sessionId}`),
+  opencodeMetaDir: vi.fn((slug: string) => `/tmp/${slug}/opencode-meta`),
   cachedPackagesDir: vi.fn((slug: string) => `/tmp/${slug}/.cached-packages`),
   codexTranscriptDir: vi.fn((slug: string) => `/tmp/${slug}/transcripts`),
   worktreeDir: vi.fn((slug: string, sessionId: string) => `/tmp/${slug}/worktrees/${sessionId}`),
@@ -478,6 +480,60 @@ describe('createSession', () => {
     expect(mockWriteFile).toHaveBeenCalledWith('/tmp/demo/claude.json', '{}')
     expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/claude', { recursive: true })
     expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/codex', { recursive: true })
+  })
+
+  it('mounts the per-session opencode data dir + meta dir on every session', async () => {
+    // Per-yaac-session opencode data is mounted regardless of which tool
+    // is active (matches the existing "claude + codex always mounted"
+    // pattern), so the bind shows up here even though tool=claude.
+    await createSession('demo', { tool: 'claude' })
+
+    const binds = mockCreateContainer.mock.calls[0]?.[0].HostConfig?.Binds
+    const opencodeMount = (binds ?? []).find(
+      (b: string) => b.endsWith(':/home/yaac/.local/share/opencode:Z'),
+    )
+    expect(opencodeMount).toBeDefined()
+    expect(opencodeMount).toMatch(/^\/tmp\/demo\/opencode-data\/[^:]+:/)
+    expect(mockMkdir).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/tmp\/demo\/opencode-data\//),
+      { recursive: true },
+    )
+    expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/opencode-meta', { recursive: true })
+  })
+})
+
+describe('buildAgentCmd', () => {
+  it('returns the codex respawn command unchanged', () => {
+    const fresh = buildAgentCmd('codex', 'sid-abc', '--add-dir /add-dir/x', false)
+    expect(fresh).toBe('codex --yolo --add-dir /add-dir/x')
+    const resume = buildAgentCmd('codex', 'sid-abc', '', true)
+    expect(resume).toBe('codex --yolo resume sid-abc')
+  })
+
+  it('returns the claude respawn command unchanged', () => {
+    const fresh = buildAgentCmd('claude', 'sid-abc', '', false)
+    expect(fresh).toBe(
+      'CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --session-id sid-abc',
+    )
+    const resume = buildAgentCmd('claude', 'sid-abc', '', true)
+    expect(resume).toBe(
+      'CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --resume sid-abc',
+    )
+  })
+
+  it('launches opencode with --port + --hostname so the in-container HTTP server is reachable', () => {
+    const fresh = buildAgentCmd('opencode', 'sid-abc', '', false)
+    expect(fresh).toBe('opencode --port 4096 --hostname 127.0.0.1')
+  })
+
+  it('passes --continue when resuming an opencode session', () => {
+    const resume = buildAgentCmd('opencode', 'sid-abc', '', true)
+    expect(resume).toBe('opencode --port 4096 --hostname 127.0.0.1 --continue')
+  })
+
+  it('drops add-dir flags for opencode (no CLI equivalent in opencode)', () => {
+    const cmd = buildAgentCmd('opencode', 'sid-abc', '--add-dir /add-dir/x', false)
+    expect(cmd).toBe('opencode --port 4096 --hostname 127.0.0.1')
   })
 })
 

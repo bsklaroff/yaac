@@ -24,9 +24,10 @@ export async function authList(): Promise<void> {
   console.log('Tool credentials:')
   printToolAuth('claude', result.toolAuth.find((t) => t.tool === 'claude'))
   printToolAuth('codex', result.toolAuth.find((t) => t.tool === 'codex'))
+  printToolAuth('opencode', result.toolAuth.find((t) => t.tool === 'opencode'))
 }
 
-function printToolAuth(label: 'claude' | 'codex', entry: ToolAuthSummary | undefined): void {
+function printToolAuth(label: 'claude' | 'codex' | 'opencode', entry: ToolAuthSummary | undefined): void {
   const padded = label.padEnd(9)
   if (!entry) {
     console.log(`  ${padded} not configured`)

@@ -40,7 +40,8 @@ export async function authUpdate(): Promise<void> {
   console.log('  1) Git credentials (HTTPS token or SSH key)')
   console.log('  2) Claude Code (Anthropic)')
   console.log('  3) Codex (OpenAI)')
-  const answer = (await rl.question('Choice [1-3]: ')).trim()
+  console.log('  4) OpenCode (OpenRouter)')
+  const answer = (await rl.question('Choice [1-4]: ')).trim()
   rl.close()
 
   if (answer === '1') {
@@ -53,6 +54,10 @@ export async function authUpdate(): Promise<void> {
   }
   if (answer === '3') {
     await runToolUpdate('codex')
+    return
+  }
+  if (answer === '4') {
+    await runToolUpdate('opencode')
     return
   }
   console.log('Cancelled.')
@@ -202,7 +207,10 @@ async function runToolUpdate(tool: AgentTool): Promise<void> {
   const client = await getRpcClient()
   const res = await client.auth[':tool'].$put({ param: { tool }, json: payload })
   if (!res.ok) throw await toClientError(res)
-  const label = tool === 'claude' ? 'Claude Code' : 'Codex'
+  const label =
+    tool === 'claude' ? 'Claude Code' :
+    tool === 'codex' ? 'Codex' :
+    'OpenCode'
   console.log(`${label} credentials saved.`)
 }
 

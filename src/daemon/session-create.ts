@@ -22,6 +22,8 @@ import {
   claudeJsonFile,
   codexDir,
   codexTranscriptDir,
+  opencodeDataDir,
+  opencodeMetaDir,
   cachedPackagesDir,
   worktreeDir,
   worktreesDir,
@@ -121,6 +123,19 @@ export function buildAgentCmd(
       'codex --yolo',
       resume ? `resume ${sessionId}` : '',
       addDirFlags,
+    ].filter(Boolean).join(' ')
+  }
+  if (tool === 'opencode') {
+    // --port + --hostname enable opencode's built-in HTTP server on
+    // container loopback. yaac reads /session and /session/status from
+    // there (via `podman exec curl`) for status + first-message lookup.
+    // --continue resumes the one session stored in the per-yaac-session
+    // data dir (isolated per container — no cwd-collision concern).
+    // addDirFlags is dropped: opencode has no --add-dir equivalent.
+    return [
+      'opencode',
+      '--port 4096 --hostname 127.0.0.1',
+      resume ? '--continue' : '',
     ].filter(Boolean).join(' ')
   }
   return [
@@ -229,6 +244,7 @@ interface ContainerSetupParams {
   claude: string
   claudeJson: string
   codex: string
+  opencodeData: string
   cachedPackages: string
   tool: AgentTool
   config: YaacConfig
@@ -244,8 +260,8 @@ interface ContainerSetupParams {
 async function startContainerWithSetup(params: ContainerSetupParams): Promise<void> {
   const {
     imageName, containerName, projectSlug, sessionId, env,
-    wtDir, repo, claude, claudeJson, codex, cachedPackages, tool, config, options,
-    networkMode, pgRelayIp, gitUser, forwardedPorts, extraBinds,
+    wtDir, repo, claude, claudeJson, codex, opencodeData, cachedPackages, tool,
+    config, options, networkMode, pgRelayIp, gitUser, forwardedPorts, extraBinds,
   } = params
 
   // Every in-container `tmux` invocation routes through this prefix so
@@ -296,6 +312,7 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
         `${claude}:/home/yaac/.claude:Z`,
         `${claudeJson}:/home/yaac/.claude.json:Z`,
         `${codex}:/home/yaac/.codex:Z`,
+        `${opencodeData}:/home/yaac/.local/share/opencode:Z`,
         `${cachedPackages}:/home/yaac/.cached-packages:Z`,
         `${tmuxHostDir}:${CONTAINER_TMUX_DIR}:Z`,
         ...Object.entries(config.cacheVolumes ?? {}).map(
@@ -383,7 +400,10 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
     .join(' ')
 
   const agentCmd = buildAgentCmd(tool, sessionId, addDirFlags, options.resume === true)
-  const toolLabel = tool === 'codex' ? 'Codex' : 'Claude Code'
+  const toolLabel =
+    tool === 'codex' ? 'Codex' :
+    tool === 'opencode' ? 'OpenCode' :
+    'Claude Code'
   emit(`Starting ${toolLabel}...`, options)
   // Open the tmux session with a placeholder keepalive (`sleep infinity`)
   // instead of the agent directly. If we launched the agent here, a
@@ -709,6 +729,13 @@ export async function createSession(
       }
       // OAuth: Claude Code reads the placeholder bundle from the mounted
       // .claude/.credentials.json, so no env var is needed.
+    } else if (tool === 'opencode') {
+      // opencode is api-key only (OpenRouter). It reads OPENROUTER_API_KEY
+      // from env and sends `Authorization: Bearer <key>` to openrouter.ai,
+      // which the proxy swaps for the real key.
+      if (toolAuth.kind === 'api-key') {
+        env.push(`OPENROUTER_API_KEY=${PLACEHOLDER_API_KEY}`)
+      }
     } else if (toolAuth.kind === 'api-key') {
       env.push(`OPENAI_API_KEY=${PLACEHOLDER_API_KEY}`)
     }
@@ -756,10 +783,17 @@ export async function createSession(
   const claude = claudeDir(projectSlug)
   const claudeJson = claudeJsonFile(projectSlug)
   const codex = codexDir(projectSlug)
+  const opencodeData = opencodeDataDir(projectSlug, sessionId)
   const cachedPackages = cachedPackagesDir(projectSlug)
 
   await fs.mkdir(claude, { recursive: true })
   await fs.mkdir(codex, { recursive: true })
+  // Per-yaac-session opencode data dir (sqlite DB + sessions). Per-session
+  // isolation sidesteps opencode upstream #5241 concurrent-write issues.
+  // Also create the meta dir so opencode-status helpers can write first-
+  // message snapshots without racing on parent-dir creation.
+  await fs.mkdir(opencodeData, { recursive: true })
+  await fs.mkdir(opencodeMetaDir(projectSlug), { recursive: true })
   await fs.mkdir(cachedPackages, { recursive: true })
 
   // Refresh the per-project placeholder .credentials.json from the current
@@ -819,8 +853,9 @@ export async function createSession(
   const maxStartAttempts = 3
   const setupParams: ContainerSetupParams = {
     imageName, containerName, projectSlug, sessionId, env,
-    wtDir, repo, claude, claudeJson, codex, cachedPackages, tool, config, options,
-    networkMode, pgRelayIp, gitUser, forwardedPorts, extraBinds: sshExtraBinds,
+    wtDir, repo, claude, claudeJson, codex, opencodeData, cachedPackages, tool,
+    config, options, networkMode, pgRelayIp, gitUser, forwardedPorts,
+    extraBinds: sshExtraBinds,
   }
 
   emit(`Creating container ${containerName}...`, options)

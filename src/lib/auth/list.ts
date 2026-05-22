@@ -30,13 +30,15 @@ async function toolAuthSummary(tool: AgentTool): Promise<ToolAuthSummary | null>
  * API keys.
  */
 export async function listAuth(): Promise<AuthListResult> {
-  const [gitCredentials, claude, codex] = await Promise.all([
+  const [gitCredentials, claude, codex, opencode] = await Promise.all([
     listEntries(),
     toolAuthSummary('claude'),
     toolAuthSummary('codex'),
+    toolAuthSummary('opencode'),
   ])
   const toolAuth: ToolAuthSummary[] = []
   if (claude) toolAuth.push(claude)
   if (codex) toolAuth.push(codex)
+  if (opencode) toolAuth.push(opencode)
   return { gitCredentials, toolAuth }
 }

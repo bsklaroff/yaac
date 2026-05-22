@@ -34,7 +34,10 @@ export async function authClear(): Promise<void> {
     })
   }
   for (const entry of toolAuth) {
-    const label = entry.tool === 'claude' ? 'Claude Code' : 'Codex'
+    const label =
+      entry.tool === 'claude' ? 'Claude Code' :
+      entry.tool === 'codex' ? 'Codex' :
+      'OpenCode'
     entries.push({
       label: `${label} credentials (${entry.keyPreview})`,
       run: async () => {

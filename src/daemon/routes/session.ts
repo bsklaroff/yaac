@@ -38,7 +38,7 @@ export const sessionApp = new Hono()
       project: z.string().min(1),
       addDir: z.array(z.string()).optional(),
       addDirRw: z.array(z.string()).optional(),
-      tool: z.enum(['claude', 'codex']).optional(),
+      tool: z.enum(['claude', 'codex', 'opencode']).optional(),
       gitUser: z.object({ name: z.string(), email: z.string() }).optional(),
     })),
     (c) => {
@@ -108,11 +108,11 @@ export const sessionApp = new Hono()
     '/stream/next',
     zValidator('json', z.object({
       project: z.string().optional(),
-      tool: z.enum(['claude', 'codex']).optional(),
+      tool: z.enum(['claude', 'codex', 'opencode']).optional(),
       visited: z.array(z.string()).default([]),
       lastVisited: z.string().optional(),
       lastProjectSlug: z.string().optional(),
-      lastTool: z.enum(['claude', 'codex']).optional(),
+      lastTool: z.enum(['claude', 'codex', 'opencode']).optional(),
       lastOutcome: z.enum(['detached', 'closed_blank', 'closed_prompted', 'none']).default('none'),
     })),
     async (c) => {

@@ -4,6 +4,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { podman } from '@/lib/container/runtime'
 import { evictClaudeStatusCache } from '@/lib/session/claude-status'
+import { evictOpencodeProbeCache } from '@/lib/session/opencode-status'
 import { proxyClient } from '@/lib/container/proxy-client'
 import { resolveImageTag } from '@/lib/container/image-builder'
 import {
@@ -141,12 +142,13 @@ export async function cleanupSession(params: {
   const { containerName, projectSlug, sessionId } = params
   const container = podman.getContainer(containerName)
 
-  // Drop any cached tmux-alive / claude-status entry so a subsequent
-  // caller doesn't see a stale value from this session's previous
-  // probe (or, in the worst case, a value belonging to a brand-new
-  // session with the same id).
+  // Drop any cached tmux-alive / claude-status / opencode-probe entry so
+  // a subsequent caller doesn't see a stale value from this session's
+  // previous probe (or, in the worst case, a value belonging to a brand-
+  // new session with the same id).
   tmuxAliveCache.delete(tmuxAliveKey(projectSlug, sessionId))
   evictClaudeStatusCache(projectSlug, sessionId)
+  evictOpencodeProbeCache(projectSlug, sessionId)
 
   stopSessionForwarders(sessionId)
   await removeSessionFromProxy(sessionId)
@@ -214,6 +216,7 @@ export async function cleanupSessionDetached(params: {
 
   tmuxAliveCache.delete(tmuxAliveKey(projectSlug, sessionId))
   evictClaudeStatusCache(projectSlug, sessionId)
+  evictOpencodeProbeCache(projectSlug, sessionId)
 
   stopSessionForwarders(sessionId)
   await removeSessionFromProxy(sessionId)

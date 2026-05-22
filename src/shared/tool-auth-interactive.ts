@@ -14,6 +14,7 @@ import {
 /**
  * Auto-detect the auth kind from a token string.
  * - Anthropic OAuth tokens start with "sk-ant-oat"
+ * - opencode is OpenRouter api-key only in v1
  * - Everything else defaults to 'api-key'
  */
 export function detectAuthKind(tool: AgentTool, token: string): ToolAuthKind {
@@ -219,16 +220,31 @@ export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult> {
   // Test-only hook: e2e-cli can't drive the native `claude login` /
   // `codex login` OAuth flow end-to-end, so these env vars short-circuit
   // with a JSON-serialised bundle. The CLI → daemon persistence path is
-  // still exercised exactly as in production.
-  const hookVar = tool === 'claude' ? 'YAAC_E2E_CLAUDE_LOGIN' : 'YAAC_E2E_CODEX_LOGIN'
+  // still exercised exactly as in production. opencode skips the native
+  // CLI entirely (OpenRouter api-key only), so its hook payload is a
+  // bare api-key string.
+  const hookVar =
+    tool === 'claude' ? 'YAAC_E2E_CLAUDE_LOGIN' :
+    tool === 'codex' ? 'YAAC_E2E_CODEX_LOGIN' :
+    'YAAC_E2E_OPENCODE_LOGIN'
   const hookRaw = process.env[hookVar]
   if (hookRaw) {
     if (tool === 'claude') {
       const bundle = claudeOAuthBundleSchema.parse(JSON.parse(hookRaw))
       return { apiKey: bundle.accessToken, kind: 'oauth', claudeBundle: bundle }
     }
-    const bundle = JSON.parse(hookRaw) as CodexOAuthBundle
-    return { apiKey: bundle.accessToken, kind: 'oauth', codexBundle: bundle }
+    if (tool === 'codex') {
+      const bundle = JSON.parse(hookRaw) as CodexOAuthBundle
+      return { apiKey: bundle.accessToken, kind: 'oauth', codexBundle: bundle }
+    }
+    // opencode: the env var holds a raw OpenRouter key.
+    return { apiKey: hookRaw, kind: 'api-key' }
+  }
+
+  if (tool === 'opencode') {
+    // No native login flow — OpenRouter is api-key only and we don't
+    // shell out to `opencode auth login` in v1.
+    return promptForApiKey(tool)
   }
 
   const toolLabel = tool === 'claude' ? 'Claude Code' : 'Codex'
@@ -273,7 +289,10 @@ export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult> {
  */
 export async function promptForApiKey(tool: AgentTool): Promise<ToolLoginResult> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-  const label = tool === 'claude' ? 'Anthropic API key or OAuth token' : 'OpenAI API key'
+  const label =
+    tool === 'claude' ? 'Anthropic API key or OAuth token' :
+    tool === 'codex' ? 'OpenAI API key' :
+    'OpenRouter API key'
   const key = (await rl.question(`Paste your ${label}: `)).trim()
   rl.close()
   if (!key) {

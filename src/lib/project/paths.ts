@@ -35,6 +35,10 @@ export function codexCredentialsPath(): string {
   return path.join(credentialsDir(), 'codex.json')
 }
 
+export function opencodeCredentialsPath(): string {
+  return path.join(credentialsDir(), 'opencode.json')
+}
+
 export function projectDir(slug: string): string {
   return path.join(getProjectsDir(), slug)
 }
@@ -85,6 +89,32 @@ export function codexTranscriptDir(slug: string): string {
 
 export function codexTranscriptFile(slug: string, sessionId: string): string {
   return path.join(codexTranscriptDir(slug), `${sessionId}.jsonl`)
+}
+
+/**
+ * Per-yaac-session opencode data root. Bind-mounted at
+ * `/home/yaac/.local/share/opencode/` inside the container. Per-session
+ * isolation sidesteps opencode upstream concurrent-write issues
+ * (sst/opencode#5241) and makes `opencode --continue` deterministic since
+ * each container's DB only ever contains its own session.
+ *
+ * Persists across container teardown so `yaac session list -d` first-
+ * message lookups still work via the meta cache below.
+ */
+export function opencodeDataDir(slug: string, sessionId: string): string {
+  return path.join(projectDir(slug), 'opencode-data', sessionId)
+}
+
+/**
+ * Per-yaac-session metadata cache. Stores the first-message snapshot
+ * keyed by yaac session ID so deleted sessions retain their preview.
+ */
+export function opencodeMetaDir(slug: string): string {
+  return path.join(projectDir(slug), 'opencode-meta')
+}
+
+export function opencodeMetaFile(slug: string, sessionId: string): string {
+  return path.join(opencodeMetaDir(slug), `${sessionId}.json`)
 }
 
 export function worktreesDir(slug: string): string {

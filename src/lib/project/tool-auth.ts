@@ -7,6 +7,7 @@ import {
   getProjectsDir,
   claudeDir,
   codexDir,
+  opencodeCredentialsPath,
   projectClaudeCredentialsFile,
   projectCodexAuthFile,
 } from '@/lib/project/paths'
@@ -21,6 +22,7 @@ import {
   type ClaudeOAuthBundle,
   type CodexCredentialsFile,
   type CodexOAuthBundle,
+  type OpencodeCredentialsFile,
 } from '@/shared/types'
 import {
   detectAuthKind,
@@ -140,6 +142,30 @@ export async function saveCodexOAuthBundle(bundle: CodexOAuthBundle): Promise<vo
   })
 }
 
+export async function loadOpencodeCredentialsFile(): Promise<OpencodeCredentialsFile | null> {
+  try {
+    const raw = await fs.readFile(opencodeCredentialsPath(), 'utf8')
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return null
+    const o = parsed as Record<string, unknown>
+    if (o.kind === 'api-key' && typeof o.savedAt === 'string' && typeof o.apiKey === 'string' && o.apiKey !== '') {
+      return { kind: 'api-key', savedAt: o.savedAt, apiKey: o.apiKey }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+export async function saveOpencodeCredentialsFile(creds: OpencodeCredentialsFile): Promise<void> {
+  await ensureCredentialsDir()
+  await fs.writeFile(
+    opencodeCredentialsPath(),
+    JSON.stringify(creds, null, 2) + '\n',
+    { mode: 0o600 },
+  )
+}
+
 /**
  * Load the stored auth entry for a specific tool.
  * Returns null if no credentials are configured.
@@ -161,6 +187,11 @@ export async function loadToolAuthEntry(tool: AgentTool): Promise<ToolAuthEntry 
       }
     }
     return { tool: 'claude', kind: 'api-key', apiKey: f.apiKey, savedAt: f.savedAt }
+  }
+  if (tool === 'opencode') {
+    const f = await loadOpencodeCredentialsFile()
+    if (!f) return null
+    return { tool: 'opencode', kind: 'api-key', apiKey: f.apiKey, savedAt: f.savedAt }
   }
   const f = await loadCodexCredentialsFile()
   if (!f) return null
@@ -205,6 +236,14 @@ export async function saveToolAuth(tool: AgentTool, apiKey: string, kind: ToolAu
     await saveClaudeCredentialsFile({ kind: 'api-key', savedAt, apiKey })
     return
   }
+  if (tool === 'opencode') {
+    // opencode supports api-key only. OAuth payloads are rejected at the
+    // persistToolAuthPayload boundary; if we get here with kind='oauth',
+    // store as api-key defensively so the proxy still has something to
+    // inject.
+    await saveOpencodeCredentialsFile({ kind: 'api-key', savedAt, apiKey })
+    return
+  }
   if (kind === 'oauth') {
     // OAuth without a bundle can't be refreshed — callers should use
     // saveCodexOAuthBundle. Fall through to api-key so the proxy still
@@ -230,7 +269,10 @@ export async function saveClaudeOAuthBundle(bundle: ClaudeOAuthBundle): Promise<
  * Remove stored auth for a specific tool. Returns true if an entry was present.
  */
 export async function removeToolAuth(tool: AgentTool): Promise<boolean> {
-  const target = tool === 'claude' ? claudeCredentialsPath() : codexCredentialsPath()
+  const target =
+    tool === 'claude' ? claudeCredentialsPath() :
+    tool === 'codex' ? codexCredentialsPath() :
+    opencodeCredentialsPath()
   try {
     await fs.unlink(target)
     return true
@@ -264,7 +306,7 @@ export async function persistToolLogin(tool: AgentTool, result: ToolLoginResult)
  * don't recognize.
  */
 export async function persistToolAuthPayload(tool: AgentTool, payload: unknown): Promise<void> {
-  if (tool !== 'claude' && tool !== 'codex') {
+  if (tool !== 'claude' && tool !== 'codex' && tool !== 'opencode') {
     throw new DaemonError('VALIDATION', `Unknown tool "${String(tool)}".`)
   }
   if (!payload || typeof payload !== 'object') {
@@ -279,6 +321,9 @@ export async function persistToolAuthPayload(tool: AgentTool, payload: unknown):
     return
   }
   if (p.kind === 'oauth') {
+    if (tool === 'opencode') {
+      throw new DaemonError('VALIDATION', 'opencode only supports api-key auth.')
+    }
     if (tool === 'claude') {
       if (!isClaudeOAuthBundle(p.bundle)) {
         throw new DaemonError('VALIDATION', 'Claude oauth payload needs a valid bundle.')
@@ -313,7 +358,10 @@ export async function ensureToolAuth(tool: AgentTool): Promise<ToolAuthEntry> {
 
   const result = await runToolLogin(tool)
   await persistToolLogin(tool, result)
-  const toolLabel = tool === 'claude' ? 'Claude Code' : 'Codex'
+  const toolLabel =
+    tool === 'claude' ? 'Claude Code' :
+    tool === 'codex' ? 'Codex' :
+    'OpenCode'
   console.log(`${toolLabel} credentials saved.`)
   const saved = await loadToolAuthEntry(tool)
   if (!saved) throw new Error(`Failed to persist ${toolLabel} credentials.`)

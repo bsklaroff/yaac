@@ -20,7 +20,11 @@ export async function loadPreferences(): Promise<PreferencesFile> {
     if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
       const obj = parsed as Record<string, unknown>
       const result: PreferencesFile = {}
-      if (obj.defaultTool === 'claude' || obj.defaultTool === 'codex') {
+      if (
+        obj.defaultTool === 'claude'
+        || obj.defaultTool === 'codex'
+        || obj.defaultTool === 'opencode'
+      ) {
         result.defaultTool = obj.defaultTool
       }
       return result
@@ -50,7 +54,7 @@ export async function setDefaultTool(tool: AgentTool): Promise<void> {
   await savePreferences(prefs)
 }
 
-const VALID_TOOLS: AgentTool[] = ['claude', 'codex']
+const VALID_TOOLS: AgentTool[] = ['claude', 'codex', 'opencode']
 
 export function isValidTool(value: string): value is AgentTool {
   return VALID_TOOLS.includes(value as AgentTool)
@@ -74,7 +78,7 @@ export async function setDefaultToolChecked(toolName: string): Promise<AgentTool
 export async function promptForDefaultTool(): Promise<AgentTool> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
   console.log('Choose a default agent tool.')
-  console.log('Options: claude, codex')
+  console.log('Options: claude, codex, opencode')
   const answer = (await rl.question('Default tool: ')).trim().toLowerCase()
   rl.close()
   if (!isValidTool(answer)) {

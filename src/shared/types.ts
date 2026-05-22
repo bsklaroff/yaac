@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-export type AgentTool = 'claude' | 'codex'
+export type AgentTool = 'claude' | 'codex' | 'opencode'
 
 export type ToolAuthKind = 'api-key' | 'oauth'
 
@@ -77,6 +77,27 @@ export type CodexCredentialsFile =
     savedAt: string
     apiKey: string
   }
+
+/**
+ * Shape of `~/.yaac/.credentials/opencode.json`. Only api-key — opencode
+ * integration in yaac is OpenRouter-only at the moment.
+ */
+export type OpencodeCredentialsFile = {
+  kind: 'api-key'
+  savedAt: string
+  apiKey: string
+}
+
+/**
+ * Per-yaac-session opencode metadata cache. Stores the first-message
+ * snapshot so deleted-session listings can still surface it without
+ * needing to spin up a sqlite reader against the persisted DB.
+ */
+export interface OpencodeSessionMeta {
+  firstMessage?: string
+  /** ISO timestamp of last successful capture. */
+  capturedAt?: string
+}
 
 /**
  * Summary view over per-tool credential files — used by `auth list`, etc.

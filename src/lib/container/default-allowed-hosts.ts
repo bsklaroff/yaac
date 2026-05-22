@@ -24,6 +24,11 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'chatgpt.com',
   'ab.chatgpt.com',
 
+  // OpenCode / OpenRouter
+  'openrouter.ai',
+  'opencode.ai',
+  'models.dev',
+
   // Version control — GitHub
   'github.com',
   'www.github.com',

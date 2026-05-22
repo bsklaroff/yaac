@@ -56,7 +56,7 @@ describe('yaac session stream (real CLI + real daemon)', () => {
     expect(stdout).toContain('No project selected')
   })
 
-  it('errors when the --tool flag is not claude or codex', async () => {
+  it('errors when the --tool flag is not claude, codex, or opencode', async () => {
     const { stderr, exitCode } = await runYaac(
       testEnv.env, 'session', 'stream', '--tool', 'mystery',
     )

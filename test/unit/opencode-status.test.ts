@@ -1,0 +1,216 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import fs from 'node:fs/promises'
+import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
+
+vi.mock('@/lib/container/runtime', () => ({
+  podmanExecWithRetry: vi.fn(),
+}))
+
+import { podmanExecWithRetry } from '@/lib/container/runtime'
+import { opencodeMetaDir, opencodeMetaFile } from '@/lib/project/paths'
+import {
+  pickOpencodeSession,
+  getSessionOpencodeStatus,
+  getSessionOpencodeFirstUserMessage,
+  getDeletedSessionOpencodeFirstUserMessage,
+  _clearOpencodeProbeCacheForTests,
+} from '@/lib/session/opencode-status'
+
+const mockedExec = vi.mocked(podmanExecWithRetry)
+
+const SEP = '<<<yaac-opencode-probe-sep>>>'
+
+function probeStdout(
+  sessions: Array<{ id: string; title?: string; parentID?: string; updated?: number }>,
+  statusByteId: Record<string, { type: string }>,
+): { stdout: string; stderr: string } {
+  const sessionsJson = JSON.stringify(
+    sessions.map((s) => ({
+      id: s.id,
+      title: s.title,
+      directory: '/workspace',
+      parentID: s.parentID,
+      time: { created: 0, updated: s.updated ?? 0 },
+    })),
+  )
+  const statusJson = JSON.stringify(statusByteId)
+  return { stdout: `${sessionsJson}\n${SEP}\n${statusJson}\n`, stderr: '' }
+}
+
+describe('opencode-status', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+    mockedExec.mockReset()
+    _clearOpencodeProbeCacheForTests()
+  })
+
+  afterEach(async () => {
+    await cleanupTempDir(tmpDir)
+  })
+
+  describe('pickOpencodeSession', () => {
+    it('picks the most-recently-updated root session', () => {
+      const result = pickOpencodeSession({
+        sessions: [
+          { id: 's1', time: { created: 0, updated: 100 } },
+          { id: 's2', time: { created: 0, updated: 500 } },
+          { id: 's3', time: { created: 0, updated: 200 } },
+        ],
+        status: {},
+      })
+      expect(result?.id).toBe('s2')
+    })
+
+    it('prefers root sessions (no parentID) over forks', () => {
+      const result = pickOpencodeSession({
+        sessions: [
+          { id: 'fork', parentID: 's-root', time: { created: 0, updated: 1000 } },
+          { id: 's-root', time: { created: 0, updated: 100 } },
+        ],
+        status: {},
+      })
+      expect(result?.id).toBe('s-root')
+    })
+
+    it('falls back to any session if no roots are present', () => {
+      const result = pickOpencodeSession({
+        sessions: [
+          { id: 'fork-a', parentID: 'missing', time: { created: 0, updated: 100 } },
+          { id: 'fork-b', parentID: 'missing', time: { created: 0, updated: 500 } },
+        ],
+        status: {},
+      })
+      expect(result?.id).toBe('fork-b')
+    })
+
+    it('returns undefined for an empty session list', () => {
+      const result = pickOpencodeSession({ sessions: [], status: {} })
+      expect(result).toBeUndefined()
+    })
+  })
+
+  describe('getSessionOpencodeStatus', () => {
+    it('maps busy -> running', async () => {
+      mockedExec.mockResolvedValueOnce(probeStdout(
+        [{ id: 'ses_1', title: 'hi', updated: 1 }],
+        { ses_1: { type: 'busy' } },
+      ))
+      const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
+      expect(status).toBe('running')
+    })
+
+    it('maps retry -> running', async () => {
+      mockedExec.mockResolvedValueOnce(probeStdout(
+        [{ id: 'ses_1', title: 'hi', updated: 1 }],
+        { ses_1: { type: 'retry' } },
+      ))
+      const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
+      expect(status).toBe('running')
+    })
+
+    it('maps idle -> waiting', async () => {
+      mockedExec.mockResolvedValueOnce(probeStdout(
+        [{ id: 'ses_1', title: 'hi', updated: 1 }],
+        { ses_1: { type: 'idle' } },
+      ))
+      const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
+      expect(status).toBe('waiting')
+    })
+
+    it('returns waiting when the session has no status entry', async () => {
+      mockedExec.mockResolvedValueOnce(probeStdout(
+        [{ id: 'ses_1', title: 'hi', updated: 1 }],
+        {},
+      ))
+      const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
+      expect(status).toBe('waiting')
+    })
+
+    it('returns waiting when no sessions exist yet (TUI still empty)', async () => {
+      mockedExec.mockResolvedValueOnce(probeStdout([], {}))
+      const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
+      expect(status).toBe('waiting')
+    })
+
+    it('returns waiting when the probe fails (container gone / HTTP server down)', async () => {
+      mockedExec.mockRejectedValueOnce(new Error('exec failed'))
+      const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
+      expect(status).toBe('waiting')
+    })
+
+    it('returns waiting when stdout is malformed JSON', async () => {
+      mockedExec.mockResolvedValueOnce({ stdout: `not-json\n${SEP}\n{}`, stderr: '' })
+      const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
+      expect(status).toBe('waiting')
+    })
+
+    it('coalesces concurrent probes into one exec via the cache', async () => {
+      mockedExec.mockResolvedValueOnce(probeStdout(
+        [{ id: 'ses_1', title: 't', updated: 1 }],
+        { ses_1: { type: 'busy' } },
+      ))
+      const [a, b, c] = await Promise.all([
+        getSessionOpencodeStatus('proj', 'sid', 'container'),
+        getSessionOpencodeStatus('proj', 'sid', 'container'),
+        getSessionOpencodeStatus('proj', 'sid', 'container'),
+      ])
+      expect([a, b, c]).toEqual(['running', 'running', 'running'])
+      expect(mockedExec).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('getSessionOpencodeFirstUserMessage', () => {
+    it('returns the title from the probe and caches it to the meta file', async () => {
+      await fs.mkdir(opencodeMetaDir('proj'), { recursive: true })
+      mockedExec.mockResolvedValueOnce(probeStdout(
+        [{ id: 'ses_1', title: 'Refactor auth flow', updated: 1 }],
+        { ses_1: { type: 'idle' } },
+      ))
+      const msg = await getSessionOpencodeFirstUserMessage('proj', 'sid', 'container')
+      expect(msg).toBe('Refactor auth flow')
+
+      const cached = JSON.parse(
+        await fs.readFile(opencodeMetaFile('proj', 'sid'), 'utf8'),
+      ) as { firstMessage?: string; capturedAt?: string }
+      expect(cached.firstMessage).toBe('Refactor auth flow')
+      expect(typeof cached.capturedAt).toBe('string')
+    })
+
+    it('falls back to the cached meta file when the probe yields no session', async () => {
+      await fs.mkdir(opencodeMetaDir('proj'), { recursive: true })
+      await fs.writeFile(
+        opencodeMetaFile('proj', 'sid'),
+        JSON.stringify({ firstMessage: 'stale-but-useful', capturedAt: '2026-01-01' }),
+      )
+      mockedExec.mockResolvedValueOnce(probeStdout([], {}))
+      const msg = await getSessionOpencodeFirstUserMessage('proj', 'sid', 'container')
+      expect(msg).toBe('stale-but-useful')
+    })
+
+    it('returns undefined when neither the probe nor the meta file have data', async () => {
+      mockedExec.mockRejectedValueOnce(new Error('exec failed'))
+      const msg = await getSessionOpencodeFirstUserMessage('proj', 'sid', 'container')
+      expect(msg).toBeUndefined()
+    })
+  })
+
+  describe('getDeletedSessionOpencodeFirstUserMessage', () => {
+    it('reads from the meta file without touching podman', async () => {
+      await fs.mkdir(opencodeMetaDir('proj'), { recursive: true })
+      await fs.writeFile(
+        opencodeMetaFile('proj', 'sid'),
+        JSON.stringify({ firstMessage: 'cached title' }),
+      )
+      const msg = await getDeletedSessionOpencodeFirstUserMessage('proj', 'sid')
+      expect(msg).toBe('cached title')
+      expect(mockedExec).not.toHaveBeenCalled()
+    })
+
+    it('returns undefined when no meta file exists', async () => {
+      const msg = await getDeletedSessionOpencodeFirstUserMessage('proj', 'sid')
+      expect(msg).toBeUndefined()
+    })
+  })
+})

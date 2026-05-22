@@ -50,6 +50,7 @@ const CREDENTIALS_DIR = '/yaac-credentials'
 const GITHUB_CREDS_FILE = path.join(CREDENTIALS_DIR, 'github.json')
 const CLAUDE_CREDS_FILE = path.join(CREDENTIALS_DIR, 'claude.json')
 const CODEX_CREDS_FILE = path.join(CREDENTIALS_DIR, 'codex.json')
+const OPENCODE_CREDS_FILE = path.join(CREDENTIALS_DIR, 'opencode.json')
 
 const CLAUDE_TOKEN_URL_HOST = 'platform.claude.com'
 const CLAUDE_TOKEN_URL_PATH = '/v1/oauth/token'
@@ -62,6 +63,10 @@ const OPENAI_TOKEN_URL_PATH = '/oauth/token'
 // swap for codex sessions.
 const CHATGPT_HOST = 'chatgpt.com'
 const CODEX_DEFAULT_REFRESH_WINDOW_MS = 28 * 24 * 60 * 60 * 1000
+// opencode + OpenRouter: api-key only. The proxy swaps the placeholder
+// Bearer for the real OpenRouter key on openrouter.ai requests when the
+// session is registered as tool=opencode.
+const OPENROUTER_API_HOST = 'openrouter.ai'
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -97,6 +102,8 @@ type CodexOAuthBundle = {
 type CodexCreds =
   | { kind: 'oauth'; bundle: CodexOAuthBundle }
   | { kind: 'api-key'; apiKey: string }
+
+type OpencodeCreds = { kind: 'api-key'; apiKey: string }
 
 // NOTE: keep in sync with src/shared/credentials.ts and
 // src/lib/project/credentials.ts. The proxy bundles independently and can't
@@ -299,6 +306,21 @@ function readCodexCreds(): CodexCreds | null {
 function readCodexOAuthBundle(): CodexOAuthBundle | null {
   const creds = readCodexCreds()
   return creds && creds.kind === 'oauth' ? creds.bundle : null
+}
+
+function readOpencodeCreds(): OpencodeCreds | null {
+  try {
+    const raw = fs.readFileSync(OPENCODE_CREDS_FILE, 'utf8')
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return null
+    const o = parsed as Record<string, unknown>
+    if (o.kind === 'api-key' && typeof o.apiKey === 'string' && o.apiKey) {
+      return { kind: 'api-key', apiKey: o.apiKey }
+    }
+    return null
+  } catch {
+    return null
+  }
 }
 
 /** Decode a JWT's payload and return `exp` as unix epoch ms, or null. */
@@ -637,6 +659,7 @@ function hostNeedsDynamicMitm(sessionId: string | null, hostname: string, port: 
   if (hostname === OPENAI_API_HOST) return true
   if (hostname === OPENAI_TOKEN_URL_HOST) return true
   if (hostname === CHATGPT_HOST) return true
+  if (hostname === OPENROUTER_API_HOST) return true
   if (sessionId && sessionHasHttpsCredentialForHost(sessionId, hostname)) return true
   return false
 }
@@ -742,6 +765,28 @@ function buildDynamicRules(
           action: 'replace_header',
           name: 'Authorization',
           value: 'Bearer ' + creds.bundle.accessToken,
+        }],
+      })
+    }
+  }
+
+  // opencode credential swap on openrouter.ai. api-key only; the
+  // container's OPENROUTER_API_KEY env carries the placeholder, opencode
+  // sends `Bearer <placeholder>`, and the proxy substitutes the real key
+  // here. Gated on session tool=opencode + the placeholder sentinel so
+  // unrelated traffic (or a user manually carrying their own key)
+  // passes through untouched.
+  if (hostname === OPENROUTER_API_HOST
+    && sessionTool.get(sessionId) === 'opencode') {
+    const creds = readOpencodeCreds()
+    const incomingAuth = headerValue(reqHeaders, 'authorization')
+    if (creds && incomingAuth === 'Bearer ' + PLACEHOLDER_API_KEY) {
+      rules.push({
+        pathPattern: '*',
+        injections: [{
+          action: 'set_header',
+          name: 'Authorization',
+          value: 'Bearer ' + creds.apiKey,
         }],
       })
     }

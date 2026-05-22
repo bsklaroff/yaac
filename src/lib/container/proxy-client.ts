@@ -194,7 +194,7 @@ export class ProxyClient {
       rules: InjectionRule[]
       allowedHosts: string[]
       repoUrl?: string
-      tool?: 'claude' | 'codex'
+      tool?: 'claude' | 'codex' | 'opencode'
       upstreamRedirects?: Record<string, UpstreamRedirect>
     },
   ): Promise<void> {

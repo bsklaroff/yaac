@@ -30,7 +30,7 @@ export const authApp = new Hono()
   .get('/list', async (c) => c.json(await listAuth()))
   .post(
     '/clear',
-    zValidator('json', z.object({ service: z.enum(['all', 'claude', 'codex']) })),
+    zValidator('json', z.object({ service: z.enum(['all', 'claude', 'codex', 'opencode']) })),
     async (c) => {
       const { service } = c.req.valid('json')
       await clearAuth(service)
@@ -90,7 +90,7 @@ export const authApp = new Hono()
   )
   .put(
     '/:tool',
-    zValidator('param', z.object({ tool: z.enum(['claude', 'codex']) })),
+    zValidator('param', z.object({ tool: z.enum(['claude', 'codex', 'opencode']) })),
     zValidator('json', z.discriminatedUnion('kind', [
       z.object({ kind: z.literal('api-key'), apiKey: z.string().min(1) }),
       z.object({
