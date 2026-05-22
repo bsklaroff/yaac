@@ -131,6 +131,29 @@ describe('classifyClaudePane', () => {
   it('tolerates extra whitespace between the modifier and "to interrupt"', () => {
     expect(classifyClaudePane('esc   to   interrupt')).toBe('running')
   })
+
+  it('ignores the interrupt hint when it appears in transcript history above the footer', () => {
+    // Real regression: the pane is 200 rows tall and transcript history
+    // scrolls up but stays visible. An assistant turn that quoted the
+    // phrase "esc to interrupt" (in a Web Search query, a discussion of
+    // this regex, etc.) caused the whole-pane scan to false-positive as
+    // 'running' while the live status bar was actually the idle one.
+    const padding: string[] = Array.from({ length: 20 }, () => '')
+    const pane = [
+      '● Web Search("opencode TUI status spinner \"esc to interrupt\" indicator")',
+      '  ⎿  Did 1 search in 10s',
+      '',
+      '● The strings come from opencode\'s dev branch — same fragility',
+      '  class as claude-status\'s ctrl+c/esc to interrupt regex.',
+      '',
+      ...padding,
+      '──────────────────────────',
+      '❯ ',
+      '──────────────────────────',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+    ].join('\n')
+    expect(classifyClaudePane(pane)).toBe('waiting')
+  })
 })
 
 describe('getSessionClaudeStatus', () => {

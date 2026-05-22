@@ -24,11 +24,26 @@ import { scanJsonlForward } from '@/lib/session/jsonl'
  * raw byte stream contains no contiguous text to grep. Instead we ask
  * tmux for its rendered grid via `capture-pane -p`, which gives back
  * plain visible text.
+ *
+ * We only scan the bottom of the pane because the pane is 200 lines tall
+ * (see -y in session-create.ts) and transcript history scrolls up but
+ * stays visible. Assistant content can legitimately contain the literal
+ * string "esc to interrupt" — a Web Search query, a discussion of this
+ * very regex, etc. — and would otherwise false-positive as "running".
+ * The live spinner/status-bar footer always sits at the very bottom of
+ * the pane regardless of how much transcript precedes it.
  */
 const INTERRUPT_HINT = /(?:ctrl\+c|esc)\s+to\s+interrupt/i
+// The live hint lives in the bottom status bar (below the lower
+// divider), so 3 rows is enough to cover the bar plus any trailing
+// blank line and is tight enough that transcript text that happens to
+// contain "esc to interrupt" never falls into the window.
+const FOOTER_LINES = 3
 
 export function classifyClaudePane(paneContent: string): 'running' | 'waiting' {
-  return INTERRUPT_HINT.test(paneContent) ? 'running' : 'waiting'
+  const lines = paneContent.split('\n')
+  const footer = lines.slice(-FOOTER_LINES).join('\n')
+  return INTERRUPT_HINT.test(footer) ? 'running' : 'waiting'
 }
 
 /**
