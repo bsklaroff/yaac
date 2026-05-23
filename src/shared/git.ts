@@ -36,6 +36,23 @@ export function torSshOpts(): string[] {
 }
 
 /**
+ * Join ssh argv into a GIT_SSH_COMMAND string. git tokenizes that env var
+ * with shell rules, so an arg containing spaces (e.g. a ProxyCommand value)
+ * must be quoted or it word-splits — ssh then sees garbage flags and runs
+ * a truncated ProxyCommand. POSIX single-quote escape: replace `'` with
+ * `'\''` and wrap in `'…'`. We only quote args that need it so the result
+ * stays readable.
+ */
+export function formatSshCommand(args: string[]): string {
+  return args.map(shellQuoteArg).join(' ')
+}
+
+function shellQuoteArg(s: string): string {
+  if (s !== '' && !/[\s'"\\$`*?|&;<>()#]/.test(s)) return s
+  return "'" + s.replace(/'/g, "'\\''") + "'"
+}
+
+/**
  * Read the user's global git identity. Returns `null` if either
  * `user.name` or `user.email` is unset, or if `git` itself fails.
  *

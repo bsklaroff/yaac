@@ -12,8 +12,8 @@ export function injectTokenIntoUrl(url: string, token: string): string {
   return parsed.toString()
 }
 
-export { isTorEnabled, torSshOpts } from '@/shared/git'
-import { isTorEnabled } from '@/shared/git'
+export { isTorEnabled, torSshOpts, formatSshCommand } from '@/shared/git'
+import { isTorEnabled, formatSshCommand } from '@/shared/git'
 
 export function expandTilde(p: string): string {
   if (p === '~') return os.homedir()
@@ -43,15 +43,14 @@ import { torSshOpts } from '@/shared/git'
  * built separately and uses the proxy's ssh-agent instead of `-i`.
  */
 export function buildHostSideGitSshCommand(keyPath: string, knownHostsPath: string): string {
-  const args = [
+  return formatSshCommand([
     'ssh', '-F', '/dev/null',
     '-i', keyPath,
     '-o', `UserKnownHostsFile=${knownHostsPath}`,
     '-o', 'StrictHostKeyChecking=yes',
     '-o', 'IdentitiesOnly=yes',
     ...torSshOpts(),
-  ]
-  return args.join(' ')
+  ])
 }
 
 /**

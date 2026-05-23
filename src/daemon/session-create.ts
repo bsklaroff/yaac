@@ -47,6 +47,7 @@ import {
   loadKnownHostsEntryForHost,
 } from '@/lib/project/credentials'
 import { writeKnownHostsFile } from '@/lib/git'
+import { formatSshCommand } from '@/shared/git'
 import { hostMatchesPattern } from '@/lib/container/default-allowed-hosts'
 import {
   PROXY_CONTAINER_PORT,
@@ -704,13 +705,13 @@ export async function createSession(
     )
     const proxyCommand = `ncat --proxy ${proxyClient.proxyIp}:${PROXY_CONTAINER_PORT}`
       + ` --proxy-type http --proxy-auth x:${sessionId} %h %p`
-    const gitSshCmd = [
+    const gitSshCmd = formatSshCommand([
       'ssh', '-F', '/dev/null',
       '-o', `UserKnownHostsFile=${containerKnownHosts}`,
       '-o', 'StrictHostKeyChecking=yes',
       '-o', 'IdentitiesOnly=no',
       '-o', `ProxyCommand=${proxyCommand}`,
-    ].join(' ')
+    ])
     env.push(`SSH_AUTH_SOCK=${SSH_AGENT_SOCKET_PATH}`)
     env.push(`GIT_SSH_COMMAND=${gitSshCmd}`)
   }
