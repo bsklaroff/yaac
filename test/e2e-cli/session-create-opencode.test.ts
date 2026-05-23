@@ -189,6 +189,23 @@ describe('yaac session create -t opencode (real CLI + real daemon + real opencod
     const hostConfigStat = await fs.stat(hostOcConfigDir)
     expect(hostConfigStat.isDirectory()).toBe(true)
 
+    // Verify websearch wiring: yaac writes the permission entry into the
+    // shared opencode.json and the container has the matching env var
+    // gating the Exa-backed tool registration.
+    const seededRaw = await fs.readFile(
+      path.join(hostOcConfigDir, 'opencode.json'),
+      'utf8',
+    )
+    const seeded = JSON.parse(seededRaw) as {
+      permission?: { websearch?: string }
+    }
+    expect(seeded.permission?.websearch).toBe('allow')
+
+    const { stdout: envOut } = await podmanRetry([
+      'exec', containerName, 'sh', '-c', 'printenv OPENCODE_ENABLE_EXA',
+    ])
+    expect(envOut.trim()).toBe('true')
+
     // Write a config on the host and verify it's visible inside the container
     await fs.writeFile(
       path.join(hostOcConfigDir, 'opencode.json'),

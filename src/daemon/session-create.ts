@@ -64,6 +64,7 @@ import {
 import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/lib/git'
 import { claimPrewarmSession } from '@/lib/prewarm'
 import { ensureCodexHooksJson, ensureCodexConfigToml } from '@/lib/session/codex-hooks'
+import { ensureOpencodeConfigJson } from '@/lib/session/opencode-config'
 import { DaemonError } from '@/daemon/errors'
 import {
   buildStatusRight,
@@ -747,6 +748,14 @@ export async function createSession(
     // Codex into api-key mode instead of ChatGPT OAuth.
   }
 
+  // Enable opencode's Exa-backed websearch tool. opencode only registers
+  // the tool when this env var is truthy; the matching `permission.websearch`
+  // entry is written into the shared opencode.json below. The MCP endpoint
+  // `mcp.exa.ai` is on the default proxy allowlist.
+  if (tool === 'opencode') {
+    env.push('OPENCODE_ENABLE_EXA=true')
+  }
+
   const networkMode = proxyClient.network
 
   // Port forwarding: reserve host ports in the daemon process so no
@@ -850,6 +859,12 @@ export async function createSession(
 
     await ensureCodexHooksJson(codex_)
     await ensureCodexConfigToml(codex_)
+  }
+
+  if (tool === 'opencode') {
+    // Grant the websearch permission in the shared opencode.json so the
+    // Exa-backed tool is usable (paired with OPENCODE_ENABLE_EXA above).
+    await ensureOpencodeConfigJson(opencodeConfig)
   }
 
   // Retry the entire container create + setup so that if the container dies

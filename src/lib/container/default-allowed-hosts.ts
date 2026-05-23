@@ -28,6 +28,8 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'openrouter.ai',
   'opencode.ai',
   'models.dev',
+  // Exa MCP — backs opencode's websearch tool when OPENCODE_ENABLE_EXA is set
+  'mcp.exa.ai',
 
   // Version control — GitHub
   'github.com',
