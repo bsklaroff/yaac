@@ -34,11 +34,14 @@ import { scanJsonlForward } from '@/lib/session/jsonl'
  * the pane regardless of how much transcript precedes it.
  */
 const INTERRUPT_HINT = /(?:ctrl\+c|esc)\s+to\s+interrupt/i
-// The live hint lives in the bottom status bar (below the lower
-// divider), so 3 rows is enough to cover the bar plus any trailing
-// blank line and is tight enough that transcript text that happens to
-// contain "esc to interrupt" never falls into the window.
-const FOOTER_LINES = 3
+// The live hint lives in the bottom status bar / spinner line. While
+// Claude Code is running subagents it renders a task list at the very
+// bottom of the pane, which pushes the hint up several rows — a 3-row
+// window missed it and misreported the session as 'waiting'. 10 rows
+// covers the hint plus a typical task list while still staying well
+// clear of transcript history (the pane is 200 rows tall), so assistant
+// text that happens to quote "esc to interrupt" doesn't false-positive.
+const FOOTER_LINES = 10
 
 export function classifyClaudePane(paneContent: string): 'running' | 'waiting' {
   const lines = paneContent.split('\n')

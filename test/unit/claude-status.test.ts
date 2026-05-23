@@ -52,6 +52,24 @@ describe('classifyClaudePane', () => {
     expect(classifyClaudePane(pane)).toBe('running')
   })
 
+  it('returns running when a subagent task list sits below the interrupt hint', () => {
+    // While running subagents Claude Code renders a task list at the
+    // very bottom of the pane, pushing the spinner/interrupt-hint line
+    // up several rows — out of reach of a tight 3-row footer window.
+    const pane = [
+      '● Delegating to subagents.',
+      '',
+      '✳ Orchestrating… (45s · ↑ 2.1k tokens · esc to interrupt)',
+      '  ├─ Explore(search status code) running… (12s)',
+      '  ├─ Explore(map test files) running… (9s)',
+      '  ├─ general-purpose(audit detection) running… (30s)',
+      '  └─ claude(write up findings) running… (4s)',
+      '',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ctrl+t to hide tasks',
+    ].join('\n')
+    expect(classifyClaudePane(pane)).toBe('running')
+  })
+
   it('returns waiting for the idle ready prompt', () => {
     const pane = [
       '● Done.',
