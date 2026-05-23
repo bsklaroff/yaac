@@ -365,7 +365,7 @@ export async function listSshEntries(): Promise<Array<{
 
 /**
  * Interactive prompt: HTTPS PAT path. SSH path lives in the CLI command
- * because it needs an ssh-keyscan helper.
+ * because it needs to drive ssh to fetch the known_hosts entry.
  */
 export async function promptForHttpsCredential(): Promise<{ pattern: string; token: string }> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })

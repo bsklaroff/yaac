@@ -5,9 +5,8 @@ import simpleGit from 'simple-git'
  * "0", and "false" (case-insensitive) are off; everything else is on.
  *
  * Lives in shared so both the daemon (which gates host-side git ops on
- * it) and CLI commands (which need it to build ssh / ssh-keyscan opts)
- * can use it without the latter pulling on @/lib/git, which the lint
- * boundary forbids.
+ * it) and CLI commands (which need it to build ssh opts) can use it
+ * without the latter pulling on @/lib/git, which the lint boundary forbids.
  */
 export function isTorEnabled(): boolean {
   const raw = process.env.YAAC_USE_TOR
@@ -18,11 +17,15 @@ export function isTorEnabled(): boolean {
 }
 
 /**
- * ssh does not honor ALL_PROXY / HTTPS_PROXY, so Tor routing for ssh and
- * ssh-keyscan has to go through `-o ProxyCommand=...`. OpenBSD `nc -X 5 -x`
- * passes the destination hostname unchanged to the SOCKS5 proxy, so Tor
- * resolves DNS at its exit (no local-DNS leak). `netcat-openbsd` is on
- * every Linux/macOS we target.
+ * ssh does not honor ALL_PROXY / HTTPS_PROXY, so Tor routing for ssh has
+ * to go through `-o ProxyCommand=...`. OpenBSD `nc -X 5 -x` passes the
+ * destination hostname unchanged to the SOCKS5 proxy, so Tor resolves DNS
+ * at its exit (no local-DNS leak). `netcat-openbsd` is on every
+ * Linux/macOS we target.
+ *
+ * Note: these opts must NOT be passed to `ssh-keyscan` — its `-O` flag
+ * only accepts `hashalg`, not ProxyCommand. For host-key fetches under
+ * Tor, drive `ssh` instead (see fetchKnownHostsEntry in auth-update.ts).
  */
 export function torSshOpts(): string[] {
   if (!isTorEnabled()) return []

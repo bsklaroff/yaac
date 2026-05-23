@@ -1,4 +1,8 @@
 import readline from 'node:readline/promises'
+import os from 'node:os'
+import path from 'node:path'
+import crypto from 'node:crypto'
+import fs from 'node:fs/promises'
 import * as childProcess from 'node:child_process'
 import { getRpcClient, toClientError } from '@/shared/daemon-client'
 import { validatePattern, parsePattern } from '@/shared/credentials'
@@ -11,23 +15,53 @@ import {
 import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '@/shared/types'
 
 /**
- * ssh-keyscan via spawn (not execFile/promisify). spawn is the only
- * child_process export some test suites mock — avoiding execFile at
- * module load keeps those tests from blowing up on import.
+ * Fetch a known_hosts entry for `host` by driving `ssh` (not `ssh-keyscan`).
+ *
+ * Why ssh: ssh-keyscan does not accept `-o ProxyCommand=…` (its `-O` flag
+ * only takes `hashalg`), so it can't be routed through Tor. ssh does honor
+ * `-o ProxyCommand=…`, and with StrictHostKeyChecking=accept-new +
+ * UserKnownHostsFile=<tmp> it persists the negotiated host key to the temp
+ * file during KEX, before BatchMode kills the auth step.
+ *
+ * Returns the single key type ssh actually negotiated — which is the entry
+ * the subsequent git-over-ssh connection will use, so it's what we want.
  */
-function runSshKeyscan(args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = childProcess.spawn('ssh-keyscan', args, { stdio: ['ignore', 'pipe', 'pipe'] })
-    let stdout = ''
+async function fetchKnownHostsEntry(host: string): Promise<string> {
+  const tmp = path.join(
+    os.tmpdir(),
+    `yaac-knownhosts-${crypto.randomBytes(6).toString('hex')}`,
+  )
+  await fs.writeFile(tmp, '', { mode: 0o600 })
+  try {
+    const args = [
+      '-F', '/dev/null',
+      '-o', 'StrictHostKeyChecking=accept-new',
+      '-o', `UserKnownHostsFile=${tmp}`,
+      '-o', 'HashKnownHosts=no',
+      '-o', 'BatchMode=yes',
+      '-o', 'IdentitiesOnly=yes',
+      '-o', 'ConnectTimeout=10',
+      ...torSshOpts(),
+      `nobody@${host}`,
+      'true',
+    ]
     let stderr = ''
-    child.stdout.on('data', (c: Buffer) => { stdout += c.toString('utf8') })
-    child.stderr.on('data', (c: Buffer) => { stderr += c.toString('utf8') })
-    child.on('error', reject)
-    child.on('close', (code) => {
-      if (code === 0) resolve(stdout)
-      else reject(new Error(`ssh-keyscan exited with code ${code ?? '?'}: ${stderr.trim()}`))
+    await new Promise<void>((resolve) => {
+      const child = childProcess.spawn('ssh', args, { stdio: ['ignore', 'ignore', 'pipe'] })
+      child.stderr.on('data', (c: Buffer) => { stderr += c.toString('utf8') })
+      child.on('error', () => resolve())
+      child.on('close', () => resolve())
     })
-  })
+    const written = await fs.readFile(tmp, 'utf8')
+    const lines = written.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'))
+    if (lines.length === 0) {
+      const tail = stderr.trim().split('\n').slice(-3).join(' | ')
+      throw new Error(`no host key recovered for ${host}${tail ? `: ${tail}` : ''}`)
+    }
+    return lines[0]
+  } finally {
+    await fs.rm(tmp, { force: true })
+  }
 }
 
 type ToolAuthPayload =
@@ -143,33 +177,15 @@ async function runSshUpdate(): Promise<void> {
     process.exit(1)
   }
 
-  console.log(`Known-hosts entry for ${host} — paste the line, or type "fetch" to run ssh-keyscan:`)
+  console.log(`Known-hosts entry for ${host} — paste the line, or type "fetch" to retrieve it via ssh:`)
   let knownHostsEntry = (await rl.question('Entry: ')).trim()
   if (knownHostsEntry.toLowerCase() === 'fetch') {
     try {
-      const args = ['-H', ...torSshOpts(), host]
-      const stdout = await runSshKeyscan(args)
-      const lines = stdout.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'))
-      if (lines.length === 0) {
-        rl.close()
-        console.error(`ssh-keyscan returned no entries for ${host}.`)
-        process.exit(1)
-      }
-      console.log('ssh-keyscan returned:')
-      for (let i = 0; i < lines.length; i++) {
-        console.log(`  ${i + 1}) ${lines[i]}`)
-      }
-      const pickAnswer = (await rl.question('Use which entry? [1]: ')).trim() || '1'
-      const pick = parseInt(pickAnswer, 10)
-      if (isNaN(pick) || pick < 1 || pick > lines.length) {
-        rl.close()
-        console.error('Cancelled.')
-        process.exit(1)
-      }
-      knownHostsEntry = lines[pick - 1]
+      knownHostsEntry = await fetchKnownHostsEntry(host)
+      console.log(`Fetched: ${knownHostsEntry}`)
     } catch (err) {
       rl.close()
-      console.error(`ssh-keyscan failed: ${err instanceof Error ? err.message : String(err)}`)
+      console.error(`Failed to fetch known_hosts entry: ${err instanceof Error ? err.message : String(err)}`)
       process.exit(1)
     }
   }
