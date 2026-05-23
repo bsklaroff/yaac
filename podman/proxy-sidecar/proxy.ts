@@ -107,15 +107,10 @@ type OpencodeCreds = { kind: 'api-key'; apiKey: string }
 
 // NOTE: keep in sync with src/shared/credentials.ts and
 // src/lib/project/credentials.ts. The proxy bundles independently and can't
-// import from src/.
-type HttpsCredentialEntry = { kind: 'https'; pattern: string; token: string }
-type SshCredentialEntry = {
-  kind: 'ssh'
-  pattern: string
-  privateKeyPath: string
-  knownHostsEntry: string
-}
-type GitCredentialEntry = HttpsCredentialEntry | SshCredentialEntry
+// import from src/. SSH entries live in the same file but are irrelevant to
+// the proxy — the daemon uploads SSH keys directly via PUT /agent/keys, so we
+// only parse out the HTTPS entries here.
+type HttpsCredentialEntry = { pattern: string; token: string }
 
 type ParsedPattern = { host: string; kind: 'any' | 'exact' | 'prefix'; path: string }
 
@@ -407,35 +402,23 @@ function parseGitRemote(remoteUrl: string | undefined): {
   return null
 }
 
-function readGitCredentials(): GitCredentialEntry[] {
+function readGitCredentials(): HttpsCredentialEntry[] {
   try {
     const raw = fs.readFileSync(GITHUB_CREDS_FILE, 'utf8')
     const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return []
     const o = parsed as Record<string, unknown>
     if (!Array.isArray(o.tokens)) return []
-    const result: GitCredentialEntry[] = []
+    const result: HttpsCredentialEntry[] = []
     for (const entry of o.tokens as unknown[]) {
       if (!entry || typeof entry !== 'object') continue
       const e = entry as Record<string, unknown>
       const kind = e.kind ?? 'https'
-      if (kind === 'https') {
-        if (typeof e.pattern !== 'string' || typeof e.token !== 'string' || !e.token) continue
-        const pattern = normalizeLegacyPattern(e.pattern)
-        if (!parsePattern(pattern)) continue
-        result.push({ kind: 'https', pattern, token: e.token })
-      } else if (kind === 'ssh') {
-        if (typeof e.pattern !== 'string'
-          || typeof e.privateKeyPath !== 'string' || !e.privateKeyPath
-          || typeof e.knownHostsEntry !== 'string' || !e.knownHostsEntry) continue
-        if (!parsePattern(e.pattern)) continue
-        result.push({
-          kind: 'ssh',
-          pattern: e.pattern,
-          privateKeyPath: e.privateKeyPath,
-          knownHostsEntry: e.knownHostsEntry,
-        })
-      }
+      if (kind !== 'https') continue
+      if (typeof e.pattern !== 'string' || typeof e.token !== 'string' || !e.token) continue
+      const pattern = normalizeLegacyPattern(e.pattern)
+      if (!parsePattern(pattern)) continue
+      result.push({ pattern, token: e.token })
     }
     return result
   } catch {
@@ -456,7 +439,6 @@ function resolveHttpsCredentialForRepo(repoUrl: string | undefined): {
   const parsed = parseGitRemote(repoUrl)
   if (!parsed || parsed.scheme !== 'https') return null
   for (const entry of creds) {
-    if (entry.kind !== 'https') continue
     if (matchPattern(entry.pattern, parsed.host, parsed.path)) {
       return { token: entry.token, host: parsed.host, path: parsed.path }
     }
@@ -1517,17 +1499,18 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     let body = ''
     req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
     req.on('end', () => {
-      let parsed: { host?: unknown; keyPem?: unknown }
+      let parsed: { host?: unknown; keyPem?: unknown; knownHostsEntry?: unknown }
       try {
-        parsed = JSON.parse(body) as { host?: unknown; keyPem?: unknown }
+        parsed = JSON.parse(body) as typeof parsed
       } catch {
         res.writeHead(400); res.end('Invalid JSON'); return
       }
       if (typeof parsed.host !== 'string' || !parsed.host
-        || typeof parsed.keyPem !== 'string' || !parsed.keyPem) {
-        res.writeHead(400); res.end('Need {host, keyPem}'); return
+        || typeof parsed.keyPem !== 'string' || !parsed.keyPem
+        || typeof parsed.knownHostsEntry !== 'string' || !parsed.knownHostsEntry) {
+        res.writeHead(400); res.end('Need {host, keyPem, knownHostsEntry}'); return
       }
-      void sshAddKey(parsed.host, parsed.keyPem).then(
+      void sshAddKey(parsed.host, parsed.keyPem, parsed.knownHostsEntry).then(
         () => { res.writeHead(200); res.end('ok') },
         (err: Error) => { res.writeHead(400); res.end(err.message) },
       )
@@ -1561,8 +1544,28 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
 }
 
 // ── ssh-agent management ──────────────────────────────────────────────
+//
+// `ssh-add -h <host>` adds a destination constraint that binds the key to a
+// single hostname. ssh-add encodes the host's *public* key fingerprint into
+// that constraint, so it requires the host's pubkey to be available in a
+// known_hosts file at the moment ssh-add runs. We keep the entries in an
+// in-memory map keyed by host and rewrite the file before each ssh-add /
+// ssh-add -D invocation; the agent itself stores the constraint, so the
+// file's later contents don't matter.
 
-function sshAddKey(host: string, keyPem: string): Promise<void> {
+const SSH_HOME = '/home/node/.ssh'
+const KNOWN_HOSTS_FILE = path.join(SSH_HOME, 'known_hosts')
+const knownHostsByHost = new Map<string, string>()
+
+function writeKnownHostsFile(): void {
+  fs.mkdirSync(SSH_HOME, { recursive: true, mode: 0o700 })
+  const lines = [...knownHostsByHost.values()].map((e) => e.trim()).filter(Boolean)
+  fs.writeFileSync(KNOWN_HOSTS_FILE, lines.length ? lines.join('\n') + '\n' : '', { mode: 0o600 })
+}
+
+function sshAddKey(host: string, keyPem: string, knownHostsEntry: string): Promise<void> {
+  knownHostsByHost.set(host, knownHostsEntry)
+  writeKnownHostsFile()
   return new Promise((resolve, reject) => {
     const child = spawn('ssh-add', ['-h', host, '-'], {
       env: {
@@ -1586,6 +1589,8 @@ function sshAddKey(host: string, keyPem: string): Promise<void> {
 }
 
 function sshClearAgent(): Promise<void> {
+  knownHostsByHost.clear()
+  writeKnownHostsFile()
   return new Promise((resolve, reject) => {
     const child = spawn('ssh-add', ['-D'], {
       env: { ...process.env, SSH_AUTH_SOCK: '/ssh-agent/socket' },

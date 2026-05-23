@@ -259,8 +259,13 @@ export class ProxyClient {
     return true
   }
 
-  /** Upload an SSH private key to the proxy's ssh-agent. */
-  async uploadSshKey(host: string, keyPath: string): Promise<void> {
+  /**
+   * Upload an SSH private key to the proxy's ssh-agent. `knownHostsEntry`
+   * is required so the proxy can populate its known_hosts before invoking
+   * `ssh-add -h <host>` — without it ssh-add can't encode the destination
+   * constraint and fails with "No host keys for destination".
+   */
+  async uploadSshKey(host: string, keyPath: string, knownHostsEntry: string): Promise<void> {
     const keyPem = await fs.readFile(keyPath, 'utf8')
     const res = await fetch(`${this.baseUrl}/agent/keys`, {
       method: 'PUT',
@@ -268,7 +273,7 @@ export class ProxyClient {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${this.authSecret}`,
       },
-      body: JSON.stringify({ host, keyPem }),
+      body: JSON.stringify({ host, keyPem, knownHostsEntry }),
     })
     if (!res.ok) {
       const text = await res.text()
@@ -315,7 +320,7 @@ export class ProxyClient {
     await this.clearSshKeys()
     for (const entry of entries) {
       try {
-        await this.uploadSshKey(entry.host, entry.privateKeyPath)
+        await this.uploadSshKey(entry.host, entry.privateKeyPath, entry.knownHostsEntry)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         daemonLog(`[daemon] proxy ssh-agent: failed to load key for ${entry.host}: ${msg}`)
