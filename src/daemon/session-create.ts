@@ -344,6 +344,13 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
         ...extraBinds,
       ],
       NetworkMode: networkMode,
+      // Map container UID 1000 (yaac) to the host daemon's UID so that
+      // bind-mounted host paths (worktree, ~/.claude, ~/.codex, …) are
+      // writable by the in-container yaac user. Without this, rootless
+      // podman on Linux maps container UID 1000 to a subuid and host
+      // files appear as `root` inside — breaking the /workspace/.git
+      // pointer write and every other host-owned mount.
+      UsernsMode: 'keep-id',
       Memory: 8 * 1024 ** 3,
       ...(config.nestedContainers ? {
         SecurityOpt: ['label=disable', 'unmask=/proc/sys'],

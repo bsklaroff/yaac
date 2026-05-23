@@ -616,6 +616,10 @@ export class ProxyClient {
               [`${PROXY_CONTAINER_PORT}/tcp`]: [{ HostPort: hostPort, HostIp: '127.0.0.1' }],
             },
             NetworkMode: `podman,${this.config.network}`,
+            // See UsernsMode note in session-create.ts: keep-id maps the
+            // proxy's `node` user (UID 1000) to the host daemon UID so
+            // credsDir is readable on Linux rootless podman.
+            UsernsMode: 'keep-id',
             Binds: [
               `${credsDir}:/yaac-credentials:Z`,
               `${agentVolume}:${SSH_AGENT_MOUNT}`,
