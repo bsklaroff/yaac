@@ -12,33 +12,16 @@ import {
 import { DaemonError } from '@/daemon/errors'
 import type { ProjectMeta } from '@/shared/types'
 
-function deriveSlug(remoteUrl: string): string {
-  const lastSegment = remoteUrl.split('/').pop() ?? remoteUrl
-  return lastSegment.replace(/\.git$/, '')
-}
-
-/**
- * Expand `owner/repo` shorthand to a full GitHub HTTPS URL. Unchanged from
- * the github-only era — this is a CLI ergonomic convenience, not a default.
- */
-export function expandOwnerRepo(input: string): string {
-  if (input.includes('://') || input.includes('@')) return input
-  const parts = input.split('/')
-  if (parts.length === 2 && parts[0] && parts[1]) {
-    return `https://github.com/${parts[0]}/${parts[1]}`
-  }
-  return input
-}
-
 /**
  * Validate a git remote URL. Accepts the two `parseGitRemote` forms:
- *   - https://<host>/<owner>/<repo>[.git]
- *   - SCP-style: git@<host>:<owner>/<repo>[.git]
- * Rejects http://, ssh://, custom ports, and unparseable input.
+ *   - https://<host>/<path>[.git]
+ *   - SCP-style: git@<host>:<path>[.git]
+ * Rejects http://, ssh://, custom ports, and unparseable input. Returns the
+ * parsed remote so callers can reuse it (e.g. to derive a slug).
  */
-export function validateGitRemoteUrl(url: string): void {
+export function validateGitRemoteUrl(url: string): ReturnType<typeof parseGitRemote> {
   try {
-    parseGitRemote(url)
+    return parseGitRemote(url)
   } catch (err) {
     throw new DaemonError(
       'VALIDATION',
@@ -57,11 +40,9 @@ export interface AddProjectResult {
  * missing credential, clone failure) so the daemon can map them to
  * the right HTTP status and CLI exit code.
  */
-export async function addProject(input: string): Promise<AddProjectResult> {
-  const remoteUrl = expandOwnerRepo(input)
-  validateGitRemoteUrl(remoteUrl)
-
-  const slug = deriveSlug(remoteUrl)
+export async function addProject(remoteUrl: string): Promise<AddProjectResult> {
+  const parsed = validateGitRemoteUrl(remoteUrl)
+  const slug = parsed.path.split('/').pop() as string
   const dir = projectDir(slug)
 
   await ensureDataDir()

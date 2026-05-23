@@ -45,7 +45,7 @@ Commands:
 
 yaac project <command>
   list              List all projects
-  add <remote-url>  Add a project (GitHub HTTPS URL or owner/repo)
+  add <remote-url>  Add a project (HTTPS URL or SSH URL like git@host:path)
 
 yaac session <command>
   create [options] <project>  Create a new session for a project
@@ -102,17 +102,18 @@ Tokens are stored as an ordered list. When yaac needs a token for a given repo, 
 ```json
 {
   "tokens": [
-    { "pattern": "acme-corp/*", "token": "ghp_org_scoped_token" },
-    { "pattern": "my-user/private-repo", "token": "ghp_repo_scoped_token" },
-    { "pattern": "*", "token": "ghp_fallback_token" }
+    { "kind": "https", "pattern": "github.com/acme-corp/*", "token": "ghp_org_scoped_token" },
+    { "kind": "https", "pattern": "github.com/my-user/private-repo", "token": "ghp_repo_scoped_token" },
+    { "kind": "https", "pattern": "gitlab.com/group/sub/*", "token": "glpat_subgroup_token" },
+    { "kind": "https", "pattern": "github.com/*", "token": "ghp_fallback_token" }
   ]
 }
 ```
 
-Each pattern takes one of three forms:
-- `*` — catch-all default, matches any repo
-- `<owner>/*` — matches all repos under an owner (org or personal account)
-- `<owner>/<repo>` — matches a specific repo
+Each pattern is host-prefixed and takes one of these forms:
+- `<host>/*` — matches every repo on `<host>`
+- `<host>/<path>` — matches a specific repo at `<path>` (any depth: `acme/foo`, `group/sub/repo`, or a single segment like `myrepo` for Gerrit-style hosts)
+- `<host>/<prefix>/*` — matches every repo whose path starts with `<prefix>` (the prefix itself can span multiple segments, e.g. `gitlab.com/group/sub/*`)
 
 First match wins, so put more specific patterns before broader ones. On first run, yaac prompts for a token if none are configured.
 

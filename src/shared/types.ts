@@ -188,7 +188,7 @@ export interface YaacConfig {
 
 export interface HttpsGitCredentialEntry {
   kind: 'https'
-  /** Pattern: "<host>/*", "<host>/<owner>/*", or "<host>/<owner>/<repo>" */
+  /** Pattern: "<host>/*", "<host>/<path>", or "<host>/<prefix>/*" */
   pattern: string
   /** PAT used as the password in basic auth with username 'x-access-token'. */
   token: string

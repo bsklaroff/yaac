@@ -1,11 +1,14 @@
 /**
  * Git credential pattern grammar. Patterns must be host-prefixed. Accepted:
  *   "<host>/*"               — every repo on <host>
- *   "<host>/<owner>/*"       — every repo under <owner> on <host>
- *   "<host>/<owner>/<repo>"  — one specific repo
+ *   "<host>/<path>"          — one specific repo at <path> (any depth, may be
+ *                              a single segment or nested like "group/sub/repo")
+ *   "<host>/<prefix>/*"      — every repo whose path starts with <prefix>
+ *                              (the prefix can itself span multiple segments)
  *
- * Wildcards are not allowed inside the host or owner segments. The repo
- * segment is either a literal name or "*". Empty segments are rejected.
+ * Wildcards are only allowed as a trailing path segment. The host segment must
+ * be a real hostname (contain a `.`, or be the literal "localhost") and cannot
+ * contain a wildcard. Empty segments are rejected.
  *
  * NOTE: keep in sync with podman/proxy-sidecar/proxy.ts — the proxy bundles
  * independently and replicates this logic.
@@ -13,8 +16,10 @@
 
 export interface ParsedPattern {
   host: string
-  owner: string
-  repo: string
+  /** 'any' = host wildcard; 'exact' = full path match; 'prefix' = path/... match */
+  kind: 'any' | 'exact' | 'prefix'
+  /** Empty string when kind === 'any'; otherwise the literal path or prefix. */
+  path: string
 }
 
 /** Validate a pattern string. Returns true iff `parsePattern` would succeed. */
@@ -38,9 +43,9 @@ export function parsePattern(pattern: string): ParsedPattern {
     throw new Error(`Invalid pattern: "${pattern}"`)
   }
   const parts = pattern.split('/')
-  if (parts.length < 2 || parts.length > 3) {
+  if (parts.length < 2) {
     throw new Error(
-      `Invalid pattern "${pattern}". Use <host>/*, <host>/<owner>/*, or <host>/<owner>/<repo>.`,
+      `Pattern must be host-prefixed (e.g. "${pattern}/*"), got "${pattern}"`,
     )
   }
   const host = parts[0]
@@ -49,28 +54,29 @@ export function parsePattern(pattern: string): ParsedPattern {
       `Pattern host segment must be a real hostname (e.g. github.com), got "${host}"`,
     )
   }
-  if (parts.length === 2) {
-    if (parts[1] !== '*') {
+  const rest = parts.slice(1)
+  if (rest.length === 1 && rest[0] === '*') {
+    return { host, kind: 'any', path: '' }
+  }
+  if (rest[rest.length - 1] === '*') {
+    const prefixParts = rest.slice(0, -1)
+    if (prefixParts.some((p) => !p || p.includes('*'))) {
       throw new Error(
-        `Two-segment pattern "${pattern}" must end in '*'. `
-        + 'For a specific repo use <host>/<owner>/<repo>.',
+        `Pattern path segments must be literal (no wildcards or empty segments), got "${pattern}"`,
       )
     }
-    return { host, owner: '*', repo: '*' }
+    return { host, kind: 'prefix', path: prefixParts.join('/') }
   }
-  const owner = parts[1]
-  const repo = parts[2]
-  if (!owner || owner.includes('*')) {
-    throw new Error(`Pattern owner segment must be literal, got "${owner}"`)
+  if (rest.some((p) => !p || p.includes('*'))) {
+    throw new Error(
+      `Pattern path may only contain a trailing '*' segment, got "${pattern}"`,
+    )
   }
-  if (!repo || (repo.includes('*') && repo !== '*')) {
-    throw new Error(`Pattern repo segment must be '*' or a literal name, got "${repo}"`)
-  }
-  return { host, owner, repo }
+  return { host, kind: 'exact', path: rest.join('/') }
 }
 
-/** Does the pattern match this (host, owner, repo) triple? */
-export function matchPattern(pattern: string, host: string, owner: string, repo: string): boolean {
+/** Does the pattern match this (host, path) pair? `path` is the full repo path. */
+export function matchPattern(pattern: string, host: string, path: string): boolean {
   let parsed: ParsedPattern
   try {
     parsed = parsePattern(pattern)
@@ -78,7 +84,7 @@ export function matchPattern(pattern: string, host: string, owner: string, repo:
     return false
   }
   if (parsed.host !== host) return false
-  if (parsed.owner !== '*' && parsed.owner !== owner) return false
-  if (parsed.repo !== '*' && parsed.repo !== repo) return false
-  return true
+  if (parsed.kind === 'any') return true
+  if (parsed.kind === 'exact') return path === parsed.path
+  return path === parsed.path || path.startsWith(parsed.path + '/')
 }

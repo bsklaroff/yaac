@@ -85,7 +85,7 @@ async function runGitUpdate(): Promise<void> {
 async function runHttpsUpdate(): Promise<void> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
   console.log('Add an HTTPS git credential.')
-  console.log('Pattern examples: github.com/*, github.com/acme/*, github.com/acme/repo, git.example.com/team/*')
+  console.log('Pattern examples: github.com/*, github.com/acme/*, github.com/acme/repo, gitlab.com/group/sub/*')
   const pattern = (await rl.question('Repo pattern: ')).trim()
   if (!pattern) {
     rl.close()
@@ -94,7 +94,7 @@ async function runHttpsUpdate(): Promise<void> {
   }
   if (!validatePattern(pattern)) {
     rl.close()
-    console.error('Invalid pattern. Use <host>/*, <host>/<owner>/*, or <host>/<owner>/<repo>.')
+    console.error('Invalid pattern. Use <host>/*, <host>/<path>, or <host>/<prefix>/*.')
     process.exit(1)
   }
   const token = (await rl.question('Token (PAT): ')).trim()
@@ -123,7 +123,7 @@ async function runSshUpdate(): Promise<void> {
   }
   if (!validatePattern(pattern)) {
     rl.close()
-    console.error('Invalid pattern. Use <host>/*, <host>/<owner>/*, or <host>/<owner>/<repo>.')
+    console.error('Invalid pattern. Use <host>/*, <host>/<path>, or <host>/<prefix>/*.')
     process.exit(1)
   }
 

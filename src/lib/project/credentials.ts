@@ -106,15 +106,16 @@ export async function saveCredentials(creds: GitCredentialsFile): Promise<void> 
 
 /**
  * Parse a git remote URL. Two forms are supported:
- *   - https://<host>/<owner>/<repo>[.git]
- *   - SCP-style: [user@]<host>:<owner>/<repo>[.git]
- * Throws on anything else, including ssh://… URLs and URLs with explicit ports.
+ *   - https://<host>/<path>[.git]
+ *   - SCP-style: [user@]<host>:<path>[.git]
+ * `<path>` may be any depth — a single segment (e.g. Gerrit-style `repo`) or
+ * a deeper path (e.g. `group/sub/repo`). Throws on ssh://, http://, explicit
+ * ports, or unparseable input.
  */
 export interface ParsedGitRemote {
   scheme: 'https' | 'ssh'
   host: string
-  owner: string
-  repo: string
+  path: string
 }
 
 const SCP_REGEX = /^(?:([\w._-]+)@)?([\w.-]+):(?!\/)(.+)$/
@@ -122,7 +123,7 @@ const SCP_REGEX = /^(?:([\w._-]+)@)?([\w.-]+):(?!\/)(.+)$/
 export function parseGitRemote(remoteUrl: string): ParsedGitRemote {
   if (remoteUrl.startsWith('ssh://')) {
     throw new Error(
-      'ssh:// URLs are not supported. Use SCP-style: git@host:owner/repo',
+      'ssh:// URLs are not supported. Use SCP-style: git@host:path/to/repo',
     )
   }
   if (remoteUrl.startsWith('https://') || remoteUrl.startsWith('http://')) {
@@ -133,21 +134,20 @@ export function parseGitRemote(remoteUrl: string): ParsedGitRemote {
     if (url.port) {
       throw new Error(`Custom HTTPS ports are not supported: "${remoteUrl}"`)
     }
-    const segments = url.pathname.replace(/^\//, '').replace(/\.git$/, '').split('/')
-    if (segments.length < 2 || !segments[0] || !segments[1]) {
-      throw new Error(`Cannot parse owner/repo from URL: ${remoteUrl}`)
+    const path = url.pathname.replace(/^\//, '').replace(/\.git$/, '')
+    if (!path) {
+      throw new Error(`Cannot parse repo path from URL: ${remoteUrl}`)
     }
-    return { scheme: 'https', host: url.hostname, owner: segments[0], repo: segments[1] }
+    return { scheme: 'https', host: url.hostname, path }
   }
   const m = SCP_REGEX.exec(remoteUrl)
   if (m) {
     const host = m[2]
     const path = m[3].replace(/\.git$/, '')
-    const segments = path.split('/')
-    if (segments.length < 2 || !segments[0] || !segments[1]) {
-      throw new Error(`Cannot parse owner/repo from URL: ${remoteUrl}`)
+    if (!path) {
+      throw new Error(`Cannot parse repo path from URL: ${remoteUrl}`)
     }
-    return { scheme: 'ssh', host, owner: segments[0], repo: segments[1] }
+    return { scheme: 'ssh', host, path }
   }
   throw new Error(`Unrecognized git remote URL: "${remoteUrl}"`)
 }
@@ -170,11 +170,11 @@ function expandTilde(p: string): string {
 export async function resolveCredentialForUrl(
   remoteUrl: string,
 ): Promise<ResolvedGitCredential | null> {
-  const { scheme, host, owner, repo } = parseGitRemote(remoteUrl)
+  const { scheme, host, path } = parseGitRemote(remoteUrl)
   const creds = await loadCredentials()
   for (const entry of creds.tokens) {
     if (entry.kind !== scheme) continue
-    if (!matchPattern(entry.pattern, host, owner, repo)) continue
+    if (!matchPattern(entry.pattern, host, path)) continue
     if (entry.kind === 'https') return { kind: 'https', token: entry.token }
     return {
       kind: 'ssh',
@@ -238,7 +238,7 @@ export async function addEntry(entry: GitCredentialEntry): Promise<void> {
   if (!validatePattern(entry.pattern)) {
     throw new DaemonError(
       'VALIDATION',
-      'Invalid pattern. Use <host>/*, <host>/<owner>/*, or <host>/<owner>/<repo>.',
+      'Invalid pattern. Use <host>/*, <host>/<path>, or <host>/<prefix>/*.',
     )
   }
   if (entry.kind === 'https' && !entry.token) {
@@ -370,7 +370,7 @@ export async function listSshEntries(): Promise<Array<{
 export async function promptForHttpsCredential(): Promise<{ pattern: string; token: string }> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
   console.log('Add an HTTPS git credential (e.g. a GitHub PAT or self-hosted token).')
-  console.log('Pattern examples: github.com/*, github.com/acme/*, github.com/acme/repo, git.example.com/team/*')
+  console.log('Pattern examples: github.com/*, github.com/acme/*, github.com/acme/repo, gitlab.com/group/sub/*')
   const pattern = (await rl.question('Repo pattern: ')).trim()
   if (!pattern) {
     rl.close()
@@ -379,7 +379,7 @@ export async function promptForHttpsCredential(): Promise<{ pattern: string; tok
   }
   if (!validatePattern(pattern)) {
     rl.close()
-    console.error('Invalid pattern. Use <host>/*, <host>/<owner>/*, or <host>/<owner>/<repo>.')
+    console.error('Invalid pattern. Use <host>/*, <host>/<path>, or <host>/<prefix>/*.')
     process.exit(1)
   }
   const token = (await rl.question('Token: ')).trim()

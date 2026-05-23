@@ -117,7 +117,7 @@ type SshCredentialEntry = {
 }
 type GitCredentialEntry = HttpsCredentialEntry | SshCredentialEntry
 
-type ParsedPattern = { host: string; owner: string; repo: string }
+type ParsedPattern = { host: string; kind: 'any' | 'exact' | 'prefix'; path: string }
 
 type Injection =
   | { action: 'set_header'; name: string; value: string }
@@ -355,43 +355,44 @@ function normalizeLegacyPattern(pattern: string): string {
 function parsePattern(pattern: string): ParsedPattern | null {
   if (!pattern || pattern.includes(' ')) return null
   const parts = pattern.split('/')
-  if (parts.length < 2 || parts.length > 3) return null
+  if (parts.length < 2) return null
   const host = parts[0]
-  if (!host || host.includes('*')) return null
-  if (parts.length === 2) {
-    if (parts[1] !== '*') return null
-    return { host, owner: '*', repo: '*' }
+  if (!host || host.includes('*') || !isHostSegment(host)) return null
+  const rest = parts.slice(1)
+  if (rest.length === 1 && rest[0] === '*') {
+    return { host, kind: 'any', path: '' }
   }
-  const owner = parts[1]
-  const repo = parts[2]
-  if (!owner || owner.includes('*')) return null
-  if (!repo || (repo.includes('*') && repo !== '*')) return null
-  return { host, owner, repo }
+  if (rest[rest.length - 1] === '*') {
+    const prefixParts = rest.slice(0, -1)
+    if (prefixParts.some((p) => !p || p.includes('*'))) return null
+    return { host, kind: 'prefix', path: prefixParts.join('/') }
+  }
+  if (rest.some((p) => !p || p.includes('*'))) return null
+  return { host, kind: 'exact', path: rest.join('/') }
 }
 
-function matchPattern(pattern: string, host: string, owner: string, repo: string): boolean {
+function matchPattern(pattern: string, host: string, path: string): boolean {
   const p = parsePattern(pattern)
   if (!p) return false
   if (p.host !== host) return false
-  if (p.owner !== '*' && p.owner !== owner) return false
-  if (p.repo !== '*' && p.repo !== repo) return false
-  return true
+  if (p.kind === 'any') return true
+  if (p.kind === 'exact') return path === p.path
+  return path === p.path || path.startsWith(p.path + '/')
 }
 
 /** Parse a git remote URL. Accepts https:// and SCP-style only. */
 function parseGitRemote(remoteUrl: string | undefined): {
   scheme: 'https' | 'ssh'
   host: string
-  owner: string
-  repo: string
+  path: string
 } | null {
   if (!remoteUrl || typeof remoteUrl !== 'string') return null
   if (remoteUrl.startsWith('https://')) {
     try {
       const url = new URL(remoteUrl)
-      const segments = url.pathname.replace(/^\//, '').replace(/\.git$/, '').split('/')
-      if (segments.length < 2 || !segments[0] || !segments[1]) return null
-      return { scheme: 'https', host: url.hostname, owner: segments[0], repo: segments[1] }
+      const path = url.pathname.replace(/^\//, '').replace(/\.git$/, '')
+      if (!path) return null
+      return { scheme: 'https', host: url.hostname, path }
     } catch {
       return null
     }
@@ -399,10 +400,9 @@ function parseGitRemote(remoteUrl: string | undefined): {
   const m = /^(?:([\w._-]+)@)?([\w.-]+):(?!\/)(.+)$/.exec(remoteUrl)
   if (m) {
     const host = m[2]
-    const tail = m[3].replace(/\.git$/, '')
-    const segments = tail.split('/')
-    if (segments.length < 2 || !segments[0] || !segments[1]) return null
-    return { scheme: 'ssh', host, owner: segments[0], repo: segments[1] }
+    const path = m[3].replace(/\.git$/, '')
+    if (!path) return null
+    return { scheme: 'ssh', host, path }
   }
   return null
 }
@@ -445,11 +445,11 @@ function readGitCredentials(): GitCredentialEntry[] {
 
 /**
  * Resolve the HTTPS credential for a session's repoUrl, returning the matched
- * token along with the (host, owner, repo) it matched on so callers can guard
- * against cross-host token leakage.
+ * token along with the (host, path) it matched on so callers can guard against
+ * cross-host token leakage.
  */
 function resolveHttpsCredentialForRepo(repoUrl: string | undefined): {
-  token: string; host: string; owner: string; repo: string
+  token: string; host: string; path: string
 } | null {
   const creds = readGitCredentials()
   if (creds.length === 0) return null
@@ -457,8 +457,8 @@ function resolveHttpsCredentialForRepo(repoUrl: string | undefined): {
   if (!parsed || parsed.scheme !== 'https') return null
   for (const entry of creds) {
     if (entry.kind !== 'https') continue
-    if (matchPattern(entry.pattern, parsed.host, parsed.owner, parsed.repo)) {
-      return { token: entry.token, host: parsed.host, owner: parsed.owner, repo: parsed.repo }
+    if (matchPattern(entry.pattern, parsed.host, parsed.path)) {
+      return { token: entry.token, host: parsed.host, path: parsed.path }
     }
   }
   return null

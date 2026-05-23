@@ -104,12 +104,12 @@ vi.mock('@/lib/project/credentials', () => ({
   parseGitRemote: (url: string) => {
     if (url.startsWith('https://')) {
       const u = new URL(url)
-      const segs = u.pathname.replace(/^\//, '').replace(/\.git$/, '').split('/')
-      return { scheme: 'https', host: u.hostname, owner: segs[0], repo: segs[1] }
+      const path = u.pathname.replace(/^\//, '').replace(/\.git$/, '')
+      return { scheme: 'https', host: u.hostname, path }
     }
     const m = /^(?:[\w._-]+@)?([\w.-]+):(.+)$/.exec(url)!
-    const segs = m[2].replace(/\.git$/, '').split('/')
-    return { scheme: 'ssh', host: m[1], owner: segs[0], repo: segs[1] }
+    const path = m[2].replace(/\.git$/, '')
+    return { scheme: 'ssh', host: m[1], path }
   },
   loadKnownHostsEntryForHost: vi.fn().mockResolvedValue(null),
 }))
