@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN ARCH="$(dpkg --print-architecture)" && if [ "$ARCH" = "amd64" ]; then ARCH=x64; fi && \
     curl -fsSL "https://nodejs.org/dist/v22.22.2/node-v22.22.2-linux-${ARCH}.tar.xz" | \
     tar -xJ -C /usr/local --strip-components=1
-RUN ARCH="$(dpkg --print-architecture)" && \
+RUN ARCH="$(dpkg --print-architecture)" && if [ "$ARCH" = "amd64" ]; then ARCH=x86_64; fi && \
     curl -fsSL "https://github.com/neovim/neovim/releases/download/v0.10.4/nvim-linux-${ARCH}.tar.gz" | \
     tar -xz -C /usr/local --strip-components=1 && \
     ln -sf /usr/local/bin/nvim /usr/local/bin/vi && \
