@@ -624,7 +624,7 @@ export async function createSession(
   } else {
     const defaultBranch = await getDefaultBranch(repo)
     emit(`Creating worktree from ${defaultBranch}...`, options)
-    await addWorktree(repo, wtDir, `yaac/${sessionId}`, `origin/${defaultBranch}`)
+    await addWorktree(repo, wtDir, `agent/${sessionId}`, `origin/${defaultBranch}`)
   }
 
   // Fetch the image's baked-in ENV so we can preserve it.

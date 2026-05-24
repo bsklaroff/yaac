@@ -210,7 +210,7 @@ describe('yaac session create features (real CLI + real daemon)', () => {
     const { stdout: branch } = await podmanRetry([
       'exec', '-w', '/workspace', name, 'git', 'rev-parse', '--abbrev-ref', 'HEAD',
     ])
-    expect(branch.trim()).toBe(`yaac/${sessionId}`)
+    expect(branch.trim()).toBe(`agent/${sessionId}`)
 
     const { stdout: tmuxList } = await podmanRetry([
       'exec', name, 'tmux', '-S', CONTAINER_TMUX_SOCK, 'list-sessions',

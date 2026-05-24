@@ -57,7 +57,7 @@ describe('git helpers', () => {
 
   it('creates a worktree with a new branch', async () => {
     const wtPath = path.join(tmpDir, 'worktree')
-    await addWorktree(sourceRepo, wtPath, 'yaac/test-session')
+    await addWorktree(sourceRepo, wtPath, 'agent/test-session')
 
     // Verify worktree exists and has files
     const content = await fs.readFile(path.join(wtPath, 'hello.txt'), 'utf8')
@@ -66,7 +66,7 @@ describe('git helpers', () => {
     // Verify branch was created
     const git = simpleGit(wtPath)
     const branch = await git.revparse(['--abbrev-ref', 'HEAD'])
-    expect(branch.trim()).toBe('yaac/test-session')
+    expect(branch.trim()).toBe('agent/test-session')
   })
 
   it('creates a worktree with upstream tracking', async () => {
@@ -76,7 +76,7 @@ describe('git helpers', () => {
 
     const defaultBranch = await getDefaultBranch(cloneDir)
     const wtPath = path.join(tmpDir, 'worktree')
-    await addWorktree(cloneDir, wtPath, 'yaac/test-tracked', `origin/${defaultBranch}`)
+    await addWorktree(cloneDir, wtPath, 'agent/test-tracked', `origin/${defaultBranch}`)
 
     // Verify the branch tracks origin/<default>
     const git = simpleGit(wtPath)
@@ -122,7 +122,7 @@ describe('git helpers', () => {
     // Create worktree from origin/<default> — should include the new commit
     const defaultBranch = await getDefaultBranch(cloneDir)
     const wtPath = path.join(tmpDir, 'wt-startpoint')
-    await addWorktree(cloneDir, wtPath, 'yaac/from-origin', `origin/${defaultBranch}`)
+    await addWorktree(cloneDir, wtPath, 'agent/from-origin', `origin/${defaultBranch}`)
 
     const content = await fs.readFile(path.join(wtPath, 'new-file.txt'), 'utf8')
     expect(content).toBe('new content\n')
@@ -217,7 +217,7 @@ describe('git helpers', () => {
 
   it('removes a worktree', async () => {
     const wtPath = path.join(tmpDir, 'worktree')
-    await addWorktree(sourceRepo, wtPath, 'yaac/to-remove')
+    await addWorktree(sourceRepo, wtPath, 'agent/to-remove')
     await removeWorktree(sourceRepo, wtPath)
 
     // Verify directory is gone
