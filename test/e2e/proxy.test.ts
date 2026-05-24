@@ -36,6 +36,28 @@ function proxyRequest(
   })
 }
 
+/**
+ * Open a raw TCP connection to the proxy's published port, send a CONNECT
+ * request, and resolve with the response head (everything up to the blank
+ * line). Used to assert the proxy's CONNECT-level responses (e.g. the 407
+ * auth challenge) without a full TLS tunnel.
+ */
+function rawConnectHead(proxyPort: string | number, request: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const sock = net.connect(Number(proxyPort), '127.0.0.1', () => sock.write(request))
+    let buf = ''
+    sock.on('data', (d: Buffer) => {
+      buf += d.toString('utf8')
+      if (buf.includes('\r\n\r\n')) {
+        sock.destroy()
+        resolve(buf)
+      }
+    })
+    sock.on('error', reject)
+    sock.setTimeout(5000, () => { sock.destroy(); reject(new Error('rawConnectHead timeout')) })
+  })
+}
+
 describe('proxy sidecar', () => {
   let client: ProxyClient
 
@@ -187,6 +209,22 @@ describe('proxy sidecar', () => {
 
       await client.removeSession(sessionId)
     }, 60_000)
+
+    it('challenges a credential-less CONNECT with 407, not 403', async () => {
+      await client.ensureRunning()
+
+      // ncat (git's SSH ProxyCommand) never sends Proxy-Authorization
+      // preemptively — it sends a bare CONNECT and only attaches credentials
+      // after a 407 challenge. A 403 here made it give up without ever
+      // authenticating. The proxy must answer missing auth with 407 +
+      // Proxy-Authenticate so challenge-response clients can retry.
+      const head = await rawConnectHead(
+        client.hostPort,
+        'CONNECT github.com:22 HTTP/1.1\r\nHost: github.com:22\r\n\r\n',
+      )
+      expect(head).toMatch(/^HTTP\/1\.1 407 /)
+      expect(head.toLowerCase()).toContain('proxy-authenticate: basic')
+    }, 30_000)
   })
 })
 

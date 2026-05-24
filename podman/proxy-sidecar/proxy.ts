@@ -1712,6 +1712,25 @@ server.on('connect', (req: http.IncomingMessage, clientSocket: Duplex, head: Buf
     }
   })
 
+  // Challenge-response proxy auth. Clients like ncat (git's SSH ProxyCommand,
+  // session-create.ts) never send Proxy-Authorization preemptively — they
+  // send a bare CONNECT and only attach credentials after a 407. Answering a
+  // credential-less CONNECT with 403 made ncat give up without ever
+  // authenticating. Emit the standard challenge instead; ncat resends the
+  // CONNECT (reconnecting on a fresh socket when we close here) carrying the
+  // x:<sessionId> creds, which re-enters this handler with a parseable
+  // session id. Preemptive clients (curl/node for HTTPS) never hit this path.
+  if (!sessionId) {
+    clientSocket.write(
+      'HTTP/1.1 407 Proxy Authentication Required\r\n'
+      + 'Proxy-Authenticate: Basic realm="yaac"\r\n'
+      + 'Content-Length: 0\r\n'
+      + '\r\n',
+    )
+    clientSocket.end()
+    return
+  }
+
   if (!isHostAllowed(sessionId, hostname)) {
     console.log(`[proxy] BLOCKED CONNECT to ${hostname}:${port} (not in allowlist)`)
     recordBlockedHost(sessionId, hostname)
