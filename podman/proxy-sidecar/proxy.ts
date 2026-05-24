@@ -43,6 +43,11 @@ const TOR_SOCKS_URL = 'socks5h://127.0.0.1:9050'
 const torAgent = USE_TOR ? new SocksProxyAgent(TOR_SOCKS_URL) : null
 const torProxy = { host: '127.0.0.1', port: 9050, type: 5 as const }
 
+// How long to wait for Tor to build a circuit and open a tunnel stream before
+// giving up. The `socks` library defaults to 30s; Tor's first circuit to a
+// given destination can take longer, so use a higher fixed ceiling.
+const TOR_TUNNEL_TIMEOUT_MS = 120_000
+
 // Host-mounted credentials directory. The entire `~/.yaac/.credentials/`
 // directory is bind-mounted RW so the proxy can read every service's
 // credentials at request time and write refreshed Claude OAuth bundles back.
@@ -1338,6 +1343,7 @@ function handleTunnel(clientSocket: Duplex, hostname: string, port: string | und
       proxy: torProxy,
       command: 'connect',
       destination: { host: hostname, port: destPort },
+      timeout: TOR_TUNNEL_TIMEOUT_MS,
     }, (err, info) => {
       if (err || !info) {
         console.error(`[proxy] Tor tunnel error for ${hostname}:`, err?.message ?? 'no socket')
