@@ -11,6 +11,8 @@ import {
   claudeDir,
   codexTranscriptDir,
   getDataDir,
+  opencodeMetaDir,
+  opencodeMetaFile,
   worktreesDir,
   projectDir,
 } from '@/lib/project/paths'
@@ -84,6 +86,19 @@ describe('resolveRestartTarget', () => {
     expect(info.tool).toBe('codex')
   })
 
+  it('resolves tool=opencode from the container label', async () => {
+    listSpy.mockResolvedValueOnce([container({
+      Labels: {
+        'yaac.data-dir': getDataDir(),
+        'yaac.session-id': 'abcd1234',
+        'yaac.project': 'demo',
+        'yaac.tool': 'opencode',
+      },
+    })])
+    const info = await resolveRestartTarget('abcd1234')
+    expect(info.tool).toBe('opencode')
+  })
+
   it('resolves from a live container by session id prefix', async () => {
     listSpy.mockResolvedValueOnce([container()])
     const info = await resolveRestartTarget('abcd')
@@ -117,6 +132,17 @@ describe('resolveRestartTarget', () => {
     await fs.writeFile(path.join(codexTranscriptDir('demo'), 'codexsess.jsonl'), '')
     const info = await resolveRestartTarget('codexsess')
     expect(info.tool).toBe('codex')
+    expect(info.containerName).toBeNull()
+  })
+
+  it('detects tool=opencode from the meta file when no jsonl transcript exists', async () => {
+    listSpy.mockResolvedValueOnce([])
+    await fs.mkdir(projectDir('demo'), { recursive: true })
+    await fs.mkdir(path.join(worktreesDir('demo'), 'ocsess'), { recursive: true })
+    await fs.mkdir(opencodeMetaDir('demo'), { recursive: true })
+    await fs.writeFile(opencodeMetaFile('demo', 'ocsess'), '{}')
+    const info = await resolveRestartTarget('ocsess')
+    expect(info.tool).toBe('opencode')
     expect(info.containerName).toBeNull()
   })
 

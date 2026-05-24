@@ -1,5 +1,5 @@
 import { ensurePrewarmSessions, clearFailedPrewarmSessions } from '@/lib/prewarm'
-import { reconcileStaleSessions } from '@/lib/session/list'
+import { reconcileStaleSessions, captureOpencodeFirstMessages } from '@/lib/session/list'
 import { persistAllBlockedHosts } from '@/lib/session/blocked-hosts'
 import { daemonLog } from '@/daemon/log'
 
@@ -44,13 +44,15 @@ function defaultTickSteps(): Array<() => Promise<void>> {
     clearFailedPrewarmSessions,
     ensurePrewarmSessions,
     reconcileStaleSessions,
+    captureOpencodeFirstMessages,
     persistAllBlockedHosts,
   ]
 }
 
 /**
  * Background reconciliation loop. Owns prewarm upkeep, stale-session
- * reaping, and blocked-host persistence. Starts with an immediate tick,
+ * reaping, opencode first-message capture, and blocked-host persistence.
+ * Starts with an immediate tick,
  * then ticks once per `intervalMs`. Exits promptly when `signal` aborts;
  * does not interrupt an in-flight tick.
  */

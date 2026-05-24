@@ -14,6 +14,10 @@ describe('getToolFromContainer', () => {
     expect(getToolFromContainer({ Labels: { 'yaac.tool': 'codex' } })).toBe('codex')
   })
 
+  it('returns opencode when yaac.tool is opencode', () => {
+    expect(getToolFromContainer({ Labels: { 'yaac.tool': 'opencode' } })).toBe('opencode')
+  })
+
   it('returns claude when Labels is undefined', () => {
     expect(getToolFromContainer({})).toBe('claude')
   })

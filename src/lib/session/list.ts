@@ -1,8 +1,9 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { podman } from '@/lib/container/runtime'
-import { claudeDir, codexTranscriptDir, getDataDir, getProjectsDir, projectDir } from '@/lib/project/paths'
+import { claudeDir, codexTranscriptDir, getDataDir, getProjectsDir, opencodeMetaDir, projectDir } from '@/lib/project/paths'
 import { getSessionStatus, getSessionFirstMessage, getToolFromContainer } from '@/lib/session/status'
+import { ensureOpencodeFirstMessageCaptured } from '@/lib/session/opencode-status'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 import { readBlockedHosts } from '@/lib/session/blocked-hosts'
 import { isPrewarmSession, readPrewarmSessions } from '@/lib/prewarm'
@@ -228,9 +229,48 @@ export async function reconcileStaleSessions(): Promise<void> {
 }
 
 /**
- * Scan the Claude Code JSONL dirs and Codex transcript dirs for session
- * ids that no longer have a matching container. If podman is down, every
- * saved session is treated as deleted.
+ * Persist the first-message snapshot for running opencode sessions that
+ * don't have one yet, so `session list -d` and restart retain a record
+ * even when no client polls /session/list (otherwise the only trigger).
+ * Designed to run from the daemon background loop.
+ *
+ * opencode is the only tool whose snapshot is probe-driven — claude and
+ * codex write their transcripts directly on message submit — so this
+ * targets opencode containers and is a no-op for the rest. Each capture
+ * is best-effort and self-skips once a snapshot exists (see
+ * `ensureOpencodeFirstMessageCaptured`).
+ */
+export async function captureOpencodeFirstMessages(): Promise<void> {
+  let containers
+  try {
+    containers = await podman.listContainers({
+      all: true,
+      filters: { label: [`yaac.data-dir=${getDataDir()}`] },
+    })
+  } catch {
+    return
+  }
+  const { running } = await classifySessionContainers(
+    containers, Date.now(), isTmuxSessionAlive, resolveStartingGraceMs(),
+  )
+  await Promise.all(running.map(async (c) => {
+    if (getToolFromContainer(c) !== 'opencode') return
+    const sessionId = c.Labels?.['yaac.session-id'] ?? ''
+    const slug = c.Labels?.['yaac.project'] ?? ''
+    const containerName = c.Names?.[0]?.replace(/^\//, '') ?? c.Id ?? ''
+    if (!sessionId || !slug || !containerName) return
+    try {
+      await ensureOpencodeFirstMessageCaptured(slug, sessionId, containerName)
+    } catch {
+      // best-effort — next tick retries
+    }
+  }))
+}
+
+/**
+ * Scan the Claude Code JSONL dirs, Codex transcript dirs, and opencode
+ * meta caches for session ids that no longer have a matching container.
+ * If podman is down, every saved session is treated as deleted.
  *
  * Entries are sorted newest-first and sliced to `limit` before prompts
  * are read — parsing each JSONL only for the rows the caller will render.
@@ -325,6 +365,40 @@ export async function listDeletedSessions(
       }
     } catch {
       // no codex transcript dir
+    }
+
+    // opencode's per-session sqlite data dir is created for every
+    // session regardless of tool, so it can't identify opencode
+    // sessions. The meta cache (first-message snapshot, keyed by
+    // session id) is written only for opencode sessions and survives
+    // container teardown, making it the authoritative deleted-session
+    // record — the same source getDeletedSessionOpencodeFirstUserMessage
+    // reads from.
+    const opencodeMeta = opencodeMetaDir(slug)
+    try {
+      const entries = await fs.readdir(opencodeMeta)
+      for (const entry of entries) {
+        if (!entry.endsWith('.json')) continue
+        const sessionId = entry.replace('.json', '')
+        if (activeSessionIds.has(sessionId)) continue
+        const filePath = path.join(opencodeMeta, entry)
+        try {
+          const stat = await fs.lstat(filePath)
+          collected.push({
+            entry: {
+              sessionId,
+              projectSlug: slug,
+              tool: 'opencode',
+              createdAt: stat.birthtime.toISOString().replace('T', ' ').slice(0, 19),
+            },
+            birthtimeMs: stat.birthtimeMs,
+          })
+        } catch {
+          continue
+        }
+      }
+    } catch {
+      // no opencode meta dir
     }
   }
 

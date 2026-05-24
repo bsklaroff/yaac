@@ -311,3 +311,25 @@ export async function getDeletedSessionOpencodeFirstUserMessage(
   const meta = await loadOpencodeMeta(projectSlug, sessionId)
   return meta?.firstMessage
 }
+
+/**
+ * Capture-and-persist the first-message snapshot for a live opencode
+ * session, but only if one isn't already cached. Driven by the daemon
+ * background loop so a record exists for `session list -d` / restart even
+ * when no client is polling /session/list (the only other trigger).
+ *
+ * Short-circuits on a cheap meta-file read once captured, so steady-state
+ * ticks don't re-probe settled sessions. Probing only persists when
+ * opencode has generated a title (i.e. a message was submitted), so this
+ * preserves parity with claude/codex — a session with no messages yet
+ * leaves no record.
+ */
+export async function ensureOpencodeFirstMessageCaptured(
+  projectSlug: string,
+  sessionId: string,
+  containerName: string,
+): Promise<void> {
+  const meta = await loadOpencodeMeta(projectSlug, sessionId)
+  if (meta?.firstMessage) return
+  await getSessionOpencodeFirstUserMessage(projectSlug, sessionId, containerName)
+}

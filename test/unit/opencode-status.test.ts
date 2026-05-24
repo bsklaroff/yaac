@@ -15,6 +15,7 @@ import {
   getSessionOpencodeStatus,
   getSessionOpencodeFirstUserMessage,
   getDeletedSessionOpencodeFirstUserMessage,
+  ensureOpencodeFirstMessageCaptured,
   _clearOpencodeProbeCacheForTests,
 } from '@/lib/session/opencode-status'
 
@@ -220,6 +221,37 @@ describe('opencode-status', () => {
     it('returns undefined when no meta file exists', async () => {
       const msg = await getDeletedSessionOpencodeFirstUserMessage('proj', 'sid')
       expect(msg).toBeUndefined()
+    })
+  })
+
+  describe('ensureOpencodeFirstMessageCaptured', () => {
+    it('skips the probe when a snapshot is already cached', async () => {
+      await fs.mkdir(opencodeMetaDir('proj'), { recursive: true })
+      await fs.writeFile(
+        opencodeMetaFile('proj', 'sid'),
+        JSON.stringify({ firstMessage: 'already cached' }),
+      )
+      await ensureOpencodeFirstMessageCaptured('proj', 'sid', 'container')
+      expect(mockedExec).not.toHaveBeenCalled()
+    })
+
+    it('probes and persists the title when no snapshot exists yet', async () => {
+      await fs.mkdir(opencodeMetaDir('proj'), { recursive: true })
+      mockedExec.mockResolvedValueOnce(sessionsStdout(
+        [{ id: 'ses_1', title: 'Fix the parser', updated: 1 }],
+      ))
+      await ensureOpencodeFirstMessageCaptured('proj', 'sid', 'container')
+      const cached = JSON.parse(
+        await fs.readFile(opencodeMetaFile('proj', 'sid'), 'utf8'),
+      ) as { firstMessage?: string }
+      expect(cached.firstMessage).toBe('Fix the parser')
+    })
+
+    it('persists nothing when the session has no title yet (no message submitted)', async () => {
+      await fs.mkdir(opencodeMetaDir('proj'), { recursive: true })
+      mockedExec.mockResolvedValueOnce(sessionsStdout([{ id: 'ses_1', updated: 1 }]))
+      await ensureOpencodeFirstMessageCaptured('proj', 'sid', 'container')
+      await expect(fs.access(opencodeMetaFile('proj', 'sid'))).rejects.toBeTruthy()
     })
   })
 })

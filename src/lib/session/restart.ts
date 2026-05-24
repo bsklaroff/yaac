@@ -6,9 +6,11 @@ import {
   codexTranscriptDir,
   getDataDir,
   getProjectsDir,
+  opencodeMetaFile,
   worktreesDir,
 } from '@/lib/project/paths'
 import { cleanupSession } from '@/lib/session/cleanup'
+import { getToolFromContainer } from '@/lib/session/status'
 import { createSession, type SessionCreateResult } from '@/daemon/session-create'
 import { DaemonError } from '@/daemon/errors'
 import type { AgentTool } from '@/shared/types'
@@ -30,16 +32,18 @@ async function fileExists(p: string): Promise<boolean> {
 }
 
 /**
- * Pick the tool for a reaped session by looking at which transcript file
- * survived. Prefers claude when both exist (shouldn't happen — a session
- * is created with a single tool) so the resume path has deterministic
- * fallback behaviour.
+ * Pick the tool for a reaped session by looking at which per-tool artifact
+ * survived: claude/codex leave a transcript jsonl, opencode leaves a meta
+ * snapshot keyed by session id. Prefers claude when several exist
+ * (shouldn't happen — a session is created with a single tool) so the
+ * resume path has deterministic fallback behaviour.
  */
 async function detectToolFromTranscript(slug: string, sessionId: string): Promise<AgentTool> {
   const claudeJsonl = path.join(claudeDir(slug), 'projects', '-workspace', `${sessionId}.jsonl`)
   if (await fileExists(claudeJsonl)) return 'claude'
   const codexJsonl = path.join(codexTranscriptDir(slug), `${sessionId}.jsonl`)
   if (await fileExists(codexJsonl)) return 'codex'
+  if (await fileExists(opencodeMetaFile(slug, sessionId))) return 'opencode'
   return 'claude'
 }
 
@@ -67,7 +71,7 @@ export async function resolveRestartTarget(idOrName: string): Promise<RestartRes
       return {
         projectSlug: match.Labels?.['yaac.project'] ?? '',
         sessionId: match.Labels?.['yaac.session-id'] ?? '',
-        tool: match.Labels?.['yaac.tool'] === 'codex' ? 'codex' : 'claude',
+        tool: getToolFromContainer(match),
         containerName: match.Names?.[0]?.replace(/^\//, '') ?? match.Id,
       }
     }

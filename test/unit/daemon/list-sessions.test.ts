@@ -1,9 +1,23 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import { claudeDir, getProjectsDir, projectDir } from '@/lib/project/paths'
-import { listActiveSessions, listDeletedSessions } from '@/lib/session/list'
+import * as runtime from '@/lib/container/runtime'
+import * as cleanup from '@/lib/session/cleanup'
+import * as opencodeStatus from '@/lib/session/opencode-status'
+import {
+  claudeDir,
+  getDataDir,
+  getProjectsDir,
+  opencodeMetaDir,
+  opencodeMetaFile,
+  projectDir,
+} from '@/lib/project/paths'
+import {
+  listActiveSessions,
+  listDeletedSessions,
+  captureOpencodeFirstMessages,
+} from '@/lib/session/list'
 import { DaemonError } from '@/daemon/errors'
 import type { ProjectMeta } from '@/shared/types'
 
@@ -136,6 +150,24 @@ describe('listDeletedSessions', () => {
     expect(zeroLimit).toHaveLength(3)
   })
 
+  it('enumerates opencode sessions from the meta cache with no active container', async () => {
+    await writeProject('demo')
+    await fs.mkdir(opencodeMetaDir('demo'), { recursive: true })
+    await fs.writeFile(
+      opencodeMetaFile('demo', 'ocsess'),
+      JSON.stringify({ firstMessage: 'build a thing', capturedAt: '2026-05-01T00:00:00.000Z' }),
+    )
+    await fs.writeFile(path.join(opencodeMetaDir('demo'), 'ignoreme.txt'), 'not json')
+    const result = await listDeletedSessions('demo')
+    expect(result).toHaveLength(1)
+    expect(result[0]).toMatchObject({
+      sessionId: 'ocsess',
+      projectSlug: 'demo',
+      tool: 'opencode',
+      prompt: 'build a thing',
+    })
+  })
+
   it('populates prompt from the first user message in the Claude transcript', async () => {
     await writeProject('demo')
     const sessionsDir = path.join(claudeDir('demo'), 'projects', '-workspace')
@@ -144,6 +176,63 @@ describe('listDeletedSessions', () => {
     await fs.writeFile(path.join(sessionsDir, 'a.jsonl'), `${first}\n`)
     const result = await listDeletedSessions('demo')
     expect(result[0]?.prompt).toBe('hello there')
+  })
+})
+
+describe('captureOpencodeFirstMessages', () => {
+  let tmpDir: string
+
+  function container(overrides: {
+    id: string
+    sessionId: string
+    tool: string
+  }): Record<string, unknown> {
+    return {
+      Id: overrides.id,
+      Names: [`/yaac-demo-${overrides.sessionId}`],
+      Labels: {
+        'yaac.data-dir': getDataDir(),
+        'yaac.session-id': overrides.sessionId,
+        'yaac.project': 'demo',
+        'yaac.tool': overrides.tool,
+      },
+      State: 'running',
+    }
+  }
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+  })
+
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    await cleanupTempDir(tmpDir)
+  })
+
+  it('captures only running opencode sessions, skipping other tools', async () => {
+    vi.spyOn(runtime.podman, 'listContainers').mockResolvedValue([
+      container({ id: 'oc', sessionId: 'ocsess', tool: 'opencode' }),
+      container({ id: 'cl', sessionId: 'clsess', tool: 'claude' }),
+    ] as unknown as Awaited<ReturnType<typeof runtime.podman.listContainers>>)
+    vi.spyOn(cleanup, 'isTmuxSessionAlive').mockResolvedValue(true)
+    const captureSpy = vi
+      .spyOn(opencodeStatus, 'ensureOpencodeFirstMessageCaptured')
+      .mockResolvedValue(undefined)
+
+    await captureOpencodeFirstMessages()
+
+    expect(captureSpy).toHaveBeenCalledTimes(1)
+    expect(captureSpy).toHaveBeenCalledWith('demo', 'ocsess', 'yaac-demo-ocsess')
+  })
+
+  it('returns early without capturing when podman is unavailable', async () => {
+    vi.spyOn(runtime.podman, 'listContainers').mockRejectedValue(new Error('down'))
+    const captureSpy = vi
+      .spyOn(opencodeStatus, 'ensureOpencodeFirstMessageCaptured')
+      .mockResolvedValue(undefined)
+
+    await expect(captureOpencodeFirstMessages()).resolves.toBeUndefined()
+    expect(captureSpy).not.toHaveBeenCalled()
   })
 })
 
