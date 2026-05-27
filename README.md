@@ -281,3 +281,9 @@ podman machine stop
 podman machine set --memory 8192
 podman machine start
 ```
+
+By default yaac sets `UsernsMode: keep-id` on its containers so the in-container user can write host-owned bind mounts — this is needed on **Linux** rootless-podman hosts. It is unnecessary on macOS (podman runs in a VM) and breaks nested containers there: keep-id forces podman to `chown-by-maps` the shared image cache's layers, which fails with `storage-chown-by-maps: lchown ... operation not permitted`. If you hit that, start the daemon with keep-id disabled:
+
+```sh
+YAAC_DISABLE_KEEP_ID=1 yaac daemon restart
+```

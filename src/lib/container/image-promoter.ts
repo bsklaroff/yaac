@@ -1,4 +1,4 @@
-import { podman, shellPodmanWithRetry } from '@/lib/container/runtime'
+import { keepIdEnabled, podman, shellPodmanWithRetry } from '@/lib/container/runtime'
 import { getDataDir } from '@/lib/project/paths'
 
 /**
@@ -200,11 +200,10 @@ export async function promoteSessionImages(
         // gone (not just exited) before returning, so that the shared
         // cache volume is free to be removed in the same teardown flow.
         SecurityOpt: ['label=disable'],
-        // See UsernsMode note in session-create.ts: keep-id maps the
-        // promoter's `yaac` user to the host daemon UID so the source
-        // graphroot (yaac-owned on host) is readable on Linux rootless
-        // podman.
-        UsernsMode: 'keep-id',
+        // See keepIdEnabled(): keep-id maps the promoter's `yaac` user to the
+        // host daemon UID so the source graphroot (yaac-owned on host) is
+        // readable on Linux rootless podman. YAAC_DISABLE_KEEP_ID=1 omits it.
+        ...(keepIdEnabled() ? { UsernsMode: 'keep-id' } : {}),
         Binds: [
           // The source graphroot must live at the session's original path:
           // podman's sqlite db has that path baked in and rejects

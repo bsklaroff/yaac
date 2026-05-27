@@ -7,6 +7,29 @@ export const execFileAsync = promisify(execFile)
 const execAsync = promisify(exec)
 
 /**
+ * Whether to set `UsernsMode: keep-id` on the session, proxy, and promoter
+ * containers. keep-id maps the in-container user to the host daemon UID so
+ * host-owned bind mounts (worktree, ~/.claude, credsDir, graphroot) are
+ * writable on Linux rootless-podman hosts.
+ *
+ * It is unnecessary on macOS (podman runs in a VM; virtiofs handles
+ * ownership) and actively breaks nested containers: keep-id changes the UID
+ * mapping so podman must `chown-by-maps` the shared image cache's
+ * additionalimagestores layers, and that chown fails with EPERM because the
+ * rootless session container has CapEff=0 (`storage-chown-by-maps: lchown
+ * ... operation not permitted`). Set `YAAC_DISABLE_KEEP_ID=1` to omit it.
+ *
+ * Defaults to enabled; parsing mirrors `isTorEnabled()` (unset / empty / `0`
+ * / `false` count as "keep-id stays on").
+ */
+export function keepIdEnabled(): boolean {
+  const raw = process.env.YAAC_DISABLE_KEEP_ID
+  if (raw === undefined) return true
+  const v = raw.trim().toLowerCase()
+  return v === '' || v === '0' || v === 'false'
+}
+
+/**
  * Stderr patterns that indicate a transient podman failure worth retrying.
  * These are NOT "the container is actually gone" — they're podman/OCI runtime
  * state races that usually resolve on their own (e.g. container transitioning,

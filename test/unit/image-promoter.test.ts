@@ -9,6 +9,7 @@ vi.mock('@/lib/container/runtime', () => ({
     createContainer: vi.fn(),
   },
   shellPodmanWithRetry: vi.fn(),
+  keepIdEnabled: vi.fn().mockReturnValue(true),
 }))
 
 vi.mock('@/lib/project/paths', () => ({

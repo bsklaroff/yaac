@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
-import { ensureContainerRuntime, podman, shellPodmanWithRetry } from '@/lib/container/runtime'
+import { ensureContainerRuntime, keepIdEnabled, podman, shellPodmanWithRetry } from '@/lib/container/runtime'
 import { ensureImage, packTar } from '@/lib/container/image-builder'
 import {
   ensureNestedStorageVolumes,
@@ -349,8 +349,10 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
       // writable by the in-container yaac user. Without this, rootless
       // podman on Linux maps container UID 1000 to a subuid and host
       // files appear as `root` inside — breaking the /workspace/.git
-      // pointer write and every other host-owned mount.
-      UsernsMode: 'keep-id',
+      // pointer write and every other host-owned mount. See keepIdEnabled():
+      // unnecessary on macOS and breaks the nested-container image cache, so
+      // YAAC_DISABLE_KEEP_ID=1 omits it.
+      ...(keepIdEnabled() ? { UsernsMode: 'keep-id' } : {}),
       Memory: 8 * 1024 ** 3,
       ...(config.nestedContainers ? {
         SecurityOpt: ['label=disable', 'unmask=/proc/sys'],

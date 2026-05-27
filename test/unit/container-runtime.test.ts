@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // Mock node:child_process so the promisified execFile / exec are controllable.
 // Must be hoisted before importing the module under test.
@@ -75,6 +75,7 @@ import {
   createAndStartContainerWithRetry,
   createSemaphore,
   dialBackoffDelayMs,
+  keepIdEnabled,
 } from '@/lib/container/runtime'
 
 describe('isTransientPodmanError', () => {
@@ -287,6 +288,35 @@ describe('shellPodmanWithRetry', () => {
       shellPodmanWithRetry('podman exec c true', { baseDelay: 1, maxAttempts: 3 }),
     ).rejects.toThrow('still transient')
     expect(execMock).toHaveBeenCalledTimes(3)
+  })
+})
+
+describe('keepIdEnabled', () => {
+  const KEY = 'YAAC_DISABLE_KEEP_ID'
+  let saved: string | undefined
+  beforeEach(() => { saved = process.env[KEY] })
+  afterEach(() => {
+    if (saved === undefined) delete process.env[KEY]
+    else process.env[KEY] = saved
+  })
+
+  it('defaults to enabled when the env var is unset', () => {
+    delete process.env[KEY]
+    expect(keepIdEnabled()).toBe(true)
+  })
+
+  it('stays enabled for falsy/empty values', () => {
+    for (const v of ['', '0', 'false', 'FALSE', '  false  ']) {
+      process.env[KEY] = v
+      expect(keepIdEnabled()).toBe(true)
+    }
+  })
+
+  it('disables for any truthy value', () => {
+    for (const v of ['1', 'true', 'TRUE', 'yes', 'on']) {
+      process.env[KEY] = v
+      expect(keepIdEnabled()).toBe(false)
+    }
   })
 })
 

@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { spawn, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { SecretProxyRule } from '@/shared/types'
-import { podman, ensureNetwork, imageExists } from '@/lib/container/runtime'
+import { podman, ensureNetwork, imageExists, keepIdEnabled } from '@/lib/container/runtime'
 import fs from 'node:fs/promises'
 import { PROXY_DIR, credentialsDir } from '@/lib/project/paths'
 import { contextHash } from '@/lib/container/image-builder'
@@ -616,10 +616,10 @@ export class ProxyClient {
               [`${PROXY_CONTAINER_PORT}/tcp`]: [{ HostPort: hostPort, HostIp: '127.0.0.1' }],
             },
             NetworkMode: `podman,${this.config.network}`,
-            // See UsernsMode note in session-create.ts: keep-id maps the
-            // proxy's `node` user (UID 1000) to the host daemon UID so
-            // credsDir is readable on Linux rootless podman.
-            UsernsMode: 'keep-id',
+            // See keepIdEnabled(): keep-id maps the proxy's `node` user (UID
+            // 1000) to the host daemon UID so credsDir is readable on Linux
+            // rootless podman. YAAC_DISABLE_KEEP_ID=1 omits it.
+            ...(keepIdEnabled() ? { UsernsMode: 'keep-id' } : {}),
             Binds: [
               `${credsDir}:/yaac-credentials:Z`,
               `${agentVolume}:${SSH_AGENT_MOUNT}`,
