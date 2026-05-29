@@ -412,6 +412,16 @@ describe('credentials', () => {
       expect(creds.tokens).toEqual([{ kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_new' }])
     })
 
+    it('preserves the case of the pattern as typed', async () => {
+      await addEntry({ kind: 'https', pattern: 'github.com/Acme/Repo', token: 'ghp_a' })
+      await addEntry({ kind: 'https', pattern: 'github.com/acme/repo', token: 'ghp_b' })
+      const creds = await loadCredentials()
+      expect(creds.tokens).toEqual([
+        { kind: 'https', pattern: 'github.com/Acme/Repo', token: 'ghp_a' },
+        { kind: 'https', pattern: 'github.com/acme/repo', token: 'ghp_b' },
+      ])
+    })
+
     it('rejects invalid pattern', async () => {
       await expect(addEntry({ kind: 'https', pattern: '*', token: 'ghp_x' }))
         .rejects.toBeInstanceOf(DaemonError)
@@ -452,6 +462,17 @@ describe('credentials', () => {
       await replaceEntries([{ kind: 'https', pattern: 'github.com/new/*', token: 'ghp_new' }])
       expect((await loadCredentials()).tokens).toEqual([
         { kind: 'https', pattern: 'github.com/new/*', token: 'ghp_new' },
+      ])
+    })
+
+    it('preserves the case of each entry as provided', async () => {
+      await replaceEntries([
+        { kind: 'https', pattern: 'github.com/Acme/Repo', token: 'ghp_a' },
+        { kind: 'https', pattern: 'gitlab.com/Acme/Repo', token: 'glp_b' },
+      ])
+      expect((await loadCredentials()).tokens).toEqual([
+        { kind: 'https', pattern: 'github.com/Acme/Repo', token: 'ghp_a' },
+        { kind: 'https', pattern: 'gitlab.com/Acme/Repo', token: 'glp_b' },
       ])
     })
 

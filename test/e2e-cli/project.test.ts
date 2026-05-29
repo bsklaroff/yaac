@@ -107,4 +107,27 @@ describe('yaac project (real CLI + real daemon)', () => {
     expect(exitCode).not.toBe(0)
     expect(stderr).toContain('already exists')
   })
+
+  it('project add lowercases the slug regardless of the URL case', async () => {
+    // The slug is baked into image tags (yaac-user-<slug>:<hash>), which
+    // Docker/Podman require to be all-lowercase, so the slug is forced to
+    // lowercase even when the source URL has caps. The CONFLICT check fires
+    // after slug derivation but before clone / credential resolution, so we
+    // can assert the slug shape via the conflict message.
+    await fs.mkdir(path.join(testEnv.dataDir, 'projects', 'myrepo'), { recursive: true })
+
+    const github = await runYaac(
+      testEnv.env, 'project', 'add', 'https://github.com/Acme/MyRepo',
+    )
+    expect(github.exitCode).not.toBe(0)
+    expect(github.stderr).toContain('"myrepo"')
+    expect(github.stderr).toContain('already exists')
+
+    const gitlab = await runYaac(
+      testEnv.env, 'project', 'add', 'https://gitlab.com/Acme/MyRepo',
+    )
+    expect(gitlab.exitCode).not.toBe(0)
+    expect(gitlab.stderr).toContain('"myrepo"')
+    expect(gitlab.stderr).toContain('already exists')
+  })
 })

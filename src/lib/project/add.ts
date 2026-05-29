@@ -42,7 +42,10 @@ export interface AddProjectResult {
  */
 export async function addProject(remoteUrl: string): Promise<AddProjectResult> {
   const parsed = validateGitRemoteUrl(remoteUrl)
-  const slug = parsed.path.split('/').pop() as string
+  // The slug is baked into image tags (yaac-user-<slug>:<hash>), which Docker/
+  // Podman require to be all-lowercase. URL and credential-pattern case is
+  // preserved everywhere else.
+  const slug = (parsed.path.split('/').pop() as string).toLowerCase()
   const dir = projectDir(slug)
 
   await ensureDataDir()
