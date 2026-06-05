@@ -39,8 +39,15 @@ RUN ARCH="$(dpkg --print-architecture)" && \
       -o /usr/local/lib/docker/cli-plugins/docker-compose && \
     chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
-RUN echo "yaac:100000:65536" > /etc/subuid && \
-    echo "yaac:100000:65536" > /etc/subgid
+# Nested-podman subuid/subgid ranges. These must reference uids that actually
+# exist in *this* container's userns — not the host's subuid range. On Fedora
+# hosts rootless podman happens to give the outer container a ~1M uid range so
+# `100000:65536` falls inside it by accident; on Ubuntu hosts the outer range
+# is the standard 65536 and uids ≥100000 aren't mapped, so newuidmap rejects
+# the multi-line uid_map write with EPERM. Sticking to inside-uids 1..65535
+# (skipping yaac's own uid 1000) works on either distro.
+RUN printf 'yaac:1:999\nyaac:1001:64535\n' > /etc/subuid && \
+    printf 'yaac:1:999\nyaac:1001:64535\n' > /etc/subgid
 
 RUN chmod u-s /usr/bin/newuidmap /usr/bin/newgidmap && \
     setcap cap_setuid+ep /usr/bin/newuidmap && \
