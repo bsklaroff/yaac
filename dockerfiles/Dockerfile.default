@@ -7,7 +7,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcairo2 libcups2t64 libdbus-1-3 libgbm1 libnspr4 libnss3 libpango-1.0-0 \
     libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
     libxkbcommon0 libxrandr2 locales ncat netcat-openbsd openssh-client \
-    podman python3 ripgrep socat sudo tmux wget xz-utils zsh && \
+    pipx podman python3 python3-pip python3-venv ripgrep socat sudo tmux \
+    wget xz-utils zsh && \
     sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen && update-locale LANG=en_US.UTF-8 && \
     if [ -n "$SSL_CERT_FILE" ] && [ -f "$SSL_CERT_FILE" ]; then \
       cp "$SSL_CERT_FILE" /usr/local/share/ca-certificates/proxy-ca.crt && update-ca-certificates; \
@@ -26,6 +27,14 @@ RUN ARCH="$(dpkg --print-architecture)" && if [ "$ARCH" = "amd64" ]; then ARCH=x
     tar -xz -C /usr/local --strip-components=1 && \
     ln -sf /usr/local/bin/nvim /usr/local/bin/vi && \
     ln -sf /usr/local/bin/nvim /usr/local/bin/vim
+# Docker CLI only — routed at DOCKER_HOST below to the rootless podman socket,
+# which serves the Docker Engine API. Running a real dockerd here would need a
+# second rootlesskit userns nested under podman's; the kernel refuses the
+# inner /proc remount because of the standard /proc/{acpi,scsi,kcore,...}
+# masks, so containers fail to start. Podman's socket avoids that nesting.
+RUN ARCH="$(dpkg --print-architecture)" && if [ "$ARCH" = "amd64" ]; then ARCH=x86_64; else ARCH=aarch64; fi && \
+    curl -fsSL "https://download.docker.com/linux/static/stable/${ARCH}/docker-29.5.3.tgz" | \
+    tar -xz -C /usr/local/bin --strip-components=1 docker/docker
 RUN corepack enable
 RUN PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers \
       npx -y playwright-core@1.50.1 install chromium --no-shell && \
@@ -53,6 +62,7 @@ ENV PATH="/home/yaac/.local/bin:${PATH}"
 ENV EDITOR=nvim
 ENV SHELL=/bin/zsh
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+ENV DOCKER_HOST=unix:///run/user/1000/podman/podman.sock
 
 RUN cat <<'EOF' > ~/.zshrc
 HISTSIZE=10000
