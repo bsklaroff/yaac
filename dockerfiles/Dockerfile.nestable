@@ -20,6 +20,25 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends uidmap libcap2-bin slirp4netns && \
     rm -rf /var/lib/apt/lists/*
 
+# Docker CLI + compose plugin — both routed at DOCKER_HOST below to the
+# rootless podman socket, which serves the Docker Engine API. Running a real
+# dockerd here would need a second rootlesskit userns nested under podman's;
+# the kernel refuses the inner /proc remount because of the standard
+# /proc/{acpi,scsi,kcore,...} masks, so containers fail to start. Podman's
+# socket avoids that nesting. Buildx is omitted on purpose — its default
+# docker-container driver wants to pull moby/buildkit, which our egress
+# proxy forbids; compose falls back to the classic build endpoint that
+# podman implements.
+RUN ARCH="$(dpkg --print-architecture)" && \
+    if [ "$ARCH" = "amd64" ]; then DOCKER_ARCH=x86_64; COMPOSE_ARCH=x86_64; \
+    else DOCKER_ARCH=aarch64; COMPOSE_ARCH=aarch64; fi && \
+    curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-29.5.3.tgz" | \
+      tar -xz -C /usr/local/bin --strip-components=1 docker/docker && \
+    mkdir -p /usr/local/lib/docker/cli-plugins && \
+    curl -fsSL "https://github.com/docker/compose/releases/download/v5.1.4/docker-compose-linux-${COMPOSE_ARCH}" \
+      -o /usr/local/lib/docker/cli-plugins/docker-compose && \
+    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
 RUN echo "yaac:100000:65536" > /etc/subuid && \
     echo "yaac:100000:65536" > /etc/subgid
 
@@ -65,3 +84,4 @@ RUN mkdir -p /run/user/1000/podman && chown yaac:yaac -R /run/user/1000
 
 USER yaac
 ENV _CONTAINERS_USERNS_CONFIGURED=""
+ENV DOCKER_HOST=unix:///run/user/1000/podman/podman.sock
