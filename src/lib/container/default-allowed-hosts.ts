@@ -62,6 +62,7 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'hub.docker.com',
   'www.docker.com',
   'production.cloudflare.docker.com',
+  'production.cloudfront.docker.com',
   'download.docker.com',
   'podman.io',
   'gcr.io',
