@@ -138,7 +138,7 @@ export const PROMOTER_SCRIPT = [
   // so the silent teardown paths still leave an audit trail of what was
   // promoted and what failed.
   'log() { echo "[promoter] $*"; echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" >> /dst/.yaac-promoter.log; }',
-  `log "start uid=$(id -u) graphRoot=$(podman info --format '{{.Store.GraphRoot}}' 2>&1)"`,
+  `log "start uid=$(id -u) HOME=$HOME graphRoot=$(podman info --format '{{.Store.GraphRoot}}' 2>&1)"`,
   // Pass 1 — copy by id. `podman image ls -q --no-trunc` emits ids
   // prefixed with "sha256:"; skopeo's containers-storage transport parses
   // a bare `sha256:<hex>` as a name+tag (→ docker.io/library/sha256:<hex>),
@@ -146,8 +146,21 @@ export const PROMOTER_SCRIPT = [
   // image-id reference. skopeo's stderr is captured into `err` so a failure
   // is reported (not silently swallowed); the `if` keeps it best-effort —
   // a bad copy never aborts the remaining images.
-  'ids=$(podman image ls -a -q --no-trunc 2>/dev/null | sed -e "s/^sha256://" || true)',
-  'log "found $(echo "$ids" | grep -c . || true) image id(s) in source graphroot"',
+  // Capture `image ls` stderr so a read failure (ownership/userns mismatch,
+  // storage-driver mismatch, wrong HOME/graphroot) is logged instead of
+  // silently yielding an empty id list and a misleading "found 0".
+  'lserr=$(mktemp)',
+  'ids=$(podman image ls -a -q --no-trunc 2>"$lserr" | sed -e "s/^sha256://" || true)',
+  '[ -s "$lserr" ] && log "podman image ls stderr: $(tr "\\n" " " < "$lserr")"',
+  'rm -f "$lserr"',
+  'nfound=$(echo "$ids" | grep -c . || true)',
+  // Cross-check against the on-disk store: count image-id dirs under
+  // overlay-images (excluding the images.json / images.lock metadata files).
+  // If the store holds image dirs but podman listed none, the read failed —
+  // the store is not actually empty.
+  `nmeta=$(ls -1 "$HOME/.local/share/containers/storage/overlay-images" 2>/dev/null | grep -vc '^images\\.' || true)`,
+  'log "found $nfound image id(s) in source graphroot (overlay-images dirs on disk: $nmeta)"',
+  '[ "$nfound" = "0" ] && [ "${nmeta:-0}" != "0" ] && log "WARN: store holds $nmeta image dir(s) but podman listed 0 — the source graphroot could not be read (ownership/userns or storage-driver mismatch)"',
   'copied=0; skipped=0; failed=0',
   'for id in $ids; do',
   '  if podman --root /dst --runroot /tmp/dst-run image exists "$id" 2>/dev/null; then',
@@ -216,6 +229,18 @@ export function buildPromoterRunArgs(opts: {
     // Source graphroot must live at the session's original storage path:
     // podman's sqlite db bakes that path in and rejects `--root` overrides.
     '-v', `${graphroot}:/home/yaac/.local/share/containers:rw`,
+    // Mount the shared cache at the additionalimagestores path too, not just
+    // at the /dst destination. The session built its images with this cache
+    // mounted as an additional store, so an image built `FROM <cached-base>`
+    // (or any pulled image whose lower layers were already cached) keeps those
+    // lower layers in the cache, not the graphroot. Without this mount the
+    // source store can't resolve them — podman reports "top layer ... not
+    // found in layer tree" and lists zero images, so the promoter copies
+    // nothing. With it, the full layer tree resolves; skopeo copies only the
+    // new top layer(s) and skips lower layers already present in the cache.
+    // rw (not ro) because additionalimagestores unconditionally creates
+    // lock-file dirs in the store path (see SHARED_IMAGE_STORE_PATH).
+    '-v', `${imageCache}:${SHARED_IMAGE_STORE_PATH}:rw`,
     '-v', `${imageCache}:/dst:rw`,
     imageRef,
     '-c', PROMOTER_SCRIPT,

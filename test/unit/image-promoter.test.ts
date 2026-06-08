@@ -241,6 +241,9 @@ describe('buildPromoterRunArgs', () => {
     // db rejects `--root` overrides with a config mismatch).
     expect(args).toContain('yaac-podmanstorage-sess-y:/home/yaac/.local/share/containers:rw')
     expect(args).toContain('yaac-imagecache-slug-x:/dst:rw')
+    // The cache is also mounted at the additionalimagestores path so the source
+    // store can resolve layers of images built FROM a cached base.
+    expect(args).toContain('yaac-imagecache-slug-x:/var/lib/shared-images:rw')
     // Labels mirror the old dockerode path for orphan GC.
     expect(args).toContain('yaac.promoter=true')
     expect(args).toContain('yaac.project=slug-x')
@@ -269,6 +272,7 @@ describe('buildPromoterShellCommand', () => {
     // override, and image all appear as quoted tokens.
     expect(cmd).toContain("'yaac-podmanstorage-sess-y:/home/yaac/.local/share/containers:rw'")
     expect(cmd).toContain("'yaac-imagecache-slug-x:/dst:rw'")
+    expect(cmd).toContain("'yaac-imagecache-slug-x:/var/lib/shared-images:rw'")
     expect(cmd).toContain("'label=disable'")
     expect(cmd).toContain("'/bin/sh'")
     expect(cmd).toContain("'yaac-base-nestable:abcdef'")
@@ -297,6 +301,7 @@ describe('promoteSessionImages', () => {
     expect(args).toContain('yaac-base-nestable:abc')
     expect(args).toContain('yaac-podmanstorage-sess-y:/home/yaac/.local/share/containers:rw')
     expect(args).toContain('yaac-imagecache-slug-x:/dst:rw')
+    expect(args).toContain('yaac-imagecache-slug-x:/var/lib/shared-images:rw')
     expect(args).toContain('label=disable')
     expect(args).toContain('/bin/sh')
     // No onLog → stdout/stderr are ignored (not piped).
