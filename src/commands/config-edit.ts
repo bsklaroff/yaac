@@ -5,7 +5,7 @@ import { editFile } from '@/commands/edit-file'
 
 export async function configEdit(projectSlug: string): Promise<void> {
   const client = await getRpcClient()
-  const res = await client.project[':slug'].$get({ param: { slug: projectSlug } })
+  const res = await client.project[':slug'].exists.$get({ param: { slug: projectSlug } })
   if (!res.ok) throw await toClientError(res)
 
   await editFile(path.join(projectConfigDir(projectSlug), 'yaac-config.json'))

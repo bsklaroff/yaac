@@ -71,6 +71,24 @@ describe('yaac config (real CLI + real daemon)', () => {
     expect(await fs.readFile(target, 'utf8')).toBe('user-dockerfile-marker')
   })
 
+  it('config edit opens the editor even when yaac-config.json is malformed', async () => {
+    const repo = path.join(testEnv.scratchDir, 'demo')
+    await createTestRepo(repo)
+    await addTestProject(repo)
+
+    const target = path.join(testEnv.dataDir, 'projects', 'demo', 'config', 'yaac-config.json')
+    await fs.mkdir(path.dirname(target), { recursive: true })
+    await fs.writeFile(target, '{ this is not valid json')
+
+    const editor = await writeMarkerEditor('repaired-config')
+    const { exitCode, stderr } = await runYaac(
+      { ...testEnv.env, EDITOR: editor },
+      'config', 'edit', 'demo',
+    )
+    expect(exitCode, stderr).toBe(0)
+    expect(await fs.readFile(target, 'utf8')).toBe('repaired-config')
+  })
+
   it('config edit fails with a clear error for an unknown project slug', async () => {
     const editor = await writeMarkerEditor('should-not-run')
     const { exitCode, stderr } = await runYaac(

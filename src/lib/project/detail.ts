@@ -30,6 +30,15 @@ async function loadProjectMeta(slug: string): Promise<ProjectMeta> {
 }
 
 /**
+ * Cheap existence check that doesn't parse `yaac-config.json`. Used by
+ * `config edit` so a malformed config doesn't block opening the editor
+ * to fix it — exactly when you need to edit it most.
+ */
+export async function assertProjectExists(slug: string): Promise<void> {
+  await loadProjectMeta(slug)
+}
+
+/**
  * Resolve the project's config from the per-machine config directory.
  * Mirrors `resolveProjectConfig` but throws NOT_FOUND when the project
  * itself is unknown (the daemon route relies on this).
