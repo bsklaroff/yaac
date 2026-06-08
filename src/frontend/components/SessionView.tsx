@@ -1,6 +1,13 @@
 import type { JSX } from 'react'
 import { useUiStore } from '@/frontend/store'
-import type { DaemonSnapshot } from '@/shared/types'
+import { SessionTerminal } from '@/frontend/components/SessionTerminal'
+import type { DaemonSnapshot, SessionListEntry } from '@/shared/types'
+
+const STATUS_DOT: Record<SessionListEntry['status'], string> = {
+  running: 'bg-green-500',
+  waiting: 'bg-amber-500',
+  prewarm: 'bg-sky-500',
+}
 
 export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined }): JSX.Element {
   const selectedSessionId = useUiStore((s) => s.selectedSessionId)
@@ -15,33 +22,18 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
   }
 
   return (
-    <main className="h-full flex-1 overflow-y-auto bg-neutral-900 p-8 text-neutral-200">
-      <h1 className="text-xl font-semibold">{session.projectSlug}</h1>
-      <dl className="mt-6 grid max-w-xl grid-cols-[8rem_1fr] gap-y-3 text-sm">
-        <Field label="Session" value={session.sessionId} />
-        <Field label="Tool" value={session.tool} />
-        <Field label="Status" value={session.status} />
-        <Field label="Created" value={session.createdAt} />
-        <Field label="Blocked hosts" value={session.blockedHosts.length ? session.blockedHosts.join(', ') : '—'} />
-      </dl>
-      {session.prompt && (
-        <div className="mt-6 max-w-xl">
-          <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Prompt</div>
-          <p className="mt-1 whitespace-pre-wrap text-sm text-neutral-300">{session.prompt}</p>
-        </div>
-      )}
-      <p className="mt-8 text-xs text-neutral-600">
-        Embedded terminal lands with the PTY bridge (next milestone).
-      </p>
+    <main className="flex h-full flex-1 flex-col bg-neutral-900">
+      <header className="flex items-center gap-3 border-b border-neutral-800 px-4 py-2.5 text-sm">
+        <span className={`h-2 w-2 shrink-0 rounded-full ${STATUS_DOT[session.status]}`} />
+        <span className="font-semibold text-neutral-100">{session.projectSlug}</span>
+        <span className="text-neutral-500">{session.tool}</span>
+        <span className="text-neutral-600">{session.status}</span>
+        <span className="ml-auto font-mono text-xs text-neutral-600">{session.sessionId.slice(0, 12)}</span>
+      </header>
+      {/* key forces a fresh terminal + socket when switching sessions */}
+      <div className="min-h-0 flex-1 p-2">
+        <SessionTerminal key={session.sessionId} sessionId={session.sessionId} />
+      </div>
     </main>
-  )
-}
-
-function Field({ label, value }: { label: string; value: string }): JSX.Element {
-  return (
-    <>
-      <dt className="text-neutral-500">{label}</dt>
-      <dd className="break-all font-mono text-neutral-200">{value}</dd>
-    </>
   )
 }

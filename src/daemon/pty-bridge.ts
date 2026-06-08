@@ -1,0 +1,123 @@
+import * as pty from 'node-pty'
+import type { IPty } from 'node-pty'
+import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
+
+const DEFAULT_COLS = 80
+const DEFAULT_ROWS = 24
+
+/**
+ * `podman exec -it <container> tmux -S <sock> attach-session -t yaac` —
+ * the same invocation the CLI's `session attach` runs, but spawned under
+ * a PTY on the daemon so podman gets a real tty.
+ */
+export function attachArgs(containerName: string): string[] {
+  return [
+    'exec', '-it', containerName,
+    'tmux', '-S', CONTAINER_TMUX_SOCK, 'attach-session', '-t', 'yaac',
+  ]
+}
+
+export interface ControlMessage {
+  type: 'resize' | 'signal' | 'ping'
+  cols?: number
+  rows?: number
+  name?: string
+}
+
+/** Parse a text control frame. Returns null for anything unrecognized. */
+export function parseControl(text: string): ControlMessage | null {
+  let obj: unknown
+  try {
+    obj = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (!obj || typeof obj !== 'object') return null
+  const t = (obj as { type?: unknown }).type
+  if (t !== 'resize' && t !== 'signal' && t !== 'ping') return null
+  return obj as ControlMessage
+}
+
+/** Minimal PTY surface the bridge needs (real impl: node-pty's IPty). */
+export interface PtyLike {
+  onData(cb: (data: string) => void): void
+  onExit(cb: (e: { exitCode: number }) => void): void
+  write(data: string): void
+  resize(cols: number, rows: number): void
+  kill(signal?: string): void
+}
+
+/** Minimal socket surface (real impl: the `ws` WebSocket via WSContext.raw). */
+export interface SocketLike {
+  send(data: string | Uint8Array): void
+  close(code?: number, reason?: string): void
+  onMessage(cb: (data: string | Buffer | ArrayBuffer, isBinary: boolean) => void): void
+  onClose(cb: () => void): void
+}
+
+function toText(data: string | Buffer | ArrayBuffer): string {
+  if (typeof data === 'string') return data
+  return Buffer.from(data as ArrayBuffer).toString('utf8')
+}
+
+/**
+ * Wire a PTY to a socket per the wire protocol:
+ *   - PTY output  → binary frames to the client
+ *   - binary in   → PTY stdin (keystrokes)
+ *   - text in     → control: {resize}/{signal}/{ping}
+ *   - PTY exit    → close the socket
+ *   - socket close→ kill the PTY (detaches tmux; the session lives on)
+ */
+export function bridge(ptyProc: PtyLike, sock: SocketLike): void {
+  ptyProc.onData((d) => {
+    try {
+      sock.send(Buffer.from(d, 'utf8'))
+    } catch {
+      // socket gone; the close handler will kill the pty
+    }
+  })
+
+  ptyProc.onExit(({ exitCode }) => {
+    try {
+      sock.close(1000, `pty exited (${exitCode})`)
+    } catch {
+      // already closed
+    }
+  })
+
+  sock.onMessage((data, isBinary) => {
+    if (isBinary) {
+      ptyProc.write(toText(data))
+      return
+    }
+    const ctrl = parseControl(toText(data))
+    if (!ctrl) return
+    if (ctrl.type === 'resize' && ctrl.cols && ctrl.rows) {
+      ptyProc.resize(ctrl.cols, ctrl.rows)
+    } else if (ctrl.type === 'signal' && ctrl.name) {
+      ptyProc.kill(ctrl.name)
+    } else if (ctrl.type === 'ping') {
+      sock.send('{"type":"pong"}')
+    }
+  })
+
+  sock.onClose(() => {
+    try {
+      ptyProc.kill()
+    } catch {
+      // already gone
+    }
+  })
+}
+
+/** Spawn the attach PTY for a resolved container. */
+export function spawnAttachPty(
+  containerName: string,
+  size: { cols?: number; rows?: number } = {},
+): IPty {
+  return pty.spawn('podman', attachArgs(containerName), {
+    name: 'xterm-color',
+    cols: size.cols ?? DEFAULT_COLS,
+    rows: size.rows ?? DEFAULT_ROWS,
+  })
+}

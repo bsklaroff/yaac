@@ -3,6 +3,7 @@ packages:
 allowBuilds:
   cpu-features: false
   esbuild: false
+  node-pty: true
   protobufjs: false
   ssh2: false
 minimumReleaseAge: 10080

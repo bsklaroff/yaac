@@ -47,6 +47,7 @@ interface ProxyEntry {
 const proxy: Record<string, ProxyEntry> = {}
 for (const p of apiPrefixes) proxy[p] = { target, changeOrigin: true }
 proxy['/events'] = { target, changeOrigin: true, ws: true }
+proxy['/pty'] = { target, changeOrigin: true, ws: true }
 
 export default defineConfig({
   root: 'src/frontend',

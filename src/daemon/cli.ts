@@ -10,6 +10,8 @@ import { createNodeWebSocket } from '@hono/node-ws'
 import { buildApp } from '@/daemon/server'
 import { createWebAuthStore } from '@/daemon/web-auth'
 import { EventHub } from '@/daemon/events'
+import { bridge, spawnAttachPty, type SocketLike } from '@/daemon/pty-bridge'
+import { resolveSessionContainer } from '@/daemon/session-resolve'
 import { readBuildId } from '@/shared/build-id'
 import {
   acquireLock,
@@ -33,6 +35,18 @@ const __filename = fileURLToPath(import.meta.url)
 
 export interface DaemonRunOptions {
   port?: number
+}
+
+/**
+ * Minimal shape of the `ws` WebSocket exposed as WSContext.raw. The `ws`
+ * package's own types aren't in our resolvable set (transitive dep), so
+ * we pin just what the PTY bridge uses.
+ */
+interface RawWebSocket {
+  send(data: string | Uint8Array): void
+  close(code?: number, reason?: string): void
+  on(event: 'message', cb: (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => void): void
+  on(event: 'close', cb: () => void): void
 }
 
 // When YAAC_USE_TOR is set, the daemon routes its own git fetch/clone
@@ -114,6 +128,47 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     onClose: (_evt, ws) => hub.remove(ws),
     onError: (_err, ws) => hub.remove(ws),
   })))
+
+  // PTY bridge: one embedded terminal per connection, attached to the
+  // session's tmux. Path is /pty/attach (not /session/...) to avoid
+  // colliding with the GET /session/:id route. Auth rides the upgrade.
+  app.get('/pty/attach', nodeWs.upgradeWebSocket((c) => {
+    const id = c.req.query('id') ?? ''
+    return {
+      onOpen: (_evt, ws) => {
+        void (async () => {
+          let containerName: string
+          try {
+            const resolved = await resolveSessionContainer(id, { requireRunning: true })
+            containerName = resolved.containerName
+          } catch {
+            try {
+              ws.send(JSON.stringify({ type: 'error', message: 'session not found or not running' }))
+            } catch { /* socket already gone */ }
+            ws.close(1011, 'resolve failed')
+            return
+          }
+          // ws.raw is the underlying `ws` WebSocket, but its types aren't in
+          // our resolvable set (transitive dep), so pin a minimal shape.
+          const raw = ws.raw as RawWebSocket | undefined
+          if (!raw) {
+            ws.close(1011, 'no raw socket')
+            return
+          }
+          const ptyProc = spawnAttachPty(containerName)
+          const sock: SocketLike = {
+            send: (data) => raw.send(data),
+            close: (code, reason) => raw.close(code, reason),
+            onMessage: (cb) => raw.on('message', (data, isBinary) =>
+              cb(Array.isArray(data) ? Buffer.concat(data) : data, isBinary)),
+            onClose: (cb) => raw.on('close', () => cb()),
+          }
+          bridge(ptyProc, sock)
+          daemonLog(`[daemon] pty attach: session=${id} container=${containerName}`)
+        })()
+      },
+    }
+  }))
 
   const { server, port } = await new Promise<{ server: ServerType; port: number }>(
     (resolve, reject) => {
