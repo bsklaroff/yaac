@@ -1,16 +1,41 @@
+import path from 'node:path'
+import { existsSync } from 'node:fs'
 import { Hono } from 'hono'
 import type { Context } from 'hono'
-import { bearerAuth, denyBrowserCors, requestLogger } from '@/daemon/auth'
+import { setCookie } from 'hono/cookie'
+import { denyBrowserCors, requestLogger } from '@/daemon/auth'
+import {
+  cookieOrBearerAuth,
+  createWebAuthStore,
+  hostHeaderCheck,
+  SESSION_COOKIE,
+  type WebAuthStore,
+} from '@/daemon/web-auth'
+import { registerStaticRoutes } from '@/daemon/static'
 import { toErrorBody, rewriteZValidatorBody } from '@/daemon/errors'
 import { projectApp } from '@/daemon/routes/project'
 import { sessionApp } from '@/daemon/routes/session'
 import { toolApp } from '@/daemon/routes/tool'
 import { authApp } from '@/daemon/routes/auth'
 import { readPrewarmSessions } from '@/lib/prewarm'
+import { daemonLog } from '@/daemon/log'
+import { PACKAGE_ROOT } from '@/shared/paths'
 
 export interface DaemonAppDeps {
   secret: string
   buildId: string
+  /**
+   * Browser-auth store (bootstrap code + session cookies). Optional so
+   * existing in-process tests can keep calling `buildApp({secret,
+   * buildId})`; a fresh store is created when omitted.
+   */
+  store?: WebAuthStore
+  /**
+   * Returns the daemon's bound port for the Host-header check. Defaults
+   * to a getter returning 0 ("not bound" — tests that never `serve`), in
+   * which case only the loopback-hostname check applies.
+   */
+  getPort?: () => number
 }
 
 /**
@@ -19,11 +44,14 @@ export interface DaemonAppDeps {
  * can be driven with `new Request(...)` directly).
  */
 export function buildApp(deps: DaemonAppDeps) {
+  const store = deps.store ?? createWebAuthStore()
+  const getPort = deps.getPort ?? ((): number => 0)
   const app = new Hono()
 
   app.use('*', requestLogger())
+  app.use('*', hostHeaderCheck(getPort))
   app.use('*', denyBrowserCors())
-  app.use('*', bearerAuth(deps.secret))
+  app.use('*', cookieOrBearerAuth(deps.secret, store))
   app.use('*', async (c, next) => {
     await next()
     if (c.res.status !== 400) return
@@ -42,6 +70,47 @@ export function buildApp(deps: DaemonAppDeps) {
     { error: { code: 'NOT_FOUND', message: `no route ${c.req.method} ${c.req.path}` } },
     404,
   ))
+
+  // Browser auth bootstrap. Public (allowlisted in cookieOrBearerAuth):
+  // exchanges a one-time code for an HttpOnly session cookie. Never log
+  // the code value — only ok/fail.
+  app.post('/auth/bootstrap', async (c) => {
+    const body: unknown = await c.req.json().catch(() => null)
+    const code = (body as { code?: unknown } | null)?.code
+    if (typeof code !== 'string' || code.length === 0) {
+      daemonLog('[daemon] bootstrap fail')
+      return c.json({ error: { code: 'BAD_REQUEST', message: 'missing bootstrap code' } }, 400)
+    }
+    const sessionId = store.consumeBootstrap(code)
+    if (!sessionId) {
+      daemonLog('[daemon] bootstrap fail')
+      return c.json(
+        { error: { code: 'BAD_BOOTSTRAP', message: 'invalid or expired bootstrap code' } },
+        401,
+      )
+    }
+    setCookie(c, SESSION_COOKIE, sessionId, {
+      httpOnly: true,
+      sameSite: 'Strict',
+      path: '/',
+      // No `Secure`: the daemon is http on loopback, and browsers reject
+      // Secure cookies over http — setting it would drop the cookie.
+    })
+    daemonLog('[daemon] bootstrap ok')
+    return c.body(null, 204)
+  })
+
+  // Authenticated (CLI bearer / existing cookie): return the current
+  // bootstrap code so `yaac open` can build a ready-to-open authed URL
+  // without scraping the daemon log. Not public — requires a credential.
+  app.get('/auth/bootstrap-code', (c) => c.json({ code: store.currentCode() }))
+
+  // Serve the built SPA bundle when present (production: dist/frontend).
+  // Absent in dev/test (Vite serves the app instead), so guard on it.
+  const frontendDir = path.join(PACKAGE_ROOT, 'frontend')
+  if (existsSync(path.join(frontendDir, 'index.html'))) {
+    registerStaticRoutes(app, frontendDir)
+  }
 
   return app
     .get('/health', (c) => c.json({ ok: true, buildId: deps.buildId }))

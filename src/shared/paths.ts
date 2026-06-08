@@ -59,6 +59,15 @@ export function daemonLogPath(): string {
   return path.join(getDataDir(), 'daemon.log')
 }
 
+/**
+ * Persisted webapp session ids (0600). Lets a daemon restart keep browser
+ * sessions valid so users don't re-bootstrap on every rebuild. Sessions
+ * are bearer-equivalent, so this file is as sensitive as the lock file.
+ */
+export function webSessionsPath(): string {
+  return path.join(getDataDir(), '.web-sessions.json')
+}
+
 export async function ensureDataDir(): Promise<void> {
   await fs.mkdir(getProjectsDir(), { recursive: true })
 }

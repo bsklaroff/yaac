@@ -19,7 +19,7 @@ import { toolSet } from '@/commands/tool-set'
 import { configEdit } from '@/commands/config-edit'
 import { configEditDockerfile } from '@/commands/config-edit-dockerfile'
 import { configEditUserDockerfile } from '@/commands/config-edit-user-dockerfile'
-import { runDaemon, startDaemon, stopDaemon, restartDaemon, daemonLogs } from '@/daemon/cli'
+import { runDaemon, startDaemon, stopDaemon, restartDaemon, daemonLogs, openWebapp } from '@/daemon/cli'
 import { getDefaultTool } from '@/lib/project/preferences'
 import type { AgentTool } from '@/shared/types'
 import type { SessionMonitorOptions } from '@/commands/session-monitor'
@@ -100,6 +100,14 @@ daemon
   .option('-n, --lines <n>', 'Print only the last N lines', (v) => Number.parseInt(v, 10))
   .action(async (options: { follow?: boolean; lines?: number }) => {
     await daemonLogs(options)
+  })
+
+program
+  .command('open')
+  .description('Open the webapp in your browser (starts the daemon if needed)')
+  .option('--no-browser', 'Print the authenticated URL instead of launching a browser')
+  .action(async (options: { browser?: boolean }) => {
+    await openWebapp({ noBrowser: options.browser === false })
   })
 
 const project = program

@@ -6,7 +6,12 @@ import { createReadStream, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { serve, type ServerType } from '@hono/node-server'
+import { createNodeWebSocket } from '@hono/node-ws'
 import { buildApp } from '@/daemon/server'
+import { createWebAuthStore } from '@/daemon/web-auth'
+import { EventHub } from '@/daemon/events'
+import { bridge, spawnAttachPty, type SocketLike } from '@/daemon/pty-bridge'
+import { resolveSessionContainer } from '@/daemon/session-resolve'
 import { readBuildId } from '@/shared/build-id'
 import {
   acquireLock,
@@ -17,7 +22,7 @@ import {
   type DaemonLock,
 } from '@/shared/lock'
 import { ensureDataDir } from '@/lib/project/paths'
-import { daemonLogPath } from '@/shared/paths'
+import { daemonLogPath, webSessionsPath } from '@/shared/paths'
 import { startBackgroundLoop } from '@/daemon/background-loop'
 import { gcOrphanSessionVolumes } from '@/lib/container/image-promoter'
 import { gcOrphanEphemeralModuleDirs } from '@/lib/session/cleanup'
@@ -30,6 +35,18 @@ const __filename = fileURLToPath(import.meta.url)
 
 export interface DaemonRunOptions {
   port?: number
+}
+
+/**
+ * Minimal shape of the `ws` WebSocket exposed as WSContext.raw. The `ws`
+ * package's own types aren't in our resolvable set (transitive dep), so
+ * we pin just what the PTY bridge uses.
+ */
+interface RawWebSocket {
+  send(data: string | Uint8Array): void
+  close(code?: number, reason?: string): void
+  on(event: 'message', cb: (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => void): void
+  on(event: 'close', cb: () => void): void
 }
 
 // When YAAC_USE_TOR is set, the daemon routes its own git fetch/clone
@@ -85,7 +102,78 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
   }
 
   const secret = crypto.randomBytes(32).toString('hex')
-  const app = buildApp({ secret, buildId })
+  // Port isn't known until serve() binds, but the Host-header middleware
+  // (built into the app now) needs it. Bind it late through a ref the
+  // getter closes over; requests only arrive after we set it below.
+  const portRef = { current: 0 }
+  // Restore webapp sessions persisted by a prior daemon so a restart
+  // (e.g. a rebuild) doesn't force every browser to re-bootstrap.
+  const store = createWebAuthStore({
+    initialSessions: await loadWebSessions(),
+    onSessionsChanged: (sessions) => void saveWebSessions(sessions),
+  })
+  const hub = new EventHub()
+  const app = buildApp({ secret, buildId, store, getPort: () => portRef.current })
+
+  // WebSocket event stream. Registered here (not in buildApp) so buildApp's
+  // return type stays the plain Hono app the CLI's typed RPC client infers
+  // from. Auth runs as normal middleware on the upgrade — the cookie
+  // travels with it, no token in the URL.
+  // Keep the object rather than destructuring: injectWebSocket is a
+  // method that relies on `this`, so calling a detached reference later
+  // would break it (and trips eslint's unbound-method rule).
+  const nodeWs = createNodeWebSocket({ app })
+  app.get('/events', nodeWs.upgradeWebSocket(() => ({
+    onOpen: (_evt, ws) => {
+      hub.add(ws)
+      void hub.sendSnapshotTo(ws).catch(
+        (err: unknown) => daemonLog(`[daemon] events: initial snapshot failed: ${String(err)}`),
+      )
+    },
+    onClose: (_evt, ws) => hub.remove(ws),
+    onError: (_err, ws) => hub.remove(ws),
+  })))
+
+  // PTY bridge: one embedded terminal per connection, attached to the
+  // session's tmux. Path is /pty/attach (not /session/...) to avoid
+  // colliding with the GET /session/:id route. Auth rides the upgrade.
+  app.get('/pty/attach', nodeWs.upgradeWebSocket((c) => {
+    const id = c.req.query('id') ?? ''
+    return {
+      onOpen: (_evt, ws) => {
+        void (async () => {
+          let containerName: string
+          try {
+            const resolved = await resolveSessionContainer(id, { requireRunning: true })
+            containerName = resolved.containerName
+          } catch {
+            try {
+              ws.send(JSON.stringify({ type: 'error', message: 'session not found or not running' }))
+            } catch { /* socket already gone */ }
+            ws.close(1011, 'resolve failed')
+            return
+          }
+          // ws.raw is the underlying `ws` WebSocket, but its types aren't in
+          // our resolvable set (transitive dep), so pin a minimal shape.
+          const raw = ws.raw as RawWebSocket | undefined
+          if (!raw) {
+            ws.close(1011, 'no raw socket')
+            return
+          }
+          const ptyProc = spawnAttachPty(containerName)
+          const sock: SocketLike = {
+            send: (data) => raw.send(data),
+            close: (code, reason) => raw.close(code, reason),
+            onMessage: (cb) => raw.on('message', (data, isBinary) =>
+              cb(Array.isArray(data) ? Buffer.concat(data) : data, isBinary)),
+            onClose: (cb) => raw.on('close', () => cb()),
+          }
+          bridge(ptyProc, sock)
+          daemonLog(`[daemon] pty attach: session=${id} container=${containerName}`)
+        })()
+      },
+    }
+  }))
 
   const { server, port } = await new Promise<{ server: ServerType; port: number }>(
     (resolve, reject) => {
@@ -95,6 +183,8 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
       s.once('error', reject)
     },
   )
+  portRef.current = port
+  nodeWs.injectWebSocket(server)
 
   // Race-safe acquire via O_EXCL. Another daemon may have slipped past
   // the pre-bind fast-path check above; atomic create ensures exactly one
@@ -108,6 +198,9 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
   }
   const torPrefix = isTorEnabled() ? '(using tor) ' : ''
   daemonLog(`[daemon] ${torPrefix}listening on 127.0.0.1:${port} lock=${daemonLockPath()}`)
+  // Start banner for the webapp: a one-time, time-bounded bootstrap URL.
+  // The code is single-use; reopen with a fresh one after `daemon restart`.
+  daemonLog(`[daemon] open http://127.0.0.1:${port}/?bootstrap=${store.currentCode()}`)
 
   // Register signal handlers BEFORE the async startup steps below. Node's
   // default SIGTERM/SIGINT action is to terminate immediately, bypassing
@@ -174,7 +267,13 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
   // first prewarm tick that whole time. Running them concurrently with
   // the loop lets the daemon serve the prewarm/reconcile path right
   // away while the GC drains in the background.
-  loopDone = startBackgroundLoop({ signal: abortCtrl.signal })
+  loopDone = startBackgroundLoop({
+    signal: abortCtrl.signal,
+    // After each reconciliation tick, push a fresh snapshot to any
+    // connected webapp clients (no-op when none are connected, and only
+    // broadcasts when the state actually changed).
+    onTick: () => hub.publishSnapshot(),
+  })
 
   // Remove per-session podman graphroot volumes whose session container
   // is gone (crashed session, killed daemon, host reboot). No layer
@@ -285,6 +384,66 @@ export async function restartDaemon(): Promise<void> {
   await startDaemon()
 }
 
+export function buildWebappUrl(port: number, code: string): string {
+  return `http://127.0.0.1:${port}/?bootstrap=${code}`
+}
+
+export interface OpenWebappOptions {
+  /** Print the URL instead of launching a browser. */
+  noBrowser?: boolean
+  // Injected for tests; default to the real implementations.
+  ensureDaemon?: () => Promise<void>
+  loadLock?: () => Promise<DaemonLock | null>
+  fetchImpl?: typeof fetch
+  launch?: (url: string) => void
+}
+
+/**
+ * Entry point for `yaac open`. Ensures the daemon is running, fetches a
+ * fresh bootstrap code over the authenticated API, and launches the
+ * browser straight into the authenticated webapp — no log-scraping or
+ * code-pasting. The URL is always printed (stdout) so it's scriptable.
+ */
+export async function openWebapp(opts: OpenWebappOptions = {}): Promise<void> {
+  const ensureDaemon = opts.ensureDaemon ?? startDaemon
+  const loadLock = opts.loadLock ?? readLock
+  const fetchImpl = opts.fetchImpl ?? ((input, init) => fetch(input, init))
+  const launch = opts.launch ?? openBrowser
+
+  // Idempotent: no-ops if a matching daemon is already running.
+  await ensureDaemon()
+  const lock = await loadLock()
+  if (!lock) throw new Error('daemon is not running')
+
+  const res = await fetchImpl(`http://127.0.0.1:${lock.port}/auth/bootstrap-code`, {
+    headers: { authorization: `Bearer ${lock.secret}` },
+  })
+  if (!res.ok) throw new Error(`failed to fetch bootstrap code (HTTP ${res.status})`)
+  const { code } = await res.json() as { code: string }
+
+  const url = buildWebappUrl(lock.port, code)
+  console.log(url)
+  if (opts.noBrowser) return
+  launch(url)
+}
+
+function openBrowser(url: string): void {
+  const { cmd, args } = process.platform === 'darwin'
+    ? { cmd: 'open', args: [url] }
+    : process.platform === 'win32'
+      ? { cmd: 'cmd', args: ['/c', 'start', '', url] }
+      : { cmd: 'xdg-open', args: [url] }
+  try {
+    const child = spawn(cmd, args, { detached: true, stdio: 'ignore' })
+    child.on('error', () => {
+      console.error(`[yaac] couldn't launch a browser — open this URL manually:\n  ${url}`)
+    })
+    child.unref()
+  } catch {
+    console.error(`[yaac] couldn't launch a browser — open this URL manually:\n  ${url}`)
+  }
+}
+
 async function spawnDaemonDetached(): Promise<void> {
   const { bin, args } = resolveDaemonInvocation()
   const child = spawn(bin, args, {
@@ -337,6 +496,24 @@ function findTsxCli(): string | null {
     dir = parent
   }
   return null
+}
+
+async function loadWebSessions(): Promise<string[]> {
+  try {
+    const raw = await fs.readFile(webSessionsPath(), 'utf8')
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []
+  } catch {
+    return [] // no file yet, or unreadable — start fresh
+  }
+}
+
+async function saveWebSessions(sessions: string[]): Promise<void> {
+  try {
+    await fs.writeFile(webSessionsPath(), JSON.stringify(sessions), { mode: 0o600 })
+  } catch (err) {
+    daemonLog(`[daemon] failed to persist web sessions: ${String(err)}`)
+  }
 }
 
 async function waitForLiveLock(timeoutMs: number): Promise<DaemonLock> {

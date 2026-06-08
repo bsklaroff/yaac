@@ -337,3 +337,53 @@ export type PickNextResult =
       reason: 'no_active' | 'closed_blank' | 'needs_project'
       candidates?: string[]
     }
+
+// ---------------------------------------------------------------------------
+// Webapp event stream — pushed over the `/events` WebSocket. The slice
+// pushes a full snapshot on connect and after each background-loop tick
+// when the state changed; granular per-entity events come later.
+// ---------------------------------------------------------------------------
+
+/**
+ * Project row in the snapshot. Structurally matches `ProjectListEntry`
+ * from `@/lib/project/list`; inlined here so this module stays
+ * browser-safe (the frontend imports it without pulling node-only lib
+ * files into its type graph).
+ */
+export interface ProjectSummary {
+  slug: string
+  remoteUrl: string
+  addedAt: string
+  sessionCount: number
+}
+
+/**
+ * Prewarm row in the snapshot. Structurally matches `PrewarmEntry` from
+ * `@/lib/prewarm`; inlined for the same browser-safety reason.
+ */
+export interface PrewarmSummary {
+  sessionId: string
+  containerName: string
+  fingerprint: string
+  state: 'creating' | 'ready' | 'failed'
+  verifiedAt: number
+  tool?: AgentTool
+}
+
+/**
+ * Full picture of daemon-owned state the webapp renders. Hydrated from a
+ * `snapshot` event on connect and replaced wholesale on every subsequent
+ * `snapshot`. Mirrors the union of `GET /session/list`, `GET /project/list`,
+ * and `GET /prewarm`.
+ */
+export interface DaemonSnapshot {
+  sessions: SessionListEntry[]
+  stale: StaleSessionInfo[]
+  failedPrewarms: FailedPrewarmInfo[]
+  projects: ProjectSummary[]
+  prewarm: Record<string, PrewarmSummary>
+}
+
+/** Messages the daemon pushes over `/events`. */
+export type DaemonEvent =
+  | { type: 'snapshot'; data: DaemonSnapshot }

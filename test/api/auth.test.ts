@@ -1,60 +1,16 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { Hono } from 'hono'
-import { bearerAuth, denyBrowserCors, requestLogger } from '@/daemon/auth'
+import { denyBrowserCors, requestLogger } from '@/daemon/auth'
 
-function buildTestApp(secret = 'shh'): Hono {
+function buildTestApp(): Hono {
   const app = new Hono()
   app.use('*', denyBrowserCors())
-  app.use('*', bearerAuth(secret))
-  app.get('/health', (c) => c.text('ok'))
   app.get('/protected', (c) => c.text('protected ok'))
   return app
 }
 
-describe('bearerAuth', () => {
-  it('rejects requests with no Authorization header', async () => {
-    const res = await buildTestApp().request('/protected')
-    expect(res.status).toBe(401)
-    const body = await res.json() as { error: { code: string } }
-    expect(body.error.code).toBe('BAD_BEARER')
-  })
-
-  it('rejects requests with the wrong secret', async () => {
-    const res = await buildTestApp().request('/protected', {
-      headers: { authorization: 'Bearer not-the-secret' },
-    })
-    expect(res.status).toBe(401)
-  })
-
-  it('accepts requests with the correct secret', async () => {
-    const res = await buildTestApp().request('/protected', {
-      headers: { authorization: 'Bearer shh' },
-    })
-    expect(res.status).toBe(200)
-    expect(await res.text()).toBe('protected ok')
-  })
-
-  it('accepts the bearer scheme case-insensitively', async () => {
-    const res = await buildTestApp().request('/protected', {
-      headers: { authorization: 'bearer shh' },
-    })
-    expect(res.status).toBe(200)
-  })
-
-  it('exempts /health so the CLI can probe without the secret', async () => {
-    const res = await buildTestApp().request('/health')
-    expect(res.status).toBe(200)
-    expect(await res.text()).toBe('ok')
-  })
-
-  it('rejects when secret-length matches but bytes differ', async () => {
-    // Length-equal mismatch exercises the constant-time branch.
-    const res = await buildTestApp('abc').request('/protected', {
-      headers: { authorization: 'Bearer xyz' },
-    })
-    expect(res.status).toBe(401)
-  })
-})
+// Bearer + cookie auth moved to `@/daemon/web-auth`; see
+// test/unit/daemon/web-auth.test.ts for that coverage.
 
 describe('denyBrowserCors', () => {
   it('responds 405 to preflight (OPTIONS) requests', async () => {
