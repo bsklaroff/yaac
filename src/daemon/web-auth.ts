@@ -2,8 +2,14 @@ import crypto from 'node:crypto'
 import type { MiddlewareHandler } from 'hono'
 import { getCookie } from 'hono/cookie'
 
-/** How long a freshly minted bootstrap code stays valid. */
-export const BOOTSTRAP_TTL_MS = 60_000
+/**
+ * How long a freshly minted bootstrap code stays valid. Generous (24h)
+ * on purpose: the code is single-use, 256-bit, and already retrievable
+ * from `yaac daemon logs` for the daemon's lifetime, so a short TTL adds
+ * little security but creates a real "code expired before I opened the
+ * browser" papercut. It still rotates on every successful exchange.
+ */
+export const BOOTSTRAP_TTL_MS = 24 * 60 * 60 * 1000
 
 /** Name of the HttpOnly cookie that carries a webapp session. */
 export const SESSION_COOKIE = 'yaac_session'
@@ -33,11 +39,19 @@ export interface WebAuthStore {
 }
 
 export function createWebAuthStore(
-  opts: { ttlMs?: number; now?: () => number } = {},
+  opts: {
+    ttlMs?: number
+    now?: () => number
+    /** Sessions to restore (e.g. persisted across a daemon restart). */
+    initialSessions?: Iterable<string>
+    /** Called whenever the live session set changes, for persistence. */
+    onSessionsChanged?: (sessions: string[]) => void
+  } = {},
 ): WebAuthStore {
   const ttlMs = opts.ttlMs ?? BOOTSTRAP_TTL_MS
   const now = opts.now ?? ((): number => Date.now())
-  const sessions = new Set<string>()
+  const sessions = new Set<string>(opts.initialSessions ?? [])
+  const persist = (): void => opts.onSessionsChanged?.([...sessions])
   let code = newToken()
   let codeIssuedAt = now()
 
@@ -53,10 +67,14 @@ export function createWebAuthStore(
       codeIssuedAt = t
       const id = newToken()
       sessions.add(id)
+      persist()
       return id
     },
     isValidSession: (id) => sessions.has(id),
-    revokeAll: () => sessions.clear(),
+    revokeAll: () => {
+      sessions.clear()
+      persist()
+    },
   }
 }
 

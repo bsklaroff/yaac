@@ -479,7 +479,9 @@ describe('createSession', () => {
       '/tmp/demo/claude.json:/home/yaac/.claude.json:Z',
       '/tmp/demo/codex:/home/yaac/.codex:Z',
     ]))
-    expect(mockWriteFile).toHaveBeenCalledWith('/tmp/demo/claude.json', '{}')
+    // seedClaudeJson ensures the file exists (pretty JSON + trailing
+    // newline). No onboarding flags for a non-Claude (codex) session.
+    expect(mockWriteFile).toHaveBeenCalledWith('/tmp/demo/claude.json', '{}\n')
     expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/claude', { recursive: true })
     expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/codex', { recursive: true })
   })

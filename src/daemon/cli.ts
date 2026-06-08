@@ -22,7 +22,7 @@ import {
   type DaemonLock,
 } from '@/shared/lock'
 import { ensureDataDir } from '@/lib/project/paths'
-import { daemonLogPath } from '@/shared/paths'
+import { daemonLogPath, webSessionsPath } from '@/shared/paths'
 import { startBackgroundLoop } from '@/daemon/background-loop'
 import { gcOrphanSessionVolumes } from '@/lib/container/image-promoter'
 import { gcOrphanEphemeralModuleDirs } from '@/lib/session/cleanup'
@@ -106,7 +106,12 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
   // (built into the app now) needs it. Bind it late through a ref the
   // getter closes over; requests only arrive after we set it below.
   const portRef = { current: 0 }
-  const store = createWebAuthStore()
+  // Restore webapp sessions persisted by a prior daemon so a restart
+  // (e.g. a rebuild) doesn't force every browser to re-bootstrap.
+  const store = createWebAuthStore({
+    initialSessions: await loadWebSessions(),
+    onSessionsChanged: (sessions) => void saveWebSessions(sessions),
+  })
   const hub = new EventHub()
   const app = buildApp({ secret, buildId, store, getPort: () => portRef.current })
 
@@ -431,6 +436,24 @@ function findTsxCli(): string | null {
     dir = parent
   }
   return null
+}
+
+async function loadWebSessions(): Promise<string[]> {
+  try {
+    const raw = await fs.readFile(webSessionsPath(), 'utf8')
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []
+  } catch {
+    return [] // no file yet, or unreadable — start fresh
+  }
+}
+
+async function saveWebSessions(sessions: string[]): Promise<void> {
+  try {
+    await fs.writeFile(webSessionsPath(), JSON.stringify(sessions), { mode: 0o600 })
+  } catch (err) {
+    daemonLog(`[daemon] failed to persist web sessions: ${String(err)}`)
+  }
 }
 
 async function waitForLiveLock(timeoutMs: number): Promise<DaemonLock> {

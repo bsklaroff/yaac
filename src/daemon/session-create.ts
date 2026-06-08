@@ -156,6 +156,65 @@ async function containerExecRoot(containerName: string, cmd: string): Promise<vo
   await shellPodmanWithRetry(`podman exec --user root ${containerName} ${cmd}`)
 }
 
+// Keep in lockstep with the @anthropic-ai/claude-code dependency: if it
+// ships a newer onboarding flow, a stale value lets the first-run wizard
+// reappear. `lastOnboardingVersion` must be >= the running CLI version.
+const CLAUDE_ONBOARDING_VERSION = '2.1.111'
+
+interface ClaudeJsonState {
+  hasCompletedOnboarding?: boolean
+  lastOnboardingVersion?: string
+  customApiKeyResponses?: { approved?: string[]; rejected?: string[] }
+  projects?: Record<string, { hasTrustDialogAccepted?: boolean } | undefined>
+  [key: string]: unknown
+}
+
+/**
+ * Ensure `~/.claude.json` exists (Podman bind-mounts it as a file) and, for
+ * Claude sessions, seed claude-code's onboarding state so its first-run
+ * wizard (theme picker, then the login screen) is skipped. Merges into any
+ * existing state so claude-code's own keys (oauthAccount, migrations, …)
+ * survive. The agent runs in /workspace; /repo is the git worktree root.
+ */
+export async function seedClaudeJson(claudeJsonPath: string, isClaudeSession: boolean): Promise<void> {
+  let state: ClaudeJsonState = {}
+  try {
+    state = JSON.parse(await fs.readFile(claudeJsonPath, 'utf8')) as ClaudeJsonState
+  } catch {
+    // missing or invalid — start fresh
+  }
+  if (isClaudeSession) {
+    state.hasCompletedOnboarding = true
+    state.lastOnboardingVersion = CLAUDE_ONBOARDING_VERSION
+    const approved = new Set([...(state.customApiKeyResponses?.approved ?? []), 'yaac-ph-api-key'])
+    state.customApiKeyResponses = { approved: [...approved], rejected: state.customApiKeyResponses?.rejected ?? [] }
+    const projects = { ...state.projects }
+    for (const dir of ['/workspace', '/repo']) {
+      projects[dir] = { ...projects[dir], hasTrustDialogAccepted: true }
+    }
+    state.projects = projects
+  }
+  await fs.writeFile(claudeJsonPath, JSON.stringify(state, null, 2) + '\n')
+}
+
+/**
+ * Seed `~/.claude/settings.json` so claude-code skips the one-time
+ * "Bypass Permissions mode" warning. yaac runs the agent with permission
+ * bypass inside a sandboxed container — exactly the case the warning says
+ * is safe — so showing it on every session is pure friction. Merges into
+ * any existing settings (e.g. the theme claude-code writes itself).
+ */
+export async function seedClaudeSettings(settingsPath: string): Promise<void> {
+  let settings: Record<string, unknown> = {}
+  try {
+    settings = JSON.parse(await fs.readFile(settingsPath, 'utf8')) as Record<string, unknown>
+  } catch {
+    // missing or invalid — start fresh
+  }
+  settings.skipDangerousModePermissionPrompt = true
+  await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n')
+}
+
 interface EphemeralMount {
   /** Relative path under /workspace (e.g. "node_modules"). */
   rel: string
@@ -835,12 +894,13 @@ export async function createSession(
     }
   }
 
-  // Ensure claude.json exists so Podman mounts it as a file, not a directory.
-  try {
-    await fs.access(claudeJson)
-  } catch {
-    await fs.writeFile(claudeJson, '{}')
-  }
+  // Ensure claude.json exists (Podman bind-mounts it as a file) and, for
+  // Claude sessions, seed claude-code's onboarding state so the first-run
+  // wizard — theme picker then login — is skipped. The injected placeholder
+  // credential authenticates the agent; without these flags the user is
+  // forced to log in inside every session.
+  await seedClaudeJson(claudeJson, tool === 'claude')
+  if (tool === 'claude') await seedClaudeSettings(path.join(claude, 'settings.json'))
 
   if (tool === 'codex') {
     // Ensure codex dir and transcript symlink dir exist
