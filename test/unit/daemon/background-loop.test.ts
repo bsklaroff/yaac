@@ -71,6 +71,33 @@ describe('startBackgroundLoop', () => {
     expect(step).toHaveBeenCalledTimes(1)
   })
 
+  it('calls onTick after every tick, and a throwing onTick does not halt the loop', async () => {
+    const step = vi.fn().mockResolvedValue(undefined)
+    const onTick = vi.fn().mockRejectedValue(new Error('listener boom'))
+    const abortCtrl = new AbortController()
+    consoleErrorSpy.mockClear()
+
+    let sleepCount = 0
+    const sleep = vi.fn().mockImplementation(() => {
+      sleepCount++
+      if (sleepCount >= 2) abortCtrl.abort()
+      return Promise.resolve()
+    })
+
+    await startBackgroundLoop({
+      signal: abortCtrl.signal,
+      intervalMs: 1000,
+      sleep,
+      tickSteps: [step],
+      onTick,
+    })
+
+    // Initial tick + 1 post-sleep tick → onTick fired once per tick.
+    expect(step).toHaveBeenCalledTimes(2)
+    expect(onTick).toHaveBeenCalledTimes(2)
+    expect(consoleErrorSpy).toHaveBeenCalled()
+  })
+
   it('isolates per-step failures — a throwing step does not skip later steps or halt the loop', async () => {
     const stepA = vi.fn().mockRejectedValue(new Error('boom'))
     const stepB = vi.fn().mockResolvedValue(undefined)

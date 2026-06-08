@@ -6,7 +6,10 @@ import { createReadStream, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { serve, type ServerType } from '@hono/node-server'
+import { createNodeWebSocket } from '@hono/node-ws'
 import { buildApp } from '@/daemon/server'
+import { createWebAuthStore } from '@/daemon/web-auth'
+import { EventHub } from '@/daemon/events'
 import { readBuildId } from '@/shared/build-id'
 import {
   acquireLock,
@@ -85,7 +88,32 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
   }
 
   const secret = crypto.randomBytes(32).toString('hex')
-  const app = buildApp({ secret, buildId })
+  // Port isn't known until serve() binds, but the Host-header middleware
+  // (built into the app now) needs it. Bind it late through a ref the
+  // getter closes over; requests only arrive after we set it below.
+  const portRef = { current: 0 }
+  const store = createWebAuthStore()
+  const hub = new EventHub()
+  const app = buildApp({ secret, buildId, store, getPort: () => portRef.current })
+
+  // WebSocket event stream. Registered here (not in buildApp) so buildApp's
+  // return type stays the plain Hono app the CLI's typed RPC client infers
+  // from. Auth runs as normal middleware on the upgrade — the cookie
+  // travels with it, no token in the URL.
+  // Keep the object rather than destructuring: injectWebSocket is a
+  // method that relies on `this`, so calling a detached reference later
+  // would break it (and trips eslint's unbound-method rule).
+  const nodeWs = createNodeWebSocket({ app })
+  app.get('/events', nodeWs.upgradeWebSocket(() => ({
+    onOpen: (_evt, ws) => {
+      hub.add(ws)
+      void hub.sendSnapshotTo(ws).catch(
+        (err: unknown) => daemonLog(`[daemon] events: initial snapshot failed: ${String(err)}`),
+      )
+    },
+    onClose: (_evt, ws) => hub.remove(ws),
+    onError: (_err, ws) => hub.remove(ws),
+  })))
 
   const { server, port } = await new Promise<{ server: ServerType; port: number }>(
     (resolve, reject) => {
@@ -95,6 +123,8 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
       s.once('error', reject)
     },
   )
+  portRef.current = port
+  nodeWs.injectWebSocket(server)
 
   // Race-safe acquire via O_EXCL. Another daemon may have slipped past
   // the pre-bind fast-path check above; atomic create ensures exactly one
@@ -108,6 +138,9 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
   }
   const torPrefix = isTorEnabled() ? '(using tor) ' : ''
   daemonLog(`[daemon] ${torPrefix}listening on 127.0.0.1:${port} lock=${daemonLockPath()}`)
+  // Start banner for the webapp: a one-time, time-bounded bootstrap URL.
+  // The code is single-use; reopen with a fresh one after `daemon restart`.
+  daemonLog(`[daemon] open http://127.0.0.1:${port}/?bootstrap=${store.currentCode()}`)
 
   // Register signal handlers BEFORE the async startup steps below. Node's
   // default SIGTERM/SIGINT action is to terminate immediately, bypassing
@@ -174,7 +207,13 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
   // first prewarm tick that whole time. Running them concurrently with
   // the loop lets the daemon serve the prewarm/reconcile path right
   // away while the GC drains in the background.
-  loopDone = startBackgroundLoop({ signal: abortCtrl.signal })
+  loopDone = startBackgroundLoop({
+    signal: abortCtrl.signal,
+    // After each reconciliation tick, push a fresh snapshot to any
+    // connected webapp clients (no-op when none are connected, and only
+    // broadcasts when the state actually changed).
+    onTick: () => hub.publishSnapshot(),
+  })
 
   // Remove per-session podman graphroot volumes whose session container
   // is gone (crashed session, killed daemon, host reboot). No layer

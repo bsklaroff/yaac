@@ -18,6 +18,13 @@ export interface BackgroundLoopDeps {
    * sequence with per-step error isolation. Defaults to the real tick.
    */
   tickSteps?: Array<() => Promise<void>>
+  /**
+   * Called after every completed tick (including the immediate first
+   * one). Used to push a fresh state snapshot to webapp clients once
+   * reconciliation has settled. Errors are swallowed so a bad listener
+   * can't wedge the loop.
+   */
+  onTick?: () => void | Promise<void>
 }
 
 function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -74,6 +81,13 @@ export async function startBackgroundLoop(deps: BackgroundLoopDeps): Promise<voi
         await step()
       } catch (err) {
         daemonLog(`[daemon] loop step ${step.name || 'anon'} failed: ${String(err)}`)
+      }
+    }
+    if (deps.onTick) {
+      try {
+        await deps.onTick()
+      } catch (err) {
+        daemonLog(`[daemon] loop onTick failed: ${String(err)}`)
       }
     }
   }

@@ -1,32 +1,8 @@
 import type { Context, MiddlewareHandler } from 'hono'
 import { daemonLog } from '@/daemon/log'
 
-/**
- * Bearer middleware for the daemon. Every request must carry
- * `Authorization: Bearer <secret>` where <secret> matches the value
- * generated at daemon start and written to ~/.yaac/.daemon.lock.
- *
- * Because the daemon binds 127.0.0.1 only, the secret defends against
- * other processes on the same host; it is *not* a defense against a
- * compromised user account (which already owns the filesystem).
- *
- * The /health probe is exempt so the CLI bootstrap can distinguish
- * "daemon alive but wrong secret" (stale cache) from "daemon down".
- */
-export function bearerAuth(secret: string): MiddlewareHandler {
-  return async (c, next) => {
-    if (c.req.path === '/health') return next()
-    const header = c.req.header('authorization') ?? ''
-    const match = /^Bearer\s+(.+)$/i.exec(header)
-    if (!match || !constantTimeEqual(match[1], secret)) {
-      return c.json(
-        { error: { code: 'BAD_BEARER', message: 'missing or invalid bearer token' } },
-        401,
-      )
-    }
-    return next()
-  }
-}
+// Bearer/cookie auth now lives in `@/daemon/web-auth` (one gate accepts
+// either credential). This module keeps the CORS guard and request log.
 
 /**
  * Browser `fetch` is not allowed to talk to the daemon. Refuse preflight
@@ -37,13 +13,6 @@ export function denyBrowserCors(): MiddlewareHandler {
     if (c.req.method === 'OPTIONS') return c.body(null, 405)
     return next()
   }
-}
-
-function constantTimeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false
-  let diff = 0
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
-  return diff === 0
 }
 
 /** Log path + status + duration. Never log request/response bodies. */
