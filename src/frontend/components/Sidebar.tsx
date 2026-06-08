@@ -1,6 +1,6 @@
 import type { JSX, ReactNode } from 'react'
 import clsx from 'clsx'
-import { FolderGit2, SquareTerminal } from 'lucide-react'
+import { ProjectsIcon, TerminalIcon } from '@/frontend/lib/icons'
 import { useUiStore } from '@/frontend/store'
 import type { DaemonSnapshot, SessionListEntry } from '@/shared/types'
 
@@ -34,7 +34,7 @@ export function Sidebar({
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        <Section icon={<SquareTerminal size={13} />} title={`Sessions (${sessions.length})`}>
+        <Section icon={<TerminalIcon size={13} />} title={`Sessions (${sessions.length})`}>
           {sessions.length === 0 && <Empty label="No active sessions" />}
           {sessions.map((s) => (
             <button
@@ -57,7 +57,7 @@ export function Sidebar({
           ))}
         </Section>
 
-        <Section icon={<FolderGit2 size={13} />} title={`Projects (${projects.length})`}>
+        <Section icon={<ProjectsIcon size={13} />} title={`Projects (${projects.length})`}>
           {projects.length === 0 && <Empty label="No projects" />}
           {projects.map((p) => (
             <div key={p.slug} className="flex items-center gap-2 px-4 py-1.5 text-sm">

@@ -1,6 +1,8 @@
 packages:
   - "podman/proxy-sidecar"
 allowBuilds:
+  # Prebuilt package — no consumer build needed; don't run its vendor scripts.
+  '@central-icons-react/round-filled-radius-3-stroke-2': false
   cpu-features: false
   esbuild: false
   node-pty: true
