@@ -20,7 +20,7 @@ export function SessionTerminal({ sessionId }: { sessionId: string }): JSX.Eleme
       fontSize: 13,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
       cursorBlink: true,
-      theme: { background: '#171717', foreground: '#e5e5e5' },
+      theme: { background: '#0b0b0d', foreground: '#e7e7ea' },
     })
     const fit = new FitAddon()
     term.loadAddon(fit)

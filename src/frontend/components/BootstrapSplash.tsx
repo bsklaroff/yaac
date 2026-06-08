@@ -32,11 +32,11 @@ export function BootstrapSplash({ onAuthed }: { onAuthed: () => void }): JSX.Ele
   }
 
   return (
-    <div className="flex h-full items-center justify-center bg-neutral-950 text-neutral-200">
+    <div className="flex h-full items-center justify-center bg-bg text-text">
       <div className="w-full max-w-md px-8">
-        <h1 className="text-2xl font-semibold tracking-tight">Connect to yaac</h1>
-        <p className="mt-3 text-sm text-neutral-400">
-          Open the URL from <code className="text-neutral-300">yaac daemon logs</code>, or paste the
+        <h1 className="text-2xl font-semibold tracking-tight text-text">Connect to yaac</h1>
+        <p className="mt-3 text-sm text-text-dim">
+          Open the URL from <code className="text-text">yaac daemon logs</code>, or paste the
           one-time bootstrap code below.
         </p>
         <Form
@@ -49,16 +49,16 @@ export function BootstrapSplash({ onAuthed }: { onAuthed: () => void }): JSX.Ele
             <Field.Control
               placeholder="bootstrap code"
               autoFocus
-              className="rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 font-mono text-sm
-                outline-none focus:border-neutral-500"
+              className="rounded-md border border-border bg-surface-2 px-3 py-2 font-mono text-sm
+                text-text outline-none focus:border-border-strong"
             />
             <Field.Error className="text-sm text-red-400" />
           </Field.Root>
           <button
             type="submit"
             disabled={busy}
-            className="rounded-md bg-neutral-200 px-3 py-2 text-sm font-medium text-neutral-900
-              hover:bg-white disabled:opacity-50"
+            className="rounded-md bg-accent px-3 py-2 text-sm font-medium text-bg
+              transition hover:brightness-110 disabled:opacity-50"
           >
             {busy ? 'Connecting…' : 'Connect'}
           </button>

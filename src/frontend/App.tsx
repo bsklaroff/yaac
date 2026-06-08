@@ -60,7 +60,7 @@ function App(): JSX.Element {
 
 function FullScreen({ children }: { children: ReactNode }): JSX.Element {
   return (
-    <div className="flex h-full items-center justify-center bg-neutral-950 text-neutral-500">
+    <div className="flex h-full items-center justify-center bg-bg text-text-faint">
       {children}
     </div>
   )

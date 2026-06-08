@@ -15,20 +15,20 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
 
   if (!session) {
     return (
-      <main className="flex h-full flex-1 items-center justify-center text-neutral-600">
+      <main className="flex h-full flex-1 items-center justify-center bg-bg text-text-faint">
         Select a session
       </main>
     )
   }
 
   return (
-    <main className="flex h-full flex-1 flex-col bg-neutral-900">
-      <header className="flex items-center gap-3 border-b border-neutral-800 px-4 py-2.5 text-sm">
+    <main className="flex h-full flex-1 flex-col bg-bg">
+      <header className="flex h-11 items-center gap-3 border-b border-border bg-surface px-4 text-sm">
         <span className={`h-2 w-2 shrink-0 rounded-full ${STATUS_DOT[session.status]}`} />
-        <span className="font-semibold text-neutral-100">{session.projectSlug}</span>
-        <span className="text-neutral-500">{session.tool}</span>
-        <span className="text-neutral-600">{session.status}</span>
-        <span className="ml-auto font-mono text-xs text-neutral-600">{session.sessionId.slice(0, 12)}</span>
+        <span className="font-semibold text-text">{session.projectSlug}</span>
+        <span className="text-text-dim">{session.tool}</span>
+        <span className="text-text-faint">{session.status}</span>
+        <span className="ml-auto font-mono text-xs text-text-faint">{session.sessionId.slice(0, 12)}</span>
       </header>
       {/* key forces a fresh terminal + socket when switching sessions */}
       <div className="min-h-0 flex-1 p-2">
