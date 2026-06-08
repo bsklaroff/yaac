@@ -384,6 +384,56 @@ export async function restartDaemon(): Promise<void> {
   await startDaemon()
 }
 
+export function buildWebappUrl(port: number, code: string): string {
+  return `http://127.0.0.1:${port}/?bootstrap=${code}`
+}
+
+export interface OpenWebappOptions {
+  /** Print the URL instead of launching a browser. */
+  noBrowser?: boolean
+}
+
+/**
+ * Entry point for `yaac open`. Ensures the daemon is running, fetches a
+ * fresh bootstrap code over the authenticated API, and launches the
+ * browser straight into the authenticated webapp — no log-scraping or
+ * code-pasting. The URL is always printed (stdout) so it's scriptable.
+ */
+export async function openWebapp(opts: OpenWebappOptions = {}): Promise<void> {
+  // Idempotent: no-ops if a matching daemon is already running.
+  await startDaemon()
+  const lock = await readLock()
+  if (!lock) throw new Error('daemon is not running')
+
+  const res = await fetch(`http://127.0.0.1:${lock.port}/auth/bootstrap-code`, {
+    headers: { authorization: `Bearer ${lock.secret}` },
+  })
+  if (!res.ok) throw new Error(`failed to fetch bootstrap code (HTTP ${res.status})`)
+  const { code } = await res.json() as { code: string }
+
+  const url = buildWebappUrl(lock.port, code)
+  console.log(url)
+  if (opts.noBrowser) return
+  openBrowser(url)
+}
+
+function openBrowser(url: string): void {
+  const { cmd, args } = process.platform === 'darwin'
+    ? { cmd: 'open', args: [url] }
+    : process.platform === 'win32'
+      ? { cmd: 'cmd', args: ['/c', 'start', '', url] }
+      : { cmd: 'xdg-open', args: [url] }
+  try {
+    const child = spawn(cmd, args, { detached: true, stdio: 'ignore' })
+    child.on('error', () => {
+      console.error(`[yaac] couldn't launch a browser — open this URL manually:\n  ${url}`)
+    })
+    child.unref()
+  } catch {
+    console.error(`[yaac] couldn't launch a browser — open this URL manually:\n  ${url}`)
+  }
+}
+
 async function spawnDaemonDetached(): Promise<void> {
   const { bin, args } = resolveDaemonInvocation()
   const child = spawn(bin, args, {

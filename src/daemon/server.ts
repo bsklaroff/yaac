@@ -100,6 +100,11 @@ export function buildApp(deps: DaemonAppDeps) {
     return c.body(null, 204)
   })
 
+  // Authenticated (CLI bearer / existing cookie): return the current
+  // bootstrap code so `yaac open` can build a ready-to-open authed URL
+  // without scraping the daemon log. Not public — requires a credential.
+  app.get('/auth/bootstrap-code', (c) => c.json({ code: store.currentCode() }))
+
   // Serve the built SPA bundle when present (production: dist/frontend).
   // Absent in dev/test (Vite serves the app instead), so guard on it.
   const frontendDir = path.join(PACKAGE_ROOT, 'frontend')
