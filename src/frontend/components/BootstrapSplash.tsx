@@ -1,27 +1,31 @@
-import { useState, type JSX } from 'react'
+import { useState, type FormEvent, type JSX } from 'react'
+import { Form } from '@base-ui/react/form'
+import { Field } from '@base-ui/react/field'
 import { postBootstrap } from '@/frontend/lib/bootstrap'
 
 /**
  * First-open / expired-session screen. The daemon logs a one-time URL
  * (`yaac daemon logs`); the user can open it directly or paste just the
- * code here.
+ * code here. Built on Base UI's Form + Field — the server "invalid code"
+ * result surfaces through the Form `errors` prop into `Field.Error`.
  */
 export function BootstrapSplash({ onAuthed }: { onAuthed: () => void }): JSX.Element {
-  const [code, setCode] = useState('')
+  const [errors, setErrors] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
 
-  const submit = async (e: React.FormEvent): Promise<void> => {
-    e.preventDefault()
-    if (!code.trim()) return
+  const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault()
+    const raw = new FormData(event.currentTarget).get('code')
+    const code = (typeof raw === 'string' ? raw : '').trim()
+    if (!code) return
     setBusy(true)
-    setError(null)
+    setErrors({})
     try {
-      const ok = await postBootstrap(code.trim())
+      const ok = await postBootstrap(code)
       if (ok) onAuthed()
-      else setError('Invalid or expired code. Restart the daemon for a fresh one.')
+      else setErrors({ code: 'Invalid or expired code. Restart the daemon for a fresh one.' })
     } catch {
-      setError('Could not reach the daemon.')
+      setErrors({ code: 'Could not reach the daemon.' })
     } finally {
       setBusy(false)
     }
@@ -35,15 +39,21 @@ export function BootstrapSplash({ onAuthed }: { onAuthed: () => void }): JSX.Ele
           Open the URL from <code className="text-neutral-300">yaac daemon logs</code>, or paste the
           one-time bootstrap code below.
         </p>
-        <form onSubmit={(e) => void submit(e)} className="mt-6 flex flex-col gap-3">
-          <input
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-            placeholder="bootstrap code"
-            autoFocus
-            className="rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 font-mono text-sm
-              outline-none focus:border-neutral-500"
-          />
+        <Form
+          errors={errors}
+          onSubmit={(e) => void submit(e)}
+          className="mt-6 flex flex-col gap-3"
+        >
+          <Field.Root name="code" className="flex flex-col gap-1">
+            <Field.Label className="sr-only">Bootstrap code</Field.Label>
+            <Field.Control
+              placeholder="bootstrap code"
+              autoFocus
+              className="rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 font-mono text-sm
+                outline-none focus:border-neutral-500"
+            />
+            <Field.Error className="text-sm text-red-400" />
+          </Field.Root>
           <button
             type="submit"
             disabled={busy}
@@ -52,8 +62,7 @@ export function BootstrapSplash({ onAuthed }: { onAuthed: () => void }): JSX.Ele
           >
             {busy ? 'Connecting…' : 'Connect'}
           </button>
-          {error && <p className="text-sm text-red-400">{error}</p>}
-        </form>
+        </Form>
       </div>
     </div>
   )
