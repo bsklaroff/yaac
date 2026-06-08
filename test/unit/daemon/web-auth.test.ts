@@ -6,6 +6,7 @@ import {
   hostHeaderCheck,
   isAllowedHost,
   isPublicPath,
+  MAX_SESSIONS,
   SESSION_COOKIE,
 } from '@/daemon/web-auth'
 
@@ -63,6 +64,19 @@ describe('createWebAuthStore', () => {
     expect(snapshots.at(-1)).toContain(sid)
     store.revokeAll()
     expect(snapshots.at(-1)).toEqual([])
+  })
+
+  it('caps retained sessions at MAX_SESSIONS, evicting the oldest', () => {
+    let latest: string[] = []
+    const store = createWebAuthStore({ onSessionsChanged: (s) => { latest = s } })
+    const ids: string[] = []
+    for (let i = 0; i < MAX_SESSIONS + 5; i++) {
+      const id = store.consumeBootstrap(store.currentCode())
+      if (id) ids.push(id)
+    }
+    expect(latest).toHaveLength(MAX_SESSIONS)
+    expect(store.isValidSession(ids[0])).toBe(false) // oldest evicted
+    expect(store.isValidSession(ids[ids.length - 1])).toBe(true) // newest kept
   })
 })
 

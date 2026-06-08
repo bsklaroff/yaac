@@ -38,6 +38,7 @@ sudo apt update && sudo apt install -t plucky podman crun
 yaac [command]
 
 Commands:
+  open            Open the web app in your browser (starts the daemon if needed)
   project         Manage projects
   session         Manage sessions
   config          Edit per-machine project configuration files
@@ -82,6 +83,32 @@ Detach from a tmux session with `Ctrl-B D`. Kill the tmux session (and the
 container) with `Ctrl-B K` (custom binding, not standard tmux). Open a new
 shell in the tmux session with `Ctrl-B C`, and switch between shells with `Ctrl-B N` (next) and
 `Ctrl-B P` (previous).
+
+## Web app
+
+yaac ships a local web app — a GUI over the same daemon the CLI drives.
+Launch it with:
+
+```sh
+yaac open
+```
+
+This starts the daemon if needed and opens your browser straight into the
+authenticated app: a live session sidebar, the project list, and an embedded
+terminal (xterm.js) attached to each session's tmux. `yaac open --no-browser`
+prints the URL instead of launching a browser.
+
+It's local-first — the daemon binds `127.0.0.1` only, and the browser
+authenticates with an `HttpOnly` cookie obtained from a one-time bootstrap
+code that `yaac open` handles for you (no manual pasting). The CLI and web
+app drive the same on-disk state, so you can mix them freely.
+
+For frontend development, run the daemon alongside the Vite dev server:
+
+```sh
+yaac daemon start
+pnpm frontend:dev   # http://localhost:1420, proxies the API to the daemon
+```
 
 ## Authentication
 

@@ -2,3 +2,6 @@ node_modules/
 dist/
 .env
 .eslintcache
+
+# Claude Code preview launcher (local tooling)
+.claude/launch.json

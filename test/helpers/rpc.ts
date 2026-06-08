@@ -7,10 +7,11 @@ type DaemonApp = ReturnType<typeof buildApp>
 /**
  * Wrap an in-memory `buildApp(...)` instance as a typed Hono RPC client.
  * Injects the bearer header on every request and dispatches through
- * `app.fetch`, so no port is bound.
+ * `app.fetch`, so no port is bound. Uses a loopback host so the daemon's
+ * Host-header check accepts it (the real CLI likewise targets 127.0.0.1).
  */
 export function makeTestRpcClient(app: DaemonApp, secret = 'shh') {
-  return hc<AppType>('http://test.local/', {
+  return hc<AppType>('http://127.0.0.1/', {
     fetch: (input: RequestInfo | URL, init?: RequestInit) => {
       const headers = new Headers(init?.headers ?? {})
       headers.set('authorization', `Bearer ${secret}`)

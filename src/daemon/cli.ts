@@ -391,6 +391,11 @@ export function buildWebappUrl(port: number, code: string): string {
 export interface OpenWebappOptions {
   /** Print the URL instead of launching a browser. */
   noBrowser?: boolean
+  // Injected for tests; default to the real implementations.
+  ensureDaemon?: () => Promise<void>
+  loadLock?: () => Promise<DaemonLock | null>
+  fetchImpl?: typeof fetch
+  launch?: (url: string) => void
 }
 
 /**
@@ -400,12 +405,17 @@ export interface OpenWebappOptions {
  * code-pasting. The URL is always printed (stdout) so it's scriptable.
  */
 export async function openWebapp(opts: OpenWebappOptions = {}): Promise<void> {
+  const ensureDaemon = opts.ensureDaemon ?? startDaemon
+  const loadLock = opts.loadLock ?? readLock
+  const fetchImpl = opts.fetchImpl ?? ((input, init) => fetch(input, init))
+  const launch = opts.launch ?? openBrowser
+
   // Idempotent: no-ops if a matching daemon is already running.
-  await startDaemon()
-  const lock = await readLock()
+  await ensureDaemon()
+  const lock = await loadLock()
   if (!lock) throw new Error('daemon is not running')
 
-  const res = await fetch(`http://127.0.0.1:${lock.port}/auth/bootstrap-code`, {
+  const res = await fetchImpl(`http://127.0.0.1:${lock.port}/auth/bootstrap-code`, {
     headers: { authorization: `Bearer ${lock.secret}` },
   })
   if (!res.ok) throw new Error(`failed to fetch bootstrap code (HTTP ${res.status})`)
@@ -414,7 +424,7 @@ export async function openWebapp(opts: OpenWebappOptions = {}): Promise<void> {
   const url = buildWebappUrl(lock.port, code)
   console.log(url)
   if (opts.noBrowser) return
-  openBrowser(url)
+  launch(url)
 }
 
 function openBrowser(url: string): void {

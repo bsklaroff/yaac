@@ -1,6 +1,10 @@
-import { describe, it, expect } from 'vitest'
-import { attachArgs, parseControl, bridge } from '@/daemon/pty-bridge'
+import { describe, it, expect, vi } from 'vitest'
+import * as pty from 'node-pty'
+import { attachArgs, parseControl, bridge, spawnAttachPty } from '@/daemon/pty-bridge'
 import type { PtyLike, SocketLike } from '@/daemon/pty-bridge'
+
+// Avoid loading/spawning the real node-pty native module in unit tests.
+vi.mock('node-pty', () => ({ spawn: vi.fn(() => ({})) }))
 
 describe('attachArgs', () => {
   it('builds the podman exec tmux attach argv', () => {
@@ -8,6 +12,17 @@ describe('attachArgs', () => {
       'exec', '-it', 'yaac-demo-abc',
       'tmux', '-S', '/tmp/yaac-tmux/server', 'attach-session', '-t', 'yaac',
     ])
+  })
+})
+
+describe('spawnAttachPty', () => {
+  it('spawns `podman` under a PTY with the attach argv and given size', () => {
+    spawnAttachPty('yaac-demo', { cols: 100, rows: 40 })
+    expect(pty.spawn).toHaveBeenCalledWith(
+      'podman',
+      attachArgs('yaac-demo'),
+      expect.objectContaining({ name: 'xterm-color', cols: 100, rows: 40 }),
+    )
   })
 })
 

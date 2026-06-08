@@ -28,11 +28,12 @@ describe('yaac daemon HTTP surface (real daemon)', () => {
     await testEnv.cleanup()
   })
 
-  it('rejects /project/list without a bearer token', async () => {
+  it('rejects /project/list without a bearer token or cookie', async () => {
     const res = await fetch(`http://127.0.0.1:${daemon.lock.port}/project/list`)
     expect(res.status).toBe(401)
     const body = await res.json() as unknown as { error: { code: string } }
-    expect(body.error.code).toBe('BAD_BEARER')
+    // Combined bearer/cookie gate (was BAD_BEARER before the cookie path).
+    expect(body.error.code).toBe('UNAUTHENTICATED')
   })
 
   it('returns the empty project list with the correct bearer', async () => {

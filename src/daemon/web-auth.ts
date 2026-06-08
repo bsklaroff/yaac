@@ -14,6 +14,9 @@ export const BOOTSTRAP_TTL_MS = 24 * 60 * 60 * 1000
 /** Name of the HttpOnly cookie that carries a webapp session. */
 export const SESSION_COOKIE = 'yaac_session'
 
+/** Upper bound on retained webapp sessions (oldest evicted first). */
+export const MAX_SESSIONS = 64
+
 /**
  * Holds the single live bootstrap code and the set of minted browser
  * session ids. One instance per daemon lifetime; sessions die when the
@@ -52,6 +55,17 @@ export function createWebAuthStore(
   const now = opts.now ?? ((): number => Date.now())
   const sessions = new Set<string>(opts.initialSessions ?? [])
   const persist = (): void => opts.onSessionsChanged?.([...sessions])
+  // Each bootstrap mints a session that's never explicitly revoked, so
+  // cap the set (FIFO — Set preserves insertion order) to keep the
+  // persisted file bounded across many `yaac open` invocations.
+  const trim = (): void => {
+    while (sessions.size > MAX_SESSIONS) {
+      const oldest = sessions.values().next().value
+      if (oldest === undefined) break
+      sessions.delete(oldest)
+    }
+  }
+  trim()
   let code = newToken()
   let codeIssuedAt = now()
 
@@ -67,6 +81,7 @@ export function createWebAuthStore(
       codeIssuedAt = t
       const id = newToken()
       sessions.add(id)
+      trim()
       persist()
       return id
     },
@@ -139,7 +154,20 @@ export function isAllowedHost(host: string, boundPort: number): boolean {
 
 export function hostHeaderCheck(getPort: () => number): MiddlewareHandler {
   return async (c, next) => {
-    if (isAllowedHost(c.req.header('host') ?? '', getPort())) return next()
+    // Prefer the Host header (what a browser sends). Fall back to the
+    // request URL's host for in-memory dispatch (hono's app.fetch in
+    // tests) where no Host header is present. Real socket traffic always
+    // carries Host, and a DNS-rebind request reflects the attacker host
+    // in both the header and the URL, so the fallback doesn't weaken it.
+    let host = c.req.header('host') ?? ''
+    if (!host) {
+      try {
+        host = new URL(c.req.url).host
+      } catch {
+        host = ''
+      }
+    }
+    if (isAllowedHost(host, getPort())) return next()
     return c.json(
       { error: { code: 'BAD_HOST', message: 'host not allowed' } },
       403,
