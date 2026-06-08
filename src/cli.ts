@@ -5,6 +5,7 @@ import { projectList } from '@/commands/project-list'
 import { sessionCreate } from '@/commands/session-create'
 import { sessionList } from '@/commands/session-list'
 import { sessionDelete } from '@/commands/session-delete'
+import { sessionPromote } from '@/commands/session-promote'
 import { sessionRestart } from '@/commands/session-restart'
 import { sessionAttach } from '@/commands/session-attach'
 import { sessionShell } from '@/commands/session-shell'
@@ -153,6 +154,12 @@ session
   .description('Delete a session and clean up its resources')
   .argument('<session-id>', 'Session ID, container name, or container ID')
   .action(sessionDelete)
+
+session
+  .command('promote')
+  .description('Run the image-cache promoter for a session and stream its output (debug)')
+  .argument('<session-id>', 'Session ID (full or prefix) of a nestedContainers session')
+  .action(sessionPromote)
 
 session
   .command('restart')

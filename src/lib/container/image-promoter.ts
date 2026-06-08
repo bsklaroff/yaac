@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import { keepIdEnabled, podman, shellPodmanWithRetry } from '@/lib/container/runtime'
 import { getDataDir } from '@/lib/project/paths'
 
@@ -132,37 +133,128 @@ export const PROMOTER_SCRIPT = [
   'touch /dst/.yaac-promoter.lock',
   'exec 9>/dst/.yaac-promoter.lock',
   'flock -x 9',
+  // log() fans every step out to stdout (which `yaac session promote`
+  // streams) AND appends to a persistent log inside the shared cache volume,
+  // so the silent teardown paths still leave an audit trail of what was
+  // promoted and what failed.
+  'log() { echo "[promoter] $*"; echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" >> /dst/.yaac-promoter.log; }',
+  `log "start uid=$(id -u) graphRoot=$(podman info --format '{{.Store.GraphRoot}}' 2>&1)"`,
   // Pass 1 — copy by id. `podman image ls -q --no-trunc` emits ids
   // prefixed with "sha256:"; skopeo's containers-storage transport parses
   // a bare `sha256:<hex>` as a name+tag (→ docker.io/library/sha256:<hex>),
   // so strip the prefix and pass through `@<hex>` for an unambiguous
-  // image-id reference.
+  // image-id reference. skopeo's stderr is captured into `err` so a failure
+  // is reported (not silently swallowed); the `if` keeps it best-effort —
+  // a bad copy never aborts the remaining images.
   'ids=$(podman image ls -a -q --no-trunc 2>/dev/null | sed -e "s/^sha256://" || true)',
+  'log "found $(echo "$ids" | grep -c . || true) image id(s) in source graphroot"',
+  'copied=0; skipped=0; failed=0',
   'for id in $ids; do',
-  '  if podman --root /dst --runroot /tmp/dst-run image exists "$id" 2>/dev/null; then continue; fi',
-  '  skopeo copy --quiet "containers-storage:@$id" "containers-storage:[overlay@/dst+/tmp/dst-run]@$id" || true',
+  '  if podman --root /dst --runroot /tmp/dst-run image exists "$id" 2>/dev/null; then',
+  '    log "SKIP  $id (already in shared cache)"; skipped=$((skipped+1)); continue',
+  '  fi',
+  '  if err=$(skopeo copy "containers-storage:@$id" "containers-storage:[overlay@/dst+/tmp/dst-run]@$id" 2>&1); then',
+  '    log "COPY  $id OK"; copied=$((copied+1))',
+  '  else',
+  '    log "COPY  $id FAILED: $err"; failed=$((failed+1))',
+  '  fi',
   'done',
+  'log "copy summary: copied=$copied skipped=$skipped failed=$failed"',
   // Pass 2 — restore tags so FROM refs and `podman run <name>` resolve
   // from additionalimagestores without a registry round-trip. Drop the
   // `<none>:<none>` rows (dangling images) already handled by-id in pass 1.
   `podman image ls --no-trunc --format '{{.ID}}|{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -v '|<none>:<none>$' | while IFS='|' read -r tid tref; do`,
   '  [ -z "$tid" ] && continue',
-  '  podman --root /dst --runroot /tmp/dst-run tag "$tid" "$tref" 2>/dev/null || true',
+  '  if podman --root /dst --runroot /tmp/dst-run tag "$tid" "$tref" 2>/dev/null; then log "TAG   $tref"; else log "TAG   $tref FAILED"; fi',
   'done',
   // Pass 3 — GC dangling images on /dst older than 7d (168h). Catches
   // ex-tagged images orphaned by later tag re-points; 168h is long enough
   // that recent build intermediates still back podman's build cache.
   `podman --root /dst --runroot /tmp/dst-run image prune --filter 'dangling=true' --filter 'until=168h' -f 2>/dev/null || true`,
+  `log "shared cache now holds $(podman --root /dst --runroot /tmp/dst-run image ls -aq 2>/dev/null | wc -l | tr -d ' ') image(s)"`,
+  'log "done"',
 ].join('\n')
 
 /**
- * Copy images from a session's per-session graphroot into the project's
- * shared image-cache volume. Runs skopeo inside a short-lived container
- * with both volumes mounted rw; serialization across concurrent promoters
- * is provided by flock on a sentinel file inside the shared volume.
+ * Single source of truth for the promoter's `podman run` argv (sans the
+ * leading `podman`). Every launcher derives from this so the container is
+ * byte-for-byte identical no matter how it's started: `promoteSessionImages`
+ * spawns it directly, and `buildPromoterShellCommand` shell-quotes it for the
+ * detached teardown path.
  *
- * Best-effort: failures are logged and swallowed so teardown is never
- * blocked on cache salvage.
+ * `keepId` is injectable for tests; in production it defaults to
+ * `keepIdEnabled()`. keep-id maps the promoter's `yaac` user to the host
+ * daemon UID so the source graphroot (yaac-owned on host) is readable on
+ * Linux rootless podman; `YAAC_DISABLE_KEEP_ID=1` omits it.
+ */
+export function buildPromoterRunArgs(opts: {
+  projectSlug: string
+  sessionId: string
+  imageRef: string
+  keepId?: boolean
+}): string[] {
+  const { projectSlug, sessionId, imageRef } = opts
+  const keepId = opts.keepId ?? keepIdEnabled()
+  const graphroot = sessionGraphrootVolumeName(sessionId)
+  const imageCache = projectImageCacheVolumeName(projectSlug)
+  return [
+    'run', '--rm',
+    // Run as yaac so the source graphroot (yaac-owned in the original
+    // session) is readable and the sqlite db's recorded static dir matches.
+    '--user', 'yaac',
+    ...(keepId ? ['--userns', 'keep-id'] : []),
+    '--security-opt', 'label=disable',
+    // Labels mirror the old dockerode path so orphan promoter containers are
+    // still identifiable for GC/debugging.
+    '--label', 'yaac.promoter=true',
+    '--label', `yaac.project=${projectSlug}`,
+    '--label', `yaac.session-id=${sessionId}`,
+    '--label', `yaac.data-dir=${getDataDir()}`,
+    // The nestable image's ENTRYPOINT is `catatonit -- sleep infinity`;
+    // override it so `-c <script>` drives the container.
+    '--entrypoint', '/bin/sh',
+    // Source graphroot must live at the session's original storage path:
+    // podman's sqlite db bakes that path in and rejects `--root` overrides.
+    '-v', `${graphroot}:/home/yaac/.local/share/containers:rw`,
+    '-v', `${imageCache}:/dst:rw`,
+    imageRef,
+    '-c', PROMOTER_SCRIPT,
+  ]
+}
+
+/**
+ * Split a stream of chunks into newline-terminated lines, invoking `onLine`
+ * for each complete line. Returns a `flush()` to emit any trailing partial
+ * line once the stream closes.
+ */
+function makeLineSplitter(onLine: (line: string) => void): {
+  push: (chunk: Buffer) => void
+  flush: () => void
+} {
+  let buf = ''
+  return {
+    push: (chunk) => {
+      buf += chunk.toString()
+      const lines = buf.split('\n')
+      buf = lines.pop() ?? ''
+      for (const line of lines) onLine(line)
+    },
+    flush: () => {
+      if (buf) { onLine(buf); buf = '' }
+    },
+  }
+}
+
+/**
+ * Copy images from a session's per-session graphroot into the project's
+ * shared image-cache volume by running the promoter container (skopeo +
+ * flock) to completion. The one launcher used by both production teardown
+ * (`cleanupSession`, no `onLog`) and the `yaac session promote` debug command
+ * (`onLog` streams each promoter log line to the caller).
+ *
+ * Best-effort: a non-zero exit or spawn failure is returned (and warned), not
+ * thrown, so teardown is never blocked on cache salvage. Resolves with the
+ * container's exit code (0 = success, -1 = the promoter could not be spawned).
  *
  * `imageRef` is the nestable image tag — it already has podman+skopeo+flock.
  */
@@ -170,95 +262,56 @@ export async function promoteSessionImages(
   projectSlug: string,
   sessionId: string,
   imageRef: string,
-): Promise<void> {
-  const graphroot = sessionGraphrootVolumeName(sessionId)
-  const imageCache = projectImageCacheVolumeName(projectSlug)
-
-  let container: Awaited<ReturnType<typeof podman.createContainer>> | null = null
+  opts: { onLog?: (line: string) => void } = {},
+): Promise<number> {
+  const args = buildPromoterRunArgs({ projectSlug, sessionId, imageRef })
   try {
-    container = await podman.createContainer({
-      Image: imageRef,
-      // The nestable base image's ENTRYPOINT is `catatonit -- sleep infinity`
-      // (PID 1 reaper + idle hold). Passing only a `Cmd` appends the script
-      // args to that entrypoint, which makes `sleep` try to parse `-c` as
-      // an option. Override the entrypoint so Cmd drives the container.
-      Entrypoint: ['/bin/sh'],
-      Cmd: ['-c', PROMOTER_SCRIPT],
-      // Run as the `yaac` user so the source graphroot (owned by yaac in
-      // the original session) is readable and the sqlite db's recorded
-      // static dir matches. Root would see the same paths but would also
-      // invalidate the userns mapping skopeo reads layer files through.
-      User: 'yaac',
-      Labels: {
-        'yaac.promoter': 'true',
-        'yaac.project': projectSlug,
-        'yaac.session-id': sessionId,
-        'yaac.data-dir': getDataDir(),
-      },
-      HostConfig: {
-        // No AutoRemove: we need to block until the container is fully
-        // gone (not just exited) before returning, so that the shared
-        // cache volume is free to be removed in the same teardown flow.
-        SecurityOpt: ['label=disable'],
-        // See keepIdEnabled(): keep-id maps the promoter's `yaac` user to the
-        // host daemon UID so the source graphroot (yaac-owned on host) is
-        // readable on Linux rootless podman. YAAC_DISABLE_KEEP_ID=1 omits it.
-        ...(keepIdEnabled() ? { UsernsMode: 'keep-id' } : {}),
-        Binds: [
-          // The source graphroot must live at the session's original path:
-          // podman's sqlite db has that path baked in and rejects
-          // `--root` overrides with a "database configuration mismatch".
-          `${graphroot}:/home/yaac/.local/share/containers:rw`,
-          `${imageCache}:/dst:rw`,
-        ],
-      },
+    return await new Promise<number>((resolve, reject) => {
+      // `podman run --rm` (foreground) removes the container after it exits
+      // and only then returns, so awaiting `close` blocks until the container
+      // is fully gone — leaving the shared cache volume free for removal in
+      // the same teardown flow (the property the old no-AutoRemove path had).
+      const child = spawn('podman', args, {
+        stdio: ['ignore', opts.onLog ? 'pipe' : 'ignore', opts.onLog ? 'pipe' : 'ignore'],
+      })
+      if (opts.onLog) {
+        const splitter = makeLineSplitter(opts.onLog)
+        child.stdout?.on('data', splitter.push)
+        child.stderr?.on('data', splitter.push)
+        child.on('close', () => splitter.flush())
+      }
+      child.on('error', reject)
+      child.on('close', (code) => resolve(code ?? 0))
     })
-    await container.start()
-    await container.wait()
   } catch (err) {
     console.warn(
       `Image promoter for session ${sessionId} failed: ${(err as Error).message}`,
     )
-  }
-  if (container) {
-    try { await container.remove({ force: true }) } catch { /* already gone */ }
+    return -1
   }
 }
 
 /**
- * Build the shell one-liner for running the promoter via `podman run` from
- * a background shell (e.g. detached cleanup). Uses the same
- * `PROMOTER_SCRIPT` as the dockerode path. The caller is responsible for
- * ensuring the quoted string is appended to a `sh -c`-compatible script.
+ * Shell-escape one argv token by single-quoting it (and escaping any embedded
+ * single quotes), so the joined string survives an outer `sh -c`.
+ */
+function shellQuote(arg: string): string {
+  return `'${arg.replace(/'/g, `'\\''`)}'`
+}
+
+/**
+ * Build the shell one-liner for running the promoter via `podman run` from a
+ * background shell (e.g. detached cleanup). Shell-quotes the same argv as
+ * `promoteSessionImages` so both drive a byte-for-byte identical container.
+ * The caller is responsible for appending it to a `sh -c`-compatible script.
  */
 export function buildPromoterShellCommand(
   projectSlug: string,
   sessionId: string,
   imageRef: string,
 ): string {
-  const graphroot = sessionGraphrootVolumeName(sessionId)
-  const imageCache = projectImageCacheVolumeName(projectSlug)
-  // Escape single quotes inside the inner script so the outer sh -c '...'
-  // wrapper survives. The script has no single quotes today, but belt and
-  // braces.
-  const inner = PROMOTER_SCRIPT.replace(/'/g, `'\\''`)
-  return [
-    'podman run --rm',
-    // The source graphroot must live at the session's original path:
-    // podman's sqlite db has that path baked in and rejects `--root`
-    // overrides with a "database configuration mismatch". Run as yaac
-    // (the session's user) so the on-disk ownership matches.
-    '--user yaac',
-    '--security-opt label=disable',
-    // The nestable base image has an ENTRYPOINT of `catatonit -- sleep
-    // infinity`. Override it so our `-c '<script>'` args are passed to sh,
-    // not appended after `sleep infinity`.
-    '--entrypoint /bin/sh',
-    `-v ${graphroot}:/home/yaac/.local/share/containers:rw`,
-    `-v ${imageCache}:/dst:rw`,
-    imageRef,
-    `-c '${inner}'`,
-  ].join(' ')
+  const args = buildPromoterRunArgs({ projectSlug, sessionId, imageRef })
+  return `podman ${args.map(shellQuote).join(' ')}`
 }
 
 interface VolumeListEntry {
@@ -268,6 +321,54 @@ interface VolumeListEntry {
 
 interface VolumeListResponse {
   Volumes?: VolumeListEntry[] | null
+}
+
+/**
+ * Resolve a session's id + project slug from its per-session graphroot
+ * volume's labels, accepting a full session id or a unique prefix. The
+ * graphroot volume is the right source of truth for the promoter: it carries
+ * `yaac.project` and outlives the session container, but is removed after a
+ * normal `session delete` — so a "not found" here means there is nothing left
+ * to promote. Throws on no match or an ambiguous prefix.
+ */
+export async function resolvePromotableSession(
+  idOrPrefix: string,
+): Promise<{ sessionId: string; projectSlug: string }> {
+  const dataDir = getDataDir()
+  let volumeList: VolumeListResponse
+  try {
+    volumeList = await podman.listVolumes({
+      filters: { label: [`${GRAPHROOT_LABEL}=true`, `yaac.data-dir=${dataDir}`] },
+    }) as VolumeListResponse
+  } catch (err) {
+    throw new Error(`Failed to list podman volumes: ${(err as Error).message}`)
+  }
+
+  const matches = (volumeList.Volumes ?? []).filter((v) => {
+    const sid = v.Labels?.['yaac.session-id']
+    return !!sid && (sid === idOrPrefix || sid.startsWith(idOrPrefix))
+  })
+
+  if (matches.length === 0) {
+    throw new Error(
+      `No per-session graphroot volume found for session "${idOrPrefix}". ` +
+      'The promoter only applies to nestedContainers sessions, and the ' +
+      'volume is removed after a normal `session delete`.',
+    )
+  }
+
+  // An exact id match wins even when the prefix also matched longer ids.
+  const exact = matches.find((v) => v.Labels?.['yaac.session-id'] === idOrPrefix)
+  if (!exact && matches.length > 1) {
+    const ids = matches.map((v) => v.Labels?.['yaac.session-id']).join(', ')
+    throw new Error(`Ambiguous session prefix "${idOrPrefix}" matches: ${ids}`)
+  }
+  const chosen = exact ?? matches[0]
+
+  return {
+    sessionId: chosen.Labels?.['yaac.session-id'] ?? '',
+    projectSlug: chosen.Labels?.['yaac.project'] ?? '',
+  }
 }
 
 /**

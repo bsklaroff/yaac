@@ -7,6 +7,8 @@ import { getSessionDetail, getSessionBlockedHosts, getSessionPrompt } from '@/li
 import { deleteSession } from '@/lib/session/delete'
 import { restartSession } from '@/lib/session/restart'
 import { createSession, type SessionCreateOptions } from '@/daemon/session-create'
+import { resolveImageTag } from '@/lib/container/image-builder'
+import { promoteSessionImages, resolvePromotableSession } from '@/lib/container/image-promoter'
 import { DaemonError, toErrorBody } from '@/daemon/errors'
 import { resolveSessionContainer } from '@/daemon/session-resolve'
 import { getPrewarmSession, clearPrewarmSession } from '@/lib/prewarm'
@@ -102,6 +104,47 @@ export const sessionApp = new Hono()
       const { sessionId } = c.req.valid('json')
       const info = await deleteSession(sessionId)
       return c.json(info)
+    },
+  )
+  .post(
+    '/promote',
+    zValidator('json', z.object({ sessionId: z.string().min(1) })),
+    (c) => {
+      // Run the real teardown promoter (`promoteSessionImages`) on demand and
+      // stream its per-image log lines back as NDJSON {progress|result|error}
+      // events, so `yaac session promote` shows exactly what production does.
+      const { sessionId } = c.req.valid('json')
+      c.header('Content-Type', 'application/x-ndjson')
+      return stream(c, async (s) => {
+        const write = (event: unknown) => s.writeln(JSON.stringify(event))
+        try {
+          const resolved = await resolvePromotableSession(sessionId)
+          const imageRef = await resolveImageTag(
+            resolved.projectSlug, process.env.YAAC_IMAGE_PREFIX, true,
+          )
+          await write({
+            type: 'progress',
+            message: `Promoting session ${resolved.sessionId} `
+              + `(project "${resolved.projectSlug}") via ${imageRef}`,
+          })
+          const exitCode = await promoteSessionImages(
+            resolved.projectSlug, resolved.sessionId, imageRef,
+            { onLog: (line) => { void write({ type: 'progress', message: line }) } },
+          )
+          await write({
+            type: 'result',
+            result: {
+              sessionId: resolved.sessionId,
+              projectSlug: resolved.projectSlug,
+              imageRef,
+              exitCode,
+            },
+          })
+        } catch (err) {
+          const { body: errBody } = toErrorBody(err)
+          await write({ type: 'error', error: errBody.error })
+        }
+      })
     },
   )
   .post(

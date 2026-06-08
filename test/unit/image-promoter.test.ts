@@ -6,16 +6,19 @@ vi.mock('@/lib/container/runtime', () => ({
     createVolume: vi.fn(),
     listVolumes: vi.fn(),
     listContainers: vi.fn(),
-    createContainer: vi.fn(),
   },
   shellPodmanWithRetry: vi.fn(),
   keepIdEnabled: vi.fn().mockReturnValue(true),
 }))
 
+vi.mock('node:child_process', () => ({ spawn: vi.fn() }))
+
 vi.mock('@/lib/project/paths', () => ({
   getDataDir: () => '/tmp/yaac-data',
 }))
 
+import { EventEmitter } from 'node:events'
+import { spawn } from 'node:child_process'
 import { podman, shellPodmanWithRetry } from '@/lib/container/runtime'
 import {
   sessionGraphrootVolumeName,
@@ -24,8 +27,10 @@ import {
   removeSessionGraphrootVolume,
   removeProjectImageCacheVolume,
   gcOrphanSessionVolumes,
+  buildPromoterRunArgs,
   buildPromoterShellCommand,
   promoteSessionImages,
+  resolvePromotableSession,
   PROMOTER_SCRIPT,
   SHARED_IMAGE_STORE_PATH,
   GRAPHROOT_LABEL,
@@ -37,17 +42,32 @@ const mockGetVolume = vi.mocked(podman.getVolume)
 const mockCreateVolume = vi.mocked(podman.createVolume)
 const mockListVolumes = vi.mocked(podman.listVolumes)
 const mockListContainers = vi.mocked(podman.listContainers)
-const mockCreateContainer = vi.mocked(podman.createContainer)
 /* eslint-enable @typescript-eslint/unbound-method */
 const mockShellPodman = vi.mocked(shellPodmanWithRetry)
+const mockSpawn = vi.mocked(spawn)
+
+/**
+ * Minimal stand-in for a ChildProcess: an EventEmitter with `stdout`/`stderr`
+ * sub-emitters, so a test can drive `data`/`close`/`error` events.
+ */
+interface FakeChild extends EventEmitter {
+  stdout: EventEmitter
+  stderr: EventEmitter
+}
+function makeFakeChild(): FakeChild {
+  const child = new EventEmitter() as FakeChild
+  child.stdout = new EventEmitter()
+  child.stderr = new EventEmitter()
+  return child
+}
 
 beforeEach(() => {
   mockGetVolume.mockReset()
   mockCreateVolume.mockReset()
   mockListVolumes.mockReset()
   mockListContainers.mockReset()
-  mockCreateContainer.mockReset()
   mockShellPodman.mockReset()
+  mockSpawn.mockReset()
 })
 
 afterEach(() => {
@@ -208,74 +228,164 @@ describe('gcOrphanSessionVolumes', () => {
   })
 })
 
+describe('buildPromoterRunArgs', () => {
+  it('builds a self-removing `podman run` argv with binds, labels, and the script', () => {
+    const args = buildPromoterRunArgs({
+      projectSlug: 'slug-x', sessionId: 'sess-y', imageRef: 'img:tag', keepId: true,
+    })
+    expect(args.slice(0, 2)).toEqual(['run', '--rm'])
+    // keep-id maps the promoter's yaac user to the host daemon UID.
+    expect(args).toContain('--userns')
+    expect(args).toContain('keep-id')
+    // Source graphroot mounts at its session-original path (the podman sqlite
+    // db rejects `--root` overrides with a config mismatch).
+    expect(args).toContain('yaac-podmanstorage-sess-y:/home/yaac/.local/share/containers:rw')
+    expect(args).toContain('yaac-imagecache-slug-x:/dst:rw')
+    // Labels mirror the old dockerode path for orphan GC.
+    expect(args).toContain('yaac.promoter=true')
+    expect(args).toContain('yaac.project=slug-x')
+    expect(args).toContain('yaac.session-id=sess-y')
+    expect(args).toContain('yaac.data-dir=/tmp/yaac-data')
+    expect(args).toContain('img:tag')
+    // The inline script is carried as the final `-c <script>` argument.
+    expect(args[args.length - 2]).toBe('-c')
+    expect(args[args.length - 1]).toBe(PROMOTER_SCRIPT)
+  })
+
+  it('omits the keep-id userns flag when keepId is false', () => {
+    const args = buildPromoterRunArgs({
+      projectSlug: 's', sessionId: 'x', imageRef: 'i:t', keepId: false,
+    })
+    expect(args).not.toContain('--userns')
+    expect(args).not.toContain('keep-id')
+  })
+})
+
 describe('buildPromoterShellCommand', () => {
-  it('includes volume binds, label=disable, and the inline script', () => {
+  it('shell-quotes the same argv as the spawned promoter', () => {
     const cmd = buildPromoterShellCommand('slug-x', 'sess-y', 'yaac-base-nestable:abcdef')
-    // Source graphroot mounts at the session's original path so podman's
-    // sqlite db's recorded static dir matches — remounting at /src causes
-    // "database configuration mismatch".
-    expect(cmd).toContain('-v yaac-podmanstorage-sess-y:/home/yaac/.local/share/containers:rw')
-    expect(cmd).toContain('-v yaac-imagecache-slug-x:/dst:rw')
-    expect(cmd).toContain('--security-opt label=disable')
-    expect(cmd).toContain('--user yaac')
-    // The base image's ENTRYPOINT is `catatonit -- sleep infinity`; the
-    // promoter overrides it so `-c '<script>'` reaches sh, not sleep.
-    expect(cmd).toContain('--entrypoint /bin/sh')
-    expect(cmd).toContain('yaac-base-nestable:abcdef')
+    expect(cmd.startsWith('podman ')).toBe(true)
+    // Each argv token is single-quoted; the binds, security flag, entrypoint
+    // override, and image all appear as quoted tokens.
+    expect(cmd).toContain("'yaac-podmanstorage-sess-y:/home/yaac/.local/share/containers:rw'")
+    expect(cmd).toContain("'yaac-imagecache-slug-x:/dst:rw'")
+    expect(cmd).toContain("'label=disable'")
+    expect(cmd).toContain("'/bin/sh'")
+    expect(cmd).toContain("'yaac-base-nestable:abcdef'")
+    // keepIdEnabled() is mocked true → the userns flag is present.
+    expect(cmd).toContain("'--userns' 'keep-id'")
+    // The inline script is carried as the final quoted -c argument.
     expect(cmd).toContain('skopeo copy')
     expect(cmd).toContain('flock -x 9')
   })
 })
 
 describe('promoteSessionImages', () => {
-  it('runs a one-shot promoter container mounting both volumes', async () => {
-    const start = vi.fn().mockResolvedValue(undefined)
-    const waitCall = vi.fn().mockResolvedValue({ StatusCode: 0 })
-    const remove = vi.fn().mockResolvedValue(undefined)
-    mockCreateContainer.mockResolvedValue(
-      { start, wait: waitCall, remove } as never,
-    )
+  it('spawns `podman run` with both volume binds and resolves the exit code', async () => {
+    mockSpawn.mockImplementation(((_cmd: string, _args: string[]) => {
+      const child = makeFakeChild()
+      queueMicrotask(() => child.emit('close', 0))
+      return child
+    }) as never)
 
-    await promoteSessionImages('slug-x', 'sess-y', 'yaac-base-nestable:abc')
+    const code = await promoteSessionImages('slug-x', 'sess-y', 'yaac-base-nestable:abc')
+    expect(code).toBe(0)
 
-    const call = mockCreateContainer.mock.calls[0]?.[0] as {
-      Image: string
-      User: string
-      Entrypoint: string[]
-      Cmd: string[]
-      HostConfig: {
-        AutoRemove?: boolean
-        SecurityOpt: string[]
-        Binds: string[]
-      }
-    }
-    expect(call.Image).toBe('yaac-base-nestable:abc')
-    // Run as `yaac` (the session's user) so ownership and podman's baked-in
-    // paths match the source graphroot.
-    expect(call.User).toBe('yaac')
-    // The base image's ENTRYPOINT is `catatonit -- sleep infinity`; override
-    // it so Cmd's `-c '<script>'` reaches sh instead of being appended after
-    // `sleep infinity`.
-    expect(call.Entrypoint).toEqual(['/bin/sh'])
-    expect(call.Cmd[0]).toBe('-c')
-    // AutoRemove must NOT be set — we explicitly remove after wait() so the
-    // shared cache volume is free for removal in the same teardown flow.
-    expect(call.HostConfig.AutoRemove).toBeUndefined()
-    expect(call.HostConfig.SecurityOpt).toContain('label=disable')
-    // Source graphroot mounts at its session-original path (the podman
-    // sqlite db rejects `--root` overrides with a config mismatch).
-    expect(call.HostConfig.Binds).toContain('yaac-podmanstorage-sess-y:/home/yaac/.local/share/containers:rw')
-    expect(call.HostConfig.Binds).toContain('yaac-imagecache-slug-x:/dst:rw')
-    expect(start).toHaveBeenCalled()
-    expect(waitCall).toHaveBeenCalled()
-    expect(remove).toHaveBeenCalledWith({ force: true })
+    const [cmd, args, opts] = mockSpawn.mock.calls[0] as [string, string[], { stdio: unknown[] }]
+    expect(cmd).toBe('podman')
+    expect(args.slice(0, 2)).toEqual(['run', '--rm'])
+    expect(args).toContain('yaac-base-nestable:abc')
+    expect(args).toContain('yaac-podmanstorage-sess-y:/home/yaac/.local/share/containers:rw')
+    expect(args).toContain('yaac-imagecache-slug-x:/dst:rw')
+    expect(args).toContain('label=disable')
+    expect(args).toContain('/bin/sh')
+    // No onLog → stdout/stderr are ignored (not piped).
+    expect(opts.stdio).toEqual(['ignore', 'ignore', 'ignore'])
   })
 
-  it('swallows container-create failures', async () => {
-    mockCreateContainer.mockRejectedValue(new Error('oci boom'))
-    await expect(
-      promoteSessionImages('slug-x', 'sess-y', 'img:tag'),
-    ).resolves.toBeUndefined()
+  it('streams promoter log lines to onLog and returns a non-zero exit code', async () => {
+    mockSpawn.mockImplementation((() => {
+      const child = makeFakeChild()
+      queueMicrotask(() => {
+        child.stdout.emit('data', Buffer.from('[promoter] start\n[promoter] COPY abc OK\n'))
+        child.stderr.emit('data', Buffer.from('skopeo: boom\n'))
+        child.emit('close', 7)
+      })
+      return child
+    }) as never)
+
+    const lines: string[] = []
+    const code = await promoteSessionImages('slug-x', 'sess-y', 'img:tag', {
+      onLog: (l) => lines.push(l),
+    })
+    expect(code).toBe(7)
+    expect(lines).toContain('[promoter] start')
+    expect(lines).toContain('[promoter] COPY abc OK')
+    expect(lines).toContain('skopeo: boom')
+    // onLog → stdout/stderr piped so the lines can be captured.
+    const opts = mockSpawn.mock.calls[0][2]
+    expect(opts?.stdio).toEqual(['ignore', 'pipe', 'pipe'])
+  })
+
+  it('swallows spawn failures and returns -1', async () => {
+    mockSpawn.mockImplementation((() => {
+      const child = makeFakeChild()
+      queueMicrotask(() => child.emit('error', new Error('podman not found')))
+      return child
+    }) as never)
+    await expect(promoteSessionImages('slug-x', 'sess-y', 'img:tag')).resolves.toBe(-1)
+  })
+})
+
+describe('resolvePromotableSession', () => {
+  it('resolves project + session id from the graphroot volume labels', async () => {
+    mockListVolumes.mockResolvedValue({
+      Volumes: [
+        { Name: 'yaac-podmanstorage-sess-1', Labels: { 'yaac.session-id': 'sess-1', 'yaac.project': 'proj-a' } },
+        { Name: 'yaac-podmanstorage-sess-2', Labels: { 'yaac.session-id': 'sess-2', 'yaac.project': 'proj-b' } },
+      ],
+    } as never)
+    await expect(resolvePromotableSession('sess-2')).resolves.toEqual({
+      sessionId: 'sess-2', projectSlug: 'proj-b',
+    })
+  })
+
+  it('accepts a unique prefix', async () => {
+    mockListVolumes.mockResolvedValue({
+      Volumes: [
+        { Name: 'yaac-podmanstorage-abc123', Labels: { 'yaac.session-id': 'abc123', 'yaac.project': 'proj-a' } },
+      ],
+    } as never)
+    await expect(resolvePromotableSession('abc')).resolves.toEqual({
+      sessionId: 'abc123', projectSlug: 'proj-a',
+    })
+  })
+
+  it('prefers an exact id match over longer prefix matches', async () => {
+    mockListVolumes.mockResolvedValue({
+      Volumes: [
+        { Name: 'yaac-podmanstorage-abc', Labels: { 'yaac.session-id': 'abc', 'yaac.project': 'exact' } },
+        { Name: 'yaac-podmanstorage-abc1', Labels: { 'yaac.session-id': 'abc1', 'yaac.project': 'longer' } },
+      ],
+    } as never)
+    await expect(resolvePromotableSession('abc')).resolves.toEqual({
+      sessionId: 'abc', projectSlug: 'exact',
+    })
+  })
+
+  it('throws when no graphroot volume matches', async () => {
+    mockListVolumes.mockResolvedValue({ Volumes: [] } as never)
+    await expect(resolvePromotableSession('nope')).rejects.toThrow(/No per-session graphroot/)
+  })
+
+  it('throws on an ambiguous prefix', async () => {
+    mockListVolumes.mockResolvedValue({
+      Volumes: [
+        { Name: 'yaac-podmanstorage-abc1', Labels: { 'yaac.session-id': 'abc1', 'yaac.project': 'p' } },
+        { Name: 'yaac-podmanstorage-abc2', Labels: { 'yaac.session-id': 'abc2', 'yaac.project': 'p' } },
+      ],
+    } as never)
+    await expect(resolvePromotableSession('abc')).rejects.toThrow(/Ambiguous/)
   })
 })
 
@@ -315,5 +425,14 @@ describe('PROMOTER_SCRIPT and SHARED_IMAGE_STORE_PATH constants', () => {
     expect(PROMOTER_SCRIPT).toContain(
       "podman --root /dst --runroot /tmp/dst-run image prune --filter 'dangling=true' --filter 'until=168h' -f",
     )
+  })
+
+  it('logs per-image copy outcomes instead of silently swallowing failures', () => {
+    // log() fans out to stdout (streamed by `yaac session promote`) and a
+    // persistent audit log in the shared cache volume.
+    expect(PROMOTER_SCRIPT).toContain('log() {')
+    expect(PROMOTER_SCRIPT).toContain('>> /dst/.yaac-promoter.log')
+    // A failed copy is reported with skopeo's captured stderr, not dropped.
+    expect(PROMOTER_SCRIPT).toContain('log "COPY  $id FAILED: $err"')
   })
 })
