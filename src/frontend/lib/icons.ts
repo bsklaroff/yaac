@@ -7,4 +7,6 @@
 export {
   IconConsole as TerminalIcon,
   IconFolders as ProjectsIcon,
+  IconPlusMedium as AddIcon,
+  IconSettingsGear2 as SettingsIcon,
 } from '@central-icons-react/round-filled-radius-3-stroke-2'

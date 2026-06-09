@@ -3,9 +3,12 @@ import { api, ApiError } from './lib/apiClient'
 import { readBootstrapCode, postBootstrap, stripBootstrapFromUrl } from './lib/bootstrap'
 import { useEvents } from './lib/useEvents'
 import { useSnapshot } from './lib/useSnapshot'
+import { useUiStore } from './store'
+import { ProjectRail } from './components/ProjectRail'
 import { Sidebar } from './components/Sidebar'
 import { SessionView } from './components/SessionView'
 import { BootstrapSplash } from './components/BootstrapSplash'
+import type { DaemonSnapshot } from '@/shared/types'
 
 type AuthState = 'checking' | 'authed' | 'needs-bootstrap'
 
@@ -50,9 +53,36 @@ function App(): JSX.Element {
   if (auth === 'checking') return <FullScreen>Loading…</FullScreen>
   if (auth === 'needs-bootstrap') return <BootstrapSplash onAuthed={() => setAuth('authed')} />
 
+  return <Workspace snapshot={snapshot} connected={connected} />
+}
+
+function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefined; connected: boolean }): JSX.Element {
+  const activeProjectSlug = useUiStore((s) => s.activeProjectSlug)
+  const setActiveProject = useUiStore((s) => s.setActiveProject)
+
+  const projects = snapshot?.projects ?? []
+  const sessions = snapshot?.sessions ?? []
+
+  // Default the rail selection to the first project once projects arrive.
+  useEffect(() => {
+    if (!activeProjectSlug && projects.length > 0) setActiveProject(projects[0].slug)
+  }, [activeProjectSlug, projects, setActiveProject])
+
+  const scoped = sessions.filter((s) => s.projectSlug === activeProjectSlug)
+  const attention: Record<string, number> = {}
+  for (const s of sessions) {
+    if (s.status === 'waiting') attention[s.projectSlug] = (attention[s.projectSlug] ?? 0) + 1
+  }
+
   return (
     <div className="flex h-full">
-      <Sidebar snapshot={snapshot} connected={connected} />
+      <ProjectRail
+        projects={projects}
+        activeProjectSlug={activeProjectSlug}
+        attentionBySlug={attention}
+        onSelect={setActiveProject}
+      />
+      <Sidebar projectSlug={activeProjectSlug} sessions={scoped} connected={connected} />
       <SessionView snapshot={snapshot} />
     </div>
   )

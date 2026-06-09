@@ -1,0 +1,98 @@
+import type { JSX } from 'react'
+import clsx from 'clsx'
+import { AddIcon, SettingsIcon } from '@/frontend/lib/icons'
+import type { ProjectSummary } from '@/shared/types'
+
+/**
+ * Deterministic per-project identity color from the slug. OKLCH (not HSL)
+ * so every hue reads at the same perceived lightness/chroma — no hue is
+ * harshly bright or muddy — with chroma/lightness tuned to sit calmly in
+ * the muted dark palette. The hue is quantized to 24 evenly-spaced steps
+ * to keep adjacent projects visually distinct.
+ */
+function projectColor(slug: string): string {
+  let h = 0
+  for (let i = 0; i < slug.length; i++) h = (h * 31 + slug.charCodeAt(i)) >>> 0
+  const hue = (h % 24) * 15
+  return `oklch(0.74 0.115 ${hue})`
+}
+
+function projectInitial(slug: string): string {
+  const c = slug.replace(/[^a-z0-9]/gi, '')[0]
+  return (c ?? '?').toUpperCase()
+}
+
+/**
+ * Discord/Slack-style left rail of projects — the top-level navigation
+ * axis. The active project scopes the sidebar; a project with sessions
+ * awaiting input shows an attention badge so "which project needs me" is
+ * visible before drilling in.
+ */
+export function ProjectRail({
+  projects,
+  activeProjectSlug,
+  attentionBySlug,
+  onSelect,
+}: {
+  projects: ProjectSummary[]
+  activeProjectSlug: string | null
+  attentionBySlug: Record<string, number>
+  onSelect: (slug: string) => void
+}): JSX.Element {
+  return (
+    <div className="flex w-12 shrink-0 flex-col items-center gap-2 border-r border-border bg-bg py-3">
+      {projects.map((p) => {
+        const active = p.slug === activeProjectSlug
+        const color = projectColor(p.slug)
+        const waiting = attentionBySlug[p.slug] ?? 0
+        return (
+          <button
+            key={p.slug}
+            onClick={() => onSelect(p.slug)}
+            className="group relative flex items-center justify-center"
+            title={p.slug}
+          >
+            <span
+              className={clsx(
+                'absolute left-0 -ml-3 w-0.5 rounded-r-full bg-text transition-all',
+                active ? 'h-6' : 'h-0 group-hover:h-3',
+              )}
+            />
+            <span
+              className={clsx(
+                'flex h-8 w-8 items-center justify-center text-[13px] font-semibold transition-all',
+                active ? 'rounded-[9px]' : 'rounded-2xl group-hover:rounded-[9px]',
+              )}
+              style={{
+                background: active ? color : `color-mix(in oklab, ${color} 20%, var(--color-surface-2))`,
+                color: active ? '#0b0b0d' : color,
+              }}
+            >
+              {projectInitial(p.slug)}
+            </span>
+            {waiting > 0 && (
+              <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-amber-500 ring-2 ring-bg" />
+            )}
+          </button>
+        )
+      })}
+
+      <div className="my-1 h-px w-6 bg-border" />
+      <button
+        className="flex h-8 w-8 items-center justify-center rounded-2xl bg-surface-2 text-text-dim transition-all
+          hover:rounded-[9px] hover:bg-surface-3 hover:text-accent"
+        title="New project"
+      >
+        <AddIcon size={14} />
+      </button>
+
+      <div className="flex-1" />
+      <button
+        className="flex h-8 w-8 items-center justify-center rounded-2xl text-text-faint hover:text-text-dim"
+        title="Settings"
+      >
+        <SettingsIcon size={14} />
+      </button>
+    </div>
+  )
+}
