@@ -85,7 +85,6 @@ export function ProjectRail({
         )
       })}
 
-      <div className="my-1 h-px w-6 bg-border" />
       <NewProjectButton />
 
       <div className="flex-1" />
