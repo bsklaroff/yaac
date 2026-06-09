@@ -9,6 +9,8 @@
  * gated paid package, so it can't be the default. Agent tools are now shown
  * by name rather than a glyph, since lucide has no brand marks.)
  */
+import type { AgentTool } from '@/shared/types'
+
 export {
   Terminal as TerminalIcon,
   Folders as ProjectsIcon,
@@ -22,3 +24,10 @@ export {
   ChevronRight as ChevronIcon,
   X as CloseIcon,
 } from 'lucide-react'
+
+/** Display name per agent tool (proper brand casing, incl. OpenCode). */
+export const TOOL_LABEL: Record<AgentTool, string> = {
+  claude: 'Claude',
+  codex: 'Codex',
+  opencode: 'OpenCode',
+}

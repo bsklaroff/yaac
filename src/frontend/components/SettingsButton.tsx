@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent, type JSX } from 'react'
 import clsx from 'clsx'
 import { Dialog } from '@base-ui/react/dialog'
-import { SettingsIcon } from '@/frontend/lib/icons'
+import { SettingsIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import { addGitCredential, getAuthList, getDefaultTool, setDefaultTool } from '@/frontend/lib/settingsApi'
 import type { AgentTool, AuthListResult } from '@/shared/types'
 
@@ -59,7 +59,7 @@ export function SettingsButton(): JSX.Element {
                     tool === t ? 'bg-surface-3 text-text' : 'text-text-dim hover:text-text',
                   )}
                 >
-                  {t}
+                  {TOOL_LABEL[t]}
                 </button>
               ))}
             </div>

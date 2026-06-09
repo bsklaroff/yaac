@@ -4,7 +4,7 @@ import { useUiStore } from '@/frontend/store'
 import { SessionTerminal } from '@/frontend/components/SessionTerminal'
 import { SessionActionsMenu } from '@/frontend/components/SessionActionsMenu'
 import { CreatingPlaceholder } from '@/frontend/components/CreatingPlaceholder'
-import { BlockedIcon } from '@/frontend/lib/icons'
+import { BlockedIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import type { DaemonSnapshot } from '@/shared/types'
 
 export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined }): JSX.Element {
@@ -32,14 +32,14 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
       {creating ? (
         <header className="flex h-11 items-center gap-2.5 border-b border-border bg-surface px-4 text-sm">
           <span className="min-w-0 flex-1 truncate font-medium text-text-dim">New session</span>
-          <span className="shrink-0 text-xs text-text-faint">{creating.tool}</span>
+          <span className="shrink-0 text-xs text-text-faint">{TOOL_LABEL[creating.tool]}</span>
         </header>
       ) : session ? (
         <header className="flex h-11 items-center gap-2.5 border-b border-border bg-surface px-4 text-sm">
           <span className="min-w-0 flex-1 truncate font-medium text-text">
             {session.prompt || 'New session'}
           </span>
-          <span className="shrink-0 text-xs text-text-faint">{session.tool}</span>
+          <span className="shrink-0 text-xs text-text-faint">{TOOL_LABEL[session.tool]}</span>
           {session.blockedHosts.length > 0 && (
             <span
               className="flex shrink-0 items-center gap-0.5 text-xs text-[#d65858]"

@@ -1,5 +1,5 @@
 import type { JSX } from 'react'
-import { LoadingIcon } from '@/frontend/lib/icons'
+import { LoadingIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import { useUiStore } from '@/frontend/store'
 import type { CreatingSession } from '@/frontend/store'
 
@@ -26,7 +26,7 @@ export function CreatingPlaceholder({ creating }: { creating: CreatingSession })
         <>
           <div className="flex items-center gap-2 text-sm text-text">
             <LoadingIcon size={15} className="animate-spin text-text-dim" />
-            Creating {creating.tool} session in {creating.projectSlug}
+            Creating {TOOL_LABEL[creating.tool]} session in {creating.projectSlug}
           </div>
           <p className="text-xs text-text-faint">{creating.message}</p>
         </>

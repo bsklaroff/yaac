@@ -1,7 +1,7 @@
 import { useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { Collapsible } from '@base-ui/react/collapsible'
-import { BlockedIcon, ChevronIcon, CloseIcon } from '@/frontend/lib/icons'
+import { BlockedIcon, ChevronIcon, CloseIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import { NewSessionButton } from '@/frontend/components/NewSessionButton'
 import { ProjectActionsMenu } from '@/frontend/components/ProjectActionsMenu'
 import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
@@ -129,7 +129,7 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
           <span className="truncate font-medium">{session.prompt || 'New session'}</span>
           {/* Tool name; on row hover it yields to the delete × in the same spot. */}
           <span className="ml-auto shrink-0 text-xs text-text-faint transition-opacity group-hover:opacity-0">
-            {session.tool}
+            {TOOL_LABEL[session.tool]}
           </span>
         </span>
         <span className="flex items-center gap-2 text-xs text-text-faint">
