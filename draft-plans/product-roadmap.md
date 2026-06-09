@@ -48,7 +48,23 @@ Make managing many agents fast and legible.
 
 ---
 
-## 2 — Workflow: Plan / Build / Review (mid term)
+## 2 — Collaboration (high priority)
+
+Shift beyond the current single-user, 127.0.0.1-only model so a team can
+work a shared fleet of agents. Needs real design around identity, remote
+access, and security — but it's a primary direction, not an afterthought.
+
+- ⬜ Shared / observable sessions: watch a teammate's agent terminal live
+  (the PTY bridge already tees one terminal to multiple clients)
+- ⬜ Presence + handoff: see who's attached; take over a session
+- ⬜ Comments / annotations on sessions and on diffs
+- ⬜ Team projects and a shared credential vault
+- ⬜ Remote access: secure tunnel or a hosted control plane, with real auth
+  and identity — supersedes the loopback-only stance
+
+---
+
+## 3 — Workflow: Plan / Build / Review
 
 Adapt code-design's modes to agent orchestration. A unit of work moves
 through three modes, switched from a top bar:
@@ -60,48 +76,12 @@ through three modes, switched from a top bar:
   status, prompt history, forwarded ports, and logs.
 - ⬜ **Review** — inspect what the agent produced: worktree **diff** viewer +
   file browser, accept / iterate / discard, draft a commit or PR, push.
-  Hooks into the existing `AttachOutcome` (detached / closed_blank /
-  closed_prompted).
 
 ---
 
-## 3 — Optional LLM features (additive, bring-your-own-key)
+## 4 — Optional LLM features
 
-All opt-in and gated behind a toggle / user-supplied key, so the core stays
-local-first with no mandatory cloud dependency.
-
-- ⬜ Auto-title sessions; summarize what an agent did
-- ⬜ Generate or refine the **Plan** prompt from a one-line description
-- ⬜ Triage assistant: rank which sessions need attention; summarize blockers
-- ⬜ Review helpers: explain-the-diff, draft the PR description / commit msg
-- ⬜ Semantic search across sessions and transcripts
-- ⬜ Fleet digest: "what changed / what's stuck" across all running agents
-
----
-
-## 4 — Collaboration (later — architectural shift)
-
-Moves beyond the current single-user, 127.0.0.1-only model. Each step is a
-*non-goal today* and needs real design around identity, remote access, and
-security.
-
-- ⬜ Shared / observable sessions: watch a teammate's agent terminal live
-  (the PTY bridge already tees one terminal to multiple clients)
-- ⬜ Presence + handoff: see who's attached; take over a session
-- ⬜ Comments / annotations on sessions and on diffs (in Review)
-- ⬜ Team projects and a shared credential vault
-- ⬜ Remote access: secure tunnel or a hosted control plane, with real auth
-  and identity — supersedes the loopback-only stance
-
----
-
-## 5 — Productization (later)
-
-- ⬜ Electron (or Tauri) desktop shell: supervises the daemon, opens the UI,
-  makes auth invisible, ships signed installers + auto-update
-- ⬜ Tray / menu-bar presence; auto-start the daemon on login
-- ⬜ API hardening: `/v1` versioning, granular per-entity event types,
-  migrate CLI `attach` / `shell` / `stream` onto the WS bridge
+_Placeholder — scope TBD._
 
 ---
 
@@ -112,5 +92,5 @@ security.
 - **Central Icons** is a gated paid dependency — installing yaac needs that
   registry's auth; resolve (vendor the used icons, or gate) before yaac is
   broadly installable.
-- The webapp is a presentation layer over the daemon; new UI features that
-  need host actions (open-editor, diffs) land as daemon endpoints first.
+- The webapp is a presentation layer over the daemon; UI features that need
+  host actions (open-editor, diffs) land as daemon endpoints first.
