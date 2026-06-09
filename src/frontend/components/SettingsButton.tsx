@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent, type JSX } from 'react'
 import clsx from 'clsx'
 import { Dialog } from '@base-ui/react/dialog'
+import { Radio } from '@base-ui/react/radio'
+import { RadioGroup } from '@base-ui/react/radio-group'
 import { CloseIcon, GeneralIcon, KeyIcon, SettingsIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import { addGitCredential, getAuthList, getDefaultTool, setDefaultTool } from '@/frontend/lib/settingsApi'
 import type { AgentTool, AuthListResult } from '@/shared/types'
@@ -90,20 +92,28 @@ export function SettingsButton(): JSX.Element {
                   label="Default tool"
                   hint="Used for prewarmed containers and as the initial pick when creating a session."
                 >
-                  <div className="flex w-80 gap-1 rounded-lg bg-bg p-1">
+                  <RadioGroup
+                    value={tool ?? undefined}
+                    onValueChange={(value) => pickTool(value as AgentTool)}
+                    className="flex flex-col gap-1"
+                  >
                     {TOOLS.map((t) => (
-                      <button
+                      <label
                         key={t}
-                        onClick={() => pickTool(t)}
-                        className={clsx(
-                          'flex flex-1 items-center justify-center rounded-md px-3 py-1.5 text-xs font-medium transition',
-                          tool === t ? 'bg-surface-3 text-text' : 'text-text-dim hover:text-text',
-                        )}
+                        className="flex w-fit cursor-default items-center gap-2.5 rounded-md py-1 pr-2 text-xs
+                          text-text-dim transition hover:text-text"
                       >
+                        <Radio.Root
+                          value={t}
+                          className="flex h-4 w-4 items-center justify-center rounded-full border border-border-strong
+                            transition data-[checked]:border-accent data-[checked]:bg-accent"
+                        >
+                          <Radio.Indicator className="h-1.5 w-1.5 rounded-full bg-surface data-[unchecked]:hidden" />
+                        </Radio.Root>
                         {TOOL_LABEL[t]}
-                      </button>
+                      </label>
                     ))}
-                  </div>
+                  </RadioGroup>
                 </Field>
               </section>
             )}
