@@ -41,8 +41,12 @@ export function Sidebar({
   sessions: SessionListEntry[]
   connected: boolean
 }): JSX.Element {
-  // Prewarm spares are hidden, so the empty state keys off visible sessions.
-  const visibleCount = sessions.filter((s) => GROUPS.some((g) => g.status === s.status)).length
+  // Hide sessions whose delete is in flight (optimistic) until the snapshot
+  // drops them. Prewarm spares are also hidden, so the empty state keys off
+  // what's actually shown.
+  const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
+  const shown = sessions.filter((s) => !pendingDeleteIds.includes(s.sessionId))
+  const visibleCount = shown.filter((s) => GROUPS.some((g) => g.status === s.status)).length
 
   return (
     <aside className="flex h-full w-64 flex-col border-r border-border bg-surface text-text">
@@ -64,7 +68,7 @@ export function Sidebar({
             key={g.status}
             label={g.label}
             defaultOpen={g.defaultOpen}
-            sessions={sessions.filter((s) => s.status === g.status)}
+            sessions={shown.filter((s) => s.status === g.status)}
           />
         ))}
       </div>
@@ -102,18 +106,22 @@ function SessionGroup({
 function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
   const selectedSessionId = useUiStore((s) => s.selectedSessionId)
   const selectSession = useUiStore((s) => s.selectSession)
+  const beginDelete = useUiStore((s) => s.beginDelete)
+  const endDelete = useUiStore((s) => s.endDelete)
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const [busy, setBusy] = useState(false)
 
+  // Optimistic: hide the row and close the dialog immediately, then fire the
+  // delete. The daemon's cleanup is detached (a stop can take ~10s), so we
+  // can't wait for the snapshot to drop it. On failure, restore the row.
   const onConfirmDelete = (): void => {
-    setBusy(true)
-    void deleteSession(session.sessionId)
-      .then(() => {
-        if (selectedSessionId === session.sessionId) selectSession(null)
-        setConfirmDelete(false)
-      })
-      .catch((e: unknown) => console.error('delete failed', e))
-      .finally(() => setBusy(false))
+    const id = session.sessionId
+    setConfirmDelete(false)
+    beginDelete(id)
+    if (selectedSessionId === id) selectSession(null)
+    void deleteSession(id).catch((e: unknown) => {
+      console.error('delete failed', e)
+      endDelete(id)
+    })
   }
 
   return (
@@ -162,7 +170,6 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
       <ConfirmDialog
         open={confirmDelete}
         onOpenChange={setConfirmDelete}
-        busy={busy}
         title="Delete session?"
         description="Stops and removes the session's container and worktree. This can't be undone."
         confirmLabel="Delete"
