@@ -64,9 +64,16 @@ export function ProjectRail({
                 'flex h-7 w-7 items-center justify-center text-[13px] font-semibold transition-all',
                 active ? 'rounded-lg' : 'rounded-2xl group-hover:rounded-lg',
               )}
+              // Quiet identity treatment: a dark tint of the project hue for
+              // the fill, a light pastel of it for the initial — active just
+              // steps both up rather than going to a loud solid fill.
               style={{
-                background: active ? color : `color-mix(in oklab, ${color} 20%, var(--color-surface-2))`,
-                color: active ? '#0b0b0d' : color,
+                background: active
+                  ? `color-mix(in oklab, ${color} 26%, var(--color-surface-2))`
+                  : `color-mix(in oklab, ${color} 12%, var(--color-surface-2))`,
+                color: active
+                  ? `color-mix(in oklab, ${color} 40%, var(--color-text))`
+                  : `color-mix(in oklab, ${color} 45%, var(--color-text-dim))`,
               }}
             >
               {projectInitial(p.slug)}
