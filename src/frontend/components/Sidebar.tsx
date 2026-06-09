@@ -41,8 +41,9 @@ export function Sidebar({
   return (
     <aside className="flex h-full w-64 flex-col border-r border-border bg-surface text-text">
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-4">
-        <span className="truncate font-semibold tracking-tight">{projectSlug ?? 'yaac'}</span>
-        {projectSlug && <ProjectActionsMenu slug={projectSlug} />}
+        {projectSlug
+          ? <ProjectActionsMenu slug={projectSlug} />
+          : <span className="font-semibold tracking-tight">yaac</span>}
         {/* Only surfaced when disconnected — no permanent "live" dot. */}
         {!connected && <span className="ml-auto shrink-0 text-xs text-amber-400/80">reconnecting…</span>}
       </div>

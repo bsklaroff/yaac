@@ -1,14 +1,17 @@
 import { useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { Menu } from '@base-ui/react/menu'
-import { DeleteIcon, MoreIcon } from '@/frontend/lib/icons'
+import { DeleteIcon } from '@/frontend/lib/icons'
 import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
 import { removeProject } from '@/frontend/lib/projectApi'
 import { useUiStore } from '@/frontend/store'
 
 const ITEM = 'flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-xs outline-none'
 
-/** Actions for the active project — currently: remove (with confirm). */
+/**
+ * The project name doubles as the actions trigger — clicking it (with a
+ * whole-label hover state) opens the menu. Currently: remove (with confirm).
+ */
 export function ProjectActionsMenu({ slug }: { slug: string }): JSX.Element {
   const setActiveProject = useUiStore((s) => s.setActiveProject)
   const [confirm, setConfirm] = useState(false)
@@ -25,9 +28,9 @@ export function ProjectActionsMenu({ slug }: { slug: string }): JSX.Element {
   return (
     <>
       <Menu.Root>
-        <Menu.Trigger className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
-          hover:bg-surface-2 hover:text-text">
-          <MoreIcon size={15} />
+        <Menu.Trigger className="-ml-2 flex min-w-0 items-center rounded-md px-2 py-1 font-semibold
+          tracking-tight text-text outline-none transition hover:bg-surface-2 data-[popup-open]:bg-surface-2">
+          <span className="truncate">{slug}</span>
         </Menu.Trigger>
         <Menu.Portal>
           <Menu.Positioner side="bottom" align="start" sideOffset={6}>
