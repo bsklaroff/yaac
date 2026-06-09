@@ -75,7 +75,7 @@ export function Sidebar({
             )}
           >
             <span className="flex items-center gap-2">
-              <span className="truncate font-medium">{s.prompt || 'new session'}</span>
+              <span className="truncate font-medium">{s.prompt || 'New session'}</span>
               {(() => { const Icon = TOOL_ICON[s.tool]; return <Icon size={14} className="ml-auto shrink-0 text-text-dim" /> })()}
             </span>
             <span className="flex items-center gap-2 text-xs text-text-faint">
