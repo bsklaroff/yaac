@@ -23,6 +23,8 @@ export {
   LoaderCircle as LoadingIcon,
   ChevronRight as ChevronIcon,
   X as CloseIcon,
+  KeyRound as KeyIcon,
+  SlidersHorizontal as GeneralIcon,
 } from 'lucide-react'
 
 /** Display name per agent tool (proper brand casing, incl. OpenCode). */

@@ -1,15 +1,27 @@
 import { useEffect, useState, type FormEvent, type JSX } from 'react'
 import clsx from 'clsx'
 import { Dialog } from '@base-ui/react/dialog'
-import { SettingsIcon, TOOL_LABEL } from '@/frontend/lib/icons'
+import { CloseIcon, GeneralIcon, KeyIcon, SettingsIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import { addGitCredential, getAuthList, getDefaultTool, setDefaultTool } from '@/frontend/lib/settingsApi'
 import type { AgentTool, AuthListResult } from '@/shared/types'
 
 const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode']
 
-/** Rail gear → settings: default tool, credentials listing, add git token. */
+type SettingsSection = 'general' | 'credentials'
+
+const SECTIONS: { key: SettingsSection; label: string; Icon: typeof GeneralIcon }[] = [
+  { key: 'general', label: 'General', Icon: GeneralIcon },
+  { key: 'credentials', label: 'Credentials', Icon: KeyIcon },
+]
+
+/**
+ * Rail gear → settings. Notion-style modal: a left nav of sections over a
+ * scrollable content pane (General: default tool; Credentials: listing +
+ * add git token).
+ */
 export function SettingsButton(): JSX.Element {
   const [open, setOpen] = useState(false)
+  const [section, setSection] = useState<SettingsSection>('general')
   const [tool, setTool] = useState<AgentTool | null>(null)
   const [auth, setAuth] = useState<AuthListResult | null>(null)
 
@@ -39,57 +51,98 @@ export function SettingsButton(): JSX.Element {
       <Dialog.Portal>
         <Dialog.Backdrop className="fixed inset-0 bg-black/60 backdrop-blur-[1px] transition-opacity duration-150
           data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
-        <Dialog.Popup className="fixed left-1/2 top-1/2 w-[480px] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2
-          rounded-lg border border-border bg-surface-2 p-5 text-text shadow-[0_16px_48px_rgba(0,0,0,0.5)] outline-none
+        <Dialog.Popup className="fixed left-1/2 top-1/2 flex h-[480px] max-h-[calc(100vh-4rem)] w-[720px]
+          max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl border
+          border-white/[0.06] bg-surface text-text shadow-[0_16px_48px_rgba(0,0,0,0.5)] outline-none
           transition duration-150 data-[starting-style]:scale-95 data-[starting-style]:opacity-0
           data-[ending-style]:scale-95 data-[ending-style]:opacity-0">
-          <div className="flex items-center justify-between">
-            <Dialog.Title className="text-sm font-semibold">Settings</Dialog.Title>
-            <Dialog.Close className="text-xs text-text-dim hover:text-text">Done</Dialog.Close>
+          {/* Left nav */}
+          <div className="flex w-44 shrink-0 flex-col gap-0.5 border-r border-white/[0.04] bg-bg/50 p-2">
+            <Dialog.Title className="px-2 pb-2 pt-1 text-xs font-semibold text-text-dim">Settings</Dialog.Title>
+            {SECTIONS.map(({ key, label, Icon }) => (
+              <button
+                key={key}
+                onClick={() => setSection(key)}
+                className={clsx(
+                  'flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition',
+                  section === key
+                    ? 'bg-surface-2 font-medium text-text'
+                    : 'text-text-dim hover:bg-surface-2/60 hover:text-text',
+                )}
+              >
+                <Icon size={13} className="shrink-0" />
+                {label}
+              </button>
+            ))}
           </div>
 
-          <Section label="Default tool">
-            <div className="flex gap-1 rounded-lg bg-bg p-1">
-              {TOOLS.map((t) => (
-                <button
-                  key={t}
-                  onClick={() => pickTool(t)}
-                  className={clsx(
-                    'flex flex-1 items-center justify-center rounded-md px-3 py-1.5 text-xs font-medium transition',
-                    tool === t ? 'bg-surface-3 text-text' : 'text-text-dim hover:text-text',
-                  )}
-                >
-                  {TOOL_LABEL[t]}
-                </button>
-              ))}
-            </div>
-          </Section>
+          {/* Content */}
+          <div className="relative min-w-0 flex-1 overflow-y-auto p-6">
+            <Dialog.Close className="absolute right-3 top-3 flex h-6 w-6 items-center justify-center rounded
+              text-text-faint transition hover:bg-surface-2 hover:text-text" aria-label="Close settings">
+              <CloseIcon size={14} />
+            </Dialog.Close>
 
-          <Section label="Credentials">
-            <div className="space-y-1.5 text-xs">
-              {auth?.gitCredentials.map((c) => (
-                <Row key={c.pattern} left={`git · ${c.pattern}`} right={c.preview} />
-              ))}
-              {auth?.toolAuth.map((t) => (
-                <Row key={t.tool} left={`${t.tool} · ${t.kind}`} right={t.keyPreview} />
-              ))}
-              {auth && auth.gitCredentials.length === 0 && auth.toolAuth.length === 0 && (
-                <p className="text-text-faint">No credentials configured.</p>
-              )}
-            </div>
-            <AddGitCredential onAdded={refresh} />
-          </Section>
+            {section === 'general' && (
+              <section>
+                <h2 className="text-sm font-semibold">General</h2>
+                <Field
+                  label="Default tool"
+                  hint="Used for prewarmed containers and as the initial pick when creating a session."
+                >
+                  <div className="flex w-80 gap-1 rounded-lg bg-bg p-1">
+                    {TOOLS.map((t) => (
+                      <button
+                        key={t}
+                        onClick={() => pickTool(t)}
+                        className={clsx(
+                          'flex flex-1 items-center justify-center rounded-md px-3 py-1.5 text-xs font-medium transition',
+                          tool === t ? 'bg-surface-3 text-text' : 'text-text-dim hover:text-text',
+                        )}
+                      >
+                        {TOOL_LABEL[t]}
+                      </button>
+                    ))}
+                  </div>
+                </Field>
+              </section>
+            )}
+
+            {section === 'credentials' && (
+              <section>
+                <h2 className="text-sm font-semibold">Credentials</h2>
+                <Field label="Configured" hint="Git tokens and tool auth yaac injects into session containers.">
+                  <div className="space-y-1.5 text-xs">
+                    {auth?.gitCredentials.map((c) => (
+                      <Row key={c.pattern} left={`git · ${c.pattern}`} right={c.preview} />
+                    ))}
+                    {auth?.toolAuth.map((t) => (
+                      <Row key={t.tool} left={`${t.tool} · ${t.kind}`} right={t.keyPreview} />
+                    ))}
+                    {auth && auth.gitCredentials.length === 0 && auth.toolAuth.length === 0 && (
+                      <p className="text-text-faint">No credentials configured.</p>
+                    )}
+                  </div>
+                </Field>
+                <Field label="Add git credential" hint="HTTPS token for a host pattern, e.g. github.com/*.">
+                  <AddGitCredential onAdded={refresh} />
+                </Field>
+              </section>
+            )}
+          </div>
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>
   )
 }
 
-function Section({ label, children }: { label: string; children: JSX.Element | JSX.Element[] }): JSX.Element {
+/** A labeled settings field: small bold label, dim hint, then the control. */
+function Field({ label, hint, children }: { label: string; hint?: string; children: JSX.Element }): JSX.Element {
   return (
-    <div className="mt-5">
-      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-faint">{label}</div>
-      {children}
+    <div className="mt-6">
+      <div className="text-xs font-medium text-text">{label}</div>
+      {hint && <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">{hint}</p>}
+      <div className="mt-2">{children}</div>
     </div>
   )
 }
@@ -129,7 +182,7 @@ function AddGitCredential({ onAdded }: { onAdded: () => void }): JSX.Element {
   }
 
   return (
-    <form onSubmit={(e) => void submit(e)} className="mt-2 flex flex-col gap-2">
+    <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-2">
       <div className="flex gap-2">
         <input
           name="pattern"
