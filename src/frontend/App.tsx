@@ -96,7 +96,9 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
   }
 
   return (
-    <div className="flex h-full">
+    // Rail + sidebar sit flush on the #050507 base (#root); the session pane
+    // floats as an inset, rounded, bordered card.
+    <div className="flex h-full bg-[#050507]">
       <ProjectRail
         projects={projects}
         activeProjectSlug={activeProjectSlug}
@@ -104,7 +106,9 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
         onSelect={setActiveProject}
       />
       <Sidebar projectSlug={activeProjectSlug} sessions={scoped} connected={connected} />
-      <SessionView snapshot={snapshot} />
+      <div className="min-w-0 flex-1 p-2">
+        <SessionView snapshot={snapshot} />
+      </div>
     </div>
   )
 }

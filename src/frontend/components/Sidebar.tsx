@@ -60,7 +60,7 @@ export function Sidebar({
     && !(creating.sessionId && shown.some((s) => s.sessionId === creating.sessionId))
 
   return (
-    <aside className="flex h-full w-64 flex-col border-r border-border bg-surface text-text">
+    <aside className="flex h-full w-64 flex-col bg-surface text-text">
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border pl-4 pr-2">
         {projectSlug
           ? <ProjectActionsMenu slug={projectSlug} />

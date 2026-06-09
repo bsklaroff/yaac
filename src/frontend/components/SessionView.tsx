@@ -28,7 +28,7 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
   const mounted = opened.filter((id) => liveIds.has(id))
 
   return (
-    <main className="flex h-full min-w-0 flex-1 flex-col bg-bg">
+    <main className="flex h-full min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-bg">
       {creating ? (
         <header className="flex h-11 items-center gap-2.5 border-b border-border bg-surface px-4 text-sm">
           <span className="min-w-0 flex-1 truncate font-medium text-text-dim">New session</span>
