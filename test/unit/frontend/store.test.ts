@@ -73,41 +73,12 @@ describe('selection + project switching', () => {
     expect(useUiStore.getState().terminalNonces).toEqual({ t1: 2, t2: 1 })
   })
 
-  it('setTerminalTab tracks the active tab per session', () => {
-    useUiStore.getState().setTerminalTab('s1', 'shell:shell')
-    useUiStore.getState().setTerminalTab('s2', 'agent')
-    useUiStore.getState().setTerminalTab('s1', 'agent')
-    expect(useUiStore.getState().terminalTabs).toEqual({ s1: 'agent', s2: 'agent' })
-  })
-})
-
-describe('split panes', () => {
-  it('setSplitTarget opens and closes the secondary pane', () => {
-    useUiStore.getState().setSplitTarget('s1', 'shell:shell')
-    expect(useUiStore.getState().splitTargets).toEqual({ s1: 'shell:shell' })
-    useUiStore.getState().setSplitTarget('s1', null)
-    expect(useUiStore.getState().splitTargets).toEqual({})
-  })
-
-  it('refuses to split the target that is already primary (toggles closed)', () => {
-    useUiStore.getState().setTerminalTab('s1', 'shell:shell')
-    useUiStore.getState().setSplitTarget('s1', 'shell:shell')
-    expect(useUiStore.getState().splitTargets).toEqual({})
-  })
-
-  it('collapses the split when its target becomes primary', () => {
-    useUiStore.getState().setSplitTarget('s1', 'window:@3')
-    useUiStore.getState().setTerminalTab('s1', 'window:@3')
-    expect(useUiStore.getState().splitTargets).toEqual({})
-    expect(useUiStore.getState().terminalTabs.s1).toBe('window:@3')
-  })
-
-  it('clamps the divider ratio to 0.2..0.8', () => {
-    useUiStore.getState().setSplitRatio('s1', 0.05)
-    expect(useUiStore.getState().splitRatios.s1).toBe(0.2)
-    useUiStore.getState().setSplitRatio('s1', 0.97)
-    expect(useUiStore.getState().splitRatios.s1).toBe(0.8)
-    useUiStore.getState().setSplitRatio('s1', 0.6)
-    expect(useUiStore.getState().splitRatios.s1).toBe(0.6)
+  it('setSessionLayout stores per-session workspace trees (null = emptied)', () => {
+    const tree = { type: 'split' as const, dir: 'row' as const, ratio: 0.5,
+      a: { type: 'leaf' as const, target: 'agent' },
+      b: { type: 'leaf' as const, target: 'shell:shell' } }
+    useUiStore.getState().setSessionLayout('s1', tree)
+    useUiStore.getState().setSessionLayout('s2', null)
+    expect(useUiStore.getState().layouts).toEqual({ s1: tree, s2: null })
   })
 })
