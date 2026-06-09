@@ -1,7 +1,7 @@
 import type { JSX } from 'react'
 import clsx from 'clsx'
-import { SettingsIcon } from '@/frontend/lib/icons'
 import { NewProjectButton } from '@/frontend/components/NewProjectButton'
+import { SettingsButton } from '@/frontend/components/SettingsButton'
 import type { ProjectSummary } from '@/shared/types'
 
 /**
@@ -82,12 +82,7 @@ export function ProjectRail({
       <NewProjectButton />
 
       <div className="flex-1" />
-      <button
-        className="flex h-8 w-8 items-center justify-center rounded-2xl text-text-faint hover:text-text-dim"
-        title="Settings"
-      >
-        <SettingsIcon size={14} />
-      </button>
+      <SettingsButton />
     </div>
   )
 }
