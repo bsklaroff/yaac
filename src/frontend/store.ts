@@ -1,11 +1,17 @@
 import { create } from 'zustand'
-import type { AgentTool } from '@/shared/types'
+import type { AgentTool, DeletedSessionEntry } from '@/shared/types'
 
-/** A session being provisioned — shown as a placeholder in the main pane. */
+/** A session being provisioned — shown as an immediate sidebar row (in a
+ *  "starting" state) and a main-pane placeholder. Persists from the moment
+ *  create is clicked until the real session lands in the snapshot. */
 export interface CreatingSession {
   projectSlug: string
   tool: AgentTool
   message: string
+  /** Set once provisioning resolves; we keep showing the placeholder until
+   *  the snapshot includes this id, then `creating` is cleared (seamless
+   *  hand-off to the real, snapshot-driven row + terminal). */
+  sessionId?: string
   error?: string
 }
 
@@ -23,6 +29,9 @@ interface UiState {
   /** Sessions whose delete was confirmed — hidden optimistically until the
    *  daemon's (detached) cleanup completes and the snapshot drops them. */
   pendingDeleteIds: string[]
+  /** Just-deleted sessions (that had history) shown optimistically in the
+   *  Deleted group until the daemon's list-deleted catches up. */
+  optimisticDeleted: DeletedSessionEntry[]
   setCreating: (c: CreatingSession | null) => void
   setActiveProject: (slug: string | null) => void
   selectSession: (id: string | null) => void
@@ -34,6 +43,11 @@ interface UiState {
   /** Stop hiding a session — on delete error (restore) or once the snapshot
    *  confirms it's gone (prune). */
   endDelete: (sessionId: string) => void
+  /** Optimistically show a just-deleted session in the Deleted group. */
+  addOptimisticDeleted: (entry: DeletedSessionEntry) => void
+  /** Drop an optimistic deleted entry — once list-deleted includes it, or on
+   *  restart. */
+  removeOptimisticDeleted: (sessionId: string) => void
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -42,6 +56,7 @@ export const useUiStore = create<UiState>((set) => ({
   terminalNonces: {},
   creating: null,
   pendingDeleteIds: [],
+  optimisticDeleted: [],
   setCreating: (c) => set({ creating: c }),
   // Switching projects clears the open session — the sidebar now shows a
   // different project's sessions, so the old selection no longer belongs.
@@ -59,6 +74,16 @@ export const useUiStore = create<UiState>((set) => ({
   endDelete: (sessionId) => set((s) => (
     s.pendingDeleteIds.includes(sessionId)
       ? { pendingDeleteIds: s.pendingDeleteIds.filter((id) => id !== sessionId) }
+      : s
+  )),
+  addOptimisticDeleted: (entry) => set((s) => (
+    s.optimisticDeleted.some((e) => e.sessionId === entry.sessionId)
+      ? s
+      : { optimisticDeleted: [entry, ...s.optimisticDeleted] }
+  )),
+  removeOptimisticDeleted: (sessionId) => set((s) => (
+    s.optimisticDeleted.some((e) => e.sessionId === sessionId)
+      ? { optimisticDeleted: s.optimisticDeleted.filter((e) => e.sessionId !== sessionId) }
       : s
   )),
 }))

@@ -150,6 +150,36 @@ describe('classifyClaudePane', () => {
     expect(classifyClaudePane('esc   to   interrupt')).toBe('running')
   })
 
+  it('returns running when the status bar truncates the hint with an ellipsis', () => {
+    // Real regression: Claude Code truncates its bottom status bar to the
+    // pane width, and the window tracks the attached client — on a narrow
+    // browser pane (plus a "gh auth login" notice eating width) the hint
+    // rendered as "esc t…" and the session was misreported as waiting.
+    const pane = [
+      '✢ Sock-hopping…',
+      '',
+      '──────────────────────────',
+      '❯ ',
+      '──────────────────────────',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · gh auth login · esc t…',
+    ].join('\n')
+    expect(classifyClaudePane(pane)).toBe('running')
+  })
+
+  it('accepts any truncation point of the hint', () => {
+    for (const cut of ['esc…', 'esc t…', 'esc to…', 'esc to inter…', 'ctrl+c to interru…']) {
+      expect(classifyClaudePane(`  ⏵⏵ bypass permissions on · ${cut}`)).toBe('running')
+    }
+  })
+
+  it('does not treat other truncated esc-hints as running', () => {
+    // Only prefixes of the real interrupt hint count — a truncated
+    // "esc to undo" (or arbitrary esc text) must stay waiting.
+    expect(classifyClaudePane('  ⏵⏵ bypass permissions on · esc to u…')).toBe('waiting')
+    expect(classifyClaudePane('  ⏵⏵ bypass permissions on · esc closes…')).toBe('waiting')
+    expect(classifyClaudePane('  ⏵⏵ bypass permissions on · ← for…')).toBe('waiting')
+  })
+
   it('ignores the interrupt hint when it appears in transcript history above the footer', () => {
     // Real regression: the pane is 200 rows tall and transcript history
     // scrolls up but stays visible. An assistant turn that quoted the

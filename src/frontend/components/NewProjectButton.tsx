@@ -38,7 +38,7 @@ export function NewProjectButton(): JSX.Element {
       <button
         onClick={() => setOpen(true)}
         title="New project"
-        className="flex h-8 w-8 items-center justify-center rounded-2xl bg-surface-2 text-text-dim transition-all
+        className="flex h-7 w-7 items-center justify-center rounded-2xl bg-surface-2 text-text-dim transition-all
           hover:rounded-[9px] hover:bg-surface-3 hover:text-accent"
       >
         <AddIcon size={14} />

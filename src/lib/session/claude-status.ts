@@ -43,10 +43,28 @@ const INTERRUPT_HINT = /(?:ctrl\+c|esc)\s+to\s+interrupt/i
 // text that happens to quote "esc to interrupt" doesn't false-positive.
 const FOOTER_LINES = 10
 
+// Claude Code truncates its bottom status bar to the pane width with a
+// trailing ellipsis, so on narrow panes (the window tracks the attached
+// client) the hint can render as "… · esc t…". Catch any candidate that
+// starts like the hint and ends in "…"; `isTruncatedInterruptHint`
+// verifies the cut-off text is a genuine prefix of the full phrase, so
+// idle hints like "esc to undo" can never slip through.
+const TRUNCATED_HINT_CANDIDATE = /(?:ctrl\+c|esc)[^\n·…]{0,20}…/gi
+const FULL_HINTS = ['ctrl+c to interrupt', 'esc to interrupt']
+
+function isTruncatedInterruptHint(candidate: string): boolean {
+  const cut = candidate.replace(/…$/, '').replace(/\s+/g, ' ').trimEnd().toLowerCase()
+  return FULL_HINTS.some((full) => full.startsWith(cut))
+}
+
 export function classifyClaudePane(paneContent: string): 'running' | 'waiting' {
   const lines = paneContent.split('\n')
   const footer = lines.slice(-FOOTER_LINES).join('\n')
-  return INTERRUPT_HINT.test(footer) ? 'running' : 'waiting'
+  if (INTERRUPT_HINT.test(footer)) return 'running'
+  for (const m of footer.match(TRUNCATED_HINT_CANDIDATE) ?? []) {
+    if (isTruncatedInterruptHint(m)) return 'running'
+  }
+  return 'waiting'
 }
 
 /**

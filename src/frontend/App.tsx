@@ -61,6 +61,8 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
   const setActiveProject = useUiStore((s) => s.setActiveProject)
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
   const endDelete = useUiStore((s) => s.endDelete)
+  const creating = useUiStore((s) => s.creating)
+  const setCreating = useUiStore((s) => s.setCreating)
 
   const projects = snapshot?.projects ?? []
   const sessions = snapshot?.sessions ?? []
@@ -78,6 +80,14 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
     for (const id of pendingDeleteIds) if (!live.has(id)) endDelete(id)
   }, [sessions, pendingDeleteIds, endDelete])
 
+  // Once the provisioned session shows up in the snapshot, hand off from the
+  // optimistic "starting" placeholder to the real, snapshot-driven row.
+  useEffect(() => {
+    if (creating?.sessionId && sessions.some((s) => s.sessionId === creating.sessionId)) {
+      setCreating(null)
+    }
+  }, [creating, sessions, setCreating])
+
   const scoped = sessions.filter((s) => s.projectSlug === activeProjectSlug)
   // Per-project count of sessions awaiting input → the rail attention badge.
   const attention: Record<string, number> = {}
@@ -86,7 +96,9 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
   }
 
   return (
-    <div className="flex h-full">
+    // Rail + sidebar sit flush on the base layer; the session pane floats
+    // as an inset, rounded, bordered card.
+    <div className="flex h-full bg-base">
       <ProjectRail
         projects={projects}
         activeProjectSlug={activeProjectSlug}
@@ -94,7 +106,9 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
         onSelect={setActiveProject}
       />
       <Sidebar projectSlug={activeProjectSlug} sessions={scoped} connected={connected} />
-      <SessionView snapshot={snapshot} />
+      <div className="min-w-0 flex-1 p-2">
+        <SessionView snapshot={snapshot} />
+      </div>
     </div>
   )
 }

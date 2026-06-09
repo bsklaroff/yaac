@@ -25,6 +25,28 @@ describe('pending-delete tracking', () => {
   })
 })
 
+describe('optimistic deleted tracking', () => {
+  const entry = (sessionId: string) => ({
+    sessionId, projectSlug: 'p', tool: 'claude' as const, createdAt: '2026-01-01 00:00:00', prompt: 'hi',
+  })
+
+  it('addOptimisticDeleted prepends, with no duplicates', () => {
+    useUiStore.getState().addOptimisticDeleted(entry('a'))
+    useUiStore.getState().addOptimisticDeleted(entry('b'))
+    useUiStore.getState().addOptimisticDeleted(entry('a'))
+    expect(useUiStore.getState().optimisticDeleted.map((e) => e.sessionId)).toEqual(['b', 'a'])
+  })
+
+  it('removeOptimisticDeleted drops a tracked id and no-ops otherwise', () => {
+    useUiStore.getState().addOptimisticDeleted(entry('a'))
+    useUiStore.getState().addOptimisticDeleted(entry('b'))
+    useUiStore.getState().removeOptimisticDeleted('a')
+    expect(useUiStore.getState().optimisticDeleted.map((e) => e.sessionId)).toEqual(['b'])
+    useUiStore.getState().removeOptimisticDeleted('missing')
+    expect(useUiStore.getState().optimisticDeleted.map((e) => e.sessionId)).toEqual(['b'])
+  })
+})
+
 describe('selection + project switching', () => {
   it('selectSession sets the selected id', () => {
     useUiStore.getState().selectSession('s1')
