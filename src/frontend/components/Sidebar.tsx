@@ -1,6 +1,6 @@
 import type { JSX } from 'react'
 import clsx from 'clsx'
-import { TerminalIcon } from '@/frontend/lib/icons'
+import { BlockedIcon, TerminalIcon, TOOL_ICON } from '@/frontend/lib/icons'
 import { NewSessionButton } from '@/frontend/components/NewSessionButton'
 import { NextWaitingButton } from '@/frontend/components/NextWaitingButton'
 import { useUiStore } from '@/frontend/store'
@@ -70,10 +70,19 @@ export function Sidebar({
             <span className="flex items-center gap-2">
               <span className={clsx('h-2 w-2 shrink-0 rounded-full', STATUS_DOT[s.status])} />
               <span className="truncate font-medium">{s.prompt || 'new session'}</span>
-              <span className="ml-auto shrink-0 text-xs text-text-faint">{s.tool}</span>
+              {(() => { const Icon = TOOL_ICON[s.tool]; return <Icon size={14} className="ml-auto shrink-0 text-text-dim" /> })()}
             </span>
-            <span className="truncate pl-4 font-mono text-xs text-text-faint">
-              {s.sessionId.slice(0, 12)}
+            <span className="flex items-center gap-2 pl-4 text-xs text-text-faint">
+              <span className="truncate font-mono">{s.sessionId.slice(0, 12)}</span>
+              {s.blockedHosts.length > 0 && (
+                <span
+                  className="ml-auto flex shrink-0 items-center gap-0.5 text-[#d65858]"
+                  title={`${s.blockedHosts.length} blocked host(s)`}
+                >
+                  <BlockedIcon size={11} />
+                  {s.blockedHosts.length}
+                </span>
+              )}
             </span>
           </button>
         ))}
