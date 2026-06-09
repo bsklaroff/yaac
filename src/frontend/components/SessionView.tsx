@@ -3,13 +3,7 @@ import { useUiStore } from '@/frontend/store'
 import { SessionTerminal } from '@/frontend/components/SessionTerminal'
 import { SessionActionsMenu } from '@/frontend/components/SessionActionsMenu'
 import { BlockedIcon, TOOL_ICON } from '@/frontend/lib/icons'
-import type { DaemonSnapshot, SessionListEntry } from '@/shared/types'
-
-const STATUS_DOT: Record<SessionListEntry['status'], string> = {
-  running: 'bg-green-500',
-  waiting: 'bg-amber-500',
-  prewarm: 'bg-sky-500',
-}
+import type { DaemonSnapshot } from '@/shared/types'
 
 export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined }): JSX.Element {
   const selectedSessionId = useUiStore((s) => s.selectedSessionId)
@@ -29,21 +23,19 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
   return (
     <main className="flex h-full flex-1 flex-col bg-bg">
       <header className="flex h-11 items-center gap-2.5 border-b border-border bg-surface px-4 text-sm">
-        <span className={`h-2 w-2 shrink-0 rounded-full ${STATUS_DOT[session.status]}`} />
-        <span className="font-semibold text-text">{session.projectSlug}</span>
-        <ToolIcon size={14} className="text-text-dim" />
-        <span className="text-text-dim">{session.tool}</span>
-        <span className="text-text-faint">{session.status}</span>
+        <ToolIcon size={15} className="shrink-0 text-text-dim" />
+        <span className="min-w-0 flex-1 truncate font-medium text-text">
+          {session.prompt || 'New session'}
+        </span>
         {session.blockedHosts.length > 0 && (
           <span
-            className="flex items-center gap-0.5 text-xs text-[#d65858]"
+            className="flex shrink-0 items-center gap-0.5 text-xs text-[#d65858]"
             title={session.blockedHosts.join('\n')}
           >
             <BlockedIcon size={12} />
             {session.blockedHosts.length}
           </span>
         )}
-        <span className="ml-auto font-mono text-xs text-text-faint">{session.sessionId.slice(0, 12)}</span>
         <SessionActionsMenu sessionId={session.sessionId} />
       </header>
       {/* key forces a fresh terminal + socket when switching sessions or on
