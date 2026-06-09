@@ -41,7 +41,7 @@ export function ProjectRail({
   onSelect: (slug: string) => void
 }): JSX.Element {
   return (
-    <div className="flex w-12 shrink-0 flex-col items-center gap-2 border-r border-border bg-bg py-3">
+    <div className="flex w-12 shrink-0 flex-col items-center gap-2 py-3">
       {projects.map((p) => {
         const active = p.slug === activeProjectSlug
         const color = projectColor(p.slug)
