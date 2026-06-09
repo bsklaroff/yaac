@@ -1,6 +1,7 @@
 import type { JSX } from 'react'
 import clsx from 'clsx'
-import { AddIcon, SettingsIcon } from '@/frontend/lib/icons'
+import { SettingsIcon } from '@/frontend/lib/icons'
+import { NewProjectButton } from '@/frontend/components/NewProjectButton'
 import type { ProjectSummary } from '@/shared/types'
 
 /**
@@ -78,13 +79,7 @@ export function ProjectRail({
       })}
 
       <div className="my-1 h-px w-6 bg-border" />
-      <button
-        className="flex h-8 w-8 items-center justify-center rounded-2xl bg-surface-2 text-text-dim transition-all
-          hover:rounded-[9px] hover:bg-surface-3 hover:text-accent"
-        title="New project"
-      >
-        <AddIcon size={14} />
-      </button>
+      <NewProjectButton />
 
       <div className="flex-1" />
       <button

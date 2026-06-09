@@ -3,6 +3,7 @@ import clsx from 'clsx'
 import { BlockedIcon, TerminalIcon, TOOL_ICON } from '@/frontend/lib/icons'
 import { NewSessionButton } from '@/frontend/components/NewSessionButton'
 import { NextWaitingButton } from '@/frontend/components/NextWaitingButton'
+import { ProjectActionsMenu } from '@/frontend/components/ProjectActionsMenu'
 import { useUiStore } from '@/frontend/store'
 import type { SessionListEntry } from '@/shared/types'
 
@@ -32,9 +33,10 @@ export function Sidebar({
 
   return (
     <aside className="flex h-full w-64 flex-col border-r border-border bg-surface text-text">
-      <div className="flex h-11 shrink-0 items-center justify-between border-b border-border px-4">
+      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-4">
         <span className="truncate font-semibold tracking-tight">{projectSlug ?? 'yaac'}</span>
-        <span className="flex shrink-0 items-center gap-1.5 text-xs text-text-dim">
+        {projectSlug && <ProjectActionsMenu slug={projectSlug} />}
+        <span className="ml-auto flex shrink-0 items-center gap-1.5 text-xs text-text-dim">
           <span className={clsx('h-2 w-2 rounded-full', connected ? 'bg-green-500' : 'bg-text-faint')} />
           {connected ? 'live' : 'offline'}
         </span>
