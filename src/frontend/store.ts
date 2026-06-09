@@ -20,12 +20,20 @@ interface UiState {
   terminalNonces: Record<string, number>
   /** A session being provisioned (placeholder shown until it's ready). */
   creating: CreatingSession | null
+  /** Sessions whose delete was confirmed — hidden optimistically until the
+   *  daemon's (detached) cleanup completes and the snapshot drops them. */
+  pendingDeleteIds: string[]
   setCreating: (c: CreatingSession | null) => void
   setActiveProject: (slug: string | null) => void
   selectSession: (id: string | null) => void
   /** Jump to a specific session, switching the active project to match. */
   openSession: (projectSlug: string, sessionId: string) => void
   reconnectTerminal: (sessionId: string) => void
+  /** Optimistically hide a session being deleted. */
+  beginDelete: (sessionId: string) => void
+  /** Stop hiding a session — on delete error (restore) or once the snapshot
+   *  confirms it's gone (prune). */
+  endDelete: (sessionId: string) => void
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -33,6 +41,7 @@ export const useUiStore = create<UiState>((set) => ({
   selectedSessionId: null,
   terminalNonces: {},
   creating: null,
+  pendingDeleteIds: [],
   setCreating: (c) => set({ creating: c }),
   // Switching projects clears the open session — the sidebar now shows a
   // different project's sessions, so the old selection no longer belongs.
@@ -42,4 +51,14 @@ export const useUiStore = create<UiState>((set) => ({
   reconnectTerminal: (sessionId) => set((s) => ({
     terminalNonces: { ...s.terminalNonces, [sessionId]: (s.terminalNonces[sessionId] ?? 0) + 1 },
   })),
+  beginDelete: (sessionId) => set((s) => (
+    s.pendingDeleteIds.includes(sessionId)
+      ? s
+      : { pendingDeleteIds: [...s.pendingDeleteIds, sessionId] }
+  )),
+  endDelete: (sessionId) => set((s) => (
+    s.pendingDeleteIds.includes(sessionId)
+      ? { pendingDeleteIds: s.pendingDeleteIds.filter((id) => id !== sessionId) }
+      : s
+  )),
 }))

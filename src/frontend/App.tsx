@@ -59,6 +59,8 @@ function App(): JSX.Element {
 function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefined; connected: boolean }): JSX.Element {
   const activeProjectSlug = useUiStore((s) => s.activeProjectSlug)
   const setActiveProject = useUiStore((s) => s.setActiveProject)
+  const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
+  const endDelete = useUiStore((s) => s.endDelete)
 
   const projects = snapshot?.projects ?? []
   const sessions = snapshot?.sessions ?? []
@@ -67,6 +69,14 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
   useEffect(() => {
     if (!activeProjectSlug && projects.length > 0) setActiveProject(projects[0].slug)
   }, [activeProjectSlug, projects, setActiveProject])
+
+  // Once the snapshot no longer lists an optimistically-deleted session, the
+  // daemon's cleanup landed — stop tracking it so the set can't leak (or
+  // wrongly hide a future session that reuses the id).
+  useEffect(() => {
+    const live = new Set(sessions.map((s) => s.sessionId))
+    for (const id of pendingDeleteIds) if (!live.has(id)) endDelete(id)
+  }, [sessions, pendingDeleteIds, endDelete])
 
   const scoped = sessions.filter((s) => s.projectSlug === activeProjectSlug)
   // Per-project count of sessions awaiting input → the rail attention badge.
