@@ -151,7 +151,7 @@ function DeletedGroup({
 
   return (
     <Collapsible.Root open={open} onOpenChange={setOpen} className="py-1">
-      <Collapsible.Trigger className="flex w-full items-center gap-1 px-3 py-1 text-xs font-semibold uppercase
+      <Collapsible.Trigger className="flex w-full items-center gap-1 px-3 py-1 text-xs font-semibold
         tracking-wide text-text-faint outline-none transition hover:text-text-dim">
         <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
         <span>Deleted</span>
@@ -235,7 +235,7 @@ function SessionGroup({
 
   return (
     <Collapsible.Root open={open} onOpenChange={setOpen} className="py-1">
-      <Collapsible.Trigger className="flex w-full items-center gap-1 px-3 py-1 text-xs font-semibold uppercase
+      <Collapsible.Trigger className="flex w-full items-center gap-1 px-3 py-1 text-xs font-semibold
         tracking-wide text-text-faint outline-none transition hover:text-text-dim">
         <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
         <span>{label}</span>
