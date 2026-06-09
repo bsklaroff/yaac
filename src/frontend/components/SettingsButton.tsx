@@ -30,7 +30,7 @@ export function SettingsButton(): JSX.Element {
       <button
         onClick={() => setOpen(true)}
         title="Settings"
-        className="flex h-8 w-8 items-center justify-center rounded-2xl text-text-faint transition-all
+        className="flex h-7 w-7 items-center justify-center rounded-2xl text-text-faint transition-all
           hover:rounded-[9px] hover:text-text-dim"
       >
         <SettingsIcon size={14} />

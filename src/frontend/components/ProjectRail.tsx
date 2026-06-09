@@ -41,7 +41,7 @@ export function ProjectRail({
   onSelect: (slug: string) => void
 }): JSX.Element {
   return (
-    <div className="flex w-12 shrink-0 flex-col items-center gap-2 py-3">
+    <div className="flex w-10 shrink-0 flex-col items-center gap-2 py-3">
       {projects.map((p) => {
         const active = p.slug === activeProjectSlug
         const color = projectColor(p.slug)
@@ -55,14 +55,14 @@ export function ProjectRail({
           >
             <span
               className={clsx(
-                'absolute left-0 -ml-3 w-0.5 rounded-r-full bg-text transition-all',
-                active ? 'h-6' : 'h-0 group-hover:h-3',
+                'absolute left-0 -ml-1.5 w-0.5 rounded-r-full bg-text transition-all',
+                active ? 'h-5' : 'h-0 group-hover:h-3',
               )}
             />
             <span
               className={clsx(
-                'flex h-8 w-8 items-center justify-center text-[13px] font-semibold transition-all',
-                active ? 'rounded-[9px]' : 'rounded-2xl group-hover:rounded-[9px]',
+                'flex h-7 w-7 items-center justify-center text-[13px] font-semibold transition-all',
+                active ? 'rounded-lg' : 'rounded-2xl group-hover:rounded-lg',
               )}
               style={{
                 background: active ? color : `color-mix(in oklab, ${color} 20%, var(--color-surface-2))`,
@@ -72,7 +72,7 @@ export function ProjectRail({
               {projectInitial(p.slug)}
             </span>
             {waiting > 0 && (
-              <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-amber-500 ring-2 ring-bg" />
+              <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-amber-500 ring-2 ring-base" />
             )}
           </button>
         )
