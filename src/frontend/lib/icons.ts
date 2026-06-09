@@ -9,4 +9,7 @@ export {
   IconFolders as ProjectsIcon,
   IconPlusMedium as AddIcon,
   IconSettingsGear2 as SettingsIcon,
+  IconCircleDotsCenter1 as MoreIcon,
+  IconArrowsRepeat as RestartIcon,
+  IconTrashCan as DeleteIcon,
 } from '@central-icons-react/round-filled-radius-3-stroke-2'

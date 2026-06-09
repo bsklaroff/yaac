@@ -1,3 +1,4 @@
+import { api } from './apiClient'
 import type { AgentTool } from '@/shared/types'
 
 export interface CreateSessionResult {
@@ -7,33 +8,34 @@ export interface CreateSessionResult {
   claimedPrewarm: boolean
 }
 
-type CreateEvent =
+type StreamEvent =
   | { type: 'progress'; message: string }
-  | { type: 'result'; result: CreateSessionResult }
+  | { type: 'result'; result: unknown }
   | { type: 'error'; error: { message: string } }
 
 /**
- * POST /session/create and consume its NDJSON progress stream. Calls
- * `onProgress` for each step and resolves with the final result, or
- * throws with the daemon's error message.
+ * POST a session operation and consume its NDJSON progress stream
+ * (/session/create and /session/restart both stream
+ * progress → result → error). Calls `onProgress` per step; resolves with
+ * the final result object or throws the daemon's error message.
  */
-export async function createSession(
-  project: string,
-  tool: AgentTool,
+async function streamSessionOp(
+  path: string,
+  body: unknown,
   onProgress: (message: string) => void,
-): Promise<CreateSessionResult> {
-  const res = await fetch('/session/create', {
+): Promise<unknown> {
+  const res = await fetch(path, {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ project, tool }),
+    body: JSON.stringify(body),
   })
-  if (!res.ok || !res.body) throw new Error(`create failed (HTTP ${res.status})`)
+  if (!res.ok || !res.body) throw new Error(`request failed (HTTP ${res.status})`)
 
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
-  let result: CreateSessionResult | null = null
+  let result: unknown = null
 
   for (;;) {
     const { done, value } = await reader.read()
@@ -44,13 +46,32 @@ export async function createSession(
       const line = buffer.slice(0, nl).trim()
       buffer = buffer.slice(nl + 1)
       if (!line) continue
-      const event = JSON.parse(line) as CreateEvent
+      const event = JSON.parse(line) as StreamEvent
       if (event.type === 'progress') onProgress(event.message)
       else if (event.type === 'result') result = event.result
       else if (event.type === 'error') throw new Error(event.error.message)
     }
   }
 
-  if (!result) throw new Error('session creation returned no result')
+  if (result === null) throw new Error('operation returned no result')
   return result
+}
+
+export async function createSession(
+  project: string,
+  tool: AgentTool,
+  onProgress: (message: string) => void,
+): Promise<CreateSessionResult> {
+  return await streamSessionOp('/session/create', { project, tool }, onProgress) as CreateSessionResult
+}
+
+export async function restartSession(
+  sessionId: string,
+  onProgress: (message: string) => void,
+): Promise<{ sessionId: string }> {
+  return await streamSessionOp('/session/restart', { sessionId }, onProgress) as { sessionId: string }
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  await api.post('/session/delete', { sessionId })
 }
