@@ -30,15 +30,15 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
   return (
     // The floating pane, Claude Code-style: surface fill + hairline white/10
     // border + drop shadow over the (lighter) base, compact title bar inside.
-    <main className="flex h-full min-w-0 flex-col overflow-hidden rounded-lg border border-white/10 bg-surface
+    <main className="flex h-full min-w-0 flex-col overflow-hidden rounded-lg border border-white/[0.06] bg-surface
       shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
       {creating ? (
-        <header className="flex h-9 shrink-0 items-center gap-2.5 px-4 text-xs">
+        <header className="flex h-8 shrink-0 items-center gap-2.5 px-4 text-xs">
           <span className="min-w-0 flex-1 truncate font-medium text-text-dim">New session</span>
           <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[creating.tool]}</span>
         </header>
       ) : session ? (
-        <header className="flex h-9 shrink-0 items-center gap-2.5 px-4 text-xs">
+        <header className="flex h-8 shrink-0 items-center gap-2.5 px-4 text-xs">
           <span className="min-w-0 flex-1 truncate font-medium text-text">
             {session.prompt || 'New session'}
           </span>
@@ -55,7 +55,7 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
           <SessionActionsMenu sessionId={session.sessionId} />
         </header>
       ) : (
-        <div className="h-9 shrink-0" />
+        <div className="h-8 shrink-0" />
       )}
 
       <div className="relative min-h-0 flex-1">
@@ -65,8 +65,12 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
         {/* All opened terminals stay mounted; only the active one is visible.
             Keyed with a per-session nonce so a restart remounts just that one. */}
         {mounted.map((id) => (
-          <div key={id} className={clsx('absolute inset-0 p-2', id !== selectedSessionId && 'invisible')}>
-            <SessionTerminal key={`${id}:${terminalNonces[id] ?? 0}`} sessionId={id} />
+          <div key={id} className={clsx('absolute inset-0 px-2 pb-2', id !== selectedSessionId && 'invisible')}>
+            {/* The terminal is its own dark rounded block inset in the surface
+                card, with side padding so text isn't flush to the edge. */}
+            <div className="h-full w-full overflow-hidden rounded-lg bg-bg px-3 py-2">
+              <SessionTerminal key={`${id}:${terminalNonces[id] ?? 0}`} sessionId={id} />
+            </div>
           </div>
         ))}
         {/* Provisioning overlay — covers the (kept-alive) terminals until ready. */}
