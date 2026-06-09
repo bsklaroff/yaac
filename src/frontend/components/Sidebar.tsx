@@ -2,6 +2,7 @@ import type { JSX } from 'react'
 import clsx from 'clsx'
 import { TerminalIcon } from '@/frontend/lib/icons'
 import { NewSessionButton } from '@/frontend/components/NewSessionButton'
+import { NextWaitingButton } from '@/frontend/components/NextWaitingButton'
 import { useUiStore } from '@/frontend/store'
 import type { SessionListEntry } from '@/shared/types'
 
@@ -18,10 +19,12 @@ const STATUS_DOT: Record<SessionListEntry['status'], string> = {
 export function Sidebar({
   projectSlug,
   sessions,
+  waiting,
   connected,
 }: {
   projectSlug: string | null
   sessions: SessionListEntry[]
+  waiting: SessionListEntry[]
   connected: boolean
 }): JSX.Element {
   const selectedSessionId = useUiStore((s) => s.selectedSessionId)
@@ -36,6 +39,12 @@ export function Sidebar({
           {connected ? 'live' : 'offline'}
         </span>
       </div>
+
+      {waiting.length > 0 && (
+        <div className="border-b border-border p-2">
+          <NextWaitingButton waiting={waiting} />
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto py-2">
         <div className="flex items-center gap-1.5 px-4 py-1 text-xs font-semibold uppercase tracking-wide text-text-faint">

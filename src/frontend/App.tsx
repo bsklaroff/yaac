@@ -69,9 +69,10 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
   }, [activeProjectSlug, projects, setActiveProject])
 
   const scoped = sessions.filter((s) => s.projectSlug === activeProjectSlug)
+  const waiting = sessions.filter((s) => s.status === 'waiting')
   const attention: Record<string, number> = {}
-  for (const s of sessions) {
-    if (s.status === 'waiting') attention[s.projectSlug] = (attention[s.projectSlug] ?? 0) + 1
+  for (const s of waiting) {
+    attention[s.projectSlug] = (attention[s.projectSlug] ?? 0) + 1
   }
 
   return (
@@ -82,7 +83,7 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
         attentionBySlug={attention}
         onSelect={setActiveProject}
       />
-      <Sidebar projectSlug={activeProjectSlug} sessions={scoped} connected={connected} />
+      <Sidebar projectSlug={activeProjectSlug} sessions={scoped} waiting={waiting} connected={connected} />
       <SessionView snapshot={snapshot} />
     </div>
   )

@@ -10,6 +10,8 @@ interface UiState {
   terminalNonce: number
   setActiveProject: (slug: string | null) => void
   selectSession: (id: string | null) => void
+  /** Jump to a specific session, switching the active project to match. */
+  openSession: (projectSlug: string, sessionId: string) => void
   reconnectTerminal: () => void
 }
 
@@ -21,5 +23,6 @@ export const useUiStore = create<UiState>((set) => ({
   // different project's sessions, so the old selection no longer belongs.
   setActiveProject: (slug) => set({ activeProjectSlug: slug, selectedSessionId: null }),
   selectSession: (id) => set({ selectedSessionId: id }),
+  openSession: (projectSlug, sessionId) => set({ activeProjectSlug: projectSlug, selectedSessionId: sessionId }),
   reconnectTerminal: () => set((s) => ({ terminalNonce: s.terminalNonce + 1 })),
 }))
