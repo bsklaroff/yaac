@@ -1,11 +1,18 @@
-import type { JSX } from 'react'
+import { useState, type JSX } from 'react'
 import clsx from 'clsx'
-import { BlockedIcon, TerminalIcon, TOOL_ICON } from '@/frontend/lib/icons'
+import { Collapsible } from '@base-ui/react/collapsible'
+import { BlockedIcon, ChevronIcon, TOOL_ICON } from '@/frontend/lib/icons'
 import { NewSessionButton } from '@/frontend/components/NewSessionButton'
-import { NextWaitingButton } from '@/frontend/components/NextWaitingButton'
 import { ProjectActionsMenu } from '@/frontend/components/ProjectActionsMenu'
 import { useUiStore } from '@/frontend/store'
 import type { SessionListEntry } from '@/shared/types'
+
+/** Session groups by state — Waiting first (the triage surface). */
+const GROUPS: { status: SessionListEntry['status']; label: string; defaultOpen: boolean }[] = [
+  { status: 'waiting', label: 'Waiting', defaultOpen: true },
+  { status: 'running', label: 'Running', defaultOpen: true },
+  { status: 'prewarm', label: 'Prewarm', defaultOpen: false },
+]
 
 /** Human relative age from the session's UTC 'YYYY-MM-DD HH:MM:SS' time. */
 function relativeAge(createdAt: string): string {
@@ -20,81 +27,100 @@ function relativeAge(createdAt: string): string {
   return `${Math.floor(h / 24)}d ago`
 }
 
-/**
- * Session list for the active project (the rail picks the project). Project
- * navigation lives in the rail, so this is session-only now.
- */
 export function Sidebar({
   projectSlug,
   sessions,
-  waiting,
   connected,
 }: {
   projectSlug: string | null
   sessions: SessionListEntry[]
-  waiting: SessionListEntry[]
   connected: boolean
 }): JSX.Element {
-  const selectedSessionId = useUiStore((s) => s.selectedSessionId)
-  const selectSession = useUiStore((s) => s.selectSession)
-
   return (
     <aside className="flex h-full w-64 flex-col border-r border-border bg-surface text-text">
-      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-4">
+      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border pl-4 pr-2">
         {projectSlug
           ? <ProjectActionsMenu slug={projectSlug} />
           : <span className="font-semibold tracking-tight">yaac</span>}
-        {/* Only surfaced when disconnected — no permanent "live" dot. */}
-        {!connected && <span className="ml-auto shrink-0 text-xs text-amber-400/80">reconnecting…</span>}
+        <div className="ml-auto flex items-center gap-2">
+          {!connected && <span className="text-xs text-amber-400/80">reconnecting…</span>}
+          {projectSlug && <NewSessionButton projectSlug={projectSlug} />}
+        </div>
       </div>
 
-      {waiting.length > 0 && (
-        <div className="border-b border-border p-2">
-          <NextWaitingButton waiting={waiting} />
-        </div>
-      )}
-
-      <div className="flex-1 overflow-y-auto py-2">
-        <div className="flex items-center gap-1.5 px-4 py-1 text-xs font-semibold uppercase tracking-wide text-text-faint">
-          <TerminalIcon size={13} />
-          <span>Sessions ({sessions.length})</span>
-          {projectSlug && (
-            <span className="ml-auto">
-              <NewSessionButton projectSlug={projectSlug} />
-            </span>
-          )}
-        </div>
+      <div className="flex-1 overflow-y-auto py-1">
         {!projectSlug && <Empty label="No project selected" />}
-        {projectSlug && sessions.length === 0 && <Empty label="No active sessions" />}
-        {sessions.map((s) => (
-          <button
-            key={s.sessionId}
-            onClick={() => selectSession(s.sessionId)}
-            className={clsx(
-              'flex w-full flex-col gap-0.5 px-4 py-2 text-left text-sm transition hover:bg-surface-2',
-              selectedSessionId === s.sessionId && 'bg-surface-2',
-            )}
-          >
-            <span className="flex items-center gap-2">
-              <span className="truncate font-medium">{s.prompt || 'New session'}</span>
-              {(() => { const Icon = TOOL_ICON[s.tool]; return <Icon size={14} className="ml-auto shrink-0 text-text-dim" /> })()}
-            </span>
-            <span className="flex items-center gap-2 text-xs text-text-faint">
-              <span className="truncate">{relativeAge(s.createdAt)}</span>
-              {s.blockedHosts.length > 0 && (
-                <span
-                  className="ml-auto flex shrink-0 items-center gap-0.5 text-[#d65858]"
-                  title={`${s.blockedHosts.length} blocked host(s)`}
-                >
-                  <BlockedIcon size={11} />
-                  {s.blockedHosts.length}
-                </span>
-              )}
-            </span>
-          </button>
+        {projectSlug && sessions.length === 0 && <Empty label="No sessions yet — start one with +" />}
+        {GROUPS.map((g) => (
+          <SessionGroup
+            key={g.status}
+            label={g.label}
+            defaultOpen={g.defaultOpen}
+            sessions={sessions.filter((s) => s.status === g.status)}
+          />
         ))}
       </div>
     </aside>
+  )
+}
+
+function SessionGroup({
+  label,
+  sessions,
+  defaultOpen,
+}: {
+  label: string
+  sessions: SessionListEntry[]
+  defaultOpen: boolean
+}): JSX.Element | null {
+  const [open, setOpen] = useState(defaultOpen)
+  if (sessions.length === 0) return null
+
+  return (
+    <Collapsible.Root open={open} onOpenChange={setOpen} className="py-1">
+      <Collapsible.Trigger className="flex w-full items-center gap-1 px-3 py-1 text-xs font-semibold uppercase
+        tracking-wide text-text-faint outline-none transition hover:text-text-dim">
+        <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
+        <span>{label}</span>
+        <span className="text-text-faint/70">{sessions.length}</span>
+      </Collapsible.Trigger>
+      <Collapsible.Panel>
+        {sessions.map((s) => <SessionRow key={s.sessionId} session={s} />)}
+      </Collapsible.Panel>
+    </Collapsible.Root>
+  )
+}
+
+function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
+  const selectedSessionId = useUiStore((s) => s.selectedSessionId)
+  const selectSession = useUiStore((s) => s.selectSession)
+  const ToolIcon = TOOL_ICON[session.tool]
+
+  return (
+    <button
+      onClick={() => selectSession(session.sessionId)}
+      className={clsx(
+        'flex w-full flex-col gap-0.5 px-4 py-2 text-left text-sm transition hover:bg-surface-2',
+        selectedSessionId === session.sessionId && 'bg-surface-2',
+      )}
+    >
+      <span className="flex items-center gap-2">
+        <span className="truncate font-medium">{session.prompt || 'New session'}</span>
+        <ToolIcon size={14} className="ml-auto shrink-0 text-text-dim" />
+      </span>
+      <span className="flex items-center gap-2 text-xs text-text-faint">
+        <span className="truncate">{relativeAge(session.createdAt)}</span>
+        {session.blockedHosts.length > 0 && (
+          <span
+            className="ml-auto flex shrink-0 items-center gap-0.5 text-[#d65858]"
+            title={`${session.blockedHosts.length} blocked host(s)`}
+          >
+            <BlockedIcon size={11} />
+            {session.blockedHosts.length}
+          </span>
+        )}
+      </span>
+    </button>
   )
 }
 

@@ -23,6 +23,7 @@ export {
   IconTrashCan as DeleteIcon,
   IconCircleBanSign as BlockedIcon,
   IconLoadingCircle as LoadingIcon,
+  IconChevronRightSmall as ChevronIcon,
 } from '@central-icons-react/round-filled-radius-3-stroke-2'
 
 /** Brand glyph per agent tool. */
