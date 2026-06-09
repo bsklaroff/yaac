@@ -6,23 +6,26 @@ interface UiState {
   activeProjectSlug: string | null
   /** Session shown in the main pane. */
   selectedSessionId: string | null
-  /** Bumped to force the terminal to remount + reattach (e.g. on restart). */
-  terminalNonce: number
+  /** Per-session counter; bumping one forces that terminal to remount +
+   *  reattach (e.g. after a restart) without disturbing the others. */
+  terminalNonces: Record<string, number>
   setActiveProject: (slug: string | null) => void
   selectSession: (id: string | null) => void
   /** Jump to a specific session, switching the active project to match. */
   openSession: (projectSlug: string, sessionId: string) => void
-  reconnectTerminal: () => void
+  reconnectTerminal: (sessionId: string) => void
 }
 
 export const useUiStore = create<UiState>((set) => ({
   activeProjectSlug: null,
   selectedSessionId: null,
-  terminalNonce: 0,
+  terminalNonces: {},
   // Switching projects clears the open session — the sidebar now shows a
   // different project's sessions, so the old selection no longer belongs.
   setActiveProject: (slug) => set({ activeProjectSlug: slug, selectedSessionId: null }),
   selectSession: (id) => set({ selectedSessionId: id }),
   openSession: (projectSlug, sessionId) => set({ activeProjectSlug: projectSlug, selectedSessionId: sessionId }),
-  reconnectTerminal: () => set((s) => ({ terminalNonce: s.terminalNonce + 1 })),
+  reconnectTerminal: (sessionId) => set((s) => ({
+    terminalNonces: { ...s.terminalNonces, [sessionId]: (s.terminalNonces[sessionId] ?? 0) + 1 },
+  })),
 }))

@@ -18,7 +18,7 @@ export function SessionActionsMenu({ sessionId }: { sessionId: string }): JSX.El
   const onRestart = (): void => {
     setBusy(true)
     void restartSession(sessionId, () => {})
-      .then(() => reconnectTerminal())
+      .then(() => reconnectTerminal(sessionId))
       .catch((e: unknown) => console.error('restart failed', e))
       .finally(() => setBusy(false))
   }
