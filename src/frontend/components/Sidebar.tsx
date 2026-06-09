@@ -1,9 +1,11 @@
 import { useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { Collapsible } from '@base-ui/react/collapsible'
-import { BlockedIcon, ChevronIcon, TOOL_ICON } from '@/frontend/lib/icons'
+import { BlockedIcon, ChevronIcon, CloseIcon, TOOL_ICON } from '@/frontend/lib/icons'
 import { NewSessionButton } from '@/frontend/components/NewSessionButton'
 import { ProjectActionsMenu } from '@/frontend/components/ProjectActionsMenu'
+import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
+import { deleteSession } from '@/frontend/lib/createSession'
 import { useUiStore } from '@/frontend/store'
 import type { SessionListEntry } from '@/shared/types'
 
@@ -101,32 +103,71 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
   const selectedSessionId = useUiStore((s) => s.selectedSessionId)
   const selectSession = useUiStore((s) => s.selectSession)
   const ToolIcon = TOOL_ICON[session.tool]
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  const onConfirmDelete = (): void => {
+    setBusy(true)
+    void deleteSession(session.sessionId)
+      .then(() => {
+        if (selectedSessionId === session.sessionId) selectSession(null)
+        setConfirmDelete(false)
+      })
+      .catch((e: unknown) => console.error('delete failed', e))
+      .finally(() => setBusy(false))
+  }
 
   return (
-    <button
-      onClick={() => selectSession(session.sessionId)}
-      className={clsx(
-        'flex w-full flex-col gap-0.5 px-4 py-2 text-left text-sm transition hover:bg-surface-2',
-        selectedSessionId === session.sessionId && 'bg-surface-2',
-      )}
-    >
-      <span className="flex items-center gap-2">
-        <span className="truncate font-medium">{session.prompt || 'New session'}</span>
-        <ToolIcon size={14} className="ml-auto shrink-0 text-text-dim" />
-      </span>
-      <span className="flex items-center gap-2 text-xs text-text-faint">
-        <span className="truncate">{relativeAge(session.createdAt)}</span>
-        {session.blockedHosts.length > 0 && (
-          <span
-            className="ml-auto flex shrink-0 items-center gap-0.5 text-[#d65858]"
-            title={`${session.blockedHosts.length} blocked host(s)`}
-          >
-            <BlockedIcon size={11} />
-            {session.blockedHosts.length}
-          </span>
+    <div className="group relative">
+      <button
+        onClick={() => selectSession(session.sessionId)}
+        className={clsx(
+          'flex w-full flex-col gap-0.5 px-4 py-2 text-left text-sm transition hover:bg-surface-2',
+          selectedSessionId === session.sessionId && 'bg-surface-2',
         )}
-      </span>
-    </button>
+      >
+        <span className="flex items-center gap-2">
+          <span className="truncate font-medium">{session.prompt || 'New session'}</span>
+          {/* Tool glyph normally; on row hover it yields to the delete × in the same spot. */}
+          <ToolIcon size={14} className="ml-auto shrink-0 text-text-dim transition-opacity group-hover:opacity-0" />
+        </span>
+        <span className="flex items-center gap-2 text-xs text-text-faint">
+          <span className="truncate">{relativeAge(session.createdAt)}</span>
+          {session.blockedHosts.length > 0 && (
+            <span
+              className="ml-auto flex shrink-0 items-center gap-0.5 text-[#d65858]"
+              title={`${session.blockedHosts.length} blocked host(s)`}
+            >
+              <BlockedIcon size={11} />
+              {session.blockedHosts.length}
+            </span>
+          )}
+        </span>
+      </button>
+
+      {/* Overlaid as a sibling (not nested in the row button) and pointer-inert
+          until hover, so it can't swallow clicks meant for selecting the row. */}
+      <button
+        onClick={() => setConfirmDelete(true)}
+        title="Delete session"
+        aria-label="Delete session"
+        className="absolute right-3.5 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
+          opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
+          group-hover:pointer-events-auto group-hover:opacity-100"
+      >
+        <CloseIcon size={14} />
+      </button>
+
+      <ConfirmDialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        busy={busy}
+        title="Delete session?"
+        description="Stops and removes the session's container and worktree. This can't be undone."
+        confirmLabel="Delete"
+        onConfirm={onConfirmDelete}
+      />
+    </div>
   )
 }
 
