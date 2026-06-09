@@ -1,6 +1,7 @@
 import type { JSX } from 'react'
 import clsx from 'clsx'
 import { TerminalIcon } from '@/frontend/lib/icons'
+import { NewSessionButton } from '@/frontend/components/NewSessionButton'
 import { useUiStore } from '@/frontend/store'
 import type { SessionListEntry } from '@/shared/types'
 
@@ -39,7 +40,12 @@ export function Sidebar({
       <div className="flex-1 overflow-y-auto py-2">
         <div className="flex items-center gap-1.5 px-4 py-1 text-xs font-semibold uppercase tracking-wide text-text-faint">
           <TerminalIcon size={13} />
-          Sessions ({sessions.length})
+          <span>Sessions ({sessions.length})</span>
+          {projectSlug && (
+            <span className="ml-auto">
+              <NewSessionButton projectSlug={projectSlug} />
+            </span>
+          )}
         </div>
         {!projectSlug && <Empty label="No project selected" />}
         {projectSlug && sessions.length === 0 && <Empty label="No active sessions" />}
