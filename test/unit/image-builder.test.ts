@@ -116,9 +116,18 @@ describe('image-builder prerequisites', () => {
     const dockerfilePath = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
     const content = await fs.readFile(dockerfilePath, 'utf8')
     expect(content).toContain('FROM docker.io/ubuntu:24.04')
-    expect(content).toContain('claude.ai/install.sh')
     expect(content).toContain('gh')
     expect(content).toContain('tmux')
+  })
+
+  it('Dockerfile.tools installs the agent CLIs on top of the base', async () => {
+    const dockerfilePath = path.join(DOCKERFILES_DIR, 'Dockerfile.tools')
+    const content = await fs.readFile(dockerfilePath, 'utf8')
+    expect(content).toMatch(/^ARG BASE_IMAGE\n/m)
+    expect(content).toMatch(/^FROM \$\{BASE_IMAGE\}/m)
+    expect(content).toContain('claude.ai/install.sh')
+    expect(content).toContain('@openai/codex')
+    expect(content).toContain('opencode-ai')
   })
 
   it('Dockerfile.default runs as non-root yaac user', async () => {

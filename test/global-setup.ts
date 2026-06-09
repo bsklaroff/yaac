@@ -96,12 +96,19 @@ export async function setup(): Promise<void> {
   const baseTag = `yaac-test-base:${baseHash}`
   await ensureImageByTag(baseTag, baseDockerfile, DOCKERFILES_DIR)
 
-  // --- Nestable layer (Dockerfile.nestable, layered on base) ---
+  // --- Tools layer (Dockerfile.tools, layered on base) ---
+  const toolsDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.tools')
+  const toolsContentHash = await fileHash(toolsDockerfile)
+  const toolsHash = crypto.createHash('sha256').update(`${baseHash}:${toolsContentHash}`).digest('hex').slice(0, 16)
+  const toolsTag = `yaac-test-tools:${toolsHash}`
+  await ensureImageByTag(toolsTag, toolsDockerfile, DOCKERFILES_DIR, { BASE_IMAGE: baseTag })
+
+  // --- Nestable layer (Dockerfile.nestable, layered on tools) ---
   const nestDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
   const nestContentHash = await fileHash(nestDockerfile)
-  const nestHash = crypto.createHash('sha256').update(`${baseHash}:${nestContentHash}`).digest('hex').slice(0, 16)
+  const nestHash = crypto.createHash('sha256').update(`${toolsHash}:${nestContentHash}`).digest('hex').slice(0, 16)
   const nestTag = `yaac-test-base-nestable:${nestHash}`
-  await ensureImageByTag(nestTag, nestDockerfile, DOCKERFILES_DIR, { BASE_IMAGE: baseTag })
+  await ensureImageByTag(nestTag, nestDockerfile, DOCKERFILES_DIR, { BASE_IMAGE: toolsTag })
 
   // --- Proxy sidecar (podman/proxy-sidecar/) ---
   const proxyHash = await contextHash(PROXY_DIR)

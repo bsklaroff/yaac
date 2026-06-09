@@ -468,3 +468,16 @@ export async function imageExists(name: string): Promise<boolean> {
     return false
   }
 }
+
+/**
+ * Remove a container image by tag. No-ops when the image is absent or in
+ * use — used by `yaac project rebuild` to clear stale downstream layers
+ * before re-running their builds.
+ */
+export async function removeImage(name: string): Promise<void> {
+  try {
+    await execFileAsync('podman', ['rmi', '-f', name])
+  } catch {
+    // not present / in use — best-effort cleanup
+  }
+}

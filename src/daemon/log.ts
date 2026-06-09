@@ -28,10 +28,15 @@ export function daemonLog(message: string): void {
  * line at a time with `prefix` prepended. Used so noisy subprocess
  * output (e.g. `podman build`) lands in `~/.yaac/daemon.log` instead of
  * being dropped when the daemon runs detached with `stdio: 'ignore'`.
+ *
+ * Pass `onLine` to also fan each line out to a caller — used by streaming
+ * commands (e.g. `yaac project rebuild`) that need to mirror build output
+ * to an NDJSON response while still landing it in the persistent log.
  */
 export function pipeToDaemonLog(
   stream: NodeJS.ReadableStream | null,
   prefix: string,
+  onLine?: (line: string) => void,
 ): void {
   if (!stream) return
   let buf = ''
@@ -42,10 +47,16 @@ export function pipeToDaemonLog(
     while ((idx = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, idx)
       buf = buf.slice(idx + 1)
-      if (line.length > 0) daemonLog(`${prefix}${line}`)
+      if (line.length > 0) {
+        daemonLog(`${prefix}${line}`)
+        onLine?.(line)
+      }
     }
   })
   stream.on('end', () => {
-    if (buf.length > 0) daemonLog(`${prefix}${buf}`)
+    if (buf.length > 0) {
+      daemonLog(`${prefix}${buf}`)
+      onLine?.(buf)
+    }
   })
 }

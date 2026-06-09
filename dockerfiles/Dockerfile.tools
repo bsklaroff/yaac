@@ -1,0 +1,11 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+# Agent CLIs and MCP servers. Split out of Dockerfile.default so they can be
+# rebuilt with `--no-cache` (via `yaac project rebuild`) to pick up new
+# upstream versions (e.g. when Claude Code ships a new release) without
+# re-running the slow apt/Node base build.
+RUN npm install -g chrome-devtools-mcp@0.24.0
+RUN npm install -g @openai/codex
+RUN npm install -g opencode-ai
+RUN curl -fsSL https://claude.ai/install.sh | bash

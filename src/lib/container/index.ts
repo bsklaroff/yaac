@@ -1,7 +1,7 @@
 export { podman, ensureContainerRuntime, ensureNetwork, imageExists, execFileAsync } from './runtime'
 export { findAvailablePort, reserveAvailablePort, podmanRelay, startPortForwarders } from './port'
 export type { RelayFactory, ReservedPort } from './port'
-export { ensureImage, ensureImageByTag, fileHash, contextHash, packTar } from './image-builder'
+export { ensureImage, ensureImageByTag, fileHash, contextHash, packTar, rebuildProjectImage } from './image-builder'
 export { ProxyClient, proxyClient, PROXY_CONTAINER_PORT, buildRulesFromConfig } from './proxy-client'
 export type { ProxyClientConfig, Injection, InjectionRule } from './proxy-client'
 export { PgRelayClient, pgRelay, PG_RELAY_CONTAINER, SESSION_NETWORK } from './pg-relay'

@@ -76,6 +76,8 @@ import {
   createSemaphore,
   dialBackoffDelayMs,
   keepIdEnabled,
+  imageExists,
+  removeImage,
 } from '@/lib/container/runtime'
 
 describe('isTransientPodmanError', () => {
@@ -288,6 +290,36 @@ describe('shellPodmanWithRetry', () => {
       shellPodmanWithRetry('podman exec c true', { baseDelay: 1, maxAttempts: 3 }),
     ).rejects.toThrow('still transient')
     expect(execMock).toHaveBeenCalledTimes(3)
+  })
+})
+
+describe('imageExists', () => {
+  beforeEach(() => { execFileMock.mockReset() })
+
+  it('returns true when podman image inspect succeeds', async () => {
+    execFileMock.mockResolvedValue({ stdout: '[]', stderr: '' })
+    expect(await imageExists('yaac-tools:abc')).toBe(true)
+    expect(execFileMock).toHaveBeenCalledWith('podman', ['image', 'inspect', 'yaac-tools:abc'])
+  })
+
+  it('returns false when inspect fails (image absent)', async () => {
+    execFileMock.mockRejectedValue(new Error('no such image'))
+    expect(await imageExists('missing:tag')).toBe(false)
+  })
+})
+
+describe('removeImage', () => {
+  beforeEach(() => { execFileMock.mockReset() })
+
+  it('calls podman rmi -f with the tag', async () => {
+    execFileMock.mockResolvedValue({ stdout: '', stderr: '' })
+    await removeImage('yaac-tools:abc')
+    expect(execFileMock).toHaveBeenCalledWith('podman', ['rmi', '-f', 'yaac-tools:abc'])
+  })
+
+  it('swallows errors so missing/in-use images do not abort cleanup', async () => {
+    execFileMock.mockRejectedValue(new Error('image is in use'))
+    await expect(removeImage('busy:tag')).resolves.toBeUndefined()
   })
 })
 

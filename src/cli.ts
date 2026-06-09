@@ -2,6 +2,7 @@ import { Command, type Help } from 'commander'
 import { exitOnClientError } from '@/shared/daemon-client'
 import { projectAdd } from '@/commands/project-add'
 import { projectList } from '@/commands/project-list'
+import { projectRebuild } from '@/commands/project-rebuild'
 import { sessionCreate } from '@/commands/session-create'
 import { sessionList } from '@/commands/session-list'
 import { sessionDelete } from '@/commands/session-delete'
@@ -125,6 +126,12 @@ project
   .description('Add a project from a git remote')
   .argument('<remote-url>', 'Git remote URL')
   .action(projectAdd)
+
+project
+  .command('rebuild')
+  .description("Rebuild the project's tools layer (claude/codex/opencode) with --no-cache")
+  .argument('<project>', 'Project slug')
+  .action(projectRebuild)
 
 const session = program
   .command('session')

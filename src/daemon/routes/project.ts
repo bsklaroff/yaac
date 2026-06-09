@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { stream } from 'hono/streaming'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { listProjects } from '@/lib/project/list'
@@ -6,6 +7,9 @@ import { getProjectDetail, resolveProjectConfigWithSource, assertProjectExists }
 import { addProject } from '@/lib/project/add'
 import { removeProject } from '@/lib/project/remove'
 import { writeProjectConfig, removeProjectConfig } from '@/lib/project/local-config'
+import { resolveProjectConfig } from '@/lib/project/config'
+import { rebuildProjectImage } from '@/lib/container/image-builder'
+import { toErrorBody } from '@/daemon/errors'
 
 export const projectApp = new Hono()
   .get('/list', async (c) => c.json(await listProjects()))
@@ -42,4 +46,30 @@ export const projectApp = new Hono()
   .delete('/:slug/config', async (c) => {
     await removeProjectConfig(c.req.param('slug'))
     return c.body(null, 204)
+  })
+  .post('/:slug/rebuild', (c) => {
+    // Stream the rebuild logs as NDJSON {progress|result|error} events so
+    // `yaac project rebuild` can mirror `podman build --no-cache` output
+    // live (it can take minutes when the upstream Claude/codex installers
+    // download fresh tarballs).
+    const slug = c.req.param('slug')
+    c.header('Content-Type', 'application/x-ndjson')
+    return stream(c, async (s) => {
+      const write = (event: unknown) => s.writeln(JSON.stringify(event))
+      try {
+        // Resolve project (throws NOT_FOUND if missing) and read its config
+        // so we rebuild the same chain the next session would actually use.
+        await getProjectDetail(slug)
+        const config = await resolveProjectConfig(slug)
+        const finalTag = await rebuildProjectImage(slug, {
+          imagePrefix: process.env.YAAC_IMAGE_PREFIX,
+          nestedContainers: config?.nestedContainers ?? false,
+          onLog: (line) => { void write({ type: 'progress', message: line }) },
+        })
+        await write({ type: 'result', result: { projectSlug: slug, finalTag } })
+      } catch (err) {
+        const { body: errBody } = toErrorBody(err)
+        await write({ type: 'error', error: errBody.error })
+      }
+    })
   })
