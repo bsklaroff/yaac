@@ -13,6 +13,7 @@ import { DaemonError, toErrorBody } from '@/daemon/errors'
 import { resolveSessionContainer } from '@/daemon/session-resolve'
 import { getPrewarmSession, clearPrewarmSession } from '@/lib/prewarm'
 import { pickNextStreamSession } from '@/daemon/stream-picker'
+import { notifySessionListChanged } from '@/daemon/sessions-changed'
 
 export const sessionApp = new Hono()
   .get(
@@ -62,6 +63,9 @@ export const sessionApp = new Hono()
           const result = await createSession(body.project, opts)
           if (!result) throw new DaemonError('INTERNAL', 'session creation returned no result')
           await write({ type: 'result', result })
+          // Container is up — push a snapshot now so the webapp shows the new
+          // session immediately instead of on the next periodic tick.
+          notifySessionListChanged()
         } catch (err) {
           const { body: errBody } = toErrorBody(err)
           await write({ type: 'error', error: errBody.error })
@@ -90,6 +94,7 @@ export const sessionApp = new Hono()
             onProgress: (message) => { void write({ type: 'progress', message }) },
           })
           await write({ type: 'result', result })
+          notifySessionListChanged()
         } catch (err) {
           const { body: errBody } = toErrorBody(err)
           await write({ type: 'error', error: errBody.error })
