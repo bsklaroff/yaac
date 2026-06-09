@@ -3,14 +3,17 @@ import clsx from 'clsx'
 import { useUiStore } from '@/frontend/store'
 import { SessionTerminal } from '@/frontend/components/SessionTerminal'
 import { SessionActionsMenu } from '@/frontend/components/SessionActionsMenu'
+import { CreatingPlaceholder } from '@/frontend/components/CreatingPlaceholder'
 import { BlockedIcon, TOOL_ICON } from '@/frontend/lib/icons'
 import type { DaemonSnapshot } from '@/shared/types'
 
 export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined }): JSX.Element {
   const selectedSessionId = useUiStore((s) => s.selectedSessionId)
   const terminalNonces = useUiStore((s) => s.terminalNonces)
+  const creating = useUiStore((s) => s.creating)
   const sessions = snapshot?.sessions ?? []
   const session = sessions.find((s) => s.sessionId === selectedSessionId)
+  const CreatingTool = creating ? TOOL_ICON[creating.tool] : null
 
   // Keep-alive: remember every session that's been opened and keep its
   // terminal mounted (just hidden) so switching back is instant — no
@@ -27,7 +30,12 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
 
   return (
     <main className="flex h-full flex-1 flex-col bg-bg">
-      {session ? (
+      {creating && CreatingTool ? (
+        <header className="flex h-11 items-center gap-2.5 border-b border-border bg-surface px-4 text-sm">
+          <CreatingTool size={15} className="shrink-0 text-text-dim" />
+          <span className="min-w-0 flex-1 truncate font-medium text-text-dim">New session</span>
+        </header>
+      ) : session ? (
         <header className="flex h-11 items-center gap-2.5 border-b border-border bg-surface px-4 text-sm">
           {(() => { const Icon = TOOL_ICON[session.tool]; return <Icon size={15} className="shrink-0 text-text-dim" /> })()}
           <span className="min-w-0 flex-1 truncate font-medium text-text">
@@ -49,7 +57,7 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
       )}
 
       <div className="relative min-h-0 flex-1">
-        {!session && (
+        {!session && !creating && (
           <div className="flex h-full items-center justify-center text-text-faint">Select a session</div>
         )}
         {/* All opened terminals stay mounted; only the active one is visible.
@@ -59,6 +67,12 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
             <SessionTerminal key={`${id}:${terminalNonces[id] ?? 0}`} sessionId={id} />
           </div>
         ))}
+        {/* Provisioning overlay — covers the (kept-alive) terminals until ready. */}
+        {creating && (
+          <div className="absolute inset-0 z-20 bg-bg">
+            <CreatingPlaceholder creating={creating} />
+          </div>
+        )}
       </div>
     </main>
   )

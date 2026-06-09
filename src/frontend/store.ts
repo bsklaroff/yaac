@@ -1,4 +1,13 @@
 import { create } from 'zustand'
+import type { AgentTool } from '@/shared/types'
+
+/** A session being provisioned — shown as a placeholder in the main pane. */
+export interface CreatingSession {
+  projectSlug: string
+  tool: AgentTool
+  message: string
+  error?: string
+}
 
 /** Local-only UI state (not daemon state — that lives in the snapshot). */
 interface UiState {
@@ -9,6 +18,9 @@ interface UiState {
   /** Per-session counter; bumping one forces that terminal to remount +
    *  reattach (e.g. after a restart) without disturbing the others. */
   terminalNonces: Record<string, number>
+  /** A session being provisioned (placeholder shown until it's ready). */
+  creating: CreatingSession | null
+  setCreating: (c: CreatingSession | null) => void
   setActiveProject: (slug: string | null) => void
   selectSession: (id: string | null) => void
   /** Jump to a specific session, switching the active project to match. */
@@ -20,6 +32,8 @@ export const useUiStore = create<UiState>((set) => ({
   activeProjectSlug: null,
   selectedSessionId: null,
   terminalNonces: {},
+  creating: null,
+  setCreating: (c) => set({ creating: c }),
   // Switching projects clears the open session — the sidebar now shows a
   // different project's sessions, so the old selection no longer belongs.
   setActiveProject: (slug) => set({ activeProjectSlug: slug, selectedSessionId: null }),
