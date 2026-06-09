@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import * as pty from 'node-pty'
-import { attachArgs, parseControl, bridge, spawnAttachPty } from '@/daemon/pty-bridge'
+import { attachArgs, parseControl, parsePtySize, bridge, spawnAttachPty } from '@/daemon/pty-bridge'
 import type { PtyLike, SocketLike } from '@/daemon/pty-bridge'
 
 // Avoid loading/spawning the real node-pty native module in unit tests.
@@ -23,6 +23,23 @@ describe('spawnAttachPty', () => {
       attachArgs('yaac-demo'),
       expect.objectContaining({ name: 'xterm-color', cols: 100, rows: 40 }),
     )
+  })
+})
+
+describe('parsePtySize', () => {
+  it('coerces valid numeric strings to a size', () => {
+    expect(parsePtySize('150', '40')).toEqual({ cols: 150, rows: 40 })
+  })
+
+  it('accepts numbers and truncates fractions', () => {
+    expect(parsePtySize(150.9, 40.2)).toEqual({ cols: 150, rows: 40 })
+  })
+
+  it('drops missing, non-numeric, non-positive, or oversized values', () => {
+    expect(parsePtySize(undefined, undefined)).toEqual({ cols: undefined, rows: undefined })
+    expect(parsePtySize('abc', '40')).toEqual({ cols: undefined, rows: 40 })
+    expect(parsePtySize('0', '-5')).toEqual({ cols: undefined, rows: undefined })
+    expect(parsePtySize('5000', '40')).toEqual({ cols: undefined, rows: 40 })
   })
 })
 

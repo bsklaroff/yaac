@@ -10,7 +10,7 @@ import { createNodeWebSocket } from '@hono/node-ws'
 import { buildApp } from '@/daemon/server'
 import { createWebAuthStore } from '@/daemon/web-auth'
 import { EventHub } from '@/daemon/events'
-import { bridge, spawnAttachPty, type SocketLike } from '@/daemon/pty-bridge'
+import { bridge, parsePtySize, spawnAttachPty, type SocketLike } from '@/daemon/pty-bridge'
 import { resolveSessionContainer } from '@/daemon/session-resolve'
 import { readBuildId } from '@/shared/build-id'
 import {
@@ -139,6 +139,10 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
   // colliding with the GET /session/:id route. Auth rides the upgrade.
   app.get('/pty/attach', nodeWs.upgradeWebSocket((c) => {
     const id = c.req.query('id') ?? ''
+    // Spawn the PTY at the browser's reported size so the tmux window and the
+    // client grid match from the first frame — no cold-start resize, no
+    // reflow garble. Falls back to 80x24 when the params are missing/invalid.
+    const size = parsePtySize(c.req.query('cols'), c.req.query('rows'))
     return {
       onOpen: (_evt, ws) => {
         void (async () => {
@@ -160,7 +164,7 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
             ws.close(1011, 'no raw socket')
             return
           }
-          const ptyProc = spawnAttachPty(containerName)
+          const ptyProc = spawnAttachPty(containerName, size)
           const sock: SocketLike = {
             send: (data) => raw.send(data),
             close: (code, reason) => raw.close(code, reason),
