@@ -28,8 +28,12 @@ interface UiState {
   /** Per-session counter; bumping one forces that terminal to remount +
    *  reattach (e.g. after a restart) without disturbing the others. */
   terminalNonces: Record<string, number>
-  /** Per-session active terminal tab (default: agent). */
+  /** Per-session active terminal tab (default: agent) — the primary pane. */
   terminalTabs: Record<string, TerminalTab>
+  /** Per-session secondary pane target; absent = not split. */
+  splitTargets: Record<string, TerminalTab>
+  /** Per-session divider position as the primary pane's fraction (0..1). */
+  splitRatios: Record<string, number>
   /** A session being provisioned (placeholder shown until it's ready). */
   creating: CreatingSession | null
   /** Sessions whose delete was confirmed — hidden optimistically until the
@@ -44,8 +48,14 @@ interface UiState {
   /** Jump to a specific session, switching the active project to match. */
   openSession: (projectSlug: string, sessionId: string) => void
   reconnectTerminal: (sessionId: string) => void
-  /** Switch a session's main pane between the agent and shell terminals. */
+  /** Switch a session's primary pane to a terminal. Collapses the split if
+   *  the same target is already showing in the secondary pane. */
   setTerminalTab: (sessionId: string, tab: TerminalTab) => void
+  /** Open a terminal in the secondary pane (null closes the split). Opening
+   *  the target that's already primary toggles the split closed. */
+  setSplitTarget: (sessionId: string, target: TerminalTab | null) => void
+  /** Move the split divider (clamped to 0.2..0.8). */
+  setSplitRatio: (sessionId: string, ratio: number) => void
   /** Optimistically hide a session being deleted. */
   beginDelete: (sessionId: string) => void
   /** Stop hiding a session — on delete error (restore) or once the snapshot
@@ -63,6 +73,8 @@ export const useUiStore = create<UiState>((set) => ({
   selectedSessionId: null,
   terminalNonces: {},
   terminalTabs: {},
+  splitTargets: {},
+  splitRatios: {},
   creating: null,
   pendingDeleteIds: [],
   optimisticDeleted: [],
@@ -75,8 +87,25 @@ export const useUiStore = create<UiState>((set) => ({
   reconnectTerminal: (sessionId) => set((s) => ({
     terminalNonces: { ...s.terminalNonces, [sessionId]: (s.terminalNonces[sessionId] ?? 0) + 1 },
   })),
-  setTerminalTab: (sessionId, tab) => set((s) => ({
-    terminalTabs: { ...s.terminalTabs, [sessionId]: tab },
+  setTerminalTab: (sessionId, tab) => set((s) => {
+    const next: Partial<UiState> = { terminalTabs: { ...s.terminalTabs, [sessionId]: tab } }
+    // Selecting the split pane's target as primary would show it twice —
+    // collapse the split instead.
+    if (s.splitTargets[sessionId] === tab) {
+      const { [sessionId]: _, ...rest } = s.splitTargets
+      next.splitTargets = rest
+    }
+    return next
+  }),
+  setSplitTarget: (sessionId, target) => set((s) => {
+    if (target === null || (s.terminalTabs[sessionId] ?? 'agent') === target) {
+      const { [sessionId]: _, ...rest } = s.splitTargets
+      return { splitTargets: rest }
+    }
+    return { splitTargets: { ...s.splitTargets, [sessionId]: target } }
+  }),
+  setSplitRatio: (sessionId, ratio) => set((s) => ({
+    splitRatios: { ...s.splitRatios, [sessionId]: Math.min(0.8, Math.max(0.2, ratio)) },
   })),
   beginDelete: (sessionId) => set((s) => (
     s.pendingDeleteIds.includes(sessionId)
