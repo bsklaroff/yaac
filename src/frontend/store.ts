@@ -1,11 +1,17 @@
 import { create } from 'zustand'
 import type { AgentTool } from '@/shared/types'
 
-/** A session being provisioned — shown as a placeholder in the main pane. */
+/** A session being provisioned — shown as an immediate sidebar row (in a
+ *  "starting" state) and a main-pane placeholder. Persists from the moment
+ *  create is clicked until the real session lands in the snapshot. */
 export interface CreatingSession {
   projectSlug: string
   tool: AgentTool
   message: string
+  /** Set once provisioning resolves; we keep showing the placeholder until
+   *  the snapshot includes this id, then `creating` is cleared (seamless
+   *  hand-off to the real, snapshot-driven row + terminal). */
+  sessionId?: string
   error?: string
 }
 

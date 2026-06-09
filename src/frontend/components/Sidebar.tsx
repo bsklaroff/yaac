@@ -1,12 +1,12 @@
 import { useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { Collapsible } from '@base-ui/react/collapsible'
-import { BlockedIcon, ChevronIcon, CloseIcon, TOOL_LABEL } from '@/frontend/lib/icons'
+import { BlockedIcon, ChevronIcon, CloseIcon, LoadingIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import { NewSessionButton } from '@/frontend/components/NewSessionButton'
 import { ProjectActionsMenu } from '@/frontend/components/ProjectActionsMenu'
 import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
 import { deleteSession } from '@/frontend/lib/createSession'
-import { useUiStore } from '@/frontend/store'
+import { useUiStore, type CreatingSession } from '@/frontend/store'
 import type { SessionListEntry } from '@/shared/types'
 
 /**
@@ -45,8 +45,16 @@ export function Sidebar({
   // drops them. Prewarm spares are also hidden, so the empty state keys off
   // what's actually shown.
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
+  const creating = useUiStore((s) => s.creating)
   const shown = sessions.filter((s) => !pendingDeleteIds.includes(s.sessionId))
   const visibleCount = shown.filter((s) => GROUPS.some((g) => g.status === s.status)).length
+
+  // Show a "starting" row the instant create is clicked, until the real
+  // session lands in the snapshot (then App clears `creating`). Skip it if the
+  // real row is already present, to avoid a one-frame duplicate.
+  const showCreating = !!creating
+    && creating.projectSlug === projectSlug
+    && !(creating.sessionId && shown.some((s) => s.sessionId === creating.sessionId))
 
   return (
     <aside className="flex h-full w-64 flex-col border-r border-border bg-surface text-text">
@@ -62,7 +70,10 @@ export function Sidebar({
 
       <div className="flex-1 overflow-y-auto py-1">
         {!projectSlug && <Empty label="No project selected" />}
-        {projectSlug && visibleCount === 0 && <Empty label="No sessions yet — start one with +" />}
+        {projectSlug && visibleCount === 0 && !showCreating && (
+          <Empty label="No sessions yet — start one with +" />
+        )}
+        {showCreating && creating && <CreatingRow creating={creating} />}
         {GROUPS.map((g) => (
           <SessionGroup
             key={g.status}
@@ -73,6 +84,28 @@ export function Sidebar({
         ))}
       </div>
     </aside>
+  )
+}
+
+/** Immediate, non-interactive row for a session that's still provisioning. */
+function CreatingRow({ creating }: { creating: CreatingSession }): JSX.Element {
+  return (
+    <div className="flex w-full flex-col gap-0.5 px-4 py-2 text-sm">
+      <span className="flex items-center gap-2">
+        <span className="truncate font-medium text-text-dim">New session</span>
+        <span className="ml-auto shrink-0 text-xs text-text-faint">{TOOL_LABEL[creating.tool]}</span>
+      </span>
+      <span className="flex items-center gap-1.5 text-xs text-text-faint">
+        {creating.error ? (
+          <span className="text-[#d65858]">failed</span>
+        ) : (
+          <>
+            <LoadingIcon size={11} className="animate-spin" />
+            <span className="truncate">{creating.message || 'starting…'}</span>
+          </>
+        )}
+      </span>
+    </div>
   )
 }
 
