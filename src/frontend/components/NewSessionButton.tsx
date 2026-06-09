@@ -25,7 +25,10 @@ export function NewSessionButton({ projectSlug }: { projectSlug: string }): JSX.
       setCreating({ projectSlug, tool, message })
     })
       .then((result) => {
-        setCreating(null)
+        // Keep the placeholder + sidebar "starting" row until the snapshot
+        // includes the session (App clears `creating` then) — a seamless
+        // hand-off with no flash. Select it so it opens the moment it's ready.
+        setCreating({ projectSlug, tool, message: 'Ready', sessionId: result.sessionId })
         openSession(projectSlug, result.sessionId)
       })
       .catch((e: unknown) => {
