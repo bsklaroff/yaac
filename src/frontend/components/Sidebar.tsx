@@ -7,11 +7,14 @@ import { ProjectActionsMenu } from '@/frontend/components/ProjectActionsMenu'
 import { useUiStore } from '@/frontend/store'
 import type { SessionListEntry } from '@/shared/types'
 
-/** Session groups by state — Waiting first (the triage surface). */
+/**
+ * User-facing session groups, in triage order (Waiting first). Prewarm is
+ * deliberately excluded — it's a background hot-spare the daemon manages, not
+ * a session the user acts on, so it never appears in the sidebar.
+ */
 const GROUPS: { status: SessionListEntry['status']; label: string; defaultOpen: boolean }[] = [
   { status: 'waiting', label: 'Waiting', defaultOpen: true },
   { status: 'running', label: 'Running', defaultOpen: true },
-  { status: 'prewarm', label: 'Prewarm', defaultOpen: false },
 ]
 
 /** Human relative age from the session's UTC 'YYYY-MM-DD HH:MM:SS' time. */
@@ -36,6 +39,9 @@ export function Sidebar({
   sessions: SessionListEntry[]
   connected: boolean
 }): JSX.Element {
+  // Prewarm spares are hidden, so the empty state keys off visible sessions.
+  const visibleCount = sessions.filter((s) => GROUPS.some((g) => g.status === s.status)).length
+
   return (
     <aside className="flex h-full w-64 flex-col border-r border-border bg-surface text-text">
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border pl-4 pr-2">
@@ -50,7 +56,7 @@ export function Sidebar({
 
       <div className="flex-1 overflow-y-auto py-1">
         {!projectSlug && <Empty label="No project selected" />}
-        {projectSlug && sessions.length === 0 && <Empty label="No sessions yet — start one with +" />}
+        {projectSlug && visibleCount === 0 && <Empty label="No sessions yet — start one with +" />}
         {GROUPS.map((g) => (
           <SessionGroup
             key={g.status}
