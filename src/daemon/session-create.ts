@@ -72,10 +72,43 @@ import {
   provisionSessionForwarders,
   registerSessionForwarders,
 } from '@/lib/session/port-forwarders'
-import type { AgentTool, PortMapping, YaacConfig } from '@/shared/types'
+import type { AgentTool, PortMapping, YaacConfig, InitCommandSpec } from '@/shared/types'
 
 export function shellEscape(str: string): string {
   return str.replace(/'/g, "'\\''")
+}
+
+export interface InitWindow {
+  name: string
+  /** Already shell-escaped and joined with `&&`. */
+  cmd: string
+  /** When false, the window is set `remain-on-exit on` so the user can
+   *  inspect output after the commands finish or error. */
+  hidePane: boolean
+}
+
+/**
+ * Resolve `config.initCommands` into the concrete set of tmux windows to
+ * spawn. Pure (no side effects) so it can be unit-tested directly.
+ *
+ *   - string[]            → one `init` window with the commands chained `&&`
+ *   - InitCommandSpec[]   → one window per spec, name taken from spec.name
+ *   - undefined / []      → no windows
+ */
+export function resolveInitWindows(config: YaacConfig): InitWindow[] {
+  const entries = config.initCommands
+  if (!entries || entries.length === 0) return []
+
+  const topHide = config.hideInitPane ?? false
+  if (typeof entries[0] === 'string') {
+    const cmd = (entries as string[]).map(shellEscape).join(' && ')
+    return [{ name: 'init', cmd, hidePane: topHide }]
+  }
+  return (entries as InitCommandSpec[]).map((e) => ({
+    name: e.name,
+    cmd: e.commands.map(shellEscape).join(' && '),
+    hidePane: e.hidePane ?? topHide,
+  }))
 }
 
 /**
@@ -497,14 +530,23 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
   // terminal to force a fresh SIGWINCH.
   await containerExec(containerName, `${TMUX} -u new-session -d -s yaac -n ${tool} -x 500 -y 200 'sleep infinity'`)
 
-  // Run init commands in a background tmux window (parallel to Claude Code)
-  if (config.initCommands?.length) {
-    const initScript = config.initCommands
-      .map((cmd) => shellEscape(cmd))
-      .join(' && ')
-    await containerExec(containerName, `${TMUX} new-window -d -t yaac -n init 'cd /workspace && ${initScript}'`)
-    if (!config.hideInitPane) {
-      await containerExec(containerName, `${TMUX} set-option -t yaac:init remain-on-exit on`)
+  // Run init commands in background tmux windows (parallel to the agent).
+  // One window per InitWindow — string-form configs collapse to a single
+  // `init` window, object-form configs get one window per entry so a
+  // backend and frontend can run side by side.
+  for (const win of resolveInitWindows(config)) {
+    if (win.name === tool) {
+      throw new DaemonError(
+        'VALIDATION',
+        `initCommands window name "${win.name}" collides with the agent window for tool "${tool}"`,
+      )
+    }
+    await containerExec(
+      containerName,
+      `${TMUX} new-window -d -t yaac -n ${win.name} 'cd /workspace && ${win.cmd}'`,
+    )
+    if (!win.hidePane) {
+      await containerExec(containerName, `${TMUX} set-option -t yaac:${win.name} remain-on-exit on`)
     }
   }
 

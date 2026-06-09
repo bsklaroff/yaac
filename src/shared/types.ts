@@ -163,12 +163,31 @@ export interface PostgresRelayConfig {
   containerPort?: number
 }
 
+/**
+ * Object form of an `initCommands` entry. Each spec becomes its own tmux
+ * window so multiple long-running processes (e.g. a backend and a frontend
+ * dev server) can run in parallel and be inspected independently.
+ */
+export interface InitCommandSpec {
+  /** tmux window name. Must be unique, kebab-ish, and must not collide
+   *  with the agent window name (claude/codex/opencode). */
+  name: string
+  /** Commands chained with `&&` inside this window. */
+  commands: string[]
+  /** Per-window override for `hideInitPane`. Defaults to the top-level
+   *  `hideInitPane`, which itself defaults to false. */
+  hidePane?: boolean
+}
+
 export interface YaacConfig {
   envPassthrough?: string[]
   env?: Record<string, string>
   envSecretProxy?: Record<string, SecretProxyRule>
   cacheVolumes?: Record<string, string>
-  initCommands?: string[]
+  /** Either a flat string list (collapsed into a single `init` window) or
+   *  a list of `InitCommandSpec` objects (one tmux window per entry).
+   *  Mixing the two forms is rejected by the config parser. */
+  initCommands?: string[] | InitCommandSpec[]
   nestedContainers?: boolean
   portForward?: PortForwardConfig[]
   bindMounts?: BindMountConfig[]

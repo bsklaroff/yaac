@@ -237,7 +237,18 @@ Add a `yaac-config.json` to your repo root. Example with all options:
 
   For ad-hoc mounts at session creation time, use the `--add-dir` / `--add-dir-rw` CLI flags instead. These mount the host directory under `/add-dir/<host-path>` inside the container and automatically pass it to Claude Code via `--add-dir`.
 - **cacheVolumes** — named Podman volumes mounted into the container. Keys are volume names, values are absolute container paths. Volumes persist across sessions. Note: a per-project `~/.yaac/projects/<project>/.cached-packages` directory is already bind-mounted at `/home/yaac/.cached-packages` on every container for pnpm (and other package-manager caches you want to share across sessions), so you don't need a `cacheVolumes` entry for pnpm's store.
-- **initCommands** — commands run inside the container after it starts (e.g. `pnpm install` against the warm shared cache). These run on every session, not just the first.
+- **initCommands** — commands run inside the container after it starts (e.g. `pnpm install` against the warm shared cache). These run on every session, not just the first. Accepts two shapes (cannot be mixed):
+  - **String list** — all commands are chained with `&&` and run in a single tmux window named `init`, parallel to the agent:
+    ```json
+    "initCommands": ["pnpm install", "pnpm build"]
+    ```
+  - **Object list** — one tmux window per entry, so multiple long-running processes (e.g. a backend and a frontend dev server) run in parallel and can be inspected independently. Each entry has a `name` (the tmux window name; must not collide with the agent window — `claude` / `codex` / `opencode` / `init` / `yaac` are reserved), a `commands` array (chained with `&&` inside that window), and an optional `hidePane` that overrides the top-level `hideInitPane` for this window. Windows are spawned independently, so any shared setup (e.g. `pnpm install`) should be listed in each window that needs it:
+    ```json
+    "initCommands": [
+      { "name": "backend",  "commands": ["pnpm install", "pnpm dev:backend"] },
+      { "name": "frontend", "commands": ["pnpm install", "pnpm dev:frontend"] }
+    ]
+    ```
 - **nestedContainers** — when `true`, enables podman-in-podman support so sessions can build and run containers (default: `false`). See [Nested containers](#nested-containers) below.
 - **hideInitPane** — when `true`, the init commands tmux pane is automatically closed after the commands finish or error (default: `false`). When `false`, the pane is preserved with `remain-on-exit` so you can inspect the output.
 - **pgRelay** — configures a PostgreSQL relay sidecar that forwards connections from inside the container to a PostgreSQL instance on the host. The relay uses `socat` to proxy TCP traffic so that `localhost` connections inside the session reach your host database.

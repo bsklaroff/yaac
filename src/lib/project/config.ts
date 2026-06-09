@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import type { YaacConfig, PostgresRelayConfig } from '@/shared/types'
+import type { YaacConfig, PostgresRelayConfig, InitCommandSpec, AgentTool } from '@/shared/types'
 import { projectConfigDir } from '@/lib/project/paths'
 
 const KNOWN_KEYS = new Set(['envPassthrough', 'env', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'nestedContainers', 'portForward', 'bindMounts', 'hideInitPane', 'pgRelay', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths'])
@@ -33,6 +33,87 @@ export function resolveEphemeralModulesPaths(config: YaacConfig | null): string[
 export function ephemeralModulesSlotKey(relPath: string): string {
   if (relPath === 'node_modules') return 'root'
   return relPath.replace(/\//g, '_')
+}
+
+/** tmux window names tagged 'reserved' across every supported agent tool —
+ *  we reject these so an `initCommands` entry can never clobber the agent
+ *  pane on a session whose tool is set to that name. */
+const RESERVED_INIT_WINDOW_NAMES: ReadonlySet<string> = new Set<AgentTool | 'init' | 'yaac'>(
+  ['claude', 'codex', 'opencode', 'init', 'yaac'],
+)
+
+const INIT_WINDOW_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+/**
+ * Parse the `initCommands` field. Two shapes are accepted but never mixed:
+ *   - string[]              → collapses into a single `init` tmux window
+ *   - InitCommandSpec[]     → one tmux window per entry (parallel execution)
+ *
+ * A mixed array is rejected so each session has a predictable window layout.
+ */
+export function parseInitCommands(raw: unknown): string[] | InitCommandSpec[] {
+  if (!Array.isArray(raw)) {
+    throw new Error('yaac-config.json: initCommands must be an array')
+  }
+  if (raw.length === 0) return []
+
+  const allStrings = raw.every((v) => typeof v === 'string')
+  const allObjects = raw.every((v) => isPlainObject(v))
+  if (!allStrings && !allObjects) {
+    throw new Error(
+      'yaac-config.json: initCommands must be either a string array or an '
+      + 'array of {name, commands} objects — the two forms cannot be mixed',
+    )
+  }
+
+  if (allStrings) return raw
+
+  const specs: InitCommandSpec[] = []
+  const seen = new Set<string>()
+  for (let i = 0; i < raw.length; i++) {
+    const entry = raw[i]
+    if (typeof entry.name !== 'string' || entry.name.length === 0) {
+      throw new Error(`yaac-config.json: initCommands[${i}].name must be a non-empty string`)
+    }
+    if (!INIT_WINDOW_NAME_PATTERN.test(entry.name)) {
+      throw new Error(
+        `yaac-config.json: initCommands[${i}].name "${entry.name}" must match `
+        + `${INIT_WINDOW_NAME_PATTERN.source} (kebab/snake, no shell or tmux target chars)`,
+      )
+    }
+    if (RESERVED_INIT_WINDOW_NAMES.has(entry.name)) {
+      throw new Error(
+        `yaac-config.json: initCommands[${i}].name "${entry.name}" is reserved`,
+      )
+    }
+    if (seen.has(entry.name)) {
+      throw new Error(`yaac-config.json: initCommands[${i}].name "${entry.name}" is duplicated`)
+    }
+    seen.add(entry.name)
+    if (
+      !Array.isArray(entry.commands)
+      || entry.commands.length === 0
+      || !entry.commands.every((c) => typeof c === 'string' && c.length > 0)
+    ) {
+      throw new Error(
+        `yaac-config.json: initCommands[${i}].commands must be a non-empty array of non-empty strings`,
+      )
+    }
+    if (entry.hidePane !== undefined && typeof entry.hidePane !== 'boolean') {
+      throw new Error(`yaac-config.json: initCommands[${i}].hidePane must be a boolean`)
+    }
+    const spec: InitCommandSpec = {
+      name: entry.name,
+      commands: entry.commands as string[],
+    }
+    if (entry.hidePane !== undefined) spec.hidePane = entry.hidePane
+    specs.push(spec)
+  }
+  return specs
 }
 
 /** Expand `$VAR` and `${VAR}` references in a string using `process.env`. */
@@ -132,10 +213,7 @@ export function parseProjectConfig(raw: string): YaacConfig {
   }
 
   if (obj.initCommands !== undefined) {
-    if (!Array.isArray(obj.initCommands) || !obj.initCommands.every((v) => typeof v === 'string')) {
-      throw new Error('yaac-config.json: initCommands must be a string array')
-    }
-    config.initCommands = obj.initCommands
+    config.initCommands = parseInitCommands(obj.initCommands)
   }
 
   if (obj.nestedContainers !== undefined) {

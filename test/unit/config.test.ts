@@ -6,6 +6,7 @@ import {
   ephemeralModulesSlotKey,
   expandEnvVars,
   loadProjectConfig,
+  parseInitCommands,
   parseProjectConfig,
   resolveEphemeralModulesPaths,
   resolveProjectConfig,
@@ -212,7 +213,19 @@ describe('loadProjectConfig', () => {
       path.join(tmpDir, 'yaac-config.json'),
       JSON.stringify({ initCommands: 'not-an-array' }),
     )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('initCommands must be a string array')
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('initCommands must be an array')
+  })
+
+  it('parses object-form initCommands with multiple windows', async () => {
+    const config = {
+      initCommands: [
+        { name: 'backend', commands: ['pnpm dev:backend'] },
+        { name: 'frontend', commands: ['pnpm dev:frontend'], hidePane: true },
+      ],
+    }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual(config)
   })
 
   it('parses valid config with nestedContainers', async () => {
@@ -776,5 +789,81 @@ describe('expandEnvVars', () => {
   it('throws on unset variable', () => {
     delete process.env.YAAC_UNSET_VAR
     expect(() => expandEnvVars('$YAAC_UNSET_VAR')).toThrow('environment variable "YAAC_UNSET_VAR" is not set')
+  })
+})
+
+describe('parseInitCommands', () => {
+  it('returns [] for an empty array', () => {
+    expect(parseInitCommands([])).toEqual([])
+  })
+
+  it('returns string list unchanged', () => {
+    expect(parseInitCommands(['pnpm install', 'pnpm build'])).toEqual([
+      'pnpm install',
+      'pnpm build',
+    ])
+  })
+
+  it('returns object list with hidePane stripped when undefined', () => {
+    const result = parseInitCommands([
+      { name: 'backend', commands: ['pnpm dev:backend'] },
+      { name: 'frontend', commands: ['pnpm dev:frontend'], hidePane: false },
+    ])
+    expect(result).toEqual([
+      { name: 'backend', commands: ['pnpm dev:backend'] },
+      { name: 'frontend', commands: ['pnpm dev:frontend'], hidePane: false },
+    ])
+  })
+
+  it('rejects non-array input', () => {
+    expect(() => parseInitCommands('pnpm install')).toThrow('initCommands must be an array')
+  })
+
+  it('rejects mixed strings and objects', () => {
+    expect(() => parseInitCommands(['pnpm install', { name: 'be', commands: ['x'] }]))
+      .toThrow('cannot be mixed')
+  })
+
+  it('rejects a missing name', () => {
+    expect(() => parseInitCommands([{ commands: ['x'] }]))
+      .toThrow(/initCommands\[0\]\.name/)
+  })
+
+  it('rejects a reserved name', () => {
+    for (const reserved of ['claude', 'codex', 'opencode', 'init', 'yaac']) {
+      expect(() => parseInitCommands([{ name: reserved, commands: ['x'] }]))
+        .toThrow(`"${reserved}" is reserved`)
+    }
+  })
+
+  it('rejects a name with disallowed chars', () => {
+    for (const bad of ['be:1', 'be.1', 'with space', '1leading-digit-ok?']) {
+      // names must match [a-zA-Z0-9][a-zA-Z0-9_-]*
+      if (/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(bad)) continue
+      expect(() => parseInitCommands([{ name: bad, commands: ['x'] }]))
+        .toThrow(/must match/)
+    }
+  })
+
+  it('rejects duplicate names', () => {
+    expect(() => parseInitCommands([
+      { name: 'be', commands: ['a'] },
+      { name: 'be', commands: ['b'] },
+    ])).toThrow('"be" is duplicated')
+  })
+
+  it('rejects an empty commands array', () => {
+    expect(() => parseInitCommands([{ name: 'be', commands: [] }]))
+      .toThrow(/commands must be a non-empty array/)
+  })
+
+  it('rejects non-string entries in commands', () => {
+    expect(() => parseInitCommands([{ name: 'be', commands: ['ok', 42] }]))
+      .toThrow(/commands must be a non-empty array/)
+  })
+
+  it('rejects a non-boolean hidePane', () => {
+    expect(() => parseInitCommands([{ name: 'be', commands: ['x'], hidePane: 'yes' }]))
+      .toThrow(/hidePane must be a boolean/)
   })
 })

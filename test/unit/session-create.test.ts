@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { buildAgentCmd, createSession } from '@/daemon/session-create'
+import { buildAgentCmd, createSession, resolveInitWindows } from '@/daemon/session-create'
 import { sessionCreate } from '@/commands/session-create'
 
 vi.mock('node:child_process', () => ({
@@ -486,6 +486,44 @@ describe('createSession', () => {
     expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/codex', { recursive: true })
   })
 
+  it('spawns one tmux new-window per InitCommandSpec entry', async () => {
+    vi.mocked(resolveProjectConfig).mockResolvedValue({
+      initCommands: [
+        { name: 'backend', commands: ['pnpm dev:backend'] },
+        { name: 'frontend', commands: ['pnpm dev:frontend'], hidePane: true },
+      ],
+    })
+
+    await createSession('demo', { tool: 'claude' })
+
+    const tmuxCmds = vi.mocked(shellPodmanWithRetry).mock.calls
+      .map((args) => args[0])
+      .filter((c): c is string => typeof c === 'string' && c.includes('new-window'))
+    expect(tmuxCmds.some((c) => c.includes('-n backend') && c.includes('pnpm dev:backend'))).toBe(true)
+    expect(tmuxCmds.some((c) => c.includes('-n frontend') && c.includes('pnpm dev:frontend'))).toBe(true)
+
+    const remainOnExitCmds = vi.mocked(shellPodmanWithRetry).mock.calls
+      .map((args) => args[0])
+      .filter((c): c is string => typeof c === 'string' && c.includes('remain-on-exit on'))
+    // backend defaults to hidePane=false → keeps remain-on-exit; frontend
+    // sets hidePane=true → no remain-on-exit.
+    expect(remainOnExitCmds.some((c) => c.includes('yaac:backend'))).toBe(true)
+    expect(remainOnExitCmds.some((c) => c.includes('yaac:frontend'))).toBe(false)
+  })
+
+  it('rejects an init window name that collides with the agent tool window', async () => {
+    vi.mocked(resolveProjectConfig).mockResolvedValue({
+      // The config parser normally rejects 'claude' as reserved, but the
+      // collision guard inside startContainerWithSetup is a belt-and-
+      // suspenders backstop — exercise it by feeding a config that bypasses
+      // the parser path used in production.
+      initCommands: [{ name: 'claude', commands: ['echo hi'] }],
+    })
+    await expect(createSession('demo', { tool: 'claude' })).rejects.toThrow(
+      /collides with the agent window for tool "claude"/,
+    )
+  })
+
   it('mounts the per-session opencode data dir + meta dir on every session', async () => {
     // Per-yaac-session opencode data is mounted regardless of which tool
     // is active (matches the existing "claude + codex always mounted"
@@ -546,6 +584,60 @@ describe('buildAgentCmd', () => {
   it('drops add-dir flags for opencode (no CLI equivalent in opencode)', () => {
     const cmd = buildAgentCmd('opencode', 'sid-abc', '--add-dir /add-dir/x', false)
     expect(cmd).toBe('opencode --port 4096 --hostname 127.0.0.1')
+  })
+})
+
+describe('resolveInitWindows', () => {
+  it('returns [] when initCommands is unset or empty', () => {
+    expect(resolveInitWindows({})).toEqual([])
+    expect(resolveInitWindows({ initCommands: [] })).toEqual([])
+  })
+
+  it('collapses a string list into a single init window with &&-joined cmd', () => {
+    const windows = resolveInitWindows({ initCommands: ['pnpm install', 'pnpm build'] })
+    expect(windows).toEqual([
+      { name: 'init', cmd: 'pnpm install && pnpm build', hidePane: false },
+    ])
+  })
+
+  it('inherits the top-level hideInitPane on the string-form window', () => {
+    const windows = resolveInitWindows({
+      initCommands: ['pnpm install'],
+      hideInitPane: true,
+    })
+    expect(windows[0]?.hidePane).toBe(true)
+  })
+
+  it('produces one window per object entry, &&-joining commands within each', () => {
+    const windows = resolveInitWindows({
+      initCommands: [
+        { name: 'backend', commands: ['pnpm dev:backend'] },
+        { name: 'frontend', commands: ['pnpm install', 'pnpm dev:frontend'] },
+      ],
+    })
+    expect(windows).toEqual([
+      { name: 'backend', cmd: 'pnpm dev:backend', hidePane: false },
+      { name: 'frontend', cmd: 'pnpm install && pnpm dev:frontend', hidePane: false },
+    ])
+  })
+
+  it('per-window hidePane overrides the top-level default', () => {
+    const windows = resolveInitWindows({
+      initCommands: [
+        { name: 'backend', commands: ['pnpm dev:backend'] },
+        { name: 'install', commands: ['pnpm install'], hidePane: true },
+      ],
+      hideInitPane: false,
+    })
+    expect(windows.map((w) => [w.name, w.hidePane])).toEqual([
+      ['backend', false],
+      ['install', true],
+    ])
+  })
+
+  it('shell-escapes single quotes in command strings', () => {
+    const windows = resolveInitWindows({ initCommands: ["echo 'hi'"] })
+    expect(windows[0]?.cmd).toBe("echo '\\''hi'\\''")
   })
 })
 
