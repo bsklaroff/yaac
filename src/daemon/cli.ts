@@ -11,6 +11,7 @@ import { buildApp } from '@/daemon/server'
 import { createWebAuthStore } from '@/daemon/web-auth'
 import { EventHub } from '@/daemon/events'
 import { bridge, parsePtySize, spawnAttachPty, type SocketLike } from '@/daemon/pty-bridge'
+import { onSessionListChanged } from '@/daemon/sessions-changed'
 import { resolveSessionContainer } from '@/daemon/session-resolve'
 import { readBuildId } from '@/shared/build-id'
 import {
@@ -113,6 +114,10 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     onSessionsChanged: (sessions) => void saveWebSessions(sessions),
   })
   const hub = new EventHub()
+  // Push a fresh snapshot the moment a session is created/restarted, so the
+  // webapp's sidebar + terminal update immediately instead of waiting for the
+  // next periodic tick.
+  onSessionListChanged(() => { void hub.publishSnapshot() })
   const app = buildApp({ secret, buildId, store, getPort: () => portRef.current })
 
   // WebSocket event stream. Registered here (not in buildApp) so buildApp's
