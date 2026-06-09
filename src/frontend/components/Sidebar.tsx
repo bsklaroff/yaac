@@ -166,8 +166,8 @@ function DeletedGroup({
             key={d.sessionId}
             onClick={() => setConfirm(d)}
             title="Restart this session"
-            className="group/d flex w-full flex-col gap-0.5 px-4 py-2 text-left text-sm text-text-dim
-              transition hover:bg-surface-2 hover:text-text"
+            className="group/d mx-2 flex w-[calc(100%-1rem)] flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left
+              text-sm text-text-dim transition hover:bg-surface/60 hover:text-text"
           >
             <span className="flex items-center gap-2">
               <span className="truncate font-medium">{d.prompt || 'New session'}</span>
@@ -202,7 +202,7 @@ function DeletedGroup({
 /** Immediate, non-interactive row for a session that's still provisioning. */
 function CreatingRow({ creating }: { creating: CreatingSession }): JSX.Element {
   return (
-    <div className="flex w-full flex-col gap-0.5 px-4 py-2 text-sm">
+    <div className="mx-2 flex flex-col gap-0.5 rounded-lg px-2.5 py-2 text-sm">
       <span className="flex items-center gap-2">
         <span className="truncate font-medium text-text-dim">New session</span>
         <span className="ml-auto shrink-0 text-xs text-text-faint">{TOOL_LABEL[creating.tool]}</span>
@@ -284,12 +284,12 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
   }
 
   return (
-    <div className="group relative">
+    <div className="group relative mx-2">
       <button
         onClick={() => selectSession(session.sessionId)}
         className={clsx(
-          'flex w-full flex-col gap-0.5 px-4 py-2 text-left text-sm transition hover:bg-surface-2',
-          selectedSessionId === session.sessionId && 'bg-surface-2',
+          'flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left text-sm transition hover:bg-surface/60',
+          selectedSessionId === session.sessionId && 'bg-surface hover:bg-surface',
         )}
       >
         <span className="flex items-center gap-2">
@@ -319,7 +319,7 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
         onClick={() => setConfirmDelete(true)}
         title="Delete session"
         aria-label="Delete session"
-        className="absolute right-3.5 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
+        className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
           opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
           group-hover:pointer-events-auto group-hover:opacity-100"
       >
