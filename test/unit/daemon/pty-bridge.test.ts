@@ -1,10 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
-import * as pty from 'node-pty'
+import * as pty from '@lydell/node-pty'
 import { attachArgs, parseControl, parsePtySize, bridge, spawnAttachPty } from '@/daemon/pty-bridge'
 import type { PtyLike, SocketLike } from '@/daemon/pty-bridge'
 
 // Avoid loading/spawning the real node-pty native module in unit tests.
-vi.mock('node-pty', () => ({ spawn: vi.fn(() => ({})) }))
+vi.mock('@lydell/node-pty', () => ({ spawn: vi.fn(() => ({})) }))
 
 describe('attachArgs', () => {
   it('builds the podman exec tmux attach argv', () => {

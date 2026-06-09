@@ -1,5 +1,5 @@
-import * as pty from 'node-pty'
-import type { IPty } from 'node-pty'
+import * as pty from '@lydell/node-pty'
+import type { IPty } from '@lydell/node-pty'
 import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
 
 const DEFAULT_COLS = 80
