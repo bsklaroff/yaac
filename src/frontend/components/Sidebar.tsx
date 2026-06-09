@@ -167,7 +167,7 @@ function DeletedGroup({
             onClick={() => setConfirm(d)}
             title="Restart this session"
             className="group/d mx-2 flex w-[calc(100%-1rem)] flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left
-              text-sm text-text-dim transition hover:bg-surface/60 hover:text-text"
+              text-sm text-text-dim transition hover:bg-surface-2/60 hover:text-text"
           >
             <span className="flex items-center gap-2">
               <span className="truncate font-medium">{d.prompt || 'New session'}</span>
@@ -288,8 +288,8 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
       <button
         onClick={() => selectSession(session.sessionId)}
         className={clsx(
-          'flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left text-sm transition hover:bg-surface/60',
-          selectedSessionId === session.sessionId && 'bg-surface hover:bg-surface',
+          'flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left text-sm transition hover:bg-surface-2/60',
+          selectedSessionId === session.sessionId && 'bg-surface-2 hover:bg-surface-2',
         )}
       >
         <span className="flex items-center gap-2">

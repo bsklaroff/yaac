@@ -28,9 +28,10 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
   const mounted = opened.filter((id) => liveIds.has(id))
 
   return (
-    // The floating pane: elevation comes from the bg step up from the base
-    // (no borders), with a compact title bar inside.
-    <main className="flex h-full min-w-0 flex-col overflow-hidden rounded-xl bg-surface">
+    // The floating pane, Claude Code-style: surface fill + hairline white/10
+    // border + drop shadow over the (lighter) base, compact title bar inside.
+    <main className="flex h-full min-w-0 flex-col overflow-hidden rounded-lg border border-white/10 bg-surface
+      shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
       {creating ? (
         <header className="flex h-9 shrink-0 items-center gap-2.5 px-4 text-xs">
           <span className="min-w-0 flex-1 truncate font-medium text-text-dim">New session</span>
