@@ -2,7 +2,7 @@ import { type JSX } from 'react'
 import { Menu } from '@base-ui/react/menu'
 import { AddIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import { createSession } from '@/frontend/lib/createSession'
-import { useUiStore } from '@/frontend/store'
+import { useProvisionSession } from '@/frontend/lib/useProvisionSession'
 import type { AgentTool } from '@/shared/types'
 
 const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode']
@@ -16,24 +16,10 @@ const ITEM = 'flex w-full cursor-default items-center rounded-md px-2 py-1.5 tex
  * session is selected on success (it also arrives live via /events).
  */
 export function NewSessionButton({ projectSlug }: { projectSlug: string }): JSX.Element {
-  const openSession = useUiStore((s) => s.openSession)
-  const setCreating = useUiStore((s) => s.setCreating)
+  const provision = useProvisionSession()
 
   const create = (tool: AgentTool): void => {
-    setCreating({ projectSlug, tool, message: 'Starting…' })
-    void createSession(projectSlug, tool, (message) => {
-      setCreating({ projectSlug, tool, message })
-    })
-      .then((result) => {
-        // Keep the placeholder + sidebar "starting" row until the snapshot
-        // includes the session (App clears `creating` then) — a seamless
-        // hand-off with no flash. Select it so it opens the moment it's ready.
-        setCreating({ projectSlug, tool, message: 'Ready', sessionId: result.sessionId })
-        openSession(projectSlug, result.sessionId)
-      })
-      .catch((e: unknown) => {
-        setCreating({ projectSlug, tool, message: '', error: e instanceof Error ? e.message : 'create failed' })
-      })
+    provision(projectSlug, tool, (onProgress) => createSession(projectSlug, tool, onProgress))
   }
 
   return (

@@ -1,11 +1,14 @@
 import { useState, type JSX } from 'react'
 import clsx from 'clsx'
+import { useQuery } from '@tanstack/react-query'
 import { Collapsible } from '@base-ui/react/collapsible'
-import { BlockedIcon, ChevronIcon, CloseIcon, LoadingIcon, TOOL_LABEL } from '@/frontend/lib/icons'
+import { BlockedIcon, ChevronIcon, CloseIcon, LoadingIcon, RestartIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import { NewSessionButton } from '@/frontend/components/NewSessionButton'
 import { ProjectActionsMenu } from '@/frontend/components/ProjectActionsMenu'
 import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
-import { deleteSession } from '@/frontend/lib/createSession'
+import { deleteSession, restartSession } from '@/frontend/lib/createSession'
+import { getDeletedSessions } from '@/frontend/lib/deletedApi'
+import { useProvisionSession } from '@/frontend/lib/useProvisionSession'
 import { useUiStore, type CreatingSession } from '@/frontend/store'
 import type { SessionListEntry } from '@/shared/types'
 
@@ -82,8 +85,85 @@ export function Sidebar({
             sessions={shown.filter((s) => s.status === g.status)}
           />
         ))}
+        {projectSlug && (
+          <DeletedGroup
+            projectSlug={projectSlug}
+            activeSignature={sessions.map((s) => s.sessionId).sort().join(',')}
+          />
+        )}
       </div>
     </aside>
+  )
+}
+
+/**
+ * Deleted sessions for the project (containers gone, transcripts kept).
+ * Collapsed by default; lazy-loaded and re-fetched whenever the active-session
+ * set changes (so a just-deleted session appears and a restarted one drops).
+ * Clicking a row restarts it via the same optimistic "starting" flow.
+ */
+function DeletedGroup({
+  projectSlug,
+  activeSignature,
+}: {
+  projectSlug: string
+  activeSignature: string
+}): JSX.Element | null {
+  const [open, setOpen] = useState(false)
+  const [restarting, setRestarting] = useState<string[]>([])
+  const provision = useProvisionSession()
+
+  const { data } = useQuery({
+    queryKey: ['deleted', projectSlug, activeSignature],
+    queryFn: () => getDeletedSessions(projectSlug),
+    staleTime: 2000,
+  })
+
+  const rows = (data ?? []).filter((d) => !restarting.includes(d.sessionId))
+  // Hide the group entirely when there's nothing to show (and it's closed),
+  // so it doesn't add weight for projects with no deleted sessions.
+  if (rows.length === 0 && !open) return null
+
+  const onRestart = (sessionId: string, tool: SessionListEntry['tool']): void => {
+    setRestarting((r) => [...r, sessionId])
+    provision(projectSlug, tool, (onProgress) => restartSession(sessionId, onProgress))
+  }
+
+  return (
+    <Collapsible.Root open={open} onOpenChange={setOpen} className="py-1">
+      <Collapsible.Trigger className="flex w-full items-center gap-1 px-3 py-1 text-xs font-semibold uppercase
+        tracking-wide text-text-faint outline-none transition hover:text-text-dim">
+        <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
+        <span>Deleted</span>
+        {data && <span className="text-text-faint/70">{rows.length}</span>}
+      </Collapsible.Trigger>
+      <Collapsible.Panel>
+        {rows.length === 0 && (
+          <div className="px-4 py-2 text-xs text-text-faint">No deleted sessions</div>
+        )}
+        {rows.map((d) => (
+          <button
+            key={d.sessionId}
+            onClick={() => onRestart(d.sessionId, d.tool)}
+            title="Restart this session"
+            className="group/d flex w-full flex-col gap-0.5 px-4 py-2 text-left text-sm text-text-dim
+              transition hover:bg-surface-2 hover:text-text"
+          >
+            <span className="flex items-center gap-2">
+              <span className="truncate font-medium">{d.prompt || 'New session'}</span>
+              <RestartIcon
+                size={13}
+                className="ml-auto shrink-0 text-text-faint opacity-0 transition-opacity group-hover/d:opacity-100"
+              />
+            </span>
+            <span className="flex items-center gap-2 text-xs text-text-faint">
+              <span className="truncate">{relativeAge(d.createdAt)}</span>
+              <span className="ml-auto shrink-0">{TOOL_LABEL[d.tool]}</span>
+            </span>
+          </button>
+        ))}
+      </Collapsible.Panel>
+    </Collapsible.Root>
   )
 }
 
