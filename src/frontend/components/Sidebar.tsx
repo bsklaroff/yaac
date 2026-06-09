@@ -7,10 +7,17 @@ import { ProjectActionsMenu } from '@/frontend/components/ProjectActionsMenu'
 import { useUiStore } from '@/frontend/store'
 import type { SessionListEntry } from '@/shared/types'
 
-const STATUS_DOT: Record<SessionListEntry['status'], string> = {
-  running: 'bg-green-500',
-  waiting: 'bg-amber-500',
-  prewarm: 'bg-sky-500',
+/** Human relative age from the session's UTC 'YYYY-MM-DD HH:MM:SS' time. */
+function relativeAge(createdAt: string): string {
+  const t = Date.parse(createdAt.replace(' ', 'T') + 'Z')
+  if (Number.isNaN(t)) return ''
+  const s = Math.max(0, Math.floor((Date.now() - t) / 1000))
+  if (s < 60) return `${s}s ago`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ago`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ago`
+  return `${Math.floor(h / 24)}d ago`
 }
 
 /**
@@ -68,12 +75,11 @@ export function Sidebar({
             )}
           >
             <span className="flex items-center gap-2">
-              <span className={clsx('h-2 w-2 shrink-0 rounded-full', STATUS_DOT[s.status])} />
               <span className="truncate font-medium">{s.prompt || 'new session'}</span>
               {(() => { const Icon = TOOL_ICON[s.tool]; return <Icon size={14} className="ml-auto shrink-0 text-text-dim" /> })()}
             </span>
-            <span className="flex items-center gap-2 pl-4 text-xs text-text-faint">
-              <span className="truncate font-mono">{s.sessionId.slice(0, 12)}</span>
+            <span className="flex items-center gap-2 text-xs text-text-faint">
+              <span className="truncate">{relativeAge(s.createdAt)}</span>
               {s.blockedHosts.length > 0 && (
                 <span
                   className="ml-auto flex shrink-0 items-center gap-0.5 text-[#d65858]"
