@@ -65,7 +65,7 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
         {/* All opened terminals stay mounted; only the active one is visible.
             Keyed with a per-session nonce so a restart remounts just that one. */}
         {mounted.map((id) => (
-          <div key={id} className={clsx('absolute inset-0 px-1 pb-1', id !== selectedSessionId && 'invisible')}>
+          <div key={id} className={clsx('absolute inset-0 px-0.5 pb-0.5', id !== selectedSessionId && 'invisible')}>
             {/* The terminal is its own dark rounded block inset in the surface
                 card, with side padding so text isn't flush to the edge. */}
             <div className="h-full w-full overflow-hidden rounded-lg bg-bg px-3 py-2">
