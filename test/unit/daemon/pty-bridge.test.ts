@@ -15,23 +15,43 @@ describe('attachArgs', () => {
     expect(attachArgs('yaac-demo-abc', 'agent')).toEqual(attachArgs('yaac-demo-abc'))
   })
 
-  it('builds the lazy-create shell attach argv for the shell target', () => {
-    expect(attachArgs('yaac-demo-abc', 'shell')).toEqual([
+  it('builds the lazy-create shell attach argv for shell targets', () => {
+    expect(attachArgs('yaac-demo-abc', 'shell:shell')).toEqual([
       'exec', '-it', 'yaac-demo-abc',
       'sh', '-c',
       'tmux -S /tmp/yaac-tmux/server new-session -d -s shell -c /workspace 2>/dev/null; '
       + 'exec tmux -S /tmp/yaac-tmux/server attach-session -t shell',
     ])
+    expect(attachArgs('yaac-demo-abc', 'shell:shell-2')[5]).toContain('-s shell-2')
+  })
+
+  it('builds a grouped-session view argv for window targets', () => {
+    const argv = attachArgs('yaac-demo-abc', 'window:@3')
+    expect(argv.slice(0, 4)).toEqual(['exec', '-it', 'yaac-demo-abc', 'sh'])
+    const cmd = argv[5]
+    expect(cmd).toContain('new-session -t yaac -s view-$$')
+    expect(cmd).toContain('set-option destroy-unattached on')
+    expect(cmd).toContain("select-window -t '@3'")
   })
 })
 
 describe('parsePtyTarget', () => {
-  it('accepts shell and defaults everything else to agent', () => {
-    expect(parsePtyTarget('shell')).toBe('shell')
+  it('normalizes and validates targets, defaulting to agent', () => {
     expect(parsePtyTarget('agent')).toBe('agent')
+    expect(parsePtyTarget('shell')).toBe('shell:shell')
+    expect(parsePtyTarget('shell:shell')).toBe('shell:shell')
+    expect(parsePtyTarget('shell:shell-12')).toBe('shell:shell-12')
+    expect(parsePtyTarget('window:@7')).toBe('window:@7')
+  })
+
+  it('rejects malformed or injected targets', () => {
     expect(parsePtyTarget(undefined)).toBe('agent')
-    expect(parsePtyTarget('window')).toBe('agent')
     expect(parsePtyTarget(42)).toBe('agent')
+    expect(parsePtyTarget('window:7')).toBe('agent')
+    expect(parsePtyTarget('window:@x')).toBe('agent')
+    expect(parsePtyTarget('shell:evil; rm -rf /')).toBe('agent')
+    expect(parsePtyTarget('shell:SHELL')).toBe('agent')
+    expect(parsePtyTarget("window:@1' \\; kill-server")).toBe('agent')
   })
 })
 
@@ -150,12 +170,23 @@ describe('bridge', () => {
     expect(pty.killed).toEqual(['SIGINT'])
   })
 
-  it('kills the PTY when the socket closes (detach)', () => {
-    const pty = new FakePty()
-    const sock = new FakeSock()
-    bridge(pty, sock)
-    sock.emitClose()
-    expect(pty.killed).toEqual([undefined])
+  it('detaches tmux gracefully on socket close, then force-kills the PTY', () => {
+    vi.useFakeTimers()
+    try {
+      const pty = new FakePty()
+      const sock = new FakeSock()
+      bridge(pty, sock, { detachGraceMs: 400 })
+      sock.emitClose()
+      // Graceful: the detach keystroke (C-b d) goes to the tmux client so
+      // the exec'd process exits inside the container too (podman orphans
+      // exec sessions on a plain host-side kill).
+      expect(pty.written).toEqual(['\x02d'])
+      expect(pty.killed).toEqual([])
+      vi.advanceTimersByTime(400)
+      expect(pty.killed).toEqual([undefined])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('closes the socket when the PTY exits', () => {

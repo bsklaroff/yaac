@@ -15,8 +15,9 @@ export interface CreatingSession {
   error?: string
 }
 
-/** Which terminal a session's main pane shows. */
-export type TerminalTab = 'agent' | 'shell'
+/** Which terminal a session's main pane shows — a /pty/attach target:
+ *  'agent', 'shell:<name>', or 'window:@<id>'. */
+export type TerminalTab = string
 
 /** Local-only UI state (not daemon state — that lives in the snapshot). */
 interface UiState {

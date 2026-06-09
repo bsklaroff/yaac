@@ -14,8 +14,8 @@ export function SessionTerminal({
   target = 'agent',
 }: {
   sessionId: string
-  /** Which tmux session to attach: the agent CLI or the scratch shell. */
-  target?: 'agent' | 'shell'
+  /** /pty/attach target: 'agent', 'shell:<name>', or 'window:@<id>'. */
+  target?: string
 }): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -36,50 +36,75 @@ export function SessionTerminal({
     term.open(el)
     fit.fit()
 
-    // Send the fitted size up-front so the daemon spawns the PTY at the right
-    // dimensions — the tmux window and this grid agree from the first frame,
-    // avoiding the cold-start resize that garbles full-screen TUIs.
-    const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    const params = new URLSearchParams({ id: sessionId, target })
-    if (term.cols > 0 && term.rows > 0) {
-      params.set('cols', String(term.cols))
-      params.set('rows', String(term.rows))
-    }
-    const ws = new WebSocket(`${scheme}://${window.location.host}/pty/attach?${params.toString()}`)
-    ws.binaryType = 'arraybuffer'
-    const encoder = new TextEncoder()
+    let ws: WebSocket | null = null
+    let dataSub: { dispose(): void } | null = null
+    let resizeSub: { dispose(): void } | null = null
 
-    const sendResize = (): void => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+    // Defer the connection one tick: React dev StrictMode mounts, cleans up,
+    // and remounts synchronously, and a WS aborted while still CONNECTING
+    // doesn't reliably tear down the proxied upstream — the daemon-side PTY
+    // then leaks (observed holding grouped view sessions open forever). The
+    // canceled timer means the throwaway first mount never connects at all.
+    const connectTimer = setTimeout(() => {
+      // Send the fitted size up-front so the daemon spawns the PTY at the
+      // right dimensions — the tmux window and this grid agree from the
+      // first frame, avoiding the cold-start resize that garbles
+      // full-screen TUIs.
+      const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
+      const params = new URLSearchParams({ id: sessionId, target })
+      if (term.cols > 0 && term.rows > 0) {
+        params.set('cols', String(term.cols))
+        params.set('rows', String(term.rows))
       }
-    }
+      const sock = new WebSocket(`${scheme}://${window.location.host}/pty/attach?${params.toString()}`)
+      ws = sock
+      sock.binaryType = 'arraybuffer'
+      const encoder = new TextEncoder()
 
-    ws.onopen = (): void => {
-      fit.fit()
-      sendResize()
-    }
-    ws.onmessage = (e: MessageEvent): void => {
-      if (typeof e.data === 'string') return // control frame (error/pong)
-      term.write(new Uint8Array(e.data as ArrayBuffer))
-    }
-    ws.onclose = (): void => {
-      term.write('\r\n\x1b[2m[disconnected]\x1b[0m\r\n')
-    }
+      const sendResize = (): void => {
+        if (sock.readyState === WebSocket.OPEN) {
+          sock.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+        }
+      }
 
-    const dataSub = term.onData((d: string): void => {
-      if (ws.readyState === WebSocket.OPEN) ws.send(encoder.encode(d))
-    })
-    const resizeSub = term.onResize((): void => sendResize())
+      sock.onopen = (): void => {
+        fit.fit()
+        sendResize()
+      }
+      sock.onmessage = (e: MessageEvent): void => {
+        if (typeof e.data === 'string') return // control frame (error/pong)
+        term.write(new Uint8Array(e.data as ArrayBuffer))
+      }
+      sock.onclose = (): void => {
+        term.write('\r\n\x1b[2m[disconnected]\x1b[0m\r\n')
+      }
+
+      dataSub = term.onData((d: string): void => {
+        if (sock.readyState === WebSocket.OPEN) sock.send(encoder.encode(d))
+      })
+      resizeSub = term.onResize((): void => sendResize())
+    }, 0)
 
     const onWindowResize = (): void => fit.fit()
     window.addEventListener('resize', onWindowResize)
 
     return (): void => {
+      clearTimeout(connectTimer)
       window.removeEventListener('resize', onWindowResize)
-      dataSub.dispose()
-      resizeSub.dispose()
-      ws.close()
+      dataSub?.dispose()
+      resizeSub?.dispose()
+      if (ws) {
+        // Drop handlers so a late close event can't touch the disposed
+        // terminal; if still CONNECTING, close again once open so the
+        // proxied upstream is reliably torn down.
+        ws.onmessage = null
+        ws.onclose = null
+        if (ws.readyState === WebSocket.CONNECTING) {
+          const sock = ws
+          sock.onopen = () => sock.close()
+        }
+        ws.close()
+      }
       term.dispose()
     }
   }, [sessionId, target])
