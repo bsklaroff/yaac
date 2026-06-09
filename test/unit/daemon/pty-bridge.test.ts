@@ -1,17 +1,37 @@
 import { describe, it, expect, vi } from 'vitest'
 import * as pty from '@lydell/node-pty'
-import { attachArgs, parseControl, parsePtySize, bridge, spawnAttachPty } from '@/daemon/pty-bridge'
+import { attachArgs, parseControl, parsePtySize, parsePtyTarget, bridge, spawnAttachPty } from '@/daemon/pty-bridge'
 import type { PtyLike, SocketLike } from '@/daemon/pty-bridge'
 
 // Avoid loading/spawning the real node-pty native module in unit tests.
 vi.mock('@lydell/node-pty', () => ({ spawn: vi.fn(() => ({})) }))
 
 describe('attachArgs', () => {
-  it('builds the podman exec tmux attach argv', () => {
+  it('builds the podman exec tmux attach argv (agent default)', () => {
     expect(attachArgs('yaac-demo-abc')).toEqual([
       'exec', '-it', 'yaac-demo-abc',
       'tmux', '-S', '/tmp/yaac-tmux/server', 'attach-session', '-t', 'yaac',
     ])
+    expect(attachArgs('yaac-demo-abc', 'agent')).toEqual(attachArgs('yaac-demo-abc'))
+  })
+
+  it('builds the lazy-create shell attach argv for the shell target', () => {
+    expect(attachArgs('yaac-demo-abc', 'shell')).toEqual([
+      'exec', '-it', 'yaac-demo-abc',
+      'sh', '-c',
+      'tmux -S /tmp/yaac-tmux/server new-session -d -s shell -c /workspace 2>/dev/null; '
+      + 'exec tmux -S /tmp/yaac-tmux/server attach-session -t shell',
+    ])
+  })
+})
+
+describe('parsePtyTarget', () => {
+  it('accepts shell and defaults everything else to agent', () => {
+    expect(parsePtyTarget('shell')).toBe('shell')
+    expect(parsePtyTarget('agent')).toBe('agent')
+    expect(parsePtyTarget(undefined)).toBe('agent')
+    expect(parsePtyTarget('window')).toBe('agent')
+    expect(parsePtyTarget(42)).toBe('agent')
   })
 })
 

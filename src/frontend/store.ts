@@ -15,6 +15,9 @@ export interface CreatingSession {
   error?: string
 }
 
+/** Which terminal a session's main pane shows. */
+export type TerminalTab = 'agent' | 'shell'
+
 /** Local-only UI state (not daemon state — that lives in the snapshot). */
 interface UiState {
   /** Project whose sessions the sidebar is scoped to (rail selection). */
@@ -24,6 +27,8 @@ interface UiState {
   /** Per-session counter; bumping one forces that terminal to remount +
    *  reattach (e.g. after a restart) without disturbing the others. */
   terminalNonces: Record<string, number>
+  /** Per-session active terminal tab (default: agent). */
+  terminalTabs: Record<string, TerminalTab>
   /** A session being provisioned (placeholder shown until it's ready). */
   creating: CreatingSession | null
   /** Sessions whose delete was confirmed — hidden optimistically until the
@@ -38,6 +43,8 @@ interface UiState {
   /** Jump to a specific session, switching the active project to match. */
   openSession: (projectSlug: string, sessionId: string) => void
   reconnectTerminal: (sessionId: string) => void
+  /** Switch a session's main pane between the agent and shell terminals. */
+  setTerminalTab: (sessionId: string, tab: TerminalTab) => void
   /** Optimistically hide a session being deleted. */
   beginDelete: (sessionId: string) => void
   /** Stop hiding a session — on delete error (restore) or once the snapshot
@@ -54,6 +61,7 @@ export const useUiStore = create<UiState>((set) => ({
   activeProjectSlug: null,
   selectedSessionId: null,
   terminalNonces: {},
+  terminalTabs: {},
   creating: null,
   pendingDeleteIds: [],
   optimisticDeleted: [],
@@ -65,6 +73,9 @@ export const useUiStore = create<UiState>((set) => ({
   openSession: (projectSlug, sessionId) => set({ activeProjectSlug: projectSlug, selectedSessionId: sessionId }),
   reconnectTerminal: (sessionId) => set((s) => ({
     terminalNonces: { ...s.terminalNonces, [sessionId]: (s.terminalNonces[sessionId] ?? 0) + 1 },
+  })),
+  setTerminalTab: (sessionId, tab) => set((s) => ({
+    terminalTabs: { ...s.terminalTabs, [sessionId]: tab },
   })),
   beginDelete: (sessionId) => set((s) => (
     s.pendingDeleteIds.includes(sessionId)

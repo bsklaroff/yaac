@@ -6,11 +6,39 @@ const DEFAULT_COLS = 80
 const DEFAULT_ROWS = 24
 
 /**
- * `podman exec -it <container> tmux -S <sock> attach-session -t yaac` —
- * the same invocation the CLI's `session attach` runs, but spawned under
- * a PTY on the daemon so podman gets a real tty.
+ * What a terminal tab attaches to inside the container. Each target is its
+ * own tmux session on the container's socket, so every attached client has
+ * an independent view (no shared-active-window contention) and the shell
+ * survives browser reloads like the agent does.
  */
-export function attachArgs(containerName: string): string[] {
+export type PtyTarget = 'agent' | 'shell'
+
+/** Coerce a client-supplied target (e.g. a WS query param) to a PtyTarget. */
+export function parsePtyTarget(raw: unknown): PtyTarget {
+  return raw === 'shell' ? 'shell' : 'agent'
+}
+
+/**
+ * Argv for attaching a tab's PTY:
+ *  - agent: `tmux attach-session -t yaac` — same invocation as the CLI's
+ *    `session attach`.
+ *  - shell: ensure the persistent scratch-shell session exists *detached*,
+ *    then attach. Deliberately NOT `new-session -A`: two clients attaching
+ *    in quick succession (React dev double-mount, fast tab toggles) race the
+ *    attached-create and can take the freshly created session down with the
+ *    first client. Detached creation + attach is idempotent — the duplicate
+ *    create fails harmlessly and both clients attach.
+ * Spawned under a PTY on the daemon so podman gets a real tty.
+ */
+export function attachArgs(containerName: string, target: PtyTarget = 'agent'): string[] {
+  if (target === 'shell') {
+    const tmux = `tmux -S ${CONTAINER_TMUX_SOCK}`
+    return [
+      'exec', '-it', containerName,
+      'sh', '-c',
+      `${tmux} new-session -d -s shell -c /workspace 2>/dev/null; exec ${tmux} attach-session -t shell`,
+    ]
+  }
   return [
     'exec', '-it', containerName,
     'tmux', '-S', CONTAINER_TMUX_SOCK, 'attach-session', '-t', 'yaac',
@@ -133,8 +161,9 @@ export function parsePtySize(
 export function spawnAttachPty(
   containerName: string,
   size: { cols?: number; rows?: number } = {},
+  target: PtyTarget = 'agent',
 ): IPty {
-  return pty.spawn('podman', attachArgs(containerName), {
+  return pty.spawn('podman', attachArgs(containerName, target), {
     name: 'xterm-color',
     cols: size.cols ?? DEFAULT_COLS,
     rows: size.rows ?? DEFAULT_ROWS,

@@ -10,7 +10,7 @@ import { createNodeWebSocket } from '@hono/node-ws'
 import { buildApp } from '@/daemon/server'
 import { createWebAuthStore } from '@/daemon/web-auth'
 import { EventHub } from '@/daemon/events'
-import { bridge, parsePtySize, spawnAttachPty, type SocketLike } from '@/daemon/pty-bridge'
+import { bridge, parsePtySize, parsePtyTarget, spawnAttachPty, type SocketLike } from '@/daemon/pty-bridge'
 import { onSessionListChanged } from '@/daemon/sessions-changed'
 import { resolveSessionContainer } from '@/daemon/session-resolve'
 import { readBuildId } from '@/shared/build-id'
@@ -148,6 +148,8 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     // client grid match from the first frame — no cold-start resize, no
     // reflow garble. Falls back to 80x24 when the params are missing/invalid.
     const size = parsePtySize(c.req.query('cols'), c.req.query('rows'))
+    // Which tmux session to attach: the agent (default) or the scratch shell.
+    const target = parsePtyTarget(c.req.query('target'))
     return {
       onOpen: (_evt, ws) => {
         void (async () => {
@@ -169,7 +171,7 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
             ws.close(1011, 'no raw socket')
             return
           }
-          const ptyProc = spawnAttachPty(containerName, size)
+          const ptyProc = spawnAttachPty(containerName, size, target)
           const sock: SocketLike = {
             send: (data) => raw.send(data),
             close: (code, reason) => raw.close(code, reason),

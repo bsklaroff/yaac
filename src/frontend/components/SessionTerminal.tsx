@@ -9,7 +9,14 @@ import '@xterm/xterm/css/xterm.css'
  * text frames carry control (resize). Same-origin, so the session cookie
  * rides the upgrade.
  */
-export function SessionTerminal({ sessionId }: { sessionId: string }): JSX.Element {
+export function SessionTerminal({
+  sessionId,
+  target = 'agent',
+}: {
+  sessionId: string
+  /** Which tmux session to attach: the agent CLI or the scratch shell. */
+  target?: 'agent' | 'shell'
+}): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -33,7 +40,7 @@ export function SessionTerminal({ sessionId }: { sessionId: string }): JSX.Eleme
     // dimensions — the tmux window and this grid agree from the first frame,
     // avoiding the cold-start resize that garbles full-screen TUIs.
     const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    const params = new URLSearchParams({ id: sessionId })
+    const params = new URLSearchParams({ id: sessionId, target })
     if (term.cols > 0 && term.rows > 0) {
       params.set('cols', String(term.cols))
       params.set('rows', String(term.rows))
@@ -75,7 +82,7 @@ export function SessionTerminal({ sessionId }: { sessionId: string }): JSX.Eleme
       ws.close()
       term.dispose()
     }
-  }, [sessionId])
+  }, [sessionId, target])
 
   return <div ref={containerRef} className="h-full w-full" />
 }

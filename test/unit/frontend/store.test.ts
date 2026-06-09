@@ -72,4 +72,11 @@ describe('selection + project switching', () => {
     useUiStore.getState().reconnectTerminal('t2')
     expect(useUiStore.getState().terminalNonces).toEqual({ t1: 2, t2: 1 })
   })
+
+  it('setTerminalTab tracks the active tab per session', () => {
+    useUiStore.getState().setTerminalTab('s1', 'shell')
+    useUiStore.getState().setTerminalTab('s2', 'agent')
+    useUiStore.getState().setTerminalTab('s1', 'agent')
+    expect(useUiStore.getState().terminalTabs).toEqual({ s1: 'agent', s2: 'agent' })
+  })
 })

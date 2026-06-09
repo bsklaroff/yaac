@@ -1,31 +1,40 @@
 import { useEffect, useState, type JSX } from 'react'
 import clsx from 'clsx'
-import { useUiStore } from '@/frontend/store'
+import { useUiStore, type TerminalTab } from '@/frontend/store'
 import { SessionTerminal } from '@/frontend/components/SessionTerminal'
 import { SessionActionsMenu } from '@/frontend/components/SessionActionsMenu'
 import { CreatingPlaceholder } from '@/frontend/components/CreatingPlaceholder'
 import { BlockedIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import type { DaemonSnapshot } from '@/shared/types'
 
+const TABS: { key: TerminalTab; label: string }[] = [
+  { key: 'agent', label: 'Agent' },
+  { key: 'shell', label: 'Shell' },
+]
+
 export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined }): JSX.Element {
   const selectedSessionId = useUiStore((s) => s.selectedSessionId)
   const terminalNonces = useUiStore((s) => s.terminalNonces)
+  const terminalTabs = useUiStore((s) => s.terminalTabs)
+  const setTerminalTab = useUiStore((s) => s.setTerminalTab)
   const creating = useUiStore((s) => s.creating)
   const sessions = snapshot?.sessions ?? []
   const session = sessions.find((s) => s.sessionId === selectedSessionId)
+  const activeTab: TerminalTab = selectedSessionId ? (terminalTabs[selectedSessionId] ?? 'agent') : 'agent'
 
-  // Keep-alive: remember every session that's been opened and keep its
+  // Keep-alive: remember every session:tab that's been opened and keep its
   // terminal mounted (just hidden) so switching back is instant — no
-  // remount, reconnect, or resize-reflow jump.
+  // remount, reconnect, or resize-reflow jump. Tabs are opened lazily, so a
+  // session's shell only exists once its Shell tab is first visited.
   const [opened, setOpened] = useState<string[]>([])
   useEffect(() => {
-    if (selectedSessionId) {
-      setOpened((prev) => (prev.includes(selectedSessionId) ? prev : [...prev, selectedSessionId]))
-    }
-  }, [selectedSessionId])
+    if (!selectedSessionId) return
+    const key = `${selectedSessionId}:${activeTab}`
+    setOpened((prev) => (prev.includes(key) ? prev : [...prev, key]))
+  }, [selectedSessionId, activeTab])
 
   const liveIds = new Set(sessions.map((s) => s.sessionId))
-  const mounted = opened.filter((id) => liveIds.has(id))
+  const mounted = opened.filter((key) => liveIds.has(key.slice(0, key.lastIndexOf(':'))))
 
   return (
     // The floating pane, Claude Code-style: surface fill + hairline white/10
@@ -42,6 +51,24 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
           <span className="min-w-0 flex-1 truncate font-medium text-text">
             {session.prompt || 'New session'}
           </span>
+          {/* Terminal tabs: the agent CLI and a persistent scratch shell in
+              the same container (each its own tmux session). */}
+          <div className="flex shrink-0 items-center gap-0.5 rounded-md bg-bg/60 p-0.5">
+            {TABS.map((t) => (
+              <button
+                key={t.key}
+                onClick={() => setTerminalTab(session.sessionId, t.key)}
+                className={clsx(
+                  'rounded px-2 py-0.5 text-[11px] transition',
+                  activeTab === t.key
+                    ? 'bg-surface-3 font-medium text-text'
+                    : 'text-text-faint hover:text-text-dim',
+                )}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
           <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[session.tool]}</span>
           {session.blockedHosts.length > 0 && (
             <span
@@ -63,16 +90,23 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
           <div className="flex h-full items-center justify-center text-text-faint">Select a session</div>
         )}
         {/* All opened terminals stay mounted; only the active one is visible.
-            Keyed with a per-session nonce so a restart remounts just that one. */}
-        {mounted.map((id) => (
-          <div key={id} className={clsx('absolute inset-0 px-0.5 pb-0.5', id !== selectedSessionId && 'invisible')}>
-            {/* The terminal is its own dark rounded block inset in the surface
-                card, with side padding so text isn't flush to the edge. */}
-            <div className="h-full w-full overflow-hidden rounded-lg bg-bg px-3 py-2">
-              <SessionTerminal key={`${id}:${terminalNonces[id] ?? 0}`} sessionId={id} />
+            Keyed with a per-session nonce so a restart remounts just that
+            session's terminals. */}
+        {mounted.map((key) => {
+          const sep = key.lastIndexOf(':')
+          const id = key.slice(0, sep)
+          const tab = key.slice(sep + 1) as TerminalTab
+          const visible = id === selectedSessionId && tab === activeTab
+          return (
+            <div key={key} className={clsx('absolute inset-0 px-0.5 pb-0.5', !visible && 'invisible')}>
+              {/* The terminal is its own dark rounded block inset in the surface
+                  card, with side padding so text isn't flush to the edge. */}
+              <div className="h-full w-full overflow-hidden rounded-lg bg-bg px-3 py-2">
+                <SessionTerminal key={`${key}:${terminalNonces[id] ?? 0}`} sessionId={id} target={tab} />
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
         {/* Provisioning overlay — covers the (kept-alive) terminals until ready. */}
         {creating && (
           <div className="absolute inset-0 z-20 bg-surface">
