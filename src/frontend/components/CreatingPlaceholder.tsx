@@ -1,5 +1,5 @@
 import type { JSX } from 'react'
-import { LoadingIcon, TOOL_ICON } from '@/frontend/lib/icons'
+import { LoadingIcon } from '@/frontend/lib/icons'
 import { useUiStore } from '@/frontend/store'
 import type { CreatingSession } from '@/frontend/store'
 
@@ -7,11 +7,9 @@ import type { CreatingSession } from '@/frontend/store'
  *  terminal that will arrive. Streams progress; on failure offers dismiss. */
 export function CreatingPlaceholder({ creating }: { creating: CreatingSession }): JSX.Element {
   const setCreating = useUiStore((s) => s.setCreating)
-  const Tool = TOOL_ICON[creating.tool]
 
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
-      <Tool size={28} className="text-text-dim" />
       {creating.error ? (
         <>
           <p className="text-sm font-medium text-[#d65858]">Couldn&apos;t create session</p>
@@ -28,7 +26,7 @@ export function CreatingPlaceholder({ creating }: { creating: CreatingSession })
         <>
           <div className="flex items-center gap-2 text-sm text-text">
             <LoadingIcon size={15} className="animate-spin text-text-dim" />
-            Creating session in {creating.projectSlug}
+            Creating {creating.tool} session in {creating.projectSlug}
           </div>
           <p className="text-xs text-text-faint">{creating.message}</p>
         </>

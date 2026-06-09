@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent, type JSX } from 'react'
 import clsx from 'clsx'
 import { Dialog } from '@base-ui/react/dialog'
-import { SettingsIcon, TOOL_ICON } from '@/frontend/lib/icons'
+import { SettingsIcon } from '@/frontend/lib/icons'
 import { addGitCredential, getAuthList, getDefaultTool, setDefaultTool } from '@/frontend/lib/settingsApi'
 import type { AgentTool, AuthListResult } from '@/shared/types'
 
@@ -50,22 +50,18 @@ export function SettingsButton(): JSX.Element {
 
           <Section label="Default tool">
             <div className="flex gap-1 rounded-lg bg-bg p-1">
-              {TOOLS.map((t) => {
-                const Icon = TOOL_ICON[t]
-                return (
-                  <button
-                    key={t}
-                    onClick={() => pickTool(t)}
-                    className={clsx(
-                      'flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition',
-                      tool === t ? 'bg-surface-3 text-text' : 'text-text-dim hover:text-text',
-                    )}
-                  >
-                    <Icon size={13} />
-                    {t}
-                  </button>
-                )
-              })}
+              {TOOLS.map((t) => (
+                <button
+                  key={t}
+                  onClick={() => pickTool(t)}
+                  className={clsx(
+                    'flex flex-1 items-center justify-center rounded-md px-3 py-1.5 text-xs font-medium transition',
+                    tool === t ? 'bg-surface-3 text-text' : 'text-text-dim hover:text-text',
+                  )}
+                >
+                  {t}
+                </button>
+              ))}
             </div>
           </Section>
 

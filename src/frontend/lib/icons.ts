@@ -6,27 +6,9 @@
  *
  * (A Central Icons variant — round-filled, with real brand glyphs — is kept
  * on the `claude/central-icons-ref` branch for reference; it depends on a
- * gated paid package, so it can't be the default.)
+ * gated paid package, so it can't be the default. Agent tools are now shown
+ * by name rather than a glyph, since lucide has no brand marks.)
  */
-import {
-  Terminal,
-  Folders,
-  Plus,
-  Settings,
-  Ellipsis,
-  RotateCw,
-  Trash2,
-  Ban,
-  LoaderCircle,
-  ChevronRight,
-  X,
-  Sparkles,
-  Bot,
-  Code,
-  type LucideIcon,
-} from 'lucide-react'
-import type { AgentTool } from '@/shared/types'
-
 export {
   Terminal as TerminalIcon,
   Folders as ProjectsIcon,
@@ -39,14 +21,4 @@ export {
   LoaderCircle as LoadingIcon,
   ChevronRight as ChevronIcon,
   X as CloseIcon,
-}
-
-/**
- * Per-tool glyph. lucide has no brand marks, so each tool gets a distinct
- * generic icon (Central Icons had the real Claude/OpenAI/OpenCode logos).
- */
-export const TOOL_ICON: Record<AgentTool, LucideIcon> = {
-  claude: Sparkles,
-  codex: Bot,
-  opencode: Code,
-}
+} from 'lucide-react'
