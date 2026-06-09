@@ -18,7 +18,7 @@ export {
   IconFolders as ProjectsIcon,
   IconPlusMedium as AddIcon,
   IconSettingsGear2 as SettingsIcon,
-  IconCircleDotsCenter1 as MoreIcon,
+  IconDotGrid1x3Horizontal as MoreIcon,
   IconArrowsRepeat as RestartIcon,
   IconTrashCan as DeleteIcon,
   IconCircleBanSign as BlockedIcon,
