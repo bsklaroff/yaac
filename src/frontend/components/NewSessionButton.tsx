@@ -1,27 +1,25 @@
-import { useState, type JSX } from 'react'
-import clsx from 'clsx'
-import { Dialog } from '@base-ui/react/dialog'
-import { AddIcon } from '@/frontend/lib/icons'
+import { type JSX } from 'react'
+import { Menu } from '@base-ui/react/menu'
+import { AddIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import { createSession } from '@/frontend/lib/createSession'
 import { useUiStore } from '@/frontend/store'
 import type { AgentTool } from '@/shared/types'
 
 const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode']
+const ITEM = 'flex w-full cursor-default items-center rounded-md px-2 py-1.5 text-xs outline-none '
+  + 'text-text-dim data-[highlighted]:bg-surface-3 data-[highlighted]:text-text'
 
 /**
- * "+ New session" for the active project. Picks the tool, then fires the
- * create and closes immediately — provisioning progress streams into the
- * main pane (via the store's `creating` state), not the modal. The new
+ * "+ New session" for the active project: a dropdown of tools. Picking one
+ * fires the create and the menu closes immediately — provisioning progress
+ * streams into the main pane (via the store's `creating` state). The new
  * session is selected on success (it also arrives live via /events).
  */
 export function NewSessionButton({ projectSlug }: { projectSlug: string }): JSX.Element {
   const openSession = useUiStore((s) => s.openSession)
   const setCreating = useUiStore((s) => s.setCreating)
-  const [open, setOpen] = useState(false)
-  const [tool, setTool] = useState<AgentTool>('claude')
 
-  const create = (): void => {
-    setOpen(false)
+  const create = (tool: AgentTool): void => {
     setCreating({ projectSlug, tool, message: 'Starting…' })
     void createSession(projectSlug, tool, (message) => {
       setCreating({ projectSlug, tool, message })
@@ -36,56 +34,28 @@ export function NewSessionButton({ projectSlug }: { projectSlug: string }): JSX.
   }
 
   return (
-    <Dialog.Root open={open} onOpenChange={setOpen}>
-      <button
-        onClick={() => setOpen(true)}
+    <Menu.Root>
+      <Menu.Trigger
         title="New session"
-        className="flex h-5 w-5 items-center justify-center rounded text-text-dim transition hover:bg-surface-2 hover:text-accent"
+        className="flex h-5 w-5 items-center justify-center rounded text-text-dim transition hover:bg-surface-2
+          hover:text-accent data-[popup-open]:bg-surface-2 data-[popup-open]:text-accent"
       >
         <AddIcon size={14} />
-      </button>
-
-      <Dialog.Portal>
-        <Dialog.Backdrop className="fixed inset-0 bg-black/60 backdrop-blur-[1px] transition-opacity duration-150
-          data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
-        <Dialog.Popup className="fixed left-1/2 top-1/2 w-[360px] -translate-x-1/2 -translate-y-1/2 rounded-lg border
-          border-border bg-surface-2 p-5 text-text shadow-[0_16px_48px_rgba(0,0,0,0.5)] outline-none transition duration-150
-          data-[starting-style]:scale-95 data-[starting-style]:opacity-0 data-[ending-style]:scale-95 data-[ending-style]:opacity-0">
-          <Dialog.Title className="text-sm font-semibold">New session</Dialog.Title>
-          <Dialog.Description className="mt-1 text-xs text-text-dim">
-            in <span className="text-text">{projectSlug}</span>
-          </Dialog.Description>
-
-          <div className="mt-4 flex gap-1 rounded-lg bg-bg p-1">
+      </Menu.Trigger>
+      <Menu.Portal>
+        <Menu.Positioner side="bottom" align="end" sideOffset={6}>
+          <Menu.Popup className="min-w-[180px] rounded-lg border border-border bg-surface-2 p-1 text-text
+            shadow-[0_12px_32px_rgba(0,0,0,0.5)] outline-none transition-opacity duration-100
+            data-[starting-style]:opacity-0 data-[ending-style]:opacity-0">
+            <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">New session</div>
             {TOOLS.map((t) => (
-              <button
-                key={t}
-                onClick={() => setTool(t)}
-                className={clsx(
-                  'flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition',
-                  tool === t ? 'bg-surface-3 text-text' : 'text-text-dim hover:text-text',
-                )}
-              >
-                {t}
-              </button>
+              <Menu.Item key={t} className={ITEM} onClick={() => create(t)}>
+                {TOOL_LABEL[t]}
+              </Menu.Item>
             ))}
-          </div>
-
-          <div className="mt-5 flex justify-end gap-2">
-            <Dialog.Close className="flex h-8 items-center rounded-md px-3 text-xs text-text-dim transition
-              hover:bg-surface-3 hover:text-text">
-              Cancel
-            </Dialog.Close>
-            <button
-              onClick={create}
-              className="flex h-8 items-center rounded-md bg-accent px-3 text-xs font-medium text-bg transition
-                hover:brightness-110"
-            >
-              Create
-            </button>
-          </div>
-        </Dialog.Popup>
-      </Dialog.Portal>
-    </Dialog.Root>
+          </Menu.Popup>
+        </Menu.Positioner>
+      </Menu.Portal>
+    </Menu.Root>
   )
 }
