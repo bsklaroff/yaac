@@ -110,6 +110,25 @@ export function bridge(ptyProc: PtyLike, sock: SocketLike): void {
   })
 }
 
+/**
+ * Coerce client-supplied terminal dimensions (e.g. WS query params) into a
+ * size object for `spawnAttachPty`. Non-numeric, non-positive, or absurd
+ * values become `undefined` so the caller falls back to the 80x24 default.
+ * Spawning the attach PTY at the browser's real size — rather than the
+ * default and resizing after — avoids the cold-start reflow that garbles
+ * full-screen TUIs (the client grid and tmux window agree from frame one).
+ */
+export function parsePtySize(
+  colsRaw: unknown,
+  rowsRaw: unknown,
+): { cols?: number; rows?: number } {
+  const clamp = (v: unknown): number | undefined => {
+    const n = Math.trunc(Number(v))
+    return Number.isFinite(n) && n >= 1 && n <= 1000 ? n : undefined
+  }
+  return { cols: clamp(colsRaw), rows: clamp(rowsRaw) }
+}
+
 /** Spawn the attach PTY for a resolved container. */
 export function spawnAttachPty(
   containerName: string,

@@ -26,15 +26,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (res.status === 401) throw new ApiError(401, 'unauthenticated')
   if (!res.ok) {
-    const detail = await res.text().catch(() => '')
-    throw new ApiError(res.status, detail || `request failed: ${res.status}`)
+    throw new ApiError(res.status, await errorMessage(res))
   }
   if (res.status === 204) return undefined as T
   return res.json() as Promise<T>
+}
+
+/** Pull the daemon's `{ error: { message } }` out of a failed response. */
+async function errorMessage(res: Response): Promise<string> {
+  const text = await res.text().catch(() => '')
+  if (!text) return `request failed: ${res.status}`
+  try {
+    const body = JSON.parse(text) as { error?: { message?: string } }
+    return body.error?.message ?? text
+  } catch {
+    return text
+  }
 }
 
 export const api = {
   get: <T>(path: string): Promise<T> => request<T>(path),
   post: <T>(path: string, body?: unknown): Promise<T> =>
     request<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) }),
+  del: <T>(path: string): Promise<T> => request<T>(path, { method: 'DELETE' }),
 }

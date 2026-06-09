@@ -20,15 +20,23 @@ export function SessionTerminal({ sessionId }: { sessionId: string }): JSX.Eleme
       fontSize: 13,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
       cursorBlink: true,
-      theme: { background: '#171717', foreground: '#e5e5e5' },
+      theme: { background: '#0b0b0d', foreground: '#e7e7ea' },
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(el)
     fit.fit()
 
+    // Send the fitted size up-front so the daemon spawns the PTY at the right
+    // dimensions — the tmux window and this grid agree from the first frame,
+    // avoiding the cold-start resize that garbles full-screen TUIs.
     const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    const ws = new WebSocket(`${scheme}://${window.location.host}/pty/attach?id=${encodeURIComponent(sessionId)}`)
+    const params = new URLSearchParams({ id: sessionId })
+    if (term.cols > 0 && term.rows > 0) {
+      params.set('cols', String(term.cols))
+      params.set('rows', String(term.rows))
+    }
+    const ws = new WebSocket(`${scheme}://${window.location.host}/pty/attach?${params.toString()}`)
     ws.binaryType = 'arraybuffer'
     const encoder = new TextEncoder()
 
