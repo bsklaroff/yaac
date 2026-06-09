@@ -1,4 +1,4 @@
-import { useState, type JSX } from 'react'
+import { useEffect, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { useQuery } from '@tanstack/react-query'
 import { Collapsible } from '@base-ui/react/collapsible'
@@ -10,7 +10,7 @@ import { deleteSession, restartSession } from '@/frontend/lib/createSession'
 import { getDeletedSessions } from '@/frontend/lib/deletedApi'
 import { useProvisionSession } from '@/frontend/lib/useProvisionSession'
 import { useUiStore, type CreatingSession } from '@/frontend/store'
-import type { SessionListEntry } from '@/shared/types'
+import type { DeletedSessionEntry, SessionListEntry } from '@/shared/types'
 
 /**
  * User-facing session groups, in triage order (Waiting first). Prewarm is
@@ -111,7 +111,10 @@ function DeletedGroup({
 }): JSX.Element | null {
   const [open, setOpen] = useState(false)
   const [restarting, setRestarting] = useState<string[]>([])
+  const [confirm, setConfirm] = useState<DeletedSessionEntry | null>(null)
   const provision = useProvisionSession()
+  const optimisticDeleted = useUiStore((s) => s.optimisticDeleted)
+  const removeOptimisticDeleted = useUiStore((s) => s.removeOptimisticDeleted)
 
   const { data } = useQuery({
     queryKey: ['deleted', projectSlug, activeSignature],
@@ -119,14 +122,31 @@ function DeletedGroup({
     staleTime: 2000,
   })
 
-  const rows = (data ?? []).filter((d) => !restarting.includes(d.sessionId))
+  // Once list-deleted catches up to an optimistic entry, drop the optimistic
+  // copy (the fetched one takes over — same id, no flicker).
+  useEffect(() => {
+    if (!data) return
+    const fetched = new Set(data.map((d) => d.sessionId))
+    for (const e of optimisticDeleted) if (fetched.has(e.sessionId)) removeOptimisticDeleted(e.sessionId)
+  }, [data, optimisticDeleted, removeOptimisticDeleted])
+
+  // Merge optimistic just-deleted entries (for this project) ahead of the
+  // fetched list, de-duped, minus any mid-restart.
+  const fetchedIds = new Set((data ?? []).map((d) => d.sessionId))
+  const merged = [
+    ...optimisticDeleted.filter((e) => e.projectSlug === projectSlug && !fetchedIds.has(e.sessionId)),
+    ...(data ?? []),
+  ]
+  const rows = merged.filter((d) => !restarting.includes(d.sessionId))
   // Hide the group entirely when there's nothing to show (and it's closed),
   // so it doesn't add weight for projects with no deleted sessions.
   if (rows.length === 0 && !open) return null
 
-  const onRestart = (sessionId: string, tool: SessionListEntry['tool']): void => {
-    setRestarting((r) => [...r, sessionId])
-    provision(projectSlug, tool, (onProgress) => restartSession(sessionId, onProgress))
+  const onConfirmRestart = (entry: DeletedSessionEntry): void => {
+    setConfirm(null)
+    setRestarting((r) => [...r, entry.sessionId])
+    removeOptimisticDeleted(entry.sessionId)
+    provision(projectSlug, entry.tool, (onProgress) => restartSession(entry.sessionId, onProgress))
   }
 
   return (
@@ -135,7 +155,7 @@ function DeletedGroup({
         tracking-wide text-text-faint outline-none transition hover:text-text-dim">
         <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
         <span>Deleted</span>
-        {data && <span className="text-text-faint/70">{rows.length}</span>}
+        <span className="text-text-faint/70">{rows.length}</span>
       </Collapsible.Trigger>
       <Collapsible.Panel>
         {rows.length === 0 && (
@@ -144,7 +164,7 @@ function DeletedGroup({
         {rows.map((d) => (
           <button
             key={d.sessionId}
-            onClick={() => onRestart(d.sessionId, d.tool)}
+            onClick={() => setConfirm(d)}
             title="Restart this session"
             className="group/d flex w-full flex-col gap-0.5 px-4 py-2 text-left text-sm text-text-dim
               transition hover:bg-surface-2 hover:text-text"
@@ -163,6 +183,18 @@ function DeletedGroup({
           </button>
         ))}
       </Collapsible.Panel>
+
+      <ConfirmDialog
+        open={!!confirm}
+        onOpenChange={(next) => { if (!next) setConfirm(null) }}
+        destructive={false}
+        title="Restart this session?"
+        description={confirm
+          ? `Recreates the container and resumes ${TOOL_LABEL[confirm.tool]} from where it left off${confirm.prompt ? `:\n“${confirm.prompt}”` : '.'}`
+          : ''}
+        confirmLabel="Restart"
+        onConfirm={() => { if (confirm) onConfirmRestart(confirm) }}
+      />
     </Collapsible.Root>
   )
 }
@@ -221,6 +253,8 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
   const selectSession = useUiStore((s) => s.selectSession)
   const beginDelete = useUiStore((s) => s.beginDelete)
   const endDelete = useUiStore((s) => s.endDelete)
+  const addOptimisticDeleted = useUiStore((s) => s.addOptimisticDeleted)
+  const removeOptimisticDeleted = useUiStore((s) => s.removeOptimisticDeleted)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
   // Optimistic: hide the row and close the dialog immediately, then fire the
@@ -231,9 +265,21 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
     setConfirmDelete(false)
     beginDelete(id)
     if (selectedSessionId === id) selectSession(null)
+    // A session with history (a prompt → a transcript) will appear in the
+    // Deleted group once cleanup lands; show it there immediately.
+    if (session.prompt) {
+      addOptimisticDeleted({
+        sessionId: id,
+        projectSlug: session.projectSlug,
+        tool: session.tool,
+        createdAt: session.createdAt,
+        prompt: session.prompt,
+      })
+    }
     void deleteSession(id).catch((e: unknown) => {
       console.error('delete failed', e)
       endDelete(id)
+      removeOptimisticDeleted(id)
     })
   }
 
