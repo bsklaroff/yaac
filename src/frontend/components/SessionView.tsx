@@ -6,7 +6,7 @@ import { useUiStore } from '@/frontend/store'
 import { SessionTerminal } from '@/frontend/components/SessionTerminal'
 import { SessionActionsMenu } from '@/frontend/components/SessionActionsMenu'
 import { CreatingPlaceholder } from '@/frontend/components/CreatingPlaceholder'
-import { AddIcon, BlockedIcon, CloseIcon, SplitDownIcon, SplitRightIcon, TOOL_LABEL } from '@/frontend/lib/icons'
+import { AddIcon, BlockedIcon, CloseIcon, SidebarIcon, SplitDownIcon, SplitRightIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import { getSessionTerminals, closeSessionTerminal, nextShellName } from '@/frontend/lib/terminalsApi'
 import {
   computeLayout,
@@ -77,6 +77,7 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
   const terminalNonces = useUiStore((s) => s.terminalNonces)
   const layouts = useUiStore((s) => s.layouts)
   const setSessionLayout = useUiStore((s) => s.setSessionLayout)
+  const toggleSidebar = useUiStore((s) => s.toggleSidebar)
   const creating = useUiStore((s) => s.creating)
   const queryClient = useQueryClient()
   const sessions = snapshot?.sessions ?? []
@@ -277,13 +278,31 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
       {/* Slim session bar on the base layer — the panes are the cards. */}
       {creating ? (
         <header className="flex h-8 shrink-0 items-center gap-2.5 px-2 text-xs">
+          <button
+            onClick={toggleSidebar}
+            title="Toggle sidebar"
+            aria-label="Toggle sidebar"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
+              hover:bg-surface-2 hover:text-text-dim"
+          >
+            <SidebarIcon size={14} />
+          </button>
           <span className="min-w-0 flex-1 truncate font-medium text-text-dim">New session</span>
           <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[creating.tool]}</span>
         </header>
       ) : session ? (
         <header className="flex h-8 shrink-0 items-center gap-2.5 px-2 text-xs">
+          <button
+            onClick={toggleSidebar}
+            title="Toggle sidebar"
+            aria-label="Toggle sidebar"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
+              hover:bg-surface-2 hover:text-text-dim"
+          >
+            <SidebarIcon size={14} />
+          </button>
           <span className="min-w-0 flex-1 truncate font-medium text-text">
-            {session.prompt || 'New session'}
+            {session.title || session.prompt || 'New session'}
           </span>
           <AddTerminalMenu
             items={addItems}
@@ -309,15 +328,25 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
               {session.blockedHosts.length}
             </span>
           )}
-          <SessionActionsMenu sessionId={session.sessionId} />
+          <SessionActionsMenu sessionId={session.sessionId} currentTitle={session.title ?? ''} />
         </header>
       ) : (
-        <div className="h-8 shrink-0" />
+        <header className="flex h-8 shrink-0 items-center px-2">
+          <button
+            onClick={toggleSidebar}
+            title="Toggle sidebar"
+            aria-label="Toggle sidebar"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
+              hover:bg-surface-2 hover:text-text-dim"
+          >
+            <SidebarIcon size={14} />
+          </button>
+        </header>
       )}
 
       <div ref={wsRef} className="relative min-h-0 flex-1">
         {!session && !creating && (
-          <div className="flex h-full items-center justify-center text-text-faint">Select a session</div>
+          <div className="flex h-full items-center justify-center text-text-faint">No sessions yet</div>
         )}
 
         {/* Pane cards (chrome) for the selected session. */}

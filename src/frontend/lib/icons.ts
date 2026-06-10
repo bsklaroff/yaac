@@ -25,6 +25,8 @@ export {
   X as CloseIcon,
   KeyRound as KeyIcon,
   SlidersHorizontal as GeneralIcon,
+  Pencil as RenameIcon,
+  PanelLeft as SidebarIcon,
   Columns2 as SplitRightIcon,
   Rows2 as SplitDownIcon,
 } from 'lucide-react'
