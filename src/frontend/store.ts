@@ -3,6 +3,30 @@ import { isLayoutNode, type LayoutNode } from '@/frontend/lib/layout'
 import type { AgentTool, DeletedSessionEntry } from '@/shared/types'
 
 const LAYOUTS_LS_KEY = 'yaac.layouts.v1'
+const VIEWMODE_LS_KEY = 'yaac.viewmode.v1'
+
+/** How the workspace renders its terminals: a tiling window manager, or
+ *  one-at-a-time tabs (better on small screens). */
+export type ViewMode = 'tiles' | 'tabs'
+
+/** Persisted view mode; first-run default keys off the viewport width
+ *  (exported for tests). */
+export function loadViewMode(viewportWidth?: number): ViewMode {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(VIEWMODE_LS_KEY)
+      if (raw === 'tiles' || raw === 'tabs') return raw
+    }
+  } catch { /* fall through to the default */ }
+  const width = viewportWidth ?? (typeof window !== 'undefined' ? window.innerWidth : 1440)
+  return width < 1024 ? 'tabs' : 'tiles'
+}
+
+function persistViewMode(mode: ViewMode): void {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(VIEWMODE_LS_KEY, mode)
+  } catch { /* non-fatal */ }
+}
 
 /** Read persisted workspace layouts, dropping anything structurally
  *  invalid (exported for tests). */
@@ -65,6 +89,11 @@ interface UiState {
   layouts: Record<string, LayoutNode | null>
   /** Whether the session sidebar is shown. */
   sidebarOpen: boolean
+  /** Tiling WM vs one-at-a-time tabs (persisted; small screens default
+   *  to tabs). The layout tree stays canonical in both modes. */
+  viewMode: ViewMode
+  /** Per-session active terminal in tabs mode. */
+  activeTabs: Record<string, string>
   /** A session being provisioned (placeholder shown until it's ready). */
   creating: CreatingSession | null
   /** Sessions whose delete was confirmed — hidden optimistically until the
@@ -83,6 +112,8 @@ interface UiState {
    *  helpers in lib/layout). */
   setSessionLayout: (sessionId: string, layout: LayoutNode | null) => void
   toggleSidebar: () => void
+  setViewMode: (mode: ViewMode) => void
+  setActiveTab: (sessionId: string, target: string) => void
   /** Optimistically hide a session being deleted. */
   beginDelete: (sessionId: string) => void
   /** Stop hiding a session — on delete error (restore) or once the snapshot
@@ -101,6 +132,8 @@ export const useUiStore = create<UiState>((set) => ({
   terminalNonces: {},
   layouts: loadPersistedLayouts(),
   sidebarOpen: true,
+  viewMode: loadViewMode(),
+  activeTabs: {},
   creating: null,
   pendingDeleteIds: [],
   optimisticDeleted: [],
@@ -117,6 +150,13 @@ export const useUiStore = create<UiState>((set) => ({
     layouts: { ...s.layouts, [sessionId]: layout },
   })),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
+  setViewMode: (mode) => {
+    persistViewMode(mode)
+    set({ viewMode: mode })
+  },
+  setActiveTab: (sessionId, target) => set((s) => ({
+    activeTabs: { ...s.activeTabs, [sessionId]: target },
+  })),
   beginDelete: (sessionId) => set((s) => (
     s.pendingDeleteIds.includes(sessionId)
       ? s

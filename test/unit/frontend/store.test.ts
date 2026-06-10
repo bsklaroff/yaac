@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach } from 'vitest'
-import { useUiStore } from '@/frontend/store'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { loadViewMode, useUiStore } from '@/frontend/store'
 
 const initial = useUiStore.getState()
 
@@ -80,5 +80,42 @@ describe('selection + project switching', () => {
     useUiStore.getState().setSessionLayout('s1', tree)
     useUiStore.getState().setSessionLayout('s2', null)
     expect(useUiStore.getState().layouts).toEqual({ s1: tree, s2: null })
+  })
+})
+
+describe('view mode (tiles vs tabs)', () => {
+  afterEach(() => {
+    delete (globalThis as Record<string, unknown>).localStorage
+  })
+
+  it('defaults by viewport width when nothing is persisted', () => {
+    expect(loadViewMode(1440)).toBe('tiles')
+    expect(loadViewMode(800)).toBe('tabs')
+  })
+
+  it('prefers the persisted value over the width default', () => {
+    const store = new Map<string, string>()
+    ;(globalThis as Record<string, unknown>).localStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => { store.set(k, String(v)) },
+    }
+    store.set('yaac.viewmode.v1', 'tabs')
+    expect(loadViewMode(1440)).toBe('tabs')
+    store.set('yaac.viewmode.v1', 'garbage')
+    expect(loadViewMode(1440)).toBe('tiles')
+  })
+
+  it('setViewMode updates state and persists; setActiveTab is per session', () => {
+    const store = new Map<string, string>()
+    ;(globalThis as Record<string, unknown>).localStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => { store.set(k, String(v)) },
+    }
+    useUiStore.getState().setViewMode('tabs')
+    expect(useUiStore.getState().viewMode).toBe('tabs')
+    expect(store.get('yaac.viewmode.v1')).toBe('tabs')
+    useUiStore.getState().setActiveTab('s1', 'shell:shell')
+    useUiStore.getState().setActiveTab('s2', 'agent')
+    expect(useUiStore.getState().activeTabs).toEqual({ s1: 'shell:shell', s2: 'agent' })
   })
 })

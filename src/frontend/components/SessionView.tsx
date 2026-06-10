@@ -6,7 +6,7 @@ import { useUiStore } from '@/frontend/store'
 import { SessionTerminal } from '@/frontend/components/SessionTerminal'
 import { SessionActionsMenu } from '@/frontend/components/SessionActionsMenu'
 import { CreatingPlaceholder } from '@/frontend/components/CreatingPlaceholder'
-import { AddIcon, BlockedIcon, CloseIcon, SidebarIcon, SplitDownIcon, SplitRightIcon, TOOL_LABEL } from '@/frontend/lib/icons'
+import { AddIcon, BlockedIcon, CloseIcon, SidebarIcon, SplitDownIcon, SplitRightIcon, TabsIcon, TilesIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import { getSessionTerminals, closeSessionTerminal, nextShellName } from '@/frontend/lib/terminalsApi'
 import {
   computeLayout,
@@ -78,6 +78,10 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
   const layouts = useUiStore((s) => s.layouts)
   const setSessionLayout = useUiStore((s) => s.setSessionLayout)
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
+  const viewMode = useUiStore((s) => s.viewMode)
+  const setViewMode = useUiStore((s) => s.setViewMode)
+  const activeTabs = useUiStore((s) => s.activeTabs)
+  const setActiveTab = useUiStore((s) => s.setActiveTab)
   const creating = useUiStore((s) => s.creating)
   const queryClient = useQueryClient()
   const sessions = snapshot?.sessions ?? []
@@ -111,6 +115,13 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
     return () => ro.disconnect()
   }, [])
 
+  // Tabs mode renders the same layout-tree leaves one at a time; the tree
+  // stays canonical so toggling back to tiles restores the arrangement.
+  const targets = leafTargets(layout)
+  const activeTab = sid
+    ? (activeTabs[sid] && targets.includes(activeTabs[sid]) ? activeTabs[sid] : targets[0])
+    : undefined
+  const tiled = viewMode === 'tiles'
   const { panes, dividers } = computeLayout(layout, { x: 0, y: 0, w: wsSize.w, h: wsSize.h }, GAP)
   const panesRef = useRef<PaneRect[]>(panes)
   panesRef.current = panes
@@ -304,6 +315,15 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
           <span className="min-w-0 flex-1 truncate font-medium text-text">
             {session.title || session.prompt || 'New session'}
           </span>
+          <button
+            onClick={() => setViewMode(tiled ? 'tabs' : 'tiles')}
+            title={tiled ? 'Switch to tabs' : 'Switch to tiles'}
+            aria-label={tiled ? 'Switch to tabs' : 'Switch to tiles'}
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-dim transition
+              hover:bg-surface-2 hover:text-text"
+          >
+            {tiled ? <TabsIcon size={13} /> : <TilesIcon size={13} />}
+          </button>
           <AddTerminalMenu
             items={addItems}
             onPick={(pick) => openTerminal(pick)}
@@ -349,8 +369,8 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
           <div className="flex h-full items-center justify-center text-text-faint">No sessions yet</div>
         )}
 
-        {/* Pane cards (chrome) for the selected session. */}
-        {session && panes.map(({ target, rect }) => (
+        {/* Pane cards (chrome) for the selected session — tiles mode. */}
+        {session && tiled && panes.map(({ target, rect }) => (
           <section
             key={target}
             style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}
@@ -411,6 +431,54 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
           </section>
         ))}
 
+        {/* Tabs mode: one full-bleed card; the strip switches between the
+            same layout-tree leaves the tiles mode arranges spatially. */}
+        {session && !tiled && targets.length > 0 && (
+          <section className="absolute inset-0 flex flex-col overflow-hidden rounded-lg border
+            border-white/[0.06] bg-surface shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
+            <div style={{ height: HEADER_H }} className="flex shrink-0 items-center gap-0.5 px-1.5">
+              {targets.map((t) => (
+                <span key={t} className="group/tab relative flex items-center">
+                  <button
+                    onClick={() => setActiveTab(session.sessionId, t)}
+                    className={clsx(
+                      'rounded px-2 py-0.5 pr-5 text-[11px] transition',
+                      activeTab === t
+                        ? 'bg-surface-3 font-medium text-text'
+                        : 'text-text-faint hover:text-text-dim',
+                    )}
+                  >
+                    {paneName(t, terminals)}
+                  </button>
+                  <button
+                    onClick={() => closePane(t)}
+                    title={`Close ${paneName(t, terminals)}`}
+                    aria-label={`Close ${paneName(t, terminals)}`}
+                    className="absolute right-0.5 flex h-4 w-4 items-center justify-center rounded
+                      text-text-faint opacity-0 transition hover:text-text group-hover/tab:opacity-100"
+                  >
+                    <CloseIcon size={10} />
+                  </button>
+                </span>
+              ))}
+              <AddTerminalMenu
+                items={addItems}
+                onPick={(pick) => openTerminal(pick)}
+                trigger={
+                  <Menu.Trigger
+                    title="Add terminal"
+                    aria-label="Add terminal tab"
+                    className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
+                      hover:bg-surface-2 hover:text-text"
+                  >
+                    <AddIcon size={12} />
+                  </Menu.Trigger>
+                }
+              />
+            </div>
+          </section>
+        )}
+
         {/* Empty workspace: offer to add the first terminal. */}
         {session && !creating && panes.length === 0 && (
           <div className="flex h-full items-center justify-center">
@@ -433,7 +501,7 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
           const sep = key.indexOf('|')
           const id = key.slice(0, sep)
           const target = key.slice(sep + 1)
-          const pane = id === sid ? panes.find((p) => p.target === target) : undefined
+          const pane = id === sid && tiled ? panes.find((p) => p.target === target) : undefined
           const style = pane
             ? {
                 left: pane.rect.x + PAD,
@@ -441,7 +509,14 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
                 width: pane.rect.w - PAD * 2,
                 height: pane.rect.h - HEADER_H - PAD,
               }
-            : undefined
+            : id === sid && !tiled && target === activeTab
+              ? {
+                  left: PAD,
+                  top: HEADER_H,
+                  width: wsSize.w - PAD * 2,
+                  height: wsSize.h - HEADER_H - PAD,
+                }
+              : undefined
           return (
             <div
               key={key}
@@ -456,7 +531,7 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
         })}
 
         {/* Split dividers (drag to resize). */}
-        {session && dividers.map((d) => (
+        {session && tiled && dividers.map((d) => (
           <div
             key={d.path || 'root'}
             onPointerDown={(e) => onDividerDown(e, d.path, d.dir, d.box)}
