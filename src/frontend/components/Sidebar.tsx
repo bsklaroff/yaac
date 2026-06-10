@@ -151,8 +151,8 @@ function DeletedGroup({
 
   return (
     <Collapsible.Root open={open} onOpenChange={setOpen} className="py-1">
-      <Collapsible.Trigger className="flex w-full items-center gap-1 px-3 py-1 text-xs font-semibold
-        tracking-wide text-text-faint outline-none transition hover:text-text-dim">
+      <Collapsible.Trigger className="flex w-full items-center gap-1 px-3 py-1 text-xs font-medium
+        text-text-faint outline-none transition hover:text-text-dim">
         <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
         <span>Deleted</span>
         <span className="text-text-faint/70">{rows.length}</span>
@@ -170,7 +170,7 @@ function DeletedGroup({
               text-sm text-text-dim transition hover:bg-surface-2/60 hover:text-text"
           >
             <span className="flex items-center gap-2">
-              <span className="truncate font-medium">{d.prompt || 'New session'}</span>
+              <span className="truncate font-medium">{d.title || d.prompt || 'New session'}</span>
               <RestartIcon
                 size={13}
                 className="ml-auto shrink-0 text-text-faint opacity-0 transition-opacity group-hover/d:opacity-100"
@@ -235,8 +235,8 @@ function SessionGroup({
 
   return (
     <Collapsible.Root open={open} onOpenChange={setOpen} className="py-1">
-      <Collapsible.Trigger className="flex w-full items-center gap-1 px-3 py-1 text-xs font-semibold
-        tracking-wide text-text-faint outline-none transition hover:text-text-dim">
+      <Collapsible.Trigger className="flex w-full items-center gap-1 px-3 py-1 text-xs font-medium
+        text-text-faint outline-none transition hover:text-text-dim">
         <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
         <span>{label}</span>
         <span className="text-text-faint/70">{sessions.length}</span>
@@ -274,6 +274,7 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
         tool: session.tool,
         createdAt: session.createdAt,
         prompt: session.prompt,
+        title: session.title,
       })
     }
     void deleteSession(id).catch((e: unknown) => {
@@ -293,7 +294,7 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
         )}
       >
         <span className="flex items-center gap-2">
-          <span className="truncate font-medium">{session.prompt || 'New session'}</span>
+          <span className="truncate font-medium">{session.title || session.prompt || 'New session'}</span>
           {/* Tool name; on row hover it yields to the delete × in the same spot. */}
           <span className="ml-auto shrink-0 text-xs text-text-faint transition-opacity group-hover:opacity-0">
             {TOOL_LABEL[session.tool]}

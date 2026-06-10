@@ -63,6 +63,9 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
   const endDelete = useUiStore((s) => s.endDelete)
   const creating = useUiStore((s) => s.creating)
   const setCreating = useUiStore((s) => s.setCreating)
+  const selectedSessionId = useUiStore((s) => s.selectedSessionId)
+  const selectSession = useUiStore((s) => s.selectSession)
+  const sidebarOpen = useUiStore((s) => s.sidebarOpen)
 
   const projects = snapshot?.projects ?? []
   const sessions = snapshot?.sessions ?? []
@@ -89,6 +92,19 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
   }, [creating, sessions, setCreating])
 
   const scoped = sessions.filter((s) => s.projectSlug === activeProjectSlug)
+
+  // Auto-select: never show an empty pane when the project has sessions —
+  // pick the first waiting one (else the first visible). Skipped while a
+  // create is provisioning (its placeholder owns the pane and the new id
+  // isn't in the snapshot yet).
+  useEffect(() => {
+    if (!activeProjectSlug || creating) return
+    const visible = scoped.filter((s) => s.status !== 'prewarm' && !pendingDeleteIds.includes(s.sessionId))
+    if (visible.length === 0) return
+    if (selectedSessionId && visible.some((s) => s.sessionId === selectedSessionId)) return
+    const pick = visible.find((s) => s.status === 'waiting') ?? visible[0]
+    selectSession(pick.sessionId)
+  }, [activeProjectSlug, creating, scoped, selectedSessionId, pendingDeleteIds, selectSession])
   // Per-project count of sessions awaiting input → the rail attention badge.
   const attention: Record<string, number> = {}
   for (const s of sessions) {
@@ -105,7 +121,7 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
         attentionBySlug={attention}
         onSelect={setActiveProject}
       />
-      <Sidebar projectSlug={activeProjectSlug} sessions={scoped} connected={connected} />
+      {sidebarOpen && <Sidebar projectSlug={activeProjectSlug} sessions={scoped} connected={connected} />}
       <div className="min-w-0 flex-1 p-2">
         <SessionView snapshot={snapshot} />
       </div>

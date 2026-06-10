@@ -41,6 +41,19 @@ export function leaf(target: string): LayoutNode {
   return { type: 'leaf', target }
 }
 
+/** Structural validation for trees from untrusted storage (localStorage). */
+export function isLayoutNode(v: unknown): v is LayoutNode {
+  if (!v || typeof v !== 'object') return false
+  const n = v as Record<string, unknown>
+  if (n.type === 'leaf') return typeof n.target === 'string' && n.target.length > 0
+  if (n.type === 'split') {
+    return (n.dir === 'row' || n.dir === 'col')
+      && typeof n.ratio === 'number' && n.ratio > 0 && n.ratio < 1
+      && isLayoutNode(n.a) && isLayoutNode(n.b)
+  }
+  return false
+}
+
 /** All pane targets in the tree, left-to-right. */
 export function leafTargets(node: LayoutNode | null): string[] {
   if (!node) return []
