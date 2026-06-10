@@ -1,7 +1,11 @@
-import type { JSX } from 'react'
+import { useState, type JSX } from 'react'
 import clsx from 'clsx'
+import { CloseIcon } from '@/frontend/lib/icons'
 import { NewProjectButton } from '@/frontend/components/NewProjectButton'
 import { SettingsButton } from '@/frontend/components/SettingsButton'
+import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
+import { removeProject } from '@/frontend/lib/projectApi'
+import { useUiStore } from '@/frontend/store'
 import type { ProjectSummary } from '@/shared/types'
 
 /**
@@ -27,7 +31,8 @@ function projectInitial(slug: string): string {
  * Discord/Slack-style left rail of projects — the top-level navigation
  * axis. The active project scopes the sidebar; a project with sessions
  * awaiting input shows an attention badge so "which project needs me" is
- * visible before drilling in.
+ * visible before drilling in. Removing a project lives here too: an × on
+ * the avatar (hover), behind a confirm.
  */
 export function ProjectRail({
   projects,
@@ -40,6 +45,21 @@ export function ProjectRail({
   attentionBySlug: Record<string, number>
   onSelect: (slug: string) => void
 }): JSX.Element {
+  const setActiveProject = useUiStore((s) => s.setActiveProject)
+  const [confirm, setConfirm] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const onConfirmRemove = (slug: string): void => {
+    setBusy(true)
+    void removeProject(slug)
+      .then(() => {
+        if (activeProjectSlug === slug) setActiveProject(null)
+        setConfirm(null)
+      })
+      .catch((e: unknown) => console.error('remove project failed', e))
+      .finally(() => setBusy(false))
+  }
+
   return (
     <div className="flex w-10 shrink-0 flex-col items-center gap-2 py-3">
       {projects.map((p) => {
@@ -47,41 +67,56 @@ export function ProjectRail({
         const color = projectColor(p.slug)
         const waiting = attentionBySlug[p.slug] ?? 0
         return (
-          <button
-            key={p.slug}
-            onClick={() => onSelect(p.slug)}
-            className="group relative flex items-center justify-center"
-            title={p.slug}
-          >
-            <span
-              className={clsx(
-                'absolute left-0 -ml-1.5 w-0.5 rounded-r-full bg-text transition-all',
-                active ? 'h-5' : 'h-0 group-hover:h-3',
-              )}
-            />
-            <span
-              className={clsx(
-                'flex h-7 w-7 items-center justify-center text-[13px] font-semibold transition-all',
-                active ? 'rounded-lg' : 'rounded-2xl group-hover:rounded-lg',
-              )}
-              // Quiet identity treatment: a dark tint of the project hue for
-              // the fill, a light pastel of it for the initial — active just
-              // steps both up rather than going to a loud solid fill.
-              style={{
-                background: active
-                  ? `color-mix(in oklab, ${color} 26%, var(--color-surface-2))`
-                  : `color-mix(in oklab, ${color} 12%, var(--color-surface-2))`,
-                color: active
-                  ? `color-mix(in oklab, ${color} 40%, var(--color-text))`
-                  : `color-mix(in oklab, ${color} 45%, var(--color-text-dim))`,
-              }}
+          <div key={p.slug} className="group relative">
+            <button
+              onClick={() => onSelect(p.slug)}
+              className="relative flex items-center justify-center"
+              title={p.slug}
             >
-              {projectInitial(p.slug)}
-            </span>
-            {waiting > 0 && (
-              <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-amber-500 ring-2 ring-base" />
-            )}
-          </button>
+              <span
+                className={clsx(
+                  'absolute left-0 -ml-1.5 w-0.5 rounded-r-full bg-text transition-all',
+                  active ? 'h-5' : 'h-0 group-hover:h-3',
+                )}
+              />
+              <span
+                className={clsx(
+                  'flex h-7 w-7 items-center justify-center text-[13px] font-semibold transition-all',
+                  active ? 'rounded-lg' : 'rounded-2xl group-hover:rounded-lg',
+                )}
+                // Quiet identity treatment: a dark tint of the project hue for
+                // the fill, a light pastel of it for the initial — active just
+                // steps both up rather than going to a loud solid fill.
+                style={{
+                  background: active
+                    ? `color-mix(in oklab, ${color} 26%, var(--color-surface-2))`
+                    : `color-mix(in oklab, ${color} 12%, var(--color-surface-2))`,
+                  color: active
+                    ? `color-mix(in oklab, ${color} 40%, var(--color-text))`
+                    : `color-mix(in oklab, ${color} 45%, var(--color-text-dim))`,
+                }}
+              >
+                {projectInitial(p.slug)}
+              </span>
+              {waiting > 0 && (
+                <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-amber-500 ring-2 ring-base group-hover:opacity-0" />
+              )}
+            </button>
+
+            {/* Hover ×: remove project (confirmed below). A sibling of the
+                select button — nesting buttons is invalid and would swallow
+                selection clicks. */}
+            <button
+              onClick={() => setConfirm(p.slug)}
+              title={`Remove ${p.slug}`}
+              aria-label={`Remove ${p.slug}`}
+              className="pointer-events-none absolute -right-1 -top-1 z-10 flex h-3.5 w-3.5 items-center
+                justify-center rounded-full bg-surface-3 text-text-dim opacity-0 ring-2 ring-base transition
+                hover:bg-[#c94a4a] hover:text-white group-hover:pointer-events-auto group-hover:opacity-100"
+            >
+              <CloseIcon size={9} />
+            </button>
+          </div>
         )
       })}
 
@@ -89,6 +124,18 @@ export function ProjectRail({
 
       <div className="flex-1" />
       <SettingsButton />
+
+      <ConfirmDialog
+        open={confirm !== null}
+        onOpenChange={(next) => { if (!next) setConfirm(null) }}
+        busy={busy}
+        title="Remove project?"
+        description={confirm
+          ? `Removes "${confirm}" and all its sessions and worktrees. This can't be undone.`
+          : ''}
+        confirmLabel="Remove"
+        onConfirm={() => { if (confirm) onConfirmRemove(confirm) }}
+      />
     </div>
   )
 }

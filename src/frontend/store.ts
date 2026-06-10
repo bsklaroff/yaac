@@ -75,6 +75,10 @@ export interface CreatingSession {
  *  'agent', 'shell:<name>', or 'window:@<id>'. */
 export type TerminalTab = string
 
+/** Top-level phase tab: Plan (wiki docs + grill sessions) or Build (the
+ *  regular session workspace). */
+export type PhaseTab = 'plan' | 'build'
+
 /** Local-only UI state (not daemon state — that lives in the snapshot). */
 interface UiState {
   /** Project whose sessions the sidebar is scoped to (rail selection). */
@@ -89,6 +93,10 @@ interface UiState {
   layouts: Record<string, LayoutNode | null>
   /** Whether the session sidebar is shown. */
   sidebarOpen: boolean
+  /** Top-level Plan | Build tab. */
+  phaseTab: PhaseTab
+  /** Plan tab: selected wiki doc path (page filename), if any. */
+  selectedDocPath: string | null
   /** Tiling WM vs one-at-a-time tabs (persisted; small screens default
    *  to tabs). The layout tree stays canonical in both modes. */
   viewMode: ViewMode
@@ -112,6 +120,8 @@ interface UiState {
    *  helpers in lib/layout). */
   setSessionLayout: (sessionId: string, layout: LayoutNode | null) => void
   toggleSidebar: () => void
+  setPhaseTab: (tab: PhaseTab) => void
+  selectDoc: (path: string | null) => void
   setViewMode: (mode: ViewMode) => void
   setActiveTab: (sessionId: string, target: string) => void
   /** Optimistically hide a session being deleted. */
@@ -132,6 +142,8 @@ export const useUiStore = create<UiState>((set) => ({
   terminalNonces: {},
   layouts: loadPersistedLayouts(),
   sidebarOpen: true,
+  phaseTab: 'build',
+  selectedDocPath: null,
   viewMode: loadViewMode(),
   activeTabs: {},
   creating: null,
@@ -150,6 +162,8 @@ export const useUiStore = create<UiState>((set) => ({
     layouts: { ...s.layouts, [sessionId]: layout },
   })),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
+  setPhaseTab: (tab) => set({ phaseTab: tab }),
+  selectDoc: (path) => set({ selectedDocPath: path }),
   setViewMode: (mode) => {
     persistViewMode(mode)
     set({ viewMode: mode })

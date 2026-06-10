@@ -45,4 +45,26 @@ describe('buildAgentCmd', () => {
       expect(cmd).toBe('CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --resume abc --add-dir /add-dir/tmp')
     })
   })
+
+  describe('seed prompt file (plan-mode sessions)', () => {
+    it('claude and codex take the prompt as a positional $(cat …) arg', () => {
+      expect(buildAgentCmd('claude', 'sid', '', false, '/tmp/yaac-seed-prompt.txt')).toBe(
+        'CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --session-id sid '
+        + '"$(cat /tmp/yaac-seed-prompt.txt)"',
+      )
+      expect(buildAgentCmd('codex', 'sid', '', false, '/tmp/yaac-seed-prompt.txt')).toBe(
+        'codex --yolo "$(cat /tmp/yaac-seed-prompt.txt)"',
+      )
+    })
+
+    it('opencode takes it via --prompt', () => {
+      expect(buildAgentCmd('opencode', 'sid', '', false, '/tmp/yaac-seed-prompt.txt')).toBe(
+        'opencode --port 4096 --hostname 127.0.0.1 --prompt "$(cat /tmp/yaac-seed-prompt.txt)"',
+      )
+    })
+
+    it('omitting the file leaves commands unchanged', () => {
+      expect(buildAgentCmd('claude', 'sid', '')).not.toContain('cat')
+    })
+  })
 })

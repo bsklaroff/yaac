@@ -12,6 +12,8 @@ import {
 import { cleanupSession } from '@/lib/session/cleanup'
 import { getToolFromContainer } from '@/lib/session/status'
 import { createSession, type SessionCreateResult } from '@/daemon/session-create'
+import { loadPlanSessionMeta } from '@/lib/plans/session-meta'
+import { sessionPlansDir } from '@/lib/project/paths'
 import { DaemonError } from '@/daemon/errors'
 import type { AgentTool } from '@/shared/types'
 
@@ -133,6 +135,12 @@ export async function restartSession(
     await cleanupSession({ containerName, projectSlug, sessionId })
   }
 
+  // Plan-mode sessions get their wiki clone re-mounted at /plans (no new
+  // seed prompt — the resumed transcript already carries it).
+  const planMeta = await loadPlanSessionMeta(projectSlug, sessionId)
+  const plansDir = sessionPlansDir(projectSlug, sessionId)
+  const plansDirExists = await fileExists(path.join(plansDir, '.git'))
+
   const result = await createSession(projectSlug, {
     resume: true,
     sessionId,
@@ -141,6 +149,9 @@ export async function restartSession(
     addDirRw: opts.addDirRw,
     gitUser: opts.gitUser,
     onProgress: opts.onProgress,
+    ...(planMeta && plansDirExists
+      ? { plans: { role: planMeta.role, doc: planMeta.doc, hostDir: plansDir } }
+      : {}),
   })
   if (!result) throw new DaemonError('INTERNAL', 'session restart returned no result')
   return result

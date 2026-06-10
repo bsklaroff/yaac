@@ -289,6 +289,39 @@ export interface SessionListEntry {
   /** User-assigned display title (falls back to `prompt` in UIs). */
   title?: string
   blockedHosts: string[]
+  /** Set when this session was spawned by Plan mode ('plan' = grill
+   *  session, 'build' = promoted implementation session). */
+  planRole?: PlanRole
+  /** Wiki page filename this session is working on (when known). */
+  planDoc?: string
+}
+
+// --- plan mode ---
+
+export type PlanPhase = 'plan' | 'build' | 'review'
+export type PlanRole = 'plan' | 'build'
+
+/** One plan document (a page of the project's GitHub wiki). */
+export interface PlanDocEntry {
+  /** Wiki page filename, e.g. 'offline-sync.md'. */
+  path: string
+  title: string
+  phase: PlanPhase
+  /** Session ids recorded in the doc's frontmatter. */
+  sessions: string[]
+  /** mtime (ms) of the freshest copy seen. */
+  updatedAt: number
+  /** Set when the freshest copy is a live session's unpushed working
+   *  tree rather than the daemon's wiki mirror. */
+  draftSessionId?: string
+}
+
+export interface PlansResult {
+  available: boolean
+  /** Human-readable reason when unavailable (no wiki, no remote, …). */
+  reason?: string
+  wikiUrl?: string
+  docs: PlanDocEntry[]
 }
 
 export interface StaleSessionInfo {

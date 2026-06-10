@@ -85,7 +85,7 @@ export function gitEnvForCredential(
   return torEnv()
 }
 
-async function ensureKnownHostsFileForCredential(
+export async function ensureKnownHostsFileForCredential(
   credential: ResolvedGitCredential | null,
 ): Promise<string | undefined> {
   if (credential?.kind !== 'ssh') return undefined

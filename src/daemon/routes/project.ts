@@ -10,8 +10,10 @@ import { writeProjectConfig, removeProjectConfig } from '@/lib/project/local-con
 import { resolveProjectConfig } from '@/lib/project/config'
 import { rebuildProjectImage } from '@/lib/container/image-builder'
 import { toErrorBody } from '@/daemon/errors'
+import { plansApp } from '@/daemon/routes/plans'
 
 export const projectApp = new Hono()
+  .route('/:slug/plans', plansApp)
   .get('/list', async (c) => c.json(await listProjects()))
   .post(
     '/add',

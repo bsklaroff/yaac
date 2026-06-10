@@ -1,11 +1,18 @@
 import { useEffect, useState, type JSX } from 'react'
-import clsx from 'clsx'
 import { useQuery } from '@tanstack/react-query'
-import { Collapsible } from '@base-ui/react/collapsible'
-import { BlockedIcon, ChevronIcon, CloseIcon, LoadingIcon, RestartIcon, TOOL_LABEL } from '@/frontend/lib/icons'
+import { BlockedIcon, CloseIcon, LoadingIcon, RestartIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import { NewSessionButton } from '@/frontend/components/NewSessionButton'
-import { ProjectActionsMenu } from '@/frontend/components/ProjectActionsMenu'
+import { SessionActionsMenu } from '@/frontend/components/SessionActionsMenu'
 import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
+import {
+  SidebarShell,
+  SidebarHeader,
+  SidebarTitle,
+  SidebarBody,
+  SidebarGroup,
+  SidebarRow,
+  SidebarEmpty,
+} from '@/frontend/components/ui/SidebarChrome'
 import { deleteSession, restartSession } from '@/frontend/lib/createSession'
 import { getDeletedSessions } from '@/frontend/lib/deletedApi'
 import { useProvisionSession } from '@/frontend/lib/useProvisionSession'
@@ -60,21 +67,19 @@ export function Sidebar({
     && !(creating.sessionId && shown.some((s) => s.sessionId === creating.sessionId))
 
   return (
-    <aside className="flex h-full w-64 flex-col text-text">
-      <div className="flex h-11 shrink-0 items-center gap-2 pl-4 pr-2">
-        {projectSlug
-          ? <ProjectActionsMenu slug={projectSlug} />
-          : <span className="font-semibold tracking-tight">yaac</span>}
-        <div className="ml-auto flex items-center gap-2">
+    <SidebarShell>
+      <SidebarHeader>
+        <SidebarTitle>Sessions</SidebarTitle>
+        <div className="ml-auto flex items-center gap-1">
           {!connected && <span className="text-xs text-amber-400/80">reconnecting…</span>}
           {projectSlug && <NewSessionButton projectSlug={projectSlug} />}
         </div>
-      </div>
+      </SidebarHeader>
 
-      <div className="flex-1 overflow-y-auto py-1">
-        {!projectSlug && <Empty label="No project selected" />}
+      <SidebarBody>
+        {!projectSlug && <SidebarEmpty>No project selected</SidebarEmpty>}
         {projectSlug && visibleCount === 0 && !showCreating && (
-          <Empty label="No sessions yet — start one with +" />
+          <SidebarEmpty>No sessions yet — start one with +</SidebarEmpty>
         )}
         {showCreating && creating && <CreatingRow creating={creating} />}
         {GROUPS.map((g) => (
@@ -91,8 +96,8 @@ export function Sidebar({
             activeSignature={sessions.map((s) => s.sessionId).sort().join(',')}
           />
         )}
-      </div>
-    </aside>
+      </SidebarBody>
+    </SidebarShell>
   )
 }
 
@@ -150,39 +155,32 @@ function DeletedGroup({
   }
 
   return (
-    <Collapsible.Root open={open} onOpenChange={setOpen} className="py-1">
-      <Collapsible.Trigger className="flex w-full items-center gap-1 px-3 py-1 text-xs font-medium
-        text-text-faint outline-none transition hover:text-text-dim">
-        <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
-        <span>Deleted</span>
-        <span className="text-text-faint/70">{rows.length}</span>
-      </Collapsible.Trigger>
-      <Collapsible.Panel>
+    <>
+      <SidebarGroup label="Deleted" count={rows.length} open={open} onOpenChange={setOpen}>
         {rows.length === 0 && (
           <div className="px-4 py-2 text-xs text-text-faint">No deleted sessions</div>
         )}
         {rows.map((d) => (
-          <button
+          <SidebarRow
             key={d.sessionId}
             onClick={() => setConfirm(d)}
             title="Restart this session"
-            className="group/d mx-2 flex w-[calc(100%-1rem)] flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left
-              text-sm text-text-dim transition hover:bg-surface-2/60 hover:text-text"
+            className="group/d flex-col gap-0.5 text-text-dim hover:text-text"
           >
-            <span className="flex items-center gap-2">
+            <span className="flex w-full items-center gap-2">
               <span className="truncate font-medium">{d.title || d.prompt || 'New session'}</span>
               <RestartIcon
                 size={13}
                 className="ml-auto shrink-0 text-text-faint opacity-0 transition-opacity group-hover/d:opacity-100"
               />
             </span>
-            <span className="flex items-center gap-2 text-xs text-text-faint">
+            <span className="flex w-full items-center gap-2 text-xs text-text-faint">
               <span className="truncate">{relativeAge(d.createdAt)}</span>
               <span className="ml-auto shrink-0">{TOOL_LABEL[d.tool]}</span>
             </span>
-          </button>
+          </SidebarRow>
         ))}
-      </Collapsible.Panel>
+      </SidebarGroup>
 
       <ConfirmDialog
         open={!!confirm}
@@ -195,19 +193,19 @@ function DeletedGroup({
         confirmLabel="Restart"
         onConfirm={() => { if (confirm) onConfirmRestart(confirm) }}
       />
-    </Collapsible.Root>
+    </>
   )
 }
 
 /** Immediate, non-interactive row for a session that's still provisioning. */
 function CreatingRow({ creating }: { creating: CreatingSession }): JSX.Element {
   return (
-    <div className="mx-2 flex flex-col gap-0.5 rounded-lg px-2.5 py-2 text-sm">
-      <span className="flex items-center gap-2">
+    <SidebarRow className="flex-col gap-0.5">
+      <span className="flex w-full items-center gap-2">
         <span className="truncate font-medium text-text-dim">New session</span>
         <span className="ml-auto shrink-0 text-xs text-text-faint">{TOOL_LABEL[creating.tool]}</span>
       </span>
-      <span className="flex items-center gap-1.5 text-xs text-text-faint">
+      <span className="flex w-full items-center gap-1.5 text-xs text-text-faint">
         {creating.error ? (
           <span className="text-[#d65858]">failed</span>
         ) : (
@@ -217,7 +215,7 @@ function CreatingRow({ creating }: { creating: CreatingSession }): JSX.Element {
           </>
         )}
       </span>
-    </div>
+    </SidebarRow>
   )
 }
 
@@ -230,21 +228,12 @@ function SessionGroup({
   sessions: SessionListEntry[]
   defaultOpen: boolean
 }): JSX.Element | null {
-  const [open, setOpen] = useState(defaultOpen)
   if (sessions.length === 0) return null
 
   return (
-    <Collapsible.Root open={open} onOpenChange={setOpen} className="py-1">
-      <Collapsible.Trigger className="flex w-full items-center gap-1 px-3 py-1 text-xs font-medium
-        text-text-faint outline-none transition hover:text-text-dim">
-        <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
-        <span>{label}</span>
-        <span className="text-text-faint/70">{sessions.length}</span>
-      </Collapsible.Trigger>
-      <Collapsible.Panel>
-        {sessions.map((s) => <SessionRow key={s.sessionId} session={s} />)}
-      </Collapsible.Panel>
-    </Collapsible.Root>
+    <SidebarGroup label={label} count={sessions.length} defaultOpen={defaultOpen}>
+      {sessions.map((s) => <SessionRow key={s.sessionId} session={s} />)}
+    </SidebarGroup>
   )
 }
 
@@ -285,23 +274,29 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
   }
 
   return (
-    <div className="group relative mx-2">
-      <button
+    <div className="group relative">
+      <SidebarRow
         onClick={() => selectSession(session.sessionId)}
-        className={clsx(
-          'flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left text-sm transition hover:bg-surface-2/60',
-          selectedSessionId === session.sessionId && 'bg-surface-2 hover:bg-surface-2',
-        )}
+        selected={selectedSessionId === session.sessionId}
+        className="flex-col gap-0.5"
       >
-        <span className="flex items-center gap-2">
+        <span className="flex w-full items-center gap-2">
           <span className="truncate font-medium">{session.title || session.prompt || 'New session'}</span>
           {/* Tool name; on row hover it yields to the delete × in the same spot. */}
           <span className="ml-auto shrink-0 text-xs text-text-faint transition-opacity group-hover:opacity-0">
             {TOOL_LABEL[session.tool]}
           </span>
         </span>
-        <span className="flex items-center gap-2 text-xs text-text-faint">
+        <span className="flex w-full items-center gap-2 text-xs text-text-faint">
           <span className="truncate">{relativeAge(session.createdAt)}</span>
+          {session.planDoc && (
+            <span
+              className="truncate rounded bg-accent/15 px-1.5 text-[10px] leading-4 text-accent"
+              title={`${session.planRole === 'plan' ? 'Planning' : 'Building'} ${session.planDoc}`}
+            >
+              {session.planDoc.replace(/\.md$/, '')}
+            </span>
+          )}
           {session.blockedHosts.length > 0 && (
             <span
               className="ml-auto flex shrink-0 items-center gap-0.5 text-[#d65858]"
@@ -312,20 +307,32 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
             </span>
           )}
         </span>
-      </button>
+      </SidebarRow>
 
-      {/* Overlaid as a sibling (not nested in the row button) and pointer-inert
-          until hover, so it can't swallow clicks meant for selecting the row. */}
-      <button
-        onClick={() => setConfirmDelete(true)}
-        title="Delete session"
-        aria-label="Delete session"
-        className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
-          opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
-          group-hover:pointer-events-auto group-hover:opacity-100"
-      >
-        <CloseIcon size={14} />
-      </button>
+      {/* Overlaid as siblings (not nested in the row button) and pointer-inert
+          until hover, so they can't swallow clicks meant for selecting the
+          row. ⋯ = rename/restart; × = delete. */}
+      <span className="absolute right-4 top-2 flex items-center gap-0.5">
+        <SessionActionsMenu
+          sessionId={session.sessionId}
+          currentTitle={session.title ?? ''}
+          iconSize={14}
+          triggerClassName="flex h-5 w-5 items-center justify-center rounded text-text-faint
+            opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
+            group-hover:pointer-events-auto group-hover:opacity-100
+            data-[popup-open]:pointer-events-auto data-[popup-open]:opacity-100 data-[popup-open]:bg-surface-3"
+        />
+        <button
+          onClick={() => setConfirmDelete(true)}
+          title="Delete session"
+          aria-label="Delete session"
+          className="flex h-5 w-5 items-center justify-center rounded text-text-faint
+            opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
+            group-hover:pointer-events-auto group-hover:opacity-100"
+        >
+          <CloseIcon size={14} />
+        </button>
+      </span>
 
       <ConfirmDialog
         open={confirmDelete}
@@ -339,6 +346,3 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
   )
 }
 
-function Empty({ label }: { label: string }): JSX.Element {
-  return <div className="px-4 py-2 text-sm text-text-faint">{label}</div>
-}

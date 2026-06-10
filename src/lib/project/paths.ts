@@ -150,6 +150,26 @@ export function sessionTmuxSockPath(slug: string, sessionId: string): string {
   return path.join(sessionTmuxDir(slug, sessionId), 'server')
 }
 
+/**
+ * Daemon-owned read-only clone of the project's GitHub wiki
+ * (`<repo>.wiki.git`). Used to list/render plan docs and to perform the
+ * promote frontmatter flip; never written by sessions (each session gets
+ * its own clone, see `sessionPlansDir`).
+ */
+export function plansMirrorDir(slug: string): string {
+  return path.join(projectDir(slug), 'plans-mirror')
+}
+
+/**
+ * Per-session wiki clone, bind-mounted into the container at /plans.
+ * The in-container agent commits and pushes it itself (git-native sync);
+ * a separate clone per session keeps concurrent sessions from racing on
+ * one working tree.
+ */
+export function sessionPlansDir(slug: string, sessionId: string): string {
+  return path.join(projectDir(slug), 'sessions', sessionId, 'plans')
+}
+
 export function blockedHostsDir(slug: string): string {
   return path.join(projectDir(slug), 'blocked-hosts')
 }

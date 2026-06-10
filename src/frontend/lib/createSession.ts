@@ -19,7 +19,7 @@ type StreamEvent =
  * progress → result → error). Calls `onProgress` per step; resolves with
  * the final result object or throws the daemon's error message.
  */
-async function streamSessionOp(
+export async function streamSessionOp(
   path: string,
   body: unknown,
   onProgress: (message: string) => void,

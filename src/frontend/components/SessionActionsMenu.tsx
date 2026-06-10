@@ -3,6 +3,7 @@ import clsx from 'clsx'
 import { Menu } from '@base-ui/react/menu'
 import { MoreIcon, RenameIcon, RestartIcon } from '@/frontend/lib/icons'
 import { InputDialog } from '@/frontend/components/ui/InputDialog'
+import { barIconButtonClass } from '@/frontend/components/ui/WorkspaceBar'
 import { renameSession, restartSession } from '@/frontend/lib/createSession'
 import { useUiStore } from '@/frontend/store'
 
@@ -16,9 +17,15 @@ const ITEM = 'flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text
 export function SessionActionsMenu({
   sessionId,
   currentTitle = '',
+  triggerClassName,
+  iconSize = 16,
 }: {
   sessionId: string
   currentTitle?: string
+  /** Override the trigger button's classes (e.g. the sidebar row's
+   *  hover-revealed variant). */
+  triggerClassName?: string
+  iconSize?: number
 }): JSX.Element {
   const reconnectTerminal = useUiStore((s) => s.reconnectTerminal)
   const [renaming, setRenaming] = useState(false)
@@ -37,9 +44,12 @@ export function SessionActionsMenu({
   return (
     <>
       <Menu.Root>
-        <Menu.Trigger className="flex h-6 w-6 items-center justify-center rounded text-text-dim transition
-          hover:bg-surface-2 hover:text-text">
-          <MoreIcon size={16} />
+        <Menu.Trigger
+          title="Session actions"
+          aria-label="Session actions"
+          className={triggerClassName ?? barIconButtonClass('dim')}
+        >
+          <MoreIcon size={iconSize} />
         </Menu.Trigger>
         <Menu.Portal>
           <Menu.Positioner side="bottom" align="end" sideOffset={6}>

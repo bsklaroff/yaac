@@ -4,6 +4,7 @@ import { Dialog } from '@base-ui/react/dialog'
 import { Radio } from '@base-ui/react/radio'
 import { RadioGroup } from '@base-ui/react/radio-group'
 import { CloseIcon, GeneralIcon, KeyIcon, SettingsIcon, TOOL_LABEL } from '@/frontend/lib/icons'
+import { barIconButtonClass } from '@/frontend/components/ui/WorkspaceBar'
 import { addGitCredential, getAuthList, getDefaultTool, setDefaultTool } from '@/frontend/lib/settingsApi'
 import type { AgentTool, AuthListResult } from '@/shared/types'
 
@@ -80,8 +81,10 @@ export function SettingsButton(): JSX.Element {
 
           {/* Content */}
           <div className="relative min-w-0 flex-1 overflow-y-auto p-6">
-            <Dialog.Close className="absolute right-3 top-3 flex h-6 w-6 items-center justify-center rounded
-              text-text-faint transition hover:bg-surface-2 hover:text-text" aria-label="Close settings">
+            <Dialog.Close
+              className={clsx(barIconButtonClass('faint'), 'absolute right-3 top-3')}
+              aria-label="Close settings"
+            >
               <CloseIcon size={14} />
             </Dialog.Close>
 

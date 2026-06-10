@@ -83,6 +83,21 @@ describe('selection + project switching', () => {
   })
 })
 
+describe('phase tabs (plan vs build)', () => {
+  it('defaults to build and switches via setPhaseTab', () => {
+    expect(useUiStore.getState().phaseTab).toBe('build')
+    useUiStore.getState().setPhaseTab('plan')
+    expect(useUiStore.getState().phaseTab).toBe('plan')
+  })
+
+  it('selectDoc tracks the selected wiki page (null clears it)', () => {
+    useUiStore.getState().selectDoc('offline-sync.md')
+    expect(useUiStore.getState().selectedDocPath).toBe('offline-sync.md')
+    useUiStore.getState().selectDoc(null)
+    expect(useUiStore.getState().selectedDocPath).toBeNull()
+  })
+})
+
 describe('view mode (tiles vs tabs)', () => {
   afterEach(() => {
     delete (globalThis as Record<string, unknown>).localStorage

@@ -1,6 +1,8 @@
 import { type JSX } from 'react'
+import clsx from 'clsx'
 import { Menu } from '@base-ui/react/menu'
 import { AddIcon, TOOL_LABEL } from '@/frontend/lib/icons'
+import { barIconButtonClass } from '@/frontend/components/ui/WorkspaceBar'
 import { createSession } from '@/frontend/lib/createSession'
 import { useProvisionSession } from '@/frontend/lib/useProvisionSession'
 import type { AgentTool } from '@/shared/types'
@@ -26,8 +28,8 @@ export function NewSessionButton({ projectSlug }: { projectSlug: string }): JSX.
     <Menu.Root>
       <Menu.Trigger
         title="New session"
-        className="flex h-5 w-5 items-center justify-center rounded text-text-dim transition hover:bg-surface-2
-          hover:text-accent data-[popup-open]:bg-surface-2 data-[popup-open]:text-accent"
+        aria-label="New session"
+        className={clsx(barIconButtonClass('faint'), 'data-[popup-open]:bg-surface-2 data-[popup-open]:text-text-dim')}
       >
         <AddIcon size={14} />
       </Menu.Trigger>

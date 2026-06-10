@@ -4,9 +4,14 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Menu } from '@base-ui/react/menu'
 import { useUiStore } from '@/frontend/store'
 import { SessionTerminal } from '@/frontend/components/SessionTerminal'
-import { SessionActionsMenu } from '@/frontend/components/SessionActionsMenu'
+import { Pane, PaneHeader, PaneTitle, TerminalBlock } from '@/frontend/components/ui/Pane'
+import {
+  WorkspaceBar,
+  BarIconButton,
+  barIconButtonClass,
+} from '@/frontend/components/ui/WorkspaceBar'
 import { CreatingPlaceholder } from '@/frontend/components/CreatingPlaceholder'
-import { AddIcon, BlockedIcon, CloseIcon, SidebarIcon, SplitDownIcon, SplitRightIcon, TabsIcon, TilesIcon, TOOL_LABEL } from '@/frontend/lib/icons'
+import { AddIcon, BlockedIcon, CloseIcon, SidebarIcon, SplitDownIcon, SplitRightIcon, TabsIcon, TilesIcon } from '@/frontend/lib/icons'
 import { getSessionTerminals, closeSessionTerminal, nextShellName } from '@/frontend/lib/terminalsApi'
 import {
   computeLayout,
@@ -44,32 +49,80 @@ interface DragState {
   over?: { dest: string; edge: DropEdge }
 }
 
-function paneName(target: string, terminals: SessionTerminalEntry[] | undefined): string {
+/** A non-terminal pane an embedding view contributes to the workspace —
+ *  e.g. the Plan tab's rendered doc. It participates in the layout tree
+ *  (split/drag/tab) like any terminal; only its body differs. */
+export interface ExtraPane {
+  target: string
+  name: string
+  render: () => ReactNode
+  /** Pane-level actions (always visible): rendered in the pane header in
+   *  tiles mode and at the end of the tab strip when active in tabs mode. */
+  actions?: ReactNode
+}
+
+function paneName(
+  target: string,
+  terminals: SessionTerminalEntry[] | undefined,
+  extraPanes?: ExtraPane[],
+): string {
+  const extra = extraPanes?.find((p) => p.target === target)
+  if (extra) return extra.name
   if (target === 'agent') return 'Agent'
   if (target.startsWith('shell:')) return target.slice('shell:'.length)
   const entry = terminals?.find((t) => t.target === target)
   return entry?.name ?? 'window'
 }
 
-export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined }): JSX.Element {
+export function SessionView({
+  snapshot,
+  sessionIdOverride,
+  hideBar = false,
+  layoutKey,
+  defaultLayout,
+  extraPanes = [],
+}: {
+  snapshot: DaemonSnapshot | undefined
+  /** Pin the workspace to a specific session instead of the sidebar
+   *  selection (the Plan tab embeds the WM for its grill session). */
+  sessionIdOverride?: string
+  /** Omit the session bar — the embedding view brings its own. */
+  hideBar?: boolean
+  /** Store key for the layout tree (defaults to the session id). The Plan
+   *  tab namespaces its key so its doc+agent arrangement doesn't leak into
+   *  the Build tab's workspace for the same session. */
+  layoutKey?: string
+  /** Tree to use before the user has arranged anything (default: a single
+   *  agent pane). */
+  defaultLayout?: LayoutNode
+  /** Non-terminal panes contributed by the embedding view. */
+  extraPanes?: ExtraPane[]
+}): JSX.Element {
   const selectedSessionId = useUiStore((s) => s.selectedSessionId)
   const terminalNonces = useUiStore((s) => s.terminalNonces)
   const layouts = useUiStore((s) => s.layouts)
   const setSessionLayout = useUiStore((s) => s.setSessionLayout)
+  const sidebarOpen = useUiStore((s) => s.sidebarOpen)
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
   const viewMode = useUiStore((s) => s.viewMode)
   const setViewMode = useUiStore((s) => s.setViewMode)
   const activeTabs = useUiStore((s) => s.activeTabs)
   const setActiveTab = useUiStore((s) => s.setActiveTab)
-  const creating = useUiStore((s) => s.creating)
+  const storeCreating = useUiStore((s) => s.creating)
+  // The provisioning placeholder belongs to the Build tab's selection flow;
+  // an embedded (pinned) workspace has its own spawn UI.
+  const creating = sessionIdOverride ? null : storeCreating
   const queryClient = useQueryClient()
   const sessions = snapshot?.sessions ?? []
-  const session = sessions.find((s) => s.sessionId === selectedSessionId)
+  const session = sessions.find((s) => s.sessionId === (sessionIdOverride ?? selectedSessionId))
   const sid = session?.sessionId ?? null
+  const lkey = sid ? (layoutKey ?? sid) : null
+  const baseLayout = defaultLayout ?? leaf('agent')
+  const extraTargets = new Set(extraPanes.map((p) => p.target))
 
-  // The session's workspace tree: missing key = the default single agent
-  // pane; null = explicitly emptied.
-  const layout: LayoutNode | null = sid ? (sid in layouts ? layouts[sid] : leaf('agent')) : null
+  // The session's workspace tree: missing key = the default tree; null =
+  // explicitly emptied.
+  const layout: LayoutNode | null = lkey ? (lkey in layouts ? layouts[lkey] : baseLayout) : null
 
   // The container's terminals beyond the agent (initCommands windows and
   // scratch shells) — powers the add-terminal menus and pane names.
@@ -106,15 +159,19 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
   panesRef.current = panes
 
   // Keep-alive: every session|target ever shown stays mounted (hidden) so
-  // switching back is instant. Panes closed explicitly are dropped.
+  // switching back is instant. Panes closed explicitly are dropped. Extra
+  // (non-terminal) panes have no connection to keep alive.
   const [opened, setOpened] = useState<string[]>([])
   useEffect(() => {
     if (!sid || !layout) return
-    const keys = leafTargets(layout).map((t) => `${sid}|${t}`)
+    const keys = leafTargets(layout)
+      .filter((t) => !extraTargets.has(t))
+      .map((t) => `${sid}|${t}`)
     setOpened((prev) => {
       const fresh = keys.filter((k) => !prev.includes(k))
       return fresh.length ? [...prev, ...fresh] : prev
     })
+    // (extraTargets is per-render derived state; sid+layout cover it.)
   }, [sid, layout])
 
   const liveIds = new Set(sessions.map((s) => s.sessionId))
@@ -128,11 +185,11 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
    *  workspace). New shells get the next free name and exist lazily on
    *  first attach. */
   const openTerminal = (pick: AddPick, onto?: { target: string; dir: SplitDir }): void => {
-    if (!sid) return
+    if (!lkey) return
     const target = pick.kind === 'existing' ? pick.target : `shell:${nextShellName(terminals ?? [])}`
     if (pick.kind === 'new-shell') setTimeout(refetchTerminals, 1000)
     if (!layout) {
-      setSessionLayout(sid, leaf(target))
+      setSessionLayout(lkey, leaf(target))
       return
     }
     if (leafTargets(layout).includes(target)) return
@@ -141,14 +198,14 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
       const largest = [...panes].sort((a, b) => b.rect.w * b.rect.h - a.rect.w * a.rect.h)[0]
       anchor = largest?.target ?? leafTargets(layout)[0]
     }
-    setSessionLayout(sid, splitLeaf(layout, anchor, target, onto?.dir ?? 'row'))
+    setSessionLayout(lkey, splitLeaf(layout, anchor, target, onto?.dir ?? 'row'))
   }
 
   /** Close a pane. Scratch shells are also killed (they're disposable);
    *  agent/window panes just leave the workspace. */
   const closePane = (target: string): void => {
-    if (!sid || !layout) return
-    setSessionLayout(sid, removeLeaf(layout, target))
+    if (!sid || !lkey || !layout) return
+    setSessionLayout(lkey, removeLeaf(layout, target))
     setOpened((prev) => prev.filter((k) => k !== `${sid}|${target}`))
     if (target.startsWith('shell:')) {
       void closeSessionTerminal(sid, target)
@@ -160,18 +217,18 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
   // --- divider drag ---
   const onDividerDown = (e: ReactPointerEvent, path: string, dir: SplitDir, box: { x: number; y: number; w: number; h: number }): void => {
     e.preventDefault()
-    if (!sid) return
+    if (!lkey) return
     const ws = wsRef.current
     if (!ws) return
     const wsRect = ws.getBoundingClientRect()
     const onMove = (ev: globalThis.PointerEvent): void => {
       const cur = useUiStore.getState()
-      const node = sid in cur.layouts ? cur.layouts[sid] : leaf('agent')
+      const node = lkey in cur.layouts ? cur.layouts[lkey] : baseLayout
       if (!node) return
       const pos = dir === 'row' ? ev.clientX - wsRect.left - box.x : ev.clientY - wsRect.top - box.y
       const total = dir === 'row' ? box.w : box.h
       if (total <= 0) return
-      cur.setSessionLayout(sid, setRatioAt(node, path, pos / total))
+      cur.setSessionLayout(lkey, setRatioAt(node, path, pos / total))
     }
     const onUp = (): void => {
       window.removeEventListener('pointermove', onMove)
@@ -190,7 +247,7 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
     // Buttons inside the header (split/close) handle their own clicks.
     if ((e.target as HTMLElement).closest('button')) return
     e.preventDefault()
-    if (!sid) return
+    if (!lkey) return
     const ws = wsRef.current
     if (!ws) return
     const wsRect = ws.getBoundingClientRect()
@@ -224,9 +281,9 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
       setDrag(null)
       if (!d?.active || !d.over) return
       const cur = useUiStore.getState()
-      const node = sid in cur.layouts ? cur.layouts[sid] : leaf('agent')
+      const node = lkey in cur.layouts ? cur.layouts[lkey] : baseLayout
       if (!node) return
-      cur.setSessionLayout(sid, moveLeaf(node, d.src, d.over.dest, d.over.edge))
+      cur.setSessionLayout(lkey, moveLeaf(node, d.src, d.over.dest, d.over.edge))
     }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
@@ -235,6 +292,9 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
   // Items offered by the add-terminal menus: anything not already open.
   const openTargets = new Set(layout ? leafTargets(layout) : [])
   const addItems: { target: string; name: string }[] = [
+    ...extraPanes
+      .filter((p) => !openTargets.has(p.target))
+      .map((p) => ({ target: p.target, name: p.name })),
     ...(!openTargets.has('agent') && session ? [{ target: 'agent', name: 'Agent' }] : []),
     ...(terminals ?? [])
       .filter((t) => !openTargets.has(t.target))
@@ -251,43 +311,32 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
   return (
     <main className="flex h-full min-w-0 flex-col">
       {/* Slim session bar on the base layer — the panes are the cards. */}
-      {creating ? (
-        <header className="flex h-8 shrink-0 items-center gap-2.5 px-2 text-xs">
-          <button
-            onClick={toggleSidebar}
-            title="Toggle sidebar"
-            aria-label="Toggle sidebar"
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
-              hover:bg-surface-2 hover:text-text-dim"
-          >
-            <SidebarIcon size={14} />
-          </button>
-          <span className="min-w-0 flex-1 truncate font-medium text-text-dim">New session</span>
-          <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[creating.tool]}</span>
-        </header>
+      {hideBar ? null : creating ? (
+        <WorkspaceBar>
+          {!sidebarOpen && (
+            <BarIconButton title="Open sidebar" onClick={toggleSidebar}>
+              <SidebarIcon size={14} />
+            </BarIconButton>
+          )}
+          <span className="flex-1" />
+        </WorkspaceBar>
       ) : session ? (
-        <header className="flex h-8 shrink-0 items-center gap-2.5 px-2 text-xs">
-          <button
-            onClick={toggleSidebar}
-            title="Toggle sidebar"
-            aria-label="Toggle sidebar"
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
-              hover:bg-surface-2 hover:text-text-dim"
-          >
-            <SidebarIcon size={14} />
-          </button>
-          <span className="min-w-0 flex-1 truncate font-medium text-text">
-            {session.title || session.prompt || 'New session'}
-          </span>
-          <button
-            onClick={() => setViewMode(tiled ? 'tabs' : 'tiles')}
+        <WorkspaceBar>
+          {!sidebarOpen && (
+            <BarIconButton title="Open sidebar" onClick={toggleSidebar}>
+              <SidebarIcon size={14} />
+            </BarIconButton>
+          )}
+          {/* No title/tool here — the sidebar already names the selected
+              session; the bar is just workspace controls. */}
+          <span className="flex-1" />
+          <BarIconButton
+            tone="dim"
             title={tiled ? 'Switch to tabs' : 'Switch to tiles'}
-            aria-label={tiled ? 'Switch to tabs' : 'Switch to tiles'}
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-dim transition
-              hover:bg-surface-2 hover:text-text"
+            onClick={() => setViewMode(tiled ? 'tabs' : 'tiles')}
           >
             {tiled ? <TabsIcon size={13} /> : <TilesIcon size={13} />}
-          </button>
+          </BarIconButton>
           <AddTerminalMenu
             items={addItems}
             onPick={(pick) => openTerminal(pick)}
@@ -295,14 +344,15 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
               <Menu.Trigger
                 title="Add terminal"
                 aria-label="Add terminal"
-                className="flex h-6 w-6 items-center justify-center rounded text-text-dim transition
-                  hover:bg-surface-2 hover:text-text data-[popup-open]:bg-surface-2 data-[popup-open]:text-text"
+                className={clsx(
+                  barIconButtonClass('dim'),
+                  'data-[popup-open]:bg-surface-2 data-[popup-open]:text-text',
+                )}
               >
                 <AddIcon size={14} />
               </Menu.Trigger>
             }
           />
-          <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[session.tool]}</span>
           {session.blockedHosts.length > 0 && (
             <span
               className="flex shrink-0 items-center gap-0.5 text-xs text-[#d65858]"
@@ -312,20 +362,15 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
               {session.blockedHosts.length}
             </span>
           )}
-          <SessionActionsMenu sessionId={session.sessionId} currentTitle={session.title ?? ''} />
-        </header>
+        </WorkspaceBar>
       ) : (
-        <header className="flex h-8 shrink-0 items-center px-2">
-          <button
-            onClick={toggleSidebar}
-            title="Toggle sidebar"
-            aria-label="Toggle sidebar"
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
-              hover:bg-surface-2 hover:text-text-dim"
-          >
-            <SidebarIcon size={14} />
-          </button>
-        </header>
+        <WorkspaceBar>
+          {!sidebarOpen && (
+            <BarIconButton title="Open sidebar" onClick={toggleSidebar}>
+              <SidebarIcon size={14} />
+            </BarIconButton>
+          )}
+        </WorkspaceBar>
       )}
 
       <div ref={wsRef} className="relative min-h-0 flex-1">
@@ -335,23 +380,18 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
 
         {/* Pane cards (chrome) for the selected session — tiles mode. */}
         {session && tiled && panes.map(({ target, rect }) => (
-          <section
+          <Pane
             key={target}
             style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}
-            className={clsx(
-              'absolute flex flex-col overflow-hidden rounded-lg border border-white/[0.06] bg-surface',
-              'shadow-[0_8px_24px_rgba(0,0,0,0.45)]',
-              drag?.active && drag.src === target && 'opacity-60',
-            )}
+            className={clsx('absolute', drag?.active && drag.src === target && 'opacity-60')}
           >
-            <div
+            <PaneHeader
               onPointerDown={(e) => onHeaderDown(e, target)}
-              style={{ height: HEADER_H }}
-              className="group/pane flex shrink-0 cursor-grab select-none items-center gap-1.5 px-2.5 active:cursor-grabbing"
+              className="group/pane cursor-grab select-none active:cursor-grabbing"
             >
-              <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-text-dim">
-                {paneName(target, terminals)}
-              </span>
+              <PaneTitle>{paneName(target, terminals, extraPanes)}</PaneTitle>
+              {/* Hover-revealed WM controls sit left of the always-visible
+                  pane actions, so the actions stay anchored at the edge. */}
               <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/pane:opacity-100">
                 <AddTerminalMenu
                   items={addItems}
@@ -359,7 +399,7 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
                   trigger={
                     <Menu.Trigger
                       title="Split right"
-                      aria-label={`Split ${paneName(target, terminals)} right`}
+                      aria-label={`Split ${paneName(target, terminals, extraPanes)} right`}
                       className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
                         hover:bg-surface-2 hover:text-text"
                     >
@@ -373,7 +413,7 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
                   trigger={
                     <Menu.Trigger
                       title="Split down"
-                      aria-label={`Split ${paneName(target, terminals)} down`}
+                      aria-label={`Split ${paneName(target, terminals, extraPanes)} down`}
                       className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
                         hover:bg-surface-2 hover:text-text"
                     >
@@ -384,40 +424,49 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
                 <button
                   onClick={() => closePane(target)}
                   title="Close pane"
-                  aria-label={`Close ${paneName(target, terminals)}`}
+                  aria-label={`Close ${paneName(target, terminals, extraPanes)}`}
                   className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
                     hover:bg-surface-2 hover:text-text"
                 >
                   <CloseIcon size={11} />
                 </button>
               </span>
-            </div>
-          </section>
+              {extraPanes.find((p) => p.target === target)?.actions}
+            </PaneHeader>
+            {/* Non-terminal panes render their body in the card itself;
+                terminal bodies are the kept-alive overlays below. */}
+            {extraTargets.has(target) && (
+              <div className="min-h-0 flex-1 overflow-hidden">
+                {extraPanes.find((p) => p.target === target)?.render()}
+              </div>
+            )}
+          </Pane>
         ))}
 
         {/* Tabs mode: one full-bleed card; the strip switches between the
             same layout-tree leaves the tiles mode arranges spatially. */}
         {session && !tiled && targets.length > 0 && (
-          <section className="absolute inset-0 flex flex-col overflow-hidden rounded-lg border
-            border-white/[0.06] bg-surface shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
-            <div style={{ height: HEADER_H }} className="flex shrink-0 items-center gap-0.5 px-1.5">
+          <Pane className="absolute inset-0">
+            <PaneHeader padded={false} className="gap-0.5 px-1.5">
               {targets.map((t) => (
                 <span key={t} className="group/tab relative flex items-center">
                   <button
                     onClick={() => setActiveTab(session.sessionId, t)}
                     className={clsx(
-                      'rounded px-2 py-0.5 pr-5 text-[11px] transition',
+                      // font-medium on every state: weight only on the active
+                      // tab changes the text width and makes the strip jump.
+                      'rounded px-2 py-0.5 pr-5 text-[11px] font-medium transition',
                       activeTab === t
-                        ? 'bg-surface-3 font-medium text-text'
+                        ? 'bg-surface-3 text-text'
                         : 'text-text-faint hover:text-text-dim',
                     )}
                   >
-                    {paneName(t, terminals)}
+                    {paneName(t, terminals, extraPanes)}
                   </button>
                   <button
                     onClick={() => closePane(t)}
-                    title={`Close ${paneName(t, terminals)}`}
-                    aria-label={`Close ${paneName(t, terminals)}`}
+                    title={`Close ${paneName(t, terminals, extraPanes)}`}
+                    aria-label={`Close ${paneName(t, terminals, extraPanes)}`}
                     className="absolute right-0.5 flex h-4 w-4 items-center justify-center rounded
                       text-text-faint opacity-0 transition hover:text-text group-hover/tab:opacity-100"
                   >
@@ -439,8 +488,18 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
                   </Menu.Trigger>
                 }
               />
-            </div>
-          </section>
+              {activeTab && (
+                <span className="ml-auto flex shrink-0 items-center pr-1">
+                  {extraPanes.find((p) => p.target === activeTab)?.actions}
+                </span>
+              )}
+            </PaneHeader>
+            {activeTab && extraTargets.has(activeTab) && (
+              <div className="min-h-0 flex-1 overflow-hidden">
+                {extraPanes.find((p) => p.target === activeTab)?.render()}
+              </div>
+            )}
+          </Pane>
         )}
 
         {/* Empty workspace: offer to add the first terminal. */}
@@ -487,9 +546,9 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
               style={style}
               className={clsx('absolute', !style && 'invisible left-0 top-0 h-full w-full')}
             >
-              <div className="h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">
+              <TerminalBlock>
                 <SessionTerminal key={`${key}:${terminalNonces[id] ?? 0}`} sessionId={id} target={target} />
-              </div>
+              </TerminalBlock>
             </div>
           )
         })}

@@ -72,11 +72,14 @@ import {
   provisionSessionForwarders,
   registerSessionForwarders,
 } from '@/lib/session/port-forwarders'
-import type { AgentTool, PortMapping, YaacConfig, InitCommandSpec } from '@/shared/types'
+import type { AgentTool, PlanRole, PortMapping, YaacConfig, InitCommandSpec } from '@/shared/types'
 
 export function shellEscape(str: string): string {
   return str.replace(/'/g, "'\\''")
 }
+
+/** In-container path component for the plan-mode seed prompt (under /tmp). */
+export const SEED_PROMPT_FILE_NAME = 'yaac-seed-prompt.txt'
 
 export interface InitWindow {
   name: string
@@ -153,12 +156,18 @@ export function buildAgentCmd(
   sessionId: string,
   addDirFlags: string,
   resume = false,
+  seedPromptFile?: string,
 ): string {
+  // Plan-mode sessions start the agent with an initial prompt. The text
+  // is shipped into the container as a file (no shell-quoting hazards in
+  // the tmux command string) and expanded by the in-container shell.
+  const seed = seedPromptFile ? `"$(cat ${seedPromptFile})"` : ''
   if (tool === 'codex') {
     return [
       'codex --yolo',
       resume ? `resume ${sessionId}` : '',
       addDirFlags,
+      seed,
     ].filter(Boolean).join(' ')
   }
   if (tool === 'opencode') {
@@ -172,12 +181,14 @@ export function buildAgentCmd(
       'opencode',
       '--port 4096 --hostname 127.0.0.1',
       resume ? '--continue' : '',
+      seed ? `--prompt ${seed}` : '',
     ].filter(Boolean).join(' ')
   }
   return [
     'CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions',
     resume ? `--resume ${sessionId}` : `--session-id ${sessionId}`,
     addDirFlags,
+    seed,
   ].filter(Boolean).join(' ')
 }
 
@@ -318,6 +329,22 @@ export interface SessionCreateOptions {
    * and stream-picker callers omit this.
    */
   onProgress?: (message: string) => void
+  /**
+   * Plan-mode session: mounts the per-session wiki clone at /plans and
+   * starts the agent with a seed prompt (grill interview or "implement
+   * the plan"). The plans route prepares `hostDir` (the clone) before
+   * calling createSession.
+   */
+  plans?: {
+    role: PlanRole
+    /** Wiki page filename this session works on. */
+    doc: string
+    /** Initial agent prompt, shipped into the container as a file.
+     *  Omitted on restart — the resumed transcript already has it. */
+    seedPrompt?: string
+    /** Host path of the session's wiki clone (bind-mounted at /plans). */
+    hostDir: string
+  }
 }
 
 export interface SessionCreateResult {
@@ -399,6 +426,10 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
       'yaac.data-dir': getDataDir(),
       'yaac.proxy-container': proxyClient.containerName,
       'yaac.tool': tool,
+      ...(options.plans ? {
+        'yaac.plans-role': options.plans.role,
+        'yaac.plans-doc': options.plans.doc,
+      } : {}),
     },
     Env: env,
     HostConfig: {
@@ -433,6 +464,7 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
               `${projectImageCacheVolumeName(projectSlug)}:${SHARED_IMAGE_STORE_PATH}:Z`,
             ]
           : []),
+        ...(options.plans ? [`${options.plans.hostDir}:/plans:Z`] : []),
         ...extraBinds,
       ],
       NetworkMode: networkMode,
@@ -500,12 +532,32 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
   await containerExec(containerName, 'git config --global --add safe.directory /workspace')
   await containerExec(containerName, 'git config --global --add safe.directory /repo')
 
+  // Plan-mode: the wiki clone mount was created by the daemon process, so
+  // hand it to the in-container user, mark it safe for git, and ship the
+  // seed prompt as a file (read by the agent command via $(cat ...)).
+  // Runs after the gitdir fix above — any in-container git invocation
+  // from /workspace explodes while /workspace/.git still points at the
+  // host-side worktree path.
+  if (options.plans) {
+    await containerExecRoot(containerName, 'chown -R yaac:yaac /plans')
+    await containerExec(containerName, 'git config --global --add safe.directory /plans')
+    if (options.plans.seedPrompt) {
+      const seedArchive = await packTar([
+        { name: SEED_PROMPT_FILE_NAME, content: options.plans.seedPrompt },
+      ])
+      await containerRef.putArchive(seedArchive, { path: '/tmp' })
+    }
+  }
+
   // Start the agent tool in a tmux session
   const addDirFlags = [...(options.addDir ?? []), ...(options.addDirRw ?? [])]
     .map((p) => `--add-dir /add-dir${shellEscape(p)}`)
     .join(' ')
 
-  const agentCmd = buildAgentCmd(tool, sessionId, addDirFlags, options.resume === true)
+  const agentCmd = buildAgentCmd(
+    tool, sessionId, addDirFlags, options.resume === true,
+    options.plans?.seedPrompt ? `/tmp/${SEED_PROMPT_FILE_NAME}` : undefined,
+  )
   const toolLabel =
     tool === 'codex' ? 'Codex' :
     tool === 'opencode' ? 'OpenCode' :
@@ -627,9 +679,11 @@ export async function createSession(
   // Skip when resuming: the caller has a specific sessionId and worktree
   // to reuse.
   // claimPrewarmSession checks that the requested tool matches the prewarmed tool.
+  // Plan-mode sessions can't claim either: prewarmed containers lack the
+  // /plans mount and never got a seed prompt.
   const tool: AgentTool = options.tool ?? 'claude'
   const hasAddDir = (options.addDir?.length ?? 0) > 0 || (options.addDirRw?.length ?? 0) > 0
-  const canClaim = !options.createPrewarm && !hasAddDir && !options.resume
+  const canClaim = !options.createPrewarm && !hasAddDir && !options.resume && !options.plans
   const claimed = canClaim ? await claimPrewarmSession(projectSlug, tool) : null
   if (claimed) {
     emit(`Claiming prewarmed session ${claimed.sessionId.slice(0, 8)}...`, options)

@@ -181,6 +181,7 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
         isPrewarmSession(slug, sessionId),
         readBlockedHosts(slug, sessionId),
       ])
+      const planRole = c.Labels?.['yaac.plans-role']
       return {
         sessionId,
         projectSlug: slug,
@@ -190,6 +191,10 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
         prompt,
         title: titlesBySlug.get(slug)?.[sessionId],
         blockedHosts,
+        ...(planRole === 'plan' || planRole === 'build' ? {
+          planRole,
+          planDoc: c.Labels?.['yaac.plans-doc'],
+        } : {}),
       }
     }),
   )
