@@ -127,6 +127,30 @@ export function moveLeaf(node: LayoutNode, src: string, dest: string, edge: Drop
   return splitLeaf(without, dest, src, dir, after)
 }
 
+/**
+ * Move the `src` pane to a workspace edge: it becomes one half of a new
+ * root split (full height for left/right, full width for top/bottom), with
+ * the rest of the layout as the other half. No-op if src is the only pane.
+ */
+export function moveLeafToRoot(
+  node: LayoutNode,
+  src: string,
+  edge: Exclude<DropEdge, 'center'>,
+): LayoutNode {
+  if (!leafTargets(node).includes(src)) return node
+  const without = removeLeaf(node, src)
+  if (!without) return node
+  const dir: SplitDir = edge === 'left' || edge === 'right' ? 'row' : 'col'
+  const after = edge === 'right' || edge === 'bottom'
+  return {
+    type: 'split',
+    dir,
+    ratio: 0.5,
+    a: after ? without : leaf(src),
+    b: after ? leaf(src) : without,
+  }
+}
+
 /** Partition `rect` by the tree, leaving `gap` px between panes. Returns
  *  every pane's rect and every divider's hit area. */
 export function computeLayout(

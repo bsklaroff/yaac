@@ -15,6 +15,7 @@ import {
   leaf,
   leafTargets,
   moveLeaf,
+  moveLeafToRoot,
   removeLeaf,
   setRatioAt,
   splitLeaf,
@@ -33,15 +34,35 @@ const HEADER_H = 28
 const PAD = 3
 /** Pointer must travel this far before a header-drag becomes a move. */
 const DRAG_THRESHOLD = 5
+/** Dragging within this many px of a workspace edge targets the ROOT —
+ *  dropping there gives the pane a full-height/width half of the whole
+ *  workspace instead of splitting an individual pane. */
+const ROOT_EDGE_MARGIN = 28
 
 type AddPick = { kind: 'existing'; target: string } | { kind: 'new-shell' }
+
+type DropTarget =
+  | { kind: 'pane'; dest: string; edge: DropEdge }
+  | { kind: 'root'; edge: Exclude<DropEdge, 'center'> }
 
 interface DragState {
   src: string
   startX: number
   startY: number
   active: boolean
-  over?: { dest: string; edge: DropEdge }
+  over?: DropTarget
+}
+
+/** Root-edge hit test: the closest workspace edge within the margin. */
+function rootEdgeAt(px: number, py: number, w: number, h: number): Exclude<DropEdge, 'center'> | null {
+  const dists: Array<[Exclude<DropEdge, 'center'>, number]> = [
+    ['left', px],
+    ['right', w - px],
+    ['top', py],
+    ['bottom', h - py],
+  ]
+  dists.sort((a, b) => a[1] - b[1])
+  return dists[0][1] <= ROOT_EDGE_MARGIN ? dists[0][0] : null
 }
 
 function paneName(target: string, terminals: SessionTerminalEntry[] | undefined): string {
@@ -196,11 +217,19 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
       if (!active) return
       const px = ev.clientX - wsRect.left
       const py = ev.clientY - wsRect.top
-      const hit = panesRef.current.find((p) =>
-        px >= p.rect.x && px <= p.rect.x + p.rect.w && py >= p.rect.y && py <= p.rect.y + p.rect.h)
-      const over = hit && hit.target !== d.src
-        ? { dest: hit.target, edge: dropEdgeFor(hit.rect, px, py) }
-        : undefined
+      // Workspace edges win over pane edges: they're the only way to carve
+      // out a full-height/width half when no single pane spans the axis.
+      const rootEdge = rootEdgeAt(px, py, wsRect.width, wsRect.height)
+      let over: DropTarget | undefined
+      if (rootEdge) {
+        over = { kind: 'root', edge: rootEdge }
+      } else {
+        const hit = panesRef.current.find((p) =>
+          px >= p.rect.x && px <= p.rect.x + p.rect.w && py >= p.rect.y && py <= p.rect.y + p.rect.h)
+        if (hit && hit.target !== d.src) {
+          over = { kind: 'pane', dest: hit.target, edge: dropEdgeFor(hit.rect, px, py) }
+        }
+      }
       const next: DragState = { ...d, active, over }
       dragRef.current = next
       setDrag(next)
@@ -214,7 +243,10 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
       const cur = useUiStore.getState()
       const node = sid in cur.layouts ? cur.layouts[sid] : leaf('agent')
       if (!node) return
-      cur.setSessionLayout(sid, moveLeaf(node, d.src, d.over.dest, d.over.edge))
+      const moved = d.over.kind === 'root'
+        ? moveLeafToRoot(node, d.src, d.over.edge)
+        : moveLeaf(node, d.src, d.over.dest, d.over.edge)
+      cur.setSessionLayout(sid, moved)
     }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
@@ -231,8 +263,12 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
 
   const dropHighlight = drag?.active && drag.over
     ? (() => {
-        const pane = panes.find((p) => p.target === drag.over!.dest)
-        return pane ? dropHighlightRect(pane.rect, drag.over.edge) : null
+        const over = drag.over
+        if (over.kind === 'root') {
+          return dropHighlightRect({ x: 0, y: 0, w: wsSize.w, h: wsSize.h }, over.edge)
+        }
+        const pane = panes.find((p) => p.target === over.dest)
+        return pane ? dropHighlightRect(pane.rect, over.edge) : null
       })()
     : null
 
