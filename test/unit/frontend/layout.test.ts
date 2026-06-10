@@ -7,6 +7,7 @@ import {
   swapLeaves,
   setRatioAt,
   moveLeaf,
+  moveLeafToRoot,
   computeLayout,
   dropEdgeFor,
   dropHighlightRect,
@@ -113,6 +114,38 @@ describe('moveLeaf', () => {
     const t = base()
     expect(moveLeaf(t, 'agent', 'agent', 'left')).toBe(t)
     expect(moveLeaf(t, 'nope', 'agent', 'left')).toBe(t)
+  })
+})
+
+describe('moveLeafToRoot', () => {
+  // 2x2 grid: no pane spans the full height — the case pane-edge drops
+  // can't produce a full-height half from.
+  const grid = (): LayoutNode => {
+    let t: LayoutNode = splitLeaf(leaf('a'), 'a', 'b', 'col')
+    t = splitLeaf(t, 'a', 'c', 'row')
+    t = splitLeaf(t, 'b', 'd', 'row')
+    return t
+  }
+
+  it('gives the pane a full-height half at the right workspace edge', () => {
+    const moved = moveLeafToRoot(grid(), 'd', 'right')
+    expect(moved).toMatchObject({ dir: 'row', ratio: 0.5, b: leaf('d') })
+    // d's rect spans the full height and half the width
+    const { panes } = computeLayout(moved, { x: 0, y: 0, w: 1000, h: 600 }, 0)
+    const d = panes.find((p) => p.target === 'd')!
+    expect(d.rect).toEqual({ x: 500, y: 0, w: 500, h: 600 })
+  })
+
+  it('supports all four edges with the pane placed on that side', () => {
+    expect(moveLeafToRoot(grid(), 'd', 'left')).toMatchObject({ dir: 'row', a: leaf('d') })
+    expect(moveLeafToRoot(grid(), 'd', 'top')).toMatchObject({ dir: 'col', a: leaf('d') })
+    expect(moveLeafToRoot(grid(), 'd', 'bottom')).toMatchObject({ dir: 'col', b: leaf('d') })
+  })
+
+  it('no-ops for the only pane or an unknown pane', () => {
+    expect(moveLeafToRoot(leaf('a'), 'a', 'right')).toEqual(leaf('a'))
+    const t = grid()
+    expect(moveLeafToRoot(t, 'nope', 'right')).toBe(t)
   })
 })
 
