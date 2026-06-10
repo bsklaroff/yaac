@@ -1,6 +1,37 @@
 import { create } from 'zustand'
-import type { LayoutNode } from '@/frontend/lib/layout'
+import { isLayoutNode, type LayoutNode } from '@/frontend/lib/layout'
 import type { AgentTool, DeletedSessionEntry } from '@/shared/types'
+
+const LAYOUTS_LS_KEY = 'yaac.layouts.v1'
+
+/** Read persisted workspace layouts, dropping anything structurally
+ *  invalid (exported for tests). */
+export function loadPersistedLayouts(): Record<string, LayoutNode | null> {
+  try {
+    if (typeof localStorage === 'undefined') return {}
+    const raw = localStorage.getItem(LAYOUTS_LS_KEY)
+    if (!raw) return {}
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return {}
+    const out: Record<string, LayoutNode | null> = {}
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (v === null || isLayoutNode(v)) out[k] = v
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+/** Persist workspace layouts; best-effort (exported for tests). */
+export function persistLayouts(layouts: Record<string, LayoutNode | null>): void {
+  try {
+    if (typeof localStorage === 'undefined') return
+    localStorage.setItem(LAYOUTS_LS_KEY, JSON.stringify(layouts))
+  } catch {
+    // quota/serialization failures are non-fatal — layouts just won't stick
+  }
+}
 
 /** A session being provisioned — shown as an immediate sidebar row (in a
  *  "starting" state) and a main-pane placeholder. Persists from the moment
@@ -32,6 +63,8 @@ interface UiState {
   /** Per-session workspace layout tree. Missing key = the default single
    *  agent pane; null = an explicitly emptied workspace. */
   layouts: Record<string, LayoutNode | null>
+  /** Whether the session sidebar is shown. */
+  sidebarOpen: boolean
   /** A session being provisioned (placeholder shown until it's ready). */
   creating: CreatingSession | null
   /** Sessions whose delete was confirmed — hidden optimistically until the
@@ -49,6 +82,7 @@ interface UiState {
   /** Replace a session's workspace layout (trees are built with the pure
    *  helpers in lib/layout). */
   setSessionLayout: (sessionId: string, layout: LayoutNode | null) => void
+  toggleSidebar: () => void
   /** Optimistically hide a session being deleted. */
   beginDelete: (sessionId: string) => void
   /** Stop hiding a session — on delete error (restore) or once the snapshot
@@ -65,7 +99,8 @@ export const useUiStore = create<UiState>((set) => ({
   activeProjectSlug: null,
   selectedSessionId: null,
   terminalNonces: {},
-  layouts: {},
+  layouts: loadPersistedLayouts(),
+  sidebarOpen: true,
   creating: null,
   pendingDeleteIds: [],
   optimisticDeleted: [],
@@ -81,6 +116,7 @@ export const useUiStore = create<UiState>((set) => ({
   setSessionLayout: (sessionId, layout) => set((s) => ({
     layouts: { ...s.layouts, [sessionId]: layout },
   })),
+  toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   beginDelete: (sessionId) => set((s) => (
     s.pendingDeleteIds.includes(sessionId)
       ? s
@@ -102,3 +138,10 @@ export const useUiStore = create<UiState>((set) => ({
       : s
   )),
 }))
+
+// Workspace layouts survive reloads. Session ids are stable across restarts
+// (restart resumes the same id), so a restored session gets its old layout
+// back too.
+useUiStore.subscribe((state, prev) => {
+  if (state.layouts !== prev.layouts) persistLayouts(state.layouts)
+})

@@ -75,3 +75,8 @@ export async function restartSession(
 export async function deleteSession(sessionId: string): Promise<void> {
   await api.post('/session/delete', { sessionId })
 }
+
+/** Set a session's display title (blank clears it back to the prompt). */
+export async function renameSession(sessionId: string, title: string): Promise<void> {
+  await api.post(`/session/${encodeURIComponent(sessionId)}/title`, { title })
+}

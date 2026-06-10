@@ -569,7 +569,14 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
     const statusRight = buildStatusRight(projectSlug, sessionId, forwardedPorts)
     await containerExec(containerName, `${TMUX} set-option -t yaac status-right '${shellEscape(statusRight)}'`)
   }
-  await containerExec(containerName, `${TMUX} bind-key k kill-server`)
+  // C-b k kills the whole tmux server (every window, shell, and the agent —
+  // the session is then reaped as a zombie). Guard it with a confirm: a
+  // stray prefix+k in any attached terminal (CLI or a webapp pane) was a
+  // one-keystroke session killer.
+  await containerExec(
+    containerName,
+    `${TMUX} bind-key k confirm-before -p 'kill this yaac session? (y/n)' kill-server`,
+  )
 
   // Now that the window's tmux options are settled, replace the keepalive
   // `sleep infinity` with the real agent. respawn-window -k kills the

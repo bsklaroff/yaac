@@ -286,6 +286,8 @@ export interface SessionListEntry {
   /** Container created time as 'YYYY-MM-DD HH:MM:SS' (UTC). */
   createdAt: string
   prompt?: string
+  /** User-assigned display title (falls back to `prompt` in UIs). */
+  title?: string
   blockedHosts: string[]
 }
 
@@ -318,6 +320,8 @@ export interface DeletedSessionEntry {
   createdAt: string
   /** First user message from the transcript, if any. */
   prompt?: string
+  /** User-assigned display title (survives delete; ids are stable). */
+  title?: string
 }
 
 /** A webapp-attachable terminal inside a session's container (beyond the

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  isLayoutNode,
   leaf,
   leafTargets,
   splitLeaf,
@@ -113,6 +114,22 @@ describe('moveLeaf', () => {
     const t = base()
     expect(moveLeaf(t, 'agent', 'agent', 'left')).toBe(t)
     expect(moveLeaf(t, 'nope', 'agent', 'left')).toBe(t)
+  })
+})
+
+describe('isLayoutNode', () => {
+  it('accepts valid leaves and splits', () => {
+    expect(isLayoutNode(leaf('agent'))).toBe(true)
+    expect(isLayoutNode(splitLeaf(leaf('agent'), 'agent', 'shell:shell', 'col'))).toBe(true)
+  })
+
+  it('rejects malformed structures', () => {
+    expect(isLayoutNode(null)).toBe(false)
+    expect(isLayoutNode('leaf')).toBe(false)
+    expect(isLayoutNode({ type: 'leaf' })).toBe(false)
+    expect(isLayoutNode({ type: 'leaf', target: '' })).toBe(false)
+    expect(isLayoutNode({ type: 'split', dir: 'row', ratio: 1.5, a: leaf('a'), b: leaf('b') })).toBe(false)
+    expect(isLayoutNode({ type: 'split', dir: 'row', ratio: 0.5, a: leaf('a'), b: { type: 'leaf' } })).toBe(false)
   })
 })
 

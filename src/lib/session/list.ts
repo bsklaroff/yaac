@@ -7,6 +7,7 @@ import { ensureOpencodeFirstMessageCaptured } from '@/lib/session/opencode-statu
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 import { readBlockedHosts } from '@/lib/session/blocked-hosts'
 import { isPrewarmSession, readPrewarmSessions } from '@/lib/prewarm'
+import { getSessionTitles } from '@/lib/session/titles'
 import { DaemonError } from '@/daemon/errors'
 import type {
   ActiveSessionsResult,
@@ -152,6 +153,12 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
     containers, Date.now(), isTmuxSessionAlive, resolveStartingGraceMs(),
   )
 
+  // User-assigned titles, one file read per project.
+  const titleSlugs = [...new Set(running.map((c) => c.Labels?.['yaac.project']).filter((v): v is string => !!v))]
+  const titlesBySlug = new Map(await Promise.all(
+    titleSlugs.map(async (slug) => [slug, await getSessionTitles(slug)] as const),
+  ))
+
   const sessions: SessionListEntry[] = await Promise.all(
     running.map(async (c): Promise<SessionListEntry> => {
       const sessionId = c.Labels?.['yaac.session-id'] ?? ''
@@ -181,6 +188,7 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
         status: prewarm ? 'prewarm' : status,
         createdAt: formatCreated(c.Created),
         prompt,
+        title: titlesBySlug.get(slug)?.[sessionId],
         blockedHosts,
       }
     }),
@@ -405,8 +413,13 @@ export async function listDeletedSessions(
   collected.sort((a, b) => b.birthtimeMs - a.birthtimeMs)
   const slice = limit && limit > 0 ? collected.slice(0, limit) : collected
   const capped = slice.map((r) => r.entry)
+  const deletedTitleSlugs = [...new Set(capped.map((e) => e.projectSlug))]
+  const deletedTitles = new Map(await Promise.all(
+    deletedTitleSlugs.map(async (slug) => [slug, await getSessionTitles(slug)] as const),
+  ))
   await Promise.all(capped.map(async (entry) => {
     entry.prompt = await getSessionFirstMessage(entry.projectSlug, entry.sessionId, entry.tool)
+    entry.title = deletedTitles.get(entry.projectSlug)?.[entry.sessionId]
   }))
   return capped
 }

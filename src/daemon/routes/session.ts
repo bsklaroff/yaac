@@ -15,6 +15,7 @@ import { getPrewarmSession, clearPrewarmSession } from '@/lib/prewarm'
 import { pickNextStreamSession } from '@/daemon/stream-picker'
 import { notifySessionListChanged } from '@/daemon/sessions-changed'
 import { listSessionTerminals, killShellTerminal } from '@/daemon/terminals'
+import { setSessionTitle } from '@/lib/session/titles'
 
 export const sessionApp = new Hono()
   .get(
@@ -184,6 +185,19 @@ export const sessionApp = new Hono()
     const resolved = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
     return c.json({ containerName: resolved.containerName })
   })
+  .post(
+    '/:id/title',
+    zValidator('json', z.object({ title: z.string().max(500) })),
+    async (c) => {
+      // Resolve in any state — renaming a waiting or just-stopped session is
+      // fine; the title lives on the host, not in the container.
+      const { projectSlug, sessionId } = await resolveSessionContainer(c.req.param('id'))
+      await setSessionTitle(projectSlug, sessionId, c.req.valid('json').title)
+      // Push a fresh snapshot so the sidebar reflects the rename immediately.
+      notifySessionListChanged()
+      return c.body(null, 204)
+    },
+  )
   .get('/:id/terminals', async (c) => {
     const { containerName } = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
     return c.json(await listSessionTerminals(containerName))

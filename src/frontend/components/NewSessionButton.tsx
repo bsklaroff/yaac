@@ -32,7 +32,9 @@ export function NewSessionButton({ projectSlug }: { projectSlug: string }): JSX.
         <AddIcon size={14} />
       </Menu.Trigger>
       <Menu.Portal>
-        <Menu.Positioner side="bottom" align="end" sideOffset={6}>
+        {/* align=start: the popup extends right (over the pane area) instead of
+            left across the sidebar content. */}
+        <Menu.Positioner side="bottom" align="start" sideOffset={6}>
           <Menu.Popup className="min-w-[180px] rounded-lg border border-border bg-surface-2 p-1 text-text
             shadow-[0_12px_32px_rgba(0,0,0,0.5)] outline-none transition-opacity duration-100
             data-[starting-style]:opacity-0 data-[ending-style]:opacity-0">
