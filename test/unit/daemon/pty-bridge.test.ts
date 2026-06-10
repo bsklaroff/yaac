@@ -38,6 +38,7 @@ describe('attachArgs', () => {
 describe('parsePtyTarget', () => {
   it('normalizes and validates targets, defaulting to agent', () => {
     expect(parsePtyTarget('agent')).toBe('agent')
+    expect(parsePtyTarget('agent-view')).toBe('agent-view')
     expect(parsePtyTarget('shell')).toBe('shell:shell')
     expect(parsePtyTarget('shell:shell')).toBe('shell:shell')
     expect(parsePtyTarget('shell:shell-12')).toBe('shell:shell-12')
@@ -80,6 +81,16 @@ describe('parsePtySize', () => {
     expect(parsePtySize('abc', '40')).toEqual({ cols: undefined, rows: 40 })
     expect(parsePtySize('0', '-5')).toEqual({ cols: undefined, rows: undefined })
     expect(parsePtySize('5000', '40')).toEqual({ cols: undefined, rows: 40 })
+  })
+})
+
+describe('attachArgs agent-view', () => {
+  it('attaches through a throwaway grouped session pinned to the agent window', () => {
+    const argv = attachArgs('yaac-demo', 'agent-view')
+    const cmd = argv[5]
+    expect(cmd).toContain('new-session -t yaac -s view-$$')
+    expect(cmd).toContain('set-option destroy-unattached on')
+    expect(cmd).toContain('select-window -t yaac:0')
   })
 })
 
@@ -168,6 +179,20 @@ describe('bridge', () => {
     bridge(pty, sock)
     sock.emitMessage('{"type":"signal","name":"SIGINT"}', false)
     expect(pty.killed).toEqual(['SIGINT'])
+  })
+
+  it('readOnly drops keystrokes and signals but allows resize', () => {
+    const pty = new FakePty()
+    const sock = new FakeSock()
+    bridge(pty, sock, { readOnly: true })
+    sock.emitMessage(Buffer.from('rm -rf /\r', 'utf8'), true)
+    sock.emitMessage('{"type":"signal","name":"SIGKILL"}', false)
+    expect(pty.written).toEqual([])
+    expect(pty.killed).toEqual([])
+    sock.emitMessage('{"type":"resize","cols":100,"rows":30}', false)
+    expect(pty.resized).toEqual([[100, 30]])
+    sock.emitMessage('{"type":"ping"}', false)
+    expect(sock.sent).toContain('{"type":"pong"}')
   })
 
   it('detaches tmux gracefully on socket close, then force-kills the PTY', () => {

@@ -8,10 +8,11 @@ import path from 'node:path'
 import { serve, type ServerType } from '@hono/node-server'
 import { createNodeWebSocket } from '@hono/node-ws'
 import { buildApp } from '@/daemon/server'
-import { createWebAuthStore } from '@/daemon/web-auth'
+import { createWebAuthStore, getRequestGuestScope } from '@/daemon/web-auth'
 import { EventHub } from '@/daemon/events'
-import { bridge, parsePtySize, parsePtyTarget, spawnAttachPty, type SocketLike } from '@/daemon/pty-bridge'
+import { bridge, parsePtySize, parsePtyTarget, spawnAttachPty, type PtyTarget, type SocketLike } from '@/daemon/pty-bridge'
 import { onSessionListChanged } from '@/daemon/sessions-changed'
+import { detectTailnet, type TailnetInfo } from '@/daemon/tailscale'
 import { resolveSessionContainer } from '@/daemon/session-resolve'
 import { readBuildId } from '@/shared/build-id'
 import {
@@ -23,6 +24,7 @@ import {
   type DaemonLock,
 } from '@/shared/lock'
 import { ensureDataDir } from '@/lib/project/paths'
+import { getTailnetSharing } from '@/lib/project/preferences'
 import { daemonLogPath, webSessionsPath } from '@/shared/paths'
 import { startBackgroundLoop } from '@/daemon/background-loop'
 import { gcOrphanSessionVolumes } from '@/lib/container/image-promoter'
@@ -113,12 +115,33 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     initialSessions: await loadWebSessions(),
     onSessionsChanged: (sessions) => void saveWebSessions(sessions),
   })
+  // Tailnet sharing (opt-in preference): bind a second listener on the
+  // tailscale address so share links work for teammates. Resolved before
+  // buildApp so the Host-header allowlist and share-link origin are ready
+  // for the first request.
+  let tailnet: TailnetInfo | null = null
+  if (await getTailnetSharing()) {
+    tailnet = await detectTailnet()
+    if (!tailnet) {
+      daemonLog('[daemon] tailnet sharing enabled but no tailnet address found (is tailscale up?)')
+    }
+  }
+  const extraHostnames = tailnet ? [tailnet.ip, ...(tailnet.dnsName ? [tailnet.dnsName] : [])] : []
+  const shareHost = tailnet ? (tailnet.dnsName ?? tailnet.ip) : null
+
   const hub = new EventHub()
   // Push a fresh snapshot the moment a session is created/restarted, so the
   // webapp's sidebar + terminal update immediately instead of waiting for the
   // next periodic tick.
   onSessionListChanged(() => { void hub.publishSnapshot() })
-  const app = buildApp({ secret, buildId, store, getPort: () => portRef.current })
+  const app = buildApp({
+    secret,
+    buildId,
+    store,
+    getPort: () => portRef.current,
+    getExtraHostnames: () => extraHostnames,
+    getShareOrigin: () => (shareHost ? `http://${shareHost}:${portRef.current}` : null),
+  })
 
   // WebSocket event stream. Registered here (not in buildApp) so buildApp's
   // return type stays the plain Hono app the CLI's typed RPC client infers
@@ -149,13 +172,21 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     // reflow garble. Falls back to 80x24 when the params are missing/invalid.
     const size = parsePtySize(c.req.query('cols'), c.req.query('rows'))
     // Which tmux session to attach: the agent (default) or the scratch shell.
-    const target = parsePtyTarget(c.req.query('target'))
+    let target: PtyTarget = parsePtyTarget(c.req.query('target'))
+    // Shared-session guests: scoped to their one session, always through an
+    // independent grouped view of the agent window, read-only in view mode.
+    const guestScope = getRequestGuestScope(c)
+    if (guestScope) target = 'agent-view'
+    const readOnly = guestScope?.mode === 'view'
     return {
       onOpen: (_evt, ws) => {
         void (async () => {
           let containerName: string
           try {
             const resolved = await resolveSessionContainer(id, { requireRunning: true })
+            if (guestScope && resolved.sessionId !== guestScope.sessionId) {
+              throw new Error('out of scope')
+            }
             containerName = resolved.containerName
           } catch {
             try {
@@ -179,8 +210,9 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
               cb(Array.isArray(data) ? Buffer.concat(data) : data, isBinary)),
             onClose: (cb) => raw.on('close', () => cb()),
           }
-          bridge(ptyProc, sock)
-          daemonLog(`[daemon] pty attach: session=${id} container=${containerName}`)
+          bridge(ptyProc, sock, { readOnly })
+          daemonLog(`[daemon] pty attach: session=${id} container=${containerName}`
+            + (guestScope ? ` guest=${guestScope.mode}` : ''))
         })()
       },
     }
@@ -196,6 +228,23 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
   )
   portRef.current = port
   nodeWs.injectWebSocket(server)
+
+  // Second listener on the tailnet address (same port, same app). WS
+  // upgrades must be injected per server.
+  let tailnetServer: ServerType | null = null
+  if (tailnet) {
+    try {
+      tailnetServer = await new Promise<ServerType>((resolve, reject) => {
+        const s2 = serve({ fetch: app.fetch, port, hostname: tailnet.ip }, () => resolve(s2))
+        s2.once('error', reject)
+      })
+      nodeWs.injectWebSocket(tailnetServer)
+      daemonLog(`[daemon] tailnet sharing on http://${shareHost}:${port}`)
+    } catch (err) {
+      tailnetServer = null
+      daemonLog(`[daemon] tailnet bind failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
 
   // Race-safe acquire via O_EXCL. Another daemon may have slipped past
   // the pre-bind fast-path check above; atomic create ensures exactly one
@@ -249,7 +298,13 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     // daemon is going away either way, and the lock file is the thing
     // the CLI watches to decide whether to restart.
     await Promise.race([
-      new Promise<void>((resolve) => server.close(() => resolve())),
+      Promise.all([
+        new Promise<void>((resolve) => server.close(() => resolve())),
+        new Promise<void>((resolve) => {
+          if (tailnetServer) tailnetServer.close(() => resolve())
+          else resolve()
+        }),
+      ]),
       new Promise<void>((resolve) => setTimeout(resolve, 3000)),
     ])
     // Pass our pid so a shutdown that dragged past stopDaemon's 3s

@@ -27,6 +27,8 @@ export {
   SlidersHorizontal as GeneralIcon,
   Pencil as RenameIcon,
   PanelLeft as SidebarIcon,
+  Share2 as ShareIcon,
+  Eye as ViewIcon,
   Columns2 as SplitRightIcon,
   Rows2 as SplitDownIcon,
 } from 'lucide-react'

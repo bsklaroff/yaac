@@ -2,6 +2,7 @@ import { podman } from '@/lib/container/runtime'
 import { getDataDir } from '@/lib/project/paths'
 import { DaemonError } from '@/daemon/errors'
 import { getSessionFirstMessage, getToolFromContainer } from '@/lib/session/status'
+import { getSessionTitles } from '@/lib/session/titles'
 import { readBlockedHosts } from '@/lib/session/blocked-hosts'
 import type { AgentTool } from '@/shared/types'
 
@@ -15,6 +16,10 @@ export interface SessionDetail {
   blockedHostsCount: number
   /** ISO timestamp of container creation. */
   createdAt: string
+  /** User-assigned display title, if any. */
+  title?: string
+  /** First user message from the transcript, if any. */
+  prompt?: string
 }
 
 interface MatchedContainer {
@@ -59,9 +64,13 @@ async function findSessionContainer(idOrName: string): Promise<MatchedContainer>
 
 export async function getSessionDetail(idOrName: string): Promise<SessionDetail> {
   const match = await findSessionContainer(idOrName)
-  const blocked = match.sessionId && match.projectSlug
-    ? await readBlockedHosts(match.projectSlug, match.sessionId)
-    : []
+  const [blocked, titles, prompt] = match.sessionId && match.projectSlug
+    ? await Promise.all([
+      readBlockedHosts(match.projectSlug, match.sessionId),
+      getSessionTitles(match.projectSlug),
+      getSessionFirstMessage(match.projectSlug, match.sessionId, match.tool, match.name),
+    ])
+    : [[], {} as Record<string, string>, undefined]
   return {
     sessionId: match.sessionId,
     projectSlug: match.projectSlug,
@@ -71,6 +80,8 @@ export async function getSessionDetail(idOrName: string): Promise<SessionDetail>
     labels: match.labels,
     blockedHostsCount: blocked.length,
     createdAt: match.createdAt,
+    title: titles[match.sessionId],
+    prompt,
   }
 }
 

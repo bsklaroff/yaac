@@ -12,10 +12,13 @@ import '@xterm/xterm/css/xterm.css'
 export function SessionTerminal({
   sessionId,
   target = 'agent',
+  readOnly = false,
 }: {
   sessionId: string
   /** /pty/attach target: 'agent', 'shell:<name>', or 'window:@<id>'. */
   target?: string
+  /** Don't send keystrokes (view-mode guests; the server enforces too). */
+  readOnly?: boolean
 }): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -80,7 +83,7 @@ export function SessionTerminal({
       }
 
       dataSub = term.onData((d: string): void => {
-        if (sock.readyState === WebSocket.OPEN) sock.send(encoder.encode(d))
+        if (!readOnly && sock.readyState === WebSocket.OPEN) sock.send(encoder.encode(d))
       })
       resizeSub = term.onResize((): void => sendResize())
     }, 0)
@@ -115,7 +118,7 @@ export function SessionTerminal({
       }
       term.dispose()
     }
-  }, [sessionId, target])
+  }, [sessionId, target, readOnly])
 
   return <div ref={containerRef} className="h-full w-full" />
 }

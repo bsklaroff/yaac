@@ -1,5 +1,4 @@
 import { useEffect, useState, type JSX, type ReactNode } from 'react'
-import { api, ApiError } from './lib/apiClient'
 import { readBootstrapCode, postBootstrap, stripBootstrapFromUrl } from './lib/bootstrap'
 import { useEvents } from './lib/useEvents'
 import { useSnapshot } from './lib/useSnapshot'
@@ -8,50 +7,55 @@ import { ProjectRail } from './components/ProjectRail'
 import { Sidebar } from './components/Sidebar'
 import { SessionView } from './components/SessionView'
 import { BootstrapSplash } from './components/BootstrapSplash'
+import { GuestView } from './components/GuestView'
+import { getAuthMe, type AuthMe } from './lib/invitesApi'
 import type { DaemonSnapshot } from '@/shared/types'
 
-type AuthState = 'checking' | 'authed' | 'needs-bootstrap'
-
-/** Hit a protected endpoint to see if the session cookie is still good. */
-async function probeAuth(): Promise<boolean> {
-  try {
-    await api.get('/prewarm')
-    return true
-  } catch (err) {
-    // 401 → not authed; anything else (daemon down) → show the splash too
-    // rather than a blank screen.
-    if (err instanceof ApiError && err.status === 401) return false
-    return false
-  }
-}
+type AuthState =
+  | { kind: 'checking' }
+  | { kind: 'authed'; me: AuthMe }
+  | { kind: 'needs-bootstrap' }
 
 function App(): JSX.Element {
-  const [auth, setAuth] = useState<AuthState>('checking')
+  const [auth, setAuth] = useState<AuthState>({ kind: 'checking' })
 
   useEffect(() => {
     let cancelled = false
+    const finish = async (): Promise<void> => {
+      const me = await getAuthMe().catch((): AuthMe | null => null)
+      if (cancelled) return
+      setAuth(me && (me.owner || me.guest) ? { kind: 'authed', me } : { kind: 'needs-bootstrap' })
+    }
     void (async () => {
       const code = readBootstrapCode()
       if (code) {
-        const ok = await postBootstrap(code)
+        await postBootstrap(code)
         stripBootstrapFromUrl()
-        if (ok) {
-          if (!cancelled) setAuth('authed')
-          return
-        }
       }
-      const authed = await probeAuth()
-      if (!cancelled) setAuth(authed ? 'authed' : 'needs-bootstrap')
+      // /auth/me reports owner and/or guest (share-link cookie) standing —
+      // it's the single source of truth for which experience to render.
+      await finish()
     })()
     return () => { cancelled = true }
   }, [])
 
-  // Hooks must run unconditionally; the WS only connects once authed.
-  const { connected } = useEvents(auth === 'authed')
+  // Guest experience: scoped cookie only, or an owner previewing via
+  // /join's ?guest=1 redirect.
+  const me = auth.kind === 'authed' ? auth.me : null
+  const guestParam = new URLSearchParams(window.location.search).has('guest')
+  const asGuest = !!me?.guest && (!me.owner || guestParam)
+
+  // Hooks must run unconditionally; the WS only connects for owners.
+  const { connected } = useEvents(auth.kind === 'authed' && !!me?.owner && !asGuest)
   const snapshot = useSnapshot()
 
-  if (auth === 'checking') return <FullScreen>Loading…</FullScreen>
-  if (auth === 'needs-bootstrap') return <BootstrapSplash onAuthed={() => setAuth('authed')} />
+  if (auth.kind === 'checking') return <FullScreen>Loading…</FullScreen>
+  if (auth.kind === 'needs-bootstrap') {
+    return <BootstrapSplash onAuthed={() => { window.location.reload() }} />
+  }
+  if (asGuest && me?.guest) {
+    return <GuestView sessionId={me.guest.sessionId} mode={me.guest.mode} />
+  }
 
   return <Workspace snapshot={snapshot} connected={connected} />
 }

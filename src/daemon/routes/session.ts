@@ -16,6 +16,7 @@ import { pickNextStreamSession } from '@/daemon/stream-picker'
 import { notifySessionListChanged } from '@/daemon/sessions-changed'
 import { listSessionTerminals, killShellTerminal } from '@/daemon/terminals'
 import { setSessionTitle } from '@/lib/session/titles'
+import { createInvite, listInvites, revokeInvite } from '@/daemon/invites'
 
 export const sessionApp = new Hono()
   .get(
@@ -195,6 +196,29 @@ export const sessionApp = new Hono()
       await setSessionTitle(projectSlug, sessionId, c.req.valid('json').title)
       // Push a fresh snapshot so the sidebar reflects the rename immediately.
       notifySessionListChanged()
+      return c.body(null, 204)
+    },
+  )
+  .post(
+    '/:id/invites',
+    zValidator('json', z.object({ mode: z.enum(['view', 'drive']) })),
+    async (c) => {
+      // Resolve so invites always carry the full session id (the client may
+      // pass a prefix) and so unknown sessions 404 instead of minting junk.
+      const { sessionId } = await resolveSessionContainer(c.req.param('id'))
+      const invite = await createInvite(sessionId, c.req.valid('json').mode)
+      return c.json(invite)
+    },
+  )
+  .get('/:id/invites', async (c) => {
+    const { sessionId } = await resolveSessionContainer(c.req.param('id'))
+    return c.json(await listInvites(sessionId))
+  })
+  .post(
+    '/:id/invites/revoke',
+    zValidator('json', z.object({ token: z.string().min(1) })),
+    async (c) => {
+      await revokeInvite(c.req.valid('json').token)
       return c.body(null, 204)
     },
   )

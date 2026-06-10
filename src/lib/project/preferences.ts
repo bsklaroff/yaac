@@ -7,6 +7,9 @@ import type { AgentTool } from '@/shared/types'
 
 export interface PreferencesFile {
   defaultTool?: AgentTool
+  /** Bind a second daemon listener on the tailnet address so share links
+   *  work for teammates. Takes effect on daemon (re)start. */
+  tailnetSharing?: boolean
 }
 
 export function preferencesPath(): string {
@@ -26,6 +29,9 @@ export async function loadPreferences(): Promise<PreferencesFile> {
         || obj.defaultTool === 'opencode'
       ) {
         result.defaultTool = obj.defaultTool
+      }
+      if (typeof obj.tailnetSharing === 'boolean') {
+        result.tailnetSharing = obj.tailnetSharing
       }
       return result
     }
@@ -51,6 +57,17 @@ export async function getDefaultTool(): Promise<AgentTool | undefined> {
 export async function setDefaultTool(tool: AgentTool): Promise<void> {
   const prefs = await loadPreferences()
   prefs.defaultTool = tool
+  await savePreferences(prefs)
+}
+
+export async function getTailnetSharing(): Promise<boolean> {
+  const prefs = await loadPreferences()
+  return prefs.tailnetSharing ?? false
+}
+
+export async function setTailnetSharing(enabled: boolean): Promise<void> {
+  const prefs = await loadPreferences()
+  prefs.tailnetSharing = enabled
   await savePreferences(prefs)
 }
 

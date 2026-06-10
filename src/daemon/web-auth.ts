@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 import type { MiddlewareHandler } from 'hono'
 import { getCookie } from 'hono/cookie'
+import { getValidInvite, type InviteMode } from '@/daemon/invites'
 
 /**
  * How long a freshly minted bootstrap code stays valid. Generous (24h)
@@ -13,6 +14,71 @@ export const BOOTSTRAP_TTL_MS = 24 * 60 * 60 * 1000
 
 /** Name of the HttpOnly cookie that carries a webapp session. */
 export const SESSION_COOKIE = 'yaac_session'
+
+/** Name of the HttpOnly cookie that carries a guest (shared-session)
+ *  identity. Separate from SESSION_COOKIE so an owner who opens their own
+ *  share link keeps full access. */
+export const GUEST_COOKIE = 'yaac_guest'
+
+/** What a guest cookie is allowed to touch. */
+export interface GuestScope {
+  sessionId: string
+  mode: InviteMode
+}
+
+/**
+ * Guest cookie registry: guest session id → invite token. Scope is
+ * resolved against the invite store on every request, so revoking an
+ * invite (or its expiry) cuts off every cookie minted from it
+ * immediately. In-memory: a daemon restart just means re-clicking the
+ * share link.
+ */
+const guestSessions = new Map<string, string>()
+
+/** Mint a guest session id for an invite token (called by /join). */
+export function mintGuestSession(inviteToken: string): string {
+  const id = newToken()
+  guestSessions.set(id, inviteToken)
+  // Bound the registry; oldest first (Map preserves insertion order).
+  while (guestSessions.size > MAX_SESSIONS) {
+    const oldest = guestSessions.keys().next().value
+    if (oldest === undefined) break
+    guestSessions.delete(oldest)
+  }
+  return id
+}
+
+/** Resolve a guest session id to its live scope (null if the backing
+ *  invite is gone or expired). */
+export async function resolveGuestScope(guestId: string): Promise<GuestScope | null> {
+  const token = guestSessions.get(guestId)
+  if (!token) return null
+  const invite = await getValidInvite(token)
+  if (!invite) {
+    guestSessions.delete(guestId)
+    return null
+  }
+  return { sessionId: invite.sessionId, mode: invite.mode }
+}
+
+export function _clearGuestSessionsForTests(): void {
+  guestSessions.clear()
+}
+
+/**
+ * Per-request guest scope, keyed off the raw Request so it flows through
+ * mounted sub-apps without Hono context-variable typing gymnastics.
+ * Absent for owner/bearer requests.
+ */
+const requestScopes = new WeakMap<Request, GuestScope>()
+
+export function setRequestGuestScope(c: { req: { raw: Request } }, scope: GuestScope): void {
+  requestScopes.set(c.req.raw, scope)
+}
+
+export function getRequestGuestScope(c: { req: { raw: Request } }): GuestScope | undefined {
+  return requestScopes.get(c.req.raw)
+}
 
 /** Upper bound on retained webapp sessions (oldest evicted first). */
 export const MAX_SESSIONS = 64
@@ -104,6 +170,7 @@ function newToken(): string {
 export function isPublicPath(path: string): boolean {
   if (path === '/health') return true
   if (path === '/auth/bootstrap') return true
+  if (path === '/join') return true
   if (path === '/') return true
   if (path.startsWith('/assets/')) return true
   return false
@@ -128,6 +195,17 @@ export function cookieOrBearerAuth(
     const sid = getCookie(c, SESSION_COOKIE)
     if (sid && store.isValidSession(sid)) return next()
 
+    // Guest (shared-session) cookie: scoped access. Owner credentials win
+    // above, so an owner opening their own share link keeps full access.
+    const gid = getCookie(c, GUEST_COOKIE)
+    if (gid) {
+      const scope = await resolveGuestScope(gid)
+      if (scope) {
+        setRequestGuestScope(c, scope)
+        return next()
+      }
+    }
+
     return c.json(
       { error: { code: 'UNAUTHENTICATED', message: 'missing or invalid credentials' } },
       401,
@@ -144,15 +222,20 @@ export function cookieOrBearerAuth(
  * call `serve`) — the port comparison is skipped there, but the
  * loopback-hostname check still applies.
  */
-export function isAllowedHost(host: string, boundPort: number): boolean {
+export function isAllowedHost(host: string, boundPort: number, extraHostnames: string[] = []): boolean {
   if (!host) return false
   const [hostname, portStr] = host.split(':')
-  if (hostname !== '127.0.0.1' && hostname !== 'localhost') return false
+  const allowed = hostname === '127.0.0.1' || hostname === 'localhost'
+    || extraHostnames.includes(hostname)
+  if (!allowed) return false
   if (portStr && boundPort > 0 && portStr !== String(boundPort)) return false
   return true
 }
 
-export function hostHeaderCheck(getPort: () => number): MiddlewareHandler {
+export function hostHeaderCheck(
+  getPort: () => number,
+  getExtraHostnames: () => string[] = () => [],
+): MiddlewareHandler {
   return async (c, next) => {
     // Prefer the Host header (what a browser sends). Fall back to the
     // request URL's host for in-memory dispatch (hono's app.fetch in
@@ -167,7 +250,7 @@ export function hostHeaderCheck(getPort: () => number): MiddlewareHandler {
         host = ''
       }
     }
-    if (isAllowedHost(host, getPort())) return next()
+    if (isAllowedHost(host, getPort(), getExtraHostnames())) return next()
     return c.json(
       { error: { code: 'BAD_HOST', message: 'host not allowed' } },
       403,

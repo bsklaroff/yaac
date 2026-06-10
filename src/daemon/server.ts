@@ -2,15 +2,20 @@ import path from 'node:path'
 import { existsSync } from 'node:fs'
 import { Hono } from 'hono'
 import type { Context } from 'hono'
-import { setCookie } from 'hono/cookie'
+import { getCookie, setCookie } from 'hono/cookie'
 import { denyBrowserCors, requestLogger } from '@/daemon/auth'
 import {
   cookieOrBearerAuth,
   createWebAuthStore,
+  getRequestGuestScope,
+  GUEST_COOKIE,
   hostHeaderCheck,
+  mintGuestSession,
+  resolveGuestScope,
   SESSION_COOKIE,
   type WebAuthStore,
 } from '@/daemon/web-auth'
+import { getValidInvite } from '@/daemon/invites'
 import { registerStaticRoutes } from '@/daemon/static'
 import { toErrorBody, rewriteZValidatorBody } from '@/daemon/errors'
 import { projectApp } from '@/daemon/routes/project'
@@ -36,6 +41,12 @@ export interface DaemonAppDeps {
    * which case only the loopback-hostname check applies.
    */
   getPort?: () => number
+  /** Extra hostnames the Host-header check accepts (tailnet IP / MagicDNS
+   *  name when tailnet sharing is on). */
+  getExtraHostnames?: () => string[]
+  /** Origin share links should use (e.g. http://100.x.y.z:port), null when
+   *  the daemon is loopback-only. */
+  getShareOrigin?: () => string | null
 }
 
 /**
@@ -49,9 +60,27 @@ export function buildApp(deps: DaemonAppDeps) {
   const app = new Hono()
 
   app.use('*', requestLogger())
-  app.use('*', hostHeaderCheck(getPort))
+  app.use('*', hostHeaderCheck(getPort, deps.getExtraHostnames ?? (() => [])))
   app.use('*', denyBrowserCors())
   app.use('*', cookieOrBearerAuth(deps.secret, store))
+  // Guests (shared-session cookies) may only read their one session and
+  // attach to its terminal; everything else is forbidden. Owner/bearer
+  // requests carry no scope and skip this entirely.
+  app.use('*', async (c, next) => {
+    const scope = getRequestGuestScope(c)
+    if (!scope) return next()
+    const path = c.req.path
+    const allowed =
+      path === '/auth/me'
+      || (c.req.method === 'GET' && path === `/session/${scope.sessionId}`)
+      || (c.req.method === 'GET' && path === `/session/${scope.sessionId}/terminals`)
+      || path === '/pty/attach'
+    if (allowed) return next()
+    return c.json(
+      { error: { code: 'FORBIDDEN', message: 'this share link only covers its session' } },
+      403,
+    )
+  })
   app.use('*', async (c, next) => {
     await next()
     if (c.res.status !== 400) return
@@ -104,6 +133,44 @@ export function buildApp(deps: DaemonAppDeps) {
   // bootstrap code so `yaac open` can build a ready-to-open authed URL
   // without scraping the daemon log. Not public — requires a credential.
   app.get('/auth/bootstrap-code', (c) => c.json({ code: store.currentCode() }))
+
+  // Who am I: lets the SPA distinguish owner, guest (and the guest's
+  // scope), or unauthenticated. Owner wins when both cookies are present;
+  // `guest` is still reported so an owner can preview the guest view.
+  app.get('/auth/me', async (c) => {
+    const header = c.req.header('authorization') ?? ''
+    const sid = getCookie(c, SESSION_COOKIE)
+    const owner = /^Bearer\s+/.test(header) || !!(sid && store.isValidSession(sid))
+    // Resolve the guest cookie directly (the auth middleware only does so
+    // when owner auth fails) so an owner who opened a share link can still
+    // preview the guest experience via ?guest=1.
+    let scope = getRequestGuestScope(c) ?? null
+    if (!scope) {
+      const gid = getCookie(c, GUEST_COOKIE)
+      if (gid) scope = await resolveGuestScope(gid)
+    }
+    return c.json({ owner, guest: scope, shareOrigin: deps.getShareOrigin?.() ?? null })
+  })
+
+  // Redeem a share link: validate the invite and set the guest cookie.
+  // Public; the minted cookie is what carries the (scoped) access.
+  app.get('/join', async (c) => {
+    const code = c.req.query('code') ?? ''
+    const invite = code ? await getValidInvite(code) : null
+    if (!invite) {
+      return c.json(
+        { error: { code: 'BAD_INVITE', message: 'invalid or expired share link' } },
+        401,
+      )
+    }
+    setCookie(c, GUEST_COOKIE, mintGuestSession(invite.token), {
+      httpOnly: true,
+      sameSite: 'Lax',
+      path: '/',
+    })
+    daemonLog(`[daemon] guest joined session=${invite.sessionId} mode=${invite.mode}`)
+    return c.redirect('/?guest=1')
+  })
 
   // Serve the built SPA bundle when present (production: dist/frontend).
   // Absent in dev/test (Vite serves the app instead), so guard on it.

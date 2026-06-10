@@ -17,3 +17,12 @@ export async function getAuthList(): Promise<AuthListResult> {
 export async function addGitCredential(pattern: string, token: string): Promise<void> {
   await api.post('/auth/git/credentials', { kind: 'https', pattern, token })
 }
+
+export async function getTailnetSharing(): Promise<boolean> {
+  const res = await api.get<{ enabled: boolean }>('/tool/tailnet-sharing')
+  return res.enabled
+}
+
+export async function setTailnetSharing(enabled: boolean): Promise<void> {
+  await api.post('/tool/tailnet-sharing', { enabled })
+}

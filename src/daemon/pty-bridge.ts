@@ -14,6 +14,9 @@ const DEFAULT_ROWS = 24
  *  - 'window:@<id>'   — a specific window of the `yaac` session (e.g. an
  *    initCommands dev server), viewed through a per-client grouped session
  *    so the active window of other viewers (and the CLI) is never touched.
+ *  - 'agent-view'     — the agent window through a per-client grouped
+ *    session: an independent view that can't move the owner's active
+ *    window or fight its size. What shared-session guests get.
  */
 export type PtyTarget = string
 
@@ -25,6 +28,7 @@ const WINDOW_ID = /^@[0-9]{1,6}$/
 export function parsePtyTarget(raw: unknown): PtyTarget {
   if (typeof raw !== 'string') return 'agent'
   if (raw === 'agent') return 'agent'
+  if (raw === 'agent-view') return 'agent-view'
   if (raw === 'shell') return 'shell:shell'
   if (raw.startsWith('shell:') && SHELL_NAME.test(raw.slice('shell:'.length))) return raw
   if (raw.startsWith('window:') && WINDOW_ID.test(raw.slice('window:'.length))) return raw
@@ -62,6 +66,13 @@ export function attachArgs(containerName: string, target: PtyTarget = 'agent'): 
       'exec', '-it', containerName,
       'sh', '-c',
       `exec ${tmux} new-session -t yaac -s view-$$ \\; set-option destroy-unattached on \\; select-window -t '${windowId}'`,
+    ]
+  }
+  if (target === 'agent-view') {
+    return [
+      'exec', '-it', containerName,
+      'sh', '-c',
+      `exec ${tmux} new-session -t yaac -s view-$$ \\; set-option destroy-unattached on \\; select-window -t yaac:0`,
     ]
   }
   return [
@@ -134,9 +145,10 @@ const DETACH_GRACE_MS = 400
 export function bridge(
   ptyProc: PtyLike,
   sock: SocketLike,
-  opts: { detachGraceMs?: number } = {},
+  opts: { detachGraceMs?: number; readOnly?: boolean } = {},
 ): void {
   const detachGraceMs = opts.detachGraceMs ?? DETACH_GRACE_MS
+  const readOnly = opts.readOnly ?? false
   ptyProc.onData((d) => {
     try {
       sock.send(Buffer.from(d, 'utf8'))
@@ -155,7 +167,8 @@ export function bridge(
 
   sock.onMessage((data, isBinary) => {
     if (isBinary) {
-      ptyProc.write(toText(data))
+      // View-mode guests can look but not type.
+      if (!readOnly) ptyProc.write(toText(data))
       return
     }
     const ctrl = parseControl(toText(data))
@@ -163,7 +176,7 @@ export function bridge(
     if (ctrl.type === 'resize' && ctrl.cols && ctrl.rows) {
       ptyProc.resize(ctrl.cols, ctrl.rows)
     } else if (ctrl.type === 'signal' && ctrl.name) {
-      ptyProc.kill(ctrl.name)
+      if (!readOnly) ptyProc.kill(ctrl.name)
     } else if (ctrl.type === 'ping') {
       sock.send('{"type":"pong"}')
     }

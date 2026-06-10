@@ -7,8 +7,10 @@ import {
   loadPreferences,
   savePreferences,
   getDefaultTool,
+  getTailnetSharing,
   setDefaultTool,
   setDefaultToolChecked,
+  setTailnetSharing,
   isValidTool,
 } from '@/lib/project/preferences'
 import { DaemonError } from '@/daemon/errors'
@@ -131,5 +133,33 @@ describe('preferences', () => {
         code: 'VALIDATION',
       })
     })
+  })
+})
+
+describe('tailnet sharing preference', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+  })
+
+  afterEach(async () => {
+    await cleanupTempDir(tmpDir)
+  })
+
+  it('defaults to false and round-trips', async () => {
+    expect(await getTailnetSharing()).toBe(false)
+    await setTailnetSharing(true)
+    expect(await getTailnetSharing()).toBe(true)
+    // coexists with other prefs
+    await setDefaultTool('codex')
+    expect(await getTailnetSharing()).toBe(true)
+    await setTailnetSharing(false)
+    expect(await getTailnetSharing()).toBe(false)
+  })
+
+  it('ignores a non-boolean value in the file', async () => {
+    await fs.writeFile(preferencesPath(), JSON.stringify({ tailnetSharing: 'yes' }))
+    expect(await getTailnetSharing()).toBe(false)
   })
 })

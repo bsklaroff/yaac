@@ -36,7 +36,7 @@ const target = `http://127.0.0.1:${daemonPort}`
 
 // Bare-path API surface proxied to the daemon (see webapp-frontend.md:
 // the slice keeps the existing paths rather than a /v1 prefix).
-const apiPrefixes = ['/session', '/project', '/tool', '/auth', '/prewarm', '/health']
+const apiPrefixes = ['/session', '/project', '/tool', '/auth', '/prewarm', '/health', '/join']
 
 interface ProxyEntry {
   target: string

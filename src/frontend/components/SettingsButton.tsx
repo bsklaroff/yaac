@@ -4,7 +4,7 @@ import { Dialog } from '@base-ui/react/dialog'
 import { Radio } from '@base-ui/react/radio'
 import { RadioGroup } from '@base-ui/react/radio-group'
 import { CloseIcon, GeneralIcon, KeyIcon, SettingsIcon, TOOL_LABEL } from '@/frontend/lib/icons'
-import { addGitCredential, getAuthList, getDefaultTool, setDefaultTool } from '@/frontend/lib/settingsApi'
+import { addGitCredential, getAuthList, getDefaultTool, getTailnetSharing, setDefaultTool, setTailnetSharing } from '@/frontend/lib/settingsApi'
 import type { AgentTool, AuthListResult } from '@/shared/types'
 
 const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode']
@@ -26,10 +26,12 @@ export function SettingsButton(): JSX.Element {
   const [section, setSection] = useState<SettingsSection>('general')
   const [tool, setTool] = useState<AgentTool | null>(null)
   const [auth, setAuth] = useState<AuthListResult | null>(null)
+  const [tailnet, setTailnet] = useState<boolean | null>(null)
 
   const refresh = (): void => {
     void getDefaultTool().then(setTool).catch((e: unknown) => console.error(e))
     void getAuthList().then(setAuth).catch((e: unknown) => console.error(e))
+    void getTailnetSharing().then(setTailnet).catch((e: unknown) => console.error(e))
   }
 
   useEffect(() => { if (open) refresh() }, [open])
@@ -37,6 +39,12 @@ export function SettingsButton(): JSX.Element {
   const pickTool = (t: AgentTool): void => {
     setTool(t)
     void setDefaultTool(t).catch((e: unknown) => console.error(e))
+  }
+
+  const toggleTailnet = (): void => {
+    const next = !tailnet
+    setTailnet(next)
+    void setTailnetSharing(next).catch((e: unknown) => console.error(e))
   }
 
   return (
@@ -114,6 +122,20 @@ export function SettingsButton(): JSX.Element {
                       </label>
                     ))}
                   </RadioGroup>
+                </Field>
+                <Field
+                  label="Share over tailnet"
+                  hint="Also listen on this machine's tailscale address so session share links work for teammates. Takes effect after a daemon restart."
+                >
+                  <label className="flex w-fit cursor-default items-center gap-2.5 text-xs text-text-dim">
+                    <input
+                      type="checkbox"
+                      checked={tailnet ?? false}
+                      onChange={toggleTailnet}
+                      className="h-3.5 w-3.5 accent-[#d4875f]"
+                    />
+                    Enabled
+                  </label>
                 </Field>
               </section>
             )}

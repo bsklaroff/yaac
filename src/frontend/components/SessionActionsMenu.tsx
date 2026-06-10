@@ -1,8 +1,9 @@
 import { useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { Menu } from '@base-ui/react/menu'
-import { MoreIcon, RenameIcon, RestartIcon } from '@/frontend/lib/icons'
+import { MoreIcon, RenameIcon, RestartIcon, ShareIcon } from '@/frontend/lib/icons'
 import { InputDialog } from '@/frontend/components/ui/InputDialog'
+import { ShareDialog } from '@/frontend/components/ShareDialog'
 import { renameSession, restartSession } from '@/frontend/lib/createSession'
 import { useUiStore } from '@/frontend/store'
 
@@ -22,6 +23,7 @@ export function SessionActionsMenu({
 }): JSX.Element {
   const reconnectTerminal = useUiStore((s) => s.reconnectTerminal)
   const [renaming, setRenaming] = useState(false)
+  const [sharing, setSharing] = useState(false)
 
   const onRestart = (): void => {
     void restartSession(sessionId, () => {})
@@ -48,6 +50,13 @@ export function SessionActionsMenu({
               data-[starting-style]:opacity-0 data-[ending-style]:opacity-0">
               <Menu.Item
                 className={clsx(ITEM, 'text-text-dim data-[highlighted]:bg-surface-3 data-[highlighted]:text-text')}
+                onClick={() => setSharing(true)}
+              >
+                <ShareIcon size={14} />
+                Share
+              </Menu.Item>
+              <Menu.Item
+                className={clsx(ITEM, 'text-text-dim data-[highlighted]:bg-surface-3 data-[highlighted]:text-text')}
                 onClick={() => setRenaming(true)}
               >
                 <RenameIcon size={14} />
@@ -64,6 +73,8 @@ export function SessionActionsMenu({
           </Menu.Positioner>
         </Menu.Portal>
       </Menu.Root>
+
+      <ShareDialog sessionId={sessionId} open={sharing} onOpenChange={setSharing} />
 
       <InputDialog
         open={renaming}
