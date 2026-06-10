@@ -25,6 +25,8 @@ export {
   X as CloseIcon,
   KeyRound as KeyIcon,
   SlidersHorizontal as GeneralIcon,
+  Columns2 as SplitRightIcon,
+  Rows2 as SplitDownIcon,
 } from 'lucide-react'
 
 /** Display name per agent tool (proper brand casing, incl. OpenCode). */

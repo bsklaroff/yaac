@@ -73,10 +73,12 @@ describe('selection + project switching', () => {
     expect(useUiStore.getState().terminalNonces).toEqual({ t1: 2, t2: 1 })
   })
 
-  it('setTerminalTab tracks the active tab per session', () => {
-    useUiStore.getState().setTerminalTab('s1', 'shell')
-    useUiStore.getState().setTerminalTab('s2', 'agent')
-    useUiStore.getState().setTerminalTab('s1', 'agent')
-    expect(useUiStore.getState().terminalTabs).toEqual({ s1: 'agent', s2: 'agent' })
+  it('setSessionLayout stores per-session workspace trees (null = emptied)', () => {
+    const tree = { type: 'split' as const, dir: 'row' as const, ratio: 0.5,
+      a: { type: 'leaf' as const, target: 'agent' },
+      b: { type: 'leaf' as const, target: 'shell:shell' } }
+    useUiStore.getState().setSessionLayout('s1', tree)
+    useUiStore.getState().setSessionLayout('s2', null)
+    expect(useUiStore.getState().layouts).toEqual({ s1: tree, s2: null })
   })
 })

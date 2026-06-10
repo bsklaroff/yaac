@@ -85,12 +85,20 @@ export function SessionTerminal({
       resizeSub = term.onResize((): void => sendResize())
     }, 0)
 
-    const onWindowResize = (): void => fit.fit()
-    window.addEventListener('resize', onWindowResize)
+    // Refit on any container size change (window resizes, but also split
+    // panes opening/closing and divider drags), coalesced to one fit per
+    // frame.
+    let fitRaf = 0
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(fitRaf)
+      fitRaf = requestAnimationFrame(() => fit.fit())
+    })
+    observer.observe(el)
 
     return (): void => {
       clearTimeout(connectTimer)
-      window.removeEventListener('resize', onWindowResize)
+      observer.disconnect()
+      cancelAnimationFrame(fitRaf)
       dataSub?.dispose()
       resizeSub?.dispose()
       if (ws) {
