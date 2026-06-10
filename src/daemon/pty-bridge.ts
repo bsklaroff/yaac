@@ -6,11 +6,64 @@ const DEFAULT_COLS = 80
 const DEFAULT_ROWS = 24
 
 /**
- * `podman exec -it <container> tmux -S <sock> attach-session -t yaac` —
- * the same invocation the CLI's `session attach` runs, but spawned under
- * a PTY on the daemon so podman gets a real tty.
+ * What a terminal tab attaches to inside the container:
+ *  - 'agent'          — the primary `yaac` tmux session (the agent CLI).
+ *  - 'shell:<name>'   — a scratch-shell tmux session ('shell', 'shell-2', …),
+ *    created lazily; persists across reloads. 'shell' is accepted as an
+ *    alias for 'shell:shell'.
+ *  - 'window:@<id>'   — a specific window of the `yaac` session (e.g. an
+ *    initCommands dev server), viewed through a per-client grouped session
+ *    so the active window of other viewers (and the CLI) is never touched.
  */
-export function attachArgs(containerName: string): string[] {
+export type PtyTarget = string
+
+const SHELL_NAME = /^shell(?:-[0-9]{1,4})?$/
+const WINDOW_ID = /^@[0-9]{1,6}$/
+
+/** Coerce a client-supplied target (e.g. a WS query param) to a PtyTarget.
+ *  Anything unrecognized falls back to the agent. */
+export function parsePtyTarget(raw: unknown): PtyTarget {
+  if (typeof raw !== 'string') return 'agent'
+  if (raw === 'agent') return 'agent'
+  if (raw === 'shell') return 'shell:shell'
+  if (raw.startsWith('shell:') && SHELL_NAME.test(raw.slice('shell:'.length))) return raw
+  if (raw.startsWith('window:') && WINDOW_ID.test(raw.slice('window:'.length))) return raw
+  return 'agent'
+}
+
+/**
+ * Argv for attaching a tab's PTY. Spawned under a PTY on the daemon so
+ * podman gets a real tty.
+ *
+ * Shells: ensure the session exists *detached*, then attach. Deliberately
+ * NOT `new-session -A`: two clients attaching in quick succession (React
+ * dev double-mount, fast tab toggles) race the attached-create and can take
+ * the freshly created session down with the first client. Detached creation
+ * + attach is idempotent — the duplicate create fails harmlessly.
+ *
+ * Windows: attach via a per-client grouped session (`new-session -t yaac`)
+ * with destroy-unattached on, so each viewer selects the window
+ * independently and the throwaway grouped session dies on detach (the
+ * windows themselves belong to the group and live on).
+ */
+export function attachArgs(containerName: string, target: PtyTarget = 'agent'): string[] {
+  const tmux = `tmux -S ${CONTAINER_TMUX_SOCK}`
+  if (target.startsWith('shell:')) {
+    const name = target.slice('shell:'.length)
+    return [
+      'exec', '-it', containerName,
+      'sh', '-c',
+      `${tmux} new-session -d -s ${name} -c /workspace 2>/dev/null; exec ${tmux} attach-session -t ${name}`,
+    ]
+  }
+  if (target.startsWith('window:')) {
+    const windowId = target.slice('window:'.length)
+    return [
+      'exec', '-it', containerName,
+      'sh', '-c',
+      `exec ${tmux} new-session -t yaac -s view-$$ \\; set-option destroy-unattached on \\; select-window -t '${windowId}'`,
+    ]
+  }
   return [
     'exec', '-it', containerName,
     'tmux', '-S', CONTAINER_TMUX_SOCK, 'attach-session', '-t', 'yaac',
@@ -60,15 +113,30 @@ function toText(data: string | Buffer | ArrayBuffer): string {
   return Buffer.from(data as ArrayBuffer).toString('utf8')
 }
 
+/** How long after the graceful tmux detach to force-kill the PTY. */
+const DETACH_GRACE_MS = 400
+
 /**
  * Wire a PTY to a socket per the wire protocol:
  *   - PTY output  → binary frames to the client
  *   - binary in   → PTY stdin (keystrokes)
  *   - text in     → control: {resize}/{signal}/{ping}
  *   - PTY exit    → close the socket
- *   - socket close→ kill the PTY (detaches tmux; the session lives on)
+ *   - socket close→ detach tmux gracefully, then kill the PTY
+ *
+ * The detach-first matters: killing the host-side `podman exec` does NOT
+ * terminate the exec'd tmux client inside the container (podman orphans
+ * exec sessions), so a plain kill leaks a zombie attached client in the
+ * container on every disconnect. Writing the detach keystroke (prefix + d;
+ * the containers run stock tmux bindings) makes the client exit cleanly on
+ * both sides; the delayed kill is the fallback for a wedged client.
  */
-export function bridge(ptyProc: PtyLike, sock: SocketLike): void {
+export function bridge(
+  ptyProc: PtyLike,
+  sock: SocketLike,
+  opts: { detachGraceMs?: number } = {},
+): void {
+  const detachGraceMs = opts.detachGraceMs ?? DETACH_GRACE_MS
   ptyProc.onData((d) => {
     try {
       sock.send(Buffer.from(d, 'utf8'))
@@ -103,10 +171,17 @@ export function bridge(ptyProc: PtyLike, sock: SocketLike): void {
 
   sock.onClose(() => {
     try {
-      ptyProc.kill()
+      ptyProc.write('\x02d') // C-b d: detach the tmux client cleanly
     } catch {
-      // already gone
+      // pty already gone
     }
+    setTimeout(() => {
+      try {
+        ptyProc.kill()
+      } catch {
+        // already gone
+      }
+    }, detachGraceMs)
   })
 }
 
@@ -133,8 +208,9 @@ export function parsePtySize(
 export function spawnAttachPty(
   containerName: string,
   size: { cols?: number; rows?: number } = {},
+  target: PtyTarget = 'agent',
 ): IPty {
-  return pty.spawn('podman', attachArgs(containerName), {
+  return pty.spawn('podman', attachArgs(containerName, target), {
     name: 'xterm-color',
     cols: size.cols ?? DEFAULT_COLS,
     rows: size.rows ?? DEFAULT_ROWS,

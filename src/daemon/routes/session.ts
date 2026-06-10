@@ -14,6 +14,7 @@ import { resolveSessionContainer } from '@/daemon/session-resolve'
 import { getPrewarmSession, clearPrewarmSession } from '@/lib/prewarm'
 import { pickNextStreamSession } from '@/daemon/stream-picker'
 import { notifySessionListChanged } from '@/daemon/sessions-changed'
+import { listSessionTerminals, killShellTerminal } from '@/daemon/terminals'
 
 export const sessionApp = new Hono()
   .get(
@@ -183,6 +184,24 @@ export const sessionApp = new Hono()
     const resolved = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
     return c.json({ containerName: resolved.containerName })
   })
+  .get('/:id/terminals', async (c) => {
+    const { containerName } = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
+    return c.json(await listSessionTerminals(containerName))
+  })
+  .post(
+    '/:id/terminals/close',
+    zValidator('json', z.object({ target: z.string().min(1) })),
+    async (c) => {
+      const { containerName } = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
+      const { target } = c.req.valid('json')
+      try {
+        await killShellTerminal(containerName, target)
+      } catch (err) {
+        throw new DaemonError('VALIDATION', err instanceof Error ? err.message : String(err))
+      }
+      return c.body(null, 204)
+    },
+  )
   .get('/:id', async (c) => c.json(await getSessionDetail(c.req.param('id'))))
   .get('/:id/blocked-hosts', async (c) => c.json(await getSessionBlockedHosts(c.req.param('id'))))
   .get('/:id/prompt', async (c) => {
