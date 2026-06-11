@@ -7,9 +7,9 @@ import type { PtyLike, SocketLike } from '@/daemon/pty-bridge'
 vi.mock('@lydell/node-pty', () => ({ spawn: vi.fn(() => ({})) }))
 
 describe('attachArgs', () => {
-  it('builds the podman exec tmux attach argv (agent default)', () => {
+  it('builds the kubectl exec tmux attach argv (agent default)', () => {
     expect(attachArgs('yaac-demo-abc')).toEqual([
-      'exec', '-it', 'yaac-demo-abc',
+      'exec', '-n', 'yaac', '-it', 'job/yaac-demo-abc', '--',
       'tmux', '-S', '/tmp/yaac-tmux/server', 'attach-session', '-t', 'yaac',
     ])
     expect(attachArgs('yaac-demo-abc', 'agent')).toEqual(attachArgs('yaac-demo-abc'))
@@ -17,18 +17,20 @@ describe('attachArgs', () => {
 
   it('builds the lazy-create shell attach argv for shell targets', () => {
     expect(attachArgs('yaac-demo-abc', 'shell:shell')).toEqual([
-      'exec', '-it', 'yaac-demo-abc',
+      'exec', '-n', 'yaac', '-it', 'job/yaac-demo-abc', '--',
       'sh', '-c',
       'tmux -S /tmp/yaac-tmux/server new-session -d -s shell -c /workspace 2>/dev/null; '
       + 'exec tmux -S /tmp/yaac-tmux/server attach-session -t shell',
     ])
-    expect(attachArgs('yaac-demo-abc', 'shell:shell-2')[5]).toContain('-s shell-2')
+    expect(attachArgs('yaac-demo-abc', 'shell:shell-2')[8]).toContain('-s shell-2')
   })
 
   it('builds a grouped-session view argv for window targets', () => {
     const argv = attachArgs('yaac-demo-abc', 'window:@3')
-    expect(argv.slice(0, 4)).toEqual(['exec', '-it', 'yaac-demo-abc', 'sh'])
-    const cmd = argv[5]
+    expect(argv.slice(0, 7)).toEqual([
+      'exec', '-n', 'yaac', '-it', 'job/yaac-demo-abc', '--', 'sh',
+    ])
+    const cmd = argv[8]
     expect(cmd).toContain('new-session -t yaac -s view-$$')
     expect(cmd).toContain('set-option destroy-unattached on')
     expect(cmd).toContain("select-window -t '@3'")
@@ -56,10 +58,10 @@ describe('parsePtyTarget', () => {
 })
 
 describe('spawnAttachPty', () => {
-  it('spawns `podman` under a PTY with the attach argv and given size', () => {
+  it('spawns `kubectl` under a PTY with the attach argv and given size', () => {
     spawnAttachPty('yaac-demo', { cols: 100, rows: 40 })
     expect(pty.spawn).toHaveBeenCalledWith(
-      'podman',
+      'kubectl',
       attachArgs('yaac-demo'),
       expect.objectContaining({ name: 'xterm-color', cols: 100, rows: 40 }),
     )
@@ -178,8 +180,8 @@ describe('bridge', () => {
       bridge(pty, sock, { detachGraceMs: 400 })
       sock.emitClose()
       // Graceful: the detach keystroke (C-b d) goes to the tmux client so
-      // the exec'd process exits inside the container too (podman orphans
-      // exec sessions on a plain host-side kill).
+      // the exec'd process exits inside the container too (a plain
+      // host-side kill can orphan the remote tmux client).
       expect(pty.written).toEqual(['\x02d'])
       expect(pty.killed).toEqual([])
       vi.advanceTimersByTime(400)

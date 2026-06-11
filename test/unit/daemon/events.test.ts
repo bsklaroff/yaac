@@ -1,10 +1,19 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
+
+vi.mock('@/lib/session/list', () => ({
+  listActiveSessions: vi.fn().mockResolvedValue({ sessions: [], stale: [] }),
+}))
+
+vi.mock('@/lib/project/list', () => ({
+  listProjects: vi.fn().mockResolvedValue([]),
+}))
+
 import { EventHub, buildSnapshot, serializeEvent } from '@/daemon/events'
 import type { WsLike } from '@/daemon/events'
 import type { DaemonSnapshot } from '@/shared/types'
 
 function emptySnapshot(): DaemonSnapshot {
-  return { sessions: [], stale: [], failedPrewarms: [], projects: [], prewarm: {} }
+  return { sessions: [], stale: [], projects: [] }
 }
 
 function snapshotWithProject(slug: string): DaemonSnapshot {
@@ -102,12 +111,10 @@ describe('EventHub', () => {
 })
 
 describe('buildSnapshot', () => {
-  it('returns all five state slices', async () => {
+  it('returns all three state slices', async () => {
     const snap = await buildSnapshot()
     expect(Array.isArray(snap.sessions)).toBe(true)
     expect(Array.isArray(snap.stale)).toBe(true)
-    expect(Array.isArray(snap.failedPrewarms)).toBe(true)
     expect(Array.isArray(snap.projects)).toBe(true)
-    expect(typeof snap.prewarm).toBe('object')
   })
 })

@@ -2,12 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 
-vi.mock('@/lib/container/runtime', () => ({
-  podmanExecWithRetry: vi.fn(),
-  shellPodmanWithRetry: vi.fn(),
+vi.mock('@/lib/k8s/exec', () => ({
+  containerExec: vi.fn(),
 }))
 
-import { podmanExecWithRetry, shellPodmanWithRetry } from '@/lib/container/runtime'
+import { containerExec } from '@/lib/k8s/exec'
 import { opencodeMetaDir, opencodeMetaFile } from '@/lib/project/paths'
 import {
   pickOpencodeSession,
@@ -19,8 +18,30 @@ import {
   _clearOpencodeProbeCacheForTests,
 } from '@/lib/session/opencode-status'
 
-const mockedExec = vi.mocked(podmanExecWithRetry)
-const mockedShell = vi.mocked(shellPodmanWithRetry)
+const mockedExec = vi.mocked(containerExec)
+
+/**
+ * Both the HTTP probe (`curl /session`) and the tmux pane capture go
+ * through `containerExec` now. Helpers below install a dispatching
+ * implementation so each test can control the two paths independently.
+ */
+function mockProbeResult(result: { stdout: string; stderr: string } | Error): void {
+  mockedExec.mockImplementation((_jobName: string, cmd: string) => {
+    if (cmd.includes('curl')) {
+      return result instanceof Error ? Promise.reject(result) : Promise.resolve(result)
+    }
+    return Promise.reject(new Error('unexpected non-probe exec'))
+  })
+}
+
+function mockPaneResult(result: { stdout: string; stderr: string } | Error): void {
+  mockedExec.mockImplementation((_jobName: string, cmd: string) => {
+    if (cmd.includes('capture-pane')) {
+      return result instanceof Error ? Promise.reject(result) : Promise.resolve(result)
+    }
+    return Promise.reject(new Error('unexpected non-pane exec'))
+  })
+}
 
 function sessionsStdout(
   sessions: Array<{ id: string; title?: string; parentID?: string; updated?: number }>,
@@ -47,7 +68,6 @@ describe('opencode-status', () => {
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
     mockedExec.mockReset()
-    mockedShell.mockReset()
     _clearOpencodeProbeCacheForTests()
   })
 
@@ -127,13 +147,13 @@ describe('opencode-status', () => {
 
   describe('getSessionOpencodeStatus', () => {
     it('maps a pane with the interrupt hint to running', async () => {
-      mockedShell.mockResolvedValueOnce(paneStdout('working...\n  esc interrupt\n'))
+      mockPaneResult(paneStdout('working...\n  esc interrupt\n'))
       const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
       expect(status).toBe('running')
     })
 
     it('maps a pane with the permission overlay to waiting', async () => {
-      mockedShell.mockResolvedValueOnce(paneStdout(
+      mockPaneResult(paneStdout(
         '△ Permission required\n  $ rm -rf /\n  esc interrupt\n',
       ))
       const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
@@ -141,7 +161,7 @@ describe('opencode-status', () => {
     })
 
     it('maps a pane with the question overlay to waiting', async () => {
-      mockedShell.mockResolvedValueOnce(paneStdout(
+      mockPaneResult(paneStdout(
         'Pick one:\n  > A\n    B\n  enter submit  esc dismiss\n',
       ))
       const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
@@ -149,33 +169,33 @@ describe('opencode-status', () => {
     })
 
     it('maps an idle pane (no markers) to waiting', async () => {
-      mockedShell.mockResolvedValueOnce(paneStdout('Ready.\n> _\n'))
+      mockPaneResult(paneStdout('Ready.\n> _\n'))
       const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
       expect(status).toBe('waiting')
     })
 
     it('returns waiting when capture-pane fails (container gone / tmux not up yet)', async () => {
-      mockedShell.mockRejectedValueOnce(new Error('exec failed'))
+      mockPaneResult(new Error('exec failed'))
       const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
       expect(status).toBe('waiting')
     })
 
     it('coalesces concurrent probes into one capture-pane exec via the cache', async () => {
-      mockedShell.mockResolvedValueOnce(paneStdout('  esc interrupt\n'))
+      mockPaneResult(paneStdout('  esc interrupt\n'))
       const [a, b, c] = await Promise.all([
         getSessionOpencodeStatus('proj', 'sid', 'container'),
         getSessionOpencodeStatus('proj', 'sid', 'container'),
         getSessionOpencodeStatus('proj', 'sid', 'container'),
       ])
       expect([a, b, c]).toEqual(['running', 'running', 'running'])
-      expect(mockedShell).toHaveBeenCalledTimes(1)
+      expect(mockedExec).toHaveBeenCalledTimes(1)
     })
   })
 
   describe('getSessionOpencodeFirstUserMessage', () => {
     it('returns the title from the probe and caches it to the meta file', async () => {
       await fs.mkdir(opencodeMetaDir('proj'), { recursive: true })
-      mockedExec.mockResolvedValueOnce(sessionsStdout(
+      mockProbeResult(sessionsStdout(
         [{ id: 'ses_1', title: 'Refactor auth flow', updated: 1 }],
       ))
       const msg = await getSessionOpencodeFirstUserMessage('proj', 'sid', 'container')
@@ -194,20 +214,20 @@ describe('opencode-status', () => {
         opencodeMetaFile('proj', 'sid'),
         JSON.stringify({ firstMessage: 'stale-but-useful', capturedAt: '2026-01-01' }),
       )
-      mockedExec.mockResolvedValueOnce(sessionsStdout([]))
+      mockProbeResult(sessionsStdout([]))
       const msg = await getSessionOpencodeFirstUserMessage('proj', 'sid', 'container')
       expect(msg).toBe('stale-but-useful')
     })
 
     it('returns undefined when neither the probe nor the meta file have data', async () => {
-      mockedExec.mockRejectedValueOnce(new Error('exec failed'))
+      mockProbeResult(new Error('exec failed'))
       const msg = await getSessionOpencodeFirstUserMessage('proj', 'sid', 'container')
       expect(msg).toBeUndefined()
     })
   })
 
   describe('getDeletedSessionOpencodeFirstUserMessage', () => {
-    it('reads from the meta file without touching podman', async () => {
+    it('reads from the meta file without touching the pod', async () => {
       await fs.mkdir(opencodeMetaDir('proj'), { recursive: true })
       await fs.writeFile(
         opencodeMetaFile('proj', 'sid'),
@@ -237,7 +257,7 @@ describe('opencode-status', () => {
 
     it('probes and persists the title when no snapshot exists yet', async () => {
       await fs.mkdir(opencodeMetaDir('proj'), { recursive: true })
-      mockedExec.mockResolvedValueOnce(sessionsStdout(
+      mockProbeResult(sessionsStdout(
         [{ id: 'ses_1', title: 'Fix the parser', updated: 1 }],
       ))
       await ensureOpencodeFirstMessageCaptured('proj', 'sid', 'container')
@@ -249,7 +269,7 @@ describe('opencode-status', () => {
 
     it('persists nothing when the session has no title yet (no message submitted)', async () => {
       await fs.mkdir(opencodeMetaDir('proj'), { recursive: true })
-      mockedExec.mockResolvedValueOnce(sessionsStdout([{ id: 'ses_1', updated: 1 }]))
+      mockProbeResult(sessionsStdout([{ id: 'ses_1', updated: 1 }]))
       await ensureOpencodeFirstMessageCaptured('proj', 'sid', 'container')
       await expect(fs.access(opencodeMetaFile('proj', 'sid'))).rejects.toBeTruthy()
     })

@@ -7,14 +7,15 @@ import {
   type YaacTestEnv,
   type SpawnedDaemon,
 } from '@test/helpers/cli'
-import { createTestRepo, addTestProject, requirePodman } from '@test/helpers/setup'
+import { createTestRepo, addTestProject, requirePodman, requireCluster } from '@test/helpers/setup'
 
 describe('yaac session stream (real CLI + real daemon)', () => {
-  // pickNextStreamSession always calls podman.listContainers to filter
-  // running sessions, even when the projects dir is empty — so this
-  // test file needs a live podman.
+  // pickNextStreamSession always calls listSessionPods (kubectl) to
+  // filter running sessions, even when the projects dir is empty — so
+  // this test file needs a reachable cluster.
   beforeAll(async () => {
     await requirePodman()
+    await requireCluster()
   })
 
   let testEnv: YaacTestEnv

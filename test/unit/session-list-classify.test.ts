@@ -1,118 +1,116 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { classifySessionContainers, resolveStartingGraceMs, STARTING_GRACE_MS } from '@/lib/session/list'
+import { classifySessionPods, resolveStartingGraceMs, STARTING_GRACE_MS } from '@/lib/session/list'
+import type { SessionPod } from '@/lib/k8s/pods'
 
 const NOW = 1_800_000_000_000
 const now = (): number => NOW
 
-function container(overrides: {
-  id?: string
-  name?: string
+function pod(overrides: {
+  jobName?: string
+  podName?: string
   sessionId?: string
   project?: string
-  state?: string
+  running?: boolean
+  phase?: string
   ageMs?: number
-}) {
-  const createdSec = overrides.ageMs === undefined
-    ? Math.floor(NOW / 1000) - Math.ceil(STARTING_GRACE_MS / 1000) - 1
-    : Math.floor((NOW - overrides.ageMs) / 1000)
+}): SessionPod {
+  const createdAtMs = overrides.ageMs === undefined
+    ? NOW - STARTING_GRACE_MS - 1_000
+    : NOW - overrides.ageMs
+  const running = overrides.running ?? true
   return {
-    Id: overrides.id ?? 'id-' + (overrides.name ?? 'c'),
-    Names: [`/${overrides.name ?? 'yaac-proj-s1'}`],
-    Labels: {
-      'yaac.session-id': overrides.sessionId ?? 's1',
-      'yaac.project': overrides.project ?? 'proj',
-    },
-    State: overrides.state ?? 'running',
-    Created: createdSec,
+    jobName: overrides.jobName ?? 'yaac-proj-s1',
+    podName: overrides.podName ?? `${overrides.jobName ?? 'yaac-proj-s1'}-abcde`,
+    sessionId: overrides.sessionId ?? 's1',
+    projectSlug: overrides.project ?? 'proj',
+    tool: 'claude',
+    phase: overrides.phase ?? (running ? 'Running' : 'Failed'),
+    running,
+    createdAtMs,
+    labels: {},
   }
 }
 
-describe('classifySessionContainers', () => {
-  it('puts running containers with live tmux into the running bucket', async () => {
-    const c = container({})
-    const result = await classifySessionContainers([c], now(), () => Promise.resolve(true))
-    expect(result.running).toEqual([c])
+describe('classifySessionPods', () => {
+  it('puts running pods with live tmux into the running bucket', async () => {
+    const p = pod({})
+    const result = await classifySessionPods([p], now(), () => Promise.resolve(true))
+    expect(result.running).toEqual([p])
     expect(result.stale).toEqual([])
   })
 
-  it('classifies old running-but-no-tmux containers as zombie stale', async () => {
-    const c = container({ name: 'yaac-proj-zombie', sessionId: 'z1' })
-    const result = await classifySessionContainers([c], now(), () => Promise.resolve(false))
+  it('classifies old running-but-no-tmux pods as zombie stale', async () => {
+    const p = pod({ jobName: 'yaac-proj-zombie', sessionId: 'z1' })
+    const result = await classifySessionPods([p], now(), () => Promise.resolve(false))
     expect(result.running).toEqual([])
     expect(result.stale).toEqual([
-      { containerName: 'yaac-proj-zombie', projectSlug: 'proj', sessionId: 'z1', zombie: true },
+      { jobName: 'yaac-proj-zombie', projectSlug: 'proj', sessionId: 'z1', zombie: true },
     ])
   })
 
-  it('classifies old exited containers as non-zombie stale', async () => {
-    const c = container({ name: 'yaac-proj-dead', sessionId: 'd1', state: 'exited' })
-    const result = await classifySessionContainers([c], now(), () => Promise.resolve(true))
+  it('classifies old non-running pods as non-zombie stale', async () => {
+    const p = pod({ jobName: 'yaac-proj-dead', sessionId: 'd1', running: false })
+    const result = await classifySessionPods([p], now(), () => Promise.resolve(true))
     expect(result.running).toEqual([])
     expect(result.stale).toEqual([
-      { containerName: 'yaac-proj-dead', projectSlug: 'proj', sessionId: 'd1', zombie: false },
+      { jobName: 'yaac-proj-dead', projectSlug: 'proj', sessionId: 'd1', zombie: false },
     ])
   })
 
-  it('skips young running-but-no-tmux containers during the startup grace window', async () => {
-    // Simulates session-create attempt N with the container up but tmux
+  it('skips young running-but-no-tmux pods during the startup grace window', async () => {
+    // Simulates session-create attempt N with the pod up but tmux
     // not yet started. Reaping this would clobber the proxy session.
-    const c = container({ name: 'yaac-proj-new', state: 'running', ageMs: STARTING_GRACE_MS - 1_000 })
+    const p = pod({ jobName: 'yaac-proj-new', ageMs: STARTING_GRACE_MS - 1_000 })
     const isTmuxAlive = vi.fn().mockResolvedValue(false)
-    const result = await classifySessionContainers([c], now(), isTmuxAlive)
+    const result = await classifySessionPods([p], now(), isTmuxAlive)
     expect(result.running).toEqual([])
     expect(result.stale).toEqual([])
   })
 
-  it('skips young exited containers so a retry can recreate them safely', async () => {
+  it('skips young non-running pods so a retry can recreate them safely', async () => {
     // Simulates the window between attempt N dying and the retry loop
-    // firing `podman rm -f`. The reaper must not race with it.
-    const c = container({ state: 'exited', ageMs: STARTING_GRACE_MS - 1_000 })
-    const result = await classifySessionContainers([c], now(), () => Promise.resolve(true))
+    // recreating the Job. The reaper must not race with it.
+    const p = pod({ running: false, ageMs: STARTING_GRACE_MS - 1_000 })
+    const result = await classifySessionPods([p], now(), () => Promise.resolve(true))
     expect(result.running).toEqual([])
     expect(result.stale).toEqual([])
   })
 
-  it('reaps a container that has been running without tmux past the grace window', async () => {
-    const c = container({ name: 'yaac-proj-stuck', ageMs: STARTING_GRACE_MS + 5_000 })
-    const result = await classifySessionContainers([c], now(), () => Promise.resolve(false))
+  it('reaps a pod that has been running without tmux past the grace window', async () => {
+    const p = pod({ jobName: 'yaac-proj-stuck', ageMs: STARTING_GRACE_MS + 5_000 })
+    const result = await classifySessionPods([p], now(), () => Promise.resolve(false))
     expect(result.stale).toEqual([
-      { containerName: 'yaac-proj-stuck', projectSlug: 'proj', sessionId: 's1', zombie: true },
+      { jobName: 'yaac-proj-stuck', projectSlug: 'proj', sessionId: 's1', zombie: true },
     ])
   })
 
-  it('treats missing Created as old so legacy entries do not leak forever', async () => {
-    const c = { ...container({ state: 'exited' }), Created: undefined as number | undefined }
-    const result = await classifySessionContainers([c], now(), () => Promise.resolve(true))
+  it('treats createdAtMs=0 (missing creationTimestamp) as old so legacy entries do not leak forever', async () => {
+    const p = { ...pod({ running: false }), createdAtMs: 0 }
+    const result = await classifySessionPods([p], now(), () => Promise.resolve(true))
     expect(result.stale).toHaveLength(1)
     expect(result.stale[0].zombie).toBe(false)
   })
 
-  it('falls back to Id when Names is missing, and tolerates empty labels', async () => {
-    const c = {
-      Id: 'abc123',
-      Names: undefined as string[] | undefined,
-      Labels: undefined as Record<string, string> | undefined,
-      State: 'exited',
-      Created: Math.floor((NOW - STARTING_GRACE_MS - 1_000) / 1000),
-    }
-    const result = await classifySessionContainers([c], now(), () => Promise.resolve(true))
+  it('tolerates empty labels — a pod without slug/session-id still becomes stale', async () => {
+    const p = pod({ jobName: 'abc123', sessionId: '', project: '', running: false })
+    const result = await classifySessionPods([p], now(), () => Promise.resolve(true))
     expect(result.stale).toEqual([
-      { containerName: 'abc123', projectSlug: '', sessionId: '', zombie: false },
+      { jobName: 'abc123', projectSlug: '', sessionId: '', zombie: false },
     ])
   })
 
-  it('passes (slug, sessionId) from container labels to isTmuxAlive', async () => {
-    const c = container({ name: 'yaac-proj-s1', project: 'proj', sessionId: 's1' })
+  it('passes (slug, sessionId) from pod labels to isTmuxAlive', async () => {
+    const p = pod({ jobName: 'yaac-proj-s1', project: 'proj', sessionId: 's1' })
     const isTmuxAlive = vi.fn().mockResolvedValue(true)
-    await classifySessionContainers([c], now(), isTmuxAlive)
+    await classifySessionPods([p], now(), isTmuxAlive)
     expect(isTmuxAlive).toHaveBeenCalledWith('proj', 's1')
   })
 
   it('honors an explicit graceMs override', async () => {
-    const c = container({ state: 'exited', ageMs: 500 })
-    const zeroGrace = await classifySessionContainers([c], now(), () => Promise.resolve(true), 0)
+    const p = pod({ running: false, ageMs: 500 })
+    const zeroGrace = await classifySessionPods([p], now(), () => Promise.resolve(true), 0)
     expect(zeroGrace.stale).toHaveLength(1)
-    const largeGrace = await classifySessionContainers([c], now(), () => Promise.resolve(true), 10_000)
+    const largeGrace = await classifySessionPods([p], now(), () => Promise.resolve(true), 10_000)
     expect(largeGrace.stale).toEqual([])
   })
 })

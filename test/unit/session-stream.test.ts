@@ -5,8 +5,13 @@ import { sessionStream } from '@/commands/session-stream'
 import { getRpcClient } from '@/shared/daemon-client'
 import type * as daemonClientModule from '@/shared/daemon-client'
 
+// `@/lib/k8s/kubectl` (pulled in via `@/lib/k8s/exec`) promisifies
+// execFile/exec at module load, so the child_process mock must provide
+// them even though this test only asserts on spawn.
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
+  execFile: vi.fn(),
+  exec: vi.fn(),
 }))
 
 vi.mock('@/shared/daemon-client', async (importOriginal) => {
@@ -32,7 +37,7 @@ type StreamResponse =
   | {
       done: false
       sessionId: string
-      containerName: string
+      jobName: string
       tmuxSession: 'yaac'
       projectSlug: string
       tool: 'claude' | 'codex'
@@ -95,7 +100,7 @@ describe('sessionStream', () => {
       {
         done: false,
         sessionId: 'abc',
-        containerName: 'yaac-demo-abc',
+        jobName: 'yaac-demo-abc',
         tmuxSession: 'yaac',
         projectSlug: 'demo',
         tool: 'claude',
@@ -109,8 +114,11 @@ describe('sessionStream', () => {
 
     expect(spawn).toHaveBeenCalledTimes(1)
     expect(spawn).toHaveBeenCalledWith(
-      'podman',
-      ['exec', '-it', 'yaac-demo-abc', 'tmux', '-S', '/tmp/yaac-tmux/server', 'attach-session', '-t', 'yaac'],
+      'kubectl',
+      [
+        'exec', '-n', 'yaac', '-it', 'job/yaac-demo-abc', '--',
+        'tmux', '-S', '/tmp/yaac-tmux/server', 'attach-session', '-t', 'yaac',
+      ],
       { stdio: 'inherit' },
     )
     expect(post).toHaveBeenCalledTimes(2)

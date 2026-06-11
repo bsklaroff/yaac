@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import simpleGit from 'simple-git'
 import { cloneRepo } from '@/lib/git'
+import { listSessionPods } from '@/lib/k8s/pods'
 import {
   createYaacTestEnv,
   spawnYaacDaemon,
@@ -10,7 +11,12 @@ import {
   type YaacTestEnv,
   type SpawnedDaemon,
 } from '@test/helpers/cli'
-import { requirePodman, TEST_RUN_ID, podmanRetry } from '@test/helpers/setup'
+import {
+  requirePodman,
+  requireCluster,
+  execInJob,
+  cleanupSessionJobs,
+} from '@test/helpers/setup'
 import {
   startMockGit,
   seedMockGitRepo,
@@ -19,11 +25,11 @@ import {
 } from '@test/helpers/mock-remotes'
 
 /**
- * Boots a real opencode session container and asserts the in-container
+ * Boots a real opencode session pod and asserts the in-container
  * HTTP server (`opencode --port 4096 --hostname 127.0.0.1`) actually
  * comes up and answers on `/session` and `/session/status`. The yaac
  * status + first-message helpers in src/lib/session/opencode-status.ts
- * depend on these endpoints being reachable via `podman exec curl`, so
+ * depend on these endpoints being reachable via `kubectl exec curl`, so
  * without this test the entire opencode status pipeline is unverified
  * by CI.
  *
@@ -32,33 +38,25 @@ import {
  * provider, so reaching `/session/status` is enough to prove the wiring.
  */
 describe('yaac session create -t opencode (real CLI + real daemon + real opencode)', () => {
-  const networkName = `yaac-test-sessions-${TEST_RUN_ID}`
   let testEnv: YaacTestEnv
   let daemon: SpawnedDaemon | null = null
   let mockGit: MockGit | null = null
 
   beforeAll(async () => {
     await requirePodman()
-    try { await podmanRetry(['network', 'create', networkName]) } catch { /* exists */ }
+    await requireCluster()
   })
 
   beforeEach(async () => {
     testEnv = await createYaacTestEnv()
-    mockGit = await startMockGit(networkName)
+    mockGit = await startMockGit()
     await seedMockGitRepo(mockGit, 'repo-demo', { files: { 'README.md': '# demo\n' } })
   })
 
   afterEach(async () => {
     if (daemon) await daemon.stop()
     daemon = null
-    try {
-      const { stdout } = await podmanRetry([
-        'ps', '-a', '--filter', `label=yaac.data-dir=${testEnv.dataDir}`,
-        '--format', '{{.Names}}',
-      ])
-      const names = stdout.split('\n').filter(Boolean)
-      if (names.length > 0) await podmanRetry(['rm', '-f', ...names])
-    } catch { /* best effort */ }
+    await cleanupSessionJobs()
     await cleanupMocks([mockGit])
     mockGit = null
     await testEnv.cleanup()
@@ -97,18 +95,13 @@ describe('yaac session create -t opencode (real CLI + real daemon + real opencod
     const { exitCode } = await runYaac(daemonEnv, 'session', 'create', 'repo-demo', '--tool', 'opencode')
     expect(exitCode).toBe(0)
 
-    // Find this test's session container. session-create may also kick
-    // off a prewarm; the user-facing session is the oldest of the two.
-    const { stdout: rows } = await podmanRetry([
-      'ps', '--filter', `label=yaac.data-dir=${testEnv.dataDir}`,
-      '--filter', 'label=yaac.project=repo-demo',
-      '--format', '{{.Names}}|{{.CreatedAt}}',
-    ])
-    const containerName = rows
-      .split('\n').filter(Boolean)
-      .sort((a, b) => a.split('|')[1].localeCompare(b.split('|')[1]))
-      .map((row) => row.split('|')[0])[0]
-    expect(containerName).toBeDefined()
+    // Find this test's session Job (scoped by data-dir-hash via
+    // listSessionPods; oldest-first for determinism).
+    const pods = await listSessionPods('repo-demo')
+    const jobName = pods
+      .sort((a, b) => a.createdAtMs - b.createdAtMs)
+      .map((p) => p.jobName)[0]
+    expect(jobName).toBeDefined()
 
     // Poll the in-container HTTP server. opencode bootstraps the worker +
     // SQLite migrations before binding, so allow generous time. -sf
@@ -120,8 +113,8 @@ describe('yaac session create -t opencode (real CLI + real daemon + real opencod
     let lastStderr = ''
     for (let i = 0; i < 60 && !probeOk; i++) {
       try {
-        const { stdout } = await podmanRetry([
-          'exec', containerName, 'sh', '-c',
+        const { stdout } = await execInJob(jobName, [
+          'sh', '-c',
           'curl -sf -o /dev/stdout -w "\\n%{http_code}" http://127.0.0.1:4096/session 2>&1',
         ])
         lastStdout = stdout
@@ -148,14 +141,14 @@ describe('yaac session create -t opencode (real CLI + real daemon + real opencod
       // opencode crashing at startup (TUI couldn't init, missing native
       // module, etc.) or the wrong package name in Dockerfile.default.
       try {
-        const { stdout: pane } = await podmanRetry([
-          'exec', containerName, 'tmux', 'capture-pane', '-p', '-t', 'yaac:opencode',
+        const { stdout: pane } = await execInJob(jobName, [
+          'tmux', 'capture-pane', '-p', '-t', 'yaac:opencode',
         ])
         console.error('opencode tmux pane:\n' + pane)
       } catch { /* ignore */ }
       try {
-        const { stdout: ps } = await podmanRetry([
-          'exec', containerName, 'sh', '-c', 'ps -ef | grep -i opencode | grep -v grep',
+        const { stdout: ps } = await execInJob(jobName, [
+          'sh', '-c', 'ps -ef | grep -i opencode | grep -v grep',
         ])
         console.error('opencode processes:\n' + ps)
       } catch { /* ignore */ }
@@ -172,8 +165,8 @@ describe('yaac session create -t opencode (real CLI + real daemon + real opencod
     // container loopback, and the extra exec is flaky under
     // parallel-test-suite load (race between opencode startup and the
     // tmux window settling).
-    const { stdout: statusOut } = await podmanRetry([
-      'exec', containerName, 'sh', '-c',
+    const { stdout: statusOut } = await execInJob(jobName, [
+      'sh', '-c',
       'curl -sf http://127.0.0.1:4096/session/status',
     ])
     const status: unknown = JSON.parse(statusOut.trim() || '{}')
@@ -184,7 +177,7 @@ describe('yaac session create -t opencode (real CLI + real daemon + real opencod
     // container. This directory persists across sessions so that model
     // selection, permissions, and other settings written to
     // ~/.config/opencode/opencode.json via Config.updateGlobal() survive
-    // container teardown.
+    // pod teardown.
     const hostOcConfigDir = path.join(projectDir, 'opencode-config')
     const hostConfigStat = await fs.stat(hostOcConfigDir)
     expect(hostConfigStat.isDirectory()).toBe(true)
@@ -201,8 +194,8 @@ describe('yaac session create -t opencode (real CLI + real daemon + real opencod
     }
     expect(seeded.permission?.websearch).toBe('allow')
 
-    const { stdout: envOut } = await podmanRetry([
-      'exec', containerName, 'sh', '-c', 'printenv OPENCODE_ENABLE_EXA',
+    const { stdout: envOut } = await execInJob(jobName, [
+      'sh', '-c', 'printenv OPENCODE_ENABLE_EXA',
     ])
     expect(envOut.trim()).toBe('true')
 
@@ -211,8 +204,8 @@ describe('yaac session create -t opencode (real CLI + real daemon + real opencod
       path.join(hostOcConfigDir, 'opencode.json'),
       JSON.stringify({ model: 'anthropic/claude-sonnet-4-5' }),
     )
-    const { stdout: catOut } = await podmanRetry([
-      'exec', containerName, 'cat', '/home/yaac/.config/opencode/opencode.json',
+    const { stdout: catOut } = await execInJob(jobName, [
+      'cat', '/home/yaac/.config/opencode/opencode.json',
     ])
     const inside: unknown = JSON.parse(catOut.trim())
     expect(inside).toEqual({ model: 'anthropic/claude-sonnet-4-5' })

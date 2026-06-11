@@ -15,7 +15,7 @@ type AuthState = 'checking' | 'authed' | 'needs-bootstrap'
 /** Hit a protected endpoint to see if the session cookie is still good. */
 async function probeAuth(): Promise<boolean> {
   try {
-    await api.get('/prewarm')
+    await api.get('/auth/bootstrap-code')
     return true
   } catch (err) {
     // 401 → not authed; anything else (daemon down) → show the splash too
@@ -99,7 +99,7 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
   // isn't in the snapshot yet).
   useEffect(() => {
     if (!activeProjectSlug || creating) return
-    const visible = scoped.filter((s) => s.status !== 'prewarm' && !pendingDeleteIds.includes(s.sessionId))
+    const visible = scoped.filter((s) => !pendingDeleteIds.includes(s.sessionId))
     if (visible.length === 0) return
     if (selectedSessionId && visible.some((s) => s.sessionId === selectedSessionId)) return
     const pick = visible.find((s) => s.status === 'waiting') ?? visible[0]

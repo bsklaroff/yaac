@@ -1,5 +1,6 @@
 import net from 'node:net'
 import { type ChildProcess, spawn } from 'node:child_process'
+import { stdinExecArgs } from '@/lib/k8s/exec'
 import type { PortMapping } from '@/shared/types'
 
 export type { PortMapping }
@@ -68,17 +69,16 @@ export async function reserveAvailablePort(
 }
 
 /**
- * Create a RelayFactory that uses `podman exec` + `nc` to connect to
- * localhost inside the given container.  Using `localhost` instead of a
+ * Create a RelayFactory that uses `kubectl exec -i` + `nc` to connect to
+ * localhost inside the given session pod.  Using `localhost` instead of a
  * literal IP lets nc reach services bound to either IPv4 (127.0.0.1) or
  * IPv6 (::1) loopback.
  */
-export function podmanRelay(containerName: string): RelayFactory {
+export function kubectlRelay(jobName: string): RelayFactory {
   return (containerPort) =>
-    spawn('podman', [
-      'exec', '-i', containerName,
-      'nc', 'localhost', String(containerPort),
-    ], { stdio: ['pipe', 'pipe', 'ignore'] })
+    spawn('kubectl', stdinExecArgs(jobName, ['nc', 'localhost', String(containerPort)]), {
+      stdio: ['pipe', 'pipe', 'ignore'],
+    })
 }
 
 /**

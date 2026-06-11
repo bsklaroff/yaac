@@ -4,12 +4,16 @@ import os from 'node:os'
 import path from 'node:path'
 import type ChildProcessModule from 'node:child_process'
 
-vi.mock('@/lib/container/runtime', () => ({
-  podman: {
-    getContainer: vi.fn(),
-    listContainers: vi.fn(),
-  },
-}))
+// Pod/Job listing is mocked (gcOrphanEphemeralModuleDirs reads it);
+// sessionJobName stays real so the tmux-probe argv assertions hold.
+vi.mock('@/lib/k8s/pods', async (importOriginal) => {
+  const actual = await importOriginal<typeof podsModule>()
+  return {
+    ...actual,
+    listSessionPods: vi.fn(),
+    listSessionJobs: vi.fn(),
+  }
+})
 
 const execFileMock = vi.fn<(cmd: string, args: string[], opts: unknown) => Promise<void>>()
 vi.mock('node:child_process', async () => {
@@ -26,7 +30,8 @@ vi.mock('node:child_process', async () => {
   }
 })
 
-import { podman } from '@/lib/container/runtime'
+import { listSessionPods, listSessionJobs } from '@/lib/k8s/pods'
+import type * as podsModule from '@/lib/k8s/pods'
 import {
   isTmuxSessionAlive,
   cleanupSession,
@@ -37,10 +42,22 @@ import {
 } from '@/lib/session/cleanup'
 import { setDataDir } from '@/lib/project/paths'
 
-/* eslint-disable @typescript-eslint/unbound-method */
-const mockListContainers = vi.mocked(podman.listContainers)
-const mockGetContainer = vi.mocked(podman.getContainer)
-/* eslint-enable @typescript-eslint/unbound-method */
+const mockListPods = vi.mocked(listSessionPods)
+const mockListJobs = vi.mocked(listSessionJobs)
+
+function podWithSession(sessionId: string): podsModule.SessionPod {
+  return {
+    jobName: `yaac-proj-${sessionId}`,
+    podName: `yaac-proj-${sessionId}-x1`,
+    sessionId,
+    projectSlug: 'proj-a',
+    tool: 'claude',
+    phase: 'Running',
+    running: true,
+    createdAtMs: 0,
+    labels: {},
+  }
+}
 
 describe('isTmuxSessionAlive', () => {
   let dataDir: string
@@ -57,9 +74,9 @@ describe('isTmuxSessionAlive', () => {
   })
 
   function setProbeResult(slug: string, sid: string, alive: boolean): void {
-    const name = `yaac-${slug}-${sid}`
+    const target = `job/yaac-${slug}-${sid}`
     execFileMock.mockImplementation((_cmd: string, args: string[]) => {
-      if (args[0] === 'exec' && args[1] === name) {
+      if (args[0] === 'exec' && args.includes(target)) {
         return alive ? Promise.resolve() : Promise.reject(new Error('has-session: no such session'))
       }
       return Promise.reject(new Error('unexpected execFile call'))
@@ -74,8 +91,11 @@ describe('isTmuxSessionAlive', () => {
     setProbeResult('p', 's-up', true)
     await expect(isTmuxSessionAlive('p', 's-up')).resolves.toBe(true)
     expect(execFileMock).toHaveBeenCalledWith(
-      'podman',
-      ['exec', 'yaac-p-s-up', 'tmux', '-S', '/tmp/yaac-tmux/server', 'has-session', '-t', 'yaac'],
+      'kubectl',
+      [
+        'exec', '-n', 'yaac', 'job/yaac-p-s-up', '--',
+        'tmux', '-S', '/tmp/yaac-tmux/server', 'has-session', '-t', 'yaac',
+      ],
       expect.objectContaining({ timeout: expect.any(Number) as number }),
     )
   })
@@ -104,24 +124,23 @@ describe('isTmuxSessionAlive', () => {
 
   it('caches per (slug, sid), not globally', async () => {
     execFileMock.mockImplementation((_cmd: string, args: string[]) => {
-      return args[1] === 'yaac-p-s-A'
+      return args.includes('job/yaac-p-s-a')
         ? Promise.resolve()
         : Promise.reject(new Error('no session'))
     })
-    expect(await isTmuxSessionAlive('p', 's-A')).toBe(true)
-    expect(await isTmuxSessionAlive('p', 's-B')).toBe(false)
+    expect(await isTmuxSessionAlive('p', 's-a')).toBe(true)
+    expect(await isTmuxSessionAlive('p', 's-b')).toBe(false)
   })
 
   it('cleanupSession evicts the cache entry for that session', async () => {
     setProbeResult('p', 's-evict', true)
     expect(await isTmuxSessionAlive('p', 's-evict')).toBe(true)
 
-    mockGetContainer.mockReturnValue({
-      stop: vi.fn().mockResolvedValue(undefined),
-      remove: vi.fn().mockResolvedValue(undefined),
-    } as never)
+    // cleanupSession's `kubectl delete job` and proxy lookups also hit the
+    // mocked execFile and reject ("unexpected execFile call") — both paths
+    // are best-effort and swallow the error.
     await cleanupSession({
-      containerName: 'c-evict',
+      jobName: 'yaac-p-s-evict',
       projectSlug: 'p',
       sessionId: 's-evict',
     })
@@ -170,7 +189,9 @@ describe('gcOrphanEphemeralModuleDirs', () => {
   beforeEach(async () => {
     dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-gc-ephemeral-'))
     setDataDir(dataDir)
-    mockListContainers.mockReset()
+    mockListPods.mockReset()
+    mockListJobs.mockReset()
+    mockListJobs.mockResolvedValue([])
   })
 
   afterEach(async () => {
@@ -189,14 +210,12 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     return dir
   }
 
-  it('removes dirs whose session container is gone and leaves live ones', async () => {
+  it('removes dirs whose session pod is gone and leaves live ones', async () => {
     const live = await seedModulesDir('proj-a', 'live-1')
     const deadA = await seedModulesDir('proj-a', 'dead-1')
     const deadB = await seedModulesDir('proj-b', 'dead-2')
 
-    mockListContainers.mockResolvedValue([
-      { Labels: { 'yaac.session-id': 'live-1' } },
-    ] as never)
+    mockListPods.mockResolvedValue([podWithSession('live-1')])
 
     await gcOrphanEphemeralModuleDirs()
 
@@ -205,13 +224,27 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     await expect(fs.access(deadB)).rejects.toThrow()
   })
 
+  it('keeps dirs whose session only shows up in the Job list (pod mid-recreate)', async () => {
+    const jobOnly = await seedModulesDir('proj-a', 'job-only-1')
+
+    mockListPods.mockResolvedValue([])
+    mockListJobs.mockResolvedValue([{
+      jobName: 'yaac-proj-a-job-only-1',
+      sessionId: 'job-only-1',
+      projectSlug: 'proj-a',
+      createdAtMs: 0,
+    }])
+
+    await gcOrphanEphemeralModuleDirs()
+
+    await expect(fs.access(jobOnly)).resolves.toBeUndefined()
+  })
+
   it('also removes orphan per-session tmux dirs', async () => {
     const liveTmux = await seedSessionsDir('proj-a', 'live-1')
     const deadTmux = await seedSessionsDir('proj-a', 'dead-1')
 
-    mockListContainers.mockResolvedValue([
-      { Labels: { 'yaac.session-id': 'live-1' } },
-    ] as never)
+    mockListPods.mockResolvedValue([podWithSession('live-1')])
 
     await gcOrphanEphemeralModuleDirs()
 
@@ -221,32 +254,23 @@ describe('gcOrphanEphemeralModuleDirs', () => {
 
   it('is a no-op when the projects dir does not exist', async () => {
     // No projects dir seeded at all.
-    mockListContainers.mockResolvedValue([] as never)
+    mockListPods.mockResolvedValue([])
     await expect(gcOrphanEphemeralModuleDirs()).resolves.toBeUndefined()
   })
 
   it('skips projects that have no modules dir', async () => {
     // Seed only the project dir, not .cached-packages/modules/.
     await fs.mkdir(path.join(dataDir, 'projects', 'proj-empty'), { recursive: true })
-    mockListContainers.mockResolvedValue([] as never)
+    mockListPods.mockResolvedValue([])
     await expect(gcOrphanEphemeralModuleDirs()).resolves.toBeUndefined()
   })
 
-  it('returns quietly if container listing fails', async () => {
+  it('returns quietly if pod listing fails', async () => {
     const dead = await seedModulesDir('proj-a', 'would-be-removed')
-    mockListContainers.mockRejectedValue(new Error('podman offline'))
+    mockListPods.mockRejectedValue(new Error('cluster offline'))
 
     await expect(gcOrphanEphemeralModuleDirs()).resolves.toBeUndefined()
     // Nothing was removed because we bailed out before the sweep.
     await expect(fs.access(dead)).resolves.toBeUndefined()
-  })
-
-  it('filters by yaac.data-dir so other yaac installs are not considered', async () => {
-    mockListContainers.mockResolvedValue([] as never)
-    await gcOrphanEphemeralModuleDirs()
-
-    const filters = mockListContainers.mock.calls[0]?.[0] as
-      | { filters?: { label?: string[] } } | undefined
-    expect(filters?.filters?.label).toContain(`yaac.data-dir=${dataDir}`)
   })
 })

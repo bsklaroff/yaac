@@ -17,6 +17,6 @@
       "@test/*": ["./test/*"]
     }
   },
-  "include": ["src", "test", "scripts", "*.config.ts", "podman/proxy-sidecar/proxy.ts"],
+  "include": ["src", "test", "scripts", "*.config.ts", "k8s/proxy/proxy.ts"],
   "exclude": ["node_modules", "dist", "src/frontend", "vite.config.ts"]
 }

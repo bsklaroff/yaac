@@ -1,9 +1,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { podman } from '@/lib/container/runtime'
-import { removeProjectImageCacheVolume } from '@/lib/container/image-promoter'
-import { getDataDir, projectDir } from '@/lib/project/paths'
-import { cleanupSession } from '@/lib/session/cleanup'
+import { listSessionPods, type SessionPod } from '@/lib/k8s/pods'
+import { projectDir } from '@/lib/project/paths'
+import { cleanupSessionDetached } from '@/lib/session/cleanup'
 import { DaemonError } from '@/daemon/errors'
 
 /**
@@ -18,29 +17,24 @@ export async function removeProject(slug: string): Promise<void> {
     throw new DaemonError('NOT_FOUND', `project ${slug} not found`)
   }
 
-  let containers: Awaited<ReturnType<typeof podman.listContainers>> = []
+  let pods: SessionPod[] = []
   try {
-    containers = await podman.listContainers({
-      all: true,
-      filters: { label: [`yaac.data-dir=${getDataDir()}`, `yaac.project=${slug}`] },
-    })
+    pods = await listSessionPods(slug)
   } catch {
-    // podman unavailable — skip container cleanup, still nuke the dir.
+    // cluster unavailable — skip session cleanup, still nuke the dir.
   }
 
-  for (const c of containers) {
-    const name = c.Names?.[0]?.replace(/^\//, '') ?? c.Id
-    const sessionId = c.Labels?.['yaac.session-id'] ?? ''
+  for (const p of pods) {
     try {
-      await cleanupSession({ containerName: name, projectSlug: slug, sessionId })
+      await cleanupSessionDetached({
+        jobName: p.jobName,
+        projectSlug: slug,
+        sessionId: p.sessionId,
+      })
     } catch {
-      // best-effort cleanup — continue with the next container
+      // best-effort cleanup — continue with the next session
     }
   }
-
-  // All sessions (and their per-session graphroot volumes) are gone, so
-  // nothing still needs the project-shared image cache.
-  await removeProjectImageCacheVolume(slug)
 
   await fs.rm(dir, { recursive: true, force: true })
 }

@@ -2,29 +2,43 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { podmanRetry, removeContainer } from '@test/helpers/setup'
-import { createAndStartContainerWithRetry, execFileAsync } from '@/lib/container/runtime'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { baseImageHash } from '@/lib/container/image-builder'
+import { DOCKERFILES_DIR } from '@/lib/project/paths'
+import { ensureNamespace } from '@/lib/k8s/bootstrap'
+import {
+  k8sNamespace,
+  kubectlApply,
+  kubectlGetJson,
+  kubectlWithRetry,
+  type KubectlExecOptions,
+} from '@/lib/k8s/kubectl'
+import { registryHasTag, registryRef } from '@/lib/k8s/registry'
+
+const execFileAsync = promisify(execFile)
 
 /**
  * Mock LLM + mock git-over-HTTP servers that stand in for the real Anthropic,
  * OpenAI, and GitHub remotes when the proxy's upstream-redirect feature
- * reroutes them. Both run in containers on a podman network (usually the
- * test's proxy network) so the proxy can reach them by IP.
+ * reroutes them. Each mock runs as a Pod + ClusterIP Service in the test
+ * namespace, so the proxy pod reaches it via cluster DNS.
  *
  * Pairing: production traffic flows
- *   session container → HTTPS_PROXY → proxy sidecar (MITM + inject creds)
+ *   session pod → HTTPS_PROXY → proxy pod (MITM + inject creds)
  *     → https.request(api.anthropic.com)
  * Test traffic flows the same path, but the proxy's upstreamRedirects map
- * swaps the final hop to `mockLLM.networkIp:mockLLM.port` (plain HTTP —
- * mocks don't speak TLS).
+ * swaps the final hop to `{host: mock.host, port: mock.port}` — the mock
+ * Service's DNS name (plain HTTP — mocks don't speak TLS).
  */
 
 const MOCK_LLM_PORT = 9100
 const MOCK_GIT_PORT = 9101
 
 export interface MockLLM {
-  readonly containerName: string
-  readonly networkIp: string
+  readonly podName: string
+  /** In-cluster DNS name (`<svc>.<ns>.svc`) — the upstream-redirect target. */
+  readonly host: string
   readonly port: number
   /** Fetch every request the mock has seen, oldest first. */
   transcript(): Promise<MockLLMEntry[]>
@@ -39,8 +53,9 @@ export interface MockLLMEntry {
 }
 
 export interface MockGit {
-  readonly containerName: string
-  readonly networkIp: string
+  readonly podName: string
+  /** In-cluster DNS name (`<svc>.<ns>.svc`) — the upstream-redirect target. */
+  readonly host: string
   readonly port: number
   /** Host-side directory containing one bare repo per test (e.g. `repo-demo.git`). */
   readonly reposDir: string
@@ -48,20 +63,141 @@ export interface MockGit {
 }
 
 /**
- * Resolve the `yaac-test-base` image tag. The image is pre-built by
- * `test/global-setup.ts`; we pick the first `yaac-test-base:*` tag (excluding
- * the `-nestable` variant). Tests that need it without a fresh build should
- * already have it present.
+ * Resolve the in-cluster ref of the `yaac-test-base` image. The image is
+ * pre-built by `test/global-setup.ts` (same content-hash tag computation)
+ * and pushed to the local registry; pods can only pull from the registry,
+ * so a missing tag is a fail-fast setup error, never a build trigger.
+ * Exported for tests that launch session-like probe pods directly.
  */
-async function resolveTestBaseImage(): Promise<string> {
-  const { stdout } = await podmanRetry([
-    'images', '--format', '{{.Repository}}:{{.Tag}}', '--filter', 'reference=yaac-test-base',
-  ])
-  const tags = stdout.trim().split('\n').filter(Boolean).filter((t) => !t.includes('test-base-nestable'))
-  if (tags.length === 0) {
-    throw new Error('yaac-test-base image missing — did global-setup.ts run?')
+export async function resolveTestBaseImageRef(): Promise<string> {
+  const dockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
+  const tag = `yaac-test-base:${await baseImageHash(dockerfile)}`
+  if (!await registryHasTag(tag)) {
+    throw new Error(
+      `${tag} is not in the local registry — did test/global-setup.ts run `
+      + 'with the registry reachable?',
+    )
   }
-  return tags[0]
+  return registryRef(tag)
+}
+
+/** `kubectl exec` into a mock pod (argv passthrough, no shell quoting). */
+async function execInPod(
+  podName: string,
+  args: string[],
+  opts: KubectlExecOptions = {},
+): Promise<{ stdout: string; stderr: string }> {
+  return kubectlWithRetry(
+    ['exec', '-n', k8sNamespace(), podName, '--', ...args],
+    opts,
+  )
+}
+
+interface MockPodOpts {
+  /** Host dir mounted read-only at /srv/git (mock-git's repo store). */
+  hostPathDir?: string
+}
+
+/**
+ * Apply a single-container Pod running `node -e <script>` plus a ClusterIP
+ * Service with the same name, then wait until the in-pod server accepts
+ * connections on `port`.
+ */
+async function startMockPod(
+  name: string,
+  script: string,
+  port: number,
+  opts: MockPodOpts = {},
+): Promise<void> {
+  const ns = k8sNamespace()
+  await ensureNamespace()
+  const image = await resolveTestBaseImageRef()
+
+  await kubectlApply({
+    apiVersion: 'v1',
+    kind: 'Pod',
+    metadata: {
+      name,
+      namespace: ns,
+      labels: { 'app': name, 'yaac.test': 'true' },
+    },
+    spec: {
+      restartPolicy: 'Never',
+      automountServiceAccountToken: false,
+      enableServiceLinks: false,
+      containers: [
+        {
+          name: 'mock',
+          image,
+          imagePullPolicy: 'IfNotPresent',
+          command: ['node', '-e', script],
+          ports: [{ containerPort: port }],
+          ...(opts.hostPathDir
+            ? { volumeMounts: [{ name: 'repos', mountPath: '/srv/git', readOnly: true }] }
+            : {}),
+        },
+      ],
+      ...(opts.hostPathDir
+        ? { volumes: [{ name: 'repos', hostPath: { path: opts.hostPathDir, type: 'Directory' } }] }
+        : {}),
+    },
+  })
+  await kubectlApply({
+    apiVersion: 'v1',
+    kind: 'Service',
+    metadata: {
+      name,
+      namespace: ns,
+      labels: { 'yaac.test': 'true' },
+    },
+    spec: {
+      type: 'ClusterIP',
+      selector: { app: name },
+      ports: [{ port, targetPort: port }],
+    },
+  })
+
+  // Phase 1: wait for the pod to be Running (covers image pull).
+  interface RawPod { status?: { phase?: string } }
+  let phase = 'Pending'
+  for (let i = 0; i < 120; i++) {
+    const pod = await kubectlGetJson<RawPod>(['get', 'pod', name, '-n', ns])
+    phase = pod?.status?.phase ?? 'Unknown'
+    if (phase === 'Running') break
+    if (phase === 'Failed' || phase === 'Succeeded') {
+      throw new Error(`mock pod ${name} reached terminal phase ${phase}`)
+    }
+    await new Promise((r) => setTimeout(r, 500))
+  }
+  if (phase !== 'Running') {
+    throw new Error(`mock pod ${name} not Running after 60s (phase ${phase})`)
+  }
+
+  // Phase 2: wait for the node server inside to accept connections.
+  for (let i = 0; i < 40; i++) {
+    try {
+      await execInPod(name, [
+        'sh', '-c',
+        `node -e "require('net').connect({ host: '127.0.0.1', port: ${port} }).once('connect', () => process.exit(0)).once('error', () => process.exit(1))"`,
+      ], { timeout: 5000 })
+      return
+    } catch {
+      if (i === 39) throw new Error(`mock pod ${name} server did not become ready in 10s`)
+      await new Promise((r) => setTimeout(r, 250))
+    }
+  }
+}
+
+/** Delete a mock's Pod + Service, swallowing every error. */
+async function deleteMockPod(name: string): Promise<void> {
+  const ns = k8sNamespace()
+  await kubectlWithRetry([
+    'delete', 'pod', name, '-n', ns,
+    '--ignore-not-found', '--wait=false', '--grace-period=1',
+  ]).catch(() => { /* already gone */ })
+  await kubectlWithRetry([
+    'delete', 'service', name, '-n', ns, '--ignore-not-found',
+  ]).catch(() => { /* already gone */ })
 }
 
 const MOCK_LLM_SCRIPT = `
@@ -208,56 +344,35 @@ const MOCK_LLM_SCRIPT = `
   server.listen(${MOCK_LLM_PORT}, '0.0.0.0', () => console.log('mock-llm ready'));
 `
 
-export async function startMockLLM(networkName: string): Promise<MockLLM> {
-  const baseImage = await resolveTestBaseImage()
-  const containerName = `yaac-mock-llm-${crypto.randomBytes(4).toString('hex')}`
-
-  const container = await createAndStartContainerWithRetry({
-    Image: baseImage,
-    name: containerName,
-    Entrypoint: ['node', '-e', MOCK_LLM_SCRIPT],
-    Labels: { 'yaac.test': 'true' },
-    HostConfig: { NetworkMode: networkName },
-  })
-  const info = await container.inspect()
-  const networks = info.NetworkSettings.Networks as Record<string, { IPAddress: string }>
-  const networkIp = networks[networkName]?.IPAddress
-  if (!networkIp) throw new Error(`mock-llm has no IP on network ${networkName}`)
-
-  // Wait for the server to accept connections
-  for (let i = 0; i < 40; i++) {
-    try {
-      await podmanRetry([
-        'exec', containerName, 'sh', '-c',
-        `node -e "require('net').connect({ host: '127.0.0.1', port: ${MOCK_LLM_PORT} }).once('connect', () => process.exit(0)).once('error', () => process.exit(1))"`,
-      ], { timeout: 2000 })
-      break
-    } catch {
-      if (i === 39) throw new Error('mock-llm did not become ready in 10s')
-      await new Promise((r) => setTimeout(r, 250))
-    }
-  }
+export async function startMockLLM(): Promise<MockLLM> {
+  const podName = `yaac-mock-llm-${crypto.randomBytes(4).toString('hex')}`
+  await startMockPod(podName, MOCK_LLM_SCRIPT, MOCK_LLM_PORT)
 
   return {
-    containerName,
-    networkIp,
+    podName,
+    host: `${podName}.${k8sNamespace()}.svc`,
     port: MOCK_LLM_PORT,
     async transcript() {
-      const { stdout } = await podmanRetry([
-        'exec', containerName, 'cat', '/tmp/transcript.ndjson',
+      const { stdout } = await execInPod(podName, [
+        'cat', '/tmp/transcript.ndjson',
       ])
       return stdout.split('\n').filter(Boolean).map((line) => JSON.parse(line) as MockLLMEntry)
     },
-    async stop() { await removeContainer(containerName) },
+    async stop() { await deleteMockPod(podName) },
   }
 }
 
 /**
  * Start a mock git server that speaks the "dumb HTTP" protocol. Bare repos
- * live in `reposDir` on the host and are bind-mounted read-write into the
- * container (git needs to rewrite `info/refs` via `git update-server-info`
- * on seed). Read-only: enough for `git fetch` / `git clone`, not push. Add
- * `git-http-backend` CGI wrapping if push support is needed later.
+ * live in `reposDir` on the host and reach the pod through a read-only
+ * hostPath mount at /srv/git (seeding runs host-side git, including
+ * `git update-server-info`, so the pod never writes). Read-only: enough
+ * for `git fetch` / `git clone`, not push. Add `git-http-backend` CGI
+ * wrapping if push support is needed later.
+ *
+ * NOTE: hostPath mounts assume the cluster node can see the host's temp
+ * dir (kind: TMPDIR under the home extraMount, or an extra mount for
+ * /tmp) — the same wiring session pods need for their data-dir mounts.
  */
 const MOCK_GIT_SCRIPT = `
   const http = require('http');
@@ -306,49 +421,22 @@ const MOCK_GIT_SCRIPT = `
   }).listen(${MOCK_GIT_PORT}, '0.0.0.0', () => console.log('mock-git ready'));
 `
 
-export async function startMockGit(networkName: string): Promise<MockGit> {
-  const baseImage = await resolveTestBaseImage()
-  const containerName = `yaac-mock-git-${crypto.randomBytes(4).toString('hex')}`
+export async function startMockGit(): Promise<MockGit> {
+  const podName = `yaac-mock-git-${crypto.randomBytes(4).toString('hex')}`
   const reposDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-mock-git-'))
-  // The `node` user (uid 1000 in the image) owns the container's process;
-  // the repos dir must be world-readable so `node` can stat+stream the files.
+  // The container process runs as a non-root user; the repos dir must be
+  // world-readable so it can stat+stream the files.
   await fs.chmod(reposDir, 0o755)
 
-  const container = await createAndStartContainerWithRetry({
-    Image: baseImage,
-    name: containerName,
-    Entrypoint: ['node', '-e', MOCK_GIT_SCRIPT],
-    Labels: { 'yaac.test': 'true' },
-    HostConfig: {
-      NetworkMode: networkName,
-      Binds: [`${reposDir}:/srv/git:Z`],
-    },
-  })
-  const info = await container.inspect()
-  const networks = info.NetworkSettings.Networks as Record<string, { IPAddress: string }>
-  const networkIp = networks[networkName]?.IPAddress
-  if (!networkIp) throw new Error(`mock-git has no IP on network ${networkName}`)
-
-  for (let i = 0; i < 40; i++) {
-    try {
-      await podmanRetry([
-        'exec', containerName, 'sh', '-c',
-        `node -e "require('net').connect({ host: '127.0.0.1', port: ${MOCK_GIT_PORT} }).once('connect', () => process.exit(0)).once('error', () => process.exit(1))"`,
-      ], { timeout: 2000 })
-      break
-    } catch {
-      if (i === 39) throw new Error('mock-git did not become ready in 10s')
-      await new Promise((r) => setTimeout(r, 250))
-    }
-  }
+  await startMockPod(podName, MOCK_GIT_SCRIPT, MOCK_GIT_PORT, { hostPathDir: reposDir })
 
   return {
-    containerName,
-    networkIp,
+    podName,
+    host: `${podName}.${k8sNamespace()}.svc`,
     port: MOCK_GIT_PORT,
     reposDir,
     async stop() {
-      await removeContainer(containerName)
+      await deleteMockPod(podName)
       await fs.rm(reposDir, { recursive: true, force: true })
     },
   }
@@ -358,7 +446,7 @@ export async function startMockGit(networkName: string): Promise<MockGit> {
  * Create a bare repo under `mockGit.reposDir`/`<name>.git` with the given
  * file set committed on the default branch, then run `git update-server-info`
  * so the dumb-HTTP protocol can serve it. Uses the host's git binary, not
- * the container's — simpler and avoids round-tripping through podman exec.
+ * the pod's — simpler and avoids round-tripping through kubectl exec.
  */
 export async function seedMockGitRepo(
   mockGit: MockGit,
@@ -398,7 +486,7 @@ export async function seedMockGitRepo(
     await runGit(workdir, ['push', 'origin', branch])
     await execFileAsync('git', ['update-server-info'], { cwd: bareDir })
 
-    // Ensure mock-git's container user can read everything
+    // Ensure mock-git's pod user can read everything
     await execFileAsync('chmod', ['-R', 'a+rX', bareDir])
   } finally {
     await fs.rm(workdir, { recursive: true, force: true })
@@ -407,7 +495,7 @@ export async function seedMockGitRepo(
 
 /**
  * Drop all state for both mocks. Safe to call even if a mock has already
- * stopped — each `stop()` swallows "container not found" errors.
+ * stopped — each `stop()` swallows "not found" errors.
  */
 export async function cleanupMocks(
   mocks: Array<{ stop: () => Promise<void> } | null | undefined>,

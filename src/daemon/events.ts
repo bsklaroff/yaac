@@ -1,6 +1,5 @@
 import { listActiveSessions } from '@/lib/session/list'
 import { listProjects } from '@/lib/project/list'
-import { readPrewarmSessions } from '@/lib/prewarm'
 import { daemonLog } from '@/daemon/log'
 import type { DaemonEvent, DaemonSnapshot } from '@/shared/types'
 
@@ -15,17 +14,14 @@ export interface WsLike {
  * connecting client needs zero follow-up round-trips.
  */
 export async function buildSnapshot(): Promise<DaemonSnapshot> {
-  const [active, projects, prewarm] = await Promise.all([
+  const [active, projects] = await Promise.all([
     listActiveSessions(),
     listProjects(),
-    readPrewarmSessions(),
   ])
   return {
     sessions: active.sessions,
     stale: active.stale,
-    failedPrewarms: active.failedPrewarms,
     projects,
-    prewarm,
   }
 }
 

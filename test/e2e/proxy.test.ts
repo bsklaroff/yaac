@@ -3,12 +3,54 @@ import crypto from 'node:crypto'
 import http from 'node:http'
 import net from 'node:net'
 import tls from 'node:tls'
-import { requirePodman, podmanRetry, removeContainer } from '@test/helpers/setup'
+import {
+  requirePodman,
+  requireCluster,
+  useTestNamespace,
+  createTempDataDir,
+  cleanupTempDir,
+  TEST_PROXY_CONFIG,
+} from '@test/helpers/setup'
+import { resolveTestBaseImageRef } from '@test/helpers/mock-remotes'
 import { ProxyClient, PROXY_CONTAINER_PORT } from '@/lib/container/proxy-client'
-import { createAndStartContainerWithRetry } from '@/lib/container/runtime'
+import { PROXY_APP_NAME, PROXY_PORT } from '@/lib/k8s/bootstrap'
+import { ServicePortForward } from '@/lib/k8s/port-forward'
+import { readBlockedHosts } from '@/lib/session/blocked-hosts'
+import { writeProxySecrets } from '@/lib/project/credentials'
+import {
+  k8sNamespace,
+  kubectlApply,
+  kubectlGetJson,
+  kubectlWithRetry,
+} from '@/lib/k8s/kubectl'
 
-// Unique suffix per test run to avoid container/network name collisions
-const RUN_ID = crypto.randomBytes(4).toString('hex')
+/**
+ * Exercises the proxy directly through the new kubernetes ProxyClient:
+ * the proxy runs as the `yaac-proxy` Deployment+Service in the per-run
+ * test namespace; the test reaches its HTTP API through a loopback
+ * `kubectl port-forward` (the same transport the daemon uses), and
+ * in-cluster peers (echo servers, session-like pods) run as pods in the
+ * same namespace.
+ */
+
+// File-wide environment: per-run namespace + a temp data dir (the proxy
+// Deployment hostPath-mounts credential/agent dirs under the data dir).
+let restoreNamespace: (() => void) | null = null
+let tempDataDir: string | null = null
+
+beforeAll(async () => {
+  await requirePodman()
+  await requireCluster()
+  restoreNamespace = useTestNamespace()
+  tempDataDir = await createTempDataDir()
+})
+
+afterAll(async () => {
+  restoreNamespace?.()
+  restoreNamespace = null
+  if (tempDataDir) await cleanupTempDir(tempDataDir)
+  tempDataDir = null
+})
 
 /** Make an HTTP request through the proxy using the absolute-URI form. */
 function proxyRequest(
@@ -37,10 +79,10 @@ function proxyRequest(
 }
 
 /**
- * Open a raw TCP connection to the proxy's published port, send a CONNECT
- * request, and resolve with the response head (everything up to the blank
- * line). Used to assert the proxy's CONNECT-level responses (e.g. the 407
- * auth challenge) without a full TLS tunnel.
+ * Open a raw TCP connection to the proxy's forwarded loopback port, send a
+ * CONNECT request, and resolve with the response head (everything up to
+ * the blank line). Used to assert the proxy's CONNECT-level responses
+ * (e.g. the 407 auth challenge) without a full TLS tunnel.
  */
 function rawConnectHead(proxyPort: string | number, request: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -58,20 +100,139 @@ function rawConnectHead(proxyPort: string | number, request: string): Promise<st
   })
 }
 
+/** Delete a test pod (and its same-named service, if any), best-effort. */
+async function deleteTestPod(name: string): Promise<void> {
+  await kubectlWithRetry([
+    'delete', 'pod', name, '-n', k8sNamespace(),
+    '--ignore-not-found', '--wait=false', '--grace-period=1',
+  ]).catch(() => { /* ok */ })
+  await kubectlWithRetry([
+    'delete', 'service', name, '-n', k8sNamespace(), '--ignore-not-found',
+  ]).catch(() => { /* ok */ })
+}
+
+/** `kubectl exec` into a test pod (argv passthrough). */
+async function execInPod(
+  podName: string,
+  args: string[],
+  opts: { timeout?: number } = {},
+): Promise<{ stdout: string; stderr: string }> {
+  return kubectlWithRetry(
+    ['exec', '-n', k8sNamespace(), podName, '--', ...args],
+    opts,
+  )
+}
+
+/** Poll a pod until Running (covers registry image pull). */
+async function waitForPodRunning(name: string, timeoutMs = 60_000): Promise<void> {
+  interface RawPod { status?: { phase?: string } }
+  const deadline = Date.now() + timeoutMs
+  let phase = 'Pending'
+  while (Date.now() < deadline) {
+    const pod = await kubectlGetJson<RawPod>(['get', 'pod', name, '-n', k8sNamespace()])
+    phase = pod?.status?.phase ?? 'Unknown'
+    if (phase === 'Running') return
+    if (phase === 'Failed' || phase === 'Succeeded') {
+      throw new Error(`pod ${name} reached terminal phase ${phase}`)
+    }
+    await new Promise((r) => setTimeout(r, 500))
+  }
+  throw new Error(`pod ${name} not Running within ${timeoutMs}ms (phase ${phase})`)
+}
+
+const ECHO_PORT = 8080
+
+/**
+ * Start an HTTP echo server as a Pod + ClusterIP Service in the test
+ * namespace — the in-cluster peer the proxy forwards/redirects to.
+ * Returns the Service DNS name the proxy resolves.
+ */
+async function startEchoPod(name: string): Promise<{ host: string }> {
+  const echoScript = `
+    const http = require('http');
+    http.createServer((req, res) => {
+      const chunks = [];
+      req.on('data', c => chunks.push(c));
+      req.on('end', () => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          method: req.method,
+          url: req.url,
+          headers: req.headers,
+          body: Buffer.concat(chunks).toString('utf8'),
+        }));
+      });
+    }).listen(${ECHO_PORT}, '0.0.0.0', () => console.log('echo ready'));
+  `
+  const ns = k8sNamespace()
+  const image = await resolveTestBaseImageRef()
+  await kubectlApply({
+    apiVersion: 'v1',
+    kind: 'Pod',
+    metadata: { name, namespace: ns, labels: { 'app': name, 'yaac.test': 'true' } },
+    spec: {
+      restartPolicy: 'Never',
+      automountServiceAccountToken: false,
+      enableServiceLinks: false,
+      containers: [{
+        name: 'echo',
+        image,
+        imagePullPolicy: 'IfNotPresent',
+        command: ['node', '-e', echoScript],
+        ports: [{ containerPort: ECHO_PORT }],
+      }],
+    },
+  })
+  await kubectlApply({
+    apiVersion: 'v1',
+    kind: 'Service',
+    metadata: { name, namespace: ns, labels: { 'yaac.test': 'true' } },
+    spec: {
+      type: 'ClusterIP',
+      selector: { app: name },
+      ports: [{ port: ECHO_PORT, targetPort: ECHO_PORT }],
+    },
+  })
+  await waitForPodRunning(name)
+
+  // Wait for the echo server to be reachable through the SERVICE path —
+  // the same DNS name + ClusterIP route the proxy uses. Probing the
+  // pod's loopback is not enough: the service DNS record and kube-proxy
+  // endpoint programming land after the pod is up, and the first
+  // forwarding request would race them and 502.
+  const host = `${name}.${ns}.svc`
+  const probeUrl = `http://${host}:${ECHO_PORT}/ping`
+  let reachable = false
+  for (let i = 0; i < 40; i++) {
+    try {
+      const { stdout } = await execInPod(name, [
+        'sh', '-c', `curl -sf ${probeUrl}`,
+      ], { timeout: 5000 })
+      if (stdout) { reachable = true; break }
+    } catch {
+      await new Promise((r) => setTimeout(r, 250))
+    }
+  }
+  if (!reachable) throw new Error(`echo service not reachable at ${probeUrl}`)
+  return { host }
+}
+
 describe('proxy sidecar', () => {
   let client: ProxyClient
+  const tunnel = new ServicePortForward(PROXY_APP_NAME, PROXY_PORT)
 
-  beforeAll(async () => {
-    await requirePodman()
+  /** ensureRunning + a live loopback tunnel; returns the local port. */
+  async function ensureProxy(): Promise<number> {
+    await client.ensureRunning()
+    return tunnel.ensure()
+  }
 
-    client = new ProxyClient({
-      image: 'yaac-test-proxy',
-      network: `yaac-test-sidecar-${RUN_ID}`,
-      requirePrebuilt: true,
-    })
+  beforeAll(() => {
+    client = new ProxyClient(TEST_PROXY_CONFIG)
   })
 
   afterAll(async () => {
+    tunnel.stop()
     if (!client) return
     try {
       await client.stop()
@@ -81,23 +242,23 @@ describe('proxy sidecar', () => {
   })
 
   it('starts proxy and healthcheck responds', async () => {
-    await client.ensureRunning()
+    const hostPort = await ensureProxy()
 
-    const res = await fetch(`http://127.0.0.1:${client.hostPort}/healthz`)
+    const res = await fetch(`http://127.0.0.1:${hostPort}/healthz`)
     expect(res.ok).toBe(true)
     expect(await res.text()).toBe('ok')
-  })
+  }, 240_000)
 
   it('serves CA certificate', async () => {
-    await client.ensureRunning()
+    await ensureProxy()
 
     const caCert = await client.getCaCert()
     expect(caCert).toContain('BEGIN CERTIFICATE')
     expect(caCert).toContain('END CERTIFICATE')
-  })
+  }, 60_000)
 
   it('registers session with rules and allowlist', async () => {
-    await client.ensureRunning()
+    await ensureProxy()
 
     const sessionId = crypto.randomUUID()
 
@@ -112,49 +273,42 @@ describe('proxy sidecar', () => {
       allowedHosts: ['*'],
     })
 
+    // GET /sessions reflects the registration — the persistence tests
+    // below depend on this to observe what a replaced pod reloaded.
+    expect(await client.listSessions()).toContain(sessionId)
+
     await client.removeSession(sessionId)
-  })
+    expect(await client.listSessions()).not.toContain(sessionId)
+  }, 60_000)
 
   it('ensureRunning is idempotent', async () => {
-    // Call twice — should not error or create duplicate containers
+    // Call twice — should not error or roll the deployment.
     await client.ensureRunning()
-    await client.ensureRunning()
+    const hostPort = await ensureProxy()
 
-    const res = await fetch(`http://127.0.0.1:${client.hostPort}/healthz`)
+    const res = await fetch(`http://127.0.0.1:${hostPort}/healthz`)
     expect(res.ok).toBe(true)
-  })
 
-  it('stop removes container and network', async () => {
-    await client.ensureRunning()
-    const containerName = client.containerName
-    const networkName = client.network
-    await client.stop()
-
-    // Verify the container was removed
-    const { ExitCode: containerExit } = await podmanRetry([
-      'container', 'exists', containerName,
-    ]).then(() => ({ ExitCode: 0 }), () => ({ ExitCode: 1 }))
-    expect(containerExit).toBe(1)
-
-    // Verify the network was removed
-    const { ExitCode: networkExit } = await podmanRetry([
-      'network', 'exists', networkName,
-    ]).then(() => ({ ExitCode: 0 }), () => ({ ExitCode: 1 }))
-    expect(networkExit).toBe(1)
-  })
+    // Exactly one proxy pod backs the Service.
+    const pods = await kubectlGetJson<{ items: unknown[] }>([
+      'get', 'pods', '-n', k8sNamespace(),
+      '-l', `app=${PROXY_APP_NAME}`, '--field-selector', 'status.phase=Running',
+    ])
+    expect(pods?.items).toHaveLength(1)
+  }, 60_000)
 
   describe('CONNECT tunnel', () => {
-    const tunnelContainers: string[] = []
+    const tunnelPods: string[] = []
 
     afterEach(async () => {
-      for (const name of tunnelContainers) {
-        await removeContainer(name)
+      for (const name of tunnelPods) {
+        await deleteTestPod(name)
       }
-      tunnelContainers.length = 0
+      tunnelPods.length = 0
     })
 
-    it('tunnels TCP connections via CONNECT from internal network', async () => {
-      await client.ensureRunning()
+    it('tunnels TCP connections via CONNECT from a session-like pod', async () => {
+      await ensureProxy()
 
       // Register a session with an allowlist covering github.com so the CONNECT
       // tunnel can be authorized. (The proxy blocks by default when no session
@@ -165,53 +319,60 @@ describe('proxy sidecar', () => {
         allowedHosts: ['github.com'],
       })
 
-      // Create a container on the internal-only network (same as a real session)
-      const containerName = `yaac-proxy-tunnel-test-${crypto.randomBytes(4).toString('hex')}`
-      tunnelContainers.push(containerName)
+      // Create a pod in the test namespace (same as a real session pod).
+      // NOTE: the podman-era assertion that the pod CANNOT reach external
+      // hosts directly is gone — the internal-only podman network has no
+      // kubernetes equivalent yet (egress lockdown via NetworkPolicy is
+      // not part of this migration), so only the positive CONNECT path is
+      // asserted here.
+      const podName = `yaac-proxy-tunnel-test-${crypto.randomBytes(4).toString('hex')}`
+      tunnelPods.push(podName)
 
-      // Find the test base image
-      const { stdout: images } = await podmanRetry([
-        'images', '--format', '{{.Repository}}:{{.Tag}}', '--filter', 'reference=yaac-test-base',
-      ])
-      const baseImage = images.trim().split('\n')[0]
-      expect(baseImage).toBeTruthy()
-
-      await createAndStartContainerWithRetry({
-        Image: baseImage,
-        name: containerName,
-        Labels: { 'yaac.test': 'true' },
-        HostConfig: {
-          NetworkMode: client.network,
+      await kubectlApply({
+        apiVersion: 'v1',
+        kind: 'Pod',
+        metadata: {
+          name: podName,
+          namespace: k8sNamespace(),
+          labels: { 'yaac.test': 'true' },
+        },
+        spec: {
+          restartPolicy: 'Never',
+          automountServiceAccountToken: false,
+          enableServiceLinks: false,
+          containers: [{
+            name: 'session',
+            image: await resolveTestBaseImageRef(),
+            imagePullPolicy: 'IfNotPresent',
+            // No command override — the base image's ENTRYPOINT is
+            // `catatonit -- sleep infinity`, which keeps the pod alive.
+          }],
         },
       })
+      await waitForPodRunning(podName)
 
-      // Verify the container CANNOT reach external hosts directly
-      const { stdout: blocked } = await podmanRetry([
-        'exec', containerName, 'sh', '-c',
-        'curl -sf --connect-timeout 3 http://github.com 2>&1 || echo connection-blocked',
-      ], { timeout: 10_000 })
-      expect(blocked.trim()).toContain('connection-blocked')
-
-      // Verify the container CAN open a CONNECT tunnel through the proxy when
-      // authenticated as a registered session. We send a raw CONNECT request
-      // and check the proxy's response line. A successful tunnel returns
-      // "HTTP/1.1 200 Connection Established"; a blocked tunnel returns 403.
+      // Verify the pod CAN open a CONNECT tunnel through the proxy when
+      // authenticated as a registered session. We send a raw CONNECT
+      // request to the proxy Service and check the response line. A
+      // successful tunnel returns "HTTP/1.1 200 Connection Established";
+      // a blocked tunnel returns 403.
       const proxyAuth = Buffer.from(`x:${sessionId}`).toString('base64')
       const connectReq =
         'CONNECT github.com:443 HTTP/1.1\r\n' +
         'Host: github.com:443\r\n' +
         `Proxy-Authorization: Basic ${proxyAuth}\r\n\r\n`
-      const { stdout: tunneled } = await podmanRetry([
-        'exec', containerName, 'sh', '-c',
-        `printf '${connectReq}' | nc -w 3 ${client.proxyIp} ${PROXY_CONTAINER_PORT} | head -c 40`,
-      ], { timeout: 10_000 })
+      const proxyHost = `${PROXY_APP_NAME}.${k8sNamespace()}.svc`
+      const { stdout: tunneled } = await execInPod(podName, [
+        'sh', '-c',
+        `printf '${connectReq}' | nc -w 3 ${proxyHost} ${PROXY_CONTAINER_PORT} | head -c 40`,
+      ], { timeout: 15_000 })
       expect(tunneled).toContain('200 Connection Established')
 
       await client.removeSession(sessionId)
-    }, 60_000)
+    }, 120_000)
 
     it('challenges a credential-less CONNECT with 407, not 403', async () => {
-      await client.ensureRunning()
+      const hostPort = await ensureProxy()
 
       // ncat (git's SSH ProxyCommand) never sends Proxy-Authorization
       // preemptively — it sends a bare CONNECT and only attaches credentials
@@ -219,20 +380,47 @@ describe('proxy sidecar', () => {
       // authenticating. The proxy must answer missing auth with 407 +
       // Proxy-Authenticate so challenge-response clients can retry.
       const head = await rawConnectHead(
-        client.hostPort,
+        hostPort,
         'CONNECT github.com:22 HTTP/1.1\r\nHost: github.com:22\r\n\r\n',
       )
       expect(head).toMatch(/^HTTP\/1\.1 407 /)
       expect(head.toLowerCase()).toContain('proxy-authenticate: basic')
     }, 30_000)
   })
+
+  it('stop removes the proxy Deployment and Service', async () => {
+    await ensureProxy()
+    await client.stop()
+    tunnel.stop()
+
+    // stop() deletes the Deployment with --wait=false; poll briefly until
+    // both objects are gone.
+    let deploymentGone = false
+    let serviceGone = false
+    for (let i = 0; i < 40; i++) {
+      const dep = await kubectlGetJson<unknown>([
+        'get', 'deployment', PROXY_APP_NAME, '-n', k8sNamespace(),
+      ])
+      const svc = await kubectlGetJson<unknown>([
+        'get', 'service', PROXY_APP_NAME, '-n', k8sNamespace(),
+      ])
+      deploymentGone = dep === null
+      serviceGone = svc === null
+      if (deploymentGone && serviceGone) break
+      await new Promise((r) => setTimeout(r, 250))
+    }
+    expect(deploymentGone).toBe(true)
+    expect(serviceGone).toBe(true)
+  }, 60_000)
 })
 
 describe('proxy HTTP forwarding', () => {
   let client: ProxyClient
-  let echoContainerName: string
-  let echoIp: string
-  const echoPort = 8080
+  let hostPort = 0
+  let echoPodName: string
+  let echoHost: string
+  const echoPort = ECHO_PORT
+  const tunnel = new ServicePortForward(PROXY_APP_NAME, PROXY_PORT)
   // Default session used by tests that exercise forwarding (as opposed to
   // allowlist enforcement). Since the proxy fails closed, every forwarding
   // test needs an authenticated session with a permissive allowlist.
@@ -241,84 +429,30 @@ describe('proxy HTTP forwarding', () => {
   const defaultAuthHeader = { 'Proxy-Authorization': `Basic ${defaultAuth}` }
 
   beforeAll(async () => {
-    await requirePodman()
-
-    client = new ProxyClient({
-      image: 'yaac-test-proxy',
-      network: `yaac-test-http-${RUN_ID}`,
-      requirePrebuilt: true,
-    })
+    client = new ProxyClient(TEST_PROXY_CONFIG)
     await client.ensureRunning()
+    hostPort = await tunnel.ensure()
 
     // Register a default session with a wildcard allowlist so the basic
     // forwarding tests can proceed without setting up their own session.
     await client.registerSession(defaultSessionId, { rules: [], allowedHosts: ['*'] })
 
-    // Run an echo HTTP server inside a container on the podman network
-    // (same network the proxy container is also connected to).
-    // This avoids macOS podman VM host-reachability issues.
-    echoContainerName = `yaac-echo-test-${crypto.randomBytes(4).toString('hex')}`
-    const echoScript = `
-      const http = require('http');
-      http.createServer((req, res) => {
-        const chunks = [];
-        req.on('data', c => chunks.push(c));
-        req.on('end', () => {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            method: req.method,
-            url: req.url,
-            headers: req.headers,
-            body: Buffer.concat(chunks).toString('utf8'),
-          }));
-        });
-      }).listen(${echoPort}, '0.0.0.0', () => console.log('echo ready'));
-    `
-
-    // Find the proxy image (has node)
-    const { stdout: images } = await podmanRetry([
-      'images', '--format', '{{.Repository}}:{{.Tag}}', '--filter', 'reference=yaac-test-proxy',
-    ])
-    const proxyImage = images.trim().split('\n')[0]
-
-    const echoContainer = await createAndStartContainerWithRetry({
-      Image: proxyImage,
-      name: echoContainerName,
-      Cmd: ['node', '-e', echoScript],
-      Labels: { 'yaac.test': 'true' },
-      HostConfig: {
-        NetworkMode: 'podman',
-      },
-    })
-
-    // Get the echo container's IP on the podman network
-    const info = await echoContainer.inspect()
-    const networks = info.NetworkSettings.Networks as Record<string, { IPAddress: string }>
-    echoIp = networks['podman']?.IPAddress
-    if (!echoIp) throw new Error('Echo container has no IP on podman network')
-
-    // Wait for echo server to be ready
-    for (let i = 0; i < 20; i++) {
-      try {
-        const { stdout } = await podmanRetry([
-          'exec', echoContainerName, 'sh', '-c',
-          `curl -sf http://127.0.0.1:${echoPort}/ping`,
-        ], { timeout: 3000 })
-        if (stdout) break
-      } catch {
-        await new Promise((r) => setTimeout(r, 250))
-      }
-    }
-  })
+    // Run an echo HTTP server as a pod+service in the test namespace —
+    // an upstream the proxy can resolve and reach from inside the cluster.
+    echoPodName = `yaac-echo-test-${crypto.randomBytes(4).toString('hex')}`
+    const echo = await startEchoPod(echoPodName)
+    echoHost = echo.host
+  }, 240_000)
 
   afterAll(async () => {
+    tunnel.stop()
     try { await client?.stop() } catch { /* ok */ }
-    if (echoContainerName) await removeContainer(echoContainerName)
+    if (echoPodName) await deleteTestPod(echoPodName)
   })
 
   it('forwards a plain HTTP GET request', async () => {
-    const targetUrl = `http://${echoIp}:${echoPort}/hello?foo=bar`
-    const result = await proxyRequest(Number(client.hostPort), targetUrl, {
+    const targetUrl = `http://${echoHost}:${echoPort}/hello?foo=bar`
+    const result = await proxyRequest(hostPort, targetUrl, {
       headers: defaultAuthHeader,
     })
 
@@ -326,13 +460,13 @@ describe('proxy HTTP forwarding', () => {
     const echo = JSON.parse(result.body) as { method: string; url: string; headers: Record<string, string> }
     expect(echo.method).toBe('GET')
     expect(echo.url).toBe('/hello?foo=bar')
-    expect(echo.headers.host).toBe(`${echoIp}:${echoPort}`)
+    expect(echo.headers.host).toBe(`${echoHost}:${echoPort}`)
   })
 
   it('forwards a POST request with body', async () => {
-    const targetUrl = `http://${echoIp}:${echoPort}/submit`
+    const targetUrl = `http://${echoHost}:${echoPort}/submit`
     const body = 'key=value&other=data'
-    const result = await proxyRequest(Number(client.hostPort), targetUrl, {
+    const result = await proxyRequest(hostPort, targetUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...defaultAuthHeader },
       body,
@@ -346,8 +480,8 @@ describe('proxy HTTP forwarding', () => {
   })
 
   it('strips proxy-authorization header before forwarding', async () => {
-    const targetUrl = `http://${echoIp}:${echoPort}/check`
-    const result = await proxyRequest(Number(client.hostPort), targetUrl, {
+    const targetUrl = `http://${echoHost}:${echoPort}/check`
+    const result = await proxyRequest(hostPort, targetUrl, {
       headers: defaultAuthHeader,
     })
 
@@ -357,15 +491,15 @@ describe('proxy HTTP forwarding', () => {
   })
 
   it('returns 502 when upstream is unreachable', async () => {
-    const targetUrl = `http://${echoIp}:19399/nope`
-    const result = await proxyRequest(Number(client.hostPort), targetUrl, {
+    const targetUrl = `http://${echoHost}:19399/nope`
+    const result = await proxyRequest(hostPort, targetUrl, {
       headers: defaultAuthHeader,
     })
     expect(result.status).toBe(502)
   })
 
   it('still serves API endpoints on non-proxy requests', async () => {
-    const res = await fetch(`http://127.0.0.1:${client.hostPort}/healthz`)
+    const res = await fetch(`http://127.0.0.1:${hostPort}/healthz`)
     expect(res.ok).toBe(true)
     expect(await res.text()).toBe('ok')
   })
@@ -375,23 +509,23 @@ describe('proxy HTTP forwarding', () => {
     await client.registerSession(sessionId, {
       rules: [
         {
-          hostPattern: echoIp,
+          hostPattern: echoHost,
           pathPattern: '/*',
           injections: [],
         },
       ],
-      allowedHosts: [echoIp],
+      allowedHosts: [echoHost],
     })
 
     // Request to the echo server (allowed)
     const auth = Buffer.from(`x:${sessionId}`).toString('base64')
-    const allowed = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/test`, {
+    const allowed = await proxyRequest(hostPort, `http://${echoHost}:${echoPort}/test`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(allowed.status).toBe(200)
 
     // Request to a different host (blocked) — use a non-routable IP to avoid DNS
-    const blocked = await proxyRequest(Number(client.hostPort), 'http://192.0.2.1:80/test', {
+    const blocked = await proxyRequest(hostPort, 'http://192.0.2.1:80/test', {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(blocked.status).toBe(403)
@@ -405,7 +539,7 @@ describe('proxy HTTP forwarding', () => {
     await client.registerSession(sessionId, { rules: [], allowedHosts: ['*'] })
 
     const auth = Buffer.from(`x:${sessionId}`).toString('base64')
-    const result = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/test`, {
+    const result = await proxyRequest(hostPort, `http://${echoHost}:${echoPort}/test`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(result.status).toBe(200)
@@ -414,12 +548,13 @@ describe('proxy HTTP forwarding', () => {
   })
 
   it('supports wildcard patterns in allowlist', async () => {
-    // The echo container IP is like 10.x.x.x — use a wildcard that won't match it
+    // The echo host is a `*.svc` cluster DNS name — use a wildcard that
+    // won't match it.
     const sessionId = crypto.randomUUID()
     await client.registerSession(sessionId, { rules: [], allowedHosts: ['*.example.com'] })
 
     const auth = Buffer.from(`x:${sessionId}`).toString('base64')
-    const blocked = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/test`, {
+    const blocked = await proxyRequest(hostPort, `http://${echoHost}:${echoPort}/test`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(blocked.status).toBe(403)
@@ -430,7 +565,7 @@ describe('proxy HTTP forwarding', () => {
   it('blocks traffic when no session is registered (fail closed)', async () => {
     // No Proxy-Authorization header → proxy has no session mapping and must
     // block the request. Previously this would allow all traffic.
-    const blocked = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/test`)
+    const blocked = await proxyRequest(hostPort, `http://${echoHost}:${echoPort}/test`)
     expect(blocked.status).toBe(403)
     expect(blocked.body).toContain('not in the allowed hosts')
   })
@@ -440,7 +575,7 @@ describe('proxy HTTP forwarding', () => {
     // exists, so the proxy must block.
     const unknownSessionId = crypto.randomUUID()
     const auth = Buffer.from(`x:${unknownSessionId}`).toString('base64')
-    const blocked = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/test`, {
+    const blocked = await proxyRequest(hostPort, `http://${echoHost}:${echoPort}/test`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(blocked.status).toBe(403)
@@ -451,7 +586,7 @@ describe('proxy HTTP forwarding', () => {
     await client.registerSession(sessionId, { rules: [], allowedHosts: [] })
 
     const auth = Buffer.from(`x:${sessionId}`).toString('base64')
-    const blocked = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/test`, {
+    const blocked = await proxyRequest(hostPort, `http://${echoHost}:${echoPort}/test`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(blocked.status).toBe(403)
@@ -465,7 +600,7 @@ describe('proxy HTTP forwarding', () => {
     await client.registerSession(sessionId, {
       rules: [
         {
-          hostPattern: echoIp,
+          hostPattern: echoHost,
           pathPattern: '/*',
           injections: [{ action: 'set_header', name: 'authorization', value: 'Bearer secret-token' }],
         },
@@ -475,7 +610,7 @@ describe('proxy HTTP forwarding', () => {
 
     // Send a plain HTTP request through the proxy with valid session credentials
     const auth = Buffer.from(`x:${sessionId}`).toString('base64')
-    const result = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/test`, {
+    const result = await proxyRequest(hostPort, `http://${echoHost}:${echoPort}/test`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
 
@@ -488,33 +623,33 @@ describe('proxy HTTP forwarding', () => {
     await client.removeSession(sessionId)
   })
 
-  it('tracks blocked hosts per session via /blocked-hosts endpoint', async () => {
+  it('writes blocked hosts through to /data, readable from the host', async () => {
     const sessionId = crypto.randomUUID()
-    await client.registerSession(sessionId, { rules: [], allowedHosts: [echoIp] })
+    await client.registerSession(sessionId, { rules: [], allowedHosts: [echoHost] })
 
     // Make a request to a blocked host
     const auth = Buffer.from(`x:${sessionId}`).toString('base64')
-    const blocked = await proxyRequest(Number(client.hostPort), 'http://192.0.2.1:80/test', {
+    const blocked = await proxyRequest(hostPort, 'http://192.0.2.1:80/test', {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(blocked.status).toBe(403)
 
     // Also block a second host
-    const blocked2 = await proxyRequest(Number(client.hostPort), 'http://198.51.100.1:80/test', {
+    const blocked2 = await proxyRequest(hostPort, 'http://198.51.100.1:80/test', {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(blocked2.status).toBe(403)
 
-    // Fetch blocked hosts
-    const blockedHosts = await client.getBlockedHosts()
-    expect(blockedHosts[sessionId]).toBeDefined()
-    expect(blockedHosts[sessionId]).toContain('192.0.2.1')
-    expect(blockedHosts[sessionId]).toContain('198.51.100.1')
+    // The proxy writes /data/blocked-hosts.json through on growth; /data
+    // is a hostPath under the test data dir, so read it exactly the way
+    // the daemon does. Poll: the write-through happens after the 403 is
+    // already on the wire.
+    await expect.poll(() => readBlockedHosts(sessionId), { timeout: 10_000 })
+      .toEqual(expect.arrayContaining(['192.0.2.1', '198.51.100.1']))
 
-    // After removing session, blocked hosts should be cleaned up
+    // After removing the session, its entry is pruned from the file
     await client.removeSession(sessionId)
-    const afterRemoval = await client.getBlockedHosts()
-    expect(afterRemoval[sessionId]).toBeUndefined()
+    await expect.poll(() => readBlockedHosts(sessionId), { timeout: 10_000 }).toEqual([])
   })
 
   it('isolates rules between concurrent sessions', async () => {
@@ -536,12 +671,12 @@ describe('proxy HTTP forwarding', () => {
     const authA = Buffer.from(`x:${sessionA}`).toString('base64')
     const authB = Buffer.from(`x:${sessionB}`).toString('base64')
 
-    const allowed = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/a`, {
+    const allowed = await proxyRequest(hostPort, `http://${echoHost}:${echoPort}/a`, {
       headers: { 'Proxy-Authorization': `Basic ${authA}` },
     })
     expect(allowed.status).toBe(200)
 
-    const blocked = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/b`, {
+    const blocked = await proxyRequest(hostPort, `http://${echoHost}:${echoPort}/b`, {
       headers: { 'Proxy-Authorization': `Basic ${authB}` },
     })
     expect(blocked.status).toBe(403)
@@ -555,14 +690,14 @@ describe('proxy HTTP forwarding', () => {
     await client.registerSession(sessionId, { rules: [], allowedHosts: ['*'] })
 
     const auth = Buffer.from(`x:${sessionId}`).toString('base64')
-    const before = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/before`, {
+    const before = await proxyRequest(hostPort, `http://${echoHost}:${echoPort}/before`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(before.status).toBe(200)
 
     await client.removeSession(sessionId)
 
-    const after = await proxyRequest(Number(client.hostPort), `http://${echoIp}:${echoPort}/after`, {
+    const after = await proxyRequest(hostPort, `http://${echoHost}:${echoPort}/after`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(after.status).toBe(403)
@@ -574,7 +709,7 @@ describe('proxy HTTP forwarding', () => {
  * tunnel (trusting the proxy's self-signed leaf cert), then ride an
  * `http.request` over the TLS socket so node handles chunked encoding,
  * content-length parsing, and response framing. Mirrors what a real CLI
- * inside a session container does, minus CA-cert verification —
+ * inside a session pod does, minus CA-cert verification —
  * `rejectUnauthorized: false` avoids the CA-cert plumbing dance for tests
  * that only exercise the forwarding path.
  */
@@ -648,78 +783,28 @@ async function proxiedHttpsRequest(
 
 describe('proxy upstream redirect', () => {
   let client: ProxyClient
-  let echoContainerName: string
-  let echoIp: string
-  const echoPort = 8080
+  let hostPort = 0
+  let echoPodName: string
+  let echoHost: string
+  const echoPort = ECHO_PORT
+  const tunnel = new ServicePortForward(PROXY_APP_NAME, PROXY_PORT)
 
   beforeAll(async () => {
-    await requirePodman()
-
-    client = new ProxyClient({
-      image: 'yaac-test-proxy',
-      network: `yaac-test-redirect-${RUN_ID}`,
-      requirePrebuilt: true,
-    })
+    client = new ProxyClient(TEST_PROXY_CONFIG)
     await client.ensureRunning()
+    hostPort = await tunnel.ensure()
 
-    // Echo server on the proxy's network — mirrors what a mock-remotes
-    // sidecar will look like. Runs on the yaac-test-proxy image (which
-    // has node), bound to the proxy network so the proxy container can
-    // reach it by IP.
-    echoContainerName = `yaac-redirect-echo-${crypto.randomBytes(4).toString('hex')}`
-    const echoScript = `
-      const http = require('http');
-      http.createServer((req, res) => {
-        const chunks = [];
-        req.on('data', c => chunks.push(c));
-        req.on('end', () => {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            method: req.method,
-            url: req.url,
-            headers: req.headers,
-            body: Buffer.concat(chunks).toString('utf8'),
-          }));
-        });
-      }).listen(${echoPort}, '0.0.0.0');
-    `
-
-    const { stdout: images } = await podmanRetry([
-      'images', '--format', '{{.Repository}}:{{.Tag}}', '--filter', 'reference=yaac-test-proxy',
-    ])
-    const proxyImage = images.trim().split('\n')[0]
-
-    const container = await createAndStartContainerWithRetry({
-      Image: proxyImage,
-      name: echoContainerName,
-      Cmd: ['node', '-e', echoScript],
-      Labels: { 'yaac.test': 'true' },
-      HostConfig: {
-        NetworkMode: client.network,
-      },
-    })
-    const info = await container.inspect()
-    const networks = info.NetworkSettings.Networks as Record<string, { IPAddress: string }>
-    echoIp = networks[client.network]?.IPAddress
-    if (!echoIp) throw new Error('Echo container has no IP on redirect test network')
-
-    // Wait for echo server to be ready
-    for (let i = 0; i < 20; i++) {
-      try {
-        const { stdout } = await podmanRetry([
-          'exec', echoContainerName, 'sh', '-c',
-          `curl -sf http://127.0.0.1:${echoPort}/ping`,
-        ], { timeout: 3000 })
-        if (stdout) break
-      } catch {
-        await new Promise((r) => setTimeout(r, 250))
-      }
-    }
-  })
+    // Echo server in the test namespace — mirrors what a mock-remotes
+    // pod looks like: a Service the proxy resolves by cluster DNS.
+    echoPodName = `yaac-redirect-echo-${crypto.randomBytes(4).toString('hex')}`
+    const echo = await startEchoPod(echoPodName)
+    echoHost = echo.host
+  }, 240_000)
 
   afterAll(async () => {
+    tunnel.stop()
     try { await client?.stop() } catch { /* ok */ }
-    if (echoContainerName) await removeContainer(echoContainerName)
+    if (echoPodName) await deleteTestPod(echoPodName)
   })
 
   it('redirects MITMed upstream to the registered target', async () => {
@@ -728,12 +813,12 @@ describe('proxy upstream redirect', () => {
       rules: [],
       allowedHosts: ['api.anthropic.com'],
       upstreamRedirects: {
-        'api.anthropic.com': { host: echoIp, port: echoPort, tls: false },
+        'api.anthropic.com': { host: echoHost, port: echoPort, tls: false },
       },
     })
 
     const result = await proxiedHttpsRequest(
-      Number(client.hostPort),
+      hostPort,
       'api.anthropic.com',
       sessionId,
       { method: 'POST', path: '/v1/messages', body: '{"hello":"world"}' },
@@ -756,22 +841,22 @@ describe('proxy upstream redirect', () => {
   it('does not redirect for hosts that have no redirect registered', async () => {
     // Same session, but request a host not in the redirect map. Since we
     // allow all hosts here and don't set a redirect for api.openai.com, the
-    // proxy would try to forward to the real api.openai.com — which on the
-    // session network either fails (no DNS) or reaches something we don't
-    // want to hit. The invariant we check: the request did NOT land at our
-    // echo server (path wouldn't match).
+    // proxy would try to forward to the real api.openai.com — which the
+    // test cluster either can't reach or we don't want to hit. The
+    // invariant we check: the request did NOT land at our echo server
+    // (path wouldn't match).
     const sessionId = crypto.randomUUID()
     await client.registerSession(sessionId, {
       rules: [],
       allowedHosts: ['api.anthropic.com', 'api.openai.com'],
       upstreamRedirects: {
-        'api.anthropic.com': { host: echoIp, port: echoPort, tls: false },
+        'api.anthropic.com': { host: echoHost, port: echoPort, tls: false },
       },
     })
 
     // api.anthropic.com → echo (redirected, succeeds)
     const redirected = await proxiedHttpsRequest(
-      Number(client.hostPort),
+      hostPort,
       'api.anthropic.com',
       sessionId,
       { method: 'GET', path: '/mapped' },
@@ -780,11 +865,12 @@ describe('proxy upstream redirect', () => {
     const echoBody = JSON.parse(redirected.body) as { url: string }
     expect(echoBody.url).toBe('/mapped')
 
-    // api.openai.com → real upstream (isolated in-container network has no
-    // route to it, so expect a 502 Bad Gateway from the proxy, not a
-    // successful echo).
+    // api.openai.com → real upstream. Either the cluster has no route to
+    // it (502 from the proxy) or — if the test cluster does have egress —
+    // the real api.openai.com answers with a non-200 for this bogus path.
+    // Both prove the redirect map did not capture the host.
     const unredirected = await proxiedHttpsRequest(
-      Number(client.hostPort),
+      hostPort,
       'api.openai.com',
       sessionId,
       { method: 'GET', path: '/not-mapped' },
@@ -800,11 +886,11 @@ describe('proxy upstream redirect', () => {
       rules: [],
       allowedHosts: ['api.anthropic.com'],
       upstreamRedirects: {
-        'api.anthropic.com': { host: echoIp, port: echoPort, tls: false },
+        'api.anthropic.com': { host: echoHost, port: echoPort, tls: false },
       },
     })
     const first = await proxiedHttpsRequest(
-      Number(client.hostPort),
+      hostPort,
       'api.anthropic.com',
       sessionId,
       { method: 'GET', path: '/v1/before' },
@@ -817,7 +903,7 @@ describe('proxy upstream redirect', () => {
       allowedHosts: ['api.anthropic.com'],
     })
     const second = await proxiedHttpsRequest(
-      Number(client.hostPort),
+      hostPort,
       'api.anthropic.com',
       sessionId,
       { method: 'GET', path: '/v1/after' },
@@ -826,4 +912,168 @@ describe('proxy upstream redirect', () => {
 
     await client.removeSession(sessionId)
   }, 30_000)
+})
+
+interface RawProxyPodList {
+  items: Array<{
+    metadata?: { uid?: string; deletionTimestamp?: string }
+    status?: { phase?: string; containerStatuses?: Array<{ ready?: boolean }> }
+  }>
+}
+
+/** UID of the single ready proxy pod, or null while none qualifies. */
+async function findReadyProxyPodUid(): Promise<string | null> {
+  const list = await kubectlGetJson<RawProxyPodList>([
+    'get', 'pods', '-n', k8sNamespace(), '-l', `app=${PROXY_APP_NAME}`,
+  ])
+  const pod = list?.items.find((p) =>
+    p.status?.phase === 'Running'
+    && !p.metadata?.deletionTimestamp
+    && p.status?.containerStatuses?.every((c) => c.ready),
+  )
+  return pod?.metadata?.uid ?? null
+}
+
+describe('proxy state persistence across pod replacement', () => {
+  let client: ProxyClient
+  let hostPort = 0
+  let echoPodName: string
+  let echoHost: string
+  const tunnel = new ServicePortForward(PROXY_APP_NAME, PROXY_PORT)
+
+  beforeAll(async () => {
+    client = new ProxyClient(TEST_PROXY_CONFIG)
+    await client.ensureRunning()
+    hostPort = await tunnel.ensure()
+
+    echoPodName = `yaac-persist-echo-${crypto.randomBytes(4).toString('hex')}`
+    const echo = await startEchoPod(echoPodName)
+    echoHost = echo.host
+  }, 240_000)
+
+  afterAll(async () => {
+    tunnel.stop()
+    try { await client?.stop() } catch { /* ok */ }
+    if (echoPodName) await deleteTestPod(echoPodName)
+  })
+
+  it('resolves secretRef injections from the proxy-secrets credentials file', async () => {
+    // The credentials dir is a hostPath under the test data dir — write
+    // the secret the same way the daemon does before a registration.
+    await writeProxySecrets({ E2E_TEST_SECRET: 'sekrit-value' })
+
+    const sessionId = crypto.randomUUID()
+    await client.registerSession(sessionId, {
+      rules: [{
+        hostPattern: 'api.anthropic.com',
+        pathPattern: '/*',
+        injections: [{
+          action: 'set_header', name: 'x-test-secret',
+          secretRef: 'E2E_TEST_SECRET', prefix: 'Bearer ',
+        }],
+      }],
+      allowedHosts: ['api.anthropic.com'],
+      upstreamRedirects: {
+        'api.anthropic.com': { host: echoHost, port: ECHO_PORT, tls: false },
+      },
+    })
+
+    const result = await proxiedHttpsRequest(
+      hostPort, 'api.anthropic.com', sessionId,
+      { method: 'GET', path: '/with-secret' },
+    )
+    expect(result.status).toBe(200)
+    const echo = JSON.parse(result.body) as { headers: Record<string, string> }
+    expect(echo.headers['x-test-secret']).toBe('Bearer sekrit-value')
+
+    await client.removeSession(sessionId)
+  }, 30_000)
+
+  it('serves live sessions across a proxy pod replacement with no re-registration', async () => {
+    await writeProxySecrets({ E2E_TEST_SECRET: 'sekrit-value' })
+
+    const sessionId = crypto.randomUUID()
+    await client.registerSession(sessionId, {
+      rules: [{
+        hostPattern: 'api.anthropic.com',
+        pathPattern: '/*',
+        injections: [{
+          action: 'set_header', name: 'x-test-secret',
+          secretRef: 'E2E_TEST_SECRET', prefix: 'Bearer ',
+        }],
+      }],
+      allowedHosts: ['api.anthropic.com'],
+      upstreamRedirects: {
+        'api.anthropic.com': { host: echoHost, port: ECHO_PORT, tls: false },
+      },
+    })
+
+    // Record a blocked host so its survival can be asserted post-churn.
+    const auth = Buffer.from(`x:${sessionId}`).toString('base64')
+    const blocked = await proxyRequest(hostPort, 'http://192.0.2.1:80/test', {
+      headers: { 'Proxy-Authorization': `Basic ${auth}` },
+    })
+    expect(blocked.status).toBe(403)
+    await expect.poll(() => readBlockedHosts(sessionId), { timeout: 10_000 })
+      .toContain('192.0.2.1')
+
+    const oldUid = await findReadyProxyPodUid()
+    expect(oldUid).toBeTruthy()
+
+    // Kill the proxy pod. The Deployment (strategy: Recreate) replaces it;
+    // the replacement must reload all session state from /data.
+    await kubectlWithRetry([
+      'delete', 'pod', '-n', k8sNamespace(), '-l', `app=${PROXY_APP_NAME}`,
+      '--wait=false', '--grace-period=1',
+    ])
+    await expect.poll(
+      async () => {
+        const uid = await findReadyProxyPodUid().catch(() => null)
+        return uid !== null && uid !== oldUid
+      },
+      { timeout: 120_000, interval: 1_000 },
+    ).toBe(true)
+
+    // Both loopback tunnels died with the pod; poll until they respawn
+    // against the replacement and it answers.
+    await expect.poll(() => client.attachIfRunning(), { timeout: 30_000, interval: 500 })
+      .toBe(true)
+    await expect.poll(
+      async () => {
+        try {
+          hostPort = await tunnel.ensure()
+          const res = await fetch(`http://127.0.0.1:${hostPort}/healthz`)
+          return res.ok
+        } catch {
+          return false
+        }
+      },
+      { timeout: 30_000, interval: 500 },
+    ).toBe(true)
+
+    // The headline assertions: nothing re-registered this session (no
+    // daemon runs in this suite), yet the replacement proxy knows it —
+    // registration, allowlist, redirect, and secretRef rule all survived
+    // via /data, and the proxied request still succeeds.
+    expect(await client.listSessions()).toContain(sessionId)
+
+    const result = await proxiedHttpsRequest(
+      hostPort, 'api.anthropic.com', sessionId,
+      { method: 'GET', path: '/after-churn' },
+    )
+    expect(result.status).toBe(200)
+    const echo = JSON.parse(result.body) as { headers: Record<string, string> }
+    expect(echo.headers['x-test-secret']).toBe('Bearer sekrit-value')
+
+    // Blocked-host history survived the replacement too (reloaded at boot)
+    expect(await readBlockedHosts(sessionId)).toContain('192.0.2.1')
+
+    // And the allowlist still fails closed for non-allowed hosts.
+    const stillBlocked = await proxyRequest(hostPort, 'http://192.0.2.1:80/test', {
+      headers: { 'Proxy-Authorization': `Basic ${auth}` },
+    })
+    expect(stillBlocked.status).toBe(403)
+
+    await client.removeSession(sessionId)
+  }, 240_000)
 })

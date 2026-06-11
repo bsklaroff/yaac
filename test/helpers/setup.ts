@@ -7,37 +7,18 @@ import { promisify } from 'node:util'
 import simpleGit from 'simple-git'
 import { setDataDir, getDataDir, projectDir, repoDir, claudeDir } from '@/lib/project/paths'
 import { cloneRepo } from '@/lib/git'
-import { podman, podmanExecWithRetry, ensurePodmanSocket, getSocketPath } from '@/lib/container/runtime'
+import { ensurePodmanSocket, getSocketPath } from '@/lib/container/runtime'
+import {
+  dataDirHash,
+  k8sNamespace,
+  kubectlWithRetry,
+  type KubectlExecOptions,
+} from '@/lib/k8s/kubectl'
+import { LABEL_DATA_DIR_HASH } from '@/lib/k8s/pods'
 import type { ProjectMeta } from '@/shared/types'
 import type { ProxyClientConfig } from '@/lib/container/proxy-client'
 
 const execFileAsync = promisify(execFile)
-
-/**
- * Run `podman <args>` with retries on transient podman errors (container
- * state improper, OCI runtime races, conmon churn).  Tests share this helper
- * so that transient errors from parallel workers don't cause spurious
- * failures.
- */
-export async function podmanRetry(
-  args: string[],
-  opts?: { timeout?: number },
-): Promise<{ stdout: string; stderr: string }> {
-  return await podmanExecWithRetry(args, opts)
-}
-
-/**
- * Remove a container by name, swallowing errors if it's already gone.
- * Stop and remove each have their own try/catch so `stop()` throwing
- * HTTP 304 on an already-exited container doesn't skip the remove.
- * A short 1s stop grace period is faster than `remove({ force: true })`
- * for well-behaved test containers that exit on SIGTERM.
- */
-export async function removeContainer(name: string): Promise<void> {
-  const c = podman.getContainer(name)
-  try { await c.stop({ t: 1 }) } catch { /* already stopped */ }
-  try { await c.remove() } catch { /* already gone */ }
-}
 
 /**
  * Prefix used for all container images built during e2e tests.
@@ -46,26 +27,113 @@ export async function removeContainer(name: string): Promise<void> {
 export const TEST_IMAGE_PREFIX = 'yaac-test'
 
 /**
- * Unique suffix per test worker to avoid container/network name collisions
- * when multiple test runs execute concurrently.
+ * Unique suffix per test FILE: vitest isolates each file in its own forked
+ * process, so this module is re-imported (and these bytes redrawn) per
+ * file. Avoids kubernetes object name collisions between files and
+ * between concurrent test runs.
  */
 export const TEST_RUN_ID = crypto.randomBytes(4).toString('hex')
 
 /**
- * Proxy sidecar config for e2e tests.
- * Uses separate image/network to avoid interfering with the app's proxy.
- * Network name includes a random suffix so concurrent runs don't collide.
- * Container name, host port, and auth secret are auto-resolved by ProxyClient.
+ * Per-file kubernetes namespace (see TEST_RUN_ID for granularity). Every
+ * yaac object a test file creates (session Jobs, the proxy
+ * Deployment/Service, mock-remote pods) lands in this namespace, isolating
+ * it from other files and from a real daemon's `yaac` namespace. Tests
+ * WITHIN a file share it — their isolation comes from per-test data dirs
+ * plus the data-dir-hash label (see cleanupSessionJobs). Leaked namespaces
+ * are swept by test/global-setup.ts teardown.
+ */
+export const TEST_NAMESPACE = `yaac-test-${TEST_RUN_ID}`
+
+/**
+ * Point the current test process at the per-run test namespace, so that
+ * src helpers (listSessionPods, containerExec, ProxyClient, ...) target
+ * the same namespace a daemon spawned with `createYaacTestEnv().env`
+ * uses. Returns a restore function.
+ */
+export function useTestNamespace(): () => void {
+  const prev = process.env.YAAC_K8S_NAMESPACE
+  process.env.YAAC_K8S_NAMESPACE = TEST_NAMESPACE
+  return () => {
+    if (prev === undefined) delete process.env.YAAC_K8S_NAMESPACE
+    else process.env.YAAC_K8S_NAMESPACE = prev
+  }
+}
+
+/**
+ * Proxy sidecar config for e2e tests. Uses the pre-built test image;
+ * namespace isolation comes from `YAAC_K8S_NAMESPACE` (see
+ * `TEST_NAMESPACE` / `useTestNamespace`), not from the config.
  */
 export const TEST_PROXY_CONFIG: ProxyClientConfig = {
   image: 'yaac-test-proxy',
-  network: `yaac-test-sessions-${TEST_RUN_ID}`,
   requirePrebuilt: true,
+}
+
+/**
+ * Run a command inside a session Job's pod:
+ * `kubectl exec -n <ns> job/<jobName> -- <args>`. The k8s replacement for
+ * the podman-era `podmanRetry(['exec', <container>, ...])` test helper.
+ * argv is passed straight through execFile, so no shell quoting is needed.
+ */
+export async function execInJob(
+  jobName: string,
+  args: string[],
+  opts: KubectlExecOptions = {},
+): Promise<{ stdout: string; stderr: string }> {
+  return kubectlWithRetry(
+    ['exec', '-n', k8sNamespace(), `job/${jobName}`, '--', ...args],
+    opts,
+  )
+}
+
+/**
+ * Remove a session Job (and its pod) by name, swallowing errors if it's
+ * already gone or the cluster is unreachable.
+ */
+export async function removeSessionJob(jobName: string): Promise<void> {
+  try {
+    await kubectlWithRetry([
+      'delete', 'job', jobName,
+      '-n', k8sNamespace(),
+      '--ignore-not-found', '--wait=false',
+    ])
+  } catch {
+    // already gone / cluster unreachable — best-effort cleanup
+  }
+}
+
+/**
+ * Delete every session Job/pod this test's data dir created in the active
+ * namespace. The data-dir-hash scoping matters within a file: sequential
+ * tests share TEST_NAMESPACE, and `--wait=false` means a prior test's
+ * pods may still be terminating when the next test starts — the label
+ * keeps them out of each other's queries (listSessionPods, the daemon's
+ * stale-session reconciler) and out of this delete. The k8s analog of the
+ * podman-era `podman rm -f $(podman ps -a --filter
+ * label=yaac.data-dir=<dir>)`.
+ */
+export async function cleanupSessionJobs(): Promise<void> {
+  try {
+    await kubectlWithRetry([
+      'delete', 'jobs,pods',
+      '-n', k8sNamespace(),
+      '-l', `${LABEL_DATA_DIR_HASH}=${dataDirHash()}`,
+      '--ignore-not-found', '--wait=false',
+    ])
+  } catch {
+    // cluster unreachable — nothing to clean
+  }
 }
 
 /**
  * Creates a temporary data dir and sets it as the yaac data dir.
  * Returns the path for cleanup.
+ *
+ * NOTE: lives under os.tmpdir(). Session pods hostPath-mount paths under
+ * the data dir, so e2e runs against kind need the node to see the host's
+ * temp dir (set TMPDIR to a home-dir path or add a kind extraMounts entry
+ * for it). `yaac cluster check` verifies the data-dir mount wiring.
  */
 export async function createTempDataDir(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-test-'))
@@ -100,7 +168,10 @@ export async function createTestRepo(dir: string): Promise<string> {
 }
 
 /**
- * Remove all yaac test containers.
+ * Remove all yaac test containers left behind in the podman store (the
+ * build engine). Session workloads run as kubernetes Jobs now, but
+ * interrupted older runs / stray build helpers may still leave podman
+ * containers carrying the test label.
  */
 export async function cleanupContainers(): Promise<void> {
   try {
@@ -118,20 +189,9 @@ export async function cleanupContainers(): Promise<void> {
 }
 
 /**
- * Remove the yaac test network.
- */
-export async function cleanupNetwork(networkName = 'yaac-test-sessions'): Promise<void> {
-  try {
-    await execFileAsync('podman', ['network', 'rm', networkName])
-  } catch {
-    // doesn't exist
-  }
-}
-
-/**
- * Check if podman is available and running.
- * Uses `podman info` on all platforms to verify the daemon is actually reachable
- * (not just that a machine is listed as running).
+ * Check if podman (the image build engine) is available and running.
+ * Uses `podman info` on all platforms to verify the daemon is actually
+ * reachable (not just that a machine is listed as running).
  */
 export async function podmanAvailable(): Promise<boolean> {
   try {
@@ -164,6 +224,36 @@ export async function requirePodman(): Promise<void> {
     if (await podmanAvailable()) { _podmanAlive = true; return }
   }
   throw new Error('Podman is not available. Start it with: podman machine start')
+}
+
+/**
+ * Check if a kubernetes cluster (the session runtime) is reachable —
+ * `kubectl version` round-trips to the API server with a short timeout.
+ */
+export async function clusterAvailable(): Promise<boolean> {
+  try {
+    await execFileAsync('kubectl', ['version', '--output', 'json'], { timeout: 10_000 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+let _clusterAlive = false
+
+/**
+ * Throws if no kubernetes cluster is reachable. Use in beforeAll of every
+ * e2e test that creates sessions or proxies so they fail with a pointed
+ * message instead of timing out deep inside kubectl retries.
+ */
+export async function requireCluster(): Promise<void> {
+  if (_clusterAlive) return
+  if (await clusterAvailable()) { _clusterAlive = true; return }
+  throw new Error(
+    'Kubernetes cluster is not reachable. yaac e2e tests need kubectl '
+    + 'pointed at a local cluster — run "yaac cluster check" for setup '
+    + 'instructions.',
+  )
 }
 
 /**

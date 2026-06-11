@@ -3,7 +3,12 @@ import os from 'node:os'
 import path from 'node:path'
 import readline from 'node:readline/promises'
 import * as childProcess from 'node:child_process'
-import { credentialsDir, githubCredentialsPath, ensureDataDir } from '@/lib/project/paths'
+import {
+  credentialsDir,
+  githubCredentialsPath,
+  proxySecretsCredentialsPath,
+  ensureDataDir,
+} from '@/lib/project/paths'
 import { DaemonError } from '@/daemon/errors'
 import { parsePattern, validatePattern, matchPattern } from '@/shared/credentials'
 import type {
@@ -102,6 +107,46 @@ export async function saveCredentials(creds: GitCredentialsFile): Promise<void> 
     JSON.stringify(creds, null, 2) + '\n',
     { mode: 0o600 },
   )
+}
+
+/**
+ * Merge envSecretProxy values into the proxy-secrets credentials file.
+ * The proxy resolves `secretRef` injection rules against this file per
+ * request, so it must be written before the session registration that
+ * references it. Merge semantics (not replace): projects proxy different
+ * env vars and must not clobber each other's entries.
+ *
+ * Written in place (same convention as `saveCredentials`), NOT via
+ * tmp+rename: a host-side rename swaps the directory entry to a new
+ * inode, and the kind VM's virtiofs cache can miss that — a freshly
+ * replaced proxy pod then sees ENOENT for the file. In-place writes keep
+ * the inode stable. The proxy tolerates the resulting torn-read window
+ * exactly as it does for github.json: an unparseable file drops the
+ * injection for that one request and the next read sees settled bytes.
+ */
+export async function writeProxySecrets(secrets: Record<string, string>): Promise<void> {
+  if (Object.keys(secrets).length === 0) return
+  await ensureCredentialsDir()
+  const file = proxySecretsCredentialsPath()
+  const existing: Record<string, string> = {}
+  try {
+    const parsed: unknown = JSON.parse(await fs.readFile(file, 'utf8'))
+    if (parsed && typeof parsed === 'object') {
+      const prior = (parsed as Record<string, unknown>).secrets
+      if (prior && typeof prior === 'object') {
+        for (const [key, value] of Object.entries(prior as Record<string, unknown>)) {
+          if (typeof value === 'string' && value) existing[key] = value
+        }
+      }
+    }
+  } catch {
+    // first write or unreadable — start fresh
+  }
+  const payload = {
+    savedAt: new Date().toISOString(),
+    secrets: { ...existing, ...secrets },
+  }
+  await fs.writeFile(file, JSON.stringify(payload, null, 2) + '\n', { mode: 0o600 })
 }
 
 /**

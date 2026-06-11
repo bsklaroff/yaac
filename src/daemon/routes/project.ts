@@ -7,8 +7,8 @@ import { getProjectDetail, resolveProjectConfigWithSource, assertProjectExists }
 import { addProject } from '@/lib/project/add'
 import { removeProject } from '@/lib/project/remove'
 import { writeProjectConfig, removeProjectConfig } from '@/lib/project/local-config'
-import { resolveProjectConfig } from '@/lib/project/config'
 import { rebuildProjectImage } from '@/lib/container/image-builder'
+import { pushImageToRegistry } from '@/lib/k8s/registry'
 import { toErrorBody } from '@/daemon/errors'
 
 export const projectApp = new Hono()
@@ -57,15 +57,16 @@ export const projectApp = new Hono()
     return stream(c, async (s) => {
       const write = (event: unknown) => s.writeln(JSON.stringify(event))
       try {
-        // Resolve project (throws NOT_FOUND if missing) and read its config
-        // so we rebuild the same chain the next session would actually use.
+        // Resolve project first (throws NOT_FOUND if missing).
         await getProjectDetail(slug)
-        const config = await resolveProjectConfig(slug)
         const finalTag = await rebuildProjectImage(slug, {
           imagePrefix: process.env.YAAC_IMAGE_PREFIX,
-          nestedContainers: config?.nestedContainers ?? false,
           onLog: (line) => { void write({ type: 'progress', message: line }) },
         })
+        // New sessions pull from the in-cluster registry, so the rebuilt
+        // image is invisible until it's pushed there.
+        await write({ type: 'progress', message: 'Pushing rebuilt image to the local registry...' })
+        await pushImageToRegistry(finalTag)
         await write({ type: 'result', result: { projectSlug: slug, finalTag } })
       } catch (err) {
         const { body: errBody } = toErrorBody(err)

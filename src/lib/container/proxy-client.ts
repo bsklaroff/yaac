@@ -1,18 +1,23 @@
-import crypto from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { spawn, execFile } from 'node:child_process'
-import { promisify } from 'node:util'
-import type { SecretProxyRule } from '@/shared/types'
-import { podman, ensureNetwork, imageExists, keepIdEnabled } from '@/lib/container/runtime'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
-import { PROXY_DIR, credentialsDir } from '@/lib/project/paths'
+import type { SecretProxyRule } from '@/shared/types'
+import { imageExists } from '@/lib/container/runtime'
+import { PROXY_DIR } from '@/lib/project/paths'
 import { contextHash } from '@/lib/container/image-builder'
-import { findAvailablePort } from '@/lib/container/port'
+import {
+  ensureCaConfigMap,
+  ensureNamespace,
+  ensureProxyAuthSecret,
+  ensureProxyResources,
+  PROXY_APP_NAME,
+  PROXY_PORT,
+} from '@/lib/k8s/bootstrap'
+import { k8sNamespace, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
+import { pushImageToRegistry, registryHasTag, registryRef } from '@/lib/k8s/registry'
+import { ServicePortForward } from '@/lib/k8s/port-forward'
 import { listSshEntries } from '@/lib/project/credentials'
 import { daemonLog, pipeToDaemonLog } from '@/daemon/log'
-import { isTorEnabled } from '@/lib/git'
-
-const execFileAsync = promisify(execFile)
 
 // --- Secret convention types & builder (merged from secret-conventions.ts) ---
 
@@ -20,6 +25,16 @@ export interface Injection {
   action: 'set_header' | 'replace_header' | 'remove_header' | 'replace_body_param'
   name: string
   value?: string
+  /**
+   * Reference to an entry in the proxy-secrets credentials file (keyed by
+   * env var name) instead of a literal `value`. The proxy resolves it at
+   * injection time from its credentials mount, which keeps registrations
+   * secret-free — a hard requirement for the proxy persisting them to its
+   * /data volume across pod replacements.
+   */
+  secretRef?: string
+  /** Prefix prepended to the resolved secret (e.g. "Bearer "). */
+  prefix?: string
 }
 
 export interface InjectionRule {
@@ -30,8 +45,8 @@ export interface InjectionRule {
 
 /**
  * Test-only: redirect the post-MITM upstream call for `hostname` to a mock
- * on the proxy's network. Credential injection and TLS termination still
- * run normally; only the final upstream hop is diverted.
+ * reachable from the proxy pod. Credential injection and TLS termination
+ * still run normally; only the final upstream hop is diverted.
  */
 export interface UpstreamRedirect {
   host: string
@@ -43,6 +58,11 @@ export interface UpstreamRedirect {
  * Build proxy injection rules from yaac-config.json's envSecretProxy field.
  * Each entry maps an env var name to a SecretProxyRule that describes how to
  * inject the secret (as a header or body parameter).
+ *
+ * Rules carry the env var name as a `secretRef`, never the value — the
+ * proxy resolves it per request from the proxy-secrets credentials file
+ * (see `collectProxySecrets`), so registrations stay secret-free and a
+ * value updated on disk applies to live sessions immediately.
  */
 export function buildRulesFromConfig(
   envSecretProxy: Record<string, SecretProxyRule>,
@@ -51,8 +71,7 @@ export function buildRulesFromConfig(
   const rules: InjectionRule[] = []
 
   for (const [envVar, rule] of Object.entries(envSecretProxy)) {
-    const value = env[envVar]
-    if (!value) {
+    if (!env[envVar]) {
       console.warn(`Warning: ${envVar} is not set in the environment, skipping proxy rule`)
       continue
     }
@@ -61,12 +80,16 @@ export function buildRulesFromConfig(
 
     let injections: Injection[]
     if (rule.bodyParam) {
-      injections = [{ action: 'replace_body_param', name: rule.bodyParam, value }]
+      injections = [{ action: 'replace_body_param', name: rule.bodyParam, secretRef: envVar }]
     } else {
       const headerName = rule.header ?? 'authorization'
       const prefix = rule.prefix ?? (rule.header ? '' : 'Bearer ')
-      const headerValue = `${prefix}${value}`
-      injections = [{ action: 'set_header', name: headerName, value: headerValue }]
+      injections = [{
+        action: 'set_header',
+        name: headerName,
+        secretRef: envVar,
+        ...(prefix ? { prefix } : {}),
+      }]
     }
 
     for (const host of rule.hosts) {
@@ -77,102 +100,87 @@ export function buildRulesFromConfig(
   return rules
 }
 
+/**
+ * Collect the envSecretProxy values that are present in `env`, keyed by
+ * env var name — the entries `buildRulesFromConfig`'s secretRefs resolve
+ * against. Written to the proxy-secrets credentials file before each
+ * registration.
+ */
+export function collectProxySecrets(
+  envSecretProxy: Record<string, SecretProxyRule>,
+  env: Record<string, string | undefined>,
+): Record<string, string> {
+  const secrets: Record<string, string> = {}
+  for (const envVar of Object.keys(envSecretProxy)) {
+    const value = env[envVar]
+    if (value) secrets[envVar] = value
+  }
+  return secrets
+}
+
 // --- ProxyClient ---
 
-/** Port the proxy server listens on inside its container (fixed). */
-export const PROXY_CONTAINER_PORT = '10255'
+/** Port the proxy serves on inside the cluster (fixed). */
+export const PROXY_CONTAINER_PORT = String(PROXY_PORT)
 
-/** Path inside session and proxy containers where the ssh-agent socket lives. */
+/** Path inside session and proxy pods where the ssh-agent socket lives. */
 export const SSH_AGENT_SOCKET_PATH = '/ssh-agent/socket'
-/** Mount point inside containers for the shared agent socket volume. */
+/** Mount point inside pods for the shared agent-socket hostPath dir. */
 export const SSH_AGENT_MOUNT = '/ssh-agent'
 
-/**
- * Deterministic volume name for the proxy's ssh-agent socket. Encodes the
- * proxy image hash so old volumes don't get mounted into newer proxies (and
- * vice versa) — the agent socket protocol can drift across openssh-client
- * versions and rotating the volume on image-hash change is a clean reset.
- */
-export function sshAgentVolumeName(imageHash: string): string {
-  return `yaac-ssh-agent-${imageHash.slice(0, 8)}`
-}
+/** In-container path of the proxy CA cert (mounted from the ConfigMap). */
+export const PROXY_CA_PATH = '/etc/yaac/certs/proxy-ca.pem'
 
 export interface ProxyClientConfig {
   image: string
-  network: string
   requirePrebuilt?: boolean
 }
 
-/**
- * Resolved state after ensureRunning() — always has concrete values
- * for container name, host port, and auth secret.
- */
-interface ResolvedState {
-  containerName: string
-  hostPort: string
-  authSecret: string
-  /** Named volume that holds the proxy ssh-agent socket. */
-  agentVolume: string
-}
-
 export class ProxyClient {
-  private _proxyIp: string | null = null
   private running = false
-  private resolvedImage: string | null = null
-  private resolved: ResolvedState | null = null
+  private authSecret: string | null = null
+  private readonly forward = new ServicePortForward(PROXY_APP_NAME, PROXY_PORT)
   // In-flight ensureRunning() promise used as a mutex so concurrent
-  // callers (session-create + the background loop's persistAllBlockedHosts)
-  // don't race into two parallel `start()` calls, which would cause
-  // name-conflict and stomping between force-remove and createContainer.
+  // callers (e.g. two parallel session creates) don't race into two
+  // parallel bootstrap passes.
   private ensureInflight: Promise<void> | null = null
 
   constructor(private config: ProxyClientConfig) {}
 
-  get network(): string {
-    return this.config.network
+  /**
+   * DNS name session pods use to reach the proxy — the ClusterIP Service.
+   * Stable across proxy pod replacements, unlike the podman-era container
+   * IP that had to be re-discovered after every restart.
+   */
+  get serviceHost(): string {
+    return `${PROXY_APP_NAME}.${k8sNamespace()}.svc`
   }
 
-  get hostPort(): string {
-    return this.requireResolved().hostPort
-  }
-
-  get containerName(): string {
-    return this.requireResolved().containerName
-  }
-
-  get agentVolume(): string {
-    return this.requireResolved().agentVolume
-  }
-
-  get proxyIp(): string {
-    if (!this._proxyIp) throw new Error('Proxy not started — call ensureRunning() first')
-    return this._proxyIp
-  }
-
+  /**
+   * Daemon-side base URL: a loopback `kubectl port-forward` into the
+   * Service. The proxy itself is reachable only inside the cluster.
+   */
   private get baseUrl(): string {
-    return `http://127.0.0.1:${this.requireResolved().hostPort}`
+    const port = this.forward.currentPort
+    if (!port) throw new Error('Proxy not started — call ensureRunning() first')
+    return `http://127.0.0.1:${port}`
   }
 
-  private get authSecret(): string {
-    return this.requireResolved().authSecret
-  }
-
-  private requireResolved(): ResolvedState {
-    if (!this.resolved) throw new Error('Proxy not started — call ensureRunning() first')
-    return this.resolved
+  private requireAuthSecret(): string {
+    if (!this.authSecret) throw new Error('Proxy not started — call ensureRunning() first')
+    return this.authSecret
   }
 
   getProxyEnv(sessionId: string): string[] {
-    if (!this._proxyIp) throw new Error('Proxy not started — call ensureRunning() first')
-    const proxyUrl = `http://x:${sessionId}@${this._proxyIp}:${PROXY_CONTAINER_PORT}`
+    const proxyUrl = `http://x:${sessionId}@${this.serviceHost}:${PROXY_PORT}`
     return [
       `HTTPS_PROXY=${proxyUrl}`,
       `HTTP_PROXY=${proxyUrl}`,
       `https_proxy=${proxyUrl}`,
       `http_proxy=${proxyUrl}`,
-      'NODE_EXTRA_CA_CERTS=/tmp/proxy-ca.pem',
-      'SSL_CERT_FILE=/tmp/proxy-ca.pem',
-      'GIT_SSL_CAINFO=/tmp/proxy-ca.pem',
+      `NODE_EXTRA_CA_CERTS=${PROXY_CA_PATH}`,
+      `SSL_CERT_FILE=${PROXY_CA_PATH}`,
+      `GIT_SSL_CAINFO=${PROXY_CA_PATH}`,
       'NO_PROXY=localhost,127.0.0.1,::1',
       'no_proxy=localhost,127.0.0.1,::1',
       'NODE_USE_ENV_PROXY=1',
@@ -202,7 +210,7 @@ export class ProxyClient {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.authSecret}`,
+        'Authorization': `Bearer ${this.requireAuthSecret()}`,
       },
       body: JSON.stringify({
         rules: state.rules,
@@ -221,7 +229,7 @@ export class ProxyClient {
   async removeSession(sessionId: string): Promise<void> {
     const res = await fetch(`${this.baseUrl}/sessions/${encodeURIComponent(sessionId)}`, {
       method: 'DELETE',
-      headers: { 'Authorization': `Bearer ${this.authSecret}` },
+      headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
     })
     if (!res.ok) {
       const text = await res.text()
@@ -230,13 +238,14 @@ export class ProxyClient {
   }
 
   /**
-   * Attach to an already-running proxy sidecar for this image hash without
-   * starting a new one. Returns true if the sidecar was found and the
-   * instance is ready to issue requests, false otherwise. Used by cleanup
-   * paths that want to talk to the proxy only if it already exists.
+   * Attach to an already-deployed proxy without bootstrapping anything.
+   * Returns true if the proxy answers /healthz through a fresh tunnel,
+   * false otherwise. Used by cleanup paths that want to talk to the proxy
+   * only if it already exists — they must not build images or apply
+   * manifests.
    */
   async attachIfRunning(): Promise<boolean> {
-    if (this.running && this.resolved) {
+    if (this.running) {
       try {
         const res = await fetch(`${this.baseUrl}/healthz`)
         if (res.ok) return true
@@ -244,19 +253,18 @@ export class ProxyClient {
         this.running = false
       }
     }
-    const hash = await contextHash(PROXY_DIR)
-    const existing = await this.discoverExistingProxy(hash)
-    if (!existing) return false
-    this.resolved = {
-      containerName: existing.containerName,
-      hostPort: existing.hostPort,
-      authSecret: existing.authSecret,
-      agentVolume: sshAgentVolumeName(hash),
+    try {
+      const secret = await readExistingProxyAuthSecret()
+      if (!secret) return false
+      await this.forward.ensure()
+      const res = await fetch(`${this.baseUrl}/healthz`)
+      if (!res.ok) return false
+      this.authSecret = secret
+      this.running = true
+      return true
+    } catch {
+      return false
     }
-    this._proxyIp = existing.proxyIp
-    this.resolvedImage = `${this.config.image}:${hash}`
-    this.running = true
-    return true
   }
 
   /**
@@ -271,7 +279,7 @@ export class ProxyClient {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.authSecret}`,
+        'Authorization': `Bearer ${this.requireAuthSecret()}`,
       },
       body: JSON.stringify({ host, keyPem, knownHostsEntry }),
     })
@@ -285,7 +293,7 @@ export class ProxyClient {
   async clearSshKeys(): Promise<void> {
     const res = await fetch(`${this.baseUrl}/agent/keys`, {
       method: 'DELETE',
-      headers: { 'Authorization': `Bearer ${this.authSecret}` },
+      headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
     })
     if (!res.ok) {
       const text = await res.text()
@@ -296,7 +304,7 @@ export class ProxyClient {
   /** List identities currently loaded into the proxy's ssh-agent. */
   async listAgentKeys(): Promise<Array<{ fingerprint: string; comment: string }>> {
     const res = await fetch(`${this.baseUrl}/agent/keys`, {
-      headers: { 'Authorization': `Bearer ${this.authSecret}` },
+      headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
     })
     if (!res.ok) {
       const text = await res.text()
@@ -315,7 +323,7 @@ export class ProxyClient {
    * a broken key shouldn't prevent the others from loading.
    */
   async syncSshKeysFromCredentials(): Promise<void> {
-    if (!this.resolved) return
+    if (!this.running) return
     const entries = await listSshEntries()
     await this.clearSshKeys()
     for (const entry of entries) {
@@ -328,15 +336,41 @@ export class ProxyClient {
     }
   }
 
-  async getBlockedHosts(): Promise<Record<string, string[]>> {
-    const res = await fetch(`${this.baseUrl}/blocked-hosts`, {
-      headers: { 'Authorization': `Bearer ${this.authSecret}` },
+  /**
+   * Heal ssh-agent identity loss after a proxy pod replacement. Unlike
+   * session registrations (which the proxy reloads from /data on its
+   * own), agent identities are memory-only by design — key bytes never
+   * touch the proxy filesystem — and nothing re-uploads them unless
+   * ensureRunning()'s bootstrap path runs; attachIfRunning() can quietly
+   * re-attach to a fresh pod without it. A replaced pod always boots
+   * with a fully empty agent (partial loss is impossible), so
+   * "credentials have SSH entries but the agent holds none" is the loss
+   * signature; re-sync exactly then. No-op on healthy ticks and for
+   * installs with no SSH remotes.
+   */
+  async reconcileSshKeys(): Promise<void> {
+    if (!this.running) return
+    const entries = await listSshEntries()
+    if (entries.length === 0) return
+    if ((await this.listAgentKeys()).length > 0) return
+    await this.syncSshKeysFromCredentials()
+  }
+
+  /**
+   * List the session ids the proxy currently has state for. Diagnostic
+   * surface: e2e tests use it to assert a replaced proxy pod actually
+   * reloaded its registrations from /data (registrations are
+   * write-through persisted, so nothing re-registers them at runtime).
+   */
+  async listSessions(): Promise<string[]> {
+    const res = await fetch(`${this.baseUrl}/sessions`, {
+      headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
     })
     if (!res.ok) {
       const text = await res.text()
-      throw new Error(`Failed to get blocked hosts: ${res.status} ${text}`)
+      throw new Error(`Failed to list proxy sessions: ${res.status} ${text}`)
     }
-    return res.json() as Promise<Record<string, string[]>>
+    return res.json() as Promise<string[]>
   }
 
   async ensureRunning(): Promise<void> {
@@ -358,497 +392,142 @@ export class ProxyClient {
       }
     }
 
-    const hash = await contextHash(PROXY_DIR)
-    const taggedImage = `${this.config.image}:${hash}`
+    await ensureNamespace()
+    this.authSecret = await ensureProxyAuthSecret()
 
-    // Try to reuse an existing proxy container for this image hash
-    const existing = await this.discoverExistingProxy(hash)
-    if (existing) {
-      this.resolved = {
-        containerName: existing.containerName,
-        hostPort: existing.hostPort,
-        authSecret: existing.authSecret,
-        agentVolume: sshAgentVolumeName(hash),
-      }
-      this._proxyIp = existing.proxyIp
-      this.resolvedImage = taggedImage
-      this.running = true
-      this.gcStaleProxies(hash).catch(() => {})
-      this.gcStaleTestContainers()
-        .then(() => this.gcStaleNetworks())
-        .catch(() => {})
-      // Re-sync ssh-agent in case the proxy was restarted out-of-band.
-      this.syncSshKeysFromCredentials().catch((err: Error) => {
-        daemonLog(`[daemon] proxy ssh-agent sync failed: ${err.message}`)
-      })
-      return
-    }
+    const imageRef = await this.ensureProxyImage()
+    await ensureProxyResources(imageRef)
 
-    // No reusable proxy — build image if needed and start a new one
-    await this.ensureProxyImage(taggedImage)
-    await this.start(hash)
+    await this.forward.ensure()
+    await this.waitForHealthy()
     this.running = true
-    this.gcStaleProxies(hash).catch(() => {})
-    // Cold start: agent has no identities; load them.
+
+    // Distribute the proxy's CA to session pods via the ConfigMap. Cheap
+    // no-op when the stored PEM already matches.
+    const caPem = await this.getCaCert()
+    await ensureCaConfigMap(caPem)
+
+    // Load ssh-agent identities (cold start: agent is empty; restart:
+    // re-sync in case the proxy pod was replaced out-of-band).
     this.syncSshKeysFromCredentials().catch((err: Error) => {
       daemonLog(`[daemon] proxy ssh-agent sync failed: ${err.message}`)
     })
   }
 
-  private async discoverExistingProxy(hash: string): Promise<{
-    containerName: string
-    hostPort: string
-    authSecret: string
-    proxyIp: string
-  } | null> {
-    // Look up the proxy by its deterministic name
-    // (`containerNameFor(hash)` is a pure function of hash + network).
-    // A direct `getContainer(name).inspect()` — single object, not an
-    // enumeration — sidesteps the podman `listContainers` race where a
-    // sibling container being removed mid-call makes the whole list fail
-    // with "container not known" (see containers/storage#1864). That race
-    // used to drop us into start()'s force-remove path, destroying a
-    // healthy running proxy and breaking every session's network access.
-    // If `inspect()` here fails, it fails for a reason specific to the
-    // target container — not because of unrelated concurrent churn.
-    const name = this.containerNameFor(hash)
-
-    let info
-    try {
-      info = await podman.getContainer(name).inspect()
-    } catch (err) {
-      daemonLog(`[daemon] proxy-discover: ${name} inspect failed (likely absent): ${String(err)}`)
-      return null
-    }
-
-    // Defense in depth: verify the container is actually ours and current.
-    // Name includes the hash, so mismatches here would be a podman or
-    // disk-state anomaly rather than normal operation.
-    if (info.Config?.Labels?.['yaac.proxy.image-hash'] !== hash) {
-      daemonLog(
-        `[daemon] proxy-discover: ${name} has mismatched image-hash label — ignoring`,
-      )
-      return null
-    }
-    if (!info.State?.Running) {
-      daemonLog(`[daemon] proxy-discover: ${name} state=${info.State?.Status ?? '?'} (not running)`)
-      return null
-    }
-
-    // Recover host port from port bindings
-    const ports = info.NetworkSettings?.Ports as
-      Record<string, Array<{ HostPort: string }>> | undefined
-    const hostPort = ports?.[`${PROXY_CONTAINER_PORT}/tcp`]?.[0]?.HostPort
-    if (!hostPort) {
-      daemonLog(`[daemon] proxy-discover: ${name}: no host port binding`)
-      return null
-    }
-
-    // Recover auth secret from container env
-    const envArr: string[] = info.Config?.Env ?? []
-    const secretEntry = envArr.find((e) => e.startsWith('PROXY_AUTH_SECRET='))
-    const authSecret = secretEntry?.slice('PROXY_AUTH_SECRET='.length)
-    if (!authSecret) {
-      daemonLog(`[daemon] proxy-discover: ${name}: missing PROXY_AUTH_SECRET env`)
-      return null
-    }
-
-    // Recover proxy IP on session network
-    const networks = info.NetworkSettings?.Networks as
-      Record<string, { IPAddress: string }> | undefined
-    const proxyIp = networks?.[this.config.network]?.IPAddress
-    if (!proxyIp) {
-      const attached = networks ? Object.keys(networks).join(',') : '(none)'
-      daemonLog(
-        `[daemon] proxy-discover: ${name}: no IP on network `
-        + `${this.config.network} (attached: ${attached})`,
-      )
-      return null
-    }
-
-    // Verify health
-    let res: Response
-    try {
-      res = await fetch(`http://127.0.0.1:${hostPort}/healthz`)
-    } catch (err) {
-      daemonLog(`[daemon] proxy-discover: ${name}: /healthz fetch failed: ${String(err)}`)
-      return null
-    }
-    if (!res.ok) {
-      daemonLog(`[daemon] proxy-discover: ${name}: /healthz status=${res.status}`)
-      return null
-    }
-
-    daemonLog(`[daemon] proxy-discover: adopted ${name} ip=${proxyIp} port=${hostPort}`)
-    return { containerName: name, hostPort, authSecret, proxyIp }
-  }
-
-  private async ensureProxyImage(taggedImage: string): Promise<void> {
-    if (await imageExists(taggedImage)) {
-      this.resolvedImage = taggedImage
-      return
-    }
-
-    if (this.config.requirePrebuilt) {
-      throw new Error(
-        `Proxy image ${taggedImage} is missing or stale. ` +
-        'Restart the test run so the global setup can rebuild it.',
-      )
-    }
-    daemonLog(`[build] starting ${taggedImage} (proxy sidecar)`)
-    await new Promise<void>((resolve, reject) => {
-      const buildArgs = ['build', '-t', taggedImage]
-      const certFile = process.env.SSL_CERT_FILE
-      if (certFile && existsSync(certFile)) {
-        buildArgs.push('--volume', `${certFile}:${certFile}:ro`)
-        buildArgs.push('--build-arg', `SSL_CERT_FILE=${certFile}`)
-      }
-      buildArgs.push(PROXY_DIR)
-      const child = spawn('podman', buildArgs, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: 300_000,
-      })
-      const prefix = `[build ${taggedImage}] `
-      pipeToDaemonLog(child.stdout, prefix)
-      pipeToDaemonLog(child.stderr, prefix)
-      child.on('close', (code) => {
-        if (code === 0) resolve()
-        else reject(new Error(`podman build exited with code ${code}`))
-      })
-      child.on('error', reject)
-    })
-    this.resolvedImage = taggedImage
-  }
-
   /**
-   * Derive a stable container name from the image hash and network name.
-   * Including the network ensures isolation between concurrent test runs
-   * (each uses a unique network name) while remaining stable across CLI
-   * invocations within the same environment.
+   * Ensure the proxy image (content-hash tagged) exists in the registry
+   * and return its in-cluster ref. Builds locally with podman only when
+   * the registry doesn't already hold the tag.
    */
-  private containerNameFor(imageHash: string): string {
-    const netHash = crypto.createHash('sha256')
-      .update(this.config.network)
-      .digest('hex')
-      .slice(0, 8)
-    return `yaac-proxy-${imageHash.slice(0, 8)}-${netHash}`
+  private async ensureProxyImage(): Promise<string> {
+    const hash = await contextHash(PROXY_DIR)
+    const localTag = `${this.config.image}:${hash}`
+    if (await registryHasTag(localTag)) return registryRef(localTag)
+
+    if (!await imageExists(localTag)) {
+      if (this.config.requirePrebuilt) {
+        throw new Error(
+          `Proxy image ${localTag} is missing or stale. ` +
+          'Restart the test run so the global setup can rebuild it.',
+        )
+      }
+      daemonLog(`[build] starting ${localTag} (proxy sidecar)`)
+      await new Promise<void>((resolve, reject) => {
+        const buildArgs = ['build', '-t', localTag]
+        const certFile = process.env.SSL_CERT_FILE
+        if (certFile && existsSync(certFile)) {
+          buildArgs.push('--volume', `${certFile}:${certFile}:ro`)
+          buildArgs.push('--build-arg', `SSL_CERT_FILE=${certFile}`)
+        }
+        buildArgs.push(PROXY_DIR)
+        const child = spawn('podman', buildArgs, {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: 300_000,
+        })
+        const prefix = `[build ${localTag}] `
+        pipeToDaemonLog(child.stdout, prefix)
+        pipeToDaemonLog(child.stderr, prefix)
+        child.on('close', (code) => {
+          if (code === 0) resolve()
+          else reject(new Error(`podman build exited with code ${code}`))
+        })
+        child.on('error', reject)
+      })
+    }
+    return pushImageToRegistry(localTag)
   }
 
-  private async start(hash: string): Promise<void> {
-    // Create the internal session network
-    await ensureNetwork(this.config.network)
-
-    const containerName = this.containerNameFor(hash)
-    const authSecret = crypto.randomBytes(32).toString('hex')
-    // Spread the initial port pick across a 1000-port window so concurrent
-    // test workers don't all land on 10255 and spend the retry budget
-    // fighting over the same port. Each worker still verifies the port is
-    // actually free via findAvailablePort, just from a different offset.
-    const portBase = 10255 + Math.floor(Math.random() * 1000)
-    let hostPort = String(await findAvailablePort(portBase))
-
-    // Ensure the host-side credentials dir exists so the bind-mount succeeds
-    // even before the user has logged in. The entire directory is mounted
-    // RW so the proxy can read GitHub / Codex / Claude credentials at
-    // request time and write refreshed Claude OAuth bundles back.
-    const credsDir = credentialsDir()
-    await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
-
-    // Create the ssh-agent named volume (shared between proxy and session
-    // containers). Idempotent.
-    const agentVolume = sshAgentVolumeName(hash)
-    try {
-      await execFileAsync('podman', ['volume', 'create', agentVolume])
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      if (!msg.includes('already exists')) {
-        daemonLog(`[daemon] proxy-start: ssh-agent volume create failed: ${msg}`)
-      }
-    }
-
-    // Remove leftover container with same name (e.g. exited/dead).
-    // Log the state before we destroy it — if the bug "daemon restart
-    // kills network access" fires, this line tells us whether we just
-    // killed a healthy running proxy (destructive) or cleaned up an
-    // exited stub (benign).
-    try {
-      const existing = podman.getContainer(containerName)
-      try {
-        const info = await existing.inspect()
-        daemonLog(
-          `[daemon] proxy-start: force-removing ${containerName} `
-          + `state=${info.State.Status} running=${info.State.Running}`,
-        )
-      } catch {
-        // Container not present — nothing interesting to log.
-      }
-      await existing.remove({ force: true })
-    } catch {
-      // doesn't exist
-    }
-
-    // After force-removing a container, podman's rootlessport process may
-    // still hold the host port for a brief moment. Retry create+start to
-    // ride out the delay rather than failing immediately.
-    // Podman reports port conflicts as either "address already in use" or
-    // "proxy already running" (rootlessport variant). Name conflicts have a
-    // separate message ("container name ... is already in use") and a
-    // separate fix: adopt the existing proxy if it matches our hash, or
-    // force-remove and retry if it doesn't.
-    let container: Awaited<ReturnType<typeof podman.createContainer>> | null = null
-    for (let attempt = 0; ; attempt++) {
-      try {
-        container = await podman.createContainer({
-          Image: this.resolvedImage!,
-          name: containerName,
-          Labels: {
-            'yaac.proxy': 'true',
-            'yaac.proxy.image-hash': hash,
-          },
-          ExposedPorts: { [`${PROXY_CONTAINER_PORT}/tcp`]: {} },
-          Env: [
-            `PORT=${PROXY_CONTAINER_PORT}`,
-            `PROXY_AUTH_SECRET=${authSecret}`,
-            ...(isTorEnabled() ? ['USE_TOR=1'] : []),
-          ],
-          HostConfig: {
-            PortBindings: {
-              [`${PROXY_CONTAINER_PORT}/tcp`]: [{ HostPort: hostPort, HostIp: '127.0.0.1' }],
-            },
-            NetworkMode: `podman,${this.config.network}`,
-            // See keepIdEnabled(): keep-id maps the proxy's `node` user (UID
-            // 1000) to the host daemon UID so credsDir is readable on Linux
-            // rootless podman. YAAC_DISABLE_KEEP_ID=1 omits it.
-            ...(keepIdEnabled() ? { UsernsMode: 'keep-id' } : {}),
-            Binds: [
-              `${credsDir}:/yaac-credentials:Z`,
-              `${agentVolume}:${SSH_AGENT_MOUNT}`,
-            ],
-          },
-        })
-        await container.start()
-        break
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : ''
-        const isPortConflict = msg.includes('address already in use') || msg.includes('proxy already running')
-        // Podman's wording for name collisions varies by version / endpoint:
-        //   - "container name \"...\" is already in use"
-        //   - "name \"...\" is in use: container already exists"
-        // Match both — any "in use" error that isn't a port conflict is a
-        // name collision worth retrying (or adopting).
-        const isNameConflict = !isPortConflict
-          && (msg.includes('already in use') || msg.includes('is in use'))
-          && (msg.includes('container name') || msg.includes('container already exists'))
-        // With many parallel test workers racing for host ports, port
-        // conflicts can take several retries to clear — bump the budget
-        // well past the 5-worker rule of thumb.
-        if (attempt >= 20 || (!isPortConflict && !isNameConflict)) {
-          throw err
-        }
-
-        if (isNameConflict) {
-          // Another caller (concurrent worker, daemon restart race, stale
-          // container from a prior run) holds the name. Prefer adopting a
-          // healthy existing proxy over stomping it — if discovery finds
-          // one with our hash and it answers /healthz, reuse it.
-          const existing = await this.discoverExistingProxy(hash)
-          if (existing) {
-            this.resolved = {
-              containerName: existing.containerName,
-              hostPort: existing.hostPort,
-              authSecret: existing.authSecret,
-              agentVolume: sshAgentVolumeName(hash),
-            }
-            this._proxyIp = existing.proxyIp
-            return
-          }
-          // Can't adopt — force-remove and retry, with a short delay so
-          // podman can finish its asynchronous cleanup before we try again.
-          try { await podman.getContainer(containerName).remove({ force: true }) } catch { /* ok */ }
-          await new Promise((r) => setTimeout(r, 500))
-          continue
-        }
-
-        // Port conflict: remove the created-but-not-started container, pick
-        // a fresh host port, and retry. Re-randomize the search offset so a
-        // swarm of workers stuck on consecutive ports breaks up instead of
-        // all marching in lockstep.
-        try { await podman.getContainer(containerName).remove({ force: true }) } catch { /* ok */ }
-        const retryBase = Number(hostPort) + 1 + Math.floor(Math.random() * 500)
-        hostPort = String(await findAvailablePort(retryBase))
-        await new Promise((r) => setTimeout(r, 200))
-      }
-    }
-
-    if (!container) {
-      // Unreachable: the loop either breaks (with `container` populated) or
-      // throws / returns from the adopt path. The guard makes TS happy.
-      throw new Error('proxy container never created')
-    }
-
-    this.resolved = { containerName, hostPort, authSecret, agentVolume }
-
-    // Resolve proxy IP on internal network
-    const info = await container.inspect()
-    const networks = info.NetworkSettings.Networks as Record<string, { IPAddress: string }>
-    this._proxyIp = networks[this.config.network]?.IPAddress
-    if (!this._proxyIp) {
-      throw new Error(`Proxy container has no IP on network ${this.config.network}`)
-    }
-
-    // Wait for healthcheck
+  private async waitForHealthy(): Promise<void> {
     for (let i = 0; i < 30; i++) {
       try {
         const res = await fetch(`${this.baseUrl}/healthz`)
-        if (res.ok) {
-          console.log(`Proxy sidecar running on port ${hostPort}`)
-          return
-        }
+        if (res.ok) return
       } catch {
-        // not ready yet
+        // not ready yet — possibly a dead tunnel; respawn it
+        await this.forward.ensure().catch(() => { /* retried below */ })
       }
       await new Promise((r) => setTimeout(r, 500))
     }
-    throw new Error('Proxy sidecar failed to start within 15 seconds')
+    throw new Error('Proxy did not become healthy within 15 seconds')
   }
 
   /**
-   * Remove proxy containers that are no longer useful:
-   *   - image hash differs from `currentHash` (stale build), OR
-   *   - container is in `exited` state (orphaned from a prior run — e.g. a
-   *     test worker on a one-off network that finished without calling stop)
-   * Proxies with sessions still referencing them are always preserved, as are
-   * `running`/`created` proxies (which may belong to a concurrent worker).
+   * Drop the daemon-side control tunnel without touching the deployed
+   * proxy. Called from daemon shutdown — without it the `kubectl
+   * port-forward` child outlives the daemon (orphaned to PID 1) and each
+   * restart stacks another one.
    */
-  private async gcStaleProxies(currentHash: string): Promise<void> {
-    const proxies = await podman.listContainers({
-      all: true,
-      filters: { label: ['yaac.proxy=true'] },
-    })
-
-    for (const p of proxies) {
-      const hashMatches = p.Labels?.['yaac.proxy.image-hash'] === currentHash
-      const isExited = p.State === 'exited'
-      if (hashMatches && !isExited) continue
-
-      const proxyName = p.Names?.[0]?.replace(/^\//, '') ?? p.Id
-
-      // Check if any session containers still reference this proxy
-      const sessions = await podman.listContainers({
-        all: true,
-        filters: { label: [`yaac.proxy-container=${proxyName}`] },
-      })
-      if (sessions.length > 0) continue
-
-      console.log(`Removing stale proxy ${proxyName}...`)
-      try {
-        await podman.getContainer(proxyName).remove({ force: true })
-      } catch {
-        // already gone
-      }
-    }
+  disconnect(): void {
+    this.forward.stop()
+    this.running = false
   }
 
   /**
-   * Remove exited `yaac.test=true` containers older than 1 hour. Tests
-   * clean these up in afterEach, but a crashed or killed test run leaks
-   * them — and the leftover exited containers pin their per-test network,
-   * blocking gcStaleNetworks. The 1-hour grace period avoids racing a
-   * long-running test suite.
+   * Tear down the proxy Deployment/Service and the control tunnel. Used
+   * by test teardown; production daemons leave the proxy deployed.
    */
-  private async gcStaleTestContainers(): Promise<void> {
-    const cutoff = Math.floor(Date.now() / 1000) - 60 * 60
-    const containers = await podman.listContainers({
-      all: true,
-      filters: { label: ['yaac.test=true'], status: ['exited'] },
-    })
-
-    for (const c of containers) {
-      if (typeof c.Created !== 'number' || c.Created > cutoff) continue
-      const name = c.Names?.[0]?.replace(/^\//, '') ?? c.Id
-      console.log(`Removing stale test container ${name}...`)
-      try {
-        await podman.getContainer(c.Id).remove({ force: true })
-      } catch {
-        // already gone
-      }
-    }
-  }
-
-  /**
-   * Remove yaac-prefixed networks that are older than 1 hour, have no
-   * attached containers, and are not the network this ProxyClient manages.
-   * The 1-hour grace period avoids racing concurrent test workers that have
-   * just created their network but not yet attached a container.
-   */
-  private async gcStaleNetworks(): Promise<void> {
-    const cutoff = Date.now() - 60 * 60 * 1000
-    const networks = await podman.listNetworks() as Array<{
-      Name?: string
-      Created?: string
-    }>
-
-    for (const n of networks) {
-      if (!n.Name?.startsWith('yaac-')) continue
-      if (n.Name === this.config.network) continue
-
-      const created = Date.parse(n.Created ?? '')
-      if (!Number.isFinite(created) || created > cutoff) continue
-
-      // The compat /networks endpoint's Containers field only lists *running*
-      // containers, but podman refuses to remove a network that still has
-      // stopped/exited containers attached. Query for all attached containers
-      // directly so we skip silently instead of logging + failing each run.
-      const attached = await podman.listContainers({
-        all: true,
-        filters: { network: [n.Name] },
-      })
-      if (attached.length > 0) continue
-
-      console.log(`Removing stale network ${n.Name}...`)
-      try {
-        await podman.getNetwork(n.Name).remove()
-      } catch {
-        // already gone
-      }
-    }
-  }
-
   async stop(): Promise<void> {
     console.log('Stopping proxy...')
-    if (this.resolved) {
-      try {
-        await podman.getContainer(this.resolved.containerName).remove({ force: true })
-      } catch {
-        // already stopped or removed
-      }
-    }
+    this.forward.stop()
     try {
-      await podman.getNetwork(this.config.network).remove()
+      await kubectlWithRetry([
+        'delete', 'deployment', PROXY_APP_NAME,
+        '-n', k8sNamespace(), '--ignore-not-found', '--wait=false',
+      ])
+      await kubectlWithRetry([
+        'delete', 'service', PROXY_APP_NAME,
+        '-n', k8sNamespace(), '--ignore-not-found',
+      ])
     } catch {
-      // ok
+      // cluster unreachable — nothing to stop
     }
-    this._proxyIp = null
     this.running = false
-    this.resolved = null
+    this.authSecret = null
   }
 }
 
+async function readExistingProxyAuthSecret(): Promise<string | null> {
+  const secret = await kubectlGetJson<{ data?: Record<string, string> }>([
+    'get', 'secret', 'yaac-proxy-auth', '-n', k8sNamespace(),
+  ])
+  const encoded = secret?.data?.secret
+  return encoded ? Buffer.from(encoded, 'base64').toString('utf8') : null
+}
+
 /**
- * Compute the proxy sidecar image tag without starting or building anything.
- * Useful for fingerprinting — the tag encodes the content of podman/proxy-sidecar/.
+ * Compute the proxy image tag without starting or building anything.
+ * Useful for fingerprinting — the tag encodes the content of the proxy
+ * build context.
  */
 export async function resolveProxyImageTag(image = 'yaac-proxy'): Promise<string> {
   const hash = await contextHash(PROXY_DIR)
   return `${image}:${hash}`
 }
 
-// Default singleton — resolved state is populated by ensureRunning().
-// YAAC_PROXY_IMAGE / YAAC_PROXY_NETWORK are test-only hooks that let the
-// e2e-cli suite point a daemon subprocess at pre-built test images and an
-// isolated sidecar network. Unset in production.
+// Default singleton. YAAC_PROXY_IMAGE is a test-only hook that lets the
+// e2e suite point a daemon subprocess at pre-built test images. Unset in
+// production.
 export const proxyClient = new ProxyClient({
   image: process.env.YAAC_PROXY_IMAGE ?? 'yaac-proxy',
-  network: process.env.YAAC_PROXY_NETWORK ?? 'yaac-sessions',
   requirePrebuilt: process.env.YAAC_REQUIRE_PREBUILT_IMAGES === '1',
 })

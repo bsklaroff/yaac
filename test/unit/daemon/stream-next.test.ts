@@ -9,10 +9,18 @@ import type { ProjectMeta } from '@/shared/types'
 
 import type * as waitingModule from '@/lib/session/waiting'
 import type * as statusModule from '@/lib/session/status'
+import type * as podsModule from '@/lib/k8s/pods'
 
 vi.mock('@/lib/session/waiting', async () => {
   const actual = await vi.importActual<typeof waitingModule>('@/lib/session/waiting')
   return { ...actual, getWaitingSessions: vi.fn() }
+})
+
+// getActiveProjects (the needs_project path) lists session pods directly —
+// mock the pod listing so no cluster is needed.
+vi.mock('@/lib/k8s/pods', async () => {
+  const actual = await vi.importActual<typeof podsModule>('@/lib/k8s/pods')
+  return { ...actual, listSessionPods: vi.fn().mockResolvedValue([]) }
 })
 
 vi.mock('@/daemon/session-create', () => ({ createSession: vi.fn() }))
@@ -24,17 +32,19 @@ vi.mock('@/lib/session/status', async () => {
 import { getWaitingSessions } from '@/lib/session/waiting'
 import { createSession } from '@/daemon/session-create'
 import { getSessionFirstMessage } from '@/lib/session/status'
+import { listSessionPods } from '@/lib/k8s/pods'
 
 const mockGetWaiting = vi.mocked(getWaitingSessions)
 const mockCreate = vi.mocked(createSession)
 const mockFirstMsg = vi.mocked(getSessionFirstMessage)
+const mockListPods = vi.mocked(listSessionPods)
 
 function makeSession(overrides: Partial<WaitingSession> = {}): WaitingSession {
   return {
-    containerName: 'yaac-demo-a',
+    jobName: `yaac-demo-${overrides.sessionId ?? 'a'}`,
     sessionId: 'a',
     projectSlug: 'demo',
-    created: 1_700_000_000,
+    createdAtMs: 1_700_000_000_000,
     tool: 'claude',
     ...overrides,
   }
@@ -58,6 +68,7 @@ describe('pickNextStreamSession', () => {
     tmpDir = await createTempDataDir()
     vi.resetAllMocks()
     mockFirstMsg.mockResolvedValue(undefined)
+    mockListPods.mockResolvedValue([])
   })
 
   afterEach(async () => {
@@ -78,7 +89,7 @@ describe('pickNextStreamSession', () => {
     expect(result).toMatchObject({
       done: false,
       sessionId: 'a',
-      containerName: 'yaac-demo-a',
+      jobName: 'yaac-demo-a',
       lastVisited: 'a',
       visited: ['a'],
     })
@@ -136,10 +147,9 @@ describe('pickNextStreamSession', () => {
     mockGetWaiting.mockResolvedValue([])
     mockCreate.mockResolvedValue({
       sessionId: 'new',
-      containerName: 'yaac-demo-new',
+      jobName: 'yaac-demo-new',
       forwardedPorts: [],
       tool: 'claude',
-      claimedPrewarm: false,
     })
 
     const result = await pickNextStreamSession({
@@ -151,7 +161,7 @@ describe('pickNextStreamSession', () => {
     expect(result).toMatchObject({
       done: false,
       sessionId: 'new',
-      containerName: 'yaac-demo-new',
+      jobName: 'yaac-demo-new',
       projectSlug: 'demo',
       visited: ['new'],
       lastVisited: 'new',

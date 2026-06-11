@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createYaacTestEnv, spawnYaacDaemon, runYaac, type YaacTestEnv, type SpawnedDaemon } from '@test/helpers/cli'
 import { createTestRepo, addTestProject } from '@test/helpers/setup'
+import { makeDaemonRpcClient } from '@test/helpers/rpc'
 
 describe('yaac config (real CLI + real daemon)', () => {
   let testEnv: YaacTestEnv
@@ -87,6 +88,37 @@ describe('yaac config (real CLI + real daemon)', () => {
     )
     expect(exitCode, stderr).toBe(0)
     expect(await fs.readFile(target, 'utf8')).toBe('repaired-config')
+  })
+
+  it('rejects podman-era yaac-config.json keys with a removed-feature error', async () => {
+    // `nestedContainers` and `pgRelay` existed on the podman backend and
+    // were removed in the kubernetes migration. The shared config parser
+    // (exercised here through the daemon's config-write route, the same
+    // validation session-create hits at load time) must reject them with
+    // a pointed message, not the generic unknown-field warning.
+    const repo = path.join(testEnv.scratchDir, 'demo')
+    await createTestRepo(repo)
+    await addTestProject(repo)
+
+    const client = makeDaemonRpcClient(daemon)
+
+    const nested = await client.project[':slug'].config.$put({
+      param: { slug: 'demo' },
+      json: { config: { nestedContainers: true } },
+    })
+    expect(nested.status).toBe(400)
+    const nestedBody = await nested.json() as unknown as { error: { code: string; message: string } }
+    expect(nestedBody.error.code).toBe('VALIDATION')
+    expect(nestedBody.error.message).toMatch(/nestedContainers.*no longer supported/)
+
+    const pgRelay = await client.project[':slug'].config.$put({
+      param: { slug: 'demo' },
+      json: { config: { pgRelay: { port: 5432 } } },
+    })
+    expect(pgRelay.status).toBe(400)
+    const pgBody = await pgRelay.json() as unknown as { error: { code: string; message: string } }
+    expect(pgBody.error.code).toBe('VALIDATION')
+    expect(pgBody.error.message).toMatch(/pgRelay.*no longer supported/)
   })
 
   it('config edit fails with a clear error for an unknown project slug', async () => {

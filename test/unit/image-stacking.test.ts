@@ -81,7 +81,7 @@ describe('ensureImage layer stacking', () => {
     const result = await ensureImage('myproject')
 
     expect(operations).toHaveLength(3)
-    expect(operations[0]).toMatch(new RegExp(`^build yaac-base:${HASH_RE}$`))
+    expect(operations[0]).toMatch(new RegExp(`^build yaac-base:${HASH_RE} \\[YAAC_UID=\\d+\\]$`))
     expect(operations[1]).toMatch(new RegExp(`^build yaac-tools:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\]$`))
     expect(operations[2]).toMatch(new RegExp(`^build yaac-user-myproject:${HASH_RE} \\[BASE_IMAGE=yaac-tools:${HASH_RE}\\]$`))
     expect(result).toMatch(new RegExp(`^yaac-user-myproject:${HASH_RE}$`))
@@ -95,7 +95,7 @@ describe('ensureImage layer stacking', () => {
     const result = await ensureImage('myproject')
 
     expect(operations).toHaveLength(2)
-    expect(operations[0]).toMatch(new RegExp(`^build yaac-base:${HASH_RE}$`))
+    expect(operations[0]).toMatch(new RegExp(`^build yaac-base:${HASH_RE} \\[YAAC_UID=\\d+\\]$`))
     expect(operations[1]).toMatch(new RegExp(`^build yaac-tools:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\]$`))
     expect(result).toMatch(new RegExp(`^yaac-tools:${HASH_RE}$`))
   })
@@ -112,7 +112,7 @@ describe('ensureImage layer stacking', () => {
 
     // Standalone Dockerfile.yaac owns its own toolchain — no tools layer.
     expect(operations).toEqual([
-      expect.stringMatching(new RegExp(`^build yaac-base:${HASH_RE}$`)),
+      expect.stringMatching(new RegExp(`^build yaac-base:${HASH_RE} \\[YAAC_UID=\\d+\\]$`)),
     ])
     expect(result).toMatch(new RegExp(`^yaac-base:${HASH_RE}$`))
   })
@@ -129,7 +129,7 @@ describe('ensureImage layer stacking', () => {
 
     // base → tools → yaac (layered on tools, not on default)
     expect(operations).toHaveLength(3)
-    expect(operations[0]).toMatch(new RegExp(`^build yaac-base:${HASH_RE}$`))
+    expect(operations[0]).toMatch(new RegExp(`^build yaac-base:${HASH_RE} \\[YAAC_UID=\\d+\\]$`))
     expect(operations[1]).toMatch(new RegExp(`^build yaac-tools:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\]$`))
     expect(operations[2]).toMatch(new RegExp(`^build yaac-base:${HASH_RE} \\[BASE_IMAGE=yaac-tools:${HASH_RE}\\]$`))
     expect(result).toMatch(new RegExp(`^yaac-base:${HASH_RE}$`))
@@ -147,7 +147,7 @@ describe('ensureImage layer stacking', () => {
 
     // No default build, no tools — treated as standalone replacement
     expect(operations).toEqual([
-      expect.stringMatching(new RegExp(`^build yaac-base:${HASH_RE}$`)),
+      expect.stringMatching(new RegExp(`^build yaac-base:${HASH_RE} \\[YAAC_UID=\\d+\\]$`)),
     ])
     expect(result).toMatch(new RegExp(`^yaac-base:${HASH_RE}$`))
   })
@@ -159,71 +159,6 @@ describe('ensureImage layer stacking', () => {
 
     const { ensureImage } = await loadModule()
     await expect(ensureImage('myproject')).rejects.toThrow('must use `ARG BASE_IMAGE` and `FROM \${BASE_IMAGE}`')
-  })
-
-  it('builds nestable layer on top of tools when nestedContainers is true', async () => {
-    const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
-    await fs.mkdir(repoPath, { recursive: true })
-
-    const { ensureImage } = await loadModule()
-    const result = await ensureImage('myproject', undefined, false, true)
-
-    expect(operations).toHaveLength(3)
-    expect(operations[0]).toMatch(new RegExp(`^build yaac-base:${HASH_RE}$`))
-    expect(operations[1]).toMatch(new RegExp(`^build yaac-tools:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\]$`))
-    expect(operations[2]).toMatch(new RegExp(`^build yaac-base-nestable:${HASH_RE} \\[BASE_IMAGE=yaac-tools:${HASH_RE}\\]$`))
-    expect(result).toMatch(new RegExp(`^yaac-base-nestable:${HASH_RE}$`))
-  })
-
-  it('builds nestable + user layers when both are enabled', async () => {
-    const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
-    await fs.mkdir(repoPath, { recursive: true })
-    await fs.writeFile(path.join(dataDir, 'Dockerfile.user'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n')
-
-    const { ensureImage } = await loadModule()
-    const result = await ensureImage('myproject', undefined, false, true)
-
-    expect(operations).toHaveLength(4)
-    expect(operations[0]).toMatch(new RegExp(`^build yaac-base:${HASH_RE}$`))
-    expect(operations[1]).toMatch(new RegExp(`^build yaac-tools:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\]$`))
-    expect(operations[2]).toMatch(new RegExp(`^build yaac-base-nestable:${HASH_RE} \\[BASE_IMAGE=yaac-tools:${HASH_RE}\\]$`))
-    expect(operations[3]).toMatch(new RegExp(`^build yaac-user-myproject:${HASH_RE} \\[BASE_IMAGE=yaac-base-nestable:${HASH_RE}\\]$`))
-    expect(result).toMatch(new RegExp(`^yaac-user-myproject:${HASH_RE}$`))
-  })
-
-  it('builds nestable layer on top of standalone Dockerfile.yaac when nestedContainers is true', async () => {
-    const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
-    const configDir = path.join(dataDir, 'projects', 'myproject', 'config')
-    await fs.mkdir(repoPath, { recursive: true })
-    await fs.mkdir(configDir, { recursive: true })
-    await fs.writeFile(path.join(configDir, 'Dockerfile.yaac'), 'FROM docker.io/ubuntu:24.04\nRUN echo custom\n')
-
-    const { ensureImage } = await loadModule()
-    const result = await ensureImage('myproject', undefined, false, true)
-
-    // Standalone yaac: no default base, no tools layer.
-    expect(operations).toHaveLength(2)
-    expect(operations[0]).toMatch(new RegExp(`^build yaac-base:${HASH_RE}$`))
-    expect(operations[1]).toMatch(new RegExp(`^build yaac-base-nestable:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\]$`))
-    expect(result).toMatch(new RegExp(`^yaac-base-nestable:${HASH_RE}$`))
-  })
-
-  it('builds nestable layer on top of layered Dockerfile.yaac when nestedContainers is true', async () => {
-    const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
-    const configDir = path.join(dataDir, 'projects', 'myproject', 'config')
-    await fs.mkdir(repoPath, { recursive: true })
-    await fs.mkdir(configDir, { recursive: true })
-    await fs.writeFile(path.join(configDir, 'Dockerfile.yaac'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo custom\n')
-
-    const { ensureImage } = await loadModule()
-    const result = await ensureImage('myproject', undefined, false, true)
-
-    expect(operations).toHaveLength(4)
-    expect(operations[0]).toMatch(new RegExp(`^build yaac-base:${HASH_RE}$`))
-    expect(operations[1]).toMatch(new RegExp(`^build yaac-tools:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\]$`))
-    expect(operations[2]).toMatch(new RegExp(`^build yaac-base:${HASH_RE} \\[BASE_IMAGE=yaac-tools:${HASH_RE}\\]$`))
-    expect(operations[3]).toMatch(new RegExp(`^build yaac-base-nestable:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\]$`))
-    expect(result).toMatch(new RegExp(`^yaac-base-nestable:${HASH_RE}$`))
   })
 
   it('ensureImageByTag builds when image does not exist', async () => {
@@ -246,19 +181,18 @@ describe('ensureImage layer stacking', () => {
     expect(result).toMatch(new RegExp(`^yaac-tools:${HASH_RE}$`))
   })
 
-  it('rebuildProjectImage rebuilds nestable + user layers downstream of tools (no --no-cache)', async () => {
+  it('rebuildProjectImage rebuilds the user layer downstream of tools (no --no-cache)', async () => {
     const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
     await fs.mkdir(repoPath, { recursive: true })
     await fs.writeFile(path.join(dataDir, 'Dockerfile.user'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n')
 
     const { rebuildProjectImage } = await loadModule()
-    const result = await rebuildProjectImage('myproject', { nestedContainers: true })
+    const result = await rebuildProjectImage('myproject')
 
-    // tools (--no-cache) → nestable → user. The system base is untouched.
-    expect(operations).toHaveLength(3)
+    // tools (--no-cache) → user. The system base is untouched.
+    expect(operations).toHaveLength(2)
     expect(operations[0]).toMatch(new RegExp(`^build yaac-tools:${HASH_RE} \\[BASE_IMAGE=yaac-base:${HASH_RE}\\] --no-cache$`))
-    expect(operations[1]).toMatch(new RegExp(`^build yaac-base-nestable:${HASH_RE} \\[BASE_IMAGE=yaac-tools:${HASH_RE}\\]$`))
-    expect(operations[2]).toMatch(new RegExp(`^build yaac-user-myproject:${HASH_RE} \\[BASE_IMAGE=yaac-base-nestable:${HASH_RE}\\]$`))
+    expect(operations[1]).toMatch(new RegExp(`^build yaac-user-myproject:${HASH_RE} \\[BASE_IMAGE=yaac-tools:${HASH_RE}\\]$`))
     expect(result).toMatch(new RegExp(`^yaac-user-myproject:${HASH_RE}$`))
   })
 

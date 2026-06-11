@@ -154,15 +154,6 @@ export interface SecretProxyRule {
   bodyParam?: string
 }
 
-export interface PostgresRelayConfig {
-  /** Whether to enable the PostgreSQL relay (default: false) */
-  enabled: boolean
-  /** Port PostgreSQL listens on the host (default: 5432) */
-  hostPort?: number
-  /** Port to expose inside the relay container (default: 5432) */
-  containerPort?: number
-}
-
 /**
  * Object form of an `initCommands` entry. Each spec becomes its own tmux
  * window so multiple long-running processes (e.g. a backend and a frontend
@@ -188,11 +179,9 @@ export interface YaacConfig {
    *  a list of `InitCommandSpec` objects (one tmux window per entry).
    *  Mixing the two forms is rejected by the config parser. */
   initCommands?: string[] | InitCommandSpec[]
-  nestedContainers?: boolean
   portForward?: PortForwardConfig[]
   bindMounts?: BindMountConfig[]
   hideInitPane?: boolean
-  pgRelay?: PostgresRelayConfig
   addAllowedUrls?: string[]
   setAllowedUrls?: string[]
   /**
@@ -230,16 +219,6 @@ export type GitCredentialEntry = HttpsGitCredentialEntry | SshGitCredentialEntry
  */
 export interface GitCredentialsFile {
   tokens: GitCredentialEntry[]
-}
-
-export interface SessionMeta {
-  id: string
-  containerId: string
-  containerName: string
-  proxyToken: string | null
-  worktreeBranch: string
-  createdAt: string
-  status: 'running' | 'waiting' | 'stopped'
 }
 
 // ---------------------------------------------------------------------------
@@ -282,8 +261,8 @@ export interface SessionListEntry {
   sessionId: string
   projectSlug: string
   tool: AgentTool
-  status: 'running' | 'waiting' | 'prewarm'
-  /** Container created time as 'YYYY-MM-DD HH:MM:SS' (UTC). */
+  status: 'running' | 'waiting'
+  /** Pod created time as 'YYYY-MM-DD HH:MM:SS' (UTC). */
   createdAt: string
   prompt?: string
   /** User-assigned display title (falls back to `prompt` in UIs). */
@@ -292,24 +271,16 @@ export interface SessionListEntry {
 }
 
 export interface StaleSessionInfo {
-  containerName: string
+  jobName: string
   projectSlug: string
   sessionId: string
-  /** True when the container is still running but tmux is gone. */
+  /** True when the pod is still running but tmux is gone. */
   zombie: boolean
-}
-
-export interface FailedPrewarmInfo {
-  slug: string
-  fingerprint: string
-  /** Unix epoch ms. */
-  verifiedAt: number
 }
 
 export interface ActiveSessionsResult {
   sessions: SessionListEntry[]
   stale: StaleSessionInfo[]
-  failedPrewarms: FailedPrewarmInfo[]
 }
 
 export interface DeletedSessionEntry {
@@ -359,7 +330,7 @@ export type PickNextResult =
   | {
       done: false
       sessionId: string
-      containerName: string
+      jobName: string
       tmuxSession: 'yaac'
       projectSlug: string
       tool: AgentTool
@@ -392,30 +363,15 @@ export interface ProjectSummary {
 }
 
 /**
- * Prewarm row in the snapshot. Structurally matches `PrewarmEntry` from
- * `@/lib/prewarm`; inlined for the same browser-safety reason.
- */
-export interface PrewarmSummary {
-  sessionId: string
-  containerName: string
-  fingerprint: string
-  state: 'creating' | 'ready' | 'failed'
-  verifiedAt: number
-  tool?: AgentTool
-}
-
-/**
  * Full picture of daemon-owned state the webapp renders. Hydrated from a
  * `snapshot` event on connect and replaced wholesale on every subsequent
- * `snapshot`. Mirrors the union of `GET /session/list`, `GET /project/list`,
- * and `GET /prewarm`.
+ * `snapshot`. Mirrors the union of `GET /session/list` and
+ * `GET /project/list`.
  */
 export interface DaemonSnapshot {
   sessions: SessionListEntry[]
   stale: StaleSessionInfo[]
-  failedPrewarms: FailedPrewarmInfo[]
   projects: ProjectSummary[]
-  prewarm: Record<string, PrewarmSummary>
 }
 
 /** Messages the daemon pushes over `/events`. */

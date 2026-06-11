@@ -6,12 +6,12 @@
  *
  * Concurrent attaches to the same session share a single forwarder
  * set — register only the first one, and let re-registration for a
- * sessionId that already has forwarders be a no-op so
- * prewarm-claim paths can't double-register.
+ * sessionId that already has forwarders be a no-op so the
+ * daemon-restart restore pass can't double-register.
  */
 
-import { shellPodmanWithRetry } from '@/lib/container/runtime'
-import { podmanRelay, reserveAvailablePort, startPortForwarders } from '@/lib/container/port'
+import { containerExec } from '@/lib/k8s/exec'
+import { kubectlRelay, reserveAvailablePort, startPortForwarders } from '@/lib/container/port'
 import type { ReservedPort } from '@/lib/container/port'
 import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
 import type { PortForwardConfig, PortMapping } from '@/shared/types'
@@ -46,10 +46,10 @@ export function hasSessionForwarders(sessionId: string): boolean {
 /**
  * Stop every registered forwarder. Called from the daemon's shutdown
  * handler so each relay's listener server is closed and each in-flight
- * `podman exec` child is signalled before the daemon exits. Without
+ * `kubectl exec` child is signalled before the daemon exits. Without
  * this, relay children survive the daemon (orphaned to PID 1) and the
  * next daemon's `restoreAllSessionForwarders` adds new ones on top —
- * every restart compounds the count of live `podman exec` slots.
+ * every restart compounds the count of live `kubectl exec` slots.
  */
 export function stopAllSessionForwarders(): void {
   for (const sessionId of [...forwarders.keys()]) {
@@ -63,8 +63,8 @@ function shellEscape(str: string): string {
 
 /**
  * Render the tmux `status-right` value shown in a session's bottom bar.
- * Kept in a single helper so new sessions, prewarm claims, and daemon
- * restarts all produce the same format.
+ * Kept in a single helper so new sessions and daemon restarts both
+ * produce the same format.
  */
 export function buildStatusRight(
   projectSlug: string,
@@ -78,34 +78,34 @@ export function buildStatusRight(
 }
 
 /**
- * Overwrite the running container's tmux `status-right`. Used when
- * ports are provisioned after container creation (prewarm claim, daemon
- * restart) so the displayed port mapping matches the live forwarders.
+ * Overwrite the running session's tmux `status-right`. Used when ports
+ * are provisioned after Job creation (daemon restart) so the displayed
+ * port mapping matches the live forwarders.
  */
 export async function setSessionStatusRight(
-  containerName: string,
+  jobName: string,
   projectSlug: string,
   sessionId: string,
   ports: ReadonlyArray<PortMapping>,
 ): Promise<void> {
   const value = buildStatusRight(projectSlug, sessionId, ports)
-  await shellPodmanWithRetry(
-    `podman exec ${containerName} tmux -S ${CONTAINER_TMUX_SOCK} set-option -t yaac status-right '${shellEscape(value)}'`,
+  await containerExec(
+    jobName,
+    `tmux -S ${CONTAINER_TMUX_SOCK} set-option -t yaac status-right '${shellEscape(value)}'`,
   )
 }
 
 /**
- * Reserve host ports, start relay forwarders into the given container,
+ * Reserve host ports, start relay forwarders into the given session pod,
  * register them for teardown, and refresh tmux status-right so the
  * displayed port mapping matches the live forwarders. Used by the
- * prewarm-claim and daemon-restart paths; new-session creation does
- * this inline so the ports are held across the container-start
- * window.
+ * daemon-restart path only; new-session creation does this inline so
+ * the ports are held across the pod-start window.
  */
 export async function provisionSessionForwarders(
   projectSlug: string,
   sessionId: string,
-  containerName: string,
+  jobName: string,
   portForward: PortForwardConfig[] | undefined,
 ): Promise<PortMapping[]> {
   const reserved: ReservedPort[] = []
@@ -116,14 +116,14 @@ export async function provisionSessionForwarders(
     }
   }
 
-  // Always refresh status-right — even with no port forwards, the
-  // prewarm container's baked-in string may include stale info we
-  // want cleared.
-  await setSessionStatusRight(containerName, projectSlug, sessionId, reserved)
+  // Always refresh status-right — even with no port forwards, the pod's
+  // existing string may include stale port info from before the daemon
+  // restarted that we want cleared.
+  await setSessionStatusRight(jobName, projectSlug, sessionId, reserved)
 
   if (reserved.length === 0) return []
 
-  const stop = startPortForwarders(podmanRelay(containerName), reserved)
+  const stop = startPortForwarders(kubectlRelay(jobName), reserved)
   registerSessionForwarders(sessionId, stop)
 
   return reserved.map(({ containerPort, hostPort }) => ({ containerPort, hostPort }))

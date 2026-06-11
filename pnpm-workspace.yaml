@@ -1,5 +1,5 @@
 packages:
-  - "podman/proxy-sidecar"
+  - "k8s/proxy"
 allowBuilds:
   cpu-features: false
   esbuild: false

@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { claudeDir } from '@/lib/project/paths'
 import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
-import { shellPodmanWithRetry } from '@/lib/container/runtime'
+import { containerExec } from '@/lib/k8s/exec'
 import { scanJsonlForward } from '@/lib/session/jsonl'
 
 /**
@@ -69,15 +69,16 @@ export function classifyClaudePane(paneContent: string): 'running' | 'waiting' {
 
 /**
  * Capture the visible portion of the claude agent pane as plain text by
- * shelling into the container and running `tmux capture-pane -p`. The
+ * shelling into the session pod and running `tmux capture-pane -p`. The
  * `-J` flag joins wrapped lines so wide-terminal wrapping never splits
  * the interrupt hint across two lines. Returns `undefined` if the
- * container or tmux session isn't ready yet (e.g. mid-startup).
+ * pod or tmux session isn't ready yet (e.g. mid-startup).
  */
-async function captureClaudePane(containerName: string): Promise<string | undefined> {
+async function captureClaudePane(jobName: string): Promise<string | undefined> {
   try {
-    const { stdout } = await shellPodmanWithRetry(
-      `podman exec ${containerName} tmux -S ${CONTAINER_TMUX_SOCK} capture-pane -pJ -t yaac:claude.0`,
+    const { stdout } = await containerExec(
+      jobName,
+      `tmux -S ${CONTAINER_TMUX_SOCK} capture-pane -pJ -t yaac:claude.0`,
       { maxAttempts: 1 },
     )
     return stdout
@@ -94,7 +95,7 @@ async function captureClaudePane(containerName: string): Promise<string | undefi
  * capture-pane call. Without this, `/session/list` (UI polls every ~5s,
  * both with and without a project filter), `getWaitingSessions`
  * (called from the stream-picker), and any overlap between them each
- * drive their own `podman exec` independently for every claude session.
+ * drive their own `kubectl exec` independently for every claude session.
  */
 const CLAUDE_STATUS_TTL_MS = 2_000
 
@@ -127,8 +128,8 @@ export function evictClaudeStatusCache(slug: string, sessionId: string): void {
   claudeStatusCache.delete(claudeStatusKey(slug, sessionId))
 }
 
-async function probeClaudeStatus(containerName: string): Promise<'running' | 'waiting'> {
-  const pane = await captureClaudePane(containerName)
+async function probeClaudeStatus(jobName: string): Promise<'running' | 'waiting'> {
+  const pane = await captureClaudePane(jobName)
   if (pane === undefined) return 'waiting'
   return classifyClaudePane(pane)
 }
@@ -136,7 +137,7 @@ async function probeClaudeStatus(containerName: string): Promise<'running' | 'wa
 export async function getSessionClaudeStatus(
   projectSlug: string,
   sessionId: string,
-  containerName: string,
+  jobName: string,
 ): Promise<'running' | 'waiting'> {
   const key = claudeStatusKey(projectSlug, sessionId)
   const now = Date.now()
@@ -145,7 +146,7 @@ export async function getSessionClaudeStatus(
     if (cached.kind === 'inflight') return cached.promise
     if (cached.expiresAt > now) return cached.value
   }
-  const promise = probeClaudeStatus(containerName).then((value) => {
+  const promise = probeClaudeStatus(jobName).then((value) => {
     claudeStatusCache.set(key, {
       kind: 'settled',
       value,

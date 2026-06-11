@@ -1,0 +1,34 @@
+# kind cluster config for yaac.
+#
+# Two pieces of wiring yaac needs and cannot add to a running cluster:
+#   1. containerd `config_path` so `localhost:5000` image refs resolve to
+#      the local registry container (see "Cluster setup" in the README for
+#      the hosts.toml + network-connect steps that pair with this).
+#   2. extraMounts making your home directory visible to the node at the
+#      same path — yaac session pods mount worktrees, caches, and
+#      credentials via hostPath, which resolves on the NODE, not the host.
+#
+# Substitute $HOME for your real home directory before use (kind does not
+# expand environment variables), e.g.:
+#   sed "s|\$HOME|$HOME|g" k8s/kind-config.yaml | kind create cluster --name yaac --config -
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  # No kindnet: its NetworkPolicy engine (kube-network-policies) fails
+  # OPEN — a new pod's first packets flow before its IP reaches the
+  # engine's nftables set, so sessions would start with a brief window of
+  # unrestricted egress. setup-kind-cluster.sh installs Cilium instead,
+  # which fails CLOSED (a pod cannot start until its eBPF policy programs
+  # are attached). Cilium runs with ipam.mode=kubernetes, allocating pod
+  # IPs from this podSubnet.
+  disableDefaultCNI: true
+  podSubnet: 10.244.0.0/16
+containerdConfigPatches:
+- |-
+  [plugins."io.containerd.grpc.v1.cri".registry]
+    config_path = "/etc/containerd/certs.d"
+nodes:
+- role: control-plane
+  extraMounts:
+  - hostPath: $HOME
+    containerPath: $HOME

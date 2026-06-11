@@ -1,18 +1,16 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { podman } from '@/lib/container/runtime'
-import { claudeDir, codexTranscriptDir, getDataDir, getProjectsDir, opencodeMetaDir, projectDir } from '@/lib/project/paths'
-import { getSessionStatus, getSessionFirstMessage, getToolFromContainer } from '@/lib/session/status'
+import { listSessionJobs, listSessionPods, type SessionPod } from '@/lib/k8s/pods'
+import { claudeDir, codexTranscriptDir, getProjectsDir, opencodeMetaDir, projectDir } from '@/lib/project/paths'
+import { getSessionStatus, getSessionFirstMessage, normalizeTool } from '@/lib/session/status'
 import { ensureOpencodeFirstMessageCaptured } from '@/lib/session/opencode-status'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 import { readBlockedHosts } from '@/lib/session/blocked-hosts'
-import { isPrewarmSession, readPrewarmSessions } from '@/lib/prewarm'
 import { getSessionTitles } from '@/lib/session/titles'
 import { DaemonError } from '@/daemon/errors'
 import type {
   ActiveSessionsResult,
   DeletedSessionEntry,
-  FailedPrewarmInfo,
   SessionListEntry,
   StaleSessionInfo,
 } from '@/shared/types'
@@ -20,20 +18,19 @@ import type {
 export type {
   ActiveSessionsResult,
   DeletedSessionEntry,
-  FailedPrewarmInfo,
   SessionListEntry,
   StaleSessionInfo,
 }
 
 /**
- * Default grace window that protects freshly-created session containers
- * from the stale-session reaper. session-create's retry loop recreates
- * the container between attempts and does not start tmux until the last
- * step, so without a grace period a concurrent `listActiveSessions` call
- * can classify the container as a zombie — firing cleanupSessionDetached,
- * which removes the session's allowedHosts from the proxy mid-creation.
+ * Default grace window that protects freshly-created session pods from
+ * the stale-session reaper. session-create's retry loop recreates the
+ * Job between attempts and does not start tmux until the last step, so
+ * without a grace period a concurrent `listActiveSessions` call can
+ * classify the pod as a zombie — firing cleanupSessionDetached, which
+ * removes the session's allowedHosts from the proxy mid-creation.
  * Tests override this with YAAC_STARTING_GRACE_MS so they can provoke
- * cleanup on containers they just created.
+ * cleanup on sessions they just created.
  */
 export const STARTING_GRACE_MS = 60_000
 
@@ -44,43 +41,30 @@ export function resolveStartingGraceMs(): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : STARTING_GRACE_MS
 }
 
-interface ClassifiableContainer {
-  Id?: string
-  Names?: string[]
-  Labels?: Record<string, string>
-  State?: string
-  /** Unix epoch seconds, as returned by podman.listContainers. */
-  Created?: number
-}
-
 /**
- * Split the container list into the ones the renderer should show as
- * active sessions, the ones the caller should tear down, and implicitly
- * (by omission) the ones that are still inside the startup grace window.
+ * Split the pod list into the ones the renderer should show as active
+ * sessions, the ones the caller should tear down, and implicitly (by
+ * omission) the ones that are still inside the startup grace window.
  */
-export async function classifySessionContainers<T extends ClassifiableContainer>(
-  containers: T[],
+export async function classifySessionPods(
+  pods: SessionPod[],
   nowMs: number,
   isTmuxAlive: (slug: string, sessionId: string) => Promise<boolean>,
   graceMs: number = STARTING_GRACE_MS,
-): Promise<{ running: T[]; stale: StaleSessionInfo[] }> {
-  const running: T[] = []
+): Promise<{ running: SessionPod[]; stale: StaleSessionInfo[] }> {
+  const running: SessionPod[] = []
   const stale: StaleSessionInfo[] = []
-  for (const c of containers) {
-    const name = c.Names?.[0]?.replace(/^\//, '') ?? c.Id ?? ''
-    const sessionId = c.Labels?.['yaac.session-id'] ?? ''
-    const slug = c.Labels?.['yaac.project'] ?? ''
-
-    if (c.State === 'running' && slug && sessionId && await isTmuxAlive(slug, sessionId)) {
-      running.push(c)
+  for (const p of pods) {
+    if (p.running && p.projectSlug && p.sessionId && await isTmuxAlive(p.projectSlug, p.sessionId)) {
+      running.push(p)
       continue
     }
 
-    const ageMs = typeof c.Created === 'number' ? nowMs - c.Created * 1000 : Infinity
+    const ageMs = p.createdAtMs > 0 ? nowMs - p.createdAtMs : Infinity
     if (ageMs < graceMs) continue
 
-    const zombie = c.State === 'running'
-    stale.push({ containerName: name, projectSlug: slug, sessionId, zombie })
+    const zombie = p.running
+    stale.push({ jobName: p.jobName, projectSlug: p.projectSlug, sessionId: p.sessionId, zombie })
   }
   return { running, stale }
 }
@@ -93,14 +77,14 @@ async function ensureProjectExists(slug: string): Promise<void> {
   }
 }
 
-function formatCreated(epochSeconds: number): string {
-  return new Date(epochSeconds * 1000).toISOString().replace('T', ' ').slice(0, 19)
+function formatCreated(epochMs: number): string {
+  return new Date(epochMs).toISOString().replace('T', ' ').slice(0, 19)
 }
 
 /**
  * In-flight `listActiveSessions` calls keyed by `projectFilter ?? ''`.
  * The UI polls /session/list every ~5s and `listActiveSessions` is the
- * heaviest read path (listContainers + N tmux-alive probes + N status
+ * heaviest read path (pod list + N tmux-alive probes + N status
  * reads), so overlapping requests must share one execution. Each entry
  * is cleared when its Promise settles.
  */
@@ -115,10 +99,9 @@ export function _clearListActiveInflightForTests(): void {
 }
 
 /**
- * Enumerate managed containers for a project (or all projects), splitting
+ * Enumerate session pods for a project (or all projects), splitting
  * them into the active-session rows the renderer displays and the stale
- * set the caller is expected to tear down. Also collects failed-prewarm
- * entries so the renderer can surface them.
+ * set the caller is expected to tear down.
  *
  * Concurrent calls with the same `projectFilter` share one in-flight
  * Promise (see `listActiveInflight`).
@@ -137,102 +120,97 @@ export async function listActiveSessions(projectFilter?: string): Promise<Active
 async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSessionsResult> {
   if (projectFilter) await ensureProjectExists(projectFilter)
 
-  const filters: Record<string, string[]> = {
-    label: [`yaac.data-dir=${getDataDir()}`],
-  }
-  if (projectFilter) filters.label.push(`yaac.project=${projectFilter}`)
-
-  let containers
+  let pods
   try {
-    containers = await podman.listContainers({ all: true, filters })
+    pods = await listSessionPods(projectFilter)
   } catch (err) {
-    throw new DaemonError('PODMAN_UNAVAILABLE', err instanceof Error ? err.message : String(err))
+    throw new DaemonError('RUNTIME_UNAVAILABLE', err instanceof Error ? err.message : String(err))
   }
 
-  const { running, stale } = await classifySessionContainers(
-    containers, Date.now(), isTmuxSessionAlive, resolveStartingGraceMs(),
+  const { running, stale } = await classifySessionPods(
+    pods, Date.now(), isTmuxSessionAlive, resolveStartingGraceMs(),
   )
 
   // User-assigned titles, one file read per project.
-  const titleSlugs = [...new Set(running.map((c) => c.Labels?.['yaac.project']).filter((v): v is string => !!v))]
+  const titleSlugs = [...new Set(running.map((p) => p.projectSlug).filter((v): v is string => !!v))]
   const titlesBySlug = new Map(await Promise.all(
     titleSlugs.map(async (slug) => [slug, await getSessionTitles(slug)] as const),
   ))
 
   const sessions: SessionListEntry[] = await Promise.all(
-    running.map(async (c): Promise<SessionListEntry> => {
-      const sessionId = c.Labels?.['yaac.session-id'] ?? ''
-      const slug = c.Labels?.['yaac.project'] ?? ''
-      const containerName = c.Names?.[0]?.replace(/^\//, '') ?? c.Id ?? ''
-      const tool = getToolFromContainer(c)
-      if (!sessionId || !slug) {
+    running.map(async (p): Promise<SessionListEntry> => {
+      const tool = normalizeTool(p.tool)
+      if (!p.sessionId || !p.projectSlug) {
         return {
-          sessionId,
-          projectSlug: slug,
+          sessionId: p.sessionId,
+          projectSlug: p.projectSlug,
           tool,
           status: 'running',
-          createdAt: formatCreated(c.Created),
+          createdAt: formatCreated(p.createdAtMs),
           blockedHosts: [],
         }
       }
-      const [status, prompt, prewarm, blockedHosts] = await Promise.all([
-        getSessionStatus(slug, sessionId, tool, containerName),
-        getSessionFirstMessage(slug, sessionId, tool, containerName),
-        isPrewarmSession(slug, sessionId),
-        readBlockedHosts(slug, sessionId),
+      const [status, prompt, blockedHosts] = await Promise.all([
+        getSessionStatus(p.projectSlug, p.sessionId, tool, p.jobName),
+        getSessionFirstMessage(p.projectSlug, p.sessionId, tool, p.jobName),
+        readBlockedHosts(p.sessionId),
       ])
       return {
-        sessionId,
-        projectSlug: slug,
+        sessionId: p.sessionId,
+        projectSlug: p.projectSlug,
         tool,
-        status: prewarm ? 'prewarm' : status,
-        createdAt: formatCreated(c.Created),
+        status,
+        createdAt: formatCreated(p.createdAtMs),
         prompt,
-        title: titlesBySlug.get(slug)?.[sessionId],
+        title: titlesBySlug.get(p.projectSlug)?.[p.sessionId],
         blockedHosts,
       }
     }),
   )
 
-  const prewarmData = await readPrewarmSessions()
-  const failedPrewarms: FailedPrewarmInfo[] = Object.entries(prewarmData)
-    .filter(([, entry]) => entry.state === 'failed')
-    .filter(([slug]) => !projectFilter || slug === projectFilter)
-    .map(([slug, entry]) => ({
-      slug,
-      fingerprint: entry.fingerprint,
-      verifiedAt: entry.verifiedAt,
-    }))
-
-  return { sessions, stale, failedPrewarms }
+  return { sessions, stale }
 }
 
 /**
- * Tear down stale session containers (stopped, or running with a dead
+ * Tear down stale session Jobs (pod stopped, or running with a dead
  * tmux session) across every project. Swallows individual failures so
- * one broken container can't block the rest; designed to be called from
+ * one broken session can't block the rest; designed to be called from
  * the daemon background loop.
  */
 export async function reconcileStaleSessions(): Promise<void> {
-  let containers
+  let pods
   try {
-    containers = await podman.listContainers({
-      all: true,
-      filters: { label: [`yaac.data-dir=${getDataDir()}`] },
-    })
+    pods = await listSessionPods()
   } catch {
     return
   }
-  const { stale } = await classifySessionContainers(
-    containers, Date.now(), isTmuxSessionAlive, resolveStartingGraceMs(),
-  )
-  if (stale.length === 0) return
-  await Promise.all(stale.map((s) =>
-    cleanupSessionDetached({
-      containerName: s.containerName,
-      projectSlug: s.projectSlug,
-      sessionId: s.sessionId,
-    }).catch(() => { /* best-effort */ }),
+  const nowMs = Date.now()
+  const graceMs = resolveStartingGraceMs()
+  const { stale } = await classifySessionPods(pods, nowMs, isTmuxSessionAlive, graceMs)
+
+  // Orphan-Job sweep: a Job whose pod was evicted/deleted out-of-band is
+  // invisible to the pod-based classifier, so cross-reference the Job
+  // list and reap any job past the grace window with no backing pod.
+  const orphanTargets: Array<{ jobName: string; projectSlug: string; sessionId: string }> = []
+  try {
+    const jobs = await listSessionJobs()
+    const podSessionIds = new Set(pods.map((p) => p.sessionId))
+    for (const j of jobs) {
+      if (podSessionIds.has(j.sessionId)) continue
+      if (nowMs - j.createdAtMs < graceMs) continue
+      orphanTargets.push({ jobName: j.jobName, projectSlug: j.projectSlug, sessionId: j.sessionId })
+    }
+  } catch {
+    // Job list unavailable — the pod-based sweep below still runs.
+  }
+
+  const targets = [
+    ...stale.map((s) => ({ jobName: s.jobName, projectSlug: s.projectSlug, sessionId: s.sessionId })),
+    ...orphanTargets,
+  ]
+  if (targets.length === 0) return
+  await Promise.all(targets.map((t) =>
+    cleanupSessionDetached(t).catch(() => { /* best-effort */ }),
   ))
 }
 
@@ -244,31 +222,25 @@ export async function reconcileStaleSessions(): Promise<void> {
  *
  * opencode is the only tool whose snapshot is probe-driven — claude and
  * codex write their transcripts directly on message submit — so this
- * targets opencode containers and is a no-op for the rest. Each capture
+ * targets opencode sessions and is a no-op for the rest. Each capture
  * is best-effort and self-skips once a snapshot exists (see
  * `ensureOpencodeFirstMessageCaptured`).
  */
 export async function captureOpencodeFirstMessages(): Promise<void> {
-  let containers
+  let pods
   try {
-    containers = await podman.listContainers({
-      all: true,
-      filters: { label: [`yaac.data-dir=${getDataDir()}`] },
-    })
+    pods = await listSessionPods()
   } catch {
     return
   }
-  const { running } = await classifySessionContainers(
-    containers, Date.now(), isTmuxSessionAlive, resolveStartingGraceMs(),
+  const { running } = await classifySessionPods(
+    pods, Date.now(), isTmuxSessionAlive, resolveStartingGraceMs(),
   )
-  await Promise.all(running.map(async (c) => {
-    if (getToolFromContainer(c) !== 'opencode') return
-    const sessionId = c.Labels?.['yaac.session-id'] ?? ''
-    const slug = c.Labels?.['yaac.project'] ?? ''
-    const containerName = c.Names?.[0]?.replace(/^\//, '') ?? c.Id ?? ''
-    if (!sessionId || !slug || !containerName) return
+  await Promise.all(running.map(async (p) => {
+    if (normalizeTool(p.tool) !== 'opencode') return
+    if (!p.sessionId || !p.projectSlug || !p.jobName) return
     try {
-      await ensureOpencodeFirstMessageCaptured(slug, sessionId, containerName)
+      await ensureOpencodeFirstMessageCaptured(p.projectSlug, p.sessionId, p.jobName)
     } catch {
       // best-effort — next tick retries
     }
@@ -277,8 +249,9 @@ export async function captureOpencodeFirstMessages(): Promise<void> {
 
 /**
  * Scan the Claude Code JSONL dirs, Codex transcript dirs, and opencode
- * meta caches for session ids that no longer have a matching container.
- * If podman is down, every saved session is treated as deleted.
+ * meta caches for session ids that no longer have a matching session
+ * pod. If the cluster is not reachable, every saved session is treated
+ * as deleted.
  *
  * Entries are sorted newest-first and sliced to `limit` before prompts
  * are read — parsing each JSONL only for the rows the caller will render.
@@ -304,16 +277,12 @@ export async function listDeletedSessions(
 
   const activeSessionIds = new Set<string>()
   try {
-    const containers = await podman.listContainers({
-      all: true,
-      filters: { label: [`yaac.data-dir=${getDataDir()}`] },
-    })
-    for (const c of containers) {
-      const sid = c.Labels?.['yaac.session-id']
-      if (sid) activeSessionIds.add(sid)
+    const pods = await listSessionPods()
+    for (const p of pods) {
+      if (p.sessionId) activeSessionIds.add(p.sessionId)
     }
   } catch {
-    // podman not available — treat all as deleted
+    // cluster not reachable — treat all as deleted
   }
 
   // Track ms-precision birthtime alongside each entry so the sort is

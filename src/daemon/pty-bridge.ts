@@ -1,5 +1,6 @@
 import * as pty from '@lydell/node-pty'
 import type { IPty } from '@lydell/node-pty'
+import { interactiveExecArgs } from '@/lib/k8s/exec'
 import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
 
 const DEFAULT_COLS = 80
@@ -32,8 +33,9 @@ export function parsePtyTarget(raw: unknown): PtyTarget {
 }
 
 /**
- * Argv for attaching a tab's PTY. Spawned under a PTY on the daemon so
- * podman gets a real tty.
+ * Argv for attaching a tab's PTY: `kubectl exec -it job/<name> -- …`,
+ * spawned under a PTY on the daemon so kubectl gets a real tty — the
+ * same transport the CLI's `session attach` uses.
  *
  * Shells: ensure the session exists *detached*, then attach. Deliberately
  * NOT `new-session -A`: two clients attaching in quick succession (React
@@ -46,28 +48,25 @@ export function parsePtyTarget(raw: unknown): PtyTarget {
  * independently and the throwaway grouped session dies on detach (the
  * windows themselves belong to the group and live on).
  */
-export function attachArgs(containerName: string, target: PtyTarget = 'agent'): string[] {
+export function attachArgs(jobName: string, target: PtyTarget = 'agent'): string[] {
   const tmux = `tmux -S ${CONTAINER_TMUX_SOCK}`
   if (target.startsWith('shell:')) {
     const name = target.slice('shell:'.length)
-    return [
-      'exec', '-it', containerName,
+    return interactiveExecArgs(jobName, [
       'sh', '-c',
       `${tmux} new-session -d -s ${name} -c /workspace 2>/dev/null; exec ${tmux} attach-session -t ${name}`,
-    ]
+    ])
   }
   if (target.startsWith('window:')) {
     const windowId = target.slice('window:'.length)
-    return [
-      'exec', '-it', containerName,
+    return interactiveExecArgs(jobName, [
       'sh', '-c',
       `exec ${tmux} new-session -t yaac -s view-$$ \\; set-option destroy-unattached on \\; select-window -t '${windowId}'`,
-    ]
+    ])
   }
-  return [
-    'exec', '-it', containerName,
+  return interactiveExecArgs(jobName, [
     'tmux', '-S', CONTAINER_TMUX_SOCK, 'attach-session', '-t', 'yaac',
-  ]
+  ])
 }
 
 export interface ControlMessage {
@@ -124,12 +123,12 @@ const DETACH_GRACE_MS = 400
  *   - PTY exit    → close the socket
  *   - socket close→ detach tmux gracefully, then kill the PTY
  *
- * The detach-first matters: killing the host-side `podman exec` does NOT
- * terminate the exec'd tmux client inside the container (podman orphans
- * exec sessions), so a plain kill leaks a zombie attached client in the
- * container on every disconnect. Writing the detach keystroke (prefix + d;
- * the containers run stock tmux bindings) makes the client exit cleanly on
- * both sides; the delayed kill is the fallback for a wedged client.
+ * The detach-first matters: killing the host-side exec process does not
+ * reliably terminate the exec'd tmux client inside the container, so a
+ * plain kill can leak a zombie attached client in the container on every
+ * disconnect. Writing the detach keystroke (prefix + d; the containers
+ * run stock tmux bindings) makes the client exit cleanly on both sides;
+ * the delayed kill is the fallback for a wedged client.
  */
 export function bridge(
   ptyProc: PtyLike,
@@ -204,13 +203,13 @@ export function parsePtySize(
   return { cols: clamp(colsRaw), rows: clamp(rowsRaw) }
 }
 
-/** Spawn the attach PTY for a resolved container. */
+/** Spawn the attach PTY for a resolved session Job. */
 export function spawnAttachPty(
-  containerName: string,
+  jobName: string,
   size: { cols?: number; rows?: number } = {},
   target: PtyTarget = 'agent',
 ): IPty {
-  return pty.spawn('podman', attachArgs(containerName, target), {
+  return pty.spawn('kubectl', attachArgs(jobName, target), {
     name: 'xterm-color',
     cols: size.cols ?? DEFAULT_COLS,
     rows: size.rows ?? DEFAULT_ROWS,

@@ -2,20 +2,26 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
-import { ensureContainerRuntime, keepIdEnabled, podman, shellPodmanWithRetry } from '@/lib/container/runtime'
-import { ensureImage, packTar } from '@/lib/container/image-builder'
-import {
-  ensureNestedStorageVolumes,
-  sessionGraphrootVolumeName,
-  projectImageCacheVolumeName,
-  SHARED_IMAGE_STORE_PATH,
-} from '@/lib/container/image-promoter'
-import { proxyClient, buildRulesFromConfig } from '@/lib/container/proxy-client'
-import type { UpstreamRedirect } from '@/lib/container/proxy-client'
+import { ensureContainerRuntime } from '@/lib/container/runtime'
+import { ensureImage } from '@/lib/container/image-builder'
+import { proxyClient, PROXY_CONTAINER_PORT, SSH_AGENT_MOUNT, SSH_AGENT_SOCKET_PATH } from '@/lib/container/proxy-client'
+import { buildSessionRegistration, syncProxySecrets } from '@/lib/session/proxy-registration'
 import { resolveAllowedHosts } from '@/lib/container/default-allowed-hosts'
-import { reserveAvailablePort, startPortForwarders, podmanRelay } from '@/lib/container/port'
+import { reserveAvailablePort, startPortForwarders, kubectlRelay } from '@/lib/container/port'
 import type { ReservedPort } from '@/lib/container/port'
-import { pgRelay } from '@/lib/container/pg-relay'
+import { containerExec } from '@/lib/k8s/exec'
+import { dataDirHash, k8sNamespace, kubectlApply, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
+import {
+  JOB_NAME_LABEL,
+  LABEL_DATA_DIR_HASH,
+  LABEL_PROJECT,
+  LABEL_SESSION_ID,
+  LABEL_TOOL,
+  sessionJobName,
+} from '@/lib/k8s/pods'
+import { buildSessionJobManifest, type HostPathMount } from '@/lib/k8s/pod-spec'
+import { sshAgentHostDir } from '@/lib/k8s/bootstrap'
+import { pushImageToRegistry } from '@/lib/k8s/registry'
 import {
   repoDir,
   claudeDir,
@@ -26,10 +32,10 @@ import {
   opencodeDataDir,
   opencodeMetaDir,
   cachedPackagesDir,
+  cacheVolumeDir,
   worktreeDir,
   worktreesDir,
   projectDir,
-  getDataDir,
   sessionTmuxDir,
 } from '@/lib/project/paths'
 import {
@@ -50,11 +56,6 @@ import { writeKnownHostsFile } from '@/lib/git'
 import { formatSshCommand } from '@/shared/git'
 import { hostMatchesPattern } from '@/lib/container/default-allowed-hosts'
 import {
-  PROXY_CONTAINER_PORT,
-  SSH_AGENT_MOUNT,
-  SSH_AGENT_SOCKET_PATH,
-} from '@/lib/container/proxy-client'
-import {
   loadToolAuthEntry,
   loadClaudeCredentialsFile,
   loadCodexCredentialsFile,
@@ -63,13 +64,11 @@ import {
   PLACEHOLDER_API_KEY,
 } from '@/lib/project/tool-auth'
 import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/lib/git'
-import { claimPrewarmSession } from '@/lib/prewarm'
 import { ensureCodexHooksJson, ensureCodexConfigToml } from '@/lib/session/codex-hooks'
 import { ensureOpencodeConfigJson } from '@/lib/session/opencode-config'
 import { DaemonError } from '@/daemon/errors'
 import {
   buildStatusRight,
-  provisionSessionForwarders,
   registerSessionForwarders,
 } from '@/lib/session/port-forwarders'
 import type { AgentTool, PortMapping, YaacConfig, InitCommandSpec } from '@/shared/types'
@@ -111,38 +110,6 @@ export function resolveInitWindows(config: YaacConfig): InitWindow[] {
   }))
 }
 
-/**
- * Parse the `YAAC_E2E_UPSTREAM_REDIRECTS` env var into a redirect map for the
- * proxy. Test-only — lets e2e-cli tests rewire `api.anthropic.com` etc. to a
- * mock container without adding user-facing config. Expects a JSON object
- * keyed by hostname with values `{host, port, tls?}`. Returns undefined when
- * the env var is unset, empty, or unparseable.
- */
-export function parseUpstreamRedirectsEnv(
-  raw: string | undefined,
-): Record<string, UpstreamRedirect> | undefined {
-  if (!raw) return undefined
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    return undefined
-  }
-  if (!parsed || typeof parsed !== 'object') return undefined
-  const result: Record<string, UpstreamRedirect> = {}
-  for (const [host, val] of Object.entries(parsed as Record<string, unknown>)) {
-    if (!val || typeof val !== 'object') continue
-    const v = val as Record<string, unknown>
-    if (typeof v.host !== 'string' || typeof v.port !== 'number') continue
-    result[host] = {
-      host: v.host,
-      port: v.port,
-      tls: typeof v.tls === 'boolean' ? v.tls : undefined,
-    }
-  }
-  return Object.keys(result).length > 0 ? result : undefined
-}
-
 function emit(message: string, options: SessionCreateOptions): void {
   console.log(message)
   options.onProgress?.(message)
@@ -164,7 +131,7 @@ export function buildAgentCmd(
   if (tool === 'opencode') {
     // --port + --hostname enable opencode's built-in HTTP server on
     // container loopback. yaac reads /session and /session/status from
-    // there (via `podman exec curl`) for status + first-message lookup.
+    // there (via `kubectl exec curl`) for status + first-message lookup.
     // --continue resumes the one session stored in the per-yaac-session
     // data dir (isolated per container — no cwd-collision concern).
     // addDirFlags is dropped: opencode has no --add-dir equivalent.
@@ -181,14 +148,6 @@ export function buildAgentCmd(
   ].filter(Boolean).join(' ')
 }
 
-async function containerExec(containerName: string, cmd: string): Promise<void> {
-  await shellPodmanWithRetry(`podman exec ${containerName} ${cmd}`)
-}
-
-async function containerExecRoot(containerName: string, cmd: string): Promise<void> {
-  await shellPodmanWithRetry(`podman exec --user root ${containerName} ${cmd}`)
-}
-
 // Keep in lockstep with the @anthropic-ai/claude-code dependency: if it
 // ships a newer onboarding flow, a stale value lets the first-run wizard
 // reappear. `lastOnboardingVersion` must be >= the running CLI version.
@@ -203,7 +162,7 @@ interface ClaudeJsonState {
 }
 
 /**
- * Ensure `~/.claude.json` exists (Podman bind-mounts it as a file) and, for
+ * Ensure `~/.claude.json` exists (it is hostPath-mounted as a file) and, for
  * Claude sessions, seed claude-code's onboarding state so its first-run
  * wizard (theme picker, then the login screen) is skipped. Merges into any
  * existing state so claude-code's own keys (oauthAccount, migrations, …)
@@ -233,7 +192,7 @@ export async function seedClaudeJson(claudeJsonPath: string, isClaudeSession: bo
 /**
  * Seed `~/.claude/settings.json` so claude-code skips the one-time
  * "Bypass Permissions mode" warning. yaac runs the agent with permission
- * bypass inside a sandboxed container — exactly the case the warning says
+ * bypass inside a sandboxed pod — exactly the case the warning says
  * is safe — so showing it on every session is pure friction. Merges into
  * any existing settings (e.g. the theme claude-code writes itself).
  */
@@ -251,26 +210,22 @@ export async function seedClaudeSettings(settingsPath: string): Promise<void> {
 interface EphemeralMount {
   /** Relative path under /workspace (e.g. "node_modules"). */
   rel: string
-  /** Host backing dir — the bind-mount source. */
+  /** Host backing dir — the hostPath mount source. */
   hostBacking: string
-  /** Absolute in-container path — the bind-mount target. */
+  /** Absolute in-container path — the mount target. */
   containerPath: string
 }
 
 /**
  * Resolve per-session ephemeral-module mount descriptors and ensure
- * each backing directory exists on the host before container create.
+ * each backing directory exists on the host before the Job is created.
  *
- * Each `rel` becomes a bind mount from
+ * Each `rel` becomes a hostPath mount from
  * `<cachedPackages>/modules/<sessionId>/<slotKey>` on host to
  * `/workspace/<rel>` inside the container. Keeping the backing dirs
- * under the same `.cached-packages` bind as the pnpm store preserves
+ * under the same `.cached-packages` mount as the pnpm store preserves
  * hardlink affinity (same superblock → `link(2)` does not hit EXDEV),
  * and nothing lands on the host worktree.
- *
- * A plain bind mount (rather than a symlink) avoids Node.js's
- * `fs.mkdir({recursive:true})` quirk where an existing symlink-to-dir
- * is reported as ENOTDIR — pnpm's installer calls exactly that.
  */
 async function prepareEphemeralMounts(
   cachedPackages: string,
@@ -295,8 +250,7 @@ async function prepareEphemeralMounts(
 export interface SessionCreateOptions {
   addDir?: string[]
   addDirRw?: string[]
-  createPrewarm?: boolean
-  /** Pre-generated session ID (used by prewarm to know the container name upfront). */
+  /** Pre-generated session ID (used by resume to know the Job name upfront). */
   sessionId?: string
   /** Agent tool to run inside the container (default: 'claude'). */
   tool?: AgentTool
@@ -314,191 +268,120 @@ export interface SessionCreateOptions {
   /**
    * Called for each user-visible progress message during provisioning.
    * The HTTP route forwards these to the CLI as NDJSON events so
-   * `yaac session create` can show what the daemon is doing. Prewarm
-   * and stream-picker callers omit this.
+   * `yaac session create` can show what the daemon is doing.
    */
   onProgress?: (message: string) => void
 }
 
 export interface SessionCreateResult {
   sessionId?: string
-  containerName?: string
+  jobName?: string
   forwardedPorts?: PortMapping[]
   tool?: AgentTool
-  claimedPrewarm?: boolean
 }
 
-interface ContainerSetupParams {
-  imageName: string
-  containerName: string
+interface SessionSetupParams {
+  imageRef: string
+  jobName: string
   projectSlug: string
   sessionId: string
   env: string[]
-  wtDir: string
-  repo: string
-  claude: string
-  claudeJson: string
-  codex: string
-  opencodeData: string
-  opencodeConfig: string
-  cachedPackages: string
+  hostPathMounts: HostPathMount[]
   tool: AgentTool
   config: YaacConfig
   options: SessionCreateOptions
-  networkMode: string
-  pgRelayIp: string | null
   gitUser: { name: string; email: string }
   forwardedPorts: ReservedPort[]
-  /** Extra Binds (ssh-agent volume, known_hosts) when project remote is SSH. */
-  extraBinds: string[]
 }
 
-async function startContainerWithSetup(params: ContainerSetupParams): Promise<void> {
+/** Poll until the session pod is Ready, failing fast on terminal states. */
+async function waitForPodReady(jobName: string, timeoutMs = 180_000): Promise<void> {
+  interface RawPods {
+    items: Array<{
+      status?: {
+        phase?: string
+        containerStatuses?: Array<{
+          ready?: boolean
+          state?: { waiting?: { reason?: string; message?: string } }
+        }>
+      }
+    }>
+  }
+  const deadline = Date.now() + timeoutMs
+  let lastDetail = 'pod not created yet'
+  while (Date.now() < deadline) {
+    const list = await kubectlGetJson<RawPods>([
+      'get', 'pods', '-n', k8sNamespace(), '-l', `${JOB_NAME_LABEL}=${jobName}`,
+    ])
+    const pod = list?.items[0]
+    if (pod) {
+      const phase = pod.status?.phase ?? 'Unknown'
+      const cs = pod.status?.containerStatuses?.[0]
+      if (cs?.ready) return
+      if (phase === 'Failed' || phase === 'Succeeded') {
+        throw new Error(`session pod for ${jobName} reached terminal phase ${phase}`)
+      }
+      const waiting = cs?.state?.waiting
+      lastDetail = waiting?.reason
+        ? `${waiting.reason}${waiting.message ? `: ${waiting.message}` : ''}`
+        : `phase ${phase}`
+      // Image-pull failures never self-heal for content-hash tags — the
+      // bytes are either in the registry or they aren't. Fail fast with
+      // the reason instead of burning the whole timeout.
+      if (waiting?.reason === 'ErrImagePull' || waiting?.reason === 'ImagePullBackOff') {
+        throw new Error(`session pod for ${jobName} cannot pull its image (${lastDetail})`)
+      }
+    }
+    await new Promise((r) => setTimeout(r, 500))
+  }
+  throw new Error(`session pod for ${jobName} not ready after ${timeoutMs}ms (${lastDetail})`)
+}
+
+async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   const {
-    imageName, containerName, projectSlug, sessionId, env,
-    wtDir, repo, claude, claudeJson, codex, opencodeData, opencodeConfig, cachedPackages, tool,
-    config, options, networkMode, pgRelayIp, gitUser, forwardedPorts, extraBinds,
+    imageRef, jobName, projectSlug, sessionId, env, hostPathMounts,
+    tool, config, options, gitUser, forwardedPorts,
   } = params
 
   // Every in-container `tmux` invocation routes through this prefix so
-  // the server socket lands on a host-bind-mounted dir. Liveness and
-  // pane-content probes still go through `podman exec` because UNIX
-  // socket connect()s don't cross virtio-fs.
+  // the server socket lands on a host-mounted dir. Liveness and
+  // pane-content probes still go through `kubectl exec` because UNIX
+  // socket connect()s don't cross the hostPath boundary portably.
   const TMUX = `tmux -S ${CONTAINER_TMUX_SOCK}`
 
-  // Pre-create the per-session graphroot and project image-cache volumes
-  // with identifying labels so orphan GC can distinguish them from other
-  // yaac installs' volumes. Auto-created-on-mount volumes would be unlabeled.
-  if (config.nestedContainers) {
-    await ensureNestedStorageVolumes(projectSlug, sessionId)
-  }
-
-  // Create per-session backing dirs under .cached-packages/modules/<sid>/
-  // and mount each into /workspace/<relPath>. Same underlying filesystem
-  // as the pnpm store → hardlinks work; nothing lands on the worktree.
-  // Real projects already gitignore node_modules, so no info/exclude
-  // bookkeeping is needed here — an empty bind-mount dir is not reported
-  // by `git status` either.
-  const ephemeralMounts = await prepareEphemeralMounts(
-    cachedPackages,
-    sessionId,
-    resolveEphemeralModulesPaths(config),
-  )
-
-  // Per-session host dir holding the tmux server socket and pane log.
-  // Created here so the bind mount below has a stable source path.
-  const tmuxHostDir = sessionTmuxDir(projectSlug, sessionId)
-  await fs.mkdir(tmuxHostDir, { recursive: true })
-
-  const container = await podman.createContainer({
-    Image: imageName,
-    name: containerName,
-    Labels: {
-      'yaac.project': projectSlug,
-      'yaac.session-id': sessionId,
-      'yaac.data-dir': getDataDir(),
-      'yaac.proxy-container': proxyClient.containerName,
-      'yaac.tool': tool,
+  const manifest = buildSessionJobManifest({
+    jobName,
+    namespace: k8sNamespace(),
+    labels: {
+      [LABEL_PROJECT]: projectSlug,
+      [LABEL_SESSION_ID]: sessionId,
+      [LABEL_DATA_DIR_HASH]: dataDirHash(),
+      [LABEL_TOOL]: tool,
     },
-    Env: env,
-    HostConfig: {
-      Binds: [
-        `${wtDir}:/workspace:Z`,
-        `${repo}/.git:/repo/.git:Z`,
-        `${claude}:/home/yaac/.claude:Z`,
-        `${claudeJson}:/home/yaac/.claude.json:Z`,
-        `${codex}:/home/yaac/.codex:Z`,
-        `${opencodeData}:/home/yaac/.local/share/opencode:Z`,
-        `${opencodeConfig}:/home/yaac/.config/opencode:Z`,
-        `${cachedPackages}:/home/yaac/.cached-packages:Z`,
-        `${tmuxHostDir}:${CONTAINER_TMUX_DIR}:Z`,
-        ...Object.entries(config.cacheVolumes ?? {}).map(
-          ([key, containerPath]) => `yaac-cache-${projectSlug}-${key}:${containerPath}:Z`,
-        ),
-        ...(config.bindMounts ?? []).map(
-          ({ hostPath, containerPath, mode }) => `${hostPath}:${containerPath}:${mode},Z`,
-        ),
-        ...(options.addDir ?? []).map(
-          (p) => `${p}:/add-dir${p}:ro,Z`,
-        ),
-        ...(options.addDirRw ?? []).map(
-          (p) => `${p}:/add-dir${p}:rw,Z`,
-        ),
-        ...ephemeralMounts.map(
-          (m) => `${m.hostBacking}:${m.containerPath}:Z`,
-        ),
-        ...(config.nestedContainers
-          ? [
-              `${sessionGraphrootVolumeName(sessionId)}:/home/yaac/.local/share/containers:Z`,
-              `${projectImageCacheVolumeName(projectSlug)}:${SHARED_IMAGE_STORE_PATH}:Z`,
-            ]
-          : []),
-        ...extraBinds,
-      ],
-      NetworkMode: networkMode,
-      // Map container UID 1000 (yaac) to the host daemon's UID so that
-      // bind-mounted host paths (worktree, ~/.claude, ~/.codex, …) are
-      // writable by the in-container yaac user. Without this, rootless
-      // podman on Linux maps container UID 1000 to a subuid and host
-      // files appear as `root` inside — breaking the /workspace/.git
-      // pointer write and every other host-owned mount. See keepIdEnabled():
-      // unnecessary on macOS and breaks the nested-container image cache, so
-      // YAAC_DISABLE_KEEP_ID=1 omits it.
-      ...(keepIdEnabled() ? { UsernsMode: 'keep-id' } : {}),
-      Memory: 8 * 1024 ** 3,
-      ...(config.nestedContainers ? {
-        SecurityOpt: ['label=disable', 'unmask=/proc/sys'],
-        Devices: [{ PathOnHost: '/dev/net/tun', PathInContainer: '/dev/net/tun', CgroupPermissions: 'rwm' }],
-      } : {}),
-    },
+    image: imageRef,
+    env,
+    hostPathMounts,
+    memoryLimitBytes: 8 * 1024 ** 3,
   })
+  await kubectlApply(manifest)
+  await waitForPodReady(jobName)
 
-  await container.start()
-
-  // Fix ownership of named cache volumes (created as root, but container runs as yaac)
-  for (const containerPath of Object.values(config.cacheVolumes ?? {})) {
-    await containerExecRoot(containerName, `chown yaac:yaac '${shellEscape(containerPath)}'`)
-  }
-
-  // Fix ownership of the ephemeral-module bind mounts — the host
-  // backing dirs may have been created by the daemon process with a
-  // different UID than the container's yaac user.
-  for (const m of ephemeralMounts) {
-    await containerExecRoot(containerName, `chown yaac:yaac '${shellEscape(m.containerPath)}'`)
-  }
-
-  // Same fix for the tmux bind mount — the host dir was created by the
-  // daemon process and the in-container yaac user needs to own it so
-  // it can write the tmux socket.
-  await containerExecRoot(containerName, `chown yaac:yaac '${CONTAINER_TMUX_DIR}'`)
-
-  // Forward localhost:<pgPort> inside the container to the pg-relay sidecar (IPv4 + IPv6)
-  if (pgRelayIp) {
-    await shellPodmanWithRetry(`podman exec -d --user root ${containerName} socat TCP4-LISTEN:${pgRelay.containerPort},fork,reuseaddr,bind=127.0.0.1 TCP:${pgRelayIp}:${pgRelay.containerPort}`)
-    await shellPodmanWithRetry(`podman exec -d --user root ${containerName} socat TCP6-LISTEN:${pgRelay.containerPort},fork,reuseaddr,bind=::1 TCP:${pgRelayIp}:${pgRelay.containerPort}`)
-  }
-
-  // Fix ownership of podman storage volume and start API socket for nested containers
-  if (config.nestedContainers) {
-    await containerExecRoot(containerName, 'chown yaac:yaac /home/yaac/.local/share/containers')
-    await shellPodmanWithRetry(`podman exec -d ${containerName} podman system service --time=0 unix:///run/user/1000/podman/podman.sock`)
-  }
-
-  // Inject CA cert for HTTPS MITM (proxy is always active)
-  const caCert = await proxyClient.getCaCert()
-  const archive = await packTar([{ name: 'proxy-ca.pem', content: caCert }])
-  const containerRef = podman.getContainer(containerName)
-  await containerRef.putArchive(archive, { path: '/tmp' })
+  // No ownership fixup is needed for daemon-created hostPath mounts: the
+  // image's yaac user is built with the daemon's uid (YAAC_UID build arg,
+  // see sessionUid in image-builder), and the pod's idmapped mounts
+  // present host uids identically, so daemon-owned dirs are yaac-writable
+  // as-is. In-container chowns would also be wrong cross-platform: on
+  // Linux they rewrite the real host uid to a per-pod userns value.
 
   // Fix worktree git pointers for in-container paths
-  await containerExec(containerName, `sh -c "echo 'gitdir: /repo/.git/worktrees/${sessionId}' > /workspace/.git"`)
-  await containerExec(containerName, `sh -c "echo '/workspace/.git' > /repo/.git/worktrees/${sessionId}/gitdir"`)
+  await containerExec(jobName, `sh -c "echo 'gitdir: /repo/.git/worktrees/${sessionId}' > /workspace/.git"`)
+  await containerExec(jobName, `sh -c "echo '/workspace/.git' > /repo/.git/worktrees/${sessionId}/gitdir"`)
 
   // Configure git identity and trust mounted directories inside container
-  await containerExec(containerName, `git config --global user.name '${shellEscape(gitUser.name)}'`)
-  await containerExec(containerName, `git config --global user.email '${shellEscape(gitUser.email)}'`)
-  await containerExec(containerName, 'git config --global --add safe.directory /workspace')
-  await containerExec(containerName, 'git config --global --add safe.directory /repo')
+  await containerExec(jobName, `git config --global user.name '${shellEscape(gitUser.name)}'`)
+  await containerExec(jobName, `git config --global user.email '${shellEscape(gitUser.email)}'`)
+  await containerExec(jobName, 'git config --global --add safe.directory /workspace')
+  await containerExec(jobName, 'git config --global --add safe.directory /repo')
 
   // Start the agent tool in a tmux session
   const addDirFlags = [...(options.addDir ?? []), ...(options.addDirRw ?? [])]
@@ -528,7 +411,7 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
   // tmux's default 80x24 and a race against the agent's startup render
   // can leave Claude stuck at 80x24 until the user resizes the host
   // terminal to force a fresh SIGWINCH.
-  await containerExec(containerName, `${TMUX} -u new-session -d -s yaac -n ${tool} -x 500 -y 200 'sleep infinity'`)
+  await containerExec(jobName, `${TMUX} -u new-session -d -s yaac -n ${tool} -x 500 -y 200 'sleep infinity'`)
 
   // Run init commands in background tmux windows (parallel to the agent).
   // One window per InitWindow — string-form configs collapse to a single
@@ -542,39 +425,33 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
       )
     }
     await containerExec(
-      containerName,
+      jobName,
       `${TMUX} new-window -d -t yaac -n ${win.name} 'cd /workspace && ${win.cmd}'`,
     )
     if (!win.hidePane) {
-      await containerExec(containerName, `${TMUX} set-option -t yaac:${win.name} remain-on-exit on`)
+      await containerExec(jobName, `${TMUX} set-option -t yaac:${win.name} remain-on-exit on`)
     }
   }
 
   // Configure tmux UX
-  await containerExec(containerName, `${TMUX} set-option -g history-limit 200000`)
-  await containerExec(containerName, `${TMUX} set-option -g mouse on`)
-  await containerExec(containerName, `${TMUX} set-option -g focus-events on`)
+  await containerExec(jobName, `${TMUX} set-option -g history-limit 200000`)
+  await containerExec(jobName, `${TMUX} set-option -g mouse on`)
+  await containerExec(jobName, `${TMUX} set-option -g focus-events on`)
   // Propagate terminal bells (\a) from any window through to the attached
   // client so the user's terminal emulator can surface notifications.
-  await containerExec(containerName, `${TMUX} set-option -g monitor-bell on`)
-  await containerExec(containerName, `${TMUX} set-option -g bell-action any`)
-  await containerExec(containerName, `${TMUX} set-option -g visual-bell off`)
-  await containerExec(containerName, `${TMUX} set-option -g allow-passthrough on`)
-  await containerExec(containerName, `${TMUX} set-option -t yaac status-right-length 80`)
-  // Prewarm containers skip the status-right write: the claim path's
-  // setSessionStatusRight races with this call, and since prewarm
-  // forwardedPorts is always empty, an unlucky ordering would clobber the
-  // claim's real port info with a no-ports string.
-  if (!options.createPrewarm) {
-    const statusRight = buildStatusRight(projectSlug, sessionId, forwardedPorts)
-    await containerExec(containerName, `${TMUX} set-option -t yaac status-right '${shellEscape(statusRight)}'`)
-  }
+  await containerExec(jobName, `${TMUX} set-option -g monitor-bell on`)
+  await containerExec(jobName, `${TMUX} set-option -g bell-action any`)
+  await containerExec(jobName, `${TMUX} set-option -g visual-bell off`)
+  await containerExec(jobName, `${TMUX} set-option -g allow-passthrough on`)
+  await containerExec(jobName, `${TMUX} set-option -t yaac status-right-length 80`)
+  const statusRight = buildStatusRight(projectSlug, sessionId, forwardedPorts)
+  await containerExec(jobName, `${TMUX} set-option -t yaac status-right '${shellEscape(statusRight)}'`)
   // C-b k kills the whole tmux server (every window, shell, and the agent —
   // the session is then reaped as a zombie). Guard it with a confirm: a
   // stray prefix+k in any attached terminal (CLI or a webapp pane) was a
   // one-keystroke session killer.
   await containerExec(
-    containerName,
+    jobName,
     `${TMUX} bind-key k confirm-before -p 'kill this yaac session? (y/n)' kill-server`,
   )
 
@@ -582,12 +459,12 @@ async function startContainerWithSetup(params: ContainerSetupParams): Promise<vo
   // `sleep infinity` with the real agent. respawn-window -k kills the
   // placeholder and starts the agent in the same window, preserving the
   // tmux state we just built.
-  await containerExec(containerName, `${TMUX} respawn-window -k -t yaac:${tool} '${agentCmd}'`)
+  await containerExec(jobName, `${TMUX} respawn-window -k -t yaac:${tool} '${agentCmd}'`)
 }
 
 /**
  * Server-side implementation of `/session/create`. Provisions the
- * worktree, proxy rules, container, and port forwarders — all
+ * worktree, proxy rules, kubernetes Job, and port forwarders — all
  * long-lived resources that the daemon owns for the session's
  * lifetime. The CLI only prompts for git identity and then attaches
  * the user's terminal to the resulting tmux session.
@@ -619,46 +496,12 @@ export async function createSession(
     throw new DaemonError('VALIDATION', 'resume requires a sessionId')
   }
 
-  // Try to claim a prewarmed session — it already has everything set up.
-  // Skip when createPrewarm is true (prewarm creation path itself).
-  // Skip when --add-dir / --add-dir-rw is set: prewarm containers are
-  // created without those mounts and the fingerprint doesn't encode them,
-  // so claiming one would silently drop the user's requested directories.
-  // Skip when resuming: the caller has a specific sessionId and worktree
-  // to reuse.
-  // claimPrewarmSession checks that the requested tool matches the prewarmed tool.
   const tool: AgentTool = options.tool ?? 'claude'
-  const hasAddDir = (options.addDir?.length ?? 0) > 0 || (options.addDirRw?.length ?? 0) > 0
-  const canClaim = !options.createPrewarm && !hasAddDir && !options.resume
-  const claimed = canClaim ? await claimPrewarmSession(projectSlug, tool) : null
-  if (claimed) {
-    emit(`Claiming prewarmed session ${claimed.sessionId.slice(0, 8)}...`, options)
-    // Prewarm containers don't get port forwarders at creation time
-    // (we don't yet know which host ports will be free when the session
-    // is claimed). Provision them now so the claimed session actually
-    // forwards the ports advertised in its tmux status bar. Failures
-    // propagate — a session returned with no forwarders looks healthy
-    // in the status bar but silently drops connections.
-    const claimedConfig: YaacConfig = await resolveProjectConfig(projectSlug) ?? {}
-    const forwardedPorts = await provisionSessionForwarders(
-      projectSlug,
-      claimed.sessionId,
-      claimed.containerName,
-      claimedConfig.portForward,
-    )
-    return {
-      sessionId: claimed.sessionId,
-      containerName: claimed.containerName,
-      forwardedPorts,
-      tool,
-      claimedPrewarm: true,
-    }
-  }
 
   await ensureContainerRuntime()
 
-  // Git identity is resolved by the CLI before the call. Prewarm creation
-  // falls back to the global git config.
+  // Git identity is resolved by the CLI before the call; fall back to the
+  // global git config for non-interactive callers (stream picker).
   let gitUser: { name: string; email: string } | null = options.gitUser ?? null
   if (!gitUser) gitUser = await getGitUserConfig()
   if (!gitUser) {
@@ -720,8 +563,10 @@ export async function createSession(
     projectSlug,
     process.env.YAAC_IMAGE_PREFIX,
     process.env.YAAC_REQUIRE_PREBUILT_IMAGES === '1',
-    config.nestedContainers ?? false,
   )
+
+  emit('Pushing session image to the local registry...', options)
+  const imageRef = await pushImageToRegistry(imageName)
 
   const sessionId = options.sessionId ?? crypto.randomUUID()
   const wtDir = worktreeDir(projectSlug, sessionId)
@@ -737,15 +582,10 @@ export async function createSession(
     await addWorktree(repo, wtDir, `agent/${sessionId}`, `origin/${defaultBranch}`)
   }
 
-  // Fetch the image's baked-in ENV so we can preserve it.
-  // The container-create API's Env field *replaces* the image ENV rather
-  // than merging, so we start from the image's values and let explicit
-  // overrides win.
-  const imageInfo = await podman.getImage(imageName).inspect()
-  const imageEnv: string[] = (imageInfo.Config?.Env as string[] | undefined) ?? []
-
-  // Build container env — start with image defaults
-  const env: string[] = [...imageEnv]
+  // Build container env. Unlike the podman create API (whose Env field
+  // replaced the image ENV wholesale), kubernetes env vars overlay the
+  // image's — so no image-inspect merge step is needed.
+  const env: string[] = []
 
   // YAAC session ID — used by the Codex SessionStart hook to record the transcript path
   env.push(`YAAC_SESSION_ID=${sessionId}`)
@@ -771,8 +611,8 @@ export async function createSession(
   // Proxy is always required — it reads the host-mounted credentials dir
   // directly and injects GitHub / Claude / Codex tokens into outbound HTTPS
   // requests. Credential updates via `yaac auth update` propagate to every
-  // running session without needing to restart containers.
-  emit('Starting proxy sidecar...', options)
+  // running session without needing to restart pods.
+  emit('Ensuring proxy deployment...', options)
   await proxyClient.ensureRunning()
 
   // Check that tool credentials exist on the host so the container can
@@ -780,31 +620,29 @@ export async function createSession(
   // per-project placeholder refresh below.
   const toolAuth = await loadToolAuthEntry(tool)
 
-  // Forward rules from config (envSecretProxy) to the proxy along with the
-  // rest of this session's state. GitHub / Claude / Codex auth is handled
+  // Register this session's state (envSecretProxy rules, allowlist, repo
+  // URL) with the proxy. GitHub / Claude / Codex auth is handled
   // dynamically by the proxy from the mounted credentials dir — no per-
-  // session rule is needed for those.
-  const additionalRules = config.envSecretProxy
-    ? buildRulesFromConfig(config.envSecretProxy, process.env)
-    : []
-  const upstreamRedirects = parseUpstreamRedirectsEnv(process.env.YAAC_E2E_UPSTREAM_REDIRECTS)
-  await proxyClient.registerSession(sessionId, {
-    rules: additionalRules,
-    allowedHosts,
-    repoUrl: remoteUrl,
-    tool,
-    upstreamRedirects,
-  })
+  // session rule is needed for those. envSecretProxy rules reference
+  // their values by name; the values land in the proxy-secrets
+  // credentials file first so the registration's secretRefs resolve from
+  // the proxy's first request onward. The same builder backs the
+  // background loop's backstop reconciler.
+  await syncProxySecrets(config)
+  await proxyClient.registerSession(
+    sessionId,
+    buildSessionRegistration({ config, remoteUrl, tool }),
+  )
 
-  // Add proxy env vars
+  // Add proxy env vars (Service DNS — stable across proxy pod restarts)
   env.push(...proxyClient.getProxyEnv(sessionId))
 
   // SSH provisioning: when the project's remote is SSH, expose the proxy's
-  // ssh-agent into the container (no private key inside the container) and
+  // ssh-agent into the pod (no private key inside the container) and
   // configure git's SSH transport to (a) use the agent for identity, (b)
   // verify with our project-scoped known_hosts, (c) tunnel through the MITM
   // proxy via HTTP CONNECT so the allowlist still applies.
-  const sshExtraBinds: string[] = []
+  const sshMounts: HostPathMount[] = []
   if (parsedRemote.scheme === 'ssh') {
     const knownHostsEntry = await loadKnownHostsEntryForHost(parsedRemote.host)
     if (!knownHostsEntry) {
@@ -816,11 +654,11 @@ export async function createSession(
     const knownHostsFile = path.join(projectDir(projectSlug), 'known_hosts')
     await writeKnownHostsFile([knownHostsEntry], knownHostsFile)
     const containerKnownHosts = '/home/yaac/.ssh/yaac/known_hosts'
-    sshExtraBinds.push(
-      `${proxyClient.agentVolume}:${SSH_AGENT_MOUNT}`,
-      `${knownHostsFile}:${containerKnownHosts}:ro,Z`,
+    sshMounts.push(
+      { hostPath: sshAgentHostDir(), mountPath: SSH_AGENT_MOUNT, type: 'DirectoryOrCreate' },
+      { hostPath: knownHostsFile, mountPath: containerKnownHosts, readOnly: true, type: 'File' },
     )
-    const proxyCommand = `ncat --proxy ${proxyClient.proxyIp}:${PROXY_CONTAINER_PORT}`
+    const proxyCommand = `ncat --proxy ${proxyClient.serviceHost}:${PROXY_CONTAINER_PORT}`
       + ` --proxy-type http --proxy-auth x:${sessionId} %h %p`
     const gitSshCmd = formatSshCommand([
       'ssh', '-F', '/dev/null',
@@ -874,21 +712,13 @@ export async function createSession(
     env.push('OPENCODE_ENABLE_EXA=true')
   }
 
-  const networkMode = proxyClient.network
-
   // Port forwarding: reserve host ports in the daemon process so no
   // other process can claim them between discovery and the forwarder
-  // starting up. The daemon owns the forwarders for the container's
+  // starting up. The daemon owns the forwarders for the session's
   // lifetime; they are torn down by `deleteSession` and the stale-
-  // container reaper.
-  //
-  // Prewarm containers skip this step: we can't know which host ports
-  // will be free when the session is eventually claimed, so reserving
-  // them now (and then releasing before the claim) just bakes stale
-  // port info into tmux status-right. Ports are provisioned on the
-  // claim path instead.
+  // session reaper.
   const forwardedPorts: ReservedPort[] = []
-  if (!options.createPrewarm && config.portForward?.length) {
+  if (config.portForward?.length) {
     for (const { containerPort, hostPortStart } of config.portForward) {
       emit(`Finding available host port starting from ${hostPortStart} for container port ${containerPort}...`, options)
       const reserved = await reserveAvailablePort(containerPort, hostPortStart)
@@ -897,19 +727,7 @@ export async function createSession(
     }
   }
 
-  // PostgreSQL relay setup
-  const pgConfig = config.pgRelay
-  const pgEnabled = !!(pgConfig && pgConfig.enabled)
-  let pgRelayIp: string | null = null
-
-  if (pgEnabled) {
-    emit('Starting PostgreSQL relay sidecar...', options)
-    await pgRelay.ensureRunning(pgConfig)
-    pgRelayIp = pgRelay.ip
-  }
-
-
-  const containerName = `yaac-${projectSlug}-${sessionId}`
+  const jobName = sessionJobName(projectSlug, sessionId)
   const claude = claudeDir(projectSlug)
   const claudeJson = claudeJsonFile(projectSlug)
   const codex = codexDir(projectSlug)
@@ -943,7 +761,7 @@ export async function createSession(
     }
   }
 
-  // Ensure claude.json exists (Podman bind-mounts it as a file) and, for
+  // Ensure claude.json exists (it is hostPath-mounted as a file) and, for
   // Claude sessions, seed claude-code's onboarding state so the first-run
   // wizard — theme picker then login — is skipped. The injected placeholder
   // credential authenticates the agent; without these flags the user is
@@ -986,30 +804,95 @@ export async function createSession(
     await ensureOpencodeConfigJson(opencodeConfig)
   }
 
-  // Retry the entire container create + setup so that if the container dies
-  // immediately after creation we start fresh instead of futilely retrying
-  // individual exec calls against a dead container.
-  const maxStartAttempts = 3
-  const setupParams: ContainerSetupParams = {
-    imageName, containerName, projectSlug, sessionId, env,
-    wtDir, repo, claude, claudeJson, codex, opencodeData, opencodeConfig, cachedPackages, tool,
-    config, options, networkMode, pgRelayIp, gitUser, forwardedPorts,
-    extraBinds: sshExtraBinds,
+  // Pre-create cacheVolumes host dirs so they're daemon-owned rather than
+  // root-owned via DirectoryOrCreate — the in-container yaac user carries
+  // the daemon's uid, so daemon-owned means yaac-writable.
+  const cacheVolumeEntries = Object.entries(config.cacheVolumes ?? {})
+  for (const [key] of cacheVolumeEntries) {
+    await fs.mkdir(cacheVolumeDir(projectSlug, key), { recursive: true })
   }
 
-  emit(`Creating container ${containerName}...`, options)
+  // Per-session host dir holding the tmux server socket and pane log.
+  const tmuxHostDir = sessionTmuxDir(projectSlug, sessionId)
+  await fs.mkdir(tmuxHostDir, { recursive: true })
+
+  const ephemeralMounts = await prepareEphemeralMounts(
+    cachedPackages,
+    sessionId,
+    resolveEphemeralModulesPaths(config),
+  )
+
+  const hostPathMounts: HostPathMount[] = [
+    { hostPath: wtDir, mountPath: '/workspace' },
+    { hostPath: `${repo}/.git`, mountPath: '/repo/.git' },
+    { hostPath: claude, mountPath: '/home/yaac/.claude' },
+    { hostPath: claudeJson, mountPath: '/home/yaac/.claude.json', type: 'File' },
+    { hostPath: codex, mountPath: '/home/yaac/.codex' },
+    { hostPath: opencodeData, mountPath: '/home/yaac/.local/share/opencode' },
+    { hostPath: opencodeConfig, mountPath: '/home/yaac/.config/opencode' },
+    { hostPath: cachedPackages, mountPath: '/home/yaac/.cached-packages' },
+    { hostPath: tmuxHostDir, mountPath: CONTAINER_TMUX_DIR },
+    ...cacheVolumeEntries.map(([key, containerPath]): HostPathMount => ({
+      hostPath: cacheVolumeDir(projectSlug, key),
+      mountPath: containerPath,
+    })),
+    // User bindMounts and --add-dir paths may point at files or
+    // directories — omit `type` so the kubelet mounts whatever exists.
+    ...(config.bindMounts ?? []).map(({ hostPath, containerPath, mode }): HostPathMount => ({
+      hostPath,
+      mountPath: containerPath,
+      readOnly: mode === 'ro',
+      type: '',
+    })),
+    ...(options.addDir ?? []).map((p): HostPathMount => ({
+      hostPath: p,
+      mountPath: `/add-dir${p}`,
+      readOnly: true,
+      type: '',
+    })),
+    ...(options.addDirRw ?? []).map((p): HostPathMount => ({
+      hostPath: p,
+      mountPath: `/add-dir${p}`,
+      type: '',
+    })),
+    ...ephemeralMounts.map((m): HostPathMount => ({
+      hostPath: m.hostBacking,
+      mountPath: m.containerPath,
+    })),
+    ...sshMounts,
+  ]
+
+  // Retry the entire Job create + setup so that if the pod dies
+  // immediately after creation we start fresh instead of futilely retrying
+  // individual exec calls against a dead pod.
+  const maxStartAttempts = 3
+  const setupParams: SessionSetupParams = {
+    imageRef, jobName, projectSlug, sessionId, env, hostPathMounts,
+    tool, config, options, gitUser, forwardedPorts,
+  }
+
+  emit(`Creating session job ${jobName}...`, options)
 
   for (let attempt = 1; attempt <= maxStartAttempts; attempt++) {
     try {
-      await startContainerWithSetup(setupParams)
+      await startJobWithSetup(setupParams)
       break
     } catch (err) {
-      // Always remove the half-created container. Otherwise a container
-      // left running (e.g. tmux up but a later exec failed) gets picked up
-      // by listActiveSessions as a bogus waiting session.
-      try { await shellPodmanWithRetry(`podman rm -f ${containerName}`) } catch { /* already gone */ }
+      // Always remove the half-created Job. Otherwise a pod left running
+      // (e.g. tmux up but a later exec failed) gets picked up by
+      // listActiveSessions as a bogus waiting session. Foreground cascade
+      // so the dead pod is fully gone before a retry re-applies the Job —
+      // waitForPodReady matches pods by the job-name label and must not
+      // see the previous attempt's terminating pod.
+      try {
+        await kubectlWithRetry([
+          'delete', 'job', jobName, '-n', k8sNamespace(),
+          '--ignore-not-found', '--cascade=foreground',
+          '--wait=true', '--timeout=30s',
+        ])
+      } catch { /* already gone */ }
       if (attempt < maxStartAttempts) {
-        emit(`Container startup failed (attempt ${attempt}/${maxStartAttempts}), retrying...`, options)
+        emit(`Session startup failed (attempt ${attempt}/${maxStartAttempts}), retrying...`, options)
         continue
       }
       // Release any pre-bound host ports so a retry (or the reaper) can
@@ -1019,26 +902,18 @@ export async function createSession(
     }
   }
 
-  if (options.createPrewarm) {
-    // Prewarmed sessions aren't attached immediately. Port forwarders
-    // are provisioned on the claim path (see above); nothing to hand
-    // off here.
-    return { sessionId }
-  }
-
-  // Container is up — hand the reserved sockets off to long-lived
-  // forwarders owned by the daemon. These stay alive across user
-  // attaches/detaches and are torn down only by delete or the reaper.
+  // Pod is up — hand the reserved sockets off to long-lived forwarders
+  // owned by the daemon. These stay alive across user attaches/detaches
+  // and are torn down only by delete or the reaper.
   if (forwardedPorts.length > 0) {
-    const stop = startPortForwarders(podmanRelay(containerName), forwardedPorts)
+    const stop = startPortForwarders(kubectlRelay(jobName), forwardedPorts)
     registerSessionForwarders(sessionId, stop)
   }
 
   return {
     sessionId,
-    containerName,
+    jobName,
     forwardedPorts: forwardedPorts.map(({ containerPort, hostPort }) => ({ containerPort, hostPort })),
     tool,
-    claimedPrewarm: false,
   }
 }

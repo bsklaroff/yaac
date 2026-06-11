@@ -2,21 +2,18 @@ import { EventEmitter } from 'node:events'
 import type net from 'node:net'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
-vi.mock('@/lib/container/runtime', () => ({
-  shellPodmanWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-  podman: {
-    listContainers: vi.fn(),
-  },
+vi.mock('@/lib/k8s/exec', () => ({
+  containerExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
 vi.mock('@/lib/container/port', () => ({
   reserveAvailablePort: vi.fn(),
   startPortForwarders: vi.fn(),
-  podmanRelay: vi.fn(),
+  kubectlRelay: vi.fn(),
 }))
 
-import { shellPodmanWithRetry } from '@/lib/container/runtime'
-import { podmanRelay, reserveAvailablePort, startPortForwarders } from '@/lib/container/port'
+import { containerExec } from '@/lib/k8s/exec'
+import { kubectlRelay, reserveAvailablePort, startPortForwarders } from '@/lib/container/port'
 import type { ReservedPort } from '@/lib/container/port'
 import {
   buildStatusRight,
@@ -28,10 +25,10 @@ import {
   stopSessionForwarders,
 } from '@/lib/session/port-forwarders'
 
-const mockExecPodman = vi.mocked(shellPodmanWithRetry)
+const mockExec = vi.mocked(containerExec)
 const mockReserve = vi.mocked(reserveAvailablePort)
 const mockStartForwarders = vi.mocked(startPortForwarders)
-const mockPodmanRelay = vi.mocked(podmanRelay)
+const mockKubectlRelay = vi.mocked(kubectlRelay)
 
 function makeReservedPort(hostPort: number, containerPort: number): ReservedPort {
   const server = new EventEmitter() as unknown as net.Server
@@ -61,14 +58,15 @@ describe('setSessionStatusRight', () => {
     vi.resetAllMocks()
   })
 
-  it('issues a podman exec tmux set-option command with the rendered value', async () => {
+  it('execs a tmux set-option command into the job with the rendered value', async () => {
     await setSessionStatusRight('yaac-proj-123', 'proj', 'abcdef0123456789', [
       { hostPort: 19001, containerPort: 3000 },
     ])
-    expect(mockExecPodman).toHaveBeenCalledTimes(1)
-    const arg = mockExecPodman.mock.calls[0]?.[0]
-    expect(arg).toContain('podman exec yaac-proj-123 tmux -S /tmp/yaac-tmux/server set-option -t yaac status-right')
-    expect(arg).toContain(':19001->3000')
+    expect(mockExec).toHaveBeenCalledTimes(1)
+    const [jobName, cmd] = mockExec.mock.calls[0] ?? []
+    expect(jobName).toBe('yaac-proj-123')
+    expect(cmd).toContain('tmux -S /tmp/yaac-tmux/server set-option -t yaac status-right')
+    expect(cmd).toContain(':19001->3000')
   })
 })
 
@@ -147,7 +145,7 @@ describe('stopAllSessionForwarders', () => {
 describe('provisionSessionForwarders', () => {
   beforeEach(() => {
     vi.resetAllMocks()
-    mockPodmanRelay.mockReturnValue(vi.fn() as never)
+    mockKubectlRelay.mockReturnValue(vi.fn() as never)
     mockStartForwarders.mockReturnValue(vi.fn())
   })
 
@@ -165,7 +163,7 @@ describe('provisionSessionForwarders', () => {
     expect(mockReserve).not.toHaveBeenCalled()
     expect(mockStartForwarders).not.toHaveBeenCalled()
     // Still refreshes tmux so any baked-in port info is cleared.
-    expect(mockExecPodman).toHaveBeenCalledTimes(1)
+    expect(mockExec).toHaveBeenCalledTimes(1)
   })
 
   it('reserves, starts, registers and returns the port mappings', async () => {
@@ -180,7 +178,7 @@ describe('provisionSessionForwarders', () => {
 
     expect(mockReserve).toHaveBeenNthCalledWith(1, 3000, 3000)
     expect(mockReserve).toHaveBeenNthCalledWith(2, 5432, 5432)
-    expect(mockPodmanRelay).toHaveBeenCalledWith('yaac-proj-sess-prov-2')
+    expect(mockKubectlRelay).toHaveBeenCalledWith('yaac-proj-sess-prov-2')
     expect(mockStartForwarders).toHaveBeenCalledTimes(1)
     expect(hasSessionForwarders('sess-prov-2')).toBe(true)
     expect(result).toEqual([
@@ -188,7 +186,7 @@ describe('provisionSessionForwarders', () => {
       { containerPort: 5432, hostPort: 19501 },
     ])
     // status-right refresh carries the real host ports.
-    const statusCall = mockExecPodman.mock.calls[0]?.[0] ?? ''
+    const statusCall = mockExec.mock.calls[0]?.[1] ?? ''
     expect(statusCall).toContain(':19500->3000')
     expect(statusCall).toContain(':19501->5432')
   })
@@ -200,7 +198,7 @@ describe('provisionSessionForwarders', () => {
         { containerPort: 3000, hostPortStart: 3000 },
       ]),
     ).rejects.toThrow('no ports available')
-    expect(mockExecPodman).not.toHaveBeenCalled()
+    expect(mockExec).not.toHaveBeenCalled()
     expect(mockStartForwarders).not.toHaveBeenCalled()
     expect(hasSessionForwarders('sess-prov-3')).toBe(false)
   })

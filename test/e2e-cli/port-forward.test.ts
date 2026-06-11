@@ -4,6 +4,7 @@ import http from 'node:http'
 import path from 'node:path'
 import simpleGit from 'simple-git'
 import { cloneRepo } from '@/lib/git'
+import { listSessionPods } from '@/lib/k8s/pods'
 import {
   createYaacTestEnv,
   spawnYaacDaemon,
@@ -11,7 +12,12 @@ import {
   type YaacTestEnv,
   type SpawnedDaemon,
 } from '@test/helpers/cli'
-import { requirePodman, TEST_RUN_ID, podmanRetry } from '@test/helpers/setup'
+import {
+  requirePodman,
+  requireCluster,
+  execInJob,
+  cleanupSessionJobs,
+} from '@test/helpers/setup'
 import {
   startMockLLM,
   startMockGit,
@@ -23,16 +29,16 @@ import {
 
 /**
  * End-to-end coverage of the portForward field in yaac-config.json. One
- * session is created through the real CLI + daemon + podman path (same
- * harness as `session-create-happy.test.ts`); each `it()` then exec's a
- * fresh HTTP server inside that shared container on its own container
+ * session is created through the real CLI + daemon + cluster path (same
+ * harness as `session-create-happy.test.ts`); each `it()` then starts a
+ * fresh HTTP server inside that shared session pod on its own container
  * port and drives traffic through the host-side forwarder.
  *
- * The low-level `startPortForwarders` / `reserveAvailablePort` /
- * `podmanRelay` behavior is already unit-tested in test/unit/port*.ts;
- * this file is about proving that a project's yaac-config.json flows
- * through session-create → daemon → forwarder registry, and that the
- * podman-exec relay works against a real yaac session container.
+ * The low-level `startPortForwarders` / `reserveAvailablePort` relay
+ * behavior is already unit-tested in test/unit/port*.ts; this file is
+ * about proving that a project's yaac-config.json flows through
+ * session-create → daemon → forwarder registry, and that the
+ * `kubectl exec -i ... nc` relay works against a real yaac session pod.
  */
 
 function httpGet(url: string, timeoutMs = 15_000): Promise<{ status: number; body: string }> {
@@ -51,9 +57,12 @@ function httpGet(url: string, timeoutMs = 15_000): Promise<{ status: number; bod
   })
 }
 
-describe('yaac session create honors portForward in yaac-config.json', () => {
-  const networkName = `yaac-test-sessions-${TEST_RUN_ID}`
+/** POSIX single-quote escaping for strings embedded in `sh -c '...'`. */
+function shq(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`
+}
 
+describe('yaac session create honors portForward in yaac-config.json', () => {
   // Container-port → host-port map, populated from the daemon's
   // "Forwarding host port ... -> container port ..." progress messages.
   const hostPortFor = new Map<number, number>()
@@ -62,17 +71,15 @@ describe('yaac session create honors portForward in yaac-config.json', () => {
   let daemon: SpawnedDaemon | null = null
   let mockLLM: MockLLM | null = null
   let mockGit: MockGit | null = null
-  let containerName = ''
+  let jobName = ''
 
   beforeAll(async () => {
     await requirePodman()
-    try {
-      await podmanRetry(['network', 'create', networkName])
-    } catch { /* already exists */ }
+    await requireCluster()
 
     testEnv = await createYaacTestEnv()
-    mockLLM = await startMockLLM(networkName)
-    mockGit = await startMockGit(networkName)
+    mockLLM = await startMockLLM()
+    mockGit = await startMockGit()
 
     // 20000+ host port range avoids collisions with the 19xxx ports
     // used by test/unit/port*.ts that may run concurrently in other workers.
@@ -133,8 +140,8 @@ describe('yaac session create honors portForward in yaac-config.json', () => {
       '[user]\n\tname = Test User\n\temail = test@example.com\n',
     )
 
-    const llmTarget = { host: mockLLM.networkIp, port: mockLLM.port, tls: false }
-    const gitTarget = { host: mockGit.networkIp, port: mockGit.port, tls: false }
+    const llmTarget = { host: mockLLM.host, port: mockLLM.port, tls: false }
+    const gitTarget = { host: mockGit.host, port: mockGit.port, tls: false }
     const redirects = {
       'github.com': gitTarget,
       'api.github.com': gitTarget,
@@ -167,39 +174,27 @@ describe('yaac session create honors portForward in yaac-config.json', () => {
     }
     expect(hostPortFor.size).toBe(portForward.length)
 
-    // Locate the session container — label scope keeps us from tripping
-    // over leaks from other workers/runs.
-    const { stdout: rows } = await podmanRetry([
-      'ps', '--filter', `label=yaac.data-dir=${testEnv.dataDir}`,
-      '--filter', 'label=yaac.project=repo-demo',
-      '--format', '{{.Names}}|{{.CreatedAt}}',
-    ])
-    containerName = rows
-      .split('\n').filter(Boolean)
-      .sort((a, b) => a.split('|')[1].localeCompare(b.split('|')[1]))
-      .map((row) => row.split('|')[0])[0]
-    expect(containerName).toMatch(/^yaac-repo-demo-/)
+    // Locate the session Job — listSessionPods scopes by data-dir-hash
+    // so leaks from other workers/runs never match.
+    const pods = await listSessionPods('repo-demo')
+    jobName = pods
+      .sort((a, b) => a.createdAtMs - b.createdAtMs)
+      .map((p) => p.jobName)[0] ?? ''
+    expect(jobName).toMatch(/^yaac-repo-demo-/)
   }, 180_000)
 
   afterAll(async () => {
     if (daemon) await daemon.stop()
-    try {
-      const { stdout } = await podmanRetry([
-        'ps', '-a', '--filter', `label=yaac.data-dir=${testEnv.dataDir}`,
-        '--format', '{{.Names}}',
-      ])
-      const names = stdout.split('\n').filter(Boolean)
-      if (names.length > 0) await podmanRetry(['rm', '-f', ...names])
-    } catch { /* best effort */ }
+    await cleanupSessionJobs()
     await cleanupMocks([mockLLM, mockGit])
     await testEnv.cleanup()
   })
 
   /**
-   * Spawn an HTTP server inside the shared session container via
-   * `podman exec -d` and wait (in-container) for it to start accepting.
-   * Each call should use a unique `containerPort` so concurrent tests
-   * don't fight over the same listen socket.
+   * Spawn an HTTP server inside the shared session pod (backgrounded with
+   * nohup — kubectl exec has no detach mode) and wait (in-container) for
+   * it to start accepting. Each call should use a unique `containerPort`
+   * so concurrent tests don't fight over the same listen socket.
    */
   async function startHttpServerInContainer(
     containerPort: number,
@@ -213,15 +208,17 @@ describe('yaac session create honors portForward in yaac-config.json', () => {
         res.end(${JSON.stringify(responseText)});
       }).listen(${containerPort}, '${bindAddress}');
     `
-    await podmanRetry(['exec', '-d', containerName, 'node', '-e', script])
+    await execInJob(jobName, [
+      'sh', '-c', `nohup node -e ${shq(script)} >/dev/null 2>&1 &`,
+    ])
 
     const curlHost = bindAddress === '::1' ? '[::1]' : bindAddress
     for (let i = 0; i < 40; i++) {
       try {
-        const { stdout } = await podmanRetry([
-          'exec', containerName, 'sh', '-c',
+        const { stdout } = await execInJob(jobName, [
+          'sh', '-c',
           `curl -sf http://${curlHost}:${containerPort}/`,
-        ], { timeout: 3000 })
+        ], { timeout: 5000 })
         if (stdout === responseText) return
       } catch {
         await new Promise((r) => setTimeout(r, 250))

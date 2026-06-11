@@ -3,6 +3,9 @@
  *
  * - Generates a self-signed CA on startup (persisted to /data/)
  * - Accepts per-session rules and allowlists via HTTP API
+ * - Writes per-session registrations and blocked-host state through to
+ *   /data/ (a hostPath the daemon reads directly) and reloads both at
+ *   boot, so a pod replacement never strands live sessions
  * - Handles CONNECT tunneling: MITMs TLS when rules match, tunnels otherwise
  * - Reads GitHub / Claude / Codex credentials directly from the host-mounted
  *   `/yaac-credentials/` directory at request time, so updates to tokens via
@@ -56,6 +59,7 @@ const GITHUB_CREDS_FILE = path.join(CREDENTIALS_DIR, 'github.json')
 const CLAUDE_CREDS_FILE = path.join(CREDENTIALS_DIR, 'claude.json')
 const CODEX_CREDS_FILE = path.join(CREDENTIALS_DIR, 'codex.json')
 const OPENCODE_CREDS_FILE = path.join(CREDENTIALS_DIR, 'opencode.json')
+const PROXY_SECRETS_FILE = path.join(CREDENTIALS_DIR, 'proxy-secrets.json')
 
 const CLAUDE_TOKEN_URL_HOST = 'platform.claude.com'
 const CLAUDE_TOKEN_URL_PATH = '/v1/oauth/token'
@@ -125,12 +129,33 @@ type Injection =
   | { action: 'remove_header'; name: string }
   | { action: 'replace_body_param'; name: string; value: string }
 
+/**
+ * Injection as registered via PUT /sessions/:id. Instead of a literal
+ * `value`, it may carry a `secretRef` naming an entry in the mounted
+ * proxy-secrets credentials file (plus an optional header `prefix`, e.g.
+ * "Bearer "). References keep registrations secret-free so they can be
+ * persisted to /data; the real value is resolved per request from
+ * `/yaac-credentials/proxy-secrets.json`, which also means rotation via
+ * the daemon applies to live sessions immediately.
+ */
+type RegisteredInjection = {
+  action: Injection['action']
+  name: string
+  value?: string
+  secretRef?: string
+  prefix?: string
+}
+
 type InjectionRule = {
   pathPattern: string
   injections: Injection[]
 }
 
-type HostInjectionRule = InjectionRule & { hostPattern: string }
+type HostInjectionRule = {
+  hostPattern: string
+  pathPattern: string
+  injections: RegisteredInjection[]
+}
 
 /**
  * Per-session upstream redirect: when the client MITMs `hostname`, forward
@@ -323,6 +348,60 @@ function readOpencodeCreds(): OpencodeCreds | null {
   }
 }
 
+/**
+ * Read the daemon-maintained envSecretProxy values (env var name -> secret)
+ * from the mounted credentials dir. Written by session-create before each
+ * registration; injection rules reference entries by key via `secretRef`.
+ */
+function readProxySecrets(): Record<string, string> {
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(PROXY_SECRETS_FILE, 'utf8'))
+    if (!parsed || typeof parsed !== 'object') return {}
+    const secrets = (parsed as Record<string, unknown>).secrets
+    if (!secrets || typeof secrets !== 'object') return {}
+    const out: Record<string, string> = {}
+    for (const [key, value] of Object.entries(secrets as Record<string, unknown>)) {
+      if (typeof value === 'string' && value) out[key] = value
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Resolve registration-time injections into concrete value injections.
+ * The secrets file is read lazily (once per call, only when a rule
+ * actually carries a secretRef). Injections whose reference doesn't
+ * resolve are dropped — never inject an empty or placeholder credential.
+ */
+function resolveRegisteredRules(rules: HostInjectionRule[]): InjectionRule[] {
+  let secrets: Record<string, string> | null = null
+  const out: InjectionRule[] = []
+  for (const rule of rules) {
+    const injections: Injection[] = []
+    for (const inj of rule.injections) {
+      if (inj.action === 'remove_header') {
+        injections.push({ action: 'remove_header', name: inj.name })
+        continue
+      }
+      let value = inj.value
+      if (typeof value !== 'string' && inj.secretRef) {
+        secrets ??= readProxySecrets()
+        const secret = secrets[inj.secretRef]
+        if (secret !== undefined) value = (inj.prefix ?? '') + secret
+      }
+      if (typeof value !== 'string') {
+        console.error(`[proxy] Dropping injection for ${inj.name}: unresolvable secretRef ${inj.secretRef ?? '(none)'}`)
+        continue
+      }
+      injections.push({ action: inj.action, name: inj.name, value })
+    }
+    out.push({ pathPattern: rule.pathPattern, injections })
+  }
+  return out
+}
+
 /** Decode a JWT's payload and return `exp` as unix epoch ms, or null. */
 function decodeJwtExp(jwt: string): number | null {
   try {
@@ -503,6 +582,111 @@ const sessionUpstreamRedirects = new Map<string, Record<string, UpstreamRedirect
 /** sessionId -> Set of blocked hostnames */
 const blockedHostsBySession = new Map<string, Set<string>>()
 
+// ── State persistence (/data write-through) ────────────────────────────
+//
+// /data is a hostPath, so anything written here is directly readable by
+// the daemon off the host filesystem — no HTTP round-trip. Blocked hosts
+// are written through on change (they're plain hostnames, no secrets);
+// session registrations are written through on PUT/DELETE so a replaced
+// proxy pod reloads them at boot and self-heals without daemon help.
+// Registrations are safe to persist because injection rules carry
+// credential *references* (`secretRef`), never secret values — the values
+// live in the mounted credentials dir and are resolved at injection time.
+
+const BLOCKED_HOSTS_FILE = path.join(DATA_DIR, 'blocked-hosts.json')
+const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json')
+
+/**
+ * Atomic write via tmp+rename so a concurrent host-side reader never sees
+ * a torn file — same pattern as the OAuth bundle writers.
+ */
+function writeJsonAtomic(filePath: string, value: unknown): void {
+  const tmp = filePath + '.tmp-' + crypto.randomBytes(6).toString('hex')
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 })
+  fs.renameSync(tmp, filePath)
+}
+
+function persistBlockedHosts(): void {
+  const result: Record<string, string[]> = {}
+  for (const [sid, hosts] of blockedHostsBySession) {
+    if (hosts.size > 0) result[sid] = [...hosts]
+  }
+  try {
+    writeJsonAtomic(BLOCKED_HOSTS_FILE, result)
+  } catch (err) {
+    console.error('[proxy] Failed to persist blocked hosts:', (err as Error).message)
+  }
+}
+
+function loadBlockedHosts(): void {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(fs.readFileSync(BLOCKED_HOSTS_FILE, 'utf8'))
+  } catch {
+    return // first boot or unreadable — start empty
+  }
+  if (!parsed || typeof parsed !== 'object') return
+  for (const [sid, hosts] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!Array.isArray(hosts)) continue
+    blockedHostsBySession.set(sid, new Set(hosts.filter((h) => typeof h === 'string')))
+  }
+  console.log(`[proxy] Loaded blocked hosts for ${blockedHostsBySession.size} session(s) from disk`)
+}
+
+/**
+ * Snapshot of everything PUT /sessions/:id registers. `upstreamRedirects`
+ * is test-only state (see UpstreamRedirect) — persisting it is harmless
+ * and keeps the snapshot a faithful copy of the registration.
+ */
+type PersistedSession = {
+  rules: HostInjectionRule[]
+  allowedHosts: string[]
+  repoUrl?: string
+  tool?: string
+  upstreamRedirects?: Record<string, UpstreamRedirect>
+}
+
+function persistSessions(): void {
+  const result: Record<string, PersistedSession> = {}
+  for (const [sid, allowedHosts] of sessionAllowedHosts) {
+    result[sid] = {
+      rules: sessionRules.get(sid) ?? [],
+      allowedHosts,
+      repoUrl: sessionRepoUrl.get(sid),
+      tool: sessionTool.get(sid),
+      upstreamRedirects: sessionUpstreamRedirects.get(sid),
+    }
+  }
+  try {
+    writeJsonAtomic(SESSIONS_FILE, result)
+  } catch (err) {
+    console.error('[proxy] Failed to persist sessions:', (err as Error).message)
+  }
+}
+
+function loadSessions(): void {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8'))
+  } catch {
+    return // first boot or unreadable — start empty
+  }
+  if (!parsed || typeof parsed !== 'object') return
+  for (const [sid, raw] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!raw || typeof raw !== 'object') continue
+    const s = raw as Record<string, unknown>
+    if (!Array.isArray(s.rules) || !Array.isArray(s.allowedHosts)) continue
+    sessionRules.set(sid, s.rules as HostInjectionRule[])
+    sessionAllowedHosts.set(sid, s.allowedHosts as string[])
+    if (typeof s.repoUrl === 'string' && s.repoUrl) sessionRepoUrl.set(sid, s.repoUrl)
+    if (typeof s.tool === 'string' && s.tool) sessionTool.set(sid, s.tool)
+    if (s.upstreamRedirects && typeof s.upstreamRedirects === 'object') {
+      sessionUpstreamRedirects.set(sid, s.upstreamRedirects as Record<string, UpstreamRedirect>)
+    }
+  }
+  console.log(`[proxy] Loaded ${sessionAllowedHosts.size} session registration(s) from disk`)
+}
+
 // ── Injection Logic ────────────────────────────────────────────────────
 
 function pathMatches(requestPath: string, pattern: string): boolean {
@@ -549,7 +733,11 @@ function recordBlockedHost(sessionId: string | null, hostname: string): void {
     hosts = new Set()
     blockedHostsBySession.set(sessionId, hosts)
   }
+  if (hosts.has(hostname)) return
   hosts.add(hostname)
+  // Write-through only when the set actually grew — repeat blocks of the
+  // same host are by far the common case and need no disk traffic.
+  persistBlockedHosts()
 }
 
 function applyInjections(
@@ -1146,12 +1334,12 @@ function handleMitm(
 
     // Dynamic rules (GitHub / Codex / Claude auth + OAuth refresh swap) are
     // derived from the host-mounted credentials dir on every request and
-    // merged into the statically-configured rules so a single injection
-    // pipeline handles both.
+    // merged into the registered rules (secretRefs resolved per request,
+    // same freshness semantics) so a single injection pipeline handles both.
     const dynamicRules = buildDynamicRules(
       sessionId, hostname, claudeTokenBundle, codexTokenBundle, req.headers,
     )
-    const allRules: InjectionRule[] = [...rules, ...dynamicRules]
+    const allRules: InjectionRule[] = [...resolveRegisteredRules(rules), ...dynamicRules]
     const injCount = applyInjections(headers, reqPath, allRules)
     const bodyInjections = collectBodyInjections(reqPath, allRules)
 
@@ -1250,7 +1438,7 @@ function handleMitm(
     delete headers['proxy-connection']
 
     const dynamicRules = buildDynamicRules(sessionId, hostname, null, null, req.headers)
-    const allRules: InjectionRule[] = [...rules, ...dynamicRules]
+    const allRules: InjectionRule[] = [...resolveRegisteredRules(rules), ...dynamicRules]
     const injCount = applyInjections(headers, reqPath, allRules)
 
     if (injCount > 0) {
@@ -1453,6 +1641,10 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
         } else {
           sessionUpstreamRedirects.delete(sessionId)
         }
+        // Write-through: registrations are secret-free (rules carry
+        // secretRefs), so a replaced pod reloads them at boot and live
+        // sessions keep working with zero daemon involvement.
+        persistSessions()
         const redirectCount = sessionUpstreamRedirects.get(sessionId)
           ? Object.keys(sessionUpstreamRedirects.get(sessionId)!).length
           : 0
@@ -1467,6 +1659,15 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     return
   }
 
+  // List registered session ids. Diagnostic surface — e2e tests use it
+  // to assert a replaced pod reloaded its registrations from /data.
+  if (req.method === 'GET' && req.url === '/sessions') {
+    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify([...sessionAllowedHosts.keys()]))
+    return
+  }
+
   // Remove all state for a session
   if (req.method === 'DELETE' && req.url?.startsWith('/sessions/')) {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
@@ -1476,24 +1677,12 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     sessionRepoUrl.delete(sessionId)
     sessionTool.delete(sessionId)
     sessionUpstreamRedirects.delete(sessionId)
-    blockedHostsBySession.delete(sessionId)
+    const hadBlockedHosts = blockedHostsBySession.delete(sessionId)
+    persistSessions()
+    if (hadBlockedHosts) persistBlockedHosts()
     console.log(`[proxy] Removed session ${sessionId.slice(0, 8)}... (found: ${deleted})`)
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ ok: true, deleted }))
-    return
-  }
-
-  // Return blocked hosts for all sessions
-  if (req.method === 'GET' && req.url === '/blocked-hosts') {
-    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
-    const result: Record<string, string[]> = {}
-    for (const [sid, hosts] of blockedHostsBySession) {
-      if (hosts.size > 0) {
-        result[sid] = [...hosts]
-      }
-    }
-    res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify(result))
     return
   }
 
@@ -1559,9 +1748,26 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
 // ssh-add -D invocation; the agent itself stores the constraint, so the
 // file's later contents don't matter.
 
-const SSH_HOME = '/home/node/.ssh'
+// HOME (deployment) and SSH_AUTH_SOCK (entrypoint.sh) are required env the
+// proxy is always launched with; a missing value means a broken
+// deployment, so fail loudly at startup rather than silently fall back.
+function requireEnv(name: string): string {
+  const value = process.env[name]
+  if (!value) throw new Error(`proxy: required env ${name} is not set`)
+  return value
+}
+
+// $HOME/.ssh so the file we write matches the known_hosts ssh-add reads
+// (ssh-add resolves ~ from HOME). The deployment sets HOME to a
+// runtime-uid-writable mount because the proxy runs as the daemon's host
+// uid, which need not own the image's /home/node.
+const SSH_HOME = path.join(requireEnv('HOME'), '.ssh')
 const KNOWN_HOSTS_FILE = path.join(SSH_HOME, 'known_hosts')
 const knownHostsByHost = new Map<string, string>()
+
+// The proxy talks to the real agent socket directly (set by entrypoint.sh);
+// session pods use the 0666 socat bridge alongside it.
+const AGENT_SOCK = requireEnv('SSH_AUTH_SOCK')
 
 function writeKnownHostsFile(): void {
   fs.mkdirSync(SSH_HOME, { recursive: true, mode: 0o700 })
@@ -1576,7 +1782,7 @@ function sshAddKey(host: string, keyPem: string, knownHostsEntry: string): Promi
     const child = spawn('ssh-add', ['-h', host, '-'], {
       env: {
         ...process.env,
-        SSH_AUTH_SOCK: '/ssh-agent/socket',
+        SSH_AUTH_SOCK: AGENT_SOCK,
         SSH_ASKPASS: '/bin/false',
         SSH_ASKPASS_REQUIRE: 'force',
         DISPLAY: 'none:0',
@@ -1599,7 +1805,7 @@ function sshClearAgent(): Promise<void> {
   writeKnownHostsFile()
   return new Promise((resolve, reject) => {
     const child = spawn('ssh-add', ['-D'], {
-      env: { ...process.env, SSH_AUTH_SOCK: '/ssh-agent/socket' },
+      env: { ...process.env, SSH_AUTH_SOCK: AGENT_SOCK },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let stderr = ''
@@ -1616,7 +1822,7 @@ function sshClearAgent(): Promise<void> {
 function sshListAgent(): Promise<Array<{ fingerprint: string; comment: string }>> {
   return new Promise((resolve, reject) => {
     const child = spawn('ssh-add', ['-l'], {
-      env: { ...process.env, SSH_AUTH_SOCK: '/ssh-agent/socket' },
+      env: { ...process.env, SSH_AUTH_SOCK: AGENT_SOCK },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let stdout = ''
@@ -1645,6 +1851,10 @@ function sshListAgent(): Promise<Array<{ fingerprint: string; comment: string }>
 // ── Server ─────────────────────────────────────────────────────────────
 
 ca = loadOrGenerateCA()
+// Reload write-through state so a pod replacement (image upgrade, crash,
+// eviction) doesn't 403 live sessions or lose their blocked-host history.
+loadSessions()
+loadBlockedHosts()
 
 // ── HTTP Forward Proxy ────────────────────────────────────────────────
 

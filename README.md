@@ -1,6 +1,6 @@
 # Yet Another Agent Container
 
-Agent sandbox manager — run many parallel agent sessions in isolated Podman containers. Supports Claude Code and Codex CLI.
+Agent sandbox manager — run many parallel agent sessions, each as an isolated Kubernetes Job on a local single-node cluster. Supports Claude Code, Codex CLI, and OpenCode.
 
 ## Install
 
@@ -14,23 +14,96 @@ pnpm build
 npm install -g .
 ```
 
-Install [Podman](https://podman.io/) (version 5.0+) for containerization:
+yaac splits the container runtime in two:
+
+- **Podman** builds session images (`podman build` / `podman push`) and hosts the kind node container. Install version 5.0+:
+
+  ```sh
+  # Debian / Ubuntu (25.04+)
+  sudo apt install podman
+  ```
+
+  On macOS, podman runs inside a VM, and yaac needs two non-default machine settings: **rootful** (kind requires it) and the **libkrun provider** (session pods run in user namespaces, which need idmapped-mount support on the VM's file sharing — libkrun's virtiofs has it, Apple's Virtualization.framework does not):
+
+  ```sh
+  brew install podman
+  brew install slp/krunkit/krunkit
+  printf '[machine]\nprovider = "libkrun"\n' >> ~/.config/containers/containers.conf
+  podman machine init --rootful --cpus 8 --memory 32768
+  podman machine start
+  ```
+
+  > **krunkit version note:** idmapped mounts need libkrun >= 1.17, and clock timesync (below) needs krunkit >= 1.2.0 — the brew tap lags upstream on both. Install the upstream release bundle (self-contained: krunkit + a current libkrun + EFI firmware) over the brew install:
+  >
+  > ```sh
+  > curl -fsSL https://github.com/libkrun/krunkit/releases/download/v1.2.1/krunkit-podman-unsigned-1.2.1.tgz | tar xz
+  > cp lib/libkrun.dylib /opt/homebrew/lib/
+  > mkdir -p /opt/homebrew/share/krunkit && cp share/krunkit/KRUN_EFI.silent.fd /opt/homebrew/share/krunkit/
+  > cp bin/krunkit /opt/homebrew/bin/krunkit-1.2.1
+  > codesign -f -s - /opt/homebrew/lib/libkrun.dylib
+  > printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>com.apple.security.hypervisor</key><true/>\n<key>com.apple.security.cs.disable-library-validation</key><true/>\n</dict></plist>\n' > krunkit.entitlements
+  > codesign -f -s - --entitlements krunkit.entitlements /opt/homebrew/bin/krunkit-1.2.1
+  > ln -sf krunkit-1.2.1 /opt/homebrew/bin/krunkit
+  > ```
+  >
+  > (restart the machine afterwards; `yaac cluster check`'s probe verifies idmapped hostPath writes end to end)
+
+  > **Clock drift after sleep:** the machine's clock freezes while the Mac sleeps ([podman#11541](https://github.com/containers/podman/issues/11541)), and NTP can't always recover — the pauses also corrupt chrony's measurements (`exceeds maxjitter` / `Can't synchronise: no selectable sources` in the VM journal), so builds fail with `podman build exited with code 100` / apt `Release file ... is not valid yet`. The real fix is krunkit's `--timesync` (>= 1.2.0): the host pushes its clock into the guest over vsock on every wake. podman doesn't pass the flag yet ([podman#28345](https://github.com/containers/podman/issues/28345)), so wire it manually:
+  >
+  > ```sh
+  > # 1. guest side: qemu-guest-agent listening on vsock port 1234
+  > podman machine ssh "sudo rpm-ostree install qemu-guest-agent"
+  > podman machine ssh "sudo tee /etc/systemd/system/qemu-ga-vsock.service" <<'EOF'
+  > [Unit]
+  > Description=QEMU Guest Agent on vsock (krunkit --timesync receiver)
+  > [Service]
+  > ExecStart=/usr/bin/qemu-ga --method=vsock-listen --path=3:1234
+  > Restart=always
+  > [Install]
+  > WantedBy=multi-user.target
+  > EOF
+  > podman machine ssh "sudo systemctl enable qemu-ga-vsock.service"
+  > # Fedora's SELinux policy lacks vsock perms for qemu-ga — allow them:
+  > #   allow virt_qemu_ga_t self:vsock_socket { create bind listen accept getattr setattr read write shutdown };
+  > # (compile with checkmodule/semodule_package — e.g. in a fedora container — and `semodule -i`)
+  >
+  > # 2. host side: wrap krunkit so podman's invocation gains --timesync
+  > mv /opt/homebrew/bin/krunkit /opt/homebrew/bin/krunkit-real 2>/dev/null || true
+  > printf '#!/bin/sh\ncase " $* " in\n  *" --bootloader "*) exec /opt/homebrew/bin/krunkit-1.2.1 "$@" --timesync vsockPort=1234 ;;\n  *) exec /opt/homebrew/bin/krunkit-1.2.1 "$@" ;;\nesac\n' > /opt/homebrew/bin/krunkit
+  > chmod +x /opt/homebrew/bin/krunkit
+  > podman machine stop && podman machine start   # then re-run scripts/setup-kind-cluster.sh
+  > ```
+  >
+  > All of this manual wiring is upstreamed for the release after podman 5.8.2: podman passes `--timesync vsockPort=1234` itself ([podman#28527](https://github.com/containers/podman/pull/28527)) and the machine image ships the vsock qemu-guest-agent + SELinux policy ([podman-machine-os#238](https://github.com/containers/podman-machine-os/pull/238), both merged 2026-05-26). When you upgrade past 5.8.2: **remove the wrapper** (`ln -sf krunkit-1.2.1 /opt/homebrew/bin/krunkit` — the duplicated flag would break machine start) and recreate the machine (`podman machine rm` + `init`) so the new image replaces the manual guest wiring. Manual recovery if the clock is ever skewed anyway:
+  >
+  > ```sh
+  > podman machine ssh "sudo date -u -s @$(date +%s) && sudo systemctl restart chronyd"
+  > ```
+
+- **Kubernetes** runs the sessions — one Job (single-pod) per session, plus a shared proxy Deployment. yaac targets a **local single-node cluster** (kind recommended). Session pods run with `hostUsers: false` (user namespaces), so the filesystem backing your home directory must support idmapped mounts — ext4/xfs/btrfs on Linux, libkrun's virtiofs on macOS (see above).
+
+### Cluster setup
+
+Install [kind](https://kind.sigs.k8s.io/) and [kubectl](https://kubernetes.io/docs/tasks/tools/), then run the bundled setup script:
 
 ```sh
-# macOS
-brew install podman
-sudo /opt/homebrew/Cellar/podman/$(podman --version | cut -d' ' -f3)/bin/podman-mac-helper install
-podman machine init
-podman machine start
-
-# Debian / Ubuntu (25.04+)
-sudo apt install podman
-
-# Ubuntu 24.04 — pin podman from 25.04 (plucky):
-echo 'deb http://archive.ubuntu.com/ubuntu plucky main universe' | sudo tee /etc/apt/sources.list.d/plucky.list
-printf 'Package: *\nPin: release n=plucky\nPin-Priority: 100\n' | sudo tee /etc/apt/preferences.d/plucky
-sudo apt update && sudo apt install -t plucky podman crun
+./scripts/setup-kind-cluster.sh
+yaac cluster check
 ```
+
+The script creates a kind cluster from `k8s/kind-config.yaml` with the three pieces of wiring yaac needs:
+
+1. **Local image registry** on `127.0.0.1:5000` — yaac pushes built session images there and pods pull them as `localhost:5000/...` (the kind [local-registry pattern](https://kind.sigs.k8s.io/docs/user/local-registry/)).
+2. **Home-directory extraMount** — session pods mount worktrees, caches, and credentials via `hostPath`, which resolves on the *node*. Mounting `$HOME` into the node at the same path makes node == host for everything yaac touches.
+3. **Unmasked sysfs mount on the node** — session pods run in user namespaces (`hostUsers: false`), and the kernel refuses to start them while kind's `/sys` masks make sysfs "not fully visible" ([kind#3436](https://github.com/kubernetes-sigs/kind/issues/3436)). This mount lives in the node's mount namespace, so **re-run the script after a node container restart** (e.g. after restarting the podman machine).
+
+User namespaces are what keep in-container root unprivileged: the session image grants passwordless sudo (agents can `apt-get install` mid-session), and the userns maps uid 0 in the pod to a throwaway unprivileged uid on the node — the same containment rootless podman gave the pre-kubernetes backend.
+
+The idmapped mounts that come with user namespaces present hostPath files at their real node-side uids, so the session image builds its `yaac` user with the daemon's uid (`YAAC_UID` build arg, baked in automatically and folded into the image tag). Nothing to configure — but if your uid ever changes, images rebuild on their own, and a standalone `Dockerfile.yaac` that creates its own user should honor `ARG YAAC_UID` the same way `dockerfiles/Dockerfile.default` does, or its writes to `/workspace` will fail with `Permission denied`.
+
+`yaac cluster check` verifies kubectl, the cluster, the registry, the namespace, and runs an end-to-end probe pod — user-namespaced, like session pods — that exercises all three wirings, including a hostPath **write** at the session uid. Run it whenever sessions fail to start.
+
+> **v1 limits:** single-node clusters only (the hostPath model assumes node == host). The daemon's control traffic reaches the proxy through a loopback `kubectl port-forward`; nothing yaac deploys listens on host interfaces.
 
 ## Usage
 
@@ -39,18 +112,23 @@ yaac [command]
 
 Commands:
   open            Open the web app in your browser (starts the daemon if needed)
+  cluster         Manage the kubernetes cluster yaac runs sessions on
   project         Manage projects
   session         Manage sessions
   config          Edit per-machine project configuration files
   auth            Manage credentials (GitHub tokens and tool API keys)
 
+yaac cluster <command>
+  check             Verify cluster prerequisites (kubectl, registry, hostPath wiring)
+
 yaac project <command>
   list              List all projects
   add <remote-url>  Add a project (HTTPS URL or SSH URL like git@host:path)
+  rebuild <project> Rebuild the agent-CLI image layer with --no-cache
 
 yaac session <command>
   create [options] <project>  Create a new session for a project
-    -t, --tool <tool>         Agent tool to use (claude or codex)
+    -t, --tool <tool>         Agent tool to use (claude, codex, or opencode)
     --add-dir <path>          Mount a host directory read-only (repeatable)
     --add-dir-rw <path>       Mount a host directory read-write (repeatable)
   list [options] [project]    List active sessions
@@ -59,14 +137,13 @@ yaac session <command>
   attach <container-id>       Attach to the agent tmux session
   stream [options] [project]  Stream through waiting sessions, attaching to
                               each in turn
-    -t, --tool <tool>         Agent tool for new sessions (claude or codex)
+    -t, --tool <tool>         Agent tool for new sessions (claude, codex, or opencode)
   monitor [options] [project] Poll and display active sessions in real-time
     -n, --interval <seconds>  Refresh interval in seconds (default: 5)
-    --prewarm-tool <tool>     Agent tool for prewarmed sessions
 
 yaac tool <command>
   get                 Show the current default agent tool
-  set <tool>          Set the default agent tool (claude or codex)
+  set <tool>          Set the default agent tool (claude, codex, or opencode)
 
 yaac config <command>
   edit <project>              Open the project's yaac-config.json in $EDITOR
@@ -75,7 +152,7 @@ yaac config <command>
 
 yaac auth <command>
   list                List configured credentials (masked)
-  update              Add or update credentials (GitHub, Claude Code, or Codex)
+  update              Add or update credentials (GitHub, Claude Code, Codex, or OpenCode)
   clear               Remove stored credentials (interactive)
 ```
 
@@ -112,13 +189,14 @@ pnpm frontend:dev   # http://localhost:1420, proxies the API to the daemon
 
 ## Authentication
 
-yaac centralizes credentials on the host and injects them into container traffic through the proxy sidecar. Real tokens are never written into the container filesystem. Credentials live under `~/.yaac/.credentials/` (directory permissions `0700`, files `0600`), split by service:
+yaac centralizes credentials on the host and injects them into session traffic through the shared proxy (a `yaac-proxy` Deployment in the cluster). Real tokens are never written into the container filesystem. Credentials live under `~/.yaac/.credentials/` (directory permissions `0700`, files `0600`), split by service:
 
 - `~/.yaac/.credentials/github.json` — GitHub tokens
 - `~/.yaac/.credentials/claude.json` — Claude Code credentials (OAuth bundle or API key)
 - `~/.yaac/.credentials/codex.json` — Codex credentials
+- `~/.yaac/.credentials/opencode.json` — OpenCode credentials (OpenRouter API key)
 
-The proxy sidecar bind-mounts this directory RW and reads credentials at request time, so updates via `yaac auth update` propagate to every running session immediately without needing to restart containers.
+The proxy pod mounts this directory RW (hostPath) and reads credentials at request time, so updates via `yaac auth update` propagate to every running session immediately without needing to restart pods. The proxy is reachable only inside the cluster (ClusterIP Service); the daemon talks to it over a loopback `kubectl port-forward`.
 
 ### GitHub tokens
 
@@ -146,19 +224,19 @@ First match wins, so put more specific patterns before broader ones. On first ru
 
 Tokens are used for:
 - **Host-side git operations** — clone and fetch use HTTPS with the matching token embedded in the request.
-- **Container-side GitHub requests** — a MITM proxy sidecar injects the token as an `Authorization` header into all HTTPS requests to `github.com` and `api.github.com`. The token is never written into the container filesystem. Each session uses the single token that matches its project's remote URL.
+- **Session-side GitHub requests** — the MITM proxy injects the token as an `Authorization` header into all HTTPS requests to `github.com` and `api.github.com`. The token is never written into the container filesystem. Each session uses the single token that matches its project's remote URL.
 
 Token injection only happens over HTTPS. Plain HTTP requests through the proxy never receive credentials.
 
-### Claude Code and Codex credentials
+### Agent tool credentials
 
-yaac also manages the API credentials for the agent tool itself, so Claude Code and Codex don't need to authenticate inside each container. On first run (or via `yaac auth update`), yaac runs the tool's native login flow on the host and stores the resulting credentials.
+yaac also manages the API credentials for the agent tool itself, so Claude Code, Codex, and OpenCode don't need to authenticate inside each container. On first run (or via `yaac auth update`), yaac runs the tool's native login flow on the host and stores the resulting credentials. OpenCode is API-key only (OpenRouter): the key stays on the host and the proxy swaps the in-container placeholder on requests to openrouter.ai.
 
-For Claude Code OAuth, each project's `.claude/.credentials.json` inside the container holds placeholder tokens (`yaac-ph-access` / `yaac-ph-refresh`) together with the real `expiresAt` and scopes. The proxy sidecar transparently rewrites outbound API calls, swaps the placeholder refresh token on refresh requests, and writes refreshed bundles back to the host file — so real tokens never enter the container filesystem. For API-key mode (both tools) the proxy injects the key as an outbound header.
+For Claude Code OAuth, each project's `.claude/.credentials.json` inside the container holds placeholder tokens (`yaac-ph-access` / `yaac-ph-refresh`) together with the real `expiresAt` and scopes. The proxy transparently rewrites outbound API calls, swaps the placeholder refresh token on refresh requests, and writes refreshed bundles back to the host file — so real tokens never enter the container filesystem. For API-key mode (both tools) the proxy injects the key as an outbound header.
 
-## Container layout
+## Session layout
 
-Each session runs in an isolated container with the following mounts:
+Each session runs as a single-pod Kubernetes Job with the following hostPath mounts:
 
 | Host | Container | Description |
 |------|-----------|-------------|
@@ -167,9 +245,11 @@ Each session runs in an isolated container with the following mounts:
 | `~/.yaac/projects/<project>/claude/` | `/home/yaac/.claude` | Claude Code configuration |
 | `~/.yaac/projects/<project>/claude.json` | `/home/yaac/.claude.json` | Claude Code project settings |
 | `~/.yaac/projects/<project>/codex/` | `/home/yaac/.codex` | Codex configuration and transcripts |
+| `~/.yaac/projects/<project>/opencode-config/` | `/home/yaac/.config/opencode` | OpenCode configuration (shared per project) |
+| `~/.yaac/projects/<project>/opencode-data/<session-id>` | `/home/yaac/.local/share/opencode` | OpenCode session data (per session) |
 | `~/.yaac/projects/<project>/.cached-packages` | `/home/yaac/.cached-packages` | Per-project package-manager caches |
 
-The container runs as user `yaac` with home directory `/home/yaac`. All project data is stored under `~/.yaac/projects/<repo-name>/`. The repo plus both tool state directories are shared across all sessions within a project (but isolated between projects), so Claude and Codex sessions can inspect each other's history. Each session gets its own git worktree.
+The session container runs as user `yaac` with home directory `/home/yaac`. All project data is stored under `~/.yaac/projects/<repo-name>/` on the host — which is why the cluster node must have your home directory extraMounted (see [Cluster setup](#cluster-setup)). The repo plus the Claude and Codex state directories are shared across all sessions within a project (but isolated between projects), so those sessions can inspect each other's history; OpenCode session data is per-session to avoid concurrent-write issues in its database. Each session gets its own git worktree.
 
 The `.cached-packages` directory is shared by every session within the project, so package-manager caches survive session teardown and are reused across sessions. pnpm's default `store-dir` is pre-configured to `/home/yaac/.cached-packages/pnpm-store`, so `pnpm install` populates the per-project store automatically with no extra configuration.
 
@@ -209,13 +289,7 @@ Add a `yaac-config.json` to your repo root. Example with all options:
   },
   "initCommands": ["pnpm install"],
   "addAllowedUrls": ["internal.corp.example.com", "*.mycdn.example.com"],
-  "nestedContainers": false,
-  "hideInitPane": false,
-  "pgRelay": {
-    "enabled": true,
-    "hostPort": 5432,
-    "containerPort": 5432
-  }
+  "hideInitPane": false
 }
 ```
 
@@ -236,7 +310,7 @@ Add a `yaac-config.json` to your repo root. Example with all options:
   - **`mode`** — `"ro"` for read-only or `"rw"` for read-write (required).
 
   For ad-hoc mounts at session creation time, use the `--add-dir` / `--add-dir-rw` CLI flags instead. These mount the host directory under `/add-dir/<host-path>` inside the container and automatically pass it to Claude Code via `--add-dir`.
-- **cacheVolumes** — named Podman volumes mounted into the container. Keys are volume names, values are absolute container paths. Volumes persist across sessions. Note: a per-project `~/.yaac/projects/<project>/.cached-packages` directory is already bind-mounted at `/home/yaac/.cached-packages` on every container for pnpm (and other package-manager caches you want to share across sessions), so you don't need a `cacheVolumes` entry for pnpm's store.
+- **cacheVolumes** — per-project persistent cache directories mounted into the container. Keys are cache names (backed by `~/.yaac/projects/<project>/cache-volumes/<name>` on the host), values are absolute container paths. Caches persist across sessions. Note: a per-project `~/.yaac/projects/<project>/.cached-packages` directory is already bind-mounted at `/home/yaac/.cached-packages` on every container for pnpm (and other package-manager caches you want to share across sessions), so you don't need a `cacheVolumes` entry for pnpm's store.
 - **initCommands** — commands run inside the container after it starts (e.g. `pnpm install` against the warm shared cache). These run on every session, not just the first. Accepts two shapes (cannot be mixed):
   - **String list** — all commands are chained with `&&` and run in a single tmux window named `init`, parallel to the agent:
     ```json
@@ -249,12 +323,7 @@ Add a `yaac-config.json` to your repo root. Example with all options:
       { "name": "frontend", "commands": ["pnpm install", "pnpm dev:frontend"] }
     ]
     ```
-- **nestedContainers** — when `true`, enables podman-in-podman support so sessions can build and run containers (default: `false`). See [Nested containers](#nested-containers) below.
 - **hideInitPane** — when `true`, the init commands tmux pane is automatically closed after the commands finish or error (default: `false`). When `false`, the pane is preserved with `remain-on-exit` so you can inspect the output.
-- **pgRelay** — configures a PostgreSQL relay sidecar that forwards connections from inside the container to a PostgreSQL instance on the host. The relay uses `socat` to proxy TCP traffic so that `localhost` connections inside the session reach your host database.
-  - **`enabled`** — must be set to `true` to start the relay (default: `false`). The relay will not run unless this is explicitly enabled.
-  - **`hostPort`** — port PostgreSQL listens on the host (default: `5432`).
-  - **`containerPort`** — port exposed inside the container for the relay (default: `5432`).
 - **addAllowedUrls** — additional host patterns to allow on top of the [default allowlist](src/lib/container/default-allowed-hosts.ts). By default, the proxy blocks outbound requests to hosts not on the default list. Use this to add extra hosts without replacing the defaults. Supports exact hostnames (`api.example.com`) and wildcards (`*.example.com`).
 - **setAllowedUrls** — completely replaces the default allowlist with the given list of host patterns. Cannot be used together with `addAllowedUrls`. Set to `["*"]` to allow all outbound URLs (disables filtering), or `[]` to block all external network access. If the resolved list does not include `api.anthropic.com` or `github.com`, a warning is printed since sessions require these to function.
 
@@ -279,7 +348,7 @@ The default image (Ubuntu 24.04 + Node.js + pnpm + Claude Code + gh + tmux) can 
   # Rest of Dockerfile...
   ```
 
-Layer order: default (or Dockerfile.yaac) → Dockerfile.nestable (if `nestedContainers` is true) → Dockerfile.user.
+Layer order: default → Dockerfile.tools (agent CLIs; rebuilt by `yaac project rebuild`) → Dockerfile.yaac (if layered) → Dockerfile.user. A standalone Dockerfile.yaac replaces the default + tools layers entirely.
 
 ## Project config
 
@@ -301,27 +370,3 @@ yaac config edit-user-dockerfile       # ~/.yaac/Dockerfile.user (global)
 
 Each command resolves `$EDITOR` (then `$VISUAL`, then `vi`) and creates the parent directory if it doesn't exist yet.
 
-## Nested containers
-
-Set `"nestedContainers": true` in `yaac-config.json` to let sessions run `podman` (podman-in-podman). This builds an extra image layer (`Dockerfile.nestable`) on top of whichever base is used (default or custom `Dockerfile.yaac`) that configures rootless podman inside the container.
-
-No `--privileged` flag or extra capabilities are needed. At runtime, yaac adds the following security overrides:
-
-- `--security-opt label=disable` — disables SELinux label confinement
-- `--security-opt unmask=/proc/sys` — unmasks `/proc/sys` inside the container
-- `--device /dev/net/tun` — exposes the TUN device for container networking
-- A per-project named volume is mounted for container storage so pulled images persist across sessions.
-
-On macOS, the default podman machine memory (2 GB) is not enough for nested container builds. Increase it to at least 4 GB (8 GB recommended):
-
-```sh
-podman machine stop
-podman machine set --memory 8192
-podman machine start
-```
-
-By default yaac sets `UsernsMode: keep-id` on its containers so the in-container user can write host-owned bind mounts — this is needed on **Linux** rootless-podman hosts. It is unnecessary on macOS (podman runs in a VM) and breaks nested containers there: keep-id forces podman to `chown-by-maps` the shared image cache's layers, which fails with `storage-chown-by-maps: lchown ... operation not permitted`. If you hit that, start the daemon with keep-id disabled:
-
-```sh
-YAAC_DISABLE_KEEP_ID=1 yaac daemon restart
-```

@@ -7,11 +7,8 @@ import { getSessionDetail, getSessionBlockedHosts, getSessionPrompt } from '@/li
 import { deleteSession } from '@/lib/session/delete'
 import { restartSession } from '@/lib/session/restart'
 import { createSession, type SessionCreateOptions } from '@/daemon/session-create'
-import { resolveImageTag } from '@/lib/container/image-builder'
-import { promoteSessionImages, resolvePromotableSession } from '@/lib/container/image-promoter'
 import { DaemonError, toErrorBody } from '@/daemon/errors'
 import { resolveSessionContainer } from '@/daemon/session-resolve'
-import { getPrewarmSession, clearPrewarmSession } from '@/lib/prewarm'
 import { pickNextStreamSession } from '@/daemon/stream-picker'
 import { notifySessionListChanged } from '@/daemon/sessions-changed'
 import { listSessionTerminals, killShellTerminal } from '@/daemon/terminals'
@@ -114,47 +111,6 @@ export const sessionApp = new Hono()
     },
   )
   .post(
-    '/promote',
-    zValidator('json', z.object({ sessionId: z.string().min(1) })),
-    (c) => {
-      // Run the real teardown promoter (`promoteSessionImages`) on demand and
-      // stream its per-image log lines back as NDJSON {progress|result|error}
-      // events, so `yaac session promote` shows exactly what production does.
-      const { sessionId } = c.req.valid('json')
-      c.header('Content-Type', 'application/x-ndjson')
-      return stream(c, async (s) => {
-        const write = (event: unknown) => s.writeln(JSON.stringify(event))
-        try {
-          const resolved = await resolvePromotableSession(sessionId)
-          const imageRef = await resolveImageTag(
-            resolved.projectSlug, process.env.YAAC_IMAGE_PREFIX, true,
-          )
-          await write({
-            type: 'progress',
-            message: `Promoting session ${resolved.sessionId} `
-              + `(project "${resolved.projectSlug}") via ${imageRef}`,
-          })
-          const exitCode = await promoteSessionImages(
-            resolved.projectSlug, resolved.sessionId, imageRef,
-            { onLog: (line) => { void write({ type: 'progress', message: line }) } },
-          )
-          await write({
-            type: 'result',
-            result: {
-              sessionId: resolved.sessionId,
-              projectSlug: resolved.projectSlug,
-              imageRef,
-              exitCode,
-            },
-          })
-        } catch (err) {
-          const { body: errBody } = toErrorBody(err)
-          await write({ type: 'error', error: errBody.error })
-        }
-      })
-    },
-  )
-  .post(
     '/stream/next',
     zValidator('json', z.object({
       project: z.string().optional(),
@@ -173,17 +129,11 @@ export const sessionApp = new Hono()
   )
   .get('/:id/attach-info', async (c) => {
     const resolved = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
-    if (resolved.projectSlug && resolved.sessionId) {
-      const prewarm = await getPrewarmSession(resolved.projectSlug)
-      if (prewarm?.sessionId === resolved.sessionId) {
-        await clearPrewarmSession(resolved.projectSlug)
-      }
-    }
-    return c.json({ containerName: resolved.containerName, tmuxSession: 'yaac' as const })
+    return c.json({ jobName: resolved.jobName, tmuxSession: 'yaac' as const })
   })
   .get('/:id/shell-info', async (c) => {
     const resolved = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
-    return c.json({ containerName: resolved.containerName })
+    return c.json({ jobName: resolved.jobName })
   })
   .post(
     '/:id/title',
@@ -199,17 +149,17 @@ export const sessionApp = new Hono()
     },
   )
   .get('/:id/terminals', async (c) => {
-    const { containerName } = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
-    return c.json(await listSessionTerminals(containerName))
+    const { jobName } = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
+    return c.json(await listSessionTerminals(jobName))
   })
   .post(
     '/:id/terminals/close',
     zValidator('json', z.object({ target: z.string().min(1) })),
     async (c) => {
-      const { containerName } = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
+      const { jobName } = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
       const { target } = c.req.valid('json')
       try {
-        await killShellTerminal(containerName, target)
+        await killShellTerminal(jobName, target)
       } catch (err) {
         throw new DaemonError('VALIDATION', err instanceof Error ? err.message : String(err))
       }

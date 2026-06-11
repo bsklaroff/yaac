@@ -59,7 +59,7 @@ function shellQuoteArg(s: string): string {
  * Lives in shared because both the CLI (which prompts when missing
  * and forwards the resolved pair to the daemon) and the daemon
  * (which falls back to the global config during non-interactive
- * prewarm creation) need it.
+ * session creation) need it.
  */
 export async function getGitUserConfig(): Promise<{ name: string; email: string } | null> {
   try {

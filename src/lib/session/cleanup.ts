@@ -2,24 +2,18 @@ import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { podman } from '@/lib/container/runtime'
+import { listSessionJobs, listSessionPods, sessionJobName } from '@/lib/k8s/pods'
+import { k8sNamespace, kubectlWithRetry } from '@/lib/k8s/kubectl'
+import { execTarget } from '@/lib/k8s/exec'
 import { evictClaudeStatusCache } from '@/lib/session/claude-status'
 import { evictOpencodeProbeCache } from '@/lib/session/opencode-status'
 import { proxyClient } from '@/lib/container/proxy-client'
-import { resolveImageTag } from '@/lib/container/image-builder'
-import {
-  buildPromoterShellCommand,
-  promoteSessionImages,
-  removeSessionGraphrootVolume,
-  sessionGraphrootVolumeName,
-} from '@/lib/container/image-promoter'
-import { resolveProjectConfig } from '@/lib/project/config'
 import {
   cachedPackagesDir,
   projectDir,
   sessionTmuxDir,
 } from '@/lib/project/paths'
-import { CONTAINER_TMUX_SOCK, getProjectsDir, getDataDir } from '@/shared/paths'
+import { CONTAINER_TMUX_SOCK, getProjectsDir } from '@/shared/paths'
 import { stopSessionForwarders } from '@/lib/session/port-forwarders'
 
 const execFileAsync = promisify(execFile)
@@ -58,7 +52,7 @@ async function removeSessionFromProxy(sessionId: string): Promise<void> {
  * callers coalesce onto the same probe. Without this, /session/list
  * (called every ~5s by the UI), the background loop's
  * `hasLiveSessions`, and the stream-picker each run the same
- * has-session check independently for every container.
+ * has-session check independently for every session pod.
  */
 const TMUX_ALIVE_TTL_MS = 2_000
 const TMUX_PROBE_TIMEOUT_MS = 2_000
@@ -84,21 +78,23 @@ export function _clearTmuxAliveCacheForTests(): void {
 }
 
 /**
- * Probe tmux liveness by running `tmux has-session` inside the container
- * via `podman exec`. We can't connect to the bind-mounted UNIX socket
- * from the host: on podman-machine (macOS) the socket file appears on
- * the host via virtio-fs/9p but the listening kernel state lives in the
- * VM, so host-side `connect()` always fails with ECONNREFUSED. Running
- * the client inside the container is the only portable signal.
+ * Probe tmux liveness by running `tmux has-session` inside the session
+ * pod via `kubectl exec`. We can't connect to the hostPath-mounted UNIX
+ * socket from the host: the socket file is visible on the host but the
+ * listening kernel state isn't host-connectable, so running the client
+ * inside the container is the only portable signal.
  *
- * Exit 0 → session present. Non-zero / timeout / missing container → false.
+ * Exit 0 → session present. Non-zero / timeout / missing pod → false.
  */
 async function probeTmuxSessionAlive(slug: string, sessionId: string): Promise<boolean> {
-  const containerName = `yaac-${slug}-${sessionId}`
+  const jobName = sessionJobName(slug, sessionId)
   try {
     await execFileAsync(
-      'podman',
-      ['exec', containerName, 'tmux', '-S', CONTAINER_TMUX_SOCK, 'has-session', '-t', 'yaac'],
+      'kubectl',
+      [
+        'exec', '-n', k8sNamespace(), execTarget(jobName), '--',
+        'tmux', '-S', CONTAINER_TMUX_SOCK, 'has-session', '-t', 'yaac',
+      ],
       { timeout: TMUX_PROBE_TIMEOUT_MS },
     )
     return true
@@ -112,7 +108,7 @@ async function probeTmuxSessionAlive(slug: string, sessionId: string): Promise<b
  *
  * Results are cached for `TMUX_ALIVE_TTL_MS` and concurrent callers
  * for the same session share one in-flight probe, so the underlying
- * `podman exec` runs at most once per session per TTL window.
+ * `kubectl exec` runs at most once per session per TTL window.
  */
 export async function isTmuxSessionAlive(slug: string, sessionId: string): Promise<boolean> {
   const key = tmuxAliveKey(slug, sessionId)
@@ -135,12 +131,11 @@ export async function isTmuxSessionAlive(slug: string, sessionId: string): Promi
 }
 
 export async function cleanupSession(params: {
-  containerName: string
+  jobName: string
   projectSlug: string
   sessionId: string
 }): Promise<void> {
-  const { containerName, projectSlug, sessionId } = params
-  const container = podman.getContainer(containerName)
+  const { jobName, projectSlug, sessionId } = params
 
   // Drop any cached tmux-alive / claude-status / opencode-probe entry so
   // a subsequent caller doesn't see a stale value from this session's
@@ -153,35 +148,18 @@ export async function cleanupSession(params: {
   stopSessionForwarders(sessionId)
   await removeSessionFromProxy(sessionId)
 
+  // Delete the session Job; the pod's terminationGracePeriodSeconds (5s)
+  // covers the graceful-stop window, so no separate stop step is needed.
+  // --wait so the modules/tmux dirs below aren't yanked out from under a
+  // still-terminating pod.
   try {
-    await container.stop({ t: 5 })
+    await kubectlWithRetry([
+      'delete', 'job', jobName, '-n', k8sNamespace(),
+      '--ignore-not-found', '--wait=true', '--timeout=30s',
+    ])
   } catch {
-    // container may already be stopped
-  }
-
-  try {
-    await container.remove()
-  } catch {
-    // container may already be removed
-  }
-
-  // For nestedContainers sessions: salvage image layers from the session's
-  // per-session podman graphroot into the project's shared image cache,
-  // then drop the now-obsolete graphroot volume. Best-effort — never blocks
-  // teardown on cache salvage or volume removal.
-  try {
-    const config = await resolveProjectConfig(projectSlug)
-    if (config?.nestedContainers) {
-      try {
-        const imageRef = await resolveImageTag(projectSlug, process.env.YAAC_IMAGE_PREFIX, true)
-        await promoteSessionImages(projectSlug, sessionId, imageRef)
-      } catch (err) {
-        console.warn(`Promoter for session ${sessionId} failed: ${(err as Error).message}`)
-      }
-      await removeSessionGraphrootVolume(sessionId)
-    }
-  } catch {
-    // config resolution failed — skip promotion silently
+    // Job may already be gone, or deletion timed out — best-effort; the
+    // background reconcile loop sweeps any leftover Job.
   }
 
   // Remove the per-session ephemeral-modules backing dir from
@@ -193,7 +171,7 @@ export async function cleanupSession(params: {
   })
 
   // Remove the per-session tmux dir holding the server socket. The
-  // container is gone; the bind-mount source is garbage now.
+  // pod is gone; the hostPath-mount source is garbage now.
   await fs.rm(sessionTmuxDir(projectSlug, sessionId), {
     recursive: true,
     force: true,
@@ -204,15 +182,15 @@ export async function cleanupSession(params: {
 
 /**
  * Remove the session's state from the proxy sidecar (in-process, fast),
- * then spawn a detached background process to do the slow container
- * teardown so the calling process can exit immediately.
+ * then spawn a detached background process to do the slow Job teardown
+ * so the calling process can exit immediately.
  */
 export async function cleanupSessionDetached(params: {
-  containerName: string
+  jobName: string
   projectSlug: string
   sessionId: string
 }): Promise<void> {
-  const { containerName, projectSlug, sessionId } = params
+  const { jobName, projectSlug, sessionId } = params
 
   tmuxAliveCache.delete(tmuxAliveKey(projectSlug, sessionId))
   evictClaudeStatusCache(projectSlug, sessionId)
@@ -221,25 +199,6 @@ export async function cleanupSessionDetached(params: {
   stopSessionForwarders(sessionId)
   await removeSessionFromProxy(sessionId)
 
-  // For nestedContainers projects, include promoter + per-session volume
-  // removal in the detached script so the caller can exit immediately but
-  // the cache still gets salvaged and the volume cleaned up in the
-  // background. Image ref is resolved in-process — cheap and avoids
-  // needing config access inside the detached shell.
-  let promoterCmd = ''
-  let graphrootRm = ''
-  try {
-    const config = await resolveProjectConfig(projectSlug)
-    if (config?.nestedContainers) {
-      const imageRef = await resolveImageTag(projectSlug, process.env.YAAC_IMAGE_PREFIX, true)
-      promoterCmd = `${buildPromoterShellCommand(projectSlug, sessionId, imageRef)} 2>/dev/null || true`
-      graphrootRm = `podman volume rm -f ${sessionGraphrootVolumeName(sessionId)} 2>/dev/null || true`
-    }
-  } catch {
-    // config or image-tag resolution failed — skip the promoter bits; the
-    // orphan-GC on next daemon start will clean up the volume.
-  }
-
   const modulesDir = sessionModulesDir(projectSlug, sessionId)
   const ephemeralModulesRm = `rm -rf '${modulesDir.replace(/'/g, `'\\''`)}' 2>/dev/null || true`
 
@@ -247,10 +206,7 @@ export async function cleanupSessionDetached(params: {
   const tmuxDirRm = `rm -rf '${tmuxDir.replace(/'/g, `'\\''`)}' 2>/dev/null || true`
 
   const script = [
-    `podman stop -t 5 ${containerName} 2>/dev/null || true`,
-    `podman rm ${containerName} 2>/dev/null || true`,
-    ...(promoterCmd ? [promoterCmd] : []),
-    ...(graphrootRm ? [graphrootRm] : []),
+    `kubectl delete job ${jobName} -n ${k8sNamespace()} --ignore-not-found 2>/dev/null || true`,
     ephemeralModulesRm,
     tmuxDirRm,
   ].join('; ')
@@ -264,27 +220,22 @@ export async function cleanupSessionDetached(params: {
 
 /**
  * Daemon-startup sweep: remove `.cached-packages/modules/<sid>`
- * directories whose session container is no longer alive. Catches
- * leftovers from crashes, killed daemons, and host reboots. Mirrors
- * `gcOrphanSessionVolumes` (`src/lib/container/image-promoter.ts`)
- * but operates on host directories rather than podman volumes.
+ * directories whose session is no longer alive. Catches leftovers from
+ * crashes, killed daemons, and host reboots.
  */
 export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
-  const dataDir = getDataDir()
-
   let liveSessionIds: Set<string>
   try {
-    const containers = await podman.listContainers({
-      all: true,
-      filters: { label: [`yaac.data-dir=${dataDir}`] },
-    })
+    // Union of pod and Job session ids: a Job mid-recreate (pod evicted,
+    // replacement not scheduled yet) only shows up in the Job list, and
+    // must not have its dirs swept.
+    const [pods, jobs] = await Promise.all([listSessionPods(), listSessionJobs()])
     liveSessionIds = new Set(
-      containers
-        .map((c) => c.Labels?.['yaac.session-id'])
-        .filter((id): id is string => !!id),
+      [...pods.map((p) => p.sessionId), ...jobs.map((j) => j.sessionId)]
+        .filter((id) => !!id),
     )
   } catch (err) {
-    console.warn(`Orphan modules GC: failed to list containers: ${(err as Error).message}`)
+    console.warn(`Orphan modules GC: failed to list session pods/jobs: ${(err as Error).message}`)
     return
   }
 

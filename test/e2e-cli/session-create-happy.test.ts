@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import simpleGit from 'simple-git'
 import { cloneRepo } from '@/lib/git'
+import { listSessionPods } from '@/lib/k8s/pods'
 import {
   createYaacTestEnv,
   spawnYaacDaemon,
@@ -10,7 +11,12 @@ import {
   type YaacTestEnv,
   type SpawnedDaemon,
 } from '@test/helpers/cli'
-import { requirePodman, TEST_RUN_ID, podmanRetry } from '@test/helpers/setup'
+import {
+  requirePodman,
+  requireCluster,
+  execInJob,
+  cleanupSessionJobs,
+} from '@test/helpers/setup'
 import {
   startMockLLM,
   startMockGit,
@@ -21,24 +27,22 @@ import {
 } from '@test/helpers/mock-remotes'
 
 /**
- * End-to-end infrastructure test: real CLI + real daemon + real podman, with
- * the proxy's `upstreamRedirects` feature rerouting every outbound host the
- * session would normally use (GitHub, Anthropic) to a mock container on the
- * same podman network.
+ * End-to-end infrastructure test: real CLI + real daemon + real cluster,
+ * with the proxy's `upstreamRedirects` feature rerouting every outbound
+ * host the session would normally use (GitHub, Anthropic) to a mock pod
+ * in the test namespace.
  *
  * We deliberately do NOT try to fully boot `claude-code` inside the session
- * container — its startup hits ~a dozen different endpoints (statsig,
+ * pod — its startup hits ~a dozen different endpoints (statsig,
  * bootstrap, policy_limits, mcp-registry, ...) and chasing every response
  * shape couples the test to claude-code's internal flow. Instead we exec
- * `curl` inside the session container and drive a single `POST
+ * `curl` inside the session pod and drive a single `POST
  * /v1/messages` through the same proxy + MITM + credential-injection path
  * claude-code would use. That's sufficient to prove the test-mocking
  * infrastructure works; a follow-up test can cover real claude-code once
  * the mock is fleshed out enough to satisfy its bootstrap.
  */
 describe('yaac session create (mocked remotes, happy path)', () => {
-  const networkName = `yaac-test-sessions-${TEST_RUN_ID}`
-
   let testEnv: YaacTestEnv
   let daemon: SpawnedDaemon | null = null
   let mockLLM: MockLLM | null = null
@@ -46,18 +50,13 @@ describe('yaac session create (mocked remotes, happy path)', () => {
 
   beforeAll(async () => {
     await requirePodman()
-    // The proxy creates this network on demand when it spins up. Pre-create
-    // so the mock containers can attach before the proxy exists; if it
-    // already exists the create is a no-op.
-    try {
-      await podmanRetry(['network', 'create', networkName])
-    } catch { /* already exists */ }
+    await requireCluster()
   })
 
   beforeEach(async () => {
     testEnv = await createYaacTestEnv()
-    mockLLM = await startMockLLM(networkName)
-    mockGit = await startMockGit(networkName)
+    mockLLM = await startMockLLM()
+    mockGit = await startMockGit()
 
     await seedMockGitRepo(mockGit, 'repo-demo', {
       files: { 'README.md': '# demo\n' },
@@ -67,19 +66,10 @@ describe('yaac session create (mocked remotes, happy path)', () => {
   afterEach(async () => {
     if (daemon) await daemon.stop()
     daemon = null
-    // Remove every container this test created so they don't pile up across
-    // runs. Filter by data-dir so we never touch containers owned by a
-    // concurrent worker.
-    try {
-      const { stdout } = await podmanRetry([
-        'ps', '-a', '--filter', `label=yaac.data-dir=${testEnv.dataDir}`,
-        '--format', '{{.Names}}',
-      ])
-      const names = stdout.split('\n').filter(Boolean)
-      if (names.length > 0) {
-        await podmanRetry(['rm', '-f', ...names])
-      }
-    } catch { /* best effort */ }
+    // Remove every session Job this test created so they don't pile up
+    // across runs. Scoped by data-dir-hash so we never touch objects owned
+    // by a concurrent worker.
+    await cleanupSessionJobs()
     await cleanupMocks([mockLLM, mockGit])
     mockLLM = null
     mockGit = null
@@ -136,8 +126,8 @@ describe('yaac session create (mocked remotes, happy path)', () => {
       '[user]\n\tname = Test User\n\temail = test@example.com\n',
     )
 
-    const llmTarget = { host: mockLLM!.networkIp, port: mockLLM!.port, tls: false }
-    const gitTarget = { host: mockGit!.networkIp, port: mockGit!.port, tls: false }
+    const llmTarget = { host: mockLLM!.host, port: mockLLM!.port, tls: false }
+    const gitTarget = { host: mockGit!.host, port: mockGit!.port, tls: false }
     const redirects = {
       'github.com': gitTarget,
       'api.github.com': gitTarget,
@@ -162,30 +152,24 @@ describe('yaac session create (mocked remotes, happy path)', () => {
     }
     expect(exitCode).toBe(0)
 
-    // Locate THIS test's session container (scope by data-dir so we don't
-    // trip over leaked containers from other workers/runs).
-    const { stdout: containerIds } = await podmanRetry([
-      'ps', '--filter', `label=yaac.data-dir=${testEnv.dataDir}`,
-      '--filter', 'label=yaac.project=repo-demo',
-      '--format', '{{.Names}}|{{.CreatedAt}}',
-    ])
-    // Oldest-first — the CLI's session is the one session-create returned,
-    // which was created before the daemon spun up a background prewarm.
-    const containerName = containerIds
-      .split('\n').filter(Boolean)
-      .sort((a, b) => a.split('|')[1].localeCompare(b.split('|')[1]))
-      .map((row) => row.split('|')[0])[0]
-    expect(containerName).toMatch(/^yaac-repo-demo-/)
+    // Locate THIS test's session Job (listSessionPods scopes by the
+    // data-dir-hash label, so leaked pods from other workers/runs never
+    // match). Oldest-first for determinism.
+    const pods = await listSessionPods('repo-demo')
+    const jobName = pods
+      .sort((a, b) => a.createdAtMs - b.createdAtMs)
+      .map((p) => p.jobName)[0]
+    expect(jobName).toMatch(/^yaac-repo-demo-/)
 
-    // Drive a single HTTPS request from inside the session container
+    // Drive a single HTTPS request from inside the session pod
     // through the proxy: `curl -k` because we don't ship the proxy's CA
     // into the curl invocation (the proxy already installed it into the
     // container's trust store, but `-k` keeps the test deterministic).
     // We send the placeholder x-api-key sentinel that the proxy gates
     // credential injection on — the proxy swaps it for the real value
     // ('sk-ant-fake-real-key') on match.
-    const { stdout: curlOut, stderr: curlErr } = await podmanRetry([
-      'exec', containerName, 'curl', '-sS', '-k',
+    const { stdout: curlOut, stderr: curlErr } = await execInJob(jobName, [
+      'curl', '-sS', '-k',
       '--max-time', '10',
       '-X', 'POST',
       '-H', 'x-api-key: yaac-ph-api-key',

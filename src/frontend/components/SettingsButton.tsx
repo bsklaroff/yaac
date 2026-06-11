@@ -90,7 +90,7 @@ export function SettingsButton(): JSX.Element {
                 <h2 className="text-sm font-semibold">General</h2>
                 <Field
                   label="Default tool"
-                  hint="Used for prewarmed containers and as the initial pick when creating a session."
+                  hint="The initial pick when creating a session."
                 >
                   <RadioGroup
                     value={tool ?? undefined}

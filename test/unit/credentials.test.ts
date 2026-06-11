@@ -17,7 +17,9 @@ import {
   parseGitRemote,
   matchPattern,
   saveCredentials,
+  writeProxySecrets,
 } from '@/lib/project/credentials'
+import { proxySecretsCredentialsPath } from '@/lib/project/paths'
 import { DaemonError } from '@/daemon/errors'
 
 describe('credentials', () => {
@@ -527,6 +529,40 @@ describe('credentials', () => {
 
     it('returns empty list when no entries', async () => {
       expect(await listEntries()).toEqual([])
+    })
+  })
+
+  describe('writeProxySecrets', () => {
+    async function readSecretsFile(): Promise<Record<string, string>> {
+      const raw = JSON.parse(await fs.readFile(proxySecretsCredentialsPath(), 'utf8')) as {
+        secrets: Record<string, string>
+      }
+      return raw.secrets
+    }
+
+    it('writes secrets keyed by env var name with 0600 mode', async () => {
+      await writeProxySecrets({ MY_KEY: 'sekrit' })
+      expect(await readSecretsFile()).toEqual({ MY_KEY: 'sekrit' })
+      const stat = await fs.stat(proxySecretsCredentialsPath())
+      expect(stat.mode & 0o777).toBe(0o600)
+    })
+
+    it('merges into existing entries instead of replacing them', async () => {
+      await writeProxySecrets({ A: '1', B: '2' })
+      await writeProxySecrets({ B: 'updated', C: '3' })
+      expect(await readSecretsFile()).toEqual({ A: '1', B: 'updated', C: '3' })
+    })
+
+    it('no-ops on an empty secrets map', async () => {
+      await writeProxySecrets({})
+      await expect(fs.access(proxySecretsCredentialsPath())).rejects.toThrow()
+    })
+
+    it('recovers from a corrupt existing file', async () => {
+      await fs.mkdir(path.dirname(proxySecretsCredentialsPath()), { recursive: true })
+      await fs.writeFile(proxySecretsCredentialsPath(), '{not json')
+      await writeProxySecrets({ A: '1' })
+      expect(await readSecretsFile()).toEqual({ A: '1' })
     })
   })
 })

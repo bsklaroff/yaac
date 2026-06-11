@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import * as runtime from '@/lib/container/runtime'
+import * as pods from '@/lib/k8s/pods'
 import * as cleanup from '@/lib/session/cleanup'
 import * as sessionCreate from '@/daemon/session-create'
 import { resolveRestartTarget, restartSession } from '@/lib/session/restart'
@@ -10,35 +10,43 @@ import { sessionRestart } from '@/commands/session-restart'
 import {
   claudeDir,
   codexTranscriptDir,
-  getDataDir,
   opencodeMetaDir,
   opencodeMetaFile,
   worktreesDir,
   projectDir,
 } from '@/lib/project/paths'
+import type { SessionPod } from '@/lib/k8s/pods'
 
 /**
  * Unit coverage for the session-restart pipeline: target resolution
- * (live container first, filesystem fallback for reaped sessions) and
- * the handoff to `cleanupSession` + `createSession(resume: true)`.
- * Podman / createSession are mocked so we don't need a running podman.
+ * (live pod first, filesystem fallback for reaped sessions) and the
+ * handoff to `cleanupSession` + `createSession(resume: true)`. Pod
+ * listing / createSession are mocked so we don't need a cluster.
  */
-describe('resolveRestartTarget', () => {
-  type PodmanContainerInspect = {
-    Id: string
-    Names?: string[]
-    Labels?: Record<string, string>
-    State?: string
+function pod(overrides: Partial<SessionPod> = {}): SessionPod {
+  return {
+    jobName: 'yaac-demo-abcd1234',
+    podName: 'yaac-demo-abcd1234-p0d42',
+    sessionId: 'abcd1234',
+    projectSlug: 'demo',
+    tool: 'claude',
+    phase: 'Running',
+    running: true,
+    createdAtMs: 1_700_000_000_000,
+    labels: {},
+    ...overrides,
   }
+}
 
+describe('resolveRestartTarget', () => {
   let tmpDir: string
-  let listSpy: ReturnType<typeof vi.fn<(opts?: unknown) => Promise<PodmanContainerInspect[]>>>
+  let listSpy: ReturnType<typeof vi.fn<() => Promise<SessionPod[]>>>
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
     listSpy = vi.fn()
-    vi.spyOn(runtime.podman, 'listContainers').mockImplementation(
-      listSpy as unknown as typeof runtime.podman.listContainers,
+    vi.spyOn(pods, 'listSessionPods').mockImplementation(
+      listSpy as unknown as typeof pods.listSessionPods,
     )
   })
 
@@ -47,63 +55,34 @@ describe('resolveRestartTarget', () => {
     await cleanupTempDir(tmpDir)
   })
 
-  function container(overrides: Partial<PodmanContainerInspect> = {}): PodmanContainerInspect {
-    return {
-      Id: 'fullcontainerid00000000',
-      Names: ['/yaac-demo-abcd1234'],
-      Labels: {
-        'yaac.data-dir': getDataDir(),
-        'yaac.session-id': 'abcd1234',
-        'yaac.project': 'demo',
-        'yaac.tool': 'claude',
-      },
-      State: 'running',
-      ...overrides,
-    }
-  }
-
-  it('resolves from a live container by exact session id', async () => {
-    listSpy.mockResolvedValueOnce([container()])
+  it('resolves from a live pod by exact session id', async () => {
+    listSpy.mockResolvedValueOnce([pod()])
     const info = await resolveRestartTarget('abcd1234')
     expect(info).toEqual({
       projectSlug: 'demo',
       sessionId: 'abcd1234',
       tool: 'claude',
-      containerName: 'yaac-demo-abcd1234',
+      jobName: 'yaac-demo-abcd1234',
     })
   })
 
-  it('resolves tool=codex from the container label', async () => {
-    listSpy.mockResolvedValueOnce([container({
-      Labels: {
-        'yaac.data-dir': getDataDir(),
-        'yaac.session-id': 'abcd1234',
-        'yaac.project': 'demo',
-        'yaac.tool': 'codex',
-      },
-    })])
+  it('resolves tool=codex from the pod label', async () => {
+    listSpy.mockResolvedValueOnce([pod({ tool: 'codex' })])
     const info = await resolveRestartTarget('abcd1234')
     expect(info.tool).toBe('codex')
   })
 
-  it('resolves tool=opencode from the container label', async () => {
-    listSpy.mockResolvedValueOnce([container({
-      Labels: {
-        'yaac.data-dir': getDataDir(),
-        'yaac.session-id': 'abcd1234',
-        'yaac.project': 'demo',
-        'yaac.tool': 'opencode',
-      },
-    })])
+  it('resolves tool=opencode from the pod label', async () => {
+    listSpy.mockResolvedValueOnce([pod({ tool: 'opencode' })])
     const info = await resolveRestartTarget('abcd1234')
     expect(info.tool).toBe('opencode')
   })
 
-  it('resolves from a live container by session id prefix', async () => {
-    listSpy.mockResolvedValueOnce([container()])
+  it('resolves from a live pod by session id prefix', async () => {
+    listSpy.mockResolvedValueOnce([pod()])
     const info = await resolveRestartTarget('abcd')
     expect(info.sessionId).toBe('abcd1234')
-    expect(info.containerName).toBe('yaac-demo-abcd1234')
+    expect(info.jobName).toBe('yaac-demo-abcd1234')
   })
 
   it('falls back to the worktree dir + claude transcript for a reaped session', async () => {
@@ -120,7 +99,7 @@ describe('resolveRestartTarget', () => {
       projectSlug: 'demo',
       sessionId: 'deadbeefdeadbeef',
       tool: 'claude',
-      containerName: null,
+      jobName: null,
     })
   })
 
@@ -132,7 +111,7 @@ describe('resolveRestartTarget', () => {
     await fs.writeFile(path.join(codexTranscriptDir('demo'), 'codexsess.jsonl'), '')
     const info = await resolveRestartTarget('codexsess')
     expect(info.tool).toBe('codex')
-    expect(info.containerName).toBeNull()
+    expect(info.jobName).toBeNull()
   })
 
   it('detects tool=opencode from the meta file when no jsonl transcript exists', async () => {
@@ -143,7 +122,7 @@ describe('resolveRestartTarget', () => {
     await fs.writeFile(opencodeMetaFile('demo', 'ocsess'), '{}')
     const info = await resolveRestartTarget('ocsess')
     expect(info.tool).toBe('opencode')
-    expect(info.containerName).toBeNull()
+    expect(info.jobName).toBeNull()
   })
 
   it('resolves a worktree-dir prefix match across projects', async () => {
@@ -155,15 +134,15 @@ describe('resolveRestartTarget', () => {
     expect(info.projectSlug).toBe('demo')
   })
 
-  it('throws NOT_FOUND when no container and no worktree match', async () => {
+  it('throws NOT_FOUND when no pod and no worktree match', async () => {
     listSpy.mockResolvedValueOnce([])
     await expect(resolveRestartTarget('missing')).rejects.toMatchObject({
       code: 'NOT_FOUND',
     })
   })
 
-  it('falls through to the filesystem when podman is unavailable', async () => {
-    listSpy.mockRejectedValueOnce(new Error('ECONNREFUSED'))
+  it('falls through to the filesystem when the cluster is unavailable', async () => {
+    listSpy.mockRejectedValueOnce(new Error('connection refused'))
     await fs.mkdir(projectDir('demo'), { recursive: true })
     await fs.mkdir(path.join(worktreesDir('demo'), 'xyz'), { recursive: true })
     const info = await resolveRestartTarget('xyz')
@@ -171,21 +150,14 @@ describe('resolveRestartTarget', () => {
       projectSlug: 'demo',
       sessionId: 'xyz',
       tool: 'claude',
-      containerName: null,
+      jobName: null,
     })
   })
 })
 
 describe('restartSession', () => {
-  type PodmanContainerInspect = {
-    Id: string
-    Names?: string[]
-    Labels?: Record<string, string>
-    State?: string
-  }
-
   let tmpDir: string
-  let listSpy: ReturnType<typeof vi.fn<(opts?: unknown) => Promise<PodmanContainerInspect[]>>>
+  let listSpy: ReturnType<typeof vi.fn<() => Promise<SessionPod[]>>>
   let cleanupSpy: ReturnType<typeof vi.fn>
   let createSpy: ReturnType<typeof vi.fn>
 
@@ -195,13 +167,12 @@ describe('restartSession', () => {
     cleanupSpy = vi.fn().mockResolvedValue(undefined)
     createSpy = vi.fn().mockResolvedValue({
       sessionId: 'abcd1234',
-      containerName: 'yaac-demo-abcd1234',
+      jobName: 'yaac-demo-abcd1234',
       forwardedPorts: [],
       tool: 'claude',
-      claimedPrewarm: false,
     })
-    vi.spyOn(runtime.podman, 'listContainers').mockImplementation(
-      listSpy as unknown as typeof runtime.podman.listContainers,
+    vi.spyOn(pods, 'listSessionPods').mockImplementation(
+      listSpy as unknown as typeof pods.listSessionPods,
     )
     vi.spyOn(cleanup, 'cleanupSession').mockImplementation(
       cleanupSpy as unknown as typeof cleanup.cleanupSession,
@@ -216,24 +187,14 @@ describe('restartSession', () => {
     await cleanupTempDir(tmpDir)
   })
 
-  it('kills the live container first, then creates a resumed session', async () => {
-    listSpy.mockResolvedValueOnce([{
-      Id: 'full',
-      Names: ['/yaac-demo-abcd1234'],
-      Labels: {
-        'yaac.data-dir': getDataDir(),
-        'yaac.session-id': 'abcd1234',
-        'yaac.project': 'demo',
-        'yaac.tool': 'claude',
-      },
-      State: 'running',
-    }])
+  it('kills the live job first, then creates a resumed session', async () => {
+    listSpy.mockResolvedValueOnce([pod()])
 
     const progress: string[] = []
     await restartSession('abcd1234', { onProgress: (m) => progress.push(m) })
 
     expect(cleanupSpy).toHaveBeenCalledWith({
-      containerName: 'yaac-demo-abcd1234',
+      jobName: 'yaac-demo-abcd1234',
       projectSlug: 'demo',
       sessionId: 'abcd1234',
     })
@@ -242,10 +203,10 @@ describe('restartSession', () => {
       sessionId: 'abcd1234',
       tool: 'claude',
     }))
-    expect(progress.some((m) => m.includes('Stopping container yaac-demo-abcd1234'))).toBe(true)
+    expect(progress.some((m) => m.includes('Stopping session job yaac-demo-abcd1234'))).toBe(true)
   })
 
-  it('skips cleanup when no container exists and falls back to the worktree', async () => {
+  it('skips cleanup when no pod exists and falls back to the worktree', async () => {
     listSpy.mockResolvedValueOnce([])
     await fs.mkdir(projectDir('demo'), { recursive: true })
     await fs.mkdir(path.join(worktreesDir('demo'), 'deadbeef'), { recursive: true })
@@ -261,17 +222,7 @@ describe('restartSession', () => {
   })
 
   it('forwards addDir / addDirRw / gitUser into createSession', async () => {
-    listSpy.mockResolvedValueOnce([{
-      Id: 'full',
-      Names: ['/yaac-demo-abcd1234'],
-      Labels: {
-        'yaac.data-dir': getDataDir(),
-        'yaac.session-id': 'abcd1234',
-        'yaac.project': 'demo',
-        'yaac.tool': 'claude',
-      },
-      State: 'running',
-    }])
+    listSpy.mockResolvedValueOnce([pod()])
 
     await restartSession('abcd1234', {
       addDir: ['/tmp/ro'],

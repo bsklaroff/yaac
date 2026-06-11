@@ -3,43 +3,42 @@ import { existsSync } from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { pack } from 'tar-stream'
 import { DOCKERFILES_DIR, getDataDir, projectConfigDir } from '@/lib/project/paths'
 import { imageExists, removeImage } from '@/lib/container/runtime'
 import { daemonLog, pipeToDaemonLog } from '@/daemon/log'
-
-interface TarEntry {
-  name: string
-  content: string
-}
-
-export async function packTar(entries: TarEntry[]): Promise<Buffer> {
-  const p = pack()
-  const chunks: Buffer[] = []
-  p.on('data', (chunk: Buffer) => chunks.push(chunk))
-
-  for (const entry of entries) {
-    await new Promise<void>((resolve, reject) => {
-      p.entry({ name: entry.name }, entry.content, (err) => {
-        if (err) reject(err)
-        else resolve()
-      })
-    })
-  }
-
-  p.finalize()
-  await new Promise<void>((resolve) => p.on('end', resolve))
-
-  return Buffer.concat(chunks)
-}
 
 export function stringHash(content: string): string {
   return crypto.createHash('sha256').update(content).digest('hex').slice(0, 16)
 }
 
+/**
+ * The uid baked into session images as the `yaac` user (YAAC_UID build
+ * arg). Session pods run in user namespaces (`hostUsers: false`), and
+ * kubernetes identity-idmaps host uids into the pod, so a hostPath file
+ * owned by host uid N appears in-container as uid N. Daemon-created dirs
+ * (worktrees, cache volumes, config mounts) are owned by the daemon's
+ * uid — the in-container user must carry the same uid to write them.
+ * Falls back to 1000 when there is no uid to mirror (non-POSIX) or the
+ * daemon runs as root (uid 0 is taken inside the image).
+ */
+export function sessionUid(): number {
+  const uid = process.getuid?.() ?? 1000
+  return uid > 0 ? uid : 1000
+}
+
 export async function fileHash(filePath: string): Promise<string> {
   const content = await fs.readFile(filePath, 'utf8')
   return stringHash(content)
+}
+
+/**
+ * Content hash for a root (FROM-scratch) session image layer: the
+ * Dockerfile content plus the YAAC_UID build arg. Shared by the daemon's
+ * layer resolution and the test global setup so both derive identical
+ * tags.
+ */
+export async function baseImageHash(dockerfilePath: string): Promise<string> {
+  return stringHash(`${await fileHash(dockerfilePath)}:uid=${sessionUid()}`)
 }
 
 // node_modules is a dev-only artifact created by pnpm workspace installs; it
@@ -173,7 +172,6 @@ interface ImageLayer {
 async function resolveImageChain(
   projectSlug: string,
   prefix: string,
-  nestedContainers: boolean,
 ): Promise<{ layers: ImageLayer[]; finalTag: string }> {
   const layers: ImageLayer[] = []
 
@@ -190,7 +188,11 @@ async function resolveImageChain(
 
   const yaacIsLayered = yaacContent ? isLayered(yaacContent) : false
   const defaultDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
-  const defaultHash = await fileHash(defaultDockerfile)
+  // The daemon uid is a build input (YAAC_UID arg, see sessionUid), so it
+  // is folded into the root layer's content hash — a uid change must
+  // invalidate the tag just like a Dockerfile edit.
+  const uid = sessionUid()
+  const defaultHash = await baseImageHash(defaultDockerfile)
   const defaultTag = `${prefix}-base:${defaultHash}`
 
   // We're on the canonical base unless Dockerfile.yaac replaces it standalone.
@@ -202,6 +204,7 @@ async function resolveImageChain(
       tag: defaultTag,
       dockerfile: defaultDockerfile,
       context: DOCKERFILES_DIR,
+      buildArgs: { YAAC_UID: String(uid) },
       contentHash: defaultHash,
     })
   }
@@ -228,10 +231,14 @@ async function resolveImageChain(
   }
 
   // Resolve the base layer tag (may be tools-only, layered yaac, or standalone yaac).
+  // A standalone Dockerfile.yaac is a root layer like Dockerfile.default:
+  // it owns its user setup, so it gets the YAAC_UID build arg (honoring it
+  // is up to the Dockerfile) and the uid folded into its hash. Layered
+  // variants inherit the uid through the parent's hash chain.
   const baseHash = yaacIsLayered
     ? stringHash(`${toolsHash!}:${stringHash(yaacContent!)}`)
     : yaacDockerfile
-      ? stringHash(yaacContent!)
+      ? stringHash(`${stringHash(yaacContent!)}:uid=${uid}`)
       : toolsHash!
   const baseTag = yaacDockerfile
     ? `${prefix}-base:${baseHash}`
@@ -243,29 +250,15 @@ async function resolveImageChain(
       tag: baseTag,
       dockerfile: yaacDockerfile,
       context: baseContext,
-      ...(yaacIsLayered ? { buildArgs: { BASE_IMAGE: toolsTag! } } : {}),
+      buildArgs: yaacIsLayered
+        ? { BASE_IMAGE: toolsTag! }
+        : { YAAC_UID: String(uid) },
       contentHash: baseHash,
     })
   }
 
-  // Layer 1.5 (optional): <prefix>-base-nestable (podman-in-podman support)
   let effectiveTag = baseTag
-  let effectiveHash = baseHash
-  if (nestedContainers) {
-    const nestDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
-    const nestContentHash = await fileHash(nestDockerfile)
-    const nestHash = stringHash(`${baseHash}:${nestContentHash}`)
-    const nestTag = `${prefix}-base-nestable:${nestHash}`
-    layers.push({
-      tag: nestTag,
-      dockerfile: nestDockerfile,
-      context: DOCKERFILES_DIR,
-      buildArgs: { BASE_IMAGE: baseTag },
-      contentHash: nestHash,
-    })
-    effectiveTag = nestTag
-    effectiveHash = nestHash
-  }
+  const effectiveHash = baseHash
 
   // Layer 2 (optional): <prefix>-user-<slug> (from ~/.yaac/Dockerfile.user)
   const userDockerfile = path.join(getDataDir(), 'Dockerfile.user')
@@ -299,9 +292,9 @@ async function resolveImageChain(
  * Useful for fingerprinting — computes what the tag would be based on
  * current Dockerfile content and config.
  */
-export async function resolveImageTag(projectSlug: string, imagePrefix?: string, nestedContainers = false): Promise<string> {
+export async function resolveImageTag(projectSlug: string, imagePrefix?: string): Promise<string> {
   const prefix = imagePrefix ?? 'yaac'
-  const { finalTag } = await resolveImageChain(projectSlug, prefix, nestedContainers)
+  const { finalTag } = await resolveImageChain(projectSlug, prefix)
   return finalTag
 }
 
@@ -316,8 +309,7 @@ export async function resolveImageTag(projectSlug: string, imagePrefix?: string,
  * Layer 2: yaac-base from Dockerfile.yaac — when present:
  *   - layered on Dockerfile.tools (when Dockerfile.yaac uses `ARG BASE_IMAGE` + `FROM ${BASE_IMAGE}`)
  *   - or standalone (replaces the canonical base + tools)
- * Layer 3 (optional): yaac-base-nestable (Dockerfile.nestable, when nestedContainers)
- * Layer 4 (optional): yaac-user-<slug> (~/.yaac/Dockerfile.user, builds on top)
+ * Layer 3 (optional): yaac-user-<slug> (~/.yaac/Dockerfile.user, builds on top)
  *
  * Returns the final image name to use for containers.
  *
@@ -326,11 +318,10 @@ export async function resolveImageTag(projectSlug: string, imagePrefix?: string,
  * @param requirePrebuilt - When true, throw instead of building if the base
  *   image is missing or stale. Used by e2e tests so parallel workers fail
  *   fast instead of racing to build the same image.
- * @param nestedContainers - When true, build the nestable layer (podman-in-podman support).
  */
-export async function ensureImage(projectSlug: string, imagePrefix?: string, requirePrebuilt = false, nestedContainers = false): Promise<string> {
+export async function ensureImage(projectSlug: string, imagePrefix?: string, requirePrebuilt = false): Promise<string> {
   const prefix = imagePrefix ?? 'yaac'
-  const { layers, finalTag } = await resolveImageChain(projectSlug, prefix, nestedContainers)
+  const { layers, finalTag } = await resolveImageChain(projectSlug, prefix)
 
   for (const layer of layers) {
     if (await imageExists(layer.tag)) continue
@@ -358,7 +349,7 @@ export async function ensureImage(projectSlug: string, imagePrefix?: string, req
  * tag never invalidates and a normal `ensureImage` would silently reuse a
  * stale cached layer. This forces a `--no-cache` rebuild of the tools layer
  * (re-fetching the latest upstream version of each CLI) and re-runs every
- * downstream layer (nestable / Dockerfile.yaac overlay / Dockerfile.user) so
+ * downstream layer (Dockerfile.yaac overlay / Dockerfile.user) so
  * they sit on the new tools image.
  *
  * The system base (Dockerfile.default — apt packages, Node, Playwright) is
@@ -374,14 +365,11 @@ export async function rebuildProjectImage(
   projectSlug: string,
   opts: {
     imagePrefix?: string
-    nestedContainers?: boolean
     onLog?: (line: string) => void
   } = {},
 ): Promise<string> {
   const prefix = opts.imagePrefix ?? 'yaac'
-  const { layers, finalTag } = await resolveImageChain(
-    projectSlug, prefix, opts.nestedContainers ?? false,
-  )
+  const { layers, finalTag } = await resolveImageChain(projectSlug, prefix)
 
   const toolsIdx = layers.findIndex((l) => l.tag.startsWith(`${prefix}-tools:`))
   if (toolsIdx < 0) {

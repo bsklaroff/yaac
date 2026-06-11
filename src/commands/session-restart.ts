@@ -4,6 +4,7 @@ import readline from 'node:readline/promises'
 import { spawn } from 'node:child_process'
 import simpleGit from 'simple-git'
 import { getRpcClient, toClientError } from '@/commands/rpc'
+import { interactiveExecArgs } from '@/lib/k8s/exec'
 import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
 import { getGitUserConfig } from '@/shared/git'
 
@@ -14,7 +15,7 @@ export interface SessionRestartOptions {
 
 interface SessionRestartResult {
   sessionId?: string
-  containerName?: string
+  jobName?: string
 }
 
 type StreamEvent =
@@ -58,8 +59,8 @@ async function consumeStream(res: Response): Promise<SessionRestartResult> {
 /**
  * CLI entry for `yaac session restart <sessionId>`. Resolves git identity
  * up-front (prompting when missing), then hands the restart off to the
- * daemon. The daemon tears down the old container, keeps the worktree,
- * and spins up a fresh container running the agent with `--resume`.
+ * daemon. The daemon tears down the old Job, keeps the worktree, and
+ * spins up a fresh Job running the agent with `--resume`.
  */
 export async function sessionRestart(
   sessionId: string,
@@ -112,9 +113,9 @@ export async function sessionRestart(
 
   const result = await consumeStream(res)
 
-  const { sessionId: restartedId, containerName } = result
-  if (!restartedId || !containerName) {
-    console.error('Daemon did not return a sessionId/containerName.')
+  const { sessionId: restartedId, jobName } = result
+  if (!restartedId || !jobName) {
+    console.error('Daemon did not return a sessionId/jobName.')
     process.exitCode = 1
     return
   }
@@ -122,14 +123,14 @@ export async function sessionRestart(
   if (process.env.YAAC_E2E_NO_ATTACH !== '1') {
     try {
       await new Promise<void>((resolve, reject) => {
-        const child = spawn('podman', ['exec', '-it', containerName, 'tmux', '-S', CONTAINER_TMUX_SOCK, 'attach-session', '-t', 'yaac'], {
+        const child = spawn('kubectl', interactiveExecArgs(jobName, ['tmux', '-S', CONTAINER_TMUX_SOCK, 'attach-session', '-t', 'yaac']), {
           stdio: 'inherit',
         })
         child.on('close', () => resolve())
         child.on('error', reject)
       })
     } catch {
-      // Container or tmux session was killed — reaper will clean up.
+      // Job or tmux session was killed — reaper will clean up.
     }
   }
 

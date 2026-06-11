@@ -1,6 +1,5 @@
-import { ensurePrewarmSessions, clearFailedPrewarmSessions } from '@/lib/prewarm'
 import { reconcileStaleSessions, captureOpencodeFirstMessages } from '@/lib/session/list'
-import { persistAllBlockedHosts } from '@/lib/session/blocked-hosts'
+import { reconcileProxySshKeys } from '@/lib/session/proxy-reconcile'
 import { daemonLog } from '@/daemon/log'
 
 export interface BackgroundLoopDeps {
@@ -48,17 +47,21 @@ function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
 
 function defaultTickSteps(): Array<() => Promise<void>> {
   return [
-    clearFailedPrewarmSessions,
-    ensurePrewarmSessions,
     reconcileStaleSessions,
     captureOpencodeFirstMessages,
-    persistAllBlockedHosts,
+    // ssh-agent heal only (attach-only probe, never bootstraps): session
+    // registrations survive proxy pod replacement via the /data
+    // write-through, but agent identities are memory-only by design and
+    // need the daemon to re-upload them. The proxy itself is deployed
+    // lazily by the first session create's ensureRunning().
+    reconcileProxySshKeys,
   ]
 }
 
 /**
- * Background reconciliation loop. Owns prewarm upkeep, stale-session
- * reaping, opencode first-message capture, and blocked-host persistence.
+ * Background reconciliation loop. Owns stale-session
+ * reaping, opencode first-message capture, and the proxy
+ * ssh-agent key heal.
  * Starts with an immediate tick,
  * then ticks once per `intervalMs`. Exits promptly when `signal` aborts;
  * does not interrupt an in-flight tick.

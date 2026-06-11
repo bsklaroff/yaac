@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import simpleGit from 'simple-git'
 import { cloneRepo } from '@/lib/git'
-import { podman } from '@/lib/container/runtime'
+import { listSessionPods, type SessionPod } from '@/lib/k8s/pods'
 import {
   createYaacTestEnv,
   spawnYaacDaemon,
@@ -11,7 +11,12 @@ import {
   type YaacTestEnv,
   type SpawnedDaemon,
 } from '@test/helpers/cli'
-import { requirePodman, TEST_RUN_ID, podmanRetry } from '@test/helpers/setup'
+import {
+  requirePodman,
+  requireCluster,
+  execInJob,
+  cleanupSessionJobs,
+} from '@test/helpers/setup'
 import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
 import {
   startMockLLM,
@@ -24,38 +29,29 @@ import {
 
 /**
  * Feature-by-feature coverage for `yaac session create` driven through
- * the real CLI + real daemon + real podman, replacing the integration-
- * style `test/e2e/session-create.test.ts` which re-implemented container
- * orchestration instead of exercising the product's code path. Uses the
- * same mock-remote harness as `session-create-happy.test.ts`: the proxy
- * rewrites GitHub / Anthropic hostnames to local mock containers so
+ * the real CLI + real daemon + real cluster. Uses the same mock-remote
+ * harness as `session-create-happy.test.ts`: the proxy rewrites GitHub /
+ * Anthropic hostnames to mock pods in the test namespace so
  * session-create's GitHub-token + credential-injection paths are
  * satisfied without touching the real internet.
  *
  * Deliberately deferred:
- *   - pgRelay — the daemon's pg-relay singleton hardcodes the
- *     `yaac-sessions` network, which doesn't match the test proxy's
- *     network override. The session container and relay would end up on
- *     different networks, so the CLI path can't be exercised without a
- *     product change.
- *   - nestedContainers — skipped in containerized CI already, and a
- *     CLI-driven version would just re-prove the same podman calls.
  *   - pnpm cache reuse — exercises pnpm store behavior, not CLI surface.
+ * Removed with the kubernetes migration (yaac-config.json now rejects the
+ * keys outright — see config.test.ts):
+ *   - pgRelay
+ *   - nestedContainers
  */
 describe('yaac session create features (real CLI + real daemon)', () => {
-  const networkName = `yaac-test-sessions-${TEST_RUN_ID}`
   let testEnv: YaacTestEnv
   let daemon: SpawnedDaemon | null = null
   let mockLLM: MockLLM | null = null
   let mockGit: MockGit | null = null
   let daemonEnv: NodeJS.ProcessEnv
-  let extraVolumes: string[]
 
   beforeAll(async () => {
     await requirePodman()
-    try {
-      await podmanRetry(['network', 'create', networkName])
-    } catch { /* already exists */ }
+    await requireCluster()
   })
 
   async function seedCredentials(): Promise<void> {
@@ -106,21 +102,14 @@ describe('yaac session create features (real CLI + real daemon)', () => {
     }
   }
 
-  async function findContainerName(slug: string): Promise<string> {
-    // The daemon starts a background prewarm right after session-create
-    // returns — scope by data-dir + project, take the oldest so we
-    // always grab the CLI's session, not the freshly-minted prewarm.
-    const { stdout } = await podmanRetry([
-      'ps', '--filter', `label=yaac.data-dir=${testEnv.dataDir}`,
-      '--filter', `label=yaac.project=${slug}`,
-      '--format', '{{.Names}}|{{.CreatedAt}}',
-    ])
-    const name = stdout
-      .split('\n').filter(Boolean)
-      .sort((a, b) => a.split('|')[1].localeCompare(b.split('|')[1]))
-      .map((row) => row.split('|')[0])[0]
-    if (!name) throw new Error(`no container found for project ${slug}`)
-    return name
+  async function findSessionPod(slug: string): Promise<SessionPod> {
+    // listSessionPods scopes by the data-dir-hash label, so we never trip
+    // over pods owned by a concurrent worker. Oldest-first so we always
+    // grab the CLI's session.
+    const pods = await listSessionPods(slug)
+    const pod = pods.sort((a, b) => a.createdAtMs - b.createdAtMs)[0]
+    if (!pod) throw new Error(`no session pod found for project ${slug}`)
+    return pod
   }
 
   async function createSession(
@@ -133,22 +122,21 @@ describe('yaac session create features (real CLI + real daemon)', () => {
     if (exitCode !== 0) {
       throw new Error(`session create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
     }
-    return findContainerName(slug)
+    return (await findSessionPod(slug)).jobName
   }
 
   beforeEach(async () => {
-    extraVolumes = []
     testEnv = await createYaacTestEnv()
     await seedCredentials()
     await fs.writeFile(
       testEnv.gitConfigPath,
       '[user]\n\tname = Test User\n\temail = test@example.com\n',
     )
-    mockLLM = await startMockLLM(networkName)
-    mockGit = await startMockGit(networkName)
+    mockLLM = await startMockLLM()
+    mockGit = await startMockGit()
 
-    const llmTarget = { host: mockLLM.networkIp, port: mockLLM.port, tls: false }
-    const gitTarget = { host: mockGit.networkIp, port: mockGit.port, tls: false }
+    const llmTarget = { host: mockLLM.host, port: mockLLM.port, tls: false }
+    const gitTarget = { host: mockGit.host, port: mockGit.port, tls: false }
     daemonEnv = {
       ...testEnv.env,
       YAAC_E2E_UPSTREAM_REDIRECTS: JSON.stringify({
@@ -168,62 +156,53 @@ describe('yaac session create features (real CLI + real daemon)', () => {
   afterEach(async () => {
     if (daemon) await daemon.stop()
     daemon = null
-    try {
-      const { stdout } = await podmanRetry([
-        'ps', '-a', '--filter', `label=yaac.data-dir=${testEnv.dataDir}`,
-        '--format', '{{.Names}}',
-      ])
-      const names = stdout.split('\n').filter(Boolean)
-      if (names.length > 0) await podmanRetry(['rm', '-f', ...names])
-    } catch { /* best effort */ }
-    for (const vol of extraVolumes) {
-      try { await podmanRetry(['volume', 'rm', vol]) } catch { /* already gone */ }
-    }
+    await cleanupSessionJobs()
     await cleanupMocks([mockLLM, mockGit])
     mockLLM = null
     mockGit = null
     await testEnv.cleanup()
   })
 
-  it('provisions container, worktree, mounts, git, and tmux', async () => {
+  it('provisions pod, worktree, mounts, git, and tmux', async () => {
     await setupProject('basics')
     const name = await createSession('basics')
 
-    const info = await podman.getContainer(name).inspect()
-    expect(info.State.Running).toBe(true)
-    expect(info.Config.Labels['yaac.project']).toBe('basics')
-    expect(info.Config.Labels['yaac.tool']).toBe('claude')
-    const sessionId = info.Config.Labels['yaac.session-id']
+    const pod = await findSessionPod('basics')
+    expect(pod.running).toBe(true)
+    expect(pod.labels['yaac.project']).toBe('basics')
+    expect(pod.labels['yaac.tool']).toBe('claude')
+    const sessionId = pod.sessionId
     expect(sessionId).toBeTruthy()
 
-    await podmanRetry(['exec', name, 'test', '-d', '/home/yaac/.claude'])
-    await podmanRetry(['exec', name, 'test', '-f', '/home/yaac/.claude.json'])
-    await podmanRetry(['exec', name, 'test', '-d', '/home/yaac/.codex'])
+    await execInJob(name, ['test', '-d', '/home/yaac/.claude'])
+    await execInJob(name, ['test', '-f', '/home/yaac/.claude.json'])
+    await execInJob(name, ['test', '-d', '/home/yaac/.codex'])
 
-    const { stdout: lsOut } = await podmanRetry(['exec', name, 'ls', '/workspace'])
+    const { stdout: lsOut } = await execInJob(name, ['ls', '/workspace'])
     expect(lsOut).toContain('README.md')
 
-    const { stdout: gitStatus } = await podmanRetry([
-      'exec', '-w', '/workspace', name, 'git', 'status', '--porcelain',
+    // kubectl exec has no workdir flag — cd inside the shell instead.
+    const { stdout: gitStatus } = await execInJob(name, [
+      'sh', '-c', 'cd /workspace && git status --porcelain',
     ])
     expect(gitStatus.trim()).toBe('')
-    const { stdout: branch } = await podmanRetry([
-      'exec', '-w', '/workspace', name, 'git', 'rev-parse', '--abbrev-ref', 'HEAD',
+    const { stdout: branch } = await execInJob(name, [
+      'sh', '-c', 'cd /workspace && git rev-parse --abbrev-ref HEAD',
     ])
     expect(branch.trim()).toBe(`agent/${sessionId}`)
 
-    const { stdout: tmuxList } = await podmanRetry([
-      'exec', name, 'tmux', '-S', CONTAINER_TMUX_SOCK, 'list-sessions',
+    const { stdout: tmuxList } = await execInJob(name, [
+      'tmux', '-S', CONTAINER_TMUX_SOCK, 'list-sessions',
     ])
     expect(tmuxList).toContain('yaac')
-    const { stdout: statusRight } = await podmanRetry([
-      'exec', name, 'tmux', '-S', CONTAINER_TMUX_SOCK,
+    const { stdout: statusRight } = await execInJob(name, [
+      'tmux', '-S', CONTAINER_TMUX_SOCK,
       'show-option', '-t', 'yaac', 'status-right',
     ])
     expect(statusRight).toContain(sessionId.slice(0, 8))
 
-    await expect(podmanRetry([
-      'exec', name, 'test', '-f', '/tmp/yaac-prompt',
+    await expect(execInJob(name, [
+      'test', '-f', '/tmp/yaac-prompt',
     ])).rejects.toThrow()
   }, 180_000)
 
@@ -233,7 +212,7 @@ describe('yaac session create features (real CLI + real daemon)', () => {
     })
     const name = await createSession('passthrough')
 
-    const { stdout } = await podmanRetry(['exec', name, 'env'])
+    const { stdout } = await execInJob(name, ['env'])
     expect(stdout).toContain('YAAC_TEST_VAR=hello-from-host')
   }, 180_000)
 
@@ -245,30 +224,29 @@ describe('yaac session create features (real CLI + real daemon)', () => {
     if (exitCode !== 0) {
       throw new Error(`exit ${exitCode}\nstdout:${stdout}\nstderr:${stderr}`)
     }
-    const name = await findContainerName('shared-codex')
-    const info = await podman.getContainer(name).inspect()
-    expect(info.Config.Labels['yaac.tool']).toBe('codex')
+    const pod = await findSessionPod('shared-codex')
+    expect(pod.labels['yaac.tool']).toBe('codex')
+    const name = pod.jobName
 
-    await podmanRetry(['exec', name, 'test', '-d', '/home/yaac/.claude'])
-    await podmanRetry(['exec', name, 'test', '-f', '/home/yaac/.claude.json'])
-    await podmanRetry(['exec', name, 'test', '-d', '/home/yaac/.codex'])
+    await execInJob(name, ['test', '-d', '/home/yaac/.claude'])
+    await execInJob(name, ['test', '-f', '/home/yaac/.claude.json'])
+    await execInJob(name, ['test', '-d', '/home/yaac/.codex'])
   }, 180_000)
 
   it('mounts named cacheVolumes from config', async () => {
-    const volName = 'yaac-cache-cache-vol-test-cache'
-    try { await podmanRetry(['volume', 'rm', volName]) } catch { /* not present */ }
-    extraVolumes.push(volName)
-
+    // cacheVolumes are hostPath dirs under the project dir on the k8s
+    // backend, so they vanish with the temp data dir — no host-side
+    // volume cleanup needed.
     await setupProject('cache-vol', {
       yaacConfig: { cacheVolumes: { 'test-cache': '/tmp/test-cache' } },
     })
     const name = await createSession('cache-vol')
 
-    await podmanRetry([
-      'exec', name, 'sh', '-c', 'echo hello > /tmp/test-cache/marker',
+    await execInJob(name, [
+      'sh', '-c', 'echo hello > /tmp/test-cache/marker',
     ])
-    const { stdout } = await podmanRetry([
-      'exec', name, 'cat', '/tmp/test-cache/marker',
+    const { stdout } = await execInJob(name, [
+      'cat', '/tmp/test-cache/marker',
     ])
     expect(stdout.trim()).toBe('hello')
   }, 180_000)
@@ -288,7 +266,7 @@ describe('yaac session create features (real CLI + real daemon)', () => {
     let ran = false
     for (let i = 0; i < 40; i++) {
       try {
-        await podmanRetry(['exec', name, 'test', '-f', '/tmp/init-ran'])
+        await execInJob(name, ['test', '-f', '/tmp/init-ran'])
         ran = true
         break
       } catch {
@@ -309,12 +287,12 @@ describe('yaac session create features (real CLI + real daemon)', () => {
     })
     const name = await createSession('portfwd')
 
-    // Port forwarding runs through the daemon's `podmanRelay` TCP proxy,
-    // not podman's native PortBindings, so the container's HostConfig
-    // has no port map — status-right is the user-facing surface for the
-    // chosen host ports.
-    const { stdout: statusRight } = await podmanRetry([
-      'exec', name, 'tmux', '-S', CONTAINER_TMUX_SOCK,
+    // Port forwarding runs through the daemon's per-connection
+    // `kubectl exec nc` relay, not any kubernetes port mapping, so the
+    // pod spec has no port map — status-right is the user-facing surface
+    // for the chosen host ports.
+    const { stdout: statusRight } = await execInJob(name, [
+      'tmux', '-S', CONTAINER_TMUX_SOCK,
       'show-option', '-t', 'yaac', 'status-right',
     ])
     const match8080 = statusRight.match(/:(\d+)->8080/)
@@ -343,23 +321,23 @@ describe('yaac session create features (real CLI + real daemon)', () => {
     })
     const name = await createSession('bindmount')
 
-    const { stdout: roContent } = await podmanRetry([
-      'exec', name, 'cat', '/mnt/ro-data/readme.txt',
+    const { stdout: roContent } = await execInJob(name, [
+      'cat', '/mnt/ro-data/readme.txt',
     ])
     expect(roContent.trim()).toBe('read-only content')
-    await expect(podmanRetry([
-      'exec', name, 'sh', '-c', 'echo test > /mnt/ro-data/fail.txt',
+    await expect(execInJob(name, [
+      'sh', '-c', 'echo test > /mnt/ro-data/fail.txt',
     ])).rejects.toThrow()
 
-    const { stdout: rwContent } = await podmanRetry([
-      'exec', name, 'cat', '/mnt/rw-data/data.txt',
+    const { stdout: rwContent } = await execInJob(name, [
+      'cat', '/mnt/rw-data/data.txt',
     ])
     expect(rwContent.trim()).toBe('writable content')
-    await podmanRetry([
-      'exec', name, 'sh', '-c', 'echo new-data > /mnt/rw-data/new.txt',
+    await execInJob(name, [
+      'sh', '-c', 'echo new-data > /mnt/rw-data/new.txt',
     ])
-    const { stdout: newContent } = await podmanRetry([
-      'exec', name, 'cat', '/mnt/rw-data/new.txt',
+    const { stdout: newContent } = await execInJob(name, [
+      'cat', '/mnt/rw-data/new.txt',
     ])
     expect(newContent.trim()).toBe('new-data')
   }, 180_000)
@@ -372,25 +350,25 @@ describe('yaac session create features (real CLI + real daemon)', () => {
     })
     const name = await createSession('ephemeral-modules')
 
-    const info = await podman.getContainer(name).inspect()
-    const sessionId = info.Config.Labels['yaac.session-id']
+    const pod = await findSessionPod('ephemeral-modules')
+    const sessionId = pod.sessionId
     expect(sessionId).toBeTruthy()
 
     // Inside the container: /workspace/node_modules is a real directory
     // backed by a bind mount — not a symlink (Node's fs.mkdir would
     // reject a symlink-to-dir with ENOTDIR, breaking pnpm).
-    await expect(podmanRetry([
-      'exec', name, 'readlink', '/workspace/node_modules',
+    await expect(execInJob(name, [
+      'readlink', '/workspace/node_modules',
     ])).rejects.toThrow()
-    const { stdout: ftype } = await podmanRetry([
-      'exec', name, 'stat', '-c', '%F', '/workspace/node_modules',
+    const { stdout: ftype } = await execInJob(name, [
+      'stat', '-c', '%F', '/workspace/node_modules',
     ])
     expect(ftype.trim()).toBe('directory')
 
     // Write to the bind mount and confirm the bytes land in the
     // host-side .cached-packages tree, NOT in the worktree.
-    await podmanRetry([
-      'exec', name, 'sh', '-c',
+    await execInJob(name, [
+      'sh', '-c',
       'echo hello > /workspace/node_modules/marker.txt',
     ])
     const hostBacking = path.join(
@@ -410,15 +388,15 @@ describe('yaac session create features (real CLI + real daemon)', () => {
 
     // node_modules is gitignored (via the seeded .gitignore), so a
     // populated bind mount doesn't surface in `git status`.
-    const { stdout: gitStatus } = await podmanRetry([
-      'exec', '-w', '/workspace', name, 'git', 'status', '--porcelain',
+    const { stdout: gitStatus } = await execInJob(name, [
+      'sh', '-c', 'cd /workspace && git status --porcelain',
     ])
     expect(gitStatus.trim()).toBe('')
 
     // Seed the pnpm-store so the post-delete assertion below can verify
     // that modules/<sid> is reaped while the shared store survives.
-    await podmanRetry([
-      'exec', name, 'sh', '-c',
+    await execInJob(name, [
+      'sh', '-c',
       'mkdir -p /home/yaac/.cached-packages/pnpm-store && echo store-content > /home/yaac/.cached-packages/pnpm-store/src',
     ])
 
@@ -461,8 +439,8 @@ describe('yaac session create features (real CLI + real daemon)', () => {
     // /workspace/node_modules should not exist at all when the feature
     // is disabled — the worktree is a fresh git checkout with no
     // node_modules in it and no bind mount is installed.
-    await expect(podmanRetry([
-      'exec', name, 'test', '-e', '/workspace/node_modules',
+    await expect(execInJob(name, [
+      'test', '-e', '/workspace/node_modules',
     ])).rejects.toThrow()
   }, 180_000)
 
@@ -479,23 +457,23 @@ describe('yaac session create features (real CLI + real daemon)', () => {
       'adddir', '--add-dir', roDir, '--add-dir-rw', rwDir,
     )
 
-    const { stdout: roOut } = await podmanRetry([
-      'exec', name, 'cat', `/add-dir${roDir}/hello.txt`,
+    const { stdout: roOut } = await execInJob(name, [
+      'cat', `/add-dir${roDir}/hello.txt`,
     ])
     expect(roOut.trim()).toBe('read-only extra')
-    await expect(podmanRetry([
-      'exec', name, 'sh', '-c', `echo test > /add-dir${roDir}/fail.txt`,
+    await expect(execInJob(name, [
+      'sh', '-c', `echo test > /add-dir${roDir}/fail.txt`,
     ])).rejects.toThrow()
 
-    const { stdout: rwOut } = await podmanRetry([
-      'exec', name, 'cat', `/add-dir${rwDir}/data.txt`,
+    const { stdout: rwOut } = await execInJob(name, [
+      'cat', `/add-dir${rwDir}/data.txt`,
     ])
     expect(rwOut.trim()).toBe('writable extra')
-    await podmanRetry([
-      'exec', name, 'sh', '-c', `echo new-data > /add-dir${rwDir}/new.txt`,
+    await execInJob(name, [
+      'sh', '-c', `echo new-data > /add-dir${rwDir}/new.txt`,
     ])
-    const { stdout: newOut } = await podmanRetry([
-      'exec', name, 'cat', `/add-dir${rwDir}/new.txt`,
+    const { stdout: newOut } = await execInJob(name, [
+      'cat', `/add-dir${rwDir}/new.txt`,
     ])
     expect(newOut.trim()).toBe('new-data')
   }, 180_000)

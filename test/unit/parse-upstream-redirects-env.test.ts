@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseUpstreamRedirectsEnv } from '@/daemon/session-create'
+import { parseUpstreamRedirectsEnv } from '@/lib/session/proxy-registration'
 
 describe('parseUpstreamRedirectsEnv', () => {
   it('returns undefined for missing env', () => {

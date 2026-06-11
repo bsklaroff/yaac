@@ -3,17 +3,18 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import simpleGit from 'simple-git'
 import { createYaacTestEnv, spawnYaacDaemon, runYaac, type YaacTestEnv, type SpawnedDaemon } from '@test/helpers/cli'
-import { addTestProject, createTestRepo, requirePodman } from '@test/helpers/setup'
+import { addTestProject, createTestRepo, requirePodman, requireCluster } from '@test/helpers/setup'
 
 /**
- * Real CLI + real daemon + real podman.
+ * Real CLI + real daemon + real runtime (podman build engine + cluster).
  *
  * Today this covers one CLI-initiated session-create path end-to-end:
  * the VALIDATION error raised by the daemon when no GitHub token is
  * configured for the project's remote. That flows through the full
  * subprocess→HTTP→Hono→session-create-handler→NDJSON-stream→CLI
- * chain, including `ensureContainerRuntime()`, so it proves the
- * podman+daemon plumbing works end-to-end through real processes.
+ * chain, including `ensureContainerRuntime()` (podman + kubernetes), so
+ * it proves the runtime+daemon plumbing works end-to-end through real
+ * processes.
  *
  * A happy-path container-creation test (actually spawning a session
  * container through the real CLI) is deliberately deferred: the
@@ -25,8 +26,11 @@ import { addTestProject, createTestRepo, requirePodman } from '@test/helpers/set
  * scope for the initial e2e-cli PR; tracked as follow-up.
  */
 describe('yaac session create (real CLI + real daemon)', () => {
+  // `createSession` runs `ensureContainerRuntime()` (which round-trips
+  // to the cluster API) before the credential checks these tests target.
   beforeAll(async () => {
     await requirePodman()
+    await requireCluster()
   })
 
   let testEnv: YaacTestEnv

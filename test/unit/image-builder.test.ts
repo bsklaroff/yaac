@@ -1,9 +1,9 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { DOCKERFILES_DIR } from '@/lib/project/paths'
-import { contextHash, fileHash } from '@/lib/container/image-builder'
+import { baseImageHash, contextHash, fileHash, sessionUid } from '@/lib/container/image-builder'
 
 describe('fileHash', () => {
   it('produces a 16-char hex hash of file contents', async () => {
@@ -26,6 +26,48 @@ describe('fileHash', () => {
       await fs.writeFile(a, 'same content')
       await fs.writeFile(b, 'same content')
       expect(await fileHash(a)).toBe(await fileHash(b))
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('sessionUid', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('mirrors the daemon process uid', () => {
+    vi.spyOn(process, 'getuid').mockReturnValue(501)
+    expect(sessionUid()).toBe(501)
+  })
+
+  it('falls back to 1000 when the daemon runs as root (uid 0 is taken in the image)', () => {
+    vi.spyOn(process, 'getuid').mockReturnValue(0)
+    expect(sessionUid()).toBe(1000)
+  })
+})
+
+describe('baseImageHash', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('folds the session uid into the Dockerfile content hash', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-bih-'))
+    try {
+      const dockerfile = path.join(tmpDir, 'Dockerfile')
+      await fs.writeFile(dockerfile, 'FROM scratch')
+
+      vi.spyOn(process, 'getuid').mockReturnValue(501)
+      const hash501 = await baseImageHash(dockerfile)
+      vi.spyOn(process, 'getuid').mockReturnValue(1000)
+      const hash1000 = await baseImageHash(dockerfile)
+
+      expect(hash501).toMatch(/^[0-9a-f]{16}$/)
+      // A uid change must invalidate the tag like a Dockerfile edit would.
+      expect(hash501).not.toBe(hash1000)
+      expect(hash501).not.toBe(await fileHash(dockerfile))
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true })
     }
@@ -137,6 +179,13 @@ describe('image-builder prerequisites', () => {
     expect(content).toContain('USER yaac')
   })
 
+  it('Dockerfile.default builds yaac with the injected YAAC_UID (idmapped hostPath writes)', async () => {
+    const dockerfilePath = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
+    const content = await fs.readFile(dockerfilePath, 'utf8')
+    expect(content).toMatch(/^ARG YAAC_UID=1000$/m)
+    expect(content).toContain('useradd -m -u ${YAAC_UID}')
+  })
+
   it('Dockerfile.default uses catatonit as PID 1 to reap zombies', async () => {
     const dockerfilePath = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
     const content = await fs.readFile(dockerfilePath, 'utf8')
@@ -147,20 +196,4 @@ describe('image-builder prerequisites', () => {
     expect(content).toContain('infinity')
   })
 
-  it('Dockerfile.nestable uses ARG BASE_IMAGE without a default', async () => {
-    const dockerfilePath = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
-    const content = await fs.readFile(dockerfilePath, 'utf8')
-    expect(content).toMatch(/^ARG BASE_IMAGE\n/m)
-    expect(content).not.toContain('BASE_IMAGE=')
-  })
-
-  it('Dockerfile.nestable configures podman-in-podman support', async () => {
-    const dockerfilePath = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
-    const content = await fs.readFile(dockerfilePath, 'utf8')
-    expect(content).toContain('subuid')
-    expect(content).toContain('subgid')
-    expect(content).toContain('setcap')
-    expect(content).toContain('containers.conf')
-    expect(content).toContain('_CONTAINERS_USERNS_CONFIGURED')
-  })
 })

@@ -11,7 +11,7 @@ import {
 export { PACKAGE_ROOT, ensureDataDir, getDataDir, getProjectsDir, projectConfigDir, setDataDir }
 
 export const DOCKERFILES_DIR = path.join(PACKAGE_ROOT, 'dockerfiles')
-export const PROXY_DIR = path.join(PACKAGE_ROOT, 'podman', 'proxy-sidecar')
+export const PROXY_DIR = path.join(PACKAGE_ROOT, 'k8s', 'proxy')
 
 /**
  * Top-level directory for all host-side credential files. Split into
@@ -37,6 +37,17 @@ export function codexCredentialsPath(): string {
 
 export function opencodeCredentialsPath(): string {
   return path.join(credentialsDir(), 'opencode.json')
+}
+
+/**
+ * File holding envSecretProxy values (env var name -> secret), written by
+ * the daemon before each session registration. Injection rules sent to
+ * the proxy reference these entries by key (`secretRef`) instead of
+ * embedding the value, which keeps registrations secret-free so the proxy
+ * can persist them across pod replacements.
+ */
+export function proxySecretsCredentialsPath(): string {
+  return path.join(credentialsDir(), 'proxy-secrets.json')
 }
 
 export function projectDir(slug: string): string {
@@ -71,6 +82,16 @@ export function codexDir(slug: string): string {
 
 export function cachedPackagesDir(slug: string): string {
   return path.join(projectDir(slug), '.cached-packages')
+}
+
+/**
+ * Host directory backing a `cacheVolumes` entry. The podman backend used
+ * named volumes (`yaac-cache-<slug>-<key>`); on kubernetes these are
+ * plain per-project hostPath dirs with the same persist-across-sessions
+ * semantics.
+ */
+export function cacheVolumeDir(slug: string, key: string): string {
+  return path.join(projectDir(slug), 'cache-volumes', key)
 }
 
 /**
@@ -148,12 +169,4 @@ export function sessionTmuxDir(slug: string, sessionId: string): string {
 
 export function sessionTmuxSockPath(slug: string, sessionId: string): string {
   return path.join(sessionTmuxDir(slug, sessionId), 'server')
-}
-
-export function blockedHostsDir(slug: string): string {
-  return path.join(projectDir(slug), 'blocked-hosts')
-}
-
-export function blockedHostsFile(slug: string, sessionId: string): string {
-  return path.join(blockedHostsDir(slug), `${sessionId}.json`)
 }

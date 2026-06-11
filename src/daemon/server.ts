@@ -17,7 +17,6 @@ import { projectApp } from '@/daemon/routes/project'
 import { sessionApp } from '@/daemon/routes/session'
 import { toolApp } from '@/daemon/routes/tool'
 import { authApp } from '@/daemon/routes/auth'
-import { readPrewarmSessions } from '@/lib/prewarm'
 import { daemonLog } from '@/daemon/log'
 import { PACKAGE_ROOT } from '@/shared/paths'
 
@@ -114,7 +113,6 @@ export function buildApp(deps: DaemonAppDeps) {
 
   return app
     .get('/health', (c) => c.json({ ok: true, buildId: deps.buildId }))
-    .get('/prewarm', async (c) => c.json(await readPrewarmSessions()))
     .route('/project', projectApp)
     .route('/session', sessionApp)
     .route('/tool', toolApp)

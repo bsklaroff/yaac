@@ -1,87 +1,83 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+
+vi.mock('@/lib/k8s/pods', async (importOriginal) => {
+  const actual = await importOriginal<typeof podsModule>()
+  return {
+    ...actual,
+    listSessionPods: vi.fn(),
+  }
+})
+
 import { resolveContainer, resolveContainerAnyState } from '@/lib/container/resolve'
-import * as runtime from '@/lib/container/runtime'
-import { setDataDir } from '@/lib/project/paths'
+import { listSessionPods, type SessionPod } from '@/lib/k8s/pods'
+import type * as podsModule from '@/lib/k8s/pods'
+
+const mockListPods = vi.mocked(listSessionPods)
 
 /**
- * Unit-level coverage for the container-resolution helpers.
+ * Unit-level coverage for the session-resolution helpers.
  *
- * Mocks `podman.listContainers` so we can drive every branch (prefix
- * match, exact match, name vs session-id vs container-id, non-running
- * state, podman down) without creating real containers. The matching
- * logic itself is the only interesting production code path; the e2e
- * version previously exercised it against real podman, which is
- * overkill for pure string matching.
+ * Mocks `listSessionPods` so we can drive every branch (prefix match,
+ * exact match, Job name vs session-id vs pod-name, non-running phase,
+ * cluster down) without a real cluster. The matching logic itself is the
+ * only interesting production code path.
  */
 describe('resolveContainer / resolveContainerAnyState', () => {
-  type PodmanContainerInspect = {
-    Id: string
-    Names?: string[]
-    Labels?: Record<string, string>
-    State?: string
-  }
-
-  let listSpy: ReturnType<typeof vi.fn<(opts?: unknown) => Promise<PodmanContainerInspect[]>>>
-
   beforeEach(() => {
-    setDataDir('/tmp/unit-container-resolve')
-    listSpy = vi.fn()
-    vi.spyOn(runtime.podman, 'listContainers').mockImplementation(
-      listSpy as unknown as typeof runtime.podman.listContainers,
-    )
+    mockListPods.mockReset()
     process.exitCode = undefined
   })
 
   afterEach(() => {
-    vi.restoreAllMocks()
     process.exitCode = undefined
   })
 
-  function container(overrides: Partial<PodmanContainerInspect>): PodmanContainerInspect {
+  function pod(overrides: Partial<SessionPod> = {}): SessionPod {
     return {
-      Id: 'fullcontainerid00000000000000',
-      Names: ['/yaac-demo-abcd1234'],
-      Labels: {
-        'yaac.data-dir': '/tmp/unit-container-resolve',
-        'yaac.session-id': 'abcd1234',
-        'yaac.project': 'demo',
-      },
-      State: 'running',
+      jobName: 'yaac-demo-abcd1234',
+      podName: 'yaac-demo-abcd1234-x7k2p',
+      sessionId: 'abcd1234',
+      projectSlug: 'demo',
+      tool: 'claude',
+      phase: 'Running',
+      running: true,
+      createdAtMs: 1_700_000_000_000,
+      labels: {},
       ...overrides,
     }
   }
 
   describe('resolveContainer (requires running)', () => {
-    it('returns the container name for an exact session-id match', async () => {
-      listSpy.mockResolvedValueOnce([container({})])
+    it('returns the job name for an exact session-id match', async () => {
+      mockListPods.mockResolvedValueOnce([pod()])
       expect(await resolveContainer('abcd1234')).toBe('yaac-demo-abcd1234')
     })
 
-    it('returns the container name for a session-id prefix match', async () => {
-      listSpy.mockResolvedValueOnce([container({})])
+    it('returns the job name for a session-id prefix match', async () => {
+      mockListPods.mockResolvedValueOnce([pod()])
       expect(await resolveContainer('abcd')).toBe('yaac-demo-abcd1234')
     })
 
-    it('returns the container name for a full container-name match', async () => {
-      listSpy.mockResolvedValueOnce([container({})])
+    it('returns the job name for a full job-name match', async () => {
+      mockListPods.mockResolvedValueOnce([pod()])
       expect(await resolveContainer('yaac-demo-abcd1234')).toBe('yaac-demo-abcd1234')
     })
 
-    it('returns the container name for a container-id prefix match', async () => {
-      listSpy.mockResolvedValueOnce([container({ Id: 'deadbeef00000000' })])
-      expect(await resolveContainer('deadbeef')).toBe('yaac-demo-abcd1234')
+    it('returns the job name for an exact pod-name match', async () => {
+      mockListPods.mockResolvedValueOnce([pod()])
+      expect(await resolveContainer('yaac-demo-abcd1234-x7k2p')).toBe('yaac-demo-abcd1234')
     })
 
     it('does not match a project-name prefix (the project slug alone)', async () => {
-      listSpy.mockResolvedValueOnce([container({})])
+      mockListPods.mockResolvedValueOnce([pod()])
       const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       expect(await resolveContainer('demo')).toBeNull()
       expect(process.exitCode).toBe(1)
       errSpy.mockRestore()
     })
 
-    it('does not match the bare "yaac" container-name prefix', async () => {
-      listSpy.mockResolvedValueOnce([container({})])
+    it('does not match the bare "yaac" name prefix shared by every job', async () => {
+      mockListPods.mockResolvedValueOnce([pod()])
       const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       expect(await resolveContainer('yaac')).toBeNull()
       expect(process.exitCode).toBe(1)
@@ -89,23 +85,23 @@ describe('resolveContainer / resolveContainerAnyState', () => {
     })
 
     it('returns null and sets exitCode=1 on unknown id', async () => {
-      listSpy.mockResolvedValueOnce([])
+      mockListPods.mockResolvedValueOnce([])
       const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       expect(await resolveContainer('nonexistent')).toBeNull()
       expect(process.exitCode).toBe(1)
       errSpy.mockRestore()
     })
 
-    it('returns null and sets exitCode=1 when the container is not running', async () => {
-      listSpy.mockResolvedValueOnce([container({ State: 'exited' })])
+    it('returns null and sets exitCode=1 when the pod is not running', async () => {
+      mockListPods.mockResolvedValueOnce([pod({ running: false, phase: 'Failed' })])
       const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       expect(await resolveContainer('abcd1234')).toBeNull()
       expect(process.exitCode).toBe(1)
       errSpy.mockRestore()
     })
 
-    it('returns null and sets exitCode=1 when podman is unavailable', async () => {
-      listSpy.mockRejectedValueOnce(new Error('ECONNREFUSED'))
+    it('returns null and sets exitCode=1 when the cluster is unavailable', async () => {
+      mockListPods.mockRejectedValueOnce(new Error('connection refused'))
       const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       expect(await resolveContainer('abcd1234')).toBeNull()
       expect(process.exitCode).toBe(1)
@@ -114,8 +110,8 @@ describe('resolveContainer / resolveContainerAnyState', () => {
   })
 
   describe('resolveContainerAnyState', () => {
-    it('resolves a running container with full metadata', async () => {
-      listSpy.mockResolvedValueOnce([container({})])
+    it('resolves a running session with full metadata', async () => {
+      mockListPods.mockResolvedValueOnce([pod()])
       expect(await resolveContainerAnyState('abcd1234')).toEqual({
         name: 'yaac-demo-abcd1234',
         sessionId: 'abcd1234',
@@ -124,31 +120,31 @@ describe('resolveContainer / resolveContainerAnyState', () => {
       })
     })
 
-    it('resolves an exited container and surfaces its state', async () => {
-      listSpy.mockResolvedValueOnce([container({ State: 'exited' })])
+    it('resolves a non-running session and surfaces its lowercased phase', async () => {
+      mockListPods.mockResolvedValueOnce([pod({ running: false, phase: 'Failed' })])
       expect(await resolveContainerAnyState('abcd1234')).toEqual({
         name: 'yaac-demo-abcd1234',
         sessionId: 'abcd1234',
         projectSlug: 'demo',
-        state: 'exited',
+        state: 'failed',
       })
     })
 
     it('resolves by prefix match', async () => {
-      listSpy.mockResolvedValueOnce([container({})])
+      mockListPods.mockResolvedValueOnce([pod()])
       expect((await resolveContainerAnyState('abcd'))?.name).toBe('yaac-demo-abcd1234')
     })
 
     it('returns null and sets exitCode=1 on unknown id', async () => {
-      listSpy.mockResolvedValueOnce([])
+      mockListPods.mockResolvedValueOnce([])
       const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       expect(await resolveContainerAnyState('nonexistent')).toBeNull()
       expect(process.exitCode).toBe(1)
       errSpy.mockRestore()
     })
 
-    it('returns null and sets exitCode=1 when podman is unavailable', async () => {
-      listSpy.mockRejectedValueOnce(new Error('ECONNREFUSED'))
+    it('returns null and sets exitCode=1 when the cluster is unavailable', async () => {
+      mockListPods.mockRejectedValueOnce(new Error('connection refused'))
       const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       expect(await resolveContainerAnyState('abcd1234')).toBeNull()
       expect(process.exitCode).toBe(1)

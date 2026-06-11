@@ -194,13 +194,12 @@ describe('write routes', () => {
     it('streams progress and a terminal result event from createSession', async () => {
       mockCreateSession.mockImplementation((_slug, opts) => {
         opts.onProgress?.('Fetching latest from remote...')
-        opts.onProgress?.('Creating container yaac-demo-sess-x...')
+        opts.onProgress?.('Creating session job yaac-demo-sess-x...')
         return Promise.resolve({
           sessionId: 'sess-x',
-          containerName: 'yaac-demo-sess-x',
+          jobName: 'yaac-demo-sess-x',
           forwardedPorts: [],
           tool: 'claude',
-          claimedPrewarm: false,
         })
       })
       const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
@@ -216,15 +215,14 @@ describe('write routes', () => {
       const events = text.trim().split('\n').map((line) => JSON.parse(line) as unknown)
       expect(events).toEqual([
         { type: 'progress', message: 'Fetching latest from remote...' },
-        { type: 'progress', message: 'Creating container yaac-demo-sess-x...' },
+        { type: 'progress', message: 'Creating session job yaac-demo-sess-x...' },
         {
           type: 'result',
           result: {
             sessionId: 'sess-x',
-            containerName: 'yaac-demo-sess-x',
+            jobName: 'yaac-demo-sess-x',
             forwardedPorts: [],
             tool: 'claude',
-            claimedPrewarm: false,
           },
         },
       ])
@@ -257,14 +255,13 @@ describe('write routes', () => {
 
     it('streams progress and a result event from restartSession', async () => {
       mockRestartSession.mockImplementation((_id, opts) => {
-        opts?.onProgress?.('Stopping container yaac-demo-sess-x...')
+        opts?.onProgress?.('Stopping session job yaac-demo-sess-x...')
         opts?.onProgress?.('Reusing existing worktree at /wt/sess-x')
         return Promise.resolve({
           sessionId: 'sess-x',
-          containerName: 'yaac-demo-sess-x',
+          jobName: 'yaac-demo-sess-x',
           forwardedPorts: [],
           tool: 'claude',
-          claimedPrewarm: false,
         })
       })
       const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
@@ -279,16 +276,15 @@ describe('write routes', () => {
       expect(res.headers.get('content-type')).toBe('application/x-ndjson')
       const events = (await res.text()).trim().split('\n').map((line) => JSON.parse(line) as unknown)
       expect(events).toEqual([
-        { type: 'progress', message: 'Stopping container yaac-demo-sess-x...' },
+        { type: 'progress', message: 'Stopping session job yaac-demo-sess-x...' },
         { type: 'progress', message: 'Reusing existing worktree at /wt/sess-x' },
         {
           type: 'result',
           result: {
             sessionId: 'sess-x',
-            containerName: 'yaac-demo-sess-x',
+            jobName: 'yaac-demo-sess-x',
             forwardedPorts: [],
             tool: 'claude',
-            claimedPrewarm: false,
           },
         },
       ])
@@ -324,7 +320,7 @@ describe('write routes', () => {
       mockDeleteSession.mockResolvedValue({
         sessionId: 'sess-x',
         projectSlug: 'demo',
-        containerName: 'yaac-demo-sess-x',
+        jobName: 'yaac-demo-sess-x',
       })
       const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.session.delete.$post({ json: { sessionId: 'sess-x' } })

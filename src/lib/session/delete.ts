@@ -1,41 +1,56 @@
-import { podman } from '@/lib/container/runtime'
-import { getDataDir } from '@/lib/project/paths'
+import { findSessionPod, listSessionJobs, listSessionPods } from '@/lib/k8s/pods'
 import { cleanupSessionDetached } from '@/lib/session/cleanup'
 import { DaemonError } from '@/daemon/errors'
 
 export interface DeletedSessionInfo {
   sessionId: string
-  containerName: string
+  jobName: string
   projectSlug: string
 }
 
 /**
- * Resolve a session by prefix match on id or container name and schedule
- * a detached cleanup (stop container + remove + prune worktree). Throws
- * `NOT_FOUND` if nothing matches, `PODMAN_UNAVAILABLE` if podman can't
- * be reached.
+ * Resolve a session by prefix match on id or Job/pod name and schedule
+ * a detached cleanup (delete Job + prune session dirs). Throws
+ * `NOT_FOUND` if nothing matches, `RUNTIME_UNAVAILABLE` if the cluster
+ * can't be reached.
  */
 export async function deleteSession(idOrName: string): Promise<DeletedSessionInfo> {
-  let containers
+  let pods
   try {
-    containers = await podman.listContainers({
-      all: true,
-      filters: { label: [`yaac.data-dir=${getDataDir()}`] },
-    })
+    pods = await listSessionPods()
   } catch (err) {
-    throw new DaemonError('PODMAN_UNAVAILABLE', err instanceof Error ? err.message : String(err))
+    throw new DaemonError('RUNTIME_UNAVAILABLE', err instanceof Error ? err.message : String(err))
   }
 
-  const match = containers.find((c) => {
-    const sessionId = c.Labels?.['yaac.session-id'] ?? ''
-    const name = c.Names?.[0]?.replace(/^\//, '') ?? ''
-    return sessionId === idOrName
-      || name === idOrName
-      || sessionId.startsWith(idOrName)
-      || c.Id.startsWith(idOrName)
-  })
+  const match = findSessionPod(pods, idOrName)
+  if (match) {
+    const info: DeletedSessionInfo = {
+      jobName: match.jobName,
+      sessionId: match.sessionId,
+      projectSlug: match.projectSlug,
+    }
+    await cleanupSessionDetached(info)
+    return info
+  }
 
-  if (!match) {
+  // A Job whose pod was deleted out-of-band has no pod to match — fall
+  // back to the Job list with the same match semantics so the pod-less
+  // Job can still be deleted. Job names are matched exactly, not by
+  // prefix: every name starts with `yaac-`, so a short prefix would
+  // resolve to an arbitrary session.
+  let jobs
+  try {
+    jobs = await listSessionJobs()
+  } catch (err) {
+    throw new DaemonError('RUNTIME_UNAVAILABLE', err instanceof Error ? err.message : String(err))
+  }
+  const jobMatch = jobs.find((j) =>
+    j.sessionId === idOrName
+    || j.jobName === idOrName
+    || j.sessionId.startsWith(idOrName),
+  )
+
+  if (!jobMatch) {
     throw new DaemonError(
       'NOT_FOUND',
       `No session found matching "${idOrName}". Run "yaac session list" to see active sessions.`,
@@ -43,9 +58,9 @@ export async function deleteSession(idOrName: string): Promise<DeletedSessionInf
   }
 
   const info: DeletedSessionInfo = {
-    containerName: match.Names?.[0]?.replace(/^\//, '') ?? match.Id,
-    sessionId: match.Labels?.['yaac.session-id'] ?? '',
-    projectSlug: match.Labels?.['yaac.project'] ?? '',
+    jobName: jobMatch.jobName,
+    sessionId: jobMatch.sessionId,
+    projectSlug: jobMatch.projectSlug,
   }
 
   await cleanupSessionDetached(info)

@@ -5,8 +5,13 @@ import { sessionShell } from '@/commands/session-shell'
 import { getRpcClient } from '@/shared/daemon-client'
 import type * as daemonClientModule from '@/shared/daemon-client'
 
+// `@/lib/k8s/kubectl` (pulled in via `@/lib/k8s/exec`) promisifies
+// execFile/exec at module load, so the child_process mock must provide
+// them even though this test only asserts on spawn.
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
+  execFile: vi.fn(),
+  exec: vi.fn(),
 }))
 
 vi.mock('@/shared/daemon-client', async (importOriginal) => {
@@ -37,11 +42,11 @@ describe('sessionShell', () => {
     process.exitCode = undefined
   })
 
-  it('fetches shell-info and spawns podman exec zsh', async () => {
+  it('fetches shell-info and spawns kubectl exec zsh', async () => {
     vi.mocked(spawn).mockImplementation(() => mockAttachedChild() as never)
     const mockGet = vi.fn().mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve({ containerName: 'yaac-demo-abc' }),
+      json: () => Promise.resolve({ jobName: 'yaac-demo-abc' }),
     })
     vi.mocked(getRpcClient).mockResolvedValue({
       session: { ':id': { 'shell-info': { $get: mockGet } } },
@@ -51,8 +56,8 @@ describe('sessionShell', () => {
 
     expect(mockGet).toHaveBeenCalledWith({ param: { id: 'abc' } })
     expect(spawn).toHaveBeenCalledWith(
-      'podman',
-      ['exec', '-it', 'yaac-demo-abc', 'zsh'],
+      'kubectl',
+      ['exec', '-n', 'yaac', '-it', 'job/yaac-demo-abc', '--', 'zsh'],
       { stdio: 'inherit' },
     )
   })

@@ -3,8 +3,8 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 
-vi.mock('@/lib/container/runtime', () => ({
-  shellPodmanWithRetry: vi.fn(),
+vi.mock('@/lib/k8s/exec', () => ({
+  containerExec: vi.fn(),
 }))
 
 import {
@@ -14,9 +14,9 @@ import {
   evictClaudeStatusCache,
   _clearClaudeStatusCacheForTests,
 } from '@/lib/session/claude-status'
-import { shellPodmanWithRetry } from '@/lib/container/runtime'
+import { containerExec } from '@/lib/k8s/exec'
 
-const mockExec = vi.mocked(shellPodmanWithRetry)
+const mockExec = vi.mocked(containerExec)
 
 describe('classifyClaudePane', () => {
   it('returns running when the pane shows "esc to interrupt"', () => {
@@ -224,24 +224,24 @@ describe('getSessionClaudeStatus', () => {
     await expect(getSessionClaudeStatus('p', 's-wait', 'c-wait')).resolves.toBe('waiting')
   })
 
-  it('returns waiting when capture-pane fails (container not ready)', async () => {
-    mockExec.mockRejectedValue(new Error('no such container'))
+  it('returns waiting when capture-pane fails (pod not ready)', async () => {
+    mockExec.mockRejectedValue(new Error('no such pod'))
     await expect(getSessionClaudeStatus('p', 's-absent', 'c-absent')).resolves.toBe('waiting')
   })
 
-  it('invokes capture-pane against the named container and claude pane', async () => {
+  it('invokes capture-pane against the named job and claude pane', async () => {
     mockPane('esc to interrupt')
     await getSessionClaudeStatus('p', 's-cmd', 'yaac-proj-cmd')
     expect(mockExec).toHaveBeenCalledTimes(1)
-    const cmd = mockExec.mock.calls[0][0]
-    expect(cmd).toContain('podman exec yaac-proj-cmd')
+    const [jobName, cmd] = mockExec.mock.calls[0]
+    expect(jobName).toBe('yaac-proj-cmd')
     expect(cmd).toContain('capture-pane -pJ -t yaac:claude.0')
   })
 
-  it('serves repeat calls from the TTL cache without re-invoking podman', async () => {
+  it('serves repeat calls from the TTL cache without re-invoking kubectl', async () => {
     mockPane('❯ ')
     expect(await getSessionClaudeStatus('p', 's-cache', 'c-cache')).toBe('waiting')
-    // A second call within the TTL must NOT call podman again — verify
+    // A second call within the TTL must NOT exec again — verify
     // by switching the mock to throw; if the cache were bypassed the
     // call would now return 'waiting' for a different reason but
     // would also bump the mock counter.
@@ -260,8 +260,8 @@ describe('getSessionClaudeStatus', () => {
   })
 
   it('caches per (slug, sid), not globally', async () => {
-    mockExec.mockImplementation((cmd: string) => {
-      if (cmd.includes('c-A')) return Promise.resolve({ stdout: 'esc to interrupt', stderr: '' })
+    mockExec.mockImplementation((jobName: string) => {
+      if (jobName.includes('c-A')) return Promise.resolve({ stdout: 'esc to interrupt', stderr: '' })
       return Promise.resolve({ stdout: '❯ ', stderr: '' })
     })
     expect(await getSessionClaudeStatus('p', 's-A', 'c-A')).toBe('running')

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -9,9 +9,15 @@ import {
   type YaacTestEnv,
   type SpawnedDaemon,
 } from '@test/helpers/cli'
-import { addTestProject, createTestRepo } from '@test/helpers/setup'
+import { addTestProject, createTestRepo, requireCluster } from '@test/helpers/setup'
 
 describe('yaac session list (real CLI + real daemon)', () => {
+  // Listing active sessions queries pods via kubectl, so even the
+  // empty-state cases need a reachable cluster.
+  beforeAll(async () => {
+    await requireCluster()
+  })
+
   let testEnv: YaacTestEnv
   let daemon: SpawnedDaemon
 

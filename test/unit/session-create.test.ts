@@ -1,11 +1,10 @@
 import { EventEmitter } from 'node:events'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { buildAgentCmd, createSession, resolveInitWindows } from '@/daemon/session-create'
-import { sessionCreate } from '@/commands/session-create'
 
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
-  execSync: vi.fn(),
+  execFile: vi.fn(),
+  exec: vi.fn(),
 }))
 
 vi.mock('node:fs/promises', () => ({
@@ -13,6 +12,7 @@ vi.mock('node:fs/promises', () => ({
     access: vi.fn().mockResolvedValue(undefined),
     mkdir: vi.fn().mockResolvedValue(undefined),
     writeFile: vi.fn().mockResolvedValue(undefined),
+    readFile: vi.fn().mockRejectedValue(new Error('missing')),
     chmod: vi.fn().mockResolvedValue(undefined),
   },
 }))
@@ -26,24 +26,34 @@ vi.mock('simple-git', () => ({
 
 vi.mock('@/lib/container/runtime', () => ({
   ensureContainerRuntime: vi.fn().mockResolvedValue(undefined),
-  shellPodmanWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-  keepIdEnabled: vi.fn().mockReturnValue(true),
-  podman: {
-    createContainer: vi.fn(),
-    getContainer: vi.fn(),
-    getImage: vi.fn(),
-  },
 }))
 
 vi.mock('@/lib/container/image-builder', () => ({
   ensureImage: vi.fn().mockResolvedValue('yaac-test-image'),
-  packTar: vi.fn().mockResolvedValue(Buffer.from('archive')),
+}))
+
+vi.mock('@/lib/k8s/registry', () => ({
+  pushImageToRegistry: vi.fn().mockResolvedValue('localhost:5000/yaac-test-image'),
+}))
+
+vi.mock('@/lib/k8s/kubectl', () => ({
+  dataDirHash: vi.fn(() => 'ddh0123456789abc'),
+  k8sNamespace: vi.fn(() => 'yaac'),
+  kubectlApply: vi.fn().mockResolvedValue(undefined),
+  kubectlGetJson: vi.fn(),
+  kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+}))
+
+vi.mock('@/lib/k8s/exec', () => ({
+  containerExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
 vi.mock('@/lib/container/proxy-client', () => ({
+  PROXY_CONTAINER_PORT: '10255',
+  SSH_AGENT_MOUNT: '/ssh-agent',
+  SSH_AGENT_SOCKET_PATH: '/ssh-agent/socket',
   proxyClient: {
-    containerName: 'yaac-proxy',
-    network: 'bridge',
+    serviceHost: 'yaac-proxy.yaac.svc',
     ensureRunning: vi.fn().mockResolvedValue(undefined),
     registerSession: vi.fn().mockResolvedValue(undefined),
     getProxyEnv: vi.fn().mockReturnValue(['HTTPS_PROXY=http://proxy']),
@@ -65,15 +75,7 @@ vi.mock('@/lib/container/default-allowed-hosts', async (importOriginal) => {
 vi.mock('@/lib/container/port', () => ({
   reserveAvailablePort: vi.fn(),
   startPortForwarders: vi.fn().mockReturnValue(vi.fn()),
-  podmanRelay: vi.fn().mockReturnValue({}),
-}))
-
-vi.mock('@/lib/container/pg-relay', () => ({
-  pgRelay: {
-    containerPort: 15432,
-    ip: '127.0.0.1',
-    ensureRunning: vi.fn().mockResolvedValue(undefined),
-  },
+  kubectlRelay: vi.fn().mockReturnValue(() => ({})),
 }))
 
 vi.mock('@/lib/project/paths', () => ({
@@ -85,11 +87,13 @@ vi.mock('@/lib/project/paths', () => ({
   opencodeDataDir: vi.fn((slug: string, sessionId: string) => `/tmp/${slug}/opencode-data/${sessionId}`),
   opencodeMetaDir: vi.fn((slug: string) => `/tmp/${slug}/opencode-meta`),
   cachedPackagesDir: vi.fn((slug: string) => `/tmp/${slug}/.cached-packages`),
+  cacheVolumeDir: vi.fn((slug: string, key: string) => `/tmp/${slug}/cache-volumes/${key}`),
   codexTranscriptDir: vi.fn((slug: string) => `/tmp/${slug}/transcripts`),
   worktreeDir: vi.fn((slug: string, sessionId: string) => `/tmp/${slug}/worktrees/${sessionId}`),
   worktreesDir: vi.fn((slug: string) => `/tmp/${slug}/worktrees`),
   projectDir: vi.fn((slug: string) => `/tmp/${slug}`),
   sessionTmuxDir: vi.fn((slug: string, sid: string) => `/tmp/${slug}/sessions/${sid}/tmux`),
+  credentialsDir: vi.fn(() => '/tmp/yaac-data/.credentials'),
   getDataDir: vi.fn(() => '/tmp/yaac-data'),
 }))
 
@@ -101,7 +105,6 @@ vi.mock('@/lib/project/config', () => ({
 
 vi.mock('@/lib/project/credentials', () => ({
   resolveCredentialForUrl: vi.fn().mockResolvedValue({ kind: 'https', token: 'token' }),
-  loadCredentials: vi.fn().mockResolvedValue({ tokens: [] }),
   parseGitRemote: (url: string) => {
     if (url.startsWith('https://')) {
       const u = new URL(url)
@@ -118,7 +121,10 @@ vi.mock('@/lib/project/credentials', () => ({
 vi.mock('@/lib/project/tool-auth', () => ({
   loadToolAuthEntry: vi.fn().mockResolvedValue(null),
   loadClaudeCredentialsFile: vi.fn().mockResolvedValue(null),
+  loadCodexCredentialsFile: vi.fn().mockResolvedValue(null),
   writeProjectClaudePlaceholder: vi.fn().mockResolvedValue(undefined),
+  writeProjectCodexPlaceholder: vi.fn().mockResolvedValue(undefined),
+  PLACEHOLDER_API_KEY: 'test-placeholder-key',
 }))
 
 vi.mock('@/lib/git', () => ({
@@ -126,64 +132,99 @@ vi.mock('@/lib/git', () => ({
   getDefaultBranch: vi.fn().mockResolvedValue('main'),
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
   getGitUserConfig: vi.fn().mockResolvedValue({ name: 'Test User', email: 'test@example.com' }),
+  writeKnownHostsFile: vi.fn().mockResolvedValue(undefined),
+  isTorEnabled: vi.fn().mockReturnValue(false),
 }))
 
-vi.mock('@/shared/git', () => ({
-  getGitUserConfig: vi.fn().mockResolvedValue({ name: 'Test User', email: 'test@example.com' }),
-}))
-
-vi.mock('@/lib/prewarm', () => ({
-  claimPrewarmSession: vi.fn(),
-}))
+vi.mock('@/shared/git', async (importOriginal) => {
+  const actual = await importOriginal<typeof sharedGitModule>()
+  return {
+    ...actual,
+    getGitUserConfig: vi.fn().mockResolvedValue({ name: 'Test User', email: 'test@example.com' }),
+  }
+})
 
 vi.mock('@/lib/session/codex-hooks', () => ({
   ensureCodexHooksJson: vi.fn().mockResolvedValue(undefined),
   ensureCodexConfigToml: vi.fn().mockResolvedValue(undefined),
 }))
 
+vi.mock('@/lib/session/opencode-config', () => ({
+  ensureOpencodeConfigJson: vi.fn().mockResolvedValue(undefined),
+}))
+
 vi.mock('@/lib/session/port-forwarders', () => ({
   buildStatusRight: vi.fn().mockReturnValue(' stub-status '),
-  provisionSessionForwarders: vi.fn().mockResolvedValue([]),
   registerSessionForwarders: vi.fn(),
 }))
 
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
-import { podman, ensureContainerRuntime, shellPodmanWithRetry } from '@/lib/container/runtime'
-import { claimPrewarmSession } from '@/lib/prewarm'
-import { ensureImage, packTar } from '@/lib/container/image-builder'
+import { buildAgentCmd, createSession, resolveInitWindows } from '@/daemon/session-create'
+import { sessionCreate } from '@/commands/session-create'
+import { ensureContainerRuntime } from '@/lib/container/runtime'
+import { ensureImage } from '@/lib/container/image-builder'
+import { pushImageToRegistry } from '@/lib/k8s/registry'
+import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
+import { containerExec } from '@/lib/k8s/exec'
 import { proxyClient } from '@/lib/container/proxy-client'
 import { resolveProjectConfig } from '@/lib/project/config'
-import { resolveCredentialForUrl, loadCredentials } from '@/lib/project/credentials'
+import { resolveCredentialForUrl } from '@/lib/project/credentials'
+import { loadToolAuthEntry } from '@/lib/project/tool-auth'
 import { resolveAllowedHosts } from '@/lib/container/default-allowed-hosts'
 import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/lib/git'
-import { reserveAvailablePort } from '@/lib/container/port'
-import {
-  buildStatusRight,
-  provisionSessionForwarders,
-  registerSessionForwarders,
-} from '@/lib/session/port-forwarders'
+import { kubectlRelay, reserveAvailablePort, startPortForwarders } from '@/lib/container/port'
+import { buildStatusRight, registerSessionForwarders } from '@/lib/session/port-forwarders'
 
 const mockSpawn = vi.mocked(spawn)
 const mockAccess = vi.mocked(fs.access)
 const mockMkdir = vi.mocked(fs.mkdir)
 const mockWriteFile = vi.mocked(fs.writeFile)
-// eslint-disable-next-line @typescript-eslint/unbound-method
-const mockCreateContainer = vi.mocked(podman.createContainer)
-// eslint-disable-next-line @typescript-eslint/unbound-method
-const mockGetContainer = vi.mocked(podman.getContainer)
-// eslint-disable-next-line @typescript-eslint/unbound-method
-const mockGetImage = vi.mocked(podman.getImage)
-const mockClaimPrewarmSession = vi.mocked(claimPrewarmSession)
+const mockReadFile = vi.mocked(fs.readFile)
+const mockApply = vi.mocked(kubectlApply)
+const mockGetJson = vi.mocked(kubectlGetJson)
+const mockKubectlRetry = vi.mocked(kubectlWithRetry)
+const mockContainerExec = vi.mocked(containerExec)
 const mockReserveAvailablePort = vi.mocked(reserveAvailablePort)
-const mockProvisionSessionForwarders = vi.mocked(provisionSessionForwarders)
+const mockStartForwarders = vi.mocked(startPortForwarders)
+const mockKubectlRelay = vi.mocked(kubectlRelay)
 const mockRegisterSessionForwarders = vi.mocked(registerSessionForwarders)
-const mockBuildStatusRight = vi.mocked(buildStatusRight)
+const mockLoadToolAuth = vi.mocked(loadToolAuthEntry)
 
 function mockAttachedChild(): EventEmitter {
   const child = new EventEmitter()
   process.nextTick(() => child.emit('close', 0))
   return child
+}
+
+interface JobManifest {
+  kind: string
+  metadata: { name: string; namespace: string; labels: Record<string, string> }
+  spec: {
+    backoffLimit: number
+    template: {
+      metadata: { labels: Record<string, string> }
+      spec: {
+        restartPolicy: string
+        containers: Array<{
+          image: string
+          env: Array<{ name: string; value: string }>
+          volumeMounts: Array<{ name: string; mountPath: string; readOnly?: boolean }>
+        }>
+        volumes: Array<{
+          name: string
+          hostPath?: { path: string; type: string }
+          configMap?: { name: string }
+        }>
+      }
+    }
+  }
+}
+
+function appliedJobManifest(): JobManifest {
+  const call = mockApply.mock.calls.find((c) => (c[0] as { kind?: string }).kind === 'Job')
+  expect(call).toBeDefined()
+  return call![0] as JobManifest
 }
 
 describe('createSession', () => {
@@ -193,196 +234,142 @@ describe('createSession', () => {
     mockAccess.mockResolvedValue(undefined)
     mockMkdir.mockResolvedValue(undefined)
     mockWriteFile.mockResolvedValue(undefined)
+    mockReadFile.mockRejectedValue(new Error('missing'))
     vi.mocked(ensureContainerRuntime).mockResolvedValue(undefined)
     vi.mocked(ensureImage).mockResolvedValue('yaac-test-image')
-    vi.mocked(packTar).mockResolvedValue(Buffer.from('archive'))
+    vi.mocked(pushImageToRegistry).mockResolvedValue('localhost:5000/yaac-test-image')
     vi.mocked(resolveProjectConfig).mockResolvedValue({})
-    vi.mocked(resolveCredentialForUrl).mockResolvedValue({ kind: 'https', token: 'token' })
-    vi.mocked(loadCredentials).mockResolvedValue({ tokens: [] })
+    vi.mocked(resolveCredentialForUrl).mockResolvedValue({ kind: 'https', token: 'token' } as never)
     vi.mocked(resolveAllowedHosts).mockReturnValue(['*'])
     vi.mocked(addWorktree).mockResolvedValue(undefined)
     vi.mocked(getDefaultBranch).mockResolvedValue('main')
     vi.mocked(fetchOrigin).mockResolvedValue(undefined)
     vi.mocked(getGitUserConfig).mockResolvedValue({ name: 'Test User', email: 'test@example.com' })
-    // eslint-disable-next-line @typescript-eslint/unbound-method
+    mockLoadToolAuth.mockResolvedValue(null)
+    /* eslint-disable @typescript-eslint/unbound-method */
     vi.mocked(proxyClient.ensureRunning).mockResolvedValue(undefined)
-    // eslint-disable-next-line @typescript-eslint/unbound-method
     vi.mocked(proxyClient.registerSession).mockResolvedValue(undefined)
-    // eslint-disable-next-line @typescript-eslint/unbound-method
     vi.mocked(proxyClient.getProxyEnv).mockReturnValue(['HTTPS_PROXY=http://proxy'])
-    // eslint-disable-next-line @typescript-eslint/unbound-method
-    vi.mocked(proxyClient.getCaCert).mockResolvedValue('cert')
+    /* eslint-enable @typescript-eslint/unbound-method */
     mockSpawn.mockImplementation(() => mockAttachedChild() as never)
-    mockClaimPrewarmSession.mockResolvedValue(null)
+    mockApply.mockResolvedValue(undefined)
+    // waitForPodReady polls this — default to "pod ready" so the flow runs
+    // straight through. Failure tests override it.
+    mockGetJson.mockResolvedValue({
+      items: [{ status: { phase: 'Running', containerStatuses: [{ ready: true }] } }],
+    })
+    mockKubectlRetry.mockResolvedValue({ stdout: '', stderr: '' })
+    mockContainerExec.mockResolvedValue({ stdout: '', stderr: '' })
+    mockStartForwarders.mockReturnValue(vi.fn())
+    mockKubectlRelay.mockReturnValue((() => ({})) as never)
+    vi.mocked(buildStatusRight).mockReturnValue(' stub-status ')
     mockReserveAvailablePort.mockResolvedValue({
       containerPort: 3000,
       hostPort: 3000,
       server: { close: vi.fn() },
     } as never)
-    mockProvisionSessionForwarders.mockResolvedValue([])
-    mockBuildStatusRight.mockReturnValue(' stub-status ')
-    mockCreateContainer.mockResolvedValue({
-      start: vi.fn().mockResolvedValue(undefined),
-    } as never)
-    mockGetContainer.mockReturnValue({
-      putArchive: vi.fn().mockResolvedValue(undefined),
-    } as never)
-    mockGetImage.mockReturnValue({
-      inspect: vi.fn().mockResolvedValue({ Config: { Env: [] } }),
-    } as never)
   })
 
-  it('returns the claimed prewarmed session without starting a new container', async () => {
-    mockClaimPrewarmSession.mockResolvedValue({
-      sessionId: 'prewarm-session',
-      containerName: 'yaac-demo-prewarm-session',
-    })
-
-    const result = await createSession('demo', {})
-
-    expect(result).toEqual({
-      sessionId: 'prewarm-session',
-      containerName: 'yaac-demo-prewarm-session',
-      forwardedPorts: [],
-      tool: 'claude',
-      claimedPrewarm: true,
-    })
-    expect(mockCreateContainer).not.toHaveBeenCalled()
-  })
-
-  it('provisions forwarders for claimed prewarm sessions and returns the mappings', async () => {
-    mockClaimPrewarmSession.mockResolvedValue({
-      sessionId: 'prewarm-session',
-      containerName: 'yaac-demo-prewarm-session',
-    })
-    vi.mocked(resolveProjectConfig).mockResolvedValue({
-      portForward: [{ containerPort: 3000, hostPortStart: 3000 }],
-    })
-    mockProvisionSessionForwarders.mockResolvedValue([
-      { containerPort: 3000, hostPort: 3000 },
-    ])
-
-    const result = await createSession('demo', {})
-
-    expect(mockProvisionSessionForwarders).toHaveBeenCalledTimes(1)
-    expect(mockProvisionSessionForwarders).toHaveBeenCalledWith(
-      'demo', 'prewarm-session', 'yaac-demo-prewarm-session',
-      [{ containerPort: 3000, hostPortStart: 3000 }],
-    )
-    expect(result?.forwardedPorts).toEqual([{ containerPort: 3000, hostPort: 3000 }])
-    expect(result?.claimedPrewarm).toBe(true)
-  })
-
-  it('does not reserve ports when creating a prewarm session', async () => {
-    vi.mocked(resolveProjectConfig).mockResolvedValue({
-      portForward: [{ containerPort: 3000, hostPortStart: 3000 }],
-    })
-
-    await createSession('demo', { createPrewarm: true, sessionId: 'new-prewarm' })
-
-    expect(mockReserveAvailablePort).not.toHaveBeenCalled()
-    expect(mockRegisterSessionForwarders).not.toHaveBeenCalled()
-    expect(mockProvisionSessionForwarders).not.toHaveBeenCalled()
-  })
-
-  it('does not bake a status-right value into the prewarm container', async () => {
-    // Prewarm containers would always get an empty-ports status-right, so
-    // leaving it unset avoids racing with the claim path's own write.
-    await createSession('demo', { createPrewarm: true, sessionId: 'new-prewarm' })
-    expect(mockBuildStatusRight).not.toHaveBeenCalled()
-  })
-
-  it('skips the prewarm claim when --add-dir is set and creates a fresh container with the mount', async () => {
-    mockClaimPrewarmSession.mockResolvedValue({
-      sessionId: 'prewarm-session',
-      containerName: 'yaac-demo-prewarm-session',
-    })
-
-    const result = await createSession('demo', { addDir: ['/host/extra'] })
-
-    expect(mockClaimPrewarmSession).not.toHaveBeenCalled()
-    expect(result?.claimedPrewarm).toBe(false)
-    expect(mockCreateContainer).toHaveBeenCalledTimes(1)
-    const binds = mockCreateContainer.mock.calls[0]?.[0].HostConfig?.Binds
-    expect(binds).toEqual(expect.arrayContaining(['/host/extra:/add-dir/host/extra:ro,Z']))
-  })
-
-  it('skips the prewarm claim when --add-dir-rw is set and creates a fresh container with the mount', async () => {
-    mockClaimPrewarmSession.mockResolvedValue({
-      sessionId: 'prewarm-session',
-      containerName: 'yaac-demo-prewarm-session',
-    })
-
-    const result = await createSession('demo', { addDirRw: ['/host/rw'] })
-
-    expect(mockClaimPrewarmSession).not.toHaveBeenCalled()
-    expect(result?.claimedPrewarm).toBe(false)
-    const binds = mockCreateContainer.mock.calls[0]?.[0].HostConfig?.Binds
-    expect(binds).toEqual(expect.arrayContaining(['/host/rw:/add-dir/host/rw:rw,Z']))
-  })
-
-  it('still claims a prewarm when addDir/addDirRw are empty arrays', async () => {
-    mockClaimPrewarmSession.mockResolvedValue({
-      sessionId: 'prewarm-session',
-      containerName: 'yaac-demo-prewarm-session',
-    })
-
-    const result = await createSession('demo', { addDir: [], addDirRw: [] })
-
-    expect(mockClaimPrewarmSession).toHaveBeenCalledTimes(1)
-    expect(result?.claimedPrewarm).toBe(true)
-    expect(mockCreateContainer).not.toHaveBeenCalled()
-  })
-
-  it('propagates provisionSessionForwarders failures when claiming a prewarm', async () => {
-    mockClaimPrewarmSession.mockResolvedValue({
-      sessionId: 'prewarm-session',
-      containerName: 'yaac-demo-prewarm-session',
-    })
-    mockProvisionSessionForwarders.mockRejectedValueOnce(new Error('no ports available'))
-
-    await expect(createSession('demo', {})).rejects.toThrow('no ports available')
-  })
-
-  it('reserves and registers forwarders on a fresh non-prewarm session', async () => {
-    vi.mocked(resolveProjectConfig).mockResolvedValue({
-      portForward: [{ containerPort: 3000, hostPortStart: 3000 }],
-    })
-    mockReserveAvailablePort.mockResolvedValueOnce({
-      containerPort: 3000,
-      hostPort: 3001,
-      server: { close: vi.fn() },
-    } as never)
-
-    const result = await createSession('demo', {})
-
-    expect(mockReserveAvailablePort).toHaveBeenCalledWith(3000, 3000)
-    expect(mockRegisterSessionForwarders).toHaveBeenCalledTimes(1)
-    expect(result?.forwardedPorts).toEqual([{ containerPort: 3000, hostPort: 3001 }])
-    expect(result?.claimedPrewarm).toBe(false)
-  })
-
-  it('returns a newly created session descriptor without attaching', async () => {
+  it('returns a session descriptor with the job name, without attaching', async () => {
     const result = await createSession('demo', { tool: 'codex' })
 
     expect(result).toBeDefined()
     expect(result?.sessionId).toEqual(expect.any(String))
+    expect(result?.jobName).toBe(`yaac-demo-${result?.sessionId}`)
     expect(result?.tool).toBe('codex')
-    expect(result?.claimedPrewarm).toBe(false)
-    expect(mockCreateContainer).toHaveBeenCalledTimes(1)
+    expect(result?.forwardedPorts).toEqual([])
+    expect(mockApply).toHaveBeenCalledTimes(1)
+    expect(mockSpawn).not.toHaveBeenCalled()
   })
 
-  it('mounts shared Claude and Codex state for Claude sessions', async () => {
-    await createSession('demo', { tool: 'claude' })
+  it('applies a Job manifest with session labels, the registry image ref, and shared mounts', async () => {
+    await createSession('demo', { tool: 'claude', sessionId: 'abcd1234' })
 
-    const binds = mockCreateContainer.mock.calls[0]?.[0].HostConfig?.Binds
-    expect(binds).toEqual(expect.arrayContaining([
-      '/tmp/demo/claude:/home/yaac/.claude:Z',
-      '/tmp/demo/claude.json:/home/yaac/.claude.json:Z',
-      '/tmp/demo/codex:/home/yaac/.codex:Z',
+    const manifest = appliedJobManifest()
+    expect(manifest.metadata.name).toBe('yaac-demo-abcd1234')
+    expect(manifest.metadata.namespace).toBe('yaac')
+
+    const labels = {
+      'yaac.project': 'demo',
+      'yaac.session-id': 'abcd1234',
+      'yaac.data-dir-hash': 'ddh0123456789abc',
+      'yaac.tool': 'claude',
+    }
+    expect(manifest.metadata.labels).toEqual(labels)
+    expect(manifest.spec.template.metadata.labels).toEqual(labels)
+    expect(manifest.spec.backoffLimit).toBe(0)
+    expect(manifest.spec.template.spec.restartPolicy).toBe('Never')
+
+    const container = manifest.spec.template.spec.containers[0]
+    // The image ref is the registry push result, not the local tag.
+    expect(container.image).toBe('localhost:5000/yaac-test-image')
+    expect(container.env).toEqual(expect.arrayContaining([
+      { name: 'YAAC_SESSION_ID', value: 'abcd1234' },
+      { name: 'HTTPS_PROXY', value: 'http://proxy' },
     ]))
+
+    const hostPaths = manifest.spec.template.spec.volumes
+      .filter((v) => v.hostPath)
+      .map((v) => v.hostPath!.path)
+    expect(hostPaths).toEqual(expect.arrayContaining([
+      '/tmp/demo/worktrees/abcd1234',
+      '/tmp/demo/repo/.git',
+      '/tmp/demo/claude',
+      '/tmp/demo/claude.json',
+      '/tmp/demo/codex',
+      '/tmp/demo/opencode-data/abcd1234',
+      '/tmp/demo/opencode-config',
+      '/tmp/demo/.cached-packages',
+      '/tmp/demo/sessions/abcd1234/tmux',
+    ]))
+    // ~/.claude.json is a single file — hostPath type File.
+    const claudeJsonVol = manifest.spec.template.spec.volumes
+      .find((v) => v.hostPath?.path === '/tmp/demo/claude.json')
+    expect(claudeJsonVol?.hostPath?.type).toBe('File')
+
     expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/claude', { recursive: true })
     expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/codex', { recursive: true })
+    expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/opencode-meta', { recursive: true })
+  })
+
+  it('mounts --add-dir read-only and --add-dir-rw read-write with the no-check hostPath type', async () => {
+    await createSession('demo', { sessionId: 'abcd1234', addDir: ['/host/extra'], addDirRw: ['/host/rw'] })
+
+    const manifest = appliedJobManifest()
+    const { volumes, containers } = manifest.spec.template.spec
+
+    const roVol = volumes.find((v) => v.hostPath?.path === '/host/extra')
+    expect(roVol?.hostPath?.type).toBe('')
+    const roMount = containers[0].volumeMounts.find((m) => m.mountPath === '/add-dir/host/extra')
+    expect(roMount?.readOnly).toBe(true)
+    expect(roMount?.name).toBe(roVol?.name)
+
+    const rwVol = volumes.find((v) => v.hostPath?.path === '/host/rw')
+    expect(rwVol?.hostPath?.type).toBe('')
+    const rwMount = containers[0].volumeMounts.find((m) => m.mountPath === '/add-dir/host/rw')
+    expect(rwMount?.readOnly).toBeUndefined()
+  })
+
+  it('adds the placeholder API key env for claude api-key auth', async () => {
+    mockLoadToolAuth.mockResolvedValue({ kind: 'api-key' } as never)
+
+    await createSession('demo', { tool: 'claude', sessionId: 'abcd1234' })
+
+    const container = appliedJobManifest().spec.template.spec.containers[0]
+    expect(container.env).toEqual(expect.arrayContaining([
+      { name: 'ANTHROPIC_API_KEY', value: 'test-placeholder-key' },
+    ]))
+  })
+
+  it('never chowns mounts in-container — uid alignment makes daemon dirs writable', async () => {
+    await createSession('demo', { sessionId: 'abcd1234' })
+
+    // The image's yaac user carries the daemon's uid (YAAC_UID build arg),
+    // so daemon-created hostPath dirs are writable without privileged
+    // fixups. A chown here would also corrupt host-side ownership on
+    // Linux (idmapped mounts write the pod's userns uid through).
+    const cmds = mockContainerExec.mock.calls.map((c) => c[1])
+    expect(cmds.some((c) => c.includes('chown') || c.startsWith('sudo '))).toBe(false)
   })
 
   it('calls onProgress with stage messages during provisioning', async () => {
@@ -393,38 +380,102 @@ describe('createSession', () => {
     })
     expect(messages).toContain('Fetching latest from remote...')
     expect(messages).toContain('Ensuring container images are built...')
+    expect(messages).toContain('Pushing session image to the local registry...')
     expect(messages).toContain('Creating worktree from main...')
-    expect(messages).toContain('Starting proxy sidecar...')
-    expect(messages.some((m) => m.startsWith('Creating container yaac-demo-'))).toBe(true)
+    expect(messages).toContain('Ensuring proxy deployment...')
+    expect(messages.some((m) => m.startsWith('Creating session job yaac-demo-'))).toBe(true)
     expect(messages).toContain('Starting Claude Code...')
   })
 
-  it('emits a claim-prewarm message when claiming a prewarmed session', async () => {
-    mockClaimPrewarmSession.mockResolvedValue({
-      sessionId: 'prewarm-0123456789abcdef',
-      containerName: 'yaac-demo-prewarm-0123456789abcdef',
+  it('reserves, starts, and registers port forwarders for the new job', async () => {
+    vi.mocked(resolveProjectConfig).mockResolvedValue({
+      portForward: [{ containerPort: 3000, hostPortStart: 3000 }],
     })
-    const messages: string[] = []
-    await createSession('demo', { onProgress: (m) => messages.push(m) })
-    expect(messages).toEqual([
-      'Claiming prewarmed session prewarm-...',
-    ])
+    const reserved = { containerPort: 3000, hostPort: 3001, server: { close: vi.fn() } }
+    mockReserveAvailablePort.mockResolvedValueOnce(reserved as never)
+    const relayFactory = (() => ({})) as never
+    mockKubectlRelay.mockReturnValue(relayFactory)
+
+    const result = await createSession('demo', { sessionId: 'abcd1234' })
+
+    expect(mockReserveAvailablePort).toHaveBeenCalledWith(3000, 3000)
+    expect(mockKubectlRelay).toHaveBeenCalledWith('yaac-demo-abcd1234')
+    expect(mockStartForwarders).toHaveBeenCalledWith(relayFactory, [reserved])
+    expect(mockRegisterSessionForwarders).toHaveBeenCalledWith('abcd1234', expect.any(Function))
+    expect(result?.forwardedPorts).toEqual([{ containerPort: 3000, hostPort: 3001 }])
   })
 
-  it('force-removes the container after every failed startup attempt, including the last', async () => {
-    mockCreateContainer.mockResolvedValue({
-      start: vi.fn().mockRejectedValue(new Error('container refused to start')),
-    } as never)
+  it('deletes the half-created Job after every failed startup attempt, including the last', async () => {
+    // waitForPodReady sees a terminal pod on every attempt.
+    mockGetJson.mockResolvedValue({ items: [{ status: { phase: 'Failed' } }] })
 
-    await expect(createSession('demo', {})).rejects.toThrow('container refused to start')
+    await expect(createSession('demo', { sessionId: 'abcd1234' })).rejects.toThrow(
+      /terminal phase Failed/,
+    )
 
-    const rmCalls = vi.mocked(shellPodmanWithRetry).mock.calls
-      .map((args) => args[0])
-      .filter((cmd) => typeof cmd === 'string' && cmd.startsWith('podman rm -f '))
-    expect(rmCalls).toHaveLength(3)
-    for (const cmd of rmCalls) {
-      expect(cmd).toMatch(/^podman rm -f yaac-demo-/)
+    const deleteCalls = mockKubectlRetry.mock.calls
+      .map((c) => c[0])
+      .filter((args) => args[0] === 'delete' && args[1] === 'job')
+    expect(deleteCalls).toHaveLength(3)
+    for (const args of deleteCalls) {
+      expect(args[2]).toBe('yaac-demo-abcd1234')
     }
+  })
+
+  it('seeds claude.json without onboarding flags for non-Claude sessions', async () => {
+    await createSession('demo', { tool: 'codex', sessionId: 'abcd1234' })
+    // seedClaudeJson ensures the file exists (pretty JSON + trailing
+    // newline). No onboarding flags for a non-Claude (codex) session.
+    expect(mockWriteFile).toHaveBeenCalledWith('/tmp/demo/claude.json', '{}\n')
+  })
+
+  it('spawns one tmux new-window per InitCommandSpec entry', async () => {
+    vi.mocked(resolveProjectConfig).mockResolvedValue({
+      initCommands: [
+        { name: 'backend', commands: ['pnpm dev:backend'] },
+        { name: 'frontend', commands: ['pnpm dev:frontend'], hidePane: true },
+      ],
+    })
+
+    await createSession('demo', { tool: 'claude' })
+
+    const tmuxCmds = mockContainerExec.mock.calls
+      .map((args) => args[1])
+      .filter((c) => c.includes('new-window'))
+    expect(tmuxCmds.some((c) => c.includes('-n backend') && c.includes('pnpm dev:backend'))).toBe(true)
+    expect(tmuxCmds.some((c) => c.includes('-n frontend') && c.includes('pnpm dev:frontend'))).toBe(true)
+
+    const remainOnExitCmds = mockContainerExec.mock.calls
+      .map((args) => args[1])
+      .filter((c) => c.includes('remain-on-exit on'))
+    // backend defaults to hidePane=false → keeps remain-on-exit; frontend
+    // sets hidePane=true → no remain-on-exit.
+    expect(remainOnExitCmds.some((c) => c.includes('yaac:backend'))).toBe(true)
+    expect(remainOnExitCmds.some((c) => c.includes('yaac:frontend'))).toBe(false)
+  })
+
+  it('respawns the agent window with the tool command after tmux setup', async () => {
+    await createSession('demo', { tool: 'codex', sessionId: 'abcd1234' })
+
+    const respawn = mockContainerExec.mock.calls
+      .map((args) => args[1])
+      .find((c) => c.includes('respawn-window'))
+    expect(respawn).toBeDefined()
+    expect(respawn).toContain('-t yaac:codex')
+    expect(respawn).toContain('codex --yolo')
+  })
+
+  it('rejects an init window name that collides with the agent tool window', async () => {
+    vi.mocked(resolveProjectConfig).mockResolvedValue({
+      // The config parser normally rejects 'claude' as reserved, but the
+      // collision guard inside startJobWithSetup is a belt-and-suspenders
+      // backstop — exercise it by feeding a config that bypasses the
+      // parser path used in production.
+      initCommands: [{ name: 'claude', commands: ['echo hi'] }],
+    })
+    await expect(createSession('demo', { tool: 'claude' })).rejects.toThrow(
+      /collides with the agent window for tool "claude"/,
+    )
   })
 
   describe('resume mode', () => {
@@ -432,11 +483,6 @@ describe('createSession', () => {
       await expect(createSession('demo', { resume: true })).rejects.toMatchObject({
         code: 'VALIDATION',
       })
-    })
-
-    it('skips the prewarm claim when resuming', async () => {
-      await createSession('demo', { resume: true, sessionId: 'abcd1234' })
-      expect(mockClaimPrewarmSession).not.toHaveBeenCalled()
     })
 
     it('reuses an existing worktree instead of calling addWorktree', async () => {
@@ -463,91 +509,30 @@ describe('createSession', () => {
     })
   })
 
-  it('mounts shared Claude and Codex state for Codex sessions', async () => {
-    mockAccess.mockImplementation((target) => {
-      if (target === '/tmp/demo/claude.json') {
-        return Promise.reject(new Error('missing'))
-      }
-      return Promise.resolve(undefined)
-    })
-
-    await createSession('demo', { tool: 'codex' })
-
-    const binds = mockCreateContainer.mock.calls[0]?.[0].HostConfig?.Binds
-    expect(binds).toEqual(expect.arrayContaining([
-      '/tmp/demo/claude:/home/yaac/.claude:Z',
-      '/tmp/demo/claude.json:/home/yaac/.claude.json:Z',
-      '/tmp/demo/codex:/home/yaac/.codex:Z',
-    ]))
-    // seedClaudeJson ensures the file exists (pretty JSON + trailing
-    // newline). No onboarding flags for a non-Claude (codex) session.
-    expect(mockWriteFile).toHaveBeenCalledWith('/tmp/demo/claude.json', '{}\n')
-    expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/claude', { recursive: true })
-    expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/codex', { recursive: true })
-  })
-
-  it('spawns one tmux new-window per InitCommandSpec entry', async () => {
-    vi.mocked(resolveProjectConfig).mockResolvedValue({
-      initCommands: [
-        { name: 'backend', commands: ['pnpm dev:backend'] },
-        { name: 'frontend', commands: ['pnpm dev:frontend'], hidePane: true },
-      ],
-    })
-
-    await createSession('demo', { tool: 'claude' })
-
-    const tmuxCmds = vi.mocked(shellPodmanWithRetry).mock.calls
-      .map((args) => args[0])
-      .filter((c): c is string => typeof c === 'string' && c.includes('new-window'))
-    expect(tmuxCmds.some((c) => c.includes('-n backend') && c.includes('pnpm dev:backend'))).toBe(true)
-    expect(tmuxCmds.some((c) => c.includes('-n frontend') && c.includes('pnpm dev:frontend'))).toBe(true)
-
-    const remainOnExitCmds = vi.mocked(shellPodmanWithRetry).mock.calls
-      .map((args) => args[0])
-      .filter((c): c is string => typeof c === 'string' && c.includes('remain-on-exit on'))
-    // backend defaults to hidePane=false → keeps remain-on-exit; frontend
-    // sets hidePane=true → no remain-on-exit.
-    expect(remainOnExitCmds.some((c) => c.includes('yaac:backend'))).toBe(true)
-    expect(remainOnExitCmds.some((c) => c.includes('yaac:frontend'))).toBe(false)
-  })
-
-  it('rejects an init window name that collides with the agent tool window', async () => {
-    vi.mocked(resolveProjectConfig).mockResolvedValue({
-      // The config parser normally rejects 'claude' as reserved, but the
-      // collision guard inside startContainerWithSetup is a belt-and-
-      // suspenders backstop — exercise it by feeding a config that bypasses
-      // the parser path used in production.
-      initCommands: [{ name: 'claude', commands: ['echo hi'] }],
-    })
-    await expect(createSession('demo', { tool: 'claude' })).rejects.toThrow(
-      /collides with the agent window for tool "claude"/,
-    )
-  })
-
-  it('mounts the per-session opencode data dir + meta dir on every session', async () => {
+  it('mounts the per-session opencode data dir + shared config dir on every session', async () => {
     // Per-yaac-session opencode data is mounted regardless of which tool
     // is active (matches the existing "claude + codex always mounted"
-    // pattern), so the bind shows up here even though tool=claude.
-    await createSession('demo', { tool: 'claude' })
+    // pattern), so the mount shows up here even though tool=claude.
+    await createSession('demo', { tool: 'claude', sessionId: 'abcd1234' })
 
-    const binds = mockCreateContainer.mock.calls[0]?.[0].HostConfig?.Binds
-    const opencodeMount = (binds ?? []).find(
-      (b: string) => b.endsWith(':/home/yaac/.local/share/opencode:Z'),
-    )
-    expect(opencodeMount).toBeDefined()
-    expect(opencodeMount).toMatch(/^\/tmp\/demo\/opencode-data\/[^:]+:/)
+    const { volumes, containers } = appliedJobManifest().spec.template.spec
+
+    const dataVol = volumes.find((v) => v.hostPath?.path === '/tmp/demo/opencode-data/abcd1234')
+    expect(dataVol).toBeDefined()
+    const dataMount = containers[0].volumeMounts
+      .find((m) => m.mountPath === '/home/yaac/.local/share/opencode')
+    expect(dataMount?.name).toBe(dataVol?.name)
+
+    const configVol = volumes.find((v) => v.hostPath?.path === '/tmp/demo/opencode-config')
+    expect(configVol).toBeDefined()
+    const configMount = containers[0].volumeMounts
+      .find((m) => m.mountPath === '/home/yaac/.config/opencode')
+    expect(configMount?.name).toBe(configVol?.name)
+
     expect(mockMkdir).toHaveBeenCalledWith(
       expect.stringMatching(/^\/tmp\/demo\/opencode-data\//),
       { recursive: true },
     )
-    expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/opencode-meta', { recursive: true })
-
-    // Verify the shared opencode config dir is mounted and created on every
-    // session
-    const configMount = (binds ?? []).find(
-      (b: string) => b.endsWith(':/home/yaac/.config/opencode:Z'),
-    )
-    expect(configMount).toBe('/tmp/demo/opencode-config:/home/yaac/.config/opencode:Z')
     expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/opencode-config', { recursive: true })
   })
 })
@@ -643,6 +628,7 @@ describe('resolveInitWindows', () => {
 
 import type * as daemonClientModule from '@/shared/daemon-client'
 import type * as allowedHostsModule from '@/lib/container/default-allowed-hosts'
+import type * as sharedGitModule from '@/shared/git'
 
 vi.mock('@/shared/daemon-client', async (importOriginal) => {
   const actual = await importOriginal<typeof daemonClientModule>()
@@ -689,15 +675,14 @@ describe('sessionCreate (CLI shim)', () => {
     } as unknown as Awaited<ReturnType<typeof getRpcClient>>)
     mockPost.mockResolvedValue(streamingResponse([
       JSON.stringify({ type: 'progress', message: 'Fetching latest from remote...' }),
-      JSON.stringify({ type: 'progress', message: 'Creating container yaac-demo-sess-123...' }),
+      JSON.stringify({ type: 'progress', message: 'Creating session job yaac-demo-sess-123...' }),
       JSON.stringify({
         type: 'result',
         result: {
           sessionId: 'sess-123',
-          containerName: 'yaac-demo-sess-123',
+          jobName: 'yaac-demo-sess-123',
           forwardedPorts: [],
           tool: 'claude',
-          claimedPrewarm: false,
         },
       }),
     ]))
@@ -720,7 +705,7 @@ describe('sessionCreate (CLI shim)', () => {
     await sessionCreate('demo', {})
     const logged = logSpy.mock.calls.map((args) => args[0] as unknown).filter((v) => typeof v === 'string')
     expect(logged).toContain('Fetching latest from remote...')
-    expect(logged).toContain('Creating container yaac-demo-sess-123...')
+    expect(logged).toContain('Creating session job yaac-demo-sess-123...')
   })
 
   it('throws with the daemon error message when the stream carries an error event', async () => {

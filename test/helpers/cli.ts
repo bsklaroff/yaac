@@ -4,17 +4,16 @@ import os from 'node:os'
 import path from 'node:path'
 import { setDataDir } from '@/shared/paths'
 import { readLock, type DaemonLock } from '@/shared/lock'
-import { TEST_RUN_ID } from '@test/helpers/setup'
+import { TEST_NAMESPACE } from '@test/helpers/setup'
 
 const TSX_CLI = path.resolve(__dirname, '..', '..', 'node_modules', 'tsx', 'dist', 'cli.mjs')
 const ENTRY = path.resolve(__dirname, '..', '..', 'src', 'cli.ts')
 
 /**
  * Cross-worker mutex so only one `yaac daemon run` is live at a time
- * across all vitest workers. Multiple daemons racing the same podman
- * socket under load was overloading it — every daemon runs its own
- * prewarm tick, so N workers meant N concurrent prewarms fighting for
- * the same container store.
+ * across all vitest workers. Multiple daemons hammering the shared
+ * cluster API server and the podman build engine concurrently starves
+ * both, so daemon-backed suites serialize on this lock.
  *
  * Lock file holds the owner's PID so a crashed holder doesn't wedge
  * the suite forever. fs.open(wx) is atomic across processes.
@@ -100,7 +99,7 @@ export interface YaacTestEnv {
  * `~/.gitconfig` untouched.
  *
  * Test-only daemon hooks are preset here so container-backed tests
- * land on pre-built images and a worker-isolated proxy network;
+ * land on pre-built images and a worker-isolated kubernetes namespace;
  * tests that do not touch containers just ignore them.
  */
 export async function createYaacTestEnv(): Promise<YaacTestEnv> {
@@ -110,6 +109,10 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
   await fs.mkdir(path.join(dataDir, 'projects'), { recursive: true })
   await fs.writeFile(gitConfigPath, '')
   setDataDir(dataDir)
+  // Mirror the namespace into the test process so src helpers used by
+  // assertions (listSessionPods, containerExec, ...) hit the same
+  // namespace as the daemon subprocess.
+  process.env.YAAC_K8S_NAMESPACE = TEST_NAMESPACE
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -118,7 +121,7 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
     YAAC_BUILD_ID: 'test-build-id',
     YAAC_IMAGE_PREFIX: 'yaac-test',
     YAAC_PROXY_IMAGE: 'yaac-test-proxy',
-    YAAC_PROXY_NETWORK: `yaac-test-sessions-${TEST_RUN_ID}`,
+    YAAC_K8S_NAMESPACE: TEST_NAMESPACE,
     YAAC_REQUIRE_PREBUILT_IMAGES: '1',
   }
 
@@ -182,10 +185,10 @@ export async function spawnYaacDaemon(env: NodeJS.ProcessEnv): Promise<SpawnedDa
         child.kill('SIGTERM')
         await new Promise<void>((resolve) => {
           // Give the daemon up to 15s to finish its current background-loop
-          // tick (prewarm upkeep, blocked-host persist) before we force-kill.
-          // SIGKILL bypasses the shutdown handler's `removeLock()` call, so a
-          // too-short timeout leaves stale lock files and flakes tests that
-          // assert on lock cleanup.
+          // tick (session reconcile, blocked-host persist) before we
+          // force-kill. SIGKILL bypasses the shutdown handler's
+          // `removeLock()` call, so a too-short timeout leaves stale lock
+          // files and flakes tests that assert on lock cleanup.
           const t = setTimeout(() => {
             child.kill('SIGKILL')
             resolve()

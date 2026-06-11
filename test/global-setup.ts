@@ -2,29 +2,30 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { fileHash, contextHash, ensureImageByTag } from '@/lib/container/image-builder'
+import { baseImageHash, fileHash, contextHash, ensureImageByTag, sessionUid } from '@/lib/container/image-builder'
 import { ensurePodmanSocket, getSocketPath } from '@/lib/container/runtime'
+import { pushImageToRegistry, registryReachable } from '@/lib/k8s/registry'
 import { DOCKERFILES_DIR, PROXY_DIR } from '@/lib/project/paths'
 
 const execFileAsync = promisify(execFile)
 
 /**
- * Prune every container built from a `yaac-test-*` image. Covers proxy
- * sidecars (yaac-test-proxy:*), mock remotes / test session containers
- * (yaac-test-base:*, yaac-test-base-nestable:*), and anything else the
- * suite tags under the `yaac-test-` prefix.
+ * Prune every podman container built from a `yaac-test-*` image. Sessions
+ * run as kubernetes Jobs now, so this only catches leftovers in the build
+ * engine's store: stray containers from interrupted older runs and any
+ * helper containers a test spun up under podman.
  *
- * Why an image-prefix filter rather than a label filter: an interrupted
- * test run leaves behind orphan containers whose conmons have died
- * (`conmon exited prematurely — internal libpod error`). Those orphans
- * accumulate across runs, drag down the shared podman service, and
- * eventually trigger the socket cascade. A label filter misses any
+ * Why an image-prefix filter rather than a label filter: orphan containers
+ * whose conmons have died (`conmon exited prematurely — internal libpod
+ * error`) accumulate across runs, drag down the shared podman service,
+ * and eventually trigger the socket cascade. A label filter misses any
  * container whose create-time label we haven't explicitly set; the
  * image prefix catches every test artifact unambiguously.
  *
  * Safe by construction: production images use the `yaac-` prefix
  * without `-test-` (e.g. yaac-base, yaac-proxy, yaac-user-<slug>), so
- * a running real daemon's containers are never matched. See
+ * a running real daemon's artifacts are never matched, and the
+ * `yaac-registry` container (registry:2 image) is untouched. See
  * `src/lib/container/image-builder.ts` — the test suite opts into
  * `imagePrefix: 'yaac-test'` to get this namespace separation.
  */
@@ -57,7 +58,30 @@ async function pruneTestContainers(): Promise<void> {
 }
 
 /**
- * Pre-build all container images used by e2e tests.
+ * Delete leaked per-run test namespaces (`yaac-test-<runId>`) from prior
+ * interrupted runs. Cheap best-effort sweep — every error (kubectl
+ * missing, cluster unreachable) is swallowed.
+ */
+async function cleanupLeakedTestNamespaces(): Promise<void> {
+  try {
+    const { stdout } = await execFileAsync(
+      'kubectl', ['get', 'namespaces', '-o', 'name'], { timeout: 10_000 },
+    )
+    const leaked = stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((name) => name.startsWith('namespace/yaac-test-'))
+    if (leaked.length === 0) return
+    await execFileAsync(
+      'kubectl', ['delete', ...leaked, '--ignore-not-found', '--wait=false'],
+      { timeout: 30_000 },
+    )
+  } catch { /* kubectl or cluster absent — nothing to sweep */ }
+}
+
+/**
+ * Pre-build all container images used by e2e tests, and push them to the
+ * local OCI registry so cluster pods can pull them.
  *
  * Each image is tagged with a content hash of its source files
  * (e.g. yaac-test-base:<hash>). This means the tag itself encodes
@@ -84,17 +108,18 @@ export async function setup(): Promise<void> {
   }
   if (!podmanAvailable) return
 
-  // Wipe leaked test containers from prior runs. Reclaims the 10255+ host
-  // ports held by leaked proxies, and flushes orphan mock/session
-  // containers whose conmons died — those orphans hang the podman
-  // service under subsequent test load.
+  // Wipe leaked build-engine containers from prior runs — orphans whose
+  // conmons died hang the podman service under subsequent build load.
   await pruneTestContainers()
 
   // --- Base image (Dockerfile.default) ---
+  // Hash composition must match resolveImageChain: the YAAC_UID build arg
+  // (in-container yaac uid = daemon uid, for idmapped hostPath writes) is
+  // part of the image content, so it is folded into the tag.
   const baseDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
-  const baseHash = await fileHash(baseDockerfile)
+  const baseHash = await baseImageHash(baseDockerfile)
   const baseTag = `yaac-test-base:${baseHash}`
-  await ensureImageByTag(baseTag, baseDockerfile, DOCKERFILES_DIR)
+  await ensureImageByTag(baseTag, baseDockerfile, DOCKERFILES_DIR, { YAAC_UID: String(sessionUid()) })
 
   // --- Tools layer (Dockerfile.tools, layered on base) ---
   const toolsDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.tools')
@@ -103,19 +128,24 @@ export async function setup(): Promise<void> {
   const toolsTag = `yaac-test-tools:${toolsHash}`
   await ensureImageByTag(toolsTag, toolsDockerfile, DOCKERFILES_DIR, { BASE_IMAGE: baseTag })
 
-  // --- Nestable layer (Dockerfile.nestable, layered on tools) ---
-  const nestDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
-  const nestContentHash = await fileHash(nestDockerfile)
-  const nestHash = crypto.createHash('sha256').update(`${toolsHash}:${nestContentHash}`).digest('hex').slice(0, 16)
-  const nestTag = `yaac-test-base-nestable:${nestHash}`
-  await ensureImageByTag(nestTag, nestDockerfile, DOCKERFILES_DIR, { BASE_IMAGE: toolsTag })
-
-  // --- Proxy sidecar (podman/proxy-sidecar/) ---
+  // --- Proxy (k8s/proxy/) ---
   const proxyHash = await contextHash(PROXY_DIR)
   const proxyTag = `yaac-test-proxy:${proxyHash}`
   await ensureImageByTag(proxyTag, path.join(PROXY_DIR, 'Dockerfile'), PROXY_DIR)
+
+  // Session/mock pods pull images from the local registry, not the podman
+  // store — push everything up front so test workers never race a push.
+  // pushImageToRegistry no-ops when the content-hash tag is already there.
+  if (await registryReachable()) {
+    for (const tag of [baseTag, toolsTag, proxyTag]) {
+      await pushImageToRegistry(tag)
+    }
+  } else {
+    console.log('[global-setup] local registry not reachable — e2e tests requiring a cluster will fail')
+  }
 }
 
 export async function teardown(): Promise<void> {
   await pruneTestContainers()
+  await cleanupLeakedTestNamespaces()
 }

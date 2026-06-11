@@ -3,9 +3,8 @@ import type { AgentTool } from '@/shared/types'
 
 export interface CreateSessionResult {
   sessionId: string
-  containerName: string
+  jobName: string
   tool: AgentTool
-  claimedPrewarm: boolean
 }
 
 type StreamEvent =

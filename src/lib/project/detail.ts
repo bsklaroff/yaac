@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { getDataDir, projectDir, projectConfigDir } from '@/lib/project/paths'
-import { podman } from '@/lib/container/runtime'
+import { projectDir, projectConfigDir } from '@/lib/project/paths'
+import { listSessionPods } from '@/lib/k8s/pods'
 import { loadProjectConfig } from '@/lib/project/config'
 import { DaemonError } from '@/daemon/errors'
 import type { ProjectMeta, YaacConfig } from '@/shared/types'
@@ -50,11 +50,8 @@ export async function resolveProjectConfigWithSource(slug: string): Promise<Proj
 
 async function countSessionsForProject(slug: string): Promise<number> {
   try {
-    const containers = await podman.listContainers({
-      all: true,
-      filters: { label: [`yaac.data-dir=${getDataDir()}`, `yaac.project=${slug}`] },
-    })
-    return containers.length
+    const pods = await listSessionPods(slug)
+    return pods.length
   } catch {
     return 0
   }

@@ -6,7 +6,6 @@ import { projectRebuild } from '@/commands/project-rebuild'
 import { sessionCreate } from '@/commands/session-create'
 import { sessionList } from '@/commands/session-list'
 import { sessionDelete } from '@/commands/session-delete'
-import { sessionPromote } from '@/commands/session-promote'
 import { sessionRestart } from '@/commands/session-restart'
 import { sessionAttach } from '@/commands/session-attach'
 import { sessionShell } from '@/commands/session-shell'
@@ -17,6 +16,7 @@ import { authClear } from '@/commands/auth-clear'
 import { authList } from '@/commands/auth-list'
 import { toolGet } from '@/commands/tool-get'
 import { toolSet } from '@/commands/tool-set'
+import { clusterCheck } from '@/commands/cluster-check'
 import { configEdit } from '@/commands/config-edit'
 import { configEditDockerfile } from '@/commands/config-edit-dockerfile'
 import { configEditUserDockerfile } from '@/commands/config-edit-user-dockerfile'
@@ -111,6 +111,16 @@ program
     await openWebapp({ noBrowser: options.browser === false })
   })
 
+const cluster = program
+  .command('cluster')
+  .description('Manage the kubernetes cluster yaac runs sessions on')
+  .configureHelp({ formatHelp: nestedHelp })
+
+cluster
+  .command('check')
+  .description('Verify cluster prerequisites (kubectl, registry, hostPath wiring)')
+  .action(clusterCheck)
+
 const project = program
   .command('project')
   .description('Manage projects')
@@ -169,12 +179,6 @@ session
   .description('Delete a session and clean up its resources')
   .argument('<session-id>', 'Session ID, container name, or container ID')
   .action(sessionDelete)
-
-session
-  .command('promote')
-  .description('Run the image-cache promoter for a session and stream its output (debug)')
-  .argument('<session-id>', 'Session ID (full or prefix) of a nestedContainers session')
-  .action(sessionPromote)
 
 session
   .command('restart')
@@ -268,7 +272,7 @@ auth
 
 auth
   .command('update')
-  .description('Add or update credentials (GitHub, Claude Code, or Codex)')
+  .description('Add or update credentials (GitHub, Claude Code, Codex, or OpenCode)')
   .action(authUpdate)
 
 auth

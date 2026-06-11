@@ -12,11 +12,7 @@ import { useProvisionSession } from '@/frontend/lib/useProvisionSession'
 import { useUiStore, type CreatingSession } from '@/frontend/store'
 import type { DeletedSessionEntry, SessionListEntry } from '@/shared/types'
 
-/**
- * User-facing session groups, in triage order (Waiting first). Prewarm is
- * deliberately excluded — it's a background hot-spare the daemon manages, not
- * a session the user acts on, so it never appears in the sidebar.
- */
+/** User-facing session groups, in triage order (Waiting first). */
 const GROUPS: { status: SessionListEntry['status']; label: string; defaultOpen: boolean }[] = [
   { status: 'waiting', label: 'Waiting', defaultOpen: true },
   { status: 'running', label: 'Running', defaultOpen: true },
@@ -45,8 +41,7 @@ export function Sidebar({
   connected: boolean
 }): JSX.Element {
   // Hide sessions whose delete is in flight (optimistic) until the snapshot
-  // drops them. Prewarm spares are also hidden, so the empty state keys off
-  // what's actually shown.
+  // drops them, so the empty state keys off what's actually shown.
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
   const creating = useUiStore((s) => s.creating)
   const shown = sessions.filter((s) => !pendingDeleteIds.includes(s.sessionId))

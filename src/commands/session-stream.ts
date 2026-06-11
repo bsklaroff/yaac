@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import readline from 'node:readline/promises'
 import { getRpcClient, toClientError } from '@/commands/rpc'
+import { interactiveExecArgs } from '@/lib/k8s/exec'
 import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
 import type { AgentTool, StreamOutcome } from '@/shared/types'
 
@@ -81,15 +82,15 @@ export async function sessionStream(project?: string, tool?: AgentTool): Promise
     console.log(`Attaching to session ${shortId} (project: ${body.projectSlug})...`)
 
     // Test-only hook: e2e-cli tests drive sessions without a TTY, where
-    // `podman exec -it` hangs waiting for terminal capabilities. Setting
+    // `kubectl exec -it` hangs waiting for terminal capabilities. Setting
     // this env var returns after the first pick so the test can drive the
-    // container directly via `podman exec`.
+    // container directly via `kubectl exec`.
     if (process.env.YAAC_E2E_NO_ATTACH === '1') return
 
     await new Promise<void>((resolve, reject) => {
       const child = spawn(
-        'podman',
-        ['exec', '-it', body.containerName, 'tmux', '-S', CONTAINER_TMUX_SOCK, 'attach-session', '-t', body.tmuxSession],
+        'kubectl',
+        interactiveExecArgs(body.jobName, ['tmux', '-S', CONTAINER_TMUX_SOCK, 'attach-session', '-t', body.tmuxSession]),
         { stdio: 'inherit' },
       )
       child.on('close', () => resolve())

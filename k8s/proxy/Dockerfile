@@ -1,12 +1,14 @@
 FROM docker.io/node:22.22.2-slim
 ARG SSL_CERT_FILE
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tor openssh-client \
+    && apt-get install -y --no-install-recommends tor openssh-client socat \
     && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /data && chown node:node /data
-# The ssh-agent socket lives in /ssh-agent (a shared named volume).
-# Create the mountpoint with node:node ownership so the agent's socket
-# inherits uid 1000 and session containers (also uid 1000) can connect.
+# The ssh-agent socket lives in /ssh-agent (a shared hostPath volume).
+# entrypoint.sh runs the real agent on a private socket here and bridges
+# a 0666 socket alongside it (socat) so user-namespaced session pods —
+# whose idmapped view of the agent socket shows its owner as an unmapped
+# uid — can still connect.
 RUN mkdir -p /ssh-agent && chown node:node /ssh-agent
 WORKDIR /app
 COPY package.json /app/package.json

@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import simpleGit from 'simple-git'
 import { cloneRepo } from '@/lib/git'
+import { listSessionPods } from '@/lib/k8s/pods'
 import {
   createYaacTestEnv,
   spawnYaacDaemon,
@@ -10,7 +11,12 @@ import {
   type YaacTestEnv,
   type SpawnedDaemon,
 } from '@test/helpers/cli'
-import { requirePodman, TEST_RUN_ID, podmanRetry } from '@test/helpers/setup'
+import {
+  requirePodman,
+  requireCluster,
+  execInJob,
+  cleanupSessionJobs,
+} from '@test/helpers/setup'
 import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
 import {
   startMockLLM,
@@ -40,7 +46,6 @@ import {
  * root to /repo.
  */
 describe('yaac session create drives real claude-code through mocked remotes', () => {
-  const networkName = `yaac-test-sessions-${TEST_RUN_ID}`
   let testEnv: YaacTestEnv
   let daemon: SpawnedDaemon | null = null
   let mockLLM: MockLLM | null = null
@@ -48,27 +53,20 @@ describe('yaac session create drives real claude-code through mocked remotes', (
 
   beforeAll(async () => {
     await requirePodman()
-    try { await podmanRetry(['network', 'create', networkName]) } catch { /* exists */ }
+    await requireCluster()
   })
 
   beforeEach(async () => {
     testEnv = await createYaacTestEnv()
-    mockLLM = await startMockLLM(networkName)
-    mockGit = await startMockGit(networkName)
+    mockLLM = await startMockLLM()
+    mockGit = await startMockGit()
     await seedMockGitRepo(mockGit, 'repo-demo', { files: { 'README.md': '# demo\n' } })
   })
 
   afterEach(async () => {
     if (daemon) await daemon.stop()
     daemon = null
-    try {
-      const { stdout } = await podmanRetry([
-        'ps', '-a', '--filter', `label=yaac.data-dir=${testEnv.dataDir}`,
-        '--format', '{{.Names}}',
-      ])
-      const names = stdout.split('\n').filter(Boolean)
-      if (names.length > 0) await podmanRetry(['rm', '-f', ...names])
-    } catch { /* best effort */ }
+    await cleanupSessionJobs()
     await cleanupMocks([mockLLM, mockGit])
     mockLLM = null
     mockGit = null
@@ -100,7 +98,7 @@ describe('yaac session create drives real claude-code through mocked remotes', (
 
     // Pre-seed claude-code's onboarding state so the first-run wizard is
     // skipped. These mount as /home/yaac/.claude.json and
-    // /home/yaac/.claude/settings.json in the session container.
+    // /home/yaac/.claude/settings.json in the session pod.
     await fs.writeFile(path.join(projectDir, 'claude.json'), JSON.stringify({
       hasCompletedOnboarding: true,
       lastOnboardingVersion: '2.1.116',
@@ -117,8 +115,8 @@ describe('yaac session create drives real claude-code through mocked remotes', (
     // Redirect every Anthropic / Claude / statsig host claude-code's
     // startup touches. Missing any of these causes claude's background
     // task to 502 and the whole process to unwind.
-    const llmTarget = { host: mockLLM!.networkIp, port: mockLLM!.port, tls: false }
-    const gitTarget = { host: mockGit!.networkIp, port: mockGit!.port, tls: false }
+    const llmTarget = { host: mockLLM!.host, port: mockLLM!.port, tls: false }
+    const gitTarget = { host: mockGit!.host, port: mockGit!.port, tls: false }
     const redirects = {
       'github.com': gitTarget, 'api.github.com': gitTarget,
       'api.anthropic.com': llmTarget,
@@ -141,19 +139,13 @@ describe('yaac session create drives real claude-code through mocked remotes', (
     const { exitCode } = await runYaac(daemonEnv, 'session', 'create', 'repo-demo', '--tool', 'claude')
     expect(exitCode).toBe(0)
 
-    // Find this test's session container (oldest of the project's
-    // containers — the daemon spins up a prewarm after session-create
-    // completes, which is newer).
-    const { stdout: containerIds } = await podmanRetry([
-      'ps', '--filter', `label=yaac.data-dir=${testEnv.dataDir}`,
-      '--filter', 'label=yaac.project=repo-demo',
-      '--format', '{{.Names}}|{{.CreatedAt}}',
-    ])
-    const containerName = containerIds
-      .split('\n').filter(Boolean)
-      .sort((a, b) => a.split('|')[1].localeCompare(b.split('|')[1]))
-      .map((row) => row.split('|')[0])[0]
-    expect(containerName).toBeDefined()
+    // Find this test's session Job (scoped by data-dir-hash via
+    // listSessionPods; oldest-first for determinism).
+    const pods = await listSessionPods('repo-demo')
+    const jobName = pods
+      .sort((a, b) => a.createdAtMs - b.createdAtMs)
+      .map((p) => p.jobName)[0]
+    expect(jobName).toBeDefined()
 
     // Wait for claude-code to show its main chat prompt. With the
     // pre-seeded onboarding state this happens directly on startup, no
@@ -162,8 +154,7 @@ describe('yaac session create drives real claude-code through mocked remotes', (
 
     const send = async (...keys: string[]): Promise<void> => {
       for (const k of keys) {
-        await podmanRetry([
-          'exec', '-w', '/', containerName,
+        await execInJob(jobName, [
           'tmux', '-S', CONTAINER_TMUX_SOCK, 'send-keys',
           '-t', 'yaac:claude', k,
         ])
@@ -171,8 +162,8 @@ describe('yaac session create drives real claude-code through mocked remotes', (
       }
     }
     const capturePane = async (): Promise<string> => {
-      const { stdout } = await podmanRetry([
-        'exec', '-w', '/', containerName, 'sh', '-c',
+      const { stdout } = await execInJob(jobName, [
+        'sh', '-c',
         `tmux -S ${CONTAINER_TMUX_SOCK} capture-pane -t yaac:claude -p -S - -E - 2>&1`,
       ])
       return stdout

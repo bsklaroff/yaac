@@ -19,8 +19,7 @@ import {
   opencodeConfigDir,
   worktreesDir,
   worktreeDir,
-  blockedHostsDir,
-  blockedHostsFile,
+  proxySecretsCredentialsPath,
   ensureDataDir,
   PACKAGE_ROOT,
   DOCKERFILES_DIR,
@@ -64,8 +63,11 @@ describe('paths', () => {
     expect(opencodeConfigDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/opencode-config')
     expect(worktreesDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/worktrees')
     expect(worktreeDir('my-repo', 'abc123')).toBe('/tmp/yaac-test/projects/my-repo/worktrees/abc123')
-    expect(blockedHostsDir('my-repo')).toBe('/tmp/yaac-test/projects/my-repo/blocked-hosts')
-    expect(blockedHostsFile('my-repo', 'abc123')).toBe('/tmp/yaac-test/projects/my-repo/blocked-hosts/abc123.json')
+  })
+
+  it('returns correct proxy-secrets credentials path', () => {
+    setDataDir('/tmp/yaac-test')
+    expect(proxySecretsCredentialsPath()).toBe('/tmp/yaac-test/.credentials/proxy-secrets.json')
   })
 
   it('ensureDataDir creates projects directory', async () => {

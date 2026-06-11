@@ -1,46 +1,28 @@
-import { podman } from '@/lib/container/runtime'
-import { getDataDir } from '@/lib/project/paths'
+import { findSessionPod, listSessionPods } from '@/lib/k8s/pods'
 
 export interface ResolvedContainer {
+  /** Session Job name (`yaac-<slug>-<sessionId>`). */
   name: string
   sessionId: string
   projectSlug: string
   state: string
 }
 
-function listManagedContainers() {
-  return podman.listContainers({
-    all: true,
-    filters: { label: [`yaac.data-dir=${getDataDir()}`] },
-  })
-}
-
-function findMatch(containers: Awaited<ReturnType<typeof listManagedContainers>>, idOrName: string) {
-  return containers.find((c) => {
-    const sessionId = c.Labels?.['yaac.session-id'] ?? ''
-    const name = c.Names?.[0]?.replace(/^\//, '') ?? ''
-    return sessionId === idOrName
-      || name === idOrName
-      || sessionId.startsWith(idOrName)
-      || c.Id.startsWith(idOrName)
-  })
-}
-
 /**
- * Resolves a container by prefix match on session ID or container name.
- * Returns the full container name, or null if not found/not running.
+ * Resolves a session by prefix match on session ID, Job name, or Pod
+ * name. Returns the Job name, or null if not found/not running.
  */
 export async function resolveContainer(idOrName: string): Promise<string | null> {
-  let containers
+  let pods
   try {
-    containers = await listManagedContainers()
+    pods = await listSessionPods()
   } catch {
-    console.error('Failed to connect to Podman. Is the Podman machine running?')
+    console.error('Failed to reach the kubernetes cluster. Run "yaac cluster check".')
     process.exitCode = 1
     return null
   }
 
-  const match = findMatch(containers, idOrName)
+  const match = findSessionPod(pods, idOrName)
 
   if (!match) {
     console.error(`No session found matching "${idOrName}". Run "yaac session list" to see active sessions.`)
@@ -48,30 +30,29 @@ export async function resolveContainer(idOrName: string): Promise<string | null>
     return null
   }
 
-  if (match.State !== 'running') {
-    const name = match.Names?.[0]?.replace(/^\//, '') ?? match.Id.slice(0, 12)
-    console.error(`Container "${name}" is not running (state: ${match.State}).`)
+  if (!match.running) {
+    console.error(`Session "${match.jobName}" is not running (phase: ${match.phase}).`)
     process.exitCode = 1
     return null
   }
 
-  return match.Names?.[0]?.replace(/^\//, '') ?? match.Id
+  return match.jobName
 }
 
 /**
- * Resolves a container by prefix match, accepting any state (running, stopped, exited).
+ * Resolves a session by prefix match, accepting any pod phase.
  */
 export async function resolveContainerAnyState(idOrName: string): Promise<ResolvedContainer | null> {
-  let containers
+  let pods
   try {
-    containers = await listManagedContainers()
+    pods = await listSessionPods()
   } catch {
-    console.error('Failed to connect to Podman. Is the Podman machine running?')
+    console.error('Failed to reach the kubernetes cluster. Run "yaac cluster check".')
     process.exitCode = 1
     return null
   }
 
-  const match = findMatch(containers, idOrName)
+  const match = findSessionPod(pods, idOrName)
 
   if (!match) {
     console.error(`No session found matching "${idOrName}". Run "yaac session list" to see active sessions.`)
@@ -80,9 +61,9 @@ export async function resolveContainerAnyState(idOrName: string): Promise<Resolv
   }
 
   return {
-    name: match.Names?.[0]?.replace(/^\//, '') ?? match.Id,
-    sessionId: match.Labels?.['yaac.session-id'] ?? '',
-    projectSlug: match.Labels?.['yaac.project'] ?? '',
-    state: match.State ?? 'unknown',
+    name: match.jobName,
+    sessionId: match.sessionId,
+    projectSlug: match.projectSlug,
+    state: match.running ? 'running' : match.phase.toLowerCase(),
   }
 }

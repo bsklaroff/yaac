@@ -7,10 +7,10 @@ import {
   getDeletedSessionOpencodeFirstUserMessage,
 } from '@/lib/session/opencode-status'
 
-export function getToolFromContainer(container: { Labels?: Record<string, string> }): AgentTool {
-  const tool = container.Labels?.['yaac.tool']
-  if (tool === 'codex') return 'codex'
-  if (tool === 'opencode') return 'opencode'
+/** Normalize a raw `yaac.tool` label value into an AgentTool. */
+export function normalizeTool(raw: string | undefined): AgentTool {
+  if (raw === 'codex') return 'codex'
+  if (raw === 'opencode') return 'opencode'
   return 'claude'
 }
 
@@ -18,30 +18,30 @@ export async function getSessionStatus(
   projectSlug: string,
   sessionId: string,
   tool: AgentTool,
-  containerName: string,
+  jobName: string,
 ): Promise<'running' | 'waiting'> {
   if (tool === 'codex') return getSessionCodexStatus(projectSlug, sessionId)
-  if (tool === 'opencode') return getSessionOpencodeStatus(projectSlug, sessionId, containerName)
-  return getSessionClaudeStatus(projectSlug, sessionId, containerName)
+  if (tool === 'opencode') return getSessionOpencodeStatus(projectSlug, sessionId, jobName)
+  return getSessionClaudeStatus(projectSlug, sessionId, jobName)
 }
 
 /**
- * First-message lookup for `yaac session list`. `containerName` is
- * required for opencode (HTTP probe into the running container) and
- * ignored for claude/codex (they read JSONL files from host bind-mounts).
- * Pass `undefined` for deleted-session listings where the container is
- * gone — opencode then reads from its on-disk meta cache.
+ * First-message lookup for `yaac session list`. `jobName` is required
+ * for opencode (HTTP probe into the running container) and ignored for
+ * claude/codex (they read JSONL files from host bind-mounts). Pass
+ * `undefined` for deleted-session listings where the Job is gone —
+ * opencode then reads from its on-disk meta cache.
  */
 export async function getSessionFirstMessage(
   projectSlug: string,
   sessionId: string,
   tool: AgentTool,
-  containerName?: string,
+  jobName?: string,
 ): Promise<string | undefined> {
   if (tool === 'codex') return getSessionCodexFirstUserMessage(projectSlug, sessionId)
   if (tool === 'opencode') {
-    if (containerName) {
-      return getSessionOpencodeFirstUserMessage(projectSlug, sessionId, containerName)
+    if (jobName) {
+      return getSessionOpencodeFirstUserMessage(projectSlug, sessionId, jobName)
     }
     return getDeletedSessionOpencodeFirstUserMessage(projectSlug, sessionId)
   }

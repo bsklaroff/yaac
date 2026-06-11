@@ -6,11 +6,14 @@ import {
   type YaacTestEnv,
   type SpawnedDaemon,
 } from '@test/helpers/cli'
-import { requirePodman } from '@test/helpers/setup'
+import { requirePodman, requireCluster } from '@test/helpers/setup'
 
 describe('yaac session delete (real CLI + real daemon)', () => {
+  // Session resolution lists pods/jobs via kubectl, so the NOT_FOUND path
+  // needs a reachable cluster even though no session is ever created.
   beforeAll(async () => {
     await requirePodman()
+    await requireCluster()
   })
 
   let testEnv: YaacTestEnv

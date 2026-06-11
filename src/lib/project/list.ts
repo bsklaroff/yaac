@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { getDataDir, getProjectsDir } from '@/lib/project/paths'
-import { podman } from '@/lib/container/runtime'
+import { getProjectsDir } from '@/lib/project/paths'
+import { listSessionPods } from '@/lib/k8s/pods'
 import type { ProjectMeta } from '@/shared/types'
 
 export interface ProjectListEntry {
@@ -13,8 +13,8 @@ export interface ProjectListEntry {
 
 /**
  * Scan every `project.json` under `~/.yaac/projects/` and count live
- * sessions by label. If Podman is unavailable we still return the
- * projects — just with `sessionCount: 0`. Same behavior as the old
+ * sessions by pod label. If the cluster is unavailable we still return
+ * the projects — just with `sessionCount: 0`. Same behavior as the old
  * in-process `projectList()` command.
  *
  * This is the pure data half of `yaac project list`; the CLI renderer
@@ -30,7 +30,7 @@ export async function listProjects(): Promise<ProjectListEntry[]> {
     return []
   }
 
-  const containerCounts = await countSessionsByProject()
+  const sessionCounts = await countSessionsByProject()
 
   const projects: ProjectListEntry[] = []
   for (const entry of entries) {
@@ -42,7 +42,7 @@ export async function listProjects(): Promise<ProjectListEntry[]> {
         slug: meta.slug,
         remoteUrl: meta.remoteUrl,
         addedAt: meta.addedAt,
-        sessionCount: containerCounts[meta.slug] ?? 0,
+        sessionCount: sessionCounts[meta.slug] ?? 0,
       })
     } catch {
       // skip malformed entries
@@ -55,16 +55,12 @@ export async function listProjects(): Promise<ProjectListEntry[]> {
 async function countSessionsByProject(): Promise<Record<string, number>> {
   const counts: Record<string, number> = {}
   try {
-    const containers = await podman.listContainers({
-      all: true,
-      filters: { label: [`yaac.data-dir=${getDataDir()}`] },
-    })
-    for (const c of containers) {
-      const proj = c.Labels?.['yaac.project']
-      if (proj) counts[proj] = (counts[proj] ?? 0) + 1
+    const pods = await listSessionPods()
+    for (const p of pods) {
+      if (p.projectSlug) counts[p.projectSlug] = (counts[p.projectSlug] ?? 0) + 1
     }
   } catch {
-    // podman not available — leave counts empty
+    // cluster not available — leave counts empty
   }
   return counts
 }

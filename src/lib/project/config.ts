@@ -1,10 +1,20 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import type { YaacConfig, PostgresRelayConfig, InitCommandSpec, AgentTool } from '@/shared/types'
+import type { YaacConfig, InitCommandSpec, AgentTool } from '@/shared/types'
 import { projectConfigDir } from '@/lib/project/paths'
 
-const KNOWN_KEYS = new Set(['envPassthrough', 'env', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'nestedContainers', 'portForward', 'bindMounts', 'hideInitPane', 'pgRelay', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths'])
+const KNOWN_KEYS = new Set(['envPassthrough', 'env', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'portForward', 'bindMounts', 'hideInitPane', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths'])
+
+/**
+ * Options that existed on the podman backend but were removed in the
+ * kubernetes migration. Rejected with a pointed error (not the generic
+ * unknown-field warning) so upgraders learn what happened.
+ */
+const REMOVED_KEYS: Record<string, string> = {
+  nestedContainers: 'nested containers are not supported on the kubernetes backend (planned for v2)',
+  pgRelay: 'the PostgreSQL relay was removed in the kubernetes migration',
+}
 
 /** Default when `ephemeralModulesPaths` is unset — redirect the root
  *  node_modules only. Set to `[]` in yaac-config.json to opt out. */
@@ -137,6 +147,9 @@ export function parseProjectConfig(raw: string): YaacConfig {
   const obj = parsed as Record<string, unknown>
 
   for (const key of Object.keys(obj)) {
+    if (key in REMOVED_KEYS) {
+      throw new Error(`yaac-config.json: "${key}" is no longer supported — ${REMOVED_KEYS[key]}`)
+    }
     if (!KNOWN_KEYS.has(key)) {
       console.warn(`yaac-config.json: unknown field "${key}"`)
     }
@@ -216,13 +229,6 @@ export function parseProjectConfig(raw: string): YaacConfig {
     config.initCommands = parseInitCommands(obj.initCommands)
   }
 
-  if (obj.nestedContainers !== undefined) {
-    if (typeof obj.nestedContainers !== 'boolean') {
-      throw new Error('yaac-config.json: nestedContainers must be a boolean')
-    }
-    config.nestedContainers = obj.nestedContainers
-  }
-
   if (obj.hideInitPane !== undefined) {
     if (typeof obj.hideInitPane !== 'boolean') {
       throw new Error('yaac-config.json: hideInitPane must be a boolean')
@@ -284,34 +290,6 @@ export function parseProjectConfig(raw: string): YaacConfig {
         mode: entry.mode,
       })
     }
-  }
-
-  if (obj.pgRelay !== undefined) {
-    if (typeof obj.pgRelay !== 'object' || obj.pgRelay === null || Array.isArray(obj.pgRelay)) {
-      throw new Error('yaac-config.json: pgRelay must be an object')
-    }
-    const pg = obj.pgRelay as Record<string, unknown>
-
-    if (pg.enabled === undefined) {
-      throw new Error('yaac-config.json: pgRelay.enabled is required')
-    }
-    if (typeof pg.enabled !== 'boolean') {
-      throw new Error('yaac-config.json: pgRelay.enabled must be a boolean')
-    }
-    const pgConfig: PostgresRelayConfig = { enabled: pg.enabled }
-    if (pg.hostPort !== undefined) {
-      if (typeof pg.hostPort !== 'number' || !Number.isInteger(pg.hostPort) || pg.hostPort < 1 || pg.hostPort > 65535) {
-        throw new Error('yaac-config.json: pgRelay.hostPort must be an integer between 1 and 65535')
-      }
-      pgConfig.hostPort = pg.hostPort
-    }
-    if (pg.containerPort !== undefined) {
-      if (typeof pg.containerPort !== 'number' || !Number.isInteger(pg.containerPort) || pg.containerPort < 1 || pg.containerPort > 65535) {
-        throw new Error('yaac-config.json: pgRelay.containerPort must be an integer between 1 and 65535')
-      }
-      pgConfig.containerPort = pg.containerPort
-    }
-    config.pgRelay = pgConfig
   }
 
   if (obj.addAllowedUrls !== undefined) {

@@ -1,9 +1,33 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+
+vi.mock('@/lib/k8s/pods', async (importOriginal) => {
+  const actual = await importOriginal<typeof podsModule>()
+  return {
+    ...actual,
+    listSessionPods: vi.fn(),
+    listSessionJobs: vi.fn(),
+  }
+})
+
+vi.mock('@/lib/session/cleanup', async (importOriginal) => {
+  const actual = await importOriginal<typeof cleanupModule>()
+  return {
+    ...actual,
+    cleanupSessionDetached: vi.fn().mockResolvedValue(undefined),
+  }
+})
+
 import { sessionDelete } from '@/commands/session-delete'
 import { deleteSession } from '@/lib/session/delete'
-import * as runtime from '@/lib/container/runtime'
-import * as cleanup from '@/lib/session/cleanup'
+import { listSessionPods, listSessionJobs, type SessionPod } from '@/lib/k8s/pods'
+import type * as podsModule from '@/lib/k8s/pods'
+import { cleanupSessionDetached } from '@/lib/session/cleanup'
+import type * as cleanupModule from '@/lib/session/cleanup'
 import { setDataDir } from '@/lib/project/paths'
+
+const mockListPods = vi.mocked(listSessionPods)
+const mockListJobs = vi.mocked(listSessionJobs)
+const cleanupSpy = vi.mocked(cleanupSessionDetached)
 
 describe('sessionDelete', () => {
   it('is exported as a function', () => {
@@ -13,60 +37,47 @@ describe('sessionDelete', () => {
 
 /**
  * Unit coverage for `deleteSession`: the prefix-matching logic, the
- * NOT_FOUND / PODMAN_UNAVAILABLE error shapes, and the handoff to
- * `cleanupSessionDetached` with the matched container's metadata.
- * Uses mocked podman so we don't need real containers.
+ * NOT_FOUND / RUNTIME_UNAVAILABLE error shapes, the pod-less-Job
+ * fallback, and the handoff to `cleanupSessionDetached` with the matched
+ * session's metadata. Uses mocked pod/Job listings so no cluster is
+ * needed.
  *
- * The actual reap-the-container behaviour is exercised end-to-end by
- * the e2e-cli session-delete NOT_FOUND test plus the integration-heavy
- * `test/e2e/session-delete.test.ts` running/stopped paths.
+ * The actual reap-the-Job behaviour is exercised end-to-end by the
+ * e2e session-delete tests.
  */
 describe('deleteSession', () => {
-  type PodmanContainerInspect = {
-    Id: string
-    Names?: string[]
-    Labels?: Record<string, string>
-    State?: string
-  }
-
-  let listSpy: ReturnType<typeof vi.fn<(opts?: unknown) => Promise<PodmanContainerInspect[]>>>
-  let cleanupSpy: ReturnType<typeof vi.fn>
-
   beforeEach(() => {
     setDataDir('/tmp/unit-session-delete')
-    listSpy = vi.fn()
-    cleanupSpy = vi.fn().mockResolvedValue(undefined)
-    vi.spyOn(runtime.podman, 'listContainers').mockImplementation(
-      listSpy as unknown as typeof runtime.podman.listContainers,
-    )
-    vi.spyOn(cleanup, 'cleanupSessionDetached').mockImplementation(
-      cleanupSpy as unknown as typeof cleanup.cleanupSessionDetached,
-    )
+    mockListPods.mockReset()
+    mockListJobs.mockReset()
+    mockListJobs.mockResolvedValue([])
+    cleanupSpy.mockClear()
   })
 
   afterEach(() => {
     vi.restoreAllMocks()
   })
 
-  function container(overrides: Partial<PodmanContainerInspect> = {}): PodmanContainerInspect {
+  function pod(overrides: Partial<SessionPod> = {}): SessionPod {
     return {
-      Id: 'fullcontainerid0000000000000000',
-      Names: ['/yaac-demo-abcd1234'],
-      Labels: {
-        'yaac.data-dir': '/tmp/unit-session-delete',
-        'yaac.session-id': 'abcd1234',
-        'yaac.project': 'demo',
-      },
-      State: 'running',
+      jobName: 'yaac-demo-abcd1234',
+      podName: 'yaac-demo-abcd1234-p0d42',
+      sessionId: 'abcd1234',
+      projectSlug: 'demo',
+      tool: 'claude',
+      phase: 'Running',
+      running: true,
+      createdAtMs: 1_700_000_000_000,
+      labels: {},
       ...overrides,
     }
   }
 
   it('resolves by exact session-id and hands the match to cleanupSessionDetached', async () => {
-    listSpy.mockResolvedValueOnce([container()])
+    mockListPods.mockResolvedValueOnce([pod()])
     const info = await deleteSession('abcd1234')
     expect(info).toEqual({
-      containerName: 'yaac-demo-abcd1234',
+      jobName: 'yaac-demo-abcd1234',
       sessionId: 'abcd1234',
       projectSlug: 'demo',
     })
@@ -74,43 +85,69 @@ describe('deleteSession', () => {
   })
 
   it('resolves by session-id prefix', async () => {
-    listSpy.mockResolvedValueOnce([container()])
+    mockListPods.mockResolvedValueOnce([pod()])
     const info = await deleteSession('abcd')
     expect(info.sessionId).toBe('abcd1234')
     expect(cleanupSpy).toHaveBeenCalledTimes(1)
   })
 
-  it('resolves by full container name', async () => {
-    listSpy.mockResolvedValueOnce([container()])
+  it('resolves by full job name', async () => {
+    mockListPods.mockResolvedValueOnce([pod()])
     const info = await deleteSession('yaac-demo-abcd1234')
-    expect(info.containerName).toBe('yaac-demo-abcd1234')
+    expect(info.jobName).toBe('yaac-demo-abcd1234')
   })
 
-  it('resolves by container-id prefix', async () => {
-    listSpy.mockResolvedValueOnce([container({ Id: 'deadbeef00000000' })])
-    const info = await deleteSession('deadbeef')
+  it('resolves by exact pod name', async () => {
+    mockListPods.mockResolvedValueOnce([pod({ podName: 'deadbeef00000000' })])
+    const info = await deleteSession('deadbeef00000000')
     expect(info.sessionId).toBe('abcd1234')
   })
 
-  it('schedules cleanup even for an already-stopped container', async () => {
-    listSpy.mockResolvedValueOnce([container({ State: 'exited' })])
+  it('schedules cleanup even for a non-running pod', async () => {
+    mockListPods.mockResolvedValueOnce([pod({ running: false, phase: 'Failed' })])
     const info = await deleteSession('abcd1234')
     expect(info.sessionId).toBe('abcd1234')
     expect(cleanupSpy).toHaveBeenCalledTimes(1)
   })
 
-  it('throws NOT_FOUND when no container matches', async () => {
-    listSpy.mockResolvedValueOnce([])
+  it('falls back to the Job list when the pod was deleted out-of-band', async () => {
+    mockListPods.mockResolvedValueOnce([])
+    mockListJobs.mockResolvedValueOnce([{
+      jobName: 'yaac-demo-podless1',
+      sessionId: 'podless1',
+      projectSlug: 'demo',
+      createdAtMs: 1_700_000_000_000,
+    }])
+    const info = await deleteSession('podless')
+    expect(info).toEqual({
+      jobName: 'yaac-demo-podless1',
+      sessionId: 'podless1',
+      projectSlug: 'demo',
+    })
+    expect(cleanupSpy).toHaveBeenCalledWith(info)
+  })
+
+  it('throws NOT_FOUND when neither a pod nor a Job matches', async () => {
+    mockListPods.mockResolvedValueOnce([])
     await expect(deleteSession('missing')).rejects.toMatchObject({
       code: 'NOT_FOUND',
     })
     expect(cleanupSpy).not.toHaveBeenCalled()
   })
 
-  it('throws PODMAN_UNAVAILABLE when the list call fails', async () => {
-    listSpy.mockRejectedValueOnce(new Error('ECONNREFUSED'))
+  it('throws RUNTIME_UNAVAILABLE when the pod list call fails', async () => {
+    mockListPods.mockRejectedValueOnce(new Error('connection refused'))
     await expect(deleteSession('abcd1234')).rejects.toMatchObject({
-      code: 'PODMAN_UNAVAILABLE',
+      code: 'RUNTIME_UNAVAILABLE',
+    })
+    expect(cleanupSpy).not.toHaveBeenCalled()
+  })
+
+  it('throws RUNTIME_UNAVAILABLE when the Job-list fallback fails', async () => {
+    mockListPods.mockResolvedValueOnce([])
+    mockListJobs.mockRejectedValueOnce(new Error('connection refused'))
+    await expect(deleteSession('abcd1234')).rejects.toMatchObject({
+      code: 'RUNTIME_UNAVAILABLE',
     })
     expect(cleanupSpy).not.toHaveBeenCalled()
   })

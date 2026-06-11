@@ -11,7 +11,7 @@ import {
   type YaacTestEnv,
   type SpawnedDaemon,
 } from '@test/helpers/cli'
-import { requirePodman, TEST_RUN_ID, podmanRetry } from '@test/helpers/setup'
+import { requirePodman, requireCluster, cleanupSessionJobs } from '@test/helpers/setup'
 import {
   startMockLLM,
   startMockGit,
@@ -50,6 +50,13 @@ function openWs(url: string, headers: Record<string, string>): {
     ws.once('open', resolve)
     ws.once('error', reject)
   })
+  // Tests that expect the upgrade to be refused (e.g. a 401) await
+  // `failed`, never `opened` — and their `ws.close()` while still
+  // CONNECTING rejects `opened` ("WebSocket was closed before the
+  // connection was established"). Attach a no-op handler so that
+  // expected rejection doesn't surface as an unhandled rejection;
+  // callers that do `await opened` still observe it.
+  opened.catch(() => {})
   const failed = new Promise<number>((resolve) => {
     ws.once('unexpected-response', (_req, res) => resolve(res.statusCode ?? 0))
   })
@@ -105,9 +112,7 @@ describe('daemon WebSocket surface (real daemon, no containers)', () => {
   })
 })
 
-describe('PTY WebSocket round-trip (real session container)', () => {
-  const networkName = `yaac-test-ws-${TEST_RUN_ID}`
-
+describe('PTY WebSocket round-trip (real session pod)', () => {
   let testEnv: YaacTestEnv
   let daemon: SpawnedDaemon | null = null
   let mockLLM: MockLLM | null = null
@@ -115,29 +120,20 @@ describe('PTY WebSocket round-trip (real session container)', () => {
 
   beforeAll(async () => {
     await requirePodman()
-    try {
-      await podmanRetry(['network', 'create', networkName])
-    } catch { /* already exists */ }
+    await requireCluster()
   })
 
   beforeEach(async () => {
     testEnv = await createYaacTestEnv()
-    mockLLM = await startMockLLM(networkName)
-    mockGit = await startMockGit(networkName)
+    mockLLM = await startMockLLM()
+    mockGit = await startMockGit()
     await seedMockGitRepo(mockGit, 'repo-demo', { files: { 'README.md': '# demo\n' } })
   })
 
   afterEach(async () => {
     if (daemon) await daemon.stop()
     daemon = null
-    try {
-      const { stdout } = await podmanRetry([
-        'ps', '-a', '--filter', `label=yaac.data-dir=${testEnv.dataDir}`,
-        '--format', '{{.Names}}',
-      ])
-      const names = stdout.split('\n').filter(Boolean)
-      if (names.length > 0) await podmanRetry(['rm', '-f', ...names])
-    } catch { /* best effort */ }
+    await cleanupSessionJobs()
     await cleanupMocks([mockLLM, mockGit])
     mockLLM = null
     mockGit = null
@@ -172,8 +168,8 @@ describe('PTY WebSocket round-trip (real session container)', () => {
       '[user]\n\tname = Test User\n\temail = test@example.com\n',
     )
 
-    const llmTarget = { host: mockLLM!.networkIp, port: mockLLM!.port, tls: false }
-    const gitTarget = { host: mockGit!.networkIp, port: mockGit!.port, tls: false }
+    const llmTarget = { host: mockLLM!.host, port: mockLLM!.port, tls: false }
+    const gitTarget = { host: mockGit!.host, port: mockGit!.port, tls: false }
     const daemonEnv: NodeJS.ProcessEnv = {
       ...testEnv.env,
       YAAC_E2E_UPSTREAM_REDIRECTS: JSON.stringify({
@@ -202,7 +198,7 @@ describe('PTY WebSocket round-trip (real session container)', () => {
       | { sessions: Array<{ sessionId: string; status: string }> }
       | Array<{ sessionId: string; status: string }>
     const sessions = Array.isArray(list) ? list : list.sessions
-    const session = sessions.find((s) => s.status !== 'prewarm')
+    const session = sessions[0]
     expect(session).toBeDefined()
 
     // Attach a scratch shell over the WS (the webapp's terminal path) and
@@ -210,7 +206,7 @@ describe('PTY WebSocket round-trip (real session container)', () => {
     // the container and tmux.
     const { ws, binary, opened } = openWs(
       `ws://127.0.0.1:${daemon.lock.port}/pty/attach`
-        + `?id=${session!.sessionId}&target=shell:shell&cols=100&rows=30`,
+        + `?id=${session.sessionId}&target=shell:shell&cols=100&rows=30`,
       auth,
     )
     await opened

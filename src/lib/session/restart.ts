@@ -1,16 +1,15 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { podman } from '@/lib/container/runtime'
+import { findSessionPod, listSessionPods } from '@/lib/k8s/pods'
 import {
   claudeDir,
   codexTranscriptDir,
-  getDataDir,
   getProjectsDir,
   opencodeMetaFile,
   worktreesDir,
 } from '@/lib/project/paths'
 import { cleanupSession } from '@/lib/session/cleanup'
-import { getToolFromContainer } from '@/lib/session/status'
+import { normalizeTool } from '@/lib/session/status'
 import { createSession, type SessionCreateResult } from '@/daemon/session-create'
 import { DaemonError } from '@/daemon/errors'
 import type { AgentTool } from '@/shared/types'
@@ -19,7 +18,7 @@ export interface RestartResolution {
   projectSlug: string
   sessionId: string
   tool: AgentTool
-  containerName: string | null
+  jobName: string | null
 }
 
 async function fileExists(p: string): Promise<boolean> {
@@ -48,38 +47,28 @@ async function detectToolFromTranscript(slug: string, sessionId: string): Promis
 }
 
 /**
- * Locate the project + tool for a session id. Prefers a live container's
+ * Locate the project + tool for a session id. Prefers a live pod's
  * labels (authoritative about tool) and falls back to scanning preserved
  * worktree dirs and transcript files so deleted sessions can still be
  * restarted against their saved history.
  */
 export async function resolveRestartTarget(idOrName: string): Promise<RestartResolution> {
   try {
-    const containers = await podman.listContainers({
-      all: true,
-      filters: { label: [`yaac.data-dir=${getDataDir()}`] },
-    })
-    const match = containers.find((c) => {
-      const sid = c.Labels?.['yaac.session-id'] ?? ''
-      const name = c.Names?.[0]?.replace(/^\//, '') ?? ''
-      return sid === idOrName
-        || name === idOrName
-        || sid.startsWith(idOrName)
-        || c.Id.startsWith(idOrName)
-    })
+    const pods = await listSessionPods()
+    const match = findSessionPod(pods, idOrName)
     if (match) {
       return {
-        projectSlug: match.Labels?.['yaac.project'] ?? '',
-        sessionId: match.Labels?.['yaac.session-id'] ?? '',
-        tool: getToolFromContainer(match),
-        containerName: match.Names?.[0]?.replace(/^\//, '') ?? match.Id,
+        projectSlug: match.projectSlug,
+        sessionId: match.sessionId,
+        tool: normalizeTool(match.tool),
+        jobName: match.jobName,
       }
     }
   } catch {
-    // Podman unavailable — try filesystem fallback. If both paths fail we
-    // surface NOT_FOUND below; PODMAN_UNAVAILABLE would be misleading since
-    // the restart may still succeed when podman recovers by the time
-    // createSession runs.
+    // Cluster unreachable — try filesystem fallback. If both paths fail we
+    // surface NOT_FOUND below; RUNTIME_UNAVAILABLE would be misleading
+    // since the restart may still succeed when the cluster recovers by the
+    // time createSession runs.
   }
 
   let slugs: string[] = []
@@ -99,7 +88,7 @@ export async function resolveRestartTarget(idOrName: string): Promise<RestartRes
     const wt = entries.find((e) => e === idOrName || e.startsWith(idOrName))
     if (!wt) continue
     const tool = await detectToolFromTranscript(slug, wt)
-    return { projectSlug: slug, sessionId: wt, tool, containerName: null }
+    return { projectSlug: slug, sessionId: wt, tool, jobName: null }
   }
 
   throw new DaemonError(
@@ -116,8 +105,8 @@ export interface RestartSessionOptions {
 }
 
 /**
- * Tear down any existing container for `idOrName` (preserving the
- * worktree) and spin up a fresh one that resumes the same session via
+ * Tear down any existing Job for `idOrName` (preserving the worktree)
+ * and spin up a fresh one that resumes the same session via
  * `claude --resume` / `codex resume`. All env, config, proxy rules, and
  * port forwarders come from the project config — addDir / addDirRw are
  * the only per-invocation inputs because they're not persisted anywhere.
@@ -126,11 +115,11 @@ export async function restartSession(
   idOrName: string,
   opts: RestartSessionOptions = {},
 ): Promise<SessionCreateResult> {
-  const { projectSlug, sessionId, tool, containerName } = await resolveRestartTarget(idOrName)
+  const { projectSlug, sessionId, tool, jobName } = await resolveRestartTarget(idOrName)
 
-  if (containerName) {
-    opts.onProgress?.(`Stopping container ${containerName}...`)
-    await cleanupSession({ containerName, projectSlug, sessionId })
+  if (jobName) {
+    opts.onProgress?.(`Stopping session job ${jobName}...`)
+    await cleanupSession({ jobName, projectSlug, sessionId })
   }
 
   const result = await createSession(projectSlug, {

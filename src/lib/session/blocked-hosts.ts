@@ -1,94 +1,34 @@
 import fs from 'node:fs/promises'
-import { blockedHostsDir, blockedHostsFile, getDataDir } from '@/lib/project/paths'
-import { podman } from '@/lib/container/runtime'
-import { proxyClient } from '@/lib/container/proxy-client'
-import type { ProxyClient } from '@/lib/container/proxy-client'
+import path from 'node:path'
+import { proxyDataHostDir } from '@/lib/k8s/bootstrap'
 
-export async function fetchAndPersistBlockedHosts(
-  proxyClient: ProxyClient,
-  sessions: Array<{ sessionId: string; projectSlug: string }>,
-): Promise<Record<string, string[]>> {
-  let allBlocked: Record<string, string[]>
-  try {
-    allBlocked = await proxyClient.getBlockedHosts()
-  } catch {
-    return {}
-  }
-
-  // Build a lookup from sessionId to projectSlug
-  const slugBySession = new Map(sessions.map((s) => [s.sessionId, s.projectSlug]))
-
-  // Write a file for each session that has blocked hosts
-  const dirsCreated = new Set<string>()
-  for (const [sessionId, hosts] of Object.entries(allBlocked)) {
-    const slug = slugBySession.get(sessionId)
-    if (!slug || hosts.length === 0) continue
-
-    const dir = blockedHostsDir(slug)
-    if (!dirsCreated.has(dir)) {
-      await fs.mkdir(dir, { recursive: true })
-      dirsCreated.add(dir)
-    }
-
-    const filePath = blockedHostsFile(slug, sessionId)
-    await fs.writeFile(filePath, JSON.stringify(hosts, null, 2) + '\n')
-  }
-
-  return allBlocked
-}
-
-export async function readBlockedHosts(slug: string, sessionId: string): Promise<string[]> {
-  const filePath = blockedHostsFile(slug, sessionId)
-  try {
-    const data = await fs.readFile(filePath, 'utf8')
-    return JSON.parse(data) as string[]
-  } catch {
-    return []
-  }
+/**
+ * Host path of the proxy's blocked-hosts write-through file. The proxy
+ * writes `/data/blocked-hosts.json` (sessionId -> hostnames) atomically
+ * whenever a session's blocked set grows; /data is a hostPath, so the
+ * daemon reads the live state straight off the filesystem — no proxy
+ * HTTP round-trip, no background-loop snapshotting, no staleness.
+ */
+export function blockedHostsStatePath(): string {
+  return path.join(proxyDataHostDir(), 'blocked-hosts.json')
 }
 
 /**
- * List running managed containers and persist their blocked-host state
- * from the proxy sidecar to disk. No-op if the proxy isn't running.
- * Replaces the hand-rolled block at the bottom of the old
- * `session monitor` command.
+ * Read the blocked hostnames the proxy has recorded for one session.
+ * Tolerant of a missing or transiently torn file (the proxy writes via
+ * tmp+rename, but virtiofs rename atomicity for host-side readers is not
+ * guaranteed) — both cases return the empty list and the next read
+ * sees the settled state.
  */
-export async function persistAllBlockedHosts(): Promise<void> {
+export async function readBlockedHosts(sessionId: string): Promise<string[]> {
+  let parsed: unknown
   try {
-    await proxyClient.ensureRunning()
+    parsed = JSON.parse(await fs.readFile(blockedHostsStatePath(), 'utf8'))
   } catch {
-    return
+    return []
   }
-  let containers
-  try {
-    containers = await podman.listContainers({
-      all: true,
-      filters: { label: [`yaac.data-dir=${getDataDir()}`] },
-    })
-  } catch {
-    return
-  }
-  const sessions = containers
-    .filter((c) => c.State === 'running')
-    .map((c) => ({
-      sessionId: c.Labels?.['yaac.session-id'] ?? '',
-      projectSlug: c.Labels?.['yaac.project'] ?? '',
-    }))
-    .filter((s) => s.sessionId && s.projectSlug)
-  await fetchAndPersistBlockedHosts(proxyClient, sessions)
-}
-
-export async function readAllBlockedHosts(
-  sessions: Array<{ sessionId: string; projectSlug: string }>,
-): Promise<Record<string, string[]>> {
-  const result: Record<string, string[]> = {}
-  await Promise.all(
-    sessions.map(async ({ sessionId, projectSlug }) => {
-      const hosts = await readBlockedHosts(projectSlug, sessionId)
-      if (hosts.length > 0) {
-        result[sessionId] = hosts
-      }
-    }),
-  )
-  return result
+  if (!parsed || typeof parsed !== 'object') return []
+  const hosts = (parsed as Record<string, unknown>)[sessionId]
+  if (!Array.isArray(hosts)) return []
+  return hosts.filter((h): h is string => typeof h === 'string')
 }

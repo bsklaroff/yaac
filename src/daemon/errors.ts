@@ -9,7 +9,7 @@ export type ErrorCode =
   | 'NOT_FOUND'
   | 'VALIDATION'
   | 'CONFLICT'
-  | 'PODMAN_UNAVAILABLE'
+  | 'RUNTIME_UNAVAILABLE'
   | 'AUTH_REQUIRED'
   | 'BAD_BEARER'
   | 'INTERNAL'
@@ -37,7 +37,7 @@ function defaultStatus(code: ErrorCode): number {
     case 'NOT_FOUND': return 404
     case 'VALIDATION': return 400
     case 'CONFLICT': return 409
-    case 'PODMAN_UNAVAILABLE': return 503
+    case 'RUNTIME_UNAVAILABLE': return 503
     case 'AUTH_REQUIRED': return 401
     case 'BAD_BEARER': return 401
     case 'INTERNAL': return 500
@@ -58,12 +58,12 @@ export function toErrorBody(err: unknown): { status: number; body: DaemonErrorBo
     }
   }
   const message = err instanceof Error ? err.message : String(err)
-  // Best-effort classification for podman connection failures so the CLI
-  // can render the old "Failed to connect to Podman" message.
-  if (/podman|dockerode|ECONNREFUSED.*\/podman/i.test(message)) {
+  // Best-effort classification for build-engine / cluster connection
+  // failures so the CLI can render a clear "runtime unavailable" message.
+  if (/podman|kubectl|kubernetes|connection refused.*6443/i.test(message)) {
     return {
       status: 503,
-      body: { error: { code: 'PODMAN_UNAVAILABLE', message } },
+      body: { error: { code: 'RUNTIME_UNAVAILABLE', message } },
     }
   }
   return {

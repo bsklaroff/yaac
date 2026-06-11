@@ -228,21 +228,15 @@ describe('loadProjectConfig', () => {
     expect(result).toEqual(config)
   })
 
-  it('parses valid config with nestedContainers', async () => {
+  it('rejects the removed nestedContainers key with a pointed error', async () => {
     await fs.writeFile(
       path.join(tmpDir, 'yaac-config.json'),
       JSON.stringify({ nestedContainers: true }),
     )
-    const result = await loadProjectConfig(tmpDir)
-    expect(result).toEqual({ nestedContainers: true })
-  })
-
-  it('throws on invalid nestedContainers type', async () => {
-    await fs.writeFile(
-      path.join(tmpDir, 'yaac-config.json'),
-      JSON.stringify({ nestedContainers: 'yes' }),
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow(
+      '"nestedContainers" is no longer supported — nested containers are not '
+      + 'supported on the kubernetes backend (planned for v2)',
     )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('nestedContainers must be a boolean')
   })
 
   it('parses valid config with hideInitPane', async () => {
@@ -464,68 +458,23 @@ describe('loadProjectConfig', () => {
     }
   })
 
-  it('throws on pgRelay section without enabled', async () => {
+  it('rejects the removed pgRelay key with a pointed error', async () => {
     await fs.writeFile(
       path.join(tmpDir, 'yaac-config.json'),
-      JSON.stringify({ pgRelay: {} }),
+      JSON.stringify({ pgRelay: { enabled: true, hostPort: 5433 } }),
     )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('pgRelay.enabled is required')
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow(
+      '"pgRelay" is no longer supported — the PostgreSQL relay was removed in '
+      + 'the kubernetes migration',
+    )
   })
 
-  it('parses valid config with pgRelay section (all fields)', async () => {
-    const config = {
-      pgRelay: { enabled: true, hostPort: 5433, containerPort: 5434 },
-    }
-    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
-    const result = await loadProjectConfig(tmpDir)
-    expect(result).toEqual(config)
-  })
-
-  it('parses pgRelay with enabled false', async () => {
-    const config = { pgRelay: { enabled: false } }
-    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
-    const result = await loadProjectConfig(tmpDir)
-    expect(result).toEqual(config)
-  })
-
-  it('throws on invalid pgRelay type', async () => {
+  it('rejects pgRelay regardless of its value shape', async () => {
     await fs.writeFile(
       path.join(tmpDir, 'yaac-config.json'),
       JSON.stringify({ pgRelay: 'not-an-object' }),
     )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('pgRelay must be an object')
-  })
-
-  it('throws on invalid pgRelay.enabled type', async () => {
-    await fs.writeFile(
-      path.join(tmpDir, 'yaac-config.json'),
-      JSON.stringify({ pgRelay: { enabled: 'yes' } }),
-    )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('pgRelay.enabled must be a boolean')
-  })
-
-  it('throws on invalid pgRelay.hostPort', async () => {
-    await fs.writeFile(
-      path.join(tmpDir, 'yaac-config.json'),
-      JSON.stringify({ pgRelay: { enabled: true, hostPort: 70000 } }),
-    )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('pgRelay.hostPort must be an integer between 1 and 65535')
-  })
-
-  it('throws on non-integer pgRelay.hostPort', async () => {
-    await fs.writeFile(
-      path.join(tmpDir, 'yaac-config.json'),
-      JSON.stringify({ pgRelay: { enabled: true, hostPort: 54.32 } }),
-    )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('pgRelay.hostPort must be an integer between 1 and 65535')
-  })
-
-  it('throws on invalid pgRelay.containerPort', async () => {
-    await fs.writeFile(
-      path.join(tmpDir, 'yaac-config.json'),
-      JSON.stringify({ pgRelay: { enabled: true, containerPort: 0 } }),
-    )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('pgRelay.containerPort must be an integer between 1 and 65535')
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('"pgRelay" is no longer supported')
   })
 
 
@@ -590,8 +539,8 @@ describe('loadProjectConfig', () => {
   })
 
   it('parseProjectConfig parses raw JSON string', () => {
-    const result = parseProjectConfig(JSON.stringify({ nestedContainers: true, initCommands: ['echo hi'] }))
-    expect(result).toEqual({ nestedContainers: true, initCommands: ['echo hi'] })
+    const result = parseProjectConfig(JSON.stringify({ hideInitPane: true, initCommands: ['echo hi'] }))
+    expect(result).toEqual({ hideInitPane: true, initCommands: ['echo hi'] })
   })
 
   it('warns on unknown fields', async () => {

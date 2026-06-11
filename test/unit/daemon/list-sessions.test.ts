@@ -2,12 +2,22 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import * as runtime from '@/lib/container/runtime'
+
+vi.mock('@/lib/k8s/pods', async (importOriginal) => {
+  const actual = await importOriginal<typeof podsModule>()
+  return {
+    ...actual,
+    listSessionPods: vi.fn().mockResolvedValue([]),
+    listSessionJobs: vi.fn().mockResolvedValue([]),
+  }
+})
+
+import { listSessionPods, type SessionPod } from '@/lib/k8s/pods'
+import type * as podsModule from '@/lib/k8s/pods'
 import * as cleanup from '@/lib/session/cleanup'
 import * as opencodeStatus from '@/lib/session/opencode-status'
 import {
   claudeDir,
-  getDataDir,
   getProjectsDir,
   opencodeMetaDir,
   opencodeMetaFile,
@@ -17,9 +27,12 @@ import {
   listActiveSessions,
   listDeletedSessions,
   captureOpencodeFirstMessages,
+  _clearListActiveInflightForTests,
 } from '@/lib/session/list'
 import { DaemonError } from '@/daemon/errors'
 import type { ProjectMeta } from '@/shared/types'
+
+const mockListPods = vi.mocked(listSessionPods)
 
 async function writeProject(slug: string, meta: Partial<ProjectMeta> = {}): Promise<void> {
   const full: ProjectMeta = {
@@ -37,6 +50,9 @@ describe('listActiveSessions', () => {
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
+    _clearListActiveInflightForTests()
+    mockListPods.mockReset()
+    mockListPods.mockResolvedValue([])
   })
 
   afterEach(async () => {
@@ -47,28 +63,15 @@ describe('listActiveSessions', () => {
     await expect(listActiveSessions('does-not-exist')).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 
-  it('returns empty arrays with no containers and no prewarm state', async () => {
+  it('returns empty arrays with no session pods', async () => {
     const result = await listActiveSessions()
     expect(result.sessions).toEqual([])
     expect(result.stale).toEqual([])
-    expect(result.failedPrewarms).toEqual([])
   })
 
-  it('surfaces failed prewarms from the state file', async () => {
-    await writeProject('foo')
-    const prewarmFile = path.join(tmpDir, '.prewarm-sessions.json')
-    const entry = {
-      sessionId: 'abc',
-      containerName: 'yaac-foo-abc',
-      fingerprint: 'fp-1',
-      state: 'failed' as const,
-      verifiedAt: 1_700_000_000_000,
-    }
-    await fs.writeFile(prewarmFile, JSON.stringify({ foo: entry }))
-    const result = await listActiveSessions('foo')
-    expect(result.failedPrewarms).toEqual([
-      { slug: 'foo', fingerprint: 'fp-1', verifiedAt: 1_700_000_000_000 },
-    ])
+  it('throws RUNTIME_UNAVAILABLE when the pod listing fails', async () => {
+    mockListPods.mockRejectedValueOnce(new Error('connection refused'))
+    await expect(listActiveSessions()).rejects.toMatchObject({ code: 'RUNTIME_UNAVAILABLE' })
   })
 })
 
@@ -77,6 +80,8 @@ describe('listDeletedSessions', () => {
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
+    mockListPods.mockReset()
+    mockListPods.mockResolvedValue([])
   })
 
   afterEach(async () => {
@@ -93,7 +98,7 @@ describe('listDeletedSessions', () => {
     expect(result).toEqual([])
   })
 
-  it('enumerates Claude JSONL sessions that have no active container', async () => {
+  it('enumerates Claude JSONL sessions that have no active pod', async () => {
     await writeProject('demo')
     const sessionsDir = path.join(claudeDir('demo'), 'projects', '-workspace')
     await fs.mkdir(sessionsDir, { recursive: true })
@@ -106,6 +111,26 @@ describe('listDeletedSessions', () => {
       projectSlug: 'demo',
       tool: 'claude',
     })
+  })
+
+  it('skips sessions that still have an active pod', async () => {
+    await writeProject('demo')
+    const sessionsDir = path.join(claudeDir('demo'), 'projects', '-workspace')
+    await fs.mkdir(sessionsDir, { recursive: true })
+    await fs.writeFile(path.join(sessionsDir, 'active1.jsonl'), '{}\n')
+    mockListPods.mockResolvedValue([{
+      jobName: 'yaac-demo-active1',
+      podName: 'yaac-demo-active1-x1',
+      sessionId: 'active1',
+      projectSlug: 'demo',
+      tool: 'claude',
+      phase: 'Running',
+      running: true,
+      createdAtMs: 0,
+      labels: {},
+    }])
+    const result = await listDeletedSessions('demo')
+    expect(result).toEqual([])
   })
 
   it('sorts newest first', async () => {
@@ -150,7 +175,7 @@ describe('listDeletedSessions', () => {
     expect(zeroLimit).toHaveLength(3)
   })
 
-  it('enumerates opencode sessions from the meta cache with no active container', async () => {
+  it('enumerates opencode sessions from the meta cache with no active pod', async () => {
     await writeProject('demo')
     await fs.mkdir(opencodeMetaDir('demo'), { recursive: true })
     await fs.writeFile(
@@ -182,26 +207,23 @@ describe('listDeletedSessions', () => {
 describe('captureOpencodeFirstMessages', () => {
   let tmpDir: string
 
-  function container(overrides: {
-    id: string
-    sessionId: string
-    tool: string
-  }): Record<string, unknown> {
+  function pod(overrides: { sessionId: string; tool: string }): SessionPod {
     return {
-      Id: overrides.id,
-      Names: [`/yaac-demo-${overrides.sessionId}`],
-      Labels: {
-        'yaac.data-dir': getDataDir(),
-        'yaac.session-id': overrides.sessionId,
-        'yaac.project': 'demo',
-        'yaac.tool': overrides.tool,
-      },
-      State: 'running',
+      jobName: `yaac-demo-${overrides.sessionId}`,
+      podName: `yaac-demo-${overrides.sessionId}-x1`,
+      sessionId: overrides.sessionId,
+      projectSlug: 'demo',
+      tool: overrides.tool,
+      phase: 'Running',
+      running: true,
+      createdAtMs: 0,
+      labels: {},
     }
   }
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
+    mockListPods.mockReset()
   })
 
   afterEach(async () => {
@@ -210,10 +232,10 @@ describe('captureOpencodeFirstMessages', () => {
   })
 
   it('captures only running opencode sessions, skipping other tools', async () => {
-    vi.spyOn(runtime.podman, 'listContainers').mockResolvedValue([
-      container({ id: 'oc', sessionId: 'ocsess', tool: 'opencode' }),
-      container({ id: 'cl', sessionId: 'clsess', tool: 'claude' }),
-    ] as unknown as Awaited<ReturnType<typeof runtime.podman.listContainers>>)
+    mockListPods.mockResolvedValue([
+      pod({ sessionId: 'ocsess', tool: 'opencode' }),
+      pod({ sessionId: 'clsess', tool: 'claude' }),
+    ])
     vi.spyOn(cleanup, 'isTmuxSessionAlive').mockResolvedValue(true)
     const captureSpy = vi
       .spyOn(opencodeStatus, 'ensureOpencodeFirstMessageCaptured')
@@ -225,8 +247,8 @@ describe('captureOpencodeFirstMessages', () => {
     expect(captureSpy).toHaveBeenCalledWith('demo', 'ocsess', 'yaac-demo-ocsess')
   })
 
-  it('returns early without capturing when podman is unavailable', async () => {
-    vi.spyOn(runtime.podman, 'listContainers').mockRejectedValue(new Error('down'))
+  it('returns early without capturing when the cluster is unavailable', async () => {
+    mockListPods.mockRejectedValue(new Error('down'))
     const captureSpy = vi
       .spyOn(opencodeStatus, 'ensureOpencodeFirstMessageCaptured')
       .mockResolvedValue(undefined)
@@ -241,6 +263,9 @@ describe('listActiveSessions project filter', () => {
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
+    _clearListActiveInflightForTests()
+    mockListPods.mockReset()
+    mockListPods.mockResolvedValue([])
   })
 
   afterEach(async () => {

@@ -1,7 +1,6 @@
 import { getRpcClient, toClientError } from '@/commands/rpc'
 import type {
   DeletedSessionEntry,
-  FailedPrewarmInfo,
   SessionListEntry,
 } from '@/shared/types'
 
@@ -40,12 +39,10 @@ export async function sessionList(projectSlug?: string, options: SessionListOpti
     renderRunning(result.sessions)
     renderBlockedHosts(result.sessions)
   }
-
-  renderFailedPrewarms(result.failedPrewarms)
 }
 
 function renderRunning(sessions: SessionListEntry[]): void {
-  const statusOrder: Record<string, number> = { waiting: 0, running: 1, prewarm: 2 }
+  const statusOrder: Record<string, number> = { waiting: 0, running: 1 }
   const sorted = [...sessions].sort((a, b) =>
     (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9)
       || a.createdAt.localeCompare(b.createdAt),
@@ -87,16 +84,6 @@ function renderBlockedHosts(sessions: SessionListEntry[]): void {
     for (const host of s.blockedHosts) {
       console.log(`    ${host}`)
     }
-  }
-  console.log('')
-}
-
-function renderFailedPrewarms(failed: FailedPrewarmInfo[]): void {
-  if (failed.length === 0) return
-  console.log('Failed prewarms (will retry when fingerprint changes or monitor restarts):')
-  for (const f of failed) {
-    const failedAt = new Date(f.verifiedAt).toISOString().replace('T', ' ').slice(0, 19)
-    console.log(`  ${f.slug}  fingerprint=${f.fingerprint}  failed=${failedAt}`)
   }
   console.log('')
 }

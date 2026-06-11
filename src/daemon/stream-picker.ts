@@ -1,8 +1,7 @@
 import fs from 'node:fs/promises'
-import { podman } from '@/lib/container/runtime'
-import { getDataDir, getProjectsDir } from '@/lib/project/paths'
+import { listSessionPods } from '@/lib/k8s/pods'
+import { getProjectsDir } from '@/lib/project/paths'
 import { isTmuxSessionAlive } from '@/lib/session/cleanup'
-import { isPrewarmSession } from '@/lib/prewarm'
 import { getSessionFirstMessage } from '@/lib/session/status'
 import { getWaitingSessions } from '@/lib/session/waiting'
 import { createSession } from '@/daemon/session-create'
@@ -17,20 +16,14 @@ import type {
 export type { PickNextInput, PickNextResult, StreamOutcome }
 
 async function getActiveProjects(): Promise<string[]> {
-  const containers = await podman.listContainers({
-    all: true,
-    filters: { label: [`yaac.data-dir=${getDataDir()}`] },
-  })
+  const pods = await listSessionPods()
   const projects = new Set<string>()
-  for (const c of containers) {
-    const slug = c.Labels?.['yaac.project']
-    if (!slug) continue
-    if (c.State !== 'running') continue
-    const sid = c.Labels?.['yaac.session-id']
-    if (!sid) continue
-    if (!(await isTmuxSessionAlive(slug, sid))) continue
-    if (await isPrewarmSession(slug, sid)) continue
-    projects.add(slug)
+  for (const p of pods) {
+    if (!p.projectSlug) continue
+    if (!p.running) continue
+    if (!p.sessionId) continue
+    if (!(await isTmuxSessionAlive(p.projectSlug, p.sessionId))) continue
+    projects.add(p.projectSlug)
   }
   return [...projects].sort()
 }
@@ -73,7 +66,7 @@ export async function pickNextStreamSession(input: PickNextInput): Promise<PickN
     return {
       done: false,
       sessionId: next.sessionId,
-      containerName: next.containerName,
+      jobName: next.jobName,
       tmuxSession: 'yaac',
       projectSlug: next.projectSlug,
       tool: next.tool,
@@ -89,11 +82,11 @@ export async function pickNextStreamSession(input: PickNextInput): Promise<PickN
       allSessions[0].projectSlug,
       allSessions[0].sessionId,
       allSessions[0].tool,
-      allSessions[0].containerName,
+      allSessions[0].jobName,
     ))
 
   // If the last-attached session has disappeared from the waiting list
-  // (container was killed/removed), treat it as closed_blank when its
+  // (job was killed/removed), treat it as closed_blank when its
   // transcript has no user message.
   let lastClosedBlank = false
   if (
@@ -115,14 +108,14 @@ export async function pickNextStreamSession(input: PickNextInput): Promise<PickN
   if (input.project) {
     const tool: AgentTool = input.tool ?? 'claude'
     const created = await createSession(input.project, { tool })
-    if (!created?.sessionId || !created.containerName) {
+    if (!created?.sessionId || !created.jobName) {
       throw new DaemonError('INTERNAL', 'session creation returned no result')
     }
     visited.push(created.sessionId)
     return {
       done: false,
       sessionId: created.sessionId,
-      containerName: created.containerName,
+      jobName: created.jobName,
       tmuxSession: 'yaac',
       projectSlug: input.project,
       tool,

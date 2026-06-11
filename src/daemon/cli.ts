@@ -25,8 +25,10 @@ import {
 import { ensureDataDir } from '@/lib/project/paths'
 import { daemonLogPath, webSessionsPath } from '@/shared/paths'
 import { startBackgroundLoop } from '@/daemon/background-loop'
-import { gcOrphanSessionVolumes } from '@/lib/container/image-promoter'
 import { gcOrphanEphemeralModuleDirs } from '@/lib/session/cleanup'
+import { ensureNamespace } from '@/lib/k8s/bootstrap'
+import { ensureLocalRegistry } from '@/lib/k8s/registry'
+import { proxyClient } from '@/lib/container/proxy-client'
 import { restoreAllSessionForwarders } from '@/lib/session/restore-forwarders'
 import { stopAllSessionForwarders } from '@/lib/session/port-forwarders'
 import { daemonLog } from '@/daemon/log'
@@ -153,10 +155,10 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     return {
       onOpen: (_evt, ws) => {
         void (async () => {
-          let containerName: string
+          let jobName: string
           try {
             const resolved = await resolveSessionContainer(id, { requireRunning: true })
-            containerName = resolved.containerName
+            jobName = resolved.jobName
           } catch {
             try {
               ws.send(JSON.stringify({ type: 'error', message: 'session not found or not running' }))
@@ -171,7 +173,7 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
             ws.close(1011, 'no raw socket')
             return
           }
-          const ptyProc = spawnAttachPty(containerName, size, target)
+          const ptyProc = spawnAttachPty(jobName, size, target)
           const sock: SocketLike = {
             send: (data) => raw.send(data),
             close: (code, reason) => raw.close(code, reason),
@@ -180,7 +182,7 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
             onClose: (cb) => raw.on('close', () => cb()),
           }
           bridge(ptyProc, sock)
-          daemonLog(`[daemon] pty attach: session=${id} container=${containerName}`)
+          daemonLog(`[daemon] pty attach: session=${id} job=${jobName}`)
         })()
       },
     }
@@ -227,10 +229,10 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     abortCtrl.abort()
     if (loopDone) {
       // Bound the loop drain the same way we bound server.close() below.
-      // Under parallel-test podman pressure, an in-flight prewarm or
-      // reap tick can stack retries for many seconds — long enough to
-      // blow `yaac daemon stop`'s observation window and make the CLI
-      // fall back to "force-removed stale lock".
+      // Under parallel-test cluster pressure, an in-flight reap tick can
+      // stack retries for many seconds — long enough to blow `yaac
+      // daemon stop`'s observation window and make the CLI fall back to
+      // "force-removed stale lock".
       await Promise.race([
         loopDone.catch((err) => daemonLog(`[daemon] loop exit error: ${String(err)}`)),
         new Promise<void>((resolve) => setTimeout(resolve, 3000)),
@@ -238,10 +240,14 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     }
     // Tear down every active port-forwarder before closing the server.
     // Each forwarder owns a listener server and a set of long-lived
-    // `podman exec nc` relay children; without this they survive the
+    // `kubectl exec nc` relay children; without this they survive the
     // daemon (orphaned to PID 1) and the next daemon stacks new ones on
     // top via restoreAllSessionForwarders.
     stopAllSessionForwarders()
+
+    // Same for the proxy control tunnel (`kubectl port-forward` child) —
+    // the deployed proxy itself stays up for the next daemon to adopt.
+    proxyClient.disconnect()
 
     // @hono/node-server wraps a Node http.Server; close() refuses new
     // connections, drains in-flight requests, then fires the callback.
@@ -261,6 +267,16 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
   process.on('SIGTERM', () => void shutdown('SIGTERM'))
   process.on('SIGINT', () => void shutdown('SIGINT'))
 
+  // Best-effort cluster bootstrap: the local registry and the yaac
+  // namespace are cheap to ensure and needed by the first session.
+  // Failures are logged, not fatal — the daemon can serve project/auth
+  // RPCs without a cluster, and session creation surfaces its own
+  // RUNTIME_UNAVAILABLE with a pointer to `yaac cluster check`.
+  void (async () => {
+    await ensureLocalRegistry()
+    await ensureNamespace()
+  })().catch((err) => daemonLog(`[daemon] cluster bootstrap failed: ${String(err)}`))
+
   // A daemon restart loses the in-memory forwarder registry while
   // running containers keep their tmux `status-right` advertising
   // ports that aren't actually forwarded anymore. Rebuild forwarders
@@ -272,12 +288,12 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     daemonLog(`[daemon] restore forwarders failed: ${String(err)}`)
   }
 
-  // Start the background loop before running orphan GC. Both GC passes
-  // hit the podman socket, and during a freeze cluster (saturated VM,
-  // user restarting repeatedly) they can take minutes — blocking the
-  // first prewarm tick that whole time. Running them concurrently with
-  // the loop lets the daemon serve the prewarm/reconcile path right
-  // away while the GC drains in the background.
+  // Start the background loop before running orphan GC. The GC pass
+  // hits the cluster API, and during a freeze cluster (saturated VM,
+  // user restarting repeatedly) it can take minutes — blocking the
+  // first reconcile tick that whole time. Running it concurrently with
+  // the loop lets the daemon serve the reconcile path right away while
+  // the GC drains in the background.
   loopDone = startBackgroundLoop({
     signal: abortCtrl.signal,
     // After each reconciliation tick, push a fresh snapshot to any
@@ -286,15 +302,9 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     onTick: () => hub.publishSnapshot(),
   })
 
-  // Remove per-session podman graphroot volumes whose session container
-  // is gone (crashed session, killed daemon, host reboot). No layer
-  // salvage — cache missed at crash time is forfeit.
-  void gcOrphanSessionVolumes()
-    .catch((err) => daemonLog(`[daemon] orphan volume GC failed: ${String(err)}`))
-
   // Remove per-session `.cached-packages/modules/<sid>` dirs whose
-  // session container is gone. Same rationale as graphroot GC above —
-  // catches leftovers from crashes and host reboots.
+  // session container is gone — catches leftovers from crashes and host
+  // reboots.
   void gcOrphanEphemeralModuleDirs()
     .catch((err) => daemonLog(`[daemon] orphan modules GC failed: ${String(err)}`))
 }

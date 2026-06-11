@@ -1,7 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import crypto from 'node:crypto'
-import fs from 'node:fs/promises'
-import path from 'node:path'
 import {
   createYaacTestEnv,
   runYaac,
@@ -9,21 +7,47 @@ import {
   type YaacTestEnv,
 } from '@test/helpers/cli'
 import { readLock } from '@/shared/lock'
-import { requirePodman, podmanRetry } from '@test/helpers/setup'
-import { podman, createAndStartContainerWithRetry } from '@/lib/container/runtime'
+import { requirePodman, requireCluster, TEST_PROXY_CONFIG } from '@test/helpers/setup'
+import { resolveTestBaseImageRef } from '@test/helpers/mock-remotes'
+import { ProxyClient } from '@/lib/container/proxy-client'
+import { PROXY_APP_NAME, PROXY_AUTH_SECRET_NAME, PROXY_PORT } from '@/lib/k8s/bootstrap'
+import {
+  k8sNamespace,
+  kubectlApply,
+  kubectlGetJson,
+  kubectlWithRetry,
+} from '@/lib/k8s/kubectl'
 
 /**
- * Regression test for the daemon-restart network-loss bug: restarting the
- * daemon while its proxy sidecar is running must not force-remove or
- * recreate the proxy — session containers hold the proxy's internal-network
- * IP in their HTTPS_PROXY env vars and lose network access if the proxy
- * comes back on a new IP.
+ * Regression test for daemon-restart proxy churn: restarting the daemon
+ * while its proxy is running must not tear down or replace the proxy —
+ * session pods hold `HTTPS_PROXY=...yaac-proxy.<ns>.svc:10255` env vars,
+ * and while the Service DNS name is stable, a proxy pod replacement
+ * still drops live MITM tunnels and loses ssh-agent identities.
+ *
+ * Kubernetes-era expectations (the successor to the podman-era
+ * "adoption" semantics):
+ *   - the proxy Deployment/Service survive the restart untouched
+ *     (`kubectl apply` reconciles; same image hash → no rollout)
+ *   - the concrete proxy pod is NOT replaced (same UID)
+ *   - the second daemon reads the auth secret back from the
+ *     `yaac-proxy-auth` Secret instead of regenerating it
+ *   - a session-like pod can still reach the proxy via the Service after
+ *     the restart
  *
  * Uses the real `yaac daemon restart` command (not spawnYaacDaemon) so the
  * stop/start race matches production: stopDaemon waits only for the lock
  * to be removed, then startDaemon spawns the new daemon immediately — the
  * outgoing daemon may still be mid-shutdown when the new one's background
  * loop fires its first tick.
+ *
+ * Dropped from the podman era (no k8s analog):
+ *   - the "second stale-hash proxy + dependent session" case — there is
+ *     exactly one proxy Deployment per namespace now; `kubectl apply`
+ *     replaces the pod in-place on image-hash changes instead of running
+ *     old and new proxies side by side.
+ *   - the skipped listContainers-race case — that raced podman's
+ *     container store; the apiserver has no equivalent failure mode.
  */
 
 // Hold the cross-worker mutex for the whole file since we spawn detached
@@ -33,6 +57,7 @@ import { podman, createAndStartContainerWithRetry } from '@/lib/container/runtim
 let releaseDaemonMutex: (() => Promise<void>) | null = null
 beforeAll(async () => {
   await requirePodman()
+  await requireCluster()
   releaseDaemonMutex = await acquireDaemonMutex()
 })
 afterAll(async () => {
@@ -40,9 +65,55 @@ afterAll(async () => {
   releaseDaemonMutex = null
 })
 
+interface ProxyPodIdentity {
+  name: string
+  uid: string
+  startedAt: string
+}
+
+interface RawPodList {
+  items: Array<{
+    metadata?: { name?: string; uid?: string; deletionTimestamp?: string }
+    status?: { phase?: string; startTime?: string }
+  }>
+}
+
+async function findRunningProxyPod(): Promise<ProxyPodIdentity | null> {
+  const list = await kubectlGetJson<RawPodList>([
+    'get', 'pods', '-n', k8sNamespace(), '-l', `app=${PROXY_APP_NAME}`,
+  ])
+  const pod = list?.items.find(
+    (p) => p.status?.phase === 'Running' && !p.metadata?.deletionTimestamp,
+  )
+  if (!pod) return null
+  return {
+    name: pod.metadata?.name ?? '',
+    uid: pod.metadata?.uid ?? '',
+    startedAt: pod.status?.startTime ?? '',
+  }
+}
+
+async function waitForRunningProxyPod(timeoutMs: number): Promise<ProxyPodIdentity> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const pod = await findRunningProxyPod().catch(() => null)
+    if (pod) return pod
+    await new Promise((r) => setTimeout(r, 500))
+  }
+  throw new Error(`no running proxy pod in namespace ${k8sNamespace()} within ${timeoutMs}ms`)
+}
+
+async function readProxyAuthSecret(): Promise<string | null> {
+  const secret = await kubectlGetJson<{ data?: Record<string, string> }>([
+    'get', 'secret', PROXY_AUTH_SECRET_NAME, '-n', k8sNamespace(),
+  ])
+  const encoded = secret?.data?.secret
+  return encoded ? Buffer.from(encoded, 'base64').toString('utf8') : null
+}
+
 describe('daemon restart preserves running proxy (real `yaac daemon restart`)', () => {
-  const network = `yaac-test-restart-${crypto.randomBytes(4).toString('hex')}`
   let testEnv: YaacTestEnv
+  let probePodName: string | null = null
 
   beforeEach(async () => {
     testEnv = await createYaacTestEnv()
@@ -50,66 +121,69 @@ describe('daemon restart preserves running proxy (real `yaac daemon restart`)', 
 
   afterEach(async () => {
     await killDaemonByLock()
-    try {
-      const { stdout } = await podmanRetry([
-        'ps', '-a', '--filter', `network=${network}`, '--format', '{{.Names}}',
-      ])
-      const names = stdout.split('\n').filter(Boolean)
-      if (names.length > 0) await podmanRetry(['rm', '-f', ...names])
-    } catch { /* ok */ }
-    try { await podmanRetry(['network', 'rm', network]) } catch { /* ok */ }
+    if (probePodName) {
+      await kubectlWithRetry([
+        'delete', 'pod', probePodName, '-n', k8sNamespace(),
+        '--ignore-not-found', '--wait=false', '--grace-period=1',
+      ]).catch(() => { /* best effort */ })
+      probePodName = null
+    }
+    // Remove the proxy Deployment/Service so the next test's daemon
+    // bootstraps from a clean namespace state.
+    await kubectlWithRetry([
+      'delete', 'deployment,service', PROXY_APP_NAME,
+      '-n', k8sNamespace(), '--ignore-not-found', '--wait=false',
+    ]).catch(() => { /* best effort */ })
     await testEnv.cleanup()
   })
 
-  it('`yaac daemon restart` preserves proxy identity, IP, and session reachability', async () => {
-    const daemonEnv = { ...testEnv.env, YAAC_PROXY_NETWORK: network }
+  it('`yaac daemon restart` preserves the proxy pod, auth secret, and session reachability', async () => {
+    const daemonEnv = testEnv.env
 
     // Real `yaac daemon start` — spawns a detached daemon subprocess.
     const started = await runYaac(daemonEnv, 'daemon', 'start')
     expect(started.exitCode).toBe(0)
 
-    // Wait for the background loop's first tick to bring the proxy up.
-    const proxyBefore = await waitForRunningProxy(network, 30_000)
-    const idBefore = proxyBefore.Id
-    const startedAtBefore = proxyBefore.State.StartedAt
-    const ipBefore = ipOnNetwork(proxyBefore, network)
-    expect(ipBefore).toMatch(/^\d+\.\d+\.\d+\.\d+$/)
-    const proxyName = proxyBefore.Name.replace(/^\//, '')
+    // The daemon deploys the proxy lazily on the first session create, not
+    // on startup — stand the proxy up from the test process (same data dir
+    // and namespace) to simulate a daemon that has created a session.
+    const bootstrapClient = new ProxyClient(TEST_PROXY_CONFIG)
+    await bootstrapClient.ensureRunning()
+    bootstrapClient.disconnect()
 
-    // Attach a session-like container to the proxy network, labeled as
-    // if it were a real yaac session. This matches the production shape:
-    //   - a container on the proxy's internal network
-    //   - a `yaac.proxy-container=<name>` label (gcStaleProxies uses it)
-    //   - a `yaac.data-dir=<dir>` label (reconcile/prewarm/forwarders use it)
-    // Without this, the daemon's restart-time queries see zero session
-    // containers and may behave differently than in prod.
-    const { stdout: baseImages } = await podmanRetry([
-      'images', '--format', '{{.Repository}}:{{.Tag}}', '--filter', 'reference=yaac-test-base',
-    ])
-    const baseImage = baseImages.trim().split('\n')[0]
-    expect(baseImage).toBeTruthy()
+    const proxyBefore = await waitForRunningProxyPod(60_000)
+    expect(proxyBefore.uid).toBeTruthy()
 
-    const sessionName = `yaac-restart-test-sess-${crypto.randomBytes(4).toString('hex')}`
-    await createAndStartContainerWithRetry({
-      Image: baseImage,
-      name: sessionName,
-      Labels: {
-        'yaac.test': 'true',
-        // Keep `yaac.proxy-container` so gcStaleProxies sees a dependent
-        // session and preserves the proxy. Deliberately omit the session
-        // labels (`yaac.data-dir`, `yaac.session-id`, `yaac.project`) so
-        // reconcileStaleSessions — which tmux-pings and reaps anything
-        // without a live tmux — doesn't eat this test probe.
-        'yaac.proxy-container': proxyName,
+    const secretBefore = await readProxyAuthSecret()
+    expect(secretBefore).toBeTruthy()
+
+    // Launch a session-like pod in the namespace. This matches the
+    // production shape: a pod whose HTTPS_PROXY env would point at the
+    // proxy Service DNS name. The base image's entrypoint keeps it alive.
+    probePodName = `yaac-restart-test-sess-${crypto.randomBytes(4).toString('hex')}`
+    await kubectlApply({
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: {
+        name: probePodName,
+        namespace: k8sNamespace(),
+        labels: { 'yaac.test': 'true' },
       },
-      // No Cmd override — the base image's ENTRYPOINT is
-      // `catatonit -- sleep infinity`, which keeps the container alive.
-      HostConfig: { NetworkMode: network },
+      spec: {
+        restartPolicy: 'Never',
+        automountServiceAccountToken: false,
+        enableServiceLinks: false,
+        containers: [{
+          name: 'probe',
+          image: await resolveTestBaseImageRef(),
+          imagePullPolicy: 'IfNotPresent',
+        }],
+      },
     })
 
-    // Baseline: the session container can reach the proxy on the
-    // internal network at the IP the real HTTPS_PROXY env var would use.
-    await expectReachable(sessionName, ipBefore!)
+    // Baseline: the session-like pod can reach the proxy through the
+    // ClusterIP Service — the address real session pods use.
+    await expectProxyReachable(probePodName)
 
     const lockBefore = await readLock()
     expect(lockBefore).not.toBeNull()
@@ -124,250 +198,112 @@ describe('daemon restart preserves running proxy (real `yaac daemon restart`)', 
     expect(lockAfter).not.toBeNull()
     expect(lockAfter!.pid).not.toBe(lockBefore!.pid)
 
-    // Give the new daemon's first background-loop tick time to call
-    // persistAllBlockedHosts -> proxyClient.ensureRunning(). The tick
-    // runs immediately on startup; 8s is well past the inline path.
+    // Give the new daemon's first background-loop tick time to run its
+    // reconcile steps (attach-only — they must not churn the proxy). The
+    // tick runs immediately on startup; 8s is well past the inline path.
     await new Promise((r) => setTimeout(r, 8_000))
 
-    const proxyAfter = await podman.getContainer(proxyName).inspect()
-    expect(proxyAfter.State.Running).toBe(true)
-    // Identity preserved — not force-removed then recreated.
-    expect(proxyAfter.Id).toBe(idBefore)
-    expect(proxyAfter.State.StartedAt).toBe(startedAtBefore)
-    // Internal-network IP preserved — existing session containers'
-    // HTTPS_PROXY env vars depend on this.
-    expect(ipOnNetwork(proxyAfter, network)).toBe(ipBefore)
-
-    // The bug's actual symptom: the session container must still be able
-    // to reach the proxy at its original IP.
-    await expectReachable(sessionName, ipBefore!)
-  }, 180_000)
-
-  // Skipped: flaky on rootless podman due to a long tail of unrelated
-  // failure modes when creating ~20 containers concurrently (uid_map
-  // EPERM, EPIPE on the podman socket, `crun start` exit-1, etc.).
-  // Even with the proxy-client fixes in place, test setup itself
-  // intermittently breaks. The race the test was meant to reproduce
-  // (containers/storage#1864) is documented in production logs and
-  // covered architecturally by name-based discovery + transient retries
-  // in proxy-client.ts / runtime.ts. Leaving here for future revival
-  // once we limit setup concurrency or improve rootless robustness.
-  it.skip('restart while outgoing daemon is cleaning up stale sessions — proxy not destroyed by listContainers race', async () => {
-    const daemonEnv = { ...testEnv.env, YAAC_PROXY_NETWORK: network }
-
-    const started = await runYaac(daemonEnv, 'daemon', 'start')
-    expect(started.exitCode).toBe(0)
-
-    const proxyBefore = await waitForRunningProxy(network, 30_000)
-    const proxyName = proxyBefore.Name.replace(/^\//, '')
-    const idBefore = proxyBefore.Id
-    const ipBefore = ipOnNetwork(proxyBefore, network)!
-
-    const { stdout: baseImages } = await podmanRetry([
-      'images', '--format', '{{.Repository}}:{{.Tag}}', '--filter', 'reference=yaac-test-base',
-    ])
-    const baseImage = baseImages.trim().split('\n')[0]
-    expect(baseImage).toBeTruthy()
-
-    // Create stale "session" containers. reconcileStaleSessions in the
-    // outgoing daemon's background loop classifies them as stale (no
-    // live tmux) and spawns a detached
-    //   podman stop -t 5 <name>; podman rm <name>
-    // script per container. With many `podman rm` in flight when the
-    // new daemon's first tick fires listContainers, one of those rms
-    // completing mid-call causes podman to 500 with "container not
-    // known" — the production race.
-    //
-    // This reproduces the bug ~30–60% of the time under stress. It's a
-    // probabilistic regression guard: a pre-fix run will sometimes pass,
-    // but a post-fix run should always pass. Over many CI runs a
-    // regression shows up as a fresh wave of failures even if any single
-    // run might be green.
-    await Promise.all(
-      Array.from({ length: 20 }).map(async (_, i) => {
-        const name = `yaac-race-sess-${i}-${crypto.randomBytes(2).toString('hex')}`
-        await createAndStartContainerWithRetry({
-          Image: baseImage,
-          name,
-          Labels: {
-            'yaac.test': 'true',
-            'yaac.data-dir': testEnv.dataDir,
-            'yaac.session-id': crypto.randomUUID(),
-            'yaac.project': 'restart-race',
-          },
-          HostConfig: { NetworkMode: network },
-        })
-      }),
-    )
-
-    // Wait past one 5s tick so reconcileStaleSessions fires cleanups.
-    await new Promise((r) => setTimeout(r, 6_000))
-
-    const restarted = await runYaac(daemonEnv, 'daemon', 'restart')
-    expect(restarted.exitCode).toBe(0)
-
-    // Let the new daemon's first tick hit listContainers while the
-    // detached cleanups are still churning.
-    await new Promise((r) => setTimeout(r, 8_000))
-
-    const proxyAfter = await podman.getContainer(proxyName).inspect()
-      .catch(() => null)
-
-    // Dump the daemon log so we see which branch fired regardless of
-    // outcome — helps when triaging an occasional CI failure.
-    try {
-      const log = await fs.readFile(path.join(testEnv.dataDir, 'daemon.log'), 'utf8')
-      const relevant = log.split('\n').filter((l) =>
-        /proxy-discover|proxy-start|listContainers/.test(l),
-      )
-      console.log(`--- proxy-related daemon log ---\n${relevant.join('\n')}`)
-    } catch { /* ok */ }
-
+    // The Deployment must still be there and the SAME pod must still be
+    // running — `kubectl apply` with an unchanged template must not have
+    // triggered a rollout, and nothing may have force-deleted the pod.
+    const proxyAfter = await findRunningProxyPod()
     expect(proxyAfter).not.toBeNull()
-    expect(proxyAfter!.State.Running).toBe(true)
-    expect(proxyAfter!.Id).toBe(idBefore)
-    expect(ipOnNetwork(proxyAfter as unknown as PodmanInspectLite, network)).toBe(ipBefore)
+    expect(proxyAfter!.uid).toBe(proxyBefore.uid)
+    expect(proxyAfter!.name).toBe(proxyBefore.name)
+    expect(proxyAfter!.startedAt).toBe(proxyBefore.startedAt)
+
+    // The second daemon must have read the existing auth secret back from
+    // the k8s Secret rather than rotating it — a rotation would strand
+    // the proxy pod's env-injected copy until the next pod replacement.
+    const secretAfter = await readProxyAuthSecret()
+    expect(secretAfter).toBe(secretBefore)
+
+    // The bug's actual symptom: the session-like pod must still be able
+    // to reach the proxy at the Service address.
+    await expectProxyReachable(probePodName)
   }, 180_000)
 
-  it('restart with a second stale-hash proxy and dependent session — both proxies survive', async () => {
-    const daemonEnv = { ...testEnv.env, YAAC_PROXY_NETWORK: network }
+  it('a replaced proxy pod self-heals registrations from /data with no daemon involvement', async () => {
+    const daemonEnv = testEnv.env
 
     const started = await runYaac(daemonEnv, 'daemon', 'start')
     expect(started.exitCode).toBe(0)
 
-    const currentProxy = await waitForRunningProxy(network, 30_000)
-    const currentProxyName = currentProxy.Name.replace(/^\//, '')
-    const currentId = currentProxy.Id
-    const currentStartedAt = currentProxy.State.StartedAt
-    const currentIp = ipOnNetwork(currentProxy, network)!
+    // Stand the proxy up and register a session that has NO backing
+    // session pod: nothing in the daemon re-registers sessions at
+    // runtime (the proxy owns its state via the /data write-through), so
+    // if this registration survives the pod churn it can only have come
+    // from the proxy's /data reload.
+    const client = new ProxyClient(TEST_PROXY_CONFIG)
+    await client.ensureRunning()
+    const sessionId = crypto.randomUUID()
+    await client.registerSession(sessionId, {
+      rules: [{
+        hostPattern: 'api.example.com',
+        pathPattern: '/*',
+        injections: [{ action: 'set_header', name: 'x-key', secretRef: 'MY_KEY' }],
+      }],
+      allowedHosts: ['github.com'],
+    })
 
-    // Stand up a second container labeled like a proxy from a previous yaac
-    // version (different image-hash). Simulates the post-upgrade state
-    // where an old proxy is still running because sessions depend on it.
-    // We use the test-base image for simplicity — we're not asserting on
-    // its HTTPS handling, only on whether the daemon's gcStaleProxies
-    // preserves it.
-    const { stdout: baseImages } = await podmanRetry([
-      'images', '--format', '{{.Repository}}:{{.Tag}}', '--filter', 'reference=yaac-test-base',
+    const proxyBefore = await waitForRunningProxyPod(60_000)
+
+    // Kill the proxy pod; the Deployment replaces it.
+    await kubectlWithRetry([
+      'delete', 'pod', '-n', k8sNamespace(), '-l', `app=${PROXY_APP_NAME}`,
+      '--wait=false', '--grace-period=1',
     ])
-    const baseImage = baseImages.trim().split('\n')[0]
-    expect(baseImage).toBeTruthy()
+    const deadline = Date.now() + 120_000
+    let proxyAfter = await findRunningProxyPod().catch(() => null)
+    while (Date.now() < deadline && (!proxyAfter || proxyAfter.uid === proxyBefore.uid)) {
+      await new Promise((r) => setTimeout(r, 1000))
+      proxyAfter = await findRunningProxyPod().catch(() => null)
+    }
+    expect(proxyAfter).not.toBeNull()
+    expect(proxyAfter!.uid).not.toBe(proxyBefore.uid)
 
-    const staleProxyName = `yaac-proxy-stalehash-${crypto.randomBytes(4).toString('hex')}`
-    await createAndStartContainerWithRetry({
-      Image: baseImage,
-      name: staleProxyName,
-      Labels: {
-        'yaac.test': 'true',
-        'yaac.proxy': 'true',
-        'yaac.proxy.image-hash': 'fake-old-hash-aaaaaaaa',
-      },
-      HostConfig: { NetworkMode: network },
-    })
-    const staleProxyInspect = await podman.getContainer(staleProxyName).inspect()
-    const staleProxyId = staleProxyInspect.Id
-    const staleProxyStartedAt = staleProxyInspect.State.StartedAt
+    // Re-attach through a fresh tunnel (the old one died with the pod)
+    // and confirm the replacement reloaded the registration from /data —
+    // with the daemon running the whole time and unable to have healed
+    // this pod-less session itself.
+    const reattachDeadline = Date.now() + 30_000
+    let attached = false
+    while (Date.now() < reattachDeadline && !attached) {
+      attached = await client.attachIfRunning()
+      if (!attached) await new Promise((r) => setTimeout(r, 500))
+    }
+    expect(attached).toBe(true)
+    expect(await client.listSessions()).toContain(sessionId)
 
-    // A session container that depends on the stale proxy (the condition
-    // that should make gcStaleProxies preserve it).
-    const staleDependentName = `yaac-restart-test-olddep-${crypto.randomBytes(4).toString('hex')}`
-    await createAndStartContainerWithRetry({
-      Image: baseImage,
-      name: staleDependentName,
-      Labels: {
-        'yaac.test': 'true',
-        'yaac.proxy-container': staleProxyName,
-      },
-      HostConfig: { NetworkMode: network },
-    })
-
-    // A session container that depends on the CURRENT proxy.
-    const currentDependentName = `yaac-restart-test-newdep-${crypto.randomBytes(4).toString('hex')}`
-    await createAndStartContainerWithRetry({
-      Image: baseImage,
-      name: currentDependentName,
-      Labels: {
-        'yaac.test': 'true',
-        'yaac.proxy-container': currentProxyName,
-      },
-      HostConfig: { NetworkMode: network },
-    })
-
-    // Baseline: current-proxy dependent can reach the current proxy.
-    await expectReachable(currentDependentName, currentIp)
-
-    const restarted = await runYaac(daemonEnv, 'daemon', 'restart')
-    expect(restarted.exitCode).toBe(0)
-
-    await new Promise((r) => setTimeout(r, 8_000))
-
-    // Both proxies must still be running and unchanged.
-    const staleAfter = await podman.getContainer(staleProxyName).inspect()
-    expect(staleAfter.State.Running).toBe(true)
-    expect(staleAfter.Id).toBe(staleProxyId)
-    expect(staleAfter.State.StartedAt).toBe(staleProxyStartedAt)
-
-    const currentAfter = await podman.getContainer(currentProxyName).inspect()
-    expect(currentAfter.State.Running).toBe(true)
-    expect(currentAfter.Id).toBe(currentId)
-    expect(currentAfter.State.StartedAt).toBe(currentStartedAt)
-    expect(ipOnNetwork(currentAfter as unknown as PodmanInspectLite, network)).toBe(currentIp)
-
-    // Session depending on the current proxy must still reach it.
-    await expectReachable(currentDependentName, currentIp)
-  }, 180_000)
+    await client.removeSession(sessionId)
+    client.disconnect()
+  }, 300_000)
 })
 
-interface PodmanInspectLite {
-  Id: string
-  Name: string
-  State: { Running: boolean; StartedAt: string }
-  NetworkSettings: { Networks: Record<string, { IPAddress: string }> }
-}
-
-async function waitForRunningProxy(
-  network: string,
-  timeoutMs: number,
-): Promise<PodmanInspectLite> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    const { stdout } = await podmanRetry([
-      'ps', '--filter', 'label=yaac.proxy=true', '--format', '{{.Names}}',
-    ])
-    for (const name of stdout.split('\n').filter(Boolean)) {
-      const info = await podman.getContainer(name).inspect() as unknown as PodmanInspectLite
-      if (info.State.Running && info.NetworkSettings.Networks[network]) {
-        return info
-      }
-    }
-    await new Promise((r) => setTimeout(r, 500))
-  }
-  throw new Error(`no running proxy on network ${network} within ${timeoutMs}ms`)
-}
-
-function ipOnNetwork(info: PodmanInspectLite, network: string): string | undefined {
-  return info.NetworkSettings.Networks[network]?.IPAddress
-}
-
-async function expectReachable(fromContainer: string, proxyIp: string): Promise<void> {
-  // Use the proxy's /healthz endpoint on the internal network — same path
-  // a session container's HTTPS_PROXY would tunnel to. We're checking the
+async function expectProxyReachable(podName: string): Promise<void> {
+  // Use the proxy's /healthz endpoint via the ClusterIP Service — same
+  // path a session pod's HTTPS_PROXY would tunnel to. We're checking
   // network reachability, not credentialed forwarding.
-  // --noproxy '*' bypasses any http_proxy/HTTP_PROXY env that podman
-  // inherited from the host (e.g. when running tests inside a yaac dev
-  // container behind an egress proxy). Without it, curl tunnels through
-  // the egress proxy and gets 403'd on the internal-network IP.
-  // Retry: the proxy container may be marked Running before its HTTP
-  // listener is up (it generates a CA on first start).
-  const deadline = Date.now() + 20_000
+  // --noproxy '*' bypasses any http_proxy/HTTP_PROXY env inherited from
+  // the host (e.g. when running tests inside a dev container behind an
+  // egress proxy). Without it, curl tunnels through the egress proxy and
+  // gets 403'd on the cluster-internal address.
+  // Retry: the probe pod may come up before the proxy's HTTP listener
+  // (it generates a CA on first start), and DNS for a fresh Service can
+  // lag a beat.
+  const target = `http://${PROXY_APP_NAME}.${k8sNamespace()}.svc:${PROXY_PORT}/healthz`
+  const deadline = Date.now() + 30_000
   let lastStdout = ''
   while (Date.now() < deadline) {
-    const { stdout } = await podmanRetry([
-      'exec', fromContainer, 'sh', '-c',
-      `curl -sf --noproxy '*' --connect-timeout 2 http://${proxyIp}:10255/healthz || echo UNREACHABLE`,
-    ], { timeout: 10_000 })
-    lastStdout = stdout.trim()
-    if (lastStdout === 'ok') return
+    try {
+      const { stdout } = await kubectlWithRetry([
+        'exec', '-n', k8sNamespace(), podName, '--',
+        'sh', '-c',
+        `curl -sf --noproxy '*' --connect-timeout 2 ${target} || echo UNREACHABLE`,
+      ], { timeout: 10_000 })
+      lastStdout = stdout.trim()
+      if (lastStdout === 'ok') return
+    } catch { /* pod still starting — retry */ }
     await new Promise((r) => setTimeout(r, 500))
   }
   expect(lastStdout).toBe('ok')

@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { setDataDir } from '@/lib/project/paths'
-import { readBlockedHosts, readAllBlockedHosts } from '@/lib/session/blocked-hosts'
+import { blockedHostsStatePath, readBlockedHosts } from '@/lib/session/blocked-hosts'
 
 describe('blocked-hosts', () => {
   let tmpDir: string
@@ -17,36 +17,48 @@ describe('blocked-hosts', () => {
     await fs.rm(tmpDir, { recursive: true, force: true })
   })
 
+  async function writeStateFile(content: string): Promise<void> {
+    const file = blockedHostsStatePath()
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await fs.writeFile(file, content)
+  }
+
+  it('blockedHostsStatePath points into the proxy-data host dir', () => {
+    expect(blockedHostsStatePath()).toBe(
+      path.join(tmpDir, 'run', 'proxy-data', 'blocked-hosts.json'),
+    )
+  })
+
   it('readBlockedHosts returns empty array when no file exists', async () => {
-    const hosts = await readBlockedHosts('my-project', 'nonexistent-session')
+    const hosts = await readBlockedHosts('nonexistent-session')
     expect(hosts).toEqual([])
   })
 
-  it('readBlockedHosts reads persisted file', async () => {
-    const dir = path.join(tmpDir, 'projects', 'my-project', 'blocked-hosts')
-    await fs.mkdir(dir, { recursive: true })
-    await fs.writeFile(path.join(dir, 'session-123.json'), JSON.stringify(['evil.com', 'bad.org']))
+  it('readBlockedHosts reads the session entry from the proxy write-through file', async () => {
+    await writeStateFile(JSON.stringify({
+      'session-123': ['evil.com', 'bad.org'],
+      'session-456': ['worse.net'],
+    }))
 
-    const hosts = await readBlockedHosts('my-project', 'session-123')
-    expect(hosts).toEqual(['evil.com', 'bad.org'])
+    expect(await readBlockedHosts('session-123')).toEqual(['evil.com', 'bad.org'])
+    expect(await readBlockedHosts('session-456')).toEqual(['worse.net'])
+    expect(await readBlockedHosts('session-789')).toEqual([])
   })
 
-  it('readAllBlockedHosts aggregates from multiple sessions', async () => {
-    const dir1 = path.join(tmpDir, 'projects', 'proj-a', 'blocked-hosts')
-    const dir2 = path.join(tmpDir, 'projects', 'proj-b', 'blocked-hosts')
-    await fs.mkdir(dir1, { recursive: true })
-    await fs.mkdir(dir2, { recursive: true })
-    await fs.writeFile(path.join(dir1, 'sess-1.json'), JSON.stringify(['evil.com']))
-    await fs.writeFile(path.join(dir2, 'sess-2.json'), JSON.stringify(['bad.org', 'worse.net']))
+  it('readBlockedHosts tolerates a torn or malformed file', async () => {
+    await writeStateFile('{"session-123": ["evil.co')
+    expect(await readBlockedHosts('session-123')).toEqual([])
 
-    const result = await readAllBlockedHosts([
-      { sessionId: 'sess-1', projectSlug: 'proj-a' },
-      { sessionId: 'sess-2', projectSlug: 'proj-b' },
-      { sessionId: 'sess-3', projectSlug: 'proj-a' }, // no file
-    ])
+    await writeStateFile('"not-an-object"')
+    expect(await readBlockedHosts('session-123')).toEqual([])
+  })
 
-    expect(result['sess-1']).toEqual(['evil.com'])
-    expect(result['sess-2']).toEqual(['bad.org', 'worse.net'])
-    expect(result['sess-3']).toBeUndefined()
+  it('readBlockedHosts drops non-string entries and non-array values', async () => {
+    await writeStateFile(JSON.stringify({
+      'session-123': ['evil.com', 42, null, 'bad.org'],
+      'session-456': 'not-an-array',
+    }))
+    expect(await readBlockedHosts('session-123')).toEqual(['evil.com', 'bad.org'])
+    expect(await readBlockedHosts('session-456')).toEqual([])
   })
 })

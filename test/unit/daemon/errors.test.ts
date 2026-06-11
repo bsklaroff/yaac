@@ -12,7 +12,7 @@ describe('daemon errors', () => {
       expect(new DaemonError('NOT_FOUND', 'x').httpStatus).toBe(404)
       expect(new DaemonError('VALIDATION', 'x').httpStatus).toBe(400)
       expect(new DaemonError('CONFLICT', 'x').httpStatus).toBe(409)
-      expect(new DaemonError('PODMAN_UNAVAILABLE', 'x').httpStatus).toBe(503)
+      expect(new DaemonError('RUNTIME_UNAVAILABLE', 'x').httpStatus).toBe(503)
       expect(new DaemonError('AUTH_REQUIRED', 'x').httpStatus).toBe(401)
       expect(new DaemonError('INTERNAL', 'x').httpStatus).toBe(500)
     })
@@ -35,11 +35,22 @@ describe('daemon errors', () => {
       })
     })
 
-    it('classifies podman connection failures as PODMAN_UNAVAILABLE', () => {
+    it('classifies podman (build engine) connection failures as RUNTIME_UNAVAILABLE', () => {
       const err = new Error('connect ECONNREFUSED /run/user/1000/podman/podman.sock')
       const result = toErrorBody(err)
       expect(result.status).toBe(503)
-      expect(result.body.error.code).toBe('PODMAN_UNAVAILABLE')
+      expect(result.body.error.code).toBe('RUNTIME_UNAVAILABLE')
+    })
+
+    it('classifies kubectl / cluster connection failures as RUNTIME_UNAVAILABLE', () => {
+      for (const message of [
+        'Command failed: kubectl get pods -n yaac',
+        'Kubernetes cluster is not reachable.',
+      ]) {
+        const result = toErrorBody(new Error(message))
+        expect(result.status).toBe(503)
+        expect(result.body.error.code).toBe('RUNTIME_UNAVAILABLE')
+      }
     })
 
     it('falls back to INTERNAL for unrecognized errors', () => {

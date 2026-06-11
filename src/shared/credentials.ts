@@ -10,7 +10,7 @@
  * be a real hostname (contain a `.`, or be the literal "localhost") and cannot
  * contain a wildcard. Empty segments are rejected.
  *
- * NOTE: keep in sync with podman/proxy-sidecar/proxy.ts — the proxy bundles
+ * NOTE: keep in sync with k8s/proxy/proxy.ts — the proxy bundles
  * independently and replicates this logic.
  */
 

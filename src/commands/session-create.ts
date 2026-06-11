@@ -4,6 +4,7 @@ import readline from 'node:readline/promises'
 import { spawn } from 'node:child_process'
 import simpleGit from 'simple-git'
 import { getRpcClient, toClientError } from '@/commands/rpc'
+import { interactiveExecArgs } from '@/lib/k8s/exec'
 import { getGitUserConfig } from '@/shared/git'
 import { CONTAINER_TMUX_SOCK, getProjectsDir } from '@/shared/paths'
 import type { AgentTool } from '@/shared/types'
@@ -16,7 +17,7 @@ export interface SessionCreateOptions {
 
 interface SessionCreateResult {
   sessionId?: string
-  containerName?: string
+  jobName?: string
 }
 
 type StreamEvent =
@@ -67,8 +68,8 @@ async function consumeSessionCreateStream(res: Response): Promise<SessionCreateR
  * CLI entry point for `yaac session create`. Prompts for git identity
  * when the global config is missing, then hands provisioning off to
  * the daemon via `POST /session/create`. The daemon owns the worktree,
- * container, and port forwarders for the session's lifetime; the CLI
- * just attaches the user's terminal to the resulting tmux session.
+ * Job, and port forwarders for the session's lifetime; the CLI just
+ * attaches the user's terminal to the resulting tmux session.
  */
 export async function sessionCreate(projectSlug: string, options: SessionCreateOptions): Promise<string | undefined> {
   // Local fast-fail on an unknown project slug so the user gets an
@@ -130,29 +131,29 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
 
   const result = await consumeSessionCreateStream(res)
 
-  const { sessionId, containerName } = result
-  if (!sessionId || !containerName) {
-    console.error('Daemon did not return a sessionId/containerName.')
+  const { sessionId, jobName } = result
+  if (!sessionId || !jobName) {
+    console.error('Daemon did not return a sessionId/jobName.')
     process.exitCode = 1
     return
   }
 
   // Test-only hook: e2e-cli tests drive sessions without a TTY, where
-  // `podman exec -it` hangs waiting for terminal capabilities. Setting
+  // `kubectl exec -it` hangs waiting for terminal capabilities. Setting
   // this env var returns after provisioning and lets the test drive the
-  // container directly via `podman exec`.
+  // container directly via `kubectl exec`.
   if (process.env.YAAC_E2E_NO_ATTACH !== '1') {
     try {
       await new Promise<void>((resolve, reject) => {
-        const child = spawn('podman', ['exec', '-it', containerName, 'tmux', '-S', CONTAINER_TMUX_SOCK, 'attach-session', '-t', 'yaac'], {
+        const child = spawn('kubectl', interactiveExecArgs(jobName, ['tmux', '-S', CONTAINER_TMUX_SOCK, 'attach-session', '-t', 'yaac']), {
           stdio: 'inherit',
         })
         child.on('close', () => resolve())
         child.on('error', reject)
       })
     } catch {
-      // Container or tmux session was killed (e.g. ctrl-b k) — the
-      // daemon's background loop will reap the dead container.
+      // Job or tmux session was killed (e.g. ctrl-b k) — the daemon's
+      // background loop will reap the dead session.
     }
   }
 

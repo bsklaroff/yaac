@@ -1,5 +1,3 @@
 export { isTmuxSessionAlive, cleanupSession, cleanupSessionDetached } from './cleanup'
 export { classifyClaudePane, getSessionClaudeStatus, getFirstUserMessage, getSessionFirstUserMessage } from './claude-status'
-export { computeFingerprint, resolveSessionFingerprint } from './fingerprint'
-export type { FingerprintInputs } from './fingerprint'
-export { fetchAndPersistBlockedHosts, readBlockedHosts, readAllBlockedHosts } from './blocked-hosts'
+export { blockedHostsStatePath, readBlockedHosts } from './blocked-hosts'

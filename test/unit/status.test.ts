@@ -1,28 +1,28 @@
 import { describe, it, expect } from 'vitest'
-import { getToolFromContainer } from '@/lib/session/status'
+import { normalizeTool } from '@/lib/session/status'
 
-describe('getToolFromContainer', () => {
-  it('returns claude when no yaac.tool label exists', () => {
-    expect(getToolFromContainer({ Labels: { 'yaac.project': 'test' } })).toBe('claude')
+describe('normalizeTool', () => {
+  it('returns claude when the raw label is undefined', () => {
+    expect(normalizeTool(undefined)).toBe('claude')
   })
 
-  it('returns claude when yaac.tool is claude', () => {
-    expect(getToolFromContainer({ Labels: { 'yaac.tool': 'claude' } })).toBe('claude')
+  it('returns claude when the raw label is claude', () => {
+    expect(normalizeTool('claude')).toBe('claude')
   })
 
-  it('returns codex when yaac.tool is codex', () => {
-    expect(getToolFromContainer({ Labels: { 'yaac.tool': 'codex' } })).toBe('codex')
+  it('returns codex when the raw label is codex', () => {
+    expect(normalizeTool('codex')).toBe('codex')
   })
 
-  it('returns opencode when yaac.tool is opencode', () => {
-    expect(getToolFromContainer({ Labels: { 'yaac.tool': 'opencode' } })).toBe('opencode')
+  it('returns opencode when the raw label is opencode', () => {
+    expect(normalizeTool('opencode')).toBe('opencode')
   })
 
-  it('returns claude when Labels is undefined', () => {
-    expect(getToolFromContainer({})).toBe('claude')
+  it('returns claude for an empty string', () => {
+    expect(normalizeTool('')).toBe('claude')
   })
 
   it('returns claude for unknown tool values', () => {
-    expect(getToolFromContainer({ Labels: { 'yaac.tool': 'unknown' } })).toBe('claude')
+    expect(normalizeTool('unknown')).toBe('claude')
   })
 })

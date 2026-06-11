@@ -1,9 +1,9 @@
-import { shellPodmanWithRetry } from '@/lib/container/runtime'
+import { containerExec } from '@/lib/k8s/exec'
 import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
 import type { SessionTerminalEntry } from '@/shared/types'
 
 /**
- * Enumerate the terminals a session's container offers the webapp:
+ * Enumerate the terminals a session's pod offers the webapp:
  *  - the extra windows of the `yaac` tmux session (initCommands dev servers,
  *    watchers, …) — the first window is the agent itself and is covered by
  *    the dedicated 'agent' target, so it's skipped here;
@@ -46,10 +46,11 @@ export function nextShellName(existing: SessionTerminalEntry[]): string {
   }
 }
 
-async function tmuxOut(containerName: string, tmuxArgs: string): Promise<string> {
+async function tmuxOut(jobName: string, tmuxArgs: string): Promise<string> {
   try {
-    const { stdout } = await shellPodmanWithRetry(
-      `podman exec ${containerName} tmux -S ${CONTAINER_TMUX_SOCK} ${tmuxArgs}`,
+    const { stdout } = await containerExec(
+      jobName,
+      `tmux -S ${CONTAINER_TMUX_SOCK} ${tmuxArgs}`,
       { maxAttempts: 1 },
     )
     return stdout
@@ -58,21 +59,22 @@ async function tmuxOut(containerName: string, tmuxArgs: string): Promise<string>
   }
 }
 
-/** List a container's webapp-attachable terminals (windows + shells). */
-export async function listSessionTerminals(containerName: string): Promise<SessionTerminalEntry[]> {
+/** List a session's webapp-attachable terminals (windows + shells). */
+export async function listSessionTerminals(jobName: string): Promise<SessionTerminalEntry[]> {
   const [windows, sessions] = await Promise.all([
-    tmuxOut(containerName, "list-windows -t yaac -F '#{window_index}|#{window_id}|#{window_name}'"),
-    tmuxOut(containerName, "list-sessions -F '#{session_name}'"),
+    tmuxOut(jobName, "list-windows -t yaac -F '#{window_index}|#{window_id}|#{window_name}'"),
+    tmuxOut(jobName, "list-sessions -F '#{session_name}'"),
   ])
   return [...parseWindowList(windows), ...parseShellSessions(sessions)]
 }
 
 /** Kill a scratch-shell tmux session. Only shell targets are killable. */
-export async function killShellTerminal(containerName: string, target: string): Promise<void> {
+export async function killShellTerminal(jobName: string, target: string): Promise<void> {
   const name = target.startsWith('shell:') ? target.slice('shell:'.length) : ''
   if (!SHELL_SESSION.test(name)) throw new Error(`not a shell target: ${target}`)
-  await shellPodmanWithRetry(
-    `podman exec ${containerName} tmux -S ${CONTAINER_TMUX_SOCK} kill-session -t ${name}`,
+  await containerExec(
+    jobName,
+    `tmux -S ${CONTAINER_TMUX_SOCK} kill-session -t ${name}`,
     { maxAttempts: 1 },
   )
 }
