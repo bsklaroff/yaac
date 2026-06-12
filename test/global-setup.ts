@@ -128,6 +128,18 @@ export async function setup(): Promise<void> {
   const toolsTag = `yaac-test-tools:${toolsHash}`
   await ensureImageByTag(toolsTag, toolsDockerfile, DOCKERFILES_DIR, { BASE_IMAGE: baseTag })
 
+  // --- Nestable layer (Dockerfile.nestable, layered on tools) ---
+  // In-pod rootless podman for nestedContainers e2e tests. Hash composition
+  // must match resolveImageChain (tools hash + nestable content).
+  const nestableDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
+  const nestableContentHash = await fileHash(nestableDockerfile)
+  const nestableHash = crypto.createHash('sha256').update(`${toolsHash}:${nestableContentHash}`).digest('hex').slice(0, 16)
+  const nestableTag = `yaac-test-nestable:${nestableHash}`
+  await ensureImageByTag(nestableTag, nestableDockerfile, DOCKERFILES_DIR, {
+    BASE_IMAGE: toolsTag,
+    YAAC_UID: String(sessionUid()),
+  })
+
   // --- Proxy (k8s/proxy/) ---
   const proxyHash = await contextHash(PROXY_DIR)
   const proxyTag = `yaac-test-proxy:${proxyHash}`
@@ -147,7 +159,7 @@ export async function setup(): Promise<void> {
   // store — push everything up front so test workers never race a push.
   // pushImageToRegistry no-ops when the content-hash tag is already there.
   if (await registryReachable()) {
-    for (const tag of [baseTag, toolsTag, proxyTag, redirectInitTag, relayTag]) {
+    for (const tag of [baseTag, toolsTag, nestableTag, proxyTag, redirectInitTag, relayTag]) {
       await pushImageToRegistry(tag)
     }
   } else {

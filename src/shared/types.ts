@@ -175,6 +175,13 @@ export interface YaacConfig {
   env?: Record<string, string>
   envSecretProxy?: Record<string, SecretProxyRule>
   cacheVolumes?: Record<string, string>
+  /**
+   * Run an in-pod rootless podman so `docker build` / `docker run` /
+   * `docker compose` work inside sessions. Adds the nestable image layer
+   * and the nested pod-spec branch (userns-scoped SYS_ADMIN, graphroot
+   * emptyDir, shared image store).
+   */
+  nestedContainers?: boolean
   /** Either a flat string list (collapsed into a single `init` window) or
    *  a list of `InitCommandSpec` objects (one tmux window per entry).
    *  Mixing the two forms is rejected by the config parser. */

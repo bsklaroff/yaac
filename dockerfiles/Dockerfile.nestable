@@ -1,0 +1,149 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+USER root
+
+RUN ARCH="$(dpkg --print-architecture)" && \
+    if [ "$ARCH" = "arm64" ]; then \
+      MIRROR="http://ports.ubuntu.com/ubuntu-ports"; \
+    else \
+      MIRROR="http://archive.ubuntu.com/ubuntu"; \
+    fi && \
+    printf 'Types: deb\nURIs: %s\nSuites: plucky plucky-updates\nComponents: main universe\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' "$MIRROR" \
+      > /etc/apt/sources.list.d/ubuntu-plucky.sources
+RUN cat <<'EOF' > /etc/apt/preferences.d/ubuntu-plucky
+Package: *
+Pin: release n=plucky
+Pin-Priority: 100
+EOF
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends -t plucky podman crun skopeo && \
+    apt-get install -y --no-install-recommends uidmap libcap2-bin && \
+    rm -rf /var/lib/apt/lists/*
+
+# Docker CLI + compose plugin — both routed at DOCKER_HOST below to the
+# rootless podman socket, which serves the Docker Engine API. Running a real
+# dockerd here would need a second rootlesskit userns nested under podman's;
+# the kernel refuses the inner /proc remount because of the standard
+# /proc/{acpi,scsi,kcore,...} masks, so containers fail to start. Podman's
+# socket avoids that nesting. Buildx is omitted on purpose — its default
+# docker-container driver wants to pull moby/buildkit, which our egress
+# proxy forbids; compose falls back to the classic build endpoint that
+# podman implements.
+RUN ARCH="$(dpkg --print-architecture)" && \
+    if [ "$ARCH" = "amd64" ]; then DOCKER_ARCH=x86_64; COMPOSE_ARCH=x86_64; \
+    else DOCKER_ARCH=aarch64; COMPOSE_ARCH=aarch64; fi && \
+    curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-29.5.3.tgz" | \
+      tar -xz -C /usr/local/bin --strip-components=1 docker/docker && \
+    mkdir -p /usr/local/lib/docker/cli-plugins && \
+    curl -fsSL "https://github.com/docker/compose/releases/download/v5.1.4/docker-compose-linux-${COMPOSE_ARCH}" \
+      -o /usr/local/lib/docker/cli-plugins/docker-compose && \
+    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+# Nested-podman subuid/subgid ranges. These must reference ids that
+# actually exist in *this* pod's user namespace — not the host's subuid
+# range. The session pod (hostUsers: false) maps the standard 65536 ids,
+# so sticking to inside-ids 1..65535 always fits the map; anything >= 65536
+# would make newuidmap reject the id_map write with EPERM. The single id
+# the yaac user/group already occupies is punched out of each range —
+# podman refuses a sub*id mapping that includes the caller's own uid/gid.
+# subuid and subgid are computed separately because, after the base image
+# removes ubuntu (uid/gid 1000), useradd can land the yaac user's uid and
+# its primary group's gid on different numbers.
+ARG YAAC_UID=1000
+RUN U="$(id -u yaac)" && G="$(id -g yaac)" && \
+    printf 'yaac:1:%s\nyaac:%s:%s\n' "$((U - 1))" "$((U + 1))" "$((65535 - U))" > /etc/subuid && \
+    printf 'yaac:1:%s\nyaac:%s:%s\n' "$((G - 1))" "$((G + 1))" "$((65535 - G))" > /etc/subgid
+
+RUN chmod u-s /usr/bin/newuidmap /usr/bin/newgidmap && \
+    setcap cap_setuid+ep /usr/bin/newuidmap && \
+    setcap cap_setgid+ep /usr/bin/newgidmap
+
+# Engine config. Every nested container shares the pod's namespaces:
+# netns=host means a container's listener binds directly in the pod netns
+# (curl localhost just works; `docker run -p` is a no-op) and its egress
+# stays on the pod's transparent redirect (locally-originated traffic — see
+# k8s/redirect-init/redirect.sh). base_hosts_file extends the pod's
+# hostAliases (e.g. the per-project registry name) into nested containers.
+# Container-private networks (the default `docker compose` bridge,
+# `docker run --network ...`) are NOT supported in-pod: the userspace
+# network helpers fail under the pod's nested-userns sandbox (pasta's
+# pivot_root and slirp4netns/netavark's /proc/sys writes are both refused),
+# so neither is installed — use `network_mode: host`.
+# keyring=false: the pod's userns refuses the per-container kernel session
+# keyring crun would otherwise create (EPERM). no_pivot_root=true: crun
+# falls back to chroot — pivot_root is likewise refused inside the pod's
+# userns. Both are the standard rootless-podman-in-kubernetes settings.
+RUN cat <<'EOF' > /etc/containers/containers.conf
+[containers]
+netns="host"
+userns="host"
+ipcns="host"
+utsns="host"
+cgroupns="host"
+cgroups="disabled"
+keyring=false
+log_driver="k8s-file"
+base_hosts_file="/etc/hosts"
+[engine]
+cgroup_manager="cgroupfs"
+events_logger="file"
+runtime="crun"
+no_pivot_root=true
+EOF
+
+# docker-CLI parity for unqualified image names: `docker pull nginx` means
+# docker.io. Static and baked — nested pulls go straight through the MITM
+# proxy (allowlisted upstream registries), so there is no per-project
+# registry remap here.
+RUN cat <<'EOF' > /etc/containers/registries.conf
+unqualified-search-registries = ["docker.io"]
+EOF
+
+# User-level engine config:
+#   - /proc volume: rootless podman in a pod cannot mount a fresh /proc
+#     (the pod's /proc carries the standard runtime masks), so bind the
+#     pod's /proc into nested containers.
+#   - proxy-CA volume + env: every nested container (and every `docker
+#     build` RUN step — buildah honors these in builds too) auto-mounts the
+#     session's MITM CA and trusts it, mirroring getCaTrustEnv
+#     (src/lib/container/proxy-client.ts) with zero user cooperation.
+#     Only the ADDITIVE trust vars are set: SSL_CERT_FILE (OpenSSL still
+#     loads the default SSL_CERT_DIR, so real roots remain) and
+#     NODE_EXTRA_CA_CERTS (appended to Node's bundled roots). The
+#     single-file *_CA_BUNDLE/*_CAINFO vars (CURL_CA_BUNDLE,
+#     REQUESTS_CA_BUNDLE, CARGO_HTTP_CAINFO) are deliberately NOT set: they
+#     REPLACE the whole trust set with just our CA, which would make those
+#     tools reject the REAL certs of hosts the proxy tunnels (most
+#     allowlisted registries/mirrors) — see
+#     plans/nested-ca-combined-bundle.md for the proper combined-bundle fix.
+RUN mkdir -p /home/yaac/.config/containers && \
+    mkdir -p /home/yaac/.local/share/containers && \
+    mkdir -p /var/lib/shared-images
+RUN cat <<'EOF' > /home/yaac/.config/containers/containers.conf
+[containers]
+volumes = [
+  "/proc:/proc",
+  "/etc/yaac/certs/proxy-ca.pem:/etc/yaac/certs/proxy-ca.pem:ro",
+]
+env = [
+  "SSL_CERT_FILE=/etc/yaac/certs/proxy-ca.pem",
+  "NODE_EXTRA_CA_CERTS=/etc/yaac/certs/proxy-ca.pem",
+  "GIT_SSL_CAINFO=/etc/yaac/certs/proxy-ca.pem",
+]
+default_sysctls = []
+EOF
+RUN cat <<'EOF' > /home/yaac/.config/containers/storage.conf
+[storage]
+driver = "overlay"
+
+[storage.options]
+additionalimagestores = ["/var/lib/shared-images"]
+EOF
+RUN chown yaac:yaac -R /home/yaac/.local/share/containers /home/yaac/.config /var/lib/shared-images
+
+RUN mkdir -p /run/user/${YAAC_UID}/podman && chown yaac:yaac -R /run/user/${YAAC_UID}
+
+USER yaac
+ENV _CONTAINERS_USERNS_CONFIGURED=""
+ENV XDG_RUNTIME_DIR=/run/user/${YAAC_UID}
+ENV DOCKER_HOST=unix:///run/user/${YAAC_UID}/podman/podman.sock

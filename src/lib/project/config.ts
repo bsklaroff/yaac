@@ -4,17 +4,7 @@ import crypto from 'node:crypto'
 import type { YaacConfig, InitCommandSpec, AgentTool } from '@/shared/types'
 import { projectConfigDir } from '@/lib/project/paths'
 
-const KNOWN_KEYS = new Set(['envPassthrough', 'env', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'portForward', 'bindMounts', 'hideInitPane', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths'])
-
-/**
- * Options that existed on the podman backend but were removed in the
- * kubernetes migration. Rejected with a pointed error (not the generic
- * unknown-field warning) so upgraders learn what happened.
- */
-const REMOVED_KEYS: Record<string, string> = {
-  nestedContainers: 'nested containers are not supported on the kubernetes backend (planned for v2)',
-  pgRelay: 'the PostgreSQL relay was removed in the kubernetes migration',
-}
+const KNOWN_KEYS = new Set(['envPassthrough', 'env', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'portForward', 'bindMounts', 'hideInitPane', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths', 'nestedContainers'])
 
 /** Default when `ephemeralModulesPaths` is unset — redirect the root
  *  node_modules only. Set to `[]` in yaac-config.json to opt out. */
@@ -147,9 +137,6 @@ export function parseProjectConfig(raw: string): YaacConfig {
   const obj = parsed as Record<string, unknown>
 
   for (const key of Object.keys(obj)) {
-    if (key in REMOVED_KEYS) {
-      throw new Error(`yaac-config.json: "${key}" is no longer supported — ${REMOVED_KEYS[key]}`)
-    }
     if (!KNOWN_KEYS.has(key)) {
       console.warn(`yaac-config.json: unknown field "${key}"`)
     }
@@ -308,6 +295,13 @@ export function parseProjectConfig(raw: string): YaacConfig {
 
   if (config.addAllowedUrls && config.setAllowedUrls) {
     throw new Error('yaac-config.json: addAllowedUrls and setAllowedUrls are mutually exclusive')
+  }
+
+  if (obj.nestedContainers !== undefined) {
+    if (typeof obj.nestedContainers !== 'boolean') {
+      throw new Error('yaac-config.json: nestedContainers must be a boolean')
+    }
+    config.nestedContainers = obj.nestedContainers
   }
 
   if (obj.ephemeralModulesPaths !== undefined) {

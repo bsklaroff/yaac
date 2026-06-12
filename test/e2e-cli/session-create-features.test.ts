@@ -37,10 +37,7 @@ import {
  *
  * Deliberately deferred:
  *   - pnpm cache reuse — exercises pnpm store behavior, not CLI surface.
- * Removed with the kubernetes migration (yaac-config.json now rejects the
- * keys outright — see config.test.ts):
- *   - pgRelay
- *   - nestedContainers
+ *   - nestedContainers — covered by nested-containers.test.ts.
  */
 describe('yaac session create features (real CLI + real daemon)', () => {
   let testEnv: YaacTestEnv

@@ -74,6 +74,9 @@ async function happyResponses(
       stderr: '',
     }
   }
+  if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-nested') {
+    return { stdout: 'NESTED_MOUNT_OK\n', stderr: '' }
+  }
   if (file === 'kubectl' && args[0] === 'logs') {
     const nonce = await fs.readFile(path.join(getDataDir(), '.cluster-check-nonce'), 'utf8')
     await simulateProbeWrite()
@@ -143,6 +146,7 @@ describe('runClusterCheck', () => {
       ['redirect', 'pass'],
       ['lockdown', 'pass'],
       ['dns-stub', 'pass'],
+      ['nested-mount', 'pass'],
       // The proxy deploys lazily, so its VIP pin is unverifiable here.
       ['proxy-vip', 'skip'],
       ['service-cidr', 'pass'],
@@ -259,6 +263,7 @@ describe('runClusterCheck', () => {
     expect(byName(results, 'redirect')).toMatchObject({ status: 'skip' })
     expect(byName(results, 'lockdown')).toMatchObject({ status: 'skip' })
     expect(byName(results, 'dns-stub')).toMatchObject({ status: 'skip' })
+    expect(byName(results, 'nested-mount')).toMatchObject({ status: 'skip' })
     expect(deps.pushImage).not.toHaveBeenCalled()
     expect(deps.ensureRedirectInitImage).not.toHaveBeenCalled()
     expect(deps.ensureRelayImage).not.toHaveBeenCalled()
@@ -415,6 +420,56 @@ describe('runClusterCheck', () => {
     const stub = byName(results, 'dns-stub')
     expect(stub).toMatchObject({ status: 'fail' })
     expect(stub?.detail).toContain('ENOTFOUND')
+  })
+
+  it('runs the nested-mount probe under the exact nested session securityContext', async () => {
+    const deps = makeDeps()
+    const { results } = await runClusterCheck(deps)
+    expect(byName(results, 'nested-mount')).toMatchObject({ status: 'pass' })
+
+    const probePod = vi.mocked(deps.apply).mock.calls
+      .map((c) => c[0] as { kind: string; metadata?: { name?: string } })
+      .find((m) => m.kind === 'Pod' && m.metadata?.name === 'yaac-cluster-check-nested') as {
+      spec: {
+        hostUsers: boolean
+        securityContext: { seccompProfile: { type: string } }
+        containers: Array<{
+          securityContext?: Record<string, unknown>
+          command: string[]
+        }>
+      }
+    } | undefined
+    expect(probePod).toBeDefined()
+    // The probe mirrors the nested session pod: userns + RuntimeDefault +
+    // the session uid carrying a userns-scoped SYS_ADMIN grant.
+    expect(probePod?.spec.hostUsers).toBe(false)
+    expect(probePod?.spec.securityContext).toEqual({
+      seccompProfile: { type: 'RuntimeDefault' },
+    })
+    expect(probePod?.spec.containers[0].securityContext).toEqual({
+      runAsUser: sessionUid(),
+      capabilities: { add: ['SYS_ADMIN'] },
+      allowPrivilegeEscalation: true,
+    })
+    // The rootless-podman prerequisite: tmpfs mount inside an unprivileged
+    // user namespace.
+    expect(probePod?.spec.containers[0].command.join(' ')).toContain('unshare -U -r -m')
+    expect(probePod?.spec.containers[0].command.join(' ')).toContain('mount -t tmpfs')
+  })
+
+  it('warns (without failing) when the userns mount is refused', async () => {
+    const run = happyRun()
+    run.mockImplementation(async (file: string, args: string[]) => {
+      if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-nested') {
+        return { stdout: 'NESTED_MOUNT_FAIL\n', stderr: '' }
+      }
+      return happyResponses(file, args)
+    })
+    const { ok, results } = await runClusterCheck(makeDeps({ run }))
+    const nested = byName(results, 'nested-mount')
+    expect(nested).toMatchObject({ status: 'warn' })
+    expect(nested?.fix).toContain('userns-scoped SYS_ADMIN grant')
+    expect(ok).toBe(true) // warn-only — only nestedContainers sessions are affected
   })
 
   it('warns on proxy VIP pin drift and passes when the live Service matches', async () => {

@@ -228,15 +228,30 @@ describe('loadProjectConfig', () => {
     expect(result).toEqual(config)
   })
 
-  it('rejects the removed nestedContainers key with a pointed error', async () => {
+  it('parses valid config with nestedContainers', async () => {
     await fs.writeFile(
       path.join(tmpDir, 'yaac-config.json'),
       JSON.stringify({ nestedContainers: true }),
     )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow(
-      '"nestedContainers" is no longer supported — nested containers are not '
-      + 'supported on the kubernetes backend (planned for v2)',
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual({ nestedContainers: true })
+  })
+
+  it('parses an explicit nestedContainers: false', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ nestedContainers: false }),
     )
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual({ nestedContainers: false })
+  })
+
+  it('throws on invalid nestedContainers type', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ nestedContainers: 'yes' }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('nestedContainers must be a boolean')
   })
 
   it('parses valid config with hideInitPane', async () => {
@@ -457,26 +472,6 @@ describe('loadProjectConfig', () => {
       delete process.env.YAAC_TEST_REL
     }
   })
-
-  it('rejects the removed pgRelay key with a pointed error', async () => {
-    await fs.writeFile(
-      path.join(tmpDir, 'yaac-config.json'),
-      JSON.stringify({ pgRelay: { enabled: true, hostPort: 5433 } }),
-    )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow(
-      '"pgRelay" is no longer supported — the PostgreSQL relay was removed in '
-      + 'the kubernetes migration',
-    )
-  })
-
-  it('rejects pgRelay regardless of its value shape', async () => {
-    await fs.writeFile(
-      path.join(tmpDir, 'yaac-config.json'),
-      JSON.stringify({ pgRelay: 'not-an-object' }),
-    )
-    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('"pgRelay" is no longer supported')
-  })
-
 
   it('parses valid config with addAllowedUrls', async () => {
     const config = { addAllowedUrls: ['extra.example.com', '*.corp.example.com'] }

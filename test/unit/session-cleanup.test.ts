@@ -15,7 +15,18 @@ vi.mock('@/lib/k8s/pods', async (importOriginal) => {
   }
 })
 
+// The promoter execs into the pod via shellKubectlWithRetry (a real
+// subprocess) — stub the module so cleanup unit tests never touch the
+// cluster, and so the hooks' presence/order can be asserted.
+vi.mock('@/lib/container/image-promoter', () => ({
+  promoteSessionImages: vi.fn().mockResolvedValue(true),
+  buildPromoterShellCommand: vi.fn(
+    (jobName: string) => `kubectl exec job/${jobName} -- promoter || true`,
+  ),
+}))
+
 const execFileMock = vi.fn<(cmd: string, args: string[], opts: unknown) => Promise<void>>()
+const spawnMock = vi.fn<(cmd: string, args: string[], opts: unknown) => void>()
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof ChildProcessModule>('node:child_process')
   return {
@@ -27,9 +38,14 @@ vi.mock('node:child_process', async () => {
         (err: Error) => { cb(err, '', '') },
       )
     },
+    spawn: (cmd: string, args: string[], opts: unknown) => {
+      spawnMock(cmd, args, opts)
+      return { unref: () => { /* detached stub */ } }
+    },
   }
 })
 
+import { promoteSessionImages } from '@/lib/container/image-promoter'
 import { listSessionPods, listSessionJobs } from '@/lib/k8s/pods'
 import type * as podsModule from '@/lib/k8s/pods'
 import {
@@ -155,11 +171,56 @@ describe('cleanupSession', () => {
   it('is exported as a function', () => {
     expect(typeof cleanupSession).toBe('function')
   })
+
+  it('runs the image promoter before deleting the Job', async () => {
+    const mockPromote = vi.mocked(promoteSessionImages)
+    mockPromote.mockClear()
+    execFileMock.mockReset()
+    execFileMock.mockResolvedValue(undefined)
+
+    await cleanupSession({
+      jobName: 'yaac-p-s-promote',
+      projectSlug: 'p',
+      sessionId: 's-promote',
+    })
+
+    expect(mockPromote).toHaveBeenCalledWith('yaac-p-s-promote')
+    // The pod (and its graphroot emptyDir) must still exist when the
+    // promoter runs — the Job delete has to come after.
+    const deleteCall = execFileMock.mock.calls.find(
+      ([cmd, args]) => cmd === 'kubectl' && args[0] === 'delete' && args.includes('yaac-p-s-promote'),
+    )
+    expect(deleteCall).toBeDefined()
+    const promoteOrder = mockPromote.mock.invocationCallOrder[0]
+    const deleteOrder = execFileMock.mock.invocationCallOrder[
+      execFileMock.mock.calls.indexOf(deleteCall!)
+    ]
+    expect(promoteOrder).toBeLessThan(deleteOrder)
+  })
 })
 
 describe('cleanupSessionDetached', () => {
   it('is exported as a function', () => {
     expect(typeof cleanupSessionDetached).toBe('function')
+  })
+
+  it('puts the promoter line ahead of the Job delete in the detached script', async () => {
+    spawnMock.mockClear()
+    execFileMock.mockReset()
+    execFileMock.mockResolvedValue(undefined)
+    await cleanupSessionDetached({
+      jobName: 'yaac-p-s-detached',
+      projectSlug: 'p',
+      sessionId: 's-detached',
+    })
+
+    const call = spawnMock.mock.calls.find(([cmd]) => cmd === 'sh')
+    expect(call).toBeDefined()
+    const script = (call![1])[1]
+    const promoterIdx = script.indexOf('-- promoter || true')
+    const deleteIdx = script.indexOf('kubectl delete job yaac-p-s-detached')
+    expect(promoterIdx).toBeGreaterThanOrEqual(0)
+    expect(deleteIdx).toBeGreaterThan(promoterIdx)
   })
 })
 

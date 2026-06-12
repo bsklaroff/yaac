@@ -4,9 +4,13 @@ import {
   CA_CONFIGMAP_KEY,
   CA_CONFIGMAP_NAME,
   CA_MOUNT_DIR,
+  NESTED_GRAPHROOT_PATH,
+  SHARED_IMAGE_STORE_DST_PATH,
+  SHARED_IMAGE_STORE_PATH,
   assertSessionLabels,
   buildSessionJobManifest,
   parseEnvEntry,
+  type NestedContainersParams,
   type SessionJobParams,
 } from '@/lib/k8s/pod-spec'
 
@@ -88,12 +92,13 @@ interface Manifest {
         automountServiceAccountToken: boolean
         enableServiceLinks: boolean
         hostUsers?: boolean
-        securityContext: { seccompProfile: { type: string } }
+        securityContext: { seccompProfile: { type: string }; fsGroup?: number }
         initContainers: Array<{
           name: string
           image: string
           imagePullPolicy: string
           restartPolicy?: string
+          command?: string[]
           securityContext: {
             runAsUser?: number
             allowPrivilegeEscalation?: boolean
@@ -101,6 +106,7 @@ interface Manifest {
           }
           env: Array<{ name: string; value: string }>
           startupProbe?: { exec: { command: string[] } }
+          volumeMounts?: Array<{ name: string; mountPath: string }>
         }>
         containers: Array<{
           name: string
@@ -108,13 +114,18 @@ interface Manifest {
           imagePullPolicy: string
           workingDir: string
           env: Array<{ name: string; value: string }>
+          securityContext?: {
+            capabilities?: { add?: string[] }
+            allowPrivilegeEscalation?: boolean
+          }
           volumeMounts: Array<{ name: string; mountPath: string; readOnly?: boolean }>
-          resources: { limits: { memory: string } }
+          resources: { limits: Record<string, string> }
         }>
         volumes: Array<{
           name: string
           hostPath?: { path: string; type: string }
           configMap?: { name: string }
+          emptyDir?: Record<string, never>
         }>
       }
     }
@@ -286,6 +297,87 @@ describe('buildSessionJobManifest', () => {
       mountPath: CA_MOUNT_DIR,
       readOnly: true,
     })
+  })
+})
+
+describe('buildSessionJobManifest — nestedContainers', () => {
+  const nested: NestedContainersParams = {
+    uid: 501,
+    sharedImagesHostPath: '/var/lib/yaac/imagecache/ddh16/demo',
+  }
+
+  it('leaves the non-nested manifest byte-identical when nested is absent', () => {
+    const withoutField = buildSessionJobManifest(params())
+    const withUndefined = buildSessionJobManifest({ ...params(), nested: undefined })
+    expect(JSON.stringify(withUndefined)).toBe(JSON.stringify(withoutField))
+
+    const spec = build().spec.template.spec
+    expect(spec.securityContext).toEqual({ seccompProfile: { type: 'RuntimeDefault' } })
+    expect(spec.initContainers.map((c) => c.name)).toEqual(['yaac-redirect-init', 'yaac-relay'])
+    expect(spec.volumes.some((v) => v.name === 'podman-graphroot' || v.name === 'shared-images')).toBe(false)
+    expect(spec.containers[0].resources.limits).toEqual({ memory: String(8 * 1024 ** 3) })
+  })
+
+  it('keeps RuntimeDefault and adds only SYS_ADMIN on the session container', () => {
+    const spec = build({ nested }).spec.template.spec
+    // seccompProfile stays RuntimeDefault — the userns-scoped cap is what
+    // unlocks the mount family in containerd's profile, not Unconfined.
+    expect(spec.securityContext.seccompProfile).toEqual({ type: 'RuntimeDefault' })
+    expect(spec.hostUsers).toBe(false)
+    // No explicit allowPrivilegeEscalation — the kubelet forces it true
+    // under CAP_SYS_ADMIN, so it would be redundant.
+    expect(spec.containers[0].securityContext).toEqual({
+      capabilities: { add: ['SYS_ADMIN'] },
+    })
+  })
+
+  it('sets fsGroup to the yaac uid for the graphroot emptyDir', () => {
+    const spec = build({ nested }).spec.template.spec
+    expect(spec.securityContext.fsGroup).toBe(501)
+    expect(spec.volumes).toContainEqual({ name: 'podman-graphroot', emptyDir: {} })
+    expect(spec.containers[0].volumeMounts).toContainEqual({
+      name: 'podman-graphroot',
+      mountPath: NESTED_GRAPHROOT_PATH,
+    })
+  })
+
+  it('mounts the shared image store rw and chowns it via a first init container', () => {
+    const spec = build({ nested }).spec.template.spec
+    expect(spec.volumes).toContainEqual({
+      name: 'shared-images',
+      hostPath: { path: '/var/lib/yaac/imagecache/ddh16/demo', type: 'DirectoryOrCreate' },
+    })
+    // rw mount (no readOnly key): additionalimagestores creates lock dirs.
+    expect(spec.containers[0].volumeMounts).toContainEqual({
+      name: 'shared-images',
+      mountPath: SHARED_IMAGE_STORE_PATH,
+    })
+    // A second mount of the same volume — the promoter's write-side
+    // destination root, dodging the read-only additional-store lock.
+    expect(spec.containers[0].volumeMounts).toContainEqual({
+      name: 'shared-images',
+      mountPath: SHARED_IMAGE_STORE_DST_PATH,
+    })
+
+    // The chown init runs FIRST — before the landed redirect-init/relay
+    // pair — as root-in-userns, on the session image itself.
+    expect(spec.initContainers.map((c) => c.name)).toEqual([
+      'yaac-imagestore-init', 'yaac-redirect-init', 'yaac-relay',
+    ])
+    const chown = spec.initContainers[0]
+    expect(chown.image).toBe('localhost:5000/yaac-tools:abc')
+    expect(chown.securityContext).toEqual({ runAsUser: 0 })
+    expect(chown.command).toEqual([
+      'sh', '-c', `chown 501:501 ${SHARED_IMAGE_STORE_PATH}`,
+    ])
+    expect(chown.volumeMounts).toEqual([
+      { name: 'shared-images', mountPath: SHARED_IMAGE_STORE_PATH },
+    ])
+  })
+
+  it('keeps the resource limits identical to a non-nested pod (memory only)', () => {
+    const limits = build({ nested }).spec.template.spec.containers[0].resources.limits
+    expect(limits).toEqual({ memory: String(8 * 1024 ** 3) })
   })
 })
 

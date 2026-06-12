@@ -158,10 +158,15 @@ interface ImageLayer {
 /**
  * Resolves the full image layer chain for a project without building anything.
  * Returns the ordered list of layers.
+ *
+ * `nestedContainers` inserts the nestable layer (in-pod rootless podman +
+ * docker CLI) between tools and any layered Dockerfile.yaac. Skipped for a
+ * standalone Dockerfile.yaac, which owns its own toolchain.
  */
 async function resolveImageChain(
   projectSlug: string,
   prefix: string,
+  nestedContainers = false,
 ): Promise<{ layers: ImageLayer[]; finalTag: string }> {
   const layers: ImageLayer[] = []
 
@@ -220,19 +225,44 @@ async function resolveImageChain(
     })
   }
 
-  // Resolve the base layer tag (may be tools-only, layered yaac, or standalone yaac).
-  // A standalone Dockerfile.yaac is a root layer like Dockerfile.default:
-  // it owns its user setup, so it gets the YAAC_UID build arg (honoring it
-  // is up to the Dockerfile) and the uid folded into its hash. Layered
-  // variants inherit the uid through the parent's hash chain.
+  // Layer 1b (optional): <prefix>-nestable (Dockerfile.nestable) — in-pod
+  // rootless podman + docker CLI + compose for `nestedContainers`
+  // sessions. Sits on tools so a layered Dockerfile.yaac inherits it; a
+  // standalone Dockerfile.yaac skips it (it owns its toolchain). The uid
+  // shapes the layer's subuid ranges and socket path, but it is already
+  // folded into the chain through the base hash.
+  let nestableTag: string | null = null
+  let nestableHash: string | null = null
+  if (useDefaultBase && nestedContainers) {
+    const nestableDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
+    const nestableContentHash = await fileHash(nestableDockerfile)
+    nestableHash = stringHash(`${toolsHash!}:${nestableContentHash}`)
+    nestableTag = `${prefix}-nestable:${nestableHash}`
+    layers.push({
+      tag: nestableTag,
+      dockerfile: nestableDockerfile,
+      context: DOCKERFILES_DIR,
+      buildArgs: { BASE_IMAGE: toolsTag!, YAAC_UID: String(uid) },
+      contentHash: nestableHash,
+    })
+  }
+
+  // Resolve the base layer tag (may be tools/nestable, layered yaac, or
+  // standalone yaac). A standalone Dockerfile.yaac is a root layer like
+  // Dockerfile.default: it owns its user setup, so it gets the YAAC_UID
+  // build arg (honoring it is up to the Dockerfile) and the uid folded
+  // into its hash. Layered variants inherit the uid through the parent's
+  // hash chain.
+  const parentTag = nestableTag ?? toolsTag
+  const parentHash = nestableHash ?? toolsHash
   const baseHash = yaacIsLayered
-    ? stringHash(`${toolsHash!}:${stringHash(yaacContent!)}`)
+    ? stringHash(`${parentHash!}:${stringHash(yaacContent!)}`)
     : yaacDockerfile
       ? stringHash(`${stringHash(yaacContent!)}:uid=${uid}`)
-      : toolsHash!
+      : parentHash!
   const baseTag = yaacDockerfile
     ? `${prefix}-base:${baseHash}`
-    : toolsTag!
+    : parentTag!
 
   if (yaacDockerfile) {
     const baseContext = path.dirname(yaacDockerfile)
@@ -241,7 +271,7 @@ async function resolveImageChain(
       dockerfile: yaacDockerfile,
       context: baseContext,
       buildArgs: yaacIsLayered
-        ? { BASE_IMAGE: toolsTag! }
+        ? { BASE_IMAGE: parentTag! }
         : { YAAC_UID: String(uid) },
       contentHash: baseHash,
     })
@@ -282,9 +312,13 @@ async function resolveImageChain(
  * Useful for fingerprinting — computes what the tag would be based on
  * current Dockerfile content and config.
  */
-export async function resolveImageTag(projectSlug: string, imagePrefix?: string): Promise<string> {
+export async function resolveImageTag(
+  projectSlug: string,
+  imagePrefix?: string,
+  nestedContainers = false,
+): Promise<string> {
   const prefix = imagePrefix ?? 'yaac'
-  const { finalTag } = await resolveImageChain(projectSlug, prefix)
+  const { finalTag } = await resolveImageChain(projectSlug, prefix, nestedContainers)
   return finalTag
 }
 
@@ -296,9 +330,12 @@ export async function resolveImageTag(projectSlug: string, imagePrefix?: string)
  * Layer 1a: yaac-tools (Dockerfile.tools — claude, codex, opencode, etc.)
  *   Included whenever the canonical base is in use. Rebuilt with --no-cache
  *   by `yaac project rebuild` to pick up new upstream agent CLI versions.
+ * Layer 1b (optional): yaac-nestable (Dockerfile.nestable — in-pod rootless
+ *   podman + docker CLI/compose), only when `nestedContainers` is set.
  * Layer 2: yaac-base from Dockerfile.yaac — when present:
- *   - layered on Dockerfile.tools (when Dockerfile.yaac uses `ARG BASE_IMAGE` + `FROM ${BASE_IMAGE}`)
- *   - or standalone (replaces the canonical base + tools)
+ *   - layered on Dockerfile.tools / Dockerfile.nestable (when Dockerfile.yaac
+ *     uses `ARG BASE_IMAGE` + `FROM ${BASE_IMAGE}`)
+ *   - or standalone (replaces the canonical base + tools + nestable)
  * Layer 3 (optional): yaac-user-<slug> (~/.yaac/Dockerfile.user, builds on top)
  *
  * Returns the final image name to use for containers.
@@ -308,10 +345,17 @@ export async function resolveImageTag(projectSlug: string, imagePrefix?: string)
  * @param requirePrebuilt - When true, throw instead of building if the base
  *   image is missing or stale. Used by e2e tests so parallel workers fail
  *   fast instead of racing to build the same image.
+ * @param nestedContainers - Include the nestable layer (from the project's
+ *   `nestedContainers` config, passed by createSession).
  */
-export async function ensureImage(projectSlug: string, imagePrefix?: string, requirePrebuilt = false): Promise<string> {
+export async function ensureImage(
+  projectSlug: string,
+  imagePrefix?: string,
+  requirePrebuilt = false,
+  nestedContainers = false,
+): Promise<string> {
   const prefix = imagePrefix ?? 'yaac'
-  const { layers, finalTag } = await resolveImageChain(projectSlug, prefix)
+  const { layers, finalTag } = await resolveImageChain(projectSlug, prefix, nestedContainers)
 
   for (const layer of layers) {
     if (await imageExists(layer.tag)) continue

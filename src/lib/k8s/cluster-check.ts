@@ -99,8 +99,12 @@ const defaultDeps: ClusterCheckDeps = {
  *      (nat REDIRECT delivers to the loopback relay), lockdown (filter
  *      default-deny REJECTs non-proxy egress fast), dns-stub (udp/53 is
  *      answered by the relay's stub, never kube-dns)
- *  10. proxy Service VIP pin drift (warn-only)
- *  11. service-CIDR drift (warn-only)
+ *  10. nested-mount (warn-only): under the nested session securityContext
+ *      (userns-scoped SYS_ADMIN, RuntimeDefault) an unprivileged user can
+ *      mount tmpfs inside a user namespace — the rootless-podman
+ *      prerequisite for nestedContainers sessions
+ *  11. proxy Service VIP pin drift (warn-only)
+ *  12. service-CIDR drift (warn-only)
  */
 export async function runClusterCheck(
   deps: ClusterCheckDeps = defaultDeps,
@@ -187,7 +191,9 @@ export async function runClusterCheck(
   }
 
   // 7. end-to-end probe (skipped when prerequisites already failed)
-  const PROBE_GATES = ['probe', 'egress', 'redirect', 'lockdown', 'dns-stub'] as const
+  const PROBE_GATES = [
+    'probe', 'egress', 'redirect', 'lockdown', 'dns-stub', 'nested-mount',
+  ] as const
   if (results.some((r) => r.status === 'fail')) {
     for (const name of PROBE_GATES) {
       add({ name, status: 'skip', detail: 'skipped — fix the failures above first' })
@@ -217,11 +223,16 @@ export async function runClusterCheck(
   // path), all collected from one session-shaped probe pod
   for (const r of await runTransparentRedirectProbe(deps)) add(r)
 
-  // 10. proxy VIP pin (warn-only drift check, like the service CIDR
+  // 10. nested userns-mount probe (warn-only: only nestedContainers
+  // sessions need it — the tripwire for containerd versions where the
+  // namespaced SYS_ADMIN grant does not unlock the mount family)
+  add(await runNestedMountProbe(deps))
+
+  // 11. proxy VIP pin (warn-only drift check, like the service CIDR
   // below: session relays dial the pinned VIP from env)
   add(await runProxyVipPinCheck(deps))
 
-  // 11. service-CIDR drift (warn-only: the VIP pin hashes into the
+  // 12. service-CIDR drift (warn-only: the VIP pin hashes into the
   // compiled service subnet, so a drifted cluster fails the proxy
   // Service creation — loudly — on the next daemon start)
   add(await runServiceCidrDriftCheck(deps))
@@ -756,6 +767,93 @@ async function runTransparentRedirectProbe(deps: ClusterCheckDeps): Promise<Chec
     await cleanup()
   }
 }
+
+const NESTED_PROBE_POD_NAME = 'yaac-cluster-check-nested'
+
+/**
+ * Warn-level gate for nestedContainers sessions: under the exact nested
+ * session securityContext — hostUsers: false, seccomp RuntimeDefault, the
+ * unprivileged session uid with a userns-scoped SYS_ADMIN grant — an
+ * `unshare -U -r -m` user namespace must be able to mount tmpfs. That is
+ * the rootless-podman prerequisite (overlay/proc/tmpfs mounts inside the
+ * userns it creates; `docker build` RUN steps cannot avoid mount()): the
+ * cap makes containerd's static RuntimeDefault profile compile the
+ * mount-family syscalls into the seccomp allowlist. A containerd version
+ * that doesn't unlock the family via the namespaced cap fails here.
+ */
+async function runNestedMountProbe(deps: ClusterCheckDeps): Promise<CheckResult> {
+  const ns = k8sNamespace()
+  try {
+    const imageRef = await deps.pushImage(PROBE_LOCAL_TAG)
+    await deps.run('kubectl', ['delete', 'pod', NESTED_PROBE_POD_NAME, '-n', ns, '--ignore-not-found'])
+    await deps.apply({
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: { name: NESTED_PROBE_POD_NAME, namespace: ns },
+      spec: {
+        restartPolicy: 'Never',
+        automountServiceAccountToken: false,
+        enableServiceLinks: false,
+        hostUsers: false,
+        securityContext: { seccompProfile: { type: 'RuntimeDefault' } },
+        containers: [{
+          name: 'probe',
+          image: imageRef,
+          // The nested session-container securityContext, verbatim (see
+          // buildSessionJobManifest's nested branch).
+          securityContext: {
+            runAsUser: sessionUid(),
+            capabilities: { add: ['SYS_ADMIN'] },
+            allowPrivilegeEscalation: true,
+          },
+          command: [
+            'sh', '-c',
+            'mkdir -p /tmp/m && '
+            + "unshare -U -r -m sh -c 'mount -t tmpfs none /tmp/m' "
+            + '&& echo NESTED_MOUNT_OK || echo NESTED_MOUNT_FAIL',
+          ],
+        }],
+      },
+    })
+
+    const phase = await waitForProbePodPhase(NESTED_PROBE_POD_NAME, 'Succeeded', 60_000)
+    if (phase !== 'Succeeded') {
+      return {
+        name: 'nested-mount', status: 'warn',
+        detail: `nested probe pod ended in phase ${phase} — nestedContainers sessions unverified`,
+        fix: NESTED_MOUNT_FIX,
+      }
+    }
+    const { stdout } = await deps.run('kubectl', ['logs', NESTED_PROBE_POD_NAME, '-n', ns])
+    if (stdout.includes('NESTED_MOUNT_OK')) {
+      return {
+        name: 'nested-mount', status: 'pass',
+        detail: 'userns-scoped SYS_ADMIN unlocks rootless mounts (nestedContainers ready)',
+      }
+    }
+    return {
+      name: 'nested-mount', status: 'warn',
+      detail: 'mounting tmpfs inside a user namespace failed under the nested securityContext'
+        + ` (logs: ${stdout.trim().slice(0, 80) || 'empty'})`,
+      fix: NESTED_MOUNT_FIX,
+    }
+  } catch (err) {
+    return {
+      name: 'nested-mount', status: 'warn',
+      detail: `nested userns-mount probe errored (${truncate(err)})`,
+      fix: NESTED_MOUNT_FIX,
+    }
+  } finally {
+    await deps.run('kubectl', ['delete', 'pod', NESTED_PROBE_POD_NAME, '-n', ns, '--ignore-not-found'])
+      .catch(() => { /* best-effort cleanup */ })
+  }
+}
+
+const NESTED_MOUNT_FIX =
+  'Only nestedContainers sessions are affected (docker build/run in-pod). '
+  + 'This containerd version does not unlock the mount syscall family via '
+  + 'the userns-scoped SYS_ADMIN grant — nested sessions on this cluster '
+  + 'cannot mount overlay/proc/tmpfs inside their build userns.'
 
 /**
  * Warn when the live proxy Service's ClusterIP drifts from the compiled

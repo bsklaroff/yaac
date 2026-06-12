@@ -9,6 +9,35 @@ export const CA_MOUNT_DIR = '/etc/yaac/certs'
 /** Full in-container path of the proxy CA cert. */
 export const CA_CERT_PATH = `${CA_MOUNT_DIR}/${CA_CONFIGMAP_KEY}`
 
+/**
+ * In-container mount point of the cross-session shared image store
+ * (`additionalimagestores` in the nestable image's storage.conf). Mounted
+ * rw because podman unconditionally creates lock-file directories inside
+ * the store path (containers/storage#1733) — the promoter is the only
+ * intentional writer; session-side writes are lock files only.
+ */
+export const SHARED_IMAGE_STORE_PATH = '/var/lib/shared-images'
+
+/**
+ * A second mount of the SAME shared-image-store hostPath, used only as the
+ * promoter's write-side destination root. Distinct path, same directory:
+ * the store is also listed in `additionalimagestores`, which podman opens
+ * with a read-only lock, so a destination addressed as
+ * SHARED_IMAGE_STORE_PATH fails ("not a read-write lock"). Writing through
+ * a different path that podman doesn't recognize as its own additional
+ * store gets a read-write lock; the bytes land in the same directory the
+ * next session reads. Mirrors the pre-migration promoter's `/dst` mount.
+ */
+export const SHARED_IMAGE_STORE_DST_PATH = '/var/lib/shared-images-dst'
+
+/**
+ * In-container path of the per-session podman graphroot (an emptyDir, so
+ * its lifetime matches the single-pod Job). The kind node mounts a real
+ * filesystem at /var, so kubelet emptyDirs support native rootless
+ * overlay (no fuse).
+ */
+export const NESTED_GRAPHROOT_PATH = '/home/yaac/.local/share/containers'
+
 export interface HostPathMount {
   hostPath: string
   mountPath: string
@@ -67,6 +96,26 @@ export interface EgressSidecarParams {
   relayToken: string
 }
 
+/**
+ * Nested-containers (in-pod rootless podman) parameters. Present only for
+ * `nestedContainers: true` sessions — non-nested pod specs are
+ * byte-identical to a spec built without this field.
+ */
+export interface NestedContainersParams {
+  /**
+   * uid of the in-image yaac user (= the daemon uid, see sessionUid).
+   * Used as the pod fsGroup so the kubelet chowns the graphroot emptyDir,
+   * and as the chown target for the shared image store.
+   */
+  uid: number
+  /**
+   * Node-local hostPath backing the cross-session shared image store
+   * (`/var/lib/yaac/imagecache/<dataDirHash>/<projectSlug>`). Root-owned
+   * `DirectoryOrCreate` — a chown init container hands it to `uid`.
+   */
+  sharedImagesHostPath: string
+}
+
 export interface SessionJobParams {
   jobName: string
   namespace: string
@@ -78,6 +127,8 @@ export interface SessionJobParams {
   hostPathMounts: HostPathMount[]
   memoryLimitBytes: number
   egress: EgressSidecarParams
+  /** In-pod podman wiring; absent for non-nested sessions. */
+  nested?: NestedContainersParams
   /** Matches the podman-era `container.stop({t: 5})` grace. */
   terminationGracePeriodSeconds?: number
 }
@@ -121,6 +172,24 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
   })
   volumeMounts.push({ name: 'proxy-ca', mountPath: CA_MOUNT_DIR, readOnly: true })
 
+  if (p.nested) {
+    // Per-session graphroot: emptyDir, chowned to the yaac uid via the
+    // pod fsGroup (fsGroup touches ownership-managed volumes only —
+    // hostPath mounts are unaffected).
+    volumes.push({ name: 'podman-graphroot', emptyDir: {} })
+    volumeMounts.push({ name: 'podman-graphroot', mountPath: NESTED_GRAPHROOT_PATH })
+    // Cross-session shared image store (additionalimagestores). rw — see
+    // SHARED_IMAGE_STORE_PATH. Mounted at a second path too
+    // (SHARED_IMAGE_STORE_DST_PATH) so the teardown promoter can write to
+    // it without colliding with the read-only additional-store lock.
+    volumes.push({
+      name: 'shared-images',
+      hostPath: { path: p.nested.sharedImagesHostPath, type: 'DirectoryOrCreate' },
+    })
+    volumeMounts.push({ name: 'shared-images', mountPath: SHARED_IMAGE_STORE_PATH })
+    volumeMounts.push({ name: 'shared-images', mountPath: SHARED_IMAGE_STORE_DST_PATH })
+  }
+
   return {
     apiVersion: 'batch/v1',
     kind: 'Job',
@@ -142,7 +211,12 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
           enableServiceLinks: false,
           // The runtime's default seccomp profile — podman applied this
           // by default, kubernetes leaves pods unconfined without it.
-          securityContext: { seccompProfile: { type: 'RuntimeDefault' } },
+          // Nested sessions add fsGroup so the kubelet chowns the
+          // graphroot emptyDir to the yaac uid.
+          securityContext: {
+            seccompProfile: { type: 'RuntimeDefault' },
+            ...(p.nested ? { fsGroup: p.nested.uid } : {}),
+          },
           // Run every session pod in a user namespace: in-container root
           // (reachable via the image's passwordless sudo, a feature —
           // agents install packages mid-session) maps to an unprivileged
@@ -167,9 +241,25 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
           //      startupProbe gates the workload container, so no session
           //      byte can egress before the relay is up. Runs as a distinct
           //      uid with no added capability; only it holds the token.
-          // Composition point with the nested-containers plan: its chown
-          // init container, when it lands, goes first.
+          // Nested sessions prepend a chown init container: the shared
+          // image store hostPath is root-owned (DirectoryOrCreate), and
+          // root-in-userns (hostUsers: false) is enough to hand it to the
+          // yaac uid — idmapped-mount identity across pods is proven by
+          // the cluster-check uid probe.
           initContainers: [
+            ...(p.nested ? [{
+              name: 'yaac-imagestore-init',
+              image: p.image,
+              imagePullPolicy: 'IfNotPresent',
+              securityContext: { runAsUser: 0 },
+              command: [
+                'sh', '-c',
+                `chown ${p.nested.uid}:${p.nested.uid} ${SHARED_IMAGE_STORE_PATH}`,
+              ],
+              volumeMounts: [
+                { name: 'shared-images', mountPath: SHARED_IMAGE_STORE_PATH },
+              ],
+            }] : []),
             {
               name: 'yaac-redirect-init',
               image: p.egress.redirectImage,
@@ -239,6 +329,20 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
               workingDir: '/workspace',
               env: p.env.map(parseEnvEntry),
               volumeMounts,
+              // Nested only: seccompProfile stays RuntimeDefault; the
+              // userns-scoped SYS_ADMIN (hostUsers: false — no host
+              // authority) exists to make containerd's static profile
+              // compile the mount-family syscalls into the seccomp
+              // allowlist, which rootless podman needs for overlay/proc/
+              // tmpfs mounts (and `docker build` RUN steps cannot avoid
+              // mount()). No explicit allowPrivilegeEscalation: the kubelet
+              // forces it true whenever a container holds CAP_SYS_ADMIN, so
+              // setting it would be redundant (and false would be rejected).
+              ...(p.nested ? {
+                securityContext: {
+                  capabilities: { add: ['SYS_ADMIN'] },
+                },
+              } : {}),
               resources: {
                 limits: { memory: String(p.memoryLimitBytes) },
               },

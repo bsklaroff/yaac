@@ -3,7 +3,8 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
 import { ensureContainerRuntime } from '@/lib/container/runtime'
-import { ensureImage } from '@/lib/container/image-builder'
+import { ensureImage, sessionUid } from '@/lib/container/image-builder'
+import { sharedImageStoreHostPath } from '@/lib/container/image-promoter'
 import { proxyClient, SSH_AGENT_MOUNT, SSH_AGENT_SOCKET_PATH } from '@/lib/container/proxy-client'
 import { buildSessionRegistration, syncProxySecrets } from '@/lib/session/proxy-registration'
 import { resolveAllowedHosts } from '@/lib/container/default-allowed-hosts'
@@ -19,7 +20,12 @@ import {
   LABEL_TOOL,
   sessionJobName,
 } from '@/lib/k8s/pods'
-import { buildSessionJobManifest, type HostPathMount, type EgressSidecarParams } from '@/lib/k8s/pod-spec'
+import {
+  buildSessionJobManifest,
+  type HostPathMount,
+  type EgressSidecarParams,
+  type NestedContainersParams,
+} from '@/lib/k8s/pod-spec'
 import {
   clusterIpForNamespace,
   RELAY_CONNECT_PORT,
@@ -301,6 +307,7 @@ interface SessionSetupParams {
   env: string[]
   hostPathMounts: HostPathMount[]
   egress: EgressSidecarParams
+  nested?: NestedContainersParams
   tool: AgentTool
   config: YaacConfig
   options: SessionCreateOptions
@@ -357,7 +364,7 @@ async function waitForPodReady(jobName: string, timeoutMs = 180_000): Promise<vo
 async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   const {
     imageRef, jobName, projectSlug, sessionId, env, hostPathMounts,
-    egress, tool, config, options, gitUser, forwardedPorts,
+    egress, nested, tool, config, options, gitUser, forwardedPorts,
   } = params
 
   // Every in-container `tmux` invocation routes through this prefix so
@@ -380,6 +387,7 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
     hostPathMounts,
     memoryLimitBytes: 8 * 1024 ** 3,
     egress,
+    nested,
   })
   await kubectlApply(manifest)
   await waitForPodReady(jobName)
@@ -430,6 +438,41 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   // can leave Claude stuck at 80x24 until the user resizes the host
   // terminal to force a fresh SIGWINCH.
   await containerExec(jobName, `${TMUX} -u new-session -d -s yaac -n ${tool} -x 500 -y 200 'sleep infinity'`)
+
+  // Nested sessions: start the in-pod rootless podman engine (it serves
+  // the Docker Engine API on the socket DOCKER_HOST points at). This is
+  // the k8s port of the pre-migration `podman exec -d <ctr> podman system
+  // service`: a detached background process, not a tmux window. kubectl
+  // exec has no `-d`, so background it with all fds redirected to a log
+  // file — the exec stream then closes and `containerExec` returns while
+  // the service keeps running, reparented to the container's catatonit
+  // init. Then gate on `docker version` so a broken engine (e.g. a cluster
+  // that refuses the userns mount) fails here with a clear error instead
+  // of a confusing "cannot connect to docker" the first time the agent
+  // runs.
+  if (nested) {
+    await containerExec(
+      jobName,
+      `sh -c 'podman system service --time=0 >/tmp/podman-service.log 2>&1 &'`,
+    )
+    emit('Waiting for the in-pod container engine...', options)
+    const deadline = Date.now() + 60_000
+    for (;;) {
+      try {
+        await containerExec(jobName, 'docker version', { maxAttempts: 1, timeout: 10_000 })
+        break
+      } catch (err) {
+        if (Date.now() > deadline) {
+          throw new Error(
+            'in-pod podman did not become ready within 60s — check '
+            + `/tmp/podman-service.log in session ${sessionId} `
+            + `(${(err as Error).message})`,
+          )
+        }
+        await new Promise((r) => setTimeout(r, 500))
+      }
+    }
+  }
 
   // Run init commands in background tmux windows (parallel to the agent).
   // One window per InitWindow — string-form configs collapse to a single
@@ -576,11 +619,17 @@ export async function createSession(
     }
   }
 
+  // nestedContainers shapes the image chain (nestable layer), the pod
+  // spec (nested branch), the proxy allowlist (registry hosts), and the
+  // in-pod engine start + readiness gate below.
+  const nestedContainers = config.nestedContainers === true
+
   emit('Ensuring container images are built...', options)
   const imageName = await ensureImage(
     projectSlug,
     process.env.YAAC_IMAGE_PREFIX,
     process.env.YAAC_REQUIRE_PREBUILT_IMAGES === '1',
+    nestedContainers,
   )
 
   emit('Pushing session image to the local registry...', options)
@@ -656,6 +705,15 @@ export async function createSession(
     sessionId,
     relayToken: proxyClient.relayToken(sessionId),
   }
+
+  // Nested-containers pod wiring: shared image store hostPath (node-local)
+  // + graphroot/securityContext branch in the manifest.
+  const nested: NestedContainersParams | undefined = nestedContainers
+    ? {
+      uid: sessionUid(),
+      sharedImagesHostPath: sharedImageStoreHostPath(projectSlug),
+    }
+    : undefined
 
   // Check that tool credentials exist on the host so the container can
   // authenticate via the proxy. For Claude OAuth this also drives the
@@ -916,7 +974,7 @@ export async function createSession(
   const maxStartAttempts = 3
   const setupParams: SessionSetupParams = {
     imageRef, jobName, projectSlug, sessionId, env, hostPathMounts,
-    egress, tool, config, options, gitUser, forwardedPorts,
+    egress, nested, tool, config, options, gitUser, forwardedPorts,
   }
 
   emit(`Creating session job ${jobName}...`, options)

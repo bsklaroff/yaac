@@ -172,6 +172,48 @@ describe('image-builder prerequisites', () => {
     expect(content).toContain('opencode-ai')
   })
 
+  it('Dockerfile.nestable layers in-pod podman with the docker CLI on the tools image', async () => {
+    const dockerfilePath = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
+    const content = await fs.readFile(dockerfilePath, 'utf8')
+    expect(content).toMatch(/^ARG BASE_IMAGE\n/m)
+    expect(content).toMatch(/^FROM \$\{BASE_IMAGE\}/m)
+    // Engine + build/copy tooling, docker-CLI surface.
+    expect(content).toContain('podman')
+    expect(content).toContain('skopeo')
+    expect(content).toContain('docker-compose')
+    // Container-private networks aren't supported in-pod, so no userspace
+    // network helper is installed (host netns is the only mode).
+    expect(content).not.toContain('default_rootless_network_cmd')
+    // The uid the daemon injects shapes the subuid ranges and socket path.
+    expect(content).toMatch(/^ARG YAAC_UID=1000$/m)
+    expect(content).toContain('DOCKER_HOST=unix:///run/user/${YAAC_UID}/podman/podman.sock')
+    // Everything shares the pod's namespaces — nested egress must stay on
+    // the pod-netns redirect (locally-originated traffic).
+    expect(content).toContain('netns="host"')
+    // Rootless-podman-in-kubernetes settings: the pod userns refuses the
+    // per-container keyring and pivot_root.
+    expect(content).toContain('keyring=false')
+    expect(content).toContain('no_pivot_root=true')
+    // Cross-session layer cache rides additionalimagestores.
+    expect(content).toContain('additionalimagestores = ["/var/lib/shared-images"]')
+    // Nested containers auto-trust the session's MITM CA via the additive
+    // trust vars only (single-file *_CA_BUNDLE vars would replace the whole
+    // trust set and break tunneled hosts — see the combined-bundle plan).
+    // Assert the replace-vars are not *set* (the explanatory comment may
+    // still name them).
+    expect(content).toContain('/etc/yaac/certs/proxy-ca.pem')
+    expect(content).toContain('SSL_CERT_FILE=/etc/yaac/certs/proxy-ca.pem')
+    expect(content).not.toContain('CURL_CA_BUNDLE=')
+    expect(content).not.toContain('REQUESTS_CA_BUNDLE=')
+    expect(content).not.toContain('CARGO_HTTP_CAINFO=')
+    // newuidmap/newgidmap carry file caps, not setuid.
+    expect(content).toContain('setcap cap_setuid+ep /usr/bin/newuidmap')
+    expect(content).toContain('setcap cap_setgid+ep /usr/bin/newgidmap')
+    // The engine is started by a detached daemon exec, not an entrypoint
+    // override — the image keeps the base catatonit keepalive.
+    expect(content).not.toMatch(/^ENTRYPOINT/m)
+  })
+
   it('Dockerfile.default runs as non-root yaac user', async () => {
     const dockerfilePath = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
     const content = await fs.readFile(dockerfilePath, 'utf8')

@@ -8,6 +8,7 @@ import { execTarget } from '@/lib/k8s/exec'
 import { evictClaudeStatusCache } from '@/lib/session/claude-status'
 import { evictOpencodeProbeCache } from '@/lib/session/opencode-status'
 import { proxyClient } from '@/lib/container/proxy-client'
+import { buildPromoterShellCommand, promoteSessionImages } from '@/lib/container/image-promoter'
 import {
   cachedPackagesDir,
   projectDir,
@@ -148,6 +149,12 @@ export async function cleanupSession(params: {
   stopSessionForwarders(sessionId)
   await removeSessionFromProxy(sessionId)
 
+  // Salvage built image layers into the project's shared store before the
+  // pod (and its graphroot emptyDir) is destroyed. Best-effort, and the
+  // in-pod script self-gates on the nested mounts, so non-nested sessions
+  // (and already-dead pods) no-op.
+  await promoteSessionImages(jobName)
+
   // Delete the session Job; the pod's terminationGracePeriodSeconds (5s)
   // covers the graceful-stop window, so no separate stop step is needed.
   // --wait so the modules/tmux dirs below aren't yanked out from under a
@@ -206,6 +213,10 @@ export async function cleanupSessionDetached(params: {
   const tmuxDirRm = `rm -rf '${tmuxDir.replace(/'/g, `'\\''`)}' 2>/dev/null || true`
 
   const script = [
+    // Promoter first: it execs into the pod, which the Job delete below
+    // destroys. Self-gating + `|| true`, so non-nested sessions and dead
+    // pods fall straight through to the delete.
+    buildPromoterShellCommand(jobName),
     `kubectl delete job ${jobName} -n ${k8sNamespace()} --ignore-not-found 2>/dev/null || true`,
     ephemeralModulesRm,
     tmuxDirRm,

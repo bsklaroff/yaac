@@ -6,7 +6,7 @@ import {
   buildSessionRegistration,
   syncProxySecrets,
 } from '@/lib/session/proxy-registration'
-import { DEFAULT_ALLOWED_HOSTS } from '@/lib/container/default-allowed-hosts'
+import { DEFAULT_ALLOWED_HOSTS, NESTED_PULL_HOSTS } from '@/lib/container/default-allowed-hosts'
 import { proxySecretsCredentialsPath, setDataDir } from '@/lib/project/paths'
 
 describe('buildSessionRegistration', () => {
@@ -57,6 +57,50 @@ describe('buildSessionRegistration', () => {
       config: { addAllowedUrls: ['extra.example.com'] },
       remoteUrl: 'u', tool: 'claude', env: {},
     }).allowedHosts).toContain('extra.example.com')
+  })
+
+  it('auto-appends the registry/CDN pull hosts for nestedContainers sessions', () => {
+    const reg = buildSessionRegistration({
+      config: { nestedContainers: true },
+      remoteUrl: 'u', tool: 'claude', env: {},
+    })
+    for (const host of NESTED_PULL_HOSTS) {
+      expect(reg.allowedHosts).toContain(host)
+    }
+    // The docker.io pull hosts were moved out of the base list, so they
+    // appear exactly once (appended), never duplicated.
+    expect(
+      reg.allowedHosts.filter((h) => h === 'registry-1.docker.io'),
+    ).toHaveLength(1)
+    // The shared default list itself must never be mutated.
+    expect(DEFAULT_ALLOWED_HOSTS).not.toContain('cdn01.quay.io')
+  })
+
+  it('still appends the pull hosts on top of addAllowedUrls', () => {
+    const reg = buildSessionRegistration({
+      config: { nestedContainers: true, addAllowedUrls: ['extra.example.com'] },
+      remoteUrl: 'u', tool: 'claude', env: {},
+    })
+    expect(reg.allowedHosts).toContain('extra.example.com')
+    expect(reg.allowedHosts).toContain('registry-1.docker.io')
+  })
+
+  it('does NOT append the pull hosts under setAllowedUrls (full override)', () => {
+    const reg = buildSessionRegistration({
+      config: { nestedContainers: true, setAllowedUrls: ['only.example.com'] },
+      remoteUrl: 'u', tool: 'claude', env: {},
+    })
+    expect(reg.allowedHosts).toEqual(['only.example.com'])
+  })
+
+  it('leaves the allowlist untouched when nestedContainers is off', () => {
+    const reg = buildSessionRegistration({
+      config: {},
+      remoteUrl: 'u', tool: 'claude', env: {},
+    })
+    expect(reg.allowedHosts).toEqual([...DEFAULT_ALLOWED_HOSTS])
+    expect(reg.allowedHosts).not.toContain('cdn01.quay.io')
+    expect(reg.allowedHosts).not.toContain('registry-1.docker.io')
   })
 
   it('parses upstream redirects from the e2e env hook', () => {

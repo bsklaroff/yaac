@@ -1,6 +1,6 @@
 import { buildRulesFromConfig, collectProxySecrets } from '@/lib/container/proxy-client'
 import type { InjectionRule, UpstreamRedirect } from '@/lib/container/proxy-client'
-import { resolveAllowedHosts } from '@/lib/container/default-allowed-hosts'
+import { NESTED_PULL_HOSTS, resolveAllowedHosts } from '@/lib/container/default-allowed-hosts'
 import { writeProxySecrets } from '@/lib/project/credentials'
 import type { AgentTool, YaacConfig } from '@/shared/types'
 
@@ -62,11 +62,21 @@ export function buildSessionRegistration(input: {
   env?: NodeJS.ProcessEnv
 }): SessionRegistration {
   const env = input.env ?? process.env
+  // Copy: resolveAllowedHosts may return the shared DEFAULT_ALLOWED_HOSTS
+  // array itself, which must never be mutated.
+  const allowedHosts = [...resolveAllowedHosts(input.config)]
+  // Auto-append the registry pull hosts for nested sessions — unless the
+  // user pinned an exact allowlist with setAllowedUrls, which is a full
+  // override the user owns completely (addAllowedUrls and the default list
+  // still get them).
+  if (input.config.nestedContainers && !input.config.setAllowedUrls) {
+    allowedHosts.push(...NESTED_PULL_HOSTS.filter((h) => !allowedHosts.includes(h)))
+  }
   return {
     rules: input.config.envSecretProxy
       ? buildRulesFromConfig(input.config.envSecretProxy, env)
       : [],
-    allowedHosts: resolveAllowedHosts(input.config),
+    allowedHosts,
     repoUrl: input.remoteUrl,
     tool: input.tool,
     upstreamRedirects: parseUpstreamRedirectsEnv(env.YAAC_E2E_UPSTREAM_REDIRECTS),

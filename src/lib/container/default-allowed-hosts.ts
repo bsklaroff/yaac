@@ -56,13 +56,11 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'api.bitbucket.org',
 
   // Container registries
-  'registry-1.docker.io',
-  'auth.docker.io',
-  'index.docker.io',
+  // The docker.io image-pull hosts live in NESTED_PULL_HOSTS below — a
+  // non-nested session never runs `docker pull`, so they are appended to
+  // the allowlist only when `nestedContainers` is on.
   'hub.docker.com',
   'www.docker.com',
-  'production.cloudflare.docker.com',
-  'production.cloudfront.docker.com',
   'download.docker.com',
   'podman.io',
   'gcr.io',
@@ -303,6 +301,34 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
 
   // Container image storage
   'docker-images-prod.*.r2.cloudflarestorage.com',
+]
+
+/**
+ * Upstream container-registry + CDN hosts that a `nestedContainers`
+ * session's in-pod `docker pull` reaches, appended to the session
+ * allowlist when `nestedContainers` is on (see `buildSessionRegistration`)
+ * so the pull rides the pod-netns redirect → relay → proxy transparent
+ * listener and is judged, fail-closed, by SNI. Kept out of
+ * DEFAULT_ALLOWED_HOSTS because a non-nested session never pulls images;
+ * `setAllowedUrls` fully overrides the allowlist and these are NOT
+ * re-appended under it (the user takes complete control). ghcr.io and
+ * pkg-containers.githubusercontent.com are already in the base list, so
+ * they are not duplicated here.
+ */
+export const NESTED_PULL_HOSTS: string[] = [
+  // docker.io
+  'registry-1.docker.io',
+  'auth.docker.io',
+  'index.docker.io',
+  'production.cloudflare.docker.com',
+  'production.cloudfront.docker.com',
+  // quay.io
+  'quay.io',
+  'cdn01.quay.io',
+  'cdn02.quay.io',
+  'cdn03.quay.io',
+  // Alpine apk — `docker build` RUN steps on alpine-based images
+  'dl-cdn.alpinelinux.org',
 ]
 
 /** Check if a hostname matches a pattern (exact, *.suffix, or interior wildcard). */
