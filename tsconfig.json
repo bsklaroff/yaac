@@ -14,9 +14,11 @@
     "sourceMap": true,
     "paths": {
       "@/*": ["./src/*"],
-      "@test/*": ["./test/*"]
+      "@test/*": ["./test/*"],
+      "@proxy/*": ["./k8s/proxy/*"],
+      "@relay/*": ["./k8s/relay/*"]
     }
   },
-  "include": ["src", "test", "scripts", "*.config.ts", "k8s/proxy/proxy.ts"],
+  "include": ["src", "test", "scripts", "*.config.ts", "k8s/proxy/proxy.ts", "k8s/proxy/transparent.ts", "k8s/proxy/pp2.ts", "k8s/relay/relay.ts", "k8s/relay/pp2-frame.ts", "k8s/relay/dns-stub.ts"],
   "exclude": ["node_modules", "dist", "src/frontend", "vite.config.ts"]
 }

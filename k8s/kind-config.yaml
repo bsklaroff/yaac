@@ -1,7 +1,7 @@
 # kind cluster config for yaac.
 #
 # Two pieces of wiring yaac needs and cannot add to a running cluster:
-#   1. containerd `config_path` so `localhost:5000` image refs resolve to
+#   1. containerd `config_path` so `localhost:5001` image refs resolve to
 #      the local registry container (see "Cluster setup" in the README for
 #      the hosts.toml + network-connect steps that pair with this).
 #   2. extraMounts making your home directory visible to the node at the
@@ -20,9 +20,16 @@ networking:
   # unrestricted egress. setup-kind-cluster.sh installs Cilium instead,
   # which fails CLOSED (a pod cannot start until its eBPF policy programs
   # are attached). Cilium runs with ipam.mode=kubernetes, allocating pod
-  # IPs from this podSubnet.
+  # IPs from the node's PodCIDR (kind's default podSubnet — nothing in
+  # yaac depends on its value).
   disableDefaultCNI: true
-  podSubnet: 10.244.0.0/16
+  # serviceSubnet is pinned because the proxy Service's per-namespace
+  # VIP pin (clusterIpForNamespace / CLUSTER_SERVICE_CIDR in
+  # src/lib/k8s/bootstrap.ts) hashes into it — session relays dial that
+  # VIP from env, and the redirect-init filter carve-out admits relay
+  # egress to exactly that address. `yaac cluster check` warns when a
+  # live cluster drifts from it.
+  serviceSubnet: 10.96.0.0/16
 containerdConfigPatches:
 - |-
   [plugins."io.containerd.grpc.v1.cri".registry]

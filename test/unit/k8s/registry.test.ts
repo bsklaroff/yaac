@@ -72,9 +72,9 @@ function fetchResponse(init: { ok: boolean; status?: number }): Response {
 }
 
 describe('registryHost / registryRef', () => {
-  it('defaults to localhost:5000', () => {
-    expect(registryHost()).toBe('localhost:5000')
-    expect(registryRef('yaac-tools:abc')).toBe('localhost:5000/yaac-tools:abc')
+  it('defaults to localhost:5001', () => {
+    expect(registryHost()).toBe('localhost:5001')
+    expect(registryRef('yaac-tools:abc')).toBe('localhost:5001/yaac-tools:abc')
   })
 
   it('honors the YAAC_K8S_REGISTRY override', () => {
@@ -93,7 +93,7 @@ describe('registryReachable', () => {
     fetchMock.mockResolvedValue(fetchResponse({ ok: true }))
     await expect(registryReachable()).resolves.toBe(true)
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://localhost:5000/v2/',
+      'http://localhost:5001/v2/',
       expect.objectContaining({ signal: expect.any(AbortSignal) as AbortSignal }),
     )
   })
@@ -121,7 +121,7 @@ describe('registryHasTag', () => {
     fetchMock.mockResolvedValue(fetchResponse({ ok: true }))
     await expect(registryHasTag('yaac-tools:abc123')).resolves.toBe(true)
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://localhost:5000/v2/yaac-tools/manifests/abc123',
+      'http://localhost:5001/v2/yaac-tools/manifests/abc123',
       expect.objectContaining({ method: 'HEAD' }),
     )
   })
@@ -155,7 +155,7 @@ describe('ensureLocalRegistry', () => {
     )
     expect(execFileMock).toHaveBeenCalledWith('podman', [
       'run', '-d', '--name', REGISTRY_CONTAINER_NAME,
-      '-p', '127.0.0.1:5000:5000',
+      '-p', '127.0.0.1:5001:5000',
       'docker.io/library/registry:2',
     ])
   })
@@ -171,18 +171,18 @@ describe('pushImageToRegistry', () => {
   it('skips the push when the immutable tag already exists', async () => {
     fetchMock.mockResolvedValue(fetchResponse({ ok: true })) // manifest HEAD hit
     const ref = await pushImageToRegistry('yaac-tools:abc')
-    expect(ref).toBe('localhost:5000/yaac-tools:abc')
+    expect(ref).toBe('localhost:5001/yaac-tools:abc')
     expect(spawnedChildren).toHaveLength(0)
   })
 
   it('pushes via podman with --tls-verify=false and returns the in-cluster ref', async () => {
     fetchMock.mockResolvedValue(fetchResponse({ ok: false, status: 404 }))
     const ref = await pushImageToRegistry('yaac-tools:abc')
-    expect(ref).toBe('localhost:5000/yaac-tools:abc')
+    expect(ref).toBe('localhost:5001/yaac-tools:abc')
     expect(spawnedChildren).toHaveLength(1)
     expect(spawnedChildren[0].file).toBe('podman')
     expect(spawnedChildren[0].args).toEqual([
-      'push', '--tls-verify=false', 'yaac-tools:abc', 'localhost:5000/yaac-tools:abc',
+      'push', '--tls-verify=false', 'yaac-tools:abc', 'localhost:5001/yaac-tools:abc',
     ])
   })
 

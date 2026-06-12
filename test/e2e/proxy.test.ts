@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import crypto from 'node:crypto'
 import http from 'node:http'
 import net from 'node:net'
@@ -12,8 +12,17 @@ import {
   TEST_PROXY_CONFIG,
 } from '@test/helpers/setup'
 import { resolveTestBaseImageRef } from '@test/helpers/mock-remotes'
-import { ProxyClient, PROXY_CONTAINER_PORT } from '@/lib/container/proxy-client'
-import { PROXY_APP_NAME, PROXY_PORT } from '@/lib/k8s/bootstrap'
+import { ProxyClient } from '@/lib/container/proxy-client'
+import {
+  ensureNamespace,
+  ensureProxyAuthSecret,
+  PROXY_APP_NAME,
+  PROXY_PORT,
+  TRANSPARENT_HTTP_PORT,
+  TRANSPARENT_HTTPS_PORT,
+} from '@/lib/k8s/bootstrap'
+import { relayTokenFor } from '@proxy/pp2'
+import { buildPp2Header } from '@relay/pp2-frame'
 import { ServicePortForward } from '@/lib/k8s/port-forward'
 import { readBlockedHosts } from '@/lib/session/blocked-hosts'
 import { writeProxySecrets } from '@/lib/project/credentials'
@@ -37,13 +46,65 @@ import {
 // Deployment hostPath-mounts credential/agent dirs under the data dir).
 let restoreNamespace: (() => void) | null = null
 let tempDataDir: string | null = null
+// The proxy auth secret, for forging the relay's PP2 identity header. The
+// suite reaches the proxy's transparent listeners directly (playing the
+// relay) since the explicit :10255 CONNECT/forward paths are gone.
+let proxyAuthSecret = ''
 
 beforeAll(async () => {
   await requirePodman()
   await requireCluster()
   restoreNamespace = useTestNamespace()
   tempDataDir = await createTempDataDir()
+  await ensureNamespace()
+  proxyAuthSecret = await ensureProxyAuthSecret()
 })
+
+/** PP2 identity header the relay prepends for a session (test plays relay). */
+function pp2(sessionId: string): Buffer {
+  return buildPp2Header({ identity: `${sessionId}:${relayTokenFor(proxyAuthSecret, sessionId)}` })
+}
+
+/** Pull the session id out of a `Proxy-Authorization: Basic x:<sid>` header. */
+function sessionIdFromAuth(headers: Record<string, string> | undefined): string | null {
+  const h = headers?.['Proxy-Authorization'] ?? headers?.['proxy-authorization']
+  const m = h ? /^Basic\s+(.+)$/i.exec(h) : null
+  if (!m) return null
+  const decoded = Buffer.from(m[1], 'base64').toString('utf8')
+  const colon = decoded.indexOf(':')
+  return colon === -1 ? decoded : decoded.slice(colon + 1) || null
+}
+
+/** Decode a chunked transfer-encoding body into a single string. */
+function decodeChunked(buf: Buffer): string {
+  const out: Buffer[] = []
+  let off = 0
+  while (off < buf.length) {
+    const lineEnd = buf.indexOf('\r\n', off)
+    if (lineEnd === -1) break
+    const size = parseInt(buf.toString('ascii', off, lineEnd).trim(), 16)
+    if (!Number.isFinite(size) || size === 0) break
+    out.push(buf.subarray(lineEnd + 2, lineEnd + 2 + size))
+    off = lineEnd + 2 + size + 2 // past the chunk + its trailing CRLF
+  }
+  return Buffer.concat(out).toString('utf8')
+}
+
+/**
+ * Parse a raw HTTP/1 response (status line + body after the blank line),
+ * decoding chunked transfer-encoding (the echo server omits Content-Length,
+ * so HTTP/1.1 chunks the body — node's http client used to decode this for
+ * us before this suite went raw to inject the PP2 header).
+ */
+function parseHttpResponse(buf: Buffer): { status: number; body: string } {
+  const headEnd = buf.indexOf('\r\n\r\n')
+  const head = buf.toString('utf8', 0, headEnd === -1 ? buf.length : headEnd)
+  const status = Number(/^HTTP\/\d\.\d (\d{3})/.exec(head.slice(0, head.indexOf('\r\n')))?.[1] ?? 0)
+  if (headEnd === -1) return { status, body: '' }
+  const rawBody = buf.subarray(headEnd + 4)
+  const chunked = /\r\ntransfer-encoding:\s*chunked/i.test('\r\n' + head)
+  return { status, body: chunked ? decodeChunked(rawBody) : rawBody.toString('utf8') }
+}
 
 afterAll(async () => {
   restoreNamespace?.()
@@ -52,51 +113,61 @@ afterAll(async () => {
   tempDataDir = null
 })
 
-/** Make an HTTP request through the proxy using the absolute-URI form. */
+/**
+ * Make an HTTP request through the proxy's transparent HTTP listener,
+ * prefixed with the relay's PP2 identity header (the test plays the relay).
+ * `proxyPort` is a loopback forward of TRANSPARENT_HTTP_PORT. The original
+ * absolute-form (`http://host:port/path`) and `Proxy-Authorization` shape
+ * is kept so call sites barely change: the host:port becomes the origin-
+ * form Host header, and the `x:<sid>` auth becomes the PP2 token. A request
+ * with no auth carries no PP2 — the proxy destroys it (fail closed), which
+ * surfaces here as a closed connection (status 0).
+ */
 function proxyRequest(
   proxyPort: number,
   targetUrl: string,
   opts: { method?: string; headers?: Record<string, string>; body?: string } = {},
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
-    const req = http.request({
-      hostname: '127.0.0.1',
-      port: proxyPort,
-      path: targetUrl,
-      method: opts.method ?? 'GET',
-      headers: opts.headers ?? {},
-    }, (res) => {
-      const chunks: Buffer[] = []
-      res.on('data', (c: Buffer) => chunks.push(c))
-      res.on('end', () => {
-        resolve({ status: res.statusCode!, body: Buffer.concat(chunks).toString('utf8') })
-      })
+    const url = new URL(targetUrl)
+    const sessionId = sessionIdFromAuth(opts.headers)
+    const body = opts.body ?? ''
+    let buf = Buffer.alloc(0)
+    const sock = net.connect(proxyPort, '127.0.0.1', () => {
+      if (sessionId !== null) sock.write(pp2(sessionId))
+      const lines = [
+        `${opts.method ?? 'GET'} ${url.pathname}${url.search} HTTP/1.1`,
+        `Host: ${url.host}`,
+        'Connection: close',
+        ...Object.entries(opts.headers ?? {})
+          .filter(([k]) => k.toLowerCase() !== 'proxy-authorization')
+          .map(([k, v]) => `${k}: ${v}`),
+      ]
+      if (body) lines.push(`Content-Length: ${Buffer.byteLength(body)}`)
+      sock.write(lines.join('\r\n') + '\r\n\r\n' + body)
     })
-    req.on('error', reject)
-    if (opts.body) req.write(opts.body)
-    req.end()
+    sock.on('data', (c: Buffer) => { buf = Buffer.concat([buf, c]) })
+    sock.on('close', () => resolve(buf.length ? parseHttpResponse(buf) : { status: 0, body: '' }))
+    sock.on('error', () => { if (buf.length) resolve(parseHttpResponse(buf)); else resolve({ status: 0, body: '' }) })
+    sock.setTimeout(20_000, () => { sock.destroy(); reject(new Error('proxyRequest timeout')) })
   })
 }
 
 /**
  * Open a raw TCP connection to the proxy's forwarded loopback port, send a
- * CONNECT request, and resolve with the response head (everything up to
- * the blank line). Used to assert the proxy's CONNECT-level responses
- * (e.g. the 407 auth challenge) without a full TLS tunnel.
+ * request, and resolve with everything received before the socket closes
+ * (or a 5s cap). Used to assert that the explicit CONNECT path on :10255 is
+ * gone — the server closes a CONNECT with no HTTP response, so this
+ * resolves empty.
  */
-function rawConnectHead(proxyPort: string | number, request: string): Promise<string> {
-  return new Promise((resolve, reject) => {
+function rawConnectResult(proxyPort: string | number, request: string): Promise<string> {
+  return new Promise((resolve) => {
     const sock = net.connect(Number(proxyPort), '127.0.0.1', () => sock.write(request))
     let buf = ''
-    sock.on('data', (d: Buffer) => {
-      buf += d.toString('utf8')
-      if (buf.includes('\r\n\r\n')) {
-        sock.destroy()
-        resolve(buf)
-      }
-    })
-    sock.on('error', reject)
-    sock.setTimeout(5000, () => { sock.destroy(); reject(new Error('rawConnectHead timeout')) })
+    sock.on('data', (d: Buffer) => { buf += d.toString('utf8') })
+    sock.on('close', () => resolve(buf))
+    sock.on('error', () => resolve(buf))
+    sock.setTimeout(5000, () => { sock.destroy(); resolve(buf) })
   })
 }
 
@@ -297,96 +368,22 @@ describe('proxy sidecar', () => {
     expect(pods?.items).toHaveLength(1)
   }, 60_000)
 
-  describe('CONNECT tunnel', () => {
-    const tunnelPods: string[] = []
+  it('no longer offers an explicit CONNECT path on :10255 (server closes it)', async () => {
+    const hostPort = await ensureProxy()
 
-    afterEach(async () => {
-      for (const name of tunnelPods) {
-        await deleteTestPod(name)
-      }
-      tunnelPods.length = 0
-    })
-
-    it('tunnels TCP connections via CONNECT from a session-like pod', async () => {
-      await ensureProxy()
-
-      // Register a session with an allowlist covering github.com so the CONNECT
-      // tunnel can be authorized. (The proxy blocks by default when no session
-      // or allowlist is registered.)
-      const sessionId = crypto.randomUUID()
-      await client.registerSession(sessionId, {
-        rules: [],
-        allowedHosts: ['github.com'],
-      })
-
-      // Create a pod in the test namespace (same as a real session pod).
-      // NOTE: the podman-era assertion that the pod CANNOT reach external
-      // hosts directly is gone — the internal-only podman network has no
-      // kubernetes equivalent yet (egress lockdown via NetworkPolicy is
-      // not part of this migration), so only the positive CONNECT path is
-      // asserted here.
-      const podName = `yaac-proxy-tunnel-test-${crypto.randomBytes(4).toString('hex')}`
-      tunnelPods.push(podName)
-
-      await kubectlApply({
-        apiVersion: 'v1',
-        kind: 'Pod',
-        metadata: {
-          name: podName,
-          namespace: k8sNamespace(),
-          labels: { 'yaac.test': 'true' },
-        },
-        spec: {
-          restartPolicy: 'Never',
-          automountServiceAccountToken: false,
-          enableServiceLinks: false,
-          containers: [{
-            name: 'session',
-            image: await resolveTestBaseImageRef(),
-            imagePullPolicy: 'IfNotPresent',
-            // No command override — the base image's ENTRYPOINT is
-            // `catatonit -- sleep infinity`, which keeps the pod alive.
-          }],
-        },
-      })
-      await waitForPodRunning(podName)
-
-      // Verify the pod CAN open a CONNECT tunnel through the proxy when
-      // authenticated as a registered session. We send a raw CONNECT
-      // request to the proxy Service and check the response line. A
-      // successful tunnel returns "HTTP/1.1 200 Connection Established";
-      // a blocked tunnel returns 403.
-      const proxyAuth = Buffer.from(`x:${sessionId}`).toString('base64')
-      const connectReq =
-        'CONNECT github.com:443 HTTP/1.1\r\n' +
-        'Host: github.com:443\r\n' +
-        `Proxy-Authorization: Basic ${proxyAuth}\r\n\r\n`
-      const proxyHost = `${PROXY_APP_NAME}.${k8sNamespace()}.svc`
-      const { stdout: tunneled } = await execInPod(podName, [
-        'sh', '-c',
-        `printf '${connectReq}' | nc -w 3 ${proxyHost} ${PROXY_CONTAINER_PORT} | head -c 40`,
-      ], { timeout: 15_000 })
-      expect(tunneled).toContain('200 Connection Established')
-
-      await client.removeSession(sessionId)
-    }, 120_000)
-
-    it('challenges a credential-less CONNECT with 407, not 403', async () => {
-      const hostPort = await ensureProxy()
-
-      // ncat (git's SSH ProxyCommand) never sends Proxy-Authorization
-      // preemptively — it sends a bare CONNECT and only attaches credentials
-      // after a 407 challenge. A 403 here made it give up without ever
-      // authenticating. The proxy must answer missing auth with 407 +
-      // Proxy-Authenticate so challenge-response clients can retry.
-      const head = await rawConnectHead(
-        hostPort,
-        'CONNECT github.com:22 HTTP/1.1\r\nHost: github.com:22\r\n\r\n',
-      )
-      expect(head).toMatch(/^HTTP\/1\.1 407 /)
-      expect(head.toLowerCase()).toContain('proxy-authenticate: basic')
-    }, 30_000)
-  })
+    // SSH and all session egress now authenticate via the relay's
+    // per-connection PP2 token on the transparent listeners; no session
+    // carries a proxy credential, so there is no `server.on('connect')`
+    // handler. Node closes any CONNECT to :10255 with no HTTP response —
+    // neither the old 200 tunnel nor the 407 challenge.
+    const out = await rawConnectResult(
+      hostPort,
+      'CONNECT github.com:443 HTTP/1.1\r\nHost: github.com:443\r\n\r\n',
+    )
+    expect(out).not.toContain('200 Connection Established')
+    expect(out).not.toContain('407')
+    expect(out.trim()).toBe('')
+  }, 30_000)
 
   it('stop removes the proxy Deployment and Service', async () => {
     await ensureProxy()
@@ -421,6 +418,8 @@ describe('proxy HTTP forwarding', () => {
   let echoHost: string
   const echoPort = ECHO_PORT
   const tunnel = new ServicePortForward(PROXY_APP_NAME, PROXY_PORT)
+  const httpFwd = new ServicePortForward(PROXY_APP_NAME, TRANSPARENT_HTTP_PORT)
+  let httpFwdPort = 0
   // Default session used by tests that exercise forwarding (as opposed to
   // allowlist enforcement). Since the proxy fails closed, every forwarding
   // test needs an authenticated session with a permissive allowlist.
@@ -432,6 +431,7 @@ describe('proxy HTTP forwarding', () => {
     client = new ProxyClient(TEST_PROXY_CONFIG)
     await client.ensureRunning()
     hostPort = await tunnel.ensure()
+    httpFwdPort = await httpFwd.ensure()
 
     // Register a default session with a wildcard allowlist so the basic
     // forwarding tests can proceed without setting up their own session.
@@ -446,13 +446,14 @@ describe('proxy HTTP forwarding', () => {
 
   afterAll(async () => {
     tunnel.stop()
+    httpFwd.stop()
     try { await client?.stop() } catch { /* ok */ }
     if (echoPodName) await deleteTestPod(echoPodName)
   })
 
   it('forwards a plain HTTP GET request', async () => {
     const targetUrl = `http://${echoHost}:${echoPort}/hello?foo=bar`
-    const result = await proxyRequest(hostPort, targetUrl, {
+    const result = await proxyRequest(httpFwdPort, targetUrl, {
       headers: defaultAuthHeader,
     })
 
@@ -466,7 +467,7 @@ describe('proxy HTTP forwarding', () => {
   it('forwards a POST request with body', async () => {
     const targetUrl = `http://${echoHost}:${echoPort}/submit`
     const body = 'key=value&other=data'
-    const result = await proxyRequest(hostPort, targetUrl, {
+    const result = await proxyRequest(httpFwdPort, targetUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...defaultAuthHeader },
       body,
@@ -481,7 +482,7 @@ describe('proxy HTTP forwarding', () => {
 
   it('strips proxy-authorization header before forwarding', async () => {
     const targetUrl = `http://${echoHost}:${echoPort}/check`
-    const result = await proxyRequest(hostPort, targetUrl, {
+    const result = await proxyRequest(httpFwdPort, targetUrl, {
       headers: defaultAuthHeader,
     })
 
@@ -492,7 +493,7 @@ describe('proxy HTTP forwarding', () => {
 
   it('returns 502 when upstream is unreachable', async () => {
     const targetUrl = `http://${echoHost}:19399/nope`
-    const result = await proxyRequest(hostPort, targetUrl, {
+    const result = await proxyRequest(httpFwdPort, targetUrl, {
       headers: defaultAuthHeader,
     })
     expect(result.status).toBe(502)
@@ -519,13 +520,13 @@ describe('proxy HTTP forwarding', () => {
 
     // Request to the echo server (allowed)
     const auth = Buffer.from(`x:${sessionId}`).toString('base64')
-    const allowed = await proxyRequest(hostPort, `http://${echoHost}:${echoPort}/test`, {
+    const allowed = await proxyRequest(httpFwdPort, `http://${echoHost}:${echoPort}/test`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(allowed.status).toBe(200)
 
     // Request to a different host (blocked) — use a non-routable IP to avoid DNS
-    const blocked = await proxyRequest(hostPort, 'http://192.0.2.1:80/test', {
+    const blocked = await proxyRequest(httpFwdPort, 'http://192.0.2.1:80/test', {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(blocked.status).toBe(403)
@@ -539,7 +540,7 @@ describe('proxy HTTP forwarding', () => {
     await client.registerSession(sessionId, { rules: [], allowedHosts: ['*'] })
 
     const auth = Buffer.from(`x:${sessionId}`).toString('base64')
-    const result = await proxyRequest(hostPort, `http://${echoHost}:${echoPort}/test`, {
+    const result = await proxyRequest(httpFwdPort, `http://${echoHost}:${echoPort}/test`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(result.status).toBe(200)
@@ -554,7 +555,7 @@ describe('proxy HTTP forwarding', () => {
     await client.registerSession(sessionId, { rules: [], allowedHosts: ['*.example.com'] })
 
     const auth = Buffer.from(`x:${sessionId}`).toString('base64')
-    const blocked = await proxyRequest(hostPort, `http://${echoHost}:${echoPort}/test`, {
+    const blocked = await proxyRequest(httpFwdPort, `http://${echoHost}:${echoPort}/test`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(blocked.status).toBe(403)
@@ -565,9 +566,10 @@ describe('proxy HTTP forwarding', () => {
   it('blocks traffic when no session is registered (fail closed)', async () => {
     // No Proxy-Authorization header → proxy has no session mapping and must
     // block the request. Previously this would allow all traffic.
-    const blocked = await proxyRequest(hostPort, `http://${echoHost}:${echoPort}/test`)
-    expect(blocked.status).toBe(403)
-    expect(blocked.body).toContain('not in the allowed hosts')
+    // No PP2 identity at all (no auth) → the transparent listener
+    // destroys the connection before any allowlist check.
+    const blocked = await proxyRequest(httpFwdPort, `http://${echoHost}:${echoPort}/test`)
+    expect(blocked.status).not.toBe(200)
   })
 
   it('blocks traffic when session is registered but session is unknown (fail closed)', async () => {
@@ -575,7 +577,7 @@ describe('proxy HTTP forwarding', () => {
     // exists, so the proxy must block.
     const unknownSessionId = crypto.randomUUID()
     const auth = Buffer.from(`x:${unknownSessionId}`).toString('base64')
-    const blocked = await proxyRequest(hostPort, `http://${echoHost}:${echoPort}/test`, {
+    const blocked = await proxyRequest(httpFwdPort, `http://${echoHost}:${echoPort}/test`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(blocked.status).toBe(403)
@@ -586,7 +588,7 @@ describe('proxy HTTP forwarding', () => {
     await client.registerSession(sessionId, { rules: [], allowedHosts: [] })
 
     const auth = Buffer.from(`x:${sessionId}`).toString('base64')
-    const blocked = await proxyRequest(hostPort, `http://${echoHost}:${echoPort}/test`, {
+    const blocked = await proxyRequest(httpFwdPort, `http://${echoHost}:${echoPort}/test`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(blocked.status).toBe(403)
@@ -610,7 +612,7 @@ describe('proxy HTTP forwarding', () => {
 
     // Send a plain HTTP request through the proxy with valid session credentials
     const auth = Buffer.from(`x:${sessionId}`).toString('base64')
-    const result = await proxyRequest(hostPort, `http://${echoHost}:${echoPort}/test`, {
+    const result = await proxyRequest(httpFwdPort, `http://${echoHost}:${echoPort}/test`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
 
@@ -629,13 +631,13 @@ describe('proxy HTTP forwarding', () => {
 
     // Make a request to a blocked host
     const auth = Buffer.from(`x:${sessionId}`).toString('base64')
-    const blocked = await proxyRequest(hostPort, 'http://192.0.2.1:80/test', {
+    const blocked = await proxyRequest(httpFwdPort, 'http://192.0.2.1:80/test', {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(blocked.status).toBe(403)
 
     // Also block a second host
-    const blocked2 = await proxyRequest(hostPort, 'http://198.51.100.1:80/test', {
+    const blocked2 = await proxyRequest(httpFwdPort, 'http://198.51.100.1:80/test', {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(blocked2.status).toBe(403)
@@ -671,12 +673,12 @@ describe('proxy HTTP forwarding', () => {
     const authA = Buffer.from(`x:${sessionA}`).toString('base64')
     const authB = Buffer.from(`x:${sessionB}`).toString('base64')
 
-    const allowed = await proxyRequest(hostPort, `http://${echoHost}:${echoPort}/a`, {
+    const allowed = await proxyRequest(httpFwdPort, `http://${echoHost}:${echoPort}/a`, {
       headers: { 'Proxy-Authorization': `Basic ${authA}` },
     })
     expect(allowed.status).toBe(200)
 
-    const blocked = await proxyRequest(hostPort, `http://${echoHost}:${echoPort}/b`, {
+    const blocked = await proxyRequest(httpFwdPort, `http://${echoHost}:${echoPort}/b`, {
       headers: { 'Proxy-Authorization': `Basic ${authB}` },
     })
     expect(blocked.status).toBe(403)
@@ -690,14 +692,14 @@ describe('proxy HTTP forwarding', () => {
     await client.registerSession(sessionId, { rules: [], allowedHosts: ['*'] })
 
     const auth = Buffer.from(`x:${sessionId}`).toString('base64')
-    const before = await proxyRequest(hostPort, `http://${echoHost}:${echoPort}/before`, {
+    const before = await proxyRequest(httpFwdPort, `http://${echoHost}:${echoPort}/before`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(before.status).toBe(200)
 
     await client.removeSession(sessionId)
 
-    const after = await proxyRequest(hostPort, `http://${echoHost}:${echoPort}/after`, {
+    const after = await proxyRequest(httpFwdPort, `http://${echoHost}:${echoPort}/after`, {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(after.status).toBe(403)
@@ -705,13 +707,13 @@ describe('proxy HTTP forwarding', () => {
 })
 
 /**
- * Send a proxied HTTPS request: CONNECT through the proxy, TLS-wrap the
- * tunnel (trusting the proxy's self-signed leaf cert), then ride an
- * `http.request` over the TLS socket so node handles chunked encoding,
- * content-length parsing, and response framing. Mirrors what a real CLI
- * inside a session pod does, minus CA-cert verification —
- * `rejectUnauthorized: false` avoids the CA-cert plumbing dance for tests
- * that only exercise the forwarding path.
+ * Send a proxied HTTPS request through the proxy's transparent HTTPS
+ * listener: prefix the connection with the relay's PP2 identity header
+ * (the test plays the relay), then TLS-wrap (trusting the proxy's
+ * self-signed leaf), then ride an `http.request` over the TLS socket so
+ * node handles framing. `proxyHostPort` is a loopback forward of
+ * TRANSPARENT_HTTPS_PORT. `rejectUnauthorized: false` avoids the CA-cert
+ * plumbing for tests that only exercise the forwarding path.
  */
 async function proxiedHttpsRequest(
   proxyHostPort: number,
@@ -724,27 +726,13 @@ async function proxiedHttpsRequest(
     s.once('connect', () => resolve(s))
     s.once('error', reject)
   })
+  // Persistent handler so a late reset (e.g. proxy churn) rejects the
+  // request promise instead of crashing the process as an unhandled error.
+  tcp.on('error', () => { /* surfaced via the TLS / http error paths */ })
 
-  const auth = Buffer.from(`x:${sessionId}`).toString('base64')
-  tcp.write(
-    `CONNECT ${targetHost}:443 HTTP/1.1\r\n` +
-    `Host: ${targetHost}:443\r\n` +
-    `Proxy-Authorization: Basic ${auth}\r\n\r\n`,
-  )
-
-  await new Promise<void>((resolve, reject) => {
-    let buf = ''
-    const onData = (chunk: Buffer): void => {
-      buf += chunk.toString('utf8')
-      if (buf.includes('\r\n\r\n')) {
-        tcp.off('data', onData)
-        if (/^HTTP\/1\.1 200/.test(buf)) resolve()
-        else reject(new Error(`CONNECT failed: ${buf.split('\r\n')[0]}`))
-      }
-    }
-    tcp.on('data', onData)
-    tcp.once('error', reject)
-  })
+  // PP2 identity, then the SNI-bearing ClientHello drives the proxy's
+  // peek + MITM, exactly as the relay → proxy path does in production.
+  tcp.write(pp2(sessionId))
 
   const tlsSocket = await new Promise<tls.TLSSocket>((resolve, reject) => {
     const t = tls.connect({
@@ -787,7 +775,7 @@ describe('proxy upstream redirect', () => {
   let echoPodName: string
   let echoHost: string
   const echoPort = ECHO_PORT
-  const tunnel = new ServicePortForward(PROXY_APP_NAME, PROXY_PORT)
+  const tunnel = new ServicePortForward(PROXY_APP_NAME, TRANSPARENT_HTTPS_PORT)
 
   beforeAll(async () => {
     client = new ProxyClient(TEST_PROXY_CONFIG)
@@ -940,11 +928,17 @@ describe('proxy state persistence across pod replacement', () => {
   let echoPodName: string
   let echoHost: string
   const tunnel = new ServicePortForward(PROXY_APP_NAME, PROXY_PORT)
+  const httpsFwd = new ServicePortForward(PROXY_APP_NAME, TRANSPARENT_HTTPS_PORT)
+  const httpFwd = new ServicePortForward(PROXY_APP_NAME, TRANSPARENT_HTTP_PORT)
+  let httpsFwdPort = 0
+  let httpFwdPort = 0
 
   beforeAll(async () => {
     client = new ProxyClient(TEST_PROXY_CONFIG)
     await client.ensureRunning()
     hostPort = await tunnel.ensure()
+    httpsFwdPort = await httpsFwd.ensure()
+    httpFwdPort = await httpFwd.ensure()
 
     echoPodName = `yaac-persist-echo-${crypto.randomBytes(4).toString('hex')}`
     const echo = await startEchoPod(echoPodName)
@@ -953,6 +947,8 @@ describe('proxy state persistence across pod replacement', () => {
 
   afterAll(async () => {
     tunnel.stop()
+    httpsFwd.stop()
+    httpFwd.stop()
     try { await client?.stop() } catch { /* ok */ }
     if (echoPodName) await deleteTestPod(echoPodName)
   })
@@ -979,7 +975,7 @@ describe('proxy state persistence across pod replacement', () => {
     })
 
     const result = await proxiedHttpsRequest(
-      hostPort, 'api.anthropic.com', sessionId,
+      httpsFwdPort, 'api.anthropic.com', sessionId,
       { method: 'GET', path: '/with-secret' },
     )
     expect(result.status).toBe(200)
@@ -1010,7 +1006,7 @@ describe('proxy state persistence across pod replacement', () => {
 
     // Record a blocked host so its survival can be asserted post-churn.
     const auth = Buffer.from(`x:${sessionId}`).toString('base64')
-    const blocked = await proxyRequest(hostPort, 'http://192.0.2.1:80/test', {
+    const blocked = await proxyRequest(httpFwdPort, 'http://192.0.2.1:80/test', {
       headers: { 'Proxy-Authorization': `Basic ${auth}` },
     })
     expect(blocked.status).toBe(403)
@@ -1042,6 +1038,8 @@ describe('proxy state persistence across pod replacement', () => {
       async () => {
         try {
           hostPort = await tunnel.ensure()
+          httpsFwdPort = await httpsFwd.ensure()
+          httpFwdPort = await httpFwd.ensure()
           const res = await fetch(`http://127.0.0.1:${hostPort}/healthz`)
           return res.ok
         } catch {
@@ -1057,22 +1055,36 @@ describe('proxy state persistence across pod replacement', () => {
     // via /data, and the proxied request still succeeds.
     expect(await client.listSessions()).toContain(sessionId)
 
-    const result = await proxiedHttpsRequest(
-      hostPort, 'api.anthropic.com', sessionId,
-      { method: 'GET', path: '/after-churn' },
-    )
-    expect(result.status).toBe(200)
-    const echo = JSON.parse(result.body) as { headers: Record<string, string> }
+    // Retry: the transparent-HTTPS forward can briefly race the Recreate's
+    // endpoint reprogramming even after /healthz answers on the API port.
+    let result: { status: number; body: string; headers: http.IncomingHttpHeaders } | null = null
+    await expect.poll(async () => {
+      try {
+        httpsFwdPort = await httpsFwd.ensure()
+        result = await proxiedHttpsRequest(
+          httpsFwdPort, 'api.anthropic.com', sessionId,
+          { method: 'GET', path: '/after-churn' },
+        )
+        return result.status
+      } catch {
+        return 0
+      }
+    }, { timeout: 30_000, interval: 1_000 }).toBe(200)
+    const echo = JSON.parse(result!.body) as { headers: Record<string, string> }
     expect(echo.headers['x-test-secret']).toBe('Bearer sekrit-value')
 
     // Blocked-host history survived the replacement too (reloaded at boot)
     expect(await readBlockedHosts(sessionId)).toContain('192.0.2.1')
 
-    // And the allowlist still fails closed for non-allowed hosts.
-    const stillBlocked = await proxyRequest(hostPort, 'http://192.0.2.1:80/test', {
-      headers: { 'Proxy-Authorization': `Basic ${auth}` },
-    })
-    expect(stillBlocked.status).toBe(403)
+    // And the allowlist still fails closed for non-allowed hosts (re-ensure
+    // the transparent-HTTP forward, which can go stale across the churn).
+    await expect.poll(async () => {
+      httpFwdPort = await httpFwd.ensure()
+      const r = await proxyRequest(httpFwdPort, 'http://192.0.2.1:80/test', {
+        headers: { 'Proxy-Authorization': `Basic ${auth}` },
+      })
+      return r.status
+    }, { timeout: 30_000, interval: 1_000 }).toBe(403)
 
     await client.removeSession(sessionId)
   }, 240_000)

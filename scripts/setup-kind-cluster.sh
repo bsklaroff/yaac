@@ -1,13 +1,17 @@
 #!/bin/sh
-# Create a kind cluster wired for yaac: local registry on 127.0.0.1:5000,
-# containerd hosts.toml so pods can pull `localhost:5000/...`, and the
+# Create a kind cluster wired for yaac: local registry on 127.0.0.1:5001,
+# containerd hosts.toml so pods can pull `localhost:5001/...`, and the
 # home-directory extraMount session pods need for hostPath volumes.
 # Idempotent: safe to re-run; deletes and recreates the cluster.
+#
+# Host port 5001 (not 5000): macOS AirPlay Receiver squats on `::1:5000`,
+# which intercepts `localhost:5000` registry probes. The container-internal
+# port stays 5000.
 set -eu
 
 CLUSTER_NAME="${YAAC_KIND_CLUSTER:-yaac}"
 REGISTRY_NAME="${YAAC_REGISTRY_NAME:-yaac-registry}"
-REGISTRY_PORT="${YAAC_REGISTRY_PORT:-5000}"
+REGISTRY_PORT="${YAAC_REGISTRY_PORT:-5001}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Everything runs under podman — yaac's image build engine, and what the
@@ -43,8 +47,8 @@ sed "s|\$HOME|${HOME}|g" "${SCRIPT_DIR}/../k8s/kind-config.yaml" \
 # needs fail CLOSED: Cilium's CNI ADD does not return until the pod's
 # eBPF policy programs are attached, so a session container cannot start
 # (let alone egress) before its policy is enforced. ipam.mode=kubernetes
-# allocates pod IPs from the node's PodCIDR (podSubnet in
-# kind-config.yaml). Cilium has no static manifest, so installation goes
+# allocates pod IPs from the node's PodCIDR (kind's default podSubnet).
+# Cilium has no static manifest, so installation goes
 # through the cilium CLI — downloaded (pinned) when not already on PATH.
 CILIUM_VERSION="1.19.4"
 CILIUM_CLI_VERSION="v0.19.4"
@@ -70,7 +74,7 @@ fi
 "${CILIUM_CLI}" status --context "kind-${CLUSTER_NAME}" --wait --wait-duration 5m
 ${KCTL} wait --for=condition=Ready node --all --timeout=120s
 
-# 4. Tell the node's containerd that localhost:5000 is the registry, and
+# 4. Tell the node's containerd that localhost:5001 is the registry, and
 # mount an extra unmasked sysfs so userns pods (hostUsers: false — every
 # yaac session pod) can start: the kernel refuses sysfs mounts inside a
 # user namespace while kind's product-file masks make the node's /sys

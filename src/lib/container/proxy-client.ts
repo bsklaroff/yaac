@@ -1,5 +1,5 @@
-import { existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
+import { createHmac } from 'node:crypto'
 import fs from 'node:fs/promises'
 import type { SecretProxyRule } from '@/shared/types'
 import { imageExists } from '@/lib/container/runtime'
@@ -148,15 +148,6 @@ export class ProxyClient {
   constructor(private config: ProxyClientConfig) {}
 
   /**
-   * DNS name session pods use to reach the proxy — the ClusterIP Service.
-   * Stable across proxy pod replacements, unlike the podman-era container
-   * IP that had to be re-discovered after every restart.
-   */
-  get serviceHost(): string {
-    return `${PROXY_APP_NAME}.${k8sNamespace()}.svc`
-  }
-
-  /**
    * Daemon-side base URL: a loopback `kubectl port-forward` into the
    * Service. The proxy itself is reachable only inside the cluster.
    */
@@ -171,22 +162,20 @@ export class ProxyClient {
     return this.authSecret
   }
 
-  getProxyEnv(sessionId: string): string[] {
-    const proxyUrl = `http://x:${sessionId}@${this.serviceHost}:${PROXY_PORT}`
+  /**
+   * CA-trust (and prompt-suppression) env for session containers. No
+   * routing vars: egress interception is transparent — the pod's
+   * redirect init container DNATs outbound 443/80 to the proxy at the
+   * network layer, so `HTTP(S)_PROXY`/`NO_PROXY` cooperation is gone and
+   * tools that ignore proxy env vars are intercepted all the same. Only
+   * trust in the MITM CA still needs to ride env.
+   */
+  getCaTrustEnv(): string[] {
     return [
-      `HTTPS_PROXY=${proxyUrl}`,
-      `HTTP_PROXY=${proxyUrl}`,
-      `https_proxy=${proxyUrl}`,
-      `http_proxy=${proxyUrl}`,
       `NODE_EXTRA_CA_CERTS=${PROXY_CA_PATH}`,
       `SSL_CERT_FILE=${PROXY_CA_PATH}`,
       `GIT_SSL_CAINFO=${PROXY_CA_PATH}`,
-      'NO_PROXY=localhost,127.0.0.1,::1',
-      'no_proxy=localhost,127.0.0.1,::1',
-      'NODE_USE_ENV_PROXY=1',
-      'NODE_OPTIONS=--disable-warning=UNDICI-EHPA',
       'GIT_TERMINAL_PROMPT=0',
-      'GIT_HTTP_PROXY_AUTHMETHOD=basic',
     ]
   }
 
@@ -224,6 +213,21 @@ export class ProxyClient {
       const text = await res.text()
       throw new Error(`Failed to register session: ${res.status} ${text}`)
     }
+  }
+
+  /**
+   * The per-session relay credential injected into the pod's yaac-relay
+   * container: HMAC-SHA256(PROXY_AUTH_SECRET, "relay:"+sessionId), hex.
+   * The relay prepends "<sessionId>:<token>" to each connection in a PP2
+   * TLV; the proxy recomputes and verifies it. No token is ever stored or
+   * sent over the wire, and it is derivable after a proxy replacement, so
+   * nothing needs healing. Keep the formula in sync with relayTokenFor
+   * (k8s/proxy/pp2.ts) — the proxy cannot import from src/.
+   */
+  relayToken(sessionId: string): string {
+    return createHmac('sha256', this.requireAuthSecret())
+      .update(`relay:${sessionId}`)
+      .digest('hex')
   }
 
   async removeSession(sessionId: string): Promise<void> {
@@ -433,13 +437,7 @@ export class ProxyClient {
       }
       daemonLog(`[build] starting ${localTag} (proxy sidecar)`)
       await new Promise<void>((resolve, reject) => {
-        const buildArgs = ['build', '-t', localTag]
-        const certFile = process.env.SSL_CERT_FILE
-        if (certFile && existsSync(certFile)) {
-          buildArgs.push('--volume', `${certFile}:${certFile}:ro`)
-          buildArgs.push('--build-arg', `SSL_CERT_FILE=${certFile}`)
-        }
-        buildArgs.push(PROXY_DIR)
+        const buildArgs = ['build', '-t', localTag, PROXY_DIR]
         const child = spawn('podman', buildArgs, {
           stdio: ['ignore', 'pipe', 'pipe'],
           timeout: 300_000,

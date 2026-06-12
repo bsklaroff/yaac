@@ -5,7 +5,7 @@ import crypto from 'node:crypto'
 import { baseImageHash, fileHash, contextHash, ensureImageByTag, sessionUid } from '@/lib/container/image-builder'
 import { ensurePodmanSocket, getSocketPath } from '@/lib/container/runtime'
 import { pushImageToRegistry, registryReachable } from '@/lib/k8s/registry'
-import { DOCKERFILES_DIR, PROXY_DIR } from '@/lib/project/paths'
+import { DOCKERFILES_DIR, PROXY_DIR, REDIRECT_INIT_DIR, RELAY_DIR } from '@/lib/project/paths'
 
 const execFileAsync = promisify(execFile)
 
@@ -133,11 +133,21 @@ export async function setup(): Promise<void> {
   const proxyTag = `yaac-test-proxy:${proxyHash}`
   await ensureImageByTag(proxyTag, path.join(PROXY_DIR, 'Dockerfile'), PROXY_DIR)
 
+  // --- Transparent-egress redirect init container (k8s/redirect-init/) ---
+  const redirectInitHash = await contextHash(REDIRECT_INIT_DIR)
+  const redirectInitTag = `yaac-test-redirect-init:${redirectInitHash}`
+  await ensureImageByTag(redirectInitTag, path.join(REDIRECT_INIT_DIR, 'Dockerfile'), REDIRECT_INIT_DIR)
+
+  // --- Per-pod egress relay (k8s/relay/, multi-stage Go build) ---
+  const relayHash = await contextHash(RELAY_DIR)
+  const relayTag = `yaac-test-relay:${relayHash}`
+  await ensureImageByTag(relayTag, path.join(RELAY_DIR, 'Dockerfile'), RELAY_DIR)
+
   // Session/mock pods pull images from the local registry, not the podman
   // store — push everything up front so test workers never race a push.
   // pushImageToRegistry no-ops when the content-hash tag is already there.
   if (await registryReachable()) {
-    for (const tag of [baseTag, toolsTag, proxyTag]) {
+    for (const tag of [baseTag, toolsTag, proxyTag, redirectInitTag, relayTag]) {
       await pushImageToRegistry(tag)
     }
   } else {

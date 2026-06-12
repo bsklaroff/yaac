@@ -6,6 +6,8 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, 'src'),
       '@test': path.resolve(__dirname, 'test'),
+      '@proxy': path.resolve(__dirname, 'k8s/proxy'),
+      '@relay': path.resolve(__dirname, 'k8s/relay'),
     },
   },
   test: {

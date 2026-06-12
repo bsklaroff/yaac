@@ -53,13 +53,21 @@ vi.mock('@/lib/container/proxy-client', () => ({
   SSH_AGENT_MOUNT: '/ssh-agent',
   SSH_AGENT_SOCKET_PATH: '/ssh-agent/socket',
   proxyClient: {
-    serviceHost: 'yaac-proxy.yaac.svc',
     ensureRunning: vi.fn().mockResolvedValue(undefined),
     registerSession: vi.fn().mockResolvedValue(undefined),
-    getProxyEnv: vi.fn().mockReturnValue(['HTTPS_PROXY=http://proxy']),
+    getCaTrustEnv: vi.fn().mockReturnValue(['SSL_CERT_FILE=/etc/yaac/certs/proxy-ca.pem']),
+    relayToken: vi.fn().mockReturnValue('a'.repeat(64)),
     getCaCert: vi.fn().mockResolvedValue('cert'),
   },
   buildRulesFromConfig: vi.fn().mockReturnValue([]),
+}))
+
+vi.mock('@/lib/k8s/redirect-init', () => ({
+  ensureRedirectInitImage: vi.fn().mockResolvedValue('localhost:5000/yaac-redirect-init:test'),
+}))
+
+vi.mock('@/lib/k8s/relay', () => ({
+  ensureRelayImage: vi.fn().mockResolvedValue('localhost:5000/yaac-relay:test'),
 }))
 
 vi.mock('@/lib/container/default-allowed-hosts', async (importOriginal) => {
@@ -167,9 +175,13 @@ import { ensureImage } from '@/lib/container/image-builder'
 import { pushImageToRegistry } from '@/lib/k8s/registry'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
 import { containerExec } from '@/lib/k8s/exec'
+import { clusterIpForNamespace } from '@/lib/k8s/bootstrap'
 import { proxyClient } from '@/lib/container/proxy-client'
+import { ensureRedirectInitImage } from '@/lib/k8s/redirect-init'
+import { ensureRelayImage } from '@/lib/k8s/relay'
 import { resolveProjectConfig } from '@/lib/project/config'
-import { resolveCredentialForUrl } from '@/lib/project/credentials'
+import simpleGit from 'simple-git'
+import { resolveCredentialForUrl, loadKnownHostsEntryForHost } from '@/lib/project/credentials'
 import { loadToolAuthEntry } from '@/lib/project/tool-auth'
 import { resolveAllowedHosts } from '@/lib/container/default-allowed-hosts'
 import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/lib/git'
@@ -206,6 +218,12 @@ interface JobManifest {
       metadata: { labels: Record<string, string> }
       spec: {
         restartPolicy: string
+        initContainers: Array<{
+          name: string
+          image: string
+          restartPolicy?: string
+          env: Array<{ name: string; value: string }>
+        }>
         containers: Array<{
           image: string
           env: Array<{ name: string; value: string }>
@@ -249,14 +267,19 @@ describe('createSession', () => {
     /* eslint-disable @typescript-eslint/unbound-method */
     vi.mocked(proxyClient.ensureRunning).mockResolvedValue(undefined)
     vi.mocked(proxyClient.registerSession).mockResolvedValue(undefined)
-    vi.mocked(proxyClient.getProxyEnv).mockReturnValue(['HTTPS_PROXY=http://proxy'])
+    vi.mocked(proxyClient.getCaTrustEnv).mockReturnValue(['SSL_CERT_FILE=/etc/yaac/certs/proxy-ca.pem'])
+    vi.mocked(proxyClient.relayToken).mockReturnValue('a'.repeat(64))
+    vi.mocked(ensureRedirectInitImage).mockResolvedValue('localhost:5000/yaac-redirect-init:test')
+    vi.mocked(ensureRelayImage).mockResolvedValue('localhost:5000/yaac-relay:test')
     /* eslint-enable @typescript-eslint/unbound-method */
     mockSpawn.mockImplementation(() => mockAttachedChild() as never)
     mockApply.mockResolvedValue(undefined)
     // waitForPodReady polls this — default to "pod ready" so the flow runs
     // straight through. Failure tests override it.
     mockGetJson.mockResolvedValue({
-      items: [{ status: { phase: 'Running', containerStatuses: [{ ready: true }] } }],
+      items: [{
+        status: { phase: 'Running', containerStatuses: [{ ready: true }] },
+      }],
     })
     mockKubectlRetry.mockResolvedValue({ stdout: '', stderr: '' })
     mockContainerExec.mockResolvedValue({ stdout: '', stderr: '' })
@@ -305,8 +328,13 @@ describe('createSession', () => {
     expect(container.image).toBe('localhost:5000/yaac-test-image')
     expect(container.env).toEqual(expect.arrayContaining([
       { name: 'YAAC_SESSION_ID', value: 'abcd1234' },
-      { name: 'HTTPS_PROXY', value: 'http://proxy' },
+      { name: 'SSL_CERT_FILE', value: '/etc/yaac/certs/proxy-ca.pem' },
     ]))
+    // Routing env vars are gone — interception is transparent.
+    const envNames = container.env.map((e) => e.name)
+    for (const name of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'NO_PROXY', 'no_proxy']) {
+      expect(envNames).not.toContain(name)
+    }
 
     const hostPaths = manifest.spec.template.spec.volumes
       .filter((v) => v.hostPath)
@@ -330,6 +358,65 @@ describe('createSession', () => {
     expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/claude', { recursive: true })
     expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/codex', { recursive: true })
     expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/opencode-meta', { recursive: true })
+  })
+
+  it('threads the egress sidecars into the Job and injects the relay token, never the daemon binding a pod', async () => {
+    await createSession('demo', { tool: 'claude', sessionId: 'abcd1234' })
+
+    const initContainers = appliedJobManifest().spec.template.spec.initContainers
+    expect(initContainers.map((c) => c.name)).toEqual(['yaac-redirect-init', 'yaac-relay'])
+    expect(initContainers[0].image).toBe('localhost:5000/yaac-redirect-init:test')
+
+    // The relay carries this session's derived credential; the proxy
+    // re-verifies it per connection, so the daemon never asserts identity.
+    const relay = initContainers[1]
+    expect(relay.image).toBe('localhost:5000/yaac-relay:test')
+    expect(relay.restartPolicy).toBe('Always')
+    expect(relay.env).toContainEqual({ name: 'SESSION_ID', value: 'abcd1234' })
+    expect(relay.env).toContainEqual({ name: 'RELAY_TOKEN', value: 'a'.repeat(64) })
+    // The relay dials the proxy by its pinned per-namespace VIP, never a
+    // DNS name — resolution inside the pod is the stub's dummy answer.
+    expect(relay.env).toContainEqual({
+      name: 'PROXY_HOST', value: clusterIpForNamespace('yaac'),
+    })
+    expect(relay.env).toContainEqual({ name: 'LISTEN_DNS_PORT', value: '15004' })
+    // redirect-init gets the filter default-deny params; its carve-out
+    // targets the same pinned VIP the relay dials, not a CIDR.
+    expect(initContainers[0].env).toContainEqual({ name: 'REDIRECT_DNS_PORT', value: '15004' })
+    expect(initContainers[0].env).toContainEqual({ name: 'RELAY_UID', value: '1337' })
+    expect(initContainers[0].env).toContainEqual({
+      name: 'PROXY_CLUSTER_IP', value: clusterIpForNamespace('yaac'),
+    })
+    const redirectEnvNames = initContainers[0].env.map((e) => e.name)
+    expect(redirectEnvNames).not.toContain('SERVICE_CIDR')
+    expect(redirectEnvNames).not.toContain('POD_CIDR')
+    /* eslint-disable-next-line @typescript-eslint/unbound-method */
+    expect(proxyClient.relayToken).toHaveBeenCalledWith('abcd1234')
+
+    // No bind endpoint exists anymore — identity is stateless at the proxy.
+    expect(proxyClient).not.toHaveProperty('bindSessionIp')
+  })
+
+  it('routes SSH through the pod-local relay with no x:sessionId credential', async () => {
+    // SSH-scheme remote: the proxy command must point ncat at the relay's
+    // loopback CONNECT port and carry no proxy-auth, so identity is the
+    // relay's PP2 token (not a leakable bearer credential in the env).
+    vi.mocked(simpleGit).mockReturnValue({
+      remote: vi.fn().mockResolvedValue('git@github.com:example/repo.git'),
+      addConfig: vi.fn().mockResolvedValue(undefined),
+    } as never)
+    vi.mocked(loadKnownHostsEntryForHost).mockResolvedValue('github.com ssh-ed25519 AAAAC3')
+
+    await createSession('demo', { tool: 'claude', sessionId: 'abcd1234' })
+
+    const env = appliedJobManifest().spec.template.spec.containers[0].env
+    const sshCmd = env.find((e) => e.name === 'GIT_SSH_COMMAND')?.value ?? ''
+    expect(sshCmd).toContain('ncat --proxy 127.0.0.1:15003')
+    expect(sshCmd).toContain('--proxy-type http')
+    // No bearer credential rides the workload env.
+    expect(sshCmd).not.toContain('--proxy-auth')
+    expect(sshCmd).not.toContain('x:')
+    expect(sshCmd).not.toContain('abcd1234')
   })
 
   it('mounts --add-dir read-only and --add-dir-rw read-write with the no-check hostPath type', async () => {

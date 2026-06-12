@@ -8,7 +8,8 @@ import { daemonLog } from '@/daemon/log'
  * deliberately memory-only — key bytes never touch the proxy filesystem
  * — so a replaced pod always boots with an empty agent and only the
  * daemon can re-upload the keys. This is the one proxy heal left on the
- * background tick.
+ * background tick: session identity is now a per-connection relay token
+ * the proxy verifies statelessly, so it needs no healing.
  */
 export async function reconcileProxySshKeys(): Promise<void> {
   // attachIfRunning, not ensureRunning: this step must never bootstrap

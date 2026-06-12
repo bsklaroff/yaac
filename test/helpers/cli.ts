@@ -121,6 +121,8 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
     YAAC_BUILD_ID: 'test-build-id',
     YAAC_IMAGE_PREFIX: 'yaac-test',
     YAAC_PROXY_IMAGE: 'yaac-test-proxy',
+    YAAC_REDIRECT_INIT_IMAGE: 'yaac-test-redirect-init',
+    YAAC_RELAY_IMAGE: 'yaac-test-relay',
     YAAC_K8S_NAMESPACE: TEST_NAMESPACE,
     YAAC_REQUIRE_PREBUILT_IMAGES: '1',
   }

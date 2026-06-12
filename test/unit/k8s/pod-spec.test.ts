@@ -54,6 +54,22 @@ function params(overrides: Partial<SessionJobParams> = {}): SessionJobParams {
     env: ['YAAC_SESSION_ID=abcd', 'X=a=b'],
     hostPathMounts: [],
     memoryLimitBytes: 8 * 1024 ** 3,
+    egress: {
+      redirectImage: 'localhost:5001/yaac-redirect-init:def',
+      relayImage: 'localhost:5001/yaac-relay:abc',
+      relayHttpsPort: 15001,
+      relayHttpPort: 15002,
+      relayConnectPort: 15003,
+      relayDnsPort: 15004,
+      relayUid: 1337,
+      // The pinned proxy Service VIP — an IP, never a DNS name.
+      proxyHost: '10.96.0.179',
+      transparentHttpsPort: 10256,
+      transparentHttpPort: 10257,
+      transparentTunnelPort: 10258,
+      sessionId: 'abcd',
+      relayToken: 'deadbeef'.repeat(8),
+    },
     ...overrides,
   }
 }
@@ -73,6 +89,19 @@ interface Manifest {
         enableServiceLinks: boolean
         hostUsers?: boolean
         securityContext: { seccompProfile: { type: string } }
+        initContainers: Array<{
+          name: string
+          image: string
+          imagePullPolicy: string
+          restartPolicy?: string
+          securityContext: {
+            runAsUser?: number
+            allowPrivilegeEscalation?: boolean
+            capabilities?: { add?: string[]; drop?: string[] }
+          }
+          env: Array<{ name: string; value: string }>
+          startupProbe?: { exec: { command: string[] } }
+        }>
         containers: Array<{
           name: string
           image: string
@@ -178,6 +207,71 @@ describe('buildSessionJobManifest', () => {
     const mounts = m.spec.template.spec.containers[0].volumeMounts
     expect(mounts[0]).toEqual({ name: 'hp-0', mountPath: '/mnt/ro', readOnly: true })
     expect(mounts[1]).toEqual({ name: 'hp-1', mountPath: '/mnt/rw' })
+  })
+
+  it('emits redirect-init then relay, with NET_ADMIN only on redirect-init', () => {
+    const spec = build().spec.template.spec
+    expect(spec.initContainers.map((c) => c.name)).toEqual(['yaac-redirect-init', 'yaac-relay'])
+
+    const redirect = spec.initContainers[0]
+    expect(redirect.image).toBe('localhost:5001/yaac-redirect-init:def')
+    expect(redirect.imagePullPolicy).toBe('IfNotPresent')
+    expect(redirect.securityContext).toEqual({ capabilities: { add: ['NET_ADMIN'] } })
+    expect(redirect.restartPolicy).toBeUndefined() // run-to-completion
+
+    // The session container itself must carry no added capability.
+    expect(spec.containers[0]).not.toHaveProperty('securityContext')
+  })
+
+  it('threads the REDIRECT ports and filter default-deny params into the redirect-init env', () => {
+    const env = build().spec.template.spec.initContainers[0].env
+    expect(env).toEqual([
+      { name: 'REDIRECT_HTTPS_PORT', value: '15001' },
+      { name: 'REDIRECT_HTTP_PORT', value: '15002' },
+      { name: 'REDIRECT_DNS_PORT', value: '15004' },
+      // Filter-table default-deny: the carve-out is keyed on the relay
+      // uid and scoped to the proxy VIP's transport ports — exactly the
+      // pinned ClusterIP, never a CIDR-wide rule.
+      { name: 'RELAY_UID', value: '1337' },
+      { name: 'PROXY_CLUSTER_IP', value: '10.96.0.179' },
+      { name: 'TRANSPARENT_HTTPS_PORT', value: '10256' },
+      { name: 'TRANSPARENT_HTTP_PORT', value: '10257' },
+      { name: 'TRANSPARENT_TUNNEL_PORT', value: '10258' },
+    ])
+  })
+
+  it('runs the relay as a native sidecar (restartPolicy Always) with a ready-file probe and no caps', () => {
+    const relay = build().spec.template.spec.initContainers[1]
+    expect(relay.name).toBe('yaac-relay')
+    expect(relay.image).toBe('localhost:5001/yaac-relay:abc')
+    expect(relay.restartPolicy).toBe('Always')
+    expect(relay.securityContext.runAsUser).toBe(1337)
+    expect(relay.securityContext.allowPrivilegeEscalation).toBe(false)
+    expect(relay.securityContext.capabilities).toEqual({ drop: ['ALL'] })
+    // Exec probe on a ready file the relay writes after binding loopback
+    // (a tcpSocket probe would dial the unreachable pod IP).
+    expect(relay.startupProbe?.exec.command).toEqual([
+      'sh', '-c', 'test -f /tmp/yaac-relay-ready',
+    ])
+  })
+
+  it('carries the session credential and all four listen ports on the relay container only', () => {
+    const spec = build().spec.template.spec
+    const relayEnv = spec.initContainers[1].env
+    expect(relayEnv).toContainEqual({ name: 'SESSION_ID', value: 'abcd' })
+    expect(relayEnv).toContainEqual({ name: 'RELAY_TOKEN', value: 'deadbeef'.repeat(8) })
+    // The pinned VIP rides through verbatim — the relay never resolves DNS.
+    expect(relayEnv).toContainEqual({ name: 'PROXY_HOST', value: '10.96.0.179' })
+    expect(relayEnv).toContainEqual({ name: 'TRANSPARENT_HTTPS_PORT', value: '10256' })
+    expect(relayEnv).toContainEqual({ name: 'TRANSPARENT_HTTP_PORT', value: '10257' })
+    expect(relayEnv).toContainEqual({ name: 'TRANSPARENT_TUNNEL_PORT', value: '10258' })
+    expect(relayEnv).toContainEqual({ name: 'LISTEN_HTTPS_PORT', value: '15001' })
+    expect(relayEnv).toContainEqual({ name: 'LISTEN_HTTP_PORT', value: '15002' })
+    expect(relayEnv).toContainEqual({ name: 'LISTEN_CONNECT_PORT', value: '15003' })
+    expect(relayEnv).toContainEqual({ name: 'LISTEN_DNS_PORT', value: '15004' })
+    // The workload container must never see the token.
+    const sessionEnvNames = spec.containers[0].env.map((e) => e.name)
+    expect(sessionEnvNames).not.toContain('RELAY_TOKEN')
   })
 
   it('always appends the proxy-CA ConfigMap volume mounted read-only at the CA dir', () => {

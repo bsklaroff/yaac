@@ -28,13 +28,36 @@ import type { Duplex } from 'node:stream'
 import forge from 'node-forge'
 import { SocksClient } from 'socks'
 import { SocksProxyAgent } from 'socks-proxy-agent'
+import {
+  isInternalUpstream,
+  peekClientHelloSni,
+  splitHostHeader,
+} from './transparent'
+import {
+  identityFromPp2,
+  parsePp2Header,
+  verifyRelayToken,
+} from './pp2'
 
-const PORT = process.env.PORT
+// Control-API listener (CA cert, registrations, ssh-agent keys). Renamed
+// from PORT now that no session egress reaches it — it is purely the API.
+const API_PORT = process.env.API_PORT
 const PROXY_AUTH_SECRET = process.env.PROXY_AUTH_SECRET
-if (!PORT || !PROXY_AUTH_SECRET) {
-  console.error('[proxy] PORT and PROXY_AUTH_SECRET environment variables are required')
+// Transparent egress listeners: the per-pod relay forwards redirected
+// 443/80 here (PP2 identity, destination from TLS SNI / HTTP Host) and
+// SSH CONNECTs to the tunnel listener (destination from the CONNECT line).
+const TRANSPARENT_HTTPS_PORT = process.env.TRANSPARENT_HTTPS_PORT
+const TRANSPARENT_HTTP_PORT = process.env.TRANSPARENT_HTTP_PORT
+const TRANSPARENT_TUNNEL_PORT = process.env.TRANSPARENT_TUNNEL_PORT
+if (!API_PORT || !PROXY_AUTH_SECRET || !TRANSPARENT_HTTPS_PORT || !TRANSPARENT_HTTP_PORT
+  || !TRANSPARENT_TUNNEL_PORT) {
+  console.error('[proxy] API_PORT, PROXY_AUTH_SECRET, TRANSPARENT_HTTPS_PORT, '
+    + 'TRANSPARENT_HTTP_PORT and TRANSPARENT_TUNNEL_PORT environment variables are required')
   process.exit(1)
 }
+// Narrowed alias: control-flow narrowing of the module const above does not
+// reach the listener closures that verify relay tokens.
+const proxyAuthSecret: string = PROXY_AUTH_SECRET
 const DATA_DIR = '/data'
 
 // When USE_TOR=1, route every upstream connection through the Tor SOCKS
@@ -1279,20 +1302,6 @@ function handleCodexTokenResponse(
   })
 }
 
-// ── Session ID Extraction ─────────────────────────────────────────────
-
-function extractSessionId(proxyAuthHeader: string | string[] | undefined): string | null {
-  if (!proxyAuthHeader) return null
-  const header = Array.isArray(proxyAuthHeader) ? proxyAuthHeader[0] : proxyAuthHeader
-  const match = /^Basic\s+(.+)$/i.exec(header)
-  if (!match) return null
-  const decoded = Buffer.from(match[1], 'base64').toString()
-  const colonIdx = decoded.indexOf(':')
-  if (colonIdx === -1) return decoded
-  const password = decoded.slice(colonIdx + 1)
-  return password || decoded.slice(0, colonIdx)
-}
-
 // ── MITM Handler ───────────────────────────────────────────────────────
 
 function handleMitm(
@@ -1526,7 +1535,11 @@ function handleMitm(
 function handleTunnel(clientSocket: Duplex, hostname: string, port: string | undefined): void {
   const destPort = parseInt(port ?? '', 10) || 443
 
-  if (USE_TOR) {
+  // Tor refuses loopback/RFC1918 upstreams, and the transparent listeners
+  // widened what can reach this path (any allowlisted SNI, including
+  // in-cluster names in tests) — internal destinations go direct. Same
+  // guard shape as the MITM path's redirect carve-out (sendUpstream).
+  if (USE_TOR && !isInternalUpstream(hostname)) {
     void SocksClient.createConnection({
       proxy: torProxy,
       command: 'connect',
@@ -1563,6 +1576,71 @@ function handleTunnel(clientSocket: Duplex, hostname: string, port: string | und
   clientSocket.on('error', () => {
     upstream.destroy()
   })
+}
+
+// ── Upstream Dispatch (shared by CONNECT + transparent listeners) ─────
+
+/**
+ * Authorize `hostname` for the session and hand the socket to the MITM
+ * or tunnel path. The explicit CONNECT listener and the transparent
+ * HTTPS listener share everything from the allowlist check onward; they
+ * differ only in framing — CONNECT writes an HTTP response head
+ * (`writeConnectOk`, and a 403 on block), while a transparent socket
+ * carries raw TLS, so a block is a pre-handshake destroy.
+ */
+function dispatchToUpstream(
+  clientSocket: Duplex,
+  hostname: string,
+  port: string | undefined,
+  sessionId: string,
+  opts: { writeConnectOk: boolean; head?: Buffer },
+): void {
+  // Hold the read side until handleMitm/handleTunnel attaches the pipe (which
+  // resumes it). We connect upstream asynchronously, so without this the bytes
+  // the client sends right after our 200 — the TLS ClientHello on a CONNECT
+  // tunnel — land on a flowing socket with no consumer and are silently
+  // dropped, stalling the handshake. The SNI peeker already pauses; this makes
+  // the guarantee hold for every dispatch path.
+  clientSocket.pause()
+
+  if (!isHostAllowed(sessionId, hostname)) {
+    const label = opts.writeConnectOk ? 'CONNECT' : 'transparent HTTPS'
+    console.log(`[proxy] BLOCKED ${label} to ${hostname}:${port ?? '443'} (not in allowlist)`)
+    recordBlockedHost(sessionId, hostname)
+    if (opts.writeConnectOk) {
+      clientSocket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
+      clientSocket.end()
+    } else {
+      clientSocket.destroy()
+    }
+    return
+  }
+
+  const rules = findRulesForHost(sessionId, hostname)
+
+  // Always MITM well-known tool-auth hosts so we can inject credentials
+  // read from the host-mounted credentials dir, even when no per-session
+  // rule-based injections apply. Port-aware: SSH (22) always tunnels.
+  const destPort = parseInt(port ?? '', 10) || 443
+  const needsDynMitm = hostNeedsDynamicMitm(sessionId, hostname, destPort)
+
+  // A registered redirect for this hostname forces MITM — without it, the
+  // proxy would tunnel bytes unchanged and the redirect could never apply.
+  const redirect = sessionUpstreamRedirects.get(sessionId)?.[hostname] ?? null
+
+  if (opts.writeConnectOk) {
+    clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+  }
+
+  if (opts.head && opts.head.length > 0) {
+    clientSocket.unshift(opts.head)
+  }
+
+  if (rules.length > 0 || needsDynMitm || redirect) {
+    handleMitm(clientSocket, hostname, port, sessionId, rules, redirect)
+  } else {
+    handleTunnel(clientSocket, hostname, port)
+  }
 }
 
 // ── API Request Handler ────────────────────────────────────────────────
@@ -1856,22 +1934,21 @@ ca = loadOrGenerateCA()
 loadSessions()
 loadBlockedHosts()
 
-// ── HTTP Forward Proxy ────────────────────────────────────────────────
+// ── Plain-HTTP Forward ────────────────────────────────────────────────
 
-function isProxyRequest(req: http.IncomingMessage): boolean {
-  return !!req.url && req.url.startsWith('http://')
-}
-
-// Security: token injection is deliberately NOT applied to plain HTTP requests.
-// Injecting credentials over unencrypted connections would expose them to
-// network observers. Only HTTPS CONNECT+MITM requests get token injection.
-function handleHttpForward(req: http.IncomingMessage, res: http.ServerResponse): void {
-  if (!req.url) {
-    res.writeHead(400); res.end('Bad request'); return
-  }
-  const target = new URL(req.url)
-  const sessionId = extractSessionId(req.headers['proxy-authorization'])
-
+// Security: token injection is deliberately NOT applied to plain HTTP
+// requests. Injecting credentials over unencrypted connections would
+// expose them to network observers; only the HTTPS MITM path injects.
+//
+// Used only by the transparent HTTP listener (origin-form requests after
+// the relay's PP2 preamble); identity is the verified relay token. The
+// old absolute-form forward proxy on the control port is gone.
+function forwardPlainHttp(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  sessionId: string,
+  target: { hostname: string; port: number; path: string },
+): void {
   if (!isHostAllowed(sessionId, target.hostname)) {
     console.log(`[proxy] BLOCKED HTTP forward to ${target.hostname} (not in allowlist)`)
     recordBlockedHost(sessionId, target.hostname)
@@ -1881,24 +1958,25 @@ function handleHttpForward(req: http.IncomingMessage, res: http.ServerResponse):
   }
 
   const headers: http.OutgoingHttpHeaders = { ...req.headers }
-  delete headers['proxy-authorization']
   delete headers['proxy-connection']
-  headers.host = target.host
 
+  // Same internal-destination guard as handleTunnel: Tor refuses
+  // loopback/RFC1918 and can't resolve in-cluster names.
+  const useTorAgent = torAgent !== null && !isInternalUpstream(target.hostname)
   const upstream = http.request({
     hostname: target.hostname,
-    port: parseInt(target.port, 10) || 80,
-    path: target.pathname + target.search,
+    port: target.port,
+    path: target.path,
     method: req.method,
     headers,
-    ...(torAgent ? { agent: torAgent } : {}),
+    ...(useTorAgent ? { agent: torAgent } : {}),
   }, (upstreamRes) => {
     res.writeHead(upstreamRes.statusCode ?? 200, upstreamRes.headers)
     upstreamRes.pipe(res)
   })
 
   upstream.on('error', (err: Error) => {
-    console.error(`[proxy] HTTP forward error for ${req.url}:`, err.message)
+    console.error(`[proxy] HTTP forward error for ${target.hostname}${target.path}:`, err.message)
     if (!res.headersSent) {
       res.writeHead(502, { 'Content-Type': 'text/plain' })
     }
@@ -1910,87 +1988,272 @@ function handleHttpForward(req: http.IncomingMessage, res: http.ServerResponse):
 
 // ── Server ─────────────────────────────────────────────────────────────
 
+// :API_PORT serves only the daemon control API (CA cert, session
+// registrations, ssh-agent keys). Session egress never reaches it — all of
+// it (HTTP, HTTPS, SSH) rides the relay-fed transparent listeners, gated by
+// the per-connection PP2 token.
 const server = http.createServer((req, res) => {
-  if (isProxyRequest(req)) {
-    handleHttpForward(req, res)
-  } else {
-    handleApiRequest(req, res)
-  }
-})
-
-server.on('connect', (req: http.IncomingMessage, clientSocket: Duplex, head: Buffer) => {
-  const [hostname, port] = (req.url ?? '').split(':')
-  const sessionId = extractSessionId(req.headers['proxy-authorization'])
-
-  clientSocket.on('error', (err: NodeJS.ErrnoException) => {
-    if (err.code !== 'ECONNRESET') {
-      console.error(`[proxy] Client socket error for ${hostname}:${port}:`, err.message)
-    }
-  })
-
-  // Challenge-response proxy auth. Clients like ncat (git's SSH ProxyCommand,
-  // session-create.ts) never send Proxy-Authorization preemptively — they
-  // send a bare CONNECT and only attach credentials after a 407. Answering a
-  // credential-less CONNECT with 403 made ncat give up without ever
-  // authenticating. Emit the standard challenge instead; ncat resends the
-  // CONNECT (reconnecting on a fresh socket when we close here) carrying the
-  // x:<sessionId> creds, which re-enters this handler with a parseable
-  // session id. Preemptive clients (curl/node for HTTPS) never hit this path.
-  if (!sessionId) {
-    clientSocket.write(
-      'HTTP/1.1 407 Proxy Authentication Required\r\n'
-      + 'Proxy-Authenticate: Basic realm="yaac"\r\n'
-      + 'Content-Length: 0\r\n'
-      + '\r\n',
-    )
-    clientSocket.end()
-    return
-  }
-
-  if (!isHostAllowed(sessionId, hostname)) {
-    console.log(`[proxy] BLOCKED CONNECT to ${hostname}:${port} (not in allowlist)`)
-    recordBlockedHost(sessionId, hostname)
-    clientSocket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
-    clientSocket.end()
-    return
-  }
-
-  const rules = sessionId ? findRulesForHost(sessionId, hostname) : []
-
-  // Always MITM well-known tool-auth hosts so we can inject credentials
-  // read from the host-mounted credentials dir, even when no per-session
-  // rule-based injections apply. Port-aware: SSH (22) always tunnels.
-  const destPort = parseInt(port ?? '', 10) || 443
-  const needsDynMitm = hostNeedsDynamicMitm(sessionId, hostname, destPort)
-
-  // A registered redirect for this hostname forces MITM — without it, the
-  // proxy would tunnel bytes unchanged and the redirect could never apply.
-  const redirect = sessionId
-    ? (sessionUpstreamRedirects.get(sessionId)?.[hostname] ?? null)
-    : null
-
-  clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
-
-  if (head.length > 0) {
-    clientSocket.unshift(head)
-  }
-
-  if (rules.length > 0 || needsDynMitm || redirect) {
-    handleMitm(clientSocket, hostname, port, sessionId, rules, redirect)
-  } else {
-    handleTunnel(clientSocket, hostname, port)
-  }
+  handleApiRequest(req, res)
 })
 
 server.on('error', (err: Error) => {
   console.error('[proxy] Server error:', err)
 })
 
-server.listen(parseInt(PORT, 10), '0.0.0.0', () => {
-  console.log(`[proxy] MITM proxy listening on port ${PORT}${USE_TOR ? ' (Tor: enabled)' : ''}`)
+server.listen(parseInt(API_PORT, 10), '0.0.0.0', () => {
+  console.log(`[proxy] control API listening on port ${API_PORT}${USE_TOR ? ' (Tor: enabled)' : ''}`)
 })
+
+// ── Transparent listeners ──────────────────────────────────────────────
+//
+// Session pods' redirect init container REDIRECTs outbound 443/80 to the
+// per-pod yaac-relay, which recovers the original destination via
+// SO_ORIGINAL_DST and forwards here behind a PROXY protocol v2 header
+// whose TLV carries "<sessionId>:<token>". Identity is that
+// per-connection credential, verified against PROXY_AUTH_SECRET — not the
+// source IP — so a pod that merely reaches the port gets nothing without
+// it. Destination still comes from the TLS SNI (443) / HTTP Host (80)
+// after the PP2 header is consumed. Both listeners fail closed: no/invalid
+// PP2, a bad token, or (for HTTPS) an SNI-less ClientHello → destroy.
+
+/** Cap on bytes buffered while waiting for a parseable ClientHello. */
+const SNI_PEEK_MAX_BYTES = 64 * 1024
+/** How long to wait for the ClientHello before dropping the socket. */
+const SNI_PEEK_TIMEOUT_MS = 10_000
+/** Cap + deadline for the PP2 preamble (it precedes any client byte). */
+const PP2_MAX_BYTES = 4 * 1024
+const PP2_TIMEOUT_MS = 10_000
+
+/**
+ * Consume + verify the relay's PP2 preamble on a freshly accepted
+ * transparent socket, then hand the session id and the remaining stream
+ * (the real TLS/HTTP bytes, unshifted) to `next`. Any failure destroys
+ * the socket — this is the fail-closed gate that replaces source-IP
+ * identity, and it also closes the "any in-cluster pod can poke the
+ * transparent port" exposure: no valid credential, no conversation.
+ */
+function withRelayIdentity(
+  socket: net.Socket,
+  label: string,
+  next: (sessionId: string, leftover: Buffer) => void,
+): void {
+  socket.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code !== 'ECONNRESET') {
+      console.error(`[proxy] Transparent ${label} socket error:`, err.message)
+    }
+  })
+
+  const peer = socket.remoteAddress ?? '(unknown)'
+  let buf = Buffer.alloc(0)
+  const timer = setTimeout(() => {
+    console.log(`[proxy] Transparent ${label} from ${peer}: no PROXY header within ${PP2_TIMEOUT_MS}ms`)
+    socket.destroy()
+  }, PP2_TIMEOUT_MS)
+
+  const onData = (chunk: Buffer): void => {
+    buf = Buffer.concat([buf, chunk])
+    const res = parsePp2Header(buf)
+    if (res.kind === 'need-more') {
+      if (buf.length > PP2_MAX_BYTES) { clearTimeout(timer); socket.destroy() }
+      return
+    }
+    clearTimeout(timer)
+    socket.removeListener('data', onData)
+    if (res.kind === 'invalid') {
+      console.log(`[proxy] BLOCKED transparent ${label} from ${peer}: no valid PROXY header`)
+      socket.destroy()
+      return
+    }
+    const identity = identityFromPp2(res.tlvs)
+    if (!identity || !verifyRelayToken(proxyAuthSecret, identity.sessionId, identity.token)) {
+      console.log(`[proxy] BLOCKED transparent ${label} from ${peer}: missing/invalid relay token`)
+      socket.destroy()
+      return
+    }
+    // Hand the bytes after the header to `next` directly rather than
+    // unshifting here: the HTTPS peeker continues buffering from this
+    // leftover (one unshift, at dispatch), and the HTTP path unshifts it
+    // once before handing the socket to the internal server. A second
+    // unshift on top of this one does not reliably re-emit to a
+    // freshly-added 'data' listener.
+    next(identity.sessionId, buf.subarray(res.bytesConsumed))
+  }
+  socket.on('data', onData)
+}
+
+/**
+ * After the PP2 preamble: peek the ClientHello SNI without terminating
+ * TLS, then dispatch to the shared MITM/tunnel path. `initial` is the
+ * post-header leftover from withRelayIdentity (often the start of the
+ * ClientHello). The single unshift at dispatch drives the real handshake
+ * downstream.
+ */
+function peekSniAndDispatch(socket: net.Socket, sessionId: string, initial: Buffer): void {
+  const peer = socket.remoteAddress ?? '(unknown)'
+  let buf = initial
+  let settled = false
+  const timer = setTimeout(() => {
+    if (settled) return
+    console.log(`[proxy] Transparent HTTPS from ${peer}: no ClientHello within ${SNI_PEEK_TIMEOUT_MS}ms`)
+    socket.destroy()
+  }, SNI_PEEK_TIMEOUT_MS)
+
+  // Returns true once the SNI is resolved (or the socket is destroyed).
+  const evaluate = (): boolean => {
+    const peek = peekClientHelloSni(buf)
+    if (peek.kind === 'need-more') {
+      if (buf.length > SNI_PEEK_MAX_BYTES) { settled = true; clearTimeout(timer); socket.destroy() }
+      return settled
+    }
+    settled = true
+    clearTimeout(timer)
+    socket.removeListener('data', onData)
+    if (peek.kind !== 'found') {
+      console.log(`[proxy] BLOCKED transparent HTTPS from ${peer}: no parseable SNI`)
+      socket.destroy()
+      return true
+    }
+    // Pause before unshift so the buffered ClientHello waits for the
+    // downstream reader (the MITM TLSSocket, or the tunnel pipe) instead
+    // of being emitted into a flowing socket with no listener — a
+    // TLSSocket wrapped over a flowing socket drops the unshifted hello
+    // and the handshake stalls.
+    socket.pause()
+    if (buf.length > 0) socket.unshift(buf)
+    // Destination port is 443 by construction: only dport-443 traffic is
+    // REDIRECTed to the relay's HTTPS upstream.
+    dispatchToUpstream(socket, peek.serverName, '443', sessionId, { writeConnectOk: false })
+    return true
+  }
+
+  function onData(chunk: Buffer): void {
+    buf = Buffer.concat([buf, chunk])
+    evaluate()
+  }
+
+  // The leftover may already contain the whole ClientHello.
+  if (evaluate()) return
+  socket.on('data', onData)
+}
+
+const transparentHttpsServer = net.createServer((socket) => {
+  withRelayIdentity(socket, 'HTTPS', (sessionId, leftover) =>
+    peekSniAndDispatch(socket, sessionId, leftover))
+})
+
+// Origin-form HTTP after the PP2 preamble: feed the post-header stream
+// into an internal http.Server (the `emit('connection')` pattern handleMitm
+// already uses) and carry the verified session id on the socket.
+type IdentifiedSocket = net.Socket & { yaacSessionId?: string }
+
+const internalHttpServer = http.createServer((req, res) => {
+  const sessionId = (req.socket as IdentifiedSocket).yaacSessionId
+  if (!sessionId) {
+    // Unreachable: sockets reach this server only after token verification.
+    res.writeHead(403, { 'Content-Type': 'text/plain' }); res.end('No identity'); return
+  }
+  // Requests arrive origin-form (`GET /path` + `Host:`), so the original
+  // destination hostname rides the Host header. handleHttpForward's
+  // absolute-form parsing does not apply; the forward core is shared.
+  const hostHeader = req.headers.host
+  const target = hostHeader !== undefined ? splitHostHeader(hostHeader, 80) : null
+  if (target === null) {
+    res.writeHead(400, { 'Content-Type': 'text/plain' })
+    res.end('Missing or malformed Host header')
+    return
+  }
+  forwardPlainHttp(req, res, sessionId, {
+    hostname: target.hostname,
+    port: target.port,
+    path: req.url ?? '/',
+  })
+})
+
+const transparentHttpServer = net.createServer((socket) => {
+  withRelayIdentity(socket, 'HTTP', (sessionId, leftover) => {
+    ;(socket as IdentifiedSocket).yaacSessionId = sessionId
+    if (leftover.length > 0) socket.unshift(leftover)
+    internalHttpServer.emit('connection', socket)
+  })
+})
+
+/** Cap + deadline for the CONNECT request line on the tunnel listener. */
+const CONNECT_MAX_BYTES = 8 * 1024
+const CONNECT_TIMEOUT_MS = 10_000
+
+/**
+ * After the PP2 preamble on the tunnel listener: read the explicit
+ * `CONNECT host:port` the relay forwarded from git's ncat, then hand off
+ * to the shared dispatch with `writeConnectOk` so the 200 flows back
+ * through the relay to ncat. SSH (port 22) tunnels; the allowlist still
+ * applies, on the hostname ncat preserved.
+ */
+function readConnectAndDispatch(socket: net.Socket, sessionId: string, initial: Buffer): void {
+  const peer = socket.remoteAddress ?? '(unknown)'
+  let buf = initial
+  let settled = false
+  const timer = setTimeout(() => {
+    if (settled) return
+    console.log(`[proxy] Transparent TUNNEL from ${peer}: no CONNECT within ${CONNECT_TIMEOUT_MS}ms`)
+    socket.destroy()
+  }, CONNECT_TIMEOUT_MS)
+
+  const evaluate = (): boolean => {
+    const end = buf.indexOf('\r\n\r\n')
+    if (end === -1) {
+      if (buf.length > CONNECT_MAX_BYTES) { settled = true; clearTimeout(timer); socket.destroy() }
+      return settled
+    }
+    settled = true
+    clearTimeout(timer)
+    socket.removeListener('data', onData)
+    const firstLine = buf.subarray(0, buf.indexOf('\r\n')).toString('utf8')
+    const m = /^CONNECT\s+(\S+):(\d+)\s+HTTP\/\d/i.exec(firstLine)
+    if (!m) {
+      console.log(`[proxy] BLOCKED transparent TUNNEL from ${peer}: bad CONNECT line`)
+      socket.destroy()
+      return true
+    }
+    // Bytes past the request headers (normally none — ncat waits for 200).
+    const rest = buf.subarray(end + 4)
+    dispatchToUpstream(socket, m[1], m[2], sessionId, {
+      writeConnectOk: true,
+      head: rest.length > 0 ? rest : undefined,
+    })
+    return true
+  }
+
+  function onData(chunk: Buffer): void {
+    buf = Buffer.concat([buf, chunk])
+    evaluate()
+  }
+
+  if (evaluate()) return
+  socket.on('data', onData)
+}
+
+const transparentTunnelServer = net.createServer((socket) => {
+  withRelayIdentity(socket, 'TUNNEL', (sessionId, leftover) =>
+    readConnectAndDispatch(socket, sessionId, leftover))
+})
+
+for (const [srv, portStr, label] of [
+  [transparentHttpsServer, TRANSPARENT_HTTPS_PORT, 'HTTPS'],
+  [transparentHttpServer, TRANSPARENT_HTTP_PORT, 'HTTP'],
+  [transparentTunnelServer, TRANSPARENT_TUNNEL_PORT, 'TUNNEL'],
+] as Array<[net.Server, string, string]>) {
+  srv.on('error', (err: Error) => {
+    console.error(`[proxy] Transparent ${label} server error:`, err)
+  })
+  srv.listen(parseInt(portStr, 10), '0.0.0.0', () => {
+    console.log(`[proxy] Transparent ${label} listener on port ${portStr}`)
+  })
+}
 
 process.on('SIGTERM', () => {
   console.log('[proxy] Shutting down...')
+  transparentHttpsServer.close()
+  transparentHttpServer.close()
+  transparentTunnelServer.close()
   server.close(() => process.exit(0))
 })

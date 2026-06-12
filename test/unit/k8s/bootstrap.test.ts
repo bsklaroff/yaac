@@ -18,13 +18,19 @@ vi.mock('@/lib/git', async (importOriginal) => {
 })
 
 import {
+  CLUSTER_SERVICE_CIDR,
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
   PROXY_PORT,
+  RELAY_DNS_PORT,
   SESSION_NETWORK_POLICY_NAME,
+  TRANSPARENT_HTTP_PORT,
+  TRANSPARENT_HTTPS_PORT,
+  TRANSPARENT_TUNNEL_PORT,
   buildProxyDeploymentManifest,
   buildProxyServiceManifest,
   buildSessionNetworkPolicyManifest,
+  clusterIpForNamespace,
   ensureCaConfigMap,
   ensureNamespace,
   ensureProxyAuthSecret,
@@ -60,10 +66,57 @@ afterEach(async () => {
 })
 
 describe('constants', () => {
-  it('expose the proxy app/secret names and in-cluster port', () => {
+  it('expose the proxy app/secret names and in-cluster ports', () => {
     expect(PROXY_APP_NAME).toBe('yaac-proxy')
     expect(PROXY_AUTH_SECRET_NAME).toBe('yaac-proxy-auth')
     expect(PROXY_PORT).toBe(10255)
+    expect(TRANSPARENT_HTTPS_PORT).toBe(10256)
+    expect(TRANSPARENT_HTTP_PORT).toBe(10257)
+    expect(TRANSPARENT_TUNNEL_PORT).toBe(10258)
+    expect(RELAY_DNS_PORT).toBe(15004)
+  })
+
+  it('pin the VIP-pin service CIDR to the kind-config value', () => {
+    expect(CLUSTER_SERVICE_CIDR).toBe('10.96.0.0/16')
+  })
+})
+
+describe('clusterIpForNamespace', () => {
+  it('is deterministic — Service recreation reproduces the identical VIP', () => {
+    expect(clusterIpForNamespace('test-ns')).toBe(clusterIpForNamespace('test-ns'))
+    expect(clusterIpForNamespace('test-ns')).toBe('10.96.40.19')
+    expect(clusterIpForNamespace('yaac')).toBe('10.96.220.80')
+  })
+
+  it('stays inside the service /16, skipping the low 16 and the broadcast edge', () => {
+    // offset (3rd*256 + 4th octet) must land in [16, 65519] of the /16.
+    for (let i = 0; i < 2000; i++) {
+      const octets = clusterIpForNamespace(`yaac-test-${i}`).split('.').map(Number)
+      expect(octets.slice(0, 2)).toEqual([10, 96])
+      const offset = octets[2] * 256 + octets[3]
+      expect(offset).toBeGreaterThanOrEqual(16)
+      expect(offset).toBeLessThanOrEqual(65519)
+    }
+  })
+
+  it('can never collide with the apiserver (10.96.0.1) or kube-dns (10.96.0.10)', () => {
+    // Both live in the skipped low 16, so no namespace can hash onto them.
+    for (let i = 0; i < 5000; i++) {
+      const ip = clusterIpForNamespace(`ns-${i}`)
+      expect(ip).not.toBe('10.96.0.1')
+      expect(ip).not.toBe('10.96.0.10')
+    }
+  })
+
+  it('uses the wide band — distinct namespaces spread across many /24s', () => {
+    const thirdOctets = new Set<number>()
+    for (let i = 0; i < 500; i++) {
+      thirdOctets.add(Number(clusterIpForNamespace(`ns-${i}`).split('.')[2]))
+    }
+    // A single-/24 band would collapse all of these to third octet 0; the
+    // /16 band must spread them across well over a dozen distinct /24s.
+    expect(thirdOctets.size).toBeGreaterThan(50)
+    expect(clusterIpForNamespace('test-ns')).not.toBe(clusterIpForNamespace('other-ns'))
   })
 })
 
@@ -152,11 +205,19 @@ describe('buildProxyDeploymentManifest', () => {
     expect(m.spec.selector.matchLabels).toEqual({ app: PROXY_APP_NAME })
   })
 
-  it('wires the image, port, auth secret env, and readiness probe', () => {
+  it('wires the image, ports, auth secret env, and readiness probe', () => {
     const c = build().spec.template.spec.containers[0]
     expect(c.image).toBe('localhost:5000/yaac-proxy:abc')
-    expect(c.ports).toEqual([{ containerPort: PROXY_PORT }])
-    expect(c.env).toContainEqual({ name: 'PORT', value: String(PROXY_PORT) })
+    expect(c.ports).toEqual([
+      { containerPort: PROXY_PORT },
+      { containerPort: TRANSPARENT_HTTPS_PORT },
+      { containerPort: TRANSPARENT_HTTP_PORT },
+      { containerPort: TRANSPARENT_TUNNEL_PORT },
+    ])
+    expect(c.env).toContainEqual({ name: 'API_PORT', value: String(PROXY_PORT) })
+    expect(c.env).toContainEqual({ name: 'TRANSPARENT_HTTPS_PORT', value: String(TRANSPARENT_HTTPS_PORT) })
+    expect(c.env).toContainEqual({ name: 'TRANSPARENT_HTTP_PORT', value: String(TRANSPARENT_HTTP_PORT) })
+    expect(c.env).toContainEqual({ name: 'TRANSPARENT_TUNNEL_PORT', value: String(TRANSPARENT_TUNNEL_PORT) })
     expect(c.env).toContainEqual({
       name: 'PROXY_AUTH_SECRET',
       valueFrom: { secretKeyRef: { name: PROXY_AUTH_SECRET_NAME, key: 'secret' } },
@@ -202,7 +263,7 @@ describe('buildProxyDeploymentManifest', () => {
 })
 
 describe('buildProxyServiceManifest', () => {
-  it('exposes a ClusterIP service on the proxy port', () => {
+  it('exposes a ClusterIP service on the proxy + transparent ports (port == targetPort)', () => {
     expect(buildProxyServiceManifest()).toEqual({
       apiVersion: 'v1',
       kind: 'Service',
@@ -213,15 +274,22 @@ describe('buildProxyServiceManifest', () => {
       },
       spec: {
         type: 'ClusterIP',
+        // Pinned per namespace: session relays dial this VIP from env.
+        clusterIP: clusterIpForNamespace('test-ns'),
         selector: { app: PROXY_APP_NAME },
-        ports: [{ port: PROXY_PORT, targetPort: PROXY_PORT }],
+        ports: [
+          { name: 'proxy', port: PROXY_PORT, targetPort: PROXY_PORT },
+          { name: 'transparent-https', port: TRANSPARENT_HTTPS_PORT, targetPort: TRANSPARENT_HTTPS_PORT },
+          { name: 'transparent-http', port: TRANSPARENT_HTTP_PORT, targetPort: TRANSPARENT_HTTP_PORT },
+          { name: 'transparent-tunnel', port: TRANSPARENT_TUNNEL_PORT, targetPort: TRANSPARENT_TUNNEL_PORT },
+        ],
       },
     })
   })
 })
 
 describe('buildSessionNetworkPolicyManifest', () => {
-  it('locks session-pod egress to the proxy port and kube-dns only', () => {
+  it('locks session-pod egress to the proxy transparent transport ports only', () => {
     expect(buildSessionNetworkPolicyManifest()).toEqual({
       apiVersion: 'networking.k8s.io/v1',
       kind: 'NetworkPolicy',
@@ -238,28 +306,35 @@ describe('buildSessionNetworkPolicyManifest', () => {
         egress: [
           {
             to: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }],
-            ports: [{ protocol: 'TCP', port: PROXY_PORT }],
-          },
-          {
-            to: [{
-              namespaceSelector: {
-                matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' },
-              },
-              podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } },
-            }],
+            // Transport ports (post-DNAT), not the original 443/80.
             ports: [
-              { protocol: 'UDP', port: 53 },
-              { protocol: 'TCP', port: 53 },
+              { protocol: 'TCP', port: TRANSPARENT_HTTPS_PORT },
+              { protocol: 'TCP', port: TRANSPARENT_HTTP_PORT },
+              { protocol: 'TCP', port: TRANSPARENT_TUNNEL_PORT },
             ],
           },
         ],
       },
     })
   })
+
+  it('admits neither the explicit proxy port nor kube-dns', () => {
+    const manifest = buildSessionNetworkPolicyManifest() as {
+      spec: { egress: Array<{ ports: Array<{ port: number }> }> }
+    }
+    // 10255 serves only the daemon's port-forwarded control API, and DNS
+    // never leaves the pod (the relay stub answers it) — neither belongs
+    // in the session egress surface.
+    expect(manifest.spec.egress).toHaveLength(1)
+    const ports = manifest.spec.egress[0].ports.map((p) => p.port)
+    expect(ports).not.toContain(PROXY_PORT)
+    expect(ports).not.toContain(53)
+  })
 })
 
 describe('ensureProxyResources', () => {
   it('pre-creates host dirs, applies both manifests, and waits for the rollout', async () => {
+    mockGetJson.mockResolvedValue(null) // no live Service yet
     await ensureProxyResources('localhost:5000/yaac-proxy:abc')
 
     // Host dirs exist (DirectoryOrCreate would have made them root-owned).
@@ -269,6 +344,10 @@ describe('ensureProxyResources', () => {
 
     const kinds = mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
     expect(kinds).toEqual(['Deployment', 'Service', 'NetworkPolicy'])
+    // A fresh cluster needs no VIP migration delete.
+    expect(mockRetry).not.toHaveBeenCalledWith(
+      expect.arrayContaining(['delete', 'service']),
+    )
     expect(mockRetry).toHaveBeenCalledWith(
       [
         'rollout', 'status', `deployment/${PROXY_APP_NAME}`,
@@ -277,6 +356,30 @@ describe('ensureProxyResources', () => {
       ],
       expect.objectContaining({ maxAttempts: 2 }),
     )
+  })
+
+  it('leaves a Service already at the pinned VIP untouched', async () => {
+    mockGetJson.mockResolvedValue({ spec: { clusterIP: clusterIpForNamespace('test-ns') } })
+    await ensureProxyResources('localhost:5000/yaac-proxy:abc')
+    expect(mockRetry).not.toHaveBeenCalledWith(
+      expect.arrayContaining(['delete', 'service']),
+    )
+  })
+
+  it('migrates a pre-pin Service: deletes it before re-applying (clusterIP is immutable)', async () => {
+    mockGetJson.mockResolvedValue({ spec: { clusterIP: '10.96.123.45' } })
+    await ensureProxyResources('localhost:5000/yaac-proxy:abc')
+
+    const deleteIdx = mockRetry.mock.calls.findIndex(
+      (c) => c[0][0] === 'delete' && c[0][1] === 'service',
+    )
+    expect(deleteIdx).toBeGreaterThanOrEqual(0)
+    expect(mockRetry.mock.calls[deleteIdx][0]).toEqual([
+      'delete', 'service', PROXY_APP_NAME, '-n', 'test-ns', '--ignore-not-found',
+    ])
+    // The delete happens before any apply, so the re-apply recreates the
+    // Service at the pinned VIP instead of failing on the immutable field.
+    expect(mockApply).toHaveBeenCalled()
   })
 })
 

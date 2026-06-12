@@ -93,7 +93,7 @@ yaac cluster check
 
 The script creates a kind cluster from `k8s/kind-config.yaml` with the three pieces of wiring yaac needs:
 
-1. **Local image registry** on `127.0.0.1:5000` — yaac pushes built session images there and pods pull them as `localhost:5000/...` (the kind [local-registry pattern](https://kind.sigs.k8s.io/docs/user/local-registry/)).
+1. **Local image registry** on `127.0.0.1:5001` — yaac pushes built session images there and pods pull them as `localhost:5001/...` (the kind [local-registry pattern](https://kind.sigs.k8s.io/docs/user/local-registry/)). Host port 5001 (not the registry-default 5000) sidesteps macOS AirPlay Receiver, which binds `::1:5000`; the container-internal port stays 5000.
 2. **Home-directory extraMount** — session pods mount worktrees, caches, and credentials via `hostPath`, which resolves on the *node*. Mounting `$HOME` into the node at the same path makes node == host for everything yaac touches.
 3. **Unmasked sysfs mount on the node** — session pods run in user namespaces (`hostUsers: false`), and the kernel refuses to start them while kind's `/sys` masks make sysfs "not fully visible" ([kind#3436](https://github.com/kubernetes-sigs/kind/issues/3436)). This mount lives in the node's mount namespace, so **re-run the script after a node container restart** (e.g. after restarting the podman machine).
 

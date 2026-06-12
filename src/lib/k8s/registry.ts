@@ -7,12 +7,19 @@ const execFileAsync = promisify(execFile)
 /**
  * Host:port of the local OCI registry that bridges host-side `podman
  * build` and in-cluster image pulls. The same string is used as the push
- * target from the host (the registry publishes 127.0.0.1:5000) and as the
+ * target from the host (the registry publishes 127.0.0.1:5001) and as the
  * image-ref prefix in pod specs (kind's local-registry containerd config
- * resolves `localhost:5000` from inside the node).
+ * resolves `localhost:5001` from inside the node).
+ *
+ * Host port 5001, not 5000: macOS's AirPlay Receiver binds `::1:5000` and
+ * answers 403, so a `localhost:5000` fetch resolving to IPv6 first hits
+ * AirPlay instead of the registry. On 5001 the IPv6 attempt simply
+ * refuses and the client falls through to the IPv4 registry. The
+ * container-internal port stays 5000 (the `yaac-registry:5000` the kind
+ * node reaches over the podman network).
  */
 export function registryHost(): string {
-  return process.env.YAAC_K8S_REGISTRY ?? 'localhost:5000'
+  return process.env.YAAC_K8S_REGISTRY ?? 'localhost:5001'
 }
 
 /** Full in-cluster image ref for a locally built `repo:tag`. */
@@ -71,7 +78,7 @@ export async function registryHasTag(tag: string): Promise<boolean> {
  * publishing 127.0.0.1 only.
  *
  * NOTE: for pods to pull from it, the cluster must be wired to resolve
- * `localhost:5000` to this registry (kind: containerd `config_path` +
+ * `localhost:5001` to this registry (kind: containerd `config_path` +
  * hosts.toml + connecting the container to the kind network). That wiring
  * is cluster setup, documented in the README and verified by
  * `yaac cluster check` — yaac does not mutate cluster nodes itself.
@@ -79,7 +86,7 @@ export async function registryHasTag(tag: string): Promise<boolean> {
 export async function ensureLocalRegistry(): Promise<void> {
   if (await registryReachable()) return
 
-  const port = registryHost().split(':')[1] ?? '5000'
+  const port = registryHost().split(':')[1] ?? '5001'
   daemonLog(`[registry] starting ${REGISTRY_CONTAINER_NAME} on 127.0.0.1:${port}`)
   try {
     await execFileAsync('podman', ['rm', '-f', '--ignore', REGISTRY_CONTAINER_NAME])

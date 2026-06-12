@@ -4,7 +4,7 @@ import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
 import { ensureContainerRuntime } from '@/lib/container/runtime'
 import { ensureImage } from '@/lib/container/image-builder'
-import { proxyClient, PROXY_CONTAINER_PORT, SSH_AGENT_MOUNT, SSH_AGENT_SOCKET_PATH } from '@/lib/container/proxy-client'
+import { proxyClient, SSH_AGENT_MOUNT, SSH_AGENT_SOCKET_PATH } from '@/lib/container/proxy-client'
 import { buildSessionRegistration, syncProxySecrets } from '@/lib/session/proxy-registration'
 import { resolveAllowedHosts } from '@/lib/container/default-allowed-hosts'
 import { reserveAvailablePort, startPortForwarders, kubectlRelay } from '@/lib/container/port'
@@ -19,8 +19,21 @@ import {
   LABEL_TOOL,
   sessionJobName,
 } from '@/lib/k8s/pods'
-import { buildSessionJobManifest, type HostPathMount } from '@/lib/k8s/pod-spec'
-import { sshAgentHostDir } from '@/lib/k8s/bootstrap'
+import { buildSessionJobManifest, type HostPathMount, type EgressSidecarParams } from '@/lib/k8s/pod-spec'
+import {
+  clusterIpForNamespace,
+  RELAY_CONNECT_PORT,
+  RELAY_DNS_PORT,
+  RELAY_HTTP_PORT,
+  RELAY_HTTPS_PORT,
+  RELAY_UID,
+  sshAgentHostDir,
+  TRANSPARENT_HTTP_PORT,
+  TRANSPARENT_HTTPS_PORT,
+  TRANSPARENT_TUNNEL_PORT,
+} from '@/lib/k8s/bootstrap'
+import { ensureRedirectInitImage } from '@/lib/k8s/redirect-init'
+import { ensureRelayImage } from '@/lib/k8s/relay'
 import { pushImageToRegistry } from '@/lib/k8s/registry'
 import {
   repoDir,
@@ -287,6 +300,7 @@ interface SessionSetupParams {
   sessionId: string
   env: string[]
   hostPathMounts: HostPathMount[]
+  egress: EgressSidecarParams
   tool: AgentTool
   config: YaacConfig
   options: SessionCreateOptions
@@ -316,6 +330,9 @@ async function waitForPodReady(jobName: string, timeoutMs = 180_000): Promise<vo
     const pod = list?.items[0]
     if (pod) {
       const phase = pod.status?.phase ?? 'Unknown'
+      // containerStatuses[0] is the session container — the relay native
+      // sidecar reports under initContainerStatuses, so this stays the
+      // workload's readiness even with the sidecar present.
       const cs = pod.status?.containerStatuses?.[0]
       if (cs?.ready) return
       if (phase === 'Failed' || phase === 'Succeeded') {
@@ -340,7 +357,7 @@ async function waitForPodReady(jobName: string, timeoutMs = 180_000): Promise<vo
 async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   const {
     imageRef, jobName, projectSlug, sessionId, env, hostPathMounts,
-    tool, config, options, gitUser, forwardedPorts,
+    egress, tool, config, options, gitUser, forwardedPorts,
   } = params
 
   // Every in-container `tmux` invocation routes through this prefix so
@@ -362,6 +379,7 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
     env,
     hostPathMounts,
     memoryLimitBytes: 8 * 1024 ** 3,
+    egress,
   })
   await kubectlApply(manifest)
   await waitForPodReady(jobName)
@@ -615,6 +633,30 @@ export async function createSession(
   emit('Ensuring proxy deployment...', options)
   await proxyClient.ensureRunning()
 
+  // Transparent egress wiring: the session pod's redirect init container
+  // REDIRECTs outbound udp/53 and tcp 443/80 to the per-pod relay (DNS
+  // stub + forwarders) and default-denies everything else, so the relay
+  // is the only egress path. The relay forwards to the proxy — dialed by
+  // its pinned ClusterIP, never DNS — behind a PROXY-protocol-v2 header
+  // carrying this session's relay credential. The token is derived from
+  // the proxy auth secret the daemon already holds, so nothing about it
+  // needs persisting or healing across proxy pod replacement.
+  const egress: EgressSidecarParams = {
+    redirectImage: await ensureRedirectInitImage(),
+    relayImage: await ensureRelayImage(),
+    relayHttpsPort: RELAY_HTTPS_PORT,
+    relayHttpPort: RELAY_HTTP_PORT,
+    relayConnectPort: RELAY_CONNECT_PORT,
+    relayDnsPort: RELAY_DNS_PORT,
+    relayUid: RELAY_UID,
+    proxyHost: clusterIpForNamespace(k8sNamespace()),
+    transparentHttpsPort: TRANSPARENT_HTTPS_PORT,
+    transparentHttpPort: TRANSPARENT_HTTP_PORT,
+    transparentTunnelPort: TRANSPARENT_TUNNEL_PORT,
+    sessionId,
+    relayToken: proxyClient.relayToken(sessionId),
+  }
+
   // Check that tool credentials exist on the host so the container can
   // authenticate via the proxy. For Claude OAuth this also drives the
   // per-project placeholder refresh below.
@@ -634,8 +676,10 @@ export async function createSession(
     buildSessionRegistration({ config, remoteUrl, tool }),
   )
 
-  // Add proxy env vars (Service DNS — stable across proxy pod restarts)
-  env.push(...proxyClient.getProxyEnv(sessionId))
+  // CA-trust env only — no HTTP(S)_PROXY routing vars. Interception is
+  // transparent at the network layer (see redirectInit above), so the
+  // container needs nothing but trust in the MITM CA.
+  env.push(...proxyClient.getCaTrustEnv())
 
   // SSH provisioning: when the project's remote is SSH, expose the proxy's
   // ssh-agent into the pod (no private key inside the container) and
@@ -658,8 +702,12 @@ export async function createSession(
       { hostPath: sshAgentHostDir(), mountPath: SSH_AGENT_MOUNT, type: 'DirectoryOrCreate' },
       { hostPath: knownHostsFile, mountPath: containerKnownHosts, readOnly: true, type: 'File' },
     )
-    const proxyCommand = `ncat --proxy ${proxyClient.serviceHost}:${PROXY_CONTAINER_PORT}`
-      + ` --proxy-type http --proxy-auth x:${sessionId} %h %p`
+    // ncat speaks CONNECT to the pod-local relay (no credential); the
+    // relay attaches this session's PP2 token and forwards to the proxy's
+    // tunnel listener. So SSH carries no x:<sessionId> in the workload's
+    // env — identity is the relay token, same as HTTP(S).
+    const proxyCommand = `ncat --proxy 127.0.0.1:${RELAY_CONNECT_PORT}`
+      + ' --proxy-type http %h %p'
     const gitSshCmd = formatSshCommand([
       'ssh', '-F', '/dev/null',
       '-o', `UserKnownHostsFile=${containerKnownHosts}`,
@@ -868,7 +916,7 @@ export async function createSession(
   const maxStartAttempts = 3
   const setupParams: SessionSetupParams = {
     imageRef, jobName, projectSlug, sessionId, env, hostPathMounts,
-    tool, config, options, gitUser, forwardedPorts,
+    egress, tool, config, options, gitUser, forwardedPorts,
   }
 
   emit(`Creating session job ${jobName}...`, options)

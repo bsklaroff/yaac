@@ -18,8 +18,103 @@ export const PROXY_APP_NAME = 'yaac-proxy'
 export const PROXY_AUTH_SECRET_NAME = 'yaac-proxy-auth'
 /** Port the proxy serves inside the cluster (container + Service port). */
 export const PROXY_PORT = 10255
-/** NetworkPolicy restricting session-pod egress to the proxy + DNS. */
+/**
+ * Transparent egress listeners: session pods' outbound 443/80 is DNAT'd
+ * here by their redirect init container (TLS-SNI / Host-header routing,
+ * source-pod-IP identity — see k8s/proxy/proxy.ts).
+ */
+export const TRANSPARENT_HTTPS_PORT = 10256
+export const TRANSPARENT_HTTP_PORT = 10257
+/**
+ * Transparent tunnel listener: the relay forwards SSH (git's ncat
+ * ProxyCommand, pointed at the relay's loopback CONNECT port) here behind
+ * a PP2 identity header. The listener verifies the token, parses the
+ * `CONNECT host:port`, and tunnels — so SSH authenticates with the same
+ * per-connection credential as HTTP(S), with no `x:<sessionId>` in the
+ * workload's env.
+ */
+export const TRANSPARENT_TUNNEL_PORT = 10258
+/**
+ * Per-pod relay: the redirect init container REDIRECTs outbound 443 to the
+ * relay's HTTPS loopback port and outbound 80 to its HTTP port. Two ports
+ * (not one) carry the original protocol to the relay without
+ * SO_ORIGINAL_DST, keeping the relay pure Node. The relay forwards to the
+ * proxy's matching transparent listener with a PP2 identity header.
+ * 1500x / uid 1337 mirror Istio's well-known relay values.
+ */
+export const RELAY_HTTPS_PORT = 15001
+export const RELAY_HTTP_PORT = 15002
+/** Loopback port git's ncat ProxyCommand sends its CONNECT to. */
+export const RELAY_CONNECT_PORT = 15003
+/**
+ * Loopback UDP port of the relay's DNS stub. The redirect init container
+ * REDIRECTs all outbound udp/53 here — including queries aimed at the
+ * kube-dns VIP — so DNS never leaves the pod: the stub answers every A
+ * query with a fixed dummy IP, which is all a client needs — the 443/80
+ * REDIRECT ignores the dialed IP and the proxy routes by SNI/Host.
+ */
+export const RELAY_DNS_PORT = 15004
+export const RELAY_UID = 1337
+/**
+ * The cluster's service subnet, pinned in k8s/kind-config.yaml.
+ * clusterIpForNamespace hashes the proxy Service's pinned VIP into this
+ * compiled value, so a drifted live cluster would fail Service creation
+ * ("provided IP is not in the valid range") — `yaac cluster check`
+ * warns on drift.
+ */
+export const CLUSTER_SERVICE_CIDR = '10.96.0.0/16'
+/** NetworkPolicy restricting session-pod egress to the proxy. */
 export const SESSION_NETWORK_POLICY_NAME = 'yaac-session-egress'
+
+/**
+ * Deterministic per-namespace ClusterIP for the proxy Service, pinned at
+ * Service creation. The relay dials this VIP directly (PROXY_HOST in its
+ * env), so it never resolves a DNS name — which is what lets the pod's
+ * udp/53 REDIRECT capture everything unconditionally — and because
+ * recreation reproduces the identical VIP by construction, a
+ * deleted-and-recreated Service can never strand the env-frozen relays
+ * of running sessions. Per-namespace, not one fixed IP, because
+ * ClusterIPs are cluster-scoped and e2e per-run namespaces coexist with
+ * the production namespace on the same cluster.
+ *
+ * Hashes the namespace across (almost) the whole service /16 — ~65.5k
+ * slots, skipping the first 16 addresses (network, apiserver .1, kube-dns
+ * .10) and the top 16 (…255.255 broadcast). The wide span is what keeps
+ * pin-vs-pin collisions negligible when many Services coexist: a
+ * cluster-scoped ClusterIP clash makes the second `kubectl apply` fail
+ * loudly ("provided IP is already allocated") — never a misroute, but a
+ * hard failure — and the birthday math is unforgiving in a small band
+ * (50 coexisting pins → ~99.7% collision in a single /24's ~224 slots,
+ * vs ~1.9% across the /16). This matters for the nested-containers plan,
+ * where per-session vclusters + per-project registries could stand up
+ * dozens of pinned Services at once (see plans/nested-containers-plan.md).
+ *
+ * Tradeoff vs the old /24 band: this spills past the k8s "static
+ * subrange" — the low 256 the dynamic allocator avoids (KEP-3070, GA
+ * since 1.26), which is capped at 256 addresses regardless of CIDR size,
+ * so there is no race-free way to get more than ~250 slots. A pin in the
+ * upper band CAN therefore collide with a *dynamically*-allocated
+ * Service. On yaac's dedicated cluster that risk is near-zero (yaac pins
+ * every Service it creates, so nothing it controls is dynamically
+ * allocated; only kube-system's init-time low statics exist), and a
+ * clash still errors loudly rather than misrouting. The nested plan must
+ * re-confirm this holds once vcluster's own (yaac-uncontrolled) Services
+ * enter the picture.
+ *
+ * Assumes the compiled /16 CLUSTER_SERVICE_CIDR; `yaac cluster check`
+ * warns when the live cluster's service subnet drifts from it.
+ */
+export function clusterIpForNamespace(namespace: string): string {
+  const [addr, prefix] = CLUSTER_SERVICE_CIDR.split('/')
+  const baseInt = addr.split('.').reduce((acc, o) => ((acc << 8) + Number(o)) >>> 0, 0)
+  const total = 2 ** (32 - Number(prefix))
+  // Skip the low 16 (network + apiserver .1 + kube-dns .10) and the top
+  // 16 (…broadcast); hash the namespace uniformly across the rest.
+  const span = total - 32
+  const hash = crypto.createHash('sha256').update(namespace).digest()
+  const ipInt = (baseInt + 16 + (hash.readUInt32BE(0) % span)) >>> 0
+  return [(ipInt >>> 24) & 0xff, (ipInt >>> 16) & 0xff, (ipInt >>> 8) & 0xff, ipInt & 0xff].join('.')
+}
 
 /**
  * Pod securityContext running the proxy as the daemon's own host uid/gid.
@@ -138,9 +233,17 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
               name: 'proxy',
               image: imageRef,
               imagePullPolicy: 'IfNotPresent',
-              ports: [{ containerPort: PROXY_PORT }],
+              ports: [
+                { containerPort: PROXY_PORT },
+                { containerPort: TRANSPARENT_HTTPS_PORT },
+                { containerPort: TRANSPARENT_HTTP_PORT },
+                { containerPort: TRANSPARENT_TUNNEL_PORT },
+              ],
               env: [
-                { name: 'PORT', value: String(PROXY_PORT) },
+                { name: 'API_PORT', value: String(PROXY_PORT) },
+                { name: 'TRANSPARENT_HTTPS_PORT', value: String(TRANSPARENT_HTTPS_PORT) },
+                { name: 'TRANSPARENT_HTTP_PORT', value: String(TRANSPARENT_HTTP_PORT) },
+                { name: 'TRANSPARENT_TUNNEL_PORT', value: String(TRANSPARENT_TUNNEL_PORT) },
                 {
                   name: 'PROXY_AUTH_SECRET',
                   valueFrom: {
@@ -196,14 +299,28 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
 
 /**
  * Build the NetworkPolicy that makes the proxy's allowlist mandatory at
- * the network layer. Without it the allowlist is advisory: HTTP(S)_PROXY
- * env vars are cooperative, and an agent that opens raw sockets has full
- * egress. The policy selects every session pod (any pod carrying the
- * session-id label) and allows egress ONLY to:
- *   - proxy pods (`app: yaac-proxy`) on the proxy port — Service-VIP
- *     traffic matches because policies evaluate post-DNAT against the
- *     backend pod's labels
- *   - kube-dns on port 53, so the proxy's Service name resolves
+ * the network layer. Without it the allowlist is advisory: an agent that
+ * opens raw sockets to in-cluster IPs (which the pod-netns redirect
+ * RETURNs) would have free egress there. The policy selects every
+ * session pod (any pod carrying the session-id label) and allows egress
+ * ONLY to proxy pods (`app: yaac-proxy`) on the transparent transport
+ * ports — Service-VIP traffic matches because policies evaluate
+ * post-DNAT against the backend pod's labels.
+ *
+ * Deliberately absent:
+ *   - the explicit proxy port 10255: nothing in session pods dials it
+ *     (the daemon's control API rides `kubectl port-forward`, not the
+ *     pod network)
+ *   - kube-dns: queries never leave the pod — the redirect init
+ *     container REDIRECTs udp/53 to the relay's loopback DNS stub, which
+ *     closes the DNS-tunneling channel entirely
+ *
+ * This is the pod-scoped backstop under the in-pod filter default-deny
+ * (k8s/redirect-init/redirect.sh), which additionally distinguishes the
+ * relay container from the session container — something NetworkPolicy
+ * cannot do (they share the pod IP). End state: session pods reach
+ * exactly {proxy pods} x {transparent ports}, and within the pod only
+ * the relay uid can do even that.
  *
  * No Ingress rules on purpose: nothing reaches session pods over the pod
  * network — exec, PTY attach, and port relays all ride `kubectl exec`
@@ -228,18 +345,13 @@ export function buildSessionNetworkPolicyManifest(): Record<string, unknown> {
       egress: [
         {
           to: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }],
-          ports: [{ protocol: 'TCP', port: PROXY_PORT }],
-        },
-        {
-          to: [{
-            namespaceSelector: {
-              matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' },
-            },
-            podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } },
-          }],
+          // Transport ports, not 443/80: redirected packets are DNAT'd to
+          // the proxy's transparent listeners in the pod netns *before*
+          // policy evaluation, which runs post-DNAT against the proxy pod.
           ports: [
-            { protocol: 'UDP', port: 53 },
-            { protocol: 'TCP', port: 53 },
+            { protocol: 'TCP', port: TRANSPARENT_HTTPS_PORT },
+            { protocol: 'TCP', port: TRANSPARENT_HTTP_PORT },
+            { protocol: 'TCP', port: TRANSPARENT_TUNNEL_PORT },
           ],
         },
       ],
@@ -258,8 +370,20 @@ export function buildProxyServiceManifest(): Record<string, unknown> {
     },
     spec: {
       type: 'ClusterIP',
+      // Pinned, not allocator-assigned: session relays dial this VIP from
+      // env (no DNS), and the pin makes it reproducible across Service
+      // recreation — see clusterIpForNamespace.
+      clusterIP: clusterIpForNamespace(k8sNamespace()),
       selector: { app: PROXY_APP_NAME },
-      ports: [{ port: PROXY_PORT, targetPort: PROXY_PORT }],
+      // port == targetPort throughout: the NetworkPolicy and the in-pod
+      // egress filter list the post-translation (transport) port, so a
+      // remap would make policy and Service silently diverge.
+      ports: [
+        { name: 'proxy', port: PROXY_PORT, targetPort: PROXY_PORT },
+        { name: 'transparent-https', port: TRANSPARENT_HTTPS_PORT, targetPort: TRANSPARENT_HTTPS_PORT },
+        { name: 'transparent-http', port: TRANSPARENT_HTTP_PORT, targetPort: TRANSPARENT_HTTP_PORT },
+        { name: 'transparent-tunnel', port: TRANSPARENT_TUNNEL_PORT, targetPort: TRANSPARENT_TUNNEL_PORT },
+      ],
     },
   }
 }
@@ -277,6 +401,21 @@ export async function ensureProxyResources(imageRef: string): Promise<void> {
   await fs.mkdir(credentialsDir(), { recursive: true, mode: 0o700 })
   await fs.mkdir(sshAgentHostDir(), { recursive: true })
   await fs.mkdir(proxyDataHostDir(), { recursive: true })
+
+  // One-time migration to the pinned VIP: spec.clusterIP is immutable, so
+  // on a cluster whose Service predates the pin (or drifted) the apply
+  // would fail with "field is immutable" — delete and let the apply below
+  // recreate it at the pinned address. Pre-migration sessions are safe
+  // across the swap: their relays still hold the proxy's DNS name and
+  // Node re-resolves it on every connection.
+  const live = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
+    'get', 'service', PROXY_APP_NAME, '-n', k8sNamespace(),
+  ])
+  if (live && live.spec?.clusterIP !== clusterIpForNamespace(k8sNamespace())) {
+    await kubectlWithRetry([
+      'delete', 'service', PROXY_APP_NAME, '-n', k8sNamespace(), '--ignore-not-found',
+    ])
+  }
 
   await kubectlApply(buildProxyDeploymentManifest(imageRef))
   await kubectlApply(buildProxyServiceManifest())
