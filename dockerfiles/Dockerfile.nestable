@@ -39,6 +39,14 @@ RUN ARCH="$(dpkg --print-architecture)" && \
       -o /usr/local/lib/docker/cli-plugins/docker-compose && \
     chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
+# kubectl — for virtualCluster sessions (KUBECONFIG points at the
+# session's vcluster) and yaac-in-yaac. Pinned; lives in this layer
+# rather than tools so non-nested sessions stay untouched.
+RUN ARCH="$(dpkg --print-architecture)" && \
+    curl -fsSL "https://dl.k8s.io/release/v1.34.1/bin/linux/${ARCH}/kubectl" \
+      -o /usr/local/bin/kubectl && \
+    chmod +x /usr/local/bin/kubectl
+
 # Nested-podman subuid/subgid ranges. These must reference ids that
 # actually exist in *this* pod's user namespace — not the host's subuid
 # range. The session pod (hostUsers: false) maps the standard 65536 ids,

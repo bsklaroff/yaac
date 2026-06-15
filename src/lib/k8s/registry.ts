@@ -86,6 +86,16 @@ export async function registryHasTag(tag: string): Promise<boolean> {
 export async function ensureLocalRegistry(): Promise<void> {
   if (await registryReachable()) return
 
+  // Inside a nested yaac (YAAC_NESTED=1) the registry is the outer
+  // per-project registry — external infrastructure the inner daemon must
+  // never try to stand up its own replacement for.
+  if (process.env.YAAC_NESTED === '1') {
+    throw new Error(
+      `Registry ${registryHost()} is not answering. It is externally managed `
+      + '(nested yaac uses the outer per-project registry) — check the outer yaac.',
+    )
+  }
+
   const port = registryHost().split(':')[1] ?? '5001'
   daemonLog(`[registry] starting ${REGISTRY_CONTAINER_NAME} on 127.0.0.1:${port}`)
   try {

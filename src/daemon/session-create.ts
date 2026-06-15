@@ -42,16 +42,34 @@ import { ensureRedirectInitImage } from '@/lib/k8s/redirect-init'
 import { ensureRelayImage } from '@/lib/k8s/relay'
 import { pushImageToRegistry } from '@/lib/k8s/registry'
 import {
+  ensureProjectRegistry,
+  projectRegistryClusterIp,
+  projectRegistryConfDropIn,
+  projectRegistryHost,
+  projectRegistryHostname,
+  PROJECT_REGISTRY_PORT,
+} from '@/lib/k8s/project-registry'
+import {
+  ensureSessionVcluster,
+  ensureVclusterImages,
+  vclusterClusterIp,
+  vclusterName,
+  VCLUSTER_API_PORT,
+  waitForVclusterKubeconfig,
+} from '@/lib/k8s/vcluster'
+import {
   repoDir,
   claudeDir,
   claudeJsonFile,
   codexDir,
   codexTranscriptDir,
+  nestedYaacDataDir,
   opencodeConfigDir,
   opencodeDataDir,
   opencodeMetaDir,
   cachedPackagesDir,
   cacheVolumeDir,
+  sessionVclusterDir,
   worktreeDir,
   worktreesDir,
   projectDir,
@@ -308,6 +326,10 @@ interface SessionSetupParams {
   hostPathMounts: HostPathMount[]
   egress: EgressSidecarParams
   nested?: NestedContainersParams
+  /** Static in-pod name→VIP entries (vcluster sessions: the registry host). */
+  hostAliases?: Array<{ ip: string; hostnames: string[] }>
+  /** Set for virtualCluster sessions — the per-project push registry. */
+  virtualCluster?: boolean
   tool: AgentTool
   config: YaacConfig
   options: SessionCreateOptions
@@ -364,7 +386,8 @@ async function waitForPodReady(jobName: string, timeoutMs = 180_000): Promise<vo
 async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   const {
     imageRef, jobName, projectSlug, sessionId, env, hostPathMounts,
-    egress, nested, tool, config, options, gitUser, forwardedPorts,
+    egress, nested, hostAliases, virtualCluster, tool, config, options,
+    gitUser, forwardedPorts,
   } = params
 
   // Every in-container `tmux` invocation routes through this prefix so
@@ -388,6 +411,7 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
     memoryLimitBytes: 8 * 1024 ** 3,
     egress,
     nested,
+    hostAliases,
   })
   await kubectlApply(manifest)
   await waitForPodReady(jobName)
@@ -451,6 +475,24 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   // of a confusing "cannot connect to docker" the first time the agent
   // runs.
   if (nested) {
+    // virtualCluster sessions: drop a registries.conf.d entry marking the
+    // per-project registry (plain HTTP on :5000) insecure, so user-driven
+    // `docker push` works without --tls-verify gymnastics. Written before
+    // the engine starts; per-project host, so it can't live in the shared
+    // nestable image layer. The single quotes around the printf args are
+    // safe: the drop-in contains double quotes only.
+    if (virtualCluster) {
+      const confDir = '/home/yaac/.config/containers/registries.conf.d'
+      const lines = projectRegistryConfDropIn(projectSlug)
+        .split('\n')
+        .filter((l) => l.length > 0)
+        .map((l) => `'${l.replace(/"/g, '\\"')}'`)
+        .join(' ')
+      await containerExec(
+        jobName,
+        `sh -c "mkdir -p ${confDir} && printf '%s\\n' ${lines} > ${confDir}/yaac-project-registry.conf"`,
+      )
+    }
     await containerExec(
       jobName,
       `sh -c 'podman system service --time=0 >/tmp/podman-service.log 2>&1 &'`,
@@ -621,8 +663,25 @@ export async function createSession(
 
   // nestedContainers shapes the image chain (nestable layer), the pod
   // spec (nested branch), the proxy allowlist (registry hosts), and the
-  // in-pod engine start + readiness gate below.
-  const nestedContainers = config.nestedContainers === true
+  // in-pod engine start + readiness gate below. virtualCluster (config
+  // only) additionally stands up the per-project push registry and a
+  // per-session vcluster, and implies nestedContainers — the in-pod
+  // podman is the session's only build engine. The config parser already
+  // normalizes `virtualCluster: true` to set `nestedContainers: true`
+  // (and rejects an explicit `nestedContainers: false` alongside it).
+  const virtualCluster = config.virtualCluster === true
+  const nestedContainers = config.nestedContainers === true || virtualCluster
+
+  // Recursion cap: an inner yaac (running inside a vcluster session)
+  // must not stand up vcluster-in-vcluster — the depth buys nothing
+  // (synced pods already run on the host node) and the inner cluster
+  // lacks the infrastructure (Cilium CRDs don't sync, no kind node).
+  if (virtualCluster && process.env.YAAC_NESTED === '1') {
+    throw new DaemonError(
+      'VALIDATION',
+      'virtualCluster is not supported inside a nested yaac (no vcluster-in-vcluster).',
+    )
+  }
 
   emit('Ensuring container images are built...', options)
   const imageName = await ensureImage(
@@ -682,6 +741,32 @@ export async function createSession(
   emit('Ensuring proxy deployment...', options)
   await proxyClient.ensureRunning()
 
+  // virtualCluster sessions get a per-project push registry — the image
+  // source for vcluster synced pods and yaac-in-yaac — plus their own
+  // virtual cluster. The pod reaches both via in-pod filter carve-outs
+  // for their pinned VIPs (and a hostAliases name for the registry — DNS
+  // never leaves the pod); matching NetworkPolicies admit the same flows
+  // at the CNI layer. The vcluster is created here so its cold start
+  // overlaps the worktree/setup work below; the kubeconfig is awaited
+  // just before the mounts are assembled.
+  const extraTcpAccept: string[] = []
+  let hostAliases: Array<{ ip: string; hostnames: string[] }> | undefined
+  if (virtualCluster) {
+    emit('Ensuring project registry...', options)
+    await ensureProjectRegistry(projectSlug)
+    const registryVip = projectRegistryClusterIp(projectSlug)
+    extraTcpAccept.push(`${registryVip}:${PROJECT_REGISTRY_PORT}`)
+    hostAliases = [{ ip: registryVip, hostnames: [projectRegistryHostname(projectSlug)] }]
+
+    emit('Creating virtual cluster...', options)
+    await ensureVclusterImages()
+    await ensureSessionVcluster({
+      sessionId,
+      allowedHostPathPrefix: nestedYaacDataDir(projectSlug, sessionId),
+    })
+    extraTcpAccept.push(`${vclusterClusterIp(vclusterName(sessionId))}:${VCLUSTER_API_PORT}`)
+  }
+
   // Transparent egress wiring: the session pod's redirect init container
   // REDIRECTs outbound udp/53 and tcp 443/80 to the per-pod relay (DNS
   // stub + forwarders) and default-denies everything else, so the relay
@@ -704,6 +789,7 @@ export async function createSession(
     transparentTunnelPort: TRANSPARENT_TUNNEL_PORT,
     sessionId,
     relayToken: proxyClient.relayToken(sessionId),
+    ...(extraTcpAccept.length ? { extraTcpAccept } : {}),
   }
 
   // Nested-containers pod wiring: shared image store hostPath (node-local)
@@ -928,6 +1014,36 @@ export async function createSession(
     resolveEphemeralModulesPaths(config),
   )
 
+  // vcluster kubeconfig: wait for the syncer to publish it (the cold
+  // start has been running since the ensure above), write it under the
+  // session dir, and dir-mount it at ~/.kube. Speaks to the pinned
+  // VIP:8443 (IP SAN) — no DNS involved.
+  const vclusterMounts: HostPathMount[] = []
+  if (virtualCluster) {
+    emit('Waiting for the virtual cluster API...', options)
+    const kubeconfig = await waitForVclusterKubeconfig(vclusterName(sessionId))
+    const vcDir = sessionVclusterDir(projectSlug, sessionId)
+    await fs.mkdir(vcDir, { recursive: true })
+    await fs.writeFile(path.join(vcDir, 'config'), kubeconfig, { mode: 0o600 })
+    vclusterMounts.push({ hostPath: vcDir, mountPath: '/home/yaac/.kube' })
+    env.push('KUBECONFIG=/home/yaac/.kube/config')
+
+    // yaac-in-yaac preset: the nested data dir is mounted at the
+    // IDENTICAL absolute path in the pod, because inner synced-pod
+    // hostPaths resolve on the NODE (which sees the host path via the
+    // kind $HOME extraMount). It is also the VAP guard's only allowed
+    // hostPath prefix for this session's synced pods. The registry env
+    // points the inner daemon's pushes at the project's registry
+    // (resolvable in-pod via hostAliases, on the node via hosts.toml) —
+    // no repo-path prefix, since that registry is already project-scoped.
+    const nestedDataDir = nestedYaacDataDir(projectSlug, sessionId)
+    await fs.mkdir(nestedDataDir, { recursive: true })
+    vclusterMounts.push({ hostPath: nestedDataDir, mountPath: nestedDataDir })
+    env.push(`YAAC_DATA_DIR=${nestedDataDir}`)
+    env.push('YAAC_NESTED=1')
+    env.push(`YAAC_K8S_REGISTRY=${projectRegistryHost(projectSlug)}`)
+  }
+
   const hostPathMounts: HostPathMount[] = [
     { hostPath: wtDir, mountPath: '/workspace' },
     { hostPath: `${repo}/.git`, mountPath: '/repo/.git' },
@@ -965,6 +1081,7 @@ export async function createSession(
       hostPath: m.hostBacking,
       mountPath: m.containerPath,
     })),
+    ...vclusterMounts,
     ...sshMounts,
   ]
 
@@ -974,7 +1091,8 @@ export async function createSession(
   const maxStartAttempts = 3
   const setupParams: SessionSetupParams = {
     imageRef, jobName, projectSlug, sessionId, env, hostPathMounts,
-    egress, nested, tool, config, options, gitUser, forwardedPorts,
+    egress, nested, hostAliases, virtualCluster, tool, config, options,
+    gitUser, forwardedPorts,
   }
 
   emit(`Creating session job ${jobName}...`, options)

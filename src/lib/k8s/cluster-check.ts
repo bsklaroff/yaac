@@ -218,6 +218,21 @@ export async function runClusterCheck(
   }
   add(await runNetworkPolicyProbe(deps))
 
+  // Inner yaac (a vcluster session, YAAC_NESTED=1): the remaining gates
+  // probe machinery that deliberately does not exist inside a vcluster.
+  // Inner sessions are non-nested with no transparent-egress layer
+  // (synced pods have no redirect/relay pair — and no upstream egress at
+  // all in v1), vcluster-in-vcluster is refused outright, and there is
+  // no kubeadm config to read a service CIDR from. Skipping also avoids
+  // in-pod podman builds of the redirect/relay images just to probe.
+  if (process.env.YAAC_NESTED === '1') {
+    for (const name of ['redirect', 'lockdown', 'dns-stub', 'nested-mount', 'vap', 'service-cidr']) {
+      add({ name, status: 'skip', detail: 'skipped — nested yaac (not applicable inside a vcluster)' })
+    }
+    add(await runProxyVipPinCheck(deps))
+    return { ok: !results.some((r) => r.status === 'fail'), results }
+  }
+
   // 9. transparent-redirect + lockdown + dns-stub gates — the hard gates
   // for the env-var-free egress design (there is no env-proxy fallback
   // path), all collected from one session-shaped probe pod
@@ -227,6 +242,11 @@ export async function runClusterCheck(
   // sessions need it — the tripwire for containerd versions where the
   // namespaced SYS_ADMIN grant does not unlock the mount family)
   add(await runNestedMountProbe(deps))
+
+  // 10b. ValidatingAdmissionPolicy availability (warn-only: only
+  // virtualCluster sessions need it — the synced-pod guard refuses
+  // vcluster creation without it, fail-closed)
+  add(await runVapAvailabilityCheck(deps))
 
   // 11. proxy VIP pin (warn-only drift check, like the service CIDR
   // below: session relays dial the pinned VIP from env)
@@ -854,6 +874,32 @@ const NESTED_MOUNT_FIX =
   + 'This containerd version does not unlock the mount syscall family via '
   + 'the userns-scoped SYS_ADMIN grant — nested sessions on this cluster '
   + 'cannot mount overlay/proc/tmpfs inside their build userns.'
+
+/**
+ * Warn-only gate for virtualCluster sessions: the synced-pod guard is a
+ * ValidatingAdmissionPolicy, and vcluster creation refuses to proceed
+ * without the API (fail-closed, no opt-out).
+ */
+async function runVapAvailabilityCheck(deps: ClusterCheckDeps): Promise<CheckResult> {
+  try {
+    await deps.run('kubectl', ['get', 'validatingadmissionpolicies', '-o', 'name'], {
+      timeout: 15_000,
+    })
+    return {
+      name: 'vap', status: 'pass',
+      detail: 'ValidatingAdmissionPolicy API available (vcluster synced-pod guard)',
+    }
+  } catch (err) {
+    return {
+      name: 'vap', status: 'warn',
+      detail: `ValidatingAdmissionPolicy API unavailable (${truncate(err)})`,
+      fix: 'Only virtualCluster sessions are affected — their synced-pod '
+        + 'guard needs the ValidatingAdmissionPolicy API (kubernetes >= '
+        + '1.30, enabled by default). vcluster creation fails closed '
+        + 'without it.',
+    }
+  }
+}
 
 /**
  * Warn when the live proxy Service's ClusterIP drifts from the compiled

@@ -105,13 +105,34 @@ export const SESSION_NETWORK_POLICY_NAME = 'yaac-session-egress'
  * warns when the live cluster's service subnet drifts from it.
  */
 export function clusterIpForNamespace(namespace: string): string {
+  return pinnedClusterIp(namespace)
+}
+
+/**
+ * Keyed generalization of the VIP pin for the other Services yaac
+ * creates (per-project registries, per-session vcluster APIs — see
+ * plans/nested-containers-plan.md). Hashes `<namespace>/<serviceName>`
+ * across the same /16 band, so all pins share one collision budget (the
+ * birthday math in clusterIpForNamespace's docstring covers them
+ * jointly). `/` cannot appear in a namespace name, so these keys can
+ * never alias the bare-namespace key of the proxy pin.
+ *
+ * FROZEN, like the namespace pin: these VIPs are baked into running
+ * pods' iptables carve-outs (EXTRA_TCP_ACCEPT), pod hostAliases, and
+ * node hosts.toml files — re-keying the hash would strand them all.
+ */
+export function clusterIpForService(namespace: string, serviceName: string): string {
+  return pinnedClusterIp(`${namespace}/${serviceName}`)
+}
+
+function pinnedClusterIp(key: string): string {
   const [addr, prefix] = CLUSTER_SERVICE_CIDR.split('/')
   const baseInt = addr.split('.').reduce((acc, o) => ((acc << 8) + Number(o)) >>> 0, 0)
   const total = 2 ** (32 - Number(prefix))
   // Skip the low 16 (network + apiserver .1 + kube-dns .10) and the top
-  // 16 (…broadcast); hash the namespace uniformly across the rest.
+  // 16 (…broadcast); hash the key uniformly across the rest.
   const span = total - 32
-  const hash = crypto.createHash('sha256').update(namespace).digest()
+  const hash = crypto.createHash('sha256').update(key).digest()
   const ipInt = (baseInt + 16 + (hash.readUInt32BE(0) % span)) >>> 0
   return [(ipInt >>> 24) & 0xff, (ipInt >>> 16) & 0xff, (ipInt >>> 8) & 0xff, ipInt & 0xff].join('.')
 }
@@ -359,6 +380,54 @@ export function buildSessionNetworkPolicyManifest(): Record<string, unknown> {
   }
 }
 
+/** Blanket world-egress deny (CiliumNetworkPolicy) — see the builder. */
+export const EGRESS_WORLD_DENY_NAME = 'yaac-egress-world-deny'
+
+/**
+ * Blanket CiliumNetworkPolicy denying egress to the `world` entity
+ * (everything outside the cluster) for every pod in the install
+ * namespace except the proxy — the only pod that legitimately reaches
+ * the internet (it dials allowlisted upstreams on sessions' behalf).
+ *
+ * `app NotIn [yaac-proxy]` denies world for everything except the proxy;
+ * NotIn also matches pods with no `app` label, so it catches session
+ * pods, registries, mocks, and anything added later. The exemption label
+ * can only be set by the trusted daemon on its own pods (session/synced
+ * pods never carry it), so it is not a forge vector.
+ *
+ * Namespace-scoped, not cluster-wide on purpose: a cluster-wide deny
+ * would also hit kube-system CoreDNS (whose upstream forwarding the proxy
+ * needs to resolve external hosts) and the Cilium/system pods. vcluster
+ * synced pods live in their OWN per-session namespaces, each blanketed by
+ * its own deny (buildVclusterNamespaceWorldDenyManifest in vcluster.ts),
+ * so they are covered there rather than here.
+ *
+ * Why a Cilium *deny* rather than a k8s NetworkPolicy: deny rules take
+ * precedence over allows and cannot be widened by union, so a tenant
+ * allow-all NetworkPolicy cannot punch through it. `world` excludes
+ * in-cluster pods, the service CIDR, the host, and the apiserver, so
+ * every legitimate intra-cluster flow (relay->proxy VIP, vcluster API)
+ * is untouched, and image pulls run on the node (not in pods) so they
+ * are unaffected.
+ */
+export function buildEgressWorldDenyCiliumPolicyManifest(): Record<string, unknown> {
+  return {
+    apiVersion: 'cilium.io/v2',
+    kind: 'CiliumNetworkPolicy',
+    metadata: {
+      name: EGRESS_WORLD_DENY_NAME,
+      namespace: k8sNamespace(),
+      labels: { app: PROXY_APP_NAME },
+    },
+    spec: {
+      endpointSelector: {
+        matchExpressions: [{ key: 'app', operator: 'NotIn', values: [PROXY_APP_NAME] }],
+      },
+      egressDeny: [{ toEntities: ['world'] }],
+    },
+  }
+}
+
 export function buildProxyServiceManifest(): Record<string, unknown> {
   return {
     apiVersion: 'v1',
@@ -422,6 +491,9 @@ export async function ensureProxyResources(imageRef: string): Promise<void> {
   // Applied with the proxy resources so the egress lockdown exists before
   // any session pod can be scheduled (sessions require ensureRunning()).
   await kubectlApply(buildSessionNetworkPolicyManifest())
+  // Blanket world-egress deny over session + vcluster synced pods — the
+  // authoritative backstop a vcluster tenant cannot widen (see builder).
+  await kubectlApply(buildEgressWorldDenyCiliumPolicyManifest())
   await kubectlWithRetry([
     'rollout', 'status', `deployment/${PROXY_APP_NAME}`,
     '-n', k8sNamespace(),

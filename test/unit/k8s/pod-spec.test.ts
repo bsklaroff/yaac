@@ -285,6 +285,48 @@ describe('buildSessionJobManifest', () => {
     expect(sessionEnvNames).not.toContain('RELAY_TOKEN')
   })
 
+  it('emits no EXTRA_TCP_ACCEPT env and no hostAliases by default', () => {
+    const spec = build().spec.template.spec
+    const redirectEnvNames = spec.initContainers[0].env.map((e) => e.name)
+    expect(redirectEnvNames).not.toContain('EXTRA_TCP_ACCEPT')
+    expect(spec).not.toHaveProperty('hostAliases')
+    // Empty lists behave like absent ones — byte-identical output.
+    const bare = buildSessionJobManifest(params())
+    const empty = buildSessionJobManifest({
+      ...params({ hostAliases: [] }),
+      egress: { ...params().egress, extraTcpAccept: [] },
+    })
+    expect(JSON.stringify(empty)).toBe(JSON.stringify(bare))
+  })
+
+  it('joins extraTcpAccept pairs into the redirect-init EXTRA_TCP_ACCEPT env', () => {
+    const m = build({
+      egress: {
+        ...params().egress,
+        extraTcpAccept: ['10.96.12.34:5000', '10.96.56.78:8443'],
+      },
+    })
+    const env = m.spec.template.spec.initContainers[0].env
+    expect(env).toContainEqual({
+      name: 'EXTRA_TCP_ACCEPT',
+      value: '10.96.12.34:5000,10.96.56.78:8443',
+    })
+    // The carve-out rides the redirect-init container only.
+    const relayEnvNames = m.spec.template.spec.initContainers[1].env.map((e) => e.name)
+    expect(relayEnvNames).not.toContain('EXTRA_TCP_ACCEPT')
+  })
+
+  it('emits pod hostAliases when provided (registry name → pinned VIP)', () => {
+    const m = build({
+      hostAliases: [{ ip: '10.96.12.34', hostnames: ['yaac-reg-demo-abcd1234.test-ns.svc'] }],
+    }) as unknown as Manifest & {
+      spec: { template: { spec: { hostAliases?: Array<{ ip: string; hostnames: string[] }> } } }
+    }
+    expect(m.spec.template.spec.hostAliases).toEqual([
+      { ip: '10.96.12.34', hostnames: ['yaac-reg-demo-abcd1234.test-ns.svc'] },
+    ])
+  })
+
   it('always appends the proxy-CA ConfigMap volume mounted read-only at the CA dir', () => {
     const m = build()
     const { volumes, containers } = m.spec.template.spec

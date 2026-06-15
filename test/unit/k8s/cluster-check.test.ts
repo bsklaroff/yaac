@@ -147,6 +147,7 @@ describe('runClusterCheck', () => {
       ['lockdown', 'pass'],
       ['dns-stub', 'pass'],
       ['nested-mount', 'pass'],
+      ['vap', 'pass'],
       // The proxy deploys lazily, so its VIP pin is unverifiable here.
       ['proxy-vip', 'skip'],
       ['service-cidr', 'pass'],
@@ -195,6 +196,29 @@ describe('runClusterCheck', () => {
     await expect(
       fs.access(path.join(getDataDir(), '.cluster-check-write')),
     ).rejects.toThrow()
+  })
+
+  it('skips the egress-layer and vcluster gates inside a nested yaac', async () => {
+    process.env.YAAC_NESTED = '1'
+    try {
+      const deps = makeDeps()
+      const { ok, results } = await runClusterCheck(deps)
+      expect(ok).toBe(true)
+      // The shared-machinery checks still run for real (inner registry,
+      // inner namespace, inner probe + egress enforcement).
+      expect(byName(results, 'probe')?.status).toBe('pass')
+      expect(byName(results, 'egress')?.status).toBe('pass')
+      // No transparent-egress layer / nestedContainers / vcluster
+      // recursion inside a vcluster — and no kubeadm config to read.
+      for (const name of ['redirect', 'lockdown', 'dns-stub', 'nested-mount', 'vap', 'service-cidr']) {
+        expect(byName(results, name)?.status).toBe('skip')
+      }
+      // The relay/redirect images must NOT be built in-pod just to probe.
+      expect(deps.ensureRedirectInitImage).not.toHaveBeenCalled()
+      expect(deps.ensureRelayImage).not.toHaveBeenCalled()
+    } finally {
+      delete process.env.YAAC_NESTED
+    }
   })
 
   it('short-circuits with a single failure when kubectl is missing', async () => {

@@ -10,9 +10,15 @@ import { evictOpencodeProbeCache } from '@/lib/session/opencode-status'
 import { proxyClient } from '@/lib/container/proxy-client'
 import { buildPromoterShellCommand, promoteSessionImages } from '@/lib/container/image-promoter'
 import {
+  buildVclusterCleanupShellCommand,
+  getVclusterStatus,
+  removeSessionVcluster,
+  vclusterName,
+} from '@/lib/k8s/vcluster'
+import {
   cachedPackagesDir,
   projectDir,
-  sessionTmuxDir,
+  sessionDir,
 } from '@/lib/project/paths'
 import { CONTAINER_TMUX_SOCK, getProjectsDir } from '@/shared/paths'
 import { stopSessionForwarders } from '@/lib/session/port-forwarders'
@@ -169,6 +175,18 @@ export async function cleanupSession(params: {
     // background reconcile loop sweeps any leftover Job.
   }
 
+  // Tear down the session's vcluster, if it had one. One cheap probe
+  // gates the label-selector deletes so non-vcluster sessions pay a
+  // single kubectl get. Best-effort: the background vcluster reconcile
+  // sweeps anything this misses.
+  try {
+    if (await getVclusterStatus(sessionId)) {
+      await removeSessionVcluster(vclusterName(sessionId))
+    }
+  } catch (err) {
+    console.warn(`vcluster cleanup for ${sessionId} failed: ${(err as Error).message}`)
+  }
+
   // Remove the per-session ephemeral-modules backing dir from
   // `.cached-packages/modules/<sid>`. No-op if the feature was disabled
   // for this session (dir won't exist).
@@ -177,9 +195,10 @@ export async function cleanupSession(params: {
     force: true,
   })
 
-  // Remove the per-session tmux dir holding the server socket. The
-  // pod is gone; the hostPath-mount source is garbage now.
-  await fs.rm(sessionTmuxDir(projectSlug, sessionId), {
+  // Remove the per-session dir (tmux socket dir, vcluster kubeconfig,
+  // nested-yaac data). The pod is gone; the hostPath-mount sources are
+  // garbage now.
+  await fs.rm(sessionDir(projectSlug, sessionId), {
     recursive: true,
     force: true,
   })
@@ -209,8 +228,8 @@ export async function cleanupSessionDetached(params: {
   const modulesDir = sessionModulesDir(projectSlug, sessionId)
   const ephemeralModulesRm = `rm -rf '${modulesDir.replace(/'/g, `'\\''`)}' 2>/dev/null || true`
 
-  const tmuxDir = sessionTmuxDir(projectSlug, sessionId)
-  const tmuxDirRm = `rm -rf '${tmuxDir.replace(/'/g, `'\\''`)}' 2>/dev/null || true`
+  const sessDir = sessionDir(projectSlug, sessionId)
+  const sessionDirRm = `rm -rf '${sessDir.replace(/'/g, `'\\''`)}' 2>/dev/null || true`
 
   const script = [
     // Promoter first: it execs into the pod, which the Job delete below
@@ -218,8 +237,11 @@ export async function cleanupSessionDetached(params: {
     // pods fall straight through to the delete.
     buildPromoterShellCommand(jobName),
     `kubectl delete job ${jobName} -n ${k8sNamespace()} --ignore-not-found 2>/dev/null || true`,
+    // vcluster teardown: pure label-selector deletes, so non-vcluster
+    // sessions no-op (every line carries --ignore-not-found + `|| true`).
+    buildVclusterCleanupShellCommand(vclusterName(sessionId)),
     ephemeralModulesRm,
-    tmuxDirRm,
+    sessionDirRm,
   ].join('; ')
 
   const child = spawn('sh', ['-c', script], {

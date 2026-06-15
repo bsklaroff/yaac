@@ -42,6 +42,27 @@ case "$PROXY_CLUSTER_IP" in
   *[!0-9.]*) echo "PROXY_CLUSTER_IP must be an IPv4 address, got: $PROXY_CLUSTER_IP" >&2; exit 1 ;;
 esac
 
+# Optional in-cluster carve-outs: comma-separated "<ip>:<port>" pairs
+# ACCEPTed in the filter table above the REJECTs (vcluster sessions use
+# this for the project registry VIP:5000 and the vcluster API VIP:8443 —
+# ports the nat layer never captures, so the "every 443/80 is captured"
+# invariant holds). Same literal-IPv4 rule as PROXY_CLUSTER_IP, and the
+# rules are frozen for the pod's lifetime, so only PINNED Service VIPs
+# belong here (clusterIpForService — recreation reproduces them). Each
+# carve-out must also be admitted by a matching NetworkPolicy at the CNI
+# layer; neither layer alone is sufficient.
+EXTRA_TCP_ACCEPT="${EXTRA_TCP_ACCEPT:-}"
+for pair in $(echo "$EXTRA_TCP_ACCEPT" | tr ',' ' '); do
+  ip="${pair%:*}"
+  port="${pair##*:}"
+  case "$ip" in
+    ''|*[!0-9.]*) echo "EXTRA_TCP_ACCEPT entries must be <ipv4>:<port>, got: $pair" >&2; exit 1 ;;
+  esac
+  case "$port" in
+    ''|*[!0-9]*) echo "EXTRA_TCP_ACCEPT entries must be <ipv4>:<port>, got: $pair" >&2; exit 1 ;;
+  esac
+done
+
 # --- nat: capture into the relay ---
 # Loopback stays pristine; everything else on 53/443/80 is REDIRECTed.
 iptables -t nat -A OUTPUT -o lo -j RETURN
@@ -81,6 +102,13 @@ iptables -A OUTPUT -d 127.0.0.0/8 -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
 iptables -A OUTPUT -m owner --uid-owner "$RELAY_UID" -p tcp -d "$PROXY_CLUSTER_IP/32" \
   -m multiport --dports "$PROXY_PORTS" -j ACCEPT
+# Pinned-VIP carve-outs (validated above). Deliberately NOT uid-scoped:
+# the whole pod (session user, nested containers, podman) may dial these
+# in-cluster destinations directly — they listen on ports the nat layer
+# never captures, so packets arrive here with their real destination.
+for pair in $(echo "$EXTRA_TCP_ACCEPT" | tr ',' ' '); do
+  iptables -A OUTPUT -p tcp -d "${pair%:*}/32" --dport "${pair##*:}" -j ACCEPT
+done
 # REJECT, not DROP: agents fail in milliseconds with a clear refusal
 # (tcp-reset / port-unreachable) instead of hanging on a timeout.
 iptables -A OUTPUT -p tcp -j REJECT --reject-with tcp-reset
@@ -98,4 +126,5 @@ iptables -A OUTPUT -j REJECT
 echo "yaac-redirect-init: nat 443 -> 127.0.0.1:$REDIRECT_HTTPS_PORT," \
   "80 -> 127.0.0.1:$REDIRECT_HTTP_PORT, udp53 -> 127.0.0.1:$REDIRECT_DNS_PORT" \
   "(direct: lo); filter default-deny" \
-  "(carve-out: uid $RELAY_UID -> tcp $PROXY_PORTS at $PROXY_CLUSTER_IP)"
+  "(carve-out: uid $RELAY_UID -> tcp $PROXY_PORTS at $PROXY_CLUSTER_IP;" \
+  "extra: ${EXTRA_TCP_ACCEPT:-none})"

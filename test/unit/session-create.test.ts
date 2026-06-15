@@ -100,9 +100,13 @@ vi.mock('@/lib/project/paths', () => ({
   worktreeDir: vi.fn((slug: string, sessionId: string) => `/tmp/${slug}/worktrees/${sessionId}`),
   worktreesDir: vi.fn((slug: string) => `/tmp/${slug}/worktrees`),
   projectDir: vi.fn((slug: string) => `/tmp/${slug}`),
+  sessionDir: vi.fn((slug: string, sid: string) => `/tmp/${slug}/sessions/${sid}`),
   sessionTmuxDir: vi.fn((slug: string, sid: string) => `/tmp/${slug}/sessions/${sid}/tmux`),
+  sessionVclusterDir: vi.fn((slug: string, sid: string) => `/tmp/${slug}/sessions/${sid}/vcluster`),
+  nestedYaacDataDir: vi.fn((slug: string, sid: string) => `/tmp/${slug}/sessions/${sid}/nested-yaac`),
   credentialsDir: vi.fn(() => '/tmp/yaac-data/.credentials'),
   getDataDir: vi.fn(() => '/tmp/yaac-data'),
+  PACKAGE_ROOT: '/tmp/yaac-package',
 }))
 
 vi.mock('@/lib/project/config', () => ({
@@ -303,6 +307,20 @@ describe('createSession', () => {
     expect(result?.forwardedPorts).toEqual([])
     expect(mockApply).toHaveBeenCalledTimes(1)
     expect(mockSpawn).not.toHaveBeenCalled()
+  })
+
+  it('refuses vcluster-in-vcluster: virtualCluster under YAAC_NESTED=1', async () => {
+    vi.mocked(resolveProjectConfig).mockResolvedValue({
+      virtualCluster: true,
+      nestedContainers: true,
+    })
+    process.env.YAAC_NESTED = '1'
+    try {
+      await expect(createSession('demo', { tool: 'claude' }))
+        .rejects.toThrow(/vcluster-in-vcluster/)
+    } finally {
+      delete process.env.YAAC_NESTED
+    }
   })
 
   it('applies a Job manifest with session labels, the registry image ref, and shared mounts', async () => {

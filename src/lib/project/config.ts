@@ -4,7 +4,7 @@ import crypto from 'node:crypto'
 import type { YaacConfig, InitCommandSpec, AgentTool } from '@/shared/types'
 import { projectConfigDir } from '@/lib/project/paths'
 
-const KNOWN_KEYS = new Set(['envPassthrough', 'env', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'portForward', 'bindMounts', 'hideInitPane', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths', 'nestedContainers'])
+const KNOWN_KEYS = new Set(['envPassthrough', 'env', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'portForward', 'bindMounts', 'hideInitPane', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths', 'nestedContainers', 'virtualCluster'])
 
 /** Default when `ephemeralModulesPaths` is unset — redirect the root
  *  node_modules only. Set to `[]` in yaac-config.json to opt out. */
@@ -302,6 +302,28 @@ export function parseProjectConfig(raw: string): YaacConfig {
       throw new Error('yaac-config.json: nestedContainers must be a boolean')
     }
     config.nestedContainers = obj.nestedContainers
+  }
+
+  if (obj.virtualCluster !== undefined) {
+    if (typeof obj.virtualCluster !== 'boolean') {
+      throw new Error('yaac-config.json: virtualCluster must be a boolean')
+    }
+    config.virtualCluster = obj.virtualCluster
+  }
+
+  // virtualCluster implies nestedContainers: the in-pod podman is the
+  // session's only build engine, so a vcluster session without it could
+  // never build images for its own pods. An explicit opt-out alongside
+  // virtualCluster is a contradiction — reject it rather than silently
+  // picking a side.
+  if (config.virtualCluster) {
+    if (obj.nestedContainers === false) {
+      throw new Error(
+        'yaac-config.json: virtualCluster requires nestedContainers — '
+        + 'remove "nestedContainers": false or disable virtualCluster',
+      )
+    }
+    config.nestedContainers = true
   }
 
   if (obj.ephemeralModulesPaths !== undefined) {

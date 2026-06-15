@@ -182,6 +182,14 @@ export interface YaacConfig {
    * emptyDir, shared image store).
    */
   nestedContainers?: boolean
+  /**
+   * Give each session its own virtual kubernetes cluster (vcluster) plus
+   * a per-project push registry the node can pull from. Implies
+   * `nestedContainers` (the in-pod podman is the session's only build
+   * engine, so vcluster workflows that build images need it); the config
+   * parser rejects an explicit `nestedContainers: false` alongside this.
+   */
+  virtualCluster?: boolean
   /** Either a flat string list (collapsed into a single `init` window) or
    *  a list of `InitCommandSpec` objects (one tmux window per entry).
    *  Mixing the two forms is rejected by the config parser. */

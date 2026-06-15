@@ -94,6 +94,15 @@ export interface EgressSidecarParams {
   sessionId: string
   /** HMAC(PROXY_AUTH_SECRET, "relay:"+sessionId); the proxy re-verifies it. */
   relayToken: string
+  /**
+   * Extra in-pod filter ACCEPTs — literal `<ipv4>:<port>` pairs the
+   * redirect-init script installs above its REJECTs. Pinned Service VIPs
+   * only (the rules are frozen for the pod's lifetime), on ports the nat
+   * layer never captures (registry 5000, vcluster API 8443 — never
+   * 443/80). Each entry needs a matching NetworkPolicy allowance at the
+   * CNI layer; neither layer alone admits the flow.
+   */
+  extraTcpAccept?: string[]
 }
 
 /**
@@ -129,6 +138,15 @@ export interface SessionJobParams {
   egress: EgressSidecarParams
   /** In-pod podman wiring; absent for non-nested sessions. */
   nested?: NestedContainersParams
+  /**
+   * Static /etc/hosts entries for in-cluster names the pod must resolve
+   * without kube-dns (DNS never leaves the pod — the relay stub answers
+   * everything with a dummy IP). glibc/musl consult files before the
+   * resolver, so these beat the stub; the nestable image's
+   * `base_hosts_file` extends them into nested containers. Used for the
+   * per-project registry host → pinned VIP (vcluster sessions).
+   */
+  hostAliases?: Array<{ ip: string; hostnames: string[] }>
   /** Matches the podman-era `container.stop({t: 5})` grace. */
   terminationGracePeriodSeconds?: number
 }
@@ -205,6 +223,7 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
         spec: {
           restartPolicy: 'Never',
           terminationGracePeriodSeconds: p.terminationGracePeriodSeconds ?? 5,
+          ...(p.hostAliases?.length ? { hostAliases: p.hostAliases } : {}),
           // Session pods host untrusted agent workloads: no cluster API
           // credentials, and no service-discovery env pollution.
           automountServiceAccountToken: false,
@@ -277,6 +296,13 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
                 { name: 'TRANSPARENT_HTTPS_PORT', value: String(p.egress.transparentHttpsPort) },
                 { name: 'TRANSPARENT_HTTP_PORT', value: String(p.egress.transparentHttpPort) },
                 { name: 'TRANSPARENT_TUNNEL_PORT', value: String(p.egress.transparentTunnelPort) },
+                // Pinned-VIP in-cluster carve-outs (vcluster sessions
+                // only) — filter ACCEPTs the script installs above its
+                // REJECTs. Omitted entirely otherwise.
+                ...(p.egress.extraTcpAccept?.length ? [{
+                  name: 'EXTRA_TCP_ACCEPT',
+                  value: p.egress.extraTcpAccept.join(','),
+                }] : []),
               ],
             },
             {

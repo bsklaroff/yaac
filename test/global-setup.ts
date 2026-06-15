@@ -4,6 +4,8 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { baseImageHash, fileHash, contextHash, ensureImageByTag, sessionUid } from '@/lib/container/image-builder'
 import { ensurePodmanSocket, getSocketPath } from '@/lib/container/runtime'
+import { ensureRegistryImage } from '@/lib/k8s/project-registry'
+import { ensureVclusterImages } from '@/lib/k8s/vcluster'
 import { pushImageToRegistry, registryReachable } from '@/lib/k8s/registry'
 import { DOCKERFILES_DIR, PROXY_DIR, REDIRECT_INIT_DIR, RELAY_DIR } from '@/lib/project/paths'
 
@@ -162,6 +164,11 @@ export async function setup(): Promise<void> {
     for (const tag of [baseTag, toolsTag, nestableTag, proxyTag, redirectInitTag, relayTag]) {
       await pushImageToRegistry(tag)
     }
+    // Per-project registry image (registry:2, digest-pinned mirror) and
+    // the vcluster image set, for virtualCluster e2e tests —
+    // pull-or-skip, then push, same as above.
+    await ensureRegistryImage(false)
+    await ensureVclusterImages(false)
   } else {
     console.log('[global-setup] local registry not reachable — e2e tests requiring a cluster will fail')
   }

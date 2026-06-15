@@ -254,6 +254,51 @@ describe('loadProjectConfig', () => {
     await expect(loadProjectConfig(tmpDir)).rejects.toThrow('nestedContainers must be a boolean')
   })
 
+  it('virtualCluster implies nestedContainers', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ virtualCluster: true }),
+    )
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual({ virtualCluster: true, nestedContainers: true })
+  })
+
+  it('keeps an explicit virtualCluster: false inert', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ virtualCluster: false }),
+    )
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual({ virtualCluster: false })
+  })
+
+  it('rejects virtualCluster: true alongside nestedContainers: false', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ virtualCluster: true, nestedContainers: false }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow(
+      'virtualCluster requires nestedContainers',
+    )
+  })
+
+  it('accepts virtualCluster: true with an explicit nestedContainers: true', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ virtualCluster: true, nestedContainers: true }),
+    )
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual({ virtualCluster: true, nestedContainers: true })
+  })
+
+  it('throws on invalid virtualCluster type', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ virtualCluster: 1 }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('virtualCluster must be a boolean')
+  })
+
   it('parses valid config with hideInitPane', async () => {
     await fs.writeFile(
       path.join(tmpDir, 'yaac-config.json'),

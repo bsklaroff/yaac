@@ -1,4 +1,5 @@
 import { findSessionPod, listSessionPods } from '@/lib/k8s/pods'
+import { getVclusterStatus, type VclusterStatus } from '@/lib/k8s/vcluster'
 import { DaemonError } from '@/daemon/errors'
 import { getSessionFirstMessage, normalizeTool } from '@/lib/session/status'
 import { readBlockedHosts } from '@/lib/session/blocked-hosts'
@@ -14,6 +15,8 @@ export interface SessionDetail {
   blockedHostsCount: number
   /** ISO timestamp of pod creation. */
   createdAt: string
+  /** Present only for virtualCluster sessions. */
+  virtualCluster?: VclusterStatus
 }
 
 interface MatchedSession {
@@ -51,6 +54,9 @@ export async function getSessionDetail(idOrName: string): Promise<SessionDetail>
   const blocked = match.sessionId
     ? await readBlockedHosts(match.sessionId)
     : []
+  // Best-effort: detail must render even when the vcluster lookup
+  // hiccups (it is one extra kubectl get; null for non-vcluster sessions).
+  const vcluster = await getVclusterStatus(match.sessionId).catch(() => null)
   return {
     sessionId: match.sessionId,
     projectSlug: match.projectSlug,
@@ -60,6 +66,7 @@ export async function getSessionDetail(idOrName: string): Promise<SessionDetail>
     labels: match.labels,
     blockedHostsCount: blocked.length,
     createdAt: match.createdAt,
+    ...(vcluster ? { virtualCluster: vcluster } : {}),
   }
 }
 

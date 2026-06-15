@@ -161,14 +161,45 @@ export function worktreeDir(slug: string, sessionId: string): string {
 }
 
 /**
+ * Per-session host directory rooting everything session-scoped that is
+ * not the worktree: the tmux socket dir, the vcluster kubeconfig dir,
+ * and the yaac-in-yaac data dir. Removed wholesale by session cleanup
+ * and the orphan-session GC.
+ */
+export function sessionDir(slug: string, sessionId: string): string {
+  return path.join(projectDir(slug), 'sessions', sessionId)
+}
+
+/**
  * Per-session host directory bind-mounted into the container at
  * `CONTAINER_TMUX_DIR`. Holds the tmux server socket so the daemon can
  * probe liveness without hitting the podman API.
  */
 export function sessionTmuxDir(slug: string, sessionId: string): string {
-  return path.join(projectDir(slug), 'sessions', sessionId, 'tmux')
+  return path.join(sessionDir(slug, sessionId), 'tmux')
 }
 
 export function sessionTmuxSockPath(slug: string, sessionId: string): string {
   return path.join(sessionTmuxDir(slug, sessionId), 'server')
+}
+
+/**
+ * Per-session host directory holding the vcluster kubeconfig, mounted
+ * at /home/yaac/.kube inside the session container (virtualCluster
+ * sessions only). Dir-mounted (not the file) so the daemon's background
+ * kubeconfig heal can rewrite the file without remounting.
+ */
+export function sessionVclusterDir(slug: string, sessionId: string): string {
+  return path.join(sessionDir(slug, sessionId), 'vcluster')
+}
+
+/**
+ * Per-session host directory backing the yaac-in-yaac data dir
+ * (YAAC_DATA_DIR inside the session). Mounted at the IDENTICAL absolute
+ * path in the pod — the kind $HOME extraMount makes the node see it, so
+ * inner synced-pod hostPaths resolve. Also the VAP guard's only allowed
+ * hostPath prefix for the session's synced pods.
+ */
+export function nestedYaacDataDir(slug: string, sessionId: string): string {
+  return path.join(sessionDir(slug, sessionId), 'nested-yaac')
 }

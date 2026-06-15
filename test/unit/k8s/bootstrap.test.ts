@@ -29,8 +29,11 @@ import {
   TRANSPARENT_TUNNEL_PORT,
   buildProxyDeploymentManifest,
   buildProxyServiceManifest,
+  buildEgressWorldDenyCiliumPolicyManifest,
   buildSessionNetworkPolicyManifest,
   clusterIpForNamespace,
+  clusterIpForService,
+  EGRESS_WORLD_DENY_NAME,
   ensureCaConfigMap,
   ensureNamespace,
   ensureProxyAuthSecret,
@@ -117,6 +120,35 @@ describe('clusterIpForNamespace', () => {
     // /16 band must spread them across well over a dozen distinct /24s.
     expect(thirdOctets.size).toBeGreaterThan(50)
     expect(clusterIpForNamespace('test-ns')).not.toBe(clusterIpForNamespace('other-ns'))
+  })
+})
+
+describe('clusterIpForService', () => {
+  it('is deterministic and FROZEN — recreation must reproduce the VIP', () => {
+    expect(clusterIpForService('test-ns', 'yaac-reg-demo-12345678'))
+      .toBe(clusterIpForService('test-ns', 'yaac-reg-demo-12345678'))
+    // Pinned values: baked into running pods' iptables carve-outs,
+    // hostAliases, and node hosts.toml — a hash change would strand them.
+    expect(clusterIpForService('yaac', 'yaac-reg-demo-12345678')).toBe('10.96.92.178')
+  })
+
+  it('keys on both namespace and service name', () => {
+    expect(clusterIpForService('ns-a', 'svc')).not.toBe(clusterIpForService('ns-b', 'svc'))
+    expect(clusterIpForService('ns-a', 'svc')).not.toBe(clusterIpForService('ns-a', 'svc2'))
+  })
+
+  it('cannot alias the proxy pin (namespace names cannot contain "/")', () => {
+    expect(clusterIpForService('test-ns', 'x')).not.toBe(clusterIpForNamespace('test-ns'))
+  })
+
+  it('stays inside the service /16, skipping the low 16 and the broadcast edge', () => {
+    for (let i = 0; i < 2000; i++) {
+      const octets = clusterIpForService('yaac', `svc-${i}`).split('.').map(Number)
+      expect(octets.slice(0, 2)).toEqual([10, 96])
+      const offset = octets[2] * 256 + octets[3]
+      expect(offset).toBeGreaterThanOrEqual(16)
+      expect(offset).toBeLessThanOrEqual(65519)
+    }
   })
 })
 
@@ -262,6 +294,38 @@ describe('buildProxyDeploymentManifest', () => {
   })
 })
 
+describe('buildEgressWorldDenyCiliumPolicyManifest', () => {
+  interface Cnp {
+    apiVersion: string
+    kind: string
+    metadata: { name: string; namespace: string; labels: Record<string, string> }
+    spec: {
+      endpointSelector: { matchExpressions: Array<{ key: string; operator: string; values?: string[] }> }
+      egressDeny: Array<{ toEntities: string[] }>
+    }
+  }
+
+  it('denies world for the whole install namespace except the proxy', () => {
+    const m = buildEgressWorldDenyCiliumPolicyManifest() as unknown as Cnp
+    expect(m.apiVersion).toBe('cilium.io/v2')
+    expect(m.kind).toBe('CiliumNetworkPolicy')
+    expect(m.metadata.name).toBe(EGRESS_WORLD_DENY_NAME)
+    expect(m.metadata.namespace).toBe('test-ns')
+    // Everything except the proxy (NotIn also matches no-app pods, so it
+    // catches session pods, registries, mocks). The exemption label is
+    // only settable by the trusted daemon on its own pods. Synced pods
+    // live in their own per-session namespaces, denied there.
+    expect(m.spec.endpointSelector.matchExpressions)
+      .toEqual([{ key: 'app', operator: 'NotIn', values: ['yaac-proxy'] }])
+    expect(m.spec.egressDeny).toEqual([{ toEntities: ['world'] }])
+  })
+
+  it('exempts only the proxy, by an unforgeable trusted-daemon label', () => {
+    const m = buildEgressWorldDenyCiliumPolicyManifest() as unknown as Cnp
+    expect(m.spec.endpointSelector.matchExpressions[0].values).toEqual(['yaac-proxy'])
+  })
+})
+
 describe('buildProxyServiceManifest', () => {
   it('exposes a ClusterIP service on the proxy + transparent ports (port == targetPort)', () => {
     expect(buildProxyServiceManifest()).toEqual({
@@ -343,7 +407,7 @@ describe('ensureProxyResources', () => {
     await expect(fs.stat(proxyDataHostDir())).resolves.toBeDefined()
 
     const kinds = mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
-    expect(kinds).toEqual(['Deployment', 'Service', 'NetworkPolicy'])
+    expect(kinds).toEqual(['Deployment', 'Service', 'NetworkPolicy', 'CiliumNetworkPolicy'])
     // A fresh cluster needs no VIP migration delete.
     expect(mockRetry).not.toHaveBeenCalledWith(
       expect.arrayContaining(['delete', 'service']),

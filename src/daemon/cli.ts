@@ -26,6 +26,7 @@ import { ensureDataDir } from '@/lib/project/paths'
 import { daemonLogPath, webSessionsPath } from '@/shared/paths'
 import { startBackgroundLoop } from '@/daemon/background-loop'
 import { gcOrphanEphemeralModuleDirs } from '@/lib/session/cleanup'
+import { gcOrphanProjectRegistries } from '@/lib/k8s/project-registry'
 import { ensureNamespace } from '@/lib/k8s/bootstrap'
 import { ensureLocalRegistry } from '@/lib/k8s/registry'
 import { proxyClient } from '@/lib/container/proxy-client'
@@ -307,6 +308,11 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
   // reboots.
   void gcOrphanEphemeralModuleDirs()
     .catch((err) => daemonLog(`[daemon] orphan modules GC failed: ${String(err)}`))
+
+  // Remove per-project push registries whose project dir is gone —
+  // catches `project remove` runs that raced an unavailable cluster.
+  void gcOrphanProjectRegistries()
+    .catch((err) => daemonLog(`[daemon] orphan registry GC failed: ${String(err)}`))
 }
 
 /**

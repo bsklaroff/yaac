@@ -1,5 +1,6 @@
 import { reconcileStaleSessions, captureOpencodeFirstMessages } from '@/lib/session/list'
 import { reconcileProxySshKeys } from '@/lib/session/proxy-reconcile'
+import { reconcileVclusters } from '@/lib/session/vcluster-reconcile'
 import { daemonLog } from '@/daemon/log'
 
 export interface BackgroundLoopDeps {
@@ -55,6 +56,8 @@ function defaultTickSteps(): Array<() => Promise<void>> {
     // need the daemon to re-upload them. The proxy itself is deployed
     // lazily by the first session create's ensureRunning().
     reconcileProxySshKeys,
+    // Per-session vclusters: orphan GC + host-side kubeconfig heal.
+    reconcileVclusters,
   ]
 }
 

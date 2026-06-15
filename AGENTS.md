@@ -20,7 +20,15 @@ All container images used by e2e tests are pre-built in `test/global-setup.ts` b
 |-------|--------|
 | `yaac-test-base:<hash>` | `dockerfiles/Dockerfile.default` |
 | `yaac-test-tools:<hash>` | `dockerfiles/Dockerfile.tools` (layered on base) |
+| `yaac-test-nestable:<hash>` | `dockerfiles/Dockerfile.nestable` (layered on tools) |
 | `yaac-test-proxy:<hash>` | `k8s/proxy/` (all files in directory) |
+| `yaac-test-redirect-init:<hash>` | `k8s/redirect-init/` (all files in directory) |
+| `yaac-test-relay:<hash>` | `k8s/relay/` (all files in directory) |
+
+The global setup also mirrors digest-pinned upstream images into the local
+registry (no content hash — the digest IS the pin): `registry:2` for
+per-project registries (`src/lib/k8s/project-registry.ts`) and the vcluster
+image set (`k8s/vcluster/images.json`).
 
 **Rules:**
 - Never build images inside individual test workers — all builds belong in `test/global-setup.ts`.

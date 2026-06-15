@@ -326,6 +326,8 @@ Add a `yaac-config.json` to your repo root. Example with all options:
 - **hideInitPane** — when `true`, the init commands tmux pane is automatically closed after the commands finish or error (default: `false`). When `false`, the pane is preserved with `remain-on-exit` so you can inspect the output.
 - **addAllowedUrls** — additional host patterns to allow on top of the [default allowlist](src/lib/container/default-allowed-hosts.ts). By default, the proxy blocks outbound requests to hosts not on the default list. Use this to add extra hosts without replacing the defaults. Supports exact hostnames (`api.example.com`) and wildcards (`*.example.com`).
 - **setAllowedUrls** — completely replaces the default allowlist with the given list of host patterns. Cannot be used together with `addAllowedUrls`. Set to `["*"]` to allow all outbound URLs (disables filtering), or `[]` to block all external network access. If the resolved list does not include `api.anthropic.com` or `github.com`, a warning is printed since sessions require these to function.
+- **nestedContainers** — run an in-pod rootless podman so `docker build` / `docker run` / `docker compose up --build` work inside the session exactly as a project README instructs (the `docker` CLI talks to podman's Docker-API socket). See [Nested containers and virtual clusters](#nested-containers-and-virtual-clusters).
+- **virtualCluster** — give each session its own virtual kubernetes cluster (vcluster) plus a per-project push registry. Implies `nestedContainers` (setting `"nestedContainers": false` alongside it is a config error).
 
 ## Custom images
 
@@ -348,7 +350,24 @@ The default image (Ubuntu 24.04 + Node.js + pnpm + Claude Code + gh + tmux) can 
   # Rest of Dockerfile...
   ```
 
-Layer order: default → Dockerfile.tools (agent CLIs; rebuilt by `yaac project rebuild`) → Dockerfile.yaac (if layered) → Dockerfile.user. A standalone Dockerfile.yaac replaces the default + tools layers entirely.
+Layer order: default → Dockerfile.tools (agent CLIs; rebuilt by `yaac project rebuild`) → Dockerfile.nestable (only when `nestedContainers` is on) → Dockerfile.yaac (if layered) → Dockerfile.user. A standalone Dockerfile.yaac replaces the default + tools (+ nestable) layers entirely.
+
+## Nested containers and virtual clusters
+
+**`nestedContainers: true`** runs a rootless podman inside the session pod and points the `docker` CLI (and compose) at its Docker-API socket:
+
+- `docker build` / `docker run` / `docker compose up --build` work as-is. Image pulls ride the session's transparent egress to the MITM proxy: the upstream registries (docker.io, ghcr.io, quay.io and their CDNs) are auto-added to the session allowlist, and anything else is denied fail-closed. Build `RUN` steps and nested containers automatically trust the proxy CA.
+- Nested containers share the pod's network namespace: a container's listener is reachable on `localhost:<port>` directly (`docker run -p` is a no-op — the app binds the port itself), and container-private networks are unsupported — use `network_mode: host` in compose files.
+- Built layers are promoted into a per-project shared store at session teardown, so an identical `docker build` in the next session is a pure cache hit.
+
+**`virtualCluster: true`** additionally gives the session its own kubernetes cluster:
+
+- `kubectl` inside the session is preconfigured (`KUBECONFIG`) against a per-session [vcluster](https://www.vcluster.com/); `kubectl get nodes`, `kubectl run`, deployments, services, and inner NetworkPolicies all work. Pods created in the vcluster actually run on the host cluster, confined to the session: they can reach their own vcluster's API and each other, and nothing else (no host apiserver, no internet — in v1 synced pods have no upstream egress at all).
+- A synced-pod admission guard (ValidatingAdmissionPolicy, kubernetes >= 1.30) blocks hostNetwork/hostPID/hostIPC/hostPorts/privileged, restricts hostPath volumes to the session's `nested-yaac` data dir, and requires a user namespace (`hostUsers: false`) for added capabilities. vcluster creation fails closed (with no opt-out) when the VAP API is missing.
+- Each project gets a plain-HTTP push registry (`registry:2`) reachable from its sessions as `yaac-reg-<project>.<namespace>.svc:5000` — build an image, `docker push` it there, and `kubectl run` the pushed ref in the vcluster (the node pulls it through a containerd `hosts.toml` mapping). Only the project's own sessions can reach its registry. Stale content-hash tags accumulate until project removal or cluster recreate (registry:2 has no safe online GC).
+- Each vcluster costs roughly 0.5Gi of memory, so mind how many vcluster sessions run at once.
+
+**yaac-in-yaac**: vcluster sessions are preset for running yaac itself inside the session — `YAAC_NESTED=1`, `YAAC_DATA_DIR` pointing at a host-visible per-session dir, and `YAAC_K8S_REGISTRY` pointing at the project registry. Supported in v1: the inner unit suite, inner `yaac cluster check` (egress-layer gates skip under `YAAC_NESTED`), and inner non-nested session creation against the vcluster (inner sessions have no upstream egress in v1). Inner yaac refuses `virtualCluster` — no vcluster-in-vcluster.
 
 ## Project config
 
