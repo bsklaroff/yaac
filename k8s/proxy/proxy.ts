@@ -37,6 +37,7 @@ import {
 import { parsePp2Header } from './pp2'
 import { buildDnsResponse, parseDnsQuery } from './dns-stub'
 import { PodSessionIndex, fetchSessionByPodIp, startPodWatch } from './pod-watch'
+import { SYSTEM_ROOTS_PATH, combineCaBundle } from './ca-bundle'
 
 // Control-API listener (CA cert, registrations, ssh-agent keys). Renamed
 // from PORT now that no session egress reaches it — it is purely the API.
@@ -1682,6 +1683,31 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     }
     res.writeHead(200, { 'Content-Type': 'application/x-pem-file' })
     res.end(ca.pem)
+    return
+  }
+
+  // Combined trust bundle for nested containers: the image's public roots
+  // PLUS the proxy MITM CA. The own-bundle tools in nested containers
+  // (curl / requests / cargo / git-libcurl) point CURL_CA_BUNDLE & friends
+  // at this superset, so they trust the proxy on intercepted hosts AND real
+  // upstreams on tunnelled hosts. See k8s/proxy/ca-bundle.ts.
+  if (req.method === 'GET' && req.url === '/ca-bundle.pem') {
+    if (!ca) {
+      res.writeHead(503)
+      res.end('CA not ready')
+      return
+    }
+    let roots = ''
+    try {
+      roots = fs.readFileSync(SYSTEM_ROOTS_PATH, 'utf8')
+    } catch (err) {
+      console.error(`[proxy] cannot read system roots at ${SYSTEM_ROOTS_PATH}: ${(err as Error).message}`)
+      res.writeHead(500)
+      res.end('system roots unavailable')
+      return
+    }
+    res.writeHead(200, { 'Content-Type': 'application/x-pem-file' })
+    res.end(combineCaBundle(roots, ca.pem))
     return
   }
 

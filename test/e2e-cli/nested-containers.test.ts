@@ -446,4 +446,97 @@ describe('yaac nested containers (real CLI + real daemon + real cluster)', () =>
 
     await runYaac(daemonEnv, 'session', 'delete', session.sessionId)
   }, 900_000)
+
+  it('trusts the MITM CA for own-bundle tools (curl) via the combined bundle', async () => {
+    // The own-bundle tools (curl, requests, cargo, git-libcurl) ignore
+    // SSL_CERT_FILE and REPLACE their trust set with a single *_CA_BUNDLE
+    // file. Pointed at the lone proxy CA they reject the real cert of every
+    // tunnelled host; pointed at the combined bundle {public roots} ∪ {proxy
+    // CA} they trust both intercepted and tunnelled hosts. This proves the
+    // combined bundle is (1) functionally trusted by curl on a MITM'd host,
+    // (2) a real superset (public roots + the proxy CA), and (3) wired into
+    // nested containers AND `docker build` RUN steps — the exact place a
+    // nested Dockerfile's `RUN curl ...` needs it. See
+    // plans/nested-ca-combined-bundle.md.
+    const slug = 'nested-curl'
+    await setupProject(slug)
+    const session = await createSession(slug)
+    const name = session.jobName
+
+    // (1) Functional: the session's own curl (OpenSSL-linked, honors
+    // CURL_CA_BUNDLE) reaches a MITM'd host. github.com is allowlisted and
+    // redirected to the mock git server, so the proxy MITMs it — curl must
+    // validate the proxy-signed leaf against the combined bundle. No `-f`:
+    // any HTTP status proves the TLS handshake validated; a rejected cert
+    // makes curl exit non-zero with http_code 000.
+    let httpCode = ''
+    for (let i = 0; i < 20; i++) {
+      try {
+        const { stdout } = await execInJob(name, [
+          'sh', '-c',
+          'curl -sS -o /dev/null -w "%{http_code}" --max-time 8 https://github.com/',
+        ], { timeout: 15_000, maxAttempts: 1 })
+        httpCode = stdout.trim()
+        if (/^[1-9]\d{2}$/.test(httpCode)) break
+      } catch { /* warmup: DNS stub / redirect not ready yet */ }
+      await new Promise((r) => setTimeout(r, 1000))
+    }
+    expect(httpCode).toMatch(/^[1-9]\d{2}$/)
+
+    // (2) Superset: the bundle the vars point at contains the proxy CA AND
+    // the full public root set (so tunnelled upstreams keep validating).
+    const { stdout: subjects } = await execInJob(name, [
+      'sh', '-c',
+      'openssl crl2pkcs7 -nocrl -certfile /etc/yaac/certs/ca-bundle.pem '
+      + '| openssl pkcs7 -print_certs -noout',
+    ], { timeout: 30_000 })
+    const certCount = (subjects.match(/^subject/gm) ?? []).length
+    expect(certCount).toBeGreaterThan(100)        // public roots present
+    expect(subjects).toContain('yaac Proxy CA')   // proxy MITM CA present
+
+    // (3a) Nested container: containers.conf mounts the combined bundle and
+    // points every own-bundle var at it. busybox has no curl, but the trust
+    // wiring curl would read is provably present in the nested container.
+    const { stdout: nestedEnv } = await execInJob(name, [
+      'sh', '-c',
+      `docker run --rm ${UPSTREAM_IMAGE_REF} sh -c `
+      + `'printf "%s\\n" "$CURL_CA_BUNDLE" "$REQUESTS_CA_BUNDLE" "$CARGO_HTTP_CAINFO" "$GIT_SSL_CAINFO"; `
+      + `grep -c "BEGIN CERTIFICATE" /etc/yaac/certs/ca-bundle.pem'`,
+    ], { timeout: 120_000 })
+    const nestedLines = nestedEnv.trim().split('\n')
+    expect(nestedLines.slice(0, 4)).toEqual([
+      '/etc/yaac/certs/ca-bundle.pem',
+      '/etc/yaac/certs/ca-bundle.pem',
+      '/etc/yaac/certs/ca-bundle.pem',
+      '/etc/yaac/certs/ca-bundle.pem',
+    ])
+    expect(Number(nestedLines[4])).toBeGreaterThan(100)
+
+    // (3b) `docker build` RUN step. buildah does NOT apply containers.conf
+    // [containers] env to build RUN steps (verified — CURL_CA_BUNDLE is empty
+    // there), but it DOES apply [containers] volumes. Build-time trust rides a
+    // ca-certificates DROP-IN: the bare proxy CA is bind-mounted into
+    // /usr/local/share/ca-certificates/, which `update-ca-certificates` folds
+    // into the image's real roots. Two RUN steps assert the mechanism with no
+    // network and no curl (busybox lacks both):
+    //   (i)  the drop-in is present in the build and IS the proxy CA, AND
+    //   (ii) the EBUSY regression is gone — replacing the managed bundle the
+    //        exact way update-ca-certificates does (temp file + `mv`) must
+    //        succeed. With a bind-mount over that file it failed
+    //        "mv: ... Device or resource busy"; with the drop-in it does not.
+    const dropIn = '/usr/local/share/ca-certificates/yaac-proxy-ca.crt'
+    const osStore = '/etc/ssl/certs/ca-certificates.crt'
+    const dockerfile =
+      `FROM ${UPSTREAM_IMAGE_REF}\\n`
+      + `RUN diff -q ${dropIn} /etc/yaac/certs/proxy-ca.pem\\n`
+      + `RUN mkdir -p /etc/ssl/certs && cp ${dropIn} ${osStore}.new && mv ${osStore}.new ${osStore}\\n`
+    await execInJob(name, [
+      'sh', '-c',
+      'mkdir -p /tmp/curlbuild && cd /tmp/curlbuild && '
+      + `printf '${dockerfile}' > Dockerfile && `
+      + 'docker build --no-cache -t yaac-curl-trust:v1 .',
+    ], { timeout: 180_000, maxAttempts: 1 })
+
+    await runYaac(daemonEnv, 'session', 'delete', session.sessionId)
+  }, 900_000)
 })

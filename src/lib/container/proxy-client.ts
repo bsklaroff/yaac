@@ -130,6 +130,14 @@ export const SSH_AGENT_MOUNT = '/ssh-agent'
 /** In-container path of the proxy CA cert (mounted from the ConfigMap). */
 export const PROXY_CA_PATH = '/etc/yaac/certs/proxy-ca.pem'
 
+/**
+ * In-container path of the combined trust bundle `{public roots} ∪ {proxy
+ * CA}` (the ConfigMap's second key). The own-bundle tools that ignore
+ * SSL_CERT_FILE point their single-file vars here. See
+ * plans/nested-ca-combined-bundle.md.
+ */
+export const PROXY_CA_BUNDLE_PATH = '/etc/yaac/certs/ca-bundle.pem'
+
 export interface ProxyClientConfig {
   image: string
   requirePrebuilt?: boolean
@@ -168,12 +176,27 @@ export class ProxyClient {
    * network layer, so `HTTP(S)_PROXY`/`NO_PROXY` cooperation is gone and
    * tools that ignore proxy env vars are intercepted all the same. Only
    * trust in the MITM CA still needs to ride env.
+   *
+   * Two trust shapes, by what each tool reads:
+   *  - ADDITIVE (proxy CA alongside the image's real roots): SSL_CERT_FILE
+   *    for OpenSSL-default tooling and NODE_EXTRA_CA_CERTS for Node, which
+   *    keep consulting the default store/bundled roots too.
+   *  - REPLACE (single-file bundle): CURL_CA_BUNDLE / REQUESTS_CA_BUNDLE /
+   *    CARGO_HTTP_CAINFO / GIT_SSL_CAINFO for the own-bundle tools (curl,
+   *    requests, cargo, git-libcurl) that ignore SSL_CERT_FILE. Pointing
+   *    those at the lone proxy CA would make them reject the real cert of
+   *    every tunnelled host, so they get the combined bundle (roots + CA) —
+   *    a superset, which makes "replace" correct on both intercepted and
+   *    tunnelled hosts. See plans/nested-ca-combined-bundle.md.
    */
   getCaTrustEnv(): string[] {
     return [
       `NODE_EXTRA_CA_CERTS=${PROXY_CA_PATH}`,
       `SSL_CERT_FILE=${PROXY_CA_PATH}`,
-      `GIT_SSL_CAINFO=${PROXY_CA_PATH}`,
+      `CURL_CA_BUNDLE=${PROXY_CA_BUNDLE_PATH}`,
+      `REQUESTS_CA_BUNDLE=${PROXY_CA_BUNDLE_PATH}`,
+      `CARGO_HTTP_CAINFO=${PROXY_CA_BUNDLE_PATH}`,
+      `GIT_SSL_CAINFO=${PROXY_CA_BUNDLE_PATH}`,
       'GIT_TERMINAL_PROMPT=0',
     ]
   }
@@ -181,6 +204,19 @@ export class ProxyClient {
   async getCaCert(): Promise<string> {
     const res = await fetch(`${this.baseUrl}/ca.pem`)
     if (!res.ok) throw new Error(`Failed to fetch CA cert: ${res.status}`)
+    return res.text()
+  }
+
+  /**
+   * The combined trust bundle `{public roots} ∪ {proxy CA}`, built by the
+   * proxy from its own ca-certificates plus the MITM CA. Mounted into nested
+   * containers (and the session pod) so the own-bundle tools that ignore
+   * SSL_CERT_FILE (curl / requests / cargo / git-libcurl) can REPLACE their
+   * trust set with a superset. See plans/nested-ca-combined-bundle.md.
+   */
+  async getCaBundle(): Promise<string> {
+    const res = await fetch(`${this.baseUrl}/ca-bundle.pem`)
+    if (!res.ok) throw new Error(`Failed to fetch CA bundle: ${res.status}`)
     return res.text()
   }
 
@@ -392,10 +428,13 @@ export class ProxyClient {
     await this.waitForHealthy()
     this.running = true
 
-    // Distribute the proxy's CA to session pods via the ConfigMap. Cheap
-    // no-op when the stored PEM already matches.
+    // Distribute the proxy's CA to session pods via the ConfigMap: the bare
+    // CA (additive trust) plus the combined bundle (roots + CA) the
+    // own-bundle tools point CURL_CA_BUNDLE & friends at. Cheap no-op when
+    // both stored values already match.
     const caPem = await this.getCaCert()
-    await ensureCaConfigMap(caPem)
+    const caBundle = await this.getCaBundle()
+    await ensureCaConfigMap(caPem, caBundle)
 
     // Load ssh-agent identities (cold start: agent is empty; restart:
     // re-sync in case the proxy pod was replaced out-of-band).

@@ -196,16 +196,31 @@ describe('image-builder prerequisites', () => {
     expect(content).toContain('no_pivot_root=true')
     // Cross-session layer cache rides additionalimagestores.
     expect(content).toContain('additionalimagestores = ["/var/lib/shared-images"]')
-    // Nested containers auto-trust the session's MITM CA via the additive
-    // trust vars only (single-file *_CA_BUNDLE vars would replace the whole
-    // trust set and break tunneled hosts — see the combined-bundle plan).
-    // Assert the replace-vars are not *set* (the explanatory comment may
-    // still name them).
-    expect(content).toContain('/etc/yaac/certs/proxy-ca.pem')
+    // Nested containers auto-trust the session's MITM CA. Two trust shapes:
+    // the ADDITIVE vars point at the bare proxy CA (OpenSSL/Node keep their
+    // real roots alongside it); the own-bundle REPLACE vars point at the
+    // combined bundle {public roots} ∪ {proxy CA} so curl/requests/cargo/
+    // git-libcurl trust both intercepted and tunnelled hosts (see the
+    // combined-bundle plan).
     expect(content).toContain('SSL_CERT_FILE=/etc/yaac/certs/proxy-ca.pem')
-    expect(content).not.toContain('CURL_CA_BUNDLE=')
-    expect(content).not.toContain('REQUESTS_CA_BUNDLE=')
-    expect(content).not.toContain('CARGO_HTTP_CAINFO=')
+    expect(content).toContain('NODE_EXTRA_CA_CERTS=/etc/yaac/certs/proxy-ca.pem')
+    expect(content).toContain('CURL_CA_BUNDLE=/etc/yaac/certs/ca-bundle.pem')
+    expect(content).toContain('REQUESTS_CA_BUNDLE=/etc/yaac/certs/ca-bundle.pem')
+    expect(content).toContain('CARGO_HTTP_CAINFO=/etc/yaac/certs/ca-bundle.pem')
+    expect(content).toContain('GIT_SSL_CAINFO=/etc/yaac/certs/ca-bundle.pem')
+    // The combined bundle is mounted into nested containers (and build RUN
+    // steps) alongside the bare CA.
+    expect(content).toContain('/etc/yaac/certs/ca-bundle.pem:/etc/yaac/certs/ca-bundle.pem:ro')
+    // Build-time trust: the bare proxy CA is dropped into the ca-certificates
+    // source dir. Volumes (unlike env) reach `docker build` RUN steps, so
+    // `apt-get install ca-certificates` folds it into the image's real roots.
+    expect(content).toContain('/etc/yaac/certs/proxy-ca.pem:/usr/local/share/ca-certificates/yaac-proxy-ca.crt:ro')
+    // Must NOT bind-mount over the managed bundle file — rename() onto a
+    // bind-mountpoint fails EBUSY and breaks `update-ca-certificates`.
+    expect(content).not.toContain(':/etc/ssl/certs/ca-certificates.crt:ro')
+    // The replace-vars must never point at the bare proxy CA (that breaks
+    // tunnelled hosts — the exact regression the combined bundle fixes).
+    expect(content).not.toContain('CURL_CA_BUNDLE=/etc/yaac/certs/proxy-ca.pem')
     // newuidmap/newgidmap carry file caps, not setuid.
     expect(content).toContain('setcap cap_setuid+ep /usr/bin/newuidmap')
     expect(content).toContain('setcap cap_setgid+ep /usr/bin/newgidmap')

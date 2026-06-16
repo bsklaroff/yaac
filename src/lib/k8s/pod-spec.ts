@@ -4,10 +4,20 @@ import { LABEL_SESSION_ID } from '@/lib/k8s/pods'
 export const CA_CONFIGMAP_NAME = 'yaac-proxy-ca'
 /** Key inside the CA ConfigMap / filename inside the mount dir. */
 export const CA_CONFIGMAP_KEY = 'proxy-ca.pem'
+/**
+ * Second key in the CA ConfigMap: the combined trust bundle
+ * `{public roots} ∪ {proxy CA}`. The own-bundle tools in nested containers
+ * (curl / requests / cargo / git-libcurl) point CURL_CA_BUNDLE & friends at
+ * it — a superset, so they trust the proxy on intercepted hosts AND real
+ * upstreams on tunnelled hosts. See plans/nested-ca-combined-bundle.md.
+ */
+export const CA_BUNDLE_KEY = 'ca-bundle.pem'
 /** Directory inside session pods where the CA ConfigMap is mounted. */
 export const CA_MOUNT_DIR = '/etc/yaac/certs'
 /** Full in-container path of the proxy CA cert. */
 export const CA_CERT_PATH = `${CA_MOUNT_DIR}/${CA_CONFIGMAP_KEY}`
+/** Full in-container path of the combined trust bundle (roots + proxy CA). */
+export const CA_BUNDLE_PATH = `${CA_MOUNT_DIR}/${CA_BUNDLE_KEY}`
 
 /**
  * In-container mount point of the cross-session shared image store

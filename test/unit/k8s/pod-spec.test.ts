@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
+  CA_BUNDLE_KEY,
+  CA_BUNDLE_PATH,
   CA_CERT_PATH,
   CA_CONFIGMAP_KEY,
   CA_CONFIGMAP_NAME,
@@ -20,6 +22,12 @@ describe('CA constants', () => {
     expect(CA_CONFIGMAP_KEY).toBe('proxy-ca.pem')
     expect(CA_MOUNT_DIR).toBe('/etc/yaac/certs')
     expect(CA_CERT_PATH).toBe('/etc/yaac/certs/proxy-ca.pem')
+  })
+
+  it('compose the combined-bundle path from dir + bundle key', () => {
+    expect(CA_BUNDLE_KEY).toBe('ca-bundle.pem')
+    expect(CA_BUNDLE_PATH).toBe('/etc/yaac/certs/ca-bundle.pem')
+    expect(CA_BUNDLE_PATH).not.toBe(CA_CERT_PATH)
   })
 })
 

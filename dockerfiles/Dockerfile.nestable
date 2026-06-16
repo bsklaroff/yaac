@@ -111,19 +111,42 @@ EOF
 #   - /proc volume: rootless podman in a pod cannot mount a fresh /proc
 #     (the pod's /proc carries the standard runtime masks), so bind the
 #     pod's /proc into nested containers.
-#   - proxy-CA volume + env: every nested container (and every `docker
-#     build` RUN step — buildah honors these in builds too) auto-mounts the
-#     session's MITM CA and trusts it, mirroring getCaTrustEnv
-#     (src/lib/container/proxy-client.ts) with zero user cooperation.
-#     Only the ADDITIVE trust vars are set: SSL_CERT_FILE (OpenSSL still
-#     loads the default SSL_CERT_DIR, so real roots remain) and
-#     NODE_EXTRA_CA_CERTS (appended to Node's bundled roots). The
-#     single-file *_CA_BUNDLE/*_CAINFO vars (CURL_CA_BUNDLE,
-#     REQUESTS_CA_BUNDLE, CARGO_HTTP_CAINFO) are deliberately NOT set: they
-#     REPLACE the whole trust set with just our CA, which would make those
-#     tools reject the REAL certs of hosts the proxy tunnels (most
-#     allowlisted registries/mirrors) — see
-#     plans/nested-ca-combined-bundle.md for the proper combined-bundle fix.
+#   - proxy-CA trust: every nested container (and every `docker build` RUN
+#     step) auto-trusts the session's MITM CA with zero user cooperation.
+#     Two delivery mechanisms, because env and volumes reach different places:
+#       VOLUMES reach BOTH `podman run` and `docker build` RUN steps; ENV
+#       reaches `podman run` but NOT `docker build` RUN (buildah does not
+#       apply containers.conf [containers] env to build steps — verified by
+#       test/e2e-cli/nested-containers.test.ts). So build-time trust must
+#       ride a volume, not an env var.
+#     The trust set must be the union {public roots} ∪ {proxy CA} for the
+#     own-bundle tools (curl, requests, cargo, git-libcurl) that ignore
+#     SSL_CERT_FILE and REPLACE their whole trust set with a single file —
+#     pointed at the lone proxy CA they reject the REAL certs of every
+#     tunnelled host (most allowlisted registries/mirrors). The combined
+#     bundle (public roots + proxy CA) is served by the proxy's
+#     /ca-bundle.pem and mounted here. See plans/nested-ca-combined-bundle.md.
+#       CA-CERTIFICATES DROP-IN — the bare proxy CA is bind-mounted as a
+#         source cert in /usr/local/share/ca-certificates/. `update-ca-
+#         certificates` (run by `apt-get install ca-certificates`, the usual
+#         way a build gains HTTPS, and by many packages' triggers) folds it
+#         into the image's real roots, producing the correct union in the
+#         image's own /etc/ssl/certs/ca-certificates.crt — which curl reads
+#         by default with no env. This is the build-time path. We must NOT
+#         bind-mount over /etc/ssl/certs/ca-certificates.crt directly: that
+#         file is what update-ca-certificates rewrites (temp file + rename),
+#         and rename() onto a bind-mountpoint fails EBUSY, so the
+#         ca-certificates postinst — and the whole build — fails. The drop-in
+#         composes with update-ca-certificates instead of fighting it. (A
+#         build that runs curl against a MITM host WITHOUT ever installing/
+#         refreshing ca-certificates won't pick this up; that path is covered
+#         at run-time by the env vars below, or by running
+#         update-ca-certificates.)
+#       ENV (run-time) — SSL_CERT_FILE/NODE_EXTRA_CA_CERTS additively on the
+#         bare proxy CA; CURL_CA_BUNDLE/REQUESTS_CA_BUNDLE/CARGO_HTTP_CAINFO/
+#         GIT_SSL_CAINFO on the combined bundle, for the own-bundle tools
+#         (notably requests/cargo) that read neither the OS store nor
+#         SSL_CERT_FILE.
 RUN mkdir -p /home/yaac/.config/containers && \
     mkdir -p /home/yaac/.local/share/containers && \
     mkdir -p /var/lib/shared-images
@@ -132,11 +155,16 @@ RUN cat <<'EOF' > /home/yaac/.config/containers/containers.conf
 volumes = [
   "/proc:/proc",
   "/etc/yaac/certs/proxy-ca.pem:/etc/yaac/certs/proxy-ca.pem:ro",
+  "/etc/yaac/certs/ca-bundle.pem:/etc/yaac/certs/ca-bundle.pem:ro",
+  "/etc/yaac/certs/proxy-ca.pem:/usr/local/share/ca-certificates/yaac-proxy-ca.crt:ro",
 ]
 env = [
   "SSL_CERT_FILE=/etc/yaac/certs/proxy-ca.pem",
   "NODE_EXTRA_CA_CERTS=/etc/yaac/certs/proxy-ca.pem",
-  "GIT_SSL_CAINFO=/etc/yaac/certs/proxy-ca.pem",
+  "CURL_CA_BUNDLE=/etc/yaac/certs/ca-bundle.pem",
+  "REQUESTS_CA_BUNDLE=/etc/yaac/certs/ca-bundle.pem",
+  "CARGO_HTTP_CAINFO=/etc/yaac/certs/ca-bundle.pem",
+  "GIT_SSL_CAINFO=/etc/yaac/certs/ca-bundle.pem",
 ]
 default_sysctls = []
 EOF

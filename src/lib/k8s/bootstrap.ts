@@ -8,7 +8,7 @@ import {
   kubectlWithRetry,
 } from '@/lib/k8s/kubectl'
 import { ensureCiliumCrds } from '@/lib/k8s/cilium-crds'
-import { CA_CONFIGMAP_KEY, CA_CONFIGMAP_NAME } from '@/lib/k8s/pod-spec'
+import { CA_BUNDLE_KEY, CA_CONFIGMAP_KEY, CA_CONFIGMAP_NAME } from '@/lib/k8s/pod-spec'
 import { LABEL_SESSION_ID } from '@/lib/k8s/pods'
 import { credentialsDir, getDataDir } from '@/lib/project/paths'
 import { isTorEnabled } from '@/lib/git'
@@ -1016,19 +1016,25 @@ interface RawConfigMap {
 }
 
 /**
- * Upsert the proxy-CA ConfigMap that every session pod mounts. Skips the
- * write when the stored PEM already matches (the common case — the proxy
- * persists its CA in /data and only regenerates when that volume is lost).
+ * Upsert the proxy-CA ConfigMap that every session pod mounts. Carries two
+ * keys: the bare proxy CA (additive trust — SSL_CERT_FILE/NODE_EXTRA_CA_CERTS)
+ * and the combined bundle `{public roots} ∪ {proxy CA}` (replace-semantics
+ * trust for the own-bundle tools — CURL_CA_BUNDLE & friends). Skips the write
+ * when both stored values already match (the common case — the proxy persists
+ * its CA in /data and only regenerates when that volume is lost).
  */
-export async function ensureCaConfigMap(caPem: string): Promise<void> {
+export async function ensureCaConfigMap(caPem: string, caBundlePem: string): Promise<void> {
   const existing = await kubectlGetJson<RawConfigMap>([
     'get', 'configmap', CA_CONFIGMAP_NAME, '-n', k8sNamespace(),
   ])
-  if (existing?.data?.[CA_CONFIGMAP_KEY] === caPem) return
+  if (
+    existing?.data?.[CA_CONFIGMAP_KEY] === caPem &&
+    existing?.data?.[CA_BUNDLE_KEY] === caBundlePem
+  ) return
   await kubectlApply({
     apiVersion: 'v1',
     kind: 'ConfigMap',
     metadata: { name: CA_CONFIGMAP_NAME, namespace: k8sNamespace() },
-    data: { [CA_CONFIGMAP_KEY]: caPem },
+    data: { [CA_CONFIGMAP_KEY]: caPem, [CA_BUNDLE_KEY]: caBundlePem },
   })
 }

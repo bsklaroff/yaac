@@ -650,25 +650,35 @@ describe('ensureProxyResources', () => {
 })
 
 describe('ensureCaConfigMap', () => {
-  it('skips the apply when the stored PEM already matches', async () => {
-    mockGetJson.mockResolvedValue({ data: { 'proxy-ca.pem': 'PEM-CONTENT' } })
-    await ensureCaConfigMap('PEM-CONTENT')
+  it('skips the apply only when both the CA and the bundle already match', async () => {
+    mockGetJson.mockResolvedValue({
+      data: { 'proxy-ca.pem': 'PEM-CONTENT', 'ca-bundle.pem': 'BUNDLE' },
+    })
+    await ensureCaConfigMap('PEM-CONTENT', 'BUNDLE')
     expect(mockApply).not.toHaveBeenCalled()
   })
 
-  it('applies the ConfigMap when absent or stale', async () => {
+  it('applies the ConfigMap with both keys when absent or stale', async () => {
     mockGetJson.mockResolvedValue(null)
-    await ensureCaConfigMap('NEW-PEM')
+    await ensureCaConfigMap('NEW-PEM', 'NEW-BUNDLE')
     expect(mockApply).toHaveBeenCalledWith({
       apiVersion: 'v1',
       kind: 'ConfigMap',
       metadata: { name: 'yaac-proxy-ca', namespace: 'test-ns' },
-      data: { 'proxy-ca.pem': 'NEW-PEM' },
+      data: { 'proxy-ca.pem': 'NEW-PEM', 'ca-bundle.pem': 'NEW-BUNDLE' },
     })
 
     mockApply.mockClear()
     mockGetJson.mockResolvedValue({ data: { 'proxy-ca.pem': 'OLD-PEM' } })
-    await ensureCaConfigMap('NEW-PEM')
+    await ensureCaConfigMap('NEW-PEM', 'NEW-BUNDLE')
+    expect(mockApply).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-applies when the CA matches but the bundle drifted (e.g. roots refresh)', async () => {
+    mockGetJson.mockResolvedValue({
+      data: { 'proxy-ca.pem': 'SAME', 'ca-bundle.pem': 'OLD-BUNDLE' },
+    })
+    await ensureCaConfigMap('SAME', 'NEW-BUNDLE')
     expect(mockApply).toHaveBeenCalledTimes(1)
   })
 })
