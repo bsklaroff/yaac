@@ -12,8 +12,6 @@ export { PACKAGE_ROOT, ensureDataDir, getDataDir, getProjectsDir, projectConfigD
 
 export const DOCKERFILES_DIR = path.join(PACKAGE_ROOT, 'dockerfiles')
 export const PROXY_DIR = path.join(PACKAGE_ROOT, 'k8s', 'proxy')
-export const REDIRECT_INIT_DIR = path.join(PACKAGE_ROOT, 'k8s', 'redirect-init')
-export const RELAY_DIR = path.join(PACKAGE_ROOT, 'k8s', 'relay')
 
 /**
  * Top-level directory for all host-side credential files. Split into

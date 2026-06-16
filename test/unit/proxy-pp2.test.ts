@@ -1,37 +1,42 @@
 import { describe, it, expect } from 'vitest'
-import {
-  PP2_TLV_YAAC_IDENTITY,
-  identityFromPp2,
-  parsePp2Header,
-  relayTokenFor,
-  verifyRelayToken,
-} from '@proxy/pp2'
-// The relay is the real PP2 producer; test the proxy's parser against it.
-import { buildPp2Header } from '@relay/pp2-frame'
+import { parsePp2Header } from '@proxy/pp2'
 
-const SECRET = 'test-proxy-secret'
-const SID = 'abcd-1234'
+const PP2_SIG = Buffer.from([0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a])
 
-function header(identity = `${SID}:${relayTokenFor(SECRET, SID)}`): Buffer {
-  return buildPp2Header({ srcIp: '10.244.0.5', srcPort: 54321, dstIp: '1.2.3.4', dstPort: 443, identity })
+function be16(n: number): Buffer {
+  const b = Buffer.alloc(2)
+  b.writeUInt16BE(n)
+  return b
+}
+
+/** The AF_INET / STREAM PROXY-protocol-v2 header Cilium's Envoy stamps. */
+function afInet(
+  srcIp = '10.244.0.5', srcPort = 54321, dstIp = '1.2.3.4', dstPort = 443,
+): Buffer {
+  const addr = Buffer.concat([
+    Buffer.from(srcIp.split('.').map(Number)),
+    Buffer.from(dstIp.split('.').map(Number)),
+    be16(srcPort), be16(dstPort),
+  ])
+  return Buffer.concat([PP2_SIG, Buffer.from([0x21, 0x11]), be16(addr.length), addr])
 }
 
 describe('parsePp2Header', () => {
-  it('round-trips a built header: addresses, ports, and the identity TLV', () => {
-    const res = parsePp2Header(header())
+  it('round-trips an AF_INET header: source/destination addresses and ports', () => {
+    const res = parsePp2Header(afInet())
     expect(res.kind).toBe('ok')
     if (res.kind !== 'ok') return
     expect(res.srcIp).toBe('10.244.0.5')
     expect(res.dstIp).toBe('1.2.3.4')
     expect(res.srcPort).toBe(54321)
     expect(res.dstPort).toBe(443)
-    expect(res.bytesConsumed).toBe(header().length)
-    expect(res.tlvs.get(PP2_TLV_YAAC_IDENTITY)?.toString('utf8')).toBe(`${SID}:${relayTokenFor(SECRET, SID)}`)
+    expect(res.bytesConsumed).toBe(afInet().length)
+    expect(res.tlvs.size).toBe(0)
   })
 
   it('consumes exactly the header, leaving trailing payload for the caller', () => {
     const payload = Buffer.from('subsequent-clienthello-bytes')
-    const combined = Buffer.concat([header(), payload])
+    const combined = Buffer.concat([afInet(), payload])
     const res = parsePp2Header(combined)
     expect(res.kind).toBe('ok')
     if (res.kind !== 'ok') return
@@ -39,7 +44,7 @@ describe('parsePp2Header', () => {
   })
 
   it('returns need-more for every truncated prefix of a valid header', () => {
-    const h = header()
+    const h = afInet()
     for (const len of [0, 1, 11, 12, 15, 16, h.length - 1]) {
       expect(parsePp2Header(h.subarray(0, len)), `len ${len}`).toEqual({ kind: 'need-more' })
     }
@@ -47,7 +52,7 @@ describe('parsePp2Header', () => {
 
   it('fails closed (invalid) on a TLS ClientHello — the key fail-closed case', () => {
     // First byte of a TLS record is 0x16, which diverges from the PP2
-    // signature immediately.
+    // signature immediately, so a pod sending raw TLS gets no conversation.
     expect(parsePp2Header(Buffer.from([0x16, 0x03, 0x01, 0x00, 0x05])))
       .toEqual({ kind: 'invalid' })
   })
@@ -58,8 +63,7 @@ describe('parsePp2Header', () => {
   })
 
   it('fails closed on a correct signature but wrong version', () => {
-    const h = header()
-    const bad = Buffer.from(h)
+    const bad = Buffer.from(afInet())
     bad[12] = 0x31 // version 3
     expect(parsePp2Header(bad)).toEqual({ kind: 'invalid' })
   })
@@ -67,98 +71,23 @@ describe('parsePp2Header', () => {
   it('fails closed on a TLV that overruns the declared length', () => {
     // Address block (12B) + one TLV header claiming a 200-byte value but
     // only 3 bytes of value present.
-    const sig = Buffer.from([0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a])
     const addr = Buffer.alloc(12)
-    const tlv = Buffer.concat([Buffer.from([PP2_TLV_YAAC_IDENTITY]), be16(200), Buffer.from('abc')])
+    const tlv = Buffer.concat([Buffer.from([0x02]), be16(200), Buffer.from('abc')])
     const rem = Buffer.concat([addr, tlv])
-    const hdr = Buffer.concat([sig, Buffer.from([0x21, 0x11]), be16(rem.length), rem])
+    const hdr = Buffer.concat([PP2_SIG, Buffer.from([0x21, 0x11]), be16(rem.length), rem])
     expect(parsePp2Header(hdr)).toEqual({ kind: 'invalid' })
   })
 
   it('rejects an oversized declared remaining length without buffering it', () => {
-    const sig = Buffer.from([0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a])
-    const hdr = Buffer.concat([sig, Buffer.from([0x21, 0x11, 0xff, 0xff])])
+    const hdr = Buffer.concat([PP2_SIG, Buffer.from([0x21, 0x11, 0xff, 0xff])])
     expect(parsePp2Header(hdr)).toEqual({ kind: 'invalid' })
   })
 
-  it('parses an AF_UNSPEC header (no address block, TLVs only)', () => {
-    const identity = Buffer.from('s:t')
-    const tlv = Buffer.concat([Buffer.from([PP2_TLV_YAAC_IDENTITY]), be16(identity.length), identity])
-    const sig = Buffer.from([0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a])
-    const hdr = Buffer.concat([sig, Buffer.from([0x21, 0x00]), be16(tlv.length), tlv])
+  it('parses an AF_UNSPEC header (no address block) with a null source IP', () => {
+    const hdr = Buffer.concat([PP2_SIG, Buffer.from([0x21, 0x00]), be16(0)])
     const res = parsePp2Header(hdr)
     expect(res.kind).toBe('ok')
     if (res.kind !== 'ok') return
     expect(res.srcIp).toBeNull()
-    expect(res.tlvs.get(PP2_TLV_YAAC_IDENTITY)?.toString('utf8')).toBe('s:t')
-  })
-})
-
-function be16(n: number): Buffer {
-  const b = Buffer.alloc(2)
-  b.writeUInt16BE(n)
-  return b
-}
-
-describe('identityFromPp2', () => {
-  it('splits "<sessionId>:<token>" on the first colon', () => {
-    const res = parsePp2Header(header())
-    if (res.kind !== 'ok') throw new Error('parse failed')
-    expect(identityFromPp2(res.tlvs)).toEqual({ sessionId: SID, token: relayTokenFor(SECRET, SID) })
-  })
-
-  it('returns null when the identity TLV is absent', () => {
-    expect(identityFromPp2(new Map())).toBeNull()
-  })
-
-  it('returns null for malformed values (no colon, empty side)', () => {
-    for (const v of ['no-colon', ':token', 'sid:']) {
-      expect(identityFromPp2(new Map([[PP2_TLV_YAAC_IDENTITY, Buffer.from(v)]]))).toBeNull()
-    }
-  })
-})
-
-describe('relayTokenFor / verifyRelayToken', () => {
-  it('verifies a token the daemon would compute for the same session', () => {
-    const token = relayTokenFor(SECRET, SID)
-    expect(verifyRelayToken(SECRET, SID, token)).toBe(true)
-  })
-
-  it('rejects a token bound to a different session id', () => {
-    const token = relayTokenFor(SECRET, 'other-session')
-    expect(verifyRelayToken(SECRET, SID, token)).toBe(false)
-  })
-
-  it('rejects a token computed under a different secret', () => {
-    const token = relayTokenFor('wrong-secret', SID)
-    expect(verifyRelayToken(SECRET, SID, token)).toBe(false)
-  })
-
-  it('rejects empty / wrong-length tokens without throwing', () => {
-    expect(verifyRelayToken(SECRET, SID, '')).toBe(false)
-    expect(verifyRelayToken(SECRET, SID, 'deadbeef')).toBe(false)
-  })
-
-  it('is deterministic and hex (so it never collides with the colon separator)', () => {
-    expect(relayTokenFor(SECRET, SID)).toMatch(/^[0-9a-f]{64}$/)
-    expect(relayTokenFor(SECRET, SID)).toBe(relayTokenFor(SECRET, SID))
-  })
-})
-
-describe('end-to-end identity gate', () => {
-  it('a header built with a valid token verifies after parse', () => {
-    const token = relayTokenFor(SECRET, SID)
-    const res = parsePp2Header(buildPp2Header({ identity: `${SID}:${token}` }))
-    if (res.kind !== 'ok') throw new Error('parse failed')
-    const id = identityFromPp2(res.tlvs)
-    expect(id).not.toBeNull()
-    expect(verifyRelayToken(SECRET, id!.sessionId, id!.token)).toBe(true)
-  })
-
-  it('a header carrying a forged token parses but fails verification', () => {
-    const res = parsePp2Header(buildPp2Header({ identity: `${SID}:${'0'.repeat(64)}` }))
-    if (res.kind !== 'ok') throw new Error('parse failed')
-    const id = identityFromPp2(res.tlvs)!
-    expect(verifyRelayToken(SECRET, id.sessionId, id.token)).toBe(false)
   })
 })

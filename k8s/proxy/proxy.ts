@@ -19,6 +19,7 @@ import http from 'node:http'
 import https from 'node:https'
 import net from 'node:net'
 import tls from 'node:tls'
+import dgram from 'node:dgram'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -33,11 +34,9 @@ import {
   peekClientHelloSni,
   splitHostHeader,
 } from './transparent'
-import {
-  identityFromPp2,
-  parsePp2Header,
-  verifyRelayToken,
-} from './pp2'
+import { parsePp2Header } from './pp2'
+import { buildDnsResponse, parseDnsQuery } from './dns-stub'
+import { PodSessionIndex, fetchSessionByPodIp, startPodWatch } from './pod-watch'
 
 // Control-API listener (CA cert, registrations, ssh-agent keys). Renamed
 // from PORT now that no session egress reaches it — it is purely the API.
@@ -55,10 +54,23 @@ if (!API_PORT || !PROXY_AUTH_SECRET || !TRANSPARENT_HTTPS_PORT || !TRANSPARENT_H
     + 'TRANSPARENT_HTTP_PORT and TRANSPARENT_TUNNEL_PORT environment variables are required')
   process.exit(1)
 }
-// Narrowed alias: control-flow narrowing of the module const above does not
-// reach the listener closures that verify relay tokens.
-const proxyAuthSecret: string = PROXY_AUTH_SECRET
 const DATA_DIR = '/data'
+// UDP/53 DNS stub: session pods point their resolver here; every A query gets
+// this fixed dummy (resolution is decorative — Cilium redirects by port, the
+// proxy routes by SNI/Host). Optional so non-cluster test runs can skip it.
+const DNS_STUB_PORT = process.env.DNS_STUB_PORT
+const DNS_DUMMY_IPV4 = '198.18.0.1'
+
+// podIP → sessionId, kept fresh by watching the pods API with the proxy's
+// read-only ServiceAccount. The transparent listeners resolve a connection's
+// session from the source pod IP in the Envoy-stamped PROXY header.
+const podIndex = new PodSessionIndex()
+async function resolveSession(ip: string): Promise<string | undefined> {
+  const cached = podIndex.resolve(ip)
+  if (cached) return cached
+  // Cache-miss fallback: a new pod's first packet can beat its watch event.
+  try { return await fetchSessionByPodIp(podIndex, ip) } catch { return undefined }
+}
 
 // When USE_TOR=1, route every upstream connection through the Tor SOCKS
 // listener started by entrypoint.sh on container loopback. socks5h://
@@ -2025,14 +2037,15 @@ const PP2_MAX_BYTES = 4 * 1024
 const PP2_TIMEOUT_MS = 10_000
 
 /**
- * Consume + verify the relay's PP2 preamble on a freshly accepted
- * transparent socket, then hand the session id and the remaining stream
- * (the real TLS/HTTP bytes, unshifted) to `next`. Any failure destroys
- * the socket — this is the fail-closed gate that replaces source-IP
- * identity, and it also closes the "any in-cluster pod can poke the
- * transparent port" exposure: no valid credential, no conversation.
+ * Consume the Envoy-stamped PROXY-protocol-v2 preamble on a freshly accepted
+ * transparent socket, resolve the source pod IP it carries to a session id,
+ * then hand that session id and the remaining stream to `next`. Any failure
+ * destroys the socket — this is the fail-closed gate. Identity is the source
+ * pod IP (Cilium sets it from eBPF-verified endpoint metadata, unspoofable);
+ * the proxy-ingress CiliumNetworkPolicy ensures only the node Envoy can reach
+ * these ports, so a session pod cannot dial in and forge a source.
  */
-function withRelayIdentity(
+function resolveSessionBySourceIp(
   socket: net.Socket,
   label: string,
   next: (sessionId: string, leftover: Buffer) => void,
@@ -2059,24 +2072,29 @@ function withRelayIdentity(
     }
     clearTimeout(timer)
     socket.removeListener('data', onData)
-    if (res.kind === 'invalid') {
+    if (res.kind === 'invalid' || !res.srcIp) {
       console.log(`[proxy] BLOCKED transparent ${label} from ${peer}: no valid PROXY header`)
       socket.destroy()
       return
     }
-    const identity = identityFromPp2(res.tlvs)
-    if (!identity || !verifyRelayToken(proxyAuthSecret, identity.sessionId, identity.token)) {
-      console.log(`[proxy] BLOCKED transparent ${label} from ${peer}: missing/invalid relay token`)
-      socket.destroy()
-      return
-    }
-    // Hand the bytes after the header to `next` directly rather than
-    // unshifting here: the HTTPS peeker continues buffering from this
-    // leftover (one unshift, at dispatch), and the HTTP path unshifts it
-    // once before handing the socket to the internal server. A second
-    // unshift on top of this one does not reliably re-emit to a
-    // freshly-added 'data' listener.
-    next(identity.sessionId, buf.subarray(res.bytesConsumed))
+    const srcIp = res.srcIp
+    // Keep buffering bytes that arrive while we resolve the session async, so
+    // none are lost between removing onData and `next` attaching its reader.
+    let leftover = buf.subarray(res.bytesConsumed)
+    const buffer = (chunk2: Buffer): void => { leftover = Buffer.concat([leftover, chunk2]) }
+    socket.on('data', buffer)
+    void resolveSession(srcIp).then((sessionId) => {
+      socket.removeListener('data', buffer)
+      if (!sessionId) {
+        console.log(`[proxy] BLOCKED transparent ${label} from ${peer}: source ${srcIp} is not a known session pod`)
+        socket.destroy()
+        return
+      }
+      // Hand the post-header bytes to `next` directly (the HTTPS peeker / HTTP
+      // path each unshift once at dispatch; a second unshift would not
+      // reliably re-emit to a freshly-added 'data' listener).
+      next(sessionId, leftover)
+    })
   }
   socket.on('data', onData)
 }
@@ -2084,7 +2102,7 @@ function withRelayIdentity(
 /**
  * After the PP2 preamble: peek the ClientHello SNI without terminating
  * TLS, then dispatch to the shared MITM/tunnel path. `initial` is the
- * post-header leftover from withRelayIdentity (often the start of the
+ * post-header leftover from resolveSessionBySourceIp (often the start of the
  * ClientHello). The single unshift at dispatch drives the real handshake
  * downstream.
  */
@@ -2137,7 +2155,7 @@ function peekSniAndDispatch(socket: net.Socket, sessionId: string, initial: Buff
 }
 
 const transparentHttpsServer = net.createServer((socket) => {
-  withRelayIdentity(socket, 'HTTPS', (sessionId, leftover) =>
+  resolveSessionBySourceIp(socket, 'HTTPS', (sessionId, leftover) =>
     peekSniAndDispatch(socket, sessionId, leftover))
 })
 
@@ -2170,7 +2188,7 @@ const internalHttpServer = http.createServer((req, res) => {
 })
 
 const transparentHttpServer = net.createServer((socket) => {
-  withRelayIdentity(socket, 'HTTP', (sessionId, leftover) => {
+  resolveSessionBySourceIp(socket, 'HTTP', (sessionId, leftover) => {
     ;(socket as IdentifiedSocket).yaacSessionId = sessionId
     if (leftover.length > 0) socket.unshift(leftover)
     internalHttpServer.emit('connection', socket)
@@ -2233,7 +2251,7 @@ function readConnectAndDispatch(socket: net.Socket, sessionId: string, initial: 
 }
 
 const transparentTunnelServer = net.createServer((socket) => {
-  withRelayIdentity(socket, 'TUNNEL', (sessionId, leftover) =>
+  resolveSessionBySourceIp(socket, 'TUNNEL', (sessionId, leftover) =>
     readConnectAndDispatch(socket, sessionId, leftover))
 })
 
@@ -2250,10 +2268,38 @@ for (const [srv, portStr, label] of [
   })
 }
 
+// ── DNS stub (UDP/53) ──────────────────────────────────────────────────────
+// Session pods resolve against the proxy VIP; every A query gets the dummy IP.
+const dnsServer = DNS_STUB_PORT ? dgram.createSocket('udp4') : null
+if (dnsServer && DNS_STUB_PORT) {
+  dnsServer.on('message', (msg, rinfo) => {
+    const query = parseDnsQuery(msg)
+    if (!query) return
+    dnsServer.send(buildDnsResponse(query, DNS_DUMMY_IPV4), rinfo.port, rinfo.address)
+  })
+  dnsServer.on('error', (err) => console.error('[proxy] DNS stub error:', err))
+  dnsServer.bind(parseInt(DNS_STUB_PORT, 10), () => {
+    console.log(`[proxy] DNS stub listener on udp/${DNS_STUB_PORT}`)
+  })
+}
+
+// ── Pod-watch (source IP → session) ────────────────────────────────────────
+// Only in-cluster (a mounted SA). Local/test runs without it leave the index
+// empty, so transparent connections fail closed — which is correct.
+if (process.env.KUBERNETES_SERVICE_HOST) {
+  void startPodWatch(podIndex).catch((err: Error) => {
+    console.error('[proxy] pod-watch failed to start:', err.message)
+    process.exit(1)
+  })
+} else {
+  console.warn('[proxy] no KUBERNETES_SERVICE_HOST — pod-watch disabled (not in-cluster)')
+}
+
 process.on('SIGTERM', () => {
   console.log('[proxy] Shutting down...')
   transparentHttpsServer.close()
   transparentHttpServer.close()
   transparentTunnelServer.close()
+  dnsServer?.close()
   server.close(() => process.exit(0))
 })

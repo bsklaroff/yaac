@@ -56,18 +56,9 @@ vi.mock('@/lib/container/proxy-client', () => ({
     ensureRunning: vi.fn().mockResolvedValue(undefined),
     registerSession: vi.fn().mockResolvedValue(undefined),
     getCaTrustEnv: vi.fn().mockReturnValue(['SSL_CERT_FILE=/etc/yaac/certs/proxy-ca.pem']),
-    relayToken: vi.fn().mockReturnValue('a'.repeat(64)),
     getCaCert: vi.fn().mockResolvedValue('cert'),
   },
   buildRulesFromConfig: vi.fn().mockReturnValue([]),
-}))
-
-vi.mock('@/lib/k8s/redirect-init', () => ({
-  ensureRedirectInitImage: vi.fn().mockResolvedValue('localhost:5000/yaac-redirect-init:test'),
-}))
-
-vi.mock('@/lib/k8s/relay', () => ({
-  ensureRelayImage: vi.fn().mockResolvedValue('localhost:5000/yaac-relay:test'),
 }))
 
 vi.mock('@/lib/container/default-allowed-hosts', async (importOriginal) => {
@@ -181,8 +172,6 @@ import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubect
 import { containerExec } from '@/lib/k8s/exec'
 import { clusterIpForNamespace } from '@/lib/k8s/bootstrap'
 import { proxyClient } from '@/lib/container/proxy-client'
-import { ensureRedirectInitImage } from '@/lib/k8s/redirect-init'
-import { ensureRelayImage } from '@/lib/k8s/relay'
 import { resolveProjectConfig } from '@/lib/project/config'
 import simpleGit from 'simple-git'
 import { resolveCredentialForUrl, loadKnownHostsEntryForHost } from '@/lib/project/credentials'
@@ -222,7 +211,9 @@ interface JobManifest {
       metadata: { labels: Record<string, string> }
       spec: {
         restartPolicy: string
-        initContainers: Array<{
+        dnsPolicy?: string
+        dnsConfig?: { nameservers: string[] }
+        initContainers?: Array<{
           name: string
           image: string
           restartPolicy?: string
@@ -272,9 +263,6 @@ describe('createSession', () => {
     vi.mocked(proxyClient.ensureRunning).mockResolvedValue(undefined)
     vi.mocked(proxyClient.registerSession).mockResolvedValue(undefined)
     vi.mocked(proxyClient.getCaTrustEnv).mockReturnValue(['SSL_CERT_FILE=/etc/yaac/certs/proxy-ca.pem'])
-    vi.mocked(proxyClient.relayToken).mockReturnValue('a'.repeat(64))
-    vi.mocked(ensureRedirectInitImage).mockResolvedValue('localhost:5000/yaac-redirect-init:test')
-    vi.mocked(ensureRelayImage).mockResolvedValue('localhost:5000/yaac-relay:test')
     /* eslint-enable @typescript-eslint/unbound-method */
     mockSpawn.mockImplementation(() => mockAttachedChild() as never)
     mockApply.mockResolvedValue(undefined)
@@ -378,47 +366,27 @@ describe('createSession', () => {
     expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/opencode-meta', { recursive: true })
   })
 
-  it('threads the egress sidecars into the Job and injects the relay token, never the daemon binding a pod', async () => {
+  it('injects no per-pod egress sidecars and points the pod resolver at the proxy VIP', async () => {
     await createSession('demo', { tool: 'claude', sessionId: 'abcd1234' })
 
-    const initContainers = appliedJobManifest().spec.template.spec.initContainers
-    expect(initContainers.map((c) => c.name)).toEqual(['yaac-redirect-init', 'yaac-relay'])
-    expect(initContainers[0].image).toBe('localhost:5000/yaac-redirect-init:test')
-
-    // The relay carries this session's derived credential; the proxy
-    // re-verifies it per connection, so the daemon never asserts identity.
-    const relay = initContainers[1]
-    expect(relay.image).toBe('localhost:5000/yaac-relay:test')
-    expect(relay.restartPolicy).toBe('Always')
-    expect(relay.env).toContainEqual({ name: 'SESSION_ID', value: 'abcd1234' })
-    expect(relay.env).toContainEqual({ name: 'RELAY_TOKEN', value: 'a'.repeat(64) })
-    // The relay dials the proxy by its pinned per-namespace VIP, never a
-    // DNS name — resolution inside the pod is the stub's dummy answer.
-    expect(relay.env).toContainEqual({
-      name: 'PROXY_HOST', value: clusterIpForNamespace('yaac'),
-    })
-    expect(relay.env).toContainEqual({ name: 'LISTEN_DNS_PORT', value: '15004' })
-    // redirect-init gets the filter default-deny params; its carve-out
-    // targets the same pinned VIP the relay dials, not a CIDR.
-    expect(initContainers[0].env).toContainEqual({ name: 'REDIRECT_DNS_PORT', value: '15004' })
-    expect(initContainers[0].env).toContainEqual({ name: 'RELAY_UID', value: '1337' })
-    expect(initContainers[0].env).toContainEqual({
-      name: 'PROXY_CLUSTER_IP', value: clusterIpForNamespace('yaac'),
-    })
-    const redirectEnvNames = initContainers[0].env.map((e) => e.name)
-    expect(redirectEnvNames).not.toContain('SERVICE_CIDR')
-    expect(redirectEnvNames).not.toContain('POD_CIDR')
-    /* eslint-disable-next-line @typescript-eslint/unbound-method */
-    expect(proxyClient.relayToken).toHaveBeenCalledWith('abcd1234')
-
-    // No bind endpoint exists anymore — identity is stateless at the proxy.
-    expect(proxyClient).not.toHaveProperty('bindSessionIp')
+    const spec = appliedJobManifest().spec.template.spec
+    // Egress is redirected at the cluster level (Cilium CEC + CNP) — the Job
+    // carries no redirect-init/relay init containers.
+    expect(spec.initContainers).toBeUndefined()
+    // The pod resolves DNS against the proxy VIP's stub (pinned, never a DNS
+    // name); identity is the source pod IP the proxy watches, so no token.
+    expect(spec.dnsPolicy).toBe('None')
+    expect(spec.dnsConfig).toEqual({ nameservers: [clusterIpForNamespace('yaac')] })
+    const sessionEnvNames = spec.containers[0].env.map((e: { name: string }) => e.name)
+    expect(sessionEnvNames).not.toContain('RELAY_TOKEN')
+    // No bind endpoint exists — identity is stateless at the proxy.
+    expect(proxyClient).not.toHaveProperty('relayToken')
   })
 
-  it('routes SSH through the pod-local relay with no x:sessionId credential', async () => {
-    // SSH-scheme remote: the proxy command must point ncat at the relay's
-    // loopback CONNECT port and carry no proxy-auth, so identity is the
-    // relay's PP2 token (not a leakable bearer credential in the env).
+  it('routes SSH through the Cilium-redirected tunnel sentinel with no credential', async () => {
+    // SSH-scheme remote: ncat CONNECTs to the sentinel address that Cilium
+    // redirects to the proxy tunnel listener, carrying no proxy-auth — so
+    // identity is the source pod IP (not a leakable bearer credential).
     vi.mocked(simpleGit).mockReturnValue({
       remote: vi.fn().mockResolvedValue('git@github.com:example/repo.git'),
       addConfig: vi.fn().mockResolvedValue(undefined),
@@ -429,7 +397,7 @@ describe('createSession', () => {
 
     const env = appliedJobManifest().spec.template.spec.containers[0].env
     const sshCmd = env.find((e) => e.name === 'GIT_SSH_COMMAND')?.value ?? ''
-    expect(sshCmd).toContain('ncat --proxy 127.0.0.1:15003')
+    expect(sshCmd).toContain('ncat --proxy 198.18.0.2:10259')
     expect(sshCmd).toContain('--proxy-type http')
     // No bearer credential rides the workload env.
     expect(sshCmd).not.toContain('--proxy-auth')

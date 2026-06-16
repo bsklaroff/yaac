@@ -1,18 +1,15 @@
 /**
- * Minimal DNS wire-format helpers for the relay's loopback DNS stub —
- * pure (no deps, no I/O), the pp2-frame.ts precedent. Kept in the relay's
- * build context (k8s/relay/) so the relay image can COPY it; unit tests
- * import it directly via the @relay alias.
+ * Minimal DNS wire-format helpers for the proxy's UDP/53 stub — pure (no
+ * deps, no I/O). Session pods point their resolver (dnsConfig.nameservers) at
+ * the proxy VIP; the stub answers every A query with a fixed dummy IP.
  *
- * The stub's contract (see the session-egress lockdown design): the
- * pod-netns nat rules REDIRECT every outbound udp/53 packet here, and in
- * this architecture the resolved IP is decorative — the 443/80 REDIRECT
- * ignores it and the proxy routes by SNI/Host. So every A query gets a
- * fixed dummy answer and everything else (AAAA included) gets an empty
- * NOERROR: pods are v4 single-stack, and an empty NOERROR — not
- * NXDOMAIN — makes dual-query resolvers fall through to the A answer.
- * The TC bit is never set, so resolvers never retry over tcp/53 (which
- * the pod's egress filter REJECTs).
+ * The resolved IP is decorative: Cilium redirects egress by port (443/80), and
+ * the proxy routes by TLS SNI / HTTP Host — never by the dialed address. So a
+ * constant dummy answer is all a client needs, and resolving nothing real
+ * keeps the DNS-tunnelling channel closed. Everything that is not IN/A (AAAA
+ * included) gets an empty NOERROR — not NXDOMAIN — so dual-query resolvers
+ * fall through to the A answer. The TC bit is never set, so resolvers never
+ * retry over tcp/53.
  */
 
 export const DNS_QTYPE_A = 1
@@ -31,12 +28,11 @@ export interface DnsQuery {
 }
 
 /**
- * Parse a DNS query. Returns null (the caller drops the packet) for
- * anything the stub should not answer: truncated packets, responses
- * (QR=1), multi-question packets, or malformed names. Trailing bytes
- * after the question (EDNS OPT records in the additional section) are
- * tolerated and ignored — the response simply carries no EDNS, which is
- * fine for answers this small.
+ * Parse a DNS query. Returns null (the caller drops the packet) for anything
+ * the stub should not answer: truncated packets, responses (QR=1),
+ * multi-question packets, or malformed names. Trailing bytes after the
+ * question (EDNS OPT records in the additional section) are tolerated and
+ * ignored — the response simply carries no EDNS, which is fine here.
  */
 export function parseDnsQuery(buf: Buffer): DnsQuery | null {
   if (buf.length < 12) return null
@@ -45,8 +41,7 @@ export function parseDnsQuery(buf: Buffer): DnsQuery | null {
   if (buf.readUInt16BE(4) !== 1) return null // exactly one question
 
   // QNAME: length-prefixed labels, 0-terminated. Compression pointers
-  // (len > 63) never appear in a query's first name — there is nothing
-  // earlier in the packet to point at — so treat them as malformed.
+  // (len > 63) never appear in a query's first name, so treat as malformed.
   let off = 12
   for (;;) {
     if (off >= buf.length) return null
@@ -68,8 +63,8 @@ export function parseDnsQuery(buf: Buffer): DnsQuery | null {
 }
 
 /**
- * Build the stub's response to a parsed query: a single fixed A answer
- * for IN/A, an empty NOERROR for everything else. Never truncated.
+ * Build the stub's response to a parsed query: a single fixed A answer for
+ * IN/A, an empty NOERROR for everything else. Never truncated.
  */
 export function buildDnsResponse(query: DnsQuery, dummyIpv4: string): Buffer {
   const answers = query.qtype === DNS_QTYPE_A && query.qclass === DNS_QCLASS_IN ? 1 : 0

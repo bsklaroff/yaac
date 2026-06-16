@@ -68,9 +68,14 @@ else
     mv "${CLI_DIR}/cilium" "${CILIUM_CLI}"
   fi
 fi
+# envoyConfig.enabled installs the CiliumEnvoyConfig/CiliumClusterwideEnvoyConfig
+# CRDs and lets policy-referenced custom Envoy listeners load — yaac uses one to
+# redirect session-pod egress to the proxy (replaces the per-pod relay; see
+# src/lib/k8s/bootstrap.ts buildEgressRedirectCecManifest).
 "${CILIUM_CLI}" install --context "kind-${CLUSTER_NAME}" \
   --version "${CILIUM_VERSION}" \
-  --set ipam.mode=kubernetes
+  --set ipam.mode=kubernetes \
+  --set envoyConfig.enabled=true
 "${CILIUM_CLI}" status --context "kind-${CLUSTER_NAME}" --wait --wait-duration 5m
 ${KCTL} wait --for=condition=Ready node --all --timeout=120s
 

@@ -19,18 +19,28 @@ vi.mock('@/lib/git', async (importOriginal) => {
 
 import {
   CLUSTER_SERVICE_CIDR,
+  DNS_STUB_PORT,
+  EGRESS_REDIRECT_CEC_NAME,
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
+  PROXY_INGRESS_CNP_NAME,
   PROXY_PORT,
-  RELAY_DNS_PORT,
-  SESSION_NETWORK_POLICY_NAME,
+  PROXY_SA_NAME,
+  SESSION_EGRESS_REDIRECT_CNP_NAME,
+  SSH_TUNNEL_SENTINEL,
   TRANSPARENT_HTTP_PORT,
   TRANSPARENT_HTTPS_PORT,
   TRANSPARENT_TUNNEL_PORT,
+  TUNNEL_INGRESS_PORT,
+  buildEgressRedirectCecManifest,
   buildProxyDeploymentManifest,
+  buildProxyIngressCnpManifest,
+  buildProxyRoleBindingManifest,
+  buildProxyRoleManifest,
+  buildProxyServiceAccountManifest,
   buildProxyServiceManifest,
+  buildSessionEgressRedirectCnpManifest,
   buildEgressWorldDenyCiliumPolicyManifest,
-  buildSessionNetworkPolicyManifest,
   clusterIpForNamespace,
   clusterIpForService,
   EGRESS_WORLD_DENY_NAME,
@@ -76,7 +86,6 @@ describe('constants', () => {
     expect(TRANSPARENT_HTTPS_PORT).toBe(10256)
     expect(TRANSPARENT_HTTP_PORT).toBe(10257)
     expect(TRANSPARENT_TUNNEL_PORT).toBe(10258)
-    expect(RELAY_DNS_PORT).toBe(15004)
   })
 
   it('pin the VIP-pin service CIDR to the kind-config value', () => {
@@ -206,12 +215,14 @@ interface DeploymentManifest {
     template: {
       metadata: { labels: Record<string, string> }
       spec: {
+        serviceAccountName?: string
         automountServiceAccountToken: boolean
         enableServiceLinks: boolean
         securityContext?: { runAsUser?: number; runAsGroup?: number; fsGroup?: number }
         containers: Array<{
           image: string
-          ports: Array<{ containerPort: number }>
+          securityContext?: { capabilities?: { add?: string[] } }
+          ports: Array<{ containerPort: number; protocol?: string }>
           env: Array<Record<string, unknown>>
           readinessProbe: { httpGet: { path: string; port: number } }
           volumeMounts: Array<{ name: string; mountPath: string }>
@@ -245,7 +256,11 @@ describe('buildProxyDeploymentManifest', () => {
       { containerPort: TRANSPARENT_HTTPS_PORT },
       { containerPort: TRANSPARENT_HTTP_PORT },
       { containerPort: TRANSPARENT_TUNNEL_PORT },
+      { containerPort: DNS_STUB_PORT, protocol: 'UDP' },
     ])
+    // NET_BIND_SERVICE lets the non-root proxy bind udp/53 for the DNS stub.
+    expect(c.securityContext?.capabilities?.add).toEqual(['NET_BIND_SERVICE'])
+    expect(c.env).toContainEqual({ name: 'DNS_STUB_PORT', value: String(DNS_STUB_PORT) })
     expect(c.env).toContainEqual({ name: 'API_PORT', value: String(PROXY_PORT) })
     expect(c.env).toContainEqual({ name: 'TRANSPARENT_HTTPS_PORT', value: String(TRANSPARENT_HTTPS_PORT) })
     expect(c.env).toContainEqual({ name: 'TRANSPARENT_HTTP_PORT', value: String(TRANSPARENT_HTTP_PORT) })
@@ -262,7 +277,9 @@ describe('buildProxyDeploymentManifest', () => {
 
   it('mounts credentials, ssh-agent, and proxy-data hostPaths (DirectoryOrCreate)', () => {
     const spec = build().spec.template.spec
-    expect(spec.automountServiceAccountToken).toBe(false)
+    // The proxy now mounts its SA token to watch pods (source-IP → session).
+    expect(spec.serviceAccountName).toBe(PROXY_SA_NAME)
+    expect(spec.automountServiceAccountToken).toBe(true)
     expect(spec.enableServiceLinks).toBe(false)
     expect(spec.volumes).toEqual([
       { name: 'credentials', hostPath: { path: credentialsDir(), type: 'DirectoryOrCreate' } },
@@ -315,8 +332,13 @@ describe('buildEgressWorldDenyCiliumPolicyManifest', () => {
     // catches session pods, registries, mocks). The exemption label is
     // only settable by the trusted daemon on its own pods. Synced pods
     // live in their own per-session namespaces, denied there.
+    // Excludes the proxy AND session pods — the latter are governed by the
+    // redirect CNP, whose world:443/80 allow a world-deny here would beat.
     expect(m.spec.endpointSelector.matchExpressions)
-      .toEqual([{ key: 'app', operator: 'NotIn', values: ['yaac-proxy'] }])
+      .toEqual([
+        { key: 'app', operator: 'NotIn', values: ['yaac-proxy'] },
+        { key: 'yaac.session-id', operator: 'DoesNotExist' },
+      ])
     expect(m.spec.egressDeny).toEqual([{ toEntities: ['world'] }])
   })
 
@@ -346,53 +368,180 @@ describe('buildProxyServiceManifest', () => {
           { name: 'transparent-https', port: TRANSPARENT_HTTPS_PORT, targetPort: TRANSPARENT_HTTPS_PORT },
           { name: 'transparent-http', port: TRANSPARENT_HTTP_PORT, targetPort: TRANSPARENT_HTTP_PORT },
           { name: 'transparent-tunnel', port: TRANSPARENT_TUNNEL_PORT, targetPort: TRANSPARENT_TUNNEL_PORT },
+          { name: 'dns', port: DNS_STUB_PORT, targetPort: DNS_STUB_PORT, protocol: 'UDP' },
         ],
       },
     })
   })
 })
 
-describe('buildSessionNetworkPolicyManifest', () => {
-  it('locks session-pod egress to the proxy transparent transport ports only', () => {
-    expect(buildSessionNetworkPolicyManifest()).toEqual({
-      apiVersion: 'networking.k8s.io/v1',
-      kind: 'NetworkPolicy',
-      metadata: {
-        name: SESSION_NETWORK_POLICY_NAME,
-        namespace: 'test-ns',
-        labels: { app: PROXY_APP_NAME },
-      },
-      spec: {
-        podSelector: {
-          matchExpressions: [{ key: 'yaac.session-id', operator: 'Exists' }],
-        },
-        policyTypes: ['Egress'],
-        egress: [
-          {
-            to: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }],
-            // Transport ports (post-DNAT), not the original 443/80.
-            ports: [
-              { protocol: 'TCP', port: TRANSPARENT_HTTPS_PORT },
-              { protocol: 'TCP', port: TRANSPARENT_HTTP_PORT },
-              { protocol: 'TCP', port: TRANSPARENT_TUNNEL_PORT },
-            ],
-          },
-        ],
-      },
-    })
+describe('buildEgressRedirectCecManifest', () => {
+  interface Cec {
+    apiVersion: string
+    kind: string
+    metadata: { name: string; namespace: string; annotations: Record<string, string> }
+    spec: {
+      backendServices: Array<{ name: string; namespace: string; number: string[] }>
+      resources: Array<Record<string, unknown>>
+    }
+  }
+  it('is an annotated CEC with three listener+cluster pairs to the proxy', () => {
+    const m = buildEgressRedirectCecManifest() as unknown as Cec
+    expect(m.apiVersion).toBe('cilium.io/v2')
+    expect(m.kind).toBe('CiliumEnvoyConfig')
+    expect(m.metadata.name).toBe(EGRESS_REDIRECT_CEC_NAME)
+    // The load-bearing annotation: without it Cilium binds the upstream to
+    // the client pod IP and forwarding to a fixed proxy dead-ends.
+    expect(m.metadata.annotations['cec.cilium.io/use-original-source-address']).toBe('false')
+    const listeners = m.spec.resources.filter(
+      (r) => String(r['@type']).endsWith('v3.Listener'),
+    )
+    const clusters = m.spec.resources.filter(
+      (r) => String(r['@type']).endsWith('v3.Cluster'),
+    )
+    expect(listeners).toHaveLength(3)
+    expect(clusters).toHaveLength(3)
   })
 
-  it('admits neither the explicit proxy port nor kube-dns', () => {
-    const manifest = buildSessionNetworkPolicyManifest() as {
-      spec: { egress: Array<{ ports: Array<{ port: number }> }> }
+  it('resolves each upstream via an EDS cluster backed by the proxy Service port, with proxy-protocol v2', () => {
+    const m = buildEgressRedirectCecManifest() as unknown as Cec
+    const ns = 'test-ns'
+    // backendServices is what makes EDS resolve: Cilium syncs the proxy
+    // Service's endpoints (for these port numbers) into the clusters.
+    expect(m.spec.backendServices).toEqual([{
+      name: 'yaac-proxy',
+      namespace: ns,
+      number: [
+        String(TRANSPARENT_HTTPS_PORT),
+        String(TRANSPARENT_HTTP_PORT),
+        String(TRANSPARENT_TUNNEL_PORT),
+      ],
+    }])
+    const clusters = m.spec.resources.filter(
+      (r) => String(r['@type']).endsWith('v3.Cluster'),
+    ) as Array<{
+      name: string
+      type: string
+      transportSocket: { name: string; typedConfig: { config: { version: string } } }
+    }>
+    // EDS (not a static ClusterIP endpoint): the node-local Envoy makes
+    // upstream connections from the host netns, which do not traverse
+    // kube-proxy ClusterIP DNAT — a static ClusterIP dead-ends on connect.
+    // Cluster names must match `<ns>/<service>:<port>` for backendServices.
+    expect(clusters.map((c) => ({ name: c.name, type: c.type }))).toEqual([
+      { name: `${ns}/yaac-proxy:${TRANSPARENT_HTTPS_PORT}`, type: 'EDS' },
+      { name: `${ns}/yaac-proxy:${TRANSPARENT_HTTP_PORT}`, type: 'EDS' },
+      { name: `${ns}/yaac-proxy:${TRANSPARENT_TUNNEL_PORT}`, type: 'EDS' },
+    ])
+    for (const c of clusters) {
+      expect(c.transportSocket.name).toBe('envoy.transport_sockets.upstream_proxy_protocol')
+      expect(c.transportSocket.typedConfig.config.version).toBe('V2')
     }
-    // 10255 serves only the daemon's port-forwarded control API, and DNS
-    // never leaves the pod (the relay stub answers it) — neither belongs
-    // in the session egress surface.
-    expect(manifest.spec.egress).toHaveLength(1)
-    const ports = manifest.spec.egress[0].ports.map((p) => p.port)
-    expect(ports).not.toContain(PROXY_PORT)
-    expect(ports).not.toContain(53)
+  })
+})
+
+describe('buildSessionEgressRedirectCnpManifest', () => {
+  interface Cnp {
+    metadata: { name: string }
+    spec: {
+      endpointSelector: { matchExpressions: Array<{ key: string; operator: string }> }
+      egress: Array<{
+        toEntities?: string[]
+        toCIDRSet?: Array<{ cidr: string }>
+        toEndpoints?: Array<{ matchLabels: Record<string, string> }>
+        toPorts: Array<{ ports: Array<{ port: string; protocol: string }>; listener?: { envoyConfig: { name: string }; name: string } }>
+      }>
+    }
+  }
+  it('default-denies session egress except 443/80→Envoy, the SSH sentinel, and DNS', () => {
+    const m = buildSessionEgressRedirectCnpManifest() as unknown as Cnp
+    expect(m.metadata.name).toBe(SESSION_EGRESS_REDIRECT_CNP_NAME)
+    expect(m.spec.endpointSelector.matchExpressions)
+      .toEqual([{ key: 'yaac.session-id', operator: 'Exists' }])
+
+    const [https, http, ssh, dns] = m.spec.egress
+    expect(https.toEntities).toEqual(['world'])
+    expect(https.toPorts[0].ports[0]).toEqual({ port: '443', protocol: 'TCP' })
+    expect(https.toPorts[0].listener?.name).toBe('yaac-egress-https')
+    expect(https.toPorts[0].listener?.envoyConfig.name).toBe(EGRESS_REDIRECT_CEC_NAME)
+
+    expect(http.toPorts[0].ports[0]).toEqual({ port: '80', protocol: 'TCP' })
+    expect(http.toPorts[0].listener?.name).toBe('yaac-egress-http')
+
+    expect(ssh.toCIDRSet).toEqual([{ cidr: `${SSH_TUNNEL_SENTINEL}/32` }])
+    expect(ssh.toPorts[0].ports[0]).toEqual({ port: String(TUNNEL_INGRESS_PORT), protocol: 'TCP' })
+    expect(ssh.toPorts[0].listener?.name).toBe('yaac-egress-tunnel')
+
+    // DNS goes straight to the proxy stub (no Envoy listener).
+    expect(dns.toEndpoints).toEqual([{ matchLabels: { app: PROXY_APP_NAME } }])
+    expect(dns.toPorts[0].ports[0]).toEqual({ port: String(DNS_STUB_PORT), protocol: 'UDP' })
+    expect(dns.toPorts[0].listener).toBeUndefined()
+  })
+
+  it('admits in-cluster registry (5000) + vcluster API (8443) for vcluster sessions, un-MITM\'d', () => {
+    const m = buildSessionEgressRedirectCnpManifest() as unknown as Cnp
+    const inCluster = m.spec.egress[4]
+    expect(inCluster.toEndpoints).toEqual([{}])
+    expect(inCluster.toPorts[0].ports).toEqual([
+      { port: '5000', protocol: 'TCP' },
+      { port: '8443', protocol: 'TCP' },
+    ])
+    expect(inCluster.toPorts[0].listener).toBeUndefined()
+  })
+})
+
+describe('buildProxyIngressCnpManifest', () => {
+  interface Cnp {
+    metadata: { name: string }
+    spec: {
+      endpointSelector: { matchLabels: Record<string, string> }
+      ingress: Array<{
+        fromEntities?: string[]
+        fromEndpoints?: Array<{ matchExpressions: Array<{ key: string; operator: string }> }>
+        toPorts: Array<{ ports: Array<{ port: string; protocol: string }> }>
+      }>
+    }
+  }
+  it('keeps the control API host-only and opens transparent+DNS to session pods', () => {
+    const m = buildProxyIngressCnpManifest() as unknown as Cnp
+    expect(m.metadata.name).toBe(PROXY_INGRESS_CNP_NAME)
+    expect(m.spec.endpointSelector.matchLabels).toEqual({ app: PROXY_APP_NAME })
+
+    const [host, session] = m.spec.ingress
+    // Control API (session registration + readiness probe): host only.
+    expect(host.fromEntities).toEqual(['host'])
+    expect(host.toPorts[0].ports).toEqual([{ port: String(PROXY_PORT), protocol: 'TCP' }])
+
+    // The redirected egress arrives with the session pod's identity (Cilium
+    // preserves it through the Envoy proxy), so the transparent listeners +
+    // DNS stub open to the session-id selector. The forgery lock is on the
+    // egress side (a direct dial never leaves the pod), not here.
+    expect(session.fromEndpoints?.[0].matchExpressions)
+      .toEqual([{ key: 'yaac.session-id', operator: 'Exists' }])
+    expect(session.toPorts[0].ports).toEqual([
+      { port: String(TRANSPARENT_HTTPS_PORT), protocol: 'TCP' },
+      { port: String(TRANSPARENT_HTTP_PORT), protocol: 'TCP' },
+      { port: String(TRANSPARENT_TUNNEL_PORT), protocol: 'TCP' },
+      { port: String(DNS_STUB_PORT), protocol: 'UDP' },
+    ])
+  })
+})
+
+describe('proxy ServiceAccount + RBAC', () => {
+  it('creates a SA and a read-only pods Role bound to it', () => {
+    expect(buildProxyServiceAccountManifest()).toEqual({
+      apiVersion: 'v1',
+      kind: 'ServiceAccount',
+      metadata: { name: PROXY_SA_NAME, namespace: 'test-ns', labels: { app: PROXY_APP_NAME } },
+    })
+    const role = buildProxyRoleManifest() as { rules: Array<{ apiGroups: string[]; resources: string[]; verbs: string[] }> }
+    expect(role.rules).toEqual([{ apiGroups: [''], resources: ['pods'], verbs: ['get', 'list', 'watch'] }])
+    const rb = buildProxyRoleBindingManifest() as {
+      roleRef: { kind: string; name: string }
+      subjects: Array<{ kind: string; name: string; namespace: string }>
+    }
+    expect(rb.roleRef).toEqual({ apiGroup: 'rbac.authorization.k8s.io', kind: 'Role', name: PROXY_SA_NAME })
+    expect(rb.subjects).toEqual([{ kind: 'ServiceAccount', name: PROXY_SA_NAME, namespace: 'test-ns' }])
   })
 })
 
@@ -407,7 +556,11 @@ describe('ensureProxyResources', () => {
     await expect(fs.stat(proxyDataHostDir())).resolves.toBeDefined()
 
     const kinds = mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
-    expect(kinds).toEqual(['Deployment', 'Service', 'NetworkPolicy', 'CiliumNetworkPolicy'])
+    expect(kinds).toEqual([
+      'ServiceAccount', 'Role', 'RoleBinding', 'Deployment', 'Service',
+      'CiliumEnvoyConfig', 'CiliumNetworkPolicy', 'CiliumNetworkPolicy',
+      'CiliumNetworkPolicy',
+    ])
     // A fresh cluster needs no VIP migration delete.
     expect(mockRetry).not.toHaveBeenCalledWith(
       expect.arrayContaining(['delete', 'service']),

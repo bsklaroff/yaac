@@ -3,20 +3,15 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { execFileAsync, k8sNamespace, kubectlApply, kubectlGetJson } from '@/lib/k8s/kubectl'
 import {
-  buildSessionNetworkPolicyManifest,
+  buildProxyIngressCnpManifest,
+  buildSessionEgressRedirectCnpManifest,
   CLUSTER_SERVICE_CIDR,
   clusterIpForNamespace,
   ensureNamespace,
   PROXY_APP_NAME,
-  RELAY_DNS_PORT,
-  RELAY_UID,
-  TRANSPARENT_HTTP_PORT,
   TRANSPARENT_HTTPS_PORT,
-  TRANSPARENT_TUNNEL_PORT,
 } from '@/lib/k8s/bootstrap'
 import { LABEL_SESSION_ID } from '@/lib/k8s/pods'
-import { ensureRedirectInitImage } from '@/lib/k8s/redirect-init'
-import { ensureRelayImage } from '@/lib/k8s/relay'
 import { registryHost, registryReachable, pushImageToRegistry } from '@/lib/k8s/registry'
 import { sessionUid } from '@/lib/container/image-builder'
 import { getDataDir } from '@/shared/paths'
@@ -59,10 +54,6 @@ export interface ClusterCheckDeps {
   pushImage: (localTag: string) => Promise<string>
   ensureNamespace: () => Promise<void>
   apply: (manifest: object) => Promise<void>
-  /** Build/push the redirect-init image; returns its in-cluster ref. */
-  ensureRedirectInitImage: () => Promise<string>
-  /** Build/push the relay image; returns its in-cluster ref. */
-  ensureRelayImage: () => Promise<string>
 }
 
 const defaultDeps: ClusterCheckDeps = {
@@ -71,10 +62,6 @@ const defaultDeps: ClusterCheckDeps = {
   pushImage: pushImageToRegistry,
   ensureNamespace,
   apply: kubectlApply,
-  // Never require pre-built images here: the preflight builds for real so
-  // it also validates that the redirect-init / relay contexts build at all.
-  ensureRedirectInitImage: () => ensureRedirectInitImage(false),
-  ensureRelayImage: () => ensureRelayImage(false),
 }
 
 /**
@@ -94,11 +81,12 @@ const defaultDeps: ClusterCheckDeps = {
  *      mount of the data dir and writes a marker back at the session uid
  *      — proves in-cluster registry pulls, host-visible hostPath, AND
  *      unprivileged hostPath writes in one shot
- *   8. egress NetworkPolicy enforcement (the pod-scoped backstop layer)
- *   9. transparent-egress gates from one session-shaped pod: redirect
- *      (nat REDIRECT delivers to the loopback relay), lockdown (filter
- *      default-deny REJECTs non-proxy egress fast), dns-stub (udp/53 is
- *      answered by the relay's stub, never kube-dns)
+ *   8. egress enforcement: a session-labeled pod cannot reach the apiserver
+ *      (CNI enforces policy) and cannot dial a proxy transparent port
+ *      directly (the forgery lock — its egress default-deny admits no such
+ *      route, so only the Cilium redirect can reach those ports)
+ *   9. envoy-config: the CiliumEnvoyConfig CRDs exist (the cluster-level
+ *      egress redirect needs `envoyConfig.enabled` — setup-kind-cluster.sh)
  *  10. nested-mount (warn-only): under the nested session securityContext
  *      (userns-scoped SYS_ADMIN, RuntimeDefault) an unprivileged user can
  *      mount tmpfs inside a user namespace — the rootless-podman
@@ -192,7 +180,7 @@ export async function runClusterCheck(
 
   // 7. end-to-end probe (skipped when prerequisites already failed)
   const PROBE_GATES = [
-    'probe', 'egress', 'redirect', 'lockdown', 'dns-stub', 'nested-mount',
+    'probe', 'egress', 'envoy-config', 'nested-mount',
   ] as const
   if (results.some((r) => r.status === 'fail')) {
     for (const name of PROBE_GATES) {
@@ -226,17 +214,16 @@ export async function runClusterCheck(
   // no kubeadm config to read a service CIDR from. Skipping also avoids
   // in-pod podman builds of the redirect/relay images just to probe.
   if (process.env.YAAC_NESTED === '1') {
-    for (const name of ['redirect', 'lockdown', 'dns-stub', 'nested-mount', 'vap', 'service-cidr']) {
+    for (const name of ['envoy-config', 'nested-mount', 'vap', 'service-cidr']) {
       add({ name, status: 'skip', detail: 'skipped — nested yaac (not applicable inside a vcluster)' })
     }
     add(await runProxyVipPinCheck(deps))
     return { ok: !results.some((r) => r.status === 'fail'), results }
   }
 
-  // 9. transparent-redirect + lockdown + dns-stub gates — the hard gates
-  // for the env-var-free egress design (there is no env-proxy fallback
-  // path), all collected from one session-shaped probe pod
-  for (const r of await runTransparentRedirectProbe(deps)) add(r)
+  // 9. envoy-config: the CiliumEnvoyConfig CRDs must exist, or the
+  // cluster-level egress redirect (the CEC) cannot be applied at all.
+  add(await runEnvoyConfigCheck(deps))
 
   // 10. nested userns-mount probe (warn-only: only nestedContainers
   // sessions need it — the tripwire for containerd versions where the
@@ -408,7 +395,16 @@ const NETPOL_PROBE_POD_NAME = 'yaac-cluster-check-egress'
 async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResult> {
   const ns = k8sNamespace()
   try {
-    await deps.apply(buildSessionNetworkPolicyManifest())
+    // The cluster-level egress lockdown: the redirect CNP default-denies
+    // session egress (admitting only 443/80→Envoy, the SSH sentinel, DNS,
+    // and the in-cluster registry/vcluster ports). That default-deny is ALSO
+    // the forgery lock — it leaves no egress rule to the proxy's transparent
+    // ports, so a session pod cannot dial one directly to inject a forged
+    // PROXY-protocol source. (The proxy-ingress CNP must open those ports to
+    // the session-pod identity, since Cilium preserves it through the Envoy
+    // redirect — see buildProxyIngressCnpManifest.)
+    await deps.apply(buildSessionEgressRedirectCnpManifest())
+    await deps.apply(buildProxyIngressCnpManifest())
     const { stdout: rawIp } = await deps.run('kubectl', [
       'get', 'svc', 'kubernetes', '-n', 'default', '-o', 'jsonpath={.spec.clusterIP}',
     ])
@@ -420,16 +416,13 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
       }
     }
 
-    // When the proxy is deployed, also assert the *positive* half of the
-    // lockdown from the same session-labeled pod: the proxy must be
-    // reachable on a transparent transport port — the only ports the
-    // policy admits (evaluated post-DNAT against the proxy pod; the
-    // explicit port 10255 is deliberately NOT admitted, it serves only
-    // the daemon's port-forwarded control API). A plain TCP connect
-    // gives the verdict: the listener accepts and only then judges the
-    // PP2 credential, so connect-success proves the network path. Absent
-    // proxy → skip this half (it deploys lazily on the first session
-    // create).
+    // When the proxy is deployed, also assert the forgery lock from the
+    // same session-labeled pod: it must NOT be able to dial a transparent
+    // port directly. The block is on the pod's own egress (the redirect CNP
+    // default-deny above), not the proxy ingress. A direct connect that
+    // SUCCEEDS would let a pod inject a forged PROXY-protocol source and
+    // impersonate another session. Absent proxy → skip this half (it deploys
+    // lazily on the first session create).
     let proxyIp: string | null = null
     try {
       const { stdout } = await deps.run('kubectl', [
@@ -441,7 +434,7 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
     }
     const proxyCheck = proxyIp
       ? `; nc -w 4 ${proxyIp} ${TRANSPARENT_HTTPS_PORT} </dev/null >/dev/null 2>&1`
-        + ' && echo NP_PROXY_OK || echo NP_PROXY_BLOCKED'
+        + ' && echo NP_PROXY_OPEN || echo NP_PROXY_LOCKED'
       : ''
 
     const imageRef = await deps.pushImage(PROBE_LOCAL_TAG)
@@ -496,23 +489,23 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
           + 'install an enforcing CNI / the kube-network-policies agent.',
       }
     }
-    if (stdout.includes('NP_PROXY_BLOCKED')) {
+    if (stdout.includes('NP_PROXY_OPEN')) {
       return {
         name: 'egress', status: 'fail',
-        detail: 'a session-labeled pod cannot reach the proxy on its transport port — sessions would have no egress at all',
-        fix: 'The egress NetworkPolicy must admit TCP '
-          + `${TRANSPARENT_HTTPS_PORT}/${TRANSPARENT_HTTP_PORT}/${TRANSPARENT_TUNNEL_PORT} `
-          + 'to proxy pods. Restart the yaac daemon (ensureProxyResources '
-          + 're-applies the policy) and re-run this check.',
+        detail: 'a session-labeled pod dialed a proxy transparent port directly — the forgery lock is open, so a pod could impersonate another session',
+        fix: 'The session-egress CiliumNetworkPolicy must default-deny egress '
+          + 'to the proxy transparent ports (it admits only 443/80→Envoy, the '
+          + 'SSH sentinel, DNS, and the in-cluster carve-outs). Restart the '
+          + 'yaac daemon so ensureProxyResources re-applies it.',
       }
     }
     if (stdout.includes('NP_BLOCKED')) {
       const proxyHalf = proxyIp
-        ? ', proxy reachable on transport port'
-        : ' (proxy not deployed — positive half unverified)'
+        ? ', and cannot dial a transparent port directly (forgery lock holds)'
+        : ' (proxy not deployed — forgery-lock half unverified)'
       return {
         name: 'egress', status: 'pass',
-        detail: `session egress locked to the proxy transport ports (NetworkPolicy enforced${proxyHalf})`,
+        detail: `session egress is default-denied at the CNI${proxyHalf}`,
       }
     }
     return {
@@ -531,13 +524,6 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
       .catch(() => { /* best-effort cleanup */ })
   }
 }
-
-const REDIRECT_PROBE_POD_NAME = 'yaac-cluster-check-redirect'
-const RELAY_PROBE_PORT = 15001
-/** TEST-NET-1: never routable, so a recovered dst proves the REDIRECT. */
-const REDIRECT_PROBE_TARGET_IP = '192.0.2.10'
-/** The relay stub's fixed A answer — keep in sync with k8s/relay/relay.ts. */
-const DNS_STUB_DUMMY_IP = '198.18.0.1'
 
 /** Poll a pod until it reaches a wanted phase (or any terminal one). */
 async function waitForProbePodPhase(
@@ -559,232 +545,39 @@ async function waitForProbePodPhase(
 }
 
 /**
- * The transparent-egress hard gates. With the proxy env vars gone there
- * is no fallback routing path, so the cluster must prove, end to end with
- * the real redirect-init + relay images, that under the session-pod
- * hardening (NET_ADMIN init container in a hostUsers:false, session-
- * labeled pod) the whole pod-netns layer works. One self-contained pod
- * yields three verdicts:
- *
- *   - redirect: a dial to a never-routable IP reaches the loopback relay
- *     (probe mode prints REDIRECT_OK on the first connection and exits) —
- *     only the nat REDIRECT can carry it there.
- *   - dns-stub: resolving a `.invalid` name returns the stub's dummy IP —
- *     proves the udp/53 REDIRECT beat the in-cluster CIDR RETURNs (a real
- *     resolver would answer NXDOMAIN).
- *   - lockdown: a TCP connect to kube-dns's VIP :53 (in-cluster, not a
- *     proxy port) is refused FAST — proves the filter default-deny REJECT
- *     and owner-match uid translation under the pod userns. A slow
- *     refusal means only the NetworkPolicy DROP (the pod-scoped backstop)
- *     caught it; a connect means both layers failed open.
- *
- * No proxy, no Service, no socket-LB or source-IP-preservation
- * requirement (the relay dials the proxy as an ordinary client in
- * production).
+ * The CiliumEnvoyConfig CRDs must exist: the cluster-level egress redirect is
+ * a CEC (buildEgressRedirectCecManifest), and without `envoyConfig.enabled`
+ * on the Cilium install the CRD is absent, so the daemon's
+ * ensureProxyResources apply would fail and session egress would have no
+ * redirect at all. The behavioral gates (redirect / allowlist / forgery lock
+ * / DNS stub) are exercised end to end by the transparent-egress e2e suite
+ * against a deployed proxy; here we check only the prerequisite.
  */
-async function runTransparentRedirectProbe(deps: ClusterCheckDeps): Promise<CheckResult[]> {
-  const ns = k8sNamespace()
-  const cleanup = async (): Promise<void> => {
-    await deps.run('kubectl', [
-      'delete', 'pod', REDIRECT_PROBE_POD_NAME,
-      '-n', ns, '--ignore-not-found', '--grace-period=1',
-    ]).catch(() => { /* best-effort */ })
-  }
-  const skipped = (detail: string): CheckResult[] => ([
-    { name: 'lockdown', status: 'skip', detail },
-    { name: 'dns-stub', status: 'skip', detail },
-  ])
-
+async function runEnvoyConfigCheck(deps: ClusterCheckDeps): Promise<CheckResult> {
   try {
-    const [redirectImage, relayImage] = await Promise.all([
-      deps.ensureRedirectInitImage(),
-      deps.ensureRelayImage(),
+    const { stdout } = await deps.run('kubectl', [
+      'get', 'crd', 'ciliumenvoyconfigs.cilium.io',
+      '-o', 'jsonpath={.metadata.name}',
     ])
-
-    // The lockdown gate's in-cluster TCP target. kube-dns is ideal: always
-    // present with a real tcp/53 listener, so a cluster where neither the
-    // filter nor NetworkPolicy bites yields a *connect* verdict, not an
-    // ambiguous refusal. Fall back to the conventional .10 slot.
-    let denyTargetIp = ''
-    try {
-      const { stdout } = await deps.run('kubectl', [
-        'get', 'svc', 'kube-dns', '-n', 'kube-system', '-o', 'jsonpath={.spec.clusterIP}',
-      ])
-      denyTargetIp = stdout.trim()
-    } catch { /* fall through to the conventional slot */ }
-    if (!denyTargetIp) {
-      const base = CLUSTER_SERVICE_CIDR.split('/')[0].split('.')
-      denyTargetIp = `${base[0]}.${base[1]}.${base[2]}.10`
+    if (stdout.trim() === 'ciliumenvoyconfigs.cilium.io') {
+      return {
+        name: 'envoy-config', status: 'pass',
+        detail: 'CiliumEnvoyConfig CRDs present (cluster-level egress redirect can be applied)',
+      }
     }
-
-    await cleanup()
-
-    // Single session-shaped pod: redirect-init installs the real nat +
-    // filter rules, the relay runs in probe mode (HTTPS listener + DNS
-    // stub) as the main container, and the script collects the three
-    // verdicts in log lines. The session-id label makes the egress
-    // NetworkPolicy select the pod, so the lockdown gate's fast/slow
-    // timing genuinely separates the in-pod REJECT from the CNI DROP.
-    await deps.apply({
-      apiVersion: 'v1',
-      kind: 'Pod',
-      metadata: {
-        name: REDIRECT_PROBE_POD_NAME,
-        namespace: ns,
-        labels: { [LABEL_SESSION_ID]: 'cluster-check-redirect-probe' },
-      },
-      spec: {
-        restartPolicy: 'Never',
-        automountServiceAccountToken: false,
-        enableServiceLinks: false,
-        hostUsers: false,
-        securityContext: { seccompProfile: { type: 'RuntimeDefault' } },
-        initContainers: [{
-          name: 'redirect-init',
-          image: redirectImage,
-          securityContext: { capabilities: { add: ['NET_ADMIN'] } },
-          env: [
-            { name: 'REDIRECT_HTTPS_PORT', value: String(RELAY_PROBE_PORT) },
-            { name: 'REDIRECT_HTTP_PORT', value: String(RELAY_PROBE_PORT + 1) },
-            { name: 'REDIRECT_DNS_PORT', value: String(RELAY_DNS_PORT) },
-            // The probe container (the relay image) runs as the relay uid,
-            // so the filter carve-out applies to it exactly as in sessions.
-            // The carve-out targets the pinned VIP, valid whether or not
-            // the proxy is deployed yet (the probe never dials it).
-            { name: 'RELAY_UID', value: String(RELAY_UID) },
-            { name: 'PROXY_CLUSTER_IP', value: clusterIpForNamespace(ns) },
-            { name: 'TRANSPARENT_HTTPS_PORT', value: String(TRANSPARENT_HTTPS_PORT) },
-            { name: 'TRANSPARENT_HTTP_PORT', value: String(TRANSPARENT_HTTP_PORT) },
-            { name: 'TRANSPARENT_TUNNEL_PORT', value: String(TRANSPARENT_TUNNEL_PORT) },
-          ],
-        }],
-        containers: [{
-          name: 'probe',
-          image: relayImage,
-          workingDir: '/app',
-          env: [
-            { name: 'RELAY_PROBE', value: '1' },
-            { name: 'LISTEN_HTTPS_PORT', value: String(RELAY_PROBE_PORT) },
-            { name: 'LISTEN_DNS_PORT', value: String(RELAY_DNS_PORT) },
-          ],
-          // Background the relay (probe mode: HTTPS listener + DNS stub),
-          // then run the three gates. The redirect dial goes LAST — the
-          // probe relay exits on its first TCP connection.
-          command: ['sh', '-c', [
-            './node_modules/.bin/tsx relay.ts &',
-            'sleep 4',
-            // dns-stub gate: resolve4 queries the resolv.conf nameserver
-            // (kube-dns's VIP) over udp; only the REDIRECT can turn a
-            // .invalid name into the stub's dummy answer.
-            'node -e "require(\'dns\').promises.resolve4(\'yaac-cluster-check.invalid\')'
-            + '.then(function(a){console.log(\'RESOLVED:\'+a[0])},'
-            + 'function(e){console.log(\'RESOLVED:\'+e.code)})"',
-            // lockdown gate: REJECT answers in milliseconds; a CNI DROP
-            // burns the full nc timeout. date math separates the two.
-            'S=$(date +%s)',
-            `if nc -w 5 ${denyTargetIp} 53 </dev/null >/dev/null 2>&1; then`,
-            '  echo DENY_CONNECTED',
-            'elif [ $(( $(date +%s) - S )) -le 2 ]; then',
-            '  echo DENY_FAST',
-            'else',
-            '  echo DENY_SLOW',
-            'fi',
-            // redirect gate: the relay prints REDIRECT_OK and exits.
-            `nc -w 3 ${REDIRECT_PROBE_TARGET_IP} 443 </dev/null 2>/dev/null || true`,
-            'sleep 2',
-          ].join('\n')],
-        }],
-      },
-    })
-
-    const phase = await waitForProbePodPhase(REDIRECT_PROBE_POD_NAME, 'Succeeded', 90_000)
-    if (phase !== 'Succeeded') {
-      const detail = `redirect probe pod ended in phase ${phase}`
-      return [{
-        name: 'redirect', status: 'fail',
-        detail: `${detail} — pod-netns REDIRECT is not working`,
-        fix: 'If the init container failed, the node kernel refused '
-          + 'pod-netns iptables under NET_ADMIN + hostUsers:false — re-run '
-          + 'scripts/setup-kind-cluster.sh.\nIf the probe container failed, '
-          + 'the REDIRECT did not deliver to the relay in the pod netns; '
-          + `check the pod logs (kubectl logs ${REDIRECT_PROBE_POD_NAME} -n ${ns}).`,
-      }, ...skipped(`skipped — ${detail}`)]
+    return {
+      name: 'envoy-config', status: 'fail',
+      detail: 'the ciliumenvoyconfigs.cilium.io CRD is missing — the egress-redirect CEC cannot be created',
+      fix: 'Cilium was installed without envoyConfig. Re-run '
+        + 'scripts/setup-kind-cluster.sh (it passes --set envoyConfig.enabled=true), '
+        + 'or `cilium upgrade --reuse-values --set envoyConfig.enabled=true`.',
     }
-
-    const { stdout } = await deps.run('kubectl', ['logs', REDIRECT_PROBE_POD_NAME, '-n', ns])
-    const results: CheckResult[] = []
-
-    if (stdout.includes('REDIRECT_OK')) {
-      results.push({
-        name: 'redirect', status: 'pass',
-        detail: 'pod-netns REDIRECT delivers outbound 443 to the loopback relay',
-      })
-    } else {
-      results.push({
-        name: 'redirect', status: 'fail',
-        detail: 'the pod-netns REDIRECT did not deliver to the relay'
-          + ` (expected "REDIRECT_OK", logs: ${stdout.trim().slice(0, 80) || 'empty'})`,
-        fix: 'The pod-netns REDIRECT did not reach the loopback relay — '
-          + 're-run scripts/setup-kind-cluster.sh and re-check.',
-      })
-    }
-
-    if (stdout.includes('DENY_FAST')) {
-      results.push({
-        name: 'lockdown', status: 'pass',
-        detail: 'non-proxy egress REJECTed in-pod (filter default-deny active)',
-      })
-    } else if (stdout.includes('DENY_CONNECTED')) {
-      results.push({
-        name: 'lockdown', status: 'fail',
-        detail: 'a session-shaped pod reached kube-dns tcp/53 — neither the in-pod filter nor NetworkPolicy blocked it',
-        fix: 'The redirect-init filter rules did not take effect AND the '
-          + 'CNI is not enforcing NetworkPolicy. Re-run '
-          + 'scripts/setup-kind-cluster.sh; if it persists, check that the '
-          + 'node kernel ships xt_owner (the init container would crash '
-          + 'loudly otherwise).',
-      })
-    } else if (stdout.includes('DENY_SLOW')) {
-      results.push({
-        name: 'lockdown', status: 'fail',
-        detail: 'non-proxy egress only timed out (NetworkPolicy DROP) — the in-pod filter REJECT is not answering',
-        fix: 'The filter default-deny should refuse immediately with '
-          + 'tcp-reset; only the pod-scoped NetworkPolicy backstop caught '
-          + 'this. Re-run scripts/setup-kind-cluster.sh and re-check.',
-      })
-    } else {
-      results.push({
-        name: 'lockdown', status: 'fail',
-        detail: `lockdown gate produced no verdict (logs: ${stdout.trim().slice(0, 80) || 'empty'})`,
-        fix: KIND_SETUP_FIX,
-      })
-    }
-
-    const resolved = /RESOLVED:(\S+)/.exec(stdout)?.[1]
-    if (resolved === DNS_STUB_DUMMY_IP) {
-      results.push({
-        name: 'dns-stub', status: 'pass',
-        detail: `udp/53 intercepted by the relay DNS stub (answers ${DNS_STUB_DUMMY_IP})`,
-      })
-    } else {
-      results.push({
-        name: 'dns-stub', status: 'fail',
-        detail: `resolution did not hit the relay stub (expected ${DNS_STUB_DUMMY_IP}, got ${resolved ?? 'no verdict'})`,
-        fix: 'The udp/53 REDIRECT must precede the in-cluster CIDR '
-          + 'excludes so queries to the kube-dns VIP land on the relay '
-          + 'stub. Rebuild the redirect-init image (a stale image misses '
-          + 'the DNS rule) and re-run this check.',
-      })
-    }
-    return results
   } catch (err) {
-    const detail = `redirect probe errored (${truncate(err)})`
-    return [
-      { name: 'redirect', status: 'fail', detail, fix: KIND_SETUP_FIX },
-      ...skipped(`skipped — ${detail}`),
-    ]
-  } finally {
-    await cleanup()
+    return {
+      name: 'envoy-config', status: 'fail',
+      detail: `could not query CRDs (${truncate(err)})`,
+      fix: KIND_SETUP_FIX,
+    }
   }
 }
 

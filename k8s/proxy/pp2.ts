@@ -1,27 +1,21 @@
 /**
- * PROXY protocol v2 parsing + the yaac session-identity TLV, for the
- * proxy's transparent listeners. The per-pod yaac-relay (k8s/relay,
- * Go) prepends a PP2 header to every redirected connection carrying
- * `<sessionId>:<token>` in a custom TLV; the proxy parses it here,
- * verifies the token, and only then proceeds to the existing SNI / Host
- * handling. Zero deps and no side effects, so it is unit-testable by
- * import — mirrors transparent.ts.
+ * PROXY protocol v2 parsing for the proxy's transparent listeners. The
+ * node-local Cilium Envoy prepends a PP2 header to every redirected
+ * connection carrying the real source pod IP (AF_INET); the proxy parses it
+ * here, then resolves that IP to a session (see pod-watch.ts) before the
+ * existing SNI / Host handling. Zero deps and no side effects, so it is
+ * unit-testable by import — mirrors transparent.ts.
  *
- * Wire format: haproxy PROXY protocol spec §2.2 (binary). We only emit /
- * accept the AF_INET + STREAM shape the relay produces; AF_UNSPEC (no
- * addresses, TLVs only) parses too. Everything malformed maps to
- * `invalid` so the listener fails closed.
+ * Wire format: haproxy PROXY protocol spec §2.2 (binary). We accept the
+ * AF_INET + STREAM shape Envoy produces; AF_UNSPEC (no addresses, TLVs only)
+ * parses too. Everything malformed maps to `invalid` so the listener fails
+ * closed.
  */
-
-import crypto from 'node:crypto'
 
 /** 12-byte v2 signature. */
 const PP2_SIGNATURE = Buffer.from([
   0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a,
 ])
-
-/** TLV type carrying "<sessionId>:<token>" (experimental range 0xE0–0xEF). */
-export const PP2_TLV_YAAC_IDENTITY = 0xe0
 
 /** Cap on the variable-length section, defense against a hostile length. */
 const PP2_MAX_REMAINING = 1024
@@ -100,38 +94,3 @@ export function parsePp2Header(buf: Buffer): Pp2ParseResult {
   return { kind: 'ok', bytesConsumed: total, srcIp, dstIp, srcPort, dstPort, tlvs }
 }
 
-/**
- * Extract `{sessionId, token}` from the yaac identity TLV, or null when
- * absent / malformed. The value is `<sessionId>:<token>`; the token is hex
- * so it carries no colon, making the first colon an unambiguous split.
- */
-export function identityFromPp2(
-  tlvs: Map<number, Buffer>,
-): { sessionId: string; token: string } | null {
-  const value = tlvs.get(PP2_TLV_YAAC_IDENTITY)
-  if (!value) return null
-  const str = value.toString('utf8')
-  const colon = str.indexOf(':')
-  if (colon <= 0 || colon === str.length - 1) return null
-  return { sessionId: str.slice(0, colon), token: str.slice(colon + 1) }
-}
-
-/**
- * The per-session relay credential: HMAC-SHA256(proxyAuthSecret,
- * "relay:" + sessionId), hex. The daemon computes the same value and
- * injects it into the relay container; the proxy recomputes and verifies
- * it per connection, so no token is ever stored or distributed and it
- * survives proxy pod replacement. Keep the formula in sync with
- * proxyClient.relayToken (src/lib/container/proxy-client.ts) — the proxy
- * cannot import from src/.
- */
-export function relayTokenFor(secret: string, sessionId: string): string {
-  return crypto.createHmac('sha256', secret).update(`relay:${sessionId}`).digest('hex')
-}
-
-/** Timing-safe check that `token` is the expected relay credential. */
-export function verifyRelayToken(secret: string, sessionId: string, token: string): boolean {
-  const expected = relayTokenFor(secret, sessionId)
-  if (token.length !== expected.length) return false
-  return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expected))
-}

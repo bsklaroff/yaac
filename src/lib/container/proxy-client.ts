@@ -1,5 +1,4 @@
 import { spawn } from 'node:child_process'
-import { createHmac } from 'node:crypto'
 import fs from 'node:fs/promises'
 import type { SecretProxyRule } from '@/shared/types'
 import { imageExists } from '@/lib/container/runtime'
@@ -213,21 +212,6 @@ export class ProxyClient {
       const text = await res.text()
       throw new Error(`Failed to register session: ${res.status} ${text}`)
     }
-  }
-
-  /**
-   * The per-session relay credential injected into the pod's yaac-relay
-   * container: HMAC-SHA256(PROXY_AUTH_SECRET, "relay:"+sessionId), hex.
-   * The relay prepends "<sessionId>:<token>" to each connection in a PP2
-   * TLV; the proxy recomputes and verifies it. No token is ever stored or
-   * sent over the wire, and it is derivable after a proxy replacement, so
-   * nothing needs healing. Keep the formula in sync with relayTokenFor
-   * (k8s/proxy/pp2.ts) — the proxy cannot import from src/.
-   */
-  relayToken(sessionId: string): string {
-    return createHmac('sha256', this.requireAuthSecret())
-      .update(`relay:${sessionId}`)
-      .digest('hex')
   }
 
   async removeSession(sessionId: string): Promise<void> {

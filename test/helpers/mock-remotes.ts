@@ -4,8 +4,8 @@ import path from 'node:path'
 import os from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { baseImageHash, contextHash } from '@/lib/container/image-builder'
-import { DOCKERFILES_DIR, REDIRECT_INIT_DIR, RELAY_DIR } from '@/lib/project/paths'
+import { baseImageHash } from '@/lib/container/image-builder'
+import { DOCKERFILES_DIR } from '@/lib/project/paths'
 import { ensureNamespace } from '@/lib/k8s/bootstrap'
 import {
   k8sNamespace,
@@ -81,35 +81,6 @@ export async function resolveTestBaseImageRef(): Promise<string> {
   return registryRef(tag)
 }
 
-/**
- * Resolve the in-cluster ref of the pre-built `yaac-test-redirect-init`
- * image (same fail-fast contract as `resolveTestBaseImageRef`).
- */
-export async function resolveTestRedirectInitImageRef(): Promise<string> {
-  const tag = `yaac-test-redirect-init:${await contextHash(REDIRECT_INIT_DIR)}`
-  if (!await registryHasTag(tag)) {
-    throw new Error(
-      `${tag} is not in the local registry — did test/global-setup.ts run `
-      + 'with the registry reachable?',
-    )
-  }
-  return registryRef(tag)
-}
-
-/**
- * Resolve the in-cluster ref of the pre-built `yaac-test-relay` image
- * (same fail-fast contract as `resolveTestBaseImageRef`).
- */
-export async function resolveTestRelayImageRef(): Promise<string> {
-  const tag = `yaac-test-relay:${await contextHash(RELAY_DIR)}`
-  if (!await registryHasTag(tag)) {
-    throw new Error(
-      `${tag} is not in the local registry — did test/global-setup.ts run `
-      + 'with the registry reachable?',
-    )
-  }
-  return registryRef(tag)
-}
 
 /** `kubectl exec` into a mock pod (argv passthrough, no shell quoting). */
 async function execInPod(

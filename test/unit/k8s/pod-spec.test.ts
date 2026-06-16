@@ -58,22 +58,8 @@ function params(overrides: Partial<SessionJobParams> = {}): SessionJobParams {
     env: ['YAAC_SESSION_ID=abcd', 'X=a=b'],
     hostPathMounts: [],
     memoryLimitBytes: 8 * 1024 ** 3,
-    egress: {
-      redirectImage: 'localhost:5001/yaac-redirect-init:def',
-      relayImage: 'localhost:5001/yaac-relay:abc',
-      relayHttpsPort: 15001,
-      relayHttpPort: 15002,
-      relayConnectPort: 15003,
-      relayDnsPort: 15004,
-      relayUid: 1337,
-      // The pinned proxy Service VIP — an IP, never a DNS name.
-      proxyHost: '10.96.0.179',
-      transparentHttpsPort: 10256,
-      transparentHttpPort: 10257,
-      transparentTunnelPort: 10258,
-      sessionId: 'abcd',
-      relayToken: 'deadbeef'.repeat(8),
-    },
+    // The pinned proxy Service VIP — an IP, never a DNS name.
+    proxyHost: '10.96.0.179',
     ...overrides,
   }
 }
@@ -92,8 +78,10 @@ interface Manifest {
         automountServiceAccountToken: boolean
         enableServiceLinks: boolean
         hostUsers?: boolean
+        dnsPolicy?: string
+        dnsConfig?: { nameservers: string[] }
         securityContext: { seccompProfile: { type: string }; fsGroup?: number }
-        initContainers: Array<{
+        initContainers?: Array<{
           name: string
           image: string
           imagePullPolicy: string
@@ -220,100 +208,32 @@ describe('buildSessionJobManifest', () => {
     expect(mounts[1]).toEqual({ name: 'hp-1', mountPath: '/mnt/rw' })
   })
 
-  it('emits redirect-init then relay, with NET_ADMIN only on redirect-init', () => {
+  it('injects no per-pod egress sidecars — egress is redirected at the cluster level', () => {
     const spec = build().spec.template.spec
-    expect(spec.initContainers.map((c) => c.name)).toEqual(['yaac-redirect-init', 'yaac-relay'])
-
-    const redirect = spec.initContainers[0]
-    expect(redirect.image).toBe('localhost:5001/yaac-redirect-init:def')
-    expect(redirect.imagePullPolicy).toBe('IfNotPresent')
-    expect(redirect.securityContext).toEqual({ capabilities: { add: ['NET_ADMIN'] } })
-    expect(redirect.restartPolicy).toBeUndefined() // run-to-completion
-
+    // No redirect-init / relay; a non-nested pod has no init containers at all.
+    expect(spec.initContainers).toBeUndefined()
     // The session container itself must carry no added capability.
     expect(spec.containers[0]).not.toHaveProperty('securityContext')
   })
 
-  it('threads the REDIRECT ports and filter default-deny params into the redirect-init env', () => {
-    const env = build().spec.template.spec.initContainers[0].env
-    expect(env).toEqual([
-      { name: 'REDIRECT_HTTPS_PORT', value: '15001' },
-      { name: 'REDIRECT_HTTP_PORT', value: '15002' },
-      { name: 'REDIRECT_DNS_PORT', value: '15004' },
-      // Filter-table default-deny: the carve-out is keyed on the relay
-      // uid and scoped to the proxy VIP's transport ports — exactly the
-      // pinned ClusterIP, never a CIDR-wide rule.
-      { name: 'RELAY_UID', value: '1337' },
-      { name: 'PROXY_CLUSTER_IP', value: '10.96.0.179' },
-      { name: 'TRANSPARENT_HTTPS_PORT', value: '10256' },
-      { name: 'TRANSPARENT_HTTP_PORT', value: '10257' },
-      { name: 'TRANSPARENT_TUNNEL_PORT', value: '10258' },
-    ])
-  })
-
-  it('runs the relay as a native sidecar (restartPolicy Always) with a ready-file probe and no caps', () => {
-    const relay = build().spec.template.spec.initContainers[1]
-    expect(relay.name).toBe('yaac-relay')
-    expect(relay.image).toBe('localhost:5001/yaac-relay:abc')
-    expect(relay.restartPolicy).toBe('Always')
-    expect(relay.securityContext.runAsUser).toBe(1337)
-    expect(relay.securityContext.allowPrivilegeEscalation).toBe(false)
-    expect(relay.securityContext.capabilities).toEqual({ drop: ['ALL'] })
-    // Exec probe on a ready file the relay writes after binding loopback
-    // (a tcpSocket probe would dial the unreachable pod IP).
-    expect(relay.startupProbe?.exec.command).toEqual([
-      'sh', '-c', 'test -f /tmp/yaac-relay-ready',
-    ])
-  })
-
-  it('carries the session credential and all four listen ports on the relay container only', () => {
+  it('points the pod resolver at the proxy VIP DNS stub (dnsPolicy None)', () => {
     const spec = build().spec.template.spec
-    const relayEnv = spec.initContainers[1].env
-    expect(relayEnv).toContainEqual({ name: 'SESSION_ID', value: 'abcd' })
-    expect(relayEnv).toContainEqual({ name: 'RELAY_TOKEN', value: 'deadbeef'.repeat(8) })
-    // The pinned VIP rides through verbatim — the relay never resolves DNS.
-    expect(relayEnv).toContainEqual({ name: 'PROXY_HOST', value: '10.96.0.179' })
-    expect(relayEnv).toContainEqual({ name: 'TRANSPARENT_HTTPS_PORT', value: '10256' })
-    expect(relayEnv).toContainEqual({ name: 'TRANSPARENT_HTTP_PORT', value: '10257' })
-    expect(relayEnv).toContainEqual({ name: 'TRANSPARENT_TUNNEL_PORT', value: '10258' })
-    expect(relayEnv).toContainEqual({ name: 'LISTEN_HTTPS_PORT', value: '15001' })
-    expect(relayEnv).toContainEqual({ name: 'LISTEN_HTTP_PORT', value: '15002' })
-    expect(relayEnv).toContainEqual({ name: 'LISTEN_CONNECT_PORT', value: '15003' })
-    expect(relayEnv).toContainEqual({ name: 'LISTEN_DNS_PORT', value: '15004' })
-    // The workload container must never see the token.
+    expect(spec.dnsPolicy).toBe('None')
+    expect(spec.dnsConfig).toEqual({ nameservers: ['10.96.0.179'] })
+  })
+
+  it('never leaks a relay token into the session container env', () => {
+    const spec = build().spec.template.spec
     const sessionEnvNames = spec.containers[0].env.map((e) => e.name)
     expect(sessionEnvNames).not.toContain('RELAY_TOKEN')
   })
 
-  it('emits no EXTRA_TCP_ACCEPT env and no hostAliases by default', () => {
+  it('emits no hostAliases by default; empty list behaves like absent', () => {
     const spec = build().spec.template.spec
-    const redirectEnvNames = spec.initContainers[0].env.map((e) => e.name)
-    expect(redirectEnvNames).not.toContain('EXTRA_TCP_ACCEPT')
     expect(spec).not.toHaveProperty('hostAliases')
-    // Empty lists behave like absent ones — byte-identical output.
     const bare = buildSessionJobManifest(params())
-    const empty = buildSessionJobManifest({
-      ...params({ hostAliases: [] }),
-      egress: { ...params().egress, extraTcpAccept: [] },
-    })
+    const empty = buildSessionJobManifest(params({ hostAliases: [] }))
     expect(JSON.stringify(empty)).toBe(JSON.stringify(bare))
-  })
-
-  it('joins extraTcpAccept pairs into the redirect-init EXTRA_TCP_ACCEPT env', () => {
-    const m = build({
-      egress: {
-        ...params().egress,
-        extraTcpAccept: ['10.96.12.34:5000', '10.96.56.78:8443'],
-      },
-    })
-    const env = m.spec.template.spec.initContainers[0].env
-    expect(env).toContainEqual({
-      name: 'EXTRA_TCP_ACCEPT',
-      value: '10.96.12.34:5000,10.96.56.78:8443',
-    })
-    // The carve-out rides the redirect-init container only.
-    const relayEnvNames = m.spec.template.spec.initContainers[1].env.map((e) => e.name)
-    expect(relayEnvNames).not.toContain('EXTRA_TCP_ACCEPT')
   })
 
   it('emits pod hostAliases when provided (registry name → pinned VIP)', () => {
@@ -355,7 +275,7 @@ describe('buildSessionJobManifest — nestedContainers', () => {
 
     const spec = build().spec.template.spec
     expect(spec.securityContext).toEqual({ seccompProfile: { type: 'RuntimeDefault' } })
-    expect(spec.initContainers.map((c) => c.name)).toEqual(['yaac-redirect-init', 'yaac-relay'])
+    expect(spec.initContainers).toBeUndefined()
     expect(spec.volumes.some((v) => v.name === 'podman-graphroot' || v.name === 'shared-images')).toBe(false)
     expect(spec.containers[0].resources.limits).toEqual({ memory: String(8 * 1024 ** 3) })
   })
@@ -401,12 +321,10 @@ describe('buildSessionJobManifest — nestedContainers', () => {
       mountPath: SHARED_IMAGE_STORE_DST_PATH,
     })
 
-    // The chown init runs FIRST — before the landed redirect-init/relay
-    // pair — as root-in-userns, on the session image itself.
-    expect(spec.initContainers.map((c) => c.name)).toEqual([
-      'yaac-imagestore-init', 'yaac-redirect-init', 'yaac-relay',
-    ])
-    const chown = spec.initContainers[0]
+    // The chown init is the ONLY init container now (egress is redirected at
+    // the cluster level) — root-in-userns, on the session image itself.
+    expect(spec.initContainers?.map((c) => c.name)).toEqual(['yaac-imagestore-init'])
+    const chown = spec.initContainers![0]
     expect(chown.image).toBe('localhost:5000/yaac-tools:abc')
     expect(chown.securityContext).toEqual({ runAsUser: 0 })
     expect(chown.command).toEqual([

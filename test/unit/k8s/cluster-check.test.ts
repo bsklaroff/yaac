@@ -36,9 +36,6 @@ async function simulateProbeWrite(): Promise<void> {
   await fs.writeFile(path.join(getDataDir(), '.cluster-check-write'), 'ok\n')
 }
 
-/** The marker the relay probe prints when the REDIRECT delivers. */
-const REDIRECT_PROBE_MARKER = 'REDIRECT_OK'
-
 /**
  * deps.run implementation covering every probe the all-pass path makes.
  * `kubectl logs` echoes back the nonce file runClusterCheck wrote so the
@@ -68,11 +65,9 @@ async function happyResponses(
   if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-egress') {
     return { stdout: 'NP_BLOCKED\n', stderr: '' }
   }
-  if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-redirect') {
-    return {
-      stdout: `[relay] probe listening\nRESOLVED:198.18.0.1\nDENY_FAST\n${REDIRECT_PROBE_MARKER}\n`,
-      stderr: '',
-    }
+  if (file === 'kubectl' && args[0] === 'get' && args[1] === 'crd'
+    && args[2] === 'ciliumenvoyconfigs.cilium.io') {
+    return { stdout: 'ciliumenvoyconfigs.cilium.io', stderr: '' }
   }
   if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-nested') {
     return { stdout: 'NESTED_MOUNT_OK\n', stderr: '' }
@@ -105,10 +100,6 @@ function makeDeps(
       ?? vi.fn().mockResolvedValue('localhost:5000/yaac-cluster-probe:busybox-1.36'),
     ensureNamespace: overrides.ensureNamespace ?? vi.fn().mockResolvedValue(undefined),
     apply: overrides.apply ?? vi.fn().mockResolvedValue(undefined),
-    ensureRedirectInitImage: overrides.ensureRedirectInitImage
-      ?? vi.fn().mockResolvedValue('localhost:5000/yaac-redirect-init:test'),
-    ensureRelayImage: overrides.ensureRelayImage
-      ?? vi.fn().mockResolvedValue('localhost:5000/yaac-relay:test'),
   } as ClusterCheckDeps & { run: RunMock }
 }
 
@@ -143,9 +134,7 @@ describe('runClusterCheck', () => {
       ['namespace', 'pass'],
       ['probe', 'pass'],
       ['egress', 'pass'],
-      ['redirect', 'pass'],
-      ['lockdown', 'pass'],
-      ['dns-stub', 'pass'],
+      ['envoy-config', 'pass'],
       ['nested-mount', 'pass'],
       ['vap', 'pass'],
       // The proxy deploys lazily, so its VIP pin is unverifiable here.
@@ -153,9 +142,7 @@ describe('runClusterCheck', () => {
       ['service-cidr', 'pass'],
     ])
     expect(ok).toBe(true)
-    expect(deps.ensureRedirectInitImage).toHaveBeenCalled()
-    expect(deps.ensureRelayImage).toHaveBeenCalled()
-    expect(byName(results, 'redirect')?.detail).toContain('REDIRECT delivers')
+    expect(byName(results, 'envoy-config')?.detail).toContain('CiliumEnvoyConfig CRDs present')
 
     // Probe ran through the deps: image pushed, pod applied, pod deleted.
     expect(deps.pushImage).toHaveBeenCalledWith('yaac-cluster-probe:busybox-1.36')
@@ -210,12 +197,9 @@ describe('runClusterCheck', () => {
       expect(byName(results, 'egress')?.status).toBe('pass')
       // No transparent-egress layer / nestedContainers / vcluster
       // recursion inside a vcluster — and no kubeadm config to read.
-      for (const name of ['redirect', 'lockdown', 'dns-stub', 'nested-mount', 'vap', 'service-cidr']) {
+      for (const name of ['envoy-config', 'nested-mount', 'vap', 'service-cidr']) {
         expect(byName(results, name)?.status).toBe('skip')
       }
-      // The relay/redirect images must NOT be built in-pod just to probe.
-      expect(deps.ensureRedirectInitImage).not.toHaveBeenCalled()
-      expect(deps.ensureRelayImage).not.toHaveBeenCalled()
     } finally {
       delete process.env.YAAC_NESTED
     }
@@ -284,13 +268,9 @@ describe('runClusterCheck', () => {
     expect(byName(results, 'podman')).toMatchObject({ status: 'fail' })
     expect(byName(results, 'probe')).toMatchObject({ status: 'skip' })
     expect(byName(results, 'egress')).toMatchObject({ status: 'skip' })
-    expect(byName(results, 'redirect')).toMatchObject({ status: 'skip' })
-    expect(byName(results, 'lockdown')).toMatchObject({ status: 'skip' })
-    expect(byName(results, 'dns-stub')).toMatchObject({ status: 'skip' })
+    expect(byName(results, 'envoy-config')).toMatchObject({ status: 'skip' })
     expect(byName(results, 'nested-mount')).toMatchObject({ status: 'skip' })
     expect(deps.pushImage).not.toHaveBeenCalled()
-    expect(deps.ensureRedirectInitImage).not.toHaveBeenCalled()
-    expect(deps.ensureRelayImage).not.toHaveBeenCalled()
     expect(deps.apply).not.toHaveBeenCalled()
   })
 
@@ -298,7 +278,7 @@ describe('runClusterCheck', () => {
     const { results } = await runClusterCheck(makeDeps())
     expect(byName(results, 'egress')).toMatchObject({
       status: 'pass',
-      detail: expect.stringContaining('NetworkPolicy enforced') as string,
+      detail: expect.stringContaining('default-denied at the CNI') as string,
     })
   })
 
@@ -330,14 +310,15 @@ describe('runClusterCheck', () => {
     expect(egress?.fix).toContain('kindnet')
   })
 
-  it('fails the egress check when the proxy is deployed but unreachable from a session pod', async () => {
+  it('fails the egress check when a session pod can dial a transparent port (forgery lock open)', async () => {
     const run = happyRun()
     run.mockImplementation(async (file: string, args: string[]) => {
       if (file === 'kubectl' && args[0] === 'get' && args[1] === 'svc' && args[2] === 'yaac-proxy') {
         return { stdout: '10.96.7.7', stderr: '' }
       }
       if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-egress') {
-        return { stdout: 'NP_BLOCKED\nNP_PROXY_BLOCKED\n', stderr: '' }
+        // Blocked from the apiserver, but reached a transparent port directly.
+        return { stdout: 'NP_BLOCKED\nNP_PROXY_OPEN\n', stderr: '' }
       }
       return happyResponses(file, args)
     })
@@ -345,105 +326,31 @@ describe('runClusterCheck', () => {
     expect(ok).toBe(false)
     const egress = byName(results, 'egress')
     expect(egress).toMatchObject({ status: 'fail' })
-    expect(egress?.detail).toContain('cannot reach the proxy')
+    expect(egress?.detail).toContain('forgery lock is open')
   })
 
-  it('passes the redirect, lockdown, and dns-stub gates from one session-shaped probe pod', async () => {
-    const deps = makeDeps()
-    const { results } = await runClusterCheck(deps)
-    expect(byName(results, 'redirect')).toMatchObject({ status: 'pass' })
-    expect(byName(results, 'lockdown')).toMatchObject({ status: 'pass' })
-    expect(byName(results, 'dns-stub')).toMatchObject({ status: 'pass' })
-    // The probe pod runs the real redirect.sh + relay contract: NET_ADMIN
-    // init container, user-namespaced pod, relay in probe mode.
-    const probePod = vi.mocked(deps.apply).mock.calls
-      .map((c) => c[0] as { kind: string; metadata?: { name?: string } })
-      .find((m) => m.kind === 'Pod' && m.metadata?.name === 'yaac-cluster-check-redirect') as {
-      metadata: { labels?: Record<string, string> }
-      spec: {
-        hostUsers: boolean
-        initContainers: Array<{
-          securityContext: { capabilities: { add: string[] } }
-          env: Array<{ name: string; value: string }>
-        }>
-        containers: Array<{ image: string; env: Array<{ name: string; value: string }> }>
-      }
-    } | undefined
-    expect(probePod).toBeDefined()
-    expect(probePod?.spec.hostUsers).toBe(false)
-    // Session-shaped: the egress NetworkPolicy selects the pod, so the
-    // lockdown gate's timing separates in-pod REJECT from CNI DROP.
-    expect(probePod?.metadata.labels?.['yaac.session-id']).toBeTruthy()
-    expect(probePod?.spec.initContainers[0].securityContext)
-      .toEqual({ capabilities: { add: ['NET_ADMIN'] } })
-    // redirect-init installs the REDIRECT, not a DNAT-to-ClusterIP.
-    expect(probePod?.spec.initContainers[0].env).toContainEqual(
-      { name: 'REDIRECT_HTTPS_PORT', value: '15001' },
-    )
-    // The filter default-deny params ride along (redirect.sh requires
-    // them); the carve-out targets the pinned VIP, never a CIDR.
-    expect(probePod?.spec.initContainers[0].env).toContainEqual({ name: 'REDIRECT_DNS_PORT', value: '15004' })
-    expect(probePod?.spec.initContainers[0].env).toContainEqual({ name: 'RELAY_UID', value: '1337' })
-    expect(probePod?.spec.initContainers[0].env).toContainEqual({
-      name: 'PROXY_CLUSTER_IP', value: clusterIpForNamespace('test-ns'),
+  it('passes envoy-config when the CiliumEnvoyConfig CRD is present', async () => {
+    const { results } = await runClusterCheck(makeDeps())
+    expect(byName(results, 'envoy-config')).toMatchObject({
+      status: 'pass',
+      detail: expect.stringContaining('CRDs present') as string,
     })
-    expect(probePod?.spec.initContainers[0].env.some(
-      (e) => e.name === 'SERVICE_CIDR' || e.name === 'POD_CIDR',
-    )).toBe(false)
-    expect(probePod?.spec.initContainers[0].env).toContainEqual({ name: 'TRANSPARENT_HTTPS_PORT', value: '10256' })
-    // The probe container is the relay image in probe mode + DNS stub.
-    expect(probePod?.spec.containers[0].image).toBe('localhost:5000/yaac-relay:test')
-    expect(probePod?.spec.containers[0].env).toContainEqual({ name: 'RELAY_PROBE', value: '1' })
-    expect(probePod?.spec.containers[0].env).toContainEqual({ name: 'LISTEN_DNS_PORT', value: '15004' })
   })
 
-  it('fails the lockdown gate when non-proxy egress is only stopped by the CNI (slow)', async () => {
+  it('fails envoy-config when the CiliumEnvoyConfig CRD is missing', async () => {
     const run = happyRun()
     run.mockImplementation(async (file: string, args: string[]) => {
-      if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-redirect') {
-        return { stdout: `RESOLVED:198.18.0.1\nDENY_SLOW\n${REDIRECT_PROBE_MARKER}\n`, stderr: '' }
+      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'crd'
+        && args[2] === 'ciliumenvoyconfigs.cilium.io') {
+        return { stdout: '', stderr: '' } // CRD absent
       }
       return happyResponses(file, args)
     })
     const { ok, results } = await runClusterCheck(makeDeps({ run }))
     expect(ok).toBe(false)
-    const lockdown = byName(results, 'lockdown')
-    expect(lockdown).toMatchObject({ status: 'fail' })
-    expect(lockdown?.detail).toContain('in-pod filter REJECT')
-    expect(byName(results, 'redirect')).toMatchObject({ status: 'pass' })
-  })
-
-  it('fails the lockdown gate when both the filter and NetworkPolicy fail open', async () => {
-    const run = happyRun()
-    run.mockImplementation(async (file: string, args: string[]) => {
-      if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-redirect') {
-        return { stdout: `RESOLVED:198.18.0.1\nDENY_CONNECTED\n${REDIRECT_PROBE_MARKER}\n`, stderr: '' }
-      }
-      return happyResponses(file, args)
-    })
-    const { ok, results } = await runClusterCheck(makeDeps({ run }))
-    expect(ok).toBe(false)
-    expect(byName(results, 'lockdown')).toMatchObject({
-      status: 'fail',
-      detail: expect.stringContaining('reached kube-dns tcp/53') as string,
-    })
-  })
-
-  it('fails the dns-stub gate when resolution does not return the dummy IP', async () => {
-    const run = happyRun()
-    run.mockImplementation(async (file: string, args: string[]) => {
-      if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-redirect') {
-        // NXDOMAIN from a real resolver: the 53 REDIRECT lost to the CIDR
-        // RETURN and the query escaped to kube-dns.
-        return { stdout: `RESOLVED:ENOTFOUND\nDENY_FAST\n${REDIRECT_PROBE_MARKER}\n`, stderr: '' }
-      }
-      return happyResponses(file, args)
-    })
-    const { ok, results } = await runClusterCheck(makeDeps({ run }))
-    expect(ok).toBe(false)
-    const stub = byName(results, 'dns-stub')
-    expect(stub).toMatchObject({ status: 'fail' })
-    expect(stub?.detail).toContain('ENOTFOUND')
+    const envoy = byName(results, 'envoy-config')
+    expect(envoy).toMatchObject({ status: 'fail' })
+    expect(envoy?.fix).toContain('envoyConfig.enabled')
   })
 
   it('runs the nested-mount probe under the exact nested session securityContext', async () => {
@@ -528,36 +435,6 @@ describe('runClusterCheck', () => {
     })
     const pinnedRun = await runClusterCheck(makeDeps({ run: pinned }))
     expect(byName(pinnedRun.results, 'proxy-vip')).toMatchObject({ status: 'pass' })
-  })
-
-  it('fails the redirect probe when the REDIRECT does not deliver to the relay', async () => {
-    const run = happyRun()
-    run.mockImplementation(async (file: string, args: string[]) => {
-      if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-redirect') {
-        // Probe succeeded but logged no REDIRECT_OK line.
-        return { stdout: '[relay] probe listening\n', stderr: '' }
-      }
-      return happyResponses(file, args)
-    })
-    const { ok, results } = await runClusterCheck(makeDeps({ run }))
-    expect(ok).toBe(false)
-    const redirect = byName(results, 'redirect')
-    expect(redirect).toMatchObject({ status: 'fail' })
-    expect(redirect?.detail).toContain('did not deliver to the relay')
-  })
-
-  it('fails the redirect probe when the probe pod never succeeds', async () => {
-    mockGetJson.mockImplementation((args: string[]) => {
-      if (args[1] === 'pod' && args[2] === 'yaac-cluster-check-redirect') {
-        return Promise.resolve({ status: { phase: 'Failed' } })
-      }
-      return Promise.resolve(happyGetJson(args))
-    })
-    const { ok, results } = await runClusterCheck(makeDeps())
-    expect(ok).toBe(false)
-    const redirect = byName(results, 'redirect')
-    expect(redirect).toMatchObject({ status: 'fail' })
-    expect(redirect?.detail).toContain('phase Failed')
   })
 
   it('warns on service-subnet drift between the live cluster and the compiled VIP-pin range', async () => {

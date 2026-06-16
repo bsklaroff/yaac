@@ -35,26 +35,32 @@ export const TRANSPARENT_HTTP_PORT = 10257
  */
 export const TRANSPARENT_TUNNEL_PORT = 10258
 /**
- * Per-pod relay: the redirect init container REDIRECTs outbound 443 to the
- * relay's HTTPS loopback port and outbound 80 to its HTTP port. Two ports
- * (not one) carry the original protocol to the relay without
- * SO_ORIGINAL_DST, keeping the relay pure Node. The relay forwards to the
- * proxy's matching transparent listener with a PP2 identity header.
- * 1500x / uid 1337 mirror Istio's well-known relay values.
+ * Port the per-pod git SSH `ncat` ProxyCommand dials (a sentinel address, not
+ * a real host). Cilium redirects egress to SSH_TUNNEL_SENTINEL:this-port
+ * through the node Envoy to the proxy's transparent tunnel listener, so SSH
+ * gets the same source-IP-via-PP2 identity as HTTP(S). ncat still sends
+ * `CONNECT host:22`, so the proxy learns the real destination for the
+ * allowlist (a raw port-22 redirect would lose the hostname — DNS is a stub).
  */
-export const RELAY_HTTPS_PORT = 15001
-export const RELAY_HTTP_PORT = 15002
-/** Loopback port git's ncat ProxyCommand sends its CONNECT to. */
-export const RELAY_CONNECT_PORT = 15003
+export const TUNNEL_INGRESS_PORT = 10259
 /**
- * Loopback UDP port of the relay's DNS stub. The redirect init container
- * REDIRECTs all outbound udp/53 here — including queries aimed at the
- * kube-dns VIP — so DNS never leaves the pod: the stub answers every A
- * query with a fixed dummy IP, which is all a client needs — the 443/80
- * REDIRECT ignores the dialed IP and the proxy routes by SNI/Host.
+ * Sentinel address the SSH ncat ProxyCommand dials. Never a real host: it
+ * only exists to be matched and redirected by Cilium. In the RFC2544
+ * benchmark range (like the DNS stub's 198.18.0.1), so it can never route.
  */
-export const RELAY_DNS_PORT = 15004
-export const RELAY_UID = 1337
+export const SSH_TUNNEL_SENTINEL = '198.18.0.2'
+/** UDP port the proxy's DNS stub serves (Service + container; needs
+ * CAP_NET_BIND_SERVICE so the non-root proxy can bind <1024). */
+export const DNS_STUB_PORT = 53
+/** CiliumEnvoyConfig that programs the node Envoy to forward redirected
+ * session egress to the proxy's transparent listeners. */
+export const EGRESS_REDIRECT_CEC_NAME = 'yaac-egress-redirect'
+/** CiliumNetworkPolicy that L7-redirects session-pod egress into the CEC. */
+export const SESSION_EGRESS_REDIRECT_CNP_NAME = 'yaac-session-egress-redirect'
+/** CiliumNetworkPolicy locking the proxy's transparent ports to Envoy/host. */
+export const PROXY_INGRESS_CNP_NAME = 'yaac-proxy-ingress'
+/** ServiceAccount the proxy uses to watch pods (source-IP -> session). */
+export const PROXY_SA_NAME = 'yaac-proxy'
 /**
  * The cluster's service subnet, pinned in k8s/kind-config.yaml.
  * clusterIpForNamespace hashes the proxy Service's pinned VIP into this
@@ -63,8 +69,6 @@ export const RELAY_UID = 1337
  * warns on drift.
  */
 export const CLUSTER_SERVICE_CIDR = '10.96.0.0/16'
-/** NetworkPolicy restricting session-pod egress to the proxy. */
-export const SESSION_NETWORK_POLICY_NAME = 'yaac-session-egress'
 
 /**
  * Deterministic per-namespace ClusterIP for the proxy Service, pinned at
@@ -246,7 +250,11 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
       template: {
         metadata: { labels: { app: PROXY_APP_NAME } },
         spec: {
-          automountServiceAccountToken: false,
+          // The proxy watches pods (source-IP → session) via the in-cluster
+          // API, so it needs its SA token mounted — read-only pods access
+          // granted by buildProxyRoleManifest.
+          serviceAccountName: PROXY_SA_NAME,
+          automountServiceAccountToken: true,
           enableServiceLinks: false,
           ...proxyRunAsSecurityContext(),
           containers: [
@@ -254,17 +262,23 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
               name: 'proxy',
               image: imageRef,
               imagePullPolicy: 'IfNotPresent',
+              // NET_BIND_SERVICE lets the non-root proxy bind udp/53 for the
+              // DNS stub, keeping the Service's port==targetPort invariant
+              // (no remap, so policy and Service agree on the port).
+              securityContext: { capabilities: { add: ['NET_BIND_SERVICE'] } },
               ports: [
                 { containerPort: PROXY_PORT },
                 { containerPort: TRANSPARENT_HTTPS_PORT },
                 { containerPort: TRANSPARENT_HTTP_PORT },
                 { containerPort: TRANSPARENT_TUNNEL_PORT },
+                { containerPort: DNS_STUB_PORT, protocol: 'UDP' },
               ],
               env: [
                 { name: 'API_PORT', value: String(PROXY_PORT) },
                 { name: 'TRANSPARENT_HTTPS_PORT', value: String(TRANSPARENT_HTTPS_PORT) },
                 { name: 'TRANSPARENT_HTTP_PORT', value: String(TRANSPARENT_HTTP_PORT) },
                 { name: 'TRANSPARENT_TUNNEL_PORT', value: String(TRANSPARENT_TUNNEL_PORT) },
+                { name: 'DNS_STUB_PORT', value: String(DNS_STUB_PORT) },
                 {
                   name: 'PROXY_AUTH_SECRET',
                   valueFrom: {
@@ -318,68 +332,6 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
   }
 }
 
-/**
- * Build the NetworkPolicy that makes the proxy's allowlist mandatory at
- * the network layer. Without it the allowlist is advisory: an agent that
- * opens raw sockets to in-cluster IPs (which the pod-netns redirect
- * RETURNs) would have free egress there. The policy selects every
- * session pod (any pod carrying the session-id label) and allows egress
- * ONLY to proxy pods (`app: yaac-proxy`) on the transparent transport
- * ports — Service-VIP traffic matches because policies evaluate
- * post-DNAT against the backend pod's labels.
- *
- * Deliberately absent:
- *   - the explicit proxy port 10255: nothing in session pods dials it
- *     (the daemon's control API rides `kubectl port-forward`, not the
- *     pod network)
- *   - kube-dns: queries never leave the pod — the redirect init
- *     container REDIRECTs udp/53 to the relay's loopback DNS stub, which
- *     closes the DNS-tunneling channel entirely
- *
- * This is the pod-scoped backstop under the in-pod filter default-deny
- * (k8s/redirect-init/redirect.sh), which additionally distinguishes the
- * relay container from the session container — something NetworkPolicy
- * cannot do (they share the pod IP). End state: session pods reach
- * exactly {proxy pods} x {transparent ports}, and within the pod only
- * the relay uid can do even that.
- *
- * No Ingress rules on purpose: nothing reaches session pods over the pod
- * network — exec, PTY attach, and port relays all ride `kubectl exec`
- * through the kubelet, which NetworkPolicy does not mediate. Note the
- * policy only bites on a CNI that enforces NetworkPolicy (kind's kindnet
- * does); `yaac cluster check` probes enforcement end to end.
- */
-export function buildSessionNetworkPolicyManifest(): Record<string, unknown> {
-  return {
-    apiVersion: 'networking.k8s.io/v1',
-    kind: 'NetworkPolicy',
-    metadata: {
-      name: SESSION_NETWORK_POLICY_NAME,
-      namespace: k8sNamespace(),
-      labels: { app: PROXY_APP_NAME },
-    },
-    spec: {
-      podSelector: {
-        matchExpressions: [{ key: LABEL_SESSION_ID, operator: 'Exists' }],
-      },
-      policyTypes: ['Egress'],
-      egress: [
-        {
-          to: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }],
-          // Transport ports, not 443/80: redirected packets are DNAT'd to
-          // the proxy's transparent listeners in the pod netns *before*
-          // policy evaluation, which runs post-DNAT against the proxy pod.
-          ports: [
-            { protocol: 'TCP', port: TRANSPARENT_HTTPS_PORT },
-            { protocol: 'TCP', port: TRANSPARENT_HTTP_PORT },
-            { protocol: 'TCP', port: TRANSPARENT_TUNNEL_PORT },
-          ],
-        },
-      ],
-    },
-  }
-}
-
 /** Blanket world-egress deny (CiliumNetworkPolicy) — see the builder. */
 export const EGRESS_WORLD_DENY_NAME = 'yaac-egress-world-deny'
 
@@ -390,10 +342,15 @@ export const EGRESS_WORLD_DENY_NAME = 'yaac-egress-world-deny'
  * the internet (it dials allowlisted upstreams on sessions' behalf).
  *
  * `app NotIn [yaac-proxy]` denies world for everything except the proxy;
- * NotIn also matches pods with no `app` label, so it catches session
- * pods, registries, mocks, and anything added later. The exemption label
- * can only be set by the trusted daemon on its own pods (session/synced
- * pods never carry it), so it is not a forge vector.
+ * NotIn also matches pods with no `app` label, so it catches registries,
+ * mocks, and anything added later. The exemption label can only be set by
+ * the trusted daemon on its own pods, so it is not a forge vector.
+ *
+ * Session pods (`yaac.session-id`) are explicitly EXCLUDED here: their
+ * egress is governed by the redirect CNP (buildSessionEgressRedirectCnpManifest),
+ * which is itself default-deny and only permits 443/80→Envoy, the SSH
+ * sentinel, and DNS. A world-deny over them would beat the redirect's
+ * world:443/80 allow (Cilium deny > allow) and block all egress.
  *
  * Namespace-scoped, not cluster-wide on purpose: a cluster-wide deny
  * would also hit kube-system CoreDNS (whose upstream forwarding the proxy
@@ -421,10 +378,279 @@ export function buildEgressWorldDenyCiliumPolicyManifest(): Record<string, unkno
     },
     spec: {
       endpointSelector: {
-        matchExpressions: [{ key: 'app', operator: 'NotIn', values: [PROXY_APP_NAME] }],
+        matchExpressions: [
+          { key: 'app', operator: 'NotIn', values: [PROXY_APP_NAME] },
+          { key: LABEL_SESSION_ID, operator: 'DoesNotExist' },
+        ],
       },
       egressDeny: [{ toEntities: ['world'] }],
     },
+  }
+}
+
+/** Envoy listener names referenced by both the CEC and the redirect CNP. */
+const LISTENER_HTTPS = 'yaac-egress-https'
+const LISTENER_HTTP = 'yaac-egress-http'
+const LISTENER_TUNNEL = 'yaac-egress-tunnel'
+
+/**
+ * The Envoy cluster name Cilium populates (via EDS) with a backend Service's
+ * endpoints for one of its ports. Convention is `<namespace>/<service>:<port>`
+ * (the port is the Service port *number*) — it must match a `backendServices`
+ * entry in the same CEC. See `buildEgressRedirectCecManifest`.
+ */
+function proxyEdsClusterName(upstreamPort: number): string {
+  return `${k8sNamespace()}/${PROXY_APP_NAME}:${upstreamPort}`
+}
+
+/**
+ * One Envoy listener + its upstream cluster: a bare tcp_proxy that forwards
+ * everything to the proxy on `upstreamPort`, wrapping the upstream connection
+ * in PROXY-protocol-v2 so the proxy sees the real client (source) IP and the
+ * original destination.
+ *
+ * The cluster is **EDS** (`type: EDS`), not a static ClusterIP endpoint:
+ * Cilium's node-local Envoy makes upstream connections from the host netns,
+ * and those do **not** traverse kube-proxy's ClusterIP DNAT (socket-LB is off
+ * here, `KubeProxyReplacement: False`), so a static ClusterIP target dead-ends
+ * on `cx_connect_fail`. EDS makes Cilium sync the proxy Service's real backend
+ * pod endpoints into the cluster (see the CEC's `backendServices`), so Envoy
+ * dials the proxy pod IP directly. Cilium injects its own bpf_metadata listener
+ * filter (identity resolution); the CEC annotation turns its transparent-source
+ * binding off so the connect to the fixed proxy succeeds.
+ */
+function redirectListenerAndCluster(
+  listenerName: string,
+  upstreamPort: number,
+): Record<string, unknown>[] {
+  const clusterName = proxyEdsClusterName(upstreamPort)
+  return [
+    {
+      '@type': 'type.googleapis.com/envoy.config.listener.v3.Listener',
+      name: listenerName,
+      filterChains: [{
+        filters: [{
+          name: 'envoy.filters.network.tcp_proxy',
+          typedConfig: {
+            '@type': 'type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy',
+            statPrefix: listenerName,
+            cluster: clusterName,
+          },
+        }],
+      }],
+    },
+    {
+      '@type': 'type.googleapis.com/envoy.config.cluster.v3.Cluster',
+      name: clusterName,
+      connectTimeout: '5s',
+      type: 'EDS',
+      transportSocket: {
+        name: 'envoy.transport_sockets.upstream_proxy_protocol',
+        typedConfig: {
+          '@type': 'type.googleapis.com/envoy.extensions.transport_sockets.proxy_protocol.v3.ProxyProtocolUpstreamTransport',
+          config: { version: 'V2' },
+          transportSocket: {
+            name: 'envoy.transport_sockets.raw_buffer',
+            typedConfig: { '@type': 'type.googleapis.com/envoy.extensions.transport_sockets.raw_buffer.v3.RawBuffer' },
+          },
+        },
+      },
+    },
+  ]
+}
+
+/**
+ * CiliumEnvoyConfig programming the node-local Envoy with three listeners
+ * (HTTPS/HTTP/tunnel) that forward redirected session egress to the proxy's
+ * matching transparent listener. Replaces the per-pod relay: identity is the
+ * source pod IP carried in the upstream PROXY-protocol header (the proxy maps
+ * it to a session — see k8s/proxy), not an HMAC token.
+ *
+ * The `cec.cilium.io/use-original-source-address: "false"` annotation is
+ * load-bearing: without it Cilium binds the upstream socket to the client pod
+ * IP, and forwarding to a fixed proxy (not the original dst) then dead-ends on
+ * the return path. Requires `envoyConfig.enabled=true` on the Cilium install
+ * (scripts/setup-kind-cluster.sh).
+ *
+ * `backendServices` is what makes the EDS clusters resolve: Cilium syncs the
+ * proxy Service's backend endpoints (for the listed port numbers) into the
+ * matching `<ns>/<service>:<port>` clusters, so Envoy dials the proxy pod IP
+ * directly rather than a ClusterIP it cannot route to from the host netns.
+ */
+export function buildEgressRedirectCecManifest(): Record<string, unknown> {
+  return {
+    apiVersion: 'cilium.io/v2',
+    kind: 'CiliumEnvoyConfig',
+    metadata: {
+      name: EGRESS_REDIRECT_CEC_NAME,
+      namespace: k8sNamespace(),
+      labels: { app: PROXY_APP_NAME },
+      annotations: { 'cec.cilium.io/use-original-source-address': 'false' },
+    },
+    spec: {
+      backendServices: [{
+        name: PROXY_APP_NAME,
+        namespace: k8sNamespace(),
+        number: [
+          String(TRANSPARENT_HTTPS_PORT),
+          String(TRANSPARENT_HTTP_PORT),
+          String(TRANSPARENT_TUNNEL_PORT),
+        ],
+      }],
+      resources: [
+        ...redirectListenerAndCluster(LISTENER_HTTPS, TRANSPARENT_HTTPS_PORT),
+        ...redirectListenerAndCluster(LISTENER_HTTP, TRANSPARENT_HTTP_PORT),
+        ...redirectListenerAndCluster(LISTENER_TUNNEL, TRANSPARENT_TUNNEL_PORT),
+      ],
+    },
+  }
+}
+
+/** Reference to a listener defined in the egress-redirect CEC. */
+function cecListenerRef(name: string): Record<string, unknown> {
+  return { envoyConfig: { kind: 'CiliumEnvoyConfig', name: EGRESS_REDIRECT_CEC_NAME }, name }
+}
+
+/**
+ * CiliumNetworkPolicy that L7-redirects session-pod egress into the CEC
+ * listeners. Selecting any pod with the session-id label makes Cilium
+ * default-deny that pod's egress except: 443/80 to any external host (→ the
+ * HTTPS/HTTP listeners), the SSH sentinel on TUNNEL_INGRESS_PORT (→ the tunnel
+ * listener), and udp/53 to the proxy's DNS stub. This replaces both the old
+ * k8s session NetworkPolicy and the per-pod iptables default-deny.
+ */
+export function buildSessionEgressRedirectCnpManifest(): Record<string, unknown> {
+  return {
+    apiVersion: 'cilium.io/v2',
+    kind: 'CiliumNetworkPolicy',
+    metadata: {
+      name: SESSION_EGRESS_REDIRECT_CNP_NAME,
+      namespace: k8sNamespace(),
+      labels: { app: PROXY_APP_NAME },
+    },
+    spec: {
+      endpointSelector: { matchExpressions: [{ key: LABEL_SESSION_ID, operator: 'Exists' }] },
+      egress: [
+        {
+          toEntities: ['world'],
+          toPorts: [{ ports: [{ port: '443', protocol: 'TCP' }], listener: cecListenerRef(LISTENER_HTTPS) }],
+        },
+        {
+          toEntities: ['world'],
+          toPorts: [{ ports: [{ port: '80', protocol: 'TCP' }], listener: cecListenerRef(LISTENER_HTTP) }],
+        },
+        {
+          toCIDRSet: [{ cidr: `${SSH_TUNNEL_SENTINEL}/32` }],
+          toPorts: [{ ports: [{ port: String(TUNNEL_INGRESS_PORT), protocol: 'TCP' }], listener: cecListenerRef(LISTENER_TUNNEL) }],
+        },
+        {
+          toEndpoints: [{ matchLabels: { app: PROXY_APP_NAME } }],
+          toPorts: [{ ports: [{ port: String(DNS_STUB_PORT), protocol: 'UDP' }] }],
+        },
+        // In-cluster carve-outs for vcluster sessions: the per-project push
+        // registry (5000) and the per-session vcluster API (8443). Plain
+        // L3/L4 (no listener) — direct in-cluster flows, not MITM'd; the
+        // receiving pods carry their own ingress policies. Ports mirror
+        // PROJECT_REGISTRY_PORT / VCLUSTER_API_PORT (not imported, to avoid a
+        // bootstrap↔vcluster import cycle).
+        {
+          toEndpoints: [{}],
+          toPorts: [{ ports: [
+            { port: '5000', protocol: 'TCP' },
+            { port: '8443', protocol: 'TCP' },
+          ] }],
+        },
+      ],
+    },
+  }
+}
+
+/**
+ * CiliumNetworkPolicy locking the proxy's INGRESS.
+ *
+ * Key Cilium fact (verified empirically, not the original plan's guess): when
+ * the node-local Envoy forwards redirected egress to the proxy, Cilium does
+ * NOT relabel the connection as `host`/`ingress`. With the CEC's
+ * `use-original-source-address: false` the *source IP* becomes `cilium_host`,
+ * but Cilium PRESERVES the original endpoint's **security identity** through
+ * the proxy — so at the proxy the redirected traffic carries the *session
+ * pod's* identity (`yaac.session-id` label), indistinguishable at L3/L4 from a
+ * direct dial. Hence the transparent ports must be opened to the session-pod
+ * identity, not to `host`.
+ *
+ * The forgery lock therefore lives on the **egress** side, not here: a session
+ * pod's egress policy (buildSessionEgressRedirectCnpManifest) permits only
+ * 443/80→world (redirected via the CEC listener), the tunnel sentinel, DNS,
+ * and the in-cluster carve-outs — it has NO rule to the proxy's transparent
+ * ports, so a direct dial is dropped at the source. And because Cilium verifies
+ * pod source IPs, the only way to reach a transparent port is the redirect,
+ * which stamps the *real* (unspoofable) pod IP into the PROXY-protocol header.
+ * The e2e forgery test (a session pod dialing a transparent port directly must
+ * fail) is the standing guard.
+ *
+ * PROXY_PORT (the control API) stays host-only — the daemon registers sessions
+ * over it and the kubelet readiness probe hits it; session pods must not.
+ */
+export function buildProxyIngressCnpManifest(): Record<string, unknown> {
+  return {
+    apiVersion: 'cilium.io/v2',
+    kind: 'CiliumNetworkPolicy',
+    metadata: {
+      name: PROXY_INGRESS_CNP_NAME,
+      namespace: k8sNamespace(),
+      labels: { app: PROXY_APP_NAME },
+    },
+    spec: {
+      endpointSelector: { matchLabels: { app: PROXY_APP_NAME } },
+      ingress: [
+        {
+          // Control API: the host daemon (session registration) + kubelet probe.
+          fromEntities: ['host'],
+          toPorts: [{ ports: [{ port: String(PROXY_PORT), protocol: 'TCP' }] }],
+        },
+        {
+          // Redirected session egress (transparent listeners) + DNS stub. The
+          // redirected traffic arrives with the session pod's identity (see the
+          // docstring); a direct dial is blocked at the pod's own egress.
+          fromEndpoints: [{ matchExpressions: [{ key: LABEL_SESSION_ID, operator: 'Exists' }] }],
+          toPorts: [{ ports: [
+            { port: String(TRANSPARENT_HTTPS_PORT), protocol: 'TCP' },
+            { port: String(TRANSPARENT_HTTP_PORT), protocol: 'TCP' },
+            { port: String(TRANSPARENT_TUNNEL_PORT), protocol: 'TCP' },
+            { port: String(DNS_STUB_PORT), protocol: 'UDP' },
+          ] }],
+        },
+      ],
+    },
+  }
+}
+
+/** ServiceAccount the proxy runs as so it can watch pods (source-IP→session). */
+export function buildProxyServiceAccountManifest(): Record<string, unknown> {
+  return {
+    apiVersion: 'v1',
+    kind: 'ServiceAccount',
+    metadata: { name: PROXY_SA_NAME, namespace: k8sNamespace(), labels: { app: PROXY_APP_NAME } },
+  }
+}
+
+/** Read-only Role: the proxy lists/watches pods to resolve source IP→session. */
+export function buildProxyRoleManifest(): Record<string, unknown> {
+  return {
+    apiVersion: 'rbac.authorization.k8s.io/v1',
+    kind: 'Role',
+    metadata: { name: PROXY_SA_NAME, namespace: k8sNamespace(), labels: { app: PROXY_APP_NAME } },
+    rules: [{ apiGroups: [''], resources: ['pods'], verbs: ['get', 'list', 'watch'] }],
+  }
+}
+
+export function buildProxyRoleBindingManifest(): Record<string, unknown> {
+  return {
+    apiVersion: 'rbac.authorization.k8s.io/v1',
+    kind: 'RoleBinding',
+    metadata: { name: PROXY_SA_NAME, namespace: k8sNamespace(), labels: { app: PROXY_APP_NAME } },
+    roleRef: { apiGroup: 'rbac.authorization.k8s.io', kind: 'Role', name: PROXY_SA_NAME },
+    subjects: [{ kind: 'ServiceAccount', name: PROXY_SA_NAME, namespace: k8sNamespace() }],
   }
 }
 
@@ -452,6 +678,7 @@ export function buildProxyServiceManifest(): Record<string, unknown> {
         { name: 'transparent-https', port: TRANSPARENT_HTTPS_PORT, targetPort: TRANSPARENT_HTTPS_PORT },
         { name: 'transparent-http', port: TRANSPARENT_HTTP_PORT, targetPort: TRANSPARENT_HTTP_PORT },
         { name: 'transparent-tunnel', port: TRANSPARENT_TUNNEL_PORT, targetPort: TRANSPARENT_TUNNEL_PORT },
+        { name: 'dns', port: DNS_STUB_PORT, targetPort: DNS_STUB_PORT, protocol: 'UDP' },
       ],
     },
   }
@@ -486,13 +713,22 @@ export async function ensureProxyResources(imageRef: string): Promise<void> {
     ])
   }
 
+  // SA + RBAC before the Deployment, which references the SA so the proxy
+  // can watch pods (source-IP → session).
+  await kubectlApply(buildProxyServiceAccountManifest())
+  await kubectlApply(buildProxyRoleManifest())
+  await kubectlApply(buildProxyRoleBindingManifest())
   await kubectlApply(buildProxyDeploymentManifest(imageRef))
   await kubectlApply(buildProxyServiceManifest())
-  // Applied with the proxy resources so the egress lockdown exists before
-  // any session pod can be scheduled (sessions require ensureRunning()).
-  await kubectlApply(buildSessionNetworkPolicyManifest())
-  // Blanket world-egress deny over session + vcluster synced pods — the
-  // authoritative backstop a vcluster tenant cannot widen (see builder).
+  // The egress lockdown, applied with the proxy so it exists before any
+  // session pod can be scheduled (sessions require ensureRunning()). CEC
+  // before the CNP that references its listeners.
+  await kubectlApply(buildEgressRedirectCecManifest())
+  await kubectlApply(buildSessionEgressRedirectCnpManifest())
+  // Lock the proxy's transparent ports to the node Envoy (forgery guard).
+  await kubectlApply(buildProxyIngressCnpManifest())
+  // Blanket world-egress deny over non-session pods — the authoritative
+  // backstop a vcluster tenant cannot widen (see builder).
   await kubectlApply(buildEgressWorldDenyCiliumPolicyManifest())
   await kubectlWithRetry([
     'rollout', 'status', `deployment/${PROXY_APP_NAME}`,
