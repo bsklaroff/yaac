@@ -27,6 +27,7 @@ import {
 } from '@/lib/k8s/pod-spec'
 import {
   clusterIpForNamespace,
+  proxyServiceClusterIp,
   sshAgentHostDir,
   SSH_TUNNEL_SENTINEL,
   TUNNEL_INGRESS_PORT,
@@ -758,7 +759,13 @@ export async function createSession(
   // (DNS stub) and dials the SSH tunnel sentinel; both are admitted by the
   // same redirect CNP. The proxy identifies the session by the source pod IP
   // it watches, so nothing per-session needs injecting here.
-  const proxyHost = clusterIpForNamespace(k8sNamespace())
+  //
+  // Nested (inner) yaac: the inner proxy Service is vcluster-allocated, not
+  // pinned, so query its ClusterIP (a vcluster IP the synced inner session
+  // pods can reach for the DNS stub) instead of computing the host-CIDR pin.
+  const proxyHost = process.env.YAAC_NESTED === '1'
+    ? await proxyServiceClusterIp()
+    : clusterIpForNamespace(k8sNamespace())
 
   // Nested-containers pod wiring: shared image store hostPath (node-local)
   // + graphroot/securityContext branch in the manifest.

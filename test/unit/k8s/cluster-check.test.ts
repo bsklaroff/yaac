@@ -192,12 +192,11 @@ describe('runClusterCheck', () => {
       const { ok, results } = await runClusterCheck(deps)
       expect(ok).toBe(true)
       // The shared-machinery checks still run for real (inner registry,
-      // inner namespace, inner probe + egress enforcement).
+      // inner namespace, inner probe).
       expect(byName(results, 'probe')?.status).toBe('pass')
-      expect(byName(results, 'egress')?.status).toBe('pass')
-      // No transparent-egress layer / nestedContainers / vcluster
-      // recursion inside a vcluster — and no kubeadm config to read.
-      for (const name of ['envoy-config', 'nested-mount', 'vap', 'service-cidr']) {
+      // egress is enforced host-side for a vcluster's synced pods (not
+      // probeable from in here), so it self-skips along with the rest.
+      for (const name of ['egress', 'envoy-config', 'nested-mount', 'vap', 'service-cidr']) {
         expect(byName(results, name)?.status).toBe('skip')
       }
     } finally {

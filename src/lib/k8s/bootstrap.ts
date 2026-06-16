@@ -7,6 +7,7 @@ import {
   kubectlGetJson,
   kubectlWithRetry,
 } from '@/lib/k8s/kubectl'
+import { ensureCiliumCrds } from '@/lib/k8s/cilium-crds'
 import { CA_CONFIGMAP_KEY, CA_CONFIGMAP_NAME } from '@/lib/k8s/pod-spec'
 import { LABEL_SESSION_ID } from '@/lib/k8s/pods'
 import { credentialsDir, getDataDir } from '@/lib/project/paths'
@@ -61,6 +62,48 @@ export const SESSION_EGRESS_REDIRECT_CNP_NAME = 'yaac-session-egress-redirect'
 export const PROXY_INGRESS_CNP_NAME = 'yaac-proxy-ingress'
 /** ServiceAccount the proxy uses to watch pods (source-IP -> session). */
 export const PROXY_SA_NAME = 'yaac-proxy'
+
+/**
+ * Inner (nested / yaac-in-yaac) redirect objects. The daemon projects these
+ * into a managed vcluster's host namespace so the vcluster's synced pods are
+ * redirected to that session's *inner* proxy at higher precedence than the
+ * outer redirect (see plans/yaac-in-yaac-inner-egress.md). The session pod
+ * never gets host RBAC — the daemon rebuilds them from these trusted builders.
+ */
+export const INNER_EGRESS_REDIRECT_CEC_NAME = 'yaac-inner-egress-redirect'
+export const INNER_SESSION_EGRESS_REDIRECT_CNP_NAME = 'yaac-inner-session-egress-redirect'
+export const INNER_PROXY_INGRESS_CNP_NAME = 'yaac-inner-proxy-ingress'
+/**
+ * The outer yaac's low-precedence fallback redirect for a vcluster's synced
+ * pods (→ the OUTER proxy), so they have working egress from the moment they
+ * exist — before/without any inner yaac.
+ */
+export const VCLUSTER_FALLBACK_CEC_NAME = 'yaac-vcluster-fallback-redirect'
+export const VCLUSTER_FALLBACK_CNP_NAME = 'yaac-vcluster-fallback-redirect'
+/**
+ * `toPorts.listener.priority` (lower number = higher precedence; unset is the
+ * lowest, ~126). EVERY yaac's session-egress redirect uses the SAME normal
+ * value — so an inner yaac is fully transparent (no special band) and its
+ * projected redirect naturally beats the outer fallback. The outer's
+ * vcluster-fallback uses a deliberately lower precedence so any inner override
+ * wins. Spike 2026-06-16 proved lower-wins (explicit beats unset); the nesting
+ * e2e pins the explicit-vs-explicit case.
+ */
+export const SESSION_REDIRECT_PRIORITY = 50
+export const VCLUSTER_FALLBACK_PRIORITY = 90
+/**
+ * Label the syncer stamps on a vcluster's synced pods (value = the vcluster
+ * name). Literal, not imported from vcluster.ts, to avoid a bootstrap↔vcluster
+ * import cycle (same reason the registry/vcluster ports are literals above).
+ */
+export const LABEL_VCLUSTER_MANAGED_BY = 'vcluster.loft.sh/managed-by'
+/**
+ * Role label + value the inner proxy pod carries so the inner override can
+ * exclude it (loop-free): the inner proxy is NOT redirected to itself, so its
+ * own upstream dials fall through to the outer redirect → outer proxy → world.
+ */
+export const LABEL_ROLE = 'yaac.role'
+export const ROLE_INNER_PROXY = 'inner-proxy'
 /**
  * The cluster's service subnet, pinned in k8s/kind-config.yaml.
  * clusterIpForNamespace hashes the proxy Service's pinned VIP into this
@@ -232,7 +275,15 @@ export async function ensureProxyAuthSecret(): Promise<string> {
  * NodePort. The proxy listens inside its pod's network namespace; the
  * daemon reaches it through a loopback `kubectl port-forward`.
  */
-export function buildProxyDeploymentManifest(imageRef: string): Record<string, unknown> {
+export function buildProxyDeploymentManifest(
+  imageRef: string,
+  opts: { nested?: boolean } = {},
+): Record<string, unknown> {
+  // Nested (inner) proxy: stamp the role so the inner override CNP can
+  // exclude it (loop-free) and the projection can discover it.
+  const podLabels = opts.nested
+    ? { app: PROXY_APP_NAME, [LABEL_ROLE]: ROLE_INNER_PROXY }
+    : { app: PROXY_APP_NAME }
   return {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -248,7 +299,7 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
       strategy: { type: 'Recreate' },
       selector: { matchLabels: { app: PROXY_APP_NAME } },
       template: {
-        metadata: { labels: { app: PROXY_APP_NAME } },
+        metadata: { labels: podLabels },
         spec: {
           // The proxy watches pods (source-IP → session) via the in-cluster
           // API, so it needs its SA token mounted — read-only pods access
@@ -399,8 +450,8 @@ const LISTENER_TUNNEL = 'yaac-egress-tunnel'
  * (the port is the Service port *number*) — it must match a `backendServices`
  * entry in the same CEC. See `buildEgressRedirectCecManifest`.
  */
-function proxyEdsClusterName(upstreamPort: number): string {
-  return `${k8sNamespace()}/${PROXY_APP_NAME}:${upstreamPort}`
+function edsClusterName(namespace: string, service: string, port: number): string {
+  return `${namespace}/${service}:${port}`
 }
 
 /**
@@ -421,9 +472,8 @@ function proxyEdsClusterName(upstreamPort: number): string {
  */
 function redirectListenerAndCluster(
   listenerName: string,
-  upstreamPort: number,
+  clusterName: string,
 ): Record<string, unknown>[] {
-  const clusterName = proxyEdsClusterName(upstreamPort)
   return [
     {
       '@type': 'type.googleapis.com/envoy.config.listener.v3.Listener',
@@ -476,21 +526,32 @@ function redirectListenerAndCluster(
  * proxy Service's backend endpoints (for the listed port numbers) into the
  * matching `<ns>/<service>:<port>` clusters, so Envoy dials the proxy pod IP
  * directly rather than a ClusterIP it cannot route to from the host netns.
+ *
+ * `cecNamespace` is where the CEC lives; `proxyNamespace`/`proxyService` name
+ * the upstream proxy Service its EDS clusters resolve (`backendServices` carries
+ * a namespace, so a per-vcluster fallback CEC can target the outer proxy in
+ * another namespace — see buildVclusterFallbackRedirectCecManifest).
  */
-export function buildEgressRedirectCecManifest(): Record<string, unknown> {
+function buildRedirectCec(
+  cecName: string,
+  cecNamespace: string,
+  proxyNamespace: string,
+  proxyService: string,
+): Record<string, unknown> {
+  const cluster = (port: number): string => edsClusterName(proxyNamespace, proxyService, port)
   return {
     apiVersion: 'cilium.io/v2',
     kind: 'CiliumEnvoyConfig',
     metadata: {
-      name: EGRESS_REDIRECT_CEC_NAME,
-      namespace: k8sNamespace(),
+      name: cecName,
+      namespace: cecNamespace,
       labels: { app: PROXY_APP_NAME },
       annotations: { 'cec.cilium.io/use-original-source-address': 'false' },
     },
     spec: {
       backendServices: [{
-        name: PROXY_APP_NAME,
-        namespace: k8sNamespace(),
+        name: proxyService,
+        namespace: proxyNamespace,
         number: [
           String(TRANSPARENT_HTTPS_PORT),
           String(TRANSPARENT_HTTP_PORT),
@@ -498,17 +559,33 @@ export function buildEgressRedirectCecManifest(): Record<string, unknown> {
         ],
       }],
       resources: [
-        ...redirectListenerAndCluster(LISTENER_HTTPS, TRANSPARENT_HTTPS_PORT),
-        ...redirectListenerAndCluster(LISTENER_HTTP, TRANSPARENT_HTTP_PORT),
-        ...redirectListenerAndCluster(LISTENER_TUNNEL, TRANSPARENT_TUNNEL_PORT),
+        ...redirectListenerAndCluster(LISTENER_HTTPS, cluster(TRANSPARENT_HTTPS_PORT)),
+        ...redirectListenerAndCluster(LISTENER_HTTP, cluster(TRANSPARENT_HTTP_PORT)),
+        ...redirectListenerAndCluster(LISTENER_TUNNEL, cluster(TRANSPARENT_TUNNEL_PORT)),
       ],
     },
   }
 }
 
-/** Reference to a listener defined in the egress-redirect CEC. */
+export function buildEgressRedirectCecManifest(): Record<string, unknown> {
+  return buildRedirectCec(EGRESS_REDIRECT_CEC_NAME, k8sNamespace(), k8sNamespace(), PROXY_APP_NAME)
+}
+
+/**
+ * A `toPorts.listener` reference to a listener in a CEC. Every yaac's
+ * session-egress redirect carries the same normal `priority`; the inner one
+ * is identical (transparent), and the outer vcluster fallback uses a lower
+ * precedence so the inner wins — see SESSION_REDIRECT_PRIORITY.
+ */
+function listenerRef(cecName: string, name: string, priority?: number): Record<string, unknown> {
+  const ref: Record<string, unknown> = { envoyConfig: { kind: 'CiliumEnvoyConfig', name: cecName }, name }
+  if (priority !== undefined) ref.priority = priority
+  return ref
+}
+
+/** Reference to a listener in the (outer) egress-redirect CEC, at normal priority. */
 function cecListenerRef(name: string): Record<string, unknown> {
-  return { envoyConfig: { kind: 'CiliumEnvoyConfig', name: EGRESS_REDIRECT_CEC_NAME }, name }
+  return listenerRef(EGRESS_REDIRECT_CEC_NAME, name, SESSION_REDIRECT_PRIORITY)
 }
 
 /**
@@ -625,6 +702,170 @@ export function buildProxyIngressCnpManifest(): Record<string, unknown> {
   }
 }
 
+/**
+ * Inner egress-redirect CEC the daemon projects into a vcluster's host
+ * namespace. Same three listeners as the outer CEC, but EDS-backed by the
+ * **inner** proxy's host-synced Service (`innerProxyService` in `vcNamespace` —
+ * its name is vcluster-translated, so the daemon discovers and passes it). The
+ * inner override CNP references these listeners at a winning priority.
+ */
+export function buildInnerEgressRedirectCecManifest(
+  vcNamespace: string,
+  innerProxyService: string,
+): Record<string, unknown> {
+  return buildRedirectCec(INNER_EGRESS_REDIRECT_CEC_NAME, vcNamespace, vcNamespace, innerProxyService)
+}
+
+/**
+ * Inner session-egress redirect CNP (the override). Selects a vcluster's synced
+ * pods (`managed-by=<vcName>`) **except** the inner proxy itself
+ * (`yaac.role != inner-proxy`, loop-free) and redirects their 443/80/SSH egress
+ * into the inner CEC listeners at the **normal** priority — the same value every
+ * yaac uses (so the inner stays transparent), which beats the outer vcluster
+ * fallback (a lower precedence). Mirrors the outer session-egress shape so inner
+ * sessions behave identically. The forgery lock lives on this egress default-deny.
+ */
+export function buildInnerSessionEgressRedirectCnpManifest(
+  vcNamespace: string,
+  vcName: string,
+): Record<string, unknown> {
+  const ref = (listener: string): Record<string, unknown> =>
+    listenerRef(INNER_EGRESS_REDIRECT_CEC_NAME, listener, SESSION_REDIRECT_PRIORITY)
+  return {
+    apiVersion: 'cilium.io/v2',
+    kind: 'CiliumNetworkPolicy',
+    metadata: {
+      name: INNER_SESSION_EGRESS_REDIRECT_CNP_NAME,
+      namespace: vcNamespace,
+      labels: { app: PROXY_APP_NAME },
+    },
+    spec: {
+      endpointSelector: { matchExpressions: [
+        { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [vcName] },
+        { key: LABEL_ROLE, operator: 'NotIn', values: [ROLE_INNER_PROXY] },
+      ] },
+      egress: [
+        {
+          toEntities: ['world'],
+          toPorts: [{ ports: [{ port: '443', protocol: 'TCP' }], listener: ref(LISTENER_HTTPS) }],
+        },
+        {
+          toEntities: ['world'],
+          toPorts: [{ ports: [{ port: '80', protocol: 'TCP' }], listener: ref(LISTENER_HTTP) }],
+        },
+        {
+          toCIDRSet: [{ cidr: `${SSH_TUNNEL_SENTINEL}/32` }],
+          toPorts: [{ ports: [{ port: String(TUNNEL_INGRESS_PORT), protocol: 'TCP' }], listener: ref(LISTENER_TUNNEL) }],
+        },
+        {
+          toEndpoints: [{ matchLabels: { app: PROXY_APP_NAME } }],
+          toPorts: [{ ports: [{ port: String(DNS_STUB_PORT), protocol: 'UDP' }] }],
+        },
+      ],
+    },
+  }
+}
+
+/**
+ * Inner proxy-ingress CNP. Locks the inner proxy's transparent ports to the
+ * redirected synced-pod identity (`managed-by=<vcName>`) and its control API to
+ * the host — the same trust model as the outer proxy-ingress (the redirect
+ * preserves the source pod's identity; a direct dial is blocked at egress).
+ */
+export function buildInnerProxyIngressCnpManifest(
+  vcNamespace: string,
+  vcName: string,
+): Record<string, unknown> {
+  return {
+    apiVersion: 'cilium.io/v2',
+    kind: 'CiliumNetworkPolicy',
+    metadata: {
+      name: INNER_PROXY_INGRESS_CNP_NAME,
+      namespace: vcNamespace,
+      labels: { app: PROXY_APP_NAME },
+    },
+    spec: {
+      endpointSelector: { matchLabels: { [LABEL_ROLE]: ROLE_INNER_PROXY } },
+      ingress: [
+        {
+          fromEntities: ['host'],
+          toPorts: [{ ports: [{ port: String(PROXY_PORT), protocol: 'TCP' }] }],
+        },
+        {
+          fromEndpoints: [{ matchExpressions: [
+            { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [vcName] },
+          ] }],
+          toPorts: [{ ports: [
+            { port: String(TRANSPARENT_HTTPS_PORT), protocol: 'TCP' },
+            { port: String(TRANSPARENT_HTTP_PORT), protocol: 'TCP' },
+            { port: String(TRANSPARENT_TUNNEL_PORT), protocol: 'TCP' },
+            { port: String(DNS_STUB_PORT), protocol: 'UDP' },
+          ] }],
+        },
+      ],
+    },
+  }
+}
+
+/**
+ * The outer yaac's fallback redirect CEC for a vcluster's synced pods, in the
+ * vcluster's host namespace, EDS-backed by the OUTER proxy (cross-namespace via
+ * `backendServices.namespace`). A per-vcluster CEC is needed because a CNP's
+ * `listener.envoyConfig` ref carries no namespace, so the fallback CNP can't
+ * point at the outer CEC directly.
+ */
+export function buildVclusterFallbackRedirectCecManifest(
+  vcNamespace: string,
+): Record<string, unknown> {
+  return buildRedirectCec(VCLUSTER_FALLBACK_CEC_NAME, vcNamespace, k8sNamespace(), PROXY_APP_NAME)
+}
+
+/**
+ * The outer yaac's fallback redirect CNP: ALL of a vcluster's synced pods
+ * (`managed-by=<vcName>`, including the inner proxy) get 443/80/SSH redirected
+ * to the OUTER proxy at a deliberately LOW precedence (VCLUSTER_FALLBACK_PRIORITY
+ * ≫ SESSION_REDIRECT_PRIORITY). So synced pods have working egress the moment
+ * they exist; once an inner yaac is up, its normal-priority override wins for
+ * its session pods, while the inner proxy itself (excluded from the override)
+ * stays on this fallback → outer proxy (loop-free chaining). DNS is out of scope
+ * here (synced pods resolve via vcluster CoreDNS).
+ */
+export function buildVclusterFallbackRedirectCnpManifest(
+  vcNamespace: string,
+  vcName: string,
+): Record<string, unknown> {
+  const ref = (listener: string): Record<string, unknown> =>
+    listenerRef(VCLUSTER_FALLBACK_CEC_NAME, listener, VCLUSTER_FALLBACK_PRIORITY)
+  return {
+    apiVersion: 'cilium.io/v2',
+    kind: 'CiliumNetworkPolicy',
+    metadata: {
+      name: VCLUSTER_FALLBACK_CNP_NAME,
+      namespace: vcNamespace,
+      labels: { app: PROXY_APP_NAME },
+    },
+    spec: {
+      endpointSelector: { matchExpressions: [
+        { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [vcName] },
+      ] },
+      egress: [
+        {
+          toEntities: ['world'],
+          toPorts: [{ ports: [{ port: '443', protocol: 'TCP' }], listener: ref(LISTENER_HTTPS) }],
+        },
+        {
+          toEntities: ['world'],
+          toPorts: [{ ports: [{ port: '80', protocol: 'TCP' }], listener: ref(LISTENER_HTTP) }],
+        },
+        {
+          toCIDRSet: [{ cidr: `${SSH_TUNNEL_SENTINEL}/32` }],
+          toPorts: [{ ports: [{ port: String(TUNNEL_INGRESS_PORT), protocol: 'TCP' }], listener: ref(LISTENER_TUNNEL) }],
+        },
+      ],
+    },
+  }
+}
+
 /** ServiceAccount the proxy runs as so it can watch pods (source-IP→session). */
 export function buildProxyServiceAccountManifest(): Record<string, unknown> {
   return {
@@ -654,7 +895,9 @@ export function buildProxyRoleBindingManifest(): Record<string, unknown> {
   }
 }
 
-export function buildProxyServiceManifest(): Record<string, unknown> {
+export function buildProxyServiceManifest(
+  opts: { nested?: boolean } = {},
+): Record<string, unknown> {
   return {
     apiVersion: 'v1',
     kind: 'Service',
@@ -665,10 +908,13 @@ export function buildProxyServiceManifest(): Record<string, unknown> {
     },
     spec: {
       type: 'ClusterIP',
-      // Pinned, not allocator-assigned: session relays dial this VIP from
-      // env (no DNS), and the pin makes it reproducible across Service
-      // recreation — see clusterIpForNamespace.
-      clusterIP: clusterIpForNamespace(k8sNamespace()),
+      // Pinned, not allocator-assigned: session pods dial this VIP from env
+      // (no DNS), and the pin makes it reproducible across Service recreation
+      // — see clusterIpForNamespace. NESTED (inner) proxy: do NOT pin — the
+      // host-CIDR pin could collide on the host when vcluster syncs the
+      // Service, and the inner redirect uses EDS (endpoints, not the VIP);
+      // the inner yaac discovers the allocated ClusterIP for its DNS stub.
+      ...(opts.nested ? {} : { clusterIP: clusterIpForNamespace(k8sNamespace()) }),
       selector: { app: PROXY_APP_NAME },
       // port == targetPort throughout: the NetworkPolicy and the in-pod
       // egress filter list the post-translation (transport) port, so a
@@ -691,26 +937,54 @@ export function buildProxyServiceManifest(): Record<string, unknown> {
  * the declarative successor to the podman-era hash-in-the-container-name
  * scheme plus manual stale-proxy GC.
  */
-export async function ensureProxyResources(imageRef: string): Promise<void> {
+/**
+ * The live ClusterIP of the proxy Service. For the nested (inner) proxy it's
+ * vcluster-allocated (unpinned), so the inner yaac queries it rather than
+ * computing clusterIpForNamespace — to use as the inner session pods' DNS
+ * nameserver (a vcluster ClusterIP they can reach; the spike confirmed synced
+ * pods reach vcluster ClusterIPs and that an explicit dnsConfig survives sync).
+ */
+export async function proxyServiceClusterIp(): Promise<string> {
+  const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
+    'get', 'service', PROXY_APP_NAME, '-n', k8sNamespace(),
+  ])
+  const ip = svc?.spec?.clusterIP
+  if (!ip) throw new Error('proxy Service has no ClusterIP yet')
+  return ip
+}
+
+export async function ensureProxyResources(
+  imageRef: string,
+  opts: { nested?: boolean } = {},
+): Promise<void> {
   // Pre-create the credentials dir with tight permissions before any pod
   // mounts it — DirectoryOrCreate would make it root-owned 0755.
   await fs.mkdir(credentialsDir(), { recursive: true, mode: 0o700 })
   await fs.mkdir(sshAgentHostDir(), { recursive: true })
   await fs.mkdir(proxyDataHostDir(), { recursive: true })
 
+  // Nested (inner) yaac: its vcluster has no Cilium, so install the CEC/CNP
+  // CRDs (permissive) before the CEC/CNP applies below would otherwise fail
+  // with "no matches for kind". The inner yaac owns its vcluster — the host
+  // never reaches in to register them.
+  if (opts.nested) await ensureCiliumCrds()
+
   // One-time migration to the pinned VIP: spec.clusterIP is immutable, so
   // on a cluster whose Service predates the pin (or drifted) the apply
   // would fail with "field is immutable" — delete and let the apply below
   // recreate it at the pinned address. Pre-migration sessions are safe
   // across the swap: their relays still hold the proxy's DNS name and
-  // Node re-resolves it on every connection.
-  const live = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
-    'get', 'service', PROXY_APP_NAME, '-n', k8sNamespace(),
-  ])
-  if (live && live.spec?.clusterIP !== clusterIpForNamespace(k8sNamespace())) {
-    await kubectlWithRetry([
-      'delete', 'service', PROXY_APP_NAME, '-n', k8sNamespace(), '--ignore-not-found',
+  // Node re-resolves it on every connection. Skipped when nested: the inner
+  // proxy Service is unpinned (vcluster-allocated).
+  if (!opts.nested) {
+    const live = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
+      'get', 'service', PROXY_APP_NAME, '-n', k8sNamespace(),
     ])
+    if (live && live.spec?.clusterIP !== clusterIpForNamespace(k8sNamespace())) {
+      await kubectlWithRetry([
+        'delete', 'service', PROXY_APP_NAME, '-n', k8sNamespace(), '--ignore-not-found',
+      ])
+    }
   }
 
   // SA + RBAC before the Deployment, which references the SA so the proxy
@@ -718,8 +992,8 @@ export async function ensureProxyResources(imageRef: string): Promise<void> {
   await kubectlApply(buildProxyServiceAccountManifest())
   await kubectlApply(buildProxyRoleManifest())
   await kubectlApply(buildProxyRoleBindingManifest())
-  await kubectlApply(buildProxyDeploymentManifest(imageRef))
-  await kubectlApply(buildProxyServiceManifest())
+  await kubectlApply(buildProxyDeploymentManifest(imageRef, opts))
+  await kubectlApply(buildProxyServiceManifest(opts))
   // The egress lockdown, applied with the proxy so it exists before any
   // session pod can be scheduled (sessions require ensureRunning()). CEC
   // before the CNP that references its listeners.

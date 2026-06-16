@@ -1,6 +1,7 @@
 import { reconcileStaleSessions, captureOpencodeFirstMessages } from '@/lib/session/list'
 import { reconcileProxySshKeys } from '@/lib/session/proxy-reconcile'
 import { reconcileVclusters } from '@/lib/session/vcluster-reconcile'
+import { reconcileInnerRedirects } from '@/lib/session/inner-redirect-reconcile'
 import { daemonLog } from '@/daemon/log'
 
 export interface BackgroundLoopDeps {
@@ -58,6 +59,9 @@ function defaultTickSteps(): Array<() => Promise<void>> {
     reconcileProxySshKeys,
     // Per-session vclusters: orphan GC + host-side kubeconfig heal.
     reconcileVclusters,
+    // yaac-in-yaac: project the inner egress redirect for a vcluster's synced
+    // pods once its inner proxy is up (or prune it when gone).
+    reconcileInnerRedirects,
   ]
 }
 

@@ -161,7 +161,9 @@ describe.skipIf(process.env.YAAC_E2E_NESTED_YAAC !== '1')(
       const { stdout: envOut } = await execInJob(name, [
         'sh', '-c', 'echo "$YAAC_NESTED|$YAAC_DATA_DIR|$YAAC_K8S_REGISTRY"',
       ])
-      expect(envOut).toMatch(/^1\|\/.*nested-yaac\|yaac-reg-.*\.svc:5000\//)
+      // YAAC_K8S_REGISTRY is the project registry host:port, no path prefix
+      // (projectRegistryHost — the registry is already project-scoped).
+      expect(envOut).toMatch(/^1\|\/.*nested-yaac\|yaac-reg-.*\.svc:5000\s*$/)
 
       // Copy the source in and install deps (linux natives) through the
       // proxy — registry.npmjs.org is on the default allowlist.
@@ -176,12 +178,11 @@ describe.skipIf(process.env.YAAC_E2E_NESTED_YAAC !== '1')(
       ], { timeout: 1_800_000, maxAttempts: 1 })
 
       // Inner cluster check: the inner daemon-free preflight against the
-      // vcluster. The probe builds nothing — it pushes busybox through
-      // the in-pod podman to the project registry (prefix host) and runs
-      // a synced probe pod from it under the VAP guard; the egress gate
-      // proves inner NetworkPolicies are enforced by host Cilium. The
-      // transparent-egress / nested-mount / vap / service-cidr gates
-      // self-skip under YAAC_NESTED.
+      // vcluster. The probe builds nothing — it pushes busybox through the
+      // in-pod podman to the project registry and runs a synced probe pod
+      // from it under the VAP guard. The egress / envoy-config / nested-mount
+      // / vap / service-cidr gates self-skip under YAAC_NESTED (egress is
+      // enforced host-side, the rest have no in-vcluster equivalent).
       const { stdout: checkOut } = await execInJob(name, [
         'sh', '-c', 'cd /tmp/yaac && node_modules/.bin/tsx src/cli.ts cluster check 2>&1; echo "EXIT:$?"',
       ], { timeout: 900_000, maxAttempts: 1 })
@@ -189,8 +190,7 @@ describe.skipIf(process.env.YAAC_E2E_NESTED_YAAC !== '1')(
       expect(checkOut).toContain('✓ registry')
       expect(checkOut).toContain('✓ namespace')
       expect(checkOut).toContain('✓ probe')
-      expect(checkOut).toContain('✓ egress')
-      expect(checkOut).toContain('- redirect')
+      expect(checkOut).toContain('- egress')
       expect(checkOut).toMatch(/EXIT:0/)
 
       // (The vcluster-in-vcluster refusal is pinned by a unit test on

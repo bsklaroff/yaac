@@ -204,22 +204,25 @@ export async function runClusterCheck(
     add(await runServiceCidrDriftCheck(deps))
     return { ok: false, results }
   }
-  add(await runNetworkPolicyProbe(deps))
-
   // Inner yaac (a vcluster session, YAAC_NESTED=1): the remaining gates
-  // probe machinery that deliberately does not exist inside a vcluster.
-  // Inner sessions are non-nested with no transparent-egress layer
-  // (synced pods have no redirect/relay pair — and no upstream egress at
-  // all in v1), vcluster-in-vcluster is refused outright, and there is
-  // no kubeadm config to read a service CIDR from. Skipping also avoids
-  // in-pod podman builds of the redirect/relay images just to probe.
+  // probe machinery that deliberately does not exist inside a vcluster, so
+  // they self-skip. The egress gate is among them: an inner session's egress
+  // default-deny is enforced HOST-side (the daemon projects the redirect for
+  // the vcluster's synced pods — see plans/yaac-in-yaac-inner-egress.md), and
+  // the vcluster has no Cilium datapath or CRDs, so it cannot be probed from
+  // in here (applying the session-egress CNP errors "no matches for kind").
+  // The OUTER cluster-check verifies egress. envoy-config / vap / service-cidr
+  // likewise have no in-vcluster equivalent; vcluster-in-vcluster is refused.
   if (process.env.YAAC_NESTED === '1') {
+    add({ name: 'egress', status: 'skip', detail: 'skipped — nested yaac (inner-session egress is enforced host-side)' })
     for (const name of ['envoy-config', 'nested-mount', 'vap', 'service-cidr']) {
       add({ name, status: 'skip', detail: 'skipped — nested yaac (not applicable inside a vcluster)' })
     }
     add(await runProxyVipPinCheck(deps))
     return { ok: !results.some((r) => r.status === 'fail'), results }
   }
+
+  add(await runNetworkPolicyProbe(deps))
 
   // 9. envoy-config: the CiliumEnvoyConfig CRDs must exist, or the
   // cluster-level egress redirect (the CEC) cannot be applied at all.

@@ -33,6 +33,21 @@ import {
   TRANSPARENT_TUNNEL_PORT,
   TUNNEL_INGRESS_PORT,
   buildEgressRedirectCecManifest,
+  buildInnerEgressRedirectCecManifest,
+  buildInnerSessionEgressRedirectCnpManifest,
+  buildInnerProxyIngressCnpManifest,
+  INNER_EGRESS_REDIRECT_CEC_NAME,
+  INNER_SESSION_EGRESS_REDIRECT_CNP_NAME,
+  INNER_PROXY_INGRESS_CNP_NAME,
+  buildVclusterFallbackRedirectCecManifest,
+  buildVclusterFallbackRedirectCnpManifest,
+  LABEL_VCLUSTER_MANAGED_BY,
+  LABEL_ROLE,
+  ROLE_INNER_PROXY,
+  VCLUSTER_FALLBACK_CEC_NAME,
+  VCLUSTER_FALLBACK_CNP_NAME,
+  SESSION_REDIRECT_PRIORITY,
+  VCLUSTER_FALLBACK_PRIORITY,
   buildProxyDeploymentManifest,
   buildProxyIngressCnpManifest,
   buildProxyRoleBindingManifest,
@@ -48,6 +63,7 @@ import {
   ensureNamespace,
   ensureProxyAuthSecret,
   ensureProxyResources,
+  proxyServiceClusterIp,
   proxyDataHostDir,
   sshAgentHostDir,
 } from '@/lib/k8s/bootstrap'
@@ -248,6 +264,19 @@ describe('buildProxyDeploymentManifest', () => {
     expect(m.spec.selector.matchLabels).toEqual({ app: PROXY_APP_NAME })
   })
 
+  it('nested (inner) proxy: stamps yaac.role=inner-proxy on the pod (loop-free exclusion)', () => {
+    const plain = buildProxyDeploymentManifest('img') as unknown as {
+      spec: { template: { metadata: { labels: Record<string, string> } } }
+    }
+    expect(plain.spec.template.metadata.labels).toEqual({ app: PROXY_APP_NAME })
+    const nested = buildProxyDeploymentManifest('img', { nested: true }) as unknown as {
+      spec: { template: { metadata: { labels: Record<string, string> } } }
+    }
+    expect(nested.spec.template.metadata.labels).toEqual({
+      app: PROXY_APP_NAME, [LABEL_ROLE]: ROLE_INNER_PROXY,
+    })
+  })
+
   it('wires the image, ports, auth secret env, and readiness probe', () => {
     const c = build().spec.template.spec.containers[0]
     expect(c.image).toBe('localhost:5000/yaac-proxy:abc')
@@ -372,6 +401,26 @@ describe('buildProxyServiceManifest', () => {
         ],
       },
     })
+  })
+
+  it('nested (inner) proxy: omits the host-CIDR ClusterIP pin (vcluster allocates)', () => {
+    const m = buildProxyServiceManifest({ nested: true }) as unknown as {
+      spec: { clusterIP?: string; type: string }
+    }
+    expect(m.spec.type).toBe('ClusterIP')
+    expect(m.spec.clusterIP).toBeUndefined()
+  })
+})
+
+describe('proxyServiceClusterIp', () => {
+  it('returns the live (vcluster-allocated) ClusterIP of the proxy Service', async () => {
+    mockGetJson.mockResolvedValue({ spec: { clusterIP: '10.96.92.236' } })
+    expect(await proxyServiceClusterIp()).toBe('10.96.92.236')
+  })
+
+  it('throws if the Service has no ClusterIP yet', async () => {
+    mockGetJson.mockResolvedValue({ spec: {} })
+    await expect(proxyServiceClusterIp()).rejects.toThrow(/ClusterIP/)
   })
 })
 
@@ -621,5 +670,128 @@ describe('ensureCaConfigMap', () => {
     mockGetJson.mockResolvedValue({ data: { 'proxy-ca.pem': 'OLD-PEM' } })
     await ensureCaConfigMap('NEW-PEM')
     expect(mockApply).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('inner-redirect builders (yaac-in-yaac projection)', () => {
+  const VC_NS = 'yaac-vc-abcd1234'
+  const VC_NAME = 'yvc-abcd1234'
+  const INNER_SVC = 'yaac-proxy-x-yaac-x-yvc-abcd1234' // vcluster-translated name
+
+  it('inner CEC: EDS-backed by the inner proxy Service, in the vcluster namespace', () => {
+    const m = buildInnerEgressRedirectCecManifest(VC_NS, INNER_SVC) as unknown as {
+      metadata: { name: string; namespace: string; annotations: Record<string, string> }
+      spec: {
+        backendServices: Array<{ name: string; namespace: string; number: string[] }>
+        resources: Array<{ '@type': string; name?: string; type?: string }>
+      }
+    }
+    expect(m.metadata.name).toBe(INNER_EGRESS_REDIRECT_CEC_NAME)
+    expect(m.metadata.namespace).toBe(VC_NS)
+    expect(m.metadata.annotations['cec.cilium.io/use-original-source-address']).toBe('false')
+    expect(m.spec.backendServices).toEqual([{
+      name: INNER_SVC,
+      namespace: VC_NS,
+      number: [String(TRANSPARENT_HTTPS_PORT), String(TRANSPARENT_HTTP_PORT), String(TRANSPARENT_TUNNEL_PORT)],
+    }])
+    const clusters = m.spec.resources.filter((r) => String(r['@type']).endsWith('v3.Cluster'))
+    expect(clusters.map((c) => ({ name: c.name, type: c.type }))).toEqual([
+      { name: `${VC_NS}/${INNER_SVC}:${TRANSPARENT_HTTPS_PORT}`, type: 'EDS' },
+      { name: `${VC_NS}/${INNER_SVC}:${TRANSPARENT_HTTP_PORT}`, type: 'EDS' },
+      { name: `${VC_NS}/${INNER_SVC}:${TRANSPARENT_TUNNEL_PORT}`, type: 'EDS' },
+    ])
+  })
+
+  it('inner override CNP: managed-by AND not inner-proxy, listeners at the normal priority', () => {
+    const m = buildInnerSessionEgressRedirectCnpManifest(VC_NS, VC_NAME) as unknown as {
+      metadata: { name: string; namespace: string }
+      spec: {
+        endpointSelector: { matchExpressions: Array<{ key: string; operator: string; values: string[] }> }
+        egress: Array<{ toPorts: Array<{ ports: Array<{ port: string }>; listener?: { envoyConfig: { name: string }; name: string; priority?: number } }> }>
+      }
+    }
+    expect(m.metadata.name).toBe(INNER_SESSION_EGRESS_REDIRECT_CNP_NAME)
+    expect(m.metadata.namespace).toBe(VC_NS)
+    // Scope: this vcluster's synced pods, excluding the inner proxy (loop-free).
+    expect(m.spec.endpointSelector.matchExpressions).toEqual([
+      { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [VC_NAME] },
+      { key: LABEL_ROLE, operator: 'NotIn', values: [ROLE_INNER_PROXY] },
+    ])
+    // Every redirect listener targets the INNER CEC at the NORMAL priority (same
+    // value any yaac uses — transparent), which beats the outer fallback.
+    const listeners = m.spec.egress.map((e) => e.toPorts[0].listener).filter(Boolean)
+    expect(listeners).toHaveLength(3) // HTTPS, HTTP, tunnel (DNS has no listener)
+    for (const l of listeners) {
+      expect(l?.envoyConfig.name).toBe(INNER_EGRESS_REDIRECT_CEC_NAME)
+      expect(l?.priority).toBe(SESSION_REDIRECT_PRIORITY)
+    }
+    // DNS rule carries no listener (plain L4 to the inner proxy stub).
+    const dnsRule = m.spec.egress.find((e) => e.toPorts[0].ports[0].port === String(DNS_STUB_PORT))
+    expect(dnsRule?.toPorts[0].listener).toBeUndefined()
+  })
+
+  it('inner proxy-ingress CNP: control host-only, transparent ports to managed-by pods', () => {
+    const m = buildInnerProxyIngressCnpManifest(VC_NS, VC_NAME) as unknown as {
+      metadata: { name: string; namespace: string }
+      spec: {
+        endpointSelector: { matchLabels: Record<string, string> }
+        ingress: Array<{
+          fromEntities?: string[]
+          fromEndpoints?: Array<{ matchExpressions: Array<{ key: string; operator: string; values: string[] }> }>
+          toPorts: Array<{ ports: Array<{ port: string; protocol: string }> }>
+        }>
+      }
+    }
+    expect(m.metadata.name).toBe(INNER_PROXY_INGRESS_CNP_NAME)
+    expect(m.spec.endpointSelector.matchLabels).toEqual({ [LABEL_ROLE]: ROLE_INNER_PROXY })
+    const [host, session] = m.spec.ingress
+    expect(host.fromEntities).toEqual(['host'])
+    expect(host.toPorts[0].ports).toEqual([{ port: String(PROXY_PORT), protocol: 'TCP' }])
+    expect(session.fromEndpoints?.[0].matchExpressions)
+      .toEqual([{ key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [VC_NAME] }])
+    expect(session.toPorts[0].ports.map((p) => p.port)).toEqual([
+      String(TRANSPARENT_HTTPS_PORT), String(TRANSPARENT_HTTP_PORT),
+      String(TRANSPARENT_TUNNEL_PORT), String(DNS_STUB_PORT),
+    ])
+  })
+
+  it('fallback CEC: EDS-backed by the OUTER proxy (cross-namespace), in the vcluster ns', () => {
+    const m = buildVclusterFallbackRedirectCecManifest(VC_NS) as unknown as {
+      metadata: { name: string; namespace: string }
+      spec: {
+        backendServices: Array<{ name: string; namespace: string }>
+        resources: Array<{ '@type': string; name?: string }>
+      }
+    }
+    expect(m.metadata.name).toBe(VCLUSTER_FALLBACK_CEC_NAME)
+    expect(m.metadata.namespace).toBe(VC_NS) // CEC lives in the vcluster ns...
+    // ...but EDS-resolves the OUTER proxy (k8sNamespace=test-ns) cross-namespace.
+    expect(m.spec.backendServices[0]).toMatchObject({ name: 'yaac-proxy', namespace: 'test-ns' })
+    const clusters = m.spec.resources.filter((r) => String(r['@type']).endsWith('v3.Cluster'))
+    expect(clusters[0].name).toBe(`test-ns/yaac-proxy:${TRANSPARENT_HTTPS_PORT}`)
+  })
+
+  it('fallback CNP: ALL managed-by pods → outer proxy at a LOWER precedence than normal', () => {
+    const m = buildVclusterFallbackRedirectCnpManifest(VC_NS, VC_NAME) as unknown as {
+      metadata: { name: string; namespace: string }
+      spec: {
+        endpointSelector: { matchExpressions: Array<{ key: string; operator: string; values: string[] }> }
+        egress: Array<{ toPorts: Array<{ listener?: { envoyConfig: { name: string }; priority?: number } }> }>
+      }
+    }
+    expect(m.metadata.name).toBe(VCLUSTER_FALLBACK_CNP_NAME)
+    expect(m.metadata.namespace).toBe(VC_NS)
+    // ALL synced pods (no inner-proxy exclusion — the inner proxy chains here).
+    expect(m.spec.endpointSelector.matchExpressions).toEqual([
+      { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [VC_NAME] },
+    ])
+    const listeners = m.spec.egress.map((e) => e.toPorts[0].listener).filter(Boolean)
+    expect(listeners).toHaveLength(3)
+    for (const l of listeners) {
+      expect(l?.envoyConfig.name).toBe(VCLUSTER_FALLBACK_CEC_NAME)
+      expect(l?.priority).toBe(VCLUSTER_FALLBACK_PRIORITY)
+    }
+    // The fallback must lose to a normal-priority inner override.
+    expect(VCLUSTER_FALLBACK_PRIORITY).toBeGreaterThan(SESSION_REDIRECT_PRIORITY)
   })
 })

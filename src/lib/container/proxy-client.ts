@@ -384,7 +384,9 @@ export class ProxyClient {
     this.authSecret = await ensureProxyAuthSecret()
 
     const imageRef = await this.ensureProxyImage()
-    await ensureProxyResources(imageRef)
+    // Nested (inner) yaac: the proxy runs in a vcluster — unpinned Service +
+    // the inner-proxy role label (see ensureProxyResources).
+    await ensureProxyResources(imageRef, { nested: process.env.YAAC_NESTED === '1' })
 
     await this.forward.ensure()
     await this.waitForHealthy()
