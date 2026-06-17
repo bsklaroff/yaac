@@ -255,7 +255,23 @@ The `.cached-packages` directory is shared by every session within the project, 
 
 ## Project configuration
 
-Add a `yaac-config.json` to your repo root. Example with all options:
+Per-machine, per-project configuration lives under each project's data dir — not in the repo, so it's never committed and can differ per machine:
+
+```
+~/.yaac/projects/<repo-name>/config/yaac-config.json
+~/.yaac/projects/<repo-name>/config/Dockerfile.yaac
+~/.yaac/Dockerfile.user
+```
+
+The easiest way to populate these is in `$EDITOR`:
+
+```
+yaac config edit <project>             # yaac-config.json
+yaac config edit-dockerfile <project>  # Dockerfile.yaac
+yaac config edit-user-dockerfile       # ~/.yaac/Dockerfile.user (global)
+```
+
+Example `yaac-config.json` with all options:
 
 ```json
 {
@@ -368,24 +384,4 @@ Layer order: default → Dockerfile.tools (agent CLIs; rebuilt by `yaac project 
 - Each vcluster costs roughly 0.5Gi of memory, so mind how many vcluster sessions run at once.
 
 **yaac-in-yaac**: vcluster sessions are preset for running yaac itself inside the session — `YAAC_NESTED=1`, `YAAC_DATA_DIR` pointing at a host-visible per-session dir, and `YAAC_K8S_REGISTRY` pointing at the project registry. Supported in v1: the inner unit suite, inner `yaac cluster check` (egress-layer gates skip under `YAAC_NESTED`), and inner non-nested session creation against the vcluster (inner sessions have no upstream egress in v1). Inner yaac refuses `virtualCluster` — no vcluster-in-vcluster.
-
-## Project config
-
-Per-machine, per-project configuration lives under each project's data dir:
-
-```
-~/.yaac/projects/<repo-name>/config/yaac-config.json
-~/.yaac/projects/<repo-name>/config/Dockerfile.yaac
-~/.yaac/Dockerfile.user
-```
-
-The easiest way to populate these is in `$EDITOR`:
-
-```
-yaac config edit <project>             # yaac-config.json
-yaac config edit-dockerfile <project>  # Dockerfile.yaac
-yaac config edit-user-dockerfile       # ~/.yaac/Dockerfile.user (global)
-```
-
-Each command resolves `$EDITOR` (then `$VISUAL`, then `vi`) and creates the parent directory if it doesn't exist yet.
 
