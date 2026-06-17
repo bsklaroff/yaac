@@ -234,8 +234,17 @@ function loadOrGenerateCA(): CA {
     const certPem = fs.readFileSync(certPath, 'utf8')
     const key = forge.pki.privateKeyFromPem(keyPem)
     const cert = forge.pki.certificateFromPem(certPem)
-    console.log('[proxy] Loaded existing CA from disk')
-    return { key, cert, pem: certPem }
+    // A CA minted before the SKI/AKI issuer-disambiguation fix carries no
+    // subjectKeyIdentifier, so a verifier holding another identically-named
+    // "yaac Proxy CA" (e.g. the outer proxy's CA, folded into a nested
+    // session's combined trust bundle) can't tell which one signed a leaf and
+    // hard-fails on the wrong key. Regenerate it so new leaves get a matching
+    // AKI. See getLeafCert.
+    if (cert.getExtension('subjectKeyIdentifier')) {
+      console.log('[proxy] Loaded existing CA from disk')
+      return { key, cert, pem: certPem }
+    }
+    console.log('[proxy] Existing CA lacks a subjectKeyIdentifier — regenerating')
   }
 
   console.log('[proxy] Generating new CA...')
@@ -253,6 +262,11 @@ function loadOrGenerateCA(): CA {
   cert.setExtensions([
     { name: 'basicConstraints', cA: true },
     { name: 'keyUsage', keyCertSign: true, cRLSign: true },
+    // SKI so a verifier can pick THIS CA over another identically-named
+    // "yaac Proxy CA" (each proxy mints its own self-signed CA with the same
+    // CN; a chained nested session trusts both). The leaf's AKI points here,
+    // so selection is by key id, not bundle order. See getLeafCert.
+    { name: 'subjectKeyIdentifier' },
   ])
   cert.sign(keys.privateKey, forge.md.sha256.create())
 
@@ -292,6 +306,15 @@ function getLeafCert(hostname: string): { key: string; cert: string } {
     { name: 'basicConstraints', cA: false },
     { name: 'keyUsage', digitalSignature: true, keyEncipherment: true },
     { name: 'extKeyUsage', serverAuth: true },
+    // AKI = the issuing CA's SKI, so a verifier holding several same-named
+    // "yaac Proxy CA" roots (a nested session's combined bundle carries both
+    // the inner and outer proxy CAs) selects the CA that actually signed this
+    // leaf instead of trying them in name order and hard-failing on the wrong
+    // key (OpenSSL does not retry the other candidate). See loadOrGenerateCA.
+    {
+      name: 'authorityKeyIdentifier',
+      keyIdentifier: ca.cert.generateSubjectKeyIdentifier().getBytes(),
+    },
   ])
   cert.sign(ca.key, forge.md.sha256.create())
 

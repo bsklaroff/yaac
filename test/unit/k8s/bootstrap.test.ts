@@ -17,6 +17,12 @@ vi.mock('@/lib/git', async (importOriginal) => {
   }
 })
 
+// ensureProxyResources(nested) registers the Cilium CRDs into the vcluster;
+// no test here exercises the real CRD apply, so stub it out.
+vi.mock('@/lib/k8s/cilium-crds', () => ({
+  ensureCiliumCrds: vi.fn().mockResolvedValue(undefined),
+}))
+
 import {
   CLUSTER_SERVICE_CIDR,
   DNS_STUB_PORT,
@@ -48,6 +54,8 @@ import {
   VCLUSTER_FALLBACK_CNP_NAME,
   SESSION_REDIRECT_PRIORITY,
   VCLUSTER_FALLBACK_PRIORITY,
+  buildOuterProxyCaConfigMapManifest,
+  OUTER_CA_CONFIGMAP_NAME,
   buildProxyDeploymentManifest,
   buildProxyIngressCnpManifest,
   buildProxyRoleBindingManifest,
@@ -68,6 +76,7 @@ import {
   sshAgentHostDir,
 } from '@/lib/k8s/bootstrap'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
+import { CA_CERT_PATH } from '@/lib/k8s/pod-spec'
 import { isTorEnabled } from '@/lib/git'
 import { credentialsDir } from '@/lib/project/paths'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
@@ -288,6 +297,25 @@ describe('buildProxyDeploymentManifest', () => {
     }
     expect(nested.spec.template.spec.dnsPolicy).toBe('None')
     expect(nested.spec.template.spec.dnsConfig).toEqual({ nameservers: ['127.0.0.1'] })
+  })
+
+  it('nested (inner) proxy: trusts the outer CA via NODE_EXTRA_CA_CERTS + a projected ConfigMap mount', () => {
+    // Top-level proxy reaches the world directly — no outer CA, no mount.
+    const plain = build().spec.template.spec
+    expect(plain.containers[0].env)
+      .not.toContainEqual(expect.objectContaining({ name: 'NODE_EXTRA_CA_CERTS' }))
+    expect(plain.volumes).not.toContainEqual(expect.objectContaining({ name: 'outer-ca' }))
+    expect(plain.containers[0].volumeMounts)
+      .not.toContainEqual(expect.objectContaining({ name: 'outer-ca' }))
+
+    const nested = buildProxyDeploymentManifest('img', { nested: true }) as unknown as DeploymentManifest
+    const nspec = nested.spec.template.spec
+    expect(nspec.containers[0].env)
+      .toContainEqual({ name: 'NODE_EXTRA_CA_CERTS', value: '/etc/yaac/outer-ca/proxy-ca.pem' })
+    expect(nspec.volumes)
+      .toContainEqual({ name: 'outer-ca', configMap: { name: OUTER_CA_CONFIGMAP_NAME } })
+    expect(nspec.containers[0].volumeMounts)
+      .toContainEqual({ name: 'outer-ca', mountPath: '/etc/yaac/outer-ca', readOnly: true })
   })
 
   it('wires the image, ports, auth secret env, and readiness probe', () => {
@@ -678,6 +706,40 @@ describe('ensureProxyResources', () => {
     // The delete happens before any apply, so the re-apply recreates the
     // Service at the pinned VIP instead of failing on the immutable field.
     expect(mockApply).toHaveBeenCalled()
+  })
+
+  it('nested: projects the outer CA ConfigMap (read from CA_CERT_PATH) before the Deployment', async () => {
+    mockGetJson.mockResolvedValue(null)
+    // mockRestore() also clears the call record, so assert before restoring.
+    const readSpy = vi.spyOn(fs, 'readFile').mockResolvedValue('OUTER-CA-PEM')
+    await ensureProxyResources('img', { nested: true })
+    // The outer CA is read from the inner yaac's own session-pod trust mount.
+    expect(readSpy).toHaveBeenCalledWith(CA_CERT_PATH, 'utf8')
+    const cmCall = mockApply.mock.calls.find(
+      (c) => (c[0] as { kind: string }).kind === 'ConfigMap',
+    )
+    expect(cmCall?.[0]).toEqual({
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      metadata: { name: OUTER_CA_CONFIGMAP_NAME, namespace: 'test-ns' },
+      data: { 'proxy-ca.pem': 'OUTER-CA-PEM' },
+    })
+    // Applied before the Deployment so the configMap mount resolves on first
+    // schedule (a missing source would keep the pod ContainerCreating).
+    const kinds = mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
+    expect(kinds.indexOf('ConfigMap')).toBeLessThan(kinds.indexOf('Deployment'))
+    readSpy.mockRestore()
+  })
+})
+
+describe('buildOuterProxyCaConfigMapManifest', () => {
+  it('wraps the outer CA PEM under proxy-ca.pem in the install namespace', () => {
+    expect(buildOuterProxyCaConfigMapManifest('OUTER-PEM')).toEqual({
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      metadata: { name: OUTER_CA_CONFIGMAP_NAME, namespace: 'test-ns' },
+      data: { 'proxy-ca.pem': 'OUTER-PEM' },
+    })
   })
 })
 

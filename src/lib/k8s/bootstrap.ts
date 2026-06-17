@@ -8,7 +8,12 @@ import {
   kubectlWithRetry,
 } from '@/lib/k8s/kubectl'
 import { ensureCiliumCrds } from '@/lib/k8s/cilium-crds'
-import { CA_BUNDLE_KEY, CA_CONFIGMAP_KEY, CA_CONFIGMAP_NAME } from '@/lib/k8s/pod-spec'
+import {
+  CA_BUNDLE_KEY,
+  CA_CERT_PATH,
+  CA_CONFIGMAP_KEY,
+  CA_CONFIGMAP_NAME,
+} from '@/lib/k8s/pod-spec'
 import { LABEL_SESSION_ID } from '@/lib/k8s/pods'
 import { credentialsDir, getDataDir } from '@/lib/project/paths'
 import { isTorEnabled } from '@/lib/git'
@@ -104,6 +109,24 @@ export const LABEL_VCLUSTER_MANAGED_BY = 'vcluster.loft.sh/managed-by'
  */
 export const LABEL_ROLE = 'yaac.role'
 export const ROLE_INNER_PROXY = 'inner-proxy'
+/**
+ * Nested (inner) proxy only. The inner proxy's chained upstream dial
+ * (inner session → inner proxy → OUTER proxy → internet) terminates TLS at
+ * the outer proxy, which presents a leaf signed by the OUTER proxy's MITM CA.
+ * The stock proxy dials upstream with Node's default trust store, so without
+ * the outer CA that dial fails with "self-signed certificate in certificate
+ * chain" and the inner session has no internet. The daemon projects the outer
+ * CA into the vcluster as this ConfigMap; the inner proxy mounts it and points
+ * NODE_EXTRA_CA_CERTS at it (additive trust — the real roots still apply). The
+ * inner yaac reads the outer CA from its own session-pod trust mount
+ * (pod-spec CA_CERT_PATH).
+ */
+export const OUTER_CA_CONFIGMAP_NAME = 'yaac-outer-proxy-ca'
+/** Mount dir + file for the projected outer CA inside the inner proxy. A
+ * dedicated dir (not the session CA mount) so it never collides with the
+ * inner proxy's own CA material. */
+const OUTER_CA_MOUNT_DIR = '/etc/yaac/outer-ca'
+const OUTER_CA_PATH = `${OUTER_CA_MOUNT_DIR}/${CA_CONFIGMAP_KEY}`
 /**
  * The cluster's service subnet, pinned in k8s/kind-config.yaml.
  * clusterIpForNamespace hashes the proxy Service's pinned VIP into this
@@ -359,6 +382,12 @@ export function buildProxyDeploymentManifest(
                 // dir. ssh-add and the known_hosts writer resolve ~ here.
                 { name: 'HOME', value: '/home/proxy' },
                 ...(isTorEnabled() ? [{ name: 'USE_TOR', value: '1' }] : []),
+                // Nested (inner) proxy: trust the OUTER proxy's MITM CA so the
+                // chained upstream dial (→ outer proxy) validates. Additive —
+                // Node still consults its bundled roots. See OUTER_CA_*.
+                ...(opts.nested
+                  ? [{ name: 'NODE_EXTRA_CA_CERTS', value: OUTER_CA_PATH }]
+                  : []),
               ],
               readinessProbe: {
                 httpGet: { path: '/healthz', port: PROXY_PORT },
@@ -370,6 +399,9 @@ export function buildProxyDeploymentManifest(
                 { name: 'ssh-agent', mountPath: '/ssh-agent' },
                 { name: 'proxy-data', mountPath: '/data' },
                 { name: 'home', mountPath: '/home/proxy' },
+                ...(opts.nested
+                  ? [{ name: 'outer-ca', mountPath: OUTER_CA_MOUNT_DIR, readOnly: true }]
+                  : []),
               ],
             },
           ],
@@ -391,10 +423,31 @@ export function buildProxyDeploymentManifest(
             // non-root proxy uid, and so nothing the proxy writes under
             // HOME persists onto the host.
             { name: 'home', emptyDir: {} },
+            // Nested (inner) proxy: the outer CA, projected by the daemon into
+            // the vcluster as a ConfigMap (buildOuterProxyCaConfigMapManifest).
+            ...(opts.nested
+              ? [{ name: 'outer-ca', configMap: { name: OUTER_CA_CONFIGMAP_NAME } }]
+              : []),
           ],
         },
       },
     },
+  }
+}
+
+/**
+ * ConfigMap carrying the OUTER proxy's CA, applied by a nested (inner) yaac
+ * into its vcluster so the inner proxy can trust the outer proxy's MITM leaf
+ * on its chained upstream hop (see OUTER_CA_CONFIGMAP_NAME). vcluster syncs it
+ * to the host because the inner proxy pod mounts it. Pure builder — the caller
+ * reads the outer CA (from CA_CERT_PATH, its own trust mount) and applies.
+ */
+export function buildOuterProxyCaConfigMapManifest(caPem: string): Record<string, unknown> {
+  return {
+    apiVersion: 'v1',
+    kind: 'ConfigMap',
+    metadata: { name: OUTER_CA_CONFIGMAP_NAME, namespace: k8sNamespace() },
+    data: { [CA_CONFIGMAP_KEY]: caPem },
   }
 }
 
@@ -1042,7 +1095,18 @@ export async function ensureProxyResources(
   // CRDs (permissive) before the CEC/CNP applies below would otherwise fail
   // with "no matches for kind". The inner yaac owns its vcluster — the host
   // never reaches in to register them.
-  if (opts.nested) await ensureCiliumCrds()
+  if (opts.nested) {
+    await ensureCiliumCrds()
+    // Project the OUTER proxy's CA into the vcluster so the inner proxy's
+    // chained upstream dial (inner proxy → outer proxy) trusts the outer MITM
+    // leaf — without it every inner-session HTTPS request fails closed with
+    // "self-signed certificate in certificate chain". The inner yaac reads the
+    // outer CA from its own session-pod trust mount (it already trusts it to
+    // reach its own upstream). Applied before the Deployment so the mount
+    // resolves on first schedule.
+    const outerCaPem = await fs.readFile(CA_CERT_PATH, 'utf8')
+    await kubectlApply(buildOuterProxyCaConfigMapManifest(outerCaPem))
+  }
 
   // One-time migration to the pinned VIP: spec.clusterIP is immutable, so
   // on a cluster whose Service predates the pin (or drifted) the apply
