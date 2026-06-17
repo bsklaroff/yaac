@@ -1,4 +1,4 @@
-import { Command, type Help } from 'commander'
+import { Command, Argument, type Help } from 'commander'
 import { exitOnClientError } from '@/shared/daemon-client'
 import { projectAdd } from '@/commands/project-add'
 import { projectList } from '@/commands/project-list'
@@ -20,6 +20,7 @@ import { clusterCheck } from '@/commands/cluster-check'
 import { configEdit } from '@/commands/config-edit'
 import { configEditDockerfile } from '@/commands/config-edit-dockerfile'
 import { configEditUserDockerfile } from '@/commands/config-edit-user-dockerfile'
+import { authFake, FAKE_AUTH_KINDS } from '@/commands/auth-fake'
 import { runDaemon, startDaemon, stopDaemon, restartDaemon, daemonLogs, openWebapp } from '@/daemon/cli'
 import { getDefaultTool } from '@/lib/project/preferences'
 import type { AgentTool } from '@/shared/types'
@@ -279,5 +280,14 @@ auth
   .command('clear')
   .description('Remove stored credentials (interactive)')
   .action(authClear)
+
+auth
+  .command('fake')
+  .description('Seed fake credentials so sessions authenticate via a parent proxy (local/dev + yaac-in-yaac)')
+  .addArgument(
+    new Argument('<kind>', 'Credential kind to seed (claude-oauth or github)')
+      .choices([...FAKE_AUTH_KINDS]),
+  )
+  .action(authFake)
 
 program.parseAsync().catch(exitOnClientError)

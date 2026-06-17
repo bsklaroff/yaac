@@ -5,6 +5,7 @@ import { listAuth } from '@/lib/auth/list'
 import { clearAuth } from '@/lib/auth/clear'
 import { addEntry, removeEntryChecked, replaceEntries } from '@/lib/project/credentials'
 import { persistToolAuthPayload } from '@/lib/project/tool-auth'
+import { seedFakeClaudeOAuth, seedFakeGithubCredential } from '@/lib/project/fake-auth'
 import { proxyClient } from '@/lib/container/proxy-client'
 import { claudeOAuthBundleSchema, codexOAuthBundleSchema } from '@/shared/types'
 
@@ -34,6 +35,19 @@ export const authApp = new Hono()
     async (c) => {
       const { service } = c.req.valid('json')
       await clearAuth(service)
+      return c.body(null, 204)
+    },
+  )
+  .post(
+    '/fake',
+    zValidator('json', z.object({ kind: z.enum(['claude-oauth', 'github']) })),
+    async (c) => {
+      const { kind } = c.req.valid('json')
+      if (kind === 'claude-oauth') {
+        await seedFakeClaudeOAuth()
+      } else {
+        await seedFakeGithubCredential()
+      }
       return c.body(null, 204)
     },
   )
