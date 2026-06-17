@@ -9,7 +9,7 @@ import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
 import { deleteSession, restartSession } from '@/frontend/lib/createSession'
 import { getDeletedSessions } from '@/frontend/lib/deletedApi'
 import { useProvisionSession } from '@/frontend/lib/useProvisionSession'
-import { useUiStore, type CreatingSession } from '@/frontend/store'
+import { isCreatingInProject, useUiStore, type CreatingSession } from '@/frontend/store'
 import type { DeletedSessionEntry, SessionListEntry } from '@/shared/types'
 
 /** User-facing session groups, in triage order (Waiting first). */
@@ -50,9 +50,8 @@ export function Sidebar({
   // Show a "starting" row the instant create is clicked, until the real
   // session lands in the snapshot (then App clears `creating`). Skip it if the
   // real row is already present, to avoid a one-frame duplicate.
-  const showCreating = !!creating
-    && creating.projectSlug === projectSlug
-    && !(creating.sessionId && shown.some((s) => s.sessionId === creating.sessionId))
+  const showCreating = isCreatingInProject(creating, projectSlug)
+    && !(creating?.sessionId && shown.some((s) => s.sessionId === creating.sessionId))
 
   return (
     <aside className="flex h-full w-64 flex-col text-text">

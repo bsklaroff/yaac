@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { loadViewMode, useUiStore } from '@/frontend/store'
+import { isCreatingInProject, loadViewMode, useUiStore, type CreatingSession } from '@/frontend/store'
 
 const initial = useUiStore.getState()
 
@@ -80,6 +80,25 @@ describe('selection + project switching', () => {
     useUiStore.getState().setSessionLayout('s1', tree)
     useUiStore.getState().setSessionLayout('s2', null)
     expect(useUiStore.getState().layouts).toEqual({ s1: tree, s2: null })
+  })
+})
+
+describe('isCreatingInProject', () => {
+  const creating = (projectSlug: string): CreatingSession => ({
+    projectSlug, tool: 'claude', message: 'Starting…',
+  })
+
+  it('is false when nothing is provisioning', () => {
+    expect(isCreatingInProject(null, 'proj')).toBe(false)
+  })
+
+  it('matches only the project the create belongs to', () => {
+    expect(isCreatingInProject(creating('proj'), 'proj')).toBe(true)
+    expect(isCreatingInProject(creating('proj'), 'other')).toBe(false)
+  })
+
+  it('is false for a null active project', () => {
+    expect(isCreatingInProject(creating('proj'), null)).toBe(false)
   })
 })
 

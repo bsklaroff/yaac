@@ -3,7 +3,7 @@ import { api, ApiError } from './lib/apiClient'
 import { readBootstrapCode, postBootstrap, stripBootstrapFromUrl } from './lib/bootstrap'
 import { useEvents } from './lib/useEvents'
 import { useSnapshot } from './lib/useSnapshot'
-import { useUiStore } from './store'
+import { isCreatingInProject, useUiStore } from './store'
 import { ProjectRail } from './components/ProjectRail'
 import { Sidebar } from './components/Sidebar'
 import { SessionView } from './components/SessionView'
@@ -94,11 +94,12 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
   const scoped = sessions.filter((s) => s.projectSlug === activeProjectSlug)
 
   // Auto-select: never show an empty pane when the project has sessions —
-  // pick the first waiting one (else the first visible). Skipped while a
-  // create is provisioning (its placeholder owns the pane and the new id
-  // isn't in the snapshot yet).
+  // pick the first waiting one (else the first visible). Skipped only while a
+  // create is provisioning *in this project* (its placeholder owns the pane
+  // and the new id isn't in the snapshot yet); a create elsewhere must not
+  // block selecting a session in the project we're actually viewing.
   useEffect(() => {
-    if (!activeProjectSlug || creating) return
+    if (!activeProjectSlug || isCreatingInProject(creating, activeProjectSlug)) return
     const visible = scoped.filter((s) => !pendingDeleteIds.includes(s.sessionId))
     if (visible.length === 0) return
     if (selectedSessionId && visible.some((s) => s.sessionId === selectedSessionId)) return

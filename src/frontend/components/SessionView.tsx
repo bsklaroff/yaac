@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type JSX, type PointerEvent as ReactPointe
 import clsx from 'clsx'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Menu } from '@base-ui/react/menu'
-import { useUiStore } from '@/frontend/store'
+import { isCreatingInProject, useUiStore } from '@/frontend/store'
 import { SessionTerminal } from '@/frontend/components/SessionTerminal'
 import { SessionActionsMenu } from '@/frontend/components/SessionActionsMenu'
 import { CreatingPlaceholder } from '@/frontend/components/CreatingPlaceholder'
@@ -83,10 +83,18 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
   const activeTabs = useUiStore((s) => s.activeTabs)
   const setActiveTab = useUiStore((s) => s.setActiveTab)
   const creating = useUiStore((s) => s.creating)
+  const activeProjectSlug = useUiStore((s) => s.activeProjectSlug)
   const queryClient = useQueryClient()
   const sessions = snapshot?.sessions ?? []
   const session = sessions.find((s) => s.sessionId === selectedSessionId)
   const sid = session?.sessionId ?? null
+
+  // The provisioning placeholder owns the main pane only within its own
+  // project, and only when no real session is selected to take precedence.
+  // Otherwise a create in one project would overlay whatever session you're
+  // viewing (the placeholder is a full-bleed z-30 cover). The new session's id
+  // isn't in the snapshot yet, so `!session` also covers the hand-off window.
+  const creatingHere = isCreatingInProject(creating, activeProjectSlug) && !session ? creating : null
 
   // The session's workspace tree: missing key = the default single agent
   // pane; null = explicitly emptied.
@@ -287,7 +295,7 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
   return (
     <main className="flex h-full min-w-0 flex-col">
       {/* Slim session bar on the base layer — the panes are the cards. */}
-      {creating ? (
+      {creatingHere ? (
         <header className="flex h-8 shrink-0 items-center gap-2.5 px-2 text-xs">
           <button
             onClick={toggleSidebar}
@@ -299,7 +307,7 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
             <SidebarIcon size={14} />
           </button>
           <span className="min-w-0 flex-1 truncate font-medium text-text-dim">New session</span>
-          <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[creating.tool]}</span>
+          <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[creatingHere.tool]}</span>
         </header>
       ) : session ? (
         <header className="flex h-8 shrink-0 items-center gap-2.5 px-2 text-xs">
@@ -365,7 +373,7 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
       )}
 
       <div ref={wsRef} className="relative min-h-0 flex-1">
-        {!session && !creating && (
+        {!session && !creatingHere && (
           <div className="flex h-full items-center justify-center text-text-faint">No sessions yet</div>
         )}
 
@@ -480,7 +488,7 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
         )}
 
         {/* Empty workspace: offer to add the first terminal. */}
-        {session && !creating && panes.length === 0 && (
+        {session && !creatingHere && panes.length === 0 && (
           <div className="flex h-full items-center justify-center">
             <AddTerminalMenu
               items={addItems}
@@ -556,10 +564,11 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
           />
         )}
 
-        {/* Provisioning overlay — covers the workspace until ready. */}
-        {creating && (
+        {/* Provisioning overlay — covers the workspace until ready. Scoped to
+            the active project so it can't cover another project's session. */}
+        {creatingHere && (
           <div className="absolute inset-0 z-30 bg-base">
-            <CreatingPlaceholder creating={creating} />
+            <CreatingPlaceholder creating={creatingHere} />
           </div>
         )}
       </div>

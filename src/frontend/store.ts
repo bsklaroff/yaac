@@ -71,6 +71,17 @@ export interface CreatingSession {
   error?: string
 }
 
+/** Is a session currently provisioning *in this project*? The `creating`
+ *  placeholder is project-scoped — a create in one project must never surface
+ *  in another project's sidebar or main pane (it's a full-bleed overlay, so an
+ *  unscoped check covers whatever session you're viewing). */
+export function isCreatingInProject(
+  creating: CreatingSession | null,
+  projectSlug: string | null,
+): boolean {
+  return !!creating && creating.projectSlug === projectSlug
+}
+
 /** A terminal pane identity — a /pty/attach target:
  *  'agent', 'shell:<name>', or 'window:@<id>'. */
 export type TerminalTab = string
