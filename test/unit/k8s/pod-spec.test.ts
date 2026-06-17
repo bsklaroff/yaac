@@ -65,6 +65,7 @@ function params(overrides: Partial<SessionJobParams> = {}): SessionJobParams {
     image: 'localhost:5000/yaac-tools:abc',
     env: ['YAAC_SESSION_ID=abcd', 'X=a=b'],
     hostPathMounts: [],
+    memoryRequestBytes: 1 * 1024 ** 3,
     memoryLimitBytes: 8 * 1024 ** 3,
     // The pinned proxy Service VIP — an IP, never a DNS name.
     proxyHost: '10.96.0.179',
@@ -115,7 +116,7 @@ interface Manifest {
             allowPrivilegeEscalation?: boolean
           }
           volumeMounts: Array<{ name: string; mountPath: string; readOnly?: boolean }>
-          resources: { limits: Record<string, string> }
+          resources: { requests: Record<string, string>; limits: Record<string, string> }
         }>
         volumes: Array<{
           name: string
@@ -168,12 +169,13 @@ describe('buildSessionJobManifest', () => {
     ).toBe(30)
   })
 
-  it('configures the session container: image, pull policy, workdir, memory limit', () => {
+  it('configures the session container: image, pull policy, workdir, memory request/limit', () => {
     const c = build().spec.template.spec.containers[0]
     expect(c.name).toBe('session')
     expect(c.image).toBe('localhost:5000/yaac-tools:abc')
     expect(c.imagePullPolicy).toBe('IfNotPresent')
     expect(c.workingDir).toBe('/workspace')
+    expect(c.resources.requests.memory).toBe(String(1 * 1024 ** 3))
     expect(c.resources.limits.memory).toBe(String(8 * 1024 ** 3))
   })
 
@@ -285,7 +287,10 @@ describe('buildSessionJobManifest — nestedContainers', () => {
     expect(spec.securityContext).toEqual({ seccompProfile: { type: 'RuntimeDefault' } })
     expect(spec.initContainers).toBeUndefined()
     expect(spec.volumes.some((v) => v.name === 'podman-graphroot' || v.name === 'shared-images')).toBe(false)
-    expect(spec.containers[0].resources.limits).toEqual({ memory: String(8 * 1024 ** 3) })
+    expect(spec.containers[0].resources).toEqual({
+      requests: { memory: String(1 * 1024 ** 3) },
+      limits: { memory: String(8 * 1024 ** 3) },
+    })
   })
 
   it('keeps RuntimeDefault and adds only SYS_ADMIN on the session container', () => {
@@ -343,9 +348,12 @@ describe('buildSessionJobManifest — nestedContainers', () => {
     ])
   })
 
-  it('keeps the resource limits identical to a non-nested pod (memory only)', () => {
-    const limits = build({ nested }).spec.template.spec.containers[0].resources.limits
-    expect(limits).toEqual({ memory: String(8 * 1024 ** 3) })
+  it('keeps the resources identical to a non-nested pod (memory only)', () => {
+    const resources = build({ nested }).spec.template.spec.containers[0].resources
+    expect(resources).toEqual({
+      requests: { memory: String(1 * 1024 ** 3) },
+      limits: { memory: String(8 * 1024 ** 3) },
+    })
   })
 })
 

@@ -89,6 +89,15 @@ export interface SessionJobParams {
   /** `NAME=VALUE` entries — same shape session-create builds today. */
   env: string[]
   hostPathMounts: HostPathMount[]
+  /**
+   * Scheduler reservation (the guaranteed floor). Kept well below
+   * memoryLimitBytes so many idle sessions pack onto one node — memory is
+   * overcommitted the way the kernel already allows for limits. Omitting it
+   * would make Kubernetes default the request up to the limit, hard-reserving
+   * the full ceiling per session and starving new sessions of node memory.
+   */
+  memoryRequestBytes: number
+  /** Hard cgroup cap; exceeding it OOM-kills the container. */
   memoryLimitBytes: number
   /**
    * Pinned proxy Service ClusterIP. Session pods point their resolver at it
@@ -263,6 +272,7 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
                 },
               } : {}),
               resources: {
+                requests: { memory: String(p.memoryRequestBytes) },
                 limits: { memory: String(p.memoryLimitBytes) },
               },
             },

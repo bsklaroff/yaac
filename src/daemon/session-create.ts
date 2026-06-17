@@ -397,6 +397,7 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
     image: imageRef,
     env,
     hostPathMounts,
+    memoryRequestBytes: 1 * 1024 ** 3,
     memoryLimitBytes: 8 * 1024 ** 3,
     proxyHost,
     nested,
