@@ -277,6 +277,19 @@ describe('buildProxyDeploymentManifest', () => {
     })
   })
 
+  it('nested (inner) proxy: resolves DNS via its own loopback stub, not vcluster CoreDNS', () => {
+    const plain = build() as unknown as {
+      spec: { template: { spec: { dnsPolicy?: string; dnsConfig?: unknown } } }
+    }
+    expect(plain.spec.template.spec.dnsPolicy).toBeUndefined()
+    expect(plain.spec.template.spec.dnsConfig).toBeUndefined()
+    const nested = buildProxyDeploymentManifest('img', { nested: true }) as unknown as {
+      spec: { template: { spec: { dnsPolicy?: string; dnsConfig?: { nameservers: string[] } } } }
+    }
+    expect(nested.spec.template.spec.dnsPolicy).toBe('None')
+    expect(nested.spec.template.spec.dnsConfig).toEqual({ nameservers: ['127.0.0.1'] })
+  })
+
   it('wires the image, ports, auth secret env, and readiness probe', () => {
     const c = build().spec.template.spec.containers[0]
     expect(c.image).toBe('localhost:5000/yaac-proxy:abc')
@@ -572,6 +585,25 @@ describe('buildProxyIngressCnpManifest', () => {
       { port: String(TRANSPARENT_HTTP_PORT), protocol: 'TCP' },
       { port: String(TRANSPARENT_TUNNEL_PORT), protocol: 'TCP' },
       { port: String(DNS_STUB_PORT), protocol: 'UDP' },
+    ])
+  })
+
+  it('admits a vcluster chained hop on the transparent ports cross-namespace (no DNS)', () => {
+    const m = buildProxyIngressCnpManifest() as unknown as Cnp
+    // yaac-in-yaac: an inner proxy's upstream dials (and pre-opt-in synced pods)
+    // chain to THIS proxy via the fallback redirect, arriving with the syncer's
+    // `managed-by` label from another namespace — admit them cross-namespace.
+    const chain = m.spec.ingress[2]
+    expect(chain.fromEndpoints?.[0].matchExpressions).toEqual([
+      { key: 'vcluster.loft.sh/managed-by', operator: 'Exists' },
+      { key: 'k8s:io.kubernetes.pod.namespace', operator: 'Exists' },
+    ])
+    // Transparent TCP only — the inner proxy sinkholes DNS via its own stub, so
+    // no 53 reaches the outer proxy from a vcluster pod.
+    expect(chain.toPorts[0].ports).toEqual([
+      { port: String(TRANSPARENT_HTTPS_PORT), protocol: 'TCP' },
+      { port: String(TRANSPARENT_HTTP_PORT), protocol: 'TCP' },
+      { port: String(TRANSPARENT_TUNNEL_PORT), protocol: 'TCP' },
     ])
   })
 })

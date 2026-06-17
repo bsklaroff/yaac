@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { PodSessionIndex, podSessionId } from '@proxy/pod-watch'
+import { PodSessionIndex, podSessionId, parseVclusterAttribution } from '@proxy/pod-watch'
 import type { WatchedPod } from '@proxy/pod-watch'
 
 function pod(ip: string | undefined, sid: string | undefined): WatchedPod {
@@ -63,5 +63,29 @@ describe('PodSessionIndex', () => {
     const idx = new PodSessionIndex()
     idx.set('10.0.0.9', 'sess-z')
     expect(idx.resolve('10.0.0.9')).toBe('sess-z')
+  })
+})
+
+describe('parseVclusterAttribution', () => {
+  it('parses a flat podIP→sessionId map', () => {
+    const m = parseVclusterAttribution('{"10.0.0.1":"sess-a","10.0.0.2":"sess-b"}')
+    expect(m).not.toBeNull()
+    expect(m!.get('10.0.0.1')).toBe('sess-a')
+    expect(m!.get('10.0.0.2')).toBe('sess-b')
+    expect(m!.size).toBe(2)
+  })
+
+  it('accepts an empty object (full-replace clear)', () => {
+    const m = parseVclusterAttribution('{}')
+    expect(m).not.toBeNull()
+    expect(m!.size).toBe(0)
+  })
+
+  it('returns null for malformed JSON, arrays, or non-string values', () => {
+    expect(parseVclusterAttribution('not json')).toBeNull()
+    expect(parseVclusterAttribution('[]')).toBeNull()
+    expect(parseVclusterAttribution('null')).toBeNull()
+    expect(parseVclusterAttribution('{"10.0.0.1":123}')).toBeNull()
+    expect(parseVclusterAttribution('{"10.0.0.1":""}')).toBeNull()
   })
 })

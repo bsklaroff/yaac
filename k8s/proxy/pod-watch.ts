@@ -82,6 +82,32 @@ export class PodSessionIndex {
   }
 }
 
+/**
+ * Parse the body of `PUT /vcluster-attribution` — a flat `{ podIP: sessionId }`
+ * object the host daemon pushes so the OUTER proxy can attribute a vcluster's
+ * chained egress (its inner proxy's upstream dials, and synced pods before an
+ * inner yaac opts in) to the OWNING outer session. Those pods live in another
+ * host namespace with no `yaac.session-id` of their own (or only the *inner*
+ * session's), so the pod-watch can't resolve them; the daemon — which knows each
+ * vcluster namespace's owning session and reads the host pod IPs — supplies the
+ * map instead. Full-replace semantics (the daemon sends the complete current set
+ * each tick), so a stale IP is evicted on the next push.
+ *
+ * Returns null for anything that isn't an object of string→non-empty-string, so
+ * the endpoint rejects a malformed body rather than poisoning attribution.
+ */
+export function parseVclusterAttribution(body: string): Map<string, string> | null {
+  let parsed: unknown
+  try { parsed = JSON.parse(body) } catch { return null }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const out = new Map<string, string>()
+  for (const [ip, sid] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof sid !== 'string' || !sid || !ip) return null
+    out.set(ip, sid)
+  }
+  return out
+}
+
 // ── In-cluster API client (built-in https; no kube client library) ──────────
 
 interface ApiConfig {

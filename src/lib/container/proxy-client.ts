@@ -250,6 +250,30 @@ export class ProxyClient {
     }
   }
 
+  /**
+   * Push the full `{ podIP: outerSessionId }` attribution map for every managed
+   * vcluster's pods (yaac-in-yaac). The outer proxy can't resolve these
+   * cross-namespace source pods to a session itself, so chained egress (an inner
+   * proxy's upstream dials, and synced pods before an inner yaac opts in) would
+   * otherwise fail closed. Full-replace each call — the daemon sends the
+   * complete current set each background tick, so a torn-down pod's IP is
+   * evicted on the next push.
+   */
+  async registerVclusterAttribution(podSessions: Record<string, string>): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/vcluster-attribution`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.requireAuthSecret()}`,
+      },
+      body: JSON.stringify(podSessions),
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Failed to register vcluster attribution: ${res.status} ${text}`)
+    }
+  }
+
   async removeSession(sessionId: string): Promise<void> {
     const res = await fetch(`${this.baseUrl}/sessions/${encodeURIComponent(sessionId)}`, {
       method: 'DELETE',

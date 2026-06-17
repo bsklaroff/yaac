@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import YAML from 'yaml'
-import { clusterIpForService } from '@/lib/k8s/bootstrap'
+import { clusterIpForService, PROXY_APP_NAME } from '@/lib/k8s/bootstrap'
 import {
   dataDirHash,
   execFileAsync,
@@ -517,17 +517,31 @@ export function buildVclusterSyncedPodsNetworkPolicyManifest(
 }
 
 /**
- * Blanket world-egress deny for the vcluster's entire host namespace.
- * Everything in that namespace is vcluster-owned (the control plane and
- * synced pods) and NONE of it legitimately reaches the internet —
- * control plane talks to the host apiserver/kube-dns (in-cluster), synced
- * pods to the vcluster API/siblings (in-cluster). So an empty
- * endpointSelector (all pods in the namespace) + egressDeny world is the
- * authoritative, forge-proof containment: a Cilium deny beats allows, and
- * a tenant cannot place a pod outside its own vcluster namespace, so no
- * synced pod can dodge it. This replaces the install-namespace policy's
- * managed-by rule (synced pods no longer live there) and is cleaned up
- * automatically when the namespace is deleted.
+ * Blanket world-egress deny for the vcluster's entire host namespace —
+ * the forge-proof containment floor for vcluster-owned pods (a Cilium deny
+ * beats allows, and a tenant cannot place a pod outside its own vcluster
+ * namespace, so no synced pod can dodge it). Cleaned up automatically when
+ * the namespace is deleted.
+ *
+ * The inner proxy (`app=yaac-proxy`) and the inner session pods
+ * (`yaac.session-id`) are EXCLUDED, exactly as the install-namespace deny
+ * excludes its proxy + session pods (buildEgressWorldDenyCiliumPolicyManifest):
+ * their world egress is governed by the redirect CNPs (the per-vcluster
+ * fallback → outer proxy, and the daemon-projected inner override → inner
+ * proxy), which are themselves default-deny and only permit 443/80/SSH→Envoy
+ * + DNS. A world-deny over them would beat that redirect allow (Cilium deny >
+ * allow) and block all egress — which is exactly what silently broke
+ * yaac-in-yaac: the inner session pod's api.anthropic.com:443 was dropped
+ * before it could reach the inner proxy.
+ *
+ * The exclusion is NOT a forge vector even though a tenant controls its
+ * vcluster pods' labels: every synced pod carries the syncer-stamped
+ * `managed-by` label and is therefore selected by the fallback redirect
+ * (default-deny + redirect to the outer proxy) regardless of any label it
+ * forges, so dropping the explicit world-deny over the excluded set never
+ * opens raw internet egress — it only lets the redirect take effect.
+ * Non-excluded pods (the control plane, CoreDNS) stay denied here and are
+ * additionally locked down by their own CNPs.
  */
 export function buildVclusterNamespaceWorldDenyManifest(
   name: string,
@@ -542,7 +556,12 @@ export function buildVclusterNamespaceWorldDenyManifest(
       labels: vclusterLabels(name, sessionId),
     },
     spec: {
-      endpointSelector: {},
+      endpointSelector: {
+        matchExpressions: [
+          { key: 'app', operator: 'NotIn', values: [PROXY_APP_NAME] },
+          { key: LABEL_SESSION_ID, operator: 'DoesNotExist' },
+        ],
+      },
       egressDeny: [{ toEntities: ['world'] }],
     },
   }

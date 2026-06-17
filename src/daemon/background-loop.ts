@@ -2,6 +2,7 @@ import { reconcileStaleSessions, captureOpencodeFirstMessages } from '@/lib/sess
 import { reconcileProxySshKeys } from '@/lib/session/proxy-reconcile'
 import { reconcileVclusters } from '@/lib/session/vcluster-reconcile'
 import { reconcileInnerRedirects } from '@/lib/session/inner-redirect-reconcile'
+import { reconcileVclusterAttribution } from '@/lib/session/vcluster-attribution-reconcile'
 import { daemonLog } from '@/daemon/log'
 
 export interface BackgroundLoopDeps {
@@ -62,6 +63,10 @@ function defaultTickSteps(): Array<() => Promise<void>> {
     // yaac-in-yaac: project the inner egress redirect for a vcluster's synced
     // pods once its inner proxy is up (or prune it when gone).
     reconcileInnerRedirects,
+    // yaac-in-yaac: tell the outer proxy which outer session owns each
+    // vcluster's pods, so their chained egress is attributed + allowlist-judged
+    // (the proxy can't resolve those cross-namespace source pods itself).
+    reconcileVclusterAttribution,
   ]
 }
 

@@ -36,7 +36,7 @@ import {
 } from './transparent'
 import { parsePp2Header } from './pp2'
 import { buildDnsResponse, parseDnsQuery } from './dns-stub'
-import { PodSessionIndex, fetchSessionByPodIp, startPodWatch } from './pod-watch'
+import { PodSessionIndex, fetchSessionByPodIp, parseVclusterAttribution, startPodWatch } from './pod-watch'
 import { SYSTEM_ROOTS_PATH, combineCaBundle } from './ca-bundle'
 
 // Control-API listener (CA cert, registrations, ssh-agent keys). Renamed
@@ -66,9 +66,22 @@ const DNS_DUMMY_IPV4 = '198.18.0.1'
 // read-only ServiceAccount. The transparent listeners resolve a connection's
 // session from the source pod IP in the Envoy-stamped PROXY header.
 const podIndex = new PodSessionIndex()
+
+// podIP → OUTER sessionId for a vcluster's chained egress (yaac-in-yaac). The
+// host daemon pushes this via PUT /vcluster-attribution: those source pods live
+// in another namespace the pod-watch SA can't resolve to the owning session, so
+// the daemon — which knows the mapping — supplies it. Full-replace each push.
+const vclusterPodSession = new Map<string, string>()
+// Last-applied attribution content, so the every-tick re-push logs only on change.
+let lastVclusterAttributionKey = ''
+
 async function resolveSession(ip: string): Promise<string | undefined> {
   const cached = podIndex.resolve(ip)
   if (cached) return cached
+  // Daemon-supplied attribution for a vcluster's chained egress (the pod-watch
+  // can't see those cross-namespace source pods).
+  const vc = vclusterPodSession.get(ip)
+  if (vc) return vc
   // Cache-miss fallback: a new pod's first packet can beat its watch event.
   try { return await fetchSessionByPodIp(podIndex, ip) } catch { return undefined }
 }
@@ -1771,6 +1784,34 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
       } catch (err) {
         res.writeHead(400); res.end(`Invalid JSON: ${(err as Error).message}`)
       }
+    })
+    return
+  }
+
+  // yaac-in-yaac attribution: the host daemon pushes a full `{ podIP:
+  // outerSessionId }` map for every managed vcluster's pods, so chained egress
+  // (the inner proxy's upstream dials + pre-opt-in synced pods) is attributed to
+  // the owning OUTER session and judged against its allowlist. Not persisted —
+  // pod IPs are ephemeral and the daemon re-pushes every tick; a replaced proxy
+  // fail-closes on this traffic until the next push.
+  if (req.method === 'PUT' && req.url === '/vcluster-attribution') {
+    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
+    let body = ''
+    req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
+    req.on('end', () => {
+      const map = parseVclusterAttribution(body)
+      if (!map) { res.writeHead(400); res.end('Invalid body: need {podIP: sessionId}'); return }
+      const key = [...map.entries()].map(([ip, sid]) => `${ip}=${sid}`).sort().join(',')
+      vclusterPodSession.clear()
+      for (const [ip, sid] of map) vclusterPodSession.set(ip, sid)
+      // The daemon re-pushes every tick (so the map survives a proxy restart);
+      // only log when it actually changes, to keep the log quiet at steady state.
+      if (key !== lastVclusterAttributionKey) {
+        lastVclusterAttributionKey = key
+        console.log(`[proxy] vcluster attribution updated (${map.size} pod IP(s))`)
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true }))
     })
     return
   }

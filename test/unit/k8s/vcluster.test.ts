@@ -363,17 +363,26 @@ describe('namespace + confinement policies', () => {
       .toEqual({ [LABEL_VCLUSTER_MANAGED_BY]: VC })
   })
 
-  it('blankets the whole vcluster namespace with a world-egress deny', () => {
+  it('blankets the vcluster namespace with a world-egress deny, carving out the proxy + session pods', () => {
     const m = buildVclusterNamespaceWorldDenyManifest(VC, SID) as unknown as {
       kind: string
       metadata: { name: string; namespace: string }
-      spec: { endpointSelector: object; egressDeny: Array<{ toEntities: string[] }> }
+      spec: {
+        endpointSelector: { matchExpressions: Array<{ key: string; operator: string; values?: string[] }> }
+        egressDeny: Array<{ toEntities: string[] }>
+      }
     }
     expect(m.kind).toBe('CiliumNetworkPolicy')
     expect(m.metadata.namespace).toBe(VCNS)
-    // Empty endpointSelector = all pods in the namespace (everything there
-    // is vcluster-owned and none of it needs the internet).
-    expect(m.spec.endpointSelector).toEqual({})
+    // The inner proxy (app=yaac-proxy) and inner session pods (yaac.session-id)
+    // are EXCLUDED: their world egress is the redirect CNPs' job, and a Cilium
+    // deny beats the redirect allow — so a blanket deny would silently break
+    // yaac-in-yaac (the inner session could not reach the API). Mirrors the
+    // install-namespace deny (buildEgressWorldDenyCiliumPolicyManifest).
+    expect(m.spec.endpointSelector.matchExpressions).toEqual([
+      { key: 'app', operator: 'NotIn', values: ['yaac-proxy'] },
+      { key: 'yaac.session-id', operator: 'DoesNotExist' },
+    ])
     expect(m.spec.egressDeny).toEqual([{ toEntities: ['world'] }])
   })
 

@@ -307,6 +307,21 @@ export function buildProxyDeploymentManifest(
           serviceAccountName: PROXY_SA_NAME,
           automountServiceAccountToken: true,
           enableServiceLinks: false,
+          // Nested (inner) proxy: resolve upstream hostnames via its OWN DNS
+          // stub (loopback), not the vcluster CoreDNS. The inner proxy carries
+          // `managed-by`, so the outer yaac's fallback redirect catches its
+          // egress and default-denies everything but world:443/80 (→ outer
+          // proxy) + 53→itself — so a query to the vcluster CoreDNS is dropped
+          // (getaddrinfo EAI_AGAIN). Its stub sinkholes every name to the dummy
+          // IP; the proxy then dials that, the fallback redirects it to the
+          // outer proxy, and the outer proxy resolves+dials the real upstream
+          // (SNI-routed). dnsPolicy:None + an explicit nameserver survives
+          // vcluster sync (the N3 spike confirmed this). Top-level proxy keeps
+          // the cluster default — it reaches the world directly and needs real
+          // resolution via cluster CoreDNS.
+          ...(opts.nested
+            ? { dnsPolicy: 'None', dnsConfig: { nameservers: ['127.0.0.1'] } }
+            : {}),
           ...proxyRunAsSecurityContext(),
           containers: [
             {
@@ -695,6 +710,30 @@ export function buildProxyIngressCnpManifest(): Record<string, unknown> {
             { port: String(TRANSPARENT_HTTP_PORT), protocol: 'TCP' },
             { port: String(TRANSPARENT_TUNNEL_PORT), protocol: 'TCP' },
             { port: String(DNS_STUB_PORT), protocol: 'UDP' },
+          ] }],
+        },
+        {
+          // yaac-in-yaac: a vcluster's synced pods chain to THIS (outer) proxy
+          // via the per-vcluster fallback redirect — the inner proxy's upstream
+          // dials, and any synced pod's egress before an inner yaac opts in.
+          // They arrive (identity preserved) carrying the syncer-stamped
+          // `managed-by` label from another namespace, so admit the transparent
+          // ports cross-namespace (`managed-by` Exists + any pod namespace). No
+          // DNS: the inner proxy sinkholes via its own stub and synced session
+          // pods resolve via the inner proxy, so neither dials the outer proxy
+          // for 53. The forgery lock still holds on egress (a vcluster pod's
+          // default-deny has no route to a transparent port except the
+          // redirect), and the source IP is attributed to the OWNING outer
+          // session, so the outer allowlist is enforced — fail-closed if the IP
+          // is unknown.
+          fromEndpoints: [{ matchExpressions: [
+            { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'Exists' },
+            { key: 'k8s:io.kubernetes.pod.namespace', operator: 'Exists' },
+          ] }],
+          toPorts: [{ ports: [
+            { port: String(TRANSPARENT_HTTPS_PORT), protocol: 'TCP' },
+            { port: String(TRANSPARENT_HTTP_PORT), protocol: 'TCP' },
+            { port: String(TRANSPARENT_TUNNEL_PORT), protocol: 'TCP' },
           ] }],
         },
       ],
