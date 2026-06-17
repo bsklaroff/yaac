@@ -421,9 +421,10 @@ export const EGRESS_WORLD_DENY_NAME = 'yaac-egress-world-deny'
  * Namespace-scoped, not cluster-wide on purpose: a cluster-wide deny
  * would also hit kube-system CoreDNS (whose upstream forwarding the proxy
  * needs to resolve external hosts) and the Cilium/system pods. vcluster
- * synced pods live in their OWN per-session namespaces, each blanketed by
- * its own deny (buildVclusterNamespaceWorldDenyManifest in vcluster.ts),
- * so they are covered there rather than here.
+ * synced pods live in their OWN per-session namespaces, where the
+ * unforgeable per-vcluster fallback redirect (default-deny + redirect to
+ * the outer proxy, buildVclusterFallbackRedirectCnpManifest) is their
+ * containment floor, so they are covered there rather than here.
  *
  * Why a Cilium *deny* rather than a k8s NetworkPolicy: deny rules take
  * precedence over allows and cannot be widened by union, so a tenant
@@ -757,12 +758,19 @@ export function buildInnerEgressRedirectCecManifest(
 
 /**
  * Inner session-egress redirect CNP (the override). Selects a vcluster's synced
- * pods (`managed-by=<vcName>`) **except** the inner proxy itself
- * (`yaac.role != inner-proxy`, loop-free) and redirects their 443/80/SSH egress
- * into the inner CEC listeners at the **normal** priority — the same value every
- * yaac uses (so the inner stays transparent), which beats the outer vcluster
- * fallback (a lower precedence). Mirrors the outer session-egress shape so inner
- * sessions behave identically. The forgery lock lives on this egress default-deny.
+ * pods (`managed-by=<vcName>`) EXCEPT the inner proxy (`yaac.role != inner-proxy`)
+ * and redirects their 443/80/SSH egress into the inner CEC at the normal priority
+ * (SESSION_REDIRECT_PRIORITY), which beats the fallback (a lower precedence) — so
+ * inner-session world traffic flows to the INNER proxy while the inner proxy's own
+ * egress stays on the fallback → outer proxy (loop-free).
+ *
+ * This is a ROUTING override, NOT a containment boundary. The unforgeable fallback
+ * (buildVclusterFallbackRedirectCnpManifest) already default-denies every synced
+ * pod's raw world and supplies intracluster + DNS (the inner proxy's DNS stub is a
+ * `managed-by` sibling there), so this policy only needs the world redirects. The
+ * `yaac.role` exclusion is tenant-forgeable, but forging it is non-escalating: a
+ * session that forges `inner-proxy` merely drops to the fallback → OUTER proxy
+ * (still allowlisted), never to raw world.
  */
 export function buildInnerSessionEgressRedirectCnpManifest(
   vcNamespace: string,
@@ -795,10 +803,6 @@ export function buildInnerSessionEgressRedirectCnpManifest(
         {
           toCIDRSet: [{ cidr: `${SSH_TUNNEL_SENTINEL}/32` }],
           toPorts: [{ ports: [{ port: String(TUNNEL_INGRESS_PORT), protocol: 'TCP' }], listener: ref(LISTENER_TUNNEL) }],
-        },
-        {
-          toEndpoints: [{ matchLabels: { app: PROXY_APP_NAME } }],
-          toPorts: [{ ports: [{ port: String(DNS_STUB_PORT), protocol: 'UDP' }] }],
         },
       ],
     },
@@ -860,14 +864,31 @@ export function buildVclusterFallbackRedirectCecManifest(
 }
 
 /**
- * The outer yaac's fallback redirect CNP: ALL of a vcluster's synced pods
- * (`managed-by=<vcName>`, including the inner proxy) get 443/80/SSH redirected
- * to the OUTER proxy at a deliberately LOW precedence (VCLUSTER_FALLBACK_PRIORITY
- * ≫ SESSION_REDIRECT_PRIORITY). So synced pods have working egress the moment
- * they exist; once an inner yaac is up, its normal-priority override wins for
- * its session pods, while the inner proxy itself (excluded from the override)
- * stays on this fallback → outer proxy (loop-free chaining). DNS is out of scope
- * here (synced pods resolve via vcluster CoreDNS).
+ * The vcluster's synced-pod egress floor — the single unforgeable containment
+ * policy for everything that runs inside a per-session vcluster. Selects ALL
+ * synced pods by the syncer-stamped `managed-by=<vcName>` label (a tenant inside
+ * the vcluster cannot suppress or forge it), makes their egress default-deny, and
+ * permits exactly:
+ *
+ *   - 443/80/SSH → the OUTER proxy, redirected via the fallback CEC at a
+ *     deliberately LOW precedence (VCLUSTER_FALLBACK_PRIORITY ≫
+ *     SESSION_REDIRECT_PRIORITY) so an inner yaac's normal-priority override
+ *     (buildInnerSessionEgressRedirectCnpManifest) wins for its session pods,
+ *     while the inner proxy itself (excluded from that override) stays on this
+ *     fallback → outer proxy (loop-free chaining).
+ *   - intracluster: the vcluster API (control-plane pod on 8443) and sibling
+ *     synced pods on any port — inner services, the vcluster CoreDNS, and an
+ *     inner proxy's DNS stub, all `managed-by` so matched unforgeably.
+ *
+ * Everything else (raw world, the host, the host apiserver, other namespaces) is
+ * dropped by the default-deny. This is the SOLE guarantee that no synced pod ever
+ * reaches raw world — it replaces the former blanket world-deny CNP (which used
+ * forgeable exclusions and, being an egressDeny, beat the redirect's allow) and
+ * the k8s synced-pods NetworkPolicy (whose intracluster allows are folded in
+ * here). A STATIC per-vcluster policy applied at vcluster-creation time BEFORE
+ * the chart (so the default-deny is in force before the first synced pod exists)
+ * and torn down with the namespace; nothing deletes it in between, so it is not
+ * re-asserted per tick (a builder change reaches a running vcluster on recreate).
  */
 export function buildVclusterFallbackRedirectCnpManifest(
   vcNamespace: string,
@@ -899,6 +920,21 @@ export function buildVclusterFallbackRedirectCnpManifest(
         {
           toCIDRSet: [{ cidr: `${SSH_TUNNEL_SENTINEL}/32` }],
           toPorts: [{ ports: [{ port: String(TUNNEL_INGRESS_PORT), protocol: 'TCP' }], listener: ref(LISTENER_TUNNEL) }],
+        },
+        {
+          // Intracluster: the vcluster API (control-plane pod on 8443) — synced
+          // pods reach it via the virtual kubernetes.default → host Service DNAT.
+          // 8443 mirrors VCLUSTER_API_PORT (literal to avoid a bootstrap↔vcluster
+          // import cycle, same as the carve-outs in the outer session-egress CNP).
+          toEndpoints: [{ matchLabels: { app: 'vcluster', release: vcName } }],
+          toPorts: [{ ports: [{ port: '8443', protocol: 'TCP' }] }],
+        },
+        {
+          // Sibling synced pods, any port: inner services, the vcluster CoreDNS,
+          // and an inner proxy's DNS stub — all carry the unforgeable managed-by.
+          toEndpoints: [{ matchExpressions: [
+            { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [vcName] },
+          ] }],
         },
       ],
     },

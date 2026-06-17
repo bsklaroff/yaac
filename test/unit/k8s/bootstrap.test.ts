@@ -759,17 +759,18 @@ describe('inner-redirect builders (yaac-in-yaac projection)', () => {
       { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [VC_NAME] },
       { key: LABEL_ROLE, operator: 'NotIn', values: [ROLE_INNER_PROXY] },
     ])
+    // Routing-only override: just the 3 world redirects (HTTPS, HTTP, tunnel).
+    // Intracluster + DNS come from the fallback (the inner proxy's DNS stub is a
+    // managed-by sibling there), so no DNS rule lives here.
+    expect(m.spec.egress).toHaveLength(3)
+    const listeners = m.spec.egress.map((e) => e.toPorts[0].listener).filter(Boolean)
+    expect(listeners).toHaveLength(3)
     // Every redirect listener targets the INNER CEC at the NORMAL priority (same
     // value any yaac uses — transparent), which beats the outer fallback.
-    const listeners = m.spec.egress.map((e) => e.toPorts[0].listener).filter(Boolean)
-    expect(listeners).toHaveLength(3) // HTTPS, HTTP, tunnel (DNS has no listener)
     for (const l of listeners) {
       expect(l?.envoyConfig.name).toBe(INNER_EGRESS_REDIRECT_CEC_NAME)
       expect(l?.priority).toBe(SESSION_REDIRECT_PRIORITY)
     }
-    // DNS rule carries no listener (plain L4 to the inner proxy stub).
-    const dnsRule = m.spec.egress.find((e) => e.toPorts[0].ports[0].port === String(DNS_STUB_PORT))
-    expect(dnsRule?.toPorts[0].listener).toBeUndefined()
   })
 
   it('inner proxy-ingress CNP: control host-only, transparent ports to managed-by pods', () => {
@@ -813,12 +814,16 @@ describe('inner-redirect builders (yaac-in-yaac projection)', () => {
     expect(clusters[0].name).toBe(`test-ns/yaac-proxy:${TRANSPARENT_HTTPS_PORT}`)
   })
 
-  it('fallback CNP: ALL managed-by pods → outer proxy at a LOWER precedence than normal', () => {
+  it('fallback CNP: ALL managed-by pods → outer proxy (low precedence) + intracluster', () => {
     const m = buildVclusterFallbackRedirectCnpManifest(VC_NS, VC_NAME) as unknown as {
       metadata: { name: string; namespace: string }
       spec: {
         endpointSelector: { matchExpressions: Array<{ key: string; operator: string; values: string[] }> }
-        egress: Array<{ toPorts: Array<{ listener?: { envoyConfig: { name: string }; priority?: number } }> }>
+        egress: Array<{
+          toEntities?: string[]
+          toEndpoints?: Array<{ matchLabels?: Record<string, string>; matchExpressions?: Array<{ key: string; operator: string; values: string[] }> }>
+          toPorts?: Array<{ ports: Array<{ port: string; protocol: string }>; listener?: { envoyConfig: { name: string }; priority?: number } }>
+        }>
       }
     }
     expect(m.metadata.name).toBe(VCLUSTER_FALLBACK_CNP_NAME)
@@ -827,7 +832,8 @@ describe('inner-redirect builders (yaac-in-yaac projection)', () => {
     expect(m.spec.endpointSelector.matchExpressions).toEqual([
       { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [VC_NAME] },
     ])
-    const listeners = m.spec.egress.map((e) => e.toPorts[0].listener).filter(Boolean)
+    // The 3 world redirects target the fallback CEC at the LOW precedence.
+    const listeners = m.spec.egress.flatMap((e) => e.toPorts ?? []).map((p) => p.listener).filter(Boolean)
     expect(listeners).toHaveLength(3)
     for (const l of listeners) {
       expect(l?.envoyConfig.name).toBe(VCLUSTER_FALLBACK_CEC_NAME)
@@ -835,5 +841,16 @@ describe('inner-redirect builders (yaac-in-yaac projection)', () => {
     }
     // The fallback must lose to a normal-priority inner override.
     expect(VCLUSTER_FALLBACK_PRIORITY).toBeGreaterThan(SESSION_REDIRECT_PRIORITY)
+    // Intracluster (folded in from the deleted k8s synced-pods NetworkPolicy):
+    // the vcluster API (control-plane pod on 8443) + any sibling synced pod.
+    const api = m.spec.egress.find((e) =>
+      e.toEndpoints?.[0].matchLabels?.app === 'vcluster' && !e.toPorts?.[0].listener)
+    expect(api?.toEndpoints?.[0].matchLabels).toEqual({ app: 'vcluster', release: VC_NAME })
+    expect(api?.toPorts?.[0].ports).toEqual([{ port: '8443', protocol: 'TCP' }])
+    const siblings = m.spec.egress.find((e) =>
+      e.toEndpoints?.[0].matchExpressions && !e.toPorts)
+    expect(siblings?.toEndpoints?.[0].matchExpressions).toEqual([
+      { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [VC_NAME] },
+    ])
   })
 })

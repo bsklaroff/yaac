@@ -2,7 +2,11 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import YAML from 'yaml'
-import { clusterIpForService, PROXY_APP_NAME } from '@/lib/k8s/bootstrap'
+import {
+  buildVclusterFallbackRedirectCecManifest,
+  buildVclusterFallbackRedirectCnpManifest,
+  clusterIpForService,
+} from '@/lib/k8s/bootstrap'
 import {
   dataDirHash,
   execFileAsync,
@@ -469,110 +473,20 @@ export function buildVclusterSessionNetworkPolicyManifest(
 }
 
 /**
- * Default-deny egress backstop for this vcluster's SYNCED pods —
- * `yaac-vc-<sid8>-synced`. The OSS syncer cannot stamp yaac.session-id
- * (expression patches are a pro feature), so synced pods never match
- * the yaac-session-egress backstop; this policy is what makes their
- * confinement fail-closed instead of fail-open. Selected by the
- * managed-by label the syncer ALWAYS stamps; allowed egress is exactly:
- *
- *   - the vcluster API pod on 8443 (the virtual `kubernetes.default`
- *     endpoints resolve to the syncer pod, post-DNAT)
- *   - sibling synced pods (inner services + the synced CoreDNS on 1053)
- *
- * Everything else — upstream internet, the host apiserver, kube-dns,
- * the proxy, other sessions — is dropped at the CNI. Synced pods carry
- * no in-pod filter (no redirect/relay pair), so this CNI policy alone
- * governs them, and they have no transparent egress path in v1 (the M4
- * stretch injects the redirect/relay pair to change that).
- */
-export function buildVclusterSyncedPodsNetworkPolicyManifest(
-  name: string,
-  sessionId: string,
-): Record<string, unknown> {
-  return {
-    apiVersion: 'networking.k8s.io/v1',
-    kind: 'NetworkPolicy',
-    metadata: {
-      name: `yaac-vc-${name.replace(/^yvc-/, '')}-synced`,
-      // Synced pods live in the vcluster's own namespace; a NetworkPolicy
-      // only governs pods in its own namespace, so it goes there too.
-      namespace: vclusterNamespace(name),
-      labels: vclusterLabels(name, sessionId),
-    },
-    spec: {
-      podSelector: { matchLabels: { [LABEL_VCLUSTER_MANAGED_BY]: name } },
-      policyTypes: ['Egress'],
-      egress: [
-        {
-          to: [{ podSelector: { matchLabels: { app: 'vcluster', release: name } } }],
-          ports: [{ protocol: 'TCP', port: VCLUSTER_API_PORT }],
-        },
-        {
-          to: [{ podSelector: { matchLabels: { [LABEL_VCLUSTER_MANAGED_BY]: name } } }],
-        },
-      ],
-    },
-  }
-}
-
-/**
- * Blanket world-egress deny for the vcluster's entire host namespace —
- * the forge-proof containment floor for vcluster-owned pods (a Cilium deny
- * beats allows, and a tenant cannot place a pod outside its own vcluster
- * namespace, so no synced pod can dodge it). Cleaned up automatically when
- * the namespace is deleted.
- *
- * The inner proxy (`app=yaac-proxy`) and the inner session pods
- * (`yaac.session-id`) are EXCLUDED, exactly as the install-namespace deny
- * excludes its proxy + session pods (buildEgressWorldDenyCiliumPolicyManifest):
- * their world egress is governed by the redirect CNPs (the per-vcluster
- * fallback → outer proxy, and the daemon-projected inner override → inner
- * proxy), which are themselves default-deny and only permit 443/80/SSH→Envoy
- * + DNS. A world-deny over them would beat that redirect allow (Cilium deny >
- * allow) and block all egress — which is exactly what silently broke
- * yaac-in-yaac: the inner session pod's api.anthropic.com:443 was dropped
- * before it could reach the inner proxy.
- *
- * The exclusion is NOT a forge vector even though a tenant controls its
- * vcluster pods' labels: every synced pod carries the syncer-stamped
- * `managed-by` label and is therefore selected by the fallback redirect
- * (default-deny + redirect to the outer proxy) regardless of any label it
- * forges, so dropping the explicit world-deny over the excluded set never
- * opens raw internet egress — it only lets the redirect take effect.
- * Non-excluded pods (the control plane, CoreDNS) stay denied here and are
- * additionally locked down by their own CNPs.
- */
-export function buildVclusterNamespaceWorldDenyManifest(
-  name: string,
-  sessionId: string,
-): Record<string, unknown> {
-  return {
-    apiVersion: 'cilium.io/v2',
-    kind: 'CiliumNetworkPolicy',
-    metadata: {
-      name: `${name}-egress-world-deny`,
-      namespace: vclusterNamespace(name),
-      labels: vclusterLabels(name, sessionId),
-    },
-    spec: {
-      endpointSelector: {
-        matchExpressions: [
-          { key: 'app', operator: 'NotIn', values: [PROXY_APP_NAME] },
-          { key: LABEL_SESSION_ID, operator: 'DoesNotExist' },
-        ],
-      },
-      egressDeny: [{ toEntities: ['world'] }],
-    },
-  }
-}
-
-/**
  * CiliumNetworkPolicy locking the vcluster control-plane pod down: it
  * holds host-API credentials and could otherwise be an egress escape
  * hatch (e.g. via webhooks). Allowed: the host apiserver + host entity
  * (kubelet proxying for exec/logs), kube-dns, its own synced pods, and
  * itself (the Service hairpin its kubelet port produces).
+ *
+ * `managed-by DoesNotExist` is load-bearing, not cosmetic: the real
+ * control-plane pod is chart-created in the namespace and carries NO
+ * managed-by label, whereas EVERY synced pod carries it (syncer-stamped,
+ * unforgeable). Without this guard a tenant could create a synced pod
+ * labelled `app=vcluster, release=<vc>` — those labels propagate to the
+ * host pod — and, since CNP allows union, inherit this policy's
+ * kube-apiserver + host egress, reaching the host API server directly.
+ * The guard excludes every synced pod by the one label they cannot forge.
  */
 export function buildVclusterControlPlaneCnpManifest(
   name: string,
@@ -588,7 +502,10 @@ export function buildVclusterControlPlaneCnpManifest(
       labels: vclusterLabels(name, sessionId),
     },
     spec: {
-      endpointSelector: { matchLabels: { app: 'vcluster', release: name } },
+      endpointSelector: {
+        matchLabels: { app: 'vcluster', release: name },
+        matchExpressions: [{ key: LABEL_VCLUSTER_MANAGED_BY, operator: 'DoesNotExist' }],
+      },
       egress: [
         { toEntities: ['kube-apiserver', 'host'] },
         {
@@ -714,15 +631,21 @@ export async function ensureSessionVcluster(p: EnsureVclusterParams): Promise<vo
     await kubectlWithRetry(['delete', 'service', name, '-n', vcNs, '--ignore-not-found'])
   }
 
-  // Confinement BEFORE the control plane exists: Cilium fails closed,
-  // so the synced-pods backstop must be in place before the syncer can
-  // create its first host pod (CoreDNS appears within seconds). The
-  // session policy lives in the install namespace (it selects the
-  // session pod); the synced-pods + control-plane policies live in the
-  // vcluster namespace (where those pods are).
+  // Confinement BEFORE the control plane exists: Cilium fails closed, so the
+  // synced-pod egress floor must be in place before the syncer creates its first
+  // host pod (CoreDNS appears within seconds) — otherwise a pod with no policy
+  // selecting it would get default-ALLOW egress, a cold-start window to raw
+  // world. The session policy lives in the install namespace (it selects the
+  // session pod); the fallback redirect (the synced-pod floor: default-deny +
+  // world→outer proxy + intracluster) and the control-plane CNP live in the
+  // vcluster namespace. The fallback is a STATIC per-vcluster policy seeded here
+  // and torn down with the namespace — nothing deletes it in between, so the
+  // daemon reconcile does not re-assert it (it only projects the dynamic inner
+  // override once an inner yaac's proxy appears). CEC before the CNP that
+  // references its listeners.
   await kubectlApply(buildVclusterSessionNetworkPolicyManifest(name, p.sessionId))
-  await kubectlApply(buildVclusterSyncedPodsNetworkPolicyManifest(name, p.sessionId))
-  await kubectlApply(buildVclusterNamespaceWorldDenyManifest(name, p.sessionId))
+  await kubectlApply(buildVclusterFallbackRedirectCecManifest(vcNs))
+  await kubectlApply(buildVclusterFallbackRedirectCnpManifest(vcNs, name))
   await kubectlApply(buildVclusterControlPlaneCnpManifest(name, p.sessionId))
   await kubectlWithRetry(['apply', '-f', '-'], {
     input: await renderVclusterManifests({ sessionId: p.sessionId }),
@@ -759,8 +682,9 @@ export async function waitForVclusterKubeconfig(
 /**
  * Tear down one vcluster. With each vcluster in its own host namespace,
  * deleting the namespace removes everything inside it in one shot — the
- * control plane, synced pods, the synced-pods + control-plane policies,
- * the RBAC Role/RoleBinding, and the kubeconfig Secret. Only two things
+ * control plane, synced pods, the fallback-redirect (CEC + CNP) and
+ * control-plane policies, any daemon-projected inner-redirect objects, the
+ * RBAC Role/RoleBinding, and the kubeconfig Secret. Only two things
  * live outside it: the cluster-scoped objects (ClusterRole/Binding, the
  * VAP policy/binding — deleted by our ownership label) and the session
  * NetworkPolicy in the install namespace (it selects the session pod, so

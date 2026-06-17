@@ -2,8 +2,6 @@ import {
   buildInnerEgressRedirectCecManifest,
   buildInnerProxyIngressCnpManifest,
   buildInnerSessionEgressRedirectCnpManifest,
-  buildVclusterFallbackRedirectCecManifest,
-  buildVclusterFallbackRedirectCnpManifest,
   INNER_EGRESS_REDIRECT_CEC_NAME,
   INNER_PROXY_INGRESS_CNP_NAME,
   INNER_SESSION_EGRESS_REDIRECT_CNP_NAME,
@@ -56,30 +54,34 @@ async function pruneInnerRedirect(vcNamespace: string): Promise<void> {
 
 /**
  * Background-loop tick step for yaac-in-yaac inner egress (design B,
- * plans/yaac-in-yaac-inner-egress.md). For each managed vcluster:
+ * plans/yaac-in-yaac-inner-egress.md). Projects only the DYNAMIC inner override —
+ * the part that depends on an inner yaac's proxy existing. For each managed
+ * vcluster:
  *
- *   - ALWAYS apply the low-precedence FALLBACK redirect (synced pods → the outer
- *     proxy) so they have working egress the moment they exist.
  *   - If its inner proxy is up (a host-synced `yaac-proxy` Service in the
  *     vcluster's namespace), PROJECT the inner override: an inner CEC EDS-backed
  *     by that Service + an override CNP that redirects the vcluster's synced
  *     pods (`managed-by=<vc>`, excluding the inner proxy) to it at the normal
  *     priority (which beats the fallback) + the inner proxy-ingress lock.
- *   - Else PRUNE any stale inner override (the fallback stays).
+ *   - Else PRUNE any stale inner override.
+ *
+ * The low-precedence FALLBACK redirect (the synced-pod egress floor → the outer
+ * proxy) is NOT applied here: it's a static per-vcluster policy seeded at
+ * vcluster-creation time (ensureSessionVcluster) and torn down with the
+ * namespace. Nothing in the system deletes it once created (a tenant has no host
+ * RBAC; CNPs/NetworkPolicies don't sync out of the vcluster), so there is no
+ * per-tick reassert. Trade-off: a change to the fallback builder reaches a
+ * running vcluster only on recreate.
  *
  * The session pod never gets host RBAC: the daemon (host cluster-admin) is the
  * sole writer and rebuilds from trusted builders, so a tenant can't author an
- * escape. The fallback objects are torn down with the vcluster namespace.
- * Idempotent and best-effort; the loop isolates step errors.
+ * escape. Idempotent and best-effort; the loop isolates step errors.
  */
 export async function reconcileInnerRedirects(): Promise<void> {
   const vclusters = await listVclusterNamespaces()
   if (vclusters.length === 0) return
 
   for (const { name, namespace } of vclusters) {
-    await kubectlApply(buildVclusterFallbackRedirectCecManifest(namespace))
-    await kubectlApply(buildVclusterFallbackRedirectCnpManifest(namespace, name))
-
     const innerProxyService = await findInnerProxyService(namespace, name)
     if (!innerProxyService) {
       await pruneInnerRedirect(namespace)

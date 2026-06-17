@@ -39,11 +39,9 @@ import {
   buildVclusterCleanupShellCommand,
   buildVclusterControlPlaneCnpManifest,
   buildVclusterNamespaceManifest,
-  buildVclusterNamespaceWorldDenyManifest,
   buildVclusterPodGuardBindingManifest,
   buildVclusterPodGuardPolicyManifest,
   buildVclusterSessionNetworkPolicyManifest,
-  buildVclusterSyncedPodsNetworkPolicyManifest,
   ensureHelm,
   ensureSessionVcluster,
   ensureVclusterImages,
@@ -348,51 +346,16 @@ describe('namespace + confinement policies', () => {
       .toEqual({ [LABEL_VCLUSTER_MANAGED_BY]: VC })
   })
 
-  it('synced-pods backstop lives in the vcluster ns (same-namespace peers)', () => {
-    const m = buildVclusterSyncedPodsNetworkPolicyManifest(VC, SID) as unknown as NetPol
-    expect(m.metadata.name).toBe('yaac-vc-0a1b2c3d-synced')
-    expect(m.metadata.namespace).toBe(VCNS)
-    expect(m.spec.podSelector.matchLabels).toEqual({ [LABEL_VCLUSTER_MANAGED_BY]: VC })
-    expect(m.spec.egress).toHaveLength(2)
-    // Same namespace now, so plain podSelector (no namespaceSelector).
-    expect(m.spec.egress[0].to[0].namespaceSelector).toBeUndefined()
-    expect(m.spec.egress[0].to[0].podSelector.matchLabels)
-      .toEqual({ app: 'vcluster', release: VC })
-    expect(m.spec.egress[0].ports).toEqual([{ protocol: 'TCP', port: VCLUSTER_API_PORT }])
-    expect(m.spec.egress[1].to[0].podSelector.matchLabels)
-      .toEqual({ [LABEL_VCLUSTER_MANAGED_BY]: VC })
-  })
-
-  it('blankets the vcluster namespace with a world-egress deny, carving out the proxy + session pods', () => {
-    const m = buildVclusterNamespaceWorldDenyManifest(VC, SID) as unknown as {
-      kind: string
-      metadata: { name: string; namespace: string }
-      spec: {
-        endpointSelector: { matchExpressions: Array<{ key: string; operator: string; values?: string[] }> }
-        egressDeny: Array<{ toEntities: string[] }>
-      }
-    }
-    expect(m.kind).toBe('CiliumNetworkPolicy')
-    expect(m.metadata.namespace).toBe(VCNS)
-    // The inner proxy (app=yaac-proxy) and inner session pods (yaac.session-id)
-    // are EXCLUDED: their world egress is the redirect CNPs' job, and a Cilium
-    // deny beats the redirect allow — so a blanket deny would silently break
-    // yaac-in-yaac (the inner session could not reach the API). Mirrors the
-    // install-namespace deny (buildEgressWorldDenyCiliumPolicyManifest).
-    expect(m.spec.endpointSelector.matchExpressions).toEqual([
-      { key: 'app', operator: 'NotIn', values: ['yaac-proxy'] },
-      { key: 'yaac.session-id', operator: 'DoesNotExist' },
-    ])
-    expect(m.spec.egressDeny).toEqual([{ toEntities: ['world'] }])
-  })
-
   it('locks the control plane to apiserver/host/kube-dns/own pods (CNP), in the vcluster ns', () => {
     const m = buildVclusterControlPlaneCnpManifest(VC, SID) as {
       apiVersion: string
       kind: string
       metadata: { namespace: string }
       spec: {
-        endpointSelector: { matchLabels: Record<string, string> }
+        endpointSelector: {
+          matchLabels: Record<string, string>
+          matchExpressions: Array<{ key: string; operator: string }>
+        }
         egress: Array<Record<string, unknown>>
       }
     }
@@ -400,6 +363,12 @@ describe('namespace + confinement policies', () => {
     expect(m.kind).toBe('CiliumNetworkPolicy')
     expect(m.metadata.namespace).toBe(VCNS)
     expect(m.spec.endpointSelector.matchLabels).toEqual({ app: 'vcluster', release: VC })
+    // managed-by DoesNotExist excludes synced pods unforgeably: a tenant could
+    // forge `app=vcluster, release=<vc>` (those labels propagate to the host
+    // pod) and otherwise inherit this policy's kube-apiserver/host egress.
+    expect(m.spec.endpointSelector.matchExpressions).toEqual([
+      { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'DoesNotExist' },
+    ])
     expect(m.spec.egress[0]).toEqual({ toEntities: ['kube-apiserver', 'host'] })
     expect(JSON.stringify(m.spec.egress)).toContain('kube-dns')
     expect(JSON.stringify(m.spec.egress)).toContain(`"${LABEL_VCLUSTER_MANAGED_BY}":"${VC}"`)
@@ -430,16 +399,17 @@ describe('ensureSessionVcluster', () => {
     await ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' })
 
     // The dedicated namespace first, then the VAP guard + the CNI
-    // confinement (session NP, synced-pods NP, namespace world-deny CNP,
-    // control-plane CNP) — all BEFORE the control plane exists, so no
-    // synced pod is ever admitted unguarded/unconfined.
+    // confinement (session NP, the fallback-redirect CEC then its CNP — the
+    // synced-pod egress floor — then the control-plane CNP) — all BEFORE the
+    // control plane exists, so no synced pod is ever admitted
+    // unguarded/unconfined. CEC before the CNP that references its listeners.
     const kinds = mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
     expect(kinds).toEqual([
       'Namespace',
       'ValidatingAdmissionPolicy',
       'ValidatingAdmissionPolicyBinding',
       'NetworkPolicy',
-      'NetworkPolicy',
+      'CiliumEnvoyConfig',
       'CiliumNetworkPolicy',
       'CiliumNetworkPolicy',
     ])

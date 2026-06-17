@@ -83,31 +83,40 @@ controlPlane:
     extraSANs: []
 sync:
   toHost:
-    # NOTE (plan deviation, risk #2 fallback): the original design
-    # stamped synced pods with yaac.session-id via
-    # sync.toHost.pods.patches, but expression patches are a vcluster
-    # PRO feature ("Translate Patches") — the OSS syncer hard-errors on
-    # them. Synced-pod confinement instead keys on the
-    # vcluster.loft.sh/managed-by label the syncer always stamps: the
-    # per-vcluster synced-pods NetworkPolicy
-    # (buildVclusterSyncedPodsNetworkPolicyManifest) is their
-    # default-deny backstop, replacing yaac-session-egress for these
-    # pods. Synced pods carry NO yaac labels at all, which also keeps
-    # them invisible to the session reaper/list paths.
+    # NOTE: two DIFFERENT label mechanisms, easy to conflate.
+    #   - STAMP (inject a label the virtual pod lacks): a vcluster PRO
+    #     feature ("Translate Patches", sync.toHost.pods.patches) — the OSS
+    #     syncer hard-errors on it. So the OUTER yaac cannot add
+    #     yaac.session-id to an arbitrary tenant pod.
+    #   - PROPAGATE (copy a label the virtual pod already carries): default
+    #     behavior — the host pod gets the virtual pod's labels verbatim. So
+    #     an INNER yaac's own pods (which it labels app=yaac-proxy /
+    #     yaac.role / yaac.session-id at creation) DO carry those labels on
+    #     the host. A pure tenant workload that sets none carries none.
+    # Containment therefore keys on vcluster.loft.sh/managed-by — the ONE
+    # label the SYNCER itself stamps on every synced pod, which a tenant
+    # cannot forge or suppress. The per-vcluster fallback-redirect CNP
+    # (buildVclusterFallbackRedirectCnpManifest), selecting managed-by, is
+    # the default-deny egress floor (world → outer proxy + intracluster),
+    # replacing yaac-session-egress for these pods. Any yaac labels that DO
+    # propagate are forgeable, so policy never relies on them for the
+    # containment boundary — only for non-escalating routing (inner-vs-outer
+    # proxy). Beware: this all rests on vcluster's default verbatim label
+    # propagation — a chart bump that starts translating pod labels would
+    # break the redirect selectors (see the nesting e2e).
     pods:
       enabled: true
     networkPolicies:
       # DELIBERATELY OFF (security). Syncing tenant NetworkPolicies to the
       # host lets anything inside the vcluster create an allow-all egress
-      # NetworkPolicy that unions over our (allow-only) synced-pods
+      # NetworkPolicy that unions over our (allow-only) synced-pod
       # containment and grants its synced pod raw internet egress —
       # bypassing the proxy/allowlist entirely (verified). Synced-pod
-      # containment instead comes solely from the yaac-applied policies
-      # (the per-vcluster synced-pods NetworkPolicy + the blanket
-      # yaac-egress-world-deny CiliumNetworkPolicy), which a tenant cannot
-      # widen. Cost: an inner yaac's own NetworkPolicies are not enforced
-      # on the host — acceptable in v1 (inner sessions are confined by the
-      # outer policies and have no upstream egress regardless).
+      # containment instead comes solely from the yaac-applied fallback
+      # redirect CNP (managed-by → default-deny + redirect to the outer
+      # proxy), which a tenant cannot widen. Cost: an inner yaac's own
+      # NetworkPolicies are not enforced on the host — acceptable (inner
+      # sessions are confined by the outer fallback regardless).
       enabled: false
   fromHost:
     nodes:

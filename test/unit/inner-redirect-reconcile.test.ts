@@ -20,8 +20,6 @@ import {
   INNER_EGRESS_REDIRECT_CEC_NAME,
   INNER_PROXY_INGRESS_CNP_NAME,
   INNER_SESSION_EGRESS_REDIRECT_CNP_NAME,
-  VCLUSTER_FALLBACK_CEC_NAME,
-  VCLUSTER_FALLBACK_CNP_NAME,
 } from '@/lib/k8s/bootstrap'
 
 const mockGetJson = vi.mocked(kubectlGetJson)
@@ -52,16 +50,14 @@ describe('reconcileInnerRedirects', () => {
     expect(mockRetry).not.toHaveBeenCalled()
   })
 
-  it('applies the fallback then projects the inner override when the inner proxy is up', async () => {
+  it('projects the inner override when the inner proxy is up (no fallback — that is creation-time)', async () => {
     mockList.mockResolvedValue([VC])
     mockGetJson.mockResolvedValue({ items: [{ metadata: { name: SYNCED_SVC } }] })
 
     await reconcileInnerRedirects()
 
-    // Fallback first (always), then the three inner objects — none pruned.
+    // Only the three inner objects — the fallback is seeded at creation, not here.
     expect(appliedNames()).toEqual([
-      { kind: 'CiliumEnvoyConfig', name: VCLUSTER_FALLBACK_CEC_NAME, namespace: 'yaac-vc-1' },
-      { kind: 'CiliumNetworkPolicy', name: VCLUSTER_FALLBACK_CNP_NAME, namespace: 'yaac-vc-1' },
       { kind: 'CiliumEnvoyConfig', name: INNER_EGRESS_REDIRECT_CEC_NAME, namespace: 'yaac-vc-1' },
       { kind: 'CiliumNetworkPolicy', name: INNER_SESSION_EGRESS_REDIRECT_CNP_NAME, namespace: 'yaac-vc-1' },
       { kind: 'CiliumNetworkPolicy', name: INNER_PROXY_INGRESS_CNP_NAME, namespace: 'yaac-vc-1' },
@@ -69,21 +65,18 @@ describe('reconcileInnerRedirects', () => {
     expect(mockRetry).not.toHaveBeenCalled()
 
     // The inner CEC is EDS-backed by the discovered (translated) Service name.
-    const innerCec = mockApply.mock.calls[2][0] as { spec: { backendServices: Array<{ name: string }> } }
+    const innerCec = mockApply.mock.calls[0][0] as { spec: { backendServices: Array<{ name: string }> } }
     expect(innerCec.spec.backendServices[0].name).toBe(SYNCED_SVC)
   })
 
-  it('keeps the fallback but prunes the inner override when the inner proxy is gone', async () => {
+  it('prunes the inner override when the inner proxy is gone (fallback untouched)', async () => {
     mockList.mockResolvedValue([VC])
     mockGetJson.mockResolvedValue({ items: [] }) // no inner proxy Service
 
     await reconcileInnerRedirects()
 
-    // Fallback still applied; inner override deleted (ignore-not-found).
-    expect(appliedNames()).toEqual([
-      { kind: 'CiliumEnvoyConfig', name: VCLUSTER_FALLBACK_CEC_NAME, namespace: 'yaac-vc-1' },
-      { kind: 'CiliumNetworkPolicy', name: VCLUSTER_FALLBACK_CNP_NAME, namespace: 'yaac-vc-1' },
-    ])
+    // Nothing applied; inner override deleted (ignore-not-found).
+    expect(appliedNames()).toEqual([])
     const deletes = mockRetry.mock.calls.map(([args]) => args.join(' '))
     expect(deletes).toEqual([
       `delete ciliumenvoyconfig ${INNER_EGRESS_REDIRECT_CEC_NAME} -n yaac-vc-1 --ignore-not-found`,
