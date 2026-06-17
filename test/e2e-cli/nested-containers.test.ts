@@ -20,6 +20,7 @@ import {
   requireCluster,
   execInJob,
   cleanupSessionJobs,
+  IS_NESTED_YAAC,
 } from '@test/helpers/setup'
 import {
   startMockLLM,
@@ -121,7 +122,9 @@ async function startMockUpstreamRegistry(): Promise<MockUpstreamRegistry> {
   }
 }
 
-describe('yaac nested containers (real CLI + real daemon + real cluster)', () => {
+// In-pod podman builds rely on a `kind` podman network and host topology
+// that don't exist inside a nested (vcluster) session.
+describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real daemon + real cluster)', () => {
   let testEnv: YaacTestEnv
   let daemon: SpawnedDaemon | null = null
   let mockLLM: MockLLM | null = null

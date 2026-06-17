@@ -12,6 +12,7 @@ import {
   createTempDataDir,
   cleanupTempDir,
   TEST_PROXY_CONFIG,
+  IS_NESTED_YAAC,
 } from '@test/helpers/setup'
 import { resolveTestBaseImageRef } from '@test/helpers/mock-remotes'
 import { ProxyClient } from '@/lib/container/proxy-client'
@@ -317,7 +318,10 @@ describe('cilium-level transparent egress (source-IP identity)', () => {
     try { await client.stop() } catch { /* ok */ }
   })
 
-  it('reaches an allowed host through SNI MITM with the mounted CA', async () => {
+  // The positive-egress legs (reach/HTTP/CONNECT/DNS-stub) require the
+  // inner Cilium redirect, which is enforced host-side in a nested session;
+  // the fail-closed / source-IP / forgery-lock legs still hold and run.
+  it.skipIf(IS_NESTED_YAAC)('reaches an allowed host through SNI MITM with the mounted CA', async () => {
     // --resolve pins the never-routable IP: only the Cilium redirect can
     // deliver it. --cacert proves the proxy MITM'd with a leaf the mounted
     // yaac CA signs for api.anthropic.com. Identity is podA's source IP.
@@ -355,7 +359,7 @@ describe('cilium-level transparent egress (source-IP identity)', () => {
     expect(fromA.exit).not.toBe(0)
   }, 60_000)
 
-  it('forwards transparent HTTP (port 80) via the Host header', async () => {
+  it.skipIf(IS_NESTED_YAAC)('forwards transparent HTTP (port 80) via the Host header', async () => {
     const r = await curlInPod(
       podA, `--resolve ${echoHost}:80:${FAKE_IP_A} "http://${echoHost}/hello?x=1"`,
     )
@@ -368,7 +372,7 @@ describe('cilium-level transparent egress (source-IP identity)', () => {
     expect(echoed.headers.host).toBe(echoHost)
   }, 60_000)
 
-  it('tunnels an explicit CONNECT through the Cilium-redirected SSH sentinel', async () => {
+  it.skipIf(IS_NESTED_YAAC)('tunnels an explicit CONNECT through the Cilium-redirected SSH sentinel', async () => {
     // `curl --proxy http://<sentinel>:<tunnel-port>` sends the same CONNECT
     // git's ncat ProxyCommand does. Cilium redirects the sentinel through
     // Envoy to the proxy tunnel listener, which reads CONNECT host:port and
@@ -382,7 +386,7 @@ describe('cilium-level transparent egress (source-IP identity)', () => {
     expect(r.out).toContain('TUNNEL_OK')
   }, 120_000)
 
-  it('answers DNS from the proxy stub (every name → the dummy IP)', async () => {
+  it.skipIf(IS_NESTED_YAAC)('answers DNS from the proxy stub (every name → the dummy IP)', async () => {
     const r = await execInPod(podA, [
       'sh', '-c', 'getent hosts dns-stub-probe.example || true',
     ], { timeout: 20_000 })

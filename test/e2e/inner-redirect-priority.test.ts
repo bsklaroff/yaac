@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { requireCluster } from '@test/helpers/setup'
+import { requireCluster, IS_NESTED_YAAC } from '@test/helpers/setup'
 import { k8sNamespace, kubectlApply, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
 import { SESSION_REDIRECT_PRIORITY, VCLUSTER_FALLBACK_PRIORITY } from '@/lib/k8s/bootstrap'
 
@@ -116,7 +116,9 @@ async function curlUntil(want: string, timeoutMs = 30_000): Promise<string> {
   return last
 }
 
-describe('inner-redirect priority override (the undocumented Cilium guard)', () => {
+// The inner Cilium egress redirect is enforced host-side for a nested
+// session, so this priority-override guard isn't observable from in here.
+describe.skipIf(IS_NESTED_YAAC)('inner-redirect priority override (the undocumented Cilium guard)', () => {
   beforeAll(async () => {
     await requireCluster()
     // Fresh, policy-free namespace (delete any leftover first, then create).

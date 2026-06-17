@@ -7,7 +7,7 @@ import {
   type YaacTestEnv,
 } from '@test/helpers/cli'
 import { readLock } from '@/shared/lock'
-import { requirePodman, requireCluster, TEST_PROXY_CONFIG } from '@test/helpers/setup'
+import { requirePodman, requireCluster, TEST_PROXY_CONFIG, IS_NESTED_YAAC } from '@test/helpers/setup'
 import { resolveTestBaseImageRef } from '@test/helpers/mock-remotes'
 import { ProxyClient } from '@/lib/container/proxy-client'
 import { PROXY_APP_NAME, PROXY_AUTH_SECRET_NAME, PROXY_PORT } from '@/lib/k8s/bootstrap'
@@ -137,7 +137,10 @@ describe('daemon restart preserves running proxy (real `yaac daemon restart`)', 
     await testEnv.cleanup()
   })
 
-  it('`yaac daemon restart` preserves the proxy pod, auth secret, and session reachability', async () => {
+  // The reachability leg curls out through the in-pod egress redirect,
+  // enforced host-side (not present) in a nested session; the self-heal
+  // test below has no such dependency, so only this one is skipped.
+  it.skipIf(IS_NESTED_YAAC)('`yaac daemon restart` preserves the proxy pod, auth secret, and session reachability', async () => {
     const daemonEnv = testEnv.env
 
     // Real `yaac daemon start` — spawns a detached daemon subprocess.

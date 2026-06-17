@@ -15,6 +15,7 @@ import {
   type KubectlExecOptions,
 } from '@/lib/k8s/kubectl'
 import { registryHasTag, registryRef } from '@/lib/k8s/registry'
+import { e2eMkdtemp } from '@test/helpers/tmp'
 
 const execFileAsync = promisify(execFile)
 
@@ -424,7 +425,7 @@ const MOCK_GIT_SCRIPT = `
 
 export async function startMockGit(): Promise<MockGit> {
   const podName = `yaac-mock-git-${crypto.randomBytes(4).toString('hex')}`
-  const reposDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-mock-git-'))
+  const reposDir = await e2eMkdtemp('yaac-mock-git-')
   // The container process runs as a non-root user; the repos dir must be
   // world-readable so it can stat+stream the files.
   await fs.chmod(reposDir, 0o755)

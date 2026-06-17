@@ -5,6 +5,7 @@ import path from 'node:path'
 import { setDataDir } from '@/shared/paths'
 import { readLock, type DaemonLock } from '@/shared/lock'
 import { TEST_NAMESPACE } from '@test/helpers/setup'
+import { e2eMkdtemp } from '@test/helpers/tmp'
 
 const TSX_CLI = path.resolve(__dirname, '..', '..', 'node_modules', 'tsx', 'dist', 'cli.mjs')
 const ENTRY = path.resolve(__dirname, '..', '..', 'src', 'cli.ts')
@@ -103,7 +104,7 @@ export interface YaacTestEnv {
  * tests that do not touch containers just ignore them.
  */
 export async function createYaacTestEnv(): Promise<YaacTestEnv> {
-  const scratchDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-e2ecli-'))
+  const scratchDir = await e2eMkdtemp('yaac-e2ecli-')
   const dataDir = path.join(scratchDir, 'data')
   const gitConfigPath = path.join(scratchDir, 'gitconfig')
   await fs.mkdir(path.join(dataDir, 'projects'), { recursive: true })

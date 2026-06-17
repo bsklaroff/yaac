@@ -25,6 +25,7 @@ import {
   requireCluster,
   execInJob,
   cleanupSessionJobs,
+  IS_NESTED_YAAC,
 } from '@test/helpers/setup'
 import {
   startMockLLM,
@@ -38,7 +39,9 @@ import {
 /** Mirrored by the global setup (k8s/vcluster/images.json) — runnable. */
 const INNER_IMAGE = 'localhost:5001/library/alpine:3.20'
 
-describe('yaac vcluster sessions (real CLI + real daemon + real cluster)', () => {
+// createSession refuses virtualCluster inside a nested yaac (no
+// vcluster-in-vcluster), so these can't run from within a session.
+describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real daemon + real cluster)', () => {
   let testEnv: YaacTestEnv
   let daemon: SpawnedDaemon | null = null
   let mockLLM: MockLLM | null = null

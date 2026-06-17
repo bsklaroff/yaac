@@ -1,6 +1,5 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -17,6 +16,7 @@ import {
 import { LABEL_DATA_DIR_HASH } from '@/lib/k8s/pods'
 import type { ProjectMeta } from '@/shared/types'
 import type { ProxyClientConfig } from '@/lib/container/proxy-client'
+import { e2eMkdtemp } from '@test/helpers/tmp'
 
 const execFileAsync = promisify(execFile)
 
@@ -44,6 +44,19 @@ export const TEST_RUN_ID = crypto.randomBytes(4).toString('hex')
  * are swept by test/global-setup.ts teardown.
  */
 export const TEST_NAMESPACE = `yaac-test-${TEST_RUN_ID}`
+
+/**
+ * True when the e2e suite runs inside a nested yaac session. Several
+ * capabilities simply don't exist in a vcluster-backed inner session and
+ * cannot be exercised from in here, so the tests that depend on them are
+ * `skipIf`'d on this flag:
+ *  - the inner Cilium transparent-egress redirect (enforced host-side for a
+ *    nested session — `yaac cluster check` reports `egress: skipped`);
+ *  - vcluster-in-vcluster (`createSession` refuses it outright);
+ *  - the podman `kind` network and `system service` lifecycle (the inner
+ *    podman has neither).
+ */
+export const IS_NESTED_YAAC = process.env.YAAC_NESTED === '1'
 
 /**
  * Point the current test process at the per-run test namespace, so that
@@ -130,13 +143,14 @@ export async function cleanupSessionJobs(): Promise<void> {
  * Creates a temporary data dir and sets it as the yaac data dir.
  * Returns the path for cleanup.
  *
- * NOTE: lives under os.tmpdir(). Session pods hostPath-mount paths under
+ * NOTE: lives under e2eTmpBase() (os.tmpdir() on a host, the node-shared
+ * data dir inside a nested yaac). Session pods hostPath-mount paths under
  * the data dir, so e2e runs against kind need the node to see the host's
  * temp dir (set TMPDIR to a home-dir path or add a kind extraMounts entry
  * for it). `yaac cluster check` verifies the data-dir mount wiring.
  */
 export async function createTempDataDir(): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-test-'))
+  const dir = await e2eMkdtemp('yaac-test-')
   await fs.mkdir(path.join(dir, 'projects'), { recursive: true })
   setDataDir(dir)
   return dir
