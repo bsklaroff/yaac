@@ -399,17 +399,16 @@ describe('ensureSessionVcluster', () => {
     await ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' })
 
     // The dedicated namespace first, then the VAP guard + the CNI
-    // confinement (session NP, the fallback-redirect CEC then its CNP — the
-    // synced-pod egress floor — then the control-plane CNP) — all BEFORE the
-    // control plane exists, so no synced pod is ever admitted
-    // unguarded/unconfined. CEC before the CNP that references its listeners.
+    // confinement (session NP, the fallback-redirect CNP — the synced-pod
+    // egress floor, whose listeners live in the shared cluster-scoped CCEC —
+    // then the control-plane CNP) — all BEFORE the control plane exists, so no
+    // synced pod is ever admitted unguarded/unconfined.
     const kinds = mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
     expect(kinds).toEqual([
       'Namespace',
       'ValidatingAdmissionPolicy',
       'ValidatingAdmissionPolicyBinding',
       'NetworkPolicy',
-      'CiliumEnvoyConfig',
       'CiliumNetworkPolicy',
       'CiliumNetworkPolicy',
     ])

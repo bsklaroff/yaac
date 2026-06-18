@@ -3,7 +3,6 @@ import os from 'node:os'
 import path from 'node:path'
 import YAML from 'yaml'
 import {
-  buildVclusterFallbackRedirectCecManifest,
   buildVclusterFallbackRedirectCnpManifest,
   clusterIpForService,
 } from '@/lib/k8s/bootstrap'
@@ -636,15 +635,16 @@ export async function ensureSessionVcluster(p: EnsureVclusterParams): Promise<vo
   // host pod (CoreDNS appears within seconds) — otherwise a pod with no policy
   // selecting it would get default-ALLOW egress, a cold-start window to raw
   // world. The session policy lives in the install namespace (it selects the
-  // session pod); the fallback redirect (the synced-pod floor: default-deny +
-  // world→outer proxy + intracluster) and the control-plane CNP live in the
-  // vcluster namespace. The fallback is a STATIC per-vcluster policy seeded here
-  // and torn down with the namespace — nothing deletes it in between, so the
-  // daemon reconcile does not re-assert it (it only projects the dynamic inner
-  // override once an inner yaac's proxy appears). CEC before the CNP that
-  // references its listeners.
+  // session pod); the fallback redirect CNP (the synced-pod floor: default-deny
+  // + world→outer proxy + intracluster) and the control-plane CNP live in the
+  // vcluster namespace. The fallback CNP is a STATIC per-vcluster policy seeded
+  // here and torn down with the namespace — nothing deletes it in between, so
+  // the daemon reconcile does not re-assert it (it only projects the dynamic
+  // inner override once an inner yaac's proxy appears). Its redirect listeners
+  // live in the SHARED cluster-scoped fallback CCEC (created once at bootstrap,
+  // ensureProxyResources), referenced by kind — so creating a vcluster adds NO
+  // Envoy listener and never triggers a node-wide endpoint regeneration.
   await kubectlApply(buildVclusterSessionNetworkPolicyManifest(name, p.sessionId))
-  await kubectlApply(buildVclusterFallbackRedirectCecManifest(vcNs))
   await kubectlApply(buildVclusterFallbackRedirectCnpManifest(vcNs, name))
   await kubectlApply(buildVclusterControlPlaneCnpManifest(name, p.sessionId))
   await kubectlWithRetry(['apply', '-f', '-'], {
@@ -682,13 +682,15 @@ export async function waitForVclusterKubeconfig(
 /**
  * Tear down one vcluster. With each vcluster in its own host namespace,
  * deleting the namespace removes everything inside it in one shot — the
- * control plane, synced pods, the fallback-redirect (CEC + CNP) and
- * control-plane policies, any daemon-projected inner-redirect objects, the
- * RBAC Role/RoleBinding, and the kubeconfig Secret. Only two things
- * live outside it: the cluster-scoped objects (ClusterRole/Binding, the
- * VAP policy/binding — deleted by our ownership label) and the session
- * NetworkPolicy in the install namespace (it selects the session pod, so
- * it can't move — deleted by label there).
+ * control plane, synced pods, the fallback-redirect CNP and control-plane
+ * policies, any daemon-projected inner-redirect objects, the RBAC
+ * Role/RoleBinding, and the kubeconfig Secret. Things that live outside it
+ * are unaffected: the cluster-scoped objects (ClusterRole/Binding, the VAP
+ * policy/binding — deleted by our ownership label), the session NetworkPolicy
+ * in the install namespace (it selects the session pod, so it can't move —
+ * deleted by label there), and the SHARED fallback-redirect CCEC (a per-install
+ * singleton the CNP references by kind; it serves every vcluster, so it is
+ * intentionally NOT torn down here — it goes with the install).
  */
 export function vclusterCleanupKubectlArgs(name: string): string[][] {
   return [

@@ -82,9 +82,20 @@ export const INNER_PROXY_INGRESS_CNP_NAME = 'yaac-inner-proxy-ingress'
  * The outer yaac's low-precedence fallback redirect for a vcluster's synced
  * pods (→ the OUTER proxy), so they have working egress from the moment they
  * exist — before/without any inner yaac.
+ *
+ * The listeners live in a single SHARED, cluster-scoped
+ * `CiliumClusterwideEnvoyConfig` (one per install, name install-scoped via
+ * `vclusterFallbackCcecName` to avoid collisions between the real install and
+ * ephemeral e2e `yaac-test-<run-id>` installs). Each vcluster keeps its own
+ * fallback CNP (for tenant isolation) but references that shared CCEC, so
+ * creating/destroying a vcluster adds/removes NO Envoy listeners — the churn
+ * that otherwise triggers a node-wide "regenerate all endpoints" and wedges
+ * every session's egress (see plans/distributed-mapping-pine.md).
+ *
+ * One shared base name: the per-vcluster CNP uses it verbatim; the cluster-scoped
+ * CCEC suffixes it with the install namespace (`vclusterFallbackCcecName`).
  */
-export const VCLUSTER_FALLBACK_CEC_NAME = 'yaac-vcluster-fallback-redirect'
-export const VCLUSTER_FALLBACK_CNP_NAME = 'yaac-vcluster-fallback-redirect'
+export const VCLUSTER_FALLBACK_REDIRECT_NAME = 'yaac-vcluster-fallback-redirect'
 /**
  * `toPorts.listener.priority` (lower number = higher precedence; unset is the
  * lowest, ~126). EVERY yaac's session-egress redirect uses the SAME normal
@@ -596,24 +607,29 @@ function redirectListenerAndCluster(
  * matching `<ns>/<service>:<port>` clusters, so Envoy dials the proxy pod IP
  * directly rather than a ClusterIP it cannot route to from the host netns.
  *
- * `cecNamespace` is where the CEC lives; `proxyNamespace`/`proxyService` name
+ * `cecNamespace` is where the CEC lives, or `null` to emit a cluster-scoped
+ * `CiliumClusterwideEnvoyConfig` (CCEC) instead — used by the shared vcluster
+ * fallback so a per-vcluster CNP can reference it cross-namespace (a CNP's
+ * `listener.envoyConfig` ref resolves a namespaced CEC only in the CNP's own
+ * namespace, but a CCEC is cluster-scoped). `proxyNamespace`/`proxyService` name
  * the upstream proxy Service its EDS clusters resolve (`backendServices` carries
- * a namespace, so a per-vcluster fallback CEC can target the outer proxy in
- * another namespace — see buildVclusterFallbackRedirectCecManifest).
+ * a namespace, so the shared fallback CCEC targets the outer proxy regardless of
+ * which vcluster namespace the redirected pod lives in).
  */
 function buildRedirectCec(
   cecName: string,
-  cecNamespace: string,
+  cecNamespace: string | null,
   proxyNamespace: string,
   proxyService: string,
 ): Record<string, unknown> {
   const cluster = (port: number): string => edsClusterName(proxyNamespace, proxyService, port)
+  const clusterScoped = cecNamespace === null
   return {
     apiVersion: 'cilium.io/v2',
-    kind: 'CiliumEnvoyConfig',
+    kind: clusterScoped ? 'CiliumClusterwideEnvoyConfig' : 'CiliumEnvoyConfig',
     metadata: {
       name: cecName,
-      namespace: cecNamespace,
+      ...(clusterScoped ? {} : { namespace: cecNamespace }),
       labels: { app: PROXY_APP_NAME },
       annotations: { 'cec.cilium.io/use-original-source-address': 'false' },
     },
@@ -646,8 +662,13 @@ export function buildEgressRedirectCecManifest(): Record<string, unknown> {
  * is identical (transparent), and the outer vcluster fallback uses a lower
  * precedence so the inner wins — see SESSION_REDIRECT_PRIORITY.
  */
-function listenerRef(cecName: string, name: string, priority?: number): Record<string, unknown> {
-  const ref: Record<string, unknown> = { envoyConfig: { kind: 'CiliumEnvoyConfig', name: cecName }, name }
+function listenerRef(
+  cecName: string,
+  name: string,
+  priority?: number,
+  kind: 'CiliumEnvoyConfig' | 'CiliumClusterwideEnvoyConfig' = 'CiliumEnvoyConfig',
+): Record<string, unknown> {
+  const ref: Record<string, unknown> = { envoyConfig: { kind, name: cecName }, name }
   if (priority !== undefined) ref.priority = priority
   return ref
 }
@@ -904,16 +925,33 @@ export function buildInnerProxyIngressCnpManifest(
 }
 
 /**
- * The outer yaac's fallback redirect CEC for a vcluster's synced pods, in the
- * vcluster's host namespace, EDS-backed by the OUTER proxy (cross-namespace via
- * `backendServices.namespace`). A per-vcluster CEC is needed because a CNP's
- * `listener.envoyConfig` ref carries no namespace, so the fallback CNP can't
- * point at the outer CEC directly.
+ * Cluster-scoped name of this install's shared fallback CCEC. A CCEC name is
+ * global, so it's suffixed with the install namespace: the real `yaac` install
+ * and any ephemeral e2e `yaac-test-<run-id>` install can coexist on one cluster,
+ * each with its own singleton CCEC EDS-backed by its own proxy.
  */
-export function buildVclusterFallbackRedirectCecManifest(
-  vcNamespace: string,
-): Record<string, unknown> {
-  return buildRedirectCec(VCLUSTER_FALLBACK_CEC_NAME, vcNamespace, k8sNamespace(), PROXY_APP_NAME)
+export function vclusterFallbackCcecName(namespace: string): string {
+  return `${VCLUSTER_FALLBACK_REDIRECT_NAME}-${namespace}`
+}
+
+/**
+ * The outer yaac's fallback redirect for every vcluster's synced pods, as a
+ * SINGLE shared cluster-scoped CCEC (EDS-backed by the OUTER proxy). One per
+ * install, created once at bootstrap — NOT per vcluster — so vcluster churn
+ * never adds/removes Envoy listeners. Each vcluster's fallback CNP references
+ * this CCEC cross-namespace by `kind: CiliumClusterwideEnvoyConfig` (a CNP's
+ * `listener.envoyConfig` ref carries no namespace, but a CCEC needs none). The
+ * CCEC is cluster-scoped, so it does NOT cascade on namespace deletion — it is
+ * torn down explicitly (e2e global-setup cleanup; install teardown).
+ */
+export function buildVclusterFallbackRedirectCcecManifest(): Record<string, unknown> {
+  const manifest = buildRedirectCec(
+    vclusterFallbackCcecName(k8sNamespace()), null, k8sNamespace(), PROXY_APP_NAME,
+  )
+  // Cluster-scoped: tag with the owning install namespace so teardown can find it.
+  const metadata = manifest.metadata as Record<string, unknown>
+  metadata.labels = { ...(metadata.labels as Record<string, string>), 'yaac.install-namespace': k8sNamespace() }
+  return manifest
 }
 
 /**
@@ -923,8 +961,9 @@ export function buildVclusterFallbackRedirectCecManifest(
  * the vcluster cannot suppress or forge it), makes their egress default-deny, and
  * permits exactly:
  *
- *   - 443/80/SSH → the OUTER proxy, redirected via the fallback CEC at a
- *     deliberately LOW precedence (VCLUSTER_FALLBACK_PRIORITY ≫
+ *   - 443/80/SSH → the OUTER proxy, redirected via the shared fallback CCEC
+ *     (cluster-scoped, referenced by kind) at a deliberately LOW precedence
+ *     (VCLUSTER_FALLBACK_PRIORITY ≫
  *     SESSION_REDIRECT_PRIORITY) so an inner yaac's normal-priority override
  *     (buildInnerSessionEgressRedirectCnpManifest) wins for its session pods,
  *     while the inner proxy itself (excluded from that override) stays on this
@@ -948,12 +987,15 @@ export function buildVclusterFallbackRedirectCnpManifest(
   vcName: string,
 ): Record<string, unknown> {
   const ref = (listener: string): Record<string, unknown> =>
-    listenerRef(VCLUSTER_FALLBACK_CEC_NAME, listener, VCLUSTER_FALLBACK_PRIORITY)
+    listenerRef(
+      vclusterFallbackCcecName(k8sNamespace()), listener, VCLUSTER_FALLBACK_PRIORITY,
+      'CiliumClusterwideEnvoyConfig',
+    )
   return {
     apiVersion: 'cilium.io/v2',
     kind: 'CiliumNetworkPolicy',
     metadata: {
-      name: VCLUSTER_FALLBACK_CNP_NAME,
+      name: VCLUSTER_FALLBACK_REDIRECT_NAME,
       namespace: vcNamespace,
       labels: { app: PROXY_APP_NAME },
     },
@@ -1138,6 +1180,18 @@ export async function ensureProxyResources(
   // before the CNP that references its listeners.
   await kubectlApply(buildEgressRedirectCecManifest())
   await kubectlApply(buildSessionEgressRedirectCnpManifest())
+  // The shared, cluster-scoped fallback redirect for vcluster synced pods.
+  // Applied once here (not per-vcluster) so each vcluster's fallback CNP can
+  // reference it by kind without adding/removing Envoy listeners on create —
+  // the churn that otherwise wedges every session's egress. HOST-ONLY: a nested
+  // yaac creates no vcluster sessions (vcluster-in-vcluster is rejected) so it
+  // never references this, and its vcluster only has the permissive CEC/CNP CRDs
+  // (ensureCiliumCrds, above) — applying a CiliumClusterwideEnvoyConfig there
+  // would fail "no matches for kind". The outer daemon owns the host-side
+  // redirect for every vcluster's synced pods, including a nested yaac's.
+  if (!opts.nested) {
+    await kubectlApply(buildVclusterFallbackRedirectCcecManifest())
+  }
   // Lock the proxy's transparent ports to the node Envoy (forgery guard).
   await kubectlApply(buildProxyIngressCnpManifest())
   // Blanket world-egress deny over non-session pods — the authoritative

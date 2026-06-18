@@ -45,13 +45,13 @@ import {
   INNER_EGRESS_REDIRECT_CEC_NAME,
   INNER_SESSION_EGRESS_REDIRECT_CNP_NAME,
   INNER_PROXY_INGRESS_CNP_NAME,
-  buildVclusterFallbackRedirectCecManifest,
+  buildVclusterFallbackRedirectCcecManifest,
+  vclusterFallbackCcecName,
   buildVclusterFallbackRedirectCnpManifest,
   LABEL_VCLUSTER_MANAGED_BY,
   LABEL_ROLE,
   ROLE_INNER_PROXY,
-  VCLUSTER_FALLBACK_CEC_NAME,
-  VCLUSTER_FALLBACK_CNP_NAME,
+  VCLUSTER_FALLBACK_REDIRECT_NAME,
   SESSION_REDIRECT_PRIORITY,
   VCLUSTER_FALLBACK_PRIORITY,
   buildOuterProxyCaConfigMapManifest,
@@ -667,8 +667,8 @@ describe('ensureProxyResources', () => {
     const kinds = mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
     expect(kinds).toEqual([
       'ServiceAccount', 'Role', 'RoleBinding', 'Deployment', 'Service',
-      'CiliumEnvoyConfig', 'CiliumNetworkPolicy', 'CiliumNetworkPolicy',
-      'CiliumNetworkPolicy',
+      'CiliumEnvoyConfig', 'CiliumNetworkPolicy', 'CiliumClusterwideEnvoyConfig',
+      'CiliumNetworkPolicy', 'CiliumNetworkPolicy',
     ])
     // A fresh cluster needs no VIP migration delete.
     expect(mockRetry).not.toHaveBeenCalledWith(
@@ -728,6 +728,10 @@ describe('ensureProxyResources', () => {
     // schedule (a missing source would keep the pod ContainerCreating).
     const kinds = mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
     expect(kinds.indexOf('ConfigMap')).toBeLessThan(kinds.indexOf('Deployment'))
+    // The cluster-scoped fallback CCEC is HOST-ONLY: the nested vcluster has no
+    // CiliumClusterwideEnvoyConfig CRD (ensureCiliumCrds installs only CEC/CNP),
+    // and a nested yaac creates no vcluster sessions to reference it.
+    expect(kinds).not.toContain('CiliumClusterwideEnvoyConfig')
     readSpy.mockRestore()
   })
 })
@@ -860,17 +864,24 @@ describe('inner-redirect builders (yaac-in-yaac projection)', () => {
     ])
   })
 
-  it('fallback CEC: EDS-backed by the OUTER proxy (cross-namespace), in the vcluster ns', () => {
-    const m = buildVclusterFallbackRedirectCecManifest(VC_NS) as unknown as {
-      metadata: { name: string; namespace: string }
+  it('fallback CCEC: cluster-scoped (no namespace), install-scoped name, EDS → outer proxy', () => {
+    const m = buildVclusterFallbackRedirectCcecManifest() as unknown as {
+      kind: string
+      metadata: { name: string; namespace?: string; labels: Record<string, string> }
       spec: {
         backendServices: Array<{ name: string; namespace: string }>
         resources: Array<{ '@type': string; name?: string }>
       }
     }
-    expect(m.metadata.name).toBe(VCLUSTER_FALLBACK_CEC_NAME)
-    expect(m.metadata.namespace).toBe(VC_NS) // CEC lives in the vcluster ns...
-    // ...but EDS-resolves the OUTER proxy (k8sNamespace=test-ns) cross-namespace.
+    // Cluster-scoped: a CCEC so a per-vcluster CNP can reference it cross-ns.
+    expect(m.kind).toBe('CiliumClusterwideEnvoyConfig')
+    expect(m.metadata.namespace).toBeUndefined()
+    // Name + label are install-scoped so the real install and ephemeral
+    // yaac-test-* installs don't collide on the global CCEC name.
+    expect(m.metadata.name).toBe(vclusterFallbackCcecName('test-ns'))
+    expect(m.metadata.name).toBe('yaac-vcluster-fallback-redirect-test-ns')
+    expect(m.metadata.labels['yaac.install-namespace']).toBe('test-ns')
+    // EDS-resolves the OUTER proxy (k8sNamespace=test-ns).
     expect(m.spec.backendServices[0]).toMatchObject({ name: 'yaac-proxy', namespace: 'test-ns' })
     const clusters = m.spec.resources.filter((r) => String(r['@type']).endsWith('v3.Cluster'))
     expect(clusters[0].name).toBe(`test-ns/yaac-proxy:${TRANSPARENT_HTTPS_PORT}`)
@@ -884,21 +895,23 @@ describe('inner-redirect builders (yaac-in-yaac projection)', () => {
         egress: Array<{
           toEntities?: string[]
           toEndpoints?: Array<{ matchLabels?: Record<string, string>; matchExpressions?: Array<{ key: string; operator: string; values: string[] }> }>
-          toPorts?: Array<{ ports: Array<{ port: string; protocol: string }>; listener?: { envoyConfig: { name: string }; priority?: number } }>
+          toPorts?: Array<{ ports: Array<{ port: string; protocol: string }>; listener?: { envoyConfig: { kind: string; name: string }; priority?: number } }>
         }>
       }
     }
-    expect(m.metadata.name).toBe(VCLUSTER_FALLBACK_CNP_NAME)
+    expect(m.metadata.name).toBe(VCLUSTER_FALLBACK_REDIRECT_NAME)
     expect(m.metadata.namespace).toBe(VC_NS)
     // ALL synced pods (no inner-proxy exclusion — the inner proxy chains here).
     expect(m.spec.endpointSelector.matchExpressions).toEqual([
       { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [VC_NAME] },
     ])
-    // The 3 world redirects target the fallback CEC at the LOW precedence.
+    // The 3 world redirects target the SHARED cluster-scoped fallback CCEC
+    // (referenced by kind, cross-namespace) at the LOW precedence.
     const listeners = m.spec.egress.flatMap((e) => e.toPorts ?? []).map((p) => p.listener).filter(Boolean)
     expect(listeners).toHaveLength(3)
     for (const l of listeners) {
-      expect(l?.envoyConfig.name).toBe(VCLUSTER_FALLBACK_CEC_NAME)
+      expect(l?.envoyConfig.kind).toBe('CiliumClusterwideEnvoyConfig')
+      expect(l?.envoyConfig.name).toBe(vclusterFallbackCcecName('test-ns'))
       expect(l?.priority).toBe(VCLUSTER_FALLBACK_PRIORITY)
     }
     // The fallback must lose to a normal-priority inner override.

@@ -61,8 +61,9 @@ async function pruneTestContainers(): Promise<void> {
 
 /**
  * Delete leaked per-run test namespaces (`yaac-test-<runId>`) from prior
- * interrupted runs. Cheap best-effort sweep — every error (kubectl
- * missing, cluster unreachable) is swallowed.
+ * interrupted runs, plus the cluster-scoped fallback CCECs they own. Cheap
+ * best-effort sweep — every error (kubectl missing, cluster unreachable) is
+ * swallowed.
  */
 async function cleanupLeakedTestNamespaces(): Promise<void> {
   try {
@@ -73,12 +74,32 @@ async function cleanupLeakedTestNamespaces(): Promise<void> {
       .split('\n')
       .map((line) => line.trim())
       .filter((name) => name.startsWith('namespace/yaac-test-'))
+    if (leaked.length > 0) {
+      await execFileAsync(
+        'kubectl', ['delete', ...leaked, '--ignore-not-found', '--wait=false'],
+        { timeout: 30_000 },
+      )
+    }
+  } catch { /* kubectl or cluster absent — nothing to sweep */ }
+  // The fallback CCEC is cluster-scoped, so it does NOT cascade when its test
+  // namespace is deleted — sweep the ones owned by any `yaac-test-*` install.
+  try {
+    const { stdout } = await execFileAsync('kubectl', [
+      'get', 'ciliumclusterwideenvoyconfig', '-l', 'app=yaac-proxy',
+      '-o', "jsonpath={range .items[*]}{.metadata.name}{'\\t'}{.metadata.labels.yaac\\.install-namespace}{'\\n'}{end}",
+    ], { timeout: 10_000 })
+    const leaked = stdout
+      .split('\n')
+      .map((line) => line.split('\t'))
+      .filter(([, ns]) => ns?.startsWith('yaac-test-'))
+      .map(([name]) => name)
     if (leaked.length === 0) return
     await execFileAsync(
-      'kubectl', ['delete', ...leaked, '--ignore-not-found', '--wait=false'],
+      'kubectl',
+      ['delete', 'ciliumclusterwideenvoyconfig', ...leaked, '--ignore-not-found', '--wait=false'],
       { timeout: 30_000 },
     )
-  } catch { /* kubectl or cluster absent — nothing to sweep */ }
+  } catch { /* CRD absent or cluster unreachable — nothing to sweep */ }
 }
 
 /**

@@ -156,10 +156,13 @@ workload that syncs to the host on its own (Deployment+Service). Only the
   the inner's normal-priority override (projected by the daemon, re-scoped to
   `managed-by`) beats the fallback (50 < 90) and wins, while the inner-proxy pod
   (excluded from the override, matched only by the fallback) chains → outer
-  proxy. Lower number wins. (CNP `listener.envoyConfig` carries no namespace, so
-  the fallback needs its own per-vcluster CEC that EDS-backs the outer proxy
-  cross-namespace.) vcluster-in-vcluster is rejected, so one level — no band
-  arithmetic needed.
+  proxy. Lower number wins. (CNP `listener.envoyConfig` carries no namespace.
+  SUPERSEDED — see plans/distributed-mapping-pine.md: the fallback's listeners
+  now live in a single shared cluster-scoped CCEC the per-vcluster CNP references
+  by kind, instead of a per-vcluster CEC, to stop session churn from regenerating
+  every endpoint. The inner override CEC stays per-vcluster — its upstream is each
+  vcluster's own inner proxy.) vcluster-in-vcluster is rejected, so one level — no
+  band arithmetic needed.
 - **Loop-free + fail-closed.** The inner proxy is excluded from its own override
   and still caught by the default managed-by redirect → outer proxy. Anything
   the override doesn't cover stays under the default redirect. Both layers are
