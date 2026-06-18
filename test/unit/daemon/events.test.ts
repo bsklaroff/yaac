@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
 vi.mock('@/lib/session/list', () => ({
   listActiveSessions: vi.fn().mockResolvedValue({ sessions: [], stale: [] }),
@@ -10,10 +10,12 @@ vi.mock('@/lib/project/list', () => ({
 
 import { EventHub, buildSnapshot, serializeEvent } from '@/daemon/events'
 import type { WsLike } from '@/daemon/events'
+import { listActiveSessions } from '@/lib/session/list'
+import { registerProvisioning, clearAllProvisioningForTests } from '@/daemon/provisioning'
 import type { DaemonSnapshot } from '@/shared/types'
 
 function emptySnapshot(): DaemonSnapshot {
-  return { sessions: [], stale: [], projects: [] }
+  return { sessions: [], stale: [], projects: [], provisioning: [] }
 }
 
 function snapshotWithProject(slug: string): DaemonSnapshot {
@@ -111,10 +113,38 @@ describe('EventHub', () => {
 })
 
 describe('buildSnapshot', () => {
-  it('returns all three state slices', async () => {
+  it('returns all state slices', async () => {
     const snap = await buildSnapshot()
     expect(Array.isArray(snap.sessions)).toBe(true)
     expect(Array.isArray(snap.stale)).toBe(true)
     expect(Array.isArray(snap.projects)).toBe(true)
+    expect(Array.isArray(snap.provisioning)).toBe(true)
+  })
+})
+
+describe('buildSnapshot provisioning', () => {
+  beforeEach(() => { clearAllProvisioningForTests() })
+  afterEach(() => { clearAllProvisioningForTests() })
+
+  it('includes a provisioning entry that has no live session yet', async () => {
+    registerProvisioning({ sessionId: 'prov-1', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    const snap = await buildSnapshot()
+    expect(snap.provisioning.map((e) => e.sessionId)).toEqual(['prov-1'])
+  })
+
+  it('filters out (and reaps) a provisioning entry whose session is now active', async () => {
+    vi.mocked(listActiveSessions).mockResolvedValueOnce({
+      sessions: [{
+        sessionId: 'prov-2', projectSlug: 'p', tool: 'claude',
+        status: 'waiting', createdAt: '2026-01-01 00:00:00', blockedHosts: [],
+      }],
+      stale: [],
+    })
+    registerProvisioning({ sessionId: 'prov-2', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    const snap = await buildSnapshot()
+    expect(snap.provisioning).toEqual([])
+    // Superseded entry was reaped, so a later build (no live session) stays empty.
+    const next = await buildSnapshot()
+    expect(next.provisioning).toEqual([])
   })
 })

@@ -8,34 +8,49 @@ const initial = useUiStore.getState()
 beforeEach(() => { useUiStore.setState(initial, true) })
 
 describe('useProvisionSession', () => {
-  it('shows the creating placeholder, then keeps it (with id) and selects on resolve', async () => {
+  it('adds an optimistic provisioning row with the given id and auto-opens it', () => {
     const { result } = renderHook(() => useProvisionSession())
 
     act(() => {
-      result.current('proj', 'claude', () => Promise.resolve({ sessionId: 'sid-1' }))
+      result.current('proj', 'claude', 'create', 'sid-1', () => Promise.resolve({ sessionId: 'sid-1' }))
     })
-    // Optimistic placeholder appears synchronously.
-    expect(useUiStore.getState().creating).toMatchObject({ projectSlug: 'proj', tool: 'claude' })
 
-    await waitFor(() => {
-      expect(useUiStore.getState().creating?.sessionId).toBe('sid-1')
-    })
-    // Selected so it opens once the snapshot includes it; `creating` is kept
-    // until then (App clears it on hand-off).
+    expect(useUiStore.getState().optimisticProvisioning).toMatchObject([
+      { sessionId: 'sid-1', projectSlug: 'proj', tool: 'claude', kind: 'create', message: 'Starting…' },
+    ])
+    // Auto-open: selected and the project switched so progress shows immediately.
     expect(useUiStore.getState().selectedSessionId).toBe('sid-1')
     expect(useUiStore.getState().activeProjectSlug).toBe('proj')
   })
 
-  it('surfaces an error on the placeholder when the op rejects', async () => {
+  it('streams progress into the optimistic row message', async () => {
     const { result } = renderHook(() => useProvisionSession())
 
     act(() => {
-      result.current('proj', 'codex', () => Promise.reject(new Error('boom')))
+      result.current('proj', 'claude', 'create', 'sid-2', (_sid, onProgress) => {
+        onProgress('Pulling image…')
+        return Promise.resolve({ sessionId: 'sid-2' })
+      })
     })
 
     await waitFor(() => {
-      expect(useUiStore.getState().creating?.error).toBe('boom')
+      const row = useUiStore.getState().optimisticProvisioning.find((e) => e.sessionId === 'sid-2')
+      expect(row?.message).toBe('Pulling image…')
     })
-    expect(useUiStore.getState().selectedSessionId).toBeNull()
+  })
+
+  it('surfaces an error on the optimistic row when the op rejects', async () => {
+    const { result } = renderHook(() => useProvisionSession())
+
+    act(() => {
+      result.current('proj', 'codex', 'restart', 'sid-3', () => Promise.reject(new Error('boom')))
+    })
+
+    await waitFor(() => {
+      const row = useUiStore.getState().optimisticProvisioning.find((e) => e.sessionId === 'sid-3')
+      expect(row?.error).toBe('boom')
+    })
+    // The row was still added and selected even though the op failed.
+    expect(useUiStore.getState().selectedSessionId).toBe('sid-3')
   })
 })

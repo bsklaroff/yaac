@@ -6,11 +6,11 @@ import { BlockedIcon, ChevronIcon, CloseIcon, LoadingIcon, RestartIcon, TOOL_LAB
 import { NewSessionButton } from '@/frontend/components/NewSessionButton'
 import { ProjectActionsMenu } from '@/frontend/components/ProjectActionsMenu'
 import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
-import { deleteSession, restartSession } from '@/frontend/lib/createSession'
+import { deleteSession, dismissProvisioning, restartSession } from '@/frontend/lib/createSession'
 import { getDeletedSessions } from '@/frontend/lib/deletedApi'
 import { useProvisionSession } from '@/frontend/lib/useProvisionSession'
-import { isCreatingInProject, useUiStore, type CreatingSession } from '@/frontend/store'
-import type { DeletedSessionEntry, SessionListEntry } from '@/shared/types'
+import { useUiStore } from '@/frontend/store'
+import type { DeletedSessionEntry, ProvisioningSessionEntry, SessionListEntry } from '@/shared/types'
 
 /** User-facing session groups, in triage order (Waiting first). */
 const GROUPS: { status: SessionListEntry['status']; label: string; defaultOpen: boolean }[] = [
@@ -34,24 +34,19 @@ function relativeAge(createdAt: string): string {
 export function Sidebar({
   projectSlug,
   sessions,
+  provisioning,
   connected,
 }: {
   projectSlug: string | null
   sessions: SessionListEntry[]
+  provisioning: ProvisioningSessionEntry[]
   connected: boolean
 }): JSX.Element {
   // Hide sessions whose delete is in flight (optimistic) until the snapshot
   // drops them, so the empty state keys off what's actually shown.
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
-  const creating = useUiStore((s) => s.creating)
   const shown = sessions.filter((s) => !pendingDeleteIds.includes(s.sessionId))
   const visibleCount = shown.filter((s) => GROUPS.some((g) => g.status === s.status)).length
-
-  // Show a "starting" row the instant create is clicked, until the real
-  // session lands in the snapshot (then App clears `creating`). Skip it if the
-  // real row is already present, to avoid a one-frame duplicate.
-  const showCreating = isCreatingInProject(creating, projectSlug)
-    && !(creating?.sessionId && shown.some((s) => s.sessionId === creating.sessionId))
 
   return (
     <aside className="flex h-full w-64 flex-col text-text">
@@ -67,10 +62,10 @@ export function Sidebar({
 
       <div className="flex-1 overflow-y-auto py-1">
         {!projectSlug && <Empty label="No project selected" />}
-        {projectSlug && visibleCount === 0 && !showCreating && (
+        {projectSlug && visibleCount === 0 && provisioning.length === 0 && (
           <Empty label="No sessions yet — start one with +" />
         )}
-        {showCreating && creating && <CreatingRow creating={creating} />}
+        {provisioning.map((p) => <ProvisioningRow key={p.sessionId} entry={p} />)}
         {GROUPS.map((g) => (
           <SessionGroup
             key={g.status}
@@ -140,7 +135,8 @@ function DeletedGroup({
     setConfirm(null)
     setRestarting((r) => [...r, entry.sessionId])
     removeOptimisticDeleted(entry.sessionId)
-    provision(projectSlug, entry.tool, (onProgress) => restartSession(entry.sessionId, onProgress))
+    provision(projectSlug, entry.tool, 'restart', entry.sessionId,
+      (sid, onProgress) => restartSession(sid, onProgress, { projectSlug, tool: entry.tool }))
   }
 
   return (
@@ -193,24 +189,57 @@ function DeletedGroup({
   )
 }
 
-/** Immediate, non-interactive row for a session that's still provisioning. */
-function CreatingRow({ creating }: { creating: CreatingSession }): JSX.Element {
+/** Selectable row for a session that's still provisioning. Clicking it opens
+ *  the provisioning status in the main pane; a failed one offers a dismiss ×. */
+function ProvisioningRow({ entry }: { entry: ProvisioningSessionEntry }): JSX.Element {
+  const selectedSessionId = useUiStore((s) => s.selectedSessionId)
+  const selectSession = useUiStore((s) => s.selectSession)
+  const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
+
+  const dismiss = (): void => {
+    void dismissProvisioning(entry.sessionId).catch(() => { /* best-effort */ })
+    removeOptimisticProvisioning(entry.sessionId)
+    if (selectedSessionId === entry.sessionId) selectSession(null)
+  }
+
   return (
-    <div className="mx-2 flex flex-col gap-0.5 rounded-lg px-2.5 py-2 text-sm">
-      <span className="flex items-center gap-2">
-        <span className="truncate font-medium text-text-dim">New session</span>
-        <span className="ml-auto shrink-0 text-xs text-text-faint">{TOOL_LABEL[creating.tool]}</span>
-      </span>
-      <span className="flex items-center gap-1.5 text-xs text-text-faint">
-        {creating.error ? (
-          <span className="text-[#d65858]">failed</span>
-        ) : (
-          <>
-            <LoadingIcon size={11} className="animate-spin" />
-            <span className="truncate">{creating.message || 'starting…'}</span>
-          </>
+    <div className="group relative mx-2">
+      <button
+        onClick={() => selectSession(entry.sessionId)}
+        className={clsx(
+          'flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left text-sm transition hover:bg-surface-2/60',
+          selectedSessionId === entry.sessionId && 'bg-surface-2 hover:bg-surface-2',
         )}
-      </span>
+      >
+        <span className="flex items-center gap-2">
+          <span className="truncate font-medium text-text-dim">
+            {entry.kind === 'restart' ? 'Restarting session' : 'New session'}
+          </span>
+          <span className="ml-auto shrink-0 text-xs text-text-faint">{TOOL_LABEL[entry.tool]}</span>
+        </span>
+        <span className="flex items-center gap-1.5 text-xs text-text-faint">
+          {entry.error ? (
+            <span className="text-[#d65858]">failed</span>
+          ) : (
+            <>
+              <LoadingIcon size={11} className="animate-spin" />
+              <span className="truncate">{entry.message || 'starting…'}</span>
+            </>
+          )}
+        </span>
+      </button>
+
+      {entry.error && (
+        <button
+          onClick={dismiss}
+          title="Dismiss"
+          aria-label="Dismiss"
+          className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
+            opacity-0 transition hover:bg-surface-3 hover:text-text group-hover:opacity-100"
+        >
+          <CloseIcon size={14} />
+        </button>
+      )}
     </div>
   )
 }

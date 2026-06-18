@@ -378,6 +378,26 @@ export interface ProjectSummary {
 }
 
 /**
+ * A session that is currently provisioning — a create or restart in flight,
+ * tracked in daemon memory and surfaced in the snapshot so the webapp renders
+ * it as a first-class, selectable sidebar row that survives a reload (with live
+ * progress) until the real session lands or a failure is dismissed.
+ */
+export interface ProvisioningSessionEntry {
+  sessionId: string
+  projectSlug: string
+  tool: AgentTool
+  kind: 'create' | 'restart'
+  /** Latest progress line (e.g. 'Pulling image…'). */
+  message: string
+  /** Set when provisioning failed; the row stays until dismissed. */
+  error?: string
+  /** 'YYYY-MM-DD HH:MM:SS' UTC, derived from when provisioning started — so
+   *  the sidebar can show a relative age for a row that has no pod yet. */
+  createdAt: string
+}
+
+/**
  * Full picture of daemon-owned state the webapp renders. Hydrated from a
  * `snapshot` event on connect and replaced wholesale on every subsequent
  * `snapshot`. Mirrors the union of `GET /session/list` and
@@ -387,6 +407,7 @@ export interface DaemonSnapshot {
   sessions: SessionListEntry[]
   stale: StaleSessionInfo[]
   projects: ProjectSummary[]
+  provisioning: ProvisioningSessionEntry[]
 }
 
 /** Messages the daemon pushes over `/events`. */

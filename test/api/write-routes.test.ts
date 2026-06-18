@@ -44,6 +44,7 @@ import { deleteSession } from '@/lib/session/delete'
 import { restartSession } from '@/lib/session/restart'
 import { addProject } from '@/lib/project/add'
 import { removeProject } from '@/lib/project/remove'
+import { registerProvisioning, listProvisioning, clearAllProvisioningForTests } from '@/daemon/provisioning'
 
 const mockCreateSession = vi.mocked(createSession)
 const mockDeleteSession = vi.mocked(deleteSession)
@@ -85,6 +86,7 @@ describe('write routes', () => {
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
     vi.resetAllMocks()
+    clearAllProvisioningForTests()
   })
 
   afterEach(async () => {
@@ -240,6 +242,45 @@ describe('write routes', () => {
       expect(events).toEqual([
         { type: 'error', error: { code: 'VALIDATION', message: 'no github token' } },
       ])
+    })
+
+    it('threads a client-supplied sessionId into createSession', async () => {
+      mockCreateSession.mockResolvedValue({
+        sessionId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude',
+      })
+      const id = '11111111-1111-4111-8111-111111111111'
+      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const res = await client.session.create.$post({ json: { project: 'demo', sessionId: id } })
+      expect(res.status).toBe(200)
+      await res.text()
+      expect(mockCreateSession).toHaveBeenCalledWith('demo', expect.objectContaining({ sessionId: id }))
+    })
+
+    it('rejects a non-uuid sessionId with VALIDATION', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/session/create', withAuth({
+        method: 'POST',
+        body: JSON.stringify({ project: 'demo', sessionId: 'not-a-uuid' }),
+      }))
+      expect(res.status).toBe(400)
+      const body = await res.json() as { error: { code: string } }
+      expect(body.error.code).toBe('VALIDATION')
+    })
+  })
+
+  describe('POST /session/provisioning/:id/dismiss', () => {
+    it('removes the registry entry and returns 204', async () => {
+      registerProvisioning({ sessionId: 'dz-1', projectSlug: 'demo', tool: 'claude', kind: 'create' })
+      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const res = await client.session.provisioning[':id'].dismiss.$post({ param: { id: 'dz-1' } })
+      expect(res.status).toBe(204)
+      expect(listProvisioning().some((p) => p.sessionId === 'dz-1')).toBe(false)
+    })
+
+    it('is idempotent for an unknown id', async () => {
+      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const res = await client.session.provisioning[':id'].dismiss.$post({ param: { id: 'nope' } })
+      expect(res.status).toBe(204)
     })
   })
 

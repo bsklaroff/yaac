@@ -60,15 +60,24 @@ export async function createSession(
   project: string,
   tool: AgentTool,
   onProgress: (message: string) => void,
+  sessionId?: string,
 ): Promise<CreateSessionResult> {
-  return await streamSessionOp('/session/create', { project, tool }, onProgress) as CreateSessionResult
+  const body = sessionId ? { project, tool, sessionId } : { project, tool }
+  return await streamSessionOp('/session/create', body, onProgress) as CreateSessionResult
 }
 
 export async function restartSession(
   sessionId: string,
   onProgress: (message: string) => void,
+  meta?: { projectSlug?: string; tool?: AgentTool },
 ): Promise<{ sessionId: string }> {
-  return await streamSessionOp('/session/restart', { sessionId }, onProgress) as { sessionId: string }
+  return await streamSessionOp('/session/restart', { sessionId, ...meta }, onProgress) as { sessionId: string }
+}
+
+/** Dismiss a provisioning row (drops the daemon registry entry; used for a
+ *  failed create/restart). Idempotent server-side. */
+export async function dismissProvisioning(sessionId: string): Promise<void> {
+  await api.post(`/session/provisioning/${encodeURIComponent(sessionId)}/dismiss`)
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {

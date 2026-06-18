@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { isLayoutNode, type LayoutNode } from '@/frontend/lib/layout'
-import type { AgentTool, DeletedSessionEntry } from '@/shared/types'
+import type { DeletedSessionEntry, ProvisioningSessionEntry } from '@/shared/types'
 
 const LAYOUTS_LS_KEY = 'yaac.layouts.v1'
 const VIEWMODE_LS_KEY = 'yaac.viewmode.v1'
@@ -57,29 +57,23 @@ export function persistLayouts(layouts: Record<string, LayoutNode | null>): void
   }
 }
 
-/** A session being provisioned — shown as an immediate sidebar row (in a
- *  "starting" state) and a main-pane placeholder. Persists from the moment
- *  create is clicked until the real session lands in the snapshot. */
-export interface CreatingSession {
-  projectSlug: string
-  tool: AgentTool
-  message: string
-  /** Set once provisioning resolves; we keep showing the placeholder until
-   *  the snapshot includes this id, then `creating` is cleared (seamless
-   *  hand-off to the real, snapshot-driven row + terminal). */
-  sessionId?: string
-  error?: string
-}
-
-/** Is a session currently provisioning *in this project*? The `creating`
- *  placeholder is project-scoped — a create in one project must never surface
- *  in another project's sidebar or main pane (it's a full-bleed overlay, so an
- *  unscoped check covers whatever session you're viewing). */
-export function isCreatingInProject(
-  creating: CreatingSession | null,
-  projectSlug: string | null,
-): boolean {
-  return !!creating && creating.projectSlug === projectSlug
+/**
+ * Merge daemon-snapshot provisioning rows with local optimistic ones, deduped
+ * by sessionId (the snapshot wins — it carries the live message/error), sorted
+ * by createdAt then id for a stable sidebar order. The optimistic copy only
+ * fills the gap between clicking create and the first snapshot frame; once the
+ * snapshot knows the id, App prunes it.
+ */
+export function mergeProvisioning(
+  snapshot: ProvisioningSessionEntry[],
+  optimistic: ProvisioningSessionEntry[],
+): ProvisioningSessionEntry[] {
+  const byId = new Map<string, ProvisioningSessionEntry>()
+  for (const e of optimistic) byId.set(e.sessionId, e)
+  for (const e of snapshot) byId.set(e.sessionId, e)
+  return [...byId.values()].sort(
+    (a, b) => a.createdAt.localeCompare(b.createdAt) || a.sessionId.localeCompare(b.sessionId),
+  )
 }
 
 /** A terminal pane identity — a /pty/attach target:
@@ -105,15 +99,23 @@ interface UiState {
   viewMode: ViewMode
   /** Per-session active terminal in tabs mode. */
   activeTabs: Record<string, string>
-  /** A session being provisioned (placeholder shown until it's ready). */
-  creating: CreatingSession | null
+  /** Locally-initiated provisioning rows, shown the instant create/restart is
+   *  clicked. The daemon snapshot's `provisioning[]` is the source of truth;
+   *  these only bridge the gap until the first snapshot frame carries the id,
+   *  then they're pruned. */
+  optimisticProvisioning: ProvisioningSessionEntry[]
   /** Sessions whose delete was confirmed — hidden optimistically until the
    *  daemon's (detached) cleanup completes and the snapshot drops them. */
   pendingDeleteIds: string[]
   /** Just-deleted sessions (that had history) shown optimistically in the
    *  Deleted group until the daemon's list-deleted catches up. */
   optimisticDeleted: DeletedSessionEntry[]
-  setCreating: (c: CreatingSession | null) => void
+  /** Add a locally-initiated provisioning row (dedup by id). */
+  addOptimisticProvisioning: (entry: ProvisioningSessionEntry) => void
+  /** Patch a tracked optimistic row's message or error (no-op if absent). */
+  updateOptimisticProvisioning: (sessionId: string, patch: { message?: string; error?: string }) => void
+  /** Drop an optimistic row — once the snapshot knows the id, or on dismiss. */
+  removeOptimisticProvisioning: (sessionId: string) => void
   setActiveProject: (slug: string | null) => void
   selectSession: (id: string | null) => void
   /** Jump to a specific session, switching the active project to match. */
@@ -145,10 +147,27 @@ export const useUiStore = create<UiState>((set) => ({
   sidebarOpen: true,
   viewMode: loadViewMode(),
   activeTabs: {},
-  creating: null,
+  optimisticProvisioning: [],
   pendingDeleteIds: [],
   optimisticDeleted: [],
-  setCreating: (c) => set({ creating: c }),
+  addOptimisticProvisioning: (entry) => set((s) => (
+    s.optimisticProvisioning.some((e) => e.sessionId === entry.sessionId)
+      ? s
+      : { optimisticProvisioning: [...s.optimisticProvisioning, entry] }
+  )),
+  updateOptimisticProvisioning: (sessionId, patch) => set((s) => (
+    s.optimisticProvisioning.some((e) => e.sessionId === sessionId)
+      ? {
+          optimisticProvisioning: s.optimisticProvisioning.map((e) =>
+            e.sessionId === sessionId ? { ...e, ...patch } : e),
+        }
+      : s
+  )),
+  removeOptimisticProvisioning: (sessionId) => set((s) => (
+    s.optimisticProvisioning.some((e) => e.sessionId === sessionId)
+      ? { optimisticProvisioning: s.optimisticProvisioning.filter((e) => e.sessionId !== sessionId) }
+      : s
+  )),
   // Switching projects clears the open session — the sidebar now shows a
   // different project's sessions, so the old selection no longer belongs.
   setActiveProject: (slug) => set({ activeProjectSlug: slug, selectedSessionId: null }),

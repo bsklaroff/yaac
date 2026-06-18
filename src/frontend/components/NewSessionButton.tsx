@@ -11,15 +11,17 @@ const ITEM = 'flex w-full cursor-default items-center rounded-md px-2 py-1.5 tex
 
 /**
  * "+ New session" for the active project: a dropdown of tools. Picking one
- * fires the create and the menu closes immediately — provisioning progress
- * streams into the main pane (via the store's `creating` state). The new
- * session is selected on success (it also arrives live via /events).
+ * fires the create and the menu closes immediately — a provisioning row appears
+ * in the sidebar and is auto-opened so progress streams into the main pane. The
+ * id is generated up front so the row is selectable and survives a reload.
  */
 export function NewSessionButton({ projectSlug }: { projectSlug: string }): JSX.Element {
   const provision = useProvisionSession()
 
   const create = (tool: AgentTool): void => {
-    provision(projectSlug, tool, (onProgress) => createSession(projectSlug, tool, onProgress))
+    const sessionId = crypto.randomUUID()
+    provision(projectSlug, tool, 'create', sessionId,
+      (sid, onProgress) => createSession(projectSlug, tool, onProgress, sid))
   }
 
   return (

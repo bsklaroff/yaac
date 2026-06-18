@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type JSX, type PointerEvent as ReactPointe
 import clsx from 'clsx'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Menu } from '@base-ui/react/menu'
-import { isCreatingInProject, useUiStore } from '@/frontend/store'
+import { useUiStore } from '@/frontend/store'
 import { SessionTerminal } from '@/frontend/components/SessionTerminal'
 import { SessionActionsMenu } from '@/frontend/components/SessionActionsMenu'
 import { CreatingPlaceholder } from '@/frontend/components/CreatingPlaceholder'
@@ -24,7 +24,7 @@ import {
   type PaneRect,
   type SplitDir,
 } from '@/frontend/lib/layout'
-import type { DaemonSnapshot, SessionTerminalEntry } from '@/shared/types'
+import type { DaemonSnapshot, ProvisioningSessionEntry, SessionTerminalEntry } from '@/shared/types'
 
 /** Gap between pane cards (the dividers live in it). */
 const GAP = 8
@@ -72,7 +72,13 @@ function paneName(target: string, terminals: SessionTerminalEntry[] | undefined)
   return entry?.name ?? 'window'
 }
 
-export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined }): JSX.Element {
+export function SessionView({
+  snapshot,
+  provisioning,
+}: {
+  snapshot: DaemonSnapshot | undefined
+  provisioning: ProvisioningSessionEntry[]
+}): JSX.Element {
   const selectedSessionId = useUiStore((s) => s.selectedSessionId)
   const terminalNonces = useUiStore((s) => s.terminalNonces)
   const layouts = useUiStore((s) => s.layouts)
@@ -82,19 +88,15 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
   const setViewMode = useUiStore((s) => s.setViewMode)
   const activeTabs = useUiStore((s) => s.activeTabs)
   const setActiveTab = useUiStore((s) => s.setActiveTab)
-  const creating = useUiStore((s) => s.creating)
-  const activeProjectSlug = useUiStore((s) => s.activeProjectSlug)
   const queryClient = useQueryClient()
   const sessions = snapshot?.sessions ?? []
   const session = sessions.find((s) => s.sessionId === selectedSessionId)
   const sid = session?.sessionId ?? null
 
-  // The provisioning placeholder owns the main pane only within its own
-  // project, and only when no real session is selected to take precedence.
-  // Otherwise a create in one project would overlay whatever session you're
-  // viewing (the placeholder is a full-bleed z-30 cover). The new session's id
-  // isn't in the snapshot yet, so `!session` also covers the hand-off window.
-  const creatingHere = isCreatingInProject(creating, activeProjectSlug) && !session ? creating : null
+  // The provisioning placeholder owns the main pane only when its row is the
+  // selected one (and no real session of that id exists yet) — so it never
+  // hijacks a session you're viewing; you click the row to see its status.
+  const creatingHere = session ? null : provisioning.find((p) => p.sessionId === selectedSessionId) ?? null
 
   // The session's workspace tree: missing key = the default single agent
   // pane; null = explicitly emptied.
@@ -306,7 +308,9 @@ export function SessionView({ snapshot }: { snapshot: DaemonSnapshot | undefined
           >
             <SidebarIcon size={14} />
           </button>
-          <span className="min-w-0 flex-1 truncate font-medium text-text-dim">New session</span>
+          <span className="min-w-0 flex-1 truncate font-medium text-text-dim">
+            {creatingHere.kind === 'restart' ? 'Restarting session' : 'New session'}
+          </span>
           <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[creatingHere.tool]}</span>
         </header>
       ) : session ? (

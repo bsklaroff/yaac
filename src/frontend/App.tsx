@@ -3,7 +3,7 @@ import { api, ApiError } from './lib/apiClient'
 import { readBootstrapCode, postBootstrap, stripBootstrapFromUrl } from './lib/bootstrap'
 import { useEvents } from './lib/useEvents'
 import { useSnapshot } from './lib/useSnapshot'
-import { isCreatingInProject, useUiStore } from './store'
+import { mergeProvisioning, useUiStore } from './store'
 import { ProjectRail } from './components/ProjectRail'
 import { Sidebar } from './components/Sidebar'
 import { SessionView } from './components/SessionView'
@@ -61,14 +61,16 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
   const setActiveProject = useUiStore((s) => s.setActiveProject)
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
   const endDelete = useUiStore((s) => s.endDelete)
-  const creating = useUiStore((s) => s.creating)
-  const setCreating = useUiStore((s) => s.setCreating)
+  const optimisticProvisioning = useUiStore((s) => s.optimisticProvisioning)
+  const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
   const selectedSessionId = useUiStore((s) => s.selectedSessionId)
   const selectSession = useUiStore((s) => s.selectSession)
   const sidebarOpen = useUiStore((s) => s.sidebarOpen)
 
   const projects = snapshot?.projects ?? []
   const sessions = snapshot?.sessions ?? []
+  // Daemon-tracked provisioning rows + local optimistic ones (snapshot wins).
+  const provisioning = mergeProvisioning(snapshot?.provisioning ?? [], optimisticProvisioning)
 
   // Default the rail selection to the first project once projects arrive.
   useEffect(() => {
@@ -83,29 +85,33 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
     for (const id of pendingDeleteIds) if (!live.has(id)) endDelete(id)
   }, [sessions, pendingDeleteIds, endDelete])
 
-  // Once the provisioned session shows up in the snapshot, hand off from the
-  // optimistic "starting" placeholder to the real, snapshot-driven row.
+  // Once the daemon knows a provisioning id (as a real session or its own
+  // provisioning row), drop the local optimistic copy — the snapshot is the
+  // source of truth from here, carrying live progress and reload-survival.
   useEffect(() => {
-    if (creating?.sessionId && sessions.some((s) => s.sessionId === creating.sessionId)) {
-      setCreating(null)
-    }
-  }, [creating, sessions, setCreating])
+    const known = new Set<string>([
+      ...sessions.map((s) => s.sessionId),
+      ...(snapshot?.provisioning ?? []).map((p) => p.sessionId),
+    ])
+    for (const e of optimisticProvisioning) if (known.has(e.sessionId)) removeOptimisticProvisioning(e.sessionId)
+  }, [sessions, snapshot, optimisticProvisioning, removeOptimisticProvisioning])
 
   const scoped = sessions.filter((s) => s.projectSlug === activeProjectSlug)
+  const scopedProvisioning = provisioning.filter((p) => p.projectSlug === activeProjectSlug)
 
-  // Auto-select: never show an empty pane when the project has sessions —
-  // pick the first waiting one (else the first visible). Skipped only while a
-  // create is provisioning *in this project* (its placeholder owns the pane
-  // and the new id isn't in the snapshot yet); a create elsewhere must not
-  // block selecting a session in the project we're actually viewing.
+  // Auto-select: never show an empty pane when the project has sessions — pick
+  // the first waiting one (else the first visible). But never override a
+  // selected provisioning row (it's not in `scoped`, so it would otherwise be
+  // stolen) — auto-open on create relies on the selection sticking.
   useEffect(() => {
-    if (!activeProjectSlug || isCreatingInProject(creating, activeProjectSlug)) return
+    if (!activeProjectSlug) return
+    if (selectedSessionId && scopedProvisioning.some((p) => p.sessionId === selectedSessionId)) return
     const visible = scoped.filter((s) => !pendingDeleteIds.includes(s.sessionId))
     if (visible.length === 0) return
     if (selectedSessionId && visible.some((s) => s.sessionId === selectedSessionId)) return
     const pick = visible.find((s) => s.status === 'waiting') ?? visible[0]
     selectSession(pick.sessionId)
-  }, [activeProjectSlug, creating, scoped, selectedSessionId, pendingDeleteIds, selectSession])
+  }, [activeProjectSlug, scopedProvisioning, scoped, selectedSessionId, pendingDeleteIds, selectSession])
   // Per-project count of sessions awaiting input → the rail attention badge.
   const attention: Record<string, number> = {}
   for (const s of sessions) {
@@ -122,9 +128,16 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
         attentionBySlug={attention}
         onSelect={setActiveProject}
       />
-      {sidebarOpen && <Sidebar projectSlug={activeProjectSlug} sessions={scoped} connected={connected} />}
+      {sidebarOpen && (
+        <Sidebar
+          projectSlug={activeProjectSlug}
+          sessions={scoped}
+          provisioning={scopedProvisioning}
+          connected={connected}
+        />
+      )}
       <div className="min-w-0 flex-1 p-2">
-        <SessionView snapshot={snapshot} />
+        <SessionView snapshot={snapshot} provisioning={scopedProvisioning} />
       </div>
     </div>
   )

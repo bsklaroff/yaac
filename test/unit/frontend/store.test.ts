@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { isCreatingInProject, loadViewMode, useUiStore, type CreatingSession } from '@/frontend/store'
+import { loadViewMode, mergeProvisioning, useUiStore } from '@/frontend/store'
+import type { ProvisioningSessionEntry } from '@/shared/types'
 
 const initial = useUiStore.getState()
 
@@ -83,22 +84,57 @@ describe('selection + project switching', () => {
   })
 })
 
-describe('isCreatingInProject', () => {
-  const creating = (projectSlug: string): CreatingSession => ({
-    projectSlug, tool: 'claude', message: 'Starting…',
+describe('optimistic provisioning tracking', () => {
+  const entry = (sessionId: string, over: Partial<ProvisioningSessionEntry> = {}): ProvisioningSessionEntry => ({
+    sessionId, projectSlug: 'p', tool: 'claude', kind: 'create', message: 'Starting…',
+    createdAt: '2026-01-01 00:00:00', ...over,
   })
 
-  it('is false when nothing is provisioning', () => {
-    expect(isCreatingInProject(null, 'proj')).toBe(false)
+  it('addOptimisticProvisioning appends, with no duplicates', () => {
+    useUiStore.getState().addOptimisticProvisioning(entry('a'))
+    useUiStore.getState().addOptimisticProvisioning(entry('b'))
+    useUiStore.getState().addOptimisticProvisioning(entry('a'))
+    expect(useUiStore.getState().optimisticProvisioning.map((e) => e.sessionId)).toEqual(['a', 'b'])
   })
 
-  it('matches only the project the create belongs to', () => {
-    expect(isCreatingInProject(creating('proj'), 'proj')).toBe(true)
-    expect(isCreatingInProject(creating('proj'), 'other')).toBe(false)
+  it('updateOptimisticProvisioning patches message/error and no-ops for unknown ids', () => {
+    useUiStore.getState().addOptimisticProvisioning(entry('a'))
+    useUiStore.getState().updateOptimisticProvisioning('a', { message: 'Pulling…' })
+    expect(useUiStore.getState().optimisticProvisioning[0].message).toBe('Pulling…')
+    useUiStore.getState().updateOptimisticProvisioning('a', { error: 'boom' })
+    expect(useUiStore.getState().optimisticProvisioning[0].error).toBe('boom')
+    useUiStore.getState().updateOptimisticProvisioning('missing', { message: 'x' })
+    expect(useUiStore.getState().optimisticProvisioning).toHaveLength(1)
   })
 
-  it('is false for a null active project', () => {
-    expect(isCreatingInProject(creating('proj'), null)).toBe(false)
+  it('removeOptimisticProvisioning drops a tracked id and no-ops otherwise', () => {
+    useUiStore.getState().addOptimisticProvisioning(entry('a'))
+    useUiStore.getState().addOptimisticProvisioning(entry('b'))
+    useUiStore.getState().removeOptimisticProvisioning('a')
+    expect(useUiStore.getState().optimisticProvisioning.map((e) => e.sessionId)).toEqual(['b'])
+    useUiStore.getState().removeOptimisticProvisioning('missing')
+    expect(useUiStore.getState().optimisticProvisioning.map((e) => e.sessionId)).toEqual(['b'])
+  })
+})
+
+describe('mergeProvisioning', () => {
+  const e = (sessionId: string, over: Partial<ProvisioningSessionEntry> = {}): ProvisioningSessionEntry => ({
+    sessionId, projectSlug: 'p', tool: 'claude', kind: 'create', message: 'm',
+    createdAt: '2026-01-01 00:00:00', ...over,
+  })
+
+  it('dedupes by id with the snapshot row winning', () => {
+    const merged = mergeProvisioning([e('a', { message: 'live' })], [e('a', { message: 'optim' }), e('b')])
+    expect(merged.find((x) => x.sessionId === 'a')?.message).toBe('live')
+    expect(merged.map((x) => x.sessionId)).toEqual(['a', 'b'])
+  })
+
+  it('sorts by createdAt then id', () => {
+    const merged = mergeProvisioning([], [
+      e('b', { createdAt: '2026-01-01 00:00:02' }),
+      e('a', { createdAt: '2026-01-01 00:00:01' }),
+    ])
+    expect(merged.map((x) => x.sessionId)).toEqual(['a', 'b'])
   })
 })
 
