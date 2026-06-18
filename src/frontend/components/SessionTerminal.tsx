@@ -2,6 +2,10 @@ import { useEffect, useRef, type JSX } from 'react'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
+import { clipboardKeyAction } from '@/frontend/lib/clipboard'
+
+// iPadOS reports as "Macintosh" in modern Safari; both want the ⌘ bindings.
+const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent)
 
 /**
  * One embedded terminal attached to a session's tmux via the daemon's
@@ -27,10 +31,45 @@ export function SessionTerminal({
       fontSize: 13,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
       cursorBlink: true,
+      // tmux runs with `mouse on`, so a plain drag is forwarded to tmux as a
+      // mouse event rather than selecting text. xterm only does a local
+      // selection when "forced" with a modifier: Shift+drag on Linux/Windows
+      // (built in), or Option+drag on macOS — but only when this is enabled.
+      macOptionClickForcesSelection: true,
       // Matches --color-bg: the terminal sits in its own dark rounded block
       // inset within the surface card.
-      theme: { background: '#0b0b0d', foreground: '#e7e7ea' },
+      theme: {
+        background: '#0b0b0d',
+        foreground: '#e7e7ea',
+        // A clearly visible highlight for mouse selections to copy from.
+        selectionBackground: '#3a3d4d',
+      },
     })
+
+    // Copy/paste. xterm never copies a selection on its own, so wire the
+    // platform-standard bindings: ⌘C/⌘V on mac, Ctrl+Shift+C/V elsewhere.
+    term.attachCustomKeyEventHandler((e: KeyboardEvent): boolean => {
+      if (e.type !== 'keydown') return true
+      const action = clipboardKeyAction(e, IS_MAC)
+      if (action === 'copy') {
+        // preventDefault stops the browser's own copy (which would clobber
+        // our clipboard write with the hidden textarea's empty selection)
+        // and Chrome's Ctrl+Shift+C devtools shortcut.
+        e.preventDefault()
+        const sel = term.getSelection()
+        if (sel) void navigator.clipboard?.writeText(sel)
+        return false
+      }
+      if (action === 'paste') {
+        // Returning false (without preventDefault) keeps xterm from emitting
+        // the control byte while still letting the browser fire its native
+        // paste event, which xterm's textarea handler turns into a properly
+        // bracketed paste — no clipboard-read permission needed.
+        return false
+      }
+      return true
+    })
+
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(el)
