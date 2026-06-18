@@ -538,6 +538,16 @@ describe('createSession', () => {
     expect(respawn).toContain('codex --yolo')
   })
 
+  it('configures tmux for truecolor (RGB) passthrough to the attached terminal', async () => {
+    await createSession('demo', { tool: 'claude', sessionId: 'abcd1234' })
+
+    const cmds = mockContainerExec.mock.calls.map((args) => args[1])
+    // The `*` glob in the feature value stays single-quoted so the host
+    // shell in containerExec passes it literally instead of expanding it.
+    expect(cmds.some((c) => c.includes("set-option -as terminal-features ',*:RGB'"))).toBe(true)
+    expect(cmds.some((c) => c.includes('set-option -g default-terminal tmux-256color'))).toBe(true)
+  })
+
   it('rejects an init window name that collides with the agent tool window', async () => {
     vi.mocked(resolveProjectConfig).mockResolvedValue({
       // The config parser normally rejects 'claude' as reserved, but the

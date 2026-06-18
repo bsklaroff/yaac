@@ -536,6 +536,17 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   await containerExec(jobName, `${TMUX} set-option -g bell-action any`)
   await containerExec(jobName, `${TMUX} set-option -g visual-bell off`)
   await containerExec(jobName, `${TMUX} set-option -g allow-passthrough on`)
+  // Advertise 24-bit (truecolor) support so tmux forwards RGB escape
+  // sequences to the attached terminal — the embedded xterm.js pane and the
+  // CLI's host emulator are both truecolor-capable — instead of quantizing
+  // them down to the 256-color palette. The quantization is what made
+  // `git diff` unreadable: delta (and other tools) emit subtle 24-bit diff
+  // backgrounds, and squashing them onto the nearest 256 cube color turns
+  // them into saturated blocks that swallow dim syntax tokens like comments.
+  // The `*` glob in the value must stay single-quoted so the host shell in
+  // containerExec doesn't expand it.
+  await containerExec(jobName, `${TMUX} set-option -g default-terminal tmux-256color`)
+  await containerExec(jobName, `${TMUX} set-option -as terminal-features ',*:RGB'`)
   await containerExec(jobName, `${TMUX} set-option -t yaac status-right-length 80`)
   const statusRight = buildStatusRight(projectSlug, sessionId, forwardedPorts)
   await containerExec(jobName, `${TMUX} set-option -t yaac status-right '${shellEscape(statusRight)}'`)
