@@ -22,6 +22,7 @@ import {
   removeLock,
   type DaemonLock,
 } from '@/shared/lock'
+import { resolveDaemonPort, bindWithAutoIncrement } from '@/shared/daemon-port'
 import { ensureDataDir } from '@/lib/project/paths'
 import { daemonLogPath, webSessionsPath } from '@/shared/paths'
 import { startBackgroundLoop } from '@/daemon/background-loop'
@@ -79,13 +80,41 @@ async function preflightHostTor(): Promise<void> {
   })
 }
 
+// `FetchCallback` isn't re-exported from the package entry, so derive the
+// fetch handler's type straight from serve()'s options.
+type ServeFetch = Parameters<typeof serve>[0]['fetch']
+
+/**
+ * Bind the daemon's HTTP server on 127.0.0.1, preferring `startPort` and
+ * auto-incrementing past any in-use port to the next free one. The actual
+ * bound port is returned (and recorded in the lock file), so `yaac open` and
+ * the dev-server proxy follow the daemon wherever it lands. `startPort` 0
+ * asks the OS for an ephemeral port.
+ */
+function bindDaemonServer(
+  fetch: ServeFetch,
+  startPort: number,
+): Promise<{ server: ServerType; port: number }> {
+  return bindWithAutoIncrement(startPort, (port) =>
+    new Promise<{ server: ServerType; port: number }>((resolve, reject) => {
+      const s = serve({ fetch, port, hostname: '127.0.0.1' }, (info) => {
+        resolve({ server: s, port: info.port })
+      })
+      s.once('error', reject)
+    }),
+  )
+}
+
 /**
  * Entry point for `yaac daemon run` — the foreground HTTP server.
  *
  * - If another daemon is already live, print its handshake and exit 0
  *   (idempotent).
- * - Otherwise bind 127.0.0.1:<port-or-ephemeral>, write the lock, serve
- *   until SIGTERM / SIGINT, then unlink the lock and exit.
+ * - Otherwise bind 127.0.0.1:<port> (resolveDaemonPort: `--port`, else
+ *   YAAC_DAEMON_PORT, else DEFAULT_DAEMON_PORT), write the lock, serve until
+ *   SIGTERM / SIGINT, then unlink the lock and exit. If the preferred port is
+ *   already in use it auto-increments to the next free one; the actual bound
+ *   port is recorded in the lock.
  */
 export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
   await preflightHostTor()
@@ -189,14 +218,11 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     }
   }))
 
-  const { server, port } = await new Promise<{ server: ServerType; port: number }>(
-    (resolve, reject) => {
-      const s = serve({ fetch: app.fetch, port: opts.port ?? 0, hostname: '127.0.0.1' }, (info) => {
-        resolve({ server: s, port: info.port })
-      })
-      s.once('error', reject)
-    },
-  )
+  const startPort = resolveDaemonPort(opts.port)
+  const { server, port } = await bindDaemonServer(app.fetch, startPort)
+  if (startPort !== 0 && port !== startPort) {
+    daemonLog(`[daemon] preferred port ${startPort} in use; bound ${port} instead`)
+  }
   portRef.current = port
   nodeWs.injectWebSocket(server)
 

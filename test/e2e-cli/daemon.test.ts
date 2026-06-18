@@ -9,6 +9,7 @@ import {
   type SpawnedDaemon,
 } from '@test/helpers/cli'
 import { readLock, daemonLockPath } from '@/shared/lock'
+import { MAX_PORT_PROBES } from '@/shared/daemon-port'
 import { daemonLogPath } from '@/shared/paths'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
@@ -84,6 +85,33 @@ describe('yaac daemon lifecycle (real CLI + real daemon)', () => {
     expect(lockNow?.port).toBe(firstPort)
   })
 
+  it('`daemon run --port <N>` prefers the requested port over the env default', async () => {
+    // A port above the env default (YAAC_DAEMON_PORT) proves --port wins: were
+    // it ignored, the daemon would land on the lower env port. Auto-increment
+    // only nudges it higher, so the bound port stays in [wanted, wanted+probes).
+    const wanted = testEnv.daemonPort + 1
+    const child = spawn(process.execPath, [
+      path.resolve('node_modules/tsx/dist/cli.mjs'),
+      path.resolve('src/cli.ts'),
+      'daemon', 'run', '--port', String(wanted),
+    ], { env: testEnv.env, stdio: ['ignore', 'ignore', 'pipe'] })
+    try {
+      const deadline = Date.now() + 5000
+      let lock = await readLock()
+      while (!lock && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 100))
+        lock = await readLock()
+      }
+      expect(lock?.port).toBeGreaterThanOrEqual(wanted)
+      expect(lock!.port).toBeLessThan(wanted + MAX_PORT_PROBES)
+      const res = await fetch(`http://127.0.0.1:${lock!.port}/health`)
+      expect(res.status).toBe(200)
+    } finally {
+      child.kill('SIGTERM')
+      await new Promise<void>((resolve) => child.once('exit', () => resolve()))
+    }
+  })
+
   it('writes the lock at the resolved daemonLockPath()', async () => {
     daemon = await spawnYaacDaemon(testEnv.env)
     expect(daemonLockPath()).toBe(path.join(testEnv.dataDir, '.daemon.lock'))
@@ -110,6 +138,11 @@ describe('yaac daemon start / stop / restart (real CLI)', () => {
     expect(exitCode).toBe(0)
     const lock = await readLock()
     expect(lock).not.toBeNull()
+    // No --port was given, so the daemon prefers the fixed default (here the
+    // test env's YAAC_DAEMON_PORT), auto-incrementing only if it's busy —
+    // never an OS-assigned ephemeral port well outside that range.
+    expect(lock!.port).toBeGreaterThanOrEqual(testEnv.daemonPort)
+    expect(lock!.port).toBeLessThan(testEnv.daemonPort + MAX_PORT_PROBES)
     const res = await fetch(`http://127.0.0.1:${lock!.port}/health`)
     expect(res.status).toBe(200)
   })

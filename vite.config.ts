@@ -4,13 +4,16 @@ import { readFileSync } from 'node:fs'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { DEFAULT_DAEMON_PORT } from './src/shared/daemon-port'
 
 /**
- * The daemon binds an ephemeral port and records it in the lock file.
- * The dev server proxies API + WS traffic there, so we read the port at
- * startup. Override with YAAC_DAEMON_PORT, or YAAC_DATA_DIR to relocate
- * the lock. If no daemon is running yet, fall back to a placeholder and
- * warn — start the daemon, then restart `pnpm frontend:dev`.
+ * The daemon prefers DEFAULT_DAEMON_PORT (or its --port / YAAC_DAEMON_PORT
+ * override), incrementing to the next free port if it's busy, and records the
+ * actual port in the lock file. The dev server proxies API + WS traffic
+ * there, so we read the port at startup. Override with YAAC_DAEMON_PORT, or
+ * YAAC_DATA_DIR to relocate the lock. If no daemon is running yet, fall back
+ * to the default port and warn — start the daemon, then restart
+ * `pnpm frontend:dev`.
  */
 function resolveDaemonPort(): number {
   const fromEnv = process.env.YAAC_DAEMON_PORT
@@ -25,10 +28,10 @@ function resolveDaemonPort(): number {
     // fall through to the warning below
   }
   console.warn(
-    `[vite] no daemon lock at ${lockPath}; proxying to :8787. `
+    `[vite] no daemon lock at ${lockPath}; proxying to :${DEFAULT_DAEMON_PORT}. `
     + 'Start it with `yaac daemon start`, then restart the dev server.',
   )
-  return 8787
+  return DEFAULT_DAEMON_PORT
 }
 
 const daemonPort = resolveDaemonPort()

@@ -22,6 +22,7 @@ import { configEditDockerfile } from '@/commands/config-edit-dockerfile'
 import { configEditUserDockerfile } from '@/commands/config-edit-user-dockerfile'
 import { authFake, FAKE_AUTH_KINDS } from '@/commands/auth-fake'
 import { runDaemon, startDaemon, stopDaemon, restartDaemon, daemonLogs, openWebapp } from '@/daemon/cli'
+import { DEFAULT_DAEMON_PORT } from '@/shared/daemon-port'
 import { getDefaultTool } from '@/lib/project/preferences'
 import type { AgentTool } from '@/shared/types'
 import type { SessionMonitorOptions } from '@/commands/session-monitor'
@@ -75,7 +76,7 @@ const daemon = program
 daemon
   .command('run')
   .description('Run the daemon in the foreground (used internally by `start`)')
-  .option('-p, --port <port>', 'Port to bind on 127.0.0.1 (default: ephemeral)', (v) => Number.parseInt(v, 10))
+  .option('-p, --port <port>', `Preferred port on 127.0.0.1 (default: ${DEFAULT_DAEMON_PORT}; increments if in use)`, (v) => Number.parseInt(v, 10))
   .action(async (options: { port?: number }) => {
     await runDaemon({ port: options.port })
   })

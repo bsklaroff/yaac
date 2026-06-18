@@ -21,6 +21,15 @@ const ENTRY = path.resolve(__dirname, '..', '..', 'src', 'cli.ts')
  */
 const DAEMON_LOCK_FILE = path.join(os.tmpdir(), 'yaac-test-daemon-mutex.lock')
 
+/**
+ * Base for the per-worker daemon port set via `YAAC_DAEMON_PORT`. Chosen well
+ * clear of the real default (DEFAULT_DAEMON_PORT = 8787) so the fixed-port
+ * `daemon start`/`restart` suites never collide with a developer's own daemon
+ * on 8787. `spawnYaacDaemon` passes `--port 0` and ignores this; only suites
+ * that bind the default port (no `--port`) observe it.
+ */
+const TEST_DAEMON_PORT_BASE = 18800
+
 // Process-reentrant: if this worker already owns the file lock, a
 // nested acquire just bumps a refcount. The file lock is only released
 // when the refcount drops back to zero. Prevents a file-level mutex
@@ -86,6 +95,8 @@ export interface YaacTestEnv {
   scratchDir: string
   dataDir: string
   gitConfigPath: string
+  /** Port the daemon binds when started without `--port` (via YAAC_DAEMON_PORT). */
+  daemonPort: number
   env: NodeJS.ProcessEnv
   cleanup: () => Promise<void>
 }
@@ -115,10 +126,17 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
   // namespace as the daemon subprocess.
   process.env.YAAC_K8S_NAMESPACE = TEST_NAMESPACE
 
+  // Per-worker default port so a fixed-port `daemon start`/`restart` daemon
+  // lands clear of 8787 — both another worker's daemon and any real daemon
+  // a developer is running locally.
+  const workerId = Number.parseInt(process.env.VITEST_WORKER_ID ?? '1', 10)
+  const daemonPort = TEST_DAEMON_PORT_BASE + (Number.isNaN(workerId) ? 0 : workerId)
+
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     YAAC_DATA_DIR: dataDir,
     GIT_CONFIG_GLOBAL: gitConfigPath,
+    YAAC_DAEMON_PORT: String(daemonPort),
     YAAC_BUILD_ID: 'test-build-id',
     YAAC_IMAGE_PREFIX: 'yaac-test',
     YAAC_PROXY_IMAGE: 'yaac-test-proxy',
@@ -132,7 +150,7 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
     await fs.rm(scratchDir, { recursive: true, force: true })
   }
 
-  return { scratchDir, dataDir, gitConfigPath, env, cleanup }
+  return { scratchDir, dataDir, gitConfigPath, daemonPort, env, cleanup }
 }
 
 export interface SpawnedDaemon {
