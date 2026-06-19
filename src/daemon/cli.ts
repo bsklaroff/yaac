@@ -135,10 +135,6 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
   }
 
   const secret = crypto.randomBytes(32).toString('hex')
-  // Port isn't known until serve() binds, but the Host-header middleware
-  // (built into the app now) needs it. Bind it late through a ref the
-  // getter closes over; requests only arrive after we set it below.
-  const portRef = { current: 0 }
   // Restore webapp sessions persisted by a prior daemon so a restart
   // (e.g. a rebuild) doesn't force every browser to re-bootstrap.
   const store = createWebAuthStore({
@@ -150,7 +146,7 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
   // webapp's sidebar + terminal update immediately instead of waiting for the
   // next periodic tick.
   onSessionListChanged(() => { void hub.publishSnapshot() })
-  const app = buildApp({ secret, buildId, store, getPort: () => portRef.current })
+  const app = buildApp({ secret, buildId, store })
 
   // WebSocket event stream. Registered here (not in buildApp) so buildApp's
   // return type stays the plain Hono app the CLI's typed RPC client infers
@@ -223,7 +219,6 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
   if (startPort !== 0 && port !== startPort) {
     daemonLog(`[daemon] preferred port ${startPort} in use; bound ${port} instead`)
   }
-  portRef.current = port
   nodeWs.injectWebSocket(server)
 
   // Race-safe acquire via O_EXCL. Another daemon may have slipped past

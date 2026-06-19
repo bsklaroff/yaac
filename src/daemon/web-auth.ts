@@ -140,19 +140,20 @@ export function cookieOrBearerAuth(
  * rebinding, where an attacker domain resolves to 127.0.0.1 but the
  * browser still sends the attacker's hostname in `Host`.
  *
- * `boundPort` of 0 means "not bound yet" (in-process tests that never
- * call `serve`) — the port comparison is skipped there, but the
- * loopback-hostname check still applies.
+ * Only the hostname is checked, not the port: a port-forward (common
+ * when reaching the daemon from outside its container) legitimately
+ * remaps the external port, so the browser's `Host` port need not equal
+ * the daemon's bound port. The port comparison would add no real defense
+ * anyway — a DNS-rebind request must already target the daemon's real
+ * port to connect, so its `Host` port would match regardless.
  */
-export function isAllowedHost(host: string, boundPort: number): boolean {
+export function isAllowedHost(host: string): boolean {
   if (!host) return false
-  const [hostname, portStr] = host.split(':')
-  if (hostname !== '127.0.0.1' && hostname !== 'localhost') return false
-  if (portStr && boundPort > 0 && portStr !== String(boundPort)) return false
-  return true
+  const [hostname] = host.split(':')
+  return hostname === '127.0.0.1' || hostname === 'localhost'
 }
 
-export function hostHeaderCheck(getPort: () => number): MiddlewareHandler {
+export function hostHeaderCheck(): MiddlewareHandler {
   return async (c, next) => {
     // Prefer the Host header (what a browser sends). Fall back to the
     // request URL's host for in-memory dispatch (hono's app.fetch in
@@ -167,7 +168,7 @@ export function hostHeaderCheck(getPort: () => number): MiddlewareHandler {
         host = ''
       }
     }
-    if (isAllowedHost(host, getPort())) return next()
+    if (isAllowedHost(host)) return next()
     return c.json(
       { error: { code: 'BAD_HOST', message: 'host not allowed' } },
       403,

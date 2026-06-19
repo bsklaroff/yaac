@@ -96,27 +96,25 @@ describe('isPublicPath', () => {
 })
 
 describe('isAllowedHost', () => {
-  it('allows loopback hostnames with the bound port', () => {
-    expect(isAllowedHost('127.0.0.1:5000', 5000)).toBe(true)
-    expect(isAllowedHost('localhost:5000', 5000)).toBe(true)
+  it('allows loopback hostnames with a port', () => {
+    expect(isAllowedHost('127.0.0.1:5000')).toBe(true)
+    expect(isAllowedHost('localhost:5000')).toBe(true)
   })
 
   it('allows a loopback hostname without a port', () => {
-    expect(isAllowedHost('localhost', 5000)).toBe(true)
+    expect(isAllowedHost('localhost')).toBe(true)
+    expect(isAllowedHost('127.0.0.1')).toBe(true)
   })
 
   it('rejects non-loopback hostnames (DNS rebinding)', () => {
-    expect(isAllowedHost('evil.com:5000', 5000)).toBe(false)
-    expect(isAllowedHost('evil.com', 5000)).toBe(false)
-    expect(isAllowedHost('', 5000)).toBe(false)
+    expect(isAllowedHost('evil.com:5000')).toBe(false)
+    expect(isAllowedHost('evil.com')).toBe(false)
+    expect(isAllowedHost('')).toBe(false)
   })
 
-  it('rejects a wrong port when the bound port is known', () => {
-    expect(isAllowedHost('127.0.0.1:9999', 5000)).toBe(false)
-  })
-
-  it('skips the port check when not bound yet (port 0)', () => {
-    expect(isAllowedHost('127.0.0.1:9999', 0)).toBe(true)
+  it('allows any port on a loopback host (port-forward remaps it)', () => {
+    expect(isAllowedHost('127.0.0.1:9999')).toBe(true)
+    expect(isAllowedHost('localhost:9788')).toBe(true)
   })
 })
 
@@ -179,20 +177,25 @@ describe('cookieOrBearerAuth', () => {
 })
 
 describe('hostHeaderCheck', () => {
-  function appWithHostCheck(port: number): Hono {
+  function appWithHostCheck(): Hono {
     const app = new Hono()
-    app.use('*', hostHeaderCheck(() => port))
+    app.use('*', hostHeaderCheck())
     app.get('/x', (c) => c.text('ok'))
     return app
   }
 
   it('allows loopback hosts', async () => {
-    const res = await appWithHostCheck(0).request('/x', { headers: { host: '127.0.0.1' } })
+    const res = await appWithHostCheck().request('/x', { headers: { host: '127.0.0.1' } })
+    expect(res.status).toBe(200)
+  })
+
+  it('allows a loopback host on a forwarded (non-bound) port', async () => {
+    const res = await appWithHostCheck().request('/x', { headers: { host: 'localhost:9788' } })
     expect(res.status).toBe(200)
   })
 
   it('rejects a non-loopback host', async () => {
-    const res = await appWithHostCheck(0).request('http://evil.com/x', {
+    const res = await appWithHostCheck().request('http://evil.com/x', {
       headers: { host: 'evil.com' },
     })
     expect(res.status).toBe(403)

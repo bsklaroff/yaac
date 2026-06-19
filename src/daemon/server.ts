@@ -29,12 +29,6 @@ export interface DaemonAppDeps {
    * buildId})`; a fresh store is created when omitted.
    */
   store?: WebAuthStore
-  /**
-   * Returns the daemon's bound port for the Host-header check. Defaults
-   * to a getter returning 0 ("not bound" — tests that never `serve`), in
-   * which case only the loopback-hostname check applies.
-   */
-  getPort?: () => number
 }
 
 /**
@@ -44,11 +38,10 @@ export interface DaemonAppDeps {
  */
 export function buildApp(deps: DaemonAppDeps) {
   const store = deps.store ?? createWebAuthStore()
-  const getPort = deps.getPort ?? ((): number => 0)
   const app = new Hono()
 
   app.use('*', requestLogger())
-  app.use('*', hostHeaderCheck(getPort))
+  app.use('*', hostHeaderCheck())
   app.use('*', denyBrowserCors())
   app.use('*', cookieOrBearerAuth(deps.secret, store))
   app.use('*', async (c, next) => {
