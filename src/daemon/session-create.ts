@@ -78,6 +78,7 @@ import {
   resolveCredentialForUrl,
   parseGitRemote,
   loadKnownHostsEntryForHost,
+  ghApiHostForGitHost,
 } from '@/lib/project/credentials'
 import { writeKnownHostsFile } from '@/lib/git'
 import { formatSshCommand } from '@/shared/git'
@@ -89,6 +90,7 @@ import {
   writeProjectClaudePlaceholder,
   writeProjectCodexPlaceholder,
   PLACEHOLDER_API_KEY,
+  PLACEHOLDER_GH_TOKEN,
 } from '@/lib/project/tool-auth'
 import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/lib/git'
 import { ensureCodexHooksJson, ensureCodexConfigToml } from '@/lib/session/codex-hooks'
@@ -893,6 +895,25 @@ export async function createSession(
     // Codex OAuth: Codex reads the placeholder bundle from the mounted
     // .codex/auth.json. Setting OPENAI_API_KEY here would risk steering
     // Codex into api-key mode instead of ChatGPT OAuth.
+  }
+
+  // GitHub CLI (`gh`) auth: when the project's remote is an HTTPS GitHub repo,
+  // hand `gh` a placeholder GH_TOKEN so it treats itself as logged in. The
+  // proxy swaps the placeholder for the session's real HTTPS git token on
+  // api.github.com requests (see buildDynamicRules in the proxy), reusing the
+  // PAT yaac already manages — no separate `gh auth login`. An SSH remote has
+  // no HTTPS token to inject, so gh stays unauthenticated there.
+  //
+  // Skipped when the user already wires a GitHub token themselves — an explicit
+  // GH_TOKEN (envPassthrough/config.env) or an envSecretProxy entry for
+  // GH_TOKEN/GITHUB_TOKEN — so their configuration wins.
+  const userWiresGithubToken = env.some((e) => e.startsWith('GH_TOKEN='))
+    || Boolean(config.envSecretProxy?.GH_TOKEN)
+    || Boolean(config.envSecretProxy?.GITHUB_TOKEN)
+  if (credential.kind === 'https'
+    && ghApiHostForGitHost(parsedRemote.host) !== null
+    && !userWiresGithubToken) {
+    env.push(`GH_TOKEN=${PLACEHOLDER_GH_TOKEN}`)
   }
 
   // Enable opencode's Exa-backed websearch tool. opencode only registers

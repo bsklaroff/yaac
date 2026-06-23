@@ -17,7 +17,7 @@ import type {
   HttpsGitCredentialEntry,
 } from '@/shared/types'
 
-export { validatePattern, parsePattern, matchPattern } from '@/shared/credentials'
+export { validatePattern, parsePattern, matchPattern, ghApiHostForGitHost } from '@/shared/credentials'
 
 export function credentialsPath(): string {
   return githubCredentialsPath()

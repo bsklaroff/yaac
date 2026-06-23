@@ -59,6 +59,7 @@ vi.mock('@/lib/container/proxy-client', () => ({
     getCaCert: vi.fn().mockResolvedValue('cert'),
   },
   buildRulesFromConfig: vi.fn().mockReturnValue([]),
+  collectProxySecrets: vi.fn().mockReturnValue({}),
 }))
 
 vi.mock('@/lib/container/default-allowed-hosts', async (importOriginal) => {
@@ -119,6 +120,8 @@ vi.mock('@/lib/project/credentials', () => ({
     return { scheme: 'ssh', host: m[1], path }
   },
   loadKnownHostsEntryForHost: vi.fn().mockResolvedValue(null),
+  ghApiHostForGitHost: (host: string) => (host === 'github.com' ? 'api.github.com' : null),
+  writeProxySecrets: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@/lib/project/tool-auth', () => ({
@@ -128,6 +131,7 @@ vi.mock('@/lib/project/tool-auth', () => ({
   writeProjectClaudePlaceholder: vi.fn().mockResolvedValue(undefined),
   writeProjectCodexPlaceholder: vi.fn().mockResolvedValue(undefined),
   PLACEHOLDER_API_KEY: 'test-placeholder-key',
+  PLACEHOLDER_GH_TOKEN: 'test-placeholder-gh-token',
 }))
 
 vi.mock('@/lib/git', () => ({
@@ -432,6 +436,46 @@ describe('createSession', () => {
     expect(container.env).toEqual(expect.arrayContaining([
       { name: 'ANTHROPIC_API_KEY', value: 'test-placeholder-key' },
     ]))
+  })
+
+  it('seeds a placeholder GH_TOKEN for an HTTPS github.com remote', async () => {
+    await createSession('demo', { sessionId: 'abcd1234' })
+
+    const container = appliedJobManifest().spec.template.spec.containers[0]
+    expect(container.env).toEqual(expect.arrayContaining([
+      { name: 'GH_TOKEN', value: 'test-placeholder-gh-token' },
+    ]))
+  })
+
+  it('does not seed GH_TOKEN for a non-GitHub HTTPS remote', async () => {
+    vi.mocked(simpleGit).mockReturnValue({
+      remote: vi.fn().mockResolvedValue('https://gitlab.com/example/repo.git'),
+    } as never)
+
+    await createSession('demo', { sessionId: 'abcd1234' })
+
+    const envNames = appliedJobManifest().spec.template.spec.containers[0].env.map((e) => e.name)
+    expect(envNames).not.toContain('GH_TOKEN')
+  })
+
+  it('does not override an explicit GH_TOKEN from project config', async () => {
+    vi.mocked(resolveProjectConfig).mockResolvedValue({ env: { GH_TOKEN: 'ghp_user' } })
+
+    await createSession('demo', { sessionId: 'abcd1234' })
+
+    const env = appliedJobManifest().spec.template.spec.containers[0].env
+    expect(env.find((e) => e.name === 'GH_TOKEN')?.value).toBe('ghp_user')
+  })
+
+  it('defers to an envSecretProxy GITHUB_TOKEN rule instead of auto-wiring gh', async () => {
+    vi.mocked(resolveProjectConfig).mockResolvedValue({
+      envSecretProxy: { GITHUB_TOKEN: { hosts: ['api.github.com'] } },
+    } as never)
+
+    await createSession('demo', { sessionId: 'abcd1234' })
+
+    const envNames = appliedJobManifest().spec.template.spec.containers[0].env.map((e) => e.name)
+    expect(envNames).not.toContain('GH_TOKEN')
   })
 
   it('never chowns mounts in-container — uid alignment makes daemon dirs writable', async () => {

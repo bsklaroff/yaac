@@ -908,12 +908,39 @@ function hostNeedsDynamicMitm(sessionId: string | null, hostname: string, port: 
   if (hostname === CHATGPT_HOST) return true
   if (hostname === OPENROUTER_API_HOST) return true
   if (sessionId && sessionHasHttpsCredentialForHost(sessionId, hostname)) return true
+  // gh CLI: MITM the GitHub API host so we can swap the placeholder GH_TOKEN
+  // for the session's real git token (api.github.com is not the git remote
+  // host, so the credential check above misses it).
+  if (sessionId && resolveGithubApiTokenForSession(sessionId, hostname) !== null) return true
   return false
 }
 
 function sessionHasHttpsCredentialForHost(sessionId: string, hostname: string): boolean {
   const cred = resolveHttpsCredentialForRepo(sessionRepoUrl.get(sessionId))
   return cred?.host === hostname
+}
+
+/**
+ * Map a git host to the API host the GitHub CLI (`gh`) talks to. Mirrors
+ * ghApiHostForGitHost in src/shared/credentials.ts — public GitHub's API is
+ * api.github.com while the git remote is github.com.
+ */
+function ghApiHostForGitHost(host: string): string | null {
+  if (host === 'github.com') return 'api.github.com'
+  return null
+}
+
+/**
+ * Resolve the GitHub token to inject for `gh` traffic to `hostname`: the
+ * session's HTTPS git token, but only when `hostname` is the gh API host for
+ * that credential's git host. The host gate keeps the token from leaking onto
+ * unrelated MITM'd hosts.
+ */
+function resolveGithubApiTokenForSession(sessionId: string, hostname: string): string | null {
+  const cred = resolveHttpsCredentialForRepo(sessionRepoUrl.get(sessionId))
+  if (!cred) return null
+  if (ghApiHostForGitHost(cred.host) !== hostname) return null
+  return cred.token
 }
 
 function headerValue(
@@ -954,6 +981,29 @@ function buildDynamicRules(
       pathPattern: '*',
       injections: [{ action: 'set_header', name: 'Authorization', value: basic }],
     })
+  }
+
+  // GitHub CLI (`gh`) auth: the container's GH_TOKEN carries the placeholder.
+  // gh sends it to the GitHub API host (api.github.com — REST + GraphQL) as
+  // `Authorization: token <placeholder>` (or `Bearer`). Swap in the session's
+  // real github.com HTTPS git token, preserving gh's auth scheme. Gated on the
+  // session having a matching GitHub credential AND on the placeholder
+  // sentinel, so traffic carrying a user-supplied token passes through.
+  const ghApiToken = resolveGithubApiTokenForSession(sessionId, hostname)
+  if (ghApiToken) {
+    const incomingAuth = headerValue(reqHeaders, 'authorization')
+    if (incomingAuth && incomingAuth.includes(PLACEHOLDER_GH_TOKEN)) {
+      rules.push({
+        pathPattern: '*',
+        injections: [{
+          action: 'set_header',
+          name: 'Authorization',
+          // Function replacer so a token with `$` can't trigger replace's
+          // special-pattern substitution.
+          value: incomingAuth.replace(PLACEHOLDER_GH_TOKEN, () => ghApiToken),
+        }],
+      })
+    }
   }
 
   // Anthropic credential swap is gated on the inbound request carrying our
@@ -1108,6 +1158,7 @@ function encodeBody(raw: Buffer, encoding: string | string[] | undefined): Buffe
 const PLACEHOLDER_ACCESS_TOKEN = 'yaac-ph-access'
 const PLACEHOLDER_REFRESH_TOKEN = 'yaac-ph-refresh'
 const PLACEHOLDER_API_KEY = 'yaac-ph-api-key'
+const PLACEHOLDER_GH_TOKEN = 'yaac-ph-gh-token'
 
 type TokenResponseBody = {
   access_token?: unknown

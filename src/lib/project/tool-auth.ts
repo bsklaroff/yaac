@@ -60,6 +60,13 @@ export const PLACEHOLDER_REFRESH_TOKEN = 'yaac-ph-refresh'
  * carrying a user-supplied key pass through unchanged.
  */
 export const PLACEHOLDER_API_KEY = 'yaac-ph-api-key'
+/**
+ * Placeholder GH_TOKEN seeded into session containers so the GitHub CLI (`gh`)
+ * treats itself as logged in. The proxy swaps it for the session's real HTTPS
+ * git token on api.github.com requests carrying this sentinel; gh traffic with
+ * a user-supplied token passes through unchanged.
+ */
+export const PLACEHOLDER_GH_TOKEN = 'yaac-ph-gh-token'
 
 async function ensureCredentialsDir(): Promise<void> {
   await ensureDataDir()
