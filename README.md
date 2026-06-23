@@ -27,26 +27,12 @@ yaac splits the container runtime in two:
 
   ```sh
   brew install podman
-  brew install slp/krunkit/krunkit
+  brew trust libkrun/krun
+  brew install libkrun/krun/krunkit
   printf '[machine]\nprovider = "libkrun"\n' >> ~/.config/containers/containers.conf
   podman machine init --rootful --cpus 8 --memory 32768
   podman machine start
   ```
-
-  > **krunkit version note:** idmapped mounts need libkrun >= 1.17, and clock timesync (below) needs krunkit >= 1.2.0 — the brew tap lags upstream on both. Install the upstream release bundle (self-contained: krunkit + a current libkrun + EFI firmware) over the brew install:
-  >
-  > ```sh
-  > curl -fsSL https://github.com/libkrun/krunkit/releases/download/v1.2.1/krunkit-podman-unsigned-1.2.1.tgz | tar xz
-  > cp lib/libkrun.dylib /opt/homebrew/lib/
-  > mkdir -p /opt/homebrew/share/krunkit && cp share/krunkit/KRUN_EFI.silent.fd /opt/homebrew/share/krunkit/
-  > cp bin/krunkit /opt/homebrew/bin/krunkit-1.2.1
-  > codesign -f -s - /opt/homebrew/lib/libkrun.dylib
-  > printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>com.apple.security.hypervisor</key><true/>\n<key>com.apple.security.cs.disable-library-validation</key><true/>\n</dict></plist>\n' > krunkit.entitlements
-  > codesign -f -s - --entitlements krunkit.entitlements /opt/homebrew/bin/krunkit-1.2.1
-  > ln -sf krunkit-1.2.1 /opt/homebrew/bin/krunkit
-  > ```
-  >
-  > (restart the machine afterwards; `yaac cluster check`'s probe verifies idmapped hostPath writes end to end)
 
   > **Clock drift after sleep:** the machine's clock freezes while the Mac sleeps ([podman#11541](https://github.com/containers/podman/issues/11541)), and NTP can't always recover — the pauses also corrupt chrony's measurements (`exceeds maxjitter` / `Can't synchronise: no selectable sources` in the VM journal), so builds fail with `podman build exited with code 100` / apt `Release file ... is not valid yet`. The real fix is krunkit's `--timesync` (>= 1.2.0): the host pushes its clock into the guest over vsock on every wake. podman doesn't pass the flag yet ([podman#28345](https://github.com/containers/podman/issues/28345)), so wire it manually:
   >
@@ -69,12 +55,12 @@ yaac splits the container runtime in two:
   >
   > # 2. host side: wrap krunkit so podman's invocation gains --timesync
   > mv /opt/homebrew/bin/krunkit /opt/homebrew/bin/krunkit-real 2>/dev/null || true
-  > printf '#!/bin/sh\ncase " $* " in\n  *" --bootloader "*) exec /opt/homebrew/bin/krunkit-1.2.1 "$@" --timesync vsockPort=1234 ;;\n  *) exec /opt/homebrew/bin/krunkit-1.2.1 "$@" ;;\nesac\n' > /opt/homebrew/bin/krunkit
+  > printf '#!/bin/sh\ncase " $* " in\n  *" --bootloader "*) exec /opt/homebrew/bin/krunkit-real "$@" --timesync vsockPort=1234 ;;\n  *) exec /opt/homebrew/bin/krunkit-real "$@" ;;\nesac\n' > /opt/homebrew/bin/krunkit
   > chmod +x /opt/homebrew/bin/krunkit
   > podman machine stop && podman machine start   # then re-run scripts/setup-kind-cluster.sh
   > ```
   >
-  > All of this manual wiring is upstreamed for the release after podman 5.8.2: podman passes `--timesync vsockPort=1234` itself ([podman#28527](https://github.com/containers/podman/pull/28527)) and the machine image ships the vsock qemu-guest-agent + SELinux policy ([podman-machine-os#238](https://github.com/containers/podman-machine-os/pull/238), both merged 2026-05-26). When you upgrade past 5.8.2: **remove the wrapper** (`ln -sf krunkit-1.2.1 /opt/homebrew/bin/krunkit` — the duplicated flag would break machine start) and recreate the machine (`podman machine rm` + `init`) so the new image replaces the manual guest wiring. Manual recovery if the clock is ever skewed anyway:
+  > All of this manual wiring is upstreamed for podman 6.0 (not yet in Homebrew — `brew install podman` is still 5.8.x): podman passes `--timesync vsockPort=1234` itself ([podman#28527](https://github.com/containers/podman/pull/28527)) and the machine image ships the vsock qemu-guest-agent + SELinux policy ([podman-machine-os#238](https://github.com/containers/podman-machine-os/pull/238), both merged 2026-05-26). When you upgrade to 6.0: **remove the wrapper** (`mv /opt/homebrew/bin/krunkit-real /opt/homebrew/bin/krunkit` — the duplicated flag would break machine start) and recreate the machine (`podman machine rm` + `init`) so the new image replaces the manual guest wiring. Manual recovery if the clock is ever skewed anyway:
   >
   > ```sh
   > podman machine ssh "sudo date -u -s @$(date +%s) && sudo systemctl restart chronyd"
