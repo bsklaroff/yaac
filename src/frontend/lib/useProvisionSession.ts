@@ -27,14 +27,24 @@ export function useProvisionSession(): (
 ) => void {
   const addOptimisticProvisioning = useUiStore((s) => s.addOptimisticProvisioning)
   const updateOptimisticProvisioning = useUiStore((s) => s.updateOptimisticProvisioning)
+  const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
   const openSession = useUiStore((s) => s.openSession)
 
   return useCallback((projectSlug, tool, kind, sessionId, op) => {
     addOptimisticProvisioning({ sessionId, projectSlug, tool, kind, message: 'Starting…', createdAt: nowUtc() })
     openSession(projectSlug, sessionId) // auto-open the locally-initiated provision
     void op(sessionId, (message) => updateOptimisticProvisioning(sessionId, { message }))
+      .then((res) => {
+        // A create that claimed a prewarmed spare returns the spare's own id,
+        // not the one we generated (a running pod's id can't be re-keyed). Drop
+        // our optimistic row for the requested id and follow the real session.
+        if (res.sessionId !== sessionId) {
+          removeOptimisticProvisioning(sessionId)
+          openSession(projectSlug, res.sessionId)
+        }
+      })
       .catch((e: unknown) => {
         updateOptimisticProvisioning(sessionId, { error: e instanceof Error ? e.message : 'failed' })
       })
-  }, [addOptimisticProvisioning, updateOptimisticProvisioning, openSession])
+  }, [addOptimisticProvisioning, updateOptimisticProvisioning, removeOptimisticProvisioning, openSession])
 }

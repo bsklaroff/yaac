@@ -15,6 +15,7 @@ import { dataDirHash, k8sNamespace, kubectlApply, kubectlGetJson, kubectlWithRet
 import {
   JOB_NAME_LABEL,
   LABEL_DATA_DIR_HASH,
+  LABEL_PREWARMED,
   LABEL_PROJECT,
   LABEL_SESSION_ID,
   LABEL_TOOL,
@@ -287,6 +288,12 @@ export interface SessionCreateOptions {
    */
   resume?: boolean
   /**
+   * Provision a prewarmed spare: stamp the `yaac.prewarmed` pod label so the
+   * session is hidden from user-facing views until claimed on a later
+   * `session create`. Set by the prewarm reconciler; never by a user create.
+   */
+  prewarm?: boolean
+  /**
    * Git identity to use inside the container. The CLI resolves this
    * up-front (prompting when missing) and passes it in.
    */
@@ -393,6 +400,10 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
       [LABEL_SESSION_ID]: sessionId,
       [LABEL_DATA_DIR_HASH]: dataDirHash(),
       [LABEL_TOOL]: tool,
+      // Prewarmed spares carry this until claimed; claiming removes it
+      // (kubectl label pod yaac.prewarmed-), flipping the pod to a normal
+      // session that lists in the user-facing views.
+      ...(options.prewarm ? { [LABEL_PREWARMED]: 'true' } : {}),
     },
     image: imageRef,
     env,

@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { getProjectsDir } from '@/lib/project/paths'
-import { listSessionPods } from '@/lib/k8s/pods'
+import { listSessionPods, isPrewarmed } from '@/lib/k8s/pods'
 import type { ProjectMeta } from '@/shared/types'
 
 export interface ProjectListEntry {
@@ -57,6 +57,7 @@ async function countSessionsByProject(): Promise<Record<string, number>> {
   try {
     const pods = await listSessionPods()
     for (const p of pods) {
+      if (isPrewarmed(p)) continue // spares aren't user sessions
       if (p.projectSlug) counts[p.projectSlug] = (counts[p.projectSlug] ?? 0) + 1
     }
   } catch {

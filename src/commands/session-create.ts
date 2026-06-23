@@ -115,13 +115,14 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     gitUser = { name, email }
   }
 
-  const tool: AgentTool = options.tool ?? 'claude'
-
+  // Tool is sent only when explicit (--tool). The daemon resolves the
+  // configured default (yaac tool set) when omitted, so a bare create matches
+  // the prewarmed spare the daemon keeps for that tool.
   const client = await getRpcClient()
   const res = await client.session.create.$post({
     json: {
       project: projectSlug,
-      tool,
+      tool: options.tool,
       addDir: options.addDir,
       addDirRw: options.addDirRw,
       gitUser,

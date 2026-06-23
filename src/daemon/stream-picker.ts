@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises'
-import { listSessionPods } from '@/lib/k8s/pods'
+import { listSessionPods, isPrewarmed } from '@/lib/k8s/pods'
 import { getProjectsDir } from '@/lib/project/paths'
 import { isTmuxSessionAlive } from '@/lib/session/cleanup'
 import { getSessionFirstMessage } from '@/lib/session/status'
@@ -20,6 +20,7 @@ async function getActiveProjects(): Promise<string[]> {
   const projects = new Set<string>()
   for (const p of pods) {
     if (!p.projectSlug) continue
+    if (isPrewarmed(p)) continue // a spare-only project isn't a stream target
     if (!p.running) continue
     if (!p.sessionId) continue
     if (!(await isTmuxSessionAlive(p.projectSlug, p.sessionId))) continue

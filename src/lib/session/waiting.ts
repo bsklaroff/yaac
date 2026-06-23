@@ -1,4 +1,4 @@
-import { listSessionPods } from '@/lib/k8s/pods'
+import { listSessionPods, isPrewarmed } from '@/lib/k8s/pods'
 import { getSessionStatus, normalizeTool } from '@/lib/session/status'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 import { resolveStartingGraceMs } from '@/lib/session/list'
@@ -26,6 +26,10 @@ export async function getWaitingSessions(
 
   for (const p of pods) {
     if (!p.sessionId || !p.projectSlug) continue
+
+    // Prewarmed spares aren't user sessions — keep them out of the stream
+    // picker. A stuck spare is reaped by reconcileStaleSessions, not here.
+    if (isPrewarmed(p)) continue
 
     if (alreadyCleaning?.has(p.sessionId)) continue
 

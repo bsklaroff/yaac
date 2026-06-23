@@ -144,6 +144,11 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
     YAAC_RELAY_IMAGE: 'yaac-test-relay',
     YAAC_K8S_NAMESPACE: TEST_NAMESPACE,
     YAAC_REQUIRE_PREBUILT_IMAGES: '1',
+    // Prewarming is on by default in production, but a background pool that
+    // spawns spares (and vcluster stacks) under every e2e suite would burn
+    // cluster resources and perturb assertions. Off by default; the dedicated
+    // prewarm suite re-enables it with `{ ...env, YAAC_PREWARM_POOL_SIZE: '1' }`.
+    YAAC_PREWARM_POOL_SIZE: '0',
   }
 
   const cleanup = async (): Promise<void> => {

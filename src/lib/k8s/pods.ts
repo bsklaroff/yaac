@@ -6,6 +6,14 @@ export const LABEL_PROJECT = 'yaac.project'
 export const LABEL_SESSION_ID = 'yaac.session-id'
 export const LABEL_DATA_DIR_HASH = 'yaac.data-dir-hash'
 export const LABEL_TOOL = 'yaac.tool'
+/**
+ * Marks a session pod as a prewarmed spare — fully provisioned with its
+ * agent booted and waiting, but not yet handed to a user. Spares are hidden
+ * from user-facing views and claimed on `session create` by removing this
+ * label (see `src/daemon/prewarm.ts`). Stamped only when present, so a
+ * normal session pod simply lacks the label.
+ */
+export const LABEL_PREWARMED = 'yaac.prewarmed'
 
 /**
  * Kubernetes object names must be lowercase DNS-1123 and the `job-name`
@@ -38,6 +46,11 @@ export interface SessionPod {
   /** Pod creationTimestamp as epoch ms. */
   createdAtMs: number
   labels: Record<string, string>
+}
+
+/** True when a pod is a prewarmed spare (carries the `yaac.prewarmed` label). */
+export function isPrewarmed(pod: SessionPod): boolean {
+  return pod.labels[LABEL_PREWARMED] === 'true'
 }
 
 /**

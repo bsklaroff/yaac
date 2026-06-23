@@ -12,7 +12,7 @@ vi.mock('@/lib/k8s/pods', async (importOriginal) => {
   }
 })
 
-import { listSessionPods, type SessionPod } from '@/lib/k8s/pods'
+import { listSessionPods, LABEL_PREWARMED, type SessionPod } from '@/lib/k8s/pods'
 import type * as podsModule from '@/lib/k8s/pods'
 import * as cleanup from '@/lib/session/cleanup'
 import * as opencodeStatus from '@/lib/session/opencode-status'
@@ -65,6 +65,24 @@ describe('listActiveSessions', () => {
 
   it('returns empty arrays with no session pods', async () => {
     const result = await listActiveSessions()
+    expect(result.sessions).toEqual([])
+    expect(result.stale).toEqual([])
+  })
+
+  it('hides prewarmed spares from the active session list', async () => {
+    mockListPods.mockResolvedValue([{
+      jobName: 'yaac-demo-spare',
+      podName: 'yaac-demo-spare-x1',
+      sessionId: 'spare1',
+      projectSlug: 'demo',
+      tool: 'claude',
+      phase: 'Running',
+      running: true,
+      createdAtMs: 1_000,
+      labels: { [LABEL_PREWARMED]: 'true' },
+    }])
+    const result = await listActiveSessions()
+    // Filtered out before classify, so it never reaches the status probes.
     expect(result.sessions).toEqual([])
     expect(result.stale).toEqual([])
   })

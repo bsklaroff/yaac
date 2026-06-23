@@ -778,9 +778,18 @@ describe('sessionCreate (CLI shim)', () => {
     expect(mockPost).toHaveBeenCalledWith(expect.objectContaining({
       json: expect.objectContaining({
         project: 'demo',
-        tool: 'claude',
+        // No --tool → omitted so the daemon resolves the configured default
+        // (and matches the prewarmed spare it keeps for that tool).
+        tool: undefined,
         gitUser: { name: 'Test', email: 't@x.io' },
       }) as unknown,
+    }))
+  })
+
+  it('forwards an explicit --tool unchanged', async () => {
+    await sessionCreate('demo', { tool: 'codex' })
+    expect(mockPost).toHaveBeenCalledWith(expect.objectContaining({
+      json: expect.objectContaining({ tool: 'codex' }) as unknown,
     }))
   })
 

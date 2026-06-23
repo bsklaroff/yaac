@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { listSessionJobs, listSessionPods, type SessionPod } from '@/lib/k8s/pods'
+import { listSessionJobs, listSessionPods, isPrewarmed, type SessionPod } from '@/lib/k8s/pods'
 import { claudeDir, codexTranscriptDir, getProjectsDir, opencodeMetaDir, projectDir } from '@/lib/project/paths'
 import { getSessionStatus, getSessionFirstMessage, normalizeTool } from '@/lib/session/status'
 import { ensureOpencodeFirstMessageCaptured } from '@/lib/session/opencode-status'
@@ -126,6 +126,12 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
   } catch (err) {
     throw new DaemonError('RUNTIME_UNAVAILABLE', err instanceof Error ? err.message : String(err))
   }
+
+  // Prewarmed spares are not user sessions until claimed — hide them from the
+  // session list (and skip the status/first-message probes they'd trigger).
+  // The stale reaper deliberately still sees them (it lists pods itself), so a
+  // stuck spare is still reaped.
+  pods = pods.filter((p) => !isPrewarmed(p))
 
   const { running, stale } = await classifySessionPods(
     pods, Date.now(), isTmuxSessionAlive, resolveStartingGraceMs(),

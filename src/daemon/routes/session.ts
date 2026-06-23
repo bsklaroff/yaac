@@ -8,6 +8,8 @@ import { getSessionDetail, getSessionBlockedHosts, getSessionPrompt } from '@/li
 import { deleteSession } from '@/lib/session/delete'
 import { restartSession } from '@/lib/session/restart'
 import { createSession, type SessionCreateOptions } from '@/daemon/session-create'
+import { tryClaimPrewarmed } from '@/daemon/prewarm'
+import { getDefaultTool } from '@/lib/project/preferences'
 import {
   registerProvisioning,
   updateProvisioningMessage,
@@ -62,8 +64,28 @@ export const sessionApp = new Hono()
       c.header('Content-Type', 'application/x-ndjson')
       return stream(c, async (s) => {
         const write = (event: unknown) => s.writeln(JSON.stringify(event))
+        // Resolve the tool daemon-side: explicit --tool wins, else the
+        // configured default (yaac tool set), else claude. This is the tool the
+        // prewarm pool warms, so a bare create matches its spare.
+        const tool = body.tool ?? (await getDefaultTool()) ?? 'claude'
+
+        // Fast path: claim a prewarmed spare for this project + tool. Skipped
+        // when --add-dir is requested (the spare lacks those mounts). A claim
+        // returns the spare's own id and registers no provisioning row — the
+        // unhidden session lists in the very next snapshot.
+        if (!body.addDir?.length && !body.addDirRw?.length) {
+          const claimed = await tryClaimPrewarmed(
+            body.project, tool, body.gitUser,
+            (message) => { void write({ type: 'progress', message }) },
+          )
+          if (claimed) {
+            await write({ type: 'result', result: claimed })
+            notifySessionListChanged()
+            return
+          }
+        }
+
         const sessionId = body.sessionId ?? randomUUID()
-        const tool = body.tool ?? 'claude'
         const opts: SessionCreateOptions = {
           sessionId,
           // Mirror progress into the provisioning registry (webapp, snapshot-
@@ -75,7 +97,7 @@ export const sessionApp = new Hono()
         }
         if (body.addDir) opts.addDir = body.addDir
         if (body.addDirRw) opts.addDirRw = body.addDirRw
-        if (body.tool) opts.tool = body.tool
+        opts.tool = tool // resolved default applies when --tool was omitted
         if (body.gitUser) opts.gitUser = body.gitUser
         // Register before the long await so the row shows up instantly and
         // survives a browser reload (the stream keeps running server-side).

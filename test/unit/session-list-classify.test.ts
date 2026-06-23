@@ -39,6 +39,20 @@ describe('classifySessionPods', () => {
     expect(result.stale).toEqual([])
   })
 
+  it('still classifies prewarmed spares (the reaper must keep seeing them)', async () => {
+    // listActiveSessions filters spares out, but the stale reaper relies on
+    // classifySessionPods NOT special-casing them, so a stuck spare is reaped.
+    const live = { ...pod({ jobName: 'yaac-proj-spare', sessionId: 'sp1' }), labels: { 'yaac.prewarmed': 'true' } }
+    const liveRes = await classifySessionPods([live], now(), () => Promise.resolve(true))
+    expect(liveRes.running).toEqual([live])
+
+    const stuck = { ...pod({ jobName: 'yaac-proj-stuck', sessionId: 'sp2', ageMs: STARTING_GRACE_MS + 5_000 }), labels: { 'yaac.prewarmed': 'true' } }
+    const stuckRes = await classifySessionPods([stuck], now(), () => Promise.resolve(false))
+    expect(stuckRes.stale).toEqual([
+      { jobName: 'yaac-proj-stuck', projectSlug: 'proj', sessionId: 'sp2', zombie: true },
+    ])
+  })
+
   it('classifies old running-but-no-tmux pods as zombie stale', async () => {
     const p = pod({ jobName: 'yaac-proj-zombie', sessionId: 'z1' })
     const result = await classifySessionPods([p], now(), () => Promise.resolve(false))

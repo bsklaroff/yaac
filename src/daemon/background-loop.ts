@@ -3,6 +3,7 @@ import { reconcileProxySshKeys } from '@/lib/session/proxy-reconcile'
 import { reconcileVclusters } from '@/lib/session/vcluster-reconcile'
 import { reconcileInnerRedirects } from '@/lib/session/inner-redirect-reconcile'
 import { reconcileVclusterAttribution } from '@/lib/session/vcluster-attribution-reconcile'
+import { reconcilePrewarmPool } from '@/daemon/prewarm-reconcile'
 import { daemonLog } from '@/daemon/log'
 
 export interface BackgroundLoopDeps {
@@ -51,6 +52,9 @@ function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
 function defaultTickSteps(): Array<() => Promise<void>> {
   return [
     reconcileStaleSessions,
+    // Keep one prewarmed spare per active project (after the stale sweep so
+    // counts reflect just-reaped sessions). No-op when the pool size is 0.
+    reconcilePrewarmPool,
     captureOpencodeFirstMessages,
     // ssh-agent heal only (attach-only probe, never bootstraps): session
     // registrations survive proxy pod replacement via the /data

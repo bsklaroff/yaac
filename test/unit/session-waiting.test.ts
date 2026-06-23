@@ -84,6 +84,16 @@ describe('getWaitingSessions', () => {
     expect(mockCleanupDetached).not.toHaveBeenCalled()
   })
 
+  it('excludes prewarmed spares (never offered to the stream picker)', async () => {
+    mockListPods.mockResolvedValue([pod({ labels: { 'yaac.prewarmed': 'true' } })])
+    mockGetStatus.mockResolvedValue('waiting')
+
+    const result = await getWaitingSessions()
+    expect(result).toEqual([])
+    // A stuck spare is reaped by reconcileStaleSessions, not here.
+    expect(mockCleanupDetached).not.toHaveBeenCalled()
+  })
+
   it('triggers detached cleanup for stale (non-running/zombie) pods', async () => {
     mockListPods.mockResolvedValue([
       pod({ jobName: 'yaac-proj-dead', sessionId: 'dead', running: false, phase: 'Failed' }),
