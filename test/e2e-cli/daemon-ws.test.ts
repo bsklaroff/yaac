@@ -191,14 +191,26 @@ describe('PTY WebSocket round-trip (real session pod)', () => {
     }
     expect(exitCode).toBe(0)
 
-    // Find the created session over the HTTP API.
+    // Find the created session over the HTTP API. `session create` returns
+    // once the pod is up, but `/session/list` only surfaces a session once
+    // its tmux is probe-alive (see classifySessionPods), and a request can
+    // briefly share an in-flight list snapshot taken just before that. The
+    // real UI polls every ~5s and tolerates the gap, so poll here too
+    // rather than asserting on a single immediate fetch.
     const base = `http://127.0.0.1:${daemon.lock.port}`
     const auth = { authorization: `Bearer ${daemon.lock.secret}` }
-    const list = await (await fetch(`${base}/session/list?project=repo-demo`, { headers: auth })).json() as
-      | { sessions: Array<{ sessionId: string; status: string }> }
-      | Array<{ sessionId: string; status: string }>
-    const sessions = Array.isArray(list) ? list : list.sessions
-    const session = sessions[0]
+    const listSession = async (): Promise<{ sessionId: string; status: string }> => {
+      const list = await (await fetch(`${base}/session/list?project=repo-demo`, { headers: auth })).json() as
+        | { sessions: Array<{ sessionId: string; status: string }> }
+        | Array<{ sessionId: string; status: string }>
+      const sessions = Array.isArray(list) ? list : list.sessions
+      return sessions[0]
+    }
+    let session = await listSession()
+    for (let i = 0; i < 30 && !session; i++) {
+      await sleep(500)
+      session = await listSession()
+    }
     expect(session).toBeDefined()
 
     // Attach a scratch shell over the WS (the webapp's terminal path) and
