@@ -167,7 +167,9 @@ export interface SpawnedDaemon {
 /**
  * Spawn a real `yaac daemon run` subprocess under the given env. Polls
  * for the lock file (5s budget) so the caller can read `.lock.port`
- * without races. `stop()` SIGTERMs, falling back to SIGKILL after 3s.
+ * without races. The daemon leads its own process group; `stop()`
+ * SIGTERMs that group, falling back to a group SIGKILL after 15s so the
+ * daemon's forked children are reaped rather than orphaned.
  *
  * Acquires the cross-worker daemon mutex before spawning so only one
  * yaac daemon exists across all parallel vitest workers at any time.
@@ -188,6 +190,13 @@ export async function spawnYaacDaemon(env: NodeJS.ProcessEnv): Promise<SpawnedDa
     child = spawn(process.execPath, [TSX_CLI, ENTRY, 'daemon', 'run', '--port', '0'], {
       env,
       stdio: ['ignore', 'ignore', 'pipe'],
+      // Make the daemon its own process-group leader (setsid) so `stop()`
+      // can signal the whole group. The daemon forks long-lived children
+      // (`kubectl port-forward`/`exec` relays) that inherit this pgid; a
+      // group kill reaps them even on the SIGKILL path, instead of leaving
+      // them orphaned to accumulate across the serialized e2e files until
+      // the cgroup pid ceiling is hit and `fork()` starts returning EAGAIN.
+      detached: true,
     })
 
     // Forward daemon stderr to the test worker's stderr when the debug
@@ -208,7 +217,12 @@ export async function spawnYaacDaemon(env: NodeJS.ProcessEnv): Promise<SpawnedDa
   const stop = async (): Promise<void> => {
     try {
       if (child.exitCode === null) {
-        child.kill('SIGTERM')
+        // SIGTERM the whole group: the daemon runs its shutdown handler
+        // (which calls `removeLock()`, so lock-cleanup assertions stay
+        // green), and its `kubectl port-forward`/`exec` children get the
+        // signal directly rather than waiting on the daemon to tear them
+        // down.
+        killGroup(child, 'SIGTERM')
         await new Promise<void>((resolve) => {
           // Give the daemon up to 15s to finish its current background-loop
           // tick (session reconcile, blocked-host persist) before we
@@ -216,7 +230,10 @@ export async function spawnYaacDaemon(env: NodeJS.ProcessEnv): Promise<SpawnedDa
           // `removeLock()` call, so a too-short timeout leaves stale lock
           // files and flakes tests that assert on lock cleanup.
           const t = setTimeout(() => {
-            child.kill('SIGKILL')
+            // SIGKILL the group, not just the daemon: a force-killed daemon
+            // never reaps its children, so without this they orphan and
+            // leak across the serialized e2e files.
+            killGroup(child, 'SIGKILL')
             resolve()
           }, 15000)
           child.once('exit', () => {
@@ -231,6 +248,27 @@ export async function spawnYaacDaemon(env: NodeJS.ProcessEnv): Promise<SpawnedDa
   }
 
   return { child, lock, stop }
+}
+
+/**
+ * Signal a daemon's entire process group (negative PID). The daemon is
+ * spawned `detached`, so it leads its own group and a group-directed
+ * signal reaches every child it forked. Falls back to signalling just the
+ * daemon if the group is already gone (ESRCH) or the PID is unknown.
+ */
+function killGroup(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (child.pid === undefined) return
+  try {
+    process.kill(-child.pid, signal)
+  } catch {
+    // Group already exited (ESRCH) or can't be addressed — try the lone
+    // child as a best effort; ignore if it's gone too.
+    try {
+      child.kill(signal)
+    } catch {
+      // Already dead; nothing to clean up.
+    }
+  }
 }
 
 async function waitForLock(timeoutMs: number): Promise<DaemonLock> {
