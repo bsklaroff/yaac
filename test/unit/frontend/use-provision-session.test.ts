@@ -53,6 +53,12 @@ describe('useProvisionSession', () => {
       // ...and the real (claimed) session is selected.
       expect(useUiStore.getState().selectedSessionId).toBe('spare-id')
     })
+    // The optimistic row is RE-KEYED to the claimed id (not just dropped) so the
+    // auto-open survives the gap until the snapshot lists the spare — otherwise
+    // App's auto-select would steal the pane back to an existing session.
+    expect(useUiStore.getState().optimisticProvisioning).toMatchObject([
+      { sessionId: 'spare-id', projectSlug: 'proj', tool: 'claude', kind: 'create' },
+    ])
   })
 
   it('keeps the row and selection when the result id matches (cold create)', async () => {

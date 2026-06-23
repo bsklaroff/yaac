@@ -36,9 +36,16 @@ export function useProvisionSession(): (
     void op(sessionId, (message) => updateOptimisticProvisioning(sessionId, { message }))
       .then((res) => {
         // A create that claimed a prewarmed spare returns the spare's own id,
-        // not the one we generated (a running pod's id can't be re-keyed). Drop
-        // our optimistic row for the requested id and follow the real session.
+        // not the one we generated (a running pod's id can't be re-keyed).
+        // Re-key the optimistic row to that id and follow it — DON'T just drop
+        // the row: the spare isn't in the snapshot yet, so for the gap until it
+        // lands an unprotected selection would be stolen back to an existing
+        // session by App's auto-select. Carrying an optimistic row keeps the
+        // pane on the new session until the snapshot takes over.
         if (res.sessionId !== sessionId) {
+          addOptimisticProvisioning({
+            sessionId: res.sessionId, projectSlug, tool, kind, message: 'Claiming warm spare…', createdAt: nowUtc(),
+          })
           removeOptimisticProvisioning(sessionId)
           openSession(projectSlug, res.sessionId)
         }
