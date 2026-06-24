@@ -430,6 +430,18 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   await containerExec(jobName, `sh -c "echo 'gitdir: /repo/.git/worktrees/${sessionId}' > /workspace/.git"`)
   await containerExec(jobName, `sh -c "echo '/workspace/.git' > /repo/.git/worktrees/${sessionId}/gitdir"`)
 
+  // Lock the worktree so `git worktree prune` can never reap it. Every
+  // session worktree's gitdir points at /workspace — valid only inside its
+  // own pod — so from the host, or any other pod sharing this /repo mount,
+  // it looks "prunable". A single prune (explicit, or one mis-firing under
+  // FD/PID exhaustion — gc does not prune worktrees) would otherwise wipe
+  // every session's admin dir at once, breaking git in all live sessions.
+  // The lock file is checked before the prunable test, so prune skips it.
+  // Worktrees are never `git worktree remove`d (teardown rm -rf's the dirs),
+  // so the lock needs no clearing; admin dirs accumulating under
+  // /repo/.git/worktrees is acceptable (the pivotal repo already has 500+).
+  await containerExec(jobName, `sh -c "printf 'yaac session ${sessionId}' > /repo/.git/worktrees/${sessionId}/locked"`)
+
   // Configure git identity and trust mounted directories inside container
   await containerExec(jobName, `git config --global user.name '${shellEscape(gitUser.name)}'`)
   await containerExec(jobName, `git config --global user.email '${shellEscape(gitUser.email)}'`)

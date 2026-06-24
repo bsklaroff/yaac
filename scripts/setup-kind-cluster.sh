@@ -95,6 +95,22 @@ for node in $(kind get nodes --name "${CLUSTER_NAME}"); do
   printf '[host."http://%s:5000"]\n' "${REGISTRY_NAME}" \
     | podman exec -i "${node}" sh -c "cat > ${REGISTRY_DIR}/hosts.toml"
   podman exec "${node}" sh -c 'mkdir -p /mnt/sysfs && mount -t sysfs none /mnt/sysfs'
+  # Lift the per-container PID cap and give the kernel headroom for the
+  # contiguous (GFP_ATOMIC) allocations virtiofs needs. The systemd cgroup
+  # driver stamps DefaultTasksMax (307 on the kind base image) onto every
+  # containerd container scope, so a session that fans out subagents hits
+  # `fork: resource temporarily unavailable` and its agent/tmux/kubectl-exec
+  # die. vm.min_free_kbytes defaults far too low for a 32 GB guest, so the
+  # order-4/5 virtiofs request-buffer allocations fail under fragmentation
+  # (sessions lose filesystem I/O). Both are node/VM-global and reset on a
+  # node or VM restart, so re-run this script after one.
+  podman exec "${node}" sh -c '
+    mkdir -p /etc/systemd/system.conf.d
+    printf "[Manager]\nDefaultTasksMax=infinity\n" > /etc/systemd/system.conf.d/10-yaac-tasksmax.conf
+    systemctl daemon-reexec
+    echo 262144 > /proc/sys/vm/min_free_kbytes
+    echo 40 > /proc/sys/vm/compaction_proactiveness
+  '
 done
 
 # 5. Put the registry on the kind network so nodes can reach it by name.
