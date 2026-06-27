@@ -199,6 +199,19 @@ describe('yaac session create -t opencode (real CLI + real daemon + real opencod
     ])
     expect(envOut.trim()).toBe('true')
 
+    // The seeded opencode credential has no `provider` field, so it defaults
+    // to OpenRouter — the container carries the OPENROUTER_API_KEY placeholder
+    // (the proxy swaps it for the real key on openrouter.ai) and not the
+    // NeuralWatt one.
+    const { stdout: orKeyOut } = await execInJob(jobName, [
+      'sh', '-c', 'printenv OPENROUTER_API_KEY',
+    ])
+    expect(orKeyOut.trim()).toBe('yaac-ph-api-key')
+    const { stdout: nwKeyOut } = await execInJob(jobName, [
+      'sh', '-c', 'printenv NEURALWATT_API_KEY || true',
+    ])
+    expect(nwKeyOut.trim()).toBe('')
+
     // Write a config on the host and verify it's visible inside the container
     await fs.writeFile(
       path.join(hostOcConfigDir, 'opencode.json'),

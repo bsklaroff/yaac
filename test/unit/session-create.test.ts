@@ -301,6 +301,36 @@ describe('createSession', () => {
     expect(mockSpawn).not.toHaveBeenCalled()
   })
 
+  it('seeds OPENROUTER_API_KEY for an opencode session on the openrouter provider', async () => {
+    mockLoadToolAuth.mockResolvedValue({
+      tool: 'opencode',
+      kind: 'api-key',
+      apiKey: 'sk-or-real',
+      savedAt: new Date().toISOString(),
+      opencodeProvider: 'openrouter',
+    })
+    await createSession('demo', { tool: 'opencode', sessionId: 'abcd1234' })
+
+    const env = appliedJobManifest().spec.template.spec.containers[0].env
+    expect(env).toContainEqual({ name: 'OPENROUTER_API_KEY', value: 'test-placeholder-key' })
+    expect(env.map((e) => e.name)).not.toContain('NEURALWATT_API_KEY')
+  })
+
+  it('seeds NEURALWATT_API_KEY for an opencode session on the neuralwatt provider', async () => {
+    mockLoadToolAuth.mockResolvedValue({
+      tool: 'opencode',
+      kind: 'api-key',
+      apiKey: 'nw-real',
+      savedAt: new Date().toISOString(),
+      opencodeProvider: 'neuralwatt',
+    })
+    await createSession('demo', { tool: 'opencode', sessionId: 'abcd1234' })
+
+    const env = appliedJobManifest().spec.template.spec.containers[0].env
+    expect(env).toContainEqual({ name: 'NEURALWATT_API_KEY', value: 'test-placeholder-key' })
+    expect(env.map((e) => e.name)).not.toContain('OPENROUTER_API_KEY')
+  })
+
   it('refuses vcluster-in-vcluster: virtualCluster under YAAC_NESTED=1', async () => {
     vi.mocked(resolveProjectConfig).mockResolvedValue({
       virtualCluster: true,

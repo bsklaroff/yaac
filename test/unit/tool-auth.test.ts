@@ -5,6 +5,7 @@ import { loadCredentials, saveCredentials } from '@/lib/project/credentials'
 import {
   claudeCredentialsPath,
   codexCredentialsPath,
+  opencodeCredentialsPath,
   projectClaudeCredentialsFile,
   claudeDir,
   projectDir,
@@ -16,6 +17,8 @@ import {
   saveClaudeOAuthBundle,
   loadClaudeCredentialsFile,
   loadCodexCredentialsFile,
+  loadOpencodeCredentialsFile,
+  parseOpencodeProvider,
   removeToolAuth,
   buildPlaceholderBundle,
   writeProjectClaudePlaceholder,
@@ -288,7 +291,7 @@ describe('tool-auth', () => {
     })
   })
 
-  describe('opencode (OpenRouter)', () => {
+  describe('opencode (OpenRouter / NeuralWatt)', () => {
     it('detectAuthKind always returns api-key for opencode', () => {
       expect(detectAuthKind('opencode', 'sk-or-anything')).toBe('api-key')
       expect(detectAuthKind('opencode', 'sk-ant-oat01-claude-looking')).toBe('api-key')
@@ -304,8 +307,45 @@ describe('tool-auth', () => {
         tool: 'opencode',
         kind: 'api-key',
         apiKey: 'sk-or-v1-roundtrip',
+        // No provider in the payload defaults to openrouter.
+        opencodeProvider: 'openrouter',
       })
       expect(typeof entry?.savedAt).toBe('string')
+    })
+
+    it('persists the neuralwatt provider from the payload', async () => {
+      await persistToolAuthPayload('opencode', {
+        kind: 'api-key',
+        apiKey: 'nw-key',
+        provider: 'neuralwatt',
+      })
+      const entry = await loadToolAuthEntry('opencode')
+      expect(entry).toMatchObject({
+        tool: 'opencode',
+        kind: 'api-key',
+        apiKey: 'nw-key',
+        opencodeProvider: 'neuralwatt',
+      })
+      const file = await loadOpencodeCredentialsFile()
+      expect(file?.provider).toBe('neuralwatt')
+    })
+
+    it('saveToolAuth records the opencode provider', async () => {
+      await saveToolAuth('opencode', 'nw-direct', 'api-key', 'neuralwatt')
+      expect((await loadToolAuthEntry('opencode'))?.opencodeProvider).toBe('neuralwatt')
+    })
+
+    it('defaults provider to openrouter for legacy creds without the field', async () => {
+      // A credential file written before `provider` existed. Save once to
+      // create the credentials dir, then overwrite with the legacy shape.
+      await saveToolAuth('opencode', 'sk-or-legacy', 'api-key')
+      await fs.writeFile(
+        opencodeCredentialsPath(),
+        JSON.stringify({ kind: 'api-key', savedAt: '2025-01-01T00:00:00.000Z', apiKey: 'sk-or-legacy' }),
+      )
+      const file = await loadOpencodeCredentialsFile()
+      expect(file?.provider).toBe('openrouter')
+      expect((await loadToolAuthEntry('opencode'))?.opencodeProvider).toBe('openrouter')
     })
 
     it('loadToolAuthEntry returns null when no opencode creds are saved', async () => {
@@ -329,6 +369,18 @@ describe('tool-auth', () => {
           bundle: { accessToken: 'x', refreshToken: 'y', expiresAt: 1, scopes: [] },
         }),
       ).rejects.toMatchObject({ code: 'VALIDATION' })
+    })
+  })
+
+  describe('parseOpencodeProvider', () => {
+    it('returns neuralwatt only for the exact string', () => {
+      expect(parseOpencodeProvider('neuralwatt')).toBe('neuralwatt')
+    })
+
+    it('defaults to openrouter for openrouter, undefined, and junk', () => {
+      expect(parseOpencodeProvider('openrouter')).toBe('openrouter')
+      expect(parseOpencodeProvider(undefined)).toBe('openrouter')
+      expect(parseOpencodeProvider('something-else')).toBe('openrouter')
     })
   })
 })

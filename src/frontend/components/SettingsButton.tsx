@@ -127,7 +127,11 @@ export function SettingsButton(): JSX.Element {
                       <Row key={c.pattern} left={`git · ${c.pattern}`} right={c.preview} />
                     ))}
                     {auth?.toolAuth.map((t) => (
-                      <Row key={t.tool} left={`${t.tool} · ${t.kind}`} right={t.keyPreview} />
+                      <Row
+                        key={t.tool}
+                        left={`${t.tool} · ${t.opencodeProvider ? `${t.opencodeProvider} · ` : ''}${t.kind}`}
+                        right={t.keyPreview}
+                      />
                     ))}
                     {auth && auth.gitCredentials.length === 0 && auth.toolAuth.length === 0 && (
                       <p className="text-text-faint">No credentials configured.</p>

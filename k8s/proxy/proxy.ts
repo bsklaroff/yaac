@@ -121,10 +121,19 @@ const OPENAI_TOKEN_URL_PATH = '/oauth/token'
 // swap for codex sessions.
 const CHATGPT_HOST = 'chatgpt.com'
 const CODEX_DEFAULT_REFRESH_WINDOW_MS = 28 * 24 * 60 * 60 * 1000
-// opencode + OpenRouter: api-key only. The proxy swaps the placeholder
-// Bearer for the real OpenRouter key on openrouter.ai requests when the
-// session is registered as tool=opencode.
+// opencode: api-key only. The proxy swaps the placeholder Bearer for the real
+// key on the provider's host when the session is registered as tool=opencode.
+// OpenRouter and NeuralWatt are the two supported backends; the credential
+// records which one, and the swap targets that provider's host only.
 const OPENROUTER_API_HOST = 'openrouter.ai'
+const NEURALWATT_API_HOST = 'api.neuralwatt.com'
+
+type OpencodeProvider = 'openrouter' | 'neuralwatt'
+
+/** The host an opencode provider's api-key authenticates against. */
+function opencodeProviderHost(provider: OpencodeProvider): string {
+  return provider === 'neuralwatt' ? NEURALWATT_API_HOST : OPENROUTER_API_HOST
+}
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -161,7 +170,7 @@ type CodexCreds =
   | { kind: 'oauth'; bundle: CodexOAuthBundle }
   | { kind: 'api-key'; apiKey: string }
 
-type OpencodeCreds = { kind: 'api-key'; apiKey: string }
+type OpencodeCreds = { kind: 'api-key'; apiKey: string; provider: OpencodeProvider }
 
 // NOTE: keep in sync with src/shared/credentials.ts and
 // src/lib/project/credentials.ts. The proxy bundles independently and can't
@@ -412,7 +421,10 @@ function readOpencodeCreds(): OpencodeCreds | null {
     if (!parsed || typeof parsed !== 'object') return null
     const o = parsed as Record<string, unknown>
     if (o.kind === 'api-key' && typeof o.apiKey === 'string' && o.apiKey) {
-      return { kind: 'api-key', apiKey: o.apiKey }
+      // `provider` was added later — default to openrouter for files written
+      // before it existed.
+      const provider: OpencodeProvider = o.provider === 'neuralwatt' ? 'neuralwatt' : 'openrouter'
+      return { kind: 'api-key', apiKey: o.apiKey, provider }
     }
     return null
   } catch {
@@ -907,6 +919,7 @@ function hostNeedsDynamicMitm(sessionId: string | null, hostname: string, port: 
   if (hostname === OPENAI_TOKEN_URL_HOST) return true
   if (hostname === CHATGPT_HOST) return true
   if (hostname === OPENROUTER_API_HOST) return true
+  if (hostname === NEURALWATT_API_HOST) return true
   if (sessionId && sessionHasHttpsCredentialForHost(sessionId, hostname)) return true
   // gh CLI: MITM the GitHub API host so we can swap the placeholder GH_TOKEN
   // for the session's real git token (api.github.com is not the git remote
@@ -1067,17 +1080,18 @@ function buildDynamicRules(
     }
   }
 
-  // opencode credential swap on openrouter.ai. api-key only; the
-  // container's OPENROUTER_API_KEY env carries the placeholder, opencode
-  // sends `Bearer <placeholder>`, and the proxy substitutes the real key
-  // here. Gated on session tool=opencode + the placeholder sentinel so
-  // unrelated traffic (or a user manually carrying their own key)
-  // passes through untouched.
-  if (hostname === OPENROUTER_API_HOST
-    && sessionTool.get(sessionId) === 'opencode') {
+  // opencode credential swap. api-key only; the container's
+  // OPENROUTER_API_KEY / NEURALWATT_API_KEY env carries the placeholder,
+  // opencode sends `Bearer <placeholder>`, and the proxy substitutes the real
+  // key here. Gated on session tool=opencode + the placeholder sentinel + the
+  // host matching the credential's provider, so unrelated traffic (or a user
+  // manually carrying their own key) passes through untouched.
+  if (sessionTool.get(sessionId) === 'opencode') {
     const creds = readOpencodeCreds()
     const incomingAuth = headerValue(reqHeaders, 'authorization')
-    if (creds && incomingAuth === 'Bearer ' + PLACEHOLDER_API_KEY) {
+    if (creds
+      && hostname === opencodeProviderHost(creds.provider)
+      && incomingAuth === 'Bearer ' + PLACEHOLDER_API_KEY) {
       rules.push({
         pathPattern: '*',
         injections: [{

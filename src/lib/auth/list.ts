@@ -21,6 +21,7 @@ async function toolAuthSummary(tool: AgentTool): Promise<ToolAuthSummary | null>
     kind: entry.kind,
     keyPreview: maskKey(entry.apiKey),
     savedAt: entry.savedAt,
+    opencodeProvider: entry.opencodeProvider,
   }
 }
 

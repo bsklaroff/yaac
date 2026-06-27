@@ -23,6 +23,7 @@ import {
   type CodexCredentialsFile,
   type CodexOAuthBundle,
   type OpencodeCredentialsFile,
+  type OpencodeProvider,
 } from '@/shared/types'
 import {
   detectAuthKind,
@@ -32,6 +33,7 @@ import {
   readClaudeOAuthFromHost,
   readCodexOAuthFromHost,
   readCodexCredentials,
+  parseOpencodeProvider,
   promptForApiKey,
   runToolLogin,
   type ToolLoginResult,
@@ -45,6 +47,7 @@ export {
   readClaudeOAuthFromHost,
   readCodexOAuthFromHost,
   readCodexCredentials,
+  parseOpencodeProvider,
   promptForApiKey,
   runToolLogin,
 }
@@ -156,7 +159,12 @@ export async function loadOpencodeCredentialsFile(): Promise<OpencodeCredentials
     if (!parsed || typeof parsed !== 'object') return null
     const o = parsed as Record<string, unknown>
     if (o.kind === 'api-key' && typeof o.savedAt === 'string' && typeof o.apiKey === 'string' && o.apiKey !== '') {
-      return { kind: 'api-key', savedAt: o.savedAt, apiKey: o.apiKey }
+      // `provider` was added later — default to openrouter for files written
+      // before it existed.
+      const provider = parseOpencodeProvider(
+        typeof o.provider === 'string' ? o.provider : undefined,
+      )
+      return { kind: 'api-key', provider, savedAt: o.savedAt, apiKey: o.apiKey }
     }
     return null
   } catch {
@@ -198,7 +206,13 @@ export async function loadToolAuthEntry(tool: AgentTool): Promise<ToolAuthEntry 
   if (tool === 'opencode') {
     const f = await loadOpencodeCredentialsFile()
     if (!f) return null
-    return { tool: 'opencode', kind: 'api-key', apiKey: f.apiKey, savedAt: f.savedAt }
+    return {
+      tool: 'opencode',
+      kind: 'api-key',
+      apiKey: f.apiKey,
+      savedAt: f.savedAt,
+      opencodeProvider: f.provider,
+    }
   }
   const f = await loadCodexCredentialsFile()
   if (!f) return null
@@ -221,7 +235,12 @@ export async function loadToolAuthEntry(tool: AgentTool): Promise<ToolAuthEntry 
  * `saveClaudeOAuthBundle` to preserve the full bundle (refreshToken, expiresAt,
  * etc). The `apiKey` form here loses those extra fields.
  */
-export async function saveToolAuth(tool: AgentTool, apiKey: string, kind: ToolAuthKind): Promise<void> {
+export async function saveToolAuth(
+  tool: AgentTool,
+  apiKey: string,
+  kind: ToolAuthKind,
+  opencodeProvider?: OpencodeProvider,
+): Promise<void> {
   const savedAt = new Date().toISOString()
   if (tool === 'claude') {
     if (kind === 'oauth') {
@@ -248,7 +267,12 @@ export async function saveToolAuth(tool: AgentTool, apiKey: string, kind: ToolAu
     // persistToolAuthPayload boundary; if we get here with kind='oauth',
     // store as api-key defensively so the proxy still has something to
     // inject.
-    await saveOpencodeCredentialsFile({ kind: 'api-key', savedAt, apiKey })
+    await saveOpencodeCredentialsFile({
+      kind: 'api-key',
+      provider: opencodeProvider ?? 'openrouter',
+      savedAt,
+      apiKey,
+    })
     return
   }
   if (kind === 'oauth') {
@@ -304,7 +328,7 @@ export async function persistToolLogin(tool: AgentTool, result: ToolLoginResult)
     await fanOutCodexPlaceholders(result.codexBundle)
     return
   }
-  await saveToolAuth(tool, result.apiKey, result.kind)
+  await saveToolAuth(tool, result.apiKey, result.kind, result.opencodeProvider)
 }
 
 /**
@@ -324,7 +348,13 @@ export async function persistToolAuthPayload(tool: AgentTool, payload: unknown):
     if (typeof p.apiKey !== 'string' || p.apiKey === '') {
       throw new DaemonError('VALIDATION', 'api-key payload requires a non-empty apiKey.')
     }
-    await persistToolLogin(tool, { apiKey: p.apiKey, kind: 'api-key' })
+    await persistToolLogin(tool, {
+      apiKey: p.apiKey,
+      kind: 'api-key',
+      opencodeProvider: tool === 'opencode'
+        ? parseOpencodeProvider(typeof p.provider === 'string' ? p.provider : undefined)
+        : undefined,
+    })
     return
   }
   if (p.kind === 'oauth') {

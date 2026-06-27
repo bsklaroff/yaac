@@ -5,6 +5,16 @@ export type AgentTool = 'claude' | 'codex' | 'opencode'
 export type ToolAuthKind = 'api-key' | 'oauth'
 
 /**
+ * Backend an opencode session authenticates against. Both are api-key only
+ * and both are first-class opencode providers (registered in models.dev), so
+ * the only runtime difference is which env var carries the key and which host
+ * the proxy swaps the placeholder on. Stored on the opencode credential and
+ * chosen at `yaac auth update` time; legacy credentials (no provider field)
+ * load as 'openrouter'.
+ */
+export type OpencodeProvider = 'openrouter' | 'neuralwatt'
+
+/**
  * Claude Code's native OAuth bundle. Stored under the "claudeAiOauth" key in
  * both Claude's `.credentials.json` and yaac's host-side mirror.
  *
@@ -80,10 +90,13 @@ export type CodexCredentialsFile =
 
 /**
  * Shape of `~/.yaac/.credentials/opencode.json`. Only api-key — opencode
- * integration in yaac is OpenRouter-only at the moment.
+ * integration in yaac authenticates via an api-key for either OpenRouter or
+ * NeuralWatt. `provider` defaults to 'openrouter' on load for credentials
+ * written before the field existed.
  */
 export type OpencodeCredentialsFile = {
   kind: 'api-key'
+  provider: OpencodeProvider
   savedAt: string
   apiKey: string
 }
@@ -119,6 +132,8 @@ export interface ToolAuthEntry {
   /** Codex OAuth only — the full bundle, carried here so consumers like
    *  `auth list` can render plan type / email from the id_token. */
   codexBundle?: CodexOAuthBundle
+  /** opencode only — which backend the stored api-key authenticates against. */
+  opencodeProvider?: OpencodeProvider
 }
 
 export interface ProjectMeta {
@@ -263,6 +278,8 @@ export interface ToolAuthSummary {
   /** Masked preview of the access token / API key (last 4 chars). */
   keyPreview: string
   savedAt: string
+  /** opencode only — which backend the stored api-key authenticates against. */
+  opencodeProvider?: OpencodeProvider
 }
 
 export interface AuthListResult {

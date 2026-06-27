@@ -34,5 +34,6 @@ function printToolAuth(label: 'claude' | 'codex' | 'opencode', entry: ToolAuthSu
     return
   }
   const kindLabel = entry.kind === 'oauth' ? 'oauth' : 'api-key'
-  console.log(`  ${padded} ${entry.keyPreview}  (${kindLabel}, saved ${entry.savedAt.slice(0, 10)})`)
+  const providerLabel = entry.opencodeProvider ? `${entry.opencodeProvider}, ` : ''
+  console.log(`  ${padded} ${entry.keyPreview}  (${providerLabel}${kindLabel}, saved ${entry.savedAt.slice(0, 10)})`)
 }

@@ -895,11 +895,17 @@ export async function createSession(
       // OAuth: Claude Code reads the placeholder bundle from the mounted
       // .claude/.credentials.json, so no env var is needed.
     } else if (tool === 'opencode') {
-      // opencode is api-key only (OpenRouter). It reads OPENROUTER_API_KEY
-      // from env and sends `Authorization: Bearer <key>` to openrouter.ai,
-      // which the proxy swaps for the real key.
+      // opencode is api-key only. Depending on the credential's provider it
+      // reads OPENROUTER_API_KEY (openrouter.ai) or NEURALWATT_API_KEY
+      // (api.neuralwatt.com) from env and sends `Authorization: Bearer <key>`
+      // to that host, which the proxy swaps for the real key. Both are
+      // first-class opencode providers (models.dev), so no opencode.json
+      // provider block is needed.
       if (toolAuth.kind === 'api-key') {
-        env.push(`OPENROUTER_API_KEY=${PLACEHOLDER_API_KEY}`)
+        const envVar = toolAuth.opencodeProvider === 'neuralwatt'
+          ? 'NEURALWATT_API_KEY'
+          : 'OPENROUTER_API_KEY'
+        env.push(`${envVar}=${PLACEHOLDER_API_KEY}`)
       }
     } else if (toolAuth.kind === 'api-key') {
       env.push(`OPENAI_API_KEY=${PLACEHOLDER_API_KEY}`)

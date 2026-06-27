@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 import { addEntry } from '@/lib/project/credentials'
-import { saveClaudeCredentialsFile } from '@/lib/project/tool-auth'
+import { saveClaudeCredentialsFile, saveToolAuth } from '@/lib/project/tool-auth'
 import { listAuth } from '@/lib/auth/list'
 
 describe('listAuth', () => {
@@ -44,6 +44,18 @@ describe('listAuth', () => {
         keyPreview: '***EFGH',
         savedAt: '2026-04-20T00:00:00.000Z',
       },
+    ])
+  })
+
+  it('surfaces the opencode provider in the summary', async () => {
+    await saveToolAuth('opencode', 'nw-secret-key', 'api-key', 'neuralwatt')
+    const result = await listAuth()
+    expect(result.toolAuth).toEqual([
+      expect.objectContaining({
+        tool: 'opencode',
+        kind: 'api-key',
+        opencodeProvider: 'neuralwatt',
+      }),
     ])
   })
 

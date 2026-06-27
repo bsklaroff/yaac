@@ -106,7 +106,13 @@ export const authApp = new Hono()
     '/:tool',
     zValidator('param', z.object({ tool: z.enum(['claude', 'codex', 'opencode']) })),
     zValidator('json', z.discriminatedUnion('kind', [
-      z.object({ kind: z.literal('api-key'), apiKey: z.string().min(1) }),
+      z.object({
+        kind: z.literal('api-key'),
+        apiKey: z.string().min(1),
+        // opencode only — which backend the key authenticates against.
+        // Ignored for claude/codex. Defaults to openrouter when absent.
+        provider: z.enum(['openrouter', 'neuralwatt']).optional(),
+      }),
       z.object({
         kind: z.literal('oauth'),
         bundle: z.union([claudeOAuthBundleSchema, codexOAuthBundleSchema]),

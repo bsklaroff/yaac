@@ -118,7 +118,8 @@ describe('yaac auth update (real CLI + real daemon)', () => {
 
   it('persists an OpenCode (OpenRouter) api key via the test-only login hook', async () => {
     // YAAC_E2E_OPENCODE_LOGIN holds a raw api key string — opencode is
-    // api-key-only in v1 and skips any native CLI spawn.
+    // api-key-only and skips any native CLI spawn. With no provider override
+    // the credential defaults to openrouter.
     const env = { ...testEnv.env, YAAC_E2E_OPENCODE_LOGIN: 'sk-or-v1-test-key' }
     const { stdout, exitCode } = await runYaac(env, 'auth', 'update', { stdin: '4\n' })
     expect(exitCode).toBe(0)
@@ -126,9 +127,30 @@ describe('yaac auth update (real CLI + real daemon)', () => {
 
     const credsPath = path.join(testEnv.dataDir, '.credentials', 'opencode.json')
     const raw = await fs.readFile(credsPath, 'utf8')
-    const parsed = JSON.parse(raw) as { kind: string; apiKey?: string; savedAt?: string }
+    const parsed = JSON.parse(raw) as {
+      kind: string; apiKey?: string; savedAt?: string; provider?: string
+    }
     expect(parsed.kind).toBe('api-key')
     expect(parsed.apiKey).toBe('sk-or-v1-test-key')
+    expect(parsed.provider).toBe('openrouter')
     expect(typeof parsed.savedAt).toBe('string')
+  })
+
+  it('persists an OpenCode NeuralWatt api key when the provider hook is set', async () => {
+    const env = {
+      ...testEnv.env,
+      YAAC_E2E_OPENCODE_LOGIN: 'nw-test-key',
+      YAAC_E2E_OPENCODE_PROVIDER: 'neuralwatt',
+    }
+    const { stdout, exitCode } = await runYaac(env, 'auth', 'update', { stdin: '4\n' })
+    expect(exitCode).toBe(0)
+    expect(stdout).toContain('OpenCode credentials saved.')
+
+    const credsPath = path.join(testEnv.dataDir, '.credentials', 'opencode.json')
+    const raw = await fs.readFile(credsPath, 'utf8')
+    const parsed = JSON.parse(raw) as { kind: string; apiKey?: string; provider?: string }
+    expect(parsed.kind).toBe('api-key')
+    expect(parsed.apiKey).toBe('nw-test-key')
+    expect(parsed.provider).toBe('neuralwatt')
   })
 })

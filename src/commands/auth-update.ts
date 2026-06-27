@@ -12,7 +12,12 @@ import {
   runToolLogin,
   type ToolLoginResult,
 } from '@/shared/tool-auth-interactive'
-import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '@/shared/types'
+import type {
+  AgentTool,
+  ClaudeOAuthBundle,
+  CodexOAuthBundle,
+  OpencodeProvider,
+} from '@/shared/types'
 
 /**
  * Fetch a known_hosts entry for `host` by driving `ssh` (not `ssh-keyscan`).
@@ -65,7 +70,7 @@ async function fetchKnownHostsEntry(host: string): Promise<string> {
 }
 
 type ToolAuthPayload =
-  | { kind: 'api-key'; apiKey: string }
+  | { kind: 'api-key'; apiKey: string; provider?: OpencodeProvider }
   | { kind: 'oauth'; bundle: ClaudeOAuthBundle | CodexOAuthBundle }
 
 export async function authUpdate(): Promise<void> {
@@ -74,7 +79,7 @@ export async function authUpdate(): Promise<void> {
   console.log('  1) Git credentials (HTTPS token or SSH key)')
   console.log('  2) Claude Code (Anthropic)')
   console.log('  3) Codex (OpenAI)')
-  console.log('  4) OpenCode (OpenRouter)')
+  console.log('  4) OpenCode (OpenRouter or NeuralWatt)')
   const answer = (await rl.question('Choice [1-4]: ')).trim()
   rl.close()
 
@@ -239,6 +244,13 @@ function buildAuthPayload(tool: AgentTool, result: ToolLoginResult): ToolAuthPay
   }
   if (!result.apiKey) {
     throw new Error('No credentials captured from tool login.')
+  }
+  if (tool === 'opencode') {
+    return {
+      kind: 'api-key',
+      apiKey: result.apiKey,
+      provider: result.opencodeProvider ?? 'openrouter',
+    }
   }
   return { kind: 'api-key', apiKey: result.apiKey }
 }

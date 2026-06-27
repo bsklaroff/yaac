@@ -8,6 +8,7 @@ import {
   type AgentTool,
   type ClaudeOAuthBundle,
   type CodexOAuthBundle,
+  type OpencodeProvider,
   type ToolAuthKind,
 } from '@/shared/types'
 
@@ -211,6 +212,8 @@ export interface ToolLoginResult {
   claudeBundle?: ClaudeOAuthBundle
   /** Present when Codex OAuth login succeeded — the full bundle. */
   codexBundle?: CodexOAuthBundle
+  /** opencode only — backend the captured api-key authenticates against. */
+  opencodeProvider?: OpencodeProvider
 }
 
 /**
@@ -237,8 +240,14 @@ export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult> {
       const bundle = JSON.parse(hookRaw) as CodexOAuthBundle
       return { apiKey: bundle.accessToken, kind: 'oauth', codexBundle: bundle }
     }
-    // opencode: the env var holds a raw OpenRouter key.
-    return { apiKey: hookRaw, kind: 'api-key' }
+    // opencode: the env var holds a raw api-key; an optional sibling var
+    // picks the provider (defaults to openrouter) so e2e can drive the
+    // NeuralWatt branch without a TTY.
+    return {
+      apiKey: hookRaw,
+      kind: 'api-key',
+      opencodeProvider: parseOpencodeProvider(process.env.YAAC_E2E_OPENCODE_PROVIDER),
+    }
   }
 
   if (tool === 'opencode') {
@@ -285,13 +294,42 @@ export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult> {
 }
 
 /**
- * Prompt the user to paste their API key directly.
+ * Coerce a raw provider string to an OpencodeProvider, defaulting to
+ * 'openrouter' for anything unrecognized (including undefined).
+ */
+export function parseOpencodeProvider(value: string | undefined): OpencodeProvider {
+  return value === 'neuralwatt' ? 'neuralwatt' : 'openrouter'
+}
+
+/**
+ * Prompt for which backend an opencode api-key authenticates against.
+ * Defaults to OpenRouter when the user just hits enter.
+ */
+async function promptForOpencodeProvider(
+  rl: readline.Interface,
+): Promise<OpencodeProvider> {
+  console.log('Which opencode provider?')
+  console.log('  1) OpenRouter (default)')
+  console.log('  2) NeuralWatt')
+  const answer = (await rl.question('Choice [1-2]: ')).trim()
+  return answer === '2' ? 'neuralwatt' : 'openrouter'
+}
+
+/**
+ * Prompt the user to paste their API key directly. For opencode, first asks
+ * which provider the key belongs to so the session and proxy know which env
+ * var / host to use.
  */
 export async function promptForApiKey(tool: AgentTool): Promise<ToolLoginResult> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+  let opencodeProvider: OpencodeProvider | undefined
+  if (tool === 'opencode') {
+    opencodeProvider = await promptForOpencodeProvider(rl)
+  }
   const label =
     tool === 'claude' ? 'Anthropic API key or OAuth token' :
     tool === 'codex' ? 'OpenAI API key' :
+    opencodeProvider === 'neuralwatt' ? 'NeuralWatt API key' :
     'OpenRouter API key'
   const key = (await rl.question(`Paste your ${label}: `)).trim()
   rl.close()
@@ -299,5 +337,5 @@ export async function promptForApiKey(tool: AgentTool): Promise<ToolLoginResult>
     console.error('Key cannot be empty.')
     process.exit(1)
   }
-  return { apiKey: key, kind: detectAuthKind(tool, key) }
+  return { apiKey: key, kind: detectAuthKind(tool, key), opencodeProvider }
 }
