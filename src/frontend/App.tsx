@@ -3,7 +3,7 @@ import { api, ApiError } from './lib/apiClient'
 import { readBootstrapCode, postBootstrap, stripBootstrapFromUrl } from './lib/bootstrap'
 import { useEvents } from './lib/useEvents'
 import { useSnapshot } from './lib/useSnapshot'
-import { mergeProvisioning, useUiStore } from './store'
+import { mergeProvisioning, persistSelection, useUiStore } from './store'
 import { ProjectRail } from './components/ProjectRail'
 import { Sidebar } from './components/Sidebar'
 import { SessionView } from './components/SessionView'
@@ -72,9 +72,22 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
   // Daemon-tracked provisioning rows + local optimistic ones (snapshot wins).
   const provisioning = mergeProvisioning(snapshot?.provisioning ?? [], optimisticProvisioning)
 
-  // Default the rail selection to the first project once projects arrive.
+  // Mirror the restored selection (which may have come from localStorage) into
+  // the URL on first paint, so even a bare reload yields a shareable link.
+  // Ongoing changes are mirrored by the store subscription.
   useEffect(() => {
-    if (!activeProjectSlug && projects.length > 0) setActiveProject(projects[0].slug)
+    const s = useUiStore.getState()
+    persistSelection(s.activeProjectSlug, s.selectedSessionId)
+  }, [])
+
+  // Default the rail selection to the first project once projects arrive, and
+  // recover from a persisted/active project that no longer exists (deleted, or
+  // a stale link) by falling back to the first. Switching here clears the
+  // session — correct, since the restored session belonged to that project.
+  useEffect(() => {
+    if (projects.length === 0) return
+    if (activeProjectSlug && projects.some((p) => p.slug === activeProjectSlug)) return
+    setActiveProject(projects[0].slug)
   }, [activeProjectSlug, projects, setActiveProject])
 
   // Once the snapshot no longer lists an optimistically-deleted session, the

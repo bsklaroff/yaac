@@ -4,6 +4,7 @@ import type { DeletedSessionEntry, ProvisioningSessionEntry } from '@/shared/typ
 
 const LAYOUTS_LS_KEY = 'yaac.layouts.v1'
 const VIEWMODE_LS_KEY = 'yaac.viewmode.v1'
+const SELECTION_LS_KEY = 'yaac.selection.v1'
 
 /** How the workspace renders its terminals: a tiling window manager, or
  *  one-at-a-time tabs (better on small screens). */
@@ -26,6 +27,70 @@ function persistViewMode(mode: ViewMode): void {
   try {
     if (typeof localStorage !== 'undefined') localStorage.setItem(VIEWMODE_LS_KEY, mode)
   } catch { /* non-fatal */ }
+}
+
+/** The project + session the workspace is currently viewing — persisted so a
+ *  reload, or a shared/bookmarked link, reopens the same view. */
+export interface PersistedSelection {
+  projectSlug: string | null
+  sessionId: string | null
+}
+
+/**
+ * Read the persisted selection. The URL query wins over localStorage — a
+ * shared `?project=…&session=…` link should override the last local view —
+ * with localStorage as the fallback for a bare reload. The session is only a
+ * hint: App drops it if that session is no longer active. Exported for tests.
+ */
+export function loadSelection(): PersistedSelection {
+  try {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      const projectSlug = params.get('project')
+      if (projectSlug) return { projectSlug, sessionId: params.get('session') }
+    }
+  } catch { /* fall through to localStorage */ }
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(SELECTION_LS_KEY)
+      if (raw) {
+        const parsed: unknown = JSON.parse(raw)
+        if (parsed && typeof parsed === 'object') {
+          const p = parsed as Record<string, unknown>
+          return {
+            projectSlug: typeof p.projectSlug === 'string' ? p.projectSlug : null,
+            sessionId: typeof p.sessionId === 'string' ? p.sessionId : null,
+          }
+        }
+      }
+    }
+  } catch { /* fall through to the empty default */ }
+  return { projectSlug: null, sessionId: null }
+}
+
+/**
+ * Persist the selection to localStorage and mirror it into the URL bar as
+ * `?project=&session=` query params (replaceState — no navigation; unrelated
+ * params like `bootstrap` are preserved). The SPA is served only at `/`, so
+ * query params (not a path) keep deep links working on a hard reload.
+ * Best-effort. Exported for tests.
+ */
+export function persistSelection(projectSlug: string | null, sessionId: string | null): void {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(SELECTION_LS_KEY, JSON.stringify({ projectSlug, sessionId }))
+    }
+  } catch { /* quota/serialization failures are non-fatal */ }
+  try {
+    if (typeof window !== 'undefined' && window.history) {
+      const url = new URL(window.location.href)
+      if (projectSlug) url.searchParams.set('project', projectSlug)
+      else url.searchParams.delete('project')
+      if (sessionId) url.searchParams.set('session', sessionId)
+      else url.searchParams.delete('session')
+      window.history.replaceState({}, '', url.pathname + url.search + url.hash)
+    }
+  } catch { /* history failures are non-fatal */ }
 }
 
 /** Read persisted workspace layouts, dropping anything structurally
@@ -139,9 +204,11 @@ interface UiState {
   removeOptimisticDeleted: (sessionId: string) => void
 }
 
+const initialSelection = loadSelection()
+
 export const useUiStore = create<UiState>((set) => ({
-  activeProjectSlug: null,
-  selectedSessionId: null,
+  activeProjectSlug: initialSelection.projectSlug,
+  selectedSessionId: initialSelection.sessionId,
   terminalNonces: {},
   layouts: loadPersistedLayouts(),
   sidebarOpen: true,
@@ -214,4 +281,16 @@ export const useUiStore = create<UiState>((set) => ({
 // back too.
 useUiStore.subscribe((state, prev) => {
   if (state.layouts !== prev.layouts) persistLayouts(state.layouts)
+})
+
+// The active project + session survive reloads and are mirrored into the URL
+// bar so a link is shareable. Only the session is liveness-gated — App drops a
+// restored selection whose session is no longer active.
+useUiStore.subscribe((state, prev) => {
+  if (
+    state.activeProjectSlug !== prev.activeProjectSlug
+    || state.selectedSessionId !== prev.selectedSessionId
+  ) {
+    persistSelection(state.activeProjectSlug, state.selectedSessionId)
+  }
 })
