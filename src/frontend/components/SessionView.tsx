@@ -12,6 +12,7 @@ import {
   computeLayout,
   dropEdgeFor,
   dropHighlightRect,
+  focusPaneTarget,
   leaf,
   leafTargets,
   moveLeaf,
@@ -80,6 +81,7 @@ export function SessionView({
   provisioning: ProvisioningSessionEntry[]
 }): JSX.Element {
   const selectedSessionId = useUiStore((s) => s.selectedSessionId)
+  const focusNonce = useUiStore((s) => s.focusNonce)
   const terminalNonces = useUiStore((s) => s.terminalNonces)
   const layouts = useUiStore((s) => s.layouts)
   const setSessionLayout = useUiStore((s) => s.setSessionLayout)
@@ -132,6 +134,10 @@ export function SessionView({
     ? (activeTabs[sid] && targets.includes(activeTabs[sid]) ? activeTabs[sid] : targets[0])
     : undefined
   const tiled = viewMode === 'tiles'
+  // The pane to drop focus into when this session is selected/opened — only
+  // that one terminal gets a live focusKey, so a bumped focusNonce focuses it
+  // without disturbing any other (kept-alive, off-screen) terminal.
+  const focusTarget = sid ? focusPaneTarget(targets, activeTab, tiled) : null
   const { panes, dividers } = computeLayout(layout, { x: 0, y: 0, w: wsSize.w, h: wsSize.h }, GAP)
   const panesRef = useRef<PaneRect[]>(panes)
   panesRef.current = panes
@@ -536,7 +542,12 @@ export function SessionView({
               className={clsx('absolute', !style && 'invisible left-0 top-0 h-full w-full')}
             >
               <div className="h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">
-                <SessionTerminal key={`${key}:${terminalNonces[id] ?? 0}`} sessionId={id} target={target} />
+                <SessionTerminal
+                  key={`${key}:${terminalNonces[id] ?? 0}`}
+                  sessionId={id}
+                  target={target}
+                  focusKey={id === sid && target === focusTarget ? focusNonce : undefined}
+                />
               </div>
             </div>
           )

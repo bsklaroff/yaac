@@ -67,6 +67,17 @@ describe('selection + project switching', () => {
     expect(useUiStore.getState().selectedSessionId).toBe('s2')
   })
 
+  it('selectSession and openSession each bump focusNonce', () => {
+    expect(useUiStore.getState().focusNonce).toBe(0)
+    useUiStore.getState().selectSession('s1')
+    expect(useUiStore.getState().focusNonce).toBe(1)
+    // Re-selecting the same session still bumps — clicking it re-focuses.
+    useUiStore.getState().selectSession('s1')
+    expect(useUiStore.getState().focusNonce).toBe(2)
+    useUiStore.getState().openSession('proj', 's2')
+    expect(useUiStore.getState().focusNonce).toBe(3)
+  })
+
   it('reconnectTerminal bumps only the target session nonce', () => {
     useUiStore.getState().reconnectTerminal('t1')
     useUiStore.getState().reconnectTerminal('t1')

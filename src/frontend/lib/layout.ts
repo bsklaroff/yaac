@@ -61,6 +61,22 @@ export function leafTargets(node: LayoutNode | null): string[] {
   return [...leafTargets(node.a), ...leafTargets(node.b)]
 }
 
+/**
+ * The pane keyboard focus should land in when a session becomes selected.
+ * Tabs mode shows one pane at a time, so the visible tab wins; tiles mode
+ * shows them all, so prefer the agent pane (the one you talk to), falling
+ * back to the first leaf. Null when the session has no panes.
+ */
+export function focusPaneTarget(
+  targets: string[],
+  activeTab: string | undefined,
+  tiled: boolean,
+): string | null {
+  if (!tiled) return activeTab ?? null
+  if (targets.includes('agent')) return 'agent'
+  return targets[0] ?? null
+}
+
 const clampRatio = (r: number): number => Math.min(0.9, Math.max(0.1, r))
 
 /**

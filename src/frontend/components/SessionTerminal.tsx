@@ -16,12 +16,18 @@ const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(naviga
 export function SessionTerminal({
   sessionId,
   target = 'agent',
+  focusKey,
 }: {
   sessionId: string
   /** /pty/attach target: 'agent', 'shell:<name>', or 'window:@<id>'. */
   target?: string
+  /** When this changes to a defined value, drop keyboard focus into the
+   *  terminal. The caller bumps it on selecting/opening the session; leaving
+   *  it undefined (panes that shouldn't grab focus) is a no-op. */
+  focusKey?: number
 }): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
+  const termRef = useRef<XTerm | null>(null)
 
   useEffect(() => {
     const el = containerRef.current
@@ -74,6 +80,7 @@ export function SessionTerminal({
     term.loadAddon(fit)
     term.open(el)
     fit.fit()
+    termRef.current = term
 
     let ws: WebSocket | null = null
     let dataSub: { dispose(): void } | null = null
@@ -153,8 +160,18 @@ export function SessionTerminal({
         ws.close()
       }
       term.dispose()
+      termRef.current = null
     }
   }, [sessionId, target])
+
+  // Move keyboard focus into the terminal when the session is selected/opened.
+  // This focuses xterm's hidden textarea only — it deliberately does NOT
+  // synthesize a click on the screen, which (tmux mouse mode is on) would be
+  // forwarded as a mouse event and could trigger an action in the TUI.
+  useEffect(() => {
+    if (focusKey === undefined) return
+    termRef.current?.focus()
+  }, [focusKey])
 
   return <div ref={containerRef} className="h-full w-full" />
 }

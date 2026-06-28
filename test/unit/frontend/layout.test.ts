@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  focusPaneTarget,
   isLayoutNode,
   leaf,
   leafTargets,
@@ -23,6 +24,23 @@ describe('leafTargets', () => {
     expect(leafTargets(leaf('agent'))).toEqual(['agent'])
     const tree = splitLeaf(leaf('agent'), 'agent', 'shell:shell', 'row')
     expect(leafTargets(tree)).toEqual(['agent', 'shell:shell'])
+  })
+})
+
+describe('focusPaneTarget', () => {
+  it('tabs mode focuses the active tab (the only visible pane)', () => {
+    expect(focusPaneTarget(['agent', 'shell:a'], 'shell:a', false)).toBe('shell:a')
+    expect(focusPaneTarget(['agent'], 'agent', false)).toBe('agent')
+  })
+
+  it('tiles mode prefers the agent pane, else the first leaf', () => {
+    expect(focusPaneTarget(['shell:a', 'agent'], 'shell:a', true)).toBe('agent')
+    expect(focusPaneTarget(['shell:a', 'shell:b'], 'shell:b', true)).toBe('shell:a')
+  })
+
+  it('returns null when there is no pane to focus', () => {
+    expect(focusPaneTarget([], undefined, true)).toBeNull()
+    expect(focusPaneTarget([], undefined, false)).toBeNull()
   })
 })
 

@@ -151,6 +151,11 @@ interface UiState {
   activeProjectSlug: string | null
   /** Session shown in the main pane. */
   selectedSessionId: string | null
+  /** Bumped every time a session is selected or opened. The view watches it
+   *  to pull keyboard focus into that session's primary pane — a plain
+   *  textarea focus, never a synthetic click (which xterm would forward to
+   *  tmux as a mouse event). */
+  focusNonce: number
   /** Per-session counter; bumping one forces that terminal to remount +
    *  reattach (e.g. after a restart) without disturbing the others. */
   terminalNonces: Record<string, number>
@@ -209,6 +214,7 @@ const initialSelection = loadSelection()
 export const useUiStore = create<UiState>((set) => ({
   activeProjectSlug: initialSelection.projectSlug,
   selectedSessionId: initialSelection.sessionId,
+  focusNonce: 0,
   terminalNonces: {},
   layouts: loadPersistedLayouts(),
   sidebarOpen: true,
@@ -238,8 +244,9 @@ export const useUiStore = create<UiState>((set) => ({
   // Switching projects clears the open session — the sidebar now shows a
   // different project's sessions, so the old selection no longer belongs.
   setActiveProject: (slug) => set({ activeProjectSlug: slug, selectedSessionId: null }),
-  selectSession: (id) => set({ selectedSessionId: id }),
-  openSession: (projectSlug, sessionId) => set({ activeProjectSlug: projectSlug, selectedSessionId: sessionId }),
+  selectSession: (id) => set((s) => ({ selectedSessionId: id, focusNonce: s.focusNonce + 1 })),
+  openSession: (projectSlug, sessionId) =>
+    set((s) => ({ activeProjectSlug: projectSlug, selectedSessionId: sessionId, focusNonce: s.focusNonce + 1 })),
   reconnectTerminal: (sessionId) => set((s) => ({
     terminalNonces: { ...s.terminalNonces, [sessionId]: (s.terminalNonces[sessionId] ?? 0) + 1 },
   })),
