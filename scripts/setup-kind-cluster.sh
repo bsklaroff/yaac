@@ -111,6 +111,11 @@ for node in $(kind get nodes --name "${CLUSTER_NAME}"); do
     echo 262144 > /proc/sys/vm/min_free_kbytes
     echo 40 > /proc/sys/vm/compaction_proactiveness
   '
+  # Raise the node *container's* own PID ceiling (podman defaults it to
+  # 2048): with many sessions plus per-session vclusters the node's total
+  # process count blows past it and the node's own containerd can't fork,
+  # which cascades to every pod. 32768 is ~30x typical load, still bounded.
+  podman update --pids-limit 32768 "${node}"
 done
 
 # 5. Put the registry on the kind network so nodes can reach it by name.
