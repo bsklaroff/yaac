@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { DaemonEvent } from '@/shared/types'
+import { INITIAL_RECONNECT_DELAY_MS, nextReconnectDelay } from '@/frontend/lib/reconnect'
 
 export const SNAPSHOT_KEY = ['snapshot'] as const
 
@@ -13,7 +14,7 @@ export const SNAPSHOT_KEY = ['snapshot'] as const
 export function useEvents(enabled: boolean): { connected: boolean } {
   const queryClient = useQueryClient()
   const [connected, setConnected] = useState(false)
-  const backoffRef = useRef(500)
+  const backoffRef = useRef(INITIAL_RECONNECT_DELAY_MS)
 
   useEffect(() => {
     if (!enabled) return
@@ -27,7 +28,7 @@ export function useEvents(enabled: boolean): { connected: boolean } {
 
       ws.onopen = (): void => {
         setConnected(true)
-        backoffRef.current = 500
+        backoffRef.current = INITIAL_RECONNECT_DELAY_MS
       }
 
       ws.onmessage = (evt: MessageEvent): void => {
@@ -49,7 +50,7 @@ export function useEvents(enabled: boolean): { connected: boolean } {
         setConnected(false)
         if (closedByUs) return
         reconnectTimer = setTimeout(connect, backoffRef.current)
-        backoffRef.current = Math.min(backoffRef.current * 2, 10_000)
+        backoffRef.current = nextReconnectDelay(backoffRef.current)
       }
     }
 

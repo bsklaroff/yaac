@@ -3,6 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { clipboardKeyAction } from '@/frontend/lib/clipboard'
+import { INITIAL_RECONNECT_DELAY_MS, nextReconnectDelay } from '@/frontend/lib/reconnect'
 
 // iPadOS reports as "Macintosh" in modern Safari; both want the ⌘ bindings.
 const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent)
@@ -83,15 +84,23 @@ export function SessionTerminal({
     termRef.current = term
 
     let ws: WebSocket | null = null
-    let dataSub: { dispose(): void } | null = null
-    let resizeSub: { dispose(): void } | null = null
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined
+    let reconnectDelay = INITIAL_RECONNECT_DELAY_MS
+    let closedByUs = false
+    const encoder = new TextEncoder()
 
-    // Defer the connection one tick: React dev StrictMode mounts, cleans up,
-    // and remounts synchronously, and a WS aborted while still CONNECTING
-    // doesn't reliably tear down the proxied upstream — the daemon-side PTY
-    // then leaks (observed holding grouped view sessions open forever). The
-    // canceled timer means the throwaway first mount never connects at all.
-    const connectTimer = setTimeout(() => {
+    const sendResize = (): void => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+      }
+    }
+
+    // (Re)attach to the session's tmux. The tmux server in the pod is
+    // persistent and survives client detaches, so a fresh socket re-attaches
+    // to the same session with scrollback intact — which is what makes
+    // auto-reconnect lossless here. Backoff mirrors the /events socket
+    // (useEvents): 500ms doubling to a 10s cap, reset on open.
+    const connect = (): void => {
       // Send the fitted size up-front so the daemon spawns the PTY at the
       // right dimensions — the tmux window and this grid agree from the
       // first frame, avoiding the cold-start resize that garbles
@@ -105,15 +114,11 @@ export function SessionTerminal({
       const sock = new WebSocket(`${scheme}://${window.location.host}/pty/attach?${params.toString()}`)
       ws = sock
       sock.binaryType = 'arraybuffer'
-      const encoder = new TextEncoder()
-
-      const sendResize = (): void => {
-        if (sock.readyState === WebSocket.OPEN) {
-          sock.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-        }
-      }
+      let opened = false
 
       sock.onopen = (): void => {
+        opened = true
+        reconnectDelay = INITIAL_RECONNECT_DELAY_MS
         fit.fit()
         sendResize()
       }
@@ -122,14 +127,45 @@ export function SessionTerminal({
         term.write(new Uint8Array(e.data as ArrayBuffer))
       }
       sock.onclose = (): void => {
-        term.write('\r\n\x1b[2m[disconnected]\x1b[0m\r\n')
+        // Ignore a stale socket we've already torn down or replaced.
+        if (closedByUs || sock !== ws) return
+        // Only announce a drop the user actually had — a connect that never
+        // opened (e.g. pod gone) shouldn't spam the screen on every retry.
+        if (opened) term.write('\r\n\x1b[2m[disconnected, reconnecting…]\x1b[0m\r\n')
+        reconnectTimer = setTimeout(connect, reconnectDelay)
+        reconnectDelay = nextReconnectDelay(reconnectDelay)
       }
+    }
 
-      dataSub = term.onData((d: string): void => {
-        if (sock.readyState === WebSocket.OPEN) sock.send(encoder.encode(d))
-      })
-      resizeSub = term.onResize((): void => sendResize())
-    }, 0)
+    // Tap the terminal (not a single socket) so input/resize keep flowing to
+    // whichever socket is current after a reconnect.
+    const dataSub = term.onData((d: string): void => {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(encoder.encode(d))
+    })
+    const resizeSub = term.onResize((): void => sendResize())
+
+    // A suspended laptop drops the socket silently; the browser often doesn't
+    // surface the close until the tab is refocused or the network returns.
+    // These wake events re-attach immediately instead of waiting out backoff.
+    const reconnectNow = (): void => {
+      if (closedByUs) return
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      reconnectDelay = INITIAL_RECONNECT_DELAY_MS
+      connect()
+    }
+    const onVisible = (): void => {
+      if (document.visibilityState === 'visible') reconnectNow()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('online', reconnectNow)
+
+    // Defer the first connection one tick: React dev StrictMode mounts, cleans
+    // up, and remounts synchronously, and a WS aborted while still CONNECTING
+    // doesn't reliably tear down the proxied upstream — the daemon-side PTY
+    // then leaks (observed holding grouped view sessions open forever). The
+    // canceled timer means the throwaway first mount never connects at all.
+    const connectTimer = setTimeout(connect, 0)
 
     // Refit on any container size change (window resizes, but also split
     // panes opening/closing and divider drags), coalesced to one fit per
@@ -142,11 +178,15 @@ export function SessionTerminal({
     observer.observe(el)
 
     return (): void => {
+      closedByUs = true
       clearTimeout(connectTimer)
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('online', reconnectNow)
       observer.disconnect()
       cancelAnimationFrame(fitRaf)
-      dataSub?.dispose()
-      resizeSub?.dispose()
+      dataSub.dispose()
+      resizeSub.dispose()
       if (ws) {
         // Drop handlers so a late close event can't touch the disposed
         // terminal; if still CONNECTING, close again once open so the
