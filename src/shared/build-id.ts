@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { PACKAGE_ROOT } from '@/shared/paths'
+import { testEnv } from '@/shared/env'
 
 const BUILD_ID_FILENAME = '.build-id'
 
@@ -70,7 +71,7 @@ async function collect(
  * fail loudly rather than silently letting a stale daemon keep running.
  */
 export async function readBuildId(rootDir: string = PACKAGE_ROOT): Promise<string> {
-  const envOverride = process.env.YAAC_BUILD_ID
+  const envOverride = testEnv.buildIdOverride
   if (envOverride) return envOverride
 
   const p = buildIdPath(rootDir)

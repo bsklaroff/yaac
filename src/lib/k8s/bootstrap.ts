@@ -16,7 +16,7 @@ import {
 } from '@/lib/k8s/pod-spec'
 import { LABEL_SESSION_ID } from '@/lib/k8s/pods'
 import { credentialsDir, getDataDir } from '@/lib/project/paths'
-import { isTorEnabled } from '@/lib/git'
+import { env } from '@/shared/env'
 
 /** Deployment/Service name and pod selector label of the shared proxy. */
 export const PROXY_APP_NAME = 'yaac-proxy'
@@ -392,7 +392,7 @@ export function buildProxyDeploymentManifest(
                 // (only public known_hosts) out of the persisted secret
                 // dir. ssh-add and the known_hosts writer resolve ~ here.
                 { name: 'HOME', value: '/home/proxy' },
-                ...(isTorEnabled() ? [{ name: 'USE_TOR', value: '1' }] : []),
+                ...(env.useTor ? [{ name: 'USE_TOR', value: '1' }] : []),
                 // Nested (inner) proxy: trust the OUTER proxy's MITM CA so the
                 // chained upstream dial (→ outer proxy) validates. Additive —
                 // Node still consults its bundled roots. See OUTER_CA_*.

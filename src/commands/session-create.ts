@@ -7,6 +7,7 @@ import { getRpcClient, toClientError } from '@/commands/rpc'
 import { interactiveExecArgs } from '@/lib/k8s/exec'
 import { getGitUserConfig } from '@/shared/git'
 import { CONTAINER_TMUX_SOCK, getProjectsDir } from '@/shared/paths'
+import { testEnv } from '@/shared/env'
 import type { AgentTool } from '@/shared/types'
 
 export interface SessionCreateOptions {
@@ -143,7 +144,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   // `kubectl exec -it` hangs waiting for terminal capabilities. Setting
   // this env var returns after provisioning and lets the test drive the
   // container directly via `kubectl exec`.
-  if (process.env.YAAC_E2E_NO_ATTACH !== '1') {
+  if (!testEnv.e2eNoAttach) {
     try {
       await new Promise<void>((resolve, reject) => {
         const child = spawn('kubectl', interactiveExecArgs(jobName, ['tmux', '-S', CONTAINER_TMUX_SOCK, 'attach-session', '-t', 'yaac']), {

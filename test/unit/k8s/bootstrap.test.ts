@@ -9,14 +9,6 @@ vi.mock('@/lib/k8s/kubectl', () => ({
   kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
-vi.mock('@/lib/git', async (importOriginal) => {
-  const actual = await importOriginal<typeof gitModule>()
-  return {
-    ...actual,
-    isTorEnabled: vi.fn(() => false),
-  }
-})
-
 // ensureProxyResources(nested) registers the Cilium CRDs into the vcluster;
 // no test here exercises the real CRD apply, so stub it out.
 vi.mock('@/lib/k8s/cilium-crds', () => ({
@@ -77,15 +69,12 @@ import {
 } from '@/lib/k8s/bootstrap'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
 import { CA_CERT_PATH } from '@/lib/k8s/pod-spec'
-import { isTorEnabled } from '@/lib/git'
 import { credentialsDir } from '@/lib/project/paths'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import type * as gitModule from '@/lib/git'
 
 const mockApply = vi.mocked(kubectlApply)
 const mockGetJson = vi.mocked(kubectlGetJson)
 const mockRetry = vi.mocked(kubectlWithRetry)
-const mockTor = vi.mocked(isTorEnabled)
 
 let tmpDir: string
 
@@ -96,11 +85,12 @@ beforeEach(async () => {
   mockGetJson.mockReset()
   mockRetry.mockReset()
   mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
-  mockTor.mockReturnValue(false)
+  vi.stubEnv('YAAC_USE_TOR', '')
 })
 
 afterEach(async () => {
   await cleanupTempDir(tmpDir)
+  vi.unstubAllEnvs()
 })
 
 describe('constants', () => {
@@ -375,7 +365,7 @@ describe('buildProxyDeploymentManifest', () => {
   it('adds USE_TOR only when tor is enabled', () => {
     expect(build().spec.template.spec.containers[0].env)
       .not.toContainEqual({ name: 'USE_TOR', value: '1' })
-    mockTor.mockReturnValue(true)
+    vi.stubEnv('YAAC_USE_TOR', '1')
     expect(build().spec.template.spec.containers[0].env)
       .toContainEqual({ name: 'USE_TOR', value: '1' })
   })

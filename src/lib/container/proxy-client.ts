@@ -17,6 +17,7 @@ import { pushImageToRegistry, registryHasTag, registryRef } from '@/lib/k8s/regi
 import { ServicePortForward } from '@/lib/k8s/port-forward'
 import { listSshEntries } from '@/lib/project/credentials'
 import { daemonLog, pipeToDaemonLog } from '@/daemon/log'
+import { env, testEnv } from '@/shared/env'
 
 // --- Secret convention types & builder (merged from secret-conventions.ts) ---
 
@@ -446,7 +447,7 @@ export class ProxyClient {
     const imageRef = await this.ensureProxyImage()
     // Nested (inner) yaac: the proxy runs in a vcluster — unpinned Service +
     // the inner-proxy role label (see ensureProxyResources).
-    await ensureProxyResources(imageRef, { nested: process.env.YAAC_NESTED === '1' })
+    await ensureProxyResources(imageRef, { nested: env.nested })
 
     await this.forward.ensure()
     await this.waitForHealthy()
@@ -575,6 +576,6 @@ export async function resolveProxyImageTag(image = 'yaac-proxy'): Promise<string
 // e2e suite point a daemon subprocess at pre-built test images. Unset in
 // production.
 export const proxyClient = new ProxyClient({
-  image: process.env.YAAC_PROXY_IMAGE ?? 'yaac-proxy',
-  requirePrebuilt: process.env.YAAC_REQUIRE_PREBUILT_IMAGES === '1',
+  image: testEnv.proxyImage,
+  requirePrebuilt: testEnv.requirePrebuiltImages,
 })

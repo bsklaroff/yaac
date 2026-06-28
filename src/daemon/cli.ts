@@ -34,7 +34,7 @@ import { proxyClient } from '@/lib/container/proxy-client'
 import { restoreAllSessionForwarders } from '@/lib/session/restore-forwarders'
 import { stopAllSessionForwarders } from '@/lib/session/port-forwarders'
 import { daemonLog } from '@/daemon/log'
-import { isTorEnabled } from '@/lib/git'
+import { env } from '@/shared/env'
 
 const __filename = fileURLToPath(import.meta.url)
 
@@ -59,8 +59,8 @@ interface RawWebSocket {
 // Fail loud at startup if it's unreachable rather than letting the first
 // git operation fail with an opaque connection-refused.
 async function preflightHostTor(): Promise<void> {
-  if (!isTorEnabled()) return
-  const url = new URL(process.env.YAAC_HOST_TOR_SOCKS_URL ?? 'socks5h://127.0.0.1:9050')
+  if (!env.useTor) return
+  const url = new URL(env.torSocksUrl)
   const host = url.hostname
   const port = parseInt(url.port || '9050', 10)
   await new Promise<void>((resolve, reject) => {
@@ -231,7 +231,7 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     await new Promise<void>((resolve) => server.close(() => resolve()))
     return
   }
-  const torPrefix = isTorEnabled() ? '(using tor) ' : ''
+  const torPrefix = env.useTor ? '(using tor) ' : ''
   daemonLog(`[daemon] ${torPrefix}listening on 127.0.0.1:${port} lock=${daemonLockPath()}`)
   // Start banner for the webapp: a one-time, time-bounded bootstrap URL.
   // The code is single-use; reopen with a fresh one after `daemon restart`.
@@ -375,7 +375,7 @@ export async function startDaemon(): Promise<void> {
       `daemon buildId ${fresh.buildId} does not match CLI buildId ${cliBuildId}`,
     )
   }
-  const torPrefix = isTorEnabled() ? '(using tor) ' : ''
+  const torPrefix = env.useTor ? '(using tor) ' : ''
   console.error(`[yaac] ${torPrefix}daemon started pid=${fresh.pid} port=${fresh.port}`)
 }
 
@@ -497,6 +497,7 @@ async function spawnDaemonDetached(): Promise<void> {
   const child = spawn(bin, args, {
     detached: true,
     stdio: 'ignore',
+    // eslint-disable-next-line no-process-env -- forward the full host env to the detached daemon subprocess
     env: process.env,
   })
   child.unref()

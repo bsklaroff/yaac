@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('@/daemon/session-create', () => ({ shellEscape: (s: string) => s.replace(/'/g, "'\\''") }))
 vi.mock('@/lib/session/cleanup', () => ({ isTmuxSessionAlive: vi.fn() }))
@@ -11,11 +11,9 @@ vi.mock('@/lib/k8s/pods', async (importOriginal) => ({
 
 import {
   tryClaimPrewarmed,
-  resolvePrewarmPoolSize,
   claiming,
   inFlight,
   clearPrewarmStateForTests,
-  DEFAULT_PREWARM_POOL_SIZE,
 } from '@/daemon/prewarm'
 import { LABEL_PREWARMED, listSessionPods, type SessionPod } from '@/lib/k8s/pods'
 import type * as podsModule from '@/lib/k8s/pods'
@@ -45,30 +43,6 @@ function spare(o: Partial<SessionPod> = {}): SessionPod {
     ...o,
   }
 }
-
-describe('resolvePrewarmPoolSize', () => {
-  afterEach(() => vi.unstubAllEnvs())
-
-  it('defaults to 1 when unset or blank', () => {
-    vi.stubEnv('YAAC_PREWARM_POOL_SIZE', '')
-    expect(resolvePrewarmPoolSize()).toBe(DEFAULT_PREWARM_POOL_SIZE)
-    expect(DEFAULT_PREWARM_POOL_SIZE).toBe(1)
-  })
-
-  it('parses non-negative integers (0 disables)', () => {
-    vi.stubEnv('YAAC_PREWARM_POOL_SIZE', '0')
-    expect(resolvePrewarmPoolSize()).toBe(0)
-    vi.stubEnv('YAAC_PREWARM_POOL_SIZE', '3')
-    expect(resolvePrewarmPoolSize()).toBe(3)
-  })
-
-  it('falls back to the default for garbage / negative / non-integer values', () => {
-    for (const v of ['abc', '-2', '2.5']) {
-      vi.stubEnv('YAAC_PREWARM_POOL_SIZE', v)
-      expect(resolvePrewarmPoolSize()).toBe(DEFAULT_PREWARM_POOL_SIZE)
-    }
-  })
-})
 
 describe('tryClaimPrewarmed', () => {
   beforeEach(() => {

@@ -3,6 +3,7 @@ import os from 'node:os'
 import fs from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { env } from '@/shared/env'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -16,10 +17,10 @@ function findPackageRoot(from: string): string {
   }
 }
 
-// tsup sets process.env.YAAC_BUNDLED at build time. In the bundle, static
-// assets (dockerfiles/, podman/) are copied into dist/ alongside index.js.
-// In dev/test, walk up from the source file to find the repo root.
-export const PACKAGE_ROOT = process.env.YAAC_BUNDLED
+// In the bundle (env.bundled, set by tsup), static assets (dockerfiles/,
+// podman/) are copied into dist/ alongside index.js. In dev/test, walk up
+// from the source file to find the repo root.
+export const PACKAGE_ROOT = env.bundled
   ? __dirname
   : findPackageRoot(__dirname)
 
@@ -27,7 +28,7 @@ let dataDir: string | null = null
 
 export function getDataDir(): string {
   if (dataDir) return dataDir
-  if (process.env.YAAC_DATA_DIR) return process.env.YAAC_DATA_DIR
+  if (env.dataDirOverride) return env.dataDirOverride
   return path.join(os.homedir(), '.yaac')
 }
 

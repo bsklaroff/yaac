@@ -1,20 +1,5 @@
 import simpleGit from 'simple-git'
-
-/**
- * Parses YAAC_USE_TOR with permissive truthy semantics: unset, empty,
- * "0", and "false" (case-insensitive) are off; everything else is on.
- *
- * Lives in shared so both the daemon (which gates host-side git ops on
- * it) and CLI commands (which need it to build ssh opts) can use it
- * without the latter pulling on @/lib/git, which the lint boundary forbids.
- */
-export function isTorEnabled(): boolean {
-  const raw = process.env.YAAC_USE_TOR
-  if (raw === undefined) return false
-  const v = raw.trim().toLowerCase()
-  if (v === '' || v === '0' || v === 'false') return false
-  return true
-}
+import { env } from '@/shared/env'
 
 /**
  * ssh does not honor ALL_PROXY / HTTPS_PROXY, so Tor routing for ssh has
@@ -28,8 +13,8 @@ export function isTorEnabled(): boolean {
  * Tor, drive `ssh` instead (see fetchKnownHostsEntry in auth-update.ts).
  */
 export function torSshOpts(): string[] {
-  if (!isTorEnabled()) return []
-  const url = new URL(process.env.YAAC_HOST_TOR_SOCKS_URL ?? 'socks5h://127.0.0.1:9050')
+  if (!env.useTor) return []
+  const url = new URL(env.torSocksUrl)
   const host = url.hostname
   const port = parseInt(url.port || '9050', 10)
   return ['-o', `ProxyCommand=nc -X 5 -x ${host}:${port} %h %p`]

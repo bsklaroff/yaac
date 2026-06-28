@@ -42,20 +42,6 @@ export function clearPrewarmStateForTests(): void {
   inFlight.clear()
 }
 
-/** Default prewarm pool size per active project. */
-export const DEFAULT_PREWARM_POOL_SIZE = 1
-
-/**
- * Resolve the prewarm pool size from `YAAC_PREWARM_POOL_SIZE` (default 1, `0`
- * disables). Mirrors `resolveStartingGraceMs` in `src/lib/session/list.ts`.
- */
-export function resolvePrewarmPoolSize(): number {
-  const raw = process.env.YAAC_PREWARM_POOL_SIZE
-  if (raw === undefined || raw === '') return DEFAULT_PREWARM_POOL_SIZE
-  const parsed = Number(raw)
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : DEFAULT_PREWARM_POOL_SIZE
-}
-
 export interface PrewarmSpawn {
   projectSlug: string
   tool: AgentTool

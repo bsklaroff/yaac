@@ -11,6 +11,7 @@ import {
   type OpencodeProvider,
   type ToolAuthKind,
 } from '@/shared/types'
+import { testEnv } from '@/shared/env'
 
 /**
  * Auto-detect the auth kind from a token string.
@@ -226,11 +227,7 @@ export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult> {
   // still exercised exactly as in production. opencode skips the native
   // CLI entirely (OpenRouter api-key only), so its hook payload is a
   // bare api-key string.
-  const hookVar =
-    tool === 'claude' ? 'YAAC_E2E_CLAUDE_LOGIN' :
-    tool === 'codex' ? 'YAAC_E2E_CODEX_LOGIN' :
-    'YAAC_E2E_OPENCODE_LOGIN'
-  const hookRaw = process.env[hookVar]
+  const hookRaw = testEnv.toolLoginHook(tool)
   if (hookRaw) {
     if (tool === 'claude') {
       const bundle = claudeOAuthBundleSchema.parse(JSON.parse(hookRaw))
@@ -246,7 +243,7 @@ export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult> {
     return {
       apiKey: hookRaw,
       kind: 'api-key',
-      opencodeProvider: parseOpencodeProvider(process.env.YAAC_E2E_OPENCODE_PROVIDER),
+      opencodeProvider: parseOpencodeProvider(testEnv.opencodeProviderHook),
     }
   }
 

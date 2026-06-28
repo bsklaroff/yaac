@@ -3,6 +3,7 @@ import readline from 'node:readline/promises'
 import { getRpcClient, toClientError } from '@/commands/rpc'
 import { interactiveExecArgs } from '@/lib/k8s/exec'
 import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
+import { testEnv } from '@/shared/env'
 import type { AgentTool, StreamOutcome } from '@/shared/types'
 
 async function promptForProject(projects: string[], message: string): Promise<string | undefined> {
@@ -85,7 +86,7 @@ export async function sessionStream(project?: string, tool?: AgentTool): Promise
     // `kubectl exec -it` hangs waiting for terminal capabilities. Setting
     // this env var returns after the first pick so the test can drive the
     // container directly via `kubectl exec`.
-    if (process.env.YAAC_E2E_NO_ATTACH === '1') return
+    if (testEnv.e2eNoAttach) return
 
     await new Promise<void>((resolve, reject) => {
       const child = spawn(

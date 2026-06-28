@@ -13,9 +13,9 @@ import {
   claiming,
   computePrewarmPlan,
   inFlight,
-  resolvePrewarmPoolSize,
 } from '@/daemon/prewarm'
 import { daemonLog } from '@/daemon/log'
+import { env } from '@/shared/env'
 import type { AgentTool } from '@/shared/types'
 
 /** Fire a prewarm spawn, decrementing the in-flight counter when it settles. */
@@ -36,7 +36,7 @@ async function spawnSpare(projectSlug: string, tool: AgentTool): Promise<void> {
  * Best-effort: a cluster hiccup just skips this tick.
  */
 export async function reconcilePrewarmPool(): Promise<void> {
-  const poolSize = resolvePrewarmPoolSize()
+  const poolSize = env.prewarmPoolSize
   if (poolSize === 0) return
 
   let pods

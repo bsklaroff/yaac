@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
-import { classifySessionPods, resolveStartingGraceMs, STARTING_GRACE_MS } from '@/lib/session/list'
+import { describe, it, expect, vi } from 'vitest'
+import { classifySessionPods, STARTING_GRACE_MS } from '@/lib/session/list'
 import type { SessionPod } from '@/lib/k8s/pods'
 
 const NOW = 1_800_000_000_000
@@ -129,27 +129,3 @@ describe('classifySessionPods', () => {
   })
 })
 
-describe('resolveStartingGraceMs', () => {
-  afterEach(() => {
-    vi.unstubAllEnvs()
-  })
-
-  it('returns the default when YAAC_STARTING_GRACE_MS is unset', () => {
-    vi.stubEnv('YAAC_STARTING_GRACE_MS', '')
-    expect(resolveStartingGraceMs()).toBe(STARTING_GRACE_MS)
-  })
-
-  it('returns the parsed env value when set', () => {
-    vi.stubEnv('YAAC_STARTING_GRACE_MS', '0')
-    expect(resolveStartingGraceMs()).toBe(0)
-    vi.stubEnv('YAAC_STARTING_GRACE_MS', '2500')
-    expect(resolveStartingGraceMs()).toBe(2500)
-  })
-
-  it('falls back to the default for unparseable or negative values', () => {
-    vi.stubEnv('YAAC_STARTING_GRACE_MS', 'not-a-number')
-    expect(resolveStartingGraceMs()).toBe(STARTING_GRACE_MS)
-    vi.stubEnv('YAAC_STARTING_GRACE_MS', '-5')
-    expect(resolveStartingGraceMs()).toBe(STARTING_GRACE_MS)
-  })
-})

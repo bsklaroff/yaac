@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process'
  * is split so values like `EDITOR="code -w"` produce a multi-arg invocation
  * (no shell, so paths can't be misinterpreted as shell metacharacters).
  */
+// eslint-disable-next-line no-process-env -- DI seam reading EDITOR/VISUAL; tests inject a fake env.
 export function resolveEditor(env: NodeJS.ProcessEnv = process.env): { cmd: string; args: string[] } {
   const raw = (env.EDITOR ?? env.VISUAL ?? 'vi').trim()
   const [cmd, ...args] = raw.split(/\s+/)
@@ -20,6 +21,7 @@ export function resolveEditor(env: NodeJS.ProcessEnv = process.env): { cmd: stri
  * full-screen editors (vim, nano) render normally. Resolves on a clean
  * exit; rejects on spawn error or non-zero exit code.
  */
+// eslint-disable-next-line no-process-env -- DI seam; tests inject a fake env.
 export async function editFile(filePath: string, env: NodeJS.ProcessEnv = process.env): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true })
   const { cmd, args } = resolveEditor(env)

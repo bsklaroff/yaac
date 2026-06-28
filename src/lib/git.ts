@@ -4,6 +4,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
 import type { ResolvedGitCredential } from '@/lib/project/credentials'
+import { env } from '@/shared/env'
 
 export function injectTokenIntoUrl(url: string, token: string): string {
   const parsed = new URL(url)
@@ -12,8 +13,8 @@ export function injectTokenIntoUrl(url: string, token: string): string {
   return parsed.toString()
 }
 
-export { isTorEnabled, torSshOpts, formatSshCommand } from '@/shared/git'
-import { isTorEnabled, formatSshCommand } from '@/shared/git'
+export { torSshOpts, formatSshCommand } from '@/shared/git'
+import { formatSshCommand } from '@/shared/git'
 
 export function expandTilde(p: string): string {
   if (p === '~') return os.homedir()
@@ -29,8 +30,9 @@ export function expandTilde(p: string): string {
 // simple-git's `.env(obj)` replaces the child's env wholesale, so we must
 // spread process.env to preserve PATH, HOME, etc.
 export function torEnv(): NodeJS.ProcessEnv | undefined {
-  if (!isTorEnabled()) return undefined
-  const url = process.env.YAAC_HOST_TOR_SOCKS_URL ?? 'socks5h://127.0.0.1:9050'
+  if (!env.useTor) return undefined
+  const url = env.torSocksUrl
+  // eslint-disable-next-line no-process-env -- forward the full host env to the git subprocess (PATH/HOME/…), adding the Tor proxy vars
   return { ...process.env, ALL_PROXY: url, NO_PROXY: 'localhost,127.0.0.1' }
 }
 
@@ -74,6 +76,7 @@ export function gitEnvForCredential(
   credential: ResolvedGitCredential | null,
   knownHostsPath?: string,
 ): NodeJS.ProcessEnv | undefined {
+  // eslint-disable-next-line no-process-env -- forward the full host env to the git subprocess when Tor is off (torEnv spreads it when on)
   const base = torEnv() ?? { ...process.env }
   if (credential?.kind === 'ssh') {
     if (!knownHostsPath) throw new Error('SSH credentials require a knownHostsPath')

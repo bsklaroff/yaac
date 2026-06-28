@@ -2,6 +2,7 @@ import { exec, execFile } from 'node:child_process'
 import crypto from 'node:crypto'
 import { promisify } from 'node:util'
 import { getDataDir } from '@/shared/paths'
+import { testEnv } from '@/shared/env'
 
 export const execFileAsync = promisify(execFile)
 const execAsync = promisify(exec)
@@ -14,7 +15,7 @@ const execAsync = promisify(exec)
  * test/helpers/setup.ts).
  */
 export function k8sNamespace(): string {
-  return process.env.YAAC_K8S_NAMESPACE ?? 'yaac'
+  return testEnv.k8sNamespace
 }
 
 /**

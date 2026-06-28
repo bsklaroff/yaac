@@ -120,6 +120,7 @@ export function parseInitCommands(raw: unknown): string[] | InitCommandSpec[] {
 export function expandEnvVars(s: string): string {
   return s.replace(/\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_match, braced, plain) => {
     const name = (braced ?? plain) as string
+    // eslint-disable-next-line no-process-env -- user-driven $VAR expansion; name comes from the config string, not a fixed yaac var
     const value = process.env[name]
     if (value === undefined) {
       throw new Error(`environment variable "${name}" is not set`)

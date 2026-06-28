@@ -61,6 +61,7 @@ export function buildSessionRegistration(input: {
   tool: AgentTool
   env?: NodeJS.ProcessEnv
 }): SessionRegistration {
+  // eslint-disable-next-line no-process-env -- DI seam: tests pass input.env.
   const env = input.env ?? process.env
   // Copy: resolveAllowedHosts may return the shared DEFAULT_ALLOWED_HOSTS
   // array itself, which must never be mutated.
@@ -92,6 +93,7 @@ export function buildSessionRegistration(input: {
  */
 export async function syncProxySecrets(
   config: YaacConfig,
+  // eslint-disable-next-line no-process-env -- DI seam: tests pass a fake env.
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
   if (!config.envSecretProxy) return

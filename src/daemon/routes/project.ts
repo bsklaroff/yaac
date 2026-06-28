@@ -10,6 +10,7 @@ import { writeProjectConfig, removeProjectConfig } from '@/lib/project/local-con
 import { rebuildProjectImage } from '@/lib/container/image-builder'
 import { pushImageToRegistry } from '@/lib/k8s/registry'
 import { toErrorBody } from '@/daemon/errors'
+import { testEnv } from '@/shared/env'
 
 export const projectApp = new Hono()
   .get('/list', async (c) => c.json(await listProjects()))
@@ -60,7 +61,7 @@ export const projectApp = new Hono()
         // Resolve project first (throws NOT_FOUND if missing).
         await getProjectDetail(slug)
         const finalTag = await rebuildProjectImage(slug, {
-          imagePrefix: process.env.YAAC_IMAGE_PREFIX,
+          imagePrefix: testEnv.imagePrefix,
           onLog: (line) => { void write({ type: 'progress', message: line }) },
         })
         // New sessions pull from the in-cluster registry, so the rebuilt

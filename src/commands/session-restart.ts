@@ -7,6 +7,7 @@ import { getRpcClient, toClientError } from '@/commands/rpc'
 import { interactiveExecArgs } from '@/lib/k8s/exec'
 import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
 import { getGitUserConfig } from '@/shared/git'
+import { testEnv } from '@/shared/env'
 
 export interface SessionRestartOptions {
   addDir?: string[]
@@ -120,7 +121,7 @@ export async function sessionRestart(
     return
   }
 
-  if (process.env.YAAC_E2E_NO_ATTACH !== '1') {
+  if (!testEnv.e2eNoAttach) {
     try {
       await new Promise<void>((resolve, reject) => {
         const child = spawn('kubectl', interactiveExecArgs(jobName, ['tmux', '-S', CONTAINER_TMUX_SOCK, 'attach-session', '-t', 'yaac']), {

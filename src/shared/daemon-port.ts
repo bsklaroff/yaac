@@ -1,3 +1,5 @@
+import { env } from '@/shared/env'
+
 /**
  * Port the daemon binds on 127.0.0.1 when `yaac daemon run` is invoked
  * without `--port`. A fixed default — rather than an OS-assigned ephemeral
@@ -20,16 +22,9 @@ export const DEFAULT_DAEMON_PORT = 8787
  * isn't a valid TCP port throws, so a typo fails loudly instead of silently
  * falling through to the default.
  */
-export function resolveDaemonPort(
-  optPort?: number,
-  env: NodeJS.ProcessEnv = process.env,
-): number {
+export function resolveDaemonPort(optPort?: number): number {
   if (optPort !== undefined) return assertValidPort(optPort, '--port')
-  const fromEnv = env.YAAC_DAEMON_PORT
-  if (fromEnv !== undefined && fromEnv !== '') {
-    return assertValidPort(Number(fromEnv), 'YAAC_DAEMON_PORT')
-  }
-  return DEFAULT_DAEMON_PORT
+  return env.daemonPort ?? DEFAULT_DAEMON_PORT
 }
 
 function assertValidPort(port: number, source: string): number {

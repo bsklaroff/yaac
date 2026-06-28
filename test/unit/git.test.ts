@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import simpleGit from 'simple-git'
-import { cloneRepo, getDefaultBranch, addWorktree, removeWorktree, fetchOrigin, getGitUserConfig, injectTokenIntoUrl, getRemoteHeadCommit, torEnv, isTorEnabled, torSshOpts, buildHostSideGitSshCommand, formatSshCommand, writeKnownHostsFile, expandTilde } from '@/lib/git'
+import { cloneRepo, getDefaultBranch, addWorktree, removeWorktree, fetchOrigin, getGitUserConfig, injectTokenIntoUrl, getRemoteHeadCommit, torEnv, torSshOpts, buildHostSideGitSshCommand, formatSshCommand, writeKnownHostsFile, expandTilde } from '@/lib/git'
 
 describe('git helpers', () => {
   let tmpDir: string
@@ -223,36 +223,6 @@ describe('git helpers', () => {
     // Verify directory is gone
     await expect(fs.access(wtPath)).rejects.toThrow()
   })
-})
-
-describe('isTorEnabled', () => {
-  const originalUseTor = process.env.YAAC_USE_TOR
-
-  afterEach(() => {
-    if (originalUseTor === undefined) delete process.env.YAAC_USE_TOR
-    else process.env.YAAC_USE_TOR = originalUseTor
-  })
-
-  it('returns false when YAAC_USE_TOR is unset', () => {
-    delete process.env.YAAC_USE_TOR
-    expect(isTorEnabled()).toBe(false)
-  })
-
-  it.each(['', '0', 'false', 'FALSE', 'False', '  false  '])(
-    'returns false when YAAC_USE_TOR=%j',
-    (value) => {
-      process.env.YAAC_USE_TOR = value
-      expect(isTorEnabled()).toBe(false)
-    },
-  )
-
-  it.each(['1', 'true', 'TRUE', 'yes', 'on', 'anything'])(
-    'returns true when YAAC_USE_TOR=%j',
-    (value) => {
-      process.env.YAAC_USE_TOR = value
-      expect(isTorEnabled()).toBe(true)
-    },
-  )
 })
 
 describe('torEnv', () => {

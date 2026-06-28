@@ -331,6 +331,46 @@ Example `yaac-config.json` with all options:
 - **nestedContainers** — run an in-pod rootless podman so `docker build` / `docker run` / `docker compose up --build` work inside the session exactly as a project README instructs (the `docker` CLI talks to podman's Docker-API socket). See [Nested containers and virtual clusters](#nested-containers-and-virtual-clusters).
 - **virtualCluster** — give each session its own virtual kubernetes cluster (vcluster) plus a per-project push registry. Implies `nestedContainers` (setting `"nestedContainers": false` alongside it is a config error).
 
+## Environment variables
+
+Every yaac variable is read in one place — [`src/shared/env.ts`](src/shared/env.ts) — which owns its default and validation. The rest of the codebase imports the typed `env` / `testEnv` accessors instead of touching `process.env`.
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `YAAC_DATA_DIR` | `~/.yaac` | Data directory holding projects, sessions, and the daemon lock. |
+| `YAAC_DAEMON_PORT` | `8787` | Port the daemon binds on `127.0.0.1` (auto-increments if busy). `0` requests an OS-assigned ephemeral port. |
+| `YAAC_USE_TOR` | `false` | Route the daemon's host-side git/ssh through a Tor SOCKS proxy. Off when unset/empty/`0`/`false`; any other value is on. |
+| `YAAC_HOST_TOR_SOCKS_URL` | `socks5h://127.0.0.1:9050` | SOCKS endpoint used when `YAAC_USE_TOR` is on. |
+| `YAAC_K8S_REGISTRY` | `localhost:5001` | `host:port` of the local OCI registry the cluster pulls session images from. |
+| `YAAC_PREWARM_POOL_SIZE` | `1` | Prewarmed sessions kept ready per active project (`0` disables prewarming). |
+| `YAAC_NESTED` | _(unset)_ | Set to `1` automatically by the daemon inside a nested (vcluster) session — not something you set yourself. |
+| `YAAC_BUNDLED` | _(unset)_ | Set to `true` by the build (tsup) in the shipped bundle so it loads assets from `dist/`. Build-time define, not a runtime knob. |
+| `EDITOR` / `VISUAL` | `vi` | Editor opened by the `yaac config edit*` commands (git's convention: `$EDITOR`, then `$VISUAL`, then `vi`). |
+
+`YAAC_UID` is a Docker **build arg** (not a runtime variable) — see [Custom images](#custom-images).
+
+### Internal & testing
+
+These are set by the build or the test harness; production reads several of them only via their defaults.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `YAAC_K8S_NAMESPACE` | `yaac` | Namespace holding every yaac k8s object. E2e runs isolate per-file namespaces here. |
+| `YAAC_IMAGE_PREFIX` | _(unset)_ | Prefix applied to built/pushed image names (test isolation). |
+| `YAAC_PROXY_IMAGE` | `yaac-proxy` | Proxy image tag override. |
+| `YAAC_REQUIRE_PREBUILT_IMAGES` | _(unset)_ | `1` fails fast if a required image isn't already in the registry (CI/e2e). |
+| `YAAC_STARTING_GRACE_MS` | `60000` | Grace window (ms) protecting freshly-created session pods from the stale-session reaper. |
+| `YAAC_BUILD_ID` | _(unset)_ | Override the build id for tests running from source (no `dist/.build-id`). |
+| `YAAC_DAEMON_URL` / `YAAC_DAEMON_SECRET` / `YAAC_DAEMON_BUILD_ID` | _(unset)_ | Point the CLI at an in-process daemon without the lock file (tests). |
+| `YAAC_E2E_NO_ATTACH` | _(unset)_ | `1` skips the post-provision `kubectl exec -it` attach (no-TTY e2e). |
+| `YAAC_E2E_SKIP_FETCH` | _(unset)_ | `1` skips the host-side git fetch during create (e2e fixtures pre-populate the repo). |
+| `YAAC_E2E_CLAUDE_LOGIN` / `YAAC_E2E_CODEX_LOGIN` / `YAAC_E2E_OPENCODE_LOGIN` | _(unset)_ | Short-circuit the native tool login with a serialized OAuth bundle (claude/codex) or raw api key (opencode). |
+| `YAAC_E2E_OPENCODE_PROVIDER` | _(unset)_ | Picks the opencode provider during e2e login (defaults to openrouter). |
+
+The proxy and relay sidecar containers read their own internal variables (`API_PORT`, `PROXY_AUTH_SECRET`, `TRANSPARENT_HTTPS_PORT`, `TRANSPARENT_HTTP_PORT`, `TRANSPARENT_TUNNEL_PORT`, `DNS_STUB_PORT`, `USE_TOR`, and the `KUBERNETES_SERVICE_*` pair). The daemon and cluster inject these when building each pod spec — they are not user-configurable.
+
 ## Custom images
 
 The default image (Ubuntu 24.04 + Node.js + pnpm + Claude Code + gh + tmux) can be customized:

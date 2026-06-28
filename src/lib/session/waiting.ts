@@ -1,7 +1,7 @@
 import { listSessionPods, isPrewarmed } from '@/lib/k8s/pods'
 import { getSessionStatus, normalizeTool } from '@/lib/session/status'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
-import { resolveStartingGraceMs } from '@/lib/session/list'
+import { testEnv } from '@/shared/env'
 import type { AgentTool } from '@/shared/types'
 
 export interface WaitingSession {
@@ -19,7 +19,7 @@ export async function getWaitingSessions(
 ): Promise<WaitingSession[]> {
   const pods = await listSessionPods(projectSlug)
   const nowMs = Date.now()
-  const graceMs = resolveStartingGraceMs()
+  const graceMs = testEnv.startingGraceMs
 
   const results: WaitingSession[] = []
   const stale: Array<{ jobName: string; slug: string; sessionId: string }> = []

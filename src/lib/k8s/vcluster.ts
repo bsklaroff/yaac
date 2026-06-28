@@ -18,6 +18,7 @@ import { LABEL_SESSION_ID } from '@/lib/k8s/pods'
 import { pushImageToRegistry, registryHasTag, registryHost, registryRef } from '@/lib/k8s/registry'
 import { imageExists } from '@/lib/container/runtime'
 import { PACKAGE_ROOT } from '@/lib/project/paths'
+import { testEnv } from '@/shared/env'
 
 export const VCLUSTER_DIR = path.join(PACKAGE_ROOT, 'k8s', 'vcluster')
 /**
@@ -217,7 +218,7 @@ interface VclusterImageEntry {
  * registry, so nothing pulls upstream at pod-create time).
  */
 export async function ensureVclusterImages(
-  requirePrebuilt = process.env.YAAC_REQUIRE_PREBUILT_IMAGES === '1',
+  requirePrebuilt = testEnv.requirePrebuiltImages,
 ): Promise<void> {
   const raw = await fs.readFile(path.join(VCLUSTER_DIR, 'images.json'), 'utf8')
   const { images } = JSON.parse(raw) as { images: VclusterImageEntry[] }

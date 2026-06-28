@@ -15,6 +15,7 @@ import { LABEL_SESSION_ID } from '@/lib/k8s/pods'
 import { registryHost, registryReachable, pushImageToRegistry } from '@/lib/k8s/registry'
 import { sessionUid } from '@/lib/container/image-builder'
 import { getDataDir } from '@/shared/paths'
+import { env } from '@/shared/env'
 
 export type CheckStatus = 'pass' | 'fail' | 'warn' | 'skip'
 
@@ -213,7 +214,7 @@ export async function runClusterCheck(
   // in here (applying the session-egress CNP errors "no matches for kind").
   // The OUTER cluster-check verifies egress. envoy-config / vap / service-cidr
   // likewise have no in-vcluster equivalent; vcluster-in-vcluster is refused.
-  if (process.env.YAAC_NESTED === '1') {
+  if (env.nested) {
     add({ name: 'egress', status: 'skip', detail: 'skipped — nested yaac (inner-session egress is enforced host-side)' })
     for (const name of ['envoy-config', 'nested-mount', 'vap', 'service-cidr']) {
       add({ name, status: 'skip', detail: 'skipped — nested yaac (not applicable inside a vcluster)' })

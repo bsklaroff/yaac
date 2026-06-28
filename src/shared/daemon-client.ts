@@ -1,5 +1,6 @@
 import { hc } from 'hono/client'
 import { readBuildId } from '@/shared/build-id'
+import { testEnv } from '@/shared/env'
 import { isLockLive, readLock, type DaemonLock } from '@/shared/lock'
 import type { DaemonErrorBody } from '@/daemon/errors'
 import type { AppType } from '@/daemon/server'
@@ -133,8 +134,8 @@ export function describeLockMismatch(
  *   shared `~/.yaac/.daemon.lock`. Production never sets these.
  */
 async function defaultResolveLock(): Promise<DaemonLock> {
-  const envUrl = process.env.YAAC_DAEMON_URL
-  const envSecret = process.env.YAAC_DAEMON_SECRET
+  const envUrl = testEnv.daemonUrlOverride
+  const envSecret = testEnv.daemonSecretOverride
   if (envUrl && envSecret) {
     const url = new URL(envUrl)
     return {
@@ -142,7 +143,7 @@ async function defaultResolveLock(): Promise<DaemonLock> {
       port: Number(url.port),
       secret: envSecret,
       startedAt: 0,
-      buildId: process.env.YAAC_DAEMON_BUILD_ID ?? '',
+      buildId: testEnv.daemonBuildIdOverride,
     }
   }
 

@@ -13,6 +13,7 @@ import { LABEL_PROJECT, LABEL_SESSION_ID } from '@/lib/k8s/pods'
 import { pushImageToRegistry, registryHasTag, registryRef } from '@/lib/k8s/registry'
 import { imageExists } from '@/lib/container/runtime'
 import { projectDir } from '@/lib/project/paths'
+import { testEnv } from '@/shared/env'
 
 /** `app` label value shared by every per-project registry pod. */
 export const REGISTRY_APP_LABEL = 'yaac-registry'
@@ -281,7 +282,7 @@ export function buildRegistryEgressNetworkPolicyManifest(
  * image with zero upstream egress at pod-create time.
  */
 export async function ensureRegistryImage(
-  requirePrebuilt = process.env.YAAC_REQUIRE_PREBUILT_IMAGES === '1',
+  requirePrebuilt = testEnv.requirePrebuiltImages,
 ): Promise<string> {
   if (await registryHasTag(REGISTRY_MIRROR_TAG)) return registryRef(REGISTRY_MIRROR_TAG)
 

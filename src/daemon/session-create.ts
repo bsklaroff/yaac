@@ -12,6 +12,8 @@ import { reserveAvailablePort, startPortForwarders, kubectlRelay } from '@/lib/c
 import type { ReservedPort } from '@/lib/container/port'
 import { containerExec } from '@/lib/k8s/exec'
 import { dataDirHash, k8sNamespace, kubectlApply, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
+// Aliased: this module uses a local `env: string[]` for the pod's env vars.
+import { env as yaacEnv, testEnv } from '@/shared/env'
 import {
   JOB_NAME_LABEL,
   LABEL_DATA_DIR_HASH,
@@ -677,7 +679,7 @@ export async function createSession(
   // Test-only: e2e fixtures pre-populate the bare repo, so skip the host-side
   // fetchOrigin (which would try to reach the real remote from the daemon
   // process — outside the proxy's reach).
-  if (process.env.YAAC_E2E_SKIP_FETCH !== '1') {
+  if (!testEnv.e2eSkipFetch) {
     emit('Fetching latest from remote...', options)
     try {
       await fetchOrigin(repo, credential)
@@ -702,7 +704,7 @@ export async function createSession(
   // must not stand up vcluster-in-vcluster — the depth buys nothing
   // (synced pods already run on the host node) and the inner cluster
   // lacks the infrastructure (Cilium CRDs don't sync, no kind node).
-  if (virtualCluster && process.env.YAAC_NESTED === '1') {
+  if (virtualCluster && yaacEnv.nested) {
     throw new DaemonError(
       'VALIDATION',
       'virtualCluster is not supported inside a nested yaac (no vcluster-in-vcluster).',
@@ -712,8 +714,8 @@ export async function createSession(
   emit('Ensuring container images are built...', options)
   const imageName = await ensureImage(
     projectSlug,
-    process.env.YAAC_IMAGE_PREFIX,
-    process.env.YAAC_REQUIRE_PREBUILT_IMAGES === '1',
+    testEnv.imagePrefix,
+    testEnv.requirePrebuiltImages,
     nestedContainers,
   )
 
@@ -745,6 +747,7 @@ export async function createSession(
   // Passthrough env vars
   if (config.envPassthrough) {
     for (const name of config.envPassthrough) {
+      // eslint-disable-next-line no-process-env -- user-configured passthrough; name comes from project config, not a fixed yaac var
       const val = process.env[name]
       if (val !== undefined) {
         env.push(`${name}=${val}`)
@@ -800,7 +803,7 @@ export async function createSession(
   // Nested (inner) yaac: the inner proxy Service is vcluster-allocated, not
   // pinned, so query its ClusterIP (a vcluster IP the synced inner session
   // pods can reach for the DNS stub) instead of computing the host-CIDR pin.
-  const proxyHost = process.env.YAAC_NESTED === '1'
+  const proxyHost = yaacEnv.nested
     ? await proxyServiceClusterIp()
     : clusterIpForNamespace(k8sNamespace())
 
@@ -879,6 +882,7 @@ export async function createSession(
   // Add placeholder values for proxied secrets so tools detect them
   if (config.envSecretProxy) {
     for (const name of Object.keys(config.envSecretProxy)) {
+      // eslint-disable-next-line no-process-env -- user-configured secret proxy; name comes from project config, not a fixed yaac var
       if (process.env[name]) {
         env.push(`${name}=placeholder`)
       }

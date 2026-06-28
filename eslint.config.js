@@ -77,4 +77,18 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // process.env may only be read in src/shared/env.ts, which centralizes
+    // every yaac variable's default and validation. The few sanctioned reads
+    // elsewhere (subprocess env forwarding, user-driven $VAR/passthrough
+    // lookups, DI defaults) carry an inline `eslint-disable-next-line
+    // no-process-env` with a justification. The override below re-enables
+    // reads inside env.ts itself.
+    files: ['src/**/*.ts'],
+    rules: { 'no-process-env': 'error' },
+  },
+  {
+    files: ['src/shared/env.ts'],
+    rules: { 'no-process-env': 'off' },
+  },
 )

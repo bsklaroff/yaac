@@ -8,6 +8,7 @@ import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanu
 import { readBlockedHosts } from '@/lib/session/blocked-hosts'
 import { getSessionTitles } from '@/lib/session/titles'
 import { DaemonError } from '@/daemon/errors'
+import { testEnv } from '@/shared/env'
 import type {
   ActiveSessionsResult,
   DeletedSessionEntry,
@@ -33,13 +34,6 @@ export type {
  * cleanup on sessions they just created.
  */
 export const STARTING_GRACE_MS = 60_000
-
-export function resolveStartingGraceMs(): number {
-  const raw = process.env.YAAC_STARTING_GRACE_MS
-  if (raw === undefined || raw === '') return STARTING_GRACE_MS
-  const parsed = Number(raw)
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : STARTING_GRACE_MS
-}
 
 /**
  * Split the pod list into the ones the renderer should show as active
@@ -134,7 +128,7 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
   pods = pods.filter((p) => !isPrewarmed(p))
 
   const { running, stale } = await classifySessionPods(
-    pods, Date.now(), isTmuxSessionAlive, resolveStartingGraceMs(),
+    pods, Date.now(), isTmuxSessionAlive, testEnv.startingGraceMs,
   )
 
   // User-assigned titles, one file read per project.
@@ -191,7 +185,7 @@ export async function reconcileStaleSessions(): Promise<void> {
     return
   }
   const nowMs = Date.now()
-  const graceMs = resolveStartingGraceMs()
+  const graceMs = testEnv.startingGraceMs
   const { stale } = await classifySessionPods(pods, nowMs, isTmuxSessionAlive, graceMs)
 
   // Orphan-Job sweep: a Job whose pod was evicted/deleted out-of-band is
@@ -240,7 +234,7 @@ export async function captureOpencodeFirstMessages(): Promise<void> {
     return
   }
   const { running } = await classifySessionPods(
-    pods, Date.now(), isTmuxSessionAlive, resolveStartingGraceMs(),
+    pods, Date.now(), isTmuxSessionAlive, testEnv.startingGraceMs,
   )
   await Promise.all(running.map(async (p) => {
     if (normalizeTool(p.tool) !== 'opencode') return

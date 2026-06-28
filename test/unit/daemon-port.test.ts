@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import net from 'node:net'
 import {
   DEFAULT_DAEMON_PORT,
@@ -19,32 +19,45 @@ describe('DEFAULT_DAEMON_PORT', () => {
 })
 
 describe('resolveDaemonPort', () => {
+  // resolveDaemonPort reads YAAC_DAEMON_PORT via env.daemonPort, so drive the
+  // env cases by stubbing the var rather than passing it in.
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
   it('prefers an explicit --port over the env and the default', () => {
-    expect(resolveDaemonPort(1234, { YAAC_DAEMON_PORT: '9999' })).toBe(1234)
+    vi.stubEnv('YAAC_DAEMON_PORT', '9999')
+    expect(resolveDaemonPort(1234)).toBe(1234)
   })
 
   it('allows --port 0 (OS-assigned ephemeral)', () => {
-    expect(resolveDaemonPort(0, { YAAC_DAEMON_PORT: '9999' })).toBe(0)
+    vi.stubEnv('YAAC_DAEMON_PORT', '9999')
+    expect(resolveDaemonPort(0)).toBe(0)
   })
 
   it('falls back to YAAC_DAEMON_PORT when no --port is given', () => {
-    expect(resolveDaemonPort(undefined, { YAAC_DAEMON_PORT: '9999' })).toBe(9999)
+    vi.stubEnv('YAAC_DAEMON_PORT', '9999')
+    expect(resolveDaemonPort()).toBe(9999)
   })
 
   it('falls back to the default when neither --port nor env is set', () => {
-    expect(resolveDaemonPort(undefined, {})).toBe(DEFAULT_DAEMON_PORT)
+    vi.stubEnv('YAAC_DAEMON_PORT', undefined)
+    expect(resolveDaemonPort()).toBe(DEFAULT_DAEMON_PORT)
   })
 
   it('treats an empty YAAC_DAEMON_PORT as unset', () => {
-    expect(resolveDaemonPort(undefined, { YAAC_DAEMON_PORT: '' })).toBe(DEFAULT_DAEMON_PORT)
+    vi.stubEnv('YAAC_DAEMON_PORT', '')
+    expect(resolveDaemonPort()).toBe(DEFAULT_DAEMON_PORT)
   })
 
   it('throws on a non-numeric YAAC_DAEMON_PORT', () => {
-    expect(() => resolveDaemonPort(undefined, { YAAC_DAEMON_PORT: 'nope' })).toThrow(/YAAC_DAEMON_PORT/)
+    vi.stubEnv('YAAC_DAEMON_PORT', 'nope')
+    expect(() => resolveDaemonPort()).toThrow(/YAAC_DAEMON_PORT/)
   })
 
   it('throws on an out-of-range YAAC_DAEMON_PORT', () => {
-    expect(() => resolveDaemonPort(undefined, { YAAC_DAEMON_PORT: '70000' })).toThrow(/between 0 and 65535/)
+    vi.stubEnv('YAAC_DAEMON_PORT', '70000')
+    expect(() => resolveDaemonPort()).toThrow(/between 0 and 65535/)
   })
 
   it('throws on a NaN --port (e.g. `--port abc` parsed to NaN)', () => {
