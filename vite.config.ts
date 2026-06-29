@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
-import { DEFAULT_DAEMON_PORT } from './src/shared/daemon-port'
+import { DEFAULT_DAEMON_PORT } from './src/shared/daemon-port-default'
 
 /**
  * The daemon prefers DEFAULT_DAEMON_PORT (or its --port / YAAC_DAEMON_PORT

@@ -1,14 +1,10 @@
 import { env } from '@/shared/env'
+import { DEFAULT_DAEMON_PORT } from '@/shared/daemon-port-default'
 
-/**
- * Port the daemon binds on 127.0.0.1 when `yaac daemon run` is invoked
- * without `--port`. A fixed default — rather than an OS-assigned ephemeral
- * port — keeps the browser-app URL (http://127.0.0.1:<port>/) stable across
- * daemon restarts so it can be bookmarked, and lets the Vite dev server fall
- * back to the right target when no daemon lock exists yet (see
- * vite.config.ts). Override per-run with `yaac daemon run --port <N>`.
- */
-export const DEFAULT_DAEMON_PORT = 8787
+// Re-exported so existing consumers keep importing it from `@/shared/daemon-port`.
+// It is defined in a dependency-free leaf module so `vite.config.ts` can read
+// the constant without pulling `@/shared/env` into the config-load bundle.
+export { DEFAULT_DAEMON_PORT }
 
 /**
  * Resolve the port the daemon should bind, honoring (highest precedence
