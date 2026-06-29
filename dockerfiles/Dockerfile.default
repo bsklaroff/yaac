@@ -48,6 +48,12 @@ USER yaac
 RUN npm config set prefix /home/yaac/.local
 RUN corepack install -g pnpm@11.1.2 && \
     pnpm config set store-dir /home/yaac/.cached-packages/pnpm-store
+# Playwright pinned to the same version as the chromium installed above
+# (playwright-core@1.50.1 → chromium build 1155), so `chromium.launch()`
+# resolves the prebuilt browser at PLAYWRIGHT_BROWSERS_PATH. Skip the bundled
+# browser download — the binaries already live there. Installs the `playwright`
+# CLI on PATH; scripts that import the module use its absolute path or `npx`.
+RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install -g playwright@1.50.1
 
 ENV LANG=en_US.UTF-8
 ENV TERM=xterm-256color

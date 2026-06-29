@@ -1,17 +1,17 @@
 import { useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { Menu } from '@base-ui/react/menu'
-import { MoreIcon, RenameIcon, RestartIcon } from '@/frontend/lib/icons'
+import { MoreIcon, RenameIcon } from '@/frontend/lib/icons'
 import { InputDialog } from '@/frontend/components/ui/InputDialog'
-import { renameSession, restartSession } from '@/frontend/lib/createSession'
-import { useUiStore } from '@/frontend/store'
+import { renameSession } from '@/frontend/lib/createSession'
 
 const ITEM = 'flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-xs outline-none'
 
 /**
- * Per-session header actions: rename (display title) and restart (kill +
- * resume). Delete lives on the sidebar row's hover × (a single, optimistic
- * delete path).
+ * Per-session header actions: rename (display title). Restarting a live session
+ * is intentionally not offered here — restart lives only on the Deleted group's
+ * optimistic, multi-at-a-time provisioning flow. Delete lives on the sidebar
+ * row's hover × (a single, optimistic delete path).
  */
 export function SessionActionsMenu({
   sessionId,
@@ -20,14 +20,7 @@ export function SessionActionsMenu({
   sessionId: string
   currentTitle?: string
 }): JSX.Element {
-  const reconnectTerminal = useUiStore((s) => s.reconnectTerminal)
   const [renaming, setRenaming] = useState(false)
-
-  const onRestart = (): void => {
-    void restartSession(sessionId, () => {})
-      .then(() => reconnectTerminal(sessionId))
-      .catch((e: unknown) => console.error('restart failed', e))
-  }
 
   const onRename = (title: string): void => {
     void renameSession(sessionId, title)
@@ -52,13 +45,6 @@ export function SessionActionsMenu({
               >
                 <RenameIcon size={14} />
                 Rename
-              </Menu.Item>
-              <Menu.Item
-                className={clsx(ITEM, 'text-text-dim data-[highlighted]:bg-surface-3 data-[highlighted]:text-text')}
-                onClick={onRestart}
-              >
-                <RestartIcon size={14} />
-                Restart
               </Menu.Item>
             </Menu.Popup>
           </Menu.Positioner>

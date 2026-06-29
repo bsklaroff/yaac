@@ -382,7 +382,11 @@ export function SessionView({
         </header>
       )}
 
-      <div ref={wsRef} className="relative min-h-0 flex-1">
+      {/* `isolate`: the provisioning overlay below is z-30, and without an
+          isolating stacking context here it escapes into the root context and
+          paints over portaled dropdowns (e.g. "+ New session"). Isolating
+          confines its z-index so those popups render above it. */}
+      <div ref={wsRef} className="relative isolate min-h-0 flex-1">
         {!session && !creatingHere && (
           <div className="flex h-full items-center justify-center text-text-faint">No sessions yet</div>
         )}
