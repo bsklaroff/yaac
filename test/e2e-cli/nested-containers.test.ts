@@ -460,7 +460,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real daemon 
     // (2) a real superset (public roots + the proxy CA), and (3) wired into
     // nested containers AND `docker build` RUN steps — the exact place a
     // nested Dockerfile's `RUN curl ...` needs it. See
-    // plans/nested-ca-combined-bundle.md.
+    // docs/nested-ca-combined-bundle.md.
     const slug = 'nested-curl'
     await setupProject(slug)
     const session = await createSession(slug)

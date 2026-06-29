@@ -20,7 +20,7 @@ The daemon-backed webapp and its plumbing.
 - ✅ PTY bridge + embedded xterm.js terminal (attach to a session's tmux)
 - ✅ `yaac open` — one command: starts the daemon, opens the browser authed
 - ✅ Design system: Base UI primitives + design tokens (ported from
-  code-design) + Central Icons, all centralized
+  code-design) + centralized icons, all centralized
 - ✅ Projects rail + project-scoped session sidebar
 - ✅ Create a session from the webapp (Base UI dialog, streamed progress)
 
@@ -30,21 +30,27 @@ The daemon-backed webapp and its plumbing.
 
 Make managing many agents fast and legible.
 
-- ⬜ **Triage: "next waiting →"** — the in-app `session stream`: jump to the
-  next session awaiting input, across projects. The single most
-  yaac-defining interaction.
-- ⬜ Attention model: a reliable "needs me" signal (waiting / blocked host /
+- 🚧 **Triage: "next waiting →"** — jump to the next session awaiting input,
+  across projects. The single most yaac-defining interaction. CLI `session
+  stream` shipped; the in-app cross-project jump is still pending (today the
+  webapp auto-selects the first waiting session and flags waiting projects on
+  the rail).
+- ✅ Attention model: a reliable "needs me" signal (waiting / blocked host /
   exited) surfaced on the rail badge and session rows
-- ⬜ Session row richness: tool glyph, last-activity, blocked-host flag,
+- ✅ Session row richness: tool label, last-activity, blocked-host flag,
   prompt preview
-- ⬜ Terminal tabs per session: attach / shell / new-window (needs the
-  daemon shell + window PTY endpoints)
-- ⬜ Session lifecycle UI: delete (ConfirmDialog), restart, open worktree in
-  editor
-- ⬜ New-project flow (rail `+`) and project removal
-- ⬜ Settings → CLI parity: GitHub tokens, Claude/Codex OAuth, default tool,
-  per-project config editor (Monaco), credentials listing
-- ⬜ Filtering / search and strong empty + onboarding + reconnecting states
+- ✅ Terminal tabs per session: attach / shell / new-window — now exceeds the
+  original scope with a tiling split-pane workspace (drag-to-rearrange,
+  resizable dividers) plus a tabs mode, over the daemon shell + window PTY
+  endpoints
+- 🚧 Session lifecycle UI: delete (ConfirmDialog), restart, and rename
+  shipped; open worktree in editor still pending
+- ✅ New-project flow (rail `+`) and project removal
+- 🚧 Settings → CLI parity: default tool, credentials listing, and GitHub
+  token add shipped; Claude/Codex OAuth UI and the per-project config editor
+  (Monaco) still pending
+- 🚧 States: strong empty + onboarding + reconnecting states shipped;
+  filtering / search still pending
 
 ---
 
@@ -87,10 +93,12 @@ _Placeholder — scope TBD._
 
 ## Cross-cutting notes
 
-- **Design system** lives on the `claude/base-ui` branch (tokens, Base UI,
-  Central Icons, rail) and feeds every UI item above.
-- **Central Icons** is a gated paid dependency — installing yaac needs that
-  registry's auth; resolve (vendor the used icons, or gate) before yaac is
-  broadly installable.
+- **Design system** is merged into `main` (`src/frontend/`): tokens, Base UI,
+  centralized icons, and the rail all feed every UI item above.
+- **Icons**: the icon blocker is resolved — yaac ships the free,
+  open-source `lucide-react` set as its centralized icons, so installing it
+  needs no gated-registry auth. The paid Central Icons variant (round-filled,
+  real brand glyphs) is parked on the `claude/central-icons-ref` branch for
+  reference.
 - The webapp is a presentation layer over the daemon; UI features that need
   host actions (open-editor, diffs) land as daemon endpoints first.

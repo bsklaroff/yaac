@@ -9,7 +9,7 @@ export const CA_CONFIGMAP_KEY = 'proxy-ca.pem'
  * `{public roots} ∪ {proxy CA}`. The own-bundle tools in nested containers
  * (curl / requests / cargo / git-libcurl) point CURL_CA_BUNDLE & friends at
  * it — a superset, so they trust the proxy on intercepted hosts AND real
- * upstreams on tunnelled hosts. See plans/nested-ca-combined-bundle.md.
+ * upstreams on tunnelled hosts. See docs/nested-ca-combined-bundle.md.
  */
 export const CA_BUNDLE_KEY = 'ca-bundle.pem'
 /** Directory inside session pods where the CA ConfigMap is mounted. */

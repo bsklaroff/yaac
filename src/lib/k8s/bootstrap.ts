@@ -72,7 +72,7 @@ export const PROXY_SA_NAME = 'yaac-proxy'
  * Inner (nested / yaac-in-yaac) redirect objects. The daemon projects these
  * into a managed vcluster's host namespace so the vcluster's synced pods are
  * redirected to that session's *inner* proxy at higher precedence than the
- * outer redirect (see plans/yaac-in-yaac-inner-egress.md). The session pod
+ * outer redirect (see docs/yaac-in-yaac-inner-egress.md). The session pod
  * never gets host RBAC — the daemon rebuilds them from these trusted builders.
  */
 export const INNER_EGRESS_REDIRECT_CEC_NAME = 'yaac-inner-egress-redirect'
@@ -90,7 +90,7 @@ export const INNER_PROXY_INGRESS_CNP_NAME = 'yaac-inner-proxy-ingress'
  * fallback CNP (for tenant isolation) but references that shared CCEC, so
  * creating/destroying a vcluster adds/removes NO Envoy listeners — the churn
  * that otherwise triggers a node-wide "regenerate all endpoints" and wedges
- * every session's egress (see plans/distributed-mapping-pine.md).
+ * every session's egress (see docs/yaac-in-yaac-inner-egress.md).
  *
  * One shared base name: the per-vcluster CNP uses it verbatim; the cluster-scoped
  * CCEC suffixes it with the install namespace (`vclusterFallbackCcecName`).
@@ -168,7 +168,7 @@ export const CLUSTER_SERVICE_CIDR = '10.96.0.0/16'
  * (50 coexisting pins → ~99.7% collision in a single /24's ~224 slots,
  * vs ~1.9% across the /16). This matters for the nested-containers plan,
  * where per-session vclusters + per-project registries could stand up
- * dozens of pinned Services at once (see plans/nested-containers-plan.md).
+ * dozens of pinned Services at once (see docs/nested-containers-plan.md).
  *
  * Tradeoff vs the old /24 band: this spills past the k8s "static
  * subrange" — the low 256 the dynamic allocator avoids (KEP-3070, GA
@@ -192,7 +192,7 @@ export function clusterIpForNamespace(namespace: string): string {
 /**
  * Keyed generalization of the VIP pin for the other Services yaac
  * creates (per-project registries, per-session vcluster APIs — see
- * plans/nested-containers-plan.md). Hashes `<namespace>/<serviceName>`
+ * docs/nested-containers-plan.md). Hashes `<namespace>/<serviceName>`
  * across the same /16 band, so all pins share one collision budget (the
  * birthday math in clusterIpForNamespace's docstring covers them
  * jointly). `/` cannot appear in a namespace name, so these keys can

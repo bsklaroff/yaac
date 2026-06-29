@@ -23,7 +23,7 @@ import {
 
 /**
  * Wire-level coverage for the daemon's WebSocket surface, per the test
- * strategy in draft-plans/webapp-daemon-follow-up.md:
+ * strategy in plans/webapp-daemon-follow-up.md:
  *  - /events sends a `snapshot` frame on connect and rejects missing auth.
  *  - /pty/attach reports an error for unknown sessions.
  *  - /pty/attach round-trips bytes against a real session container

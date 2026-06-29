@@ -125,7 +125,7 @@ EOF
 #     pointed at the lone proxy CA they reject the REAL certs of every
 #     tunnelled host (most allowlisted registries/mirrors). The combined
 #     bundle (public roots + proxy CA) is served by the proxy's
-#     /ca-bundle.pem and mounted here. See plans/nested-ca-combined-bundle.md.
+#     /ca-bundle.pem and mounted here. See docs/nested-ca-combined-bundle.md.
 #       CA-CERTIFICATES DROP-IN — the bare proxy CA is bind-mounted as a
 #         source cert in /usr/local/share/ca-certificates/. `update-ca-
 #         certificates` (run by `apt-get install ca-certificates`, the usual

@@ -209,7 +209,7 @@ export async function runClusterCheck(
   // probe machinery that deliberately does not exist inside a vcluster, so
   // they self-skip. The egress gate is among them: an inner session's egress
   // default-deny is enforced HOST-side (the daemon projects the redirect for
-  // the vcluster's synced pods — see plans/yaac-in-yaac-inner-egress.md), and
+  // the vcluster's synced pods — see docs/yaac-in-yaac-inner-egress.md), and
   // the vcluster has no Cilium datapath or CRDs, so it cannot be probed from
   // in here (applying the session-egress CNP errors "no matches for kind").
   // The OUTER cluster-check verifies egress. envoy-config / vap / service-cidr

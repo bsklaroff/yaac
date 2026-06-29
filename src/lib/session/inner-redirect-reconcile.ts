@@ -54,7 +54,7 @@ async function pruneInnerRedirect(vcNamespace: string): Promise<void> {
 
 /**
  * Background-loop tick step for yaac-in-yaac inner egress (design B,
- * plans/yaac-in-yaac-inner-egress.md). Projects only the DYNAMIC inner override —
+ * docs/yaac-in-yaac-inner-egress.md). Projects only the DYNAMIC inner override —
  * the part that depends on an inner yaac's proxy existing. For each managed
  * vcluster:
  *

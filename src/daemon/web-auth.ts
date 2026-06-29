@@ -24,7 +24,7 @@ export const MAX_SESSIONS = 64
  *
  * The bootstrap code is single-use and time-bounded: a successful
  * exchange rotates it (so the consumed code can't be replayed) and mints
- * a fresh session id. See `webapp-frontend.md` for the threat model.
+ * a fresh session id. See `plans/webapp-frontend.md` for the threat model.
  */
 export interface WebAuthStore {
   /** The bootstrap code to advertise in the start banner / `?bootstrap=`. */

@@ -135,7 +135,7 @@ export const PROXY_CA_PATH = '/etc/yaac/certs/proxy-ca.pem'
  * In-container path of the combined trust bundle `{public roots} ∪ {proxy
  * CA}` (the ConfigMap's second key). The own-bundle tools that ignore
  * SSL_CERT_FILE point their single-file vars here. See
- * plans/nested-ca-combined-bundle.md.
+ * docs/nested-ca-combined-bundle.md.
  */
 export const PROXY_CA_BUNDLE_PATH = '/etc/yaac/certs/ca-bundle.pem'
 
@@ -188,7 +188,7 @@ export class ProxyClient {
    *    those at the lone proxy CA would make them reject the real cert of
    *    every tunnelled host, so they get the combined bundle (roots + CA) —
    *    a superset, which makes "replace" correct on both intercepted and
-   *    tunnelled hosts. See plans/nested-ca-combined-bundle.md.
+   *    tunnelled hosts. See docs/nested-ca-combined-bundle.md.
    */
   getCaTrustEnv(): string[] {
     return [
@@ -213,7 +213,7 @@ export class ProxyClient {
    * proxy from its own ca-certificates plus the MITM CA. Mounted into nested
    * containers (and the session pod) so the own-bundle tools that ignore
    * SSL_CERT_FILE (curl / requests / cargo / git-libcurl) can REPLACE their
-   * trust set with a superset. See plans/nested-ca-combined-bundle.md.
+   * trust set with a superset. See docs/nested-ca-combined-bundle.md.
    */
   async getCaBundle(): Promise<string> {
     const res = await fetch(`${this.baseUrl}/ca-bundle.pem`)

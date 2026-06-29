@@ -4,7 +4,7 @@ import { bootInProcessDaemon, type InProcessDaemon } from '@test/helpers/daemon'
 
 /**
  * Full browser-auth bootstrap exchange over a real socket, per the test
- * strategy in draft-plans/webapp-daemon-follow-up.md: code → cookie →
+ * strategy in plans/webapp-daemon-follow-up.md: code → cookie →
  * authorized request, plus replay and garbage rejection. The store-level
  * rules are unit-tested in web-auth.test.ts; this covers the wire
  * (Set-Cookie attributes, cookie-authenticated follow-up).
