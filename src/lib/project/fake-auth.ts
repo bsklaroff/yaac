@@ -3,13 +3,13 @@ import {
   fanOutClaudePlaceholders,
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_REFRESH_TOKEN,
+  PLACEHOLDER_GH_TOKEN,
 } from '@/lib/project/tool-auth'
 import { addEntry } from '@/lib/project/credentials'
 import type { ClaudeOAuthBundle } from '@/shared/types'
 
-/** Pattern + token seeded by `auth fake github`. */
+/** Credential pattern seeded by `auth fake github`. */
 export const FAKE_GITHUB_PATTERN = 'github.com/*'
-export const FAKE_GITHUB_TOKEN = 'fake-ghp-token'
 
 /**
  * Scopes Claude Code's real OAuth bundle carries. Mirrored into the fake bundle
@@ -57,8 +57,14 @@ export async function seedFakeClaudeOAuth(): Promise<void> {
 
 /**
  * Seed a fake HTTPS GitHub credential (`github.com/*`) into the data dir.
- * Merges with any existing entries (replaces only the matching pattern).
+ * The token is the proxy placeholder (`yaac-ph-gh-token`), not a random
+ * fake — same trick as the fake Claude bundle above. A parent yaac's MITM
+ * proxy swaps the sentinel for the real GitHub token, so `gh` (and HTTPS
+ * git) inside a session authenticate against the real API over the
+ * chained-egress path. A genuinely fake value would instead be forwarded
+ * as-is and rejected (401) one hop too early. Merges with any existing
+ * entries (replaces only the matching pattern).
  */
 export async function seedFakeGithubCredential(): Promise<void> {
-  await addEntry({ kind: 'https', pattern: FAKE_GITHUB_PATTERN, token: FAKE_GITHUB_TOKEN })
+  await addEntry({ kind: 'https', pattern: FAKE_GITHUB_PATTERN, token: PLACEHOLDER_GH_TOKEN })
 }

@@ -6,7 +6,6 @@ import {
   seedFakeClaudeOAuth,
   seedFakeGithubCredential,
   FAKE_GITHUB_PATTERN,
-  FAKE_GITHUB_TOKEN,
 } from '@/lib/project/fake-auth'
 import { loadClaudeCredentialsFile } from '@/lib/project/tool-auth'
 import { loadCredentials, saveCredentials } from '@/lib/project/credentials'
@@ -18,6 +17,7 @@ import {
 import {
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_REFRESH_TOKEN,
+  PLACEHOLDER_GH_TOKEN,
 } from '@/lib/project/tool-auth'
 
 describe('fake-auth', () => {
@@ -69,13 +69,13 @@ describe('fake-auth', () => {
   })
 
   describe('seedFakeGithubCredential', () => {
-    it('writes an https github.com/* entry to the data dir', async () => {
+    it('seeds the proxy placeholder token so the credential chains through a parent', async () => {
       await seedFakeGithubCredential()
       const creds = await loadCredentials()
       expect(creds.tokens).toContainEqual({
         kind: 'https',
         pattern: FAKE_GITHUB_PATTERN,
-        token: FAKE_GITHUB_TOKEN,
+        token: PLACEHOLDER_GH_TOKEN,
       })
     })
 
@@ -93,7 +93,7 @@ describe('fake-auth', () => {
       expect(creds.tokens).toContainEqual({
         kind: 'https',
         pattern: FAKE_GITHUB_PATTERN,
-        token: FAKE_GITHUB_TOKEN,
+        token: PLACEHOLDER_GH_TOKEN,
       })
     })
   })

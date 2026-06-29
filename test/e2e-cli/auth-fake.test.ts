@@ -50,7 +50,7 @@ describe('yaac auth fake (real CLI + real daemon)', () => {
     expect(parsed.tokens).toContainEqual({
       kind: 'https',
       pattern: 'github.com/*',
-      token: 'fake-ghp-token',
+      token: 'yaac-ph-gh-token',
     })
   })
 
