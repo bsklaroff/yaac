@@ -108,15 +108,6 @@ export interface SessionJobParams {
   proxyHost: string
   /** In-pod podman wiring; absent for non-nested sessions. */
   nested?: NestedContainersParams
-  /**
-   * Static /etc/hosts entries for in-cluster names the pod must resolve
-   * without the proxy DNS stub (which answers everything with a dummy IP).
-   * glibc/musl consult files before the resolver, so these beat the stub;
-   * the nestable image's `base_hosts_file` extends them into nested
-   * containers. Used for the per-project registry host → pinned VIP
-   * (vcluster sessions).
-   */
-  hostAliases?: Array<{ ip: string; hostnames: string[] }>
   /** Matches the podman-era `container.stop({t: 5})` grace. */
   terminationGracePeriodSeconds?: number
 }
@@ -193,7 +184,6 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
         spec: {
           restartPolicy: 'Never',
           terminationGracePeriodSeconds: p.terminationGracePeriodSeconds ?? 5,
-          ...(p.hostAliases?.length ? { hostAliases: p.hostAliases } : {}),
           // Session pods host untrusted agent workloads: no cluster API
           // credentials, and no service-discovery env pollution.
           automountServiceAccountToken: false,
@@ -219,12 +209,13 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
           // does not negotiate FUSE idmap support). See "Cluster setup"
           // in the README; `yaac cluster check` probes this end to end.
           hostUsers: false,
-          // DNS: session pods resolve against the proxy's UDP/53 stub — every
-          // A query gets a dummy IP. Resolution is decorative: Cilium
-          // redirects egress by port (cluster-level CEC + CNP, no per-pod
-          // redirect-init/relay sidecar) and the proxy routes by SNI/Host.
-          // hostAliases still beat it for in-cluster names. dnsPolicy None
-          // makes this resolver the only one.
+          // DNS: session pods resolve against the proxy's UDP/53 stub, which is
+          // split-horizon — internal names (`*.svc`) are forwarded to the
+          // cluster CoreDNS so the pod learns live ClusterIPs (the registry,
+          // its vcluster API), while external names get a sinkhole IP since
+          // egress is port-redirected (cluster-level CEC + CNP, no per-pod
+          // sidecar) and the proxy routes by SNI/Host. dnsPolicy None makes
+          // this resolver the only one.
           dnsPolicy: 'None',
           dnsConfig: { nameservers: [p.proxyHost] },
           // Nested sessions prepend a chown init container: the shared image

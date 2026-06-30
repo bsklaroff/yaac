@@ -8,7 +8,6 @@ import { k8sNamespace, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubect
 import {
   LABEL_VCLUSTER_MANAGED_BY,
   removeSessionVcluster,
-  vclusterClusterIp,
   vclusterName,
   vclusterNamespace,
 } from '@/lib/k8s/vcluster'
@@ -215,7 +214,11 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real daemon 
     // nor the internet — synced pods carry no session-id label, so the
     // per-vcluster synced-pods policy is their only (and default-deny)
     // egress surface.
-    const vcVip = vclusterClusterIp(vcName)
+    const vcSvc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
+      'get', 'service', vcName, '-n', vcNs,
+    ])
+    const vcVip = vcSvc?.spec?.clusterIP
+    expect(vcVip, 'vcluster API Service has a (live) ClusterIP').toBeTruthy()
     const { stdout: allowed } = await kubectlWithRetry([
       'exec', '-n', vcNs, syncedPod, '--',
       'sh', '-c', `nc -w 4 -z ${vcVip} 8443 && echo VC_API_OK || echo VC_API_BLOCKED`,

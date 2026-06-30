@@ -1,6 +1,5 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
-import { clusterIpForService } from '@/lib/k8s/bootstrap'
 import {
   dataDirHash,
   execFileAsync,
@@ -25,8 +24,8 @@ export const REGISTRY_APP_LABEL = 'yaac-registry'
 export const LABEL_REGISTRY_DATA_DIR_HASH = 'yaac.registry-data-dir-hash'
 /**
  * In-cluster port of the per-project registry. Deliberately not 443/80:
- * the session pod's nat layer captures those uniformly, and 5000 passes
- * straight through to the in-pod EXTRA_TCP_ACCEPT carve-out.
+ * Cilium redirects those to the proxy, whereas 5000 rides the session-egress
+ * CNP's in-cluster carve-out (toEndpoints 5000/8443) straight to the registry.
  */
 export const PROJECT_REGISTRY_PORT = 5000
 
@@ -63,28 +62,20 @@ export function projectRegistryName(projectSlug: string): string {
 }
 
 /**
- * The one registry host string used from every perspective: sessions
- * resolve it via pod hostAliases (DNS never leaves the pod), the node's
- * containerd via the hosts.toml this module writes. Standard service-DNS
- * shape so it would also resolve via kube-dns for anything unstubbed.
+ * The in-cluster service-DNS name of the registry. A FULL `.svc.cluster.local`
+ * FQDN, not the `.svc` shorthand: sessions resolve it through the proxy's
+ * split-horizon DNS, which forwards ONLY `.cluster.local` to CoreDNS (a bare
+ * `.svc` would be sinkholed, since CoreDNS forwards anything outside its zone
+ * to the remote resolver — a DNS-exfil channel). The node's containerd matches
+ * it via the hosts.toml this module writes (it never DNS-resolves it).
  */
-export function projectRegistryHost(projectSlug: string): string {
-  return `${projectRegistryName(projectSlug)}.${k8sNamespace()}.svc:${PROJECT_REGISTRY_PORT}`
-}
-
-/** Hostname half of `projectRegistryHost` (pod hostAliases entries). */
 export function projectRegistryHostname(projectSlug: string): string {
-  return `${projectRegistryName(projectSlug)}.${k8sNamespace()}.svc`
+  return `${projectRegistryName(projectSlug)}.${k8sNamespace()}.svc.cluster.local`
 }
 
-/**
- * Pinned ClusterIP of the project registry Service. Load-bearing, not
- * hygiene: the VIP is frozen into running pods' iptables carve-outs
- * (EXTRA_TCP_ACCEPT), pod hostAliases, and the node's hosts.toml, so
- * Service recreation must reproduce it by construction.
- */
-export function projectRegistryClusterIp(projectSlug: string): string {
-  return clusterIpForService(k8sNamespace(), projectRegistryName(projectSlug))
+/** `projectRegistryHostname` with the registry port (the image-ref host). */
+export function projectRegistryHost(projectSlug: string): string {
+  return `${projectRegistryHostname(projectSlug)}:${PROJECT_REGISTRY_PORT}`
 }
 
 /**
@@ -194,11 +185,12 @@ export function buildProjectRegistryServiceManifest(projectSlug: string): Record
     },
     spec: {
       type: 'ClusterIP',
-      // Pinned — see projectRegistryClusterIp.
-      clusterIP: projectRegistryClusterIp(projectSlug),
+      // Allocator-assigned (no longer pinned): sessions resolve the live
+      // ClusterIP through the proxy's split-horizon DNS, and the node's
+      // hosts.toml is rewritten with the live IP on every ensure.
       selector: { app: REGISTRY_APP_LABEL, [LABEL_PROJECT]: projectSlug },
-      // port == targetPort: the NetworkPolicy and the in-pod carve-out
-      // list the post-translation port; a remap would silently diverge.
+      // port == targetPort: the NetworkPolicy and the session-egress CNP
+      // carve-out list the post-translation port; a remap would diverge.
       ports: [{
         name: 'registry',
         port: PROJECT_REGISTRY_PORT,
@@ -210,9 +202,10 @@ export function buildProjectRegistryServiceManifest(projectSlug: string): Record
 
 /**
  * NetworkPolicy admitting this project's sessions to this project's
- * registry — the CNI half of the carve-out (the in-pod EXTRA_TCP_ACCEPT
- * is the other; neither alone admits the flow). Per-project rather than
- * shared because registry:2 has no path ACLs: a shared writable registry
+ * registry — the registry-ingress half of the carve-out (the session-egress
+ * CNP's 5000 allowance is the other; neither alone admits the flow).
+ * Per-project rather than shared because registry:2 has no path ACLs: a
+ * shared writable registry
  * would let any session overwrite another project's (or the infra) tags.
  * The session-id Exists term keeps the policy off the registry pod
  * itself (it carries the project label too).
@@ -310,16 +303,21 @@ async function listNodeNames(): Promise<string[]> {
 }
 
 /**
- * Write the node containerd hosts.toml mapping the registry's svc-DNS
- * host to its pinned-VIP URL, so `kubectl run` of a pushed ref pulls
- * straight from the in-cluster registry. Same podman-exec mechanism as
- * scripts/setup-kind-cluster.sh. hosts.toml is read per-pull (no
- * containerd restart) and never needs healing — Service recreation
- * reproduces the VIP by construction.
+ * Write the node containerd hosts.toml mapping the registry's svc-DNS host to
+ * its live ClusterIP URL, so `kubectl run` of a pushed ref pulls straight from
+ * the in-cluster registry. Same podman-exec mechanism as
+ * scripts/setup-kind-cluster.sh. The node is not a cluster-DNS client, so it
+ * needs the IP here; hosts.toml is read per-pull (no containerd restart) and is
+ * rewritten on every ensure, so the allocator-assigned IP is always current.
+ * Must run after the Service is applied (ensureProjectRegistry waits for it).
  */
 export async function writeNodeRegistryHostsToml(projectSlug: string): Promise<void> {
   const host = projectRegistryHost(projectSlug)
-  const vip = projectRegistryClusterIp(projectSlug)
+  const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
+    'get', 'service', projectRegistryName(projectSlug), '-n', k8sNamespace(),
+  ])
+  const vip = svc?.spec?.clusterIP
+  if (!vip) throw new Error(`project registry Service ${projectRegistryName(projectSlug)} has no ClusterIP yet`)
   const dir = `/etc/containerd/certs.d/${host}`
   const content = `[host."http://${vip}:${PROJECT_REGISTRY_PORT}"]`
   for (const node of await listNodeNames()) {
@@ -331,24 +329,17 @@ export async function writeNodeRegistryHostsToml(projectSlug: string): Promise<v
 }
 
 /**
- * Idempotently stand up the project's registry (Deployment + pinned-VIP
- * Service + both NetworkPolicies + node hosts.toml) and wait for it to
- * serve. Called from session-create only for `virtualCluster` sessions —
- * nested-only sessions need no registry, no carve-outs, no hostAliases.
+ * Idempotently stand up the project's registry (Deployment + Service + both
+ * NetworkPolicies + node hosts.toml) and wait for it to serve. Called from
+ * session-create only for `virtualCluster` sessions — nested-only sessions need
+ * no registry and no carve-outs. The Service's ClusterIP is allocator-assigned
+ * and never deleted, so `apply` is a no-op on it after first creation (the pin
+ * and its immutable-field migration are gone).
  */
 export async function ensureProjectRegistry(projectSlug: string): Promise<void> {
   const name = projectRegistryName(projectSlug)
   const ns = k8sNamespace()
   const imageRef = await ensureRegistryImage()
-
-  // clusterIP is immutable: migrate a drifted/pre-pin Service by delete +
-  // re-apply, mirroring ensureProxyResources.
-  const live = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
-    'get', 'service', name, '-n', ns,
-  ])
-  if (live && live.spec?.clusterIP !== projectRegistryClusterIp(projectSlug)) {
-    await kubectlWithRetry(['delete', 'service', name, '-n', ns, '--ignore-not-found'])
-  }
 
   await kubectlApply(buildProjectRegistryDeploymentManifest(projectSlug, imageRef))
   await kubectlApply(buildProjectRegistryServiceManifest(projectSlug))

@@ -8,7 +8,6 @@ import { listSessionPods, type SessionPod } from '@/lib/k8s/pods'
 import { k8sNamespace, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
 import {
   gcOrphanProjectRegistries,
-  projectRegistryClusterIp,
   projectRegistryHost,
   projectRegistryHostname,
   projectRegistryName,
@@ -146,16 +145,17 @@ describe.skipIf(IS_NESTED_YAAC)('yaac per-project registry (real CLI + real daem
 
     const regName = projectRegistryName(slug)
     const regHost = projectRegistryHost(slug)
-    const regVip = projectRegistryClusterIp(slug)
 
-    // --- Appears, at the pinned VIP ---
+    // --- Appears, with an allocator-assigned (no longer pinned) ClusterIP ---
     const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
       'get', 'service', regName, '-n', k8sNamespace(),
     ])
-    expect(svc?.spec?.clusterIP).toBe(regVip)
+    const regVip = svc?.spec?.clusterIP
+    expect(regVip).toBeTruthy()
 
-    // hostAliases beat the DNS stub: the svc name resolves to the pinned
-    // VIP via /etc/hosts (kube-dns is unreachable by design).
+    // The proxy's split-horizon DNS forwards `*.svc` to cluster DNS, so the
+    // registry name resolves to its live ClusterIP from inside the session —
+    // no hostAliases, no pin.
     const { stdout: hostsOut } = await execInJob(name, [
       'getent', 'hosts', projectRegistryHostname(slug),
     ])

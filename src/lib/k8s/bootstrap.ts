@@ -139,86 +139,6 @@ export const OUTER_CA_CONFIGMAP_NAME = 'yaac-outer-proxy-ca'
 const OUTER_CA_MOUNT_DIR = '/etc/yaac/outer-ca'
 const OUTER_CA_PATH = `${OUTER_CA_MOUNT_DIR}/${CA_CONFIGMAP_KEY}`
 /**
- * The cluster's service subnet, pinned in k8s/kind-config.yaml.
- * clusterIpForNamespace hashes the proxy Service's pinned VIP into this
- * compiled value, so a drifted live cluster would fail Service creation
- * ("provided IP is not in the valid range") — `yaac cluster check`
- * warns on drift.
- */
-export const CLUSTER_SERVICE_CIDR = '10.96.0.0/16'
-
-/**
- * Deterministic per-namespace ClusterIP for the proxy Service, pinned at
- * Service creation. The relay dials this VIP directly (PROXY_HOST in its
- * env), so it never resolves a DNS name — which is what lets the pod's
- * udp/53 REDIRECT capture everything unconditionally — and because
- * recreation reproduces the identical VIP by construction, a
- * deleted-and-recreated Service can never strand the env-frozen relays
- * of running sessions. Per-namespace, not one fixed IP, because
- * ClusterIPs are cluster-scoped and e2e per-run namespaces coexist with
- * the production namespace on the same cluster.
- *
- * Hashes the namespace across (almost) the whole service /16 — ~65.5k
- * slots, skipping the first 16 addresses (network, apiserver .1, kube-dns
- * .10) and the top 16 (…255.255 broadcast). The wide span is what keeps
- * pin-vs-pin collisions negligible when many Services coexist: a
- * cluster-scoped ClusterIP clash makes the second `kubectl apply` fail
- * loudly ("provided IP is already allocated") — never a misroute, but a
- * hard failure — and the birthday math is unforgiving in a small band
- * (50 coexisting pins → ~99.7% collision in a single /24's ~224 slots,
- * vs ~1.9% across the /16). This matters for the nested-containers plan,
- * where per-session vclusters + per-project registries could stand up
- * dozens of pinned Services at once (see docs/nested-containers-plan.md).
- *
- * Tradeoff vs the old /24 band: this spills past the k8s "static
- * subrange" — the low 256 the dynamic allocator avoids (KEP-3070, GA
- * since 1.26), which is capped at 256 addresses regardless of CIDR size,
- * so there is no race-free way to get more than ~250 slots. A pin in the
- * upper band CAN therefore collide with a *dynamically*-allocated
- * Service. On yaac's dedicated cluster that risk is near-zero (yaac pins
- * every Service it creates, so nothing it controls is dynamically
- * allocated; only kube-system's init-time low statics exist), and a
- * clash still errors loudly rather than misrouting. The nested plan must
- * re-confirm this holds once vcluster's own (yaac-uncontrolled) Services
- * enter the picture.
- *
- * Assumes the compiled /16 CLUSTER_SERVICE_CIDR; `yaac cluster check`
- * warns when the live cluster's service subnet drifts from it.
- */
-export function clusterIpForNamespace(namespace: string): string {
-  return pinnedClusterIp(namespace)
-}
-
-/**
- * Keyed generalization of the VIP pin for the other Services yaac
- * creates (per-project registries, per-session vcluster APIs — see
- * docs/nested-containers-plan.md). Hashes `<namespace>/<serviceName>`
- * across the same /16 band, so all pins share one collision budget (the
- * birthday math in clusterIpForNamespace's docstring covers them
- * jointly). `/` cannot appear in a namespace name, so these keys can
- * never alias the bare-namespace key of the proxy pin.
- *
- * FROZEN, like the namespace pin: these VIPs are baked into running
- * pods' iptables carve-outs (EXTRA_TCP_ACCEPT), pod hostAliases, and
- * node hosts.toml files — re-keying the hash would strand them all.
- */
-export function clusterIpForService(namespace: string, serviceName: string): string {
-  return pinnedClusterIp(`${namespace}/${serviceName}`)
-}
-
-function pinnedClusterIp(key: string): string {
-  const [addr, prefix] = CLUSTER_SERVICE_CIDR.split('/')
-  const baseInt = addr.split('.').reduce((acc, o) => ((acc << 8) + Number(o)) >>> 0, 0)
-  const total = 2 ** (32 - Number(prefix))
-  // Skip the low 16 (network + apiserver .1 + kube-dns .10) and the top
-  // 16 (…broadcast); hash the key uniformly across the rest.
-  const span = total - 32
-  const hash = crypto.createHash('sha256').update(key).digest()
-  const ipInt = (baseInt + 16 + (hash.readUInt32BE(0) % span)) >>> 0
-  return [(ipInt >>> 24) & 0xff, (ipInt >>> 16) & 0xff, (ipInt >>> 8) & 0xff, ipInt & 0xff].join('.')
-}
-
-/**
  * Pod securityContext running the proxy as the daemon's own host uid/gid.
  * The proxy reads/writes hostPath dirs the daemon creates (the CA in
  * /data, the ssh-agent socket dir, and the 0700 credentials dir);
@@ -393,6 +313,13 @@ export function buildProxyDeploymentManifest(
                 // dir. ssh-add and the known_hosts writer resolve ~ here.
                 { name: 'HOME', value: '/home/proxy' },
                 ...(env.useTor ? [{ name: 'USE_TOR', value: '1' }] : []),
+                // Split-horizon DNS: the top-level proxy resolves internal
+                // names (`*.svc`) against the cluster CoreDNS so session pods
+                // learn live ClusterIPs (no IP pinning). OFF when nested — the
+                // inner proxy is firewalled from the vcluster CoreDNS and must
+                // sinkhole every name (its upstream dial chains to the outer
+                // proxy, which resolves for real).
+                ...(opts.nested ? [] : [{ name: 'DNS_FORWARD_INTERNAL', value: '1' }]),
                 // Nested (inner) proxy: trust the OUTER proxy's MITM CA so the
                 // chained upstream dial (→ outer proxy) validates. Additive —
                 // Node still consults its bundled roots. See OUTER_CA_*.
@@ -1065,9 +992,7 @@ export function buildProxyRoleBindingManifest(): Record<string, unknown> {
   }
 }
 
-export function buildProxyServiceManifest(
-  opts: { nested?: boolean } = {},
-): Record<string, unknown> {
+export function buildProxyServiceManifest(): Record<string, unknown> {
   return {
     apiVersion: 'v1',
     kind: 'Service',
@@ -1078,13 +1003,12 @@ export function buildProxyServiceManifest(
     },
     spec: {
       type: 'ClusterIP',
-      // Pinned, not allocator-assigned: session pods dial this VIP from env
-      // (no DNS), and the pin makes it reproducible across Service recreation
-      // — see clusterIpForNamespace. NESTED (inner) proxy: do NOT pin — the
-      // host-CIDR pin could collide on the host when vcluster syncs the
-      // Service, and the inner redirect uses EDS (endpoints, not the VIP);
-      // the inner yaac discovers the allocated ClusterIP for its DNS stub.
-      ...(opts.nested ? {} : { clusterIP: clusterIpForNamespace(k8sNamespace()) }),
+      // Allocator-assigned ClusterIP (no longer pinned): session-create reads
+      // it live at pod-create (proxyServiceClusterIp) for the pod's dnsConfig.
+      // The Service is never deleted/recreated, so its ClusterIP is stable for
+      // the cluster's lifetime; the egress redirect is EDS-backed (endpoints,
+      // not the VIP) and the DNS policy is identity-based, so neither needs a
+      // fixed IP.
       selector: { app: PROXY_APP_NAME },
       // port == targetPort throughout: the NetworkPolicy and the in-pod
       // egress filter list the post-translation (transport) port, so a
@@ -1108,11 +1032,11 @@ export function buildProxyServiceManifest(
  * scheme plus manual stale-proxy GC.
  */
 /**
- * The live ClusterIP of the proxy Service. For the nested (inner) proxy it's
- * vcluster-allocated (unpinned), so the inner yaac queries it rather than
- * computing clusterIpForNamespace — to use as the inner session pods' DNS
- * nameserver (a vcluster ClusterIP they can reach; the spike confirmed synced
- * pods reach vcluster ClusterIPs and that an explicit dnsConfig survives sync).
+ * The live ClusterIP of the proxy Service — read at pod-create as the session
+ * pods' DNS nameserver + egress redirect target. Allocator-assigned (no longer
+ * pinned) for both the top-level and the vcluster-allocated inner proxy; stable
+ * because the Service is never deleted/recreated. (The spike confirmed synced
+ * pods reach vcluster ClusterIPs and that an explicit dnsConfig survives sync.)
  */
 export async function proxyServiceClusterIp(): Promise<string> {
   const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
@@ -1150,31 +1074,15 @@ export async function ensureProxyResources(
     await kubectlApply(buildOuterProxyCaConfigMapManifest(outerCaPem))
   }
 
-  // One-time migration to the pinned VIP: spec.clusterIP is immutable, so
-  // on a cluster whose Service predates the pin (or drifted) the apply
-  // would fail with "field is immutable" — delete and let the apply below
-  // recreate it at the pinned address. Pre-migration sessions are safe
-  // across the swap: their relays still hold the proxy's DNS name and
-  // Node re-resolves it on every connection. Skipped when nested: the inner
-  // proxy Service is unpinned (vcluster-allocated).
-  if (!opts.nested) {
-    const live = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
-      'get', 'service', PROXY_APP_NAME, '-n', k8sNamespace(),
-    ])
-    if (live && live.spec?.clusterIP !== clusterIpForNamespace(k8sNamespace())) {
-      await kubectlWithRetry([
-        'delete', 'service', PROXY_APP_NAME, '-n', k8sNamespace(), '--ignore-not-found',
-      ])
-    }
-  }
-
   // SA + RBAC before the Deployment, which references the SA so the proxy
-  // can watch pods (source-IP → session).
+  // can watch pods (source-IP → session). The Service's ClusterIP is
+  // allocator-assigned and never deleted, so `apply` is a no-op on it after
+  // first creation — no immutable-field migration needed (the pin is gone).
   await kubectlApply(buildProxyServiceAccountManifest())
   await kubectlApply(buildProxyRoleManifest())
   await kubectlApply(buildProxyRoleBindingManifest())
   await kubectlApply(buildProxyDeploymentManifest(imageRef, opts))
-  await kubectlApply(buildProxyServiceManifest(opts))
+  await kubectlApply(buildProxyServiceManifest())
   // The egress lockdown, applied with the proxy so it exists before any
   // session pod can be scheduled (sessions require ensureRunning()). CEC
   // before the CNP that references its listeners.

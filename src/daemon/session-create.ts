@@ -29,7 +29,6 @@ import {
   type NestedContainersParams,
 } from '@/lib/k8s/pod-spec'
 import {
-  clusterIpForNamespace,
   proxyServiceClusterIp,
   sshAgentHostDir,
   SSH_TUNNEL_SENTINEL,
@@ -38,10 +37,8 @@ import {
 import { pushImageToRegistry } from '@/lib/k8s/registry'
 import {
   ensureProjectRegistry,
-  projectRegistryClusterIp,
   projectRegistryConfDropIn,
   projectRegistryHost,
-  projectRegistryHostname,
 } from '@/lib/k8s/project-registry'
 import {
   ensureSessionVcluster,
@@ -324,11 +321,9 @@ interface SessionSetupParams {
   sessionId: string
   env: string[]
   hostPathMounts: HostPathMount[]
-  /** Pinned proxy VIP — the session pod's resolver + egress redirect target. */
+  /** Live proxy Service ClusterIP — the pod's resolver + egress redirect target. */
   proxyHost: string
   nested?: NestedContainersParams
-  /** Static in-pod name→VIP entries (vcluster sessions: the registry host). */
-  hostAliases?: Array<{ ip: string; hostnames: string[] }>
   /** Set for virtualCluster sessions — the per-project push registry. */
   virtualCluster?: boolean
   tool: AgentTool
@@ -386,7 +381,7 @@ async function waitForPodReady(jobName: string, timeoutMs = 180_000): Promise<vo
 async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   const {
     imageRef, jobName, projectSlug, sessionId, env, hostPathMounts,
-    proxyHost, nested, hostAliases, virtualCluster, tool, config, options,
+    proxyHost, nested, virtualCluster, tool, config, options,
     gitUser, forwardedPorts,
   } = params
 
@@ -416,7 +411,6 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
     memoryLimitBytes: 8 * 1024 ** 3,
     proxyHost,
     nested,
-    hostAliases,
   })
   await kubectlApply(manifest)
   await waitForPodReady(jobName)
@@ -781,18 +775,16 @@ export async function createSession(
 
   // virtualCluster sessions get a per-project push registry — the image
   // source for vcluster synced pods and yaac-in-yaac — plus their own
-  // virtual cluster. The pod reaches both via in-pod filter carve-outs
-  // for their pinned VIPs (and a hostAliases name for the registry — DNS
-  // never leaves the pod); matching NetworkPolicies admit the same flows
-  // at the CNI layer. The vcluster is created here so its cold start
-  // overlaps the worktree/setup work below; the kubeconfig is awaited
-  // just before the mounts are assembled.
-  let hostAliases: Array<{ ip: string; hostnames: string[] }> | undefined
+  // virtual cluster. The pod reaches both on their in-cluster ClusterIPs,
+  // which it resolves through the proxy's split-horizon DNS (`*.svc` →
+  // cluster CoreDNS), so no pinned VIP or hostAliases is needed; the
+  // egress carve-outs / NetworkPolicies admit the flows by port + endpoint.
+  // The vcluster is created here so its cold start overlaps the
+  // worktree/setup work below; the kubeconfig is awaited just before the
+  // mounts are assembled.
   if (virtualCluster) {
     emit('Ensuring project registry...', options)
     await ensureProjectRegistry(projectSlug)
-    const registryVip = projectRegistryClusterIp(projectSlug)
-    hostAliases = [{ ip: registryVip, hostnames: [projectRegistryHostname(projectSlug)] }]
 
     emit('Creating virtual cluster...', options)
     await ensureVclusterImages()
@@ -804,17 +796,15 @@ export async function createSession(
 
   // Egress: the session pod's outbound 443/80 is redirected to the proxy at
   // the cluster level by the Cilium CEC + CNP (buildEgressRedirectCecManifest)
-  // — no per-pod sidecar. The pod also points its resolver at the proxy VIP
+  // — no per-pod sidecar. The pod also points its resolver at the proxy
   // (DNS stub) and dials the SSH tunnel sentinel; both are admitted by the
   // same redirect CNP. The proxy identifies the session by the source pod IP
   // it watches, so nothing per-session needs injecting here.
   //
-  // Nested (inner) yaac: the inner proxy Service is vcluster-allocated, not
-  // pinned, so query its ClusterIP (a vcluster IP the synced inner session
-  // pods can reach for the DNS stub) instead of computing the host-CIDR pin.
-  const proxyHost = yaacEnv.nested
-    ? await proxyServiceClusterIp()
-    : clusterIpForNamespace(k8sNamespace())
+  // The proxy Service ClusterIP is allocator-assigned (no longer pinned) — for
+  // both the outer and the vcluster-allocated inner proxy — so read it live.
+  // Stable for the cluster's lifetime: the Service is never deleted/recreated.
+  const proxyHost = await proxyServiceClusterIp()
 
   // Nested-containers pod wiring: shared image store hostPath (node-local)
   // + graphroot/securityContext branch in the manifest.
@@ -1085,8 +1075,8 @@ export async function createSession(
     // kind $HOME extraMount). It is also the VAP guard's only allowed
     // hostPath prefix for this session's synced pods. The registry env
     // points the inner daemon's pushes at the project's registry
-    // (resolvable in-pod via hostAliases, on the node via hosts.toml) —
-    // no repo-path prefix, since that registry is already project-scoped.
+    // (resolvable in-pod via the proxy's split-horizon DNS, on the node via
+    // hosts.toml) — no repo-path prefix, that registry is already scoped.
     const nestedDataDir = nestedYaacDataDir(projectSlug, sessionId)
     await fs.mkdir(nestedDataDir, { recursive: true })
     vclusterMounts.push({ hostPath: nestedDataDir, mountPath: nestedDataDir })
@@ -1142,7 +1132,7 @@ export async function createSession(
   const maxStartAttempts = 3
   const setupParams: SessionSetupParams = {
     imageRef, jobName, projectSlug, sessionId, env, hostPathMounts,
-    proxyHost, nested, hostAliases, virtualCluster, tool, config, options,
+    proxyHost, nested, virtualCluster, tool, config, options,
     gitUser, forwardedPorts,
   }
 

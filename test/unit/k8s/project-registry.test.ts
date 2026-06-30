@@ -35,7 +35,6 @@ import {
   ensureProjectRegistry,
   ensureRegistryImage,
   gcOrphanProjectRegistries,
-  projectRegistryClusterIp,
   projectRegistryConfDropIn,
   projectRegistryHost,
   projectRegistryHostname,
@@ -43,7 +42,6 @@ import {
   projectRegistryStorageHostPath,
   removeProjectRegistry,
 } from '@/lib/k8s/project-registry'
-import { clusterIpForService } from '@/lib/k8s/bootstrap'
 import {
   execFileAsync,
   kubectlApply,
@@ -102,15 +100,11 @@ describe('projectRegistryName', () => {
 })
 
 describe('host / VIP / storage helpers', () => {
-  it('builds the one svc-DNS host string used from every perspective', () => {
+  it('builds the registry svc-DNS host as a full .cluster.local FQDN', () => {
     const name = projectRegistryName('demo')
-    expect(projectRegistryHostname('demo')).toBe(`${name}.test-ns.svc`)
-    expect(projectRegistryHost('demo')).toBe(`${name}.test-ns.svc:${PROJECT_REGISTRY_PORT}`)
-  })
-
-  it('pins the Service VIP via the keyed generalization', () => {
-    expect(projectRegistryClusterIp('demo'))
-      .toBe(clusterIpForService('test-ns', projectRegistryName('demo')))
+    // FQDN, not the `.svc` shorthand: the proxy forwards only `.cluster.local`.
+    expect(projectRegistryHostname('demo')).toBe(`${name}.test-ns.svc.cluster.local`)
+    expect(projectRegistryHost('demo')).toBe(`${name}.test-ns.svc.cluster.local:${PROJECT_REGISTRY_PORT}`)
   })
 
   it('scopes node-local storage by install hash and project slug', () => {
@@ -204,7 +198,6 @@ describe('manifest builders', () => {
       },
       spec: {
         type: 'ClusterIP',
-        clusterIP: projectRegistryClusterIp('demo'),
         selector: { app: REGISTRY_APP_LABEL, 'yaac.project': 'demo' },
         ports: [{
           name: 'registry',
@@ -304,9 +297,9 @@ describe('ensureRegistryImage', () => {
 describe('ensureProjectRegistry', () => {
   beforeEach(() => {
     mockHasTag.mockResolvedValue(true)
-    // get service → absent; get nodes → one kind node.
+    // get service → live (allocator-assigned) ClusterIP; get nodes → one node.
     mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
-      if (args[1] === 'service') return Promise.resolve(null)
+      if (args[1] === 'service') return Promise.resolve({ spec: { clusterIP: '10.96.0.50' } })
       if (args[1] === 'nodes') return Promise.resolve(NODE_LIST)
       return Promise.resolve(null)
     })
@@ -325,7 +318,7 @@ describe('ensureProjectRegistry', () => {
       expect.objectContaining({ maxAttempts: 2 }),
     )
     // hosts.toml written on the kind node via podman exec, mapping the
-    // svc-DNS host dir to the pinned-VIP URL.
+    // svc-DNS host dir to the live ClusterIP URL.
     const hostsCall = mockExec.mock.calls.find(
       (c) => c[0] === 'podman' && (c[1] as string[])[0] === 'exec',
     )
@@ -333,30 +326,8 @@ describe('ensureProjectRegistry', () => {
     const script = (hostsCall![1] as string[])[4]
     expect((hostsCall![1] as string[])[1]).toBe('yaac-control-plane')
     expect(script).toContain(`/etc/containerd/certs.d/${projectRegistryHost('demo')}`)
-    expect(script).toContain(`http://${projectRegistryClusterIp('demo')}:${PROJECT_REGISTRY_PORT}`)
-    // No drift → no Service delete.
-    expect(mockRetry).not.toHaveBeenCalledWith(expect.arrayContaining(['delete', 'service']))
-  })
-
-  it('migrates a drifted Service: deletes it before re-applying (clusterIP immutable)', async () => {
-    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
-      if (args[1] === 'service') return Promise.resolve({ spec: { clusterIP: '10.96.1.2' } })
-      if (args[1] === 'nodes') return Promise.resolve(NODE_LIST)
-      return Promise.resolve(null)
-    })
-    await ensureProjectRegistry('demo')
-    expect(mockRetry).toHaveBeenCalledWith([
-      'delete', 'service', projectRegistryName('demo'), '-n', 'test-ns', '--ignore-not-found',
-    ])
-  })
-
-  it('leaves a Service already at the pinned VIP untouched', async () => {
-    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
-      if (args[1] === 'service') return Promise.resolve({ spec: { clusterIP: projectRegistryClusterIp('demo') } })
-      if (args[1] === 'nodes') return Promise.resolve(NODE_LIST)
-      return Promise.resolve(null)
-    })
-    await ensureProjectRegistry('demo')
+    expect(script).toContain(`http://10.96.0.50:${PROJECT_REGISTRY_PORT}`)
+    // The ClusterIP is allocator-assigned and never deleted — no migration.
     expect(mockRetry).not.toHaveBeenCalledWith(expect.arrayContaining(['delete', 'service']))
   })
 })

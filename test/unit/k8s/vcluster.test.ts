@@ -49,13 +49,11 @@ import {
   listVclusterNamespaces,
   renderVclusterManifests,
   vclusterCleanupKubectlArgs,
-  vclusterClusterIp,
   vclusterKubeconfigSecretName,
   vclusterName,
   vclusterNamespace,
   waitForVclusterKubeconfig,
 } from '@/lib/k8s/vcluster'
-import { clusterIpForService } from '@/lib/k8s/bootstrap'
 import {
   execFileAsync,
   kubectlApply,
@@ -94,14 +92,10 @@ beforeEach(() => {
   mockImageExists.mockResolvedValue(false)
 })
 
-describe('names and pins', () => {
+describe('names', () => {
   it('derives yvc-<sid8> from the session UUID', () => {
     expect(vclusterName(SID)).toBe(VC)
     expect(vclusterName('ABC-DEF-123456789')).toBe('yvc-abcdef12')
-  })
-
-  it('pins the API Service VIP via the keyed generalization', () => {
-    expect(vclusterClusterIp(VC)).toBe(clusterIpForService('test-ns', VC))
   })
 
   it('names the syncer-written kubeconfig secret vc-<name>', () => {
@@ -154,7 +148,7 @@ describe('renderVclusterManifests', () => {
         return Promise.resolve({
           stdout:
             'apiVersion: v1\nkind: Service\nmetadata:\n  name: '
-            + `${VC}\n  namespace: test-ns\nspec:\n  clusterIP: ${vclusterClusterIp(VC)}\n`
+            + `${VC}\n  namespace: test-ns\nspec: {}\n`
             + '---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: '
             + `${VC}\nspec: {}\n`,
           stderr: '',
@@ -169,14 +163,16 @@ describe('renderVclusterManifests', () => {
     const tmpl = mockExec.mock.calls.find((c) => c[0] === 'helm' && (c[1] as string[])[0] === 'template')
     expect(tmpl).toBeDefined()
     const args = (tmpl![1] as string[]).join(' ')
-    const vip = vclusterClusterIp(VC)
+    const apiHost = `${VC}.${vclusterNamespace(VC)}.svc.cluster.local`
     expect(args).toContain(`template ${VC}`)
     expect(args).toContain('vcluster-')
     expect(args).toContain('--namespace test-ns')
     expect(args).toContain('controlPlane.advanced.defaultImageRegistry=localhost:5001')
-    expect(args).toContain(`controlPlane.service.spec.clusterIP=${vip}`)
-    expect(args).toContain(`controlPlane.proxy.extraSANs[0]=${vip}`)
-    expect(args).toContain(`exportKubeConfig.server=https://${vip}:${VCLUSTER_API_PORT}`)
+    // No pinned clusterIP: the API is reached by service-DNS name (resolved
+    // via the proxy split-horizon DNS), so the SAN + server use that name.
+    expect(args).not.toContain('controlPlane.service.spec.clusterIP')
+    expect(args).toContain(`controlPlane.proxy.extraSANs[0]=${apiHost}`)
+    expect(args).toContain(`exportKubeConfig.server=https://${apiHost}:${VCLUSTER_API_PORT}`)
   })
 
   it('stamps the yaac ownership labels (but never yaac.session-id) on the rendered objects', async () => {
@@ -437,16 +433,15 @@ describe('ensureSessionVcluster', () => {
     expect(mockApply).not.toHaveBeenCalled()
   })
 
-  it('migrates a drifted Service before re-applying (clusterIP immutable)', async () => {
+  it('never deletes the API Service (ClusterIP is allocator-assigned, no pin)', async () => {
     mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
       if (args[1] === 'deployments') return Promise.resolve({ items: [] })
-      if (args[1] === 'service') return Promise.resolve({ spec: { clusterIP: '10.96.9.9' } })
       return Promise.resolve(null)
     })
     await ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' })
-    expect(mockRetry).toHaveBeenCalledWith([
-      'delete', 'service', VC, '-n', VCNS, '--ignore-not-found',
-    ])
+    expect(mockRetry).not.toHaveBeenCalledWith(
+      expect.arrayContaining(['delete', 'service']),
+    )
   })
 })
 
@@ -532,7 +527,6 @@ describe('getVclusterStatus', () => {
     mockGetJson.mockResolvedValue({ status: { readyReplicas: 1 } })
     await expect(getVclusterStatus(SID)).resolves.toEqual({
       name: VC,
-      clusterIp: vclusterClusterIp(VC),
       ready: true,
     })
     mockGetJson.mockResolvedValue({ status: {} })

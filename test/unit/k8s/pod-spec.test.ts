@@ -238,23 +238,9 @@ describe('buildSessionJobManifest', () => {
     expect(sessionEnvNames).not.toContain('RELAY_TOKEN')
   })
 
-  it('emits no hostAliases by default; empty list behaves like absent', () => {
+  it('never emits hostAliases (in-cluster names resolve via the proxy DNS)', () => {
     const spec = build().spec.template.spec
     expect(spec).not.toHaveProperty('hostAliases')
-    const bare = buildSessionJobManifest(params())
-    const empty = buildSessionJobManifest(params({ hostAliases: [] }))
-    expect(JSON.stringify(empty)).toBe(JSON.stringify(bare))
-  })
-
-  it('emits pod hostAliases when provided (registry name → pinned VIP)', () => {
-    const m = build({
-      hostAliases: [{ ip: '10.96.12.34', hostnames: ['yaac-reg-demo-abcd1234.test-ns.svc'] }],
-    }) as unknown as Manifest & {
-      spec: { template: { spec: { hostAliases?: Array<{ ip: string; hostnames: string[] }> } } }
-    }
-    expect(m.spec.template.spec.hostAliases).toEqual([
-      { ip: '10.96.12.34', hostnames: ['yaac-reg-demo-abcd1234.test-ns.svc'] },
-    ])
   })
 
   it('always appends the proxy-CA ConfigMap volume mounted read-only at the CA dir', () => {

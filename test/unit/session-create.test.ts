@@ -44,6 +44,14 @@ vi.mock('@/lib/k8s/kubectl', () => ({
   kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
+// Keep bootstrap real except proxyServiceClusterIp, which would otherwise hit
+// the (pod-shaped) kubectlGetJson mock and throw — the pod's DNS nameserver is
+// the live proxy ClusterIP read here.
+vi.mock('@/lib/k8s/bootstrap', async (importOriginal) => ({
+  ...(await importOriginal()),
+  proxyServiceClusterIp: vi.fn().mockResolvedValue('10.96.0.5'),
+}))
+
 vi.mock('@/lib/k8s/exec', () => ({
   containerExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
@@ -174,7 +182,7 @@ import { ensureImage } from '@/lib/container/image-builder'
 import { pushImageToRegistry } from '@/lib/k8s/registry'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
 import { containerExec } from '@/lib/k8s/exec'
-import { clusterIpForNamespace } from '@/lib/k8s/bootstrap'
+import { proxyServiceClusterIp } from '@/lib/k8s/bootstrap'
 import { proxyClient } from '@/lib/container/proxy-client'
 import { resolveProjectConfig } from '@/lib/project/config'
 import simpleGit from 'simple-git'
@@ -263,6 +271,7 @@ describe('createSession', () => {
     vi.mocked(fetchOrigin).mockResolvedValue(undefined)
     vi.mocked(getGitUserConfig).mockResolvedValue({ name: 'Test User', email: 'test@example.com' })
     mockLoadToolAuth.mockResolvedValue(null)
+    vi.mocked(proxyServiceClusterIp).mockResolvedValue('10.96.0.5')
     /* eslint-disable @typescript-eslint/unbound-method */
     vi.mocked(proxyClient.ensureRunning).mockResolvedValue(undefined)
     vi.mocked(proxyClient.registerSession).mockResolvedValue(undefined)
@@ -400,17 +409,19 @@ describe('createSession', () => {
     expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/opencode-meta', { recursive: true })
   })
 
-  it('injects no per-pod egress sidecars and points the pod resolver at the proxy VIP', async () => {
+  it('injects no per-pod egress sidecars and points the pod resolver at the proxy', async () => {
     await createSession('demo', { tool: 'claude', sessionId: 'abcd1234' })
 
     const spec = appliedJobManifest().spec.template.spec
     // Egress is redirected at the cluster level (Cilium CEC + CNP) — the Job
     // carries no redirect-init/relay init containers.
     expect(spec.initContainers).toBeUndefined()
-    // The pod resolves DNS against the proxy VIP's stub (pinned, never a DNS
-    // name); identity is the source pod IP the proxy watches, so no token.
+    // The pod resolves DNS against the proxy Service's stub at its live
+    // (allocator-assigned) ClusterIP, read via proxyServiceClusterIp;
+    // identity is the source pod IP the proxy watches, so no token.
     expect(spec.dnsPolicy).toBe('None')
-    expect(spec.dnsConfig).toEqual({ nameservers: [clusterIpForNamespace('yaac')] })
+    expect(proxyServiceClusterIp).toHaveBeenCalled()
+    expect(spec.dnsConfig).toEqual({ nameservers: ['10.96.0.5'] })
     const sessionEnvNames = spec.containers[0].env.map((e: { name: string }) => e.name)
     expect(sessionEnvNames).not.toContain('RELAY_TOKEN')
     // No bind endpoint exists — identity is stateless at the proxy.

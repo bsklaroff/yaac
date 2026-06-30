@@ -5,8 +5,6 @@ import { execFileAsync, k8sNamespace, kubectlApply, kubectlGetJson } from '@/lib
 import {
   buildProxyIngressCnpManifest,
   buildSessionEgressRedirectCnpManifest,
-  CLUSTER_SERVICE_CIDR,
-  clusterIpForNamespace,
   ensureNamespace,
   PROXY_APP_NAME,
   TRANSPARENT_HTTPS_PORT,
@@ -92,8 +90,6 @@ const defaultDeps: ClusterCheckDeps = {
  *      (userns-scoped SYS_ADMIN, RuntimeDefault) an unprivileged user can
  *      mount tmpfs inside a user namespace — the rootless-podman
  *      prerequisite for nestedContainers sessions
- *  11. proxy Service VIP pin drift (warn-only)
- *  12. service-CIDR drift (warn-only)
  */
 export async function runClusterCheck(
   deps: ClusterCheckDeps = defaultDeps,
@@ -187,10 +183,6 @@ export async function runClusterCheck(
     for (const name of PROBE_GATES) {
       add({ name, status: 'skip', detail: 'skipped — fix the failures above first' })
     }
-    // The VIP pin and service-CIDR drift checks only need kubectl + a
-    // reachable cluster, which held if we got this far.
-    add(await runProxyVipPinCheck(deps))
-    add(await runServiceCidrDriftCheck(deps))
     return { ok: false, results }
   }
   add(await runEndToEndProbe(deps))
@@ -201,8 +193,6 @@ export async function runClusterCheck(
     for (const name of PROBE_GATES.slice(1)) {
       add({ name, status: 'skip', detail: 'skipped — fix the failures above first' })
     }
-    add(await runProxyVipPinCheck(deps))
-    add(await runServiceCidrDriftCheck(deps))
     return { ok: false, results }
   }
   // Inner yaac (a vcluster session, YAAC_NESTED=1): the remaining gates
@@ -212,14 +202,13 @@ export async function runClusterCheck(
   // the vcluster's synced pods — see docs/yaac-in-yaac-inner-egress.md), and
   // the vcluster has no Cilium datapath or CRDs, so it cannot be probed from
   // in here (applying the session-egress CNP errors "no matches for kind").
-  // The OUTER cluster-check verifies egress. envoy-config / vap / service-cidr
-  // likewise have no in-vcluster equivalent; vcluster-in-vcluster is refused.
+  // The OUTER cluster-check verifies egress. envoy-config / vap likewise have
+  // no in-vcluster equivalent; vcluster-in-vcluster is refused.
   if (env.nested) {
     add({ name: 'egress', status: 'skip', detail: 'skipped — nested yaac (inner-session egress is enforced host-side)' })
-    for (const name of ['envoy-config', 'nested-mount', 'vap', 'service-cidr']) {
+    for (const name of ['envoy-config', 'nested-mount', 'vap']) {
       add({ name, status: 'skip', detail: 'skipped — nested yaac (not applicable inside a vcluster)' })
     }
-    add(await runProxyVipPinCheck(deps))
     return { ok: !results.some((r) => r.status === 'fail'), results }
   }
 
@@ -238,15 +227,6 @@ export async function runClusterCheck(
   // virtualCluster sessions need it — the synced-pod guard refuses
   // vcluster creation without it, fail-closed)
   add(await runVapAvailabilityCheck(deps))
-
-  // 11. proxy VIP pin (warn-only drift check, like the service CIDR
-  // below: session relays dial the pinned VIP from env)
-  add(await runProxyVipPinCheck(deps))
-
-  // 12. service-CIDR drift (warn-only: the VIP pin hashes into the
-  // compiled service subnet, so a drifted cluster fails the proxy
-  // Service creation — loudly — on the next daemon start)
-  add(await runServiceCidrDriftCheck(deps))
 
   return { ok: !results.some((r) => r.status === 'fail'), results }
 }
@@ -694,86 +674,6 @@ async function runVapAvailabilityCheck(deps: ClusterCheckDeps): Promise<CheckRes
         + 'guard needs the ValidatingAdmissionPolicy API (kubernetes >= '
         + '1.30, enabled by default). vcluster creation fails closed '
         + 'without it.',
-    }
-  }
-}
-
-/**
- * Warn when the live proxy Service's ClusterIP drifts from the compiled
- * per-namespace pin. Session relays dial the pinned VIP from their env
- * (no DNS), so a drifted Service strands every NEW session until the
- * daemon re-pins it. Same drift-warning class as the service-CIDR check;
- * skipped while the proxy isn't deployed (it deploys lazily on the first
- * session create).
- */
-async function runProxyVipPinCheck(deps: ClusterCheckDeps): Promise<CheckResult> {
-  const pinned = clusterIpForNamespace(k8sNamespace())
-  try {
-    const { stdout } = await deps.run('kubectl', [
-      'get', 'svc', PROXY_APP_NAME, '-n', k8sNamespace(), '-o', 'jsonpath={.spec.clusterIP}',
-    ])
-    const live = stdout.trim()
-    if (!live) {
-      return { name: 'proxy-vip', status: 'skip', detail: 'proxy not deployed — VIP pin unverified' }
-    }
-    if (live !== pinned) {
-      return {
-        name: 'proxy-vip', status: 'warn',
-        detail: `proxy Service ClusterIP ${live} drifts from the pinned ${pinned}`,
-        fix: 'Session relays dial the pinned VIP from their env. Restart '
-          + 'the yaac daemon: ensureProxyResources deletes and re-applies '
-          + 'the Service at the pinned address (sessions created before '
-          + 'the pin keep working — their relays re-resolve the Service '
-          + 'DNS name per connection).',
-      }
-    }
-    return { name: 'proxy-vip', status: 'pass', detail: `proxy Service pinned at ${pinned}` }
-  } catch {
-    return { name: 'proxy-vip', status: 'skip', detail: 'proxy not deployed — VIP pin unverified' }
-  }
-}
-
-/**
- * Warn when the live cluster's service subnet drifts from the compiled
- * CLUSTER_SERVICE_CIDR. clusterIpForNamespace hashes the proxy VIP pin
- * into the compiled value, so on a drifted cluster the pinned Service
- * cannot be created ("provided IP is not in the valid range") and the
- * redirect-init filter carve-out would target a nonexistent VIP.
- * kind/kubeadm clusters expose the subnet in kubeadm-config.
- */
-async function runServiceCidrDriftCheck(deps: ClusterCheckDeps): Promise<CheckResult> {
-  try {
-    const { stdout } = await deps.run('kubectl', [
-      'get', 'configmap', 'kubeadm-config', '-n', 'kube-system',
-      '-o', 'jsonpath={.data.ClusterConfiguration}',
-    ])
-    const serviceSubnet = /serviceSubnet:\s*(\S+)/.exec(stdout)?.[1]
-    if (!serviceSubnet) {
-      return {
-        name: 'service-cidr', status: 'warn',
-        detail: 'could not read serviceSubnet from kubeadm-config — service-CIDR drift unverified',
-      }
-    }
-    if (serviceSubnet !== CLUSTER_SERVICE_CIDR) {
-      return {
-        name: 'service-cidr', status: 'warn',
-        detail: `live service subnet ${serviceSubnet} drifts from the compiled ${CLUSTER_SERVICE_CIDR}`,
-        fix: 'The proxy Service VIP pin (clusterIpForNamespace) hashes '
-          + 'into the compiled service CIDR, so Service creation will fail '
-          + 'on this cluster. Recreate the cluster with '
-          + 'k8s/kind-config.yaml (which pins the subnet), or update '
-          + 'CLUSTER_SERVICE_CIDR in src/lib/k8s/bootstrap.ts to match '
-          + 'your cluster.',
-      }
-    }
-    return {
-      name: 'service-cidr', status: 'pass',
-      detail: `service subnet ${serviceSubnet} matches the compiled VIP-pin range`,
-    }
-  } catch (err) {
-    return {
-      name: 'service-cidr', status: 'warn',
-      detail: `could not read the cluster service subnet (${truncate(err)})`,
     }
   }
 }

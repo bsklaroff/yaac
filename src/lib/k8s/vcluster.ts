@@ -2,10 +2,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import YAML from 'yaml'
-import {
-  buildVclusterFallbackRedirectCnpManifest,
-  clusterIpForService,
-} from '@/lib/k8s/bootstrap'
+import { buildVclusterFallbackRedirectCnpManifest } from '@/lib/k8s/bootstrap'
 import {
   dataDirHash,
   execFileAsync,
@@ -23,11 +20,11 @@ import { testEnv } from '@/shared/env'
 export const VCLUSTER_DIR = path.join(PACKAGE_ROOT, 'k8s', 'vcluster')
 /**
  * Host-Service port the SESSION pod uses to reach the vcluster API.
- * Deliberately NOT 443: the session pod's nat layer captures all 443/80
- * uniformly, so the API the session dials lives on a port that passes
- * straight through to the in-pod EXTRA_TCP_ACCEPT carve-out. values.yaml
+ * Deliberately NOT 443: Cilium redirects session 443/80 egress to the proxy,
+ * so the API the session dials lives on a port that rides the session-egress
+ * CNP's in-cluster carve-out (toEndpoints 5000/8443) instead. values.yaml
  * exposes it as the `yaac-api` Service port (alongside the chart's 443,
- * which synced pods use — they carry no nat layer).
+ * which synced pods use — their egress is not redirected to the proxy).
  */
 export const VCLUSTER_API_PORT = 8443
 
@@ -76,16 +73,6 @@ function celString(s: string): string {
 export function vclusterName(sessionId: string): string {
   const sid8 = sessionId.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8)
   return `yvc-${sid8}`
-}
-
-/**
- * Pinned ClusterIP of the vcluster API Service. Load-bearing like the
- * registry pin: frozen into the session pod's iptables carve-out and
- * the exported kubeconfig (server + IP SAN), so Service recreation must
- * reproduce it by construction.
- */
-export function vclusterClusterIp(name: string): string {
-  return clusterIpForService(k8sNamespace(), name)
 }
 
 /** Secret the syncer writes the exported kubeconfig into. */
@@ -190,18 +177,23 @@ export function addYaacLabels(
 export async function renderVclusterManifests(p: VclusterRenderParams): Promise<string> {
   const helm = await ensureHelm()
   const name = vclusterName(p.sessionId)
-  const vip = vclusterClusterIp(name)
+  // The session pod reaches the API by its in-cluster service-DNS name,
+  // resolved through the proxy's split-horizon DNS to the live (allocator-
+  // assigned) ClusterIP — so the serving-cert SAN and the exported kubeconfig
+  // server use that name, and the Service's ClusterIP is no longer pinned. A
+  // full `.svc.cluster.local` FQDN: the proxy forwards only `.cluster.local` to
+  // CoreDNS (a bare `.svc` would be sinkholed to avoid a DNS-exfil channel).
+  const apiHost = `${name}.${vclusterNamespace(name)}.svc.cluster.local`
   const chart = path.join(VCLUSTER_DIR, `vcluster-${await chartVersion()}.tgz`)
   const { stdout } = await execFileAsync(helm, [
     'template', name, chart,
     '--namespace', vclusterNamespace(name),
     '--values', path.join(VCLUSTER_DIR, 'values.yaml'),
-    // Per-session overrides. --set-string so an all-digits registry/VIP
+    // Per-session overrides. --set-string so an all-digits registry host
     // is never coerced to a number.
     '--set-string', `controlPlane.advanced.defaultImageRegistry=${registryHost()}`,
-    '--set-string', `controlPlane.service.spec.clusterIP=${vip}`,
-    '--set-string', `controlPlane.proxy.extraSANs[0]=${vip}`,
-    '--set-string', `exportKubeConfig.server=https://${vip}:${VCLUSTER_API_PORT}`,
+    '--set-string', `controlPlane.proxy.extraSANs[0]=${apiHost}`,
+    '--set-string', `exportKubeConfig.server=https://${apiHost}:${VCLUSTER_API_PORT}`,
   ], { maxBuffer: 16 * 1024 * 1024 })
   return addYaacLabels(stdout, vclusterLabels(name, p.sessionId))
 }
@@ -436,8 +428,8 @@ export function buildVclusterPodGuardBindingManifest(
  * session pod lives in the install namespace, but its vcluster API and
  * synced pods are in the vcluster's own namespace — so the egress peers
  * are CROSS-NAMESPACE (namespaceSelector + podSelector). It admits the
- * session pod to reach the vcluster API on 8443 (paired with the in-pod
- * EXTRA_TCP_ACCEPT carve-out — both layers must agree) and its synced
+ * session pod to reach the vcluster API on 8443 (paired with the session-
+ * egress CNP's 8443 carve-out — both layers must agree) and its synced
  * pods (managed-by label; the OSS syncer cannot stamp yaac.session-id,
  * see values.yaml). Additive over the yaac-session-egress backstop.
  */
@@ -623,13 +615,9 @@ export async function ensureSessionVcluster(p: EnsureVclusterParams): Promise<vo
   )
   await kubectlApply(buildVclusterPodGuardBindingManifest(name, p.sessionId))
 
-  // clusterIP is immutable: migrate a drifted Service by delete + apply.
-  const live = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
-    'get', 'service', name, '-n', vcNs,
-  ])
-  if (live && live.spec?.clusterIP !== vclusterClusterIp(name)) {
-    await kubectlWithRetry(['delete', 'service', name, '-n', vcNs, '--ignore-not-found'])
-  }
+  // The API Service's ClusterIP is allocator-assigned (no longer pinned), so
+  // there is no immutable-field migration: the chart apply below creates it
+  // once and never needs to recreate it.
 
   // Confinement BEFORE the control plane exists: Cilium fails closed, so the
   // synced-pod egress floor must be in place before the syncer creates its first
@@ -656,7 +644,7 @@ export async function ensureSessionVcluster(p: EnsureVclusterParams): Promise<vo
 /**
  * Wait for the syncer to publish the exported kubeconfig (Secret
  * vc-<name>, key `config`) and return it decoded. Already pointed at
- * https://<pinned VIP>:8443 via exportKubeConfig.server — no rewrite.
+ * https://<api-svc-dns>:8443 via exportKubeConfig.server — no rewrite.
  */
 export async function waitForVclusterKubeconfig(
   name: string,
@@ -733,7 +721,6 @@ export async function removeSessionVcluster(name: string): Promise<void> {
 
 export interface VclusterStatus {
   name: string
-  clusterIp: string
   ready: boolean
 }
 
@@ -746,7 +733,6 @@ export async function getVclusterStatus(sessionId: string): Promise<VclusterStat
   if (!dep) return null
   return {
     name,
-    clusterIp: vclusterClusterIp(name),
     ready: (dep.status?.readyReplicas ?? 0) >= 1,
   }
 }

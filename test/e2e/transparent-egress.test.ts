@@ -17,7 +17,7 @@ import {
 import { resolveTestBaseImageRef } from '@test/helpers/mock-remotes'
 import { ProxyClient } from '@/lib/container/proxy-client'
 import {
-  clusterIpForNamespace,
+  proxyServiceClusterIp,
   SSH_TUNNEL_SENTINEL,
   TRANSPARENT_HTTPS_PORT,
   TUNNEL_INGRESS_PORT,
@@ -284,7 +284,7 @@ describe('cilium-level transparent egress (source-IP identity)', () => {
 
   beforeAll(async () => {
     await client.ensureRunning()
-    proxyHost = clusterIpForNamespace(k8sNamespace())
+    proxyHost = await proxyServiceClusterIp()
 
     const [echo, tlsEcho] = await Promise.all([
       startEchoPod(echoName),
@@ -386,11 +386,34 @@ describe('cilium-level transparent egress (source-IP identity)', () => {
     expect(r.out).toContain('TUNNEL_OK')
   }, 120_000)
 
-  it.skipIf(IS_NESTED_YAAC)('answers DNS from the proxy stub (every name → the dummy IP)', async () => {
-    const r = await execInPod(podA, [
+  it.skipIf(IS_NESTED_YAAC)('split-horizon DNS: external → sinkhole, internal .svc → live ClusterIP', async () => {
+    // External name: sinkholed. The answer is decorative — egress is port-
+    // redirected and the proxy routes by SNI/Host, never by the dialed IP.
+    const ext = await execInPod(podA, [
       'sh', '-c', 'getent hosts dns-stub-probe.example || true',
     ], { timeout: 20_000 })
-    expect(r.stdout).toContain('198.18.0.1')
+    expect(ext.stdout).toContain('198.18.0.1')
+
+    // Internal FQDN: the top-level proxy forwards `*.cluster.local` to cluster
+    // DNS, so the pod learns the echo Service's REAL (allocator-assigned)
+    // ClusterIP — this is what lets yaac stop pinning in-cluster Service VIPs.
+    const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
+      'get', 'service', echoName, '-n', k8sNamespace(),
+    ])
+    const echoClusterIp = svc?.spec?.clusterIP
+    expect(echoClusterIp, 'echo Service should have a ClusterIP').toBeTruthy()
+    const internal = await execInPod(podA, [
+      'sh', '-c', `getent hosts ${echoName}.${k8sNamespace()}.svc.cluster.local || true`,
+    ], { timeout: 20_000 })
+    expect(internal.stdout).toContain(echoClusterIp)
+
+    // Bare `.svc` is out of CoreDNS's zone, so the proxy sinkholes it rather
+    // than forward it upstream (the DNS-exfil guard) — it must NOT resolve to
+    // the real ClusterIP.
+    const bareSvc = await execInPod(podA, [
+      'sh', '-c', `getent hosts ${echoName}.${k8sNamespace()}.svc || true`,
+    ], { timeout: 20_000 })
+    expect(bareSvc.stdout).not.toContain(echoClusterIp)
   }, 60_000)
 
   it('refuses a direct dial to a transparent listener (the forgery lock)', async () => {

@@ -16,7 +16,6 @@ vi.mock('@/lib/k8s/cilium-crds', () => ({
 }))
 
 import {
-  CLUSTER_SERVICE_CIDR,
   DNS_STUB_PORT,
   EGRESS_REDIRECT_CEC_NAME,
   PROXY_APP_NAME,
@@ -56,8 +55,6 @@ import {
   buildProxyServiceManifest,
   buildSessionEgressRedirectCnpManifest,
   buildEgressWorldDenyCiliumPolicyManifest,
-  clusterIpForNamespace,
-  clusterIpForService,
   EGRESS_WORLD_DENY_NAME,
   ensureCaConfigMap,
   ensureNamespace,
@@ -101,78 +98,6 @@ describe('constants', () => {
     expect(TRANSPARENT_HTTPS_PORT).toBe(10256)
     expect(TRANSPARENT_HTTP_PORT).toBe(10257)
     expect(TRANSPARENT_TUNNEL_PORT).toBe(10258)
-  })
-
-  it('pin the VIP-pin service CIDR to the kind-config value', () => {
-    expect(CLUSTER_SERVICE_CIDR).toBe('10.96.0.0/16')
-  })
-})
-
-describe('clusterIpForNamespace', () => {
-  it('is deterministic — Service recreation reproduces the identical VIP', () => {
-    expect(clusterIpForNamespace('test-ns')).toBe(clusterIpForNamespace('test-ns'))
-    expect(clusterIpForNamespace('test-ns')).toBe('10.96.40.19')
-    expect(clusterIpForNamespace('yaac')).toBe('10.96.220.80')
-  })
-
-  it('stays inside the service /16, skipping the low 16 and the broadcast edge', () => {
-    // offset (3rd*256 + 4th octet) must land in [16, 65519] of the /16.
-    for (let i = 0; i < 2000; i++) {
-      const octets = clusterIpForNamespace(`yaac-test-${i}`).split('.').map(Number)
-      expect(octets.slice(0, 2)).toEqual([10, 96])
-      const offset = octets[2] * 256 + octets[3]
-      expect(offset).toBeGreaterThanOrEqual(16)
-      expect(offset).toBeLessThanOrEqual(65519)
-    }
-  })
-
-  it('can never collide with the apiserver (10.96.0.1) or kube-dns (10.96.0.10)', () => {
-    // Both live in the skipped low 16, so no namespace can hash onto them.
-    for (let i = 0; i < 5000; i++) {
-      const ip = clusterIpForNamespace(`ns-${i}`)
-      expect(ip).not.toBe('10.96.0.1')
-      expect(ip).not.toBe('10.96.0.10')
-    }
-  })
-
-  it('uses the wide band — distinct namespaces spread across many /24s', () => {
-    const thirdOctets = new Set<number>()
-    for (let i = 0; i < 500; i++) {
-      thirdOctets.add(Number(clusterIpForNamespace(`ns-${i}`).split('.')[2]))
-    }
-    // A single-/24 band would collapse all of these to third octet 0; the
-    // /16 band must spread them across well over a dozen distinct /24s.
-    expect(thirdOctets.size).toBeGreaterThan(50)
-    expect(clusterIpForNamespace('test-ns')).not.toBe(clusterIpForNamespace('other-ns'))
-  })
-})
-
-describe('clusterIpForService', () => {
-  it('is deterministic and FROZEN — recreation must reproduce the VIP', () => {
-    expect(clusterIpForService('test-ns', 'yaac-reg-demo-12345678'))
-      .toBe(clusterIpForService('test-ns', 'yaac-reg-demo-12345678'))
-    // Pinned values: baked into running pods' iptables carve-outs,
-    // hostAliases, and node hosts.toml — a hash change would strand them.
-    expect(clusterIpForService('yaac', 'yaac-reg-demo-12345678')).toBe('10.96.92.178')
-  })
-
-  it('keys on both namespace and service name', () => {
-    expect(clusterIpForService('ns-a', 'svc')).not.toBe(clusterIpForService('ns-b', 'svc'))
-    expect(clusterIpForService('ns-a', 'svc')).not.toBe(clusterIpForService('ns-a', 'svc2'))
-  })
-
-  it('cannot alias the proxy pin (namespace names cannot contain "/")', () => {
-    expect(clusterIpForService('test-ns', 'x')).not.toBe(clusterIpForNamespace('test-ns'))
-  })
-
-  it('stays inside the service /16, skipping the low 16 and the broadcast edge', () => {
-    for (let i = 0; i < 2000; i++) {
-      const octets = clusterIpForService('yaac', `svc-${i}`).split('.').map(Number)
-      expect(octets.slice(0, 2)).toEqual([10, 96])
-      const offset = octets[2] * 256 + octets[3]
-      expect(offset).toBeGreaterThanOrEqual(16)
-      expect(offset).toBeLessThanOrEqual(65519)
-    }
   })
 })
 
@@ -420,8 +345,7 @@ describe('buildProxyServiceManifest', () => {
       },
       spec: {
         type: 'ClusterIP',
-        // Pinned per namespace: session relays dial this VIP from env.
-        clusterIP: clusterIpForNamespace('test-ns'),
+        // No pinned clusterIP: allocator-assigned, read live at pod-create.
         selector: { app: PROXY_APP_NAME },
         ports: [
           { name: 'proxy', port: PROXY_PORT, targetPort: PROXY_PORT },
@@ -434,8 +358,8 @@ describe('buildProxyServiceManifest', () => {
     })
   })
 
-  it('nested (inner) proxy: omits the host-CIDR ClusterIP pin (vcluster allocates)', () => {
-    const m = buildProxyServiceManifest({ nested: true }) as unknown as {
+  it('never pins the ClusterIP (the allocator assigns it)', () => {
+    const m = buildProxyServiceManifest() as unknown as {
       spec: { clusterIP?: string; type: string }
     }
     expect(m.spec.type).toBe('ClusterIP')
@@ -660,7 +584,8 @@ describe('ensureProxyResources', () => {
       'CiliumEnvoyConfig', 'CiliumNetworkPolicy', 'CiliumClusterwideEnvoyConfig',
       'CiliumNetworkPolicy', 'CiliumNetworkPolicy',
     ])
-    // A fresh cluster needs no VIP migration delete.
+    // The proxy Service ClusterIP is allocator-assigned and never deleted —
+    // no pin migration, so ensureProxyResources issues no `delete service`.
     expect(mockRetry).not.toHaveBeenCalledWith(
       expect.arrayContaining(['delete', 'service']),
     )
@@ -672,30 +597,6 @@ describe('ensureProxyResources', () => {
       ],
       expect.objectContaining({ maxAttempts: 2 }),
     )
-  })
-
-  it('leaves a Service already at the pinned VIP untouched', async () => {
-    mockGetJson.mockResolvedValue({ spec: { clusterIP: clusterIpForNamespace('test-ns') } })
-    await ensureProxyResources('localhost:5000/yaac-proxy:abc')
-    expect(mockRetry).not.toHaveBeenCalledWith(
-      expect.arrayContaining(['delete', 'service']),
-    )
-  })
-
-  it('migrates a pre-pin Service: deletes it before re-applying (clusterIP is immutable)', async () => {
-    mockGetJson.mockResolvedValue({ spec: { clusterIP: '10.96.123.45' } })
-    await ensureProxyResources('localhost:5000/yaac-proxy:abc')
-
-    const deleteIdx = mockRetry.mock.calls.findIndex(
-      (c) => c[0][0] === 'delete' && c[0][1] === 'service',
-    )
-    expect(deleteIdx).toBeGreaterThanOrEqual(0)
-    expect(mockRetry.mock.calls[deleteIdx][0]).toEqual([
-      'delete', 'service', PROXY_APP_NAME, '-n', 'test-ns', '--ignore-not-found',
-    ])
-    // The delete happens before any apply, so the re-apply recreates the
-    // Service at the pinned VIP instead of failing on the immutable field.
-    expect(mockApply).toHaveBeenCalled()
   })
 
   it('nested: projects the outer CA ConfigMap (read from CA_CERT_PATH) before the Deployment', async () => {

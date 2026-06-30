@@ -16,7 +16,6 @@ import {
   type CheckResult,
   type ClusterCheckDeps,
 } from '@/lib/k8s/cluster-check'
-import { clusterIpForNamespace } from '@/lib/k8s/bootstrap'
 import { kubectlGetJson } from '@/lib/k8s/kubectl'
 import { sessionUid } from '@/lib/container/image-builder'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@test/helpers/setup'
@@ -54,13 +53,6 @@ async function happyResponses(
   }
   if (file === 'kubectl' && args[0] === 'get' && args[1] === 'svc' && args[2] === 'kube-dns') {
     return { stdout: '10.96.0.10', stderr: '' }
-  }
-  // The yaac-proxy Service is absent in the happy path (it deploys lazily).
-  if (file === 'kubectl' && args[0] === 'get' && args[1] === 'configmap' && args[2] === 'kubeadm-config') {
-    return {
-      stdout: 'networking:\n  podSubnet: 10.244.0.0/16\n  serviceSubnet: 10.96.0.0/16\n',
-      stderr: '',
-    }
   }
   if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-egress') {
     return { stdout: 'NP_BLOCKED\n', stderr: '' }
@@ -137,9 +129,6 @@ describe('runClusterCheck', () => {
       ['envoy-config', 'pass'],
       ['nested-mount', 'pass'],
       ['vap', 'pass'],
-      // The proxy deploys lazily, so its VIP pin is unverifiable here.
-      ['proxy-vip', 'skip'],
-      ['service-cidr', 'pass'],
     ])
     expect(ok).toBe(true)
     expect(byName(results, 'envoy-config')?.detail).toContain('CiliumEnvoyConfig CRDs present')
@@ -196,7 +185,7 @@ describe('runClusterCheck', () => {
       expect(byName(results, 'probe')?.status).toBe('pass')
       // egress is enforced host-side for a vcluster's synced pods (not
       // probeable from in here), so it self-skips along with the rest.
-      for (const name of ['egress', 'envoy-config', 'nested-mount', 'vap', 'service-cidr']) {
+      for (const name of ['egress', 'envoy-config', 'nested-mount', 'vap']) {
         expect(byName(results, name)?.status).toBe('skip')
       }
     } finally {
@@ -400,73 +389,6 @@ describe('runClusterCheck', () => {
     expect(nested).toMatchObject({ status: 'warn' })
     expect(nested?.fix).toContain('userns-scoped SYS_ADMIN grant')
     expect(ok).toBe(true) // warn-only — only nestedContainers sessions are affected
-  })
-
-  it('warns on proxy VIP pin drift and passes when the live Service matches', async () => {
-    const drifted = happyRun()
-    drifted.mockImplementation(async (file: string, args: string[]) => {
-      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'svc' && args[2] === 'yaac-proxy') {
-        return { stdout: '10.96.200.7', stderr: '' }
-      }
-      // The netpol probe sees the same Service; its positive half rides
-      // happyResponses' generic branches.
-      if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-egress') {
-        return { stdout: 'NP_BLOCKED\nNP_PROXY_OK\n', stderr: '' }
-      }
-      return happyResponses(file, args)
-    })
-    const driftedRun = await runClusterCheck(makeDeps({ run: drifted }))
-    const warn = byName(driftedRun.results, 'proxy-vip')
-    expect(warn).toMatchObject({ status: 'warn' })
-    expect(warn?.detail).toContain(clusterIpForNamespace('test-ns'))
-    expect(warn?.fix).toContain('Restart the yaac daemon')
-    expect(driftedRun.ok).toBe(true) // warn-only, like CIDR drift
-
-    const pinned = happyRun()
-    pinned.mockImplementation(async (file: string, args: string[]) => {
-      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'svc' && args[2] === 'yaac-proxy') {
-        return { stdout: clusterIpForNamespace('test-ns'), stderr: '' }
-      }
-      if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-egress') {
-        return { stdout: 'NP_BLOCKED\nNP_PROXY_OK\n', stderr: '' }
-      }
-      return happyResponses(file, args)
-    })
-    const pinnedRun = await runClusterCheck(makeDeps({ run: pinned }))
-    expect(byName(pinnedRun.results, 'proxy-vip')).toMatchObject({ status: 'pass' })
-  })
-
-  it('warns on service-subnet drift between the live cluster and the compiled VIP-pin range', async () => {
-    const run = happyRun()
-    run.mockImplementation(async (file: string, args: string[]) => {
-      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'configmap' && args[2] === 'kubeadm-config') {
-        return {
-          stdout: 'networking:\n  podSubnet: 10.244.0.0/16\n  serviceSubnet: 172.20.0.0/16\n',
-          stderr: '',
-        }
-      }
-      return happyResponses(file, args)
-    })
-    const { ok, results } = await runClusterCheck(makeDeps({ run }))
-    const cidr = byName(results, 'service-cidr')
-    expect(cidr).toMatchObject({ status: 'warn' })
-    expect(cidr?.detail).toContain('drift')
-    expect(ok).toBe(true) // warn-only — drift alone must not hard-fail
-  })
-
-  it('ignores pod-subnet drift — nothing compiled depends on it', async () => {
-    const run = happyRun()
-    run.mockImplementation(async (file: string, args: string[]) => {
-      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'configmap' && args[2] === 'kubeadm-config') {
-        return {
-          stdout: 'networking:\n  podSubnet: 10.128.0.0/16\n  serviceSubnet: 10.96.0.0/16\n',
-          stderr: '',
-        }
-      }
-      return happyResponses(file, args)
-    })
-    const { results } = await runClusterCheck(makeDeps({ run }))
-    expect(byName(results, 'service-cidr')).toMatchObject({ status: 'pass' })
   })
 
   it('fails the registry check with start instructions when nothing answers', async () => {

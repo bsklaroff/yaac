@@ -20,6 +20,7 @@ import https from 'node:https'
 import net from 'node:net'
 import tls from 'node:tls'
 import dgram from 'node:dgram'
+import dns from 'node:dns'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -35,7 +36,7 @@ import {
   splitHostHeader,
 } from './transparent'
 import { parsePp2Header } from './pp2'
-import { buildDnsResponse, parseDnsQuery } from './dns-stub'
+import { DNS_QTYPE_A, buildDnsResponse, isInternalName, parseDnsQuery } from './dns-stub'
 import { PodSessionIndex, fetchSessionByPodIp, parseVclusterAttribution, startPodWatch } from './pod-watch'
 import { SYSTEM_ROOTS_PATH, combineCaBundle } from './ca-bundle'
 
@@ -56,11 +57,41 @@ if (!API_PORT || !PROXY_AUTH_SECRET || !TRANSPARENT_HTTPS_PORT || !TRANSPARENT_H
   process.exit(1)
 }
 const DATA_DIR = '/data'
-// UDP/53 DNS stub: session pods point their resolver here; every A query gets
-// this fixed dummy (resolution is decorative — Cilium redirects by port, the
-// proxy routes by SNI/Host). Optional so non-cluster test runs can skip it.
+// UDP/53 DNS stub: session pods point their resolver here. Optional so
+// non-cluster test runs can skip it.
 const DNS_STUB_PORT = process.env.DNS_STUB_PORT
-const DNS_DUMMY_IPV4 = '198.18.0.1'
+// Sinkhole answer for EXTERNAL names: decorative — Cilium redirects egress by
+// port (443/80) and the proxy routes by SNI/Host, never by the dialed address.
+const DNS_SINKHOLE_IPV4 = '198.18.0.1'
+// Split-horizon DNS, top-level proxy only: forward `.cluster.local` names to
+// the real cluster CoreDNS so pods learn live in-cluster ClusterIPs (what lets
+// yaac stop pinning them). OFF for the nested (inner) proxy, which by design
+// resolves NOTHING for real: its resolver is its own loopback stub (it has no
+// route to the vcluster CoreDNS — see buildProxyDeploymentManifest's nested
+// dnsConfig), it sinkholes every name, and its upstream dials chain to the
+// outer proxy which resolves for real. Forwarding there would loop straight
+// back into its own stub, and inner sessions have no in-cluster Service to
+// resolve anyway (no inner registry — vcluster-in-vcluster is rejected).
+const DNS_FORWARD_INTERNAL = process.env.DNS_FORWARD_INTERNAL === '1'
+
+/**
+ * Resolve an internal name's first IPv4 against the proxy's own configured
+ * resolver (the cluster CoreDNS — the top-level proxy uses cluster-default
+ * DNS). The caller only ever passes `.cluster.local` names (isInternalName),
+ * which CoreDNS owns authoritatively and never forwards to its upstream/remote
+ * resolver — that is what keeps the DNS-exfil channel closed. Returns null on
+ * NXDOMAIN/NODATA/error (incl. resolve4's own c-ares timeout) so the caller
+ * answers empty-NOERROR. Only A/IPv4 is handled: ClusterIPs are IPv4 and the
+ * stub has only ever served A; a single address is returned.
+ */
+async function resolveInternalA(name: string): Promise<string | null> {
+  try {
+    const addrs = await dns.promises.resolve4(name)
+    return addrs.length > 0 ? addrs[0] : null
+  } catch {
+    return null // NXDOMAIN / NODATA / SERVFAIL / timeout — answer empty-NOERROR
+  }
+}
 
 // podIP → sessionId, kept fresh by watching the pods API with the proxy's
 // read-only ServiceAccount. The transparent listeners resolve a connection's
@@ -2423,18 +2454,36 @@ for (const [srv, portStr, label] of [
   })
 }
 
-// ── DNS stub (UDP/53) ──────────────────────────────────────────────────────
-// Session pods resolve against the proxy VIP; every A query gets the dummy IP.
+// ── DNS stub (UDP/53), split-horizon ───────────────────────────────────────
+// Session pods resolve against the proxy. External names get the sinkhole;
+// internal names (`*.svc`) are forwarded to cluster DNS on the top-level proxy
+// (DNS_FORWARD_INTERNAL) so pods learn live ClusterIPs — no IP pinning.
 const dnsServer = DNS_STUB_PORT ? dgram.createSocket('udp4') : null
 if (dnsServer && DNS_STUB_PORT) {
   dnsServer.on('message', (msg, rinfo) => {
     const query = parseDnsQuery(msg)
     if (!query) return
-    dnsServer.send(buildDnsResponse(query, DNS_DUMMY_IPV4), rinfo.port, rinfo.address)
+    const reply = (ip: string | null): void => {
+      dnsServer.send(buildDnsResponse(query, ip), rinfo.port, rinfo.address)
+    }
+    // External names (and every name on a non-forwarding proxy): sinkhole the
+    // A answer; non-A falls through to empty-NOERROR inside buildDnsResponse.
+    if (!DNS_FORWARD_INTERNAL || !isInternalName(query.name)) {
+      reply(DNS_SINKHOLE_IPV4)
+      return
+    }
+    // Internal name on the forwarding proxy: resolve A against cluster DNS;
+    // non-A (e.g. AAAA) gets empty-NOERROR so the resolver falls through to A.
+    if (query.qtype !== DNS_QTYPE_A) {
+      reply(null)
+      return
+    }
+    void resolveInternalA(query.name).then(reply)
   })
   dnsServer.on('error', (err) => console.error('[proxy] DNS stub error:', err))
   dnsServer.bind(parseInt(DNS_STUB_PORT, 10), () => {
-    console.log(`[proxy] DNS stub listener on udp/${DNS_STUB_PORT}`)
+    console.log(`[proxy] DNS stub listener on udp/${DNS_STUB_PORT}`
+      + (DNS_FORWARD_INTERNAL ? ' (split-horizon: internal names → cluster DNS)' : ''))
   })
 }
 

@@ -181,8 +181,8 @@ describe.skipIf(process.env.YAAC_E2E_NESTED_YAAC !== '1')(
       // vcluster. The probe builds nothing — it pushes busybox through the
       // in-pod podman to the project registry and runs a synced probe pod
       // from it under the VAP guard. The egress / envoy-config / nested-mount
-      // / vap / service-cidr gates self-skip under YAAC_NESTED (egress is
-      // enforced host-side, the rest have no in-vcluster equivalent).
+      // / vap gates self-skip under YAAC_NESTED (egress is enforced
+      // host-side, the rest have no in-vcluster equivalent).
       const { stdout: checkOut } = await execInJob(name, [
         'sh', '-c', 'cd /tmp/yaac && node_modules/.bin/tsx src/cli.ts cluster check 2>&1; echo "EXIT:$?"',
       ], { timeout: 900_000, maxAttempts: 1 })
