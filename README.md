@@ -16,7 +16,7 @@ npm install -g .
 
 yaac splits the container runtime in two:
 
-- **Podman** builds session images (`podman build` / `podman push`) and hosts the kind node container. Install version 5.0+:
+- **Podman** builds session images (`podman build` / `podman push`) and hosts the kind node container. Install version 5.0+ (podman 6.x needs kind >= v0.33.0 — see [Cluster setup](#cluster-setup)):
 
   ```sh
   # Debian / Ubuntu (25.04+)
@@ -76,6 +76,19 @@ Install [kind](https://kind.sigs.k8s.io/) and [kubectl](https://kubernetes.io/do
 ./scripts/setup-kind-cluster.sh
 yaac cluster check
 ```
+
+> **Podman 6.x requires kind >= v0.33.0 — don't bump podman alone.** Podman
+> 6.0 changed the container label format from a map to a slice, which breaks
+> how kind <= v0.32.0 enumerates its node containers (`kind get clusters`
+> fails with `exit status 125`), so `setup-kind-cluster.sh` cannot create or
+> delete a cluster. The fix is [kind#4203](https://github.com/kubernetes-sigs/kind/pull/4203)
+> (merged to `main` 2026-06-26, closes [#4201](https://github.com/kubernetes-sigs/kind/issues/4201)),
+> unreleased as of 2026-06-30 — the latest stable is v0.32.0 and even
+> v0.33.0-alpha predates the fix. Until v0.33.0 ships, stay on podman 5.x, or
+> move both together by building kind from `main` (`go install
+> sigs.k8s.io/kind@main` — note `@latest` resolves to the v0.32.0 tag, which
+> lacks the fix). yaac's own podman calls are unaffected (they read
+> `.ID`/`.Repository`/`.Tag`, not `.Labels`); only kind's provider breaks.
 
 The script creates a kind cluster from `k8s/kind-config.yaml` with the three pieces of wiring yaac needs:
 
