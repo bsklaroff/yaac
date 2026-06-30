@@ -4,10 +4,11 @@ import { listSessionJobs, listSessionPods, isPrewarmed, type SessionPod } from '
 import { claudeDir, codexTranscriptDir, getProjectsDir, opencodeMetaDir, projectDir } from '@/lib/project/paths'
 import { getSessionStatus, getSessionFirstMessage, normalizeTool } from '@/lib/session/status'
 import { ensureOpencodeFirstMessageCaptured } from '@/lib/session/opencode-status'
-import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
+import { probeTmuxLiveness, cleanupSessionDetached, type TmuxLiveness } from '@/lib/session/cleanup'
 import { readBlockedHosts } from '@/lib/session/blocked-hosts'
 import { getSessionTitles } from '@/lib/session/titles'
 import { DaemonError } from '@/daemon/errors'
+import { daemonLog } from '@/daemon/log'
 import { testEnv } from '@/shared/env'
 import type {
   ActiveSessionsResult,
@@ -43,15 +44,30 @@ export const STARTING_GRACE_MS = 60_000
 export async function classifySessionPods(
   pods: SessionPod[],
   nowMs: number,
-  isTmuxAlive: (slug: string, sessionId: string) => Promise<boolean>,
+  probeLiveness: (slug: string, sessionId: string) => Promise<TmuxLiveness>,
   graceMs: number = STARTING_GRACE_MS,
-): Promise<{ running: SessionPod[]; stale: StaleSessionInfo[] }> {
+): Promise<{ running: SessionPod[]; stale: StaleSessionInfo[]; indeterminate: SessionPod[] }> {
   const running: SessionPod[] = []
   const stale: StaleSessionInfo[] = []
+  const indeterminate: SessionPod[] = []
   for (const p of pods) {
-    if (p.running && p.projectSlug && p.sessionId && await isTmuxAlive(p.projectSlug, p.sessionId)) {
-      running.push(p)
-      continue
+    if (p.running && p.projectSlug && p.sessionId) {
+      const liveness = await probeLiveness(p.projectSlug, p.sessionId)
+      if (liveness === 'alive') {
+        running.push(p)
+        continue
+      }
+      if (liveness === 'unknown') {
+        // Inconclusive probe on a still-running pod — keep it. Reaping
+        // here on a transient kubectl-exec failure would destroy a
+        // healthy session (Job + vcluster, no recovery). It stays in the
+        // running bucket; a genuinely dead pod is still caught later by
+        // the pod-phase (running=false) and orphan-Job paths.
+        running.push(p)
+        indeterminate.push(p)
+        continue
+      }
+      // liveness === 'dead' — fall through to stale classification.
     }
 
     const ageMs = p.createdAtMs > 0 ? nowMs - p.createdAtMs : Infinity
@@ -60,7 +76,7 @@ export async function classifySessionPods(
     const zombie = p.running
     stale.push({ jobName: p.jobName, projectSlug: p.projectSlug, sessionId: p.sessionId, zombie })
   }
-  return { running, stale }
+  return { running, stale, indeterminate }
 }
 
 async function ensureProjectExists(slug: string): Promise<void> {
@@ -128,7 +144,7 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
   pods = pods.filter((p) => !isPrewarmed(p))
 
   const { running, stale } = await classifySessionPods(
-    pods, Date.now(), isTmuxSessionAlive, testEnv.startingGraceMs,
+    pods, Date.now(), probeTmuxLiveness, testEnv.startingGraceMs,
   )
 
   // User-assigned titles, one file read per project.
@@ -186,7 +202,19 @@ export async function reconcileStaleSessions(): Promise<void> {
   }
   const nowMs = Date.now()
   const graceMs = testEnv.startingGraceMs
-  const { stale } = await classifySessionPods(pods, nowMs, isTmuxSessionAlive, graceMs)
+  const { stale, indeterminate } = await classifySessionPods(pods, nowMs, probeTmuxLiveness, graceMs)
+
+  // Surface the near-miss: a running pod we deliberately did NOT reap
+  // because its tmux probe was inconclusive (transient kubectl-exec
+  // failure) — historically the main false-positive source. Without this
+  // line the avoided reap is invisible, so a flapping probe looks like
+  // nothing happened.
+  for (const p of indeterminate) {
+    daemonLog(
+      `[daemon] stale-reaper: keeping session=${p.sessionId} job=${p.jobName}`
+      + ' (tmux probe inconclusive; pod still running)',
+    )
+  }
 
   // Orphan-Job sweep: a Job whose pod was evicted/deleted out-of-band is
   // invisible to the pod-based classifier, so cross-reference the Job
@@ -209,6 +237,17 @@ export async function reconcileStaleSessions(): Promise<void> {
     ...orphanTargets,
   ]
   if (targets.length === 0) return
+
+  // Audit each reap with its reason before the (detached, silent)
+  // teardown runs, so a session disappearing is always explained.
+  for (const s of stale) {
+    const reason = s.zombie ? 'tmux gone, pod still running' : 'pod stopped'
+    daemonLog(`[daemon] stale-reaper: reaping session=${s.sessionId} job=${s.jobName} (${reason})`)
+  }
+  for (const o of orphanTargets) {
+    daemonLog(`[daemon] stale-reaper: reaping session=${o.sessionId} job=${o.jobName} (orphan Job, no backing pod)`)
+  }
+
   await Promise.all(targets.map((t) =>
     cleanupSessionDetached(t).catch(() => { /* best-effort */ }),
   ))
@@ -234,7 +273,7 @@ export async function captureOpencodeFirstMessages(): Promise<void> {
     return
   }
   const { running } = await classifySessionPods(
-    pods, Date.now(), isTmuxSessionAlive, testEnv.startingGraceMs,
+    pods, Date.now(), probeTmuxLiveness, testEnv.startingGraceMs,
   )
   await Promise.all(running.map(async (p) => {
     if (normalizeTool(p.tool) !== 'opencode') return

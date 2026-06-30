@@ -18,6 +18,7 @@ vi.mock('@/lib/k8s/pods', async (importOriginal) => {
 
 vi.mock('@/lib/session/cleanup', () => ({
   isTmuxSessionAlive: vi.fn().mockResolvedValue(true),
+  probeTmuxLiveness: vi.fn().mockResolvedValue('alive'),
   cleanupSession: vi.fn(),
   cleanupSessionDetached: vi.fn(),
 }))

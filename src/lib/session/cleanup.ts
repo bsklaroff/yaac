@@ -22,6 +22,7 @@ import {
 } from '@/lib/project/paths'
 import { CONTAINER_TMUX_SOCK, getProjectsDir } from '@/shared/paths'
 import { stopSessionForwarders } from '@/lib/session/port-forwarders'
+import { daemonLog } from '@/daemon/log'
 
 const execFileAsync = promisify(execFile)
 
@@ -53,9 +54,22 @@ async function removeSessionFromProxy(sessionId: string): Promise<void> {
 }
 
 /**
- * Short-TTL cache for `isTmuxSessionAlive` results, keyed by
+ * Outcome of a tmux liveness probe.
+ * - `alive`:   the "yaac" tmux session is present (exec exited 0).
+ * - `dead`:    tmux ran inside the pod and reported no session/server —
+ *              a conclusive "the agent is gone" signal.
+ * - `unknown`: the probe couldn't reach a verdict (exec timed out, or
+ *              failed with a transport/API error). The session may well
+ *              be alive; destructive callers (the stale-session reaper)
+ *              MUST NOT treat this as dead, or a transient VM/cluster blip
+ *              reaps a healthy session (Job + vcluster, no recovery).
+ */
+export type TmuxLiveness = 'alive' | 'dead' | 'unknown'
+
+/**
+ * Short-TTL cache for tmux-liveness results, keyed by
  * `${slug}/${sessionId}`. Each entry holds either a settled
- * (boolean, expiresAt) row or an in-flight Promise so concurrent
+ * (value, expiresAt) row or an in-flight Promise so concurrent
  * callers coalesce onto the same probe. Without this, /session/list
  * (called every ~5s by the UI), the background loop's
  * `hasLiveSessions`, and the stream-picker each run the same
@@ -65,8 +79,8 @@ const TMUX_ALIVE_TTL_MS = 2_000
 const TMUX_PROBE_TIMEOUT_MS = 2_000
 
 type TmuxAliveEntry =
-  | { kind: 'settled'; value: boolean; expiresAt: number }
-  | { kind: 'inflight'; promise: Promise<boolean> }
+  | { kind: 'settled'; value: TmuxLiveness; expiresAt: number }
+  | { kind: 'inflight'; promise: Promise<TmuxLiveness> }
 
 const tmuxAliveCache = new Map<string, TmuxAliveEntry>()
 
@@ -85,15 +99,46 @@ export function _clearTmuxAliveCacheForTests(): void {
 }
 
 /**
+ * Classify a failed `kubectl exec ... tmux has-session` into `dead`
+ * (conclusively no session) vs `unknown` (inconclusive — don't reap).
+ *
+ * `kubectl exec` prints `command terminated with exit code N` only when
+ * the *remote* command actually ran and exited non-zero — i.e. tmux
+ * executed in the pod and reported the session/server absent. That line,
+ * plus tmux's own "no server/session" messages, are the only conclusive
+ * "dead" signals. Everything else — exec timeout (the child is killed
+ * with SIGTERM), API/transport errors (`Error from server`, dialing the
+ * backend, connection refused, TLS timeout), a `kubectl` binary that's
+ * missing, or a pod that momentarily 404s mid-race — is inconclusive.
+ *
+ * Exported for unit testing the dead/unknown split.
+ */
+export function classifyTmuxProbeError(err: unknown): 'dead' | 'unknown' {
+  const e = (err ?? {}) as { killed?: boolean; stderr?: unknown }
+  // execFile's `timeout` kills the child (SIGTERM) — never conclusive.
+  if (e.killed) return 'unknown'
+  const stderr = typeof e.stderr === 'string'
+    ? e.stderr
+    : Buffer.isBuffer(e.stderr) ? e.stderr.toString('utf8') : ''
+  if (/command terminated with exit code/i.test(stderr)) return 'dead'
+  if (/can't find session|no server running|no current session|no sessions|error connecting to/i.test(stderr)) {
+    return 'dead'
+  }
+  return 'unknown'
+}
+
+/**
  * Probe tmux liveness by running `tmux has-session` inside the session
  * pod via `kubectl exec`. We can't connect to the hostPath-mounted UNIX
  * socket from the host: the socket file is visible on the host but the
  * listening kernel state isn't host-connectable, so running the client
  * inside the container is the only portable signal.
  *
- * Exit 0 → session present. Non-zero / timeout / missing pod → false.
+ * Exit 0 → `alive`. A failure is split into `dead`/`unknown` by
+ * `classifyTmuxProbeError` so a transient exec failure never masquerades
+ * as a dead session.
  */
-async function probeTmuxSessionAlive(slug: string, sessionId: string): Promise<boolean> {
+async function probeTmuxLivenessUncached(slug: string, sessionId: string): Promise<TmuxLiveness> {
   const jobName = sessionJobName(slug, sessionId)
   try {
     await execFileAsync(
@@ -104,20 +149,21 @@ async function probeTmuxSessionAlive(slug: string, sessionId: string): Promise<b
       ],
       { timeout: TMUX_PROBE_TIMEOUT_MS },
     )
-    return true
-  } catch {
-    return false
+    return 'alive'
+  } catch (err) {
+    return classifyTmuxProbeError(err)
   }
 }
 
 /**
- * Check whether tmux session "yaac" is alive for the given session.
- *
- * Results are cached for `TMUX_ALIVE_TTL_MS` and concurrent callers
- * for the same session share one in-flight probe, so the underlying
+ * Tri-state tmux liveness for the given session, cached for
+ * `TMUX_ALIVE_TTL_MS` with in-flight coalescing so the underlying
  * `kubectl exec` runs at most once per session per TTL window.
+ *
+ * Use this (not `isTmuxSessionAlive`) anywhere a not-alive verdict drives
+ * a destructive action: an `unknown` result must be kept, not reaped.
  */
-export async function isTmuxSessionAlive(slug: string, sessionId: string): Promise<boolean> {
+export async function probeTmuxLiveness(slug: string, sessionId: string): Promise<TmuxLiveness> {
   const key = tmuxAliveKey(slug, sessionId)
   const now = Date.now()
   const cached = tmuxAliveCache.get(key)
@@ -125,7 +171,7 @@ export async function isTmuxSessionAlive(slug: string, sessionId: string): Promi
     if (cached.kind === 'inflight') return cached.promise
     if (cached.expiresAt > now) return cached.value
   }
-  const promise = probeTmuxSessionAlive(slug, sessionId).then((value) => {
+  const promise = probeTmuxLivenessUncached(slug, sessionId).then((value) => {
     tmuxAliveCache.set(key, {
       kind: 'settled',
       value,
@@ -135,6 +181,16 @@ export async function isTmuxSessionAlive(slug: string, sessionId: string): Promi
   })
   tmuxAliveCache.set(key, { kind: 'inflight', promise })
   return promise
+}
+
+/**
+ * Boolean tmux liveness for display / non-destructive callers: true only
+ * when the probe is conclusively `alive`. Both `dead` and `unknown` map
+ * to false (skip / no-op), which is safe here — only the reaper needs to
+ * tell them apart, and it uses `probeTmuxLiveness` directly.
+ */
+export async function isTmuxSessionAlive(slug: string, sessionId: string): Promise<boolean> {
+  return (await probeTmuxLiveness(slug, sessionId)) === 'alive'
 }
 
 export async function cleanupSession(params: {
@@ -217,6 +273,11 @@ export async function cleanupSessionDetached(params: {
   sessionId: string
 }): Promise<void> {
   const { jobName, projectSlug, sessionId } = params
+
+  // Audit every teardown: the actual work below runs as a detached,
+  // stdio-ignored child, so without this line a session reaped by the
+  // background loop vanishes with no trace in the daemon log.
+  daemonLog(`[daemon] session teardown: session=${sessionId} job=${jobName} project=${projectSlug}`)
 
   tmuxAliveCache.delete(tmuxAliveKey(projectSlug, sessionId))
   evictClaudeStatusCache(projectSlug, sessionId)

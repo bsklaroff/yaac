@@ -45,18 +45,27 @@ vi.mock('node:child_process', async () => {
   }
 })
 
+// Audit logging is a vi.fn so the teardown line can be asserted without a
+// real daemon.log on disk.
+vi.mock('@/daemon/log', () => ({ daemonLog: vi.fn() }))
+
 import { promoteSessionImages } from '@/lib/container/image-promoter'
 import { listSessionPods, listSessionJobs } from '@/lib/k8s/pods'
 import type * as podsModule from '@/lib/k8s/pods'
 import {
   isTmuxSessionAlive,
+  probeTmuxLiveness,
+  classifyTmuxProbeError,
   cleanupSession,
   cleanupSessionDetached,
   sessionModulesDir,
   gcOrphanEphemeralModuleDirs,
   _clearTmuxAliveCacheForTests,
 } from '@/lib/session/cleanup'
+import { daemonLog } from '@/daemon/log'
 import { setDataDir } from '@/lib/project/paths'
+
+const mockDaemonLog = vi.mocked(daemonLog)
 
 const mockListPods = vi.mocked(listSessionPods)
 const mockListJobs = vi.mocked(listSessionJobs)
@@ -221,6 +230,104 @@ describe('cleanupSessionDetached', () => {
     const deleteIdx = script.indexOf('kubectl delete job yaac-p-s-detached')
     expect(promoterIdx).toBeGreaterThanOrEqual(0)
     expect(deleteIdx).toBeGreaterThan(promoterIdx)
+  })
+
+  it('audits the teardown so a reaped session is never silent', async () => {
+    spawnMock.mockClear()
+    mockDaemonLog.mockClear()
+    execFileMock.mockReset()
+    execFileMock.mockResolvedValue(undefined)
+    await cleanupSessionDetached({
+      jobName: 'yaac-p-s-audit',
+      projectSlug: 'proj-a',
+      sessionId: 's-audit',
+    })
+
+    const logged = mockDaemonLog.mock.calls.map(([m]) => m).join('\n')
+    expect(logged).toContain('session teardown')
+    expect(logged).toContain('session=s-audit')
+    expect(logged).toContain('job=yaac-p-s-audit')
+    expect(logged).toContain('project=proj-a')
+  })
+})
+
+describe('classifyTmuxProbeError', () => {
+  it('is unknown when the probe timed out (child killed)', () => {
+    const err = Object.assign(new Error('timeout'), { killed: true, signal: 'SIGTERM' })
+    expect(classifyTmuxProbeError(err)).toBe('unknown')
+  })
+
+  it('is dead when kubectl reports the remote command exited non-zero', () => {
+    // tmux actually ran in the pod and said "no session" — conclusive.
+    const err = Object.assign(new Error('exit 1'), { stderr: 'command terminated with exit code 1' })
+    expect(classifyTmuxProbeError(err)).toBe('dead')
+  })
+
+  it('is dead on tmux\'s own no-server / no-session messages', () => {
+    expect(classifyTmuxProbeError({ stderr: 'no server running on /tmp/yaac-tmux/server' })).toBe('dead')
+    expect(classifyTmuxProbeError({ stderr: "can't find session: yaac" })).toBe('dead')
+  })
+
+  it('reads stderr from a Buffer too', () => {
+    const err = { stderr: Buffer.from('command terminated with exit code 1') }
+    expect(classifyTmuxProbeError(err)).toBe('dead')
+  })
+
+  it('is unknown on a kubectl transport / API error (the false-positive source)', () => {
+    expect(classifyTmuxProbeError({ stderr: 'Error from server (NotFound): pods "x" not found' })).toBe('unknown')
+    expect(classifyTmuxProbeError({ stderr: 'error: unable to upgrade connection: container not found' })).toBe('unknown')
+    expect(classifyTmuxProbeError({ stderr: 'Unable to connect to the server: dial tcp: i/o timeout' })).toBe('unknown')
+  })
+
+  it('is unknown when there is no usable error detail', () => {
+    expect(classifyTmuxProbeError(new Error('boom'))).toBe('unknown')
+    expect(classifyTmuxProbeError(undefined)).toBe('unknown')
+    expect(classifyTmuxProbeError(null)).toBe('unknown')
+  })
+})
+
+describe('probeTmuxLiveness', () => {
+  let dataDir: string
+
+  beforeEach(async () => {
+    _clearTmuxAliveCacheForTests()
+    execFileMock.mockReset()
+    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-tmuxprobe-'))
+    setDataDir(dataDir)
+  })
+
+  afterEach(async () => {
+    await fs.rm(dataDir, { recursive: true, force: true })
+  })
+
+  it('is alive when has-session exits 0', async () => {
+    execFileMock.mockResolvedValue(undefined)
+    await expect(probeTmuxLiveness('p', 's-alive')).resolves.toBe('alive')
+  })
+
+  it('is dead when the remote tmux exits non-zero', async () => {
+    execFileMock.mockRejectedValue(
+      Object.assign(new Error('exit 1'), { stderr: 'command terminated with exit code 1' }),
+    )
+    await expect(probeTmuxLiveness('p', 's-dead')).resolves.toBe('dead')
+  })
+
+  it('is unknown on a transient exec failure — never a reap signal', async () => {
+    execFileMock.mockRejectedValue(
+      Object.assign(new Error('boom'), { stderr: 'Unable to connect to the server: i/o timeout' }),
+    )
+    await expect(probeTmuxLiveness('p', 's-blip')).resolves.toBe('unknown')
+  })
+
+  it('coalesces concurrent callers onto a single in-flight probe', async () => {
+    execFileMock.mockResolvedValue(undefined)
+    const [a, b, c] = await Promise.all([
+      probeTmuxLiveness('p', 's-coalesce'),
+      probeTmuxLiveness('p', 's-coalesce'),
+      probeTmuxLiveness('p', 's-coalesce'),
+    ])
+    expect([a, b, c]).toEqual(['alive', 'alive', 'alive'])
+    expect(execFileMock).toHaveBeenCalledTimes(1)
   })
 })
 
