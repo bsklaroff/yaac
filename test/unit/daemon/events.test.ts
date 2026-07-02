@@ -11,7 +11,7 @@ vi.mock('@/lib/project/list', () => ({
 import { EventHub, buildSnapshot, serializeEvent } from '@/daemon/events'
 import type { WsLike } from '@/daemon/events'
 import { listActiveSessions } from '@/lib/session/list'
-import { registerProvisioning, clearAllProvisioningForTests } from '@/daemon/provisioning'
+import { registerProvisioning, removeProvisioning, clearAllProvisioningForTests } from '@/daemon/provisioning'
 import type { DaemonSnapshot } from '@/shared/types'
 
 function emptySnapshot(): DaemonSnapshot {
@@ -132,7 +132,10 @@ describe('buildSnapshot provisioning', () => {
     expect(snap.provisioning.map((e) => e.sessionId)).toEqual(['prov-1'])
   })
 
-  it('filters out (and reaps) a provisioning entry whose session is now active', async () => {
+  it('hides a listed session that is still provisioning, keeping the row', async () => {
+    // A pod lists as an active session mid-setup (Running + tmux up, but no
+    // agent/init windows yet) — the provisioning row must win until the
+    // create route removes it, or clients attach to a half-built session.
     vi.mocked(listActiveSessions).mockResolvedValueOnce({
       sessions: [{
         sessionId: 'prov-2', projectSlug: 'p', tool: 'claude',
@@ -142,9 +145,23 @@ describe('buildSnapshot provisioning', () => {
     })
     registerProvisioning({ sessionId: 'prov-2', projectSlug: 'p', tool: 'claude', kind: 'create' })
     const snap = await buildSnapshot()
+    expect(snap.sessions).toEqual([])
+    expect(snap.provisioning.map((e) => e.sessionId)).toEqual(['prov-2'])
+  })
+
+  it('lists the session once its provisioning entry is removed (the hand-off)', async () => {
+    vi.mocked(listActiveSessions).mockResolvedValue({
+      sessions: [{
+        sessionId: 'prov-3', projectSlug: 'p', tool: 'claude',
+        status: 'waiting', createdAt: '2026-01-01 00:00:00', blockedHosts: [], forwardedPorts: [],
+      }],
+      stale: [],
+    })
+    registerProvisioning({ sessionId: 'prov-3', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    removeProvisioning('prov-3')
+    const snap = await buildSnapshot()
+    expect(snap.sessions.map((s) => s.sessionId)).toEqual(['prov-3'])
     expect(snap.provisioning).toEqual([])
-    // Superseded entry was reaped, so a later build (no live session) stays empty.
-    const next = await buildSnapshot()
-    expect(next.provisioning).toEqual([])
+    vi.mocked(listActiveSessions).mockResolvedValue({ sessions: [], stale: [] })
   })
 })

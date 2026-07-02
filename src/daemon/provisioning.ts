@@ -7,8 +7,11 @@
  * until dismissed so the user still sees them after a reload.
  *
  * The daemon is a single process, so a module-level map is enough. Entries are
- * dropped when the real session lands in `listActiveSessions` (lazy cleanup in
- * `buildSnapshot`) or when the user dismisses a failed one.
+ * dropped by the create/restart routes the moment provisioning resolves, or by
+ * the user dismissing a failed one. While an entry exists, `buildSnapshot`
+ * hides any same-id active session — a pod lists well before its tmux windows
+ * are set up, and clients must keep rendering the row, not attach to a
+ * half-built session.
  */
 import { notifySessionListChanged } from '@/daemon/sessions-changed'
 import type { AgentTool, ProvisioningSessionEntry } from '@/shared/types'
@@ -36,7 +39,7 @@ function formatCreated(epochMs: number): string {
 /** Track a new in-flight provision (idempotent overwrite on the same id, e.g.
  *  a retry). Pushes a fresh snapshot so the row appears immediately. Every
  *  creating/restarting session is shown — entries are only dropped when the
- *  real session lands (lazy cleanup in buildSnapshot) or on dismiss. */
+ *  create/restart resolves (the routes remove them) or on dismiss. */
 export function registerProvisioning(input: {
   sessionId: string
   projectSlug: string
@@ -74,8 +77,8 @@ export function failProvisioning(sessionId: string, error: string): void {
   notifySessionListChanged()
 }
 
-/** Drop an entry (real session landed, or user dismissed). Notifies only if it
- *  actually removed something, to avoid a spurious broadcast. */
+/** Drop an entry (provisioning resolved, or user dismissed). Notifies only if
+ *  it actually removed something, to avoid a spurious broadcast. */
 export function removeProvisioning(sessionId: string): void {
   if (entries.delete(sessionId)) notifySessionListChanged()
 }

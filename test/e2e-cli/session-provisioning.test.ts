@@ -253,8 +253,10 @@ describe('provisioning hand-off on a real session create (client-supplied id)', 
       { sessions: Array<{ sessionId: string }> }
     expect(list.sessions.some((s) => s.sessionId === sessionId)).toBe(true)
 
-    // ...and the provisioning row drops on hand-off (buildSnapshot de-dups it
-    // against the now-live session — no double row).
+    // ...and the provisioning row drops on hand-off (the create route removes
+    // it when createSession resolves; until then buildSnapshot hides the
+    // session so no snapshot ever carries both — no double row, and no
+    // terminals mounted against a half-built session).
     let droppedFromProvisioning = false
     for (let i = 0; i < 100; i++) {
       const snap = sub.latest()

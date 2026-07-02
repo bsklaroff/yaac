@@ -105,11 +105,12 @@ export const sessionApp = new Hono()
         try {
           const result = await createSession(body.project, opts)
           if (!result) throw new DaemonError('INTERNAL', 'session creation returned no result')
+          // Setup is complete — drop the provisioning row (its notify pushes
+          // the snapshot that swaps it for the now-ready session; buildSnapshot
+          // hides the session while the row exists). Before the result write,
+          // so a client gone mid-create can't leave the row stuck.
+          removeProvisioning(sessionId)
           await write({ type: 'result', result })
-          // Container is up — push a snapshot now so the webapp shows the new
-          // session immediately instead of on the next periodic tick. The
-          // provisioning entry is dropped by buildSnapshot once the real
-          // session lists (covers the startup grace window).
           notifySessionListChanged()
         } catch (err) {
           const { body: errBody } = toErrorBody(err)
@@ -155,6 +156,9 @@ export const sessionApp = new Hono()
               void write({ type: 'progress', message })
             },
           })
+          // Same hand-off as create: drop the row so the restarted session
+          // (hidden while the row existed) lists in the next snapshot.
+          removeProvisioning(body.sessionId)
           await write({ type: 'result', result })
           notifySessionListChanged()
         } catch (err) {
