@@ -2,10 +2,14 @@
  * `pnpm watch` — dev loop for working on yaac itself (including inside
  * a yaac-in-yaac session). package.json runs this under `tsx watch`,
  * which reruns it whenever a build input changes; each run does
- * `pnpm build` then `yaac daemon restart` so the running daemon always
- * matches the CLI's buildId. A failed build skips the restart and the
- * watcher waits for the next change. Ctrl-C stops the watcher but
- * leaves the daemon running.
+ * `pnpm build` then `yaac daemon start`, falling back to `yaac daemon
+ * restart` when start refuses (live daemon on an older buildId), so
+ * the running daemon always matches the CLI's buildId. The build is
+ * deterministic (buildId is a content hash of dist/), so the initial
+ * run after `yaac daemon start` in initCommands leaves the daemon
+ * untouched instead of bouncing it. A failed build skips the
+ * (re)start and the watcher waits for the next change. Ctrl-C stops
+ * the watcher but leaves the daemon running.
  *
  * tsx kills only this wrapper on rerun, so the build is spawned in its
  * own process group and the signal handler forwards the kill to the
@@ -55,8 +59,14 @@ function run(cmd: string, args: string[]): Promise<void> {
 
 try {
   await run('pnpm', ['build'])
-  await run(process.execPath, [path.join(repoRoot, 'dist', 'cli.js'), 'daemon', 'restart'])
-  console.error('[watch] build ok, daemon restarted — watching for changes')
+  const cli = path.join(repoRoot, 'dist', 'cli.js')
+  try {
+    await run(process.execPath, [cli, 'daemon', 'start'])
+  } catch {
+    // start throws when a live daemon is on an older buildId — bounce it.
+    await run(process.execPath, [cli, 'daemon', 'restart'])
+  }
+  console.error('[watch] build ok, daemon in sync — watching for changes')
 } catch (err) {
   console.error(`[watch] ${err instanceof Error ? err.message : String(err)} — waiting for the next change`)
 }
