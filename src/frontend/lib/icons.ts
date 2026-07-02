@@ -31,6 +31,7 @@ export {
   GalleryHorizontal as TabsIcon,
   Columns2 as SplitRightIcon,
   Rows2 as SplitDownIcon,
+  ExternalLink as OpenLinkIcon,
 } from 'lucide-react'
 
 /** Display name per agent tool (proper brand casing, incl. OpenCode). */

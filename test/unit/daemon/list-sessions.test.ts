@@ -29,6 +29,7 @@ import {
   captureOpencodeFirstMessages,
   _clearListActiveInflightForTests,
 } from '@/lib/session/list'
+import { registerSessionForwarders, stopSessionForwarders } from '@/lib/session/port-forwarders'
 import { DaemonError } from '@/daemon/errors'
 import type { ProjectMeta } from '@/shared/types'
 
@@ -90,6 +91,44 @@ describe('listActiveSessions', () => {
   it('throws RUNTIME_UNAVAILABLE when the pod listing fails', async () => {
     mockListPods.mockRejectedValueOnce(new Error('connection refused'))
     await expect(listActiveSessions()).rejects.toMatchObject({ code: 'RUNTIME_UNAVAILABLE' })
+  })
+
+  it('carries the forwarder registry port mappings on each entry', async () => {
+    mockListPods.mockResolvedValue([
+      {
+        jobName: 'yaac-demo-withports',
+        podName: 'yaac-demo-withports-x1',
+        sessionId: 'withports',
+        projectSlug: 'demo',
+        tool: 'claude',
+        phase: 'Running',
+        running: true,
+        createdAtMs: 1_000,
+        labels: {},
+      },
+      {
+        jobName: 'yaac-demo-noports',
+        podName: 'yaac-demo-noports-x1',
+        sessionId: 'noports',
+        projectSlug: 'demo',
+        tool: 'claude',
+        phase: 'Running',
+        running: true,
+        createdAtMs: 1_000,
+        labels: {},
+      },
+    ])
+    registerSessionForwarders('withports', () => {}, [{ containerPort: 8787, hostPort: 9787 }])
+    try {
+      const result = await listActiveSessions()
+      const bySession = new Map(result.sessions.map((s) => [s.sessionId, s]))
+      expect(bySession.get('withports')?.forwardedPorts).toEqual([
+        { containerPort: 8787, hostPort: 9787 },
+      ])
+      expect(bySession.get('noports')?.forwardedPorts).toEqual([])
+    } finally {
+      stopSessionForwarders('withports')
+    }
   })
 })
 

@@ -7,6 +7,7 @@ import { getSessionFirstMessage, normalizeTool } from '@/lib/session/status'
 import { ensureOpencodeFirstMessageCaptured } from '@/lib/session/opencode-status'
 import { isSessionStreamHealthy, readSessionStatus, readSessionWaitingSince } from '@/lib/session/status-store'
 import { probeTmuxLiveness, cleanupSessionDetached, type TmuxLiveness } from '@/lib/session/cleanup'
+import { getSessionPorts } from '@/lib/session/port-forwarders'
 import { readBlockedHosts } from '@/lib/session/blocked-hosts'
 import { getSessionTitles } from '@/lib/session/titles'
 import { DaemonError } from '@/daemon/errors'
@@ -187,6 +188,7 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
           status: 'running',
           createdAt: formatCreated(p.createdAtMs),
           blockedHosts: [],
+          forwardedPorts: [],
         }
       }
       const [prompt, blockedHosts] = await Promise.all([
@@ -203,6 +205,7 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
         prompt,
         title: titlesBySlug.get(p.projectSlug)?.[p.sessionId],
         blockedHosts,
+        forwardedPorts: getSessionPorts(p.sessionId),
       }
     }),
   )

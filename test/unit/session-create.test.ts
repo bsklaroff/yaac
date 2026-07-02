@@ -559,7 +559,9 @@ describe('createSession', () => {
     expect(mockReserveAvailablePort).toHaveBeenCalledWith(3000, 3000)
     expect(mockKubectlRelay).toHaveBeenCalledWith('yaac-demo-abcd1234')
     expect(mockStartForwarders).toHaveBeenCalledWith(relayFactory, [reserved])
-    expect(mockRegisterSessionForwarders).toHaveBeenCalledWith('abcd1234', expect.any(Function))
+    expect(mockRegisterSessionForwarders).toHaveBeenCalledWith(
+      'abcd1234', expect.any(Function), [reserved],
+    )
     expect(result?.forwardedPorts).toEqual([{ containerPort: 3000, hostPort: 3001 }])
   })
 

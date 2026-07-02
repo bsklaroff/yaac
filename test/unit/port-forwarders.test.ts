@@ -17,6 +17,7 @@ import { kubectlRelay, reserveAvailablePort, startPortForwarders } from '@/lib/c
 import type { ReservedPort } from '@/lib/container/port'
 import {
   buildStatusRight,
+  getSessionPorts,
   hasSessionForwarders,
   provisionSessionForwarders,
   registerSessionForwarders,
@@ -80,25 +81,50 @@ describe('registry: register/stop/hasSessionForwarders', () => {
 
   it('registers a forwarder and reports it present', () => {
     expect(hasSessionForwarders('sess-reg-1')).toBe(false)
-    registerSessionForwarders('sess-reg-1', vi.fn())
+    registerSessionForwarders('sess-reg-1', vi.fn(), [])
     expect(hasSessionForwarders('sess-reg-1')).toBe(true)
   })
 
   it('ignores a second registration and runs the duplicate stop', () => {
     const first = vi.fn()
     const second = vi.fn()
-    registerSessionForwarders('sess-reg-2', first)
-    registerSessionForwarders('sess-reg-2', second)
+    registerSessionForwarders('sess-reg-2', first, [{ containerPort: 3000, hostPort: 19000 }])
+    registerSessionForwarders('sess-reg-2', second, [{ containerPort: 3000, hostPort: 19999 }])
     expect(first).not.toHaveBeenCalled()
     expect(second).toHaveBeenCalledTimes(1)
+    // The first registration's ports stay authoritative.
+    expect(getSessionPorts('sess-reg-2')).toEqual([{ containerPort: 3000, hostPort: 19000 }])
   })
 
   it('stopSessionForwarders invokes the stored stop and removes the entry', () => {
     const stop = vi.fn()
-    registerSessionForwarders('sess-reg-1', stop)
+    registerSessionForwarders('sess-reg-1', stop, [])
     stopSessionForwarders('sess-reg-1')
     expect(stop).toHaveBeenCalledTimes(1)
     expect(hasSessionForwarders('sess-reg-1')).toBe(false)
+  })
+})
+
+describe('getSessionPorts', () => {
+  afterEach(() => {
+    stopSessionForwarders('sess-ports-1')
+  })
+
+  it('returns [] for a session with no registered forwarders', () => {
+    expect(getSessionPorts('sess-ports-unknown')).toEqual([])
+  })
+
+  it('returns the registered mappings and clears them on stop', () => {
+    registerSessionForwarders('sess-ports-1', vi.fn(), [
+      { containerPort: 8787, hostPort: 9787 },
+      { containerPort: 5432, hostPort: 15432 },
+    ])
+    expect(getSessionPorts('sess-ports-1')).toEqual([
+      { containerPort: 8787, hostPort: 9787 },
+      { containerPort: 5432, hostPort: 15432 },
+    ])
+    stopSessionForwarders('sess-ports-1')
+    expect(getSessionPorts('sess-ports-1')).toEqual([])
   })
 })
 
@@ -114,8 +140,8 @@ describe('stopAllSessionForwarders', () => {
   it('stops every registered forwarder and clears the registry', () => {
     const stopA = vi.fn()
     const stopB = vi.fn()
-    registerSessionForwarders('sess-all-1', stopA)
-    registerSessionForwarders('sess-all-2', stopB)
+    registerSessionForwarders('sess-all-1', stopA, [])
+    registerSessionForwarders('sess-all-2', stopB, [])
     expect(hasSessionForwarders('sess-all-1')).toBe(true)
     expect(hasSessionForwarders('sess-all-2')).toBe(true)
 
@@ -130,8 +156,8 @@ describe('stopAllSessionForwarders', () => {
   it('keeps stopping the rest even if one stop fn throws', () => {
     const stopA = vi.fn(() => { throw new Error('stuck relay') })
     const stopB = vi.fn()
-    registerSessionForwarders('sess-all-3', stopA)
-    registerSessionForwarders('sess-all-4', stopB)
+    registerSessionForwarders('sess-all-3', stopA, [])
+    registerSessionForwarders('sess-all-4', stopB, [])
 
     expect(() => stopAllSessionForwarders()).not.toThrow()
 
@@ -181,6 +207,11 @@ describe('provisionSessionForwarders', () => {
     expect(mockKubectlRelay).toHaveBeenCalledWith('yaac-proj-sess-prov-2')
     expect(mockStartForwarders).toHaveBeenCalledTimes(1)
     expect(hasSessionForwarders('sess-prov-2')).toBe(true)
+    // The registry serves the same mappings back for session-list rows.
+    expect(getSessionPorts('sess-prov-2')).toEqual([
+      { containerPort: 3000, hostPort: 19500 },
+      { containerPort: 5432, hostPort: 19501 },
+    ])
     expect(result).toEqual([
       { containerPort: 3000, hostPort: 19500 },
       { containerPort: 5432, hostPort: 19501 },

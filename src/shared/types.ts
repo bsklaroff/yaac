@@ -308,6 +308,10 @@ export interface SessionListEntry {
   /** User-assigned display title (falls back to `prompt` in UIs). */
   title?: string
   blockedHosts: string[]
+  /** Live host→container forwards owned by the daemon (from the
+   *  forwarder registry). Empty until forwarders are (re)provisioned —
+   *  briefly so after a daemon restart, before the restore pass runs. */
+  forwardedPorts: PortMapping[]
 }
 
 export interface StaleSessionInfo {

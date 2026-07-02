@@ -257,6 +257,21 @@ describe('yaac session create honors portForward in yaac-config.json', () => {
     expect(r2.body).toBe('second server')
   }, 30_000)
 
+  it('surfaces the live forwarders on /session/list (feeds the webapp snapshot)', async () => {
+    const res = await fetch(
+      `http://127.0.0.1:${daemon!.lock.port}/session/list?project=repo-demo`,
+      { headers: { authorization: `Bearer ${daemon!.lock.secret}` } },
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json() as {
+      sessions: Array<{ forwardedPorts: Array<{ containerPort: number; hostPort: number }> }>
+    }
+    expect(body.sessions).toHaveLength(1)
+    // Same mappings the create stream reported, order-insensitive.
+    const got = new Map(body.sessions[0].forwardedPorts.map((p) => [p.containerPort, p.hostPort]))
+    expect(got).toEqual(hostPortFor)
+  }, 30_000)
+
   it('relay accepts sequential requests while the event loop stays responsive', async () => {
     // Regression: startPortForwarders needs the Node event loop to
     // accept TCP connections. A wedged event loop would let the first

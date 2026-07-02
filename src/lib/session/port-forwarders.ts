@@ -16,24 +16,46 @@ import type { ReservedPort } from '@/lib/container/port'
 import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
 import type { PortForwardConfig, PortMapping } from '@/shared/types'
 
-const forwarders = new Map<string, () => void>()
+interface SessionForwarders {
+  stop: () => void
+  ports: PortMapping[]
+}
 
-export function registerSessionForwarders(sessionId: string, stop: () => void): void {
+const forwarders = new Map<string, SessionForwarders>()
+
+export function registerSessionForwarders(
+  sessionId: string,
+  stop: () => void,
+  ports: ReadonlyArray<PortMapping>,
+): void {
   if (forwarders.has(sessionId)) {
     // Already have forwarders for this session; drop the new ones to
     // avoid leaking handles.
     stop()
     return
   }
-  forwarders.set(sessionId, stop)
+  forwarders.set(sessionId, {
+    stop,
+    ports: ports.map(({ containerPort, hostPort }) => ({ containerPort, hostPort })),
+  })
+}
+
+/**
+ * Host↔container mappings of the live forwarders for a session, empty
+ * when none are registered. Feeds the `forwardedPorts` field of
+ * session-list entries (and thus the webapp snapshot) — the registry is
+ * the daemon's only record of which host ports a session actually holds.
+ */
+export function getSessionPorts(sessionId: string): PortMapping[] {
+  return forwarders.get(sessionId)?.ports ?? []
 }
 
 export function stopSessionForwarders(sessionId: string): void {
-  const stop = forwarders.get(sessionId)
-  if (!stop) return
+  const entry = forwarders.get(sessionId)
+  if (!entry) return
   forwarders.delete(sessionId)
   try {
-    stop()
+    entry.stop()
   } catch {
     // Best-effort teardown — a wedged forwarder shouldn't block delete.
   }
@@ -123,8 +145,9 @@ export async function provisionSessionForwarders(
 
   if (reserved.length === 0) return []
 
+  const mappings = reserved.map(({ containerPort, hostPort }) => ({ containerPort, hostPort }))
   const stop = startPortForwarders(kubectlRelay(jobName), reserved)
-  registerSessionForwarders(sessionId, stop)
+  registerSessionForwarders(sessionId, stop, mappings)
 
-  return reserved.map(({ containerPort, hostPort }) => ({ containerPort, hostPort }))
+  return mappings
 }

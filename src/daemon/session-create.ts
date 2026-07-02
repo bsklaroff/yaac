@@ -1175,7 +1175,7 @@ export async function createSession(
   // and are torn down only by delete or the reaper.
   if (forwardedPorts.length > 0) {
     const stop = startPortForwarders(kubectlRelay(jobName), forwardedPorts)
-    registerSessionForwarders(sessionId, stop)
+    registerSessionForwarders(sessionId, stop, forwardedPorts)
   }
 
   return {
