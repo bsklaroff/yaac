@@ -9,7 +9,7 @@ import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
 import { AddIcon, CloseIcon, SidebarIcon, SplitDownIcon, SplitRightIcon, TabsIcon, TilesIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import { BlockedHostsBadge } from '@/frontend/components/BlockedHostsBadge'
 import { getSessionTerminals, createShellTerminal, killSessionTerminal } from '@/frontend/lib/terminalsApi'
-import { matchTabShortcut, resolveCycleTarget } from '@/frontend/lib/shortcuts'
+import { matchCreateShortcut, matchTabShortcut, resolveCycleTarget } from '@/frontend/lib/shortcuts'
 import {
   addLeafToLargest,
   computeLayout,
@@ -182,29 +182,6 @@ export function SessionView({
   const liveIds = new Set(sessions.map((s) => s.sessionId))
   const mounted = opened.filter((key) => liveIds.has(key.slice(0, key.indexOf('|'))))
 
-  // Terminal-switch shortcuts: Alt+←/Alt+→ cycle left/right — the
-  // webapp-level replacement for tmux's prefix bindings (webapp panes
-  // run with `prefix None`). Captured on window so the chord is swallowed
-  // before xterm's textarea handler could forward it to the PTY; the ref
-  // keeps the single listener reading the current render's state.
-  const shortcutCtx = useRef({ sid, targets, activeTab })
-  shortcutCtx.current = { sid, targets, activeTab }
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent): void => {
-      const delta = matchTabShortcut(e)
-      if (delta === null) return
-      const ctx = shortcutCtx.current
-      if (!ctx.sid) return
-      const next = resolveCycleTarget(ctx.targets, ctx.activeTab, delta)
-      if (!next) return
-      e.preventDefault()
-      e.stopPropagation()
-      useUiStore.getState().focusTerminal(ctx.sid, next)
-    }
-    window.addEventListener('keydown', onKeyDown, { capture: true })
-    return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
-  }, [])
-
   const refetchTerminals = (): void => {
     void queryClient.invalidateQueries({ queryKey: ['terminals', sid] })
   }
@@ -230,6 +207,37 @@ export function SessionView({
       })
       .catch((e: unknown) => console.error('new shell failed', e))
   }
+
+  // Workspace shortcuts: Alt+←/Alt+→ cycle terminals left/right — the
+  // webapp-level replacement for tmux's prefix bindings (webapp panes run
+  // with `prefix None`) — and Alt+T opens a new scratch shell (Alt+N, new
+  // session, lives in App's Workspace, which owns project scope). Captured
+  // on window so the chord is swallowed before xterm's textarea handler
+  // could forward it to the PTY; the ref keeps the single listener reading
+  // the current render's state.
+  const shortcutCtx = useRef({ sid, targets, activeTab, openShell })
+  shortcutCtx.current = { sid, targets, activeTab, openShell }
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      const ctx = shortcutCtx.current
+      if (!ctx.sid) return
+      if (matchCreateShortcut(e) === 'new-shell') {
+        e.preventDefault()
+        e.stopPropagation()
+        ctx.openShell()
+        return
+      }
+      const delta = matchTabShortcut(e)
+      if (delta === null) return
+      const next = resolveCycleTarget(ctx.targets, ctx.activeTab, delta)
+      if (!next) return
+      e.preventDefault()
+      e.stopPropagation()
+      useUiStore.getState().focusTerminal(ctx.sid, next)
+    }
+    window.addEventListener('keydown', onKeyDown, { capture: true })
+    return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
+  }, [])
 
   // Pane (x) → confirm → kill the tmux window (and whatever runs in it).
   const [confirmKill, setConfirmKill] = useState<{ target: string; name: string } | null>(null)

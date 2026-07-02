@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import { api, ApiError } from './lib/apiClient'
 import { readBootstrapCode, postBootstrap, stripBootstrapFromUrl } from './lib/bootstrap'
+import { createSession } from './lib/createSession'
+import { matchCreateShortcut, matchSessionShortcut, resolveCycleTarget } from './lib/shortcuts'
 import { useEvents } from './lib/useEvents'
+import { useProvisionSession } from './lib/useProvisionSession'
 import { useSnapshot } from './lib/useSnapshot'
-import { matchSessionShortcut, resolveCycleTarget } from './lib/shortcuts'
 import { mergeProvisioning, persistSelection, unreadWaitingBySlug, useUiStore } from './store'
 import { ProjectRail } from './components/ProjectRail'
 import { Sidebar, sidebarRowIds } from './components/Sidebar'
@@ -116,21 +118,37 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
   const scoped = sessions.filter((s) => s.projectSlug === activeProjectSlug)
   const scopedProvisioning = provisioning.filter((p) => p.projectSlug === activeProjectSlug)
 
-  // Session-switch shortcuts: Alt+↑/Alt+↓ step through the sidebar rows
-  // top-to-bottom (wrapping) — the vertical sibling of SessionView's
-  // Alt+←/→ terminal cycler, and window-captured for the same reason: the
-  // chord is swallowed before xterm's textarea handler could forward it to
-  // the PTY. The ref keeps the single listener reading the current render's
-  // rows. Registered here, not in Sidebar, so it works with the sidebar
-  // hidden too.
+  // Session shortcuts, window-captured so the chord is swallowed before
+  // xterm's textarea handler could forward it to the PTY, and registered
+  // here, not in Sidebar, so they work with the sidebar hidden too:
+  //  - Alt+↑/Alt+↓ step through the sidebar rows top-to-bottom (wrapping)
+  //    — the vertical sibling of SessionView's Alt+←/→ terminal cycler.
+  //  - Alt+N starts a new session in the active project, with the selected
+  //    session's tool (or claude).
+  // The ref keeps the single listener reading the current render's state.
+  const provision = useProvisionSession()
   const rowIds = sidebarRowIds(scopedProvisioning, scoped, pendingDeleteIds)
-  const shortcutCtx = useRef({ rowIds, selectedSessionId })
-  shortcutCtx.current = { rowIds, selectedSessionId }
+  const newSession = (): void => {
+    if (!activeProjectSlug) return
+    const slug = activeProjectSlug
+    const tool = sessions.find((s) => s.sessionId === selectedSessionId)?.tool ?? 'claude'
+    const sessionId = crypto.randomUUID()
+    provision(slug, tool, 'create', sessionId,
+      (sid, onProgress) => createSession(slug, tool, onProgress, sid))
+  }
+  const shortcutCtx = useRef({ rowIds, selectedSessionId, newSession })
+  shortcutCtx.current = { rowIds, selectedSessionId, newSession }
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
+      const ctx = shortcutCtx.current
+      if (matchCreateShortcut(e) === 'new-session') {
+        e.preventDefault()
+        e.stopPropagation()
+        ctx.newSession()
+        return
+      }
       const delta = matchSessionShortcut(e)
       if (delta === null) return
-      const ctx = shortcutCtx.current
       const next = resolveCycleTarget(ctx.rowIds, ctx.selectedSessionId ?? undefined, delta)
       if (!next) return
       e.preventDefault()

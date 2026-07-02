@@ -2,6 +2,9 @@
  *  -1 = previous (left/up), 1 = next (right/down). */
 export type CycleDelta = 1 | -1
 
+/** A create intent decoded from a workspace keydown. */
+export type CreateAction = 'new-session' | 'new-shell'
+
 /** Just the keyboard-event fields the decision needs — keeps this pure and
  *  trivial to unit test without synthesizing a full KeyboardEvent. */
 export type ShortcutKey = Pick<KeyboardEvent, 'altKey' | 'ctrlKey' | 'metaKey' | 'shiftKey' | 'code'>
@@ -67,4 +70,24 @@ export function resolveCycleTarget(
   const current = active ? targets.indexOf(active) : -1
   if (current === -1) return delta === 1 ? targets[0] : targets[targets.length - 1]
   return targets[(current + delta + targets.length) % targets.length]
+}
+
+/**
+ * Map a keydown to a create intent:
+ *
+ *  - Alt+N — new session in the active project.
+ *  - Alt+T — new scratch-shell terminal in the selected session.
+ *
+ * Matches on `code` (the physical key) rather than `key`: with Option held,
+ * macOS reports dead-key values ("˜", "†") for `key` — `code` is stable
+ * everywhere. Exactly Alt must be held, so AltGr layouts (Ctrl+Alt) and
+ * terminal combos like Ctrl+Alt+N pass through untouched.
+ *
+ * Returns null for anything else, meaning "not ours — let it through".
+ */
+export function matchCreateShortcut(e: ShortcutKey): CreateAction | null {
+  if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return null
+  if (e.code === 'KeyN') return 'new-session'
+  if (e.code === 'KeyT') return 'new-shell'
+  return null
 }
