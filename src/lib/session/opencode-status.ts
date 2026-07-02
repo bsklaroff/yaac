@@ -75,32 +75,23 @@ export function evictOpencodeProbeCache(slug: string, sessionId: string): void {
 /**
  * Classify a captured opencode tmux pane into `running` / `waiting`.
  *
- * Signals (checked in priority order):
- *   1. `Permission required` — the permission overlay is up. Rendered
- *      from `routes/session/permission.tsx` as both a header label and
- *      the prompt title; appears twice. → `waiting`.
- *   2. `esc dismiss` — the question-tool overlay is up. Rendered from
- *      `routes/session/question.tsx` as the footer hint; unique to
- *      that component in opencode's TUI. → `waiting`.
- *   3. `esc interrupt` (or `esc again to interrupt` after one ESC) —
- *      rendered from `prompt/index.tsx` whenever opencode's session
- *      status is non-idle (the model/tool is actively working).
- *      → `running`.
- *   4. Otherwise → `waiting` (idle, or any state where opencode hasn't
- *      rendered a busy/dialog marker yet, e.g. mid-startup).
- *
- * Overlays render on top of the prompt area, so the busy hint can be
- * visible underneath them — that's why the dialog signals take
- * precedence over the interrupt hint.
+ * While a turn is in flight the footer status line renders an animated
+ * strip of ■/⬝ cells followed by the interrupt hint ("esc interrupt",
+ * or "esc again to interrupt" after one ESC) — either marker means
+ * `running`. Everything else is `waiting`: the status line only exists
+ * when no footer panel is open (`footer.view.tsx` renders it under
+ * `!panel() && !menu()`), and permission / question dialogs are panels,
+ * so a dialog *replaces* the busy markers rather than overlaying them.
+ * That's why the old dialog special-cases are gone — a user-blocked
+ * pane simply carries neither signal (verified against opencode
+ * 1.17.11: a busy footer reads e.g. "■■■■■⬝⬝⬝  esc interrupt").
  */
-const PERMISSION_HINT = /Permission required/i
-const QUESTION_HINT = /esc\s+dismiss/i
 const INTERRUPT_HINT = /esc\s+(?:again\s+to\s+)?interrupt/i
+const BUSY_STRIP = /(?:■|⬝){4,}/
 
 export function classifyOpencodePane(paneContent: string): 'running' | 'waiting' {
-  if (PERMISSION_HINT.test(paneContent)) return 'waiting'
-  if (QUESTION_HINT.test(paneContent)) return 'waiting'
   if (INTERRUPT_HINT.test(paneContent)) return 'running'
+  if (BUSY_STRIP.test(paneContent)) return 'running'
   return 'waiting'
 }
 

@@ -20,7 +20,7 @@ export async function getSessionStatus(
   tool: AgentTool,
   jobName: string,
 ): Promise<'running' | 'waiting'> {
-  if (tool === 'codex') return getSessionCodexStatus(projectSlug, sessionId)
+  if (tool === 'codex') return getSessionCodexStatus(projectSlug, sessionId, jobName)
   if (tool === 'opencode') return getSessionOpencodeStatus(projectSlug, sessionId, jobName)
   return getSessionClaudeStatus(projectSlug, sessionId, jobName)
 }

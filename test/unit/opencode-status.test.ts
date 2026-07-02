@@ -122,26 +122,44 @@ describe('opencode-status', () => {
       expect(classifyOpencodePane('  esc again to interrupt\n')).toBe('running')
     })
 
+    it('classifies the animated busy strip as running', () => {
+      // Live opencode 1.17.11 footer: an 8-cell strip mixing ■ and ⬝,
+      // then the interrupt hint. Either signal alone must be enough —
+      // a narrow pane can truncate the hint away.
+      expect(classifyOpencodePane('   ■■■■■⬝⬝⬝  esc interrupt\n')).toBe('running')
+      expect(classifyOpencodePane('   ⬝⬝⬝⬝⬝⬝⬝⬝\n')).toBe('running')
+      expect(classifyOpencodePane('   ■■■■\n')).toBe('running')
+      expect(classifyOpencodePane('   ■⬝■⬝\n')).toBe('running')
+    })
+
+    it('does not treat short block runs as the busy strip', () => {
+      // Bullets or box-drawing in transcript text can contain a few ■/⬝
+      // cells; only a run of 4+ counts as the strip.
+      expect(classifyOpencodePane('■ item one\n■ item two\n')).toBe('waiting')
+      expect(classifyOpencodePane('■■■ almost\n')).toBe('waiting')
+    })
+
     it('classifies an idle pane (no markers) as waiting', () => {
       expect(classifyOpencodePane('> _\nReady\n')).toBe('waiting')
     })
 
-    it('classifies "Permission required" as waiting even with esc-interrupt visible', () => {
-      // The permission overlay is rendered on top of the prompt area, so
-      // the busy hint underneath can still be present in the pane.
+    it('classifies a permission dialog as waiting (busy footer is replaced)', () => {
+      // Permission / question dialogs are footer panels: the status line
+      // carrying the strip and interrupt hint only renders when no panel
+      // is open, so a user-blocked pane carries neither signal.
       expect(classifyOpencodePane(
-        '△ Permission required\n  ⚙ Call tool bash\n  esc interrupt\n',
+        '△ Permission required\n  ⚙ Call tool bash\n  enter allow\n',
       )).toBe('waiting')
     })
 
-    it('classifies "esc dismiss" (question overlay) as waiting', () => {
+    it('classifies a question dialog as waiting', () => {
       expect(classifyOpencodePane(
-        '  enter submit  esc dismiss\n  esc interrupt\n',
+        'Pick one:\n  > A\n    B\n  enter submit  esc dismiss\n',
       )).toBe('waiting')
     })
 
-    it('matches the permission hint case-insensitively', () => {
-      expect(classifyOpencodePane('PERMISSION REQUIRED\n')).toBe('waiting')
+    it('matches the interrupt hint case-insensitively', () => {
+      expect(classifyOpencodePane('ESC INTERRUPT\n')).toBe('running')
     })
   })
 
@@ -152,15 +170,21 @@ describe('opencode-status', () => {
       expect(status).toBe('running')
     })
 
-    it('maps a pane with the permission overlay to waiting', async () => {
+    it('maps a pane with the busy strip to running', async () => {
+      mockPaneResult(paneStdout('   ■■■■■⬝⬝⬝  esc interrupt\n'))
+      const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
+      expect(status).toBe('running')
+    })
+
+    it('maps a pane with a permission dialog (no busy footer) to waiting', async () => {
       mockPaneResult(paneStdout(
-        '△ Permission required\n  $ rm -rf /\n  esc interrupt\n',
+        '△ Permission required\n  $ rm -rf /\n  enter allow\n',
       ))
       const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
       expect(status).toBe('waiting')
     })
 
-    it('maps a pane with the question overlay to waiting', async () => {
+    it('maps a pane with a question dialog (no busy footer) to waiting', async () => {
       mockPaneResult(paneStdout(
         'Pick one:\n  > A\n    B\n  enter submit  esc dismiss\n',
       ))
