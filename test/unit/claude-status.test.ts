@@ -8,7 +8,7 @@ vi.mock('@/lib/k8s/exec', () => ({
 }))
 
 import {
-  classifyClaudePane,
+  classifyClaudeTitle,
   getFirstUserMessage,
   getSessionClaudeStatus,
   evictClaudeStatusCache,
@@ -18,189 +18,59 @@ import { containerExec } from '@/lib/k8s/exec'
 
 const mockExec = vi.mocked(containerExec)
 
-describe('classifyClaudePane', () => {
-  it('returns running when the pane shows "esc to interrupt"', () => {
-    const pane = [
-      '● Let me run the tests.',
-      '',
-      '  ⎿  Running…',
-      '',
-      '✳ Brewing… (12s · ↓ 340 tokens · esc to interrupt)',
-    ].join('\n')
-    expect(classifyClaudePane(pane)).toBe('running')
+// Title fixtures below reproduce states observed against a live Claude
+// Code session inside a session pod: a running turn animates a Braille
+// spinner prefix; every user-blocked state (idle prompt, permission
+// dialog, plan approval, AskUserQuestion) flips the prefix to ✳.
+describe('classifyClaudeTitle', () => {
+  it('returns running for a Braille-spinner title (turn in flight)', () => {
+    expect(classifyClaudeTitle('⠐ Create temporary marker file')).toBe('running')
+    expect(classifyClaudeTitle('⠋ Fix the login bug')).toBe('running')
   })
 
-  it('returns running when the pane shows "ctrl+c to interrupt"', () => {
-    const pane = [
-      '● Working on it.',
-      '',
-      '* (ctrl+c to interrupt)',
-    ].join('\n')
-    expect(classifyClaudePane(pane)).toBe('running')
+  it('returns running across the whole Braille block', () => {
+    // The animation cycles through arbitrary Braille patterns — accept
+    // the full U+2800–U+28FF range, including the endpoints.
+    expect(classifyClaudeTitle('⠀ edge of block')).toBe('running')
+    expect(classifyClaudeTitle('⣿ edge of block')).toBe('running')
   })
 
-  it('returns running when the bottom bar embeds the interrupt hint', () => {
-    // Claude Code's newer TUI moves the interrupt hint into the
-    // status bar alongside the bypass-permissions toggle and the
-    // tasks panel shortcut. `capture-pane -p` renders the bar as
-    // a single visible line, separators and all.
-    const pane = [
-      '● Working on it.',
-      '',
-      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ctrl+t to hide tasks',
-    ].join('\n')
-    expect(classifyClaudePane(pane)).toBe('running')
+  it('returns running for a bare spinner with trailing newline (display-message output)', () => {
+    expect(classifyClaudeTitle('⠹ Summarize findings\n')).toBe('running')
   })
 
-  it('returns running when a subagent task list sits below the interrupt hint', () => {
-    // While running subagents Claude Code renders a task list at the
-    // very bottom of the pane, pushing the spinner/interrupt-hint line
-    // up several rows — out of reach of a tight 3-row footer window.
-    const pane = [
-      '● Delegating to subagents.',
-      '',
-      '✳ Orchestrating… (45s · ↑ 2.1k tokens · esc to interrupt)',
-      '  ├─ Explore(search status code) running… (12s)',
-      '  ├─ Explore(map test files) running… (9s)',
-      '  ├─ general-purpose(audit detection) running… (30s)',
-      '  └─ claude(write up findings) running… (4s)',
-      '',
-      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ctrl+t to hide tasks',
-    ].join('\n')
-    expect(classifyClaudePane(pane)).toBe('running')
+  it('returns waiting for the idle ✳ title', () => {
+    expect(classifyClaudeTitle('✳ Create temporary marker file')).toBe('waiting')
   })
 
-  it('returns waiting for the idle ready prompt', () => {
-    const pane = [
-      '● Done.',
-      '',
-      '─────────────────────────',
-      '❯ ',
-      '─────────────────────────',
-      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
-    ].join('\n')
-    expect(classifyClaudePane(pane)).toBe('waiting')
+  it('returns waiting for the fresh-boot title before any turn ran', () => {
+    expect(classifyClaudeTitle('✳ Claude Code')).toBe('waiting')
   })
 
-  it('returns waiting for the AskUserQuestion selector UI', () => {
-    const pane = [
-      '● Before I draft the plan I want to pin down a few design choices:',
-      '─────────────────────────',
-      '←  ☐ Selection  ☐ Container  ☐ V1 scope  ✔ Submit  →',
-      '',
-      'How should the user pick which agent backend to use?',
-      '',
-      '❯ 1. Per-session picker at creation',
-      '  2. Global env flag only',
-      '  3. Per-project setting',
-      '  4. Type something.',
-      '─────────────────────────',
-      '  5. Chat about this',
-      '  6. Skip interview and plan immediately',
-      '',
-      'Enter to select · Tab/Arrow keys to navigate · Esc to cancel',
-    ].join('\n')
-    expect(classifyClaudePane(pane)).toBe('waiting')
+  it('returns waiting while a permission dialog is up', () => {
+    // Observed live: the instant the Bash permission dialog appears the
+    // title flips from "⠂ Create temporary marker file" to ✳. Same for
+    // trust/onboarding dialogs. This is the case the JSONL transcript
+    // cannot detect (the blocking tool_use isn't persisted until
+    // answered), so it must classify as waiting here.
+    expect(classifyClaudeTitle('✳ Create temporary marker file')).toBe('waiting')
   })
 
-  it('returns waiting for the ExitPlanMode approval UI', () => {
-    const pane = [
-      ' Claude has written up a plan and is ready to execute. Would you like to proceed?',
-      '',
-      ' ❯ 1. Yes, and use auto mode',
-      '   2. Yes, manually approve edits',
-      '   3. No, refine with Ultraplan on Claude Code on the web',
-      '   4. Tell Claude what to change',
-      '      shift+tab to approve with this feedback',
-      '',
-      ' ctrl-g to edit in Nvim · ~/.claude/plans/my-plan.md',
-    ].join('\n')
-    expect(classifyClaudePane(pane)).toBe('waiting')
+  it('returns waiting for the tmux default title (claude has not set one)', () => {
+    // Until a program emits an OSC title, #{pane_title} is the pod
+    // hostname — a session still booting reads as waiting.
+    expect(classifyClaudeTitle('yaac-yaac-ee9cb586-74d3-4a1f-9d1f-482839b26d70-5tfxq')).toBe('waiting')
   })
 
-  it('returns waiting for a [y/n] permission prompt', () => {
-    const pane = [
-      '● Bash(rm -rf node_modules)',
-      'Delete files? [y/n]',
-    ].join('\n')
-    expect(classifyClaudePane(pane)).toBe('waiting')
+  it('returns waiting for an empty title', () => {
+    expect(classifyClaudeTitle('')).toBe('waiting')
   })
 
-  it('returns waiting for an empty pane', () => {
-    expect(classifyClaudePane('')).toBe('waiting')
-  })
-
-  it('returns waiting for an unrecognized pane', () => {
-    expect(classifyClaudePane('some arbitrary text with nothing special')).toBe('waiting')
-  })
-
-  it('matches the interrupt hint case-insensitively', () => {
-    expect(classifyClaudePane('ESC TO INTERRUPT')).toBe('running')
-    expect(classifyClaudePane('Ctrl+C To Interrupt')).toBe('running')
-  })
-
-  it('does not match partial phrases that lack "to interrupt"', () => {
-    // The user's own prompt mentioning esc or ctrl+c should not be
-    // misread as Claude actively working.
-    expect(classifyClaudePane('please use esc when done')).toBe('waiting')
-    expect(classifyClaudePane('I pressed ctrl+c earlier')).toBe('waiting')
-  })
-
-  it('tolerates extra whitespace between the modifier and "to interrupt"', () => {
-    expect(classifyClaudePane('esc   to   interrupt')).toBe('running')
-  })
-
-  it('returns running when the status bar truncates the hint with an ellipsis', () => {
-    // Real regression: Claude Code truncates its bottom status bar to the
-    // pane width, and the window tracks the attached client — on a narrow
-    // browser pane (plus a "gh auth login" notice eating width) the hint
-    // rendered as "esc t…" and the session was misreported as waiting.
-    const pane = [
-      '✢ Sock-hopping…',
-      '',
-      '──────────────────────────',
-      '❯ ',
-      '──────────────────────────',
-      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · gh auth login · esc t…',
-    ].join('\n')
-    expect(classifyClaudePane(pane)).toBe('running')
-  })
-
-  it('accepts any truncation point of the hint', () => {
-    for (const cut of ['esc…', 'esc t…', 'esc to…', 'esc to inter…', 'ctrl+c to interru…']) {
-      expect(classifyClaudePane(`  ⏵⏵ bypass permissions on · ${cut}`)).toBe('running')
-    }
-  })
-
-  it('does not treat other truncated esc-hints as running', () => {
-    // Only prefixes of the real interrupt hint count — a truncated
-    // "esc to undo" (or arbitrary esc text) must stay waiting.
-    expect(classifyClaudePane('  ⏵⏵ bypass permissions on · esc to u…')).toBe('waiting')
-    expect(classifyClaudePane('  ⏵⏵ bypass permissions on · esc closes…')).toBe('waiting')
-    expect(classifyClaudePane('  ⏵⏵ bypass permissions on · ← for…')).toBe('waiting')
-  })
-
-  it('ignores the interrupt hint when it appears in transcript history above the footer', () => {
-    // Real regression: the pane is 200 rows tall and transcript history
-    // scrolls up but stays visible. An assistant turn that quoted the
-    // phrase "esc to interrupt" (in a Web Search query, a discussion of
-    // this regex, etc.) caused the whole-pane scan to false-positive as
-    // 'running' while the live status bar was actually the idle one.
-    const padding: string[] = Array.from({ length: 20 }, () => '')
-    const pane = [
-      '● Web Search("opencode TUI status spinner \"esc to interrupt\" indicator")',
-      '  ⎿  Did 1 search in 10s',
-      '',
-      '● The strings come from opencode\'s dev branch — same fragility',
-      '  class as claude-status\'s ctrl+c/esc to interrupt regex.',
-      '',
-      ...padding,
-      '──────────────────────────',
-      '❯ ',
-      '──────────────────────────',
-      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
-    ].join('\n')
-    expect(classifyClaudePane(pane)).toBe('waiting')
+  it('only matches the spinner at the first character', () => {
+    // A task summary that itself contains a Braille glyph must not
+    // false-positive when the leading ✳ marks the session as idle.
+    expect(classifyClaudeTitle('✳ Fix ⠋ spinner rendering')).toBe('waiting')
+    expect(classifyClaudeTitle(' ⠋ leading space')).toBe('waiting')
   })
 })
 
@@ -210,36 +80,37 @@ describe('getSessionClaudeStatus', () => {
     mockExec.mockReset()
   })
 
-  function mockPane(content: string): void {
-    mockExec.mockResolvedValue({ stdout: content, stderr: '' })
+  function mockTitle(title: string): void {
+    // display-message -p terminates its output with a newline.
+    mockExec.mockResolvedValue({ stdout: `${title}\n`, stderr: '' })
   }
 
-  it('returns running when capture-pane includes the interrupt hint', async () => {
-    mockPane('doing things… (esc to interrupt)')
+  it('returns running when the title carries the Braille spinner', async () => {
+    mockTitle('⠙ Refactor the API')
     await expect(getSessionClaudeStatus('p', 's-run', 'c-run')).resolves.toBe('running')
   })
 
-  it('returns waiting when capture-pane lacks the interrupt hint', async () => {
-    mockPane('❯ ')
+  it('returns waiting when the title shows the idle ✳ prefix', async () => {
+    mockTitle('✳ Refactor the API')
     await expect(getSessionClaudeStatus('p', 's-wait', 'c-wait')).resolves.toBe('waiting')
   })
 
-  it('returns waiting when capture-pane fails (pod not ready)', async () => {
+  it('returns waiting when the title probe fails (pod not ready)', async () => {
     mockExec.mockRejectedValue(new Error('no such pod'))
     await expect(getSessionClaudeStatus('p', 's-absent', 'c-absent')).resolves.toBe('waiting')
   })
 
-  it('invokes capture-pane against the named job and claude pane', async () => {
-    mockPane('esc to interrupt')
+  it('queries the pane title of the named job\'s claude pane', async () => {
+    mockTitle('⠙ Working')
     await getSessionClaudeStatus('p', 's-cmd', 'yaac-proj-cmd')
     expect(mockExec).toHaveBeenCalledTimes(1)
     const [jobName, cmd] = mockExec.mock.calls[0]
     expect(jobName).toBe('yaac-proj-cmd')
-    expect(cmd).toContain('capture-pane -pJ -t yaac:claude.0')
+    expect(cmd).toContain("display-message -p -t yaac:claude.0 '#{pane_title}'")
   })
 
   it('serves repeat calls from the TTL cache without re-invoking kubectl', async () => {
-    mockPane('❯ ')
+    mockTitle('✳ Idle')
     expect(await getSessionClaudeStatus('p', 's-cache', 'c-cache')).toBe('waiting')
     // A second call within the TTL must NOT exec again — verify
     // by switching the mock to throw; if the cache were bypassed the
@@ -251,7 +122,7 @@ describe('getSessionClaudeStatus', () => {
   })
 
   it('coalesces concurrent callers onto a single in-flight probe', async () => {
-    mockPane('esc to interrupt')
+    mockTitle('⠹ Working')
     const p1 = getSessionClaudeStatus('p', 's-coalesce', 'c1')
     const p2 = getSessionClaudeStatus('p', 's-coalesce', 'c1')
     const p3 = getSessionClaudeStatus('p', 's-coalesce', 'c1')
@@ -261,21 +132,21 @@ describe('getSessionClaudeStatus', () => {
 
   it('caches per (slug, sid), not globally', async () => {
     mockExec.mockImplementation((jobName: string) => {
-      if (jobName.includes('c-A')) return Promise.resolve({ stdout: 'esc to interrupt', stderr: '' })
-      return Promise.resolve({ stdout: '❯ ', stderr: '' })
+      if (jobName.includes('c-A')) return Promise.resolve({ stdout: '⠧ Working\n', stderr: '' })
+      return Promise.resolve({ stdout: '✳ Idle\n', stderr: '' })
     })
     expect(await getSessionClaudeStatus('p', 's-A', 'c-A')).toBe('running')
     expect(await getSessionClaudeStatus('p', 's-B', 'c-B')).toBe('waiting')
   })
 
   it('evictClaudeStatusCache clears the entry for that session', async () => {
-    mockPane('❯ ')
+    mockTitle('✳ Idle')
     expect(await getSessionClaudeStatus('p', 's-evict', 'c-evict')).toBe('waiting')
 
     evictClaudeStatusCache('p', 's-evict')
 
-    // Cache cleared — a fresh probe re-runs capture-pane.
-    mockPane('esc to interrupt')
+    // Cache cleared — a fresh probe re-runs the title query.
+    mockTitle('⠛ Working')
     expect(await getSessionClaudeStatus('p', 's-evict', 'c-evict')).toBe('running')
     expect(mockExec).toHaveBeenCalledTimes(2)
   })

@@ -5,80 +5,45 @@ import { containerExec } from '@/lib/k8s/exec'
 import { scanJsonlForward } from '@/lib/session/jsonl'
 
 /**
- * Detects Claude Code's "actively working" state from the rendered tmux
- * pane. Claude Code renders an interrupt hint — "ctrl+c to interrupt" or
- * "esc to interrupt" — only while a turn is in flight (API call, tool
- * running, streaming response). Once the turn yields control back to the
- * user (idle prompt, permission [y/n], ExitPlanMode approval, or
- * AskUserQuestion selector), the hint disappears.
+ * Detects Claude Code's "actively working" state from the pane's OSC
+ * terminal title. Claude Code mirrors its spinner into the title: while
+ * a turn is in flight (API call, tool running, streaming response) the
+ * title reads "<spinner> <task summary>" with the leading glyph cycling
+ * through the Braille block (U+2800–U+28FF, the ⠋⠙⠹… animation). The
+ * moment control returns to the user — idle prompt, permission dialog,
+ * ExitPlanMode approval, or AskUserQuestion selector — the prefix flips
+ * to "✳" (U+2733). Each of those states was verified against a live
+ * session, permission dialog included; that one matters because the
+ * JSONL transcript can't see UI-blocked turns (Claude Code does not
+ * persist the blocking assistant tool_use until the user answers).
  *
- * This matters because the JSONL transcript is not a reliable status
- * source for AskUserQuestion / permission / plan-approval waits: Claude
- * Code does not persist the blocking assistant tool_use until the user
- * answers, so the JSONL tail sits at a user tool_result with no
- * indication that the next turn has stalled on a UI. Inspecting the
- * pane sidesteps that entirely.
+ * tmux exposes the OSC title as `#{pane_title}` (`allow-set-title` is
+ * on by default), so unlike scraping the rendered grid with
+ * capture-pane there is nothing to parse: no footer-window heuristics,
+ * no status-bar width truncation, and transcript text that merely
+ * quotes a spinner glyph can't false-positive because only the title's
+ * first character counts.
  *
- * We can't read pipe-pane output directly: Claude Code's TUI paints the
- * screen by absolute cursor positioning one character at a time, so the
- * raw byte stream contains no contiguous text to grep. Instead we ask
- * tmux for its rendered grid via `capture-pane -p`, which gives back
- * plain visible text.
- *
- * We only scan the bottom of the pane because the pane is 200 lines tall
- * (see -y in session-create.ts) and transcript history scrolls up but
- * stays visible. Assistant content can legitimately contain the literal
- * string "esc to interrupt" — a Web Search query, a discussion of this
- * very regex, etc. — and would otherwise false-positive as "running".
- * The live spinner/status-bar footer always sits at the very bottom of
- * the pane regardless of how much transcript precedes it.
+ * Before Claude Code sets a title the pane reports tmux's default (the
+ * pod hostname), which classifies as 'waiting' — the right answer for
+ * a session still booting.
  */
-const INTERRUPT_HINT = /(?:ctrl\+c|esc)\s+to\s+interrupt/i
-// The live hint lives in the bottom status bar / spinner line. While
-// Claude Code is running subagents it renders a task list at the very
-// bottom of the pane, which pushes the hint up several rows — a 3-row
-// window missed it and misreported the session as 'waiting'. 10 rows
-// covers the hint plus a typical task list while still staying well
-// clear of transcript history (the pane is 200 rows tall), so assistant
-// text that happens to quote "esc to interrupt" doesn't false-positive.
-const FOOTER_LINES = 10
+const BRAILLE_SPINNER_PREFIX = /^[\u2800-\u28FF]/
 
-// Claude Code truncates its bottom status bar to the pane width with a
-// trailing ellipsis, so on narrow panes (the window tracks the attached
-// client) the hint can render as "… · esc t…". Catch any candidate that
-// starts like the hint and ends in "…"; `isTruncatedInterruptHint`
-// verifies the cut-off text is a genuine prefix of the full phrase, so
-// idle hints like "esc to undo" can never slip through.
-const TRUNCATED_HINT_CANDIDATE = /(?:ctrl\+c|esc)[^\n·…]{0,20}…/gi
-const FULL_HINTS = ['ctrl+c to interrupt', 'esc to interrupt']
-
-function isTruncatedInterruptHint(candidate: string): boolean {
-  const cut = candidate.replace(/…$/, '').replace(/\s+/g, ' ').trimEnd().toLowerCase()
-  return FULL_HINTS.some((full) => full.startsWith(cut))
-}
-
-export function classifyClaudePane(paneContent: string): 'running' | 'waiting' {
-  const lines = paneContent.split('\n')
-  const footer = lines.slice(-FOOTER_LINES).join('\n')
-  if (INTERRUPT_HINT.test(footer)) return 'running'
-  for (const m of footer.match(TRUNCATED_HINT_CANDIDATE) ?? []) {
-    if (isTruncatedInterruptHint(m)) return 'running'
-  }
-  return 'waiting'
+export function classifyClaudeTitle(title: string): 'running' | 'waiting' {
+  return BRAILLE_SPINNER_PREFIX.test(title) ? 'running' : 'waiting'
 }
 
 /**
- * Capture the visible portion of the claude agent pane as plain text by
- * shelling into the session pod and running `tmux capture-pane -p`. The
- * `-J` flag joins wrapped lines so wide-terminal wrapping never splits
- * the interrupt hint across two lines. Returns `undefined` if the
+ * Read the claude agent pane's OSC title by shelling into the session
+ * pod and asking tmux for `#{pane_title}`. Returns `undefined` if the
  * pod or tmux session isn't ready yet (e.g. mid-startup).
  */
-async function captureClaudePane(jobName: string): Promise<string | undefined> {
+async function readClaudePaneTitle(jobName: string): Promise<string | undefined> {
   try {
     const { stdout } = await containerExec(
       jobName,
-      `tmux -S ${CONTAINER_TMUX_SOCK} capture-pane -pJ -t yaac:claude.0`,
+      `tmux -S ${CONTAINER_TMUX_SOCK} display-message -p -t yaac:claude.0 '#{pane_title}'`,
       { maxAttempts: 1 },
     )
     return stdout
@@ -92,7 +57,7 @@ async function captureClaudePane(jobName: string): Promise<string | undefined> {
  * `${slug}/${sessionId}`. Same shape as `tmuxAliveCache` in cleanup.ts:
  * each entry holds either a settled (status, expiresAt) row or an
  * in-flight Promise so concurrent callers coalesce onto one
- * capture-pane call. Without this, `/session/list` (UI polls every ~5s,
+ * title probe. Without this, `/session/list` (UI polls every ~5s,
  * both with and without a project filter), `getWaitingSessions`
  * (called from the stream-picker), and any overlap between them each
  * drive their own `kubectl exec` independently for every claude session.
@@ -129,9 +94,9 @@ export function evictClaudeStatusCache(slug: string, sessionId: string): void {
 }
 
 async function probeClaudeStatus(jobName: string): Promise<'running' | 'waiting'> {
-  const pane = await captureClaudePane(jobName)
-  if (pane === undefined) return 'waiting'
-  return classifyClaudePane(pane)
+  const title = await readClaudePaneTitle(jobName)
+  if (title === undefined) return 'waiting'
+  return classifyClaudeTitle(title)
 }
 
 export async function getSessionClaudeStatus(
