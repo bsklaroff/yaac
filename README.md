@@ -186,6 +186,23 @@ yaac daemon start
 pnpm frontend:dev   # http://localhost:1420, proxies the API to the daemon
 ```
 
+For daemon/CLI development, use watch mode:
+
+```sh
+pnpm watch
+```
+
+This is `tsx watch` re-running a small wrapper script
+(`scripts/dev-watch.ts`) whenever a build input changes (`src/`,
+`dockerfiles/`, `k8s/`, and the build configs); each run does `pnpm build`
+followed by `yaac daemon restart` — required because the CLI refuses to
+talk to a daemon whose buildId doesn't match. The first run builds and
+(re)starts the daemon, so `pnpm watch` alone is enough to boot a dev loop;
+a failed build skips the restart, and Ctrl-C stops the watcher but leaves
+the daemon running. This is also the intended inner dev loop when
+developing yaac inside a yaac session (yaac-in-yaac): run `pnpm watch` in
+the session and every edit lands in the inner daemon automatically.
+
 ## Authentication
 
 yaac centralizes credentials on the host and injects them into session traffic through the shared proxy (a `yaac-proxy` Deployment in the cluster). Real tokens are never written into the container filesystem. Credentials live under `~/.yaac/.credentials/` (directory permissions `0700`, files `0600`), split by service:
