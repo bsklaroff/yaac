@@ -320,6 +320,13 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
         )}
       >
         <span className="flex items-center gap-2">
+          {/* Live pulse: the session's agent is actively running. */}
+          {session.status === 'running' && (
+            <span className="relative flex h-1.5 w-1.5 shrink-0">
+              <span className="absolute h-full w-full animate-ping rounded-full bg-emerald-400/60" />
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+            </span>
+          )}
           {/* Unread bubble: this session started waiting and hasn't been viewed. */}
           {unread && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
           <span className="truncate font-medium">{session.title || session.prompt || 'New session'}</span>
