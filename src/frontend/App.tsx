@@ -3,7 +3,7 @@ import { api, ApiError } from './lib/apiClient'
 import { readBootstrapCode, postBootstrap, stripBootstrapFromUrl } from './lib/bootstrap'
 import { useEvents } from './lib/useEvents'
 import { useSnapshot } from './lib/useSnapshot'
-import { mergeProvisioning, persistSelection, useUiStore } from './store'
+import { mergeProvisioning, persistSelection, unreadWaitingBySlug, useUiStore } from './store'
 import { ProjectRail } from './components/ProjectRail'
 import { Sidebar } from './components/Sidebar'
 import { SessionView } from './components/SessionView'
@@ -66,6 +66,9 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
   const selectedSessionId = useUiStore((s) => s.selectedSessionId)
   const selectSession = useUiStore((s) => s.selectSession)
   const sidebarOpen = useUiStore((s) => s.sidebarOpen)
+  const readWaiting = useUiStore((s) => s.readWaiting)
+  const markWaitingRead = useUiStore((s) => s.markWaitingRead)
+  const syncWaitingRead = useUiStore((s) => s.syncWaitingRead)
 
   const projects = snapshot?.projects ?? []
   const sessions = snapshot?.sessions ?? []
@@ -125,11 +128,26 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
     const pick = visible.find((s) => s.status === 'waiting') ?? visible[0]
     selectSession(pick.sessionId)
   }, [activeProjectSlug, scopedProvisioning, scoped, selectedSessionId, pendingDeleteIds, selectSession])
-  // Per-project count of sessions awaiting input → the rail attention badge.
-  const attention: Record<string, number> = {}
-  for (const s of sessions) {
-    if (s.status === 'waiting') attention[s.projectSlug] = (attention[s.projectSlug] ?? 0) + 1
-  }
+  // Viewing a waiting session marks its current spell read — the pane shows
+  // it, so it no longer needs attention. Covers both selecting a waiting
+  // session and the open session flipping running → waiting under the
+  // user's eyes.
+  useEffect(() => {
+    if (!selectedSessionId) return
+    const open = sessions.find((s) => s.sessionId === selectedSessionId)
+    if (open?.status === 'waiting') markWaitingRead(selectedSessionId, open.waitingSinceMs ?? 0)
+  }, [selectedSessionId, sessions, markWaitingRead])
+
+  // GC read marks whose waiting spell is over (session running, gone, or
+  // waiting anew with a fresh waitingSinceMs).
+  useEffect(() => {
+    syncWaitingRead(sessions
+      .filter((s) => s.status === 'waiting')
+      .map((s) => ({ sessionId: s.sessionId, waitingSinceMs: s.waitingSinceMs ?? 0 })))
+  }, [sessions, syncWaitingRead])
+
+  // Per-project count of unread waiting sessions → the rail attention badge.
+  const attention = unreadWaitingBySlug(sessions, readWaiting)
 
   return (
     // Rail + sidebar sit flush on the base layer; the session pane floats

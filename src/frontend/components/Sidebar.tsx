@@ -10,7 +10,7 @@ import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
 import { deleteSession, dismissProvisioning, restartSession } from '@/frontend/lib/createSession'
 import { getDeletedSessions } from '@/frontend/lib/deletedApi'
 import { useProvisionSession } from '@/frontend/lib/useProvisionSession'
-import { useUiStore } from '@/frontend/store'
+import { isUnreadWaiting, useUiStore } from '@/frontend/store'
 import type { DeletedSessionEntry, ProvisioningSessionEntry, SessionListEntry } from '@/shared/types'
 
 /** User-facing session groups, in triage order (Waiting first). */
@@ -279,7 +279,9 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
   const endDelete = useUiStore((s) => s.endDelete)
   const addOptimisticDeleted = useUiStore((s) => s.addOptimisticDeleted)
   const removeOptimisticDeleted = useUiStore((s) => s.removeOptimisticDeleted)
+  const readWaiting = useUiStore((s) => s.readWaiting)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const unread = isUnreadWaiting(session, readWaiting)
 
   // Optimistic: hide the row and close the dialog immediately, then fire the
   // delete. The daemon's cleanup is detached (a stop can take ~10s), so we
@@ -318,6 +320,8 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
         )}
       >
         <span className="flex items-center gap-2">
+          {/* Unread bubble: this session started waiting and hasn't been viewed. */}
+          {unread && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
           <span className="truncate font-medium">{session.title || session.prompt || 'New session'}</span>
           {/* Tool name; on row hover it yields to the delete × in the same spot. */}
           <span className="ml-auto shrink-0 text-xs text-text-faint transition-opacity group-hover:opacity-0">

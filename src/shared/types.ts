@@ -296,6 +296,14 @@ export interface SessionListEntry {
   status: 'running' | 'waiting'
   /** Pod created time as 'YYYY-MM-DD HH:MM:SS' (UTC). */
   createdAt: string
+  /** Epoch ms when the current waiting spell began, stamped by the
+   *  daemon's push-fed status store at the transition itself. Only set
+   *  while status is 'waiting'; a new spell gets a new value, so clients
+   *  can tell "still the same wait" from "waited, ran, waits again" —
+   *  even for sub-second turns. In-memory on the daemon: a restart (or a
+   *  still-booting session with no watcher yet) has no stamp, which
+   *  clients treat as its own spell. */
+  waitingSinceMs?: number
   prompt?: string
   /** User-assigned display title (falls back to `prompt` in UIs). */
   title?: string

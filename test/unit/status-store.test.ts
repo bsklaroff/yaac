@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 import {
   readSessionStatus,
+  readSessionWaitingSince,
   isSessionStreamHealthy,
   setSessionStatus,
   setSessionStreamHealth,
@@ -106,6 +107,66 @@ describe('setSessionStreamHealth', () => {
     expect(listener).toHaveBeenCalledTimes(1)
     setSessionStreamHealth('demo', 's1', false)
     expect(listener).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('readSessionWaitingSince (waiting spells)', () => {
+  it('returns undefined for an absent entry (booting — no spell yet)', () => {
+    expect(readSessionWaitingSince('demo', 's1')).toBeUndefined()
+  })
+
+  it('stamps a spell on entering waiting and keeps it while waiting persists', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(1_000)
+      setSessionStatus('demo', 's1', 'waiting')
+      expect(readSessionWaitingSince('demo', 's1')).toBe(1_000)
+      vi.setSystemTime(5_000)
+      setSessionStatus('demo', 's1', 'waiting')
+      expect(readSessionWaitingSince('demo', 's1')).toBe(1_000)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clears the spell on running and restamps on the next wait', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(1_000)
+      setSessionStatus('demo', 's1', 'waiting')
+      setSessionStatus('demo', 's1', 'running')
+      expect(readSessionWaitingSince('demo', 's1')).toBeUndefined()
+      vi.setSystemTime(2_000)
+      setSessionStatus('demo', 's1', 'waiting')
+      expect(readSessionWaitingSince('demo', 's1')).toBe(2_000)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stamps the waiting entry created by a healthy-attach on an absent session', () => {
+    setSessionStreamHealth('demo', 's1', true)
+    expect(readSessionWaitingSince('demo', 's1')).toBeGreaterThan(0)
+  })
+
+  it('keeps the spell across a stream-health drop (sticky, like status)', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(1_000)
+      setSessionStatus('demo', 's1', 'waiting')
+      vi.setSystemTime(9_000)
+      setSessionStreamHealth('demo', 's1', false)
+      setSessionStreamHealth('demo', 's1', true)
+      expect(readSessionWaitingSince('demo', 's1')).toBe(1_000)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('is gone after eviction', () => {
+    setSessionStatus('demo', 's1', 'waiting')
+    evictSessionStatus('demo', 's1')
+    expect(readSessionWaitingSince('demo', 's1')).toBeUndefined()
   })
 })
 

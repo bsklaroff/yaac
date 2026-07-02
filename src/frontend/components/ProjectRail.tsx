@@ -25,9 +25,9 @@ function projectInitial(slug: string): string {
 
 /**
  * Discord/Slack-style left rail of projects — the top-level navigation
- * axis. The active project scopes the sidebar; a project with sessions
- * awaiting input shows an attention badge so "which project needs me" is
- * visible before drilling in.
+ * axis. The active project scopes the sidebar; a project with unread
+ * waiting sessions (awaiting input and not yet viewed) shows an attention
+ * badge so "which project needs me" is visible before drilling in.
  */
 export function ProjectRail({
   projects,

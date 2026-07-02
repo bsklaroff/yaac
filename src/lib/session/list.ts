@@ -5,7 +5,7 @@ import { getActivePodWatcher } from '@/lib/k8s/pod-watch'
 import { claudeDir, codexTranscriptDir, getProjectsDir, opencodeMetaDir, projectDir } from '@/lib/project/paths'
 import { getSessionFirstMessage, normalizeTool } from '@/lib/session/status'
 import { ensureOpencodeFirstMessageCaptured } from '@/lib/session/opencode-status'
-import { isSessionStreamHealthy, readSessionStatus } from '@/lib/session/status-store'
+import { isSessionStreamHealthy, readSessionStatus, readSessionWaitingSince } from '@/lib/session/status-store'
 import { probeTmuxLiveness, cleanupSessionDetached, type TmuxLiveness } from '@/lib/session/cleanup'
 import { readBlockedHosts } from '@/lib/session/blocked-hosts'
 import { getSessionTitles } from '@/lib/session/titles'
@@ -199,6 +199,7 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
         tool,
         status: readSessionStatus(p.projectSlug, p.sessionId),
         createdAt: formatCreated(p.createdAtMs),
+        waitingSinceMs: readSessionWaitingSince(p.projectSlug, p.sessionId),
         prompt,
         title: titlesBySlug.get(p.projectSlug)?.[p.sessionId],
         blockedHosts,

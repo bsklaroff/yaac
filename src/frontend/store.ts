@@ -1,10 +1,11 @@
 import { create } from 'zustand'
 import { isLayoutNode, type LayoutNode } from '@/frontend/lib/layout'
-import type { DeletedSessionEntry, ProvisioningSessionEntry } from '@/shared/types'
+import type { DeletedSessionEntry, ProvisioningSessionEntry, SessionListEntry } from '@/shared/types'
 
 const LAYOUTS_LS_KEY = 'yaac.layouts.v1'
 const VIEWMODE_LS_KEY = 'yaac.viewmode.v1'
 const SELECTION_LS_KEY = 'yaac.selection.v1'
+const READ_WAITING_LS_KEY = 'yaac.readwaiting.v1'
 
 /** How the workspace renders its terminals: a tiling window manager, or
  *  one-at-a-time tabs (better on small screens). */
@@ -112,6 +113,37 @@ export function loadPersistedLayouts(): Record<string, LayoutNode | null> {
   }
 }
 
+/** Read persisted read-waiting marks (sessionId → waitingSinceMs of the spell
+ *  that was viewed), dropping anything that isn't a number (exported for
+ *  tests). Stale marks are pruned against the first snapshot by
+ *  syncWaitingRead. */
+export function loadReadWaiting(): Record<string, number> {
+  try {
+    if (typeof localStorage === 'undefined') return {}
+    const raw = localStorage.getItem(READ_WAITING_LS_KEY)
+    if (!raw) return {}
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const out: Record<string, number> = {}
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === 'number') out[k] = v
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+/** Persist read-waiting marks; best-effort (exported for tests). */
+export function persistReadWaiting(marks: Record<string, number>): void {
+  try {
+    if (typeof localStorage === 'undefined') return
+    localStorage.setItem(READ_WAITING_LS_KEY, JSON.stringify(marks))
+  } catch {
+    // quota/serialization failures are non-fatal — marks just won't stick
+  }
+}
+
 /** Persist workspace layouts; best-effort (exported for tests). */
 export function persistLayouts(layouts: Record<string, LayoutNode | null>): void {
   try {
@@ -144,6 +176,38 @@ export function mergeProvisioning(
 /** A terminal pane identity — a /pty/attach target:
  *  'agent', 'shell:<name>', or 'window:@<id>'. */
 export type TerminalTab = string
+
+/**
+ * Whether a session is waiting and its current waiting spell hasn't been
+ * viewed. A read mark stores the spell's waitingSinceMs, so a mark from an
+ * earlier spell (session ran and is waiting again — even across a page
+ * reload) no longer matches and the session re-flags. A missing
+ * waitingSinceMs (daemon predating the field) is normalized to 0.
+ */
+export function isUnreadWaiting(
+  session: Pick<SessionListEntry, 'sessionId' | 'status' | 'waitingSinceMs'>,
+  readWaiting: Record<string, number>,
+): boolean {
+  return session.status === 'waiting' && readWaiting[session.sessionId] !== (session.waitingSinceMs ?? 0)
+}
+
+/**
+ * Per-project count of unread waiting sessions — waiting and not yet viewed
+ * during the current waiting spell. Drives the rail attention badge, so a
+ * waiting session the user has already looked at doesn't keep flagging.
+ */
+export function unreadWaitingBySlug(
+  sessions: Pick<SessionListEntry, 'sessionId' | 'projectSlug' | 'status' | 'waitingSinceMs'>[],
+  readWaiting: Record<string, number>,
+): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const s of sessions) {
+    if (isUnreadWaiting(s, readWaiting)) {
+      out[s.projectSlug] = (out[s.projectSlug] ?? 0) + 1
+    }
+  }
+  return out
+}
 
 /** Local-only UI state (not daemon state — that lives in the snapshot). */
 interface UiState {
@@ -180,6 +244,12 @@ interface UiState {
   /** Just-deleted sessions (that had history) shown optimistically in the
    *  Deleted group until the daemon's list-deleted catches up. */
   optimisticDeleted: DeletedSessionEntry[]
+  /** Read marks for waiting sessions: sessionId → waitingSinceMs of the
+   *  spell the user viewed. Keying by spell means a mark from an earlier
+   *  wait never hides a new one, even across reloads or a page that was
+   *  closed through the whole round trip. Persisted; syncWaitingRead GCs
+   *  marks whose spell is over. */
+  readWaiting: Record<string, number>
   /** Add a locally-initiated provisioning row (dedup by id). */
   addOptimisticProvisioning: (entry: ProvisioningSessionEntry) => void
   /** Patch a tracked optimistic row's message or error (no-op if absent). */
@@ -207,6 +277,15 @@ interface UiState {
   /** Drop an optimistic deleted entry — once list-deleted includes it, or on
    *  restart. */
   removeOptimisticDeleted: (sessionId: string) => void
+  /** Mark a session's current waiting spell as seen (it's open in the main
+   *  pane). Pass the entry's waitingSinceMs (normalized: missing → 0). */
+  markWaitingRead: (sessionId: string, waitingSinceMs: number) => void
+  /** GC read marks against the currently-waiting (sessionId, waitingSinceMs)
+   *  pairs: a mark whose spell is over (session running, gone, or waiting
+   *  anew) no longer matches anything and is dropped. Correctness doesn't
+   *  depend on this — isUnreadWaiting compares spells — it only keeps the
+   *  persisted map from growing. */
+  syncWaitingRead: (waiting: { sessionId: string; waitingSinceMs: number }[]) => void
 }
 
 const initialSelection = loadSelection()
@@ -223,6 +302,7 @@ export const useUiStore = create<UiState>((set) => ({
   optimisticProvisioning: [],
   pendingDeleteIds: [],
   optimisticDeleted: [],
+  readWaiting: loadReadWaiting(),
   addOptimisticProvisioning: (entry) => set((s) => (
     s.optimisticProvisioning.some((e) => e.sessionId === entry.sessionId)
       ? s
@@ -281,6 +361,19 @@ export const useUiStore = create<UiState>((set) => ({
       ? { optimisticDeleted: s.optimisticDeleted.filter((e) => e.sessionId !== sessionId) }
       : s
   )),
+  markWaitingRead: (sessionId, waitingSinceMs) => set((s) => (
+    s.readWaiting[sessionId] === waitingSinceMs
+      ? s
+      : { readWaiting: { ...s.readWaiting, [sessionId]: waitingSinceMs } }
+  )),
+  syncWaitingRead: (waiting) => set((s) => {
+    const current = new Map(waiting.map((w) => [w.sessionId, w.waitingSinceMs]))
+    const kept: Record<string, number> = {}
+    for (const [id, since] of Object.entries(s.readWaiting)) {
+      if (current.get(id) === since) kept[id] = since
+    }
+    return Object.keys(kept).length === Object.keys(s.readWaiting).length ? s : { readWaiting: kept }
+  }),
 }))
 
 // Workspace layouts survive reloads. Session ids are stable across restarts
@@ -300,4 +393,13 @@ useUiStore.subscribe((state, prev) => {
   ) {
     persistSelection(state.activeProjectSlug, state.selectedSessionId)
   }
+})
+
+// Read marks survive reloads so already-viewed waiting sessions don't
+// re-flag. Marks are keyed by the daemon's waitingSinceMs, so a session
+// that waited anew while the page was closed carries a different spell
+// timestamp and correctly shows unread; restored stale marks are GC'd
+// against the first snapshot.
+useUiStore.subscribe((state, prev) => {
+  if (state.readWaiting !== prev.readWaiting) persistReadWaiting(state.readWaiting)
 })

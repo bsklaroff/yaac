@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { loadViewMode, mergeProvisioning, useUiStore } from '@/frontend/store'
+import { isUnreadWaiting, loadViewMode, mergeProvisioning, unreadWaitingBySlug, useUiStore } from '@/frontend/store'
 import type { ProvisioningSessionEntry } from '@/shared/types'
 
 const initial = useUiStore.getState()
@@ -45,6 +45,84 @@ describe('optimistic deleted tracking', () => {
     expect(useUiStore.getState().optimisticDeleted.map((e) => e.sessionId)).toEqual(['b'])
     useUiStore.getState().removeOptimisticDeleted('missing')
     expect(useUiStore.getState().optimisticDeleted.map((e) => e.sessionId)).toEqual(['b'])
+  })
+})
+
+describe('read-waiting tracking', () => {
+  it('markWaitingRead stores the spell timestamp, overwriting an older one', () => {
+    useUiStore.getState().markWaitingRead('a', 100)
+    useUiStore.getState().markWaitingRead('a', 100)
+    useUiStore.getState().markWaitingRead('b', 200)
+    useUiStore.getState().markWaitingRead('a', 300)
+    expect(useUiStore.getState().readWaiting).toEqual({ a: 300, b: 200 })
+  })
+
+  it('syncWaitingRead drops marks whose spell is over', () => {
+    useUiStore.getState().markWaitingRead('a', 100)
+    useUiStore.getState().markWaitingRead('b', 200)
+    useUiStore.getState().markWaitingRead('c', 300)
+    // 'a' ran again (gone from the waiting set); 'b' is waiting anew with a
+    // fresh spell; 'c' is unchanged; 'd' was never read — must not be added.
+    useUiStore.getState().syncWaitingRead([
+      { sessionId: 'b', waitingSinceMs: 250 },
+      { sessionId: 'c', waitingSinceMs: 300 },
+      { sessionId: 'd', waitingSinceMs: 400 },
+    ])
+    expect(useUiStore.getState().readWaiting).toEqual({ c: 300 })
+  })
+
+  it('syncWaitingRead keeps the same state when nothing changed', () => {
+    useUiStore.getState().markWaitingRead('a', 100)
+    const before = useUiStore.getState()
+    useUiStore.getState().syncWaitingRead([
+      { sessionId: 'a', waitingSinceMs: 100 },
+      { sessionId: 'other', waitingSinceMs: 500 },
+    ])
+    expect(useUiStore.getState()).toBe(before)
+  })
+})
+
+describe('isUnreadWaiting', () => {
+  it('flags a waiting session with no mark or a mark from an older spell', () => {
+    const s = { sessionId: 'a', status: 'waiting' as const, waitingSinceMs: 200 }
+    expect(isUnreadWaiting(s, {})).toBe(true)
+    expect(isUnreadWaiting(s, { a: 100 })).toBe(true)
+    expect(isUnreadWaiting(s, { a: 200 })).toBe(false)
+  })
+
+  it('never flags a running session', () => {
+    expect(isUnreadWaiting({ sessionId: 'a', status: 'running' }, {})).toBe(false)
+  })
+
+  it('normalizes a missing waitingSinceMs to 0', () => {
+    const s = { sessionId: 'a', status: 'waiting' as const }
+    expect(isUnreadWaiting(s, {})).toBe(true)
+    expect(isUnreadWaiting(s, { a: 0 })).toBe(false)
+  })
+})
+
+describe('unreadWaitingBySlug', () => {
+  const s = (sessionId: string, projectSlug: string, status: 'running' | 'waiting', waitingSinceMs?: number) =>
+    ({ sessionId, projectSlug, status, waitingSinceMs })
+
+  it('counts only unread waiting sessions, grouped by project', () => {
+    const sessions = [
+      s('w1', 'p1', 'waiting', 100),
+      s('w2', 'p1', 'waiting', 200),
+      s('r1', 'p1', 'running'),
+      s('w3', 'p2', 'waiting', 300),
+    ]
+    expect(unreadWaitingBySlug(sessions, { w2: 200 })).toEqual({ p1: 1, p2: 1 })
+  })
+
+  it('re-counts a session whose mark is from an earlier spell', () => {
+    const sessions = [s('w1', 'p1', 'waiting', 500)]
+    expect(unreadWaitingBySlug(sessions, { w1: 100 })).toEqual({ p1: 1 })
+  })
+
+  it('omits projects with no unread waiting sessions', () => {
+    const sessions = [s('w1', 'p1', 'waiting', 100), s('r1', 'p2', 'running')]
+    expect(unreadWaitingBySlug(sessions, { w1: 100 })).toEqual({})
   })
 })
 
