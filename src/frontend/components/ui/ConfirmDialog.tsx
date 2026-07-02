@@ -1,4 +1,4 @@
-import type { JSX } from 'react'
+import { useRef, type JSX } from 'react'
 import clsx from 'clsx'
 import { AlertDialog } from '@base-ui/react/alert-dialog'
 
@@ -7,6 +7,10 @@ import { AlertDialog } from '@base-ui/react/alert-dialog'
  * tokens), ported from code-design. Controlled via `open`/`onOpenChange`;
  * the caller owns closing so it can keep the dialog up during an async
  * action and close on success. Pass `busy` to disable the buttons.
+ *
+ * The confirm button takes initial focus, so a bare Enter confirms —
+ * keyboard flows like Alt+D Enter (delete session) complete without the
+ * mouse. Esc still cancels, and Tab reaches Cancel.
  */
 export function ConfirmDialog({
   open,
@@ -29,15 +33,19 @@ export function ConfirmDialog({
   busy?: boolean
   onConfirm: () => void
 }): JSX.Element {
+  const confirmRef = useRef<HTMLButtonElement>(null)
   return (
     <AlertDialog.Root open={open} onOpenChange={(next) => { if (!busy) onOpenChange(next) }}>
       <AlertDialog.Portal>
         <AlertDialog.Backdrop className="fixed inset-0 bg-black/60 backdrop-blur-[1px] transition-opacity duration-150
           data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
-        <AlertDialog.Popup className="fixed left-1/2 top-1/2 w-[400px] max-w-[calc(100vw-2rem)] -translate-x-1/2
-          -translate-y-1/2 rounded-lg border border-border bg-surface-2 p-5 text-text shadow-[0_16px_48px_rgba(0,0,0,0.5)]
-          outline-none transition duration-150 data-[starting-style]:scale-95 data-[starting-style]:opacity-0
-          data-[ending-style]:scale-95 data-[ending-style]:opacity-0">
+        <AlertDialog.Popup
+          initialFocus={confirmRef}
+          className="fixed left-1/2 top-1/2 w-[400px] max-w-[calc(100vw-2rem)] -translate-x-1/2
+            -translate-y-1/2 rounded-lg border border-border bg-surface-2 p-5 text-text shadow-[0_16px_48px_rgba(0,0,0,0.5)]
+            outline-none transition duration-150 data-[starting-style]:scale-95 data-[starting-style]:opacity-0
+            data-[ending-style]:scale-95 data-[ending-style]:opacity-0"
+        >
           <AlertDialog.Title className="text-sm font-semibold">{title}</AlertDialog.Title>
           <AlertDialog.Description className="mt-1 text-xs leading-relaxed text-text-dim">
             {description}
@@ -51,6 +59,7 @@ export function ConfirmDialog({
               {cancelLabel}
             </AlertDialog.Close>
             <button
+              ref={confirmRef}
               onClick={onConfirm}
               disabled={busy}
               className={clsx(
