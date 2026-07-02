@@ -620,6 +620,12 @@ describe('createSession', () => {
     // shell in containerExec passes it literally instead of expanding it.
     expect(cmds.some((c) => c.includes("set-option -as terminal-features ',*:RGB'"))).toBe(true)
     expect(cmds.some((c) => c.includes('set-option -g default-terminal tmux-256color'))).toBe(true)
+    // The server-creating client carries COLORTERM=truecolor so every pane
+    // inherits it — TUIs (opencode et al.) only emit 24-bit color when they
+    // see it in their own environment.
+    const newSession = cmds.find((c) => c.includes('new-session -d -s yaac'))
+    expect(newSession).toBeDefined()
+    expect(newSession).toContain('env COLORTERM=truecolor ')
   })
 
   it('rejects an init window name that collides with the agent tool window', async () => {

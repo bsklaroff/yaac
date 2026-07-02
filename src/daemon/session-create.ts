@@ -478,7 +478,16 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   // tmux's default 80x24 and a race against the agent's startup render
   // can leave Claude stuck at 80x24 until the user resizes the host
   // terminal to force a fresh SIGWINCH.
-  await containerExec(jobName, `${TMUX} -u new-session -d -s yaac -n ${tool} -x 500 -y 200 'sleep infinity'`)
+  //
+  // `env COLORTERM=truecolor` seeds the tmux *server* environment (the
+  // server forks from this first client), which every pane on it inherits —
+  // the agent, init windows, and scratch shells. TUIs decide whether to
+  // emit 24-bit color from COLORTERM in their own environment; without it
+  // they see only TERM=tmux-256color and quantize their themes to the
+  // 256-color palette before the RGB passthrough configured below can
+  // help. (opencode was the visible casualty: its truecolor theme banded
+  // badly in the webapp's xterm.js pane.)
+  await containerExec(jobName, `env COLORTERM=truecolor ${TMUX} -u new-session -d -s yaac -n ${tool} -x 500 -y 200 'sleep infinity'`)
 
   // Nested sessions: start the in-pod rootless podman engine (it serves
   // the Docker Engine API on the socket DOCKER_HOST points at). This is
