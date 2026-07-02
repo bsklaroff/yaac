@@ -124,6 +124,13 @@ describe('unreadWaitingBySlug', () => {
     const sessions = [s('w1', 'p1', 'waiting', 100), s('r1', 'p2', 'running')]
     expect(unreadWaitingBySlug(sessions, { w1: 100 })).toEqual({})
   })
+
+  it('excludes sessions whose delete is in flight', () => {
+    // A terminating pod lingers in the snapshot as 'waiting' with its spell
+    // reset (status entry evicted) — mid-delete it must not count.
+    const sessions = [s('w1', 'p1', 'waiting'), s('w2', 'p1', 'waiting', 200)]
+    expect(unreadWaitingBySlug(sessions, {}, ['w1'])).toEqual({ p1: 1 })
+  })
 })
 
 describe('selection + project switching', () => {

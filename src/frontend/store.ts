@@ -195,13 +195,19 @@ export function isUnreadWaiting(
  * Per-project count of unread waiting sessions — waiting and not yet viewed
  * during the current waiting spell. Drives the rail attention badge, so a
  * waiting session the user has already looked at doesn't keep flagging.
+ * Sessions whose delete is in flight are excluded: a terminating pod
+ * lingers in the snapshot for a few seconds reading as a fresh 'waiting'
+ * spell (its status entry is evicted before the pod drops), and must not
+ * flash the badge on its way out.
  */
 export function unreadWaitingBySlug(
   sessions: Pick<SessionListEntry, 'sessionId' | 'projectSlug' | 'status' | 'waitingSinceMs'>[],
   readWaiting: Record<string, number>,
+  pendingDeleteIds: string[] = [],
 ): Record<string, number> {
   const out: Record<string, number> = {}
   for (const s of sessions) {
+    if (pendingDeleteIds.includes(s.sessionId)) continue
     if (isUnreadWaiting(s, readWaiting)) {
       out[s.projectSlug] = (out[s.projectSlug] ?? 0) + 1
     }

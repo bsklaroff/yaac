@@ -191,7 +191,7 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
   }, [sessions, syncWaitingRead])
 
   // Per-project count of unread waiting sessions → the rail attention badge.
-  const attention = unreadWaitingBySlug(sessions, readWaiting)
+  const attention = unreadWaitingBySlug(sessions, readWaiting, pendingDeleteIds)
 
   return (
     // Rail + sidebar sit flush on the base layer; the session pane floats
