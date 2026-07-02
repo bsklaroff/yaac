@@ -338,11 +338,12 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
         )}
       >
         <span className="flex items-center gap-2">
-          {/* Live pulse: the session's agent is actively running. */}
+          {/* Live pulse: the session's agent is actively running. A square,
+              so it can't be mistaken for the round unread bubble below. */}
           {session.status === 'running' && (
             <span className="relative flex h-1.5 w-1.5 shrink-0">
-              <span className="absolute h-full w-full animate-ping rounded-full bg-emerald-400/60" />
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+              <span className="absolute h-full w-full animate-ping rounded-[2px] bg-emerald-400/60" />
+              <span className="h-1.5 w-1.5 rounded-[2px] bg-emerald-400" />
             </span>
           )}
           {/* Unread bubble: this session started waiting and hasn't been viewed. */}
