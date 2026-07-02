@@ -1,11 +1,12 @@
-import { useEffect, useState, type JSX, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import { api, ApiError } from './lib/apiClient'
 import { readBootstrapCode, postBootstrap, stripBootstrapFromUrl } from './lib/bootstrap'
 import { useEvents } from './lib/useEvents'
 import { useSnapshot } from './lib/useSnapshot'
+import { matchSessionShortcut, resolveCycleTarget } from './lib/shortcuts'
 import { mergeProvisioning, persistSelection, unreadWaitingBySlug, useUiStore } from './store'
 import { ProjectRail } from './components/ProjectRail'
-import { Sidebar } from './components/Sidebar'
+import { Sidebar, sidebarRowIds } from './components/Sidebar'
 import { SessionView } from './components/SessionView'
 import { BootstrapSplash } from './components/BootstrapSplash'
 import type { DaemonSnapshot } from '@/shared/types'
@@ -114,6 +115,31 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
 
   const scoped = sessions.filter((s) => s.projectSlug === activeProjectSlug)
   const scopedProvisioning = provisioning.filter((p) => p.projectSlug === activeProjectSlug)
+
+  // Session-switch shortcuts: Alt+↑/Alt+↓ step through the sidebar rows
+  // top-to-bottom (wrapping) — the vertical sibling of SessionView's
+  // Alt+←/→ terminal cycler, and window-captured for the same reason: the
+  // chord is swallowed before xterm's textarea handler could forward it to
+  // the PTY. The ref keeps the single listener reading the current render's
+  // rows. Registered here, not in Sidebar, so it works with the sidebar
+  // hidden too.
+  const rowIds = sidebarRowIds(scopedProvisioning, scoped, pendingDeleteIds)
+  const shortcutCtx = useRef({ rowIds, selectedSessionId })
+  shortcutCtx.current = { rowIds, selectedSessionId }
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      const delta = matchSessionShortcut(e)
+      if (delta === null) return
+      const ctx = shortcutCtx.current
+      const next = resolveCycleTarget(ctx.rowIds, ctx.selectedSessionId ?? undefined, delta)
+      if (!next) return
+      e.preventDefault()
+      e.stopPropagation()
+      useUiStore.getState().selectSession(next)
+    }
+    window.addEventListener('keydown', onKeyDown, { capture: true })
+    return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
+  }, [])
 
   // Auto-select: never show an empty pane when the project has sessions — pick
   // the first waiting one (else the first visible). But never override a

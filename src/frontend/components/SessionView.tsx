@@ -9,7 +9,7 @@ import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
 import { AddIcon, CloseIcon, SidebarIcon, SplitDownIcon, SplitRightIcon, TabsIcon, TilesIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import { BlockedHostsBadge } from '@/frontend/components/BlockedHostsBadge'
 import { getSessionTerminals, createShellTerminal, killSessionTerminal } from '@/frontend/lib/terminalsApi'
-import { matchTabShortcut, resolveTabShortcut } from '@/frontend/lib/shortcuts'
+import { matchTabShortcut, resolveCycleTarget } from '@/frontend/lib/shortcuts'
 import {
   addLeafToLargest,
   computeLayout,
@@ -195,7 +195,7 @@ export function SessionView({
       if (delta === null) return
       const ctx = shortcutCtx.current
       if (!ctx.sid) return
-      const next = resolveTabShortcut(ctx.targets, ctx.activeTab, delta)
+      const next = resolveCycleTarget(ctx.targets, ctx.activeTab, delta)
       if (!next) return
       e.preventDefault()
       e.stopPropagation()

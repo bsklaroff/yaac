@@ -19,6 +19,24 @@ const GROUPS: { status: SessionListEntry['status']; label: string; defaultOpen: 
   { status: 'running', label: 'Running', defaultOpen: true },
 ]
 
+/**
+ * The sidebar's selectable rows in display order — provisioning first, then
+ * the session groups in triage order, minus mid-delete sessions. This is the
+ * list the Alt+↑/↓ session-switch shortcut steps through (Workspace owns the
+ * handler). Deleted rows are excluded: clicking those restarts, not selects.
+ */
+export function sidebarRowIds(
+  provisioning: Pick<ProvisioningSessionEntry, 'sessionId'>[],
+  sessions: Pick<SessionListEntry, 'sessionId' | 'status'>[],
+  pendingDeleteIds: string[],
+): string[] {
+  const shown = sessions.filter((s) => !pendingDeleteIds.includes(s.sessionId))
+  return [
+    ...provisioning.map((p) => p.sessionId),
+    ...GROUPS.flatMap((g) => shown.filter((s) => s.status === g.status).map((s) => s.sessionId)),
+  ]
+}
+
 /** Human relative age from the session's UTC 'YYYY-MM-DD HH:MM:SS' time. */
 function relativeAge(createdAt: string): string {
   const t = Date.parse(createdAt.replace(' ', 'T') + 'Z')
