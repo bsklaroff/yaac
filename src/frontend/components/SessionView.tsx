@@ -10,7 +10,7 @@ import { AddIcon, CloseIcon, SidebarIcon, SplitDownIcon, SplitRightIcon, TabsIco
 import { BlockedHostsBadge } from '@/frontend/components/BlockedHostsBadge'
 import { ForwardedPortLinks } from '@/frontend/components/ForwardedPortLinks'
 import { getSessionTerminals, createShellTerminal, killSessionTerminal } from '@/frontend/lib/terminalsApi'
-import { matchCreateShortcut, matchTabShortcut, resolveCycleTarget } from '@/frontend/lib/shortcuts'
+import { matchCloseShortcut, matchCreateShortcut, matchTabShortcut, resolveCycleTarget } from '@/frontend/lib/shortcuts'
 import {
   addLeafToLargest,
   computeLayout,
@@ -209,15 +209,21 @@ export function SessionView({
       .catch((e: unknown) => console.error('new shell failed', e))
   }
 
+  // Pane (x) / Alt+W → confirm → kill the tmux window (and whatever runs
+  // in it).
+  const [confirmKill, setConfirmKill] = useState<{ target: string; name: string } | null>(null)
+
   // Workspace shortcuts: Alt+←/Alt+→ cycle terminals left/right — the
   // webapp-level replacement for tmux's prefix bindings (webapp panes run
-  // with `prefix None`) — and Alt+T opens a new scratch shell (Alt+N, new
-  // session, lives in App's Workspace, which owns project scope). Captured
-  // on window so the chord is swallowed before xterm's textarea handler
-  // could forward it to the PTY; the ref keeps the single listener reading
-  // the current render's state.
-  const shortcutCtx = useRef({ sid, targets, activeTab, openShell })
-  shortcutCtx.current = { sid, targets, activeTab, openShell }
+  // with `prefix None`) — Alt+T opens a new scratch shell, and Alt+W kills
+  // the active terminal, through the same confirm dialog as the pane ×
+  // (Alt+N, new session, and Alt+D, delete session, live in App's
+  // Workspace, which owns project scope). Captured on window so the chord
+  // is swallowed before xterm's textarea handler could forward it to the
+  // PTY; the ref keeps the single listener reading the current render's
+  // state.
+  const shortcutCtx = useRef({ sid, targets, activeTab, terminals, openShell })
+  shortcutCtx.current = { sid, targets, activeTab, terminals, openShell }
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       const ctx = shortcutCtx.current
@@ -226,6 +232,14 @@ export function SessionView({
         e.preventDefault()
         e.stopPropagation()
         ctx.openShell()
+        return
+      }
+      if (matchCloseShortcut(e) === 'kill-terminal') {
+        // The agent pane isn't killable — leave the chord alone then.
+        if (!ctx.activeTab || ctx.activeTab === 'agent') return
+        e.preventDefault()
+        e.stopPropagation()
+        setConfirmKill({ target: ctx.activeTab, name: paneName(ctx.activeTab, ctx.terminals) })
         return
       }
       const delta = matchTabShortcut(e)
@@ -239,9 +253,6 @@ export function SessionView({
     window.addEventListener('keydown', onKeyDown, { capture: true })
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
   }, [])
-
-  // Pane (x) → confirm → kill the tmux window (and whatever runs in it).
-  const [confirmKill, setConfirmKill] = useState<{ target: string; name: string } | null>(null)
 
   const killPane = (target: string): void => {
     if (!sid || !layout) return

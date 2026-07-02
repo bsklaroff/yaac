@@ -7,7 +7,8 @@ import { BlockedHostsBadge } from '@/frontend/components/BlockedHostsBadge'
 import { NewSessionButton } from '@/frontend/components/NewSessionButton'
 import { ProjectActionsMenu } from '@/frontend/components/ProjectActionsMenu'
 import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
-import { deleteSession, dismissProvisioning, restartSession } from '@/frontend/lib/createSession'
+import { dismissProvisioning, restartSession } from '@/frontend/lib/createSession'
+import { deleteSessionOptimistic } from '@/frontend/lib/deleteSessionFlow'
 import { getDeletedSessions } from '@/frontend/lib/deletedApi'
 import { useProvisionSession } from '@/frontend/lib/useProvisionSession'
 import { isUnreadWaiting, useUiStore } from '@/frontend/store'
@@ -293,39 +294,15 @@ function SessionGroup({
 function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
   const selectedSessionId = useUiStore((s) => s.selectedSessionId)
   const selectSession = useUiStore((s) => s.selectSession)
-  const beginDelete = useUiStore((s) => s.beginDelete)
-  const endDelete = useUiStore((s) => s.endDelete)
-  const addOptimisticDeleted = useUiStore((s) => s.addOptimisticDeleted)
-  const removeOptimisticDeleted = useUiStore((s) => s.removeOptimisticDeleted)
   const readWaiting = useUiStore((s) => s.readWaiting)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const unread = isUnreadWaiting(session, readWaiting)
 
-  // Optimistic: hide the row and close the dialog immediately, then fire the
-  // delete. The daemon's cleanup is detached (a stop can take ~10s), so we
-  // can't wait for the snapshot to drop it. On failure, restore the row.
+  // Close the dialog immediately; the shared flow hides the row
+  // optimistically and restores it if the delete fails.
   const onConfirmDelete = (): void => {
-    const id = session.sessionId
     setConfirmDelete(false)
-    beginDelete(id)
-    if (selectedSessionId === id) selectSession(null)
-    // A session with history (a prompt → a transcript) will appear in the
-    // Deleted group once cleanup lands; show it there immediately.
-    if (session.prompt) {
-      addOptimisticDeleted({
-        sessionId: id,
-        projectSlug: session.projectSlug,
-        tool: session.tool,
-        createdAt: session.createdAt,
-        prompt: session.prompt,
-        title: session.title,
-      })
-    }
-    void deleteSession(id).catch((e: unknown) => {
-      console.error('delete failed', e)
-      endDelete(id)
-      removeOptimisticDeleted(id)
-    })
+    deleteSessionOptimistic(session)
   }
 
   return (

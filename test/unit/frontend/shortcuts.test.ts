@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { matchCreateShortcut, matchSessionShortcut, matchTabShortcut, resolveCycleTarget, type ShortcutKey } from '@/frontend/lib/shortcuts'
+import { matchCloseShortcut, matchCreateShortcut, matchSessionShortcut, matchTabShortcut, resolveCycleTarget, type ShortcutKey } from '@/frontend/lib/shortcuts'
 
 const key = (code: string, over: Partial<ShortcutKey> = {}): ShortcutKey => ({
   altKey: true, ctrlKey: false, metaKey: false, shiftKey: false, code, ...over,
@@ -85,5 +85,26 @@ describe('matchCreateShortcut', () => {
   it('ignores other keys', () => {
     expect(matchCreateShortcut(key('KeyM'))).toBeNull()
     expect(matchCreateShortcut(key('Enter'))).toBeNull()
+  })
+})
+
+describe('matchCloseShortcut', () => {
+  it('maps Alt+W to kill-terminal and Alt+D to delete-session', () => {
+    expect(matchCloseShortcut(key('KeyW'))).toBe('kill-terminal')
+    expect(matchCloseShortcut(key('KeyD'))).toBe('delete-session')
+  })
+
+  it('requires Alt alone — extra or missing modifiers never match', () => {
+    expect(matchCloseShortcut(key('KeyW', { altKey: false }))).toBeNull()
+    expect(matchCloseShortcut(key('KeyW', { metaKey: true }))).toBeNull()
+    expect(matchCloseShortcut(key('KeyD', { shiftKey: true }))).toBeNull()
+    // AltGr layouts report Ctrl+Alt — their characters must pass through.
+    expect(matchCloseShortcut(key('KeyD', { ctrlKey: true }))).toBeNull()
+  })
+
+  it('ignores other keys — the creates belong to matchCreateShortcut', () => {
+    expect(matchCloseShortcut(key('KeyN'))).toBeNull()
+    expect(matchCloseShortcut(key('KeyT'))).toBeNull()
+    expect(matchCloseShortcut(key('Enter'))).toBeNull()
   })
 })

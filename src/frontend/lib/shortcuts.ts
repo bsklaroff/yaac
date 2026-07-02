@@ -91,3 +91,28 @@ export function matchCreateShortcut(e: ShortcutKey): CreateAction | null {
   if (e.code === 'KeyT') return 'new-shell'
   return null
 }
+
+/** A close/teardown intent decoded from a workspace keydown. */
+export type CloseAction = 'kill-terminal' | 'delete-session'
+
+/**
+ * Map a keydown to a close intent — the destructive mirror of
+ * matchCreateShortcut:
+ *
+ *  - Alt+W — kill the active terminal (its tmux window).
+ *  - Alt+D — delete the selected session.
+ *
+ * Both go through a confirm dialog whose confirm button holds initial
+ * focus, so Alt+W Enter / Alt+D Enter complete the action from the
+ * keyboard. Matches on `code` with exactly Alt held, for the same
+ * reasons as matchCreateShortcut. Accepted cost: Alt+D shadows the
+ * browser's address-bar focus chord on Windows/Linux.
+ *
+ * Returns null for anything else, meaning "not ours — let it through".
+ */
+export function matchCloseShortcut(e: ShortcutKey): CloseAction | null {
+  if (!altAlone(e)) return null
+  if (e.code === 'KeyW') return 'kill-terminal'
+  if (e.code === 'KeyD') return 'delete-session'
+  return null
+}

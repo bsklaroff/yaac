@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import { api, ApiError } from './lib/apiClient'
 import { readBootstrapCode, postBootstrap, stripBootstrapFromUrl } from './lib/bootstrap'
 import { createSession } from './lib/createSession'
-import { matchCreateShortcut, matchSessionShortcut, resolveCycleTarget } from './lib/shortcuts'
+import { deleteSessionOptimistic } from './lib/deleteSessionFlow'
+import { matchCloseShortcut, matchCreateShortcut, matchSessionShortcut, resolveCycleTarget } from './lib/shortcuts'
 import { useEvents } from './lib/useEvents'
 import { useProvisionSession } from './lib/useProvisionSession'
 import { useSnapshot } from './lib/useSnapshot'
@@ -11,7 +12,8 @@ import { ProjectRail } from './components/ProjectRail'
 import { Sidebar, sidebarRowIds } from './components/Sidebar'
 import { SessionView } from './components/SessionView'
 import { BootstrapSplash } from './components/BootstrapSplash'
-import type { DaemonSnapshot } from '@/shared/types'
+import { ConfirmDialog } from './components/ui/ConfirmDialog'
+import type { DaemonSnapshot, SessionListEntry } from '@/shared/types'
 
 type AuthState = 'checking' | 'authed' | 'needs-bootstrap'
 
@@ -57,6 +59,13 @@ function App(): JSX.Element {
   if (auth === 'needs-bootstrap') return <BootstrapSplash onAuthed={() => setAuth('authed')} />
 
   return <Workspace snapshot={snapshot} connected={connected} />
+}
+
+/** A session's display name for dialog copy — title, else prompt (which can
+ *  be a whole first message, so clipped), else the placeholder. */
+function sessionName(session: SessionListEntry | null): string {
+  const name = session ? session.title || session.prompt || 'New session' : ''
+  return name.length > 60 ? `${name.slice(0, 60)}…` : name
 }
 
 function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefined; connected: boolean }): JSX.Element {
@@ -125,6 +134,8 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
   //    — the vertical sibling of SessionView's Alt+←/→ terminal cycler.
   //  - Alt+N starts a new session in the active project, with the selected
   //    session's tool (or claude).
+  //  - Alt+D deletes the selected session, through the same confirm dialog
+  //    as the sidebar row's × (Enter confirms — the button holds focus).
   // The ref keeps the single listener reading the current render's state.
   const provision = useProvisionSession()
   const rowIds = sidebarRowIds(scopedProvisioning, scoped, pendingDeleteIds)
@@ -136,8 +147,12 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
     provision(slug, tool, 'create', sessionId,
       (sid, onProgress) => createSession(slug, tool, onProgress, sid))
   }
-  const shortcutCtx = useRef({ rowIds, selectedSessionId, newSession })
-  shortcutCtx.current = { rowIds, selectedSessionId, newSession }
+  const [confirmDelete, setConfirmDelete] = useState<SessionListEntry | null>(null)
+  const selectedSession = selectedSessionId && !pendingDeleteIds.includes(selectedSessionId)
+    ? sessions.find((s) => s.sessionId === selectedSessionId) ?? null
+    : null
+  const shortcutCtx = useRef({ rowIds, selectedSessionId, selectedSession, newSession })
+  shortcutCtx.current = { rowIds, selectedSessionId, selectedSession, newSession }
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       const ctx = shortcutCtx.current
@@ -145,6 +160,13 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
         e.preventDefault()
         e.stopPropagation()
         ctx.newSession()
+        return
+      }
+      if (matchCloseShortcut(e) === 'delete-session') {
+        if (!ctx.selectedSession) return
+        e.preventDefault()
+        e.stopPropagation()
+        setConfirmDelete(ctx.selectedSession)
         return
       }
       const delta = matchSessionShortcut(e)
@@ -214,6 +236,20 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
       <div className="min-w-0 flex-1 p-2">
         <SessionView snapshot={snapshot} provisioning={scopedProvisioning} />
       </div>
+
+      {/* Alt+D's confirm. Unlike the sidebar row's × (whose dialog needs no
+          name — you clicked the row), this names its invisible target. */}
+      <ConfirmDialog
+        open={!!confirmDelete}
+        onOpenChange={(next) => { if (!next) setConfirmDelete(null) }}
+        title={`Delete “${sessionName(confirmDelete)}”?`}
+        description="Stops and removes the session's container and worktree. This can't be undone."
+        confirmLabel="Delete"
+        onConfirm={() => {
+          if (confirmDelete) deleteSessionOptimistic(confirmDelete)
+          setConfirmDelete(null)
+        }}
+      />
     </div>
   )
 }
