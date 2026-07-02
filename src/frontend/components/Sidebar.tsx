@@ -2,7 +2,8 @@ import { useEffect, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { useQuery } from '@tanstack/react-query'
 import { Collapsible } from '@base-ui/react/collapsible'
-import { BlockedIcon, ChevronIcon, CloseIcon, LoadingIcon, RestartIcon, TOOL_LABEL } from '@/frontend/lib/icons'
+import { ChevronIcon, CloseIcon, LoadingIcon, RestartIcon, TOOL_LABEL } from '@/frontend/lib/icons'
+import { BlockedHostsBadge } from '@/frontend/components/BlockedHostsBadge'
 import { NewSessionButton } from '@/frontend/components/NewSessionButton'
 import { ProjectActionsMenu } from '@/frontend/components/ProjectActionsMenu'
 import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
@@ -325,17 +326,18 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
         </span>
         <span className="flex items-center gap-2 text-xs text-text-faint">
           <span className="truncate">{relativeAge(session.createdAt)}</span>
-          {session.blockedHosts.length > 0 && (
-            <span
-              className="ml-auto flex shrink-0 items-center gap-0.5 text-[#d65858]"
-              title={`${session.blockedHosts.length} blocked host(s)`}
-            >
-              <BlockedIcon size={11} />
-              {session.blockedHosts.length}
-            </span>
-          )}
         </span>
       </button>
+
+      {/* Overlaid as a sibling for the same reason as the delete × below:
+          the badge is a button and can't nest inside the row button. */}
+      {session.blockedHosts.length > 0 && (
+        <BlockedHostsBadge
+          hosts={session.blockedHosts}
+          iconSize={11}
+          className="absolute bottom-1.5 right-1.5 hover:bg-surface-3"
+        />
+      )}
 
       {/* Overlaid as a sibling (not nested in the row button) and pointer-inert
           until hover, so it can't swallow clicks meant for selecting the row. */}

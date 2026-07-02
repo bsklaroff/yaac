@@ -6,7 +6,8 @@ import { useUiStore } from '@/frontend/store'
 import { SessionTerminal } from '@/frontend/components/SessionTerminal'
 import { SessionActionsMenu } from '@/frontend/components/SessionActionsMenu'
 import { CreatingPlaceholder } from '@/frontend/components/CreatingPlaceholder'
-import { AddIcon, BlockedIcon, CloseIcon, SidebarIcon, SplitDownIcon, SplitRightIcon, TabsIcon, TilesIcon, TOOL_LABEL } from '@/frontend/lib/icons'
+import { AddIcon, CloseIcon, SidebarIcon, SplitDownIcon, SplitRightIcon, TabsIcon, TilesIcon, TOOL_LABEL } from '@/frontend/lib/icons'
+import { BlockedHostsBadge } from '@/frontend/components/BlockedHostsBadge'
 import { getSessionTerminals, closeSessionTerminal, nextShellName } from '@/frontend/lib/terminalsApi'
 import {
   computeLayout,
@@ -358,13 +359,7 @@ export function SessionView({
           />
           <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[session.tool]}</span>
           {session.blockedHosts.length > 0 && (
-            <span
-              className="flex shrink-0 items-center gap-0.5 text-xs text-[#d65858]"
-              title={session.blockedHosts.join('\n')}
-            >
-              <BlockedIcon size={12} />
-              {session.blockedHosts.length}
-            </span>
+            <BlockedHostsBadge hosts={session.blockedHosts} iconSize={12} className="hover:bg-surface-2" />
           )}
           <SessionActionsMenu sessionId={session.sessionId} currentTitle={session.title ?? ''} />
         </header>

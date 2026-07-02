@@ -2,6 +2,9 @@ import { defineConfig } from 'vitest/config'
 import path from 'node:path'
 
 export default defineConfig({
+  // The root tsconfig doesn't set "jsx" (only tsconfig.frontend.json does),
+  // so tell esbuild directly — needed for .tsx component tests.
+  esbuild: { jsx: 'automatic' },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, 'src'),
@@ -24,7 +27,7 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'unit',
-          include: ['test/unit/**/*.test.ts'],
+          include: ['test/unit/**/*.test.{ts,tsx}'],
           // unit-setup.ts strips the nested-session env (YAAC_NESTED,
           // YAAC_K8S_REGISTRY) so unit assertions stay deterministic when
           // the suite runs inside a yaac session. Listed alongside the
