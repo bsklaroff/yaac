@@ -61,9 +61,16 @@ export function attachArgs(jobName: string, target: PtyTarget, viewName: string)
   const window = target.startsWith('window:')
     ? target.slice('window:'.length)
     : `${viewName}:^`
+  // The has-session guard is load-bearing: `new-session -t yaac` against a
+  // pod where session-create hasn't yet built the `yaac` session doesn't
+  // fail — tmux silently mints a NEW group named `yaac` whose one window is
+  // a bare shell, and every later view resolves `-t yaac` to that stale
+  // group instead of the real session's windows, permanently. Failing here
+  // instead lets the client's reconnect loop retry until setup finishes.
   return interactiveExecArgs(jobName, [
     'sh', '-c',
-    `exec ${tmux} new-session -t yaac -s ${viewName} ${viewOpts} \\; select-window -t '${window}'`,
+    `${tmux} has-session -t =yaac 2>/dev/null`
+    + ` && exec ${tmux} new-session -t yaac -s ${viewName} ${viewOpts} \\; select-window -t '${window}'`,
   ])
 }
 

@@ -31,7 +31,8 @@ describe('attachArgs', () => {
     expect(attachArgs('yaac-demo-abc', 'agent', 'view-11aa22bb')).toEqual([
       'exec', '-n', 'yaac', '-it', 'job/yaac-demo-abc', '--',
       'sh', '-c',
-      'exec tmux -S /tmp/yaac-tmux/server new-session -t yaac -s view-11aa22bb '
+      'tmux -S /tmp/yaac-tmux/server has-session -t =yaac 2>/dev/null'
+      + ' && exec tmux -S /tmp/yaac-tmux/server new-session -t yaac -s view-11aa22bb '
       + `${VIEW_OPTS} \\; select-window -t 'view-11aa22bb:^'`,
     ])
   })
@@ -45,6 +46,14 @@ describe('attachArgs', () => {
     expect(cmd).toContain('new-session -t yaac -s view-11aa22bb')
     expect(cmd).toContain(VIEW_OPTS)
     expect(cmd).toContain("select-window -t '@3'")
+  })
+
+  it('guards the view create on the yaac session existing', () => {
+    // Attaching before session-create has built the `yaac` tmux session must
+    // fail (so the client retries), not let `new-session -t yaac` mint a
+    // stale group whose bare-shell window poisons every subsequent view.
+    const cmd = attachArgs('yaac-demo-abc', 'agent', 'view-11aa22bb')[8]
+    expect(cmd).toMatch(/^tmux -S \S+ has-session -t =yaac 2>\/dev\/null && exec /)
   })
 })
 
