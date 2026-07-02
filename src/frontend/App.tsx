@@ -3,11 +3,11 @@ import { api, ApiError } from './lib/apiClient'
 import { readBootstrapCode, postBootstrap, stripBootstrapFromUrl } from './lib/bootstrap'
 import { createSession } from './lib/createSession'
 import { deleteSessionOptimistic } from './lib/deleteSessionFlow'
-import { matchCloseShortcut, matchCreateShortcut, matchSessionShortcut, resolveCycleTarget } from './lib/shortcuts'
+import { matchAttentionShortcut, matchCloseShortcut, matchCreateShortcut, matchSessionShortcut, resolveCycleTarget } from './lib/shortcuts'
 import { useEvents } from './lib/useEvents'
 import { useProvisionSession } from './lib/useProvisionSession'
 import { useSnapshot } from './lib/useSnapshot'
-import { mergeProvisioning, persistSelection, unreadWaitingBySlug, useUiStore } from './store'
+import { mergeProvisioning, persistSelection, resolveAttentionTarget, unreadWaitingBySlug, useUiStore } from './store'
 import { ProjectRail } from './components/ProjectRail'
 import { Sidebar, sidebarRowIds } from './components/Sidebar'
 import { SessionView } from './components/SessionView'
@@ -136,9 +136,15 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
   //    session's tool (or claude).
   //  - Alt+D deletes the selected session, through the same confirm dialog
   //    as the sidebar row's × (Enter confirms — the button holds focus).
+  //  - Alt+B jumps to the session that most needs attention: the topmost
+  //    unread-waiting one, else the topmost waiting, else the topmost running.
   // The ref keeps the single listener reading the current render's state.
   const provision = useProvisionSession()
   const rowIds = sidebarRowIds(scopedProvisioning, scoped, pendingDeleteIds)
+  const attentionTarget = resolveAttentionTarget(
+    scoped.filter((s) => !pendingDeleteIds.includes(s.sessionId)),
+    readWaiting,
+  )
   const newSession = (): void => {
     if (!activeProjectSlug) return
     const slug = activeProjectSlug
@@ -151,8 +157,8 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
   const selectedSession = selectedSessionId && !pendingDeleteIds.includes(selectedSessionId)
     ? sessions.find((s) => s.sessionId === selectedSessionId) ?? null
     : null
-  const shortcutCtx = useRef({ rowIds, selectedSessionId, selectedSession, newSession })
-  shortcutCtx.current = { rowIds, selectedSessionId, selectedSession, newSession }
+  const shortcutCtx = useRef({ rowIds, selectedSessionId, selectedSession, newSession, attentionTarget })
+  shortcutCtx.current = { rowIds, selectedSessionId, selectedSession, newSession, attentionTarget }
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       const ctx = shortcutCtx.current
@@ -167,6 +173,13 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
         e.preventDefault()
         e.stopPropagation()
         setConfirmDelete(ctx.selectedSession)
+        return
+      }
+      if (matchAttentionShortcut(e)) {
+        if (!ctx.attentionTarget) return
+        e.preventDefault()
+        e.stopPropagation()
+        useUiStore.getState().selectSession(ctx.attentionTarget)
         return
       }
       const delta = matchSessionShortcut(e)

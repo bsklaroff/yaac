@@ -116,3 +116,16 @@ export function matchCloseShortcut(e: ShortcutKey): CloseAction | null {
   if (e.code === 'KeyD') return 'delete-session'
   return null
 }
+
+/**
+ * True for Alt+B — "jump to the session that most needs attention" (the
+ * topmost unread, else waiting, else running row; resolveAttentionTarget in
+ * the store picks the actual target). Same exactly-Alt rule and physical-key
+ * (`code`) match as the other workspace chords, so AltGr / Ctrl+Alt combos and
+ * macOS Option dead-keys pass through untouched.
+ *
+ * Returns false for anything else, meaning "not ours — let it through".
+ */
+export function matchAttentionShortcut(e: ShortcutKey): boolean {
+  return altAlone(e) && e.code === 'KeyB'
+}

@@ -215,6 +215,27 @@ export function unreadWaitingBySlug(
   return out
 }
 
+/**
+ * The session Alt+B lands on: the one most in need of attention. Callers pass
+ * the sidebar's sessions (mid-delete rows already filtered out); status order
+ * within the array matches the display order, since the Waiting group renders
+ * above Running and each group preserves array order. Priority:
+ *   1. the topmost session with an unread waiting notification,
+ *   2. else the topmost waiting session (already viewed this spell),
+ *   3. else the topmost running session.
+ * Null when there's nothing to jump to.
+ */
+export function resolveAttentionTarget(
+  sessions: Pick<SessionListEntry, 'sessionId' | 'status' | 'waitingSinceMs'>[],
+  readWaiting: Record<string, number>,
+): string | null {
+  const unread = sessions.find((s) => isUnreadWaiting(s, readWaiting))
+  if (unread) return unread.sessionId
+  const waiting = sessions.find((s) => s.status === 'waiting')
+  if (waiting) return waiting.sessionId
+  return sessions.find((s) => s.status === 'running')?.sessionId ?? null
+}
+
 /** Local-only UI state (not daemon state — that lives in the snapshot). */
 interface UiState {
   /** Project whose sessions the sidebar is scoped to (rail selection). */

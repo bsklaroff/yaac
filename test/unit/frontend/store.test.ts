@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { isUnreadWaiting, loadViewMode, mergeProvisioning, unreadWaitingBySlug, useUiStore } from '@/frontend/store'
+import { isUnreadWaiting, loadViewMode, mergeProvisioning, resolveAttentionTarget, unreadWaitingBySlug, useUiStore } from '@/frontend/store'
 import type { ProvisioningSessionEntry } from '@/shared/types'
 
 const initial = useUiStore.getState()
@@ -130,6 +130,36 @@ describe('unreadWaitingBySlug', () => {
     // reset (status entry evicted) — mid-delete it must not count.
     const sessions = [s('w1', 'p1', 'waiting'), s('w2', 'p1', 'waiting', 200)]
     expect(unreadWaitingBySlug(sessions, {}, ['w1'])).toEqual({ p1: 1 })
+  })
+})
+
+describe('resolveAttentionTarget', () => {
+  const s = (sessionId: string, status: 'running' | 'waiting', waitingSinceMs?: number) =>
+    ({ sessionId, status, waitingSinceMs })
+
+  it('prefers the topmost unread-waiting session', () => {
+    // r1 is topmost overall, w1 is waiting-but-read, w2 is unread waiting.
+    const sessions = [s('r1', 'running'), s('w1', 'waiting', 100), s('w2', 'waiting', 200)]
+    expect(resolveAttentionTarget(sessions, { w1: 100 })).toBe('w2')
+  })
+
+  it('picks the topmost unread when several are unread', () => {
+    const sessions = [s('w1', 'waiting', 100), s('w2', 'waiting', 200)]
+    expect(resolveAttentionTarget(sessions, {})).toBe('w1')
+  })
+
+  it('falls back to the topmost waiting when all waiting are read', () => {
+    const sessions = [s('r1', 'running'), s('w1', 'waiting', 100), s('w2', 'waiting', 200)]
+    expect(resolveAttentionTarget(sessions, { w1: 100, w2: 200 })).toBe('w1')
+  })
+
+  it('falls back to the topmost running when nothing is waiting', () => {
+    const sessions = [s('r1', 'running'), s('r2', 'running')]
+    expect(resolveAttentionTarget(sessions, {})).toBe('r1')
+  })
+
+  it('returns null when there are no sessions', () => {
+    expect(resolveAttentionTarget([], {})).toBeNull()
   })
 })
 
