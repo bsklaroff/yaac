@@ -213,12 +213,20 @@ describe('PTY WebSocket round-trip (real session pod)', () => {
     }
     expect(session).toBeDefined()
 
-    // Attach a scratch shell over the WS (the webapp's terminal path) and
-    // round-trip a command. The shell target needs no agent auth — just
-    // the container and tmux.
+    // Create a scratch-shell window (the webapp's "+" path), attach it over
+    // the WS, and round-trip a command. A shell window needs no agent auth —
+    // just the container and tmux.
+    const createRes = await fetch(
+      `${base}/session/${session.sessionId}/terminals`,
+      { method: 'POST', headers: auth },
+    )
+    expect(createRes.ok).toBe(true)
+    const shell = await createRes.json() as { target: string; name: string }
+    expect(shell.name).toBe('shell')
+    expect(shell.target).toMatch(/^window:@\d+$/)
     const { ws, binary, opened } = openWs(
       `ws://127.0.0.1:${daemon.lock.port}/pty/attach`
-        + `?id=${session.sessionId}&target=shell:shell&cols=100&rows=30`,
+        + `?id=${session.sessionId}&target=${encodeURIComponent(shell.target)}&cols=100&rows=30`,
       auth,
     )
     await opened

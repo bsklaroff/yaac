@@ -272,11 +272,28 @@ Each terminal tab in a client is one PTY on the daemon side, exposed
 as a **single** WebSocket endpoint with a `target` query param —
 not the three separate paths originally sketched:
 
-| `target` query | Attaches to | Spawns (under a PTY on the daemon) |
+Every target attaches through a per-client grouped **view session**
+(named `view-<hex>` by the daemon) pinned to a single tmux window,
+with `destroy-unattached on` (the throwaway session dies on detach),
+`status off` (no tmux status bar — the webapp tab strip is the only
+window list; the CLI's direct attach keeps the bar), and `prefix
+None` (no tmux key bindings in webapp panes — switching is webapp
+shortcuts, and `C-b` passes through to the agent; mouse mode is
+unaffected):
+
+| `target` query | Pins the view session to | Spawns (under a PTY on the daemon) |
 |---|---|---|
-| `agent` (default) | the primary `yaac` tmux session (the agent CLI) | `kubectl exec -it job/<name> -- tmux attach-session -t yaac` |
-| `shell` / `shell:<name>` | a scratch-shell tmux session (`shell`, `shell-2`, …), created lazily, persists across reloads | `kubectl exec -it job/<name> -- sh -c 'tmux new-session -d -s <name>; exec tmux attach-session -t <name>'` |
-| `window:@<id>` | a specific window of the `yaac` session (e.g. an initCommands dev server) | `kubectl exec -it job/<name> -- sh -c 'exec tmux new-session -t yaac -s view-$$ \; set destroy-unattached on \; select-window -t @<id>'` |
+| `agent` (default) | the `yaac` session's lowest-index window (the agent CLI) | `kubectl exec -it job/<name> -- sh -c 'exec tmux new-session -t yaac -s view-<hex> \; set destroy-unattached on \; set status off \; set prefix None \; select-window -t view-<hex>:^'` |
+| `window:@<id>` | any other window of the `yaac` session — an initCommands dev server or a scratch shell | `kubectl exec -it job/<name> -- sh -c 'exec tmux new-session -t yaac -s view-<hex> \; set … \; select-window -t @<id>'` |
+
+Scratch shells are plain `yaac`-session windows (`shell`, `shell-2`,
+…) — there are no separate shell tmux sessions. The webapp creates
+them explicitly via `POST /session/:id/terminals` (which returns the
+new window's target) and kills any non-agent window via
+`POST /session/:id/terminals/close` (the daemon refuses the agent
+window). initCommands windows marked `hidePane` skip
+`remain-on-exit`, so the window — and with it the webapp pane —
+disappears when the command finishes.
 
 `WS /pty/attach?id=<session>&target=<…>&cols=&rows=`. The path is
 `/pty/attach` (not `/session/...`) to avoid colliding with the
@@ -285,19 +302,17 @@ with it, no token in the URL. The PTY is spawned at the browser's
 reported size so the tmux window and client grid agree from frame one
 (no cold-start reflow garble).
 
-Window/shell behavior keeps state consistent with the CLI: shells and
-windows are real tmux sessions/windows inside the container, so a
+Window behavior keeps state consistent with the CLI: every webapp
+terminal is a real tmux window inside the container, so a
 `yaac session attach` sees them too.
 
 ### Multiple viewers on one terminal
 
 Two clients viewing the same terminal is handled by **tmux**, not a
-daemon-side PTY registry. Shells use detached-create-then-attach (so
-two fast attaches don't race the session down), and windows are
-viewed through a per-client grouped session (`tmux new-session -t
-yaac` with `destroy-unattached on`) so each viewer selects a window
-independently and the throwaway grouped session dies on detach while
-the windows live on.
+daemon-side PTY registry. Every viewer gets its own grouped view
+session, so each one is pinned to its window independently — of other
+viewers and of the CLI — and the throwaway session dies on detach
+while the windows live on.
 
 **Not built / dropped:** the `ptyId` accept-frame and
 `?ptyId=<existing>` reconnect-and-tee mechanism. Reconnects just
@@ -319,14 +334,17 @@ control.
 
 ### Close semantics
 
-- Client closes the socket → the bridge writes the tmux detach
-  keystroke (`C-b d`) so the in-container tmux client exits cleanly,
-  then force-kills the host-side PTY after a short grace. Killing the
-  exec without detaching first leaks a zombie attached client in the
-  container, so detach-first matters. tmux keeps the window/session
-  open and the container alive (true for shells too — they're tmux
-  sessions, so a detach preserves them rather than killing a bare
-  zsh).
+- Client closes the socket → the daemon kills the per-client view
+  session inside the container (`tmux kill-session -t view-<hex>`),
+  which detaches the exec'd client cleanly; it retries once at the
+  grace deadline (in case the close raced the attach) and then
+  force-kills the host-side PTY as the final fallback. There is no
+  detach keystroke anymore — view sessions run `prefix None`, and
+  killing the exec without a container-side detach leaks a zombie
+  attached client that would pin the view session alive forever.
+  The windows belong to the group and live on, so the container stays
+  alive — closing a viewer never kills what runs in the window; only
+  the explicit terminals/close endpoint does that.
 - PTY process exits → server closes the socket with the exit code.
 - Session resolve fails / not running → server sends an `{type:
   "error"}` frame and closes.
@@ -351,7 +369,7 @@ Not built. The CLI still shells out to `kubectl exec -it` directly:
 | CLI | Today | Target |
 |---|---|---|
 | `yaac session attach <id>` | `GET /session/:id/attach-info`, then local `kubectl exec -it … tmux attach` (`src/commands/session-attach.ts`) | `WS /pty/attach?id=…&target=agent`, pipe local TTY |
-| `yaac session shell <id>` | `GET /session/:id/shell-info`, then local `kubectl exec -it … zsh` (`src/commands/session-shell.ts`) | `WS /pty/attach?id=…&target=shell`, pipe local TTY |
+| `yaac session shell <id>` | `GET /session/:id/shell-info`, then local `kubectl exec -it … zsh` (`src/commands/session-shell.ts`) | `POST /session/:id/terminals` for a shell window, then `WS /pty/attach?id=…&target=window:@<id>`, pipe local TTY |
 | `yaac session stream [project]` | HTTP poll of `POST /session/stream/next` + local `kubectl exec -it … tmux attach` per pick (`src/commands/session-stream.ts`) | `WS /session/stream`, pipe local TTY |
 | `yaac auth update` | runs the whole flow locally — readline prompts and the `claude login` / `codex login` shell-outs run in the CLI process, persisting via the HTTP `/auth/*` endpoints (`src/commands/auth-update.ts`) | `WS /auth/update`, pipe local TTY |
 

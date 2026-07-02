@@ -1,15 +1,17 @@
-import { useEffect, useRef, useState, type JSX, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type JSX, type PointerEvent as ReactPointerEvent } from 'react'
 import clsx from 'clsx'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Menu } from '@base-ui/react/menu'
 import { useUiStore } from '@/frontend/store'
 import { SessionTerminal } from '@/frontend/components/SessionTerminal'
 import { SessionActionsMenu } from '@/frontend/components/SessionActionsMenu'
 import { CreatingPlaceholder } from '@/frontend/components/CreatingPlaceholder'
+import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
 import { AddIcon, CloseIcon, SidebarIcon, SplitDownIcon, SplitRightIcon, TabsIcon, TilesIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import { BlockedHostsBadge } from '@/frontend/components/BlockedHostsBadge'
-import { getSessionTerminals, closeSessionTerminal, nextShellName } from '@/frontend/lib/terminalsApi'
+import { getSessionTerminals, createShellTerminal, killSessionTerminal } from '@/frontend/lib/terminalsApi'
+import { matchTabShortcut, resolveTabShortcut } from '@/frontend/lib/shortcuts'
 import {
+  addLeafToLargest,
   computeLayout,
   dropEdgeFor,
   dropHighlightRect,
@@ -41,8 +43,6 @@ const DRAG_THRESHOLD = 5
  *  workspace instead of splitting an individual pane. */
 const ROOT_EDGE_MARGIN = 28
 
-type AddPick = { kind: 'existing'; target: string } | { kind: 'new-shell' }
-
 type DropTarget =
   | { kind: 'pane'; dest: string; edge: DropEdge }
   | { kind: 'root'; edge: Exclude<DropEdge, 'center'> }
@@ -69,7 +69,6 @@ function rootEdgeAt(px: number, py: number, w: number, h: number): Exclude<DropE
 
 function paneName(target: string, terminals: SessionTerminalEntry[] | undefined): string {
   if (target === 'agent') return 'Agent'
-  if (target.startsWith('shell:')) return target.slice('shell:'.length)
   const entry = terminals?.find((t) => t.target === target)
   return entry?.name ?? 'window'
 }
@@ -90,7 +89,7 @@ export function SessionView({
   const viewMode = useUiStore((s) => s.viewMode)
   const setViewMode = useUiStore((s) => s.setViewMode)
   const activeTabs = useUiStore((s) => s.activeTabs)
-  const setActiveTab = useUiStore((s) => s.setActiveTab)
+  const focusTerminal = useUiStore((s) => s.focusTerminal)
   const queryClient = useQueryClient()
   const sessions = snapshot?.sessions ?? []
   const session = sessions.find((s) => s.sessionId === selectedSessionId)
@@ -106,7 +105,7 @@ export function SessionView({
   const layout: LayoutNode | null = sid ? (sid in layouts ? layouts[sid] : leaf('agent')) : null
 
   // The container's terminals beyond the agent (initCommands windows and
-  // scratch shells) — powers the add-terminal menus and pane names.
+  // scratch shells) — drives which panes exist, and their names.
   const { data: terminals } = useQuery({
     queryKey: ['terminals', sid],
     queryFn: () => getSessionTerminals(sid ?? ''),
@@ -128,6 +127,28 @@ export function SessionView({
     return () => ro.disconnect()
   }, [])
 
+  // A pane per live tmux window: the layout follows the container's window
+  // list, so init windows and scratch shells show up by default (splitting
+  // the largest pane; the user's arrangement is otherwise kept) and killed
+  // windows drop out — including kills from another client, and stale
+  // targets restored from localStorage after a session restart reassigned
+  // the window ids. The size fallbacks only matter before the first
+  // measure; the split heuristic just needs an aspect ratio.
+  useEffect(() => {
+    if (!sid || !session || !terminals) return
+    const cur: LayoutNode | null = sid in layouts ? layouts[sid] : leaf('agent')
+    const live = ['agent', ...terminals.map((t) => t.target)]
+    const liveSet = new Set(live)
+    let next = cur
+    for (const t of leafTargets(next)) {
+      if (!liveSet.has(t)) next = next && removeLeaf(next, t)
+    }
+    for (const t of live) {
+      next = addLeafToLargest(next, t, wsSize.w || 1200, wsSize.h || 800)
+    }
+    if (next !== cur) setSessionLayout(sid, next)
+  }, [sid, session, terminals, layouts, setSessionLayout, wsSize.w, wsSize.h])
+
   // Tabs mode renders the same layout-tree leaves one at a time; the tree
   // stays canonical so toggling back to tiles restores the arrangement.
   const targets = leafTargets(layout)
@@ -135,10 +156,13 @@ export function SessionView({
     ? (activeTabs[sid] && targets.includes(activeTabs[sid]) ? activeTabs[sid] : targets[0])
     : undefined
   const tiled = viewMode === 'tiles'
-  // The pane to drop focus into when this session is selected/opened — only
-  // that one terminal gets a live focusKey, so a bumped focusNonce focuses it
-  // without disturbing any other (kept-alive, off-screen) terminal.
-  const focusTarget = sid ? focusPaneTarget(targets, activeTab, tiled) : null
+  // The pane to drop focus into when this session is selected/opened or a
+  // shortcut switches terminals — only that one terminal gets a live
+  // focusKey, so a bumped focusNonce focuses it without disturbing any
+  // other (kept-alive, off-screen) terminal. Fed the raw stored tab:
+  // focusPaneTarget validates it and prefers the agent pane in tiles mode
+  // when nothing was made active yet.
+  const focusTarget = sid ? focusPaneTarget(targets, activeTabs[sid], tiled) : null
   const { panes, dividers } = computeLayout(layout, { x: 0, y: 0, w: wsSize.w, h: wsSize.h }, GAP)
   const panesRef = useRef<PaneRect[]>(panes)
   panesRef.current = panes
@@ -158,41 +182,73 @@ export function SessionView({
   const liveIds = new Set(sessions.map((s) => s.sessionId))
   const mounted = opened.filter((key) => liveIds.has(key.slice(0, key.indexOf('|'))))
 
+  // Terminal-switch shortcuts: Alt+←/Alt+→ cycle left/right — the
+  // webapp-level replacement for tmux's prefix bindings (webapp panes
+  // run with `prefix None`). Captured on window so the chord is swallowed
+  // before xterm's textarea handler could forward it to the PTY; the ref
+  // keeps the single listener reading the current render's state.
+  const shortcutCtx = useRef({ sid, targets, activeTab })
+  shortcutCtx.current = { sid, targets, activeTab }
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      const delta = matchTabShortcut(e)
+      if (delta === null) return
+      const ctx = shortcutCtx.current
+      if (!ctx.sid) return
+      const next = resolveTabShortcut(ctx.targets, ctx.activeTab, delta)
+      if (!next) return
+      e.preventDefault()
+      e.stopPropagation()
+      useUiStore.getState().focusTerminal(ctx.sid, next)
+    }
+    window.addEventListener('keydown', onKeyDown, { capture: true })
+    return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
+  }, [])
+
   const refetchTerminals = (): void => {
     void queryClient.invalidateQueries({ queryKey: ['terminals', sid] })
   }
 
-  /** Open a terminal: split `onto` (or the largest pane; or fill an empty
-   *  workspace). New shells get the next free name and exist lazily on
-   *  first attach. */
-  const openTerminal = (pick: AddPick, onto?: { target: string; dir: SplitDir }): void => {
+  /** Create a scratch-shell window and open its pane — split `onto`, or
+   *  the largest pane. The daemon returns the new window id up front, so
+   *  the pane opens without waiting for the next terminals poll. */
+  const openShell = (onto?: { target: string; dir: SplitDir }): void => {
     if (!sid) return
-    const target = pick.kind === 'existing' ? pick.target : `shell:${nextShellName(terminals ?? [])}`
-    if (pick.kind === 'new-shell') setTimeout(refetchTerminals, 1000)
-    if (!layout) {
-      setSessionLayout(sid, leaf(target))
-      return
-    }
-    if (leafTargets(layout).includes(target)) return
-    let anchor = onto?.target
-    if (!anchor) {
-      const largest = [...panes].sort((a, b) => b.rect.w * b.rect.h - a.rect.w * a.rect.h)[0]
-      anchor = largest?.target ?? leafTargets(layout)[0]
-    }
-    setSessionLayout(sid, splitLeaf(layout, anchor, target, onto?.dir ?? 'row'))
+    void createShellTerminal(sid)
+      .then((entry) => {
+        queryClient.setQueryData<SessionTerminalEntry[]>(
+          ['terminals', sid],
+          (old) => old ? [...old.filter((t) => t.target !== entry.target), entry] : [entry],
+        )
+        const state = useUiStore.getState()
+        const cur = sid in state.layouts ? state.layouts[sid] : leaf('agent')
+        const next = onto && cur
+          ? splitLeaf(cur, onto.target, entry.target, onto.dir)
+          : addLeafToLargest(cur, entry.target, wsSize.w || 1200, wsSize.h || 800)
+        state.setSessionLayout(sid, next)
+        state.focusTerminal(sid, entry.target)
+      })
+      .catch((e: unknown) => console.error('new shell failed', e))
   }
 
-  /** Close a pane. Scratch shells are also killed (they're disposable);
-   *  agent/window panes just leave the workspace. */
-  const closePane = (target: string): void => {
+  // Pane (x) → confirm → kill the tmux window (and whatever runs in it).
+  const [confirmKill, setConfirmKill] = useState<{ target: string; name: string } | null>(null)
+
+  const killPane = (target: string): void => {
     if (!sid || !layout) return
+    // Drop the cache entry alongside the pane so the layout-sync effect
+    // doesn't re-add the window while the kill is in flight. A failed kill
+    // self-heals: the next terminals poll lists the window again and the
+    // sync reopens its pane.
+    queryClient.setQueryData<SessionTerminalEntry[]>(
+      ['terminals', sid],
+      (old) => old?.filter((t) => t.target !== target),
+    )
     setSessionLayout(sid, removeLeaf(layout, target))
     setOpened((prev) => prev.filter((k) => k !== `${sid}|${target}`))
-    if (target.startsWith('shell:')) {
-      void closeSessionTerminal(sid, target)
-        .catch((e: unknown) => console.error('close shell failed', e))
-        .finally(refetchTerminals)
-    }
+    void killSessionTerminal(sid, target)
+      .catch((e: unknown) => console.error('kill terminal failed', e))
+      .finally(refetchTerminals)
   }
 
   // --- divider drag ---
@@ -281,15 +337,6 @@ export function SessionView({
     window.addEventListener('pointerup', onUp)
   }
 
-  // Items offered by the add-terminal menus: anything not already open.
-  const openTargets = new Set(layout ? leafTargets(layout) : [])
-  const addItems: { target: string; name: string }[] = [
-    ...(!openTargets.has('agent') && session ? [{ target: 'agent', name: 'Agent' }] : []),
-    ...(terminals ?? [])
-      .filter((t) => !openTargets.has(t.target))
-      .map((t) => ({ target: t.target, name: t.name })),
-  ]
-
   const dropHighlight = drag?.active && drag.over
     ? (() => {
         const over = drag.over
@@ -343,20 +390,15 @@ export function SessionView({
           >
             {tiled ? <TabsIcon size={13} /> : <TilesIcon size={13} />}
           </button>
-          <AddTerminalMenu
-            items={addItems}
-            onPick={(pick) => openTerminal(pick)}
-            trigger={
-              <Menu.Trigger
-                title="Add terminal"
-                aria-label="Add terminal"
-                className="flex h-6 w-6 items-center justify-center rounded text-text-dim transition
-                  hover:bg-surface-2 hover:text-text data-[popup-open]:bg-surface-2 data-[popup-open]:text-text"
-              >
-                <AddIcon size={14} />
-              </Menu.Trigger>
-            }
-          />
+          <button
+            onClick={() => openShell()}
+            title="New shell"
+            aria-label="New shell"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-dim transition
+              hover:bg-surface-2 hover:text-text"
+          >
+            <AddIcon size={14} />
+          </button>
           <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[session.tool]}</span>
           {session.blockedHosts.length > 0 && (
             <BlockedHostsBadge hosts={session.blockedHosts} iconSize={12} className="hover:bg-surface-2" />
@@ -406,43 +448,35 @@ export function SessionView({
                 {paneName(target, terminals)}
               </span>
               <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/pane:opacity-100">
-                <AddTerminalMenu
-                  items={addItems}
-                  onPick={(pick) => openTerminal(pick, { target, dir: 'row' })}
-                  trigger={
-                    <Menu.Trigger
-                      title="Split right"
-                      aria-label={`Split ${paneName(target, terminals)} right`}
-                      className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
-                        hover:bg-surface-2 hover:text-text"
-                    >
-                      <SplitRightIcon size={11} />
-                    </Menu.Trigger>
-                  }
-                />
-                <AddTerminalMenu
-                  items={addItems}
-                  onPick={(pick) => openTerminal(pick, { target, dir: 'col' })}
-                  trigger={
-                    <Menu.Trigger
-                      title="Split down"
-                      aria-label={`Split ${paneName(target, terminals)} down`}
-                      className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
-                        hover:bg-surface-2 hover:text-text"
-                    >
-                      <SplitDownIcon size={11} />
-                    </Menu.Trigger>
-                  }
-                />
                 <button
-                  onClick={() => closePane(target)}
-                  title="Close pane"
-                  aria-label={`Close ${paneName(target, terminals)}`}
+                  onClick={() => openShell({ target, dir: 'row' })}
+                  title="New shell right"
+                  aria-label={`New shell right of ${paneName(target, terminals)}`}
                   className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
                     hover:bg-surface-2 hover:text-text"
                 >
-                  <CloseIcon size={11} />
+                  <SplitRightIcon size={11} />
                 </button>
+                <button
+                  onClick={() => openShell({ target, dir: 'col' })}
+                  title="New shell below"
+                  aria-label={`New shell below ${paneName(target, terminals)}`}
+                  className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
+                    hover:bg-surface-2 hover:text-text"
+                >
+                  <SplitDownIcon size={11} />
+                </button>
+                {target !== 'agent' && (
+                  <button
+                    onClick={() => setConfirmKill({ target, name: paneName(target, terminals) })}
+                    title="Kill terminal"
+                    aria-label={`Kill ${paneName(target, terminals)}`}
+                    className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
+                      hover:bg-surface-2 hover:text-text"
+                  >
+                    <CloseIcon size={11} />
+                  </button>
+                )}
               </span>
             </div>
           </section>
@@ -457,9 +491,10 @@ export function SessionView({
               {targets.map((t) => (
                 <span key={t} className="group/tab relative flex items-center">
                   <button
-                    onClick={() => setActiveTab(session.sessionId, t)}
+                    onClick={() => focusTerminal(session.sessionId, t)}
                     className={clsx(
-                      'rounded px-2 py-0.5 pr-5 text-[11px] transition',
+                      'rounded px-2 py-0.5 text-[11px] transition',
+                      t !== 'agent' && 'pr-5',
                       activeTab === t
                         ? 'bg-surface-3 font-medium text-text'
                         : 'text-text-faint hover:text-text-dim',
@@ -467,50 +502,30 @@ export function SessionView({
                   >
                     {paneName(t, terminals)}
                   </button>
-                  <button
-                    onClick={() => closePane(t)}
-                    title={`Close ${paneName(t, terminals)}`}
-                    aria-label={`Close ${paneName(t, terminals)}`}
-                    className="absolute right-0.5 flex h-4 w-4 items-center justify-center rounded
-                      text-text-faint opacity-0 transition hover:text-text group-hover/tab:opacity-100"
-                  >
-                    <CloseIcon size={10} />
-                  </button>
+                  {t !== 'agent' && (
+                    <button
+                      onClick={() => setConfirmKill({ target: t, name: paneName(t, terminals) })}
+                      title={`Kill ${paneName(t, terminals)}`}
+                      aria-label={`Kill ${paneName(t, terminals)}`}
+                      className="absolute right-0.5 flex h-4 w-4 items-center justify-center rounded
+                        text-text-faint opacity-0 transition hover:text-text group-hover/tab:opacity-100"
+                    >
+                      <CloseIcon size={10} />
+                    </button>
+                  )}
                 </span>
               ))}
-              <AddTerminalMenu
-                items={addItems}
-                onPick={(pick) => openTerminal(pick)}
-                trigger={
-                  <Menu.Trigger
-                    title="Add terminal"
-                    aria-label="Add terminal tab"
-                    className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
-                      hover:bg-surface-2 hover:text-text"
-                  >
-                    <AddIcon size={12} />
-                  </Menu.Trigger>
-                }
-              />
+              <button
+                onClick={() => openShell()}
+                title="New shell"
+                aria-label="New shell tab"
+                className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
+                  hover:bg-surface-2 hover:text-text"
+              >
+                <AddIcon size={12} />
+              </button>
             </div>
           </section>
-        )}
-
-        {/* Empty workspace: offer to add the first terminal. */}
-        {session && !creatingHere && panes.length === 0 && (
-          <div className="flex h-full items-center justify-center">
-            <AddTerminalMenu
-              items={addItems}
-              onPick={(pick) => openTerminal(pick)}
-              trigger={
-                <Menu.Trigger className="flex items-center gap-1.5 rounded-md bg-surface px-3 py-1.5 text-xs
-                  text-text-dim transition hover:text-text">
-                  <AddIcon size={13} />
-                  Add terminal
-                </Menu.Trigger>
-              }
-            />
-          </div>
         )}
 
         {/* Kept-alive terminals, positioned into their pane bodies. */}
@@ -538,6 +553,11 @@ export function SessionView({
             <div
               key={key}
               style={style}
+              // Keep the active-terminal record in step with focus changes
+              // the DOM makes on its own (clicking into a tiled pane), so
+              // the cycle shortcut steps from the pane the user is actually
+              // in. Re-recording a shortcut-driven focus is a store no-op.
+              onFocusCapture={() => useUiStore.getState().setActiveTab(id, target)}
               className={clsx('absolute', !style && 'invisible left-0 top-0 h-full w-full')}
             >
               <div className="h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">
@@ -586,43 +606,19 @@ export function SessionView({
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={!!confirmKill}
+        onOpenChange={(next) => { if (!next) setConfirmKill(null) }}
+        title={`Kill terminal “${confirmKill?.name ?? ''}”?`}
+        description="This kills the tmux window and whatever is running in it."
+        confirmLabel="Kill"
+        onConfirm={() => {
+          if (confirmKill) killPane(confirmKill.target)
+          setConfirmKill(null)
+        }}
+      />
     </main>
   )
 }
 
-/** Menu of terminals that can be opened (plus a fresh shell). */
-function AddTerminalMenu({
-  items,
-  onPick,
-  trigger,
-}: {
-  items: { target: string; name: string }[]
-  onPick: (pick: AddPick) => void
-  trigger: ReactNode
-}): JSX.Element {
-  const ITEM = 'flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-xs outline-none ' +
-    'text-text-dim data-[highlighted]:bg-surface-3 data-[highlighted]:text-text'
-  return (
-    <Menu.Root>
-      {trigger}
-      <Menu.Portal>
-        <Menu.Positioner side="bottom" align="end" sideOffset={6}>
-          <Menu.Popup className="min-w-[160px] rounded-lg border border-border bg-surface-2 p-1 text-text
-            shadow-[0_12px_32px_rgba(0,0,0,0.5)] outline-none transition-opacity duration-100
-            data-[starting-style]:opacity-0 data-[ending-style]:opacity-0">
-            {items.map((i) => (
-              <Menu.Item key={i.target} className={ITEM} onClick={() => onPick({ kind: 'existing', target: i.target })}>
-                {i.name}
-              </Menu.Item>
-            ))}
-            {items.length > 0 && <Menu.Separator className="my-1 h-px bg-border" />}
-            <Menu.Item className={ITEM} onClick={() => onPick({ kind: 'new-shell' })}>
-              <AddIcon size={12} />
-              New shell
-            </Menu.Item>
-          </Menu.Popup>
-        </Menu.Positioner>
-      </Menu.Portal>
-    </Menu.Root>
-  )
-}

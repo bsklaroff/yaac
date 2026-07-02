@@ -1,6 +1,7 @@
+import { randomBytes } from 'node:crypto'
 import * as pty from '@lydell/node-pty'
 import type { IPty } from '@lydell/node-pty'
-import { interactiveExecArgs } from '@/lib/k8s/exec'
+import { containerExec, interactiveExecArgs } from '@/lib/k8s/exec'
 import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
 
 const DEFAULT_COLS = 80
@@ -8,17 +9,14 @@ const DEFAULT_ROWS = 24
 
 /**
  * What a terminal tab attaches to inside the container:
- *  - 'agent'          — the primary `yaac` tmux session (the agent CLI).
- *  - 'shell:<name>'   — a scratch-shell tmux session ('shell', 'shell-2', …),
- *    created lazily; persists across reloads. 'shell' is accepted as an
- *    alias for 'shell:shell'.
- *  - 'window:@<id>'   — a specific window of the `yaac` session (e.g. an
- *    initCommands dev server), viewed through a per-client grouped session
- *    so the active window of other viewers (and the CLI) is never touched.
+ *  - 'agent'          — the `yaac` tmux session's agent window (the CLI).
+ *  - 'window:@<id>'   — any other window of the `yaac` session (an
+ *    initCommands dev server, a scratch shell, …), viewed through a
+ *    per-client grouped session so the active window of other viewers
+ *    (and the CLI) is never touched.
  */
 export type PtyTarget = string
 
-const SHELL_NAME = /^shell(?:-[0-9]{1,4})?$/
 const WINDOW_ID = /^@[0-9]{1,6}$/
 
 /** Coerce a client-supplied target (e.g. a WS query param) to a PtyTarget.
@@ -26,10 +24,15 @@ const WINDOW_ID = /^@[0-9]{1,6}$/
 export function parsePtyTarget(raw: unknown): PtyTarget {
   if (typeof raw !== 'string') return 'agent'
   if (raw === 'agent') return 'agent'
-  if (raw === 'shell') return 'shell:shell'
-  if (raw.startsWith('shell:') && SHELL_NAME.test(raw.slice('shell:'.length))) return raw
   if (raw.startsWith('window:') && WINDOW_ID.test(raw.slice('window:'.length))) return raw
   return 'agent'
+}
+
+/** Name for a per-client tmux view session. Host-generated (rather than the
+ *  container's $$) so the daemon can address the session later — the detach
+ *  on socket close is an explicit `kill-session -t <view>`. */
+export function newViewName(): string {
+  return `view-${randomBytes(4).toString('hex')}`
 }
 
 /**
@@ -37,36 +40,52 @@ export function parsePtyTarget(raw: unknown): PtyTarget {
  * spawned under a PTY on the daemon so kubectl gets a real tty — the
  * same transport the CLI's `session attach` uses.
  *
- * Shells: ensure the session exists *detached*, then attach. Deliberately
- * NOT `new-session -A`: two clients attaching in quick succession (React
- * dev double-mount, fast tab toggles) race the attached-create and can take
- * the freshly created session down with the first client. Detached creation
- * + attach is idempotent — the duplicate create fails harmlessly.
- *
- * Windows: attach via a per-client grouped session (`new-session -t yaac`)
- * with destroy-unattached on, so each viewer selects the window
- * independently and the throwaway grouped session dies on detach (the
- * windows themselves belong to the group and live on).
+ * Every target attaches through a per-client grouped *view* session pinned
+ * to a single window, so a webapp tab and a tmux window are the same thing:
+ *  - `destroy-unattached on` — the throwaway view session dies on detach
+ *    (the windows belong to the group and live on);
+ *  - `status off` — no tmux status bar; the webapp tab strip is the only
+ *    window list (the CLI's direct `attach-session -t yaac` keeps it);
+ *  - `prefix None` — no tmux key bindings; tabs switch via webapp shortcuts
+ *    and C-b passes through to the agent. Mouse mode still works (mouse
+ *    bindings live in the root key table, which the prefix doesn't gate).
  */
-export function attachArgs(jobName: string, target: PtyTarget = 'agent'): string[] {
+export function attachArgs(jobName: string, target: PtyTarget, viewName: string): string[] {
   const tmux = `tmux -S ${CONTAINER_TMUX_SOCK}`
-  if (target.startsWith('shell:')) {
-    const name = target.slice('shell:'.length)
-    return interactiveExecArgs(jobName, [
-      'sh', '-c',
-      `${tmux} new-session -d -s ${name} -c /workspace 2>/dev/null; exec ${tmux} attach-session -t ${name}`,
-    ])
-  }
-  if (target.startsWith('window:')) {
-    const windowId = target.slice('window:'.length)
-    return interactiveExecArgs(jobName, [
-      'sh', '-c',
-      `exec ${tmux} new-session -t yaac -s view-$$ \\; set-option destroy-unattached on \\; select-window -t '${windowId}'`,
-    ])
-  }
+  const viewOpts = '\\; set-option destroy-unattached on'
+    + ' \\; set-option status off'
+    + ' \\; set-option prefix None'
+  // Agent = the yaac session's lowest-index window (`^`): the agent window is
+  // created first, and other windows only ever append after it. Same
+  // convention as the terminals enumeration.
+  const window = target.startsWith('window:')
+    ? target.slice('window:'.length)
+    : `${viewName}:^`
   return interactiveExecArgs(jobName, [
-    'tmux', '-S', CONTAINER_TMUX_SOCK, 'attach-session', '-t', 'yaac',
+    'sh', '-c',
+    `exec ${tmux} new-session -t yaac -s ${viewName} ${viewOpts} \\; select-window -t '${window}'`,
   ])
+}
+
+/**
+ * Detach a webapp client by destroying its per-client view session. With
+ * `prefix None` on view sessions there is no detach keystroke to write, and
+ * killing the host-side kubectl does not reliably terminate the exec'd tmux
+ * client inside the container — kill-session works from outside the client
+ * and `destroy-unattached` can't save a session that no longer exists.
+ * Best-effort: "no such session" (closed before the attach landed, or
+ * already reaped) and a gone pod are both fine.
+ */
+export async function killViewSession(jobName: string, viewName: string): Promise<void> {
+  try {
+    await containerExec(
+      jobName,
+      `tmux -S ${CONTAINER_TMUX_SOCK} kill-session -t ${viewName}`,
+      { maxAttempts: 1 },
+    )
+  } catch {
+    // nothing to clean up
+  }
 }
 
 export interface ControlMessage {
@@ -125,15 +144,17 @@ const DETACH_GRACE_MS = 400
  *
  * The detach-first matters: killing the host-side exec process does not
  * reliably terminate the exec'd tmux client inside the container, so a
- * plain kill can leak a zombie attached client in the container on every
- * disconnect. Writing the detach keystroke (prefix + d; the containers
- * run stock tmux bindings) makes the client exit cleanly on both sides;
- * the delayed kill is the fallback for a wedged client.
+ * plain kill can leak a zombie attached client — which, for a view session,
+ * also pins the session alive forever (destroy-unattached never fires).
+ * `detach` runs the container-side kill-session; it runs again at the grace
+ * deadline to catch the attach race (socket closed while kubectl was still
+ * connecting, so the first kill found no session to kill), right before the
+ * host-side PTY is force-killed as the final fallback.
  */
 export function bridge(
   ptyProc: PtyLike,
   sock: SocketLike,
-  opts: { detachGraceMs?: number } = {},
+  opts: { detach?: () => void; detachGraceMs?: number } = {},
 ): void {
   const detachGraceMs = opts.detachGraceMs ?? DETACH_GRACE_MS
   ptyProc.onData((d) => {
@@ -169,12 +190,9 @@ export function bridge(
   })
 
   sock.onClose(() => {
-    try {
-      ptyProc.write('\x02d') // C-b d: detach the tmux client cleanly
-    } catch {
-      // pty already gone
-    }
+    opts.detach?.()
     setTimeout(() => {
+      opts.detach?.()
       try {
         ptyProc.kill()
       } catch {
@@ -206,10 +224,11 @@ export function parsePtySize(
 /** Spawn the attach PTY for a resolved session Job. */
 export function spawnAttachPty(
   jobName: string,
-  size: { cols?: number; rows?: number } = {},
-  target: PtyTarget = 'agent',
+  size: { cols?: number; rows?: number },
+  target: PtyTarget,
+  viewName: string,
 ): IPty {
-  return pty.spawn('kubectl', attachArgs(jobName, target), {
+  return pty.spawn('kubectl', attachArgs(jobName, target, viewName), {
     name: 'xterm-color',
     cols: size.cols ?? DEFAULT_COLS,
     rows: size.rows ?? DEFAULT_ROWS,

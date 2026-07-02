@@ -231,7 +231,8 @@ interface UiState {
   /** Tiling WM vs one-at-a-time tabs (persisted; small screens default
    *  to tabs). The layout tree stays canonical in both modes. */
   viewMode: ViewMode
-  /** Per-session active terminal in tabs mode. */
+  /** Per-session active terminal: the visible tab in tabs mode, the
+   *  last-focused pane in tiles mode. Tab-switch shortcuts cycle from it. */
   activeTabs: Record<string, string>
   /** Locally-initiated provisioning rows, shown the instant create/restart is
    *  clicked. The daemon snapshot's `provisioning[]` is the source of truth;
@@ -266,7 +267,12 @@ interface UiState {
   setSessionLayout: (sessionId: string, layout: LayoutNode | null) => void
   toggleSidebar: () => void
   setViewMode: (mode: ViewMode) => void
+  /** Record a session's active terminal without moving keyboard focus —
+   *  for focus changes the DOM already made (clicking into a pane). */
   setActiveTab: (sessionId: string, target: string) => void
+  /** Make a terminal active AND pull keyboard focus into it — for tab
+   *  clicks and the tab-switch shortcuts. */
+  focusTerminal: (sessionId: string, target: string) => void
   /** Optimistically hide a session being deleted. */
   beginDelete: (sessionId: string) => void
   /** Stop hiding a session — on delete error (restore) or once the snapshot
@@ -338,8 +344,14 @@ export const useUiStore = create<UiState>((set) => ({
     persistViewMode(mode)
     set({ viewMode: mode })
   },
-  setActiveTab: (sessionId, target) => set((s) => ({
+  setActiveTab: (sessionId, target) => set((s) => (
+    s.activeTabs[sessionId] === target
+      ? s
+      : { activeTabs: { ...s.activeTabs, [sessionId]: target } }
+  )),
+  focusTerminal: (sessionId, target) => set((s) => ({
     activeTabs: { ...s.activeTabs, [sessionId]: target },
+    focusNonce: s.focusNonce + 1,
   })),
   beginDelete: (sessionId) => set((s) => (
     s.pendingDeleteIds.includes(sessionId)

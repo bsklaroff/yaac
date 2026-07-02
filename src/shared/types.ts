@@ -336,14 +336,13 @@ export interface DeletedSessionEntry {
 }
 
 /** A webapp-attachable terminal inside a session's container (beyond the
- *  primary agent view): an extra `yaac`-session window (initCommands dev
- *  server, watcher, …) or a scratch-shell tmux session. */
+ *  primary agent view): a `yaac`-session tmux window — an initCommands
+ *  window (dev server, watcher, …) or a scratch shell. */
 export interface SessionTerminalEntry {
-  /** /pty/attach target: 'window:@<id>' or 'shell:<name>'. */
+  /** /pty/attach target: 'window:@<id>'. */
   target: string
-  /** Display name (tmux window name or shell session name). */
+  /** Display name (the tmux window name). */
   name: string
-  kind: 'window' | 'shell'
 }
 
 // --- session stream picker ---

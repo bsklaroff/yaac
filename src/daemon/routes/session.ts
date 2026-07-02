@@ -20,7 +20,7 @@ import { DaemonError, toErrorBody } from '@/daemon/errors'
 import { resolveSessionContainer } from '@/daemon/session-resolve'
 import { pickNextStreamSession } from '@/daemon/stream-picker'
 import { notifySessionListChanged } from '@/daemon/sessions-changed'
-import { listSessionTerminals, killShellTerminal } from '@/daemon/terminals'
+import { createShellWindow, listSessionTerminals, killWindowTerminal } from '@/daemon/terminals'
 import { setSessionTitle } from '@/lib/session/titles'
 
 export const sessionApp = new Hono()
@@ -222,6 +222,12 @@ export const sessionApp = new Hono()
     const { jobName } = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
     return c.json(await listSessionTerminals(jobName))
   })
+  // Create a scratch-shell window in the session's `yaac` tmux session,
+  // returning its entry so the client can open a pane immediately.
+  .post('/:id/terminals', async (c) => {
+    const { jobName } = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
+    return c.json(await createShellWindow(jobName))
+  })
   .post(
     '/:id/terminals/close',
     zValidator('json', z.object({ target: z.string().min(1) })),
@@ -229,7 +235,7 @@ export const sessionApp = new Hono()
       const { jobName } = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
       const { target } = c.req.valid('json')
       try {
-        await killShellTerminal(jobName, target)
+        await killWindowTerminal(jobName, target)
       } catch (err) {
         throw new DaemonError('VALIDATION', err instanceof Error ? err.message : String(err))
       }

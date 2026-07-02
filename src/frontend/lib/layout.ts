@@ -62,17 +62,21 @@ export function leafTargets(node: LayoutNode | null): string[] {
 }
 
 /**
- * The pane keyboard focus should land in when a session becomes selected.
- * Tabs mode shows one pane at a time, so the visible tab wins; tiles mode
- * shows them all, so prefer the agent pane (the one you talk to), falling
- * back to the first leaf. Null when the session has no panes.
+ * The pane keyboard focus should land in when a session becomes selected or
+ * a shortcut switches terminals. `activeTab` is the session's last-active
+ * terminal as stored (possibly stale — it's validated here). Tabs mode shows
+ * one pane at a time, so the visible tab wins; tiles mode shows them all, so
+ * prefer the last-active pane, then the agent (the one you talk to), then
+ * the first leaf. Null when the session has no panes.
  */
 export function focusPaneTarget(
   targets: string[],
   activeTab: string | undefined,
   tiled: boolean,
 ): string | null {
-  if (!tiled) return activeTab ?? null
+  const active = activeTab && targets.includes(activeTab) ? activeTab : undefined
+  if (!tiled) return active ?? targets[0] ?? null
+  if (active) return active
   if (targets.includes('agent')) return 'agent'
   return targets[0] ?? null
 }
@@ -178,6 +182,26 @@ export function moveLeafToRoot(
     a: after ? without : leaf(src),
     b: after ? leaf(src) : without,
   }
+}
+
+/**
+ * Insert `target` as a new leaf by splitting the largest pane (by area,
+ * with the tree laid out into a w×h rect) — row-split when that pane is
+ * wider than tall, col-split otherwise. An empty tree becomes a single
+ * leaf; a tree already containing the target is returned unchanged.
+ */
+export function addLeafToLargest(
+  node: LayoutNode | null,
+  target: string,
+  w: number,
+  h: number,
+): LayoutNode {
+  if (!node) return leaf(target)
+  if (leafTargets(node).includes(target)) return node
+  const { panes } = computeLayout(node, { x: 0, y: 0, w, h }, 0)
+  const largest = [...panes].sort((a, b) => b.rect.w * b.rect.h - a.rect.w * a.rect.h)[0]
+  const dir: SplitDir = largest.rect.w >= largest.rect.h ? 'row' : 'col'
+  return splitLeaf(node, largest.target, target, dir)
 }
 
 /** Partition `rect` by the tree, leaving `gap` px between panes. Returns

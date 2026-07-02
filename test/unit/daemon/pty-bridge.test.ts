@@ -1,68 +1,93 @@
 import { describe, it, expect, vi } from 'vitest'
 import * as pty from '@lydell/node-pty'
-import { attachArgs, parseControl, parsePtySize, parsePtyTarget, bridge, spawnAttachPty } from '@/daemon/pty-bridge'
+import type * as execModule from '@/lib/k8s/exec'
+import { containerExec } from '@/lib/k8s/exec'
+import { attachArgs, killViewSession, newViewName, parseControl, parsePtySize, parsePtyTarget, bridge, spawnAttachPty } from '@/daemon/pty-bridge'
 import type { PtyLike, SocketLike } from '@/daemon/pty-bridge'
 
 // Avoid loading/spawning the real node-pty native module in unit tests.
 vi.mock('@lydell/node-pty', () => ({ spawn: vi.fn(() => ({})) }))
+// Keep the real argv builders; stub only the kubectl-exec runner.
+vi.mock('@/lib/k8s/exec', async (importOriginal) => ({
+  ...await importOriginal<typeof execModule>(),
+  containerExec: vi.fn(() => Promise.resolve({ stdout: '', stderr: '' })),
+}))
+
+/** Every webapp attach runs through a per-client grouped view session with
+ *  the same chrome-less, binding-less options. */
+const VIEW_OPTS = '\\; set-option destroy-unattached on'
+  + ' \\; set-option status off'
+  + ' \\; set-option prefix None'
+
+describe('newViewName', () => {
+  it('generates unique view-session names', () => {
+    expect(newViewName()).toMatch(/^view-[0-9a-f]{8}$/)
+    expect(newViewName()).not.toBe(newViewName())
+  })
+})
 
 describe('attachArgs', () => {
-  it('builds the kubectl exec tmux attach argv (agent default)', () => {
-    expect(attachArgs('yaac-demo-abc')).toEqual([
-      'exec', '-n', 'yaac', '-it', 'job/yaac-demo-abc', '--',
-      'tmux', '-S', '/tmp/yaac-tmux/server', 'attach-session', '-t', 'yaac',
-    ])
-    expect(attachArgs('yaac-demo-abc', 'agent')).toEqual(attachArgs('yaac-demo-abc'))
-  })
-
-  it('builds the lazy-create shell attach argv for shell targets', () => {
-    expect(attachArgs('yaac-demo-abc', 'shell:shell')).toEqual([
+  it('pins the agent target to the lowest-index yaac window via a view session', () => {
+    expect(attachArgs('yaac-demo-abc', 'agent', 'view-11aa22bb')).toEqual([
       'exec', '-n', 'yaac', '-it', 'job/yaac-demo-abc', '--',
       'sh', '-c',
-      'tmux -S /tmp/yaac-tmux/server new-session -d -s shell -c /workspace 2>/dev/null; '
-      + 'exec tmux -S /tmp/yaac-tmux/server attach-session -t shell',
+      'exec tmux -S /tmp/yaac-tmux/server new-session -t yaac -s view-11aa22bb '
+      + `${VIEW_OPTS} \\; select-window -t 'view-11aa22bb:^'`,
     ])
-    expect(attachArgs('yaac-demo-abc', 'shell:shell-2')[8]).toContain('-s shell-2')
   })
 
-  it('builds a grouped-session view argv for window targets', () => {
-    const argv = attachArgs('yaac-demo-abc', 'window:@3')
+  it('builds a window-pinned view argv for window targets', () => {
+    const argv = attachArgs('yaac-demo-abc', 'window:@3', 'view-11aa22bb')
     expect(argv.slice(0, 7)).toEqual([
       'exec', '-n', 'yaac', '-it', 'job/yaac-demo-abc', '--', 'sh',
     ])
     const cmd = argv[8]
-    expect(cmd).toContain('new-session -t yaac -s view-$$')
-    expect(cmd).toContain('set-option destroy-unattached on')
+    expect(cmd).toContain('new-session -t yaac -s view-11aa22bb')
+    expect(cmd).toContain(VIEW_OPTS)
     expect(cmd).toContain("select-window -t '@3'")
   })
 })
 
+describe('killViewSession', () => {
+  it('kills the view session inside the container', async () => {
+    await killViewSession('yaac-demo-abc', 'view-11aa22bb')
+    expect(containerExec).toHaveBeenCalledWith(
+      'yaac-demo-abc',
+      'tmux -S /tmp/yaac-tmux/server kill-session -t view-11aa22bb',
+      { maxAttempts: 1 },
+    )
+  })
+
+  it('swallows exec failures (no such session, pod gone)', async () => {
+    vi.mocked(containerExec).mockRejectedValueOnce(new Error('no such session'))
+    await expect(killViewSession('yaac-demo-abc', 'view-11aa22bb')).resolves.toBeUndefined()
+  })
+})
+
 describe('parsePtyTarget', () => {
-  it('normalizes and validates targets, defaulting to agent', () => {
+  it('validates targets, defaulting to agent', () => {
     expect(parsePtyTarget('agent')).toBe('agent')
-    expect(parsePtyTarget('shell')).toBe('shell:shell')
-    expect(parsePtyTarget('shell:shell')).toBe('shell:shell')
-    expect(parsePtyTarget('shell:shell-12')).toBe('shell:shell-12')
     expect(parsePtyTarget('window:@7')).toBe('window:@7')
   })
 
-  it('rejects malformed or injected targets', () => {
+  it('rejects malformed, injected, or retired targets', () => {
     expect(parsePtyTarget(undefined)).toBe('agent')
     expect(parsePtyTarget(42)).toBe('agent')
     expect(parsePtyTarget('window:7')).toBe('agent')
     expect(parsePtyTarget('window:@x')).toBe('agent')
-    expect(parsePtyTarget('shell:evil; rm -rf /')).toBe('agent')
-    expect(parsePtyTarget('shell:SHELL')).toBe('agent')
+    // shells are plain yaac windows now — shell: targets are gone
+    expect(parsePtyTarget('shell')).toBe('agent')
+    expect(parsePtyTarget('shell:shell')).toBe('agent')
     expect(parsePtyTarget("window:@1' \\; kill-server")).toBe('agent')
   })
 })
 
 describe('spawnAttachPty', () => {
   it('spawns `kubectl` under a PTY with the attach argv and given size', () => {
-    spawnAttachPty('yaac-demo', { cols: 100, rows: 40 })
+    spawnAttachPty('yaac-demo', { cols: 100, rows: 40 }, 'agent', 'view-11aa22bb')
     expect(pty.spawn).toHaveBeenCalledWith(
       'kubectl',
-      attachArgs('yaac-demo'),
+      attachArgs('yaac-demo', 'agent', 'view-11aa22bb'),
       expect.objectContaining({ name: 'xterm-color', cols: 100, rows: 40 }),
     )
   })
@@ -172,18 +197,37 @@ describe('bridge', () => {
     expect(pty.killed).toEqual(['SIGINT'])
   })
 
-  it('detaches tmux gracefully on socket close, then force-kills the PTY', () => {
+  it('detaches on socket close, re-detaches at the grace deadline, then force-kills the PTY', () => {
+    vi.useFakeTimers()
+    try {
+      const pty = new FakePty()
+      const sock = new FakeSock()
+      const detach = vi.fn()
+      bridge(pty, sock, { detach, detachGraceMs: 400 })
+      sock.emitClose()
+      // Graceful: the container-side kill-session detaches the client (a
+      // plain host-side kill can orphan the remote tmux client, pinning the
+      // view session attached forever). Nothing is written to the PTY —
+      // with `prefix None` a detach keystroke would just reach the agent.
+      expect(detach).toHaveBeenCalledTimes(1)
+      expect(pty.written).toEqual([])
+      expect(pty.killed).toEqual([])
+      vi.advanceTimersByTime(400)
+      // The re-detach catches a socket that closed before the attach landed.
+      expect(detach).toHaveBeenCalledTimes(2)
+      expect(pty.killed).toEqual([undefined])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('force-kills the PTY after the grace even without a detach callback', () => {
     vi.useFakeTimers()
     try {
       const pty = new FakePty()
       const sock = new FakeSock()
       bridge(pty, sock, { detachGraceMs: 400 })
       sock.emitClose()
-      // Graceful: the detach keystroke (C-b d) goes to the tmux client so
-      // the exec'd process exits inside the container too (a plain
-      // host-side kill can orphan the remote tmux client).
-      expect(pty.written).toEqual(['\x02d'])
-      expect(pty.killed).toEqual([])
       vi.advanceTimersByTime(400)
       expect(pty.killed).toEqual([undefined])
     } finally {

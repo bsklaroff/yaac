@@ -1,22 +1,22 @@
 import { api } from './apiClient'
 import type { SessionTerminalEntry } from '@/shared/types'
 
-/** Terminals a session's container offers beyond the agent view: extra
- *  tmux windows (initCommands dev servers, …) and scratch shells. */
+/** Terminals a session's container offers beyond the agent view: the other
+ *  windows of the `yaac` tmux session (initCommands dev servers, scratch
+ *  shells, …). */
 export async function getSessionTerminals(sessionId: string): Promise<SessionTerminalEntry[]> {
   return api.get<SessionTerminalEntry[]>(`/session/${encodeURIComponent(sessionId)}/terminals`)
 }
 
-/** Kill a scratch-shell terminal (windows are not closable from the UI). */
-export async function closeSessionTerminal(sessionId: string, target: string): Promise<void> {
-  await api.post(`/session/${encodeURIComponent(sessionId)}/terminals/close`, { target })
+/** Create a scratch-shell window in the session's `yaac` tmux session.
+ *  Returns the new entry so a pane can open without waiting for the next
+ *  terminals poll. */
+export async function createShellTerminal(sessionId: string): Promise<SessionTerminalEntry> {
+  return api.post<SessionTerminalEntry>(`/session/${encodeURIComponent(sessionId)}/terminals`)
 }
 
-/** Next free scratch-shell name given the current list: shell, shell-2, … */
-export function nextShellName(existing: SessionTerminalEntry[]): string {
-  const names = new Set(existing.filter((e) => e.kind === 'shell').map((e) => e.name))
-  if (!names.has('shell')) return 'shell'
-  for (let i = 2; ; i++) {
-    if (!names.has(`shell-${i}`)) return `shell-${i}`
-  }
+/** Kill a window terminal — and whatever runs in it. The daemon refuses
+ *  the agent window. */
+export async function killSessionTerminal(sessionId: string, target: string): Promise<void> {
+  await api.post(`/session/${encodeURIComponent(sessionId)}/terminals/close`, { target })
 }

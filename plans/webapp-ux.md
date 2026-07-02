@@ -240,15 +240,20 @@ What was once deferred as "split panes" is built:
 ### Terminals
 
 - Each pane is an xterm.js instance attached to a session terminal
-  over the daemon's `/pty/attach` WebSocket. Targets are the primary
-  **Agent** view, extra `yaac`-session **windows** (initCommands dev
-  servers, watchers), and scratch **shells**.
-- **"Add terminal"** menus (in the header, in pane split controls,
-  and on an empty workspace) offer any not-yet-open terminal plus a
-  fresh **New shell** (created lazily on first attach, named with the
-  next free slot).
-- Closing a pane removes it from the layout; closing a scratch-shell
-  pane also kills the disposable shell.
+  over the daemon's `/pty/attach` WebSocket. Every terminal is a
+  window of the `yaac` tmux session: the primary **Agent** window,
+  initCommands **windows** (dev servers, watchers), and scratch
+  **shells** (plain windows named `shell`, `shell-2`, …).
+- **Panes mirror the live window list**: every window shows by
+  default (init panes included), new windows get a pane by splitting
+  the largest one, and windows that close drop out — killed elsewhere,
+  or a `hidePane` init window exiting when its command finishes. The
+  user's arrangement is otherwise kept.
+- **"New shell"** buttons (header, tab strip, and pane split
+  controls) create a fresh window via the daemon and open its pane
+  immediately.
+- The pane **(x) kills the window** — after a confirm dialog, since
+  it terminates whatever runs in it. The agent pane has no (x).
 - Every shown terminal stays mounted (hidden) so switching back is
   instant; scrollback is preserved for the lifetime of the view.
 - Resize propagates to the PTY automatically (the fitted size is sent
@@ -361,11 +366,26 @@ General, above). Designed-but-not-built:
 lives on the session-view header toggle and in local storage, not in
 this pane.)
 
-## Keyboard — PENDING
+## Keyboard
 
-The designed **"jump to next waiting session"** shortcut is not
-built; there are no global keybindings in the webapp today. Within a
-terminal, only the copy/paste bindings described above apply.
+Terminal-switching is webapp-level (webapp panes attach with tmux
+`prefix None`, so there are no tmux bindings to reach for — see
+`webapp-daemon-follow-up.md`):
+
+- **Alt+← / Alt+→** (same on every platform) — previous / next
+  terminal (tab-strip order), wrapping; in tiles mode it moves
+  keyboard focus between panes. Trade-off: shadows ⌥←/⌥→ word-jump
+  inside macOS terminal panes and the browser's Alt+←/→ history
+  navigation.
+
+The chords are captured window-level before xterm sees them, and the
+tmux status bar is off in webapp panes — the tab strip is the only
+window list (the CLI's `yaac session attach` keeps the status bar
+and stock tmux bindings).
+
+Still pending: the designed **"jump to next waiting session"**
+shortcut. Within a terminal, the copy/paste bindings described above
+also apply.
 
 ## Notable shipped behaviors not in the original design
 

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  addLeafToLargest,
   focusPaneTarget,
   isLayoutNode,
   leaf,
@@ -27,15 +28,61 @@ describe('leafTargets', () => {
   })
 })
 
+describe('addLeafToLargest', () => {
+  it('fills an empty tree and no-ops on an existing target', () => {
+    expect(addLeafToLargest(null, 'agent', 1200, 800)).toEqual(leaf('agent'))
+    const tree = leaf('agent')
+    expect(addLeafToLargest(tree, 'agent', 1200, 800)).toBe(tree)
+  })
+
+  it('splits the largest pane, row-wise when it is wider than tall', () => {
+    expect(addLeafToLargest(leaf('agent'), 'window:@1', 1200, 800)).toEqual({
+      type: 'split', dir: 'row', ratio: 0.5,
+      a: leaf('agent'), b: leaf('window:@1'),
+    })
+  })
+
+  it('splits col-wise when the largest pane is taller than wide', () => {
+    expect(addLeafToLargest(leaf('agent'), 'window:@1', 600, 800)).toEqual({
+      type: 'split', dir: 'col', ratio: 0.5,
+      a: leaf('agent'), b: leaf('window:@1'),
+    })
+  })
+
+  it('targets the largest pane of an uneven split', () => {
+    // 70/30 row split of 1000px: the left pane (700x400, wider than tall)
+    // is the largest and re-splits row-wise.
+    const tree: LayoutNode = {
+      type: 'split', dir: 'row', ratio: 0.7,
+      a: leaf('agent'), b: leaf('window:@1'),
+    }
+    expect(addLeafToLargest(tree, 'window:@2', 1000, 400)).toEqual({
+      type: 'split', dir: 'row', ratio: 0.7,
+      a: { type: 'split', dir: 'row', ratio: 0.5, a: leaf('agent'), b: leaf('window:@2') },
+      b: leaf('window:@1'),
+    })
+  })
+})
+
 describe('focusPaneTarget', () => {
   it('tabs mode focuses the active tab (the only visible pane)', () => {
     expect(focusPaneTarget(['agent', 'shell:a'], 'shell:a', false)).toBe('shell:a')
     expect(focusPaneTarget(['agent'], 'agent', false)).toBe('agent')
   })
 
-  it('tiles mode prefers the agent pane, else the first leaf', () => {
-    expect(focusPaneTarget(['shell:a', 'agent'], 'shell:a', true)).toBe('agent')
-    expect(focusPaneTarget(['shell:a', 'shell:b'], 'shell:b', true)).toBe('shell:a')
+  it('tabs mode falls back to the first leaf for a stale or unset tab', () => {
+    expect(focusPaneTarget(['agent', 'shell:a'], 'shell:gone', false)).toBe('agent')
+    expect(focusPaneTarget(['agent', 'shell:a'], undefined, false)).toBe('agent')
+  })
+
+  it('tiles mode prefers the last-active pane', () => {
+    expect(focusPaneTarget(['shell:a', 'agent'], 'shell:a', true)).toBe('shell:a')
+  })
+
+  it('tiles mode falls back to the agent pane, else the first leaf', () => {
+    expect(focusPaneTarget(['shell:a', 'agent'], undefined, true)).toBe('agent')
+    expect(focusPaneTarget(['shell:a', 'agent'], 'shell:gone', true)).toBe('agent')
+    expect(focusPaneTarget(['shell:a', 'shell:b'], undefined, true)).toBe('shell:a')
   })
 
   it('returns null when there is no pane to focus', () => {

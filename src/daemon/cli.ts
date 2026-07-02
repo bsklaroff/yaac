@@ -10,7 +10,7 @@ import { createNodeWebSocket } from '@hono/node-ws'
 import { buildApp } from '@/daemon/server'
 import { createWebAuthStore } from '@/daemon/web-auth'
 import { EventHub } from '@/daemon/events'
-import { bridge, parsePtySize, parsePtyTarget, spawnAttachPty, type SocketLike } from '@/daemon/pty-bridge'
+import { bridge, killViewSession, newViewName, parsePtySize, parsePtyTarget, spawnAttachPty, type SocketLike } from '@/daemon/pty-bridge'
 import { coalesceCalls, notifySessionListChanged, onSessionListChanged } from '@/daemon/sessions-changed'
 import { resolveSessionContainer } from '@/daemon/session-resolve'
 import { StatusWatcherManager } from '@/daemon/status-watcher'
@@ -203,7 +203,8 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
             ws.close(1011, 'no raw socket')
             return
           }
-          const ptyProc = spawnAttachPty(jobName, size, target)
+          const viewName = newViewName()
+          const ptyProc = spawnAttachPty(jobName, size, target, viewName)
           const sock: SocketLike = {
             send: (data) => raw.send(data),
             close: (code, reason) => raw.close(code, reason),
@@ -211,7 +212,7 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
               cb(Array.isArray(data) ? Buffer.concat(data) : data, isBinary)),
             onClose: (cb) => raw.on('close', () => cb()),
           }
-          bridge(ptyProc, sock)
+          bridge(ptyProc, sock, { detach: () => void killViewSession(jobName, viewName) })
           daemonLog(`[daemon] pty attach: session=${id} job=${jobName}`)
         })()
       },

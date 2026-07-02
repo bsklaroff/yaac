@@ -262,4 +262,25 @@ describe('view mode (tiles vs tabs)', () => {
     useUiStore.getState().setActiveTab('s2', 'agent')
     expect(useUiStore.getState().activeTabs).toEqual({ s1: 'shell:shell', s2: 'agent' })
   })
+
+  it('setActiveTab records without focusing and no-ops on the same value', () => {
+    const nonce = useUiStore.getState().focusNonce
+    useUiStore.getState().setActiveTab('s1', 'agent')
+    expect(useUiStore.getState().focusNonce).toBe(nonce)
+    // No-op re-record keeps the state object identity (re-render-free): the
+    // focus recorder re-fires on every shortcut-driven focus.
+    const before = useUiStore.getState().activeTabs
+    useUiStore.getState().setActiveTab('s1', 'agent')
+    expect(useUiStore.getState().activeTabs).toBe(before)
+  })
+
+  it('focusTerminal records the active terminal and bumps focusNonce', () => {
+    const nonce = useUiStore.getState().focusNonce
+    useUiStore.getState().focusTerminal('s1', 'window:@2')
+    expect(useUiStore.getState().activeTabs.s1).toBe('window:@2')
+    expect(useUiStore.getState().focusNonce).toBe(nonce + 1)
+    // Re-focusing the already-active terminal still bumps — Alt+N re-focuses.
+    useUiStore.getState().focusTerminal('s1', 'window:@2')
+    expect(useUiStore.getState().focusNonce).toBe(nonce + 2)
+  })
 })

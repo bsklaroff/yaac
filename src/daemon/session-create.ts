@@ -551,6 +551,9 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
       jobName,
       `${TMUX} new-window -d -t yaac -n ${win.name} 'cd /workspace && ${win.cmd}'`,
     )
+    // Without remain-on-exit the window closes when its command finishes —
+    // and the webapp pane/tab follows the window list, so a hidePane init
+    // window shows while running and disappears once done.
     if (!win.hidePane) {
       await containerExec(jobName, `${TMUX} set-option -t yaac:${win.name} remain-on-exit on`)
     }
