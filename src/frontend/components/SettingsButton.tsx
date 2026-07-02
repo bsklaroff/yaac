@@ -176,7 +176,9 @@ function AddGitCredential({ onAdded }: { onAdded: () => void }): JSX.Element {
 
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault()
-    const form = new FormData(event.currentTarget)
+    // event.currentTarget is nulled once the handler yields, so grab it now.
+    const formElement = event.currentTarget
+    const form = new FormData(formElement)
     const rawPattern = form.get('pattern')
     const rawToken = form.get('token')
     const pattern = (typeof rawPattern === 'string' ? rawPattern : '').trim()
@@ -186,7 +188,7 @@ function AddGitCredential({ onAdded }: { onAdded: () => void }): JSX.Element {
     setError(null)
     try {
       await addGitCredential(pattern, token)
-      event.currentTarget.reset()
+      formElement.reset()
       onAdded()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed to add credential')
