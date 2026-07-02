@@ -23,3 +23,29 @@ export function notifySessionListChanged(): void {
 export function _resetSessionListChangedForTests(): void {
   listener = null
 }
+
+/**
+ * Wrap a listener so notification bursts coalesce: the first call fires
+ * immediately (a session create should push its snapshot with zero
+ * added latency), further calls inside `windowMs` collapse into one
+ * trailing call. Keeps pod-watch event storms (daemon start seeding N
+ * pods, a multi-session teardown) from stampeding snapshot rebuilds.
+ */
+export function coalesceCalls(fn: () => void, windowMs: number): () => void {
+  let timer: NodeJS.Timeout | null = null
+  let pending = false
+  return () => {
+    if (timer) {
+      pending = true
+      return
+    }
+    fn()
+    timer = setTimeout(() => {
+      timer = null
+      if (pending) {
+        pending = false
+        fn()
+      }
+    }, windowMs)
+  }
+}

@@ -1,8 +1,7 @@
 import type { AgentTool } from '@/shared/types'
-import { getSessionClaudeStatus, getSessionFirstUserMessage as getSessionClaudeFirstMessage } from '@/lib/session/claude-status'
-import { getSessionCodexStatus, getSessionCodexFirstUserMessage } from '@/lib/session/codex-status'
+import { getSessionFirstUserMessage as getSessionClaudeFirstMessage } from '@/lib/session/claude-status'
+import { getSessionCodexFirstUserMessage } from '@/lib/session/codex-status'
 import {
-  getSessionOpencodeStatus,
   getSessionOpencodeFirstUserMessage,
   getDeletedSessionOpencodeFirstUserMessage,
 } from '@/lib/session/opencode-status'
@@ -12,17 +11,6 @@ export function normalizeTool(raw: string | undefined): AgentTool {
   if (raw === 'codex') return 'codex'
   if (raw === 'opencode') return 'opencode'
   return 'claude'
-}
-
-export async function getSessionStatus(
-  projectSlug: string,
-  sessionId: string,
-  tool: AgentTool,
-  jobName: string,
-): Promise<'running' | 'waiting'> {
-  if (tool === 'codex') return getSessionCodexStatus(projectSlug, sessionId, jobName)
-  if (tool === 'opencode') return getSessionOpencodeStatus(projectSlug, sessionId, jobName)
-  return getSessionClaudeStatus(projectSlug, sessionId, jobName)
 }
 
 /**

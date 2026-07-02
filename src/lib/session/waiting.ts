@@ -1,5 +1,6 @@
 import { listSessionPods, isPrewarmed } from '@/lib/k8s/pods'
-import { getSessionStatus, normalizeTool } from '@/lib/session/status'
+import { normalizeTool } from '@/lib/session/status'
+import { readSessionStatus } from '@/lib/session/status-store'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 import { testEnv } from '@/shared/env'
 import type { AgentTool } from '@/shared/types'
@@ -46,8 +47,8 @@ export async function getWaitingSessions(
     }
 
     const tool = normalizeTool(p.tool)
-    const status = await getSessionStatus(p.projectSlug, p.sessionId, tool, p.jobName)
-    if (status !== 'waiting') continue
+    // Watcher-fed status (see status-store.ts) — a synchronous read.
+    if (readSessionStatus(p.projectSlug, p.sessionId) !== 'waiting') continue
 
     results.push({
       jobName: p.jobName,

@@ -9,7 +9,6 @@ vi.mock('@/lib/k8s/pods', async (importOriginal) => {
 })
 
 vi.mock('@/lib/session/status', () => ({
-  getSessionStatus: vi.fn(),
   getSessionFirstMessage: vi.fn(),
   normalizeTool: vi.fn(() => 'claude'),
 }))
@@ -22,11 +21,11 @@ vi.mock('@/lib/session/cleanup', () => ({
 import { getWaitingSessions } from '@/lib/session/waiting'
 import { listSessionPods, type SessionPod } from '@/lib/k8s/pods'
 import type * as podsModule from '@/lib/k8s/pods'
-import { getSessionStatus, normalizeTool } from '@/lib/session/status'
+import { normalizeTool } from '@/lib/session/status'
+import { setSessionStatus, _resetSessionStatusStoreForTests } from '@/lib/session/status-store'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
 
 const mockListPods = vi.mocked(listSessionPods)
-const mockGetStatus = vi.mocked(getSessionStatus)
 const mockNormalizeTool = vi.mocked(normalizeTool)
 const mockIsTmuxAlive = vi.mocked(isTmuxSessionAlive)
 const mockCleanupDetached = vi.mocked(cleanupSessionDetached)
@@ -49,6 +48,7 @@ function pod(overrides: Partial<SessionPod> = {}): SessionPod {
 describe('getWaitingSessions', () => {
   beforeEach(() => {
     vi.resetAllMocks()
+    _resetSessionStatusStoreForTests()
     mockNormalizeTool.mockReturnValue('claude')
     mockIsTmuxAlive.mockResolvedValue(true)
   })
@@ -62,7 +62,7 @@ describe('getWaitingSessions', () => {
       pod({ jobName: 'yaac-proj-newer', sessionId: 'newer', createdAtMs: 2_000_000 }),
       pod({ jobName: 'yaac-proj-older', sessionId: 'older', createdAtMs: 1_000_000 }),
     ])
-    mockGetStatus.mockResolvedValue('waiting')
+    // No store entry → 'waiting' (the watcher hasn't classified yet).
 
     const result = await getWaitingSessions()
     expect(result.map((s) => s.sessionId)).toEqual(['older', 'newer'])
@@ -77,7 +77,7 @@ describe('getWaitingSessions', () => {
 
   it('excludes running sessions from the waiting list', async () => {
     mockListPods.mockResolvedValue([pod()])
-    mockGetStatus.mockResolvedValue('running')
+    setSessionStatus('proj', 's1', 'running')
 
     const result = await getWaitingSessions()
     expect(result).toEqual([])
@@ -86,7 +86,6 @@ describe('getWaitingSessions', () => {
 
   it('excludes prewarmed spares (never offered to the stream picker)', async () => {
     mockListPods.mockResolvedValue([pod({ labels: { 'yaac.prewarmed': 'true' } })])
-    mockGetStatus.mockResolvedValue('waiting')
 
     const result = await getWaitingSessions()
     expect(result).toEqual([])

@@ -1,22 +1,12 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 
-vi.mock('@/lib/k8s/exec', () => ({
-  containerExec: vi.fn(),
-}))
-
 import {
   classifyCodexTitle,
   getCodexFirstUserMessage,
-  getSessionCodexStatus,
-  evictCodexStatusCache,
-  _clearCodexStatusCacheForTests,
 } from '@/lib/session/codex-status'
-import { containerExec } from '@/lib/k8s/exec'
-
-const mockExec = vi.mocked(containerExec)
 
 // Title fixtures below reproduce states observed against a live Codex
 // session (codex-cli 0.142.4): a running turn animates a Braille spinner
@@ -68,84 +58,6 @@ describe('classifyCodexTitle', () => {
     // false-positive when the title has no leading spinner.
     expect(classifyCodexTitle('fix ⠋ spinner rendering')).toBe('waiting')
     expect(classifyCodexTitle(' ⠋ leading space')).toBe('waiting')
-  })
-})
-
-describe('getSessionCodexStatus', () => {
-  beforeEach(() => {
-    _clearCodexStatusCacheForTests()
-    mockExec.mockReset()
-  })
-
-  function mockTitle(title: string): void {
-    // display-message -p terminates its output with a newline.
-    mockExec.mockResolvedValue({ stdout: `${title}\n`, stderr: '' })
-  }
-
-  it('returns running when the title carries the Braille spinner', async () => {
-    mockTitle('⠙ workdir')
-    await expect(getSessionCodexStatus('p', 's-run', 'c-run')).resolves.toBe('running')
-  })
-
-  it('returns waiting when the title is the bare project name', async () => {
-    mockTitle('workdir')
-    await expect(getSessionCodexStatus('p', 's-wait', 'c-wait')).resolves.toBe('waiting')
-  })
-
-  it('returns waiting when the title probe fails (pod not ready)', async () => {
-    mockExec.mockRejectedValue(new Error('no such pod'))
-    await expect(getSessionCodexStatus('p', 's-absent', 'c-absent')).resolves.toBe('waiting')
-  })
-
-  it('queries the pane title of the named job\'s codex pane', async () => {
-    mockTitle('⠙ workdir')
-    await getSessionCodexStatus('p', 's-cmd', 'yaac-proj-cmd')
-    expect(mockExec).toHaveBeenCalledTimes(1)
-    const [jobName, cmd] = mockExec.mock.calls[0]
-    expect(jobName).toBe('yaac-proj-cmd')
-    expect(cmd).toContain("display-message -p -t yaac:codex.0 '#{pane_title}'")
-  })
-
-  it('serves repeat calls from the TTL cache without re-invoking kubectl', async () => {
-    mockTitle('workdir')
-    expect(await getSessionCodexStatus('p', 's-cache', 'c-cache')).toBe('waiting')
-    // A second call within the TTL must NOT exec again — verify
-    // by switching the mock to throw; if the cache were bypassed the
-    // call would now return 'waiting' for a different reason but
-    // would also bump the mock counter.
-    mockExec.mockRejectedValue(new Error('should not be called'))
-    expect(await getSessionCodexStatus('p', 's-cache', 'c-cache')).toBe('waiting')
-    expect(mockExec).toHaveBeenCalledTimes(1)
-  })
-
-  it('coalesces concurrent callers onto a single in-flight probe', async () => {
-    mockTitle('⠹ workdir')
-    const p1 = getSessionCodexStatus('p', 's-coalesce', 'c1')
-    const p2 = getSessionCodexStatus('p', 's-coalesce', 'c1')
-    const p3 = getSessionCodexStatus('p', 's-coalesce', 'c1')
-    await expect(Promise.all([p1, p2, p3])).resolves.toEqual(['running', 'running', 'running'])
-    expect(mockExec).toHaveBeenCalledTimes(1)
-  })
-
-  it('caches per (slug, sid), not globally', async () => {
-    mockExec.mockImplementation((jobName: string) => {
-      if (jobName.includes('c-A')) return Promise.resolve({ stdout: '⠧ workdir\n', stderr: '' })
-      return Promise.resolve({ stdout: 'workdir\n', stderr: '' })
-    })
-    expect(await getSessionCodexStatus('p', 's-A', 'c-A')).toBe('running')
-    expect(await getSessionCodexStatus('p', 's-B', 'c-B')).toBe('waiting')
-  })
-
-  it('evictCodexStatusCache clears the entry for that session', async () => {
-    mockTitle('workdir')
-    expect(await getSessionCodexStatus('p', 's-evict', 'c-evict')).toBe('waiting')
-
-    evictCodexStatusCache('p', 's-evict')
-
-    // Cache cleared — a fresh probe re-runs the title query.
-    mockTitle('⠛ workdir')
-    expect(await getSessionCodexStatus('p', 's-evict', 'c-evict')).toBe('running')
-    expect(mockExec).toHaveBeenCalledTimes(2)
   })
 })
 

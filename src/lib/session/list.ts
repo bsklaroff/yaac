@@ -1,9 +1,11 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { listSessionJobs, listSessionPods, isPrewarmed, type SessionPod } from '@/lib/k8s/pods'
+import { getActivePodWatcher } from '@/lib/k8s/pod-watch'
 import { claudeDir, codexTranscriptDir, getProjectsDir, opencodeMetaDir, projectDir } from '@/lib/project/paths'
-import { getSessionStatus, getSessionFirstMessage, normalizeTool } from '@/lib/session/status'
+import { getSessionFirstMessage, normalizeTool } from '@/lib/session/status'
 import { ensureOpencodeFirstMessageCaptured } from '@/lib/session/opencode-status'
+import { isSessionStreamHealthy, readSessionStatus } from '@/lib/session/status-store'
 import { probeTmuxLiveness, cleanupSessionDetached, type TmuxLiveness } from '@/lib/session/cleanup'
 import { readBlockedHosts } from '@/lib/session/blocked-hosts'
 import { getSessionTitles } from '@/lib/session/titles'
@@ -28,11 +30,12 @@ export type {
  * Default grace window that protects freshly-created session pods from
  * the stale-session reaper. session-create's retry loop recreates the
  * Job between attempts and does not start tmux until the last step, so
- * without a grace period a concurrent `listActiveSessions` call can
- * classify the pod as a zombie — firing cleanupSessionDetached, which
- * removes the session's allowedHosts from the proxy mid-creation.
- * Tests override this with YAAC_STARTING_GRACE_MS so they can provoke
- * cleanup on sessions they just created.
+ * without a grace period a concurrent reap pass (`reconcileStaleSessions`,
+ * `getWaitingSessions`) can classify the pod as a zombie — firing
+ * cleanupSessionDetached, which removes the session's allowedHosts from
+ * the proxy mid-creation. Tests override this with
+ * YAAC_STARTING_GRACE_MS so they can provoke cleanup on sessions they
+ * just created.
  */
 export const STARTING_GRACE_MS = 60_000
 
@@ -92,11 +95,23 @@ function formatCreated(epochMs: number): string {
 }
 
 /**
+ * Display-path tmux liveness, fed by the status watchers instead of a
+ * probe: a healthy control-mode stream is conclusive proof the in-pod
+ * tmux server is up; anything else is merely `unknown` (watcher still
+ * connecting, respawning after a blip, daemon just started). Never
+ * `dead` — display must not drop a session on stream state. Genuinely
+ * dead sessions leave the list when their pod goes away (pod watch) or
+ * when the stale reaper — which keeps its own conclusive probes —
+ * tears them down.
+ */
+function watcherDisplayLiveness(slug: string, sessionId: string): Promise<TmuxLiveness> {
+  return Promise.resolve(isSessionStreamHealthy(slug, sessionId) ? 'alive' : 'unknown')
+}
+
+/**
  * In-flight `listActiveSessions` calls keyed by `projectFilter ?? ''`.
- * The UI polls /session/list every ~5s and `listActiveSessions` is the
- * heaviest read path (pod list + N tmux-alive probes + N status
- * reads), so overlapping requests must share one execution. Each entry
- * is cleared when its Promise settles.
+ * The UI polls /session/list every ~5s; overlapping requests share one
+ * execution. Each entry is cleared when its Promise settles.
  */
 const listActiveInflight = new Map<string, Promise<ActiveSessionsResult>>()
 
@@ -130,21 +145,29 @@ export async function listActiveSessions(projectFilter?: string): Promise<Active
 async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSessionsResult> {
   if (projectFilter) await ensureProjectExists(projectFilter)
 
+  // In the daemon the pod watcher's push-fed cache answers instantly;
+  // the one-shot kubectl list is the fallback for watcher-less contexts
+  // (unit tests, a watcher that hasn't started yet).
+  const watcher = getActivePodWatcher()
   let pods
-  try {
-    pods = await listSessionPods(projectFilter)
-  } catch (err) {
-    throw new DaemonError('RUNTIME_UNAVAILABLE', err instanceof Error ? err.message : String(err))
+  if (watcher) {
+    pods = watcher.getPods(projectFilter)
+  } else {
+    try {
+      pods = await listSessionPods(projectFilter)
+    } catch (err) {
+      throw new DaemonError('RUNTIME_UNAVAILABLE', err instanceof Error ? err.message : String(err))
+    }
   }
 
   // Prewarmed spares are not user sessions until claimed — hide them from the
-  // session list (and skip the status/first-message probes they'd trigger).
+  // session list (and skip the status/first-message reads they'd trigger).
   // The stale reaper deliberately still sees them (it lists pods itself), so a
   // stuck spare is still reaped.
   pods = pods.filter((p) => !isPrewarmed(p))
 
   const { running, stale } = await classifySessionPods(
-    pods, Date.now(), probeTmuxLiveness, testEnv.startingGraceMs,
+    pods, Date.now(), watcherDisplayLiveness, testEnv.startingGraceMs,
   )
 
   // User-assigned titles, one file read per project.
@@ -166,8 +189,7 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
           blockedHosts: [],
         }
       }
-      const [status, prompt, blockedHosts] = await Promise.all([
-        getSessionStatus(p.projectSlug, p.sessionId, tool, p.jobName),
+      const [prompt, blockedHosts] = await Promise.all([
         getSessionFirstMessage(p.projectSlug, p.sessionId, tool, p.jobName),
         readBlockedHosts(p.sessionId),
       ])
@@ -175,7 +197,7 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
         sessionId: p.sessionId,
         projectSlug: p.projectSlug,
         tool,
-        status,
+        status: readSessionStatus(p.projectSlug, p.sessionId),
         createdAt: formatCreated(p.createdAtMs),
         prompt,
         title: titlesBySlug.get(p.projectSlug)?.[p.sessionId],

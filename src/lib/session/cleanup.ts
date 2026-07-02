@@ -5,9 +5,8 @@ import path from 'node:path'
 import { listSessionJobs, listSessionPods, sessionJobName } from '@/lib/k8s/pods'
 import { k8sNamespace, kubectlWithRetry } from '@/lib/k8s/kubectl'
 import { execTarget } from '@/lib/k8s/exec'
-import { evictClaudeStatusCache } from '@/lib/session/claude-status'
-import { evictCodexStatusCache } from '@/lib/session/codex-status'
 import { evictOpencodeProbeCache } from '@/lib/session/opencode-status'
+import { evictSessionStatus } from '@/lib/session/status-store'
 import { proxyClient } from '@/lib/container/proxy-client'
 import { buildPromoterShellCommand, promoteSessionImages } from '@/lib/container/image-promoter'
 import {
@@ -201,13 +200,12 @@ export async function cleanupSession(params: {
 }): Promise<void> {
   const { jobName, projectSlug, sessionId } = params
 
-  // Drop any cached tmux-alive / agent-status / opencode-probe entry so
-  // a subsequent caller doesn't see a stale value from this session's
-  // previous probe (or, in the worst case, a value belonging to a brand-
-  // new session with the same id).
+  // Drop any cached tmux-alive / opencode-probe entry and the watcher-fed
+  // status-store row so a subsequent caller doesn't see a stale value
+  // from this session (or, in the worst case, a value belonging to a
+  // brand-new session with the same id).
   tmuxAliveCache.delete(tmuxAliveKey(projectSlug, sessionId))
-  evictClaudeStatusCache(projectSlug, sessionId)
-  evictCodexStatusCache(projectSlug, sessionId)
+  evictSessionStatus(projectSlug, sessionId)
   evictOpencodeProbeCache(projectSlug, sessionId)
 
   stopSessionForwarders(sessionId)
@@ -282,8 +280,7 @@ export async function cleanupSessionDetached(params: {
   daemonLog(`[daemon] session teardown: session=${sessionId} job=${jobName} project=${projectSlug}`)
 
   tmuxAliveCache.delete(tmuxAliveKey(projectSlug, sessionId))
-  evictClaudeStatusCache(projectSlug, sessionId)
-  evictCodexStatusCache(projectSlug, sessionId)
+  evictSessionStatus(projectSlug, sessionId)
   evictOpencodeProbeCache(projectSlug, sessionId)
 
   stopSessionForwarders(sessionId)

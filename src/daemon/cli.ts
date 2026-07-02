@@ -11,8 +11,11 @@ import { buildApp } from '@/daemon/server'
 import { createWebAuthStore } from '@/daemon/web-auth'
 import { EventHub } from '@/daemon/events'
 import { bridge, parsePtySize, parsePtyTarget, spawnAttachPty, type SocketLike } from '@/daemon/pty-bridge'
-import { onSessionListChanged } from '@/daemon/sessions-changed'
+import { coalesceCalls, notifySessionListChanged, onSessionListChanged } from '@/daemon/sessions-changed'
 import { resolveSessionContainer } from '@/daemon/session-resolve'
+import { StatusWatcherManager } from '@/daemon/status-watcher'
+import { PodWatcher, setActivePodWatcher } from '@/lib/k8s/pod-watch'
+import { onSessionStatusChanged } from '@/lib/session/status-store'
 import { readBuildId } from '@/shared/build-id'
 import {
   acquireLock,
@@ -142,10 +145,11 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     onSessionsChanged: (sessions) => void saveWebSessions(sessions),
   })
   const hub = new EventHub()
-  // Push a fresh snapshot the moment a session is created/restarted, so the
-  // webapp's sidebar + terminal update immediately instead of waiting for the
-  // next periodic tick.
-  onSessionListChanged(() => { void hub.publishSnapshot() })
+  // Push a fresh snapshot the moment session state changes — a create /
+  // restart from a route handler, a pod-watch event, or a watcher-fed
+  // status flip. The first notification publishes immediately; bursts
+  // (daemon start seeding N pods) coalesce into one trailing rebuild.
+  onSessionListChanged(coalesceCalls(() => { void hub.publishSnapshot() }, 150))
   const app = buildApp({ secret, buildId, store })
 
   // WebSocket event stream. Registered here (not in buildApp) so buildApp's
@@ -243,12 +247,20 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
   // still running would otherwise leak the lock file.
   const abortCtrl = new AbortController()
   let loopDone: Promise<void> | null = null
+  let podWatcher: PodWatcher | null = null
+  let statusWatchers: StatusWatcherManager | null = null
   let shuttingDown = false
   const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return
     shuttingDown = true
     daemonLog(`[daemon] ${signal} — shutting down`)
     abortCtrl.abort()
+    // Stop the push-fed state layer first: the pod watch child and every
+    // per-session control-mode exec are long-lived kubectl processes
+    // that would otherwise outlive the daemon (orphaned to PID 1).
+    setActivePodWatcher(null)
+    podWatcher?.stop()
+    statusWatchers?.stopAll()
     if (loopDone) {
       // Bound the loop drain the same way we bound server.close() below.
       // Under parallel-test cluster pressure, an in-flight reap tick can
@@ -309,6 +321,24 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
   } catch (err) {
     daemonLog(`[daemon] restore forwarders failed: ${String(err)}`)
   }
+
+  // Push-fed session state: one kubectl pod watch keeps the display
+  // path's pod cache current and drives the per-session status watchers
+  // (tmux control-mode streams feeding the status store). Both fire
+  // sessions-changed, so snapshots push the moment state changes
+  // instead of at the next reconcile tick. The 5s loop below stays as
+  // the convergence/backstop path and is unaffected.
+  podWatcher = new PodWatcher()
+  statusWatchers = new StatusWatcherManager()
+  const watcher = podWatcher
+  const manager = statusWatchers
+  podWatcher.onChange(() => {
+    manager.sync(watcher.getPods())
+    notifySessionListChanged()
+  })
+  onSessionStatusChanged(() => notifySessionListChanged())
+  podWatcher.start()
+  setActivePodWatcher(podWatcher)
 
   // Start the background loop before running orphan GC. The GC pass
   // hits the cluster API, and during a freeze cluster (saturated VM,

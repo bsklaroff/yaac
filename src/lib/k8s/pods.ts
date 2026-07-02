@@ -67,22 +67,45 @@ export const JOB_NAME_LABEL = 'batch.kubernetes.io/job-name'
  * admits only yaac-created session objects). A validation failure is
  * therefore a yaac bug or a hand-edited object — fail the whole list
  * loudly up-front rather than mapping rows with silently empty fields.
+ *
+ * Exported (with `mapSessionPodItem`) so the pod watcher can validate
+ * and map individual watch-event objects with the same rules.
  */
+export const sessionPodItemSchema = z.object({
+  metadata: z.object({
+    name: z.string().min(1),
+    labels: z.object({
+      [JOB_NAME_LABEL]: z.string().min(1),
+      [LABEL_SESSION_ID]: z.string().min(1),
+      [LABEL_PROJECT]: z.string().min(1),
+      [LABEL_TOOL]: z.string().min(1),
+    }).catchall(z.string()),
+    creationTimestamp: z.string().min(1),
+    deletionTimestamp: z.string().optional(),
+  }),
+  status: z.object({ phase: z.string().min(1) }),
+})
+
+export type SessionPodItem = z.infer<typeof sessionPodItemSchema>
+
+/** Map a validated pod object to the SessionPod row the rest of yaac uses. */
+export function mapSessionPodItem({ metadata, status }: SessionPodItem): SessionPod {
+  const terminating = metadata.deletionTimestamp !== undefined
+  return {
+    jobName: metadata.labels[JOB_NAME_LABEL],
+    podName: metadata.name,
+    sessionId: metadata.labels[LABEL_SESSION_ID],
+    projectSlug: metadata.labels[LABEL_PROJECT],
+    tool: metadata.labels[LABEL_TOOL],
+    phase: status.phase,
+    running: status.phase === 'Running' && !terminating,
+    createdAtMs: Date.parse(metadata.creationTimestamp),
+    labels: metadata.labels,
+  }
+}
+
 const sessionPodListSchema = z.object({
-  items: z.array(z.object({
-    metadata: z.object({
-      name: z.string().min(1),
-      labels: z.object({
-        [JOB_NAME_LABEL]: z.string().min(1),
-        [LABEL_SESSION_ID]: z.string().min(1),
-        [LABEL_PROJECT]: z.string().min(1),
-        [LABEL_TOOL]: z.string().min(1),
-      }).catchall(z.string()),
-      creationTimestamp: z.string().min(1),
-      deletionTimestamp: z.string().optional(),
-    }),
-    status: z.object({ phase: z.string().min(1) }),
-  })),
+  items: z.array(sessionPodItemSchema),
 })
 
 const sessionJobListSchema = z.object({
@@ -114,30 +137,21 @@ function parseListPayload<T>(schema: z.ZodType<T>, payload: unknown, kind: strin
  * Throws when the payload fails sessionPodListSchema validation.
  */
 export async function listSessionPods(projectFilter?: string): Promise<SessionPod[]> {
-  const selector = [
+  const list = await kubectlGetJson<unknown>([
+    'get', 'pods', '-n', k8sNamespace(), '-l', sessionPodSelector(projectFilter),
+  ])
+  if (!list) return []
+  const { items } = parseListPayload(sessionPodListSchema, list, 'pod')
+  return items.map(mapSessionPodItem)
+}
+
+/** The label selector `listSessionPods` and the pod watcher share. */
+export function sessionPodSelector(projectFilter?: string): string {
+  return [
     `${LABEL_DATA_DIR_HASH}=${dataDirHash()}`,
     `${LABEL_SESSION_ID}`,
     ...(projectFilter ? [`${LABEL_PROJECT}=${projectFilter}`] : []),
   ].join(',')
-  const list = await kubectlGetJson<unknown>([
-    'get', 'pods', '-n', k8sNamespace(), '-l', selector,
-  ])
-  if (!list) return []
-  const { items } = parseListPayload(sessionPodListSchema, list, 'pod')
-  return items.map(({ metadata, status }) => {
-    const terminating = metadata.deletionTimestamp !== undefined
-    return {
-      jobName: metadata.labels[JOB_NAME_LABEL],
-      podName: metadata.name,
-      sessionId: metadata.labels[LABEL_SESSION_ID],
-      projectSlug: metadata.labels[LABEL_PROJECT],
-      tool: metadata.labels[LABEL_TOOL],
-      phase: status.phase,
-      running: status.phase === 'Running' && !terminating,
-      createdAtMs: Date.parse(metadata.creationTimestamp),
-      labels: metadata.labels,
-    }
-  })
 }
 
 /**

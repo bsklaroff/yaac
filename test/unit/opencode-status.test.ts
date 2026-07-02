@@ -11,7 +11,6 @@ import { opencodeMetaDir, opencodeMetaFile } from '@/lib/project/paths'
 import {
   pickOpencodeSession,
   classifyOpencodePane,
-  getSessionOpencodeStatus,
   getSessionOpencodeFirstUserMessage,
   getDeletedSessionOpencodeFirstUserMessage,
   ensureOpencodeFirstMessageCaptured,
@@ -21,9 +20,10 @@ import {
 const mockedExec = vi.mocked(containerExec)
 
 /**
- * Both the HTTP probe (`curl /session`) and the tmux pane capture go
- * through `containerExec` now. Helpers below install a dispatching
- * implementation so each test can control the two paths independently.
+ * The HTTP probe (`curl /session`) goes through `containerExec`; the
+ * helper installs a dispatching implementation so tests control it.
+ * (Pane classification is watcher-fed now — `classifyOpencodePane` is
+ * tested directly on strings.)
  */
 function mockProbeResult(result: { stdout: string; stderr: string } | Error): void {
   mockedExec.mockImplementation((_jobName: string, cmd: string) => {
@@ -31,15 +31,6 @@ function mockProbeResult(result: { stdout: string; stderr: string } | Error): vo
       return result instanceof Error ? Promise.reject(result) : Promise.resolve(result)
     }
     return Promise.reject(new Error('unexpected non-probe exec'))
-  })
-}
-
-function mockPaneResult(result: { stdout: string; stderr: string } | Error): void {
-  mockedExec.mockImplementation((_jobName: string, cmd: string) => {
-    if (cmd.includes('capture-pane')) {
-      return result instanceof Error ? Promise.reject(result) : Promise.resolve(result)
-    }
-    return Promise.reject(new Error('unexpected non-pane exec'))
   })
 }
 
@@ -56,10 +47,6 @@ function sessionsStdout(
     })),
   )
   return { stdout: json + '\n', stderr: '' }
-}
-
-function paneStdout(content: string): { stdout: string; stderr: string } {
-  return { stdout: content, stderr: '' }
 }
 
 describe('opencode-status', () => {
@@ -160,59 +147,6 @@ describe('opencode-status', () => {
 
     it('matches the interrupt hint case-insensitively', () => {
       expect(classifyOpencodePane('ESC INTERRUPT\n')).toBe('running')
-    })
-  })
-
-  describe('getSessionOpencodeStatus', () => {
-    it('maps a pane with the interrupt hint to running', async () => {
-      mockPaneResult(paneStdout('working...\n  esc interrupt\n'))
-      const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
-      expect(status).toBe('running')
-    })
-
-    it('maps a pane with the busy strip to running', async () => {
-      mockPaneResult(paneStdout('   ■■■■■⬝⬝⬝  esc interrupt\n'))
-      const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
-      expect(status).toBe('running')
-    })
-
-    it('maps a pane with a permission dialog (no busy footer) to waiting', async () => {
-      mockPaneResult(paneStdout(
-        '△ Permission required\n  $ rm -rf /\n  enter allow\n',
-      ))
-      const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
-      expect(status).toBe('waiting')
-    })
-
-    it('maps a pane with a question dialog (no busy footer) to waiting', async () => {
-      mockPaneResult(paneStdout(
-        'Pick one:\n  > A\n    B\n  enter submit  esc dismiss\n',
-      ))
-      const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
-      expect(status).toBe('waiting')
-    })
-
-    it('maps an idle pane (no markers) to waiting', async () => {
-      mockPaneResult(paneStdout('Ready.\n> _\n'))
-      const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
-      expect(status).toBe('waiting')
-    })
-
-    it('returns waiting when capture-pane fails (container gone / tmux not up yet)', async () => {
-      mockPaneResult(new Error('exec failed'))
-      const status = await getSessionOpencodeStatus('proj', 'sid', 'container')
-      expect(status).toBe('waiting')
-    })
-
-    it('coalesces concurrent probes into one capture-pane exec via the cache', async () => {
-      mockPaneResult(paneStdout('  esc interrupt\n'))
-      const [a, b, c] = await Promise.all([
-        getSessionOpencodeStatus('proj', 'sid', 'container'),
-        getSessionOpencodeStatus('proj', 'sid', 'container'),
-        getSessionOpencodeStatus('proj', 'sid', 'container'),
-      ])
-      expect([a, b, c]).toEqual(['running', 'running', 'running'])
-      expect(mockedExec).toHaveBeenCalledTimes(1)
     })
   })
 

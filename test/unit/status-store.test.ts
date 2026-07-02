@@ -1,0 +1,140 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+
+import {
+  readSessionStatus,
+  isSessionStreamHealthy,
+  setSessionStatus,
+  setSessionStreamHealth,
+  evictSessionStatus,
+  onSessionStatusChanged,
+  _resetSessionStatusStoreForTests,
+} from '@/lib/session/status-store'
+
+beforeEach(() => {
+  _resetSessionStatusStoreForTests()
+})
+
+describe('readSessionStatus', () => {
+  it('returns waiting for a session with no entry', () => {
+    expect(readSessionStatus('demo', 's1')).toBe('waiting')
+  })
+
+  it('returns the stored status after a write', () => {
+    setSessionStatus('demo', 's1', 'running')
+    expect(readSessionStatus('demo', 's1')).toBe('running')
+  })
+
+  it('keys by slug AND session id', () => {
+    setSessionStatus('demo', 's1', 'running')
+    expect(readSessionStatus('other', 's1')).toBe('waiting')
+    expect(readSessionStatus('demo', 's2')).toBe('waiting')
+  })
+})
+
+describe('isSessionStreamHealthy', () => {
+  it('returns false for a session with no entry', () => {
+    expect(isSessionStreamHealthy('demo', 's1')).toBe(false)
+  })
+
+  it('returns true after a status write (classification implies a live stream)', () => {
+    setSessionStatus('demo', 's1', 'waiting')
+    expect(isSessionStreamHealthy('demo', 's1')).toBe(true)
+  })
+})
+
+describe('setSessionStatus', () => {
+  it('fires the change listener when the status flips', () => {
+    const listener = vi.fn()
+    onSessionStatusChanged(listener)
+    setSessionStatus('demo', 's1', 'running')
+    expect(listener).toHaveBeenCalledTimes(1)
+    setSessionStatus('demo', 's1', 'waiting')
+    expect(listener).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not fire when the same status is re-set on a healthy entry', () => {
+    setSessionStatus('demo', 's1', 'running')
+    const listener = vi.fn()
+    onSessionStatusChanged(listener)
+    setSessionStatus('demo', 's1', 'running')
+    expect(listener).not.toHaveBeenCalled()
+  })
+
+  it('fires when re-classifying an unhealthy entry (health became visible)', () => {
+    setSessionStatus('demo', 's1', 'running')
+    setSessionStreamHealth('demo', 's1', false)
+    const listener = vi.fn()
+    onSessionStatusChanged(listener)
+    setSessionStatus('demo', 's1', 'running')
+    expect(listener).toHaveBeenCalledTimes(1)
+    expect(isSessionStreamHealthy('demo', 's1')).toBe(true)
+  })
+})
+
+describe('setSessionStreamHealth', () => {
+  it('creates a waiting entry when marking an absent session healthy', () => {
+    const listener = vi.fn()
+    onSessionStatusChanged(listener)
+    setSessionStreamHealth('demo', 's1', true)
+    expect(readSessionStatus('demo', 's1')).toBe('waiting')
+    expect(isSessionStreamHealthy('demo', 's1')).toBe(true)
+    expect(listener).toHaveBeenCalledTimes(1)
+  })
+
+  it('is a no-op when marking an absent session unhealthy', () => {
+    const listener = vi.fn()
+    onSessionStatusChanged(listener)
+    setSessionStreamHealth('demo', 's1', false)
+    expect(isSessionStreamHealthy('demo', 's1')).toBe(false)
+    expect(listener).not.toHaveBeenCalled()
+  })
+
+  it('keeps the sticky status across a health drop', () => {
+    setSessionStatus('demo', 's1', 'running')
+    setSessionStreamHealth('demo', 's1', false)
+    expect(readSessionStatus('demo', 's1')).toBe('running')
+    expect(isSessionStreamHealthy('demo', 's1')).toBe(false)
+  })
+
+  it('fires only when the health bit actually flips', () => {
+    setSessionStatus('demo', 's1', 'running')
+    const listener = vi.fn()
+    onSessionStatusChanged(listener)
+    setSessionStreamHealth('demo', 's1', true)
+    expect(listener).not.toHaveBeenCalled()
+    setSessionStreamHealth('demo', 's1', false)
+    expect(listener).toHaveBeenCalledTimes(1)
+    setSessionStreamHealth('demo', 's1', false)
+    expect(listener).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('evictSessionStatus', () => {
+  it('removes the entry and fires the listener', () => {
+    setSessionStatus('demo', 's1', 'running')
+    const listener = vi.fn()
+    onSessionStatusChanged(listener)
+    evictSessionStatus('demo', 's1')
+    expect(readSessionStatus('demo', 's1')).toBe('waiting')
+    expect(listener).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not fire for an absent entry', () => {
+    const listener = vi.fn()
+    onSessionStatusChanged(listener)
+    evictSessionStatus('demo', 's1')
+    expect(listener).not.toHaveBeenCalled()
+  })
+})
+
+describe('onSessionStatusChanged', () => {
+  it('replaces the previous listener (last registration wins)', () => {
+    const first = vi.fn()
+    const second = vi.fn()
+    onSessionStatusChanged(first)
+    onSessionStatusChanged(second)
+    setSessionStatus('demo', 's1', 'running')
+    expect(first).not.toHaveBeenCalled()
+    expect(second).toHaveBeenCalledTimes(1)
+  })
+})

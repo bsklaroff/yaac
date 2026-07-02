@@ -1,22 +1,12 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 
-vi.mock('@/lib/k8s/exec', () => ({
-  containerExec: vi.fn(),
-}))
-
 import {
   classifyClaudeTitle,
   getFirstUserMessage,
-  getSessionClaudeStatus,
-  evictClaudeStatusCache,
-  _clearClaudeStatusCacheForTests,
 } from '@/lib/session/claude-status'
-import { containerExec } from '@/lib/k8s/exec'
-
-const mockExec = vi.mocked(containerExec)
 
 // Title fixtures below reproduce states observed against a live Claude
 // Code session inside a session pod: a running turn animates a Braille
@@ -71,96 +61,6 @@ describe('classifyClaudeTitle', () => {
     // false-positive when the leading ✳ marks the session as idle.
     expect(classifyClaudeTitle('✳ Fix ⠋ spinner rendering')).toBe('waiting')
     expect(classifyClaudeTitle(' ⠋ leading space')).toBe('waiting')
-  })
-})
-
-describe('getSessionClaudeStatus', () => {
-  beforeEach(() => {
-    _clearClaudeStatusCacheForTests()
-    mockExec.mockReset()
-  })
-
-  function mockTitle(title: string): void {
-    // display-message -p terminates its output with a newline.
-    mockExec.mockResolvedValue({ stdout: `${title}\n`, stderr: '' })
-  }
-
-  it('returns running when the title carries the Braille spinner', async () => {
-    mockTitle('⠙ Refactor the API')
-    await expect(getSessionClaudeStatus('p', 's-run', 'c-run')).resolves.toBe('running')
-  })
-
-  it('returns waiting when the title shows the idle ✳ prefix', async () => {
-    mockTitle('✳ Refactor the API')
-    await expect(getSessionClaudeStatus('p', 's-wait', 'c-wait')).resolves.toBe('waiting')
-  })
-
-  it('returns waiting when the title probe fails (pod not ready)', async () => {
-    mockExec.mockRejectedValue(new Error('no such pod'))
-    await expect(getSessionClaudeStatus('p', 's-absent', 'c-absent')).resolves.toBe('waiting')
-  })
-
-  it('queries the pane title of the named job\'s claude pane', async () => {
-    mockTitle('⠙ Working')
-    await getSessionClaudeStatus('p', 's-cmd', 'yaac-proj-cmd')
-    expect(mockExec).toHaveBeenCalledTimes(1)
-    const [jobName, cmd] = mockExec.mock.calls[0]
-    expect(jobName).toBe('yaac-proj-cmd')
-    expect(cmd).toContain("display-message -p -t yaac:claude.0 '#{pane_title}'")
-  })
-
-  it('serves repeat calls from the TTL cache without re-invoking kubectl', async () => {
-    mockTitle('✳ Idle')
-    expect(await getSessionClaudeStatus('p', 's-cache', 'c-cache')).toBe('waiting')
-    // A second call within the TTL must NOT exec again — verify
-    // by switching the mock to throw; if the cache were bypassed the
-    // call would now return 'waiting' for a different reason but
-    // would also bump the mock counter.
-    mockExec.mockRejectedValue(new Error('should not be called'))
-    expect(await getSessionClaudeStatus('p', 's-cache', 'c-cache')).toBe('waiting')
-    expect(mockExec).toHaveBeenCalledTimes(1)
-  })
-
-  it('coalesces concurrent callers onto a single in-flight probe', async () => {
-    mockTitle('⠹ Working')
-    const p1 = getSessionClaudeStatus('p', 's-coalesce', 'c1')
-    const p2 = getSessionClaudeStatus('p', 's-coalesce', 'c1')
-    const p3 = getSessionClaudeStatus('p', 's-coalesce', 'c1')
-    await expect(Promise.all([p1, p2, p3])).resolves.toEqual(['running', 'running', 'running'])
-    expect(mockExec).toHaveBeenCalledTimes(1)
-  })
-
-  it('caches per (slug, sid), not globally', async () => {
-    mockExec.mockImplementation((jobName: string) => {
-      if (jobName.includes('c-A')) return Promise.resolve({ stdout: '⠧ Working\n', stderr: '' })
-      return Promise.resolve({ stdout: '✳ Idle\n', stderr: '' })
-    })
-    expect(await getSessionClaudeStatus('p', 's-A', 'c-A')).toBe('running')
-    expect(await getSessionClaudeStatus('p', 's-B', 'c-B')).toBe('waiting')
-  })
-
-  it('evictClaudeStatusCache clears the entry for that session', async () => {
-    mockTitle('✳ Idle')
-    expect(await getSessionClaudeStatus('p', 's-evict', 'c-evict')).toBe('waiting')
-
-    evictClaudeStatusCache('p', 's-evict')
-
-    // Cache cleared — a fresh probe re-runs the title query.
-    mockTitle('⠛ Working')
-    expect(await getSessionClaudeStatus('p', 's-evict', 'c-evict')).toBe('running')
-    expect(mockExec).toHaveBeenCalledTimes(2)
-  })
-})
-
-describe('evictClaudeStatusCache', () => {
-  it('is exported as a function', () => {
-    expect(typeof evictClaudeStatusCache).toBe('function')
-  })
-})
-
-describe('_clearClaudeStatusCacheForTests', () => {
-  it('is exported as a function', () => {
-    expect(typeof _clearClaudeStatusCacheForTests).toBe('function')
   })
 })
 
