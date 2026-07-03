@@ -22,12 +22,23 @@ class YaacKind < Formula
   conflicts_with "kind", because: "both install a `kind` binary"
 
   def install
-    system "go", "build", *std_go_args(ldflags: "-s -w")
+    # Stamp the pinned commit into the version so `kind version` prints
+    # "v0.33.0-alpha+f1ec7694f59f57" instead of a bare "v0.33.0-alpha":
+    # yaac's cluster-setup preflight cannot tell whether an unstamped alpha
+    # predates the kind#4203 fix, but defers commit-stamped builds to its
+    # functional probe. Keep the sha in sync with `revision` above.
+    ldflags = %W[
+      -s -w
+      -X sigs.k8s.io/kind/pkg/cmd/kind/version.gitCommit=f1ec7694f59f57572c81bc9f8b3df46780533959
+    ]
+    # output: is required - std_go_args defaults the binary name to the
+    # formula name ("yaac-kind"), but everything expects `kind` on PATH.
+    system "go", "build", *std_go_args(output: bin/"kind", ldflags:)
 
     generate_completions_from_executable(bin/"kind", shell_parameter_format: :cobra)
   end
 
   test do
-    assert_match "kind", shell_output("#{bin}/kind version")
+    assert_match "v0.33.0-alpha+f1ec7694f59f57", shell_output("#{bin}/kind version")
   end
 end

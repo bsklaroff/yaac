@@ -237,21 +237,23 @@ async function requireBinaries(deps: ClusterSetupDeps): Promise<BinaryVersions> 
  * enumerates its node containers (`kind get clusters` exits 125 —
  * kind#4201, fixed by the unreleased kind#4203). Returns the fix message
  * when the pair is provably broken, null when it is fine or unknowable
- * (a dev build carrying a commit suffix may or may not include the fix —
- * the functional preflight settles it).
+ * (any v0.33 pre-release may or may not include the fix — the pinned
+ * yaac-kind build itself reports `v0.33.0-alpha+<sha>` — so those are
+ * left to the functional preflight).
  */
 export function diagnoseKindPodmanSkew(podmanVersionOut: string, kindVersionOut: string): string | null {
-  const podmanMajor = Number(/(\d+)\.\d+/.exec(podmanVersionOut)?.[1] ?? Number.NaN)
+  const podmanMajor = podmanMajorVersion(podmanVersionOut)
   const kindMatch = /v(\d+)\.(\d+)\.(\d+)(\S*)/.exec(kindVersionOut)
   if (!Number.isInteger(podmanMajor) || podmanMajor < 6 || !kindMatch) return null
 
   const [, majRaw, minRaw, , rest] = kindMatch
   const major = Number(majRaw)
   const minor = Number(minRaw)
-  // Dev builds report `v0.33.0-alpha.N+<commit>`; whether they carry the
-  // fix depends on N, so leave them to the functional probe.
-  if (rest.includes('+')) return null
-  const broken = major === 0 && (minor <= 32 || (minor === 33 && rest.startsWith('-alpha')))
+  // Builds from kind main after the v0.32.0 tag report `v0.33.0-alpha`
+  // (optionally with `.N+<commit>` stamped in); the version alone cannot
+  // say whether they carry the fix, so leave them to the functional probe.
+  if (rest.includes('+') || (minor === 33 && rest.startsWith('-alpha'))) return null
+  const broken = major === 0 && minor <= 32
   if (!broken) return null
 
   return (
@@ -264,6 +266,15 @@ export function diagnoseKindPodmanSkew(podmanVersionOut: string, kindVersionOut:
     + '  go install sigs.k8s.io/kind@main\n'
     + '(note `@latest` resolves to the broken v0.32.0 tag)'
   )
+}
+
+function podmanMajorVersion(podmanVersionOut: string): number {
+  return Number(/(\d+)\.\d+/.exec(podmanVersionOut)?.[1] ?? Number.NaN)
+}
+
+/** True when the versions leave the kind#4201 skew possible but unprovable. */
+function kindPodmanSkewPossible(podmanVersionOut: string, kindVersionOut: string): boolean {
+  return podmanMajorVersion(podmanVersionOut) >= 6 && /v0\.33\.\d+-alpha/.test(kindVersionOut)
 }
 
 /**
@@ -282,7 +293,13 @@ async function preflightKindProvider(deps: ClusterSetupDeps, versions: BinaryVer
       || (err instanceof Error ? err.message : String(err))
     throw new ClusterSetupError(
       `\`kind get clusters\` failed under the podman provider:\n  ${stderr.split('\n')[0]}\n`
-      + 'Check that podman is running (`podman info`).',
+      + 'Check that podman is running (`podman info`).'
+      + (kindPodmanSkewPossible(versions.podman, versions.kind)
+        ? '\n\nIf podman itself is healthy: this kind pre-release build may '
+          + 'predate the kind#4203 fix for podman 6.x label parsing '
+          + '(kind#4201). Install the pinned build, which is stamped past '
+          + 'the fix:\n  brew install bsklaroff/yaac/yaac-kind'
+        : ''),
     )
   }
 }

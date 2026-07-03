@@ -5,7 +5,7 @@
 class Yaac < Formula
   desc "Agent sandbox manager - parallel agent sessions on a local Kubernetes cluster"
   homepage "https://github.com/bsklaroff/yaac"
-  url "https://registry.npmjs.org/@bsklaroff/yaac/-/yaac-0.0.1.tgz"
+  url "https://registry.npmjs.org/@bsklaroff/yaac/-/yaac-<VERSION>.tgz"
   # Recompute on every release: curl -fsSL <url> | shasum -a 256
   sha256 "REPLACE_WITH_TARBALL_SHA256_AFTER_NPM_PUBLISH"
   license "MIT"

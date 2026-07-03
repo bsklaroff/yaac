@@ -39,11 +39,11 @@ machine image's vsock guest-agent wiring (podman-machine-os#238).
 2. Compute the tarball hash:
 
    ```sh
-   curl -fsSL https://registry.npmjs.org/@bsklaroff/yaac/-/yaac-<version>.tgz | shasum -a 256
+   curl -fsSL https://registry.npmjs.org/@bsklaroff/yaac/-/yaac-<VERSION>.tgz | shasum -a 256
    ```
 
-3. Update `url` + `sha256` in `Formula/yaac.rb`.
-4. Copy `Formula/*.rb` into the `bsklaroff/homebrew-yaac` repo and push.
+3. Copy `Formula/*.rb` into the `bsklaroff/homebrew-yaac` repo, filling in
+   the `<VERSION>` and `sha256` placeholders in `yaac.rb`, and push.
 
 ## Creating the tap (one-time)
 

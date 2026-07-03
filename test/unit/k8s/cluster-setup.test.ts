@@ -193,6 +193,26 @@ describe('runClusterSetup', () => {
     expect(err).toBeInstanceOf(ClusterSetupError)
     expect((err as Error).message).toContain('kind get clusters')
     expect((err as Error).message).toContain('cannot connect to podman')
+    expect((err as Error).message).not.toContain('kind#4203')
+  })
+
+  it('adds the skew hint to a probe failure when the kind alpha may predate the fix', async () => {
+    const run = vi.fn((file: string, args: string[]) => {
+      if (file === 'podman' && args[0] === '--version') {
+        return Promise.resolve({ stdout: 'podman version 6.0.0\n', stderr: '' })
+      }
+      if (file === 'kind' && args[0] === 'version') {
+        return Promise.resolve({ stdout: 'kind v0.33.0-alpha go1.26.4 darwin/arm64\n', stderr: '' })
+      }
+      if (file === 'kind' && args[0] === 'get' && args[1] === 'clusters') {
+        return Promise.reject(Object.assign(new Error('exit 125'), { stderr: 'failed to list clusters' }))
+      }
+      return Promise.resolve({ stdout: '', stderr: '' })
+    }) as RunMock
+    const err = await runClusterSetup({}, makeDeps({ run })).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ClusterSetupError)
+    expect((err as Error).message).toContain('kind#4203')
+    expect((err as Error).message).toContain('bsklaroff/yaac/yaac-kind')
   })
 
   it('--repair re-applies fixups without recreating the cluster', async () => {
@@ -239,9 +259,9 @@ describe('diagnoseKindPodmanSkew', () => {
     expect(msg).toContain('bsklaroff/yaac/yaac-kind')
   })
 
-  it('flags the bare v0.33.0-alpha tag (predates the fix)', () => {
+  it('leaves the bare v0.33.0-alpha to the functional probe (may carry the fix)', () => {
     expect(diagnoseKindPodmanSkew('podman version 6.1.0', 'kind v0.33.0-alpha go1.24 linux/amd64'))
-      .not.toBeNull()
+      .toBeNull()
   })
 
   it('is silent for podman 5.x with any kind', () => {
