@@ -3,6 +3,14 @@ set -e
 
 # Setup script to install git hooks
 
+# Dev-only: runs via the package.json `prepare` hook. Consumer installs
+# (npm tarball) never run it, but `npm pack`/`prepare` in an exported
+# source tree would — skip quietly when there is no enclosing repo.
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+    echo "Not inside a git repository; skipping git hooks setup."
+    exit 0
+fi
+
 echo "Setting up git hooks..."
 
 # Resolve the actual git dir (handles worktrees where .git is a file)

@@ -17,7 +17,7 @@ networking:
   # No kindnet: its NetworkPolicy engine (kube-network-policies) fails
   # OPEN — a new pod's first packets flow before its IP reaches the
   # engine's nftables set, so sessions would start with a brief window of
-  # unrestricted egress. setup-kind-cluster.sh installs Cilium instead,
+  # unrestricted egress. `yaac cluster setup` installs Cilium instead,
   # which fails CLOSED (a pod cannot start until its eBPF policy programs
   # are attached). Cilium runs with ipam.mode=kubernetes, allocating pod
   # IPs from the node's PodCIDR (kind's default podSubnet — nothing in

@@ -1,7 +1,12 @@
 {
-  "name": "yaac",
+  "name": "@bsklaroff/yaac",
   "version": "0.0.1",
   "description": "Agent sandbox manager",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bsklaroff/yaac.git"
+  },
   "type": "module",
   "packageManager": "pnpm@11.1.2",
   "bin": {
@@ -10,6 +15,9 @@
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsup && vite build && cp -r dockerfiles k8s dist/ && rm -rf dist/k8s/proxy/node_modules dist/k8s/relay/node_modules && tsx scripts/write-build-id.ts",
     "dev": "tsx src/cli.ts",
@@ -23,7 +31,8 @@
     "test:watch": "vitest",
     "frontend:dev": "vite",
     "frontend:build": "vite build",
-    "postinstall": "./setup-git.sh"
+    "prepare": "./setup-git.sh",
+    "prepublishOnly": "pnpm build"
   },
   "dependencies": {
     "@anthropic-ai/claude-code": "2.1.111",

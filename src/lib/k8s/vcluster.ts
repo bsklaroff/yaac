@@ -30,7 +30,7 @@ export const VCLUSTER_API_PORT = 8443
 
 /**
  * Pinned Helm version yaac shells out to for `helm template`. Mirrors
- * the cilium-CLI download convention in scripts/setup-kind-cluster.sh:
+ * the cilium-CLI download convention in cluster-setup.ts (ensureCiliumCli):
  * used from PATH when present, otherwise fetched once and cached under
  * ~/.cache/yaac/bin.
  */
@@ -110,7 +110,7 @@ async function chartVersion(): Promise<string> {
 /**
  * Resolve a `helm` binary, preferring one on PATH and otherwise
  * fetching the pinned release once into ~/.cache/yaac/bin — the same
- * download-and-pin convention scripts/setup-kind-cluster.sh uses for the
+ * download-and-pin convention cluster-setup.ts uses for the
  * cilium CLI. yaac only needs helm for `helm template` against the
  * vendored chart tarball (offline); the binary fetch is the one network
  * step, cached across runs.

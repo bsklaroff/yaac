@@ -45,8 +45,18 @@ async function happyResponses(
   file: string,
   args: string[],
 ): Promise<{ stdout: string; stderr: string }> {
+  if (file === 'kubectl' && args[0] === 'get' && args[1] === 'nodes'
+    && args.includes('jsonpath={.items[*].metadata.name}')) {
+    return { stdout: 'yaac-control-plane', stderr: '' }
+  }
   if (file === 'kubectl' && args[0] === 'get' && args[1] === 'nodes') {
     return { stdout: JSON.stringify({ items: [{}] }), stderr: '' }
+  }
+  if (file === 'podman' && args[0] === 'exec') {
+    return { stdout: 'sysfs=ok\ntasksmax=ok\nminfree=262144\n', stderr: '' }
+  }
+  if (file === 'podman' && args[0] === 'inspect') {
+    return { stdout: '32768\n', stderr: '' }
   }
   if (file === 'kubectl' && args[0] === 'get' && args[1] === 'svc' && args[2] === 'kubernetes') {
     return { stdout: '10.96.0.1', stderr: '' }
@@ -124,6 +134,7 @@ describe('runClusterCheck', () => {
       ['podman', 'pass'],
       ['registry', 'pass'],
       ['namespace', 'pass'],
+      ['node-fixups', 'pass'],
       ['probe', 'pass'],
       ['egress', 'pass'],
       ['envoy-config', 'pass'],
@@ -185,7 +196,8 @@ describe('runClusterCheck', () => {
       expect(byName(results, 'probe')?.status).toBe('pass')
       // egress is enforced host-side for a vcluster's synced pods (not
       // probeable from in here), so it self-skips along with the rest.
-      for (const name of ['egress', 'envoy-config', 'nested-mount', 'vap']) {
+      // node-fixups likewise: there is no podman-hosted node in here.
+      for (const name of ['node-fixups', 'egress', 'envoy-config', 'nested-mount', 'vap']) {
         expect(byName(results, name)?.status).toBe('skip')
       }
     } finally {
@@ -254,12 +266,51 @@ describe('runClusterCheck', () => {
 
     expect(ok).toBe(false)
     expect(byName(results, 'podman')).toMatchObject({ status: 'fail' })
+    expect(byName(results, 'node-fixups')).toMatchObject({ status: 'skip' })
     expect(byName(results, 'probe')).toMatchObject({ status: 'skip' })
     expect(byName(results, 'egress')).toMatchObject({ status: 'skip' })
     expect(byName(results, 'envoy-config')).toMatchObject({ status: 'skip' })
     expect(byName(results, 'nested-mount')).toMatchObject({ status: 'skip' })
     expect(deps.pushImage).not.toHaveBeenCalled()
     expect(deps.apply).not.toHaveBeenCalled()
+  })
+
+  it('warns on node-fixups (pointing at setup --repair) when a fixup went missing', async () => {
+    const run = happyRun()
+    run.mockImplementation(async (file: string, args: string[]) => {
+      if (file === 'podman' && args[0] === 'exec') {
+        // Node restarted: the sysfs mount and TasksMax conf are gone and
+        // the sysctl is back at its tiny default.
+        return { stdout: 'sysfs=missing\ntasksmax=missing\nminfree=67584\n', stderr: '' }
+      }
+      if (file === 'podman' && args[0] === 'inspect') {
+        return { stdout: '2048\n', stderr: '' } // podman's default pids ceiling
+      }
+      return happyResponses(file, args)
+    })
+    const { ok, results } = await runClusterCheck(makeDeps({ run }))
+    const fixups = byName(results, 'node-fixups')
+    expect(fixups).toMatchObject({ status: 'warn' })
+    expect(fixups?.detail).toContain('sysfs unmask')
+    expect(fixups?.detail).toContain('DefaultTasksMax')
+    expect(fixups?.detail).toContain('vm.min_free_kbytes')
+    expect(fixups?.detail).toContain('pids-limit')
+    expect(fixups?.fix).toContain('yaac cluster setup --repair')
+    expect(ok).toBe(true) // warn-only: the sysfs half also trips the probe when it matters
+  })
+
+  it('skips node-fixups when the node is not a podman container (non-kind backend)', async () => {
+    const run = happyRun()
+    run.mockImplementation(async (file: string, args: string[]) => {
+      if (file === 'podman' && args[0] === 'exec') {
+        return Promise.reject(new Error('no such container'))
+      }
+      return happyResponses(file, args)
+    })
+    const { results } = await runClusterCheck(makeDeps({ run }))
+    const fixups = byName(results, 'node-fixups')
+    expect(fixups).toMatchObject({ status: 'skip' })
+    expect(fixups?.detail).toContain('not a podman container')
   })
 
   it('passes the egress check when a session-labeled pod cannot reach the apiserver', async () => {

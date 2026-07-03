@@ -17,6 +17,7 @@ import { authList } from '@/commands/auth-list'
 import { toolGet } from '@/commands/tool-get'
 import { toolSet } from '@/commands/tool-set'
 import { clusterCheck } from '@/commands/cluster-check'
+import { clusterSetup } from '@/commands/cluster-setup'
 import { configEdit } from '@/commands/config-edit'
 import { configEditDockerfile } from '@/commands/config-edit-dockerfile'
 import { configEditUserDockerfile } from '@/commands/config-edit-user-dockerfile'
@@ -122,6 +123,14 @@ cluster
   .command('check')
   .description('Verify cluster prerequisites (kubectl, registry, hostPath wiring)')
   .action(clusterCheck)
+
+cluster
+  .command('setup')
+  .description('Create the kind cluster, registry, and Cilium wiring yaac needs (destructive: recreates the cluster)')
+  .option('--repair', 'Re-apply the node fixups that vanish on node/VM restart, without recreating the cluster')
+  .action(async (options: { repair?: boolean }) => {
+    await clusterSetup(options)
+  })
 
 const project = program
   .command('project')

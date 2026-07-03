@@ -306,7 +306,7 @@ async function listNodeNames(): Promise<string[]> {
  * Write the node containerd hosts.toml mapping the registry's svc-DNS host to
  * its live ClusterIP URL, so `kubectl run` of a pushed ref pulls straight from
  * the in-cluster registry. Same podman-exec mechanism as
- * scripts/setup-kind-cluster.sh. The node is not a cluster-DNS client, so it
+ * `yaac cluster setup`. The node is not a cluster-DNS client, so it
  * needs the IP here; hosts.toml is read per-pull (no containerd restart) and is
  * rewritten on every ensure, so the allocator-assigned IP is always current.
  * Must run after the Service is applied (ensureProjectRegistry waits for it).

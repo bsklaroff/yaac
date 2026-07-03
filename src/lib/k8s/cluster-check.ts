@@ -40,11 +40,21 @@ const PROBE_LOCAL_TAG = 'yaac-cluster-probe:busybox-1.36'
 const PROBE_POD_NAME = 'yaac-cluster-check'
 
 const KIND_SETUP_FIX = [
-  'Create a kind cluster wired for yaac (registry + home extraMount):',
-  '  see "Cluster setup" in the yaac README — it provides a',
-  '  kind-config.yaml with the local-registry containerd patch and an',
-  '  extraMounts entry for your home directory.',
+  'Create a kind cluster wired for yaac by running:',
+  '  yaac cluster setup',
+  'It provisions the podman machine (macOS), the local registry, the kind',
+  'cluster (registry wiring + home extraMount), Cilium, and the node fixups.',
 ].join('\n')
+
+/**
+ * Node-state the setup applies and this check verifies. Shared with
+ * cluster-setup.ts (which imports them) so `yaac cluster setup --repair`
+ * and the node-fixups check below can never drift apart.
+ */
+export const NODE_SYSFS_MOUNTPOINT = '/mnt/sysfs'
+export const NODE_TASKSMAX_CONF = '/etc/systemd/system.conf.d/10-yaac-tasksmax.conf'
+export const NODE_MIN_FREE_KBYTES = 262144
+export const NODE_PIDS_LIMIT = 32768
 
 export interface ClusterCheckDeps {
   /** execFile-style runner, injectable for tests. */
@@ -75,6 +85,10 @@ const defaultDeps: ClusterCheckDeps = {
  *   4. podman present (the image build engine)
  *   5. local registry answering on the configured address
  *   6. yaac namespace exists / can be created
+ *   6b. node fixups (warn-only, kind nodes only): the sysfs unmask,
+ *      DefaultTasksMax, vm.min_free_kbytes, and node pids-limit that
+ *      `yaac cluster setup` applies all live in node/VM state and vanish
+ *      on restart — detect and point at `yaac cluster setup --repair`
  *   7. end-to-end probe: push a tiny image to the registry, run a pod
  *      from `localhost:5001/...` that reads a nonce file from a hostPath
  *      mount of the data dir and writes a marker back at the session uid
@@ -85,7 +99,7 @@ const defaultDeps: ClusterCheckDeps = {
  *      directly (the forgery lock — its egress default-deny admits no such
  *      route, so only the Cilium redirect can reach those ports)
  *   9. envoy-config: the CiliumEnvoyConfig CRDs exist (the cluster-level
- *      egress redirect needs `envoyConfig.enabled` — setup-kind-cluster.sh)
+ *      egress redirect needs `envoyConfig.enabled` — `yaac cluster setup`)
  *  10. nested-mount (warn-only): under the nested session securityContext
  *      (userns-scoped SYS_ADMIN, RuntimeDefault) an unprivileged user can
  *      mount tmpfs inside a user namespace — the rootless-podman
@@ -175,9 +189,10 @@ export async function runClusterCheck(
     })
   }
 
-  // 7. end-to-end probe (skipped when prerequisites already failed)
+  // 6b–7. node fixups + end-to-end probe (skipped when prerequisites
+  // already failed)
   const PROBE_GATES = [
-    'probe', 'egress', 'envoy-config', 'nested-mount',
+    'node-fixups', 'probe', 'egress', 'envoy-config', 'nested-mount',
   ] as const
   if (results.some((r) => r.status === 'fail')) {
     for (const name of PROBE_GATES) {
@@ -185,12 +200,13 @@ export async function runClusterCheck(
     }
     return { ok: false, results }
   }
+  add(await runNodeFixupsCheck(deps))
   add(await runEndToEndProbe(deps))
 
   // 8. egress-lockdown probe (same prerequisites as the e2e probe, plus
   // the probe image it pushed)
   if (results.some((r) => r.status === 'fail')) {
-    for (const name of PROBE_GATES.slice(1)) {
+    for (const name of PROBE_GATES.slice(2)) {
       add({ name, status: 'skip', detail: 'skipped — fix the failures above first' })
     }
     return { ok: false, results }
@@ -229,6 +245,83 @@ export async function runClusterCheck(
   add(await runVapAvailabilityCheck(deps))
 
   return { ok: !results.some((r) => r.status === 'fail'), results }
+}
+
+const NODE_FIXUPS_FIX =
+  'These fixups live in node/VM state and vanish on a node or VM restart. '
+  + 'Re-apply them with: yaac cluster setup --repair'
+
+/**
+ * Warn-level detection for the node fixups `yaac cluster setup` applies.
+ * Only the sysfs unmask breaks pods immediately (the e2e probe below
+ * catches it); the TasksMax / vm.min_free_kbytes / pids-limit fixups fail
+ * much later — sessions die mid-flight under subagent fan-out or virtiofs
+ * pressure — so sessions can look healthy on a cluster that lost them to a
+ * restart. Probing is kind-specific (node name == podman container name,
+ * the same assumption project-registry.ts makes): a node that is not a
+ * podman container self-skips.
+ */
+async function runNodeFixupsCheck(deps: ClusterCheckDeps): Promise<CheckResult> {
+  if (env.nested) {
+    return {
+      name: 'node-fixups', status: 'skip',
+      detail: 'skipped — nested yaac (no podman-hosted node in here)',
+    }
+  }
+  try {
+    const { stdout } = await deps.run('kubectl', [
+      'get', 'nodes', '-o', 'jsonpath={.items[*].metadata.name}',
+    ])
+    const nodes = stdout.trim().split(/\s+/).filter(Boolean)
+    if (nodes.length === 0) {
+      return { name: 'node-fixups', status: 'warn', detail: 'no nodes found — fixups unverified' }
+    }
+    const missing = new Set<string>()
+    for (const node of nodes) {
+      let report: string
+      try {
+        const res = await deps.run('podman', ['exec', node, 'sh', '-c',
+          `mountpoint -q ${NODE_SYSFS_MOUNTPOINT} && echo sysfs=ok || echo sysfs=missing; `
+          + `test -f ${NODE_TASKSMAX_CONF} && echo tasksmax=ok || echo tasksmax=missing; `
+          + 'echo minfree=$(cat /proc/sys/vm/min_free_kbytes)',
+        ])
+        report = res.stdout
+      } catch {
+        return {
+          name: 'node-fixups', status: 'skip',
+          detail: `node "${node}" is not a podman container — kind node fixups not applicable`,
+        }
+      }
+      if (report.includes('sysfs=missing')) missing.add('sysfs unmask (userns pods)')
+      if (report.includes('tasksmax=missing')) missing.add('DefaultTasksMax (subagent fan-out)')
+      const minfree = Number(/minfree=(\d+)/.exec(report)?.[1] ?? '0')
+      if (minfree < NODE_MIN_FREE_KBYTES) missing.add('vm.min_free_kbytes (virtiofs I/O)')
+      const { stdout: pidsRaw } = await deps.run('podman', [
+        'inspect', '--format', '{{.HostConfig.PidsLimit}}', node,
+      ])
+      const pids = Number(pidsRaw.trim())
+      if (Number.isFinite(pids) && pids > 0 && pids < NODE_PIDS_LIMIT) {
+        missing.add('node pids-limit')
+      }
+    }
+    if (missing.size > 0) {
+      return {
+        name: 'node-fixups', status: 'warn',
+        detail: `missing on the node: ${[...missing].join(', ')}`,
+        fix: NODE_FIXUPS_FIX,
+      }
+    }
+    return {
+      name: 'node-fixups', status: 'pass',
+      detail: 'sysfs unmask, TasksMax, vm sysctls, and pids-limit in place',
+    }
+  } catch (err) {
+    return {
+      name: 'node-fixups', status: 'warn',
+      detail: `could not verify node fixups (${truncate(err)})`,
+      fix: NODE_FIXUPS_FIX,
+    }
+  }
 }
 
 /**
@@ -312,8 +405,8 @@ async function runEndToEndProbe(deps: ClusterCheckDeps): Promise<CheckResult> {
           + `/probe, the node cannot see ${dataDir} — add an extraMounts `
           + 'entry for your home directory to the kind config.\n'
           + 'If it failed with a sysfs or MOUNT_ATTR_IDMAP error, the '
-          + 'cluster cannot run user-namespaced pods — re-run '
-          + 'scripts/setup-kind-cluster.sh (applies the sysfs fix), and '
+          + 'cluster cannot run user-namespaced pods — run '
+          + '`yaac cluster setup --repair` (re-applies the sysfs fix), and '
           + 'on macOS use the libkrun podman-machine provider with '
           + 'libkrun-efi >= 1.17 (see "Cluster setup" in the README).\n'
           + 'If it failed writing /probe/.cluster-check-write, uid '
@@ -553,7 +646,7 @@ async function runEnvoyConfigCheck(deps: ClusterCheckDeps): Promise<CheckResult>
       name: 'envoy-config', status: 'fail',
       detail: 'the ciliumenvoyconfigs.cilium.io CRD is missing — the egress-redirect CEC cannot be created',
       fix: 'Cilium was installed without envoyConfig. Re-run '
-        + 'scripts/setup-kind-cluster.sh (it passes --set envoyConfig.enabled=true), '
+        + '`yaac cluster setup` (it installs Cilium with envoyConfig.enabled=true), '
         + 'or `cilium upgrade --reuse-values --set envoyConfig.enabled=true`.',
     }
   } catch (err) {

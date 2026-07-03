@@ -94,6 +94,18 @@ describe('env (configuration)', () => {
     })
   })
 
+  describe('kindCluster', () => {
+    it('defaults to yaac when unset', () => {
+      vi.stubEnv('YAAC_KIND_CLUSTER', undefined)
+      expect(env.kindCluster).toBe('yaac')
+    })
+
+    it('returns the override when set', () => {
+      vi.stubEnv('YAAC_KIND_CLUSTER', 'yaac-alt')
+      expect(env.kindCluster).toBe('yaac-alt')
+    })
+  })
+
   describe('prewarmPoolSize', () => {
     it('defaults to 1 when unset or blank', () => {
       vi.stubEnv('YAAC_PREWARM_POOL_SIZE', undefined)

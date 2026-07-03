@@ -201,7 +201,7 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
           // agents install packages mid-session) maps to an unprivileged
           // node uid, restoring the containment the rootless-podman
           // backend had. Requirements the cluster must satisfy: an
-          // unmasked sysfs mount on the kind node (setup-kind-cluster.sh
+          // unmasked sysfs mount on the kind node (`yaac cluster setup`
           // applies it; kind#3436) and idmapped-mount support on the
           // filesystem behind hostPath volumes — ext4/xfs/btrfs on
           // Linux; on macOS this means the libkrun podman-machine

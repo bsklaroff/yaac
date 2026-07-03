@@ -42,11 +42,13 @@ export default tseslint.config(
       '@typescript-eslint/no-restricted-imports': [
         'error',
         {
-          // Two sanctioned lib imports: @/lib/k8s/exec (attach/shell/stream
+          // Three sanctioned lib imports: @/lib/k8s/exec (attach/shell/stream
           // spawn `kubectl exec -it` host-side and need the same argv
           // builder the daemon's PTY bridge uses) and @/lib/k8s/cluster-check
-          // (`yaac cluster check` diagnoses the local environment directly —
-          // routing it through the daemon would hide daemon-down failures).
+          // + @/lib/k8s/cluster-setup (`yaac cluster check`/`setup` diagnose
+          // and provision the local environment directly — routing them
+          // through the daemon would hide daemon-down failures, and setup
+          // must run before a daemon can exist at all).
           // The negation chain re-includes each parent dir (gitignore
           // semantics: a file can't be un-ignored while its parent dir is
           // ignored).
@@ -55,8 +57,9 @@ export default tseslint.config(
               '@/*', '!@/commands', '!@/shared',
               '!@/lib', '@/lib/*', '!@/lib/k8s', '@/lib/k8s/*',
               '!@/lib/k8s/exec', '!@/lib/k8s/cluster-check',
+              '!@/lib/k8s/cluster-setup',
             ],
-            message: 'src/commands only allowed to import from src/commands, src/shared, @/lib/k8s/exec, or @/lib/k8s/cluster-check',
+            message: 'src/commands only allowed to import from src/commands, src/shared, @/lib/k8s/exec, @/lib/k8s/cluster-check, or @/lib/k8s/cluster-setup',
           }],
         },
       ],

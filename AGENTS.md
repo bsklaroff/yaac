@@ -9,7 +9,7 @@
 
 - Sessions run as Kubernetes Jobs (one single-pod Job per session) on a local single-node cluster; podman is only the image build engine (`podman build`/`podman push` to the local registry on `localhost:5000`).
 - All cluster access shells out to `kubectl` (no kubernetes client library) — matching the podman-CLI convention. Helpers live in `src/lib/k8s/`.
-- E2e tests require a wired-up cluster (`./scripts/setup-kind-cluster.sh`, verified by `yaac cluster check`); unit tests must not touch podman or the cluster.
+- E2e tests require a wired-up cluster (`yaac cluster setup`, verified by `yaac cluster check`); unit tests must not touch podman or the cluster.
 
 ## Playwright Test Scripts
 

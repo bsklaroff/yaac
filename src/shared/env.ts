@@ -76,6 +76,11 @@ export const env = {
     return process.env.YAAC_K8S_REGISTRY ?? 'localhost:5001'
   },
 
+  /** `YAAC_KIND_CLUSTER` — name of the kind cluster `yaac cluster setup` manages. */
+  get kindCluster(): string {
+    return process.env.YAAC_KIND_CLUSTER ?? 'yaac'
+  },
+
   /**
    * `YAAC_PREWARM_POOL_SIZE` — prewarmed sessions per active project (`0`
    * disables). Default 1; a non-integer or negative value falls back to 1.

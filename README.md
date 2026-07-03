@@ -4,107 +4,86 @@ Agent sandbox manager — run many parallel agent sessions, each as an isolated 
 
 ## Install
 
-Clone the repo and install globally:
+### Homebrew (macOS, arm64)
+
+```sh
+brew trust bsklaroff/yaac
+brew trust libkrun/krun
+brew install bsklaroff/yaac/yaac
+yaac cluster setup   # podman machine + registry + kind cluster + Cilium
+```
+
+The formula pulls in the whole toolchain: `node`, `kubectl`, `cilium-cli`,
+`podman` (>= 6.0), a pinned `kind` build (`yaac-kind` — see the
+[version-skew note](docs/cluster-setup.md#version-skew-podman-6x-needs-a-patched-kind)),
+and `krunkit` (from the `libkrun/krun` tap).
+
+### From source (development)
+
+A dev install **replaces** the brew one — both want to own the same
+`bin/yaac` symlink, so never keep both installed (`brew uninstall yaac`
+first if you have the package; switch back later with
+`npm uninstall -g @bsklaroff/yaac && brew install bsklaroff/yaac/yaac`).
+
+#### macOS (arm64)
+
+Install the toolchain the formula would otherwise pull in:
+
+```sh
+brew trust bsklaroff/yaac
+brew trust libkrun/krun
+brew install node pnpm kubernetes-cli cilium-cli podman bsklaroff/yaac/yaac-kind
+brew install libkrun/krun/krunkit
+```
+
+#### Linux
+
+```sh
+sudo apt install podman nodejs npm   # Debian/Ubuntu 26.04+
+sudo npm install -g pnpm
+curl -fsSLo kind "https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-$(dpkg --print-architecture)"
+sudo install -m 755 kind /usr/local/bin/kind && rm kind
+```
+
+The apt-shipped podman 5.x works fine on Linux and pairs with stock kind
+v0.32.0; only podman 6.x needs the pinned kind build (see the
+[version-skew note](docs/cluster-setup.md#version-skew-podman-6x-needs-a-patched-kind)).
+Finish with
+[kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/).
+
+#### Both platforms
+
+Then build, link, and wire the cluster:
 
 ```sh
 git clone https://github.com/bsklaroff/yaac.git
 cd yaac
 pnpm install
 pnpm build
-npm install -g .
+npm install -g .      # symlinks the checkout — every pnpm build is live
+yaac cluster setup
 ```
 
-yaac splits the container runtime in two:
+## Web app
 
-- **Podman** builds session images (`podman build` / `podman push`) and hosts the kind node container. Install version 5.0+ (podman 6.x needs kind >= v0.33.0 — see [Cluster setup](#cluster-setup)):
-
-  ```sh
-  # Debian / Ubuntu (25.04+)
-  sudo apt install podman
-  ```
-
-  On macOS, podman runs inside a VM, and yaac needs two non-default machine settings: **rootful** (kind requires it) and the **libkrun provider** (session pods run in user namespaces, which need idmapped-mount support on the VM's file sharing — libkrun's virtiofs has it, Apple's Virtualization.framework does not):
-
-  ```sh
-  brew install podman
-  brew trust libkrun/krun
-  brew install libkrun/krun/krunkit
-  printf '[machine]\nprovider = "libkrun"\n' >> ~/.config/containers/containers.conf
-  podman machine init --rootful --cpus 8 --memory 32768
-  podman machine start
-  ```
-
-  > **Clock drift after sleep:** the machine's clock freezes while the Mac sleeps ([podman#11541](https://github.com/containers/podman/issues/11541)), and NTP can't always recover — the pauses also corrupt chrony's measurements (`exceeds maxjitter` / `Can't synchronise: no selectable sources` in the VM journal), so builds fail with `podman build exited with code 100` / apt `Release file ... is not valid yet`. The real fix is krunkit's `--timesync` (>= 1.2.0): the host pushes its clock into the guest over vsock on every wake. podman doesn't pass the flag yet ([podman#28345](https://github.com/containers/podman/issues/28345)), so wire it manually:
-  >
-  > ```sh
-  > # 1. guest side: qemu-guest-agent listening on vsock port 1234
-  > podman machine ssh "sudo rpm-ostree install qemu-guest-agent"
-  > podman machine ssh "sudo tee /etc/systemd/system/qemu-ga-vsock.service" <<'EOF'
-  > [Unit]
-  > Description=QEMU Guest Agent on vsock (krunkit --timesync receiver)
-  > [Service]
-  > ExecStart=/usr/bin/qemu-ga --method=vsock-listen --path=3:1234
-  > Restart=always
-  > [Install]
-  > WantedBy=multi-user.target
-  > EOF
-  > podman machine ssh "sudo systemctl enable qemu-ga-vsock.service"
-  > # Fedora's SELinux policy lacks vsock perms for qemu-ga — allow them:
-  > #   allow virt_qemu_ga_t self:vsock_socket { create bind listen accept getattr setattr read write shutdown };
-  > # (compile with checkmodule/semodule_package — e.g. in a fedora container — and `semodule -i`)
-  >
-  > # 2. host side: wrap krunkit so podman's invocation gains --timesync
-  > mv /opt/homebrew/bin/krunkit /opt/homebrew/bin/krunkit-real 2>/dev/null || true
-  > printf '#!/bin/sh\ncase " $* " in\n  *" --bootloader "*) exec /opt/homebrew/bin/krunkit-real "$@" --timesync vsockPort=1234 ;;\n  *) exec /opt/homebrew/bin/krunkit-real "$@" ;;\nesac\n' > /opt/homebrew/bin/krunkit
-  > chmod +x /opt/homebrew/bin/krunkit
-  > podman machine stop && podman machine start   # then re-run scripts/setup-kind-cluster.sh
-  > ```
-  >
-  > All of this manual wiring is upstreamed for podman 6.0 (not yet in Homebrew — `brew install podman` is still 5.8.x): podman passes `--timesync vsockPort=1234` itself ([podman#28527](https://github.com/containers/podman/pull/28527)) and the machine image ships the vsock qemu-guest-agent + SELinux policy ([podman-machine-os#238](https://github.com/containers/podman-machine-os/pull/238), both merged 2026-05-26). When you upgrade to 6.0: **remove the wrapper** (`mv /opt/homebrew/bin/krunkit-real /opt/homebrew/bin/krunkit` — the duplicated flag would break machine start) and recreate the machine (`podman machine rm` + `init`) so the new image replaces the manual guest wiring. Manual recovery if the clock is ever skewed anyway:
-  >
-  > ```sh
-  > podman machine ssh "sudo date -u -s @$(date +%s) && sudo systemctl restart chronyd"
-  > ```
-
-- **Kubernetes** runs the sessions — one Job (single-pod) per session, plus a shared proxy Deployment. yaac targets a **local single-node cluster** (kind recommended). Session pods run with `hostUsers: false` (user namespaces), so the filesystem backing your home directory must support idmapped mounts — ext4/xfs/btrfs on Linux, libkrun's virtiofs on macOS (see above).
-
-### Cluster setup
-
-Install [kind](https://kind.sigs.k8s.io/) and [kubectl](https://kubernetes.io/docs/tasks/tools/), then run the bundled setup script:
+yaac ships a local web app — a GUI over the same daemon the CLI drives.
+Launch it with:
 
 ```sh
-./scripts/setup-kind-cluster.sh
-yaac cluster check
+yaac open
 ```
 
-> **Podman 6.x requires kind >= v0.33.0 — don't bump podman alone.** Podman
-> 6.0 changed the container label format from a map to a slice, which breaks
-> how kind <= v0.32.0 enumerates its node containers (`kind get clusters`
-> fails with `exit status 125`), so `setup-kind-cluster.sh` cannot create or
-> delete a cluster. The fix is [kind#4203](https://github.com/kubernetes-sigs/kind/pull/4203)
-> (merged to `main` 2026-06-26, closes [#4201](https://github.com/kubernetes-sigs/kind/issues/4201)),
-> unreleased as of 2026-06-30 — the latest stable is v0.32.0 and even
-> v0.33.0-alpha predates the fix. Until v0.33.0 ships, stay on podman 5.x, or
-> move both together by building kind from `main` (`go install
-> sigs.k8s.io/kind@main` — note `@latest` resolves to the v0.32.0 tag, which
-> lacks the fix). yaac's own podman calls are unaffected (they read
-> `.ID`/`.Repository`/`.Tag`, not `.Labels`); only kind's provider breaks.
+This starts the daemon if needed and opens your browser straight into the
+authenticated app: a live session sidebar, the project list, and an embedded
+terminal (xterm.js) attached to each session's tmux. `yaac open --no-browser`
+prints the URL instead of launching a browser.
 
-The script creates a kind cluster from `k8s/kind-config.yaml` with the three pieces of wiring yaac needs:
+It's local-first — the daemon binds `127.0.0.1` only, and the browser
+authenticates with an `HttpOnly` cookie obtained from a one-time bootstrap
+code that `yaac open` handles for you (no manual pasting). The CLI and web
+app drive the same on-disk state, so you can mix them freely.
 
-1. **Local image registry** on `127.0.0.1:5001` — yaac pushes built session images there and pods pull them as `localhost:5001/...` (the kind [local-registry pattern](https://kind.sigs.k8s.io/docs/user/local-registry/)). Host port 5001 (not the registry-default 5000) sidesteps macOS AirPlay Receiver, which binds `::1:5000`; the container-internal port stays 5000.
-2. **Home-directory extraMount** — session pods mount worktrees, caches, and credentials via `hostPath`, which resolves on the *node*. Mounting `$HOME` into the node at the same path makes node == host for everything yaac touches.
-3. **Unmasked sysfs mount on the node** — session pods run in user namespaces (`hostUsers: false`), and the kernel refuses to start them while kind's `/sys` masks make sysfs "not fully visible" ([kind#3436](https://github.com/kubernetes-sigs/kind/issues/3436)). This mount lives in the node's mount namespace, so **re-run the script after a node container restart** (e.g. after restarting the podman machine).
-
-User namespaces are what keep in-container root unprivileged: the session image grants passwordless sudo (agents can `apt-get install` mid-session), and the userns maps uid 0 in the pod to a throwaway unprivileged uid on the node — the same containment rootless podman gave the pre-kubernetes backend.
-
-The idmapped mounts that come with user namespaces present hostPath files at their real node-side uids, so the session image builds its `yaac` user with the daemon's uid (`YAAC_UID` build arg, baked in automatically and folded into the image tag). Nothing to configure — but if your uid ever changes, images rebuild on their own, and a standalone `Dockerfile.yaac` that creates its own user should honor `ARG YAAC_UID` the same way `dockerfiles/Dockerfile.default` does, or its writes to `/workspace` will fail with `Permission denied`.
-
-`yaac cluster check` verifies kubectl, the cluster, the registry, the namespace, and runs an end-to-end probe pod — user-namespaced, like session pods — that exercises all three wirings, including a hostPath **write** at the session uid. Run it whenever sessions fail to start.
-
-> **v1 limits:** single-node clusters only (the hostPath model assumes node == host). The daemon's control traffic reaches the proxy through a loopback `kubectl port-forward`; nothing yaac deploys listens on host interfaces.
-
-## Usage
+## CLI
 
 ```
 yaac [command]
@@ -119,6 +98,8 @@ Commands:
 
 yaac cluster <command>
   check             Verify cluster prerequisites (kubectl, registry, hostPath wiring)
+  setup [--repair]  Create the kind cluster, registry, and Cilium wiring
+                    (--repair re-applies the node fixups without recreating)
 
 yaac project <command>
   list              List all projects
@@ -159,49 +140,6 @@ Detach from a tmux session with `Ctrl-B D`. Kill the tmux session (and the
 container) with `Ctrl-B K` (custom binding, not standard tmux). Open a new
 shell in the tmux session with `Ctrl-B C`, and switch between shells with `Ctrl-B N` (next) and
 `Ctrl-B P` (previous).
-
-## Web app
-
-yaac ships a local web app — a GUI over the same daemon the CLI drives.
-Launch it with:
-
-```sh
-yaac open
-```
-
-This starts the daemon if needed and opens your browser straight into the
-authenticated app: a live session sidebar, the project list, and an embedded
-terminal (xterm.js) attached to each session's tmux. `yaac open --no-browser`
-prints the URL instead of launching a browser.
-
-It's local-first — the daemon binds `127.0.0.1` only, and the browser
-authenticates with an `HttpOnly` cookie obtained from a one-time bootstrap
-code that `yaac open` handles for you (no manual pasting). The CLI and web
-app drive the same on-disk state, so you can mix them freely.
-
-For frontend development, run the daemon alongside the Vite dev server:
-
-```sh
-yaac daemon start
-pnpm frontend:dev   # http://localhost:1420, proxies the API to the daemon
-```
-
-For daemon/CLI development, use watch mode:
-
-```sh
-pnpm watch
-```
-
-This is `tsx watch` re-running a small wrapper script
-(`scripts/dev-watch.ts`) whenever a build input changes (`src/`,
-`dockerfiles/`, `k8s/`, and the build configs); each run does `pnpm build`
-followed by `yaac daemon restart` — required because the CLI refuses to
-talk to a daemon whose buildId doesn't match. The first run builds and
-(re)starts the daemon, so `pnpm watch` alone is enough to boot a dev loop;
-a failed build skips the restart, and Ctrl-C stops the watcher but leaves
-the daemon running. This is also the intended inner dev loop when
-developing yaac inside a yaac session (yaac-in-yaac): run `pnpm watch` in
-the session and every edit lands in the inner daemon automatically.
 
 ## Authentication
 
@@ -265,13 +203,13 @@ Each session runs as a single-pod Kubernetes Job with the following hostPath mou
 | `~/.yaac/projects/<project>/opencode-data/<session-id>` | `/home/yaac/.local/share/opencode` | OpenCode session data (per session) |
 | `~/.yaac/projects/<project>/.cached-packages` | `/home/yaac/.cached-packages` | Per-project package-manager caches |
 
-The session container runs as user `yaac` with home directory `/home/yaac`. All project data is stored under `~/.yaac/projects/<repo-name>/` on the host — which is why the cluster node must have your home directory extraMounted (see [Cluster setup](#cluster-setup)). The repo plus the Claude and Codex state directories are shared across all sessions within a project (but isolated between projects), so those sessions can inspect each other's history; OpenCode session data is per-session to avoid concurrent-write issues in its database. Each session gets its own git worktree.
+The session container runs as user `yaac` with home directory `/home/yaac`. All project data is stored under `~/.yaac/projects/<repo-name>/` on the host — which is why the cluster node must have your home directory extraMounted (see [Cluster setup](docs/cluster-setup.md#what-it-wires-up)). The repo plus the Claude and Codex state directories are shared across all sessions within a project (but isolated between projects), so those sessions can inspect each other's history; OpenCode session data is per-session to avoid concurrent-write issues in its database. Each session gets its own git worktree.
 
 The `.cached-packages` directory is shared by every session within the project, so package-manager caches survive session teardown and are reused across sessions. pnpm's default `store-dir` is pre-configured to `/home/yaac/.cached-packages/pnpm-store`, so `pnpm install` populates the per-project store automatically with no extra configuration.
 
 ## Project configuration
 
-Per-machine, per-project configuration lives under each project's data dir — not in the repo, so it's never committed and can differ per machine:
+Per-machine, per-project configuration lives under each project's data dir:
 
 ```
 ~/.yaac/projects/<repo-name>/config/yaac-config.json
@@ -374,6 +312,7 @@ Every yaac variable is read in one place — [`src/shared/env.ts`](src/shared/en
 | `YAAC_USE_TOR` | `false` | Route the daemon's host-side git/ssh through a Tor SOCKS proxy. Off when unset/empty/`0`/`false`; any other value is on. |
 | `YAAC_HOST_TOR_SOCKS_URL` | `socks5h://127.0.0.1:9050` | SOCKS endpoint used when `YAAC_USE_TOR` is on. |
 | `YAAC_K8S_REGISTRY` | `localhost:5001` | `host:port` of the local OCI registry the cluster pulls session images from. |
+| `YAAC_KIND_CLUSTER` | `yaac` | Name of the kind cluster `yaac cluster setup` creates/repairs. |
 | `YAAC_PREWARM_POOL_SIZE` | `1` | Prewarmed sessions kept ready per active project (`0` disables prewarming). |
 | `YAAC_NESTED` | _(unset)_ | Set to `1` automatically by the daemon inside a nested (vcluster) session — not something you set yourself. |
 | `YAAC_BUNDLED` | _(unset)_ | Set to `true` by the build (tsup) in the shipped bundle so it loads assets from `dist/`. Build-time define, not a runtime knob. |
@@ -439,5 +378,5 @@ Layer order: default → Dockerfile.tools (agent CLIs; rebuilt by `yaac project 
 - Each project gets a plain-HTTP push registry (`registry:2`) reachable from its sessions as `yaac-reg-<project>.<namespace>.svc:5000` — build an image, `docker push` it there, and `kubectl run` the pushed ref in the vcluster (the node pulls it through a containerd `hosts.toml` mapping). Only the project's own sessions can reach its registry. Stale content-hash tags accumulate until project removal or cluster recreate (registry:2 has no safe online GC).
 - Each vcluster costs roughly 0.5Gi of memory, so mind how many vcluster sessions run at once.
 
-**yaac-in-yaac**: vcluster sessions are preset for running yaac itself inside the session — `YAAC_NESTED=1`, `YAAC_DATA_DIR` pointing at a host-visible per-session dir, and `YAAC_K8S_REGISTRY` pointing at the project registry. Supported in v1: the inner unit suite, inner `yaac cluster check` (egress-layer gates skip under `YAAC_NESTED`), and inner non-nested session creation against the vcluster (inner sessions have no upstream egress in v1). Inner yaac refuses `virtualCluster` — no vcluster-in-vcluster.
+**yaac-in-yaac**: vcluster sessions are preset for running yaac itself inside the session — `YAAC_NESTED=1`, `YAAC_DATA_DIR` pointing at a host-visible per-session dir, and `YAAC_K8S_REGISTRY` pointing at the project registry. Inner yaac refuses `virtualCluster` — no vcluster-in-vcluster.
 

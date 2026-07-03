@@ -527,7 +527,7 @@ function redirectListenerAndCluster(
  * load-bearing: without it Cilium binds the upstream socket to the client pod
  * IP, and forwarding to a fixed proxy (not the original dst) then dead-ends on
  * the return path. Requires `envoyConfig.enabled=true` on the Cilium install
- * (scripts/setup-kind-cluster.sh).
+ * (`yaac cluster setup` passes it).
  *
  * `backendServices` is what makes the EDS clusters resolve: Cilium syncs the
  * proxy Service's backend endpoints (for the listed port numbers) into the
