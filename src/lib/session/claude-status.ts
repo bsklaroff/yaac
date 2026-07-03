@@ -30,24 +30,42 @@ export function classifyClaudeTitle(title: string): 'running' | 'waiting' {
 }
 
 /**
+ * Slash commands leave synthetic `type: 'user'` entries in the transcript
+ * before the first real message. A `/model` invocation, for instance,
+ * persists three of them: the `<local-command-caveat>` preamble (marked
+ * `isMeta`), the `<command-name>…</command-name>` invocation, and its
+ * `<local-command-stdout>` output. None make a sensible session title, so
+ * we skip them and let the title fall through to the first real message.
+ */
+const COMMAND_WRAPPER =
+  /^\s*<(?:command-name|command-message|command-args|local-command-stdout|local-command-caveat)>/
+
+function isCommandMessage(isMeta: boolean | undefined, text: string): boolean {
+  return isMeta === true || COMMAND_WRAPPER.test(text)
+}
+
+/**
  * Reads the beginning of a JSONL session log and returns the text content
- * of the first user message, or undefined if none is found.
+ * of the first real user message — skipping slash-command and local-command
+ * entries — or undefined if none is found.
  */
 export async function getFirstUserMessage(jsonlPath: string): Promise<string | undefined> {
   return scanJsonlForward(jsonlPath, (entry) => {
     const parsed = entry as {
       type: string
+      isMeta?: boolean
       message?: { role?: string; content?: string | Array<{ type: string; text?: string }> }
     }
     if (parsed.type !== 'user') return undefined
 
     const content = parsed.message?.content
-    if (typeof content === 'string') return content
-    if (Array.isArray(content)) {
-      const textBlock = content.find((b) => b.type === 'text')
-      if (textBlock?.text) return textBlock.text
-    }
-    return undefined
+    let text: string | undefined
+    if (typeof content === 'string') text = content
+    else if (Array.isArray(content)) text = content.find((b) => b.type === 'text')?.text
+    if (text === undefined) return undefined
+
+    if (isCommandMessage(parsed.isMeta, text)) return undefined
+    return text
   })
 }
 

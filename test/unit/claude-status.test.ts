@@ -126,4 +126,48 @@ describe('getFirstUserMessage', () => {
 
     expect(await getFirstUserMessage(jsonlPath)).toBe('hello world')
   })
+
+  it('skips a session started with a slash command and returns the first real message', async () => {
+    // Reproduces the on-disk sequence a `/model` invocation writes before
+    // the first real turn: an isMeta caveat, the command invocation, and
+    // its stdout — all synthetic type:'user' entries.
+    await writeEntry({
+      type: 'user',
+      isMeta: true,
+      message: { role: 'user', content: '<local-command-caveat>Caveat: ...</local-command-caveat>' },
+    })
+    await writeEntry({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: '<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args></command-args>',
+      },
+    })
+    await writeEntry({
+      type: 'user',
+      message: { role: 'user', content: '<local-command-stdout>Set model to Fable 5</local-command-stdout>' },
+    })
+    await writeEntry({ type: 'user', message: { role: 'user', content: 'fix the login bug' } })
+
+    expect(await getFirstUserMessage(jsonlPath)).toBe('fix the login bug')
+  })
+
+  it('skips an isMeta user entry even without a command wrapper', async () => {
+    await writeEntry({ type: 'user', isMeta: true, message: { role: 'user', content: 'synthetic preamble' } })
+    await writeEntry({ type: 'user', message: { role: 'user', content: 'real message' } })
+    expect(await getFirstUserMessage(jsonlPath)).toBe('real message')
+  })
+
+  it('returns undefined when only command messages exist', async () => {
+    await writeEntry({
+      type: 'user',
+      isMeta: true,
+      message: { role: 'user', content: '<local-command-caveat>Caveat</local-command-caveat>' },
+    })
+    await writeEntry({
+      type: 'user',
+      message: { role: 'user', content: '<command-name>/clear</command-name>' },
+    })
+    expect(await getFirstUserMessage(jsonlPath)).toBeUndefined()
+  })
 })
