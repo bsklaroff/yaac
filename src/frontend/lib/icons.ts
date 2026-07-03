@@ -24,6 +24,7 @@ export {
   ChevronRight as ChevronIcon,
   X as CloseIcon,
   KeyRound as KeyIcon,
+  Keyboard as KeyboardIcon,
   SlidersHorizontal as GeneralIcon,
   Pencil as RenameIcon,
   PanelLeft as SidebarIcon,

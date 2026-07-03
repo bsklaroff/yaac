@@ -17,6 +17,7 @@ import { projectApp } from '@/daemon/routes/project'
 import { sessionApp } from '@/daemon/routes/session'
 import { toolApp } from '@/daemon/routes/tool'
 import { authApp } from '@/daemon/routes/auth'
+import { shortcutsApp } from '@/daemon/routes/shortcuts'
 import { daemonLog } from '@/daemon/log'
 import { PACKAGE_ROOT } from '@/shared/paths'
 
@@ -110,6 +111,7 @@ export function buildApp(deps: DaemonAppDeps) {
     .route('/session', sessionApp)
     .route('/tool', toolApp)
     .route('/auth', authApp)
+    .route('/shortcuts', shortcutsApp)
 }
 
 export type AppType = ReturnType<typeof buildApp>

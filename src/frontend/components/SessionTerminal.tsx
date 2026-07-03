@@ -3,7 +3,8 @@ import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { clipboardKeyAction } from '@/frontend/lib/clipboard'
-import { matchSessionShortcut, matchTabShortcut } from '@/frontend/lib/shortcuts'
+import { CYCLE_IDS, matchShortcut } from '@/frontend/lib/shortcuts'
+import { useUiStore } from '@/frontend/store'
 import { INITIAL_RECONNECT_DELAY_MS, nextReconnectDelay } from '@/frontend/lib/reconnect'
 
 // iPadOS reports as "Macintosh" in modern Safari; both want the ⌘ bindings.
@@ -58,12 +59,12 @@ export function SessionTerminal({
     // platform-standard bindings: ⌘C/⌘V on mac, Ctrl+Shift+C/V elsewhere.
     term.attachCustomKeyEventHandler((e: KeyboardEvent): boolean => {
       if (e.type !== 'keydown') return true
-      // Terminal-switch (Alt+←/→) and session-switch (Alt+↑/↓) chords
-      // belong to the workspace (window-capture listeners in SessionView
-      // and App act on them before they ever get here); returning false
-      // keeps xterm from also sending the ESC-sequence bytes to the PTY
-      // should one slip through.
-      if (matchTabShortcut(e) !== null || matchSessionShortcut(e) !== null) return false
+      // The terminal- and session-cycle chords belong to the workspace
+      // (window-capture listeners in SessionView and App act on them before
+      // they ever get here); returning false keeps xterm from also sending
+      // the ESC-sequence bytes to the PTY should one slip through.
+      const cycleId = matchShortcut(useUiStore.getState().bindings, e)
+      if (cycleId !== null && CYCLE_IDS.has(cycleId)) return false
       const action = clipboardKeyAction(e, IS_MAC)
       if (action === 'copy') {
         // preventDefault stops the browser's own copy (which would clobber

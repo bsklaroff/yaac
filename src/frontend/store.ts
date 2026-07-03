@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { isLayoutNode, type LayoutNode } from '@/frontend/lib/layout'
+import { DEFAULT_BINDINGS, type BindingMap, type Chord, type ShortcutId } from '@/frontend/lib/shortcuts'
 import type { DeletedSessionEntry, ProvisioningSessionEntry, SessionListEntry } from '@/shared/types'
 
 const LAYOUTS_LS_KEY = 'yaac.layouts.v1'
@@ -278,6 +279,21 @@ interface UiState {
    *  closed through the whole round trip. Persisted; syncWaitingRead GCs
    *  marks whose spell is over. */
   readWaiting: Record<string, number>
+  /** Keyboard-shortcut bindings (command id → chord). Starts at the factory
+   *  defaults and is replaced once the daemon's saved overrides load at
+   *  startup; the window keydown listeners read this at event time. */
+  bindings: BindingMap
+  /** Replace the whole binding map — used to hydrate the saved overrides. */
+  setBindings: (bindings: BindingMap) => void
+  /** Rebind a single command. */
+  setBinding: (id: ShortcutId, chord: Chord) => void
+  /** Restore every command to its factory default. */
+  resetBindings: () => void
+  /** True while the settings pane is capturing a chord for a rebind. The
+   *  workspace keydown listeners bail on it, so the recorded chord doesn't also
+   *  fire the command it's being bound to. */
+  recordingShortcut: boolean
+  setRecordingShortcut: (recording: boolean) => void
   /** Add a locally-initiated provisioning row (dedup by id). */
   addOptimisticProvisioning: (entry: ProvisioningSessionEntry) => void
   /** Patch a tracked optimistic row's message or error (no-op if absent). */
@@ -336,6 +352,12 @@ export const useUiStore = create<UiState>((set) => ({
   pendingDeleteIds: [],
   optimisticDeleted: [],
   readWaiting: loadReadWaiting(),
+  bindings: DEFAULT_BINDINGS,
+  setBindings: (bindings) => set({ bindings }),
+  setBinding: (id, chord) => set((s) => ({ bindings: { ...s.bindings, [id]: chord } })),
+  resetBindings: () => set({ bindings: DEFAULT_BINDINGS }),
+  recordingShortcut: false,
+  setRecordingShortcut: (recording) => set({ recordingShortcut: recording }),
   addOptimisticProvisioning: (entry) => set((s) => (
     s.optimisticProvisioning.some((e) => e.sessionId === entry.sessionId)
       ? s

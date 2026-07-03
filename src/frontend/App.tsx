@@ -3,7 +3,8 @@ import { api, ApiError } from './lib/apiClient'
 import { readBootstrapCode, postBootstrap, stripBootstrapFromUrl } from './lib/bootstrap'
 import { createSession } from './lib/createSession'
 import { deleteSessionOptimistic } from './lib/deleteSessionFlow'
-import { matchAttentionShortcut, matchCloseShortcut, matchCreateShortcut, matchSessionShortcut, resolveCycleTarget } from './lib/shortcuts'
+import { cycleDeltaFor, matchShortcut, mergeBindings, resolveCycleTarget } from './lib/shortcuts'
+import { getShortcutOverrides } from './lib/settingsApi'
 import { useEvents } from './lib/useEvents'
 import { useProvisionSession } from './lib/useProvisionSession'
 import { useSnapshot } from './lib/useSnapshot'
@@ -162,36 +163,57 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       const ctx = shortcutCtx.current
-      if (matchCreateShortcut(e) === 'new-session') {
-        e.preventDefault()
-        e.stopPropagation()
-        ctx.newSession()
-        return
+      const state = useUiStore.getState()
+      // The settings pane is capturing a rebind — don't act on the keypress
+      // it's recording.
+      if (state.recordingShortcut) return
+      // Only the project-scoped commands are handled here; terminal-scoped
+      // ones (new-shell, kill-terminal, terminal cycles) belong to SessionView,
+      // so its ids fall through the switch untouched.
+      const id = matchShortcut(state.bindings, e)
+      switch (id) {
+        case 'new-session':
+          e.preventDefault()
+          e.stopPropagation()
+          ctx.newSession()
+          return
+        case 'delete-session':
+          if (!ctx.selectedSession) return
+          e.preventDefault()
+          e.stopPropagation()
+          setConfirmDelete(ctx.selectedSession)
+          return
+        case 'jump-attention':
+          if (!ctx.attentionTarget) return
+          e.preventDefault()
+          e.stopPropagation()
+          useUiStore.getState().selectSession(ctx.attentionTarget)
+          return
+        case 'prev-session':
+        case 'next-session': {
+          const delta = cycleDeltaFor(id)
+          if (delta === null) return
+          const next = resolveCycleTarget(ctx.rowIds, ctx.selectedSessionId ?? undefined, delta)
+          if (!next) return
+          e.preventDefault()
+          e.stopPropagation()
+          useUiStore.getState().selectSession(next)
+          return
+        }
+        default:
+          return
       }
-      if (matchCloseShortcut(e) === 'delete-session') {
-        if (!ctx.selectedSession) return
-        e.preventDefault()
-        e.stopPropagation()
-        setConfirmDelete(ctx.selectedSession)
-        return
-      }
-      if (matchAttentionShortcut(e)) {
-        if (!ctx.attentionTarget) return
-        e.preventDefault()
-        e.stopPropagation()
-        useUiStore.getState().selectSession(ctx.attentionTarget)
-        return
-      }
-      const delta = matchSessionShortcut(e)
-      if (delta === null) return
-      const next = resolveCycleTarget(ctx.rowIds, ctx.selectedSessionId ?? undefined, delta)
-      if (!next) return
-      e.preventDefault()
-      e.stopPropagation()
-      useUiStore.getState().selectSession(next)
     }
     window.addEventListener('keydown', onKeyDown, { capture: true })
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
+  }, [])
+
+  // Load saved shortcut overrides once at startup; until they arrive the
+  // factory defaults apply. Failures are non-fatal — the defaults just stand.
+  useEffect(() => {
+    void getShortcutOverrides()
+      .then((overrides) => useUiStore.getState().setBindings(mergeBindings(overrides)))
+      .catch((e: unknown) => console.error(e))
   }, [])
 
   // Auto-select: never show an empty pane when the project has sessions — pick

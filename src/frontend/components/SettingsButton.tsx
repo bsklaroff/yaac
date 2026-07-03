@@ -3,16 +3,26 @@ import clsx from 'clsx'
 import { Dialog } from '@base-ui/react/dialog'
 import { Radio } from '@base-ui/react/radio'
 import { RadioGroup } from '@base-ui/react/radio-group'
-import { CloseIcon, GeneralIcon, KeyIcon, SettingsIcon, TOOL_LABEL } from '@/frontend/lib/icons'
-import { addGitCredential, getAuthList, getDefaultTool, setDefaultTool } from '@/frontend/lib/settingsApi'
+import { CloseIcon, GeneralIcon, KeyboardIcon, KeyIcon, SettingsIcon, TOOL_LABEL } from '@/frontend/lib/icons'
+import {
+  addGitCredential, getAuthList, getDefaultTool, resetShortcuts, setDefaultTool, setShortcutOverride,
+} from '@/frontend/lib/settingsApi'
+import {
+  SHORTCUTS, chordFromEvent, chordsEqual, formatChord, isModifierCode, validateChord, type ShortcutId,
+} from '@/frontend/lib/shortcuts'
+import { useUiStore } from '@/frontend/store'
 import type { AgentTool, AuthListResult } from '@/shared/types'
+
+// iPadOS reports as "Macintosh" in modern Safari; both want the ⌘/⌥ glyphs.
+const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent)
 
 const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode']
 
-type SettingsSection = 'general' | 'credentials'
+type SettingsSection = 'general' | 'shortcuts' | 'credentials'
 
 const SECTIONS: { key: SettingsSection; label: string; Icon: typeof GeneralIcon }[] = [
   { key: 'general', label: 'General', Icon: GeneralIcon },
+  { key: 'shortcuts', label: 'Shortcuts', Icon: KeyboardIcon },
   { key: 'credentials', label: 'Credentials', Icon: KeyIcon },
 ]
 
@@ -118,6 +128,8 @@ export function SettingsButton(): JSX.Element {
               </section>
             )}
 
+            {section === 'shortcuts' && <ShortcutsPane />}
+
             {section === 'credentials' && (
               <section>
                 <h2 className="text-sm font-semibold">Credentials</h2>
@@ -147,6 +159,128 @@ export function SettingsButton(): JSX.Element {
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>
+  )
+}
+
+/**
+ * View + rebind every keyboard shortcut. Click a row to record; the next
+ * keypress (with a modifier, not already bound) becomes its chord and persists.
+ * While recording, the workspace keydown listeners bail (via the store's
+ * `recordingShortcut` flag) so the captured chord doesn't also fire the command
+ * it's being bound to.
+ */
+function ShortcutsPane(): JSX.Element {
+  const bindings = useUiStore((s) => s.bindings)
+  const setBinding = useUiStore((s) => s.setBinding)
+  const resetBindings = useUiStore((s) => s.resetBindings)
+  const [recordingId, setRecordingId] = useState<ShortcutId | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!recordingId) return
+    const setRecording = useUiStore.getState().setRecordingShortcut
+    setRecording(true)
+    const onKeyDown = (e: KeyboardEvent): void => {
+      // Swallow the chord so it neither fires an app shortcut nor most in-page
+      // browser ones. Truly reserved chords (Ctrl+W…) are grabbed by the
+      // browser first and never arrive here — they self-exclude.
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.code === 'Escape') { setRecordingId(null); setError(null); return }
+      if (isModifierCode(e.code)) return // still waiting for the non-modifier key
+      const chord = chordFromEvent(e)
+      const check = validateChord(chord, bindings, recordingId)
+      if (!check.ok) { setError(check.reason); return }
+      const id = recordingId
+      setRecordingId(null)
+      setError(null)
+      setBinding(id, chord)
+      void setShortcutOverride(id, chord).catch((err: unknown) => console.error(err))
+    }
+    window.addEventListener('keydown', onKeyDown, { capture: true })
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, { capture: true })
+      setRecording(false)
+    }
+  }, [recordingId, bindings, setBinding])
+
+  const startRecording = (id: ShortcutId): void => {
+    setError(null)
+    setRecordingId((cur) => (cur === id ? null : id)) // click the active row again to cancel
+  }
+
+  const resetOne = (id: ShortcutId): void => {
+    const def = SHORTCUTS.find((s) => s.id === id)
+    if (!def) return
+    setError(null)
+    setBinding(id, def.defaultChord)
+    void setShortcutOverride(id, def.defaultChord).catch((err: unknown) => console.error(err))
+  }
+
+  const resetAll = (): void => {
+    setRecordingId(null)
+    setError(null)
+    resetBindings()
+    void resetShortcuts().catch((err: unknown) => console.error(err))
+  }
+
+  return (
+    <section>
+      {/* Title only — the dialog's ✕ sits at the top-right, so nothing else
+          may live there. "Reset all" is a footer below the list. */}
+      <h2 className="text-sm font-semibold">Shortcuts</h2>
+      <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
+        Click a shortcut, then press a new key combination (hold Alt, Ctrl, or Cmd).
+        Some chords the browser reserves — like Ctrl+W — can’t be captured.
+      </p>
+      {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+
+      <div className="mt-4 space-y-1">
+        {SHORTCUTS.map((def) => {
+          const chord = bindings[def.id]
+          const overridden = !chordsEqual(chord, def.defaultChord)
+          const recording = recordingId === def.id
+          return (
+            <div key={def.id} className="flex items-center justify-between gap-3 rounded-md bg-bg px-3 py-2">
+              <div className="min-w-0">
+                <div className="text-xs font-medium text-text">{def.label}</div>
+                <div className="truncate text-[11px] text-text-faint">{def.description}</div>
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5">
+                {overridden && !recording && (
+                  <button
+                    onClick={() => resetOne(def.id)}
+                    title="Reset to default"
+                    className="rounded px-1.5 py-0.5 text-[11px] text-text-faint transition hover:text-text"
+                  >
+                    Reset
+                  </button>
+                )}
+                <button
+                  onClick={() => startRecording(def.id)}
+                  className={clsx(
+                    'min-w-[88px] rounded-md border px-2.5 py-1 text-center font-mono text-xs transition',
+                    recording
+                      ? 'border-accent bg-accent/10 text-accent'
+                      : 'border-border bg-surface-2 text-text-dim hover:border-border-strong hover:text-text',
+                  )}
+                >
+                  {recording ? 'Press…' : formatChord(chord, IS_MAC)}
+                </button>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <button
+        onClick={resetAll}
+        className="mt-4 rounded-md border border-border px-2.5 py-1 text-[11px] text-text-faint transition
+          hover:border-border-strong hover:text-text"
+      >
+        Reset all to defaults
+      </button>
+    </section>
   )
 }
 

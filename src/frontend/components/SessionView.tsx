@@ -10,7 +10,7 @@ import { AddIcon, CloseIcon, SidebarIcon, SplitDownIcon, SplitRightIcon, TabsIco
 import { BlockedHostsBadge } from '@/frontend/components/BlockedHostsBadge'
 import { ForwardedPortLinks } from '@/frontend/components/ForwardedPortLinks'
 import { getSessionTerminals, createShellTerminal, killSessionTerminal } from '@/frontend/lib/terminalsApi'
-import { matchCloseShortcut, matchCreateShortcut, matchTabShortcut, resolveCycleTarget } from '@/frontend/lib/shortcuts'
+import { cycleDeltaFor, matchShortcut, resolveCycleTarget } from '@/frontend/lib/shortcuts'
 import {
   addLeafToLargest,
   computeLayout,
@@ -228,27 +228,39 @@ export function SessionView({
     const onKeyDown = (e: KeyboardEvent): void => {
       const ctx = shortcutCtx.current
       if (!ctx.sid) return
-      if (matchCreateShortcut(e) === 'new-shell') {
-        e.preventDefault()
-        e.stopPropagation()
-        ctx.openShell()
-        return
+      const state = useUiStore.getState()
+      // The settings pane is capturing a rebind — leave the keypress alone.
+      if (state.recordingShortcut) return
+      // Only the terminal-scoped commands are handled here; project-scoped ones
+      // belong to App's listener, so their ids fall through the switch.
+      const id = matchShortcut(state.bindings, e)
+      switch (id) {
+        case 'new-shell':
+          e.preventDefault()
+          e.stopPropagation()
+          ctx.openShell()
+          return
+        case 'kill-terminal':
+          // The agent pane isn't killable — leave the chord alone then.
+          if (!ctx.activeTab || ctx.activeTab === 'agent') return
+          e.preventDefault()
+          e.stopPropagation()
+          setConfirmKill({ target: ctx.activeTab, name: paneName(ctx.activeTab, ctx.terminals) })
+          return
+        case 'prev-terminal':
+        case 'next-terminal': {
+          const delta = cycleDeltaFor(id)
+          if (delta === null) return
+          const next = resolveCycleTarget(ctx.targets, ctx.activeTab, delta)
+          if (!next) return
+          e.preventDefault()
+          e.stopPropagation()
+          useUiStore.getState().focusTerminal(ctx.sid, next)
+          return
+        }
+        default:
+          return
       }
-      if (matchCloseShortcut(e) === 'kill-terminal') {
-        // The agent pane isn't killable — leave the chord alone then.
-        if (!ctx.activeTab || ctx.activeTab === 'agent') return
-        e.preventDefault()
-        e.stopPropagation()
-        setConfirmKill({ target: ctx.activeTab, name: paneName(ctx.activeTab, ctx.terminals) })
-        return
-      }
-      const delta = matchTabShortcut(e)
-      if (delta === null) return
-      const next = resolveCycleTarget(ctx.targets, ctx.activeTab, delta)
-      if (!next) return
-      e.preventDefault()
-      e.stopPropagation()
-      useUiStore.getState().focusTerminal(ctx.sid, next)
     }
     window.addEventListener('keydown', onKeyDown, { capture: true })
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true })

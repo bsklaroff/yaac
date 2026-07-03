@@ -10,8 +10,16 @@ import {
   setDefaultTool,
   setDefaultToolChecked,
   isValidTool,
+  getShortcutOverrides,
+  setShortcutOverride,
+  clearShortcutOverrides,
+  type SerializedChord,
 } from '@/lib/project/preferences'
 import { DaemonError } from '@/daemon/errors'
+
+const chord = (code: string, over: Partial<SerializedChord> = {}): SerializedChord => ({
+  code, alt: true, ctrl: false, meta: false, shift: false, ...over,
+})
 
 describe('preferences', () => {
   let tmpDir: string
@@ -130,6 +138,48 @@ describe('preferences', () => {
       await expect(setDefaultToolChecked('gemini')).rejects.toMatchObject({
         code: 'VALIDATION',
       })
+    })
+  })
+
+  describe('shortcut overrides', () => {
+    it('getShortcutOverrides returns {} when none are set', async () => {
+      expect(await getShortcutOverrides()).toEqual({})
+    })
+
+    it('setShortcutOverride persists a rebind and coexists with defaultTool', async () => {
+      await setDefaultTool('codex')
+      await setShortcutOverride('new-session', chord('KeyG'))
+      expect(await getShortcutOverrides()).toEqual({ 'new-session': chord('KeyG') })
+      // The unrelated preference is untouched.
+      expect((await loadPreferences()).defaultTool).toBe('codex')
+    })
+
+    it('accumulates overrides and overwrites one in place', async () => {
+      await setShortcutOverride('new-session', chord('KeyG'))
+      await setShortcutOverride('kill-terminal', chord('KeyX'))
+      await setShortcutOverride('new-session', chord('KeyH'))
+      expect(await getShortcutOverrides()).toEqual({
+        'new-session': chord('KeyH'),
+        'kill-terminal': chord('KeyX'),
+      })
+    })
+
+    it('clearShortcutOverrides drops the shortcuts but keeps other prefs', async () => {
+      await setDefaultTool('claude')
+      await setShortcutOverride('new-session', chord('KeyG'))
+      await clearShortcutOverrides()
+      expect(await getShortcutOverrides()).toEqual({})
+      expect((await loadPreferences()).defaultTool).toBe('claude')
+    })
+
+    it('loadPreferences drops malformed shortcut entries', async () => {
+      await fs.writeFile(preferencesPath(), JSON.stringify({
+        shortcuts: {
+          'new-session': chord('KeyG'),
+          'bad': { code: 'KeyW' }, // missing modifier flags
+        },
+      }))
+      expect((await loadPreferences()).shortcuts).toEqual({ 'new-session': chord('KeyG') })
     })
   })
 })

@@ -5,8 +5,45 @@ import { getDataDir, ensureDataDir } from '@/lib/project/paths'
 import { DaemonError } from '@/daemon/errors'
 import type { AgentTool } from '@/shared/types'
 
+/** A persisted keyboard-shortcut chord: a physical key `code` plus the four
+ *  modifier states. Mirrors the frontend `Chord` shape (the daemon must not
+ *  import frontend code). */
+export interface SerializedChord {
+  code: string
+  alt: boolean
+  ctrl: boolean
+  meta: boolean
+  shift: boolean
+}
+
 export interface PreferencesFile {
   defaultTool?: AgentTool
+  /** Keyboard-shortcut overrides, keyed by command id. Only ids the user has
+   *  rebound appear; the frontend overlays these on its factory defaults. */
+  shortcuts?: Record<string, SerializedChord>
+}
+
+/** Structural guard for a stored chord — entries arrive from a JSON file that
+ *  may be hand-edited or written by an older/newer build. */
+function isSerializedChord(value: unknown): value is SerializedChord {
+  if (typeof value !== 'object' || value === null) return false
+  const c = value as Record<string, unknown>
+  return typeof c.code === 'string'
+    && typeof c.alt === 'boolean'
+    && typeof c.ctrl === 'boolean'
+    && typeof c.meta === 'boolean'
+    && typeof c.shift === 'boolean'
+}
+
+/** Read the shortcuts map from a parsed prefs object, dropping malformed
+ *  entries. */
+function parseShortcuts(value: unknown): Record<string, SerializedChord> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {}
+  const out: Record<string, SerializedChord> = {}
+  for (const [id, chord] of Object.entries(value as Record<string, unknown>)) {
+    if (isSerializedChord(chord)) out[id] = chord
+  }
+  return out
 }
 
 export function preferencesPath(): string {
@@ -27,6 +64,8 @@ export async function loadPreferences(): Promise<PreferencesFile> {
       ) {
         result.defaultTool = obj.defaultTool
       }
+      const shortcuts = parseShortcuts(obj.shortcuts)
+      if (Object.keys(shortcuts).length > 0) result.shortcuts = shortcuts
       return result
     }
     return {}
@@ -51,6 +90,26 @@ export async function getDefaultTool(): Promise<AgentTool | undefined> {
 export async function setDefaultTool(tool: AgentTool): Promise<void> {
   const prefs = await loadPreferences()
   prefs.defaultTool = tool
+  await savePreferences(prefs)
+}
+
+/** All saved shortcut overrides (empty when none are set). */
+export async function getShortcutOverrides(): Promise<Record<string, SerializedChord>> {
+  const prefs = await loadPreferences()
+  return prefs.shortcuts ?? {}
+}
+
+/** Persist a single command's rebind, leaving the other overrides intact. */
+export async function setShortcutOverride(id: string, chord: SerializedChord): Promise<void> {
+  const prefs = await loadPreferences()
+  prefs.shortcuts = { ...prefs.shortcuts, [id]: chord }
+  await savePreferences(prefs)
+}
+
+/** Drop every shortcut override, restoring the factory defaults. */
+export async function clearShortcutOverrides(): Promise<void> {
+  const prefs = await loadPreferences()
+  delete prefs.shortcuts
   await savePreferences(prefs)
 }
 

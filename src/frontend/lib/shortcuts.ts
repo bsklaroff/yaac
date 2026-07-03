@@ -2,55 +2,147 @@
  *  -1 = previous (left/up), 1 = next (right/down). */
 export type CycleDelta = 1 | -1
 
-/** A create intent decoded from a workspace keydown. */
-export type CreateAction = 'new-session' | 'new-shell'
-
-/** Just the keyboard-event fields the decision needs — keeps this pure and
+/** Just the keyboard-event fields matching needs — keeps the matchers pure and
  *  trivial to unit test without synthesizing a full KeyboardEvent. */
 export type ShortcutKey = Pick<KeyboardEvent, 'altKey' | 'ctrlKey' | 'metaKey' | 'shiftKey' | 'code'>
 
-/** Alt with no other modifier — the workspace's cycling chord. AltGr
- *  layouts are unaffected (AltGr reports Ctrl+Alt, which doesn't match). */
-function altAlone(e: ShortcutKey): boolean {
-  return e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey
+/**
+ * A normalized key chord: a physical key plus the four modifier states.
+ * Matched on `code` (the physical key) rather than `key` so macOS Option
+ * dead-keys ("˜", "†") and keyboard-layout differences never affect it.
+ */
+export interface Chord {
+  code: string
+  alt: boolean
+  ctrl: boolean
+  meta: boolean
+  shift: boolean
 }
 
 /**
- * Map a keydown to a terminal-switching intent:
- *
- *  - Alt+← / Alt+→ — previous / next terminal (tab-strip order),
- *    the same chord on every platform.
- *
- * Alt+arrows are page-interceptable in every browser — unlike the
- * reserved native tab chords (⌘1-9, Ctrl+Tab, ⌘⇧[/]) — and AltGr layouts
- * are unaffected. Accepted costs: inside terminal panes this shadows
- * ⌥←/⌥→ word-jump on macOS, and it swallows the browser's Alt+←/→
- * history navigation while the workspace is open.
- *
- * Returns null for anything else, meaning "not ours — let it through".
+ * The rebindable commands. The directional cycles are split into prev/next so
+ * each direction is independently editable in the settings pane.
  */
-export function matchTabShortcut(e: ShortcutKey): CycleDelta | null {
-  if (!altAlone(e)) return null
-  if (e.code === 'ArrowLeft') return -1
-  if (e.code === 'ArrowRight') return 1
+export type ShortcutId =
+  | 'new-session'
+  | 'new-shell'
+  | 'delete-session'
+  | 'kill-terminal'
+  | 'jump-attention'
+  | 'prev-session'
+  | 'next-session'
+  | 'prev-terminal'
+  | 'next-terminal'
+
+/** A command's identity, human labels, and factory-default chord. */
+export interface ShortcutDef {
+  id: ShortcutId
+  label: string
+  description: string
+  defaultChord: Chord
+}
+
+/** The resolved chord bound to every command. */
+export type BindingMap = Record<ShortcutId, Chord>
+
+/** Alt-only chord for a physical key — the historical default shape. */
+function alt(code: string): Chord {
+  return { code, alt: true, ctrl: false, meta: false, shift: false }
+}
+
+/**
+ * The command registry, in match-precedence and display order. Labels and
+ * descriptions surface in Settings → Shortcuts; the defaults reproduce the
+ * chords that were previously hardcoded across the workspace.
+ */
+export const SHORTCUTS: ShortcutDef[] = [
+  { id: 'new-session', label: 'New session',
+    description: 'Create a session in the active project.', defaultChord: alt('KeyN') },
+  { id: 'new-shell', label: 'New shell',
+    description: 'Open a scratch-shell terminal in the selected session.', defaultChord: alt('KeyT') },
+  { id: 'delete-session', label: 'Delete session',
+    description: 'Delete the selected session (asks to confirm).', defaultChord: alt('KeyD') },
+  { id: 'kill-terminal', label: 'Kill terminal',
+    description: 'Close the active terminal (asks to confirm).', defaultChord: alt('KeyW') },
+  { id: 'jump-attention', label: 'Jump to attention',
+    description: 'Select the session that most needs attention.', defaultChord: alt('KeyB') },
+  { id: 'prev-session', label: 'Previous session',
+    description: 'Select the previous session in the sidebar.', defaultChord: alt('ArrowUp') },
+  { id: 'next-session', label: 'Next session',
+    description: 'Select the next session in the sidebar.', defaultChord: alt('ArrowDown') },
+  { id: 'prev-terminal', label: 'Previous terminal',
+    description: 'Focus the previous terminal in the tab strip.', defaultChord: alt('ArrowLeft') },
+  { id: 'next-terminal', label: 'Next terminal',
+    description: 'Focus the next terminal in the tab strip.', defaultChord: alt('ArrowRight') },
+]
+
+/** All shortcut ids, in registry order (which is also match precedence). */
+const SHORTCUT_IDS: ShortcutId[] = SHORTCUTS.map((s) => s.id)
+
+/** The factory-default binding for every command. */
+export const DEFAULT_BINDINGS: BindingMap = Object.fromEntries(
+  SHORTCUTS.map((s) => [s.id, s.defaultChord]),
+) as BindingMap
+
+/**
+ * The four directional cycle commands. The workspace owns these chords, so the
+ * terminal lets them bubble to the window listeners instead of forwarding ESC
+ * bytes to the PTY.
+ */
+export const CYCLE_IDS: ReadonlySet<ShortcutId> = new Set<ShortcutId>([
+  'prev-session', 'next-session', 'prev-terminal', 'next-terminal',
+])
+
+/** True when `id` is one of the known rebindable commands. */
+export function isShortcutId(id: string): id is ShortcutId {
+  return SHORTCUT_IDS.includes(id as ShortcutId)
+}
+
+/** Normalize a keydown into a Chord. */
+export function chordFromEvent(e: ShortcutKey): Chord {
+  return { code: e.code, alt: e.altKey, ctrl: e.ctrlKey, meta: e.metaKey, shift: e.shiftKey }
+}
+
+/** Structural chord equality. */
+export function chordsEqual(a: Chord, b: Chord): boolean {
+  return a.code === b.code
+    && a.alt === b.alt
+    && a.ctrl === b.ctrl
+    && a.meta === b.meta
+    && a.shift === b.shift
+}
+
+/**
+ * True when a keydown exactly matches a bound chord — the same physical key and
+ * the same four modifier states. Exact modifier equality is what preserves
+ * AltGr passthrough for free: a chord bound to Alt-alone won't match a Ctrl+Alt
+ * event (AltGr), because `ctrl` differs, so those characters fall through
+ * untouched.
+ */
+export function chordMatches(binding: Chord, e: ShortcutKey): boolean {
+  return e.code === binding.code
+    && e.altKey === binding.alt
+    && e.ctrlKey === binding.ctrl
+    && e.metaKey === binding.meta
+    && e.shiftKey === binding.shift
+}
+
+/**
+ * The command a keydown triggers under the given bindings, or null for
+ * "not ours — let it through". First match in registry order wins (validation
+ * keeps two commands from sharing a chord, so at most one ever matches).
+ */
+export function matchShortcut(bindings: BindingMap, e: ShortcutKey): ShortcutId | null {
+  for (const id of SHORTCUT_IDS) {
+    if (chordMatches(bindings[id], e)) return id
+  }
   return null
 }
 
-/**
- * Map a keydown to a session-switching intent:
- *
- *  - Alt+↑ / Alt+↓ — previous / next session (sidebar order).
- *
- * The vertical counterpart of matchTabShortcut, chosen for the same
- * reasons. Accepted cost: inside terminal panes it shadows whatever a
- * shell/TUI binds to Alt+↑/↓.
- *
- * Returns null for anything else, meaning "not ours — let it through".
- */
-export function matchSessionShortcut(e: ShortcutKey): CycleDelta | null {
-  if (!altAlone(e)) return null
-  if (e.code === 'ArrowUp') return -1
-  if (e.code === 'ArrowDown') return 1
+/** The cycle direction a command implies, or null if it isn't a cycler. */
+export function cycleDeltaFor(id: ShortcutId): CycleDelta | null {
+  if (id === 'prev-session' || id === 'prev-terminal') return -1
+  if (id === 'next-session' || id === 'next-terminal') return 1
   return null
 }
 
@@ -72,60 +164,99 @@ export function resolveCycleTarget(
   return targets[(current + delta + targets.length) % targets.length]
 }
 
-/**
- * Map a keydown to a create intent:
- *
- *  - Alt+N — new session in the active project.
- *  - Alt+T — new scratch-shell terminal in the selected session.
- *
- * Matches on `code` (the physical key) rather than `key`: with Option held,
- * macOS reports dead-key values ("˜", "†") for `key` — `code` is stable
- * everywhere. Exactly Alt must be held, so AltGr layouts (Ctrl+Alt) and
- * terminal combos like Ctrl+Alt+N pass through untouched.
- *
- * Returns null for anything else, meaning "not ours — let it through".
- */
-export function matchCreateShortcut(e: ShortcutKey): CreateAction | null {
-  if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return null
-  if (e.code === 'KeyN') return 'new-session'
-  if (e.code === 'KeyT') return 'new-shell'
-  return null
+/** Physical `code` values that are modifier keys themselves — a chord can't be
+ *  a bare modifier. */
+const MODIFIER_CODES = new Set<string>([
+  'AltLeft', 'AltRight', 'ControlLeft', 'ControlRight',
+  'MetaLeft', 'MetaRight', 'ShiftLeft', 'ShiftRight',
+])
+
+/** True when `code` is a bare modifier key rather than a bindable key. */
+export function isModifierCode(code: string): boolean {
+  return MODIFIER_CODES.has(code)
 }
 
-/** A close/teardown intent decoded from a workspace keydown. */
-export type CloseAction = 'kill-terminal' | 'delete-session'
+/** The outcome of validating a candidate rebind. */
+export type ChordValidation = { ok: true } | { ok: false; reason: string }
 
 /**
- * Map a keydown to a close intent — the destructive mirror of
- * matchCreateShortcut:
- *
- *  - Alt+W — kill the active terminal (its tmux window).
- *  - Alt+D — delete the selected session.
- *
- * Both go through a confirm dialog whose confirm button holds initial
- * focus, so Alt+W Enter / Alt+D Enter complete the action from the
- * keyboard. Matches on `code` with exactly Alt held, for the same
- * reasons as matchCreateShortcut. Accepted cost: Alt+D shadows the
- * browser's address-bar focus chord on Windows/Linux.
- *
- * Returns null for anything else, meaning "not ours — let it through".
+ * Whether `chord` may be bound to `selfId`. Requires a real modifier
+ * (Alt/Ctrl/Meta) so a bare key can't shadow terminal typing, rejects a lone
+ * modifier keypress, and rejects a chord already bound to a different command.
  */
-export function matchCloseShortcut(e: ShortcutKey): CloseAction | null {
-  if (!altAlone(e)) return null
-  if (e.code === 'KeyW') return 'kill-terminal'
-  if (e.code === 'KeyD') return 'delete-session'
-  return null
+export function validateChord(chord: Chord, bindings: BindingMap, selfId: ShortcutId): ChordValidation {
+  if (isModifierCode(chord.code)) {
+    return { ok: false, reason: 'Press a key along with a modifier.' }
+  }
+  if (!chord.alt && !chord.ctrl && !chord.meta) {
+    return { ok: false, reason: 'Hold Alt, Ctrl, or Cmd.' }
+  }
+  for (const id of SHORTCUT_IDS) {
+    if (id === selfId) continue
+    if (chordsEqual(bindings[id], chord)) {
+      const def = SHORTCUTS.find((s) => s.id === id)
+      return { ok: false, reason: `Already bound to “${def?.label ?? id}”.` }
+    }
+  }
+  return { ok: true }
+}
+
+/** Runtime guard for a Chord shape — overrides arrive from JSON. */
+export function isChord(value: unknown): value is Chord {
+  if (typeof value !== 'object' || value === null) return false
+  const c = value as Record<string, unknown>
+  return typeof c.code === 'string'
+    && typeof c.alt === 'boolean'
+    && typeof c.ctrl === 'boolean'
+    && typeof c.meta === 'boolean'
+    && typeof c.shift === 'boolean'
 }
 
 /**
- * True for Alt+B — "jump to the session that most needs attention" (the
- * topmost unread, else waiting, else running row; resolveAttentionTarget in
- * the store picks the actual target). Same exactly-Alt rule and physical-key
- * (`code`) match as the other workspace chords, so AltGr / Ctrl+Alt combos and
- * macOS Option dead-keys pass through untouched.
- *
- * Returns false for anything else, meaning "not ours — let it through".
+ * A binding map = the defaults overlaid with `overrides`, but only for known
+ * ids carrying a well-formed chord. Unknown ids and malformed chords (both
+ * possible when reading a hand-edited or stale preferences file) are ignored.
  */
-export function matchAttentionShortcut(e: ShortcutKey): boolean {
-  return altAlone(e) && e.code === 'KeyB'
+export function mergeBindings(overrides: Record<string, unknown>): BindingMap {
+  const merged: BindingMap = { ...DEFAULT_BINDINGS }
+  for (const [id, chord] of Object.entries(overrides)) {
+    if (isShortcutId(id) && isChord(chord)) merged[id] = chord
+  }
+  return merged
+}
+
+/** A human label for a physical `code`: KeyN→N, Digit1→1, ArrowLeft→←, else
+ *  the raw code. */
+export function formatCode(code: string): string {
+  const named: Record<string, string> = {
+    ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓',
+    Enter: 'Enter', Escape: 'Esc', Space: 'Space', Tab: 'Tab',
+    Backspace: 'Backspace', Delete: 'Delete',
+  }
+  if (code in named) return named[code]
+  if (code.startsWith('Key')) return code.slice(3)
+  if (code.startsWith('Digit')) return code.slice(5)
+  return code
+}
+
+/**
+ * Render a chord for display, e.g. "Alt+N", "Ctrl+Shift+K", "Alt+→". On macOS
+ * uses the platform glyphs (⌃ ⌥ ⇧ ⌘) in their conventional order.
+ */
+export function formatChord(chord: Chord, isMac = false): string {
+  if (isMac) {
+    let out = ''
+    if (chord.ctrl) out += '⌃'
+    if (chord.alt) out += '⌥'
+    if (chord.shift) out += '⇧'
+    if (chord.meta) out += '⌘'
+    return out + formatCode(chord.code)
+  }
+  const parts: string[] = []
+  if (chord.ctrl) parts.push('Ctrl')
+  if (chord.meta) parts.push('Meta')
+  if (chord.alt) parts.push('Alt')
+  if (chord.shift) parts.push('Shift')
+  parts.push(formatCode(chord.code))
+  return parts.join('+')
 }
