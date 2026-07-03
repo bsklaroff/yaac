@@ -172,6 +172,74 @@ describe('write routes', () => {
     })
   })
 
+  describe('GET /project/:slug/dockerfile', () => {
+    it('returns empty content when the project has none', async () => {
+      await writeProject('demo')
+      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const res = await client.project[':slug'].dockerfile.$get({ param: { slug: 'demo' } })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ content: '' })
+    })
+
+    it('returns 404 for an unknown project', async () => {
+      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const res = await client.project[':slug'].dockerfile.$get({ param: { slug: 'nope' } })
+      expect(res.status).toBe(404)
+    })
+  })
+
+  describe('PUT /project/:slug/dockerfile', () => {
+    it('rejects requests with no content field', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/project/demo/dockerfile', withAuth({
+        method: 'PUT',
+        body: JSON.stringify({}),
+      }))
+      expect(res.status).toBe(400)
+    })
+
+    it('writes the Dockerfile and returns it', async () => {
+      await writeProject('demo')
+      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const res = await client.project[':slug'].dockerfile.$put({
+        param: { slug: 'demo' },
+        json: { content: 'FROM ubuntu:24.04\n' },
+      })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ content: 'FROM ubuntu:24.04\n' })
+      const raw = await fs.readFile(
+        path.join(projectConfigDir('demo'), 'Dockerfile.yaac'),
+        'utf8',
+      )
+      expect(raw).toBe('FROM ubuntu:24.04\n')
+    })
+  })
+
+  describe('GET/PUT /config/user-dockerfile', () => {
+    it('returns empty content when unset', async () => {
+      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const res = await client.config['user-dockerfile'].$get()
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ content: '' })
+    })
+
+    it('writes a layered user Dockerfile and returns it', async () => {
+      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const content = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo hi\n'
+      const res = await client.config['user-dockerfile'].$put({ json: { content } })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ content })
+    })
+
+    it('rejects a non-layered user Dockerfile with 400', async () => {
+      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const res = await client.config['user-dockerfile'].$put({
+        json: { content: 'FROM ubuntu:24.04\n' },
+      })
+      expect(res.status).toBe(400)
+    })
+  })
+
   describe('POST /session/create', () => {
     it('rejects missing project', async () => {
       const app = buildApp({ secret: 'shh', buildId: 'test' })

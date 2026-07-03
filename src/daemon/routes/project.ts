@@ -7,6 +7,7 @@ import { getProjectDetail, resolveProjectConfigWithSource, assertProjectExists }
 import { addProject } from '@/lib/project/add'
 import { removeProject } from '@/lib/project/remove'
 import { writeProjectConfig, removeProjectConfig } from '@/lib/project/local-config'
+import { readProjectDockerfile, writeProjectDockerfile } from '@/lib/project/dockerfile'
 import { rebuildProjectImage } from '@/lib/container/image-builder'
 import { pushImageToRegistry } from '@/lib/k8s/registry'
 import { toErrorBody } from '@/daemon/errors'
@@ -48,6 +49,17 @@ export const projectApp = new Hono()
     await removeProjectConfig(c.req.param('slug'))
     return c.body(null, 204)
   })
+  .get('/:slug/dockerfile', async (c) =>
+    c.json({ content: await readProjectDockerfile(c.req.param('slug')) }))
+  .put(
+    '/:slug/dockerfile',
+    zValidator('json', z.object({ content: z.string() })),
+    async (c) => {
+      const { content } = c.req.valid('json')
+      await writeProjectDockerfile(c.req.param('slug'), content)
+      return c.json({ content })
+    },
+  )
   .post('/:slug/rebuild', (c) => {
     // Stream the rebuild logs as NDJSON {progress|result|error} events so
     // `yaac project rebuild` can mirror `podman build --no-cache` output

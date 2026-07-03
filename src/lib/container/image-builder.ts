@@ -141,7 +141,7 @@ async function fileExists(filePath: string): Promise<boolean> {
  * A layered Dockerfile must declare `ARG BASE_IMAGE` and use `FROM ${BASE_IMAGE}`
  * so the parent image is always injected via --build-arg (no shared mutable tags).
  */
-function isLayered(dockerfileContent: string): boolean {
+export function isLayered(dockerfileContent: string): boolean {
   return /^ARG\s+BASE_IMAGE\b/m.test(dockerfileContent)
     && /^FROM\s+\$\{BASE_IMAGE\}/m.test(dockerfileContent)
 }

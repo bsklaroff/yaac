@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { DOCKERFILES_DIR } from '@/lib/project/paths'
-import { baseImageHash, contextHash, fileHash, sessionUid } from '@/lib/container/image-builder'
+import { baseImageHash, contextHash, fileHash, sessionUid, isLayered } from '@/lib/container/image-builder'
 
 describe('fileHash', () => {
   it('produces a 16-char hex hash of file contents', async () => {
@@ -29,6 +29,20 @@ describe('fileHash', () => {
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('isLayered', () => {
+  it('accepts a Dockerfile that declares ARG BASE_IMAGE and FROM ${BASE_IMAGE}', () => {
+    expect(isLayered('ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo hi\n')).toBe(true)
+  })
+
+  it('rejects a standalone Dockerfile with a concrete FROM', () => {
+    expect(isLayered('FROM ubuntu:24.04\nRUN echo hi\n')).toBe(false)
+  })
+
+  it('rejects a Dockerfile that declares the arg but pins a concrete base', () => {
+    expect(isLayered('ARG BASE_IMAGE\nFROM ubuntu:24.04\n')).toBe(false)
   })
 })
 

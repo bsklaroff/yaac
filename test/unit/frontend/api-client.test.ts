@@ -31,4 +31,11 @@ describe('apiClient', () => {
     stubFetch({ ok: true, status: 204 })
     expect(await api.post('/x', { hi: true })).toBeUndefined()
   })
+
+  it('put sends a PUT and parses the JSON response', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({ content: 'x' }) })
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+    expect(await api.put<{ content: string }>('/x', { content: 'x' })).toEqual({ content: 'x' })
+    expect(fetchMock).toHaveBeenCalledWith('/x', expect.objectContaining({ method: 'PUT' }))
+  })
 })

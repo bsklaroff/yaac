@@ -34,3 +34,15 @@ export async function setShortcutOverride(id: ShortcutId, chord: Chord): Promise
 export async function resetShortcuts(): Promise<void> {
   await api.post('/shortcuts/reset')
 }
+
+/** Read the global user Dockerfile (~/.yaac/Dockerfile.user); '' when unset. */
+export async function getUserDockerfile(): Promise<string> {
+  const res = await api.get<{ content: string }>('/config/user-dockerfile')
+  return res.content
+}
+
+/** Write (or clear, when empty) the global user Dockerfile. Validated
+ *  server-side: a non-empty file must layer on `${BASE_IMAGE}`. */
+export async function saveUserDockerfile(content: string): Promise<void> {
+  await api.put('/config/user-dockerfile', { content })
+}

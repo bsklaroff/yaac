@@ -26,6 +26,8 @@ export {
   KeyRound as KeyIcon,
   Keyboard as KeyboardIcon,
   SlidersHorizontal as GeneralIcon,
+  FileCog as ProjectConfigIcon,
+  Container as DockerIcon,
   Pencil as RenameIcon,
   PanelLeft as SidebarIcon,
   LayoutGrid as TilesIcon,

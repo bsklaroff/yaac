@@ -1,15 +1,33 @@
-import { useEffect, useState, type FormEvent, type JSX } from 'react'
+import { useEffect, useState, type FormEvent, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { Dialog } from '@base-ui/react/dialog'
 import { Radio } from '@base-ui/react/radio'
 import { RadioGroup } from '@base-ui/react/radio-group'
-import { CloseIcon, GeneralIcon, KeyboardIcon, KeyIcon, SettingsIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import {
-  addGitCredential, getAuthList, getDefaultTool, resetShortcuts, setDefaultTool, setShortcutOverride,
+  CloseIcon,
+  DockerIcon,
+  GeneralIcon,
+  KeyboardIcon,
+  KeyIcon,
+  ProjectConfigIcon,
+  SettingsIcon,
+  TOOL_LABEL,
+} from '@/frontend/lib/icons'
+import {
+  addGitCredential,
+  getAuthList,
+  getDefaultTool,
+  getUserDockerfile,
+  resetShortcuts,
+  saveUserDockerfile,
+  setDefaultTool,
+  setShortcutOverride,
 } from '@/frontend/lib/settingsApi'
 import {
   SHORTCUTS, chordFromEvent, chordsEqual, formatChord, isModifierCode, validateChord, type ShortcutId,
 } from '@/frontend/lib/shortcuts'
+import { ProjectSettings } from '@/frontend/components/settings/ProjectSettings'
+import { FileEditor } from '@/frontend/components/settings/FileEditor'
 import { useUiStore } from '@/frontend/store'
 import type { AgentTool, AuthListResult } from '@/shared/types'
 
@@ -18,12 +36,14 @@ const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(naviga
 
 const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode']
 
-type SettingsSection = 'general' | 'shortcuts' | 'credentials'
+type SettingsSection = 'general' | 'shortcuts' | 'credentials' | 'project' | 'userDockerfile'
 
 const SECTIONS: { key: SettingsSection; label: string; Icon: typeof GeneralIcon }[] = [
   { key: 'general', label: 'General', Icon: GeneralIcon },
   { key: 'shortcuts', label: 'Shortcuts', Icon: KeyboardIcon },
   { key: 'credentials', label: 'Credentials', Icon: KeyIcon },
+  { key: 'project', label: 'Project Config', Icon: ProjectConfigIcon },
+  { key: 'userDockerfile', label: 'User Dockerfile', Icon: DockerIcon },
 ]
 
 /**
@@ -152,6 +172,26 @@ export function SettingsButton(): JSX.Element {
                 </Field>
                 <Field label="Add git credential" hint="HTTPS token for a host pattern, e.g. github.com/*.">
                   <AddGitCredential onAdded={refresh} />
+                </Field>
+              </section>
+            )}
+
+            {section === 'project' && <ProjectSettings />}
+
+            {section === 'userDockerfile' && (
+              <section>
+                <h2 className="text-sm font-semibold">User Dockerfile</h2>
+                <Field
+                  label="Dockerfile.user"
+                  hint={(
+                    <>
+                      Layered atop every project image. Must start with{' '}
+                      <code className="text-text-dim">{'ARG BASE_IMAGE'}</code> and{' '}
+                      <code className="text-text-dim">{'FROM ${BASE_IMAGE}'}</code>.
+                    </>
+                  )}
+                >
+                  <FileEditor language="dockerfile" load={getUserDockerfile} save={saveUserDockerfile} />
                 </Field>
               </section>
             )}
@@ -285,7 +325,7 @@ function ShortcutsPane(): JSX.Element {
 }
 
 /** A labeled settings field: small bold label, dim hint, then the control. */
-function Field({ label, hint, children }: { label: string; hint?: string; children: JSX.Element }): JSX.Element {
+function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: JSX.Element }): JSX.Element {
   return (
     <div className="mt-6">
       <div className="text-xs font-medium text-text">{label}</div>
