@@ -11,6 +11,12 @@
 - All cluster access shells out to `kubectl` (no kubernetes client library) — matching the podman-CLI convention. Helpers live in `src/lib/k8s/`.
 - E2e tests require a wired-up cluster (`./scripts/setup-kind-cluster.sh`, verified by `yaac cluster check`); unit tests must not touch podman or the cluster.
 
+## Playwright Test Scripts
+
+- Temporary Playwright scripts written to verify browser behavior by hand (e.g. driving xterm.js with real mouse/keyboard events) go in `test-playwright-scripts/`, committed for future reference — not in scratch/tmp dirs where they are lost.
+- They are standalone `node <script>.js` programs, not part of `pnpm test` or vitest; there is no cleanup expectation, but each script's header comment must say what it verifies and how to run it.
+- Playwright is installed globally (resolve it from `npm root -g` with a `require('playwright')` fallback, as the existing scripts do); Chromium binaries live under `/opt/playwright-browsers`.
+
 ## Test Image Management
 
 All container images used by e2e tests are pre-built in `test/global-setup.ts` before any test worker starts, then pushed to the local registry so the cluster can pull them. Image tags include a content hash of their source files (e.g., `yaac-test-base:<hash>`), so they are automatically rebuilt when source files change and stale images can never be used.

@@ -3,6 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { clipboardKeyAction } from '@/frontend/lib/clipboard'
+import { patchForcedSelection, patchKeepSelection } from '@/frontend/lib/selection'
 import { CYCLE_IDS, matchShortcut } from '@/frontend/lib/shortcuts'
 import { useUiStore } from '@/frontend/store'
 import { INITIAL_RECONNECT_DELAY_MS, nextReconnectDelay } from '@/frontend/lib/reconnect'
@@ -40,11 +41,9 @@ export function SessionTerminal({
       fontSize: 13,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
       cursorBlink: true,
-      // tmux runs with `mouse on`, so a plain drag is forwarded to tmux as a
-      // mouse event rather than selecting text. xterm only does a local
-      // selection when "forced" with a modifier: Shift+drag on Linux/Windows
-      // (built in), or Option+drag on macOS — but only when this is enabled.
-      macOptionClickForcesSelection: true,
+      // Alt is our hand-the-mouse-to-tmux modifier (see patchForcedSelection
+      // below); don't let xterm also fake arrow-key presses on Alt+click.
+      altClickMovesCursor: false,
       // Matches --color-bg: the terminal sits in its own dark rounded block
       // inset within the surface card.
       theme: {
@@ -88,6 +87,20 @@ export function SessionTerminal({
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(el)
+    // tmux runs with `mouse on`, so stock xterm reports a plain drag to tmux
+    // as mouse events and only selects text locally behind a modifier key.
+    // Invert that: plain drag selects (copy/paste just works), Alt+drag
+    // (Option on macOS) goes to tmux for TUIs that want the mouse.
+    if (!patchForcedSelection(term)) {
+      console.warn('xterm internals changed: drag reports to tmux instead of selecting')
+    }
+    // Keep a selection made to copy from alive until a new one replaces it.
+    // Without this xterm drops it on the first keystroke, on a bare mouse
+    // move (when the TUI in the pane tracks motion), and on the mouse-mode
+    // re-asserts tmux emits on redraws.
+    if (!patchKeepSelection(term)) {
+      console.warn('xterm internals changed: selection clears eagerly again')
+    }
     fit.fit()
     termRef.current = term
 
@@ -214,8 +227,8 @@ export function SessionTerminal({
 
   // Move keyboard focus into the terminal when the session is selected/opened.
   // This focuses xterm's hidden textarea only — it deliberately does NOT
-  // synthesize a click on the screen, which (tmux mouse mode is on) would be
-  // forwarded as a mouse event and could trigger an action in the TUI.
+  // synthesize a click on the screen, which would clobber any selection in
+  // progress (and, Alt-modified, would reach the TUI as a mouse event).
   useEffect(() => {
     if (focusKey === undefined) return
     termRef.current?.focus()

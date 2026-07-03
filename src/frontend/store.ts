@@ -245,8 +245,8 @@ interface UiState {
   selectedSessionId: string | null
   /** Bumped every time a session is selected or opened. The view watches it
    *  to pull keyboard focus into that session's primary pane — a plain
-   *  textarea focus, never a synthetic click (which xterm would forward to
-   *  tmux as a mouse event). */
+   *  textarea focus, never a synthetic click (which would clobber any
+   *  local selection in the terminal). */
   focusNonce: number
   /** Per-session counter; bumping one forces that terminal to remount +
    *  reattach (e.g. after a restart) without disturbing the others. */
