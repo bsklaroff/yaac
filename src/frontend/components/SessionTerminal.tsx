@@ -1,8 +1,11 @@
-import { useEffect, useRef, type JSX } from 'react'
+import { useEffect, useRef, useState, type JSX } from 'react'
+import clsx from 'clsx'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
+import { createSettleGate } from '@/frontend/lib/attach-settle'
 import { clipboardKeyAction } from '@/frontend/lib/clipboard'
+import { LoadingIcon } from '@/frontend/lib/icons'
 import { patchForcedSelection, patchKeepSelection } from '@/frontend/lib/selection'
 import { CYCLE_IDS, matchShortcut } from '@/frontend/lib/shortcuts'
 import { useUiStore } from '@/frontend/store'
@@ -32,10 +35,17 @@ export function SessionTerminal({
 }): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<XTerm | null>(null)
+  // Invisible until the first attach settles: tmux redraws the whole screen
+  // on attach (shrinking the oversized session window to this grid), and
+  // revealing only the settled frame is what keeps a fresh session from
+  // flashing mid-reflow garbage. Opacity (not display) so FitAddon can
+  // measure and size the PTY while hidden.
+  const [settled, setSettled] = useState(false)
 
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
+    setSettled(false)
 
     const term = new XTerm({
       fontSize: 13,
@@ -104,6 +114,20 @@ export function SessionTerminal({
     fit.fit()
     termRef.current = term
 
+    // Reveal only once the attach has drawn something: a cold session's
+    // attach can land before the agent paints, and the preamble-only burst
+    // must not reveal a blank screen (the gate defers until output that
+    // leaves visible cells goes quiet, bounded by its fallback).
+    const hasContent = (): boolean => {
+      const buf = term.buffer.active
+      for (let y = 0; y < term.rows; y++) {
+        const line = buf.getLine(buf.baseY + y)
+        if (line && line.translateToString(true).trim().length > 0) return true
+      }
+      return false
+    }
+    const gate = createSettleGate(() => setSettled(true), { hasContent })
+
     let ws: WebSocket | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined
     let reconnectDelay = INITIAL_RECONNECT_DELAY_MS
@@ -140,16 +164,19 @@ export function SessionTerminal({
       sock.onopen = (): void => {
         opened = true
         reconnectDelay = INITIAL_RECONNECT_DELAY_MS
+        gate.onOpen()
         fit.fit()
         sendResize()
       }
       sock.onmessage = (e: MessageEvent): void => {
         if (typeof e.data === 'string') return // control frame (error/pong)
+        gate.onData()
         term.write(new Uint8Array(e.data as ArrayBuffer))
       }
       sock.onclose = (): void => {
         // Ignore a stale socket we've already torn down or replaced.
         if (closedByUs || sock !== ws) return
+        gate.onClose()
         // Only announce a drop the user actually had — a connect that never
         // opened (e.g. pod gone) shouldn't spam the screen on every retry.
         if (opened) term.write('\r\n\x1b[2m[disconnected, reconnecting…]\x1b[0m\r\n')
@@ -200,6 +227,7 @@ export function SessionTerminal({
 
     return (): void => {
       closedByUs = true
+      gate.dispose()
       clearTimeout(connectTimer)
       if (reconnectTimer) clearTimeout(reconnectTimer)
       document.removeEventListener('visibilitychange', onVisible)
@@ -234,5 +262,17 @@ export function SessionTerminal({
     termRef.current?.focus()
   }, [focusKey])
 
-  return <div ref={containerRef} className="h-full w-full" />
+  return (
+    <div className="relative h-full w-full">
+      <div ref={containerRef} className={clsx('h-full w-full', !settled && 'opacity-0')} />
+      {/* While the gate holds the terminal invisible, a connecting notice. */}
+      {!settled && (
+        <div className="pointer-events-none absolute inset-0 flex animate-fade-in items-center
+          justify-center gap-2 text-xs text-text-faint">
+          <LoadingIcon size={13} className="animate-spin" />
+          Connecting…
+        </div>
+      )}
+    </div>
+  )
 }

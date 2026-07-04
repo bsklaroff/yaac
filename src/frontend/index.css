@@ -21,6 +21,14 @@
   --color-text-faint: #6a6a74;
   --color-accent: #d4875f;
   --color-accent-soft: #8a5a3d;
+
+  /* For transient states like SessionTerminal's connecting notice. */
+  --animate-fade-in: fade-in 200ms ease-out both;
+
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
 }
 
 html,
