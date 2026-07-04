@@ -30,7 +30,9 @@ import {
   REGISTRY_UPSTREAM_IMAGE,
   buildProjectRegistryDeploymentManifest,
   buildProjectRegistryServiceManifest,
+  buildRegistryCleanupPodManifest,
   buildRegistryEgressNetworkPolicyManifest,
+  buildRegistryHostsWriterPodManifest,
   buildRegistrySessionsNetworkPolicyManifest,
   ensureProjectRegistry,
   ensureRegistryImage,
@@ -256,6 +258,83 @@ describe('manifest builders', () => {
   })
 })
 
+describe('node-write pod builders', () => {
+  interface Pod {
+    kind: string
+    metadata: { name: string; namespace: string; labels: Record<string, string> }
+    spec: {
+      nodeName: string
+      restartPolicy: string
+      automountServiceAccountToken: boolean
+      enableServiceLinks: boolean
+      hostUsers?: boolean
+      securityContext?: object
+      containers: Array<{
+        image: string
+        command: string[]
+        volumeMounts: Array<{ name: string; mountPath: string }>
+      }>
+      volumes: Array<{ name: string; hostPath: { path: string; type: string } }>
+    }
+  }
+
+  it('writer pod pins the node and mounts only this registry\'s certs.d dir', () => {
+    const m = buildRegistryHostsWriterPodManifest(
+      'demo', 'localhost:5001/yaac-registry2:abc', 'yaac-control-plane', '10.96.0.50', 0,
+    ) as unknown as Pod
+    expect(m.kind).toBe('Pod')
+    expect(m.metadata.name).toBe(`${projectRegistryName('demo')}-hosts-0`)
+    expect(m.metadata.namespace).toBe('test-ns')
+    expect(m.metadata.labels).toEqual({
+      app: REGISTRY_APP_LABEL,
+      'yaac.project': 'demo',
+      [LABEL_REGISTRY_DATA_DIR_HASH]: 'ddh16',
+    })
+    // nodeName bypasses the scheduler — exact parity with the old
+    // every-node podman-exec loop, taints cannot strand the pod.
+    expect(m.spec.nodeName).toBe('yaac-control-plane')
+    expect(m.spec.restartPolicy).toBe('Never')
+    expect(m.spec.automountServiceAccountToken).toBe(false)
+    expect(m.spec.enableServiceLinks).toBe(false)
+    // Trusted infra, like the registry itself: plain root, no hostUsers.
+    expect(m.spec.hostUsers).toBeUndefined()
+    expect(m.spec.securityContext).toBeUndefined()
+    expect(m.spec.containers[0].image).toBe('localhost:5001/yaac-registry2:abc')
+    const script = m.spec.containers[0].command[2]
+    expect(script).toContain(`[host."http://10.96.0.50:${PROJECT_REGISTRY_PORT}"]`)
+    expect(script).toContain('/host-certs/hosts.toml')
+    // Mount scoped to exactly this registry's certs.d dir; DirectoryOrCreate
+    // replaces the old mkdir -p.
+    expect(m.spec.volumes).toEqual([{
+      name: 'certs',
+      hostPath: {
+        path: `/etc/containerd/certs.d/${projectRegistryHost('demo')}`,
+        type: 'DirectoryOrCreate',
+      },
+    }])
+    expect(m.spec.containers[0].volumeMounts)
+      .toEqual([{ name: 'certs', mountPath: '/host-certs' }])
+  })
+
+  it('cleanup pod mounts the parents and removes both residue dirs', () => {
+    const m = buildRegistryCleanupPodManifest(
+      'demo', 'localhost:5001/yaac-registry2:abc', 'yaac-control-plane', 0,
+    ) as unknown as Pod
+    expect(m.metadata.name).toBe(`${projectRegistryName('demo')}-cleanup-0`)
+    expect(m.spec.nodeName).toBe('yaac-control-plane')
+    // Parent mounts: removing the child dirs themselves (today's residue
+    // semantics) is impossible from inside a mount of the child.
+    expect(m.spec.volumes).toEqual([
+      { name: 'certs', hostPath: { path: '/etc/containerd/certs.d', type: 'DirectoryOrCreate' } },
+      { name: 'storage', hostPath: { path: '/var/lib/yaac/registry/ddh16', type: 'DirectoryOrCreate' } },
+    ])
+    const script = m.spec.containers[0].command[2]
+    expect(script).toBe(
+      `rm -rf '/host-certs/${projectRegistryHost('demo')}' '/host-storage/demo'`,
+    )
+  })
+})
+
 describe('ensureRegistryImage', () => {
   it('pins the upstream by its multi-arch index digest', () => {
     expect(REGISTRY_UPSTREAM_IMAGE).toBe(`docker.io/library/registry@${REGISTRY_IMAGE_DIGEST}`)
@@ -297,19 +376,21 @@ describe('ensureRegistryImage', () => {
 describe('ensureProjectRegistry', () => {
   beforeEach(() => {
     mockHasTag.mockResolvedValue(true)
-    // get service → live (allocator-assigned) ClusterIP; get nodes → one node.
+    // get service → live (allocator-assigned) ClusterIP; get nodes → one
+    // node; get pod → the writer pod completed.
     mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
       if (args[1] === 'service') return Promise.resolve({ spec: { clusterIP: '10.96.0.50' } })
       if (args[1] === 'nodes') return Promise.resolve(NODE_LIST)
+      if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
       return Promise.resolve(null)
     })
   })
 
-  it('applies Deployment, Service, and both NetworkPolicies, then waits and wires the node', async () => {
+  it('applies Deployment, Service, and both NetworkPolicies, then waits and runs the hosts-writer pod', async () => {
     await ensureProjectRegistry('demo')
 
     const kinds = mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
-    expect(kinds).toEqual(['Deployment', 'Service', 'NetworkPolicy', 'NetworkPolicy'])
+    expect(kinds).toEqual(['Deployment', 'Service', 'NetworkPolicy', 'NetworkPolicy', 'Pod'])
     expect(mockRetry).toHaveBeenCalledWith(
       [
         'rollout', 'status', `deployment/${projectRegistryName('demo')}`,
@@ -317,42 +398,68 @@ describe('ensureProjectRegistry', () => {
       ],
       expect.objectContaining({ maxAttempts: 2 }),
     )
-    // hosts.toml written on the kind node via podman exec, mapping the
-    // svc-DNS host dir to the live ClusterIP URL.
-    const hostsCall = mockExec.mock.calls.find(
-      (c) => c[0] === 'podman' && (c[1] as string[])[0] === 'exec',
-    )
-    expect(hostsCall).toBeDefined()
-    const script = (hostsCall![1] as string[])[4]
-    expect((hostsCall![1] as string[])[1]).toBe('yaac-control-plane')
-    expect(script).toContain(`/etc/containerd/certs.d/${projectRegistryHost('demo')}`)
+    // hosts.toml written by an in-cluster one-shot pod pinned to the node,
+    // NOT podman exec — the daemon's engine need not host the node.
+    const pod = mockApply.mock.calls
+      .map((c) => c[0] as { kind: string; spec: { nodeName: string; containers: Array<{ command: string[] }> } })
+      .find((m) => m.kind === 'Pod')!
+    expect(pod.spec.nodeName).toBe('yaac-control-plane')
+    const script = pod.spec.containers[0].command[2]
     expect(script).toContain(`http://10.96.0.50:${PROJECT_REGISTRY_PORT}`)
+    expect(mockExec).not.toHaveBeenCalled()
+    // The writer pod is pre-cleaned and deleted after completion.
+    expect(mockRetry).toHaveBeenCalledWith(
+      ['delete', 'pod', `${projectRegistryName('demo')}-hosts-0`, '-n', 'test-ns', '--ignore-not-found'],
+    )
     // The ClusterIP is allocator-assigned and never deleted — no migration.
     expect(mockRetry).not.toHaveBeenCalledWith(expect.arrayContaining(['delete', 'service']))
+  })
+
+  it('surfaces a failed writer pod with its logs (session create must not proceed)', async () => {
+    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+      if (args[1] === 'service') return Promise.resolve({ spec: { clusterIP: '10.96.0.50' } })
+      if (args[1] === 'nodes') return Promise.resolve(NODE_LIST)
+      if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Failed' } })
+      return Promise.resolve(null)
+    })
+    mockRetry.mockImplementation((args: string[]) =>
+      Promise.resolve({ stdout: args[0] === 'logs' ? 'read-only file system\n' : '', stderr: '' }))
+
+    await expect(ensureProjectRegistry('demo'))
+      .rejects.toThrow(/did not complete \(phase Failed\); logs: read-only file system/)
   })
 })
 
 describe('removeProjectRegistry', () => {
-  it('deletes by label selector scoped to this install and cleans the node', async () => {
-    mockGetJson.mockResolvedValue(NODE_LIST)
+  function mockClusterWithPodPhase(phase: string): void {
+    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+      if (args[1] === 'nodes') return Promise.resolve(NODE_LIST)
+      if (args[1] === 'pod') return Promise.resolve({ status: { phase } })
+      return Promise.resolve(null)
+    })
+  }
+
+  it('deletes by label selector scoped to this install and cleans the node via a pod', async () => {
+    mockClusterWithPodPhase('Succeeded')
     await removeProjectRegistry('demo')
+    // `pod` in the kinds reaps stray writer/cleanup pods from crashed runs.
     expect(mockRetry).toHaveBeenCalledWith([
-      'delete', 'deployment,service,networkpolicy',
+      'delete', 'deployment,service,networkpolicy,pod',
       '-l', `app=${REGISTRY_APP_LABEL},yaac.project=demo,${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16`,
       '-n', 'test-ns', '--ignore-not-found',
     ])
-    const rmCall = mockExec.mock.calls.find(
-      (c) => c[0] === 'podman' && (c[1] as string[])[4]?.includes('rm -rf'),
-    )
-    expect(rmCall).toBeDefined()
-    const script = (rmCall![1] as string[])[4]
-    expect(script).toContain(`/etc/containerd/certs.d/${projectRegistryHost('demo')}`)
-    expect(script).toContain(projectRegistryStorageHostPath('demo'))
+    const pod = mockApply.mock.calls
+      .map((c) => c[0] as { kind: string; spec: { nodeName: string; containers: Array<{ command: string[] }> } })
+      .find((m) => m.kind === 'Pod')!
+    expect(pod.spec.nodeName).toBe('yaac-control-plane')
+    const script = pod.spec.containers[0].command[2]
+    expect(script).toContain(`/host-certs/${projectRegistryHost('demo')}`)
+    expect(script).toContain('/host-storage/demo')
+    expect(mockExec).not.toHaveBeenCalled()
   })
 
   it('swallows node-side cleanup failures (cluster recreate)', async () => {
-    mockGetJson.mockResolvedValue(NODE_LIST)
-    mockExec.mockRejectedValue(new Error('no such container'))
+    mockClusterWithPodPhase('Failed')
     await expect(removeProjectRegistry('demo')).resolves.toBeUndefined()
   })
 })
@@ -380,14 +487,17 @@ describe('gcOrphanProjectRegistries', () => {
         })
       }
       if (args[1] === 'nodes') return Promise.resolve(NODE_LIST)
+      if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
       return Promise.resolve(null)
     })
 
     await gcOrphanProjectRegistries()
 
+    // Filter to the label-selector object deletes — the cleanup pod's own
+    // lifecycle (pre-delete + delete-after) also issues `delete pod` calls.
     const deletes = mockRetry.mock.calls
       .map((c) => c[0])
-      .filter((args) => args[0] === 'delete')
+      .filter((args) => args[0] === 'delete' && args[1] === 'deployment,service,networkpolicy,pod')
     expect(deletes).toHaveLength(1)
     expect(deletes[0][3]).toContain('yaac.project=gone')
   })

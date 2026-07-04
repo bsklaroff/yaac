@@ -269,6 +269,121 @@ export function buildRegistryEgressNetworkPolicyManifest(
 }
 
 /**
+ * Scaffolding shared by the one-shot node-write pods that replaced the
+ * old `podman exec <node>` writes: node files are written by a pod that
+ * hostPath-mounts the target directory, so the daemon never assumes the
+ * node is a container on its own podman engine. Pinned by `nodeName`
+ * (bypasses the scheduler, so taints cannot strand it), plain root like
+ * the registry itself, `restartPolicy: Never` — the caller polls it to a
+ * terminal phase and deletes it. It reuses the registry:2 mirror image
+ * (already in the local registry, and on the node once the registry
+ * Deployment has rolled out), and its registry labels both put it under
+ * the deny-all egress NetworkPolicy (it needs no network) and inside the
+ * removal selector's scope.
+ */
+function buildNodeWritePodManifest(
+  projectSlug: string,
+  name: string,
+  nodeName: string,
+  imageRef: string,
+  script: string,
+  volumes: Array<{ name: string; hostPath: { path: string; type: string } }>,
+  volumeMounts: Array<{ name: string; mountPath: string }>,
+): Record<string, unknown> {
+  return {
+    apiVersion: 'v1',
+    kind: 'Pod',
+    metadata: {
+      name,
+      namespace: k8sNamespace(),
+      labels: registryLabels(projectSlug),
+    },
+    spec: {
+      nodeName,
+      restartPolicy: 'Never',
+      automountServiceAccountToken: false,
+      enableServiceLinks: false,
+      containers: [{
+        name: 'write',
+        image: imageRef,
+        imagePullPolicy: 'IfNotPresent',
+        command: ['sh', '-c', script],
+        volumeMounts,
+      }],
+      volumes,
+    },
+  }
+}
+
+/**
+ * One-shot pod writing the node containerd hosts.toml for this project's
+ * registry. The hostPath is scoped to exactly the one
+ * `certs.d/<registry-host>` directory (`DirectoryOrCreate` replaces the
+ * old `mkdir -p`), so the pod can affect no other registry's mapping.
+ */
+export function buildRegistryHostsWriterPodManifest(
+  projectSlug: string,
+  imageRef: string,
+  nodeName: string,
+  vip: string,
+  nodeIndex: number,
+): Record<string, unknown> {
+  const content = `[host."http://${vip}:${PROJECT_REGISTRY_PORT}"]`
+  return buildNodeWritePodManifest(
+    projectSlug,
+    `${projectRegistryName(projectSlug)}-hosts-${nodeIndex}`,
+    nodeName,
+    imageRef,
+    `printf '%s\\n' '${content}' > /host-certs/hosts.toml`,
+    [{
+      name: 'certs',
+      hostPath: {
+        path: `/etc/containerd/certs.d/${projectRegistryHost(projectSlug)}`,
+        type: 'DirectoryOrCreate',
+      },
+    }],
+    [{ name: 'certs', mountPath: '/host-certs' }],
+  )
+}
+
+/**
+ * One-shot pod removing this project's node-side residue: the certs.d
+ * directory and the registry storage. Unlike the writer it mounts the
+ * PARENT directories — removing the child dirs themselves (not just
+ * their contents) requires it, matching what `podman exec rm -rf` did.
+ * Wider mounts than the writer's, but the pod lives for seconds and runs
+ * only at project removal.
+ */
+export function buildRegistryCleanupPodManifest(
+  projectSlug: string,
+  imageRef: string,
+  nodeName: string,
+  nodeIndex: number,
+): Record<string, unknown> {
+  return buildNodeWritePodManifest(
+    projectSlug,
+    `${projectRegistryName(projectSlug)}-cleanup-${nodeIndex}`,
+    nodeName,
+    imageRef,
+    `rm -rf '/host-certs/${projectRegistryHost(projectSlug)}' '/host-storage/${projectSlug}'`,
+    [
+      {
+        name: 'certs',
+        hostPath: { path: '/etc/containerd/certs.d', type: 'DirectoryOrCreate' },
+      },
+      {
+        name: 'storage',
+        hostPath: { path: `/var/lib/yaac/registry/${dataDirHash()}`, type: 'DirectoryOrCreate' },
+      },
+    ],
+    [
+      { name: 'certs', mountPath: '/host-certs' },
+      { name: 'storage', mountPath: '/host-storage' },
+    ],
+  )
+}
+
+/**
  * Ensure the registry:2 mirror (digest-pinned) exists in the local
  * registry and return its in-cluster ref — same build-or-skip shape as
  * `ensureRedirectInitImage`. The mirror is what lets the node pull the
@@ -296,35 +411,70 @@ interface RawNodeList {
   items: Array<{ metadata: { name: string } }>
 }
 
-/** kind node names double as their container names under podman. */
+/** Node names, for pinning the one-shot node-write pods via `nodeName`. */
 async function listNodeNames(): Promise<string[]> {
   const list = await kubectlGetJson<RawNodeList>(['get', 'nodes'])
   return (list?.items ?? []).map((n) => n.metadata.name)
 }
 
 /**
+ * Run a node-write pod to completion: delete any stray namesake, apply,
+ * poll to a terminal phase, and always delete it afterwards. Polling (not
+ * `kubectl wait`) so a Failed pod errors immediately instead of burning
+ * the whole timeout; failures carry the pod logs.
+ */
+async function runNodeWritePod(manifest: Record<string, unknown>): Promise<void> {
+  const name = (manifest as { metadata: { name: string } }).metadata.name
+  const ns = k8sNamespace()
+  await kubectlWithRetry(['delete', 'pod', name, '-n', ns, '--ignore-not-found'])
+  try {
+    await kubectlApply(manifest)
+    const deadline = Date.now() + 60_000
+    let phase = 'Pending'
+    while (Date.now() < deadline) {
+      const pod = await kubectlGetJson<{ status?: { phase?: string } }>([
+        'get', 'pod', name, '-n', ns,
+      ])
+      phase = pod?.status?.phase ?? 'Unknown'
+      if (phase === 'Succeeded' || phase === 'Failed') break
+      await new Promise((r) => setTimeout(r, 500))
+    }
+    if (phase !== 'Succeeded') {
+      const logs = await kubectlWithRetry(['logs', name, '-n', ns])
+        .then((r) => r.stdout.trim())
+        .catch(() => '')
+      throw new Error(
+        `node-write pod ${name} did not complete (phase ${phase})`
+        + (logs ? `; logs: ${logs}` : ''),
+      )
+    }
+  } finally {
+    await kubectlWithRetry(['delete', 'pod', name, '-n', ns, '--ignore-not-found'])
+      .catch(() => { /* best-effort cleanup */ })
+  }
+}
+
+/**
  * Write the node containerd hosts.toml mapping the registry's svc-DNS host to
  * its live ClusterIP URL, so `kubectl run` of a pushed ref pulls straight from
- * the in-cluster registry. Same podman-exec mechanism as
- * `yaac cluster setup`. The node is not a cluster-DNS client, so it
- * needs the IP here; hosts.toml is read per-pull (no containerd restart) and is
- * rewritten on every ensure, so the allocator-assigned IP is always current.
- * Must run after the Service is applied (ensureProjectRegistry waits for it).
+ * the in-cluster registry. Written by a one-shot in-cluster pod, NOT
+ * `podman exec <node>`: the daemon host's engine need not be the one hosting
+ * the node, and node names need not be container names. The node is not a
+ * cluster-DNS client, so it needs the IP here; hosts.toml is read per-pull
+ * (no containerd restart) and is rewritten on every ensure, so the
+ * allocator-assigned IP is always current. Must run after the Service is
+ * applied and the Deployment rolled out (the rollout also guarantees the
+ * writer pod's own image is already on the node).
  */
 export async function writeNodeRegistryHostsToml(projectSlug: string): Promise<void> {
-  const host = projectRegistryHost(projectSlug)
   const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
     'get', 'service', projectRegistryName(projectSlug), '-n', k8sNamespace(),
   ])
   const vip = svc?.spec?.clusterIP
   if (!vip) throw new Error(`project registry Service ${projectRegistryName(projectSlug)} has no ClusterIP yet`)
-  const dir = `/etc/containerd/certs.d/${host}`
-  const content = `[host."http://${vip}:${PROJECT_REGISTRY_PORT}"]`
-  for (const node of await listNodeNames()) {
-    await execFileAsync('podman', [
-      'exec', node, 'sh', '-c',
-      `mkdir -p '${dir}' && printf '%s\\n' '${content}' > '${dir}/hosts.toml'`,
-    ])
+  const imageRef = registryRef(REGISTRY_MIRROR_TAG)
+  for (const [i, node] of (await listNodeNames()).entries()) {
+    await runNodeWritePod(buildRegistryHostsWriterPodManifest(projectSlug, imageRef, node, vip, i))
   }
 }
 
@@ -353,9 +503,10 @@ export async function ensureProjectRegistry(projectSlug: string): Promise<void> 
 
 /**
  * Tear down a project's registry objects plus its node-side residue
- * (hosts.toml dir, storage). The delete selector includes the install
- * scope label so coexisting installs sharing a namespace never delete
- * each other's registries.
+ * (hosts.toml dir, storage), the latter via one-shot cleanup pods. The
+ * delete selector includes the install scope label so coexisting installs
+ * sharing a namespace never delete each other's registries; `pod` is in
+ * the kinds so stray writer/cleanup pods from crashed runs are reaped.
  */
 export async function removeProjectRegistry(projectSlug: string): Promise<void> {
   const selector = [
@@ -364,17 +515,16 @@ export async function removeProjectRegistry(projectSlug: string): Promise<void> 
     `${LABEL_REGISTRY_DATA_DIR_HASH}=${dataDirHash()}`,
   ].join(',')
   await kubectlWithRetry([
-    'delete', 'deployment,service,networkpolicy', '-l', selector,
+    'delete', 'deployment,service,networkpolicy,pod', '-l', selector,
     '-n', k8sNamespace(), '--ignore-not-found',
   ])
 
-  const certsDir = `/etc/containerd/certs.d/${projectRegistryHost(projectSlug)}`
-  const storageDir = projectRegistryStorageHostPath(projectSlug)
-  for (const node of await listNodeNames()) {
-    // Best-effort: the node container may be gone (cluster recreate).
-    await execFileAsync('podman', [
-      'exec', node, 'sh', '-c', `rm -rf '${certsDir}' '${storageDir}'`,
-    ]).catch(() => { /* node-side residue is harmless */ })
+  const imageRef = registryRef(REGISTRY_MIRROR_TAG)
+  for (const [i, node] of (await listNodeNames()).entries()) {
+    // Best-effort: the cluster may be recreated or unreachable — and the
+    // storage was node-local, so it is already gone with the old node.
+    await runNodeWritePod(buildRegistryCleanupPodManifest(projectSlug, imageRef, node, i))
+      .catch(() => { /* node-side residue is harmless */ })
   }
 }
 

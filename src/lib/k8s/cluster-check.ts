@@ -257,9 +257,8 @@ const NODE_FIXUPS_FIX =
  * catches it); the TasksMax / vm.min_free_kbytes / pids-limit fixups fail
  * much later — sessions die mid-flight under subagent fan-out or virtiofs
  * pressure — so sessions can look healthy on a cluster that lost them to a
- * restart. Probing is kind-specific (node name == podman container name,
- * the same assumption project-registry.ts makes): a node that is not a
- * podman container self-skips.
+ * restart. Probing is kind-specific (node name == podman container name):
+ * a node that is not a podman container self-skips.
  */
 async function runNodeFixupsCheck(deps: ClusterCheckDeps): Promise<CheckResult> {
   if (env.nested) {
