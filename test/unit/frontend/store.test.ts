@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { isUnreadWaiting, loadViewMode, mergeProvisioning, resolveAttentionTarget, unreadWaitingBySlug, useUiStore } from '@/frontend/store'
+import {
+  isUnreadWaiting, loadViewMode, mergeProvisioning, resolveAttentionTarget, resolveNewSessionTool,
+  unreadWaitingBySlug, useUiStore,
+} from '@/frontend/store'
 import type { ProvisioningSessionEntry } from '@/shared/types'
 
 const initial = useUiStore.getState()
@@ -319,5 +322,65 @@ describe('view mode (tiles vs tabs)', () => {
     // Re-focusing the already-active terminal still bumps — Alt+N re-focuses.
     useUiStore.getState().focusTerminal('s1', 'window:@2')
     expect(useUiStore.getState().focusNonce).toBe(nonce + 2)
+  })
+})
+
+describe('settings modal state', () => {
+  it('openSettings opens on the last-viewed section when none is given', () => {
+    useUiStore.getState().setSettingsSection('shortcuts')
+    useUiStore.getState().openSettings()
+    const state = useUiStore.getState()
+    expect(state.settingsOpen).toBe(true)
+    expect(state.settingsSection).toBe('shortcuts')
+    expect(state.settingsFocusTool).toBeNull()
+  })
+
+  it('openSettings can target a section with a tool sign-in focus', () => {
+    useUiStore.getState().openSettings('credentials', 'codex')
+    const state = useUiStore.getState()
+    expect(state.settingsOpen).toBe(true)
+    expect(state.settingsSection).toBe('credentials')
+    expect(state.settingsFocusTool).toBe('codex')
+  })
+
+  it('closeSettings clears the focus tool but keeps the section sticky', () => {
+    useUiStore.getState().openSettings('credentials', 'codex')
+    useUiStore.getState().closeSettings()
+    const state = useUiStore.getState()
+    expect(state.settingsOpen).toBe(false)
+    expect(state.settingsFocusTool).toBeNull()
+    expect(state.settingsSection).toBe('credentials')
+  })
+
+  it('a plain reopen after a focused one carries no stale focus tool', () => {
+    useUiStore.getState().openSettings('credentials', 'codex')
+    useUiStore.getState().closeSettings()
+    useUiStore.getState().openSettings()
+    expect(useUiStore.getState().settingsFocusTool).toBeNull()
+  })
+})
+
+describe('resolveNewSessionTool', () => {
+  const sessions = [
+    { sessionId: 's-claude', tool: 'claude' as const },
+    { sessionId: 's-codex', tool: 'codex' as const },
+  ]
+
+  it("uses the selected session's tool when its credentials are configured", () => {
+    expect(resolveNewSessionTool(sessions, 's-codex', new Set(['claude', 'codex'])))
+      .toBe('codex')
+  })
+
+  it('falls back to claude when nothing is selected', () => {
+    expect(resolveNewSessionTool(sessions, null, new Set(['claude']))).toBe('claude')
+  })
+
+  it('returns null when the target tool has no credentials', () => {
+    expect(resolveNewSessionTool(sessions, 's-codex', new Set(['claude']))).toBeNull()
+    expect(resolveNewSessionTool(sessions, null, new Set(['codex']))).toBeNull()
+  })
+
+  it('returns null while the auth list is still unknown (empty set)', () => {
+    expect(resolveNewSessionTool(sessions, 's-claude', new Set())).toBeNull()
   })
 })

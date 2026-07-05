@@ -5,10 +5,14 @@ import { createSession } from './lib/createSession'
 import { deleteSessionOptimistic } from './lib/deleteSessionFlow'
 import { cycleDeltaFor, matchShortcut, mergeBindings, resolveCycleTarget } from './lib/shortcuts'
 import { getShortcutOverrides } from './lib/settingsApi'
+import { configuredTools, useAuthList } from './lib/useAuthList'
 import { useEvents } from './lib/useEvents'
 import { useProvisionSession } from './lib/useProvisionSession'
 import { useSnapshot } from './lib/useSnapshot'
-import { mergeProvisioning, persistSelection, resolveAttentionTarget, unreadWaitingBySlug, useUiStore } from './store'
+import {
+  mergeProvisioning, persistSelection, resolveAttentionTarget, resolveNewSessionTool, unreadWaitingBySlug,
+  useUiStore,
+} from './store'
 import { ProjectRail } from './components/ProjectRail'
 import { Sidebar, sidebarRowIds } from './components/Sidebar'
 import { SessionView } from './components/SessionView'
@@ -134,7 +138,8 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
   //  - Alt+↑/Alt+↓ step through the sidebar rows top-to-bottom (wrapping)
   //    — the vertical sibling of SessionView's Alt+←/→ terminal cycler.
   //  - Alt+N starts a new session in the active project, with the selected
-  //    session's tool (or claude).
+  //    session's tool (or claude) — ignored while that tool has no stored
+  //    credential (sign in via settings → credentials).
   //  - Alt+D deletes the selected session, through the same confirm dialog
   //    as the sidebar row's × (Enter confirms — the button holds focus).
   //  - Alt+B jumps to the session that most needs attention: the topmost
@@ -146,10 +151,13 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
     scoped.filter((s) => !pendingDeleteIds.includes(s.sessionId)),
     readWaiting,
   )
+  const authList = useAuthList()
+  const configured = configuredTools(authList)
   const newSession = (): void => {
     if (!activeProjectSlug) return
     const slug = activeProjectSlug
-    const tool = sessions.find((s) => s.sessionId === selectedSessionId)?.tool ?? 'claude'
+    const tool = resolveNewSessionTool(sessions, selectedSessionId, configured)
+    if (!tool) return
     const sessionId = crypto.randomUUID()
     provision(slug, tool, 'create', sessionId,
       (sid, onProgress) => createSession(slug, tool, onProgress, sid))

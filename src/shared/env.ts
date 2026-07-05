@@ -190,4 +190,44 @@ export const testEnv = {
     if (tool === 'codex') return process.env.YAAC_E2E_CODEX_LOGIN
     return process.env.YAAC_E2E_OPENCODE_LOGIN
   },
+
+  /**
+   * `YAAC_E2E_{CLAUDE,CODEX}_LOGIN_CLI` — replaces the vendor CLI argv the
+   * daemon's web sign-in flow spawns (`claude setup-token` / `codex login
+   * --device-auth`) with a stub, so tests can script the whole interaction
+   * without a real OAuth round trip. Value is a JSON argv array.
+   */
+  toolLoginCliHook(tool: AgentTool): string[] | undefined {
+    const raw = tool === 'claude'
+      ? process.env.YAAC_E2E_CLAUDE_LOGIN_CLI
+      : tool === 'codex' ? process.env.YAAC_E2E_CODEX_LOGIN_CLI : undefined
+    return parseArgvHook(raw)
+  },
+
+  /**
+   * `YAAC_E2E_{CLAUDE,CODEX}_INSTALL_CLI` — replaces the installer argv the
+   * daemon's web install flow spawns (claude's `curl | bash` installer /
+   * `npm install -g @openai/codex`) with a stub, so tests never install
+   * real software. Value is a JSON argv array.
+   */
+  toolInstallCliHook(tool: AgentTool): string[] | undefined {
+    const raw = tool === 'claude'
+      ? process.env.YAAC_E2E_CLAUDE_INSTALL_CLI
+      : tool === 'codex' ? process.env.YAAC_E2E_CODEX_INSTALL_CLI : undefined
+    return parseArgvHook(raw)
+  },
+}
+
+/** Parse a JSON argv-array hook value; malformed → undefined (real CLI used). */
+function parseArgvHook(raw: string | undefined): string[] | undefined {
+  if (!raw) return undefined
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (Array.isArray(parsed) && parsed.length > 0 && parsed.every((p) => typeof p === 'string')) {
+      return parsed
+    }
+  } catch {
+    // malformed hook → ignored, real CLI is used
+  }
+  return undefined
 }

@@ -284,4 +284,43 @@ describe('testEnv (test-harness hooks)', () => {
       expect(testEnv.toolLoginHook('claude')).toBeUndefined()
     })
   })
+  describe('toolLoginCliHook', () => {
+    it('parses a JSON argv array and rejects malformed or non-argv values', () => {
+      vi.stubEnv('YAAC_E2E_CLAUDE_LOGIN_CLI', undefined)
+      expect(testEnv.toolLoginCliHook('claude')).toBeUndefined()
+      vi.stubEnv('YAAC_E2E_CLAUDE_LOGIN_CLI', '["node","/stubs/claude.cjs"]')
+      expect(testEnv.toolLoginCliHook('claude')).toEqual(['node', '/stubs/claude.cjs'])
+      vi.stubEnv('YAAC_E2E_CLAUDE_LOGIN_CLI', '{not json')
+      expect(testEnv.toolLoginCliHook('claude')).toBeUndefined()
+      vi.stubEnv('YAAC_E2E_CLAUDE_LOGIN_CLI', '[]')
+      expect(testEnv.toolLoginCliHook('claude')).toBeUndefined()
+      vi.stubEnv('YAAC_E2E_CLAUDE_LOGIN_CLI', '[1,2]')
+      expect(testEnv.toolLoginCliHook('claude')).toBeUndefined()
+    })
+
+    it('reads the per-tool variable and has no opencode hook', () => {
+      vi.stubEnv('YAAC_E2E_CODEX_LOGIN_CLI', '["codex-stub"]')
+      expect(testEnv.toolLoginCliHook('codex')).toEqual(['codex-stub'])
+      expect(testEnv.toolLoginCliHook('opencode')).toBeUndefined()
+    })
+  })
+
+  describe('toolInstallCliHook', () => {
+    it('parses a JSON argv array and rejects malformed or non-argv values', () => {
+      vi.stubEnv('YAAC_E2E_CLAUDE_INSTALL_CLI', undefined)
+      expect(testEnv.toolInstallCliHook('claude')).toBeUndefined()
+      vi.stubEnv('YAAC_E2E_CLAUDE_INSTALL_CLI', '["node","/stubs/install.cjs"]')
+      expect(testEnv.toolInstallCliHook('claude')).toEqual(['node', '/stubs/install.cjs'])
+      vi.stubEnv('YAAC_E2E_CLAUDE_INSTALL_CLI', '{not json')
+      expect(testEnv.toolInstallCliHook('claude')).toBeUndefined()
+      vi.stubEnv('YAAC_E2E_CLAUDE_INSTALL_CLI', '[]')
+      expect(testEnv.toolInstallCliHook('claude')).toBeUndefined()
+    })
+
+    it('reads the per-tool variable and has no opencode hook', () => {
+      vi.stubEnv('YAAC_E2E_CODEX_INSTALL_CLI', '["codex-install-stub"]')
+      expect(testEnv.toolInstallCliHook('codex')).toEqual(['codex-install-stub'])
+      expect(testEnv.toolInstallCliHook('opencode')).toBeUndefined()
+    })
+  })
 })

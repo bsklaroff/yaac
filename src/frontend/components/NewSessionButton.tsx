@@ -1,8 +1,11 @@
 import { type JSX } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Menu } from '@base-ui/react/menu'
 import { AddIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import { createSession } from '@/frontend/lib/createSession'
 import { useProvisionSession } from '@/frontend/lib/useProvisionSession'
+import { AUTH_LIST_KEY, configuredTools, useAuthList } from '@/frontend/lib/useAuthList'
+import { useUiStore } from '@/frontend/store'
 import type { AgentTool } from '@/shared/types'
 
 const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode']
@@ -14,9 +17,16 @@ const ITEM = 'flex w-full cursor-default items-center rounded-md px-2 py-1.5 tex
  * fires the create and the menu closes immediately — a provisioning row appears
  * in the sidebar and is auto-opened so progress streams into the main pane. The
  * id is generated up front so the row is selectable and survives a reload.
+ *
+ * Tools without a stored credential can't create: their item reads "Sign in"
+ * and opens settings → credentials with that tool's form expanded instead.
  */
 export function NewSessionButton({ projectSlug }: { projectSlug: string }): JSX.Element {
   const provision = useProvisionSession()
+  const auth = useAuthList()
+  const configured = configuredTools(auth)
+  const openSettings = useUiStore((s) => s.openSettings)
+  const queryClient = useQueryClient()
 
   const create = (tool: AgentTool): void => {
     const sessionId = crypto.randomUUID()
@@ -25,7 +35,11 @@ export function NewSessionButton({ projectSlug }: { projectSlug: string }): JSX.
   }
 
   return (
-    <Menu.Root>
+    <Menu.Root onOpenChange={(open) => {
+      // Credentials may have changed daemon-side (CLI login, another tab)
+      // since the app-start fetch — re-pull while the menu is up.
+      if (open) void queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
+    }}>
       <Menu.Trigger
         title="New session"
         className="flex h-5 w-5 items-center justify-center rounded text-text-dim transition hover:bg-surface-2
@@ -41,9 +55,14 @@ export function NewSessionButton({ projectSlug }: { projectSlug: string }): JSX.
             shadow-[0_12px_32px_rgba(0,0,0,0.5)] outline-none transition-opacity duration-100
             data-[starting-style]:opacity-0 data-[ending-style]:opacity-0">
             <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">New session</div>
-            {TOOLS.map((t) => (
+            {TOOLS.map((t) => configured.has(t) ? (
               <Menu.Item key={t} className={ITEM} onClick={() => create(t)}>
                 {TOOL_LABEL[t]}
+              </Menu.Item>
+            ) : (
+              <Menu.Item key={t} className={ITEM} onClick={() => openSettings('credentials', t)}>
+                <span className="text-text-faint">{TOOL_LABEL[t]}</span>
+                <span className="ml-auto pl-3 text-[11px] text-accent">Sign in</span>
               </Menu.Item>
             ))}
           </Menu.Popup>

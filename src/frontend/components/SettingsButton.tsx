@@ -1,5 +1,6 @@
-import { useEffect, useState, type FormEvent, type JSX, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
+import { useQueryClient } from '@tanstack/react-query'
 import { Dialog } from '@base-ui/react/dialog'
 import { Radio } from '@base-ui/react/radio'
 import { RadioGroup } from '@base-ui/react/radio-group'
@@ -15,28 +16,35 @@ import {
 } from '@/frontend/lib/icons'
 import {
   addGitCredential,
-  getAuthList,
+  cancelToolInstall,
+  cancelToolLogin,
+  clearToolAuth,
   getDefaultTool,
+  getToolInstall,
+  getToolLogin,
   getUserDockerfile,
   resetShortcuts,
   saveUserDockerfile,
+  sendToolLoginInput,
   setDefaultTool,
   setShortcutOverride,
+  setToolApiKey,
+  startToolInstall,
+  startToolLogin,
 } from '@/frontend/lib/settingsApi'
+import { AUTH_LIST_KEY, useAuthList } from '@/frontend/lib/useAuthList'
 import {
   SHORTCUTS, chordFromEvent, chordsEqual, formatChord, isModifierCode, validateChord, type ShortcutId,
 } from '@/frontend/lib/shortcuts'
 import { ProjectSettings } from '@/frontend/components/settings/ProjectSettings'
 import { FileEditor } from '@/frontend/components/settings/FileEditor'
-import { useUiStore } from '@/frontend/store'
-import type { AgentTool, AuthListResult } from '@/shared/types'
+import { useUiStore, type SettingsSection } from '@/frontend/store'
+import type { AgentTool, OpencodeProvider, ToolAuthSummary, ToolInstallView, ToolLoginView } from '@/shared/types'
 
 // iPadOS reports as "Macintosh" in modern Safari; both want the ⌘/⌥ glyphs.
 const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent)
 
 const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode']
-
-type SettingsSection = 'general' | 'shortcuts' | 'credentials' | 'project' | 'userDockerfile'
 
 const SECTIONS: { key: SettingsSection; label: string; Icon: typeof GeneralIcon }[] = [
   { key: 'general', label: 'General', Icon: GeneralIcon },
@@ -48,21 +56,26 @@ const SECTIONS: { key: SettingsSection; label: string; Icon: typeof GeneralIcon 
 
 /**
  * Rail gear → settings. Notion-style modal: a left nav of sections over a
- * scrollable content pane (General: default tool; Credentials: listing +
- * add git token).
+ * scrollable content pane (General: default tool; Credentials: tool sign-in +
+ * git tokens). Open state lives in the store so other surfaces (the
+ * new-session menu's "Sign in") can open it onto a specific section.
  */
 export function SettingsButton(): JSX.Element {
-  const [open, setOpen] = useState(false)
-  const [section, setSection] = useState<SettingsSection>('general')
+  const open = useUiStore((s) => s.settingsOpen)
+  const section = useUiStore((s) => s.settingsSection)
+  const openSettings = useUiStore((s) => s.openSettings)
+  const closeSettings = useUiStore((s) => s.closeSettings)
+  const setSection = useUiStore((s) => s.setSettingsSection)
   const [tool, setTool] = useState<AgentTool | null>(null)
-  const [auth, setAuth] = useState<AuthListResult | null>(null)
+  const queryClient = useQueryClient()
 
-  const refresh = (): void => {
+  // On open, re-pull both the default tool and the credentials list — either
+  // may have changed daemon-side (e.g. via the CLI) since the last look.
+  useEffect(() => {
+    if (!open) return
     void getDefaultTool().then(setTool).catch((e: unknown) => console.error(e))
-    void getAuthList().then(setAuth).catch((e: unknown) => console.error(e))
-  }
-
-  useEffect(() => { if (open) refresh() }, [open])
+    void queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
+  }, [open, queryClient])
 
   const pickTool = (t: AgentTool): void => {
     setTool(t)
@@ -70,9 +83,9 @@ export function SettingsButton(): JSX.Element {
   }
 
   return (
-    <Dialog.Root open={open} onOpenChange={setOpen}>
+    <Dialog.Root open={open} onOpenChange={(next) => { if (next) openSettings(); else closeSettings() }}>
       <button
-        onClick={() => setOpen(true)}
+        onClick={() => openSettings()}
         title="Settings"
         className="flex h-7 w-7 items-center justify-center rounded-2xl text-text-faint transition-all
           hover:rounded-[9px] hover:text-text-dim"
@@ -150,31 +163,7 @@ export function SettingsButton(): JSX.Element {
 
             {section === 'shortcuts' && <ShortcutsPane />}
 
-            {section === 'credentials' && (
-              <section>
-                <h2 className="text-sm font-semibold">Credentials</h2>
-                <Field label="Configured" hint="Git tokens and tool auth yaac injects into session containers.">
-                  <div className="space-y-1.5 text-xs">
-                    {auth?.gitCredentials.map((c) => (
-                      <Row key={c.pattern} left={`git · ${c.pattern}`} right={c.preview} />
-                    ))}
-                    {auth?.toolAuth.map((t) => (
-                      <Row
-                        key={t.tool}
-                        left={`${t.tool} · ${t.opencodeProvider ? `${t.opencodeProvider} · ` : ''}${t.kind}`}
-                        right={t.keyPreview}
-                      />
-                    ))}
-                    {auth && auth.gitCredentials.length === 0 && auth.toolAuth.length === 0 && (
-                      <p className="text-text-faint">No credentials configured.</p>
-                    )}
-                  </div>
-                </Field>
-                <Field label="Add git credential" hint="HTTPS token for a host pattern, e.g. github.com/*.">
-                  <AddGitCredential onAdded={refresh} />
-                </Field>
-              </section>
-            )}
+            {section === 'credentials' && <CredentialsPane />}
 
             {section === 'project' && <ProjectSettings />}
 
@@ -199,6 +188,496 @@ export function SettingsButton(): JSX.Element {
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>
+  )
+}
+
+/**
+ * Per-tool sign-in plus git tokens. Each tool row shows its stored credential
+ * (masked) with a sign-out, or a sign-in expander: claude/codex can import the
+ * native login already on the daemon's machine or take a pasted API key;
+ * opencode takes a provider pick + API key. New-session creation is blocked
+ * per tool until a credential lands here.
+ */
+function CredentialsPane(): JSX.Element {
+  const auth = useAuthList()
+  const focusTool = useUiStore((s) => s.settingsFocusTool)
+  const queryClient = useQueryClient()
+  const refresh = (): void => {
+    void queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
+  }
+
+  return (
+    <section>
+      <h2 className="text-sm font-semibold">Credentials</h2>
+      <Field label="Agent tools" hint="Sign in to create sessions with a tool. Keys stay on this machine — containers only ever see placeholders.">
+        <div className="space-y-1.5 text-xs">
+          {TOOLS.map((t) => (
+            <ToolAuthRow
+              key={t}
+              tool={t}
+              summary={auth?.toolAuth.find((a) => a.tool === t) ?? null}
+              autoExpand={focusTool === t}
+              onChanged={refresh}
+            />
+          ))}
+        </div>
+      </Field>
+      <Field label="Git credentials" hint="HTTPS tokens injected into session containers.">
+        <div className="space-y-1.5 text-xs">
+          {auth?.gitCredentials.map((c) => (
+            <Row key={c.pattern} left={`git · ${c.pattern}`} right={c.preview} />
+          ))}
+          {auth && auth.gitCredentials.length === 0 && (
+            <p className="text-text-faint">No git credentials configured.</p>
+          )}
+        </div>
+      </Field>
+      <Field label="Add git credential" hint="HTTPS token for a host pattern, e.g. github.com/*.">
+        <AddGitCredential onAdded={refresh} />
+      </Field>
+    </section>
+  )
+}
+
+/** What the key-paste input asks for, per tool (and opencode provider). */
+function apiKeyLabel(tool: AgentTool, provider: OpencodeProvider): string {
+  if (tool === 'claude') return 'Anthropic API key'
+  if (tool === 'codex') return 'OpenAI API key'
+  return provider === 'neuralwatt' ? 'NeuralWatt API key' : 'OpenRouter API key'
+}
+
+/**
+ * One tool's credential row. Signed in: masked key + sign-out. Signed out:
+ * a "Sign in" expander with the tool's available methods.
+ */
+function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
+  tool: AgentTool
+  summary: ToolAuthSummary | null
+  autoExpand: boolean
+  onChanged: () => void
+}): JSX.Element {
+  const [expanded, setExpanded] = useState(false)
+  const [busy, setBusy] = useState<'save' | 'signout' | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [justSignedIn, setJustSignedIn] = useState(false)
+  const [provider, setProvider] = useState<OpencodeProvider>('openrouter')
+
+  // Opened via a "Sign in" affordance elsewhere (new-session menu) — land
+  // with this tool's form already open.
+  useEffect(() => {
+    if (autoExpand && !summary) setExpanded(true)
+  }, [autoExpand, summary])
+
+  const run = async (kind: 'save' | 'signout', op: () => Promise<void>): Promise<void> => {
+    setBusy(kind)
+    setError(null)
+    try {
+      await op()
+      setExpanded(false)
+      setJustSignedIn(kind === 'save') // sign-out clears a stale confirmation
+      onChanged()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `failed to ${kind === 'signout' ? 'sign out' : 'sign in'}`)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const saveKey = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault()
+    const formElement = event.currentTarget
+    const raw = new FormData(formElement).get('apiKey')
+    const apiKey = (typeof raw === 'string' ? raw : '').trim()
+    if (!apiKey) return
+    await run('save', async () => {
+      await setToolApiKey(tool, apiKey, tool === 'opencode' ? provider : undefined)
+      formElement.reset()
+    })
+  }
+
+  return (
+    <div className="rounded-md bg-bg px-2.5 py-1.5">
+      <div className="flex items-center justify-between">
+        <span className="truncate font-mono text-text-dim">
+          {tool}
+          {summary && ` · ${summary.opencodeProvider ? `${summary.opencodeProvider} · ` : ''}${summary.kind}`}
+        </span>
+        {summary ? (
+          <span className="ml-2 flex shrink-0 items-center gap-2">
+            <span className="font-mono text-text-faint">{summary.keyPreview}</span>
+            <button
+              onClick={() => void run('signout', () => clearToolAuth(tool))}
+              disabled={busy !== null}
+              className="rounded px-1.5 py-0.5 text-[11px] text-text-faint transition hover:text-text
+                disabled:opacity-50"
+            >
+              {busy === 'signout' ? 'Signing out…' : 'Sign out'}
+            </button>
+          </span>
+        ) : (
+          <button
+            onClick={() => { setError(null); setExpanded((e) => !e) }}
+            className="ml-2 shrink-0 rounded-md bg-surface-3 px-2.5 py-0.5 text-[11px] font-medium text-text
+              transition hover:bg-border-strong"
+          >
+            Sign in
+          </button>
+        )}
+      </div>
+
+      {justSignedIn && (
+        <p className="mt-1 text-[11px] text-emerald-400">Signed in successfully.</p>
+      )}
+
+      {!summary && expanded && (
+        <div className="mt-2 flex flex-col gap-2 border-t border-white/[0.04] pt-2">
+          {tool !== 'opencode' && (
+            <>
+              <CliSignIn tool={tool} onDone={() => { setJustSignedIn(true); onChanged() }} />
+              <p className="text-[11px] text-text-faint">
+                …or paste an API key:
+              </p>
+            </>
+          )}
+          {tool === 'opencode' && (
+            <RadioGroup
+              value={provider}
+              onValueChange={(value) => setProvider(value as OpencodeProvider)}
+              className="flex gap-3"
+            >
+              {(['openrouter', 'neuralwatt'] as const).map((p) => (
+                <label
+                  key={p}
+                  className="flex cursor-default items-center gap-1.5 text-[11px] text-text-dim transition
+                    hover:text-text"
+                >
+                  <Radio.Root
+                    value={p}
+                    className="flex h-3.5 w-3.5 items-center justify-center rounded-full border
+                      border-border-strong transition data-[checked]:border-accent data-[checked]:bg-accent"
+                  >
+                    <Radio.Indicator className="h-1.5 w-1.5 rounded-full bg-surface data-[unchecked]:hidden" />
+                  </Radio.Root>
+                  {p === 'openrouter' ? 'OpenRouter' : 'NeuralWatt'}
+                </label>
+              ))}
+            </RadioGroup>
+          )}
+          <form onSubmit={(e) => void saveKey(e)} className="flex gap-2">
+            <input
+              name="apiKey"
+              type="password"
+              placeholder={apiKeyLabel(tool, provider)}
+              className="flex-1 rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-xs
+                text-text outline-none focus:border-border-strong"
+            />
+            <button
+              type="submit"
+              disabled={busy !== null}
+              className="shrink-0 rounded-md bg-surface-3 px-3 text-xs font-medium text-text transition
+                hover:bg-border-strong disabled:opacity-50"
+            >
+              {busy === 'save' ? 'Saving…' : 'Save'}
+            </button>
+          </form>
+        </div>
+      )}
+      {error && <p className="mt-1.5 text-[11px] text-red-400">{error}</p>}
+    </div>
+  )
+}
+
+/**
+ * The primary sign-in path: the daemon runs the vendor's own browser login
+ * (`claude auth login` / `codex login`) in a subprocess. The CLI opens the
+ * browser on this machine and completes via its localhost callback, so the
+ * UI only shows "finish in your browser" and polls for the outcome.
+ */
+function CliSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): JSX.Element {
+  const [login, setLogin] = useState<ToolLoginView | null>(null)
+  const [install, setInstall] = useState<ToolInstallView | null>(null)
+  const [justInstalled, setJustInstalled] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [inputError, setInputError] = useState<string | null>(null)
+  const label = tool === 'claude' ? 'Sign in with Claude' : 'Sign in with ChatGPT'
+  const toolName = tool === 'claude' ? 'Claude Code' : 'Codex'
+
+  // Poll while the flow runs. A vanished session (daemon restart, expiry)
+  // resets to the start button.
+  useEffect(() => {
+    if (login?.status !== 'running') return
+    const t = setInterval(() => {
+      getToolLogin(login.id).then(setLogin).catch(() => setLogin(null))
+    }, 1500)
+    return () => clearInterval(t)
+  }, [login])
+
+  // One-shot: `onDone` comes in as a fresh closure each parent render, and
+  // re-running this effect must not re-announce the same success.
+  const doneRef = useRef(false)
+  const succeeded = login?.status === 'success'
+  useEffect(() => {
+    if (!succeeded || doneRef.current) return
+    doneRef.current = true
+    onDone()
+  }, [succeeded, onDone])
+
+  // Same polling for a running install.
+  useEffect(() => {
+    if (install?.status !== 'running') return
+    const t = setInterval(() => {
+      getToolInstall(install.id).then(setInstall).catch(() => setInstall(null))
+    }, 1500)
+    return () => clearInterval(t)
+  }, [install])
+
+  // A finished install returns to the start button with a "try again" nudge.
+  const installed = install?.status === 'success'
+  useEffect(() => {
+    if (!installed) return
+    setInstall(null)
+    setLogin(null)
+    setJustInstalled(true)
+  }, [installed])
+
+  const start = async (): Promise<void> => {
+    setBusy(true)
+    doneRef.current = false
+    try {
+      setLogin(await startToolLogin(tool))
+    } catch (err) {
+      setLogin({
+        id: '', tool, status: 'error',
+        error: err instanceof Error ? err.message : 'failed to start sign-in',
+      })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const cancel = (): void => {
+    if (login?.status === 'running') void cancelToolLogin(login.id).catch(() => {})
+    setLogin(null)
+  }
+
+  const installCli = async (): Promise<void> => {
+    setBusy(true)
+    setLogin(null)
+    try {
+      setInstall(await startToolInstall(tool))
+    } catch (err) {
+      setInstall({
+        id: '', tool, status: 'error',
+        error: err instanceof Error ? err.message : 'failed to start install',
+      })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const cancelInstall = (): void => {
+    if (install?.status === 'running') void cancelToolInstall(install.id).catch(() => {})
+    setInstall(null)
+  }
+
+  if (install) {
+    if (install.status === 'error') {
+      return (
+        <div className="flex flex-col gap-1.5">
+          <p className="text-[11px] text-red-400">{install.error ?? 'install failed'}</p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => void installCli()}
+              className="w-fit rounded-md border border-border px-2.5 py-1 text-[11px] text-text-dim
+                transition hover:border-border-strong hover:text-text"
+            >
+              Try again
+            </button>
+            <button
+              onClick={cancelInstall}
+              className="w-fit rounded px-1 py-0.5 text-[11px] text-text-faint transition hover:text-text"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )
+    }
+    return (
+      <div className="flex flex-col gap-2 rounded-md border border-accent/20 bg-accent/5 p-2.5">
+        <div className="flex items-center gap-2.5">
+          <p className="flex-1 text-[11px] leading-relaxed text-text-dim">
+            Installing {toolName}…
+          </p>
+          <button
+            onClick={cancelInstall}
+            className="shrink-0 rounded px-1 py-0.5 text-[11px] text-text-faint transition hover:text-text"
+          >
+            Cancel
+          </button>
+        </div>
+        {install.output && <CliOutput text={install.output} />}
+      </div>
+    )
+  }
+
+  if (!login) {
+    return (
+      <div className="flex flex-col gap-1">
+        {justInstalled && (
+          <p className="text-[11px] text-emerald-400">{toolName} installed — try signing in again.</p>
+        )}
+        <button
+          onClick={() => void start()}
+          disabled={busy}
+          className="w-fit rounded-md bg-accent/15 px-2.5 py-1 text-[11px] font-medium text-accent transition
+            hover:bg-accent/25 disabled:opacity-50"
+        >
+          {busy ? 'Starting…' : label}
+        </button>
+        <p className="text-[11px] text-text-faint">
+          Opens a browser window on this machine to authorize.
+        </p>
+      </div>
+    )
+  }
+
+  if (login.status === 'error') {
+    if (login.cliMissing) {
+      return (
+        <div className="flex flex-col gap-1.5">
+          <p className="text-[11px] text-text-dim">{toolName} isn't installed on this machine.</p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => void installCli()}
+              disabled={busy}
+              className="w-fit rounded-md bg-accent/15 px-2.5 py-1 text-[11px] font-medium text-accent
+                transition hover:bg-accent/25 disabled:opacity-50"
+            >
+              {busy ? 'Starting…' : `Install ${toolName}`}
+            </button>
+            <button
+              onClick={cancel}
+              className="w-fit rounded px-1 py-0.5 text-[11px] text-text-faint transition hover:text-text"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )
+    }
+    return (
+      <div className="flex flex-col gap-1.5">
+        <p className="text-[11px] text-red-400">{login.error ?? 'sign-in failed'}</p>
+        <button
+          onClick={cancel}
+          className="w-fit rounded-md border border-border px-2.5 py-1 text-[11px] text-text-dim transition
+            hover:border-border-strong hover:text-text"
+        >
+          Try again
+        </button>
+      </div>
+    )
+  }
+
+  const sendInput = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault()
+    if (login.status !== 'running') return
+    const formElement = event.currentTarget
+    const raw = new FormData(formElement).get('text')
+    const text = (typeof raw === 'string' ? raw : '').trim()
+    if (!text) return
+    try {
+      setLogin(await sendToolLoginInput(login.id, text))
+      setInputError(null)
+      formElement.reset()
+    } catch (err) {
+      // A rejected paste (daemon whitelists the code alphabet) shouldn't kill
+      // the flow — surface it inline and let the user paste again.
+      setInputError(err instanceof Error ? err.message : 'failed to send input')
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-accent/20 bg-accent/5 p-2.5">
+      <div className="flex items-center gap-2.5">
+        <p className="flex-1 text-[11px] leading-relaxed text-text-dim">
+          Finish signing in from the browser window that just opened. No window? Use
+          the sign-in link the CLI printed below.
+        </p>
+        <button
+          onClick={cancel}
+          className="shrink-0 rounded px-1 py-0.5 text-[11px] text-text-faint transition hover:text-text"
+        >
+          Cancel
+        </button>
+      </div>
+      {login.output && <CliOutput text={login.output} />}
+      {tool === 'claude' && (
+        <>
+          <form onSubmit={(e) => void sendInput(e)} className="flex items-center gap-2">
+            <input
+              name="text"
+              autoComplete="off"
+              placeholder="paste code here if prompted"
+              className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono
+                text-xs text-text outline-none focus:border-border-strong"
+            />
+            <button
+              type="submit"
+              className="shrink-0 rounded-md bg-surface-3 px-3 py-1 text-xs font-medium text-text transition
+                hover:bg-border-strong"
+            >
+              Send
+            </button>
+          </form>
+          {inputError && <p className="text-[11px] text-red-400">{inputError}</p>}
+        </>
+      )}
+    </div>
+  )
+}
+
+const URL_RE = /https:\/\/[^\s"'<>]+/g
+
+/**
+ * The login CLI's output, tailing live, with URLs clickable — the manual path
+ * when the daemon couldn't open a browser on this machine.
+ */
+function CliOutput({ text }: { text: string }): JSX.Element {
+  const boxRef = useRef<HTMLPreElement>(null)
+  useEffect(() => {
+    const el = boxRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [text])
+
+  const parts: (string | JSX.Element)[] = []
+  let last = 0
+  for (const m of text.matchAll(URL_RE)) {
+    parts.push(text.slice(last, m.index))
+    parts.push(
+      <a
+        key={m.index}
+        href={m[0]}
+        target="_blank"
+        rel="noreferrer"
+        className="break-all font-medium text-accent underline decoration-accent/40 hover:decoration-accent"
+      >
+        {m[0]}
+      </a>,
+    )
+    last = m.index + m[0].length
+  }
+  parts.push(text.slice(last))
+
+  return (
+    <pre
+      ref={boxRef}
+      className="max-h-36 overflow-y-auto whitespace-pre-wrap break-words rounded bg-bg/80 p-2 font-mono
+        text-[10px] leading-relaxed text-text-dim"
+    >
+      {parts}
+    </pre>
   )
 }
 

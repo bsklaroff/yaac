@@ -11,6 +11,7 @@ import {
   projectDir,
 } from '@/lib/project/paths'
 import {
+  claudeKeychainService,
   detectAuthKind,
   loadToolAuthEntry,
   saveToolAuth,
@@ -65,6 +66,23 @@ describe('tool-auth', () => {
 
     it('defaults to api-key for codex', () => {
       expect(detectAuthKind('codex', 'sk-proj-abc123')).toBe('api-key')
+    })
+  })
+
+  describe('claudeKeychainService', () => {
+    it('is the plain host service without a config dir', () => {
+      expect(claudeKeychainService()).toBe('Claude Code-credentials')
+    })
+
+    it('suffixes 8 hex chars of sha256(configDir) — matching the CLI', () => {
+      // sha256('/tmp/x') = 2e56aa36… — the CLI takes the first 8 hex chars.
+      expect(claudeKeychainService('/tmp/x')).toBe('Claude Code-credentials-2e56aa36')
+    })
+
+    it('NFC-normalizes the config dir before hashing, like the CLI', () => {
+      const composed = '/tmp/caf\u00e9'
+      const decomposed = '/tmp/cafe\u0301'
+      expect(claudeKeychainService(decomposed)).toBe(claudeKeychainService(composed))
     })
   })
 

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 
 vi.mock('@/frontend/lib/settingsApi', () => ({
@@ -7,6 +8,12 @@ vi.mock('@/frontend/lib/settingsApi', () => ({
   getAuthList: vi.fn().mockResolvedValue({ gitCredentials: [], toolAuth: [] }),
   setDefaultTool: vi.fn().mockResolvedValue(undefined),
   addGitCredential: vi.fn().mockResolvedValue(undefined),
+  setToolApiKey: vi.fn().mockResolvedValue(undefined),
+  clearToolAuth: vi.fn().mockResolvedValue(undefined),
+  startToolLogin: vi.fn(),
+  getToolLogin: vi.fn(),
+  sendToolLoginInput: vi.fn(),
+  cancelToolLogin: vi.fn().mockResolvedValue(undefined),
   getShortcutOverrides: vi.fn().mockResolvedValue({}),
   setShortcutOverride: vi.fn().mockResolvedValue(undefined),
   resetShortcuts: vi.fn().mockResolvedValue(undefined),
@@ -27,7 +34,13 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
-  useUiStore.setState({ bindings: DEFAULT_BINDINGS, recordingShortcut: false })
+  useUiStore.setState({
+    bindings: DEFAULT_BINDINGS,
+    recordingShortcut: false,
+    settingsOpen: false,
+    settingsSection: 'general',
+    settingsFocusTool: null,
+  })
   vi.clearAllMocks()
 })
 
@@ -35,7 +48,11 @@ afterEach(cleanup)
 
 /** Open the settings modal and switch to the Shortcuts section. */
 function openShortcuts(): void {
-  render(<SettingsButton />)
+  render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <SettingsButton />
+    </QueryClientProvider>,
+  )
   fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
   fireEvent.click(screen.getByRole('button', { name: 'Shortcuts' }))
 }

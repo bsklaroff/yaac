@@ -287,6 +287,36 @@ export interface AuthListResult {
   toolAuth: ToolAuthSummary[]
 }
 
+// --- web-driven tool sign-in (daemon/tool-login.ts) ---
+
+export type ToolLoginStatus = 'running' | 'success' | 'error'
+
+/** Wire view of a daemon-run vendor-CLI browser login (never carries tokens).
+ *  The CLI opens the browser itself — same-machine setups need no relaying. */
+export interface ToolLoginView {
+  id: string
+  tool: AgentTool
+  status: ToolLoginStatus
+  /** The CLI's output so far (ANSI-stripped, tail-capped) — shown so the user
+   *  can grab the printed sign-in URL when no browser window opened. */
+  output?: string
+  error?: string
+  /** Set when the flow failed because the vendor CLI is not installed on
+   *  this machine — the webapp offers an install instead of a retry. */
+  cliMissing?: boolean
+}
+
+/** Wire view of a daemon-run vendor-CLI install kicked off from the webapp
+ *  (the "Install Claude Code / Codex" button on a cliMissing sign-in). */
+export interface ToolInstallView {
+  id: string
+  tool: AgentTool
+  status: ToolLoginStatus
+  /** Installer output so far (ANSI-stripped, tail-capped). */
+  output?: string
+  error?: string
+}
+
 // --- session/list ---
 
 export interface SessionListEntry {

@@ -38,4 +38,12 @@ describe('apiClient', () => {
     expect(await api.put<{ content: string }>('/x', { content: 'x' })).toEqual({ content: 'x' })
     expect(fetchMock).toHaveBeenCalledWith('/x', expect.objectContaining({ method: 'PUT' }))
   })
+
+  it('put sends a JSON body with the PUT method', async () => {
+    stubFetch({ ok: true, status: 204 })
+    expect(await api.put('/x', { hi: true })).toBeUndefined()
+    const call = vi.mocked(globalThis.fetch).mock.calls[0]
+    expect(call[0]).toBe('/x')
+    expect(call[1]).toMatchObject({ method: 'PUT', body: JSON.stringify({ hi: true }) })
+  })
 })

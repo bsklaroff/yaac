@@ -3,6 +3,8 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { listAuth } from '@/lib/auth/list'
 import { clearAuth } from '@/lib/auth/clear'
+import { cancelToolLogin, getToolLogin, sendToolLoginInput, startToolLogin } from '@/daemon/tool-login'
+import { cancelToolInstall, getToolInstall, startToolInstall } from '@/daemon/tool-install'
 import { addEntry, removeEntryChecked, replaceEntries } from '@/lib/project/credentials'
 import { persistToolAuthPayload } from '@/lib/project/tool-auth'
 import { seedFakeClaudeOAuth, seedFakeGithubCredential } from '@/lib/project/fake-auth'
@@ -102,6 +104,36 @@ export const authApp = new Hono()
       return c.body(null, 204)
     },
   )
+  // Web-driven sign-in: the daemon runs the vendor's browser login CLI in a
+  // subprocess; the webapp just polls for the outcome (daemon/tool-login.ts).
+  .post(
+    '/:tool/login/start',
+    zValidator('param', z.object({ tool: z.enum(['claude', 'codex']) })),
+    async (c) => c.json(await startToolLogin(c.req.valid('param').tool)),
+  )
+  .get('/login/:id', (c) => c.json(getToolLogin(c.req.param('id'))))
+  .post(
+    '/login/:id/input',
+    // Cap generously pre-trim; the manager enforces the real alphabet/length.
+    zValidator('json', z.object({ text: z.string().min(1).max(1024) })),
+    (c) => c.json(sendToolLoginInput(c.req.param('id'), c.req.valid('json').text)),
+  )
+  .post('/login/:id/cancel', (c) => {
+    cancelToolLogin(c.req.param('id'))
+    return c.body(null, 204)
+  })
+  // Web-driven CLI install: offered when a sign-in fails with cliMissing.
+  // Same session/poll shape as login (daemon/tool-install.ts).
+  .post(
+    '/:tool/install/start',
+    zValidator('param', z.object({ tool: z.enum(['claude', 'codex']) })),
+    (c) => c.json(startToolInstall(c.req.valid('param').tool)),
+  )
+  .get('/install/:id', (c) => c.json(getToolInstall(c.req.param('id'))))
+  .post('/install/:id/cancel', (c) => {
+    cancelToolInstall(c.req.param('id'))
+    return c.body(null, 204)
+  })
   .put(
     '/:tool',
     zValidator('param', z.object({ tool: z.enum(['claude', 'codex', 'opencode']) })),

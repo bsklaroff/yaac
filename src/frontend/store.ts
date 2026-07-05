@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { isLayoutNode, type LayoutNode } from '@/frontend/lib/layout'
 import { DEFAULT_BINDINGS, type BindingMap, type Chord, type ShortcutId } from '@/frontend/lib/shortcuts'
-import type { DeletedSessionEntry, ProvisioningSessionEntry, SessionListEntry } from '@/shared/types'
+import type { AgentTool, DeletedSessionEntry, ProvisioningSessionEntry, SessionListEntry } from '@/shared/types'
 
 const LAYOUTS_LS_KEY = 'yaac.layouts.v1'
 const VIEWMODE_LS_KEY = 'yaac.viewmode.v1'
@@ -237,6 +237,24 @@ export function resolveAttentionTarget(
   return sessions.find((s) => s.status === 'running')?.sessionId ?? null
 }
 
+/**
+ * The tool the new-session shortcut would launch — the selected session's
+ * tool, else claude — gated on its credentials being configured. Null means
+ * the shortcut must be ignored: the target tool has no stored credential
+ * (which includes the moment before the auth list has loaded).
+ */
+export function resolveNewSessionTool(
+  sessions: Pick<SessionListEntry, 'sessionId' | 'tool'>[],
+  selectedSessionId: string | null,
+  configured: ReadonlySet<AgentTool>,
+): AgentTool | null {
+  const tool = sessions.find((s) => s.sessionId === selectedSessionId)?.tool ?? 'claude'
+  return configured.has(tool) ? tool : null
+}
+
+/** Sections of the settings modal (left-nav entries). */
+export type SettingsSection = 'general' | 'shortcuts' | 'credentials' | 'project' | 'userDockerfile'
+
 /** Local-only UI state (not daemon state — that lives in the snapshot). */
 interface UiState {
   /** Project whose sessions the sidebar is scoped to (rail selection). */
@@ -294,6 +312,20 @@ interface UiState {
    *  fire the command it's being bound to. */
   recordingShortcut: boolean
   setRecordingShortcut: (recording: boolean) => void
+  /** Whether the settings modal is open. Lives here (not in the gear button)
+   *  so other surfaces — e.g. a "Sign in" item in the new-session menu — can
+   *  open settings onto a specific section. */
+  settingsOpen: boolean
+  /** Section the settings modal shows; sticky across open/close. */
+  settingsSection: SettingsSection
+  /** Tool whose sign-in form the credentials section auto-expands — set when
+   *  settings was opened via a "Sign in" affordance; cleared on close. */
+  settingsFocusTool: AgentTool | null
+  /** Open settings — optionally onto a section, with a tool's sign-in form
+   *  expanded. Without args it reopens on the last-viewed section. */
+  openSettings: (section?: SettingsSection, focusTool?: AgentTool) => void
+  closeSettings: () => void
+  setSettingsSection: (section: SettingsSection) => void
   /** Add a locally-initiated provisioning row (dedup by id). */
   addOptimisticProvisioning: (entry: ProvisioningSessionEntry) => void
   /** Patch a tracked optimistic row's message or error (no-op if absent). */
@@ -358,6 +390,16 @@ export const useUiStore = create<UiState>((set) => ({
   resetBindings: () => set({ bindings: DEFAULT_BINDINGS }),
   recordingShortcut: false,
   setRecordingShortcut: (recording) => set({ recordingShortcut: recording }),
+  settingsOpen: false,
+  settingsSection: 'general',
+  settingsFocusTool: null,
+  openSettings: (section, focusTool) => set((s) => ({
+    settingsOpen: true,
+    settingsSection: section ?? s.settingsSection,
+    settingsFocusTool: focusTool ?? null,
+  })),
+  closeSettings: () => set({ settingsOpen: false, settingsFocusTool: null }),
+  setSettingsSection: (section) => set({ settingsSection: section }),
   addOptimisticProvisioning: (entry) => set((s) => (
     s.optimisticProvisioning.some((e) => e.sessionId === entry.sessionId)
       ? s

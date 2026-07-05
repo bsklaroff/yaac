@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
+import crypto from 'node:crypto'
 import readline from 'node:readline/promises'
 import { spawn, execFileSync } from 'node:child_process'
 import {
@@ -55,21 +56,65 @@ export function extractClaudeOAuthBundle(raw: string): ClaudeOAuthBundle | null 
   }
 }
 
+/** Keychain service name of a default (no CLAUDE_CONFIG_DIR) claude install. */
+const CLAUDE_KEYCHAIN_SERVICE = 'Claude Code-credentials'
+
+/**
+ * The macOS Keychain service name claude CLI stores its OAuth credentials
+ * under. With no custom config dir it is the plain "Claude Code-credentials";
+ * when CLAUDE_CONFIG_DIR is set, the CLI (observed in 2.1.201) appends
+ * "-<first 8 hex chars of sha256(configDir)>" so each config home gets its
+ * own item. The hash input is the raw env value NFC-normalized — not a
+ * resolved path — so callers must pass the exact string they put in the env.
+ */
+export function claudeKeychainService(configDir?: string): string {
+  if (!configDir) return CLAUDE_KEYCHAIN_SERVICE
+  const hash = crypto.createHash('sha256')
+    .update(configDir.normalize('NFC'))
+    .digest('hex')
+    .slice(0, 8)
+  return `${CLAUDE_KEYCHAIN_SERVICE}-${hash}`
+}
+
 /**
  * On macOS, Claude Code stores OAuth credentials in the Keychain.
- * Fetch them via `security find-generic-password`.
+ * Fetch them via `security find-generic-password`. Exported for the daemon's
+ * web sign-in flow, which watches the scratch config dir's own item (see
+ * `claudeKeychainService`). Non-darwin: null.
  */
-function readClaudeKeychainPayload(): string | null {
+export function readClaudeKeychainPayload(
+  service: string = CLAUDE_KEYCHAIN_SERVICE,
+): string | null {
   if (process.platform !== 'darwin') return null
   try {
     const out = execFileSync(
       'security',
-      ['find-generic-password', '-s', 'Claude Code-credentials', '-w'],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+      ['find-generic-password', '-s', service, '-w'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 },
     )
     return out.trim()
   } catch {
     return null
+  }
+}
+
+/**
+ * Delete a scratch login's Keychain item once its credentials have been
+ * persisted (or the flow abandoned) — live OAuth tokens must not linger in
+ * items nothing reads anymore. Refuses the un-suffixed host service so no
+ * caller bug can ever log the user's own claude install out. Missing items
+ * and non-darwin are no-ops.
+ */
+export function deleteScratchClaudeKeychainItem(service: string): void {
+  if (process.platform !== 'darwin' || service === CLAUDE_KEYCHAIN_SERVICE) return
+  try {
+    execFileSync(
+      'security',
+      ['delete-generic-password', '-s', service],
+      { stdio: 'ignore', timeout: 5000 },
+    )
+  } catch {
+    // never created (login failed before the CLI wrote it) — nothing to clean
   }
 }
 
