@@ -363,7 +363,7 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
         open={confirmDelete}
         onOpenChange={setConfirmDelete}
         title="Delete session?"
-        description="Stops and removes the session's container and worktree. This can't be undone."
+        description="Stops and removes the session's container. The session history and worktree will be saved, and can be restarted."
         confirmLabel="Delete"
         onConfirm={onConfirmDelete}
       />

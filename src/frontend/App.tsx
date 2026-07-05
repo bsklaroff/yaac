@@ -286,7 +286,7 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
         open={!!confirmDelete}
         onOpenChange={(next) => { if (!next) setConfirmDelete(null) }}
         title={`Delete “${sessionName(confirmDelete)}”?`}
-        description="Stops and removes the session's container and worktree. This can't be undone."
+        description="Stops and removes the session's container. The session history and worktree will be saved, and can be restarted."
         confirmLabel="Delete"
         onConfirm={() => {
           if (confirmDelete) deleteSessionOptimistic(confirmDelete)
