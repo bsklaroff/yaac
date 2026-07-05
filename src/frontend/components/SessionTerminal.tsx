@@ -126,7 +126,14 @@ export function SessionTerminal({
       }
       return false
     }
-    const gate = createSettleGate(() => setSettled(true), { hasContent })
+    const gate = createSettleGate(() => {
+      // The attach churn (the oversized session window shrinking to this
+      // grid) can push rows into scrollback and leave the viewport unpinned
+      // a line or two above the bottom, revealing with the agent's prompt
+      // line below the fold. Snap to the bottom before the frame shows.
+      term.scrollToBottom()
+      setSettled(true)
+    }, { hasContent })
 
     let ws: WebSocket | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined
