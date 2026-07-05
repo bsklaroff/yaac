@@ -62,7 +62,7 @@ function nestedHelp(cmd: Command, helper: Help): string {
   return output.join('\n')
 }
 
-const YAAC_VERSION = '0.0.2'
+const YAAC_VERSION = '0.0.3'
 
 const program = new Command()
   .name('yaac')
