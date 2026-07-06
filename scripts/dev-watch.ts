@@ -11,6 +11,12 @@
  * (re)start and the watcher waits for the next change. Ctrl-C stops
  * the watcher but leaves the daemon running.
  *
+ * Each `pnpm build` re-opts into pnpm's verify-deps-before-run
+ * auto-install (pnpm disables it for nested script runs), so a
+ * node_modules that drifted from package.json — e.g. after a git pull
+ * — heals on the next rerun; pnpm-lock.yaml is watched so a manual
+ * `pnpm install` retriggers a rerun too.
+ *
  * tsx kills only this wrapper on rerun, so the build is spawned in its
  * own process group and the signal handler forwards the kill to the
  * whole group — a save landing mid-build can't leave an orphaned
@@ -43,7 +49,17 @@ function run(cmd: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     // detached: own process group, so the signal handler above can kill
     // the full tree (pnpm -> sh -> tsup/vite) with one group signal.
-    const child = spawn(cmd, args, { cwd: repoRoot, stdio: 'inherit', detached: true })
+    // pnpm exports verify_deps_before_run=false to script children (its
+    // guard against install->script->install recursion), which would stop
+    // the nested `pnpm build` from auto-installing after package.json
+    // changes; restore `install` so a stale node_modules self-heals. No
+    // recursion risk: our prepare script never invokes pnpm run.
+    const child = spawn(cmd, args, {
+      cwd: repoRoot,
+      stdio: 'inherit',
+      detached: true,
+      env: { ...process.env, pnpm_config_verify_deps_before_run: 'install' },
+    })
     current = child
     child.once('error', (err) => {
       current = null
