@@ -256,6 +256,13 @@ export async function seedClaudeJson(claudeJsonPath: string): Promise<void> {
  * bypass inside a sandboxed pod — exactly the case the warning says
  * is safe — so showing it on every session is pure friction. Merges into
  * any existing settings (e.g. the theme claude-code writes itself).
+ *
+ * Also raises `cleanupPeriodDays` from claude-code's 30-day default to
+ * 100 years: session transcripts live in the project's hostPath-mounted
+ * `.claude` dir and yaac owns their lifecycle, so claude-code must never
+ * garbage-collect them on startup. (0 would disable transcript
+ * persistence entirely, not cleanup — hence a large finite value.)
+ * codex and opencode need no equivalent: neither expires sessions.
  */
 export async function seedClaudeSettings(settingsPath: string): Promise<void> {
   let settings: Record<string, unknown> = {}
@@ -265,6 +272,7 @@ export async function seedClaudeSettings(settingsPath: string): Promise<void> {
     // missing or invalid — start fresh
   }
   settings.skipDangerousModePermissionPrompt = true
+  settings.cleanupPeriodDays = 36500
   await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n')
 }
 

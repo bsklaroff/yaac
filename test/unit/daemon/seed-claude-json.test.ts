@@ -78,4 +78,19 @@ describe('seedClaudeSettings', () => {
     const j = JSON.parse(await fs.readFile(settings, 'utf8')) as Record<string, unknown>
     expect(j.skipDangerousModePermissionPrompt).toBe(true)
   })
+
+  it('retains transcripts for 100 years instead of the 30-day default', async () => {
+    const settings = path.join(dir, 'settings.json')
+    await seedClaudeSettings(settings)
+    const j = JSON.parse(await fs.readFile(settings, 'utf8')) as Record<string, unknown>
+    expect(j.cleanupPeriodDays).toBe(36500)
+  })
+
+  it('overrides a shorter existing cleanupPeriodDays', async () => {
+    const settings = path.join(dir, 'settings.json')
+    await fs.writeFile(settings, JSON.stringify({ cleanupPeriodDays: 30 }))
+    await seedClaudeSettings(settings)
+    const j = JSON.parse(await fs.readFile(settings, 'utf8')) as Record<string, unknown>
+    expect(j.cleanupPeriodDays).toBe(36500)
+  })
 })
