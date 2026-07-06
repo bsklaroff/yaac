@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import simpleGit from 'simple-git'
-import { cloneRepo, getDefaultBranch, addWorktree, removeWorktree, fetchOrigin, getGitUserConfig, injectTokenIntoUrl, getRemoteHeadCommit, torEnv, torSshOpts, buildHostSideGitSshCommand, formatSshCommand, writeKnownHostsFile, expandTilde } from '@/lib/git'
+import { cloneRepo, getDefaultBranch, addWorktree, removeWorktree, fetchOrigin, getGitUserConfig, injectTokenIntoUrl, getRemoteHeadCommit, torEnv, torSshOpts, buildHostSideGitSshCommand, formatSshCommand, writeKnownHostsFile, expandTilde, isGitAuthError } from '@/lib/git'
 
 describe('git helpers', () => {
   let tmpDir: string
@@ -388,5 +388,31 @@ describe('expandTilde', () => {
 
   it('leaves non-tilde paths alone', () => {
     expect(expandTilde('/abs/path')).toBe('/abs/path')
+  })
+})
+
+describe('isGitAuthError', () => {
+  it('matches the messages git emits for rejected credentials', () => {
+    const authErrors = [
+      "fatal: Authentication failed for 'https://github.com/acme/repo.git/'",
+      'remote: Invalid username or password.',
+      "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+      "fatal: unable to access 'https://github.com/acme/repo.git/': The requested URL returned error: 403",
+      "fatal: unable to access 'https://github.com/acme/repo.git/': The requested URL returned error: 401",
+      'git@github.com: Permission denied (publickey).',
+      'remote: Permission to acme/repo.git denied to somebody.',
+    ]
+    for (const msg of authErrors) expect(isGitAuthError(msg), msg).toBe(true)
+  })
+
+  it('does not match network, ref, or server errors', () => {
+    const otherErrors = [
+      "fatal: unable to access 'https://github.com/acme/repo.git/': Could not resolve host: github.com",
+      "fatal: couldn't find remote ref refs/heads/missing",
+      "fatal: unable to access 'https://github.com/acme/repo.git/': The requested URL returned error: 500",
+      'fatal: early EOF',
+      'fatal: not a git repository',
+    ]
+    for (const msg of otherErrors) expect(isGitAuthError(msg), msg).toBe(false)
   })
 })

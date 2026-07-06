@@ -22,6 +22,7 @@ const session = (over: Partial<SessionListEntry> = {}): SessionListEntry => ({
   status: 'waiting',
   createdAt: '2026-07-02 10:00:00',
   blockedHosts: [],
+  gitAuthFailures: [],
   forwardedPorts: [],
   ...over,
 })

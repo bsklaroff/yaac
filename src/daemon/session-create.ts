@@ -91,7 +91,7 @@ import {
   PLACEHOLDER_API_KEY,
   PLACEHOLDER_GH_TOKEN,
 } from '@/lib/project/tool-auth'
-import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/lib/git'
+import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig, isGitAuthError } from '@/lib/git'
 import { ensureCodexHooksJson, ensureCodexConfigToml } from '@/lib/session/codex-hooks'
 import { ensureOpencodeConfigJson } from '@/lib/session/opencode-config'
 import { DaemonError } from '@/daemon/errors'
@@ -722,6 +722,14 @@ export async function createSession(
       await fetchOrigin(repo, credential)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
+      if (isGitAuthError(msg)) {
+        throw new DaemonError(
+          'AUTH_REQUIRED',
+          `git authentication failed for ${parsedRemote.host} — the stored credential was `
+          + 'rejected (expired or revoked token?). Run "yaac auth update" to replace it, '
+          + 'then retry.',
+        )
+      }
       throw new DaemonError('INTERNAL', `could not fetch from remote: ${msg}`)
     }
   }

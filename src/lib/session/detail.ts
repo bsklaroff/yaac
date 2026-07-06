@@ -3,7 +3,8 @@ import { getVclusterStatus, type VclusterStatus } from '@/lib/k8s/vcluster'
 import { DaemonError } from '@/daemon/errors'
 import { getSessionFirstMessage, normalizeTool } from '@/lib/session/status'
 import { readBlockedHosts } from '@/lib/session/blocked-hosts'
-import type { AgentTool } from '@/shared/types'
+import { readGitAuthFailures } from '@/lib/session/git-auth-failures'
+import type { AgentTool, GitAuthFailure } from '@/shared/types'
 
 export interface SessionDetail {
   sessionId: string
@@ -13,6 +14,8 @@ export interface SessionDetail {
   tool: AgentTool
   labels: Record<string, string>
   blockedHostsCount: number
+  /** Git credentials the upstream rejected (expired/revoked token). */
+  gitAuthFailures: GitAuthFailure[]
   /** ISO timestamp of pod creation. */
   createdAt: string
   /** Present only for virtualCluster sessions. */
@@ -54,6 +57,9 @@ export async function getSessionDetail(idOrName: string): Promise<SessionDetail>
   const blocked = match.sessionId
     ? await readBlockedHosts(match.sessionId)
     : []
+  const gitAuthFailures = match.sessionId
+    ? await readGitAuthFailures(match.sessionId)
+    : []
   // Best-effort: detail must render even when the vcluster lookup
   // hiccups (it is one extra kubectl get; null for non-vcluster sessions).
   const vcluster = await getVclusterStatus(match.sessionId).catch(() => null)
@@ -65,6 +71,7 @@ export async function getSessionDetail(idOrName: string): Promise<SessionDetail>
     tool: match.tool,
     labels: match.labels,
     blockedHostsCount: blocked.length,
+    gitAuthFailures,
     createdAt: match.createdAt,
     ...(vcluster ? { virtualCluster: vcluster } : {}),
   }

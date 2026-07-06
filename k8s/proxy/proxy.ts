@@ -697,6 +697,22 @@ const sessionUpstreamRedirects = new Map<string, Record<string, UpstreamRedirect
 /** sessionId -> Set of blocked hostnames */
 const blockedHostsBySession = new Map<string, Set<string>>()
 
+/**
+ * sessionId -> (hostname -> auth-failure record). Populated when an
+ * upstream rejects a git smart-HTTP request that carried a yaac-injected
+ * credential — i.e. the stored token itself is bad (expired/revoked),
+ * not a missing allowlist entry. Cleared per host on the next successful
+ * injected git request, so the flag self-heals after `yaac auth update`.
+ */
+const gitAuthFailuresBySession = new Map<string, Map<string, GitAuthFailureRecord>>()
+
+interface GitAuthFailureRecord {
+  /** HTTP status the upstream returned (401 or 403). */
+  status: number
+  /** Epoch ms when the failure was first seen. */
+  atMs: number
+}
+
 // ── State persistence (/data write-through) ────────────────────────────
 //
 // /data is a hostPath, so anything written here is directly readable by
@@ -709,6 +725,7 @@ const blockedHostsBySession = new Map<string, Set<string>>()
 // live in the mounted credentials dir and are resolved at injection time.
 
 const BLOCKED_HOSTS_FILE = path.join(DATA_DIR, 'blocked-hosts.json')
+const GIT_AUTH_FAILURES_FILE = path.join(DATA_DIR, 'git-auth-failures.json')
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json')
 
 /**
@@ -746,6 +763,41 @@ function loadBlockedHosts(): void {
     blockedHostsBySession.set(sid, new Set(hosts.filter((h) => typeof h === 'string')))
   }
   console.log(`[proxy] Loaded blocked hosts for ${blockedHostsBySession.size} session(s) from disk`)
+}
+
+function persistGitAuthFailures(): void {
+  const result: Record<string, Array<{ host: string; status: number; atMs: number }>> = {}
+  for (const [sid, byHost] of gitAuthFailuresBySession) {
+    if (byHost.size === 0) continue
+    result[sid] = [...byHost].map(([host, rec]) => ({ host, ...rec }))
+  }
+  try {
+    writeJsonAtomic(GIT_AUTH_FAILURES_FILE, result)
+  } catch (err) {
+    console.error('[proxy] Failed to persist git auth failures:', (err as Error).message)
+  }
+}
+
+function loadGitAuthFailures(): void {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(fs.readFileSync(GIT_AUTH_FAILURES_FILE, 'utf8'))
+  } catch {
+    return // first boot or unreadable — start empty
+  }
+  if (!parsed || typeof parsed !== 'object') return
+  for (const [sid, entries] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!Array.isArray(entries)) continue
+    const byHost = new Map<string, GitAuthFailureRecord>()
+    for (const e of entries) {
+      if (!e || typeof e !== 'object') continue
+      const { host, status, atMs } = e as Record<string, unknown>
+      if (typeof host !== 'string' || typeof status !== 'number' || typeof atMs !== 'number') continue
+      byHost.set(host, { status, atMs })
+    }
+    if (byHost.size > 0) gitAuthFailuresBySession.set(sid, byHost)
+  }
+  console.log(`[proxy] Loaded git auth failures for ${gitAuthFailuresBySession.size} session(s) from disk`)
 }
 
 /**
@@ -853,6 +905,53 @@ function recordBlockedHost(sessionId: string | null, hostname: string): void {
   // Write-through only when the set actually grew — repeat blocks of the
   // same host are by far the common case and need no disk traffic.
   persistBlockedHosts()
+}
+
+/**
+ * Git smart-HTTP endpoints: the ref advertisement
+ * (GET <repo>/info/refs?service=git-upload-pack|git-receive-pack) and the
+ * two POST RPC endpoints. Scoping the auth-failure signal to these keeps a
+ * 401 from an unrelated API on the same host from raising the "git
+ * credential is bad" flag.
+ */
+function isGitSmartHttpPath(requestPath: string): boolean {
+  const [pathname, query = ''] = requestPath.split('?', 2)
+  if (pathname.endsWith('/info/refs')) {
+    const service = new URLSearchParams(query).get('service')
+    return service === 'git-upload-pack' || service === 'git-receive-pack'
+  }
+  return pathname.endsWith('/git-upload-pack') || pathname.endsWith('/git-receive-pack')
+}
+
+/**
+ * Track the upstream's verdict on a git smart-HTTP request that carried a
+ * yaac-injected credential. A 401/403 means the stored token itself was
+ * rejected (expired or revoked) — record it (write-through, like blocked
+ * hosts) so the daemon surfaces a loud per-session error. A later 2xx on
+ * the same host clears the record, so the flag self-heals once the user
+ * runs `yaac auth update` and git is retried.
+ */
+function noteGitUpstreamStatus(
+  sessionId: string,
+  hostname: string,
+  requestPath: string,
+  status: number,
+): void {
+  if (!isGitSmartHttpPath(requestPath)) return
+  const byHost = gitAuthFailuresBySession.get(sessionId)
+  if (status === 401 || status === 403) {
+    if (byHost?.has(hostname)) return // repeat failure — no disk traffic
+    console.log(`[proxy] GIT AUTH FAILED for ${hostname} (HTTP ${status}, session ${sessionId.slice(0, 8)}...)`)
+    const hosts = byHost ?? new Map<string, GitAuthFailureRecord>()
+    hosts.set(hostname, { status, atMs: Date.now() })
+    gitAuthFailuresBySession.set(sessionId, hosts)
+    persistGitAuthFailures()
+    return
+  }
+  if (status >= 200 && status < 300 && byHost?.delete(hostname)) {
+    console.log(`[proxy] git auth recovered for ${hostname} (session ${sessionId.slice(0, 8)}...)`)
+    persistGitAuthFailures()
+  }
 }
 
 function applyInjections(
@@ -1508,6 +1607,13 @@ function handleMitm(
     const injCount = applyInjections(headers, reqPath, allRules)
     const bodyInjections = collectBodyInjections(reqPath, allRules)
 
+    // Watch the upstream's verdict when this request goes to the session's
+    // git host with a yaac-injected credential (the same condition under
+    // which buildDynamicRules added the git Authorization rule above) — a
+    // 401/403 on a git endpoint means the stored token is bad.
+    const gitCredInjected =
+      sessionId !== null && sessionHasHttpsCredentialForHost(sessionId, hostname)
+
     const totalInj = injCount + bodyInjections.length
     if (totalInj > 0) {
       const dynSuffix = dynamicRules.length > 0 ? ` + dynamic(${dynamicRules.length})` : ''
@@ -1536,6 +1642,9 @@ function handleMitm(
         ...(useHttp ? {} : { rejectUnauthorized: true }),
         ...(useTorAgent ? { agent: torAgent } : {}),
       }, (upstreamRes) => {
+        if (gitCredInjected && sessionId !== null) {
+          noteGitUpstreamStatus(sessionId, hostname, reqPath, upstreamRes.statusCode ?? 0)
+        }
         if (claudeTokenBundle && shouldCaptureTokenResponse) {
           handleClaudeTokenResponse(upstreamRes, res, claudeTokenBundle)
         } else if (codexTokenBundle && shouldCaptureTokenResponse) {
@@ -1965,8 +2074,10 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     sessionTool.delete(sessionId)
     sessionUpstreamRedirects.delete(sessionId)
     const hadBlockedHosts = blockedHostsBySession.delete(sessionId)
+    const hadGitAuthFailures = gitAuthFailuresBySession.delete(sessionId)
     persistSessions()
     if (hadBlockedHosts) persistBlockedHosts()
+    if (hadGitAuthFailures) persistGitAuthFailures()
     console.log(`[proxy] Removed session ${sessionId.slice(0, 8)}... (found: ${deleted})`)
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ ok: true, deleted }))
@@ -2142,6 +2253,7 @@ ca = loadOrGenerateCA()
 // eviction) doesn't 403 live sessions or lose their blocked-host history.
 loadSessions()
 loadBlockedHosts()
+loadGitAuthFailures()
 
 // ── Plain-HTTP Forward ────────────────────────────────────────────────
 

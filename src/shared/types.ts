@@ -321,6 +321,20 @@ export interface ToolInstallView {
 
 // --- session/list ---
 
+/**
+ * A git credential the proxy injected that the upstream rejected — the
+ * stored token is bad (expired or revoked), as opposed to a blocked host.
+ * Recorded per session by the proxy; cleared automatically when a later
+ * git request to the same host succeeds.
+ */
+export interface GitAuthFailure {
+  host: string
+  /** HTTP status the upstream returned (401 or 403). */
+  status: number
+  /** Epoch ms when the proxy first saw the failure. */
+  atMs: number
+}
+
 export interface SessionListEntry {
   sessionId: string
   projectSlug: string
@@ -340,6 +354,8 @@ export interface SessionListEntry {
   /** User-assigned display title (falls back to `prompt` in UIs). */
   title?: string
   blockedHosts: string[]
+  /** Git credentials the upstream rejected (expired/revoked token). */
+  gitAuthFailures: GitAuthFailure[]
   /** Live host→container forwards owned by the daemon (from the
    *  forwarder registry). Empty until forwarders are (re)provisioned —
    *  briefly so after a daemon restart, before the restore pass runs. */

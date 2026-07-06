@@ -13,6 +13,24 @@ export function injectTokenIntoUrl(url: string, token: string): string {
   return parsed.toString()
 }
 
+/**
+ * Heuristic for git transport errors caused by rejected credentials
+ * (expired/revoked token, insufficient scopes, rejected SSH key), as
+ * opposed to network failures or missing refs. Matches the messages git
+ * emits for HTTP 401/403 and SSH auth rejection, so callers can replace
+ * the raw stderr with an actionable "fix your credential" message.
+ */
+export function isGitAuthError(message: string): boolean {
+  return [
+    /authentication failed/i,
+    /invalid username or password/i,
+    /could not read (Username|Password)/i,
+    /returned error: 40[13]/, // curl: "The requested URL returned error: 401"
+    /permission denied \(publickey/i, // SSH key rejected
+    /permission to .+ denied/i, // GitHub's 403 remote message on push
+  ].some((re) => re.test(message))
+}
+
 export { torSshOpts, formatSshCommand } from '@/shared/git'
 import { formatSshCommand } from '@/shared/git'
 

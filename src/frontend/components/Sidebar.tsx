@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Collapsible } from '@base-ui/react/collapsible'
 import { ChevronIcon, CloseIcon, LoadingIcon, RestartIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import { BlockedHostsBadge } from '@/frontend/components/BlockedHostsBadge'
+import { GitAuthFailureBadge } from '@/frontend/components/GitAuthFailureBadge'
 import { NewSessionButton } from '@/frontend/components/NewSessionButton'
 import { ProjectActionsMenu } from '@/frontend/components/ProjectActionsMenu'
 import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
@@ -336,14 +337,26 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
         </span>
       </button>
 
-      {/* Overlaid as a sibling for the same reason as the delete × below:
-          the badge is a button and can't nest inside the row button. */}
-      {session.blockedHosts.length > 0 && (
-        <BlockedHostsBadge
-          hosts={session.blockedHosts}
-          iconSize={11}
-          className="absolute bottom-1.5 right-1.5 hover:bg-surface-3"
-        />
+      {/* Overlaid as siblings for the same reason as the delete × below:
+          the badges are buttons and can't nest inside the row button. The
+          wrapper is pointer-inert so only the badges themselves take clicks. */}
+      {(session.gitAuthFailures.length > 0 || session.blockedHosts.length > 0) && (
+        <span className="pointer-events-none absolute bottom-1.5 right-1.5 flex items-center gap-1">
+          {session.gitAuthFailures.length > 0 && (
+            <GitAuthFailureBadge
+              failures={session.gitAuthFailures}
+              iconSize={11}
+              className="pointer-events-auto hover:bg-[#d65858]/25"
+            />
+          )}
+          {session.blockedHosts.length > 0 && (
+            <BlockedHostsBadge
+              hosts={session.blockedHosts}
+              iconSize={11}
+              className="pointer-events-auto hover:bg-surface-3"
+            />
+          )}
+        </span>
       )}
 
       {/* Overlaid as a sibling (not nested in the row button) and pointer-inert

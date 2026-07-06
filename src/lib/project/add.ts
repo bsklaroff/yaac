@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ensureDataDir, projectDir, repoDir, claudeDir } from '@/lib/project/paths'
-import { cloneRepo } from '@/lib/git'
+import { cloneRepo, isGitAuthError } from '@/lib/git'
 import { parseGitRemote, resolveCredentialForUrl } from '@/lib/project/credentials'
 import {
   loadClaudeCredentialsFile,
@@ -73,6 +73,13 @@ export async function addProject(remoteUrl: string): Promise<AddProjectResult> {
   } catch (err) {
     await fs.rm(dir, { recursive: true, force: true })
     const message = err instanceof Error ? err.message : String(err)
+    if (isGitAuthError(message)) {
+      throw new DaemonError(
+        'AUTH_REQUIRED',
+        `git authentication failed for ${parsed.host} — the stored credential was rejected `
+        + '(expired or revoked token?). Run "yaac auth update" to replace it, then retry.',
+      )
+    }
     throw new DaemonError('INTERNAL', `Failed to clone: ${message}`)
   }
 

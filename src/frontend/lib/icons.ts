@@ -20,6 +20,7 @@ export {
   RotateCw as RestartIcon,
   Trash2 as DeleteIcon,
   Ban as BlockedIcon,
+  TriangleAlert as WarningIcon,
   LoaderCircle as LoadingIcon,
   ChevronRight as ChevronIcon,
   X as CloseIcon,

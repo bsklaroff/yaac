@@ -8,6 +8,7 @@ import { CreatingPlaceholder } from '@/frontend/components/CreatingPlaceholder'
 import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
 import { AddIcon, CloseIcon, SidebarIcon, SplitDownIcon, SplitRightIcon, TabsIcon, TilesIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import { BlockedHostsBadge } from '@/frontend/components/BlockedHostsBadge'
+import { GitAuthFailureBadge } from '@/frontend/components/GitAuthFailureBadge'
 import { ForwardedPortLinks } from '@/frontend/components/ForwardedPortLinks'
 import { getSessionTerminals, createShellTerminal, killSessionTerminal } from '@/frontend/lib/terminalsApi'
 import { cycleDeltaFor, matchShortcut, resolveCycleTarget } from '@/frontend/lib/shortcuts'
@@ -434,6 +435,13 @@ export function SessionView({
           <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[session.tool]}</span>
           {session.forwardedPorts.length > 0 && (
             <ForwardedPortLinks ports={session.forwardedPorts} iconSize={11} className="hover:bg-surface-2" />
+          )}
+          {session.gitAuthFailures.length > 0 && (
+            <GitAuthFailureBadge
+              failures={session.gitAuthFailures}
+              iconSize={12}
+              className="hover:bg-[#d65858]/25"
+            />
           )}
           {session.blockedHosts.length > 0 && (
             <BlockedHostsBadge hosts={session.blockedHosts} iconSize={12} className="hover:bg-surface-2" />

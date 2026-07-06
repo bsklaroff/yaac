@@ -37,6 +37,7 @@ export async function sessionList(projectSlug?: string, options: SessionListOpti
     console.log(`No active sessions${suffix}. Create one with: yaac session create <project>`)
   } else {
     renderRunning(result.sessions)
+    renderGitAuthFailures(result.sessions)
     renderBlockedHosts(result.sessions)
   }
 }
@@ -72,6 +73,19 @@ function renderRunning(sessions: SessionListEntry[]): void {
     const promptText = truncatePrompt(row.prompt, promptWidth)
     console.log(`${row.shortId.padEnd(10)} ${row.project.padEnd(projectWidth)} ${row.tool.padEnd(toolWidth)} ${row.status.padEnd(statusWidth)} ${row.created}  ${promptText}`)
   }
+  console.log('')
+}
+
+function renderGitAuthFailures(sessions: SessionListEntry[]): void {
+  const withFailures = sessions.filter((s) => s.gitAuthFailures.length > 0)
+  if (withFailures.length === 0) return
+  console.log('GIT AUTH FAILED — the stored credential was rejected (expired or revoked token?):')
+  for (const s of withFailures) {
+    for (const f of s.gitAuthFailures) {
+      console.log(`  ${s.sessionId.slice(0, 8)}  ${f.host} returned HTTP ${f.status}`)
+    }
+  }
+  console.log('Run "yaac auth update" to refresh it; the fix reaches running sessions immediately.')
   console.log('')
 }
 
