@@ -21,14 +21,14 @@ export function BlockedHostsBadge({
   return (
     <Popover.Root>
       <Popover.Trigger
-        aria-label={`${hosts.length} blocked host(s)`}
+        aria-label={`${hosts.length} blocked host${hosts.length === 1 ? '' : 's'}`}
         className={clsx(
-          'flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-xs text-[#d65858] transition',
+          'flex shrink-0 items-center gap-1 rounded bg-[#d65858]/15 px-1 py-0.5 text-xs font-medium text-[#d65858] transition',
           className,
         )}
       >
         <BlockedIcon size={iconSize} />
-        {hosts.length}
+        {hosts.length} blocked host{hosts.length === 1 ? '' : 's'}
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner side="bottom" align="end" sideOffset={4}>
