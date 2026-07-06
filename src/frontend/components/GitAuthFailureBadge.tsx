@@ -5,11 +5,12 @@ import { WarningIcon } from '@/frontend/lib/icons'
 import type { GitAuthFailure } from '@/shared/types'
 
 /**
- * Loud per-session indicator that the upstream rejected the git credential
- * the proxy injected (expired or revoked token) — git fetch/push inside the
- * session is failing. Clicking opens a popover naming the host and the fix.
- * Renders its own <button>, so inside clickable rows mount it as an overlaid
- * sibling (like BlockedHostsBadge), never nested in the row button.
+ * Loud project-wide indicator that the upstream rejected the git credential
+ * the proxy injected (expired or revoked token) — git fetch/push is failing
+ * in every one of the project's sessions. Clicking opens a popover naming
+ * the host and the fix. Renders its own <button>, so inside clickable rows
+ * mount it as an overlaid sibling (like BlockedHostsBadge), never nested in
+ * the row button.
  */
 export function GitAuthFailureBadge({
   failures,

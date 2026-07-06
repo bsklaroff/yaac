@@ -12,14 +12,17 @@ import type { AgentTool, YaacConfig } from '@/shared/types'
  * involvement. Secret-free by construction — injection rules carry
  * secretRefs, never values.
  *
- * `tool` is required: the proxy gates all agent-credential injection on the
- * registered tool, so a registration without one gets no credentials.
+ * `tool` and `projectSlug` are required (the proxy rejects a registration
+ * without them): all agent-credential injection is gated on the registered
+ * tool, and git-auth-failure records are keyed by the owning project.
  */
 export interface SessionRegistration {
   rules: InjectionRule[]
   allowedHosts: string[]
   repoUrl?: string
   tool: AgentTool
+  /** Owning project — the proxy keys its git-auth-failure records by it. */
+  projectSlug: string
   upstreamRedirects?: Record<string, UpstreamRedirect>
 }
 
@@ -63,6 +66,7 @@ export function buildSessionRegistration(input: {
   config: YaacConfig
   remoteUrl: string
   tool: AgentTool
+  projectSlug: string
   env?: NodeJS.ProcessEnv
 }): SessionRegistration {
   // eslint-disable-next-line no-process-env -- DI seam: tests pass input.env.
@@ -84,6 +88,7 @@ export function buildSessionRegistration(input: {
     allowedHosts,
     repoUrl: input.remoteUrl,
     tool: input.tool,
+    projectSlug: input.projectSlug,
     upstreamRedirects: parseUpstreamRedirectsEnv(env.YAAC_E2E_UPSTREAM_REDIRECTS),
   }
 }

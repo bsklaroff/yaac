@@ -278,6 +278,7 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
           sessions={scoped}
           provisioning={scopedProvisioning}
           connected={connected}
+          gitAuthFailures={(activeProjectSlug && snapshot?.gitAuthFailures[activeProjectSlug]) || []}
         />
       )}
       <div className="min-w-0 flex-1 p-2">

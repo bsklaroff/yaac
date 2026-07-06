@@ -1,8 +1,10 @@
 /*
  * Verifies the git-auth-failure badge end-to-end against the real stack:
- * the proxy's 401 detection (k8s/proxy/proxy.ts noteGitUpstreamStatus),
- * the daemon snapshot plumbing (SessionListEntry.gitAuthFailures), and the
- * webapp badge (GitAuthFailureBadge in the sidebar row + session header).
+ * the proxy's 401 detection (k8s/proxy/proxy.ts noteGitUpstreamStatus,
+ * recorded against the session's PROJECT), the daemon snapshot plumbing
+ * (DaemonSnapshot.gitAuthFailures, keyed by project slug), and the webapp
+ * badge (GitAuthFailureBadge in the sidebar's project header + session
+ * header).
  *
  * Flow, all against a running daemon + cluster and a REAL session pod:
  *   1. finds (or requires) an existing running session for --project
@@ -254,9 +256,10 @@ async function main() {
     const fail = gitFetchInPod(podName)
     check('git fetch in the pod fails against the 401 upstream', !fail.ok, fail.err)
 
-    // Sidebar badge: pushed via the snapshot WebSocket, no reload needed.
+    // Project-header badge: pushed via the snapshot WebSocket, no reload
+    // needed. Project-wide, so it sits in the sidebar header, not on rows.
     await page.waitForSelector(BADGE, { timeout: 60_000 })
-    check('badge appears in the sidebar', await page.locator(BADGE).count() >= 1)
+    check('badge appears in the sidebar project header', await page.locator(BADGE).count() >= 1)
     await page.screenshot({ path: path.join(shotDir, 'git-auth-badge-sidebar.png') })
 
     // Open the session: the header badge renders next to the tool label.

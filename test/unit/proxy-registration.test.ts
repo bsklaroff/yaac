@@ -23,6 +23,7 @@ describe('buildSessionRegistration', () => {
       },
       remoteUrl: 'https://github.com/acme/repo',
       tool: 'claude',
+      projectSlug: 'acme-repo',
       env: { MY_KEY: 'sekrit' },
     })
     expect(reg.rules).toEqual([{
@@ -35,6 +36,7 @@ describe('buildSessionRegistration', () => {
     expect(JSON.stringify(reg)).not.toContain('sekrit')
     expect(reg.repoUrl).toBe('https://github.com/acme/repo')
     expect(reg.tool).toBe('claude')
+    expect(reg.projectSlug).toBe('acme-repo')
   })
 
   it('resolves the default allowlist when config has no overrides', () => {
@@ -42,6 +44,7 @@ describe('buildSessionRegistration', () => {
       config: {},
       remoteUrl: 'https://github.com/acme/repo',
       tool: 'codex',
+      projectSlug: 'acme-repo',
       env: {},
     })
     expect(reg.allowedHosts).toEqual([...DEFAULT_ALLOWED_HOSTS])
@@ -51,18 +54,18 @@ describe('buildSessionRegistration', () => {
   it('honors setAllowedUrls and addAllowedUrls from config', () => {
     expect(buildSessionRegistration({
       config: { setAllowedUrls: ['only.example.com'] },
-      remoteUrl: 'u', tool: 'claude', env: {},
+      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', env: {},
     }).allowedHosts).toEqual(['only.example.com'])
     expect(buildSessionRegistration({
       config: { addAllowedUrls: ['extra.example.com'] },
-      remoteUrl: 'u', tool: 'claude', env: {},
+      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', env: {},
     }).allowedHosts).toContain('extra.example.com')
   })
 
   it('auto-appends the registry/CDN pull hosts for nestedContainers sessions', () => {
     const reg = buildSessionRegistration({
       config: { nestedContainers: true },
-      remoteUrl: 'u', tool: 'claude', env: {},
+      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', env: {},
     })
     for (const host of NESTED_PULL_HOSTS) {
       expect(reg.allowedHosts).toContain(host)
@@ -79,7 +82,7 @@ describe('buildSessionRegistration', () => {
   it('still appends the pull hosts on top of addAllowedUrls', () => {
     const reg = buildSessionRegistration({
       config: { nestedContainers: true, addAllowedUrls: ['extra.example.com'] },
-      remoteUrl: 'u', tool: 'claude', env: {},
+      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', env: {},
     })
     expect(reg.allowedHosts).toContain('extra.example.com')
     expect(reg.allowedHosts).toContain('registry-1.docker.io')
@@ -88,7 +91,7 @@ describe('buildSessionRegistration', () => {
   it('does NOT append the pull hosts under setAllowedUrls (full override)', () => {
     const reg = buildSessionRegistration({
       config: { nestedContainers: true, setAllowedUrls: ['only.example.com'] },
-      remoteUrl: 'u', tool: 'claude', env: {},
+      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', env: {},
     })
     expect(reg.allowedHosts).toEqual(['only.example.com'])
   })
@@ -96,7 +99,7 @@ describe('buildSessionRegistration', () => {
   it('leaves the allowlist untouched when nestedContainers is off', () => {
     const reg = buildSessionRegistration({
       config: {},
-      remoteUrl: 'u', tool: 'claude', env: {},
+      remoteUrl: 'u', tool: 'claude', projectSlug: 'p', env: {},
     })
     expect(reg.allowedHosts).toEqual([...DEFAULT_ALLOWED_HOSTS])
     expect(reg.allowedHosts).not.toContain('cdn01.quay.io')
@@ -108,6 +111,7 @@ describe('buildSessionRegistration', () => {
       config: {},
       remoteUrl: 'u',
       tool: 'opencode',
+      projectSlug: 'p',
       env: {
         YAAC_E2E_UPSTREAM_REDIRECTS:
           '{"api.anthropic.com":{"host":"mock.yaac-test.svc","port":8080}}',

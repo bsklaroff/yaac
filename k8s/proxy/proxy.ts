@@ -670,8 +670,9 @@ function writeCodexOAuthBundle(bundle: CodexOAuthBundle): void {
 
 // ── Secret Store ───────────────────────────────────────────────────────
 //
-// All per-tenant state is keyed by sessionId (the same credential the
-// container sends in the Proxy-Authorization header). A session is
+// Per-tenant state is keyed by sessionId (the same credential the
+// container sends in the Proxy-Authorization header), except git-auth
+// failures, which are keyed by the session's project. A session is
 // registered once via PUT /sessions/:id with its full state payload and
 // removed via DELETE /sessions/:id when the container is torn down.
 
@@ -687,6 +688,9 @@ const sessionRepoUrl = new Map<string, string>()
 /** sessionId -> active agent tool ('claude' | 'codex') */
 const sessionTool = new Map<string, string>()
 
+/** sessionId -> owning project slug (scopes the git-auth-failure records) */
+const sessionProject = new Map<string, string>()
+
 /**
  * sessionId -> (hostname -> upstream redirect target). Test-only: redirects
  * the post-MITM upstream call to a mock while leaving TLS termination and
@@ -698,13 +702,17 @@ const sessionUpstreamRedirects = new Map<string, Record<string, UpstreamRedirect
 const blockedHostsBySession = new Map<string, Set<string>>()
 
 /**
- * sessionId -> (hostname -> auth-failure record). Populated when an
+ * projectSlug -> (hostname -> auth-failure record). Populated when an
  * upstream rejects a git smart-HTTP request that carried a yaac-injected
  * credential — i.e. the stored token itself is bad (expired/revoked),
- * not a missing allowlist entry. Cleared per host on the next successful
- * injected git request, so the flag self-heals after `yaac auth update`.
+ * not a missing allowlist entry. Keyed by project (resolved through the
+ * requesting session's registration): the credential belongs to the
+ * project's repo, so one bad token flags every session of the project,
+ * and the record outlives the session that first hit it. Cleared per
+ * host on the next successful injected git request from any of the
+ * project's sessions, so the flag self-heals after `yaac auth update`.
  */
-const gitAuthFailuresBySession = new Map<string, Map<string, GitAuthFailureRecord>>()
+const gitAuthFailuresByProject = new Map<string, Map<string, GitAuthFailureRecord>>()
 
 interface GitAuthFailureRecord {
   /** HTTP status the upstream returned (401 or 403). */
@@ -767,9 +775,9 @@ function loadBlockedHosts(): void {
 
 function persistGitAuthFailures(): void {
   const result: Record<string, Array<{ host: string; status: number; atMs: number }>> = {}
-  for (const [sid, byHost] of gitAuthFailuresBySession) {
+  for (const [slug, byHost] of gitAuthFailuresByProject) {
     if (byHost.size === 0) continue
-    result[sid] = [...byHost].map(([host, rec]) => ({ host, ...rec }))
+    result[slug] = [...byHost].map(([host, rec]) => ({ host, ...rec }))
   }
   try {
     writeJsonAtomic(GIT_AUTH_FAILURES_FILE, result)
@@ -786,7 +794,7 @@ function loadGitAuthFailures(): void {
     return // first boot or unreadable — start empty
   }
   if (!parsed || typeof parsed !== 'object') return
-  for (const [sid, entries] of Object.entries(parsed as Record<string, unknown>)) {
+  for (const [slug, entries] of Object.entries(parsed as Record<string, unknown>)) {
     if (!Array.isArray(entries)) continue
     const byHost = new Map<string, GitAuthFailureRecord>()
     for (const e of entries) {
@@ -795,9 +803,9 @@ function loadGitAuthFailures(): void {
       if (typeof host !== 'string' || typeof status !== 'number' || typeof atMs !== 'number') continue
       byHost.set(host, { status, atMs })
     }
-    if (byHost.size > 0) gitAuthFailuresBySession.set(sid, byHost)
+    if (byHost.size > 0) gitAuthFailuresByProject.set(slug, byHost)
   }
-  console.log(`[proxy] Loaded git auth failures for ${gitAuthFailuresBySession.size} session(s) from disk`)
+  console.log(`[proxy] Loaded git auth failures for ${gitAuthFailuresByProject.size} project(s) from disk`)
 }
 
 /**
@@ -809,7 +817,8 @@ type PersistedSession = {
   rules: HostInjectionRule[]
   allowedHosts: string[]
   repoUrl?: string
-  tool?: string
+  tool: string
+  projectSlug: string
   upstreamRedirects?: Record<string, UpstreamRedirect>
 }
 
@@ -820,7 +829,9 @@ function persistSessions(): void {
       rules: sessionRules.get(sid) ?? [],
       allowedHosts,
       repoUrl: sessionRepoUrl.get(sid),
-      tool: sessionTool.get(sid),
+      // Both validated as present by the PUT handler.
+      tool: sessionTool.get(sid)!,
+      projectSlug: sessionProject.get(sid)!,
       upstreamRedirects: sessionUpstreamRedirects.get(sid),
     }
   }
@@ -841,15 +852,14 @@ function loadSessions(): void {
   if (!parsed || typeof parsed !== 'object') return
   for (const [sid, raw] of Object.entries(parsed as Record<string, unknown>)) {
     if (!raw || typeof raw !== 'object') continue
-    const s = raw as Record<string, unknown>
+    const s = raw as PersistedSession
     if (!Array.isArray(s.rules) || !Array.isArray(s.allowedHosts)) continue
-    sessionRules.set(sid, s.rules as HostInjectionRule[])
-    sessionAllowedHosts.set(sid, s.allowedHosts as string[])
-    if (typeof s.repoUrl === 'string' && s.repoUrl) sessionRepoUrl.set(sid, s.repoUrl)
-    if (typeof s.tool === 'string' && s.tool) sessionTool.set(sid, s.tool)
-    if (s.upstreamRedirects && typeof s.upstreamRedirects === 'object') {
-      sessionUpstreamRedirects.set(sid, s.upstreamRedirects as Record<string, UpstreamRedirect>)
-    }
+    sessionRules.set(sid, s.rules)
+    sessionAllowedHosts.set(sid, s.allowedHosts)
+    if (s.repoUrl) sessionRepoUrl.set(sid, s.repoUrl)
+    sessionTool.set(sid, s.tool)
+    sessionProject.set(sid, s.projectSlug)
+    if (s.upstreamRedirects) sessionUpstreamRedirects.set(sid, s.upstreamRedirects)
   }
   console.log(`[proxy] Loaded ${sessionAllowedHosts.size} session registration(s) from disk`)
 }
@@ -926,10 +936,11 @@ function isGitSmartHttpPath(requestPath: string): boolean {
 /**
  * Track the upstream's verdict on a git smart-HTTP request that carried a
  * yaac-injected credential. A 401/403 means the stored token itself was
- * rejected (expired or revoked) — record it (write-through, like blocked
- * hosts) so the daemon surfaces a loud per-session error. A later 2xx on
- * the same host clears the record, so the flag self-heals once the user
- * runs `yaac auth update` and git is retried.
+ * rejected (expired or revoked) — record it against the session's project
+ * (write-through, like blocked hosts) so the daemon surfaces a loud
+ * project-wide error. A later 2xx on the same host from any of the
+ * project's sessions clears the record, so the flag self-heals once the
+ * user runs `yaac auth update` and git is retried.
  */
 function noteGitUpstreamStatus(
   sessionId: string,
@@ -938,18 +949,20 @@ function noteGitUpstreamStatus(
   status: number,
 ): void {
   if (!isGitSmartHttpPath(requestPath)) return
-  const byHost = gitAuthFailuresBySession.get(sessionId)
+  const projectSlug = sessionProject.get(sessionId)
+  if (!projectSlug) return // unregistered session — can't attribute
+  const byHost = gitAuthFailuresByProject.get(projectSlug)
   if (status === 401 || status === 403) {
     if (byHost?.has(hostname)) return // repeat failure — no disk traffic
-    console.log(`[proxy] GIT AUTH FAILED for ${hostname} (HTTP ${status}, session ${sessionId.slice(0, 8)}...)`)
+    console.log(`[proxy] GIT AUTH FAILED for ${hostname} (HTTP ${status}, project ${projectSlug})`)
     const hosts = byHost ?? new Map<string, GitAuthFailureRecord>()
     hosts.set(hostname, { status, atMs: Date.now() })
-    gitAuthFailuresBySession.set(sessionId, hosts)
+    gitAuthFailuresByProject.set(projectSlug, hosts)
     persistGitAuthFailures()
     return
   }
   if (status >= 200 && status < 300 && byHost?.delete(hostname)) {
-    console.log(`[proxy] git auth recovered for ${hostname} (session ${sessionId.slice(0, 8)}...)`)
+    console.log(`[proxy] git auth recovered for ${hostname} (project ${projectSlug})`)
     persistGitAuthFailures()
   }
 }
@@ -1979,6 +1992,8 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
         const rules = o.rules
         if (!Array.isArray(rules)) { res.writeHead(400); res.end('Invalid body: need rules array'); return }
         if (!Array.isArray(o.allowedHosts)) { res.writeHead(400); res.end('Invalid body: need allowedHosts array'); return }
+        if (typeof o.tool !== 'string' || !o.tool) { res.writeHead(400); res.end('Invalid body: need tool'); return }
+        if (typeof o.projectSlug !== 'string' || !o.projectSlug) { res.writeHead(400); res.end('Invalid body: need projectSlug'); return }
         sessionRules.set(sessionId, rules as HostInjectionRule[])
         const allowedHosts = o.allowedHosts as string[]
         sessionAllowedHosts.set(sessionId, allowedHosts)
@@ -1987,11 +2002,8 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
         } else {
           sessionRepoUrl.delete(sessionId)
         }
-        if (typeof o.tool === 'string' && o.tool) {
-          sessionTool.set(sessionId, o.tool)
-        } else {
-          sessionTool.delete(sessionId)
-        }
+        sessionTool.set(sessionId, o.tool)
+        sessionProject.set(sessionId, o.projectSlug)
         if (o.upstreamRedirects && typeof o.upstreamRedirects === 'object') {
           const parsed: Record<string, UpstreamRedirect> = {}
           for (const [host, target] of Object.entries(o.upstreamRedirects as Record<string, unknown>)) {
@@ -2072,12 +2084,15 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     sessionAllowedHosts.delete(sessionId)
     sessionRepoUrl.delete(sessionId)
     sessionTool.delete(sessionId)
+    sessionProject.delete(sessionId)
     sessionUpstreamRedirects.delete(sessionId)
+    // Git-auth failures are deliberately NOT cleared here: they are keyed by
+    // project, and a bad stored credential outlives any one session. The
+    // record clears on the next successful git request from any of the
+    // project's sessions.
     const hadBlockedHosts = blockedHostsBySession.delete(sessionId)
-    const hadGitAuthFailures = gitAuthFailuresBySession.delete(sessionId)
     persistSessions()
     if (hadBlockedHosts) persistBlockedHosts()
-    if (hadGitAuthFailures) persistGitAuthFailures()
     console.log(`[proxy] Removed session ${sessionId.slice(0, 8)}... (found: ${deleted})`)
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ ok: true, deleted }))

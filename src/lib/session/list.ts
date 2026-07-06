@@ -9,7 +9,7 @@ import { isSessionStreamHealthy, readSessionStatus, readSessionWaitingSince } fr
 import { probeTmuxLiveness, cleanupSessionDetached, type TmuxLiveness } from '@/lib/session/cleanup'
 import { getSessionPorts } from '@/lib/session/port-forwarders'
 import { readBlockedHosts } from '@/lib/session/blocked-hosts'
-import { readGitAuthFailures } from '@/lib/session/git-auth-failures'
+import { readAllGitAuthFailures } from '@/lib/project/git-auth-failures'
 import { getSessionTitles } from '@/lib/session/titles'
 import { DaemonError } from '@/daemon/errors'
 import { daemonLog } from '@/daemon/log'
@@ -189,14 +189,12 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
           status: 'running',
           createdAt: formatCreated(p.createdAtMs),
           blockedHosts: [],
-          gitAuthFailures: [],
           forwardedPorts: [],
         }
       }
-      const [prompt, blockedHosts, gitAuthFailures] = await Promise.all([
+      const [prompt, blockedHosts] = await Promise.all([
         getSessionFirstMessage(p.projectSlug, p.sessionId, tool, p.jobName),
         readBlockedHosts(p.sessionId),
-        readGitAuthFailures(p.sessionId),
       ])
       return {
         sessionId: p.sessionId,
@@ -208,13 +206,21 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
         prompt,
         title: titlesBySlug.get(p.projectSlug)?.[p.sessionId],
         blockedHosts,
-        gitAuthFailures,
         forwardedPorts: getSessionPorts(p.sessionId),
       }
     }),
   )
 
-  return { sessions, stale }
+  // Project-wide git credential failures — independent of the session set
+  // (a bad token persists with zero running sessions and blocks new ones).
+  const allGitAuthFailures = await readAllGitAuthFailures()
+  const gitAuthFailures = projectFilter
+    ? (allGitAuthFailures[projectFilter]
+      ? { [projectFilter]: allGitAuthFailures[projectFilter] }
+      : {})
+    : allGitAuthFailures
+
+  return { sessions, stale, gitAuthFailures }
 }
 
 /**

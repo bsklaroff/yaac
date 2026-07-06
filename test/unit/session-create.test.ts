@@ -820,7 +820,11 @@ describe('retoolSpare', () => {
     // eslint-disable-next-line @typescript-eslint/unbound-method
     expect(proxyClient.registerSession).toHaveBeenCalledWith(
       'spare1',
-      expect.objectContaining({ tool: 'codex', repoUrl: 'https://github.com/example/repo.git' }),
+      expect.objectContaining({
+        tool: 'codex',
+        repoUrl: 'https://github.com/example/repo.git',
+        projectSlug: 'demo',
+      }),
     )
     const cmds = mockContainerExec.mock.calls.map((c) => c[1])
     expect(cmds.some((c) => c.includes('rename-window -t yaac:claude codex'))).toBe(true)

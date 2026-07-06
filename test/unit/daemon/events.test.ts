@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
 vi.mock('@/lib/session/list', () => ({
-  listActiveSessions: vi.fn().mockResolvedValue({ sessions: [], stale: [] }),
+  listActiveSessions: vi.fn().mockResolvedValue({ sessions: [], stale: [], gitAuthFailures: {} }),
 }))
 
 vi.mock('@/lib/project/list', () => ({
@@ -15,7 +15,7 @@ import { registerProvisioning, removeProvisioning, clearAllProvisioningForTests 
 import type { DaemonSnapshot } from '@/shared/types'
 
 function emptySnapshot(): DaemonSnapshot {
-  return { sessions: [], stale: [], projects: [], provisioning: [] }
+  return { sessions: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {} }
 }
 
 function snapshotWithProject(slug: string): DaemonSnapshot {
@@ -119,6 +119,7 @@ describe('buildSnapshot', () => {
     expect(Array.isArray(snap.stale)).toBe(true)
     expect(Array.isArray(snap.projects)).toBe(true)
     expect(Array.isArray(snap.provisioning)).toBe(true)
+    expect(snap.gitAuthFailures).toEqual({})
   })
 })
 
@@ -139,9 +140,10 @@ describe('buildSnapshot provisioning', () => {
     vi.mocked(listActiveSessions).mockResolvedValueOnce({
       sessions: [{
         sessionId: 'prov-2', projectSlug: 'p', tool: 'claude',
-        status: 'waiting', createdAt: '2026-01-01 00:00:00', blockedHosts: [], gitAuthFailures: [], forwardedPorts: [],
+        status: 'waiting', createdAt: '2026-01-01 00:00:00', blockedHosts: [], forwardedPorts: [],
       }],
       stale: [],
+      gitAuthFailures: {},
     })
     registerProvisioning({ sessionId: 'prov-2', projectSlug: 'p', tool: 'claude', kind: 'create' })
     const snap = await buildSnapshot()
@@ -153,15 +155,16 @@ describe('buildSnapshot provisioning', () => {
     vi.mocked(listActiveSessions).mockResolvedValue({
       sessions: [{
         sessionId: 'prov-3', projectSlug: 'p', tool: 'claude',
-        status: 'waiting', createdAt: '2026-01-01 00:00:00', blockedHosts: [], gitAuthFailures: [], forwardedPorts: [],
+        status: 'waiting', createdAt: '2026-01-01 00:00:00', blockedHosts: [], forwardedPorts: [],
       }],
       stale: [],
+      gitAuthFailures: {},
     })
     registerProvisioning({ sessionId: 'prov-3', projectSlug: 'p', tool: 'claude', kind: 'create' })
     removeProvisioning('prov-3')
     const snap = await buildSnapshot()
     expect(snap.sessions.map((s) => s.sessionId)).toEqual(['prov-3'])
     expect(snap.provisioning).toEqual([])
-    vi.mocked(listActiveSessions).mockResolvedValue({ sessions: [], stale: [] })
+    vi.mocked(listActiveSessions).mockResolvedValue({ sessions: [], stale: [], gitAuthFailures: {} })
   })
 })

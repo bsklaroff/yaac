@@ -1,6 +1,7 @@
 import { getRpcClient, toClientError } from '@/commands/rpc'
 import type {
   DeletedSessionEntry,
+  GitAuthFailure,
   SessionListEntry,
 } from '@/shared/types'
 
@@ -37,9 +38,11 @@ export async function sessionList(projectSlug?: string, options: SessionListOpti
     console.log(`No active sessions${suffix}. Create one with: yaac session create <project>`)
   } else {
     renderRunning(result.sessions)
-    renderGitAuthFailures(result.sessions)
     renderBlockedHosts(result.sessions)
   }
+  // Project-wide, so rendered even with zero sessions — a rejected
+  // credential also blocks creating new ones.
+  renderGitAuthFailures(result.gitAuthFailures)
 }
 
 function renderRunning(sessions: SessionListEntry[]): void {
@@ -76,13 +79,13 @@ function renderRunning(sessions: SessionListEntry[]): void {
   console.log('')
 }
 
-function renderGitAuthFailures(sessions: SessionListEntry[]): void {
-  const withFailures = sessions.filter((s) => s.gitAuthFailures.length > 0)
-  if (withFailures.length === 0) return
+function renderGitAuthFailures(failuresByProject: Record<string, GitAuthFailure[]>): void {
+  const slugs = Object.keys(failuresByProject).sort()
+  if (slugs.length === 0) return
   console.log('GIT AUTH FAILED — the stored credential was rejected (expired or revoked token?):')
-  for (const s of withFailures) {
-    for (const f of s.gitAuthFailures) {
-      console.log(`  ${s.sessionId.slice(0, 8)}  ${f.host} returned HTTP ${f.status}`)
+  for (const slug of slugs) {
+    for (const f of failuresByProject[slug]) {
+      console.log(`  ${slug}  ${f.host} returned HTTP ${f.status}`)
     }
   }
   console.log('Run "yaac auth update" to refresh it; the fix reaches running sessions immediately.')

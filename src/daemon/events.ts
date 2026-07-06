@@ -34,6 +34,7 @@ export async function buildSnapshot(): Promise<DaemonSnapshot> {
     stale: active.stale,
     projects,
     provisioning,
+    gitAuthFailures: active.gitAuthFailures,
   }
 }
 

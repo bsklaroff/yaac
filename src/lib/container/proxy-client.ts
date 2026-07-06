@@ -230,6 +230,9 @@ export class ProxyClient {
       // Required: the proxy gates all agent-credential injection on the
       // registered tool — a session registered without one gets none.
       tool: 'claude' | 'codex' | 'opencode'
+      // Required: the proxy keys its git-auth-failure records by the
+      // session's owning project.
+      projectSlug: string
       upstreamRedirects?: Record<string, UpstreamRedirect>
     },
   ): Promise<void> {
@@ -244,6 +247,7 @@ export class ProxyClient {
         allowedHosts: state.allowedHosts,
         repoUrl: state.repoUrl,
         tool: state.tool,
+        projectSlug: state.projectSlug,
         upstreamRedirects: state.upstreamRedirects,
       }),
     })

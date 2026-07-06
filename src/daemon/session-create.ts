@@ -202,7 +202,7 @@ export async function retoolSpare(
   const remoteUrl = (await simpleGit(repoDir(spare.projectSlug)).remote(['get-url', 'origin']))?.trim() ?? ''
   await proxyClient.registerSession(
     spare.sessionId,
-    buildSessionRegistration({ config, remoteUrl, tool }),
+    buildSessionRegistration({ config, remoteUrl, tool, projectSlug: spare.projectSlug }),
   )
   await containerExec(spare.jobName, `${TMUX} rename-window -t yaac:${spare.tool} ${tool}`)
   await containerExec(
@@ -879,7 +879,7 @@ export async function createSession(
   await syncProxySecrets(config)
   await proxyClient.registerSession(
     sessionId,
-    buildSessionRegistration({ config, remoteUrl, tool }),
+    buildSessionRegistration({ config, remoteUrl, tool, projectSlug }),
   )
 
   // CA-trust env only — no HTTP(S)_PROXY routing vars. Interception is

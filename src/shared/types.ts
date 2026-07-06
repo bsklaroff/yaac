@@ -324,8 +324,10 @@ export interface ToolInstallView {
 /**
  * A git credential the proxy injected that the upstream rejected — the
  * stored token is bad (expired or revoked), as opposed to a blocked host.
- * Recorded per session by the proxy; cleared automatically when a later
- * git request to the same host succeeds.
+ * Recorded per project by the proxy (the credential belongs to the
+ * project's repo, so one bad token affects every session of the project);
+ * cleared automatically when a later git request to the same host from any
+ * of the project's sessions succeeds.
  */
 export interface GitAuthFailure {
   host: string
@@ -354,8 +356,6 @@ export interface SessionListEntry {
   /** User-assigned display title (falls back to `prompt` in UIs). */
   title?: string
   blockedHosts: string[]
-  /** Git credentials the upstream rejected (expired/revoked token). */
-  gitAuthFailures: GitAuthFailure[]
   /** Live host→container forwards owned by the daemon (from the
    *  forwarder registry). Empty until forwarders are (re)provisioned —
    *  briefly so after a daemon restart, before the restore pass runs. */
@@ -373,6 +373,10 @@ export interface StaleSessionInfo {
 export interface ActiveSessionsResult {
   sessions: SessionListEntry[]
   stale: StaleSessionInfo[]
+  /** Project slug -> git credentials the upstream rejected. Project-wide,
+   *  not per-session: one bad token affects every session of the project.
+   *  Only projects with at least one failing host appear. */
+  gitAuthFailures: Record<string, GitAuthFailure[]>
 }
 
 export interface DeletedSessionEntry {
@@ -484,6 +488,9 @@ export interface DaemonSnapshot {
   stale: StaleSessionInfo[]
   projects: ProjectSummary[]
   provisioning: ProvisioningSessionEntry[]
+  /** Project slug -> git credentials the upstream rejected (project-wide;
+   *  see ActiveSessionsResult.gitAuthFailures). */
+  gitAuthFailures: Record<string, GitAuthFailure[]>
 }
 
 /** Messages the daemon pushes over `/events`. */

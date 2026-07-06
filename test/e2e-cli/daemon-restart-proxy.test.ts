@@ -248,6 +248,7 @@ describe('daemon restart preserves running proxy (real `yaac daemon restart`)', 
       }],
       allowedHosts: ['github.com'],
       tool: 'claude',
+      projectSlug: 'restart-proxy',
     })
 
     const proxyBefore = await waitForRunningProxyPod(60_000)

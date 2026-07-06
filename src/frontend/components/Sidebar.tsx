@@ -13,7 +13,7 @@ import { deleteSessionOptimistic } from '@/frontend/lib/deleteSessionFlow'
 import { getDeletedSessions } from '@/frontend/lib/deletedApi'
 import { useProvisionSession } from '@/frontend/lib/useProvisionSession'
 import { isUnreadWaiting, useUiStore } from '@/frontend/store'
-import type { DeletedSessionEntry, ProvisioningSessionEntry, SessionListEntry } from '@/shared/types'
+import type { DeletedSessionEntry, GitAuthFailure, ProvisioningSessionEntry, SessionListEntry } from '@/shared/types'
 
 /** User-facing session groups, in triage order (Waiting first). */
 const GROUPS: { status: SessionListEntry['status']; label: string; defaultOpen: boolean }[] = [
@@ -57,11 +57,14 @@ export function Sidebar({
   sessions,
   provisioning,
   connected,
+  gitAuthFailures,
 }: {
   projectSlug: string | null
   sessions: SessionListEntry[]
   provisioning: ProvisioningSessionEntry[]
   connected: boolean
+  /** The active project's rejected git credentials (project-wide flag). */
+  gitAuthFailures: GitAuthFailure[]
 }): JSX.Element {
   // Hide sessions whose delete is in flight (optimistic) until the snapshot
   // drops them, so the empty state keys off what's actually shown.
@@ -77,6 +80,15 @@ export function Sidebar({
           : <span className="font-semibold tracking-tight">yaac</span>}
         <div className="ml-auto flex items-center gap-2">
           {!connected && <span className="text-xs text-amber-400/80">reconnecting…</span>}
+          {/* Project-wide: the stored credential is the project's, so the
+              flag lives on the project header, not on individual sessions. */}
+          {gitAuthFailures.length > 0 && (
+            <GitAuthFailureBadge
+              failures={gitAuthFailures}
+              iconSize={11}
+              className="hover:bg-[#d65858]/25"
+            />
+          )}
           {projectSlug && <NewSessionButton projectSlug={projectSlug} />}
         </div>
       </div>
@@ -337,25 +349,16 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
         </span>
       </button>
 
-      {/* Overlaid as siblings for the same reason as the delete × below:
-          the badges are buttons and can't nest inside the row button. The
-          wrapper is pointer-inert so only the badges themselves take clicks. */}
-      {(session.gitAuthFailures.length > 0 || session.blockedHosts.length > 0) && (
+      {/* Overlaid as a sibling for the same reason as the delete × below:
+          the badge is a button and can't nest inside the row button. The
+          wrapper is pointer-inert so only the badge itself takes clicks. */}
+      {session.blockedHosts.length > 0 && (
         <span className="pointer-events-none absolute bottom-1.5 right-1.5 flex items-center gap-1">
-          {session.gitAuthFailures.length > 0 && (
-            <GitAuthFailureBadge
-              failures={session.gitAuthFailures}
-              iconSize={11}
-              className="pointer-events-auto hover:bg-[#d65858]/25"
-            />
-          )}
-          {session.blockedHosts.length > 0 && (
-            <BlockedHostsBadge
-              hosts={session.blockedHosts}
-              iconSize={11}
-              className="pointer-events-auto hover:bg-surface-3"
-            />
-          )}
+          <BlockedHostsBadge
+            hosts={session.blockedHosts}
+            iconSize={11}
+            className="pointer-events-auto hover:bg-surface-3"
+          />
         </span>
       )}
 

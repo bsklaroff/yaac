@@ -96,6 +96,9 @@ export function SessionView({
   const sessions = snapshot?.sessions ?? []
   const session = sessions.find((s) => s.sessionId === selectedSessionId)
   const sid = session?.sessionId ?? null
+  // Project-wide flag; shown in the header because a rejected credential
+  // fails git fetch/push inside this session too.
+  const gitAuthFailures = (session && snapshot?.gitAuthFailures[session.projectSlug]) || []
 
   // The provisioning placeholder owns the main pane only when its row is the
   // selected one (and no real session of that id exists yet) — so it never
@@ -436,9 +439,9 @@ export function SessionView({
           {session.forwardedPorts.length > 0 && (
             <ForwardedPortLinks ports={session.forwardedPorts} iconSize={11} className="hover:bg-surface-2" />
           )}
-          {session.gitAuthFailures.length > 0 && (
+          {gitAuthFailures.length > 0 && (
             <GitAuthFailureBadge
-              failures={session.gitAuthFailures}
+              failures={gitAuthFailures}
               iconSize={12}
               className="hover:bg-[#d65858]/25"
             />
