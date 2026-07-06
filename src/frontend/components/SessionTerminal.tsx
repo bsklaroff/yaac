@@ -8,6 +8,7 @@ import { clipboardKeyAction } from '@/frontend/lib/clipboard'
 import { LoadingIcon } from '@/frontend/lib/icons'
 import { patchForcedSelection, patchKeepSelection } from '@/frontend/lib/selection'
 import { CYCLE_IDS, matchShortcut } from '@/frontend/lib/shortcuts'
+import { enableWebglRenderer } from '@/frontend/lib/webgl-renderer'
 import { useUiStore } from '@/frontend/store'
 import { INITIAL_RECONNECT_DELAY_MS, nextReconnectDelay } from '@/frontend/lib/reconnect'
 
@@ -97,6 +98,12 @@ export function SessionTerminal({
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(el)
+    // The DOM renderer's per-row CSS-pixel rounding leaves hairline gaps
+    // between rows at fractional devicePixelRatios, slicing up solid-colored
+    // output; the WebGL renderer tiles rows exactly on the device-pixel grid.
+    if (!enableWebglRenderer(term)) {
+      console.warn('WebGL2 unavailable: DOM renderer may show hairline gaps between rows')
+    }
     // tmux runs with `mouse on`, so stock xterm reports a plain drag to tmux
     // as mouse events and only selects text locally behind a modifier key.
     // Invert that: plain drag selects (copy/paste just works), Alt+drag

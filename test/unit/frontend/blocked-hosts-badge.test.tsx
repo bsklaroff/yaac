@@ -22,8 +22,8 @@ describe('BlockedHostsBadge', () => {
   it('shows the count and no hover tooltip on the trigger', () => {
     render(<BlockedHostsBadge hosts={HOSTS} iconSize={12} />)
 
-    const trigger = screen.getByRole('button', { name: '2 blocked host(s)' })
-    expect(trigger.textContent).toBe('2')
+    const trigger = screen.getByRole('button', { name: '2 blocked hosts' })
+    expect(trigger.textContent).toBe('2 blocked hosts')
     // The host list moved from a hover tooltip into the click popover.
     expect(trigger.getAttribute('title')).toBeNull()
   })
@@ -33,7 +33,7 @@ describe('BlockedHostsBadge', () => {
 
     expect(screen.queryByText('registry.npmjs.org')).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: '2 blocked host(s)' }))
+    fireEvent.click(screen.getByRole('button', { name: '2 blocked hosts' }))
 
     expect(screen.getByText('Blocked hosts')).toBeTruthy()
     for (const host of HOSTS) expect(screen.getByText(host)).toBeTruthy()
