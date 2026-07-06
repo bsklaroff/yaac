@@ -6,7 +6,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { ensurePodmanSocket } from '@/lib/container/runtime'
-import { requirePodman, IS_NESTED_YAAC } from '@test/helpers/setup'
+import { requirePodman } from '@test/helpers/setup'
 
 const execFileAsync = promisify(execFile)
 
@@ -59,9 +59,10 @@ function spawnService(socketPath: string): ReturnType<typeof spawn> {
 // `podman system service` only exists inside the podman machine VM on
 // darwin — the CLI rejects it on the host. ensurePodmanSocket is only
 // called on Linux (getSocketPath returns undefined on darwin), so skip
-// this test anywhere the command isn't directly invokable. A nested yaac
-// session manages its podman socket differently, so skip there too.
-describe.skipIf(process.platform === 'darwin' || IS_NESTED_YAAC)('ensurePodmanSocket revives a dead podman service (real podman)', () => {
+// this test anywhere the command isn't directly invokable. It runs fine
+// inside a nested yaac session: the test uses its own throwaway socket
+// path, never the session's real one.
+describe.skipIf(process.platform === 'darwin')('ensurePodmanSocket revives a dead podman service (real podman)', () => {
   let tmpDir: string
   let socketPath: string
 

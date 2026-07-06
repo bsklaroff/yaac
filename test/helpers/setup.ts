@@ -53,8 +53,8 @@ export const TEST_NAMESPACE = `yaac-test-${TEST_RUN_ID}`
  *  - the inner Cilium transparent-egress redirect (enforced host-side for a
  *    nested session — `yaac cluster check` reports `egress: skipped`);
  *  - vcluster-in-vcluster (`createSession` refuses it outright);
- *  - the podman `kind` network and `system service` lifecycle (the inner
- *    podman has neither).
+ *  - the podman `kind` network (the inner podman has no host network
+ *    topology).
  */
 export const IS_NESTED_YAAC = process.env.YAAC_NESTED === '1'
 

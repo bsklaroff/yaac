@@ -7,14 +7,16 @@ import path from 'node:path'
  * stores). These get hostPath-mounted into pods, so the path must exist
  * identically on the pod's node.
  *
- * On a normal host `os.tmpdir()` works (subject to the kind extraMount
- * note in CLAUDE.md). Inside a nested yaac session it does NOT: `/tmp`
- * (and `$HOME`) are the inner pod's overlay filesystem, invisible to the
- * node, so a `/tmp/...` hostPath can never be satisfied and pods hang
- * Pending. The nested data dir (`$YAAC_DATA_DIR`) is a node-shared
- * virtiofs mount at the same absolute path on host and node, so scratch
- * dirs must live under it there. Detect that case and relocate, so e2e
- * runs in-session without anyone having to set `TMPDIR` by hand.
+ * On a host that's `os.tmpdir()` (OS-cleaned, `TMPDIR`-respecting —
+ * subject to the kind extraMount note in CLAUDE.md). Inside a nested
+ * yaac session it is NOT: `/tmp` (and `$HOME`) are the inner pod's
+ * overlay filesystem, invisible to the node, so a `/tmp/...` hostPath
+ * can never be satisfied and pods hang Pending. The nested data dir
+ * (`$YAAC_DATA_DIR`) is a node-shared virtiofs mount at the same
+ * absolute path on host and node, so scratch lives under it there (and
+ * is removed with the session dir on cleanup). Keyed on `YAAC_NESTED`,
+ * not on `YAAC_DATA_DIR` alone: a host may legitimately run a custom
+ * data dir and still wants its scratch in the OS tmpdir.
  */
 export function e2eTmpBase(): string {
   if (process.env.YAAC_NESTED === '1' && process.env.YAAC_DATA_DIR) {

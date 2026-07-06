@@ -10,7 +10,6 @@ export default defineConfig({
       '@': path.resolve(__dirname, 'src'),
       '@test': path.resolve(__dirname, 'test'),
       '@proxy': path.resolve(__dirname, 'k8s/proxy'),
-      '@relay': path.resolve(__dirname, 'k8s/relay'),
     },
   },
   test: {
@@ -29,10 +28,10 @@ export default defineConfig({
           name: 'unit',
           include: ['test/unit/**/*.test.{ts,tsx}'],
           // unit-setup.ts strips the nested-session env (YAAC_NESTED,
-          // YAAC_K8S_REGISTRY) so unit assertions stay deterministic when
-          // the suite runs inside a yaac session. Listed alongside the
-          // shared setup since a project's setupFiles replace the inherited
-          // root value rather than extending it.
+          // YAAC_DATA_DIR, YAAC_K8S_REGISTRY) so unit assertions stay
+          // deterministic when the suite runs inside a yaac session. Listed
+          // alongside the shared setup since a project's setupFiles replace
+          // the inherited root value rather than extending it.
           setupFiles: ['test/setup.ts', 'test/unit-setup.ts'],
           // Ordered before capped projects so fast unit feedback lands
           // first. Explicit groupOrder is required once projects diverge

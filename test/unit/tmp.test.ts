@@ -14,6 +14,12 @@ describe('e2eTmpBase', () => {
     expect(e2eTmpBase()).toBe(os.tmpdir())
   })
 
+  it('returns os.tmpdir() on a host with a custom data dir', () => {
+    vi.stubEnv('YAAC_NESTED', undefined)
+    vi.stubEnv('YAAC_DATA_DIR', '/srv/yaac-data')
+    expect(e2eTmpBase()).toBe(os.tmpdir())
+  })
+
   it('relocates under $YAAC_DATA_DIR inside a nested yaac session', () => {
     vi.stubEnv('YAAC_NESTED', '1')
     vi.stubEnv('YAAC_DATA_DIR', '/Users/ben/.yaac/nested')

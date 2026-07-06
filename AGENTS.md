@@ -28,8 +28,6 @@ All container images used by e2e tests are pre-built in `test/global-setup.ts` b
 | `yaac-test-tools:<hash>` | `dockerfiles/Dockerfile.tools` (layered on base) |
 | `yaac-test-nestable:<hash>` | `dockerfiles/Dockerfile.nestable` (layered on tools) |
 | `yaac-test-proxy:<hash>` | `k8s/proxy/` (all files in directory) |
-| `yaac-test-redirect-init:<hash>` | `k8s/redirect-init/` (all files in directory) |
-| `yaac-test-relay:<hash>` | `k8s/relay/` (all files in directory) |
 
 The global setup also mirrors digest-pinned upstream images into the local
 registry (no content hash — the digest IS the pin): `registry:2` for
@@ -42,5 +40,5 @@ image set (`k8s/vcluster/images.json`).
 - When adding a new sidecar or container image, add it to the global setup with a content-hash tag and use `requirePrebuilt` in tests.
 - For single-file images (Dockerfiles), use `fileHash()`. For multi-file build contexts, use `contextHash()` — both from `src/lib/image-builder.ts`.
 - E2e workers isolate cluster objects in per-run namespaces (`YAAC_K8S_NAMESPACE=yaac-test-<run-id>`).
-- E2e test data dirs (and mock-remote repo stores) are hostPath-mounted into pods, so their path must be visible to the pod's node. They are created under `e2eTmpBase()` (`test/helpers/tmp.ts`), which routes them to the right place automatically: on a host that's `os.tmpdir()`; inside a nested yaac session it's the node-shared `$YAAC_DATA_DIR` (because the inner pod's `/tmp` and `$HOME` are overlay filesystems the node can't see — hostPath mounts there hang Pending). On a kind host you still need the kind node to see `os.tmpdir()`: set `TMPDIR` to a path under your home directory — hostPath paths must match on host and node, and kind's node-internal tmpfs `/tmp` cannot be replaced by an extraMount.
+- E2e test data dirs (and mock-remote repo stores) are hostPath-mounted into pods, so their path must be visible to the pod's node. They are created under `e2eTmpBase()` (`test/helpers/tmp.ts`): on a host that's `os.tmpdir()` — so on a kind host set `TMPDIR` to a path under your home directory (hostPath paths must match on host and node, and kind's node-internal tmpfs `/tmp` cannot be replaced by an extraMount). Inside a nested yaac session (`YAAC_NESTED=1`) it's the node-shared `$YAAC_DATA_DIR/e2e-tmp` — the pod's `/tmp` and `$HOME` are overlay filesystems the node can't see (hostPath mounts there hang Pending), and scratch there is removed with the session dir on cleanup.
 - Tests that can't run inside a nested yaac session (inner Cilium egress, vcluster-in-vcluster, podman `kind` network) are gated on `IS_NESTED_YAAC` (`test/helpers/setup.ts`) via `describe.skipIf` / `it.skipIf`.
