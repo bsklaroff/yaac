@@ -433,11 +433,21 @@ export class ProxyClient {
   }
 
   private async ensureRunningImpl(): Promise<void> {
-    // Fast path: already verified in this process
+    // Fast path: already verified in this process. Gated on the deployed
+    // image still matching the current proxy source — attachIfRunning()
+    // (background reconciles, cleanup) marks a pre-existing proxy running
+    // without ever looking at its image, so without this check a
+    // healthy-but-outdated proxy would never pick up new k8s/proxy code.
+    // On mismatch, fall through to the full bootstrap: it rebuilds the
+    // image under its fresh content-hash tag and re-applies the
+    // Deployment, whose Recreate strategy swaps the pod.
     if (this.running) {
       try {
         const res = await fetch(`${this.baseUrl}/healthz`)
-        if (res.ok) return
+        if (res.ok) {
+          if (await this.isDeployedImageCurrent()) return
+          daemonLog('[daemon] proxy image is stale — rebuilding and redeploying')
+        }
       } catch {
         this.running = false
       }
@@ -468,6 +478,27 @@ export class ProxyClient {
     this.syncSshKeysFromCredentials().catch((err: Error) => {
       daemonLog(`[daemon] proxy ssh-agent sync failed: ${err.message}`)
     })
+  }
+
+  /**
+   * True when the deployed proxy Deployment's image matches the current
+   * content hash of the proxy source (the tag encodes the build
+   * context's hash — see resolveProxyImageTag). A missing Deployment
+   * counts as stale so the bootstrap recreates it. kubectl errors count
+   * as current: the caller is on the fast path with a demonstrably
+   * healthy proxy, and falling through to a bootstrap would just fail on
+   * the same broken kubectl.
+   */
+  async isDeployedImageCurrent(): Promise<boolean> {
+    try {
+      const expected = registryRef(await resolveProxyImageTag(this.config.image))
+      const deployment = await kubectlGetJson<{
+        spec?: { template?: { spec?: { containers?: Array<{ image?: string }> } } }
+      }>(['get', 'deployment', PROXY_APP_NAME, '-n', k8sNamespace()])
+      return deployment?.spec?.template?.spec?.containers?.[0]?.image === expected
+    } catch {
+      return true
+    }
   }
 
   /**
