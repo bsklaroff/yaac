@@ -87,6 +87,7 @@ export function ProjectSettings(): JSX.Element {
             <div className="mt-2">
               <FileEditor
                 key={`config:${slug}`}
+                title={`${slug} · yaac-config.json`}
                 language="json"
                 load={loadConfig}
                 save={saveConfig}
@@ -105,6 +106,7 @@ export function ProjectSettings(): JSX.Element {
             <div className="mt-2">
               <FileEditor
                 key={`dockerfile:${slug}`}
+                title={`${slug} · Dockerfile`}
                 language="dockerfile"
                 load={loadDockerfile}
                 save={saveDockerfile}

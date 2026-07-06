@@ -180,7 +180,12 @@ export function SettingsButton(): JSX.Element {
                     </>
                   )}
                 >
-                  <FileEditor language="dockerfile" load={getUserDockerfile} save={saveUserDockerfile} />
+                  <FileEditor
+                    title="Dockerfile.user"
+                    language="dockerfile"
+                    load={getUserDockerfile}
+                    save={saveUserDockerfile}
+                  />
                 </Field>
               </section>
             )}

@@ -35,6 +35,8 @@ export {
   Columns2 as SplitRightIcon,
   Rows2 as SplitDownIcon,
   ExternalLink as OpenLinkIcon,
+  Maximize2 as ExpandIcon,
+  Minimize2 as CollapseIcon,
 } from 'lucide-react'
 
 /** Display name per agent tool (proper brand casing, incl. OpenCode). */
