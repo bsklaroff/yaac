@@ -248,12 +248,16 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
   }, [selectedSessionId, sessions, markWaitingRead])
 
   // GC read marks whose waiting spell is over (session running, gone, or
-  // waiting anew with a fresh waitingSinceMs).
+  // waiting anew with a fresh waitingSinceMs). Only against hydrated frames:
+  // before the first snapshot lands, `sessions` is the empty fallback, and
+  // syncing against it would wipe every restored mark — re-flagging all
+  // waiting sessions as unread on every reload.
   useEffect(() => {
+    if (!snapshot) return
     syncWaitingRead(sessions
       .filter((s) => s.status === 'waiting')
       .map((s) => ({ sessionId: s.sessionId, waitingSinceMs: s.waitingSinceMs ?? 0 })))
-  }, [sessions, syncWaitingRead])
+  }, [snapshot, sessions, syncWaitingRead])
 
   // Per-project count of unread waiting sessions → the rail attention badge.
   const attention = unreadWaitingBySlug(sessions, readWaiting, pendingDeleteIds)
