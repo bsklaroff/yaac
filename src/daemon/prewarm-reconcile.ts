@@ -1,8 +1,9 @@
 /**
  * Background-loop step that keeps the prewarmed-session pool at its target:
- * one spare per active project (the configured default tool). Spawns spares
- * via `createSession({ prewarm: true })` and reaps excess / stale / idle ones
- * via `cleanupSessionDetached`. The decision is the pure `computePrewarmPlan`;
+ * one spare per active project, booting the configured default tool (spares
+ * are tool-agnostic — a claim for another tool retools them). Spawns spares
+ * via `createSession({ prewarm: true })` and reaps excess / idle ones via
+ * `cleanupSessionDetached`. The decision is the pure `computePrewarmPlan`;
  * this wrapper just lists pods and drives the side effects.
  */
 import { listSessionPods } from '@/lib/k8s/pods'

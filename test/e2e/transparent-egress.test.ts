@@ -298,9 +298,10 @@ describe('cilium-level transparent egress (source-IP identity)', () => {
     await client.registerSession(sessionA, {
       rules: [],
       allowedHosts: [MITM_HOST, echoHost],
+      tool: 'claude',
       upstreamRedirects: { [MITM_HOST]: { host: echoHost, port: ECHO_PORT, tls: false } },
     })
-    await client.registerSession(sessionB, { rules: [], allowedHosts: [tlsHost] })
+    await client.registerSession(sessionB, { rules: [], allowedHosts: [tlsHost], tool: 'claude' })
 
     await Promise.all([
       startSessionPod(podA, sessionA, proxyHost),

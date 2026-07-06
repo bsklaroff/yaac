@@ -163,10 +163,28 @@ describe.skipIf(IS_NESTED_YAAC)('yaac prewarmed sessions', () => {
     expect(claimedPod).toBeDefined()
     expect(isPrewarmed(claimedPod!)).toBe(false)
 
-    // 5. A fresh spare is warmed to replace the claimed one.
-    await waitFor(async () => {
+    // 5. A fresh spare is warmed to replace the claimed one. Wait for it to
+    //    be fully claimable (Running + live tmux) — the next step claims it.
+    const refilled = await waitFor(async () => {
       const pods = await listSessionPods('repo-demo')
-      return pods.some((p) => isPrewarmed(p) && p.jobName !== spareJob)
+      const s = pods.find((p) => isPrewarmed(p) && p.running && p.jobName !== spareJob)
+      if (s && await isTmuxSessionAlive('repo-demo', s.sessionId)) return s
+      return undefined
     }, 150_000)
+    expect(refilled.tool).toBe('claude')
+
+    // 6. Spares are tool-agnostic: a create for a different tool claims the
+    //    claude-warmed spare and retools it instead of cold-provisioning.
+    const third = await runYaac(daemonEnv, 'session', 'create', 'repo-demo', '--tool', 'codex')
+    if (third.exitCode !== 0) console.error(third.stdout, third.stderr)
+    expect(third.exitCode).toBe(0)
+    expect(third.stdout).toContain('Switching prewarmed session to codex...')
+    expect(third.stdout).toContain('Using prewarmed session...')
+
+    // Same pod as the refilled spare — label gone, tool label flipped.
+    const retooled = (await listSessionPods('repo-demo')).find((p) => p.jobName === refilled.jobName)
+    expect(retooled).toBeDefined()
+    expect(isPrewarmed(retooled!)).toBe(false)
+    expect(retooled!.tool).toBe('codex')
   }, 420_000)
 })

@@ -5,17 +5,21 @@ import { writeProxySecrets } from '@/lib/project/credentials'
 import type { AgentTool, YaacConfig } from '@/shared/types'
 
 /**
- * Payload of `PUT /sessions/:id` on the proxy. Registered once by
- * session-create; the proxy write-throughs it to /data and reloads it at
- * boot, so it survives proxy pod replacements (image upgrade, crash,
- * eviction) without daemon involvement. Secret-free by construction —
- * injection rules carry secretRefs, never values.
+ * Payload of `PUT /sessions/:id` on the proxy. Registered by session-create
+ * (and re-registered when a prewarmed spare is retooled at claim time); the
+ * proxy write-throughs it to /data and reloads it at boot, so it survives
+ * proxy pod replacements (image upgrade, crash, eviction) without daemon
+ * involvement. Secret-free by construction — injection rules carry
+ * secretRefs, never values.
+ *
+ * `tool` is required: the proxy gates all agent-credential injection on the
+ * registered tool, so a registration without one gets no credentials.
  */
 export interface SessionRegistration {
   rules: InjectionRule[]
   allowedHosts: string[]
   repoUrl?: string
-  tool?: AgentTool
+  tool: AgentTool
   upstreamRedirects?: Record<string, UpstreamRedirect>
 }
 

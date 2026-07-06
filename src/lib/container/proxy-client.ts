@@ -227,7 +227,9 @@ export class ProxyClient {
       rules: InjectionRule[]
       allowedHosts: string[]
       repoUrl?: string
-      tool?: 'claude' | 'codex' | 'opencode'
+      // Required: the proxy gates all agent-credential injection on the
+      // registered tool — a session registered without one gets none.
+      tool: 'claude' | 'codex' | 'opencode'
       upstreamRedirects?: Record<string, UpstreamRedirect>
     },
   ): Promise<void> {

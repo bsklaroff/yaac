@@ -175,7 +175,7 @@ vi.mock('@/lib/session/port-forwarders', () => ({
 
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
-import { buildAgentCmd, createSession, resolveInitWindows } from '@/daemon/session-create'
+import { buildAgentCmd, createSession, resolveInitWindows, retoolSpare } from '@/daemon/session-create'
 import { sessionCreate } from '@/commands/session-create'
 import { ensureContainerRuntime } from '@/lib/container/runtime'
 import { ensureImage } from '@/lib/container/image-builder'
@@ -310,14 +310,14 @@ describe('createSession', () => {
     expect(mockSpawn).not.toHaveBeenCalled()
   })
 
-  it('seeds OPENROUTER_API_KEY for an opencode session on the openrouter provider', async () => {
-    mockLoadToolAuth.mockResolvedValue({
+  it('seeds OPENROUTER_API_KEY when the opencode credential uses the openrouter provider', async () => {
+    mockLoadToolAuth.mockImplementation((tool) => Promise.resolve(tool === 'opencode' ? {
       tool: 'opencode',
       kind: 'api-key',
       apiKey: 'sk-or-real',
       savedAt: new Date().toISOString(),
       opencodeProvider: 'openrouter',
-    })
+    } : null))
     await createSession('demo', { tool: 'opencode', sessionId: 'abcd1234' })
 
     const env = appliedJobManifest().spec.template.spec.containers[0].env
@@ -325,19 +325,62 @@ describe('createSession', () => {
     expect(env.map((e) => e.name)).not.toContain('NEURALWATT_API_KEY')
   })
 
-  it('seeds NEURALWATT_API_KEY for an opencode session on the neuralwatt provider', async () => {
-    mockLoadToolAuth.mockResolvedValue({
+  it('seeds NEURALWATT_API_KEY when the opencode credential uses the neuralwatt provider', async () => {
+    mockLoadToolAuth.mockImplementation((tool) => Promise.resolve(tool === 'opencode' ? {
       tool: 'opencode',
       kind: 'api-key',
       apiKey: 'nw-real',
       savedAt: new Date().toISOString(),
       opencodeProvider: 'neuralwatt',
-    })
+    } : null))
     await createSession('demo', { tool: 'opencode', sessionId: 'abcd1234' })
 
     const env = appliedJobManifest().spec.template.spec.containers[0].env
     expect(env).toContainEqual({ name: 'NEURALWATT_API_KEY', value: 'test-placeholder-key' })
     expect(env.map((e) => e.name)).not.toContain('OPENROUTER_API_KEY')
+  })
+
+  it('seeds every credentialed tool\'s placeholder env on any session (spares are retoolable)', async () => {
+    mockLoadToolAuth.mockImplementation((tool) => Promise.resolve(tool === 'codex' ? null : {
+      tool,
+      kind: 'api-key',
+      apiKey: 'real-key',
+      savedAt: new Date().toISOString(),
+      ...(tool === 'opencode' ? { opencodeProvider: 'openrouter' } : {}),
+    } as never))
+    await createSession('demo', { tool: 'codex', sessionId: 'abcd1234' })
+
+    const env = appliedJobManifest().spec.template.spec.containers[0].env
+    // A codex session still carries the other tools' placeholders…
+    expect(env).toContainEqual({ name: 'ANTHROPIC_API_KEY', value: 'test-placeholder-key' })
+    expect(env).toContainEqual({ name: 'OPENROUTER_API_KEY', value: 'test-placeholder-key' })
+    expect(env).toContainEqual({ name: 'OPENCODE_ENABLE_EXA', value: 'true' })
+    // …but no OPENAI_API_KEY: codex has no credential here, and for codex
+    // OAuth the var would steer it into api-key mode.
+    expect(env.map((e) => e.name)).not.toContain('OPENAI_API_KEY')
+  })
+
+  it('seeds OPENAI_API_KEY only for a codex api-key credential, never for codex OAuth', async () => {
+    mockLoadToolAuth.mockImplementation((tool) => Promise.resolve(tool === 'codex' ? {
+      tool: 'codex',
+      kind: 'oauth',
+      apiKey: 'access-token',
+      savedAt: new Date().toISOString(),
+    } as never : null))
+    await createSession('demo', { tool: 'claude', sessionId: 'abcd1234' })
+    expect(appliedJobManifest().spec.template.spec.containers[0].env.map((e) => e.name))
+      .not.toContain('OPENAI_API_KEY')
+
+    mockApply.mockClear()
+    mockLoadToolAuth.mockImplementation((tool) => Promise.resolve(tool === 'codex' ? {
+      tool: 'codex',
+      kind: 'api-key',
+      apiKey: 'sk-real',
+      savedAt: new Date().toISOString(),
+    } as never : null))
+    await createSession('demo', { tool: 'claude', sessionId: 'abcd1235' })
+    expect(appliedJobManifest().spec.template.spec.containers[0].env)
+      .toContainEqual({ name: 'OPENAI_API_KEY', value: 'test-placeholder-key' })
   })
 
   it('refuses vcluster-in-vcluster: virtualCluster under YAAC_NESTED=1', async () => {
@@ -469,7 +512,8 @@ describe('createSession', () => {
   })
 
   it('adds the placeholder API key env for claude api-key auth', async () => {
-    mockLoadToolAuth.mockResolvedValue({ kind: 'api-key' } as never)
+    mockLoadToolAuth.mockImplementation((tool) =>
+      Promise.resolve(tool === 'claude' ? { kind: 'api-key' } as never : null))
 
     await createSession('demo', { tool: 'claude', sessionId: 'abcd1234' })
 
@@ -582,11 +626,12 @@ describe('createSession', () => {
     }
   })
 
-  it('seeds claude.json without onboarding flags for non-Claude sessions', async () => {
+  it('seeds claude.json onboarding flags even for non-Claude sessions (spares are retoolable)', async () => {
     await createSession('demo', { tool: 'codex', sessionId: 'abcd1234' })
-    // seedClaudeJson ensures the file exists (pretty JSON + trailing
-    // newline). No onboarding flags for a non-Claude (codex) session.
-    expect(mockWriteFile).toHaveBeenCalledWith('/tmp/demo/claude.json', '{}\n')
+    const claudeJsonWrite = mockWriteFile.mock.calls.find((c) => c[0] === '/tmp/demo/claude.json')
+    expect(claudeJsonWrite).toBeDefined()
+    const state = JSON.parse(claudeJsonWrite![1] as string) as Record<string, unknown>
+    expect(state.hasCompletedOnboarding).toBe(true)
   })
 
   it('spawns one tmux new-window per InitCommandSpec entry', async () => {
@@ -641,7 +686,7 @@ describe('createSession', () => {
     expect(newSession).toContain('env COLORTERM=truecolor ')
   })
 
-  it('rejects an init window name that collides with the agent tool window', async () => {
+  it('rejects an init window name that collides with any agent tool window', async () => {
     vi.mocked(resolveProjectConfig).mockResolvedValue({
       // The config parser normally rejects 'claude' as reserved, but the
       // collision guard inside startJobWithSetup is a belt-and-suspenders
@@ -650,7 +695,16 @@ describe('createSession', () => {
       initCommands: [{ name: 'claude', commands: ['echo hi'] }],
     })
     await expect(createSession('demo', { tool: 'claude' })).rejects.toThrow(
-      /collides with the agent window for tool "claude"/,
+      /collides with an agent tool window/,
+    )
+
+    // Other tools' names are rejected too: a retooled spare renames the
+    // agent window, so any tool name would make the tmux target ambiguous.
+    vi.mocked(resolveProjectConfig).mockResolvedValue({
+      initCommands: [{ name: 'codex', commands: ['echo hi'] }],
+    })
+    await expect(createSession('demo', { tool: 'claude' })).rejects.toThrow(
+      /collides with an agent tool window/,
     )
   })
 
@@ -745,6 +799,49 @@ describe('buildAgentCmd', () => {
   it('drops add-dir flags for opencode (no CLI equivalent in opencode)', () => {
     const cmd = buildAgentCmd('opencode', 'sid-abc', '--add-dir /add-dir/x', false)
     expect(cmd).toBe('opencode --port 4096 --hostname 127.0.0.1')
+  })
+})
+
+describe('retoolSpare', () => {
+  const spare = { jobName: 'yaac-demo-spare1', sessionId: 'spare1', projectSlug: 'demo', tool: 'claude' }
+
+  beforeEach(() => {
+    vi.resetAllMocks()
+    vi.mocked(resolveProjectConfig).mockResolvedValue({})
+    vi.mocked(resolveAllowedHosts).mockReturnValue(['*'])
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    vi.mocked(proxyClient.registerSession).mockResolvedValue(undefined)
+    mockContainerExec.mockResolvedValue({ stdout: '', stderr: '' })
+  })
+
+  it('re-registers the proxy session for the new tool, then renames + respawns the agent window', async () => {
+    await retoolSpare(spare, 'codex')
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    expect(proxyClient.registerSession).toHaveBeenCalledWith(
+      'spare1',
+      expect.objectContaining({ tool: 'codex', repoUrl: 'https://github.com/example/repo.git' }),
+    )
+    const cmds = mockContainerExec.mock.calls.map((c) => c[1])
+    expect(cmds.some((c) => c.includes('rename-window -t yaac:claude codex'))).toBe(true)
+    const respawn = cmds.find((c) => c.includes('respawn-window'))
+    expect(respawn).toContain('-t yaac:codex')
+    expect(respawn).toContain('codex --yolo')
+  })
+
+  it('boots the new agent with the spare\'s own session id', async () => {
+    await retoolSpare({ ...spare, tool: 'codex' }, 'claude')
+
+    const respawn = mockContainerExec.mock.calls.map((c) => c[1]).find((c) => c.includes('respawn-window'))
+    expect(respawn).toContain('-t yaac:claude')
+    expect(respawn).toContain('--session-id spare1')
+  })
+
+  it('propagates registration failures without touching the tmux window', async () => {
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    vi.mocked(proxyClient.registerSession).mockRejectedValue(new Error('proxy down'))
+    await expect(retoolSpare(spare, 'codex')).rejects.toThrow('proxy down')
+    expect(mockContainerExec).not.toHaveBeenCalled()
   })
 })
 

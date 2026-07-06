@@ -11,14 +11,21 @@
  * worktree, mounts) is baked at warm time and can't be re-keyed, so a claim
  * returns the spare's own id; the CLI and webapp adopt it.
  *
+ * Spares are tool-agnostic: warm-time provisioning seeds every tool's config
+ * and env placeholders, so a claim for a different tool than the one booted
+ * just retools the spare (proxy re-registration + agent respawn + label
+ * flip) instead of falling back to a cold create. The booted tool — the
+ * configured default at warm time — is recorded in the `yaac.tool` label so
+ * matching claims stay instant.
+ *
  * The daemon is a single process (lock-file enforced), so module-level state
  * is sufficient mutual exclusion — no kubernetes optimistic concurrency.
  */
 import { containerExec } from '@/lib/k8s/exec'
 import { k8sNamespace, kubectlWithRetry } from '@/lib/k8s/kubectl'
-import { LABEL_PREWARMED, isPrewarmed, listSessionPods, type SessionPod } from '@/lib/k8s/pods'
-import { isTmuxSessionAlive } from '@/lib/session/cleanup'
-import { shellEscape, type SessionCreateResult } from '@/daemon/session-create'
+import { LABEL_PREWARMED, LABEL_TOOL, isPrewarmed, listSessionPods, type SessionPod } from '@/lib/k8s/pods'
+import { cleanupSessionDetached, isTmuxSessionAlive } from '@/lib/session/cleanup'
+import { retoolSpare, shellEscape, type SessionCreateResult } from '@/daemon/session-create'
 import type { AgentTool } from '@/shared/types'
 
 /**
@@ -68,9 +75,11 @@ export interface PrewarmPlan {
  * - "spares" = prewarmed pods (any phase, so a still-pulling spare counts),
  *   minus any jobName currently being claimed (never spawn against / reap one
  *   mid-claim).
- * - A project with ≥1 claimed session wants `poolSize` spares of
- *   `defaultTool`: spawn to fill (counting in-flight so we don't stampede),
- *   reap wrong-tool spares (stale after a `tool set`) and genuine excess.
+ * - A project with ≥1 claimed session wants `poolSize` spares: spawn to fill
+ *   (counting in-flight so we don't stampede) with `defaultTool` booted, and
+ *   reap genuine excess. Spares are tool-agnostic — one warmed with a
+ *   different tool (e.g. after a `tool set`) is retooled at claim time, so
+ *   it still counts toward the pool and is never reaped for its tool.
  * - A project with 0 claimed sessions drains all its spares.
  */
 export function computePrewarmPlan(
@@ -109,19 +118,13 @@ export function computePrewarmPlan(
       spares.forEach(reap)
       continue
     }
-    // Reap spares warmed for a tool that is no longer the default.
-    const matching: SessionPod[] = []
-    for (const s of spares) {
-      if (s.tool === defaultTool) matching.push(s)
-      else reap(s)
-    }
     // Reap genuine excess (oldest first) — e.g. after the pool size is lowered.
-    if (matching.length > poolSize) {
-      matching.sort((a, b) => a.createdAtMs - b.createdAtMs)
-      matching.slice(0, matching.length - poolSize).forEach(reap)
+    if (spares.length > poolSize) {
+      spares.sort((a, b) => a.createdAtMs - b.createdAtMs)
+      spares.slice(0, spares.length - poolSize).forEach(reap)
     }
     // Spawn to fill, counting in-flight spawns so ticks don't stampede.
-    const current = matching.length + (inFlightCounts.get(project) ?? 0)
+    const current = spares.length + (inFlightCounts.get(project) ?? 0)
     for (let i = current; i < poolSize; i++) toSpawn.push({ projectSlug: project, tool: defaultTool })
   }
   return { toSpawn, toReap }
@@ -132,8 +135,12 @@ export function computePrewarmPlan(
  * claimed session's result (its own id) or `undefined` to fall through to a
  * full cold create. Never throws — any failure degrades to a cold create.
  *
- * The label removal is the commit point: a crash after it leaves a normal
- * session (no orphaned state); a crash before it leaves the spare reusable.
+ * Spares are tool-agnostic, so any running spare is claimable; one booted
+ * with a different tool is retooled first (`retoolSpare`). The label call is
+ * the commit point: a crash after it leaves a normal session (no orphaned
+ * state); a crash before it leaves the spare reusable — except once retool
+ * mutations have started, when a failed spare is tainted (registration,
+ * window name, and label may disagree) and is reaped instead of released.
  */
 export async function tryClaimPrewarmed(
   projectSlug: string,
@@ -142,13 +149,18 @@ export async function tryClaimPrewarmed(
   emit: (message: string) => void,
 ): Promise<SessionCreateResult | undefined> {
   let reserved: string | undefined
+  let chosen: SessionPod | undefined
+  let mutated = false
   try {
     const pods = await listSessionPods(projectSlug)
     const candidates = pods
-      .filter((p) => isPrewarmed(p) && p.running && p.tool === tool)
-      .sort((a, b) => b.createdAtMs - a.createdAtMs) // newest first
+      .filter((p) => isPrewarmed(p) && p.running)
+      // Prefer a spare whose booted agent already matches (skips the
+      // respawn), newest first within each group.
+      .sort((a, b) =>
+        Number(b.tool === tool) - Number(a.tool === tool)
+        || b.createdAtMs - a.createdAtMs)
 
-    let chosen: SessionPod | undefined
     for (const c of candidates) {
       if (claiming.has(c.jobName)) continue
       // Reserve synchronously (no await between the check and the add) so a
@@ -165,9 +177,17 @@ export async function tryClaimPrewarmed(
     }
     if (!chosen) return undefined
 
-    // Commit: drop the prewarmed label, flipping the pod to a normal session.
+    if (chosen.tool !== tool) {
+      emit(`Switching prewarmed session to ${tool}...`)
+      mutated = true
+      await retoolSpare(chosen, tool)
+    }
+
+    // Commit: drop the prewarmed label (stamping the new tool in the same
+    // call when retooled), flipping the pod to a normal session.
     await kubectlWithRetry([
       'label', 'pod', chosen.podName, '-n', k8sNamespace(), `${LABEL_PREWARMED}-`,
+      ...(chosen.tool !== tool ? [`${LABEL_TOOL}=${tool}`, '--overwrite'] : []),
     ])
 
     // Re-apply git identity so the claiming user's identity wins over the
@@ -181,7 +201,18 @@ export async function tryClaimPrewarmed(
     emit('Using prewarmed session...')
     return { sessionId: chosen.sessionId, jobName: chosen.jobName, tool, forwardedPorts: [] }
   } catch {
-    // Any failure (cluster unreachable, label race lost) → cold create.
+    // Any failure (cluster unreachable, label race lost) → cold create. A
+    // spare that failed mid-retool is tainted — reap it so a later claim
+    // can't pick up its inconsistent state; the reconciler warms a fresh
+    // one. Keep the reservation (jobNames are never reused, so the leaked
+    // entry is inert) so a concurrent claim can't grab the dying pod before
+    // the detached teardown lands.
+    if (chosen && mutated) {
+      const { jobName, projectSlug: slug, sessionId } = chosen
+      cleanupSessionDetached({ jobName, projectSlug: slug, sessionId })
+        .catch(() => { /* best-effort; the stale-session reaper retries */ })
+      reserved = undefined
+    }
     return undefined
   } finally {
     if (reserved) claiming.delete(reserved)

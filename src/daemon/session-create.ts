@@ -99,11 +99,18 @@ import {
   buildStatusRight,
   registerSessionForwarders,
 } from '@/lib/session/port-forwarders'
+import { AGENT_TOOLS } from '@/shared/types'
 import type { AgentTool, PortMapping, YaacConfig, InitCommandSpec } from '@/shared/types'
 
 export function shellEscape(str: string): string {
   return str.replace(/'/g, "'\\''")
 }
+
+// Every in-container `tmux` invocation routes through this prefix so
+// the server socket lands on a host-mounted dir. Liveness and
+// pane-content probes still go through `kubectl exec` because UNIX
+// socket connect()s don't cross the hostPath boundary portably.
+const TMUX = `tmux -S ${CONTAINER_TMUX_SOCK}`
 
 export interface InitWindow {
   name: string
@@ -176,6 +183,34 @@ export function buildAgentCmd(
   ].filter(Boolean).join(' ')
 }
 
+/**
+ * Swap a prewarmed spare's booted agent for a different tool at claim time.
+ * Spares are provisioned tool-agnostically (mounts, env placeholders, and
+ * per-tool config cover every tool), so only three things are keyed to the
+ * booted tool: the proxy registration (drives credential injection), the
+ * agent tmux window's name, and the process running in it. Re-registers the
+ * proxy session, then renames + respawns the agent window. The pod's tool
+ * label flips in the claim's commit call. Throws on failure — the caller
+ * must treat the spare as tainted (registration, window name, and label may
+ * disagree) and reap it.
+ */
+export async function retoolSpare(
+  spare: { jobName: string; sessionId: string; projectSlug: string; tool: string },
+  tool: AgentTool,
+): Promise<void> {
+  const config: YaacConfig = await resolveProjectConfig(spare.projectSlug) ?? {}
+  const remoteUrl = (await simpleGit(repoDir(spare.projectSlug)).remote(['get-url', 'origin']))?.trim() ?? ''
+  await proxyClient.registerSession(
+    spare.sessionId,
+    buildSessionRegistration({ config, remoteUrl, tool }),
+  )
+  await containerExec(spare.jobName, `${TMUX} rename-window -t yaac:${spare.tool} ${tool}`)
+  await containerExec(
+    spare.jobName,
+    `${TMUX} respawn-window -k -t yaac:${tool} '${buildAgentCmd(tool, spare.sessionId, '', false)}'`,
+  )
+}
+
 // Keep in lockstep with the @anthropic-ai/claude-code dependency: if it
 // ships a newer onboarding flow, a stale value lets the first-run wizard
 // reappear. `lastOnboardingVersion` must be >= the running CLI version.
@@ -190,30 +225,28 @@ interface ClaudeJsonState {
 }
 
 /**
- * Ensure `~/.claude.json` exists (it is hostPath-mounted as a file) and, for
- * Claude sessions, seed claude-code's onboarding state so its first-run
- * wizard (theme picker, then the login screen) is skipped. Merges into any
- * existing state so claude-code's own keys (oauthAccount, migrations, …)
- * survive. The agent runs in /workspace; /repo is the git worktree root.
+ * Ensure `~/.claude.json` exists (it is hostPath-mounted as a file) and seed
+ * claude-code's onboarding state so its first-run wizard (theme picker, then
+ * the login screen) is skipped. Merges into any existing state so
+ * claude-code's own keys (oauthAccount, migrations, …) survive. The agent
+ * runs in /workspace; /repo is the git worktree root.
  */
-export async function seedClaudeJson(claudeJsonPath: string, isClaudeSession: boolean): Promise<void> {
+export async function seedClaudeJson(claudeJsonPath: string): Promise<void> {
   let state: ClaudeJsonState = {}
   try {
     state = JSON.parse(await fs.readFile(claudeJsonPath, 'utf8')) as ClaudeJsonState
   } catch {
     // missing or invalid — start fresh
   }
-  if (isClaudeSession) {
-    state.hasCompletedOnboarding = true
-    state.lastOnboardingVersion = CLAUDE_ONBOARDING_VERSION
-    const approved = new Set([...(state.customApiKeyResponses?.approved ?? []), 'yaac-ph-api-key'])
-    state.customApiKeyResponses = { approved: [...approved], rejected: state.customApiKeyResponses?.rejected ?? [] }
-    const projects = { ...state.projects }
-    for (const dir of ['/workspace', '/repo']) {
-      projects[dir] = { ...projects[dir], hasTrustDialogAccepted: true }
-    }
-    state.projects = projects
+  state.hasCompletedOnboarding = true
+  state.lastOnboardingVersion = CLAUDE_ONBOARDING_VERSION
+  const approved = new Set([...(state.customApiKeyResponses?.approved ?? []), 'yaac-ph-api-key'])
+  state.customApiKeyResponses = { approved: [...approved], rejected: state.customApiKeyResponses?.rejected ?? [] }
+  const projects = { ...state.projects }
+  for (const dir of ['/workspace', '/repo']) {
+    projects[dir] = { ...projects[dir], hasTrustDialogAccepted: true }
   }
+  state.projects = projects
   await fs.writeFile(claudeJsonPath, JSON.stringify(state, null, 2) + '\n')
 }
 
@@ -385,12 +418,6 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
     gitUser, forwardedPorts,
   } = params
 
-  // Every in-container `tmux` invocation routes through this prefix so
-  // the server socket lands on a host-mounted dir. Liveness and
-  // pane-content probes still go through `kubectl exec` because UNIX
-  // socket connect()s don't cross the hostPath boundary portably.
-  const TMUX = `tmux -S ${CONTAINER_TMUX_SOCK}`
-
   const manifest = buildSessionJobManifest({
     jobName,
     namespace: k8sNamespace(),
@@ -541,10 +568,14 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   // `init` window, object-form configs get one window per entry so a
   // backend and frontend can run side by side.
   for (const win of resolveInitWindows(config)) {
-    if (win.name === tool) {
+    // Reject every tool name, not just the active tool's: a prewarmed spare
+    // can be retooled at claim time, which renames the agent window to the
+    // requested tool — an init window with that name would make the tmux
+    // target ambiguous.
+    if ((AGENT_TOOLS as readonly string[]).includes(win.name)) {
       throw new DaemonError(
         'VALIDATION',
-        `initCommands window name "${win.name}" collides with the agent window for tool "${tool}"`,
+        `initCommands window name "${win.name}" collides with an agent tool window`,
       )
     }
     await containerExec(
@@ -818,10 +849,16 @@ export async function createSession(
     }
     : undefined
 
-  // Check that tool credentials exist on the host so the container can
-  // authenticate via the proxy. For Claude OAuth this also drives the
-  // per-project placeholder refresh below.
-  const toolAuth = await loadToolAuthEntry(tool)
+  // Load every tool's stored credential, not just the active tool's: pods
+  // are provisioned tool-agnostically (a prewarmed spare can be retooled to
+  // any agent at claim time), so the env placeholders and per-project
+  // placeholder refreshes below cover each tool that has credentials, each
+  // gated on its own credential's kind.
+  const toolAuthByTool = {
+    claude: await loadToolAuthEntry('claude'),
+    codex: await loadToolAuthEntry('codex'),
+    opencode: await loadToolAuthEntry('opencode'),
+  }
 
   // Register this session's state (envSecretProxy rules, allowlist, repo
   // URL) with the proxy. GitHub / Claude / Codex auth is handled
@@ -891,35 +928,36 @@ export async function createSession(
     }
   }
 
-  // Add placeholder env var for the active tool so it doesn't prompt for login
-  // inside the container. The proxy injects the real credentials on API calls.
-  if (toolAuth) {
-    if (tool === 'claude') {
-      if (toolAuth.kind === 'api-key') {
-        env.push(`ANTHROPIC_API_KEY=${PLACEHOLDER_API_KEY}`)
-      }
-      // OAuth: Claude Code reads the placeholder bundle from the mounted
-      // .claude/.credentials.json, so no env var is needed.
-    } else if (tool === 'opencode') {
-      // opencode is api-key only. Depending on the credential's provider it
-      // reads OPENROUTER_API_KEY (openrouter.ai) or NEURALWATT_API_KEY
-      // (api.neuralwatt.com) from env and sends `Authorization: Bearer <key>`
-      // to that host, which the proxy swaps for the real key. Both are
-      // first-class opencode providers (models.dev), so no opencode.json
-      // provider block is needed.
-      if (toolAuth.kind === 'api-key') {
-        const envVar = toolAuth.opencodeProvider === 'neuralwatt'
-          ? 'NEURALWATT_API_KEY'
-          : 'OPENROUTER_API_KEY'
-        env.push(`${envVar}=${PLACEHOLDER_API_KEY}`)
-      }
-    } else if (toolAuth.kind === 'api-key') {
-      env.push(`OPENAI_API_KEY=${PLACEHOLDER_API_KEY}`)
-    }
-    // Codex OAuth: Codex reads the placeholder bundle from the mounted
-    // .codex/auth.json. Setting OPENAI_API_KEY here would risk steering
-    // Codex into api-key mode instead of ChatGPT OAuth.
+  // Add placeholder env vars so no tool prompts for login inside the
+  // container. The proxy injects the real credentials on API calls. All
+  // tools' vars go in (each gated on its own credential's kind) because the
+  // pod spec is immutable and a prewarmed spare may be retooled at claim
+  // time. The vars are only sentinels: the proxy swaps placeholders solely
+  // for the session's *registered* tool (updated on retool), so carrying
+  // another tool's placeholder grants no access to its credential.
+  if (toolAuthByTool.claude?.kind === 'api-key') {
+    env.push(`ANTHROPIC_API_KEY=${PLACEHOLDER_API_KEY}`)
   }
+  // Claude OAuth: Claude Code reads the placeholder bundle from the mounted
+  // .claude/.credentials.json, so no env var is needed.
+  if (toolAuthByTool.opencode?.kind === 'api-key') {
+    // opencode is api-key only. Depending on the credential's provider it
+    // reads OPENROUTER_API_KEY (openrouter.ai) or NEURALWATT_API_KEY
+    // (api.neuralwatt.com) from env and sends `Authorization: Bearer <key>`
+    // to that host, which the proxy swaps for the real key. Both are
+    // first-class opencode providers (models.dev), so no opencode.json
+    // provider block is needed.
+    const envVar = toolAuthByTool.opencode.opencodeProvider === 'neuralwatt'
+      ? 'NEURALWATT_API_KEY'
+      : 'OPENROUTER_API_KEY'
+    env.push(`${envVar}=${PLACEHOLDER_API_KEY}`)
+  }
+  if (toolAuthByTool.codex?.kind === 'api-key') {
+    env.push(`OPENAI_API_KEY=${PLACEHOLDER_API_KEY}`)
+  }
+  // Codex OAuth: Codex reads the placeholder bundle from the mounted
+  // .codex/auth.json. Setting OPENAI_API_KEY would risk steering Codex
+  // into api-key mode instead of ChatGPT OAuth.
 
   // GitHub CLI (`gh`) auth: when the project's remote is an HTTPS GitHub repo,
   // hand `gh` a placeholder GH_TOKEN so it treats itself as logged in. The
@@ -943,10 +981,9 @@ export async function createSession(
   // Enable opencode's Exa-backed websearch tool. opencode only registers
   // the tool when this env var is truthy; the matching `permission.websearch`
   // entry is written into the shared opencode.json below. The MCP endpoint
-  // `mcp.exa.ai` is on the default proxy allowlist.
-  if (tool === 'opencode') {
-    env.push('OPENCODE_ENABLE_EXA=true')
-  }
+  // `mcp.exa.ai` is on the default proxy allowlist. Set unconditionally
+  // (only opencode reads it) so a spare retooled to opencode gets it.
+  env.push('OPENCODE_ENABLE_EXA=true')
 
   // Port forwarding: reserve host ports in the daemon process so no
   // other process can claim them between discovery and the forwarder
@@ -982,63 +1019,61 @@ export async function createSession(
   await fs.mkdir(opencodeMetaDir(projectSlug), { recursive: true })
   await fs.mkdir(cachedPackages, { recursive: true })
 
-  // Refresh the per-project placeholder .credentials.json from the current
-  // host OAuth bundle. Picks up expiresAt changes since the last session.
-  if (tool === 'claude' && toolAuth?.kind === 'oauth') {
+  // Refresh the per-project placeholder credential files from the current
+  // host OAuth bundles. Picks up expiresAt changes since the last session.
+  // Both tools are refreshed regardless of the active tool so a prewarmed
+  // spare stays retoolable at claim time.
+  if (toolAuthByTool.claude?.kind === 'oauth') {
     const hostClaudeCreds = await loadClaudeCredentialsFile()
     if (hostClaudeCreds?.kind === 'oauth') {
       await writeProjectClaudePlaceholder(projectSlug, hostClaudeCreds.claudeAiOauth)
     }
   }
-  if (tool === 'codex' && toolAuth?.kind === 'oauth') {
+  if (toolAuthByTool.codex?.kind === 'oauth') {
     const hostCodexCreds = await loadCodexCredentialsFile()
     if (hostCodexCreds?.kind === 'oauth') {
       await writeProjectCodexPlaceholder(projectSlug, hostCodexCreds.codexOauth)
     }
   }
 
-  // Ensure claude.json exists (it is hostPath-mounted as a file) and, for
-  // Claude sessions, seed claude-code's onboarding state so the first-run
-  // wizard — theme picker then login — is skipped. The injected placeholder
-  // credential authenticates the agent; without these flags the user is
-  // forced to log in inside every session.
-  await seedClaudeJson(claudeJson, tool === 'claude')
-  if (tool === 'claude') await seedClaudeSettings(path.join(claude, 'settings.json'))
+  // Seed every tool's host-side config, not just the active tool's — the
+  // dirs are all mounted into every pod anyway, and a retooled spare must
+  // find its config in place. All writes are cheap and idempotent.
 
-  if (tool === 'codex') {
-    // Ensure codex dir and transcript symlink dir exist
-    const transcriptDir = codexTranscriptDir(projectSlug)
-    await fs.mkdir(transcriptDir, { recursive: true })
+  // claude.json (hostPath-mounted as a file): seed claude-code's onboarding
+  // state so the first-run wizard — theme picker then login — is skipped.
+  // The injected placeholder credential authenticates the agent; without
+  // these flags the user is forced to log in inside every session.
+  await seedClaudeJson(claudeJson)
+  await seedClaudeSettings(path.join(claude, 'settings.json'))
 
-    // Write a SessionStart hook that symlinks the transcript into a
-    // directory keyed by YAAC session ID, so yaac can read it directly.
-    const codex_ = codexDir(projectSlug)
-    const hookScript = path.join(codex_, '.yaac-hook.sh')
-    await fs.writeFile(hookScript, [
-      '#!/bin/sh',
-      '# Reads JSON from stdin (Codex SessionStart hook) and symlinks the',
-      '# transcript so yaac can find the right JSONL for this session.',
-      '# Uses a relative symlink so it resolves on both host and container.',
-      'INPUT=$(cat)',
-      'TRANSCRIPT=$(echo "$INPUT" | sed -n \'s/.*"transcript_path"\\s*:\\s*"\\([^"]*\\)".*/\\1/p\')',
-      'if [ -n "$TRANSCRIPT" ] && [ -n "$YAAC_SESSION_ID" ]; then',
-      '  LINK_DIR=/home/yaac/.codex/.yaac-transcripts',
-      '  mkdir -p "$LINK_DIR"',
-      '  REL=$(python3 -c "import os.path; print(os.path.relpath(\'$TRANSCRIPT\', \'$LINK_DIR\'))")',
-      '  ln -sf "$REL" "$LINK_DIR/$YAAC_SESSION_ID.jsonl"',
-      'fi',
-    ].join('\n') + '\n')
-    await fs.chmod(hookScript, 0o755)
+  // Codex: transcript symlink dir + a SessionStart hook that symlinks the
+  // transcript into a directory keyed by YAAC session ID, so yaac can read
+  // it directly.
+  const transcriptDir = codexTranscriptDir(projectSlug)
+  await fs.mkdir(transcriptDir, { recursive: true })
+  const hookScript = path.join(codex, '.yaac-hook.sh')
+  await fs.writeFile(hookScript, [
+    '#!/bin/sh',
+    '# Reads JSON from stdin (Codex SessionStart hook) and symlinks the',
+    '# transcript so yaac can find the right JSONL for this session.',
+    '# Uses a relative symlink so it resolves on both host and container.',
+    'INPUT=$(cat)',
+    'TRANSCRIPT=$(echo "$INPUT" | sed -n \'s/.*"transcript_path"\\s*:\\s*"\\([^"]*\\)".*/\\1/p\')',
+    'if [ -n "$TRANSCRIPT" ] && [ -n "$YAAC_SESSION_ID" ]; then',
+    '  LINK_DIR=/home/yaac/.codex/.yaac-transcripts',
+    '  mkdir -p "$LINK_DIR"',
+    '  REL=$(python3 -c "import os.path; print(os.path.relpath(\'$TRANSCRIPT\', \'$LINK_DIR\'))")',
+    '  ln -sf "$REL" "$LINK_DIR/$YAAC_SESSION_ID.jsonl"',
+    'fi',
+  ].join('\n') + '\n')
+  await fs.chmod(hookScript, 0o755)
+  await ensureCodexHooksJson(codex)
+  await ensureCodexConfigToml(codex)
 
-    await ensureCodexHooksJson(codex_)
-    await ensureCodexConfigToml(codex_)
-  }
-
-  if (tool === 'opencode') {
-    // Grant the websearch permission in the shared opencode.json so the
-    // Exa-backed tool is usable (paired with OPENCODE_ENABLE_EXA above).
-    await ensureOpencodeConfigJson(opencodeConfig)
-  }
+  // opencode: grant the websearch permission in the shared opencode.json so
+  // the Exa-backed tool is usable (paired with OPENCODE_ENABLE_EXA above).
+  await ensureOpencodeConfigJson(opencodeConfig)
 
   // Pre-create cacheVolumes host dirs so they're daemon-owned rather than
   // root-owned via DirectoryOrCreate — the in-container yaac user carries

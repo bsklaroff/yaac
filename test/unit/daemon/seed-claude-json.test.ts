@@ -21,8 +21,8 @@ async function read(): Promise<Record<string, unknown>> {
 }
 
 describe('seedClaudeJson', () => {
-  it('seeds onboarding + trust flags for a Claude session', async () => {
-    await seedClaudeJson(file, true)
+  it('seeds onboarding + trust flags', async () => {
+    await seedClaudeJson(file)
     const j = await read()
     expect(j.hasCompletedOnboarding).toBe(true)
     expect(typeof j.lastOnboardingVersion).toBe('string')
@@ -35,7 +35,7 @@ describe('seedClaudeJson', () => {
 
   it('preserves claude-code own keys when merging', async () => {
     await fs.writeFile(file, JSON.stringify({ oauthAccount: { uuid: 'x' }, theme: 'dark' }))
-    await seedClaudeJson(file, true)
+    await seedClaudeJson(file)
     const j = await read()
     expect(j.oauthAccount).toEqual({ uuid: 'x' })
     expect(j.theme).toBe('dark')
@@ -46,7 +46,7 @@ describe('seedClaudeJson', () => {
     await fs.writeFile(file, JSON.stringify({
       customApiKeyResponses: { approved: ['other-key'], rejected: ['nope'] },
     }))
-    await seedClaudeJson(file, true)
+    await seedClaudeJson(file)
     const j = await read()
     const responses = j.customApiKeyResponses as { approved: string[]; rejected: string[] }
     expect(responses.approved).toContain('other-key')
@@ -54,15 +54,9 @@ describe('seedClaudeJson', () => {
     expect(responses.rejected).toEqual(['nope'])
   })
 
-  it('only ensures the file exists for a non-Claude session (no onboarding flags)', async () => {
-    await seedClaudeJson(file, false)
-    const j = await read()
-    expect(j.hasCompletedOnboarding).toBeUndefined()
-  })
-
   it('starts fresh when the existing file is invalid JSON', async () => {
     await fs.writeFile(file, 'not json{')
-    await seedClaudeJson(file, true)
+    await seedClaudeJson(file)
     const j = await read()
     expect(j.hasCompletedOnboarding).toBe(true)
   })

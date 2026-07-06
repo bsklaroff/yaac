@@ -91,14 +91,12 @@ describe('computePrewarmPlan', () => {
     expect(plan.toReap).toEqual([{ jobName: 'yaac-p-spare', projectSlug: 'p', sessionId: 's2' }])
   })
 
-  it('reaps a wrong-tool spare and spawns a default-tool one', () => {
+  it('keeps a wrong-tool spare in the pool (tool-agnostic; retooled at claim time)', () => {
     const pods = [
       pod({ jobName: 'yaac-p-real', sessionId: 'r1' }),
       pod({ jobName: 'yaac-p-codex', sessionId: 's2', tool: 'codex', prewarmed: true }),
     ]
-    const plan = computePrewarmPlan(pods, 1, CLAUDE, empty(), noClaim())
-    expect(plan.toReap).toEqual([{ jobName: 'yaac-p-codex', projectSlug: 'p', sessionId: 's2' }])
-    expect(plan.toSpawn).toEqual([{ projectSlug: 'p', tool: CLAUDE }])
+    expect(computePrewarmPlan(pods, 1, CLAUDE, empty(), noClaim())).toEqual({ toSpawn: [], toReap: [] })
   })
 
   it('spawns poolSize spares when the pool is larger', () => {

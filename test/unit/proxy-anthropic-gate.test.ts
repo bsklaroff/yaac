@@ -35,10 +35,14 @@ function headerValue(
 }
 
 function buildAnthropicRules(
+  sessionTool: string | undefined,
   creds: ClaudeCreds | null,
   reqHeaders: http.IncomingHttpHeaders,
 ): InjectionRule[] {
   const rules: InjectionRule[] = []
+  // Tool gate: only a session registered as tool=claude may spend the
+  // claude credential (mirrors `sessionTool.get(sessionId) === 'claude'`).
+  if (sessionTool !== 'claude') return rules
   const incomingApiKey = headerValue(reqHeaders, 'x-api-key')
   const incomingAuth = headerValue(reqHeaders, 'authorization')
   if (creds && creds.kind === 'api-key' && incomingApiKey === PLACEHOLDER_API_KEY) {
@@ -65,7 +69,7 @@ describe('Anthropic credential injection gating', () => {
     const creds: ClaudeCreds = { kind: 'api-key', apiKey: 'sk-ant-real' }
 
     it('injects when incoming x-api-key matches the placeholder', () => {
-      const rules = buildAnthropicRules(creds, { 'x-api-key': PLACEHOLDER_API_KEY })
+      const rules = buildAnthropicRules('claude', creds, { 'x-api-key': PLACEHOLDER_API_KEY })
       expect(rules).toEqual([{
         pathPattern: '*',
         injections: [{ action: 'set_header', name: 'x-api-key', value: 'sk-ant-real' }],
@@ -73,24 +77,24 @@ describe('Anthropic credential injection gating', () => {
     })
 
     it('does not inject when incoming x-api-key is a user-provided real key', () => {
-      const rules = buildAnthropicRules(creds, { 'x-api-key': 'sk-ant-user-supplied' })
+      const rules = buildAnthropicRules('claude', creds, { 'x-api-key': 'sk-ant-user-supplied' })
       expect(rules).toEqual([])
     })
 
     it('does not inject when incoming x-api-key is absent', () => {
-      const rules = buildAnthropicRules(creds, {})
+      const rules = buildAnthropicRules('claude', creds, {})
       expect(rules).toEqual([])
     })
 
     it('does not inject when incoming x-api-key is empty', () => {
-      const rules = buildAnthropicRules(creds, { 'x-api-key': '' })
+      const rules = buildAnthropicRules('claude', creds, { 'x-api-key': '' })
       expect(rules).toEqual([])
     })
 
     it('does not inject when the OAuth placeholder is passed in api-key mode', () => {
       // OAuth placeholder arriving at an api-key-configured proxy is still a
       // mismatch — only the api-key placeholder gates api-key injection.
-      const rules = buildAnthropicRules(creds, {
+      const rules = buildAnthropicRules('claude', creds, {
         authorization: 'Bearer ' + PLACEHOLDER_ACCESS_TOKEN,
       })
       expect(rules).toEqual([])
@@ -101,7 +105,7 @@ describe('Anthropic credential injection gating', () => {
     const creds: ClaudeCreds = { kind: 'oauth', bundle: { accessToken: 'real-access-token' } }
 
     it('injects when incoming Authorization matches the Bearer placeholder', () => {
-      const rules = buildAnthropicRules(creds, {
+      const rules = buildAnthropicRules('claude', creds, {
         authorization: 'Bearer ' + PLACEHOLDER_ACCESS_TOKEN,
       })
       expect(rules).toEqual([{
@@ -115,33 +119,52 @@ describe('Anthropic credential injection gating', () => {
     })
 
     it('does not inject when Authorization carries a non-placeholder Bearer token', () => {
-      const rules = buildAnthropicRules(creds, {
+      const rules = buildAnthropicRules('claude', creds, {
         authorization: 'Bearer sk-ant-user-bearer',
       })
       expect(rules).toEqual([])
     })
 
     it('does not inject when Authorization is absent', () => {
-      const rules = buildAnthropicRules(creds, {})
+      const rules = buildAnthropicRules('claude', creds, {})
       expect(rules).toEqual([])
     })
 
     it('does not inject when the api-key placeholder is passed in oauth mode', () => {
-      const rules = buildAnthropicRules(creds, { 'x-api-key': PLACEHOLDER_API_KEY })
+      const rules = buildAnthropicRules('claude', creds, { 'x-api-key': PLACEHOLDER_API_KEY })
       expect(rules).toEqual([])
     })
 
     it('requires the exact "Bearer " prefix', () => {
-      const rules = buildAnthropicRules(creds, {
+      const rules = buildAnthropicRules('claude', creds, {
         authorization: PLACEHOLDER_ACCESS_TOKEN,
       })
       expect(rules).toEqual([])
     })
   })
 
+  describe('session tool gating', () => {
+    const creds: ClaudeCreds = { kind: 'api-key', apiKey: 'sk-ant-real' }
+
+    it('does not inject for a codex session, even with the placeholder', () => {
+      const rules = buildAnthropicRules('codex', creds, { 'x-api-key': PLACEHOLDER_API_KEY })
+      expect(rules).toEqual([])
+    })
+
+    it('does not inject for an opencode session', () => {
+      const rules = buildAnthropicRules('opencode', creds, { 'x-api-key': PLACEHOLDER_API_KEY })
+      expect(rules).toEqual([])
+    })
+
+    it('does not inject when the session has no registered tool', () => {
+      const rules = buildAnthropicRules(undefined, creds, { 'x-api-key': PLACEHOLDER_API_KEY })
+      expect(rules).toEqual([])
+    })
+  })
+
   describe('no credentials configured', () => {
     it('does not inject even when the placeholder is present', () => {
-      const rules = buildAnthropicRules(null, { 'x-api-key': PLACEHOLDER_API_KEY })
+      const rules = buildAnthropicRules('claude', null, { 'x-api-key': PLACEHOLDER_API_KEY })
       expect(rules).toEqual([])
     })
   })

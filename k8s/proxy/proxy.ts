@@ -1050,12 +1050,16 @@ function buildDynamicRules(
     }
   }
 
-  // Anthropic credential swap is gated on the inbound request carrying our
-  // placeholder sentinel. Requests that don't match (e.g. a user manually
-  // passing their own API key through the proxy) pass through unmodified —
-  // the proxy only rewrites traffic it knows it originated the placeholder
-  // for.
-  if (hostname === ANTHROPIC_API_HOST) {
+  // Anthropic credential swap is gated on the session being registered for
+  // tool=claude (matching the codex/opencode gates below — a session must
+  // never be able to spend another tool's credential; every pod carries all
+  // placeholder env vars so prewarmed spares can be retooled, and a retool
+  // re-registers the session, moving this gate with it) and on the inbound
+  // request carrying our placeholder sentinel. Requests that don't match
+  // (e.g. a user manually passing their own API key through the proxy) pass
+  // through unmodified — the proxy only rewrites traffic it knows it
+  // originated the placeholder for.
+  if (hostname === ANTHROPIC_API_HOST && sessionTool.get(sessionId) === 'claude') {
     const creds = readClaudeCreds()
     const incomingApiKey = headerValue(reqHeaders, 'x-api-key')
     const incomingAuth = headerValue(reqHeaders, 'authorization')
@@ -1475,14 +1479,21 @@ function handleMitm(
 
     // OAuth token endpoints need multi-step body capture + response rewrite:
     // swap placeholder refresh_token outbound, then capture real tokens +
-    // swap placeholders inbound. Null when this isn't the token endpoint or
-    // when no OAuth bundle is on disk (nothing to swap).
+    // swap placeholders inbound. Null when this isn't the token endpoint,
+    // when no OAuth bundle is on disk (nothing to swap), or when the session
+    // isn't registered for the matching tool — only a claude session may
+    // drive a claude token refresh (codex likewise), so one tool's session
+    // can't rotate or exercise another tool's credential. (The host-side
+    // tool sign-in flow never traverses the session proxy, so it's
+    // unaffected.)
     const claudeTokenBundle =
       hostname === CLAUDE_TOKEN_URL_HOST && reqPath === CLAUDE_TOKEN_URL_PATH
+      && sessionId !== null && sessionTool.get(sessionId) === 'claude'
         ? readClaudeOAuthBundle()
         : null
     const codexTokenBundle =
       hostname === OPENAI_TOKEN_URL_HOST && reqPath === OPENAI_TOKEN_URL_PATH
+      && sessionId !== null && sessionTool.get(sessionId) === 'codex'
         ? readCodexOAuthBundle()
         : null
 

@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import type { YaacConfig, InitCommandSpec, AgentTool } from '@/shared/types'
+import { AGENT_TOOLS } from '@/shared/types'
+import type { YaacConfig, InitCommandSpec } from '@/shared/types'
 import { projectConfigDir } from '@/lib/project/paths'
 
 const KNOWN_KEYS = new Set(['envPassthrough', 'env', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'portForward', 'bindMounts', 'hideInitPane', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths', 'nestedContainers', 'virtualCluster'])
@@ -38,8 +39,8 @@ export function ephemeralModulesSlotKey(relPath: string): string {
 /** tmux window names tagged 'reserved' across every supported agent tool —
  *  we reject these so an `initCommands` entry can never clobber the agent
  *  pane on a session whose tool is set to that name. */
-const RESERVED_INIT_WINDOW_NAMES: ReadonlySet<string> = new Set<AgentTool | 'init' | 'yaac'>(
-  ['claude', 'codex', 'opencode', 'init', 'yaac'],
+const RESERVED_INIT_WINDOW_NAMES: ReadonlySet<string> = new Set(
+  [...AGENT_TOOLS, 'init', 'yaac'],
 )
 
 const INIT_WINDOW_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/

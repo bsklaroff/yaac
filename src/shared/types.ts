@@ -2,6 +2,8 @@ import { z } from 'zod'
 
 export type AgentTool = 'claude' | 'codex' | 'opencode'
 
+export const AGENT_TOOLS: readonly AgentTool[] = ['claude', 'codex', 'opencode']
+
 export type ToolAuthKind = 'api-key' | 'oauth'
 
 /**
