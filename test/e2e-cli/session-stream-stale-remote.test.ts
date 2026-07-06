@@ -18,7 +18,6 @@ import {
   requireCluster,
   execInJob,
   cleanupSessionJobs,
-  IS_NESTED_YAAC,
 } from '@test/helpers/setup'
 import {
   startMockLLM,
@@ -39,9 +38,7 @@ import {
  * create→exit→advance-HEAD→stream cycle because the bug is timing-
  * sensitive; a single pass may miss it.
  */
-// The assertion verifies the new session routes through the in-pod egress
-// redirect, which is enforced host-side (not present) in a nested session.
-describe.skipIf(IS_NESTED_YAAC)('yaac session stream (session pod exited + remote HEAD changed)', () => {
+describe('yaac session stream (session pod exited + remote HEAD changed)', () => {
   // Loop a few times because the bug this test was written to catch is
   // timing-sensitive; a single pass of stop→advance-HEAD→stream often
   // misses the race between session creation and pickup.

@@ -13,7 +13,7 @@ import {
   kubectlWithRetry,
   type KubectlExecOptions,
 } from '@/lib/k8s/kubectl'
-import { LABEL_DATA_DIR_HASH } from '@/lib/k8s/pods'
+import { LABEL_DATA_DIR_HASH, LABEL_SESSION_ID } from '@/lib/k8s/pods'
 import type { ProjectMeta } from '@/shared/types'
 import type { ProxyClientConfig } from '@/lib/container/proxy-client'
 import { e2eMkdtemp } from '@test/helpers/tmp'
@@ -50,8 +50,9 @@ export const TEST_NAMESPACE = `yaac-test-${TEST_RUN_ID}`
  * capabilities simply don't exist in a vcluster-backed inner session and
  * cannot be exercised from in here, so the tests that depend on them are
  * `skipIf`'d on this flag:
- *  - the inner Cilium transparent-egress redirect (enforced host-side for a
- *    nested session — `yaac cluster check` reports `egress: skipped`);
+ *  - Cilium datapath assertions made from inside the cluster (egress is
+ *    enforced host-side for a nested session — `yaac cluster check` reports
+ *    `egress: skipped`) — transparent-egress, inner-redirect-priority;
  *  - vcluster-in-vcluster (`createSession` refuses it outright);
  *  - the podman `kind` network (the inner podman has no host network
  *    topology).
@@ -131,7 +132,10 @@ export async function cleanupSessionJobs(): Promise<void> {
     await kubectlWithRetry([
       'delete', 'jobs,pods',
       '-n', k8sNamespace(),
-      '-l', `${LABEL_DATA_DIR_HASH}=${dataDirHash()}`,
+      // The session-id term keeps this scoped to session Jobs/pods: the
+      // test daemon's proxy pod carries the same data-dir-hash (install
+      // identity) but is Deployment-managed, not ours to sweep.
+      '-l', `${LABEL_DATA_DIR_HASH}=${dataDirHash()},${LABEL_SESSION_ID}`,
       '--ignore-not-found', '--wait=false',
     ])
   } catch {

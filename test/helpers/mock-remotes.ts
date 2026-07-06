@@ -23,14 +23,18 @@ const execFileAsync = promisify(execFile)
  * Mock LLM + mock git-over-HTTP servers that stand in for the real Anthropic,
  * OpenAI, and GitHub remotes when the proxy's upstream-redirect feature
  * reroutes them. Each mock runs as a Pod + ClusterIP Service in the test
- * namespace, so the proxy pod reaches it via cluster DNS.
+ * namespace.
  *
  * Pairing: production traffic flows
  *   session pod → HTTPS_PROXY → proxy pod (MITM + inject creds)
  *     → https.request(api.anthropic.com)
  * Test traffic flows the same path, but the proxy's upstreamRedirects map
  * swaps the final hop to `{host: mock.host, port: mock.port}` — the mock
- * Service's DNS name (plain HTTP — mocks don't speak TLS).
+ * Service's ClusterIP (plain HTTP — mocks don't speak TLS). The IP, not the
+ * Service DNS name, on purpose: an IP literal needs no resolution, so the
+ * same registration works for a host proxy (which could resolve the name)
+ * AND a nested session's inner proxy (which sinkholes every DNS name by
+ * design and could not). The IP is stable for the Service's lifetime.
  */
 
 const MOCK_LLM_PORT = 9100
@@ -38,7 +42,7 @@ const MOCK_GIT_PORT = 9101
 
 export interface MockLLM {
   readonly podName: string
-  /** In-cluster DNS name (`<svc>.<ns>.svc`) — the upstream-redirect target. */
+  /** The mock Service's ClusterIP — the upstream-redirect target. */
   readonly host: string
   readonly port: number
   /** Fetch every request the mock has seen, oldest first. */
@@ -55,7 +59,7 @@ export interface MockLLMEntry {
 
 export interface MockGit {
   readonly podName: string
-  /** In-cluster DNS name (`<svc>.<ns>.svc`) — the upstream-redirect target. */
+  /** The mock Service's ClusterIP — the upstream-redirect target. */
   readonly host: string
   readonly port: number
   /** Host-side directory containing one bare repo per test (e.g. `repo-demo.git`). */
@@ -103,14 +107,16 @@ interface MockPodOpts {
 /**
  * Apply a single-container Pod running `node -e <script>` plus a ClusterIP
  * Service with the same name, then wait until the in-pod server accepts
- * connections on `port`.
+ * connections on `port`. Returns the Service's allocator-assigned ClusterIP —
+ * the address mocks are registered under (see the module docstring for why
+ * an IP and not the Service DNS name).
  */
 async function startMockPod(
   name: string,
   script: string,
   port: number,
   opts: MockPodOpts = {},
-): Promise<void> {
+): Promise<string> {
   const ns = k8sNamespace()
   await ensureNamespace()
   const image = await resolveTestBaseImageRef()
@@ -158,6 +164,13 @@ async function startMockPod(
       ports: [{ port, targetPort: port }],
     },
   })
+  const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
+    'get', 'service', name, '-n', ns,
+  ])
+  const clusterIp = svc?.spec?.clusterIP
+  if (!clusterIp || clusterIp === 'None') {
+    throw new Error(`mock service ${name} has no ClusterIP`)
+  }
 
   // Phase 1: wait for the pod to be Running (covers image pull).
   interface RawPod { status?: { phase?: string } }
@@ -182,12 +195,13 @@ async function startMockPod(
         'sh', '-c',
         `node -e "require('net').connect({ host: '127.0.0.1', port: ${port} }).once('connect', () => process.exit(0)).once('error', () => process.exit(1))"`,
       ], { timeout: 5000 })
-      return
+      return clusterIp
     } catch {
       if (i === 39) throw new Error(`mock pod ${name} server did not become ready in 10s`)
       await new Promise((r) => setTimeout(r, 250))
     }
   }
+  throw new Error(`mock pod ${name} server did not become ready`)
 }
 
 /** Delete a mock's Pod + Service, swallowing every error. */
@@ -348,11 +362,11 @@ const MOCK_LLM_SCRIPT = `
 
 export async function startMockLLM(): Promise<MockLLM> {
   const podName = `yaac-mock-llm-${crypto.randomBytes(4).toString('hex')}`
-  await startMockPod(podName, MOCK_LLM_SCRIPT, MOCK_LLM_PORT)
+  const clusterIp = await startMockPod(podName, MOCK_LLM_SCRIPT, MOCK_LLM_PORT)
 
   return {
     podName,
-    host: `${podName}.${k8sNamespace()}.svc`,
+    host: clusterIp,
     port: MOCK_LLM_PORT,
     async transcript() {
       const { stdout } = await execInPod(podName, [
@@ -430,11 +444,11 @@ export async function startMockGit(): Promise<MockGit> {
   // world-readable so it can stat+stream the files.
   await fs.chmod(reposDir, 0o755)
 
-  await startMockPod(podName, MOCK_GIT_SCRIPT, MOCK_GIT_PORT, { hostPathDir: reposDir })
+  const clusterIp = await startMockPod(podName, MOCK_GIT_SCRIPT, MOCK_GIT_PORT, { hostPathDir: reposDir })
 
   return {
     podName,
-    host: `${podName}.${k8sNamespace()}.svc`,
+    host: clusterIp,
     port: MOCK_GIT_PORT,
     reposDir,
     async stop() {

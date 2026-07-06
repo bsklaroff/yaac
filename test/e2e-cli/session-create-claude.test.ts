@@ -16,7 +16,6 @@ import {
   requireCluster,
   execInJob,
   cleanupSessionJobs,
-  IS_NESTED_YAAC,
 } from '@test/helpers/setup'
 import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
 import {
@@ -46,9 +45,7 @@ import {
  * worktree's .git file points at /repo/.git and git resolves the repo
  * root to /repo.
  */
-// Round-tripping a prompt needs the in-pod egress redirect to the mock
-// LLM, which is enforced host-side (not present) in a nested session.
-describe.skipIf(IS_NESTED_YAAC)('yaac session create drives real claude-code through mocked remotes', () => {
+describe('yaac session create drives real claude-code through mocked remotes', () => {
   let testEnv: YaacTestEnv
   let daemon: SpawnedDaemon | null = null
   let mockLLM: MockLLM | null = null

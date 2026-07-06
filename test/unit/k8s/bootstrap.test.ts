@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 
 vi.mock('@/lib/k8s/kubectl', () => ({
+  dataDirHash: vi.fn(() => 'ddh0123456789abc'),
   k8sNamespace: vi.fn(() => 'test-ns'),
   kubectlApply: vi.fn().mockResolvedValue(undefined),
   kubectlGetJson: vi.fn(),
@@ -36,6 +37,9 @@ import {
   INNER_EGRESS_REDIRECT_CEC_NAME,
   INNER_SESSION_EGRESS_REDIRECT_CNP_NAME,
   INNER_PROXY_INGRESS_CNP_NAME,
+  innerRedirectObjectName,
+  LABEL_PROJECTION,
+  PROJECTION_INNER_REDIRECT,
   buildVclusterFallbackRedirectCcecManifest,
   vclusterFallbackCcecName,
   buildVclusterFallbackRedirectCnpManifest,
@@ -66,6 +70,7 @@ import {
 } from '@/lib/k8s/bootstrap'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
 import { CA_CERT_PATH } from '@/lib/k8s/pod-spec'
+import { LABEL_DATA_DIR_HASH } from '@/lib/k8s/pods'
 import { credentialsDir } from '@/lib/project/paths'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 
@@ -188,16 +193,20 @@ describe('buildProxyDeploymentManifest', () => {
     expect(m.spec.selector.matchLabels).toEqual({ app: PROXY_APP_NAME })
   })
 
-  it('nested (inner) proxy: stamps yaac.role=inner-proxy on the pod (loop-free exclusion)', () => {
+  it('stamps the install identity on every proxy pod; nested adds yaac.role=inner-proxy (loop-free exclusion)', () => {
     const plain = buildProxyDeploymentManifest('img') as unknown as {
       spec: { template: { metadata: { labels: Record<string, string> } } }
     }
-    expect(plain.spec.template.metadata.labels).toEqual({ app: PROXY_APP_NAME })
+    expect(plain.spec.template.metadata.labels).toEqual({
+      app: PROXY_APP_NAME, [LABEL_DATA_DIR_HASH]: 'ddh0123456789abc',
+    })
     const nested = buildProxyDeploymentManifest('img', { nested: true }) as unknown as {
       spec: { template: { metadata: { labels: Record<string, string> } } }
     }
     expect(nested.spec.template.metadata.labels).toEqual({
-      app: PROXY_APP_NAME, [LABEL_ROLE]: ROLE_INNER_PROXY,
+      app: PROXY_APP_NAME,
+      [LABEL_DATA_DIR_HASH]: 'ddh0123456789abc',
+      [LABEL_ROLE]: ROLE_INNER_PROXY,
     })
   })
 
@@ -341,7 +350,10 @@ describe('buildProxyServiceManifest', () => {
       metadata: {
         name: PROXY_APP_NAME,
         namespace: 'test-ns',
-        labels: { app: PROXY_APP_NAME },
+        // The install identity rides the vcluster sync so the outer
+        // projection can attribute a synced inner-proxy Service to its
+        // inner install (findInnerProxyServices).
+        labels: { app: PROXY_APP_NAME, [LABEL_DATA_DIR_HASH]: 'ddh0123456789abc' },
       },
       spec: {
         type: 'ClusterIP',
@@ -676,17 +688,25 @@ describe('inner-redirect builders (yaac-in-yaac projection)', () => {
   const VC_NS = 'yaac-vc-abcd1234'
   const VC_NAME = 'yvc-abcd1234'
   const INNER_SVC = 'yaac-proxy-x-yaac-x-yvc-abcd1234' // vcluster-translated name
+  const INSTALL = 'fedcba9876543210' // the inner install's data-dir-hash
 
-  it('inner CEC: EDS-backed by the inner proxy Service, in the vcluster namespace', () => {
-    const m = buildInnerEgressRedirectCecManifest(VC_NS, INNER_SVC) as unknown as {
-      metadata: { name: string; namespace: string; annotations: Record<string, string> }
+  it('inner CEC: per-install name, EDS-backed by the inner proxy Service, in the vcluster namespace', () => {
+    const m = buildInnerEgressRedirectCecManifest(VC_NS, INNER_SVC, INSTALL) as unknown as {
+      metadata: { name: string; namespace: string; labels: Record<string, string>; annotations: Record<string, string> }
       spec: {
         backendServices: Array<{ name: string; namespace: string; number: string[] }>
         resources: Array<{ '@type': string; name?: string; type?: string }>
       }
     }
-    expect(m.metadata.name).toBe(INNER_EGRESS_REDIRECT_CEC_NAME)
+    expect(m.metadata.name).toBe(`${INNER_EGRESS_REDIRECT_CEC_NAME}-${INSTALL}`)
+    expect(m.metadata.name).toBe(innerRedirectObjectName(INNER_EGRESS_REDIRECT_CEC_NAME, INSTALL))
     expect(m.metadata.namespace).toBe(VC_NS)
+    // Projection + install labels: the reconcile prune pass lists by these.
+    expect(m.metadata.labels).toEqual({
+      app: PROXY_APP_NAME,
+      [LABEL_PROJECTION]: PROJECTION_INNER_REDIRECT,
+      [LABEL_DATA_DIR_HASH]: INSTALL,
+    })
     expect(m.metadata.annotations['cec.cilium.io/use-original-source-address']).toBe('false')
     expect(m.spec.backendServices).toEqual([{
       name: INNER_SVC,
@@ -701,19 +721,27 @@ describe('inner-redirect builders (yaac-in-yaac projection)', () => {
     ])
   })
 
-  it('inner override CNP: managed-by AND not inner-proxy, listeners at the normal priority', () => {
-    const m = buildInnerSessionEgressRedirectCnpManifest(VC_NS, VC_NAME) as unknown as {
-      metadata: { name: string; namespace: string }
+  it('inner override CNP: managed-by AND own install AND not inner-proxy, listeners at the normal priority', () => {
+    const m = buildInnerSessionEgressRedirectCnpManifest(VC_NS, VC_NAME, INSTALL) as unknown as {
+      metadata: { name: string; namespace: string; labels: Record<string, string> }
       spec: {
         endpointSelector: { matchExpressions: Array<{ key: string; operator: string; values: string[] }> }
         egress: Array<{ toPorts: Array<{ ports: Array<{ port: string }>; listener?: { envoyConfig: { name: string }; name: string; priority?: number } }> }>
       }
     }
-    expect(m.metadata.name).toBe(INNER_SESSION_EGRESS_REDIRECT_CNP_NAME)
+    expect(m.metadata.name).toBe(`${INNER_SESSION_EGRESS_REDIRECT_CNP_NAME}-${INSTALL}`)
     expect(m.metadata.namespace).toBe(VC_NS)
-    // Scope: this vcluster's synced pods, excluding the inner proxy (loop-free).
+    expect(m.metadata.labels).toEqual({
+      app: PROXY_APP_NAME,
+      [LABEL_PROJECTION]: PROJECTION_INNER_REDIRECT,
+      [LABEL_DATA_DIR_HASH]: INSTALL,
+    })
+    // Scope: this vcluster's synced pods OF THIS INSTALL, excluding the inner
+    // proxy (loop-free). Pods without an install label (e.g. test mocks) stay
+    // on the fallback.
     expect(m.spec.endpointSelector.matchExpressions).toEqual([
       { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [VC_NAME] },
+      { key: LABEL_DATA_DIR_HASH, operator: 'In', values: [INSTALL] },
       { key: LABEL_ROLE, operator: 'NotIn', values: [ROLE_INNER_PROXY] },
     ])
     // Routing-only override: just the 3 world redirects (HTTPS, HTTP, tunnel).
@@ -722,17 +750,18 @@ describe('inner-redirect builders (yaac-in-yaac projection)', () => {
     expect(m.spec.egress).toHaveLength(3)
     const listeners = m.spec.egress.map((e) => e.toPorts[0].listener).filter(Boolean)
     expect(listeners).toHaveLength(3)
-    // Every redirect listener targets the INNER CEC at the NORMAL priority (same
-    // value any yaac uses — transparent), which beats the outer fallback.
+    // Every redirect listener targets the install's OWN inner CEC at the
+    // NORMAL priority (same value any yaac uses — transparent), which beats
+    // the outer fallback.
     for (const l of listeners) {
-      expect(l?.envoyConfig.name).toBe(INNER_EGRESS_REDIRECT_CEC_NAME)
+      expect(l?.envoyConfig.name).toBe(`${INNER_EGRESS_REDIRECT_CEC_NAME}-${INSTALL}`)
       expect(l?.priority).toBe(SESSION_REDIRECT_PRIORITY)
     }
   })
 
   it('inner proxy-ingress CNP: control host-only, transparent ports to managed-by pods', () => {
     const m = buildInnerProxyIngressCnpManifest(VC_NS, VC_NAME) as unknown as {
-      metadata: { name: string; namespace: string }
+      metadata: { name: string; namespace: string; labels: Record<string, string> }
       spec: {
         endpointSelector: { matchLabels: Record<string, string> }
         ingress: Array<{
@@ -742,7 +771,14 @@ describe('inner-redirect builders (yaac-in-yaac projection)', () => {
         }>
       }
     }
+    // Shared per vcluster (unsuffixed): it selects EVERY install's inner proxy
+    // and its rules are install-independent. Carries the projection label (no
+    // install hash) so the prune pass removes it once no proxy remains.
     expect(m.metadata.name).toBe(INNER_PROXY_INGRESS_CNP_NAME)
+    expect(m.metadata.labels).toEqual({
+      app: PROXY_APP_NAME,
+      [LABEL_PROJECTION]: PROJECTION_INNER_REDIRECT,
+    })
     expect(m.spec.endpointSelector.matchLabels).toEqual({ [LABEL_ROLE]: ROLE_INNER_PROXY })
     const [host, session] = m.spec.ingress
     expect(host.fromEntities).toEqual(['host'])

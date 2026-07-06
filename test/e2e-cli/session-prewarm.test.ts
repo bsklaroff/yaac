@@ -18,7 +18,6 @@ import {
   requirePodman,
   requireCluster,
   cleanupSessionJobs,
-  IS_NESTED_YAAC,
 } from '@test/helpers/setup'
 import {
   startMockLLM,
@@ -47,10 +46,8 @@ async function waitFor<T>(fn: () => Promise<T | undefined | false>, timeoutMs: n
  * that has an open session gets a hidden spare warmed by the background loop;
  * the next `session create` claims it instead of cold-provisioning; and a fresh
  * spare is warmed to replace it.
- *
- * Gated off in nested yaac (same egress constraints as the other create e2es).
  */
-describe.skipIf(IS_NESTED_YAAC)('yaac prewarmed sessions', () => {
+describe('yaac prewarmed sessions', () => {
   let testEnv: YaacTestEnv
   let daemon: SpawnedDaemon | null = null
   let mockLLM: MockLLM | null = null

@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
+  dataDirHash,
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
@@ -14,7 +15,7 @@ import {
   CA_CONFIGMAP_KEY,
   CA_CONFIGMAP_NAME,
 } from '@/lib/k8s/pod-spec'
-import { LABEL_SESSION_ID } from '@/lib/k8s/pods'
+import { LABEL_DATA_DIR_HASH, LABEL_SESSION_ID } from '@/lib/k8s/pods'
 import { credentialsDir, getDataDir } from '@/lib/project/paths'
 import { env } from '@/shared/env'
 
@@ -120,6 +121,15 @@ export const LABEL_VCLUSTER_MANAGED_BY = 'vcluster.loft.sh/managed-by'
  */
 export const LABEL_ROLE = 'yaac.role'
 export const ROLE_INNER_PROXY = 'inner-proxy'
+/**
+ * Label stamped on the host objects `reconcileInnerRedirects` projects into a
+ * vcluster's namespace, so the prune pass can list exactly its own writes and
+ * never touch the vcluster's egress floor (which shares the `app` label).
+ * Per-install objects also carry `LABEL_DATA_DIR_HASH` = the owning inner
+ * install, the prune key.
+ */
+export const LABEL_PROJECTION = 'yaac.projection'
+export const PROJECTION_INNER_REDIRECT = 'inner-redirect'
 /**
  * Nested (inner) proxy only. The inner proxy's chained upstream dial
  * (inner session → inner proxy → OUTER proxy → internet) terminates TLS at
@@ -233,11 +243,17 @@ export function buildProxyDeploymentManifest(
   imageRef: string,
   opts: { nested?: boolean } = {},
 ): Record<string, unknown> {
-  // Nested (inner) proxy: stamp the role so the inner override CNP can
-  // exclude it (loop-free) and the projection can discover it.
-  const podLabels = opts.nested
-    ? { app: PROXY_APP_NAME, [LABEL_ROLE]: ROLE_INNER_PROXY }
-    : { app: PROXY_APP_NAME }
+  // Every proxy pod carries the install identity (the same data-dir-hash
+  // label session pods carry): tenant pod labels survive vcluster sync
+  // verbatim, so the outer projection can group a vcluster's synced pods by
+  // owning inner install. Nested (inner) proxy: additionally stamp the role
+  // so the inner override CNP can exclude it (loop-free) and the projection
+  // can discover it.
+  const podLabels = {
+    app: PROXY_APP_NAME,
+    [LABEL_DATA_DIR_HASH]: dataDirHash(),
+    ...(opts.nested ? { [LABEL_ROLE]: ROLE_INNER_PROXY } : {}),
+  }
   return {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -744,52 +760,89 @@ export function buildProxyIngressCnpManifest(): Record<string, unknown> {
 }
 
 /**
+ * Name of a per-install projected object: the shared base suffixed with the
+ * owning inner install's data-dir-hash (16 hex chars — label- and name-safe).
+ * One vcluster can host several inner yaac installs (the ambient nested yaac
+ * plus per-run e2e daemons), each with its own proxy; suffixing keeps their
+ * projections disjoint.
+ */
+export function innerRedirectObjectName(base: string, installHash: string): string {
+  return `${base}-${installHash}`
+}
+
+/** Labels for projected inner-redirect objects — see LABEL_PROJECTION. */
+function innerProjectionLabels(installHash?: string): Record<string, string> {
+  return {
+    app: PROXY_APP_NAME,
+    [LABEL_PROJECTION]: PROJECTION_INNER_REDIRECT,
+    ...(installHash ? { [LABEL_DATA_DIR_HASH]: installHash } : {}),
+  }
+}
+
+/**
  * Inner egress-redirect CEC the daemon projects into a vcluster's host
- * namespace. Same three listeners as the outer CEC, but EDS-backed by the
- * **inner** proxy's host-synced Service (`innerProxyService` in `vcNamespace` —
- * its name is vcluster-translated, so the daemon discovers and passes it). The
- * inner override CNP references these listeners at a winning priority.
+ * namespace — one per inner install. Same three listeners as the outer CEC,
+ * but EDS-backed by the **inner** proxy's host-synced Service
+ * (`innerProxyService` in `vcNamespace` — its name is vcluster-translated, so
+ * the daemon discovers and passes it). The matching per-install override CNP
+ * references these listeners at a winning priority.
  */
 export function buildInnerEgressRedirectCecManifest(
   vcNamespace: string,
   innerProxyService: string,
+  installHash: string,
 ): Record<string, unknown> {
-  return buildRedirectCec(INNER_EGRESS_REDIRECT_CEC_NAME, vcNamespace, vcNamespace, innerProxyService)
+  const manifest = buildRedirectCec(
+    innerRedirectObjectName(INNER_EGRESS_REDIRECT_CEC_NAME, installHash),
+    vcNamespace, vcNamespace, innerProxyService,
+  )
+  const metadata = manifest.metadata as Record<string, unknown>
+  metadata.labels = innerProjectionLabels(installHash)
+  return manifest
 }
 
 /**
- * Inner session-egress redirect CNP (the override). Selects a vcluster's synced
- * pods (`managed-by=<vcName>`) EXCEPT the inner proxy (`yaac.role != inner-proxy`)
- * and redirects their 443/80/SSH egress into the inner CEC at the normal priority
- * (SESSION_REDIRECT_PRIORITY), which beats the fallback (a lower precedence) — so
- * inner-session world traffic flows to the INNER proxy while the inner proxy's own
- * egress stays on the fallback → outer proxy (loop-free).
+ * Inner session-egress redirect CNP (the override) — one per inner install.
+ * Selects a vcluster's synced pods that carry the install's data-dir-hash
+ * (`managed-by=<vcName>` AND `yaac.data-dir-hash=<installHash>`) EXCEPT the
+ * inner proxy (`yaac.role != inner-proxy`) and redirects their 443/80/SSH
+ * egress into that install's inner CEC at the normal priority
+ * (SESSION_REDIRECT_PRIORITY), which beats the fallback (a lower precedence) —
+ * so inner-session world traffic flows to the OWN install's INNER proxy while
+ * the inner proxy's own egress (and any synced pod without an install label,
+ * e.g. a test mock) stays on the fallback → outer proxy (loop-free).
  *
  * This is a ROUTING override, NOT a containment boundary. The unforgeable fallback
  * (buildVclusterFallbackRedirectCnpManifest) already default-denies every synced
  * pod's raw world and supplies intracluster + DNS (the inner proxy's DNS stub is a
  * `managed-by` sibling there), so this policy only needs the world redirects. The
- * `yaac.role` exclusion is tenant-forgeable, but forging it is non-escalating: a
- * session that forges `inner-proxy` merely drops to the fallback → OUTER proxy
- * (still allowlisted), never to raw world.
+ * `yaac.role` exclusion and the data-dir-hash are tenant-forgeable, but forging
+ * either is non-escalating: a pod that forges `inner-proxy` or a foreign hash
+ * merely lands on the fallback → OUTER proxy, or on a sibling install's proxy
+ * (which fail-closes unknown source IPs) — never on raw world.
  */
 export function buildInnerSessionEgressRedirectCnpManifest(
   vcNamespace: string,
   vcName: string,
+  installHash: string,
 ): Record<string, unknown> {
   const ref = (listener: string): Record<string, unknown> =>
-    listenerRef(INNER_EGRESS_REDIRECT_CEC_NAME, listener, SESSION_REDIRECT_PRIORITY)
+    listenerRef(
+      innerRedirectObjectName(INNER_EGRESS_REDIRECT_CEC_NAME, installHash),
+      listener, SESSION_REDIRECT_PRIORITY,
+    )
   return {
     apiVersion: 'cilium.io/v2',
     kind: 'CiliumNetworkPolicy',
     metadata: {
-      name: INNER_SESSION_EGRESS_REDIRECT_CNP_NAME,
+      name: innerRedirectObjectName(INNER_SESSION_EGRESS_REDIRECT_CNP_NAME, installHash),
       namespace: vcNamespace,
-      labels: { app: PROXY_APP_NAME },
+      labels: innerProjectionLabels(installHash),
     },
     spec: {
       endpointSelector: { matchExpressions: [
         { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [vcName] },
+        { key: LABEL_DATA_DIR_HASH, operator: 'In', values: [installHash] },
         { key: LABEL_ROLE, operator: 'NotIn', values: [ROLE_INNER_PROXY] },
       ] },
       egress: [
@@ -811,10 +864,13 @@ export function buildInnerSessionEgressRedirectCnpManifest(
 }
 
 /**
- * Inner proxy-ingress CNP. Locks the inner proxy's transparent ports to the
+ * Inner proxy-ingress CNP. Locks every inner proxy's transparent ports to the
  * redirected synced-pod identity (`managed-by=<vcName>`) and its control API to
  * the host — the same trust model as the outer proxy-ingress (the redirect
  * preserves the source pod's identity; a direct dial is blocked at egress).
+ * One per vcluster, shared by all inner installs: it selects every
+ * `role=inner-proxy` pod and the admitted rules are install-independent —
+ * per-install routing is the CEC/override CNP's job, not this lock's.
  */
 export function buildInnerProxyIngressCnpManifest(
   vcNamespace: string,
@@ -826,7 +882,7 @@ export function buildInnerProxyIngressCnpManifest(
     metadata: {
       name: INNER_PROXY_INGRESS_CNP_NAME,
       namespace: vcNamespace,
-      labels: { app: PROXY_APP_NAME },
+      labels: innerProjectionLabels(),
     },
     spec: {
       endpointSelector: { matchLabels: { [LABEL_ROLE]: ROLE_INNER_PROXY } },
@@ -999,7 +1055,11 @@ export function buildProxyServiceManifest(): Record<string, unknown> {
     metadata: {
       name: PROXY_APP_NAME,
       namespace: k8sNamespace(),
-      labels: { app: PROXY_APP_NAME },
+      // The data-dir-hash names the owning install. For an inner (nested)
+      // proxy the label rides the vcluster sync to the host copy, where
+      // `findInnerProxyServices` reads it to scope that install's projected
+      // redirect — the Service name itself is syncer-translated and opaque.
+      labels: { app: PROXY_APP_NAME, [LABEL_DATA_DIR_HASH]: dataDirHash() },
     },
     spec: {
       type: 'ClusterIP',
