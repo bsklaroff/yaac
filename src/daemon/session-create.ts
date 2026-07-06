@@ -3,7 +3,8 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
 import { ensureContainerRuntime } from '@/lib/container/runtime'
-import { ensureImage, sessionUid } from '@/lib/container/image-builder'
+import { sessionUid } from '@/lib/container/image-builder'
+import { ensureImage, pushImageShared } from '@/lib/container/build-coordinator'
 import { sharedImageStoreHostPath } from '@/lib/container/image-promoter'
 import { proxyClient, SSH_AGENT_MOUNT, SSH_AGENT_SOCKET_PATH } from '@/lib/container/proxy-client'
 import { buildSessionRegistration, syncProxySecrets } from '@/lib/session/proxy-registration'
@@ -34,7 +35,6 @@ import {
   SSH_TUNNEL_SENTINEL,
   TUNNEL_INGRESS_PORT,
 } from '@/lib/k8s/bootstrap'
-import { pushImageToRegistry } from '@/lib/k8s/registry'
 import {
   ensureProjectRegistry,
   projectRegistryConfDropIn,
@@ -770,10 +770,15 @@ export async function createSession(
     testEnv.imagePrefix,
     testEnv.requirePrebuiltImages,
     nestedContainers,
+    {
+      reason: 'session',
+      onLayerStart: (i, total, layer) =>
+        emit(`Building image layer ${i}/${total} (${layer})...`, options),
+    },
   )
 
   emit('Pushing session image to the local registry...', options)
-  const imageRef = await pushImageToRegistry(imageName)
+  const imageRef = await pushImageShared(imageName, { projectSlug, reason: 'session' })
 
   const sessionId = options.sessionId ?? crypto.randomUUID()
   const wtDir = worktreeDir(projectSlug, sessionId)

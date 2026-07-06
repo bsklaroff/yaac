@@ -3,8 +3,9 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { DOCKERFILES_DIR, getDataDir, projectConfigDir } from '@/lib/project/paths'
-import { imageExists, removeImage } from '@/lib/container/runtime'
+import { imageExists } from '@/lib/container/runtime'
 import { daemonLog, pipeToDaemonLog } from '@/daemon/log'
+import type { ImageLayerName } from '@/shared/types'
 
 export function stringHash(content: string): string {
   return crypto.createHash('sha256').update(content).digest('hex').slice(0, 16)
@@ -77,12 +78,12 @@ export async function contextHash(dir: string): Promise<string> {
 //   2. The compat endpoint defaults to layers=false, discarding intermediate
 //      layers — so even back-to-back dockerode builds rebuild from scratch.
 // Staying on the CLI keeps one shared OCI cache chain across all builders.
-interface BuildOptions {
+export interface BuildOptions {
   noCache?: boolean
   onLog?: (line: string) => void
 }
 
-async function buildImage(
+export async function buildImage(
   imageName: string,
   dockerfile: string,
   context: string,
@@ -146,8 +147,10 @@ export function isLayered(dockerfileContent: string): boolean {
     && /^FROM\s+\$\{BASE_IMAGE\}/m.test(dockerfileContent)
 }
 
-interface ImageLayer {
+export interface ImageLayer {
   tag: string
+  /** Which chain step this is — the dependency the tag realizes. */
+  name: ImageLayerName
   dockerfile: string
   context: string
   buildArgs?: Record<string, string>
@@ -163,7 +166,7 @@ interface ImageLayer {
  * docker CLI) between tools and any layered Dockerfile.yaac. Skipped for a
  * standalone Dockerfile.yaac, which owns its own toolchain.
  */
-async function resolveImageChain(
+export async function resolveImageChain(
   projectSlug: string,
   prefix: string,
   nestedContainers = false,
@@ -197,6 +200,7 @@ async function resolveImageChain(
   if (useDefaultBase) {
     layers.push({
       tag: defaultTag,
+      name: 'base',
       dockerfile: defaultDockerfile,
       context: DOCKERFILES_DIR,
       buildArgs: { YAAC_UID: String(uid) },
@@ -218,6 +222,7 @@ async function resolveImageChain(
     toolsTag = `${prefix}-tools:${toolsHash}`
     layers.push({
       tag: toolsTag,
+      name: 'tools',
       dockerfile: toolsDockerfile,
       context: DOCKERFILES_DIR,
       buildArgs: { BASE_IMAGE: defaultTag },
@@ -240,6 +245,7 @@ async function resolveImageChain(
     nestableTag = `${prefix}-nestable:${nestableHash}`
     layers.push({
       tag: nestableTag,
+      name: 'nestable',
       dockerfile: nestableDockerfile,
       context: DOCKERFILES_DIR,
       buildArgs: { BASE_IMAGE: toolsTag!, YAAC_UID: String(uid) },
@@ -268,6 +274,7 @@ async function resolveImageChain(
     const baseContext = path.dirname(yaacDockerfile)
     layers.push({
       tag: baseTag,
+      name: 'project',
       dockerfile: yaacDockerfile,
       context: baseContext,
       buildArgs: yaacIsLayered
@@ -296,6 +303,7 @@ async function resolveImageChain(
     const userTag = `${prefix}-user-${projectSlug}:${userHash}`
     layers.push({
       tag: userTag,
+      name: 'user',
       dockerfile: userDockerfile,
       context: getDataDir(),
       buildArgs: { BASE_IMAGE: effectiveTag },
@@ -322,125 +330,3 @@ export async function resolveImageTag(
   return finalTag
 }
 
-/**
- * Ensures the full image chain is built for a project.
- *
- * Layer 1: yaac-base (Dockerfile.default — Ubuntu + system packages + Node)
- *   Skipped when Dockerfile.yaac is standalone (any FROM that isn't ${BASE_IMAGE}).
- * Layer 1a: yaac-tools (Dockerfile.tools — claude, codex, opencode, etc.)
- *   Included whenever the canonical base is in use. Rebuilt with --no-cache
- *   by `yaac project rebuild` to pick up new upstream agent CLI versions.
- * Layer 1b (optional): yaac-nestable (Dockerfile.nestable — in-pod rootless
- *   podman + docker CLI/compose), only when `nestedContainers` is set.
- * Layer 2: yaac-base from Dockerfile.yaac — when present:
- *   - layered on Dockerfile.tools / Dockerfile.nestable (when Dockerfile.yaac
- *     uses `ARG BASE_IMAGE` + `FROM ${BASE_IMAGE}`)
- *   - or standalone (replaces the canonical base + tools + nestable)
- * Layer 3 (optional): yaac-user-<slug> (~/.yaac/Dockerfile.user, builds on top)
- *
- * Returns the final image name to use for containers.
- *
- * @param imagePrefix - Override for image name prefix. Used by tests to
- *   build isolated images that don't interfere with the running application.
- * @param requirePrebuilt - When true, throw instead of building if the base
- *   image is missing or stale. Used by e2e tests so parallel workers fail
- *   fast instead of racing to build the same image.
- * @param nestedContainers - Include the nestable layer (from the project's
- *   `nestedContainers` config, passed by createSession).
- */
-export async function ensureImage(
-  projectSlug: string,
-  imagePrefix?: string,
-  requirePrebuilt = false,
-  nestedContainers = false,
-): Promise<string> {
-  const prefix = imagePrefix ?? 'yaac'
-  const { layers, finalTag } = await resolveImageChain(projectSlug, prefix, nestedContainers)
-
-  for (const layer of layers) {
-    if (await imageExists(layer.tag)) continue
-
-    if (requirePrebuilt) {
-      throw new Error(
-        `Image ${layer.tag} is missing or stale. ` +
-        'Restart the test run so the global setup can rebuild it.',
-      )
-    }
-
-    daemonLog(`[build] starting ${layer.tag}`)
-    await buildImage(layer.tag, layer.dockerfile, layer.context, layer.buildArgs)
-  }
-
-  return finalTag
-}
-
-/**
- * Rebuild a project's tools layer and every layer downstream of it.
- *
- * The tools layer (Dockerfile.tools) installs the agent CLIs (claude, codex,
- * opencode, chrome-devtools-mcp) from upstream installers/registries; those
- * tools tick independently of the Dockerfile content, so the content-hash
- * tag never invalidates and a normal `ensureImage` would silently reuse a
- * stale cached layer. This forces a `--no-cache` rebuild of the tools layer
- * (re-fetching the latest upstream version of each CLI) and re-runs every
- * downstream layer (Dockerfile.yaac overlay / Dockerfile.user) so
- * they sit on the new tools image.
- *
- * The system base (Dockerfile.default — apt packages, Node, Playwright) is
- * left untouched: it's slow to rebuild and its content hash already
- * invalidates correctly when the Dockerfile changes.
- *
- * Returns the final image tag (same as `ensureImage`).
- *
- * @throws when the project uses a standalone Dockerfile.yaac (no tools layer
- *   in the chain) — there's nothing for this command to invalidate.
- */
-export async function rebuildProjectImage(
-  projectSlug: string,
-  opts: {
-    imagePrefix?: string
-    onLog?: (line: string) => void
-  } = {},
-): Promise<string> {
-  const prefix = opts.imagePrefix ?? 'yaac'
-  const { layers, finalTag } = await resolveImageChain(projectSlug, prefix)
-
-  const toolsIdx = layers.findIndex((l) => l.tag.startsWith(`${prefix}-tools:`))
-  if (toolsIdx < 0) {
-    throw new Error(
-      `Project "${projectSlug}" uses a standalone Dockerfile.yaac (no tools ` +
-      'layer in the image chain). `yaac project rebuild` has nothing to ' +
-      'invalidate — rebuild your custom image directly with ' +
-      '`podman build --no-cache`.',
-    )
-  }
-
-  const emit = (msg: string): void => {
-    daemonLog(`[rebuild ${projectSlug}] ${msg}`)
-    opts.onLog?.(msg)
-  }
-
-  // Remove the existing tools image and everything downstream so podman
-  // rebuilds them from scratch off the freshly-built tools layer.
-  for (let i = toolsIdx; i < layers.length; i++) {
-    emit(`removing existing image ${layers[i].tag}`)
-    await removeImage(layers[i].tag)
-  }
-
-  // Tools layer is rebuilt with --no-cache so the upstream agent CLI
-  // installers re-execute. Downstream layers use the normal cache; their
-  // RUN steps are unchanged, but FROM resolves to the new tools digest so
-  // they're rebuilt cleanly.
-  for (let i = toolsIdx; i < layers.length; i++) {
-    const layer = layers[i]
-    const noCache = i === toolsIdx
-    emit(`building ${layer.tag}${noCache ? ' (no cache)' : ''}`)
-    await buildImage(layer.tag, layer.dockerfile, layer.context, layer.buildArgs, {
-      noCache,
-      onLog: opts.onLog,
-    })
-  }
-
-  emit(`done — final image is ${finalTag}`)
-  return finalTag
-}

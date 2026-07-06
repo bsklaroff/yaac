@@ -121,12 +121,17 @@ export async function ensureLocalRegistry(): Promise<void> {
 /**
  * Push a locally built image to the registry and return its in-cluster
  * ref. No-ops (returning the ref) when the content-hash tag is already
- * present. `--tls-verify=false` because the local registry is plain HTTP
- * on loopback.
+ * present — except with `force`, for the one flow that changes bytes under
+ * an unchanged tag (`yaac project rebuild`'s --no-cache tools refresh).
+ * `--tls-verify=false` because the local registry is plain HTTP on
+ * loopback.
  */
-export async function pushImageToRegistry(localTag: string): Promise<string> {
+export async function pushImageToRegistry(
+  localTag: string,
+  opts: { onLog?: (line: string) => void; force?: boolean } = {},
+): Promise<string> {
   const ref = registryRef(localTag)
-  if (await registryHasTag(localTag)) return ref
+  if (!opts.force && await registryHasTag(localTag)) return ref
 
   daemonLog(`[registry] pushing ${localTag} -> ${ref}`)
   await new Promise<void>((resolve, reject) => {
@@ -135,8 +140,8 @@ export async function pushImageToRegistry(localTag: string): Promise<string> {
       timeout: 600_000,
     })
     const prefix = `[push ${localTag}] `
-    pipeToDaemonLog(child.stdout, prefix)
-    pipeToDaemonLog(child.stderr, prefix)
+    pipeToDaemonLog(child.stdout, prefix, opts.onLog)
+    pipeToDaemonLog(child.stderr, prefix, opts.onLog)
     child.on('close', (code) => {
       if (code === 0) resolve()
       else reject(new Error(`podman push exited with code ${code}`))

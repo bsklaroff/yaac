@@ -42,6 +42,8 @@ vi.mock('@/daemon/log', () => ({
   pipeToDaemonLog: vi.fn(),
 }))
 
+import { pipeToDaemonLog } from '@/daemon/log'
+
 import {
   REGISTRY_CONTAINER_NAME,
   ensureLocalRegistry,
@@ -191,6 +193,24 @@ describe('pushImageToRegistry', () => {
     spawnCloseCode = 125
     await expect(pushImageToRegistry('yaac-tools:abc')).rejects.toThrow(
       'podman push exited with code 125',
+    )
+  })
+
+  it('force-pushes even when the tag is already present (rebuild path)', async () => {
+    fetchMock.mockResolvedValue(fetchResponse({ ok: true })) // manifest HEAD hit
+    const ref = await pushImageToRegistry('yaac-tools:abc', { force: true })
+    expect(ref).toBe('localhost:5001/yaac-tools:abc')
+    expect(spawnedChildren).toHaveLength(1)
+    // The has-tag check is skipped entirely, not just overridden.
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('threads onLog into the output piping', async () => {
+    fetchMock.mockResolvedValue(fetchResponse({ ok: false, status: 404 }))
+    const onLog = vi.fn()
+    await pushImageToRegistry('yaac-tools:abc', { onLog })
+    expect(vi.mocked(pipeToDaemonLog)).toHaveBeenCalledWith(
+      expect.anything(), '[push yaac-tools:abc] ', onLog,
     )
   })
 })

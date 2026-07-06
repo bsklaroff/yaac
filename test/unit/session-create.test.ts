@@ -29,11 +29,12 @@ vi.mock('@/lib/container/runtime', () => ({
 }))
 
 vi.mock('@/lib/container/image-builder', () => ({
-  ensureImage: vi.fn().mockResolvedValue('yaac-test-image'),
+  sessionUid: vi.fn(() => 1000),
 }))
 
-vi.mock('@/lib/k8s/registry', () => ({
-  pushImageToRegistry: vi.fn().mockResolvedValue('localhost:5000/yaac-test-image'),
+vi.mock('@/lib/container/build-coordinator', () => ({
+  ensureImage: vi.fn().mockResolvedValue('yaac-test-image'),
+  pushImageShared: vi.fn().mockResolvedValue('localhost:5000/yaac-test-image'),
 }))
 
 vi.mock('@/lib/k8s/kubectl', () => ({
@@ -178,8 +179,7 @@ import fs from 'node:fs/promises'
 import { buildAgentCmd, createSession, resolveInitWindows, retoolSpare } from '@/daemon/session-create'
 import { sessionCreate } from '@/commands/session-create'
 import { ensureContainerRuntime } from '@/lib/container/runtime'
-import { ensureImage } from '@/lib/container/image-builder'
-import { pushImageToRegistry } from '@/lib/k8s/registry'
+import { ensureImage, pushImageShared } from '@/lib/container/build-coordinator'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
 import { containerExec } from '@/lib/k8s/exec'
 import { proxyServiceClusterIp } from '@/lib/k8s/bootstrap'
@@ -262,7 +262,7 @@ describe('createSession', () => {
     mockReadFile.mockRejectedValue(new Error('missing'))
     vi.mocked(ensureContainerRuntime).mockResolvedValue(undefined)
     vi.mocked(ensureImage).mockResolvedValue('yaac-test-image')
-    vi.mocked(pushImageToRegistry).mockResolvedValue('localhost:5000/yaac-test-image')
+    vi.mocked(pushImageShared).mockResolvedValue('localhost:5000/yaac-test-image')
     vi.mocked(resolveProjectConfig).mockResolvedValue({})
     vi.mocked(resolveCredentialForUrl).mockResolvedValue({ kind: 'https', token: 'token' } as never)
     vi.mocked(resolveAllowedHosts).mockReturnValue(['*'])

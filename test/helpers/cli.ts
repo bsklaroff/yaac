@@ -147,6 +147,9 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
     // cluster resources and perturb assertions. Off by default; the dedicated
     // prewarm suite re-enables it with `{ ...env, YAAC_PREWARM_POOL_SIZE: '1' }`.
     YAAC_PREWARM_POOL_SIZE: '0',
+    // Same reasoning for the background image-prewarm sweep — e2e images are
+    // prebuilt by the global setup and workers must never race a podman build.
+    YAAC_IMAGE_PREWARM: '0',
   }
 
   const cleanup = async (): Promise<void> => {

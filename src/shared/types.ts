@@ -477,6 +477,34 @@ export interface ProvisioningSessionEntry {
   createdAt: string
 }
 
+/** Named step in a project's image chain, in build order. */
+export type ImageLayerName = 'base' | 'tools' | 'nestable' | 'project' | 'user'
+
+/**
+ * An image build or registry push tracked in daemon memory and surfaced in
+ * the snapshot (metadata only — the raw podman log tail is fetched via
+ * `GET /image/builds/:id/log`, not streamed through snapshots).
+ */
+export interface ImageBuildEntry {
+  id: string
+  tag: string
+  /** Which chain step this is; `'push'` for a registry push. */
+  layer: ImageLayerName | 'push'
+  action: 'build' | 'push'
+  /** Every project that requested this tag (joiners attach their slug). */
+  projectSlugs: string[]
+  reason: 'session' | 'prewarm' | 'rebuild'
+  status: 'running' | 'succeeded' | 'failed'
+  /** Parsed from podman's `STEP N/M: <instruction>` output lines. */
+  stepCurrent?: number
+  stepTotal?: number
+  stepText?: string
+  error?: string
+  /** 'YYYY-MM-DD HH:MM:SS' UTC, same shape as provisioning `createdAt`. */
+  startedAt: string
+  finishedAt?: string
+}
+
 /**
  * Full picture of daemon-owned state the webapp renders. Hydrated from a
  * `snapshot` event on connect and replaced wholesale on every subsequent
@@ -491,6 +519,7 @@ export interface DaemonSnapshot {
   /** Project slug -> git credentials the upstream rejected (project-wide;
    *  see ActiveSessionsResult.gitAuthFailures). */
   gitAuthFailures: Record<string, GitAuthFailure[]>
+  imageBuilds: ImageBuildEntry[]
 }
 
 /** Messages the daemon pushes over `/events`. */

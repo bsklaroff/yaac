@@ -193,6 +193,61 @@ export async function isTmuxSessionAlive(slug: string, sessionId: string): Promi
   return (await probeTmuxLiveness(slug, sessionId)) === 'alive'
 }
 
+/**
+ * Outcome of an agent-pane probe.
+ * - `placeholder`: the first window's pane still runs the `sleep infinity`
+ *                  keepalive that session create opens tmux with — setup
+ *                  died between `new-session` and the agent
+ *                  `respawn-window` (e.g. the daemon was restarted
+ *                  mid-create), and no agent will ever start.
+ * - `started`:     the pane runs something else — the agent respawn
+ *                  happened. Terminal state: `respawn-window -k` killed
+ *                  the placeholder, so a session can never go back.
+ * - `unknown`:     the probe couldn't reach a verdict. Destructive
+ *                  callers MUST NOT treat this as `placeholder`.
+ */
+export type AgentPaneState = 'placeholder' | 'started' | 'unknown'
+
+/** Sessions whose agent pane was conclusively seen running (probe memo —
+ *  `started` is terminal, so one positive verdict silences re-probing). */
+const agentStartedCache = new Set<string>()
+
+/**
+ * Probe whether the agent window still runs the session-create
+ * placeholder. Targets `yaac:^` (the lowest-index window — the one
+ * `new-session` opened) rather than the tool-named window so a retooled
+ * spare's rename can't dodge the check. `pane_current_command` for the
+ * placeholder is `sleep` (verified against the exact `new-session`
+ * invocation session create uses).
+ */
+export async function probeAgentPaneState(slug: string, sessionId: string): Promise<AgentPaneState> {
+  const key = tmuxAliveKey(slug, sessionId)
+  if (agentStartedCache.has(key)) return 'started'
+  const jobName = sessionJobName(slug, sessionId)
+  try {
+    const { stdout } = await execFileAsync(
+      'kubectl',
+      [
+        'exec', '-n', k8sNamespace(), execTarget(jobName), '--',
+        'tmux', '-S', CONTAINER_TMUX_SOCK, 'display-message', '-p', '-t', 'yaac:^',
+        '#{pane_current_command}',
+      ],
+      { timeout: TMUX_PROBE_TIMEOUT_MS },
+    )
+    if (stdout.trim() === 'sleep') return 'placeholder'
+    agentStartedCache.add(key)
+    return 'started'
+  } catch {
+    // Includes a dead tmux/session — the liveness probe owns that verdict.
+    return 'unknown'
+  }
+}
+
+/** Test helper: drop all memoized agent-started verdicts. */
+export function _clearAgentStartedCacheForTests(): void {
+  agentStartedCache.clear()
+}
+
 export async function cleanupSession(params: {
   jobName: string
   projectSlug: string
@@ -205,6 +260,7 @@ export async function cleanupSession(params: {
   // from this session (or, in the worst case, a value belonging to a
   // brand-new session with the same id).
   tmuxAliveCache.delete(tmuxAliveKey(projectSlug, sessionId))
+  agentStartedCache.delete(tmuxAliveKey(projectSlug, sessionId))
   evictSessionStatus(projectSlug, sessionId)
   evictOpencodeProbeCache(projectSlug, sessionId)
 
@@ -280,6 +336,7 @@ export async function cleanupSessionDetached(params: {
   daemonLog(`[daemon] session teardown: session=${sessionId} job=${jobName} project=${projectSlug}`)
 
   tmuxAliveCache.delete(tmuxAliveKey(projectSlug, sessionId))
+  agentStartedCache.delete(tmuxAliveKey(projectSlug, sessionId))
   evictSessionStatus(projectSlug, sessionId)
   evictOpencodeProbeCache(projectSlug, sessionId)
 

@@ -7,23 +7,26 @@ vi.mock('@/lib/k8s/pods', async (importOriginal) => {
   return { ...actual, listSessionPods: vi.fn(), listSessionJobs: vi.fn() }
 })
 
-// probeTmuxLiveness is the injected liveness oracle; cleanupSessionDetached
-// is the destructive action we assert (does/doesn't fire).
+// probeTmuxLiveness / probeAgentPaneState are the injected oracles;
+// cleanupSessionDetached is the destructive action we assert (does/doesn't
+// fire).
 vi.mock('@/lib/session/cleanup', () => ({
   probeTmuxLiveness: vi.fn(),
+  probeAgentPaneState: vi.fn(),
   cleanupSessionDetached: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@/daemon/log', () => ({ daemonLog: vi.fn() }))
 
 import { listSessionPods, listSessionJobs } from '@/lib/k8s/pods'
-import { probeTmuxLiveness, cleanupSessionDetached } from '@/lib/session/cleanup'
+import { probeTmuxLiveness, probeAgentPaneState, cleanupSessionDetached } from '@/lib/session/cleanup'
 import { daemonLog } from '@/daemon/log'
 import { reconcileStaleSessions } from '@/lib/session/list'
 
 const mockListPods = vi.mocked(listSessionPods)
 const mockListJobs = vi.mocked(listSessionJobs)
 const mockProbe = vi.mocked(probeTmuxLiveness)
+const mockPaneProbe = vi.mocked(probeAgentPaneState)
 const mockCleanup = vi.mocked(cleanupSessionDetached)
 const mockLog = vi.mocked(daemonLog)
 
@@ -51,6 +54,7 @@ describe('reconcileStaleSessions', () => {
     mockListPods.mockReset()
     mockListJobs.mockReset().mockResolvedValue([])
     mockProbe.mockReset()
+    mockPaneProbe.mockReset().mockResolvedValue('started')
     mockCleanup.mockClear()
     mockLog.mockClear()
   })
@@ -90,6 +94,42 @@ describe('reconcileStaleSessions', () => {
 
     expect(mockCleanup).not.toHaveBeenCalled()
     expect(loggedLines()).toBe('')
+  })
+
+  it('reaps a live-tmux pod whose agent pane is still the placeholder past grace', async () => {
+    mockListPods.mockResolvedValue([pod('half-1')])
+    mockProbe.mockResolvedValue('alive' as TmuxLiveness)
+    mockPaneProbe.mockResolvedValue('placeholder')
+
+    await reconcileStaleSessions()
+
+    expect(mockCleanup).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 'half-1', jobName: 'yaac-proj-half-1' }),
+    )
+    const log = loggedLines()
+    expect(log).toContain('reaping session=half-1')
+    expect(log).toContain('agent never started')
+  })
+
+  it('keeps a placeholder pane while the pod is inside the grace window', async () => {
+    const fresh = { ...pod('fresh-1'), createdAtMs: Date.now() }
+    mockListPods.mockResolvedValue([fresh])
+    mockProbe.mockResolvedValue('alive' as TmuxLiveness)
+    mockPaneProbe.mockResolvedValue('placeholder')
+
+    await reconcileStaleSessions()
+
+    expect(mockCleanup).not.toHaveBeenCalled()
+  })
+
+  it('does NOT reap on an inconclusive agent-pane probe', async () => {
+    mockListPods.mockResolvedValue([pod('pane-blip-1')])
+    mockProbe.mockResolvedValue('alive' as TmuxLiveness)
+    mockPaneProbe.mockResolvedValue('unknown')
+
+    await reconcileStaleSessions()
+
+    expect(mockCleanup).not.toHaveBeenCalled()
   })
 
   it('reaps an orphan Job that has no backing pod, and labels the reason', async () => {

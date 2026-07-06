@@ -129,6 +129,27 @@ describe('env (configuration)', () => {
     })
   })
 
+  describe('imagePrewarm', () => {
+    it('defaults to on when unset', () => {
+      vi.stubEnv('YAAC_IMAGE_PREWARM', undefined)
+      expect(env.imagePrewarm).toBe(true)
+    })
+
+    it('treats empty, 0, and false (any case) as off', () => {
+      for (const v of ['', '0', 'false', 'FALSE', ' 0 ']) {
+        vi.stubEnv('YAAC_IMAGE_PREWARM', v)
+        expect(env.imagePrewarm).toBe(false)
+      }
+    })
+
+    it('treats other values as on', () => {
+      for (const v of ['1', 'true', 'yes']) {
+        vi.stubEnv('YAAC_IMAGE_PREWARM', v)
+        expect(env.imagePrewarm).toBe(true)
+      }
+    })
+  })
+
   describe('nested', () => {
     it('is true only when YAAC_NESTED is exactly "1"', () => {
       vi.stubEnv('YAAC_NESTED', '1')

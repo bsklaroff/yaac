@@ -6,12 +6,24 @@ import { testEnv } from '@/shared/env'
 
 const BUILD_ID_FILENAME = '.build-id'
 
+/**
+ * Top-level dist/ dirs that are runtime-READ data, not daemon code: the
+ * daemon re-reads dockerfiles on every image-chain resolution and k8s/
+ * image build contexts on every build, so a running daemon picks up
+ * edits to them with no restart. Excluded from the buildId so a
+ * dockerfile-only rebuild doesn't read as a version mismatch — `pnpm
+ * watch` would otherwise bounce the daemon on every Dockerfile save,
+ * severing in-flight session creates (each one's k8s Job survives as a
+ * half-provisioned zombie pod).
+ */
+const RUNTIME_DATA_DIRS = new Set(['dockerfiles', 'k8s'])
+
 export function buildIdPath(rootDir: string = PACKAGE_ROOT): string {
   return path.join(rootDir, BUILD_ID_FILENAME)
 }
 
 /**
- * Recursive content hash of everything shipped in `rootDir`. Used to
+ * Recursive content hash of the code shipped in `rootDir`. Used to
  * detect a daemon running from a different install than the CLI that's
  * trying to talk to it: the build script writes this into
  * `dist/.build-id`, the daemon echoes it into `.daemon.lock`, and the
@@ -19,7 +31,8 @@ export function buildIdPath(rootDir: string = PACKAGE_ROOT): string {
  *
  * Must be deterministic across machines and filesystems, so entries are
  * sorted by POSIX-style relpath. The `.build-id` file itself is
- * excluded — otherwise writing the hash would invalidate it.
+ * excluded — otherwise writing the hash would invalidate it — as are
+ * the `RUNTIME_DATA_DIRS`, which don't affect daemon behavior.
  */
 export async function computeBuildId(rootDir: string): Promise<string> {
   const entries: Array<{ rel: string; hash: string }> = []
@@ -45,6 +58,7 @@ async function collect(
   for (const ent of dirents) {
     const rel = relDir ? `${relDir}/${ent.name}` : ent.name
     if (ent.isDirectory()) {
+      if (relDir === '' && RUNTIME_DATA_DIRS.has(ent.name)) continue
       await collect(rootDir, rel, out)
       continue
     }

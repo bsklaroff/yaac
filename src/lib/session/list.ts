@@ -6,7 +6,7 @@ import { claudeDir, codexTranscriptDir, getProjectsDir, opencodeMetaDir, project
 import { getSessionFirstMessage, normalizeTool } from '@/lib/session/status'
 import { ensureOpencodeFirstMessageCaptured } from '@/lib/session/opencode-status'
 import { isSessionStreamHealthy, readSessionStatus, readSessionWaitingSince } from '@/lib/session/status-store'
-import { probeTmuxLiveness, cleanupSessionDetached, type TmuxLiveness } from '@/lib/session/cleanup'
+import { probeAgentPaneState, probeTmuxLiveness, cleanupSessionDetached, type TmuxLiveness } from '@/lib/session/cleanup'
 import { getSessionPorts } from '@/lib/session/port-forwarders'
 import { readBlockedHosts } from '@/lib/session/blocked-hosts'
 import { readAllGitAuthFailures } from '@/lib/project/git-auth-failures'
@@ -238,7 +238,7 @@ export async function reconcileStaleSessions(): Promise<void> {
   }
   const nowMs = Date.now()
   const graceMs = testEnv.startingGraceMs
-  const { stale, indeterminate } = await classifySessionPods(pods, nowMs, probeTmuxLiveness, graceMs)
+  const { running, stale, indeterminate } = await classifySessionPods(pods, nowMs, probeTmuxLiveness, graceMs)
 
   // Surface the near-miss: a running pod we deliberately did NOT reap
   // because its tmux probe was inconclusive (transient kubectl-exec
@@ -251,6 +251,24 @@ export async function reconcileStaleSessions(): Promise<void> {
       + ' (tmux probe inconclusive; pod still running)',
     )
   }
+
+  // Half-provisioned zombie sweep: a create killed between opening tmux
+  // (the `sleep infinity` placeholder window) and respawning the agent —
+  // e.g. a daemon restart mid-create — leaves a pod whose tmux is alive
+  // but whose agent will never start. The liveness probe above calls that
+  // healthy forever, so additionally require the agent pane to have left
+  // the placeholder once the grace window has passed. Only a conclusive
+  // `placeholder` verdict reaps; `unknown` keeps the session.
+  const placeholderStale: StaleSessionInfo[] = []
+  await Promise.all(running.map(async (p) => {
+    if (!p.projectSlug || !p.sessionId) return
+    const ageMs = p.createdAtMs > 0 ? nowMs - p.createdAtMs : Infinity
+    if (ageMs < graceMs) return
+    if (await probeAgentPaneState(p.projectSlug, p.sessionId) !== 'placeholder') return
+    placeholderStale.push({
+      jobName: p.jobName, projectSlug: p.projectSlug, sessionId: p.sessionId, zombie: true,
+    })
+  }))
 
   // Orphan-Job sweep: a Job whose pod was evicted/deleted out-of-band is
   // invisible to the pod-based classifier, so cross-reference the Job
@@ -270,6 +288,7 @@ export async function reconcileStaleSessions(): Promise<void> {
 
   const targets = [
     ...stale.map((s) => ({ jobName: s.jobName, projectSlug: s.projectSlug, sessionId: s.sessionId })),
+    ...placeholderStale.map((s) => ({ jobName: s.jobName, projectSlug: s.projectSlug, sessionId: s.sessionId })),
     ...orphanTargets,
   ]
   if (targets.length === 0) return
@@ -279,6 +298,9 @@ export async function reconcileStaleSessions(): Promise<void> {
   for (const s of stale) {
     const reason = s.zombie ? 'tmux gone, pod still running' : 'pod stopped'
     daemonLog(`[daemon] stale-reaper: reaping session=${s.sessionId} job=${s.jobName} (${reason})`)
+  }
+  for (const s of placeholderStale) {
+    daemonLog(`[daemon] stale-reaper: reaping session=${s.sessionId} job=${s.jobName} (agent never started; placeholder pane past grace)`)
   }
   for (const o of orphanTargets) {
     daemonLog(`[daemon] stale-reaper: reaping session=${o.sessionId} job=${o.jobName} (orphan Job, no backing pod)`)

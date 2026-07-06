@@ -92,6 +92,18 @@ export const env = {
     return Number.isInteger(parsed) && parsed >= 0 ? parsed : 1
   },
 
+  /**
+   * `YAAC_IMAGE_PREWARM` — background per-project image prewarm builds.
+   * Unset → on; empty, "0", and "false" (case-insensitive) → off.
+   */
+  get imagePrewarm(): boolean {
+    const raw = process.env.YAAC_IMAGE_PREWARM
+    if (raw === undefined) return true
+    const v = raw.trim().toLowerCase()
+    if (v === '' || v === '0' || v === 'false') return false
+    return true
+  },
+
   /** `YAAC_NESTED` — set to `1` by the daemon inside a nested (vcluster) session. */
   get nested(): boolean {
     return process.env.YAAC_NESTED === '1'

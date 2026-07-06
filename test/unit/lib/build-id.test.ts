@@ -56,6 +56,28 @@ describe('build-id', () => {
       expect(before).toBe(after)
     })
 
+    it('ignores the runtime-data dirs (dockerfiles/, k8s/) so edits there do not bounce the daemon', async () => {
+      await fs.writeFile(path.join(dir, 'a.txt'), 'hello')
+      const before = await computeBuildId(dir)
+
+      await fs.mkdir(path.join(dir, 'dockerfiles'))
+      await fs.writeFile(path.join(dir, 'dockerfiles', 'Dockerfile.tools'), 'RUN echo v2')
+      await fs.mkdir(path.join(dir, 'k8s', 'proxy'), { recursive: true })
+      await fs.writeFile(path.join(dir, 'k8s', 'proxy', 'server.js'), 'edited')
+      const after = await computeBuildId(dir)
+
+      expect(after).toBe(before)
+    })
+
+    it('still hashes nested dirs that merely share the runtime-data names', async () => {
+      await fs.mkdir(path.join(dir, 'frontend', 'k8s'), { recursive: true })
+      await fs.writeFile(path.join(dir, 'frontend', 'k8s', 'chunk.js'), 'v1')
+      const before = await computeBuildId(dir)
+      await fs.writeFile(path.join(dir, 'frontend', 'k8s', 'chunk.js'), 'v2')
+      const after = await computeBuildId(dir)
+      expect(after).not.toBe(before)
+    })
+
     it('sorts entries so filesystem readdir order does not affect the hash', async () => {
       // Create files in a reversed order; if the implementation didn't
       // sort, the hash would change depending on readdir order.

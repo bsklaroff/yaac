@@ -1,6 +1,7 @@
 import { listActiveSessions } from '@/lib/session/list'
 import { listProjects } from '@/lib/project/list'
 import { listProvisioning } from '@/daemon/provisioning'
+import { listImageBuilds } from '@/daemon/image-builds'
 import { daemonLog } from '@/daemon/log'
 import type { DaemonEvent, DaemonSnapshot } from '@/shared/types'
 
@@ -35,6 +36,7 @@ export async function buildSnapshot(): Promise<DaemonSnapshot> {
     projects,
     provisioning,
     gitAuthFailures: active.gitAuthFailures,
+    imageBuilds: listImageBuilds(),
   }
 }
 

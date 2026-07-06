@@ -12,10 +12,11 @@ import { EventHub, buildSnapshot, serializeEvent } from '@/daemon/events'
 import type { WsLike } from '@/daemon/events'
 import { listActiveSessions } from '@/lib/session/list'
 import { registerProvisioning, removeProvisioning, clearAllProvisioningForTests } from '@/daemon/provisioning'
+import { registerImageBuild, clearAllImageBuildsForTests } from '@/daemon/image-builds'
 import type { DaemonSnapshot } from '@/shared/types'
 
 function emptySnapshot(): DaemonSnapshot {
-  return { sessions: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {} }
+  return { sessions: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {}, imageBuilds: [] }
 }
 
 function snapshotWithProject(slug: string): DaemonSnapshot {
@@ -120,6 +121,20 @@ describe('buildSnapshot', () => {
     expect(Array.isArray(snap.projects)).toBe(true)
     expect(Array.isArray(snap.provisioning)).toBe(true)
     expect(snap.gitAuthFailures).toEqual({})
+    expect(Array.isArray(snap.imageBuilds)).toBe(true)
+  })
+})
+
+describe('buildSnapshot image builds', () => {
+  beforeEach(() => { clearAllImageBuildsForTests() })
+  afterEach(() => { clearAllImageBuildsForTests() })
+
+  it('includes tracked image builds', async () => {
+    registerImageBuild({
+      tag: 'yaac-base:abc', layer: 'base', action: 'build', projectSlug: 'p', reason: 'prewarm',
+    })
+    const snap = await buildSnapshot()
+    expect(snap.imageBuilds.map((b) => b.tag)).toEqual(['yaac-base:abc'])
   })
 })
 

@@ -5,9 +5,12 @@
  * `pnpm build` then `yaac daemon start`, falling back to `yaac daemon
  * restart` when start refuses (live daemon on an older buildId), so
  * the running daemon always matches the CLI's buildId. The build is
- * deterministic (buildId is a content hash of dist/), so the initial
- * run after `yaac daemon start` in initCommands leaves the daemon
- * untouched instead of bouncing it. A failed build skips the
+ * deterministic (buildId is a content hash of the code in dist/ —
+ * dockerfiles/ and k8s/ are runtime-read data the daemon picks up
+ * without a restart, so saves there rebuild dist but leave the daemon
+ * running), so the initial run after `yaac daemon start` in
+ * initCommands leaves the daemon untouched instead of bouncing it. A
+ * failed build skips the
  * (re)start and the watcher waits for the next change. Ctrl-C stops
  * the watcher but leaves the daemon running.
  *

@@ -84,6 +84,43 @@ describe('git helpers', () => {
     expect(tracking.trim()).toBe(`origin/${defaultBranch}`)
   })
 
+  it('serializes concurrent worktree adds on one repo (git config lock race)', async () => {
+    // Tracking setup writes .git/config; unserialized concurrent adds race
+    // its lock and fail with "could not lock config file .git/config" —
+    // observed when a prewarm spare spawn and a user create hit the same
+    // project simultaneously.
+    const cloneDir = path.join(tmpDir, 'clone')
+    await cloneRepo(sourceRepo, cloneDir, null)
+    const defaultBranch = await getDefaultBranch(cloneDir)
+
+    const adds = Array.from({ length: 5 }, (_, i) =>
+      addWorktree(
+        cloneDir,
+        path.join(tmpDir, `wt-${i}`),
+        `agent/concurrent-${i}`,
+        `origin/${defaultBranch}`,
+      ))
+    await expect(Promise.all(adds)).resolves.toBeDefined()
+
+    for (let i = 0; i < 5; i++) {
+      const tracking = await simpleGit(path.join(tmpDir, `wt-${i}`))
+        .raw(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])
+      expect(tracking.trim()).toBe(`origin/${defaultBranch}`)
+    }
+  })
+
+  it('a failed worktree add does not poison later adds on the same repo', async () => {
+    const cloneDir = path.join(tmpDir, 'clone')
+    await cloneRepo(sourceRepo, cloneDir, null)
+    const defaultBranch = await getDefaultBranch(cloneDir)
+
+    const bad = addWorktree(cloneDir, path.join(tmpDir, 'wt-bad'), 'agent/dup', 'origin/does-not-exist')
+    const good = addWorktree(cloneDir, path.join(tmpDir, 'wt-good'), 'agent/ok', `origin/${defaultBranch}`)
+
+    await expect(bad).rejects.toThrow()
+    await expect(good).resolves.toBeUndefined()
+  })
+
   it('fetchOrigin updates remote refs', async () => {
     // Clone the source repo
     const cloneDir = path.join(tmpDir, 'clone')

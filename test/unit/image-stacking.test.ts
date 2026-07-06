@@ -68,8 +68,10 @@ describe('ensureImage layer stacking', () => {
     const paths = await import('@/lib/project/paths')
     paths.setDataDir(dataDir)
     // eslint-disable-next-line no-restricted-syntax
-    const mod = await import('@/lib/container/image-builder')
-    return mod
+    const builder = await import('@/lib/container/image-builder')
+    // eslint-disable-next-line no-restricted-syntax
+    const coordinator = await import('@/lib/container/build-coordinator')
+    return { ...builder, ...coordinator }
   }
 
   it('builds base → tools → user when Dockerfile.user exists', async () => {
@@ -281,6 +283,37 @@ describe('ensureImage layer stacking', () => {
     expect(messages.some((m) => m.startsWith('removing existing image yaac-tools:'))).toBe(true)
     expect(messages.some((m) => m.startsWith('building yaac-tools:') && m.endsWith('(no cache)'))).toBe(true)
     expect(messages.some((m) => m.startsWith('done — final image is yaac-tools:'))).toBe(true)
+  })
+
+  it('resolveImageChain names each dependency step in build order', async () => {
+    const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
+    const configDir = path.join(dataDir, 'projects', 'myproject', 'config')
+    await fs.mkdir(repoPath, { recursive: true })
+    await fs.mkdir(configDir, { recursive: true })
+    await fs.writeFile(path.join(configDir, 'Dockerfile.yaac'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo custom\n')
+    await fs.writeFile(path.join(dataDir, 'Dockerfile.user'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n')
+
+    const { resolveImageChain } = await loadModule()
+    const { layers } = await resolveImageChain('myproject', 'yaac', true)
+    expect(layers.map((l) => l.name)).toEqual(['base', 'tools', 'nestable', 'project', 'user'])
+  })
+
+  it('resolveImageChain names a standalone Dockerfile.yaac as the project step', async () => {
+    const repoPath = path.join(dataDir, 'projects', 'myproject', 'repo')
+    const configDir = path.join(dataDir, 'projects', 'myproject', 'config')
+    await fs.mkdir(repoPath, { recursive: true })
+    await fs.mkdir(configDir, { recursive: true })
+    await fs.writeFile(path.join(configDir, 'Dockerfile.yaac'), 'FROM docker.io/ubuntu:24.04\nRUN echo custom\n')
+
+    const { resolveImageChain } = await loadModule()
+    const { layers } = await resolveImageChain('myproject', 'yaac')
+    expect(layers.map((l) => l.name)).toEqual(['project'])
+  })
+
+  it('buildImage passes tag, dockerfile, build args, and --no-cache to podman', async () => {
+    const { buildImage } = await loadModule()
+    await buildImage('img:tag', '/some/Dockerfile', '/some', { K: 'v' }, { noCache: true })
+    expect(operations).toEqual(['build img:tag [K=v] --no-cache'])
   })
 
 })

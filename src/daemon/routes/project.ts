@@ -8,8 +8,7 @@ import { addProject } from '@/lib/project/add'
 import { removeProject } from '@/lib/project/remove'
 import { writeProjectConfig, removeProjectConfig } from '@/lib/project/local-config'
 import { readProjectDockerfile, writeProjectDockerfile } from '@/lib/project/dockerfile'
-import { rebuildProjectImage } from '@/lib/container/image-builder'
-import { pushImageToRegistry } from '@/lib/k8s/registry'
+import { rebuildProjectImage, pushImageShared } from '@/lib/container/build-coordinator'
 import { toErrorBody } from '@/daemon/errors'
 import { testEnv } from '@/shared/env'
 
@@ -79,7 +78,9 @@ export const projectApp = new Hono()
         // New sessions pull from the in-cluster registry, so the rebuilt
         // image is invisible until it's pushed there.
         await write({ type: 'progress', message: 'Pushing rebuilt image to the local registry...' })
-        await pushImageToRegistry(finalTag)
+        // force: the rebuild changed image bytes under an unchanged
+        // content-hash tag, so the has-tag no-op would skip the real push.
+        await pushImageShared(finalTag, { projectSlug: slug, reason: 'rebuild' }, { force: true })
         await write({ type: 'result', result: { projectSlug: slug, finalTag } })
       } catch (err) {
         const { body: errBody } = toErrorBody(err)

@@ -25,19 +25,31 @@ vi.mock('@/lib/container/image-promoter', () => ({
   ),
 }))
 
-const execFileMock = vi.fn<(cmd: string, args: string[], opts: unknown) => Promise<void>>()
+const execFileMock = vi.fn<(cmd: string, args: string[], opts: unknown) => Promise<void | { stdout: string }>>()
 const spawnMock = vi.fn<(cmd: string, args: string[], opts: unknown) => void>()
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof ChildProcessModule>('node:child_process')
-  return {
-    ...actual,
-    execFile: (cmd: string, args: string[], opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
-      // promisify(execFile) always invokes the 4-arg form with opts.
+  // Real execFile carries util.promisify.custom so promisify(execFile)
+  // resolves `{ stdout, stderr }` — mirror that, or code destructuring
+  // stdout would silently get a bare string under test.
+  const execFile = Object.assign(
+    (cmd: string, args: string[], opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
+      // promisify-less callers invoke the 4-arg form with opts.
       execFileMock(cmd, args, opts).then(
-        () => { cb(null, '', '') },
+        (res) => { cb(null, res && typeof res === 'object' ? res.stdout : '', '') },
         (err: Error) => { cb(err, '', '') },
       )
     },
+    {
+      [Symbol.for('nodejs.util.promisify.custom')]: (cmd: string, args: string[], opts: unknown) =>
+        execFileMock(cmd, args, opts).then(
+          (res) => ({ stdout: res && typeof res === 'object' ? res.stdout : '', stderr: '' }),
+        ),
+    },
+  )
+  return {
+    ...actual,
+    execFile,
     spawn: (cmd: string, args: string[], opts: unknown) => {
       spawnMock(cmd, args, opts)
       return { unref: () => { /* detached stub */ } }
@@ -55,12 +67,14 @@ import type * as podsModule from '@/lib/k8s/pods'
 import {
   isTmuxSessionAlive,
   probeTmuxLiveness,
+  probeAgentPaneState,
   classifyTmuxProbeError,
   cleanupSession,
   cleanupSessionDetached,
   sessionModulesDir,
   gcOrphanEphemeralModuleDirs,
   _clearTmuxAliveCacheForTests,
+  _clearAgentStartedCacheForTests,
 } from '@/lib/session/cleanup'
 import { daemonLog } from '@/daemon/log'
 import { setDataDir } from '@/lib/project/paths'
@@ -173,6 +187,83 @@ describe('isTmuxSessionAlive', () => {
     // Cache is gone — flip the probe and observe that the next call re-runs.
     setProbeResult('p', 's-evict', false)
     expect(await isTmuxSessionAlive('p', 's-evict')).toBe(false)
+  })
+})
+
+describe('probeAgentPaneState', () => {
+  let dataDir: string
+
+  beforeEach(async () => {
+    _clearAgentStartedCacheForTests()
+    execFileMock.mockReset()
+    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-agentpane-'))
+    setDataDir(dataDir)
+  })
+
+  afterEach(async () => {
+    await fs.rm(dataDir, { recursive: true, force: true })
+  })
+
+  function setPaneCommand(slug: string, sid: string, command: string | Error): void {
+    const target = `job/yaac-${slug}-${sid}`
+    execFileMock.mockImplementation((_cmd: string, args: string[]) => {
+      if (args[0] === 'exec' && args.includes(target) && args.includes('display-message')) {
+        return command instanceof Error
+          ? Promise.reject(command)
+          : Promise.resolve({ stdout: `${command}\n` })
+      }
+      return Promise.reject(new Error('unexpected execFile call'))
+    })
+  }
+
+  it('reports the sleep keepalive as placeholder, targeting the first window', async () => {
+    setPaneCommand('p', 's-half', 'sleep')
+    await expect(probeAgentPaneState('p', 's-half')).resolves.toBe('placeholder')
+    expect(execFileMock).toHaveBeenCalledWith(
+      'kubectl',
+      [
+        'exec', '-n', 'yaac', 'job/yaac-p-s-half', '--',
+        'tmux', '-S', '/tmp/yaac-tmux/server', 'display-message', '-p', '-t', 'yaac:^',
+        '#{pane_current_command}',
+      ],
+      expect.objectContaining({ timeout: expect.any(Number) as number }),
+    )
+  })
+
+  it('reports any other pane command as started', async () => {
+    setPaneCommand('p', 's-live', 'claude')
+    await expect(probeAgentPaneState('p', 's-live')).resolves.toBe('started')
+  })
+
+  it('memoizes a started verdict and never re-probes it', async () => {
+    setPaneCommand('p', 's-memo', 'claude')
+    await expect(probeAgentPaneState('p', 's-memo')).resolves.toBe('started')
+    // Even a later sleep-looking probe result can't demote it (respawn -k
+    // killed the placeholder; started is terminal) — and no exec runs.
+    setPaneCommand('p', 's-memo', 'sleep')
+    await expect(probeAgentPaneState('p', 's-memo')).resolves.toBe('started')
+    expect(execFileMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports unknown on a probe failure, and keeps re-probing', async () => {
+    setPaneCommand('p', 's-blip', new Error('exec timed out'))
+    await expect(probeAgentPaneState('p', 's-blip')).resolves.toBe('unknown')
+    setPaneCommand('p', 's-blip', 'sleep')
+    await expect(probeAgentPaneState('p', 's-blip')).resolves.toBe('placeholder')
+  })
+
+  it('cleanupSession evicts the memoized verdict for that session', async () => {
+    setPaneCommand('p', 's-evict2', 'claude')
+    await expect(probeAgentPaneState('p', 's-evict2')).resolves.toBe('started')
+
+    await cleanupSession({
+      jobName: 'yaac-p-s-evict2',
+      projectSlug: 'p',
+      sessionId: 's-evict2',
+    })
+
+    setPaneCommand('p', 's-evict2', 'sleep')
+    await expect(probeAgentPaneState('p', 's-evict2')).resolves.toBe('placeholder')
   })
 })
 

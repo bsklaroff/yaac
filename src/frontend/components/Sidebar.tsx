@@ -5,6 +5,7 @@ import { Collapsible } from '@base-ui/react/collapsible'
 import { ChevronIcon, CloseIcon, LoadingIcon, RestartIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import { BlockedHostsBadge } from '@/frontend/components/BlockedHostsBadge'
 import { GitAuthFailureBadge } from '@/frontend/components/GitAuthFailureBadge'
+import { ImageBuildIndicator } from '@/frontend/components/ImageBuildIndicator'
 import { NewSessionButton } from '@/frontend/components/NewSessionButton'
 import { ProjectActionsMenu } from '@/frontend/components/ProjectActionsMenu'
 import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
@@ -79,6 +80,7 @@ export function Sidebar({
           ? <ProjectActionsMenu slug={projectSlug} />
           : <span className="font-semibold tracking-tight">yaac</span>}
         <div className="ml-auto flex items-center gap-2">
+          <ImageBuildIndicator />
           {!connected && <span className="text-xs text-amber-400/80">reconnecting…</span>}
           {/* Project-wide: the stored credential is the project's, so the
               flag lives on the project header, not on individual sessions. */}
