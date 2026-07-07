@@ -128,3 +128,20 @@ fail to start.
 > node == host). The daemon's control traffic reaches the proxy through a
 > loopback `kubectl port-forward`; nothing yaac deploys listens on host
 > interfaces.
+
+## Deleting the cluster
+
+```sh
+yaac cluster delete        # prompts first; -y / --yes skips the prompt
+```
+
+The teardown counterpart to `setup`. It deletes the kind cluster (which
+takes the node and everything living in it — Cilium, every vcluster, the
+per-project registries, and all node-local storage) and removes the local
+`yaac-registry` container that sits beside it on podman. Running session pods
+stop, but nothing under the yaac data dir is touched: on-disk sessions and
+worktrees survive, and a later `yaac cluster setup` recreates the cluster and
+re-pushes images on demand. It leaves the podman machine and its shared image
+store alone (that's the build engine, not the cluster), and refuses to run
+inside a nested yaac session — there the cluster belongs to the outer
+install.

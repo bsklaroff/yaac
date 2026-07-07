@@ -3,12 +3,14 @@ import {
   CILIUM_CLI_VERSION,
   CILIUM_VERSION,
   ClusterSetupError,
+  confirmDefault,
   defaultMachineResources,
   diagnoseKindPodmanSkew,
   effectiveMachineProvider,
   ensureCiliumCli,
   ensurePodmanMachineSetup,
   isLegacyMachineError,
+  kindEnv,
   LEGACY_KRUNKIT_WRAPPER,
   runClusterSetup,
   type ClusterSetupDeps,
@@ -545,5 +547,27 @@ describe('ensurePodmanMachineSetup', () => {
     expect(err).toBeInstanceOf(ClusterSetupError)
     expect((err as Error).message).toContain('krunkit crashed')
     expect(deps.confirm).not.toHaveBeenCalled()
+  })
+})
+
+describe('kindEnv', () => {
+  it('forwards the host env and forces the podman provider', () => {
+    vi.stubEnv('YAAC_KINDENV_PROBE', 'present')
+    const e = kindEnv()
+    expect(e.KIND_EXPERIMENTAL_PROVIDER).toBe('podman')
+    expect(e.YAAC_KINDENV_PROBE).toBe('present')
+    vi.unstubAllEnvs()
+  })
+})
+
+describe('confirmDefault', () => {
+  it('returns false without prompting when stdin is not a TTY', async () => {
+    const original = process.stdin.isTTY
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true })
+    try {
+      await expect(confirmDefault('proceed?')).resolves.toBe(false)
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { value: original, configurable: true })
+    }
   })
 })

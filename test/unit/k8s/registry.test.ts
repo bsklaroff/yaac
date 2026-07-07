@@ -52,6 +52,7 @@ import {
   registryHost,
   registryReachable,
   registryRef,
+  removeLocalRegistry,
 } from '@/lib/k8s/registry'
 
 const fetchMock = vi.fn<typeof fetch>()
@@ -166,6 +167,16 @@ describe('ensureLocalRegistry', () => {
     fetchMock.mockResolvedValue(fetchResponse({ ok: false, status: 500 }))
     execFileMock.mockRejectedValue(new Error('podman missing'))
     await expect(ensureLocalRegistry()).rejects.toThrow('Failed to start local registry container')
+  })
+})
+
+describe('removeLocalRegistry', () => {
+  it('force-removes the managed registry container, ignoring a missing one', async () => {
+    execFileMock.mockResolvedValue({ stdout: '', stderr: '' })
+    await removeLocalRegistry()
+    expect(execFileMock).toHaveBeenCalledWith(
+      'podman', ['rm', '-f', '--ignore', REGISTRY_CONTAINER_NAME],
+    )
   })
 })
 

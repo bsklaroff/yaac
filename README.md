@@ -100,6 +100,8 @@ yaac cluster <command>
   check             Verify cluster prerequisites (kubectl, registry, hostPath wiring)
   setup [--repair]  Create the kind cluster, registry, and Cilium wiring
                     (--repair re-applies the node fixups without recreating)
+  delete [-y]       Delete the kind cluster and local registry, keeping
+                    on-disk sessions and worktrees (-y skips confirmation)
 
 yaac project <command>
   list              List all projects

@@ -119,6 +119,18 @@ export async function ensureLocalRegistry(): Promise<void> {
 }
 
 /**
+ * Force-remove the yaac-managed local registry container. `--ignore` makes
+ * a missing container a no-op (idempotent teardown), and force-removal
+ * disconnects it from the kind network first. Only ever targets the
+ * container yaac creates by name — a registry someone else runs on the same
+ * address is left untouched. Used by `yaac cluster delete`; its cached image
+ * layers are rebuildable, so losing them only costs re-pushes on next setup.
+ */
+export async function removeLocalRegistry(): Promise<void> {
+  await execFileAsync('podman', ['rm', '-f', '--ignore', REGISTRY_CONTAINER_NAME])
+}
+
+/**
  * Push a locally built image to the registry and return its in-cluster
  * ref. No-ops (returning the ref) when the content-hash tag is already
  * present — except with `force`, for the one flow that changes bytes under

@@ -17,6 +17,7 @@ import { authList } from '@/commands/auth-list'
 import { toolGet } from '@/commands/tool-get'
 import { toolSet } from '@/commands/tool-set'
 import { clusterCheck } from '@/commands/cluster-check'
+import { clusterDelete } from '@/commands/cluster-delete'
 import { clusterSetup } from '@/commands/cluster-setup'
 import { configEdit } from '@/commands/config-edit'
 import { configEditDockerfile } from '@/commands/config-edit-dockerfile'
@@ -130,6 +131,14 @@ cluster
   .option('--repair', 'Re-apply the node fixups that vanish on node/VM restart, without recreating the cluster')
   .action(async (options: { repair?: boolean }) => {
     await clusterSetup(options)
+  })
+
+cluster
+  .command('delete')
+  .description('Delete the kind cluster and local registry (keeps sessions and worktrees)')
+  .option('-y, --yes', 'Skip the confirmation prompt')
+  .action(async (options: { yes?: boolean }) => {
+    await clusterDelete(options)
   })
 
 const project = program

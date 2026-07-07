@@ -99,7 +99,7 @@ function runStreamingDefault(
   })
 }
 
-async function confirmDefault(question: string): Promise<boolean> {
+export async function confirmDefault(question: string): Promise<boolean> {
   if (!process.stdin.isTTY) return false
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
   try {
@@ -135,7 +135,7 @@ const defaultDeps: ClusterSetupDeps = {
  * podman (KIND_EXPERIMENTAL_PROVIDER is kind's own knob for that) so the
  * nodes and the registry share one engine, one network, one lifecycle.
  */
-function kindEnv(): NodeJS.ProcessEnv {
+export function kindEnv(): NodeJS.ProcessEnv {
   // eslint-disable-next-line no-process-env -- forward the full host env to the kind subprocess, adding its provider knob
   return { ...process.env, KIND_EXPERIMENTAL_PROVIDER: 'podman' }
 }
