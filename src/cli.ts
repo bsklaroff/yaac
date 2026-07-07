@@ -26,8 +26,14 @@ import { authFake, FAKE_AUTH_KINDS } from '@/commands/auth-fake'
 import { runDaemon, startDaemon, stopDaemon, restartDaemon, daemonLogs, openWebapp } from '@/daemon/cli'
 import { DEFAULT_DAEMON_PORT } from '@/shared/daemon-port'
 import { getDefaultTool } from '@/lib/project/preferences'
+import { ensureRootfulPodmanHost } from '@/lib/container/runtime'
 import type { AgentTool } from '@/shared/types'
 import type { SessionMonitorOptions } from '@/commands/session-monitor'
+
+// On Linux, yaac drives the rootful podman engine (CONTAINER_HOST). Set it once
+// here so every command — `cluster setup` (kind inherits our env) and the
+// image build/push paths — targets the same engine. No-op on macOS and nested.
+ensureRootfulPodmanHost()
 
 /**
  * Show subcommand options nested under each subcommand in help output.

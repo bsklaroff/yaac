@@ -3,7 +3,7 @@ import net from 'node:net'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { ensurePodmanSocket } from '@/lib/container/runtime'
+import { ensurePodmanSocket, ROOTFUL_PODMAN_SOCKET } from '@/lib/container/runtime'
 
 describe('ensurePodmanSocket', () => {
   let tmpDir: string | null = null
@@ -36,5 +36,21 @@ describe('ensurePodmanSocket', () => {
     await expect(
       ensurePodmanSocket(socketPath, { timeoutMs: 300, pollMs: 25 }),
     ).rejects.toThrow(/did not become ready/)
+  })
+
+  it('refuses to self-start the rootful system socket, pointing at podman.socket', async () => {
+    // The rootful socket is root-owned + systemd socket-activated; yaac can't
+    // spawn it. When it's down we surface the enable/access fix instead of a
+    // doomed `podman system service`. If a rootful podman is actually running
+    // on this host the socket accepts and there's nothing to assert.
+    const accepts = await new Promise<boolean>((resolve) => {
+      const s = net.connect(ROOTFUL_PODMAN_SOCKET)
+      s.once('connect', () => { s.end(); resolve(true) })
+      s.once('error', () => resolve(false))
+    })
+    if (accepts) return
+    await expect(
+      ensurePodmanSocket(ROOTFUL_PODMAN_SOCKET, { timeoutMs: 300, pollMs: 25 }),
+    ).rejects.toThrow(/podman\.socket/)
   })
 })

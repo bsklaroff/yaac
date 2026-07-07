@@ -39,17 +39,27 @@ brew install libkrun/krun/krunkit
 #### Linux
 
 ```sh
-sudo apt install podman nodejs npm   # Debian/Ubuntu 26.04+
+sudo apt install podman nodejs npm acl   # Debian/Ubuntu 26.04+
 sudo npm install -g pnpm
 curl -fsSLo kind "https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-$(dpkg --print-architecture)"
 sudo install -m 755 kind /usr/local/bin/kind && rm kind
+curl -fsSLo kubectl "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/$(dpkg --print-architecture)/kubectl"
+sudo install -m 755 kubectl /usr/local/bin/kubectl && rm kubectl
+
+# yaac uses rootful podman on Linux (the cilium agent needs it); enable the
+# socket and grant your user access:
+sudo systemctl enable --now podman.socket
+sudo setfacl -m u:$USER:x /run/podman
+sudo setfacl -m u:$USER:rw /run/podman/podman.sock
 ```
 
 The apt-shipped podman 5.x works fine on Linux and pairs with stock kind
 v0.32.0; only podman 6.x needs the pinned kind build (see the
 [version-skew note](docs/cluster-setup.md#version-skew-podman-6x-needs-a-patched-kind)).
-Finish with
-[kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/).
+yaac drives the **rootful** podman engine on Linux — kind's node needs the
+cgroup2 root and BPF filesystem that rootless podman doesn't delegate, or the
+cilium agent DaemonSet hangs (see
+[Linux: rootful podman](docs/cluster-setup.md#linux-rootful-podman)).
 
 #### Both platforms
 

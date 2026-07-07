@@ -15,6 +15,7 @@ import {
   runClusterCheck,
   type CheckResult,
 } from '@/lib/k8s/cluster-check'
+import { ensureRootfulPodmanHost, ROOTFUL_PODMAN_SOCKET } from '@/lib/container/runtime'
 import { PACKAGE_ROOT } from '@/shared/paths'
 import { env } from '@/shared/env'
 
@@ -160,6 +161,7 @@ export async function runClusterSetup(
   const versions = await requireBinaries(deps)
 
   if (deps.platform === 'darwin') await ensurePodmanMachineSetup(deps)
+  else await ensureRootfulPodmanReachable(deps)
 
   await preflightKindProvider(deps, versions)
 
@@ -283,6 +285,33 @@ function kindPodmanSkewPossible(podmanVersionOut: string, kindVersionOut: string
  * a harmless read. Diagnose the known skew explicitly instead of letting
  * cluster creation die with a bare exit code.
  */
+/**
+ * The Linux counterpart to `ensurePodmanMachineSetup`: yaac runs kind on the
+ * rootful podman engine (the cilium agent DaemonSet needs the cgroup2 root and
+ * BPF filesystem rootless podman does not delegate — see
+ * docs/cluster-setup.md#linux-rootful-podman). `ensureRootfulPodmanHost` points
+ * our env at the rootful socket; here we verify it actually answers, so `kind
+ * create` fails with an actionable message instead of a bare connection error.
+ * Unlike macOS, yaac can't provision the socket (it's root-owned and
+ * systemd-activated), so this only checks and instructs.
+ */
+async function ensureRootfulPodmanReachable(deps: ClusterSetupDeps): Promise<void> {
+  ensureRootfulPodmanHost()
+  try {
+    await deps.run('podman', ['info', '--format', 'json'])
+  } catch {
+    throw new ClusterSetupError(
+      'Rootful podman is not reachable. yaac runs kind on the rootful podman '
+      + 'engine on Linux (the cilium agent DaemonSet needs the cgroup2 root and '
+      + 'BPF filesystem that rootless podman does not delegate). Enable the '
+      + 'socket and grant your user access:\n'
+      + '  sudo systemctl enable --now podman.socket\n'
+      + '  sudo setfacl -m u:$USER:x /run/podman\n'
+      + `  sudo setfacl -m u:$USER:rw ${ROOTFUL_PODMAN_SOCKET}`,
+    )
+  }
+}
+
 async function preflightKindProvider(deps: ClusterSetupDeps, versions: BinaryVersions): Promise<void> {
   const skew = diagnoseKindPodmanSkew(versions.podman, versions.kind)
   if (skew) throw new ClusterSetupError(skew)

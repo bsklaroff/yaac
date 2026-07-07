@@ -8,10 +8,11 @@ which verifies all of it (the command finishes by running it).
 yaac cluster setup
 ```
 
-The command bootstraps the podman machine on macOS (see below), starts the
-local registry, creates a kind cluster from the bundled
-`k8s/kind-config.yaml`, installs pinned Cilium (`envoyConfig.enabled=true` —
-the session-egress redirect needs it), and applies the node fixups.
+The command bootstraps the podman machine on macOS (see below) — or expects a
+reachable rootful podman on Linux (see below) — starts the local registry,
+creates a kind cluster from the bundled `k8s/kind-config.yaml`, installs pinned
+Cilium (`envoyConfig.enabled=true` — the session-egress redirect needs it), and
+applies the node fixups.
 
 ## The split runtime
 
@@ -51,6 +52,73 @@ manual wiring.
 > (`mv /opt/homebrew/bin/krunkit-real /opt/homebrew/bin/krunkit`); the
 > duplicated flag breaks machine start under podman 6, and
 > `yaac cluster setup` refuses to proceed until it's gone.
+
+## Linux: rootful podman
+
+On Linux, yaac drives the **rootful** podman engine — the same choice as the
+macOS machine, for the same reason. kind's node runs as a container on this
+engine, and the cilium agent needs privileges that only exist in the initial
+user namespace. Under rootless podman the node lives in a user namespace,
+where the kernel denies the agent's `mount-bpf-fs` init container
+(`mount: /sys/fs/bpf: permission denied`), so the agent pod crash-loops in
+init and never leaves phase Pending: `yaac cluster setup` hangs at
+`1 pods of DaemonSet cilium are not ready / pod is pending` and times out.
+Even on kernels new enough to permit that mount in a user namespace (>= 6.9),
+loading the datapath's BPF programs still needs CAP_BPF in the initial user
+namespace — rootful is required either way.
+
+yaac points both halves of the split runtime at the rootful engine by setting
+`CONTAINER_HOST=unix:///run/podman/podman.sock` at startup
+(`ensureRootfulPodmanHost` in `src/lib/container/runtime.ts`): kind inherits it
+(so its podman provider uses rootful) and every `podman build`/`push` call
+targets the same store the cluster pulls from. A `CONTAINER_HOST` you set
+yourself is left untouched.
+
+The rootful socket is root-owned and systemd-activated, so yaac (unprivileged)
+can't start it — enable it once and grant your user access:
+
+```sh
+sudo apt install podman              # Debian/Ubuntu (or dnf on Fedora/RHEL)
+sudo systemctl enable --now podman.socket
+sudo setfacl -m u:$USER:x /run/podman
+sudo setfacl -m u:$USER:rw /run/podman/podman.sock
+```
+
+For access that survives socket recreation, use a `podman.socket` systemd
+drop-in (`sudo systemctl edit podman.socket`) setting `SocketMode=0660` and
+`SocketGroup=` to a group you belong to. `yaac cluster setup` prints these same
+steps if the rootful socket isn't reachable.
+
+> **Nested (in-pod) sessions are exempt:** inside a yaac session
+> (`YAAC_NESTED=1`) the in-pod podman is rootless on its own per-uid socket, so
+> the rootful default does not apply there.
+
+## Linux: VPN and firewall interference
+
+Two host-level blockers that both present as "container is up but its
+published port doesn't answer" (the registry probe on `127.0.0.1:5001`,
+kind's API server on `127.0.0.1:<port>`):
+
+- **VPN firewalls (e.g. Mullvad)** reject traffic to the podman bridge
+  subnets — including loopback-published ports, whose destination is
+  DNAT-rewritten to the container IP before the VPN's filter runs. The
+  signature: `curl` fails instantly ("after 0 ms") while `tcpdump -i podman0`
+  captures nothing. Enable the VPN's LAN exemption (Mullvad:
+  `mullvad lan set allow`). Split tunneling does not help — the blocked
+  traffic is kernel-forwarded, not owned by any process.
+- **ufw hosts: pin netavark's iptables firewall driver.** The nftables
+  driver keeps its rules in a separate table that ufw's default-deny can
+  override, and it has been seen not intercepting loopback-published ports
+  at all (connections land on podman's port-reservation socket and hang):
+
+  ```sh
+  printf '[network]\nfirewall_driver = "iptables"\n' \
+    | sudo tee /etc/containers/containers.conf.d/50-firewall-driver.conf
+  ```
+
+  Switch drivers only with a reboot (or a full teardown of containers and
+  networks) — `podman network reload` across a driver change leaves
+  half-migrated rules behind.
 
 ## Version skew: podman 6.x needs a patched kind
 

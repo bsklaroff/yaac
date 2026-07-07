@@ -6,7 +6,7 @@ import { promisify } from 'node:util'
 import simpleGit from 'simple-git'
 import { setDataDir, getDataDir, projectDir, repoDir, claudeDir } from '@/lib/project/paths'
 import { cloneRepo } from '@/lib/git'
-import { ensurePodmanSocket, getSocketPath } from '@/lib/container/runtime'
+import { ensurePodmanSocket, ensureRootfulPodmanHost, getSocketPath, usesRootfulPodman } from '@/lib/container/runtime'
 import {
   dataDirHash,
   k8sNamespace,
@@ -233,8 +233,11 @@ let _podmanAlive = false
  */
 export async function requirePodman(): Promise<void> {
   if (_podmanAlive) return
+  ensureRootfulPodmanHost()
   if (await podmanAvailable()) { _podmanAlive = true; return }
-  const socketPath = getSocketPath()
+  // The rootful system socket is systemd-managed and can't be self-revived;
+  // only the rootless per-uid socket has a `podman system service` to restart.
+  const socketPath = usesRootfulPodman() ? undefined : getSocketPath()
   if (socketPath) {
     try {
       await ensurePodmanSocket(socketPath, { timeoutMs: 5_000 })

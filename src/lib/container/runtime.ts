@@ -2,6 +2,7 @@ import { execFile, spawn } from 'node:child_process'
 import net from 'node:net'
 import { promisify } from 'node:util'
 import { ensureKubernetes } from '@/lib/k8s/kubectl'
+import { env } from '@/shared/env'
 
 export const execFileAsync = promisify(execFile)
 
@@ -49,18 +50,38 @@ async function ensurePodmanMachine(): Promise<void> {
 }
 
 async function ensurePodmanLinux(): Promise<void> {
+  ensureRootfulPodmanHost()
   try {
     await execFileAsync('podman', ['info', '--format', 'json'])
     return
   } catch { /* fall through — maybe the socket died and we can revive it */ }
 
   const socketPath = getSocketPath()
-  if (socketPath) {
+  // Only the rootless per-uid socket is self-supervised: nothing else restarts
+  // `podman system service`, so revive it. The rootful system socket is
+  // root-owned and socket-activated by systemd — yaac runs unprivileged and
+  // can't start it, so fall straight through to the enable/access instructions.
+  if (socketPath && !usesRootfulPodman()) {
     try {
       await ensurePodmanSocket(socketPath)
       await execFileAsync('podman', ['info', '--format', 'json'])
       return
     } catch { /* revive failed — fall through to install-instructions error */ }
+  }
+
+  if (usesRootfulPodman()) {
+    console.error(
+      '\nRootful podman is not reachable (yaac builds session images on the '
+      + 'rootful podman engine on Linux — the kind node needs the cgroup2 root '
+      + 'and BPF filesystem that rootless podman does not delegate, so the '
+      + 'cilium agent DaemonSet hangs under rootless). Install podman if needed, '
+      + 'then enable the socket and grant your user access:\n\n'
+      + '  sudo apt install podman            # Debian/Ubuntu (or dnf on Fedora)\n'
+      + '  sudo systemctl enable --now podman.socket\n'
+      + '  sudo setfacl -m u:$USER:x /run/podman\n'
+      + `  sudo setfacl -m u:$USER:rw ${ROOTFUL_PODMAN_SOCKET}\n`,
+    )
+    process.exit(1)
   }
 
   console.error(
@@ -72,10 +93,50 @@ async function ensurePodmanLinux(): Promise<void> {
   process.exit(1)
 }
 
+/** The rootful podman system socket, managed by systemd's `podman.socket`. */
+export const ROOTFUL_PODMAN_SOCKET = '/run/podman/podman.sock'
+
+/**
+ * Whether yaac drives the *rootful* podman engine. True on Linux hosts,
+ * mirroring the rootful podman machine we require on macOS: kind's node runs as
+ * a container on this engine, and only a rootful engine delegates the full
+ * cgroup2 root + BPF filesystem the cilium agent DaemonSet needs to attach its
+ * programs — under rootless podman that DaemonSet never goes Ready and
+ * `yaac cluster setup` hangs. Nested (in-pod) sessions keep their own rootless
+ * podman (`YAAC_NESTED`), reached over the per-uid socket below.
+ */
+export function usesRootfulPodman(): boolean {
+  return process.platform !== 'darwin' && !env.nested
+}
+
 export function getSocketPath(): string | undefined {
   if (process.platform === 'darwin') return undefined // podman-mac-helper symlinks to /var/run/docker.sock
+  if (usesRootfulPodman()) return ROOTFUL_PODMAN_SOCKET
   const uid = process.getuid?.()
   return `/run/user/${uid}/podman/podman.sock`
+}
+
+/**
+ * Point the podman CLI — and kind's podman provider, which inherits our env —
+ * at the rootful system socket via `CONTAINER_HOST`, so both the image build
+ * engine and the kind node land on the same rootful podman. Idempotent and
+ * safe to call from every entrypoint; honours a `CONTAINER_HOST` the user set
+ * themselves. No-op on macOS (podman machine) and in nested sessions (the
+ * in-pod podman is rootless).
+ */
+export function ensureRootfulPodmanHost(): void {
+  if (!usesRootfulPodman()) return
+  // eslint-disable-next-line no-process-env -- one global lever so kind + every podman call target the rootful engine
+  if (!process.env.CONTAINER_HOST) process.env.CONTAINER_HOST = `unix://${ROOTFUL_PODMAN_SOCKET}`
+}
+
+/** process.env without the remote-mode vars, so a spawned podman runs locally. */
+function localPodmanEnv(): NodeJS.ProcessEnv {
+  // eslint-disable-next-line no-process-env -- strip remote-mode vars for a local `podman system service`
+  const clone = { ...process.env }
+  delete clone.CONTAINER_HOST
+  delete clone.CONTAINER_CONNECTION
+  return clone
 }
 
 async function socketAccepts(socketPath: string): Promise<boolean> {
@@ -102,10 +163,25 @@ export async function ensurePodmanSocket(
 ): Promise<void> {
   if (await socketAccepts(socketPath)) return
 
+  if (socketPath === ROOTFUL_PODMAN_SOCKET) {
+    // Root-owned and socket-activated by systemd; an unprivileged
+    // `podman system service` can't bind it. Point the operator at the fix
+    // instead of spawning a service that will only fail with permission denied.
+    throw new Error(
+      `Rootful podman socket ${socketPath} is not reachable. Enable it and `
+      + 'grant your user access:\n'
+      + '  sudo systemctl enable --now podman.socket\n'
+      + `  sudo setfacl -m u:$USER:x /run/podman && sudo setfacl -m u:$USER:rw ${socketPath}`,
+    )
+  }
+
   const child = spawn(
     'podman',
     ['system', 'service', '--time=0', `unix://${socketPath}`],
-    { detached: true, stdio: 'ignore' },
+    // A service binds locally — strip CONTAINER_HOST/CONTAINER_CONNECTION so an
+    // ambient rootful-remote setting doesn't push the CLI into remote mode,
+    // which rejects `system service`.
+    { detached: true, stdio: 'ignore', env: localPodmanEnv() },
   )
   // Swallow spawn errors (e.g. ENOENT if podman isn't installed); the poll
   // below will fail with a clearer timeout message than an uncaught 'error'.

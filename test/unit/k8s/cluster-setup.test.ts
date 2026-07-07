@@ -198,6 +198,24 @@ describe('runClusterSetup', () => {
     expect((err as Error).message).not.toContain('kind#4203')
   })
 
+  it('fails with the rootful-podman fix when the rootful socket is unreachable', async () => {
+    const run = vi.fn((file: string, args: string[]) => {
+      if (file === 'podman' && args[0] === '--version') {
+        return Promise.resolve({ stdout: 'podman version 6.0.0\n', stderr: '' })
+      }
+      if (file === 'kind' && args[0] === 'version') {
+        return Promise.resolve({ stdout: 'kind v0.33.0-alpha go1.24.4 linux/arm64\n', stderr: '' })
+      }
+      if (file === 'podman' && args[0] === 'info') {
+        return Promise.reject(Object.assign(new Error('exit 125'), { stderr: 'cannot connect' }))
+      }
+      return Promise.resolve({ stdout: '', stderr: '' })
+    }) as RunMock
+    const err = await runClusterSetup({}, makeDeps({ run, platform: 'linux' })).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ClusterSetupError)
+    expect((err as Error).message).toContain('systemctl enable --now podman.socket')
+  })
+
   it('adds the skew hint to a probe failure when the kind alpha may predate the fix', async () => {
     const run = vi.fn((file: string, args: string[]) => {
       if (file === 'podman' && args[0] === '--version') {

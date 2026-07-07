@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // Mock node:child_process so the promisified execFile is controllable.
 // Must be hoisted before importing the module under test.
@@ -31,10 +31,12 @@ vi.mock('@/lib/k8s/kubectl', () => ({
 
 import {
   ensureContainerRuntime,
+  ensureRootfulPodmanHost,
   execFileAsync,
   getSocketPath,
   imageExists,
   removeImage,
+  usesRootfulPodman,
 } from '@/lib/container/runtime'
 import { ensureKubernetes } from '@/lib/k8s/kubectl'
 
@@ -48,13 +50,82 @@ describe('execFileAsync', () => {
 })
 
 describe('getSocketPath', () => {
-  it('returns the rootless podman socket path for the current uid on linux', () => {
-    if (process.platform === 'darwin') {
-      expect(getSocketPath()).toBeUndefined()
-      return
-    }
+  const origNested = process.env.YAAC_NESTED
+  afterEach(() => {
+    if (origNested === undefined) delete process.env.YAAC_NESTED
+    else process.env.YAAC_NESTED = origNested
+  })
+
+  it('returns undefined on darwin', () => {
+    if (process.platform !== 'darwin') return
+    expect(getSocketPath()).toBeUndefined()
+  })
+
+  it('returns the rootful system socket on a non-nested linux host', () => {
+    if (process.platform === 'darwin') return
+    delete process.env.YAAC_NESTED
+    expect(getSocketPath()).toBe('/run/podman/podman.sock')
+  })
+
+  it('returns the rootless per-uid socket inside a nested session', () => {
+    if (process.platform === 'darwin') return
+    process.env.YAAC_NESTED = '1'
     const uid = process.getuid?.()
     expect(getSocketPath()).toBe(`/run/user/${uid}/podman/podman.sock`)
+  })
+})
+
+describe('usesRootfulPodman', () => {
+  const origNested = process.env.YAAC_NESTED
+  afterEach(() => {
+    if (origNested === undefined) delete process.env.YAAC_NESTED
+    else process.env.YAAC_NESTED = origNested
+  })
+
+  it('is true on a non-nested linux host and false when nested', () => {
+    if (process.platform === 'darwin') {
+      expect(usesRootfulPodman()).toBe(false)
+      return
+    }
+    delete process.env.YAAC_NESTED
+    expect(usesRootfulPodman()).toBe(true)
+    process.env.YAAC_NESTED = '1'
+    expect(usesRootfulPodman()).toBe(false)
+  })
+})
+
+describe('ensureRootfulPodmanHost', () => {
+  const origHost = process.env.CONTAINER_HOST
+  const origNested = process.env.YAAC_NESTED
+  afterEach(() => {
+    if (origHost === undefined) delete process.env.CONTAINER_HOST
+    else process.env.CONTAINER_HOST = origHost
+    if (origNested === undefined) delete process.env.YAAC_NESTED
+    else process.env.YAAC_NESTED = origNested
+  })
+
+  it('sets CONTAINER_HOST to the rootful socket on a non-nested linux host', () => {
+    if (process.platform === 'darwin') return
+    delete process.env.YAAC_NESTED
+    delete process.env.CONTAINER_HOST
+    ensureRootfulPodmanHost()
+    expect(process.env.CONTAINER_HOST).toBe('unix:///run/podman/podman.sock')
+  })
+
+  it('honours a CONTAINER_HOST the user already set', () => {
+    if (process.platform === 'darwin') return
+    delete process.env.YAAC_NESTED
+    process.env.CONTAINER_HOST = 'unix:///custom.sock'
+    ensureRootfulPodmanHost()
+    expect(process.env.CONTAINER_HOST).toBe('unix:///custom.sock')
+  })
+
+  it('is a no-op inside a nested session', () => {
+    if (process.platform === 'darwin') return
+    process.env.YAAC_NESTED = '1'
+    delete process.env.CONTAINER_HOST
+    ensureRootfulPodmanHost()
+    expect(process.env.CONTAINER_HOST).toBeUndefined()
   })
 })
 
