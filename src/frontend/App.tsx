@@ -275,6 +275,7 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
       {sidebarOpen && (
         <Sidebar
           projectSlug={activeProjectSlug}
+          projectRemoteUrl={projects.find((p) => p.slug === activeProjectSlug)?.remoteUrl ?? ''}
           sessions={scoped}
           provisioning={scopedProvisioning}
           connected={connected}

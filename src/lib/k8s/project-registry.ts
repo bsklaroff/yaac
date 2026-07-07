@@ -514,10 +514,24 @@ export async function removeProjectRegistry(projectSlug: string): Promise<void> 
     `${LABEL_PROJECT}=${projectSlug}`,
     `${LABEL_REGISTRY_DATA_DIR_HASH}=${dataDirHash()}`,
   ].join(',')
+
+  // Node-side residue exists only if the registry itself ever did (both
+  // dirs are written by the Deployment's pod and the hosts writer). Probe
+  // before deleting and skip the cleanup pods for registry-less projects:
+  // their cleanup pod can't even start — the mirror image was never pushed,
+  // and a nested session's vcluster pod guard denies the node hostPath
+  // mounts — so each one would sit Pending for runNodeWritePod's full 60s
+  // deadline, stalling every project remove.
+  const existing = await kubectlGetJson<{ items?: unknown[] }>([
+    'get', 'deployment,service', '-l', selector, '-n', k8sNamespace(),
+  ])
+  const hadRegistry = (existing?.items?.length ?? 0) > 0
+
   await kubectlWithRetry([
     'delete', 'deployment,service,networkpolicy,pod', '-l', selector,
     '-n', k8sNamespace(), '--ignore-not-found',
   ])
+  if (!hadRegistry) return
 
   const imageRef = registryRef(REGISTRY_MIRROR_TAG)
   for (const [i, node] of (await listNodeNames()).entries()) {

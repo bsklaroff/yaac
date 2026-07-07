@@ -431,8 +431,11 @@ describe('ensureProjectRegistry', () => {
 })
 
 describe('removeProjectRegistry', () => {
-  function mockClusterWithPodPhase(phase: string): void {
+  function mockClusterWithPodPhase(phase: string, hadRegistry = true): void {
     mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+      if (args[1] === 'deployment,service') {
+        return Promise.resolve({ items: hadRegistry ? [{}] : [] })
+      }
       if (args[1] === 'nodes') return Promise.resolve(NODE_LIST)
       if (args[1] === 'pod') return Promise.resolve({ status: { phase } })
       return Promise.resolve(null)
@@ -462,6 +465,22 @@ describe('removeProjectRegistry', () => {
     mockClusterWithPodPhase('Failed')
     await expect(removeProjectRegistry('demo')).resolves.toBeUndefined()
   })
+
+  it('skips the node cleanup pods when the project never had a registry', async () => {
+    mockClusterWithPodPhase('Succeeded', false)
+    await removeProjectRegistry('demo')
+    // The by-selector delete still runs (reaps stray pods from crashes)...
+    expect(mockRetry).toHaveBeenCalledWith([
+      'delete', 'deployment,service,networkpolicy,pod',
+      '-l', `app=${REGISTRY_APP_LABEL},yaac.project=demo,${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16`,
+      '-n', 'test-ns', '--ignore-not-found',
+    ])
+    // ...but no cleanup pod is applied and no nodes are listed: a pod that
+    // can't start (image never mirrored / nested pod guard) would burn the
+    // full runNodeWritePod deadline and stall project remove for 60s.
+    expect(mockApply).not.toHaveBeenCalled()
+    expect(mockGetJson).not.toHaveBeenCalledWith(['get', 'nodes'])
+  })
 })
 
 describe('gcOrphanProjectRegistries', () => {
@@ -486,6 +505,7 @@ describe('gcOrphanProjectRegistries', () => {
           ],
         })
       }
+      if (args[1] === 'deployment,service') return Promise.resolve({ items: [{}] })
       if (args[1] === 'nodes') return Promise.resolve(NODE_LIST)
       if (args[1] === 'pod') return Promise.resolve({ status: { phase: 'Succeeded' } })
       return Promise.resolve(null)

@@ -55,12 +55,16 @@ function relativeAge(createdAt: string): string {
 
 export function Sidebar({
   projectSlug,
+  projectRemoteUrl,
   sessions,
   provisioning,
   connected,
   gitAuthFailures,
 }: {
   projectSlug: string | null
+  /** Active project's git remote ('' until the snapshot hydrates) — the
+   *  remove-project dialog's type-to-confirm text. */
+  projectRemoteUrl: string
   sessions: SessionListEntry[]
   provisioning: ProvisioningSessionEntry[]
   connected: boolean
@@ -77,7 +81,7 @@ export function Sidebar({
     <aside className="flex h-full w-64 flex-col text-text">
       <div className="flex h-11 shrink-0 items-center gap-2 pl-4 pr-2">
         {projectSlug
-          ? <ProjectActionsMenu slug={projectSlug} />
+          ? <ProjectActionsMenu slug={projectSlug} remoteUrl={projectRemoteUrl} />
           : <span className="font-semibold tracking-tight">yaac</span>}
         <div className="ml-auto flex items-center gap-2">
           <ImageBuildIndicator />

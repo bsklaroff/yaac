@@ -12,7 +12,11 @@ const ITEM = 'flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text
  * The project name doubles as the actions trigger — clicking it (with a
  * whole-label hover state) opens the menu. Currently: remove (with confirm).
  */
-export function ProjectActionsMenu({ slug }: { slug: string }): JSX.Element {
+export function ProjectActionsMenu({ slug, remoteUrl }: {
+  slug: string
+  /** The project's git remote — removal requires typing it back. */
+  remoteUrl: string
+}): JSX.Element {
   const setActiveProject = useUiStore((s) => s.setActiveProject)
   const [confirm, setConfirm] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -55,6 +59,7 @@ export function ProjectActionsMenu({ slug }: { slug: string }): JSX.Element {
         busy={busy}
         title="Remove project?"
         description={`Removes "${slug}" and all its sessions and worktrees. This can't be undone.`}
+        confirmText={remoteUrl}
         confirmLabel="Remove"
         onConfirm={onConfirm}
       />
