@@ -2160,6 +2160,13 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
 // in-memory map keyed by host and rewrite the file before each ssh-add /
 // ssh-add -D invocation; the agent itself stores the constraint, so the
 // file's later contents don't matter.
+//
+// The file path is always passed explicitly via `-H`: ssh-add's default
+// known_hosts lookup expands `~` through getpwuid(), NOT $HOME, and the
+// proxy's runtime uid (the daemon's host uid, set by runAsUser) either maps
+// to the image's `node` user — whose /home/node we never write — or to no
+// passwd entry at all. Both make the default lookup fail with "No host keys
+// found for destination".
 
 // HOME (deployment) and SSH_AUTH_SOCK (entrypoint.sh) are required env the
 // proxy is always launched with; a missing value means a broken
@@ -2170,10 +2177,10 @@ function requireEnv(name: string): string {
   return value
 }
 
-// $HOME/.ssh so the file we write matches the known_hosts ssh-add reads
-// (ssh-add resolves ~ from HOME). The deployment sets HOME to a
-// runtime-uid-writable mount because the proxy runs as the daemon's host
-// uid, which need not own the image's /home/node.
+// $HOME/.ssh — a runtime-uid-writable mount the deployment points HOME at,
+// because the proxy runs as the daemon's host uid, which need not own the
+// image's /home/node. ssh-add never resolves this path itself; it gets it
+// via -H (see above).
 const SSH_HOME = path.join(requireEnv('HOME'), '.ssh')
 const KNOWN_HOSTS_FILE = path.join(SSH_HOME, 'known_hosts')
 const knownHostsByHost = new Map<string, string>()
@@ -2192,7 +2199,7 @@ function sshAddKey(host: string, keyPem: string, knownHostsEntry: string): Promi
   knownHostsByHost.set(host, knownHostsEntry)
   writeKnownHostsFile()
   return new Promise((resolve, reject) => {
-    const child = spawn('ssh-add', ['-h', host, '-'], {
+    const child = spawn('ssh-add', ['-H', KNOWN_HOSTS_FILE, '-h', host, '-'], {
       env: {
         ...process.env,
         SSH_AUTH_SOCK: AGENT_SOCK,

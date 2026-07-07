@@ -326,7 +326,9 @@ export function buildProxyDeploymentManifest(
                 // point HOME at a dedicated emptyDir (writable via fsGroup)
                 // rather than the CA-bearing /data, keeping ssh material
                 // (only public known_hosts) out of the persisted secret
-                // dir. ssh-add and the known_hosts writer resolve ~ here.
+                // dir. Only the proxy's known_hosts writer resolves HOME;
+                // ssh-add expands ~ via getpwuid (not $HOME), so the proxy
+                // hands it the file explicitly with -H.
                 { name: 'HOME', value: '/home/proxy' },
                 ...(env.useTor ? [{ name: 'USE_TOR', value: '1' }] : []),
                 // Split-horizon DNS: the top-level proxy resolves internal

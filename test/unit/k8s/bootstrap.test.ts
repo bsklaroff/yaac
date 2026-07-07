@@ -263,8 +263,9 @@ describe('buildProxyDeploymentManifest', () => {
       name: 'PROXY_AUTH_SECRET',
       valueFrom: { secretKeyRef: { name: PROXY_AUTH_SECRET_NAME, key: 'secret' } },
     })
-    // HOME points at the emptyDir mount so ssh-add/known_hosts work when
-    // the proxy runs as the daemon uid (not the image's node user).
+    // HOME points at the emptyDir mount so the proxy's known_hosts writer
+    // works when it runs as the daemon uid (not the image's node user);
+    // ssh-add itself gets the known_hosts path via -H, never from HOME.
     expect(c.env).toContainEqual({ name: 'HOME', value: '/home/proxy' })
     expect(c.readinessProbe.httpGet).toEqual({ path: '/healthz', port: PROXY_PORT })
   })
