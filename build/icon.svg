@@ -6,9 +6,7 @@
     </linearGradient>
   </defs>
   <rect x="64" y="64" width="896" height="896" rx="205" ry="205" fill="url(#bg)"/>
-  <!-- terminal prompt: chevron > -->
-  <polyline points="372,388 588,536 372,684" fill="none" stroke="#5eead4"
-    stroke-width="62" stroke-linecap="round" stroke-linejoin="round"/>
-  <!-- cursor: underscore _ -->
-  <rect x="612" y="632" width="232" height="56" rx="28" fill="#5eead4"/>
+  <!-- letter Y -->
+  <path d="M 356 344 L 512 548 L 668 344 M 512 548 L 512 706" fill="none"
+    stroke="#5eead4" stroke-width="66" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
