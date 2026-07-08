@@ -98,7 +98,7 @@ export function SessionView({
   const sid = session?.sessionId ?? null
   // Project-wide flag; shown in the header because a rejected credential
   // fails git fetch/push inside this session too.
-  const gitAuthFailures = (session && snapshot?.gitAuthFailures[session.projectSlug]) || []
+  const gitAuthFailures = (session && snapshot?.gitAuthFailures?.[session.projectSlug]) || []
 
   // The provisioning placeholder owns the main pane only when its row is the
   // selected one (and no real session of that id exists yet) — so it never
