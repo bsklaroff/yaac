@@ -279,6 +279,44 @@ Small, and mostly additive:
 - Whether a future Quit offers "keep nudging in the background" vs. today's
   Quit = stop the daemon.
 
+## Phase 3 packaging — concrete runway (from the spike)
+
+Empirical findings that pin down the packaging work:
+
+- **The daemon bundle externalizes its deps.** `tsup` (`tsup.config.ts`)
+  leaves every production `dependency` external, so `dist/cli.js` imports
+  `hono`, `zod`, `simple-git`, `smol-toml`, `yaml`, `commander`, `@hono/*`,
+  and `@lydell/node-pty` from `node_modules` at runtime. The packaged app must
+  ship a production `node_modules` next to `dist/cli.js` — not just the bundle.
+- **node-pty needs no compile.** `@lydell/node-pty` loads its native binary
+  from a prebuilt platform optional-dependency (`@lydell/node-pty-darwin-arm64`,
+  etc.) — the esbuild model. No `electron-rebuild`, no node-gyp; just ship the
+  arch-matching platform package. Its ABI is standard Node, so it pairs with
+  the bundled standalone Node (below), not Electron.
+- **The daemon runs on a bundled standalone Node, not Electron.** So the
+  daemon's `node_modules` and `dist/` must be **unpacked plain files**
+  (`extraResources`), never inside `app.asar` (a standalone Node can't read
+  asar). `PACKAGE_ROOT` already resolves relative to `dist/cli.js` under
+  `YAAC_BUNDLED=true`, and the daemon serves the SPA from `dist/frontend` in
+  the bundle — so the packaged app needs no Vite (main.ts's `rendererBase`
+  defaults to the daemon origin).
+
+Build pipeline:
+
+1. `pnpm build` → `dist/` (cli.js + frontend + dockerfiles + k8s + .build-id).
+2. Stage a production-only `node_modules` for the daemon's runtime deps
+   (`pnpm deploy`, or a prod install of just those deps) beside `dist/`.
+3. Stage a standalone Node (the pinned 22.22.2) for the target arch.
+4. electron-builder: `dist-electron/**` (the ESM main) in the app; the staged
+   daemon dir + Node as `extraResources`; `mac.target: dir` + unsigned for a
+   first double-clickable `.app`. `.dmg` + signing/notarization → Phase 4.
+5. main.ts already derives `bundledCliEntry` from `process.resourcesPath`;
+   point the daemon spawn at the staged Node + `daemon/dist/cli.js`.
+
+Verification gap: a packaged `.app` launch (Gatekeeper, arch match, node-pty
+load) can only be fully confirmed by running the built app — a `--dir` build
+plus a headless launch-check (as in the Phase 0/1 smoke) is the loop.
+
 ## Phased delivery
 
 - **Phase 0 — spike.** Bare Electron main: hydrate PATH, spawn the daemon
