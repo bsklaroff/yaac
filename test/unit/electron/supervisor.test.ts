@@ -113,4 +113,22 @@ describe('ensureDaemonRunning', () => {
     }))
     expect(runDaemonStart).toHaveBeenCalledWith('restart')
   })
+
+  it('reuses a live matching daemon in attach mode', async () => {
+    const runDaemonStart = vi.fn(() => Promise.resolve())
+    const result = await ensureDaemonRunning(deps({ allowStart: false, runDaemonStart }))
+    expect(runDaemonStart).not.toHaveBeenCalled()
+    expect(result.port).toBe(8787)
+  })
+
+  it('throws in attach mode when a start would be needed', async () => {
+    const runDaemonStart = vi.fn(() => Promise.resolve())
+    await expect(ensureDaemonRunning(deps({
+      readLock: () => Promise.resolve(null),
+      isLockLive: () => Promise.resolve(false),
+      allowStart: false,
+      runDaemonStart,
+    }))).rejects.toThrow(/attach mode/)
+    expect(runDaemonStart).not.toHaveBeenCalled()
+  })
 })

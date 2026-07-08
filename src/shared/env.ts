@@ -143,6 +143,19 @@ export const env = {
   get electronNodeBin(): string {
     return process.env.YAAC_ELECTRON_NODE_BIN ?? 'node'
   },
+
+  /**
+   * `YAAC_ELECTRON_ATTACH` — attach to an already-running daemon without
+   * owning its lifecycle: reuse only (never start or restart), and never stop
+   * it on quit. For pointing the desktop shell at a live daemon (e.g. a
+   * preview) without disturbing it. Unset/empty/"0"/"false" → off.
+   */
+  get electronAttach(): boolean {
+    const raw = process.env.YAAC_ELECTRON_ATTACH
+    if (raw === undefined) return false
+    const v = raw.trim().toLowerCase()
+    return !(v === '' || v === '0' || v === 'false')
+  },
 }
 
 /** Set only by the test harness (a few are read in prod via their defaults). */

@@ -120,13 +120,17 @@ export interface EnsureDaemonDeps {
   isLockLive: (lock: DaemonLock) => Promise<boolean>
   runDaemonStart: (mode: 'start' | 'restart') => Promise<void>
   waitForLiveLock: (timeoutMs: number) => Promise<DaemonLock>
+  /** When false, attach-only: reuse a live matching daemon or throw — never
+   *  start or restart one. Defaults to true. */
+  allowStart?: boolean
   log?: (msg: string) => void
 }
 
 /**
  * Ensure a usable daemon is running and return its lock. Reuses a live,
  * matching daemon; otherwise starts (or restarts) one and waits for the
- * fresh lock to appear.
+ * fresh lock to appear. With `allowStart: false` it attaches only — reusing
+ * a compatible daemon or throwing rather than touching its lifecycle.
  */
 export async function ensureDaemonRunning(deps: EnsureDaemonDeps): Promise<DaemonLock> {
   const buildId = await deps.readBuildId()
@@ -135,6 +139,12 @@ export async function ensureDaemonRunning(deps: EnsureDaemonDeps): Promise<Daemo
   const action = decideDaemonAction(lock, live, buildId)
   deps.log?.(`[electron] daemon action: ${action}`)
   if (action === 'reuse') return lock as DaemonLock
+  if (deps.allowStart === false) {
+    throw new Error(
+      `attach mode: no reusable daemon (would need to '${action}'). `
+      + 'Start one with `yaac daemon start` on a matching build.',
+    )
+  }
   await deps.runDaemonStart(action)
   const fresh = await deps.waitForLiveLock(5000)
   deps.log?.(`[electron] daemon ready pid=${fresh.pid} port=${fresh.port}`)

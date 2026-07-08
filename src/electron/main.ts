@@ -40,6 +40,9 @@ let daemonLock: DaemonLock | null = null
 let quitting = false
 let eventsStop = false
 const monitor = new AttentionMonitor()
+// Attach mode reuses a running daemon without owning it: never start/restart,
+// never stop it on quit. Set by YAAC_ELECTRON_ATTACH.
+const attach = env.electronAttach
 
 // --- daemon environment + spawning -----------------------------------------
 
@@ -227,6 +230,7 @@ async function boot(): Promise<void> {
     isLockLive,
     runDaemonStart,
     waitForLiveLock,
+    allowStart: !attach,
     log: (m) => console.log(m),
   })
   createTray()
@@ -252,7 +256,8 @@ app.on('window-all-closed', () => { /* intentionally no quit */ })
 app.on('before-quit', () => {
   quitting = true
   eventsStop = true
-  if (daemonLock) {
+  // Attach mode never owns the daemon, so it leaves it running on quit.
+  if (!attach && daemonLock) {
     try {
       process.kill(daemonLock.pid, 'SIGTERM')
     } catch {
