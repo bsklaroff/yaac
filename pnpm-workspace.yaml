@@ -2,6 +2,7 @@ packages:
   - "k8s/proxy"
 allowBuilds:
   cpu-features: false
+  electron: true
   esbuild: false
   protobufjs: false
   ssh2: false
