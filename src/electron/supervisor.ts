@@ -37,6 +37,9 @@ export interface DaemonStartContext {
   execPath: string
   /** Absolute path to the bundled CLI entry (`dist/cli.js`). */
   bundledCliEntry: string
+  /** Packaged only: absolute path to the bundled standalone Node binary the
+   *  daemon runs on (keeps node-pty on the standard Node ABI). */
+  nodeRuntime?: string
   /** Dev only: absolute path to `node_modules/tsx/dist/cli.mjs`, or null. */
   tsxCli: string | null
   /** Dev only: absolute path to `src/cli.ts`. */
@@ -72,10 +75,14 @@ export function resolveDaemonStartCommand(
   }
 
   if (ctx.bundled) {
-    // Phase 0 stopgap: run the bundled CLI through Electron's own Node
-    // (`ELECTRON_RUN_AS_NODE`). Phase 3 swaps `execPath` for a bundled
-    // standalone Node so the daemon's native node-pty stays on the
-    // standard ABI — see plans/electron-app.md ("Packaging & runtime").
+    // Packaged: run the daemon on the bundled standalone Node so its native
+    // node-pty stays on the standard Node ABI (see plans/electron-app.md,
+    // "Packaging & runtime"). Fall back to Electron-as-Node only if the
+    // runtime is somehow absent — that path can't load node-pty, but it's
+    // better than failing to spawn at all.
+    if (ctx.nodeRuntime) {
+      return { bin: ctx.nodeRuntime, args: [ctx.bundledCliEntry, ...sub], extraEnv: {} }
+    }
     return {
       bin: ctx.execPath,
       args: [ctx.bundledCliEntry, ...sub],

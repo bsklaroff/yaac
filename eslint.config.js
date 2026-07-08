@@ -3,7 +3,7 @@ import stylistic from '@stylistic/eslint-plugin'
 import tseslint from 'typescript-eslint'
 
 export default tseslint.config(
-  { ignores: ['dist', 'dist-electron'] },
+  { ignores: ['dist', 'dist-electron', 'dist-app', 'staging'] },
   {
     extends: [
       ...tseslint.configs.recommendedTypeChecked,

@@ -1,6 +1,8 @@
 node_modules/
 dist/
 dist-electron/
+dist-app/
+staging/
 .env
 .eslintcache
 

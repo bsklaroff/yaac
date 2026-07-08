@@ -76,9 +76,11 @@ function daemonContext(): DaemonStartContext {
     override: env.electronDaemonCmd,
     bundled: app.isPackaged,
     execPath: process.execPath,
-    // Packaged layout is finalized in Phase 3; this is the conventional
-    // electron-builder resources location for the bundled CLI.
-    bundledCliEntry: path.join(process.resourcesPath, 'app', 'dist', 'cli.js'),
+    // Packaged layout (electron-builder.yml): the daemon + its production
+    // node_modules ship unpacked under Resources/daemon, and a standalone
+    // Node under Resources/node.
+    bundledCliEntry: path.join(process.resourcesPath, 'daemon', 'dist', 'cli.js'),
+    nodeRuntime: path.join(process.resourcesPath, 'node', 'node'),
     tsxCli: existsSync(tsxCli) ? tsxCli : null,
     devCliEntry: path.join(repoRoot, 'src', 'cli.ts'),
     nodeBin: env.electronNodeBin,
@@ -121,6 +123,19 @@ async function waitForLiveLock(timeoutMs: number): Promise<DaemonLock> {
 
 function rendererBase(port: number): string {
   return env.electronRendererUrl ?? `http://127.0.0.1:${port}/`
+}
+
+/**
+ * The build id the app compares against the daemon's lock. Packaged, the app's
+ * own PACKAGE_ROOT (Resources/app) has no `.build-id` — read the bundled
+ * daemon's instead, which is exactly what its spawned daemon reports, so the
+ * reuse/restart decision is consistent. In dev, the default (repo root /
+ * YAAC_BUILD_ID) applies.
+ */
+function readAppBuildId(): Promise<string> {
+  return app.isPackaged
+    ? readBuildId(path.join(process.resourcesPath, 'daemon', 'dist'))
+    : readBuildId()
 }
 
 // --- window -----------------------------------------------------------------
@@ -225,7 +240,7 @@ function startEventsMonitor(lock: DaemonLock): void {
 
 async function boot(): Promise<void> {
   daemonLock = await ensureDaemonRunning({
-    readBuildId,
+    readBuildId: readAppBuildId,
     readLock,
     isLockLive,
     runDaemonStart,

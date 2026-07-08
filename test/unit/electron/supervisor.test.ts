@@ -51,7 +51,15 @@ describe('resolveDaemonStartCommand', () => {
     const cmd = resolveDaemonStartCommand('restart', baseCtx())
     expect(cmd.args.slice(-2)).toEqual(['daemon', 'restart'])
   })
-  it('runs the bundled CLI via Electron-as-Node when packaged', () => {
+  it('runs the bundled CLI on the bundled standalone Node when packaged', () => {
+    const cmd = resolveDaemonStartCommand('start', baseCtx({
+      bundled: true, nodeRuntime: '/app/node/node',
+    }))
+    expect(cmd.bin).toBe('/app/node/node')
+    expect(cmd.args).toEqual(['/app/dist/cli.js', 'daemon', 'start'])
+    expect(cmd.extraEnv).toEqual({})
+  })
+  it('falls back to Electron-as-Node when packaged without a bundled Node', () => {
     const cmd = resolveDaemonStartCommand('start', baseCtx({ bundled: true }))
     expect(cmd.bin).toBe('/path/to/electron')
     expect(cmd.args).toEqual(['/app/dist/cli.js', 'daemon', 'start'])

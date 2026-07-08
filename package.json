@@ -34,6 +34,8 @@
     "frontend:build": "vite build",
     "electron:build": "tsup --config tsup.electron.config.ts",
     "electron:dev": "pnpm electron:build && YAAC_BUILD_ID=dev YAAC_ELECTRON_RENDERER_URL=http://localhost:1420/ electron .",
+    "app:stage": "tsx scripts/stage-app.ts",
+    "app:build": "pnpm build && pnpm electron:build && pnpm app:stage && electron-builder --config electron-builder.yml",
     "prepare": "./setup-git.sh",
     "prepublishOnly": "pnpm build"
   },
