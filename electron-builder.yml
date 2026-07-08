@@ -19,6 +19,7 @@ afterPack: ./scripts/after-pack.cjs
 mac:
   target:
     - dir
+  icon: build/icon.png
   # Unsigned for a local double-clickable build; signing + notarization + .dmg
   # are Phase 4.
   identity: null
