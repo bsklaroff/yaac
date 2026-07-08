@@ -1,7 +1,8 @@
 import path from 'node:path'
 import { existsSync } from 'node:fs'
 import { spawn, execFileSync } from 'node:child_process'
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, Tray, Menu, Notification, nativeImage } from 'electron'
+import WebSocket from 'ws'
 import { readLock, isLockLive, type DaemonLock } from '@/shared/lock'
 import { readBuildId } from '@/shared/build-id'
 import {
@@ -11,17 +12,36 @@ import {
 } from '@/electron/supervisor'
 import { fetchBootstrapCode, buildAuthedRendererUrl } from '@/electron/auth'
 import { parseNulEnv } from '@/electron/shell-env'
+import {
+  AttentionMonitor,
+  parseSnapshotMessage,
+  badgeText,
+  notificationFor,
+  type WaitingSession,
+} from '@/electron/attention'
+import { buildTrayBitmap } from '@/electron/tray-icon'
 import { env } from '@/shared/env'
 
 /**
- * yaac desktop — Phase 0 spike (see plans/electron-app.md).
+ * yaac desktop — Phase 1 (see plans/electron-app.md).
  *
- * A thin shell: ensure the daemon is running, auto-authenticate, and load
- * the existing webapp in a native window. Tray, notifications, and packaging
- * are later phases. All substantive logic lives in the sibling modules
- * (supervisor / auth / shell-env) so it stays headless-unit-testable; this
- * file is just the wiring that needs the Electron + child-process runtime.
+ * A thin persistent shell: supervise the daemon, load the webapp with auth
+ * wired internally, and add the native attention signals a browser tab can't —
+ * a tray, a dock badge, and OS notifications for sessions that go "waiting".
+ * Closing the window hides to the tray (the daemon keeps running); an explicit
+ * quit stops the daemon. Substantive logic lives in the sibling modules
+ * (supervisor / auth / attention / tray-icon) so it stays headless-testable;
+ * this file is the Electron + child-process wiring.
  */
+
+let win: BrowserWindow | null = null
+let tray: Tray | null = null
+let daemonLock: DaemonLock | null = null
+let quitting = false
+let eventsStop = false
+const monitor = new AttentionMonitor()
+
+// --- daemon environment + spawning -----------------------------------------
 
 /**
  * The daemon shells out to kubectl/podman/kind/tmux/brew. A Finder-launched
@@ -100,8 +120,108 @@ function rendererBase(port: number): string {
   return env.electronRendererUrl ?? `http://127.0.0.1:${port}/`
 }
 
+// --- window -----------------------------------------------------------------
+
+function createWindow(url: string): void {
+  win = new BrowserWindow({
+    width: 1280,
+    height: 860,
+    backgroundColor: '#0b0b0d',
+    webPreferences: { contextIsolation: true, nodeIntegration: false },
+  })
+  win.on('close', (e) => {
+    // Close hides to the tray; the daemon keeps running and notifications keep
+    // firing. A real quit sets `quitting` (tray Quit / Cmd-Q → before-quit).
+    if (!quitting) {
+      e.preventDefault()
+      win?.hide()
+    }
+  })
+  win.on('closed', () => { win = null })
+  void win.loadURL(url)
+}
+
+/**
+ * Show the window, recreating it if it was destroyed. Recreation needs a fresh
+ * bootstrap code because the previous one was single-use.
+ */
+async function showWindow(): Promise<void> {
+  if (win) {
+    win.show()
+    win.focus()
+    return
+  }
+  if (!daemonLock) return
+  const code = await fetchBootstrapCode(daemonLock.port, daemonLock.secret)
+  createWindow(buildAuthedRendererUrl(rendererBase(daemonLock.port), code))
+}
+
+// --- tray + attention -------------------------------------------------------
+
+function createTray(): void {
+  const { data, width, height } = buildTrayBitmap(36)
+  const icon = nativeImage.createFromBitmap(data, { width, height, scaleFactor: 2 })
+  icon.setTemplateImage(true)
+  tray = new Tray(icon)
+  tray.on('click', () => void showWindow())
+  updateTray(0)
+}
+
+function updateTray(waitingCount: number): void {
+  if (!tray) return
+  const status = waitingCount > 0 ? `${waitingCount} waiting for input` : 'No sessions waiting'
+  tray.setToolTip(waitingCount > 0 ? `yaac — ${waitingCount} waiting` : 'yaac')
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Open yaac', click: () => void showWindow() },
+    { type: 'separator' },
+    { label: status, enabled: false },
+    { type: 'separator' },
+    { label: 'Quit yaac', click: () => app.quit() },
+  ]))
+}
+
+function applyAttention(waitingCount: number, toNotify: WaitingSession[]): void {
+  if (process.platform === 'darwin') app.dock?.setBadge(badgeText(waitingCount))
+  updateTray(waitingCount)
+  if (Notification.isSupported()) {
+    for (const s of toNotify) {
+      const { title, body } = notificationFor(s)
+      const n = new Notification({ title, body })
+      n.on('click', () => void showWindow())
+      n.show()
+    }
+  }
+}
+
+/**
+ * Subscribe the main process to the daemon's `/events` stream (bearer auth
+ * from the lock) so the badge + notifications update even with the window
+ * closed. Reconnects on drop until quit.
+ */
+function startEventsMonitor(lock: DaemonLock): void {
+  const open = (): void => {
+    const ws = new WebSocket(`ws://127.0.0.1:${lock.port}/events`, {
+      headers: { authorization: `Bearer ${lock.secret}` },
+    })
+    ws.on('message', (data: Buffer | ArrayBuffer | Buffer[]) => {
+      const text = Array.isArray(data)
+        ? Buffer.concat(data).toString('utf8')
+        : Buffer.isBuffer(data) ? data.toString('utf8') : Buffer.from(data).toString('utf8')
+      const snap = parseSnapshotMessage(text)
+      if (!snap) return
+      const { waitingCount, toNotify } = monitor.update(snap)
+      applyAttention(waitingCount, toNotify)
+    })
+    ws.on('close', () => { if (!eventsStop) setTimeout(open, 1500) })
+    ws.on('error', () => { /* the close handler schedules a reconnect */ })
+  }
+  open()
+}
+
+// --- lifecycle --------------------------------------------------------------
+
 async function boot(): Promise<void> {
-  const lock = await ensureDaemonRunning({
+  daemonLock = await ensureDaemonRunning({
     readBuildId,
     readLock,
     isLockLive,
@@ -109,27 +229,34 @@ async function boot(): Promise<void> {
     waitForLiveLock,
     log: (m) => console.log(m),
   })
-  const code = await fetchBootstrapCode(lock.port, lock.secret)
-  const url = buildAuthedRendererUrl(rendererBase(lock.port), code)
-
-  const win = new BrowserWindow({
-    width: 1280,
-    height: 860,
-    backgroundColor: '#0b0b0d',
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  })
-  await win.loadURL(url)
+  createTray()
+  startEventsMonitor(daemonLock)
+  const code = await fetchBootstrapCode(daemonLock.port, daemonLock.secret)
+  createWindow(buildAuthedRendererUrl(rendererBase(daemonLock.port), code))
 }
 
 void app.whenReady().then(boot).catch((err: unknown) => {
   console.error('[electron] failed to start:', err)
 })
 
-// Phase 1 replaces this with a tray + close-to-tray (the daemon stays a
-// persistent background service). For the spike, quit when the window closes.
-app.on('window-all-closed', () => {
-  app.quit()
+// Reopen from the dock (macOS) or a second launch.
+app.on('activate', () => void showWindow())
+
+// Do NOT quit when the window closes — stay alive in the tray so the daemon
+// keeps running and attention signals keep firing.
+app.on('window-all-closed', () => { /* intentionally no quit */ })
+
+// An explicit quit (tray Quit / Cmd-Q) stops the daemon. Agent sessions are
+// Kubernetes Jobs, so they survive — they just stop being watched until the
+// app reopens.
+app.on('before-quit', () => {
+  quitting = true
+  eventsStop = true
+  if (daemonLock) {
+    try {
+      process.kill(daemonLock.pid, 'SIGTERM')
+    } catch {
+      // already gone
+    }
+  }
 })

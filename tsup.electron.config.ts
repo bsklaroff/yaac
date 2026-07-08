@@ -18,6 +18,14 @@ export default defineConfig({
   outExtension: () => ({ js: '.mjs' }),
   clean: true,
   external: ['electron'],
+  // `ws` is CJS and does `require('events')`/`require('net')`. In an ESM
+  // bundle there's no `require`, so esbuild's shim throws "Dynamic require of
+  // X". Define a real one from import.meta.url — esbuild's shim uses it when
+  // present — so those Node-builtin requires resolve at runtime.
+  banner: {
+    js: "import { createRequire as __createRequire } from 'node:module'\n"
+      + 'const require = __createRequire(import.meta.url)',
+  },
   esbuildOptions(options) {
     options.alias = { '@': './src', '@test': './test' }
   },
