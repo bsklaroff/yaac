@@ -44,6 +44,15 @@ const monitor = new AttentionMonitor()
 // never stop it on quit. Set by YAAC_ELECTRON_ATTACH.
 const attach = env.electronAttach
 
+// A dev run (YAAC_ELECTRON_DEV, set by scripts/dev-app.sh) isolates its
+// Electron storage + identity from an installed build so both can run side by
+// side — paired with the isolated data dir + namespace the dev script sets.
+// Must run before the app is ready.
+if (env.electronDev) {
+  app.setName('yaac (dev)')
+  app.setPath('userData', path.join(app.getPath('appData'), 'yaac-dev'))
+}
+
 // --- daemon environment + spawning -----------------------------------------
 
 /**

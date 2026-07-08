@@ -156,6 +156,19 @@ export const env = {
     const v = raw.trim().toLowerCase()
     return !(v === '' || v === '0' || v === 'false')
   },
+
+  /**
+   * `YAAC_ELECTRON_DEV` — mark a dev run of the desktop shell (set by
+   * scripts/dev-app.sh) so it isolates itself from an installed build: a
+   * distinct app name + Electron userData (main.ts), paired with the isolated
+   * data dir / namespace the dev script sets. Unset/empty/"0"/"false" → off.
+   */
+  get electronDev(): boolean {
+    const raw = process.env.YAAC_ELECTRON_DEV
+    if (raw === undefined) return false
+    const v = raw.trim().toLowerCase()
+    return !(v === '' || v === '0' || v === 'false')
+  },
 }
 
 /** Set only by the test harness (a few are read in prod via their defaults). */

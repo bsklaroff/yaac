@@ -33,7 +33,7 @@
     "frontend:dev": "vite",
     "frontend:build": "vite build",
     "electron:build": "tsup --config tsup.electron.config.ts",
-    "electron:dev": "pnpm electron:build && YAAC_BUILD_ID=dev YAAC_ELECTRON_RENDERER_URL=http://localhost:1420/ electron .",
+    "electron:dev": "bash scripts/dev-app.sh",
     "app:stage": "tsx scripts/stage-app.ts",
     "app:build": "pnpm build && pnpm electron:build && pnpm app:stage && electron-builder --config electron-builder.yml",
     "app:install": "pnpm app:build && tsx scripts/install-app.ts",
