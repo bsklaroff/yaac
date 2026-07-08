@@ -117,6 +117,32 @@ export const env = {
   get bundled(): boolean {
     return Boolean(process.env.YAAC_BUNDLED)
   },
+
+  /**
+   * `YAAC_ELECTRON_RENDERER_URL` — override the URL the desktop window loads.
+   * Dev points this at the Vite server (`http://localhost:1420/`); unset →
+   * the daemon origin (`http://127.0.0.1:<port>/`).
+   */
+  get electronRendererUrl(): string | undefined {
+    return process.env.YAAC_ELECTRON_RENDERER_URL
+  },
+
+  /**
+   * `YAAC_ELECTRON_DAEMON_CMD` — JSON argv of the base command the desktop
+   * app spawns to launch the daemon; `daemon <start|restart>` is appended.
+   * A test/dev hook — unset → the built-in dev (tsx) / bundled resolution.
+   */
+  get electronDaemonCmd(): string | undefined {
+    return process.env.YAAC_ELECTRON_DAEMON_CMD
+  },
+
+  /**
+   * `YAAC_ELECTRON_NODE_BIN` — Node binary the desktop app runs tsx with in
+   * dev. Unset → `node` on PATH.
+   */
+  get electronNodeBin(): string {
+    return process.env.YAAC_ELECTRON_NODE_BIN ?? 'node'
+  },
 }
 
 /** Set only by the test harness (a few are read in prod via their defaults). */

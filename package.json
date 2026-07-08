@@ -12,6 +12,7 @@
   "bin": {
     "yaac": "dist/cli.js"
   },
+  "main": "dist-electron/main.mjs",
   "files": [
     "dist"
   ],
@@ -31,6 +32,8 @@
     "test:watch": "vitest",
     "frontend:dev": "vite",
     "frontend:build": "vite build",
+    "electron:build": "tsup --config tsup.electron.config.ts",
+    "electron:dev": "pnpm electron:build && YAAC_BUILD_ID=dev YAAC_ELECTRON_RENDERER_URL=http://localhost:1420/ electron .",
     "prepare": "./setup-git.sh",
     "prepublishOnly": "pnpm build"
   },
@@ -73,6 +76,7 @@
     "@types/react-dom": "19.1.6",
     "@types/ws": "8.18.1",
     "@vitejs/plugin-react": "4.6.0",
+    "electron": "43.0.0",
     "eslint": "10.2.0",
     "globals": "17.4.0",
     "jsdom": "29.1.1",
