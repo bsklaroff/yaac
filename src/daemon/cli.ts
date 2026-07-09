@@ -2,9 +2,8 @@ import crypto from 'node:crypto'
 import net from 'node:net'
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
-import { createReadStream, existsSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import path from 'node:path'
+import { existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { serve, type ServerType } from '@hono/node-server'
 import { createNodeWebSocket } from '@hono/node-ws'
 import { buildApp } from '@/daemon/server'
@@ -38,8 +37,6 @@ import { restoreAllSessionForwarders } from '@/lib/session/restore-forwarders'
 import { stopAllSessionForwarders } from '@/lib/session/port-forwarders'
 import { daemonLog } from '@/daemon/log'
 import { env } from '@/shared/env'
-
-const __filename = fileURLToPath(import.meta.url)
 
 export interface DaemonRunOptions {
   port?: number
@@ -564,18 +561,11 @@ function resolveDaemonInvocation(): { bin: string; args: string[] } {
 }
 
 function findTsxCli(): string | null {
-  const here = path.dirname(__filename)
-  // Walk up from src/daemon/ looking for node_modules/tsx/dist/cli.mjs (or
-  // the pnpm-flattened equivalent).
-  let dir = here
-  for (let i = 0; i < 10; i++) {
-    const direct = path.join(dir, 'node_modules', 'tsx', 'dist', 'cli.mjs')
-    if (existsSync(direct)) return direct
-    const parent = path.dirname(dir)
-    if (parent === dir) break
-    dir = parent
+  try {
+    return createRequire(import.meta.url).resolve('tsx/cli')
+  } catch {
+    return null // tsx not installed (production build) — caller falls back
   }
-  return null
 }
 
 async function loadWebSessions(): Promise<string[]> {
@@ -614,88 +604,50 @@ export interface DaemonLogsOptions {
 }
 
 /**
- * Entry point for `yaac daemon logs`. Prints ~/.yaac/daemon.log to stdout.
+ * Entry point for `yaac daemon logs`. Prints ~/.yaac/daemon.log to stdout
+ * by spawning stock `tail` (flags limited to those shared by BSD and GNU
+ * tail — macOS and Linux are the only supported platforms).
  *
- * - No options: prints the whole file.
- * - `--lines N`: prints only the last N lines.
- * - `--follow`: after the initial print, keeps printing new content as it
- *   is appended. Polls at 200ms since fs.watch is flaky across platforms
- *   and log throughput is tiny — polling is simpler and plenty fast.
+ * - No options: prints the whole file (`tail -n +1`).
+ * - `--lines N`: prints only the last N lines (`tail -n N`).
+ * - `--follow`: keeps printing as content is appended (`tail -F`, which
+ *   also handles the file appearing later and truncation/replacement).
  */
 export async function daemonLogs(opts: DaemonLogsOptions = {}): Promise<void> {
   const logPath = daemonLogPath()
 
-  let position = 0
-  if (existsSync(logPath)) {
-    position = opts.lines !== undefined
-      ? await lastNLinesOffset(logPath, opts.lines)
-      : 0
-    await writeRangeToStdout(logPath, position)
-    position = (await fs.stat(logPath)).size
-  } else if (!opts.follow) {
-    console.error(`[yaac] no daemon log at ${logPath}`)
-    return
-  } else {
+  if (!existsSync(logPath)) {
+    if (!opts.follow) {
+      console.error(`[yaac] no daemon log at ${logPath}`)
+      return
+    }
     console.error(`[yaac] no daemon log at ${logPath} yet — waiting for it`)
   }
 
-  if (!opts.follow) return
-  await followLog(logPath, position)
-}
+  const args = opts.follow ? ['-F'] : []
+  // `-n +1` = from the first line (whole file); `-n N` = last N lines.
+  // Negative N would flip tail into last-|N|-lines mode — clamp to 0,
+  // matching the old "print nothing" behavior.
+  args.push('-n', opts.lines !== undefined ? String(Math.max(0, opts.lines)) : '+1')
+  args.push(logPath)
 
-/**
- * Return the byte offset that begins the last `n` lines of `logPath`.
- * Assumes lines end in '\n'. For n=0 returns the end of the file.
- */
-async function lastNLinesOffset(logPath: string, n: number): Promise<number> {
-  if (n <= 0) return (await fs.stat(logPath)).size
-  const content = await fs.readFile(logPath, 'utf8')
-  if (content.length === 0) return 0
-  // Strip a single trailing newline so splitting doesn't create a bogus
-  // empty last element.
-  const trimmed = content.endsWith('\n') ? content.slice(0, -1) : content
-  const lines = trimmed.split('\n')
-  if (lines.length <= n) return 0
-  const skipped = lines.slice(0, lines.length - n).join('\n') + '\n'
-  return Buffer.byteLength(skipped, 'utf8')
-}
+  // stderr is dropped: the missing-file case is reported above, and in
+  // follow mode `tail -F` narrates retries/rotation we don't want shown.
+  const child = spawn('tail', args, { stdio: ['ignore', 'pipe', 'ignore'] })
+  child.stdout.pipe(process.stdout, { end: false })
 
-async function writeRangeToStdout(logPath: string, start: number): Promise<void> {
-  const stat = await fs.stat(logPath)
-  if (start >= stat.size) return
   await new Promise<void>((resolve, reject) => {
-    const stream = createReadStream(logPath, { start, end: stat.size - 1 })
-    stream.on('data', (chunk) => process.stdout.write(chunk as Buffer))
-    stream.on('end', () => resolve())
-    stream.on('error', reject)
-  })
-}
-
-async function followLog(logPath: string, fromPosition: number): Promise<void> {
-  let position = fromPosition
-  await new Promise<void>((resolve) => {
-    const onSigint = (): void => {
-      clearInterval(timer)
-      process.off('SIGINT', onSigint)
-      resolve()
-    }
+    // Forward Ctrl-C so tail dies with us instead of being orphaned.
+    const onSigint = (): void => { child.kill('SIGINT') }
     process.on('SIGINT', onSigint)
-    const timer = setInterval(() => {
-      void (async () => {
-        try {
-          if (!existsSync(logPath)) return
-          const stat = await fs.stat(logPath)
-          if (stat.size > position) {
-            await writeRangeToStdout(logPath, position)
-            position = stat.size
-          } else if (stat.size < position) {
-            // File was truncated or replaced — resync from the top.
-            position = 0
-          }
-        } catch {
-          // Ignore transient FS errors; the next tick will retry.
-        }
-      })()
-    }, 200)
+    child.on('error', (err) => {
+      process.off('SIGINT', onSigint)
+      reject(err)
+    })
+    child.on('close', (code, signal) => {
+      process.off('SIGINT', onSigint)
+      if (code === 0 || signal === 'SIGINT') resolve()
+      else reject(new Error(`tail exited with ${signal ?? `code ${code}`}`))
+    })
   })
 }

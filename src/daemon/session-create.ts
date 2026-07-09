@@ -586,50 +586,52 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
         `initCommands window name "${win.name}" collides with an agent tool window`,
       )
     }
-    await containerExec(
-      jobName,
-      `${TMUX} new-window -d -t yaac -n ${win.name} 'cd /workspace && ${win.cmd}'`,
-    )
     // Without remain-on-exit the window closes when its command finishes —
     // and the webapp pane/tab follows the window list, so a hidePane init
-    // window shows while running and disappears once done.
-    if (!win.hidePane) {
-      await containerExec(jobName, `${TMUX} set-option -t yaac:${win.name} remain-on-exit on`)
-    }
+    // window shows while running and disappears once done. Chained onto the
+    // new-window in one tmux invocation (`\;`) to save a kubectl round-trip.
+    await containerExec(
+      jobName,
+      `${TMUX} new-window -d -t yaac -n ${win.name} 'cd /workspace && ${win.cmd}'`
+      + (win.hidePane ? '' : ` \\; set-option -t yaac:${win.name} remain-on-exit on`),
+    )
   }
 
-  // Configure tmux UX
-  await containerExec(jobName, `${TMUX} set-option -g history-limit 200000`)
-  await containerExec(jobName, `${TMUX} set-option -g mouse on`)
-  await containerExec(jobName, `${TMUX} set-option -g focus-events on`)
-  // Propagate terminal bells (\a) from any window through to the attached
-  // client so the user's terminal emulator can surface notifications.
-  await containerExec(jobName, `${TMUX} set-option -g monitor-bell on`)
-  await containerExec(jobName, `${TMUX} set-option -g bell-action any`)
-  await containerExec(jobName, `${TMUX} set-option -g visual-bell off`)
-  await containerExec(jobName, `${TMUX} set-option -g allow-passthrough on`)
-  // Advertise 24-bit (truecolor) support so tmux forwards RGB escape
-  // sequences to the attached terminal — the embedded xterm.js pane and the
-  // CLI's host emulator are both truecolor-capable — instead of quantizing
-  // them down to the 256-color palette. The quantization is what made
-  // `git diff` unreadable: delta (and other tools) emit subtle 24-bit diff
-  // backgrounds, and squashing them onto the nearest 256 cube color turns
-  // them into saturated blocks that swallow dim syntax tokens like comments.
-  // The `*` glob in the value must stay single-quoted so the host shell in
-  // containerExec doesn't expand it.
-  await containerExec(jobName, `${TMUX} set-option -g default-terminal tmux-256color`)
-  await containerExec(jobName, `${TMUX} set-option -as terminal-features ',*:RGB'`)
-  await containerExec(jobName, `${TMUX} set-option -t yaac status-right-length 80`)
+  // Configure tmux UX. All options are chained with `\;` into ONE tmux
+  // invocation (tmux command sequences, same trick as the PTY bridge's view
+  // options) so session create pays one kubectl exec round-trip, not twelve.
   const statusRight = buildStatusRight(projectSlug, sessionId, forwardedPorts)
-  await containerExec(jobName, `${TMUX} set-option -t yaac status-right '${shellEscape(statusRight)}'`)
-  // C-b k kills the whole tmux server (every window, shell, and the agent —
-  // the session is then reaped as a zombie). Guard it with a confirm: a
-  // stray prefix+k in any attached terminal (CLI or a webapp pane) was a
-  // one-keystroke session killer.
-  await containerExec(
-    jobName,
-    `${TMUX} bind-key k confirm-before -p 'kill this yaac session? (y/n)' kill-server`,
-  )
+  const tmuxSetup = [
+    'set-option -g history-limit 200000',
+    'set-option -g mouse on',
+    'set-option -g focus-events on',
+    // Propagate terminal bells (\a) from any window through to the attached
+    // client so the user's terminal emulator can surface notifications.
+    'set-option -g monitor-bell on',
+    'set-option -g bell-action any',
+    'set-option -g visual-bell off',
+    'set-option -g allow-passthrough on',
+    // Advertise 24-bit (truecolor) support so tmux forwards RGB escape
+    // sequences to the attached terminal — the embedded xterm.js pane and the
+    // CLI's host emulator are both truecolor-capable — instead of quantizing
+    // them down to the 256-color palette. The quantization is what made
+    // `git diff` unreadable: delta (and other tools) emit subtle 24-bit diff
+    // backgrounds, and squashing them onto the nearest 256 cube color turns
+    // them into saturated blocks that swallow dim syntax tokens like comments.
+    // The `*` glob in the value must stay single-quoted so the host shell in
+    // containerExec doesn't expand it.
+    'set-option -g default-terminal tmux-256color',
+    "set-option -as terminal-features ',*:RGB'",
+    'set-option -t yaac status-right-length 80',
+    `set-option -t yaac status-right '${shellEscape(statusRight)}'`,
+    // C-b k kills the whole tmux server (every window, shell, and the agent —
+    // the session is then reaped as a zombie). Guard it with a confirm: a
+    // stray prefix+k in any attached terminal (CLI or a webapp pane) was a
+    // one-keystroke session killer. Kept last: the `\;` separator ends
+    // bind-key's command arguments.
+    `bind-key k confirm-before -p 'kill this yaac session? (y/n)' kill-server`,
+  ]
+  await containerExec(jobName, `${TMUX} ${tmuxSetup.join(' \\; ')}`)
 
   // Now that the window's tmux options are settled, replace the keepalive
   // `sleep infinity` with the real agent. respawn-window -k kills the

@@ -1,9 +1,9 @@
-import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
+import path from 'node:path'
 import type { SecretProxyRule } from '@/shared/types'
 import { imageExists } from '@/lib/container/runtime'
 import { PROXY_DIR } from '@/lib/project/paths'
-import { contextHash } from '@/lib/container/image-builder'
+import { buildImage, contextHash } from '@/lib/container/image-builder'
 import {
   ensureCaConfigMap,
   ensureNamespace,
@@ -16,7 +16,7 @@ import { k8sNamespace, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubect
 import { pushImageToRegistry, registryHasTag, registryRef } from '@/lib/k8s/registry'
 import { ServicePortForward } from '@/lib/k8s/port-forward'
 import { listSshEntries } from '@/lib/project/credentials'
-import { daemonLog, pipeToDaemonLog } from '@/daemon/log'
+import { daemonLog } from '@/daemon/log'
 import { env, testEnv } from '@/shared/env'
 
 // --- Secret convention types & builder (merged from secret-conventions.ts) ---
@@ -549,21 +549,7 @@ export class ProxyClient {
         )
       }
       daemonLog(`[build] starting ${localTag} (proxy sidecar)`)
-      await new Promise<void>((resolve, reject) => {
-        const buildArgs = ['build', '-t', localTag, PROXY_DIR]
-        const child = spawn('podman', buildArgs, {
-          stdio: ['ignore', 'pipe', 'pipe'],
-          timeout: 300_000,
-        })
-        const prefix = `[build ${localTag}] `
-        pipeToDaemonLog(child.stdout, prefix)
-        pipeToDaemonLog(child.stderr, prefix)
-        child.on('close', (code) => {
-          if (code === 0) resolve()
-          else reject(new Error(`podman build exited with code ${code}`))
-        })
-        child.on('error', reject)
-      })
+      await buildImage(localTag, path.join(PROXY_DIR, 'Dockerfile'), PROXY_DIR)
     }
     return pushImageToRegistry(localTag)
   }
