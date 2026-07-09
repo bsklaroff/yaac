@@ -70,7 +70,7 @@
  * soft near-black text, rust accent. Applied for a forced light choice and,
  * below, for system-follows-light — CSS can't share a declaration list. */
 [data-theme="light"] {
-  --color-base: #f5f4f1;       /* warm paper shell the cards float on */
+  --color-base: #faf9f7;       /* warm off-white shell the cards float on */
   --color-bg: #efeee9;         /* deeper warm wash — settings nav, loading, window bg */
   --color-surface: #ffffff;    /* white cards, panes, popups — the elevated surface */
   --color-surface-2: #ebe9e4;  /* warm hover/selected fills, menu popups */
@@ -88,7 +88,7 @@
 
 @media (prefers-color-scheme: light) {
   [data-theme="system"] {
-    --color-base: #f5f4f1;
+    --color-base: #faf9f7;
     --color-bg: #efeee9;
     --color-surface: #ffffff;
     --color-surface-2: #ebe9e4;
