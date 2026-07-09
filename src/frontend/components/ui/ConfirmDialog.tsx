@@ -55,7 +55,7 @@ export function ConfirmDialog({
         <AlertDialog.Popup
           initialFocus={confirmText !== undefined ? inputRef : confirmRef}
           className="fixed left-1/2 top-1/2 w-[400px] max-w-[calc(100vw-2rem)] -translate-x-1/2
-            -translate-y-1/2 rounded-lg border border-border bg-surface-2 p-5 text-text shadow-[0_16px_48px_rgba(0,0,0,0.5)]
+            -translate-y-1/2 rounded-lg border border-border bg-surface-2 p-5 text-text shadow-[0_16px_48px_var(--shadow-color)]
             outline-none transition duration-150 data-[starting-style]:scale-95 data-[starting-style]:opacity-0
             data-[ending-style]:scale-95 data-[ending-style]:opacity-0"
         >

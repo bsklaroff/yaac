@@ -491,10 +491,14 @@ export function SessionView({
         {session && tiled && panes.map(({ target, rect }) => (
           <section
             key={target}
+            // The pane hosts a terminal, which is always dark — force the dark
+            // palette on the whole card so its chrome matches (no white frame
+            // around the terminal in light mode), like VS Code's terminal.
+            data-theme="dark"
             style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}
             className={clsx(
               'absolute flex flex-col overflow-hidden rounded-lg border border-hairline bg-surface',
-              'shadow-[0_8px_24px_rgba(0,0,0,0.45)]',
+              'shadow-[0_8px_24px_var(--shadow-color)]',
               drag?.active && drag.src === target && 'opacity-60',
             )}
           >
@@ -544,8 +548,10 @@ export function SessionView({
         {/* Tabs mode: one full-bleed card; the strip switches between the
             same layout-tree leaves the tiles mode arranges spatially. */}
         {session && !tiled && targets.length > 0 && (
-          <section className="absolute inset-0 flex flex-col overflow-hidden rounded-lg border
-            border-hairline bg-surface shadow-[0_8px_24px_rgba(0,0,0,0.28)]">
+          <section
+            data-theme="dark"
+            className="absolute inset-0 flex flex-col overflow-hidden rounded-lg border
+            border-hairline bg-surface shadow-[0_8px_24px_var(--shadow-color)]">
             <div style={{ height: HEADER_H }} className="flex shrink-0 items-center gap-0.5 px-1.5">
               {targets.map((t) => (
                 <span key={t} className="group/tab relative flex items-center">
@@ -611,6 +617,10 @@ export function SessionView({
           return (
             <div
               key={key}
+              // Always dark: the terminal's own background is dark, so its
+              // wrapper (bg-bg, matching the xterm bg exactly) must be too —
+              // otherwise the padding frames the terminal in paper in light mode.
+              data-theme="dark"
               style={style}
               // Keep the active-terminal record in step with focus changes
               // the DOM makes on its own (clicking into a tiled pane), so

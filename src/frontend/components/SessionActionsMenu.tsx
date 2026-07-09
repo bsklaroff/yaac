@@ -37,7 +37,7 @@ export function SessionActionsMenu({
         <Menu.Portal>
           <Menu.Positioner side="bottom" align="end" sideOffset={6}>
             <Menu.Popup className="min-w-[160px] rounded-lg border border-border bg-surface-2 p-1 text-text
-              shadow-[0_12px_32px_rgba(0,0,0,0.5)] outline-none transition-opacity duration-100
+              shadow-[0_12px_32px_var(--shadow-color)] outline-none transition-opacity duration-100
               data-[starting-style]:opacity-0 data-[ending-style]:opacity-0">
               <Menu.Item
                 className={clsx(ITEM, 'text-text-dim data-[highlighted]:bg-surface-3 data-[highlighted]:text-text')}

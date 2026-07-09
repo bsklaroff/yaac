@@ -38,18 +38,39 @@
 }
 
 /*
- * Light palette. The @theme block above is the dark base (used for
- * data-theme="dark", and for data-theme="system" when the OS is dark). These
- * selectors override the same custom properties — which every Tailwind color
- * utility resolves through var() — so the whole UI recolors with no per-class
- * dark: variants. Designed by role, not by inverting lightness: cards go white
- * and elevated, while hover/selected fills become a light-gray tint (the
- * opposite direction from dark, where more elevation means lighter). The block
- * is intentionally duplicated for the forced-light and system-follows-light
- * cases — CSS can't share a declaration list across two selectors.
+ * Palettes. The @theme block above is the dark base; these override the same
+ * custom properties — which every Tailwind color utility resolves through
+ * var() — so the whole UI recolors with no per-class dark: variants.
+ *
+ * Selectors are attribute-based (not :root-scoped) so a SUBTREE can force its
+ * own theme independent of the app: the terminal panes carry data-theme="dark"
+ * to stay dark in light mode (the terminal itself is always dark), the way
+ * VS Code keeps its integrated terminal dark under a light theme. That's why
+ * the dark block is repeated here — a nested data-theme="dark" must re-assert
+ * the base values to override an inherited light palette.
  */
-:root[data-theme="light"] {
-  --color-base: #f5f4f1;       /* warm paper shell the cards float on (Cursor-like) */
+[data-theme="dark"] {
+  --color-base: #0f0f12;
+  --color-bg: #0b0b0d;
+  --color-surface: #141417;
+  --color-surface-2: #1a1a1f;
+  --color-surface-3: #22222a;
+  --color-border: #2a2a33;
+  --color-border-strong: #3a3a45;
+  --color-text: #e7e7ea;
+  --color-text-dim: #9a9aa4;
+  --color-text-faint: #6a6a74;
+  --color-accent: #d4875f;
+  --color-accent-soft: #8a5a3d;
+  --color-hairline: rgb(255 255 255 / 0.06);
+  --color-hairline-soft: rgb(255 255 255 / 0.04);
+}
+
+/* Warm light palette (Cursor-like): white elevated cards on a paper shell,
+ * soft near-black text, rust accent. Applied for a forced light choice and,
+ * below, for system-follows-light — CSS can't share a declaration list. */
+[data-theme="light"] {
+  --color-base: #f5f4f1;       /* warm paper shell the cards float on */
   --color-bg: #efeee9;         /* deeper warm wash — settings nav, loading, window bg */
   --color-surface: #ffffff;    /* white cards, panes, popups — the elevated surface */
   --color-surface-2: #ebe9e4;  /* warm hover/selected fills, menu popups */
@@ -66,7 +87,7 @@
 }
 
 @media (prefers-color-scheme: light) {
-  :root[data-theme="system"] {
+  [data-theme="system"] {
     --color-base: #f5f4f1;
     --color-bg: #efeee9;
     --color-surface: #ffffff;
@@ -82,6 +103,19 @@
     --color-hairline: rgb(0 0 0 / 0.08);
     --color-hairline-soft: rgb(0 0 0 / 0.05);
   }
+}
+
+/*
+ * Card / menu / modal drop-shadow color. Follows the APP (root) theme only —
+ * strong on the dark shell, barely-there on the light one — and is deliberately
+ * kept off the nestable [data-theme] blocks above so a dark terminal pane still
+ * casts the light-mode shadow when it sits on the light base. Root-scoped, so
+ * nested data-theme="dark" subtrees inherit it rather than resetting it.
+ */
+:root { --shadow-color: rgb(0 0 0 / 0.44); }
+:root[data-theme="light"] { --shadow-color: rgb(0 0 0 / 0.10); }
+@media (prefers-color-scheme: light) {
+  :root[data-theme="system"] { --shadow-color: rgb(0 0 0 / 0.10); }
 }
 
 html,
