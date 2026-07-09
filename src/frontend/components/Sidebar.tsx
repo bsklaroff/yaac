@@ -1,4 +1,4 @@
-import { useEffect, useState, type JSX } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { useQuery } from '@tanstack/react-query'
 import { Collapsible } from '@base-ui/react/collapsible'
@@ -310,11 +310,50 @@ function SessionGroup({
   )
 }
 
+/**
+ * Session title that fills the row's width, truncating with an ellipsis when it
+ * doesn't fit. On row hover it un-clips and marquee-scrolls the full text (the
+ * row has already inset its right edge to clear the delete ×). The scroll
+ * distance is measured live at the hovered width, so titles that do fit stay
+ * put and the animation always reveals exactly the hidden tail.
+ */
+function MarqueeTitle({ text, hovered }: { text: string; hovered: boolean }): JSX.Element {
+  const ref = useRef<HTMLSpanElement>(null)
+
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    if (!hovered) {
+      el.style.animation = ''
+      return
+    }
+    const shift = Math.max(0, el.scrollWidth - el.clientWidth)
+    if (shift === 0) {
+      el.style.animation = ''
+      return
+    }
+    // Constant-ish reveal speed (~55px/s across the two scroll legs), floored so
+    // a short overflow still reads as a deliberate scroll, not a twitch.
+    const duration = 1400 + shift * 34
+    el.style.setProperty('--marquee-shift', `-${shift}px`)
+    el.style.animation = `marquee ${duration}ms ease-in-out infinite`
+  }, [hovered, text])
+
+  return (
+    <span className="relative min-w-0 flex-1 overflow-hidden">
+      <span ref={ref} className={clsx('block font-medium', hovered ? 'whitespace-nowrap' : 'truncate')}>
+        {text}
+      </span>
+    </span>
+  )
+}
+
 function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
   const selectedSessionId = useUiStore((s) => s.selectedSessionId)
   const selectSession = useUiStore((s) => s.selectSession)
   const readWaiting = useUiStore((s) => s.readWaiting)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [hovered, setHovered] = useState(false)
   const unread = isUnreadWaiting(session, readWaiting)
 
   // Close the dialog immediately; the shared flow hides the row
@@ -325,7 +364,11 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
   }
 
   return (
-    <div className="group relative mx-2">
+    <div
+      className="group relative mx-2"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       <button
         onClick={() => selectSession(session.sessionId)}
         className={clsx(
@@ -333,9 +376,9 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
           selectedSessionId === session.sessionId && 'bg-surface-2 hover:bg-surface-2',
         )}
       >
-        {/* pr-6 reserves room for the delete × that overlays the top-right on
-            hover, so a long title truncates before it instead of underlapping. */}
-        <span className="flex items-center gap-2 pr-6">
+        {/* Title fills the row; only on hover does it inset to clear the delete
+            × and marquee-scroll when it's too long to fit. */}
+        <span className="flex items-center gap-2 group-hover:pr-6">
           {/* Live pulse: the session's agent is actively running. A square,
               so it can't be mistaken for the round unread bubble below. */}
           {session.status === 'running' && (
@@ -346,13 +389,12 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
           )}
           {/* Unread bubble: this session started waiting and hasn't been viewed. */}
           {unread && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
-          <span className="truncate font-medium">{session.title || session.prompt || 'New session'}</span>
+          <MarqueeTitle text={session.title || session.prompt || 'New session'} hovered={hovered} />
         </span>
         <span className="flex items-center gap-2 text-xs text-text-faint">
           <span className="truncate">{relativeAge(session.createdAt)}</span>
-          {/* Tool name, dropped to the metadata row so the title gets the full
-              width above. Suppressed when hosts are blocked: the blocked-hosts
-              badge overlays this same bottom-right corner. */}
+          {/* Tool name moved off the title line so the title can run full-width;
+              hidden when the blocked-hosts badge claims the bottom-right. */}
           {session.blockedHosts.length === 0 && (
             <span className="ml-auto shrink-0">{TOOL_LABEL[session.tool]}</span>
           )}
