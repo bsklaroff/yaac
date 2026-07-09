@@ -78,7 +78,8 @@ export function Sidebar({
   const visibleCount = shown.filter((s) => GROUPS.some((g) => g.status === s.status)).length
 
   return (
-    <aside className="flex h-full w-64 flex-col text-text">
+    <aside className="my-2 ml-2 flex w-64 flex-col overflow-hidden rounded-lg
+      border border-white/[0.06] bg-surface text-text">
       <div className="flex h-11 shrink-0 items-center gap-2 pl-4 pr-2">
         {projectSlug
           ? <ProjectActionsMenu slug={projectSlug} remoteUrl={projectRemoteUrl} />
