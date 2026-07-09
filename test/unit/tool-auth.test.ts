@@ -11,24 +11,26 @@ import {
   projectDir,
 } from '@/lib/project/paths'
 import {
-  claudeKeychainService,
-  detectAuthKind,
   loadToolAuthEntry,
   saveToolAuth,
   saveClaudeOAuthBundle,
   loadClaudeCredentialsFile,
   loadCodexCredentialsFile,
   loadOpencodeCredentialsFile,
-  parseOpencodeProvider,
   removeToolAuth,
   buildPlaceholderBundle,
   writeProjectClaudePlaceholder,
   fanOutClaudePlaceholders,
-  extractClaudeOAuthBundle,
   persistToolAuthPayload,
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_REFRESH_TOKEN,
 } from '@/lib/project/tool-auth'
+import {
+  claudeKeychainService,
+  detectAuthKind,
+  extractClaudeOAuthBundle,
+  parseOpencodeProvider,
+} from '@/shared/tool-auth-interactive'
 import { DaemonError } from '@/daemon/errors'
 import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '@/shared/types'
 
@@ -112,10 +114,6 @@ describe('tool-auth', () => {
         tool: 'claude',
         kind: 'oauth',
         apiKey: SAMPLE_BUNDLE.accessToken,
-        refreshToken: SAMPLE_BUNDLE.refreshToken,
-        expiresAt: SAMPLE_BUNDLE.expiresAt,
-        scopes: SAMPLE_BUNDLE.scopes,
-        subscriptionType: SAMPLE_BUNDLE.subscriptionType,
       })
     })
 
@@ -123,7 +121,6 @@ describe('tool-auth', () => {
       await saveToolAuth('claude', 'sk-ant-api03-xyz', 'api-key')
       const entry = await loadToolAuthEntry('claude')
       expect(entry).toMatchObject({ tool: 'claude', kind: 'api-key', apiKey: 'sk-ant-api03-xyz' })
-      expect(entry?.refreshToken).toBeUndefined()
     })
 
     it('loads codex entries from codex.json', async () => {

@@ -115,7 +115,10 @@ export interface OpencodeSessionMeta {
 }
 
 /**
- * Summary view over per-tool credential files — used by `auth list`, etc.
+ * Summary view over per-tool credential files. Consumers (`auth list`,
+ * session-create's per-tool placeholder wiring) read only kind / apiKey /
+ * savedAt / opencodeProvider — full OAuth bundles stay in the per-tool
+ * credentials files.
  */
 export interface ToolAuthEntry {
   tool: AgentTool
@@ -123,17 +126,6 @@ export interface ToolAuthEntry {
   /** Access token (OAuth) or raw API key. */
   apiKey: string
   savedAt: string
-  /** OAuth only. */
-  refreshToken?: string
-  /** OAuth only. Unix epoch ms. */
-  expiresAt?: number
-  /** Claude OAuth only. */
-  scopes?: string[]
-  /** Claude OAuth only. */
-  subscriptionType?: string
-  /** Codex OAuth only — the full bundle, carried here so consumers like
-   *  `auth list` can render plan type / email from the id_token. */
-  codexBundle?: CodexOAuthBundle
   /** opencode only — which backend the stored api-key authenticates against. */
   opencodeProvider?: OpencodeProvider
 }

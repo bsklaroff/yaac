@@ -3,7 +3,6 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@test/helpers/setup'
 import {
-  credentialsPath,
   loadCredentials,
   resolveCredentialForUrl,
   loadKnownHostsEntryForHost,
@@ -12,15 +11,17 @@ import {
   removeEntryChecked,
   replaceEntries,
   listEntries,
-  validatePattern,
-  parsePattern,
   parseGitRemote,
-  matchPattern,
-  ghApiHostForGitHost,
   saveCredentials,
   writeProxySecrets,
 } from '@/lib/project/credentials'
-import { proxySecretsCredentialsPath } from '@/lib/project/paths'
+import {
+  validatePattern,
+  parsePattern,
+  matchPattern,
+  ghApiHostForGitHost,
+} from '@/shared/credentials'
+import { githubCredentialsPath, proxySecretsCredentialsPath } from '@/lib/project/paths'
 import { DaemonError } from '@/daemon/errors'
 
 describe('credentials', () => {
@@ -34,8 +35,8 @@ describe('credentials', () => {
     await cleanupTempDir(tmpDir)
   })
 
-  it('credentialsPath returns path inside data dir credentials subdirectory', () => {
-    expect(credentialsPath()).toBe(path.join(getDataDir(), '.credentials', 'github.json'))
+  it('githubCredentialsPath returns path inside data dir credentials subdirectory', () => {
+    expect(githubCredentialsPath()).toBe(path.join(getDataDir(), '.credentials', 'github.json'))
   })
 
   describe('loadCredentials', () => {
@@ -51,9 +52,9 @@ describe('credentials', () => {
     })
 
     it('normalizes legacy bare * to github.com/*', async () => {
-      await fs.mkdir(path.dirname(credentialsPath()), { recursive: true })
+      await fs.mkdir(path.dirname(githubCredentialsPath()), { recursive: true })
       await fs.writeFile(
-        credentialsPath(),
+        githubCredentialsPath(),
         JSON.stringify({ tokens: [{ pattern: '*', token: 'ghp_legacy' }] }),
       )
       const result = await loadCredentials()
@@ -61,9 +62,9 @@ describe('credentials', () => {
     })
 
     it('normalizes legacy owner/* to github.com/owner/*', async () => {
-      await fs.mkdir(path.dirname(credentialsPath()), { recursive: true })
+      await fs.mkdir(path.dirname(githubCredentialsPath()), { recursive: true })
       await fs.writeFile(
-        credentialsPath(),
+        githubCredentialsPath(),
         JSON.stringify({ tokens: [{ pattern: 'acme/*', token: 'ghp_acme' }] }),
       )
       const result = await loadCredentials()
@@ -71,9 +72,9 @@ describe('credentials', () => {
     })
 
     it('normalizes legacy owner/repo to github.com/owner/repo', async () => {
-      await fs.mkdir(path.dirname(credentialsPath()), { recursive: true })
+      await fs.mkdir(path.dirname(githubCredentialsPath()), { recursive: true })
       await fs.writeFile(
-        credentialsPath(),
+        githubCredentialsPath(),
         JSON.stringify({ tokens: [{ pattern: 'acme/repo', token: 'ghp_acme' }] }),
       )
       const result = await loadCredentials()
@@ -81,9 +82,9 @@ describe('credentials', () => {
     })
 
     it('filters out https entries with empty tokens', async () => {
-      await fs.mkdir(path.dirname(credentialsPath()), { recursive: true })
+      await fs.mkdir(path.dirname(githubCredentialsPath()), { recursive: true })
       await fs.writeFile(
-        credentialsPath(),
+        githubCredentialsPath(),
         JSON.stringify({ tokens: [
           { pattern: 'github.com/*', token: '' },
           { pattern: 'github.com/org/*', token: 'ghp_valid' },
@@ -96,9 +97,9 @@ describe('credentials', () => {
     })
 
     it('filters out ssh entries missing fields', async () => {
-      await fs.mkdir(path.dirname(credentialsPath()), { recursive: true })
+      await fs.mkdir(path.dirname(githubCredentialsPath()), { recursive: true })
       await fs.writeFile(
-        credentialsPath(),
+        githubCredentialsPath(),
         JSON.stringify({ tokens: [
           { kind: 'ssh', pattern: 'git.example.com/*', privateKeyPath: '/k' }, // missing knownHostsEntry
           { kind: 'ssh', pattern: 'git.example.com/*', privateKeyPath: '/k', knownHostsEntry: 'kh' },
@@ -111,8 +112,8 @@ describe('credentials', () => {
     })
 
     it('returns empty tokens for invalid JSON', async () => {
-      await fs.mkdir(path.dirname(credentialsPath()), { recursive: true })
-      await fs.writeFile(credentialsPath(), 'not json')
+      await fs.mkdir(path.dirname(githubCredentialsPath()), { recursive: true })
+      await fs.writeFile(githubCredentialsPath(), 'not json')
       const result = await loadCredentials()
       expect(result).toEqual({ tokens: [] })
     })
@@ -500,7 +501,7 @@ describe('credentials', () => {
 
   it('saveCredentials writes the file with 0o600 permissions', async () => {
     await addEntry({ kind: 'https', pattern: 'github.com/*', token: 'ghp_x' })
-    const stats = await fs.stat(credentialsPath())
+    const stats = await fs.stat(githubCredentialsPath())
     expect(stats.mode & 0o777).toBe(0o600)
   })
 

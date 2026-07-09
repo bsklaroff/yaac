@@ -8,8 +8,6 @@ import {
   projectDir,
 } from '@/lib/project/paths'
 import {
-  decodeJwtExp,
-  extractCodexOAuthBundle,
   buildCodexPlaceholderBundle,
   writeProjectCodexPlaceholder,
   fanOutCodexPlaceholders,
@@ -20,6 +18,7 @@ import {
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_REFRESH_TOKEN,
 } from '@/lib/project/tool-auth'
+import { decodeJwtExp, extractCodexOAuthBundle } from '@/shared/tool-auth-interactive'
 import type { CodexOAuthBundle } from '@/shared/types'
 
 /**
@@ -235,17 +234,14 @@ describe('codex oauth helpers', () => {
   })
 
   describe('loadToolAuthEntry for codex oauth', () => {
-    it('returns an OAuth entry carrying the full bundle', async () => {
+    it('returns an OAuth entry with the bundle access token', async () => {
       await saveCodexOAuthBundle(SAMPLE_BUNDLE)
       const entry = await loadToolAuthEntry('codex')
       expect(entry).toMatchObject({
         tool: 'codex',
         kind: 'oauth',
         apiKey: SAMPLE_BUNDLE.accessToken,
-        refreshToken: SAMPLE_BUNDLE.refreshToken,
-        expiresAt: SAMPLE_BUNDLE.expiresAt,
       })
-      expect(entry?.codexBundle).toEqual(SAMPLE_BUNDLE)
     })
   })
 

@@ -29,28 +29,16 @@ export type {
 }
 
 /**
- * Default grace window that protects freshly-created session pods from
- * the stale-session reaper. session-create's retry loop recreates the
- * Job between attempts and does not start tmux until the last step, so
- * without a grace period a concurrent reap pass (`reconcileStaleSessions`,
- * `getWaitingSessions`) can classify the pod as a zombie — firing
- * cleanupSessionDetached, which removes the session's allowedHosts from
- * the proxy mid-creation. Tests override this with
- * YAAC_STARTING_GRACE_MS so they can provoke cleanup on sessions they
- * just created.
- */
-export const STARTING_GRACE_MS = 60_000
-
-/**
  * Split the pod list into the ones the renderer should show as active
  * sessions, the ones the caller should tear down, and implicitly (by
  * omission) the ones that are still inside the startup grace window.
+ * Production callers pass `testEnv.startingGraceMs` for `graceMs`.
  */
 export async function classifySessionPods(
   pods: SessionPod[],
   nowMs: number,
   probeLiveness: (slug: string, sessionId: string) => Promise<TmuxLiveness>,
-  graceMs: number = STARTING_GRACE_MS,
+  graceMs: number,
 ): Promise<{ running: SessionPod[]; stale: StaleSessionInfo[]; indeterminate: SessionPod[] }> {
   const running: SessionPod[] = []
   const stale: StaleSessionInfo[] = []
@@ -382,65 +370,56 @@ export async function listDeletedSessions(
     // cluster not reachable — treat all as deleted
   }
 
-  // Track ms-precision birthtime alongside each entry so the sort is
-  // stable across files created in the same second (createdAt is
-  // truncated to second precision for display).
+  /**
+   * Scan one per-tool record dir for deleted-session files: readdir →
+   * filter by extension → skip active session ids → stat. A missing dir
+   * or an unstattable file is skipped silently. Tracks ms-precision
+   * birthtime alongside each entry so the sort is stable across files
+   * created in the same second (createdAt is truncated to second
+   * precision for display). These are daemon-written regular files
+   * (never symlinks), so plain `fs.stat` is used.
+   */
+  async function collectDeleted(
+    dir: string,
+    ext: string,
+    tool: DeletedSessionEntry['tool'],
+    slug: string,
+  ): Promise<Array<{ entry: DeletedSessionEntry; birthtimeMs: number }>> {
+    const out: Array<{ entry: DeletedSessionEntry; birthtimeMs: number }> = []
+    let files: string[]
+    try {
+      files = await fs.readdir(dir)
+    } catch {
+      return out // no record dir for this tool
+    }
+    for (const file of files) {
+      if (!file.endsWith(ext)) continue
+      const sessionId = file.slice(0, -ext.length)
+      if (activeSessionIds.has(sessionId)) continue
+      try {
+        const stat = await fs.stat(path.join(dir, file))
+        out.push({
+          entry: {
+            sessionId,
+            projectSlug: slug,
+            tool,
+            createdAt: stat.birthtime.toISOString().replace('T', ' ').slice(0, 19),
+          },
+          birthtimeMs: stat.birthtimeMs,
+        })
+      } catch {
+        continue
+      }
+    }
+    return out
+  }
+
   const collected: Array<{ entry: DeletedSessionEntry; birthtimeMs: number }> = []
-
   for (const slug of slugs) {
-    const claudeSessionsDir = path.join(claudeDir(slug), 'projects', '-workspace')
-    try {
-      const files = await fs.readdir(claudeSessionsDir)
-      for (const file of files) {
-        if (!file.endsWith('.jsonl')) continue
-        const sessionId = file.replace('.jsonl', '')
-        if (activeSessionIds.has(sessionId)) continue
-        try {
-          const stat = await fs.stat(path.join(claudeSessionsDir, file))
-          collected.push({
-            entry: {
-              sessionId,
-              projectSlug: slug,
-              tool: 'claude',
-              createdAt: stat.birthtime.toISOString().replace('T', ' ').slice(0, 19),
-            },
-            birthtimeMs: stat.birthtimeMs,
-          })
-        } catch {
-          continue
-        }
-      }
-    } catch {
-      // no claude sessions dir
-    }
-
-    const codexTranscripts = codexTranscriptDir(slug)
-    try {
-      const entries = await fs.readdir(codexTranscripts)
-      for (const entry of entries) {
-        if (!entry.endsWith('.jsonl')) continue
-        const sessionId = entry.replace('.jsonl', '')
-        if (activeSessionIds.has(sessionId)) continue
-        const filePath = path.join(codexTranscripts, entry)
-        try {
-          const stat = await fs.lstat(filePath)
-          collected.push({
-            entry: {
-              sessionId,
-              projectSlug: slug,
-              tool: 'codex',
-              createdAt: stat.birthtime.toISOString().replace('T', ' ').slice(0, 19),
-            },
-            birthtimeMs: stat.birthtimeMs,
-          })
-        } catch {
-          continue
-        }
-      }
-    } catch {
-      // no codex transcript dir
-    }
-
+    collected.push(...await collectDeleted(
+      path.join(claudeDir(slug), 'projects', '-workspace'), '.jsonl', 'claude', slug,
+    ))
+    collected.push(...await collectDeleted(codexTranscriptDir(slug), '.jsonl', 'codex', slug))
     // opencode's per-session sqlite data dir is created for every
     // session regardless of tool, so it can't identify opencode
     // sessions. The meta cache (first-message snapshot, keyed by
@@ -448,32 +427,7 @@ export async function listDeletedSessions(
     // container teardown, making it the authoritative deleted-session
     // record — the same source getDeletedSessionOpencodeFirstUserMessage
     // reads from.
-    const opencodeMeta = opencodeMetaDir(slug)
-    try {
-      const entries = await fs.readdir(opencodeMeta)
-      for (const entry of entries) {
-        if (!entry.endsWith('.json')) continue
-        const sessionId = entry.replace('.json', '')
-        if (activeSessionIds.has(sessionId)) continue
-        const filePath = path.join(opencodeMeta, entry)
-        try {
-          const stat = await fs.lstat(filePath)
-          collected.push({
-            entry: {
-              sessionId,
-              projectSlug: slug,
-              tool: 'opencode',
-              createdAt: stat.birthtime.toISOString().replace('T', ' ').slice(0, 19),
-            },
-            birthtimeMs: stat.birthtimeMs,
-          })
-        } catch {
-          continue
-        }
-      }
-    } catch {
-      // no opencode meta dir
-    }
+    collected.push(...await collectDeleted(opencodeMetaDir(slug), '.json', 'opencode', slug))
   }
 
   collected.sort((a, b) => b.birthtimeMs - a.birthtimeMs)

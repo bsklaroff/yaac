@@ -77,10 +77,10 @@ import {
   resolveCredentialForUrl,
   parseGitRemote,
   loadKnownHostsEntryForHost,
-  ghApiHostForGitHost,
 } from '@/lib/project/credentials'
+import { ghApiHostForGitHost } from '@/shared/credentials'
 import { writeKnownHostsFile } from '@/lib/git'
-import { formatSshCommand } from '@/shared/git'
+import { formatSshCommand, getGitUserConfig } from '@/shared/git'
 import { hostMatchesPattern } from '@/lib/container/default-allowed-hosts'
 import {
   loadToolAuthEntry,
@@ -91,7 +91,7 @@ import {
   PLACEHOLDER_API_KEY,
   PLACEHOLDER_GH_TOKEN,
 } from '@/lib/project/tool-auth'
-import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig, isGitAuthError } from '@/lib/git'
+import { addWorktree, getDefaultBranch, fetchOrigin, isGitAuthError } from '@/lib/git'
 import { ensureCodexHooksJson, ensureCodexConfigToml } from '@/lib/session/codex-hooks'
 import { ensureOpencodeConfigJson } from '@/lib/session/opencode-config'
 import { DaemonError } from '@/daemon/errors'

@@ -74,9 +74,12 @@ async function runBuild(
   id: string,
   layer: ImageLayer,
   ctx: BuildContext,
-  opts: { noCache: boolean },
+  opts: { noCache: boolean; preStep?: () => Promise<void> },
 ): Promise<void> {
   try {
+    // The rebuild path removes the stale image inside the single-flight
+    // slot, so the removal never races a concurrent build of the tag.
+    if (opts.preStep) await opts.preStep()
     daemonLog(`[build] starting ${layer.tag}`)
     await buildImage(layer.tag, layer.dockerfile, layer.context, layer.buildArgs, {
       noCache: opts.noCache,
@@ -121,22 +124,12 @@ export async function rebuildLayerExclusive(
     projectSlug: ctx.projectSlug,
     reason: ctx.reason,
   })
-  const promise = (async () => {
-    await removeImage(layer.tag)
-    await buildImage(layer.tag, layer.dockerfile, layer.context, layer.buildArgs, {
-      noCache: opts.noCache,
-      onLog: (line) => {
-        ingestImageBuildLine(id, line)
-        ctx.onLog?.(line)
-      },
-    })
-  })()
-    .then(() => finishImageBuild(id))
-    .catch((err: unknown) => {
-      failImageBuild(id, err instanceof Error ? err.message : String(err))
-      throw err
-    })
-    .finally(() => inflightBuilds.delete(layer.tag))
+  const promise = runBuild(id, layer, ctx, {
+    noCache: opts.noCache,
+    preStep: () => removeImage(layer.tag),
+  })
+  // Set synchronously (before any await inside runBuild resolves) so a
+  // same-tick caller joins instead of double-building.
   inflightBuilds.set(layer.tag, { id, promise })
   return promise
 }

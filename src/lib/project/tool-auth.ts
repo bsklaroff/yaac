@@ -26,38 +26,9 @@ import {
   type OpencodeProvider,
 } from '@/shared/types'
 import {
-  detectAuthKind,
-  extractClaudeOAuthBundle,
-  extractCodexOAuthBundle,
-  decodeJwtExp,
-  claudeKeychainService,
-  deleteScratchClaudeKeychainItem,
-  readClaudeKeychainPayload,
-  readClaudeOAuthFromHost,
-  readCodexOAuthFromHost,
-  readCodexCredentials,
   parseOpencodeProvider,
-  promptForApiKey,
-  runToolLogin,
   type ToolLoginResult,
 } from '@/shared/tool-auth-interactive'
-
-export {
-  detectAuthKind,
-  extractClaudeOAuthBundle,
-  extractCodexOAuthBundle,
-  decodeJwtExp,
-  claudeKeychainService,
-  deleteScratchClaudeKeychainItem,
-  readClaudeKeychainPayload,
-  readClaudeOAuthFromHost,
-  readCodexOAuthFromHost,
-  readCodexCredentials,
-  parseOpencodeProvider,
-  promptForApiKey,
-  runToolLogin,
-}
-export type { ToolLoginResult }
 
 /** Placeholder tokens written into project-local Claude credentials. */
 export const PLACEHOLDER_ACCESS_TOKEN = 'yaac-ph-access'
@@ -195,19 +166,8 @@ export async function loadToolAuthEntry(tool: AgentTool): Promise<ToolAuthEntry 
   if (tool === 'claude') {
     const f = await loadClaudeCredentialsFile()
     if (!f) return null
-    if (f.kind === 'oauth') {
-      return {
-        tool: 'claude',
-        kind: 'oauth',
-        apiKey: f.claudeAiOauth.accessToken,
-        savedAt: f.savedAt,
-        refreshToken: f.claudeAiOauth.refreshToken,
-        expiresAt: f.claudeAiOauth.expiresAt,
-        scopes: f.claudeAiOauth.scopes,
-        subscriptionType: f.claudeAiOauth.subscriptionType,
-      }
-    }
-    return { tool: 'claude', kind: 'api-key', apiKey: f.apiKey, savedAt: f.savedAt }
+    const apiKey = f.kind === 'oauth' ? f.claudeAiOauth.accessToken : f.apiKey
+    return { tool: 'claude', kind: f.kind, apiKey, savedAt: f.savedAt }
   }
   if (tool === 'opencode') {
     const f = await loadOpencodeCredentialsFile()
@@ -222,18 +182,8 @@ export async function loadToolAuthEntry(tool: AgentTool): Promise<ToolAuthEntry 
   }
   const f = await loadCodexCredentialsFile()
   if (!f) return null
-  if (f.kind === 'oauth') {
-    return {
-      tool: 'codex',
-      kind: 'oauth',
-      apiKey: f.codexOauth.accessToken,
-      savedAt: f.savedAt,
-      refreshToken: f.codexOauth.refreshToken,
-      expiresAt: f.codexOauth.expiresAt,
-      codexBundle: f.codexOauth,
-    }
-  }
-  return { tool: 'codex', kind: 'api-key', apiKey: f.apiKey, savedAt: f.savedAt }
+  const apiKey = f.kind === 'oauth' ? f.codexOauth.accessToken : f.apiKey
+  return { tool: 'codex', kind: f.kind, apiKey, savedAt: f.savedAt }
 }
 
 /**
@@ -420,11 +370,14 @@ export async function writeProjectClaudePlaceholder(
 }
 
 /**
- * After a successful Claude OAuth login, seed every existing project's
- * `.claude/.credentials.json` with a placeholder bundle. Fresh projects get
- * seeded on `project add`.
+ * Run `fn` for every tracked project slug. A missing projects dir is a
+ * no-op; a per-project failure is warned (as `Warning: <warnLabel> for
+ * project "<slug>": <message>`) and does not block the rest.
  */
-export async function fanOutClaudePlaceholders(bundle: ClaudeOAuthBundle): Promise<void> {
+async function forEachProject(
+  fn: (slug: string) => Promise<void>,
+  warnLabel: string,
+): Promise<void> {
   let projects: string[]
   try {
     projects = await fs.readdir(getProjectsDir())
@@ -433,11 +386,20 @@ export async function fanOutClaudePlaceholders(bundle: ClaudeOAuthBundle): Promi
   }
   for (const slug of projects) {
     try {
-      await writeProjectClaudePlaceholder(slug, bundle)
+      await fn(slug)
     } catch (err) {
-      console.warn(`Warning: failed to seed placeholder creds for project "${slug}": ${err instanceof Error ? err.message : String(err)}`)
+      console.warn(`Warning: ${warnLabel} for project "${slug}": ${err instanceof Error ? err.message : String(err)}`)
     }
   }
+}
+
+/**
+ * After a successful Claude OAuth login, seed every existing project's
+ * `.claude/.credentials.json` with a placeholder bundle. Fresh projects get
+ * seeded on `project add`.
+ */
+export async function fanOutClaudePlaceholders(bundle: ClaudeOAuthBundle): Promise<void> {
+  await forEachProject((slug) => writeProjectClaudePlaceholder(slug, bundle), 'failed to seed placeholder creds')
 }
 
 /**
@@ -494,19 +456,7 @@ export async function writeProjectCodexPlaceholder(
  * `codex/auth.json` with a placeholder bundle.
  */
 export async function fanOutCodexPlaceholders(bundle: CodexOAuthBundle): Promise<void> {
-  let projects: string[]
-  try {
-    projects = await fs.readdir(getProjectsDir())
-  } catch {
-    return
-  }
-  for (const slug of projects) {
-    try {
-      await writeProjectCodexPlaceholder(slug, bundle)
-    } catch (err) {
-      console.warn(`Warning: failed to seed Codex placeholder for project "${slug}": ${err instanceof Error ? err.message : String(err)}`)
-    }
-  }
+  await forEachProject((slug) => writeProjectCodexPlaceholder(slug, bundle), 'failed to seed Codex placeholder')
 }
 
 async function unlinkIgnoreMissing(filePath: string): Promise<void> {
@@ -524,19 +474,7 @@ async function unlinkIgnoreMissing(filePath: string): Promise<void> {
  * swap for a real token.
  */
 export async function cleanupProjectClaudePlaceholders(): Promise<void> {
-  let projects: string[]
-  try {
-    projects = await fs.readdir(getProjectsDir())
-  } catch {
-    return
-  }
-  for (const slug of projects) {
-    try {
-      await unlinkIgnoreMissing(projectClaudeCredentialsFile(slug))
-    } catch (err) {
-      console.warn(`Warning: failed to remove Claude placeholder for project "${slug}": ${err instanceof Error ? err.message : String(err)}`)
-    }
-  }
+  await forEachProject((slug) => unlinkIgnoreMissing(projectClaudeCredentialsFile(slug)), 'failed to remove Claude placeholder')
 }
 
 /**
@@ -545,17 +483,5 @@ export async function cleanupProjectClaudePlaceholders(): Promise<void> {
  * in place.
  */
 export async function cleanupProjectCodexPlaceholders(): Promise<void> {
-  let projects: string[]
-  try {
-    projects = await fs.readdir(getProjectsDir())
-  } catch {
-    return
-  }
-  for (const slug of projects) {
-    try {
-      await unlinkIgnoreMissing(projectCodexAuthFile(slug))
-    } catch (err) {
-      console.warn(`Warning: failed to remove Codex placeholder for project "${slug}": ${err instanceof Error ? err.message : String(err)}`)
-    }
-  }
+  await forEachProject((slug) => unlinkIgnoreMissing(projectCodexAuthFile(slug)), 'failed to remove Codex placeholder')
 }

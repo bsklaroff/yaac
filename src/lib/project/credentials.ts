@@ -1,6 +1,4 @@
 import fs from 'node:fs/promises'
-import os from 'node:os'
-import path from 'node:path'
 import * as childProcess from 'node:child_process'
 import {
   credentialsDir,
@@ -9,17 +7,12 @@ import {
   ensureDataDir,
 } from '@/lib/project/paths'
 import { DaemonError } from '@/daemon/errors'
-import { parsePattern, validatePattern, matchPattern } from '@/shared/credentials'
+import { parsePattern, validatePattern, matchPattern, isHostSegment } from '@/shared/credentials'
+import { expandTilde } from '@/shared/paths'
 import type {
   GitCredentialEntry,
   GitCredentialsFile,
 } from '@/shared/types'
-
-export { validatePattern, parsePattern, matchPattern, ghApiHostForGitHost } from '@/shared/credentials'
-
-export function credentialsPath(): string {
-  return githubCredentialsPath()
-}
 
 async function ensureCredentialsDir(): Promise<void> {
   await ensureDataDir()
@@ -32,10 +25,6 @@ async function ensureCredentialsDir(): Promise<void> {
  * `github.com/*`; a two-segment pattern whose first segment is not a host
  * (no `.` and not `localhost`) is treated as a github.com owner.
  */
-function isHostSegment(s: string): boolean {
-  return s.includes('.') || s === 'localhost'
-}
-
 function normalizeLegacyPattern(pattern: string): string {
   if (pattern === '*') return 'github.com/*'
   const parts = pattern.split('/')
@@ -74,7 +63,7 @@ function normalizeEntry(raw: Record<string, unknown>): GitCredentialEntry | null
 
 export async function loadCredentials(): Promise<GitCredentialsFile> {
   try {
-    const raw = await fs.readFile(credentialsPath(), 'utf8')
+    const raw = await fs.readFile(githubCredentialsPath(), 'utf8')
     const parsed: unknown = JSON.parse(raw)
     if (
       typeof parsed === 'object' &&
@@ -101,7 +90,7 @@ export async function loadCredentials(): Promise<GitCredentialsFile> {
 export async function saveCredentials(creds: GitCredentialsFile): Promise<void> {
   await ensureCredentialsDir()
   await fs.writeFile(
-    credentialsPath(),
+    githubCredentialsPath(),
     JSON.stringify(creds, null, 2) + '\n',
     { mode: 0o600 },
   )
@@ -198,12 +187,6 @@ export function parseGitRemote(remoteUrl: string): ParsedGitRemote {
 export type ResolvedGitCredential =
   | { kind: 'https'; token: string }
   | { kind: 'ssh'; privateKeyPath: string; knownHostsEntry: string }
-
-function expandTilde(p: string): string {
-  if (p === '~') return os.homedir()
-  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2))
-  return p
-}
 
 /**
  * Resolve a credential for a remote URL by walking the credentials file and

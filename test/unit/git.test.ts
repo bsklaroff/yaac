@@ -3,7 +3,8 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import simpleGit from 'simple-git'
-import { cloneRepo, getDefaultBranch, addWorktree, fetchOrigin, getGitUserConfig, injectTokenIntoUrl, torEnv, torSshOpts, buildHostSideGitSshCommand, formatSshCommand, writeKnownHostsFile, expandTilde, isGitAuthError } from '@/lib/git'
+import { cloneRepo, getDefaultBranch, addWorktree, fetchOrigin, injectTokenIntoUrl, torEnv, buildHostSideGitSshCommand, writeKnownHostsFile, isGitAuthError } from '@/lib/git'
+import { formatSshCommand, getGitUserConfig, torSshOpts } from '@/shared/git'
 
 describe('git helpers', () => {
   let tmpDir: string
@@ -372,18 +373,6 @@ describe('writeKnownHostsFile', () => {
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true })
     }
-  })
-})
-
-describe('expandTilde', () => {
-  it('expands a leading ~', () => {
-    const expanded = expandTilde('~/foo')
-    expect(expanded.startsWith('/')).toBe(true)
-    expect(expanded.endsWith('/foo')).toBe(true)
-  })
-
-  it('leaves non-tilde paths alone', () => {
-    expect(expandTilde('/abs/path')).toBe('/abs/path')
   })
 })
 

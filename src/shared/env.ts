@@ -166,9 +166,14 @@ export const testEnv = {
 
   /**
    * `YAAC_STARTING_GRACE_MS` — grace window protecting freshly-created session
-   * pods from the stale-session reaper. Default 60_000; a non-finite or
-   * negative value falls back to the default. Tests shrink it to provoke
-   * cleanup.
+   * pods from the stale-session reaper. session-create's retry loop recreates
+   * the Job between attempts and does not start tmux until the last step, so
+   * without a grace period a concurrent reap pass (`reconcileStaleSessions`,
+   * `getWaitingSessions`) can classify the pod as a zombie — firing
+   * cleanupSessionDetached, which removes the session's allowedHosts from the
+   * proxy mid-creation. Default 60_000; a non-finite or negative value falls
+   * back to the default. Tests shrink it to provoke cleanup on sessions they
+   * just created.
    */
   get startingGraceMs(): number {
     const raw = process.env.YAAC_STARTING_GRACE_MS

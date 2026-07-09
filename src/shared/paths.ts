@@ -24,6 +24,13 @@ export const PACKAGE_ROOT = env.bundled
   ? __dirname
   : findPackageRoot(__dirname)
 
+/** Expand a leading `~` / `~/` to the current user's home directory. */
+export function expandTilde(p: string): string {
+  if (p === '~') return os.homedir()
+  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2))
+  return p
+}
+
 let dataDir: string | null = null
 
 export function getDataDir(): string {

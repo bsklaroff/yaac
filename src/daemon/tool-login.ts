@@ -4,14 +4,14 @@ import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 import * as pty from '@lydell/node-pty'
 import { ensureDataDir, getDataDir } from '@/lib/project/paths'
+import { persistToolLogin } from '@/lib/project/tool-auth'
 import {
   claudeKeychainService,
   deleteScratchClaudeKeychainItem,
   extractClaudeOAuthBundle,
   extractCodexOAuthBundle,
-  persistToolLogin,
   readClaudeKeychainPayload,
-} from '@/lib/project/tool-auth'
+} from '@/shared/tool-auth-interactive'
 import { resolveToolCliPath } from '@/daemon/cli-resolve'
 import { DaemonError } from '@/daemon/errors'
 import { testEnv } from '@/shared/env'

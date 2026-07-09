@@ -25,7 +25,19 @@ import {
   DOCKERFILES_DIR,
   PROXY_DIR,
 } from '@/lib/project/paths'
-import { daemonLogPath } from '@/shared/paths'
+import { daemonLogPath, expandTilde } from '@/shared/paths'
+
+describe('expandTilde', () => {
+  it('expands a leading ~', () => {
+    const expanded = expandTilde('~/foo')
+    expect(expanded.startsWith('/')).toBe(true)
+    expect(expanded.endsWith('/foo')).toBe(true)
+  })
+
+  it('leaves non-tilde paths alone', () => {
+    expect(expandTilde('/abs/path')).toBe('/abs/path')
+  })
+})
 
 describe('paths', () => {
   afterEach(() => {

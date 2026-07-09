@@ -128,7 +128,6 @@ vi.mock('@/lib/project/credentials', () => ({
     return { scheme: 'ssh', host: m[1], path }
   },
   loadKnownHostsEntryForHost: vi.fn().mockResolvedValue(null),
-  ghApiHostForGitHost: (host: string) => (host === 'github.com' ? 'api.github.com' : null),
   writeProxySecrets: vi.fn().mockResolvedValue(undefined),
 }))
 
@@ -146,7 +145,6 @@ vi.mock('@/lib/git', () => ({
   addWorktree: vi.fn().mockResolvedValue(undefined),
   getDefaultBranch: vi.fn().mockResolvedValue('main'),
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
-  getGitUserConfig: vi.fn().mockResolvedValue({ name: 'Test User', email: 'test@example.com' }),
   writeKnownHostsFile: vi.fn().mockResolvedValue(undefined),
   isTorEnabled: vi.fn().mockReturnValue(false),
 }))
@@ -188,7 +186,7 @@ import simpleGit from 'simple-git'
 import { resolveCredentialForUrl, loadKnownHostsEntryForHost } from '@/lib/project/credentials'
 import { loadToolAuthEntry } from '@/lib/project/tool-auth'
 import { resolveAllowedHosts } from '@/lib/container/default-allowed-hosts'
-import { addWorktree, getDefaultBranch, fetchOrigin, getGitUserConfig } from '@/lib/git'
+import { addWorktree, getDefaultBranch, fetchOrigin } from '@/lib/git'
 import { kubectlRelay, reserveAvailablePort, startPortForwarders } from '@/lib/container/port'
 import { buildStatusRight, registerSessionForwarders } from '@/lib/session/port-forwarders'
 
@@ -268,7 +266,7 @@ describe('createSession', () => {
     vi.mocked(addWorktree).mockResolvedValue(undefined)
     vi.mocked(getDefaultBranch).mockResolvedValue('main')
     vi.mocked(fetchOrigin).mockResolvedValue(undefined)
-    vi.mocked(getGitUserConfig).mockResolvedValue({ name: 'Test User', email: 'test@example.com' })
+    vi.mocked(getGitUserConfigShared).mockResolvedValue({ name: 'Test User', email: 'test@example.com' })
     mockLoadToolAuth.mockResolvedValue(null)
     vi.mocked(proxyServiceClusterIp).mockResolvedValue('10.96.0.5')
     /* eslint-disable @typescript-eslint/unbound-method */

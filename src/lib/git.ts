@@ -5,6 +5,7 @@ import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
 import type { ResolvedGitCredential } from '@/lib/project/credentials'
 import { env } from '@/shared/env'
+import { formatSshCommand, torSshOpts } from '@/shared/git'
 
 export function injectTokenIntoUrl(url: string, token: string): string {
   const parsed = new URL(url)
@@ -31,15 +32,6 @@ export function isGitAuthError(message: string): boolean {
   ].some((re) => re.test(message))
 }
 
-export { torSshOpts, formatSshCommand } from '@/shared/git'
-import { formatSshCommand } from '@/shared/git'
-
-export function expandTilde(p: string): string {
-  if (p === '~') return os.homedir()
-  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2))
-  return p
-}
-
 // When Tor is enabled on the daemon process, route the git subprocess
 // through the user's host-machine Tor (assumed already running at
 // YAAC_HOST_TOR_SOCKS_URL, default socks5h://127.0.0.1:9050). Returns
@@ -53,8 +45,6 @@ export function torEnv(): NodeJS.ProcessEnv | undefined {
   // eslint-disable-next-line no-process-env -- forward the full host env to the git subprocess (PATH/HOME/…), adding the Tor proxy vars
   return { ...process.env, ALL_PROXY: url, NO_PROXY: 'localhost,127.0.0.1' }
 }
-
-import { torSshOpts } from '@/shared/git'
 
 /**
  * Build the host-side GIT_SSH_COMMAND for a registered SSH key. The daemon
@@ -211,5 +201,3 @@ export async function addWorktree(repoPath: string, worktreePath: string, branch
     if (worktreeAddQueues.get(repoPath) === run) worktreeAddQueues.delete(repoPath)
   }
 }
-
-export { getGitUserConfig } from '@/shared/git'
