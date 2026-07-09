@@ -17,10 +17,6 @@ describe('daemon errors', () => {
       expect(new DaemonError('INTERNAL', 'x').httpStatus).toBe(500)
     })
 
-    it('honors an explicit httpStatus override', () => {
-      expect(new DaemonError('INTERNAL', 'x', 418).httpStatus).toBe(418)
-    })
-
     it('preserves the message', () => {
       expect(new DaemonError('NOT_FOUND', 'project foo').message).toBe('project foo')
     })

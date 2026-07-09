@@ -12,7 +12,7 @@ import {
   kubectlWithRetry,
 } from '@/lib/k8s/kubectl'
 import { LABEL_SESSION_ID } from '@/lib/k8s/pods'
-import { pushImageToRegistry, registryHasTag, registryHost, registryRef } from '@/lib/k8s/registry'
+import { pushImageToRegistry, registryHasTag, registryHost } from '@/lib/k8s/registry'
 import { imageExists } from '@/lib/container/runtime'
 import { PACKAGE_ROOT } from '@/lib/project/paths'
 import { testEnv } from '@/shared/env'
@@ -228,11 +228,6 @@ export async function ensureVclusterImages(
     }
     await pushImageToRegistry(localTag)
   }
-}
-
-/** In-cluster ref of one mirrored vcluster image (for tests/debugging). */
-export function vclusterImageRef(localTag: string): string {
-  return registryRef(localTag)
 }
 
 function vclusterLabels(name: string, sessionId: string): Record<string, string> {

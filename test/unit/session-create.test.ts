@@ -58,7 +58,6 @@ vi.mock('@/lib/k8s/exec', () => ({
 }))
 
 vi.mock('@/lib/container/proxy-client', () => ({
-  PROXY_CONTAINER_PORT: '10255',
   SSH_AGENT_MOUNT: '/ssh-agent',
   SSH_AGENT_SOCKET_PATH: '/ssh-agent/socket',
   proxyClient: {

@@ -25,10 +25,10 @@ export class DaemonError extends Error {
   readonly code: ErrorCode
   readonly httpStatus: number
 
-  constructor(code: ErrorCode, message: string, httpStatus?: number) {
+  constructor(code: ErrorCode, message: string) {
     super(message)
     this.code = code
-    this.httpStatus = httpStatus ?? defaultStatus(code)
+    this.httpStatus = defaultStatus(code)
   }
 }
 

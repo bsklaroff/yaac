@@ -120,9 +120,6 @@ export function collectProxySecrets(
 
 // --- ProxyClient ---
 
-/** Port the proxy serves on inside the cluster (fixed). */
-export const PROXY_CONTAINER_PORT = String(PROXY_PORT)
-
 /** Path inside session and proxy pods where the ssh-agent socket lives. */
 export const SSH_AGENT_SOCKET_PATH = '/ssh-agent/socket'
 /** Mount point inside pods for the shared agent-socket hostPath dir. */

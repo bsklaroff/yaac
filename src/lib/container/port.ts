@@ -26,28 +26,6 @@ function tryListen(port: number): Promise<net.Server | null> {
 }
 
 /**
- * Scan for an available TCP port on the host, starting from `startPort`.
- * Tries up to 100 consecutive ports before throwing.
- *
- * NOTE: This releases the port immediately after finding it, so there is a
- * small TOCTOU window.  Prefer {@link reserveAvailablePort} when the caller
- * needs to guarantee the port stays available until it is handed off.
- */
-export async function findAvailablePort(startPort: number): Promise<number> {
-  const maxAttempts = 100
-  for (let offset = 0; offset < maxAttempts; offset++) {
-    const port = startPort + offset
-    if (port > 65535) break
-    const server = await tryListen(port)
-    if (server) {
-      server.close()
-      return port
-    }
-  }
-  throw new Error(`No available port found starting from ${startPort} (tried ${maxAttempts} ports)`)
-}
-
-/**
  * Find an available TCP port and **keep it bound** so no other process can
  * claim it between discovery and actual use.  The returned `server` should be
  * passed to {@link startPortForwarders} which will take ownership of it.

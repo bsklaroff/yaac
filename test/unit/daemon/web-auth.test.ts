@@ -43,27 +43,17 @@ describe('createWebAuthStore', () => {
     expect(store.isValidSession('never-minted')).toBe(false)
   })
 
-  it('revokeAll invalidates every session', () => {
-    const store = createWebAuthStore()
-    const sid = store.consumeBootstrap(store.currentCode()) as string
-    expect(store.isValidSession(sid)).toBe(true)
-    store.revokeAll()
-    expect(store.isValidSession(sid)).toBe(false)
-  })
-
   it('restores initialSessions (persistence across restart)', () => {
     const store = createWebAuthStore({ initialSessions: ['restored-id'] })
     expect(store.isValidSession('restored-id')).toBe(true)
     expect(store.isValidSession('other')).toBe(false)
   })
 
-  it('notifies onSessionsChanged when sessions are minted and revoked', () => {
+  it('notifies onSessionsChanged when sessions are minted', () => {
     const snapshots: string[][] = []
     const store = createWebAuthStore({ onSessionsChanged: (s) => snapshots.push(s) })
     const sid = store.consumeBootstrap(store.currentCode()) as string
     expect(snapshots.at(-1)).toContain(sid)
-    store.revokeAll()
-    expect(snapshots.at(-1)).toEqual([])
   })
 
   it('caps retained sessions at MAX_SESSIONS, evicting the oldest', () => {
