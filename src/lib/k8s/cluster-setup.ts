@@ -132,6 +132,17 @@ const defaultDeps: ClusterSetupDeps = {
 }
 
 /**
+ * Setup deps for the daemon's streamed `/cluster/setup`: progress goes to
+ * `log` (forwarded to the client) and destructive steps are auto-approved —
+ * the caller consented by invoking setup, and there's no TTY to prompt on.
+ * Chatty subprocess output still lands in the daemon log via the default
+ * `runStreaming`.
+ */
+export function streamingClusterSetupDeps(log: (message: string) => void): ClusterSetupDeps {
+  return { ...defaultDeps, log, confirm: () => Promise.resolve(true) }
+}
+
+/**
  * Environment for every `kind` invocation: yaac runs kind's nodes under
  * podman (KIND_EXPERIMENTAL_PROVIDER is kind's own knob for that) so the
  * nodes and the registry share one engine, one network, one lifecycle.

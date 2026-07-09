@@ -17,10 +17,13 @@ import { ProjectRail } from './components/ProjectRail'
 import { Sidebar, sidebarRowIds } from './components/Sidebar'
 import { SessionView } from './components/SessionView'
 import { BootstrapSplash } from './components/BootstrapSplash'
+import { ClusterSetup } from './components/ClusterSetup'
+import { getClusterCheck, type CheckResult } from './lib/clusterApi'
 import { ConfirmDialog } from './components/ui/ConfirmDialog'
 import type { DaemonSnapshot, SessionListEntry } from '@/shared/types'
 
 type AuthState = 'checking' | 'authed' | 'needs-bootstrap'
+type ClusterState = 'ready' | 'not-ready'
 
 /** Hit a protected endpoint to see if the session cookie is still good. */
 async function probeAuth(): Promise<boolean> {
@@ -60,8 +63,31 @@ function App(): JSX.Element {
   const { connected } = useEvents(auth === 'authed')
   const snapshot = useSnapshot()
 
+  // Cluster gate, non-blocking: `cluster check` probes the cluster (a real
+  // pod) and can take many seconds, so render optimistically and only flip to
+  // the setup screen if the background check comes back not-ready. A check
+  // error (e.g. an older daemon without the route) is ignored so a transient
+  // or version-skew issue never locks the user out.
+  const [cluster, setCluster] = useState<ClusterState>('ready')
+  const [checkResults, setCheckResults] = useState<CheckResult[]>([])
+  useEffect(() => {
+    if (auth !== 'authed') return
+    let cancelled = false
+    void getClusterCheck()
+      .then((r) => {
+        if (cancelled || r.ok) return
+        setCheckResults(r.results)
+        setCluster('not-ready')
+      })
+      .catch(() => { /* stay optimistic on a check error */ })
+    return () => { cancelled = true }
+  }, [auth])
+
   if (auth === 'checking') return <FullScreen>Loading…</FullScreen>
   if (auth === 'needs-bootstrap') return <BootstrapSplash onAuthed={() => setAuth('authed')} />
+  if (cluster === 'not-ready') {
+    return <ClusterSetup results={checkResults} onReady={() => setCluster('ready')} />
+  }
 
   return <Workspace snapshot={snapshot} connected={connected} />
 }

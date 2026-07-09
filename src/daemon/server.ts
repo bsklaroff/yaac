@@ -20,6 +20,7 @@ import { authApp } from '@/daemon/routes/auth'
 import { shortcutsApp } from '@/daemon/routes/shortcuts'
 import { configApp } from '@/daemon/routes/config'
 import { imageApp } from '@/daemon/routes/image'
+import { clusterApp } from '@/daemon/routes/cluster'
 import { daemonLog } from '@/daemon/log'
 import { PACKAGE_ROOT } from '@/shared/paths'
 
@@ -116,6 +117,7 @@ export function buildApp(deps: DaemonAppDeps) {
     .route('/shortcuts', shortcutsApp)
     .route('/config', configApp)
     .route('/image', imageApp)
+    .route('/cluster', clusterApp)
 }
 
 export type AppType = ReturnType<typeof buildApp>
