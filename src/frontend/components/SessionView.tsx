@@ -6,7 +6,9 @@ import { SessionTerminal } from '@/frontend/components/SessionTerminal'
 import { SessionActionsMenu } from '@/frontend/components/SessionActionsMenu'
 import { CreatingPlaceholder } from '@/frontend/components/CreatingPlaceholder'
 import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
-import { AddIcon, CloseIcon, SidebarIcon, SplitDownIcon, SplitRightIcon, TabsIcon, TilesIcon, TOOL_LABEL } from '@/frontend/lib/icons'
+import { AddIcon, CloseIcon, SidebarIcon, SplitDownIcon, SplitRightIcon, TabsIcon, TerminalIcon, TilesIcon, TOOL_LABEL } from '@/frontend/lib/icons'
+import { EmptyState } from '@/frontend/components/ui/EmptyState'
+import { NewSessionButton } from '@/frontend/components/NewSessionButton'
 import { BlockedHostsBadge } from '@/frontend/components/BlockedHostsBadge'
 import { GitAuthFailureBadge } from '@/frontend/components/GitAuthFailureBadge'
 import { ForwardedPortLinks } from '@/frontend/components/ForwardedPortLinks'
@@ -89,6 +91,7 @@ export function SessionView({
   const setSessionLayout = useUiStore((s) => s.setSessionLayout)
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
   const sidebarOpen = useUiStore((s) => s.sidebarOpen)
+  const activeProjectSlug = useUiStore((s) => s.activeProjectSlug)
   const viewMode = useUiStore((s) => s.viewMode)
   const setViewMode = useUiStore((s) => s.setViewMode)
   const activeTabs = useUiStore((s) => s.activeTabs)
@@ -484,7 +487,15 @@ export function SessionView({
           confines its z-index so those popups render above it. */}
       <div ref={wsRef} className="relative isolate min-h-0 flex-1">
         {!session && !creatingHere && (
-          <div className="flex h-full items-center justify-center text-text-faint">No sessions yet</div>
+          <EmptyState
+            className="h-full"
+            icon={TerminalIcon}
+            title="No sessions yet"
+            description="Start a coding-agent session and it opens right here."
+            action={activeProjectSlug
+              ? <NewSessionButton projectSlug={activeProjectSlug} variant="cta" />
+              : undefined}
+          />
         )}
 
         {/* Pane cards (chrome) for the selected session — tiles mode. */}

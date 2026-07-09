@@ -2,8 +2,9 @@ import { useEffect, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { useQuery } from '@tanstack/react-query'
 import { Collapsible } from '@base-ui/react/collapsible'
-import { ChevronIcon, CloseIcon, LoadingIcon, RestartIcon, SidebarIcon, TOOL_LABEL } from '@/frontend/lib/icons'
+import { ChevronIcon, CloseIcon, LoadingIcon, ProjectsIcon, RestartIcon, SidebarIcon, TerminalIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import { BlockedHostsBadge } from '@/frontend/components/BlockedHostsBadge'
+import { EmptyState } from '@/frontend/components/ui/EmptyState'
 import { GitAuthFailureBadge } from '@/frontend/components/GitAuthFailureBadge'
 import { ImageBuildIndicator } from '@/frontend/components/ImageBuildIndicator'
 import { NewSessionButton } from '@/frontend/components/NewSessionButton'
@@ -111,9 +112,21 @@ export function Sidebar({
       </div>
 
       <div className="flex-1 overflow-y-auto py-1">
-        {!projectSlug && <Empty label="No project selected" />}
+        {!projectSlug && (
+          <EmptyState
+            className="py-12"
+            icon={ProjectsIcon}
+            title="No project selected"
+            description="Pick a project from the rail on the left."
+          />
+        )}
         {projectSlug && visibleCount === 0 && provisioning.length === 0 && (
-          <Empty label="No sessions yet — start one with +" />
+          <EmptyState
+            className="py-12"
+            icon={TerminalIcon}
+            title="No sessions yet"
+            description="Start one with the + above."
+          />
         )}
         {provisioning.map((p) => <ProvisioningRow key={p.sessionId} entry={p} />)}
         {GROUPS.map((g) => (
@@ -402,8 +415,4 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
       />
     </div>
   )
-}
-
-function Empty({ label }: { label: string }): JSX.Element {
-  return <div className="px-4 py-2 text-sm text-text-faint">{label}</div>
 }
