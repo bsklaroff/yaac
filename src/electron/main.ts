@@ -20,6 +20,7 @@ import {
   type WaitingSession,
 } from '@/electron/attention'
 import { buildTrayBitmap } from '@/electron/tray-icon'
+import { appMenuTemplate } from '@/electron/menu'
 import { env } from '@/shared/env'
 
 /**
@@ -51,6 +52,9 @@ const attach = env.electronAttach
 if (env.electronDev) {
   app.setName('yaac (dev)')
   app.setPath('userData', path.join(app.getPath('appData'), 'yaac-dev'))
+} else {
+  // Ensure the app menu reads "yaac" (not "Electron") even in an unpacked run.
+  app.setName('yaac')
 }
 
 // --- daemon environment + spawning -----------------------------------------
@@ -273,7 +277,11 @@ async function boot(): Promise<void> {
   createWindow(buildAuthedRendererUrl(rendererBase(daemonLock.port), code))
 }
 
-void app.whenReady().then(boot).catch((err: unknown) => {
+void app.whenReady().then(() => {
+  // Proper macOS menu (yaac app menu + Edit menu for terminal copy/paste).
+  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate()))
+  return boot()
+}).catch((err: unknown) => {
   console.error('[electron] failed to start:', err)
 })
 
