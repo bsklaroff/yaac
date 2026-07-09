@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { isLayoutNode, type LayoutNode } from '@/frontend/lib/layout'
 import { DEFAULT_BINDINGS, type BindingMap, type Chord, type ShortcutId } from '@/frontend/lib/shortcuts'
+import { applyThemeAttribute, loadThemePref, persistThemePref, type ThemePref } from '@/frontend/lib/theme'
 import type { AgentTool, DeletedSessionEntry, ProvisioningSessionEntry, SessionListEntry } from '@/shared/types'
 
 const LAYOUTS_LS_KEY = 'yaac.layouts.v1'
@@ -274,6 +275,10 @@ interface UiState {
   layouts: Record<string, LayoutNode | null>
   /** Whether the session sidebar is shown. */
   sidebarOpen: boolean
+  /** Light/dark preference. 'system' follows the OS; setThemePref persists it
+   *  and reflects it onto <html data-theme> for the CSS palette (index.css). */
+  themePref: ThemePref
+  setThemePref: (pref: ThemePref) => void
   /** Tiling WM vs one-at-a-time tabs (persisted; small screens default
    *  to tabs). The layout tree stays canonical in both modes. */
   viewMode: ViewMode
@@ -378,6 +383,7 @@ export const useUiStore = create<UiState>((set) => ({
   terminalNonces: {},
   layouts: loadPersistedLayouts(),
   sidebarOpen: true,
+  themePref: loadThemePref(),
   viewMode: loadViewMode(),
   activeTabs: {},
   optimisticProvisioning: [],
@@ -431,6 +437,11 @@ export const useUiStore = create<UiState>((set) => ({
     layouts: { ...s.layouts, [sessionId]: layout },
   })),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
+  setThemePref: (pref) => {
+    persistThemePref(pref)
+    applyThemeAttribute(pref)
+    set({ themePref: pref })
+  },
   setViewMode: (mode) => {
     persistViewMode(mode)
     set({ viewMode: mode })

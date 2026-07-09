@@ -88,6 +88,7 @@ export function SessionView({
   const layouts = useUiStore((s) => s.layouts)
   const setSessionLayout = useUiStore((s) => s.setSessionLayout)
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
+  const sidebarOpen = useUiStore((s) => s.sidebarOpen)
   const viewMode = useUiStore((s) => s.viewMode)
   const setViewMode = useUiStore((s) => s.setViewMode)
   const activeTabs = useUiStore((s) => s.activeTabs)
@@ -389,15 +390,19 @@ export function SessionView({
       {/* Slim session bar on the base layer — the panes are the cards. */}
       {creatingHere ? (
         <header className="flex h-8 shrink-0 items-center gap-2.5 px-2 text-xs">
-          <button
-            onClick={toggleSidebar}
-            title="Toggle sidebar"
-            aria-label="Toggle sidebar"
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
-              hover:bg-surface-2 hover:text-text-dim"
-          >
-            <SidebarIcon size={14} />
-          </button>
+          {/* Only when the sidebar is collapsed — the reopen affordance. When
+              open, its toggle lives in the sidebar header (next to +). */}
+          {!sidebarOpen && (
+            <button
+              onClick={toggleSidebar}
+              title="Show sidebar"
+              aria-label="Show sidebar"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
+                hover:bg-surface-2 hover:text-text-dim"
+            >
+              <SidebarIcon size={14} />
+            </button>
+          )}
           <span className="min-w-0 flex-1 truncate font-medium text-text-dim">
             {creatingHere.kind === 'restart' ? 'Restarting session' : 'New session'}
           </span>
@@ -405,15 +410,19 @@ export function SessionView({
         </header>
       ) : session ? (
         <header className="flex h-8 shrink-0 items-center gap-2.5 px-2 text-xs">
-          <button
-            onClick={toggleSidebar}
-            title="Toggle sidebar"
-            aria-label="Toggle sidebar"
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
-              hover:bg-surface-2 hover:text-text-dim"
-          >
-            <SidebarIcon size={14} />
-          </button>
+          {/* Only when the sidebar is collapsed — the reopen affordance. When
+              open, its toggle lives in the sidebar header (next to +). */}
+          {!sidebarOpen && (
+            <button
+              onClick={toggleSidebar}
+              title="Show sidebar"
+              aria-label="Show sidebar"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
+                hover:bg-surface-2 hover:text-text-dim"
+            >
+              <SidebarIcon size={14} />
+            </button>
+          )}
           <span className="min-w-0 flex-1 truncate font-medium text-text">
             {session.title || session.prompt || 'New session'}
           </span>
@@ -453,15 +462,19 @@ export function SessionView({
         </header>
       ) : (
         <header className="flex h-8 shrink-0 items-center px-2">
-          <button
-            onClick={toggleSidebar}
-            title="Toggle sidebar"
-            aria-label="Toggle sidebar"
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
-              hover:bg-surface-2 hover:text-text-dim"
-          >
-            <SidebarIcon size={14} />
-          </button>
+          {/* Only when the sidebar is collapsed — the reopen affordance. When
+              open, its toggle lives in the sidebar header (next to +). */}
+          {!sidebarOpen && (
+            <button
+              onClick={toggleSidebar}
+              title="Show sidebar"
+              aria-label="Show sidebar"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
+                hover:bg-surface-2 hover:text-text-dim"
+            >
+              <SidebarIcon size={14} />
+            </button>
+          )}
         </header>
       )}
 
@@ -480,7 +493,7 @@ export function SessionView({
             key={target}
             style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}
             className={clsx(
-              'absolute flex flex-col overflow-hidden rounded-lg border border-white/[0.06] bg-surface',
+              'absolute flex flex-col overflow-hidden rounded-lg border border-hairline bg-surface',
               'shadow-[0_8px_24px_rgba(0,0,0,0.45)]',
               drag?.active && drag.src === target && 'opacity-60',
             )}
@@ -532,7 +545,7 @@ export function SessionView({
             same layout-tree leaves the tiles mode arranges spatially. */}
         {session && !tiled && targets.length > 0 && (
           <section className="absolute inset-0 flex flex-col overflow-hidden rounded-lg border
-            border-white/[0.06] bg-surface shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
+            border-hairline bg-surface shadow-[0_8px_24px_rgba(0,0,0,0.28)]">
             <div style={{ height: HEADER_H }} className="flex shrink-0 items-center gap-0.5 px-1.5">
               {targets.map((t) => (
                 <span key={t} className="group/tab relative flex items-center">
@@ -630,7 +643,7 @@ export function SessionView({
             )}
           >
             <div className={clsx(
-              'rounded-full bg-white/[0.06] transition-colors hover:bg-white/25',
+              'rounded-full bg-hairline transition-colors hover:bg-text-faint',
               d.dir === 'row' ? 'h-8 w-1' : 'h-1 w-8',
             )} />
           </div>

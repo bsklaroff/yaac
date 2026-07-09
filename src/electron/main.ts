@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { existsSync } from 'node:fs'
 import { spawn, execFileSync } from 'node:child_process'
-import { app, BrowserWindow, Tray, Menu, Notification, nativeImage, screen } from 'electron'
+import { app, BrowserWindow, Tray, Menu, Notification, nativeImage, nativeTheme, screen } from 'electron'
 import WebSocket from 'ws'
 import { readLock, isLockLive, type DaemonLock } from '@/shared/lock'
 import { readBuildId } from '@/shared/build-id'
@@ -21,6 +21,7 @@ import {
 } from '@/electron/attention'
 import { buildTrayBitmap } from '@/electron/tray-icon'
 import { appMenuTemplate } from '@/electron/menu'
+import { backgroundColorFor } from '@/electron/theme-bg'
 import { readWindowState, saveWindowState, boundsVisibleOn } from '@/electron/window-state'
 import { env } from '@/shared/env'
 
@@ -170,7 +171,9 @@ async function createWindow(url: string): Promise<void> {
     minWidth: 880,
     minHeight: 560,
     show: false,
-    backgroundColor: '#0b0b0d',
+    // Match the OS appearance so a light-mode window doesn't flash the dark
+    // shell at the edges during a resize. Kept in sync below.
+    backgroundColor: backgroundColorFor(nativeTheme.shouldUseDarkColors),
     // Modern macOS chrome: hide the title bar and let the traffic lights float
     // over the UI. The webapp reserves a draggable top strip for them when it
     // detects Electron (src/frontend/App.tsx + .titlebar-drag).
@@ -180,6 +183,10 @@ async function createWindow(url: string): Promise<void> {
   })
   // Reveal only once the renderer has painted — no empty flash on open.
   win.once('ready-to-show', () => win?.show())
+  // Follow live OS light/dark switches (System mode) for the native backing.
+  const onThemeChange = (): void => win?.setBackgroundColor(backgroundColorFor(nativeTheme.shouldUseDarkColors))
+  nativeTheme.on('updated', onThemeChange)
+  win.on('closed', () => nativeTheme.removeListener('updated', onThemeChange))
   win.on('close', (e) => {
     // Persist bounds on every close (fires on hide-to-tray and on quit).
     if (win) void saveWindowState(stateFile, win.getBounds())

@@ -2,7 +2,7 @@ import { useEffect, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { useQuery } from '@tanstack/react-query'
 import { Collapsible } from '@base-ui/react/collapsible'
-import { ChevronIcon, CloseIcon, LoadingIcon, RestartIcon, TOOL_LABEL } from '@/frontend/lib/icons'
+import { ChevronIcon, CloseIcon, LoadingIcon, RestartIcon, SidebarIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import { BlockedHostsBadge } from '@/frontend/components/BlockedHostsBadge'
 import { GitAuthFailureBadge } from '@/frontend/components/GitAuthFailureBadge'
 import { ImageBuildIndicator } from '@/frontend/components/ImageBuildIndicator'
@@ -74,12 +74,13 @@ export function Sidebar({
   // Hide sessions whose delete is in flight (optimistic) until the snapshot
   // drops them, so the empty state keys off what's actually shown.
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
+  const toggleSidebar = useUiStore((s) => s.toggleSidebar)
   const shown = sessions.filter((s) => !pendingDeleteIds.includes(s.sessionId))
   const visibleCount = shown.filter((s) => GROUPS.some((g) => g.status === s.status)).length
 
   return (
     <aside className="my-2 ml-2 flex w-64 flex-col overflow-hidden rounded-lg
-      border border-white/[0.06] bg-surface text-text">
+      border border-hairline bg-surface text-text">
       <div className="flex h-11 shrink-0 items-center gap-2 pl-4 pr-2">
         {projectSlug
           ? <ProjectActionsMenu slug={projectSlug} remoteUrl={projectRemoteUrl} />
@@ -97,6 +98,15 @@ export function Sidebar({
             />
           )}
           {projectSlug && <NewSessionButton projectSlug={projectSlug} />}
+          <button
+            onClick={toggleSidebar}
+            title="Hide sidebar"
+            aria-label="Hide sidebar"
+            className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
+              hover:bg-surface-2 hover:text-text-dim"
+          >
+            <SidebarIcon size={14} />
+          </button>
         </div>
       </div>
 

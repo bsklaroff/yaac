@@ -22,12 +22,65 @@
   --color-accent: #d4875f;
   --color-accent-soft: #8a5a3d;
 
+  /* Card edges / dividers. A hair of white on the dark cards; the light
+   * palette flips these to a hair of black so edges still read on white
+   * (a plain white/[0.06] border would vanish there). */
+  --color-hairline: rgb(255 255 255 / 0.06);
+  --color-hairline-soft: rgb(255 255 255 / 0.04);
+
   /* For transient states like SessionTerminal's connecting notice. */
   --animate-fade-in: fade-in 200ms ease-out both;
 
   @keyframes fade-in {
     from { opacity: 0; }
     to { opacity: 1; }
+  }
+}
+
+/*
+ * Light palette. The @theme block above is the dark base (used for
+ * data-theme="dark", and for data-theme="system" when the OS is dark). These
+ * selectors override the same custom properties — which every Tailwind color
+ * utility resolves through var() — so the whole UI recolors with no per-class
+ * dark: variants. Designed by role, not by inverting lightness: cards go white
+ * and elevated, while hover/selected fills become a light-gray tint (the
+ * opposite direction from dark, where more elevation means lighter). The block
+ * is intentionally duplicated for the forced-light and system-follows-light
+ * cases — CSS can't share a declaration list across two selectors.
+ */
+:root[data-theme="light"] {
+  --color-base: #f5f4f1;       /* warm paper shell the cards float on (Cursor-like) */
+  --color-bg: #efeee9;         /* deeper warm wash — settings nav, loading, window bg */
+  --color-surface: #ffffff;    /* white cards, panes, popups — the elevated surface */
+  --color-surface-2: #ebe9e4;  /* warm hover/selected fills, menu popups */
+  --color-surface-3: #e2dfd9;  /* highlighted menu item — a touch deeper */
+  --color-border: #e4e1db;     /* very subtle warm hairline */
+  --color-border-strong: #cec9bf;
+  --color-text: #33322e;       /* warm near-black */
+  --color-text-dim: #78756d;   /* warm medium gray */
+  --color-text-faint: #a5a199;
+  --color-accent: #bd5a2a;     /* Cursor-style rust-orange, richer on white */
+  --color-accent-soft: #d59a6a;
+  --color-hairline: rgb(0 0 0 / 0.08);
+  --color-hairline-soft: rgb(0 0 0 / 0.05);
+}
+
+@media (prefers-color-scheme: light) {
+  :root[data-theme="system"] {
+    --color-base: #f5f4f1;
+    --color-bg: #efeee9;
+    --color-surface: #ffffff;
+    --color-surface-2: #ebe9e4;
+    --color-surface-3: #e2dfd9;
+    --color-border: #e4e1db;
+    --color-border-strong: #cec9bf;
+    --color-text: #33322e;
+    --color-text-dim: #78756d;
+    --color-text-faint: #a5a199;
+    --color-accent: #bd5a2a;
+    --color-accent-soft: #d59a6a;
+    --color-hairline: rgb(0 0 0 / 0.08);
+    --color-hairline-soft: rgb(0 0 0 / 0.05);
   }
 }
 
@@ -48,11 +101,11 @@ body,
   height: 3px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #2a2a33;
+  background: var(--color-border);
   border-radius: 3px;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: #3a3a45;
+  background: var(--color-border-strong);
 }
 *::-webkit-scrollbar-track {
   background: transparent;
