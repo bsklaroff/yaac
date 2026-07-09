@@ -333,7 +333,9 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
           selectedSessionId === session.sessionId && 'bg-surface-2 hover:bg-surface-2',
         )}
       >
-        <span className="flex items-center gap-2">
+        {/* pr-6 reserves room for the delete × that overlays the top-right on
+            hover, so a long title truncates before it instead of underlapping. */}
+        <span className="flex items-center gap-2 pr-6">
           {/* Live pulse: the session's agent is actively running. A square,
               so it can't be mistaken for the round unread bubble below. */}
           {session.status === 'running' && (
@@ -345,13 +347,15 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
           {/* Unread bubble: this session started waiting and hasn't been viewed. */}
           {unread && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
           <span className="truncate font-medium">{session.title || session.prompt || 'New session'}</span>
-          {/* Tool name; on row hover it yields to the delete × in the same spot. */}
-          <span className="ml-auto shrink-0 text-xs text-text-faint transition-opacity group-hover:opacity-0">
-            {TOOL_LABEL[session.tool]}
-          </span>
         </span>
         <span className="flex items-center gap-2 text-xs text-text-faint">
           <span className="truncate">{relativeAge(session.createdAt)}</span>
+          {/* Tool name, dropped to the metadata row so the title gets the full
+              width above. Suppressed when hosts are blocked: the blocked-hosts
+              badge overlays this same bottom-right corner. */}
+          {session.blockedHosts.length === 0 && (
+            <span className="ml-auto shrink-0">{TOOL_LABEL[session.tool]}</span>
+          )}
         </span>
       </button>
 
