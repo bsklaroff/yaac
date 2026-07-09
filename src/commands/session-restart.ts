@@ -1,12 +1,7 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import readline from 'node:readline/promises'
-import { spawn } from 'node:child_process'
-import simpleGit from 'simple-git'
+import { validateAddDirs } from '@/commands/add-dirs'
+import { ensureGitIdentity } from '@/commands/git-identity'
 import { getRpcClient, toClientError } from '@/commands/rpc'
-import { interactiveExecArgs } from '@/lib/k8s/exec'
-import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
-import { getGitUserConfig } from '@/shared/git'
+import { attachTmux } from '@/lib/k8s/exec'
 import { consumeNdjsonStream } from '@/shared/ndjson'
 import { testEnv } from '@/shared/env'
 
@@ -30,38 +25,15 @@ export async function sessionRestart(
   sessionId: string,
   options: SessionRestartOptions,
 ): Promise<string | undefined> {
-  for (const dirPath of [...(options.addDir ?? []), ...(options.addDirRw ?? [])]) {
-    if (!path.isAbsolute(dirPath)) {
-      console.error(`--add-dir path must be absolute: "${dirPath}"`)
-      process.exitCode = 1
-      return
-    }
-    try {
-      await fs.access(dirPath)
-    } catch {
-      console.error(`--add-dir path not found: "${dirPath}"`)
-      process.exitCode = 1
-      return
-    }
+  if (!(await validateAddDirs(options))) {
+    process.exitCode = 1
+    return
   }
 
-  let gitUser = await getGitUserConfig()
-  if (gitUser) {
-    console.log(`Git identity: ${gitUser.name} <${gitUser.email}>`)
-  } else {
-    console.log('No global git user configured. Git commits require a user identity.')
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-    const name = await rl.question('Enter git user.name: ')
-    const email = await rl.question('Enter git user.email: ')
-    rl.close()
-    if (!name || !email) {
-      console.error('Git user.name and user.email are required.')
-      process.exitCode = 1
-      return
-    }
-    await simpleGit().addConfig('user.name', name, false, 'global')
-    await simpleGit().addConfig('user.email', email, false, 'global')
-    gitUser = { name, email }
+  const gitUser = await ensureGitIdentity()
+  if (!gitUser) {
+    process.exitCode = 1
+    return
   }
 
   const client = await getRpcClient()
@@ -86,13 +58,7 @@ export async function sessionRestart(
 
   if (!testEnv.e2eNoAttach) {
     try {
-      await new Promise<void>((resolve, reject) => {
-        const child = spawn('kubectl', interactiveExecArgs(jobName, ['tmux', '-S', CONTAINER_TMUX_SOCK, 'attach-session', '-t', 'yaac']), {
-          stdio: 'inherit',
-        })
-        child.on('close', () => resolve())
-        child.on('error', reject)
-      })
+      await attachTmux(jobName, 'yaac')
     } catch {
       // Job or tmux session was killed — reaper will clean up.
     }

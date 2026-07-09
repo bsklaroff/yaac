@@ -1,4 +1,6 @@
 import { Command, Argument, type Help } from 'commander'
+// eslint-disable-next-line @typescript-eslint/no-restricted-imports -- package.json lives above src/; the single source of truth for the CLI version.
+import pkg from '../package.json' with { type: 'json' }
 import { exitOnClientError } from '@/shared/daemon-client'
 import { projectAdd } from '@/commands/project-add'
 import { projectList } from '@/commands/project-list'
@@ -19,9 +21,7 @@ import { toolSet } from '@/commands/tool-set'
 import { clusterCheck } from '@/commands/cluster-check'
 import { clusterDelete } from '@/commands/cluster-delete'
 import { clusterSetup } from '@/commands/cluster-setup'
-import { configEdit } from '@/commands/config-edit'
-import { configEditDockerfile } from '@/commands/config-edit-dockerfile'
-import { configEditUserDockerfile } from '@/commands/config-edit-user-dockerfile'
+import { editProjectConfigFile, configEditUserDockerfile } from '@/commands/config-edit'
 import { authFake, FAKE_AUTH_KINDS } from '@/commands/auth-fake'
 import { runDaemon, startDaemon, stopDaemon, restartDaemon, daemonLogs, openWebapp } from '@/daemon/cli'
 import { DEFAULT_DAEMON_PORT } from '@/shared/daemon-port'
@@ -68,12 +68,10 @@ function nestedHelp(cmd: Command, helper: Help): string {
   return output.join('\n')
 }
 
-const YAAC_VERSION = '0.0.3'
-
 const program = new Command()
   .name('yaac')
   .description('Agent sandbox manager')
-  .version(YAAC_VERSION)
+  .version(pkg.version)
 
 const daemon = program
   .command('daemon')
@@ -270,13 +268,17 @@ config
   .command('edit')
   .description("Open the project's yaac-config.json in $EDITOR")
   .argument('<project>', 'Project slug')
-  .action(configEdit)
+  .action(async (project: string) => {
+    await editProjectConfigFile(project, 'yaac-config.json')
+  })
 
 config
   .command('edit-dockerfile')
   .description("Open the project's Dockerfile.yaac in $EDITOR")
   .argument('<project>', 'Project slug')
-  .action(configEditDockerfile)
+  .action(async (project: string) => {
+    await editProjectConfigFile(project, 'Dockerfile.yaac')
+  })
 
 config
   .command('edit-user-dockerfile')

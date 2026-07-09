@@ -55,6 +55,7 @@ vi.mock('@/lib/k8s/bootstrap', async (importOriginal) => ({
 
 vi.mock('@/lib/k8s/exec', () => ({
   containerExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+  attachTmux: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@/lib/container/proxy-client', () => ({

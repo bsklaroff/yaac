@@ -1,8 +1,6 @@
-import { spawn } from 'node:child_process'
 import readline from 'node:readline/promises'
 import { getRpcClient, toClientError } from '@/commands/rpc'
-import { interactiveExecArgs } from '@/lib/k8s/exec'
-import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
+import { attachTmux } from '@/lib/k8s/exec'
 import { testEnv } from '@/shared/env'
 import type { AgentTool, StreamOutcome } from '@/shared/types'
 
@@ -88,15 +86,7 @@ export async function sessionStream(project?: string, tool?: AgentTool): Promise
     // container directly via `kubectl exec`.
     if (testEnv.e2eNoAttach) return
 
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn(
-        'kubectl',
-        interactiveExecArgs(body.jobName, ['tmux', '-S', CONTAINER_TMUX_SOCK, 'attach-session', '-t', body.tmuxSession]),
-        { stdio: 'inherit' },
-      )
-      child.on('close', () => resolve())
-      child.on('error', reject)
-    })
+    await attachTmux(body.jobName, body.tmuxSession)
 
     // The daemon re-evaluates outcomes on the next /stream/next call from
     // fresh state (tmux liveness, prompt presence), so the CLI only

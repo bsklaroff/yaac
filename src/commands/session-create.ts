@@ -1,13 +1,11 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import readline from 'node:readline/promises'
-import { spawn } from 'node:child_process'
-import simpleGit from 'simple-git'
+import { validateAddDirs } from '@/commands/add-dirs'
+import { ensureGitIdentity } from '@/commands/git-identity'
 import { getRpcClient, toClientError } from '@/commands/rpc'
-import { interactiveExecArgs } from '@/lib/k8s/exec'
-import { getGitUserConfig } from '@/shared/git'
+import { attachTmux } from '@/lib/k8s/exec'
 import { consumeNdjsonStream } from '@/shared/ndjson'
-import { CONTAINER_TMUX_SOCK, getProjectsDir } from '@/shared/paths'
+import { getProjectsDir } from '@/shared/paths'
 import { testEnv } from '@/shared/env'
 import type { AgentTool } from '@/shared/types'
 
@@ -42,35 +40,17 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     return
   }
 
-  // Local fast-fail on --add-dir paths so the user gets an immediate error
-  // instead of a round-trip to the daemon. The daemon re-validates.
-  for (const dirPath of [...(options.addDir ?? []), ...(options.addDirRw ?? [])]) {
-    if (!path.isAbsolute(dirPath)) {
-      console.error(`--add-dir path must be absolute: "${dirPath}"`)
-      process.exitCode = 1
-      return
-    }
+  if (!(await validateAddDirs(options))) {
+    process.exitCode = 1
+    return
   }
 
   // Resolve git identity locally so we can prompt when it's missing.
   // The daemon gets the already-resolved pair.
-  let gitUser = await getGitUserConfig()
-  if (gitUser) {
-    console.log(`Git identity: ${gitUser.name} <${gitUser.email}>`)
-  } else {
-    console.log('No global git user configured. Git commits require a user identity.')
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-    const name = await rl.question('Enter git user.name: ')
-    const email = await rl.question('Enter git user.email: ')
-    rl.close()
-    if (!name || !email) {
-      console.error('Git user.name and user.email are required.')
-      process.exitCode = 1
-      return
-    }
-    await simpleGit().addConfig('user.name', name, false, 'global')
-    await simpleGit().addConfig('user.email', email, false, 'global')
-    gitUser = { name, email }
+  const gitUser = await ensureGitIdentity()
+  if (!gitUser) {
+    process.exitCode = 1
+    return
   }
 
   // Tool is sent only when explicit (--tool). The daemon resolves the
@@ -103,13 +83,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   // container directly via `kubectl exec`.
   if (!testEnv.e2eNoAttach) {
     try {
-      await new Promise<void>((resolve, reject) => {
-        const child = spawn('kubectl', interactiveExecArgs(jobName, ['tmux', '-S', CONTAINER_TMUX_SOCK, 'attach-session', '-t', 'yaac']), {
-          stdio: 'inherit',
-        })
-        child.on('close', () => resolve())
-        child.on('error', reject)
-      })
+      await attachTmux(jobName, 'yaac')
     } catch {
       // Job or tmux session was killed (e.g. ctrl-b k) — the daemon's
       // background loop will reap the dead session.
