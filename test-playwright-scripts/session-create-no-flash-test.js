@@ -12,10 +12,13 @@
  * clicking "+ New session" → "Claude Code" and rAF-sampling the new
  * terminal's computed opacity + rendered row text from DOM-mount through
  * reveal. Also covers the "Connecting…" notice shown while the gate holds
- * (it must fade in during the hold and be gone once the terminal reveals)
- * and that the revealed frame is pinned to the bottom of scrollback — the
- * attach reflow occasionally left the viewport a line or two up, hiding the
- * agent's bottom status line, so the gate snaps to bottom before revealing.
+ * (it must fade in during the hold and be gone once the terminal reveals).
+ * Scrollback pinning is NOT asserted here: the tmux client keeps xterm in
+ * the alternate buffer for the whole attach, so there is no scrollback to
+ * drift in (the old .xterm-viewport scrollTop check was vacuous on xterm 6
+ * anyway — that element no longer scrolls). The bottom-line-eaten attach bug
+ * lives at the tmux layer and is covered by
+ * xterm-attach-scroll-pin-test.js instead.
  *
  * Run: node test-playwright-scripts/session-create-no-flash-test.js
  * Needs a running daemon (`yaac daemon start`) with a project configured;
@@ -101,18 +104,25 @@ async function main() {
           }
         }
         if (tracked) {
-          const rows = tracked.querySelector('.xterm-rows')
           // The connecting notice is the terminal container's sibling overlay.
           const notice = tracked.parentElement.querySelector('.animate-fade-in')
-          // The viewport element scrolls with xterm's scrollback; at-bottom
-          // means the last buffer line (the agent's status line) is visible.
-          const vp = tracked.querySelector('.xterm-viewport')
+          // Rendered content is read from the buffer via the window.__xterms
+          // hook (SessionTerminal): the WebGL renderer paints to a canvas, so
+          // the DOM .xterm-rows stay empty and can't be sampled.
+          const term = [...(window.__xterms ?? [])]
+            .find((t) => t.element && t.element.parentElement === tracked)
+          let textLen = 0
+          if (term) {
+            const buf = term.buffer.active
+            for (let y = 0; y < term.rows; y++) {
+              textLen += buf.getLine(buf.baseY + y)?.translateToString(true).trim().length ?? 0
+            }
+          }
           samples.push({
             t: Math.round(performance.now() - t0),
             opacity: getComputedStyle(tracked).opacity,
-            textLen: rows ? rows.textContent.trim().length : 0,
+            textLen,
             notice: notice ? Number(getComputedStyle(notice).opacity) : null,
-            atBottom: vp ? vp.scrollTop >= vp.scrollHeight - vp.clientHeight - 2 : null,
           })
         }
         if (!window.__noflashDone) requestAnimationFrame(tick)
@@ -151,17 +161,12 @@ async function main() {
       `first sample opacity=${samples[0].opacity}`)
     check('stayed hidden until reveal (no flicker on)', preReveal.every((s) => s.opacity === '0'),
       `${preReveal.length} hidden frames over ${revealSample.t - samples[0].t}ms`)
-    // The gate defers quiet/cap reveals while the buffer is blank, so by the
-    // reveal frame the DOM renderer has long since painted the content.
+    // The gate defers quiet/cap reveals while the buffer is blank, so the
+    // reveal frame must already have content in the terminal buffer.
     check('revealed with content already rendered', revealSample.textLen > 0,
-      `rows text length at reveal=${revealSample.textLen}`)
+      `buffer text length at reveal=${revealSample.textLen}`)
     check('reveal is one-way (no flicker off)', postReveal.every((s) => s.opacity === '1'),
       `${postReveal.length} visible frames`)
-    // The gate snaps the viewport to the bottom before revealing, so the
-    // agent's bottom status line can never start hidden below the fold.
-    check('revealed pinned to bottom of scrollback',
-      postReveal.every((s) => s.atBottom !== false),
-      `atBottom at reveal=${revealSample.atBottom}`)
     check('revealed within the gate policy (< 4s of mount)', revealSample.t - samples[0].t < 4000,
       `mount→reveal ${revealSample.t - samples[0].t}ms`)
 

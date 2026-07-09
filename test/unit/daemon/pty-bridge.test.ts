@@ -13,11 +13,15 @@ vi.mock('@/lib/k8s/exec', async (importOriginal) => ({
   containerExec: vi.fn(() => Promise.resolve({ stdout: '', stderr: '' })),
 }))
 
-/** Every webapp attach runs through a per-client grouped view session with
- *  the same chrome-less, binding-less options. */
-const VIEW_OPTS = '\\; set-option destroy-unattached on'
-  + ' \\; set-option status off'
-  + ' \\; set-option prefix None'
+/** Every webapp attach creates its per-client grouped view session detached,
+ *  with the chrome-less options applied before any client is attached —
+ *  `status off` while detached is what keeps the attach a single window
+ *  resize (the attached-create shape sized the window twice, eating the row
+ *  below the agent's cursor when the agent missed the net-zero resize). */
+const VIEW_CREATE = (view: string, cols: number, rows: number): string =>
+  `tmux -S /tmp/yaac-tmux/server new-session -d -t yaac -s ${view} -x ${cols} -y ${rows}`
+  + ` \\; set-option -t ${view} status off`
+  + ` \\; set-option -t ${view} prefix None`
 
 describe('newViewName', () => {
   it('generates unique view-session names', () => {
@@ -28,24 +32,43 @@ describe('newViewName', () => {
 
 describe('attachArgs', () => {
   it('pins the agent target to the lowest-index yaac window via a view session', () => {
-    expect(attachArgs('yaac-demo-abc', 'agent', 'view-11aa22bb')).toEqual([
+    expect(attachArgs('yaac-demo-abc', 'agent', 'view-11aa22bb', { cols: 150, rows: 40 })).toEqual([
       'exec', '-n', 'yaac', '-it', 'job/yaac-demo-abc', '--',
       'sh', '-c',
       'tmux -S /tmp/yaac-tmux/server has-session -t =yaac 2>/dev/null'
-      + ' && exec tmux -S /tmp/yaac-tmux/server new-session -t yaac -s view-11aa22bb '
-      + `${VIEW_OPTS} \\; select-window -t 'view-11aa22bb:^'`,
+      + ` && ${VIEW_CREATE('view-11aa22bb', 150, 40)}`
+      + ' && exec tmux -S /tmp/yaac-tmux/server attach-session -t view-11aa22bb'
+      + " \\; select-window -t 'view-11aa22bb:^'"
+      + ' \\; set-option destroy-unattached on',
     ])
   })
 
   it('builds a window-pinned view argv for window targets', () => {
-    const argv = attachArgs('yaac-demo-abc', 'window:@3', 'view-11aa22bb')
+    const argv = attachArgs('yaac-demo-abc', 'window:@3', 'view-11aa22bb', { cols: 80, rows: 24 })
     expect(argv.slice(0, 7)).toEqual([
       'exec', '-n', 'yaac', '-it', 'job/yaac-demo-abc', '--', 'sh',
     ])
     const cmd = argv[8]
-    expect(cmd).toContain('new-session -t yaac -s view-11aa22bb')
-    expect(cmd).toContain(VIEW_OPTS)
+    expect(cmd).toContain(VIEW_CREATE('view-11aa22bb', 80, 24))
     expect(cmd).toContain("select-window -t '@3'")
+  })
+
+  it('falls back to the 80x24 default size', () => {
+    const cmd = attachArgs('yaac-demo-abc', 'agent', 'view-11aa22bb')[8]
+    expect(cmd).toContain('new-session -d -t yaac -s view-11aa22bb -x 80 -y 24')
+  })
+
+  it('creates the view detached and sets destroy-unattached only after attaching', () => {
+    // Order matters twice over: `status off` must land while the view is
+    // detached (so attaching resizes the shared window exactly once, to the
+    // client size — no status-bar row intermediate), and destroy-unattached
+    // must not be set until the client is attached (a detached view with it
+    // set could be reaped in the create→attach gap by any other client's
+    // detach sweep).
+    const cmd = attachArgs('yaac-demo-abc', 'agent', 'view-11aa22bb', {})[8]
+    expect(cmd).toMatch(
+      /new-session -d [^&]*status off[^&]* && exec [^;]*attach-session[\s\S]*destroy-unattached on$/,
+    )
   })
 
   it('guards the view create on the yaac session existing', () => {
@@ -53,7 +76,7 @@ describe('attachArgs', () => {
     // fail (so the client retries), not let `new-session -t yaac` mint a
     // stale group whose bare-shell window poisons every subsequent view.
     const cmd = attachArgs('yaac-demo-abc', 'agent', 'view-11aa22bb')[8]
-    expect(cmd).toMatch(/^tmux -S \S+ has-session -t =yaac 2>\/dev\/null && exec /)
+    expect(cmd).toMatch(/^tmux -S \S+ has-session -t =yaac 2>\/dev\/null && /)
   })
 })
 
@@ -96,7 +119,7 @@ describe('spawnAttachPty', () => {
     spawnAttachPty('yaac-demo', { cols: 100, rows: 40 }, 'agent', 'view-11aa22bb')
     expect(pty.spawn).toHaveBeenCalledWith(
       'kubectl',
-      attachArgs('yaac-demo', 'agent', 'view-11aa22bb'),
+      attachArgs('yaac-demo', 'agent', 'view-11aa22bb', { cols: 100, rows: 40 }),
       expect.objectContaining({ name: 'xterm-color', cols: 100, rows: 40 }),
     )
   })

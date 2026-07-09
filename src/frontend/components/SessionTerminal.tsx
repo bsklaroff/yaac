@@ -120,6 +120,13 @@ export function SessionTerminal({
     }
     fit.fit()
     termRef.current = term
+    // Expose mounted terminals for the Playwright scripts
+    // (test-playwright-scripts/): xterm no longer mirrors scroll state into
+    // DOM scroll positions, so scripts asserting on scrollback pinning need
+    // the buffer's viewportY/baseY straight from the Terminal object.
+    const testHooks = window as unknown as { __xterms?: Set<XTerm> }
+    testHooks.__xterms ??= new Set()
+    testHooks.__xterms.add(term)
 
     // Reveal only once the attach has drawn something: a cold session's
     // attach can land before the agent paints, and the preamble-only burst
@@ -133,14 +140,14 @@ export function SessionTerminal({
       }
       return false
     }
-    const gate = createSettleGate(() => {
-      // The attach churn (the oversized session window shrinking to this
-      // grid) can push rows into scrollback and leave the viewport unpinned
-      // a line or two above the bottom, revealing with the agent's prompt
-      // line below the fold. Snap to the bottom before the frame shows.
-      term.scrollToBottom()
-      setSettled(true)
-    }, { hasContent })
+    // No scroll pinning is needed at reveal: the tmux client runs in the
+    // alternate screen buffer for the whole attach, so there is no xterm
+    // scrollback to be unpinned from (viewportY === baseY === 0 always).
+    // The "session starts a line down, bottom line hidden until a keypress"
+    // bug lived in the tmux window itself — the attach-time status-bar
+    // resize dance eating the row below the agent's cursor — and is fixed
+    // at the source in the daemon's attachArgs (see pty-bridge.ts).
+    const gate = createSettleGate(() => setSettled(true), { hasContent })
 
     let ws: WebSocket | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined
@@ -250,6 +257,7 @@ export function SessionTerminal({
       cancelAnimationFrame(fitRaf)
       dataSub.dispose()
       resizeSub.dispose()
+      testHooks.__xterms?.delete(term)
       if (ws) {
         // Drop handlers so a late close event can't touch the disposed
         // terminal; if still CONNECTING, close again once open so the

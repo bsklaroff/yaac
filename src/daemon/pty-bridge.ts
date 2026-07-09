@@ -49,12 +49,32 @@ export function newViewName(): string {
  *  - `prefix None` — no tmux key bindings; tabs switch via webapp shortcuts
  *    and C-b passes through to the agent. Mouse mode still works (mouse
  *    bindings live in the root key table, which the prefix doesn't gate).
+ *
+ * The view session is created *detached* — sized to the client, `status off`
+ * already applied — and only then attached. Creating it attached (the old
+ * shape) sized the shared window twice within one command sequence: to
+ * `client rows - 1` while the default status bar existed, then back to
+ * `client rows` when `status off` landed. tmux's shrink step discards the
+ * row *below* the agent's cursor (Claude's bottom hint line) and the grow
+ * step restores a history line at the top instead, so the whole screen ends
+ * one row lower with the bottom line gone. The agent only heals that if it
+ * repaints — and when the two SIGWINCHes coalesce on a same-size reattach it
+ * sees no net change and skips, leaving the session "slightly scrolled down"
+ * until the first keystroke forces a repaint. Detached create + status off
+ * first means attaching is a single resize to the client size (or none at
+ * all when the size is unchanged), so the intermediate row-eating size never
+ * exists. `destroy-unattached` is set only after the attach so nothing can
+ * reap the view in the created-but-not-yet-attached gap.
  */
-export function attachArgs(jobName: string, target: PtyTarget, viewName: string): string[] {
+export function attachArgs(
+  jobName: string,
+  target: PtyTarget,
+  viewName: string,
+  size: { cols?: number; rows?: number } = {},
+): string[] {
   const tmux = `tmux -S ${CONTAINER_TMUX_SOCK}`
-  const viewOpts = '\\; set-option destroy-unattached on'
-    + ' \\; set-option status off'
-    + ' \\; set-option prefix None'
+  const cols = size.cols ?? DEFAULT_COLS
+  const rows = size.rows ?? DEFAULT_ROWS
   // Agent = the yaac session's lowest-index window (`^`): the agent window is
   // created first, and other windows only ever append after it. Same
   // convention as the terminals enumeration.
@@ -67,10 +87,18 @@ export function attachArgs(jobName: string, target: PtyTarget, viewName: string)
   // a bare shell, and every later view resolves `-t yaac` to that stale
   // group instead of the real session's windows, permanently. Failing here
   // instead lets the client's reconnect loop retry until setup finishes.
+  // select-window runs inside the attached client's sequence (like the old
+  // shape) so a bare window id resolves within the view session, not the
+  // group's original.
   return interactiveExecArgs(jobName, [
     'sh', '-c',
     `${tmux} has-session -t =yaac 2>/dev/null`
-    + ` && exec ${tmux} new-session -t yaac -s ${viewName} ${viewOpts} \\; select-window -t '${window}'`,
+    + ` && ${tmux} new-session -d -t yaac -s ${viewName} -x ${cols} -y ${rows}`
+    + ` \\; set-option -t ${viewName} status off`
+    + ` \\; set-option -t ${viewName} prefix None`
+    + ` && exec ${tmux} attach-session -t ${viewName}`
+    + ` \\; select-window -t '${window}'`
+    + ' \\; set-option destroy-unattached on',
   ])
 }
 
@@ -235,7 +263,7 @@ export function spawnAttachPty(
   target: PtyTarget,
   viewName: string,
 ): IPty {
-  return pty.spawn('kubectl', attachArgs(jobName, target, viewName), {
+  return pty.spawn('kubectl', attachArgs(jobName, target, viewName, size), {
     name: 'xterm-color',
     cols: size.cols ?? DEFAULT_COLS,
     rows: size.rows ?? DEFAULT_ROWS,
