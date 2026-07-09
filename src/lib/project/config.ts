@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import crypto from 'node:crypto'
 import { AGENT_TOOLS } from '@/shared/types'
 import type { YaacConfig, InitCommandSpec } from '@/shared/types'
 import { projectConfigDir } from '@/lib/project/paths'
@@ -366,19 +365,4 @@ export async function loadProjectConfig(repoPath: string): Promise<YaacConfig | 
 
 export async function resolveProjectConfig(projectSlug: string): Promise<YaacConfig | null> {
   return loadProjectConfig(projectConfigDir(projectSlug))
-}
-
-function sortKeys(obj: unknown): unknown {
-  if (obj === null || typeof obj !== 'object') return obj
-  if (Array.isArray(obj)) return obj.map(sortKeys)
-  const sorted: Record<string, unknown> = {}
-  for (const key of Object.keys(obj as Record<string, unknown>).sort()) {
-    sorted[key] = sortKeys((obj as Record<string, unknown>)[key])
-  }
-  return sorted
-}
-
-export function hashConfig(config: YaacConfig): string {
-  const stable = JSON.stringify(sortKeys(config))
-  return crypto.createHash('sha256').update(stable).digest('hex').slice(0, 16)
 }

@@ -281,13 +281,9 @@ export async function saveToolAuth(
     })
     return
   }
-  if (kind === 'oauth') {
-    // OAuth without a bundle can't be refreshed — callers should use
-    // saveCodexOAuthBundle. Fall through to api-key so the proxy still
-    // injects the token until the user re-runs `yaac auth update`.
-    await saveCodexCredentialsFile({ kind: 'api-key', savedAt, apiKey })
-    return
-  }
+  // Codex OAuth without a bundle can't be refreshed — callers should use
+  // saveCodexOAuthBundle. Store as api-key so the proxy still injects
+  // the token until the user re-runs `yaac auth update`.
   await saveCodexCredentialsFile({ kind: 'api-key', savedAt, apiKey })
 }
 
@@ -389,26 +385,6 @@ export async function persistToolAuthPayload(tool: AgentTool, payload: unknown):
     return
   }
   throw new DaemonError('VALIDATION', `Unknown payload kind "${String(p.kind)}".`)
-}
-
-/**
- * Ensure the given tool has stored credentials. If not, runs the native login
- * flow and saves the result.
- */
-export async function ensureToolAuth(tool: AgentTool): Promise<ToolAuthEntry> {
-  const existing = await loadToolAuthEntry(tool)
-  if (existing) return existing
-
-  const result = await runToolLogin(tool)
-  await persistToolLogin(tool, result)
-  const toolLabel =
-    tool === 'claude' ? 'Claude Code' :
-    tool === 'codex' ? 'Codex' :
-    'OpenCode'
-  console.log(`${toolLabel} credentials saved.`)
-  const saved = await loadToolAuthEntry(tool)
-  if (!saved) throw new Error(`Failed to persist ${toolLabel} credentials.`)
-  return saved
 }
 
 /**

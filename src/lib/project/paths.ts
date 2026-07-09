@@ -177,10 +177,6 @@ export function sessionTmuxDir(slug: string, sessionId: string): string {
   return path.join(sessionDir(slug, sessionId), 'tmux')
 }
 
-export function sessionTmuxSockPath(slug: string, sessionId: string): string {
-  return path.join(sessionTmuxDir(slug, sessionId), 'server')
-}
-
 /**
  * Per-session host directory holding the vcluster kubeconfig, mounted
  * at /home/yaac/.kube inside the session container (virtualCluster

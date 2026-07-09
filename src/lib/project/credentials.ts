@@ -1,7 +1,6 @@
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import readline from 'node:readline/promises'
 import * as childProcess from 'node:child_process'
 import {
   credentialsDir,
@@ -14,7 +13,6 @@ import { parsePattern, validatePattern, matchPattern } from '@/shared/credential
 import type {
   GitCredentialEntry,
   GitCredentialsFile,
-  HttpsGitCredentialEntry,
 } from '@/shared/types'
 
 export { validatePattern, parsePattern, matchPattern, ghApiHostForGitHost } from '@/shared/credentials'
@@ -408,45 +406,4 @@ export async function listSshEntries(): Promise<Array<{
   return out
 }
 
-/**
- * Interactive prompt: HTTPS PAT path. SSH path lives in the CLI command
- * because it needs to drive ssh to fetch the known_hosts entry.
- */
-export async function promptForHttpsCredential(): Promise<{ pattern: string; token: string }> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-  console.log('Add an HTTPS git credential (e.g. a GitHub PAT or self-hosted token).')
-  console.log('Pattern examples: github.com/*, github.com/acme/*, github.com/acme/repo, gitlab.com/group/sub/*')
-  const pattern = (await rl.question('Repo pattern: ')).trim()
-  if (!pattern) {
-    rl.close()
-    console.error('Pattern cannot be empty.')
-    process.exit(1)
-  }
-  if (!validatePattern(pattern)) {
-    rl.close()
-    console.error('Invalid pattern. Use <host>/*, <host>/<path>, or <host>/<prefix>/*.')
-    process.exit(1)
-  }
-  const token = (await rl.question('Token: ')).trim()
-  rl.close()
-  if (!token) {
-    console.error('Token cannot be empty.')
-    process.exit(1)
-  }
-  return { pattern, token }
-}
-
-/**
- * Convenience: prompt for an HTTPS PAT and save it directly. Used by tests
- * and one-shot bootstrap paths; production CLI goes via the daemon route.
- */
-export async function ensureFirstCredential(): Promise<GitCredentialEntry | null> {
-  const creds = await loadCredentials()
-  if (creds.tokens.length > 0) return creds.tokens[0]
-  const { pattern, token } = await promptForHttpsCredential()
-  const entry: HttpsGitCredentialEntry = { kind: 'https', pattern, token }
-  await addEntry(entry)
-  console.log(`Credential saved for pattern "${pattern}".`)
-  return entry
-}
 

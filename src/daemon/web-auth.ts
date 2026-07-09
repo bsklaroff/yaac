@@ -37,8 +37,6 @@ export interface WebAuthStore {
   consumeBootstrap(code: string, nowMs?: number): string | null
   /** True if `id` is a session minted by a prior bootstrap exchange. */
   isValidSession(id: string): boolean
-  /** Invalidate every minted session (e.g. on shutdown). */
-  revokeAll(): void
 }
 
 export function createWebAuthStore(
@@ -86,10 +84,6 @@ export function createWebAuthStore(
       return id
     },
     isValidSession: (id) => sessions.has(id),
-    revokeAll: () => {
-      sessions.clear()
-      persist()
-    },
   }
 }
 

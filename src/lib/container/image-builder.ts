@@ -315,18 +315,3 @@ export async function resolveImageChain(
   return { layers, finalTag: effectiveTag }
 }
 
-/**
- * Resolves the final image tag for a project without building anything.
- * Useful for fingerprinting — computes what the tag would be based on
- * current Dockerfile content and config.
- */
-export async function resolveImageTag(
-  projectSlug: string,
-  imagePrefix?: string,
-  nestedContainers = false,
-): Promise<string> {
-  const prefix = imagePrefix ?? 'yaac'
-  const { finalTag } = await resolveImageChain(projectSlug, prefix, nestedContainers)
-  return finalTag
-}
-

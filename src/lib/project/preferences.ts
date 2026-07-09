@@ -1,5 +1,4 @@
 import fs from 'node:fs/promises'
-import readline from 'node:readline/promises'
 import path from 'node:path'
 import { getDataDir, ensureDataDir } from '@/lib/project/paths'
 import { DaemonError } from '@/daemon/errors'
@@ -131,30 +130,3 @@ export async function setDefaultToolChecked(toolName: string): Promise<AgentTool
   return toolName
 }
 
-/**
- * Interactive prompt: ask the user to choose a default agent tool.
- */
-export async function promptForDefaultTool(): Promise<AgentTool> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-  console.log('Choose a default agent tool.')
-  console.log('Options: claude, codex, opencode')
-  const answer = (await rl.question('Default tool: ')).trim().toLowerCase()
-  rl.close()
-  if (!isValidTool(answer)) {
-    console.error(`Invalid tool "${answer}". Must be one of: ${VALID_TOOLS.join(', ')}`)
-    process.exit(1)
-  }
-  await setDefaultTool(answer)
-  console.log(`Default tool set to "${answer}".`)
-  return answer
-}
-
-/**
- * Ensure a default tool is configured.
- * If none is set, prompts the user interactively.
- */
-export async function ensureDefaultTool(): Promise<AgentTool> {
-  const tool = await getDefaultTool()
-  if (tool) return tool
-  return promptForDefaultTool()
-}
