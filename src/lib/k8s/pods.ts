@@ -23,12 +23,12 @@ export const LABEL_VCLUSTER_MANAGED_BY = 'vcluster.loft.sh/managed-by'
 /**
  * Host-Service port the SESSION pod uses to reach the vcluster API.
  * Deliberately NOT 443: Cilium redirects session 443/80 egress to the proxy,
- * so the API the session dials lives on a port that rides the session-egress
- * CNP's in-cluster carve-out (toEndpoints 5000/8443) instead. values.yaml
- * exposes it as the `yaac-api` Service port (alongside the chart's 443,
- * which synced pods use — their egress is not redirected to the proxy).
- * Same cycle-free home as LABEL_VCLUSTER_MANAGED_BY (bootstrap's carve-outs
- * reference it).
+ * so the API the session dials lives on a port that rides the per-session
+ * NetworkPolicy (buildVclusterSessionNetworkPolicyManifest) straight to the
+ * control plane instead. values.yaml exposes it as the `yaac-api` Service
+ * port (alongside the chart's 443, which synced pods use — their egress is
+ * not redirected to the proxy). Same cycle-free home as
+ * LABEL_VCLUSTER_MANAGED_BY (bootstrap's vcluster fallback references it).
  */
 export const VCLUSTER_API_PORT = 8443
 /**

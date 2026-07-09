@@ -3,7 +3,12 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import simpleGit from 'simple-git'
 import { cloneRepo } from '@/lib/git'
-import { LABEL_VCLUSTER_MANAGED_BY, listSessionPods, type SessionPod } from '@/lib/k8s/pods'
+import {
+  LABEL_VCLUSTER_MANAGED_BY,
+  VCLUSTER_API_PORT,
+  listSessionPods,
+  type SessionPod,
+} from '@/lib/k8s/pods'
 import { k8sNamespace, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
 import {
   removeSessionVcluster,
@@ -341,5 +346,19 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real daemon 
       ])
       expect(dep?.status?.readyReplicas ?? 0).toBeGreaterThanOrEqual(1)
     }
+
+    // --- Cross-session isolation (issue #17) ---
+    // With the blanket in-cluster 8443 allowance gone from the session-egress
+    // CNP, a session's only hole to a vcluster API is its own per-session
+    // NetworkPolicy — session A dialing session B's API must be dropped
+    // (curl times out), even though B's API demonstrably serves (above).
+    const bName = vclusterName(b.sessionId)
+    const bApiHost = `${bName}.${vclusterNamespace(bName)}.svc.cluster.local`
+    const { stdout: cross } = await execInJob(a.jobName, [
+      'sh', '-c',
+      `curl -ksS --max-time 5 https://${bApiHost}:${VCLUSTER_API_PORT}/ >/dev/null 2>&1`
+      + ' && echo CROSS_REACHED || echo CROSS_BLOCKED',
+    ], { timeout: 30_000 })
+    expect(cross).toContain('CROSS_BLOCKED')
   }, 900_000)
 })

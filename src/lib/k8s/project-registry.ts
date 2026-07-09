@@ -24,8 +24,8 @@ export const REGISTRY_APP_LABEL = 'yaac-registry'
 export const LABEL_REGISTRY_DATA_DIR_HASH = 'yaac.registry-data-dir-hash'
 /**
  * In-cluster port of the per-project registry. Deliberately not 443/80:
- * Cilium redirects those to the proxy, whereas 5000 rides the session-egress
- * CNP's in-cluster carve-out (toEndpoints 5000/8443) straight to the registry.
+ * Cilium redirects those to the proxy, whereas 5000 rides the per-project
+ * sessions NetworkPolicy straight to the registry, un-MITM'd.
  */
 export const PROJECT_REGISTRY_PORT = 5000
 
@@ -189,8 +189,8 @@ export function buildProjectRegistryServiceManifest(projectSlug: string): Record
       // ClusterIP through the proxy's split-horizon DNS, and the node's
       // hosts.toml is rewritten with the live IP on every ensure.
       selector: { app: REGISTRY_APP_LABEL, [LABEL_PROJECT]: projectSlug },
-      // port == targetPort: the NetworkPolicy and the session-egress CNP
-      // carve-out list the post-translation port; a remap would diverge.
+      // port == targetPort: the network policies list the post-translation
+      // port; a remap would diverge.
       ports: [{
         name: 'registry',
         port: PROJECT_REGISTRY_PORT,
@@ -202,8 +202,11 @@ export function buildProjectRegistryServiceManifest(projectSlug: string): Record
 
 /**
  * NetworkPolicy admitting this project's sessions to this project's
- * registry — the registry-ingress half of the carve-out (the session-egress
- * CNP's 5000 allowance is the other; neither alone admits the flow).
+ * registry — the SOLE egress hole for session→registry traffic: Cilium
+ * unions allow rules across policies, so this punches an exactly-scoped
+ * hole through the session-egress CNP's default-deny (which itself has
+ * no in-cluster registry allowance — an install-wide rule there could
+ * not express "same project only"; see the CNP builder's comment).
  * Per-project rather than shared because registry:2 has no path ACLs: a
  * shared writable registry
  * would let any session overwrite another project's (or the infra) tags.
@@ -242,10 +245,55 @@ export function buildRegistrySessionsNetworkPolicyManifest(
 }
 
 /**
+ * CiliumNetworkPolicy locking the registry pod's INGRESS to exactly its
+ * two legitimate clients: same-project session pods pushing on 5000, and
+ * the node (host/remote-node entities — the kubelet readiness probe and
+ * containerd pulling pushed refs from the host netns via hosts.toml).
+ * The sessions NetworkPolicy above already stops other projects' sessions
+ * at their source; this is the receiving-side lock, so no future egress
+ * loosening can silently reopen cross-project tag reads/overwrites
+ * (registry:2 has no path ACLs). A CNP rather than a k8s NetworkPolicy
+ * because the node-side pulls arrive from the host netns, which only
+ * Cilium's host/remote-node entities can express.
+ */
+export function buildRegistryIngressCnpManifest(
+  projectSlug: string,
+): Record<string, unknown> {
+  const registryPort = { port: String(PROJECT_REGISTRY_PORT), protocol: 'TCP' }
+  return {
+    apiVersion: 'cilium.io/v2',
+    kind: 'CiliumNetworkPolicy',
+    metadata: {
+      name: `${projectRegistryName(projectSlug)}-ingress`,
+      namespace: k8sNamespace(),
+      labels: registryLabels(projectSlug),
+    },
+    spec: {
+      endpointSelector: {
+        matchLabels: { app: REGISTRY_APP_LABEL, [LABEL_PROJECT]: projectSlug },
+      },
+      ingress: [
+        {
+          fromEndpoints: [{
+            matchLabels: { [LABEL_PROJECT]: projectSlug },
+            matchExpressions: [{ key: LABEL_SESSION_ID, operator: 'Exists' }],
+          }],
+          toPorts: [{ ports: [registryPort] }],
+        },
+        {
+          fromEntities: ['host', 'remote-node'],
+          toPorts: [{ ports: [registryPort] }],
+        },
+      ],
+    },
+  }
+}
+
+/**
  * Deny-all egress on the registry pod: it only ever serves pushes and
  * pulls — there is nothing for it to fetch (no pull-through, no proxy
- * pseudo-session). Ingress stays unrestricted: sessions push over the
- * pod network and the node's containerd pulls from the host netns.
+ * pseudo-session). Ingress is locked separately by
+ * buildRegistryIngressCnpManifest.
  */
 export function buildRegistryEgressNetworkPolicyManifest(
   projectSlug: string,
@@ -458,12 +506,12 @@ export async function writeNodeRegistryHostsToml(projectSlug: string): Promise<v
 }
 
 /**
- * Idempotently stand up the project's registry (Deployment + Service + both
- * NetworkPolicies + node hosts.toml) and wait for it to serve. Called from
- * session-create only for `virtualCluster` sessions — nested-only sessions need
- * no registry and no carve-outs. The Service's ClusterIP is allocator-assigned
- * and never deleted, so `apply` is a no-op on it after first creation (the pin
- * and its immutable-field migration are gone).
+ * Idempotently stand up the project's registry (Deployment + Service + the
+ * network policies + node hosts.toml) and wait for it to serve. Called from
+ * session-create only for `virtualCluster` sessions — nested-only sessions
+ * need no registry. The Service's ClusterIP is allocator-assigned and never
+ * deleted, so `apply` is a no-op on it after first creation (the pin and its
+ * immutable-field migration are gone).
  */
 export async function ensureProjectRegistry(projectSlug: string): Promise<void> {
   const name = projectRegistryName(projectSlug)
@@ -473,6 +521,7 @@ export async function ensureProjectRegistry(projectSlug: string): Promise<void> 
   await kubectlApply(buildProjectRegistryDeploymentManifest(projectSlug, imageRef))
   await kubectlApply(buildProjectRegistryServiceManifest(projectSlug))
   await kubectlApply(buildRegistrySessionsNetworkPolicyManifest(projectSlug))
+  await kubectlApply(buildRegistryIngressCnpManifest(projectSlug))
   await kubectlApply(buildRegistryEgressNetworkPolicyManifest(projectSlug))
   await kubectlWithRetry([
     'rollout', 'status', `deployment/${name}`, '-n', ns, '--timeout=120s',
@@ -506,8 +555,11 @@ export async function removeProjectRegistry(projectSlug: string): Promise<void> 
   ])
   const hadRegistry = (existing?.items?.length ?? 0) > 0
 
+  // `ciliumnetworkpolicy` resolves everywhere the daemon manages a cluster:
+  // real installs run Cilium, and a nested yaac installs permissive CNP CRDs
+  // into its vcluster at bootstrap (ensureCiliumCrds).
   await kubectlWithRetry([
-    'delete', 'deployment,service,networkpolicy,pod', '-l', selector,
+    'delete', 'deployment,service,networkpolicy,ciliumnetworkpolicy,pod', '-l', selector,
     '-n', k8sNamespace(), '--ignore-not-found',
   ])
   if (!hadRegistry) return

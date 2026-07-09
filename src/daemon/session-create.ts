@@ -835,7 +835,8 @@ export async function createSession(
   // virtual cluster. The pod reaches both on their in-cluster ClusterIPs,
   // which it resolves through the proxy's split-horizon DNS (`*.svc` →
   // cluster CoreDNS), so no pinned VIP or hostAliases is needed; the
-  // egress carve-outs / NetworkPolicies admit the flows by port + endpoint.
+  // per-project/per-session NetworkPolicies these ensures apply admit the
+  // flows, scoped to the session's own registry and vcluster.
   // The vcluster is created here so its cold start overlaps the
   // worktree/setup work below; the kubeconfig is awaited just before the
   // mounts are assembled.

@@ -402,10 +402,13 @@ export function buildVclusterPodGuardBindingManifest(
  * session pod lives in the install namespace, but its vcluster API and
  * synced pods are in the vcluster's own namespace — so the egress peers
  * are CROSS-NAMESPACE (namespaceSelector + podSelector). It admits the
- * session pod to reach the vcluster API on 8443 (paired with the session-
- * egress CNP's 8443 carve-out — both layers must agree) and its synced
- * pods (managed-by label; the OSS syncer cannot stamp yaac.session-id,
- * see values.yaml). Additive over the yaac-session-egress backstop.
+ * session pod to reach ITS OWN vcluster API on 8443 and its synced pods
+ * (managed-by label; the OSS syncer cannot stamp yaac.session-id, see
+ * values.yaml). The SOLE egress hole for these flows: Cilium unions allow
+ * rules across policies, so this punches a per-session hole through the
+ * install-wide session-egress CNP's default-deny (which has no in-cluster
+ * 8443 allowance — a blanket rule there would open every session's
+ * vcluster API to every other session).
  */
 export function buildVclusterSessionNetworkPolicyManifest(
   name: string,

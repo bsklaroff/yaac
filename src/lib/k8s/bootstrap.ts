@@ -21,7 +21,6 @@ import {
   LABEL_VCLUSTER_MANAGED_BY,
   VCLUSTER_API_PORT,
 } from '@/lib/k8s/pods'
-import { PROJECT_REGISTRY_PORT } from '@/lib/k8s/project-registry'
 import { credentialsDir, getDataDir } from '@/lib/project/paths'
 import { env } from '@/shared/env'
 
@@ -630,6 +629,17 @@ function cecListenerRef(name: string): Record<string, unknown> {
  * HTTPS/HTTP listeners), the SSH sentinel on TUNNEL_INGRESS_PORT (→ the tunnel
  * listener), and udp/53 to the proxy's DNS stub. This replaces both the old
  * k8s session NetworkPolicy and the per-pod iptables default-deny.
+ *
+ * Deliberately NO in-cluster allowance for the per-project registry (5000) or
+ * the vcluster API (8443) here: this policy is install-wide (one selector over
+ * every session pod), so it cannot express "the session's OWN project/vcluster"
+ * — a blanket rule would open every registry and every vcluster API to every
+ * session (cross-project image overwrite; see issue #17). Cilium unions allow
+ * rules across policies, so those flows are instead admitted by the scoped
+ * k8s NetworkPolicies applied per project/session at create time
+ * (buildRegistrySessionsNetworkPolicyManifest,
+ * buildVclusterSessionNetworkPolicyManifest), which punch exactly-scoped holes
+ * through this policy's default-deny.
  */
 export function buildSessionEgressRedirectCnpManifest(): Record<string, unknown> {
   return {
@@ -659,17 +669,6 @@ export function buildSessionEgressRedirectCnpManifest(): Record<string, unknown>
           toEndpoints: [{ matchLabels: { app: PROXY_APP_NAME } }],
           toPorts: [{ ports: [{ port: String(DNS_STUB_PORT), protocol: 'UDP' }] }],
         },
-        // In-cluster carve-outs for vcluster sessions: the per-project push
-        // registry (5000) and the per-session vcluster API (8443). Plain
-        // L3/L4 (no listener) — direct in-cluster flows, not MITM'd; the
-        // receiving pods carry their own ingress policies.
-        {
-          toEndpoints: [{}],
-          toPorts: [{ ports: [
-            { port: String(PROJECT_REGISTRY_PORT), protocol: 'TCP' },
-            { port: String(VCLUSTER_API_PORT), protocol: 'TCP' },
-          ] }],
-        },
       ],
     },
   }
@@ -690,9 +689,10 @@ export function buildSessionEgressRedirectCnpManifest(): Record<string, unknown>
  *
  * The forgery lock therefore lives on the **egress** side, not here: a session
  * pod's egress policy (buildSessionEgressRedirectCnpManifest) permits only
- * 443/80→world (redirected via the CEC listener), the tunnel sentinel, DNS,
- * and the in-cluster carve-outs — it has NO rule to the proxy's transparent
- * ports, so a direct dial is dropped at the source. And because Cilium verifies
+ * 443/80→world (redirected via the CEC listener), the tunnel sentinel, and DNS
+ * (plus the scoped per-project/per-session registry and vcluster
+ * NetworkPolicies) — nothing admits the proxy's transparent ports, so a direct
+ * dial is dropped at the source. And because Cilium verifies
  * pod source IPs, the only way to reach a transparent port is the redirect,
  * which stamps the *real* (unspoofable) pod IP into the PROXY-protocol header.
  * The e2e forgery test (a session pod dialing a transparent port directly must

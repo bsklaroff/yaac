@@ -557,7 +557,7 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
         detail: 'a session-labeled pod dialed a proxy transparent port directly — the forgery lock is open, so a pod could impersonate another session',
         fix: 'The session-egress CiliumNetworkPolicy must default-deny egress '
           + 'to the proxy transparent ports (it admits only 443/80→Envoy, the '
-          + 'SSH sentinel, DNS, and the in-cluster carve-outs). Restart the '
+          + 'SSH sentinel, and DNS). Restart the '
           + 'yaac daemon so ensureProxyResources re-applies it.',
       }
     }

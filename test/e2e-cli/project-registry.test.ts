@@ -7,6 +7,7 @@ import { cloneRepo } from '@/lib/git'
 import { listSessionPods, type SessionPod } from '@/lib/k8s/pods'
 import { k8sNamespace, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
 import {
+  ensureProjectRegistry,
   gcOrphanProjectRegistries,
   projectRegistryHost,
   projectRegistryHostname,
@@ -161,13 +162,30 @@ describe.skipIf(IS_NESTED_YAAC)('yaac per-project registry (real CLI + real daem
     ])
     expect(hostsOut).toContain(regVip)
 
-    // In-pod filter carve-out + per-project NetworkPolicy: plain-HTTP
-    // :5000 answers from inside the session (both layers must agree —
-    // a miss on either would REJECT or DROP this).
+    // The per-project sessions NetworkPolicy is the SOLE hole through the
+    // session-egress CNP's default-deny (no blanket in-cluster allowance
+    // anymore): plain-HTTP :5000 answers from inside the session.
     const { stdout: ping } = await execInJob(name, [
       'sh', '-c', `curl -fsS --max-time 5 http://${regHost}/v2/ >/dev/null && echo REG_OK`,
     ], { timeout: 30_000 })
     expect(ping).toContain('REG_OK')
+
+    // --- Cross-project isolation (issue #17) ---
+    // Stand up a SECOND project's registry (no session needed) and assert
+    // this project's session cannot reach it: nothing admits the flow —
+    // the session-egress CNP has no in-cluster allowance, the other
+    // project's sessions NetworkPolicy does not select this pod, and the
+    // other registry's ingress CNP does not admit it. curl must time out
+    // (policy drop), not answer.
+    const otherSlug = 'vc-registry-other'
+    createdSlugs.push(otherSlug)
+    await ensureProjectRegistry(otherSlug)
+    const { stdout: cross } = await execInJob(name, [
+      'sh', '-c',
+      `curl -sS --max-time 5 http://${projectRegistryHost(otherSlug)}/v2/ >/dev/null 2>&1`
+      + ' && echo CROSS_REACHED || echo CROSS_BLOCKED',
+    ], { timeout: 30_000 })
+    expect(cross).toContain('CROSS_BLOCKED')
 
     // The insecure drop-in scopes plain-HTTP trust to exactly this host.
     const { stdout: conf } = await execInJob(name, [

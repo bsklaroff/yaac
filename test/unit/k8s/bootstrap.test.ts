@@ -494,15 +494,17 @@ describe('buildSessionEgressRedirectCnpManifest', () => {
     expect(dns.toPorts[0].listener).toBeUndefined()
   })
 
-  it('admits in-cluster registry (5000) + vcluster API (8443) for vcluster sessions, un-MITM\'d', () => {
+  it('has NO blanket in-cluster allowance — registry/vcluster flows come from scoped NetworkPolicies', () => {
     const m = buildSessionEgressRedirectCnpManifest() as unknown as Cnp
-    const inCluster = m.spec.egress[4]
-    expect(inCluster.toEndpoints).toEqual([{}])
-    expect(inCluster.toPorts[0].ports).toEqual([
-      { port: '5000', protocol: 'TCP' },
-      { port: '8443', protocol: 'TCP' },
-    ])
-    expect(inCluster.toPorts[0].listener).toBeUndefined()
+    // Exactly the four redirect/DNS rules. The old install-wide 5000/8443
+    // carve-out (toEndpoints [{}]) let any session reach any project's
+    // registry and any session's vcluster API (issue #17); those flows are
+    // now admitted only by the per-project registry NetworkPolicy and the
+    // per-session vcluster NetworkPolicy, unioned over this default-deny.
+    expect(m.spec.egress).toHaveLength(4)
+    for (const rule of m.spec.egress) {
+      expect(rule.toEndpoints ?? []).not.toContainEqual({})
+    }
   })
 })
 
