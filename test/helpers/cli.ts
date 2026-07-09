@@ -150,6 +150,10 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
     // Same reasoning for the background image-prewarm sweep — e2e images are
     // prebuilt by the global setup and workers must never race a podman build.
     YAAC_IMAGE_PREWARM: '0',
+    // Auto-titling would pull the llama.cpp binary + a ~114MB model under
+    // every e2e daemon (and retitle sessions mid-assertion); the feature is
+    // unit-tested with a stubbed runner instead.
+    YAAC_AUTO_TITLES: '0',
   }
 
   const cleanup = async (): Promise<void> => {

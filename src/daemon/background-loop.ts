@@ -6,6 +6,7 @@ import { reconcileStaleTproxyRules } from '@/lib/session/tproxy-gc-reconcile'
 import { reconcileVclusterAttribution } from '@/lib/session/vcluster-attribution-reconcile'
 import { reconcilePrewarmPool } from '@/daemon/prewarm-reconcile'
 import { reconcileImagePrewarm } from '@/daemon/image-prewarm'
+import { reconcileGeneratedTitles } from '@/daemon/title-generation'
 import { daemonLog } from '@/daemon/log'
 
 export interface BackgroundLoopDeps {
@@ -62,6 +63,10 @@ function defaultTickSteps(): Array<() => Promise<void>> {
     // counts reflect just-reaped sessions). No-op when the pool size is 0.
     reconcilePrewarmPool,
     captureOpencodeFirstMessages,
+    // Model-generated titles for untitled sessions (right after first-message
+    // capture so a fresh opencode prompt is eligible the same tick). Detached
+    // per-session tasks; inference serializes inside the summarizer.
+    reconcileGeneratedTitles,
     // ssh-agent heal only (attach-only probe, never bootstraps): session
     // registrations survive proxy pod replacement via the /data
     // write-through, but agent identities are memory-only by design and

@@ -104,6 +104,18 @@ export const env = {
     return true
   },
 
+  /**
+   * `YAAC_AUTO_TITLES` — background model-generated titles for untitled
+   * sessions. Unset → on; empty, "0", and "false" (case-insensitive) → off.
+   */
+  get autoTitles(): boolean {
+    const raw = process.env.YAAC_AUTO_TITLES
+    if (raw === undefined) return true
+    const v = raw.trim().toLowerCase()
+    if (v === '' || v === '0' || v === 'false') return false
+    return true
+  },
+
   /** `YAAC_NESTED` — set to `1` by the daemon inside a nested (vcluster) session. */
   get nested(): boolean {
     return process.env.YAAC_NESTED === '1'

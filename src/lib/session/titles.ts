@@ -3,11 +3,14 @@ import path from 'node:path'
 import { projectDir } from '@/lib/project/paths'
 
 /**
- * User-assigned session titles, stored per project in
- * `<projectDir>/session-titles.json` ({ sessionId: title }). Titles are
- * display-only: the transcript-derived first message remains the fallback
- * label everywhere. Stored outside the container so they survive delete +
- * restart (session ids are stable across restarts).
+ * Session titles, stored per project in
+ * `<projectDir>/session-titles.json` ({ sessionId: title }). Holds both
+ * user-assigned titles and model-generated ones (the title-generation loop
+ * fills in untitled sessions; a user rename overwrites via the same
+ * `setSessionTitle`). Titles are display-only: the transcript-derived first
+ * message remains the fallback label everywhere. Stored outside the
+ * container so they survive delete + restart (session ids are stable
+ * across restarts).
  */
 
 export const MAX_TITLE_LENGTH = 120
