@@ -19,6 +19,7 @@ import { SessionView } from './components/SessionView'
 import { BootstrapSplash } from './components/BootstrapSplash'
 import { ClusterSetup } from './components/ClusterSetup'
 import { getClusterCheck, type CheckResult } from './lib/clusterApi'
+import { isElectron } from './lib/platform'
 import { ConfirmDialog } from './components/ui/ConfirmDialog'
 import type { DaemonSnapshot, SessionListEntry } from '@/shared/types'
 
@@ -83,13 +84,22 @@ function App(): JSX.Element {
     return () => { cancelled = true }
   }, [auth])
 
-  if (auth === 'checking') return <FullScreen>Loading…</FullScreen>
-  if (auth === 'needs-bootstrap') return <BootstrapSplash onAuthed={() => setAuth('authed')} />
-  if (cluster === 'not-ready') {
-    return <ClusterSetup results={checkResults} onReady={() => setCluster('ready')} />
-  }
+  let content: JSX.Element
+  if (auth === 'checking') content = <FullScreen>Loading…</FullScreen>
+  else if (auth === 'needs-bootstrap') content = <BootstrapSplash onAuthed={() => setAuth('authed')} />
+  else if (cluster === 'not-ready') {
+    content = <ClusterSetup results={checkResults} onReady={() => setCluster('ready')} />
+  } else content = <Workspace snapshot={snapshot} connected={connected} />
 
-  return <Workspace snapshot={snapshot} connected={connected} />
+  // In Electron the title bar is hidden and the traffic lights float over the
+  // UI, so reserve a thin draggable strip at the top for them (a browser tab
+  // gets neither, so it renders content flush).
+  return (
+    <div className="flex h-full flex-col bg-base">
+      {isElectron() && <div className="titlebar-drag h-7 shrink-0" aria-hidden="true" />}
+      <div className="min-h-0 flex-1">{content}</div>
+    </div>
+  )
 }
 
 /** A session's display name for dialog copy — title, else prompt (which can

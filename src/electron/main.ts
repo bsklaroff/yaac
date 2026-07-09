@@ -153,9 +153,19 @@ function createWindow(url: string): void {
   win = new BrowserWindow({
     width: 1280,
     height: 860,
+    minWidth: 880,
+    minHeight: 560,
+    show: false,
     backgroundColor: '#0b0b0d',
+    // Modern macOS chrome: hide the title bar and let the traffic lights float
+    // over the UI. The webapp reserves a draggable top strip for them when it
+    // detects Electron (src/frontend/App.tsx + .titlebar-drag).
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 13, y: 7 },
     webPreferences: { contextIsolation: true, nodeIntegration: false },
   })
+  // Reveal only once the renderer has painted — no empty flash on open.
+  win.once('ready-to-show', () => win?.show())
   win.on('close', (e) => {
     // Close hides to the tray; the daemon keeps running and notifications keep
     // firing. A real quit sets `quitting` (tray Quit / Cmd-Q → before-quit).

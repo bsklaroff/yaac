@@ -57,3 +57,13 @@ body,
 *::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* Electron only: the strip App.tsx reserves for the floating macOS traffic
+   lights doubles as the window's drag handle. Interactive children opt out
+   with .no-drag. (No effect in a browser — these are -webkit-app-region.) */
+.titlebar-drag {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+}
