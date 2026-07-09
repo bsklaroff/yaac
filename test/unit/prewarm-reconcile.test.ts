@@ -51,7 +51,7 @@ describe('reconcilePrewarmPool', () => {
     vi.resetAllMocks()
     clearPrewarmStateForTests()
     mockDefaultTool.mockResolvedValue('claude')
-    mockCreate.mockResolvedValue(undefined)
+    mockCreate.mockResolvedValue({ sessionId: 's', jobName: 'yaac-p-s', forwardedPorts: [], tool: 'claude' })
     mockCleanup.mockResolvedValue(undefined)
     vi.stubEnv('YAAC_PREWARM_POOL_SIZE', '1')
   })
@@ -80,7 +80,7 @@ describe('reconcilePrewarmPool', () => {
 
   it('does not double-spawn across ticks while a spawn is in flight', async () => {
     mockListPods.mockResolvedValue([pod({ jobName: 'yaac-p-real', sessionId: 'r1' })])
-    mockCreate.mockReturnValue(new Promise<undefined>(() => { /* never resolves */ }))
+    mockCreate.mockReturnValue(new Promise<never>(() => { /* never resolves */ }))
     await reconcilePrewarmPool()
     await reconcilePrewarmPool()
     expect(mockCreate).toHaveBeenCalledTimes(1)

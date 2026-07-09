@@ -5,7 +5,7 @@ import { isTmuxSessionAlive } from '@/lib/session/cleanup'
 import { getSessionFirstMessage } from '@/lib/session/status'
 import { getWaitingSessions } from '@/lib/session/waiting'
 import { createSession } from '@/daemon/session-create'
-import { DaemonError } from '@/daemon/errors'
+import { getDefaultTool } from '@/lib/project/preferences'
 import type {
   AgentTool,
   PickNextInput,
@@ -107,11 +107,10 @@ export async function pickNextStreamSession(input: PickNextInput): Promise<PickN
   }
 
   if (input.project) {
-    const tool: AgentTool = input.tool ?? 'claude'
+    // Same resolution as /session/create: explicit tool wins, else the
+    // configured default (yaac tool set), else claude.
+    const tool: AgentTool = input.tool ?? (await getDefaultTool()) ?? 'claude'
     const created = await createSession(input.project, { tool })
-    if (!created?.sessionId || !created.jobName) {
-      throw new DaemonError('INTERNAL', 'session creation returned no result')
-    }
     visited.push(created.sessionId)
     return {
       done: false,

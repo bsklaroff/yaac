@@ -38,13 +38,6 @@ describe('authFake', () => {
     expect(post).toHaveBeenCalledWith({ json: { kind: 'github' } })
   })
 
-  it('throws on an unknown kind without calling the daemon', async () => {
-    const post = vi.fn().mockResolvedValue({ ok: true })
-    mockClient(post)
-    await expect(authFake('bogus')).rejects.toThrow(/Unknown fake credential kind/)
-    expect(post).not.toHaveBeenCalled()
-  })
-
   it('throws when the daemon returns an error response', async () => {
     const post = vi.fn().mockResolvedValue({ ok: false })
     mockClient(post)

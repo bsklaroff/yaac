@@ -122,7 +122,7 @@ export async function restartSession(
     await cleanupSession({ jobName, projectSlug, sessionId })
   }
 
-  const result = await createSession(projectSlug, {
+  return createSession(projectSlug, {
     resume: true,
     sessionId,
     tool,
@@ -131,6 +131,4 @@ export async function restartSession(
     gitUser: opts.gitUser,
     onProgress: opts.onProgress,
   })
-  if (!result) throw new DaemonError('INTERNAL', 'session restart returned no result')
-  return result
 }

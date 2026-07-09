@@ -25,7 +25,6 @@ import { configEditUserDockerfile } from '@/commands/config-edit-user-dockerfile
 import { authFake, FAKE_AUTH_KINDS } from '@/commands/auth-fake'
 import { runDaemon, startDaemon, stopDaemon, restartDaemon, daemonLogs, openWebapp } from '@/daemon/cli'
 import { DEFAULT_DAEMON_PORT } from '@/shared/daemon-port'
-import { getDefaultTool } from '@/lib/project/preferences'
 import { ensureRootfulPodmanHost } from '@/lib/container/runtime'
 import type { AgentTool } from '@/shared/types'
 import type { SessionMonitorOptions } from '@/commands/session-monitor'
@@ -187,7 +186,6 @@ session
   .option('--add-dir <path>', 'Mount a host directory as read-only (repeatable)', collect, [])
   .option('--add-dir-rw <path>', 'Mount a host directory as read-write (repeatable)', collect, [])
   .action(async (project: string, options: Parameters<typeof sessionCreate>[1]) => {
-    if (!options.tool) options.tool = await getDefaultTool() ?? 'claude'
     await sessionCreate(project, options)
   })
 
@@ -234,9 +232,8 @@ session
   .description('Stream through waiting sessions, attaching to each in turn')
   .argument('[project]', 'Filter by project slug (auto-creates sessions if none waiting)')
   .option('-t, --tool <tool>', 'Agent tool for newly created sessions (claude, codex, or opencode)')
-  .action(async (project: string | undefined, options: { tool?: string }) => {
-    const tool = options.tool ?? await getDefaultTool() ?? 'claude'
-    await sessionStream(project, tool as AgentTool)
+  .action(async (project: string | undefined, options: { tool?: AgentTool }) => {
+    await sessionStream(project, options.tool)
   })
 
 session

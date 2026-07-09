@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 import { getProjectsDir, projectDir } from '@/lib/project/paths'
+import { setDefaultTool } from '@/lib/project/preferences'
 import { pickNextStreamSession } from '@/daemon/stream-picker'
 import type { WaitingSession } from '@/lib/session/waiting'
 import type { ProjectMeta } from '@/shared/types'
@@ -167,6 +168,35 @@ describe('pickNextStreamSession', () => {
       lastVisited: 'new',
     })
     expect(mockCreate).toHaveBeenCalledWith('demo', expect.objectContaining({ tool: 'claude' }))
+  })
+
+  it('resolves the configured default tool for auto-created sessions, explicit tool winning', async () => {
+    mockGetWaiting.mockResolvedValue([])
+    await setDefaultTool('codex')
+    mockCreate.mockResolvedValue({
+      sessionId: 'new',
+      jobName: 'yaac-demo-new',
+      forwardedPorts: [],
+      tool: 'codex',
+    })
+
+    const result = await pickNextStreamSession({
+      project: 'demo',
+      visited: [],
+      lastOutcome: 'none',
+    })
+
+    expect(mockCreate).toHaveBeenCalledWith('demo', expect.objectContaining({ tool: 'codex' }))
+    expect(result).toMatchObject({ done: false, tool: 'codex' })
+
+    // An explicit tool on the request overrides the configured default.
+    await pickNextStreamSession({
+      project: 'demo',
+      tool: 'claude',
+      visited: [],
+      lastOutcome: 'none',
+    })
+    expect(mockCreate).toHaveBeenLastCalledWith('demo', expect.objectContaining({ tool: 'claude' }))
   })
 
   it('returns needs_project with configured candidates when no project and no active containers', async () => {

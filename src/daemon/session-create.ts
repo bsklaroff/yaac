@@ -349,10 +349,10 @@ export interface SessionCreateOptions {
 }
 
 export interface SessionCreateResult {
-  sessionId?: string
-  jobName?: string
-  forwardedPorts?: PortMapping[]
-  tool?: AgentTool
+  sessionId: string
+  jobName: string
+  forwardedPorts: PortMapping[]
+  tool: AgentTool
 }
 
 interface SessionSetupParams {
@@ -648,7 +648,7 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
 export async function createSession(
   projectSlug: string,
   options: SessionCreateOptions,
-): Promise<SessionCreateResult | undefined> {
+): Promise<SessionCreateResult> {
   // Verify project exists
   try {
     await fs.access(projectDir(projectSlug))

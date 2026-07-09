@@ -105,7 +105,6 @@ export const sessionApp = new Hono()
         registerProvisioning({ sessionId, projectSlug: body.project, tool, kind: 'create' })
         try {
           const result = await createSession(body.project, opts)
-          if (!result) throw new DaemonError('INTERNAL', 'session creation returned no result')
           // Setup is complete — drop the provisioning row (its notify pushes
           // the snapshot that swaps it for the now-ready session; buildSnapshot
           // hides the session while the row exists). Before the result write,
