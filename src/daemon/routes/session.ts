@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto'
 import { Hono } from 'hono'
-import { stream } from 'hono/streaming'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { listActiveSessions, listDeletedSessions } from '@/lib/session/list'
@@ -10,13 +9,9 @@ import { restartSession } from '@/lib/session/restart'
 import { createSession, type SessionCreateOptions } from '@/daemon/session-create'
 import { tryClaimPrewarmed } from '@/daemon/prewarm'
 import { getDefaultTool } from '@/lib/project/preferences'
-import {
-  registerProvisioning,
-  updateProvisioningMessage,
-  failProvisioning,
-  removeProvisioning,
-} from '@/daemon/provisioning'
-import { DaemonError, toErrorBody } from '@/daemon/errors'
+import { registerProvisioning, removeProvisioning } from '@/daemon/provisioning'
+import { streamProvisioned } from '@/daemon/routes/provisioned-stream'
+import { DaemonError } from '@/daemon/errors'
 import { allowSessionHost } from '@/lib/session/allow-host'
 import { resolveSessionContainer } from '@/daemon/session-resolve'
 import { pickNextStreamSession } from '@/daemon/stream-picker'
@@ -58,13 +53,9 @@ export const sessionApp = new Hono()
       gitUser: z.object({ name: z.string(), email: z.string() }).optional(),
     })),
     (c) => {
-      // NDJSON stream of {type:'progress'|'result'|'error'} events so the
-      // CLI can render provisioning progress live. Errors thrown inside
-      // the stream callback are swallowed by hono; catch and emit them.
       const body = c.req.valid('json')
-      c.header('Content-Type', 'application/x-ndjson')
-      return stream(c, async (s) => {
-        const write = (event: unknown) => s.writeln(JSON.stringify(event))
+      const sessionId = body.sessionId ?? randomUUID()
+      return streamProvisioned(c, sessionId, async (onProgress) => {
         // Resolve the tool daemon-side: explicit --tool wins, else the
         // configured default (yaac tool set), else claude. This is the tool the
         // prewarm pool warms, so a bare create matches its spare.
@@ -75,48 +66,22 @@ export const sessionApp = new Hono()
         // returns the spare's own id and registers no provisioning row — the
         // unhidden session lists in the very next snapshot.
         if (!body.addDir?.length && !body.addDirRw?.length) {
-          const claimed = await tryClaimPrewarmed(
-            body.project, tool, body.gitUser,
-            (message) => { void write({ type: 'progress', message }) },
-          )
-          if (claimed) {
-            await write({ type: 'result', result: claimed })
-            notifySessionListChanged()
-            return
-          }
+          const claimed = await tryClaimPrewarmed(body.project, tool, body.gitUser, onProgress)
+          if (claimed) return claimed
         }
 
-        const sessionId = body.sessionId ?? randomUUID()
         const opts: SessionCreateOptions = {
           sessionId,
-          // Mirror progress into the provisioning registry (webapp, snapshot-
-          // driven) AND the NDJSON stream (CLI). Both stay in sync.
-          onProgress: (message) => {
-            updateProvisioningMessage(sessionId, message)
-            void write({ type: 'progress', message })
-          },
+          onProgress,
+          tool, // resolved default applies when --tool was omitted
         }
         if (body.addDir) opts.addDir = body.addDir
         if (body.addDirRw) opts.addDirRw = body.addDirRw
-        opts.tool = tool // resolved default applies when --tool was omitted
         if (body.gitUser) opts.gitUser = body.gitUser
         // Register before the long await so the row shows up instantly and
         // survives a browser reload (the stream keeps running server-side).
         registerProvisioning({ sessionId, projectSlug: body.project, tool, kind: 'create' })
-        try {
-          const result = await createSession(body.project, opts)
-          // Setup is complete — drop the provisioning row (its notify pushes
-          // the snapshot that swaps it for the now-ready session; buildSnapshot
-          // hides the session while the row exists). Before the result write,
-          // so a client gone mid-create can't leave the row stuck.
-          removeProvisioning(sessionId)
-          await write({ type: 'result', result })
-          notifySessionListChanged()
-        } catch (err) {
-          const { body: errBody } = toErrorBody(err)
-          failProvisioning(sessionId, errBody.error.message)
-          await write({ type: 'error', error: errBody.error })
-        }
+        return await createSession(body.project, opts)
       })
     },
   )
@@ -135,38 +100,21 @@ export const sessionApp = new Hono()
     })),
     (c) => {
       const body = c.req.valid('json')
-      c.header('Content-Type', 'application/x-ndjson')
-      return stream(c, async (s) => {
-        const write = (event: unknown) => s.writeln(JSON.stringify(event))
-        if (body.projectSlug) {
-          registerProvisioning({
-            sessionId: body.sessionId,
-            projectSlug: body.projectSlug,
-            tool: body.tool ?? 'claude',
-            kind: 'restart',
-          })
-        }
-        try {
-          const result = await restartSession(body.sessionId, {
-            addDir: body.addDir,
-            addDirRw: body.addDirRw,
-            gitUser: body.gitUser,
-            onProgress: (message) => {
-              updateProvisioningMessage(body.sessionId, message)
-              void write({ type: 'progress', message })
-            },
-          })
-          // Same hand-off as create: drop the row so the restarted session
-          // (hidden while the row existed) lists in the next snapshot.
-          removeProvisioning(body.sessionId)
-          await write({ type: 'result', result })
-          notifySessionListChanged()
-        } catch (err) {
-          const { body: errBody } = toErrorBody(err)
-          failProvisioning(body.sessionId, errBody.error.message)
-          await write({ type: 'error', error: errBody.error })
-        }
-      })
+      if (body.projectSlug) {
+        registerProvisioning({
+          sessionId: body.sessionId,
+          projectSlug: body.projectSlug,
+          tool: body.tool ?? 'claude',
+          kind: 'restart',
+        })
+      }
+      return streamProvisioned(c, body.sessionId, (onProgress) =>
+        restartSession(body.sessionId, {
+          addDir: body.addDir,
+          addDirRw: body.addDirRw,
+          gitUser: body.gitUser,
+          onProgress,
+        }))
     },
   )
   .post(

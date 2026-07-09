@@ -1,4 +1,5 @@
 import { api } from './apiClient'
+import { consumeNdjsonStream } from '@/shared/ndjson'
 import type { AgentTool } from '@/shared/types'
 
 export interface CreateSessionResult {
@@ -6,11 +7,6 @@ export interface CreateSessionResult {
   jobName: string
   tool: AgentTool
 }
-
-type StreamEvent =
-  | { type: 'progress'; message: string }
-  | { type: 'result'; result: unknown }
-  | { type: 'error'; error: { message: string } }
 
 /**
  * POST a session operation and consume its NDJSON progress stream
@@ -29,31 +25,8 @@ async function streamSessionOp(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  if (!res.ok || !res.body) throw new Error(`request failed (HTTP ${res.status})`)
-
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  let result: unknown = null
-
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    let nl: number
-    while ((nl = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, nl).trim()
-      buffer = buffer.slice(nl + 1)
-      if (!line) continue
-      const event = JSON.parse(line) as StreamEvent
-      if (event.type === 'progress') onProgress(event.message)
-      else if (event.type === 'result') result = event.result
-      else if (event.type === 'error') throw new Error(event.error.message)
-    }
-  }
-
-  if (result === null) throw new Error('operation returned no result')
-  return result
+  if (!res.ok) throw new Error(`request failed (HTTP ${res.status})`)
+  return await consumeNdjsonStream<unknown>(res, onProgress)
 }
 
 export async function createSession(

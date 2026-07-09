@@ -7,6 +7,7 @@ import { getRpcClient, toClientError } from '@/commands/rpc'
 import { interactiveExecArgs } from '@/lib/k8s/exec'
 import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
 import { getGitUserConfig } from '@/shared/git'
+import { consumeNdjsonStream } from '@/shared/ndjson'
 import { testEnv } from '@/shared/env'
 
 export interface SessionRestartOptions {
@@ -17,44 +18,6 @@ export interface SessionRestartOptions {
 interface SessionRestartResult {
   sessionId?: string
   jobName?: string
-}
-
-type StreamEvent =
-  | { type: 'progress'; message: string }
-  | { type: 'result'; result: SessionRestartResult }
-  | { type: 'error'; error: { code: string; message: string } }
-
-async function consumeStream(res: Response): Promise<SessionRestartResult> {
-  if (!res.body) throw new Error('daemon returned an empty response body')
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buf = ''
-  let result: SessionRestartResult | null = null
-  for (;;) {
-    const { value, done } = await reader.read()
-    if (value) buf += decoder.decode(value, { stream: true })
-    if (done) {
-      buf += decoder.decode()
-      break
-    }
-    const lines = buf.split('\n')
-    buf = lines.pop() ?? ''
-    for (const line of lines) {
-      if (!line) continue
-      const event = JSON.parse(line) as StreamEvent
-      if (event.type === 'progress') console.log(event.message)
-      else if (event.type === 'result') result = event.result
-      else if (event.type === 'error') throw new Error(event.error.message)
-    }
-  }
-  if (buf) {
-    const event = JSON.parse(buf) as StreamEvent
-    if (event.type === 'progress') console.log(event.message)
-    else if (event.type === 'result') result = event.result
-    else if (event.type === 'error') throw new Error(event.error.message)
-  }
-  if (!result) throw new Error('daemon stream ended without a result event')
-  return result
 }
 
 /**
@@ -112,7 +75,7 @@ export async function sessionRestart(
   })
   if (!res.ok) throw await toClientError(res)
 
-  const result = await consumeStream(res)
+  const result = await consumeNdjsonStream<SessionRestartResult>(res)
 
   const { sessionId: restartedId, jobName } = result
   if (!restartedId || !jobName) {
