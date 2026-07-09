@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { existsSync } from 'node:fs'
 import { spawn, execFileSync } from 'node:child_process'
-import { app, BrowserWindow, Tray, Menu, Notification, nativeImage } from 'electron'
+import { app, BrowserWindow, Tray, Menu, Notification, nativeImage, screen } from 'electron'
 import WebSocket from 'ws'
 import { readLock, isLockLive, type DaemonLock } from '@/shared/lock'
 import { readBuildId } from '@/shared/build-id'
@@ -21,6 +21,7 @@ import {
 } from '@/electron/attention'
 import { buildTrayBitmap } from '@/electron/tray-icon'
 import { appMenuTemplate } from '@/electron/menu'
+import { readWindowState, saveWindowState, boundsVisibleOn } from '@/electron/window-state'
 import { env } from '@/shared/env'
 
 /**
@@ -153,10 +154,19 @@ function readAppBuildId(): Promise<string> {
 
 // --- window -----------------------------------------------------------------
 
-function createWindow(url: string): void {
+async function createWindow(url: string): Promise<void> {
+  // Restore the last window bounds, unless they'd land off every display (a
+  // monitor was unplugged) — then fall back to default, centered.
+  const stateFile = path.join(app.getPath('userData'), 'window-state.json')
+  const saved = await readWindowState(stateFile)
+  const displays = screen.getAllDisplays().map((d) => d.workArea)
+  const restore = saved && boundsVisibleOn(saved, displays) ? saved : null
+
   win = new BrowserWindow({
-    width: 1280,
-    height: 860,
+    width: restore?.width ?? 1280,
+    height: restore?.height ?? 860,
+    x: restore?.x,
+    y: restore?.y,
     minWidth: 880,
     minHeight: 560,
     show: false,
@@ -171,6 +181,8 @@ function createWindow(url: string): void {
   // Reveal only once the renderer has painted — no empty flash on open.
   win.once('ready-to-show', () => win?.show())
   win.on('close', (e) => {
+    // Persist bounds on every close (fires on hide-to-tray and on quit).
+    if (win) void saveWindowState(stateFile, win.getBounds())
     // Close hides to the tray; the daemon keeps running and notifications keep
     // firing. A real quit sets `quitting` (tray Quit / Cmd-Q → before-quit).
     if (!quitting) {
@@ -194,7 +206,7 @@ async function showWindow(): Promise<void> {
   }
   if (!daemonLock) return
   const code = await fetchBootstrapCode(daemonLock.port, daemonLock.secret)
-  createWindow(buildAuthedRendererUrl(rendererBase(daemonLock.port), code))
+  await createWindow(buildAuthedRendererUrl(rendererBase(daemonLock.port), code))
 }
 
 // --- tray + attention -------------------------------------------------------
@@ -274,7 +286,7 @@ async function boot(): Promise<void> {
   createTray()
   startEventsMonitor(daemonLock)
   const code = await fetchBootstrapCode(daemonLock.port, daemonLock.secret)
-  createWindow(buildAuthedRendererUrl(rendererBase(daemonLock.port), code))
+  await createWindow(buildAuthedRendererUrl(rendererBase(daemonLock.port), code))
 }
 
 void app.whenReady().then(() => {
