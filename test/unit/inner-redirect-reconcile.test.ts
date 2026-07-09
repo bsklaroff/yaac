@@ -10,7 +10,6 @@ vi.mock('@/lib/k8s/kubectl', () => ({
 // bootstrap.ts (imported for the real builders) only uses isTorEnabled from git.
 vi.mock('@/lib/git', () => ({ isTorEnabled: vi.fn(() => false) }))
 vi.mock('@/lib/k8s/vcluster', () => ({
-  LABEL_VCLUSTER_MANAGED_BY: 'vcluster.loft.sh/managed-by',
   listVclusterNamespaces: vi.fn().mockResolvedValue([]),
 }))
 vi.mock('@/daemon/log', () => ({ daemonLog: vi.fn() }))

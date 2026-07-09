@@ -31,9 +31,7 @@ vi.mock('@/lib/container/runtime', () => ({
 import {
   LABEL_VCLUSTER,
   LABEL_VCLUSTER_DATA_DIR_HASH,
-  LABEL_VCLUSTER_MANAGED_BY,
   LABEL_VCLUSTER_SESSION_ID,
-  VCLUSTER_API_PORT,
   VCLUSTER_POD_GUARD_POLICY,
   addYaacLabels,
   buildVclusterCleanupShellCommand,
@@ -54,6 +52,7 @@ import {
   vclusterNamespace,
   waitForVclusterKubeconfig,
 } from '@/lib/k8s/vcluster'
+import { LABEL_VCLUSTER_MANAGED_BY, VCLUSTER_API_PORT } from '@/lib/k8s/pods'
 import {
   execFileAsync,
   kubectlApply,

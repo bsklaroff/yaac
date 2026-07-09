@@ -3,7 +3,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('@/lib/k8s/kubectl', () => ({
   dataDirHash: vi.fn(() => 'ddh0123456789abc'),
   k8sNamespace: vi.fn(() => 'test-ns'),
+  kubectlApply: vi.fn().mockResolvedValue(undefined),
   kubectlGetJson: vi.fn(),
+  kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
 import {
@@ -12,13 +14,16 @@ import {
   LABEL_PROJECT,
   LABEL_SESSION_ID,
   LABEL_TOOL,
+  LABEL_VCLUSTER_MANAGED_BY,
+  VCLUSTER_API_PORT,
   findSessionPod,
   listSessionJobs,
   listSessionPods,
+  runPodToCompletion,
   sessionJobName,
   type SessionPod,
 } from '@/lib/k8s/pods'
-import { kubectlGetJson } from '@/lib/k8s/kubectl'
+import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
 
 const mockGetJson = vi.mocked(kubectlGetJson)
 
@@ -28,6 +33,9 @@ describe('label constants', () => {
     expect(LABEL_SESSION_ID).toBe('yaac.session-id')
     expect(LABEL_DATA_DIR_HASH).toBe('yaac.data-dir-hash')
     expect(LABEL_TOOL).toBe('yaac.tool')
+    // Cycle-free home for the constants bootstrap and vcluster share.
+    expect(LABEL_VCLUSTER_MANAGED_BY).toBe('vcluster.loft.sh/managed-by')
+    expect(VCLUSTER_API_PORT).toBe(8443)
   })
 })
 
@@ -288,5 +296,98 @@ describe('listSessionJobs', () => {
   it('returns [] when the list call yields null', async () => {
     mockGetJson.mockResolvedValue(null)
     await expect(listSessionJobs()).resolves.toEqual([])
+  })
+})
+
+describe('runPodToCompletion', () => {
+  const MANIFEST = {
+    apiVersion: 'v1',
+    kind: 'Pod',
+    metadata: { name: 'yaac-oneshot', namespace: 'test-ns' },
+    spec: { restartPolicy: 'Never' },
+  }
+  const mockApply = vi.mocked(kubectlApply)
+  const mockRetry = vi.mocked(kubectlWithRetry)
+
+  beforeEach(() => {
+    mockApply.mockReset()
+    mockApply.mockResolvedValue(undefined)
+    mockRetry.mockReset()
+    mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
+    mockGetJson.mockReset()
+  })
+
+  it('deletes any stray namesake, applies, polls to Succeeded, and returns the logs', async () => {
+    mockGetJson.mockResolvedValue({ status: { phase: 'Succeeded' } })
+    mockRetry.mockImplementation((args: string[]) =>
+      Promise.resolve({ stdout: args[0] === 'logs' ? 'hello\n' : '', stderr: '' }))
+
+    await expect(runPodToCompletion(MANIFEST, { timeoutMs: 5_000 }))
+      .resolves.toEqual({ phase: 'Succeeded', logs: 'hello\n' })
+
+    // Stray delete BEFORE the apply, cleanup delete after the logs.
+    const retryCalls = mockRetry.mock.calls.map((c) => c[0])
+    expect(retryCalls[0]).toEqual(
+      ['delete', 'pod', 'yaac-oneshot', '-n', 'test-ns', '--ignore-not-found'])
+    expect(retryCalls.at(-2)).toEqual(['logs', 'yaac-oneshot', '-n', 'test-ns'])
+    expect(retryCalls.at(-1)).toEqual(
+      ['delete', 'pod', 'yaac-oneshot', '-n', 'test-ns', '--ignore-not-found'])
+    expect(mockApply).toHaveBeenCalledWith(MANIFEST)
+    expect(mockGetJson).toHaveBeenCalledWith(
+      ['get', 'pod', 'yaac-oneshot', '-n', 'test-ns'])
+  })
+
+  it('returns Failed immediately (with logs) instead of burning the timeout', async () => {
+    mockGetJson.mockResolvedValue({ status: { phase: 'Failed' } })
+    mockRetry.mockImplementation((args: string[]) =>
+      Promise.resolve({ stdout: args[0] === 'logs' ? 'boom\n' : '', stderr: '' }))
+    const start = Date.now()
+    await expect(runPodToCompletion(MANIFEST, { timeoutMs: 60_000 }))
+      .resolves.toEqual({ phase: 'Failed', logs: 'boom\n' })
+    expect(Date.now() - start).toBeLessThan(5_000)
+    expect(mockGetJson).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns the last seen phase when the deadline passes without a terminal one', async () => {
+    mockGetJson.mockResolvedValue({ status: { phase: 'Pending' } })
+    const { phase } = await runPodToCompletion(MANIFEST, { timeoutMs: 5, pollMs: 1 })
+    expect(phase).toBe('Pending')
+    // The pod is still cleaned up.
+    expect(mockRetry.mock.calls.map((c) => c[0]).at(-1)).toEqual(
+      ['delete', 'pod', 'yaac-oneshot', '-n', 'test-ns', '--ignore-not-found'])
+  })
+
+  it('routes kubectl and apply through the injected seams when provided', async () => {
+    mockGetJson.mockResolvedValue({ status: { phase: 'Succeeded' } })
+    const kubectl = vi.fn((args: string[]) =>
+      Promise.resolve({ stdout: args[0] === 'logs' ? 'via-seam\n' : '' }))
+    const apply = vi.fn().mockResolvedValue(undefined)
+
+    await expect(runPodToCompletion(MANIFEST, { timeoutMs: 5_000, kubectl, apply }))
+      .resolves.toEqual({ phase: 'Succeeded', logs: 'via-seam\n' })
+    expect(apply).toHaveBeenCalledWith(MANIFEST)
+    expect(kubectl).toHaveBeenCalledWith(
+      ['delete', 'pod', 'yaac-oneshot', '-n', 'test-ns', '--ignore-not-found'])
+    // The module-level defaults stay untouched.
+    expect(mockApply).not.toHaveBeenCalled()
+    expect(mockRetry).not.toHaveBeenCalled()
+  })
+
+  it('swallows logs failures ("" logs) but still deletes the pod', async () => {
+    mockGetJson.mockResolvedValue({ status: { phase: 'Succeeded' } })
+    mockRetry.mockImplementation((args: string[]) =>
+      args[0] === 'logs'
+        ? Promise.reject(new Error('container not found'))
+        : Promise.resolve({ stdout: '', stderr: '' }))
+    await expect(runPodToCompletion(MANIFEST, { timeoutMs: 5_000 }))
+      .resolves.toEqual({ phase: 'Succeeded', logs: '' })
+  })
+
+  it('propagates apply failures after best-effort cleanup', async () => {
+    mockApply.mockRejectedValue(new Error('admission denied'))
+    await expect(runPodToCompletion(MANIFEST, { timeoutMs: 5_000 }))
+      .rejects.toThrow('admission denied')
+    // Delete-stray + cleanup delete around the failed apply.
+    expect(mockRetry.mock.calls.filter((c) => c[0][0] === 'delete')).toHaveLength(2)
   })
 })

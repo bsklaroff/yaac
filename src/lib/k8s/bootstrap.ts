@@ -15,7 +15,13 @@ import {
   CA_CONFIGMAP_KEY,
   CA_CONFIGMAP_NAME,
 } from '@/lib/k8s/pod-spec'
-import { LABEL_DATA_DIR_HASH, LABEL_SESSION_ID } from '@/lib/k8s/pods'
+import {
+  LABEL_DATA_DIR_HASH,
+  LABEL_SESSION_ID,
+  LABEL_VCLUSTER_MANAGED_BY,
+  VCLUSTER_API_PORT,
+} from '@/lib/k8s/pods'
+import { PROJECT_REGISTRY_PORT } from '@/lib/k8s/project-registry'
 import { credentialsDir, getDataDir } from '@/lib/project/paths'
 import { env } from '@/shared/env'
 
@@ -108,12 +114,6 @@ export const VCLUSTER_FALLBACK_REDIRECT_NAME = 'yaac-vcluster-fallback-redirect'
  */
 export const SESSION_REDIRECT_PRIORITY = 50
 export const VCLUSTER_FALLBACK_PRIORITY = 90
-/**
- * Label the syncer stamps on a vcluster's synced pods (value = the vcluster
- * name). Literal, not imported from vcluster.ts, to avoid a bootstrap↔vcluster
- * import cycle (same reason the registry/vcluster ports are literals above).
- */
-export const LABEL_VCLUSTER_MANAGED_BY = 'vcluster.loft.sh/managed-by'
 /**
  * Role label + value the inner proxy pod carries so the inner override can
  * exclude it (loop-free): the inner proxy is NOT redirected to itself, so its
@@ -662,14 +662,12 @@ export function buildSessionEgressRedirectCnpManifest(): Record<string, unknown>
         // In-cluster carve-outs for vcluster sessions: the per-project push
         // registry (5000) and the per-session vcluster API (8443). Plain
         // L3/L4 (no listener) — direct in-cluster flows, not MITM'd; the
-        // receiving pods carry their own ingress policies. Ports mirror
-        // PROJECT_REGISTRY_PORT / VCLUSTER_API_PORT (not imported, to avoid a
-        // bootstrap↔vcluster import cycle).
+        // receiving pods carry their own ingress policies.
         {
           toEndpoints: [{}],
           toPorts: [{ ports: [
-            { port: '5000', protocol: 'TCP' },
-            { port: '8443', protocol: 'TCP' },
+            { port: String(PROJECT_REGISTRY_PORT), protocol: 'TCP' },
+            { port: String(VCLUSTER_API_PORT), protocol: 'TCP' },
           ] }],
         },
       ],
@@ -1004,10 +1002,8 @@ export function buildVclusterFallbackRedirectCnpManifest(
         {
           // Intracluster: the vcluster API (control-plane pod on 8443) — synced
           // pods reach it via the virtual kubernetes.default → host Service DNAT.
-          // 8443 mirrors VCLUSTER_API_PORT (literal to avoid a bootstrap↔vcluster
-          // import cycle, same as the carve-outs in the outer session-egress CNP).
           toEndpoints: [{ matchLabels: { app: 'vcluster', release: vcName } }],
-          toPorts: [{ ports: [{ port: '8443', protocol: 'TCP' }] }],
+          toPorts: [{ ports: [{ port: String(VCLUSTER_API_PORT), protocol: 'TCP' }] }],
         },
         {
           // Sibling synced pods, any port: inner services, the vcluster CoreDNS,

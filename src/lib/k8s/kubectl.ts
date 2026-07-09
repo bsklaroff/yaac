@@ -74,6 +74,35 @@ export interface KubectlExecOptions {
 }
 
 /**
+ * The shared attempt loop behind both kubectl runners: retry `run` while
+ * `stderrOf(err)` matches a transient API-server error, backing off
+ * `baseDelay * 2^(attempt-1)` capped at 3200ms. Non-transient failures
+ * (and the final attempt) rethrow the original error.
+ */
+export async function retryTransient<T>(
+  run: () => Promise<T>,
+  opts: Pick<KubectlExecOptions, 'maxAttempts' | 'baseDelay'>,
+  stderrOf: (err: unknown) => string,
+): Promise<T> {
+  const maxAttempts = opts.maxAttempts ?? 5
+  const baseDelay = opts.baseDelay ?? 200
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await run()
+    } catch (err: unknown) {
+      if (attempt < maxAttempts && isTransientKubectlError(stderrOf(err))) {
+        const delay = Math.min(baseDelay * 2 ** (attempt - 1), 3200)
+        await new Promise((r) => setTimeout(r, delay))
+        continue
+      }
+      throw err
+    }
+  }
+  throw new Error('retryTransient: unexpected fall-through')
+}
+
+/**
  * Run `kubectl` with retries on transient API-server errors. Non-transient
  * failures throw immediately, preserving the original error. The `-n
  * <namespace>` flag is NOT added implicitly — callers pass it so that
@@ -83,26 +112,13 @@ export async function kubectlWithRetry(
   args: string[],
   opts: KubectlExecOptions = {},
 ): Promise<{ stdout: string; stderr: string }> {
-  const maxAttempts = opts.maxAttempts ?? 5
-  const baseDelay = opts.baseDelay ?? 200
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      if (opts.input !== undefined) {
-        return await execFileWithInput('kubectl', args, opts.input, opts.timeout)
-      }
-      return await execFileAsync('kubectl', args, opts.timeout ? { timeout: opts.timeout } : {})
-    } catch (err: unknown) {
-      const stderr = (err as { stderr?: string })?.stderr ?? ''
-      if (attempt < maxAttempts && isTransientKubectlError(stderr)) {
-        const delay = Math.min(baseDelay * 2 ** (attempt - 1), 3200)
-        await new Promise((r) => setTimeout(r, delay))
-        continue
-      }
-      throw err
-    }
-  }
-  throw new Error('kubectlWithRetry: unexpected fall-through')
+  return retryTransient(
+    () => opts.input !== undefined
+      ? execFileWithInput('kubectl', args, opts.input, opts.timeout)
+      : execFileAsync('kubectl', args, opts.timeout ? { timeout: opts.timeout } : {}),
+    opts,
+    (err) => (err as { stderr?: string })?.stderr ?? '',
+  )
 }
 
 function execFileWithInput(
@@ -139,26 +155,16 @@ export async function shellKubectlWithRetry(
   command: string,
   opts: KubectlExecOptions = {},
 ): Promise<{ stdout: string; stderr: string }> {
-  const maxAttempts = opts.maxAttempts ?? 5
-  const baseDelay = opts.baseDelay ?? 200
   const execOpts: { timeout?: number } = opts.timeout ? { timeout: opts.timeout } : {}
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
+  return retryTransient(
+    async () => {
       const res = await execAsync(command, execOpts)
       return { stdout: res.stdout.toString(), stderr: res.stderr.toString() }
-    } catch (err: unknown) {
-      const stderr = ((err as { stderr?: Buffer | string })?.stderr ?? '').toString()
-        + ((err as Error)?.message ?? '')
-      if (attempt < maxAttempts && isTransientKubectlError(stderr)) {
-        const delay = Math.min(baseDelay * 2 ** (attempt - 1), 3200)
-        await new Promise((r) => setTimeout(r, delay))
-        continue
-      }
-      throw err
-    }
-  }
-  throw new Error('shellKubectlWithRetry: unexpected fall-through')
+    },
+    opts,
+    (err) => ((err as { stderr?: Buffer | string })?.stderr ?? '').toString()
+      + ((err as Error)?.message ?? ''),
+  )
 }
 
 /**

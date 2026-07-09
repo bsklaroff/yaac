@@ -11,8 +11,8 @@ import {
   PROXY_APP_NAME,
 } from '@/lib/k8s/bootstrap'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
-import { LABEL_DATA_DIR_HASH } from '@/lib/k8s/pods'
-import { LABEL_VCLUSTER_MANAGED_BY, listVclusterNamespaces } from '@/lib/k8s/vcluster'
+import { LABEL_DATA_DIR_HASH, LABEL_VCLUSTER_MANAGED_BY } from '@/lib/k8s/pods'
+import { listVclusterNamespaces } from '@/lib/k8s/vcluster'
 import { daemonLog } from '@/daemon/log'
 
 interface RawObjectList {

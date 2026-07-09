@@ -11,28 +11,19 @@ import {
   kubectlGetJson,
   kubectlWithRetry,
 } from '@/lib/k8s/kubectl'
-import { LABEL_SESSION_ID } from '@/lib/k8s/pods'
+import { LABEL_SESSION_ID, LABEL_VCLUSTER_MANAGED_BY, VCLUSTER_API_PORT } from '@/lib/k8s/pods'
+import { ensurePinnedBinary } from '@/lib/k8s/pinned-binary'
 import { pushImageToRegistry, registryHasTag, registryHost } from '@/lib/k8s/registry'
 import { imageExists } from '@/lib/container/runtime'
 import { PACKAGE_ROOT } from '@/lib/project/paths'
 import { testEnv } from '@/shared/env'
 
 export const VCLUSTER_DIR = path.join(PACKAGE_ROOT, 'k8s', 'vcluster')
-/**
- * Host-Service port the SESSION pod uses to reach the vcluster API.
- * Deliberately NOT 443: Cilium redirects session 443/80 egress to the proxy,
- * so the API the session dials lives on a port that rides the session-egress
- * CNP's in-cluster carve-out (toEndpoints 5000/8443) instead. values.yaml
- * exposes it as the `yaac-api` Service port (alongside the chart's 443,
- * which synced pods use — their egress is not redirected to the proxy).
- */
-export const VCLUSTER_API_PORT = 8443
 
 /**
- * Pinned Helm version yaac shells out to for `helm template`. Mirrors
- * the cilium-CLI download convention in cluster-setup.ts (ensureCiliumCli):
- * used from PATH when present, otherwise fetched once and cached under
- * ~/.cache/yaac/bin.
+ * Pinned Helm version yaac shells out to for `helm template`: used from
+ * PATH when present, otherwise fetched once and cached under
+ * ~/.cache/yaac/bin (ensurePinnedBinary, shared with the cilium CLI).
  */
 const HELM_VERSION = 'v3.16.4'
 
@@ -40,8 +31,6 @@ const HELM_VERSION = 'v3.16.4'
 export const LABEL_VCLUSTER = 'yaac.vcluster'
 export const LABEL_VCLUSTER_SESSION_ID = 'yaac.vcluster-session-id'
 export const LABEL_VCLUSTER_DATA_DIR_HASH = 'yaac.vcluster-data-dir-hash'
-/** Label the SYNCER stamps on every host object it creates. */
-export const LABEL_VCLUSTER_MANAGED_BY = 'vcluster.loft.sh/managed-by'
 
 /**
  * Name prefix of the per-session ValidatingAdmissionPolicy gating
@@ -108,46 +97,36 @@ async function chartVersion(): Promise<string> {
 }
 
 /**
- * Resolve a `helm` binary, preferring one on PATH and otherwise
- * fetching the pinned release once into ~/.cache/yaac/bin — the same
- * download-and-pin convention cluster-setup.ts uses for the
- * cilium CLI. yaac only needs helm for `helm template` against the
- * vendored chart tarball (offline); the binary fetch is the one network
- * step, cached across runs.
+ * Resolve a `helm` binary, preferring one on PATH and otherwise fetching
+ * the pinned release once into ~/.cache/yaac/bin (ensurePinnedBinary,
+ * shared with the cilium CLI). yaac only needs helm for `helm template`
+ * against the vendored chart tarball (offline); the binary fetch is the
+ * one network step, cached across runs.
  */
 export async function ensureHelm(): Promise<string> {
   if (helmPathCache) return helmPathCache
-  try {
-    await execFileAsync('helm', ['version', '--short'])
-    helmPathCache = 'helm'
-    return helmPathCache
-  } catch { /* not on PATH — fall back to the pinned cache */ }
-
-  const binDir = path.join(os.homedir(), '.cache', 'yaac', 'bin')
-  const bin = path.join(binDir, `helm-${HELM_VERSION}`)
-  const present = await fs.access(bin).then(() => true).catch(() => false)
-  if (!present) {
-    const plat = process.platform === 'darwin' ? 'darwin' : 'linux'
-    const arch = process.arch === 'arm64' ? 'arm64' : 'amd64'
-    const url = `https://get.helm.sh/helm-${HELM_VERSION}-${plat}-${arch}.tar.gz`
-    await fs.mkdir(binDir, { recursive: true })
-    // Stream the release tarball and extract just the helm binary. tar
-    // is universally present; the platform subdir matches the asset name.
-    await execFileAsync('sh', [
-      '-c',
-      `curl -fsSL '${url}' | tar -xz -C '${binDir}' --strip-components=1 '${plat}-${arch}/helm' `
-      + `&& mv '${binDir}/helm' '${bin}' && chmod +x '${bin}'`,
-    ], { timeout: 120_000 })
-  }
-  helmPathCache = bin
-  return bin
+  const plat = process.platform === 'darwin' ? 'darwin' : 'linux'
+  const arch = process.arch === 'arm64' ? 'arm64' : 'amd64'
+  helmPathCache = await ensurePinnedBinary({
+    bin: 'helm',
+    version: HELM_VERSION,
+    url: `https://get.helm.sh/helm-${HELM_VERSION}-${plat}-${arch}.tar.gz`,
+    // The release tarball nests the binary in a platform subdir.
+    tarMember: `${plat}-${arch}/helm`,
+    stripComponents: 1,
+  }, {
+    run: (file, args, opts) => execFileAsync(file, args, opts),
+    homedir: () => os.homedir(),
+    fileExists: (p) => fs.access(p).then(() => true).catch(() => false),
+  })
+  return helmPathCache
 }
 
 /**
  * Add the yaac ownership labels to every object in a multi-doc manifest
  * stream. The chart has no global-labels knob (only globalMetadata
  * annotations), so this is the single post-render step — everything else
- * (names, namespace, registry, pinned VIP, the Service shape) is
+ * (names, namespace, registry, API host, the Service shape) is
  * expressed via values + `--set`. `lineWidth: 0` keeps the config
  * Secret's long base64 scalar on one line.
  */

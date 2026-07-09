@@ -1,16 +1,18 @@
 # Static Helm values for the vendored vcluster chart
 # (vcluster-<VERSION>.tgz). Applied at session-create time by
 # src/lib/k8s/vcluster.ts via `helm template`; the per-session values
-# (registry, pinned VIP) are passed as `--set` overrides, so this file
+# (registry, API host) are passed as `--set` overrides, so this file
 # carries no placeholders. The only post-render step is stamping the
 # yaac ownership labels onto every object (no global-labels knob in the
 # chart) — see addYaacLabels in vcluster.ts.
 #
-# `--set` overrides supplied at render time:
+# `--set` overrides supplied at render time (renderVclusterManifests),
+# where <api-host> is the API Service's in-cluster DNS FQDN
+# (<name>.<vc-namespace>.svc.cluster.local — resolved through the proxy's
+# split-horizon DNS to the live, allocator-assigned ClusterIP):
 #   controlPlane.advanced.defaultImageRegistry  -> registryHost()
-#   controlPlane.service.spec.clusterIP         -> the pinned Service VIP
-#   controlPlane.proxy.extraSANs[0]             -> the pinned Service VIP
-#   exportKubeConfig.server                     -> https://<VIP>:8443
+#   controlPlane.proxy.extraSANs[0]             -> <api-host>
+#   exportKubeConfig.server                     -> https://<api-host>:8443
 controlPlane:
   distro:
     k8s:
@@ -52,7 +54,7 @@ controlPlane:
   service:
     # The chart renders spec via `toYaml` passthrough and skips its
     # default ports when spec.ports is set, so the whole Service shape
-    # comes from here (clusterIP via --set):
+    # comes from here (the ClusterIP stays allocator-assigned):
     #   - yaac-api 8443: the session pod dials this; the in-pod nat layer
     #     captures all 443/80, so the API the SESSION uses must be off 443.
     #   - https 443 -> 8443: synced pods reach the inner apiserver through
@@ -77,9 +79,10 @@ controlPlane:
           targetPort: 8443
           protocol: TCP
   proxy:
-    # extraSANs[0] (the pinned VIP) is supplied via --set: the exported
-    # kubeconfig dials https://<VIP>:8443 directly — no DNS dependency at
-    # all (session pods stub DNS; kube-dns is unreachable by design).
+    # extraSANs[0] (the API's service-DNS FQDN) is supplied via --set: the
+    # exported kubeconfig dials https://<api-host>:8443, and the session
+    # pod resolves that name through the proxy's split-horizon DNS (which
+    # forwards only `.cluster.local` to CoreDNS) to the live ClusterIP.
     extraSANs: []
 sync:
   toHost:

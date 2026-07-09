@@ -8,7 +8,7 @@ import {
   kubectlGetJson,
   kubectlWithRetry,
 } from '@/lib/k8s/kubectl'
-import { LABEL_PROJECT, LABEL_SESSION_ID } from '@/lib/k8s/pods'
+import { LABEL_PROJECT, LABEL_SESSION_ID, runPodToCompletion } from '@/lib/k8s/pods'
 import { pushImageToRegistry, registryHasTag, registryRef } from '@/lib/k8s/registry'
 import { imageExists } from '@/lib/container/runtime'
 import { projectDir } from '@/lib/project/paths'
@@ -418,39 +418,18 @@ async function listNodeNames(): Promise<string[]> {
 }
 
 /**
- * Run a node-write pod to completion: delete any stray namesake, apply,
- * poll to a terminal phase, and always delete it afterwards. Polling (not
- * `kubectl wait`) so a Failed pod errors immediately instead of burning
- * the whole timeout; failures carry the pod logs.
+ * Run a node-write pod to a terminal phase (`runPodToCompletion` owns the
+ * delete-stray/apply/poll/cleanup shape) and require Succeeded; failures
+ * carry the pod logs.
  */
 async function runNodeWritePod(manifest: Record<string, unknown>): Promise<void> {
   const name = (manifest as { metadata: { name: string } }).metadata.name
-  const ns = k8sNamespace()
-  await kubectlWithRetry(['delete', 'pod', name, '-n', ns, '--ignore-not-found'])
-  try {
-    await kubectlApply(manifest)
-    const deadline = Date.now() + 60_000
-    let phase = 'Pending'
-    while (Date.now() < deadline) {
-      const pod = await kubectlGetJson<{ status?: { phase?: string } }>([
-        'get', 'pod', name, '-n', ns,
-      ])
-      phase = pod?.status?.phase ?? 'Unknown'
-      if (phase === 'Succeeded' || phase === 'Failed') break
-      await new Promise((r) => setTimeout(r, 500))
-    }
-    if (phase !== 'Succeeded') {
-      const logs = await kubectlWithRetry(['logs', name, '-n', ns])
-        .then((r) => r.stdout.trim())
-        .catch(() => '')
-      throw new Error(
-        `node-write pod ${name} did not complete (phase ${phase})`
-        + (logs ? `; logs: ${logs}` : ''),
-      )
-    }
-  } finally {
-    await kubectlWithRetry(['delete', 'pod', name, '-n', ns, '--ignore-not-found'])
-      .catch(() => { /* best-effort cleanup */ })
+  const { phase, logs } = await runPodToCompletion(manifest, { timeoutMs: 60_000, pollMs: 500 })
+  if (phase !== 'Succeeded') {
+    throw new Error(
+      `node-write pod ${name} did not complete (phase ${phase})`
+      + (logs.trim() ? `; logs: ${logs.trim()}` : ''),
+    )
   }
 }
 

@@ -16,11 +16,14 @@ import {
   type CheckResult,
   type ClusterCheckDeps,
 } from '@/lib/k8s/cluster-check'
-import { kubectlGetJson } from '@/lib/k8s/kubectl'
+import { kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
 import { sessionUid } from '@/lib/container/image-builder'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@test/helpers/setup'
 
 const mockGetJson = vi.mocked(kubectlGetJson)
+// The vap check probes through vapAvailable() (vcluster.ts), which runs on
+// kubectlWithRetry rather than deps.run.
+const mockRetry = vi.mocked(kubectlWithRetry)
 
 type RunMock = ReturnType<typeof vi.fn<
   (file: string, args: string[], opts?: unknown) => Promise<{ stdout: string; stderr: string }>
@@ -117,6 +120,9 @@ describe('runClusterCheck', () => {
     mockGetJson.mockReset()
     // Probe pods complete successfully unless a test overrides.
     mockGetJson.mockImplementation((args: string[]) => Promise.resolve(happyGetJson(args)))
+    // vapAvailable()'s kubectl probe answers unless a test overrides.
+    mockRetry.mockReset()
+    mockRetry.mockResolvedValue({ stdout: '', stderr: '' })
   })
 
   afterEach(async () => {
@@ -441,6 +447,18 @@ describe('runClusterCheck', () => {
     expect(nested).toMatchObject({ status: 'warn' })
     expect(nested?.fix).toContain('userns-scoped SYS_ADMIN grant')
     expect(ok).toBe(true) // warn-only — only nestedContainers sessions are affected
+  })
+
+  it('warns (without failing) on vap when the ValidatingAdmissionPolicy API is unavailable', async () => {
+    // The check gates on vapAvailable() — the exact probe session-create
+    // applies — so it is stubbed at the kubectl layer, not deps.run.
+    mockRetry.mockRejectedValue(new Error("the server doesn't have a resource type"))
+    const { ok, results } = await runClusterCheck(makeDeps())
+    const vap = byName(results, 'vap')
+    expect(vap).toMatchObject({ status: 'warn' })
+    expect(vap?.detail).toContain('ValidatingAdmissionPolicy API unavailable')
+    expect(vap?.fix).toContain('virtualCluster')
+    expect(ok).toBe(true) // warn-only — only virtualCluster sessions are affected
   })
 
   it('fails the registry check with start instructions when nothing answers', async () => {

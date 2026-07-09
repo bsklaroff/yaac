@@ -1,11 +1,36 @@
 import { z } from 'zod'
-import { dataDirHash, k8sNamespace, kubectlGetJson } from '@/lib/k8s/kubectl'
+import {
+  dataDirHash,
+  k8sNamespace,
+  kubectlApply,
+  kubectlGetJson,
+  kubectlWithRetry,
+} from '@/lib/k8s/kubectl'
 
 /** Label keys attached to every session Job and its Pod. */
 export const LABEL_PROJECT = 'yaac.project'
 export const LABEL_SESSION_ID = 'yaac.session-id'
 export const LABEL_DATA_DIR_HASH = 'yaac.data-dir-hash'
 export const LABEL_TOOL = 'yaac.tool'
+/**
+ * Label the SYNCER stamps on every host object a vcluster creates (value =
+ * the vcluster name). Lives here — not in vcluster.ts, which defines the
+ * other vcluster constants — because bootstrap.ts needs it too and
+ * vcluster.ts imports bootstrap (a vcluster.ts home would be an import
+ * cycle).
+ */
+export const LABEL_VCLUSTER_MANAGED_BY = 'vcluster.loft.sh/managed-by'
+/**
+ * Host-Service port the SESSION pod uses to reach the vcluster API.
+ * Deliberately NOT 443: Cilium redirects session 443/80 egress to the proxy,
+ * so the API the session dials lives on a port that rides the session-egress
+ * CNP's in-cluster carve-out (toEndpoints 5000/8443) instead. values.yaml
+ * exposes it as the `yaac-api` Service port (alongside the chart's 443,
+ * which synced pods use — their egress is not redirected to the proxy).
+ * Same cycle-free home as LABEL_VCLUSTER_MANAGED_BY (bootstrap's carve-outs
+ * reference it).
+ */
+export const VCLUSTER_API_PORT = 8443
 /**
  * Marks a session pod as a prewarmed spare — fully provisioned with its
  * agent booted and waiting, but not yet handed to a user. Spares are hidden
@@ -174,6 +199,62 @@ export interface SessionJob {
   sessionId: string
   projectSlug: string
   createdAtMs: number
+}
+
+export interface RunPodOptions {
+  /** Deadline for the pod to reach a terminal phase. */
+  timeoutMs: number
+  /** Poll interval between phase checks (default 1000ms). */
+  pollMs?: number
+  /** kubectl argv runner for the delete/logs calls; injectable for tests. */
+  kubectl?: (args: string[]) => Promise<{ stdout: string }>
+  /** Manifest apply; injectable for tests. */
+  apply?: (manifest: object) => Promise<void>
+}
+
+export interface PodRunResult {
+  /** Terminal phase, or the last phase seen when the deadline passed. */
+  phase: string
+  /** Pod logs, best-effort ('' when unavailable). */
+  logs: string
+}
+
+/**
+ * Run a one-shot pod (restartPolicy: Never) to completion: delete any
+ * stray namesake, apply the manifest, poll to a terminal phase, fetch the
+ * logs, and always delete the pod afterwards. Polling (not `kubectl
+ * wait`) so a Failed pod returns immediately instead of burning the whole
+ * timeout. Name and namespace come from the manifest; the caller owns the
+ * verdict on the returned phase/logs.
+ */
+export async function runPodToCompletion(
+  manifest: Record<string, unknown>,
+  opts: RunPodOptions,
+): Promise<PodRunResult> {
+  const { name, namespace } = (manifest as { metadata: { name: string; namespace: string } }).metadata
+  const kubectl = opts.kubectl ?? ((args: string[]) => kubectlWithRetry(args))
+  const apply = opts.apply ?? kubectlApply
+  await kubectl(['delete', 'pod', name, '-n', namespace, '--ignore-not-found'])
+  try {
+    await apply(manifest)
+    const deadline = Date.now() + opts.timeoutMs
+    let phase = 'Pending'
+    while (Date.now() < deadline) {
+      const pod = await kubectlGetJson<{ status?: { phase?: string } }>([
+        'get', 'pod', name, '-n', namespace,
+      ])
+      phase = pod?.status?.phase ?? 'Unknown'
+      if (phase === 'Succeeded' || phase === 'Failed') break
+      await new Promise((r) => setTimeout(r, opts.pollMs ?? 1000))
+    }
+    const logs = await kubectl(['logs', name, '-n', namespace])
+      .then((r) => r.stdout)
+      .catch(() => '')
+    return { phase, logs }
+  } finally {
+    await kubectl(['delete', 'pod', name, '-n', namespace, '--ignore-not-found'])
+      .catch(() => { /* best-effort cleanup */ })
+  }
 }
 
 /**

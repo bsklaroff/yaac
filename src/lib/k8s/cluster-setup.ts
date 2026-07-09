@@ -5,6 +5,7 @@ import readline from 'node:readline/promises'
 import { spawn } from 'node:child_process'
 import { parse as parseToml } from 'smol-toml'
 import { execFileAsync } from '@/lib/k8s/kubectl'
+import { ensurePinnedBinary } from '@/lib/k8s/pinned-binary'
 import { ensureLocalRegistry, registryHost, REGISTRY_CONTAINER_NAME } from '@/lib/k8s/registry'
 import {
   formatCheckResult,
@@ -281,12 +282,6 @@ function kindPodmanSkewPossible(podmanVersionOut: string, kindVersionOut: string
 }
 
 /**
- * Functional preflight for the kind/podman pair: `kind get clusters` is
- * exactly the call the skew breaks (exit 125), and on a healthy pair it is
- * a harmless read. Diagnose the known skew explicitly instead of letting
- * cluster creation die with a bare exit code.
- */
-/**
  * The Linux counterpart to `ensurePodmanMachineSetup`: yaac runs kind on the
  * rootful podman engine (the cilium agent DaemonSet needs the cgroup2 root and
  * BPF filesystem rootless podman does not delegate — see
@@ -313,6 +308,12 @@ async function ensureRootfulPodmanReachable(deps: ClusterSetupDeps): Promise<voi
   }
 }
 
+/**
+ * Functional preflight for the kind/podman pair: `kind get clusters` is
+ * exactly the call the skew breaks (exit 125), and on a healthy pair it is
+ * a harmless read. Diagnose the known skew explicitly instead of letting
+ * cluster creation die with a bare exit code.
+ */
 async function preflightKindProvider(deps: ClusterSetupDeps, versions: BinaryVersions): Promise<void> {
   const skew = diagnoseKindPodmanSkew(versions.podman, versions.kind)
   if (skew) throw new ClusterSetupError(skew)
@@ -378,28 +379,24 @@ async function recreateKindCluster(deps: ClusterSetupDeps, cluster: string): Pro
 /**
  * Resolve a cilium CLI, preferring one on PATH (the brew formula installs
  * cilium-cli) and otherwise fetching the pinned release once into
- * ~/.cache/yaac/bin — the same download-and-pin convention ensureHelm uses.
+ * ~/.cache/yaac/bin (ensurePinnedBinary — the same convention as helm).
  */
 export async function ensureCiliumCli(deps: ClusterSetupDeps = defaultDeps): Promise<string> {
-  try {
-    await deps.run('sh', ['-c', 'command -v cilium'])
-    return 'cilium'
-  } catch { /* not on PATH — fall back to the pinned cache */ }
-
-  const binDir = path.join(deps.homedir(), '.cache', 'yaac', 'bin')
-  const bin = path.join(binDir, `cilium-${CILIUM_CLI_VERSION}`)
-  if (await deps.fileExists(bin)) return bin
-
   const plat = deps.platform === 'darwin' ? 'darwin' : 'linux'
   const arch = process.arch === 'arm64' ? 'arm64' : 'amd64'
-  const url = `https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-${plat}-${arch}.tar.gz`
-  deps.log(`Downloading pinned cilium CLI ${CILIUM_CLI_VERSION}...`)
-  await deps.run('sh', [
-    '-c',
-    `mkdir -p '${binDir}' && curl -fsSL '${url}' | tar -xz -C '${binDir}' cilium `
-    + `&& mv '${binDir}/cilium' '${bin}' && chmod +x '${bin}'`,
-  ], { timeout: 120_000 })
-  return bin
+  return ensurePinnedBinary({
+    bin: 'cilium',
+    displayName: 'cilium CLI',
+    version: CILIUM_CLI_VERSION,
+    url: `https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-${plat}-${arch}.tar.gz`,
+    // The release tarball is flat: the binary sits at its root.
+    tarMember: 'cilium',
+  }, {
+    run: deps.run,
+    homedir: deps.homedir,
+    fileExists: deps.fileExists,
+    log: deps.log,
+  })
 }
 
 /**

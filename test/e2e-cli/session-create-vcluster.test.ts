@@ -3,10 +3,9 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import simpleGit from 'simple-git'
 import { cloneRepo } from '@/lib/git'
-import { listSessionPods, type SessionPod } from '@/lib/k8s/pods'
+import { LABEL_VCLUSTER_MANAGED_BY, listSessionPods, type SessionPod } from '@/lib/k8s/pods'
 import { k8sNamespace, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
 import {
-  LABEL_VCLUSTER_MANAGED_BY,
   removeSessionVcluster,
   vclusterName,
   vclusterNamespace,
@@ -174,9 +173,9 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real daemon 
     // in the install namespace.
     const vcNs = vclusterNamespace(vcName)
 
-    // The kubeconfig mount + KUBECONFIG env point at the pinned VIP:8443
-    // (IP SAN, no DNS) — `kubectl get nodes` from inside the session
-    // shows the synced host node.
+    // The kubeconfig mount + KUBECONFIG env point at the API's service-DNS
+    // FQDN on 8443 (resolved via the proxy's split-horizon DNS) —
+    // `kubectl get nodes` from inside the session shows the synced host node.
     const nodesOut = await untilOutput(
       name, ['kubectl', 'get', 'nodes', '--no-headers'],
       (out) => out.includes('Ready'), 120_000,

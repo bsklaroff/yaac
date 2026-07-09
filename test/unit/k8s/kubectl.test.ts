@@ -40,6 +40,7 @@ import {
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
+  retryTransient,
   shellKubectlWithRetry,
 } from '@/lib/k8s/kubectl'
 import { getDataDir, setDataDir } from '@/shared/paths'
@@ -127,6 +128,52 @@ describe('isNotFoundKubectlError', () => {
   it('does not match other errors', () => {
     expect(isNotFoundKubectlError('connection refused')).toBe(false)
     expect(isNotFoundKubectlError('')).toBe(false)
+  })
+})
+
+describe('retryTransient', () => {
+  const stderrOf = (err: unknown): string => (err as { stderr?: string })?.stderr ?? ''
+
+  it('returns the first successful result without retrying', async () => {
+    const run = vi.fn().mockResolvedValue('ok')
+    await expect(retryTransient(run, {}, stderrOf)).resolves.toBe('ok')
+    expect(run).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries while stderrOf extracts a transient error, then succeeds', async () => {
+    const run = vi.fn()
+      .mockRejectedValueOnce(stderrError('connection refused'))
+      .mockResolvedValue('finally')
+    await expect(
+      retryTransient(run, { baseDelay: 1, maxAttempts: 3 }, stderrOf),
+    ).resolves.toBe('finally')
+    expect(run).toHaveBeenCalledTimes(2)
+  })
+
+  it('rethrows non-transient errors immediately, preserving the original', async () => {
+    const run = vi.fn().mockRejectedValue(stderrError('permission denied'))
+    await expect(
+      retryTransient(run, { baseDelay: 1, maxAttempts: 5 }, stderrOf),
+    ).rejects.toThrow('kubectl failed')
+    expect(run).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives up after maxAttempts even when errors stay transient', async () => {
+    const run = vi.fn().mockRejectedValue(stderrError('i/o timeout'))
+    await expect(
+      retryTransient(run, { baseDelay: 1, maxAttempts: 3 }, stderrOf),
+    ).rejects.toThrow('kubectl failed')
+    expect(run).toHaveBeenCalledTimes(3)
+  })
+
+  it('classifies via the injected stderr extraction, not the error itself', async () => {
+    // A transient message in the error text is NOT retried when stderrOf
+    // does not surface it — the extraction seam is authoritative.
+    const run = vi.fn().mockRejectedValue(new Error('connection refused'))
+    await expect(
+      retryTransient(run, { baseDelay: 1, maxAttempts: 5 }, () => ''),
+    ).rejects.toThrow('connection refused')
+    expect(run).toHaveBeenCalledTimes(1)
   })
 })
 

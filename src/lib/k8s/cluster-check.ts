@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { execFileAsync, k8sNamespace, kubectlApply, kubectlGetJson } from '@/lib/k8s/kubectl'
+import { execFileAsync, k8sNamespace, kubectlApply } from '@/lib/k8s/kubectl'
 import {
   buildProxyIngressCnpManifest,
   buildSessionEgressRedirectCnpManifest,
@@ -9,7 +9,8 @@ import {
   PROXY_APP_NAME,
   TRANSPARENT_HTTPS_PORT,
 } from '@/lib/k8s/bootstrap'
-import { LABEL_SESSION_ID } from '@/lib/k8s/pods'
+import { LABEL_SESSION_ID, runPodToCompletion } from '@/lib/k8s/pods'
+import { vapAvailable } from '@/lib/k8s/vcluster'
 import { registryHost, registryReachable, pushImageToRegistry } from '@/lib/k8s/registry'
 import { sessionUid } from '@/lib/container/image-builder'
 import { getDataDir } from '@/shared/paths'
@@ -193,7 +194,7 @@ export async function runClusterCheck(
   // 6b–7. node fixups + end-to-end probe (skipped when prerequisites
   // already failed)
   const PROBE_GATES = [
-    'node-fixups', 'probe', 'egress', 'envoy-config', 'nested-mount',
+    'node-fixups', 'probe', 'egress', 'envoy-config', 'nested-mount', 'vap',
   ] as const
   if (results.some((r) => r.status === 'fail')) {
     for (const name of PROBE_GATES) {
@@ -243,7 +244,7 @@ export async function runClusterCheck(
   // 10b. ValidatingAdmissionPolicy availability (warn-only: only
   // virtualCluster sessions need it — the synced-pod guard refuses
   // vcluster creation without it, fail-closed)
-  add(await runVapAvailabilityCheck(deps))
+  add(await runVapAvailabilityCheck())
 
   return { ok: !results.some((r) => r.status === 'fail'), results }
 }
@@ -356,7 +357,6 @@ async function runEndToEndProbe(deps: ClusterCheckDeps): Promise<CheckResult> {
     }
     const imageRef = await deps.pushImage(PROBE_LOCAL_TAG)
 
-    await deps.run('kubectl', ['delete', 'pod', PROBE_POD_NAME, '-n', ns, '--ignore-not-found'])
     const manifest = {
       apiVersion: 'v1',
       kind: 'Pod',
@@ -385,20 +385,13 @@ async function runEndToEndProbe(deps: ClusterCheckDeps): Promise<CheckResult> {
         volumes: [{ name: 'probe', hostPath: { path: dataDir, type: 'Directory' } }],
       },
     }
-    await deps.apply(manifest)
-
-    // Poll for completion; image-pull errors and hostPath failures both
-    // surface here.
-    const deadline = Date.now() + 90_000
-    let phase = 'Pending'
-    while (Date.now() < deadline) {
-      const pod = await kubectlGetJson<{ status?: { phase?: string } }>([
-        'get', 'pod', PROBE_POD_NAME, '-n', ns,
-      ])
-      phase = pod?.status?.phase ?? 'Unknown'
-      if (phase === 'Succeeded' || phase === 'Failed') break
-      await new Promise((r) => setTimeout(r, 1000))
-    }
+    // Run to a terminal phase; image-pull errors and hostPath failures
+    // both surface here.
+    const { phase, logs } = await runPodToCompletion(manifest, {
+      timeoutMs: 90_000,
+      kubectl: (args) => deps.run('kubectl', args),
+      apply: deps.apply,
+    })
     if (phase !== 'Succeeded') {
       return {
         name: 'probe', status: 'fail',
@@ -418,8 +411,7 @@ async function runEndToEndProbe(deps: ClusterCheckDeps): Promise<CheckResult> {
           + 'notes in "Cluster setup" in the README.',
       }
     }
-    const { stdout } = await deps.run('kubectl', ['logs', PROBE_POD_NAME, '-n', ns])
-    if (stdout.trim() !== nonce) {
+    if (logs.trim() !== nonce) {
       return {
         name: 'probe', status: 'fail',
         detail: 'probe pod read stale data from the hostPath mount',
@@ -454,8 +446,6 @@ async function runEndToEndProbe(deps: ClusterCheckDeps): Promise<CheckResult> {
       fix: KIND_SETUP_FIX,
     }
   } finally {
-    await deps.run('kubectl', ['delete', 'pod', PROBE_POD_NAME, '-n', ns, '--ignore-not-found'])
-      .catch(() => { /* best-effort cleanup */ })
     await fs.rm(nonceFile, { force: true }).catch(() => { /* best-effort */ })
     await fs.rm(writeFile, { force: true }).catch(() => { /* best-effort */ })
   }
@@ -519,8 +509,7 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
       : ''
 
     const imageRef = await deps.pushImage(PROBE_LOCAL_TAG)
-    await deps.run('kubectl', ['delete', 'pod', NETPOL_PROBE_POD_NAME, '-n', ns, '--ignore-not-found'])
-    await deps.apply({
+    const { phase, logs } = await runPodToCompletion({
       apiVersion: 'v1',
       kind: 'Pod',
       metadata: {
@@ -539,18 +528,11 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
           ],
         }],
       },
+    }, {
+      timeoutMs: 60_000,
+      kubectl: (args) => deps.run('kubectl', args),
+      apply: deps.apply,
     })
-
-    const deadline = Date.now() + 60_000
-    let phase = 'Pending'
-    while (Date.now() < deadline) {
-      const pod = await kubectlGetJson<{ status?: { phase?: string } }>([
-        'get', 'pod', NETPOL_PROBE_POD_NAME, '-n', ns,
-      ])
-      phase = pod?.status?.phase ?? 'Unknown'
-      if (phase === 'Succeeded' || phase === 'Failed') break
-      await new Promise((r) => setTimeout(r, 1000))
-    }
     if (phase !== 'Succeeded') {
       return {
         name: 'egress', status: 'fail',
@@ -559,8 +541,7 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
       }
     }
 
-    const { stdout } = await deps.run('kubectl', ['logs', NETPOL_PROBE_POD_NAME, '-n', ns])
-    if (stdout.includes('NP_REACHED')) {
+    if (logs.includes('NP_REACHED')) {
       return {
         name: 'egress', status: 'fail',
         detail: 'a session-labeled pod reached the apiserver directly — the CNI is not enforcing NetworkPolicy',
@@ -570,7 +551,7 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
           + 'install an enforcing CNI / the kube-network-policies agent.',
       }
     }
-    if (stdout.includes('NP_PROXY_OPEN')) {
+    if (logs.includes('NP_PROXY_OPEN')) {
       return {
         name: 'egress', status: 'fail',
         detail: 'a session-labeled pod dialed a proxy transparent port directly — the forgery lock is open, so a pod could impersonate another session',
@@ -580,7 +561,7 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
           + 'yaac daemon so ensureProxyResources re-applies it.',
       }
     }
-    if (stdout.includes('NP_BLOCKED')) {
+    if (logs.includes('NP_BLOCKED')) {
       const proxyHalf = proxyIp
         ? ', and cannot dial a transparent port directly (forgery lock holds)'
         : ' (proxy not deployed — forgery-lock half unverified)'
@@ -591,7 +572,7 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
     }
     return {
       name: 'egress', status: 'fail',
-      detail: `egress probe produced no verdict (logs: ${stdout.trim().slice(0, 80) || 'empty'})`,
+      detail: `egress probe produced no verdict (logs: ${logs.trim().slice(0, 80) || 'empty'})`,
       fix: KIND_SETUP_FIX,
     }
   } catch (err) {
@@ -600,29 +581,7 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
       detail: `egress probe errored (${truncate(err)})`,
       fix: KIND_SETUP_FIX,
     }
-  } finally {
-    await deps.run('kubectl', ['delete', 'pod', NETPOL_PROBE_POD_NAME, '-n', ns, '--ignore-not-found'])
-      .catch(() => { /* best-effort cleanup */ })
   }
-}
-
-/** Poll a pod until it reaches a wanted phase (or any terminal one). */
-async function waitForProbePodPhase(
-  name: string,
-  wanted: 'Running' | 'Succeeded',
-  timeoutMs: number,
-): Promise<string> {
-  const deadline = Date.now() + timeoutMs
-  let phase = 'Pending'
-  while (Date.now() < deadline) {
-    const pod = await kubectlGetJson<{ status?: { phase?: string } }>([
-      'get', 'pod', name, '-n', k8sNamespace(),
-    ])
-    phase = pod?.status?.phase ?? 'Unknown'
-    if (phase === wanted || phase === 'Succeeded' || phase === 'Failed') return phase
-    await new Promise((r) => setTimeout(r, 1000))
-  }
-  return phase
 }
 
 /**
@@ -679,8 +638,7 @@ async function runNestedMountProbe(deps: ClusterCheckDeps): Promise<CheckResult>
   const ns = k8sNamespace()
   try {
     const imageRef = await deps.pushImage(PROBE_LOCAL_TAG)
-    await deps.run('kubectl', ['delete', 'pod', NESTED_PROBE_POD_NAME, '-n', ns, '--ignore-not-found'])
-    await deps.apply({
+    const { phase, logs } = await runPodToCompletion({
       apiVersion: 'v1',
       kind: 'Pod',
       metadata: { name: NESTED_PROBE_POD_NAME, namespace: ns },
@@ -708,9 +666,11 @@ async function runNestedMountProbe(deps: ClusterCheckDeps): Promise<CheckResult>
           ],
         }],
       },
+    }, {
+      timeoutMs: 60_000,
+      kubectl: (args) => deps.run('kubectl', args),
+      apply: deps.apply,
     })
-
-    const phase = await waitForProbePodPhase(NESTED_PROBE_POD_NAME, 'Succeeded', 60_000)
     if (phase !== 'Succeeded') {
       return {
         name: 'nested-mount', status: 'warn',
@@ -718,8 +678,7 @@ async function runNestedMountProbe(deps: ClusterCheckDeps): Promise<CheckResult>
         fix: NESTED_MOUNT_FIX,
       }
     }
-    const { stdout } = await deps.run('kubectl', ['logs', NESTED_PROBE_POD_NAME, '-n', ns])
-    if (stdout.includes('NESTED_MOUNT_OK')) {
+    if (logs.includes('NESTED_MOUNT_OK')) {
       return {
         name: 'nested-mount', status: 'pass',
         detail: 'userns-scoped SYS_ADMIN unlocks rootless mounts (nestedContainers ready)',
@@ -728,7 +687,7 @@ async function runNestedMountProbe(deps: ClusterCheckDeps): Promise<CheckResult>
     return {
       name: 'nested-mount', status: 'warn',
       detail: 'mounting tmpfs inside a user namespace failed under the nested securityContext'
-        + ` (logs: ${stdout.trim().slice(0, 80) || 'empty'})`,
+        + ` (logs: ${logs.trim().slice(0, 80) || 'empty'})`,
       fix: NESTED_MOUNT_FIX,
     }
   } catch (err) {
@@ -737,9 +696,6 @@ async function runNestedMountProbe(deps: ClusterCheckDeps): Promise<CheckResult>
       detail: `nested userns-mount probe errored (${truncate(err)})`,
       fix: NESTED_MOUNT_FIX,
     }
-  } finally {
-    await deps.run('kubectl', ['delete', 'pod', NESTED_PROBE_POD_NAME, '-n', ns, '--ignore-not-found'])
-      .catch(() => { /* best-effort cleanup */ })
   }
 }
 
@@ -752,26 +708,23 @@ const NESTED_MOUNT_FIX =
 /**
  * Warn-only gate for virtualCluster sessions: the synced-pod guard is a
  * ValidatingAdmissionPolicy, and vcluster creation refuses to proceed
- * without the API (fail-closed, no opt-out).
+ * without the API (fail-closed, no opt-out). Probes via `vapAvailable` —
+ * the exact gate session-create applies — so check and gate cannot drift.
  */
-async function runVapAvailabilityCheck(deps: ClusterCheckDeps): Promise<CheckResult> {
-  try {
-    await deps.run('kubectl', ['get', 'validatingadmissionpolicies', '-o', 'name'], {
-      timeout: 15_000,
-    })
+async function runVapAvailabilityCheck(): Promise<CheckResult> {
+  if (await vapAvailable()) {
     return {
       name: 'vap', status: 'pass',
       detail: 'ValidatingAdmissionPolicy API available (vcluster synced-pod guard)',
     }
-  } catch (err) {
-    return {
-      name: 'vap', status: 'warn',
-      detail: `ValidatingAdmissionPolicy API unavailable (${truncate(err)})`,
-      fix: 'Only virtualCluster sessions are affected — their synced-pod '
-        + 'guard needs the ValidatingAdmissionPolicy API (kubernetes >= '
-        + '1.30, enabled by default). vcluster creation fails closed '
-        + 'without it.',
-    }
+  }
+  return {
+    name: 'vap', status: 'warn',
+    detail: 'ValidatingAdmissionPolicy API unavailable',
+    fix: 'Only virtualCluster sessions are affected — their synced-pod '
+      + 'guard needs the ValidatingAdmissionPolicy API (kubernetes >= '
+      + '1.30, enabled by default). vcluster creation fails closed '
+      + 'without it.',
   }
 }
 

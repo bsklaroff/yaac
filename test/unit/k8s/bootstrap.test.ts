@@ -43,7 +43,6 @@ import {
   buildVclusterFallbackRedirectCcecManifest,
   vclusterFallbackCcecName,
   buildVclusterFallbackRedirectCnpManifest,
-  LABEL_VCLUSTER_MANAGED_BY,
   LABEL_ROLE,
   ROLE_INNER_PROXY,
   VCLUSTER_FALLBACK_REDIRECT_NAME,
@@ -70,7 +69,7 @@ import {
 } from '@/lib/k8s/bootstrap'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
 import { CA_CERT_PATH } from '@/lib/k8s/pod-spec'
-import { LABEL_DATA_DIR_HASH } from '@/lib/k8s/pods'
+import { LABEL_DATA_DIR_HASH, LABEL_VCLUSTER_MANAGED_BY } from '@/lib/k8s/pods'
 import { credentialsDir } from '@/lib/project/paths'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 
