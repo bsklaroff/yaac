@@ -1,0 +1,19 @@
+import { api } from './apiClient'
+
+/**
+ * Allow a previously-blocked host for a session. `persist: false` widens only
+ * the running session's live allowlist; `persist: true` also writes the host
+ * into the project's yaac-config.json so future sessions inherit it. Either way
+ * the proxy unblocks the host immediately and the daemon pushes a fresh
+ * snapshot, so the blocked-hosts badge updates on its own.
+ */
+export async function allowBlockedHost(
+  sessionId: string,
+  host: string,
+  opts: { persist: boolean },
+): Promise<void> {
+  await api.post(`/session/${encodeURIComponent(sessionId)}/allow-host`, {
+    host,
+    persist: opts.persist,
+  })
+}

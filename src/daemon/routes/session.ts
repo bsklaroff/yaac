@@ -17,6 +17,7 @@ import {
   removeProvisioning,
 } from '@/daemon/provisioning'
 import { DaemonError, toErrorBody } from '@/daemon/errors'
+import { allowSessionHost } from '@/lib/session/allow-host'
 import { resolveSessionContainer } from '@/daemon/session-resolve'
 import { pickNextStreamSession } from '@/daemon/stream-picker'
 import { notifySessionListChanged } from '@/daemon/sessions-changed'
@@ -248,6 +249,25 @@ export const sessionApp = new Hono()
   )
   .get('/:id', async (c) => c.json(await getSessionDetail(c.req.param('id'))))
   .get('/:id/blocked-hosts', async (c) => c.json(await getSessionBlockedHosts(c.req.param('id'))))
+  // Allow a previously-blocked host (webapp click-to-allow). The proxy prunes
+  // the host from its recorded blocked set, so the snapshot we push clears the
+  // badge. Persist/fan-out policy lives in allowSessionHost.
+  .post(
+    '/:id/allow-host',
+    zValidator('json', z.object({
+      // A bare hostname or wildcard pattern — the grammar hostMatchesPattern
+      // (default-allowed-hosts.ts) matches against; no scheme/path/port.
+      host: z.string().regex(/^[A-Za-z0-9*._-]+$/, 'host must be a bare hostname or *.wildcard pattern'),
+      persist: z.boolean().optional(),
+    })),
+    async (c) => {
+      const { host, persist } = c.req.valid('json')
+      const target = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
+      await allowSessionHost(target, host, { persist: persist ?? false })
+      notifySessionListChanged()
+      return c.body(null, 204)
+    },
+  )
   .get('/:id/prompt', async (c) => {
     const prompt = await getSessionPrompt(c.req.param('id'))
     return c.json({ prompt: prompt ?? '' })

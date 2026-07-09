@@ -362,6 +362,7 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
         <span className="pointer-events-none absolute bottom-1.5 right-1.5 flex items-center gap-1">
           <BlockedHostsBadge
             hosts={session.blockedHosts}
+            sessionId={session.sessionId}
             iconSize={11}
             className="pointer-events-auto hover:bg-[#d65858]/25"
           />

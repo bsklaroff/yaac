@@ -293,6 +293,35 @@ export class ProxyClient {
   }
 
   /**
+   * Live-widen a running session's egress allowlist by one host (the webapp
+   * "allow blocked host" action). Takes effect immediately — the proxy pushes
+   * the host into its in-memory allowlist and prunes it from the recorded
+   * blocked set. Returns false when the proxy has no registration for the
+   * session (its 404) — the caller decides whether that matters: a project-wide
+   * fan-out tolerates it, a single-session allow should surface it. Any other
+   * non-OK status throws.
+   */
+  async allowHost(sessionId: string, host: string): Promise<boolean> {
+    const res = await fetch(
+      `${this.baseUrl}/sessions/${encodeURIComponent(sessionId)}/allow-host`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.requireAuthSecret()}`,
+        },
+        body: JSON.stringify({ host }),
+      },
+    )
+    if (res.status === 404) return false
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Failed to allow host: ${res.status} ${text}`)
+    }
+    return true
+  }
+
+  /**
    * Attach to an already-deployed proxy without bootstrapping anything.
    * Returns true if the proxy answers /healthz through a fresh tunnel,
    * false otherwise. Used by cleanup paths that want to talk to the proxy

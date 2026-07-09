@@ -447,7 +447,7 @@ export function SessionView({
             />
           )}
           {session.blockedHosts.length > 0 && (
-            <BlockedHostsBadge hosts={session.blockedHosts} iconSize={12} className="hover:bg-[#d65858]/25" />
+            <BlockedHostsBadge hosts={session.blockedHosts} sessionId={session.sessionId} iconSize={12} className="hover:bg-[#d65858]/25" />
           )}
           <SessionActionsMenu sessionId={session.sessionId} currentTitle={session.title ?? ''} />
         </header>

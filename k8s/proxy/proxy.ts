@@ -2039,6 +2039,49 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     return
   }
 
+  // Live-widen one session's allowlist (webapp "allow blocked host" action).
+  // Appends the host to the in-memory allowlist so the next connect is
+  // permitted immediately, and prunes it from the recorded blocked set so the
+  // webapp badge clears. Write-through both: a replaced pod keeps the widened
+  // allowlist for the session's lifetime, and the daemon reads the pruned
+  // blocked-hosts file straight off /data.
+  const allowHostMatch = req.method === 'POST' && req.url
+    ? /^\/sessions\/([^/]+)\/allow-host$/.exec(req.url)
+    : null
+  if (allowHostMatch) {
+    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
+    const sessionId = decodeURIComponent(allowHostMatch[1])
+    let body = ''
+    req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
+    req.on('end', () => {
+      try {
+        const parsed: unknown = JSON.parse(body)
+        const host = parsed && typeof parsed === 'object'
+          ? (parsed as Record<string, unknown>).host
+          : undefined
+        if (typeof host !== 'string' || !host) {
+          res.writeHead(400); res.end('Invalid body: need host string'); return
+        }
+        const allowed = sessionAllowedHosts.get(sessionId)
+        // Fail closed: only a registered session can be widened. The daemon
+        // treats this 404 as a soft miss when fanning out over siblings.
+        if (!allowed) { res.writeHead(404); res.end('Unknown session'); return }
+        if (!allowed.includes(host)) {
+          allowed.push(host)
+          persistSessions()
+        }
+        const blocked = blockedHostsBySession.get(sessionId)
+        if (blocked && blocked.delete(host)) persistBlockedHosts()
+        console.log(`[proxy] Allowed ${host} for session ${sessionId.slice(0, 8)}...`)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true }))
+      } catch (err) {
+        res.writeHead(400); res.end(`Invalid JSON: ${(err as Error).message}`)
+      }
+    })
+    return
+  }
+
   // yaac-in-yaac attribution: the host daemon pushes a full `{ podIP:
   // outerSessionId }` map for every managed vcluster's pods, so chained egress
   // (the inner proxy's upstream dials + pre-opt-in synced pods) is attributed to

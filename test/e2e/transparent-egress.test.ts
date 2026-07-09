@@ -363,6 +363,27 @@ describe('cilium-level transparent egress (source-IP identity)', () => {
     expect(fromA.exit).not.toBe(0)
   }, 60_000)
 
+  it.skipIf(IS_NESTED_YAAC)('allowHost widens a live session so a blocked host becomes reachable', async () => {
+    // Session B's allowlist is [tlsHost] only, so the HTTP echo is blocked.
+    const before = await curlInPod(
+      podB, `--resolve ${echoHost}:80:${FAKE_IP_A} "http://${echoHost}/before"`,
+    )
+    expect(before.exit).not.toBe(0)
+
+    // Widen the running session's allowlist in place (no re-create, no restart).
+    expect(await client.allowHost(sessionB, echoHost)).toBe(true)
+
+    const after = await curlUntilSuccess(
+      podB, `--resolve ${echoHost}:80:${FAKE_IP_A} "http://${echoHost}/after"`,
+    )
+    expect(after.exit, after.out).toBe(0)
+    const echoed = JSON.parse(after.out.slice(0, after.out.lastIndexOf('EXIT:'))) as {
+      url: string; headers: Record<string, string>
+    }
+    expect(echoed.url).toBe('/after')
+    expect(echoed.headers.host).toBe(echoHost)
+  }, 120_000)
+
   it.skipIf(IS_NESTED_YAAC)('forwards transparent HTTP (port 80) via the Host header', async () => {
     const r = await curlInPod(
       podA, `--resolve ${echoHost}:80:${FAKE_IP_A} "http://${echoHost}/hello?x=1"`,
