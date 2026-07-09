@@ -116,6 +116,7 @@ describe('runClusterSetup', () => {
     expect(execCmds.some((c) => c.includes('mount -t sysfs'))).toBe(true)
     expect(execCmds.some((c) => c.includes('DefaultTasksMax=infinity'))).toBe(true)
     expect(execCmds.some((c) => c.includes('min_free_kbytes'))).toBe(true)
+    expect(execCmds.some((c) => c.includes('src_valid_mark'))).toBe(true)
     expect(runCalls.some(([f, a]) => f === 'podman' && a[0] === 'update' && a.includes('32768'))).toBe(true)
     expect(runCalls.some(([f, a]) => f === 'podman' && a[0] === 'network' && a[1] === 'connect')).toBe(true)
 

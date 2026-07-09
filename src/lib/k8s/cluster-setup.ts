@@ -10,6 +10,7 @@ import {
   formatCheckResult,
   NODE_MIN_FREE_KBYTES,
   NODE_PIDS_LIMIT,
+  NODE_SRC_VALID_MARK_PATH,
   NODE_SYSFS_MOUNTPOINT,
   NODE_TASKSMAX_CONF,
   runClusterCheck,
@@ -436,10 +437,11 @@ async function installCilium(deps: ClusterSetupDeps, cluster: string): Promise<v
  * The per-node fixups: containerd
  * registry hosts.toml, the unmasked sysfs mount for userns pods
  * (kind#3436), DefaultTasksMax + VM memory sysctls (subagent fan-out and
- * virtiofs allocations die without them), and the node container's own PID
- * ceiling. All of these live in node/VM state that resets on restart —
- * `yaac cluster setup --repair` re-applies them, and `yaac cluster check`
- * warns when they are missing.
+ * virtiofs allocations die without them), src_valid_mark=0 (session egress
+ * TPROXY — see the comment at the write below), and the node container's
+ * own PID ceiling. All of these live in node/VM state that resets on
+ * restart — `yaac cluster setup --repair` re-applies them, and
+ * `yaac cluster check` warns when they are missing.
  */
 async function applyNodeFixups(deps: ClusterSetupDeps, node: string): Promise<void> {
   deps.log(`Applying node fixups to ${node}...`)
@@ -459,6 +461,24 @@ async function applyNodeFixups(deps: ClusterSetupDeps, node: string): Promise<vo
     + 'systemctl daemon-reexec\n'
     + `echo ${NODE_MIN_FREE_KBYTES} > /proc/sys/vm/min_free_kbytes\n`
     + 'echo 40 > /proc/sys/vm/compaction_proactiveness\n',
+  ])
+  // src_valid_mark MUST be 0 or Cilium's L7 egress redirect black-holes every
+  // session's outbound TCP. wg-quick (and other VPN tooling) sets
+  // net.ipv4.conf.all.src_valid_mark=1 on the host for its fwmark policy
+  // routing, and a new netns COPIES the host's ipv4 conf — so a node created
+  // while a VPN is up inherits it. With it set, reverse-path source
+  // validation includes the packet's fwmark in its fib lookup; a TPROXY'd
+  // SYN carries Cilium's 0x200 proxy mark, so the lookup hits Cilium's own
+  // "fwmark 0x200 -> table 2004 (local default dev lo)" delivery rule,
+  // resolves the SOURCE as a local address, and the kernel drops the SYN as
+  // a martian (kfree_skb reason IP_LOCAL_SOURCE in ip_rcv_finish_core).
+  // Symptom: the TPROXY iptables counter climbs but Envoy never sees a
+  // connection and no SYN-ACK is emitted; DNS (UDP via kube-proxy) still
+  // works. Zeroing it here is netns-scoped — the host VPN keeps its value.
+  // Triage tooling: scripts/diagnose-egress-tproxy.sh (cluster) and
+  // scripts/tproxy-host-test.sh (bare-host reproducer).
+  await deps.run('podman', ['exec', node, 'sh', '-c',
+    `echo 0 > ${NODE_SRC_VALID_MARK_PATH}`,
   ])
   await deps.run('podman', ['update', '--pids-limit', String(NODE_PIDS_LIMIT), node])
 }

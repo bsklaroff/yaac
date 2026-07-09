@@ -53,7 +53,7 @@ async function happyResponses(
     return { stdout: JSON.stringify({ items: [{}] }), stderr: '' }
   }
   if (file === 'podman' && args[0] === 'exec') {
-    return { stdout: 'sysfs=ok\ntasksmax=ok\nminfree=262144\n', stderr: '' }
+    return { stdout: 'sysfs=ok\ntasksmax=ok\nminfree=262144\nsvm=0\n', stderr: '' }
   }
   if (file === 'podman' && args[0] === 'inspect') {
     return { stdout: '32768\n', stderr: '' }
@@ -281,7 +281,7 @@ describe('runClusterCheck', () => {
       if (file === 'podman' && args[0] === 'exec') {
         // Node restarted: the sysfs mount and TasksMax conf are gone and
         // the sysctl is back at its tiny default.
-        return { stdout: 'sysfs=missing\ntasksmax=missing\nminfree=67584\n', stderr: '' }
+        return { stdout: 'sysfs=missing\ntasksmax=missing\nminfree=67584\nsvm=1\n', stderr: '' }
       }
       if (file === 'podman' && args[0] === 'inspect') {
         return { stdout: '2048\n', stderr: '' } // podman's default pids ceiling
@@ -294,6 +294,7 @@ describe('runClusterCheck', () => {
     expect(fixups?.detail).toContain('sysfs unmask')
     expect(fixups?.detail).toContain('DefaultTasksMax')
     expect(fixups?.detail).toContain('vm.min_free_kbytes')
+    expect(fixups?.detail).toContain('src_valid_mark')
     expect(fixups?.detail).toContain('pids-limit')
     expect(fixups?.fix).toContain('yaac cluster setup --repair')
     expect(ok).toBe(true) // warn-only: the sysfs half also trips the probe when it matters

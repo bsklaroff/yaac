@@ -55,6 +55,7 @@ export const NODE_SYSFS_MOUNTPOINT = '/mnt/sysfs'
 export const NODE_TASKSMAX_CONF = '/etc/systemd/system.conf.d/10-yaac-tasksmax.conf'
 export const NODE_MIN_FREE_KBYTES = 262144
 export const NODE_PIDS_LIMIT = 32768
+export const NODE_SRC_VALID_MARK_PATH = '/proc/sys/net/ipv4/conf/all/src_valid_mark'
 
 export interface ClusterCheckDeps {
   /** execFile-style runner, injectable for tests. */
@@ -282,7 +283,8 @@ async function runNodeFixupsCheck(deps: ClusterCheckDeps): Promise<CheckResult> 
         const res = await deps.run('podman', ['exec', node, 'sh', '-c',
           `mountpoint -q ${NODE_SYSFS_MOUNTPOINT} && echo sysfs=ok || echo sysfs=missing; `
           + `test -f ${NODE_TASKSMAX_CONF} && echo tasksmax=ok || echo tasksmax=missing; `
-          + 'echo minfree=$(cat /proc/sys/vm/min_free_kbytes)',
+          + 'echo minfree=$(cat /proc/sys/vm/min_free_kbytes); '
+          + `echo svm=$(cat ${NODE_SRC_VALID_MARK_PATH})`,
         ])
         report = res.stdout
       } catch {
@@ -295,6 +297,9 @@ async function runNodeFixupsCheck(deps: ClusterCheckDeps): Promise<CheckResult> 
       if (report.includes('tasksmax=missing')) missing.add('DefaultTasksMax (subagent fan-out)')
       const minfree = Number(/minfree=(\d+)/.exec(report)?.[1] ?? '0')
       if (minfree < NODE_MIN_FREE_KBYTES) missing.add('vm.min_free_kbytes (virtiofs I/O)')
+      // src_valid_mark=1 (inherited from a VPN'd host) martian-drops every
+      // TPROXY'd egress SYN — see applyNodeFixups in cluster-setup.ts.
+      if (/svm=1/.test(report)) missing.add('src_valid_mark=0 (session egress TPROXY)')
       const { stdout: pidsRaw } = await deps.run('podman', [
         'inspect', '--format', '{{.HostConfig.PidsLimit}}', node,
       ])
@@ -312,7 +317,7 @@ async function runNodeFixupsCheck(deps: ClusterCheckDeps): Promise<CheckResult> 
     }
     return {
       name: 'node-fixups', status: 'pass',
-      detail: 'sysfs unmask, TasksMax, vm sysctls, and pids-limit in place',
+      detail: 'sysfs unmask, TasksMax, vm sysctls, src_valid_mark, and pids-limit in place',
     }
   } catch (err) {
     return {
