@@ -2,6 +2,7 @@ import { reconcileStaleSessions, captureOpencodeFirstMessages } from '@/lib/sess
 import { reconcileProxySshKeys } from '@/lib/session/proxy-reconcile'
 import { reconcileVclusters } from '@/lib/session/vcluster-reconcile'
 import { reconcileInnerRedirects } from '@/lib/session/inner-redirect-reconcile'
+import { reconcileStaleTproxyRules } from '@/lib/session/tproxy-gc-reconcile'
 import { reconcileVclusterAttribution } from '@/lib/session/vcluster-attribution-reconcile'
 import { reconcilePrewarmPool } from '@/daemon/prewarm-reconcile'
 import { reconcileImagePrewarm } from '@/daemon/image-prewarm'
@@ -76,6 +77,10 @@ function defaultTickSteps(): Array<() => Promise<void>> {
     // vcluster's pods, so their chained egress is attributed + allowlist-judged
     // (the proxy can't resolve those cross-namespace source pods itself).
     reconcileVclusterAttribution,
+    // GC the TPROXY rules Cilium leaks when a CEC is deleted (vcluster
+    // churn residue). Throttled internally — most ticks are a no-op. After
+    // reconcileInnerRedirects so a CEC it just (re)applied reads as live.
+    reconcileStaleTproxyRules,
   ]
 }
 
