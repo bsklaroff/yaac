@@ -14,6 +14,7 @@ import { getSessionTitles } from '@/lib/session/titles'
 import { DaemonError } from '@/daemon/errors'
 import { daemonLog } from '@/daemon/log'
 import { testEnv } from '@/shared/env'
+import { formatUtcTimestamp } from '@/shared/time'
 import type {
   ActiveSessionsResult,
   DeletedSessionEntry,
@@ -78,10 +79,6 @@ async function ensureProjectExists(slug: string): Promise<void> {
   } catch {
     throw new DaemonError('NOT_FOUND', `project ${slug} not found`)
   }
-}
-
-function formatCreated(epochMs: number): string {
-  return new Date(epochMs).toISOString().replace('T', ' ').slice(0, 19)
 }
 
 /**
@@ -175,7 +172,7 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
           projectSlug: p.projectSlug,
           tool,
           status: 'running',
-          createdAt: formatCreated(p.createdAtMs),
+          createdAt: formatUtcTimestamp(p.createdAtMs),
           blockedHosts: [],
           forwardedPorts: [],
         }
@@ -189,7 +186,7 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
         projectSlug: p.projectSlug,
         tool,
         status: readSessionStatus(p.projectSlug, p.sessionId),
-        createdAt: formatCreated(p.createdAtMs),
+        createdAt: formatUtcTimestamp(p.createdAtMs),
         waitingSinceMs: readSessionWaitingSince(p.projectSlug, p.sessionId),
         prompt,
         title: titlesBySlug.get(p.projectSlug)?.[p.sessionId],
@@ -403,7 +400,7 @@ export async function listDeletedSessions(
             sessionId,
             projectSlug: slug,
             tool,
-            createdAt: stat.birthtime.toISOString().replace('T', ' ').slice(0, 19),
+            createdAt: formatUtcTimestamp(stat.birthtimeMs),
           },
           birthtimeMs: stat.birthtimeMs,
         })

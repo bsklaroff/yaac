@@ -86,7 +86,7 @@ export async function sessionStream(project?: string, tool?: AgentTool): Promise
     // container directly via `kubectl exec`.
     if (testEnv.e2eNoAttach) return
 
-    await attachTmux(body.jobName, body.tmuxSession)
+    await attachTmux(body.jobName, 'yaac')
 
     // The daemon re-evaluates outcomes on the next /stream/next call from
     // fresh state (tmux liveness, prompt presence), so the CLI only

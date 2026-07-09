@@ -20,7 +20,7 @@ import { listProjects } from '@/lib/project/list'
 import { resolveProjectConfig } from '@/lib/project/config'
 import { resolveImageChain } from '@/lib/container/image-builder'
 import { ensureImage, pushImageShared } from '@/lib/container/build-coordinator'
-import { findBlockingFailure } from '@/daemon/image-builds'
+import { hasBlockingFailure } from '@/daemon/image-builds'
 import { daemonLog } from '@/daemon/log'
 import { env, testEnv } from '@/shared/env'
 
@@ -42,7 +42,7 @@ export async function prewarmProjectImage(projectSlug: string): Promise<void> {
   const prefix = testEnv.imagePrefix ?? 'yaac'
 
   const { layers, finalTag } = await resolveImageChain(projectSlug, prefix, nestedContainers)
-  if (findBlockingFailure([...layers.map((l) => l.tag), finalTag], FAILED_RETRY_MS)) return
+  if (hasBlockingFailure([...layers.map((l) => l.tag), finalTag], FAILED_RETRY_MS)) return
 
   await ensureImage(projectSlug, testEnv.imagePrefix, false, nestedContainers, {
     reason: 'prewarm',

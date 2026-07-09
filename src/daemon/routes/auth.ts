@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { zValidator } from '@hono/zod-validator'
+import { zv } from '@/daemon/routes/validator'
 import { z } from 'zod'
 import { listAuth } from '@/lib/auth/list'
 import { clearAuth } from '@/lib/auth/clear'
@@ -33,7 +33,7 @@ export const authApp = new Hono()
   .get('/list', async (c) => c.json(await listAuth()))
   .post(
     '/clear',
-    zValidator('json', z.object({ service: z.enum(['all', 'claude', 'codex', 'opencode']) })),
+    zv('json', z.object({ service: z.enum(['all', 'claude', 'codex', 'opencode']) })),
     async (c) => {
       const { service } = c.req.valid('json')
       await clearAuth(service)
@@ -42,7 +42,7 @@ export const authApp = new Hono()
   )
   .post(
     '/fake',
-    zValidator('json', z.object({ kind: z.enum(['claude-oauth', 'github']) })),
+    zv('json', z.object({ kind: z.enum(['claude-oauth', 'github']) })),
     async (c) => {
       const { kind } = c.req.valid('json')
       if (kind === 'claude-oauth') {
@@ -55,7 +55,7 @@ export const authApp = new Hono()
   )
   .post(
     '/git/credentials',
-    zValidator('json', credentialSchema),
+    zv('json', credentialSchema),
     async (c) => {
       const entry = c.req.valid('json')
       await addEntry(entry)
@@ -90,7 +90,7 @@ export const authApp = new Hono()
   })
   .put(
     '/git/credentials',
-    zValidator('json', z.object({
+    zv('json', z.object({
       credentials: z.array(credentialSchema),
     })),
     async (c) => {
@@ -108,14 +108,14 @@ export const authApp = new Hono()
   // subprocess; the webapp just polls for the outcome (daemon/tool-login.ts).
   .post(
     '/:tool/login/start',
-    zValidator('param', z.object({ tool: z.enum(['claude', 'codex']) })),
+    zv('param', z.object({ tool: z.enum(['claude', 'codex']) })),
     async (c) => c.json(await startToolLogin(c.req.valid('param').tool)),
   )
   .get('/login/:id', (c) => c.json(getToolLogin(c.req.param('id'))))
   .post(
     '/login/:id/input',
     // Cap generously pre-trim; the manager enforces the real alphabet/length.
-    zValidator('json', z.object({ text: z.string().min(1).max(1024) })),
+    zv('json', z.object({ text: z.string().min(1).max(1024) })),
     (c) => c.json(sendToolLoginInput(c.req.param('id'), c.req.valid('json').text)),
   )
   .post('/login/:id/cancel', (c) => {
@@ -126,7 +126,7 @@ export const authApp = new Hono()
   // Same session/poll shape as login (daemon/tool-install.ts).
   .post(
     '/:tool/install/start',
-    zValidator('param', z.object({ tool: z.enum(['claude', 'codex']) })),
+    zv('param', z.object({ tool: z.enum(['claude', 'codex']) })),
     (c) => c.json(startToolInstall(c.req.valid('param').tool)),
   )
   .get('/install/:id', (c) => c.json(getToolInstall(c.req.param('id'))))
@@ -136,8 +136,8 @@ export const authApp = new Hono()
   })
   .put(
     '/:tool',
-    zValidator('param', z.object({ tool: z.enum(['claude', 'codex', 'opencode']) })),
-    zValidator('json', z.discriminatedUnion('kind', [
+    zv('param', z.object({ tool: z.enum(['claude', 'codex', 'opencode']) })),
+    zv('json', z.discriminatedUnion('kind', [
       z.object({
         kind: z.literal('api-key'),
         apiKey: z.string().min(1),

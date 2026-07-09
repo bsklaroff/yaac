@@ -1,15 +1,10 @@
 import { useCallback } from 'react'
 import { useUiStore } from '@/frontend/store'
+import { formatUtcTimestamp } from '@/shared/time'
 import type { AgentTool, ProvisioningSessionEntry } from '@/shared/types'
 
 /** A streaming provision op (create or restart) for a known id. */
 type ProvisionOp = (sessionId: string, onProgress: (message: string) => void) => Promise<{ sessionId: string }>
-
-/** Now as 'YYYY-MM-DD HH:MM:SS' UTC — matches the daemon's createdAt shape so
- *  the optimistic row sorts and ages like a snapshot-driven one. */
-function nowUtc(): string {
-  return new Date().toISOString().replace('T', ' ').slice(0, 19)
-}
 
 /**
  * Run a session provision (create, or restart-from-deleted) with the shared
@@ -31,7 +26,7 @@ export function useProvisionSession(): (
   const openSession = useUiStore((s) => s.openSession)
 
   return useCallback((projectSlug, tool, kind, sessionId, op) => {
-    addOptimisticProvisioning({ sessionId, projectSlug, tool, kind, message: 'Starting…', createdAt: nowUtc() })
+    addOptimisticProvisioning({ sessionId, projectSlug, tool, kind, message: 'Starting…', createdAt: formatUtcTimestamp(Date.now()) })
     openSession(projectSlug, sessionId) // auto-open the locally-initiated provision
     void op(sessionId, (message) => updateOptimisticProvisioning(sessionId, { message }))
       .then((res) => {
@@ -44,7 +39,7 @@ export function useProvisionSession(): (
         // pane on the new session until the snapshot takes over.
         if (res.sessionId !== sessionId) {
           addOptimisticProvisioning({
-            sessionId: res.sessionId, projectSlug, tool, kind, message: 'Claiming warm spare…', createdAt: nowUtc(),
+            sessionId: res.sessionId, projectSlug, tool, kind, message: 'Claiming warm spare…', createdAt: formatUtcTimestamp(Date.now()),
           })
           removeOptimisticProvisioning(sessionId)
           openSession(projectSlug, res.sessionId)

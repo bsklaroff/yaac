@@ -6,11 +6,8 @@ import {
   clearAllToolLoginsForTests,
   cancelToolLogin,
   getToolLogin,
-  outputTail,
-  presentableOutput,
   sendToolLoginInput,
   startToolLogin,
-  stripAnsi,
 } from '@/daemon/tool-login'
 import { loadClaudeCredentialsFile, loadCodexCredentialsFile } from '@/lib/project/tool-auth'
 
@@ -20,33 +17,6 @@ import { loadClaudeCredentialsFile, loadCodexCredentialsFile } from '@/lib/proje
 vi.mock('@/daemon/cli-resolve', async (importOriginal) => {
   const actual = await importOriginal<typeof cliResolveModule>()
   return { ...actual, resolveToolCliPath: () => null }
-})
-
-describe('login output helpers', () => {
-  it('stripAnsi drops colors, cursor controls, and OSC sequences', () => {
-    expect(stripAnsi('\x1b[94mhttps://x\x1b[0m\x1b[?25l\x1b]0;title\x07 done')).toBe('https://x done')
-  })
-
-  it('outputTail joins the last non-empty lines', () => {
-    expect(outputTail('a\n\n b \nc\nd\ne\n', 3)).toBe('c | d | e')
-  })
-
-  it('presentableOutput drops spinner frames, duplicate lines, and extra blanks', () => {
-    const buf = 'Opening browser…\n✢\n*\n✻\n\n\n\nvisit: https://x\nvisit: https://x\nfollow the prompts\n'
-    expect(presentableOutput(buf)).toBe('Opening browser…\n\nvisit: https://x\nfollow the prompts')
-  })
-
-  it('presentableOutput drops the paste-code prompt — the webapp has its own box', () => {
-    expect(presentableOutput('visit: https://x\nPaste code here if prompted > ')).toBe('visit: https://x')
-  })
-
-  it('presentableOutput keeps text Ink appends after the paste-code prompt', () => {
-    expect(presentableOutput('Paste code here if prompted > Login successful.\n')).toBe('Login successful.')
-  })
-
-  it('presentableOutput caps to the last maxChars', () => {
-    expect(presentableOutput('abcdefgh', 4)).toBe('efgh')
-  })
 })
 
 const CLAUDE_STUB = path.join(__dirname, '..', '..', 'helpers', 'fake-claude-login.cjs')
@@ -197,10 +167,6 @@ describe('tool login sessions', () => {
     await waitForStatus(started.id, 'error')
     expect(getToolLogin(started.id).error).toContain('Login was not completed')
     expect(await loadCodexCredentialsFile()).toBeNull()
-  })
-
-  it('rejects opencode — no web sign-in flow exists', async () => {
-    await expect(startToolLogin('opencode')).rejects.toMatchObject({ code: 'VALIDATION' })
   })
 
   it('unknown ids 404; cancel forgets the session and is idempotent', async () => {

@@ -36,27 +36,3 @@ describe.skipIf(!haveCluster)('GET /session/:id/attach-info', () => {
     expect(body.error.code).toBe('NOT_FOUND')
   })
 })
-
-describe.skipIf(!haveCluster)('GET /session/:id/shell-info', () => {
-  let tmpDir: string
-  let restoreNamespace: (() => void) | null = null
-
-  beforeEach(async () => {
-    tmpDir = await createTempDataDir()
-    restoreNamespace = useTestNamespace()
-  })
-
-  afterEach(async () => {
-    restoreNamespace?.()
-    restoreNamespace = null
-    await cleanupTempDir(tmpDir)
-  })
-
-  it('returns 404 NOT_FOUND when no session pod matches the id', async () => {
-    const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
-    const res = await client.session[':id']['shell-info'].$get({ param: { id: 'bogus-id' } })
-    expect(res.status).toBe(404)
-    const body = await res.json() as unknown as { error: { code: string } }
-    expect(body.error.code).toBe('NOT_FOUND')
-  })
-})

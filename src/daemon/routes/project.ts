@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { stream } from 'hono/streaming'
-import { zValidator } from '@hono/zod-validator'
+import { zv } from '@/daemon/routes/validator'
 import { z } from 'zod'
 import { listProjects } from '@/lib/project/list'
 import { getProjectDetail, resolveProjectConfigWithSource, assertProjectExists } from '@/lib/project/detail'
@@ -16,7 +16,7 @@ export const projectApp = new Hono()
   .get('/list', async (c) => c.json(await listProjects()))
   .post(
     '/add',
-    zValidator('json', z.object({ remoteUrl: z.string().min(1) })),
+    zv('json', z.object({ remoteUrl: z.string().min(1) })),
     async (c) => {
       const { remoteUrl } = c.req.valid('json')
       return c.json(await addProject(remoteUrl))
@@ -34,7 +34,7 @@ export const projectApp = new Hono()
   .get('/:slug/config', async (c) => c.json(await resolveProjectConfigWithSource(c.req.param('slug'))))
   .put(
     '/:slug/config',
-    zValidator('json', z.object({ config: z.unknown() }).refine(
+    zv('json', z.object({ config: z.unknown() }).refine(
       (b) => b.config !== undefined,
       { message: 'Expected { config } body.', path: ['config'] },
     )),
@@ -52,7 +52,7 @@ export const projectApp = new Hono()
     c.json({ content: await readProjectDockerfile(c.req.param('slug')) }))
   .put(
     '/:slug/dockerfile',
-    zValidator('json', z.object({ content: z.string() })),
+    zv('json', z.object({ content: z.string() })),
     async (c) => {
       const { content } = c.req.valid('json')
       await writeProjectDockerfile(c.req.param('slug'), content)

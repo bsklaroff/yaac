@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { zValidator } from '@hono/zod-validator'
+import { zv } from '@/daemon/routes/validator'
 import { z } from 'zod'
 import { clearShortcutOverrides, getShortcutOverrides, setShortcutOverride } from '@/lib/project/preferences'
 
@@ -18,7 +18,7 @@ export const shortcutsApp = new Hono()
   .get('/get', async (c) => c.json({ overrides: await getShortcutOverrides() }))
   .post(
     '/set',
-    zValidator('json', z.object({ id: z.string().min(1), chord: chordSchema })),
+    zv('json', z.object({ id: z.string().min(1), chord: chordSchema })),
     async (c) => {
       const { id, chord } = c.req.valid('json')
       await setShortcutOverride(id, chord)

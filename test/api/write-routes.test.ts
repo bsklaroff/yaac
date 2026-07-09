@@ -622,7 +622,7 @@ describe('write routes', () => {
     it('start → poll → success over the wire', async () => {
       const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const startRes = await client.auth[':tool'].login.start.$post({ param: { tool: 'codex' } })
-      expect(startRes.status).toBe(200)
+      if (!startRes.ok) throw new Error('login start failed')
       const started = await startRes.json()
       expect(started.tool).toBe('codex')
 
@@ -643,6 +643,7 @@ describe('write routes', () => {
       process.env.FAKE_LOGIN_MODE = 'need-input'
       const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const startRes = await client.auth[':tool'].login.start.$post({ param: { tool: 'claude' } })
+      if (!startRes.ok) throw new Error('login start failed')
       const started = await startRes.json()
 
       const res = await client.auth.login[':id'].input.$post({
@@ -680,7 +681,7 @@ describe('write routes', () => {
     it('start → poll → success over the wire', async () => {
       const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const startRes = await client.auth[':tool'].install.start.$post({ param: { tool: 'claude' } })
-      expect(startRes.status).toBe(200)
+      if (!startRes.ok) throw new Error('install start failed')
       const started = await startRes.json()
       expect(started.tool).toBe('claude')
 

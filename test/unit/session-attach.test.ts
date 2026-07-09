@@ -46,7 +46,7 @@ describe('sessionAttach', () => {
     vi.mocked(spawn).mockImplementation(() => mockAttachedChild() as never)
     const mockGet = vi.fn().mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve({ jobName: 'yaac-demo-abc', tmuxSession: 'yaac' }),
+      json: () => Promise.resolve({ jobName: 'yaac-demo-abc' }),
     })
     vi.mocked(getRpcClient).mockResolvedValue({
       session: { ':id': { 'attach-info': { $get: mockGet } } },

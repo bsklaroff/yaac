@@ -5,7 +5,7 @@ export async function sessionAttach(containerId: string): Promise<void> {
   const client = await getRpcClient()
   const res = await client.session[':id']['attach-info'].$get({ param: { id: containerId } })
   if (!res.ok) throw await toClientError(res)
-  const { jobName, tmuxSession } = await res.json()
+  const { jobName } = await res.json()
 
-  await attachTmux(jobName, tmuxSession)
+  await attachTmux(jobName, 'yaac')
 }

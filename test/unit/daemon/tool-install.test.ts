@@ -76,10 +76,6 @@ describe('tool install sessions', () => {
     expect(getToolInstall(started.id).error).toContain('still cannot be found')
   })
 
-  it('rejects opencode — no CLI to install', () => {
-    expect(() => startToolInstall('opencode')).toThrow(/claude and codex only/)
-  })
-
   it('codex without npm or Homebrew errors with manual instructions', async () => {
     delete process.env.YAAC_E2E_CODEX_INSTALL_CLI
     const started = startToolInstall('codex')

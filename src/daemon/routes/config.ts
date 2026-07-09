@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { zValidator } from '@hono/zod-validator'
+import { zv } from '@/daemon/routes/validator'
 import { z } from 'zod'
 import { readUserDockerfile, writeUserDockerfile } from '@/lib/project/dockerfile'
 
@@ -12,7 +12,7 @@ export const configApp = new Hono()
   .get('/user-dockerfile', async (c) => c.json({ content: await readUserDockerfile() }))
   .put(
     '/user-dockerfile',
-    zValidator('json', z.object({ content: z.string() })),
+    zv('json', z.object({ content: z.string() })),
     async (c) => {
       const { content } = c.req.valid('json')
       await writeUserDockerfile(content)

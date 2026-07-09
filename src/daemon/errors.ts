@@ -72,31 +72,3 @@ export function toErrorBody(err: unknown): { status: number; body: DaemonErrorBo
   }
 }
 
-/**
- * zValidator (used inline on each route) answers validation failures with
- * its own 400 shape: `{ success: false, error: { name, message } }` where
- * `error.message` is a JSON-stringified ZodError issues array. Reshape it
- * into the daemon's `DaemonErrorBody` so the CLI exit-code mapping still
- * fires on VALIDATION. Returns null for anything that isn't that shape.
- */
-export function rewriteZValidatorBody(raw: unknown): DaemonErrorBody | null {
-  if (!raw || typeof raw !== 'object') return null
-  const r = raw as { success?: unknown; error?: unknown }
-  if (r.success !== false || !r.error || typeof r.error !== 'object') return null
-  const errMessage = (r.error as { message?: unknown }).message
-  let message = 'Validation error'
-  if (typeof errMessage === 'string') {
-    try {
-      const issues = JSON.parse(errMessage) as Array<{ path?: unknown; message?: unknown }>
-      const issue = Array.isArray(issues) ? issues[0] : undefined
-      if (issue && typeof issue.message === 'string') {
-        const path = Array.isArray(issue.path) ? issue.path.map(String).join('.') : ''
-        message = path ? `${path}: ${issue.message}` : issue.message
-      }
-    } catch {
-      message = errMessage
-    }
-  }
-  return { error: { code: 'VALIDATION', message } }
-}
-

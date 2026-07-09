@@ -7,7 +7,7 @@ vi.mock('@/lib/container/build-coordinator', () => ({
   ensureImage: vi.fn(),
   pushImageShared: vi.fn(),
 }))
-vi.mock('@/daemon/image-builds', () => ({ findBlockingFailure: vi.fn() }))
+vi.mock('@/daemon/image-builds', () => ({ hasBlockingFailure: vi.fn() }))
 vi.mock('@/daemon/log', () => ({ daemonLog: vi.fn() }))
 
 import {
@@ -19,7 +19,7 @@ import { listProjects } from '@/lib/project/list'
 import { resolveProjectConfig } from '@/lib/project/config'
 import { resolveImageChain } from '@/lib/container/image-builder'
 import { ensureImage, pushImageShared } from '@/lib/container/build-coordinator'
-import { findBlockingFailure } from '@/daemon/image-builds'
+import { hasBlockingFailure } from '@/daemon/image-builds'
 import { daemonLog } from '@/daemon/log'
 
 const mockListProjects = vi.mocked(listProjects)
@@ -27,7 +27,7 @@ const mockResolveConfig = vi.mocked(resolveProjectConfig)
 const mockResolveChain = vi.mocked(resolveImageChain)
 const mockEnsureImage = vi.mocked(ensureImage)
 const mockPush = vi.mocked(pushImageShared)
-const mockBlockingFailure = vi.mocked(findBlockingFailure)
+const mockBlockingFailure = vi.mocked(hasBlockingFailure)
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
@@ -47,7 +47,7 @@ describe('image prewarm', () => {
     vi.stubEnv('YAAC_IMAGE_PREFIX', undefined)
     mockResolveConfig.mockResolvedValue(null)
     mockResolveChain.mockResolvedValue({ layers: [], finalTag: 'yaac-tools:t' })
-    mockBlockingFailure.mockReturnValue(undefined)
+    mockBlockingFailure.mockReturnValue(false)
     mockEnsureImage.mockResolvedValue('yaac-tools:t')
     mockPush.mockResolvedValue('localhost:5001/yaac-tools:t')
   })
@@ -152,10 +152,7 @@ describe('image prewarm', () => {
         ],
         finalTag: 'yaac-tools:t',
       })
-      mockBlockingFailure.mockReturnValue({
-        id: 'build-1', tag: 'yaac-base:b', layer: 'base', action: 'build',
-        projectSlugs: ['p'], reason: 'prewarm', status: 'failed', startedAt: '2026-01-01 00:00:00',
-      })
+      mockBlockingFailure.mockReturnValue(true)
 
       await prewarmProjectImage('p')
 

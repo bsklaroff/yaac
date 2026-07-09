@@ -418,7 +418,6 @@ export type PickNextResult =
       done: false
       sessionId: string
       jobName: string
-      tmuxSession: 'yaac'
       projectSlug: string
       tool: AgentTool
       visited: string[]

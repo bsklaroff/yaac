@@ -42,14 +42,14 @@ describe('sessionShell', () => {
     process.exitCode = undefined
   })
 
-  it('fetches shell-info and spawns kubectl exec zsh', async () => {
+  it('fetches attach-info and spawns kubectl exec zsh', async () => {
     vi.mocked(spawn).mockImplementation(() => mockAttachedChild() as never)
     const mockGet = vi.fn().mockResolvedValue({
       ok: true,
       json: () => Promise.resolve({ jobName: 'yaac-demo-abc' }),
     })
     vi.mocked(getRpcClient).mockResolvedValue({
-      session: { ':id': { 'shell-info': { $get: mockGet } } },
+      session: { ':id': { 'attach-info': { $get: mockGet } } },
     } as unknown as Awaited<ReturnType<typeof getRpcClient>>)
 
     await sessionShell('abc')
@@ -69,7 +69,7 @@ describe('sessionShell', () => {
       json: () => Promise.resolve({ error: { code: 'CONFLICT', message: 'not running' } }),
     })
     vi.mocked(getRpcClient).mockResolvedValue({
-      session: { ':id': { 'shell-info': { $get: mockGet } } },
+      session: { ':id': { 'attach-info': { $get: mockGet } } },
     } as unknown as Awaited<ReturnType<typeof getRpcClient>>)
 
     await expect(sessionShell('dead')).rejects.toThrow('not running')

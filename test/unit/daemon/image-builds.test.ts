@@ -4,9 +4,9 @@ import {
   clearAllImageBuildsForTests,
   dismissImageBuild,
   failImageBuild,
-  findBlockingFailure,
   finishImageBuild,
   getImageBuildLog,
+  hasBlockingFailure,
   ingestImageBuildLine,
   listImageBuilds,
   parseBuildStep,
@@ -216,12 +216,11 @@ describe('image-builds registry', () => {
     })
   })
 
-  describe('findBlockingFailure', () => {
-    it('finds a recent failure matching one of the tags', () => {
+  describe('hasBlockingFailure', () => {
+    it('reports a recent failure matching one of the tags', () => {
       const id = register({ tag: 'yaac-tools:def' })
       failImageBuild(id, 'boom')
-      const hit = findBlockingFailure(['yaac-base:abc', 'yaac-tools:def'], 10 * 60_000)
-      expect(hit?.id).toBe(id)
+      expect(hasBlockingFailure(['yaac-base:abc', 'yaac-tools:def'], 10 * 60_000)).toBe(true)
     })
 
     it('ignores old failures, other tags, and non-failures', () => {
@@ -232,16 +231,16 @@ describe('image-builds registry', () => {
       finishImageBuild(ok)
 
       vi.advanceTimersByTime(11 * 60_000)
-      expect(findBlockingFailure(['stale:1'], 10 * 60_000)).toBeUndefined()
-      expect(findBlockingFailure(['ok:2'], 10 * 60_000)).toBeUndefined()
-      expect(findBlockingFailure(['other:3'], 10 * 60_000)).toBeUndefined()
+      expect(hasBlockingFailure(['stale:1'], 10 * 60_000)).toBe(false)
+      expect(hasBlockingFailure(['ok:2'], 10 * 60_000)).toBe(false)
+      expect(hasBlockingFailure(['other:3'], 10 * 60_000)).toBe(false)
     })
 
     it('clears when the failure is dismissed', () => {
       const id = register({ tag: 'yaac-base:abc' })
       failImageBuild(id, 'boom')
       dismissImageBuild(id)
-      expect(findBlockingFailure(['yaac-base:abc'], 10 * 60_000)).toBeUndefined()
+      expect(hasBlockingFailure(['yaac-base:abc'], 10 * 60_000)).toBe(false)
     })
   })
 })

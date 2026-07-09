@@ -38,7 +38,6 @@ type StreamResponse =
       done: false
       sessionId: string
       jobName: string
-      tmuxSession: 'yaac'
       projectSlug: string
       tool: 'claude' | 'codex'
       visited: string[]
@@ -101,7 +100,6 @@ describe('sessionStream', () => {
         done: false,
         sessionId: 'abc',
         jobName: 'yaac-demo-abc',
-        tmuxSession: 'yaac',
         projectSlug: 'demo',
         tool: 'claude',
         visited: ['abc'],

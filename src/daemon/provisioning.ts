@@ -14,6 +14,7 @@
  * half-built session.
  */
 import { notifySessionListChanged } from '@/daemon/sessions-changed'
+import { formatUtcTimestamp } from '@/shared/time'
 import type { AgentTool, ProvisioningSessionEntry } from '@/shared/types'
 
 export type ProvisioningKind = 'create' | 'restart'
@@ -29,12 +30,6 @@ interface ProvisioningEntry {
 }
 
 const entries = new Map<string, ProvisioningEntry>()
-
-/** Same 'YYYY-MM-DD HH:MM:SS' UTC shape as session list `createdAt`, so the
- *  sidebar's relativeAge() renders a sane age for a row that has no pod yet. */
-function formatCreated(epochMs: number): string {
-  return new Date(epochMs).toISOString().replace('T', ' ').slice(0, 19)
-}
 
 /** Track a new in-flight provision (idempotent overwrite on the same id, e.g.
  *  a retry). Pushes a fresh snapshot so the row appears immediately. Every
@@ -94,7 +89,7 @@ export function listProvisioning(): ProvisioningSessionEntry[] {
       kind: e.kind,
       message: e.message,
       ...(e.error !== undefined ? { error: e.error } : {}),
-      createdAt: formatCreated(e.startedAt),
+      createdAt: formatUtcTimestamp(e.startedAt),
     }))
 }
 

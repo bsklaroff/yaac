@@ -12,7 +12,7 @@ import {
   type WebAuthStore,
 } from '@/daemon/web-auth'
 import { registerStaticRoutes } from '@/daemon/static'
-import { toErrorBody, rewriteZValidatorBody } from '@/daemon/errors'
+import { toErrorBody } from '@/daemon/errors'
 import { projectApp } from '@/daemon/routes/project'
 import { sessionApp } from '@/daemon/routes/session'
 import { toolApp } from '@/daemon/routes/tool'
@@ -47,14 +47,6 @@ export function buildApp(deps: DaemonAppDeps) {
   app.use('*', hostHeaderCheck())
   app.use('*', denyBrowserCors())
   app.use('*', cookieOrBearerAuth(deps.secret, store))
-  app.use('*', async (c, next) => {
-    await next()
-    if (c.res.status !== 400) return
-    if (!c.res.headers.get('content-type')?.includes('application/json')) return
-    const raw: unknown = await c.res.clone().json().catch(() => null)
-    const reshaped = rewriteZValidatorBody(raw)
-    if (reshaped) c.res = c.json(reshaped, 400)
-  })
 
   app.onError((err: Error, c: Context) => {
     const { status, body } = toErrorBody(err)

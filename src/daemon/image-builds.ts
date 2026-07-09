@@ -9,9 +9,11 @@
  * The daemon is a single process, so a module-level map is enough. Succeeded
  * entries age out after a short retention; failed entries stay until
  * dismissed or superseded by a retry, and gate the background prewarm sweep's
- * backoff via `findBlockingFailure`.
+ * backoff via `hasBlockingFailure`.
  */
 import { notifySessionListChanged } from '@/daemon/sessions-changed'
+import { stripAnsi } from '@/shared/ansi'
+import { formatUtcTimestamp } from '@/shared/time'
 import type { ImageBuildEntry, ImageLayerName } from '@/shared/types'
 
 export type ImageBuildReason = 'session' | 'prewarm' | 'rebuild'
@@ -42,16 +44,6 @@ const LOG_CAP = 64_000
 const MAX_ENTRIES = 30
 const SUCCEEDED_RETENTION_MS = 5 * 60_000
 const STEP_TEXT_MAX = 120
-
-// Same pattern as tool-login.ts's stripAnsi; duplicated here because that
-// module imports node-pty at top level, which this registry's consumers
-// (the image builder chain) must not drag into their import graph.
-const ANSI_RE = /\x1b\[[0-9;?]*[0-9A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[=>]|[\x00-\x08\x0b-\x1f]/g
-
-/** Same 'YYYY-MM-DD HH:MM:SS' UTC shape as provisioning `createdAt`. */
-function formatTime(epochMs: number): string {
-  return new Date(epochMs).toISOString().replace('T', ' ').slice(0, 19)
-}
 
 /**
  * Parse podman/buildah's per-instruction progress line, e.g.
@@ -85,7 +77,7 @@ function prune(): void {
 
 /**
  * Track a new build/push. A finished entry for the same tag+action is
- * superseded (a retry replaces a stale failure, so its `findBlockingFailure`
+ * superseded (a retry replaces a stale failure, so its `hasBlockingFailure`
  * backoff clears). Returns the entry id the caller uses for log ingestion
  * and completion.
  */
@@ -135,7 +127,7 @@ export function attachImageBuildProject(id: string, projectSlug: string): void {
 export function ingestImageBuildLine(id: string, line: string): void {
   const e = entries.get(id)
   if (!e) return
-  const stripped = line.replace(ANSI_RE, '')
+  const stripped = stripAnsi(line)
   e.log = (e.log + stripped + '\n').slice(-LOG_CAP)
   const step = parseBuildStep(stripped)
   if (!step) return
@@ -192,8 +184,8 @@ export function listImageBuilds(): ImageBuildEntry[] {
       ...(e.stepTotal !== undefined ? { stepTotal: e.stepTotal } : {}),
       ...(e.stepText !== undefined ? { stepText: e.stepText } : {}),
       ...(e.error !== undefined ? { error: e.error } : {}),
-      startedAt: formatTime(e.startedAt),
-      ...(e.finishedAt !== undefined ? { finishedAt: formatTime(e.finishedAt) } : {}),
+      startedAt: formatUtcTimestamp(e.startedAt),
+      ...(e.finishedAt !== undefined ? { finishedAt: formatUtcTimestamp(e.finishedAt) } : {}),
     }))
 }
 
@@ -203,17 +195,15 @@ export function getImageBuildLog(id: string): string | undefined {
 }
 
 /**
- * A recent failure covering any of `tags`, or undefined. The prewarm sweep
- * uses this to back off a chain whose build just failed instead of retrying
- * every 5s tick; dismissing the failure (or editing the Dockerfile, which
- * changes the tag) re-enables the sweep immediately.
+ * Whether a recent failure covers any of `tags`. The prewarm sweep uses this
+ * to back off a chain whose build just failed instead of retrying every 5s
+ * tick; dismissing the failure (or editing the Dockerfile, which changes the
+ * tag) re-enables the sweep immediately.
  */
-export function findBlockingFailure(tags: string[], retryAfterMs: number): ImageBuildEntry | undefined {
+export function hasBlockingFailure(tags: string[], retryAfterMs: number): boolean {
   const cutoff = Date.now() - retryAfterMs
-  const blocking = [...entries.values()].find((e) =>
+  return [...entries.values()].some((e) =>
     e.status === 'failed' && tags.includes(e.tag) && (e.finishedAt ?? 0) > cutoff)
-  if (!blocking) return undefined
-  return listImageBuilds().find((e) => e.id === blocking.id)
 }
 
 /** Test helper: drop all tracked entries. */
