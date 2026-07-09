@@ -1,4 +1,5 @@
-import { existsSync, rmSync, cpSync, mkdirSync, readdirSync } from 'node:fs'
+import { existsSync, rmSync, mkdirSync, readdirSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -19,7 +20,11 @@ if (!app) throw new Error('no built yaac.app under dist-app/ — run `pnpm app:b
 
 function install(dest: string): void {
   rmSync(dest, { recursive: true, force: true })
-  cpSync(app as string, dest, { recursive: true, dereference: true })
+  // `ditto` copies the .app bundle preserving its internal symlinks (the
+  // Electron framework's `Versions/Current → A`). A cpSync with `dereference`
+  // rewrites those into absolute paths and breaks the bundle — Electron then
+  // can't find icudtl.dat and the GPU process fatally crashes on launch.
+  execFileSync('ditto', [app as string, dest])
 }
 
 let dest = '/Applications/yaac.app'
