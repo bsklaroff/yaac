@@ -1,9 +1,9 @@
 /**
  * Local-model title summarization: turns a session's first user message
  * into a short display title by shelling out to a pinned llama.cpp
- * binary running a tiny flan-t5 GGUF, entirely on the daemon host. The
- * only network traffic is the one-time binary (~12MB, github.com) and
- * model (~114MB, huggingface.co) download; each title is one short-lived
+ * binary running a small Qwen2.5-0.5B-Instruct GGUF, entirely on the daemon
+ * host. The only network traffic is the one-time binary (~12MB, github.com)
+ * and model (~330MB, huggingface.co) download; each title is one short-lived
  * subprocess, so nothing stays resident in the daemon between calls.
  *
  * Inference requests serialize one at a time (concurrent spawns would
@@ -11,27 +11,40 @@
  * daemon whose egress allowlist blocks huggingface.co) logs and backs
  * off instead of retrying every caller.
  */
-import { ensureLlamaCpp, ensureGgufModel, runCompletion } from '@/daemon/llama-cpp'
+import { ensureLlamaCpp, ensureGgufModel, runChatCompletion } from '@/daemon/llama-cpp'
 import { normalizeTitle } from '@/lib/session/titles'
 import { daemonLog } from '@/daemon/log'
 
-/** The artifact choice matters: ONNX q8/q4, GGUF Q4_0, AND the same
- *  repo's F16 GGUF all emit degenerate text ("on on on…"), while GGUF
- *  Q8_0 matches the known-good fp16 ONNX output token-for-token at
- *  temp 0 (all verified empirically — re-verify before swapping). */
+/** Qwen2.5-0.5B-Instruct at IQ4_XS, chosen empirically. flan-t5-small looped
+ *  or echoed the prompt on long / jargon-heavy first messages; smaller and
+ *  newer models (gemma-3-270m, LFM2-350M, Qwen3-0.6B, h2o-danube3-500m) echoed
+ *  the prompt, hallucinated, or added noise. Qwen2.5-0.5B was the smallest
+ *  model that reliably wrote a specific, on-topic title. On the quant ladder,
+ *  IQ4_XS (imatrix, 333MB) held Q5_K_M/Q8_0 quality with zero defects over the
+ *  test set while being the smallest and fastest — its importance-matrix
+ *  calibration beats the same-size plain Q4_K_S/Q4_K_M, which mashed words and
+ *  hallucinated ("Llama 2 …"). See docs/session-title-model-eval.md. Re-verify
+ *  title quality before swapping the model or quant. */
 export const TITLE_MODEL_URL
-  = 'https://huggingface.co/Felladrin/gguf-flan-t5-small/resolve/main/flan-t5-small.Q8_0.gguf'
-export const TITLE_MODEL_FILENAME = 'flan-t5-small.Q8_0.gguf'
+  = 'https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/Qwen2.5-0.5B-Instruct-IQ4_XS.gguf'
+export const TITLE_MODEL_FILENAME = 'Qwen2.5-0.5B-Instruct-IQ4_XS.gguf'
+
+/** Instruction for the title model, kept in the system role so the user turn
+ *  is just the (untrusted) first message wrapped with a short ask. */
+const TITLE_SYSTEM_PROMPT
+  = "You write concise, specific titles for a developer tool's session list."
 
 /** Prompts at or under this length already fit the sidebar as-is; running
  *  the model would mostly parrot them back. */
 const SHORT_PROMPT_MAX = 48
 
-/** Payload cap before templating: the model's encoder takes 512 tokens, so
- *  1000 chars (~250 tokens) plus the instruction stays well inside. */
+/** Payload cap before templating. Qwen2.5 has a 32k context, so this is about
+ *  keeping the title focused on the opening ask, not a context limit: 1000
+ *  chars (~250 tokens) is plenty of a first message to title from. */
 const MAX_INPUT_CHARS = 1000
 
-const MAX_NEW_TOKENS = 16
+/** Enough for a full ~6-word title without truncating the descriptive ones. */
+const MAX_NEW_TOKENS = 32
 
 /** How long a failed setup (binary/model download) blocks further attempts. */
 const SETUP_RETRY_MS = 10 * 60_000
@@ -41,7 +54,7 @@ type TitleRunner = (input: string) => Promise<string>
 async function defaultRunnerFactory(): Promise<TitleRunner> {
   const bin = await ensureLlamaCpp()
   const model = await ensureGgufModel(TITLE_MODEL_URL, TITLE_MODEL_FILENAME)
-  return (input) => runCompletion(bin, model, input, MAX_NEW_TOKENS)
+  return (input) => runChatCompletion(bin, model, TITLE_SYSTEM_PROMPT, input, MAX_NEW_TOKENS)
 }
 
 let runnerFactory: () => Promise<TitleRunner> = defaultRunnerFactory
@@ -115,9 +128,9 @@ async function ensureRunner(): Promise<TitleRunner | undefined> {
 
 function buildInput(prompt: string): string {
   const text = prompt.replace(/\s+/g, ' ').trim().slice(0, MAX_INPUT_CHARS)
-  // Chosen empirically: instruction wordings mentioning "summarize" or
-  // "developer request" leak those words into flan-t5-small's output.
-  return `Write a very short title for this task: ${text}`
+  return 'Write a short, specific title (3 to 6 words) that captures the main '
+    + 'point of this request. Reply with ONLY the title — no quotes, no '
+    + `punctuation at the end.\n\n${text}`
 }
 
 /** Strip wrapping quotes/backticks and trailing periods, then normalize

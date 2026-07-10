@@ -5,7 +5,7 @@ import {
   llamaCppDir,
   ensureLlamaCpp,
   ensureGgufModel,
-  runCompletion,
+  runChatCompletion,
   type LlamaCppDeps,
 } from '@/daemon/llama-cpp'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
@@ -85,18 +85,20 @@ describe('llama-cpp runtime', () => {
     })
   })
 
-  describe('runCompletion', () => {
-    it('spawns a one-shot greedy completion and strips the end marker', async () => {
+  describe('runChatCompletion', () => {
+    it('spawns a one-shot chat completion via the model template and strips the end marker', async () => {
       const deps = stubDeps()
       deps.run.mockResolvedValue({ stdout: ' a short title [end of text]\n\n', stderr: '' })
-      const out = await runCompletion('/opt/llama/llama-completion', '/m.gguf', 'prompt!', 16, deps)
+      const out = await runChatCompletion(
+        '/opt/llama/llama-completion', '/m.gguf', 'be a titler', 'prompt!', 16, deps)
       expect(out).toBe('a short title')
       const [file, args, opts] = deps.run.mock.calls[0] as [
         string, string[], { env: Record<string, string> },
       ]
       expect(file).toBe('/opt/llama/llama-completion')
       expect(args).toEqual([
-        '-m', '/m.gguf', '-p', 'prompt!', '-n', '16', '--temp', '0', '--no-display-prompt',
+        '-m', '/m.gguf', '--jinja', '-st', '-sys', 'be a titler', '-p', 'prompt!',
+        '-n', '16', '--temp', '0', '--no-display-prompt', '--simple-io',
       ])
       // The archive's shared libs sit beside the binary.
       expect(opts.env.LD_LIBRARY_PATH).toBe('/opt/llama')
@@ -106,7 +108,7 @@ describe('llama-cpp runtime', () => {
     it('propagates a subprocess failure', async () => {
       const deps = stubDeps()
       deps.run.mockRejectedValue(new Error('spawn ENOENT'))
-      await expect(runCompletion('/b', '/m', 'p', 16, deps)).rejects.toThrow('spawn ENOENT')
+      await expect(runChatCompletion('/b', '/m', 's', 'p', 16, deps)).rejects.toThrow('spawn ENOENT')
     })
   })
 })

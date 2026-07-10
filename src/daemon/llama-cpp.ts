@@ -93,24 +93,30 @@ export async function ensureGgufModel(
 }
 
 /**
- * Run one greedy completion and return the generated text (the
- * `[end of text]` marker llama-completion appends is stripped). The
- * subprocess exits when done — nothing stays loaded.
+ * Run one greedy chat completion and return the generated text (the
+ * `[end of text]` marker llama-completion appends is stripped). Applies the
+ * model's own chat template via `--jinja`, runs a single predefined user turn
+ * (`-st`), then exits — nothing stays loaded. `--simple-io` keeps the output
+ * clean when spawned as a subprocess.
  */
-export async function runCompletion(
+export async function runChatCompletion(
   bin: string,
   model: string,
-  prompt: string,
+  system: string,
+  user: string,
   maxTokens: number,
   deps: LlamaCppDeps = defaultDeps,
 ): Promise<string> {
   const dir = path.dirname(bin)
   const { stdout } = await deps.run(bin, [
     '-m', model,
-    '-p', prompt,
+    '--jinja', '-st',
+    '-sys', system,
+    '-p', user,
     '-n', String(maxTokens),
     '--temp', '0',
     '--no-display-prompt',
+    '--simple-io',
   ], {
     timeout: 120_000,
     // eslint-disable-next-line no-process-env -- env forwarded wholesale to the subprocess, adding the loader path for the archive's bundled shared libs (LD_ for linux, DYLD_ for macOS)

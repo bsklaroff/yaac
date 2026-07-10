@@ -34,8 +34,8 @@ describe('title summarizer', () => {
     vi.useRealTimers()
   })
 
-  it('pins the known-good quantization (GGUF Q8_0; q4-class quants are degenerate)', () => {
-    expect(TITLE_MODEL_URL).toContain('flan-t5-small.Q8_0.gguf')
+  it('pins the chosen model + quant (Qwen2.5-0.5B-Instruct IQ4_XS)', () => {
+    expect(TITLE_MODEL_URL).toContain('Qwen2.5-0.5B-Instruct-IQ4_XS.gguf')
   })
 
   describe('shouldGenerateTitle', () => {
@@ -59,14 +59,15 @@ describe('title summarizer', () => {
       await expect(summarizeTitle('please refactor the widget factory into a plugin')).resolves
         .toBe('Refactor widget factory plugin')
       expect(inputs).toHaveLength(1)
-      expect(inputs[0]).toMatch(/^Write a very short title for this task: /)
+      expect(inputs[0]).toMatch(/^Write a short, specific title/)
       expect(inputs[0]).toContain('please refactor the widget factory into a plugin')
     })
 
     it('truncates a huge first message to a bounded payload', async () => {
       const { inputs } = stubRunner()
       await summarizeTitle('y'.repeat(5000))
-      const payload = inputs[0].split(': ').slice(1).join(': ')
+      // The first message is appended after the instruction, past a blank line.
+      const payload = inputs[0].split('\n\n').slice(1).join('\n\n')
       expect(payload).toBe('y'.repeat(1000))
     })
 
