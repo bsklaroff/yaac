@@ -8,6 +8,7 @@ import { GitAuthFailureBadge } from '@/frontend/components/GitAuthFailureBadge'
 import { ImageBuildIndicator } from '@/frontend/components/ImageBuildIndicator'
 import { NewSessionButton } from '@/frontend/components/NewSessionButton'
 import { ProjectActionsMenu } from '@/frontend/components/ProjectActionsMenu'
+import { UsageBadge } from '@/frontend/components/UsageBadge'
 import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
 import { dismissProvisioning, restartSession } from '@/frontend/lib/createSession'
 import { deleteSessionOptimistic } from '@/frontend/lib/deleteSessionFlow'
@@ -84,6 +85,7 @@ export function Sidebar({
           ? <ProjectActionsMenu slug={projectSlug} remoteUrl={projectRemoteUrl} />
           : <span className="font-semibold tracking-tight">yaac</span>}
         <div className="ml-auto flex items-center gap-2">
+          <UsageBadge />
           <ImageBuildIndicator />
           {!connected && <span className="text-xs text-amber-400/80">reconnecting…</span>}
           {/* Project-wide: the stored credential is the project's, so the

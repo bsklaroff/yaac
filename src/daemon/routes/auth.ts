@@ -3,6 +3,7 @@ import { zv } from '@/daemon/routes/validator'
 import { z } from 'zod'
 import { listAuth } from '@/lib/auth/list'
 import { clearAuth } from '@/lib/auth/clear'
+import { requestPlanUsageRefresh } from '@/daemon/plan-usage'
 import { cancelToolLogin, getToolLogin, sendToolLoginInput, startToolLogin } from '@/daemon/tool-login'
 import { cancelToolInstall, getToolInstall, startToolInstall } from '@/daemon/tool-install'
 import { addEntry, removeEntryChecked, replaceEntries } from '@/lib/project/credentials'
@@ -31,6 +32,14 @@ const credentialSchema = z.discriminatedUnion('kind', [
 
 export const authApp = new Hono()
   .get('/list', async (c) => c.json(await listAuth()))
+  // Nudge the daemon-side plan-usage refresh (fired when the webapp's usage
+  // popover opens). Throttled in daemon/plan-usage.ts — a nudge within a
+  // minute of the last refresh is ignored — and the data itself always
+  // arrives via the pushed snapshot, never this response.
+  .post('/claude/usage/refresh', async (c) => {
+    await requestPlanUsageRefresh()
+    return c.body(null, 204)
+  })
   .post(
     '/clear',
     zv('json', z.object({ service: z.enum(['all', 'claude', 'codex', 'opencode']) })),

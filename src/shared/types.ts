@@ -281,6 +281,47 @@ export interface AuthListResult {
   toolAuth: ToolAuthSummary[]
 }
 
+// --- subscription plan usage (daemon/plan-usage.ts, snapshot field) ---
+
+/**
+ * One limit row from Anthropic's subscription usage endpoint
+ * (GET api.anthropic.com/api/oauth/usage), normalized for the wire.
+ */
+export interface PlanUsageLimit {
+  /** Upstream limit kind, e.g. 'session', 'weekly_all', 'weekly_scoped'. */
+  kind: string
+  /** Utilization of this limit, 0–100. */
+  percent: number
+  /** Upstream severity — 'normal' until the limit nears exhaustion. */
+  severity: string
+  /** ISO timestamp when this limit's window resets, when reported. */
+  resetsAt: string | null
+  /** Model display name for per-model limits (e.g. 'Fable'), else null. */
+  modelName: string | null
+}
+
+/**
+ * Plan-usage query result. Only OAuth (subscription) credentials are
+ * queryable; api-key auth and every failure path degrade to
+ * `available: false` so the UI can simply hide the readout.
+ */
+export type PlanUsageResult =
+  | {
+    available: false
+    reason: 'no-credentials' | 'api-key' | 'unauthorized' | 'error'
+    message?: string
+  }
+  | {
+    available: true
+    /** Plan tier from the stored OAuth bundle (e.g. 'max'), if known. */
+    subscriptionType: string | null
+    /** The org's rate-limit tier from the OAuth profile endpoint (e.g.
+     *  'default_claude_max_20x') — distinguishes Max 20x from Max 10x.
+     *  Null until the daemon's per-credential profile fetch lands. */
+    rateLimitTier: string | null
+    limits: PlanUsageLimit[]
+  }
+
 // --- web-driven tool sign-in (daemon/tool-login.ts) ---
 
 export type ToolLoginStatus = 'running' | 'success' | 'error'
@@ -511,6 +552,9 @@ export interface DaemonSnapshot {
    *  see ActiveSessionsResult.gitAuthFailures). */
   gitAuthFailures: Record<string, GitAuthFailure[]>
   imageBuilds: ImageBuildEntry[]
+  /** Subscription plan usage, refreshed daemon-side (daemon/plan-usage.ts).
+   *  Null until the first refresh after a webapp client connects lands. */
+  planUsage: PlanUsageResult | null
 }
 
 /** Messages the daemon pushes over `/events`. */

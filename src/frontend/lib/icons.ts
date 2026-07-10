@@ -17,6 +17,8 @@ export {
   Plus as AddIcon,
   Settings as SettingsIcon,
   Ellipsis as MoreIcon,
+  Gauge as UsageIcon,
+  Pin as PinIcon,
   RotateCw as RestartIcon,
   Trash2 as DeleteIcon,
   Ban as BlockedIcon,

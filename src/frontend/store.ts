@@ -7,6 +7,7 @@ const LAYOUTS_LS_KEY = 'yaac.layouts.v1'
 const VIEWMODE_LS_KEY = 'yaac.viewmode.v1'
 const SELECTION_LS_KEY = 'yaac.selection.v1'
 const READ_WAITING_LS_KEY = 'yaac.readwaiting.v1'
+const PINNED_USAGE_LS_KEY = 'yaac.pinnedusage.v1'
 
 /** How the workspace renders its terminals: a tiling window manager, or
  *  one-at-a-time tabs (better on small screens). */
@@ -93,6 +94,28 @@ export function persistSelection(projectSlug: string | null, sessionId: string |
       window.history.replaceState({}, '', url.pathname + url.search + url.hash)
     }
   } catch { /* history failures are non-fatal */ }
+}
+
+/** Read the persisted pinned plan-usage metric key (a UsageBadge
+ *  `metricKey`), null when nothing is pinned (exported for tests). */
+export function loadPinnedUsageMetric(): string | null {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(PINNED_USAGE_LS_KEY)
+      if (raw) return raw
+    }
+  } catch { /* fall through to the default */ }
+  return null
+}
+
+/** Persist the pinned plan-usage metric key (null clears the pin);
+ *  best-effort (exported for tests). */
+export function persistPinnedUsageMetric(key: string | null): void {
+  try {
+    if (typeof localStorage === 'undefined') return
+    if (key) localStorage.setItem(PINNED_USAGE_LS_KEY, key)
+    else localStorage.removeItem(PINNED_USAGE_LS_KEY)
+  } catch { /* non-fatal — the pin just won't stick */ }
 }
 
 /** Read persisted workspace layouts, dropping anything structurally
@@ -277,6 +300,10 @@ interface UiState {
   /** Tiling WM vs one-at-a-time tabs (persisted; small screens default
    *  to tabs). The layout tree stays canonical in both modes. */
   viewMode: ViewMode
+  /** Plan-usage metric pinned to the sidebar pill (a UsageBadge
+   *  `metricKey`); null shows the tightest limit. Persisted. */
+  pinnedUsageMetric: string | null
+  setPinnedUsageMetric: (key: string | null) => void
   /** Per-session active terminal: the visible tab in tabs mode, the
    *  last-focused pane in tiles mode. Tab-switch shortcuts cycle from it. */
   activeTabs: Record<string, string>
@@ -379,6 +406,7 @@ export const useUiStore = create<UiState>((set) => ({
   layouts: loadPersistedLayouts(),
   sidebarOpen: true,
   viewMode: loadViewMode(),
+  pinnedUsageMetric: loadPinnedUsageMetric(),
   activeTabs: {},
   optimisticProvisioning: [],
   pendingDeleteIds: [],
@@ -434,6 +462,10 @@ export const useUiStore = create<UiState>((set) => ({
   setViewMode: (mode) => {
     persistViewMode(mode)
     set({ viewMode: mode })
+  },
+  setPinnedUsageMetric: (key) => {
+    persistPinnedUsageMetric(key)
+    set({ pinnedUsageMetric: key })
   },
   setActiveTab: (sessionId, target) => set((s) => (
     s.activeTabs[sessionId] === target

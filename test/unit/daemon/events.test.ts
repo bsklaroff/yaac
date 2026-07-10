@@ -8,6 +8,12 @@ vi.mock('@/lib/project/list', () => ({
   listProjects: vi.fn().mockResolvedValue([]),
 }))
 
+// The real slice reads the credentials file and kicks upstream refreshes —
+// keep unit-test snapshot builds inert.
+vi.mock('@/daemon/plan-usage', () => ({
+  planUsageForSnapshot: vi.fn().mockResolvedValue(null),
+}))
+
 import { EventHub, buildSnapshot, serializeEvent } from '@/daemon/events'
 import type { WsLike } from '@/daemon/events'
 import { listActiveSessions } from '@/lib/session/list'
@@ -16,7 +22,10 @@ import { registerImageBuild, clearAllImageBuildsForTests } from '@/daemon/image-
 import type { DaemonSnapshot } from '@/shared/types'
 
 function emptySnapshot(): DaemonSnapshot {
-  return { sessions: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {}, imageBuilds: [] }
+  return {
+    sessions: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {}, imageBuilds: [],
+    planUsage: null,
+  }
 }
 
 function snapshotWithProject(slug: string): DaemonSnapshot {
@@ -122,6 +131,7 @@ describe('buildSnapshot', () => {
     expect(Array.isArray(snap.provisioning)).toBe(true)
     expect(snap.gitAuthFailures).toEqual({})
     expect(Array.isArray(snap.imageBuilds)).toBe(true)
+    expect(snap.planUsage).toBeNull()
   })
 })
 

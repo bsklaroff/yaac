@@ -2,6 +2,7 @@ import { listActiveSessions } from '@/lib/session/list'
 import { listProjects } from '@/lib/project/list'
 import { listProvisioning } from '@/daemon/provisioning'
 import { listImageBuilds } from '@/daemon/image-builds'
+import { planUsageForSnapshot } from '@/daemon/plan-usage'
 import { daemonLog } from '@/daemon/log'
 import type { DaemonEvent, DaemonSnapshot } from '@/shared/types'
 
@@ -16,9 +17,10 @@ export interface WsLike {
  * connecting client needs zero follow-up round-trips.
  */
 export async function buildSnapshot(): Promise<DaemonSnapshot> {
-  const [active, projects] = await Promise.all([
+  const [active, projects, planUsage] = await Promise.all([
     listActiveSessions(),
     listProjects(),
+    planUsageForSnapshot(),
   ])
   // A session with a provisioning entry is mid-create/mid-restart (or failed,
   // awaiting dismissal) — the row, not the session, is what clients should
@@ -37,6 +39,7 @@ export async function buildSnapshot(): Promise<DaemonSnapshot> {
     provisioning,
     gitAuthFailures: active.gitAuthFailures,
     imageBuilds: listImageBuilds(),
+    planUsage,
   }
 }
 
