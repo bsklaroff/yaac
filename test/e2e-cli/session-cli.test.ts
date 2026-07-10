@@ -156,7 +156,7 @@ async function firstSnapshot(url: string, secret: string): Promise<Snapshot> {
 async function runMonitorUntilFirstRender(...args: string[]): Promise<string> {
   const child: ChildProcess = spawn(process.execPath, [
     path.resolve('node_modules/tsx/dist/cli.mjs'),
-    path.resolve('src/cli.ts'),
+    path.resolve('apps/cli/src/cli.ts'),
     'session', 'monitor', ...args,
   ], { env: testEnv.env, stdio: ['ignore', 'pipe', 'pipe'] })
 

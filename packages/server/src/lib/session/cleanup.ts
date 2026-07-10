@@ -30,7 +30,7 @@ const execFileAsync = promisify(execFile)
  * Absolute host path to `<cachedPackages>/modules/<sessionId>` — the
  * per-session ephemeral-modules root whose subdirs back the
  * `/workspace/<relPath>` symlinks installed at session start. See
- * `installEphemeralModuleLinks` in `src/server/session-create.ts`.
+ * `installEphemeralModuleLinks` in `packages/server/src/session-create.ts`.
  */
 export function sessionModulesDir(projectSlug: string, sessionId: string): string {
   return path.join(cachedPackagesDir(projectSlug), 'modules', sessionId)

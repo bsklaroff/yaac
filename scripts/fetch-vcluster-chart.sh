@@ -4,7 +4,7 @@
 # k8s/vcluster/images.json to match), then re-run. At runtime yaac shells
 # out to `helm template` against this vendored tarball (offline) and
 # applies the result — see renderVclusterManifests in
-# src/lib/k8s/vcluster.ts. There is no rendered manifests.yaml anymore;
+# packages/server/src/lib/k8s/vcluster.ts. There is no rendered manifests.yaml anymore;
 # per-session values are passed as `--set` overrides at render time.
 set -eu
 

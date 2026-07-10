@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process'
 
 /**
  * The Codex SessionStart hook script lives inline in
- * `src/server/session-create.ts` (written into the container's codex
+ * `packages/server/src/session-create.ts` (written into the container's codex
  * dir on each session start). It reads Codex's hook-input JSON on
  * stdin, extracts `transcript_path`, and symlinks it into
  * `.yaac-transcripts/<YAAC_SESSION_ID>.jsonl` so yaac can find the

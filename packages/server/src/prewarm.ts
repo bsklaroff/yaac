@@ -1,7 +1,7 @@
 /**
  * Prewarmed-session pool: claim logic + the pure planner + the in-memory
  * state shared between the claim path (the create route) and the reconcile
- * loop (`src/server/prewarm-reconcile.ts`).
+ * loop (`packages/server/src/prewarm-reconcile.ts`).
  *
  * A prewarmed spare is a fully-provisioned session whose agent is booted and
  * waiting, stamped with the `yaac.prewarmed` pod label and hidden from

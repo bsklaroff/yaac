@@ -323,14 +323,14 @@ Example `yaac-config.json` with all options:
     ]
     ```
 - **hideInitPane** — when `true`, the init commands tmux pane is automatically closed after the commands finish or error (default: `false`). When `false`, the pane is preserved with `remain-on-exit` so you can inspect the output.
-- **addAllowedUrls** — additional host patterns to allow on top of the [default allowlist](src/lib/container/default-allowed-hosts.ts). By default, the proxy blocks outbound requests to hosts not on the default list. Use this to add extra hosts without replacing the defaults. Supports exact hostnames (`api.example.com`) and wildcards (`*.example.com`).
+- **addAllowedUrls** — additional host patterns to allow on top of the [default allowlist](packages/server/src/lib/container/default-allowed-hosts.ts). By default, the proxy blocks outbound requests to hosts not on the default list. Use this to add extra hosts without replacing the defaults. Supports exact hostnames (`api.example.com`) and wildcards (`*.example.com`).
 - **setAllowedUrls** — completely replaces the default allowlist with the given list of host patterns. Cannot be used together with `addAllowedUrls`. Set to `["*"]` to allow all outbound URLs (disables filtering), or `[]` to block all external network access. If the resolved list does not include `api.anthropic.com` or `github.com`, a warning is printed since sessions require these to function.
 - **nestedContainers** — run an in-pod rootless podman so `docker build` / `docker run` / `docker compose up --build` work inside the session exactly as a project README instructs (the `docker` CLI talks to podman's Docker-API socket). See [Nested containers and virtual clusters](#nested-containers-and-virtual-clusters).
 - **virtualCluster** — give each session its own virtual kubernetes cluster (vcluster) plus a per-project push registry. Implies `nestedContainers` (setting `"nestedContainers": false` alongside it is a config error).
 
 ## Environment variables
 
-Every yaac variable is read in one place — [`src/shared/env.ts`](src/shared/env.ts) — which owns its default and validation. The rest of the codebase imports the typed `env` / `testEnv` accessors instead of touching `process.env`.
+Every yaac variable is read in one place — [`packages/shared/src/env.ts`](packages/shared/src/env.ts) — which owns its default and validation. The rest of the codebase imports the typed `env` / `testEnv` accessors instead of touching `process.env`.
 
 ### Configuration
 

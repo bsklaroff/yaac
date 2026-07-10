@@ -47,7 +47,7 @@ function buildPatchBundle() {
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xterm-selection-test-'))
   const outFile = path.join(outDir, 'selection-patch.js')
   execFileSync(esbuild, [
-    path.join(ROOT, 'src/frontend/lib/selection.ts'),
+    path.join(ROOT, 'apps/frontend/src/lib/selection.ts'),
     '--bundle',
     '--format=iife',
     '--global-name=selpatch',

@@ -52,7 +52,7 @@ function buildRendererBundle() {
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xterm-webgl-gaps-test-'))
   const outFile = path.join(outDir, 'webgl-renderer.js')
   execFileSync(esbuild, [
-    path.join(ROOT, 'src/frontend/lib/webgl-renderer.ts'),
+    path.join(ROOT, 'apps/frontend/src/lib/webgl-renderer.ts'),
     '--bundle',
     '--format=iife',
     '--global-name=webglr',

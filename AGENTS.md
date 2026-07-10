@@ -1,14 +1,43 @@
-- Always install dependencies with exact versions: `pnpm add -E <package>` (or `pnpm add -DE <package>` for dev deps).
-- Every exported function must have a unit test in `test/unit/`.
-- Every CLI command argument and option must have an e2e test in `test/e2e/`.
+- Always install dependencies with exact versions: `pnpm add -E <package>` (or `pnpm add -DE <package>` for dev deps). Add package-scoped deps in that package's directory (`pnpm --filter @yaac/<pkg> add -E …`).
+- Every exported function must have a unit test in its own package's `test/` dir (e.g. `packages/server/test/`, `apps/cli/test/`).
+- Every CLI command argument and option must have an e2e test in `test/e2e-cli/` (or `test/e2e/`) at the repo root.
 - **NEVER take credit for authoring code** — do not add "Co-Authored-By" lines, or any other AI attribution to commit messages, PR descriptions, or code comments
-- Always use `pnpm lint` for linting (runs both `tsc --noEmit` and `eslint`).
+- Always use `pnpm lint` for linting (runs `tsc --noEmit`, the frontend `tsc`, and `eslint`).
 - Limit all git commit message lines to 80 characters maximum.
+
+## Repository Layout
+
+The code is a pnpm workspace. Cross-package imports use the package name
+(`@yaac/shared/types`); a package's own modules use Node subpath imports
+(`#lib/k8s/exec`, `#components/Foo`) via each package.json's `imports` map —
+there are no `#*` tsconfig `paths` entries.
+
+| Package | Role | May import |
+|---|---|---|
+| `apps/cli` (`@yaac/cli`) | the published `yaac` bin: entry + commands | server, auth-daemon, shared |
+| `apps/frontend` (`@yaac/frontend`) | React SPA | shared only |
+| `packages/server` (`@yaac/server`) | HTTP/WS daemon + all backend `lib/` | shared only |
+| `packages/auth-daemon` (`@yaac/auth-daemon`) | auth helper daemon | shared only |
+| `packages/shared` (`@yaac/shared`) | wire types + cross-cutting utils | nothing (type-only from others OK) |
+| `packages/test-utils` (`@yaac/test-utils`) | shared test helpers + fixtures | server, shared |
+| `k8s/proxy` (`yaac-proxy-sidecar`) | egress proxy sidecar | self only |
+
+Boundaries are enforced by pnpm strict `node_modules` (an undeclared package
+won't resolve) plus eslint import-restriction zones scoped to `src/**`
+(so tests are unrestricted bar the no-parent-import rule). apps never import
+apps; packages never import apps; server and auth-daemon never import each
+other — anything they share lives in `@yaac/shared`. `process.env` may only be
+read in `packages/shared/src/env.ts`.
+
+The root `package.json` is the publishable `@bsklaroff/yaac`; `pnpm build`
+bundles `apps/cli` (tsup) to `dist/cli.js` and the SPA (vite) to
+`dist/frontend`. Co-located unit tests run as per-package vitest projects
+(`unit:<pkg>`); `test/api`, `test/e2e`, and `test/e2e-cli` stay at the root.
 
 ## Runtime Architecture
 
 - Sessions run as Kubernetes Jobs (one single-pod Job per session) on a local single-node cluster; podman is only the image build engine (`podman build`/`podman push` to the local registry on `localhost:5000`).
-- All cluster access shells out to `kubectl` (no kubernetes client library) — matching the podman-CLI convention. Helpers live in `src/lib/k8s/`.
+- All cluster access shells out to `kubectl` (no kubernetes client library) — matching the podman-CLI convention. Helpers live in `packages/server/src/lib/k8s/`.
 - E2e tests require a wired-up cluster (`yaac cluster setup`, verified by `yaac cluster check`); unit tests must not touch podman or the cluster.
 
 ## Playwright Test Scripts
@@ -31,14 +60,14 @@ All container images used by e2e tests are pre-built in `test/global-setup.ts` b
 
 The global setup also mirrors digest-pinned upstream images into the local
 registry (no content hash — the digest IS the pin): `registry:2` for
-per-project registries (`src/lib/k8s/project-registry.ts`) and the vcluster
+per-project registries (`packages/server/src/lib/k8s/project-registry.ts`) and the vcluster
 image set (`k8s/vcluster/images.json`).
 
 **Rules:**
 - Never build images inside individual test workers — all builds belong in `test/global-setup.ts`.
 - E2e tests must pass `requirePrebuilt: true` so they fail fast if an image is missing or stale rather than racing to build.
 - When adding a new sidecar or container image, add it to the global setup with a content-hash tag and use `requirePrebuilt` in tests.
-- For single-file images (Dockerfiles), use `fileHash()`. For multi-file build contexts, use `contextHash()` — both from `src/lib/image-builder.ts`.
+- For single-file images (Dockerfiles), use `fileHash()`. For multi-file build contexts, use `contextHash()` — both from `packages/server/src/lib/container/image-builder.ts`.
 - E2e workers isolate cluster objects in per-run namespaces (`YAAC_K8S_NAMESPACE=yaac-test-<run-id>`).
-- E2e test data dirs (and mock-remote repo stores) are hostPath-mounted into pods, so their path must be visible to the pod's node. They are created under `e2eTmpBase()` (`test/helpers/tmp.ts`): on a host that's `os.tmpdir()` — so on a kind host set `TMPDIR` to a path under your home directory (hostPath paths must match on host and node, and kind's node-internal tmpfs `/tmp` cannot be replaced by an extraMount). Inside a nested yaac session (`YAAC_NESTED=1`) it's the node-shared `$YAAC_DATA_DIR/e2e-tmp` — the pod's `/tmp` and `$HOME` are overlay filesystems the node can't see (hostPath mounts there hang Pending), and scratch there is removed with the session dir on cleanup.
-- Tests that can't run inside a nested yaac session (in-cluster Cilium datapath assertions, vcluster-in-vcluster, podman `kind` network) are gated on `IS_NESTED_YAAC` (`test/helpers/setup.ts`) via `describe.skipIf` / `it.skipIf`. The session-create e2e family (own server+proxy+mocks) runs nested ungated — it assumes the outer server projects per-install inner redirects (docs/yaac-in-yaac-inner-egress.md); egress timeouts nested mean the host yaac predates that and needs upgrading.
+- E2e test data dirs (and mock-remote repo stores) are hostPath-mounted into pods, so their path must be visible to the pod's node. They are created under `e2eTmpBase()` (`packages/test-utils/src/tmp.ts`): on a host that's `os.tmpdir()` — so on a kind host set `TMPDIR` to a path under your home directory (hostPath paths must match on host and node, and kind's node-internal tmpfs `/tmp` cannot be replaced by an extraMount). Inside a nested yaac session (`YAAC_NESTED=1`) it's the node-shared `$YAAC_DATA_DIR/e2e-tmp` — the pod's `/tmp` and `$HOME` are overlay filesystems the node can't see (hostPath mounts there hang Pending), and scratch there is removed with the session dir on cleanup.
+- Tests that can't run inside a nested yaac session (in-cluster Cilium datapath assertions, vcluster-in-vcluster, podman `kind` network) are gated on `IS_NESTED_YAAC` (`packages/test-utils/src/setup.ts`) via `describe.skipIf` / `it.skipIf`. The session-create e2e family (own server+proxy+mocks) runs nested ungated — it assumes the outer server projects per-install inner redirects (docs/yaac-in-yaac-inner-egress.md); egress timeouts nested mean the host yaac predates that and needs upgrading.

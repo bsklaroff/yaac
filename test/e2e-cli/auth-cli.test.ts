@@ -25,12 +25,12 @@ import {
  * the state it seeds rather than inheriting residue from earlier tests.
  * Tool-credential files (claude.json/codex.json/opencode.json) are
  * written wholesale by the server (fs.writeFile of the full JSON in
- * src/lib/project/tool-auth.ts), so tests that only parse the file their
+ * packages/shared/src/tool-auth.ts), so tests that only parse the file their
  * own command just wrote don't need a reset.
  *
  * The YAAC_E2E_*_LOGIN / YAAC_E2E_OPENCODE_PROVIDER hooks are read by
- * the CLI process (runToolLogin in src/shared/tool-auth-interactive.ts,
- * called from src/commands/auth-update.ts — "interactive tool-login must
+ * the CLI process (runToolLogin in packages/shared/src/tool-auth-interactive.ts,
+ * called from apps/cli/src/commands/auth-update.ts — "interactive tool-login must
  * happen CLI-side"), never by the server, so they are passed per-runYaac
  * call and the shared server needs no special env.
  */

@@ -203,8 +203,8 @@ type CodexCreds =
 
 type OpencodeCreds = { kind: 'api-key'; apiKey: string; provider: OpencodeProvider }
 
-// NOTE: keep in sync with src/shared/credentials.ts and
-// src/lib/project/credentials.ts. The proxy bundles independently and can't
+// NOTE: keep in sync with packages/shared/src/credentials.ts and
+// packages/server/src/lib/project/credentials.ts. The proxy bundles independently and can't
 // import from src/. SSH entries live in the same file but are irrelevant to
 // the proxy — the server uploads SSH keys directly via PUT /agent/keys, so we
 // only parse out the HTTPS entries here.
@@ -1078,7 +1078,7 @@ function sessionHasHttpsCredentialForHost(sessionId: string, hostname: string): 
 
 /**
  * Map a git host to the API host the GitHub CLI (`gh`) talks to. Mirrors
- * ghApiHostForGitHost in src/shared/credentials.ts — public GitHub's API is
+ * ghApiHostForGitHost in packages/shared/src/credentials.ts — public GitHub's API is
  * api.github.com while the git remote is github.com.
  */
 function ghApiHostForGitHost(host: string): string | null {
