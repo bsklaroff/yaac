@@ -2,7 +2,7 @@ import { useEffect, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { useQuery } from '@tanstack/react-query'
 import { Collapsible } from '@base-ui/react/collapsible'
-import { ChevronIcon, CloseIcon, LoadingIcon, ProjectsIcon, RestartIcon, SidebarIcon, TerminalIcon, TOOL_LABEL } from '@/frontend/lib/icons'
+import { ChevronIcon, CloseIcon, LoadingIcon, RestartIcon, SidebarIcon, TOOL_LABEL } from '@/frontend/lib/icons'
 import { BlockedHostsBadge } from '@/frontend/components/BlockedHostsBadge'
 import { EmptyState } from '@/frontend/components/ui/EmptyState'
 import { GitAuthFailureBadge } from '@/frontend/components/GitAuthFailureBadge'
@@ -114,16 +114,16 @@ export function Sidebar({
       <div className="flex-1 overflow-y-auto py-1">
         {!projectSlug && (
           <EmptyState
-            className="py-12"
-            icon={ProjectsIcon}
+            compact
+            className="py-10"
             title="No project selected"
             description="Pick a project from the rail on the left."
           />
         )}
         {projectSlug && visibleCount === 0 && provisioning.length === 0 && (
           <EmptyState
-            className="py-12"
-            icon={TerminalIcon}
+            compact
+            className="py-10"
             title="No sessions yet"
             description="Start one with the + above."
           />

@@ -23,4 +23,10 @@ describe('EmptyState', () => {
     render(<EmptyState icon={Dot} title="Empty" action={<button>New session</button>} />)
     expect(screen.getByRole('button', { name: 'New session' })).toBeTruthy()
   })
+
+  it('omits the icon badge in compact mode', () => {
+    render(<EmptyState icon={Dot} compact title="No sessions yet" />)
+    expect(screen.getByText('No sessions yet')).toBeTruthy()
+    expect(screen.queryByTestId('icon')).toBeNull()
+  })
 })
