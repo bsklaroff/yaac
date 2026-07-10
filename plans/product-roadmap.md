@@ -1,7 +1,7 @@
 # yaac — product roadmap
 
 yaac is a local-first manager for **fleets of coding agents** running in
-sandboxed containers, driven from a CLI and a webapp over one daemon. This
+sandboxed containers, driven from a CLI and a webapp over one server. This
 roadmap tracks the arc from today's operator tool toward a collaborative,
 workflow-driven agent platform.
 
@@ -11,14 +11,14 @@ Legend: ✅ shipped · 🚧 in progress · ⬜ planned
 
 ## 0 — Foundation
 
-The daemon-backed webapp and its plumbing.
+The server-backed webapp and its plumbing.
 
-- ✅ Daemon HTTP API; CLI is a thin client over it
+- ✅ Server HTTP API; CLI is a thin client over it
 - ✅ Webapp auth: one-time bootstrap code → HttpOnly cookie; Host-header +
-  CORS guards (DNS-rebind safe); sessions persist across daemon restarts
+  CORS guards (DNS-rebind safe); sessions persist across server restarts
 - ✅ Events WebSocket (live state snapshot, no polling)
 - ✅ PTY bridge + embedded xterm.js terminal (attach to a session's tmux)
-- ✅ `yaac open` — one command: starts the daemon, opens the browser authed
+- ✅ `yaac open` — one command: starts the server, opens the browser authed
 - ✅ Design system: Base UI primitives + design tokens (ported from
   code-design) + centralized icons, all centralized
 - ✅ Projects rail + project-scoped session sidebar
@@ -41,7 +41,7 @@ Make managing many agents fast and legible.
   prompt preview
 - ✅ Terminal tabs per session: attach / shell / new-window — now exceeds the
   original scope with a tiling split-pane workspace (drag-to-rearrange,
-  resizable dividers) plus a tabs mode, over the daemon shell + window PTY
+  resizable dividers) plus a tabs mode, over the server shell + window PTY
   endpoints
 - 🚧 Session lifecycle UI: delete (ConfirmDialog), restart, and rename
   shipped; open worktree in editor still pending
@@ -100,5 +100,5 @@ _Placeholder — scope TBD._
   needs no gated-registry auth. The paid Central Icons variant (round-filled,
   real brand glyphs) is parked on the `claude/central-icons-ref` branch for
   reference.
-- The webapp is a presentation layer over the daemon; UI features that need
-  host actions (open-editor, diffs) land as daemon endpoints first.
+- The webapp is a presentation layer over the server; UI features that need
+  host actions (open-editor, diffs) land as server endpoints first.

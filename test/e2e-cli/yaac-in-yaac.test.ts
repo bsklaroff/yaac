@@ -9,10 +9,10 @@ import { removeProjectRegistry } from '@/lib/k8s/project-registry'
 import { PACKAGE_ROOT } from '@/lib/project/paths'
 import {
   createYaacTestEnv,
-  spawnYaacDaemon,
+  spawnYaacServer,
   runYaac,
   type YaacTestEnv,
-  type SpawnedDaemon,
+  type SpawnedServer,
 } from '@test/helpers/cli'
 import {
   requirePodman,
@@ -51,10 +51,10 @@ import {
 describe.skipIf(process.env.YAAC_E2E_NESTED_YAAC !== '1')(
   'yaac-in-yaac (env-gated smoke)', () => {
     let testEnv: YaacTestEnv
-    let daemon: SpawnedDaemon | null = null
+    let server: SpawnedServer | null = null
     let mockLLM: MockLLM | null = null
     let mockGit: MockGit | null = null
-    let daemonEnv: NodeJS.ProcessEnv
+    let serverEnv: NodeJS.ProcessEnv
     const createdSlugs: string[] = []
     const createdVclusters: string[] = []
 
@@ -114,7 +114,7 @@ describe.skipIf(process.env.YAAC_E2E_NESTED_YAAC !== '1')(
       mockGit = await startMockGit()
       const llmTarget = { host: mockLLM.host, port: mockLLM.port, tls: false }
       const gitTarget = { host: mockGit.host, port: mockGit.port, tls: false }
-      daemonEnv = {
+      serverEnv = {
         ...testEnv.env,
         YAAC_E2E_UPSTREAM_REDIRECTS: JSON.stringify({
           'github.com': gitTarget,
@@ -124,12 +124,12 @@ describe.skipIf(process.env.YAAC_E2E_NESTED_YAAC !== '1')(
         YAAC_E2E_SKIP_FETCH: '1',
         YAAC_E2E_NO_ATTACH: '1',
       }
-      daemon = await spawnYaacDaemon(daemonEnv)
+      server = await spawnYaacServer(serverEnv)
     })
 
     afterEach(async () => {
-      if (daemon) await daemon.stop()
-      daemon = null
+      if (server) await server.stop()
+      server = null
       await cleanupSessionJobs()
       for (const name of createdVclusters.splice(0)) {
         await removeSessionVcluster(name).catch(() => { /* gone */ })
@@ -147,7 +147,7 @@ describe.skipIf(process.env.YAAC_E2E_NESTED_YAAC !== '1')(
       const slug = 'yaac-in-yaac'
       await setupProject(slug)
       const { stdout, stderr, exitCode } = await runYaac(
-        daemonEnv, 'session', 'create', slug, '--tool', 'claude',
+        serverEnv, 'session', 'create', slug, '--tool', 'claude',
       )
       if (exitCode !== 0) {
         throw new Error(`session create failed\n${stdout}\n${stderr}`)
@@ -177,7 +177,7 @@ describe.skipIf(process.env.YAAC_E2E_NESTED_YAAC !== '1')(
         'sh', '-c', 'cd /tmp/yaac && pnpm install --frozen-lockfile 2>&1 | tail -5',
       ], { timeout: 1_800_000, maxAttempts: 1 })
 
-      // Inner cluster check: the inner daemon-free preflight against the
+      // Inner cluster check: the inner server-free preflight against the
       // vcluster. The probe builds nothing — it pushes busybox through the
       // in-pod podman to the project registry and runs a synced probe pod
       // from it under the VAP guard. The egress / envoy-config / nested-mount
@@ -195,7 +195,7 @@ describe.skipIf(process.env.YAAC_E2E_NESTED_YAAC !== '1')(
 
       // (The vcluster-in-vcluster refusal is pinned by a unit test on
       // createSession — it is a pure env gate, no cluster needed.)
-      await runYaac(daemonEnv, 'session', 'delete', session.sessionId)
+      await runYaac(serverEnv, 'session', 'delete', session.sessionId)
     }, 3_600_000)
   },
 )

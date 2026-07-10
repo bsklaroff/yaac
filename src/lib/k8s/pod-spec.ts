@@ -67,7 +67,7 @@ export interface HostPathMount {
  */
 export interface NestedContainersParams {
   /**
-   * uid of the in-image yaac user (= the daemon uid, see sessionUid).
+   * uid of the in-image yaac user (= the server uid, see sessionUid).
    * Used as the pod fsGroup so the kubelet chowns the graphroot emptyDir,
    * and as the chown target for the shared image store.
    */

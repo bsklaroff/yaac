@@ -1,5 +1,5 @@
 /**
- * Browser auth bootstrap. The daemon prints a one-time
+ * Browser auth bootstrap. The server prints a one-time
  * `?bootstrap=<code>` URL; the SPA exchanges that code for an HttpOnly
  * session cookie, then scrubs the code out of the address bar.
  */

@@ -6,7 +6,7 @@ vi.mock('@/lib/project/credentials', () => ({
   listSshEntries: mockListSshEntries,
 }))
 
-vi.mock('@/daemon/log', () => ({ daemonLog: vi.fn() }))
+vi.mock('@/server/log', () => ({ serverLog: vi.fn() }))
 
 /** A ProxyClient with its private `running` flag forced for the test. */
 function client(running: boolean): ProxyClient {

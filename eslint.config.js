@@ -44,11 +44,11 @@ export default tseslint.config(
         {
           // Four sanctioned lib imports: @/lib/k8s/exec (attach/shell/stream
           // spawn `kubectl exec -it` host-side and need the same argv
-          // builder the daemon's PTY bridge uses) and @/lib/k8s/cluster-check
+          // builder the server's PTY bridge uses) and @/lib/k8s/cluster-check
           // + @/lib/k8s/cluster-setup + @/lib/k8s/cluster-delete (`yaac cluster
           // check`/`setup`/`delete` diagnose, provision, and tear down the
-          // local environment directly — routing them through the daemon would
-          // hide daemon-down failures, and setup must run before a daemon can
+          // local environment directly — routing them through the server would
+          // hide server-down failures, and setup must run before a server can
           // exist at all).
           // The negation chain re-includes each parent dir (gitignore
           // semantics: a file can't be un-ignored while its parent dir is

@@ -9,8 +9,8 @@ import { IS_NESTED_YAAC } from '@test/helpers/setup'
  * Merged e2e coverage for the `yaac cluster` command family: `check` (no
  * options), `setup` (and its `--repair` option), and `delete` (and its
  * `-y/--yes` option). All three are host-side commands — they talk to
- * kubectl/podman/kind/the registry directly, never to the daemon — so no
- * daemon is spawned anywhere in this file and every case runs without a
+ * kubectl/podman/kind/the registry directly, never to the server — so no
+ * server is spawned anywhere in this file and every case runs without a
  * cluster: we sabotage the environment (PATH stripping, bogus KUBECONFIG,
  * nested flag) and assert the diagnostic output + exit code.
  *

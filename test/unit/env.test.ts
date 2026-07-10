@@ -53,32 +53,32 @@ describe('env (configuration)', () => {
     })
   })
 
-  describe('daemonPort', () => {
-    it('is undefined when YAAC_DAEMON_PORT is unset or empty', () => {
-      vi.stubEnv('YAAC_DAEMON_PORT', undefined)
-      expect(env.daemonPort).toBeUndefined()
-      vi.stubEnv('YAAC_DAEMON_PORT', '')
-      expect(env.daemonPort).toBeUndefined()
+  describe('serverPort', () => {
+    it('is undefined when YAAC_SERVER_PORT is unset or empty', () => {
+      vi.stubEnv('YAAC_SERVER_PORT', undefined)
+      expect(env.serverPort).toBeUndefined()
+      vi.stubEnv('YAAC_SERVER_PORT', '')
+      expect(env.serverPort).toBeUndefined()
     })
 
     it('parses a valid port', () => {
-      vi.stubEnv('YAAC_DAEMON_PORT', '9999')
-      expect(env.daemonPort).toBe(9999)
+      vi.stubEnv('YAAC_SERVER_PORT', '9999')
+      expect(env.serverPort).toBe(9999)
     })
 
     it('allows 0 (OS-assigned ephemeral)', () => {
-      vi.stubEnv('YAAC_DAEMON_PORT', '0')
-      expect(env.daemonPort).toBe(0)
+      vi.stubEnv('YAAC_SERVER_PORT', '0')
+      expect(env.serverPort).toBe(0)
     })
 
     it('throws on a non-numeric value', () => {
-      vi.stubEnv('YAAC_DAEMON_PORT', 'nope')
-      expect(() => env.daemonPort).toThrow(/YAAC_DAEMON_PORT/)
+      vi.stubEnv('YAAC_SERVER_PORT', 'nope')
+      expect(() => env.serverPort).toThrow(/YAAC_SERVER_PORT/)
     })
 
     it('throws on an out-of-range value', () => {
-      vi.stubEnv('YAAC_DAEMON_PORT', '70000')
-      expect(() => env.daemonPort).toThrow(/between 0 and 65535/)
+      vi.stubEnv('YAAC_SERVER_PORT', '70000')
+      expect(() => env.serverPort).toThrow(/between 0 and 65535/)
     })
   })
 
@@ -244,16 +244,16 @@ describe('testEnv (test-harness hooks)', () => {
     })
   })
 
-  describe('daemonUrlOverride / daemonSecretOverride', () => {
+  describe('serverUrlOverride / serverSecretOverride', () => {
     it('return undefined when unset and the value when set', () => {
-      vi.stubEnv('YAAC_DAEMON_URL', undefined)
-      vi.stubEnv('YAAC_DAEMON_SECRET', undefined)
-      expect(testEnv.daemonUrlOverride).toBeUndefined()
-      expect(testEnv.daemonSecretOverride).toBeUndefined()
-      vi.stubEnv('YAAC_DAEMON_URL', 'http://127.0.0.1:8787')
-      vi.stubEnv('YAAC_DAEMON_SECRET', 'secret')
-      expect(testEnv.daemonUrlOverride).toBe('http://127.0.0.1:8787')
-      expect(testEnv.daemonSecretOverride).toBe('secret')
+      vi.stubEnv('YAAC_SERVER_URL', undefined)
+      vi.stubEnv('YAAC_SERVER_SECRET', undefined)
+      expect(testEnv.serverUrlOverride).toBeUndefined()
+      expect(testEnv.serverSecretOverride).toBeUndefined()
+      vi.stubEnv('YAAC_SERVER_URL', 'http://127.0.0.1:8787')
+      vi.stubEnv('YAAC_SERVER_SECRET', 'secret')
+      expect(testEnv.serverUrlOverride).toBe('http://127.0.0.1:8787')
+      expect(testEnv.serverSecretOverride).toBe('secret')
     })
   })
 

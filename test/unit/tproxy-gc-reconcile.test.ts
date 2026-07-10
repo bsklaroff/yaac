@@ -12,7 +12,7 @@ vi.mock('@/lib/k8s/kubectl', () => ({
   kubectlGetJson: vi.fn(),
   kubectlWithRetry: vi.fn(),
 }))
-vi.mock('@/daemon/log', () => ({ daemonLog: vi.fn() }))
+vi.mock('@/server/log', () => ({ serverLog: vi.fn() }))
 
 import {
   type CiliumTproxyRule,
@@ -21,7 +21,7 @@ import {
   listCiliumTproxyRules,
 } from '@/lib/k8s/cilium-tproxy'
 import { kubectlGetJson } from '@/lib/k8s/kubectl'
-import { daemonLog } from '@/daemon/log'
+import { serverLog } from '@/server/log'
 import {
   reconcileStaleTproxyRules,
   resetTproxyGcState,
@@ -32,7 +32,7 @@ const mockFind = vi.mocked(findCiliumAgentPod)
 const mockList = vi.mocked(listCiliumTproxyRules)
 const mockDelete = vi.mocked(deleteCiliumTproxyRule)
 const mockGetJson = vi.mocked(kubectlGetJson)
-const mockLog = vi.mocked(daemonLog)
+const mockLog = vi.mocked(serverLog)
 
 function rule(
   name: string,
@@ -103,7 +103,7 @@ describe('reconcileStaleTproxyRules', () => {
     expect(mockFind).toHaveBeenCalledTimes(2)
   })
 
-  it('no-ops without a running cilium agent (nested daemon)', async () => {
+  it('no-ops without a running cilium agent (nested server)', async () => {
     mockFind.mockResolvedValue(null)
     await reconcileStaleTproxyRules(at(0))
     expect(mockList).not.toHaveBeenCalled()

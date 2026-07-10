@@ -10,15 +10,15 @@ import {
   getToolInstall,
   startToolInstall,
 } from '@/auth-daemon/tool-install'
-import type { AgentKind, AgentOp } from '@/daemon/auth-agent'
+import type { AgentKind, AgentOp } from '@/server/auth-agent'
 import type { ToolInstallView, ToolLoginView } from '@/shared/types'
 
 /**
  * The agent half of the auth relay: one outbound WebSocket to the main
- * daemon's /agent/auth, executing start/input/cancel ops against the
+ * server's /agent/auth, executing start/input/cancel ops against the
  * local login/install managers and pushing view snapshots back whenever
  * they change. Views are sampled from the local in-process registries
- * (cheap) so changes reach the daemon within one tick — the wire itself
+ * (cheap) so changes reach the server within one tick — the wire itself
  * is pure push.
  */
 
@@ -109,7 +109,7 @@ export function connectAuthAgent(opts: {
       try {
         sendToolLoginInput(op.id, op.text)
       } catch (err) {
-        // The daemon validated before sending; a residual failure (flow
+        // The server validated before sending; a residual failure (flow
         // ended between hops) just surfaces via the next view push.
         opts.log(`login input rejected: ${String(err)}`)
       }
@@ -148,8 +148,8 @@ export function connectAuthAgent(opts: {
     const scheduleReconnect = (): void => {
       if (sampler) clearInterval(sampler)
       sampler = null
-      // Flows can't reach the daemon anymore — kill them so vendor CLIs
-      // don't linger headless (the daemon marks its views failed too).
+      // Flows can't reach the server anymore — kill them so vendor CLIs
+      // don't linger headless (the server marks its views failed too).
       for (const [id, kind] of tracked) {
         if (kind === 'login') cancelToolLogin(id)
         else cancelToolInstall(id)
@@ -180,7 +180,7 @@ export function connectAuthAgent(opts: {
       if (sampler) clearInterval(sampler)
       if (reconnectTimer) clearTimeout(reconnectTimer)
       try {
-        ws?.close(1000, 'auth daemon stopping')
+        ws?.close(1000, 'auth server stopping')
       } catch { /* already gone */ }
     },
   }

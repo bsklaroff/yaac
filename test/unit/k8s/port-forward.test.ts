@@ -24,8 +24,8 @@ vi.mock('node:child_process', () => ({
   },
 }))
 
-vi.mock('@/daemon/log', () => ({
-  daemonLog: vi.fn(),
+vi.mock('@/server/log', () => ({
+  serverLog: vi.fn(),
 }))
 
 vi.mock('@/lib/k8s/kubectl', () => ({

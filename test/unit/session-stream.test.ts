@@ -1,21 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { sessionStream } from '@/commands/session-stream'
 import { attachSessionPty } from '@/commands/ws-terminal'
-import { getRpcClient } from '@/shared/daemon-client'
-import type * as daemonClientModule from '@/shared/daemon-client'
+import { getRpcClient } from '@/shared/server-client'
+import type * as serverClientModule from '@/shared/server-client'
 
 vi.mock('@/commands/ws-terminal', () => ({
   attachSessionPty: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('@/shared/daemon-client', async (importOriginal) => {
-  const actual = await importOriginal<typeof daemonClientModule>()
+vi.mock('@/shared/server-client', async (importOriginal) => {
+  const actual = await importOriginal<typeof serverClientModule>()
   return {
     ...actual,
     getRpcClient: vi.fn(),
     toClientError: vi.fn().mockImplementation(async (res: Response) => {
       const body = await res.json() as { error?: { message?: string } }
-      return new Error(body.error?.message ?? `daemon ${res.status}`)
+      return new Error(body.error?.message ?? `server ${res.status}`)
     }),
   }
 })
@@ -48,7 +48,7 @@ describe('sessionStream', () => {
     vi.clearAllMocks()
   })
 
-  it('exits when the daemon reports done:no_active', async () => {
+  it('exits when the server reports done:no_active', async () => {
     const { post } = mockStream([{ done: true, reason: 'no_active' }])
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
 
@@ -59,7 +59,7 @@ describe('sessionStream', () => {
     expect(logSpy).toHaveBeenCalledWith('No projects found. Add one with: yaac project add <remote-url>')
   })
 
-  it('exits when the daemon reports done:closed_blank', async () => {
+  it('exits when the server reports done:closed_blank', async () => {
     mockStream([{ done: true, reason: 'closed_blank' }])
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
 
@@ -81,7 +81,7 @@ describe('sessionStream', () => {
     expect((post.mock.calls[1][0] as { json: { project: string } }).json.project).toBe('only-one')
   })
 
-  it('attaches sessions returned by the daemon until it reports done', async () => {
+  it('attaches sessions returned by the server until it reports done', async () => {
     const { post } = mockStream([
       {
         done: false,
@@ -110,7 +110,7 @@ describe('sessionStream', () => {
     })
   })
 
-  it('propagates daemon errors', async () => {
+  it('propagates server errors', async () => {
     const post = vi.fn().mockResolvedValue({
       ok: false,
       status: 500,

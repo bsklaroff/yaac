@@ -87,8 +87,8 @@ const TONE_TRIGGER: Record<ReturnType<typeof usageTone>, string> = {
  * Sidebar-header pill showing one plan limit's utilization for the stored
  * Claude subscription — the tightest limit by default, or the metric the
  * user pinned (click a popover row to pin it; the pill then carries a
- * compact tag naming it). Reads the daemon-pushed snapshot — the daemon
- * owns querying upstream (daemon/plan-usage.ts). Hidden entirely when
+ * compact tag naming it). Reads the server-pushed snapshot — the server
+ * owns querying upstream (server/plan-usage.ts). Hidden entirely when
  * usage isn't queryable (api-key auth, expired token, endpoint trouble).
  */
 export function UsageBadge(): JSX.Element | null {
@@ -106,7 +106,7 @@ export function UsageBadge(): JSX.Element | null {
   return (
     <Popover.Root
       onOpenChange={(open) => {
-        // Someone's looking — nudge a background refresh (the daemon
+        // Someone's looking — nudge a background refresh (the server
         // ignores it within a minute of the last one); updated numbers
         // arrive on the pushed snapshot.
         if (open) void requestUsageRefresh().catch(() => { /* best-effort */ })

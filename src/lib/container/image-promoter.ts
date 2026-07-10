@@ -61,7 +61,7 @@ export const PROMOTER_SCRIPT = [
   `exec 9>${SHARED_IMAGE_STORE_DST_PATH}/.yaac-promoter.lock`,
   'flock -x 9',
   // log() fans every step out to stdout (which cleanupSession surfaces in
-  // the daemon log) AND appends to a persistent log inside the shared
+  // the server log) AND appends to a persistent log inside the shared
   // store, so the detached teardown path still leaves an audit trail.
   `log() { echo "[promoter] $*"; echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" >> ${SHARED_IMAGE_STORE_DST_PATH}/.yaac-promoter.log; }`,
   `log "start uid=$(id -u) HOME=$HOME graphRoot=$(podman info --format '{{.Store.GraphRoot}}' 2>&1)"`,

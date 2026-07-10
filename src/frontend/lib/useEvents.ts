@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import type { DaemonEvent } from '@/shared/types'
+import type { ServerEvent } from '@/shared/types'
 import { INITIAL_RECONNECT_DELAY_MS, nextReconnectDelay } from '@/frontend/lib/reconnect'
 
 export const SNAPSHOT_KEY = ['snapshot'] as const
 
 /**
- * Subscribe to the daemon's `/events` WebSocket and hydrate the React
+ * Subscribe to the server's `/events` WebSocket and hydrate the React
  * Query cache from each `snapshot` frame. Same-origin, so the session
  * cookie rides the upgrade automatically. Reconnects with exponential
  * backoff (500ms → 10s cap). Returns whether the socket is connected.
@@ -33,9 +33,9 @@ export function useEvents(enabled: boolean): { connected: boolean } {
 
       ws.onmessage = (evt: MessageEvent): void => {
         if (typeof evt.data !== 'string') return
-        let parsed: DaemonEvent
+        let parsed: ServerEvent
         try {
-          parsed = JSON.parse(evt.data) as DaemonEvent
+          parsed = JSON.parse(evt.data) as ServerEvent
         } catch {
           return
         }

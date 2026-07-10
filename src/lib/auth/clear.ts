@@ -4,7 +4,7 @@ import {
   cleanupProjectCodexPlaceholders,
   removeToolAuth,
 } from '@/lib/project/tool-auth'
-import { DaemonError } from '@/daemon/errors'
+import { ServerError } from '@/server/errors'
 
 export type ClearAuthTarget = 'all' | 'claude' | 'codex' | 'opencode'
 
@@ -45,5 +45,5 @@ export async function clearAuth(target: ClearAuthTarget): Promise<void> {
     await removeToolAuth('opencode')
     return
   }
-  throw new DaemonError('VALIDATION', `Unknown clear target "${String(target)}".`)
+  throw new ServerError('VALIDATION', `Unknown clear target "${String(target)}".`)
 }

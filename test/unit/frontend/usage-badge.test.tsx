@@ -19,7 +19,7 @@ import {
   UsageBadge,
 } from '@/frontend/components/UsageBadge'
 import { useUiStore } from '@/frontend/store'
-import type { DaemonSnapshot, PlanUsageLimit, PlanUsageResult } from '@/shared/types'
+import type { ServerSnapshot, PlanUsageLimit, PlanUsageResult } from '@/shared/types'
 
 // jsdom has no ResizeObserver; Base UI needs one to exist.
 beforeAll(() => {
@@ -62,7 +62,7 @@ function stubSnapshot(planUsage: PlanUsageResult | null): void {
   vi.mocked(useSnapshot).mockReturnValue({
     sessions: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {}, imageBuilds: [],
     planUsage,
-  } as DaemonSnapshot)
+  } as ServerSnapshot)
 }
 
 function pill(): HTMLElement {

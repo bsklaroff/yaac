@@ -1,10 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { k8sNamespace } from '@/lib/k8s/kubectl'
-import { daemonLog } from '@/daemon/log'
+import { serverLog } from '@/server/log'
 
 /**
- * Daemon-owned loopback tunnel to an in-cluster Service — the control
- * channel the daemon uses to reach the proxy's HTTP API. Spawns a
+ * Server-owned loopback tunnel to an in-cluster Service — the control
+ * channel the server uses to reach the proxy's HTTP API. Spawns a
  * long-lived `kubectl port-forward svc/<name> :<port>` child bound to
  * 127.0.0.1 with an ephemeral local port, and respawns it on the next
  * `ensure()` after the child dies (apiserver restart, proxy pod
@@ -90,8 +90,8 @@ export class ServicePortForward {
             `port-forward to svc/${this.service} exited with code ${code}\n${stderrBuf}`,
           ))
         } else if (!this.stopped) {
-          daemonLog(
-            `[daemon] port-forward svc/${this.service} died (code ${code}) — `
+          serverLog(
+            `[server] port-forward svc/${this.service} died (code ${code}) — `
             + 'will respawn on next use',
           )
         }

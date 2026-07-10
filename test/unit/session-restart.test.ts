@@ -4,7 +4,7 @@ import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 import * as pods from '@/lib/k8s/pods'
 import * as cleanup from '@/lib/session/cleanup'
-import * as sessionCreate from '@/daemon/session-create'
+import * as sessionCreate from '@/server/session-create'
 import { resolveRestartTarget, restartSession } from '@/lib/session/restart'
 import { sessionRestart } from '@/commands/session-restart'
 import {
@@ -243,7 +243,7 @@ describe('sessionRestart (CLI shim)', () => {
     expect(typeof sessionRestart).toBe('function')
   })
 
-  it('rejects a relative --add-dir path without hitting the daemon', async () => {
+  it('rejects a relative --add-dir path without hitting the server', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => { /* noop */ })
     const prevExitCode = process.exitCode
     process.exitCode = 0

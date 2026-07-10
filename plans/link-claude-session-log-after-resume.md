@@ -11,7 +11,7 @@ scans miss the orphaned file.
 
 The root cause is that YAAC currently identifies the Claude transcript by
 pinning the Claude session id to the YAAC session id via the `--session-id`
-CLI flag (`src/daemon/session-create.ts:175`, inside `buildAgentCmd`). That pin
+CLI flag (`src/server/session-create.ts:175`, inside `buildAgentCmd`). That pin
 only applies to the *initial* launch; nested `claude resume`, `/clear`,
 `/compact`, or `claude` invocations pick their own id and produce an orphaned
 JSONL. (Note `buildAgentCmd` already branches to `--resume ${sessionId}` for
@@ -71,14 +71,14 @@ hook entry into `<claudePath>/settings.json` pointing at
 file, ensure `hooks.SessionStart` exists, push our entry only if absent (idempotent),
 write back. The difference is the target file (`settings.json`, which already
 exists and is seeded by `seedClaudeSettings` at
-`src/daemon/session-create.ts:228`) rather than a dedicated `hooks.json`, so
+`src/server/session-create.ts:228`) rather than a dedicated `hooks.json`, so
 the merge must preserve the existing `settings.json` keys
 (e.g. `skipDangerousModePermissionPrompt`) rather than starting fresh.
 
 ### 2. Write the hook script + wire it up unconditionally
-`src/daemon/session-create.ts`:
+`src/server/session-create.ts`:
 - Generalize the existing Codex hook-script authoring block
-  (`src/daemon/session-create.ts:996-1023`, currently gated on
+  (`src/server/session-create.ts:996-1023`, currently gated on
   `tool === 'codex'`) so the hook script is also written for Claude sessions.
   The hook script shape is identical for Claude and Codex — both receive JSON
   on stdin with a `transcript_path` field, extract it (the current script uses
@@ -92,13 +92,13 @@ the merge must preserve the existing `settings.json` keys
   `.yaac-transcripts/` dir (`LINK_DIR=/home/yaac/.claude/.yaac-transcripts`
   vs `/home/yaac/.codex/.yaac-transcripts`). Also `mkdir -p` the Claude
   transcript dir up front, the way the Codex branch does at
-  `src/daemon/session-create.ts:998-999`.
+  `src/server/session-create.ts:998-999`.
 - Always call `ensureClaudeSettingsJson(claudeDir)` for Claude sessions
   (alongside the existing `seedClaudeSettings` call at
-  `src/daemon/session-create.ts:994`); keep the existing Codex wiring
+  `src/server/session-create.ts:994`); keep the existing Codex wiring
   (`ensureCodexHooksJson`/`ensureCodexConfigToml`) gated on `tool === 'codex'`.
 - Keep the `--session-id ${sessionId}` argument in `buildAgentCmd`
-  (`src/daemon/session-create.ts:175`) — the hook is the canonical mapping,
+  (`src/server/session-create.ts:175`) — the hook is the canonical mapping,
   but the pin keeps the default-case filename aligned with the YAAC id.
 
 ### 3. Path helpers
@@ -134,7 +134,7 @@ what `src/lib/session/list.ts:326-351` already does for Codex, including the
 
 | File | Change |
 |------|--------|
-| `src/daemon/session-create.ts` | Generalize hook-script authoring (`:996-1023`) + `ensureClaudeSettingsJson` for Claude (keep `--session-id` at `:175`) |
+| `src/server/session-create.ts` | Generalize hook-script authoring (`:996-1023`) + `ensureClaudeSettingsJson` for Claude (keep `--session-id` at `:175`) |
 | `src/lib/session/claude-hooks.ts` | **New** — mirrors `codex-hooks.ts`, targets `settings.json` |
 | `src/lib/project/paths.ts` | Add `claudeTranscriptDir`/`claudeTranscriptFile` (next to `:107-113`) |
 | `src/lib/session/claude-status.ts` | `getSessionFirstUserMessage` (`:187`) reads through `.yaac-transcripts/` symlink |

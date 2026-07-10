@@ -1,7 +1,7 @@
 import { proxyClient } from '@/lib/container/proxy-client'
 import { kubectlGetJson } from '@/lib/k8s/kubectl'
 import { listVclusterNamespaces } from '@/lib/k8s/vcluster'
-import { daemonLog } from '@/daemon/log'
+import { serverLog } from '@/server/log'
 
 interface RawPodList {
   items?: Array<{ status?: { podIP?: string } }>
@@ -15,7 +15,7 @@ interface RawPodList {
  * traffic arrives at the outer proxy with the source pod's *host* IP, but those
  * pods live in the vcluster's own namespace with no `yaac.session-id` the
  * proxy's pod-watch can resolve — so the outer proxy fail-closes on it. The
- * daemon (host cluster-admin) knows each vcluster namespace's owning session
+ * server (host cluster-admin) knows each vcluster namespace's owning session
  * and can read the host pod IPs, so it supplies the mapping; the proxy then
  * judges chained egress against the OWNING outer session's allowlist.
  */
@@ -56,8 +56,8 @@ export async function reconcileVclusterAttribution(): Promise<void> {
     await proxyClient.registerVclusterAttribution(map)
     lastPushed = serialized
   } catch (err) {
-    daemonLog(
-      '[daemon] vcluster-attribution push failed: '
+    serverLog(
+      '[server] vcluster-attribution push failed: '
       + (err instanceof Error ? err.message : String(err)),
     )
   }

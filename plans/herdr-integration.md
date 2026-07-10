@@ -30,7 +30,7 @@ Two constraints from the user shape the design:
 
 Decisions locked earlier: **herdr-driven (plugin)** depth, **same machine**
 topology. Decision locked now: yaac-herdr talks to yaac via **generic,
-herdr-agnostic CLI flags** (not the internal daemon HTTP API).
+herdr-agnostic CLI flags** (not the internal server HTTP API).
 
 ## Architecture (two repos, no reconcile)
 
@@ -67,7 +67,7 @@ be the same worktree.
 
 - **yaac owns the real working copy.** Each session gets a host worktree at
   `~/.yaac/projects/<slug>/worktrees/<sessionId>` on branch `agent/<sessionId>`
-  (`addWorktree`, `src/lib/git.ts:166`; `src/daemon/session-create.ts:726-736`),
+  (`addWorktree`, `src/lib/git.ts:166`; `src/server/session-create.ts:726-736`),
   hostPath-mounted into the pod at `/workspace` (`:1090`) with `.git` at
   `/repo/.git` (`:1091`). yaac reuses it on restart and `rm -rf`s it on delete.
 - **These worktrees are intentionally pod-internal.** Their git pointers are
@@ -93,9 +93,9 @@ A yaac session is not one terminal: inside the pod a single tmux server
 (`CONTAINER_TMUX_SOCK`) runs the **agent** (first `yaac` window), any
 **`initCommands` dev-server windows**, and lazily-created **scratch shells**
 (`shell`, `shell-2`, …). The webapp already enumerates these
-(`listSessionTerminals`, `src/daemon/terminals.ts`) and attaches to any via a
+(`listSessionTerminals`, `src/server/terminals.ts`) and attaches to any via a
 `target` (`agent` | `window:@<id>` | `shell:<name>`) through the PTY bridge
-(`attachArgs`/`parsePtyTarget`, `src/daemon/pty-bridge.ts:51`).
+(`attachArgs`/`parsePtyTarget`, `src/server/pty-bridge.ts:51`).
 
 **Mapping (clean 1:1 with herdr's hierarchy):**
 
@@ -163,11 +163,11 @@ returns the id and already has a no-attach path via `testEnv.e2eNoAttach`).
   (`src/shared/types.ts:292`) is already the right shape.
 - **`src/commands/session-attach.ts`** — add `--target <agent|window:@<id>|shell:<name>>`
   (default `agent`): generalize the hardcoded agent attach (`:15`) by reusing
-  `parsePtyTarget` + `attachArgs` from `src/daemon/pty-bridge.ts`, so any pane can
+  `parsePtyTarget` + `attachArgs` from `src/server/pty-bridge.ts`, so any pane can
   attach to a specific terminal of a session. (`yaac session shell` already gives
   a bare, non-tmux zsh.)
 - **`yaac session terminals <id> --json`** (new command) — expose
-  `listSessionTerminals` (`src/daemon/terminals.ts`) so any tool can enumerate a
+  `listSessionTerminals` (`src/server/terminals.ts`) so any tool can enumerate a
   session's terminals (agent + windows + shells).
 - **`src/cli.ts`** — register `--detach`/`--json` on `session create`
   (lines 158-168), `--json` on `session list` (lines 170-177), `--target` on
@@ -294,9 +294,9 @@ one integration smoke against a stub `herdr` + real `yaac`.
 ## Out of scope
 
 - No reconcile/bridge process (per the user); herdr is a launcher only.
-- No yaac daemon/HTTP/auth changes; no herdr references in the yaac repo.
-- No remote topology (would need the unimplemented `plans/remote-daemon-hosting.md`
-  + attach over the daemon's `/pty/attach` WebSocket).
+- No yaac server/HTTP/auth changes; no herdr references in the yaac repo.
+- No remote topology (would need the unimplemented `plans/remote-server-hosting.md`
+  + attach over the server's `/pty/attach` WebSocket).
 - No `herdr pane report-agent` state pushing (screen detection already covers all
   three tools).
 
@@ -312,4 +312,4 @@ one integration smoke against a stub `herdr` + real `yaac`.
   (plan defaults to replacement).
 - **tmux detach cleanliness:** closing a herdr pane should not leak an attached
   tmux client in the pod (the webapp bridge sends `C-b d` first,
-  `src/daemon/pty-bridge.ts:171`); verify, and detach-before-close if needed.
+  `src/server/pty-bridge.ts:171`); verify, and detach-before-close if needed.

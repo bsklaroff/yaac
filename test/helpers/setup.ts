@@ -38,7 +38,7 @@ export const TEST_RUN_ID = crypto.randomBytes(4).toString('hex')
  * Per-file kubernetes namespace (see TEST_RUN_ID for granularity). Every
  * yaac object a test file creates (session Jobs, the proxy
  * Deployment/Service, mock-remote pods) lands in this namespace, isolating
- * it from other files and from a real daemon's `yaac` namespace. Tests
+ * it from other files and from a real server's `yaac` namespace. Tests
  * WITHIN a file share it — their isolation comes from per-test data dirs
  * plus the data-dir-hash label (see cleanupSessionJobs). Leaked namespaces
  * are swept by test/global-setup.ts teardown.
@@ -62,7 +62,7 @@ export const IS_NESTED_YAAC = process.env.YAAC_NESTED === '1'
 /**
  * Point the current test process at the per-run test namespace, so that
  * src helpers (listSessionPods, containerExec, ProxyClient, ...) target
- * the same namespace a daemon spawned with `createYaacTestEnv().env`
+ * the same namespace a server spawned with `createYaacTestEnv().env`
  * uses. Returns a restore function.
  */
 export function useTestNamespace(): () => void {
@@ -122,7 +122,7 @@ export async function removeSessionJob(jobName: string): Promise<void> {
  * namespace. The data-dir-hash scoping matters within a file: sequential
  * tests share TEST_NAMESPACE, and `--wait=false` means a prior test's
  * pods may still be terminating when the next test starts — the label
- * keeps them out of each other's queries (listSessionPods, the daemon's
+ * keeps them out of each other's queries (listSessionPods, the server's
  * stale-session reconciler) and out of this delete. The k8s analog of the
  * podman-era `podman rm -f $(podman ps -a --filter
  * label=yaac.data-dir=<dir>)`.
@@ -133,7 +133,7 @@ export async function cleanupSessionJobs(): Promise<void> {
       'delete', 'jobs,pods',
       '-n', k8sNamespace(),
       // The session-id term keeps this scoped to session Jobs/pods: the
-      // test daemon's proxy pod carries the same data-dir-hash (install
+      // test server's proxy pod carries the same data-dir-hash (install
       // identity) but is Deployment-managed, not ours to sweep.
       '-l', `${LABEL_DATA_DIR_HASH}=${dataDirHash()},${LABEL_SESSION_ID}`,
       '--ignore-not-found', '--wait=false',
@@ -208,7 +208,7 @@ export async function cleanupContainers(): Promise<void> {
 
 /**
  * Check if podman (the image build engine) is available and running.
- * Uses `podman info` on all platforms to verify the daemon is actually
+ * Uses `podman info` on all platforms to verify the server is actually
  * reachable (not just that a machine is listed as running).
  */
 export async function podmanAvailable(): Promise<boolean> {

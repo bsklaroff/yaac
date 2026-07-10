@@ -148,7 +148,7 @@ function execFileWithInput(
  * Async kubectl exec with retries, matching `kubectlWithRetry`'s retry
  * behavior but accepting a full shell command string so callers that rely
  * on shell features (sh -c "...", single-quoted args) don't have to split
- * args manually. Runs in the Node event loop — does not block the daemon's
+ * args manually. Runs in the Node event loop — does not block the server's
  * HTTP server.
  */
 export async function shellKubectlWithRetry(

@@ -12,7 +12,7 @@ import type { OpencodeSessionMeta } from '@/shared/types'
  * a tool-permission prompt or a question-tool prompt — both states where
  * yaac should report `waiting`. Pane content carries unambiguous markers
  * for each. The pane is captured by the session's status watcher
- * (`src/daemon/status-watcher.ts`) over its persistent control-mode
+ * (`src/server/status-watcher.ts`) over its persistent control-mode
  * stream — `%output` events are the dirty bit — and classified with
  * `classifyOpencodePane`; reads happen via the status store.
  *
@@ -239,7 +239,7 @@ export async function getDeletedSessionOpencodeFirstUserMessage(
 
 /**
  * Capture-and-persist the first-message snapshot for a live opencode
- * session, but only if one isn't already cached. Driven by the daemon
+ * session, but only if one isn't already cached. Driven by the server
  * background loop so a record exists for `session list -d` / restart even
  * when no client is polling /session/list (the only other trigger).
  *

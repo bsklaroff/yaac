@@ -7,7 +7,7 @@ export interface ClusterSetupCliOptions {
 /**
  * `yaac cluster setup` — create (or, with --repair, fix up) the local kind
  * cluster yaac runs sessions on. Host-side like `cluster check`: talks to
- * podman/kind/kubectl directly, never to the daemon. Exits 1 when a step
+ * podman/kind/kubectl directly, never to the server. Exits 1 when a step
  * cannot proceed (ClusterSetupError carries the fix instructions) or when
  * the finishing cluster check fails.
  */

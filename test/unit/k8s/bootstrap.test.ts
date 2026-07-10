@@ -263,7 +263,7 @@ describe('buildProxyDeploymentManifest', () => {
       valueFrom: { secretKeyRef: { name: PROXY_AUTH_SECRET_NAME, key: 'secret' } },
     })
     // HOME points at the emptyDir mount so the proxy's known_hosts writer
-    // works when it runs as the daemon uid (not the image's node user);
+    // works when it runs as the server uid (not the image's node user);
     // ssh-add itself gets the known_hosts path via -H, never from HOME.
     expect(c.env).toContainEqual({ name: 'HOME', value: '/home/proxy' })
     expect(c.readinessProbe.httpGet).toEqual({ path: '/healthz', port: PROXY_PORT })
@@ -289,7 +289,7 @@ describe('buildProxyDeploymentManifest', () => {
     ])
   })
 
-  it('runs as the daemon host uid with fsGroup for the emptyDir HOME', () => {
+  it('runs as the server host uid with fsGroup for the emptyDir HOME', () => {
     const sc = build().spec.template.spec.securityContext
     expect(sc?.runAsUser).toBe(process.getuid?.())
     expect(sc?.runAsGroup).toBe(process.getgid?.())
@@ -324,7 +324,7 @@ describe('buildEgressWorldDenyCiliumPolicyManifest', () => {
     expect(m.metadata.namespace).toBe('test-ns')
     // Everything except the proxy (NotIn also matches no-app pods, so it
     // catches session pods, registries, mocks). The exemption label is
-    // only settable by the trusted daemon on its own pods. Synced pods
+    // only settable by the trusted server on its own pods. Synced pods
     // live in their own per-session namespaces, denied there.
     // Excludes the proxy AND session pods — the latter are governed by the
     // redirect CNP, whose world:443/80 allow a world-deny here would beat.
@@ -336,7 +336,7 @@ describe('buildEgressWorldDenyCiliumPolicyManifest', () => {
     expect(m.spec.egressDeny).toEqual([{ toEntities: ['world'] }])
   })
 
-  it('exempts only the proxy, by an unforgeable trusted-daemon label', () => {
+  it('exempts only the proxy, by an unforgeable trusted-server label', () => {
     const m = buildEgressWorldDenyCiliumPolicyManifest() as unknown as Cnp
     expect(m.spec.endpointSelector.matchExpressions[0].values).toEqual(['yaac-proxy'])
   })

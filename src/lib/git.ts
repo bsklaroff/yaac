@@ -32,7 +32,7 @@ export function isGitAuthError(message: string): boolean {
   ].some((re) => re.test(message))
 }
 
-// When Tor is enabled on the daemon process, route the git subprocess
+// When Tor is enabled on the server process, route the git subprocess
 // through the user's host-machine Tor (assumed already running at
 // YAAC_HOST_TOR_SOCKS_URL, default socks5h://127.0.0.1:9050). Returns
 // undefined when the toggle is off so simple-git uses its default env.
@@ -47,7 +47,7 @@ export function torEnv(): NodeJS.ProcessEnv | undefined {
 }
 
 /**
- * Build the host-side GIT_SSH_COMMAND for a registered SSH key. The daemon
+ * Build the host-side GIT_SSH_COMMAND for a registered SSH key. The server
  * has filesystem access to the key, so it uses `-i <keyPath>` directly.
  * The session container never sees this string — its own GIT_SSH_COMMAND is
  * built separately and uses the proxy's ssh-agent instead of `-i`.

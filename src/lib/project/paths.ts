@@ -41,7 +41,7 @@ export function opencodeCredentialsPath(): string {
 
 /**
  * File holding envSecretProxy values (env var name -> secret), written by
- * the daemon before each session registration. Injection rules sent to
+ * the server before each session registration. Injection rules sent to
  * the proxy reference these entries by key (`secretRef`) instead of
  * embedding the value, which keeps registrations secret-free so the proxy
  * can persist them across pod replacements.
@@ -170,7 +170,7 @@ export function sessionDir(slug: string, sessionId: string): string {
 
 /**
  * Per-session host directory bind-mounted into the container at
- * `CONTAINER_TMUX_DIR`. Holds the tmux server socket so the daemon can
+ * `CONTAINER_TMUX_DIR`. Holds the tmux server socket so the server can
  * probe liveness without hitting the podman API.
  */
 export function sessionTmuxDir(slug: string, sessionId: string): string {
@@ -180,7 +180,7 @@ export function sessionTmuxDir(slug: string, sessionId: string): string {
 /**
  * Per-session host directory holding the vcluster kubeconfig, mounted
  * at /home/yaac/.kube inside the session container (virtualCluster
- * sessions only). Dir-mounted (not the file) so the daemon's background
+ * sessions only). Dir-mounted (not the file) so the server's background
  * kubeconfig heal can rewrite the file without remounting.
  */
 export function sessionVclusterDir(slug: string, sessionId: string): string {

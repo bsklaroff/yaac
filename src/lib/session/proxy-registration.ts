@@ -8,7 +8,7 @@ import type { AgentTool, YaacConfig } from '@/shared/types'
  * Payload of `PUT /sessions/:id` on the proxy. Registered by session-create
  * (and re-registered when a prewarmed spare is retooled at claim time); the
  * proxy write-throughs it to /data and reloads it at boot, so it survives
- * proxy pod replacements (image upgrade, crash, eviction) without daemon
+ * proxy pod replacements (image upgrade, crash, eviction) without server
  * involvement. Secret-free by construction — injection rules carry
  * secretRefs, never values.
  *

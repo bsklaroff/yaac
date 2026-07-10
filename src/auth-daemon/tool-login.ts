@@ -12,16 +12,16 @@ import {
   extractCodexOAuthBundle,
   readClaudeKeychainPayload,
 } from '@/shared/tool-auth-interactive'
-import { resolveToolCliPath } from '@/daemon/cli-resolve'
-import { createCliSessionRegistry, outputTail, type CliSession } from '@/daemon/cli-session'
-import { DaemonError } from '@/daemon/errors'
+import { resolveToolCliPath } from '@/server/cli-resolve'
+import { createCliSessionRegistry, outputTail, type CliSession } from '@/server/cli-session'
+import { ServerError } from '@/server/errors'
 import { testEnv } from '@/shared/env'
 import type { ToolLoginView } from '@/shared/types'
 
 /**
- * Web-driven tool sign-in: the daemon runs the vendor's own browser login in
+ * Web-driven tool sign-in: the server runs the vendor's own browser login in
  * a subprocess. Both CLIs open the user's browser themselves and complete via
- * a localhost callback, so with the daemon on the same machine as the browser
+ * a localhost callback, so with the server on the same machine as the browser
  * (the supported setup) the whole flow is hands-free — the webapp only shows
  * "finish in your browser" and polls for the outcome.
  *
@@ -49,8 +49,8 @@ const CLAUDE_POLL_MS = 500
  * Where a completed login's credentials go. Defaults to the local
  * persistence (data-dir credential files + placeholder fan-out) — right
  * when this code runs inside the machine that owns the data dir. The
- * auth daemon overrides it with an RPC `PUT /auth/:tool` so bundles land
- * on the (possibly remote) main daemon instead of this machine.
+ * auth server overrides it with an RPC `PUT /auth/:tool` so bundles land
+ * on the (possibly remote) main server instead of this machine.
  */
 type PersistToolLogin = typeof persistToolLogin
 let persistResult: PersistToolLogin = persistToolLogin
@@ -205,7 +205,7 @@ function spawnCodex(s: LoginSession, argv: string[]): void {
 /**
  * Start (or restart) the sign-in flow for a tool. Any still-running flow for
  * the same tool is cancelled first — clients drive one at a time. `id` is
- * supplied by the relay (the main daemon mints flow ids so its routes can
+ * supplied by the relay (the main server mints flow ids so its routes can
  * answer synchronously); direct callers/tests may omit it.
  */
 export async function startToolLogin(tool: 'claude' | 'codex', id?: string): Promise<ToolLoginView> {
@@ -274,11 +274,11 @@ const LOGIN_INPUT_RE = /^[A-Za-z0-9_#-]{1,512}$/
 export function sendToolLoginInput(id: string, text: string): ToolLoginView {
   const s = registry.getById(id)
   if (!s.proc?.write) {
-    throw new DaemonError('CONFLICT', 'This sign-in is not accepting input.')
+    throw new ServerError('CONFLICT', 'This sign-in is not accepting input.')
   }
   const cleaned = text.trim()
   if (!LOGIN_INPUT_RE.test(cleaned)) {
-    throw new DaemonError(
+    throw new ServerError(
       'VALIDATION',
       'Expected the code from the authorize page (letters, digits, "#", "-", "_" only).',
     )

@@ -1,16 +1,16 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { createYaacTestEnv, spawnYaacDaemon, runYaac, type YaacTestEnv, type SpawnedDaemon } from '@test/helpers/cli'
+import { createYaacTestEnv, spawnYaacServer, runYaac, type YaacTestEnv, type SpawnedServer } from '@test/helpers/cli'
 import { createTestRepo, addTestProject } from '@test/helpers/setup'
-import { makeDaemonRpcClient } from '@test/helpers/rpc'
+import { makeServerRpcClient } from '@test/helpers/rpc'
 
 /**
  * Merged e2e coverage for `yaac project` (list/add), `yaac project rebuild`,
- * and `yaac config` — all daemon-backed CLI commands. One test env + one
- * real daemon are shared across the whole file (spawning a daemon acquires
- * the cross-worker daemon mutex and is by far the slowest step, so per-test
- * daemons made these suites pay that cost for every it()).
+ * and `yaac config` — all server-backed CLI commands. One test env + one
+ * real server are shared across the whole file (spawning a server acquires
+ * the cross-worker server mutex and is by far the slowest step, so per-test
+ * servers made these suites pay that cost for every it()).
  *
  * The shared data dir makes test ORDER load-bearing — vitest runs a file's
  * tests sequentially in declaration order:
@@ -29,19 +29,19 @@ import { makeDaemonRpcClient } from '@test/helpers/rpc'
  */
 
 let testEnv: YaacTestEnv
-let daemon: SpawnedDaemon
+let server: SpawnedServer
 
 beforeAll(async () => {
   testEnv = await createYaacTestEnv()
-  daemon = await spawnYaacDaemon(testEnv.env)
+  server = await spawnYaacServer(testEnv.env)
 })
 
 afterAll(async () => {
-  await daemon.stop()
+  await server.stop()
   await testEnv.cleanup()
 })
 
-describe('yaac project (real CLI + real daemon)', () => {
+describe('yaac project (real CLI + real server)', () => {
   // Must run first: any project seeded into the shared data dir would
   // break the empty-state assertion.
   it('project list prints the empty-state hint when no projects exist', async () => {
@@ -63,7 +63,7 @@ describe('yaac project (real CLI + real daemon)', () => {
     // The old "Only GitHub repositories are supported" error must be gone.
     expect(combined).not.toMatch(/only github/i)
     // The interactive auth-update menu must have been shown — proves the
-    // URL reached the daemon (rather than being blocked by validation).
+    // URL reached the server (rather than being blocked by validation).
     expect(combined).toMatch(/What would you like to authenticate\?/)
   })
 
@@ -125,7 +125,7 @@ describe('yaac project (real CLI + real daemon)', () => {
   })
 
   it('project add returns CONFLICT when a project with the same slug exists', async () => {
-    // Pre-create the project dir so the daemon's `fs.access` check throws
+    // Pre-create the project dir so the server's `fs.access` check throws
     // CONFLICT before it reaches token resolution.
     await fs.mkdir(path.join(testEnv.dataDir, 'projects', 'repo'), { recursive: true })
 
@@ -160,7 +160,7 @@ describe('yaac project (real CLI + real daemon)', () => {
   })
 })
 
-describe('yaac project rebuild (real CLI + real daemon)', () => {
+describe('yaac project rebuild (real CLI + real server)', () => {
   it('errors at commander level when the <project> argument is omitted', async () => {
     const { stderr, exitCode } = await runYaac(testEnv.env, 'project', 'rebuild')
     expect(exitCode).not.toBe(0)
@@ -180,7 +180,7 @@ describe('yaac project rebuild (real CLI + real daemon)', () => {
   it('reports the "standalone Dockerfile.yaac" guard when the project has no tools layer', async () => {
     // Seed a project, then drop a standalone Dockerfile.yaac (its own FROM)
     // into the per-machine config dir so resolveImageChain skips the tools
-    // layer entirely. The daemon route should surface the guard error
+    // layer entirely. The server route should surface the guard error
     // rather than attempting a (slow, network-bound) --no-cache build.
     // Slug is `repo-rebuild` (not the original `repo-alpha`) because the
     // project-list suite above already seeded `repo-alpha` into the shared
@@ -204,11 +204,11 @@ describe('yaac project rebuild (real CLI + real daemon)', () => {
   })
 })
 
-describe('yaac config (real CLI + real daemon)', () => {
+describe('yaac config (real CLI + real server)', () => {
   // Stand-in editor: a tiny shell script that writes deterministic
   // content into whichever scratch file the CLI hands it. The CLI edits
-  // a tmp copy and PUTs the result to the daemon, so assertions read the
-  // daemon-side file afterwards.
+  // a tmp copy and PUTs the result to the server, so assertions read the
+  // server-side file afterwards.
   async function writeStubEditor(name: string, content: string): Promise<string> {
     const editorPath = path.join(testEnv.scratchDir, `editor-${name}.sh`)
     const contentFile = path.join(testEnv.scratchDir, `editor-${name}.content`)
@@ -226,7 +226,7 @@ describe('yaac config (real CLI + real daemon)', () => {
     await addTestProject(repo)
   }
 
-  it('config edit round-trips yaac-config.json through the daemon (validated)', async () => {
+  it('config edit round-trips yaac-config.json through the server (validated)', async () => {
     await seedProject('demo-edit')
 
     const editor = await writeStubEditor('config', '{ "env": { "MARKER": "1" } }')
@@ -241,7 +241,7 @@ describe('yaac config (real CLI + real daemon)', () => {
     expect(saved.env).toEqual({ MARKER: '1' })
   })
 
-  it('config edit rejects invalid JSON, keeps the edits, and leaves the daemon file alone', async () => {
+  it('config edit rejects invalid JSON, keeps the edits, and leaves the server file alone', async () => {
     await seedProject('demo-badjson')
 
     const editor = await writeStubEditor('bad-json', '{ not json')
@@ -259,7 +259,7 @@ describe('yaac config (real CLI + real daemon)', () => {
     await expect(fs.access(target)).rejects.toThrow()
   })
 
-  it('config edit-dockerfile writes Dockerfile.yaac verbatim via the daemon', async () => {
+  it('config edit-dockerfile writes Dockerfile.yaac verbatim via the server', async () => {
     await seedProject('demo-dockerfile')
 
     const editor = await writeStubEditor('dockerfile', 'RUN echo dockerfile-marker\n')
@@ -273,7 +273,7 @@ describe('yaac config (real CLI + real daemon)', () => {
     expect(await fs.readFile(target, 'utf8')).toBe('RUN echo dockerfile-marker\n')
   })
 
-  it('config edit-user-dockerfile saves a layered Dockerfile.user via the daemon', async () => {
+  it('config edit-user-dockerfile saves a layered Dockerfile.user via the server', async () => {
     const layered = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user-marker\n'
     const editor = await writeStubEditor('user-dockerfile', layered)
     const { exitCode, stderr } = await runYaac(
@@ -306,11 +306,11 @@ describe('yaac config (real CLI + real daemon)', () => {
   })
 
   it('accepts the nestedContainers key through the config-write route', async () => {
-    // The daemon's config-write route runs the same parser session-create
+    // The server's config-write route runs the same parser session-create
     // hits at load time; `nestedContainers` must parse cleanly.
     await seedProject('demo-nested')
 
-    const client = makeDaemonRpcClient(daemon)
+    const client = makeServerRpcClient(server)
 
     const nested = await client.project[':slug'].config.$put({
       param: { slug: 'demo-nested' },
@@ -322,7 +322,7 @@ describe('yaac config (real CLI + real daemon)', () => {
   it('accepts virtualCluster but rejects it alongside nestedContainers: false', async () => {
     await seedProject('demo-vcluster')
 
-    const client = makeDaemonRpcClient(daemon)
+    const client = makeServerRpcClient(server)
 
     const vcluster = await client.project[':slug'].config.$put({
       param: { slug: 'demo-vcluster' },

@@ -4,7 +4,7 @@ import { listSessionPods, type SessionPod } from '@/lib/k8s/pods'
 import { removeProjectRegistry } from '@/lib/k8s/project-registry'
 import { projectDir } from '@/lib/project/paths'
 import { cleanupSessionDetached } from '@/lib/session/cleanup'
-import { DaemonError } from '@/daemon/errors'
+import { ServerError } from '@/server/errors'
 
 /**
  * Tear down every live session for a project, then remove the project
@@ -15,7 +15,7 @@ export async function removeProject(slug: string): Promise<void> {
   try {
     await fs.access(path.join(dir, 'project.json'))
   } catch {
-    throw new DaemonError('NOT_FOUND', `project ${slug} not found`)
+    throw new ServerError('NOT_FOUND', `project ${slug} not found`)
   }
 
   let pods: SessionPod[] = []
@@ -38,7 +38,7 @@ export async function removeProject(slug: string): Promise<void> {
   }
 
   // Per-project push registry (virtualCluster sessions). Best-effort —
-  // the daemon-start orphan GC sweeps anything this misses, since the
+  // the server-start orphan GC sweeps anything this misses, since the
   // project dir is gone after the rm below.
   try {
     await removeProjectRegistry(slug)

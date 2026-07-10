@@ -18,7 +18,7 @@ import { Sidebar, sidebarRowIds } from './components/Sidebar'
 import { SessionView } from './components/SessionView'
 import { BootstrapSplash } from './components/BootstrapSplash'
 import { ConfirmDialog } from './components/ui/ConfirmDialog'
-import type { DaemonSnapshot, SessionListEntry } from '@/shared/types'
+import type { ServerSnapshot, SessionListEntry } from '@/shared/types'
 
 type AuthState = 'checking' | 'authed' | 'needs-bootstrap'
 
@@ -28,7 +28,7 @@ async function probeAuth(): Promise<boolean> {
     await api.get('/auth/bootstrap-code')
     return true
   } catch (err) {
-    // 401 → not authed; anything else (daemon down) → show the splash too
+    // 401 → not authed; anything else (server down) → show the splash too
     // rather than a blank screen.
     if (err instanceof ApiError && err.status === 401) return false
     return false
@@ -73,7 +73,7 @@ function sessionName(session: SessionListEntry | null): string {
   return name.length > 60 ? `${name.slice(0, 60)}…` : name
 }
 
-function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefined; connected: boolean }): JSX.Element {
+function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefined; connected: boolean }): JSX.Element {
   const activeProjectSlug = useUiStore((s) => s.activeProjectSlug)
   const setActiveProject = useUiStore((s) => s.setActiveProject)
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
@@ -89,7 +89,7 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
 
   const projects = snapshot?.projects ?? []
   const sessions = snapshot?.sessions ?? []
-  // Daemon-tracked provisioning rows + local optimistic ones (snapshot wins).
+  // Server-tracked provisioning rows + local optimistic ones (snapshot wins).
   const provisioning = mergeProvisioning(snapshot?.provisioning ?? [], optimisticProvisioning)
 
   // Mirror the restored selection (which may have come from localStorage) into
@@ -111,14 +111,14 @@ function Workspace({ snapshot, connected }: { snapshot: DaemonSnapshot | undefin
   }, [activeProjectSlug, projects, setActiveProject])
 
   // Once the snapshot no longer lists an optimistically-deleted session, the
-  // daemon's cleanup landed — stop tracking it so the set can't leak (or
+  // server's cleanup landed — stop tracking it so the set can't leak (or
   // wrongly hide a future session that reuses the id).
   useEffect(() => {
     const live = new Set(sessions.map((s) => s.sessionId))
     for (const id of pendingDeleteIds) if (!live.has(id)) endDelete(id)
   }, [sessions, pendingDeleteIds, endDelete])
 
-  // Once the daemon knows a provisioning id (as a real session or its own
+  // Once the server knows a provisioning id (as a real session or its own
   // provisioning row), drop the local optimistic copy — the snapshot is the
   // source of truth from here, carrying live progress and reload-survival.
   useEffect(() => {

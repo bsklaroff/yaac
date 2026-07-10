@@ -7,7 +7,7 @@ import type { GitAuthFailure } from '@/shared/types'
  * Host path of the proxy's git-auth-failures write-through file. The proxy
  * writes `/data/git-auth-failures.json` (projectSlug -> failures) atomically
  * whenever it sees an upstream reject an injected git credential (and when
- * a later success clears one); /data is a hostPath, so the daemon reads the
+ * a later success clears one); /data is a hostPath, so the server reads the
  * live state straight off the filesystem — same pattern as
  * blocked-hosts.json.
  */

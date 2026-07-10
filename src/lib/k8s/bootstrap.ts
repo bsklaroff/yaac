@@ -26,7 +26,7 @@ import { env } from '@/shared/env'
 
 /** Deployment/Service name and pod selector label of the shared proxy. */
 export const PROXY_APP_NAME = 'yaac-proxy'
-/** Secret holding the daemon→proxy bearer secret. */
+/** Secret holding the server→proxy bearer secret. */
 export const PROXY_AUTH_SECRET_NAME = 'yaac-proxy-auth'
 /** Port the proxy serves inside the cluster (container + Service port). */
 export const PROXY_PORT = 10255
@@ -75,11 +75,11 @@ export const PROXY_INGRESS_CNP_NAME = 'yaac-proxy-ingress'
 export const PROXY_SA_NAME = 'yaac-proxy'
 
 /**
- * Inner (nested / yaac-in-yaac) redirect objects. The daemon projects these
+ * Inner (nested / yaac-in-yaac) redirect objects. The server projects these
  * into a managed vcluster's host namespace so the vcluster's synced pods are
  * redirected to that session's *inner* proxy at higher precedence than the
  * outer redirect (see docs/yaac-in-yaac-inner-egress.md). The session pod
- * never gets host RBAC — the daemon rebuilds them from these trusted builders.
+ * never gets host RBAC — the server rebuilds them from these trusted builders.
  */
 export const INNER_EGRESS_REDIRECT_CEC_NAME = 'yaac-inner-egress-redirect'
 export const INNER_SESSION_EGRESS_REDIRECT_CNP_NAME = 'yaac-inner-session-egress-redirect'
@@ -135,7 +135,7 @@ export const PROJECTION_INNER_REDIRECT = 'inner-redirect'
  * the outer proxy, which presents a leaf signed by the OUTER proxy's MITM CA.
  * The stock proxy dials upstream with Node's default trust store, so without
  * the outer CA that dial fails with "self-signed certificate in certificate
- * chain" and the inner session has no internet. The daemon projects the outer
+ * chain" and the inner session has no internet. The server projects the outer
  * CA into the vcluster as this ConfigMap; the inner proxy mounts it and points
  * NODE_EXTRA_CA_CERTS at it (additive trust — the real roots still apply). The
  * inner yaac reads the outer CA from its own session-pod trust mount
@@ -148,8 +148,8 @@ export const OUTER_CA_CONFIGMAP_NAME = 'yaac-outer-proxy-ca'
 const OUTER_CA_MOUNT_DIR = '/etc/yaac/outer-ca'
 const OUTER_CA_PATH = `${OUTER_CA_MOUNT_DIR}/${CA_CONFIGMAP_KEY}`
 /**
- * Pod securityContext running the proxy as the daemon's own host uid/gid.
- * The proxy reads/writes hostPath dirs the daemon creates (the CA in
+ * Pod securityContext running the proxy as the server's own host uid/gid.
+ * The proxy reads/writes hostPath dirs the server creates (the CA in
  * /data, the ssh-agent socket dir, and the 0700 credentials dir);
  * matching the creator's uid is what makes those accessible. The image's
  * default `node` uid (1000) only worked on applehv, whose virtiofs
@@ -158,7 +158,7 @@ const OUTER_CA_PATH = `${OUTER_CA_MOUNT_DIR}/${CA_CONFIGMAP_KEY}`
  * fsGroup makes the emptyDir-backed HOME (see the deployment) group-
  * writable by the proxy process; it applies only to ownership-managed
  * volumes (emptyDir), never to the hostPath mounts, which stay owned by
- * the host uid. Throws if getuid/getgid are unavailable: the daemon's
+ * the host uid. Throws if getuid/getgid are unavailable: the server's
  * whole hostPath/uid model is POSIX-only, and silently emitting an
  * image-default-uid manifest would crash-loop the proxy on a strict
  * virtiofs host with a confusing EACCES instead of failing here.
@@ -169,7 +169,7 @@ export function proxyRunAsSecurityContext(): Record<string, unknown> {
   if (uid === undefined || gid === undefined) {
     throw new Error(
       'proxyRunAsSecurityContext: process.getuid/getgid unavailable — '
-      + 'the yaac daemon requires a POSIX host',
+      + 'the yaac server requires a POSIX host',
     )
   }
   return { securityContext: { runAsUser: uid, runAsGroup: gid, fsGroup: gid } }
@@ -208,7 +208,7 @@ interface RawSecret {
 
 /**
  * Ensure the proxy auth Secret exists and return its value. The secret is
- * generated once per cluster and read back on every daemon start —
+ * generated once per cluster and read back on every server start —
  * replacing the podman-era trick of recovering it from the proxy
  * container's env on adoption.
  */
@@ -236,7 +236,7 @@ export async function ensureProxyAuthSecret(): Promise<string> {
  *
  * Exposure: ClusterIP Service only — no hostNetwork, no hostPort, no
  * NodePort. The proxy listens inside its pod's network namespace; the
- * daemon reaches it through a loopback `kubectl port-forward`.
+ * server reaches it through a loopback `kubectl port-forward`.
  */
 export function buildProxyDeploymentManifest(
   imageRef: string,
@@ -320,7 +320,7 @@ export function buildProxyDeploymentManifest(
                     secretKeyRef: { name: PROXY_AUTH_SECRET_NAME, key: 'secret' },
                   },
                 },
-                // The proxy runs as the daemon's host uid (runAsUser
+                // The proxy runs as the server's host uid (runAsUser
                 // below), which need not own the image's /home/node — so
                 // point HOME at a dedicated emptyDir (writable via fsGroup)
                 // rather than the CA-bearing /data, keeping ssh material
@@ -378,7 +378,7 @@ export function buildProxyDeploymentManifest(
             // non-root proxy uid, and so nothing the proxy writes under
             // HOME persists onto the host.
             { name: 'home', emptyDir: {} },
-            // Nested (inner) proxy: the outer CA, projected by the daemon into
+            // Nested (inner) proxy: the outer CA, projected by the server into
             // the vcluster as a ConfigMap (buildOuterProxyCaConfigMapManifest).
             ...(opts.nested
               ? [{ name: 'outer-ca', configMap: { name: OUTER_CA_CONFIGMAP_NAME } }]
@@ -418,7 +418,7 @@ export const EGRESS_WORLD_DENY_NAME = 'yaac-egress-world-deny'
  * `app NotIn [yaac-proxy]` denies world for everything except the proxy;
  * NotIn also matches pods with no `app` label, so it catches registries,
  * mocks, and anything added later. The exemption label can only be set by
- * the trusted daemon on its own pods, so it is not a forge vector.
+ * the trusted server on its own pods, so it is not a forge vector.
  *
  * Session pods (`yaac.session-id`) are explicitly EXCLUDED here: their
  * egress is governed by the redirect CNP (buildSessionEgressRedirectCnpManifest),
@@ -698,7 +698,7 @@ export function buildSessionEgressRedirectCnpManifest(): Record<string, unknown>
  * The e2e forgery test (a session pod dialing a transparent port directly must
  * fail) is the standing guard.
  *
- * PROXY_PORT (the control API) stays host-only — the daemon registers sessions
+ * PROXY_PORT (the control API) stays host-only — the server registers sessions
  * over it and the kubelet readiness probe hits it; session pods must not.
  */
 export function buildProxyIngressCnpManifest(): Record<string, unknown> {
@@ -714,7 +714,7 @@ export function buildProxyIngressCnpManifest(): Record<string, unknown> {
       endpointSelector: { matchLabels: { app: PROXY_APP_NAME } },
       ingress: [
         {
-          // Control API: the host daemon (session registration) + kubelet probe.
+          // Control API: the host server (session registration) + kubelet probe.
           fromEntities: ['host'],
           toPorts: [{ ports: [{ port: String(PROXY_PORT), protocol: 'TCP' }] }],
         },
@@ -763,7 +763,7 @@ export function buildProxyIngressCnpManifest(): Record<string, unknown> {
  * Name of a per-install projected object: the shared base suffixed with the
  * owning inner install's data-dir-hash (16 hex chars — label- and name-safe).
  * One vcluster can host several inner yaac installs (the ambient nested yaac
- * plus per-run e2e daemons), each with its own proxy; suffixing keeps their
+ * plus per-run e2e servers), each with its own proxy; suffixing keeps their
  * projections disjoint.
  */
 export function innerRedirectObjectName(base: string, installHash: string): string {
@@ -780,11 +780,11 @@ function innerProjectionLabels(installHash?: string): Record<string, string> {
 }
 
 /**
- * Inner egress-redirect CEC the daemon projects into a vcluster's host
+ * Inner egress-redirect CEC the server projects into a vcluster's host
  * namespace — one per inner install. Same three listeners as the outer CEC,
  * but EDS-backed by the **inner** proxy's host-synced Service
  * (`innerProxyService` in `vcNamespace` — its name is vcluster-translated, so
- * the daemon discovers and passes it). The matching per-install override CNP
+ * the server discovers and passes it). The matching per-install override CNP
  * references these listeners at a winning priority.
  */
 export function buildInnerEgressRedirectCecManifest(
@@ -1153,7 +1153,7 @@ export async function ensureProxyResources(
   // yaac creates no vcluster sessions (vcluster-in-vcluster is rejected) so it
   // never references this, and its vcluster only has the permissive CEC/CNP CRDs
   // (ensureCiliumCrds, above) — applying a CiliumClusterwideEnvoyConfig there
-  // would fail "no matches for kind". The outer daemon owns the host-side
+  // would fail "no matches for kind". The outer server owns the host-side
   // redirect for every vcluster's synced pods, including a nested yaac's.
   if (!opts.nested) {
     await kubectlApply(buildVclusterFallbackRedirectCcecManifest())

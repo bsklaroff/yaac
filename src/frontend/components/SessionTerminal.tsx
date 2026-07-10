@@ -16,7 +16,7 @@ import { INITIAL_RECONNECT_DELAY_MS, nextReconnectDelay } from '@/frontend/lib/r
 const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent)
 
 /**
- * One embedded terminal attached to a session's tmux via the daemon's
+ * One embedded terminal attached to a session's tmux via the server's
  * /pty/attach WebSocket. Binary frames carry raw PTY bytes both ways;
  * text frames carry control (resize). Same-origin, so the session cookie
  * rides the upgrade.
@@ -146,7 +146,7 @@ export function SessionTerminal({
     // The "session starts a line down, bottom line hidden until a keypress"
     // bug lived in the tmux window itself — the attach-time status-bar
     // resize dance eating the row below the agent's cursor — and is fixed
-    // at the source in the daemon's attachArgs (see pty-bridge.ts).
+    // at the source in the server's attachArgs (see pty-bridge.ts).
     const gate = createSettleGate(() => setSettled(true), { hasContent })
 
     let ws: WebSocket | null = null
@@ -167,7 +167,7 @@ export function SessionTerminal({
     // auto-reconnect lossless here. Backoff mirrors the /events socket
     // (useEvents): 500ms doubling to a 10s cap, reset on open.
     const connect = (): void => {
-      // Send the fitted size up-front so the daemon spawns the PTY at the
+      // Send the fitted size up-front so the server spawns the PTY at the
       // right dimensions — the tmux window and this grid agree from the
       // first frame, avoiding the cold-start resize that garbles
       // full-screen TUIs.
@@ -231,7 +231,7 @@ export function SessionTerminal({
 
     // Defer the first connection one tick: React dev StrictMode mounts, cleans
     // up, and remounts synchronously, and a WS aborted while still CONNECTING
-    // doesn't reliably tear down the proxied upstream — the daemon-side PTY
+    // doesn't reliably tear down the proxied upstream — the server-side PTY
     // then leaks (observed holding grouped view sessions open forever). The
     // canceled timer means the throwaway first mount never connects at all.
     const connectTimer = setTimeout(connect, 0)

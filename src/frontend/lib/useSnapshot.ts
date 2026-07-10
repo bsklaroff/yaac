@@ -1,15 +1,15 @@
 import { useQuery } from '@tanstack/react-query'
 import { SNAPSHOT_KEY } from './useEvents'
-import type { DaemonSnapshot } from '@/shared/types'
+import type { ServerSnapshot } from '@/shared/types'
 
 /**
- * Read the daemon snapshot from the React Query cache. There's no
+ * Read the server snapshot from the React Query cache. There's no
  * queryFn — `useEvents` populates the cache via setQueryData, so the
  * query stays disabled and `data` is undefined until the first frame
  * arrives over the WebSocket.
  */
-export function useSnapshot(): DaemonSnapshot | undefined {
-  const { data } = useQuery<DaemonSnapshot>({
+export function useSnapshot(): ServerSnapshot | undefined {
+  const { data } = useQuery<ServerSnapshot>({
     queryKey: SNAPSHOT_KEY,
     // Never runs (enabled: false) — the events socket hydrates the cache
     // via setQueryData. A queryFn must still be present or React Query

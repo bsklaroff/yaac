@@ -1,13 +1,13 @@
 /**
  * Process-local registry of port-forwarder stop functions keyed by
- * sessionId. The daemon creates forwarders when a session starts
+ * sessionId. The server creates forwarders when a session starts
  * (see `createSession`) and must tear them down when the session is
  * deleted or reaped; this module is the handoff point.
  *
  * Concurrent attaches to the same session share a single forwarder
  * set — register only the first one, and let re-registration for a
  * sessionId that already has forwarders be a no-op so the
- * daemon-restart restore pass can't double-register.
+ * server-restart restore pass can't double-register.
  */
 
 import { containerExec } from '@/lib/k8s/exec'
@@ -44,7 +44,7 @@ export function registerSessionForwarders(
  * Host↔container mappings of the live forwarders for a session, empty
  * when none are registered. Feeds the `forwardedPorts` field of
  * session-list entries (and thus the webapp snapshot) — the registry is
- * the daemon's only record of which host ports a session actually holds.
+ * the server's only record of which host ports a session actually holds.
  */
 export function getSessionPorts(sessionId: string): PortMapping[] {
   return forwarders.get(sessionId)?.ports ?? []
@@ -66,11 +66,11 @@ export function hasSessionForwarders(sessionId: string): boolean {
 }
 
 /**
- * Stop every registered forwarder. Called from the daemon's shutdown
+ * Stop every registered forwarder. Called from the server's shutdown
  * handler so each relay's listener server is closed and each in-flight
- * `kubectl exec` child is signalled before the daemon exits. Without
- * this, relay children survive the daemon (orphaned to PID 1) and the
- * next daemon's `restoreAllSessionForwarders` adds new ones on top —
+ * `kubectl exec` child is signalled before the server exits. Without
+ * this, relay children survive the server (orphaned to PID 1) and the
+ * next server's `restoreAllSessionForwarders` adds new ones on top —
  * every restart compounds the count of live `kubectl exec` slots.
  */
 export function stopAllSessionForwarders(): void {
@@ -85,7 +85,7 @@ function shellEscape(str: string): string {
 
 /**
  * Render the tmux `status-right` value shown in a session's bottom bar.
- * Kept in a single helper so new sessions and daemon restarts both
+ * Kept in a single helper so new sessions and server restarts both
  * produce the same format.
  */
 export function buildStatusRight(
@@ -101,7 +101,7 @@ export function buildStatusRight(
 
 /**
  * Overwrite the running session's tmux `status-right`. Used when ports
- * are provisioned after Job creation (daemon restart) so the displayed
+ * are provisioned after Job creation (server restart) so the displayed
  * port mapping matches the live forwarders.
  */
 export async function setSessionStatusRight(
@@ -121,7 +121,7 @@ export async function setSessionStatusRight(
  * Reserve host ports, start relay forwarders into the given session pod,
  * register them for teardown, and refresh tmux status-right so the
  * displayed port mapping matches the live forwarders. Used by the
- * daemon-restart path only; new-session creation does this inline so
+ * server-restart path only; new-session creation does this inline so
  * the ports are held across the pod-start window.
  */
 export async function provisionSessionForwarders(
@@ -139,7 +139,7 @@ export async function provisionSessionForwarders(
   }
 
   // Always refresh status-right — even with no port forwards, the pod's
-  // existing string may include stale port info from before the daemon
+  // existing string may include stale port info from before the server
   // restarted that we want cleared.
   await setSessionStatusRight(jobName, projectSlug, sessionId, reserved)
 

@@ -1,11 +1,11 @@
-import { getRpcClient as getRpcClientRaw, type GetClientOptions } from '@/shared/daemon-client'
+import { getRpcClient as getRpcClientRaw, type GetClientOptions } from '@/shared/server-client'
 import { authUpdate } from '@/commands/auth-update'
 
-export { toClientError, exitOnClientError } from '@/shared/daemon-client'
+export { toClientError, exitOnClientError } from '@/shared/server-client'
 
 /**
  * Command-side RPC client. Identical to `getRpcClient` from shared,
- * but pre-wires the interactive `authUpdate` flow as the daemon's
+ * but pre-wires the interactive `authUpdate` flow as the server's
  * AUTH_REQUIRED recovery handler. Shared cannot reference
  * `@/commands/auth-update` directly (it would create a
  * `shared → commands` value edge blocked by the lint rule), so the

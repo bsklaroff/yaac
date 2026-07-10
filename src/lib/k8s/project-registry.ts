@@ -319,7 +319,7 @@ export function buildRegistryEgressNetworkPolicyManifest(
 /**
  * Scaffolding shared by the one-shot node-write pods that replaced the
  * old `podman exec <node>` writes: node files are written by a pod that
- * hostPath-mounts the target directory, so the daemon never assumes the
+ * hostPath-mounts the target directory, so the server never assumes the
  * node is a container on its own podman engine. Pinned by `nodeName`
  * (bypasses the scheduler, so taints cannot strand it), plain root like
  * the registry itself, `restartPolicy: Never` — the caller polls it to a
@@ -485,7 +485,7 @@ async function runNodeWritePod(manifest: Record<string, unknown>): Promise<void>
  * Write the node containerd hosts.toml mapping the registry's svc-DNS host to
  * its live ClusterIP URL, so `kubectl run` of a pushed ref pulls straight from
  * the in-cluster registry. Written by a one-shot in-cluster pod, NOT
- * `podman exec <node>`: the daemon host's engine need not be the one hosting
+ * `podman exec <node>`: the server host's engine need not be the one hosting
  * the node, and node names need not be container names. The node is not a
  * cluster-DNS client, so it needs the IP here; hosts.toml is read per-pull
  * (no containerd restart) and is rewritten on every ensure, so the
@@ -555,7 +555,7 @@ export async function removeProjectRegistry(projectSlug: string): Promise<void> 
   ])
   const hadRegistry = (existing?.items?.length ?? 0) > 0
 
-  // `ciliumnetworkpolicy` resolves everywhere the daemon manages a cluster:
+  // `ciliumnetworkpolicy` resolves everywhere the server manages a cluster:
   // real installs run Cilium, and a nested yaac installs permissive CNP CRDs
   // into its vcluster at bootstrap (ensureCiliumCrds).
   await kubectlWithRetry([
@@ -578,7 +578,7 @@ interface RawServiceList {
 }
 
 /**
- * Daemon-startup sweep: remove registries whose project no longer exists
+ * Server-startup sweep: remove registries whose project no longer exists
  * locally. Catches `yaac project remove` runs that raced a dead cluster,
  * plus hand-deleted project dirs. Scoped to this install via the
  * registry GC label.

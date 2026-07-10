@@ -441,7 +441,7 @@ describe('ensureProjectRegistry', () => {
       expect.objectContaining({ maxAttempts: 2 }),
     )
     // hosts.toml written by an in-cluster one-shot pod pinned to the node,
-    // NOT podman exec — the daemon's engine need not host the node.
+    // NOT podman exec — the server's engine need not host the node.
     const pod = mockApply.mock.calls
       .map((c) => c[0] as { kind: string; spec: { nodeName: string; containers: Array<{ command: string[] }> } })
       .find((m) => m.kind === 'Pod')!

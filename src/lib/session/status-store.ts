@@ -1,6 +1,6 @@
 /**
- * Daemon-resident store of per-session agent status, fed by the status
- * watchers (`src/daemon/status-watcher.ts`) and read by every display
+ * Server-resident store of per-session agent status, fed by the status
+ * watchers (`src/server/status-watcher.ts`) and read by every display
  * path (`/session/list`, snapshots, the stream picker).
  *
  * This replaces the per-tool probe-plus-TTL-cache stacks: status is
@@ -48,7 +48,7 @@ function key(slug: string, sessionId: string): string {
 /**
  * Register the handler fired whenever an entry's observable state
  * (status or stream health) changes. Replaces any previous handler —
- * same single-listener convention as `onSessionListChanged` (the daemon
+ * same single-listener convention as `onSessionListChanged` (the server
  * is one process, and the one consumer fans out via the event hub).
  */
 export function onSessionStatusChanged(fn: () => void): void {

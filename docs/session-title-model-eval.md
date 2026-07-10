@@ -1,13 +1,13 @@
 # Session-title model evaluation
 
 > **Status: shipped.** Current-state reference for how the local session-title
-> model was chosen. Cross-referenced from `src/daemon/title-summarizer.ts`
-> (the model pin) and `src/daemon/llama-cpp.ts` (the llama.cpp runner).
+> model was chosen. Cross-referenced from `src/server/title-summarizer.ts`
+> (the model pin) and `src/server/llama-cpp.ts` (the llama.cpp runner).
 
 ## TL;DR
 
 Untitled sessions get a model-generated title summarizing their first message
-(see `src/daemon/title-generation.ts`). The original model, **`flan-t5-small`
+(see `src/server/title-generation.ts`). The original model, **`flan-t5-small`
 (Q8_0)**, produced uninformative or degenerate titles on longer or jargon-heavy
 first messages — e.g. a detailed request about sidebar title width + a marquee
 effect became just **`x row`**.
@@ -53,7 +53,7 @@ evaluation focused on finding the smallest one that stays reliable.
   user-reported bad-title cases. The set lives in the evaluation harness (see
   *Reproducing* below).
 - **Runner:** `llama.cpp` release **`b9940`**, `llama-completion` binary — the
-  same pinned runtime the daemon uses.
+  same pinned runtime the server uses.
   - Decoder-only chat models: the model's own chat template via
     `--jinja -st -sys <system> -p <user> --temp 0 --no-display-prompt
     --simple-io` (greedy). This is exactly what `runChatCompletion` does.
@@ -71,7 +71,7 @@ evaluation focused on finding the smallest one that stays reliable.
 - **Scoring:** per model, count the titles that are degenerate, a verbatim
   echo, vague/uninformative, wrong, or chat-preamble — out of 16.
 - **Hardware:** local arm64 CPU. Timings are indicative (relative), not
-  absolute; the sweep used 6 threads, the daemon uses llama.cpp defaults.
+  absolute; the sweep used 6 threads, the server uses llama.cpp defaults.
 
 ## Results
 
@@ -151,7 +151,7 @@ picked at, and the fastest to run (~1–3 s/title on the test box). Q5_K_M
 (401 MB) is a fine conservative fallback if IQ4_XS ever regresses on a
 llama.cpp bump.
 
-Wiring this in flipped the daemon from a T5 encoder-decoder (`runCompletion`,
+Wiring this in flipped the server from a T5 encoder-decoder (`runCompletion`,
 raw `-p` template) to a decoder chat model (`runChatCompletion`, the model's
 chat template) and bumped `MAX_NEW_TOKENS` 16 → 32 so descriptive titles aren't
 truncated. A `sharesVocabulary` hallucination guard remains as a safety net,
@@ -163,11 +163,11 @@ Re-verify title quality whenever bumping the pinned llama.cpp tag or swapping
 the model/quant — imatrix and encoder-decoder support are not CI-protected
 upstream and have regressed silently before.
 
-1. Fetch the binary the daemon uses (`ensureLlamaCpp`) and the model
+1. Fetch the binary the server uses (`ensureLlamaCpp`) and the model
    (`ensureGgufModel` → `<dataDir>/models`). The model download needs egress to
    `huggingface.co` **and** `us.aws.cdn.hf.co` (the xet CDN the LFS blob
    redirects to; allow `*.hf.co`). Neither is in `DEFAULT_ALLOWED_HOSTS`, so a
-   nested/locked-down daemon must have them allowed first.
+   nested/locked-down server must have them allowed first.
 2. Run a title with the shipped invocation:
 
    ```sh
@@ -345,7 +345,7 @@ the session pod's tproxy'd 443 egress SYN is getting dropped because src_valid_m
 
 Prompt:
 ```text
-nested vcluster pods that need a node hostPath mount hang Pending for 60s then fail — the runNodeWritePod deadline is being swallowed by the pod guard denying node-hostPath pods; surface the daemon-log ms and kubectl events
+nested vcluster pods that need a node hostPath mount hang Pending for 60s then fail — the runNodeWritePod deadline is being swallowed by the pod guard denying node-hostPath pods; surface the server-log ms and kubectl events
 ```
 
 | model (GGUF key) | ms | title output |
@@ -430,18 +430,18 @@ the session-create e2e test is flaky under podman — it sometimes races to buil
 
 Prompt:
 ```text
-fix the eslint errors in the daemon directory
+fix the eslint errors in the server directory
 ```
 
 | model (GGUF key) | ms | title output |
 |---|---|---|
-| `flan-t5-small` | 1486 | eslint errors in the daemon directory |
-| `flan-t5-base` | 1784 | eslint errors in the daemon directory |
-| `flan-t5-large` | 9048 | fix the eslint errors in the daemon directory |
-| `smollm2-360m` | 1303 | fixes eslint errors in daemon directory |
-| `qwen2.5-0.5b` | 2233 | Fix ESLint Errors in Daemon Directory |
-| `llama3.2-1b` | 3914 | Fix ESLint errors in daemon directory |
-| `qwen2.5-1.5b` | 3158 | Fix ESLint Errors in Daemon Directory |
+| `flan-t5-small` | 1486 | eslint errors in the server directory |
+| `flan-t5-base` | 1784 | eslint errors in the server directory |
+| `flan-t5-large` | 9048 | fix the eslint errors in the server directory |
+| `smollm2-360m` | 1303 | fixes eslint errors in server directory |
+| `qwen2.5-0.5b` | 2233 | Fix ESLint Errors in Server Directory |
+| `llama3.2-1b` | 3914 | Fix ESLint errors in server directory |
+| `qwen2.5-1.5b` | 3158 | Fix ESLint Errors in Server Directory |
 
 #### `short-rename` — short
 
@@ -481,24 +481,24 @@ mirror the digest-pinned registry:2 upstream image into the local registry durin
 
 Prompt:
 ```text
-a nested daemon seeded with a fake api-key fixture forces x-api-key mode which can't chain through the outer oauth proxy, giving Invalid API key; seed it with oauth creds instead and restart the session
+a nested server seeded with a fake api-key fixture forces x-api-key mode which can't chain through the outer oauth proxy, giving Invalid API key; seed it with oauth creds instead and restart the session
 ```
 
 | model (GGUF key) | ms | title output |
 |---|---|---|
-| `flan-t5-small` | 1838 | neted daemon seeded with fake API key |
-| `flan-t5-base` | 6726 | a nested daemon seeded with a fake |
+| `flan-t5-small` | 1838 | neted server seeded with fake API key |
+| `flan-t5-base` | 6726 | a nested server seeded with a fake |
 | `flan-t5-large` | 1660 | x-api-key mode |
 | `smollm2-360m` | 3905 | Seeded with Fake API Key Fixture, Forces OAuth Mode, Invalid API Key |
-| `qwen2.5-0.5b` | 1544 | Nested Daemon OAuth Mode |
+| `qwen2.5-0.5b` | 1544 | Nested Server OAuth Mode |
 | `llama3.2-1b` | 3927 | API Key Issue with OAuth Proxy |
-| `qwen2.5-1.5b` | 3210 | Fix API Key Issue with Nested Daemon |
+| `qwen2.5-1.5b` | 3210 | Fix API Key Issue with Nested Server |
 
 #### `long-remote-hosting` — long/obscure
 
 Prompt:
 ```text
-sketch the remote-hosting architecture where a local install is just a remote with a local daemon: an auth-only daemon runs on the user machine over an outbound websocket, Safari can't reach browser-to-loopback so we tunnel, and there's a single remote.json rather than a contexts list
+sketch the remote-hosting architecture where a local install is just a remote with a local server: an auth-only server runs on the user machine over an outbound websocket, Safari can't reach browser-to-loopback so we tunnel, and there's a single remote.json rather than a contexts list
 ```
 
 | model (GGUF key) | ms | title output |
@@ -509,7 +509,7 @@ sketch the remote-hosting architecture where a local install is just a remote wi
 | `smollm2-360m` | 2458 | Secure Local Install with Remote Hosting |
 | `qwen2.5-0.5b` | 2936 | Remote-Hosted Websocket Authentication |
 | `llama3.2-1b` | 3888 | Remote Host Architecture Overview |
-| `qwen2.5-1.5b` | 4677 | Remote-Host Architecture: Local Daemon via WebSocket, Safari Tunnel, Single Remote.json |
+| `qwen2.5-1.5b` | 4677 | Remote-Host Architecture: Local Server via WebSocket, Safari Tunnel, Single Remote.json |
 
 
 ### Round 2
@@ -626,13 +626,13 @@ the session pod's tproxy'd 443 egress SYN is getting dropped because src_valid_m
 
 Prompt:
 ```text
-nested vcluster pods that need a node hostPath mount hang Pending for 60s then fail — the runNodeWritePod deadline is being swallowed by the pod guard denying node-hostPath pods; surface the daemon-log ms and kubectl events
+nested vcluster pods that need a node hostPath mount hang Pending for 60s then fail — the runNodeWritePod deadline is being swallowed by the pod guard denying node-hostPath pods; surface the server-log ms and kubectl events
 ```
 
 | model (GGUF key) | ms | title output |
 |---|---|---|
 | `qwen2.5-0.5b-Q8` | 3357 | Nested VCluster Pods Hanging Pending for 60s |
-| `qwen2.5-0.5b-Q5KM` | 3744 | Nested vCluster Pods Hanging Pending for 60s and Fail - Daemon-Log Events |
+| `qwen2.5-0.5b-Q5KM` | 3744 | Nested vCluster Pods Hanging Pending for 60s and Fail - Server-Log Events |
 | `qwen2.5-0.5b-Q4KM` | 2169 | Nested VCluster Pods Hanging Pending for 60s |
 | `qwen3-0.6b-Q4KM` | 13788 | nested vcluster pods that need a node hostPath mount hang pending for 60s then fail — runNodeWritePod deadline is being swallowed by pod guard |
 | `gemma3-270m-Q8` | 4397 | Node-hostPath Pods |
@@ -716,19 +716,19 @@ the session-create e2e test is flaky under podman — it sometimes races to buil
 
 Prompt:
 ```text
-fix the eslint errors in the daemon directory
+fix the eslint errors in the server directory
 ```
 
 | model (GGUF key) | ms | title output |
 |---|---|---|
-| `qwen2.5-0.5b-Q8` | 2756 | Fix ESLint Errors in Daemon Directory |
-| `qwen2.5-0.5b-Q5KM` | 2039 | Fix ESLint errors in daemon directory |
-| `qwen2.5-0.5b-Q4KM` | 3398 | fix-eslint-daemon-directory |
-| `qwen3-0.6b-Q4KM` | 5890 | fix daemon errors |
-| `gemma3-270m-Q8` | 2079 | The eslint daemon is a critical component of the web development ecosystem |
-| `gemma3-270m-Q4KM` | 1091 | The daemon directory is a dangerous place to store code |
-| `lfm2-350m-Q8` | 1558 | Fixes for Eslint errors in daemon directory |
-| `lfm2-350m-Q4KM` | 2135 | Fixes for Eslint Errors in Daemon Directory |
+| `qwen2.5-0.5b-Q8` | 2756 | Fix ESLint Errors in Server Directory |
+| `qwen2.5-0.5b-Q5KM` | 2039 | Fix ESLint errors in server directory |
+| `qwen2.5-0.5b-Q4KM` | 3398 | fix-eslint-server-directory |
+| `qwen3-0.6b-Q4KM` | 5890 | fix server errors |
+| `gemma3-270m-Q8` | 2079 | The eslint server is a critical component of the web development ecosystem |
+| `gemma3-270m-Q4KM` | 1091 | The server directory is a dangerous place to store code |
+| `lfm2-350m-Q8` | 1558 | Fixes for Eslint errors in server directory |
+| `lfm2-350m-Q4KM` | 2135 | Fixes for Eslint Errors in Server Directory |
 
 #### `short-rename` — short
 
@@ -770,25 +770,25 @@ mirror the digest-pinned registry:2 upstream image into the local registry durin
 
 Prompt:
 ```text
-a nested daemon seeded with a fake api-key fixture forces x-api-key mode which can't chain through the outer oauth proxy, giving Invalid API key; seed it with oauth creds instead and restart the session
+a nested server seeded with a fake api-key fixture forces x-api-key mode which can't chain through the outer oauth proxy, giving Invalid API key; seed it with oauth creds instead and restart the session
 ```
 
 | model (GGUF key) | ms | title output |
 |---|---|---|
-| `qwen2.5-0.5b-Q8` | 1645 | Nested Daemon OAuth Mode |
-| `qwen2.5-0.5b-Q5KM` | 2996 | Nested Daemon OAuth Mode |
-| `qwen2.5-0.5b-Q4KM` | 2102 | Nested Daemon Configuration |
-| `qwen3-0.6b-Q4KM` | 10742 | nested_daemon_seed_with_oauth_credentials |
-| `gemma3-270m-Q8` | 4163 | A nested daemon seeded with a fake API-key fixture forces x-api-key mode which can't chain through the outer OAuth proxy, giving Invalid API key; seed it with oauth creds |
-| `gemma3-270m-Q4KM` | 1184 | **A Nested Daemon Seeded with Fake API Key** |
-| `lfm2-350m-Q8` | 4836 | Nested Daemon Seed Invalid API Key |
-| `lfm2-350m-Q4KM` | 1532 | Nested Daemon Seed Invalid API Key |
+| `qwen2.5-0.5b-Q8` | 1645 | Nested Server OAuth Mode |
+| `qwen2.5-0.5b-Q5KM` | 2996 | Nested Server OAuth Mode |
+| `qwen2.5-0.5b-Q4KM` | 2102 | Nested Server Configuration |
+| `qwen3-0.6b-Q4KM` | 10742 | nested_server_seed_with_oauth_credentials |
+| `gemma3-270m-Q8` | 4163 | A nested server seeded with a fake API-key fixture forces x-api-key mode which can't chain through the outer OAuth proxy, giving Invalid API key; seed it with oauth creds |
+| `gemma3-270m-Q4KM` | 1184 | **A Nested Server Seeded with Fake API Key** |
+| `lfm2-350m-Q8` | 4836 | Nested Server Seed Invalid API Key |
+| `lfm2-350m-Q4KM` | 1532 | Nested Server Seed Invalid API Key |
 
 #### `long-remote-hosting` — long/obscure
 
 Prompt:
 ```text
-sketch the remote-hosting architecture where a local install is just a remote with a local daemon: an auth-only daemon runs on the user machine over an outbound websocket, Safari can't reach browser-to-loopback so we tunnel, and there's a single remote.json rather than a contexts list
+sketch the remote-hosting architecture where a local install is just a remote with a local server: an auth-only server runs on the user machine over an outbound websocket, Safari can't reach browser-to-loopback so we tunnel, and there's a single remote.json rather than a contexts list
 ```
 
 | model (GGUF key) | ms | title output |
@@ -799,7 +799,7 @@ sketch the remote-hosting architecture where a local install is just a remote wi
 | `qwen3-0.6b-Q4KM` | 7904 | remote-hosting-architecture |
 | `gemma3-270m-Q8` | 9515 | ```python |
 | `gemma3-270m-Q4KM` | 1596 | **Remote-Hosting Architecture** |
-| `lfm2-350m-Q8` | 5505 | Remote-hosting Architecture Title: Local Daemon with Safari Tunnel |
+| `lfm2-350m-Q8` | 5505 | Remote-hosting Architecture Title: Local Server with Safari Tunnel |
 | `lfm2-350m-Q4KM` | 3704 | Remote-Hosting Architecture Title: Local Auth-Daemon Tunneling |
 
 
@@ -911,15 +911,15 @@ the session pod's tproxy'd 443 egress SYN is getting dropped because src_valid_m
 
 Prompt:
 ```text
-nested vcluster pods that need a node hostPath mount hang Pending for 60s then fail — the runNodeWritePod deadline is being swallowed by the pod guard denying node-hostPath pods; surface the daemon-log ms and kubectl events
+nested vcluster pods that need a node hostPath mount hang Pending for 60s then fail — the runNodeWritePod deadline is being swallowed by the pod guard denying node-hostPath pods; surface the server-log ms and kubectl events
 ```
 
 | model (GGUF key) | ms | title output |
 |---|---|---|
-| `qwen2.5-0.5b-Q5KM` | 3518 | Nested vCluster Pods Hanging Pending for 60s and Fail - Daemon-Log Events |
+| `qwen2.5-0.5b-Q5KM` | 3518 | Nested vCluster Pods Hanging Pending for 60s and Fail - Server-Log Events |
 | `qwen2.5-0.5b-Q4KS` | 2592 | Nested VCluster Pods Hanging Pending for 60s — Deadline Being Swallowed by Pod Guard |
-| `qwen2.5-0.5b-IQ4XS` | 1701 | Node HostPath Mount Hang in Nested VCluster Pods — Daemon-Log Events and Kubectl Logs |
-| `qwen2.5-0.5b-Q3KXL` | 1193 | Nested VCluster Pods Hanging Pending for 60s and Failing — Daemon-Log Events and Kubectl Events |
+| `qwen2.5-0.5b-IQ4XS` | 1701 | Node HostPath Mount Hang in Nested VCluster Pods — Server-Log Events and Kubectl Logs |
+| `qwen2.5-0.5b-Q3KXL` | 1193 | Nested VCluster Pods Hanging Pending for 60s and Failing — Server-Log Events and Kubectl Events |
 | `danube3-500m-Q5KM` | 2377 | The request is asking for a concise, specific title that captures the main point of the request. The title should be 3 to 6 words long and should include only the title without any |
 | `danube3-500m-Q4KM` | 2170 | The title for this request is "Node-HostPath Mount Hang Pending for 60s" |
 | `smollm2-360m-Q5KM` | 2036 | Node Host Path Mount Failure |
@@ -996,18 +996,18 @@ the session-create e2e test is flaky under podman — it sometimes races to buil
 
 Prompt:
 ```text
-fix the eslint errors in the daemon directory
+fix the eslint errors in the server directory
 ```
 
 | model (GGUF key) | ms | title output |
 |---|---|---|
-| `qwen2.5-0.5b-Q5KM` | 1321 | Fix ESLint errors in daemon directory |
-| `qwen2.5-0.5b-Q4KS` | 1158 | fix eslint errors in daemon directory |
-| `qwen2.5-0.5b-IQ4XS` | 1073 | Fix ESLint errors in daemon directory |
-| `qwen2.5-0.5b-Q3KXL` | 1170 | Fix ESLint errors in the daemon directory |
+| `qwen2.5-0.5b-Q5KM` | 1321 | Fix ESLint errors in server directory |
+| `qwen2.5-0.5b-Q4KS` | 1158 | fix eslint errors in server directory |
+| `qwen2.5-0.5b-IQ4XS` | 1073 | Fix ESLint errors in server directory |
+| `qwen2.5-0.5b-Q3KXL` | 1170 | Fix ESLint errors in the server directory |
 | `danube3-500m-Q5KM` | 1701 | The Importance of Regularly Updating Your Software |
 | `danube3-500m-Q4KM` | 2682 | The Importance of Regularly Updating Developer Tools |
-| `smollm2-360m-Q5KM` | 1656 | fix eslint errors in daemon directory |
+| `smollm2-360m-Q5KM` | 1656 | fix eslint errors in server directory |
 
 #### `short-rename` — short
 
@@ -1047,16 +1047,16 @@ mirror the digest-pinned registry:2 upstream image into the local registry durin
 
 Prompt:
 ```text
-a nested daemon seeded with a fake api-key fixture forces x-api-key mode which can't chain through the outer oauth proxy, giving Invalid API key; seed it with oauth creds instead and restart the session
+a nested server seeded with a fake api-key fixture forces x-api-key mode which can't chain through the outer oauth proxy, giving Invalid API key; seed it with oauth creds instead and restart the session
 ```
 
 | model (GGUF key) | ms | title output |
 |---|---|---|
-| `qwen2.5-0.5b-Q5KM` | 1933 | Nested Daemon OAuth Mode |
-| `qwen2.5-0.5b-Q4KS` | 1126 | Nested Daemon Configuration |
-| `qwen2.5-0.5b-IQ4XS` | 975 | Nested Daemon Configuration Error |
-| `qwen2.5-0.5b-Q3KXL` | 1058 | Nested Daemon with Fake API-Key |
-| `danube3-500m-Q5KM` | 1302 | [Nested daemon seeded with a fake api-key fixture forces x-api-key mode which can't chain through the outer oauth proxy, giving Invalid API key; seed it |
+| `qwen2.5-0.5b-Q5KM` | 1933 | Nested Server OAuth Mode |
+| `qwen2.5-0.5b-Q4KS` | 1126 | Nested Server Configuration |
+| `qwen2.5-0.5b-IQ4XS` | 975 | Nested Server Configuration Error |
+| `qwen2.5-0.5b-Q3KXL` | 1058 | Nested Server with Fake API-Key |
+| `danube3-500m-Q5KM` | 1302 | [Nested server seeded with a fake api-key fixture forces x-api-key mode which can't chain through the outer oauth proxy, giving Invalid API key; seed it |
 | `danube3-500m-Q4KM` | 838 | [Insert the title here] |
 | `smollm2-360m-Q5KM` | 1542 | Seeded with Fake API Key Fixture |
 
@@ -1064,7 +1064,7 @@ a nested daemon seeded with a fake api-key fixture forces x-api-key mode which c
 
 Prompt:
 ```text
-sketch the remote-hosting architecture where a local install is just a remote with a local daemon: an auth-only daemon runs on the user machine over an outbound websocket, Safari can't reach browser-to-loopback so we tunnel, and there's a single remote.json rather than a contexts list
+sketch the remote-hosting architecture where a local install is just a remote with a local server: an auth-only server runs on the user machine over an outbound websocket, Safari can't reach browser-to-loopback so we tunnel, and there's a single remote.json rather than a contexts list
 ```
 
 | model (GGUF key) | ms | title output |
@@ -1073,7 +1073,7 @@ sketch the remote-hosting architecture where a local install is just a remote wi
 | `qwen2.5-0.5b-Q4KS` | 1647 | Remote-Hosted Websocket Authentication |
 | `qwen2.5-0.5b-IQ4XS` | 1033 | Remote-hosting architecture with WebSocket-based authentication |
 | `qwen2.5-0.5b-Q3KXL` | 1029 | Remote-Hosted Websocket Authentication |
-| `danube3-500m-Q5KM` | 2427 | [Remote-hosting architecture where a local install is just a remote with a local daemon: an auth-only daemon runs on the user machine over an outbound websocket, Safari |
-| `danube3-500m-Q4KM` | 2119 | "Remote-hosting architecture for a local install where a local daemon runs over an outbound websocket, Safari can't reach browser-to-loopback, and there's |
+| `danube3-500m-Q5KM` | 2427 | [Remote-hosting architecture where a local install is just a remote with a local server: an auth-only server runs on the user machine over an outbound websocket, Safari |
+| `danube3-500m-Q4KM` | 2119 | "Remote-hosting architecture for a local install where a local server runs over an outbound websocket, Safari can't reach browser-to-loopback, and there's |
 | `smollm2-360m-Q5KM` | 1440 | Secure Local Install with Remote-Hosting Architecture |
 

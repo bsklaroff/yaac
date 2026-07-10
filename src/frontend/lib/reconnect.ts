@@ -1,5 +1,5 @@
 /**
- * Exponential-backoff reconnect policy shared by the daemon's two browser
+ * Exponential-backoff reconnect policy shared by the server's two browser
  * WebSockets — the `/events` stream (useEvents) and the `/pty/attach` terminal
  * (SessionTerminal): start at 500ms and double on each failed attempt up to a
  * 10s ceiling, resetting to the initial delay once a socket opens.

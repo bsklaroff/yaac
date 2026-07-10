@@ -1,15 +1,15 @@
 import WebSocket from 'ws'
-import { resolveDaemonTarget } from '@/shared/daemon-client'
+import { resolveServerTarget } from '@/shared/server-client'
 
 /**
  * CLI-side terminal transport: attach the user's terminal to a session
- * over the daemon's /pty/attach WebSocket — the same path the webapp
+ * over the server's /pty/attach WebSocket — the same path the webapp
  * uses — instead of a client-side `kubectl exec`. This is what makes
  * attach/shell/stream work identically against a local and a remote
- * daemon: the kubectl invocation happens daemon-side, next to the
+ * server: the kubectl invocation happens server-side, next to the
  * cluster.
  *
- * Wire protocol (see src/daemon/pty-bridge.ts): binary frames are PTY
+ * Wire protocol (see src/server/pty-bridge.ts): binary frames are PTY
  * bytes both ways; text frames are JSON control messages (resize /
  * ping / error).
  */
@@ -35,9 +35,9 @@ export function buildPtyAttachUrl(
 const PING_INTERVAL_MS = 30_000
 
 /**
- * Attach the current terminal to a session PTY until the daemon closes
+ * Attach the current terminal to a session PTY until the server closes
  * the stream (tmux detach, shell exit, or session death). Resolves on
- * a clean close; a daemon-reported error (e.g. session not running) is
+ * a clean close; a server-reported error (e.g. session not running) is
  * printed and sets exitCode 1 rather than throwing, matching how the
  * old kubectl path surfaced mid-attach failures.
  */
@@ -46,15 +46,15 @@ export async function attachSessionPty(
   /** 'native' (full tmux) | 'shell' (raw zsh) | 'window:@N' | 'agent'. */
   target: string,
 ): Promise<void> {
-  const daemon = await resolveDaemonTarget()
-  const url = buildPtyAttachUrl(daemon.baseUrl, {
+  const server = await resolveServerTarget()
+  const url = buildPtyAttachUrl(server.baseUrl, {
     sessionId,
     target,
     cols: process.stdout.columns,
     rows: process.stdout.rows,
   })
   const ws = new WebSocket(url, {
-    headers: { authorization: `Bearer ${daemon.secret}` },
+    headers: { authorization: `Bearer ${server.secret}` },
   })
 
   await new Promise<void>((resolve, reject) => {

@@ -3,7 +3,7 @@ import path from 'node:path'
 import { projectConfigDir, getDataDir } from '@/lib/project/paths'
 import { assertProjectExists } from '@/lib/project/detail'
 import { isLayered } from '@/lib/container/image-builder'
-import { DaemonError } from '@/daemon/errors'
+import { ServerError } from '@/server/errors'
 
 /** Per-project layered/standalone Dockerfile (config/Dockerfile.yaac). */
 function projectDockerfilePath(slug: string): string {
@@ -67,7 +67,7 @@ export async function writeUserDockerfile(content: string): Promise<void> {
     return
   }
   if (!isLayered(content)) {
-    throw new DaemonError(
+    throw new ServerError(
       'VALIDATION',
       'Dockerfile.user must use `ARG BASE_IMAGE` and `FROM ${BASE_IMAGE}` '
       + 'so it layers on the project image',

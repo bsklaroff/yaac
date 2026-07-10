@@ -85,7 +85,7 @@ export async function queryClaudeRateLimitTier(
  * One plain query of the usage endpoint with the given OAuth bundle.
  * Never throws — HTTP failures and network errors come back as
  * `{ available: false }`. Refresh cadence, caching, and bridging upstream
- * throttles all live with the caller (daemon/plan-usage.ts): the endpoint
+ * throttles all live with the caller (server/plan-usage.ts): the endpoint
  * rate-limits hard (observed: a burst of ~8 requests earned a 429 with
  * retry-after ≈4min), so nothing should call this in a loop.
  *
@@ -113,8 +113,8 @@ export async function queryClaudePlanUsage(
     return {
       available: true,
       subscriptionType: bundle.subscriptionType ?? null,
-      // Filled in by the daemon's per-credential profile fetch
-      // (daemon/plan-usage.ts) — not queried here, so a 5-minutely usage
+      // Filled in by the server's per-credential profile fetch
+      // (server/plan-usage.ts) — not queried here, so a 5-minutely usage
       // refresh doesn't double the load on the rate-limited OAuth API.
       rateLimitTier: null,
       limits: parsePlanUsageLimits(await res.json()),

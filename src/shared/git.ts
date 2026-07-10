@@ -42,7 +42,7 @@ function shellQuoteArg(s: string): string {
  * `user.name` or `user.email` is unset, or if `git` itself fails.
  *
  * Lives in shared because both the CLI (which prompts when missing
- * and forwards the resolved pair to the daemon) and the daemon
+ * and forwards the resolved pair to the server) and the server
  * (which falls back to the global config during non-interactive
  * session creation) need it.
  */

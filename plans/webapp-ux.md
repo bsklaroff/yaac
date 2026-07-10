@@ -2,9 +2,9 @@
 
 Standalone UI/UX design for the yaac webapp. This doc is only about
 what the user sees and does — architecture and data flow live in
-`webapp-frontend.md`. The daemon backend is already implemented in
-`src/daemon/` (HTTP), with events and PTY work tracked in
-`webapp-daemon-follow-up.md`. Iterate here freely; the other docs
+`webapp-frontend.md`. The server backend is already implemented in
+`src/server/` (HTTP), with events and PTY work tracked in
+`webapp-server-follow-up.md`. Iterate here freely; the other docs
 should only need updating when a design change implies new
 capabilities on the backend.
 
@@ -30,7 +30,7 @@ the shipped behavior wins here.
   should still be fast for the common loop — create session, attach,
   detach, delete.
 - **One event loop from the backend, live updates everywhere.** No
-  "refresh" button. The daemon pushes a full snapshot over the
+  "refresh" button. The server pushes a full snapshot over the
   `/events` WebSocket on connect and after each loop tick; the
   webapp re-renders within a tick. If the CLI creates a session
   while the webapp is open, it appears on its own.
@@ -150,7 +150,7 @@ Per row:
 Clicking anywhere on the row selects the session and opens its
 session view in the main area. Deleting is the hover **×** at the
 row's right edge (it overlays the tool label) → a confirm dialog →
-optimistic hide, then the daemon's detached cleanup drops it from the
+optimistic hide, then the server's detached cleanup drops it from the
 snapshot. A deleted session that had history reappears in the Deleted
 group.
 
@@ -175,7 +175,7 @@ session id is generated up front, so:
 - A **provisioning row** appears at once in the sidebar with a
   spinner and live progress ("Pulling image…"), and is auto-selected
   so progress streams into the main pane.
-- The optimistic row bridges the gap until the daemon's snapshot
+- The optimistic row bridges the gap until the server's snapshot
   carries the id; from then the snapshot is the source of truth
   (it survives a reload, carrying live progress).
 - On failure the row stays, shows "failed", and offers a dismiss ×.
@@ -189,7 +189,7 @@ that would accompany them. There is no add-dir UI yet.
 ### New project
 
 The rail "+" opens a real **modal** (Base UI Dialog): a single input
-for a git repo URL, with the daemon's error surfaced verbatim (e.g.
+for a git repo URL, with the server's error surfaced verbatim (e.g.
 `AUTH_REQUIRED` when no git credential matches the host). On success
 it selects the new project.
 
@@ -240,7 +240,7 @@ What was once deferred as "split panes" is built:
 ### Terminals
 
 - Each pane is an xterm.js instance attached to a session terminal
-  over the daemon's `/pty/attach` WebSocket. Every terminal is a
+  over the server's `/pty/attach` WebSocket. Every terminal is a
   window of the `yaac` tmux session: the primary **Agent** window,
   initCommands **windows** (dev servers, watchers), and scratch
   **shells** (plain windows named `shell`, `shell-2`, …).
@@ -250,7 +250,7 @@ What was once deferred as "split panes" is built:
   or a `hidePane` init window exiting when its command finishes. The
   user's arrangement is otherwise kept.
 - **"New shell"** buttons (header, tab strip, and pane split
-  controls) create a fresh window via the daemon and open its pane
+  controls) create a fresh window via the server and open its pane
   immediately.
 - The pane **(x) kills the window** — after a confirm dialog, since
   it terminates whatever runs in it. The agent pane has no (x).
@@ -288,7 +288,7 @@ in this menu — it lives on the sidebar row's hover **×** (a single,
 optimistic delete path).
 
 **PENDING:** copy session id, copy worktree path, and "open worktree
-in external editor" (the daemon-side spawn of the configured host
+in external editor" (the server-side spawn of the configured host
 editor, with a first-use confirm). None are built.
 
 ### No-session state
@@ -360,7 +360,7 @@ General, above). Designed-but-not-built:
 - External editor command template (for "open worktree in editor").
 - Terminal font family / size, cursor style.
 - "Show prewarm entries in the sidebar" toggle.
-- Advanced: reveal daemon logs, restart daemon.
+- Advanced: reveal server logs, restart server.
 
 (The tiles/tabs **view mode** is a real persisted preference, but it
 lives on the session-view header toggle and in local storage, not in
@@ -370,7 +370,7 @@ this pane.)
 
 Terminal-switching is webapp-level (webapp panes attach with tmux
 `prefix None`, so there are no tmux bindings to reach for — see
-`webapp-daemon-follow-up.md`):
+`webapp-server-follow-up.md`):
 
 - **Alt+← / Alt+→** (same on every platform) — previous / next
   terminal (tab-strip order), wrapping; in tiles mode it moves

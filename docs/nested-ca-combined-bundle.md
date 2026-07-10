@@ -4,7 +4,7 @@
 > containers (in-pod podman, `nestedContainers: true`) trust the session's
 > MITM proxy. It is cited from several source files as the canonical
 > rationale; keep it in sync with the code. The chosen design is **Approach
-> A1** (daemon-written combined bundle), plus a **build-time `ca-certificates`
+> A1** (server-written combined bundle), plus a **build-time `ca-certificates`
 > drop-in** that the original proposal did not anticipate. The other
 > approaches below are retained as design rationale (why combined bundle, why
 > the alternatives were rejected).
@@ -53,7 +53,7 @@ own-bundle tools (curl / requests / cargo / git-libcurl) — out of the box, wit
 no per-container `-e` and no per-image cooperation. The additive vars are kept
 as-is for the OpenSSL/Node tools.
 
-## Shipped design — Approach A1: daemon-written combined bundle
+## Shipped design — Approach A1: server-written combined bundle
 
 A single PEM that is `{standard public roots} + {proxy CA}` is produced at
 runtime, made available inside every session pod and nested container, and the
@@ -80,7 +80,7 @@ How it is wired, end to end:
    CA is ready, 500 if the roots can't be read). The bare proxy CA stays on the
    existing `GET /ca.pem`.
 
-4. **Daemon stores it in the ConfigMap.** The daemon fetches it with
+4. **Server stores it in the ConfigMap.** The server fetches it with
    `ProxyClient.getCaBundle()` (`src/lib/container/proxy-client.ts`) and
    `ensureCaConfigMap(caPem, caBundlePem)` (`src/lib/k8s/bootstrap.ts`) writes
    BOTH keys into the existing `yaac-proxy-ca` ConfigMap: `proxy-ca.pem`

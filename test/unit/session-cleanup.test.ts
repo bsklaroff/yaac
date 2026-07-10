@@ -58,8 +58,8 @@ vi.mock('node:child_process', async () => {
 })
 
 // Audit logging is a vi.fn so the teardown line can be asserted without a
-// real daemon.log on disk.
-vi.mock('@/daemon/log', () => ({ daemonLog: vi.fn() }))
+// real server.log on disk.
+vi.mock('@/server/log', () => ({ serverLog: vi.fn() }))
 
 import { promoteSessionImages } from '@/lib/container/image-promoter'
 import { listSessionPods, listSessionJobs } from '@/lib/k8s/pods'
@@ -76,10 +76,10 @@ import {
   _clearTmuxAliveCacheForTests,
   _clearAgentStartedCacheForTests,
 } from '@/lib/session/cleanup'
-import { daemonLog } from '@/daemon/log'
+import { serverLog } from '@/server/log'
 import { setDataDir } from '@/lib/project/paths'
 
-const mockDaemonLog = vi.mocked(daemonLog)
+const mockServerLog = vi.mocked(serverLog)
 
 const mockListPods = vi.mocked(listSessionPods)
 const mockListJobs = vi.mocked(listSessionJobs)
@@ -325,7 +325,7 @@ describe('cleanupSessionDetached', () => {
 
   it('audits the teardown so a reaped session is never silent', async () => {
     spawnMock.mockClear()
-    mockDaemonLog.mockClear()
+    mockServerLog.mockClear()
     execFileMock.mockReset()
     execFileMock.mockResolvedValue(undefined)
     await cleanupSessionDetached({
@@ -334,7 +334,7 @@ describe('cleanupSessionDetached', () => {
       sessionId: 's-audit',
     })
 
-    const logged = mockDaemonLog.mock.calls.map(([m]) => m).join('\n')
+    const logged = mockServerLog.mock.calls.map(([m]) => m).join('\n')
     expect(logged).toContain('session teardown')
     expect(logged).toContain('session=s-audit')
     expect(logged).toContain('job=yaac-p-s-audit')

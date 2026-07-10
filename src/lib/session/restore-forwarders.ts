@@ -1,6 +1,6 @@
 /**
- * Daemon-startup pass that rebuilds port forwarders for every live yaac
- * session pod. A daemon restart loses the in-memory forwarder registry
+ * Server-startup pass that rebuilds port forwarders for every live yaac
+ * session pod. A server restart loses the in-memory forwarder registry
  * while session pods keep running with stale `status-right` info, so
  * without this pass the tmux bars lie about which ports are
  * actually forwarded.
@@ -22,7 +22,7 @@ export async function restoreAllSessionForwarders(): Promise<void> {
   try {
     pods = await listSessionPods()
   } catch (err) {
-    console.error('[daemon] restore forwarders: list session pods failed:', err)
+    console.error('[server] restore forwarders: list session pods failed:', err)
     return
   }
 
@@ -41,7 +41,7 @@ export async function restoreAllSessionForwarders(): Promise<void> {
       await provisionSessionForwarders(projectSlug, sessionId, jobName, config.portForward)
     } catch (err) {
       console.error(
-        `[daemon] restore forwarders for ${sessionId.slice(0, 8)}: `
+        `[server] restore forwarders for ${sessionId.slice(0, 8)}: `
         + (err instanceof Error ? err.message : String(err)),
       )
     }

@@ -6,7 +6,7 @@ import {
   proxySecretsCredentialsPath,
   ensureDataDir,
 } from '@/lib/project/paths'
-import { DaemonError } from '@/daemon/errors'
+import { ServerError } from '@/server/errors'
 import { parsePattern, validatePattern, matchPattern, isHostSegment } from '@/shared/credentials'
 import { expandTilde } from '@/shared/paths'
 import type {
@@ -247,7 +247,7 @@ export async function assertKeyHasNoPassphrase(keyPath: string): Promise<void> {
         resolve()
         return
       }
-      reject(new DaemonError(
+      reject(new ServerError(
         'VALIDATION',
         `SSH private key at ${keyPath} could not be loaded without a passphrase. `
         + 'yaac does not prompt for passphrases; please re-encrypt the key without one '
@@ -262,26 +262,26 @@ export async function assertKeyHasNoPassphrase(keyPath: string): Promise<void> {
  */
 export async function addEntry(entry: GitCredentialEntry): Promise<void> {
   if (!validatePattern(entry.pattern)) {
-    throw new DaemonError(
+    throw new ServerError(
       'VALIDATION',
       'Invalid pattern. Use <host>/*, <host>/<path>, or <host>/<prefix>/*.',
     )
   }
   if (entry.kind === 'https' && !entry.token) {
-    throw new DaemonError('VALIDATION', 'Token cannot be empty.')
+    throw new ServerError('VALIDATION', 'Token cannot be empty.')
   }
   if (entry.kind === 'ssh') {
     if (!entry.privateKeyPath) {
-      throw new DaemonError('VALIDATION', 'privateKeyPath cannot be empty.')
+      throw new ServerError('VALIDATION', 'privateKeyPath cannot be empty.')
     }
     if (!entry.knownHostsEntry) {
-      throw new DaemonError('VALIDATION', 'knownHostsEntry cannot be empty.')
+      throw new ServerError('VALIDATION', 'knownHostsEntry cannot be empty.')
     }
     const expanded = expandTilde(entry.privateKeyPath)
     try {
       await fs.access(expanded, fs.constants.R_OK)
     } catch {
-      throw new DaemonError('VALIDATION', `SSH private key not readable at ${entry.privateKeyPath}`)
+      throw new ServerError('VALIDATION', `SSH private key not readable at ${entry.privateKeyPath}`)
     }
     await assertKeyHasNoPassphrase(entry.privateKeyPath)
   }
@@ -310,7 +310,7 @@ export async function removeEntry(pattern: string): Promise<boolean> {
 export async function removeEntryChecked(pattern: string): Promise<void> {
   const removed = await removeEntry(pattern)
   if (!removed) {
-    throw new DaemonError('NOT_FOUND', `No git credential found for pattern "${pattern}".`)
+    throw new ServerError('NOT_FOUND', `No git credential found for pattern "${pattern}".`)
   }
 }
 
@@ -320,16 +320,16 @@ export async function removeEntryChecked(pattern: string): Promise<void> {
 export async function replaceEntries(entries: GitCredentialEntry[]): Promise<void> {
   for (const entry of entries) {
     if (!entry || (entry.kind !== 'https' && entry.kind !== 'ssh')) {
-      throw new DaemonError('VALIDATION', 'Each credential entry needs a kind of "https" or "ssh".')
+      throw new ServerError('VALIDATION', 'Each credential entry needs a kind of "https" or "ssh".')
     }
     if (!validatePattern(entry.pattern)) {
-      throw new DaemonError('VALIDATION', `Invalid pattern "${entry.pattern}".`)
+      throw new ServerError('VALIDATION', `Invalid pattern "${entry.pattern}".`)
     }
     if (entry.kind === 'https' && !entry.token) {
-      throw new DaemonError('VALIDATION', `Empty token for pattern "${entry.pattern}".`)
+      throw new ServerError('VALIDATION', `Empty token for pattern "${entry.pattern}".`)
     }
     if (entry.kind === 'ssh' && (!entry.privateKeyPath || !entry.knownHostsEntry)) {
-      throw new DaemonError(
+      throw new ServerError(
         'VALIDATION',
         `SSH entry "${entry.pattern}" needs privateKeyPath and knownHostsEntry.`,
       )

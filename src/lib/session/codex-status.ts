@@ -19,7 +19,7 @@ function getUserMessageText(entry: CodexEntry): string | undefined {
 /**
  * Classifies Codex's "actively working" state from the pane's OSC
  * terminal title, mirroring claude-status.ts. Titles are pushed at the
- * daemon by the session's status watcher (`src/daemon/status-watcher.ts`)
+ * server by the session's status watcher (`src/server/status-watcher.ts`)
  * via a tmux control-mode subscription; reads happen via the status
  * store, never by probing the pod. Codex's default terminal title is
  * built from the `[tui].terminal_title` items `["activity",

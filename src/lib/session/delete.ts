@@ -1,6 +1,6 @@
 import { findSessionPod, listSessionJobs, listSessionPods } from '@/lib/k8s/pods'
 import { cleanupSessionDetached } from '@/lib/session/cleanup'
-import { DaemonError } from '@/daemon/errors'
+import { ServerError } from '@/server/errors'
 
 export interface DeletedSessionInfo {
   sessionId: string
@@ -19,7 +19,7 @@ export async function deleteSession(idOrName: string): Promise<DeletedSessionInf
   try {
     pods = await listSessionPods()
   } catch (err) {
-    throw new DaemonError('RUNTIME_UNAVAILABLE', err instanceof Error ? err.message : String(err))
+    throw new ServerError('RUNTIME_UNAVAILABLE', err instanceof Error ? err.message : String(err))
   }
 
   const match = findSessionPod(pods, idOrName)
@@ -42,7 +42,7 @@ export async function deleteSession(idOrName: string): Promise<DeletedSessionInf
   try {
     jobs = await listSessionJobs()
   } catch (err) {
-    throw new DaemonError('RUNTIME_UNAVAILABLE', err instanceof Error ? err.message : String(err))
+    throw new ServerError('RUNTIME_UNAVAILABLE', err instanceof Error ? err.message : String(err))
   }
   const jobMatch = jobs.find((j) =>
     j.sessionId === idOrName
@@ -51,7 +51,7 @@ export async function deleteSession(idOrName: string): Promise<DeletedSessionInf
   )
 
   if (!jobMatch) {
-    throw new DaemonError(
+    throw new ServerError(
       'NOT_FOUND',
       `No session found matching "${idOrName}". Run "yaac session list" to see active sessions.`,
     )

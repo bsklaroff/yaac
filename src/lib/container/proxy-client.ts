@@ -16,7 +16,7 @@ import { k8sNamespace, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubect
 import { pushImageToRegistry, registryHasTag, registryRef } from '@/lib/k8s/registry'
 import { ServicePortForward } from '@/lib/k8s/port-forward'
 import { listSshEntries } from '@/lib/project/credentials'
-import { daemonLog } from '@/daemon/log'
+import { serverLog } from '@/server/log'
 import { env, testEnv } from '@/shared/env'
 
 // --- Secret convention types & builder (merged from secret-conventions.ts) ---
@@ -153,7 +153,7 @@ export class ProxyClient {
   constructor(private config: ProxyClientConfig) {}
 
   /**
-   * Daemon-side base URL: a loopback `kubectl port-forward` into the
+   * Server-side base URL: a loopback `kubectl port-forward` into the
    * Service. The proxy itself is reachable only inside the cluster.
    */
   private get baseUrl(): string {
@@ -259,7 +259,7 @@ export class ProxyClient {
    * vcluster's pods (yaac-in-yaac). The outer proxy can't resolve these
    * cross-namespace source pods to a session itself, so chained egress (an inner
    * proxy's upstream dials, and synced pods before an inner yaac opts in) would
-   * otherwise fail closed. Full-replace each call — the daemon sends the
+   * otherwise fail closed. Full-replace each call — the server sends the
    * complete current set each background tick, so a torn-down pod's IP is
    * evicted on the next push.
    */
@@ -412,7 +412,7 @@ export class ProxyClient {
         await this.uploadSshKey(entry.host, entry.privateKeyPath, entry.knownHostsEntry)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        daemonLog(`[daemon] proxy ssh-agent: failed to load key for ${entry.host}: ${msg}`)
+        serverLog(`[server] proxy ssh-agent: failed to load key for ${entry.host}: ${msg}`)
       }
     }
   }
@@ -476,7 +476,7 @@ export class ProxyClient {
         const res = await fetch(`${this.baseUrl}/healthz`)
         if (res.ok) {
           if (await this.isDeployedImageCurrent()) return
-          daemonLog('[daemon] proxy image is stale — rebuilding and redeploying')
+          serverLog('[server] proxy image is stale — rebuilding and redeploying')
         }
       } catch {
         this.running = false
@@ -506,7 +506,7 @@ export class ProxyClient {
     // Load ssh-agent identities (cold start: agent is empty; restart:
     // re-sync in case the proxy pod was replaced out-of-band).
     this.syncSshKeysFromCredentials().catch((err: Error) => {
-      daemonLog(`[daemon] proxy ssh-agent sync failed: ${err.message}`)
+      serverLog(`[server] proxy ssh-agent sync failed: ${err.message}`)
     })
   }
 
@@ -548,7 +548,7 @@ export class ProxyClient {
           'Restart the test run so the global setup can rebuild it.',
         )
       }
-      daemonLog(`[build] starting ${localTag} (proxy sidecar)`)
+      serverLog(`[build] starting ${localTag} (proxy sidecar)`)
       await buildImage(localTag, path.join(PROXY_DIR, 'Dockerfile'), PROXY_DIR)
     }
     return pushImageToRegistry(localTag)
@@ -569,9 +569,9 @@ export class ProxyClient {
   }
 
   /**
-   * Drop the daemon-side control tunnel without touching the deployed
-   * proxy. Called from daemon shutdown — without it the `kubectl
-   * port-forward` child outlives the daemon (orphaned to PID 1) and each
+   * Drop the server-side control tunnel without touching the deployed
+   * proxy. Called from server shutdown — without it the `kubectl
+   * port-forward` child outlives the server (orphaned to PID 1) and each
    * restart stacks another one.
    */
   disconnect(): void {
@@ -581,7 +581,7 @@ export class ProxyClient {
 
   /**
    * Tear down the proxy Deployment/Service and the control tunnel. Used
-   * by test teardown; production daemons leave the proxy deployed.
+   * by test teardown; production servers leave the proxy deployed.
    */
   async stop(): Promise<void> {
     console.log('Stopping proxy...')
@@ -622,7 +622,7 @@ export async function resolveProxyImageTag(image = 'yaac-proxy'): Promise<string
 }
 
 // Default singleton. YAAC_PROXY_IMAGE is a test-only hook that lets the
-// e2e suite point a daemon subprocess at pre-built test images. Unset in
+// e2e suite point a server subprocess at pre-built test images. Unset in
 // production.
 export const proxyClient = new ProxyClient({
   image: testEnv.proxyImage,

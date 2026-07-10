@@ -1,12 +1,12 @@
 /*
  * Verifies the git-auth-failure badge end-to-end against the real stack:
  * the proxy's 401 detection (k8s/proxy/proxy.ts noteGitUpstreamStatus,
- * recorded against the session's PROJECT), the daemon snapshot plumbing
- * (DaemonSnapshot.gitAuthFailures, keyed by project slug), and the webapp
+ * recorded against the session's PROJECT), the server snapshot plumbing
+ * (ServerSnapshot.gitAuthFailures, keyed by project slug), and the webapp
  * badge (GitAuthFailureBadge in the sidebar's project header + session
  * header).
  *
- * Flow, all against a running daemon + cluster and a REAL session pod:
+ * Flow, all against a running server + cluster and a REAL session pod:
  *   1. finds (or requires) an existing running session for --project
  *   2. deploys an in-cluster mock upstream (401 for every git smart-HTTP
  *      path until flipped, then 200) and re-registers the session with the
@@ -22,9 +22,9 @@
  *   5. cleans up: removes the upstream redirect and the mock pod/service
  *
  * Run: node test-playwright-scripts/git-auth-badge-test.js [--project yaac]
- * Needs a running daemon with a wired cluster and ONE running session for
+ * Needs a running server with a wired cluster and ONE running session for
  * the project (create one first: `yaac session create <project>`). Reads
- * port/secret from $YAAC_DATA_DIR/.daemon.lock (or ~/.yaac). Screenshots go
+ * port/secret from $YAAC_DATA_DIR/.server.lock (or ~/.yaac). Screenshots go
  * to $TMPDIR. (playwright is resolved from the global npm root; browsers
  * live under /opt/playwright-browsers)
  */
@@ -45,15 +45,15 @@ function requirePlaywright() {
   }
 }
 
-function readDaemonLock() {
+function readServerLock() {
   const candidates = [
-    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.daemon.lock'),
-    path.join(os.homedir(), '.yaac', '.daemon.lock'),
+    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.server.lock'),
+    path.join(os.homedir(), '.yaac', '.server.lock'),
   ].filter(Boolean)
   for (const p of candidates) {
     if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
   }
-  throw new Error(`no .daemon.lock found (tried ${candidates.join(', ')}) — is the daemon running?`)
+  throw new Error(`no .server.lock found (tried ${candidates.join(', ')}) — is the server running?`)
 }
 
 const PROJECT = process.argv.includes('--project')
@@ -208,7 +208,7 @@ function gitFetchInPod(podName) {
 
 async function main() {
   const { chromium } = requirePlaywright()
-  const lock = readDaemonLock()
+  const lock = readServerLock()
   const base = `http://127.0.0.1:${lock.port}`
   const auth = { authorization: `Bearer ${lock.secret}` }
   const shotDir = process.env.TMPDIR || os.tmpdir()

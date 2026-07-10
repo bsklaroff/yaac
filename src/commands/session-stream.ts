@@ -88,7 +88,7 @@ export async function sessionStream(project?: string, tool?: AgentTool): Promise
 
     await attachSessionPty(body.sessionId, 'native')
 
-    // The daemon re-evaluates outcomes on the next /stream/next call from
+    // The server re-evaluates outcomes on the next /stream/next call from
     // fresh state (tmux liveness, prompt presence), so the CLI only
     // needs to hint that the last session detached.
     lastOutcome = 'detached'

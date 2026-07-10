@@ -28,8 +28,8 @@
  * (the real "+ New session" fast path), samples its first attach, saves
  * before/after-keypress screenshots to the script's directory, and deletes
  * the session afterwards; trials wait for the pool to respawn a spare.
- * Needs a running daemon and an existing session for <sessionId> whose agent
- * has booted. Reads port/secret from $YAAC_DATA_DIR/.daemon.lock (or ~/.yaac).
+ * Needs a running server and an existing session for <sessionId> whose agent
+ * has booted. Reads port/secret from $YAAC_DATA_DIR/.server.lock (or ~/.yaac).
  * (playwright resolved from the global npm root; browsers under
  * /opt/playwright-browsers)
  */
@@ -50,15 +50,15 @@ function requirePlaywright() {
   }
 }
 
-function readDaemonLock() {
+function readServerLock() {
   const candidates = [
-    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.daemon.lock'),
-    path.join(os.homedir(), '.yaac', '.daemon.lock'),
+    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.server.lock'),
+    path.join(os.homedir(), '.yaac', '.server.lock'),
   ].filter(Boolean)
   for (const p of candidates) {
     if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
   }
-  throw new Error(`no .daemon.lock found (tried ${candidates.join(', ')}) — is the daemon running?`)
+  throw new Error(`no .server.lock found (tried ${candidates.join(', ')}) — is the server running?`)
 }
 
 const TMUX = 'tmux -S /tmp/yaac-tmux/server'
@@ -88,7 +88,7 @@ function windowSize(pod) {
   ).toString().trim()
 }
 
-/** Claim a prewarmed spare via the daemon API; returns its sessionId. */
+/** Claim a prewarmed spare via the server API; returns its sessionId. */
 async function claimSpare(base, auth) {
   const res = await fetch(`${base}/session/create`, {
     method: 'POST',
@@ -279,7 +279,7 @@ async function main() {
   }
 
   const { chromium } = requirePlaywright()
-  const lock = readDaemonLock()
+  const lock = readServerLock()
   const base = `http://127.0.0.1:${lock.port}`
   const auth = { authorization: `Bearer ${lock.secret}` }
   const claimMode = sessionId === 'claim'
@@ -299,7 +299,7 @@ async function main() {
         shotPrefix = path.join(os.tmpdir(), `scroll-pin-claim-${i}`)
         console.log(`claimed spare ${trialSession} (screenshots at ${shotPrefix}-*.png)`)
       } else if (i > 1) {
-        // Give the daemon time to reap the previous view session, then
+        // Give the server time to reap the previous view session, then
         // restore the oversized window and let the agent repaint at it.
         await new Promise((r) => setTimeout(r, 1500))
         resetWindow(pod)

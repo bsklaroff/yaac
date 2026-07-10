@@ -51,7 +51,7 @@ describe('consumeNdjsonStream', () => {
     expect(logSpy).toHaveBeenCalledWith('building...')
   })
 
-  it('throws the daemon message on an error event', async () => {
+  it('throws the server message on an error event', async () => {
     const res = ndjsonResponse([
       { type: 'progress', message: 'step 1' },
       { type: 'error', error: { code: 'VALIDATION', message: 'no github token' } },

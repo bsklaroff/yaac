@@ -45,7 +45,7 @@ export interface DnsQuery {
  * itself (an A record or an authoritative NXDOMAIN) and never reaches its
  * `forward .` upstream. A name outside the zone (a bare `*.svc`, an external
  * host) would instead be forwarded to the node's remote resolver, re-opening a
- * DNS-exfiltration channel — so anything not in-zone is sinkholed. The daemon
+ * DNS-exfiltration channel — so anything not in-zone is sinkholed. The server
  * emits every in-cluster name it needs resolved as a `.svc.cluster.local` FQDN
  * (project registry, vcluster API) to match. The host API server
  * (`kubernetes.default.svc.cluster.local`) is deliberately EXCLUDED — no outer

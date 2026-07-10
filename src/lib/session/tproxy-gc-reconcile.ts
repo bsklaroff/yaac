@@ -6,7 +6,7 @@ import {
   tproxyRuleDeleteArgs,
 } from '@/lib/k8s/cilium-tproxy'
 import { kubectlGetJson } from '@/lib/k8s/kubectl'
-import { daemonLog } from '@/daemon/log'
+import { serverLog } from '@/server/log'
 
 /**
  * Background-loop tick step: garbage-collect the TPROXY rules Cilium leaks
@@ -29,13 +29,13 @@ import { daemonLog } from '@/daemon/log'
  *
  * Two-pass confirmation: a rule is deleted only when it was already stale on
  * the PREVIOUS sweep. A CEC deleted and re-created under the same name (the
- * daemon re-projecting an inner redirect after proxy churn) can leave a
+ * server re-projecting an inner redirect after proxy churn) can leave a
  * freshly-programmed rule that briefly looks stale; by the next sweep its
  * config exists again and the candidate is dropped. Only rules whose config
  * stayed gone for a full sweep interval are removed.
  *
  * Scoped to yaac-owned configs (`yaac-`-prefixed CEC/CCEC names) across ALL
- * installs — existence is a cluster-wide truth, so the ambient daemon safely
+ * installs — existence is a cluster-wide truth, so the ambient server safely
  * sweeps residue from destroyed e2e installs too. Cilium's own proxies (the
  * DNS proxy) don't parse as CEC refs and are never candidates.
  */
@@ -87,7 +87,7 @@ export async function reconcileStaleTproxyRules(nowMs: number = Date.now()): Pro
   lastSweepMs = nowMs
 
   const agentPod = await findCiliumAgentPod()
-  if (!agentPod) return // nested daemon (vcluster API) or agent mid-restart
+  if (!agentPod) return // nested server (vcluster API) or agent mid-restart
 
   // Rules BEFORE live configs: a config deleted in between reads as live for
   // one sweep (caught next time); a config created in between reads as live.
@@ -120,13 +120,13 @@ export async function reconcileStaleTproxyRules(nowMs: number = Date.now()): Pro
       // Exact-spec delete lost a race (agent restart, another install's GC)
       // or a transient exec failure — keep it a candidate and retry next sweep.
       staleKeys.add(key)
-      daemonLog(`[tproxy-gc] delete failed for ${rule.name} (${rule.protocol}): ${String(err)}`)
+      serverLog(`[tproxy-gc] delete failed for ${rule.name} (${rule.protocol}): ${String(err)}`)
     }
   }
   pendingStale = staleKeys
 
   if (deleted > 0) {
-    daemonLog(
+    serverLog(
       `[tproxy-gc] deleted ${deleted} stale cilium TPROXY rule(s): `
       + [...deletedNames].sort().join(', '),
     )

@@ -4,7 +4,7 @@ import { validateAddDirs } from '@/commands/add-dirs'
 import { ensureGitIdentity } from '@/commands/git-identity'
 import { getRpcClient, toClientError } from '@/commands/rpc'
 import { attachSessionPty } from '@/commands/ws-terminal'
-import { resolveDaemonTarget } from '@/shared/daemon-client'
+import { resolveServerTarget } from '@/shared/server-client'
 import { consumeNdjsonStream } from '@/shared/ndjson'
 import { getProjectsDir } from '@/shared/paths'
 import { testEnv } from '@/shared/env'
@@ -24,17 +24,17 @@ interface SessionCreateResult {
 /**
  * CLI entry point for `yaac session create`. Prompts for git identity
  * when the global config is missing, then hands provisioning off to
- * the daemon via `POST /session/create`. The daemon owns the worktree,
+ * the server via `POST /session/create`. The server owns the worktree,
  * Job, and port forwarders for the session's lifetime; the CLI just
  * attaches the user's terminal to the resulting tmux session.
  */
 export async function sessionCreate(projectSlug: string, options: SessionCreateOptions): Promise<string | undefined> {
   // Local fast-fail on an unknown project slug so the user gets an
-  // immediate error instead of a round-trip to the daemon (and so tests
-  // can exercise this path without a running daemon). The daemon re-
-  // validates. Skipped against a remote daemon — the projects dir lives
-  // on the daemon host, not this machine.
-  const target = await resolveDaemonTarget().catch(() => null)
+  // immediate error instead of a round-trip to the server (and so tests
+  // can exercise this path without a running server). The server re-
+  // validates. Skipped against a remote server — the projects dir lives
+  // on the server host, not this machine.
+  const target = await resolveServerTarget().catch(() => null)
   if (!target?.remote) {
     try {
       await fs.access(path.join(getProjectsDir(), projectSlug))
@@ -51,16 +51,16 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   }
 
   // Resolve git identity locally so we can prompt when it's missing.
-  // The daemon gets the already-resolved pair.
+  // The server gets the already-resolved pair.
   const gitUser = await ensureGitIdentity()
   if (!gitUser) {
     process.exitCode = 1
     return
   }
 
-  // Tool is sent only when explicit (--tool). The daemon resolves the
+  // Tool is sent only when explicit (--tool). The server resolves the
   // configured default (yaac tool set) when omitted, so a bare create matches
-  // the prewarmed spare the daemon keeps for that tool.
+  // the prewarmed spare the server keeps for that tool.
   const client = await getRpcClient()
   const res = await client.session.create.$post({
     json: {
@@ -77,7 +77,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
 
   const { sessionId, jobName } = result
   if (!sessionId || !jobName) {
-    console.error('Daemon did not return a sessionId/jobName.')
+    console.error('Server did not return a sessionId/jobName.')
     process.exitCode = 1
     return
   }
@@ -90,7 +90,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     try {
       await attachSessionPty(sessionId, 'native')
     } catch {
-      // Job or tmux session was killed (e.g. ctrl-b k) — the daemon's
+      // Job or tmux session was killed (e.g. ctrl-b k) — the server's
       // background loop will reap the dead session.
     }
   }

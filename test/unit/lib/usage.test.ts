@@ -118,7 +118,7 @@ describe('queryClaudePlanUsage', () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify(UPSTREAM_BODY), { status: 200 }))
 
     const result = await queryClaudePlanUsage(bundle)
-    // rateLimitTier stays null here — the daemon composes it in from its
+    // rateLimitTier stays null here — the server composes it in from its
     // own (once-per-credential) profile fetch.
     expect(result).toMatchObject({ available: true, subscriptionType: 'max', rateLimitTier: null })
     if (result.available) {

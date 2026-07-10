@@ -1,38 +1,38 @@
 import http from 'node:http'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import { bootInProcessDaemon, type InProcessDaemon } from '@test/helpers/daemon'
+import { bootInProcessServer, type InProcessServer } from '@test/helpers/server'
 
 /**
  * Full browser-auth bootstrap exchange over a real socket, per the test
- * strategy in plans/webapp-daemon-follow-up.md: code → cookie →
+ * strategy in plans/webapp-server-follow-up.md: code → cookie →
  * authorized request, plus replay and garbage rejection. The store-level
  * rules are unit-tested in web-auth.test.ts; this covers the wire
  * (Set-Cookie attributes, cookie-authenticated follow-up).
  */
 describe('browser auth bootstrap (full HTTP exchange)', () => {
   let tmpDir: string
-  let daemon: InProcessDaemon
+  let server: InProcessServer
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
-    daemon = await bootInProcessDaemon()
+    server = await bootInProcessServer()
   })
 
   afterEach(async () => {
-    await daemon.stop()
+    await server.stop()
     await cleanupTempDir(tmpDir)
   })
 
   it('exchanges the code for an HttpOnly cookie that authorizes API calls', async () => {
-    const codeRes = await fetch(`${daemon.baseUrl}/auth/bootstrap-code`, {
-      headers: { authorization: `Bearer ${daemon.secret}` },
+    const codeRes = await fetch(`${server.baseUrl}/auth/bootstrap-code`, {
+      headers: { authorization: `Bearer ${server.secret}` },
     })
     expect(codeRes.status).toBe(200)
     const { code } = await codeRes.json() as { code: string }
     expect(code).toHaveLength(64)
 
-    const exchange = await fetch(`${daemon.baseUrl}/auth/bootstrap`, {
+    const exchange = await fetch(`${server.baseUrl}/auth/bootstrap`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ code }),
@@ -45,7 +45,7 @@ describe('browser auth bootstrap (full HTTP exchange)', () => {
 
     // The cookie alone (no bearer) authorizes a protected route.
     const cookie = setCookie.split(';')[0]
-    const list = await fetch(`${daemon.baseUrl}/project/list`, {
+    const list = await fetch(`${server.baseUrl}/project/list`, {
       headers: { cookie },
     })
     expect(list.status).toBe(200)
@@ -53,25 +53,25 @@ describe('browser auth bootstrap (full HTTP exchange)', () => {
   })
 
   it('rejects a replayed code (single-use) and a garbage code', async () => {
-    const { code } = await (await fetch(`${daemon.baseUrl}/auth/bootstrap-code`, {
-      headers: { authorization: `Bearer ${daemon.secret}` },
+    const { code } = await (await fetch(`${server.baseUrl}/auth/bootstrap-code`, {
+      headers: { authorization: `Bearer ${server.secret}` },
     })).json() as { code: string }
 
-    const first = await fetch(`${daemon.baseUrl}/auth/bootstrap`, {
+    const first = await fetch(`${server.baseUrl}/auth/bootstrap`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ code }),
     })
     expect(first.status).toBe(204)
 
-    const replay = await fetch(`${daemon.baseUrl}/auth/bootstrap`, {
+    const replay = await fetch(`${server.baseUrl}/auth/bootstrap`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ code }),
     })
     expect(replay.status).toBe(401)
 
-    const garbage = await fetch(`${daemon.baseUrl}/auth/bootstrap`, {
+    const garbage = await fetch(`${server.baseUrl}/auth/bootstrap`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ code: 'f'.repeat(64) }),
@@ -81,13 +81,13 @@ describe('browser auth bootstrap (full HTTP exchange)', () => {
 
   it('a consumed exchange rotates the code for the next client', async () => {
     const readCode = async (): Promise<string> => {
-      const res = await fetch(`${daemon.baseUrl}/auth/bootstrap-code`, {
-        headers: { authorization: `Bearer ${daemon.secret}` },
+      const res = await fetch(`${server.baseUrl}/auth/bootstrap-code`, {
+        headers: { authorization: `Bearer ${server.secret}` },
       })
       return ((await res.json()) as { code: string }).code
     }
     const before = await readCode()
-    await fetch(`${daemon.baseUrl}/auth/bootstrap`, {
+    await fetch(`${server.baseUrl}/auth/bootstrap`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ code: before }),
@@ -99,10 +99,10 @@ describe('browser auth bootstrap (full HTTP exchange)', () => {
 
   it('marks the cookie Secure only behind a trusted https proxy', async () => {
     const exchange = async (headers: Record<string, string>): Promise<string> => {
-      const { code } = await (await fetch(`${daemon.baseUrl}/auth/bootstrap-code`, {
-        headers: { authorization: `Bearer ${daemon.secret}` },
+      const { code } = await (await fetch(`${server.baseUrl}/auth/bootstrap-code`, {
+        headers: { authorization: `Bearer ${server.secret}` },
       })).json() as { code: string }
-      const res = await fetch(`${daemon.baseUrl}/auth/bootstrap`, {
+      const res = await fetch(`${server.baseUrl}/auth/bootstrap`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', ...headers },
         body: JSON.stringify({ code }),
@@ -132,7 +132,7 @@ describe('browser auth bootstrap (full HTTP exchange)', () => {
     // spoof it with a raw http request — like a proxy or rebind would.
     const requestWithHost = (host: string): Promise<number> =>
       new Promise((resolve, reject) => {
-        const url = new URL(`${daemon.baseUrl}/health`)
+        const url = new URL(`${server.baseUrl}/health`)
         const req = http.request(
           { hostname: url.hostname, port: url.port, path: url.pathname, headers: { host } },
           (res) => {

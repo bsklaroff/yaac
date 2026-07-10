@@ -3,41 +3,41 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
   createYaacTestEnv,
-  spawnYaacDaemon,
+  spawnYaacServer,
   type YaacTestEnv,
-  type SpawnedDaemon,
+  type SpawnedServer,
 } from '@test/helpers/cli'
 
 /**
- * The durable-token lifecycle over the real daemon HTTP surface: mint
+ * The durable-token lifecycle over the real server HTTP surface: mint
  * with the lock secret (the loopback bootstrap path), authenticate with
  * the token instead of the secret, revoke, and observe the token die
  * while the lock secret keeps working. Also pins persistence: tokens.json
  * lands in the data dir at 0600.
  */
-describe('durable token auth flow (real daemon)', () => {
+describe('durable token auth flow (real server)', () => {
   let testEnv: YaacTestEnv
-  let daemon: SpawnedDaemon
+  let server: SpawnedServer
 
   beforeEach(async () => {
     testEnv = await createYaacTestEnv()
-    daemon = await spawnYaacDaemon(testEnv.env)
+    server = await spawnYaacServer(testEnv.env)
   })
 
   afterEach(async () => {
-    await daemon.stop()
+    await server.stop()
     await testEnv.cleanup()
   })
 
   function url(p: string): string {
-    return `http://127.0.0.1:${daemon.lock.port}${p}`
+    return `http://127.0.0.1:${server.lock.port}${p}`
   }
 
   it('mint → authenticate → list masked → revoke → token rejected', async () => {
     const create = await fetch(url('/tokens'), {
       method: 'POST',
       headers: {
-        authorization: `Bearer ${daemon.lock.secret}`,
+        authorization: `Bearer ${server.lock.secret}`,
         'content-type': 'application/json',
       },
       body: JSON.stringify({ name: 'laptop' }),
@@ -52,7 +52,7 @@ describe('durable token auth flow (real daemon)', () => {
     })
     expect(viaToken.status).toBe(200)
 
-    // Persisted at 0600 for the next daemon boot.
+    // Persisted at 0600 for the next server boot.
     const stat = await fs.stat(path.join(testEnv.dataDir, 'tokens.json'))
     expect(stat.mode & 0o777).toBe(0o600)
 
@@ -68,7 +68,7 @@ describe('durable token auth flow (real daemon)', () => {
     // Revoke, then the token is a BAD_BEARER while the lock secret works.
     const del = await fetch(url('/tokens/laptop'), {
       method: 'DELETE',
-      headers: { authorization: `Bearer ${daemon.lock.secret}` },
+      headers: { authorization: `Bearer ${server.lock.secret}` },
     })
     expect(del.status).toBe(204)
 
@@ -80,7 +80,7 @@ describe('durable token auth flow (real daemon)', () => {
     expect(body.error.code).toBe('BAD_BEARER')
 
     const viaSecret = await fetch(url('/project/list'), {
-      headers: { authorization: `Bearer ${daemon.lock.secret}` },
+      headers: { authorization: `Bearer ${server.lock.secret}` },
     })
     expect(viaSecret.status).toBe(200)
   })
@@ -89,7 +89,7 @@ describe('durable token auth flow (real daemon)', () => {
     const mk = (): Promise<Response> => fetch(url('/tokens'), {
       method: 'POST',
       headers: {
-        authorization: `Bearer ${daemon.lock.secret}`,
+        authorization: `Bearer ${server.lock.secret}`,
         'content-type': 'application/json',
       },
       body: JSON.stringify({ name: 'dev' }),
@@ -100,7 +100,7 @@ describe('durable token auth flow (real daemon)', () => {
 
     const missing = await fetch(url('/tokens/ghost'), {
       method: 'DELETE',
-      headers: { authorization: `Bearer ${daemon.lock.secret}` },
+      headers: { authorization: `Bearer ${server.lock.secret}` },
     })
     expect(missing.status).toBe(404)
   })

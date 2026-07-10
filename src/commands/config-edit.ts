@@ -5,10 +5,10 @@ import { getRpcClient, toClientError } from '@/commands/rpc'
 import { editFile } from '@/commands/edit-file'
 
 /**
- * Config editing over RPC: fetch the current content from the daemon,
+ * Config editing over RPC: fetch the current content from the server,
  * edit a scratch copy in $EDITOR on this machine, and PUT the result
- * back — the same flow against a local or remote daemon, since the
- * files live on the daemon host either way. Failed saves keep the
+ * back — the same flow against a local or remote server, since the
+ * files live on the server host either way. Failed saves keep the
  * scratch file so edits are never lost.
  */
 
@@ -46,7 +46,7 @@ function failKeepingEdits(err: Error, edit: ScratchEdit): void {
 /**
  * `yaac config edit <project>` — the project's yaac-config.json. Reads
  * the raw file (malformed content opens verbatim so it can be repaired);
- * saving goes through the daemon's validated config write, so the stored
+ * saving goes through the server's validated config write, so the stored
  * file is always parseable. Emptying the buffer clears the config.
  */
 export async function configEditProject(slug: string): Promise<void> {

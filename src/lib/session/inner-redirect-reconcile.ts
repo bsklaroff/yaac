@@ -13,7 +13,7 @@ import {
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
 import { LABEL_DATA_DIR_HASH, LABEL_VCLUSTER_MANAGED_BY } from '@/lib/k8s/pods'
 import { listVclusterNamespaces } from '@/lib/k8s/vcluster'
-import { daemonLog } from '@/daemon/log'
+import { serverLog } from '@/server/log'
 
 interface RawObjectList {
   items: Array<{ metadata: { name: string; labels?: Record<string, string> } }>
@@ -30,8 +30,8 @@ const loggedUnlabeled = new Set<string>()
 
 /**
  * Discover the host-synced inner proxy Services in a vcluster's namespace —
- * one per inner yaac install (the nested session's own daemon, plus any
- * per-run e2e daemons an agent spawns inside it).
+ * one per inner yaac install (the nested session's own server, plus any
+ * per-run e2e servers an agent spawns inside it).
  *
  * The inner yaac creates a `yaac-proxy` Service inside its vcluster; the syncer
  * lands it in the host namespace under a translated name
@@ -46,7 +46,7 @@ const loggedUnlabeled = new Set<string>()
  * governance — recreate the nested session to upgrade it.
  *
  * MUST-VERIFY (N4 e2e): the synced Service label shape — validated end to end
- * only once the nesting e2e runs against an outer daemon with this code.
+ * only once the nesting e2e runs against an outer server with this code.
  */
 async function findInnerProxyServices(
   vcNamespace: string,
@@ -65,7 +65,7 @@ async function findInnerProxyServices(
       const key = `${vcNamespace}/${name}`
       if (!loggedUnlabeled.has(key)) {
         loggedUnlabeled.add(key)
-        daemonLog(
+        serverLog(
           `[inner-redirect] ${key} has no ${LABEL_DATA_DIR_HASH} label — `
           + 'pre-per-install inner yaac (or label lost in sync); not projecting',
         )
@@ -121,7 +121,7 @@ async function pruneInnerRedirects(vcNamespace: string, desired: Set<string>): P
  *     redirects the install's synced pods (`managed-by=<vc>` +
  *     `data-dir-hash=<install>`, excluding inner proxies) to it at the normal
  *     priority (which beats the fallback). Several inner installs coexist in
- *     one vcluster (the ambient nested daemon plus per-run e2e daemons), each
+ *     one vcluster (the ambient nested server plus per-run e2e servers), each
  *     routed to its OWN proxy.
  *   - Project the shared inner proxy-ingress lock while any proxy is up.
  *   - PRUNE stale projections (installs whose proxy is gone) by the
@@ -135,7 +135,7 @@ async function pruneInnerRedirects(vcNamespace: string, desired: Set<string>): P
  * per-tick reassert. Trade-off: a change to the fallback builder reaches a
  * running vcluster only on recreate.
  *
- * The session pod never gets host RBAC: the daemon (host cluster-admin) is the
+ * The session pod never gets host RBAC: the server (host cluster-admin) is the
  * sole writer and rebuilds from trusted builders, so a tenant can't author an
  * escape. Idempotent and best-effort; the loop isolates step errors.
  */

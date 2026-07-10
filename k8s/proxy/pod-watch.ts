@@ -84,13 +84,13 @@ export class PodSessionIndex {
 
 /**
  * Parse the body of `PUT /vcluster-attribution` — a flat `{ podIP: sessionId }`
- * object the host daemon pushes so the OUTER proxy can attribute a vcluster's
+ * object the host server pushes so the OUTER proxy can attribute a vcluster's
  * chained egress (its inner proxy's upstream dials, and synced pods before an
  * inner yaac opts in) to the OWNING outer session. Those pods live in another
  * host namespace with no `yaac.session-id` of their own (or only the *inner*
- * session's), so the pod-watch can't resolve them; the daemon — which knows each
+ * session's), so the pod-watch can't resolve them; the server — which knows each
  * vcluster namespace's owning session and reads the host pod IPs — supplies the
- * map instead. Full-replace semantics (the daemon sends the complete current set
+ * map instead. Full-replace semantics (the server sends the complete current set
  * each tick), so a stale IP is evicted on the next push.
  *
  * Returns null for anything that isn't an object of string→non-empty-string, so

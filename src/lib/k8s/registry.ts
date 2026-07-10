@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
-import { daemonLog, pipeToDaemonLog } from '@/daemon/log'
+import { serverLog, pipeToServerLog } from '@/server/log'
 import { env } from '@/shared/env'
 
 const execFileAsync = promisify(execFile)
@@ -88,7 +88,7 @@ export async function ensureLocalRegistry(): Promise<void> {
   if (await registryReachable()) return
 
   // Inside a nested yaac (YAAC_NESTED=1) the registry is the outer
-  // per-project registry — external infrastructure the inner daemon must
+  // per-project registry — external infrastructure the inner server must
   // never try to stand up its own replacement for.
   if (env.nested) {
     throw new Error(
@@ -98,7 +98,7 @@ export async function ensureLocalRegistry(): Promise<void> {
   }
 
   const port = registryHost().split(':')[1] ?? '5001'
-  daemonLog(`[registry] starting ${REGISTRY_CONTAINER_NAME} on 127.0.0.1:${port}`)
+  serverLog(`[registry] starting ${REGISTRY_CONTAINER_NAME} on 127.0.0.1:${port}`)
   try {
     await execFileAsync('podman', ['rm', '-f', '--ignore', REGISTRY_CONTAINER_NAME])
     await execFileAsync('podman', [
@@ -145,15 +145,15 @@ export async function pushImageToRegistry(
   const ref = registryRef(localTag)
   if (!opts.force && await registryHasTag(localTag)) return ref
 
-  daemonLog(`[registry] pushing ${localTag} -> ${ref}`)
+  serverLog(`[registry] pushing ${localTag} -> ${ref}`)
   await new Promise<void>((resolve, reject) => {
     const child = spawn('podman', ['push', '--tls-verify=false', localTag, ref], {
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 600_000,
     })
     const prefix = `[push ${localTag}] `
-    pipeToDaemonLog(child.stdout, prefix, opts.onLog)
-    pipeToDaemonLog(child.stderr, prefix, opts.onLog)
+    pipeToServerLog(child.stdout, prefix, opts.onLog)
+    pipeToServerLog(child.stderr, prefix, opts.onLog)
     child.on('close', (code) => {
       if (code === 0) resolve()
       else reject(new Error(`podman push exited with code ${code}`))

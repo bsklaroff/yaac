@@ -14,7 +14,7 @@ import type { AgentTool } from '@/shared/types'
  *
  * The two objects are split by *who sets the variable*:
  *   - `env`     — set during real builds or runs (users, operators, the build
- *                 toolchain, or the daemon itself).
+ *                 toolchain, or the server itself).
  *   - `testEnv` — set only by the test harness. A few are read in production
  *                 too, but only ever via their built-in defaults; the override
  *                 is the test hook.
@@ -29,7 +29,7 @@ import type { AgentTool } from '@/shared/types'
  * disable. They are not yaac config and don't belong here.
  */
 
-/** Set during real builds or runs (users, operators, the build, or the daemon). */
+/** Set during real builds or runs (users, operators, the build, or the server). */
 export const env = {
   /** `YAAC_DATA_DIR` override for the data dir (projects/sessions/lock). Unset → `~/.yaac`. */
   get dataDirOverride(): string | undefined {
@@ -54,18 +54,18 @@ export const env = {
   },
 
   /**
-   * `YAAC_DAEMON_PORT` override for the daemon's listen port. Unset/empty →
-   * `undefined` (caller falls back to `DEFAULT_DAEMON_PORT`). `0` asks the OS
+   * `YAAC_SERVER_PORT` override for the server's listen port. Unset/empty →
+   * `undefined` (caller falls back to `DEFAULT_SERVER_PORT`). `0` asks the OS
    * for an ephemeral port. A non-integer or out-of-range value throws so a
    * typo fails loudly instead of silently using the default.
    */
-  get daemonPort(): number | undefined {
-    const raw = process.env.YAAC_DAEMON_PORT
+  get serverPort(): number | undefined {
+    const raw = process.env.YAAC_SERVER_PORT
     if (raw === undefined || raw === '') return undefined
     const port = Number(raw)
     if (!Number.isInteger(port) || port < 0 || port > 65535) {
       throw new Error(
-        `YAAC_DAEMON_PORT must be an integer between 0 and 65535, got ${raw}`,
+        `YAAC_SERVER_PORT must be an integer between 0 and 65535, got ${raw}`,
       )
     }
     return port
@@ -116,13 +116,13 @@ export const env = {
     return true
   },
 
-  /** `YAAC_NESTED` — set to `1` by the daemon inside a nested (vcluster) session. */
+  /** `YAAC_NESTED` — set to `1` by the server inside a nested (vcluster) session. */
   get nested(): boolean {
     return process.env.YAAC_NESTED === '1'
   },
 
   /**
-   * `YAAC_ALLOWED_HOSTS` — comma-separated extra hostnames the daemon's
+   * `YAAC_ALLOWED_HOSTS` — comma-separated extra hostnames the server's
    * Host-header check admits (e.g. the server's `srv.<tailnet>.ts.net`
    * MagicDNS name behind `tailscale serve`). Loopback is always allowed
    * regardless. Entries are trimmed and lowercased; empties dropped.
@@ -134,7 +134,7 @@ export const env = {
   },
 
   /**
-   * `YAAC_TRUST_PROXY` — set to `1` only when the daemon runs behind a
+   * `YAAC_TRUST_PROXY` — set to `1` only when the server runs behind a
    * trusted TLS-terminating proxy (tailscale serve). Gates trusting
    * `X-Forwarded-Proto` for the Secure cookie flag; without it a direct
    * loopback request could spoof the header into a posture change.
@@ -171,14 +171,14 @@ export const testEnv = {
     return process.env.YAAC_BUILD_ID
   },
 
-  /** `YAAC_DAEMON_URL` — full daemon base URL; paired with the secret below. */
-  get daemonUrlOverride(): string | undefined {
-    return process.env.YAAC_DAEMON_URL
+  /** `YAAC_SERVER_URL` — full server base URL; paired with the secret below. */
+  get serverUrlOverride(): string | undefined {
+    return process.env.YAAC_SERVER_URL
   },
 
-  /** `YAAC_DAEMON_SECRET` — bearer token for the injected daemon URL. */
-  get daemonSecretOverride(): string | undefined {
-    return process.env.YAAC_DAEMON_SECRET
+  /** `YAAC_SERVER_SECRET` — bearer token for the injected server URL. */
+  get serverSecretOverride(): string | undefined {
+    return process.env.YAAC_SERVER_SECRET
   },
 
   /**
@@ -250,7 +250,7 @@ export const testEnv = {
 
   /**
    * `YAAC_E2E_{CLAUDE,CODEX}_LOGIN_CLI` — replaces the vendor CLI argv the
-   * daemon's web sign-in flow spawns (`claude setup-token` / `codex login
+   * server's web sign-in flow spawns (`claude setup-token` / `codex login
    * --device-auth`) with a stub, so tests can script the whole interaction
    * without a real OAuth round trip. Value is a JSON argv array.
    */
@@ -263,7 +263,7 @@ export const testEnv = {
 
   /**
    * `YAAC_E2E_{CLAUDE,CODEX}_INSTALL_CLI` — replaces the installer argv the
-   * daemon's web install flow spawns (claude's `curl | bash` installer /
+   * server's web install flow spawns (claude's `curl | bash` installer /
    * `npm install -g @openai/codex`) with a stub, so tests never install
    * real software. Value is a JSON argv array.
    */

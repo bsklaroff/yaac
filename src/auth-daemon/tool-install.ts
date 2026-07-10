@@ -1,14 +1,14 @@
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { resolveCommandPath, resolveToolCliPath } from '@/daemon/cli-resolve'
-import { createCliSessionRegistry, outputTail, type CliSession } from '@/daemon/cli-session'
+import { resolveCommandPath, resolveToolCliPath } from '@/server/cli-resolve'
+import { createCliSessionRegistry, outputTail, type CliSession } from '@/server/cli-session'
 import { testEnv } from '@/shared/env'
 import type { ToolInstallView } from '@/shared/types'
 
 /**
  * Web-driven CLI install: when a sign-in fails because the vendor CLI is not
  * installed (ToolLoginView.cliMissing), the webapp offers an "Install …"
- * button that runs the vendor's install here in the daemon:
+ * button that runs the vendor's install here in the server:
  *
  *  - claude: the official standalone installer (`curl | bash`, lands in
  *    `~/.local/bin`).
@@ -53,7 +53,7 @@ function installArgv(tool: 'claude' | 'codex'): string[] | null {
 /**
  * Start (or restart) the install flow for a tool. Any still-running install
  * for the same tool is cancelled first — clients drive one at a time. `id`
- * is supplied by the relay (the main daemon mints flow ids); direct
+ * is supplied by the relay (the main server mints flow ids); direct
  * callers/tests may omit it.
  */
 export function startToolInstall(tool: 'claude' | 'codex', id?: string): ToolInstallView {
@@ -83,7 +83,7 @@ export function startToolInstall(tool: 'claude' | 'codex', id?: string): ToolIns
       return
     }
     // Exit 0 alone isn't "installed" — the sign-in flow must be able to find
-    // the binary on the daemon's $PATH.
+    // the binary on the server's $PATH.
     if (resolveToolCliPath(tool) === null) {
       registry.finish(s, 'error', 'The installer finished but the CLI still cannot be found on this machine.')
       return

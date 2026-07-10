@@ -63,12 +63,12 @@ export function projectConfigDir(slug: string): string {
   return path.join(getProjectsDir(), slug, 'config')
 }
 
-export function daemonLogPath(): string {
-  return path.join(getDataDir(), 'daemon.log')
+export function serverLogPath(): string {
+  return path.join(getDataDir(), 'server.log')
 }
 
 /**
- * Persisted webapp session ids (0600). Lets a daemon restart keep browser
+ * Persisted webapp session ids (0600). Lets a server restart keep browser
  * sessions valid so users don't re-bootstrap on every rebuild. Sessions
  * are bearer-equivalent, so this file is as sensitive as the lock file.
  */
@@ -78,7 +78,7 @@ export function webSessionsPath(): string {
 
 /**
  * Durable client tokens (0600). Unlike the lock secret these survive
- * daemon restarts — they are what remote CLIs authenticate with — so the
+ * server restarts — they are what remote CLIs authenticate with — so the
  * file is exactly as sensitive as the lock file.
  */
 export function tokensPath(): string {

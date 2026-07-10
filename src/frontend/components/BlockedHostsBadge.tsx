@@ -34,7 +34,7 @@ export function BlockedHostsBadge({
     setError(null)
     try {
       await allowBlockedHost(sessionId, host, { persist })
-      // The daemon pushes a fresh snapshot that drops the now-allowed host, so
+      // The server pushes a fresh snapshot that drops the now-allowed host, so
       // the row disappears on its own; just collapse it in the meantime.
       setExpanded(null)
     } catch (err) {

@@ -3,7 +3,7 @@ import path from 'node:path'
 import { projectDir, projectConfigDir } from '@/lib/project/paths'
 import { listSessionPods } from '@/lib/k8s/pods'
 import { loadProjectConfig } from '@/lib/project/config'
-import { DaemonError } from '@/daemon/errors'
+import { ServerError } from '@/server/errors'
 import type { ProjectMeta, YaacConfig } from '@/shared/types'
 
 export interface ProjectDetail {
@@ -24,7 +24,7 @@ async function loadProjectMeta(slug: string): Promise<ProjectMeta> {
   try {
     raw = await fs.readFile(metaPath, 'utf8')
   } catch {
-    throw new DaemonError('NOT_FOUND', `project ${slug} not found`)
+    throw new ServerError('NOT_FOUND', `project ${slug} not found`)
   }
   return JSON.parse(raw) as ProjectMeta
 }
@@ -41,7 +41,7 @@ export async function assertProjectExists(slug: string): Promise<void> {
 /**
  * Resolve the project's config from the per-machine config directory.
  * Mirrors `resolveProjectConfig` but throws NOT_FOUND when the project
- * itself is unknown (the daemon route relies on this).
+ * itself is unknown (the server route relies on this).
  */
 export async function resolveProjectConfigWithSource(slug: string): Promise<ProjectConfigResult> {
   await loadProjectMeta(slug)

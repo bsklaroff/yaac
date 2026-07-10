@@ -1,11 +1,11 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { getDataDir, ensureDataDir } from '@/lib/project/paths'
-import { DaemonError } from '@/daemon/errors'
+import { ServerError } from '@/server/errors'
 import type { AgentTool } from '@/shared/types'
 
 /** A persisted keyboard-shortcut chord: a physical key `code` plus the four
- *  modifier states. Mirrors the frontend `Chord` shape (the daemon must not
+ *  modifier states. Mirrors the frontend `Chord` shape (the server must not
  *  import frontend code). */
 export interface SerializedChord {
   code: string
@@ -124,7 +124,7 @@ export function isValidTool(value: string): value is AgentTool {
  */
 export async function setDefaultToolChecked(toolName: string): Promise<AgentTool> {
   if (!isValidTool(toolName)) {
-    throw new DaemonError('VALIDATION', `Invalid tool "${toolName}". Must be one of: ${VALID_TOOLS.join(', ')}`)
+    throw new ServerError('VALIDATION', `Invalid tool "${toolName}". Must be one of: ${VALID_TOOLS.join(', ')}`)
   }
   await setDefaultTool(toolName)
   return toolName

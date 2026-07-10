@@ -36,7 +36,7 @@ export function NewSessionButton({ projectSlug }: { projectSlug: string }): JSX.
 
   return (
     <Menu.Root onOpenChange={(open) => {
-      // Credentials may have changed daemon-side (CLI login, another tab)
+      // Credentials may have changed server-side (CLI login, another tab)
       // since the app-start fetch — re-pull while the menu is up.
       if (open) void queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
     }}>

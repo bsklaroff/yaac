@@ -1,4 +1,4 @@
-# yaac-in-yaac inner egress — transparent inner redirect via daemon projection
+# yaac-in-yaac inner egress — transparent inner redirect via server projection
 
 > **Status: shipped.** This is a current-state reference for the implemented
 > mechanism, not a proposal. It is cross-referenced from the code (see
@@ -22,15 +22,15 @@ egress setup and **no host-cluster credentials in the session pod**. This builds
 on the Cilium egress model (commit `f1fbd33`): a CEC + CNP redirect selecting a
 label, EDS upstream, source-IP identity via a pods-watch.
 
-## Design: daemon projection (the chosen approach)
+## Design: server projection (the chosen approach)
 
 The inner yaac targets **only** its vcluster for everything, including its
-CEC/CNP. The **outer daemon** (sole host cluster-admin) watches each managed
+CEC/CNP. The **outer server** (sole host cluster-admin) watches each managed
 vcluster, recognizes yaac's own egress-redirect shapes, and **rebuilds** the
 equivalent host CEC/CNP from its own trusted builders — re-scoped to the
 vcluster's `managed-by` selector and retargeted at the host-synced inner proxy.
 
-The session keeps **zero** host authority; the daemon never copies untrusted
+The session keeps **zero** host authority; the server never copies untrusted
 policy, so a tenant cannot author an escape. (The rejected alternative — handing
 the session a narrow host SA token so the inner yaac writes host CEC/CNP directly
 — couldn't be transparent: the inner yaac's primary API is its vcluster, so its
@@ -42,17 +42,17 @@ else, and it would put a host credential in the agent's pod.)
 ```
 HOST cluster (Cilium)         ns: yaac
   outer proxy + outer CEC/CNP redirect   (selects yaac.session-id Exists)
-  outer daemon = host cluster-admin
+  outer server = host cluster-admin
 
   outer session pod  (virtualCluster; label yaac.session-id=<outerSid>)
-    └ runs INNER yaac daemon  (YAAC_NESTED=1, KUBECONFIG=vcluster)
+    └ runs INNER yaac server  (YAAC_NESTED=1, KUBECONFIG=vcluster)
         creates inner sessions as pods IN the vcluster  yvc-<sid>
         runs ensureProxyResources against the vcluster → inner proxy + CEC/CNP
 
   vcluster yvc-<sid> syncs to host:
     - inner session pods   → host pods, label managed-by=<vc>   (the workload)
     - inner proxy Deploy/Svc/SA → host pod + Service            (the inner proxy)
-    - inner CEC/CNP        → NOT synced (CRDs); the daemon PROJECTS them
+    - inner CEC/CNP        → NOT synced (CRDs); the server PROJECTS them
 
   Host redirect stack for the vcluster's synced pods (managed-by=<vc>):
     (fallback) managed-by=<vc>          → OUTER proxy   [low precedence, prio 90]
@@ -66,8 +66,8 @@ HOST cluster (Cilium)         ns: yaac
        matches → fallback → OUTER proxy
 
   Several inner installs can share one vcluster — the nested session's ambient
-  daemon plus any per-run e2e daemons spawned inside it, each with its own
-  proxy. The install key is the `yaac.data-dir-hash` label every daemon already
+  server plus any per-run e2e servers spawned inside it, each with its own
+  proxy. The install key is the `yaac.data-dir-hash` label every server already
   stamps on its session pods and (since the per-install scheme) on its proxy
   Deployment pods + Service; tenant labels ride the sync verbatim.
 ```
@@ -88,7 +88,7 @@ Data path for an inner-session pod's `curl https://api.example`:
 ## Control path: the projection loop
 
 `reconcileInnerRedirects` in `src/lib/session/inner-redirect-reconcile.ts`,
-wired as a background-loop tick step in `src/daemon/background-loop.ts`. One pass
+wired as a background-loop tick step in `src/server/background-loop.ts`. One pass
 per managed vcluster (`listVclusterNamespaces`):
 
 1. **Discover the inner proxies.** `findInnerProxyServices` lists the
@@ -99,7 +99,7 @@ per managed vcluster (`listVclusterNamespaces`):
    **opt-in**; a `yaac-proxy` Service *without* the install label (an inner
    yaac predating the per-install scheme) is ignored (logged once): its pods
    stay on the outer fallback — recreate the nested session to upgrade.
-2. **Rebuild, don't copy.** The daemon never reads tenant-authored selectors;
+2. **Rebuild, don't copy.** The server never reads tenant-authored selectors;
    it rebuilds host objects from trusted builders in `src/lib/k8s/bootstrap.ts`,
    one CEC+override pair per install (names suffixed `-<installHash>` via
    `innerRedirectObjectName`):
@@ -136,9 +136,9 @@ redirect* (CEC/CNP) needs host projection.
 
 - `SESSION_REDIRECT_PRIORITY = 50` — the SAME normal value used by **every**
   yaac's session-egress redirect (outer top-level and inner alike). Because it is
-  uniform, an inner yaac is fully transparent: there is no daemon-assigned
+  uniform, an inner yaac is fully transparent: there is no server-assigned
   per-level band and no nesting-aware priority arithmetic. The override the
-  daemon projects for a vcluster's session pods uses this value.
+  server projects for a vcluster's session pods uses this value.
 - `VCLUSTER_FALLBACK_PRIORITY = 90` — the outer yaac's deliberately
   low-precedence fallback redirect for a vcluster's synced pods (→ the outer
   proxy). It gives synced pods working, allowlisted egress from the moment they
@@ -194,7 +194,7 @@ Two complementary mechanisms resolve a redirected pod's host IP to a session:
   reaches the **outer** proxy (the inner proxy's own upstream dials, plus synced
   pods before an inner yaac opts in) arrives with the source pod's host IP, but
   those pods live in the vcluster namespace with no outer `yaac.session-id` —
-  the outer proxy would otherwise fail-close. The daemon supplies a
+  the outer proxy would otherwise fail-close. The server supplies a
   `hostIP→outerSessionId` map: `buildVclusterAttribution` /
   `reconcileVclusterAttribution` in
   `src/lib/session/vcluster-attribution-reconcile.ts` (another background-loop
@@ -208,11 +208,11 @@ Two complementary mechanisms resolve a redirected pod's host IP to a session:
 - The inner yaac/session pod holds **no host credential**
   (`automountServiceAccountToken: false`, vcluster-only kubeconfig). It can only
   write to its vcluster.
-- The **daemon** is the only writer of host CEC/CNP and it **rebuilds** from
+- The **server** is the only writer of host CEC/CNP and it **rebuilds** from
   trusted builders — it never copies tenant-authored policy, so no allow-all
   escape can reach the host. The inner yaac's in-vcluster CEC/CNP are *opt-in
   signals*, not the applied content.
-- **Scope** is pinned to `managed-by=<vc>` by the daemon, so a vcluster's
+- **Scope** is pinned to `managed-by=<vc>` by the server, so a vcluster's
   override can only affect **its own** synced pods — never another session's,
   never infra.
 - **Routing override vs. containment.** The override CNPs are a *routing*
@@ -236,7 +236,7 @@ succeed (not "no matches for kind"), the vcluster needs the Cilium CRD schemas �
 **definitions only, no operator/agent** (the host Cilium is the only datapath).
 `ensureCiliumCrds` in `src/lib/k8s/cilium-crds.ts` installs **permissive**
 (`x-kubernetes-preserve-unknown-fields`) CEC/CNP CRDs and waits for them to be
-Established. In a vcluster these objects are inert — the daemon projects the
+Established. In a vcluster these objects are inert — the server projects the
 real, host-enforced redirect. Permissive (not Cilium's full ~400KB schema) is
 safe because the objects are produced by yaac's own builders and need no API
 schema validation. Called from bootstrap when running nested.
@@ -247,12 +247,12 @@ schema validation. Called from bootstrap when running nested.
   stamps the proxy pod with `yaac.role=inner-proxy` (`LABEL_ROLE` /
   `ROLE_INNER_PROXY`) only when nested, so the overrides can exclude it.
   Triggered via `proxyClient` with `{ nested: process.env.YAAC_NESTED === '1' }`.
-- **Install identity label.** Every daemon stamps `yaac.data-dir-hash` on its
+- **Install identity label.** Every server stamps `yaac.data-dir-hash` on its
   proxy Deployment pods and Service (`buildProxyDeploymentManifest` /
   `buildProxyServiceManifest`) — nested or not, matching the label session
   pods always carried. Nested, it is the key the projection groups by.
 - **Recursion cap.** The hard recursion error is narrowed to **vcluster-in-
-  vcluster only** — `src/daemon/session-create.ts:705-710` rejects
+  vcluster only** — `src/server/session-create.ts:705-710` rejects
   `virtualCluster && YAAC_NESTED==='1'`. The ordinary (non-vcluster) inner-
   session path is allowed, so an inner yaac creates inner sessions normally.
 - **Nested env.** `YAAC_NESTED=1` is set on the session env
@@ -279,15 +279,15 @@ schema validation. Called from bootstrap when running nested.
   `skipIf(IS_NESTED_YAAC)`).
 - **Nested capability:** the full unit + e2e suites are made to pass inside a
   nested yaac session (commit `9987b1d`); nesting-incapable cases are gated on
-  `IS_NESTED_YAAC`. The session-create e2e family (own daemon+proxy+mocks)
-  runs nested ungated and ASSUMES a per-install-projecting outer daemon —
-  under an older first-match outer daemon its sessions land on an arbitrary
+  `IS_NESTED_YAAC`. The session-create e2e family (own server+proxy+mocks)
+  runs nested ungated and ASSUMES a per-install-projecting outer server —
+  under an older first-match outer server its sessions land on an arbitrary
   proxy and the tests fail on egress timeouts (upgrade the host yaac).
 
 ## Known must-verify / fragilities
 
 1. **`status.podIP == hostIP`** is the attribution linchpin for inner-session
-   resolution; the daemon-supplied `hostIP→sid` map
+   resolution; the server-supplied `hostIP→sid` map
    (`vcluster-attribution-reconcile.ts`) is the productized fallback for the
    chained/outer path.
 2. **`listener.priority` is undocumented** — guarded by the mandatory override
@@ -300,9 +300,9 @@ schema validation. Called from bootstrap when running nested.
    `yaac.data-dir-hash` label off the host-synced proxy Service. Tenant POD
    labels provably sync verbatim (the shipped `yaac.role` exclusion depends on
    it); the Service-label counterpart is asserted only by the nested e2e run
-   under a per-install outer daemon. If the syncer ever translates Service
+   under a per-install outer server. If the syncer ever translates Service
    labels, `findInnerProxyServices` logs the unlabeled Service and projects
    nothing — fail-safe (fallback containment), not fail-open.
-4. **Containment** — the projection loop is the trust boundary: the daemon must
+4. **Containment** — the projection loop is the trust boundary: the server must
    rebuild (never copy) and pin scope. It deserves the same scrutiny as any host
    admission guard.

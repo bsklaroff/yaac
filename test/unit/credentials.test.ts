@@ -22,7 +22,7 @@ import {
   ghApiHostForGitHost,
 } from '@/shared/credentials'
 import { githubCredentialsPath, proxySecretsCredentialsPath } from '@/lib/project/paths'
-import { DaemonError } from '@/daemon/errors'
+import { ServerError } from '@/server/errors'
 
 describe('credentials', () => {
   let tmpDir: string
@@ -428,12 +428,12 @@ describe('credentials', () => {
 
     it('rejects invalid pattern', async () => {
       await expect(addEntry({ kind: 'https', pattern: '*', token: 'ghp_x' }))
-        .rejects.toBeInstanceOf(DaemonError)
+        .rejects.toBeInstanceOf(ServerError)
     })
 
     it('rejects empty token', async () => {
       await expect(addEntry({ kind: 'https', pattern: 'github.com/*', token: '' }))
-        .rejects.toBeInstanceOf(DaemonError)
+        .rejects.toBeInstanceOf(ServerError)
     })
   })
 
@@ -488,7 +488,7 @@ describe('credentials', () => {
 
     it('rejects entries with invalid pattern', async () => {
       await expect(replaceEntries([{ kind: 'https', pattern: '*', token: 'ghp_x' }]))
-        .rejects.toBeInstanceOf(DaemonError)
+        .rejects.toBeInstanceOf(ServerError)
     })
 
     it('rejects ssh entries missing fields', async () => {

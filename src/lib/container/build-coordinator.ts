@@ -8,8 +8,8 @@
  * coalesce onto one build and fan out again on their distinct downstream
  * layers.
  *
- * The daemon is a single process and every production caller is
- * daemon-side, so module-level maps are sufficient mutual exclusion (same
+ * The server is a single process and every production caller is
+ * server-side, so module-level maps are sufficient mutual exclusion (same
  * argument as the prewarm pool's in-flight counters). Winners own the
  * build-registry entry lifecycle (register → ingest log → finish/fail);
  * joiners only attach their project slug and await the shared promise.
@@ -21,7 +21,7 @@ import {
 } from '@/lib/container/image-builder'
 import { imageExists, removeImage } from '@/lib/container/runtime'
 import { pushImageToRegistry, registryHasTag, registryRef } from '@/lib/k8s/registry'
-import { daemonLog } from '@/daemon/log'
+import { serverLog } from '@/server/log'
 import {
   attachImageBuildProject,
   failImageBuild,
@@ -29,7 +29,7 @@ import {
   ingestImageBuildLine,
   registerImageBuild,
   type ImageBuildReason,
-} from '@/daemon/image-builds'
+} from '@/server/image-builds'
 import type { ImageLayerName } from '@/shared/types'
 
 export type { ImageBuildReason }
@@ -80,7 +80,7 @@ async function runBuild(
     // The rebuild path removes the stale image inside the single-flight
     // slot, so the removal never races a concurrent build of the tag.
     if (opts.preStep) await opts.preStep()
-    daemonLog(`[build] starting ${layer.tag}`)
+    serverLog(`[build] starting ${layer.tag}`)
     await buildImage(layer.tag, layer.dockerfile, layer.context, layer.buildArgs, {
       noCache: opts.noCache,
       onLog: (line) => {
@@ -290,7 +290,7 @@ export async function rebuildProjectImage(
   }
 
   const emit = (msg: string): void => {
-    daemonLog(`[rebuild ${projectSlug}] ${msg}`)
+    serverLog(`[rebuild ${projectSlug}] ${msg}`)
     opts.onLog?.(msg)
   }
 

@@ -76,19 +76,19 @@ yaac cluster setup
 
 ## Web app
 
-yaac ships a local web app — a GUI over the same daemon the CLI drives.
+yaac ships a local web app — a GUI over the same server the CLI drives.
 Launch it with:
 
 ```sh
 yaac open
 ```
 
-This starts the daemon if needed and opens your browser straight into the
+This starts the server if needed and opens your browser straight into the
 authenticated app: a live session sidebar, the project list, and an embedded
 terminal (xterm.js) attached to each session's tmux. `yaac open --no-browser`
 prints the URL instead of launching a browser.
 
-It's local-first — the daemon binds `127.0.0.1` only, and the browser
+It's local-first — the server binds `127.0.0.1` only, and the browser
 authenticates with an `HttpOnly` cookie obtained from a one-time bootstrap
 code that `yaac open` handles for you (no manual pasting). The CLI and web
 app drive the same on-disk state, so you can mix them freely.
@@ -99,13 +99,13 @@ app drive the same on-disk state, so you can mix them freely.
 yaac [command]
 
 Commands:
-  open            Open the web app in your browser (starts the daemon if needed)
+  open            Open the web app in your browser (starts the server if needed)
   cluster         Manage the kubernetes cluster yaac runs sessions on
   project         Manage projects
   session         Manage sessions
-  config          Edit project configuration files (via the daemon)
+  config          Edit project configuration files (via the server)
   auth            Manage credentials (GitHub tokens and tool API keys)
-  remote          Point this CLI at a remote yaac daemon
+  remote          Point this CLI at a remote yaac server
 
 yaac cluster <command>
   check             Verify cluster prerequisites (kubectl, registry, hostPath wiring)
@@ -152,17 +152,17 @@ yaac auth <command>
     create <name>       Mint a token (printed once) for a remote client
     list                List tokens (masked)
     revoke <name>       Revoke a token by name
-  daemon <command>    The login broker that runs Claude/Codex sign-ins on this machine
+  server <command>    The login broker that runs Claude/Codex sign-ins on this machine
     run|start|stop|status
 
 yaac remote <command>
-  set <url> --token <t>  Configure and enable a remote daemon (verifies the token)
-  unset                  Forget the remote (commands target the local daemon)
+  set <url> --token <t>  Configure and enable a remote server (verifies the token)
+  unset                  Forget the remote (commands target the local server)
   on | off               Toggle the configured remote without re-entering the token
   status                 Show the configured remote (masked token)
 ```
 
-See [docs/remote-hosting.md](docs/remote-hosting.md) for running the daemon
+See [docs/remote-hosting.md](docs/remote-hosting.md) for running the server
 on an always-on server and using this machine as a thin client.
 
 Detach from a tmux session with `Ctrl-B D`. Kill the tmux session (and the
@@ -179,7 +179,7 @@ yaac centralizes credentials on the host and injects them into session traffic t
 - `~/.yaac/.credentials/codex.json` — Codex credentials
 - `~/.yaac/.credentials/opencode.json` — OpenCode credentials (OpenRouter API key)
 
-The proxy pod mounts this directory RW (hostPath) and reads credentials at request time, so updates via `yaac auth update` propagate to every running session immediately without needing to restart pods. The proxy is reachable only inside the cluster (ClusterIP Service); the daemon talks to it over a loopback `kubectl port-forward`.
+The proxy pod mounts this directory RW (hostPath) and reads credentials at request time, so updates via `yaac auth update` propagate to every running session immediately without needing to restart pods. The proxy is reachable only inside the cluster (ClusterIP Service); the server talks to it over a loopback `kubectl port-forward`.
 
 ### GitHub tokens
 
@@ -336,16 +336,16 @@ Every yaac variable is read in one place — [`src/shared/env.ts`](src/shared/en
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `YAAC_DATA_DIR` | `~/.yaac` | Data directory holding projects, sessions, and the daemon lock. |
-| `YAAC_DAEMON_PORT` | `8787` | Port the daemon binds on `127.0.0.1` (auto-increments if busy). `0` requests an OS-assigned ephemeral port. |
-| `YAAC_USE_TOR` | `false` | Route the daemon's host-side git/ssh through a Tor SOCKS proxy. Off when unset/empty/`0`/`false`; any other value is on. |
+| `YAAC_DATA_DIR` | `~/.yaac` | Data directory holding projects, sessions, and the server lock. |
+| `YAAC_SERVER_PORT` | `8787` | Port the server binds on `127.0.0.1` (auto-increments if busy). `0` requests an OS-assigned ephemeral port. |
+| `YAAC_USE_TOR` | `false` | Route the server's host-side git/ssh through a Tor SOCKS proxy. Off when unset/empty/`0`/`false`; any other value is on. |
 | `YAAC_HOST_TOR_SOCKS_URL` | `socks5h://127.0.0.1:9050` | SOCKS endpoint used when `YAAC_USE_TOR` is on. |
 | `YAAC_K8S_REGISTRY` | `localhost:5001` | `host:port` of the local OCI registry the cluster pulls session images from. |
 | `YAAC_KIND_CLUSTER` | `yaac` | Name of the kind cluster `yaac cluster setup` creates/repairs. |
 | `YAAC_PREWARM_POOL_SIZE` | `1` | Prewarmed sessions kept ready per active project (`0` disables prewarming). |
-| `YAAC_NESTED` | _(unset)_ | Set to `1` automatically by the daemon inside a nested (vcluster) session — not something you set yourself. |
-| `YAAC_ALLOWED_HOSTS` | _(unset)_ | Comma-separated extra hostnames the daemon's Host-header check admits (e.g. its tailnet name behind `tailscale serve`). Loopback is always allowed. |
-| `YAAC_TRUST_PROXY` | _(unset)_ | `1` when the daemon runs behind a trusted TLS-terminating proxy: trusts `X-Forwarded-Proto` to mark the session cookie `Secure`. |
+| `YAAC_NESTED` | _(unset)_ | Set to `1` automatically by the server inside a nested (vcluster) session — not something you set yourself. |
+| `YAAC_ALLOWED_HOSTS` | _(unset)_ | Comma-separated extra hostnames the server's Host-header check admits (e.g. its tailnet name behind `tailscale serve`). Loopback is always allowed. |
+| `YAAC_TRUST_PROXY` | _(unset)_ | `1` when the server runs behind a trusted TLS-terminating proxy: trusts `X-Forwarded-Proto` to mark the session cookie `Secure`. |
 | `YAAC_FORWARD_BIND` | `127.0.0.1` | Bind address for session port-forward listeners; a remote-hosting server sets its tailnet IP so forwarded dev servers are reachable from other devices. |
 | `YAAC_BUNDLED` | _(unset)_ | Set to `true` by the build (tsup) in the shipped bundle so it loads assets from `dist/`. Build-time define, not a runtime knob. |
 | `EDITOR` / `VISUAL` | `vi` | Editor opened by the `yaac config edit*` commands (git's convention: `$EDITOR`, then `$VISUAL`, then `vi`). |
@@ -364,13 +364,13 @@ These are set by the build or the test harness; production reads several of them
 | `YAAC_REQUIRE_PREBUILT_IMAGES` | _(unset)_ | `1` fails fast if a required image isn't already in the registry (CI/e2e). |
 | `YAAC_STARTING_GRACE_MS` | `60000` | Grace window (ms) protecting freshly-created session pods from the stale-session reaper. |
 | `YAAC_BUILD_ID` | _(unset)_ | Override the build id for tests running from source (no `dist/.build-id`). |
-| `YAAC_DAEMON_URL` / `YAAC_DAEMON_SECRET` | _(unset)_ | Point the CLI at an in-process daemon without the lock file (tests). |
+| `YAAC_SERVER_URL` / `YAAC_SERVER_SECRET` | _(unset)_ | Point the CLI at an in-process server without the lock file (tests). |
 | `YAAC_E2E_NO_ATTACH` | _(unset)_ | `1` skips the post-provision terminal attach (no-TTY e2e). |
 | `YAAC_E2E_SKIP_FETCH` | _(unset)_ | `1` skips the host-side git fetch during create (e2e fixtures pre-populate the repo). |
 | `YAAC_E2E_CLAUDE_LOGIN` / `YAAC_E2E_CODEX_LOGIN` / `YAAC_E2E_OPENCODE_LOGIN` | _(unset)_ | Short-circuit the native tool login with a serialized OAuth bundle (claude/codex) or raw api key (opencode). |
 | `YAAC_E2E_OPENCODE_PROVIDER` | _(unset)_ | Picks the opencode provider during e2e login (defaults to openrouter). |
 
-The proxy and relay sidecar containers read their own internal variables (`API_PORT`, `PROXY_AUTH_SECRET`, `TRANSPARENT_HTTPS_PORT`, `TRANSPARENT_HTTP_PORT`, `TRANSPARENT_TUNNEL_PORT`, `DNS_STUB_PORT`, `USE_TOR`, and the `KUBERNETES_SERVICE_*` pair). The daemon and cluster inject these when building each pod spec — they are not user-configurable.
+The proxy and relay sidecar containers read their own internal variables (`API_PORT`, `PROXY_AUTH_SECRET`, `TRANSPARENT_HTTPS_PORT`, `TRANSPARENT_HTTP_PORT`, `TRANSPARENT_TUNNEL_PORT`, `DNS_STUB_PORT`, `USE_TOR`, and the `KUBERNETES_SERVICE_*` pair). The server and cluster inject these when building each pod spec — they are not user-configurable.
 
 ## Custom images
 

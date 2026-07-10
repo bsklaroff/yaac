@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { setDataDir } from '@/shared/paths'
-import { readLock, type DaemonLock } from '@/shared/lock'
+import { readLock, type ServerLock } from '@/shared/lock'
 import { TEST_NAMESPACE } from '@test/helpers/setup'
 import { e2eMkdtemp } from '@test/helpers/tmp'
 
@@ -11,34 +11,34 @@ const TSX_CLI = path.resolve(__dirname, '..', '..', 'node_modules', 'tsx', 'dist
 const ENTRY = path.resolve(__dirname, '..', '..', 'src', 'cli.ts')
 
 /**
- * Cross-worker mutex so only one `yaac daemon run` is live at a time
- * across all vitest workers. Multiple daemons hammering the shared
+ * Cross-worker mutex so only one `yaac server run` is live at a time
+ * across all vitest workers. Multiple servers hammering the shared
  * cluster API server and the podman build engine concurrently starves
- * both, so daemon-backed suites serialize on this lock.
+ * both, so server-backed suites serialize on this lock.
  *
  * Lock file holds the owner's PID so a crashed holder doesn't wedge
  * the suite forever. fs.open(wx) is atomic across processes.
  */
-const DAEMON_LOCK_FILE = path.join(os.tmpdir(), 'yaac-test-daemon-mutex.lock')
+const SERVER_LOCK_FILE = path.join(os.tmpdir(), 'yaac-test-server-mutex.lock')
 
 /**
- * Base for the per-worker daemon port set via `YAAC_DAEMON_PORT`. Chosen well
- * clear of the real default (DEFAULT_DAEMON_PORT = 8787) so the fixed-port
- * `daemon start`/`restart` suites never collide with a developer's own daemon
- * on 8787. `spawnYaacDaemon` passes `--port 0` and ignores this; only suites
+ * Base for the per-worker server port set via `YAAC_SERVER_PORT`. Chosen well
+ * clear of the real default (DEFAULT_SERVER_PORT = 8787) so the fixed-port
+ * `server start`/`restart` suites never collide with a developer's own server
+ * on 8787. `spawnYaacServer` passes `--port 0` and ignores this; only suites
  * that bind the default port (no `--port`) observe it.
  */
-const TEST_DAEMON_PORT_BASE = 18800
+const TEST_SERVER_PORT_BASE = 18800
 
 // Process-reentrant: if this worker already owns the file lock, a
 // nested acquire just bumps a refcount. The file lock is only released
 // when the refcount drops back to zero. Prevents a file-level mutex
-// (e.g. daemon.test.ts's beforeAll) from deadlocking against per-test
-// spawnYaacDaemon acquires in the same worker.
+// (e.g. server.test.ts's beforeAll) from deadlocking against per-test
+// spawnYaacServer acquires in the same worker.
 let localDepth = 0
 let pendingFileUnlink: Promise<void> | null = null
 
-export async function acquireDaemonMutex(): Promise<() => Promise<void>> {
+export async function acquireServerMutex(): Promise<() => Promise<void>> {
   if (localDepth > 0) {
     localDepth += 1
     let released = false
@@ -55,7 +55,7 @@ export async function acquireDaemonMutex(): Promise<() => Promise<void>> {
 
   for (;;) {
     try {
-      const fh = await fs.open(DAEMON_LOCK_FILE, 'wx')
+      const fh = await fs.open(SERVER_LOCK_FILE, 'wx')
       await fh.writeFile(String(process.pid))
       await fh.close()
       localDepth = 1
@@ -65,7 +65,7 @@ export async function acquireDaemonMutex(): Promise<() => Promise<void>> {
         released = true
         localDepth -= 1
         if (localDepth === 0) {
-          pendingFileUnlink = fs.unlink(DAEMON_LOCK_FILE).catch(() => { /* already gone */ })
+          pendingFileUnlink = fs.unlink(SERVER_LOCK_FILE).catch(() => { /* already gone */ })
           await pendingFileUnlink
           pendingFileUnlink = null
         }
@@ -74,14 +74,14 @@ export async function acquireDaemonMutex(): Promise<() => Promise<void>> {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
       // Existing lock — check if the holder is still alive.
       try {
-        const raw = await fs.readFile(DAEMON_LOCK_FILE, 'utf8')
+        const raw = await fs.readFile(SERVER_LOCK_FILE, 'utf8')
         const holderPid = parseInt(raw.trim(), 10)
         if (!Number.isNaN(holderPid)) {
           try {
             process.kill(holderPid, 0)
           } catch {
             // Holder is gone — steal the lock.
-            await fs.unlink(DAEMON_LOCK_FILE).catch(() => { /* raced */ })
+            await fs.unlink(SERVER_LOCK_FILE).catch(() => { /* raced */ })
             continue
           }
         }
@@ -95,14 +95,14 @@ export interface YaacTestEnv {
   scratchDir: string
   dataDir: string
   gitConfigPath: string
-  /** Port the daemon binds when started without `--port` (via YAAC_DAEMON_PORT). */
-  daemonPort: number
+  /** Port the server binds when started without `--port` (via YAAC_SERVER_PORT). */
+  serverPort: number
   env: NodeJS.ProcessEnv
   cleanup: () => Promise<void>
 }
 
 /**
- * Per-test isolation. We use `YAAC_DATA_DIR` (daemon) + `setDataDir()`
+ * Per-test isolation. We use `YAAC_DATA_DIR` (server) + `setDataDir()`
  * (test process) to redirect the yaac data dir, rather than
  * overriding HOME — overriding HOME breaks podman, which reads its
  * config from `$HOME/.config/containers/`. `GIT_CONFIG_GLOBAL`
@@ -110,7 +110,7 @@ export interface YaacTestEnv {
  * a user identity write to `gitConfigPath` and leave the real
  * `~/.gitconfig` untouched.
  *
- * Test-only daemon hooks are preset here so container-backed tests
+ * Test-only server hooks are preset here so container-backed tests
  * land on pre-built images and a worker-isolated kubernetes namespace;
  * tests that do not touch containers just ignore them.
  */
@@ -123,20 +123,20 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
   setDataDir(dataDir)
   // Mirror the namespace into the test process so src helpers used by
   // assertions (listSessionPods, containerExec, ...) hit the same
-  // namespace as the daemon subprocess.
+  // namespace as the server subprocess.
   process.env.YAAC_K8S_NAMESPACE = TEST_NAMESPACE
 
-  // Per-worker default port so a fixed-port `daemon start`/`restart` daemon
-  // lands clear of 8787 — both another worker's daemon and any real daemon
+  // Per-worker default port so a fixed-port `server start`/`restart` server
+  // lands clear of 8787 — both another worker's server and any real server
   // a developer is running locally.
   const workerId = Number.parseInt(process.env.VITEST_WORKER_ID ?? '1', 10)
-  const daemonPort = TEST_DAEMON_PORT_BASE + (Number.isNaN(workerId) ? 0 : workerId)
+  const serverPort = TEST_SERVER_PORT_BASE + (Number.isNaN(workerId) ? 0 : workerId)
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     YAAC_DATA_DIR: dataDir,
     GIT_CONFIG_GLOBAL: gitConfigPath,
-    YAAC_DAEMON_PORT: String(daemonPort),
+    YAAC_SERVER_PORT: String(serverPort),
     YAAC_BUILD_ID: 'test-build-id',
     YAAC_IMAGE_PREFIX: 'yaac-test',
     YAAC_PROXY_IMAGE: 'yaac-test-proxy',
@@ -151,46 +151,46 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
     // prebuilt by the global setup and workers must never race a podman build.
     YAAC_IMAGE_PREWARM: '0',
     // Auto-titling would pull the llama.cpp binary + a ~114MB model under
-    // every e2e daemon (and retitle sessions mid-assertion); the feature is
+    // every e2e server (and retitle sessions mid-assertion); the feature is
     // unit-tested with a stubbed runner instead.
     YAAC_AUTO_TITLES: '0',
   }
 
   const cleanup = async (): Promise<void> => {
-    // Reap any auth daemon a test (or `yaac open`/`auth update`) spawned
+    // Reap any auth server a test (or `yaac open`/`auth update`) spawned
     // against this data dir — it reconnects forever and would leak.
     try {
       const raw = await fs.readFile(path.join(dataDir, '.auth-daemon.lock'), 'utf8')
       const lock = JSON.parse(raw) as { pid?: number }
       if (typeof lock.pid === 'number') process.kill(lock.pid, 'SIGTERM')
     } catch {
-      // no auth daemon ran, or it's already gone
+      // no auth server ran, or it's already gone
     }
     await fs.rm(scratchDir, { recursive: true, force: true })
   }
 
-  return { scratchDir, dataDir, gitConfigPath, daemonPort, env, cleanup }
+  return { scratchDir, dataDir, gitConfigPath, serverPort, env, cleanup }
 }
 
-export interface SpawnedDaemon {
+export interface SpawnedServer {
   child: ChildProcess
-  lock: DaemonLock
+  lock: ServerLock
   stop: () => Promise<void>
 }
 
 /**
- * Spawn a real `yaac daemon run` subprocess under the given env. Polls
+ * Spawn a real `yaac server run` subprocess under the given env. Polls
  * for the lock file (5s budget) so the caller can read `.lock.port`
- * without races. The daemon leads its own process group; `stop()`
+ * without races. The server leads its own process group; `stop()`
  * SIGTERMs that group, falling back to a group SIGKILL after 15s so the
- * daemon's forked children are reaped rather than orphaned.
+ * server's forked children are reaped rather than orphaned.
  *
- * Acquires the cross-worker daemon mutex before spawning so only one
- * yaac daemon exists across all parallel vitest workers at any time.
+ * Acquires the cross-worker server mutex before spawning so only one
+ * yaac server exists across all parallel vitest workers at any time.
  * `stop()` releases it after the child has exited.
  */
-export async function spawnYaacDaemon(env: NodeJS.ProcessEnv): Promise<SpawnedDaemon> {
-  const releaseMutex = await acquireDaemonMutex()
+export async function spawnYaacServer(env: NodeJS.ProcessEnv): Promise<SpawnedServer> {
+  const releaseMutex = await acquireServerMutex()
   let mutexReleased = false
   const releaseOnce = async (): Promise<void> => {
     if (mutexReleased) return
@@ -199,13 +199,13 @@ export async function spawnYaacDaemon(env: NodeJS.ProcessEnv): Promise<SpawnedDa
   }
 
   let child: ChildProcess
-  let lock: DaemonLock
+  let lock: ServerLock
   try {
-    child = spawn(process.execPath, [TSX_CLI, ENTRY, 'daemon', 'run', '--port', '0'], {
+    child = spawn(process.execPath, [TSX_CLI, ENTRY, 'server', 'run', '--port', '0'], {
       env,
       stdio: ['ignore', 'ignore', 'pipe'],
-      // Make the daemon its own process-group leader (setsid) so `stop()`
-      // can signal the whole group. The daemon forks long-lived children
+      // Make the server its own process-group leader (setsid) so `stop()`
+      // can signal the whole group. The server forks long-lived children
       // (`kubectl port-forward`/`exec` relays) that inherit this pgid; a
       // group kill reaps them even on the SIGKILL path, instead of leaving
       // them orphaned to accumulate across the serialized e2e files until
@@ -213,12 +213,12 @@ export async function spawnYaacDaemon(env: NodeJS.ProcessEnv): Promise<SpawnedDa
       detached: true,
     })
 
-    // Forward daemon stderr to the test worker's stderr when the debug
-    // flag is set — invaluable when a daemon subprocess dies before the
+    // Forward server stderr to the test worker's stderr when the debug
+    // flag is set — invaluable when a server subprocess dies before the
     // CLI can observe a coherent error.
-    if (process.env.YAAC_TEST_DEBUG_DAEMON === '1') {
+    if (process.env.YAAC_TEST_DEBUG_SERVER === '1') {
       child.stderr?.on('data', (chunk: Buffer) => {
-        process.stderr.write(`[daemon] ${chunk.toString()}`)
+        process.stderr.write(`[server] ${chunk.toString()}`)
       })
     }
 
@@ -231,20 +231,20 @@ export async function spawnYaacDaemon(env: NodeJS.ProcessEnv): Promise<SpawnedDa
   const stop = async (): Promise<void> => {
     try {
       if (child.exitCode === null) {
-        // SIGTERM the whole group: the daemon runs its shutdown handler
+        // SIGTERM the whole group: the server runs its shutdown handler
         // (which calls `removeLock()`, so lock-cleanup assertions stay
         // green), and its `kubectl port-forward`/`exec` children get the
-        // signal directly rather than waiting on the daemon to tear them
+        // signal directly rather than waiting on the server to tear them
         // down.
         killGroup(child, 'SIGTERM')
         await new Promise<void>((resolve) => {
-          // Give the daemon up to 15s to finish its current background-loop
+          // Give the server up to 15s to finish its current background-loop
           // tick (session reconcile, blocked-host persist) before we
           // force-kill. SIGKILL bypasses the shutdown handler's
           // `removeLock()` call, so a too-short timeout leaves stale lock
           // files and flakes tests that assert on lock cleanup.
           const t = setTimeout(() => {
-            // SIGKILL the group, not just the daemon: a force-killed daemon
+            // SIGKILL the group, not just the server: a force-killed server
             // never reaps its children, so without this they orphan and
             // leak across the serialized e2e files.
             killGroup(child, 'SIGKILL')
@@ -265,10 +265,10 @@ export async function spawnYaacDaemon(env: NodeJS.ProcessEnv): Promise<SpawnedDa
 }
 
 /**
- * Signal a daemon's entire process group (negative PID). The daemon is
+ * Signal a server's entire process group (negative PID). The server is
  * spawned `detached`, so it leads its own group and a group-directed
  * signal reaches every child it forked. Falls back to signalling just the
- * daemon if the group is already gone (ESRCH) or the PID is unknown.
+ * server if the group is already gone (ESRCH) or the PID is unknown.
  */
 function killGroup(child: ChildProcess, signal: NodeJS.Signals): void {
   if (child.pid === undefined) return
@@ -285,14 +285,14 @@ function killGroup(child: ChildProcess, signal: NodeJS.Signals): void {
   }
 }
 
-async function waitForLock(timeoutMs: number): Promise<DaemonLock> {
+async function waitForLock(timeoutMs: number): Promise<ServerLock> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const lock = await readLock()
     if (lock) return lock
     await new Promise((r) => setTimeout(r, 100))
   }
-  throw new Error('daemon did not write the lock within timeout')
+  throw new Error('server did not write the lock within timeout')
 }
 
 export interface RunYaacResult {
@@ -322,7 +322,7 @@ export interface RunYaacOptions {
    * Delay between chunks when `stdin` is an array. Default 1500 ms.
    * Needs to be long enough that the CLI has closed one readline
    * interface and opened the next before the chunk arrives, including
-   * daemon-RPC round-trips and parallel-test-worker jitter.
+   * server-RPC round-trips and parallel-test-worker jitter.
    *
    * Prefer `stdinOnPrompt` for multi-prompt flows — a fixed delay races
    * the readline handoff under CPU load (observed flaking whenever tsc
@@ -343,8 +343,8 @@ export interface RunYaacOptions {
 /**
  * Spawn a `yaac <args>` CLI subprocess with the given env, capture
  * stdout/stderr, and resolve once it exits. The caller is responsible
- * for starting a daemon first (via `spawnYaacDaemon`) unless the
- * command under test is itself a daemon-lifecycle command.
+ * for starting a server first (via `spawnYaacServer`) unless the
+ * command under test is itself a server-lifecycle command.
  */
 export async function runYaac(
   env: NodeJS.ProcessEnv,

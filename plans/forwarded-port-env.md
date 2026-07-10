@@ -32,13 +32,13 @@ Decision (confirmed with user):
 Carry an optional `envVar` through the existing `PortForwardConfig` →
 `ReservedPort` chain, then inject it in both session-startup paths:
 
-1. **Fresh-create path** (`src/daemon/session-create.ts`): push `envVar=hostPort`
+1. **Fresh-create path** (`src/server/session-create.ts`): push `envVar=hostPort`
    into the pod-spec `env` array (the same array built by the `env.push(...)`
    calls around lines 743-936) after port reservation (the loop at lines
    944-950) and before that `env` array is captured into `setupParams` for Job
    creation (around line 1124). The agent's tmux pane and any later panes
    inherit it through the pod env.
-2. **Daemon-restart path** (and any future prewarm-claim path that reuses an
+2. **Server-restart path** (and any future prewarm-claim path that reuses an
    already-running pod)
    (`src/lib/session/port-forwarders.ts::provisionSessionForwarders`): the pod's
    baked-in env is fixed once the Job exists, so use
@@ -51,7 +51,7 @@ Both paths use the same `envVar=hostPort` mapping, so dev-server code reads the
 same var regardless of how the session started.
 
 > Forwarder-acquisition gap: today `provisionSessionForwarders` is wired only to
-> the daemon-restart path (`src/lib/session/restore-forwarders.ts:41`). The
+> the server-restart path (`src/lib/session/restore-forwarders.ts:41`). The
 > fresh-create path sets up forwarders inline in `session-create.ts`
 > (`startPortForwarders(kubectlRelay(jobName), forwardedPorts)` at lines
 > 1163-1166) and bakes env into the pod spec, so it does **not** need the
@@ -102,7 +102,7 @@ parameter and include it in the returned object (line 65). `startPortForwarders`
 (lines 93-135) ignores it — it already destructures only `containerPort` and
 `server` (line 100).
 
-### 4. `src/daemon/session-create.ts`
+### 4. `src/server/session-create.ts`
 
 - Line 948: pass `envVar` through to `reserveAvailablePort` so it lands on the
   `ReservedPort` (the loop at line 946 already destructures `config.portForward`
@@ -209,7 +209,7 @@ created Job as usual.
    pod has `PUBLIC_PORT` set to the actual (scanned-forward) host port via
    `yaac shell <session>` then `printenv PUBLIC_PORT`.
 4. Manual smoke (restart/prewarm path): with a session whose forwarders are
-   reprovisioned through `provisionSessionForwarders` (e.g. after a daemon
+   reprovisioned through `provisionSessionForwarders` (e.g. after a server
    restart), open a fresh tmux pane inside and confirm `printenv PUBLIC_PORT`
    is set.
 

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import { buildApp } from '@/daemon/server'
+import { buildApp } from '@/server/server'
 import { projectConfigDir, getProjectsDir, projectDir, claudeDir, codexDir } from '@/lib/project/paths'
 import { addEntry, loadCredentials } from '@/lib/project/credentials'
 import {
@@ -11,12 +11,12 @@ import {
 } from '@/lib/project/tool-auth'
 import { loadPreferences } from '@/lib/project/preferences'
 import type * as projectAddModule from '@/lib/project/add'
-import type * as cliResolveModule from '@/daemon/cli-resolve'
+import type * as cliResolveModule from '@/server/cli-resolve'
 import type { ProjectMeta, ClaudeOAuthBundle } from '@/shared/types'
-import { DaemonError } from '@/daemon/errors'
+import { ServerError } from '@/server/errors'
 import { makeTestRpcClient } from '@test/helpers/rpc'
 
-vi.mock('@/daemon/session-create', () => ({
+vi.mock('@/server/session-create', () => ({
   createSession: vi.fn(),
 }))
 
@@ -42,21 +42,21 @@ vi.mock('@/lib/project/remove', () => ({
 
 // The install flow's post-exit verification resolves the CLI on the real
 // machine — mocked so the route tests pass regardless of what's installed.
-vi.mock('@/daemon/cli-resolve', async () => {
-  const actual = await vi.importActual<typeof cliResolveModule>('@/daemon/cli-resolve')
+vi.mock('@/server/cli-resolve', async () => {
+  const actual = await vi.importActual<typeof cliResolveModule>('@/server/cli-resolve')
   return {
     ...actual,
     resolveToolCliPath: () => '/fake/bin/tool',
   }
 })
 
-import { createSession } from '@/daemon/session-create'
+import { createSession } from '@/server/session-create'
 import { deleteSession } from '@/lib/session/delete'
 import { restartSession } from '@/lib/session/restart'
 import { addProject } from '@/lib/project/add'
 import { removeProject } from '@/lib/project/remove'
-import { registerProvisioning, listProvisioning, clearAllProvisioningForTests } from '@/daemon/provisioning'
-import { authAgentHub, type AgentOp } from '@/daemon/auth-agent'
+import { registerProvisioning, listProvisioning, clearAllProvisioningForTests } from '@/server/provisioning'
+import { authAgentHub, type AgentOp } from '@/server/auth-agent'
 import {
   cancelToolLogin,
   clearAllToolLoginsForTests,
@@ -371,7 +371,7 @@ describe('write routes', () => {
     })
 
     it('emits a terminal error event when createSession throws', async () => {
-      mockCreateSession.mockRejectedValue(new DaemonError('VALIDATION', 'no github token'))
+      mockCreateSession.mockRejectedValue(new ServerError('VALIDATION', 'no github token'))
       const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.session.create.$post({ json: { project: 'demo' } })
       expect(res.status).toBe(200)
@@ -473,7 +473,7 @@ describe('write routes', () => {
     })
 
     it('emits a terminal error event when restartSession throws', async () => {
-      mockRestartSession.mockRejectedValue(new DaemonError('NOT_FOUND', 'missing'))
+      mockRestartSession.mockRejectedValue(new ServerError('NOT_FOUND', 'missing'))
       const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.session.restart.$post({ json: { sessionId: 'nope' } })
       expect(res.status).toBe(200)
@@ -678,14 +678,14 @@ describe('write routes', () => {
       delete process.env.FAKE_LOGIN_MODE
     })
 
-    it('returns AUTH_AGENT_DISCONNECTED (503) when no auth daemon is connected', async () => {
+    it('returns AUTH_AGENT_DISCONNECTED (503) when no auth server is connected', async () => {
       teardownAgent() // drop the loopback agent for this case
       const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.auth[':tool'].login.start.$post({ param: { tool: 'claude' } })
       expect(res.status).toBe(503)
       const body = await res.json() as unknown as { error: { code: string; message: string } }
       expect(body.error.code).toBe('AUTH_AGENT_DISCONNECTED')
-      expect(body.error.message).toMatch(/yaac auth (update|daemon start)/)
+      expect(body.error.message).toMatch(/yaac auth (update|server start)/)
       teardownAgent = installLoopbackAgent() // restore for afterEach symmetry
     })
 

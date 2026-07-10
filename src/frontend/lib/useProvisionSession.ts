@@ -10,7 +10,7 @@ type ProvisionOp = (sessionId: string, onProgress: (message: string) => void) =>
  * Run a session provision (create, or restart-from-deleted) with the shared
  * optimistic flow: drop an immediate provisioning row (sidebar + selectable),
  * auto-open it so the creator watches progress in the main pane, and stream
- * progress/error into it until the daemon snapshot takes over (App prunes the
+ * progress/error into it until the server snapshot takes over (App prunes the
  * optimistic copy once its `provisioning[]` or `sessions[]` includes the id).
  */
 export function useProvisionSession(): (

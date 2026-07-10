@@ -75,7 +75,7 @@ export function claudeKeychainService(configDir?: string): string {
 
 /**
  * On macOS, Claude Code stores OAuth credentials in the Keychain.
- * Fetch them via `security find-generic-password`. Exported for the daemon's
+ * Fetch them via `security find-generic-password`. Exported for the server's
  * web sign-in flow, which watches the scratch config dir's own item (see
  * `claudeKeychainService`). Non-darwin: null.
  */
@@ -205,7 +205,7 @@ export interface ToolLoginResult {
 export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult | null> {
   // Test-only hook: e2e-cli can't drive the native `claude login` /
   // `codex login` OAuth flow end-to-end, so these env vars short-circuit
-  // with a JSON-serialised bundle. The CLI → daemon persistence path is
+  // with a JSON-serialised bundle. The CLI → server persistence path is
   // still exercised exactly as in production. opencode skips the native
   // CLI entirely (OpenRouter api-key only), so its hook payload is a
   // bare api-key string.
@@ -240,8 +240,8 @@ export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult | n
 
 /**
  * The `PUT /auth/:tool` request body: how a client (the CLI's api-key
- * path, or the auth daemon after a completed login) ships captured
- * credentials to the daemon.
+ * path, or the auth server after a completed login) ships captured
+ * credentials to the server.
  */
 export type ToolAuthPayload =
   | { kind: 'api-key'; apiKey: string; provider?: OpencodeProvider }

@@ -11,7 +11,7 @@ describe('sessionShell', () => {
     vi.clearAllMocks()
   })
 
-  it('opens a raw shell over the daemon PTY WebSocket', async () => {
+  it('opens a raw shell over the server PTY WebSocket', async () => {
     await sessionShell('abc')
     expect(attachSessionPty).toHaveBeenCalledWith('abc', 'shell')
   })

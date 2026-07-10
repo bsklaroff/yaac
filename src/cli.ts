@@ -1,7 +1,7 @@
 import { Command, Argument, type Help } from 'commander'
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports -- package.json lives above src/; the single source of truth for the CLI version.
 import pkg from '../package.json' with { type: 'json' }
-import { exitOnClientError } from '@/shared/daemon-client'
+import { exitOnClientError } from '@/shared/server-client'
 import { projectAdd } from '@/commands/project-add'
 import { projectList } from '@/commands/project-list'
 import { projectRebuild } from '@/commands/project-rebuild'
@@ -26,8 +26,8 @@ import { authFake, FAKE_AUTH_KINDS } from '@/commands/auth-fake'
 import { authTokenCreate, authTokenList, authTokenRevoke } from '@/commands/auth-token'
 import { remoteSet, remoteUnset, remoteOn, remoteOff, remoteStatus } from '@/commands/remote'
 import { runAuthDaemon, startAuthDaemon, stopAuthDaemon, statusAuthDaemon } from '@/auth-daemon/run'
-import { runDaemon, startDaemon, stopDaemon, restartDaemon, daemonLogs, openWebapp } from '@/daemon/cli'
-import { DEFAULT_DAEMON_PORT } from '@/shared/daemon-port'
+import { runServer, startServer, stopServer, restartServer, serverLogs, openWebapp } from '@/server/cli'
+import { DEFAULT_SERVER_PORT } from '@/shared/server-port'
 import { ensureRootfulPodmanHost } from '@/lib/container/runtime'
 import type { AgentTool } from '@/shared/types'
 import type { SessionMonitorOptions } from '@/commands/session-monitor'
@@ -76,46 +76,46 @@ const program = new Command()
   .description('Agent sandbox manager')
   .version(pkg.version)
 
-const daemon = program
-  .command('daemon')
-  .description('Manage the yaac daemon (HTTP server the CLI talks to)')
+const server = program
+  .command('server')
+  .description('Manage the yaac server (HTTP server the CLI talks to)')
   .configureHelp({ formatHelp: nestedHelp })
 
-daemon
+server
   .command('run')
-  .description('Run the daemon in the foreground (used internally by `start`)')
-  .option('-p, --port <port>', `Preferred port on 127.0.0.1 (default: ${DEFAULT_DAEMON_PORT}; increments if in use)`, (v) => Number.parseInt(v, 10))
+  .description('Run the server in the foreground (used internally by `start`)')
+  .option('-p, --port <port>', `Preferred port on 127.0.0.1 (default: ${DEFAULT_SERVER_PORT}; increments if in use)`, (v) => Number.parseInt(v, 10))
   .action(async (options: { port?: number }) => {
-    await runDaemon({ port: options.port })
+    await runServer({ port: options.port })
   })
 
-daemon
+server
   .command('start')
-  .description('Start the daemon in the background')
-  .action(startDaemon)
+  .description('Start the server in the background')
+  .action(startServer)
 
-daemon
+server
   .command('stop')
-  .description('Stop the running daemon')
-  .action(stopDaemon)
+  .description('Stop the running server')
+  .action(stopServer)
 
-daemon
+server
   .command('restart')
-  .description('Restart the daemon (stop, then start)')
-  .action(restartDaemon)
+  .description('Restart the server (stop, then start)')
+  .action(restartServer)
 
-daemon
+server
   .command('logs')
-  .description('Print the daemon log (~/.yaac/daemon.log)')
+  .description('Print the server log (~/.yaac/server.log)')
   .option('-f, --follow', 'Keep printing new lines as they are appended')
   .option('-n, --lines <n>', 'Print only the last N lines', (v) => Number.parseInt(v, 10))
   .action(async (options: { follow?: boolean; lines?: number }) => {
-    await daemonLogs(options)
+    await serverLogs(options)
   })
 
 program
   .command('open')
-  .description('Open the webapp in your browser (starts the daemon if needed)')
+  .description('Open the webapp in your browser (starts the server if needed)')
   .option('--no-browser', 'Print the authenticated URL instead of launching a browser')
   .action(async (options: { browser?: boolean }) => {
     await openWebapp({ noBrowser: options.browser === false })
@@ -286,19 +286,19 @@ config
 
 const remote = program
   .command('remote')
-  .description('Point this CLI at a remote yaac daemon')
+  .description('Point this CLI at a remote yaac server')
   .configureHelp({ formatHelp: nestedHelp })
 
 remote
   .command('set')
-  .description('Configure and enable the remote daemon (verifies reachability and the token)')
-  .argument('<url>', 'Daemon origin, e.g. https://srv.tailnet.ts.net')
+  .description('Configure and enable the remote server (verifies reachability and the token)')
+  .argument('<url>', 'Server origin, e.g. https://srv.tailnet.ts.net')
   .requiredOption('--token <token>', 'Durable token minted on the server (yaac auth token create)')
   .action(remoteSet)
 
 remote
   .command('unset')
-  .description('Forget the remote (commands target the local daemon again)')
+  .description('Forget the remote (commands target the local server again)')
   .action(remoteUnset)
 
 remote
@@ -346,28 +346,28 @@ auth
   .action(authFake)
 
 const authDaemon = auth
-  .command('daemon')
+  .command('server')
   .description('Run the login broker that executes Claude/Codex sign-ins on this machine')
   .configureHelp({ formatHelp: nestedHelp })
 
 authDaemon
   .command('run')
-  .description('Run the auth daemon in the foreground')
+  .description('Run the auth server in the foreground')
   .action(runAuthDaemon)
 
 authDaemon
   .command('start')
-  .description('Start the auth daemon in the background')
+  .description('Start the auth server in the background')
   .action(startAuthDaemon)
 
 authDaemon
   .command('stop')
-  .description('Stop the background auth daemon')
+  .description('Stop the background auth server')
   .action(stopAuthDaemon)
 
 authDaemon
   .command('status')
-  .description('Show whether the auth daemon is running and connected')
+  .description('Show whether the auth server is running and connected')
   .action(statusAuthDaemon)
 
 const authToken = auth

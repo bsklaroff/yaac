@@ -173,7 +173,7 @@ export async function runClusterCheck(
     add({
       name: 'registry', status: 'fail',
       detail: `nothing answering on ${registryHost()}`,
-      fix: 'The yaac daemon auto-starts a registry container on startup.\n'
+      fix: 'The yaac server auto-starts a registry container on startup.\n'
         + 'Start it manually with:\n'
         + '  podman run -d --name yaac-registry -p 127.0.0.1:5001:5000 docker.io/library/registry:2',
     })
@@ -216,7 +216,7 @@ export async function runClusterCheck(
   // Inner yaac (a vcluster session, YAAC_NESTED=1): the remaining gates
   // probe machinery that deliberately does not exist inside a vcluster, so
   // they self-skip. The egress gate is among them: an inner session's egress
-  // default-deny is enforced HOST-side (the daemon projects the redirect for
+  // default-deny is enforced HOST-side (the server projects the redirect for
   // the vcluster's synced pods — see docs/yaac-in-yaac-inner-egress.md), and
   // the vcluster has no Cilium datapath or CRDs, so it cannot be probed from
   // in here (applying the session-egress CNP errors "no matches for kind").
@@ -419,7 +419,7 @@ async function runEndToEndProbe(deps: ClusterCheckDeps): Promise<CheckResult> {
           + 'extraMounts entry in your kind config.',
       }
     }
-    // The pod's write must round-trip to the host: this is the daemon-side
+    // The pod's write must round-trip to the host: this is the server-side
     // proof that a session's unprivileged uid can mutate hostPath mounts
     // (worktree, config dirs) — a read-only probe passes on clusters where
     // every session still dies on its first write.
@@ -429,7 +429,7 @@ async function runEndToEndProbe(deps: ClusterCheckDeps): Promise<CheckResult> {
         name: 'probe', status: 'fail',
         detail: `probe pod's hostPath write (uid ${sessionUid()}) did not reach the host`,
         fix: 'Session pods write hostPath mounts as the yaac user, whose '
-          + 'uid is baked in at image build time to match the daemon\'s. '
+          + 'uid is baked in at image build time to match the server\'s. '
           + 'Rebuild session images (delete stale yaac-base/yaac-tools '
           + 'tags) and check the idmapped-mount notes in "Cluster setup" '
           + 'in the README.',
@@ -558,7 +558,7 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
         fix: 'The session-egress CiliumNetworkPolicy must default-deny egress '
           + 'to the proxy transparent ports (it admits only 443/80→Envoy, the '
           + 'SSH sentinel, and DNS). Restart the '
-          + 'yaac daemon so ensureProxyResources re-applies it.',
+          + 'yaac server so ensureProxyResources re-applies it.',
       }
     }
     if (logs.includes('NP_BLOCKED')) {
@@ -587,7 +587,7 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
 /**
  * The CiliumEnvoyConfig CRDs must exist: the cluster-level egress redirect is
  * a CEC (buildEgressRedirectCecManifest), and without `envoyConfig.enabled`
- * on the Cilium install the CRD is absent, so the daemon's
+ * on the Cilium install the CRD is absent, so the server's
  * ensureProxyResources apply would fail and session egress would have no
  * redirect at all. The behavioral gates (redirect / allowlist / forgery lock
  * / DNS stub) are exercised end to end by the transparent-egress e2e suite

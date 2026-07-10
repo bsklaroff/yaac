@@ -18,7 +18,7 @@ import { kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
  * Cilium does NOT garbage-collect these rules when the CEC goes away — every
  * destroyed vcluster's inner-redirect CEC leaves its six rules behind, and
  * they accumulate without bound under session churn (observed: ~30 stale
- * unbound rules on a long-lived cluster). The daemon sweeps them via
+ * unbound rules on a long-lived cluster). The server sweeps them via
  * `reconcileStaleTproxyRules` (src/lib/session/tproxy-gc-reconcile.ts).
  */
 
@@ -106,7 +106,7 @@ interface RawPodList {
 
 /**
  * Name of the running cilium-agent pod, or null when there is none — a
- * vcluster's API (nested daemon), a cluster mid-setup, or an agent restart.
+ * vcluster's API (nested server), a cluster mid-setup, or an agent restart.
  * Single-node cluster: the first Running agent is THE agent.
  */
 export async function findCiliumAgentPod(): Promise<string | null> {

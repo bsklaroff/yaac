@@ -3,12 +3,12 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { getDataDir } from '@/shared/paths'
-import { resolveDaemonTarget } from '@/shared/daemon-client'
+import { resolveServerTarget } from '@/shared/server-client'
 
 /**
- * Client-side lifecycle of the auth daemon — the login broker that runs
+ * Client-side lifecycle of the auth server — the login broker that runs
  * on the user's machine, connects outbound to the (possibly remote) main
- * daemon, and executes claude/codex sign-in flows locally where the
+ * server, and executes claude/codex sign-in flows locally where the
  * browser and the vendors' localhost OAuth callbacks live.
  *
  * Lives in shared (not src/auth-daemon) because commands may only import
@@ -17,7 +17,7 @@ import { resolveDaemonTarget } from '@/shared/daemon-client'
 
 export interface AuthDaemonLock {
   pid: number
-  /** The main-daemon origin this agent connected to. */
+  /** The main-server origin this agent connected to. */
   baseUrl: string
   startedAt: number
 }
@@ -65,13 +65,13 @@ export function isPidLive(pid: number): boolean {
 }
 
 /**
- * Relaunch ourselves as `yaac auth daemon run`, detached. Mirrors the
- * main daemon's self-invocation: production reuses node + the bundled
+ * Relaunch ourselves as `yaac auth server run`, detached. Mirrors the
+ * main server's self-invocation: production reuses node + the bundled
  * entry; dev respawns via tsx so the loader is set up in the child.
  */
 function resolveAuthDaemonInvocation(): { bin: string; args: string[] } {
   const entry = process.argv[1] ?? ''
-  const cmd = ['auth', 'daemon', 'run']
+  const cmd = ['auth', 'server', 'run']
   if (entry.endsWith('.ts')) {
     try {
       const tsxCli = createRequire(import.meta.url).resolve('tsx/cli')
@@ -98,7 +98,7 @@ export async function spawnAuthDaemonDetached(): Promise<void> {
   })
 }
 
-/** Is the main daemon currently seeing a connected auth agent? */
+/** Is the main server currently seeing a connected auth agent? */
 async function agentConnected(baseUrl: string, secret: string): Promise<boolean> {
   try {
     const res = await fetch(`${baseUrl}/auth/agent`, {
@@ -114,19 +114,19 @@ async function agentConnected(baseUrl: string, secret: string): Promise<boolean>
 }
 
 /**
- * Make sure an auth daemon process for the currently resolved main
- * daemon exists on this machine, restarting one pointed at a different
- * daemon (the remote setting changed since it started). Does not wait
+ * Make sure an auth server process for the currently resolved main
+ * server exists on this machine, restarting one pointed at a different
+ * server (the remote setting changed since it started). Does not wait
  * for the agent to connect — `yaac open` uses this fire-and-mostly-
  * forget variant so opening the webapp never blocks on the broker.
  */
 export async function ensureAuthDaemonSpawned(): Promise<{ baseUrl: string; secret: string }> {
-  const target = await resolveDaemonTarget()
+  const target = await resolveServerTarget()
 
   const lock = await readAuthDaemonLock()
   const live = lock !== null && isPidLive(lock.pid)
   if (live && lock.baseUrl !== target.baseUrl) {
-    // Pointed at the wrong daemon — restart against the current target.
+    // Pointed at the wrong server — restart against the current target.
     try {
       process.kill(lock.pid, 'SIGTERM')
     } catch { /* already gone */ }
@@ -139,7 +139,7 @@ export async function ensureAuthDaemonSpawned(): Promise<{ baseUrl: string; secr
 }
 
 /**
- * `ensureAuthDaemonSpawned` plus a bounded wait until the main daemon
+ * `ensureAuthDaemonSpawned` plus a bounded wait until the main server
  * reports the agent connected; throws so callers can fall back (e.g.
  * api-key entry).
  */
@@ -152,7 +152,7 @@ export async function ensureAuthDaemon(): Promise<void> {
     await new Promise((r) => setTimeout(r, 250))
   }
   throw new Error(
-    'The auth daemon did not connect within 8s. '
-    + 'Check `yaac auth daemon status` on this machine.',
+    'The auth server did not connect within 8s. '
+    + 'Check `yaac auth server status` on this machine.',
   )
 }

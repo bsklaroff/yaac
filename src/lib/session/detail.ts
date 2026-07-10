@@ -1,6 +1,6 @@
 import { findSessionPod, listSessionPods } from '@/lib/k8s/pods'
 import { getVclusterStatus, type VclusterStatus } from '@/lib/k8s/vcluster'
-import { DaemonError } from '@/daemon/errors'
+import { ServerError } from '@/server/errors'
 import { getSessionFirstMessage, normalizeTool } from '@/lib/session/status'
 import { readBlockedHosts } from '@/lib/session/blocked-hosts'
 import { readGitAuthFailures } from '@/lib/project/git-auth-failures'
@@ -38,10 +38,10 @@ async function findSession(idOrName: string): Promise<MatchedSession> {
   try {
     pods = await listSessionPods()
   } catch (err) {
-    throw new DaemonError('RUNTIME_UNAVAILABLE', err instanceof Error ? err.message : String(err))
+    throw new ServerError('RUNTIME_UNAVAILABLE', err instanceof Error ? err.message : String(err))
   }
   const match = findSessionPod(pods, idOrName)
-  if (!match) throw new DaemonError('NOT_FOUND', `session ${idOrName} not found`)
+  if (!match) throw new ServerError('NOT_FOUND', `session ${idOrName} not found`)
   return {
     jobName: match.jobName,
     sessionId: match.sessionId,

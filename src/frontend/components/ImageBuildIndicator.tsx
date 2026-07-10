@@ -4,7 +4,7 @@ import { ImageBuildsOverlay } from '@/frontend/components/ImageBuildsOverlay'
 import { useSnapshot } from '@/frontend/lib/useSnapshot'
 
 /**
- * Sidebar-header pill shown while the daemon builds or pushes container
+ * Sidebar-header pill shown while the server builds or pushes container
  * images (session create, background prewarm, or a project rebuild), or
  * when a build failed and awaits dismissal. Clicking opens the fullscreen
  * overlay with per-build status and the live podman log tail. Hidden when

@@ -33,7 +33,7 @@ export async function clearToolAuth(tool: AgentTool): Promise<void> {
   await api.post('/auth/clear', { service: tool })
 }
 
-/** Kick off a daemon-run vendor-CLI browser sign-in (claude/codex). */
+/** Kick off a server-run vendor-CLI browser sign-in (claude/codex). */
 export async function startToolLogin(tool: AgentTool): Promise<ToolLoginView> {
   return api.post<ToolLoginView>(`/auth/${tool}/login/start`)
 }
@@ -53,7 +53,7 @@ export async function cancelToolLogin(id: string): Promise<void> {
   await api.post(`/auth/login/${id}/cancel`)
 }
 
-/** Kick off a daemon-run install of the tool's CLI (offered on cliMissing). */
+/** Kick off a server-run install of the tool's CLI (offered on cliMissing). */
 export async function startToolInstall(tool: AgentTool): Promise<ToolInstallView> {
   return api.post<ToolInstallView>(`/auth/${tool}/install/start`)
 }

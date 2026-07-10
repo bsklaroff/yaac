@@ -1,7 +1,7 @@
 import { isPrewarmed, listSessionPods } from '@/lib/k8s/pods'
 import { proxyClient } from '@/lib/container/proxy-client'
 import { addAllowedHostToProjectConfig } from '@/lib/project/local-config'
-import { DaemonError } from '@/daemon/errors'
+import { ServerError } from '@/server/errors'
 
 /**
  * Allow a previously-blocked egress host for a running session (the webapp
@@ -23,7 +23,7 @@ export async function allowSessionHost(
 
   if (!opts.persist) {
     if (!(await proxyClient.allowHost(target.sessionId, host))) {
-      throw new DaemonError(
+      throw new ServerError(
         'CONFLICT',
         `session ${target.sessionId} is not registered with the egress proxy`,
       )

@@ -1,30 +1,30 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   createYaacTestEnv,
-  spawnYaacDaemon,
+  spawnYaacServer,
   runYaac,
   type YaacTestEnv,
-  type SpawnedDaemon,
+  type SpawnedServer,
 } from '@test/helpers/cli'
 
 /**
  * The remote path without a second machine: point `yaac remote set` at
- * the spawned daemon's own loopback origin, authenticated by a durable
+ * the spawned server's own loopback origin, authenticated by a durable
  * token instead of the lock secret. The Host header the CLI sends is
  * loopback, which the host check allows unconditionally, so this is the
  * full remote code path minus the network in between.
  */
-describe('yaac remote (real CLI + real daemon)', () => {
+describe('yaac remote (real CLI + real server)', () => {
   let testEnv: YaacTestEnv
-  let daemon: SpawnedDaemon
+  let server: SpawnedServer
 
   beforeEach(async () => {
     testEnv = await createYaacTestEnv()
-    daemon = await spawnYaacDaemon(testEnv.env)
+    server = await spawnYaacServer(testEnv.env)
   })
 
   afterEach(async () => {
-    await daemon.stop()
+    await server.stop()
     await testEnv.cleanup()
   })
 
@@ -35,7 +35,7 @@ describe('yaac remote (real CLI + real daemon)', () => {
   }
 
   function origin(): string {
-    return `http://127.0.0.1:${daemon.lock.port}`
+    return `http://127.0.0.1:${server.lock.port}`
   }
 
   it('set → commands run via the token; revoke kills them while the lock stays live', async () => {

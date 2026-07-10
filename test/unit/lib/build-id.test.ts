@@ -56,7 +56,7 @@ describe('build-id', () => {
       expect(before).toBe(after)
     })
 
-    it('ignores the runtime-data dirs (dockerfiles/, k8s/) so edits there do not bounce the daemon', async () => {
+    it('ignores the runtime-data dirs (dockerfiles/, k8s/) so edits there do not bounce the server', async () => {
       await fs.writeFile(path.join(dir, 'a.txt'), 'hello')
       const before = await computeBuildId(dir)
 

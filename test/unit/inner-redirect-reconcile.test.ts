@@ -12,12 +12,12 @@ vi.mock('@/lib/git', () => ({ isTorEnabled: vi.fn(() => false) }))
 vi.mock('@/lib/k8s/vcluster', () => ({
   listVclusterNamespaces: vi.fn().mockResolvedValue([]),
 }))
-vi.mock('@/daemon/log', () => ({ daemonLog: vi.fn() }))
+vi.mock('@/server/log', () => ({ serverLog: vi.fn() }))
 
 import { reconcileInnerRedirects } from '@/lib/session/inner-redirect-reconcile'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
 import { listVclusterNamespaces } from '@/lib/k8s/vcluster'
-import { daemonLog } from '@/daemon/log'
+import { serverLog } from '@/server/log'
 import {
   INNER_EGRESS_REDIRECT_CEC_NAME,
   INNER_PROXY_INGRESS_CNP_NAME,
@@ -31,7 +31,7 @@ const mockGetJson = vi.mocked(kubectlGetJson)
 const mockApply = vi.mocked(kubectlApply)
 const mockRetry = vi.mocked(kubectlWithRetry)
 const mockList = vi.mocked(listVclusterNamespaces)
-const mockLog = vi.mocked(daemonLog)
+const mockLog = vi.mocked(serverLog)
 
 const VC = { name: 'yvc-1', sessionId: 's1', namespace: 'yaac-vc-1', creationTimestamp: '' }
 // vcluster-translated inner proxy Services, one per inner install.

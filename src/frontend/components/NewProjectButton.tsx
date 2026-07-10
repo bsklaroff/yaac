@@ -6,7 +6,7 @@ import { useUiStore } from '@/frontend/store'
 
 /**
  * Rail "+": add a project by cloning a git repo. On success selects the
- * new project. Surfaces the daemon's error (e.g. AUTH_REQUIRED when no git
+ * new project. Surfaces the server's error (e.g. AUTH_REQUIRED when no git
  * credential matches the host).
  */
 export function NewProjectButton(): JSX.Element {

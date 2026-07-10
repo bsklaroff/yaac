@@ -179,7 +179,7 @@ export function persistLayouts(layouts: Record<string, LayoutNode | null>): void
 }
 
 /**
- * Merge daemon-snapshot provisioning rows with local optimistic ones, deduped
+ * Merge server-snapshot provisioning rows with local optimistic ones, deduped
  * by sessionId (the snapshot wins — it carries the live message/error), sorted
  * by createdAt then id for a stable sidebar order. The optimistic copy only
  * fills the gap between clicking create and the first snapshot frame; once the
@@ -206,7 +206,7 @@ export type TerminalTab = string
  * viewed. A read mark stores the spell's waitingSinceMs, so a mark from an
  * earlier spell (session ran and is waiting again — even across a page
  * reload) no longer matches and the session re-flags. A missing
- * waitingSinceMs (daemon predating the field) is normalized to 0.
+ * waitingSinceMs (server predating the field) is normalized to 0.
  */
 export function isUnreadWaiting(
   session: Pick<SessionListEntry, 'sessionId' | 'status' | 'waitingSinceMs'>,
@@ -278,7 +278,7 @@ export function resolveNewSessionTool(
 /** Sections of the settings modal (left-nav entries). */
 export type SettingsSection = 'general' | 'shortcuts' | 'credentials' | 'project' | 'userDockerfile'
 
-/** Local-only UI state (not daemon state — that lives in the snapshot). */
+/** Local-only UI state (not server state — that lives in the snapshot). */
 interface UiState {
   /** Project whose sessions the sidebar is scoped to (rail selection). */
   activeProjectSlug: string | null
@@ -308,15 +308,15 @@ interface UiState {
    *  last-focused pane in tiles mode. Tab-switch shortcuts cycle from it. */
   activeTabs: Record<string, string>
   /** Locally-initiated provisioning rows, shown the instant create/restart is
-   *  clicked. The daemon snapshot's `provisioning[]` is the source of truth;
+   *  clicked. The server snapshot's `provisioning[]` is the source of truth;
    *  these only bridge the gap until the first snapshot frame carries the id,
    *  then they're pruned. */
   optimisticProvisioning: ProvisioningSessionEntry[]
   /** Sessions whose delete was confirmed — hidden optimistically until the
-   *  daemon's (detached) cleanup completes and the snapshot drops them. */
+   *  server's (detached) cleanup completes and the snapshot drops them. */
   pendingDeleteIds: string[]
   /** Just-deleted sessions (that had history) shown optimistically in the
-   *  Deleted group until the daemon's list-deleted catches up. */
+   *  Deleted group until the server's list-deleted catches up. */
   optimisticDeleted: DeletedSessionEntry[]
   /** Read marks for waiting sessions: sessionId → waitingSinceMs of the
    *  spell the user viewed. Keying by spell means a mark from an earlier
@@ -325,7 +325,7 @@ interface UiState {
    *  marks whose spell is over. */
   readWaiting: Record<string, number>
   /** Keyboard-shortcut bindings (command id → chord). Starts at the factory
-   *  defaults and is replaced once the daemon's saved overrides load at
+   *  defaults and is replaced once the server's saved overrides load at
    *  startup; the window keydown listeners read this at event time. */
   bindings: BindingMap
   /** Replace the whole binding map — used to hydrate the saved overrides. */
@@ -531,7 +531,7 @@ useUiStore.subscribe((state, prev) => {
 })
 
 // Read marks survive reloads so already-viewed waiting sessions don't
-// re-flag. Marks are keyed by the daemon's waitingSinceMs, so a session
+// re-flag. Marks are keyed by the server's waitingSinceMs, so a session
 // that waited anew while the page was closed carries a different spell
 // timestamp and correctly shows unread; restored stale marks are GC'd
 // against the first snapshot.

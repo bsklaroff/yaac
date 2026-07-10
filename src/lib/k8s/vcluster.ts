@@ -605,7 +605,7 @@ export async function ensureSessionVcluster(p: EnsureVclusterParams): Promise<vo
   // + world→outer proxy + intracluster) and the control-plane CNP live in the
   // vcluster namespace. The fallback CNP is a STATIC per-vcluster policy seeded
   // here and torn down with the namespace — nothing deletes it in between, so
-  // the daemon reconcile does not re-assert it (it only projects the dynamic
+  // the server reconcile does not re-assert it (it only projects the dynamic
   // inner override once an inner yaac's proxy appears). Its redirect listeners
   // live in the SHARED cluster-scoped fallback CCEC (created once at bootstrap,
   // ensureProxyResources), referenced by kind — so creating a vcluster adds NO
@@ -649,7 +649,7 @@ export async function waitForVclusterKubeconfig(
  * Tear down one vcluster. With each vcluster in its own host namespace,
  * deleting the namespace removes everything inside it in one shot — the
  * control plane, synced pods, the fallback-redirect CNP and control-plane
- * policies, any daemon-projected inner-redirect objects, the RBAC
+ * policies, any server-projected inner-redirect objects, the RBAC
  * Role/RoleBinding, and the kubeconfig Secret. Things that live outside it
  * are unaffected: the cluster-scoped objects (ClusterRole/Binding, the VAP
  * policy/binding — deleted by our ownership label), the session NetworkPolicy

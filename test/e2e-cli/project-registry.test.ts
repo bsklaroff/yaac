@@ -16,10 +16,10 @@ import {
 } from '@/lib/k8s/project-registry'
 import {
   createYaacTestEnv,
-  spawnYaacDaemon,
+  spawnYaacServer,
   runYaac,
   type YaacTestEnv,
-  type SpawnedDaemon,
+  type SpawnedServer,
 } from '@test/helpers/cli'
 import {
   requirePodman,
@@ -39,12 +39,12 @@ import {
 
 // The per-project registry test creates a virtualCluster session, which
 // createSession refuses inside a nested yaac (no vcluster-in-vcluster).
-describe.skipIf(IS_NESTED_YAAC)('yaac per-project registry (real CLI + real daemon + real cluster)', () => {
+describe.skipIf(IS_NESTED_YAAC)('yaac per-project registry (real CLI + real server + real cluster)', () => {
   let testEnv: YaacTestEnv
-  let daemon: SpawnedDaemon | null = null
+  let server: SpawnedServer | null = null
   let mockLLM: MockLLM | null = null
   let mockGit: MockGit | null = null
-  let daemonEnv: NodeJS.ProcessEnv
+  let serverEnv: NodeJS.ProcessEnv
   /** Slugs whose registries the test created — swept in afterEach. */
   const createdSlugs: string[] = []
 
@@ -90,7 +90,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac per-project registry (real CLI + real daem
 
   async function createSession(slug: string): Promise<SessionPod> {
     const { stdout, stderr, exitCode } = await runYaac(
-      daemonEnv, 'session', 'create', slug, '--tool', 'claude',
+      serverEnv, 'session', 'create', slug, '--tool', 'claude',
     )
     if (exitCode !== 0) {
       throw new Error(`session create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
@@ -112,7 +112,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac per-project registry (real CLI + real daem
 
     const llmTarget = { host: mockLLM.host, port: mockLLM.port, tls: false }
     const gitTarget = { host: mockGit.host, port: mockGit.port, tls: false }
-    daemonEnv = {
+    serverEnv = {
       ...testEnv.env,
       YAAC_E2E_UPSTREAM_REDIRECTS: JSON.stringify({
         'github.com': gitTarget,
@@ -122,12 +122,12 @@ describe.skipIf(IS_NESTED_YAAC)('yaac per-project registry (real CLI + real daem
       YAAC_E2E_SKIP_FETCH: '1',
       YAAC_E2E_NO_ATTACH: '1',
     }
-    daemon = await spawnYaacDaemon(daemonEnv)
+    server = await spawnYaacServer(serverEnv)
   })
 
   afterEach(async () => {
-    if (daemon) await daemon.stop()
-    daemon = null
+    if (server) await server.stop()
+    server = null
     await cleanupSessionJobs()
     for (const slug of createdSlugs.splice(0)) {
       await removeProjectRegistry(slug).catch(() => { /* already gone */ })
@@ -258,14 +258,14 @@ describe.skipIf(IS_NESTED_YAAC)('yaac per-project registry (real CLI + real daem
     }
 
     // --- Persists across session delete (per-project, not per-session) ---
-    const { exitCode: delExit } = await runYaac(daemonEnv, 'session', 'delete', session.sessionId)
+    const { exitCode: delExit } = await runYaac(serverEnv, 'session', 'delete', session.sessionId)
     expect(delExit).toBe(0)
     const depAfterDelete = await kubectlGetJson<{ metadata?: { name?: string } }>([
       'get', 'deployment', regName, '-n', k8sNamespace(),
     ])
     expect(depAfterDelete?.metadata?.name).toBe(regName)
 
-    // --- GCs once the project dir is gone (daemon-start sweep) ---
+    // --- GCs once the project dir is gone (server-start sweep) ---
     await fs.rm(path.join(testEnv.dataDir, 'projects', slug), { recursive: true, force: true })
     await gcOrphanProjectRegistries()
     const svcAfterGc = await kubectlGetJson<{ metadata?: { name?: string } }>([

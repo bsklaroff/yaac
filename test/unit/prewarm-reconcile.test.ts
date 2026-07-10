@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-vi.mock('@/daemon/session-create', () => ({
+vi.mock('@/server/session-create', () => ({
   createSession: vi.fn(),
   shellEscape: (s: string) => s,
 }))
@@ -13,13 +13,13 @@ vi.mock('@/lib/k8s/pods', async (importOriginal) => ({
   ...await importOriginal<typeof podsModule>(),
   listSessionPods: vi.fn(),
 }))
-vi.mock('@/daemon/log', () => ({ daemonLog: vi.fn() }))
+vi.mock('@/server/log', () => ({ serverLog: vi.fn() }))
 
-import { reconcilePrewarmPool } from '@/daemon/prewarm-reconcile'
-import { inFlight, clearPrewarmStateForTests } from '@/daemon/prewarm'
+import { reconcilePrewarmPool } from '@/server/prewarm-reconcile'
+import { inFlight, clearPrewarmStateForTests } from '@/server/prewarm'
 import { LABEL_PREWARMED, listSessionPods, type SessionPod } from '@/lib/k8s/pods'
 import type * as podsModule from '@/lib/k8s/pods'
-import { createSession } from '@/daemon/session-create'
+import { createSession } from '@/server/session-create'
 import { cleanupSessionDetached } from '@/lib/session/cleanup'
 import { getDefaultTool } from '@/lib/project/preferences'
 

@@ -31,7 +31,7 @@ import {
   extractClaudeOAuthBundle,
   parseOpencodeProvider,
 } from '@/shared/tool-auth-interactive'
-import { DaemonError } from '@/daemon/errors'
+import { ServerError } from '@/server/errors'
 import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '@/shared/types'
 
 const SAMPLE_BUNDLE: ClaudeOAuthBundle = {
@@ -284,7 +284,7 @@ describe('tool-auth', () => {
     it('rejects a non-object payload', async () => {
       await expect(
         persistToolAuthPayload('claude', null),
-      ).rejects.toBeInstanceOf(DaemonError)
+      ).rejects.toBeInstanceOf(ServerError)
     })
 
     it('rejects api-key with an empty key', async () => {

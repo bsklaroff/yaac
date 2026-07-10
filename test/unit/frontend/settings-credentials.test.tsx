@@ -206,19 +206,19 @@ describe('Settings → Credentials → web sign-in', () => {
   })
 
   it('shows a failed start inline and offers a retry, cancelling nothing', async () => {
-    vi.mocked(startToolLogin).mockRejectedValue(new Error('codex CLI not found on the daemon host'))
+    vi.mocked(startToolLogin).mockRejectedValue(new Error('codex CLI not found on the server host'))
     await openCredentials()
 
     fireEvent.click(within(toolRow('codex')).getByRole('button', { name: 'Sign in' }))
     fireEvent.click(screen.getByRole('button', { name: 'Sign in with ChatGPT' }))
 
-    await waitFor(() => expect(screen.getByText('codex CLI not found on the daemon host')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('codex CLI not found on the server host')).toBeTruthy())
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(screen.getByRole('button', { name: 'Sign in with ChatGPT' })).toBeTruthy()
     expect(cancelToolLogin).not.toHaveBeenCalled()
   })
 
-  it('cancel aborts a live flow daemon-side and returns to the start button', async () => {
+  it('cancel aborts a live flow server-side and returns to the start button', async () => {
     vi.mocked(startToolLogin).mockResolvedValue({ id: 'l3', tool: 'codex', status: 'running' })
     await openCredentials()
 

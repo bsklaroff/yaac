@@ -5,7 +5,7 @@ import path from 'node:path'
 
 // listActiveSessions fans out into many other helpers. We mock the leaves
 // (pod listing, fs-backed helpers) so the single-flight wrapper can be
-// exercised without a cluster or daemon.
+// exercised without a cluster or server.
 
 vi.mock('@/lib/k8s/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()

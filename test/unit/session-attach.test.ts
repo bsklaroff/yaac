@@ -11,7 +11,7 @@ describe('sessionAttach', () => {
     vi.clearAllMocks()
   })
 
-  it('attaches over the daemon PTY WebSocket with the native target', async () => {
+  it('attaches over the server PTY WebSocket with the native target', async () => {
     await sessionAttach('abc')
     expect(attachSessionPty).toHaveBeenCalledWith('abc', 'native')
   })

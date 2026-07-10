@@ -51,12 +51,12 @@ describe('sessionUid', () => {
     vi.restoreAllMocks()
   })
 
-  it('mirrors the daemon process uid', () => {
+  it('mirrors the server process uid', () => {
     vi.spyOn(process, 'getuid').mockReturnValue(501)
     expect(sessionUid()).toBe(501)
   })
 
-  it('falls back to 1000 when the daemon runs as root (uid 0 is taken in the image)', () => {
+  it('falls back to 1000 when the server runs as root (uid 0 is taken in the image)', () => {
     vi.spyOn(process, 'getuid').mockReturnValue(0)
     expect(sessionUid()).toBe(1000)
   })
@@ -198,7 +198,7 @@ describe('image-builder prerequisites', () => {
     // Container-private networks aren't supported in-pod, so no userspace
     // network helper is installed (host netns is the only mode).
     expect(content).not.toContain('default_rootless_network_cmd')
-    // The uid the daemon injects shapes the subuid ranges and socket path.
+    // The uid the server injects shapes the subuid ranges and socket path.
     expect(content).toMatch(/^ARG YAAC_UID=1000$/m)
     expect(content).toContain('DOCKER_HOST=unix:///run/user/${YAAC_UID}/podman/podman.sock')
     // Everything shares the pod's namespaces — nested egress must stay on
@@ -238,7 +238,7 @@ describe('image-builder prerequisites', () => {
     // newuidmap/newgidmap carry file caps, not setuid.
     expect(content).toContain('setcap cap_setuid+ep /usr/bin/newuidmap')
     expect(content).toContain('setcap cap_setgid+ep /usr/bin/newgidmap')
-    // The engine is started by a detached daemon exec, not an entrypoint
+    // The engine is started by a detached server exec, not an entrypoint
     // override — the image keeps the base catatonit keepalive.
     expect(content).not.toMatch(/^ENTRYPOINT/m)
   })

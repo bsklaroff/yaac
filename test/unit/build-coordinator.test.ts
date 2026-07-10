@@ -16,8 +16,8 @@ vi.mock('@/lib/k8s/registry', () => ({
   registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
 }))
 
-vi.mock('@/daemon/log', () => ({
-  daemonLog: vi.fn(),
+vi.mock('@/server/log', () => ({
+  serverLog: vi.fn(),
 }))
 
 import {
@@ -31,7 +31,7 @@ import {
 import { buildImage, resolveImageChain, type ImageLayer } from '@/lib/container/image-builder'
 import { imageExists, removeImage } from '@/lib/container/runtime'
 import { pushImageToRegistry, registryHasTag } from '@/lib/k8s/registry'
-import { clearAllImageBuildsForTests, listImageBuilds } from '@/daemon/image-builds'
+import { clearAllImageBuildsForTests, listImageBuilds } from '@/server/image-builds'
 import type { ImageLayerName } from '@/shared/types'
 
 const mockBuildImage = vi.mocked(buildImage)

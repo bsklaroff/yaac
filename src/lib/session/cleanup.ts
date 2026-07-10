@@ -22,7 +22,7 @@ import {
 } from '@/lib/project/paths'
 import { CONTAINER_TMUX_SOCK, getProjectsDir } from '@/shared/paths'
 import { stopSessionForwarders } from '@/lib/session/port-forwarders'
-import { daemonLog } from '@/daemon/log'
+import { serverLog } from '@/server/log'
 
 const execFileAsync = promisify(execFile)
 
@@ -30,7 +30,7 @@ const execFileAsync = promisify(execFile)
  * Absolute host path to `<cachedPackages>/modules/<sessionId>` — the
  * per-session ephemeral-modules root whose subdirs back the
  * `/workspace/<relPath>` symlinks installed at session start. See
- * `installEphemeralModuleLinks` in `src/daemon/session-create.ts`.
+ * `installEphemeralModuleLinks` in `src/server/session-create.ts`.
  */
 export function sessionModulesDir(projectSlug: string, sessionId: string): string {
   return path.join(cachedPackagesDir(projectSlug), 'modules', sessionId)
@@ -198,7 +198,7 @@ export async function isTmuxSessionAlive(slug: string, sessionId: string): Promi
  * - `placeholder`: the first window's pane still runs the `sleep infinity`
  *                  keepalive that session create opens tmux with — setup
  *                  died between `new-session` and the agent
- *                  `respawn-window` (e.g. the daemon was restarted
+ *                  `respawn-window` (e.g. the server was restarted
  *                  mid-create), and no agent will ever start.
  * - `started`:     the pane runs something else — the agent respawn
  *                  happened. Terminal state: `respawn-window -k` killed
@@ -332,8 +332,8 @@ export async function cleanupSessionDetached(params: {
 
   // Audit every teardown: the actual work below runs as a detached,
   // stdio-ignored child, so without this line a session reaped by the
-  // background loop vanishes with no trace in the daemon log.
-  daemonLog(`[daemon] session teardown: session=${sessionId} job=${jobName} project=${projectSlug}`)
+  // background loop vanishes with no trace in the server log.
+  serverLog(`[server] session teardown: session=${sessionId} job=${jobName} project=${projectSlug}`)
 
   tmuxAliveCache.delete(tmuxAliveKey(projectSlug, sessionId))
   agentStartedCache.delete(tmuxAliveKey(projectSlug, sessionId))
@@ -370,9 +370,9 @@ export async function cleanupSessionDetached(params: {
 }
 
 /**
- * Daemon-startup sweep: remove `.cached-packages/modules/<sid>`
+ * Server-startup sweep: remove `.cached-packages/modules/<sid>`
  * directories whose session is no longer alive. Catches leftovers from
- * crashes, killed daemons, and host reboots.
+ * crashes, killed servers, and host reboots.
  */
 export async function gcOrphanEphemeralModuleDirs(): Promise<void> {
   let liveSessionIds: Set<string>

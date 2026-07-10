@@ -35,7 +35,7 @@ export const VCLUSTER_API_PORT = 8443
  * Marks a session pod as a prewarmed spare — fully provisioned with its
  * agent booted and waiting, but not yet handed to a user. Spares are hidden
  * from user-facing views and claimed on `session create` by removing this
- * label (see `src/daemon/prewarm.ts`). Stamped only when present, so a
+ * label (see `src/server/prewarm.ts`). Stamped only when present, so a
  * normal session pod simply lacks the label.
  */
 export const LABEL_PREWARMED = 'yaac.prewarmed'

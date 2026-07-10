@@ -6,21 +6,21 @@ import {
   configEditUserDockerfile,
 } from '@/commands/config-edit'
 import { editFile } from '@/commands/edit-file'
-import { getRpcClient } from '@/shared/daemon-client'
-import type * as daemonClientModule from '@/shared/daemon-client'
+import { getRpcClient } from '@/shared/server-client'
+import type * as serverClientModule from '@/shared/server-client'
 
 vi.mock('@/commands/edit-file', () => ({
   editFile: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('@/shared/daemon-client', async (importOriginal) => {
-  const actual = await importOriginal<typeof daemonClientModule>()
+vi.mock('@/shared/server-client', async (importOriginal) => {
+  const actual = await importOriginal<typeof serverClientModule>()
   return {
     ...actual,
     getRpcClient: vi.fn(),
     toClientError: vi.fn().mockImplementation(async (res: Response) => {
       const body = await res.json() as { error?: { message?: string } }
-      return new Error(body.error?.message ?? `daemon ${res.status}`)
+      return new Error(body.error?.message ?? `server ${res.status}`)
     }),
   }
 })
@@ -113,7 +113,7 @@ describe('configEditProject', () => {
     errorSpy.mockRestore()
   })
 
-  it('a daemon validation failure keeps the scratch file too', async () => {
+  it('a server validation failure keeps the scratch file too', async () => {
     editorWrites('{ "virtualCluster": true, "nestedContainers": false }')
     configPut.mockResolvedValue({
       ok: false,
@@ -185,7 +185,7 @@ describe('configEditUserDockerfile', () => {
     } as unknown as Awaited<ReturnType<typeof getRpcClient>>)
   })
 
-  it('edits over the config route (daemon-host file, works remotely)', async () => {
+  it('edits over the config route (server-host file, works remotely)', async () => {
     editorWrites('ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN true\n')
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
 

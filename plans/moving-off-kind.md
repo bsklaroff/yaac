@@ -52,8 +52,8 @@ node:
 
 Probed by `src/lib/k8s/cluster-check.ts`:
 
-- **Single node**, with the daemon's `$HOME` visible on the node at the
-  same path (hostPath model — `src/daemon/session-create.ts` mounts,
+- **Single node**, with the server's `$HOME` visible on the node at the
+  same path (hostPath model — `src/server/session-create.ts` mounts,
   kind's extraMount today).
 - **Userns pods**: `hostUsers: false` on every session pod
   (`src/lib/k8s/pod-spec.ts`) ⇒ containerd 2.0+ and idmapped-mount
@@ -140,7 +140,7 @@ Time-boxed, on real macOS/arm64 hardware, before any commitment.
 ## Main registry in-cluster (deferred from the old Phase 3)
 
 Moving the `localhost:5001` podman registry container in-cluster —
-mirroring the per-project in-cluster registries, with daemon-side pushes
+mirroring the per-project in-cluster registries, with server-side pushes
 over the existing `kubectl port-forward` pattern
 (`src/lib/k8s/port-forward.ts`) — kills `connectRegistryToKindNetwork`
 and the localhost hosts.toml fixup entirely. Today's podman-network

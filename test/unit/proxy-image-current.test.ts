@@ -3,7 +3,7 @@ import { ProxyClient } from '@/lib/container/proxy-client'
 import type * as kubectlModule from '@/lib/k8s/kubectl'
 import type * as imageBuilderModule from '@/lib/container/image-builder'
 import type * as registryModule from '@/lib/k8s/registry'
-import type * as daemonLogModule from '@/daemon/log'
+import type * as serverLogModule from '@/server/log'
 
 const mockKubectlGetJson = vi.hoisted(() => vi.fn())
 vi.mock('@/lib/k8s/kubectl', async (importOriginal) => ({
@@ -27,10 +27,10 @@ vi.mock('@/lib/k8s/registry', async (importOriginal) => ({
   pushImageToRegistry: vi.fn(),
 }))
 
-vi.mock('@/daemon/log', async (importOriginal) => ({
-  ...(await importOriginal<typeof daemonLogModule>()),
-  daemonLog: vi.fn(),
-  pipeToDaemonLog: vi.fn(),
+vi.mock('@/server/log', async (importOriginal) => ({
+  ...(await importOriginal<typeof serverLogModule>()),
+  serverLog: vi.fn(),
+  pipeToServerLog: vi.fn(),
 }))
 
 function deploymentWithImage(image: string): object {

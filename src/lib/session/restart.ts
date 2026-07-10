@@ -10,8 +10,8 @@ import {
 } from '@/lib/project/paths'
 import { cleanupSession } from '@/lib/session/cleanup'
 import { normalizeTool } from '@/lib/session/status'
-import { createSession, type SessionCreateResult } from '@/daemon/session-create'
-import { DaemonError } from '@/daemon/errors'
+import { createSession, type SessionCreateResult } from '@/server/session-create'
+import { ServerError } from '@/server/errors'
 import type { AgentTool } from '@/shared/types'
 
 export interface RestartResolution {
@@ -91,7 +91,7 @@ export async function resolveRestartTarget(idOrName: string): Promise<RestartRes
     return { projectSlug: slug, sessionId: wt, tool, jobName: null }
   }
 
-  throw new DaemonError(
+  throw new ServerError(
     'NOT_FOUND',
     `No session found matching "${idOrName}". Run "yaac session list -d" to see deleted sessions.`,
   )

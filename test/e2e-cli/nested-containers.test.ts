@@ -10,10 +10,10 @@ import { listSessionPods, type SessionPod } from '@/lib/k8s/pods'
 import { k8sNamespace, kubectlGetJson } from '@/lib/k8s/kubectl'
 import {
   createYaacTestEnv,
-  spawnYaacDaemon,
+  spawnYaacServer,
   runYaac,
   type YaacTestEnv,
-  type SpawnedDaemon,
+  type SpawnedServer,
 } from '@test/helpers/cli'
 import {
   requirePodman,
@@ -124,13 +124,13 @@ async function startMockUpstreamRegistry(): Promise<MockUpstreamRegistry> {
 
 // In-pod podman builds rely on a `kind` podman network and host topology
 // that don't exist inside a nested (vcluster) session.
-describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real daemon + real cluster)', () => {
+describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server + real cluster)', () => {
   let testEnv: YaacTestEnv
-  let daemon: SpawnedDaemon | null = null
+  let server: SpawnedServer | null = null
   let mockLLM: MockLLM | null = null
   let mockGit: MockGit | null = null
   let mockRegistry: MockUpstreamRegistry | null = null
-  let daemonEnv: NodeJS.ProcessEnv
+  let serverEnv: NodeJS.ProcessEnv
 
   beforeAll(async () => {
     await requirePodman()
@@ -181,7 +181,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real daemon 
 
   async function createSession(slug: string): Promise<SessionPod> {
     const { stdout, stderr, exitCode } = await runYaac(
-      daemonEnv, 'session', 'create', slug, '--tool', 'claude',
+      serverEnv, 'session', 'create', slug, '--tool', 'claude',
     )
     if (exitCode !== 0) {
       throw new Error(`session create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
@@ -216,7 +216,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real daemon 
     const llmTarget = { host: mockLLM.host, port: mockLLM.port, tls: false }
     const gitTarget = { host: mockGit.host, port: mockGit.port, tls: false }
     const registryTarget = { host: mockRegistry.host, port: mockRegistry.port, tls: false }
-    daemonEnv = {
+    serverEnv = {
       ...testEnv.env,
       YAAC_E2E_UPSTREAM_REDIRECTS: JSON.stringify({
         'github.com': gitTarget,
@@ -227,12 +227,12 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real daemon 
       YAAC_E2E_SKIP_FETCH: '1',
       YAAC_E2E_NO_ATTACH: '1',
     }
-    daemon = await spawnYaacDaemon(daemonEnv)
+    server = await spawnYaacServer(serverEnv)
   })
 
   afterEach(async () => {
-    if (daemon) await daemon.stop()
-    daemon = null
+    if (server) await server.stop()
+    server = null
     await cleanupSessionJobs()
     await cleanupMocks([mockLLM, mockGit, mockRegistry])
     mockLLM = null
@@ -302,7 +302,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real daemon 
     // --- Delete session 1 ---
     // Detached cleanup order: promoter (graphroot → shared store) → job
     // delete. Job absence proves the whole pipeline ran.
-    const { exitCode: delExit } = await runYaac(daemonEnv, 'session', 'delete', session1.sessionId)
+    const { exitCode: delExit } = await runYaac(serverEnv, 'session', 'delete', session1.sessionId)
     expect(delExit).toBe(0)
     await waitForJobGone(name1, 300_000)
 
@@ -337,7 +337,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real daemon 
     ])
     expect(byName.trim()).toBe(imageId1)
 
-    await runYaac(daemonEnv, 'session', 'delete', session2.sessionId)
+    await runYaac(serverEnv, 'session', 'delete', session2.sessionId)
   }, 900_000)
 
   it('pulls through the proxy, serves on localhost, runs compose builds, and denies non-allowlisted pulls', async () => {
@@ -447,7 +447,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real daemon 
     expect(blockedFailed).toBe(true)
     expect(Date.now() - started).toBeLessThan(60_000)
 
-    await runYaac(daemonEnv, 'session', 'delete', session.sessionId)
+    await runYaac(serverEnv, 'session', 'delete', session.sessionId)
   }, 900_000)
 
   it('trusts the MITM CA for own-bundle tools (curl) via the combined bundle', async () => {
@@ -540,6 +540,6 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real daemon 
       + 'docker build --no-cache -t yaac-curl-trust:v1 .',
     ], { timeout: 180_000, maxAttempts: 1 })
 
-    await runYaac(daemonEnv, 'session', 'delete', session.sessionId)
+    await runYaac(serverEnv, 'session', 'delete', session.sessionId)
   }, 900_000)
 })

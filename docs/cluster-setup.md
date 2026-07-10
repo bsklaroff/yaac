@@ -177,7 +177,7 @@ node — the same containment rootless podman gave the pre-kubernetes backend.
 
 The idmapped mounts that come with user namespaces present hostPath files at
 their real node-side uids, so the session image builds its `yaac` user with
-the daemon's uid (`YAAC_UID` build arg, baked in automatically and folded
+the server's uid (`YAAC_UID` build arg, baked in automatically and folded
 into the image tag). Nothing to configure — but if your uid ever changes,
 images rebuild on their own, and a standalone `Dockerfile.yaac` that creates
 its own user should honor `ARG YAAC_UID` the same way
@@ -193,7 +193,7 @@ including a hostPath **write** at the session uid. Run it whenever sessions
 fail to start.
 
 > **v1 limits:** single-node clusters only (the hostPath model assumes
-> node == host). The daemon's control traffic reaches the proxy through a
+> node == host). The server's control traffic reaches the proxy through a
 > loopback `kubectl port-forward`; nothing yaac deploys listens on host
 > interfaces.
 

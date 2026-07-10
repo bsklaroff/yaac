@@ -4,9 +4,9 @@ import type { ToolLoginView } from '@/shared/types'
 
 /**
  * Drive a relayed browser sign-in from the terminal. The flow itself is
- * executed by the auth daemon on this machine (which opens the browser
+ * executed by the auth server on this machine (which opens the browser
  * and captures the credentials); this driver starts it via the main
- * daemon's routes, streams the vendor CLI's output (the sign-in URL when
+ * server's routes, streams the vendor CLI's output (the sign-in URL when
  * no browser window opened), forwards a pasted authorize code, and waits
  * for the terminal state — the same relay the webapp's sign-in card
  * drives, with readline in place of the card.

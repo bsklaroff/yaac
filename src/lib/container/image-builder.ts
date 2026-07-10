@@ -4,7 +4,7 @@ import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { DOCKERFILES_DIR, getDataDir, projectConfigDir } from '@/lib/project/paths'
 import { imageExists } from '@/lib/container/runtime'
-import { daemonLog, pipeToDaemonLog } from '@/daemon/log'
+import { serverLog, pipeToServerLog } from '@/server/log'
 import type { ImageLayerName } from '@/shared/types'
 
 export function stringHash(content: string): string {
@@ -15,11 +15,11 @@ export function stringHash(content: string): string {
  * The uid baked into session images as the `yaac` user (YAAC_UID build
  * arg). Session pods run in user namespaces (`hostUsers: false`), and
  * kubernetes identity-idmaps host uids into the pod, so a hostPath file
- * owned by host uid N appears in-container as uid N. Daemon-created dirs
- * (worktrees, cache volumes, config mounts) are owned by the daemon's
+ * owned by host uid N appears in-container as uid N. Server-created dirs
+ * (worktrees, cache volumes, config mounts) are owned by the server's
  * uid — the in-container user must carry the same uid to write them.
  * Falls back to 1000 when there is no uid to mirror (non-POSIX) or the
- * daemon runs as root (uid 0 is taken inside the image).
+ * server runs as root (uid 0 is taken inside the image).
  */
 export function sessionUid(): number {
   const uid = process.getuid?.() ?? 1000
@@ -33,7 +33,7 @@ export async function fileHash(filePath: string): Promise<string> {
 
 /**
  * Content hash for a root (FROM-scratch) session image layer: the
- * Dockerfile content plus the YAAC_UID build arg. Shared by the daemon's
+ * Dockerfile content plus the YAAC_UID build arg. Shared by the server's
  * layer resolution and the test global setup so both derive identical
  * tags.
  */
@@ -108,8 +108,8 @@ export async function buildImage(
       timeout: 600_000,
     })
     const prefix = `[build ${imageName}] `
-    pipeToDaemonLog(child.stdout, prefix, opts.onLog)
-    pipeToDaemonLog(child.stderr, prefix, opts.onLog)
+    pipeToServerLog(child.stdout, prefix, opts.onLog)
+    pipeToServerLog(child.stderr, prefix, opts.onLog)
     child.on('close', (code) => {
       if (code === 0) resolve()
       else reject(new Error(`podman build exited with code ${code}`))
@@ -124,7 +124,7 @@ export async function buildImage(
  */
 export async function ensureImageByTag(tag: string, dockerfile: string, context: string, buildArgs?: Record<string, string>): Promise<void> {
   if (await imageExists(tag)) return
-  daemonLog(`[build] starting ${tag}`)
+  serverLog(`[build] starting ${tag}`)
   await buildImage(tag, dockerfile, context, buildArgs)
 }
 
@@ -186,7 +186,7 @@ export async function resolveImageChain(
 
   const yaacIsLayered = yaacContent ? isLayered(yaacContent) : false
   const defaultDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
-  // The daemon uid is a build input (YAAC_UID arg, see sessionUid), so it
+  // The server uid is a build input (YAAC_UID arg, see sessionUid), so it
   // is folded into the root layer's content hash — a uid change must
   // invalidate the tag just like a Dockerfile edit.
   const uid = sessionUid()

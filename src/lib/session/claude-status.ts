@@ -15,8 +15,8 @@ import { scanJsonlForward } from '@/lib/session/jsonl'
  * JSONL transcript can't see UI-blocked turns (Claude Code does not
  * persist the blocking assistant tool_use until the user answers).
  *
- * Titles are pushed at the daemon by the session's status watcher
- * (`src/daemon/status-watcher.ts`), which holds a tmux control-mode
+ * Titles are pushed at the server by the session's status watcher
+ * (`src/server/status-watcher.ts`), which holds a tmux control-mode
  * subscription on the agent pane's `#{pane_title}` — reads happen via
  * the status store, never by probing the pod. Before Claude Code sets
  * a title the pane reports tmux's default (the pod hostname), which

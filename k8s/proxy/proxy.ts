@@ -4,7 +4,7 @@
  * - Generates a self-signed CA on startup (persisted to /data/)
  * - Accepts per-session rules and allowlists via HTTP API
  * - Writes per-session registrations and blocked-host state through to
- *   /data/ (a hostPath the daemon reads directly) and reloads both at
+ *   /data/ (a hostPath the server reads directly) and reloads both at
  *   boot, so a pod replacement never strands live sessions
  * - Handles CONNECT tunneling: MITMs TLS when rules match, tunnels otherwise
  * - Reads GitHub / Claude / Codex credentials directly from the host-mounted
@@ -99,9 +99,9 @@ async function resolveInternalA(name: string): Promise<string | null> {
 const podIndex = new PodSessionIndex()
 
 // podIP → OUTER sessionId for a vcluster's chained egress (yaac-in-yaac). The
-// host daemon pushes this via PUT /vcluster-attribution: those source pods live
+// host server pushes this via PUT /vcluster-attribution: those source pods live
 // in another namespace the pod-watch SA can't resolve to the owning session, so
-// the daemon — which knows the mapping — supplies it. Full-replace each push.
+// the server — which knows the mapping — supplies it. Full-replace each push.
 const vclusterPodSession = new Map<string, string>()
 // Last-applied attribution content, so the every-tick re-push logs only on change.
 let lastVclusterAttributionKey = ''
@@ -109,7 +109,7 @@ let lastVclusterAttributionKey = ''
 async function resolveSession(ip: string): Promise<string | undefined> {
   const cached = podIndex.resolve(ip)
   if (cached) return cached
-  // Daemon-supplied attribution for a vcluster's chained egress (the pod-watch
+  // Server-supplied attribution for a vcluster's chained egress (the pod-watch
   // can't see those cross-namespace source pods).
   const vc = vclusterPodSession.get(ip)
   if (vc) return vc
@@ -206,7 +206,7 @@ type OpencodeCreds = { kind: 'api-key'; apiKey: string; provider: OpencodeProvid
 // NOTE: keep in sync with src/shared/credentials.ts and
 // src/lib/project/credentials.ts. The proxy bundles independently and can't
 // import from src/. SSH entries live in the same file but are irrelevant to
-// the proxy — the daemon uploads SSH keys directly via PUT /agent/keys, so we
+// the proxy — the server uploads SSH keys directly via PUT /agent/keys, so we
 // only parse out the HTTPS entries here.
 type HttpsCredentialEntry = { pattern: string; token: string }
 
@@ -225,7 +225,7 @@ type Injection =
  * "Bearer "). References keep registrations secret-free so they can be
  * persisted to /data; the real value is resolved per request from
  * `/yaac-credentials/proxy-secrets.json`, which also means rotation via
- * the daemon applies to live sessions immediately.
+ * the server applies to live sessions immediately.
  */
 type RegisteredInjection = {
   action: Injection['action']
@@ -464,7 +464,7 @@ function readOpencodeCreds(): OpencodeCreds | null {
 }
 
 /**
- * Read the daemon-maintained envSecretProxy values (env var name -> secret)
+ * Read the server-maintained envSecretProxy values (env var name -> secret)
  * from the mounted credentials dir. Written by session-create before each
  * registration; injection rules reference entries by key via `secretRef`.
  */
@@ -724,10 +724,10 @@ interface GitAuthFailureRecord {
 // ── State persistence (/data write-through) ────────────────────────────
 //
 // /data is a hostPath, so anything written here is directly readable by
-// the daemon off the host filesystem — no HTTP round-trip. Blocked hosts
+// the server off the host filesystem — no HTTP round-trip. Blocked hosts
 // are written through on change (they're plain hostnames, no secrets);
 // session registrations are written through on PUT/DELETE so a replaced
-// proxy pod reloads them at boot and self-heals without daemon help.
+// proxy pod reloads them at boot and self-heals without server help.
 // Registrations are safe to persist because injection rules carry
 // credential *references* (`secretRef`), never secret values — the values
 // live in the mounted credentials dir and are resolved at injection time.
@@ -937,7 +937,7 @@ function isGitSmartHttpPath(requestPath: string): boolean {
  * Track the upstream's verdict on a git smart-HTTP request that carried a
  * yaac-injected credential. A 401/403 means the stored token itself was
  * rejected (expired or revoked) — record it against the session's project
- * (write-through, like blocked hosts) so the daemon surfaces a loud
+ * (write-through, like blocked hosts) so the server surfaces a loud
  * project-wide error. A later 2xx on the same host from any of the
  * project's sessions clears the record, so the flag self-heals once the
  * user runs `yaac auth update` and git is retried.
@@ -2023,7 +2023,7 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
         }
         // Write-through: registrations are secret-free (rules carry
         // secretRefs), so a replaced pod reloads them at boot and live
-        // sessions keep working with zero daemon involvement.
+        // sessions keep working with zero server involvement.
         persistSessions()
         const redirectCount = sessionUpstreamRedirects.get(sessionId)
           ? Object.keys(sessionUpstreamRedirects.get(sessionId)!).length
@@ -2043,7 +2043,7 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
   // Appends the host to the in-memory allowlist so the next connect is
   // permitted immediately, and prunes it from the recorded blocked set so the
   // webapp badge clears. Write-through both: a replaced pod keeps the widened
-  // allowlist for the session's lifetime, and the daemon reads the pruned
+  // allowlist for the session's lifetime, and the server reads the pruned
   // blocked-hosts file straight off /data.
   const allowHostMatch = req.method === 'POST' && req.url
     ? /^\/sessions\/([^/]+)\/allow-host$/.exec(req.url)
@@ -2063,7 +2063,7 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
           res.writeHead(400); res.end('Invalid body: need host string'); return
         }
         const allowed = sessionAllowedHosts.get(sessionId)
-        // Fail closed: only a registered session can be widened. The daemon
+        // Fail closed: only a registered session can be widened. The server
         // treats this 404 as a soft miss when fanning out over siblings.
         if (!allowed) { res.writeHead(404); res.end('Unknown session'); return }
         if (!allowed.includes(host)) {
@@ -2082,11 +2082,11 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     return
   }
 
-  // yaac-in-yaac attribution: the host daemon pushes a full `{ podIP:
+  // yaac-in-yaac attribution: the host server pushes a full `{ podIP:
   // outerSessionId }` map for every managed vcluster's pods, so chained egress
   // (the inner proxy's upstream dials + pre-opt-in synced pods) is attributed to
   // the owning OUTER session and judged against its allowlist. Not persisted —
-  // pod IPs are ephemeral and the daemon re-pushes every tick; a replaced proxy
+  // pod IPs are ephemeral and the server re-pushes every tick; a replaced proxy
   // fail-closes on this traffic until the next push.
   if (req.method === 'PUT' && req.url === '/vcluster-attribution') {
     if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
@@ -2098,7 +2098,7 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
       const key = [...map.entries()].map(([ip, sid]) => `${ip}=${sid}`).sort().join(',')
       vclusterPodSession.clear()
       for (const [ip, sid] of map) vclusterPodSession.set(ip, sid)
-      // The daemon re-pushes every tick (so the map survives a proxy restart);
+      // The server re-pushes every tick (so the map survives a proxy restart);
       // only log when it actually changes, to keep the log quiet at steady state.
       if (key !== lastVclusterAttributionKey) {
         lastVclusterAttributionKey = key
@@ -2142,7 +2142,7 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     return
   }
 
-  // ssh-agent management. The daemon uploads keys here at startup and on
+  // ssh-agent management. The server uploads keys here at startup and on
   // every `yaac auth update` SSH add/remove. Key bytes live only in the
   // agent's memory — never persisted to the proxy filesystem.
   if (req.method === 'PUT' && req.url === '/agent/keys') {
@@ -2206,7 +2206,7 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
 //
 // The file path is always passed explicitly via `-H`: ssh-add's default
 // known_hosts lookup expands `~` through getpwuid(), NOT $HOME, and the
-// proxy's runtime uid (the daemon's host uid, set by runAsUser) either maps
+// proxy's runtime uid (the server's host uid, set by runAsUser) either maps
 // to the image's `node` user — whose /home/node we never write — or to no
 // passwd entry at all. Both make the default lookup fail with "No host keys
 // found for destination".
@@ -2221,7 +2221,7 @@ function requireEnv(name: string): string {
 }
 
 // $HOME/.ssh — a runtime-uid-writable mount the deployment points HOME at,
-// because the proxy runs as the daemon's host uid, which need not own the
+// because the proxy runs as the server's host uid, which need not own the
 // image's /home/node. ssh-add never resolves this path itself; it gets it
 // via -H (see above).
 const SSH_HOME = path.join(requireEnv('HOME'), '.ssh')
@@ -2374,7 +2374,7 @@ function forwardPlainHttp(
 
 // ── Server ─────────────────────────────────────────────────────────────
 
-// :API_PORT serves only the daemon control API (CA cert, session
+// :API_PORT serves only the server control API (CA cert, session
 // registrations, ssh-agent keys). Session egress never reaches it — all of
 // it (HTTP, HTTPS, SSH) rides the relay-fed transparent listeners, gated by
 // the per-connection PP2 token.

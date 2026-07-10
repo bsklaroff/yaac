@@ -246,8 +246,8 @@ export interface GitCredentialsFile {
 }
 
 // ---------------------------------------------------------------------------
-// Wire types — RPC request/response shapes used across the daemon/CLI
-// boundary. Lib and daemon modules return these; commands receive them via
+// Wire types — RPC request/response shapes used across the server/CLI
+// boundary. Lib and server modules return these; commands receive them via
 // the Hono RPC client.
 // ---------------------------------------------------------------------------
 
@@ -281,7 +281,7 @@ export interface AuthListResult {
   toolAuth: ToolAuthSummary[]
 }
 
-// --- subscription plan usage (daemon/plan-usage.ts, snapshot field) ---
+// --- subscription plan usage (server/plan-usage.ts, snapshot field) ---
 
 /**
  * One limit row from Anthropic's subscription usage endpoint
@@ -317,16 +317,16 @@ export type PlanUsageResult =
     subscriptionType: string | null
     /** The org's rate-limit tier from the OAuth profile endpoint (e.g.
      *  'default_claude_max_20x') — distinguishes Max 20x from Max 10x.
-     *  Null until the daemon's per-credential profile fetch lands. */
+     *  Null until the server's per-credential profile fetch lands. */
     rateLimitTier: string | null
     limits: PlanUsageLimit[]
   }
 
-// --- web-driven tool sign-in (daemon/tool-login.ts) ---
+// --- web-driven tool sign-in (server/tool-login.ts) ---
 
 export type ToolLoginStatus = 'running' | 'success' | 'error'
 
-/** Wire view of a daemon-run vendor-CLI browser login (never carries tokens).
+/** Wire view of a server-run vendor-CLI browser login (never carries tokens).
  *  The CLI opens the browser itself — same-machine setups need no relaying. */
 export interface ToolLoginView {
   id: string
@@ -341,7 +341,7 @@ export interface ToolLoginView {
   cliMissing?: boolean
 }
 
-/** Wire view of a daemon-run vendor-CLI install kicked off from the webapp
+/** Wire view of a server-run vendor-CLI install kicked off from the webapp
  *  (the "Install Claude Code / Codex" button on a cliMissing sign-in). */
 export interface ToolInstallView {
   id: string
@@ -378,10 +378,10 @@ export interface SessionListEntry {
   /** Pod created time as 'YYYY-MM-DD HH:MM:SS' (UTC). */
   createdAt: string
   /** Epoch ms when the current waiting spell began, stamped by the
-   *  daemon's push-fed status store at the transition itself. Only set
+   *  server's push-fed status store at the transition itself. Only set
    *  while status is 'waiting'; a new spell gets a new value, so clients
    *  can tell "still the same wait" from "waited, ran, waits again" —
-   *  even for sub-second turns. In-memory on the daemon: a restart (or a
+   *  even for sub-second turns. In-memory on the server: a restart (or a
    *  still-booting session with no watcher yet) has no stamp, which
    *  clients treat as its own spell. */
   waitingSinceMs?: number
@@ -389,9 +389,9 @@ export interface SessionListEntry {
   /** User-assigned display title (falls back to `prompt` in UIs). */
   title?: string
   blockedHosts: string[]
-  /** Live host→container forwards owned by the daemon (from the
+  /** Live host→container forwards owned by the server (from the
    *  forwarder registry). Empty until forwarders are (re)provisioned —
-   *  briefly so after a daemon restart, before the restore pass runs. */
+   *  briefly so after a server restart, before the restore pass runs. */
   forwardedPorts: PortMapping[]
 }
 
@@ -444,7 +444,7 @@ export interface PickNextInput {
   visited: string[]
   lastVisited?: string
   /**
-   * Project slug of the last-attached session. The daemon uses it to
+   * Project slug of the last-attached session. The server uses it to
    * look up the session transcript if the session disappeared between
    * this call and the previous one — which tells us whether the user
    * closed a blank session.
@@ -491,7 +491,7 @@ export interface ProjectSummary {
 
 /**
  * A session that is currently provisioning — a create or restart in flight,
- * tracked in daemon memory and surfaced in the snapshot so the webapp renders
+ * tracked in server memory and surfaced in the snapshot so the webapp renders
  * it as a first-class, selectable sidebar row that survives a reload (with live
  * progress) until the real session lands or a failure is dismissed.
  */
@@ -513,7 +513,7 @@ export interface ProvisioningSessionEntry {
 export type ImageLayerName = 'base' | 'tools' | 'nestable' | 'project' | 'user'
 
 /**
- * An image build or registry push tracked in daemon memory and surfaced in
+ * An image build or registry push tracked in server memory and surfaced in
  * the snapshot (metadata only — the raw podman log tail is fetched via
  * `GET /image/builds/:id/log`, not streamed through snapshots).
  */
@@ -538,12 +538,12 @@ export interface ImageBuildEntry {
 }
 
 /**
- * Full picture of daemon-owned state the webapp renders. Hydrated from a
+ * Full picture of server-owned state the webapp renders. Hydrated from a
  * `snapshot` event on connect and replaced wholesale on every subsequent
  * `snapshot`. Mirrors the union of `GET /session/list` and
  * `GET /project/list`.
  */
-export interface DaemonSnapshot {
+export interface ServerSnapshot {
   sessions: SessionListEntry[]
   stale: StaleSessionInfo[]
   projects: ProjectSummary[]
@@ -552,11 +552,11 @@ export interface DaemonSnapshot {
    *  see ActiveSessionsResult.gitAuthFailures). */
   gitAuthFailures: Record<string, GitAuthFailure[]>
   imageBuilds: ImageBuildEntry[]
-  /** Subscription plan usage, refreshed daemon-side (daemon/plan-usage.ts).
+  /** Subscription plan usage, refreshed server-side (server/plan-usage.ts).
    *  Null until the first refresh after a webapp client connects lands. */
   planUsage: PlanUsageResult | null
 }
 
-/** Messages the daemon pushes over `/events`. */
-export type DaemonEvent =
-  | { type: 'snapshot'; data: DaemonSnapshot }
+/** Messages the server pushes over `/events`. */
+export type ServerEvent =
+  | { type: 'snapshot'; data: ServerSnapshot }

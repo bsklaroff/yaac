@@ -5,7 +5,7 @@ import type { SessionListEntry } from '@/shared/types'
 /**
  * Optimistic session delete, shared by the sidebar row's × and the Alt+D
  * shortcut (both post-confirm): hide the session and clear a matching
- * selection immediately, then fire the delete. The daemon's cleanup is
+ * selection immediately, then fire the delete. The server's cleanup is
  * detached (a stop can take ~10s), so we can't wait for the snapshot to
  * drop the session. On failure, restore it.
  */

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-vi.mock('@/daemon/session-create', () => ({
+vi.mock('@/server/session-create', () => ({
   shellEscape: (s: string) => s.replace(/'/g, "'\\''"),
   retoolSpare: vi.fn(),
 }))
@@ -20,13 +20,13 @@ import {
   claiming,
   inFlight,
   clearPrewarmStateForTests,
-} from '@/daemon/prewarm'
+} from '@/server/prewarm'
 import { LABEL_PREWARMED, LABEL_TOOL, listSessionPods, type SessionPod } from '@/lib/k8s/pods'
 import type * as podsModule from '@/lib/k8s/pods'
 import { cleanupSessionDetached, isTmuxSessionAlive } from '@/lib/session/cleanup'
 import { kubectlWithRetry } from '@/lib/k8s/kubectl'
 import { containerExec } from '@/lib/k8s/exec'
-import { retoolSpare } from '@/daemon/session-create'
+import { retoolSpare } from '@/server/session-create'
 
 const mockListPods = vi.mocked(listSessionPods)
 const mockTmuxAlive = vi.mocked(isTmuxSessionAlive)

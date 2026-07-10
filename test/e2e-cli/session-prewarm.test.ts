@@ -9,10 +9,10 @@ import { listProjects } from '@/lib/project/list'
 import { isTmuxSessionAlive } from '@/lib/session/cleanup'
 import {
   createYaacTestEnv,
-  spawnYaacDaemon,
+  spawnYaacServer,
   runYaac,
   type YaacTestEnv,
-  type SpawnedDaemon,
+  type SpawnedServer,
 } from '@test/helpers/cli'
 import {
   requirePodman,
@@ -49,7 +49,7 @@ async function waitFor<T>(fn: () => Promise<T | undefined | false>, timeoutMs: n
  */
 describe('yaac prewarmed sessions', () => {
   let testEnv: YaacTestEnv
-  let daemon: SpawnedDaemon | null = null
+  let server: SpawnedServer | null = null
   let mockLLM: MockLLM | null = null
   let mockGit: MockGit | null = null
 
@@ -66,8 +66,8 @@ describe('yaac prewarmed sessions', () => {
   })
 
   afterEach(async () => {
-    if (daemon) await daemon.stop()
-    daemon = null
+    if (server) await server.stop()
+    server = null
     await cleanupSessionJobs()
     await cleanupMocks([mockLLM, mockGit])
     mockLLM = null
@@ -107,7 +107,7 @@ describe('yaac prewarmed sessions', () => {
 
     const llmTarget = { host: mockLLM!.host, port: mockLLM!.port, tls: false }
     const gitTarget = { host: mockGit!.host, port: mockGit!.port, tls: false }
-    const daemonEnv: NodeJS.ProcessEnv = {
+    const serverEnv: NodeJS.ProcessEnv = {
       ...testEnv.env,
       YAAC_PREWARM_POOL_SIZE: '1', // re-enable the pool (off by default in e2e)
       YAAC_E2E_UPSTREAM_REDIRECTS: JSON.stringify({
@@ -118,10 +118,10 @@ describe('yaac prewarmed sessions', () => {
       YAAC_E2E_SKIP_FETCH: '1',
       YAAC_E2E_NO_ATTACH: '1',
     }
-    daemon = await spawnYaacDaemon(daemonEnv)
+    server = await spawnYaacServer(serverEnv)
 
     // 1. First (cold) create — the project now has an open session.
-    const first = await runYaac(daemonEnv, 'session', 'create', 'repo-demo', '--tool', 'claude')
+    const first = await runYaac(serverEnv, 'session', 'create', 'repo-demo', '--tool', 'claude')
     if (first.exitCode !== 0) console.error(first.stdout, first.stderr)
     expect(first.exitCode).toBe(0)
 
@@ -149,7 +149,7 @@ describe('yaac prewarmed sessions', () => {
     expect(proj?.sessionCount).toBe(1)
 
     // 4. Second create claims the spare instead of cold-provisioning.
-    const second = await runYaac(daemonEnv, 'session', 'create', 'repo-demo', '--tool', 'claude')
+    const second = await runYaac(serverEnv, 'session', 'create', 'repo-demo', '--tool', 'claude')
     if (second.exitCode !== 0) console.error(second.stdout, second.stderr)
     expect(second.exitCode).toBe(0)
     expect(second.stdout).toContain('Using prewarmed session...')
@@ -172,7 +172,7 @@ describe('yaac prewarmed sessions', () => {
 
     // 6. Spares are tool-agnostic: a create for a different tool claims the
     //    claude-warmed spare and retools it instead of cold-provisioning.
-    const third = await runYaac(daemonEnv, 'session', 'create', 'repo-demo', '--tool', 'codex')
+    const third = await runYaac(serverEnv, 'session', 'create', 'repo-demo', '--tool', 'codex')
     if (third.exitCode !== 0) console.error(third.stdout, third.stderr)
     expect(third.exitCode).toBe(0)
     expect(third.stdout).toContain('Switching prewarmed session to codex...')

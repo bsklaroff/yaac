@@ -4,39 +4,39 @@ import path from 'node:path'
 import WebSocket from 'ws'
 import {
   createYaacTestEnv,
-  spawnYaacDaemon,
+  spawnYaacServer,
   runYaac,
   type YaacTestEnv,
-  type SpawnedDaemon,
+  type SpawnedServer,
 } from '@test/helpers/cli'
 
 const CLAUDE_STUB = path.join(__dirname, '..', 'helpers', 'fake-claude-login.cjs')
 
 /**
  * The auth-daemon relay end to end with real processes: a spawned main
- * daemon, `yaac auth update` auto-starting a real auth daemon on this
+ * server, `yaac auth update` auto-starting a real auth server on this
  * machine, the stubbed vendor CLI completing a "browser" login, and the
- * captured bundle landing back on the main daemon over RPC. Plus the
- * `yaac auth daemon` lifecycle commands and the raw /agent/auth wire.
+ * captured bundle landing back on the main server over RPC. Plus the
+ * `yaac auth server` lifecycle commands and the raw /agent/auth wire.
  */
-describe('yaac auth daemon (real CLI + real daemons)', () => {
+describe('yaac auth server (real CLI + real servers)', () => {
   let testEnv: YaacTestEnv
-  let daemon: SpawnedDaemon
+  let server: SpawnedServer
 
   beforeEach(async () => {
     testEnv = await createYaacTestEnv()
-    daemon = await spawnYaacDaemon(testEnv.env)
+    server = await spawnYaacServer(testEnv.env)
   })
 
   afterEach(async () => {
-    // Stop any auth daemon before the main daemon so its reconnect loop
+    // Stop any auth server before the main server so its reconnect loop
     // doesn't spam the logs; testEnv.cleanup() reaps stragglers by pid.
-    await runYaac(testEnv.env, 'auth', 'daemon', 'stop')
-    await daemon.stop()
+    await runYaac(testEnv.env, 'auth', 'server', 'stop')
+    await server.stop()
     await testEnv.cleanup()
   })
 
-  it('auth update runs the relayed login and the bundle lands on the main daemon', async () => {
+  it('auth update runs the relayed login and the bundle lands on the main server', async () => {
     const env = {
       ...testEnv.env,
       YAAC_E2E_CLAUDE_LOGIN_CLI: JSON.stringify([process.execPath, CLAUDE_STUB]),
@@ -56,14 +56,14 @@ describe('yaac auth daemon (real CLI + real daemons)', () => {
   })
 
   it('start / status / stop drive the broker lifecycle', async () => {
-    const start = await runYaac(testEnv.env, 'auth', 'daemon', 'start')
+    const start = await runYaac(testEnv.env, 'auth', 'server', 'start')
     expect(start.exitCode, start.stderr).toBe(0)
-    expect(start.stderr).toMatch(/auth daemon started/)
+    expect(start.stderr).toMatch(/auth server started/)
 
     // status reports running and (once the socket lands) connected.
     let connected = false
     for (let i = 0; i < 20 && !connected; i++) {
-      const status = await runYaac(testEnv.env, 'auth', 'daemon', 'status')
+      const status = await runYaac(testEnv.env, 'auth', 'server', 'status')
       expect(status.exitCode).toBe(0)
       expect(status.stdout).toMatch(/running \(pid \d+\)/)
       connected = /connected:\s+yes/.test(status.stdout)
@@ -72,34 +72,34 @@ describe('yaac auth daemon (real CLI + real daemons)', () => {
     expect(connected).toBe(true)
 
     // A second start is an idempotent no-op.
-    const again = await runYaac(testEnv.env, 'auth', 'daemon', 'start')
+    const again = await runYaac(testEnv.env, 'auth', 'server', 'start')
     expect(again.exitCode).toBe(0)
     expect(again.stderr).toMatch(/already running/)
 
-    const stop = await runYaac(testEnv.env, 'auth', 'daemon', 'stop')
+    const stop = await runYaac(testEnv.env, 'auth', 'server', 'stop')
     expect(stop.exitCode).toBe(0)
     expect(stop.stderr).toMatch(/stopped/)
 
-    const status = await runYaac(testEnv.env, 'auth', 'daemon', 'status')
+    const status = await runYaac(testEnv.env, 'auth', 'server', 'status')
     expect(status.stdout).toMatch(/not running/)
   })
 
   it('without an agent, webapp-shaped login starts get actionable 503 guidance', async () => {
     const res = await fetch(
-      `http://127.0.0.1:${daemon.lock.port}/auth/claude/login/start`,
-      { method: 'POST', headers: { authorization: `Bearer ${daemon.lock.secret}` } },
+      `http://127.0.0.1:${server.lock.port}/auth/claude/login/start`,
+      { method: 'POST', headers: { authorization: `Bearer ${server.lock.secret}` } },
     )
     expect(res.status).toBe(503)
     const body = await res.json() as { error: { code: string; message: string } }
     expect(body.error.code).toBe('AUTH_AGENT_DISCONNECTED')
-    expect(body.error.message).toMatch(/yaac auth (update|daemon start)/)
+    expect(body.error.message).toMatch(/yaac auth (update|server start)/)
   })
 
   it('a raw agent socket flips /auth/agent and dropping it fails running flows', async () => {
-    const base = `http://127.0.0.1:${daemon.lock.port}`
-    const auth = { authorization: `Bearer ${daemon.lock.secret}` }
+    const base = `http://127.0.0.1:${server.lock.port}`
+    const auth = { authorization: `Bearer ${server.lock.secret}` }
 
-    const ws = new WebSocket(`ws://127.0.0.1:${daemon.lock.port}/agent/auth`, { headers: auth })
+    const ws = new WebSocket(`ws://127.0.0.1:${server.lock.port}/agent/auth`, { headers: auth })
     await new Promise<void>((resolve, reject) => {
       ws.once('open', () => resolve())
       ws.once('error', reject)

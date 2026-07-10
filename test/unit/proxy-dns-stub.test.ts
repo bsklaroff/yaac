@@ -54,7 +54,7 @@ describe('isInternalName', () => {
 
   it('sinkholes bare *.svc — out of zone, would leak to the upstream resolver', () => {
     // CoreDNS forwards anything outside cluster.local to its remote upstream,
-    // so a bare *.svc must NOT be forwarded (DNS-exfil channel). The daemon
+    // so a bare *.svc must NOT be forwarded (DNS-exfil channel). The server
     // emits FQDNs, so nothing legitimate relies on the shorthand.
     expect(isInternalName('yaac-reg-foo.ns.svc')).toBe(false)
     expect(isInternalName('evil.attacker.svc')).toBe(false)

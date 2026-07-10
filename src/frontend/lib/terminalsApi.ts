@@ -15,7 +15,7 @@ export async function createShellTerminal(sessionId: string): Promise<SessionTer
   return api.post<SessionTerminalEntry>(`/session/${encodeURIComponent(sessionId)}/terminals`)
 }
 
-/** Kill a window terminal — and whatever runs in it. The daemon refuses
+/** Kill a window terminal — and whatever runs in it. The server refuses
  *  the agent window. */
 export async function killSessionTerminal(sessionId: string, target: string): Promise<void> {
   await api.post(`/session/${encodeURIComponent(sessionId)}/terminals/close`, { target })

@@ -30,7 +30,7 @@ import {
   type PaneRect,
   type SplitDir,
 } from '@/frontend/lib/layout'
-import type { DaemonSnapshot, ProvisioningSessionEntry, SessionTerminalEntry } from '@/shared/types'
+import type { ServerSnapshot, ProvisioningSessionEntry, SessionTerminalEntry } from '@/shared/types'
 
 /** Gap between pane cards (the dividers live in it). */
 const GAP = 8
@@ -79,7 +79,7 @@ export function SessionView({
   snapshot,
   provisioning,
 }: {
-  snapshot: DaemonSnapshot | undefined
+  snapshot: ServerSnapshot | undefined
   provisioning: ProvisioningSessionEntry[]
 }): JSX.Element {
   const selectedSessionId = useUiStore((s) => s.selectedSessionId)
@@ -192,7 +192,7 @@ export function SessionView({
   }
 
   /** Create a scratch-shell window and open its pane — split `onto`, or
-   *  the largest pane. The daemon returns the new window id up front, so
+   *  the largest pane. The server returns the new window id up front, so
    *  the pane opens without waiting for the next terminals poll. */
   const openShell = (onto?: { target: string; dir: SplitDir }): void => {
     if (!sid) return

@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process'
 
 /**
  * The Codex SessionStart hook script lives inline in
- * `src/daemon/session-create.ts` (written into the container's codex
+ * `src/server/session-create.ts` (written into the container's codex
  * dir on each session start). It reads Codex's hook-input JSON on
  * stdin, extracts `transcript_path`, and symlinks it into
  * `.yaac-transcripts/<YAAC_SESSION_ID>.jsonl` so yaac can find the
@@ -138,7 +138,7 @@ describe('codex SessionStart hook script', () => {
 describe('codex hook script in session-create.ts matches the unit test copy', () => {
   it('has not drifted', async () => {
     const src = await fs.readFile(
-      path.resolve(__dirname, '..', '..', 'src', 'daemon', 'session-create.ts'),
+      path.resolve(__dirname, '..', '..', 'src', 'server', 'session-create.ts'),
       'utf8',
     )
     // Script is written as a joined string array — reconstruct the

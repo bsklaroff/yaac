@@ -18,10 +18,10 @@ import {
 import { removeProjectRegistry } from '@/lib/k8s/project-registry'
 import {
   createYaacTestEnv,
-  spawnYaacDaemon,
+  spawnYaacServer,
   runYaac,
   type YaacTestEnv,
-  type SpawnedDaemon,
+  type SpawnedServer,
 } from '@test/helpers/cli'
 import {
   requirePodman,
@@ -44,12 +44,12 @@ const INNER_IMAGE = 'localhost:5001/library/alpine:3.20'
 
 // createSession refuses virtualCluster inside a nested yaac (no
 // vcluster-in-vcluster), so these can't run from within a session.
-describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real daemon + real cluster)', () => {
+describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server + real cluster)', () => {
   let testEnv: YaacTestEnv
-  let daemon: SpawnedDaemon | null = null
+  let server: SpawnedServer | null = null
   let mockLLM: MockLLM | null = null
   let mockGit: MockGit | null = null
-  let daemonEnv: NodeJS.ProcessEnv
+  let serverEnv: NodeJS.ProcessEnv
   const createdSlugs: string[] = []
   const createdVclusters: string[] = []
 
@@ -95,7 +95,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real daemon 
 
   async function createSession(slug: string): Promise<SessionPod> {
     const { stdout, stderr, exitCode } = await runYaac(
-      daemonEnv, 'session', 'create', slug, '--tool', 'claude',
+      serverEnv, 'session', 'create', slug, '--tool', 'claude',
     )
     if (exitCode !== 0) {
       throw new Error(`session create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
@@ -138,7 +138,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real daemon 
 
     const llmTarget = { host: mockLLM.host, port: mockLLM.port, tls: false }
     const gitTarget = { host: mockGit.host, port: mockGit.port, tls: false }
-    daemonEnv = {
+    serverEnv = {
       ...testEnv.env,
       YAAC_E2E_UPSTREAM_REDIRECTS: JSON.stringify({
         'github.com': gitTarget,
@@ -148,12 +148,12 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real daemon 
       YAAC_E2E_SKIP_FETCH: '1',
       YAAC_E2E_NO_ATTACH: '1',
     }
-    daemon = await spawnYaacDaemon(daemonEnv)
+    server = await spawnYaacServer(serverEnv)
   })
 
   afterEach(async () => {
-    if (daemon) await daemon.stop()
-    daemon = null
+    if (server) await server.stop()
+    server = null
     await cleanupSessionJobs()
     for (const name of createdVclusters.splice(0)) {
       await removeSessionVcluster(name).catch(() => { /* already gone */ })
@@ -300,7 +300,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real daemon 
     // namespace (sweeping the control plane, synced pods, policies, and
     // kubeconfig secret) plus the cluster-scoped objects and the session
     // NetworkPolicy. The namespace disappearing is the definitive signal.
-    const { exitCode: delExit } = await runYaac(daemonEnv, 'session', 'delete', session.sessionId)
+    const { exitCode: delExit } = await runYaac(serverEnv, 'session', 'delete', session.sessionId)
     expect(delExit).toBe(0)
     const deadline = Date.now() + 300_000
     for (;;) {

@@ -16,11 +16,11 @@ vi.mock('@/lib/session/cleanup', () => ({
   cleanupSessionDetached: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('@/daemon/log', () => ({ daemonLog: vi.fn() }))
+vi.mock('@/server/log', () => ({ serverLog: vi.fn() }))
 
 import { listSessionPods, listSessionJobs } from '@/lib/k8s/pods'
 import { probeTmuxLiveness, probeAgentPaneState, cleanupSessionDetached } from '@/lib/session/cleanup'
-import { daemonLog } from '@/daemon/log'
+import { serverLog } from '@/server/log'
 import { reconcileStaleSessions } from '@/lib/session/list'
 
 const mockListPods = vi.mocked(listSessionPods)
@@ -28,7 +28,7 @@ const mockListJobs = vi.mocked(listSessionJobs)
 const mockProbe = vi.mocked(probeTmuxLiveness)
 const mockPaneProbe = vi.mocked(probeAgentPaneState)
 const mockCleanup = vi.mocked(cleanupSessionDetached)
-const mockLog = vi.mocked(daemonLog)
+const mockLog = vi.mocked(serverLog)
 
 // createdAtMs=1 (epoch) is always older than any grace window.
 function pod(sessionId: string, running = true): podsModule.SessionPod {

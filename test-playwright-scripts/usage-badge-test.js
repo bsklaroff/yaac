@@ -10,10 +10,10 @@
  * (compact tag + its percent, aria-pressed on the row), clicking another
  * switches the pin, re-clicking unpins, and a pin survives a page reload.
  * Opening the popover also POSTs a background refresh nudge, which the
- * daemon throttles to at most one upstream refresh per minute.
+ * server throttles to at most one upstream refresh per minute.
  *
- * Drives the running yaac daemon's webapp in real Chromium. The usage data
- * rides the daemon-pushed /events snapshot: the daemon refreshes it from
+ * Drives the running yaac server's webapp in real Chromium. The usage data
+ * rides the server-pushed /events snapshot: the server refreshes it from
  * api.anthropic.com (at most every 5min, only while a webapp client is
  * connected) and the badge just renders the pushed value — so this needs
  * OAuth (not api-key) Claude credentials, and the badge can take a few
@@ -21,8 +21,8 @@
  *
  * Run: node test-playwright-scripts/usage-badge-test.js
  * (set SCREENSHOT_DIR to capture closed/open screenshots there)
- * Needs a running daemon (`yaac daemon start`); reads the port/secret from
- * $YAAC_DATA_DIR/.daemon.lock (or ~/.yaac). (playwright is resolved from
+ * Needs a running server (`yaac server start`); reads the port/secret from
+ * $YAAC_DATA_DIR/.server.lock (or ~/.yaac). (playwright is resolved from
  * the global npm root; browsers live under /opt/playwright-browsers)
  */
 import { execSync } from 'node:child_process'
@@ -42,15 +42,15 @@ function requirePlaywright() {
   }
 }
 
-function readDaemonLock() {
+function readServerLock() {
   const candidates = [
-    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.daemon.lock'),
-    path.join(os.homedir(), '.yaac', '.daemon.lock'),
+    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.server.lock'),
+    path.join(os.homedir(), '.yaac', '.server.lock'),
   ].filter(Boolean)
   for (const p of candidates) {
     if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
   }
-  throw new Error(`no .daemon.lock found (tried ${candidates.join(', ')}) — is the daemon running?`)
+  throw new Error(`no .server.lock found (tried ${candidates.join(', ')}) — is the server running?`)
 }
 
 let failures = 0
@@ -62,7 +62,7 @@ function check(name, cond, detail = '') {
 
 async function main() {
   const { chromium } = requirePlaywright()
-  const lock = readDaemonLock()
+  const lock = readServerLock()
   const base = `http://127.0.0.1:${lock.port}`
   const auth = { authorization: `Bearer ${lock.secret}` }
 

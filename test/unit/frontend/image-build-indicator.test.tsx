@@ -10,7 +10,7 @@ vi.mock('@/frontend/lib/imageBuildsApi', () => ({
 
 import { ImageBuildIndicator } from '@/frontend/components/ImageBuildIndicator'
 import { useSnapshot } from '@/frontend/lib/useSnapshot'
-import type { DaemonSnapshot, ImageBuildEntry } from '@/shared/types'
+import type { ServerSnapshot, ImageBuildEntry } from '@/shared/types'
 
 // jsdom has no ResizeObserver; Base UI needs one to exist.
 beforeAll(() => {
@@ -41,7 +41,7 @@ function stubSnapshot(imageBuilds: ImageBuildEntry[]): void {
   vi.mocked(useSnapshot).mockReturnValue({
     sessions: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {}, imageBuilds,
     planUsage: null,
-  } as DaemonSnapshot)
+  } as ServerSnapshot)
 }
 
 describe('ImageBuildIndicator', () => {

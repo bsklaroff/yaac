@@ -3,9 +3,9 @@ import path from 'node:path'
 import { getDataDir } from '@/shared/paths'
 
 /**
- * The one configured remote daemon (`~/.yaac/remote.json`, 0600). yaac
+ * The one configured remote server (`~/.yaac/remote.json`, 0600). yaac
  * deliberately supports a single remote rather than named contexts —
- * `enabled` is the switch back to the local daemon without losing the
+ * `enabled` is the switch back to the local server without losing the
  * token. Growing this into a named map later is a client-side-only
  * change.
  */
@@ -52,7 +52,7 @@ export async function clearRemote(): Promise<void> {
 
 /**
  * Validate and canonicalize a remote URL to a bare http(s) origin.
- * The daemon serves at the origin root (tailscale serve mounts there
+ * The server serves at the origin root (tailscale serve mounts there
  * too), so paths/queries are a configuration mistake — reject rather
  * than silently strip.
  */

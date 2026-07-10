@@ -12,7 +12,7 @@ export interface CreateSessionResult {
  * POST a session operation and consume its NDJSON progress stream
  * (/session/create and /session/restart both stream
  * progress → result → error). Calls `onProgress` per step; resolves with
- * the final result object or throws the daemon's error message.
+ * the final result object or throws the server's error message.
  */
 async function streamSessionOp(
   path: string,
@@ -47,7 +47,7 @@ export async function restartSession(
   return await streamSessionOp('/session/restart', { sessionId, ...meta }, onProgress) as { sessionId: string }
 }
 
-/** Dismiss a provisioning row (drops the daemon registry entry; used for a
+/** Dismiss a provisioning row (drops the server registry entry; used for a
  *  failed create/restart). Idempotent server-side. */
 export async function dismissProvisioning(sessionId: string): Promise<void> {
   await api.post(`/session/provisioning/${encodeURIComponent(sessionId)}/dismiss`)

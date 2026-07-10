@@ -6,7 +6,7 @@ import type * as toolAuthInteractiveModule from '@/shared/tool-auth-interactive'
 // On macOS the real CLI never writes the scratch `.credentials.json` — the
 // login lands only in the Keychain, under a service name suffixed with a hash
 // of CLAUDE_CONFIG_DIR. These tests mock the keychain reads so the detection
-// paths in the daemon watcher run anywhere (regression: the watcher used to
+// paths in the server watcher run anywhere (regression: the watcher used to
 // read only the un-suffixed host service and reported keychain-only logins
 // as failures).
 const keychain = vi.hoisted(() => ({

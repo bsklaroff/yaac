@@ -8,7 +8,7 @@
  * shrink-reflow (the session window is created oversized; see
  * session-create.ts) that used to play out in front of the user.
  *
- * Drives the real stack: the running yaac daemon's webapp in real Chromium,
+ * Drives the real stack: the running yaac server's webapp in real Chromium,
  * clicking "+ New session" → "Claude Code" and rAF-sampling the new
  * terminal's computed opacity + rendered row text from DOM-mount through
  * reveal. Also covers the "Connecting…" notice shown while the gate holds
@@ -21,9 +21,9 @@
  * xterm-attach-scroll-pin-test.js instead.
  *
  * Run: node test-playwright-scripts/session-create-no-flash-test.js
- * Needs a running daemon (`yaac daemon start`) with a project configured;
- * reads the port/secret from $YAAC_DATA_DIR/.daemon.lock (or ~/.yaac).
- * The created session is deleted at the end via the daemon API.
+ * Needs a running server (`yaac server start`) with a project configured;
+ * reads the port/secret from $YAAC_DATA_DIR/.server.lock (or ~/.yaac).
+ * The created session is deleted at the end via the server API.
  * (playwright is resolved from the global npm root; browsers live under
  * /opt/playwright-browsers)
  */
@@ -44,15 +44,15 @@ function requirePlaywright() {
   }
 }
 
-function readDaemonLock() {
+function readServerLock() {
   const candidates = [
-    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.daemon.lock'),
-    path.join(os.homedir(), '.yaac', '.daemon.lock'),
+    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.server.lock'),
+    path.join(os.homedir(), '.yaac', '.server.lock'),
   ].filter(Boolean)
   for (const p of candidates) {
     if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
   }
-  throw new Error(`no .daemon.lock found (tried ${candidates.join(', ')}) — is the daemon running?`)
+  throw new Error(`no .server.lock found (tried ${candidates.join(', ')}) — is the server running?`)
 }
 
 let failures = 0
@@ -64,7 +64,7 @@ function check(name, cond, detail = '') {
 
 async function main() {
   const { chromium } = requirePlaywright()
-  const lock = readDaemonLock()
+  const lock = readServerLock()
   const base = `http://127.0.0.1:${lock.port}`
   const auth = { authorization: `Bearer ${lock.secret}` }
 
@@ -135,7 +135,7 @@ async function main() {
     await page.getByRole('menuitem', { name: 'Claude', exact: true }).click()
     console.log('session create clicked; waiting for the terminal to mount…')
 
-    // The provisioning placeholder shows while the daemon builds the session;
+    // The provisioning placeholder shows while the server builds the session;
     // the terminal mounts when the session lands in the snapshot. Cold
     // creates take a while (pod start + agent boot).
     await page.waitForFunction(() => window.__noflashSamples.length > 0, null, { timeout: 300_000 })

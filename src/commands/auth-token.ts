@@ -1,7 +1,7 @@
 import { getRpcClient, toClientError } from '@/commands/rpc'
 
 /**
- * Mint a durable token for a remote client. The daemon returns the full
+ * Mint a durable token for a remote client. The server returns the full
  * token exactly once — print it to stdout (script-friendly) with the
  * handling warning on stderr.
  */

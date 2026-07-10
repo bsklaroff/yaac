@@ -6,7 +6,7 @@ import { proxyDataHostDir } from '@/lib/k8s/bootstrap'
  * Host path of the proxy's blocked-hosts write-through file. The proxy
  * writes `/data/blocked-hosts.json` (sessionId -> hostnames) atomically
  * whenever a session's blocked set grows; /data is a hostPath, so the
- * daemon reads the live state straight off the filesystem — no proxy
+ * server reads the live state straight off the filesystem — no proxy
  * HTTP round-trip, no background-loop snapshotting, no staleness.
  */
 export function blockedHostsStatePath(): string {

@@ -4,7 +4,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import * as childProcess from 'node:child_process'
-import { getRpcClient, resolveDaemonTarget, toClientError } from '@/shared/daemon-client'
+import { getRpcClient, resolveServerTarget, toClientError } from '@/shared/server-client'
 import { ensureAuthDaemon } from '@/shared/auth-daemon'
 import { runRelayedToolLogin } from '@/commands/relayed-login'
 import { validatePattern, parsePattern } from '@/shared/credentials'
@@ -159,10 +159,10 @@ async function runSshUpdate(): Promise<void> {
     process.exit(1)
   }
 
-  // The key is read by the daemon/proxy on the daemon host — against a
-  // remote daemon that means a path on the server, so say so.
-  const target = await resolveDaemonTarget().catch(() => null)
-  const where = target?.remote ? `on the daemon host ${target.baseUrl}` : 'host filesystem'
+  // The key is read by the server/proxy on the server host — against a
+  // remote server that means a path on the server, so say so.
+  const target = await resolveServerTarget().catch(() => null)
+  const where = target?.remote ? `on the server host ${target.baseUrl}` : 'host filesystem'
   const privateKeyPath = (await rl.question(`Private key path (${where}; e.g. ~/.ssh/id_ed25519): `)).trim()
   if (!privateKeyPath) {
     rl.close()
@@ -220,8 +220,8 @@ async function runToolUpdate(tool: AgentTool): Promise<void> {
   })
 
   if (!result && (tool === 'claude' || tool === 'codex')) {
-    // Browser sign-in, executed by the auth daemon on this machine and
-    // persisted by it straight to the (possibly remote) main daemon.
+    // Browser sign-in, executed by the auth server on this machine and
+    // persisted by it straight to the (possibly remote) main server.
     try {
       await ensureAuthDaemon()
       const outcome = await runRelayedToolLogin(tool)

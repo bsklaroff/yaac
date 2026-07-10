@@ -22,7 +22,7 @@ export function portLinkLabel(p: PortMapping): string {
  * interface via YAAC_FORWARD_BIND, so the link is correct wherever you
  * loaded the app). This is the webapp's replacement for the tmux
  * status-right port readout — webapp panes attach through view sessions
- * with `status off`, so the daemon-pushed snapshot is the only place the
+ * with `status off`, so the server-pushed snapshot is the only place the
  * mapping can surface.
  */
 export function portLinkHref(hostname: string, p: PortMapping): string {

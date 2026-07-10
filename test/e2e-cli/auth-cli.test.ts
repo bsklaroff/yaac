@@ -4,17 +4,17 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
   createYaacTestEnv,
-  spawnYaacDaemon,
+  spawnYaacServer,
   runYaac,
   type YaacTestEnv,
-  type SpawnedDaemon,
+  type SpawnedServer,
 } from '@test/helpers/cli'
 
 /**
  * Merged auth/tool CLI suite (formerly auth.test.ts, auth-fake.test.ts,
  * auth-clear.test.ts, auth-update.test.ts, tool.test.ts) sharing ONE test
- * env and ONE daemon for the whole file instead of a per-test daemon —
- * spawning a daemon (and waiting on the cross-worker daemon mutex) per
+ * env and ONE server for the whole file instead of a per-test server —
+ * spawning a server (and waiting on the cross-worker server mutex) per
  * test dominated wall-clock for these fast, cluster-free commands.
  *
  * Vitest runs tests within a file sequentially in declaration order, and
@@ -24,27 +24,27 @@ import {
  * menu indexes, whole-file equality) resets `.credentials` to exactly
  * the state it seeds rather than inheriting residue from earlier tests.
  * Tool-credential files (claude.json/codex.json/opencode.json) are
- * written wholesale by the daemon (fs.writeFile of the full JSON in
+ * written wholesale by the server (fs.writeFile of the full JSON in
  * src/lib/project/tool-auth.ts), so tests that only parse the file their
  * own command just wrote don't need a reset.
  *
  * The YAAC_E2E_*_LOGIN / YAAC_E2E_OPENCODE_PROVIDER hooks are read by
  * the CLI process (runToolLogin in src/shared/tool-auth-interactive.ts,
  * called from src/commands/auth-update.ts — "interactive tool-login must
- * happen CLI-side"), never by the daemon, so they are passed per-runYaac
- * call and the shared daemon needs no special env.
+ * happen CLI-side"), never by the server, so they are passed per-runYaac
+ * call and the shared server needs no special env.
  */
-describe('yaac auth + tool (real CLI + shared daemon)', () => {
+describe('yaac auth + tool (real CLI + shared server)', () => {
   let testEnv: YaacTestEnv
-  let daemon: SpawnedDaemon
+  let server: SpawnedServer
 
   beforeAll(async () => {
     testEnv = await createYaacTestEnv()
-    daemon = await spawnYaacDaemon(testEnv.env)
+    server = await spawnYaacServer(testEnv.env)
   })
 
   afterAll(async () => {
-    await daemon.stop()
+    await server.stop()
     await testEnv.cleanup()
   })
 
@@ -180,7 +180,7 @@ describe('yaac auth + tool (real CLI + shared daemon)', () => {
 
   describe('auth fake', () => {
     it('auth fake claude-oauth seeds an OAuth bundle in the data dir', async () => {
-      // No reset needed: the daemon writes claude.json wholesale, so any
+      // No reset needed: the server writes claude.json wholesale, so any
       // earlier claude.json content is fully replaced before we parse it.
       const { exitCode, stderr } = await runYaac(testEnv.env, 'auth', 'fake', 'claude-oauth')
       expect(exitCode, stderr).toBe(0)
@@ -355,7 +355,7 @@ describe('yaac auth + tool (real CLI + shared daemon)', () => {
       // Reset: the assertion is tokens.toHaveLength(1), and the HTTPS
       // credential saved two tests ago would otherwise still be present.
       await resetCreds()
-      // Generate a real ed25519 key so the daemon's passphrase check passes.
+      // Generate a real ed25519 key so the server's passphrase check passes.
       // ssh-keygen is a hard host dep for yaac's SSH credential path.
       const keyPath = path.join(testEnv.dataDir, 'test-key')
       const gen = spawnSync('ssh-keygen', ['-t', 'ed25519', '-N', '', '-f', keyPath, '-C', 'yaac-test'])
@@ -454,7 +454,7 @@ describe('yaac auth + tool (real CLI + shared daemon)', () => {
   describe('tool', () => {
     // Runs after the clean-data-dir describe: `tool set` persists the
     // default tool, which would break the unconfigured-state assertion.
-    it('tool set then tool get round-trips via the daemon', async () => {
+    it('tool set then tool get round-trips via the server', async () => {
       const setResult = await runYaac(testEnv.env, 'tool', 'set', 'claude')
       expect(setResult.exitCode).toBe(0)
       expect(setResult.stdout).toMatch(/claude/)

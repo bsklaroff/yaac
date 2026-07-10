@@ -11,8 +11,8 @@ import { getSessionPorts } from '@/lib/session/port-forwarders'
 import { readBlockedHosts } from '@/lib/session/blocked-hosts'
 import { readAllGitAuthFailures } from '@/lib/project/git-auth-failures'
 import { getSessionTitles } from '@/lib/session/titles'
-import { DaemonError } from '@/daemon/errors'
-import { daemonLog } from '@/daemon/log'
+import { ServerError } from '@/server/errors'
+import { serverLog } from '@/server/log'
 import { testEnv } from '@/shared/env'
 import { formatUtcTimestamp } from '@/shared/time'
 import type {
@@ -77,7 +77,7 @@ async function ensureProjectExists(slug: string): Promise<void> {
   try {
     await fs.access(path.join(projectDir(slug), 'project.json'))
   } catch {
-    throw new DaemonError('NOT_FOUND', `project ${slug} not found`)
+    throw new ServerError('NOT_FOUND', `project ${slug} not found`)
   }
 }
 
@@ -85,7 +85,7 @@ async function ensureProjectExists(slug: string): Promise<void> {
  * Display-path tmux liveness, fed by the status watchers instead of a
  * probe: a healthy control-mode stream is conclusive proof the in-pod
  * tmux server is up; anything else is merely `unknown` (watcher still
- * connecting, respawning after a blip, daemon just started). Never
+ * connecting, respawning after a blip, server just started). Never
  * `dead` — display must not drop a session on stream state. Genuinely
  * dead sessions leave the list when their pod goes away (pod watch) or
  * when the stale reaper — which keeps its own conclusive probes —
@@ -132,7 +132,7 @@ export async function listActiveSessions(projectFilter?: string): Promise<Active
 async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSessionsResult> {
   if (projectFilter) await ensureProjectExists(projectFilter)
 
-  // In the daemon the pod watcher's push-fed cache answers instantly;
+  // In the server the pod watcher's push-fed cache answers instantly;
   // the one-shot kubectl list is the fallback for watcher-less contexts
   // (unit tests, a watcher that hasn't started yet).
   const watcher = getActivePodWatcher()
@@ -143,7 +143,7 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
     try {
       pods = await listSessionPods(projectFilter)
     } catch (err) {
-      throw new DaemonError('RUNTIME_UNAVAILABLE', err instanceof Error ? err.message : String(err))
+      throw new ServerError('RUNTIME_UNAVAILABLE', err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -212,7 +212,7 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
  * Tear down stale session Jobs (pod stopped, or running with a dead
  * tmux session) across every project. Swallows individual failures so
  * one broken session can't block the rest; designed to be called from
- * the daemon background loop.
+ * the server background loop.
  */
 export async function reconcileStaleSessions(): Promise<void> {
   let pods
@@ -231,15 +231,15 @@ export async function reconcileStaleSessions(): Promise<void> {
   // line the avoided reap is invisible, so a flapping probe looks like
   // nothing happened.
   for (const p of indeterminate) {
-    daemonLog(
-      `[daemon] stale-reaper: keeping session=${p.sessionId} job=${p.jobName}`
+    serverLog(
+      `[server] stale-reaper: keeping session=${p.sessionId} job=${p.jobName}`
       + ' (tmux probe inconclusive; pod still running)',
     )
   }
 
   // Half-provisioned zombie sweep: a create killed between opening tmux
   // (the `sleep infinity` placeholder window) and respawning the agent —
-  // e.g. a daemon restart mid-create — leaves a pod whose tmux is alive
+  // e.g. a server restart mid-create — leaves a pod whose tmux is alive
   // but whose agent will never start. The liveness probe above calls that
   // healthy forever, so additionally require the agent pane to have left
   // the placeholder once the grace window has passed. Only a conclusive
@@ -282,13 +282,13 @@ export async function reconcileStaleSessions(): Promise<void> {
   // teardown runs, so a session disappearing is always explained.
   for (const s of stale) {
     const reason = s.zombie ? 'tmux gone, pod still running' : 'pod stopped'
-    daemonLog(`[daemon] stale-reaper: reaping session=${s.sessionId} job=${s.jobName} (${reason})`)
+    serverLog(`[server] stale-reaper: reaping session=${s.sessionId} job=${s.jobName} (${reason})`)
   }
   for (const s of placeholderStale) {
-    daemonLog(`[daemon] stale-reaper: reaping session=${s.sessionId} job=${s.jobName} (agent never started; placeholder pane past grace)`)
+    serverLog(`[server] stale-reaper: reaping session=${s.sessionId} job=${s.jobName} (agent never started; placeholder pane past grace)`)
   }
   for (const o of orphanTargets) {
-    daemonLog(`[daemon] stale-reaper: reaping session=${o.sessionId} job=${o.jobName} (orphan Job, no backing pod)`)
+    serverLog(`[server] stale-reaper: reaping session=${o.sessionId} job=${o.jobName} (orphan Job, no backing pod)`)
   }
 
   await Promise.all(targets.map((t) =>
@@ -300,7 +300,7 @@ export async function reconcileStaleSessions(): Promise<void> {
  * Persist the first-message snapshot for running opencode sessions that
  * don't have one yet, so `session list -d` and restart retain a record
  * even when no client polls /session/list (otherwise the only trigger).
- * Designed to run from the daemon background loop.
+ * Designed to run from the server background loop.
  *
  * opencode is the only tool whose snapshot is probe-driven — claude and
  * codex write their transcripts directly on message submit — so this
@@ -373,7 +373,7 @@ export async function listDeletedSessions(
    * or an unstattable file is skipped silently. Tracks ms-precision
    * birthtime alongside each entry so the sort is stable across files
    * created in the same second (createdAt is truncated to second
-   * precision for display). These are daemon-written regular files
+   * precision for display). These are server-written regular files
    * (never symlinks), so plain `fs.stat` is used.
    */
   async function collectDeleted(

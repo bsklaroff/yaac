@@ -7,21 +7,21 @@ import WebSocket from 'ws'
 import simpleGit from 'simple-git'
 import {
   createYaacTestEnv,
-  spawnYaacDaemon,
+  spawnYaacServer,
   runYaac,
   type YaacTestEnv,
-  type SpawnedDaemon,
+  type SpawnedServer,
 } from '@test/helpers/cli'
 import { addTestProject, createTestRepo, requirePodman, requireCluster } from '@test/helpers/setup'
 
 /**
  * Merged session-CLI suite: one shared `createYaacTestEnv()` + one shared
- * `spawnYaacDaemon()` for every test in this file, instead of a per-test
- * daemon. Spawning a daemon (and waiting on the cross-worker daemon mutex)
+ * `spawnYaacServer()` for every test in this file, instead of a per-test
+ * server. Spawning a server (and waiting on the cross-worker server mutex)
  * dominated the wall-clock of the small per-command files this merges:
  * session-attach, session-delete, session-shell, session-restart,
  * session-list, session-monitor, session-stream, open, the validation-only
- * session-create tests, the no-container daemon-ws describe, and the
+ * session-create tests, the no-container server-ws describe, and the
  * no-container session-provisioning describe.
  *
  * Vitest runs tests within a file sequentially in declaration order, which
@@ -46,7 +46,7 @@ import { addTestProject, createTestRepo, requirePodman, requireCluster } from '@
  */
 
 let testEnv: YaacTestEnv
-let daemon: SpawnedDaemon
+let server: SpawnedServer
 
 beforeAll(async () => {
   await requirePodman()
@@ -55,17 +55,17 @@ beforeAll(async () => {
   // Global git identity so the CLI's session restart/create don't prompt
   // on stdin. `GIT_CONFIG_GLOBAL` is preset in `testEnv.env`, so seeding
   // this file is the same as populating `~/.gitconfig` without clobbering
-  // the real one. The git config file lives outside the daemon data dir,
+  // the real one. The git config file lives outside the server data dir,
   // so writing it here does not violate the empty-state tests below.
   await fs.writeFile(
     testEnv.gitConfigPath,
     '[user]\n\tname = Test User\n\temail = test@example.com\n',
   )
-  daemon = await spawnYaacDaemon(testEnv.env)
+  server = await spawnYaacServer(testEnv.env)
 })
 
 afterAll(async () => {
-  await daemon.stop()
+  await server.stop()
   await testEnv.cleanup()
 })
 
@@ -84,7 +84,7 @@ async function waitFor(
   throw new Error(describeFailure())
 }
 
-/** Open a WS against the daemon, collecting text + binary frames. */
+/** Open a WS against the server, collecting text + binary frames. */
 function openWs(url: string, headers: Record<string, string>): {
   ws: WebSocket
   text: string[]
@@ -150,7 +150,7 @@ async function firstSnapshot(url: string, secret: string): Promise<Snapshot> {
 
 /**
  * Spawn `yaac session monitor <args>` as a long-running child (it
- * re-renders forever), mirroring the `daemon logs -f` e2e pattern:
+ * re-renders forever), mirroring the `server logs -f` e2e pattern:
  * wait for the first render, assert on it, then kill the child.
  */
 async function runMonitorUntilFirstRender(...args: string[]): Promise<string> {
@@ -181,13 +181,13 @@ async function runMonitorUntilFirstRender(...args: string[]): Promise<string> {
 /**
  * These four tests assert PRISTINE empty states (no sessions, no
  * projects) against the shared data dir — they MUST run before any test
- * seeds a project. Nothing in this describe writes daemon state.
+ * seeds a project. Nothing in this describe writes server state.
  */
 describe('empty state (must run before any state is seeded)', () => {
   it('GET /events with a bearer sends a snapshot frame on connect', async () => {
     const { ws, text, opened } = openWs(
-      `ws://127.0.0.1:${daemon.lock.port}/events`,
-      { authorization: `Bearer ${daemon.lock.secret}` },
+      `ws://127.0.0.1:${server.lock.port}/events`,
+      { authorization: `Bearer ${server.lock.secret}` },
     )
     await opened
     // The snapshot is pushed immediately after the upgrade.
@@ -221,25 +221,25 @@ describe('empty state (must run before any state is seeded)', () => {
 })
 
 /**
- * Wire-level coverage for the daemon's WebSocket surface, per the test
- * strategy in plans/webapp-daemon-follow-up.md:
+ * Wire-level coverage for the server's WebSocket surface, per the test
+ * strategy in plans/webapp-server-follow-up.md:
  *  - /events sends a `snapshot` frame on connect (see the empty-state
  *    describe above) and rejects missing auth.
  *  - /pty/attach reports an error for unknown sessions.
  * The /pty/attach byte round-trip against a real session container lives
  * in session-create-suite.test.ts (it needs mock remotes + a session pod).
  */
-describe('daemon WebSocket surface (real daemon, no containers)', () => {
+describe('server WebSocket surface (real server, no containers)', () => {
   it('rejects /events without credentials', async () => {
-    const { ws, failed } = openWs(`ws://127.0.0.1:${daemon.lock.port}/events`, {})
+    const { ws, failed } = openWs(`ws://127.0.0.1:${server.lock.port}/events`, {})
     expect(await failed).toBe(401)
     ws.close()
   })
 
   it('/pty/attach reports an error frame for an unknown session', async () => {
     const { ws, text, opened } = openWs(
-      `ws://127.0.0.1:${daemon.lock.port}/pty/attach?id=definitely-bogus`,
-      { authorization: `Bearer ${daemon.lock.secret}` },
+      `ws://127.0.0.1:${server.lock.port}/pty/attach?id=definitely-bogus`,
+      { authorization: `Bearer ${server.lock.secret}` },
     )
     await opened
     const closed = new Promise<void>((r) => ws.once('close', () => r()))
@@ -250,22 +250,22 @@ describe('daemon WebSocket surface (real daemon, no containers)', () => {
 
 /**
  * End-to-end coverage for provisioning sessions as first-class snapshot
- * objects, against a REAL daemon (no containers needed — a create against a
+ * objects, against a REAL server (no containers needed — a create against a
  * non-existent project fails fast at project validation, before any cluster or
  * podman interaction). Proves:
  *  - a create registers a provisioning entry surfaced in the `/events` snapshot,
  *  - it carries kind/createdAt and, on failure, an error (kept, not dropped),
  *  - a freshly-opened WS re-hydrates it (the reload-survival mechanism),
  *  - dismiss removes it from the snapshot.
- * The provisioning entry lives only in the daemon's in-memory registry and
+ * The provisioning entry lives only in the server's in-memory registry and
  * is dismissed at the end, so no state leaks into later tests.
  */
-describe('provisioning sessions in the daemon snapshot (real daemon, no containers)', () => {
+describe('provisioning sessions in the server snapshot (real server, no containers)', () => {
   it('surfaces a create as a provisioning entry, survives a reconnect, then dismisses', async () => {
-    const base = `http://127.0.0.1:${daemon.lock.port}`
-    const auth: Record<string, string> = { authorization: `Bearer ${daemon.lock.secret}` }
+    const base = `http://127.0.0.1:${server.lock.port}`
+    const auth: Record<string, string> = { authorization: `Bearer ${server.lock.secret}` }
     const sessionId = crypto.randomUUID()
-    const wsUrl = `ws://127.0.0.1:${daemon.lock.port}/events`
+    const wsUrl = `ws://127.0.0.1:${server.lock.port}/events`
 
     // A create against a non-existent project: the route registers the
     // provisioning entry up front, then createSession throws NOT_FOUND fast →
@@ -282,12 +282,12 @@ describe('provisioning sessions in the daemon snapshot (real daemon, no containe
 
     // Reconnect (as a reloaded browser would) — the snapshot must still carry
     // the provisioning entry, with its kind, a createdAt, and the error.
-    let snap = await firstSnapshot(wsUrl, daemon.lock.secret)
+    let snap = await firstSnapshot(wsUrl, server.lock.secret)
     let entry = snap.provisioning.find((p) => p.sessionId === sessionId)
     // Give the fail-after-reject a beat if the very first reconnect raced it.
     for (let i = 0; i < 20 && !entry?.error; i++) {
       await sleep(100)
-      snap = await firstSnapshot(wsUrl, daemon.lock.secret)
+      snap = await firstSnapshot(wsUrl, server.lock.secret)
       entry = snap.provisioning.find((p) => p.sessionId === sessionId)
     }
     expect(entry).toBeDefined()
@@ -296,20 +296,20 @@ describe('provisioning sessions in the daemon snapshot (real daemon, no containe
     expect(entry?.createdAt).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
     expect(entry?.error).toBeTruthy()
 
-    // Dismiss drops it from the daemon registry → out of the snapshot.
+    // Dismiss drops it from the server registry → out of the snapshot.
     const dismiss = await fetch(`${base}/session/provisioning/${sessionId}/dismiss`, {
       method: 'POST',
       headers: auth,
     })
     expect(dismiss.status).toBe(204)
 
-    const after = await firstSnapshot(wsUrl, daemon.lock.secret)
+    const after = await firstSnapshot(wsUrl, server.lock.secret)
     expect(after.provisioning.some((p) => p.sessionId === sessionId)).toBe(false)
   }, 30_000)
 })
 
 /**
- * Fast validation/NOT_FOUND paths. None of these create any daemon-side
+ * Fast validation/NOT_FOUND paths. None of these create any server-side
  * state (no projects, no credentials, no sessions).
  */
 describe('validation errors (no state created)', () => {
@@ -382,7 +382,7 @@ describe('validation errors (no state created)', () => {
   })
 })
 
-describe('yaac open (real CLI + real daemon)', () => {
+describe('yaac open (real CLI + real server)', () => {
   it('open --no-browser prints an authenticated webapp URL with a bootstrap code', async () => {
     const { stdout, exitCode } = await runYaac(testEnv.env, 'open', '--no-browser')
     expect(exitCode).toBe(0)
@@ -398,7 +398,7 @@ describe('yaac open (real CLI + real daemon)', () => {
  * credentials dir.
  */
 describe('with seeded projects', () => {
-  describe('yaac session list (real CLI + real daemon)', () => {
+  describe('yaac session list (real CLI + real server)', () => {
     it('session list <project> filters the empty state by project name', async () => {
       const repo = path.join(testEnv.scratchDir, 'proj-empty')
       await createTestRepo(repo)
@@ -511,7 +511,7 @@ describe('with seeded projects', () => {
     })
   })
 
-  describe('yaac session monitor (real CLI + real daemon)', () => {
+  describe('yaac session monitor (real CLI + real server)', () => {
     // `-n` and `--interval` are the same commander option; this covers both.
     it('filters by the [project] argument and honors -n <seconds>', async () => {
       const repo = path.join(testEnv.scratchDir, 'proj-mon')
@@ -524,7 +524,7 @@ describe('with seeded projects', () => {
     })
   })
 
-  describe('yaac session stream (real CLI + real daemon)', () => {
+  describe('yaac session stream (real CLI + real server)', () => {
     it('exits after the user cancels the project-selection prompt', async () => {
       const repoA = path.join(testEnv.scratchDir, 'proj-a')
       const repoB = path.join(testEnv.scratchDir, 'proj-b')
@@ -549,14 +549,14 @@ describe('with seeded projects', () => {
   })
 
   /**
-   * Real CLI + real daemon + real runtime (podman build engine + cluster).
+   * Real CLI + real server + real runtime (podman build engine + cluster).
    *
    * These cover the CLI-initiated session-create VALIDATION paths: the
-   * error raised by the daemon when no GitHub token is configured for the
+   * error raised by the server when no GitHub token is configured for the
    * project's remote, and the argument checks in front of it. That flows
    * through the full subprocess→HTTP→Hono→session-create-handler→
    * NDJSON-stream→CLI chain, including `ensureContainerRuntime()` (podman
-   * + kubernetes), so it proves the runtime+daemon plumbing works
+   * + kubernetes), so it proves the runtime+server plumbing works
    * end-to-end through real processes. The happy-path container-creation
    * coverage lives in session-create-suite.test.ts (mocked remotes).
    *
@@ -564,8 +564,8 @@ describe('with seeded projects', () => {
    * data dir per test; with the shared data dir each test seeds its own
    * uniquely-slugged project instead.
    */
-  describe('yaac session create (real CLI + real daemon)', () => {
-    it('surfaces the daemon "no git credential" validation error via stderr + nonzero exit', async () => {
+  describe('yaac session create (real CLI + real server)', () => {
+    it('surfaces the server "no git credential" validation error via stderr + nonzero exit', async () => {
       const repo = path.join(testEnv.scratchDir, 'repo-demo')
       await createTestRepo(repo)
       await addTestProject(repo)
@@ -587,7 +587,7 @@ describe('with seeded projects', () => {
       expect(stderr).toMatch(/No git credential configured/)
     })
 
-    it('rejects an unknown --tool value via daemon VALIDATION', async () => {
+    it('rejects an unknown --tool value via server VALIDATION', async () => {
       const repo = path.join(testEnv.scratchDir, 'repo-demo-tool')
       await createTestRepo(repo)
       await addTestProject(repo)
@@ -601,7 +601,7 @@ describe('with seeded projects', () => {
 
     it('accepts --tool opencode (validation passes through to the git-credential check)', async () => {
       // Mirrors the "no git credential" case above for --tool claude —
-      // confirms opencode passes the daemon's tool-validation gate, then
+      // confirms opencode passes the server's tool-validation gate, then
       // trips the same missing-credential check downstream. Cheap proof
       // that the new tool value is wired through the validator without
       // standing up a real opencode container.

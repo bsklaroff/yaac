@@ -3,7 +3,7 @@ import path from 'node:path'
 
 /**
  * Local fast-fail on --add-dir/--add-dir-rw paths so the user gets an
- * immediate error instead of a round-trip to the daemon (which re-validates
+ * immediate error instead of a round-trip to the server (which re-validates
  * both checks). Prints the error and returns false on the first invalid
  * path; callers set the exit code.
  */

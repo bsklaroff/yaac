@@ -2,17 +2,17 @@
  * `pnpm watch` — dev loop for working on yaac itself (including inside
  * a yaac-in-yaac session). package.json runs this under `tsx watch`,
  * which reruns it whenever a build input changes; each run does
- * `pnpm build` then `yaac daemon start`, falling back to `yaac daemon
- * restart` when start refuses (live daemon on an older buildId), so
- * the running daemon always matches the CLI's buildId. The build is
+ * `pnpm build` then `yaac server start`, falling back to `yaac server
+ * restart` when start refuses (live server on an older buildId), so
+ * the running server always matches the CLI's buildId. The build is
  * deterministic (buildId is a content hash of the code in dist/ —
- * dockerfiles/ and k8s/ are runtime-read data the daemon picks up
- * without a restart, so saves there rebuild dist but leave the daemon
- * running), so the initial run after `yaac daemon start` in
- * initCommands leaves the daemon untouched instead of bouncing it. A
+ * dockerfiles/ and k8s/ are runtime-read data the server picks up
+ * without a restart, so saves there rebuild dist but leave the server
+ * running), so the initial run after `yaac server start` in
+ * initCommands leaves the server untouched instead of bouncing it. A
  * failed build skips the
  * (re)start and the watcher waits for the next change. Ctrl-C stops
- * the watcher but leaves the daemon running.
+ * the watcher but leaves the server running.
  *
  * Each `pnpm build` re-opts into pnpm's verify-deps-before-run
  * auto-install (pnpm disables it for nested script runs), so a
@@ -80,12 +80,12 @@ try {
   await run('pnpm', ['build'])
   const cli = path.join(repoRoot, 'dist', 'cli.js')
   try {
-    await run(process.execPath, [cli, 'daemon', 'start'])
+    await run(process.execPath, [cli, 'server', 'start'])
   } catch {
-    // start throws when a live daemon is on an older buildId — bounce it.
-    await run(process.execPath, [cli, 'daemon', 'restart'])
+    // start throws when a live server is on an older buildId — bounce it.
+    await run(process.execPath, [cli, 'server', 'restart'])
   }
-  console.error('[watch] build ok, daemon in sync — watching for changes')
+  console.error('[watch] build ok, server in sync — watching for changes')
 } catch (err) {
   console.error(`[watch] ${err instanceof Error ? err.message : String(err)} — waiting for the next change`)
 }

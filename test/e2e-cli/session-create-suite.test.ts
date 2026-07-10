@@ -11,10 +11,10 @@ import { cloneRepo } from '@/lib/git'
 import { listSessionPods, type SessionPod } from '@/lib/k8s/pods'
 import {
   createYaacTestEnv,
-  spawnYaacDaemon,
+  spawnYaacServer,
   runYaac,
   type YaacTestEnv,
-  type SpawnedDaemon,
+  type SpawnedServer,
 } from '@test/helpers/cli'
 import {
   requirePodman,
@@ -37,17 +37,17 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 /**
  * Consolidated end-to-end coverage for `yaac session create` and everything
- * that hangs off a live session: real CLI + real daemon + real cluster, with
+ * that hangs off a live session: real CLI + real server + real cluster, with
  * the proxy's `upstreamRedirects` feature rerouting every outbound host
  * (GitHub, Anthropic, OpenAI) to mock pods in the test namespace.
  *
- * One daemon + one mock-LLM/mock-Git pair serves the whole file, and one
+ * One server + one mock-LLM/mock-Git pair serves the whole file, and one
  * "kitchen-sink" claude session carries every orthogonal per-session feature
  * (envPassthrough, cacheVolumes, initCommands, portForward, bindMounts,
  * --add-dir, node_modules redirect) so we don't pay a pod bring-up per
  * feature. This file replaces the former session-create-happy / -claude /
  * -codex / -opencode / -features, session-status, port-forward, the PTY half
- * of daemon-ws, and the hand-off half of session-provisioning.
+ * of server-ws, and the hand-off half of session-provisioning.
  *
  * Within each describe the `it`s run in declaration order and some are
  * deliberately sequenced: the claude round-trip needs the live agent, the
@@ -82,7 +82,7 @@ function httpGet(url: string, timeoutMs = 15_000): Promise<{ status: number; bod
   })
 }
 
-/** Open a WS against the daemon, collecting text + binary frames. */
+/** Open a WS against the server, collecting text + binary frames. */
 function openWs(url: string, headers: Record<string, string>): {
   ws: WebSocket
   text: string[]
@@ -143,12 +143,12 @@ function makeJwt(payload: Record<string, unknown>): string {
 
 const CODEX_REAL_ACCESS_TOKEN = 'codex-real-access-token'
 
-describe('yaac session create suite (real CLI + real daemon + mocked remotes)', () => {
+describe('yaac session create suite (real CLI + real server + mocked remotes)', () => {
   let testEnv: YaacTestEnv
-  let daemon: SpawnedDaemon | null = null
+  let server: SpawnedServer | null = null
   let mockLLM: MockLLM | null = null
   let mockGit: MockGit | null = null
-  let daemonEnv: NodeJS.ProcessEnv
+  let serverEnv: NodeJS.ProcessEnv
   let base = ''
   let auth: Record<string, string> = {}
 
@@ -211,7 +211,7 @@ describe('yaac session create suite (real CLI + real daemon + mocked remotes)', 
     // refresh attempts.
     const llmTarget = { host: mockLLM.host, port: mockLLM.port, tls: false }
     const gitTarget = { host: mockGit.host, port: mockGit.port, tls: false }
-    daemonEnv = {
+    serverEnv = {
       ...testEnv.env,
       YAAC_E2E_UPSTREAM_REDIRECTS: JSON.stringify({
         'github.com': gitTarget,
@@ -234,18 +234,18 @@ describe('yaac session create suite (real CLI + real daemon + mocked remotes)', 
       }),
       YAAC_E2E_SKIP_FETCH: '1',
       YAAC_E2E_NO_ATTACH: '1',
-      // Set once at daemon startup so the envPassthrough test can observe
-      // it without needing to restart the daemon. Harmless for other tests.
+      // Set once at server startup so the envPassthrough test can observe
+      // it without needing to restart the server. Harmless for other tests.
       YAAC_TEST_VAR: 'hello-from-host',
     }
-    daemon = await spawnYaacDaemon(daemonEnv)
-    base = `http://127.0.0.1:${daemon.lock.port}`
-    auth = { authorization: `Bearer ${daemon.lock.secret}` }
+    server = await spawnYaacServer(serverEnv)
+    base = `http://127.0.0.1:${server.lock.port}`
+    auth = { authorization: `Bearer ${server.lock.secret}` }
   })
 
   afterAll(async () => {
-    if (daemon) await daemon.stop()
-    daemon = null
+    if (server) await server.stop()
+    server = null
     await cleanupSessionJobs()
     await cleanupMocks([mockLLM, mockGit])
     mockLLM = null
@@ -310,7 +310,7 @@ describe('yaac session create suite (real CLI + real daemon + mocked remotes)', 
     ...extraArgs: string[]
   ): Promise<{ jobName: string; stdout: string }> {
     const { stdout, stderr, exitCode } = await runYaac(
-      daemonEnv, 'session', 'create', slug, ...extraArgs,
+      serverEnv, 'session', 'create', slug, ...extraArgs,
     )
     if (exitCode !== 0) {
       throw new Error(`session create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
@@ -399,7 +399,7 @@ describe('yaac session create suite (real CLI + real daemon + mocked remotes)', 
           // backend, so they vanish with the temp data dir.
           cacheVolumes: { 'test-cache': '/tmp/test-cache' },
           // `sleep` keeps the init tmux window alive long enough for the
-          // daemon's follow-up `tmux set-option -t yaac:init remain-on-exit`
+          // server's follow-up `tmux set-option -t yaac:init remain-on-exit`
           // to find the window. A bare `touch` exits before that call and
           // triggers a retry loop in session-create.
           initCommands: ['touch /tmp/init-ran && sleep 30'],
@@ -437,7 +437,7 @@ describe('yaac session create suite (real CLI + real daemon + mocked remotes)', 
 
       // Parse the CLI's progress stream for the resolved host ports. Each
       // portForward entry produces one such line — this both tells us which
-      // host port to dial and proves the daemon read our config.
+      // host port to dial and proves the server read our config.
       for (const line of created.stdout.split('\n')) {
         const m = line.match(/Forwarding host port (\d+) -> container port (\d+)/)
         if (m) hostPortFor.set(Number(m[2]), Number(m[1]))
@@ -557,7 +557,7 @@ describe('yaac session create suite (real CLI + real daemon + mocked remotes)', 
     }, 60_000)
 
     it('surfaces forwarded host ports in the tmux status bar', async () => {
-      // Port forwarding runs through the daemon's per-connection
+      // Port forwarding runs through the server's per-connection
       // `kubectl exec nc` relay, not any kubernetes port mapping, so the
       // pod spec has no port map — status-right is the user-facing surface
       // for the chosen host ports, alongside the session id.
@@ -746,7 +746,7 @@ describe('yaac session create suite (real CLI + real daemon + mocked remotes)', 
       expect(shell.name).toBe('shell')
       expect(shell.target).toMatch(/^window:@\d+$/)
       const { ws, binary, opened } = openWs(
-        `ws://127.0.0.1:${daemon!.lock.port}/pty/attach`
+        `ws://127.0.0.1:${server!.lock.port}/pty/attach`
           + `?id=${sessionId}&target=${encodeURIComponent(shell.target)}&cols=100&rows=30`,
         auth,
       )
@@ -762,7 +762,7 @@ describe('yaac session create suite (real CLI + real daemon + mocked remotes)', 
       // C-b d detaches the grouped client, which exits the container-side
       // tmux client, ends the PTY, and closes the socket server-side.
       const native = openWs(
-        `ws://127.0.0.1:${daemon!.lock.port}/pty/attach`
+        `ws://127.0.0.1:${server!.lock.port}/pty/attach`
           + `?id=${sessionId}&target=native&cols=100&rows=30`,
         auth,
       )
@@ -779,7 +779,7 @@ describe('yaac session create suite (real CLI + real daemon + mocked remotes)', 
       // target=shell — the CLI's `session shell` transport: a raw zsh, no
       // tmux. `exit` ends the shell and closes the socket.
       const rawShell = openWs(
-        `ws://127.0.0.1:${daemon!.lock.port}/pty/attach`
+        `ws://127.0.0.1:${server!.lock.port}/pty/attach`
           + `?id=${sessionId}&target=shell&cols=100&rows=30`,
         auth,
       )
@@ -797,7 +797,7 @@ describe('yaac session create suite (real CLI + real daemon + mocked remotes)', 
     }, 120_000)
 
     it('pushes pane-title flips into session list, sticky across a watcher stream kill', async () => {
-      // The push-fed status path: the daemon holds a tmux control-mode
+      // The push-fed status path: the server holds a tmux control-mode
       // watcher per session (status-watcher.ts) subscribed to the agent
       // pane's `#{pane_title}`, and `session list` reads the watcher-fed
       // store — no per-list status probes. The test controls the pane title
@@ -824,7 +824,7 @@ describe('yaac session create suite (real CLI + real daemon + mocked remotes)', 
         const deadline = Date.now() + timeoutMs
         let lastOut = ''
         for (;;) {
-          const { stdout } = await runYaac(daemonEnv, 'session', 'list', 'kitchen')
+          const { stdout } = await runYaac(serverEnv, 'session', 'list', 'kitchen')
           lastOut = stdout
           const row = stdout.split('\n').find((l) => l.includes('kitchen') && !l.startsWith('SESSION'))
           if (row?.includes(expected)) return
@@ -851,7 +851,7 @@ describe('yaac session create suite (real CLI + real daemon + mocked remotes)', 
       // shell) so no intermediate sh -c carries the pattern in its own
       // cmdline — pkill would match and kill it too.
       await execFileAsync('pkill', ['-f', `job/${jobName}.*attach-session`])
-      const { stdout: afterKill } = await runYaac(daemonEnv, 'session', 'list', 'kitchen')
+      const { stdout: afterKill } = await runYaac(serverEnv, 'session', 'list', 'kitchen')
       const row = afterKill.split('\n').find((l) => l.includes('kitchen') && !l.startsWith('SESSION'))
       expect(row).toBeDefined()
       expect(row).toContain('running')
@@ -908,7 +908,7 @@ describe('yaac session create suite (real CLI + real daemon + mocked remotes)', 
 
       // Delete the session; modules/<sid> goes away, pnpm-store survives.
       const { exitCode: delExit } = await runYaac(
-        daemonEnv, 'session', 'delete', sessionId,
+        serverEnv, 'session', 'delete', sessionId,
       )
       expect(delExit).toBe(0)
 
@@ -942,7 +942,7 @@ describe('yaac session create suite (real CLI + real daemon + mocked remotes)', 
       const sessionId = randomUUID()
 
       // Watch the snapshot stream while the create runs.
-      const sub = collectSnapshots(`ws://127.0.0.1:${daemon!.lock.port}/events`, daemon!.lock.secret)
+      const sub = collectSnapshots(`ws://127.0.0.1:${server!.lock.port}/events`, server!.lock.secret)
       await sub.opened
 
       // Fire the webapp create (don't await — we want to observe the in-flight row).

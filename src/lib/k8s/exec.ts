@@ -28,8 +28,8 @@ export async function containerExec(
 
 /**
  * argv for an interactive `kubectl exec -it` into a session container —
- * used by the daemon's PTY bridge, which spawns kubectl under node-pty.
- * (The CLI's attach/shell commands ride the daemon's /pty/attach
+ * used by the server's PTY bridge, which spawns kubectl under node-pty.
+ * (The CLI's attach/shell commands ride the server's /pty/attach
  * WebSocket instead of exec'ing kubectl client-side.)
  */
 export function interactiveExecArgs(jobName: string, command: string[]): string[] {

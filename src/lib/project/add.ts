@@ -9,7 +9,7 @@ import {
   writeProjectClaudePlaceholder,
   writeProjectCodexPlaceholder,
 } from '@/lib/project/tool-auth'
-import { DaemonError } from '@/daemon/errors'
+import { ServerError } from '@/server/errors'
 import type { ProjectMeta } from '@/shared/types'
 
 /**
@@ -23,7 +23,7 @@ export function validateGitRemoteUrl(url: string): ReturnType<typeof parseGitRem
   try {
     return parseGitRemote(url)
   } catch (err) {
-    throw new DaemonError(
+    throw new ServerError(
       'VALIDATION',
       err instanceof Error ? err.message : `Invalid git remote URL: "${url}"`,
     )
@@ -36,8 +36,8 @@ export interface AddProjectResult {
 
 /**
  * Clone a git repo into the data dir as a yaac project. Throws
- * `DaemonError` for user-facing failures (bad URL, duplicate slug,
- * missing credential, clone failure) so the daemon can map them to
+ * `ServerError` for user-facing failures (bad URL, duplicate slug,
+ * missing credential, clone failure) so the server can map them to
  * the right HTTP status and CLI exit code.
  */
 export async function addProject(remoteUrl: string): Promise<AddProjectResult> {
@@ -52,15 +52,15 @@ export async function addProject(remoteUrl: string): Promise<AddProjectResult> {
 
   try {
     await fs.access(dir)
-    throw new DaemonError('CONFLICT', `Project "${slug}" already exists at ${dir}`)
+    throw new ServerError('CONFLICT', `Project "${slug}" already exists at ${dir}`)
   } catch (err) {
-    if (err instanceof DaemonError) throw err
+    if (err instanceof ServerError) throw err
     // doesn't exist — good
   }
 
   const credential = await resolveCredentialForUrl(remoteUrl)
   if (!credential) {
-    throw new DaemonError(
+    throw new ServerError(
       'AUTH_REQUIRED',
       `No git credential configured for ${remoteUrl}. Run "yaac auth update" to add one.`,
     )
@@ -74,13 +74,13 @@ export async function addProject(remoteUrl: string): Promise<AddProjectResult> {
     await fs.rm(dir, { recursive: true, force: true })
     const message = err instanceof Error ? err.message : String(err)
     if (isGitAuthError(message)) {
-      throw new DaemonError(
+      throw new ServerError(
         'AUTH_REQUIRED',
         `git authentication failed for ${parsed.host} — the stored credential was rejected `
         + '(expired or revoked token?). Run "yaac auth update" to replace it, then retry.',
       )
     }
-    throw new DaemonError('INTERNAL', `Failed to clone: ${message}`)
+    throw new ServerError('INTERNAL', `Failed to clone: ${message}`)
   }
 
   await fs.mkdir(claudeDir(slug), { recursive: true })

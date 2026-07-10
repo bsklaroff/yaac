@@ -455,7 +455,7 @@ async function applyNodeFixups(deps: ClusterSetupDeps, node: string): Promise<vo
   await deps.run('podman', ['exec', node, 'sh', '-c',
     'mkdir -p /etc/systemd/system.conf.d\n'
     + `printf '[Manager]\\nDefaultTasksMax=infinity\\n' > ${NODE_TASKSMAX_CONF}\n`
-    + 'systemctl daemon-reexec\n'
+    + 'systemctl server-reexec\n'
     + `echo ${NODE_MIN_FREE_KBYTES} > /proc/sys/vm/min_free_kbytes\n`
     + 'echo 40 > /proc/sys/vm/compaction_proactiveness\n',
   ])

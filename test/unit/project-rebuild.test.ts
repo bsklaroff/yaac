@@ -45,7 +45,7 @@ describe('projectRebuild', () => {
     expect(printed).toContain('Rebuilt myproject → yaac-tools:abc')
   })
 
-  it('throws the daemon message on an error event', async () => {
+  it('throws the server message on an error event', async () => {
     mockClient(() => ndjsonResponse([
       { type: 'error', error: { code: 'NOT_FOUND', message: 'project "nope" not found' } },
     ]))

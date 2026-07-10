@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { getDataDir } from '@/shared/paths'
 
-export interface DaemonLock {
+export interface ServerLock {
   pid: number
   port: number
   secret: string
@@ -10,23 +10,23 @@ export interface DaemonLock {
   buildId: string
 }
 
-export function daemonLockPath(): string {
-  return path.join(getDataDir(), '.daemon.lock')
+export function serverLockPath(): string {
+  return path.join(getDataDir(), '.server.lock')
 }
 
-export async function readLock(): Promise<DaemonLock | null> {
+export async function readLock(): Promise<ServerLock | null> {
   try {
-    const raw = await fs.readFile(daemonLockPath(), 'utf8')
+    const raw = await fs.readFile(serverLockPath(), 'utf8')
     const parsed = JSON.parse(raw) as unknown
-    if (!isDaemonLock(parsed)) return null
+    if (!isServerLock(parsed)) return null
     return parsed
   } catch {
     return null
   }
 }
 
-export async function writeLock(lock: DaemonLock): Promise<void> {
-  const p = daemonLockPath()
+export async function writeLock(lock: ServerLock): Promise<void> {
+  const p = serverLockPath()
   await fs.mkdir(path.dirname(p), { recursive: true })
   // Write to a temp file first, then rename so a reader never observes a
   // half-written lock. chmod 600 because the file contains a bearer secret.
@@ -36,15 +36,15 @@ export async function writeLock(lock: DaemonLock): Promise<void> {
 }
 
 /**
- * Atomically acquire the daemon lock. POSIX `O_EXCL` guarantees only one
- * process wins the create, even when two `yaac daemon run` invocations race
- * past the pre-bind fast-path check in runDaemon and both try to take the
+ * Atomically acquire the server lock. POSIX `O_EXCL` guarantees only one
+ * process wins the create, even when two `yaac server run` invocations race
+ * past the pre-bind fast-path check in runServer and both try to take the
  * lock at the same moment.
  *
  * Returns `{ acquired: true }` when this process now owns the lock — the
  * file has been written with `lock`'s contents and mode 0600.
  *
- * Returns `{ acquired: false, existing }` when another live daemon holds
+ * Returns `{ acquired: false, existing }` when another live server holds
  * the lock. The caller is responsible for tearing down any resources it
  * allocated (e.g. a bound server) and exiting idempotently.
  *
@@ -55,9 +55,9 @@ export async function writeLock(lock: DaemonLock): Promise<void> {
  * retried.
  */
 export async function acquireLock(
-  lock: DaemonLock,
-): Promise<{ acquired: true } | { acquired: false; existing: DaemonLock }> {
-  const p = daemonLockPath()
+  lock: ServerLock,
+): Promise<{ acquired: true } | { acquired: false; existing: ServerLock }> {
+  const p = serverLockPath()
   await fs.mkdir(path.dirname(p), { recursive: true })
   const payload = JSON.stringify(lock)
   const maxAttempts = 10
@@ -92,16 +92,16 @@ export async function acquireLock(
       // already gone — retry
     }
   }
-  throw new Error('failed to acquire daemon lock after retries')
+  throw new Error('failed to acquire server lock after retries')
 }
 
 /**
- * Remove the daemon lock file.
+ * Remove the server lock file.
  *
  * With `expectedPid`, only unlink when the on-disk lock still names that
- * pid. This guards against a zombified shutdown (e.g. a previous daemon
- * that hung past `stopDaemon`'s 3s force-remove timeout) clobbering a
- * successor daemon's lock when it eventually unblocks.
+ * pid. This guards against a zombified shutdown (e.g. a previous server
+ * that hung past `stopServer`'s 3s force-remove timeout) clobbering a
+ * successor server's lock when it eventually unblocks.
  *
  * Without `expectedPid`, unlink unconditionally — appropriate for callers
  * that have already classified the lock as stale (dead pid / unresponsive
@@ -113,7 +113,7 @@ export async function removeLock(expectedPid?: number): Promise<void> {
     if (!cur || cur.pid !== expectedPid) return
   }
   try {
-    await fs.unlink(daemonLockPath())
+    await fs.unlink(serverLockPath())
   } catch {
     // already gone
   }
@@ -121,10 +121,10 @@ export async function removeLock(expectedPid?: number): Promise<void> {
 
 /**
  * A lock is "live" if (a) the pid still exists and (b) /health answers
- * within 500ms. Used both by the CLI (is there a daemon to talk to?) and
- * by a second `yaac daemon` invocation (should I exit idempotently?).
+ * within 500ms. Used both by the CLI (is there a server to talk to?) and
+ * by a second `yaac server` invocation (should I exit idempotently?).
  */
-export async function isLockLive(lock: DaemonLock): Promise<boolean> {
+export async function isLockLive(lock: ServerLock): Promise<boolean> {
   if (!pidExists(lock.pid)) return false
   try {
     const ctl = new AbortController()
@@ -154,7 +154,7 @@ function pidExists(pid: number): boolean {
   }
 }
 
-function isDaemonLock(value: unknown): value is DaemonLock {
+function isServerLock(value: unknown): value is ServerLock {
   if (typeof value !== 'object' || value === null) return false
   const v = value as Record<string, unknown>
   return (

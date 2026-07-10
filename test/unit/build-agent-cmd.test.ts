@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildAgentCmd } from '@/daemon/session-create'
+import { buildAgentCmd } from '@/server/session-create'
 
 describe('buildAgentCmd', () => {
   describe('codex tool', () => {

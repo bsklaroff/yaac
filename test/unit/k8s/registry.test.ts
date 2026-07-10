@@ -35,14 +35,14 @@ vi.mock('node:child_process', () => ({
   },
 }))
 
-// daemonLog/pipeToDaemonLog write files / wire up stream piping — silence
+// serverLog/pipeToServerLog write files / wire up stream piping — silence
 // them so the spawn fake above can stay minimal.
-vi.mock('@/daemon/log', () => ({
-  daemonLog: vi.fn(),
-  pipeToDaemonLog: vi.fn(),
+vi.mock('@/server/log', () => ({
+  serverLog: vi.fn(),
+  pipeToServerLog: vi.fn(),
 }))
 
-import { pipeToDaemonLog } from '@/daemon/log'
+import { pipeToServerLog } from '@/server/log'
 
 import {
   REGISTRY_CONTAINER_NAME,
@@ -220,7 +220,7 @@ describe('pushImageToRegistry', () => {
     fetchMock.mockResolvedValue(fetchResponse({ ok: false, status: 404 }))
     const onLog = vi.fn()
     await pushImageToRegistry('yaac-tools:abc', { onLog })
-    expect(vi.mocked(pipeToDaemonLog)).toHaveBeenCalledWith(
+    expect(vi.mocked(pipeToServerLog)).toHaveBeenCalledWith(
       expect.anything(), '[push yaac-tools:abc] ', onLog,
     )
   })

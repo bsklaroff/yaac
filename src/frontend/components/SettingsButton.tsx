@@ -70,7 +70,7 @@ export function SettingsButton(): JSX.Element {
   const queryClient = useQueryClient()
 
   // On open, re-pull both the default tool and the credentials list — either
-  // may have changed daemon-side (e.g. via the CLI) since the last look.
+  // may have changed server-side (e.g. via the CLI) since the last look.
   useEffect(() => {
     if (!open) return
     void getDefaultTool().then(setTool).catch((e: unknown) => console.error(e))
@@ -199,7 +199,7 @@ export function SettingsButton(): JSX.Element {
 /**
  * Per-tool sign-in plus git tokens. Each tool row shows its stored credential
  * (masked) with a sign-out, or a sign-in expander: claude/codex can import the
- * native login already on the daemon's machine or take a pasted API key;
+ * native login already on the server's machine or take a pasted API key;
  * opencode takes a provider pick + API key. New-session creation is blocked
  * per tool until a credential lands here.
  */
@@ -393,7 +393,7 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
 }
 
 /**
- * The primary sign-in path: the daemon runs the vendor's own browser login
+ * The primary sign-in path: the server runs the vendor's own browser login
  * (`claude auth login` / `codex login`) in a subprocess. The CLI opens the
  * browser on this machine and completes via its localhost callback, so the
  * UI only shows "finish in your browser" and polls for the outcome.
@@ -407,7 +407,7 @@ function CliSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): J
   const label = tool === 'claude' ? 'Sign in with Claude' : 'Sign in with ChatGPT'
   const toolName = tool === 'claude' ? 'Claude Code' : 'Codex'
 
-  // Poll while the flow runs. A vanished session (daemon restart, expiry)
+  // Poll while the flow runs. A vanished session (server restart, expiry)
   // resets to the start button.
   useEffect(() => {
     if (login?.status !== 'running') return
@@ -597,7 +597,7 @@ function CliSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): J
       setInputError(null)
       formElement.reset()
     } catch (err) {
-      // A rejected paste (daemon whitelists the code alphabet) shouldn't kill
+      // A rejected paste (server whitelists the code alphabet) shouldn't kill
       // the flow — surface it inline and let the user paste again.
       setInputError(err instanceof Error ? err.message : 'failed to send input')
     }
@@ -647,7 +647,7 @@ const URL_RE = /https:\/\/[^\s"'<>]+/g
 
 /**
  * The login CLI's output, tailing live, with URLs clickable — the manual path
- * when the daemon couldn't open a browser on this machine.
+ * when the server couldn't open a browser on this machine.
  */
 function CliOutput({ text }: { text: string }): JSX.Element {
   const boxRef = useRef<HTMLPreElement>(null)

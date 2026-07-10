@@ -57,7 +57,7 @@ vi.mock('@/lib/k8s/exec', () => ({
   containerExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
-// The CLI command attaches over the daemon PTY WebSocket after
+// The CLI command attaches over the server PTY WebSocket after
 // provisioning — mock the transport so no socket is opened.
 vi.mock('@/commands/ws-terminal', () => ({
   attachSessionPty: vi.fn().mockResolvedValue(undefined),
@@ -179,7 +179,7 @@ vi.mock('@/lib/session/port-forwarders', () => ({
 
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
-import { buildAgentCmd, createSession, resolveInitWindows, retoolSpare } from '@/daemon/session-create'
+import { buildAgentCmd, createSession, resolveInitWindows, retoolSpare } from '@/server/session-create'
 import { sessionCreate } from '@/commands/session-create'
 import { ensureContainerRuntime } from '@/lib/container/runtime'
 import { ensureImage, pushImageShared } from '@/lib/container/build-coordinator'
@@ -566,11 +566,11 @@ describe('createSession', () => {
     expect(envNames).not.toContain('GH_TOKEN')
   })
 
-  it('never chowns mounts in-container — uid alignment makes daemon dirs writable', async () => {
+  it('never chowns mounts in-container — uid alignment makes server dirs writable', async () => {
     await createSession('demo', { sessionId: 'abcd1234' })
 
-    // The image's yaac user carries the daemon's uid (YAAC_UID build arg),
-    // so daemon-created hostPath dirs are writable without privileged
+    // The image's yaac user carries the server's uid (YAAC_UID build arg),
+    // so server-created hostPath dirs are writable without privileged
     // fixups. A chown here would also corrupt host-side ownership on
     // Linux (idmapped mounts write the pod's userns uid through).
     const cmds = mockContainerExec.mock.calls.map((c) => c[1])
@@ -906,19 +906,19 @@ describe('resolveInitWindows', () => {
   })
 })
 
-import type * as daemonClientModule from '@/shared/daemon-client'
+import type * as serverClientModule from '@/shared/server-client'
 import type * as allowedHostsModule from '@/lib/container/default-allowed-hosts'
 import type * as sharedGitModule from '@/shared/git'
 
-vi.mock('@/shared/daemon-client', async (importOriginal) => {
-  const actual = await importOriginal<typeof daemonClientModule>()
+vi.mock('@/shared/server-client', async (importOriginal) => {
+  const actual = await importOriginal<typeof serverClientModule>()
   return {
     ...actual,
     getRpcClient: vi.fn(),
   }
 })
 
-import { getRpcClient } from '@/shared/daemon-client'
+import { getRpcClient } from '@/shared/server-client'
 import { getGitUserConfig as getGitUserConfigShared } from '@/shared/git'
 
 function streamingResponse(lines: string[]): { ok: true; body: ReadableStream<Uint8Array> } {
@@ -975,7 +975,7 @@ describe('sessionCreate (CLI shim)', () => {
     expect(mockPost).toHaveBeenCalledWith(expect.objectContaining({
       json: expect.objectContaining({
         project: 'demo',
-        // No --tool → omitted so the daemon resolves the configured default
+        // No --tool → omitted so the server resolves the configured default
         // (and matches the prewarmed spare it keeps for that tool).
         tool: undefined,
         gitUser: { name: 'Test', email: 't@x.io' },
@@ -997,7 +997,7 @@ describe('sessionCreate (CLI shim)', () => {
     expect(logged).toContain('Creating session job yaac-demo-sess-123...')
   })
 
-  it('throws with the daemon error message when the stream carries an error event', async () => {
+  it('throws with the server error message when the stream carries an error event', async () => {
     mockPost.mockResolvedValue(streamingResponse([
       JSON.stringify({ type: 'progress', message: 'Fetching latest from remote...' }),
       JSON.stringify({ type: 'error', error: { code: 'VALIDATION', message: 'no github token' } }),

@@ -15,7 +15,7 @@ import {
   clearShortcutOverrides,
   type SerializedChord,
 } from '@/lib/project/preferences'
-import { DaemonError } from '@/daemon/errors'
+import { ServerError } from '@/server/errors'
 
 const chord = (code: string, over: Partial<SerializedChord> = {}): SerializedChord => ({
   code, alt: true, ctrl: false, meta: false, shift: false, ...over,
@@ -134,7 +134,7 @@ describe('preferences', () => {
     })
 
     it('throws VALIDATION for an unknown tool', async () => {
-      await expect(setDefaultToolChecked('gemini')).rejects.toBeInstanceOf(DaemonError)
+      await expect(setDefaultToolChecked('gemini')).rejects.toBeInstanceOf(ServerError)
       await expect(setDefaultToolChecked('gemini')).rejects.toMatchObject({
         code: 'VALIDATION',
       })

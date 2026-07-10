@@ -2,14 +2,14 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { projectConfigDir, projectDir } from '@/lib/project/paths'
 import { parseProjectConfig, resolveProjectConfig } from '@/lib/project/config'
-import { DaemonError } from '@/daemon/errors'
+import { ServerError } from '@/server/errors'
 import type { YaacConfig } from '@/shared/types'
 
 async function ensureProjectExists(slug: string): Promise<void> {
   try {
     await fs.access(path.join(projectDir(slug), 'project.json'))
   } catch {
-    throw new DaemonError('NOT_FOUND', `project ${slug} not found`)
+    throw new ServerError('NOT_FOUND', `project ${slug} not found`)
   }
 }
 
@@ -25,7 +25,7 @@ export async function writeProjectConfig(slug: string, rawConfig: unknown): Prom
   try {
     config = parseProjectConfig(JSON.stringify(rawConfig))
   } catch (err) {
-    throw new DaemonError('VALIDATION', err instanceof Error ? err.message : String(err))
+    throw new ServerError('VALIDATION', err instanceof Error ? err.message : String(err))
   }
 
   const dir = projectConfigDir(slug)
@@ -61,7 +61,7 @@ export async function addAllowedHostToProjectConfig(slug: string, host: string):
   try {
     overlay = await resolveProjectConfig(slug)
   } catch (err) {
-    throw new DaemonError('VALIDATION', err instanceof Error ? err.message : String(err))
+    throw new ServerError('VALIDATION', err instanceof Error ? err.message : String(err))
   }
   return writeProjectConfig(slug, withAllowedHost(overlay ?? {}, host))
 }

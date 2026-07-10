@@ -12,7 +12,7 @@
 // own data dir via setDataDir / createTempDataDir.
 //
 // Only the `unit` project loads this file. E2e tests run the real CLI
-// in-container and genuinely need the nested-session env (the daemon
+// in-container and genuinely need the nested-session env (the server
 // subprocess inherits it), so the shared test/setup.ts leaves it intact.
 // Tests that exercise nested behavior set YAAC_NESTED themselves and clean
 // up afterwards, so clearing the ambient default here is safe.

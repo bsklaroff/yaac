@@ -3,14 +3,14 @@
 ## Context
 
 Images never reach the webapp today. The terminal path is raw tmux bytes —
-xterm.js ← WebSocket (`/pty/attach`) ← daemon node-pty running `kubectl exec
--it … tmux` (`src/daemon/pty-bridge.ts`) — so when an agent takes a screenshot
+xterm.js ← WebSocket (`/pty/attach`) ← server node-pty running `kubectl exec
+-it … tmux` (`src/server/pty-bridge.ts`) — so when an agent takes a screenshot
 (Playwright + Chromium are baked into `dockerfiles/Dockerfile.default:27-56`,
 `chrome-devtools-mcp` into `Dockerfile.tools:8`), all the user sees is the
 file path printed in scrollback.
 
 Fix chosen (from the option evaluation): serve images out-of-band through a
-new authenticated daemon route, and render them in the webapp. Alternatives
+new authenticated server route, and render them in the webapp. Alternatives
 rejected: in-band terminal image protocols (images wouldn't survive the
 per-attach view-session reattach; agents don't emit them), and a watched
 "artifacts dir" gallery (needs agent cooperation; can layer on later).
@@ -58,8 +58,8 @@ maxBytes)`:
   1. `['exec', '-n', ns, execTarget(jobName), '--', 'stat', '-L', '-c',
      '%s', '--', absPath]` — existence + size check (`-L` so symlinked
      screenshots report the target's size). Map "No such file or
-     directory" stderr → `DaemonError('NOT_FOUND', …)`; size > `maxBytes`
-     → `DaemonError('VALIDATION', …, 413)`.
+     directory" stderr → `ServerError('NOT_FOUND', …)`; size > `maxBytes`
+     → `ServerError('VALIDATION', …, 413)`.
   2. `['exec', …, '--', 'base64', '--', absPath]` → decode with
      `Buffer.from(stdout.replace(/\s/g, ''), 'base64')`, return the Buffer.
 - Extend `KubectlExecOptions` with `maxBuffer?: number`, plumbed into
@@ -73,7 +73,7 @@ maxBytes)`:
 
 ### 2. Backend: `GET /session/:id/image?path=…`
 
-New route in `src/daemon/routes/session.ts`, following the `/:id/terminals`
+New route in `src/server/routes/session.ts`, following the `/:id/terminals`
 pattern (`routes/session.ts:225`):
 
 - `zValidator('query', z.object({ path: z.string().min(1) }))`.
@@ -83,9 +83,9 @@ pattern (`routes/session.ts:225`):
   authenticated user doesn't already have via `/pty/attach` (a full shell
   as the same container user).
 - Extension whitelist → MIME map, exported for tests: `png jpg jpeg gif
-  webp bmp`. Anything else → `DaemonError('VALIDATION', …)`. **`svg` is
+  webp bmp`. Anything else → `ServerError('VALIDATION', …)`. **`svg` is
   deliberately excluded**: served same-origin from the cookie-bearing
-  daemon origin, a navigated-to SVG is a scriptable document — an XSS
+  server origin, a navigated-to SVG is a scriptable document — an XSS
   vector for agent-authored content.
 - `resolveSessionContainer(c.req.param('id'), { requireRunning: true })` →
   `jobName`, then `containerReadFile`. Stopped sessions get the same error
@@ -121,7 +121,7 @@ and dispose it in the effect cleanup.
 
 ### 4. Frontend: the image pane
 
-Image panes are client-side layout leaves — no tmux window, no daemon
+Image panes are client-side layout leaves — no tmux window, no server
 state. Leaf targets are already plain strings (`'agent'`, `'shell:<name>'`,
 `'window:@<id>'`), so add a fourth scheme: **`image:<abs path>`**.
 
@@ -138,7 +138,7 @@ Helpers in `image-links.ts` (exported, unit-tested): `imageTarget(path)`,
   (bound to that pane's session id, not the selected one): if a leaf with
   the same target exists, just `focusTerminal` to it; otherwise
   `addLeafToLargest` + focus, mirroring `openShell` (`:197-214`) minus the
-  daemon call.
+  server call.
 - **`paneName`** (`:72-76`): image targets → `basename(path)`.
 - **Pane body** (mounted loop at `:578-619`): branch on `isImageTarget` —
   render `<ImagePane sessionId={id} path={…} />` instead of
@@ -167,11 +167,11 @@ New `src/frontend/components/ImagePane.tsx`:
 
 ### 5. CSP
 
-`src/daemon/static.ts:16`: `img-src 'self' data:` → `img-src 'self' data:
+`src/server/static.ts:16`: `img-src 'self' data:` → `img-src 'self' data:
 blob:` (object URLs). Direct `<img src={route}>` without the blob fetch was
 considered — no CSP change — but rejected: failures render as an opaque
 broken-image icon with no way to distinguish "file missing" from "session
-stopped" from "too large". Update `test/unit/daemon/static.test.ts`.
+stopped" from "too large". Update `test/unit/server/static.test.ts`.
 
 ## Testing
 
@@ -180,7 +180,7 @@ Unit (`test/unit/`, every new exported function covered per repo rule):
 - `k8s/exec.test.ts`: `containerReadFile` — argv shape (no shell), stat →
   404 mapping, size cap → 413, base64 round-trip, symlink `-L` flag.
 - `k8s/kubectl.test.ts`: `maxBuffer` plumbed through both exec paths.
-- `daemon/session-image.test.ts` (mirroring `daemon/terminals.test.ts`):
+- `server/session-image.test.ts` (mirroring `server/terminals.test.ts`):
   MIME map, relative/`~` resolution, non-image extension → 400 VALIDATION,
   svg rejected, missing file → 404, oversized → 413, `requireRunning`
   enforced, response headers.
@@ -191,7 +191,7 @@ Unit (`test/unit/`, every new exported function covered per repo rule):
 - `frontend/image-pane.test.tsx`: blob fetch success/error/retry, object
   URL revocation; `api-client.test.ts`: `getBlob`.
 - SessionView layout sync: image leaves survive the terminals reconcile
-  and are never daemon-killed (extend the existing frontend tests around
+  and are never server-killed (extend the existing frontend tests around
   layout/persist).
 
 E2e (`test/e2e/`, needs a wired cluster; no new CLI args so the CLI-e2e

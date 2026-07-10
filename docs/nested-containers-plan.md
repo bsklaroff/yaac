@@ -103,8 +103,8 @@ MITM proxy, not this registry. Key pieces:
   VIP). In-cluster clients reach the same host string via pod `hostAliases`.
 - Lifecycle: `ensureProjectRegistry` from session-create when `virtualCluster`
   is on (`session-create.ts:781`), `removeProjectRegistry` on project removal
-  (`src/lib/project/remove.ts:44`), `gcOrphanProjectRegistries` at daemon start
-  (`src/daemon/cli.ts:335`).
+  (`src/lib/project/remove.ts:44`), `gcOrphanProjectRegistries` at server start
+  (`src/server/cli.ts:335`).
 
 ### ClusterIP VIP pinning
 
@@ -155,7 +155,7 @@ on an emptyDir, no PVC) per session:
   (`src/lib/project/paths.ts:190`), dir-mounted at `~/.kube` with `KUBECONFIG`
   set. Orphan GC + kubeconfig heal run as a `background-loop` tick
   (`reconcileVclusters`, `src/lib/session/vcluster-reconcile.ts:29`, registered
-  at `src/daemon/background-loop.ts:66`). `SessionDetail` carries a
+  at `src/server/background-loop.ts:66`). `SessionDetail` carries a
   `virtualCluster` status block (`src/lib/session/detail.ts:18-69`,
   `getVclusterStatus`). The tmux-keyed reaper is untouched, so a vcluster pod OOM
   never kills the session.

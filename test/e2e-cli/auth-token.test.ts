@@ -1,23 +1,23 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   createYaacTestEnv,
-  spawnYaacDaemon,
+  spawnYaacServer,
   runYaac,
   type YaacTestEnv,
-  type SpawnedDaemon,
+  type SpawnedServer,
 } from '@test/helpers/cli'
 
-describe('yaac auth token (real CLI + real daemon)', () => {
+describe('yaac auth token (real CLI + real server)', () => {
   let testEnv: YaacTestEnv
-  let daemon: SpawnedDaemon
+  let server: SpawnedServer
 
   beforeEach(async () => {
     testEnv = await createYaacTestEnv()
-    daemon = await spawnYaacDaemon(testEnv.env)
+    server = await spawnYaacServer(testEnv.env)
   })
 
   afterEach(async () => {
-    await daemon.stop()
+    await server.stop()
     await testEnv.cleanup()
   })
 
@@ -56,7 +56,7 @@ describe('yaac auth token (real CLI + real daemon)', () => {
     expect(res.stderr).toMatch(/no token named 'ghost'/)
   })
 
-  it('an invalid name is rejected by the daemon validation', async () => {
+  it('an invalid name is rejected by the server validation', async () => {
     const res = await runYaac(testEnv.env, 'auth', 'token', 'create', 'bad name!')
     expect(res.exitCode).toBe(1)
     expect(res.stderr).toMatch(/invalid token name/)

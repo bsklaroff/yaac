@@ -63,7 +63,7 @@ describe('yaac remote commands', () => {
       expect((await readRemote())?.enabled).toBe(true)
     })
 
-    it('fails without persisting when the daemon is unreachable', async () => {
+    it('fails without persisting when the server is unreachable', async () => {
       vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')))
       await expect(remoteSet('https://down.ts.net', { token: 'tok' }))
         .rejects.toThrow(/cannot reach https:\/\/down\.ts\.net/)

@@ -2,10 +2,10 @@ import { describe, it, expect, vi } from 'vitest'
 
 // prewarm.ts pulls these heavy modules in transitively; the pure planner +
 // isPrewarmed never touch them, so stub them out to keep the test light.
-vi.mock('@/daemon/session-create', () => ({ shellEscape: (s: string) => s }))
+vi.mock('@/server/session-create', () => ({ shellEscape: (s: string) => s }))
 vi.mock('@/lib/session/cleanup', () => ({ isTmuxSessionAlive: vi.fn() }))
 
-import { computePrewarmPlan } from '@/daemon/prewarm'
+import { computePrewarmPlan } from '@/server/prewarm'
 import { LABEL_PREWARMED, isPrewarmed, type SessionPod } from '@/lib/k8s/pods'
 import type { AgentTool } from '@/shared/types'
 

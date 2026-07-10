@@ -4,8 +4,8 @@ import { Field } from '@base-ui/react/field'
 import { postBootstrap } from '@/frontend/lib/bootstrap'
 
 /**
- * First-open / expired-session screen. The daemon logs a one-time URL
- * (`yaac daemon logs`); the user can open it directly or paste just the
+ * First-open / expired-session screen. The server logs a one-time URL
+ * (`yaac server logs`); the user can open it directly or paste just the
  * code here. Built on Base UI's Form + Field — the server "invalid code"
  * result surfaces through the Form `errors` prop into `Field.Error`.
  */
@@ -23,9 +23,9 @@ export function BootstrapSplash({ onAuthed }: { onAuthed: () => void }): JSX.Ele
     try {
       const ok = await postBootstrap(code)
       if (ok) onAuthed()
-      else setErrors({ code: 'Invalid or expired code. Restart the daemon for a fresh one.' })
+      else setErrors({ code: 'Invalid or expired code. Restart the server for a fresh one.' })
     } catch {
-      setErrors({ code: 'Could not reach the daemon.' })
+      setErrors({ code: 'Could not reach the server.' })
     } finally {
       setBusy(false)
     }
@@ -36,7 +36,7 @@ export function BootstrapSplash({ onAuthed }: { onAuthed: () => void }): JSX.Ele
       <div className="w-full max-w-md px-8">
         <h1 className="text-2xl font-semibold tracking-tight text-text">Connect to yaac</h1>
         <p className="mt-3 text-sm text-text-dim">
-          Open the URL from <code className="text-text">yaac daemon logs</code>, or paste the
+          Open the URL from <code className="text-text">yaac server logs</code>, or paste the
           one-time bootstrap code below.
         </p>
         <Form

@@ -8,7 +8,7 @@ import {
   sessionPodSelector,
   type SessionPod,
 } from '@/lib/k8s/pods'
-import { daemonLog } from '@/daemon/log'
+import { serverLog } from '@/server/log'
 
 /**
  * Push-fed session-pod cache: one long-lived
@@ -123,7 +123,7 @@ export class PodWatcher {
     this.relistIntervalMs = deps.relistIntervalMs ?? 60_000
     this.restartDelayMs = deps.restartDelayMs ?? 1_000
     this.maxRestartDelayMs = deps.maxRestartDelayMs ?? 30_000
-    this.log = deps.log ?? daemonLog
+    this.log = deps.log ?? serverLog
     this.backoffMs = this.restartDelayMs
   }
 
@@ -158,7 +158,7 @@ export class PodWatcher {
     try {
       this.listener?.()
     } catch (err) {
-      this.log(`[daemon] pod-watch: change listener failed: ${String(err)}`)
+      this.log(`[server] pod-watch: change listener failed: ${String(err)}`)
     }
   }
 
@@ -169,7 +169,7 @@ export class PodWatcher {
       fresh = await this.listPods()
     } catch (err) {
       // Cluster hiccup — keep the current cache; the next relist retries.
-      this.log(`[daemon] pod-watch: relist failed: ${String(err)}`)
+      this.log(`[server] pod-watch: relist failed: ${String(err)}`)
       return
     }
     if (this.stopped) return
@@ -206,7 +206,7 @@ export class PodWatcher {
     try {
       child = this.spawnWatch()
     } catch (err) {
-      this.log(`[daemon] pod-watch: spawn failed: ${String(err)}`)
+      this.log(`[server] pod-watch: spawn failed: ${String(err)}`)
       this.scheduleRestart()
       return
     }
@@ -220,7 +220,7 @@ export class PodWatcher {
       stderrTail = (stderrTail + chunk.toString()).slice(-500)
     })
     child.on('error', (err) => {
-      this.log(`[daemon] pod-watch: child error: ${String(err)}`)
+      this.log(`[server] pod-watch: child error: ${String(err)}`)
     })
     child.on('exit', () => {
       if (this.stopped) return
@@ -230,7 +230,7 @@ export class PodWatcher {
       // (bad kubeconfig, unreachable cluster) back off up to the max.
       if (Date.now() - this.childSpawnedAtMs >= 60_000) this.backoffMs = this.restartDelayMs
       if (stderrTail.trim()) {
-        this.log(`[daemon] pod-watch: watch exited: ${stderrTail.trim()}`)
+        this.log(`[server] pod-watch: watch exited: ${stderrTail.trim()}`)
       }
       this.scheduleRestart()
     })
@@ -247,9 +247,9 @@ export class PodWatcher {
 }
 
 /**
- * Daemon-set singleton so the display path (`listActiveSessions`) can
+ * Server-set singleton so the display path (`listActiveSessions`) can
  * read the push-fed cache without threading the watcher through every
- * call site. Null outside the daemon (unit tests, direct lib use) —
+ * call site. Null outside the server (unit tests, direct lib use) —
  * callers fall back to a one-shot `listSessionPods`.
  */
 let activePodWatcher: PodWatcher | null = null

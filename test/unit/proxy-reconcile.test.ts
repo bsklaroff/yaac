@@ -12,7 +12,7 @@ vi.mock('@/lib/container/proxy-client', async (importOriginal) => ({
   },
 }))
 
-vi.mock('@/daemon/log', () => ({ daemonLog: vi.fn() }))
+vi.mock('@/server/log', () => ({ serverLog: vi.fn() }))
 
 describe('reconcileProxySshKeys', () => {
   afterEach(() => {

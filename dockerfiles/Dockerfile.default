@@ -37,7 +37,7 @@ RUN npx -y playwright-core@1.50.1 install chromium && \
 
 # Session pods run in user namespaces (hostUsers: false) with identity-
 # idmapped hostPath mounts, so yaac's uid must equal the uid the node sees
-# on daemon-created host files (the daemon's uid). The daemon injects it at
+# on server-created host files (the server's uid). The server injects it at
 # build time; the uid is part of the image's content-hash tag.
 ARG YAAC_UID=1000
 RUN userdel -r ubuntu 2>/dev/null; useradd -m -u ${YAAC_UID} -s /bin/zsh yaac && \

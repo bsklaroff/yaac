@@ -7,12 +7,12 @@ import { testEnv } from '@/shared/env'
 const BUILD_ID_FILENAME = '.build-id'
 
 /**
- * Top-level dist/ dirs that are runtime-READ data, not daemon code: the
- * daemon re-reads dockerfiles on every image-chain resolution and k8s/
- * image build contexts on every build, so a running daemon picks up
+ * Top-level dist/ dirs that are runtime-READ data, not server code: the
+ * server re-reads dockerfiles on every image-chain resolution and k8s/
+ * image build contexts on every build, so a running server picks up
  * edits to them with no restart. Excluded from the buildId so a
  * dockerfile-only rebuild doesn't read as a version mismatch — `pnpm
- * watch` would otherwise bounce the daemon on every Dockerfile save,
+ * watch` would otherwise bounce the server on every Dockerfile save,
  * severing in-flight session creates (each one's k8s Job survives as a
  * half-provisioned zombie pod).
  */
@@ -24,15 +24,15 @@ export function buildIdPath(rootDir: string = PACKAGE_ROOT): string {
 
 /**
  * Recursive content hash of the code shipped in `rootDir`. Used to
- * detect a daemon running from a different install than the CLI that's
+ * detect a server running from a different install than the CLI that's
  * trying to talk to it: the build script writes this into
- * `dist/.build-id`, the daemon echoes it into `.daemon.lock`, and the
- * CLI respawns the daemon on mismatch.
+ * `dist/.build-id`, the server echoes it into `.server.lock`, and the
+ * CLI respawns the server on mismatch.
  *
  * Must be deterministic across machines and filesystems, so entries are
  * sorted by POSIX-style relpath. The `.build-id` file itself is
  * excluded — otherwise writing the hash would invalidate it — as are
- * the `RUNTIME_DATA_DIRS`, which don't affect daemon behavior.
+ * the `RUNTIME_DATA_DIRS`, which don't affect server behavior.
  */
 export async function computeBuildId(rootDir: string): Promise<string> {
   const entries: Array<{ rel: string; hash: string }> = []
@@ -76,13 +76,13 @@ async function collect(
  * relative to `PACKAGE_ROOT` which in bundled builds is `dist/`.
  *
  * Honors `YAAC_BUILD_ID` as a test-injection override (matches the
- * `YAAC_DAEMON_URL` / `YAAC_DAEMON_SECRET` pattern used elsewhere) so
+ * `YAAC_SERVER_URL` / `YAAC_SERVER_SECRET` pattern used elsewhere) so
  * that tests running directly from source — where no `dist/.build-id`
- * exists — can still exercise the daemon startup path. Production
+ * exists — can still exercise the server startup path. Production
  * never sets this var.
  *
  * Throws if the file is missing or empty — a broken install should
- * fail loudly rather than silently letting a stale daemon keep running.
+ * fail loudly rather than silently letting a stale server keep running.
  */
 export async function readBuildId(rootDir: string = PACKAGE_ROOT): Promise<string> {
   const envOverride = testEnv.buildIdOverride

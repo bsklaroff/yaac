@@ -1,6 +1,6 @@
 /**
- * Thin fetch wrapper for the daemon HTTP API. Same-origin (dev: the Vite
- * proxy; prod: the daemon serves the SPA), so the browser sends the
+ * Thin fetch wrapper for the server HTTP API. Same-origin (dev: the Vite
+ * proxy; prod: the server serves the SPA), so the browser sends the
  * `yaac_session` cookie automatically — no token handling here.
  *
  * Responsibilities: JSON encode/decode, throw on non-2xx, and surface a
@@ -32,7 +32,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
-/** Pull the daemon's `{ error: { message } }` out of a failed response. */
+/** Pull the server's `{ error: { message } }` out of a failed response. */
 async function errorMessage(res: Response): Promise<string> {
   const text = await res.text().catch(() => '')
   if (!text) return `request failed: ${res.status}`

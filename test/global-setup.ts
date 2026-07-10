@@ -26,7 +26,7 @@ const execFileAsync = promisify(execFile)
  *
  * Safe by construction: production images use the `yaac-` prefix
  * without `-test-` (e.g. yaac-base, yaac-proxy, yaac-user-<slug>), so
- * a running real daemon's artifacts are never matched, and the
+ * a running real server's artifacts are never matched, and the
  * `yaac-registry` container (registry:2 image) is untouched. See
  * `src/lib/container/image-builder.ts` — the test suite opts into
  * `imagePrefix: 'yaac-test'` to get this namespace separation.
@@ -142,7 +142,7 @@ export async function setup(): Promise<void> {
 
   // --- Base image (Dockerfile.default) ---
   // Hash composition must match resolveImageChain: the YAAC_UID build arg
-  // (in-container yaac uid = daemon uid, for idmapped hostPath writes) is
+  // (in-container yaac uid = server uid, for idmapped hostPath writes) is
   // part of the image content, so it is folded into the tag.
   const baseDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
   const baseHash = await baseImageHash(baseDockerfile)

@@ -7,15 +7,15 @@
  * below it. Edits made in the overlay must survive collapsing (Escape),
  * which must close only the overlay — the settings dialog stays open.
  *
- * Drives the running yaac daemon's webapp in real Chromium: opens settings,
+ * Drives the running yaac server's webapp in real Chromium: opens settings,
  * expands the project yaac-config.json editor, checks overlay geometry,
  * types into the expanded CodeMirror to see Save enable, escapes back, then
  * repeats the expand check on the User Dockerfile section. Nothing is saved.
  *
  * Run: node test-playwright-scripts/config-editor-expand-test.js
  * (set SCREENSHOT_DIR to also capture inline/expanded screenshots there)
- * Needs a running daemon (`yaac daemon start`) with a project configured;
- * reads the port/secret from $YAAC_DATA_DIR/.daemon.lock (or ~/.yaac).
+ * Needs a running server (`yaac server start`) with a project configured;
+ * reads the port/secret from $YAAC_DATA_DIR/.server.lock (or ~/.yaac).
  * (playwright is resolved from the global npm root; browsers live under
  * /opt/playwright-browsers)
  */
@@ -36,15 +36,15 @@ function requirePlaywright() {
   }
 }
 
-function readDaemonLock() {
+function readServerLock() {
   const candidates = [
-    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.daemon.lock'),
-    path.join(os.homedir(), '.yaac', '.daemon.lock'),
+    process.env.YAAC_DATA_DIR && path.join(process.env.YAAC_DATA_DIR, '.server.lock'),
+    path.join(os.homedir(), '.yaac', '.server.lock'),
   ].filter(Boolean)
   for (const p of candidates) {
     if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'))
   }
-  throw new Error(`no .daemon.lock found (tried ${candidates.join(', ')}) — is the daemon running?`)
+  throw new Error(`no .server.lock found (tried ${candidates.join(', ')}) — is the server running?`)
 }
 
 let failures = 0
@@ -87,7 +87,7 @@ async function expectExpandedOverlay(page, viewport, label) {
 
 async function main() {
   const { chromium } = requirePlaywright()
-  const lock = readDaemonLock()
+  const lock = readServerLock()
   const base = `http://127.0.0.1:${lock.port}`
   const auth = { authorization: `Bearer ${lock.secret}` }
 

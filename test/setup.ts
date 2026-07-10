@@ -9,7 +9,7 @@ delete process.env.GIT_DIR
 delete process.env.GIT_WORK_TREE
 
 // Isolate the default data dir so tests that incidentally trigger
-// daemonLog() (or any other side effect rooted at getDataDir()) never
+// serverLog() (or any other side effect rooted at getDataDir()) never
 // write into the developer's real ~/.yaac. Tests that need their own
 // data dir override this via setDataDir() in beforeEach.
 setDataDir(path.join(os.tmpdir(), `yaac-test-default-${process.pid}`))

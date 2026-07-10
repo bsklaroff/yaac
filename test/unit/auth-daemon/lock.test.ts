@@ -11,7 +11,7 @@ import {
 } from '@/shared/auth-daemon'
 import { setDataDir } from '@/shared/paths'
 
-describe('auth daemon lock', () => {
+describe('auth server lock', () => {
   let dir: string
 
   beforeEach(async () => {

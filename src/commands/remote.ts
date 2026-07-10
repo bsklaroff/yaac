@@ -1,5 +1,5 @@
 import { readBuildId } from '@/shared/build-id'
-import { describeBuildSkew } from '@/shared/daemon-client'
+import { describeBuildSkew } from '@/shared/server-client'
 import {
   clearRemote,
   normalizeRemoteUrl,
@@ -12,7 +12,7 @@ import { maskToken } from '@/shared/mask'
 const PROBE_TIMEOUT_MS = 5000
 
 /**
- * Configure (and enable) the remote daemon after verifying it end to
+ * Configure (and enable) the remote server after verifying it end to
  * end: the origin answers /health, and the token authenticates against
  * a protected route. Build skew is a warning, not a failure — client
  * and server upgrade independently.
@@ -50,7 +50,7 @@ export async function remoteSet(url: string, opts: { token: string }): Promise<v
 
 export async function remoteUnset(): Promise<void> {
   await clearRemote()
-  console.log('Remote cleared — commands target the local daemon.')
+  console.log('Remote cleared — commands target the local server.')
 }
 
 export async function remoteOn(): Promise<void> {
@@ -62,7 +62,7 @@ export async function remoteOn(): Promise<void> {
 export async function remoteOff(): Promise<void> {
   const cfg = await requireRemote()
   await writeRemote({ ...cfg, enabled: false })
-  console.log('Remote disabled — commands target the local daemon.')
+  console.log('Remote disabled — commands target the local server.')
 }
 
 export async function remoteStatus(): Promise<void> {

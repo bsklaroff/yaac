@@ -1,5 +1,5 @@
 /**
- * Consumer side of the daemon's NDJSON operation streams
+ * Consumer side of the server's NDJSON operation streams
  * (`POST /session/create`, `POST /session/restart`,
  * `POST /project/:slug/rebuild`): zero or more `{type:'progress'}` events
  * followed by exactly one terminal `{type:'result'}` or `{type:'error'}`.
@@ -16,7 +16,7 @@ type NdjsonEvent<T> =
 /**
  * Read an NDJSON event stream, invoking `onProgress` per progress event
  * (default: print to the console, the CLI behavior) and returning the
- * terminal `result` payload. Throws with the daemon's message if the stream
+ * terminal `result` payload. Throws with the server's message if the stream
  * carries an `error` event or ends without a result. A trailing line without
  * a final newline is still processed.
  */
@@ -24,7 +24,7 @@ export async function consumeNdjsonStream<T>(
   res: Response,
   onProgress: (message: string) => void = (message) => { console.log(message) },
 ): Promise<T> {
-  if (!res.body) throw new Error('daemon returned an empty response body')
+  if (!res.body) throw new Error('server returned an empty response body')
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buf = ''
@@ -50,6 +50,6 @@ export async function consumeNdjsonStream<T>(
     for (const line of lines) result = handle(line) ?? result
   }
   if (buf) result = handle(buf) ?? result
-  if (!result) throw new Error('daemon stream ended without a result event')
+  if (!result) throw new Error('server stream ended without a result event')
   return result.value
 }
