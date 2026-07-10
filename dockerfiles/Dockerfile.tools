@@ -1,6 +1,19 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
+# Neovim — split out of Dockerfile.default so it can be rebuilt independently
+# (via `yaac project rebuild`) to pick up new upstream releases without
+# re-running the slow apt/Node base build. Needs root to write under
+# /usr/local; the base image ends as USER yaac, so switch back afterward.
+USER root
+RUN ARCH="$(dpkg --print-architecture)" && if [ "$ARCH" = "amd64" ]; then ARCH=x86_64; fi && \
+    curl -fsSL "https://github.com/neovim/neovim/releases/download/v0.12.4/nvim-linux-${ARCH}.tar.gz" | \
+    tar -xz -C /usr/local --strip-components=1 && \
+    ln -sf /usr/local/bin/nvim /usr/local/bin/vi && \
+    ln -sf /usr/local/bin/nvim /usr/local/bin/vim
+USER yaac
+ENV EDITOR=nvim
+
 # Agent CLIs and MCP servers. Split out of Dockerfile.default so they can be
 # rebuilt with `--no-cache` (via `yaac project rebuild`) to pick up new
 # upstream versions (e.g. when Claude Code ships a new release) without
