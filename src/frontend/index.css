@@ -66,21 +66,23 @@
   --color-hairline-soft: rgb(255 255 255 / 0.04);
 }
 
-/* Warm light palette (Cursor-like): white elevated cards on a paper shell,
- * soft near-black text, rust accent. Applied for a forced light choice and,
- * below, for system-follows-light — CSS can't share a declaration list. */
+/* Light palette: white elevated cards on a near-white shell, near-black text,
+ * rust accent. The neutrals carry only a whisper of warmth (heavily
+ * desaturated from the original Cursor-like paper, which read too brown).
+ * Applied for a forced light choice and, below, for system-follows-light —
+ * CSS can't share a declaration list. */
 [data-theme="light"] {
-  --color-base: #fdfcfa;       /* warm near-white shell the cards float on */
-  --color-bg: #efeee9;         /* deeper warm wash — settings nav, loading, window bg */
+  --color-base: #fcfcfb;       /* near-white shell the cards float on */
+  --color-bg: #eeedec;         /* soft neutral wash — settings nav, loading, window bg */
   --color-surface: #ffffff;    /* white cards, panes, popups — the elevated surface */
-  --color-surface-2: #ebe9e4;  /* warm hover/selected fills, menu popups */
-  --color-surface-3: #e2dfd9;  /* highlighted menu item — a touch deeper */
-  --color-border: #e4e1db;     /* very subtle warm hairline */
-  --color-border-strong: #cec9bf;
-  --color-text: #33322e;       /* warm near-black */
-  --color-text-dim: #78756d;   /* warm medium gray */
-  --color-text-faint: #a5a199;
-  --color-accent: #bd5a2a;     /* Cursor-style rust-orange, richer on white */
+  --color-surface-2: #e9e8e7;  /* hover/selected fills, menu popups */
+  --color-surface-3: #dfdedd;  /* highlighted menu item — a touch deeper */
+  --color-border: #e1e0df;     /* subtle hairline */
+  --color-border-strong: #c9c8c5;
+  --color-text: #323130;       /* near-black */
+  --color-text-dim: #757471;   /* medium gray */
+  --color-text-faint: #a2a09e;
+  --color-accent: #bd5a2a;     /* rust-orange accent, richer on white */
   --color-accent-soft: #d59a6a;
   --color-hairline: rgb(0 0 0 / 0.08);
   --color-hairline-soft: rgb(0 0 0 / 0.05);
@@ -88,16 +90,16 @@
 
 @media (prefers-color-scheme: light) {
   [data-theme="system"] {
-    --color-base: #fdfcfa;
-    --color-bg: #efeee9;
+    --color-base: #fcfcfb;
+    --color-bg: #eeedec;
     --color-surface: #ffffff;
-    --color-surface-2: #ebe9e4;
-    --color-surface-3: #e2dfd9;
-    --color-border: #e4e1db;
-    --color-border-strong: #cec9bf;
-    --color-text: #33322e;
-    --color-text-dim: #78756d;
-    --color-text-faint: #a5a199;
+    --color-surface-2: #e9e8e7;
+    --color-surface-3: #dfdedd;
+    --color-border: #e1e0df;
+    --color-border-strong: #c9c8c5;
+    --color-text: #323130;
+    --color-text-dim: #757471;
+    --color-text-faint: #a2a09e;
     --color-accent: #bd5a2a;
     --color-accent-soft: #d59a6a;
     --color-hairline: rgb(0 0 0 / 0.08);
