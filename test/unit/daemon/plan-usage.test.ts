@@ -7,11 +7,15 @@ vi.mock('@/lib/auth/usage', () => ({
   queryClaudePlanUsage: vi.fn(),
   queryClaudeRateLimitTier: vi.fn(),
 }))
+vi.mock('@/lib/auth/claude-oauth', () => ({
+  refreshClaudeOAuthBundle: vi.fn(),
+}))
 // daemonLog writes files — silence it.
 vi.mock('@/daemon/log', () => ({ daemonLog: vi.fn() }))
 vi.mock('@/daemon/sessions-changed', () => ({ notifySessionListChanged: vi.fn() }))
 
 import { queryClaudePlanUsage, queryClaudeRateLimitTier } from '@/lib/auth/usage'
+import { refreshClaudeOAuthBundle } from '@/lib/auth/claude-oauth'
 import { notifySessionListChanged } from '@/daemon/sessions-changed'
 import {
   planUsageForSnapshot,
@@ -19,11 +23,12 @@ import {
   _resetPlanUsageForTests,
 } from '@/daemon/plan-usage'
 import { setDataDir } from '@/lib/project/paths'
-import { saveClaudeCredentialsFile } from '@/lib/project/tool-auth'
-import type { PlanUsageResult } from '@/shared/types'
+import { loadClaudeCredentialsFile, saveClaudeCredentialsFile } from '@/lib/project/tool-auth'
+import type { ClaudeOAuthBundle, PlanUsageResult } from '@/shared/types'
 
 const queryMock = vi.mocked(queryClaudePlanUsage)
 const tierMock = vi.mocked(queryClaudeRateLimitTier)
+const refreshMock = vi.mocked(refreshClaudeOAuthBundle)
 
 const GOOD: PlanUsageResult = {
   available: true,
@@ -40,19 +45,34 @@ const THROTTLED: PlanUsageResult = {
   message: 'usage endpoint returned 429',
 }
 
+const UNAUTHORIZED: PlanUsageResult = { available: false, reason: 'unauthorized' }
+
+/** Unambiguously unexpired (2100-01-01) so the seeded token never trips the
+ *  expiry pre-check unless a test overrides it. */
+const FAR_FUTURE_MS = 4102444800000
+
+const FRESH_BUNDLE: ClaudeOAuthBundle = {
+  accessToken: 'tok-fresh',
+  refreshToken: 'ref-fresh',
+  expiresAt: FAR_FUTURE_MS,
+  scopes: ['user:inference'],
+  subscriptionType: 'max',
+}
+
 /** Let a detached refresh's .then land (real timers stay active). */
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
-async function seedOAuth(): Promise<void> {
+async function seedOAuth(overrides: Partial<ClaudeOAuthBundle> = {}): Promise<void> {
   await saveClaudeCredentialsFile({
     kind: 'oauth',
     savedAt: '2026-07-09T00:00:00.000Z',
     claudeAiOauth: {
       accessToken: 'tok-123',
       refreshToken: 'ref-123',
-      expiresAt: 1783667619085,
+      expiresAt: FAR_FUTURE_MS,
       scopes: ['user:inference'],
       subscriptionType: 'max',
+      ...overrides,
     },
   })
 }
@@ -75,6 +95,8 @@ describe('planUsageForSnapshot', () => {
     queryMock.mockReset()
     tierMock.mockReset()
     tierMock.mockResolvedValue(null)
+    refreshMock.mockReset()
+    refreshMock.mockResolvedValue(null)
     vi.mocked(notifySessionListChanged).mockReset()
     // Fake only Date so cadence assertions can travel in time while real
     // timers keep the flush() helper working.
@@ -242,5 +264,71 @@ describe('planUsageForSnapshot', () => {
     expect(await planUsageForSnapshot()).toBeNull()
     await flush()
     expect(await planUsageForSnapshot()).toEqual(GOOD)
+  })
+
+  // The refresh chain does real credentials-file I/O, so these tests wait
+  // on the outcome instead of a single flush() tick.
+
+  it('refreshes an expired token before querying and persists the result', async () => {
+    await seedOAuth({ expiresAt: Date.now() - 1000 })
+    refreshMock.mockResolvedValue(FRESH_BUNDLE)
+    queryMock.mockResolvedValue(GOOD)
+
+    await planUsageForSnapshot()
+    await vi.waitFor(async () => expect(await planUsageForSnapshot()).toEqual(GOOD))
+
+    expect(refreshMock).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ accessToken: 'tok-123' }))
+    expect(queryMock).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ accessToken: 'tok-fresh' }))
+    // The fresh bundle reached the credentials file, so sessions and the
+    // next daemon start pick it up too.
+    const stored = await loadClaudeCredentialsFile()
+    expect(stored?.kind === 'oauth' ? stored.claudeAiOauth : null).toEqual(FRESH_BUNDLE)
+  })
+
+  it('still queries with the stale token when the refresh fails, without a second attempt', async () => {
+    await seedOAuth({ expiresAt: Date.now() - 1000 })
+    queryMock.mockResolvedValue(UNAUTHORIZED)
+
+    await planUsageForSnapshot()
+    await vi.waitFor(async () => expect(await planUsageForSnapshot()).toEqual(UNAUTHORIZED))
+
+    expect(refreshMock).toHaveBeenCalledTimes(1)
+    expect(queryMock).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ accessToken: 'tok-123' }))
+  })
+
+  it('refreshes and retries once when an unexpired token comes back unauthorized', async () => {
+    await seedOAuth()
+    refreshMock.mockResolvedValue(FRESH_BUNDLE)
+    queryMock.mockResolvedValueOnce(UNAUTHORIZED)
+    queryMock.mockResolvedValueOnce(GOOD)
+
+    await planUsageForSnapshot()
+    await vi.waitFor(async () => expect(await planUsageForSnapshot()).toEqual(GOOD))
+
+    expect(refreshMock).toHaveBeenCalledTimes(1)
+    expect(queryMock).toHaveBeenCalledTimes(2)
+    expect(queryMock).toHaveBeenLastCalledWith(expect.objectContaining({ accessToken: 'tok-fresh' }))
+    const stored = await loadClaudeCredentialsFile()
+    expect(stored?.kind === 'oauth' ? stored.claudeAiOauth : null).toEqual(FRESH_BUNDLE)
+  })
+
+  it('does not clobber a credential replaced while the refresh was in flight', async () => {
+    await seedOAuth({ expiresAt: Date.now() - 1000 })
+    refreshMock.mockImplementation(async () => {
+      // Another writer lands first (a session refresh through the proxy,
+      // `yaac auth update`).
+      await seedOAuth({ accessToken: 'tok-other', refreshToken: 'ref-other' })
+      return FRESH_BUNDLE
+    })
+    queryMock.mockResolvedValue(GOOD)
+
+    await planUsageForSnapshot()
+    await vi.waitFor(async () => expect(await planUsageForSnapshot()).toEqual(GOOD))
+
+    // The query still used the fresh token, but the other writer's
+    // credential stayed on disk.
+    expect(queryMock).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ accessToken: 'tok-fresh' }))
+    const stored = await loadClaudeCredentialsFile()
+    expect(stored?.kind === 'oauth' ? stored.claudeAiOauth.accessToken : null).toBe('tok-other')
   })
 })

@@ -1,5 +1,6 @@
 import { queryClaudePlanUsage, queryClaudeRateLimitTier } from '@/lib/auth/usage'
-import { loadClaudeCredentialsFile } from '@/lib/project/tool-auth'
+import { refreshClaudeOAuthBundle } from '@/lib/auth/claude-oauth'
+import { loadClaudeCredentialsFile, saveClaudeOAuthBundle } from '@/lib/project/tool-auth'
 import { notifySessionListChanged } from '@/daemon/sessions-changed'
 import { daemonLog } from '@/daemon/log'
 import type { ClaudeOAuthBundle, PlanUsageResult } from '@/shared/types'
@@ -83,6 +84,31 @@ export async function requestPlanUsageRefresh(): Promise<void> {
   kickRefresh(creds.claudeAiOauth, ON_DEMAND_MIN_INTERVAL_MS)
 }
 
+/**
+ * Refresh the OAuth bundle upstream and persist it, so the fresh token also
+ * serves sessions and the next daemon restart. Never throws; null means the
+ * refresh didn't produce a usable bundle (no refresh token, revoked,
+ * network trouble).
+ */
+async function refreshAndPersistBundle(
+  bundle: ClaudeOAuthBundle,
+): Promise<ClaudeOAuthBundle | null> {
+  const fresh = await refreshClaudeOAuthBundle(bundle)
+  if (!fresh) return null
+  try {
+    // Another writer (a session refresh captured by the proxy, `yaac auth
+    // update`) may have replaced the credential while our refresh was in
+    // flight — persist only while ours is still the stored one.
+    const stored = await loadClaudeCredentialsFile()
+    if (stored?.kind === 'oauth' && stored.claudeAiOauth.accessToken === bundle.accessToken) {
+      await saveClaudeOAuthBundle(fresh)
+    }
+  } catch (err) {
+    daemonLog(`[daemon] failed to persist refreshed Claude OAuth bundle: ${err instanceof Error ? err.message : String(err)}`)
+  }
+  return fresh
+}
+
 /** Start a detached upstream refresh unless one is running or the last
  *  attempt is fresher than `minIntervalMs`. */
 function kickRefresh(bundle: ClaudeOAuthBundle, minIntervalMs: number): void {
@@ -90,10 +116,31 @@ function kickRefresh(bundle: ClaudeOAuthBundle, minIntervalMs: number): void {
   inflight = true
   attemptAt = Date.now()
   const startedGeneration = generation
-  void Promise.all([
-    queryClaudePlanUsage(bundle),
-    rateLimitTier === null ? queryClaudeRateLimitTier(bundle) : Promise.resolve(rateLimitTier),
-  ]).then(([result, tier]) => {
+  void (async () => {
+    let effective = bundle
+    let tokenRefreshTried = false
+    // An expired access token would only 401: refresh it ourselves first.
+    // Running sessions keep the host token fresh (the proxy captures their
+    // refresh traffic); this covers the no-running-session gap.
+    if (bundle.expiresAt <= Date.now()) {
+      tokenRefreshTried = true
+      effective = await refreshAndPersistBundle(bundle) ?? bundle
+    }
+    let [result, tier] = await Promise.all([
+      queryClaudePlanUsage(effective),
+      rateLimitTier === null ? queryClaudeRateLimitTier(effective) : Promise.resolve(rateLimitTier),
+    ])
+    // Unauthorized despite an unexpired stamp (revoked token, stale
+    // expiresAt): one refresh + retry before surfacing the failure.
+    if (!result.available && result.reason === 'unauthorized' && !tokenRefreshTried) {
+      const fresh = await refreshAndPersistBundle(effective)
+      if (fresh) {
+        ;[result, tier] = await Promise.all([
+          queryClaudePlanUsage(fresh),
+          tier === null ? queryClaudeRateLimitTier(fresh) : Promise.resolve(tier),
+        ])
+      }
+    }
     if (generation !== startedGeneration) return
     inflight = false
     rateLimitTier = tier
@@ -111,5 +158,5 @@ function kickRefresh(bundle: ClaudeOAuthBundle, minIntervalMs: number): void {
     // Deliver without waiting for the next background tick — the hub
     // dedupes, so an unchanged snapshot costs no traffic.
     notifySessionListChanged()
-  })
+  })()
 }

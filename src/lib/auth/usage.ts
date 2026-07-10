@@ -89,9 +89,8 @@ export async function queryClaudeRateLimitTier(
  * rate-limits hard (observed: a burst of ~8 requests earned a 429 with
  * retry-after ≈4min), so nothing should call this in a loop.
  *
- * A 401 means the access token expired without a running session to
- * refresh it (the proxy writes refreshed tokens back on session traffic);
- * the next session start heals it.
+ * A 401 means the access token is expired or revoked; the caller refreshes
+ * the bundle (lib/auth/claude-oauth.ts) and retries before surfacing it.
  */
 export async function queryClaudePlanUsage(
   bundle: ClaudeOAuthBundle,
