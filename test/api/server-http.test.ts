@@ -4,9 +4,9 @@ import {
   spawnYaacServer,
   type YaacTestEnv,
   type SpawnedServer,
-} from '@test/helpers/cli'
-import { makeServerRpcClient } from '@test/helpers/rpc'
-import { clusterAvailable } from '@test/helpers/setup'
+} from '@yaac/test-utils/cli'
+import { makeServerRpcClient } from '@yaac/test-utils/rpc'
+import { clusterAvailable } from '@yaac/test-utils/setup'
 
 /**
  * HTTP-surface tests for the spawned server. These don't exercise the

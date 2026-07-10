@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
+import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { buildApp } from '@yaac/server/server'
-import { makeTestRpcClient } from '@test/helpers/rpc'
+import { makeTestRpcClient } from '@yaac/test-utils/rpc'
 
 const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 

@@ -1,16 +1,9 @@
 import { defineConfig } from 'vitest/config'
-import path from 'node:path'
 
 export default defineConfig({
   // The base tsconfig doesn't set "jsx" for test transform, so tell esbuild
   // directly — needed for any .tsx tests run by inline projects here.
   esbuild: { jsx: 'automatic' },
-  resolve: {
-    alias: {
-      '@test': path.resolve(__dirname, 'test'),
-      '@proxy': path.resolve(__dirname, 'k8s/proxy'),
-    },
-  },
   test: {
     testTimeout: 120_000,
     // E2e beforeAll/beforeEach hooks start containers on cold caches AND
@@ -19,28 +12,18 @@ export default defineConfig({
     // Raised to 600s so queued hooks don't false-fail as flakes.
     hookTimeout: 600_000,
     globalSetup: ['test/global-setup.ts'],
-    setupFiles: ['test/setup.ts'],
+    setupFiles: ['@yaac/test-utils/vitest-setup'],
     projects: [
-      // Frontend unit tests own their config (jsdom + testing-library resolve
-      // from apps/frontend, where those deps live).
+      // Per-package unit projects own their config (and, for frontend/proxy,
+      // their own module resolution). Names are `unit:<pkg>`.
       'apps/frontend/vitest.config.ts',
-      {
-        extends: true,
-        test: {
-          name: 'unit:core',
-          include: ['test/unit/**/*.test.{ts,tsx}'],
-          // unit-setup.ts strips the nested-session env (YAAC_NESTED,
-          // YAAC_DATA_DIR, YAAC_K8S_REGISTRY) so unit assertions stay
-          // deterministic when the suite runs inside a yaac session. Listed
-          // alongside the shared setup since a project's setupFiles replace
-          // the inherited root value rather than extending it.
-          setupFiles: ['test/setup.ts', 'test/unit-setup.ts'],
-          // Ordered before capped projects so fast unit feedback lands
-          // first. Explicit groupOrder is required once projects diverge
-          // on maxWorkers; vitest refuses to pick an order itself.
-          sequence: { groupOrder: 0 },
-        },
-      },
+      'apps/cli/vitest.config.ts',
+      'packages/server/vitest.config.ts',
+      'packages/shared/vitest.config.ts',
+      'packages/auth-daemon/vitest.config.ts',
+      'packages/test-utils/vitest.config.ts',
+      'k8s/proxy/vitest.config.ts',
+      // api + e2e live in the root test/ tree (inherently cross-package).
       {
         extends: true,
         test: {

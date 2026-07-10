@@ -1,0 +1,858 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import {
+  ephemeralModulesSlotKey,
+  expandEnvVars,
+  loadProjectConfig,
+  parseInitCommands,
+  parseProjectConfig,
+  resolveEphemeralModulesPaths,
+  resolveProjectConfig,
+} from '#lib/project/config'
+import { setDataDir } from '@yaac/shared/project-paths'
+
+describe('loadProjectConfig', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-config-test-'))
+  })
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true })
+  })
+
+  it('returns null when yaac-config.json is missing', async () => {
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toBeNull()
+  })
+
+  it('parses valid config with envPassthrough', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ envPassthrough: ['TERM', 'LANG'] }),
+    )
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual({ envPassthrough: ['TERM', 'LANG'] })
+  })
+
+  it('parses valid config with envSecretProxy', async () => {
+    const config = {
+      envSecretProxy: {
+        GITHUB_TOKEN: {
+          hosts: ['api.github.com', 'github.com'],
+        },
+        ANTHROPIC_API_KEY: {
+          hosts: ['api.anthropic.com'],
+          header: 'x-api-key',
+        },
+      },
+    }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual(config)
+  })
+
+  it('parses config with both fields', async () => {
+    const config = {
+      envPassthrough: ['TERM'],
+      envSecretProxy: {
+        GITHUB_TOKEN: {
+          hosts: ['api.github.com'],
+        },
+      },
+    }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual(config)
+  })
+
+  it('parses valid config with env', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ env: { FOO: 'bar', BAZ: 'qux' } }),
+    )
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual({ env: { FOO: 'bar', BAZ: 'qux' } })
+  })
+
+  it('throws on invalid env type (array)', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ env: ['FOO=bar'] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('env must be an object of string values')
+  })
+
+  it('throws on invalid env type (string)', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ env: 'FOO=bar' }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('env must be an object of string values')
+  })
+
+  it('throws on non-string env value', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ env: { FOO: 42 } }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('env.FOO must be a string')
+  })
+
+  it('does not expand $VAR references in env values', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ env: { LITERAL: '$HOME/stuff' } }),
+    )
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual({ env: { LITERAL: '$HOME/stuff' } })
+  })
+
+  it('throws on invalid envPassthrough type', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ envPassthrough: 'not-an-array' }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('envPassthrough must be a string array')
+  })
+
+  it('throws on invalid envSecretProxy type', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ envSecretProxy: 'not-an-object' }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('envSecretProxy must be an object')
+  })
+
+  it('throws on invalid envSecretProxy values', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ envSecretProxy: { GITHUB_TOKEN: 'not-an-object' } }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('envSecretProxy.GITHUB_TOKEN must be an object')
+  })
+
+  it('throws when envSecretProxy entry has both header and bodyParam', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ envSecretProxy: { MY_KEY: { hosts: ['example.com'], header: 'x-key', bodyParam: 'key' } } }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('envSecretProxy.MY_KEY cannot have both header and bodyParam')
+  })
+
+  it('throws when envSecretProxy entry has empty hosts', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ envSecretProxy: { MY_KEY: { hosts: [], header: 'x-key' } } }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('envSecretProxy.MY_KEY.hosts must be a non-empty string array')
+  })
+
+  it('parses envSecretProxy with bodyParam', async () => {
+    const config = {
+      envSecretProxy: {
+        GITHUB_CLIENT_ID: {
+          hosts: ['github.com'],
+          path: '/login/oauth/*',
+          bodyParam: 'client_id',
+        },
+      },
+    }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual(config)
+  })
+
+  it('parses valid config with cacheVolumes', async () => {
+    const config = {
+      cacheVolumes: { 'pnpm-store': '/root/.local/share/pnpm/store/v3' },
+    }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual(config)
+  })
+
+  it('parses valid config with initCommands', async () => {
+    const config = {
+      initCommands: ['pnpm install'],
+    }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual(config)
+  })
+
+  it('throws on invalid cacheVolumes type', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ cacheVolumes: 'not-an-object' }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('cacheVolumes must be an object')
+  })
+
+  it('throws on non-string cacheVolumes values', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ cacheVolumes: { store: 123 } }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('cacheVolumes.store must be a string')
+  })
+
+  it('throws on relative cacheVolumes paths', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ cacheVolumes: { store: 'relative/path' } }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('cacheVolumes.store must be an absolute path')
+  })
+
+  it('throws on invalid initCommands type', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ initCommands: 'not-an-array' }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('initCommands must be an array')
+  })
+
+  it('parses object-form initCommands with multiple windows', async () => {
+    const config = {
+      initCommands: [
+        { name: 'backend', commands: ['pnpm dev:backend'] },
+        { name: 'frontend', commands: ['pnpm dev:frontend'], hidePane: true },
+      ],
+    }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual(config)
+  })
+
+  it('parses valid config with nestedContainers', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ nestedContainers: true }),
+    )
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual({ nestedContainers: true })
+  })
+
+  it('parses an explicit nestedContainers: false', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ nestedContainers: false }),
+    )
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual({ nestedContainers: false })
+  })
+
+  it('throws on invalid nestedContainers type', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ nestedContainers: 'yes' }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('nestedContainers must be a boolean')
+  })
+
+  it('virtualCluster implies nestedContainers', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ virtualCluster: true }),
+    )
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual({ virtualCluster: true, nestedContainers: true })
+  })
+
+  it('keeps an explicit virtualCluster: false inert', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ virtualCluster: false }),
+    )
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual({ virtualCluster: false })
+  })
+
+  it('rejects virtualCluster: true alongside nestedContainers: false', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ virtualCluster: true, nestedContainers: false }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow(
+      'virtualCluster requires nestedContainers',
+    )
+  })
+
+  it('accepts virtualCluster: true with an explicit nestedContainers: true', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ virtualCluster: true, nestedContainers: true }),
+    )
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual({ virtualCluster: true, nestedContainers: true })
+  })
+
+  it('throws on invalid virtualCluster type', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ virtualCluster: 1 }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('virtualCluster must be a boolean')
+  })
+
+  it('parses valid config with hideInitPane', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ hideInitPane: true }),
+    )
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual({ hideInitPane: true })
+  })
+
+  it('throws on invalid hideInitPane type', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ hideInitPane: 'yes' }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('hideInitPane must be a boolean')
+  })
+
+  it('parses valid config with portForward array', async () => {
+    const config = {
+      portForward: [{ containerPort: 8080, hostPortStart: 9000 }],
+    }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual(config)
+  })
+
+  it('parses portForward with multiple entries', async () => {
+    const config = {
+      portForward: [
+        { containerPort: 8080, hostPortStart: 9000 },
+        { containerPort: 3000, hostPortStart: 13000 },
+      ],
+    }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual(config)
+  })
+
+  it('throws on invalid portForward type', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ portForward: 'not-an-array' }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('portForward must be an array')
+  })
+
+  it('throws on invalid portForward entry', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ portForward: ['not-an-object'] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('portForward[0] must be an object')
+  })
+
+  it('throws on missing portForward[].containerPort', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ portForward: [{ hostPortStart: 9000 }] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('portForward[0].containerPort must be an integer')
+  })
+
+  it('throws on missing portForward[].hostPortStart', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ portForward: [{ containerPort: 8080 }] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('portForward[0].hostPortStart must be an integer')
+  })
+
+  it('throws on out-of-range portForward[].containerPort', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ portForward: [{ containerPort: 70000, hostPortStart: 9000 }] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('portForward[0].containerPort must be an integer')
+  })
+
+  it('throws on non-integer portForward[].containerPort', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ portForward: [{ containerPort: 80.5, hostPortStart: 9000 }] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('portForward[0].containerPort must be an integer')
+  })
+
+  it('parses valid config with bindMounts', async () => {
+    const config = {
+      bindMounts: [
+        { hostPath: '/home/user/data', containerPath: '/mnt/data', mode: 'ro' },
+        { hostPath: '/opt/tools', containerPath: '/opt/tools', mode: 'rw' },
+      ],
+    }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual(config)
+  })
+
+  it('throws on invalid bindMounts type', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ bindMounts: 'not-an-array' }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts must be an array')
+  })
+
+  it('throws on invalid bindMounts entry', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ bindMounts: ['not-an-object'] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts[0] must be an object')
+  })
+
+  it('throws on relative bindMounts hostPath', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ bindMounts: [{ hostPath: 'relative/path', containerPath: '/mnt/data' }] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts[0].hostPath must be an absolute path')
+  })
+
+  it('throws on relative bindMounts containerPath', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ bindMounts: [{ hostPath: '/home/user/data', containerPath: 'relative/path' }] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts[0].containerPath must be an absolute path')
+  })
+
+  it('throws on invalid bindMounts mode', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ bindMounts: [{ hostPath: '/home/user/data', containerPath: '/mnt/data', mode: 'yes' }] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts[0].mode must be "ro" or "rw"')
+  })
+
+  it('throws on missing bindMounts mode', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ bindMounts: [{ hostPath: '/home/user/data', containerPath: '/mnt/data' }] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts[0].mode must be "ro" or "rw"')
+  })
+
+  it('throws on missing bindMounts hostPath', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ bindMounts: [{ containerPath: '/mnt/data' }] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts[0].hostPath must be an absolute path')
+  })
+
+  it('throws on missing bindMounts containerPath', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ bindMounts: [{ hostPath: '/home/user/data' }] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('bindMounts[0].containerPath must be an absolute path')
+  })
+
+  it('expands $VAR in bindMounts hostPath', async () => {
+    const origHome = process.env.HOME
+    process.env.HOME = '/home/testuser'
+    try {
+      const config = {
+        bindMounts: [{ hostPath: '$HOME/datasets', containerPath: '/mnt/datasets', mode: 'ro' }],
+      }
+      await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+      const result = await loadProjectConfig(tmpDir)
+      expect(result!.bindMounts).toEqual([
+        { hostPath: '/home/testuser/datasets', containerPath: '/mnt/datasets', mode: 'ro' },
+      ])
+    } finally {
+      process.env.HOME = origHome
+    }
+  })
+
+  it('expands ${VAR} in bindMounts hostPath', async () => {
+    process.env.YAAC_TEST_DIR = '/opt/data'
+    try {
+      const config = {
+        bindMounts: [{ hostPath: '${YAAC_TEST_DIR}/models', containerPath: '/mnt/models', mode: 'rw' }],
+      }
+      await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+      const result = await loadProjectConfig(tmpDir)
+      expect(result!.bindMounts).toEqual([
+        { hostPath: '/opt/data/models', containerPath: '/mnt/models', mode: 'rw' },
+      ])
+    } finally {
+      delete process.env.YAAC_TEST_DIR
+    }
+  })
+
+  it('throws on unset env var in bindMounts hostPath', async () => {
+    delete process.env.YAAC_NONEXISTENT_VAR
+    const config = {
+      bindMounts: [{ hostPath: '$YAAC_NONEXISTENT_VAR/data', containerPath: '/mnt/data' }],
+    }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow(
+      'bindMounts[0].hostPath: environment variable "YAAC_NONEXISTENT_VAR" is not set',
+    )
+  })
+
+  it('throws when env var expansion results in non-absolute path', async () => {
+    process.env.YAAC_TEST_REL = 'relative/path'
+    try {
+      const config = {
+        bindMounts: [{ hostPath: '$YAAC_TEST_REL/data', containerPath: '/mnt/data' }],
+      }
+      await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+      await expect(loadProjectConfig(tmpDir)).rejects.toThrow('must be an absolute path (after expanding env vars')
+    } finally {
+      delete process.env.YAAC_TEST_REL
+    }
+  })
+
+  it('parses valid config with addAllowedUrls', async () => {
+    const config = { addAllowedUrls: ['extra.example.com', '*.corp.example.com'] }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual(config)
+  })
+
+  it('parses valid config with setAllowedUrls', async () => {
+    const config = { setAllowedUrls: ['*'] }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual(config)
+  })
+
+  it('parses empty addAllowedUrls array', async () => {
+    const config = { addAllowedUrls: [] }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual(config)
+  })
+
+  it('parses empty setAllowedUrls array', async () => {
+    const config = { setAllowedUrls: [] }
+    await fs.writeFile(path.join(tmpDir, 'yaac-config.json'), JSON.stringify(config))
+    const result = await loadProjectConfig(tmpDir)
+    expect(result).toEqual(config)
+  })
+
+  it('throws on invalid addAllowedUrls type', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ addAllowedUrls: 'not-an-array' }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('addAllowedUrls must be a string array')
+  })
+
+  it('throws on non-string addAllowedUrls entries', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ addAllowedUrls: [123] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('addAllowedUrls must be a string array')
+  })
+
+  it('throws on invalid setAllowedUrls type', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ setAllowedUrls: 'not-an-array' }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('setAllowedUrls must be a string array')
+  })
+
+  it('throws when both addAllowedUrls and setAllowedUrls are set', async () => {
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ addAllowedUrls: ['a.com'], setAllowedUrls: ['b.com'] }),
+    )
+    await expect(loadProjectConfig(tmpDir)).rejects.toThrow('addAllowedUrls and setAllowedUrls are mutually exclusive')
+  })
+
+  it('parseProjectConfig parses raw JSON string', () => {
+    const result = parseProjectConfig(JSON.stringify({ hideInitPane: true, initCommands: ['echo hi'] }))
+    expect(result).toEqual({ hideInitPane: true, initCommands: ['echo hi'] })
+  })
+
+  it('warns on unknown fields', async () => {
+    const warns: string[] = []
+    const origWarn = console.warn
+    console.warn = (msg: string) => warns.push(msg)
+
+    await fs.writeFile(
+      path.join(tmpDir, 'yaac-config.json'),
+      JSON.stringify({ envPassthrough: [], unknownField: true }),
+    )
+    await loadProjectConfig(tmpDir)
+
+    console.warn = origWarn
+    expect(warns).toContain('yaac-config.json: unknown field "unknownField"')
+  })
+})
+
+describe('parseProjectConfig — ephemeralModulesPaths', () => {
+  it('accepts a valid string array and strips trailing slashes', () => {
+    const result = parseProjectConfig(JSON.stringify({
+      ephemeralModulesPaths: ['node_modules', 'packages/web/node_modules/', 'apps/api/node_modules'],
+    }))
+    expect(result.ephemeralModulesPaths).toEqual([
+      'node_modules',
+      'packages/web/node_modules',
+      'apps/api/node_modules',
+    ])
+  })
+
+  it('accepts an empty array (feature disabled)', () => {
+    const result = parseProjectConfig(JSON.stringify({ ephemeralModulesPaths: [] }))
+    expect(result.ephemeralModulesPaths).toEqual([])
+  })
+
+  it('treats an absent field as not-set', () => {
+    const result = parseProjectConfig('{}')
+    expect(result.ephemeralModulesPaths).toBeUndefined()
+  })
+
+  it('rejects non-array values', () => {
+    expect(() => parseProjectConfig(JSON.stringify({ ephemeralModulesPaths: 'node_modules' })))
+      .toThrow(/must be a string array/)
+  })
+
+  it('rejects non-string entries', () => {
+    expect(() => parseProjectConfig(JSON.stringify({ ephemeralModulesPaths: ['node_modules', 5] })))
+      .toThrow(/must be a string array/)
+  })
+
+  it('rejects absolute paths', () => {
+    expect(() => parseProjectConfig(JSON.stringify({ ephemeralModulesPaths: ['/etc/passwd'] })))
+      .toThrow(/relative to \/workspace/)
+  })
+
+  it('rejects empty entries after normalization', () => {
+    expect(() => parseProjectConfig(JSON.stringify({ ephemeralModulesPaths: ['/'] })))
+      .toThrow(/must be relative to \/workspace|must not be empty/)
+    expect(() => parseProjectConfig(JSON.stringify({ ephemeralModulesPaths: [''] })))
+      .toThrow(/must not be empty/)
+  })
+
+  it('rejects entries containing .. or . segments', () => {
+    expect(() => parseProjectConfig(JSON.stringify({ ephemeralModulesPaths: ['../escape'] })))
+      .toThrow(/must not contain/)
+    expect(() => parseProjectConfig(JSON.stringify({ ephemeralModulesPaths: ['a/./b'] })))
+      .toThrow(/must not contain/)
+    expect(() => parseProjectConfig(JSON.stringify({ ephemeralModulesPaths: ['packages/../escape'] })))
+      .toThrow(/must not contain/)
+  })
+})
+
+describe('resolveEphemeralModulesPaths', () => {
+  it('returns ["node_modules"] when config is null', () => {
+    expect(resolveEphemeralModulesPaths(null)).toEqual(['node_modules'])
+  })
+
+  it('returns ["node_modules"] when field is unset', () => {
+    expect(resolveEphemeralModulesPaths({})).toEqual(['node_modules'])
+  })
+
+  it('returns the user list when set', () => {
+    expect(resolveEphemeralModulesPaths({
+      ephemeralModulesPaths: ['node_modules', 'packages/web/node_modules'],
+    })).toEqual(['node_modules', 'packages/web/node_modules'])
+  })
+
+  it('returns [] when explicitly disabled', () => {
+    expect(resolveEphemeralModulesPaths({ ephemeralModulesPaths: [] })).toEqual([])
+  })
+
+  it('returns a fresh array each call (not a shared reference)', () => {
+    const a = resolveEphemeralModulesPaths({})
+    a.push('mutated')
+    const b = resolveEphemeralModulesPaths({})
+    expect(b).toEqual(['node_modules'])
+  })
+})
+
+describe('ephemeralModulesSlotKey', () => {
+  it('maps "node_modules" to "root"', () => {
+    expect(ephemeralModulesSlotKey('node_modules')).toBe('root')
+  })
+
+  it('collapses slashes to underscores for nested paths', () => {
+    expect(ephemeralModulesSlotKey('packages/web/node_modules')).toBe('packages_web_node_modules')
+    expect(ephemeralModulesSlotKey('apps/api/node_modules')).toBe('apps_api_node_modules')
+  })
+})
+
+describe('resolveProjectConfig', () => {
+  let dataDir: string
+  const slug = 'test-project'
+
+  beforeEach(async () => {
+    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-resolve-test-'))
+    await fs.mkdir(path.join(dataDir, 'projects', slug, 'repo'), { recursive: true })
+    setDataDir(dataDir)
+  })
+
+  afterEach(async () => {
+    await fs.rm(dataDir, { recursive: true, force: true })
+  })
+
+  it('returns config when present in the per-project config dir', async () => {
+    await fs.mkdir(path.join(dataDir, 'projects', slug, 'config'), { recursive: true })
+    await fs.writeFile(
+      path.join(dataDir, 'projects', slug, 'config', 'yaac-config.json'),
+      JSON.stringify({ initCommands: ['echo local'] }),
+    )
+    const result = await resolveProjectConfig(slug)
+    expect(result).toEqual({ initCommands: ['echo local'] })
+  })
+
+  it('returns null when no local config exists', async () => {
+    const result = await resolveProjectConfig(slug)
+    expect(result).toBeNull()
+  })
+
+  it('ignores yaac-config.json checked into the cloned repo', async () => {
+    // Regression guard: previously the repo working tree was a config
+    // source. After the rename, only the per-project config dir is read.
+    await fs.writeFile(
+      path.join(dataDir, 'projects', slug, 'repo', 'yaac-config.json'),
+      JSON.stringify({ envPassthrough: ['FOO'] }),
+    )
+    const result = await resolveProjectConfig(slug)
+    expect(result).toBeNull()
+  })
+
+  it('validates the local config file', async () => {
+    await fs.mkdir(path.join(dataDir, 'projects', slug, 'config'), { recursive: true })
+    await fs.writeFile(
+      path.join(dataDir, 'projects', slug, 'config', 'yaac-config.json'),
+      JSON.stringify({ envPassthrough: 'not-an-array' }),
+    )
+    await expect(resolveProjectConfig(slug)).rejects.toThrow('envPassthrough must be a string array')
+  })
+})
+
+describe('expandEnvVars', () => {
+  it('expands $VAR syntax', () => {
+    process.env.YAAC_TEST_A = '/foo'
+    try {
+      expect(expandEnvVars('$YAAC_TEST_A/bar')).toBe('/foo/bar')
+    } finally {
+      delete process.env.YAAC_TEST_A
+    }
+  })
+
+  it('expands ${VAR} syntax', () => {
+    process.env.YAAC_TEST_B = '/baz'
+    try {
+      expect(expandEnvVars('${YAAC_TEST_B}/qux')).toBe('/baz/qux')
+    } finally {
+      delete process.env.YAAC_TEST_B
+    }
+  })
+
+  it('expands multiple variables', () => {
+    process.env.YAAC_TEST_C = '/a'
+    process.env.YAAC_TEST_D = 'b'
+    try {
+      expect(expandEnvVars('$YAAC_TEST_C/${YAAC_TEST_D}')).toBe('/a/b')
+    } finally {
+      delete process.env.YAAC_TEST_C
+      delete process.env.YAAC_TEST_D
+    }
+  })
+
+  it('returns string unchanged when no variables present', () => {
+    expect(expandEnvVars('/plain/path')).toBe('/plain/path')
+  })
+
+  it('throws on unset variable', () => {
+    delete process.env.YAAC_UNSET_VAR
+    expect(() => expandEnvVars('$YAAC_UNSET_VAR')).toThrow('environment variable "YAAC_UNSET_VAR" is not set')
+  })
+})
+
+describe('parseInitCommands', () => {
+  it('returns [] for an empty array', () => {
+    expect(parseInitCommands([])).toEqual([])
+  })
+
+  it('returns string list unchanged', () => {
+    expect(parseInitCommands(['pnpm install', 'pnpm build'])).toEqual([
+      'pnpm install',
+      'pnpm build',
+    ])
+  })
+
+  it('returns object list with hidePane stripped when undefined', () => {
+    const result = parseInitCommands([
+      { name: 'backend', commands: ['pnpm dev:backend'] },
+      { name: 'frontend', commands: ['pnpm dev:frontend'], hidePane: false },
+    ])
+    expect(result).toEqual([
+      { name: 'backend', commands: ['pnpm dev:backend'] },
+      { name: 'frontend', commands: ['pnpm dev:frontend'], hidePane: false },
+    ])
+  })
+
+  it('rejects non-array input', () => {
+    expect(() => parseInitCommands('pnpm install')).toThrow('initCommands must be an array')
+  })
+
+  it('rejects mixed strings and objects', () => {
+    expect(() => parseInitCommands(['pnpm install', { name: 'be', commands: ['x'] }]))
+      .toThrow('cannot be mixed')
+  })
+
+  it('rejects a missing name', () => {
+    expect(() => parseInitCommands([{ commands: ['x'] }]))
+      .toThrow(/initCommands\[0\]\.name/)
+  })
+
+  it('rejects a reserved name', () => {
+    for (const reserved of ['claude', 'codex', 'opencode', 'init', 'yaac']) {
+      expect(() => parseInitCommands([{ name: reserved, commands: ['x'] }]))
+        .toThrow(`"${reserved}" is reserved`)
+    }
+  })
+
+  it('rejects a name with disallowed chars', () => {
+    for (const bad of ['be:1', 'be.1', 'with space', '1leading-digit-ok?']) {
+      // names must match [a-zA-Z0-9][a-zA-Z0-9_-]*
+      if (/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(bad)) continue
+      expect(() => parseInitCommands([{ name: bad, commands: ['x'] }]))
+        .toThrow(/must match/)
+    }
+  })
+
+  it('rejects duplicate names', () => {
+    expect(() => parseInitCommands([
+      { name: 'be', commands: ['a'] },
+      { name: 'be', commands: ['b'] },
+    ])).toThrow('"be" is duplicated')
+  })
+
+  it('rejects an empty commands array', () => {
+    expect(() => parseInitCommands([{ name: 'be', commands: [] }]))
+      .toThrow(/commands must be a non-empty array/)
+  })
+
+  it('rejects non-string entries in commands', () => {
+    expect(() => parseInitCommands([{ name: 'be', commands: ['ok', 42] }]))
+      .toThrow(/commands must be a non-empty array/)
+  })
+
+  it('rejects a non-boolean hidePane', () => {
+    expect(() => parseInitCommands([{ name: 'be', commands: ['x'], hidePane: 'yes' }]))
+      .toThrow(/hidePane must be a boolean/)
+  })
+})

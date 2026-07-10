@@ -5,10 +5,10 @@ import {
   runYaac,
   acquireServerMutex,
   type YaacTestEnv,
-} from '@test/helpers/cli'
+} from '@yaac/test-utils/cli'
 import { readLock } from '@yaac/shared/lock'
-import { requirePodman, requireCluster, IS_NESTED_YAAC, TEST_PROXY_CONFIG } from '@test/helpers/setup'
-import { resolveTestBaseImageRef } from '@test/helpers/mock-remotes'
+import { requirePodman, requireCluster, IS_NESTED_YAAC, TEST_PROXY_CONFIG } from '@yaac/test-utils/setup'
+import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
 import { ProxyClient } from '@yaac/server/lib/container/proxy-client'
 import { PROXY_APP_NAME, PROXY_AUTH_SECRET_NAME, PROXY_PORT } from '@yaac/server/lib/k8s/bootstrap'
 import {

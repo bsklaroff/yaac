@@ -23,6 +23,7 @@
   },
   "devDependencies": {
     "@types/node": "25.5.2",
-    "@types/ws": "8.18.1"
+    "@types/ws": "8.18.1",
+    "@yaac/test-utils": "workspace:*"
   }
 }

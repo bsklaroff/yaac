@@ -13,13 +13,13 @@ import {
   runYaac,
   type YaacTestEnv,
   type SpawnedServer,
-} from '@test/helpers/cli'
+} from '@yaac/test-utils/cli'
 import {
   requirePodman,
   requireCluster,
   execInJob,
   cleanupSessionJobs,
-} from '@test/helpers/setup'
+} from '@yaac/test-utils/setup'
 import {
   startMockLLM,
   startMockGit,
@@ -27,7 +27,7 @@ import {
   cleanupMocks,
   type MockLLM,
   type MockGit,
-} from '@test/helpers/mock-remotes'
+} from '@yaac/test-utils/mock-remotes'
 
 /**
  * yaac-in-yaac smoke: run yaac's own CLI inside a vcluster session

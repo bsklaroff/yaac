@@ -13,12 +13,12 @@ import {
   runYaac,
   type YaacTestEnv,
   type SpawnedServer,
-} from '@test/helpers/cli'
+} from '@yaac/test-utils/cli'
 import {
   requirePodman,
   requireCluster,
   cleanupSessionJobs,
-} from '@test/helpers/setup'
+} from '@yaac/test-utils/setup'
 import {
   startMockLLM,
   startMockGit,
@@ -26,7 +26,7 @@ import {
   cleanupMocks,
   type MockLLM,
   type MockGit,
-} from '@test/helpers/mock-remotes'
+} from '@yaac/test-utils/mock-remotes'
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 

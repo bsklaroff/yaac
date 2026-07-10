@@ -7,10 +7,9 @@
       "@yaac/auth-daemon/*": ["./packages/auth-daemon/src/*"],
       "@yaac/cli/*": ["./apps/cli/src/*"],
       "@yaac/test-utils/*": ["./packages/test-utils/src/*"],
-      "@test/*": ["./test/*"],
-      "@proxy/*": ["./k8s/proxy/*"]
+      "yaac-proxy-sidecar/*": ["./k8s/proxy/*"]
     }
   },
-  "include": ["apps/cli/src", "apps/cli/test", "packages/shared/src", "packages/shared/test", "packages/server/src", "packages/server/test", "packages/auth-daemon/src", "packages/auth-daemon/test", "packages/test-utils/src", "test", "scripts", "*.config.ts", "k8s/proxy/proxy.ts", "k8s/proxy/ca-bundle.ts", "k8s/proxy/transparent.ts", "k8s/proxy/pp2.ts", "k8s/proxy/pod-watch.ts", "k8s/proxy/dns-stub.ts", "k8s/relay/relay.ts", "k8s/relay/pp2-frame.ts", "k8s/relay/dns-stub.ts"],
+  "include": ["apps/cli/src", "apps/cli/test", "packages/shared/src", "packages/shared/test", "packages/server/src", "packages/server/test", "packages/auth-daemon/src", "packages/auth-daemon/test", "packages/test-utils/src", "packages/test-utils/test", "test", "scripts", "*.config.ts", "apps/cli/vitest.config.ts", "packages/server/vitest.config.ts", "packages/shared/vitest.config.ts", "packages/auth-daemon/vitest.config.ts", "packages/test-utils/vitest.config.ts", "k8s/proxy/vitest.config.ts", "k8s/proxy/test", "k8s/proxy/proxy.ts", "k8s/proxy/ca-bundle.ts", "k8s/proxy/transparent.ts", "k8s/proxy/pp2.ts", "k8s/proxy/pod-watch.ts", "k8s/proxy/dns-stub.ts", "k8s/relay/relay.ts", "k8s/relay/pp2-frame.ts", "k8s/relay/dns-stub.ts"],
   "exclude": ["node_modules", "dist", "apps/frontend"]
 }

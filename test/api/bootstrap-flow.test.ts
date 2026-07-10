@@ -1,7 +1,7 @@
 import http from 'node:http'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import { bootInProcessServer, type InProcessServer } from '@test/helpers/server'
+import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { bootInProcessServer, type InProcessServer } from '@yaac/test-utils/server'
 
 /**
  * Full browser-auth bootstrap exchange over a real socket, per the test

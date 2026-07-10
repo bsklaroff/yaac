@@ -8,7 +8,7 @@ import {
   runYaac,
   type YaacTestEnv,
   type SpawnedServer,
-} from '@test/helpers/cli'
+} from '@yaac/test-utils/cli'
 
 /**
  * Merged auth/tool CLI suite (formerly auth.test.ts, auth-fake.test.ts,

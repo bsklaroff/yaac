@@ -20,6 +20,7 @@
   },
   "devDependencies": {
     "@types/node": "25.5.2",
-    "@yaac/server": "workspace:*"
+    "@yaac/server": "workspace:*",
+    "@yaac/test-utils": "workspace:*"
   }
 }

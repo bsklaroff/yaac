@@ -6,7 +6,7 @@ import {
   spawnYaacServer,
   type YaacTestEnv,
   type SpawnedServer,
-} from '@test/helpers/cli'
+} from '@yaac/test-utils/cli'
 
 /**
  * The durable-token lifecycle over the real server HTTP surface: mint

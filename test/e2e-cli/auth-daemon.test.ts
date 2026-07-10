@@ -8,9 +8,8 @@ import {
   runYaac,
   type YaacTestEnv,
   type SpawnedServer,
-} from '@test/helpers/cli'
-
-const CLAUDE_STUB = path.join(__dirname, '..', 'helpers', 'fake-claude-login.cjs')
+} from '@yaac/test-utils/cli'
+import { CLAUDE_STUB } from '@yaac/test-utils/fixtures'
 
 /**
  * The auth-daemon relay end to end with real processes: a spawned main

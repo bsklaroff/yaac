@@ -14,14 +14,14 @@ import {
   runYaac,
   type YaacTestEnv,
   type SpawnedServer,
-} from '@test/helpers/cli'
+} from '@yaac/test-utils/cli'
 import {
   requirePodman,
   requireCluster,
   execInJob,
   cleanupSessionJobs,
   IS_NESTED_YAAC,
-} from '@test/helpers/setup'
+} from '@yaac/test-utils/setup'
 import {
   startMockLLM,
   startMockGit,
@@ -29,7 +29,7 @@ import {
   cleanupMocks,
   type MockLLM,
   type MockGit,
-} from '@test/helpers/mock-remotes'
+} from '@yaac/test-utils/mock-remotes'
 
 const execFileAsync = promisify(execFile)
 

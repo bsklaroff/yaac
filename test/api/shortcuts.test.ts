@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
+import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { buildApp } from '@yaac/server/server'
-import { makeTestRpcClient } from '@test/helpers/rpc'
+import { makeTestRpcClient } from '@yaac/test-utils/rpc'
 
 const chord = { code: 'KeyG', alt: true, ctrl: false, meta: false, shift: false }
 

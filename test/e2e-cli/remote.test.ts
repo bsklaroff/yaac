@@ -5,7 +5,7 @@ import {
   runYaac,
   type YaacTestEnv,
   type SpawnedServer,
-} from '@test/helpers/cli'
+} from '@yaac/test-utils/cli'
 
 /**
  * The remote path without a second machine: point `yaac remote set` at

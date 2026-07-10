@@ -124,6 +124,9 @@ importers:
       '@types/ws':
         specifier: 8.18.1
         version: 8.18.1
+      '@yaac/test-utils':
+        specifier: workspace:*
+        version: link:../../packages/test-utils
 
   apps/frontend:
     dependencies:
@@ -244,6 +247,9 @@ importers:
       '@types/ws':
         specifier: 8.18.1
         version: 8.18.1
+      '@yaac/test-utils':
+        specifier: workspace:*
+        version: link:../test-utils
 
   packages/server:
     dependencies:
@@ -281,6 +287,9 @@ importers:
       '@types/node':
         specifier: 25.5.2
         version: 25.5.2
+      '@yaac/test-utils':
+        specifier: workspace:*
+        version: link:../test-utils
 
   packages/shared:
     dependencies:
@@ -300,6 +309,9 @@ importers:
       '@yaac/server':
         specifier: workspace:*
         version: link:../server
+      '@yaac/test-utils':
+        specifier: workspace:*
+        version: link:../test-utils
 
   packages/test-utils:
     dependencies:

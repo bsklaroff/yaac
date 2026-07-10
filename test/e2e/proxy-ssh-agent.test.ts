@@ -10,8 +10,8 @@ import {
   createTempDataDir,
   cleanupTempDir,
   TEST_PROXY_CONFIG,
-} from '@test/helpers/setup'
-import { e2eMkdtemp } from '@test/helpers/tmp'
+} from '@yaac/test-utils/setup'
+import { e2eMkdtemp } from '@yaac/test-utils/tmp'
 import { ProxyClient } from '@yaac/server/lib/container/proxy-client'
 
 const execFileAsync = promisify(execFile)

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
+import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { buildApp } from '@yaac/server/server'
 import { projectConfigDir, getProjectsDir, projectDir, claudeDir, codexDir } from '@yaac/shared/project-paths'
 import { addEntry, loadCredentials } from '@yaac/server/lib/project/credentials'
@@ -14,7 +14,7 @@ import type * as projectAddModule from '@yaac/server/lib/project/add'
 import type * as cliResolveModule from '@yaac/auth-daemon/cli-resolve'
 import type { ProjectMeta, ClaudeOAuthBundle } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
-import { makeTestRpcClient } from '@test/helpers/rpc'
+import { makeTestRpcClient } from '@yaac/test-utils/rpc'
 
 vi.mock('@yaac/server/session-create', () => ({
   createSession: vi.fn(),
@@ -58,6 +58,7 @@ import { removeProject } from '@yaac/server/lib/project/remove'
 import { registerProvisioning, listProvisioning, clearAllProvisioningForTests } from '@yaac/server/provisioning'
 import { authAgentHub } from '@yaac/server/auth-agent'
 import type { AgentOp } from '@yaac/shared/auth-agent-protocol'
+import { CLAUDE_STUB, CODEX_STUB, INSTALL_STUB } from '@yaac/test-utils/fixtures'
 import {
   cancelToolLogin,
   clearAllToolLoginsForTests,
@@ -661,8 +662,6 @@ describe('write routes', () => {
   })
 
   describe('tool login routes', () => {
-    const CODEX_STUB = path.join(__dirname, '..', 'helpers', 'fake-codex-login.cjs')
-    const CLAUDE_STUB = path.join(__dirname, '..', 'helpers', 'fake-claude-login.cjs')
     let teardownAgent: () => void
 
     beforeEach(() => {
@@ -748,7 +747,6 @@ describe('write routes', () => {
   })
 
   describe('tool install routes', () => {
-    const INSTALL_STUB = path.join(__dirname, '..', 'helpers', 'fake-install-cli.cjs')
     let teardownAgent: () => void
 
     beforeEach(() => {

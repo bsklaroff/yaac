@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { createYaacTestEnv, spawnYaacServer, runYaac, type YaacTestEnv, type SpawnedServer } from '@test/helpers/cli'
-import { createTestRepo, addTestProject } from '@test/helpers/setup'
-import { makeServerRpcClient } from '@test/helpers/rpc'
+import { createYaacTestEnv, spawnYaacServer, runYaac, type YaacTestEnv, type SpawnedServer } from '@yaac/test-utils/cli'
+import { createTestRepo, addTestProject } from '@yaac/test-utils/setup'
+import { makeServerRpcClient } from '@yaac/test-utils/rpc'
 
 /**
  * Merged e2e coverage for `yaac project` (list/add), `yaac project rebuild`,

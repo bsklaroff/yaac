@@ -2,8 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import crypto from 'node:crypto'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
-import { createYaacTestEnv, runYaac, type YaacTestEnv } from '@test/helpers/cli'
-import { IS_NESTED_YAAC } from '@test/helpers/setup'
+import { createYaacTestEnv, runYaac, type YaacTestEnv } from '@yaac/test-utils/cli'
+import { IS_NESTED_YAAC } from '@yaac/test-utils/setup'
 
 /**
  * Merged e2e coverage for the `yaac cluster` command family: `check` (no

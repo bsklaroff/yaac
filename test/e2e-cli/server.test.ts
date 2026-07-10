@@ -7,7 +7,7 @@ import {
   acquireServerMutex,
   type YaacTestEnv,
   type SpawnedServer,
-} from '@test/helpers/cli'
+} from '@yaac/test-utils/cli'
 import { readLock, serverLockPath } from '@yaac/shared/lock'
 import { MAX_PORT_PROBES } from '@yaac/shared/server-port'
 import { serverLogPath } from '@yaac/shared/paths'

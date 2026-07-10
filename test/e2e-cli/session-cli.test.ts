@@ -11,8 +11,8 @@ import {
   runYaac,
   type YaacTestEnv,
   type SpawnedServer,
-} from '@test/helpers/cli'
-import { addTestProject, createTestRepo, requirePodman, requireCluster } from '@test/helpers/setup'
+} from '@yaac/test-utils/cli'
+import { addTestProject, createTestRepo, requirePodman, requireCluster } from '@yaac/test-utils/setup'
 
 /**
  * Merged session-CLI suite: one shared `createYaacTestEnv()` + one shared

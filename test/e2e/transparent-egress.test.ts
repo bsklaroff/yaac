@@ -13,8 +13,8 @@ import {
   cleanupTempDir,
   TEST_PROXY_CONFIG,
   IS_NESTED_YAAC,
-} from '@test/helpers/setup'
-import { resolveTestBaseImageRef } from '@test/helpers/mock-remotes'
+} from '@yaac/test-utils/setup'
+import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
 import { ProxyClient } from '@yaac/server/lib/container/proxy-client'
 import {
   proxyServiceClusterIp,

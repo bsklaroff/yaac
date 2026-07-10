@@ -42,7 +42,7 @@ export default tseslint.config(
   // Packages never import apps. (Covers test-utils and any package without a
   // stricter zone below; server/auth-daemon/shared/cli override this.)
   {
-    files: ['packages/**/*.ts'],
+    files: ['packages/*/src/**/*.ts'],
     rules: {
       '@typescript-eslint/no-restricted-imports': [
         'error',
@@ -62,7 +62,7 @@ export default tseslint.config(
   // server and auth-daemon: only @yaac/shared (+ self via #). They must never
   // import each other — anything they share lives in @yaac/shared.
   {
-    files: ['packages/server/**/*.ts', 'packages/auth-daemon/**/*.ts'],
+    files: ['packages/server/src/**/*.ts', 'packages/auth-daemon/src/**/*.ts'],
     rules: {
       '@typescript-eslint/no-restricted-imports': [
         'error',
@@ -82,7 +82,7 @@ export default tseslint.config(
   // shared: no VALUE imports from other workspace packages; type-only is fine
   // (e.g. the Hono AppType from @yaac/server).
   {
-    files: ['packages/shared/**/*.ts'],
+    files: ['packages/shared/src/**/*.ts'],
     rules: {
       '@typescript-eslint/no-restricted-imports': [
         'error',
@@ -102,7 +102,7 @@ export default tseslint.config(
 
   // frontend: only @yaac/shared (+ self via #).
   {
-    files: ['apps/frontend/**/*.{ts,tsx}'],
+    files: ['apps/frontend/src/**/*.{ts,tsx}'],
     rules: {
       '@typescript-eslint/no-restricted-imports': [
         'error',
@@ -121,7 +121,7 @@ export default tseslint.config(
 
   // cli app: may wire server + auth-daemon + shared, but never the frontend.
   {
-    files: ['apps/cli/**/*.ts'],
+    files: ['apps/cli/src/**/*.ts'],
     rules: {
       '@typescript-eslint/no-restricted-imports': [
         'error',
@@ -183,6 +183,12 @@ export default tseslint.config(
   },
   {
     files: ['packages/shared/src/env.ts'],
+    rules: { 'no-process-env': 'off' },
+  },
+  // test-utils is test infrastructure (the former test/helpers) and reads
+  // process.env directly to shape the test environment.
+  {
+    files: ['packages/test-utils/**/*.ts'],
     rules: { 'no-process-env': 'off' },
   },
 )

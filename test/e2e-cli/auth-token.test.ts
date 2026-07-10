@@ -5,7 +5,7 @@ import {
   runYaac,
   type YaacTestEnv,
   type SpawnedServer,
-} from '@test/helpers/cli'
+} from '@yaac/test-utils/cli'
 
 describe('yaac auth token (real CLI + real server)', () => {
   let testEnv: YaacTestEnv
