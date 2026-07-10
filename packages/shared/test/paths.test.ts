@@ -25,7 +25,34 @@ import {
   DOCKERFILES_DIR,
   PROXY_DIR,
 } from '#project-paths'
-import { serverLogPath, expandTilde } from '#paths'
+import { serverLogPath, expandTilde, findRepoRoot } from '#paths'
+
+describe('findRepoRoot', () => {
+  const here = path.dirname(new URL(import.meta.url).pathname)
+
+  it('walks up past per-package package.json files to the workspace marker', async () => {
+    // Every apps/* and packages/* dir has a package.json; only the repo
+    // root has pnpm-workspace.yaml — the walk must not stop early.
+    const root = findRepoRoot(here)
+    expect(root).toBe(path.resolve(here, '..', '..', '..'))
+    const stat = await fs.stat(path.join(root, 'pnpm-workspace.yaml'))
+    expect(stat.isFile()).toBe(true)
+  })
+
+  it('is a fixed point when starting at the root itself', () => {
+    const root = findRepoRoot(here)
+    expect(findRepoRoot(root)).toBe(root)
+  })
+
+  it('throws when no workspace marker exists up the tree', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-reporoot-'))
+    try {
+      expect(() => findRepoRoot(tmpDir)).toThrow('pnpm-workspace.yaml')
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true })
+    }
+  })
+})
 
 describe('expandTilde', () => {
   it('expands a leading ~', () => {

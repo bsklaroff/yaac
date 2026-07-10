@@ -1,25 +1,15 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { getDataDir } from '#paths'
-
-export interface ServerLock {
-  pid: number
-  port: number
-  secret: string
-  startedAt: number
-  buildId: string
-}
+import { SERVER_LOCK_FILENAME, isLockLive, parseServerLock, type ServerLock } from '#server-lock-file'
 
 export function serverLockPath(): string {
-  return path.join(getDataDir(), '.server.lock')
+  return path.join(getDataDir(), SERVER_LOCK_FILENAME)
 }
 
 export async function readLock(): Promise<ServerLock | null> {
   try {
-    const raw = await fs.readFile(serverLockPath(), 'utf8')
-    const parsed = JSON.parse(raw) as unknown
-    if (!isServerLock(parsed)) return null
-    return parsed
+    return parseServerLock(await fs.readFile(serverLockPath(), 'utf8'))
   } catch {
     return null
   }
@@ -119,49 +109,3 @@ export async function removeLock(expectedPid?: number): Promise<void> {
   }
 }
 
-/**
- * A lock is "live" if (a) the pid still exists and (b) /health answers
- * within 500ms. Used both by the CLI (is there a server to talk to?) and
- * by a second `yaac server` invocation (should I exit idempotently?).
- */
-export async function isLockLive(lock: ServerLock): Promise<boolean> {
-  if (!pidExists(lock.pid)) return false
-  try {
-    const ctl = new AbortController()
-    const timer = setTimeout(() => ctl.abort(), 500)
-    try {
-      const res = await fetch(`http://127.0.0.1:${lock.port}/health`, {
-        headers: { authorization: `Bearer ${lock.secret}` },
-        signal: ctl.signal,
-      })
-      return res.ok
-    } finally {
-      clearTimeout(timer)
-    }
-  } catch {
-    return false
-  }
-}
-
-function pidExists(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    // ESRCH = no such process. EPERM = exists but we can't signal it — still alive.
-    const code = (err as NodeJS.ErrnoException).code
-    return code === 'EPERM'
-  }
-}
-
-function isServerLock(value: unknown): value is ServerLock {
-  if (typeof value !== 'object' || value === null) return false
-  const v = value as Record<string, unknown>
-  return (
-    typeof v.pid === 'number'
-    && typeof v.port === 'number'
-    && typeof v.secret === 'string'
-    && typeof v.startedAt === 'number'
-    && typeof v.buildId === 'string'
-  )
-}

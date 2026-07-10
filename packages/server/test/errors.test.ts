@@ -4,21 +4,6 @@ import { ServerError } from '@yaac/shared/errors'
 import { toErrorBody } from '#errors'
 
 describe('server errors', () => {
-  describe('ServerError', () => {
-    it('uses defaultStatus per code', () => {
-      expect(new ServerError('NOT_FOUND', 'x').httpStatus).toBe(404)
-      expect(new ServerError('VALIDATION', 'x').httpStatus).toBe(400)
-      expect(new ServerError('CONFLICT', 'x').httpStatus).toBe(409)
-      expect(new ServerError('RUNTIME_UNAVAILABLE', 'x').httpStatus).toBe(503)
-      expect(new ServerError('AUTH_REQUIRED', 'x').httpStatus).toBe(401)
-      expect(new ServerError('INTERNAL', 'x').httpStatus).toBe(500)
-    })
-
-    it('preserves the message', () => {
-      expect(new ServerError('NOT_FOUND', 'project foo').message).toBe('project foo')
-    })
-  })
-
   describe('toErrorBody', () => {
     it('passes through ServerError fields verbatim', () => {
       const result = toErrorBody(new ServerError('NOT_FOUND', 'project foo'))

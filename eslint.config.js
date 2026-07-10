@@ -166,11 +166,14 @@ export default tseslint.config(
     },
   },
 
-  // Config files load through esbuild/vite at build time and legitimately use
-  // relative imports into workspace source; exempt them from import limits.
-  // Listed after the zones so it wins for *.config.ts.
+  // The frontend vite config loads through esbuild at config-load time,
+  // which can't resolve @yaac/* bare specifiers — it legitimately uses
+  // relative imports into packages/shared leaf modules. Scoped to that one
+  // file (listed after the zones so it wins there): a blanket *.config.ts
+  // exemption would let any future config file cross package boundaries
+  // unnoticed.
   {
-    files: ['**/*.config.ts'],
+    files: ['apps/frontend/vite.config.ts'],
     rules: { '@typescript-eslint/no-restricted-imports': 'off' },
   },
 

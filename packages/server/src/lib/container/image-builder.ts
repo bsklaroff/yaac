@@ -41,18 +41,39 @@ export async function baseImageHash(dockerfilePath: string): Promise<string> {
   return stringHash(`${await fileHash(dockerfilePath)}:uid=${sessionUid()}`)
 }
 
-// node_modules is a dev-only artifact created by pnpm workspace installs; it
-// is also excluded via .containerignore in contexts that contain it.
-const CONTEXT_HASH_IGNORE = new Set(['node_modules'])
+/**
+ * Parse a .containerignore into the set of context-relative paths to skip.
+ * The hash must exclude exactly what `podman build` excludes, so instead of
+ * replicating podman's full glob matcher we support only literal paths
+ * (`node_modules`, `test`, `a/b.txt`) and fail loudly on anything fancier —
+ * a silently-mismatched pattern would let the image tag and the built image
+ * drift apart.
+ */
+export function parseContainerIgnore(content: string): Set<string> {
+  const patterns = new Set<string>()
+  for (const raw of content.split('\n')) {
+    const line = raw.trim()
+    if (line === '' || line.startsWith('#')) continue
+    if (/[*?[\]!]/.test(line) || line.startsWith('/')) {
+      throw new Error(
+        `unsupported .containerignore pattern ${JSON.stringify(line)}: `
+        + 'only literal context-relative paths are supported (contextHash '
+        + "must match podman's exclusions exactly)",
+      )
+    }
+    patterns.add(line.replace(/\/+$/, ''))
+  }
+  return patterns
+}
 
-async function collectContextFiles(root: string, rel: string): Promise<string[]> {
+async function collectContextFiles(root: string, rel: string, ignore: Set<string>): Promise<string[]> {
   const entries = await fs.readdir(path.join(root, rel), { withFileTypes: true })
   const out: string[] = []
   for (const entry of entries) {
-    if (CONTEXT_HASH_IGNORE.has(entry.name)) continue
     const childRel = rel ? `${rel}/${entry.name}` : entry.name
+    if (ignore.has(childRel)) continue
     if (entry.isDirectory()) {
-      out.push(...await collectContextFiles(root, childRel))
+      out.push(...await collectContextFiles(root, childRel, ignore))
     } else if (entry.isFile()) {
       out.push(childRel)
     }
@@ -60,8 +81,19 @@ async function collectContextFiles(root: string, rel: string): Promise<string[]>
   return out
 }
 
+/**
+ * Content hash of a build context, honoring the context's .containerignore
+ * (the same file `podman build` consults) so dev-only files — tests,
+ * node_modules — never churn image tags.
+ */
 export async function contextHash(dir: string): Promise<string> {
-  const files = (await collectContextFiles(dir, '')).sort()
+  let ignore = new Set<string>()
+  try {
+    ignore = parseContainerIgnore(await fs.readFile(path.join(dir, '.containerignore'), 'utf8'))
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+  }
+  const files = (await collectContextFiles(dir, '', ignore)).sort()
   const hasher = crypto.createHash('sha256')
   for (const rel of files) {
     hasher.update(rel)

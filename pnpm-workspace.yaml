@@ -2,6 +2,25 @@ packages:
   - "apps/*"
   - "packages/*"
   - "k8s/proxy"
+# Single source of truth for deps pinned in more than one manifest; refer to
+# them as "catalog:". k8s/proxy is the one exception — its package.json is
+# npm-installed inside the proxy image build, and npm can't resolve catalog:
+# specifiers, so its pins stay inline.
+catalog:
+  "@hono/node-server": 1.19.14
+  "@hono/node-ws": 1.3.1
+  "@hono/zod-validator": 0.7.6
+  "@lydell/node-pty": 1.1.0
+  "@types/node": 25.5.2
+  "@types/ws": 8.18.1
+  commander: 14.0.3
+  hono: 4.12.14
+  simple-git: 3.35.2
+  smol-toml: 1.6.1
+  tsx: 4.21.0
+  ws: 8.21.0
+  yaml: 2.9.0
+  zod: 4.3.6
 allowBuilds:
   cpu-features: false
   esbuild: false

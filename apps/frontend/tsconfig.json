@@ -21,6 +21,6 @@
     "src",
     "test",
     "vite.config.ts",
-    "vitest.config.ts"
+    "hash-imports.ts"
   ]
 }

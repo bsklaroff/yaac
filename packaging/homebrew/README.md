@@ -34,8 +34,10 @@ machine image's vsock guest-agent wiring (podman-machine-os#238).
 
 ## Release flow
 
-1. Bump `version` in `package.json` (and `YAAC_VERSION` in `src/cli.ts`),
+1. Bump `version` in the root `package.json` (the CLI reads it at build time),
    then publish: `pnpm publish` (the `prepublishOnly` hook rebuilds `dist/`).
+   Use `pnpm publish`, not `npm publish` — pnpm rewrites the `catalog:`
+   version specifiers to their pinned versions in the published manifest.
 2. Compute the tarball hash:
 
    ```sh

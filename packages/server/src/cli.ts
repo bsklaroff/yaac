@@ -21,11 +21,10 @@ import { readBuildId } from '@yaac/shared/build-id'
 import {
   acquireLock,
   serverLockPath,
-  isLockLive,
   readLock,
   removeLock,
-  type ServerLock,
 } from '@yaac/shared/lock'
+import { isLockLive, type ServerLock } from '@yaac/shared/server-lock-file'
 import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-port'
 import { resolveServerTarget, type ServerTarget } from '@yaac/shared/server-client'
 import { ensureAuthDaemonSpawned } from '@yaac/shared/auth-daemon'

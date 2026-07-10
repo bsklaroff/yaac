@@ -10,16 +10,13 @@
     "./*": "./src/*.ts",
     "./package.json": "./package.json"
   },
-  "scripts": {
-    "typecheck": "tsc --noEmit"
-  },
   "dependencies": {
-    "hono": "4.12.14",
-    "simple-git": "3.35.2",
-    "zod": "4.3.6"
+    "hono": "catalog:",
+    "simple-git": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
-    "@types/node": "25.5.2",
+    "@types/node": "catalog:",
     "@yaac/server": "workspace:*",
     "@yaac/test-utils": "workspace:*"
   }

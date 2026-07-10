@@ -15,9 +15,7 @@
       "@yaac/shared/*": ["./packages/shared/src/*"],
       "@yaac/server/*": ["./packages/server/src/*"],
       "@yaac/auth-daemon/*": ["./packages/auth-daemon/src/*"],
-      "@yaac/cli/*": ["./apps/cli/src/*"],
-      "@yaac/test-utils/*": ["./packages/test-utils/src/*"],
-      "yaac-proxy-sidecar/*": ["./k8s/proxy/*"]
+      "@yaac/test-utils/*": ["./packages/test-utils/src/*"]
     }
   }
 }

@@ -8,9 +8,13 @@ import {
   readLock,
   writeLock,
   removeLock,
-  isLockLive,
-  type ServerLock,
 } from '#lock'
+import {
+  isLockLive,
+  isServerLock,
+  parseServerLock,
+  type ServerLock,
+} from '#server-lock-file'
 
 describe('server lock', () => {
   let tmpDir: string
@@ -89,6 +93,37 @@ describe('server lock', () => {
 
     it('is a no-op with expectedPid when the lock is missing', async () => {
       await expect(removeLock(42)).resolves.toBeUndefined()
+    })
+  })
+
+  describe('isServerLock', () => {
+    const full: ServerLock = { pid: 1, port: 2, secret: 's', startedAt: 3, buildId: 'b' }
+
+    it('accepts a complete lock', () => {
+      expect(isServerLock(full)).toBe(true)
+    })
+
+    it('rejects non-objects, null, and missing/mistyped fields', () => {
+      expect(isServerLock('lock')).toBe(false)
+      expect(isServerLock(null)).toBe(false)
+      for (const key of Object.keys(full) as (keyof ServerLock)[]) {
+        const { [key]: value, ...partial } = full
+        expect(isServerLock(partial)).toBe(false)
+        const wrongType = typeof value === 'number' ? 'nope' : 42
+        expect(isServerLock({ ...full, [key]: wrongType })).toBe(false)
+      }
+    })
+  })
+
+  describe('parseServerLock', () => {
+    it('parses a valid lock', () => {
+      const lock: ServerLock = { pid: 1, port: 2, secret: 's', startedAt: 3, buildId: 'b' }
+      expect(parseServerLock(JSON.stringify(lock))).toEqual(lock)
+    })
+
+    it('returns null on malformed JSON and wrong shapes', () => {
+      expect(parseServerLock('not json')).toBeNull()
+      expect(parseServerLock('{"pid":1}')).toBeNull()
     })
   })
 

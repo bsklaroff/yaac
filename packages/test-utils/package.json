@@ -10,18 +10,15 @@
     "./*": "./src/*.ts",
     "./package.json": "./package.json"
   },
-  "scripts": {
-    "typecheck": "tsc --noEmit"
-  },
   "dependencies": {
-    "@hono/node-server": "1.19.14",
+    "@hono/node-server": "catalog:",
     "@yaac/server": "workspace:*",
     "@yaac/shared": "workspace:*",
-    "hono": "4.12.14",
-    "simple-git": "3.35.2",
-    "tsx": "4.21.0"
+    "hono": "catalog:",
+    "simple-git": "catalog:",
+    "tsx": "catalog:"
   },
   "devDependencies": {
-    "@types/node": "25.5.2"
+    "@types/node": "catalog:"
   }
 }

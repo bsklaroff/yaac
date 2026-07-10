@@ -6,6 +6,10 @@ export default defineConfig({
   target: 'node22',
   outDir: 'dist',
   clean: true,
+  // Consumed (and then removed) by scripts/check-cli-externals.ts, which
+  // fails the build when the bundle imports an external package missing
+  // from the root manifest's dependencies.
+  metafile: true,
   banner: { js: '#!/usr/bin/env node' },
   env: {
     YAAC_BUNDLED: 'true',

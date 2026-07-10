@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
-import { baseImageHash, contextHash, fileHash, sessionUid, isLayered } from '#lib/container/image-builder'
+import { baseImageHash, contextHash, fileHash, parseContainerIgnore, sessionUid, isLayered } from '#lib/container/image-builder'
 
 describe('fileHash', () => {
   it('produces a 16-char hex hash of file contents', async () => {
@@ -150,7 +150,42 @@ describe('contextHash', () => {
     }
   })
 
-  it('ignores node_modules', async () => {
+  it('skips paths listed in .containerignore', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-ctx-'))
+    try {
+      await fs.writeFile(path.join(tmpDir, '.containerignore'), 'node_modules\ntest\n')
+      await fs.writeFile(path.join(tmpDir, 'a.txt'), 'hello')
+      const hash1 = await contextHash(tmpDir)
+
+      await fs.mkdir(path.join(tmpDir, 'node_modules'))
+      await fs.writeFile(path.join(tmpDir, 'node_modules', 'pkg.txt'), 'noise')
+      await fs.mkdir(path.join(tmpDir, 'test'))
+      await fs.writeFile(path.join(tmpDir, 'test', 'a.test.ts'), 'noise')
+      const hash2 = await contextHash(tmpDir)
+
+      expect(hash2).toBe(hash1)
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('hashes .containerignore itself, so pattern edits change the tag', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-ctx-'))
+    try {
+      await fs.writeFile(path.join(tmpDir, 'a.txt'), 'hello')
+      await fs.writeFile(path.join(tmpDir, '.containerignore'), 'node_modules\n')
+      const hash1 = await contextHash(tmpDir)
+
+      await fs.writeFile(path.join(tmpDir, '.containerignore'), 'node_modules\ntest\n')
+      const hash2 = await contextHash(tmpDir)
+
+      expect(hash2).not.toBe(hash1)
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('hashes everything when there is no .containerignore (matching podman)', async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-ctx-'))
     try {
       await fs.writeFile(path.join(tmpDir, 'a.txt'), 'hello')
@@ -160,9 +195,28 @@ describe('contextHash', () => {
       await fs.writeFile(path.join(tmpDir, 'node_modules', 'pkg.txt'), 'noise')
       const hash2 = await contextHash(tmpDir)
 
-      expect(hash2).toBe(hash1)
+      expect(hash2).not.toBe(hash1)
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it("the proxy context's .containerignore keeps unit tests out of the image hash", async () => {
+    const proxyIgnore = await fs.readFile(
+      path.join(DOCKERFILES_DIR, '..', 'k8s', 'proxy', '.containerignore'), 'utf8')
+    expect(parseContainerIgnore(proxyIgnore)).toEqual(new Set(['node_modules', 'test']))
+  })
+})
+
+describe('parseContainerIgnore', () => {
+  it('parses literal paths, dropping comments, blanks, and trailing slashes', () => {
+    expect(parseContainerIgnore('# dev artifacts\nnode_modules/\n\ntest\na/b.txt\n'))
+      .toEqual(new Set(['node_modules', 'test', 'a/b.txt']))
+  })
+
+  it('rejects glob and negation patterns instead of silently mismatching podman', () => {
+    for (const pattern of ['*.log', 'test?', '[ab]', '!keep', '/anchored']) {
+      expect(() => parseContainerIgnore(pattern)).toThrow(/unsupported .containerignore pattern/)
     }
   })
 })

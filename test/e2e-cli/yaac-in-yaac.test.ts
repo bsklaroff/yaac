@@ -169,8 +169,10 @@ describe.skipIf(process.env.YAAC_E2E_NESTED_YAAC !== '1')(
       // proxy — registry.npmjs.org is on the default allowlist.
       await execInJob(name, [
         'sh', '-c',
+        // Unanchored excludes: the workspace layout nests node_modules (and
+        // apps/frontend/dist) below the root, not just at it.
         'mkdir -p /tmp/yaac && tar -C /yaac-src '
-        + '--exclude ./node_modules --exclude ./dist --exclude ./.git '
+        + '--exclude node_modules --exclude dist --exclude .git '
         + '-cf - . | tar -C /tmp/yaac -xf -',
       ], { timeout: 300_000, maxAttempts: 1 })
       await execInJob(name, [
@@ -184,7 +186,7 @@ describe.skipIf(process.env.YAAC_E2E_NESTED_YAAC !== '1')(
       // / vap gates self-skip under YAAC_NESTED (egress is enforced
       // host-side, the rest have no in-vcluster equivalent).
       const { stdout: checkOut } = await execInJob(name, [
-        'sh', '-c', 'cd /tmp/yaac && node_modules/.bin/tsx src/cli.ts cluster check 2>&1; echo "EXIT:$?"',
+        'sh', '-c', 'cd /tmp/yaac && node_modules/.bin/tsx apps/cli/src/cli.ts cluster check 2>&1; echo "EXIT:$?"',
       ], { timeout: 900_000, maxAttempts: 1 })
       expect(checkOut).toContain('✓ cluster')
       expect(checkOut).toContain('✓ registry')
