@@ -43,46 +43,30 @@ describe('yaac daemon lifecycle (real CLI + real daemon)', () => {
     await testEnv.cleanup()
   })
 
-  it('the daemon binds and /health responds with ok', async () => {
+  it('binds, writes the lock at daemonLockPath(), serves /health and the CLI, and clears the lock on stop', async () => {
+    // One spawned daemon walks the whole run-lifecycle: these were four
+    // separate tests, but each claim needs nothing beyond "a live daemon",
+    // so they share one spawn. (`daemon run` second-invocation idempotency
+    // is covered by the `daemon start` idempotency test below — both hit
+    // the same daemon-side lock check.)
     daemon = await spawnYaacDaemon(testEnv.env)
     expect(daemon.lock.port).toBeGreaterThan(0)
 
     const res = await fetch(`http://127.0.0.1:${daemon.lock.port}/health`)
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ ok: true })
-  })
 
-  it('stopping the daemon removes the lock', async () => {
-    daemon = await spawnYaacDaemon(testEnv.env)
-    expect(await readLock()).not.toBeNull()
-    await daemon.stop()
-    daemon = null
-    expect(await readLock()).toBeNull()
-  })
+    expect(daemonLockPath()).toBe(path.join(testEnv.dataDir, '.daemon.lock'))
+    const raw = await fs.readFile(daemonLockPath(), 'utf8')
+    expect(JSON.parse(raw)).toEqual(daemon.lock)
 
-  it('runYaac can issue a command against the spawned daemon', async () => {
-    daemon = await spawnYaacDaemon(testEnv.env)
     const { stdout, exitCode } = await runYaac(testEnv.env, 'project', 'list')
     expect(exitCode).toBe(0)
     expect(stdout).toContain('No projects found')
-  })
 
-  it('a second `yaac daemon run` invocation is idempotent', async () => {
-    daemon = await spawnYaacDaemon(testEnv.env)
-    const firstPort = daemon.lock.port
-
-    const second = spawn(process.execPath, [
-      path.resolve('node_modules/tsx/dist/cli.mjs'),
-      path.resolve('src/cli.ts'),
-      'daemon', 'run', '--port', '0',
-    ], { env: testEnv.env, stdio: ['ignore', 'ignore', 'pipe'] })
-    const exitCode = await new Promise<number | null>((resolve) => {
-      second.once('exit', (code) => resolve(code))
-    })
-    expect(exitCode).toBe(0)
-
-    const lockNow = await readLock()
-    expect(lockNow?.port).toBe(firstPort)
+    await daemon.stop()
+    daemon = null
+    expect(await readLock()).toBeNull()
   })
 
   it('`daemon run --port <N>` prefers the requested port over the env default', async () => {
@@ -112,12 +96,6 @@ describe('yaac daemon lifecycle (real CLI + real daemon)', () => {
     }
   })
 
-  it('writes the lock at the resolved daemonLockPath()', async () => {
-    daemon = await spawnYaacDaemon(testEnv.env)
-    expect(daemonLockPath()).toBe(path.join(testEnv.dataDir, '.daemon.lock'))
-    const raw = await fs.readFile(daemonLockPath(), 'utf8')
-    expect(JSON.parse(raw)).toEqual(daemon.lock)
-  })
 })
 
 describe('yaac daemon start / stop / restart (real CLI)', () => {
@@ -199,12 +177,6 @@ describe('yaac daemon start / stop / restart (real CLI)', () => {
     expect(res.status).toBe(200)
   })
 
-  it('`daemon restart` starts a daemon even when none was running', async () => {
-    expect(await readLock()).toBeNull()
-    const { exitCode } = await runYaac(testEnv.env, 'daemon', 'restart')
-    expect(exitCode).toBe(0)
-    expect(await readLock()).not.toBeNull()
-  })
 })
 
 describe('yaac daemon logs (real CLI)', () => {

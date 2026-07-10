@@ -314,8 +314,21 @@ export interface RunYaacOptions {
    * Needs to be long enough that the CLI has closed one readline
    * interface and opened the next before the chunk arrives, including
    * daemon-RPC round-trips and parallel-test-worker jitter.
+   *
+   * Prefer `stdinOnPrompt` for multi-prompt flows — a fixed delay races
+   * the readline handoff under CPU load (observed flaking whenever tsc
+   * or another suite ran concurrently).
    */
   chunkDelayMs?: number
+  /**
+   * Prompt-driven stdin: write each `send` only once its `when` pattern
+   * appears in stdout past the previous match. Deterministic replacement
+   * for the timer-based array mode: `rl.question` prints the prompt from
+   * the SAME readline interface that consumes the answer, so seeing the
+   * prompt guarantees a listener is attached — no handoff race at any
+   * load. Stdin is closed after the final send.
+   */
+  stdinOnPrompt?: Array<{ when: RegExp; send: string }>
 }
 
 /**
@@ -333,10 +346,10 @@ export async function runYaac(
     typeof last === 'object' && last !== null ? (argsWithOpts.pop() as RunYaacOptions) : {}
   const args = argsWithOpts as string[]
 
-  const stdinMode: 'pipe' | 'ignore' = opts.stdin !== undefined ? 'pipe' : 'ignore'
+  const wantsStdin = opts.stdin !== undefined || opts.stdinOnPrompt !== undefined
   const child = spawn(process.execPath, [TSX_CLI, ENTRY, ...args], {
     env,
-    stdio: [stdinMode, 'pipe', 'pipe'],
+    stdio: [wantsStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
   })
   if (opts.stdin !== undefined && child.stdin) {
     const delay = opts.chunkDelayMs ?? 1500
@@ -354,7 +367,27 @@ export async function runYaac(
   }
   let stdout = ''
   let stderr = ''
-  child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
+  // Prompt-driven stdin (see RunYaacOptions.stdinOnPrompt): scan stdout
+  // forward, one step at a time, writing each answer only after its prompt
+  // has been printed by the readline that will consume it.
+  let promptIdx = 0
+  let promptScanFrom = 0
+  const feedPrompts = (): void => {
+    const steps = opts.stdinOnPrompt
+    if (!steps || !child.stdin) return
+    while (promptIdx < steps.length) {
+      const m = steps[promptIdx].when.exec(stdout.slice(promptScanFrom))
+      if (!m) return
+      promptScanFrom += m.index + m[0].length
+      child.stdin.write(steps[promptIdx].send)
+      promptIdx += 1
+      if (promptIdx === steps.length) child.stdin.end()
+    }
+  }
+  child.stdout?.on('data', (chunk: Buffer) => {
+    stdout += chunk.toString()
+    feedPrompts()
+  })
   child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
   const exitCode = await new Promise<number | null>((resolve) => {
     child.once('exit', (code) => resolve(code))

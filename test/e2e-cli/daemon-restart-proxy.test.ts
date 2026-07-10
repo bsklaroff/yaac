@@ -7,7 +7,7 @@ import {
   type YaacTestEnv,
 } from '@test/helpers/cli'
 import { readLock } from '@/shared/lock'
-import { requirePodman, requireCluster, TEST_PROXY_CONFIG } from '@test/helpers/setup'
+import { requirePodman, requireCluster, IS_NESTED_YAAC, TEST_PROXY_CONFIG } from '@test/helpers/setup'
 import { resolveTestBaseImageRef } from '@test/helpers/mock-remotes'
 import { ProxyClient } from '@/lib/container/proxy-client'
 import { PROXY_APP_NAME, PROXY_AUTH_SECRET_NAME, PROXY_PORT } from '@/lib/k8s/bootstrap'
@@ -137,7 +137,7 @@ describe('daemon restart preserves running proxy (real `yaac daemon restart`)', 
     await testEnv.cleanup()
   })
 
-  it('`yaac daemon restart` preserves the proxy pod, auth secret, and session reachability', async () => {
+  it('`yaac daemon restart` preserves the proxy; a replaced proxy pod self-heals from /data', async () => {
     const daemonEnv = testEnv.env
 
     // Real `yaac daemon start` — spawns a detached daemon subprocess.
@@ -147,9 +147,26 @@ describe('daemon restart preserves running proxy (real `yaac daemon restart`)', 
     // The daemon deploys the proxy lazily on the first session create, not
     // on startup — stand the proxy up from the test process (same data dir
     // and namespace) to simulate a daemon that has created a session.
-    const bootstrapClient = new ProxyClient(TEST_PROXY_CONFIG)
-    await bootstrapClient.ensureRunning()
-    bootstrapClient.disconnect()
+    //
+    // Register a session that has NO backing session pod: nothing in the
+    // daemon re-registers sessions at runtime (the proxy owns its state via
+    // the /data write-through), so if this registration survives the proxy
+    // pod churn at the end of this test, it can only have come from the
+    // proxy's /data reload — the daemon (old or restarted) cannot have
+    // healed a pod-less session itself.
+    const client = new ProxyClient(TEST_PROXY_CONFIG)
+    await client.ensureRunning()
+    const sessionId = crypto.randomUUID()
+    await client.registerSession(sessionId, {
+      rules: [{
+        hostPattern: 'api.example.com',
+        pathPattern: '/*',
+        injections: [{ action: 'set_header', name: 'x-key', secretRef: 'MY_KEY' }],
+      }],
+      allowedHosts: ['github.com'],
+      tool: 'claude',
+      projectSlug: 'restart-proxy',
+    })
 
     const proxyBefore = await waitForRunningProxyPod(60_000)
     expect(proxyBefore.uid).toBeTruthy()
@@ -160,30 +177,41 @@ describe('daemon restart preserves running proxy (real `yaac daemon restart`)', 
     // Launch a session-like pod in the namespace. This matches the
     // production shape: a pod whose HTTPS_PROXY env would point at the
     // proxy Service DNS name. The base image's entrypoint keeps it alive.
-    probePodName = `yaac-restart-test-sess-${crypto.randomBytes(4).toString('hex')}`
-    await kubectlApply({
-      apiVersion: 'v1',
-      kind: 'Pod',
-      metadata: {
-        name: probePodName,
-        namespace: k8sNamespace(),
-        labels: { 'yaac.test': 'true' },
-      },
-      spec: {
-        restartPolicy: 'Never',
-        automountServiceAccountToken: false,
-        enableServiceLinks: false,
-        containers: [{
-          name: 'probe',
-          image: await resolveTestBaseImageRef(),
-          imagePullPolicy: 'IfNotPresent',
-        }],
-      },
-    })
+    //
+    // Nested, a pod's direct dial to proxy:PROXY_PORT is denied BY DESIGN:
+    // the outer daemon's inner-redirect projection applies the shared
+    // inner-proxy ingress lock (buildInnerProxyIngressCnpManifest), which
+    // admits the control port from the host entity only — this is the
+    // forgery lock, same family as the transparent-egress direct-dial
+    // deny. Inner session egress rides the transparent redirect instead,
+    // so pod→Service reachability is a host-only assertion here; the
+    // proxy-pod/auth-secret preservation assertions below still run nested.
+    if (!IS_NESTED_YAAC) {
+      probePodName = `yaac-restart-test-sess-${crypto.randomBytes(4).toString('hex')}`
+      await kubectlApply({
+        apiVersion: 'v1',
+        kind: 'Pod',
+        metadata: {
+          name: probePodName,
+          namespace: k8sNamespace(),
+          labels: { 'yaac.test': 'true' },
+        },
+        spec: {
+          restartPolicy: 'Never',
+          automountServiceAccountToken: false,
+          enableServiceLinks: false,
+          containers: [{
+            name: 'probe',
+            image: await resolveTestBaseImageRef(),
+            imagePullPolicy: 'IfNotPresent',
+          }],
+        },
+      })
 
-    // Baseline: the session-like pod can reach the proxy through the
-    // ClusterIP Service — the address real session pods use.
-    await expectProxyReachable(probePodName)
+      // Baseline: the session-like pod can reach the proxy through the
+      // ClusterIP Service — the address real session pods use.
+      await expectProxyReachable(probePodName)
+    }
 
     const lockBefore = await readLock()
     expect(lockBefore).not.toBeNull()
@@ -219,50 +247,29 @@ describe('daemon restart preserves running proxy (real `yaac daemon restart`)', 
     expect(secretAfter).toBe(secretBefore)
 
     // The bug's actual symptom: the session-like pod must still be able
-    // to reach the proxy at the Service address.
-    await expectProxyReachable(probePodName)
-  }, 180_000)
+    // to reach the proxy at the Service address. (Host-only — see the
+    // inner-proxy ingress lock note above.)
+    if (!IS_NESTED_YAAC) {
+      await expectProxyReachable(probePodName!)
+    }
 
-  it('a replaced proxy pod self-heals registrations from /data with no daemon involvement', async () => {
-    const daemonEnv = testEnv.env
-
-    const started = await runYaac(daemonEnv, 'daemon', 'start')
-    expect(started.exitCode).toBe(0)
-
-    // Stand the proxy up and register a session that has NO backing
-    // session pod: nothing in the daemon re-registers sessions at
-    // runtime (the proxy owns its state via the /data write-through), so
-    // if this registration survives the pod churn it can only have come
-    // from the proxy's /data reload.
-    const client = new ProxyClient(TEST_PROXY_CONFIG)
-    await client.ensureRunning()
-    const sessionId = crypto.randomUUID()
-    await client.registerSession(sessionId, {
-      rules: [{
-        hostPattern: 'api.example.com',
-        pathPattern: '/*',
-        injections: [{ action: 'set_header', name: 'x-key', secretRef: 'MY_KEY' }],
-      }],
-      allowedHosts: ['github.com'],
-      tool: 'claude',
-      projectSlug: 'restart-proxy',
-    })
-
-    const proxyBefore = await waitForRunningProxyPod(60_000)
-
+    // Phase 2 — proxy pod replacement. The restart above already proved
+    // the registration survives a daemon hand-off (the phantom session is
+    // still in the proxy); now churn the proxy pod itself and prove the
+    // replacement reloads it from /data.
     // Kill the proxy pod; the Deployment replaces it.
     await kubectlWithRetry([
       'delete', 'pod', '-n', k8sNamespace(), '-l', `app=${PROXY_APP_NAME}`,
       '--wait=false', '--grace-period=1',
     ])
     const deadline = Date.now() + 120_000
-    let proxyAfter = await findRunningProxyPod().catch(() => null)
-    while (Date.now() < deadline && (!proxyAfter || proxyAfter.uid === proxyBefore.uid)) {
+    let proxyReplaced = await findRunningProxyPod().catch(() => null)
+    while (Date.now() < deadline && (!proxyReplaced || proxyReplaced.uid === proxyBefore.uid)) {
       await new Promise((r) => setTimeout(r, 1000))
-      proxyAfter = await findRunningProxyPod().catch(() => null)
+      proxyReplaced = await findRunningProxyPod().catch(() => null)
     }
-    expect(proxyAfter).not.toBeNull()
-    expect(proxyAfter!.uid).not.toBe(proxyBefore.uid)
+    expect(proxyReplaced).not.toBeNull()
+    expect(proxyReplaced!.uid).not.toBe(proxyBefore.uid)
 
     // Re-attach through a fresh tunnel (the old one died with the pod)
     // and confirm the replacement reloaded the registration from /data —

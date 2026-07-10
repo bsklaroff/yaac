@@ -1,0 +1,1239 @@
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { randomUUID } from 'node:crypto'
+import fs from 'node:fs/promises'
+import http from 'node:http'
+import path from 'node:path'
+import WebSocket from 'ws'
+import simpleGit from 'simple-git'
+import { cloneRepo } from '@/lib/git'
+import { listSessionPods, type SessionPod } from '@/lib/k8s/pods'
+import {
+  createYaacTestEnv,
+  spawnYaacDaemon,
+  runYaac,
+  type YaacTestEnv,
+  type SpawnedDaemon,
+} from '@test/helpers/cli'
+import {
+  requirePodman,
+  requireCluster,
+  execInJob,
+  cleanupSessionJobs,
+} from '@test/helpers/setup'
+import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
+import {
+  startMockLLM,
+  startMockGit,
+  seedMockGitRepo,
+  cleanupMocks,
+  type MockLLM,
+  type MockGit,
+} from '@test/helpers/mock-remotes'
+
+const execFileAsync = promisify(execFile)
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * Consolidated end-to-end coverage for `yaac session create` and everything
+ * that hangs off a live session: real CLI + real daemon + real cluster, with
+ * the proxy's `upstreamRedirects` feature rerouting every outbound host
+ * (GitHub, Anthropic, OpenAI) to mock pods in the test namespace.
+ *
+ * One daemon + one mock-LLM/mock-Git pair serves the whole file, and one
+ * "kitchen-sink" claude session carries every orthogonal per-session feature
+ * (envPassthrough, cacheVolumes, initCommands, portForward, bindMounts,
+ * --add-dir, node_modules redirect) so we don't pay a pod bring-up per
+ * feature. This file replaces the former session-create-happy / -claude /
+ * -codex / -opencode / -features, session-status, port-forward, the PTY half
+ * of daemon-ws, and the hand-off half of session-provisioning.
+ *
+ * Within each describe the `it`s run in declaration order and some are
+ * deliberately sequenced: the claude round-trip needs the live agent, the
+ * status-watcher test then replaces it with an inert sleep, and the
+ * node_modules/delete test tears the session down — keep that order.
+ *
+ * Deliberately deferred (unchanged from the originals):
+ *   - pnpm cache reuse — exercises pnpm store behavior, not CLI surface.
+ *   - nestedContainers — covered by nested-containers.test.ts.
+ *   - full opencode turn via mock LLM — its HTTP server runs independently
+ *     of any provider; reaching /session/status proves the wiring.
+ */
+
+/** POSIX single-quote escaping for strings embedded in `sh -c '...'`. */
+function shq(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`
+}
+
+function httpGet(url: string, timeoutMs = 15_000): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, (res) => {
+      const chunks: Buffer[] = []
+      res.on('data', (c: Buffer) => chunks.push(c))
+      res.on('end', () => {
+        resolve({ status: res.statusCode!, body: Buffer.concat(chunks).toString('utf8') })
+      })
+    })
+    req.on('error', reject)
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error('request timed out'))
+    })
+  })
+}
+
+/** Open a WS against the daemon, collecting text + binary frames. */
+function openWs(url: string, headers: Record<string, string>): {
+  ws: WebSocket
+  text: string[]
+  binary: () => string
+  opened: Promise<void>
+} {
+  const ws = new WebSocket(url, { headers })
+  const text: string[] = []
+  const chunks: Buffer[] = []
+  ws.on('message', (data, isBinary) => {
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer)
+    if (isBinary) chunks.push(buf)
+    else text.push(buf.toString('utf8'))
+  })
+  const opened = new Promise<void>((resolve, reject) => {
+    ws.once('open', resolve)
+    ws.once('error', reject)
+  })
+  opened.catch(() => {})
+  return { ws, text, binary: () => Buffer.concat(chunks).toString('utf8'), opened }
+}
+
+interface ProvisioningEntry {
+  sessionId: string
+  projectSlug: string
+  tool: string
+  kind: 'create' | 'restart'
+  error?: string
+}
+interface Snapshot { sessions: unknown[]; provisioning: ProvisioningEntry[] }
+
+/** Collect every `snapshot` frame off a persistent WS, exposing the latest. */
+function collectSnapshots(url: string, secret: string): {
+  ws: WebSocket
+  opened: Promise<void>
+  latest: () => Snapshot | null
+} {
+  const ws = new WebSocket(url, { headers: { authorization: `Bearer ${secret}` } })
+  let latest: Snapshot | null = null
+  ws.on('message', (data, isBinary) => {
+    if (isBinary) return
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer)
+    const parsed = JSON.parse(buf.toString('utf8')) as { type: string; data: Snapshot }
+    if (parsed.type === 'snapshot') latest = parsed.data
+  })
+  const opened = new Promise<void>((resolve, reject) => {
+    ws.once('open', resolve)
+    ws.once('error', reject)
+  })
+  return { ws, opened, latest: () => latest }
+}
+
+function makeJwt(payload: Record<string, unknown>): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url')
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url')
+  return `${header}.${body}.signature-placeholder`
+}
+
+const CODEX_REAL_ACCESS_TOKEN = 'codex-real-access-token'
+
+describe('yaac session create suite (real CLI + real daemon + mocked remotes)', () => {
+  let testEnv: YaacTestEnv
+  let daemon: SpawnedDaemon | null = null
+  let mockLLM: MockLLM | null = null
+  let mockGit: MockGit | null = null
+  let daemonEnv: NodeJS.ProcessEnv
+  let base = ''
+  let auth: Record<string, string> = {}
+
+  beforeAll(async () => {
+    await requirePodman()
+    await requireCluster()
+
+    testEnv = await createYaacTestEnv()
+
+    // Fake credentials for every tool the suite exercises. The proxy reads
+    // these at MITM time and swaps the container-facing placeholders for the
+    // "real" values — the mock ignores them, but the swap is what we assert.
+    const credsDir = path.join(testEnv.dataDir, '.credentials')
+    await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
+    await fs.writeFile(path.join(credsDir, 'github.json'), JSON.stringify({
+      tokens: [{ pattern: 'test-org/*', token: 'fake-ghp-token' }],
+    }) + '\n')
+    await fs.writeFile(path.join(credsDir, 'claude.json'), JSON.stringify({
+      kind: 'api-key',
+      savedAt: new Date().toISOString(),
+      apiKey: 'sk-ant-fake-real-key',
+    }) + '\n')
+    const futureExpSeconds = Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60
+    await fs.writeFile(path.join(credsDir, 'codex.json'), JSON.stringify({
+      kind: 'oauth',
+      savedAt: new Date().toISOString(),
+      codexOauth: {
+        accessToken: CODEX_REAL_ACCESS_TOKEN,
+        refreshToken: 'codex-real-refresh-token',
+        idTokenRawJwt: makeJwt({
+          sub: 'user-mock',
+          email: 'test@example.com',
+          'https://api.openai.com/auth': {
+            chatgpt_account_id: 'acct-mock',
+            chatgpt_user_id: 'user-mock',
+          },
+        }),
+        expiresAt: futureExpSeconds * 1000,
+        lastRefresh: new Date().toISOString(),
+        accountId: 'acct-mock',
+      },
+    }) + '\n')
+    await fs.writeFile(path.join(credsDir, 'opencode.json'), JSON.stringify({
+      kind: 'api-key',
+      savedAt: new Date().toISOString(),
+      apiKey: 'sk-or-v1-fake-test-key',
+    }) + '\n')
+
+    await fs.writeFile(
+      testEnv.gitConfigPath,
+      '[user]\n\tname = Test User\n\temail = test@example.com\n',
+    )
+
+    mockLLM = await startMockLLM()
+    mockGit = await startMockGit()
+
+    // Redirect every host any of the tools' startup touches. Missing a
+    // claude/statsig host causes claude's background task to 502 and the
+    // whole process to unwind; `auth.openai.com` covers codex's background
+    // refresh attempts.
+    const llmTarget = { host: mockLLM.host, port: mockLLM.port, tls: false }
+    const gitTarget = { host: mockGit.host, port: mockGit.port, tls: false }
+    daemonEnv = {
+      ...testEnv.env,
+      YAAC_E2E_UPSTREAM_REDIRECTS: JSON.stringify({
+        'github.com': gitTarget,
+        'api.github.com': gitTarget,
+        'api.anthropic.com': llmTarget,
+        'statsig.anthropic.com': llmTarget,
+        'api.statsig.com': llmTarget,
+        'platform.claude.com': llmTarget,
+        'docs.claude.com': llmTarget,
+        'code.claude.com': llmTarget,
+        'claude.com': llmTarget,
+        'claude.ai': llmTarget,
+        'mcp-proxy.anthropic.com': llmTarget,
+        'api.openai.com': llmTarget,
+        'auth.openai.com': llmTarget,
+        'chatgpt.com': llmTarget,
+        'ab.chatgpt.com': llmTarget,
+        'openai.com': llmTarget,
+        'cdn.openai.com': llmTarget,
+      }),
+      YAAC_E2E_SKIP_FETCH: '1',
+      YAAC_E2E_NO_ATTACH: '1',
+      // Set once at daemon startup so the envPassthrough test can observe
+      // it without needing to restart the daemon. Harmless for other tests.
+      YAAC_TEST_VAR: 'hello-from-host',
+    }
+    daemon = await spawnYaacDaemon(daemonEnv)
+    base = `http://127.0.0.1:${daemon.lock.port}`
+    auth = { authorization: `Bearer ${daemon.lock.secret}` }
+  })
+
+  afterAll(async () => {
+    if (daemon) await daemon.stop()
+    daemon = null
+    await cleanupSessionJobs()
+    await cleanupMocks([mockLLM, mockGit])
+    mockLLM = null
+    mockGit = null
+    await testEnv.cleanup()
+  })
+
+  /**
+   * Stage a yaac project on disk as if `yaac project add` had cloned
+   * github.com/test-org/<slug>.git — clone from the local bare repo (fast,
+   * no network) and rewrite the remote URL to the pretend github URL so
+   * proxy routing + token resolution see it as a github remote.
+   */
+  async function setupProject(
+    slug: string,
+    opts: {
+      yaacConfig?: Record<string, unknown>
+      files?: Record<string, string>
+    } = {},
+  ): Promise<string> {
+    const files: Record<string, string> = {
+      'README.md': '# demo\n',
+      ...(opts.files ?? {}),
+    }
+    await seedMockGitRepo(mockGit!, slug, { files })
+
+    const projectPath = path.join(testEnv.dataDir, 'projects', slug)
+    const repoPath = path.join(projectPath, 'repo')
+    await fs.mkdir(path.join(projectPath, 'claude'), { recursive: true })
+    await cloneRepo(path.join(mockGit!.reposDir, `${slug}.git`), repoPath, null)
+    const fakeRemote = `https://github.com/test-org/${slug}.git`
+    await simpleGit(repoPath).remote(['set-url', 'origin', fakeRemote])
+    await fs.writeFile(path.join(projectPath, 'project.json'), JSON.stringify({
+      slug,
+      remoteUrl: fakeRemote,
+      addedAt: new Date().toISOString(),
+    }) + '\n')
+
+    if (opts.yaacConfig) {
+      const configDir = path.join(projectPath, 'config')
+      await fs.mkdir(configDir, { recursive: true })
+      await fs.writeFile(
+        path.join(configDir, 'yaac-config.json'),
+        JSON.stringify(opts.yaacConfig, null, 2) + '\n',
+      )
+    }
+    return projectPath
+  }
+
+  async function findSessionPod(slug: string): Promise<SessionPod> {
+    // listSessionPods scopes by the data-dir-hash label, so we never trip
+    // over pods owned by a concurrent worker. Oldest-first so we always
+    // grab the CLI's session.
+    const pods = await listSessionPods(slug)
+    const pod = pods.sort((a, b) => a.createdAtMs - b.createdAtMs)[0]
+    if (!pod) throw new Error(`no session pod found for project ${slug}`)
+    return pod
+  }
+
+  async function createSession(
+    slug: string,
+    ...extraArgs: string[]
+  ): Promise<{ jobName: string; stdout: string }> {
+    const { stdout, stderr, exitCode } = await runYaac(
+      daemonEnv, 'session', 'create', slug, ...extraArgs,
+    )
+    if (exitCode !== 0) {
+      throw new Error(`session create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
+    }
+    return { jobName: (await findSessionPod(slug)).jobName, stdout }
+  }
+
+  /**
+   * Spawn an HTTP server inside a session pod (backgrounded with nohup —
+   * kubectl exec has no detach mode) and wait (in-container) for it to
+   * accept. Each call should use a unique `containerPort` so tests don't
+   * fight over the same listen socket.
+   */
+  async function startHttpServerInContainer(
+    jobName: string,
+    containerPort: number,
+    bindAddress: '127.0.0.1' | '::1',
+    responseText: string,
+  ): Promise<void> {
+    const script = `
+      const http = require('http');
+      http.createServer((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end(${JSON.stringify(responseText)});
+      }).listen(${containerPort}, '${bindAddress}');
+    `
+    await execInJob(jobName, [
+      'sh', '-c', `nohup node -e ${shq(script)} >/dev/null 2>&1 &`,
+    ])
+
+    const curlHost = bindAddress === '::1' ? '[::1]' : bindAddress
+    for (let i = 0; i < 40; i++) {
+      try {
+        const { stdout } = await execInJob(jobName, [
+          'sh', '-c',
+          `curl -sf http://${curlHost}:${containerPort}/`,
+        ], { timeout: 5000 })
+        if (stdout === responseText) return
+      } catch {
+        await sleep(250)
+      }
+    }
+    throw new Error(`HTTP server on ${bindAddress}:${containerPort} never became ready`)
+  }
+
+  describe('kitchen-sink claude session', () => {
+    // One session exercises every orthogonal create-time feature at once.
+    const PORT_FORWARD = [
+      { containerPort: 8080, hostPortStart: 20000 },
+      { containerPort: 8081, hostPortStart: 20010 },
+      { containerPort: 8082, hostPortStart: 20020 },
+      { containerPort: 8083, hostPortStart: 20030 },
+      { containerPort: 8084, hostPortStart: 20040 },
+    ]
+    // Container-port → host-port map, populated from the CLI's
+    // "Forwarding host port ... -> container port ..." progress messages.
+    const hostPortFor = new Map<number, number>()
+    let jobName = ''
+    let sessionId = ''
+    let projectPath = ''
+    let roDir = ''
+    let rwDir = ''
+    let addRoDir = ''
+    let addRwDir = ''
+
+    beforeAll(async () => {
+      roDir = path.join(testEnv.scratchDir, 'ro-data')
+      rwDir = path.join(testEnv.scratchDir, 'rw-data')
+      addRoDir = path.join(testEnv.scratchDir, 'ro-extra')
+      addRwDir = path.join(testEnv.scratchDir, 'rw-extra')
+      for (const d of [roDir, rwDir, addRoDir, addRwDir]) {
+        await fs.mkdir(d, { recursive: true })
+      }
+      await fs.writeFile(path.join(roDir, 'readme.txt'), 'read-only content')
+      await fs.writeFile(path.join(rwDir, 'data.txt'), 'writable content')
+      await fs.writeFile(path.join(addRoDir, 'hello.txt'), 'read-only extra')
+      await fs.writeFile(path.join(addRwDir, 'data.txt'), 'writable extra')
+
+      projectPath = await setupProject('kitchen', {
+        // Real Node projects gitignore node_modules; seed the same so
+        // `git status` stays clean once the bind mount is populated.
+        files: { '.gitignore': 'node_modules\n' },
+        yaacConfig: {
+          envPassthrough: ['YAAC_TEST_VAR'],
+          // cacheVolumes are hostPath dirs under the project dir on the k8s
+          // backend, so they vanish with the temp data dir.
+          cacheVolumes: { 'test-cache': '/tmp/test-cache' },
+          // `sleep` keeps the init tmux window alive long enough for the
+          // daemon's follow-up `tmux set-option -t yaac:init remain-on-exit`
+          // to find the window. A bare `touch` exits before that call and
+          // triggers a retry loop in session-create.
+          initCommands: ['touch /tmp/init-ran && sleep 30'],
+          portForward: PORT_FORWARD,
+          bindMounts: [
+            { hostPath: roDir, containerPath: '/mnt/ro-data', mode: 'ro' },
+            { hostPath: rwDir, containerPath: '/mnt/rw-data', mode: 'rw' },
+          ],
+        },
+      })
+
+      // Pre-seed claude-code's onboarding state so the first-run wizard is
+      // skipped. These mount as /home/yaac/.claude.json and
+      // /home/yaac/.claude/settings.json in the session pod. `/repo` (not
+      // `/workspace`) is the key claude uses because the session worktree's
+      // .git file points at /repo/.git.
+      await fs.writeFile(path.join(projectPath, 'claude.json'), JSON.stringify({
+        hasCompletedOnboarding: true,
+        lastOnboardingVersion: '2.1.116',
+        customApiKeyResponses: { approved: ['yaac-ph-api-key'], rejected: [] },
+        projects: {
+          '/repo': { hasTrustDialogAccepted: true },
+          '/workspace': { hasTrustDialogAccepted: true },
+        },
+      }) + '\n')
+      await fs.writeFile(path.join(projectPath, 'claude', 'settings.json'), JSON.stringify({
+        skipDangerousModePermissionPrompt: true,
+      }) + '\n')
+
+      const created = await createSession(
+        'kitchen', '--tool', 'claude',
+        '--add-dir', addRoDir, '--add-dir-rw', addRwDir,
+      )
+      jobName = created.jobName
+
+      // Parse the CLI's progress stream for the resolved host ports. Each
+      // portForward entry produces one such line — this both tells us which
+      // host port to dial and proves the daemon read our config.
+      for (const line of created.stdout.split('\n')) {
+        const m = line.match(/Forwarding host port (\d+) -> container port (\d+)/)
+        if (m) hostPortFor.set(Number(m[2]), Number(m[1]))
+      }
+      expect(hostPortFor.size).toBe(PORT_FORWARD.length)
+
+      sessionId = (await findSessionPod('kitchen')).sessionId
+      expect(sessionId).toBeTruthy()
+    }, 240_000)
+
+    it('provisions pod, worktree, mounts, git, and tmux', async () => {
+      const pod = await findSessionPod('kitchen')
+      expect(pod.running).toBe(true)
+      expect(pod.labels['yaac.project']).toBe('kitchen')
+      expect(pod.labels['yaac.tool']).toBe('claude')
+
+      await execInJob(jobName, ['test', '-d', '/home/yaac/.claude'])
+      await execInJob(jobName, ['test', '-f', '/home/yaac/.claude.json'])
+      await execInJob(jobName, ['test', '-d', '/home/yaac/.codex'])
+
+      const { stdout: lsOut } = await execInJob(jobName, ['ls', '/workspace'])
+      expect(lsOut).toContain('README.md')
+
+      // kubectl exec has no workdir flag — cd inside the shell instead.
+      const { stdout: gitStatus } = await execInJob(jobName, [
+        'sh', '-c', 'cd /workspace && git status --porcelain',
+      ])
+      expect(gitStatus.trim()).toBe('')
+      const { stdout: branch } = await execInJob(jobName, [
+        'sh', '-c', 'cd /workspace && git rev-parse --abbrev-ref HEAD',
+      ])
+      expect(branch.trim()).toBe(`agent/${sessionId}`)
+
+      const { stdout: tmuxList } = await execInJob(jobName, [
+        'tmux', '-S', CONTAINER_TMUX_SOCK, 'list-sessions',
+      ])
+      expect(tmuxList).toContain('yaac')
+
+      await expect(execInJob(jobName, [
+        'test', '-f', '/tmp/yaac-prompt',
+      ])).rejects.toThrow()
+    }, 60_000)
+
+    it('passes envPassthrough vars to the container', async () => {
+      const { stdout } = await execInJob(jobName, ['env'])
+      expect(stdout).toContain('YAAC_TEST_VAR=hello-from-host')
+    }, 60_000)
+
+    it('mounts named cacheVolumes from config', async () => {
+      await execInJob(jobName, [
+        'sh', '-c', 'echo hello > /tmp/test-cache/marker',
+      ])
+      const { stdout } = await execInJob(jobName, [
+        'cat', '/tmp/test-cache/marker',
+      ])
+      expect(stdout.trim()).toBe('hello')
+    }, 60_000)
+
+    it('runs initCommands at session start', async () => {
+      // Init commands run in a background tmux window, so poll rather than
+      // assume they finished by the time session-create returned.
+      let ran = false
+      for (let i = 0; i < 40; i++) {
+        try {
+          await execInJob(jobName, ['test', '-f', '/tmp/init-ran'])
+          ran = true
+          break
+        } catch {
+          await sleep(250)
+        }
+      }
+      expect(ran).toBe(true)
+    }, 60_000)
+
+    it('mounts bindMounts read-only and read-write per config mode', async () => {
+      const { stdout: roContent } = await execInJob(jobName, [
+        'cat', '/mnt/ro-data/readme.txt',
+      ])
+      expect(roContent.trim()).toBe('read-only content')
+      await expect(execInJob(jobName, [
+        'sh', '-c', 'echo test > /mnt/ro-data/fail.txt',
+      ])).rejects.toThrow()
+
+      const { stdout: rwContent } = await execInJob(jobName, [
+        'cat', '/mnt/rw-data/data.txt',
+      ])
+      expect(rwContent.trim()).toBe('writable content')
+      await execInJob(jobName, [
+        'sh', '-c', 'echo new-data > /mnt/rw-data/new.txt',
+      ])
+      const { stdout: newContent } = await execInJob(jobName, [
+        'cat', '/mnt/rw-data/new.txt',
+      ])
+      expect(newContent.trim()).toBe('new-data')
+    }, 60_000)
+
+    it('--add-dir mounts read-only, --add-dir-rw mounts read-write', async () => {
+      const { stdout: roOut } = await execInJob(jobName, [
+        'cat', `/add-dir${addRoDir}/hello.txt`,
+      ])
+      expect(roOut.trim()).toBe('read-only extra')
+      await expect(execInJob(jobName, [
+        'sh', '-c', `echo test > /add-dir${addRoDir}/fail.txt`,
+      ])).rejects.toThrow()
+
+      const { stdout: rwOut } = await execInJob(jobName, [
+        'cat', `/add-dir${addRwDir}/data.txt`,
+      ])
+      expect(rwOut.trim()).toBe('writable extra')
+      await execInJob(jobName, [
+        'sh', '-c', `echo new-data > /add-dir${addRwDir}/new.txt`,
+      ])
+      const { stdout: newOut } = await execInJob(jobName, [
+        'cat', `/add-dir${addRwDir}/new.txt`,
+      ])
+      expect(newOut.trim()).toBe('new-data')
+    }, 60_000)
+
+    it('surfaces forwarded host ports in the tmux status bar', async () => {
+      // Port forwarding runs through the daemon's per-connection
+      // `kubectl exec nc` relay, not any kubernetes port mapping, so the
+      // pod spec has no port map — status-right is the user-facing surface
+      // for the chosen host ports, alongside the session id.
+      const { stdout: statusRight } = await execInJob(jobName, [
+        'tmux', '-S', CONTAINER_TMUX_SOCK,
+        'show-option', '-t', 'yaac', 'status-right',
+      ])
+      expect(statusRight).toContain(sessionId.slice(0, 8))
+      for (const { containerPort, hostPortStart } of PORT_FORWARD.slice(0, 2)) {
+        const m = statusRight.match(new RegExp(`:(\\d+)->${containerPort}`))
+        expect(m).not.toBeNull()
+        expect(Number(m![1])).toBeGreaterThanOrEqual(hostPortStart)
+      }
+    }, 60_000)
+
+    it('forwards HTTP from host to an IPv4-loopback container server', async () => {
+      await startHttpServerInContainer(jobName, 8080, '127.0.0.1', 'hello ipv4')
+      const res = await httpGet(`http://127.0.0.1:${hostPortFor.get(8080)}/`)
+      expect(res.status).toBe(200)
+      expect(res.body).toBe('hello ipv4')
+    }, 30_000)
+
+    it('forwards HTTP from host to an IPv6-only container server', async () => {
+      await startHttpServerInContainer(jobName, 8081, '::1', 'hello ipv6')
+      const res = await httpGet(`http://127.0.0.1:${hostPortFor.get(8081)}/`)
+      expect(res.status).toBe(200)
+      expect(res.body).toBe('hello ipv6')
+    }, 30_000)
+
+    it('forwards multiple portForward entries to the same container independently', async () => {
+      await startHttpServerInContainer(jobName, 8082, '127.0.0.1', 'first server')
+      await startHttpServerInContainer(jobName, 8083, '127.0.0.1', 'second server')
+
+      const [r1, r2] = await Promise.all([
+        httpGet(`http://127.0.0.1:${hostPortFor.get(8082)}/`),
+        httpGet(`http://127.0.0.1:${hostPortFor.get(8083)}/`),
+      ])
+      expect(r1.status).toBe(200)
+      expect(r1.body).toBe('first server')
+      expect(r2.status).toBe(200)
+      expect(r2.body).toBe('second server')
+    }, 30_000)
+
+    it('surfaces the live forwarders on /session/list (feeds the webapp snapshot)', async () => {
+      const res = await fetch(`${base}/session/list?project=kitchen`, { headers: auth })
+      expect(res.status).toBe(200)
+      const body = await res.json() as {
+        sessions: Array<{ forwardedPorts: Array<{ containerPort: number; hostPort: number }> }>
+      }
+      expect(body.sessions).toHaveLength(1)
+      // Same mappings the create stream reported, order-insensitive.
+      const got = new Map(body.sessions[0].forwardedPorts.map((p) => [p.containerPort, p.hostPort]))
+      expect(got).toEqual(hostPortFor)
+    }, 30_000)
+
+    it('relay accepts sequential requests while the event loop stays responsive', async () => {
+      // Regression: startPortForwarders needs the Node event loop to
+      // accept TCP connections. A wedged event loop would let the first
+      // request through and silently drop the rest.
+      await startHttpServerInContainer(jobName, 8084, '127.0.0.1', 'sequential')
+      const hostPort = hostPortFor.get(8084)!
+      for (let i = 0; i < 3; i++) {
+        const res = await httpGet(`http://127.0.0.1:${hostPort}/`)
+        expect(res.status).toBe(200)
+        expect(res.body).toBe('sequential')
+      }
+    }, 30_000)
+
+    it('routes session HTTPS through proxy→redirect→mock with credential injection', async () => {
+      // Drive a single HTTPS request from inside the session pod through
+      // the proxy: `curl -k` because we don't ship the proxy's CA into the
+      // curl invocation (the proxy already installed it into the
+      // container's trust store, but `-k` keeps the test deterministic).
+      // We send the placeholder x-api-key sentinel that the proxy gates
+      // credential injection on — the proxy swaps it for the real value
+      // ('sk-ant-fake-real-key') on match. A unique marker in the body
+      // distinguishes this probe from any calls the live claude-code makes
+      // on its own.
+      const marker = `curl-probe-${randomUUID().slice(0, 8)}`
+      const { stdout: curlOut, stderr: curlErr } = await execInJob(jobName, [
+        'curl', '-sS', '-k',
+        '--max-time', '10',
+        '-X', 'POST',
+        '-H', 'x-api-key: yaac-ph-api-key',
+        '-H', 'content-type: application/json',
+        '-d', `{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"${marker}"}]}`,
+        'https://api.anthropic.com/v1/messages',
+      ], { timeout: 20_000 })
+
+      if (!curlOut.includes('Hello from mock')) {
+        console.error('curl stdout:\n' + curlOut)
+        console.error('curl stderr:\n' + curlErr)
+      }
+      // The SSE stream carries the mock's text_delta — proves the response
+      // reached the container.
+      expect(curlOut).toContain('Hello from mock')
+
+      // Mock transcript should show the swapped credential. The container
+      // sent the placeholder sentinel; the proxy's dynamic MITM rule
+      // (buildDynamicRules, hostname === ANTHROPIC_API_HOST) matches the
+      // placeholder and swaps it to the on-disk api-key before forwarding.
+      // That's the piece upstream-redirect composes with: MITM + inject +
+      // redirect.
+      const transcript = await mockLLM!.transcript()
+      const probeCall = transcript.find((e) =>
+        e.method === 'POST' && e.url.startsWith('/v1/messages') && e.body.includes(marker),
+      )
+      expect(probeCall).toBeDefined()
+      expect(probeCall!.headers['x-api-key']).toBe('sk-ant-fake-real-key')
+      expect(probeCall!.body).toContain('claude-sonnet-4-6')
+    }, 60_000)
+
+    it('boots claude-code and round-trips a prompt through the mock LLM', async () => {
+      // The strongest test of the mocking infrastructure: the real tool,
+      // not a curl stand-in. Onboarding was pre-seeded at create time so
+      // claude-code lands directly on its chat prompt.
+      const send = async (...keys: string[]): Promise<void> => {
+        for (const k of keys) {
+          await execInJob(jobName, [
+            'tmux', '-S', CONTAINER_TMUX_SOCK, 'send-keys',
+            '-t', 'yaac:claude', k,
+          ])
+          await sleep(400)
+        }
+      }
+      const capturePane = async (): Promise<string> => {
+        const { stdout } = await execInJob(jobName, [
+          'sh', '-c',
+          `tmux -S ${CONTAINER_TMUX_SOCK} capture-pane -t yaac:claude -p -S - -E - 2>&1`,
+        ])
+        return stdout
+      }
+
+      await send('hello mock')
+      await sleep(500)
+      await send('Enter')
+
+      // Poll for claude rendering the mock's response text in its pane.
+      // The mock always replies with "Hello from mock!" text_delta. The
+      // initial Enter can land while claude-code is still finishing its
+      // startup render — the "hello mock" characters always make it into
+      // the prompt but the Enter is silently dropped in that window. Re-
+      // sending Enter periodically keeps the test deterministic without
+      // forcing every run to wait for a worst-case startup.
+      let pane = ''
+      let hitMockText = false
+      for (let i = 0; i < 30; i++) {
+        pane = await capturePane()
+        if (pane.includes('Hello from mock')) { hitMockText = true; break }
+        if (i > 0 && i % 3 === 0) await send('Enter')
+        await sleep(500)
+      }
+
+      if (!hitMockText) {
+        console.error('final pane:\n' + pane)
+        const tx = await mockLLM!.transcript()
+        console.error('mock transcript (' + tx.length + ' entries):')
+        for (const e of tx) {
+          const host = typeof e.headers.host === 'string' ? e.headers.host : '?'
+          console.error('  ' + e.method + ' ' + host + e.url)
+        }
+      }
+      expect(hitMockText).toBe(true)
+
+      // The mock LLM must have received the /v1/messages call carrying the
+      // typed prompt, with the proxy swapping the placeholder x-api-key for
+      // the on-disk credential.
+      const transcript = await mockLLM!.transcript()
+      const promptCall = transcript.find((e) =>
+        e.method === 'POST' && e.url.startsWith('/v1/messages') && e.body.includes('hello mock'),
+      )
+      expect(promptCall).toBeDefined()
+      expect(promptCall!.headers['x-api-key']).toBe('sk-ant-fake-real-key')
+    }, 120_000)
+
+    it('writes a command over the PTY WebSocket and reads its output back', async () => {
+      // The webapp's terminal path: create a scratch-shell window (the
+      // webapp's "+" path), attach it over the WS, round-trip a command.
+      // A shell window needs no agent auth — just the container and tmux.
+      const createRes = await fetch(
+        `${base}/session/${sessionId}/terminals`,
+        { method: 'POST', headers: auth },
+      )
+      expect(createRes.ok).toBe(true)
+      const shell = await createRes.json() as { target: string; name: string }
+      expect(shell.name).toBe('shell')
+      expect(shell.target).toMatch(/^window:@\d+$/)
+      const { ws, binary, opened } = openWs(
+        `ws://127.0.0.1:${daemon!.lock.port}/pty/attach`
+          + `?id=${sessionId}&target=${encodeURIComponent(shell.target)}&cols=100&rows=30`,
+        auth,
+      )
+      await opened
+      await sleep(3000) // let the shell start and paint its prompt
+      ws.send(Buffer.from('echo WS_ROUNDTRIP_$((40 + 2))\r'))
+      for (let i = 0; i < 30 && !binary().includes('WS_ROUNDTRIP_42'); i++) await sleep(500)
+      ws.close()
+      expect(binary()).toContain('WS_ROUNDTRIP_42')
+    }, 120_000)
+
+    it('pushes pane-title flips into session list, sticky across a watcher stream kill', async () => {
+      // The push-fed status path: the daemon holds a tmux control-mode
+      // watcher per session (status-watcher.ts) subscribed to the agent
+      // pane's `#{pane_title}`, and `session list` reads the watcher-fed
+      // store — no per-list status probes. The test controls the pane title
+      // directly (`tmux select-pane -T`) instead of driving the real agent:
+      // what's under test is yaac's title→status plumbing, not claude's
+      // title behavior (pinned by the classifyClaudeTitle unit fixtures).
+      //
+      // NOTE: this replaces claude with an inert sleep, so it must run
+      // after the round-trip tests above.
+      await execInJob(jobName, [
+        'tmux', '-S', CONTAINER_TMUX_SOCK, 'set-option', '-t', 'yaac', 'remain-on-exit', 'on',
+      ])
+      await execInJob(jobName, [
+        'tmux', '-S', CONTAINER_TMUX_SOCK, 'respawn-window', '-k', '-t', 'yaac:claude', 'sleep infinity',
+      ])
+
+      const setTitle = (title: string): Promise<{ stdout: string }> => execInJob(jobName, [
+        'tmux', '-S', CONTAINER_TMUX_SOCK, 'select-pane', '-t', 'yaac:claude.0', '-T', title,
+      ])
+      const waitForListStatus = async (
+        expected: 'running' | 'waiting',
+        timeoutMs: number,
+      ): Promise<void> => {
+        const deadline = Date.now() + timeoutMs
+        let lastOut = ''
+        for (;;) {
+          const { stdout } = await runYaac(daemonEnv, 'session', 'list', 'kitchen')
+          lastOut = stdout
+          const row = stdout.split('\n').find((l) => l.includes('kitchen') && !l.startsWith('SESSION'))
+          if (row?.includes(expected)) return
+          if (Date.now() > deadline) {
+            throw new Error(`status never became ${expected} within ${timeoutMs}ms; last list:\n${lastOut}`)
+          }
+          await sleep(500)
+        }
+      }
+
+      // Baseline: an idle-style title classifies as waiting.
+      await setTitle('✳ marker-idle')
+      await waitForListStatus('waiting', 20_000)
+
+      // A Braille-spinner title must flip the list to running with no
+      // probe in the path: title → tmux ~1s subscription check → watcher →
+      // status store → list read.
+      await setTitle('⠋ marker-busy')
+      await waitForListStatus('running', 20_000)
+
+      // Kill the watcher's kubectl exec child. Status must stay sticky
+      // (never blank / never reaped), and the watcher must respawn on its
+      // own — proven by the next title flip still landing. execFile (no
+      // shell) so no intermediate sh -c carries the pattern in its own
+      // cmdline — pkill would match and kill it too.
+      await execFileAsync('pkill', ['-f', `job/${jobName}.*attach-session`])
+      const { stdout: afterKill } = await runYaac(daemonEnv, 'session', 'list', 'kitchen')
+      const row = afterKill.split('\n').find((l) => l.includes('kitchen') && !l.startsWith('SESSION'))
+      expect(row).toBeDefined()
+      expect(row).toContain('running')
+
+      await setTitle('✳ marker-done')
+      await waitForListStatus('waiting', 30_000)
+    }, 240_000)
+
+    it('redirects /workspace/node_modules through .cached-packages and cleans up on delete', async () => {
+      // LAST kitchen test: it deletes the session.
+      // Inside the container: /workspace/node_modules is a real directory
+      // backed by a bind mount — not a symlink (Node's fs.mkdir would
+      // reject a symlink-to-dir with ENOTDIR, breaking pnpm).
+      await expect(execInJob(jobName, [
+        'readlink', '/workspace/node_modules',
+      ])).rejects.toThrow()
+      const { stdout: ftype } = await execInJob(jobName, [
+        'stat', '-c', '%F', '/workspace/node_modules',
+      ])
+      expect(ftype.trim()).toBe('directory')
+
+      // Write to the bind mount and confirm the bytes land in the
+      // host-side .cached-packages tree, NOT in the worktree.
+      await execInJob(jobName, [
+        'sh', '-c',
+        'echo hello > /workspace/node_modules/marker.txt',
+      ])
+      const hostBacking = path.join(
+        projectPath, '.cached-packages', 'modules', sessionId, 'root', 'marker.txt',
+      )
+      const hostMarker = await fs.readFile(hostBacking, 'utf8')
+      expect(hostMarker.trim()).toBe('hello')
+
+      // Host worktree's node_modules has no leaked content — the bind
+      // mount shadows it from the container side only.
+      const worktreeMarker = path.join(
+        projectPath, 'worktrees', sessionId, 'node_modules', 'marker.txt',
+      )
+      await expect(fs.access(worktreeMarker)).rejects.toThrow()
+
+      // node_modules is gitignored (via the seeded .gitignore), so a
+      // populated bind mount doesn't surface in `git status`.
+      const { stdout: gitStatus } = await execInJob(jobName, [
+        'sh', '-c', 'cd /workspace && git status --porcelain',
+      ])
+      expect(gitStatus.trim()).toBe('')
+
+      // Seed the pnpm-store so the post-delete assertion below can verify
+      // that modules/<sid> is reaped while the shared store survives.
+      await execInJob(jobName, [
+        'sh', '-c',
+        'mkdir -p /home/yaac/.cached-packages/pnpm-store && echo store-content > /home/yaac/.cached-packages/pnpm-store/src',
+      ])
+
+      // Delete the session; modules/<sid> goes away, pnpm-store survives.
+      const { exitCode: delExit } = await runYaac(
+        daemonEnv, 'session', 'delete', sessionId,
+      )
+      expect(delExit).toBe(0)
+
+      const modulesRoot = path.join(projectPath, '.cached-packages', 'modules', sessionId)
+      // Cleanup is detached — poll briefly.
+      let gone = false
+      for (let i = 0; i < 40; i++) {
+        try {
+          await fs.access(modulesRoot)
+          await sleep(250)
+        } catch {
+          gone = true
+          break
+        }
+      }
+      expect(gone).toBe(true)
+
+      const pnpmStoreSrc = path.join(projectPath, '.cached-packages', 'pnpm-store', 'src')
+      await expect(fs.access(pnpmStoreSrc)).resolves.toBeUndefined()
+    }, 120_000)
+  })
+
+  describe('provisioning hand-off + ephemeralModulesPaths []', () => {
+    it('a webapp create with a client id yields a real session of that id, and the provisioning row drops on hand-off', async () => {
+      // Doubles as the ephemeralModulesPaths:[] coverage — the project
+      // disables the node_modules redirect and we assert on the created pod
+      // after the hand-off completes.
+      await setupProject('no-ephemeral', {
+        yaacConfig: { ephemeralModulesPaths: [] },
+      })
+      const sessionId = randomUUID()
+
+      // Watch the snapshot stream while the create runs.
+      const sub = collectSnapshots(`ws://127.0.0.1:${daemon!.lock.port}/events`, daemon!.lock.secret)
+      await sub.opened
+
+      // Fire the webapp create (don't await — we want to observe the in-flight row).
+      const createDone = fetch(`${base}/session/create`, {
+        method: 'POST',
+        headers: { ...auth, 'content-type': 'application/json' },
+        body: JSON.stringify({ project: 'no-ephemeral', tool: 'claude', sessionId }),
+      }).then((r) => r.text())
+
+      // The provisioning row appears in the snapshot during creation.
+      let sawProvisioning = false
+      for (let i = 0; i < 100; i++) {
+        const row = sub.latest()?.provisioning.find((p) => p.sessionId === sessionId)
+        if (row) {
+          expect(row.kind).toBe('create')
+          expect(row.projectSlug).toBe('no-ephemeral')
+          sawProvisioning = true
+          break
+        }
+        await sleep(200)
+      }
+      expect(sawProvisioning).toBe(true)
+
+      // Creation completes successfully (NDJSON ends with a result, not an error).
+      const ndjson = await createDone
+      expect(ndjson).toContain('"type":"result"')
+      expect(ndjson).not.toContain('"type":"error"')
+
+      // The real session exists under the SAME client-supplied id...
+      const list = await (await fetch(`${base}/session/list?project=no-ephemeral`, { headers: auth })).json() as
+        { sessions: Array<{ sessionId: string }> }
+      expect(list.sessions.some((s) => s.sessionId === sessionId)).toBe(true)
+
+      // ...and the provisioning row drops on hand-off (the create route
+      // removes it when createSession resolves; until then buildSnapshot
+      // hides the session so no snapshot ever carries both — no double row,
+      // and no terminals mounted against a half-built session).
+      let droppedFromProvisioning = false
+      for (let i = 0; i < 100; i++) {
+        const snap = sub.latest()
+        if (snap && snap.sessions.some((s) => (s as { sessionId: string }).sessionId === sessionId)
+          && !snap.provisioning.some((p) => p.sessionId === sessionId)) {
+          droppedFromProvisioning = true
+          break
+        }
+        await sleep(200)
+      }
+      expect(droppedFromProvisioning).toBe(true)
+      sub.ws.close()
+
+      // /workspace/node_modules should not exist at all when the redirect
+      // is disabled — the worktree is a fresh git checkout with no
+      // node_modules in it and no bind mount is installed.
+      const pod = await findSessionPod('no-ephemeral')
+      await expect(execInJob(pod.jobName, [
+        'test', '-e', '/workspace/node_modules',
+      ])).rejects.toThrow()
+    }, 240_000)
+  })
+
+  describe('codex session', () => {
+    let jobName = ''
+
+    beforeAll(async () => {
+      const projectPath = await setupProject('codex-demo')
+      // The codex host dir drives session-create down the
+      // writeProjectCodexPlaceholder path, which seeds a ChatGPT-mode
+      // auth.json that codex can load without running its native login
+      // flow. `/repo` (not `/workspace`) is the key codex sees because the
+      // session worktree's .git file points at /repo/.git.
+      await fs.mkdir(path.join(projectPath, 'codex'), { recursive: true })
+      const created = await createSession('codex-demo', '--tool', 'codex')
+      jobName = created.jobName
+    }, 240_000)
+
+    it('mounts shared Claude and Codex state', async () => {
+      const pod = await findSessionPod('codex-demo')
+      expect(pod.labels['yaac.tool']).toBe('codex')
+      await execInJob(jobName, ['test', '-d', '/home/yaac/.claude'])
+      await execInJob(jobName, ['test', '-f', '/home/yaac/.claude.json'])
+      await execInJob(jobName, ['test', '-d', '/home/yaac/.codex'])
+    }, 60_000)
+
+    it('boots codex-cli and round-trips a prompt through the mock LLM', async () => {
+      // Codex-specific paths: the ChatGPT-shaped `auth.json` placeholder,
+      // the `Authorization: Bearer` swap on `chatgpt.com`, and the
+      // Responses-API SSE shape.
+      await sleep(5000) // wait for codex-cli to render its main prompt
+
+      const send = async (...keys: string[]): Promise<void> => {
+        for (const k of keys) {
+          await execInJob(jobName, [
+            'tmux', '-S', CONTAINER_TMUX_SOCK, 'send-keys',
+            '-t', 'yaac:codex', k,
+          ])
+          await sleep(400)
+        }
+      }
+      // Capture only the visible window, not scrollback history. Dismissed
+      // dialogs stay visible in scrollback and would otherwise cause the
+      // dispatch loop to keep matching them.
+      const capturePane = async (): Promise<string> => {
+        try {
+          const { stdout } = await execInJob(jobName, [
+            'sh', '-c',
+            `tmux -S ${CONTAINER_TMUX_SOCK} capture-pane -t yaac:codex -p 2>&1`,
+          ])
+          return stdout
+        } catch (err) {
+          return '[capture failed: ' + (err instanceof Error ? err.message : String(err)) + ']'
+        }
+      }
+      // Codex greets new sessions with modal prompts we need to dismiss
+      // before the chat composer is reachable:
+      //   1. "Do you trust the contents of this directory?" — accept default
+      //      (Yes, continue) with Enter.
+      //   2. "Hooks need review" — pick "Trust all and continue" (option 2).
+      //   3. "Introducing GPT-5.4 … 1. Try new model, 2. Use existing model"
+      //      — Down + Enter ("Use existing model") so the test isn't coupled
+      //      to a specific default model name in the mock.
+      // Dialogs render synchronously after codex's startup HTTP probes, but
+      // we don't know which is on screen at a given moment, so watch the
+      // pane and dispatch until the chat-composer prompt appears.
+      let sawTrust = false
+      let sawUpgrade = false
+      let sawHooks = false
+      let inChat = false
+      let lastPane = ''
+      for (let i = 0; i < 60 && !inChat; i++) {
+        lastPane = await capturePane()
+        if (/Do you trust the contents of this directory/i.test(lastPane)) {
+          if (!sawTrust) {
+            await send('Enter')
+            sawTrust = true
+          }
+        } else if (/Hooks need review|Trust all and continue/i.test(lastPane)) {
+          if (!sawHooks) {
+            await send('Down', 'Enter')
+            sawHooks = true
+          }
+        } else if (/Introducing GPT|Try new model|Use existing model/i.test(lastPane)) {
+          if (!sawUpgrade) {
+            await send('Down', 'Enter')
+            sawUpgrade = true
+          }
+        } else if (/OpenAI Codex|gpt-5|YOLO mode/i.test(lastPane)) {
+          inChat = true
+          break
+        }
+        await sleep(500)
+      }
+      if (!inChat) {
+        console.error('chat composer never appeared (trust=' + sawTrust + ', hooks=' + sawHooks + ', upgrade=' + sawUpgrade + ')')
+        console.error('final pane:\n' + lastPane)
+      }
+      expect(inChat).toBe(true)
+      // Let the chat UI fully render.
+      await sleep(1000)
+
+      await send('hello mock')
+      await sleep(500)
+      await send('Enter')
+
+      // Poll for codex rendering the mock's response text in its pane.
+      let pane = ''
+      let hitMockText = false
+      for (let i = 0; i < 30; i++) {
+        pane = await capturePane()
+        if (pane.includes('Hello from mock')) { hitMockText = true; break }
+        await sleep(500)
+      }
+
+      if (!hitMockText) {
+        console.error('final pane:\n' + pane)
+        const tx = await mockLLM!.transcript()
+        console.error('mock transcript (' + tx.length + ' entries):')
+        for (const e of tx) {
+          const host = typeof e.headers.host === 'string' ? e.headers.host : '?'
+          console.error('  ' + e.method + ' ' + host + e.url)
+        }
+      }
+      expect(hitMockText).toBe(true)
+
+      // The mock must have received the Responses-API call carrying the
+      // typed prompt, and the proxy must have swapped the placeholder
+      // Bearer for the real on-disk token.
+      const transcript = await mockLLM!.transcript()
+      const promptCall = transcript.find((e) =>
+        e.method === 'POST' && e.url.startsWith('/backend-api/codex/responses')
+        && e.body.includes('hello mock'),
+      )
+      expect(promptCall).toBeDefined()
+      const authHeader = promptCall!.headers['authorization']
+      const authStr = Array.isArray(authHeader) ? authHeader[0] : authHeader
+      expect(authStr).toBe('Bearer ' + CODEX_REAL_ACCESS_TOKEN)
+    }, 180_000)
+  })
+
+  describe('opencode session', () => {
+    let jobName = ''
+    let projectPath = ''
+
+    beforeAll(async () => {
+      projectPath = await setupProject('oc-demo')
+      const created = await createSession('oc-demo', '--tool', 'opencode')
+      jobName = created.jobName
+    }, 240_000)
+
+    it('boots opencode and exposes its HTTP API on 127.0.0.1:4096 inside the container', async () => {
+      // The yaac status + first-message helpers in
+      // src/lib/session/opencode-status.ts depend on these endpoints being
+      // reachable via `kubectl exec curl` — without this test the entire
+      // opencode status pipeline is unverified by CI.
+      //
+      // Poll the in-container HTTP server. opencode bootstraps the worker +
+      // SQLite migrations before binding, so allow generous time. -sf
+      // suppresses output on connect-refused. This also doubles as a
+      // wait-for-container-ready barrier — by the time the probe answers,
+      // the tmux session and `opencode` window must be set up.
+      let probeOk = false
+      let lastStdout = ''
+      let lastStderr = ''
+      for (let i = 0; i < 60 && !probeOk; i++) {
+        try {
+          const { stdout } = await execInJob(jobName, [
+            'sh', '-c',
+            'curl -sf -o /dev/stdout -w "\\n%{http_code}" http://127.0.0.1:4096/session 2>&1',
+          ])
+          lastStdout = stdout
+          // Expect a 200 status code on the trailing line and a JSON-array
+          // body (empty array is fine — no user turn has been sent yet).
+          const trimmed = stdout.trim()
+          const lastNewline = trimmed.lastIndexOf('\n')
+          const body = lastNewline >= 0 ? trimmed.slice(0, lastNewline) : ''
+          const code = lastNewline >= 0 ? trimmed.slice(lastNewline + 1) : trimmed
+          if (code === '200') {
+            const parsed: unknown = JSON.parse(body || '[]')
+            expect(Array.isArray(parsed)).toBe(true)
+            probeOk = true
+            break
+          }
+        } catch (err) {
+          lastStderr = err instanceof Error ? err.message : String(err)
+        }
+        await sleep(1000)
+      }
+
+      if (!probeOk) {
+        // Diagnostic dump before failing — the most common causes are
+        // opencode crashing at startup (TUI couldn't init, missing native
+        // module, etc.) or the wrong package name in Dockerfile.default.
+        try {
+          const { stdout: pane } = await execInJob(jobName, [
+            'tmux', 'capture-pane', '-p', '-t', 'yaac:opencode',
+          ])
+          console.error('opencode tmux pane:\n' + pane)
+        } catch { /* ignore */ }
+        try {
+          const { stdout: ps } = await execInJob(jobName, [
+            'sh', '-c', 'ps -ef | grep -i opencode | grep -v grep',
+          ])
+          console.error('opencode processes:\n' + ps)
+        } catch { /* ignore */ }
+        console.error('last curl stdout: ' + lastStdout)
+        console.error('last curl stderr: ' + lastStderr)
+      }
+      expect(probeOk).toBe(true)
+
+      // Now the status endpoint — must also return JSON (object, not array).
+      // A reachable `/session/status` is what opencode-status.ts depends on,
+      // so probing it here is the load-bearing assertion of this test.
+      const { stdout: statusOut } = await execInJob(jobName, [
+        'sh', '-c',
+        'curl -sf http://127.0.0.1:4096/session/status',
+      ])
+      const status: unknown = JSON.parse(statusOut.trim() || '{}')
+      expect(typeof status).toBe('object')
+      expect(Array.isArray(status)).toBe(false)
+    }, 180_000)
+
+    it('mounts the shared opencode-config dir with websearch + provider wiring', async () => {
+      // The shared opencode-config directory persists across sessions so
+      // that model selection, permissions, and other settings written to
+      // ~/.config/opencode/opencode.json via Config.updateGlobal() survive
+      // pod teardown.
+      const hostOcConfigDir = path.join(projectPath, 'opencode-config')
+      const hostConfigStat = await fs.stat(hostOcConfigDir)
+      expect(hostConfigStat.isDirectory()).toBe(true)
+
+      // Websearch wiring: yaac writes the permission entry into the shared
+      // opencode.json and the container has the matching env var gating the
+      // Exa-backed tool registration.
+      const seededRaw = await fs.readFile(
+        path.join(hostOcConfigDir, 'opencode.json'),
+        'utf8',
+      )
+      const seeded = JSON.parse(seededRaw) as {
+        permission?: { websearch?: string }
+      }
+      expect(seeded.permission?.websearch).toBe('allow')
+
+      const { stdout: envOut } = await execInJob(jobName, [
+        'sh', '-c', 'printenv OPENCODE_ENABLE_EXA',
+      ])
+      expect(envOut.trim()).toBe('true')
+
+      // The seeded opencode credential has no `provider` field, so it
+      // defaults to OpenRouter — the container carries the
+      // OPENROUTER_API_KEY placeholder (the proxy swaps it for the real key
+      // on openrouter.ai) and not the NeuralWatt one.
+      const { stdout: orKeyOut } = await execInJob(jobName, [
+        'sh', '-c', 'printenv OPENROUTER_API_KEY',
+      ])
+      expect(orKeyOut.trim()).toBe('yaac-ph-api-key')
+      const { stdout: nwKeyOut } = await execInJob(jobName, [
+        'sh', '-c', 'printenv NEURALWATT_API_KEY || true',
+      ])
+      expect(nwKeyOut.trim()).toBe('')
+
+      // Write a config on the host and verify it's visible inside the container.
+      await fs.writeFile(
+        path.join(hostOcConfigDir, 'opencode.json'),
+        JSON.stringify({ model: 'anthropic/claude-sonnet-4-5' }),
+      )
+      const { stdout: catOut } = await execInJob(jobName, [
+        'cat', '/home/yaac/.config/opencode/opencode.json',
+      ])
+      const inside: unknown = JSON.parse(catOut.trim())
+      expect(inside).toEqual({ model: 'anthropic/claude-sonnet-4-5' })
+    }, 60_000)
+  })
+})
