@@ -2,26 +2,26 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
-vi.mock('@/lib/k8s/pods', () => ({
+vi.mock('@yaac/server/lib/k8s/pods', () => ({
   listSessionPods: vi.fn().mockResolvedValue([]),
   listSessionJobs: vi.fn().mockResolvedValue([]),
 }))
 
-vi.mock('@/lib/k8s/vcluster', () => ({
+vi.mock('@yaac/server/lib/k8s/vcluster', () => ({
   VCLUSTER_ORPHAN_GRACE_MS: 15 * 60 * 1000,
   listVclusterNamespaces: vi.fn().mockResolvedValue([]),
   removeSessionVcluster: vi.fn().mockResolvedValue(undefined),
   waitForVclusterKubeconfig: vi.fn().mockResolvedValue('kubeconfig-bytes\n'),
 }))
 
-import { reconcileVclusters } from '@/lib/session/vcluster-reconcile'
-import { listSessionJobs, listSessionPods } from '@/lib/k8s/pods'
+import { reconcileVclusters } from '@yaac/server/lib/session/vcluster-reconcile'
+import { listSessionJobs, listSessionPods } from '@yaac/server/lib/k8s/pods'
 import {
   listVclusterNamespaces,
   removeSessionVcluster,
   waitForVclusterKubeconfig,
-} from '@/lib/k8s/vcluster'
-import { sessionVclusterDir } from '@/shared/project-paths'
+} from '@yaac/server/lib/k8s/vcluster'
+import { sessionVclusterDir } from '@yaac/shared/project-paths'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 
 const mockPods = vi.mocked(listSessionPods)

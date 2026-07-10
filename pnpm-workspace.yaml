@@ -1,4 +1,6 @@
 packages:
+  - "apps/*"
+  - "packages/*"
   - "k8s/proxy"
 allowBuilds:
   cpu-features: false

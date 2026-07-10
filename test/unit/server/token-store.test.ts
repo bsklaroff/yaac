@@ -7,10 +7,10 @@ import {
   loadTokens,
   saveTokens,
   type TokenEntry,
-} from '@/server/token-store'
-import { maskToken } from '@/shared/mask'
-import { ServerError } from '@/shared/errors'
-import { setDataDir, tokensPath } from '@/shared/paths'
+} from '@yaac/server/token-store'
+import { maskToken } from '@yaac/shared/mask'
+import { ServerError } from '@yaac/shared/errors'
+import { setDataDir, tokensPath } from '@yaac/shared/paths'
 
 describe('createTokenStore', () => {
   it('mints a 64-hex token with an ISO createdAt', () => {

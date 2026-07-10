@@ -3,9 +3,9 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import simpleGit from 'simple-git'
-import { cloneRepo } from '@/lib/git'
-import { listSessionPods, type SessionPod } from '@/lib/k8s/pods'
-import { k8sNamespace, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
+import { cloneRepo } from '@yaac/server/lib/git'
+import { listSessionPods, type SessionPod } from '@yaac/server/lib/k8s/pods'
+import { k8sNamespace, kubectlGetJson, kubectlWithRetry } from '@yaac/server/lib/k8s/kubectl'
 import {
   ensureProjectRegistry,
   gcOrphanProjectRegistries,
@@ -13,7 +13,7 @@ import {
   projectRegistryHostname,
   projectRegistryName,
   removeProjectRegistry,
-} from '@/lib/k8s/project-registry'
+} from '@yaac/server/lib/k8s/project-registry'
 import {
   createYaacTestEnv,
   spawnYaacServer,

@@ -65,12 +65,12 @@ describe('ensureImage layer stacking', () => {
     // module cache, and we need these fresh imports to pick up the doMock
     // above — static imports would keep the stale, pre-reset bindings.
     // eslint-disable-next-line no-restricted-syntax
-    const paths = await import('@/shared/project-paths')
+    const paths = await import('@yaac/shared/project-paths')
     paths.setDataDir(dataDir)
     // eslint-disable-next-line no-restricted-syntax
-    const builder = await import('@/lib/container/image-builder')
+    const builder = await import('@yaac/server/lib/container/image-builder')
     // eslint-disable-next-line no-restricted-syntax
-    const coordinator = await import('@/lib/container/build-coordinator')
+    const coordinator = await import('@yaac/server/lib/container/build-coordinator')
     return { ...builder, ...coordinator }
   }
 

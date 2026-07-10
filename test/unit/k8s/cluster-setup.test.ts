@@ -14,7 +14,7 @@ import {
   LEGACY_KRUNKIT_WRAPPER,
   runClusterSetup,
   type ClusterSetupDeps,
-} from '@/lib/k8s/cluster-setup'
+} from '@yaac/server/lib/k8s/cluster-setup'
 
 afterEach(() => {
   vi.unstubAllEnvs()

@@ -1,20 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import type * as cliResolveModule from '@/auth-daemon/cli-resolve'
+import type * as cliResolveModule from '@yaac/auth-daemon/cli-resolve'
 import {
   clearAllToolLoginsForTests,
   cancelToolLogin,
   getToolLogin,
   sendToolLoginInput,
   startToolLogin,
-} from '@/auth-daemon/tool-login'
-import { loadClaudeCredentialsFile, loadCodexCredentialsFile } from '@/shared/tool-auth'
+} from '@yaac/auth-daemon/tool-login'
+import { loadClaudeCredentialsFile, loadCodexCredentialsFile } from '@yaac/shared/tool-auth'
 
 // Only consulted when the YAAC_E2E_*_LOGIN_CLI hook is unset. Mocked to
 // "not installed" so no test can ever spawn a real vendor CLI, whatever the
 // machine has.
-vi.mock('@/auth-daemon/cli-resolve', async (importOriginal) => {
+vi.mock('@yaac/auth-daemon/cli-resolve', async (importOriginal) => {
   const actual = await importOriginal<typeof cliResolveModule>()
   return { ...actual, resolveToolCliPath: () => null }
 })

@@ -8,8 +8,8 @@ import {
   readRemote,
   remoteConfigPath,
   writeRemote,
-} from '@/shared/remote'
-import { setDataDir } from '@/shared/paths'
+} from '@yaac/shared/remote'
+import { setDataDir } from '@yaac/shared/paths'
 
 describe('remote config store', () => {
   let dir: string

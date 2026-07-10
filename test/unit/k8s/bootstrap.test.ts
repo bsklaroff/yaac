@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
-vi.mock('@/lib/k8s/kubectl', () => ({
+vi.mock('@yaac/server/lib/k8s/kubectl', () => ({
   dataDirHash: vi.fn(() => 'ddh0123456789abc'),
   k8sNamespace: vi.fn(() => 'test-ns'),
   kubectlApply: vi.fn().mockResolvedValue(undefined),
@@ -12,7 +12,7 @@ vi.mock('@/lib/k8s/kubectl', () => ({
 
 // ensureProxyResources(nested) registers the Cilium CRDs into the vcluster;
 // no test here exercises the real CRD apply, so stub it out.
-vi.mock('@/lib/k8s/cilium-crds', () => ({
+vi.mock('@yaac/server/lib/k8s/cilium-crds', () => ({
   ensureCiliumCrds: vi.fn().mockResolvedValue(undefined),
 }))
 
@@ -66,11 +66,11 @@ import {
   proxyServiceClusterIp,
   proxyDataHostDir,
   sshAgentHostDir,
-} from '@/lib/k8s/bootstrap'
-import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
-import { CA_CERT_PATH } from '@/lib/k8s/pod-spec'
-import { LABEL_DATA_DIR_HASH, LABEL_VCLUSTER_MANAGED_BY } from '@/lib/k8s/pods'
-import { credentialsDir } from '@/shared/project-paths'
+} from '@yaac/server/lib/k8s/bootstrap'
+import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/lib/k8s/kubectl'
+import { CA_CERT_PATH } from '@yaac/server/lib/k8s/pod-spec'
+import { LABEL_DATA_DIR_HASH, LABEL_VCLUSTER_MANAGED_BY } from '@yaac/server/lib/k8s/pods'
+import { credentialsDir } from '@yaac/shared/project-paths'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 
 const mockApply = vi.mocked(kubectlApply)

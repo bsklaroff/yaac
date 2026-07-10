@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
-vi.mock('@/lib/k8s/pods', async (importOriginal) => {
+vi.mock('@yaac/server/lib/k8s/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
   return {
     ...actual,
@@ -8,25 +8,25 @@ vi.mock('@/lib/k8s/pods', async (importOriginal) => {
   }
 })
 
-vi.mock('@/lib/project/config', () => ({
+vi.mock('@yaac/server/lib/project/config', () => ({
   resolveProjectConfig: vi.fn(),
 }))
 
-vi.mock('@/lib/session/cleanup', () => ({
+vi.mock('@yaac/server/lib/session/cleanup', () => ({
   isTmuxSessionAlive: vi.fn(),
 }))
 
-vi.mock('@/lib/session/port-forwarders', () => ({
+vi.mock('@yaac/server/lib/session/port-forwarders', () => ({
   hasSessionForwarders: vi.fn(),
   provisionSessionForwarders: vi.fn(),
 }))
 
-import { listSessionPods, type SessionPod } from '@/lib/k8s/pods'
-import type * as podsModule from '@/lib/k8s/pods'
-import { resolveProjectConfig } from '@/lib/project/config'
-import { isTmuxSessionAlive } from '@/lib/session/cleanup'
-import { hasSessionForwarders, provisionSessionForwarders } from '@/lib/session/port-forwarders'
-import { restoreAllSessionForwarders } from '@/lib/session/restore-forwarders'
+import { listSessionPods, type SessionPod } from '@yaac/server/lib/k8s/pods'
+import type * as podsModule from '@yaac/server/lib/k8s/pods'
+import { resolveProjectConfig } from '@yaac/server/lib/project/config'
+import { isTmuxSessionAlive } from '@yaac/server/lib/session/cleanup'
+import { hasSessionForwarders, provisionSessionForwarders } from '@yaac/server/lib/session/port-forwarders'
+import { restoreAllSessionForwarders } from '@yaac/server/lib/session/restore-forwarders'
 
 const mockListPods = vi.mocked(listSessionPods)
 const mockResolveConfig = vi.mocked(resolveProjectConfig)

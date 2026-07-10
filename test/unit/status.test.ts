@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { normalizeTool } from '@/lib/session/status'
+import { normalizeTool } from '@yaac/server/lib/session/status'
 
 describe('normalizeTool', () => {
   it('returns claude when the raw label is undefined', () => {

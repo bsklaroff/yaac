@@ -2,12 +2,12 @@ import { describe, it, expect, vi } from 'vitest'
 
 // prewarm.ts pulls these heavy modules in transitively; the pure planner +
 // isPrewarmed never touch them, so stub them out to keep the test light.
-vi.mock('@/server/session-create', () => ({ shellEscape: (s: string) => s }))
-vi.mock('@/lib/session/cleanup', () => ({ isTmuxSessionAlive: vi.fn() }))
+vi.mock('@yaac/server/session-create', () => ({ shellEscape: (s: string) => s }))
+vi.mock('@yaac/server/lib/session/cleanup', () => ({ isTmuxSessionAlive: vi.fn() }))
 
-import { computePrewarmPlan } from '@/server/prewarm'
-import { LABEL_PREWARMED, isPrewarmed, type SessionPod } from '@/lib/k8s/pods'
-import type { AgentTool } from '@/shared/types'
+import { computePrewarmPlan } from '@yaac/server/prewarm'
+import { LABEL_PREWARMED, isPrewarmed, type SessionPod } from '@yaac/server/lib/k8s/pods'
+import type { AgentTool } from '@yaac/shared/types'
 
 function pod(o: Partial<SessionPod> & { prewarmed?: boolean } = {}): SessionPod {
   const { prewarmed, labels, ...rest } = o

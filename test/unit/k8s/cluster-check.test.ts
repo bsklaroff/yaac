@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
-vi.mock('@/lib/k8s/kubectl', () => ({
+vi.mock('@yaac/server/lib/k8s/kubectl', () => ({
   execFileAsync: vi.fn(),
   k8sNamespace: vi.fn(() => 'test-ns'),
   kubectlApply: vi.fn(),
@@ -15,9 +15,9 @@ import {
   runClusterCheck,
   type CheckResult,
   type ClusterCheckDeps,
-} from '@/lib/k8s/cluster-check'
-import { kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
-import { sessionUid } from '@/lib/container/image-builder'
+} from '@yaac/server/lib/k8s/cluster-check'
+import { kubectlGetJson, kubectlWithRetry } from '@yaac/server/lib/k8s/kubectl'
+import { sessionUid } from '@yaac/server/lib/container/image-builder'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@test/helpers/setup'
 
 const mockGetJson = vi.mocked(kubectlGetJson)

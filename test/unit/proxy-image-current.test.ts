@@ -1,12 +1,12 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { ProxyClient } from '@/lib/container/proxy-client'
-import type * as kubectlModule from '@/lib/k8s/kubectl'
-import type * as imageBuilderModule from '@/lib/container/image-builder'
-import type * as registryModule from '@/lib/k8s/registry'
-import type * as serverLogModule from '@/server/log'
+import { ProxyClient } from '@yaac/server/lib/container/proxy-client'
+import type * as kubectlModule from '@yaac/server/lib/k8s/kubectl'
+import type * as imageBuilderModule from '@yaac/server/lib/container/image-builder'
+import type * as registryModule from '@yaac/server/lib/k8s/registry'
+import type * as serverLogModule from '@yaac/server/log'
 
 const mockKubectlGetJson = vi.hoisted(() => vi.fn())
-vi.mock('@/lib/k8s/kubectl', async (importOriginal) => ({
+vi.mock('@yaac/server/lib/k8s/kubectl', async (importOriginal) => ({
   ...(await importOriginal<typeof kubectlModule>()),
   k8sNamespace: () => 'yaac',
   kubectlGetJson: mockKubectlGetJson,
@@ -15,19 +15,19 @@ vi.mock('@/lib/k8s/kubectl', async (importOriginal) => ({
 }))
 
 const mockContextHash = vi.hoisted(() => vi.fn())
-vi.mock('@/lib/container/image-builder', async (importOriginal) => ({
+vi.mock('@yaac/server/lib/container/image-builder', async (importOriginal) => ({
   ...(await importOriginal<typeof imageBuilderModule>()),
   contextHash: mockContextHash,
 }))
 
-vi.mock('@/lib/k8s/registry', async (importOriginal) => ({
+vi.mock('@yaac/server/lib/k8s/registry', async (importOriginal) => ({
   ...(await importOriginal<typeof registryModule>()),
   registryRef: (tag: string) => `localhost:5001/${tag}`,
   registryHasTag: vi.fn(),
   pushImageToRegistry: vi.fn(),
 }))
 
-vi.mock('@/server/log', async (importOriginal) => ({
+vi.mock('@yaac/server/log', async (importOriginal) => ({
   ...(await importOriginal<typeof serverLogModule>()),
   serverLog: vi.fn(),
   pipeToServerLog: vi.fn(),

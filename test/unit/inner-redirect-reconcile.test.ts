@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-vi.mock('@/lib/k8s/kubectl', () => ({
+vi.mock('@yaac/server/lib/k8s/kubectl', () => ({
   dataDirHash: vi.fn(() => 'outer00000000000'),
   k8sNamespace: vi.fn(() => 'yaac'),
   kubectlGetJson: vi.fn(),
@@ -8,24 +8,24 @@ vi.mock('@/lib/k8s/kubectl', () => ({
   kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 // bootstrap.ts (imported for the real builders) only uses isTorEnabled from git.
-vi.mock('@/lib/git', () => ({ isTorEnabled: vi.fn(() => false) }))
-vi.mock('@/lib/k8s/vcluster', () => ({
+vi.mock('@yaac/server/lib/git', () => ({ isTorEnabled: vi.fn(() => false) }))
+vi.mock('@yaac/server/lib/k8s/vcluster', () => ({
   listVclusterNamespaces: vi.fn().mockResolvedValue([]),
 }))
-vi.mock('@/server/log', () => ({ serverLog: vi.fn() }))
+vi.mock('@yaac/server/log', () => ({ serverLog: vi.fn() }))
 
-import { reconcileInnerRedirects } from '@/lib/session/inner-redirect-reconcile'
-import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
-import { listVclusterNamespaces } from '@/lib/k8s/vcluster'
-import { serverLog } from '@/server/log'
+import { reconcileInnerRedirects } from '@yaac/server/lib/session/inner-redirect-reconcile'
+import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/lib/k8s/kubectl'
+import { listVclusterNamespaces } from '@yaac/server/lib/k8s/vcluster'
+import { serverLog } from '@yaac/server/log'
 import {
   INNER_EGRESS_REDIRECT_CEC_NAME,
   INNER_PROXY_INGRESS_CNP_NAME,
   INNER_SESSION_EGRESS_REDIRECT_CNP_NAME,
   LABEL_PROJECTION,
   PROJECTION_INNER_REDIRECT,
-} from '@/lib/k8s/bootstrap'
-import { LABEL_DATA_DIR_HASH } from '@/lib/k8s/pods'
+} from '@yaac/server/lib/k8s/bootstrap'
+import { LABEL_DATA_DIR_HASH } from '@yaac/server/lib/k8s/pods'
 
 const mockGetJson = vi.mocked(kubectlGetJson)
 const mockApply = vi.mocked(kubectlApply)

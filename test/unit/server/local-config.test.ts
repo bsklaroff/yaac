@@ -2,9 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import { projectConfigDir, getProjectsDir } from '@/shared/project-paths'
-import { writeProjectConfig, removeProjectConfig, readProjectConfigRaw } from '@/lib/project/local-config'
-import type { ProjectMeta } from '@/shared/types'
+import { projectConfigDir, getProjectsDir } from '@yaac/shared/project-paths'
+import { writeProjectConfig, removeProjectConfig, readProjectConfigRaw } from '@yaac/server/lib/project/local-config'
+import type { ProjectMeta } from '@yaac/shared/types'
 
 async function writeProject(slug: string): Promise<void> {
   const dir = path.join(getProjectsDir(), slug)

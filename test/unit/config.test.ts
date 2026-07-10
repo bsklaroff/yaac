@@ -10,8 +10,8 @@ import {
   parseProjectConfig,
   resolveEphemeralModulesPaths,
   resolveProjectConfig,
-} from '@/lib/project/config'
-import { setDataDir } from '@/shared/project-paths'
+} from '@yaac/server/lib/project/config'
+import { setDataDir } from '@yaac/shared/project-paths'
 
 describe('loadProjectConfig', () => {
   let tmpDir: string

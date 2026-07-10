@@ -2,11 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import * as pods from '@/lib/k8s/pods'
-import * as cleanup from '@/lib/session/cleanup'
-import * as sessionCreate from '@/server/session-create'
-import { resolveRestartTarget, restartSession } from '@/lib/session/restart'
-import { sessionRestart } from '@/commands/session-restart'
+import * as pods from '@yaac/server/lib/k8s/pods'
+import * as cleanup from '@yaac/server/lib/session/cleanup'
+import * as sessionCreate from '@yaac/server/session-create'
+import { resolveRestartTarget, restartSession } from '@yaac/server/lib/session/restart'
+import { sessionRestart } from '@yaac/cli/commands/session-restart'
 import {
   claudeDir,
   codexTranscriptDir,
@@ -14,8 +14,8 @@ import {
   opencodeMetaFile,
   worktreesDir,
   projectDir,
-} from '@/shared/project-paths'
-import type { SessionPod } from '@/lib/k8s/pods'
+} from '@yaac/shared/project-paths'
+import type { SessionPod } from '@yaac/server/lib/k8s/pods'
 
 /**
  * Unit coverage for the session-restart pipeline: target resolution

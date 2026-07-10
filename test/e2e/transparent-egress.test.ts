@@ -15,21 +15,21 @@ import {
   IS_NESTED_YAAC,
 } from '@test/helpers/setup'
 import { resolveTestBaseImageRef } from '@test/helpers/mock-remotes'
-import { ProxyClient } from '@/lib/container/proxy-client'
+import { ProxyClient } from '@yaac/server/lib/container/proxy-client'
 import {
   proxyServiceClusterIp,
   SSH_TUNNEL_SENTINEL,
   TRANSPARENT_HTTPS_PORT,
   TUNNEL_INGRESS_PORT,
-} from '@/lib/k8s/bootstrap'
-import { CA_CONFIGMAP_NAME } from '@/lib/k8s/pod-spec'
-import { LABEL_SESSION_ID } from '@/lib/k8s/pods'
+} from '@yaac/server/lib/k8s/bootstrap'
+import { CA_CONFIGMAP_NAME } from '@yaac/server/lib/k8s/pod-spec'
+import { LABEL_SESSION_ID } from '@yaac/server/lib/k8s/pods'
 import {
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-} from '@/lib/k8s/kubectl'
+} from '@yaac/server/lib/k8s/kubectl'
 
 const execFileAsync = promisify(execFile)
 

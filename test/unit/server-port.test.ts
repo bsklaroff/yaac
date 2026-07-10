@@ -6,7 +6,7 @@ import {
   resolveServerPort,
   bindWithAutoIncrement,
   isAddrInUseError,
-} from '@/shared/server-port'
+} from '@yaac/shared/server-port'
 
 const inUse = (): Error => Object.assign(new Error('in use'), { code: 'EADDRINUSE' })
 

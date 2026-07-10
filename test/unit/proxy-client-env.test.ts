@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { ProxyClient, PROXY_CA_PATH, PROXY_CA_BUNDLE_PATH } from '@/lib/container/proxy-client'
+import { ProxyClient, PROXY_CA_PATH, PROXY_CA_BUNDLE_PATH } from '@yaac/server/lib/container/proxy-client'
 
 describe('ProxyClient.getCaTrustEnv', () => {
   const env = new ProxyClient({ image: 'yaac-test-proxy' }).getCaTrustEnv()

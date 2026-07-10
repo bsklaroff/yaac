@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { zv } from '@/server/routes/validator'
+import { zv } from '@yaac/server/routes/validator'
 
 describe('zv', () => {
   const app = new Hono().post(

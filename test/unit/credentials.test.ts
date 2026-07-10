@@ -14,15 +14,15 @@ import {
   parseGitRemote,
   saveCredentials,
   writeProxySecrets,
-} from '@/lib/project/credentials'
+} from '@yaac/server/lib/project/credentials'
 import {
   validatePattern,
   parsePattern,
   matchPattern,
   ghApiHostForGitHost,
-} from '@/shared/credentials'
-import { githubCredentialsPath, proxySecretsCredentialsPath } from '@/shared/project-paths'
-import { ServerError } from '@/shared/errors'
+} from '@yaac/shared/credentials'
+import { githubCredentialsPath, proxySecretsCredentialsPath } from '@yaac/shared/project-paths'
+import { ServerError } from '@yaac/shared/errors'
 
 describe('credentials', () => {
   let tmpDir: string

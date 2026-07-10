@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { stripAnsi } from '@/shared/ansi'
+import { stripAnsi } from '@yaac/shared/ansi'
 
 describe('stripAnsi', () => {
   it('drops colors, cursor controls, and OSC sequences', () => {

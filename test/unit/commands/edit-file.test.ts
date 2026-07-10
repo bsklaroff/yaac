@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { resolveEditor, editFile } from '@/commands/edit-file'
+import { resolveEditor, editFile } from '@yaac/cli/commands/edit-file'
 
 describe('resolveEditor', () => {
   it('prefers $EDITOR over $VISUAL and the vi fallback', () => {

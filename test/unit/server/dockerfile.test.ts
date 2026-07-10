@@ -2,14 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import { projectConfigDir, getProjectsDir, getDataDir } from '@/shared/project-paths'
+import { projectConfigDir, getProjectsDir, getDataDir } from '@yaac/shared/project-paths'
 import {
   readProjectDockerfile,
   writeProjectDockerfile,
   readUserDockerfile,
   writeUserDockerfile,
-} from '@/lib/project/dockerfile'
-import type { ProjectMeta } from '@/shared/types'
+} from '@yaac/server/lib/project/dockerfile'
+import type { ProjectMeta } from '@yaac/shared/types'
 
 const LAYERED = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo hi\n'
 

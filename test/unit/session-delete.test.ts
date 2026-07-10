@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-vi.mock('@/lib/k8s/pods', async (importOriginal) => {
+vi.mock('@yaac/server/lib/k8s/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
   return {
     ...actual,
@@ -9,7 +9,7 @@ vi.mock('@/lib/k8s/pods', async (importOriginal) => {
   }
 })
 
-vi.mock('@/lib/session/cleanup', async (importOriginal) => {
+vi.mock('@yaac/server/lib/session/cleanup', async (importOriginal) => {
   const actual = await importOriginal<typeof cleanupModule>()
   return {
     ...actual,
@@ -17,13 +17,13 @@ vi.mock('@/lib/session/cleanup', async (importOriginal) => {
   }
 })
 
-import { sessionDelete } from '@/commands/session-delete'
-import { deleteSession } from '@/lib/session/delete'
-import { listSessionPods, listSessionJobs, type SessionPod } from '@/lib/k8s/pods'
-import type * as podsModule from '@/lib/k8s/pods'
-import { cleanupSessionDetached } from '@/lib/session/cleanup'
-import type * as cleanupModule from '@/lib/session/cleanup'
-import { setDataDir } from '@/shared/project-paths'
+import { sessionDelete } from '@yaac/cli/commands/session-delete'
+import { deleteSession } from '@yaac/server/lib/session/delete'
+import { listSessionPods, listSessionJobs, type SessionPod } from '@yaac/server/lib/k8s/pods'
+import type * as podsModule from '@yaac/server/lib/k8s/pods'
+import { cleanupSessionDetached } from '@yaac/server/lib/session/cleanup'
+import type * as cleanupModule from '@yaac/server/lib/session/cleanup'
+import { setDataDir } from '@yaac/shared/project-paths'
 
 const mockListPods = vi.mocked(listSessionPods)
 const mockListJobs = vi.mocked(listSessionJobs)

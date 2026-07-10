@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { reconcileProxySshKeys } from '@/lib/session/proxy-reconcile'
-import type * as proxyClientModule from '@/lib/container/proxy-client'
+import { reconcileProxySshKeys } from '@yaac/server/lib/session/proxy-reconcile'
+import type * as proxyClientModule from '@yaac/server/lib/container/proxy-client'
 
 const mockAttachIfRunning = vi.hoisted(() => vi.fn())
 const mockReconcileSshKeys = vi.hoisted(() => vi.fn())
-vi.mock('@/lib/container/proxy-client', async (importOriginal) => ({
+vi.mock('@yaac/server/lib/container/proxy-client', async (importOriginal) => ({
   ...(await importOriginal<typeof proxyClientModule>()),
   proxyClient: {
     attachIfRunning: mockAttachIfRunning,
@@ -12,7 +12,7 @@ vi.mock('@/lib/container/proxy-client', async (importOriginal) => ({
   },
 }))
 
-vi.mock('@/server/log', () => ({ serverLog: vi.fn() }))
+vi.mock('@yaac/server/log', () => ({ serverLog: vi.fn() }))
 
 describe('reconcileProxySshKeys', () => {
   afterEach(() => {

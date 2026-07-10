@@ -42,8 +42,8 @@ import {
   kubectlWithRetry,
   retryTransient,
   shellKubectlWithRetry,
-} from '@/lib/k8s/kubectl'
-import { getDataDir, setDataDir } from '@/shared/paths'
+} from '@yaac/server/lib/k8s/kubectl'
+import { getDataDir, setDataDir } from '@yaac/shared/paths'
 
 function stderrError(stderr: string): Error {
   return Object.assign(new Error('kubectl failed'), { stderr })

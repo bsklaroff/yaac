@@ -8,7 +8,7 @@ interface K8sObj {
 const parseDocs = (s: string): K8sObj[] =>
   s.split(/^---$/m).map((d) => YAML.parse(d) as K8sObj)
 
-vi.mock('@/lib/k8s/kubectl', () => ({
+vi.mock('@yaac/server/lib/k8s/kubectl', () => ({
   k8sNamespace: vi.fn(() => 'test-ns'),
   dataDirHash: vi.fn(() => 'ddh16'),
   kubectlApply: vi.fn().mockResolvedValue(undefined),
@@ -17,14 +17,14 @@ vi.mock('@/lib/k8s/kubectl', () => ({
   execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
-vi.mock('@/lib/k8s/registry', () => ({
+vi.mock('@yaac/server/lib/k8s/registry', () => ({
   registryHost: vi.fn(() => 'localhost:5001'),
   registryHasTag: vi.fn().mockResolvedValue(true),
   registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
   pushImageToRegistry: vi.fn((tag: string) => Promise.resolve(`localhost:5001/${tag}`)),
 }))
 
-vi.mock('@/lib/container/runtime', () => ({
+vi.mock('@yaac/server/lib/container/runtime', () => ({
   imageExists: vi.fn().mockResolvedValue(false),
 }))
 
@@ -51,16 +51,16 @@ import {
   vclusterName,
   vclusterNamespace,
   waitForVclusterKubeconfig,
-} from '@/lib/k8s/vcluster'
-import { LABEL_VCLUSTER_MANAGED_BY, VCLUSTER_API_PORT } from '@/lib/k8s/pods'
+} from '@yaac/server/lib/k8s/vcluster'
+import { LABEL_VCLUSTER_MANAGED_BY, VCLUSTER_API_PORT } from '@yaac/server/lib/k8s/pods'
 import {
   execFileAsync,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-} from '@/lib/k8s/kubectl'
-import { pushImageToRegistry, registryHasTag } from '@/lib/k8s/registry'
-import { imageExists } from '@/lib/container/runtime'
+} from '@yaac/server/lib/k8s/kubectl'
+import { pushImageToRegistry, registryHasTag } from '@yaac/server/lib/k8s/registry'
+import { imageExists } from '@yaac/server/lib/container/runtime'
 
 const mockApply = vi.mocked(kubectlApply)
 const mockGetJson = vi.mocked(kubectlGetJson)

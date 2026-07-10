@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest'
 
-vi.mock('@/lib/k8s/cluster-check', () => ({
+vi.mock('@yaac/server/lib/k8s/cluster-check', () => ({
   runClusterCheck: vi.fn(),
   formatCheckResult: vi.fn(
     (r: { name: string; status: string }) => `[${r.status}] ${r.name}`,
   ),
 }))
 
-import { clusterCheck } from '@/commands/cluster-check'
-import { formatCheckResult, runClusterCheck } from '@/lib/k8s/cluster-check'
+import { clusterCheck } from '@yaac/cli/commands/cluster-check'
+import { formatCheckResult, runClusterCheck } from '@yaac/server/lib/k8s/cluster-check'
 
 const mockRun = vi.mocked(runClusterCheck)
 const mockFormat = vi.mocked(formatCheckResult)

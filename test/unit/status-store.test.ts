@@ -9,7 +9,7 @@ import {
   evictSessionStatus,
   onSessionStatusChanged,
   _resetSessionStatusStoreForTests,
-} from '@/lib/session/status-store'
+} from '@yaac/server/lib/session/status-store'
 
 beforeEach(() => {
   _resetSessionStatusStoreForTests()

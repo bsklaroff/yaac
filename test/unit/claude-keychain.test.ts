@@ -12,7 +12,7 @@ import {
   claudeKeychainService,
   deleteScratchClaudeKeychainItem,
   readClaudeKeychainPayload,
-} from '@/shared/tool-auth-interactive'
+} from '@yaac/shared/tool-auth-interactive'
 
 const realPlatform = process.platform
 function setPlatform(platform: string): void {

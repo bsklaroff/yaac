@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 
-vi.mock('@/lib/k8s/pods', async (importOriginal) => {
+vi.mock('@yaac/server/lib/k8s/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
   return {
     ...actual,
@@ -10,7 +10,7 @@ vi.mock('@/lib/k8s/pods', async (importOriginal) => {
   }
 })
 
-vi.mock('@/lib/session/status', async (importOriginal) => {
+vi.mock('@yaac/server/lib/session/status', async (importOriginal) => {
   const actual = await importOriginal<typeof statusModule>()
   return {
     ...actual,
@@ -18,14 +18,14 @@ vi.mock('@/lib/session/status', async (importOriginal) => {
   }
 })
 
-import { listSessionPods, type SessionPod } from '@/lib/k8s/pods'
-import type * as podsModule from '@/lib/k8s/pods'
-import type * as statusModule from '@/lib/session/status'
+import { listSessionPods, type SessionPod } from '@yaac/server/lib/k8s/pods'
+import type * as podsModule from '@yaac/server/lib/k8s/pods'
+import type * as statusModule from '@yaac/server/lib/session/status'
 import {
   setSessionStatus,
   _resetSessionStatusStoreForTests,
-} from '@/lib/session/status-store'
-import { listActiveSessions, _clearListActiveInflightForTests } from '@/lib/session/list'
+} from '@yaac/server/lib/session/status-store'
+import { listActiveSessions, _clearListActiveInflightForTests } from '@yaac/server/lib/session/list'
 
 const mockListPods = vi.mocked(listSessionPods)
 

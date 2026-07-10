@@ -7,7 +7,7 @@ import path from 'node:path'
 // (pod listing, fs-backed helpers) so the single-flight wrapper can be
 // exercised without a cluster or server.
 
-vi.mock('@/lib/k8s/pods', async (importOriginal) => {
+vi.mock('@yaac/server/lib/k8s/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
   return {
     ...actual,
@@ -16,30 +16,30 @@ vi.mock('@/lib/k8s/pods', async (importOriginal) => {
   }
 })
 
-vi.mock('@/lib/session/cleanup', () => ({
+vi.mock('@yaac/server/lib/session/cleanup', () => ({
   isTmuxSessionAlive: vi.fn().mockResolvedValue(true),
   probeTmuxLiveness: vi.fn().mockResolvedValue('alive'),
   cleanupSession: vi.fn(),
   cleanupSessionDetached: vi.fn(),
 }))
 
-vi.mock('@/lib/session/blocked-hosts', () => ({
+vi.mock('@yaac/server/lib/session/blocked-hosts', () => ({
   readBlockedHosts: vi.fn().mockResolvedValue([]),
 }))
 
-vi.mock('@/lib/session/status', () => ({
+vi.mock('@yaac/server/lib/session/status', () => ({
   getSessionStatus: vi.fn().mockResolvedValue('running'),
   getSessionFirstMessage: vi.fn().mockResolvedValue(undefined),
   normalizeTool: vi.fn().mockReturnValue('claude'),
 }))
 
-import { listSessionPods } from '@/lib/k8s/pods'
-import type * as podsModule from '@/lib/k8s/pods'
+import { listSessionPods } from '@yaac/server/lib/k8s/pods'
+import type * as podsModule from '@yaac/server/lib/k8s/pods'
 import {
   listActiveSessions,
   _clearListActiveInflightForTests,
-} from '@/lib/session/list'
-import { setDataDir } from '@/shared/project-paths'
+} from '@yaac/server/lib/session/list'
+import { setDataDir } from '@yaac/shared/project-paths'
 
 const mockListPods = vi.mocked(listSessionPods)
 

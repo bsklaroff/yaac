@@ -6,7 +6,7 @@ import type ChildProcessModule from 'node:child_process'
 
 // Pod/Job listing is mocked (gcOrphanEphemeralModuleDirs reads it);
 // sessionJobName stays real so the tmux-probe argv assertions hold.
-vi.mock('@/lib/k8s/pods', async (importOriginal) => {
+vi.mock('@yaac/server/lib/k8s/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
   return {
     ...actual,
@@ -18,7 +18,7 @@ vi.mock('@/lib/k8s/pods', async (importOriginal) => {
 // The promoter execs into the pod via shellKubectlWithRetry (a real
 // subprocess) — stub the module so cleanup unit tests never touch the
 // cluster, and so the hooks' presence/order can be asserted.
-vi.mock('@/lib/container/image-promoter', () => ({
+vi.mock('@yaac/server/lib/container/image-promoter', () => ({
   promoteSessionImages: vi.fn().mockResolvedValue(true),
   buildPromoterShellCommand: vi.fn(
     (jobName: string) => `kubectl exec job/${jobName} -- promoter || true`,
@@ -59,11 +59,11 @@ vi.mock('node:child_process', async () => {
 
 // Audit logging is a vi.fn so the teardown line can be asserted without a
 // real server.log on disk.
-vi.mock('@/server/log', () => ({ serverLog: vi.fn() }))
+vi.mock('@yaac/server/log', () => ({ serverLog: vi.fn() }))
 
-import { promoteSessionImages } from '@/lib/container/image-promoter'
-import { listSessionPods, listSessionJobs } from '@/lib/k8s/pods'
-import type * as podsModule from '@/lib/k8s/pods'
+import { promoteSessionImages } from '@yaac/server/lib/container/image-promoter'
+import { listSessionPods, listSessionJobs } from '@yaac/server/lib/k8s/pods'
+import type * as podsModule from '@yaac/server/lib/k8s/pods'
 import {
   isTmuxSessionAlive,
   probeTmuxLiveness,
@@ -75,9 +75,9 @@ import {
   gcOrphanEphemeralModuleDirs,
   _clearTmuxAliveCacheForTests,
   _clearAgentStartedCacheForTests,
-} from '@/lib/session/cleanup'
-import { serverLog } from '@/server/log'
-import { setDataDir } from '@/shared/project-paths'
+} from '@yaac/server/lib/session/cleanup'
+import { serverLog } from '@yaac/server/log'
+import { setDataDir } from '@yaac/shared/project-paths'
 
 const mockServerLog = vi.mocked(serverLog)
 

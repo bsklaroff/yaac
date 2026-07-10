@@ -1,26 +1,26 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-vi.mock('@/lib/project/list', () => ({ listProjects: vi.fn() }))
-vi.mock('@/lib/project/config', () => ({ resolveProjectConfig: vi.fn() }))
-vi.mock('@/lib/container/image-builder', () => ({ resolveImageChain: vi.fn() }))
-vi.mock('@/lib/container/build-coordinator', () => ({
+vi.mock('@yaac/server/lib/project/list', () => ({ listProjects: vi.fn() }))
+vi.mock('@yaac/server/lib/project/config', () => ({ resolveProjectConfig: vi.fn() }))
+vi.mock('@yaac/server/lib/container/image-builder', () => ({ resolveImageChain: vi.fn() }))
+vi.mock('@yaac/server/lib/container/build-coordinator', () => ({
   ensureImage: vi.fn(),
   pushImageShared: vi.fn(),
 }))
-vi.mock('@/server/image-builds', () => ({ hasBlockingFailure: vi.fn() }))
-vi.mock('@/server/log', () => ({ serverLog: vi.fn() }))
+vi.mock('@yaac/server/image-builds', () => ({ hasBlockingFailure: vi.fn() }))
+vi.mock('@yaac/server/log', () => ({ serverLog: vi.fn() }))
 
 import {
   prewarmProjectImage,
   reconcileImagePrewarm,
   _resetImagePrewarmForTests,
-} from '@/server/image-prewarm'
-import { listProjects } from '@/lib/project/list'
-import { resolveProjectConfig } from '@/lib/project/config'
-import { resolveImageChain } from '@/lib/container/image-builder'
-import { ensureImage, pushImageShared } from '@/lib/container/build-coordinator'
-import { hasBlockingFailure } from '@/server/image-builds'
-import { serverLog } from '@/server/log'
+} from '@yaac/server/image-prewarm'
+import { listProjects } from '@yaac/server/lib/project/list'
+import { resolveProjectConfig } from '@yaac/server/lib/project/config'
+import { resolveImageChain } from '@yaac/server/lib/container/image-builder'
+import { ensureImage, pushImageShared } from '@yaac/server/lib/container/build-coordinator'
+import { hasBlockingFailure } from '@yaac/server/image-builds'
+import { serverLog } from '@yaac/server/log'
 
 const mockListProjects = vi.mocked(listProjects)
 const mockResolveConfig = vi.mocked(resolveProjectConfig)

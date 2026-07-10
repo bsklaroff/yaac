@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type * as podsModule from '@/lib/k8s/pods'
-import type { TmuxLiveness } from '@/lib/session/cleanup'
+import type * as podsModule from '@yaac/server/lib/k8s/pods'
+import type { TmuxLiveness } from '@yaac/server/lib/session/cleanup'
 
-vi.mock('@/lib/k8s/pods', async (importOriginal) => {
+vi.mock('@yaac/server/lib/k8s/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
   return { ...actual, listSessionPods: vi.fn(), listSessionJobs: vi.fn() }
 })
@@ -10,18 +10,18 @@ vi.mock('@/lib/k8s/pods', async (importOriginal) => {
 // probeTmuxLiveness / probeAgentPaneState are the injected oracles;
 // cleanupSessionDetached is the destructive action we assert (does/doesn't
 // fire).
-vi.mock('@/lib/session/cleanup', () => ({
+vi.mock('@yaac/server/lib/session/cleanup', () => ({
   probeTmuxLiveness: vi.fn(),
   probeAgentPaneState: vi.fn(),
   cleanupSessionDetached: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('@/server/log', () => ({ serverLog: vi.fn() }))
+vi.mock('@yaac/server/log', () => ({ serverLog: vi.fn() }))
 
-import { listSessionPods, listSessionJobs } from '@/lib/k8s/pods'
-import { probeTmuxLiveness, probeAgentPaneState, cleanupSessionDetached } from '@/lib/session/cleanup'
-import { serverLog } from '@/server/log'
-import { reconcileStaleSessions } from '@/lib/session/list'
+import { listSessionPods, listSessionJobs } from '@yaac/server/lib/k8s/pods'
+import { probeTmuxLiveness, probeAgentPaneState, cleanupSessionDetached } from '@yaac/server/lib/session/cleanup'
+import { serverLog } from '@yaac/server/log'
+import { reconcileStaleSessions } from '@yaac/server/lib/session/list'
 
 const mockListPods = vi.mocked(listSessionPods)
 const mockListJobs = vi.mocked(listSessionJobs)

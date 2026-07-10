@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+    "jsx": "react-jsx",
+    "isolatedModules": true,
+    "paths": {
+      "@yaac/shared/*": ["./packages/shared/src/*"],
+      "@yaac/server/*": ["./packages/server/src/*"],
+      "@yaac/auth-daemon/*": ["./packages/auth-daemon/src/*"],
+      "@yaac/cli/*": ["./apps/cli/src/*"],
+      "@yaac/test-utils/*": ["./packages/test-utils/src/*"],
+      "yaac-proxy-sidecar/*": ["./k8s/proxy/*"]
+    }
+  }
+}

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-vi.mock('@/lib/k8s/kubectl', () => ({
+vi.mock('@yaac/server/lib/k8s/kubectl', () => ({
   kubectlGetJson: vi.fn(),
   kubectlWithRetry: vi.fn(),
 }))
@@ -12,8 +12,8 @@ import {
   listCiliumTproxyRules,
   parseCiliumTproxyRules,
   tproxyRuleDeleteArgs,
-} from '@/lib/k8s/cilium-tproxy'
-import { kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
+} from '@yaac/server/lib/k8s/cilium-tproxy'
+import { kubectlGetJson, kubectlWithRetry } from '@yaac/server/lib/k8s/kubectl'
 
 const mockGetJson = vi.mocked(kubectlGetJson)
 const mockRetry = vi.mocked(kubectlWithRetry)

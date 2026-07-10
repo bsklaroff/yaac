@@ -2,15 +2,15 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
 // No cluster in unit tests — resolveSessionContainer's pod listing is
 // mocked to an empty cluster so the NOT_FOUND paths are exercised.
-vi.mock('@/lib/k8s/pods', async () => {
-  const actual = await vi.importActual<typeof podsModule>('@/lib/k8s/pods')
+vi.mock('@yaac/server/lib/k8s/pods', async () => {
+  const actual = await vi.importActual<typeof podsModule>('@yaac/server/lib/k8s/pods')
   return { ...actual, listSessionPods: vi.fn().mockResolvedValue([]) }
 })
 
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import { resolveSessionContainer } from '@/server/session-resolve'
-import { ServerError } from '@/shared/errors'
-import type * as podsModule from '@/lib/k8s/pods'
+import { resolveSessionContainer } from '@yaac/server/session-resolve'
+import { ServerError } from '@yaac/shared/errors'
+import type * as podsModule from '@yaac/server/lib/k8s/pods'
 
 describe('resolveSessionContainer', () => {
   let tmpDir: string

@@ -1,27 +1,27 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-vi.mock('@/server/session-create', () => ({
+vi.mock('@yaac/server/session-create', () => ({
   createSession: vi.fn(),
   shellEscape: (s: string) => s,
 }))
-vi.mock('@/lib/session/cleanup', () => ({
+vi.mock('@yaac/server/lib/session/cleanup', () => ({
   cleanupSessionDetached: vi.fn(),
   isTmuxSessionAlive: vi.fn(),
 }))
-vi.mock('@/lib/project/preferences', () => ({ getDefaultTool: vi.fn() }))
-vi.mock('@/lib/k8s/pods', async (importOriginal) => ({
+vi.mock('@yaac/server/lib/project/preferences', () => ({ getDefaultTool: vi.fn() }))
+vi.mock('@yaac/server/lib/k8s/pods', async (importOriginal) => ({
   ...await importOriginal<typeof podsModule>(),
   listSessionPods: vi.fn(),
 }))
-vi.mock('@/server/log', () => ({ serverLog: vi.fn() }))
+vi.mock('@yaac/server/log', () => ({ serverLog: vi.fn() }))
 
-import { reconcilePrewarmPool } from '@/server/prewarm-reconcile'
-import { inFlight, clearPrewarmStateForTests } from '@/server/prewarm'
-import { LABEL_PREWARMED, listSessionPods, type SessionPod } from '@/lib/k8s/pods'
-import type * as podsModule from '@/lib/k8s/pods'
-import { createSession } from '@/server/session-create'
-import { cleanupSessionDetached } from '@/lib/session/cleanup'
-import { getDefaultTool } from '@/lib/project/preferences'
+import { reconcilePrewarmPool } from '@yaac/server/prewarm-reconcile'
+import { inFlight, clearPrewarmStateForTests } from '@yaac/server/prewarm'
+import { LABEL_PREWARMED, listSessionPods, type SessionPod } from '@yaac/server/lib/k8s/pods'
+import type * as podsModule from '@yaac/server/lib/k8s/pods'
+import { createSession } from '@yaac/server/session-create'
+import { cleanupSessionDetached } from '@yaac/server/lib/session/cleanup'
+import { getDefaultTool } from '@yaac/server/lib/project/preferences'
 
 const mockListPods = vi.mocked(listSessionPods)
 const mockCreate = vi.mocked(createSession)

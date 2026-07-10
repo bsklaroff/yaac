@@ -4,7 +4,7 @@ import {
   onSessionListChanged,
   notifySessionListChanged,
   _resetSessionListChangedForTests,
-} from '@/server/sessions-changed'
+} from '@yaac/server/sessions-changed'
 
 afterEach(() => {
   _resetSessionListChangedForTests()

@@ -6,17 +6,17 @@ import {
   acquireServerMutex,
   type YaacTestEnv,
 } from '@test/helpers/cli'
-import { readLock } from '@/shared/lock'
+import { readLock } from '@yaac/shared/lock'
 import { requirePodman, requireCluster, IS_NESTED_YAAC, TEST_PROXY_CONFIG } from '@test/helpers/setup'
 import { resolveTestBaseImageRef } from '@test/helpers/mock-remotes'
-import { ProxyClient } from '@/lib/container/proxy-client'
-import { PROXY_APP_NAME, PROXY_AUTH_SECRET_NAME, PROXY_PORT } from '@/lib/k8s/bootstrap'
+import { ProxyClient } from '@yaac/server/lib/container/proxy-client'
+import { PROXY_APP_NAME, PROXY_AUTH_SECRET_NAME, PROXY_PORT } from '@yaac/server/lib/k8s/bootstrap'
 import {
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-} from '@/lib/k8s/kubectl'
+} from '@yaac/server/lib/k8s/kubectl'
 
 /**
  * Regression test for server-restart proxy churn: restarting the server

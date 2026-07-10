@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { ensureOpencodeConfigJson } from '@/lib/session/opencode-config'
+import { ensureOpencodeConfigJson } from '@yaac/server/lib/session/opencode-config'
 
 interface OpencodeConfig {
   permission?: Record<string, unknown>

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 
-vi.mock('@/lib/k8s/kubectl', () => ({
+vi.mock('@yaac/server/lib/k8s/kubectl', () => ({
   dataDirHash: vi.fn(() => 'ddh0123456789abc'),
   k8sNamespace: vi.fn(() => 'test-ns'),
   kubectlGetJson: vi.fn(),
@@ -12,8 +12,8 @@ import {
   getActivePodWatcher,
   setActivePodWatcher,
   type WatchChild,
-} from '@/lib/k8s/pod-watch'
-import { JOB_NAME_LABEL, LABEL_PROJECT, LABEL_SESSION_ID, LABEL_TOOL, type SessionPod } from '@/lib/k8s/pods'
+} from '@yaac/server/lib/k8s/pod-watch'
+import { JOB_NAME_LABEL, LABEL_PROJECT, LABEL_SESSION_ID, LABEL_TOOL, type SessionPod } from '@yaac/server/lib/k8s/pods'
 
 describe('createJsonStreamParser', () => {
   it('parses newline-delimited compact JSON values', () => {

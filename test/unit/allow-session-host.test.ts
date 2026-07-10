@@ -1,24 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type * as podsModule from '@/lib/k8s/pods'
+import type * as podsModule from '@yaac/server/lib/k8s/pods'
 
-vi.mock('@/lib/container/proxy-client', () => ({
+vi.mock('@yaac/server/lib/container/proxy-client', () => ({
   proxyClient: {
     attachIfRunning: vi.fn(() => Promise.resolve(true)),
     allowHost: vi.fn(() => Promise.resolve(true)),
   },
 }))
-vi.mock('@/lib/project/local-config', () => ({
+vi.mock('@yaac/server/lib/project/local-config', () => ({
   addAllowedHostToProjectConfig: vi.fn(() => Promise.resolve({})),
 }))
-vi.mock('@/lib/k8s/pods', async (importOriginal) => ({
+vi.mock('@yaac/server/lib/k8s/pods', async (importOriginal) => ({
   ...(await importOriginal<typeof podsModule>()),
   listSessionPods: vi.fn(() => Promise.resolve([])),
 }))
 
-import { proxyClient } from '@/lib/container/proxy-client'
-import { addAllowedHostToProjectConfig } from '@/lib/project/local-config'
-import { listSessionPods, LABEL_PREWARMED, type SessionPod } from '@/lib/k8s/pods'
-import { allowSessionHost } from '@/lib/session/allow-host'
+import { proxyClient } from '@yaac/server/lib/container/proxy-client'
+import { addAllowedHostToProjectConfig } from '@yaac/server/lib/project/local-config'
+import { listSessionPods, LABEL_PREWARMED, type SessionPod } from '@yaac/server/lib/k8s/pods'
+import { allowSessionHost } from '@yaac/server/lib/session/allow-host'
 
 function pod(over: Partial<SessionPod>): SessionPod {
   return {

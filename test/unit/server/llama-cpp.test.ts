@@ -7,7 +7,7 @@ import {
   ensureGgufModel,
   runChatCompletion,
   type LlamaCppDeps,
-} from '@/server/llama-cpp'
+} from '@yaac/server/llama-cpp'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 
 function stubDeps(overrides: Partial<LlamaCppDeps> = {}): LlamaCppDeps & {

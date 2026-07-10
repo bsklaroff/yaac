@@ -10,7 +10,7 @@ import {
   removeLock,
   isLockLive,
   type ServerLock,
-} from '@/shared/lock'
+} from '@yaac/shared/lock'
 
 describe('server lock', () => {
   let tmpDir: string

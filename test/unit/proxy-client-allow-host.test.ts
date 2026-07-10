@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { ProxyClient } from '@/lib/container/proxy-client'
+import { ProxyClient } from '@yaac/server/lib/container/proxy-client'
 
 // allowHost needs a resolved base URL + auth secret, both set only after the
 // port-forward + secret exchange. Inject them directly so the method can be

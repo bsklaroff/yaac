@@ -2,19 +2,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const mockAttach = vi.hoisted(() => vi.fn())
 const mockRegister = vi.hoisted(() => vi.fn())
-vi.mock('@/lib/container/proxy-client', () => ({
+vi.mock('@yaac/server/lib/container/proxy-client', () => ({
   proxyClient: { attachIfRunning: mockAttach, registerVclusterAttribution: mockRegister },
 }))
-vi.mock('@/lib/k8s/kubectl', () => ({ kubectlGetJson: vi.fn() }))
-vi.mock('@/lib/k8s/vcluster', () => ({ listVclusterNamespaces: vi.fn().mockResolvedValue([]) }))
-vi.mock('@/server/log', () => ({ serverLog: vi.fn() }))
+vi.mock('@yaac/server/lib/k8s/kubectl', () => ({ kubectlGetJson: vi.fn() }))
+vi.mock('@yaac/server/lib/k8s/vcluster', () => ({ listVclusterNamespaces: vi.fn().mockResolvedValue([]) }))
+vi.mock('@yaac/server/log', () => ({ serverLog: vi.fn() }))
 
 import {
   buildVclusterAttribution,
   reconcileVclusterAttribution,
-} from '@/lib/session/vcluster-attribution-reconcile'
-import { kubectlGetJson } from '@/lib/k8s/kubectl'
-import { listVclusterNamespaces } from '@/lib/k8s/vcluster'
+} from '@yaac/server/lib/session/vcluster-attribution-reconcile'
+import { kubectlGetJson } from '@yaac/server/lib/k8s/kubectl'
+import { listVclusterNamespaces } from '@yaac/server/lib/k8s/vcluster'
 
 const mockGetJson = vi.mocked(kubectlGetJson)
 const mockList = vi.mocked(listVclusterNamespaces)

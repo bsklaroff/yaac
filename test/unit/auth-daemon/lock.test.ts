@@ -8,8 +8,8 @@ import {
   readAuthDaemonLock,
   removeAuthDaemonLock,
   writeAuthDaemonLock,
-} from '@/shared/auth-daemon'
-import { setDataDir } from '@/shared/paths'
+} from '@yaac/shared/auth-daemon'
+import { setDataDir } from '@yaac/shared/paths'
 
 describe('auth server lock', () => {
   let dir: string

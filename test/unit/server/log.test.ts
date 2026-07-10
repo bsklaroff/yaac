@@ -3,9 +3,9 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
-import { setDataDir, serverLogPath } from '@/shared/paths'
-import { serverLog, pipeToServerLog } from '@/server/log'
-import { serverLogs } from '@/server/cli'
+import { setDataDir, serverLogPath } from '@yaac/shared/paths'
+import { serverLog, pipeToServerLog } from '@yaac/server/log'
+import { serverLogs } from '@yaac/server/cli'
 
 describe('serverLog', () => {
   let dataDir: string

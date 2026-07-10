@@ -1,24 +1,24 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-vi.mock('@/lib/session/list', () => ({ listActiveSessions: vi.fn() }))
-vi.mock('@/lib/session/titles', () => ({ setSessionTitle: vi.fn() }))
-vi.mock('@/server/title-summarizer', () => ({
+vi.mock('@yaac/server/lib/session/list', () => ({ listActiveSessions: vi.fn() }))
+vi.mock('@yaac/server/lib/session/titles', () => ({ setSessionTitle: vi.fn() }))
+vi.mock('@yaac/server/title-summarizer', () => ({
   shouldGenerateTitle: vi.fn(),
   summarizeTitle: vi.fn(),
 }))
-vi.mock('@/server/sessions-changed', () => ({ notifySessionListChanged: vi.fn() }))
-vi.mock('@/server/log', () => ({ serverLog: vi.fn() }))
+vi.mock('@yaac/server/sessions-changed', () => ({ notifySessionListChanged: vi.fn() }))
+vi.mock('@yaac/server/log', () => ({ serverLog: vi.fn() }))
 
 import {
   reconcileGeneratedTitles,
   _resetTitleGenerationForTests,
-} from '@/server/title-generation'
-import { listActiveSessions } from '@/lib/session/list'
-import { setSessionTitle } from '@/lib/session/titles'
-import { shouldGenerateTitle, summarizeTitle } from '@/server/title-summarizer'
-import { notifySessionListChanged } from '@/server/sessions-changed'
-import { serverLog } from '@/server/log'
-import type { SessionListEntry } from '@/shared/types'
+} from '@yaac/server/title-generation'
+import { listActiveSessions } from '@yaac/server/lib/session/list'
+import { setSessionTitle } from '@yaac/server/lib/session/titles'
+import { shouldGenerateTitle, summarizeTitle } from '@yaac/server/title-summarizer'
+import { notifySessionListChanged } from '@yaac/server/sessions-changed'
+import { serverLog } from '@yaac/server/log'
+import type { SessionListEntry } from '@yaac/shared/types'
 
 const mockList = vi.mocked(listActiveSessions)
 const mockSetTitle = vi.mocked(setSessionTitle)

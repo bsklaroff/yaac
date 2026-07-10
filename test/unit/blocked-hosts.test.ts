@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { setDataDir } from '@/shared/project-paths'
-import { blockedHostsStatePath, readBlockedHosts } from '@/lib/session/blocked-hosts'
+import { setDataDir } from '@yaac/shared/project-paths'
+import { blockedHostsStatePath, readBlockedHosts } from '@yaac/server/lib/session/blocked-hosts'
 
 describe('blocked-hosts', () => {
   let tmpDir: string

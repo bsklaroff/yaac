@@ -2,31 +2,31 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // Mock only the cluster-touching helpers; parsing/arg-building stay real so
 // the two-pass keys exercise the same specs production uses.
-vi.mock('@/lib/k8s/cilium-tproxy', async (importOriginal) => ({
+vi.mock('@yaac/server/lib/k8s/cilium-tproxy', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   findCiliumAgentPod: vi.fn(),
   listCiliumTproxyRules: vi.fn(),
   deleteCiliumTproxyRule: vi.fn(),
 }))
-vi.mock('@/lib/k8s/kubectl', () => ({
+vi.mock('@yaac/server/lib/k8s/kubectl', () => ({
   kubectlGetJson: vi.fn(),
   kubectlWithRetry: vi.fn(),
 }))
-vi.mock('@/server/log', () => ({ serverLog: vi.fn() }))
+vi.mock('@yaac/server/log', () => ({ serverLog: vi.fn() }))
 
 import {
   type CiliumTproxyRule,
   deleteCiliumTproxyRule,
   findCiliumAgentPod,
   listCiliumTproxyRules,
-} from '@/lib/k8s/cilium-tproxy'
-import { kubectlGetJson } from '@/lib/k8s/kubectl'
-import { serverLog } from '@/server/log'
+} from '@yaac/server/lib/k8s/cilium-tproxy'
+import { kubectlGetJson } from '@yaac/server/lib/k8s/kubectl'
+import { serverLog } from '@yaac/server/log'
 import {
   reconcileStaleTproxyRules,
   resetTproxyGcState,
   TPROXY_GC_INTERVAL_MS,
-} from '@/lib/session/tproxy-gc-reconcile'
+} from '@yaac/server/lib/session/tproxy-gc-reconcile'
 
 const mockFind = vi.mocked(findCiliumAgentPod)
 const mockList = vi.mocked(listCiliumTproxyRules)

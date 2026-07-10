@@ -2,12 +2,12 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { baseImageHash, fileHash, contextHash, ensureImageByTag, sessionUid } from '@/lib/container/image-builder'
-import { ensurePodmanSocket, ensureRootfulPodmanHost, getSocketPath, usesRootfulPodman } from '@/lib/container/runtime'
-import { ensureRegistryImage } from '@/lib/k8s/project-registry'
-import { ensureVclusterImages } from '@/lib/k8s/vcluster'
-import { pushImageToRegistry, registryReachable } from '@/lib/k8s/registry'
-import { DOCKERFILES_DIR, PROXY_DIR } from '@/shared/project-paths'
+import { baseImageHash, fileHash, contextHash, ensureImageByTag, sessionUid } from '@yaac/server/lib/container/image-builder'
+import { ensurePodmanSocket, ensureRootfulPodmanHost, getSocketPath, usesRootfulPodman } from '@yaac/server/lib/container/runtime'
+import { ensureRegistryImage } from '@yaac/server/lib/k8s/project-registry'
+import { ensureVclusterImages } from '@yaac/server/lib/k8s/vcluster'
+import { pushImageToRegistry, registryReachable } from '@yaac/server/lib/k8s/registry'
+import { DOCKERFILES_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
 
 const execFileAsync = promisify(execFile)
 

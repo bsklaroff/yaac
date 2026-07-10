@@ -3,8 +3,8 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import simpleGit from 'simple-git'
-import { cloneRepo, getDefaultBranch, addWorktree, fetchOrigin, injectTokenIntoUrl, torEnv, buildHostSideGitSshCommand, writeKnownHostsFile, isGitAuthError } from '@/lib/git'
-import { formatSshCommand, getGitUserConfig, torSshOpts } from '@/shared/git'
+import { cloneRepo, getDefaultBranch, addWorktree, fetchOrigin, injectTokenIntoUrl, torEnv, buildHostSideGitSshCommand, writeKnownHostsFile, isGitAuthError } from '@yaac/server/lib/git'
+import { formatSshCommand, getGitUserConfig, torSshOpts } from '@yaac/shared/git'
 
 describe('git helpers', () => {
   let tmpDir: string

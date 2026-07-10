@@ -5,8 +5,8 @@ import {
   parsePlanUsageLimits,
   queryClaudePlanUsage,
   queryClaudeRateLimitTier,
-} from '@/lib/auth/usage'
-import type { ClaudeOAuthBundle } from '@/shared/types'
+} from '@yaac/server/lib/auth/usage'
+import type { ClaudeOAuthBundle } from '@yaac/shared/types'
 
 /** Trimmed copy of a real api/oauth/usage payload (fields we don't read kept
  *  where they exercise the ignore-the-rest behavior). */

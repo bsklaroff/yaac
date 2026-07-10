@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-vi.mock('@/lib/k8s/kubectl', () => ({
+vi.mock('@yaac/server/lib/k8s/kubectl', () => ({
   k8sNamespace: vi.fn(() => 'test-ns'),
   shellKubectlWithRetry: vi.fn(),
 }))
@@ -10,8 +10,8 @@ import {
   execTarget,
   interactiveExecArgs,
   stdinExecArgs,
-} from '@/lib/k8s/exec'
-import { shellKubectlWithRetry } from '@/lib/k8s/kubectl'
+} from '@yaac/server/lib/k8s/exec'
+import { shellKubectlWithRetry } from '@yaac/server/lib/k8s/kubectl'
 
 const mockShell = vi.mocked(shellKubectlWithRetry)
 

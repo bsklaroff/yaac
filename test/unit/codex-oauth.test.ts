@@ -6,7 +6,7 @@ import {
   codexDir,
   projectCodexAuthFile,
   projectDir,
-} from '@/shared/project-paths'
+} from '@yaac/shared/project-paths'
 import {
   buildCodexPlaceholderBundle,
   writeProjectCodexPlaceholder,
@@ -17,9 +17,9 @@ import {
   loadToolAuthEntry,
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_REFRESH_TOKEN,
-} from '@/shared/tool-auth'
-import { decodeJwtExp, extractCodexOAuthBundle } from '@/shared/tool-auth-interactive'
-import type { CodexOAuthBundle } from '@/shared/types'
+} from '@yaac/shared/tool-auth'
+import { decodeJwtExp, extractCodexOAuthBundle } from '@yaac/shared/tool-auth-interactive'
+import type { CodexOAuthBundle } from '@yaac/shared/types'
 
 /**
  * Build a fake JWT with a given `exp` claim (seconds since epoch). Header /

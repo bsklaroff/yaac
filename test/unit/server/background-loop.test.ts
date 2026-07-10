@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { startBackgroundLoop } from '@/server/background-loop'
+import { startBackgroundLoop } from '@yaac/server/background-loop'
 
 const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 

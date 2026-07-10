@@ -1,0 +1,134 @@
+import fs from 'node:fs/promises'
+import { listSessionPods, isPrewarmed } from '#lib/k8s/pods'
+import { getProjectsDir } from '@yaac/shared/project-paths'
+import { isTmuxSessionAlive } from '#lib/session/cleanup'
+import { getSessionFirstMessage } from '#lib/session/status'
+import { getWaitingSessions } from '#lib/session/waiting'
+import { createSession } from '#session-create'
+import { getDefaultTool } from '#lib/project/preferences'
+import type {
+  AgentTool,
+  PickNextInput,
+  PickNextResult,
+  StreamOutcome,
+} from '@yaac/shared/types'
+
+export type { PickNextInput, PickNextResult, StreamOutcome }
+
+async function getActiveProjects(): Promise<string[]> {
+  const pods = await listSessionPods()
+  const projects = new Set<string>()
+  for (const p of pods) {
+    if (!p.projectSlug) continue
+    if (isPrewarmed(p)) continue // a spare-only project isn't a stream target
+    if (!p.running) continue
+    if (!p.sessionId) continue
+    if (!(await isTmuxSessionAlive(p.projectSlug, p.sessionId))) continue
+    projects.add(p.projectSlug)
+  }
+  return [...projects].sort()
+}
+
+async function getAllProjects(): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(getProjectsDir())
+    return entries.sort()
+  } catch {
+    return []
+  }
+}
+
+/**
+ * State-machine for `POST /session/stream/next`. Given the client's
+ * visited-set and last-outcome, picks the next waiting session for
+ * `project` (or creates one), rotates the visited set when every
+ * session has been seen, or signals the caller to disambiguate a
+ * project / exit the stream.
+ */
+export async function pickNextStreamSession(input: PickNextInput): Promise<PickNextResult> {
+  const allSessions = await getWaitingSessions(input.project)
+
+  let visited = [...input.visited]
+  let lastVisited = input.lastVisited
+  let sessions = allSessions.filter((s) => !visited.includes(s.sessionId))
+
+  if (sessions.length === 0 && allSessions.length > 0) {
+    // Every waiting session has been visited — rotate so we can revisit,
+    // but keep the most-recently-visited session excluded so we don't
+    // bounce right back.
+    visited = lastVisited ? [lastVisited] : []
+    lastVisited = undefined
+    sessions = allSessions.filter((s) => !visited.includes(s.sessionId))
+  }
+
+  if (sessions.length > 0) {
+    const next = sessions[0]
+    visited.push(next.sessionId)
+    return {
+      done: false,
+      sessionId: next.sessionId,
+      jobName: next.jobName,
+      projectSlug: next.projectSlug,
+      tool: next.tool,
+      visited,
+      lastVisited: next.sessionId,
+    }
+  }
+
+  const onlyVisitedBlank =
+    allSessions.length === 1 &&
+    input.visited.includes(allSessions[0].sessionId) &&
+    !(await getSessionFirstMessage(
+      allSessions[0].projectSlug,
+      allSessions[0].sessionId,
+      allSessions[0].tool,
+      allSessions[0].jobName,
+    ))
+
+  // If the last-attached session has disappeared from the waiting list
+  // (job was killed/removed), treat it as closed_blank when its
+  // transcript has no user message.
+  let lastClosedBlank = false
+  if (
+    input.lastVisited &&
+    input.lastProjectSlug &&
+    input.lastTool &&
+    !allSessions.some((s) => s.sessionId === input.lastVisited)
+  ) {
+    const firstMsg = await getSessionFirstMessage(
+      input.lastProjectSlug, input.lastVisited, input.lastTool,
+    )
+    if (!firstMsg) lastClosedBlank = true
+  }
+
+  if (input.lastOutcome === 'closed_blank' || onlyVisitedBlank || lastClosedBlank) {
+    return { done: true, reason: 'closed_blank' }
+  }
+
+  if (input.project) {
+    // Same resolution as /session/create: explicit tool wins, else the
+    // configured default (yaac tool set), else claude.
+    const tool: AgentTool = input.tool ?? (await getDefaultTool()) ?? 'claude'
+    const created = await createSession(input.project, { tool })
+    visited.push(created.sessionId)
+    return {
+      done: false,
+      sessionId: created.sessionId,
+      jobName: created.jobName,
+      projectSlug: input.project,
+      tool,
+      visited,
+      lastVisited: created.sessionId,
+    }
+  }
+
+  const active = await getActiveProjects()
+  if (active.length > 0) {
+    return { done: true, reason: 'needs_project', candidates: active }
+  }
+  const all = await getAllProjects()
+  if (all.length === 0) {
+    return { done: true, reason: 'no_active' }
+  }
+  return { done: true, reason: 'needs_project', candidates: all }
+}

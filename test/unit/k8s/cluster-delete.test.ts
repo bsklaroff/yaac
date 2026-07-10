@@ -3,7 +3,7 @@ import {
   ClusterDeleteError,
   runClusterDelete,
   type ClusterDeleteDeps,
-} from '@/lib/k8s/cluster-delete'
+} from '@yaac/server/lib/k8s/cluster-delete'
 
 afterEach(() => {
   vi.unstubAllEnvs()

@@ -1,0 +1,27 @@
+{
+  "name": "@yaac/test-utils",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "imports": {
+    "#*": "./src/*.ts"
+  },
+  "exports": {
+    "./*": "./src/*.ts",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hono/node-server": "1.19.14",
+    "@yaac/server": "workspace:*",
+    "@yaac/shared": "workspace:*",
+    "hono": "4.12.14",
+    "simple-git": "3.35.2",
+    "tsx": "4.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "25.5.2"
+  }
+}

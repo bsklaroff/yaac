@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatUtcTimestamp } from '@/shared/time'
+import { formatUtcTimestamp } from '@yaac/shared/time'
 
 describe('formatUtcTimestamp', () => {
   it("formats epoch ms as 'YYYY-MM-DD HH:MM:SS' UTC, dropping sub-second precision", () => {

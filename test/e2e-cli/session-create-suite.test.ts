@@ -7,8 +7,8 @@ import http from 'node:http'
 import path from 'node:path'
 import WebSocket from 'ws'
 import simpleGit from 'simple-git'
-import { cloneRepo } from '@/lib/git'
-import { listSessionPods, type SessionPod } from '@/lib/k8s/pods'
+import { cloneRepo } from '@yaac/server/lib/git'
+import { listSessionPods, type SessionPod } from '@yaac/server/lib/k8s/pods'
 import {
   createYaacTestEnv,
   spawnYaacServer,
@@ -22,7 +22,7 @@ import {
   execInJob,
   cleanupSessionJobs,
 } from '@test/helpers/setup'
-import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
+import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import {
   startMockLLM,
   startMockGit,

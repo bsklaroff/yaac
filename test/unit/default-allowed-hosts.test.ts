@@ -4,8 +4,8 @@ import {
   NESTED_PULL_HOSTS,
   hostMatchesPattern,
   resolveAllowedHosts,
-} from '@/lib/container/default-allowed-hosts'
-import type { YaacConfig } from '@/shared/types'
+} from '@yaac/server/lib/container/default-allowed-hosts'
+import type { YaacConfig } from '@yaac/shared/types'
 
 describe('DEFAULT_ALLOWED_HOSTS', () => {
   it('is a non-empty array of strings', () => {

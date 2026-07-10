@@ -2,75 +2,75 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import { buildApp } from '@/server/server'
-import { projectConfigDir, getProjectsDir, projectDir, claudeDir, codexDir } from '@/shared/project-paths'
-import { addEntry, loadCredentials } from '@/lib/project/credentials'
+import { buildApp } from '@yaac/server/server'
+import { projectConfigDir, getProjectsDir, projectDir, claudeDir, codexDir } from '@yaac/shared/project-paths'
+import { addEntry, loadCredentials } from '@yaac/server/lib/project/credentials'
 import {
   loadClaudeCredentialsFile,
   saveClaudeOAuthBundle,
-} from '@/shared/tool-auth'
-import { loadPreferences } from '@/lib/project/preferences'
-import type * as projectAddModule from '@/lib/project/add'
-import type * as cliResolveModule from '@/auth-daemon/cli-resolve'
-import type { ProjectMeta, ClaudeOAuthBundle } from '@/shared/types'
-import { ServerError } from '@/shared/errors'
+} from '@yaac/shared/tool-auth'
+import { loadPreferences } from '@yaac/server/lib/project/preferences'
+import type * as projectAddModule from '@yaac/server/lib/project/add'
+import type * as cliResolveModule from '@yaac/auth-daemon/cli-resolve'
+import type { ProjectMeta, ClaudeOAuthBundle } from '@yaac/shared/types'
+import { ServerError } from '@yaac/shared/errors'
 import { makeTestRpcClient } from '@test/helpers/rpc'
 
-vi.mock('@/server/session-create', () => ({
+vi.mock('@yaac/server/session-create', () => ({
   createSession: vi.fn(),
 }))
 
-vi.mock('@/lib/session/delete', () => ({
+vi.mock('@yaac/server/lib/session/delete', () => ({
   deleteSession: vi.fn(),
 }))
 
-vi.mock('@/lib/session/restart', () => ({
+vi.mock('@yaac/server/lib/session/restart', () => ({
   restartSession: vi.fn(),
 }))
 
-vi.mock('@/lib/project/add', async () => {
-  const actual = await vi.importActual<typeof projectAddModule>('@/lib/project/add')
+vi.mock('@yaac/server/lib/project/add', async () => {
+  const actual = await vi.importActual<typeof projectAddModule>('@yaac/server/lib/project/add')
   return {
     ...actual,
     addProject: vi.fn(),
   }
 })
 
-vi.mock('@/lib/project/remove', () => ({
+vi.mock('@yaac/server/lib/project/remove', () => ({
   removeProject: vi.fn(),
 }))
 
 // The install flow's post-exit verification resolves the CLI on the real
 // machine — mocked so the route tests pass regardless of what's installed.
-vi.mock('@/auth-daemon/cli-resolve', async () => {
-  const actual = await vi.importActual<typeof cliResolveModule>('@/auth-daemon/cli-resolve')
+vi.mock('@yaac/auth-daemon/cli-resolve', async () => {
+  const actual = await vi.importActual<typeof cliResolveModule>('@yaac/auth-daemon/cli-resolve')
   return {
     ...actual,
     resolveToolCliPath: () => '/fake/bin/tool',
   }
 })
 
-import { createSession } from '@/server/session-create'
-import { deleteSession } from '@/lib/session/delete'
-import { restartSession } from '@/lib/session/restart'
-import { addProject } from '@/lib/project/add'
-import { removeProject } from '@/lib/project/remove'
-import { registerProvisioning, listProvisioning, clearAllProvisioningForTests } from '@/server/provisioning'
-import { authAgentHub } from '@/server/auth-agent'
-import type { AgentOp } from '@/shared/auth-agent-protocol'
+import { createSession } from '@yaac/server/session-create'
+import { deleteSession } from '@yaac/server/lib/session/delete'
+import { restartSession } from '@yaac/server/lib/session/restart'
+import { addProject } from '@yaac/server/lib/project/add'
+import { removeProject } from '@yaac/server/lib/project/remove'
+import { registerProvisioning, listProvisioning, clearAllProvisioningForTests } from '@yaac/server/provisioning'
+import { authAgentHub } from '@yaac/server/auth-agent'
+import type { AgentOp } from '@yaac/shared/auth-agent-protocol'
 import {
   cancelToolLogin,
   clearAllToolLoginsForTests,
   getToolLogin,
   sendToolLoginInput,
   startToolLogin,
-} from '@/auth-daemon/tool-login'
+} from '@yaac/auth-daemon/tool-login'
 import {
   cancelToolInstall,
   clearAllToolInstallsForTests,
   getToolInstall,
   startToolInstall,
-} from '@/auth-daemon/tool-install'
+} from '@yaac/auth-daemon/tool-install'
 
 /**
  * Wire an in-process "loopback" auth agent into the hub: ops dispatch to

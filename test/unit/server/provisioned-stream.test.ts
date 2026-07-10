@@ -1,16 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
-import { streamProvisioned } from '@/server/routes/provisioned-stream'
+import { streamProvisioned } from '@yaac/server/routes/provisioned-stream'
 import {
   registerProvisioning,
   listProvisioning,
   clearAllProvisioningForTests,
-} from '@/server/provisioning'
+} from '@yaac/server/provisioning'
 import {
   onSessionListChanged,
   _resetSessionListChangedForTests,
-} from '@/server/sessions-changed'
-import { ServerError } from '@/shared/errors'
+} from '@yaac/server/sessions-changed'
+import { ServerError } from '@yaac/shared/errors'
 
 type Run = Parameters<typeof streamProvisioned>[2]
 

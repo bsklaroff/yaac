@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import net from 'node:net'
-import { reserveAvailablePort } from '@/lib/container/port'
+import { reserveAvailablePort } from '@yaac/server/lib/container/port'
 
 describe('reserveAvailablePort', () => {
   const servers: net.Server[] = []

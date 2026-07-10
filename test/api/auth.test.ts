@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { Hono } from 'hono'
-import { denyBrowserCors, requestLogger } from '@/server/auth'
+import { denyBrowserCors, requestLogger } from '@yaac/server/auth'
 
 function buildTestApp(): Hono {
   const app = new Hono()
@@ -9,7 +9,7 @@ function buildTestApp(): Hono {
   return app
 }
 
-// Bearer + cookie auth moved to `@/server/web-auth`; see
+// Bearer + cookie auth moved to `@yaac/server/web-auth`; see
 // test/unit/server/web-auth.test.ts for that coverage.
 
 describe('denyBrowserCors', () => {

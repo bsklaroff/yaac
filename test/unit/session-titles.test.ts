@@ -2,14 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import { projectDir } from '@/shared/project-paths'
+import { projectDir } from '@yaac/shared/project-paths'
 import {
   MAX_TITLE_LENGTH,
   sessionTitlesPath,
   normalizeTitle,
   getSessionTitles,
   setSessionTitle,
-} from '@/lib/session/titles'
+} from '@yaac/server/lib/session/titles'
 
 describe('session titles', () => {
   let tmpDir: string

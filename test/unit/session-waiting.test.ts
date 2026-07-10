@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-vi.mock('@/lib/k8s/pods', async (importOriginal) => {
+vi.mock('@yaac/server/lib/k8s/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
   return {
     ...actual,
@@ -8,22 +8,22 @@ vi.mock('@/lib/k8s/pods', async (importOriginal) => {
   }
 })
 
-vi.mock('@/lib/session/status', () => ({
+vi.mock('@yaac/server/lib/session/status', () => ({
   getSessionFirstMessage: vi.fn(),
   normalizeTool: vi.fn(() => 'claude'),
 }))
 
-vi.mock('@/lib/session/cleanup', () => ({
+vi.mock('@yaac/server/lib/session/cleanup', () => ({
   isTmuxSessionAlive: vi.fn().mockResolvedValue(true),
   cleanupSessionDetached: vi.fn(),
 }))
 
-import { getWaitingSessions } from '@/lib/session/waiting'
-import { listSessionPods, type SessionPod } from '@/lib/k8s/pods'
-import type * as podsModule from '@/lib/k8s/pods'
-import { normalizeTool } from '@/lib/session/status'
-import { setSessionStatus, _resetSessionStatusStoreForTests } from '@/lib/session/status-store'
-import { isTmuxSessionAlive, cleanupSessionDetached } from '@/lib/session/cleanup'
+import { getWaitingSessions } from '@yaac/server/lib/session/waiting'
+import { listSessionPods, type SessionPod } from '@yaac/server/lib/k8s/pods'
+import type * as podsModule from '@yaac/server/lib/k8s/pods'
+import { normalizeTool } from '@yaac/server/lib/session/status'
+import { setSessionStatus, _resetSessionStatusStoreForTests } from '@yaac/server/lib/session/status-store'
+import { isTmuxSessionAlive, cleanupSessionDetached } from '@yaac/server/lib/session/cleanup'
 
 const mockListPods = vi.mocked(listSessionPods)
 const mockNormalizeTool = vi.mocked(normalizeTool)

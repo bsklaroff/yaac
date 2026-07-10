@@ -6,19 +6,19 @@ import {
   seedFakeClaudeOAuth,
   seedFakeGithubCredential,
   FAKE_GITHUB_PATTERN,
-} from '@/lib/project/fake-auth'
-import { loadClaudeCredentialsFile } from '@/shared/tool-auth'
-import { loadCredentials, saveCredentials } from '@/lib/project/credentials'
+} from '@yaac/server/lib/project/fake-auth'
+import { loadClaudeCredentialsFile } from '@yaac/shared/tool-auth'
+import { loadCredentials, saveCredentials } from '@yaac/server/lib/project/credentials'
 import {
   projectDir,
   claudeDir,
   projectClaudeCredentialsFile,
-} from '@/shared/project-paths'
+} from '@yaac/shared/project-paths'
 import {
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_REFRESH_TOKEN,
   PLACEHOLDER_GH_TOKEN,
-} from '@/shared/tool-auth'
+} from '@yaac/shared/tool-auth'
 
 describe('fake-auth', () => {
   let tmpDir: string

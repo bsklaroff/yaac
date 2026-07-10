@@ -3,8 +3,8 @@ import {
   CLAUDE_OAUTH_CLIENT_ID,
   CLAUDE_TOKEN_URL,
   refreshClaudeOAuthBundle,
-} from '@/lib/auth/claude-oauth'
-import type { ClaudeOAuthBundle } from '@/shared/types'
+} from '@yaac/server/lib/auth/claude-oauth'
+import type { ClaudeOAuthBundle } from '@yaac/shared/types'
 
 describe('refreshClaudeOAuthBundle', () => {
   const fetchMock = vi.fn<typeof fetch>()

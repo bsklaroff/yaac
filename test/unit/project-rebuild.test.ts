@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-vi.mock('@/commands/rpc', () => ({
+vi.mock('@yaac/cli/commands/rpc', () => ({
   getRpcClient: vi.fn(),
   toClientError: vi.fn(() => Promise.resolve(new Error('client error'))),
 }))
 
-import { getRpcClient } from '@/commands/rpc'
-import { projectRebuild } from '@/commands/project-rebuild'
+import { getRpcClient } from '@yaac/cli/commands/rpc'
+import { projectRebuild } from '@yaac/cli/commands/project-rebuild'
 
 function ndjsonResponse(events: unknown[], status = 200): Response {
   const body = events.map((e) => JSON.stringify(e)).join('\n') + '\n'

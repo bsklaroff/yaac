@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { validateAddDirs } from '@/commands/add-dirs'
+import { validateAddDirs } from '@yaac/cli/commands/add-dirs'
 
 describe('validateAddDirs', () => {
   const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})

@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsup'
 
 export default defineConfig({
-  entry: { cli: 'src/cli.ts' },
+  entry: { cli: 'apps/cli/src/cli.ts' },
   format: 'esm',
   target: 'node22',
   outDir: 'dist',
@@ -10,7 +10,8 @@ export default defineConfig({
   env: {
     YAAC_BUNDLED: 'true',
   },
-  esbuildOptions(options) {
-    options.alias = { '@': './src', '@test': './test' }
-  },
+  // Bundle the workspace packages (@yaac/cli, @yaac/server, @yaac/shared,
+  // @yaac/auth-daemon) into the single dist/cli.js; runtime npm deps stay
+  // external (they're in the published package's dependencies).
+  noExternal: [/^@yaac\//],
 })

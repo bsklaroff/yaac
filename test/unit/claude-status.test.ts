@@ -6,7 +6,7 @@ import os from 'node:os'
 import {
   classifyClaudeTitle,
   getFirstUserMessage,
-} from '@/lib/session/claude-status'
+} from '@yaac/server/lib/session/claude-status'
 
 // Title fixtures below reproduce states observed against a live Claude
 // Code session inside a session pod: a running turn animates a Braille

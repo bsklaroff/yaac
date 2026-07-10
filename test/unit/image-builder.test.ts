@@ -2,8 +2,8 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { DOCKERFILES_DIR } from '@/shared/project-paths'
-import { baseImageHash, contextHash, fileHash, sessionUid, isLayered } from '@/lib/container/image-builder'
+import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
+import { baseImageHash, contextHash, fileHash, sessionUid, isLayered } from '@yaac/server/lib/container/image-builder'
 
 describe('fileHash', () => {
   it('produces a 16-char hex hash of file contents', async () => {

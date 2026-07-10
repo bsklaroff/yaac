@@ -25,7 +25,7 @@ vi.mock('node:child_process', () => ({
 // The session runtime half of ensureContainerRuntime — mocked so this file
 // never needs a cluster. ensureKubernetes itself is covered in
 // test/unit/k8s/kubectl.test.ts.
-vi.mock('@/lib/k8s/kubectl', () => ({
+vi.mock('@yaac/server/lib/k8s/kubectl', () => ({
   ensureKubernetes: vi.fn().mockResolvedValue(undefined),
 }))
 
@@ -37,8 +37,8 @@ import {
   imageExists,
   removeImage,
   usesRootfulPodman,
-} from '@/lib/container/runtime'
-import { ensureKubernetes } from '@/lib/k8s/kubectl'
+} from '@yaac/server/lib/container/runtime'
+import { ensureKubernetes } from '@yaac/server/lib/k8s/kubectl'
 
 // ensurePodmanSocket is exercised against real sockets in
 // test/unit/ensure-podman-socket.test.ts — not duplicated here.

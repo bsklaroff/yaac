@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildPtyAttachUrl, toWsUrl } from '@/commands/ws-terminal'
+import { buildPtyAttachUrl, toWsUrl } from '@yaac/cli/commands/ws-terminal'
 
 describe('toWsUrl', () => {
   it('swaps http(s) for ws(s), preserving the rest', () => {

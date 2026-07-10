@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { validateGitRemoteUrl } from '@/lib/project/add'
-import { ServerError } from '@/shared/errors'
+import { validateGitRemoteUrl } from '@yaac/server/lib/project/add'
+import { ServerError } from '@yaac/shared/errors'
 
 describe('validateGitRemoteUrl', () => {
   it('accepts a github.com https URL', () => {

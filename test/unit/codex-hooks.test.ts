@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import * as TOML from 'smol-toml'
-import { ensureCodexHooksJson, ensureCodexConfigToml } from '@/lib/session/codex-hooks'
+import { ensureCodexHooksJson, ensureCodexConfigToml } from '@yaac/server/lib/session/codex-hooks'
 
 const YAAC_HOOK_COMMAND = '/home/yaac/.codex/.yaac-hook.sh'
 

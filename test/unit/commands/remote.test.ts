@@ -2,9 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } fr
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { remoteSet, remoteUnset, remoteOn, remoteOff, remoteStatus } from '@/commands/remote'
-import { readRemote, writeRemote } from '@/shared/remote'
-import { setDataDir } from '@/shared/paths'
+import { remoteSet, remoteUnset, remoteOn, remoteOff, remoteStatus } from '@yaac/cli/commands/remote'
+import { readRemote, writeRemote } from '@yaac/shared/remote'
+import { setDataDir } from '@yaac/shared/paths'
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {

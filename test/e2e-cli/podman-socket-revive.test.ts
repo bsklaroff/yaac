@@ -5,7 +5,7 @@ import net from 'node:net'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { ensurePodmanSocket } from '@/lib/container/runtime'
+import { ensurePodmanSocket } from '@yaac/server/lib/container/runtime'
 import { requirePodman } from '@test/helpers/setup'
 
 const execFileAsync = promisify(execFile)

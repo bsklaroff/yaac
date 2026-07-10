@@ -24,15 +24,15 @@ vi.mock('node:child_process', () => ({
   },
 }))
 
-vi.mock('@/server/log', () => ({
+vi.mock('@yaac/server/log', () => ({
   serverLog: vi.fn(),
 }))
 
-vi.mock('@/lib/k8s/kubectl', () => ({
+vi.mock('@yaac/server/lib/k8s/kubectl', () => ({
   k8sNamespace: vi.fn(() => 'test-ns'),
 }))
 
-import { ServicePortForward } from '@/lib/k8s/port-forward'
+import { ServicePortForward } from '@yaac/server/lib/k8s/port-forward'
 
 function emitForwarding(child: FakeChild, port: number): void {
   child.stdout.emit('data', Buffer.from(`Forwarding from 127.0.0.1:${port} -> 10255\n`))

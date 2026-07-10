@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
-vi.mock('@/lib/k8s/kubectl', () => ({
+vi.mock('@yaac/server/lib/k8s/kubectl', () => ({
   k8sNamespace: vi.fn(() => 'test-ns'),
   dataDirHash: vi.fn(() => 'ddh16'),
   kubectlApply: vi.fn().mockResolvedValue(undefined),
@@ -11,13 +11,13 @@ vi.mock('@/lib/k8s/kubectl', () => ({
   execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
-vi.mock('@/lib/k8s/registry', () => ({
+vi.mock('@yaac/server/lib/k8s/registry', () => ({
   registryHasTag: vi.fn().mockResolvedValue(false),
   registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
   pushImageToRegistry: vi.fn((tag: string) => Promise.resolve(`localhost:5001/${tag}`)),
 }))
 
-vi.mock('@/lib/container/runtime', () => ({
+vi.mock('@yaac/server/lib/container/runtime', () => ({
   imageExists: vi.fn().mockResolvedValue(false),
 }))
 
@@ -44,15 +44,15 @@ import {
   projectRegistryName,
   projectRegistryStorageHostPath,
   removeProjectRegistry,
-} from '@/lib/k8s/project-registry'
+} from '@yaac/server/lib/k8s/project-registry'
 import {
   execFileAsync,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-} from '@/lib/k8s/kubectl'
-import { pushImageToRegistry, registryHasTag } from '@/lib/k8s/registry'
-import { imageExists } from '@/lib/container/runtime'
+} from '@yaac/server/lib/k8s/kubectl'
+import { pushImageToRegistry, registryHasTag } from '@yaac/server/lib/k8s/registry'
+import { imageExists } from '@yaac/server/lib/container/runtime'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 
 const mockApply = vi.mocked(kubectlApply)

@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { sessionAttach } from '@/commands/session-attach'
-import { attachSessionPty } from '@/commands/ws-terminal'
+import { sessionAttach } from '@yaac/cli/commands/session-attach'
+import { attachSessionPty } from '@yaac/cli/commands/ws-terminal'
 
-vi.mock('@/commands/ws-terminal', () => ({
+vi.mock('@yaac/cli/commands/ws-terminal', () => ({
   attachSessionPty: vi.fn().mockResolvedValue(undefined),
 }))
 

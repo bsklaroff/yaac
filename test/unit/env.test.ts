@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { env, testEnv } from '@/shared/env'
+import { env, testEnv } from '@yaac/shared/env'
 
 afterEach(() => {
   vi.unstubAllEnvs()

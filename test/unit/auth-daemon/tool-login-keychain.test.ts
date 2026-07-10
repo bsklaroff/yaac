@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import type * as toolAuthInteractiveModule from '@/shared/tool-auth-interactive'
+import type * as toolAuthInteractiveModule from '@yaac/shared/tool-auth-interactive'
 
 // On macOS the real CLI never writes the scratch `.credentials.json` — the
 // login lands only in the Keychain, under a service name suffixed with a hash
@@ -14,7 +14,7 @@ const keychain = vi.hoisted(() => ({
   del: vi.fn<(service: string) => void>(),
 }))
 
-vi.mock('@/shared/tool-auth-interactive', async (importOriginal) => {
+vi.mock('@yaac/shared/tool-auth-interactive', async (importOriginal) => {
   const actual = await importOriginal<typeof toolAuthInteractiveModule>()
   return {
     ...actual,
@@ -27,8 +27,8 @@ import {
   clearAllToolLoginsForTests,
   getToolLogin,
   startToolLogin,
-} from '@/auth-daemon/tool-login'
-import { loadClaudeCredentialsFile } from '@/shared/tool-auth'
+} from '@yaac/auth-daemon/tool-login'
+import { loadClaudeCredentialsFile } from '@yaac/shared/tool-auth'
 
 const CLAUDE_STUB = path.join(__dirname, '..', '..', 'helpers', 'fake-claude-login.cjs')
 

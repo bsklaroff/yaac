@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { createAuthAgentHub, parseAgentViewMsg } from '@/server/auth-agent'
-import type { AgentOp } from '@/shared/auth-agent-protocol'
-import { ServerError } from '@/shared/errors'
-import type { ToolLoginView } from '@/shared/types'
+import { createAuthAgentHub, parseAgentViewMsg } from '@yaac/server/auth-agent'
+import type { AgentOp } from '@yaac/shared/auth-agent-protocol'
+import { ServerError } from '@yaac/shared/errors'
+import type { ToolLoginView } from '@yaac/shared/types'
 
 function fakeSocket(): {
   sent: AgentOp[]

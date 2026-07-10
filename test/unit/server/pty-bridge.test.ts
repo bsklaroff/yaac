@@ -1,14 +1,14 @@
 import { describe, it, expect, vi } from 'vitest'
 import * as pty from '@lydell/node-pty'
-import type * as execModule from '@/lib/k8s/exec'
-import { containerExec } from '@/lib/k8s/exec'
-import { attachArgs, killViewSession, newViewName, parseControl, parsePtySize, parsePtyTarget, bridge, spawnAttachPty } from '@/server/pty-bridge'
-import type { PtyLike, SocketLike } from '@/server/pty-bridge'
+import type * as execModule from '@yaac/server/lib/k8s/exec'
+import { containerExec } from '@yaac/server/lib/k8s/exec'
+import { attachArgs, killViewSession, newViewName, parseControl, parsePtySize, parsePtyTarget, bridge, spawnAttachPty } from '@yaac/server/pty-bridge'
+import type { PtyLike, SocketLike } from '@yaac/server/pty-bridge'
 
 // Avoid loading/spawning the real node-pty native module in unit tests.
 vi.mock('@lydell/node-pty', () => ({ spawn: vi.fn(() => ({})) }))
 // Keep the real argv builders; stub only the kubectl-exec runner.
-vi.mock('@/lib/k8s/exec', async (importOriginal) => ({
+vi.mock('@yaac/server/lib/k8s/exec', async (importOriginal) => ({
   ...await importOriginal<typeof execModule>(),
   containerExec: vi.fn(() => Promise.resolve({ stdout: '', stderr: '' })),
 }))

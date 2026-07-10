@@ -8,9 +8,9 @@ import {
   type YaacTestEnv,
   type SpawnedServer,
 } from '@test/helpers/cli'
-import { readLock, serverLockPath } from '@/shared/lock'
-import { MAX_PORT_PROBES } from '@/shared/server-port'
-import { serverLogPath } from '@/shared/paths'
+import { readLock, serverLockPath } from '@yaac/shared/lock'
+import { MAX_PORT_PROBES } from '@yaac/shared/server-port'
+import { serverLogPath } from '@yaac/shared/paths'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 

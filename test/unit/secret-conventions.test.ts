@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildRulesFromConfig, collectProxySecrets } from '@/lib/container/proxy-client'
+import { buildRulesFromConfig, collectProxySecrets } from '@yaac/server/lib/container/proxy-client'
 
 describe('buildRulesFromConfig', () => {
   it('defaults to an authorization header with Bearer prefix when no header/prefix specified', () => {

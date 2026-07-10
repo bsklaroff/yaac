@@ -14,8 +14,8 @@ import {
   setShortcutOverride,
   clearShortcutOverrides,
   type SerializedChord,
-} from '@/lib/project/preferences'
-import { ServerError } from '@/shared/errors'
+} from '@yaac/server/lib/project/preferences'
+import { ServerError } from '@yaac/shared/errors'
 
 const chord = (code: string, over: Partial<SerializedChord> = {}): SerializedChord => ({
   code, alt: true, ctrl: false, meta: false, shift: false, ...over,

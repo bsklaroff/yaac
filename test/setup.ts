@@ -1,6 +1,6 @@
 import os from 'node:os'
 import path from 'node:path'
-import { setDataDir } from '@/shared/paths'
+import { setDataDir } from '@yaac/shared/paths'
 
 // Prevent parent git env vars from leaking into tests.
 // Without this, running tests from a git hook (e.g. pre-push) would

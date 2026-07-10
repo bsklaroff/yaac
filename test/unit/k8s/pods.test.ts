@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-vi.mock('@/lib/k8s/kubectl', () => ({
+vi.mock('@yaac/server/lib/k8s/kubectl', () => ({
   dataDirHash: vi.fn(() => 'ddh0123456789abc'),
   k8sNamespace: vi.fn(() => 'test-ns'),
   kubectlApply: vi.fn().mockResolvedValue(undefined),
@@ -22,8 +22,8 @@ import {
   runPodToCompletion,
   sessionJobName,
   type SessionPod,
-} from '@/lib/k8s/pods'
-import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
+} from '@yaac/server/lib/k8s/pods'
+import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/lib/k8s/kubectl'
 
 const mockGetJson = vi.mocked(kubectlGetJson)
 

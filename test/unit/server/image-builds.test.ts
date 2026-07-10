@@ -11,8 +11,8 @@ import {
   listImageBuilds,
   parseBuildStep,
   registerImageBuild,
-} from '@/server/image-builds'
-import { onSessionListChanged, _resetSessionListChangedForTests } from '@/server/sessions-changed'
+} from '@yaac/server/image-builds'
+import { onSessionListChanged, _resetSessionListChangedForTests } from '@yaac/server/sessions-changed'
 
 function register(overrides: Partial<Parameters<typeof registerImageBuild>[0]> = {}): string {
   return registerImageBuild({

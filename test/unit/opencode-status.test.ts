@@ -2,12 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 
-vi.mock('@/lib/k8s/exec', () => ({
+vi.mock('@yaac/server/lib/k8s/exec', () => ({
   containerExec: vi.fn(),
 }))
 
-import { containerExec } from '@/lib/k8s/exec'
-import { opencodeMetaDir, opencodeMetaFile } from '@/shared/project-paths'
+import { containerExec } from '@yaac/server/lib/k8s/exec'
+import { opencodeMetaDir, opencodeMetaFile } from '@yaac/shared/project-paths'
 import {
   pickOpencodeSession,
   classifyOpencodePane,
@@ -15,7 +15,7 @@ import {
   getDeletedSessionOpencodeFirstUserMessage,
   ensureOpencodeFirstMessageCaptured,
   _clearOpencodeProbeCacheForTests,
-} from '@/lib/session/opencode-status'
+} from '@yaac/server/lib/session/opencode-status'
 
 const mockedExec = vi.mocked(containerExec)
 

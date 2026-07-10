@@ -1,22 +1,22 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
-vi.mock('@/lib/container/image-builder', () => ({
+vi.mock('@yaac/server/lib/container/image-builder', () => ({
   buildImage: vi.fn(),
   resolveImageChain: vi.fn(),
 }))
 
-vi.mock('@/lib/container/runtime', () => ({
+vi.mock('@yaac/server/lib/container/runtime', () => ({
   imageExists: vi.fn().mockResolvedValue(false),
   removeImage: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('@/lib/k8s/registry', () => ({
+vi.mock('@yaac/server/lib/k8s/registry', () => ({
   pushImageToRegistry: vi.fn(),
   registryHasTag: vi.fn().mockResolvedValue(false),
   registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
 }))
 
-vi.mock('@/server/log', () => ({
+vi.mock('@yaac/server/log', () => ({
   serverLog: vi.fn(),
 }))
 
@@ -27,12 +27,12 @@ import {
   rebuildLayerExclusive,
   rebuildProjectImage,
   _clearBuildCoordinatorForTests,
-} from '@/lib/container/build-coordinator'
-import { buildImage, resolveImageChain, type ImageLayer } from '@/lib/container/image-builder'
-import { imageExists, removeImage } from '@/lib/container/runtime'
-import { pushImageToRegistry, registryHasTag } from '@/lib/k8s/registry'
-import { clearAllImageBuildsForTests, listImageBuilds } from '@/server/image-builds'
-import type { ImageLayerName } from '@/shared/types'
+} from '@yaac/server/lib/container/build-coordinator'
+import { buildImage, resolveImageChain, type ImageLayer } from '@yaac/server/lib/container/image-builder'
+import { imageExists, removeImage } from '@yaac/server/lib/container/runtime'
+import { pushImageToRegistry, registryHasTag } from '@yaac/server/lib/k8s/registry'
+import { clearAllImageBuildsForTests, listImageBuilds } from '@yaac/server/image-builds'
+import type { ImageLayerName } from '@yaac/shared/types'
 
 const mockBuildImage = vi.mocked(buildImage)
 const mockResolveChain = vi.mocked(resolveImageChain)

@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { sessionMonitor } from '@/commands/session-monitor'
-import { sessionList } from '@/commands/session-list'
+import { sessionMonitor } from '@yaac/cli/commands/session-monitor'
+import { sessionList } from '@yaac/cli/commands/session-list'
 
-vi.mock('@/commands/session-list', () => ({
+vi.mock('@yaac/cli/commands/session-list', () => ({
   sessionList: vi.fn().mockResolvedValue(undefined),
 }))
 

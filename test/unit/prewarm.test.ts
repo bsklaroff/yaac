@@ -1,16 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-vi.mock('@/server/session-create', () => ({
+vi.mock('@yaac/server/session-create', () => ({
   shellEscape: (s: string) => s.replace(/'/g, "'\\''"),
   retoolSpare: vi.fn(),
 }))
-vi.mock('@/lib/session/cleanup', () => ({
+vi.mock('@yaac/server/lib/session/cleanup', () => ({
   isTmuxSessionAlive: vi.fn(),
   cleanupSessionDetached: vi.fn(),
 }))
-vi.mock('@/lib/k8s/kubectl', () => ({ kubectlWithRetry: vi.fn(), k8sNamespace: () => 'ns' }))
-vi.mock('@/lib/k8s/exec', () => ({ containerExec: vi.fn() }))
-vi.mock('@/lib/k8s/pods', async (importOriginal) => ({
+vi.mock('@yaac/server/lib/k8s/kubectl', () => ({ kubectlWithRetry: vi.fn(), k8sNamespace: () => 'ns' }))
+vi.mock('@yaac/server/lib/k8s/exec', () => ({ containerExec: vi.fn() }))
+vi.mock('@yaac/server/lib/k8s/pods', async (importOriginal) => ({
   ...await importOriginal<typeof podsModule>(),
   listSessionPods: vi.fn(),
 }))
@@ -20,13 +20,13 @@ import {
   claiming,
   inFlight,
   clearPrewarmStateForTests,
-} from '@/server/prewarm'
-import { LABEL_PREWARMED, LABEL_TOOL, listSessionPods, type SessionPod } from '@/lib/k8s/pods'
-import type * as podsModule from '@/lib/k8s/pods'
-import { cleanupSessionDetached, isTmuxSessionAlive } from '@/lib/session/cleanup'
-import { kubectlWithRetry } from '@/lib/k8s/kubectl'
-import { containerExec } from '@/lib/k8s/exec'
-import { retoolSpare } from '@/server/session-create'
+} from '@yaac/server/prewarm'
+import { LABEL_PREWARMED, LABEL_TOOL, listSessionPods, type SessionPod } from '@yaac/server/lib/k8s/pods'
+import type * as podsModule from '@yaac/server/lib/k8s/pods'
+import { cleanupSessionDetached, isTmuxSessionAlive } from '@yaac/server/lib/session/cleanup'
+import { kubectlWithRetry } from '@yaac/server/lib/k8s/kubectl'
+import { containerExec } from '@yaac/server/lib/k8s/exec'
+import { retoolSpare } from '@yaac/server/session-create'
 
 const mockListPods = vi.mocked(listSessionPods)
 const mockTmuxAlive = vi.mocked(isTmuxSessionAlive)

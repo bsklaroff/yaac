@@ -4,17 +4,17 @@ import path from 'node:path'
 import os from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { baseImageHash } from '@/lib/container/image-builder'
-import { DOCKERFILES_DIR } from '@/shared/project-paths'
-import { ensureNamespace } from '@/lib/k8s/bootstrap'
+import { baseImageHash } from '@yaac/server/lib/container/image-builder'
+import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
+import { ensureNamespace } from '@yaac/server/lib/k8s/bootstrap'
 import {
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
   type KubectlExecOptions,
-} from '@/lib/k8s/kubectl'
-import { registryHasTag, registryRef } from '@/lib/k8s/registry'
+} from '@yaac/server/lib/k8s/kubectl'
+import { registryHasTag, registryRef } from '@yaac/server/lib/k8s/registry'
 import { e2eMkdtemp } from '@test/helpers/tmp'
 
 const execFileAsync = promisify(execFile)

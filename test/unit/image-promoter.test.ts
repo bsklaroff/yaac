@@ -4,26 +4,26 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
-vi.mock('@/lib/k8s/exec', async (importOriginal) => {
+vi.mock('@yaac/server/lib/k8s/exec', async (importOriginal) => {
   const actual = await importOriginal<typeof execModule>()
   return { ...actual, containerExec: vi.fn() }
 })
 
-import { containerExec } from '@/lib/k8s/exec'
-import type * as execModule from '@/lib/k8s/exec'
+import { containerExec } from '@yaac/server/lib/k8s/exec'
+import type * as execModule from '@yaac/server/lib/k8s/exec'
 import {
   PROMOTER_SCRIPT,
   buildPromoterShellCommand,
   promoteSessionImages,
   promoterExecCommand,
   sharedImageStoreHostPath,
-} from '@/lib/container/image-promoter'
+} from '@yaac/server/lib/container/image-promoter'
 import {
   NESTED_GRAPHROOT_PATH,
   SHARED_IMAGE_STORE_DST_PATH,
   SHARED_IMAGE_STORE_PATH,
-} from '@/lib/k8s/pod-spec'
-import { setDataDir } from '@/shared/project-paths'
+} from '@yaac/server/lib/k8s/pod-spec'
+import { setDataDir } from '@yaac/shared/project-paths'
 
 const mockContainerExec = vi.mocked(containerExec)
 

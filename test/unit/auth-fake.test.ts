@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { authFake } from '@/commands/auth-fake'
-import { getRpcClient } from '@/shared/server-client'
-import type * as serverClientModule from '@/shared/server-client'
+import { authFake } from '@yaac/cli/commands/auth-fake'
+import { getRpcClient } from '@yaac/shared/server-client'
+import type * as serverClientModule from '@yaac/shared/server-client'
 
-vi.mock('@/shared/server-client', async (importOriginal) => {
+vi.mock('@yaac/shared/server-client', async (importOriginal) => {
   const actual = await importOriginal<typeof serverClientModule>()
   return {
     ...actual,

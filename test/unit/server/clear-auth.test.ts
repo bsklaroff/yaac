@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import { clearAuth } from '@/lib/auth/clear'
-import { addEntry, loadCredentials } from '@/lib/project/credentials'
+import { clearAuth } from '@yaac/server/lib/auth/clear'
+import { addEntry, loadCredentials } from '@yaac/server/lib/project/credentials'
 import {
   loadClaudeCredentialsFile,
   loadCodexCredentialsFile,
@@ -10,15 +10,15 @@ import {
   saveCodexCredentialsFile,
   writeProjectClaudePlaceholder,
   writeProjectCodexPlaceholder,
-} from '@/shared/tool-auth'
+} from '@yaac/shared/tool-auth'
 import {
   claudeDir,
   codexDir,
   projectClaudeCredentialsFile,
   projectCodexAuthFile,
   projectDir,
-} from '@/shared/project-paths'
-import type { ClaudeOAuthBundle, CodexOAuthBundle } from '@/shared/types'
+} from '@yaac/shared/project-paths'
+import type { ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/shared/types'
 
 const SAMPLE_CLAUDE: ClaudeOAuthBundle = {
   accessToken: 'sk-ant-oat01-real',

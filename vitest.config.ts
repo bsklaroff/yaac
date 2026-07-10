@@ -2,12 +2,11 @@ import { defineConfig } from 'vitest/config'
 import path from 'node:path'
 
 export default defineConfig({
-  // The root tsconfig doesn't set "jsx" (only tsconfig.frontend.json does),
-  // so tell esbuild directly — needed for .tsx component tests.
+  // The base tsconfig doesn't set "jsx" for test transform, so tell esbuild
+  // directly — needed for any .tsx tests run by inline projects here.
   esbuild: { jsx: 'automatic' },
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, 'src'),
       '@test': path.resolve(__dirname, 'test'),
       '@proxy': path.resolve(__dirname, 'k8s/proxy'),
     },
@@ -22,10 +21,13 @@ export default defineConfig({
     globalSetup: ['test/global-setup.ts'],
     setupFiles: ['test/setup.ts'],
     projects: [
+      // Frontend unit tests own their config (jsdom + testing-library resolve
+      // from apps/frontend, where those deps live).
+      'apps/frontend/vitest.config.ts',
       {
         extends: true,
         test: {
-          name: 'unit',
+          name: 'unit:core',
           include: ['test/unit/**/*.test.{ts,tsx}'],
           // unit-setup.ts strips the nested-session env (YAAC_NESTED,
           // YAAC_DATA_DIR, YAAC_K8S_REGISTRY) so unit assertions stay

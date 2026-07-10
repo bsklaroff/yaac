@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 
-vi.mock('@/lib/k8s/pods', async (importOriginal) => {
+vi.mock('@yaac/server/lib/k8s/pods', async (importOriginal) => {
   const actual = await importOriginal<typeof podsModule>()
   return {
     ...actual,
@@ -12,26 +12,26 @@ vi.mock('@/lib/k8s/pods', async (importOriginal) => {
   }
 })
 
-import { listSessionPods, LABEL_PREWARMED, type SessionPod } from '@/lib/k8s/pods'
-import type * as podsModule from '@/lib/k8s/pods'
-import * as cleanup from '@/lib/session/cleanup'
-import * as opencodeStatus from '@/lib/session/opencode-status'
+import { listSessionPods, LABEL_PREWARMED, type SessionPod } from '@yaac/server/lib/k8s/pods'
+import type * as podsModule from '@yaac/server/lib/k8s/pods'
+import * as cleanup from '@yaac/server/lib/session/cleanup'
+import * as opencodeStatus from '@yaac/server/lib/session/opencode-status'
 import {
   claudeDir,
   getProjectsDir,
   opencodeMetaDir,
   opencodeMetaFile,
   projectDir,
-} from '@/shared/project-paths'
+} from '@yaac/shared/project-paths'
 import {
   listActiveSessions,
   listDeletedSessions,
   captureOpencodeFirstMessages,
   _clearListActiveInflightForTests,
-} from '@/lib/session/list'
-import { registerSessionForwarders, stopSessionForwarders } from '@/lib/session/port-forwarders'
-import { ServerError } from '@/shared/errors'
-import type { ProjectMeta } from '@/shared/types'
+} from '@yaac/server/lib/session/list'
+import { registerSessionForwarders, stopSessionForwarders } from '@yaac/server/lib/session/port-forwarders'
+import { ServerError } from '@yaac/shared/errors'
+import type { ProjectMeta } from '@yaac/shared/types'
 
 const mockListPods = vi.mocked(listSessionPods)
 

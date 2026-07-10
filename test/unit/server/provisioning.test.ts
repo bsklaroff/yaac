@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
-vi.mock('@/server/sessions-changed', () => ({
+vi.mock('@yaac/server/sessions-changed', () => ({
   notifySessionListChanged: vi.fn(),
 }))
 
@@ -11,8 +11,8 @@ import {
   removeProvisioning,
   listProvisioning,
   clearAllProvisioningForTests,
-} from '@/server/provisioning'
-import { notifySessionListChanged } from '@/server/sessions-changed'
+} from '@yaac/server/provisioning'
+import { notifySessionListChanged } from '@yaac/server/sessions-changed'
 
 const notify = vi.mocked(notifySessionListChanged)
 

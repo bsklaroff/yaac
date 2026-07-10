@@ -2,11 +2,11 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import simpleGit from 'simple-git'
-import { cloneRepo } from '@/lib/git'
-import { listSessionPods, type SessionPod } from '@/lib/k8s/pods'
-import { removeSessionVcluster, vclusterName } from '@/lib/k8s/vcluster'
-import { removeProjectRegistry } from '@/lib/k8s/project-registry'
-import { PACKAGE_ROOT } from '@/shared/project-paths'
+import { cloneRepo } from '@yaac/server/lib/git'
+import { listSessionPods, type SessionPod } from '@yaac/server/lib/k8s/pods'
+import { removeSessionVcluster, vclusterName } from '@yaac/server/lib/k8s/vcluster'
+import { removeProjectRegistry } from '@yaac/server/lib/k8s/project-registry'
+import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
 import {
   createYaacTestEnv,
   spawnYaacServer,

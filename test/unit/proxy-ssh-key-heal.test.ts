@@ -1,12 +1,12 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { ProxyClient } from '@/lib/container/proxy-client'
+import { ProxyClient } from '@yaac/server/lib/container/proxy-client'
 
 const mockListSshEntries = vi.hoisted(() => vi.fn())
-vi.mock('@/lib/project/credentials', () => ({
+vi.mock('@yaac/server/lib/project/credentials', () => ({
   listSshEntries: mockListSshEntries,
 }))
 
-vi.mock('@/server/log', () => ({ serverLog: vi.fn() }))
+vi.mock('@yaac/server/log', () => ({ serverLog: vi.fn() }))
 
 /** A ProxyClient with its private `running` flag forced for the test. */
 function client(running: boolean): ProxyClient {

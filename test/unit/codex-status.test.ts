@@ -6,7 +6,7 @@ import os from 'node:os'
 import {
   classifyCodexTitle,
   getCodexFirstUserMessage,
-} from '@/lib/session/codex-status'
+} from '@yaac/server/lib/session/codex-status'
 
 // Title fixtures below reproduce states observed against a live Codex
 // session (codex-cli 0.142.4): a running turn animates a Braille spinner

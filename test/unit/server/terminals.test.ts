@@ -1,15 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type * as execModule from '@/lib/k8s/exec'
-import { containerExec } from '@/lib/k8s/exec'
+import type * as execModule from '@yaac/server/lib/k8s/exec'
+import { containerExec } from '@yaac/server/lib/k8s/exec'
 import {
   createShellWindow,
   killWindowTerminal,
   listSessionTerminals,
   nextShellName,
   parseWindowList,
-} from '@/server/terminals'
+} from '@yaac/server/terminals'
 
-vi.mock('@/lib/k8s/exec', async (importOriginal) => ({
+vi.mock('@yaac/server/lib/k8s/exec', async (importOriginal) => ({
   ...await importOriginal<typeof execModule>(),
   containerExec: vi.fn(),
 }))

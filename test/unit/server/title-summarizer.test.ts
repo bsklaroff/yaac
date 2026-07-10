@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-vi.mock('@/server/log', () => ({ serverLog: vi.fn() }))
+vi.mock('@yaac/server/log', () => ({ serverLog: vi.fn() }))
 
 import {
   TITLE_MODEL_URL,
@@ -8,8 +8,8 @@ import {
   summarizeTitle,
   _setTitleRunnerFactoryForTests,
   _resetTitleSummarizerForTests,
-} from '@/server/title-summarizer'
-import { serverLog } from '@/server/log'
+} from '@yaac/server/title-summarizer'
+import { serverLog } from '@yaac/server/log'
 
 const mockLog = vi.mocked(serverLog)
 

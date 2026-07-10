@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolveDeletedLimit, DELETED_DEFAULT_LIMIT, sessionList } from '@/commands/session-list'
+import { resolveDeletedLimit, DELETED_DEFAULT_LIMIT, sessionList } from '@yaac/cli/commands/session-list'
 
 describe('resolveDeletedLimit', () => {
   it('returns the default limit when no options are supplied', () => {

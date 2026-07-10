@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-vi.mock('@/lib/k8s/kubectl', () => ({
+vi.mock('@yaac/server/lib/k8s/kubectl', () => ({
   kubectlApply: vi.fn().mockResolvedValue(undefined),
   kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
@@ -9,8 +9,8 @@ import {
   buildCiliumEnvoyConfigCrdManifest,
   buildCiliumNetworkPolicyCrdManifest,
   ensureCiliumCrds,
-} from '@/lib/k8s/cilium-crds'
-import { kubectlApply, kubectlWithRetry } from '@/lib/k8s/kubectl'
+} from '@yaac/server/lib/k8s/cilium-crds'
+import { kubectlApply, kubectlWithRetry } from '@yaac/server/lib/k8s/kubectl'
 
 const mockApply = vi.mocked(kubectlApply)
 const mockRetry = vi.mocked(kubectlWithRetry)

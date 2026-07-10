@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
-import { classifySessionPods } from '@/lib/session/list'
-import type { TmuxLiveness } from '@/lib/session/cleanup'
-import type { SessionPod } from '@/lib/k8s/pods'
+import { classifySessionPods } from '@yaac/server/lib/session/list'
+import type { TmuxLiveness } from '@yaac/server/lib/session/cleanup'
+import type { SessionPod } from '@yaac/server/lib/k8s/pods'
 
 /** Grace window passed explicitly — production callers use testEnv.startingGraceMs. */
 const GRACE_MS = 60_000

@@ -3,28 +3,28 @@ import os from 'node:os'
 import path from 'node:path'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-vi.mock('@/lib/auth/usage', () => ({
+vi.mock('@yaac/server/lib/auth/usage', () => ({
   queryClaudePlanUsage: vi.fn(),
   queryClaudeRateLimitTier: vi.fn(),
 }))
-vi.mock('@/lib/auth/claude-oauth', () => ({
+vi.mock('@yaac/server/lib/auth/claude-oauth', () => ({
   refreshClaudeOAuthBundle: vi.fn(),
 }))
 // serverLog writes files — silence it.
-vi.mock('@/server/log', () => ({ serverLog: vi.fn() }))
-vi.mock('@/server/sessions-changed', () => ({ notifySessionListChanged: vi.fn() }))
+vi.mock('@yaac/server/log', () => ({ serverLog: vi.fn() }))
+vi.mock('@yaac/server/sessions-changed', () => ({ notifySessionListChanged: vi.fn() }))
 
-import { queryClaudePlanUsage, queryClaudeRateLimitTier } from '@/lib/auth/usage'
-import { refreshClaudeOAuthBundle } from '@/lib/auth/claude-oauth'
-import { notifySessionListChanged } from '@/server/sessions-changed'
+import { queryClaudePlanUsage, queryClaudeRateLimitTier } from '@yaac/server/lib/auth/usage'
+import { refreshClaudeOAuthBundle } from '@yaac/server/lib/auth/claude-oauth'
+import { notifySessionListChanged } from '@yaac/server/sessions-changed'
 import {
   planUsageForSnapshot,
   requestPlanUsageRefresh,
   _resetPlanUsageForTests,
-} from '@/server/plan-usage'
-import { setDataDir } from '@/shared/project-paths'
-import { loadClaudeCredentialsFile, saveClaudeCredentialsFile } from '@/shared/tool-auth'
-import type { ClaudeOAuthBundle, PlanUsageResult } from '@/shared/types'
+} from '@yaac/server/plan-usage'
+import { setDataDir } from '@yaac/shared/project-paths'
+import { loadClaudeCredentialsFile, saveClaudeCredentialsFile } from '@yaac/shared/tool-auth'
+import type { ClaudeOAuthBundle, PlanUsageResult } from '@yaac/shared/types'
 
 const queryMock = vi.mocked(queryClaudePlanUsage)
 const tierMock = vi.mocked(queryClaudeRateLimitTier)

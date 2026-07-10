@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { ensurePinnedBinary, type PinnedBinaryDeps } from '@/lib/k8s/pinned-binary'
+import { ensurePinnedBinary, type PinnedBinaryDeps } from '@yaac/server/lib/k8s/pinned-binary'
 
 type RunMock = ReturnType<typeof vi.fn<
   (file: string, args: string[], opts?: { timeout?: number }) => Promise<unknown>

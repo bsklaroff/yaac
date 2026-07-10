@@ -2,19 +2,19 @@ import { EventEmitter } from 'node:events'
 import type net from 'node:net'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
-vi.mock('@/lib/k8s/exec', () => ({
+vi.mock('@yaac/server/lib/k8s/exec', () => ({
   containerExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
-vi.mock('@/lib/container/port', () => ({
+vi.mock('@yaac/server/lib/container/port', () => ({
   reserveAvailablePort: vi.fn(),
   startPortForwarders: vi.fn(),
   kubectlRelay: vi.fn(),
 }))
 
-import { containerExec } from '@/lib/k8s/exec'
-import { kubectlRelay, reserveAvailablePort, startPortForwarders } from '@/lib/container/port'
-import type { ReservedPort } from '@/lib/container/port'
+import { containerExec } from '@yaac/server/lib/k8s/exec'
+import { kubectlRelay, reserveAvailablePort, startPortForwarders } from '@yaac/server/lib/container/port'
+import type { ReservedPort } from '@yaac/server/lib/container/port'
 import {
   buildStatusRight,
   getSessionPorts,
@@ -24,7 +24,7 @@ import {
   setSessionStatusRight,
   stopAllSessionForwarders,
   stopSessionForwarders,
-} from '@/lib/session/port-forwarders'
+} from '@yaac/server/lib/session/port-forwarders'
 
 const mockExec = vi.mocked(containerExec)
 const mockReserve = vi.mocked(reserveAvailablePort)

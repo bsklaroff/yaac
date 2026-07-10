@@ -4,18 +4,18 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import simpleGit from 'simple-git'
-import { setDataDir, getDataDir, projectDir, repoDir, claudeDir } from '@/shared/project-paths'
-import { cloneRepo } from '@/lib/git'
-import { ensurePodmanSocket, ensureRootfulPodmanHost, getSocketPath, usesRootfulPodman } from '@/lib/container/runtime'
+import { setDataDir, getDataDir, projectDir, repoDir, claudeDir } from '@yaac/shared/project-paths'
+import { cloneRepo } from '@yaac/server/lib/git'
+import { ensurePodmanSocket, ensureRootfulPodmanHost, getSocketPath, usesRootfulPodman } from '@yaac/server/lib/container/runtime'
 import {
   dataDirHash,
   k8sNamespace,
   kubectlWithRetry,
   type KubectlExecOptions,
-} from '@/lib/k8s/kubectl'
-import { LABEL_DATA_DIR_HASH, LABEL_SESSION_ID } from '@/lib/k8s/pods'
-import type { ProjectMeta } from '@/shared/types'
-import type { ProxyClientConfig } from '@/lib/container/proxy-client'
+} from '@yaac/server/lib/k8s/kubectl'
+import { LABEL_DATA_DIR_HASH, LABEL_SESSION_ID } from '@yaac/server/lib/k8s/pods'
+import type { ProjectMeta } from '@yaac/shared/types'
+import type { ProxyClientConfig } from '@yaac/server/lib/container/proxy-client'
 import { e2eMkdtemp } from '@test/helpers/tmp'
 
 const execFileAsync = promisify(execFile)

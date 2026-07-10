@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import { Hono } from 'hono'
-import { contentTypeFor, registerStaticRoutes, SPA_CSP } from '@/server/static'
+import { contentTypeFor, registerStaticRoutes, SPA_CSP } from '@yaac/server/static'
 
 describe('contentTypeFor', () => {
   it('maps known extensions', () => {

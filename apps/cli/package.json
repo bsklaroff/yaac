@@ -1,0 +1,28 @@
+{
+  "name": "@yaac/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "imports": {
+    "#*": "./src/*.ts"
+  },
+  "exports": {
+    "./*": "./src/*.ts",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@yaac/auth-daemon": "workspace:*",
+    "@yaac/server": "workspace:*",
+    "@yaac/shared": "workspace:*",
+    "commander": "14.0.3",
+    "simple-git": "3.35.2",
+    "ws": "8.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "25.5.2",
+    "@types/ws": "8.18.1"
+  }
+}

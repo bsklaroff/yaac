@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
-import { buildWebappUrl, openWebapp } from '@/server/cli'
-import type { ServerTarget } from '@/shared/server-client'
+import { buildWebappUrl, openWebapp } from '@yaac/server/cli'
+import type { ServerTarget } from '@yaac/shared/server-client'
 
 describe('buildWebappUrl', () => {
   it('builds a URL on the target origin carrying the bootstrap code', () => {

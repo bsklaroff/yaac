@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest'
 
-vi.mock('@/lib/k8s/cluster-delete', () => {
+vi.mock('@yaac/server/lib/k8s/cluster-delete', () => {
   class ClusterDeleteError extends Error {}
   return { runClusterDelete: vi.fn(), ClusterDeleteError }
 })
 
-import { clusterDelete } from '@/commands/cluster-delete'
-import { ClusterDeleteError, runClusterDelete } from '@/lib/k8s/cluster-delete'
+import { clusterDelete } from '@yaac/cli/commands/cluster-delete'
+import { ClusterDeleteError, runClusterDelete } from '@yaac/server/lib/k8s/cluster-delete'
 
 const mockRun = vi.mocked(runClusterDelete)
 

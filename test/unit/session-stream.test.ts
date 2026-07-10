@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { sessionStream } from '@/commands/session-stream'
-import { attachSessionPty } from '@/commands/ws-terminal'
-import { getRpcClient } from '@/shared/server-client'
-import type * as serverClientModule from '@/shared/server-client'
+import { sessionStream } from '@yaac/cli/commands/session-stream'
+import { attachSessionPty } from '@yaac/cli/commands/ws-terminal'
+import { getRpcClient } from '@yaac/shared/server-client'
+import type * as serverClientModule from '@yaac/shared/server-client'
 
-vi.mock('@/commands/ws-terminal', () => ({
+vi.mock('@yaac/cli/commands/ws-terminal', () => ({
   attachSessionPty: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('@/shared/server-client', async (importOriginal) => {
+vi.mock('@yaac/shared/server-client', async (importOriginal) => {
   const actual = await importOriginal<typeof serverClientModule>()
   return {
     ...actual,

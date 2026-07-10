@@ -37,12 +37,12 @@ vi.mock('node:child_process', () => ({
 
 // serverLog/pipeToServerLog write files / wire up stream piping — silence
 // them so the spawn fake above can stay minimal.
-vi.mock('@/server/log', () => ({
+vi.mock('@yaac/server/log', () => ({
   serverLog: vi.fn(),
   pipeToServerLog: vi.fn(),
 }))
 
-import { pipeToServerLog } from '@/server/log'
+import { pipeToServerLog } from '@yaac/server/log'
 
 import {
   REGISTRY_CONTAINER_NAME,
@@ -53,7 +53,7 @@ import {
   registryReachable,
   registryRef,
   removeLocalRegistry,
-} from '@/lib/k8s/registry'
+} from '@yaac/server/lib/k8s/registry'
 
 const fetchMock = vi.fn<typeof fetch>()
 

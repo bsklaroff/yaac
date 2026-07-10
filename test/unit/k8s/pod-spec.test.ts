@@ -14,7 +14,7 @@ import {
   parseEnvEntry,
   type NestedContainersParams,
   type SessionJobParams,
-} from '@/lib/k8s/pod-spec'
+} from '@yaac/server/lib/k8s/pod-spec'
 
 describe('CA constants', () => {
   it('compose the in-container cert path from dir + key', () => {

@@ -6,14 +6,14 @@ import {
   classifyAgentObservation,
   type AttachChild,
   type WatchedSession,
-} from '@/server/status-watcher'
+} from '@yaac/server/status-watcher'
 import {
   readSessionStatus,
   isSessionStreamHealthy,
   setSessionStatus,
   _resetSessionStatusStoreForTests,
-} from '@/lib/session/status-store'
-import { JOB_NAME_LABEL, LABEL_PREWARMED, LABEL_PROJECT, LABEL_SESSION_ID, LABEL_TOOL, type SessionPod } from '@/lib/k8s/pods'
+} from '@yaac/server/lib/session/status-store'
+import { JOB_NAME_LABEL, LABEL_PREWARMED, LABEL_PROJECT, LABEL_SESSION_ID, LABEL_TOOL, type SessionPod } from '@yaac/server/lib/k8s/pods'
 
 class FakeAttachChild implements AttachChild {
   writes: string[] = []

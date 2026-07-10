@@ -4,7 +4,7 @@ import {
   ControlModeClient,
   parseControlModeNotification,
   type ControlModeNotification,
-} from '@/server/control-mode'
+} from '@yaac/server/control-mode'
 
 describe('parseControlModeNotification', () => {
   it('parses a %subscription-changed line into name/pane/value', () => {

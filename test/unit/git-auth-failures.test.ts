@@ -2,12 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { setDataDir } from '@/shared/project-paths'
+import { setDataDir } from '@yaac/shared/project-paths'
 import {
   gitAuthFailuresStatePath,
   readAllGitAuthFailures,
   readGitAuthFailures,
-} from '@/lib/project/git-auth-failures'
+} from '@yaac/server/lib/project/git-auth-failures'
 
 describe('git-auth-failures', () => {
   let tmpDir: string

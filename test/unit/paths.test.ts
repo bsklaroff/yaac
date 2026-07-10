@@ -24,8 +24,8 @@ import {
   PACKAGE_ROOT,
   DOCKERFILES_DIR,
   PROXY_DIR,
-} from '@/shared/project-paths'
-import { serverLogPath, expandTilde } from '@/shared/paths'
+} from '@yaac/shared/project-paths'
+import { serverLogPath, expandTilde } from '@yaac/shared/paths'
 
 describe('expandTilde', () => {
   it('expands a leading ~', () => {

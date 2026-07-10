@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import readline from 'node:readline/promises'
 import simpleGit from 'simple-git'
-import { ensureGitIdentity } from '@/commands/git-identity'
-import { getGitUserConfig } from '@/shared/git'
-import type * as sharedGitModule from '@/shared/git'
+import { ensureGitIdentity } from '@yaac/cli/commands/git-identity'
+import { getGitUserConfig } from '@yaac/shared/git'
+import type * as sharedGitModule from '@yaac/shared/git'
 
 vi.mock('node:readline/promises', () => ({
   default: { createInterface: vi.fn() },
@@ -13,7 +13,7 @@ vi.mock('simple-git', () => ({
   default: vi.fn(),
 }))
 
-vi.mock('@/shared/git', async (importOriginal) => {
+vi.mock('@yaac/shared/git', async (importOriginal) => {
   const actual = await importOriginal<typeof sharedGitModule>()
   return {
     ...actual,

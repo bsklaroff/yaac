@@ -1,25 +1,25 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
-vi.mock('@/lib/session/list', () => ({
+vi.mock('@yaac/server/lib/session/list', () => ({
   listActiveSessions: vi.fn().mockResolvedValue({ sessions: [], stale: [], gitAuthFailures: {} }),
 }))
 
-vi.mock('@/lib/project/list', () => ({
+vi.mock('@yaac/server/lib/project/list', () => ({
   listProjects: vi.fn().mockResolvedValue([]),
 }))
 
 // The real slice reads the credentials file and kicks upstream refreshes —
 // keep unit-test snapshot builds inert.
-vi.mock('@/server/plan-usage', () => ({
+vi.mock('@yaac/server/plan-usage', () => ({
   planUsageForSnapshot: vi.fn().mockResolvedValue(null),
 }))
 
-import { EventHub, buildSnapshot, serializeEvent } from '@/server/events'
-import type { WsLike } from '@/server/events'
-import { listActiveSessions } from '@/lib/session/list'
-import { registerProvisioning, removeProvisioning, clearAllProvisioningForTests } from '@/server/provisioning'
-import { registerImageBuild, clearAllImageBuildsForTests } from '@/server/image-builds'
-import type { ServerSnapshot } from '@/shared/types'
+import { EventHub, buildSnapshot, serializeEvent } from '@yaac/server/events'
+import type { WsLike } from '@yaac/server/events'
+import { listActiveSessions } from '@yaac/server/lib/session/list'
+import { registerProvisioning, removeProvisioning, clearAllProvisioningForTests } from '@yaac/server/provisioning'
+import { registerImageBuild, clearAllImageBuildsForTests } from '@yaac/server/image-builds'
+import type { ServerSnapshot } from '@yaac/shared/types'
 
 function emptySnapshot(): ServerSnapshot {
   return {

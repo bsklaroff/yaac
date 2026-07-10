@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { imageApp } from '@/server/routes/image'
+import { imageApp } from '@yaac/server/routes/image'
 import {
   clearAllImageBuildsForTests,
   failImageBuild,
   ingestImageBuildLine,
   registerImageBuild,
-} from '@/server/image-builds'
-import type { ImageBuildEntry } from '@/shared/types'
+} from '@yaac/server/image-builds'
+import type { ImageBuildEntry } from '@yaac/shared/types'
 
 function register(): string {
   return registerImageBuild({

@@ -1,14 +1,17 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { setDataDir } from '@/shared/paths'
-import { readLock, type ServerLock } from '@/shared/lock'
+import { setDataDir, findRepoRoot } from '@yaac/shared/paths'
+import { readLock, type ServerLock } from '@yaac/shared/lock'
 import { TEST_NAMESPACE } from '@test/helpers/setup'
 import { e2eMkdtemp } from '@test/helpers/tmp'
 
-const TSX_CLI = path.resolve(__dirname, '..', '..', 'node_modules', 'tsx', 'dist', 'cli.mjs')
-const ENTRY = path.resolve(__dirname, '..', '..', 'src', 'cli.ts')
+const REPO_ROOT = findRepoRoot(path.dirname(fileURLToPath(import.meta.url)))
+const TSX_CLI = createRequire(import.meta.url).resolve('tsx/cli')
+const ENTRY = path.join(REPO_ROOT, 'apps', 'cli', 'src', 'cli.ts')
 
 /**
  * Cross-worker mutex so only one `yaac server run` is live at a time

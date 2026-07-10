@@ -10,9 +10,9 @@ import {
   resolveServerTarget,
   toClientError,
   type ServerTarget,
-} from '@/shared/server-client'
-import { writeRemote } from '@/shared/remote'
-import { setDataDir } from '@/shared/paths'
+} from '@yaac/shared/server-client'
+import { writeRemote } from '@yaac/shared/remote'
+import { setDataDir } from '@yaac/shared/paths'
 
 function jsonResponse(body: string, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(body, {

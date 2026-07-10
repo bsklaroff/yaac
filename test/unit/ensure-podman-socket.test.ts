@@ -3,7 +3,7 @@ import net from 'node:net'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { ensurePodmanSocket, ROOTFUL_PODMAN_SOCKET } from '@/lib/container/runtime'
+import { ensurePodmanSocket, ROOTFUL_PODMAN_SOCKET } from '@yaac/server/lib/container/runtime'
 
 describe('ensurePodmanSocket', () => {
   let tmpDir: string | null = null

@@ -1,25 +1,16 @@
 {
+  "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "outDir": "dist",
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
-    "jsx": "react-jsx",
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
     "paths": {
-      "@/*": ["./src/*"],
+      "@yaac/shared/*": ["./packages/shared/src/*"],
+      "@yaac/server/*": ["./packages/server/src/*"],
+      "@yaac/auth-daemon/*": ["./packages/auth-daemon/src/*"],
+      "@yaac/cli/*": ["./apps/cli/src/*"],
+      "@yaac/test-utils/*": ["./packages/test-utils/src/*"],
       "@test/*": ["./test/*"],
-      "@proxy/*": ["./k8s/proxy/*"],
-      "@relay/*": ["./k8s/relay/*"]
+      "@proxy/*": ["./k8s/proxy/*"]
     }
   },
-  "include": ["src", "test", "scripts", "*.config.ts", "k8s/proxy/proxy.ts", "k8s/proxy/ca-bundle.ts", "k8s/proxy/transparent.ts", "k8s/proxy/pp2.ts", "k8s/proxy/pod-watch.ts", "k8s/proxy/dns-stub.ts", "k8s/relay/relay.ts", "k8s/relay/pp2-frame.ts", "k8s/relay/dns-stub.ts"],
-  "exclude": ["node_modules", "dist", "src/frontend", "vite.config.ts"]
+  "include": ["apps/cli/src", "apps/cli/test", "packages/shared/src", "packages/shared/test", "packages/server/src", "packages/server/test", "packages/auth-daemon/src", "packages/auth-daemon/test", "packages/test-utils/src", "test", "scripts", "*.config.ts", "k8s/proxy/proxy.ts", "k8s/proxy/ca-bundle.ts", "k8s/proxy/transparent.ts", "k8s/proxy/pp2.ts", "k8s/proxy/pod-watch.ts", "k8s/proxy/dns-stub.ts", "k8s/relay/relay.ts", "k8s/relay/pp2-frame.ts", "k8s/relay/dns-stub.ts"],
+  "exclude": ["node_modules", "dist", "apps/frontend"]
 }

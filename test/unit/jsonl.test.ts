@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { scanJsonlForward } from '@/lib/session/jsonl'
+import { scanJsonlForward } from '@yaac/server/lib/session/jsonl'
 
 describe('scanJsonlForward', () => {
   let tmpDir: string

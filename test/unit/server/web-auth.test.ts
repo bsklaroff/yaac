@@ -9,7 +9,7 @@ import {
   isPublicPath,
   MAX_SESSIONS,
   SESSION_COOKIE,
-} from '@/server/web-auth'
+} from '@yaac/server/web-auth'
 
 describe('createWebAuthStore', () => {
   it('exchanges the current code for a session id and rotates the code', () => {

@@ -2,38 +2,38 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import { getProjectsDir, projectDir } from '@/shared/project-paths'
-import { setDefaultTool } from '@/lib/project/preferences'
-import { pickNextStreamSession } from '@/server/stream-picker'
-import type { WaitingSession } from '@/lib/session/waiting'
-import type { ProjectMeta } from '@/shared/types'
+import { getProjectsDir, projectDir } from '@yaac/shared/project-paths'
+import { setDefaultTool } from '@yaac/server/lib/project/preferences'
+import { pickNextStreamSession } from '@yaac/server/stream-picker'
+import type { WaitingSession } from '@yaac/server/lib/session/waiting'
+import type { ProjectMeta } from '@yaac/shared/types'
 
-import type * as waitingModule from '@/lib/session/waiting'
-import type * as statusModule from '@/lib/session/status'
-import type * as podsModule from '@/lib/k8s/pods'
+import type * as waitingModule from '@yaac/server/lib/session/waiting'
+import type * as statusModule from '@yaac/server/lib/session/status'
+import type * as podsModule from '@yaac/server/lib/k8s/pods'
 
-vi.mock('@/lib/session/waiting', async () => {
-  const actual = await vi.importActual<typeof waitingModule>('@/lib/session/waiting')
+vi.mock('@yaac/server/lib/session/waiting', async () => {
+  const actual = await vi.importActual<typeof waitingModule>('@yaac/server/lib/session/waiting')
   return { ...actual, getWaitingSessions: vi.fn() }
 })
 
 // getActiveProjects (the needs_project path) lists session pods directly —
 // mock the pod listing so no cluster is needed.
-vi.mock('@/lib/k8s/pods', async () => {
-  const actual = await vi.importActual<typeof podsModule>('@/lib/k8s/pods')
+vi.mock('@yaac/server/lib/k8s/pods', async () => {
+  const actual = await vi.importActual<typeof podsModule>('@yaac/server/lib/k8s/pods')
   return { ...actual, listSessionPods: vi.fn().mockResolvedValue([]) }
 })
 
-vi.mock('@/server/session-create', () => ({ createSession: vi.fn() }))
-vi.mock('@/lib/session/status', async () => {
-  const actual = await vi.importActual<typeof statusModule>('@/lib/session/status')
+vi.mock('@yaac/server/session-create', () => ({ createSession: vi.fn() }))
+vi.mock('@yaac/server/lib/session/status', async () => {
+  const actual = await vi.importActual<typeof statusModule>('@yaac/server/lib/session/status')
   return { ...actual, getSessionFirstMessage: vi.fn() }
 })
 
-import { getWaitingSessions } from '@/lib/session/waiting'
-import { createSession } from '@/server/session-create'
-import { getSessionFirstMessage } from '@/lib/session/status'
-import { listSessionPods } from '@/lib/k8s/pods'
+import { getWaitingSessions } from '@yaac/server/lib/session/waiting'
+import { createSession } from '@yaac/server/session-create'
+import { getSessionFirstMessage } from '@yaac/server/lib/session/status'
+import { listSessionPods } from '@yaac/server/lib/k8s/pods'
 
 const mockGetWaiting = vi.mocked(getWaitingSessions)
 const mockCreate = vi.mocked(createSession)

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { consumeNdjsonStream } from '@/shared/ndjson'
+import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 
 function ndjsonResponse(events: unknown[], opts: { trailingNewline?: boolean } = {}): Response {
   const body = events.map((e) => JSON.stringify(e)).join('\n')

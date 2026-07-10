@@ -7,14 +7,14 @@ import {
   projectClaudeCredentialsFile,
   projectCodexAuthFile,
   projectDir,
-} from '@/shared/project-paths'
+} from '@yaac/shared/project-paths'
 import {
   cleanupProjectClaudePlaceholders,
   cleanupProjectCodexPlaceholders,
   writeProjectClaudePlaceholder,
   writeProjectCodexPlaceholder,
-} from '@/shared/tool-auth'
-import type { ClaudeOAuthBundle, CodexOAuthBundle } from '@/shared/types'
+} from '@yaac/shared/tool-auth'
+import type { ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/shared/types'
 
 const CLAUDE_BUNDLE: ClaudeOAuthBundle = {
   accessToken: 'sk-ant-oat01-real',

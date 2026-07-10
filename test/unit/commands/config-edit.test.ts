@@ -4,16 +4,16 @@ import {
   configEditProject,
   configEditDockerfile,
   configEditUserDockerfile,
-} from '@/commands/config-edit'
-import { editFile } from '@/commands/edit-file'
-import { getRpcClient } from '@/shared/server-client'
-import type * as serverClientModule from '@/shared/server-client'
+} from '@yaac/cli/commands/config-edit'
+import { editFile } from '@yaac/cli/commands/edit-file'
+import { getRpcClient } from '@yaac/shared/server-client'
+import type * as serverClientModule from '@yaac/shared/server-client'
 
-vi.mock('@/commands/edit-file', () => ({
+vi.mock('@yaac/cli/commands/edit-file', () => ({
   editFile: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('@/shared/server-client', async (importOriginal) => {
+vi.mock('@yaac/shared/server-client', async (importOriginal) => {
   const actual = await importOriginal<typeof serverClientModule>()
   return {
     ...actual,
