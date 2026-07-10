@@ -3,17 +3,17 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 import { buildApp } from '@/server/server'
-import { projectConfigDir, getProjectsDir, projectDir, claudeDir, codexDir } from '@/lib/project/paths'
+import { projectConfigDir, getProjectsDir, projectDir, claudeDir, codexDir } from '@/shared/project-paths'
 import { addEntry, loadCredentials } from '@/lib/project/credentials'
 import {
   loadClaudeCredentialsFile,
   saveClaudeOAuthBundle,
-} from '@/lib/project/tool-auth'
+} from '@/shared/tool-auth'
 import { loadPreferences } from '@/lib/project/preferences'
 import type * as projectAddModule from '@/lib/project/add'
-import type * as cliResolveModule from '@/server/cli-resolve'
+import type * as cliResolveModule from '@/auth-daemon/cli-resolve'
 import type { ProjectMeta, ClaudeOAuthBundle } from '@/shared/types'
-import { ServerError } from '@/server/errors'
+import { ServerError } from '@/shared/errors'
 import { makeTestRpcClient } from '@test/helpers/rpc'
 
 vi.mock('@/server/session-create', () => ({
@@ -42,8 +42,8 @@ vi.mock('@/lib/project/remove', () => ({
 
 // The install flow's post-exit verification resolves the CLI on the real
 // machine — mocked so the route tests pass regardless of what's installed.
-vi.mock('@/server/cli-resolve', async () => {
-  const actual = await vi.importActual<typeof cliResolveModule>('@/server/cli-resolve')
+vi.mock('@/auth-daemon/cli-resolve', async () => {
+  const actual = await vi.importActual<typeof cliResolveModule>('@/auth-daemon/cli-resolve')
   return {
     ...actual,
     resolveToolCliPath: () => '/fake/bin/tool',
@@ -56,7 +56,8 @@ import { restartSession } from '@/lib/session/restart'
 import { addProject } from '@/lib/project/add'
 import { removeProject } from '@/lib/project/remove'
 import { registerProvisioning, listProvisioning, clearAllProvisioningForTests } from '@/server/provisioning'
-import { authAgentHub, type AgentOp } from '@/server/auth-agent'
+import { authAgentHub } from '@/server/auth-agent'
+import type { AgentOp } from '@/shared/auth-agent-protocol'
 import {
   cancelToolLogin,
   clearAllToolLoginsForTests,

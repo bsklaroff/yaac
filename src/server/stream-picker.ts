@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import { listSessionPods, isPrewarmed } from '@/lib/k8s/pods'
-import { getProjectsDir } from '@/lib/project/paths'
+import { getProjectsDir } from '@/shared/project-paths'
 import { isTmuxSessionAlive } from '@/lib/session/cleanup'
 import { getSessionFirstMessage } from '@/lib/session/status'
 import { getWaitingSessions } from '@/lib/session/waiting'

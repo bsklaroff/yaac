@@ -4,7 +4,7 @@ import {
   outputTail,
   presentableOutput,
   type CliSession,
-} from '@/server/cli-session'
+} from '@/auth-daemon/cli-session'
 
 describe('output helpers', () => {
   it('outputTail joins the last non-empty lines', () => {

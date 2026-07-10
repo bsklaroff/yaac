@@ -7,11 +7,11 @@ import {
   getProjectsDir,
   opencodeMetaFile,
   worktreesDir,
-} from '@/lib/project/paths'
+} from '@/shared/project-paths'
 import { cleanupSession } from '@/lib/session/cleanup'
 import { normalizeTool } from '@/lib/session/status'
 import { createSession, type SessionCreateResult } from '@/server/session-create'
-import { ServerError } from '@/server/errors'
+import { ServerError } from '@/shared/errors'
 import type { AgentTool } from '@/shared/types'
 
 export interface RestartResolution {

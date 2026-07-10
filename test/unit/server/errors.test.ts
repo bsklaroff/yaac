@@ -1,9 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { HTTPException } from 'hono/http-exception'
-import {
-  ServerError,
-  toErrorBody,
-} from '@/server/errors'
+import { ServerError } from '@/shared/errors'
+import { toErrorBody } from '@/server/errors'
 
 describe('server errors', () => {
   describe('ServerError', () => {

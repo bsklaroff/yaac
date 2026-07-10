@@ -9,7 +9,7 @@ vi.mock('@/lib/k8s/pods', async () => {
 
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 import { resolveSessionContainer } from '@/server/session-resolve'
-import { ServerError } from '@/server/errors'
+import { ServerError } from '@/shared/errors'
 import type * as podsModule from '@/lib/k8s/pods'
 
 describe('resolveSessionContainer', () => {

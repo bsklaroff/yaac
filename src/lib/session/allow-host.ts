@@ -1,7 +1,7 @@
 import { isPrewarmed, listSessionPods } from '@/lib/k8s/pods'
 import { proxyClient } from '@/lib/container/proxy-client'
 import { addAllowedHostToProjectConfig } from '@/lib/project/local-config'
-import { ServerError } from '@/server/errors'
+import { ServerError } from '@/shared/errors'
 
 /**
  * Allow a previously-blocked egress host for a running session (the webapp

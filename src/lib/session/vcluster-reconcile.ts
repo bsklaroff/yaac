@@ -7,7 +7,7 @@ import {
   VCLUSTER_ORPHAN_GRACE_MS,
   waitForVclusterKubeconfig,
 } from '@/lib/k8s/vcluster'
-import { sessionVclusterDir } from '@/lib/project/paths'
+import { sessionVclusterDir } from '@/shared/project-paths'
 
 /**
  * Background-loop tick step for per-session vclusters:

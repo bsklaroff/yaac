@@ -9,7 +9,7 @@ import {
   projectClaudeCredentialsFile,
   claudeDir,
   projectDir,
-} from '@/lib/project/paths'
+} from '@/shared/project-paths'
 import {
   loadToolAuthEntry,
   saveToolAuth,
@@ -24,14 +24,14 @@ import {
   persistToolAuthPayload,
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_REFRESH_TOKEN,
-} from '@/lib/project/tool-auth'
+} from '@/shared/tool-auth'
 import {
   claudeKeychainService,
   detectAuthKind,
   extractClaudeOAuthBundle,
   parseOpencodeProvider,
 } from '@/shared/tool-auth-interactive'
-import { ServerError } from '@/server/errors'
+import { ServerError } from '@/shared/errors'
 import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '@/shared/types'
 
 const SAMPLE_BUNDLE: ClaudeOAuthBundle = {

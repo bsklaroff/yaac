@@ -1,8 +1,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { projectConfigDir, projectDir } from '@/lib/project/paths'
+import { projectConfigDir, projectDir } from '@/shared/project-paths'
 import { parseProjectConfig, resolveProjectConfig } from '@/lib/project/config'
-import { ServerError } from '@/server/errors'
+import { ServerError } from '@/shared/errors'
 import type { YaacConfig } from '@/shared/types'
 
 async function ensureProjectExists(slug: string): Promise<void> {

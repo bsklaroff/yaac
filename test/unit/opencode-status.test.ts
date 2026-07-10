@@ -7,7 +7,7 @@ vi.mock('@/lib/k8s/exec', () => ({
 }))
 
 import { containerExec } from '@/lib/k8s/exec'
-import { opencodeMetaDir, opencodeMetaFile } from '@/lib/project/paths'
+import { opencodeMetaDir, opencodeMetaFile } from '@/shared/project-paths'
 import {
   pickOpencodeSession,
   classifyOpencodePane,

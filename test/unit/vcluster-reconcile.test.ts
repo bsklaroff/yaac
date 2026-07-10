@@ -21,7 +21,7 @@ import {
   removeSessionVcluster,
   waitForVclusterKubeconfig,
 } from '@/lib/k8s/vcluster'
-import { sessionVclusterDir } from '@/lib/project/paths'
+import { sessionVclusterDir } from '@/shared/project-paths'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 
 const mockPods = vi.mocked(listSessionPods)

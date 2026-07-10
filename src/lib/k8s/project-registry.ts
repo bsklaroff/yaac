@@ -11,7 +11,7 @@ import {
 import { LABEL_PROJECT, LABEL_SESSION_ID, runPodToCompletion } from '@/lib/k8s/pods'
 import { pushImageToRegistry, registryHasTag, registryRef } from '@/lib/k8s/registry'
 import { imageExists } from '@/lib/container/runtime'
-import { projectDir } from '@/lib/project/paths'
+import { projectDir } from '@/shared/project-paths'
 import { testEnv } from '@/shared/env'
 
 /** `app` label value shared by every per-project registry pod. */

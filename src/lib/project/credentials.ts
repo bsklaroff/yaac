@@ -5,8 +5,8 @@ import {
   githubCredentialsPath,
   proxySecretsCredentialsPath,
   ensureDataDir,
-} from '@/lib/project/paths'
-import { ServerError } from '@/server/errors'
+} from '@/shared/project-paths'
+import { ServerError } from '@/shared/errors'
 import { parsePattern, validatePattern, matchPattern, isHostSegment } from '@/shared/credentials'
 import { expandTilde } from '@/shared/paths'
 import type {

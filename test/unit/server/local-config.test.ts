@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import { projectConfigDir, getProjectsDir } from '@/lib/project/paths'
+import { projectConfigDir, getProjectsDir } from '@/shared/project-paths'
 import { writeProjectConfig, removeProjectConfig, readProjectConfigRaw } from '@/lib/project/local-config'
 import type { ProjectMeta } from '@/shared/types'
 

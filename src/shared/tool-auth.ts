@@ -10,8 +10,8 @@ import {
   opencodeCredentialsPath,
   projectClaudeCredentialsFile,
   projectCodexAuthFile,
-} from '@/lib/project/paths'
-import { ServerError } from '@/server/errors'
+} from '@/shared/project-paths'
+import { ServerError } from '@/shared/errors'
 import {
   claudeOAuthBundleSchema,
   codexOAuthBundleSchema,

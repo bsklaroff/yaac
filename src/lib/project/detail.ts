@@ -1,9 +1,9 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { projectDir, projectConfigDir } from '@/lib/project/paths'
+import { projectDir, projectConfigDir } from '@/shared/project-paths'
 import { listSessionPods } from '@/lib/k8s/pods'
 import { loadProjectConfig } from '@/lib/project/config'
-import { ServerError } from '@/server/errors'
+import { ServerError } from '@/shared/errors'
 import type { ProjectMeta, YaacConfig } from '@/shared/types'
 
 export interface ProjectDetail {

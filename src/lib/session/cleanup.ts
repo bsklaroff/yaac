@@ -19,7 +19,7 @@ import {
   cachedPackagesDir,
   projectDir,
   sessionDir,
-} from '@/lib/project/paths'
+} from '@/shared/project-paths'
 import { CONTAINER_TMUX_SOCK, getProjectsDir } from '@/shared/paths'
 import { stopSessionForwarders } from '@/lib/session/port-forwarders'
 import { serverLog } from '@/server/log'

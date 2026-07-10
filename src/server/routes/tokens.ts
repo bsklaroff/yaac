@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { zv } from '@/server/routes/validator'
-import { ServerError } from '@/server/errors'
+import { ServerError } from '@/shared/errors'
 import type { TokenStore } from '@/server/token-store'
 
 /**

@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import { containerExec } from '@/lib/k8s/exec'
-import { opencodeMetaFile } from '@/lib/project/paths'
+import { opencodeMetaFile } from '@/shared/project-paths'
 import type { OpencodeSessionMeta } from '@/shared/types'
 
 /**

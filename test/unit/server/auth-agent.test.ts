@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { createAuthAgentHub, parseAgentViewMsg, type AgentOp } from '@/server/auth-agent'
-import { ServerError } from '@/server/errors'
+import { createAuthAgentHub, parseAgentViewMsg } from '@/server/auth-agent'
+import type { AgentOp } from '@/shared/auth-agent-protocol'
+import { ServerError } from '@/shared/errors'
 import type { ToolLoginView } from '@/shared/types'
 
 function fakeSocket(): {

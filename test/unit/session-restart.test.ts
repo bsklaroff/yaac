@@ -14,7 +14,7 @@ import {
   opencodeMetaFile,
   worktreesDir,
   projectDir,
-} from '@/lib/project/paths'
+} from '@/shared/project-paths'
 import type { SessionPod } from '@/lib/k8s/pods'
 
 /**

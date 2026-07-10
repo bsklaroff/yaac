@@ -9,7 +9,7 @@ import {
   type TokenEntry,
 } from '@/server/token-store'
 import { maskToken } from '@/shared/mask'
-import { ServerError } from '@/server/errors'
+import { ServerError } from '@/shared/errors'
 import { setDataDir, tokensPath } from '@/shared/paths'
 
 describe('createTokenStore', () => {

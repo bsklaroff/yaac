@@ -23,7 +23,7 @@ import {
   SHARED_IMAGE_STORE_DST_PATH,
   SHARED_IMAGE_STORE_PATH,
 } from '@/lib/k8s/pod-spec'
-import { setDataDir } from '@/lib/project/paths'
+import { setDataDir } from '@/shared/project-paths'
 
 const mockContainerExec = vi.mocked(containerExec)
 

@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { claudeDir } from '@/lib/project/paths'
+import { claudeDir } from '@/shared/project-paths'
 import { scanJsonlForward } from '@/lib/session/jsonl'
 
 /**

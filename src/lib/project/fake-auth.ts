@@ -4,7 +4,7 @@ import {
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_REFRESH_TOKEN,
   PLACEHOLDER_GH_TOKEN,
-} from '@/lib/project/tool-auth'
+} from '@/shared/tool-auth'
 import { addEntry } from '@/lib/project/credentials'
 import type { ClaudeOAuthBundle } from '@/shared/types'
 

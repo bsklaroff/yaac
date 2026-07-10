@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { setDataDir, projectDir, projectConfigDir } from '@/lib/project/paths'
+import { setDataDir, projectDir, projectConfigDir } from '@/shared/project-paths'
 import { withAllowedHost, addAllowedHostToProjectConfig } from '@/lib/project/local-config'
 import type { YaacConfig } from '@/shared/types'
 

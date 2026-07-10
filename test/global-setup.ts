@@ -7,7 +7,7 @@ import { ensurePodmanSocket, ensureRootfulPodmanHost, getSocketPath, usesRootful
 import { ensureRegistryImage } from '@/lib/k8s/project-registry'
 import { ensureVclusterImages } from '@/lib/k8s/vcluster'
 import { pushImageToRegistry, registryReachable } from '@/lib/k8s/registry'
-import { DOCKERFILES_DIR, PROXY_DIR } from '@/lib/project/paths'
+import { DOCKERFILES_DIR, PROXY_DIR } from '@/shared/project-paths'
 
 const execFileAsync = promisify(execFile)
 

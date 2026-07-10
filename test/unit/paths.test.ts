@@ -24,7 +24,7 @@ import {
   PACKAGE_ROOT,
   DOCKERFILES_DIR,
   PROXY_DIR,
-} from '@/lib/project/paths'
+} from '@/shared/project-paths'
 import { serverLogPath, expandTilde } from '@/shared/paths'
 
 describe('expandTilde', () => {

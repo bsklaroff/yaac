@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { findExecutable, resolveCommandPath, resolveToolCliPath } from '@/server/cli-resolve'
+import { findExecutable, resolveCommandPath, resolveToolCliPath } from '@/auth-daemon/cli-resolve'
 
 // A name no machine has, so PATH/fallback dirs can never produce a hit.
 const MISSING = 'yaac-definitely-missing-cli-xyz'

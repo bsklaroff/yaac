@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { DOCKERFILES_DIR } from '@/lib/project/paths'
+import { DOCKERFILES_DIR } from '@/shared/project-paths'
 import { baseImageHash, contextHash, fileHash, sessionUid, isLayered } from '@/lib/container/image-builder'
 
 describe('fileHash', () => {

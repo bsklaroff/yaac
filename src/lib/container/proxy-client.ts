@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { SecretProxyRule } from '@/shared/types'
 import { imageExists } from '@/lib/container/runtime'
-import { PROXY_DIR } from '@/lib/project/paths'
+import { PROXY_DIR } from '@/shared/project-paths'
 import { buildImage, contextHash } from '@/lib/container/image-builder'
 import {
   ensureCaConfigMap,

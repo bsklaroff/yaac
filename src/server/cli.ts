@@ -29,7 +29,7 @@ import {
 import { resolveServerPort, bindWithAutoIncrement } from '@/shared/server-port'
 import { resolveServerTarget, type ServerTarget } from '@/shared/server-client'
 import { ensureAuthDaemonSpawned } from '@/shared/auth-daemon'
-import { ensureDataDir } from '@/lib/project/paths'
+import { ensureDataDir } from '@/shared/project-paths'
 import { serverLogPath, webSessionsPath } from '@/shared/paths'
 import { startBackgroundLoop } from '@/server/background-loop'
 import { gcOrphanEphemeralModuleDirs } from '@/lib/session/cleanup'

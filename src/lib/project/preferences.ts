@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { getDataDir, ensureDataDir } from '@/lib/project/paths'
-import { ServerError } from '@/server/errors'
+import { getDataDir, ensureDataDir } from '@/shared/project-paths'
+import { ServerError } from '@/shared/errors'
 import type { AgentTool } from '@/shared/types'
 
 /** A persisted keyboard-shortcut chord: a physical key `code` plus the four

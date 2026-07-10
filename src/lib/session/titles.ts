@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { projectDir } from '@/lib/project/paths'
+import { projectDir } from '@/shared/project-paths'
 
 /**
  * Session titles, stored per project in

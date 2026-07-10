@@ -7,13 +7,13 @@ import {
   projectClaudeCredentialsFile,
   projectCodexAuthFile,
   projectDir,
-} from '@/lib/project/paths'
+} from '@/shared/project-paths'
 import {
   cleanupProjectClaudePlaceholders,
   cleanupProjectCodexPlaceholders,
   writeProjectClaudePlaceholder,
   writeProjectCodexPlaceholder,
-} from '@/lib/project/tool-auth'
+} from '@/shared/tool-auth'
 import type { ClaudeOAuthBundle, CodexOAuthBundle } from '@/shared/types'
 
 const CLAUDE_BUNDLE: ClaudeOAuthBundle = {

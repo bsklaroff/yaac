@@ -65,7 +65,7 @@ describe('ensureImage layer stacking', () => {
     // module cache, and we need these fresh imports to pick up the doMock
     // above — static imports would keep the stale, pre-reset bindings.
     // eslint-disable-next-line no-restricted-syntax
-    const paths = await import('@/lib/project/paths')
+    const paths = await import('@/shared/project-paths')
     paths.setDataDir(dataDir)
     // eslint-disable-next-line no-restricted-syntax
     const builder = await import('@/lib/container/image-builder')

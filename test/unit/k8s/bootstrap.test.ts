@@ -70,7 +70,7 @@ import {
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@/lib/k8s/kubectl'
 import { CA_CERT_PATH } from '@/lib/k8s/pod-spec'
 import { LABEL_DATA_DIR_HASH, LABEL_VCLUSTER_MANAGED_BY } from '@/lib/k8s/pods'
-import { credentialsDir } from '@/lib/project/paths'
+import { credentialsDir } from '@/shared/project-paths'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 
 const mockApply = vi.mocked(kubectlApply)

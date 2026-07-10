@@ -15,7 +15,7 @@ import {
   clearShortcutOverrides,
   type SerializedChord,
 } from '@/lib/project/preferences'
-import { ServerError } from '@/server/errors'
+import { ServerError } from '@/shared/errors'
 
 const chord = (code: string, over: Partial<SerializedChord> = {}): SerializedChord => ({
   code, alt: true, ctrl: false, meta: false, shift: false, ...over,

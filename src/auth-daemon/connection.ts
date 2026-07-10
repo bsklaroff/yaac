@@ -10,7 +10,7 @@ import {
   getToolInstall,
   startToolInstall,
 } from '@/auth-daemon/tool-install'
-import type { AgentKind, AgentOp } from '@/server/auth-agent'
+import type { AgentKind, AgentOp } from '@/shared/auth-agent-protocol'
 import type { ToolInstallView, ToolLoginView } from '@/shared/types'
 
 /**

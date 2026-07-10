@@ -28,7 +28,7 @@ import {
   getToolLogin,
   startToolLogin,
 } from '@/auth-daemon/tool-login'
-import { loadClaudeCredentialsFile } from '@/lib/project/tool-auth'
+import { loadClaudeCredentialsFile } from '@/shared/tool-auth'
 
 const CLAUDE_STUB = path.join(__dirname, '..', '..', 'helpers', 'fake-claude-login.cjs')
 

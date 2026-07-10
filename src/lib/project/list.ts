@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { getProjectsDir } from '@/lib/project/paths'
+import { getProjectsDir } from '@/shared/project-paths'
 import { listSessionPods, isPrewarmed } from '@/lib/k8s/pods'
 import type { ProjectMeta } from '@/shared/types'
 

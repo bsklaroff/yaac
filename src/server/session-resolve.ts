@@ -1,5 +1,5 @@
 import { listSessionPods, findSessionPod } from '@/lib/k8s/pods'
-import { ServerError } from '@/server/errors'
+import { ServerError } from '@/shared/errors'
 
 export interface ResolvedSession {
   jobName: string

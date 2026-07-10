@@ -1,4 +1,4 @@
-import { codexTranscriptFile } from '@/lib/project/paths'
+import { codexTranscriptFile } from '@/shared/project-paths'
 import { scanJsonlForward } from '@/lib/session/jsonl'
 
 interface CodexEntry {

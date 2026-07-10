@@ -3,8 +3,8 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 import * as pty from '@lydell/node-pty'
-import { ensureDataDir, getDataDir } from '@/lib/project/paths'
-import { persistToolLogin } from '@/lib/project/tool-auth'
+import { ensureDataDir, getDataDir } from '@/shared/project-paths'
+import { persistToolLogin } from '@/shared/tool-auth'
 import {
   claudeKeychainService,
   deleteScratchClaudeKeychainItem,
@@ -12,9 +12,9 @@ import {
   extractCodexOAuthBundle,
   readClaudeKeychainPayload,
 } from '@/shared/tool-auth-interactive'
-import { resolveToolCliPath } from '@/server/cli-resolve'
-import { createCliSessionRegistry, outputTail, type CliSession } from '@/server/cli-session'
-import { ServerError } from '@/server/errors'
+import { resolveToolCliPath } from '@/auth-daemon/cli-resolve'
+import { createCliSessionRegistry, outputTail, type CliSession } from '@/auth-daemon/cli-session'
+import { ServerError } from '@/shared/errors'
 import { testEnv } from '@/shared/env'
 import type { ToolLoginView } from '@/shared/types'
 

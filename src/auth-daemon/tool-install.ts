@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { resolveCommandPath, resolveToolCliPath } from '@/server/cli-resolve'
-import { createCliSessionRegistry, outputTail, type CliSession } from '@/server/cli-session'
+import { resolveCommandPath, resolveToolCliPath } from '@/auth-daemon/cli-resolve'
+import { createCliSessionRegistry, outputTail, type CliSession } from '@/auth-daemon/cli-session'
 import { testEnv } from '@/shared/env'
 import type { ToolInstallView } from '@/shared/types'
 

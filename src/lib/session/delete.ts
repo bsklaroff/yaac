@@ -1,6 +1,6 @@
 import { findSessionPod, listSessionJobs, listSessionPods } from '@/lib/k8s/pods'
 import { cleanupSessionDetached } from '@/lib/session/cleanup'
-import { ServerError } from '@/server/errors'
+import { ServerError } from '@/shared/errors'
 
 export interface DeletedSessionInfo {
   sessionId: string

@@ -21,7 +21,7 @@ import {
   LABEL_VCLUSTER_MANAGED_BY,
   VCLUSTER_API_PORT,
 } from '@/lib/k8s/pods'
-import { credentialsDir, getDataDir } from '@/lib/project/paths'
+import { credentialsDir, getDataDir } from '@/shared/project-paths'
 import { env } from '@/shared/env'
 
 /** Deployment/Service name and pod selector label of the shared proxy. */

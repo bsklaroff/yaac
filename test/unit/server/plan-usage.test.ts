@@ -22,8 +22,8 @@ import {
   requestPlanUsageRefresh,
   _resetPlanUsageForTests,
 } from '@/server/plan-usage'
-import { setDataDir } from '@/lib/project/paths'
-import { loadClaudeCredentialsFile, saveClaudeCredentialsFile } from '@/lib/project/tool-auth'
+import { setDataDir } from '@/shared/project-paths'
+import { loadClaudeCredentialsFile, saveClaudeCredentialsFile } from '@/shared/tool-auth'
 import type { ClaudeOAuthBundle, PlanUsageResult } from '@/shared/types'
 
 const queryMock = vi.mocked(queryClaudePlanUsage)

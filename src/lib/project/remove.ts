@@ -2,9 +2,9 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { listSessionPods, type SessionPod } from '@/lib/k8s/pods'
 import { removeProjectRegistry } from '@/lib/k8s/project-registry'
-import { projectDir } from '@/lib/project/paths'
+import { projectDir } from '@/shared/project-paths'
 import { cleanupSessionDetached } from '@/lib/session/cleanup'
-import { ServerError } from '@/server/errors'
+import { ServerError } from '@/shared/errors'
 
 /**
  * Tear down every live session for a project, then remove the project

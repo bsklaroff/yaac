@@ -77,7 +77,7 @@ import {
   _clearAgentStartedCacheForTests,
 } from '@/lib/session/cleanup'
 import { serverLog } from '@/server/log'
-import { setDataDir } from '@/lib/project/paths'
+import { setDataDir } from '@/shared/project-paths'
 
 const mockServerLog = vi.mocked(serverLog)
 

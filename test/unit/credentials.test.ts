@@ -21,8 +21,8 @@ import {
   matchPattern,
   ghApiHostForGitHost,
 } from '@/shared/credentials'
-import { githubCredentialsPath, proxySecretsCredentialsPath } from '@/lib/project/paths'
-import { ServerError } from '@/server/errors'
+import { githubCredentialsPath, proxySecretsCredentialsPath } from '@/shared/project-paths'
+import { ServerError } from '@/shared/errors'
 
 describe('credentials', () => {
   let tmpDir: string

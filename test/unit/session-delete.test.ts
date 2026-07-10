@@ -23,7 +23,7 @@ import { listSessionPods, listSessionJobs, type SessionPod } from '@/lib/k8s/pod
 import type * as podsModule from '@/lib/k8s/pods'
 import { cleanupSessionDetached } from '@/lib/session/cleanup'
 import type * as cleanupModule from '@/lib/session/cleanup'
-import { setDataDir } from '@/lib/project/paths'
+import { setDataDir } from '@/shared/project-paths'
 
 const mockListPods = vi.mocked(listSessionPods)
 const mockListJobs = vi.mocked(listSessionJobs)

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { validateGitRemoteUrl } from '@/lib/project/add'
-import { ServerError } from '@/server/errors'
+import { ServerError } from '@/shared/errors'
 
 describe('validateGitRemoteUrl', () => {
   it('accepts a github.com https URL', () => {

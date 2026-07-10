@@ -3,7 +3,7 @@ import { readBuildId } from '@/shared/build-id'
 import { testEnv } from '@/shared/env'
 import { isLockLive, readLock, type ServerLock } from '@/shared/lock'
 import { readRemote } from '@/shared/remote'
-import type { ServerErrorBody } from '@/server/errors'
+import type { ServerErrorBody } from '@/shared/errors'
 import type { AppType } from '@/server/server'
 
 /**

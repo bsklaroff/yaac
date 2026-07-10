@@ -1,6 +1,6 @@
 import { queryClaudePlanUsage, queryClaudeRateLimitTier } from '@/lib/auth/usage'
 import { refreshClaudeOAuthBundle } from '@/lib/auth/claude-oauth'
-import { loadClaudeCredentialsFile, saveClaudeOAuthBundle } from '@/lib/project/tool-auth'
+import { loadClaudeCredentialsFile, saveClaudeOAuthBundle } from '@/shared/tool-auth'
 import { notifySessionListChanged } from '@/server/sessions-changed'
 import { serverLog } from '@/server/log'
 import type { ClaudeOAuthBundle, PlanUsageResult } from '@/shared/types'

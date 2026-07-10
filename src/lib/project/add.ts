@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { ensureDataDir, projectDir, repoDir, claudeDir } from '@/lib/project/paths'
+import { ensureDataDir, projectDir, repoDir, claudeDir } from '@/shared/project-paths'
 import { cloneRepo, isGitAuthError } from '@/lib/git'
 import { parseGitRemote, resolveCredentialForUrl } from '@/lib/project/credentials'
 import {
@@ -8,8 +8,8 @@ import {
   loadCodexCredentialsFile,
   writeProjectClaudePlaceholder,
   writeProjectCodexPlaceholder,
-} from '@/lib/project/tool-auth'
-import { ServerError } from '@/server/errors'
+} from '@/shared/tool-auth'
+import { ServerError } from '@/shared/errors'
 import type { ProjectMeta } from '@/shared/types'
 
 /**

@@ -11,7 +11,7 @@ import {
   resolveEphemeralModulesPaths,
   resolveProjectConfig,
 } from '@/lib/project/config'
-import { setDataDir } from '@/lib/project/paths'
+import { setDataDir } from '@/shared/project-paths'
 
 describe('loadProjectConfig', () => {
   let tmpDir: string

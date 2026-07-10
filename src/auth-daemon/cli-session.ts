@@ -1,4 +1,4 @@
-import { ServerError } from '@/server/errors'
+import { ServerError } from '@/shared/errors'
 import { stripAnsi } from '@/shared/ansi'
 import type { AgentTool } from '@/shared/types'
 

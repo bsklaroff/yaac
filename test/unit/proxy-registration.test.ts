@@ -7,7 +7,7 @@ import {
   syncProxySecrets,
 } from '@/lib/session/proxy-registration'
 import { DEFAULT_ALLOWED_HOSTS, NESTED_PULL_HOSTS } from '@/lib/container/default-allowed-hosts'
-import { proxySecretsCredentialsPath, setDataDir } from '@/lib/project/paths'
+import { proxySecretsCredentialsPath, setDataDir } from '@/shared/project-paths'
 
 describe('buildSessionRegistration', () => {
   afterEach(() => {

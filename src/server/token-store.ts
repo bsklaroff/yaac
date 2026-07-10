@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
-import { ServerError } from '@/server/errors'
+import { ServerError } from '@/shared/errors'
 import { constantTimeEqual } from '@/server/web-auth'
 import { maskToken } from '@/shared/mask'
 import { tokensPath } from '@/shared/paths'

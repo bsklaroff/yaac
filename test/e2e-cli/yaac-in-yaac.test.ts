@@ -6,7 +6,7 @@ import { cloneRepo } from '@/lib/git'
 import { listSessionPods, type SessionPod } from '@/lib/k8s/pods'
 import { removeSessionVcluster, vclusterName } from '@/lib/k8s/vcluster'
 import { removeProjectRegistry } from '@/lib/k8s/project-registry'
-import { PACKAGE_ROOT } from '@/lib/project/paths'
+import { PACKAGE_ROOT } from '@/shared/project-paths'
 import {
   createYaacTestEnv,
   spawnYaacServer,

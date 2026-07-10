@@ -15,7 +15,7 @@ import { LABEL_SESSION_ID, LABEL_VCLUSTER_MANAGED_BY, VCLUSTER_API_PORT } from '
 import { ensurePinnedBinary } from '@/lib/k8s/pinned-binary'
 import { pushImageToRegistry, registryHasTag, registryHost } from '@/lib/k8s/registry'
 import { imageExists } from '@/lib/container/runtime'
-import { PACKAGE_ROOT } from '@/lib/project/paths'
+import { PACKAGE_ROOT } from '@/shared/project-paths'
 import { testEnv } from '@/shared/env'
 
 export const VCLUSTER_DIR = path.join(PACKAGE_ROOT, 'k8s', 'vcluster')

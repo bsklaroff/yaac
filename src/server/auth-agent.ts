@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
-import { ServerError } from '@/server/errors'
+import { ServerError } from '@/shared/errors'
 import { serverLog } from '@/server/log'
+import type { AgentKind, AgentOp, AgentTool2 } from '@/shared/auth-agent-protocol'
 import type { ToolInstallView, ToolLoginView } from '@/shared/types'
 
 /**
@@ -19,14 +20,6 @@ import type { ToolInstallView, ToolLoginView } from '@/shared/types'
  * Credentials never transit this hub — on success the agent PUTs the
  * bundle to /auth/:tool itself.
  */
-
-export type AgentKind = 'login' | 'install'
-export type AgentTool2 = 'claude' | 'codex'
-
-export type AgentOp =
-  | { op: 'start'; id: string; kind: AgentKind; tool: AgentTool2 }
-  | { op: 'input'; id: string; text: string }
-  | { op: 'cancel'; id: string; kind: AgentKind }
 
 export interface AgentViewMsg {
   op: 'view'

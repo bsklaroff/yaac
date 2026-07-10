@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { AGENT_TOOLS } from '@/shared/types'
 import type { YaacConfig, InitCommandSpec } from '@/shared/types'
-import { projectConfigDir } from '@/lib/project/paths'
+import { projectConfigDir } from '@/shared/project-paths'
 
 const KNOWN_KEYS = new Set(['envPassthrough', 'env', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'portForward', 'bindMounts', 'hideInitPane', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths', 'nestedContainers', 'virtualCluster'])
 

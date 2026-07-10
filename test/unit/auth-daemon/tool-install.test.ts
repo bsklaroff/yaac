@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import path from 'node:path'
-import type * as cliResolveModule from '@/server/cli-resolve'
+import type * as cliResolveModule from '@/auth-daemon/cli-resolve'
 
 // Both lookups hit the real machine (post-install verification, npm/brew
 // discovery) — mocked so these tests pass regardless of what's installed
@@ -10,7 +10,7 @@ const cliResolve = vi.hoisted(() => ({
   resolveCommandPath: vi.fn<(name: string) => string | null>(() => null),
 }))
 
-vi.mock('@/server/cli-resolve', async (importOriginal) => {
+vi.mock('@/auth-daemon/cli-resolve', async (importOriginal) => {
   const actual = await importOriginal<typeof cliResolveModule>()
   return {
     ...actual,

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 import { addEntry } from '@/lib/project/credentials'
-import { saveClaudeCredentialsFile, saveToolAuth } from '@/lib/project/tool-auth'
+import { saveClaudeCredentialsFile, saveToolAuth } from '@/shared/tool-auth'
 import { listAuth } from '@/lib/auth/list'
 
 describe('listAuth', () => {

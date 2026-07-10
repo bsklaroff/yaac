@@ -10,7 +10,7 @@ import {
   onSessionListChanged,
   _resetSessionListChangedForTests,
 } from '@/server/sessions-changed'
-import { ServerError } from '@/server/errors'
+import { ServerError } from '@/shared/errors'
 
 type Run = Parameters<typeof streamProvisioned>[2]
 

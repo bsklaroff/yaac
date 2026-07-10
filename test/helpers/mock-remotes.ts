@@ -5,7 +5,7 @@ import os from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { baseImageHash } from '@/lib/container/image-builder'
-import { DOCKERFILES_DIR } from '@/lib/project/paths'
+import { DOCKERFILES_DIR } from '@/shared/project-paths'
 import { ensureNamespace } from '@/lib/k8s/bootstrap'
 import {
   k8sNamespace,

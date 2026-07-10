@@ -4,7 +4,7 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import simpleGit from 'simple-git'
-import { setDataDir, getDataDir, projectDir, repoDir, claudeDir } from '@/lib/project/paths'
+import { setDataDir, getDataDir, projectDir, repoDir, claudeDir } from '@/shared/project-paths'
 import { cloneRepo } from '@/lib/git'
 import { ensurePodmanSocket, ensureRootfulPodmanHost, getSocketPath, usesRootfulPodman } from '@/lib/container/runtime'
 import {

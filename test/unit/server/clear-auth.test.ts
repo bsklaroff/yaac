@@ -10,14 +10,14 @@ import {
   saveCodexCredentialsFile,
   writeProjectClaudePlaceholder,
   writeProjectCodexPlaceholder,
-} from '@/lib/project/tool-auth'
+} from '@/shared/tool-auth'
 import {
   claudeDir,
   codexDir,
   projectClaudeCredentialsFile,
   projectCodexAuthFile,
   projectDir,
-} from '@/lib/project/paths'
+} from '@/shared/project-paths'
 import type { ClaudeOAuthBundle, CodexOAuthBundle } from '@/shared/types'
 
 const SAMPLE_CLAUDE: ClaudeOAuthBundle = {

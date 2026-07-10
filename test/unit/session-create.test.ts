@@ -92,7 +92,7 @@ vi.mock('@/lib/container/port', () => ({
   kubectlRelay: vi.fn().mockReturnValue(() => ({})),
 }))
 
-vi.mock('@/lib/project/paths', () => ({
+vi.mock('@/shared/project-paths', () => ({
   repoDir: vi.fn((slug: string) => `/tmp/${slug}/repo`),
   claudeDir: vi.fn((slug: string) => `/tmp/${slug}/claude`),
   claudeJsonFile: vi.fn((slug: string) => `/tmp/${slug}/claude.json`),
@@ -137,7 +137,7 @@ vi.mock('@/lib/project/credentials', () => ({
   writeProxySecrets: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('@/lib/project/tool-auth', () => ({
+vi.mock('@/shared/tool-auth', () => ({
   loadToolAuthEntry: vi.fn().mockResolvedValue(null),
   loadClaudeCredentialsFile: vi.fn().mockResolvedValue(null),
   loadCodexCredentialsFile: vi.fn().mockResolvedValue(null),
@@ -190,7 +190,7 @@ import { proxyClient } from '@/lib/container/proxy-client'
 import { resolveProjectConfig } from '@/lib/project/config'
 import simpleGit from 'simple-git'
 import { resolveCredentialForUrl, loadKnownHostsEntryForHost } from '@/lib/project/credentials'
-import { loadToolAuthEntry } from '@/lib/project/tool-auth'
+import { loadToolAuthEntry } from '@/shared/tool-auth'
 import { resolveAllowedHosts } from '@/lib/container/default-allowed-hosts'
 import { addWorktree, getDefaultBranch, fetchOrigin } from '@/lib/git'
 import { kubectlRelay, reserveAvailablePort, startPortForwarders } from '@/lib/container/port'

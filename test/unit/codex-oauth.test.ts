@@ -6,7 +6,7 @@ import {
   codexDir,
   projectCodexAuthFile,
   projectDir,
-} from '@/lib/project/paths'
+} from '@/shared/project-paths'
 import {
   buildCodexPlaceholderBundle,
   writeProjectCodexPlaceholder,
@@ -17,7 +17,7 @@ import {
   loadToolAuthEntry,
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_REFRESH_TOKEN,
-} from '@/lib/project/tool-auth'
+} from '@/shared/tool-auth'
 import { decodeJwtExp, extractCodexOAuthBundle } from '@/shared/tool-auth-interactive'
 import type { CodexOAuthBundle } from '@/shared/types'
 

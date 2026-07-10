@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
-import { projectConfigDir, getProjectsDir, getDataDir } from '@/lib/project/paths'
+import { projectConfigDir, getProjectsDir, getDataDir } from '@/shared/project-paths'
 import {
   readProjectDockerfile,
   writeProjectDockerfile,

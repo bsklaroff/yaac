@@ -3,8 +3,8 @@ import {
   cleanupProjectClaudePlaceholders,
   cleanupProjectCodexPlaceholders,
   removeToolAuth,
-} from '@/lib/project/tool-auth'
-import { ServerError } from '@/server/errors'
+} from '@/shared/tool-auth'
+import { ServerError } from '@/shared/errors'
 
 export type ClearAuthTarget = 'all' | 'claude' | 'codex' | 'opencode'
 

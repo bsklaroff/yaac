@@ -63,7 +63,7 @@ import {
   worktreesDir,
   projectDir,
   sessionTmuxDir,
-} from '@/lib/project/paths'
+} from '@/shared/project-paths'
 import {
   CONTAINER_TMUX_DIR,
   CONTAINER_TMUX_SOCK,
@@ -90,11 +90,11 @@ import {
   writeProjectCodexPlaceholder,
   PLACEHOLDER_API_KEY,
   PLACEHOLDER_GH_TOKEN,
-} from '@/lib/project/tool-auth'
+} from '@/shared/tool-auth'
 import { addWorktree, getDefaultBranch, fetchOrigin, isGitAuthError } from '@/lib/git'
 import { ensureCodexHooksJson, ensureCodexConfigToml } from '@/lib/session/codex-hooks'
 import { ensureOpencodeConfigJson } from '@/lib/session/opencode-config'
-import { ServerError } from '@/server/errors'
+import { ServerError } from '@/shared/errors'
 import {
   buildStatusRight,
   registerSessionForwarders,

@@ -22,7 +22,7 @@ import {
   opencodeMetaDir,
   opencodeMetaFile,
   projectDir,
-} from '@/lib/project/paths'
+} from '@/shared/project-paths'
 import {
   listActiveSessions,
   listDeletedSessions,
@@ -30,7 +30,7 @@ import {
   _clearListActiveInflightForTests,
 } from '@/lib/session/list'
 import { registerSessionForwarders, stopSessionForwarders } from '@/lib/session/port-forwarders'
-import { ServerError } from '@/server/errors'
+import { ServerError } from '@/shared/errors'
 import type { ProjectMeta } from '@/shared/types'
 
 const mockListPods = vi.mocked(listSessionPods)

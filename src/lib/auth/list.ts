@@ -1,5 +1,5 @@
 import { listEntries } from '@/lib/project/credentials'
-import { loadToolAuthEntry } from '@/lib/project/tool-auth'
+import { loadToolAuthEntry } from '@/shared/tool-auth'
 import type {
   AgentTool,
   AuthListResult,

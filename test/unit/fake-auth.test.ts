@@ -7,18 +7,18 @@ import {
   seedFakeGithubCredential,
   FAKE_GITHUB_PATTERN,
 } from '@/lib/project/fake-auth'
-import { loadClaudeCredentialsFile } from '@/lib/project/tool-auth'
+import { loadClaudeCredentialsFile } from '@/shared/tool-auth'
 import { loadCredentials, saveCredentials } from '@/lib/project/credentials'
 import {
   projectDir,
   claudeDir,
   projectClaudeCredentialsFile,
-} from '@/lib/project/paths'
+} from '@/shared/project-paths'
 import {
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_REFRESH_TOKEN,
   PLACEHOLDER_GH_TOKEN,
-} from '@/lib/project/tool-auth'
+} from '@/shared/tool-auth'
 
 describe('fake-auth', () => {
   let tmpDir: string

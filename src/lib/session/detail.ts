@@ -1,6 +1,6 @@
 import { findSessionPod, listSessionPods } from '@/lib/k8s/pods'
 import { getVclusterStatus, type VclusterStatus } from '@/lib/k8s/vcluster'
-import { ServerError } from '@/server/errors'
+import { ServerError } from '@/shared/errors'
 import { getSessionFirstMessage, normalizeTool } from '@/lib/session/status'
 import { readBlockedHosts } from '@/lib/session/blocked-hosts'
 import { readGitAuthFailures } from '@/lib/project/git-auth-failures'

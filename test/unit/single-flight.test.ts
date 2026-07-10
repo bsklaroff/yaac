@@ -39,7 +39,7 @@ import {
   listActiveSessions,
   _clearListActiveInflightForTests,
 } from '@/lib/session/list'
-import { setDataDir } from '@/lib/project/paths'
+import { setDataDir } from '@/shared/project-paths'
 
 const mockListPods = vi.mocked(listSessionPods)
 

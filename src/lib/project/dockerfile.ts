@@ -1,9 +1,9 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { projectConfigDir, getDataDir } from '@/lib/project/paths'
+import { projectConfigDir, getDataDir } from '@/shared/project-paths'
 import { assertProjectExists } from '@/lib/project/detail'
 import { isLayered } from '@/lib/container/image-builder'
-import { ServerError } from '@/server/errors'
+import { ServerError } from '@/shared/errors'
 
 /** Per-project layered/standalone Dockerfile (config/Dockerfile.yaac). */
 function projectDockerfilePath(slug: string): string {
