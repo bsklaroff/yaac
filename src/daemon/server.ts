@@ -17,10 +17,13 @@ import { projectApp } from '@/daemon/routes/project'
 import { sessionApp } from '@/daemon/routes/session'
 import { toolApp } from '@/daemon/routes/tool'
 import { authApp } from '@/daemon/routes/auth'
+import { createTokensApp } from '@/daemon/routes/tokens'
 import { shortcutsApp } from '@/daemon/routes/shortcuts'
 import { configApp } from '@/daemon/routes/config'
 import { imageApp } from '@/daemon/routes/image'
 import { daemonLog } from '@/daemon/log'
+import { createTokenStore, type TokenStore } from '@/daemon/token-store'
+import { env } from '@/shared/env'
 import { PACKAGE_ROOT } from '@/shared/paths'
 
 export interface DaemonAppDeps {
@@ -32,6 +35,11 @@ export interface DaemonAppDeps {
    * buildId})`; a fresh store is created when omitted.
    */
   store?: WebAuthStore
+  /**
+   * Durable-token store. Optional for the same reason; a fresh empty
+   * store (nothing but the lock secret authenticates) when omitted.
+   */
+  tokens?: TokenStore
 }
 
 /**
@@ -41,12 +49,19 @@ export interface DaemonAppDeps {
  */
 export function buildApp(deps: DaemonAppDeps) {
   const store = deps.store ?? createWebAuthStore()
+  const tokens = deps.tokens ?? createTokenStore()
   const app = new Hono()
 
   app.use('*', requestLogger())
+  // Stamp every response with the daemon build so a remote CLI (which
+  // can't compare lock buildIds) can warn on version skew.
+  app.use('*', async (c, next) => {
+    await next()
+    c.res.headers.set('x-yaac-build-id', deps.buildId)
+  })
   app.use('*', hostHeaderCheck())
   app.use('*', denyBrowserCors())
-  app.use('*', cookieOrBearerAuth(deps.secret, store))
+  app.use('*', cookieOrBearerAuth(deps.secret, store, tokens))
 
   app.onError((err: Error, c: Context) => {
     const { status, body } = toErrorBody(err)
@@ -80,8 +95,12 @@ export function buildApp(deps: DaemonAppDeps) {
       httpOnly: true,
       sameSite: 'Strict',
       path: '/',
-      // No `Secure`: the daemon is http on loopback, and browsers reject
-      // Secure cookies over http — setting it would drop the cookie.
+      // `Secure` only when a trusted TLS-terminating proxy (tailscale
+      // serve) says the outer leg was https. Gated on YAAC_TRUST_PROXY so
+      // a direct-loopback request can't spoof X-Forwarded-Proto into a
+      // posture change; on plain loopback http the flag stays off because
+      // browsers drop Secure cookies set over http.
+      secure: env.trustProxy && c.req.header('x-forwarded-proto') === 'https',
     })
     daemonLog('[daemon] bootstrap ok')
     return c.body(null, 204)
@@ -104,6 +123,7 @@ export function buildApp(deps: DaemonAppDeps) {
     .route('/project', projectApp)
     .route('/session', sessionApp)
     .route('/tool', toolApp)
+    .route('/tokens', createTokensApp(tokens))
     .route('/auth', authApp)
     .route('/shortcuts', shortcutsApp)
     .route('/config', configApp)

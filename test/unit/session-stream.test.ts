@@ -1,17 +1,11 @@
-import { EventEmitter } from 'node:events'
-import { spawn } from 'node:child_process'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { sessionStream } from '@/commands/session-stream'
+import { attachSessionPty } from '@/commands/ws-terminal'
 import { getRpcClient } from '@/shared/daemon-client'
 import type * as daemonClientModule from '@/shared/daemon-client'
 
-// `@/lib/k8s/kubectl` (pulled in via `@/lib/k8s/exec`) promisifies
-// execFile/exec at module load, so the child_process mock must provide
-// them even though this test only asserts on spawn.
-vi.mock('node:child_process', () => ({
-  spawn: vi.fn(),
-  execFile: vi.fn(),
-  exec: vi.fn(),
+vi.mock('@/commands/ws-terminal', () => ({
+  attachSessionPty: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@/shared/daemon-client', async (importOriginal) => {
@@ -25,12 +19,6 @@ vi.mock('@/shared/daemon-client', async (importOriginal) => {
     }),
   }
 })
-
-function attachedChild(): EventEmitter {
-  const child = new EventEmitter()
-  process.nextTick(() => child.emit('close', 0))
-  return child
-}
 
 type StreamResponse =
   | { done: true; reason: 'no_active' | 'closed_blank' | 'needs_project'; candidates?: string[] }
@@ -58,7 +46,6 @@ function mockStream(responses: StreamResponse[]): { post: ReturnType<typeof vi.f
 describe('sessionStream', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(spawn).mockImplementation(() => attachedChild() as never)
   })
 
   it('exits when the daemon reports done:no_active', async () => {
@@ -68,7 +55,7 @@ describe('sessionStream', () => {
     await sessionStream()
 
     expect(post).toHaveBeenCalledTimes(1)
-    expect(spawn).not.toHaveBeenCalled()
+    expect(attachSessionPty).not.toHaveBeenCalled()
     expect(logSpy).toHaveBeenCalledWith('No projects found. Add one with: yaac project add <remote-url>')
   })
 
@@ -78,7 +65,7 @@ describe('sessionStream', () => {
 
     await sessionStream('demo')
 
-    expect(spawn).not.toHaveBeenCalled()
+    expect(attachSessionPty).not.toHaveBeenCalled()
     expect(logSpy).toHaveBeenCalledWith('Closed blank session and found no waiting sessions. Exiting session stream.')
   })
 
@@ -110,15 +97,8 @@ describe('sessionStream', () => {
 
     await sessionStream('demo')
 
-    expect(spawn).toHaveBeenCalledTimes(1)
-    expect(spawn).toHaveBeenCalledWith(
-      'kubectl',
-      [
-        'exec', '-n', 'yaac', '-it', 'job/yaac-demo-abc', '--',
-        'tmux', '-S', '/tmp/yaac-tmux/server', 'attach-session', '-t', 'yaac',
-      ],
-      { stdio: 'inherit' },
-    )
+    expect(attachSessionPty).toHaveBeenCalledTimes(1)
+    expect(attachSessionPty).toHaveBeenCalledWith('abc', 'native')
     expect(post).toHaveBeenCalledTimes(2)
     const secondCall = post.mock.calls[1][0] as { json: unknown }
     expect(secondCall.json).toMatchObject({

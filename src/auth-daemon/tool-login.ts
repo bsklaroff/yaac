@@ -45,6 +45,20 @@ import type { ToolLoginView } from '@/shared/types'
 /** How often the claude watcher looks for freshly-written credentials. */
 const CLAUDE_POLL_MS = 500
 
+/**
+ * Where a completed login's credentials go. Defaults to the local
+ * persistence (data-dir credential files + placeholder fan-out) — right
+ * when this code runs inside the machine that owns the data dir. The
+ * auth daemon overrides it with an RPC `PUT /auth/:tool` so bundles land
+ * on the (possibly remote) main daemon instead of this machine.
+ */
+type PersistToolLogin = typeof persistToolLogin
+let persistResult: PersistToolLogin = persistToolLogin
+
+export function setToolLoginPersistence(fn: PersistToolLogin): void {
+  persistResult = fn
+}
+
 /** The spawned process surface the manager needs (PTY or piped child). */
 interface LoginProc {
   /** Forward a line to the CLI's stdin (PTY flows only — null for pipes). */
@@ -66,6 +80,12 @@ const registry = createCliSessionRegistry<LoginSession>({
 
 /** Drop every session (test isolation). */
 export function clearAllToolLoginsForTests(): void {
+  registry.clearAllForTests()
+}
+
+/** Kill every login subprocess — auth-daemon shutdown, so vendor CLIs
+ *  never outlive the broker that relays them. */
+export function killAllToolLogins(): void {
   registry.clearAllForTests()
 }
 
@@ -103,7 +123,7 @@ async function pollClaude(s: LoginSession): Promise<void> {
   if (!bundle) return
   s.persisting = true
   try {
-    await persistToolLogin('claude', { apiKey: bundle.accessToken, kind: 'oauth', claudeBundle: bundle })
+    await persistResult('claude', { apiKey: bundle.accessToken, kind: 'oauth', claudeBundle: bundle })
     registry.finish(s, 'success')
   } catch (err) {
     registry.finish(s, 'error', err instanceof Error ? err.message : String(err))
@@ -115,7 +135,7 @@ async function persistCodexScratchAuth(scratchDir: string): Promise<void> {
   const raw = await fs.readFile(path.join(scratchDir, 'auth.json'), 'utf8')
   const bundle = extractCodexOAuthBundle(raw)
   if (bundle) {
-    await persistToolLogin('codex', { apiKey: bundle.accessToken, kind: 'oauth', codexBundle: bundle })
+    await persistResult('codex', { apiKey: bundle.accessToken, kind: 'oauth', codexBundle: bundle })
     return
   }
   // Browser login always lands in ChatGPT mode today; tolerate an api-key
@@ -124,7 +144,7 @@ async function persistCodexScratchAuth(scratchDir: string): Promise<void> {
   for (const key of ['OPENAI_API_KEY', 'api_key', 'apiKey']) {
     const val = parsed[key]
     if (typeof val === 'string' && val) {
-      await persistToolLogin('codex', { apiKey: val, kind: 'api-key' })
+      await persistResult('codex', { apiKey: val, kind: 'api-key' })
       return
     }
   }
@@ -184,9 +204,11 @@ function spawnCodex(s: LoginSession, argv: string[]): void {
 
 /**
  * Start (or restart) the sign-in flow for a tool. Any still-running flow for
- * the same tool is cancelled first — the webapp drives one at a time.
+ * the same tool is cancelled first — clients drive one at a time. `id` is
+ * supplied by the relay (the main daemon mints flow ids so its routes can
+ * answer synchronously); direct callers/tests may omit it.
  */
-export async function startToolLogin(tool: 'claude' | 'codex'): Promise<ToolLoginView> {
+export async function startToolLogin(tool: 'claude' | 'codex', id?: string): Promise<ToolLoginView> {
   const existing = registry.liveForTool(tool)
   if (existing) cancelToolLogin(existing.view.id)
 
@@ -195,7 +217,7 @@ export async function startToolLogin(tool: 'claude' | 'codex'): Promise<ToolLogi
   await ensureDataDir()
   const scratchDir = await fs.mkdtemp(path.join(getDataDir(), 'login-'))
   const s = registry.create(
-    { id: crypto.randomUUID(), tool, status: 'running' },
+    { id: id ?? crypto.randomUUID(), tool, status: 'running' },
     'Sign-in timed out after 15 minutes.',
     { scratchDir, persisting: false },
   )

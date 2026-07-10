@@ -1,6 +1,6 @@
 import readline from 'node:readline/promises'
 import { getRpcClient, toClientError } from '@/commands/rpc'
-import { attachTmux } from '@/lib/k8s/exec'
+import { attachSessionPty } from '@/commands/ws-terminal'
 import { testEnv } from '@/shared/env'
 import type { AgentTool, StreamOutcome } from '@/shared/types'
 
@@ -81,12 +81,12 @@ export async function sessionStream(project?: string, tool?: AgentTool): Promise
     console.log(`Attaching to session ${shortId} (project: ${body.projectSlug})...`)
 
     // Test-only hook: e2e-cli tests drive sessions without a TTY, where
-    // `kubectl exec -it` hangs waiting for terminal capabilities. Setting
-    // this env var returns after the first pick so the test can drive the
-    // container directly via `kubectl exec`.
+    // an interactive attach hangs waiting for terminal capabilities.
+    // Setting this env var returns after the first pick so the test can
+    // drive the container directly via `kubectl exec`.
     if (testEnv.e2eNoAttach) return
 
-    await attachTmux(body.jobName, 'yaac')
+    await attachSessionPty(body.sessionId, 'native')
 
     // The daemon re-evaluates outcomes on the next /stream/next call from
     // fresh state (tmux liveness, prompt presence), so the CLI only

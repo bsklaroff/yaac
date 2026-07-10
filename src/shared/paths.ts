@@ -76,6 +76,15 @@ export function webSessionsPath(): string {
   return path.join(getDataDir(), '.web-sessions.json')
 }
 
+/**
+ * Durable client tokens (0600). Unlike the lock secret these survive
+ * daemon restarts — they are what remote CLIs authenticate with — so the
+ * file is exactly as sensitive as the lock file.
+ */
+export function tokensPath(): string {
+  return path.join(getDataDir(), 'tokens.json')
+}
+
 export async function ensureDataDir(): Promise<void> {
   await fs.mkdir(getProjectsDir(), { recursive: true })
 }

@@ -205,12 +205,15 @@ describe('yaac project rebuild (real CLI + real daemon)', () => {
 })
 
 describe('yaac config (real CLI + real daemon)', () => {
-  // Stand-in editor: a tiny shell script that writes a deterministic
-  // marker into whichever file path the CLI hands it. Lets us assert
-  // the right file path was opened without spawning a real editor.
-  async function writeMarkerEditor(marker: string): Promise<string> {
-    const editorPath = path.join(testEnv.scratchDir, `editor-${marker}.sh`)
-    await fs.writeFile(editorPath, `#!/bin/sh\nprintf %s '${marker}' > "$1"\n`, { mode: 0o755 })
+  // Stand-in editor: a tiny shell script that writes deterministic
+  // content into whichever scratch file the CLI hands it. The CLI edits
+  // a tmp copy and PUTs the result to the daemon, so assertions read the
+  // daemon-side file afterwards.
+  async function writeStubEditor(name: string, content: string): Promise<string> {
+    const editorPath = path.join(testEnv.scratchDir, `editor-${name}.sh`)
+    const contentFile = path.join(testEnv.scratchDir, `editor-${name}.content`)
+    await fs.writeFile(contentFile, content)
+    await fs.writeFile(editorPath, `#!/bin/sh\ncat '${contentFile}' > "$1"\n`, { mode: 0o755 })
     return editorPath
   }
 
@@ -223,10 +226,10 @@ describe('yaac config (real CLI + real daemon)', () => {
     await addTestProject(repo)
   }
 
-  it('config edit opens yaac-config.json under the project config dir', async () => {
+  it('config edit round-trips yaac-config.json through the daemon (validated)', async () => {
     await seedProject('demo-edit')
 
-    const editor = await writeMarkerEditor('yaac-config-marker')
+    const editor = await writeStubEditor('config', '{ "env": { "MARKER": "1" } }')
     const { exitCode, stderr } = await runYaac(
       { ...testEnv.env, EDITOR: editor },
       'config', 'edit', 'demo-edit',
@@ -234,13 +237,32 @@ describe('yaac config (real CLI + real daemon)', () => {
     expect(exitCode, stderr).toBe(0)
 
     const target = path.join(testEnv.dataDir, 'projects', 'demo-edit', 'config', 'yaac-config.json')
-    expect(await fs.readFile(target, 'utf8')).toBe('yaac-config-marker')
+    const saved = JSON.parse(await fs.readFile(target, 'utf8')) as { env?: Record<string, string> }
+    expect(saved.env).toEqual({ MARKER: '1' })
   })
 
-  it('config edit-dockerfile opens Dockerfile.yaac under the project config dir', async () => {
+  it('config edit rejects invalid JSON, keeps the edits, and leaves the daemon file alone', async () => {
+    await seedProject('demo-badjson')
+
+    const editor = await writeStubEditor('bad-json', '{ not json')
+    const { exitCode, stderr } = await runYaac(
+      { ...testEnv.env, EDITOR: editor },
+      'config', 'edit', 'demo-badjson',
+    )
+    expect(exitCode).toBe(1)
+    expect(stderr).toMatch(/Invalid JSON/)
+    expect(stderr).toMatch(/Your edits are kept at (.+)/)
+    const kept = /Your edits are kept at (.+)/.exec(stderr)?.[1] as string
+    expect(await fs.readFile(kept.trim(), 'utf8')).toBe('{ not json')
+
+    const target = path.join(testEnv.dataDir, 'projects', 'demo-badjson', 'config', 'yaac-config.json')
+    await expect(fs.access(target)).rejects.toThrow()
+  })
+
+  it('config edit-dockerfile writes Dockerfile.yaac verbatim via the daemon', async () => {
     await seedProject('demo-dockerfile')
 
-    const editor = await writeMarkerEditor('dockerfile-marker')
+    const editor = await writeStubEditor('dockerfile', 'RUN echo dockerfile-marker\n')
     const { exitCode, stderr } = await runYaac(
       { ...testEnv.env, EDITOR: editor },
       'config', 'edit-dockerfile', 'demo-dockerfile',
@@ -248,11 +270,12 @@ describe('yaac config (real CLI + real daemon)', () => {
     expect(exitCode, stderr).toBe(0)
 
     const target = path.join(testEnv.dataDir, 'projects', 'demo-dockerfile', 'config', 'Dockerfile.yaac')
-    expect(await fs.readFile(target, 'utf8')).toBe('dockerfile-marker')
+    expect(await fs.readFile(target, 'utf8')).toBe('RUN echo dockerfile-marker\n')
   })
 
-  it('config edit-user-dockerfile opens the global Dockerfile.user', async () => {
-    const editor = await writeMarkerEditor('user-dockerfile-marker')
+  it('config edit-user-dockerfile saves a layered Dockerfile.user via the daemon', async () => {
+    const layered = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user-marker\n'
+    const editor = await writeStubEditor('user-dockerfile', layered)
     const { exitCode, stderr } = await runYaac(
       { ...testEnv.env, EDITOR: editor },
       'config', 'edit-user-dockerfile',
@@ -260,23 +283,26 @@ describe('yaac config (real CLI + real daemon)', () => {
     expect(exitCode, stderr).toBe(0)
 
     const target = path.join(testEnv.dataDir, 'Dockerfile.user')
-    expect(await fs.readFile(target, 'utf8')).toBe('user-dockerfile-marker')
+    expect(await fs.readFile(target, 'utf8')).toBe(layered)
   })
 
   it('config edit opens the editor even when yaac-config.json is malformed', async () => {
     await seedProject('demo-malformed')
 
+    // The raw read hands broken content to the editor verbatim so it can
+    // be repaired; the validated write then stores clean JSON.
     const target = path.join(testEnv.dataDir, 'projects', 'demo-malformed', 'config', 'yaac-config.json')
     await fs.mkdir(path.dirname(target), { recursive: true })
     await fs.writeFile(target, '{ this is not valid json')
 
-    const editor = await writeMarkerEditor('repaired-config')
+    const editor = await writeStubEditor('repair', '{ "env": { "REPAIRED": "1" } }')
     const { exitCode, stderr } = await runYaac(
       { ...testEnv.env, EDITOR: editor },
       'config', 'edit', 'demo-malformed',
     )
     expect(exitCode, stderr).toBe(0)
-    expect(await fs.readFile(target, 'utf8')).toBe('repaired-config')
+    const saved = JSON.parse(await fs.readFile(target, 'utf8')) as { env?: Record<string, string> }
+    expect(saved.env).toEqual({ REPAIRED: '1' })
   })
 
   it('accepts the nestedContainers key through the config-write route', async () => {
@@ -316,7 +342,7 @@ describe('yaac config (real CLI + real daemon)', () => {
   })
 
   it('config edit fails with a clear error for an unknown project slug', async () => {
-    const editor = await writeMarkerEditor('should-not-run')
+    const editor = await writeStubEditor('should-not-run', 'unused')
     const { exitCode, stderr } = await runYaac(
       { ...testEnv.env, EDITOR: editor },
       'config', 'edit', 'no-such-project',

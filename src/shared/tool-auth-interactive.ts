@@ -1,9 +1,6 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import os from 'node:os'
 import crypto from 'node:crypto'
 import readline from 'node:readline/promises'
-import { spawn, execFileSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import {
   claudeOAuthBundleSchema,
   type AgentTool,
@@ -119,23 +116,6 @@ export function deleteScratchClaudeKeychainItem(service: string): void {
 }
 
 /**
- * Read Claude Code's native OAuth bundle from its config (or macOS Keychain).
- */
-export async function readClaudeOAuthFromHost(): Promise<ClaudeOAuthBundle | null> {
-  try {
-    const credPath = path.join(os.homedir(), '.claude', '.credentials.json')
-    const raw = await fs.readFile(credPath, 'utf8')
-    const bundle = extractClaudeOAuthBundle(raw)
-    if (bundle) return bundle
-  } catch {
-    // fall through to keychain
-  }
-  const kc = readClaudeKeychainPayload()
-  if (kc) return extractClaudeOAuthBundle(kc)
-  return null
-}
-
-/**
  * Decode a JWT's middle segment (payload) and return `exp` as unix epoch ms.
  * Returns null for malformed JWTs or missing `exp`. No dep on a JWT library —
  * this is two base64url decodes and a JSON parse, all in a try/catch.
@@ -202,53 +182,6 @@ export function extractCodexOAuthBundle(raw: string): CodexOAuthBundle | null {
 }
 
 /**
- * Read Codex's native `~/.codex/auth.json`. Returns a full OAuth bundle when
- * the file is in ChatGPT mode, otherwise null. Callers fall back to the
- * api-key extractor.
- */
-export async function readCodexOAuthFromHost(): Promise<CodexOAuthBundle | null> {
-  try {
-    const authPath = path.join(os.homedir(), '.codex', 'auth.json')
-    const raw = await fs.readFile(authPath, 'utf8')
-    return extractCodexOAuthBundle(raw)
-  } catch {
-    return null
-  }
-}
-
-/**
- * Read Codex's stored API key from its native config.
- */
-export async function readCodexCredentials(): Promise<string | null> {
-  try {
-    const authPath = path.join(os.homedir(), '.codex', 'auth.json')
-    const raw = await fs.readFile(authPath, 'utf8')
-    const parsed = JSON.parse(raw) as Record<string, unknown>
-    for (const key of ['api_key', 'apiKey', 'token', 'access_token']) {
-      const val = parsed[key]
-      if (typeof val === 'string' && val) {
-        return val
-      }
-    }
-    return null
-  } catch {
-    return null
-  }
-}
-
-/**
- * Spawn a CLI command and wait for it to exit. Inherits stdio so the user
- * can drive the login flow interactively.
- */
-function runInteractive(cmd: string, args: string[]): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: 'inherit' })
-    child.on('close', (code) => resolve(code ?? 0))
-    child.on('error', reject)
-  })
-}
-
-/**
  * Result of running the tool's native login CLI.
  */
 export interface ToolLoginResult {
@@ -263,9 +196,13 @@ export interface ToolLoginResult {
 }
 
 /**
- * Run the tool's native login CLI and extract the resulting credentials.
+ * The login-capture shortcuts that need no relayed flow: the e2e hook
+ * (serialized bundle) and opencode's api-key prompt. Returns null for
+ * claude/codex without a hook — those sign in through the relayed
+ * auth-daemon flow (src/commands/relayed-login.ts), which persists the
+ * bundle itself.
  */
-export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult> {
+export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult | null> {
   // Test-only hook: e2e-cli can't drive the native `claude login` /
   // `codex login` OAuth flow end-to-end, so these env vars short-circuit
   // with a JSON-serialised bundle. The CLI → daemon persistence path is
@@ -298,41 +235,37 @@ export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult> {
     return promptForApiKey(tool)
   }
 
-  const toolLabel = tool === 'claude' ? 'Claude Code' : 'Codex'
-  console.log(`Starting ${toolLabel} login flow...`)
+  return null
+}
 
-  if (tool === 'claude') {
-    const code = await runInteractive('claude', ['auth', 'login'])
-    if (code !== 0) {
-      console.warn(`Claude Code login exited with code ${code}.`)
+/**
+ * The `PUT /auth/:tool` request body: how a client (the CLI's api-key
+ * path, or the auth daemon after a completed login) ships captured
+ * credentials to the daemon.
+ */
+export type ToolAuthPayload =
+  | { kind: 'api-key'; apiKey: string; provider?: OpencodeProvider }
+  | { kind: 'oauth'; bundle: ClaudeOAuthBundle | CodexOAuthBundle }
+
+/** Shape a login result into the `PUT /auth/:tool` body. */
+export function buildAuthPayload(tool: AgentTool, result: ToolLoginResult): ToolAuthPayload {
+  if (tool === 'claude' && result.kind === 'oauth' && result.claudeBundle) {
+    return { kind: 'oauth', bundle: result.claudeBundle }
+  }
+  if (tool === 'codex' && result.kind === 'oauth' && result.codexBundle) {
+    return { kind: 'oauth', bundle: result.codexBundle }
+  }
+  if (!result.apiKey) {
+    throw new Error('No credentials captured from tool login.')
+  }
+  if (tool === 'opencode') {
+    return {
+      kind: 'api-key',
+      apiKey: result.apiKey,
+      provider: result.opencodeProvider ?? 'openrouter',
     }
-
-    const bundle = await readClaudeOAuthFromHost()
-    if (bundle) {
-      return { apiKey: bundle.accessToken, kind: 'oauth', claudeBundle: bundle }
-    }
-
-    console.log('Could not read OAuth credentials from Claude Code config.')
-    return promptForApiKey(tool)
   }
-
-  const code = await runInteractive('codex', ['login'])
-  if (code !== 0) {
-    console.warn(`Codex login exited with code ${code}.`)
-  }
-
-  const codexBundle = await readCodexOAuthFromHost()
-  if (codexBundle) {
-    return { apiKey: codexBundle.accessToken, kind: 'oauth', codexBundle }
-  }
-
-  const token = await readCodexCredentials()
-  if (token) {
-    return { apiKey: token, kind: detectAuthKind('codex', token) }
-  }
-
-  console.log('Could not read credentials from Codex config.')
-  return promptForApiKey(tool)
+  return { kind: 'api-key', apiKey: result.apiKey }
 }
 
 /**

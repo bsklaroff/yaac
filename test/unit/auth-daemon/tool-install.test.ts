@@ -24,7 +24,7 @@ import {
   clearAllToolInstallsForTests,
   getToolInstall,
   startToolInstall,
-} from '@/daemon/tool-install'
+} from '@/auth-daemon/tool-install'
 
 const INSTALL_STUB = path.join(__dirname, '..', '..', 'helpers', 'fake-install-cli.cjs')
 

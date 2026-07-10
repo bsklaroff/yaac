@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 import type { MiddlewareHandler } from 'hono'
 import { getCookie } from 'hono/cookie'
+import { env } from '@/shared/env'
 
 /**
  * How long a freshly minted bootstrap code stays valid. Generous (24h)
@@ -107,10 +108,21 @@ export function isPublicPath(path: string): boolean {
  * Accept a request if it carries either a matching bearer (CLI) or a
  * valid `yaac_session` cookie (webapp). Public paths skip the check.
  * Replaces the bearer-only middleware so both clients share one gate.
+ *
+ * A presented-but-wrong bearer is answered with `BAD_BEARER` rather than
+ * the generic `UNAUTHENTICATED`: the CLI client re-reads its credential
+ * source and retries exactly once on that code (a restarted daemon
+ * rotates the lock secret out from under a long-lived CLI process).
+ *
+ * `tokens` (when given) extends the bearer check to durable client
+ * tokens, so remote CLIs — which can never read the lock file — pass the
+ * same gate. Structural type rather than the TokenStore import to keep
+ * this module free of daemon-store dependencies.
  */
 export function cookieOrBearerAuth(
   secret: string,
   store: WebAuthStore,
+  tokens?: { isValidToken(candidate: string): boolean },
 ): MiddlewareHandler {
   return async (c, next) => {
     if (isPublicPath(c.req.path)) return next()
@@ -118,10 +130,17 @@ export function cookieOrBearerAuth(
     const header = c.req.header('authorization') ?? ''
     const match = /^Bearer\s+(.+)$/i.exec(header)
     if (match && constantTimeEqual(match[1], secret)) return next()
+    if (match && tokens?.isValidToken(match[1])) return next()
 
     const sid = getCookie(c, SESSION_COOKIE)
     if (sid && store.isValidSession(sid)) return next()
 
+    if (match) {
+      return c.json(
+        { error: { code: 'BAD_BEARER', message: 'bearer token rejected' } },
+        401,
+      )
+    }
     return c.json(
       { error: { code: 'UNAUTHENTICATED', message: 'missing or invalid credentials' } },
       401,
@@ -130,9 +149,12 @@ export function cookieOrBearerAuth(
 }
 
 /**
- * Reject requests whose `Host` header isn't loopback. Defeats DNS
- * rebinding, where an attacker domain resolves to 127.0.0.1 but the
- * browser still sends the attacker's hostname in `Host`.
+ * Reject requests whose `Host` header isn't loopback (or an explicitly
+ * allowed extra hostname — `YAAC_ALLOWED_HOSTS`, for the tailnet name a
+ * `tailscale serve` proxy forwards). Defeats DNS rebinding, where an
+ * attacker domain resolves to 127.0.0.1 but the browser still sends the
+ * attacker's hostname in `Host`. Loopback is allowed unconditionally so
+ * the extra-hosts knob can only widen, never weaken, local access.
  *
  * Only the hostname is checked, not the port: a port-forward (common
  * when reaching the daemon from outside its container) legitimately
@@ -141,10 +163,11 @@ export function cookieOrBearerAuth(
  * anyway — a DNS-rebind request must already target the daemon's real
  * port to connect, so its `Host` port would match regardless.
  */
-export function isAllowedHost(host: string): boolean {
+export function isAllowedHost(host: string, allowed: readonly string[] = []): boolean {
   if (!host) return false
-  const [hostname] = host.split(':')
-  return hostname === '127.0.0.1' || hostname === 'localhost'
+  const [hostname] = host.toLowerCase().split(':')
+  if (hostname === '127.0.0.1' || hostname === 'localhost') return true
+  return allowed.includes(hostname)
 }
 
 export function hostHeaderCheck(): MiddlewareHandler {
@@ -162,7 +185,9 @@ export function hostHeaderCheck(): MiddlewareHandler {
         host = ''
       }
     }
-    if (isAllowedHost(host)) return next()
+    // Read per request (never cached) so tests — and a daemon restarted
+    // with new env — see the current allowlist.
+    if (isAllowedHost(host, env.allowedHosts)) return next()
     return c.json(
       { error: { code: 'BAD_HOST', message: 'host not allowed' } },
       403,
@@ -170,7 +195,7 @@ export function hostHeaderCheck(): MiddlewareHandler {
   }
 }
 
-function constantTimeEqual(a: string, b: string): boolean {
+export function constantTimeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false
   let diff = 0
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)

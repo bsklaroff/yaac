@@ -2,15 +2,29 @@ import { hc } from 'hono/client'
 import { readBuildId } from '@/shared/build-id'
 import { testEnv } from '@/shared/env'
 import { isLockLive, readLock, type DaemonLock } from '@/shared/lock'
+import { readRemote } from '@/shared/remote'
 import type { DaemonErrorBody } from '@/daemon/errors'
 import type { AppType } from '@/daemon/server'
 
+/**
+ * Where a CLI invocation sends its requests. Local lock, configured
+ * remote, and the test env hatch all resolve to this one shape.
+ */
+export interface DaemonTarget {
+  /** Origin (no trailing slash), e.g. http://127.0.0.1:8787. */
+  baseUrl: string
+  /** Bearer: the lock secret locally, a durable token remotely. */
+  secret: string
+  /** True when resolved from remote.json — drives error wording and the build-skew warning. */
+  remote: boolean
+}
+
 export interface GetClientOptions {
   /**
-   * Injected for tests. Resolves to a live lock and returns the
-   * bearer/port to use for requests.
+   * Injected for tests. Resolves the daemon target (base URL + bearer)
+   * to use for requests.
    */
-  resolveLock?: () => Promise<DaemonLock>
+  resolveTarget?: () => Promise<DaemonTarget>
   fetchImpl?: typeof fetch
   /**
    * Interactive "please re-authenticate" handler. Invoked once when the
@@ -24,37 +38,58 @@ export interface GetClientOptions {
 }
 
 /**
- * Returns a fetch-shaped function that targets the local daemon:
- * resolves (and caches) the lock, injects the bearer header, and
- * handles BAD_BEARER / AUTH_REQUIRED retry. Input paths may be a
- * bare pathname or a full URL — only the path+search are used; the
- * host is always the current live daemon. Consumed by `getRpcClient`.
+ * Returns a fetch-shaped function that targets the resolved daemon:
+ * caches the target, injects the bearer header, and handles
+ * BAD_BEARER / AUTH_REQUIRED retry. Input paths may be a bare pathname
+ * or a full URL — only the path+search are used; the host is always
+ * the resolved target. Consumed by `getRpcClient`.
  */
 export async function createDaemonFetch(
   opts: GetClientOptions = {},
 ): Promise<(input: string, init?: RequestInit) => Promise<Response>> {
-  const resolveLock = opts.resolveLock ?? defaultResolveLock
+  const resolveTarget = opts.resolveTarget ?? resolveDaemonTarget
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch
   const onAuthRequired = opts.onAuthRequired ?? (async () => { /* no-op */ })
 
-  let lock = await resolveLock()
+  let target = await resolveTarget()
+  // Once per client: a remote daemon and this CLI upgrade independently,
+  // so surface (but don't fail on) a build mismatch. Local targets never
+  // get here skewed — the lock resolution hard-fails first. Checked
+  // lazily so purely-local use never touches the build-id file.
+  let buildSkewChecked = false
 
   return async (input, init = {}) => {
     const pathAndSearch = extractPathAndSearch(input)
     const send = (): Promise<Response> => fetchImpl(
-      `http://127.0.0.1:${lock.port}${pathAndSearch}`,
-      withAuth(init, lock.secret),
+      `${target.baseUrl}${pathAndSearch}`,
+      withAuth(init, target.secret),
     )
 
     let res = await send()
+    if (target.remote && !buildSkewChecked && res.headers.get('x-yaac-build-id')) {
+      buildSkewChecked = true
+      const cliBuildId = await readBuildId().catch(() => null)
+      const skew = cliBuildId
+        ? describeBuildSkew(res.headers.get('x-yaac-build-id'), cliBuildId)
+        : null
+      if (skew) console.error(skew)
+    }
     if (res.status !== 401) return res
 
     const body = await peekErrorBody(res)
     if (body?.error.code === 'BAD_BEARER') {
-      const refreshed = await resolveLock()
-      if (refreshed.secret !== lock.secret || refreshed.port !== lock.port) {
-        lock = refreshed
+      const refreshed = await resolveTarget()
+      if (refreshed.secret !== target.secret || refreshed.baseUrl !== target.baseUrl) {
+        target = refreshed
         res = await send()
+      } else if (target.remote) {
+        // Re-resolving can't help a remote target (there is no lock to
+        // re-read); tell the user how to fix the token instead.
+        throw new Error(
+          `remote daemon at ${target.baseUrl} rejected the token. `
+          + 'Mint a new one on the server (yaac auth token create <name>) and run: '
+          + `yaac remote set ${target.baseUrl} --token <token>`,
+        )
       }
     } else if (body?.error.code === 'AUTH_REQUIRED') {
       await onAuthRequired()
@@ -123,28 +158,46 @@ export function describeLockMismatch(
 }
 
 /**
- * Look up the live daemon for this CLI invocation. Commands call this
- * before every daemon request. If the daemon isn't running or is the
- * wrong version, throw with a message telling the user exactly which
- * command to run.
- *
- * - If `YAAC_DAEMON_URL` + `YAAC_DAEMON_SECRET` are set, use them
- *   directly. This is the test injection hook: tests boot an
- *   in-process daemon and point the CLI at it without writing the
- *   shared `~/.yaac/.daemon.lock`. Production never sets these.
+ * Pure sibling of `describeLockMismatch` for remote targets, where a
+ * version difference is expected life (client and server upgrade
+ * independently) and only worth a warning. Null when the daemon didn't
+ * report a build id or the ids match.
  */
-async function defaultResolveLock(): Promise<DaemonLock> {
+export function describeBuildSkew(
+  daemonBuildId: string | null,
+  cliBuildId: string,
+): string | null {
+  if (!daemonBuildId || daemonBuildId === cliBuildId) return null
+  return (
+    `warning: remote daemon build (${daemonBuildId}) differs from this CLI `
+    + `(${cliBuildId}) — upgrade one of them if commands misbehave`
+  )
+}
+
+/**
+ * Resolve the daemon target for this CLI invocation. Commands call this
+ * before every daemon request. Precedence:
+ *
+ * 1. `YAAC_DAEMON_URL` + `YAAC_DAEMON_SECRET` — the test injection hook:
+ *    tests boot an in-process daemon and point the CLI at it without
+ *    writing the shared `~/.yaac/.daemon.lock`. Production never sets
+ *    these. Above remote.json so a test data dir carrying a remote file
+ *    can't hijack a hermetic run.
+ * 2. An **enabled** `~/.yaac/remote.json` — the configured remote
+ *    daemon, authenticated by its durable token.
+ * 3. The local lock (today's behavior): must be live and build-matched,
+ *    else throw with the exact recovery command.
+ */
+export async function resolveDaemonTarget(): Promise<DaemonTarget> {
   const envUrl = testEnv.daemonUrlOverride
   const envSecret = testEnv.daemonSecretOverride
   if (envUrl && envSecret) {
-    const url = new URL(envUrl)
-    return {
-      pid: -1,
-      port: Number(url.port),
-      secret: envSecret,
-      startedAt: 0,
-      buildId: testEnv.daemonBuildIdOverride,
-    }
+    return { baseUrl: envUrl.replace(/\/+$/, ''), secret: envSecret, remote: false }
+  }
+
+  const remote = await readRemote()
+  if (remote?.enabled) {
+    return { baseUrl: remote.url, secret: remote.token, remote: true }
   }
 
   const cliBuildId = await readBuildId()
@@ -152,7 +205,8 @@ async function defaultResolveLock(): Promise<DaemonLock> {
   const live = existing ? await isLockLive(existing) : false
   const mismatch = describeLockMismatch(existing, live, cliBuildId)
   if (mismatch) throw new Error(mismatch)
-  return existing as DaemonLock
+  const lock = existing as DaemonLock
+  return { baseUrl: `http://127.0.0.1:${lock.port}`, secret: lock.secret, remote: false }
 }
 
 /**

@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { Hono } from 'hono'
 import {
+  constantTimeEqual,
   cookieOrBearerAuth,
   createWebAuthStore,
   hostHeaderCheck,
@@ -106,6 +107,18 @@ describe('isAllowedHost', () => {
     expect(isAllowedHost('127.0.0.1:9999')).toBe(true)
     expect(isAllowedHost('localhost:9788')).toBe(true)
   })
+
+  it('admits extra allowed hostnames case-insensitively, any port', () => {
+    const allowed = ['srv.tailnet.ts.net']
+    expect(isAllowedHost('srv.tailnet.ts.net', allowed)).toBe(true)
+    expect(isAllowedHost('SRV.Tailnet.TS.NET:443', allowed)).toBe(true)
+    expect(isAllowedHost('other.ts.net', allowed)).toBe(false)
+  })
+
+  it('keeps loopback allowed regardless of the extra list', () => {
+    expect(isAllowedHost('127.0.0.1', ['srv.ts.net'])).toBe(true)
+    expect(isAllowedHost('localhost:9788', [])).toBe(true)
+  })
 })
 
 function appWithAuth(): { app: Hono; store: ReturnType<typeof createWebAuthStore> } {
@@ -142,11 +155,44 @@ describe('cookieOrBearerAuth', () => {
     expect(b.status).toBe(200)
   })
 
-  it('rejects a wrong bearer', async () => {
+  it('rejects a wrong bearer with BAD_BEARER (drives the CLI re-resolve retry)', async () => {
     const res = await appWithAuth().app.request('/session/list', {
       headers: { authorization: 'Bearer nope' },
     })
     expect(res.status).toBe(401)
+    const body = await res.json() as { error: { code: string } }
+    expect(body.error.code).toBe('BAD_BEARER')
+  })
+
+  it('accepts a durable token bearer when a token store is wired', async () => {
+    const store = createWebAuthStore()
+    const app = new Hono()
+    app.use('*', cookieOrBearerAuth('shh', store, { isValidToken: (t) => t === 'durable' }))
+    app.get('/session/list', (c) => c.text('protected ok'))
+
+    const ok = await app.request('/session/list', {
+      headers: { authorization: 'Bearer durable' },
+    })
+    expect(ok.status).toBe(200)
+
+    const bad = await app.request('/session/list', {
+      headers: { authorization: 'Bearer other' },
+    })
+    expect(bad.status).toBe(401)
+    const body = await bad.json() as { error: { code: string } }
+    expect(body.error.code).toBe('BAD_BEARER')
+  })
+
+  it('lets a valid cookie override a stale bearer', async () => {
+    const { app, store } = appWithAuth()
+    const sid = store.consumeBootstrap(store.currentCode()) as string
+    const res = await app.request('/session/list', {
+      headers: {
+        authorization: 'Bearer stale',
+        cookie: `${SESSION_COOKIE}=${sid}`,
+      },
+    })
+    expect(res.status).toBe(200)
   })
 
   it('accepts a valid session cookie and rejects an invalid one', async () => {
@@ -163,6 +209,19 @@ describe('cookieOrBearerAuth', () => {
       headers: { cookie: `${SESSION_COOKIE}=bogus` },
     })
     expect(bad.status).toBe(401)
+  })
+})
+
+describe('constantTimeEqual', () => {
+  it('matches equal strings and rejects unequal ones', () => {
+    expect(constantTimeEqual('secret', 'secret')).toBe(true)
+    expect(constantTimeEqual('secret', 'secreT')).toBe(false)
+  })
+
+  it('rejects length mismatches without throwing', () => {
+    expect(constantTimeEqual('short', 'longer-value')).toBe(false)
+    expect(constantTimeEqual('', 'x')).toBe(false)
+    expect(constantTimeEqual('', '')).toBe(true)
   })
 })
 
@@ -191,5 +250,18 @@ describe('hostHeaderCheck', () => {
     expect(res.status).toBe(403)
     const body = await res.json() as { error: { code: string } }
     expect(body.error.code).toBe('BAD_HOST')
+  })
+
+  it('admits a host from YAAC_ALLOWED_HOSTS (read per request)', async () => {
+    const app = appWithHostCheck()
+    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
+    try {
+      const ok = await app.request('/x', { headers: { host: 'srv.tailnet.ts.net' } })
+      expect(ok.status).toBe(200)
+      const other = await app.request('/x', { headers: { host: 'evil.com' } })
+      expect(other.status).toBe(403)
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 })

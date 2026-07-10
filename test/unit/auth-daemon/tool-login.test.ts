@@ -8,7 +8,7 @@ import {
   getToolLogin,
   sendToolLoginInput,
   startToolLogin,
-} from '@/daemon/tool-login'
+} from '@/auth-daemon/tool-login'
 import { loadClaudeCredentialsFile, loadCodexCredentialsFile } from '@/lib/project/tool-auth'
 
 // Only consulted when the YAAC_E2E_*_LOGIN_CLI hook is unset. Mocked to

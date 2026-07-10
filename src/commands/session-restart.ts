@@ -1,7 +1,7 @@
 import { validateAddDirs } from '@/commands/add-dirs'
 import { ensureGitIdentity } from '@/commands/git-identity'
 import { getRpcClient, toClientError } from '@/commands/rpc'
-import { attachTmux } from '@/lib/k8s/exec'
+import { attachSessionPty } from '@/commands/ws-terminal'
 import { consumeNdjsonStream } from '@/shared/ndjson'
 import { testEnv } from '@/shared/env'
 
@@ -58,7 +58,7 @@ export async function sessionRestart(
 
   if (!testEnv.e2eNoAttach) {
     try {
-      await attachTmux(jobName, 'yaac')
+      await attachSessionPty(restartedId, 'native')
     } catch {
       // Job or tmux session was killed — reaper will clean up.
     }

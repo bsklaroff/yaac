@@ -4,20 +4,17 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import * as childProcess from 'node:child_process'
-import { getRpcClient, toClientError } from '@/shared/daemon-client'
+import { getRpcClient, resolveDaemonTarget, toClientError } from '@/shared/daemon-client'
+import { ensureAuthDaemon } from '@/shared/auth-daemon'
+import { runRelayedToolLogin } from '@/commands/relayed-login'
 import { validatePattern, parsePattern } from '@/shared/credentials'
 import { torSshOpts } from '@/shared/git'
 import {
+  buildAuthPayload,
   promptForApiKey,
   runToolLogin,
-  type ToolLoginResult,
 } from '@/shared/tool-auth-interactive'
-import type {
-  AgentTool,
-  ClaudeOAuthBundle,
-  CodexOAuthBundle,
-  OpencodeProvider,
-} from '@/shared/types'
+import type { AgentTool } from '@/shared/types'
 
 /**
  * Fetch a known_hosts entry for `host` by driving `ssh` (not `ssh-keyscan`).
@@ -68,10 +65,6 @@ async function fetchKnownHostsEntry(host: string): Promise<string> {
     await fs.rm(tmp, { force: true })
   }
 }
-
-type ToolAuthPayload =
-  | { kind: 'api-key'; apiKey: string; provider?: OpencodeProvider }
-  | { kind: 'oauth'; bundle: ClaudeOAuthBundle | CodexOAuthBundle }
 
 export async function authUpdate(): Promise<void> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -166,7 +159,11 @@ async function runSshUpdate(): Promise<void> {
     process.exit(1)
   }
 
-  const privateKeyPath = (await rl.question('Private key path (host filesystem; e.g. ~/.ssh/id_ed25519): ')).trim()
+  // The key is read by the daemon/proxy on the daemon host — against a
+  // remote daemon that means a path on the server, so say so.
+  const target = await resolveDaemonTarget().catch(() => null)
+  const where = target?.remote ? `on the daemon host ${target.baseUrl}` : 'host filesystem'
+  const privateKeyPath = (await rl.question(`Private key path (${where}; e.g. ~/.ssh/id_ed25519): `)).trim()
   if (!privateKeyPath) {
     rl.close()
     console.error('Private key path cannot be empty.')
@@ -210,17 +207,40 @@ async function runSshUpdate(): Promise<void> {
 }
 
 async function runToolUpdate(tool: AgentTool): Promise<void> {
-  // Interactive tool-login must happen CLI-side — the daemon can't run
-  // `claude login` / `codex login` and drive their OAuth flows. We
-  // capture the resulting bundle and hand it to the daemon to persist.
-  let result: ToolLoginResult
-  try {
-    result = await runToolLogin(tool)
-  } catch (err) {
+  const label =
+    tool === 'claude' ? 'Claude Code' :
+    tool === 'codex' ? 'Codex' :
+    'OpenCode'
+
+  // Shortcut paths that capture a result directly: the e2e hook and
+  // opencode's api-key prompt.
+  let result = await runToolLogin(tool).catch((err: unknown) => {
     console.error(err instanceof Error ? err.message : String(err))
     process.exit(1)
+  })
+
+  if (!result && (tool === 'claude' || tool === 'codex')) {
+    // Browser sign-in, executed by the auth daemon on this machine and
+    // persisted by it straight to the (possibly remote) main daemon.
+    try {
+      await ensureAuthDaemon()
+      const outcome = await runRelayedToolLogin(tool)
+      if (outcome === 'success') {
+        console.log(`${label} credentials saved.`)
+        return
+      }
+      if (outcome === 'error') {
+        process.exit(1)
+      }
+      // cli-missing: the vendor CLI isn't installed here — offer the key.
+      console.log(`The ${label} CLI is not installed on this machine — enter an API key instead.`)
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err))
+      console.log('Falling back to API-key entry.')
+    }
+    result = await promptForApiKey(tool)
   }
-  if (!result.apiKey && !result.claudeBundle && !result.codexBundle) {
+  if (!result) {
     result = await promptForApiKey(tool)
   }
 
@@ -228,29 +248,5 @@ async function runToolUpdate(tool: AgentTool): Promise<void> {
   const client = await getRpcClient()
   const res = await client.auth[':tool'].$put({ param: { tool }, json: payload })
   if (!res.ok) throw await toClientError(res)
-  const label =
-    tool === 'claude' ? 'Claude Code' :
-    tool === 'codex' ? 'Codex' :
-    'OpenCode'
   console.log(`${label} credentials saved.`)
-}
-
-function buildAuthPayload(tool: AgentTool, result: ToolLoginResult): ToolAuthPayload {
-  if (tool === 'claude' && result.kind === 'oauth' && result.claudeBundle) {
-    return { kind: 'oauth', bundle: result.claudeBundle }
-  }
-  if (tool === 'codex' && result.kind === 'oauth' && result.codexBundle) {
-    return { kind: 'oauth', bundle: result.codexBundle }
-  }
-  if (!result.apiKey) {
-    throw new Error('No credentials captured from tool login.')
-  }
-  if (tool === 'opencode') {
-    return {
-      kind: 'api-key',
-      apiKey: result.apiKey,
-      provider: result.opencodeProvider ?? 'openrouter',
-    }
-  }
-  return { kind: 'api-key', apiKey: result.apiKey }
 }

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
-import { ForwardedPortLinks, portLinkLabel } from '@/frontend/components/ForwardedPortLinks'
+import { ForwardedPortLinks, portLinkHref, portLinkLabel } from '@/frontend/components/ForwardedPortLinks'
 
 // Auto-cleanup only registers when vitest runs with globals; this suite
 // doesn't, so unmount explicitly to keep renders isolated.
@@ -17,7 +17,19 @@ describe('portLinkLabel', () => {
   })
 })
 
+describe('portLinkHref', () => {
+  it('builds the link on the host the webapp was loaded from', () => {
+    const p = { containerPort: 3000, hostPort: 19500 }
+    expect(portLinkHref('localhost', p)).toBe('http://localhost:19500')
+    // Remotely the app is loaded from the tailnet name; the forwarders
+    // bind that same interface (YAAC_FORWARD_BIND), so the link holds.
+    expect(portLinkHref('srv.tailnet.ts.net', p)).toBe('http://srv.tailnet.ts.net:19500')
+  })
+})
+
 describe('ForwardedPortLinks', () => {
+  // jsdom serves the suite from localhost, so window.location.hostname
+  // renders the same hrefs the local webapp shows.
   it('renders a localhost link per forwarded port, opening in a new tab', () => {
     render(
       <ForwardedPortLinks

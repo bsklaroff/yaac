@@ -55,7 +55,12 @@ vi.mock('@/lib/k8s/bootstrap', async (importOriginal) => ({
 
 vi.mock('@/lib/k8s/exec', () => ({
   containerExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-  attachTmux: vi.fn().mockResolvedValue(undefined),
+}))
+
+// The CLI command attaches over the daemon PTY WebSocket after
+// provisioning — mock the transport so no socket is opened.
+vi.mock('@/commands/ws-terminal', () => ({
+  attachSessionPty: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@/lib/container/proxy-client', () => ({

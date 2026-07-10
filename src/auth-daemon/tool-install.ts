@@ -31,6 +31,11 @@ export function clearAllToolInstallsForTests(): void {
   registry.clearAllForTests()
 }
 
+/** Kill every installer subprocess (auth-daemon shutdown). */
+export function killAllToolInstalls(): void {
+  registry.clearAllForTests()
+}
+
 /** The argv that installs a tool's CLI, or null when no installer can run. */
 function installArgv(tool: 'claude' | 'codex'): string[] | null {
   const hook = testEnv.toolInstallCliHook(tool)
@@ -47,14 +52,16 @@ function installArgv(tool: 'claude' | 'codex'): string[] | null {
 
 /**
  * Start (or restart) the install flow for a tool. Any still-running install
- * for the same tool is cancelled first — the webapp drives one at a time.
+ * for the same tool is cancelled first — clients drive one at a time. `id`
+ * is supplied by the relay (the main daemon mints flow ids); direct
+ * callers/tests may omit it.
  */
-export function startToolInstall(tool: 'claude' | 'codex'): ToolInstallView {
+export function startToolInstall(tool: 'claude' | 'codex', id?: string): ToolInstallView {
   const existing = registry.liveForTool(tool)
   if (existing) cancelToolInstall(existing.view.id)
 
   const s = registry.create(
-    { id: crypto.randomUUID(), tool, status: 'running' },
+    { id: id ?? crypto.randomUUID(), tool, status: 'running' },
     'Install timed out after 15 minutes.',
     {},
   )

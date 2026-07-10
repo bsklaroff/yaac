@@ -103,8 +103,9 @@ Commands:
   cluster         Manage the kubernetes cluster yaac runs sessions on
   project         Manage projects
   session         Manage sessions
-  config          Edit per-machine project configuration files
+  config          Edit project configuration files (via the daemon)
   auth            Manage credentials (GitHub tokens and tool API keys)
+  remote          Point this CLI at a remote yaac daemon
 
 yaac cluster <command>
   check             Verify cluster prerequisites (kubectl, registry, hostPath wiring)
@@ -127,6 +128,7 @@ yaac session <command>
     -d, --deleted             List deleted sessions from agent history
   delete <session-id>         Delete a session and clean up its resources
   attach <container-id>       Attach to the agent tmux session
+  shell <container-id>        Open a raw shell in the session container
   stream [options] [project]  Stream through waiting sessions, attaching to
                               each in turn
     -t, --tool <tool>         Agent tool for new sessions (claude, codex, or opencode)
@@ -146,7 +148,22 @@ yaac auth <command>
   list                List configured credentials (masked)
   update              Add or update credentials (GitHub, Claude Code, Codex, or OpenCode)
   clear               Remove stored credentials (interactive)
+  token <command>     Durable access tokens for remote clients
+    create <name>       Mint a token (printed once) for a remote client
+    list                List tokens (masked)
+    revoke <name>       Revoke a token by name
+  daemon <command>    The login broker that runs Claude/Codex sign-ins on this machine
+    run|start|stop|status
+
+yaac remote <command>
+  set <url> --token <t>  Configure and enable a remote daemon (verifies the token)
+  unset                  Forget the remote (commands target the local daemon)
+  on | off               Toggle the configured remote without re-entering the token
+  status                 Show the configured remote (masked token)
 ```
+
+See [docs/remote-hosting.md](docs/remote-hosting.md) for running the daemon
+on an always-on server and using this machine as a thin client.
 
 Detach from a tmux session with `Ctrl-B D`. Kill the tmux session (and the
 container) with `Ctrl-B K` (custom binding, not standard tmux). Open a new
@@ -327,6 +344,9 @@ Every yaac variable is read in one place — [`src/shared/env.ts`](src/shared/en
 | `YAAC_KIND_CLUSTER` | `yaac` | Name of the kind cluster `yaac cluster setup` creates/repairs. |
 | `YAAC_PREWARM_POOL_SIZE` | `1` | Prewarmed sessions kept ready per active project (`0` disables prewarming). |
 | `YAAC_NESTED` | _(unset)_ | Set to `1` automatically by the daemon inside a nested (vcluster) session — not something you set yourself. |
+| `YAAC_ALLOWED_HOSTS` | _(unset)_ | Comma-separated extra hostnames the daemon's Host-header check admits (e.g. its tailnet name behind `tailscale serve`). Loopback is always allowed. |
+| `YAAC_TRUST_PROXY` | _(unset)_ | `1` when the daemon runs behind a trusted TLS-terminating proxy: trusts `X-Forwarded-Proto` to mark the session cookie `Secure`. |
+| `YAAC_FORWARD_BIND` | `127.0.0.1` | Bind address for session port-forward listeners; a remote-hosting server sets its tailnet IP so forwarded dev servers are reachable from other devices. |
 | `YAAC_BUNDLED` | _(unset)_ | Set to `true` by the build (tsup) in the shipped bundle so it loads assets from `dist/`. Build-time define, not a runtime knob. |
 | `EDITOR` / `VISUAL` | `vi` | Editor opened by the `yaac config edit*` commands (git's convention: `$EDITOR`, then `$VISUAL`, then `vi`). |
 
@@ -344,8 +364,8 @@ These are set by the build or the test harness; production reads several of them
 | `YAAC_REQUIRE_PREBUILT_IMAGES` | _(unset)_ | `1` fails fast if a required image isn't already in the registry (CI/e2e). |
 | `YAAC_STARTING_GRACE_MS` | `60000` | Grace window (ms) protecting freshly-created session pods from the stale-session reaper. |
 | `YAAC_BUILD_ID` | _(unset)_ | Override the build id for tests running from source (no `dist/.build-id`). |
-| `YAAC_DAEMON_URL` / `YAAC_DAEMON_SECRET` / `YAAC_DAEMON_BUILD_ID` | _(unset)_ | Point the CLI at an in-process daemon without the lock file (tests). |
-| `YAAC_E2E_NO_ATTACH` | _(unset)_ | `1` skips the post-provision `kubectl exec -it` attach (no-TTY e2e). |
+| `YAAC_DAEMON_URL` / `YAAC_DAEMON_SECRET` | _(unset)_ | Point the CLI at an in-process daemon without the lock file (tests). |
+| `YAAC_E2E_NO_ATTACH` | _(unset)_ | `1` skips the post-provision terminal attach (no-TTY e2e). |
 | `YAAC_E2E_SKIP_FETCH` | _(unset)_ | `1` skips the host-side git fetch during create (e2e fixtures pre-populate the repo). |
 | `YAAC_E2E_CLAUDE_LOGIN` / `YAAC_E2E_CODEX_LOGIN` / `YAAC_E2E_OPENCODE_LOGIN` | _(unset)_ | Short-circuit the native tool login with a serialized OAuth bundle (claude/codex) or raw api key (opencode). |
 | `YAAC_E2E_OPENCODE_PROVIDER` | _(unset)_ | Picks the opencode provider during e2e login (defaults to openrouter). |

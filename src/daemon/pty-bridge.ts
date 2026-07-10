@@ -8,12 +8,20 @@ const DEFAULT_COLS = 80
 const DEFAULT_ROWS = 24
 
 /**
- * What a terminal tab attaches to inside the container:
+ * What a terminal attaches to inside the container:
  *  - 'agent'          — the `yaac` tmux session's agent window (the CLI).
  *  - 'window:@<id>'   — any other window of the `yaac` session (an
  *    initCommands dev server, a scratch shell, …), viewed through a
  *    per-client grouped session so the active window of other viewers
  *    (and the CLI) is never touched.
+ *  - 'native'         — the CLI's full-fidelity attach: a per-client
+ *    grouped session with the tmux chrome intact (status bar, prefix
+ *    keys, `C-b d` detaches), replacing the old client-side
+ *    `kubectl exec … tmux attach-session -t yaac`. Grouped rather than a
+ *    raw attach so each client keeps its own size/current-window and
+ *    `destroy-unattached` cleans up on disconnect.
+ *  - 'shell'          — a raw `zsh` exec with no tmux at all (the CLI's
+ *    `session shell`): exiting the shell ends the connection.
  */
 export type PtyTarget = string
 
@@ -23,7 +31,7 @@ const WINDOW_ID = /^@[0-9]{1,6}$/
  *  Anything unrecognized falls back to the agent. */
 export function parsePtyTarget(raw: unknown): PtyTarget {
   if (typeof raw !== 'string') return 'agent'
-  if (raw === 'agent') return 'agent'
+  if (raw === 'agent' || raw === 'native' || raw === 'shell') return raw
   if (raw.startsWith('window:') && WINDOW_ID.test(raw.slice('window:'.length))) return raw
   return 'agent'
 }
@@ -75,25 +83,39 @@ export function attachArgs(
   const tmux = `tmux -S ${CONTAINER_TMUX_SOCK}`
   const cols = size.cols ?? DEFAULT_COLS
   const rows = size.rows ?? DEFAULT_ROWS
-  // Agent = the yaac session's lowest-index window (`^`): the agent window is
-  // created first, and other windows only ever append after it. Same
-  // convention as the terminals enumeration.
-  const window = target.startsWith('window:')
-    ? target.slice('window:'.length)
-    : `${viewName}:^`
   // The has-session guard is load-bearing: `new-session -t yaac` against a
   // pod where session-create hasn't yet built the `yaac` session doesn't
   // fail — tmux silently mints a NEW group named `yaac` whose one window is
   // a bare shell, and every later view resolves `-t yaac` to that stale
   // group instead of the real session's windows, permanently. Failing here
   // instead lets the client's reconnect loop retry until setup finishes.
+  const create = `${tmux} has-session -t =yaac 2>/dev/null`
+    + ` && ${tmux} new-session -d -t yaac -s ${viewName} -x ${cols} -y ${rows}`
+
+  // Native (CLI) attach: keep the tmux chrome — status bar, prefix keys,
+  // `C-b d` — and the group's own current window. Only destroy-unattached
+  // distinguishes it from a plain `attach-session -t yaac`.
+  if (target === 'native') {
+    return interactiveExecArgs(jobName, [
+      'sh', '-c',
+      create
+      + ` && exec ${tmux} attach-session -t ${viewName}`
+      + ' \\; set-option destroy-unattached on',
+    ])
+  }
+
+  // Agent = the yaac session's lowest-index window (`^`): the agent window is
+  // created first, and other windows only ever append after it. Same
+  // convention as the terminals enumeration.
+  const window = target.startsWith('window:')
+    ? target.slice('window:'.length)
+    : `${viewName}:^`
   // select-window runs inside the attached client's sequence (like the old
   // shape) so a bare window id resolves within the view session, not the
   // group's original.
   return interactiveExecArgs(jobName, [
     'sh', '-c',
-    `${tmux} has-session -t =yaac 2>/dev/null`
-    + ` && ${tmux} new-session -d -t yaac -s ${viewName} -x ${cols} -y ${rows}`
+    create
     + ` \\; set-option -t ${viewName} status off`
     + ` \\; set-option -t ${viewName} prefix None`
     + ` && exec ${tmux} attach-session -t ${viewName}`
@@ -256,14 +278,19 @@ export function parsePtySize(
   return { cols: clamp(colsRaw), rows: clamp(rowsRaw) }
 }
 
-/** Spawn the attach PTY for a resolved session Job. */
+/** Spawn the attach PTY for a resolved session Job. The 'shell' target
+ *  is a raw zsh exec (no tmux, no view session to clean up); everything
+ *  else attaches through a per-client grouped tmux session. */
 export function spawnAttachPty(
   jobName: string,
   size: { cols?: number; rows?: number },
   target: PtyTarget,
   viewName: string,
 ): IPty {
-  return pty.spawn('kubectl', attachArgs(jobName, target, viewName, size), {
+  const args = target === 'shell'
+    ? interactiveExecArgs(jobName, ['zsh'])
+    : attachArgs(jobName, target, viewName, size)
+  return pty.spawn('kubectl', args, {
     name: 'xterm-color',
     cols: size.cols ?? DEFAULT_COLS,
     rows: size.rows ?? DEFAULT_ROWS,

@@ -1,6 +1,7 @@
 import net from 'node:net'
 import { type ChildProcess, spawn } from 'node:child_process'
 import { stdinExecArgs } from '@/lib/k8s/exec'
+import { env } from '@/shared/env'
 import type { PortMapping } from '@/shared/types'
 
 export type { PortMapping }
@@ -14,14 +15,17 @@ export interface ReservedPort extends PortMapping {
 export type RelayFactory = (containerPort: number) => ChildProcess
 
 /**
- * Try to listen on a port.  Returns the bound server on success, null on failure.
+ * Try to listen on a port.  Returns the bound server on success, null on
+ * failure.  Binds `YAAC_FORWARD_BIND` (default loopback) — a remote-
+ * hosting server sets its tailnet IP here so forwarded dev servers are
+ * reachable from other tailnet devices.
  */
 function tryListen(port: number): Promise<net.Server | null> {
   return new Promise((resolve) => {
     const server = net.createServer()
     server.once('error', () => resolve(null))
     server.once('listening', () => resolve(server))
-    server.listen(port, '127.0.0.1')
+    server.listen(port, env.forwardBind)
   })
 }
 

@@ -4,8 +4,7 @@ import { z } from 'zod'
 import { listAuth } from '@/lib/auth/list'
 import { clearAuth } from '@/lib/auth/clear'
 import { requestPlanUsageRefresh } from '@/daemon/plan-usage'
-import { cancelToolLogin, getToolLogin, sendToolLoginInput, startToolLogin } from '@/daemon/tool-login'
-import { cancelToolInstall, getToolInstall, startToolInstall } from '@/daemon/tool-install'
+import { authAgentHub } from '@/daemon/auth-agent'
 import { addEntry, removeEntryChecked, replaceEntries } from '@/lib/project/credentials'
 import { persistToolAuthPayload } from '@/lib/project/tool-auth'
 import { seedFakeClaudeOAuth, seedFakeGithubCredential } from '@/lib/project/fake-auth'
@@ -113,34 +112,37 @@ export const authApp = new Hono()
       return c.body(null, 204)
     },
   )
-  // Web-driven sign-in: the daemon runs the vendor's browser login CLI in a
-  // subprocess; the webapp just polls for the outcome (daemon/tool-login.ts).
+  // Whether an auth daemon (the user's-machine login broker) is connected.
+  .get('/agent', (c) => c.json({ connected: authAgentHub.connected() }))
+  // Web-driven sign-in: relayed to the auth daemon on the user's machine
+  // (the browser and the vendors' localhost callbacks live there); clients
+  // keep polling these routes, which serve the agent-pushed views.
   .post(
     '/:tool/login/start',
     zv('param', z.object({ tool: z.enum(['claude', 'codex']) })),
-    async (c) => c.json(await startToolLogin(c.req.valid('param').tool)),
+    (c) => c.json(authAgentHub.startLogin(c.req.valid('param').tool)),
   )
-  .get('/login/:id', (c) => c.json(getToolLogin(c.req.param('id'))))
+  .get('/login/:id', (c) => c.json(authAgentHub.getLogin(c.req.param('id'))))
   .post(
     '/login/:id/input',
-    // Cap generously pre-trim; the manager enforces the real alphabet/length.
+    // Cap generously pre-trim; the hub enforces the real alphabet/length.
     zv('json', z.object({ text: z.string().min(1).max(1024) })),
-    (c) => c.json(sendToolLoginInput(c.req.param('id'), c.req.valid('json').text)),
+    (c) => c.json(authAgentHub.sendLoginInput(c.req.param('id'), c.req.valid('json').text)),
   )
   .post('/login/:id/cancel', (c) => {
-    cancelToolLogin(c.req.param('id'))
+    authAgentHub.cancelLogin(c.req.param('id'))
     return c.body(null, 204)
   })
   // Web-driven CLI install: offered when a sign-in fails with cliMissing.
-  // Same session/poll shape as login (daemon/tool-install.ts).
+  // Same relay + poll shape as login.
   .post(
     '/:tool/install/start',
     zv('param', z.object({ tool: z.enum(['claude', 'codex']) })),
-    (c) => c.json(startToolInstall(c.req.valid('param').tool)),
+    (c) => c.json(authAgentHub.startInstall(c.req.valid('param').tool)),
   )
-  .get('/install/:id', (c) => c.json(getToolInstall(c.req.param('id'))))
+  .get('/install/:id', (c) => c.json(authAgentHub.getInstall(c.req.param('id'))))
   .post('/install/:id/cancel', (c) => {
-    cancelToolInstall(c.req.param('id'))
+    authAgentHub.cancelInstall(c.req.param('id'))
     return c.body(null, 204)
   })
   .put(

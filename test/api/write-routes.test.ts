@@ -56,8 +56,64 @@ import { restartSession } from '@/lib/session/restart'
 import { addProject } from '@/lib/project/add'
 import { removeProject } from '@/lib/project/remove'
 import { registerProvisioning, listProvisioning, clearAllProvisioningForTests } from '@/daemon/provisioning'
-import { clearAllToolLoginsForTests } from '@/daemon/tool-login'
-import { clearAllToolInstallsForTests } from '@/daemon/tool-install'
+import { authAgentHub, type AgentOp } from '@/daemon/auth-agent'
+import {
+  cancelToolLogin,
+  clearAllToolLoginsForTests,
+  getToolLogin,
+  sendToolLoginInput,
+  startToolLogin,
+} from '@/auth-daemon/tool-login'
+import {
+  cancelToolInstall,
+  clearAllToolInstallsForTests,
+  getToolInstall,
+  startToolInstall,
+} from '@/auth-daemon/tool-install'
+
+/**
+ * Wire an in-process "loopback" auth agent into the hub: ops dispatch to
+ * the real local login/install managers and a pump pushes their views
+ * back, so the routes get full end-to-end coverage without a WebSocket.
+ * Returns a teardown that must run in afterEach.
+ */
+function installLoopbackAgent(): () => void {
+  const tracked = new Map<string, 'login' | 'install'>()
+  authAgentHub.setSocket({
+    send: (data: string) => {
+      const op = JSON.parse(data) as AgentOp
+      if (op.op === 'start') {
+        tracked.set(op.id, op.kind)
+        if (op.kind === 'login') void startToolLogin(op.tool, op.id)
+        else startToolInstall(op.tool, op.id)
+      } else if (op.op === 'input') {
+        try {
+          sendToolLoginInput(op.id, op.text)
+        } catch { /* surfaces via the next view push */ }
+      } else {
+        if (op.kind === 'login') cancelToolLogin(op.id)
+        else cancelToolInstall(op.id)
+        tracked.delete(op.id)
+      }
+    },
+    close: () => {},
+  })
+  const pump = setInterval(() => {
+    for (const [id, kind] of tracked) {
+      try {
+        const view = kind === 'login' ? getToolLogin(id) : getToolInstall(id)
+        authAgentHub.ingest(JSON.stringify({ op: 'view', kind, view }))
+        if (view.status !== 'running') tracked.delete(id)
+      } catch {
+        tracked.delete(id)
+      }
+    }
+  }, 25)
+  return () => {
+    clearInterval(pump)
+    authAgentHub.clearForTests()
+  }
+}
 
 const mockCreateSession = vi.mocked(createSession)
 const mockDeleteSession = vi.mocked(deleteSession)
@@ -606,17 +662,41 @@ describe('write routes', () => {
   describe('tool login routes', () => {
     const CODEX_STUB = path.join(__dirname, '..', 'helpers', 'fake-codex-login.cjs')
     const CLAUDE_STUB = path.join(__dirname, '..', 'helpers', 'fake-claude-login.cjs')
+    let teardownAgent: () => void
 
     beforeEach(() => {
+      teardownAgent = installLoopbackAgent()
       process.env.YAAC_E2E_CODEX_LOGIN_CLI = JSON.stringify([process.execPath, CODEX_STUB])
       process.env.YAAC_E2E_CLAUDE_LOGIN_CLI = JSON.stringify([process.execPath, CLAUDE_STUB])
     })
 
     afterEach(() => {
+      teardownAgent()
       clearAllToolLoginsForTests()
       delete process.env.YAAC_E2E_CODEX_LOGIN_CLI
       delete process.env.YAAC_E2E_CLAUDE_LOGIN_CLI
       delete process.env.FAKE_LOGIN_MODE
+    })
+
+    it('returns AUTH_AGENT_DISCONNECTED (503) when no auth daemon is connected', async () => {
+      teardownAgent() // drop the loopback agent for this case
+      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const res = await client.auth[':tool'].login.start.$post({ param: { tool: 'claude' } })
+      expect(res.status).toBe(503)
+      const body = await res.json() as unknown as { error: { code: string; message: string } }
+      expect(body.error.code).toBe('AUTH_AGENT_DISCONNECTED')
+      expect(body.error.message).toMatch(/yaac auth (update|daemon start)/)
+      teardownAgent = installLoopbackAgent() // restore for afterEach symmetry
+    })
+
+    it('reports agent connectivity on GET /auth/agent', async () => {
+      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const connectedRes = await client.auth.agent.$get()
+      expect(await connectedRes.json()).toEqual({ connected: true })
+      teardownAgent()
+      const disconnectedRes = await client.auth.agent.$get()
+      expect(await disconnectedRes.json()).toEqual({ connected: false })
+      teardownAgent = installLoopbackAgent()
     })
 
     it('start → poll → success over the wire', async () => {
@@ -668,12 +748,15 @@ describe('write routes', () => {
 
   describe('tool install routes', () => {
     const INSTALL_STUB = path.join(__dirname, '..', 'helpers', 'fake-install-cli.cjs')
+    let teardownAgent: () => void
 
     beforeEach(() => {
+      teardownAgent = installLoopbackAgent()
       process.env.YAAC_E2E_CLAUDE_INSTALL_CLI = JSON.stringify([process.execPath, INSTALL_STUB])
     })
 
     afterEach(() => {
+      teardownAgent()
       clearAllToolInstallsForTests()
       delete process.env.YAAC_E2E_CLAUDE_INSTALL_CLI
     })

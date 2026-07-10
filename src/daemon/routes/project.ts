@@ -6,7 +6,7 @@ import { listProjects } from '@/lib/project/list'
 import { getProjectDetail, resolveProjectConfigWithSource, assertProjectExists } from '@/lib/project/detail'
 import { addProject } from '@/lib/project/add'
 import { removeProject } from '@/lib/project/remove'
-import { writeProjectConfig, removeProjectConfig } from '@/lib/project/local-config'
+import { writeProjectConfig, removeProjectConfig, readProjectConfigRaw } from '@/lib/project/local-config'
 import { readProjectDockerfile, writeProjectDockerfile } from '@/lib/project/dockerfile'
 import { rebuildProjectImage, pushImageShared } from '@/lib/container/build-coordinator'
 import { toErrorBody } from '@/daemon/errors'
@@ -32,6 +32,10 @@ export const projectApp = new Hono()
     return c.body(null, 204)
   })
   .get('/:slug/config', async (c) => c.json(await resolveProjectConfigWithSource(c.req.param('slug'))))
+  // Raw text for the CLI's $EDITOR flow: unlike the parsed GET above it
+  // returns malformed content verbatim so it can be repaired.
+  .get('/:slug/config/raw', async (c) =>
+    c.json({ content: await readProjectConfigRaw(c.req.param('slug')) }))
   .put(
     '/:slug/config',
     zv('json', z.object({ config: z.unknown() }).refine(

@@ -11,6 +11,7 @@ export type ErrorCode =
   | 'CONFLICT'
   | 'RUNTIME_UNAVAILABLE'
   | 'AUTH_REQUIRED'
+  | 'AUTH_AGENT_DISCONNECTED'
   | 'BAD_BEARER'
   | 'INTERNAL'
 
@@ -39,6 +40,7 @@ function defaultStatus(code: ErrorCode): number {
     case 'CONFLICT': return 409
     case 'RUNTIME_UNAVAILABLE': return 503
     case 'AUTH_REQUIRED': return 401
+    case 'AUTH_AGENT_DISCONNECTED': return 503
     case 'BAD_BEARER': return 401
     case 'INTERNAL': return 500
   }

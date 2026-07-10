@@ -1,26 +1,37 @@
-import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from 'vitest'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import os from 'node:os'
 import {
   createDaemonFetch,
+  describeBuildSkew,
   describeLockMismatch,
   exitOnClientError,
+  resolveDaemonTarget,
   toClientError,
+  type DaemonTarget,
 } from '@/shared/daemon-client'
+import { writeRemote } from '@/shared/remote'
+import { setDataDir } from '@/shared/paths'
 
-function jsonResponse(body: string, status = 200): Response {
-  return new Response(body, { status, headers: { 'content-type': 'application/json' } })
+function jsonResponse(body: string, status = 200, headers: Record<string, string> = {}): Response {
+  return new Response(body, {
+    status,
+    headers: { 'content-type': 'application/json', ...headers },
+  })
 }
 
 describe('createDaemonFetch', () => {
-  const lock = { pid: 1, port: 4242, secret: 'shh', startedAt: 0, buildId: 'test' }
+  const target: DaemonTarget = { baseUrl: 'http://127.0.0.1:4242', secret: 'shh', remote: false }
 
-  it('issues requests against the locked port with the bearer header', async () => {
+  it('issues requests against the target origin with the bearer header', async () => {
     const fetchImpl = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
       const auth = new Headers(init?.headers ?? {}).get('authorization')
       expect(auth).toBe('Bearer shh')
       return Promise.resolve(jsonResponse('[]'))
     })
     const daemonFetch = await createDaemonFetch({
-      resolveLock: () => Promise.resolve(lock),
+      resolveTarget: () => Promise.resolve(target),
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
     const res = await daemonFetch('/project/list')
@@ -30,26 +41,75 @@ describe('createDaemonFetch', () => {
     expect(url).toBe('http://127.0.0.1:4242/project/list')
   })
 
-  it('on BAD_BEARER re-resolves the lock and retries once', async () => {
-    const newLock = { ...lock, secret: 'rotated', port: 4243 }
-    const resolveLock = vi.fn()
-      .mockResolvedValueOnce(lock)
-      .mockResolvedValueOnce(newLock)
+  it('on BAD_BEARER re-resolves the target and retries once', async () => {
+    const rotated: DaemonTarget = { ...target, secret: 'rotated', baseUrl: 'http://127.0.0.1:4243' }
+    const resolveTarget = vi.fn()
+      .mockResolvedValueOnce(target)
+      .mockResolvedValueOnce(rotated)
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(jsonResponse('{"error":{"code":"BAD_BEARER","message":"x"}}', 401))
       .mockResolvedValueOnce(jsonResponse('[]'))
     const daemonFetch = await createDaemonFetch({
-      resolveLock,
+      resolveTarget,
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
     const res = await daemonFetch('/project/list')
     expect(await res.json()).toEqual([])
-    expect(resolveLock).toHaveBeenCalledTimes(2)
+    expect(resolveTarget).toHaveBeenCalledTimes(2)
     expect(fetchImpl).toHaveBeenCalledTimes(2)
     const second = fetchImpl.mock.calls[1] as [string, RequestInit]
     const auth = new Headers(second[1].headers ?? {}).get('authorization')
     expect(auth).toBe('Bearer rotated')
     expect(second[0]).toBe('http://127.0.0.1:4243/project/list')
+  })
+
+  it('a persistent BAD_BEARER on a remote target throws token-refresh instructions', async () => {
+    const remote: DaemonTarget = { baseUrl: 'https://srv.ts.net', secret: 'tok', remote: true }
+    const fetchImpl = vi.fn(() => Promise.resolve(
+      jsonResponse('{"error":{"code":"BAD_BEARER","message":"x"}}', 401),
+    ))
+    const daemonFetch = await createDaemonFetch({
+      resolveTarget: () => Promise.resolve(remote),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    await expect(daemonFetch('/project/list')).rejects.toThrow(
+      /rejected the token.*yaac auth token create.*yaac remote set https:\/\/srv\.ts\.net/s,
+    )
+    // No blind retry with the same credential.
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('warns once (stderr) when a remote daemon reports a different build id', async () => {
+    vi.stubEnv('YAAC_BUILD_ID', 'local-build')
+    const remote: DaemonTarget = { baseUrl: 'https://srv.ts.net', secret: 'tok', remote: true }
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const fetchImpl = vi.fn(() => Promise.resolve(
+      jsonResponse('[]', 200, { 'x-yaac-build-id': 'other-build' }),
+    ))
+    const daemonFetch = await createDaemonFetch({
+      resolveTarget: () => Promise.resolve(remote),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    await daemonFetch('/project/list')
+    await daemonFetch('/project/list')
+    const skewCalls = errorSpy.mock.calls.filter((c) => /differs from this CLI/.test(String(c[0])))
+    expect(skewCalls).toHaveLength(1)
+    errorSpy.mockClear()
+    vi.unstubAllEnvs()
+  })
+
+  it('does not warn about build skew for local targets', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const fetchImpl = vi.fn(() => Promise.resolve(
+      jsonResponse('[]', 200, { 'x-yaac-build-id': 'other-build' }),
+    ))
+    const daemonFetch = await createDaemonFetch({
+      resolveTarget: () => Promise.resolve(target),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    await daemonFetch('/project/list')
+    expect(errorSpy).not.toHaveBeenCalled()
+    errorSpy.mockClear()
   })
 
   it('on AUTH_REQUIRED invokes onAuthRequired and retries once', async () => {
@@ -61,7 +121,7 @@ describe('createDaemonFetch', () => {
       ))
       .mockResolvedValueOnce(jsonResponse('{"ok":true}'))
     const daemonFetch = await createDaemonFetch({
-      resolveLock: () => Promise.resolve(lock),
+      resolveTarget: () => Promise.resolve(target),
       fetchImpl: fetchImpl as unknown as typeof fetch,
       onAuthRequired,
     })
@@ -78,7 +138,7 @@ describe('createDaemonFetch', () => {
       401,
     )))
     const daemonFetch = await createDaemonFetch({
-      resolveLock: () => Promise.resolve(lock),
+      resolveTarget: () => Promise.resolve(target),
       fetchImpl: fetchImpl as unknown as typeof fetch,
       onAuthRequired,
     })
@@ -94,11 +154,71 @@ describe('createDaemonFetch', () => {
       Promise.resolve(jsonResponse('[]')),
     )
     const daemonFetch = await createDaemonFetch({
-      resolveLock: () => Promise.resolve(lock),
+      resolveTarget: () => Promise.resolve(target),
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
     await daemonFetch('http://daemon.local/project/list?foo=bar')
     expect(fetchImpl.mock.calls[0][0]).toBe('http://127.0.0.1:4242/project/list?foo=bar')
+  })
+})
+
+describe('resolveDaemonTarget', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-target-'))
+    setDataDir(dir)
+    vi.stubEnv('YAAC_DAEMON_URL', undefined)
+    vi.stubEnv('YAAC_DAEMON_SECRET', undefined)
+    // The local-lock branch compares build ids before reading the lock;
+    // a source checkout has no .build-id file, so inject one.
+    vi.stubEnv('YAAC_BUILD_ID', 'test-build')
+  })
+
+  afterEach(async () => {
+    vi.unstubAllEnvs()
+    setDataDir('')
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
+  it('the env hatch wins over an enabled remote', async () => {
+    await writeRemote({ url: 'https://srv.ts.net', token: 'tok', enabled: true })
+    vi.stubEnv('YAAC_DAEMON_URL', 'http://127.0.0.1:1234/')
+    vi.stubEnv('YAAC_DAEMON_SECRET', 'env-secret')
+    const target = await resolveDaemonTarget()
+    expect(target).toEqual({ baseUrl: 'http://127.0.0.1:1234', secret: 'env-secret', remote: false })
+  })
+
+  it('an enabled remote wins over the local lock', async () => {
+    await writeRemote({ url: 'https://srv.ts.net', token: 'tok', enabled: true })
+    const target = await resolveDaemonTarget()
+    expect(target).toEqual({ baseUrl: 'https://srv.ts.net', secret: 'tok', remote: true })
+  })
+
+  it('a disabled remote falls through to the local lock path', async () => {
+    await writeRemote({ url: 'https://srv.ts.net', token: 'tok', enabled: false })
+    // No lock in the temp data dir → the local branch throws its
+    // "not running" guidance, proving the remote was skipped.
+    await expect(resolveDaemonTarget()).rejects.toThrow(/yaac daemon start/)
+  })
+
+  it('with no remote at all, the local lock path is used', async () => {
+    await expect(resolveDaemonTarget()).rejects.toThrow(/not running/)
+  })
+})
+
+describe('describeBuildSkew', () => {
+  it('is null when the ids match or the daemon did not report one', () => {
+    expect(describeBuildSkew('abc', 'abc')).toBeNull()
+    expect(describeBuildSkew(null, 'abc')).toBeNull()
+    expect(describeBuildSkew('', 'abc')).toBeNull()
+  })
+
+  it('describes a mismatch with both ids', () => {
+    const msg = describeBuildSkew('remote-x', 'local-y')
+    expect(msg).toMatch(/remote-x/)
+    expect(msg).toMatch(/local-y/)
+    expect(msg).toMatch(/^warning:/)
   })
 })
 

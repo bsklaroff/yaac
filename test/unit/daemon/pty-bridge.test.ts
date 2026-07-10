@@ -100,17 +100,35 @@ describe('parsePtyTarget', () => {
   it('validates targets, defaulting to agent', () => {
     expect(parsePtyTarget('agent')).toBe('agent')
     expect(parsePtyTarget('window:@7')).toBe('window:@7')
+    // CLI targets: full-chrome grouped attach and the raw zsh exec.
+    expect(parsePtyTarget('native')).toBe('native')
+    expect(parsePtyTarget('shell')).toBe('shell')
   })
 
-  it('rejects malformed, injected, or retired targets', () => {
+  it('rejects malformed or injected targets', () => {
     expect(parsePtyTarget(undefined)).toBe('agent')
     expect(parsePtyTarget(42)).toBe('agent')
     expect(parsePtyTarget('window:7')).toBe('agent')
     expect(parsePtyTarget('window:@x')).toBe('agent')
-    // shells are plain yaac windows now — shell: targets are gone
-    expect(parsePtyTarget('shell')).toBe('agent')
     expect(parsePtyTarget('shell:shell')).toBe('agent')
     expect(parsePtyTarget("window:@1' \\; kill-server")).toBe('agent')
+  })
+})
+
+describe('attachArgs (native)', () => {
+  it('keeps the tmux chrome: no status-off, no prefix-none, no select-window', () => {
+    const argv = attachArgs('yaac-demo-abc', 'native', 'view-11aa22bb', { cols: 150, rows: 40 })
+    const cmd = argv[8]
+    expect(cmd).toContain('new-session -d -t yaac -s view-11aa22bb -x 150 -y 40')
+    expect(cmd).not.toContain('status off')
+    expect(cmd).not.toContain('prefix None')
+    expect(cmd).not.toContain('select-window')
+    expect(cmd).toMatch(/attach-session -t view-11aa22bb[\s\S]*destroy-unattached on$/)
+  })
+
+  it('still guards on the yaac session existing', () => {
+    const cmd = attachArgs('yaac-demo-abc', 'native', 'view-11aa22bb')[8]
+    expect(cmd).toMatch(/^tmux -S \S+ has-session -t =yaac 2>\/dev\/null && /)
   })
 })
 
@@ -121,6 +139,15 @@ describe('spawnAttachPty', () => {
       'kubectl',
       attachArgs('yaac-demo', 'agent', 'view-11aa22bb', { cols: 100, rows: 40 }),
       expect.objectContaining({ name: 'xterm-color', cols: 100, rows: 40 }),
+    )
+  })
+
+  it('spawns a raw zsh exec (no tmux) for the shell target', () => {
+    spawnAttachPty('yaac-demo', { cols: 80, rows: 24 }, 'shell', 'view-11aa22bb')
+    expect(pty.spawn).toHaveBeenCalledWith(
+      'kubectl',
+      ['exec', '-n', 'yaac', '-it', 'job/yaac-demo', '--', 'zsh'],
+      expect.objectContaining({ name: 'xterm-color', cols: 80, rows: 24 }),
     )
   })
 })

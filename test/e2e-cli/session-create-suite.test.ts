@@ -756,6 +756,44 @@ describe('yaac session create suite (real CLI + real daemon + mocked remotes)', 
       for (let i = 0; i < 30 && !binary().includes('WS_ROUNDTRIP_42'); i++) await sleep(500)
       ws.close()
       expect(binary()).toContain('WS_ROUNDTRIP_42')
+
+      // target=native — the CLI's `session attach` transport. Prefix keys
+      // must be live (view sessions set `prefix None`, native must not):
+      // C-b d detaches the grouped client, which exits the container-side
+      // tmux client, ends the PTY, and closes the socket server-side.
+      const native = openWs(
+        `ws://127.0.0.1:${daemon!.lock.port}/pty/attach`
+          + `?id=${sessionId}&target=native&cols=100&rows=30`,
+        auth,
+      )
+      const nativeClosed = new Promise<void>((resolve) => native.ws.on('close', () => resolve()))
+      await native.opened
+      for (let i = 0; i < 30 && native.binary().length === 0; i++) await sleep(500)
+      expect(native.binary().length).toBeGreaterThan(0)
+      native.ws.send(Buffer.from('\x02d')) // C-b d
+      await Promise.race([
+        nativeClosed,
+        sleep(15_000).then(() => { throw new Error('C-b d did not close the native attach') }),
+      ])
+
+      // target=shell — the CLI's `session shell` transport: a raw zsh, no
+      // tmux. `exit` ends the shell and closes the socket.
+      const rawShell = openWs(
+        `ws://127.0.0.1:${daemon!.lock.port}/pty/attach`
+          + `?id=${sessionId}&target=shell&cols=100&rows=30`,
+        auth,
+      )
+      const shellClosed = new Promise<void>((resolve) => rawShell.ws.on('close', () => resolve()))
+      await rawShell.opened
+      await sleep(3000)
+      rawShell.ws.send(Buffer.from('echo RAW_SHELL_$((20 + 3))\r'))
+      for (let i = 0; i < 30 && !rawShell.binary().includes('RAW_SHELL_23'); i++) await sleep(500)
+      expect(rawShell.binary()).toContain('RAW_SHELL_23')
+      rawShell.ws.send(Buffer.from('exit\r'))
+      await Promise.race([
+        shellClosed,
+        sleep(15_000).then(() => { throw new Error('exit did not close the raw shell attach') }),
+      ])
     }, 120_000)
 
     it('pushes pane-title flips into session list, sticky across a watcher stream kill', async () => {

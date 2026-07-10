@@ -7,7 +7,9 @@ import { createRequire } from 'node:module'
 import { serve, type ServerType } from '@hono/node-server'
 import { createNodeWebSocket } from '@hono/node-ws'
 import { buildApp } from '@/daemon/server'
+import { authAgentHub } from '@/daemon/auth-agent'
 import { createWebAuthStore } from '@/daemon/web-auth'
+import { createTokenStore, loadTokens, saveTokens } from '@/daemon/token-store'
 import { EventHub } from '@/daemon/events'
 import { bridge, killViewSession, newViewName, parsePtySize, parsePtyTarget, spawnAttachPty, type SocketLike } from '@/daemon/pty-bridge'
 import { coalesceCalls, notifySessionListChanged, onSessionListChanged } from '@/daemon/sessions-changed'
@@ -25,6 +27,8 @@ import {
   type DaemonLock,
 } from '@/shared/lock'
 import { resolveDaemonPort, bindWithAutoIncrement } from '@/shared/daemon-port'
+import { resolveDaemonTarget, type DaemonTarget } from '@/shared/daemon-client'
+import { ensureAuthDaemonSpawned } from '@/shared/auth-daemon'
 import { ensureDataDir } from '@/lib/project/paths'
 import { daemonLogPath, webSessionsPath } from '@/shared/paths'
 import { startBackgroundLoop } from '@/daemon/background-loop'
@@ -141,13 +145,22 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     initialSessions: await loadWebSessions(),
     onSessionsChanged: (sessions) => void saveWebSessions(sessions),
   })
+  // Durable client tokens survive restarts by design — they're what
+  // remote CLIs hold instead of the per-boot lock secret.
+  const tokens = createTokenStore({
+    initialTokens: await loadTokens(),
+    onChanged: (entries) => {
+      saveTokens(entries).catch((err: unknown) =>
+        daemonLog(`[daemon] failed to persist tokens: ${String(err)}`))
+    },
+  })
   const hub = new EventHub()
   // Push a fresh snapshot the moment session state changes — a create /
   // restart from a route handler, a pod-watch event, or a watcher-fed
   // status flip. The first notification publishes immediately; bursts
   // (daemon start seeding N pods) coalesce into one trailing rebuild.
   onSessionListChanged(coalesceCalls(() => { void hub.publishSnapshot() }, 150))
-  const app = buildApp({ secret, buildId, store })
+  const app = buildApp({ secret, buildId, store, tokens })
 
   // WebSocket event stream. Registered here (not in buildApp) so buildApp's
   // return type stays the plain Hono app the CLI's typed RPC client infers
@@ -166,6 +179,31 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
     },
     onClose: (_evt, ws) => hub.remove(ws),
     onError: (_err, ws) => hub.remove(ws),
+  })))
+
+  // Auth-daemon relay: the login broker on the user's machine holds one
+  // outbound socket here; sign-in routes forward ops over it and serve
+  // the views it pushes back. Auth rides the upgrade like every WS.
+  app.get('/agent/auth', nodeWs.upgradeWebSocket(() => ({
+    onOpen: (_evt, ws) => {
+      const raw = ws.raw as RawWebSocket | undefined
+      if (!raw) {
+        ws.close(1011, 'no raw socket')
+        return
+      }
+      const sock = {
+        send: (data: string) => raw.send(data),
+        close: (code?: number, reason?: string) => raw.close(code, reason),
+      }
+      authAgentHub.setSocket(sock)
+      raw.on('message', (data) => {
+        const text = Array.isArray(data)
+          ? Buffer.concat(data).toString('utf8')
+          : Buffer.isBuffer(data) ? data.toString('utf8') : Buffer.from(data).toString('utf8')
+        authAgentHub.ingest(text)
+      })
+      raw.on('close', () => authAgentHub.handleDisconnect(sock))
+    },
   })))
 
   // PTY bridge: one embedded terminal per connection, attached to the
@@ -209,7 +247,11 @@ export async function runDaemon(opts: DaemonRunOptions): Promise<void> {
               cb(Array.isArray(data) ? Buffer.concat(data) : data, isBinary)),
             onClose: (cb) => raw.on('close', () => cb()),
           }
-          bridge(ptyProc, sock, { detach: () => void killViewSession(jobName, viewName) })
+          // 'shell' is a raw zsh exec — no view session exists to clean up.
+          const detach = target === 'shell'
+            ? undefined
+            : (): void => void killViewSession(jobName, viewName)
+          bridge(ptyProc, sock, { detach })
           daemonLog(`[daemon] pty attach: session=${id} job=${jobName}`)
         })()
       },
@@ -460,8 +502,8 @@ export async function restartDaemon(): Promise<void> {
   await startDaemon()
 }
 
-export function buildWebappUrl(port: number, code: string): string {
-  return `http://127.0.0.1:${port}/?bootstrap=${code}`
+export function buildWebappUrl(baseUrl: string, code: string): string {
+  return `${baseUrl}/?bootstrap=${code}`
 }
 
 export interface OpenWebappOptions {
@@ -469,35 +511,52 @@ export interface OpenWebappOptions {
   noBrowser?: boolean
   // Injected for tests; default to the real implementations.
   ensureDaemon?: () => Promise<void>
-  loadLock?: () => Promise<DaemonLock | null>
+  resolveTarget?: () => Promise<DaemonTarget>
   fetchImpl?: typeof fetch
   launch?: (url: string) => void
 }
 
 /**
- * Entry point for `yaac open`. Ensures the daemon is running, fetches a
+ * Entry point for `yaac open`. Resolves the daemon target, fetches a
  * fresh bootstrap code over the authenticated API, and launches the
  * browser straight into the authenticated webapp — no log-scraping or
  * code-pasting. The URL is always printed (stdout) so it's scriptable.
+ *
+ * The local daemon is auto-started only when resolution fails on the
+ * local-lock path; a configured remote (or the test hatch) resolves
+ * up front and must never trigger a local daemon spawn.
  */
 export async function openWebapp(opts: OpenWebappOptions = {}): Promise<void> {
   const ensureDaemon = opts.ensureDaemon ?? startDaemon
-  const loadLock = opts.loadLock ?? readLock
+  const resolveTarget = opts.resolveTarget ?? resolveDaemonTarget
   const fetchImpl = opts.fetchImpl ?? ((input, init) => fetch(input, init))
   const launch = opts.launch ?? openBrowser
 
-  // Idempotent: no-ops if a matching daemon is already running.
-  await ensureDaemon()
-  const lock = await loadLock()
-  if (!lock) throw new Error('daemon is not running')
+  let target: DaemonTarget
+  try {
+    target = await resolveTarget()
+  } catch {
+    // Only the local-lock branch throws (daemon down / build mismatch).
+    // Start it and re-resolve; a second failure surfaces to the user.
+    await ensureDaemon()
+    target = await resolveTarget()
+  }
 
-  const res = await fetchImpl(`http://127.0.0.1:${lock.port}/auth/bootstrap-code`, {
-    headers: { authorization: `Bearer ${lock.secret}` },
+  // Best-effort: the webapp's sign-in cards need the login broker on
+  // this machine. Never block or fail `yaac open` on it.
+  try {
+    await ensureAuthDaemonSpawned()
+  } catch {
+    // resolution/spawn hiccup — sign-in cards will say what to run
+  }
+
+  const res = await fetchImpl(`${target.baseUrl}/auth/bootstrap-code`, {
+    headers: { authorization: `Bearer ${target.secret}` },
   })
   if (!res.ok) throw new Error(`failed to fetch bootstrap code (HTTP ${res.status})`)
   const { code } = await res.json() as { code: string }
 
-  const url = buildWebappUrl(lock.port, code)
+  const url = buildWebappUrl(target.baseUrl, code)
   console.log(url)
   if (opts.noBrowser) return
   launch(url)

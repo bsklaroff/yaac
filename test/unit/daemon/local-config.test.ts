@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 import { projectConfigDir, getProjectsDir } from '@/lib/project/paths'
-import { writeProjectConfig, removeProjectConfig } from '@/lib/project/local-config'
+import { writeProjectConfig, removeProjectConfig, readProjectConfigRaw } from '@/lib/project/local-config'
 import type { ProjectMeta } from '@/shared/types'
 
 async function writeProject(slug: string): Promise<void> {
@@ -49,6 +49,35 @@ describe('writeProjectConfig', () => {
     await writeProject('demo')
     await expect(writeProjectConfig('demo', { envPassthrough: 'not-array' }))
       .rejects.toMatchObject({ code: 'VALIDATION' })
+  })
+})
+
+describe('readProjectConfigRaw', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+  })
+
+  afterEach(async () => {
+    await cleanupTempDir(tmpDir)
+  })
+
+  it('throws NOT_FOUND when the project does not exist', async () => {
+    await expect(readProjectConfigRaw('missing')).rejects.toMatchObject({ code: 'NOT_FOUND' })
+  })
+
+  it("returns '' when the project has no config file", async () => {
+    await writeProject('demo')
+    expect(await readProjectConfigRaw('demo')).toBe('')
+  })
+
+  it('returns malformed content verbatim (the repair flow depends on it)', async () => {
+    await writeProject('demo')
+    const dir = projectConfigDir('demo')
+    await fs.mkdir(dir, { recursive: true })
+    await fs.writeFile(path.join(dir, 'yaac-config.json'), '{ broken')
+    expect(await readProjectConfigRaw('demo')).toBe('{ broken')
   })
 })
 

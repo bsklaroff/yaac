@@ -16,12 +16,19 @@ export function portLinkLabel(p: PortMapping): string {
 }
 
 /**
- * One link chip per forwarded port; clicking opens
- * `http://localhost:<hostPort>` in a new tab. This is the webapp's
- * replacement for the tmux status-right port readout — webapp panes
- * attach through view sessions with `status off`, so the daemon-pushed
- * snapshot is the only place the mapping can surface.
+ * One link chip per forwarded port; clicking opens the port on the host
+ * the webapp itself was loaded from — `localhost` when served locally,
+ * the tailnet name when served remotely (the forwarders bind that same
+ * interface via YAAC_FORWARD_BIND, so the link is correct wherever you
+ * loaded the app). This is the webapp's replacement for the tmux
+ * status-right port readout — webapp panes attach through view sessions
+ * with `status off`, so the daemon-pushed snapshot is the only place the
+ * mapping can surface.
  */
+export function portLinkHref(hostname: string, p: PortMapping): string {
+  return `http://${hostname}:${p.hostPort}`
+}
+
 export function ForwardedPortLinks({
   ports,
   iconSize,
@@ -37,10 +44,10 @@ export function ForwardedPortLinks({
       {ports.map((p) => (
         <a
           key={`${p.hostPort}:${p.containerPort}`}
-          href={`http://localhost:${p.hostPort}`}
+          href={portLinkHref(window.location.hostname, p)}
           target="_blank"
           rel="noreferrer"
-          title={`Open localhost:${p.hostPort} (container port ${p.containerPort})`}
+          title={`Open ${window.location.hostname}:${p.hostPort} (container port ${p.containerPort})`}
           className={clsx(
             'flex shrink-0 items-center gap-1 rounded px-1 py-0.5 font-mono text-[11px]',
             'text-text-dim transition hover:text-text',

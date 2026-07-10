@@ -149,12 +149,6 @@ export const sessionApp = new Hono()
       return c.json(result)
     },
   )
-  // The kubectl-exec target for the CLI's attach/shell commands, resolved
-  // only for a running session.
-  .get('/:id/attach-info', async (c) => {
-    const resolved = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
-    return c.json({ jobName: resolved.jobName })
-  })
   .post(
     '/:id/title',
     zv('json', z.object({ title: z.string().max(500) })),

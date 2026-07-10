@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import http from 'node:http'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@test/helpers/setup'
 import { bootInProcessDaemon, type InProcessDaemon } from '@test/helpers/daemon'
 
@@ -94,5 +95,63 @@ describe('browser auth bootstrap (full HTTP exchange)', () => {
     const after = await readCode()
     expect(after).not.toBe(before)
     expect(after).toHaveLength(64)
+  })
+
+  it('marks the cookie Secure only behind a trusted https proxy', async () => {
+    const exchange = async (headers: Record<string, string>): Promise<string> => {
+      const { code } = await (await fetch(`${daemon.baseUrl}/auth/bootstrap-code`, {
+        headers: { authorization: `Bearer ${daemon.secret}` },
+      })).json() as { code: string }
+      const res = await fetch(`${daemon.baseUrl}/auth/bootstrap`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify({ code }),
+      })
+      expect(res.status).toBe(204)
+      return res.headers.get('set-cookie') ?? ''
+    }
+
+    // Plain loopback: no Secure (browsers drop Secure cookies over http).
+    expect(await exchange({})).not.toContain('Secure')
+
+    // A spoofed X-Forwarded-Proto without the trust flag changes nothing.
+    expect(await exchange({ 'x-forwarded-proto': 'https' })).not.toContain('Secure')
+
+    // Behind tailscale serve (trust flag + forwarded proto): Secure.
+    vi.stubEnv('YAAC_TRUST_PROXY', '1')
+    try {
+      expect(await exchange({ 'x-forwarded-proto': 'https' })).toContain('Secure')
+      expect(await exchange({})).not.toContain('Secure')
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('admits an extra Host only via YAAC_ALLOWED_HOSTS', async () => {
+    // fetch() silently drops a Host override (forbidden header), so
+    // spoof it with a raw http request — like a proxy or rebind would.
+    const requestWithHost = (host: string): Promise<number> =>
+      new Promise((resolve, reject) => {
+        const url = new URL(`${daemon.baseUrl}/health`)
+        const req = http.request(
+          { hostname: url.hostname, port: url.port, path: url.pathname, headers: { host } },
+          (res) => {
+            res.resume()
+            resolve(res.statusCode ?? 0)
+          },
+        )
+        req.on('error', reject)
+        req.end()
+      })
+
+    expect(await requestWithHost('srv.tailnet.ts.net')).toBe(403)
+
+    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
+    try {
+      expect(await requestWithHost('srv.tailnet.ts.net')).toBe(200)
+      expect(await requestWithHost('other.ts.net')).toBe(403)
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 })

@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 import { serve, type ServerType } from '@hono/node-server'
 import { buildApp } from '@/daemon/server'
+import type { TokenStore } from '@/daemon/token-store'
 
 export interface InProcessDaemon {
   baseUrl: string
@@ -16,9 +17,11 @@ export interface InProcessDaemon {
  *
  * The returned `stop()` shuts the server down and unsets the env vars.
  */
-export async function bootInProcessDaemon(): Promise<InProcessDaemon> {
+export async function bootInProcessDaemon(
+  opts: { tokens?: TokenStore } = {},
+): Promise<InProcessDaemon> {
   const secret = crypto.randomBytes(32).toString('hex')
-  const app = buildApp({ secret, buildId: 'test' })
+  const app = buildApp({ secret, buildId: 'test', tokens: opts.tokens })
 
   const { server, port } = await new Promise<{ server: ServerType; port: number }>(
     (resolve, reject) => {

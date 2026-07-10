@@ -67,6 +67,21 @@ export async function addAllowedHostToProjectConfig(slug: string, host: string):
 }
 
 /**
+ * Read the per-project yaac-config.json as raw text ('' when absent),
+ * without parsing. The editing flow needs the verbatim bytes so a
+ * malformed file can be opened and repaired — the parsed read would
+ * throw on exactly the files most in need of editing.
+ */
+export async function readProjectConfigRaw(slug: string): Promise<string> {
+  await ensureProjectExists(slug)
+  try {
+    return await fs.readFile(path.join(projectConfigDir(slug), 'yaac-config.json'), 'utf8')
+  } catch {
+    return ''
+  }
+}
+
+/**
  * Remove the per-project config directory. No-op if absent.
  */
 export async function removeProjectConfig(slug: string): Promise<void> {

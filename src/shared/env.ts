@@ -122,6 +122,39 @@ export const env = {
   },
 
   /**
+   * `YAAC_ALLOWED_HOSTS` — comma-separated extra hostnames the daemon's
+   * Host-header check admits (e.g. the server's `srv.<tailnet>.ts.net`
+   * MagicDNS name behind `tailscale serve`). Loopback is always allowed
+   * regardless. Entries are trimmed and lowercased; empties dropped.
+   */
+  get allowedHosts(): string[] {
+    const raw = process.env.YAAC_ALLOWED_HOSTS
+    if (!raw) return []
+    return raw.split(',').map((h) => h.trim().toLowerCase()).filter((h) => h.length > 0)
+  },
+
+  /**
+   * `YAAC_TRUST_PROXY` — set to `1` only when the daemon runs behind a
+   * trusted TLS-terminating proxy (tailscale serve). Gates trusting
+   * `X-Forwarded-Proto` for the Secure cookie flag; without it a direct
+   * loopback request could spoof the header into a posture change.
+   */
+  get trustProxy(): boolean {
+    return process.env.YAAC_TRUST_PROXY === '1'
+  },
+
+  /**
+   * `YAAC_FORWARD_BIND` — bind address for session port-forward listeners.
+   * Default loopback (today's behavior); a remote-hosting server sets its
+   * tailnet IP so forwarded dev servers are reachable from other tailnet
+   * devices. Deployment topology, not project config.
+   */
+  get forwardBind(): string {
+    const raw = process.env.YAAC_FORWARD_BIND
+    return raw === undefined || raw.trim() === '' ? '127.0.0.1' : raw.trim()
+  },
+
+  /**
    * `YAAC_BUNDLED` — set to `'true'` by tsup in the shipped bundle (a build
    * define, not a runtime var). In the bundle static assets live in `dist/`;
    * in dev/test it is unset.
@@ -146,11 +179,6 @@ export const testEnv = {
   /** `YAAC_DAEMON_SECRET` — bearer token for the injected daemon URL. */
   get daemonSecretOverride(): string | undefined {
     return process.env.YAAC_DAEMON_SECRET
-  },
-
-  /** `YAAC_DAEMON_BUILD_ID` — build id reported for the injected daemon. */
-  get daemonBuildIdOverride(): string {
-    return process.env.YAAC_DAEMON_BUILD_ID ?? ''
   },
 
   /**

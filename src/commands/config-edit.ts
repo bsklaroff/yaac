@@ -1,25 +1,131 @@
+import fs from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import { getRpcClient, toClientError } from '@/commands/rpc'
-import { getDataDir, projectConfigDir } from '@/shared/paths'
 import { editFile } from '@/commands/edit-file'
 
 /**
- * Open one of a project's per-machine config files (`yaac-config.json`,
- * `Dockerfile.yaac`) in $EDITOR, after verifying the project exists via
- * the daemon.
+ * Config editing over RPC: fetch the current content from the daemon,
+ * edit a scratch copy in $EDITOR on this machine, and PUT the result
+ * back — the same flow against a local or remote daemon, since the
+ * files live on the daemon host either way. Failed saves keep the
+ * scratch file so edits are never lost.
  */
-export async function editProjectConfigFile(projectSlug: string, filename: string): Promise<void> {
-  const client = await getRpcClient()
-  const res = await client.project[':slug'].exists.$get({ param: { slug: projectSlug } })
-  if (!res.ok) throw await toClientError(res)
 
-  await editFile(path.join(projectConfigDir(projectSlug), filename))
+interface ScratchEdit {
+  text: string
+  tmpDir: string
+  tmpPath: string
+}
+
+/** Returns null (after printing) when the editor made no change. */
+async function editInScratch(filename: string, initial: string): Promise<ScratchEdit | null> {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-edit-'))
+  const tmpPath = path.join(tmpDir, filename)
+  await fs.writeFile(tmpPath, initial)
+  await editFile(tmpPath)
+  const text = await fs.readFile(tmpPath, 'utf8')
+  if (text === initial) {
+    await fs.rm(tmpDir, { recursive: true, force: true })
+    console.log('No changes.')
+    return null
+  }
+  return { text, tmpDir, tmpPath }
+}
+
+async function discardScratch(edit: ScratchEdit): Promise<void> {
+  await fs.rm(edit.tmpDir, { recursive: true, force: true })
+}
+
+function failKeepingEdits(err: Error, edit: ScratchEdit): void {
+  console.error(err.message)
+  console.error(`Your edits are kept at ${edit.tmpPath}`)
+  process.exitCode = 1
 }
 
 /**
- * Open the global (all-projects) `~/.yaac/Dockerfile.user` in $EDITOR.
- * No daemon round-trip: the file is not project-scoped.
+ * `yaac config edit <project>` — the project's yaac-config.json. Reads
+ * the raw file (malformed content opens verbatim so it can be repaired);
+ * saving goes through the daemon's validated config write, so the stored
+ * file is always parseable. Emptying the buffer clears the config.
  */
+export async function configEditProject(slug: string): Promise<void> {
+  const client = await getRpcClient()
+  const res = await client.project[':slug'].config.raw.$get({ param: { slug } })
+  if (!res.ok) throw await toClientError(res)
+  const { content } = await res.json()
+
+  const edit = await editInScratch('yaac-config.json', content)
+  if (!edit) return
+
+  if (edit.text.trim() === '') {
+    const del = await client.project[':slug'].config.$delete({ param: { slug } })
+    if (!del.ok) throw await toClientError(del)
+    await discardScratch(edit)
+    console.log('Cleared project config — defaults apply.')
+    return
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(edit.text)
+  } catch (err) {
+    failKeepingEdits(
+      new Error(`Invalid JSON: ${err instanceof Error ? err.message : String(err)}`),
+      edit,
+    )
+    return
+  }
+  const put = await client.project[':slug'].config.$put({ param: { slug }, json: { config: parsed } })
+  if (!put.ok) {
+    failKeepingEdits(await toClientError(put), edit)
+    return
+  }
+  await discardScratch(edit)
+  console.log('Saved project config.')
+}
+
+/** `yaac config edit-dockerfile <project>` — the project's Dockerfile.yaac. */
+export async function configEditDockerfile(slug: string): Promise<void> {
+  const client = await getRpcClient()
+  const res = await client.project[':slug'].dockerfile.$get({ param: { slug } })
+  if (!res.ok) throw await toClientError(res)
+  const { content } = await res.json()
+
+  const edit = await editInScratch('Dockerfile.yaac', content)
+  if (!edit) return
+
+  const put = await client.project[':slug'].dockerfile.$put({
+    param: { slug },
+    json: { content: edit.text },
+  })
+  if (!put.ok) {
+    failKeepingEdits(await toClientError(put), edit)
+    return
+  }
+  await discardScratch(edit)
+  console.log(edit.text.trim() === ''
+    ? 'Cleared Dockerfile.yaac — the image reverts to the base stack on next rebuild.'
+    : `Saved Dockerfile.yaac — apply it with: yaac project rebuild ${slug}`)
+}
+
+/** `yaac config edit-user-dockerfile` — the global Dockerfile.user. */
 export async function configEditUserDockerfile(): Promise<void> {
-  await editFile(path.join(getDataDir(), 'Dockerfile.user'))
+  const client = await getRpcClient()
+  const res = await client.config['user-dockerfile'].$get()
+  if (!res.ok) throw await toClientError(res)
+  const { content } = await res.json()
+
+  const edit = await editInScratch('Dockerfile.user', content)
+  if (!edit) return
+
+  const put = await client.config['user-dockerfile'].$put({ json: { content: edit.text } })
+  if (!put.ok) {
+    failKeepingEdits(await toClientError(put), edit)
+    return
+  }
+  await discardScratch(edit)
+  console.log(edit.text.trim() === ''
+    ? 'Cleared the user Dockerfile.'
+    : 'Saved the user Dockerfile.')
 }

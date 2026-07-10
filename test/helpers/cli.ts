@@ -157,6 +157,15 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
   }
 
   const cleanup = async (): Promise<void> => {
+    // Reap any auth daemon a test (or `yaac open`/`auth update`) spawned
+    // against this data dir — it reconnects forever and would leak.
+    try {
+      const raw = await fs.readFile(path.join(dataDir, '.auth-daemon.lock'), 'utf8')
+      const lock = JSON.parse(raw) as { pid?: number }
+      if (typeof lock.pid === 'number') process.kill(lock.pid, 'SIGTERM')
+    } catch {
+      // no auth daemon ran, or it's already gone
+    }
     await fs.rm(scratchDir, { recursive: true, force: true })
   }
 

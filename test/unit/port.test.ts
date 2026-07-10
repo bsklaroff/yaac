@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import net from 'node:net'
 import { reserveAvailablePort } from '@/lib/container/port'
 
@@ -28,6 +28,19 @@ describe('reserveAvailablePort', () => {
     servers.push(reserved.server)
     expect(reserved.hostPort).toBe(19500)
     expect(reserved.containerPort).toBe(3000)
+    // Default posture: bound to loopback (YAAC_FORWARD_BIND unset).
+    expect((reserved.server.address() as net.AddressInfo).address).toBe('127.0.0.1')
+  })
+
+  it('binds the YAAC_FORWARD_BIND address when configured', async () => {
+    vi.stubEnv('YAAC_FORWARD_BIND', '0.0.0.0')
+    try {
+      const reserved = await reserveAvailablePort(3000, 19550)
+      servers.push(reserved.server)
+      expect((reserved.server.address() as net.AddressInfo).address).toBe('0.0.0.0')
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 
   it('skips occupied ports', async () => {

@@ -21,8 +21,11 @@ import { toolSet } from '@/commands/tool-set'
 import { clusterCheck } from '@/commands/cluster-check'
 import { clusterDelete } from '@/commands/cluster-delete'
 import { clusterSetup } from '@/commands/cluster-setup'
-import { editProjectConfigFile, configEditUserDockerfile } from '@/commands/config-edit'
+import { configEditProject, configEditDockerfile, configEditUserDockerfile } from '@/commands/config-edit'
 import { authFake, FAKE_AUTH_KINDS } from '@/commands/auth-fake'
+import { authTokenCreate, authTokenList, authTokenRevoke } from '@/commands/auth-token'
+import { remoteSet, remoteUnset, remoteOn, remoteOff, remoteStatus } from '@/commands/remote'
+import { runAuthDaemon, startAuthDaemon, stopAuthDaemon, statusAuthDaemon } from '@/auth-daemon/run'
 import { runDaemon, startDaemon, stopDaemon, restartDaemon, daemonLogs, openWebapp } from '@/daemon/cli'
 import { DEFAULT_DAEMON_PORT } from '@/shared/daemon-port'
 import { ensureRootfulPodmanHost } from '@/lib/container/runtime'
@@ -268,22 +271,50 @@ config
   .command('edit')
   .description("Open the project's yaac-config.json in $EDITOR")
   .argument('<project>', 'Project slug')
-  .action(async (project: string) => {
-    await editProjectConfigFile(project, 'yaac-config.json')
-  })
+  .action(configEditProject)
 
 config
   .command('edit-dockerfile')
   .description("Open the project's Dockerfile.yaac in $EDITOR")
   .argument('<project>', 'Project slug')
-  .action(async (project: string) => {
-    await editProjectConfigFile(project, 'Dockerfile.yaac')
-  })
+  .action(configEditDockerfile)
 
 config
   .command('edit-user-dockerfile')
   .description('Open the global ~/.yaac/Dockerfile.user in $EDITOR')
   .action(configEditUserDockerfile)
+
+const remote = program
+  .command('remote')
+  .description('Point this CLI at a remote yaac daemon')
+  .configureHelp({ formatHelp: nestedHelp })
+
+remote
+  .command('set')
+  .description('Configure and enable the remote daemon (verifies reachability and the token)')
+  .argument('<url>', 'Daemon origin, e.g. https://srv.tailnet.ts.net')
+  .requiredOption('--token <token>', 'Durable token minted on the server (yaac auth token create)')
+  .action(remoteSet)
+
+remote
+  .command('unset')
+  .description('Forget the remote (commands target the local daemon again)')
+  .action(remoteUnset)
+
+remote
+  .command('on')
+  .description('Re-enable the configured remote')
+  .action(remoteOn)
+
+remote
+  .command('off')
+  .description('Disable the remote without forgetting it')
+  .action(remoteOff)
+
+remote
+  .command('status')
+  .description('Show the configured remote (masked token) and whether it is enabled')
+  .action(remoteStatus)
 
 const auth = program
   .command('auth')
@@ -313,5 +344,52 @@ auth
       .choices([...FAKE_AUTH_KINDS]),
   )
   .action(authFake)
+
+const authDaemon = auth
+  .command('daemon')
+  .description('Run the login broker that executes Claude/Codex sign-ins on this machine')
+  .configureHelp({ formatHelp: nestedHelp })
+
+authDaemon
+  .command('run')
+  .description('Run the auth daemon in the foreground')
+  .action(runAuthDaemon)
+
+authDaemon
+  .command('start')
+  .description('Start the auth daemon in the background')
+  .action(startAuthDaemon)
+
+authDaemon
+  .command('stop')
+  .description('Stop the background auth daemon')
+  .action(stopAuthDaemon)
+
+authDaemon
+  .command('status')
+  .description('Show whether the auth daemon is running and connected')
+  .action(statusAuthDaemon)
+
+const authToken = auth
+  .command('token')
+  .description('Manage durable access tokens for remote clients')
+  .configureHelp({ formatHelp: nestedHelp })
+
+authToken
+  .command('create')
+  .description('Mint a token (printed once) for a remote client to authenticate with')
+  .argument('<name>', 'Device name for the token (e.g. laptop)')
+  .action(authTokenCreate)
+
+authToken
+  .command('list')
+  .description('List tokens (masked)')
+  .action(authTokenList)
+
+authToken
+  .command('revoke')
+  .description('Revoke a token by name')
+  .argument('<name>', 'Device name of the token to revoke')
+  .action(authTokenRevoke)
 
 program.parseAsync().catch(exitOnClientError)

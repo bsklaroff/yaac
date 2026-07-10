@@ -3,7 +3,8 @@ import path from 'node:path'
 import { validateAddDirs } from '@/commands/add-dirs'
 import { ensureGitIdentity } from '@/commands/git-identity'
 import { getRpcClient, toClientError } from '@/commands/rpc'
-import { attachTmux } from '@/lib/k8s/exec'
+import { attachSessionPty } from '@/commands/ws-terminal'
+import { resolveDaemonTarget } from '@/shared/daemon-client'
 import { consumeNdjsonStream } from '@/shared/ndjson'
 import { getProjectsDir } from '@/shared/paths'
 import { testEnv } from '@/shared/env'
@@ -31,13 +32,17 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   // Local fast-fail on an unknown project slug so the user gets an
   // immediate error instead of a round-trip to the daemon (and so tests
   // can exercise this path without a running daemon). The daemon re-
-  // validates.
-  try {
-    await fs.access(path.join(getProjectsDir(), projectSlug))
-  } catch {
-    console.error(`Project "${projectSlug}" not found. Run "yaac project list" to see available projects.`)
-    process.exitCode = 1
-    return
+  // validates. Skipped against a remote daemon — the projects dir lives
+  // on the daemon host, not this machine.
+  const target = await resolveDaemonTarget().catch(() => null)
+  if (!target?.remote) {
+    try {
+      await fs.access(path.join(getProjectsDir(), projectSlug))
+    } catch {
+      console.error(`Project "${projectSlug}" not found. Run "yaac project list" to see available projects.`)
+      process.exitCode = 1
+      return
+    }
   }
 
   if (!(await validateAddDirs(options))) {
@@ -78,12 +83,12 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   }
 
   // Test-only hook: e2e-cli tests drive sessions without a TTY, where
-  // `kubectl exec -it` hangs waiting for terminal capabilities. Setting
-  // this env var returns after provisioning and lets the test drive the
-  // container directly via `kubectl exec`.
+  // an interactive attach hangs waiting for terminal capabilities.
+  // Setting this env var returns after provisioning and lets the test
+  // drive the container directly via `kubectl exec`.
   if (!testEnv.e2eNoAttach) {
     try {
-      await attachTmux(jobName, 'yaac')
+      await attachSessionPty(sessionId, 'native')
     } catch {
       // Job or tmux session was killed (e.g. ctrl-b k) — the daemon's
       // background loop will reap the dead session.

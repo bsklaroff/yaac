@@ -39,8 +39,18 @@ describe('yaac daemon HTTP surface (real daemon)', () => {
     const res = await fetch(`http://127.0.0.1:${daemon.lock.port}/project/list`)
     expect(res.status).toBe(401)
     const body = await res.json() as unknown as { error: { code: string } }
-    // Combined bearer/cookie gate (was BAD_BEARER before the cookie path).
+    // No credential at all → the generic code (a wrong bearer gets
+    // BAD_BEARER instead, tested below).
     expect(body.error.code).toBe('UNAUTHENTICATED')
+  })
+
+  it('rejects a wrong bearer with BAD_BEARER', async () => {
+    const res = await fetch(`http://127.0.0.1:${daemon.lock.port}/project/list`, {
+      headers: { authorization: 'Bearer not-the-secret' },
+    })
+    expect(res.status).toBe(401)
+    const body = await res.json() as unknown as { error: { code: string } }
+    expect(body.error.code).toBe('BAD_BEARER')
   })
 
   it('returns the empty project list with the correct bearer', async () => {

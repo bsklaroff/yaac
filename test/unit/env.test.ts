@@ -193,6 +193,45 @@ describe('env (configuration)', () => {
       expect(env.bundled).toBe(true)
     })
   })
+
+  describe('allowedHosts', () => {
+    it('defaults to an empty list', () => {
+      vi.stubEnv('YAAC_ALLOWED_HOSTS', undefined)
+      expect(env.allowedHosts).toEqual([])
+      vi.stubEnv('YAAC_ALLOWED_HOSTS', '')
+      expect(env.allowedHosts).toEqual([])
+    })
+
+    it('splits, trims, lowercases, and drops empties', () => {
+      vi.stubEnv('YAAC_ALLOWED_HOSTS', ' Srv.Tailnet.TS.NET , other.host ,, ')
+      expect(env.allowedHosts).toEqual(['srv.tailnet.ts.net', 'other.host'])
+    })
+  })
+
+  describe('trustProxy', () => {
+    it('is true only when YAAC_TRUST_PROXY is exactly "1"', () => {
+      vi.stubEnv('YAAC_TRUST_PROXY', '1')
+      expect(env.trustProxy).toBe(true)
+      vi.stubEnv('YAAC_TRUST_PROXY', 'true')
+      expect(env.trustProxy).toBe(false)
+      vi.stubEnv('YAAC_TRUST_PROXY', undefined)
+      expect(env.trustProxy).toBe(false)
+    })
+  })
+
+  describe('forwardBind', () => {
+    it('defaults to loopback', () => {
+      vi.stubEnv('YAAC_FORWARD_BIND', undefined)
+      expect(env.forwardBind).toBe('127.0.0.1')
+      vi.stubEnv('YAAC_FORWARD_BIND', '  ')
+      expect(env.forwardBind).toBe('127.0.0.1')
+    })
+
+    it('returns the trimmed configured address', () => {
+      vi.stubEnv('YAAC_FORWARD_BIND', ' 100.64.0.7 ')
+      expect(env.forwardBind).toBe('100.64.0.7')
+    })
+  })
 })
 
 describe('testEnv (test-harness hooks)', () => {
@@ -215,15 +254,6 @@ describe('testEnv (test-harness hooks)', () => {
       vi.stubEnv('YAAC_DAEMON_SECRET', 'secret')
       expect(testEnv.daemonUrlOverride).toBe('http://127.0.0.1:8787')
       expect(testEnv.daemonSecretOverride).toBe('secret')
-    })
-  })
-
-  describe('daemonBuildIdOverride', () => {
-    it('defaults to an empty string when unset', () => {
-      vi.stubEnv('YAAC_DAEMON_BUILD_ID', undefined)
-      expect(testEnv.daemonBuildIdOverride).toBe('')
-      vi.stubEnv('YAAC_DAEMON_BUILD_ID', 'bid')
-      expect(testEnv.daemonBuildIdOverride).toBe('bid')
     })
   })
 
