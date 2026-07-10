@@ -92,11 +92,15 @@ function App(): JSX.Element {
   } else content = <Workspace snapshot={snapshot} connected={connected} />
 
   // In Electron the title bar is hidden and the traffic lights float over the
-  // UI, so reserve a thin draggable strip at the top for them (a browser tab
-  // gets neither, so it renders content flush).
+  // UI. The full-screen states (loading/bootstrap/cluster) reserve a thin
+  // draggable strip for the lights; the workspace instead pulls its own top row
+  // (rail / sidebar header / session bar) up level with them, so that band
+  // isn't dead space — it carries its own drag regions and light clearance.
+  // A browser tab gets neither, so it always renders content flush.
+  const isWorkspace = auth === 'authed' && cluster === 'ready'
   return (
     <div className="flex h-full flex-col bg-base">
-      {isElectron() && <div className="titlebar-drag h-7 shrink-0" aria-hidden="true" />}
+      {isElectron() && !isWorkspace && <div className="titlebar-drag h-7 shrink-0" aria-hidden="true" />}
       <div className="min-h-0 flex-1">{content}</div>
     </div>
   )

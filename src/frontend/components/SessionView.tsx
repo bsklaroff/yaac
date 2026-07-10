@@ -406,7 +406,7 @@ export function SessionView({
               <SidebarIcon size={14} />
             </button>
           )}
-          <span className="min-w-0 flex-1 truncate font-medium text-text-dim">
+          <span className="titlebar-drag min-w-0 flex-1 truncate font-medium text-text-dim">
             {creatingHere.kind === 'restart' ? 'Restarting session' : 'New session'}
           </span>
           <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[creatingHere.tool]}</span>
@@ -426,7 +426,7 @@ export function SessionView({
               <SidebarIcon size={14} />
             </button>
           )}
-          <span className="min-w-0 flex-1 truncate font-medium text-text">
+          <span className="titlebar-drag min-w-0 flex-1 truncate font-medium text-text">
             {session.title || session.prompt || 'New session'}
           </span>
           <button
@@ -464,19 +464,21 @@ export function SessionView({
           <SessionActionsMenu sessionId={session.sessionId} currentTitle={session.title ?? ''} />
         </header>
       ) : (
-        <header className="flex h-8 shrink-0 items-center px-2">
+        <header className="titlebar-drag flex h-8 shrink-0 items-center px-2">
           {/* Only when the sidebar is collapsed — the reopen affordance. When
               open, its toggle lives in the sidebar header (next to +). */}
           {!sidebarOpen && (
-            <button
-              onClick={toggleSidebar}
-              title="Show sidebar"
-              aria-label="Show sidebar"
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
-                hover:bg-surface-2 hover:text-text-dim"
-            >
-              <SidebarIcon size={14} />
-            </button>
+            <div className="no-drag">
+              <button
+                onClick={toggleSidebar}
+                title="Show sidebar"
+                aria-label="Show sidebar"
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
+                  hover:bg-surface-2 hover:text-text-dim"
+              >
+                <SidebarIcon size={14} />
+              </button>
+            </div>
           )}
         </header>
       )}

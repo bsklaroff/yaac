@@ -82,11 +82,13 @@ export function Sidebar({
   return (
     <aside className="my-2 ml-2 flex w-64 flex-col overflow-hidden rounded-lg
       border border-hairline bg-surface text-text">
-      <div className="flex h-11 shrink-0 items-center gap-2 pl-4 pr-2">
-        {projectSlug
-          ? <ProjectActionsMenu slug={projectSlug} remoteUrl={projectRemoteUrl} />
-          : <span className="font-semibold tracking-tight">yaac</span>}
-        <div className="ml-auto flex items-center gap-2">
+      <div className="titlebar-drag flex h-11 shrink-0 items-center gap-2 pl-4 pr-2">
+        <div className="no-drag flex min-w-0 items-center">
+          {projectSlug
+            ? <ProjectActionsMenu slug={projectSlug} remoteUrl={projectRemoteUrl} />
+            : <span className="font-semibold tracking-tight">yaac</span>}
+        </div>
+        <div className="ml-auto flex items-center gap-2 no-drag">
           <ImageBuildIndicator />
           {!connected && <span className="text-xs text-amber-400/80">reconnecting…</span>}
           {/* Project-wide: the stored credential is the project's, so the
