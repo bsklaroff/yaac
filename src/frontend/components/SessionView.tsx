@@ -624,12 +624,9 @@ export function SessionView({
           return (
             <div
               key={key}
-              // The terminal itself is always dark, so its wrapper (bg-bg,
-              // matching the xterm bg exactly) is forced dark regardless of the
-              // app theme — otherwise the padding frames it in paper in light
-              // mode. Only the terminal is dark; the pane's header chrome above
-              // it stays themed, like a light title bar over a dark terminal.
-              data-theme="dark"
+              // The wrapper (bg-bg) mirrors the xterm background exactly, so the
+              // padding around the terminal is seamless — both follow the app
+              // theme (dark terminal on the dark shell, light on the light one).
               style={style}
               // Keep the active-terminal record in step with focus changes
               // the DOM makes on its own (clicking into a tiled pane), so

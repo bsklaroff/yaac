@@ -34,3 +34,19 @@ export function applyThemeAttribute(pref: ThemePref, root?: HTMLElement): void {
   const el = root ?? (typeof document !== 'undefined' ? document.documentElement : null)
   if (el) el.setAttribute('data-theme', pref)
 }
+
+/**
+ * The theme actually in effect (light or dark), resolving 'system' against the
+ * OS. Reads the live <html data-theme> the CSS keys off, so callers that can't
+ * see CSS variables — e.g. the xterm canvas, which needs concrete colors —
+ * stay in sync with the rest of the UI. Defaults to dark when the OS
+ * preference can't be read.
+ */
+export function resolveEffectiveTheme(): 'light' | 'dark' {
+  const attr = typeof document !== 'undefined' ? document.documentElement.getAttribute('data-theme') : null
+  if (attr === 'light' || attr === 'dark') return attr
+  if (typeof window !== 'undefined' && window.matchMedia) {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  }
+  return 'dark'
+}

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach } from 'vitest'
-import { loadThemePref, persistThemePref, applyThemeAttribute } from '@/frontend/lib/theme'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { loadThemePref, persistThemePref, applyThemeAttribute, resolveEffectiveTheme } from '@/frontend/lib/theme'
 
 beforeEach(() => localStorage.clear())
 
@@ -40,5 +40,31 @@ describe('applyThemeAttribute', () => {
   it('defaults to the document element', () => {
     applyThemeAttribute('light')
     expect(document.documentElement.getAttribute('data-theme')).toBe('light')
+  })
+})
+
+describe('resolveEffectiveTheme', () => {
+  afterEach(() => {
+    document.documentElement.removeAttribute('data-theme')
+    vi.unstubAllGlobals()
+  })
+
+  it('returns a forced light/dark attribute directly', () => {
+    document.documentElement.setAttribute('data-theme', 'light')
+    expect(resolveEffectiveTheme()).toBe('light')
+    document.documentElement.setAttribute('data-theme', 'dark')
+    expect(resolveEffectiveTheme()).toBe('dark')
+  })
+
+  it('follows the OS under system', () => {
+    document.documentElement.setAttribute('data-theme', 'system')
+    vi.stubGlobal('matchMedia', (q: string) => ({
+      matches: q.includes('dark'), addEventListener() {}, removeEventListener() {},
+    }))
+    expect(resolveEffectiveTheme()).toBe('dark')
+    vi.stubGlobal('matchMedia', (_q: string) => ({
+      matches: false, addEventListener() {}, removeEventListener() {},
+    }))
+    expect(resolveEffectiveTheme()).toBe('light')
   })
 })
