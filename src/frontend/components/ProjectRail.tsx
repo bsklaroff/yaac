@@ -43,11 +43,12 @@ export function ProjectRail({
 }): JSX.Element {
   return (
     <div className={clsx(
-      'flex w-16 shrink-0 flex-col items-center gap-2 pb-3',
-      // Electron: this rail is wide enough (64px) to host the traffic lights
-      // (~x13–65) itself, so the sidebar sits right after it with a normal gap
-      // — no awkward margin. The draggable band below covers the lights and
-      // pads the first chip clear of them.
+      // This 64px rail plus the 8px gap to the sidebar read as one region (the
+      // sidebar's border is what bounds it), so the chips are centered in that
+      // whole 72px region, not this column: pl-2 nudges them right to its
+      // center. Electron hosts the traffic lights here; the draggable band
+      // below covers them and pads the first chip clear.
+      'flex w-16 shrink-0 flex-col items-center gap-2 pb-3 pl-2',
       isElectron() ? '' : 'pt-3',
     )}>
       {isElectron() && <div className="titlebar-drag h-5 w-full shrink-0" aria-hidden="true" />}

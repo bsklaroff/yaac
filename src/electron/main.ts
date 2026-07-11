@@ -178,9 +178,9 @@ async function createWindow(url: string): Promise<void> {
     // over the UI. The webapp reserves a draggable top strip for them when it
     // detects Electron (src/frontend/App.tsx + .titlebar-drag).
     titleBarStyle: 'hiddenInset',
-    // Centered over the 64px project rail (the ~52px light cluster sits at
-    // x6–58), so the lights line up with the rail's chips below them.
-    trafficLightPosition: { x: 6, y: 7 },
+    // Centered on the rail region (x0–72) so the lights line up with the chips
+    // below them, which are centered in that same region.
+    trafficLightPosition: { x: 14, y: 7 },
     webPreferences: { contextIsolation: true, nodeIntegration: false },
   })
   // Reveal only once the renderer has painted — no empty flash on open.
