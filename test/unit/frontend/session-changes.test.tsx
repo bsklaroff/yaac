@@ -47,21 +47,25 @@ function renderPane(): void {
 afterEach(() => { cleanup(); mock.mockReset() })
 
 describe('SessionChanges', () => {
-  it('lists changed files and shows the first file’s diff', async () => {
+  it('lists changed files and auto-expands the first file’s diff', async () => {
     mock.mockResolvedValue(PAYLOAD)
     renderPane()
     await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
-    expect(screen.getByText('new1')).toBeTruthy() // first file's added line
-    expect(screen.getByText('new2')).toBeTruthy()
+    expect(screen.getByText('new1')).toBeTruthy() // first file expanded by default
+    // The second file is collapsed until clicked.
+    expect(screen.queryByText('alpha')).toBeNull()
   })
 
-  it('switches the diff when another file is selected', async () => {
+  it('expands a file’s diff inline when its row is clicked, and collapses it again', async () => {
     mock.mockResolvedValue(PAYLOAD)
     renderPane()
     await waitFor(() => expect(screen.getByTitle('new.ts')).toBeTruthy())
     fireEvent.click(screen.getByTitle('new.ts'))
     expect(screen.getByText('alpha')).toBeTruthy()
-    expect(screen.getByText('beta')).toBeTruthy()
+    expect(screen.getByText('new1')).toBeTruthy() // first file stays open (multiple can be)
+
+    fireEvent.click(screen.getByTitle('src/app.ts'))
+    expect(screen.queryByText('new1')).toBeNull() // collapsed
   })
 
   it('shows an empty state when nothing changed', async () => {
