@@ -1,41 +1,28 @@
 import { describe, it, expect } from 'vitest'
 import {
-  previewTarget,
+  PREVIEW_TARGET,
   isPreviewTarget,
-  previewPort,
   previewLabel,
   previewUrl,
   normalizePreviewNav,
+  firstDetectedPort,
 } from '@/frontend/lib/preview'
 
-describe('previewTarget / isPreviewTarget', () => {
-  it('mints and recognizes a preview target', () => {
-    expect(previewTarget(5173)).toBe('preview:5173')
-    expect(isPreviewTarget('preview:5173')).toBe(true)
+describe('isPreviewTarget', () => {
+  it('recognizes the preview target only', () => {
+    expect(isPreviewTarget(PREVIEW_TARGET)).toBe(true)
+    expect(isPreviewTarget('preview')).toBe(true)
     expect(isPreviewTarget('agent')).toBe(false)
     expect(isPreviewTarget('window:@3')).toBe(false)
   })
 })
 
-describe('previewPort', () => {
-  it('reads the container port back', () => {
-    expect(previewPort('preview:5173')).toBe(5173)
-    expect(previewPort('preview:3000')).toBe(3000)
-  })
-  it('returns null for non-preview or malformed targets', () => {
-    expect(previewPort('agent')).toBeNull()
-    expect(previewPort('preview:')).toBeNull()
-    expect(previewPort('preview:nope')).toBeNull()
-    expect(previewPort('preview:-1')).toBeNull()
-  })
-})
-
 describe('previewLabel', () => {
   it('labels with the port when present', () => {
-    expect(previewLabel('preview:5173')).toBe('Preview :5173')
+    expect(previewLabel(5173)).toBe('Preview :5173')
   })
-  it('falls back to a bare label when the port is unreadable', () => {
-    expect(previewLabel('preview:bad')).toBe('Preview')
+  it('falls back to a bare label with no port', () => {
+    expect(previewLabel(undefined)).toBe('Preview')
   })
 })
 
@@ -57,5 +44,19 @@ describe('normalizePreviewNav', () => {
   it('returns null when empty or when a path has no port', () => {
     expect(normalizePreviewNav('   ', 15173)).toBeNull()
     expect(normalizePreviewNav('/x', undefined)).toBeNull()
+  })
+})
+
+describe('firstDetectedPort', () => {
+  it('returns the first detected container port', () => {
+    expect(firstDetectedPort([
+      { containerPort: 5432, detected: false },
+      { containerPort: 5173, detected: true },
+      { containerPort: 8080, detected: true },
+    ])).toBe(5173)
+  })
+  it('returns null when nothing is detected', () => {
+    expect(firstDetectedPort([{ containerPort: 3000 }])).toBeNull()
+    expect(firstDetectedPort([])).toBeNull()
   })
 })

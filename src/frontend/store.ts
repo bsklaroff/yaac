@@ -1,5 +1,6 @@
 import { create } from 'zustand'
-import { isLayoutNode, type LayoutNode } from '@/frontend/lib/layout'
+import { addLeafToLargest, isLayoutNode, leaf, leafTargets, splitLeaf, type LayoutNode } from '@/frontend/lib/layout'
+import { PREVIEW_TARGET } from '@/frontend/lib/preview'
 import { DEFAULT_BINDINGS, type BindingMap, type Chord, type ShortcutId } from '@/frontend/lib/shortcuts'
 import { applyThemeAttribute, loadThemePref, persistThemePref, type ThemePref } from '@/frontend/lib/theme'
 import type { AgentTool, DeletedSessionEntry, ProvisioningSessionEntry, SessionListEntry } from '@/shared/types'
@@ -9,6 +10,7 @@ const VIEWMODE_LS_KEY = 'yaac.viewmode.v1'
 const SELECTION_LS_KEY = 'yaac.selection.v1'
 const READ_WAITING_LS_KEY = 'yaac.readwaiting.v1'
 const SOUND_LS_KEY = 'yaac.sound.v1'
+const PREVIEW_HANDLED_LS_KEY = 'yaac.previewhandled.v1'
 
 /** Whether the attention chime plays; defaults on. */
 function loadSoundEnabled(): boolean {
@@ -170,6 +172,49 @@ export function persistLayouts(layouts: Record<string, LayoutNode | null>): void
   }
 }
 
+/** Read the set of sessions whose preview was already auto-opened once, so a
+ *  reload doesn't re-pop a preview the user has since closed (exported for
+ *  tests). */
+export function loadPreviewHandled(): Record<string, true> {
+  try {
+    if (typeof localStorage === 'undefined') return {}
+    const raw = localStorage.getItem(PREVIEW_HANDLED_LS_KEY)
+    if (!raw) return {}
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const out: Record<string, true> = {}
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (v === true) out[k] = true
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+/** Persist preview-handled marks; best-effort (exported for tests). */
+export function persistPreviewHandled(handled: Record<string, true>): void {
+  try {
+    if (typeof localStorage === 'undefined') return
+    localStorage.setItem(PREVIEW_HANDLED_LS_KEY, JSON.stringify(handled))
+  } catch {
+    // non-fatal — the mark just won't survive a reload
+  }
+}
+
+/**
+ * Insert the single preview leaf into a session's layout: split the agent
+ * pane (preview to its right) when present, else split the largest pane; a
+ * layout that already has a preview is returned unchanged. Exported for tests.
+ */
+export function injectPreviewLeaf(base: LayoutNode | null): LayoutNode {
+  const root = base ?? leaf('agent')
+  const targets = leafTargets(root)
+  if (targets.includes(PREVIEW_TARGET)) return root
+  if (targets.includes('agent')) return splitLeaf(root, 'agent', PREVIEW_TARGET, 'row')
+  return addLeafToLargest(root, PREVIEW_TARGET, 1200, 800)
+}
+
 /**
  * Merge daemon-snapshot provisioning rows with local optimistic ones, deduped
  * by sessionId (the snapshot wins — it carries the live message/error), sorted
@@ -287,6 +332,21 @@ interface UiState {
   /** Per-session workspace layout tree. Missing key = the default single
    *  agent pane; null = an explicitly emptied workspace. */
   layouts: Record<string, LayoutNode | null>
+  /** Per-session container port the (single) preview pane currently shows.
+   *  Missing = show the first detected port. */
+  previewPort: Record<string, number>
+  /** Sessions whose preview was already auto-opened once. Set on the first
+   *  auto-open (or a manual open); keeps auto-open from re-firing after the
+   *  user closes the pane. Persisted so a reload respects a prior close. */
+  previewHandled: Record<string, true>
+  /** Point the preview pane at another detected port (toolbar dropdown). */
+  setPreviewPort: (sessionId: string, containerPort: number) => void
+  /** Auto-open the preview once for a session that just got a detected port —
+   *  a no-op if already handled; adds the pane without stealing focus. */
+  autoOpenPreview: (sessionId: string, containerPort: number) => void
+  /** Manually open/focus the preview pane (the header chip). Seeds the shown
+   *  port when unset, and marks the session handled. */
+  openPreview: (sessionId: string, containerPort?: number) => void
   /** Whether the session sidebar is shown. */
   sidebarOpen: boolean
   /** Light/dark preference. 'system' follows the OS; setThemePref persists it
@@ -399,6 +459,8 @@ export const useUiStore = create<UiState>((set) => ({
   focusNonce: 0,
   terminalNonces: {},
   layouts: loadPersistedLayouts(),
+  previewPort: {},
+  previewHandled: loadPreviewHandled(),
   sidebarOpen: true,
   themePref: loadThemePref(),
   soundEnabled: loadSoundEnabled(),
@@ -454,6 +516,33 @@ export const useUiStore = create<UiState>((set) => ({
   setSessionLayout: (sessionId, layout) => set((s) => ({
     layouts: { ...s.layouts, [sessionId]: layout },
   })),
+  setPreviewPort: (sessionId, containerPort) => set((s) => (
+    s.previewPort[sessionId] === containerPort
+      ? s
+      : { previewPort: { ...s.previewPort, [sessionId]: containerPort } }
+  )),
+  autoOpenPreview: (sessionId, containerPort) => set((s) => {
+    if (s.previewHandled[sessionId]) return s
+    const base = sessionId in s.layouts ? s.layouts[sessionId] : leaf('agent')
+    return {
+      layouts: { ...s.layouts, [sessionId]: injectPreviewLeaf(base) },
+      previewHandled: { ...s.previewHandled, [sessionId]: true },
+      previewPort: { ...s.previewPort, [sessionId]: containerPort },
+    }
+  }),
+  openPreview: (sessionId, containerPort) => set((s) => {
+    const base = sessionId in s.layouts ? s.layouts[sessionId] : leaf('agent')
+    const previewPort = containerPort !== undefined && s.previewPort[sessionId] === undefined
+      ? { ...s.previewPort, [sessionId]: containerPort }
+      : s.previewPort
+    return {
+      layouts: { ...s.layouts, [sessionId]: injectPreviewLeaf(base) },
+      previewHandled: { ...s.previewHandled, [sessionId]: true },
+      previewPort,
+      activeTabs: { ...s.activeTabs, [sessionId]: PREVIEW_TARGET },
+      focusNonce: s.focusNonce + 1,
+    }
+  }),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setThemePref: (pref) => {
     persistThemePref(pref)
@@ -517,6 +606,11 @@ export const useUiStore = create<UiState>((set) => ({
 // back too.
 useUiStore.subscribe((state, prev) => {
   if (state.layouts !== prev.layouts) persistLayouts(state.layouts)
+})
+
+// Preview-handled marks survive reloads so a closed preview isn't re-popped.
+useUiStore.subscribe((state, prev) => {
+  if (state.previewHandled !== prev.previewHandled) persistPreviewHandled(state.previewHandled)
 })
 
 // The active project + session survive reloads and are mirrored into the URL

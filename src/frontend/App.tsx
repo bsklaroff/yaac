@@ -22,6 +22,7 @@ import { getClusterCheck, type CheckResult } from './lib/clusterApi'
 import { newlyWaitingSessions, shouldChime, waitingSpellKeys } from './lib/attentionChime'
 import { playChime } from './lib/sound'
 import { isElectron } from './lib/platform'
+import { firstDetectedPort } from './lib/preview'
 import { ConfirmDialog } from './components/ui/ConfirmDialog'
 import type { DaemonSnapshot, SessionListEntry } from '@/shared/types'
 
@@ -103,6 +104,19 @@ function App(): JSX.Element {
     const watching = typeof document !== 'undefined' && document.hasFocus() ? selectedSessionId : null
     if (soundEnabled && shouldChime(fresh, watching)) playChime()
   }, [snapshot, soundEnabled, selectedSessionId])
+
+  // Auto-open a preview pane the first time a session's agent starts a dev
+  // server (a detected forwarded port). The store action fires once per
+  // session and respects a later close; Electron only (no embedded webview in
+  // a browser build).
+  const autoOpenPreview = useUiStore((s) => s.autoOpenPreview)
+  useEffect(() => {
+    if (!snapshot || !isElectron()) return
+    for (const s of snapshot.sessions) {
+      const port = firstDetectedPort(s.forwardedPorts)
+      if (port !== null) autoOpenPreview(s.sessionId, port)
+    }
+  }, [snapshot, autoOpenPreview])
 
   let content: JSX.Element
   if (auth === 'checking') content = <FullScreen>Loading…</FullScreen>

@@ -1,34 +1,22 @@
 /**
- * Preview panes live in the same tiling layout tree as terminals, so they are
- * keyed by a `target` string like everything else. A preview target encodes
- * the container port of the dev server it shows: `preview:5173`. These helpers
- * mint and read that convention; SessionView branches on `isPreviewTarget` to
- * render a browser pane instead of a terminal.
+ * Preview panes live in the same tiling layout tree as terminals, keyed by a
+ * `target` string. There is at most one preview pane per session — the single
+ * `preview` target — and which forwarded port it shows lives in the store
+ * (so a port switch is a state change, not a leaf swap, and never a new split).
+ * SessionView branches on `isPreviewTarget` to render a browser pane.
  */
 
-const PREVIEW_PREFIX = 'preview:'
+/** The one layout target a session's preview pane uses. */
+export const PREVIEW_TARGET = 'preview'
 
-/** The layout target for a preview of a given container port. */
-export function previewTarget(containerPort: number): string {
-  return `${PREVIEW_PREFIX}${containerPort}`
-}
-
-/** Whether a layout target is a preview pane (vs a terminal). */
+/** Whether a layout target is the preview pane (vs a terminal). */
 export function isPreviewTarget(target: string): boolean {
-  return target.startsWith(PREVIEW_PREFIX)
+  return target === PREVIEW_TARGET
 }
 
-/** The container port a preview target refers to, or null if it isn't one. */
-export function previewPort(target: string): number | null {
-  if (!isPreviewTarget(target)) return null
-  const n = Number(target.slice(PREVIEW_PREFIX.length))
-  return Number.isInteger(n) && n > 0 ? n : null
-}
-
-/** Pane/tab label for a preview target, e.g. "Preview :5173". */
-export function previewLabel(target: string): string {
-  const port = previewPort(target)
-  return port === null ? 'Preview' : `Preview :${port}`
+/** Pane/tab label for the preview, e.g. "Preview :5173" (bare when no port). */
+export function previewLabel(port: number | undefined): string {
+  return port === undefined ? 'Preview' : `Preview :${port}`
 }
 
 /** The loopback URL the preview webview loads for a forwarded host port. */
@@ -48,4 +36,10 @@ export function normalizePreviewNav(raw: string, hostPort: number | undefined): 
   if (hostPort === undefined) return null
   const path = trimmed.startsWith('/') ? trimmed : `/${trimmed}`
   return `http://localhost:${hostPort}${path}`
+}
+
+/** The first detected (previewable) container port among forwarded ports. */
+export function firstDetectedPort(ports: { containerPort: number; detected?: boolean }[]): number | null {
+  const found = ports.find((p) => p.detected)
+  return found ? found.containerPort : null
 }

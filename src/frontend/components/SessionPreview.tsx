@@ -4,6 +4,7 @@ import { isElectron } from '@/frontend/lib/platform'
 import { windowApi } from '@/frontend/components/WindowControls'
 import { previewUrl, normalizePreviewNav } from '@/frontend/lib/preview'
 import { NavBackIcon, NavForwardIcon, ReloadIcon, OpenLinkIcon, PreviewIcon, LoadingIcon } from '@/frontend/lib/icons'
+import type { PortMapping } from '@/shared/types'
 
 /**
  * The subset of Electron's WebviewTag DOM API the preview drives. The element
@@ -32,13 +33,20 @@ interface PreviewWebview extends HTMLElement {
  */
 export function SessionPreview({
   sessionId,
-  containerPort,
-  hostPort,
+  ports,
+  currentPort,
+  onSwitchPort,
 }: {
   sessionId: string
-  containerPort: number
-  hostPort: number | undefined
+  /** Detected, previewable forwarded ports for the session. */
+  ports: PortMapping[]
+  /** Which container port the pane currently shows. */
+  currentPort: number | undefined
+  /** Switch the pane to another detected port (the toolbar dropdown). */
+  onSwitchPort: (containerPort: number) => void
 }): JSX.Element {
+  const shownPort = currentPort ?? ports[0]?.containerPort
+  const hostPort = ports.find((p) => p.containerPort === shownPort)?.hostPort
   const url = hostPort !== undefined ? previewUrl(hostPort) : null
   const electron = isElectron()
 
@@ -153,6 +161,18 @@ export function SessionPreview({
         <button onClick={reload} title="Reload" aria-label="Reload" className={iconBtn}>
           <ReloadIcon size={12} />
         </button>
+        {ports.length > 1 && (
+          <select
+            value={shownPort}
+            onChange={(e) => onSwitchPort(Number(e.target.value))}
+            aria-label="Preview port"
+            className="shrink-0 rounded bg-bg px-1 py-0.5 font-mono text-[11px] text-text-dim outline-none"
+          >
+            {ports.map((p) => (
+              <option key={p.containerPort} value={p.containerPort}>:{p.containerPort}</option>
+            ))}
+          </select>
+        )}
         <input
           value={editing ?? address}
           onChange={(e) => setEditing(e.target.value)}
@@ -177,7 +197,7 @@ export function SessionPreview({
         {hostPort === undefined ? (
           <PreviewOverlay>
             <LoadingIcon size={18} className="animate-spin text-text-faint" />
-            <span>Waiting for the dev server on port {containerPort}…</span>
+            <span>Waiting for the dev server{shownPort ? ` on port ${shownPort}` : ''}…</span>
           </PreviewOverlay>
         ) : failed ? (
           <PreviewOverlay>

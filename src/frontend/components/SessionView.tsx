@@ -4,7 +4,9 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useUiStore } from '@/frontend/store'
 import { SessionTerminal } from '@/frontend/components/SessionTerminal'
 import { SessionPreview } from '@/frontend/components/SessionPreview'
-import { isPreviewTarget, previewPort, previewLabel } from '@/frontend/lib/preview'
+import { isPreviewTarget, previewLabel } from '@/frontend/lib/preview'
+import { isElectron } from '@/frontend/lib/platform'
+import { PreviewIcon } from '@/frontend/lib/icons'
 import { SessionActionsMenu } from '@/frontend/components/SessionActionsMenu'
 import { CreatingPlaceholder } from '@/frontend/components/CreatingPlaceholder'
 import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
@@ -73,9 +75,13 @@ function rootEdgeAt(px: number, py: number, w: number, h: number): Exclude<DropE
   return dists[0][1] <= ROOT_EDGE_MARGIN ? dists[0][0] : null
 }
 
-function paneName(target: string, terminals: SessionTerminalEntry[] | undefined): string {
+function paneName(
+  target: string,
+  terminals: SessionTerminalEntry[] | undefined,
+  previewPort?: number,
+): string {
   if (target === 'agent') return 'Agent'
-  if (isPreviewTarget(target)) return previewLabel(target)
+  if (isPreviewTarget(target)) return previewLabel(previewPort)
   const entry = terminals?.find((t) => t.target === target)
   return entry?.name ?? 'window'
 }
@@ -99,6 +105,9 @@ export function SessionView({
   const setViewMode = useUiStore((s) => s.setViewMode)
   const activeTabs = useUiStore((s) => s.activeTabs)
   const focusTerminal = useUiStore((s) => s.focusTerminal)
+  const previewPortMap = useUiStore((s) => s.previewPort)
+  const setPreviewPort = useUiStore((s) => s.setPreviewPort)
+  const openPreview = useUiStore((s) => s.openPreview)
   const queryClient = useQueryClient()
   const sessions = snapshot?.sessions ?? []
   const session = sessions.find((s) => s.sessionId === selectedSessionId)
@@ -106,6 +115,16 @@ export function SessionView({
   // Project-wide flag; shown in the header because a rejected credential
   // fails git fetch/push inside this session too.
   const gitAuthFailures = (session && snapshot?.gitAuthFailures?.[session.projectSlug]) || []
+
+  // Detected (dev-server) ports drive the embedded preview; static config
+  // ports keep their external-tab chips. In a browser build there's no
+  // embedded webview, so everything falls back to the external chips.
+  const embedPreview = isElectron()
+  const detectedPorts = session?.forwardedPorts.filter((p) => p.detected) ?? []
+  const chipPorts = embedPreview
+    ? (session?.forwardedPorts.filter((p) => !p.detected) ?? [])
+    : (session?.forwardedPorts ?? [])
+  const previewPortForSession = sid ? previewPortMap[sid] : undefined
 
   // The provisioning placeholder owns the main pane only when its row is the
   // selected one (and no real session of that id exists yet) — so it never
@@ -253,13 +272,21 @@ export function SessionView({
           e.stopPropagation()
           ctx.openShell()
           return
-        case 'kill-terminal':
+        case 'kill-terminal': {
           // The agent pane isn't killable — leave the chord alone then.
           if (!ctx.activeTab || ctx.activeTab === 'agent') return
           e.preventDefault()
           e.stopPropagation()
+          // A preview just closes (no tmux window, no confirm).
+          if (isPreviewTarget(ctx.activeTab)) {
+            const st = useUiStore.getState()
+            const cur = ctx.sid in st.layouts ? st.layouts[ctx.sid] : null
+            if (cur) st.setSessionLayout(ctx.sid, removeLeaf(cur, ctx.activeTab))
+            return
+          }
           setConfirmKill({ target: ctx.activeTab, name: paneName(ctx.activeTab, ctx.terminals) })
           return
+        }
         case 'prev-terminal':
         case 'next-terminal': {
           const delta = cycleDeltaFor(id)
@@ -461,8 +488,20 @@ export function SessionView({
             <AddIcon size={14} />
           </button>
           <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[session.tool]}</span>
-          {session.forwardedPorts.length > 0 && (
-            <ForwardedPortLinks ports={session.forwardedPorts} iconSize={11} className="hover:bg-surface-2" />
+          {embedPreview && detectedPorts.length > 0 && (
+            <button
+              onClick={() => openPreview(session.sessionId, detectedPorts[0].containerPort)}
+              title="Open preview"
+              aria-label="Open preview"
+              className="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-[11px]
+                text-text-dim transition hover:bg-surface-2 hover:text-text"
+            >
+              <PreviewIcon size={11} />
+              Preview
+            </button>
+          )}
+          {chipPorts.length > 0 && (
+            <ForwardedPortLinks ports={chipPorts} iconSize={11} className="hover:bg-surface-2" />
           )}
           {gitAuthFailures.length > 0 && (
             <GitAuthFailureBadge
@@ -530,7 +569,7 @@ export function SessionView({
               className="group/pane flex shrink-0 cursor-grab select-none items-center gap-1.5 px-2.5 active:cursor-grabbing"
             >
               <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-text-dim">
-                {paneName(target, terminals)}
+                {paneName(target, terminals, previewPortForSession)}
               </span>
               <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/pane:opacity-100">
                 {!isPreviewTarget(target) && (
@@ -599,7 +638,7 @@ export function SessionView({
                         : 'text-text-faint hover:text-text-dim',
                     )}
                   >
-                    {paneName(t, terminals)}
+                    {paneName(t, terminals, previewPortForSession)}
                   </button>
                   {isPreviewTarget(t) ? (
                     <button
@@ -662,11 +701,9 @@ export function SessionView({
           // Terminals stay mounted while hidden (instant switch-back, live PTY);
           // a preview webview is torn down off-screen (a hidden one keeps
           // hammering the dev server) and re-navigates cheaply on return.
+          // A preview only has a `style` when it's the selected session's pane,
+          // so detectedPorts / previewPortForSession (both for sid) apply.
           if (preview && !style) return null
-          const cp = preview ? previewPort(target) : null
-          const hostPort = cp !== null
-            ? session?.forwardedPorts.find((p) => p.containerPort === cp)?.hostPort
-            : undefined
           return (
             <div
               key={key}
@@ -682,9 +719,14 @@ export function SessionView({
               onFocusCapture={() => useUiStore.getState().setActiveTab(id, target)}
               className={clsx('absolute', !style && 'invisible left-0 top-0 h-full w-full')}
             >
-              {preview && cp !== null ? (
+              {preview ? (
                 <div className="h-full w-full overflow-hidden rounded-md">
-                  <SessionPreview sessionId={id} containerPort={cp} hostPort={hostPort} />
+                  <SessionPreview
+                    sessionId={id}
+                    ports={detectedPorts}
+                    currentPort={previewPortForSession}
+                    onSwitchPort={(p) => setPreviewPort(id, p)}
+                  />
                 </div>
               ) : (
                 <div className="h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">
