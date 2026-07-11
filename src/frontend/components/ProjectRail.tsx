@@ -45,9 +45,9 @@ export function ProjectRail({
     <div className={clsx(
       'flex w-10 shrink-0 flex-col items-center gap-2 pb-3',
       // Electron: the traffic lights (~x13–65) spill past this 40px rail, so a
-      // right margin holds the sidebar (and, collapsed, the session pane) clear
-      // of them; pt drops the first chip below them.
-      isElectron() ? 'mr-6 pt-2' : 'pt-3',
+      // right margin holds the sidebar (and, collapsed, the session pane) a
+      // comfortable distance clear of them; pt drops the first chip below them.
+      isElectron() ? 'mr-8 pt-2' : 'pt-3',
     )}>
       {/* Electron: a draggable band over the floating traffic lights. */}
       {isElectron() && <div className="titlebar-drag h-6 w-full shrink-0" aria-hidden="true" />}
