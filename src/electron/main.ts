@@ -183,6 +183,9 @@ async function createWindow(url: string): Promise<void> {
       contextIsolation: true,
       nodeIntegration: false,
       preload: path.join(path.dirname(fileURLToPath(import.meta.url)), 'preload.cjs'),
+      // Let the attention chime play without a prior click (it fires on a
+      // background event — a session flipping to waiting), not a user gesture.
+      autoplayPolicy: 'no-user-gesture-required',
     },
   })
   win.setWindowButtonVisibility(false)

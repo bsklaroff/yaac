@@ -8,6 +8,20 @@ const LAYOUTS_LS_KEY = 'yaac.layouts.v1'
 const VIEWMODE_LS_KEY = 'yaac.viewmode.v1'
 const SELECTION_LS_KEY = 'yaac.selection.v1'
 const READ_WAITING_LS_KEY = 'yaac.readwaiting.v1'
+const SOUND_LS_KEY = 'yaac.sound.v1'
+
+/** Whether the attention chime plays; defaults on. */
+function loadSoundEnabled(): boolean {
+  try {
+    if (typeof localStorage !== 'undefined') return localStorage.getItem(SOUND_LS_KEY) !== '0'
+  } catch { /* fall through to the default */ }
+  return true
+}
+function persistSoundEnabled(enabled: boolean): void {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(SOUND_LS_KEY, enabled ? '1' : '0')
+  } catch { /* non-fatal */ }
+}
 
 /** How the workspace renders its terminals: a tiling window manager, or
  *  one-at-a-time tabs (better on small screens). */
@@ -279,6 +293,9 @@ interface UiState {
    *  and reflects it onto <html data-theme> for the CSS palette (index.css). */
   themePref: ThemePref
   setThemePref: (pref: ThemePref) => void
+  /** Whether the attention chime plays when a session flips to waiting. */
+  soundEnabled: boolean
+  setSoundEnabled: (enabled: boolean) => void
   /** Tiling WM vs one-at-a-time tabs (persisted; small screens default
    *  to tabs). The layout tree stays canonical in both modes. */
   viewMode: ViewMode
@@ -384,6 +401,7 @@ export const useUiStore = create<UiState>((set) => ({
   layouts: loadPersistedLayouts(),
   sidebarOpen: true,
   themePref: loadThemePref(),
+  soundEnabled: loadSoundEnabled(),
   viewMode: loadViewMode(),
   activeTabs: {},
   optimisticProvisioning: [],
@@ -441,6 +459,10 @@ export const useUiStore = create<UiState>((set) => ({
     persistThemePref(pref)
     applyThemeAttribute(pref)
     set({ themePref: pref })
+  },
+  setSoundEnabled: (enabled) => {
+    persistSoundEnabled(enabled)
+    set({ soundEnabled: enabled })
   },
   setViewMode: (mode) => {
     persistViewMode(mode)

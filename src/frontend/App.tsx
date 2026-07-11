@@ -19,6 +19,8 @@ import { SessionView } from './components/SessionView'
 import { BootstrapSplash } from './components/BootstrapSplash'
 import { ClusterSetup } from './components/ClusterSetup'
 import { getClusterCheck, type CheckResult } from './lib/clusterApi'
+import { newlyWaiting, waitingSpellKeys } from './lib/attentionChime'
+import { playChime } from './lib/sound'
 import { isElectron } from './lib/platform'
 import { ConfirmDialog } from './components/ui/ConfirmDialog'
 import type { DaemonSnapshot, SessionListEntry } from '@/shared/types'
@@ -83,6 +85,21 @@ function App(): JSX.Element {
       .catch(() => { /* stay optimistic on a check error */ })
     return () => { cancelled = true }
   }, [auth])
+
+  // Chime the moment any session flips to waiting (it needs input) — the
+  // audible sibling of the tray badge + notification. Seed silently on the
+  // first snapshot so sessions already waiting on load don't all fire, and
+  // only when the sound preference is on.
+  const soundEnabled = useUiStore((s) => s.soundEnabled)
+  const waitingSpells = useRef<Set<string> | null>(null)
+  useEffect(() => {
+    if (!snapshot) return
+    const current = waitingSpellKeys(snapshot.sessions)
+    if (waitingSpells.current === null) { waitingSpells.current = current; return }
+    const fresh = newlyWaiting(waitingSpells.current, current)
+    waitingSpells.current = current
+    if (fresh.length > 0 && soundEnabled) playChime()
+  }, [snapshot, soundEnabled])
 
   let content: JSX.Element
   if (auth === 'checking') content = <FullScreen>Loading…</FullScreen>
