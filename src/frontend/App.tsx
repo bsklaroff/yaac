@@ -19,7 +19,7 @@ import { SessionView } from './components/SessionView'
 import { BootstrapSplash } from './components/BootstrapSplash'
 import { ClusterSetup } from './components/ClusterSetup'
 import { getClusterCheck, type CheckResult } from './lib/clusterApi'
-import { newlyWaiting, waitingSpellKeys } from './lib/attentionChime'
+import { newlyWaitingSessions, shouldChime, waitingSpellKeys } from './lib/attentionChime'
 import { playChime } from './lib/sound'
 import { isElectron } from './lib/platform'
 import { ConfirmDialog } from './components/ui/ConfirmDialog'
@@ -86,20 +86,23 @@ function App(): JSX.Element {
     return () => { cancelled = true }
   }, [auth])
 
-  // Chime the moment any session flips to waiting (it needs input) — the
-  // audible sibling of the tray badge + notification. Seed silently on the
-  // first snapshot so sessions already waiting on load don't all fire, and
-  // only when the sound preference is on.
+  // Chime the moment a session flips to waiting (it needs input) — the audible
+  // sibling of the tray badge + notification. Seed silently on the first
+  // snapshot so sessions already waiting on load don't all fire; skip the
+  // session the user is actively watching (selected + window focused — they can
+  // see it flip); gate on the sound preference.
   const soundEnabled = useUiStore((s) => s.soundEnabled)
+  const selectedSessionId = useUiStore((s) => s.selectedSessionId)
   const waitingSpells = useRef<Set<string> | null>(null)
   useEffect(() => {
     if (!snapshot) return
     const current = waitingSpellKeys(snapshot.sessions)
     if (waitingSpells.current === null) { waitingSpells.current = current; return }
-    const fresh = newlyWaiting(waitingSpells.current, current)
+    const fresh = newlyWaitingSessions(waitingSpells.current, snapshot.sessions)
     waitingSpells.current = current
-    if (fresh.length > 0 && soundEnabled) playChime()
-  }, [snapshot, soundEnabled])
+    const watching = typeof document !== 'undefined' && document.hasFocus() ? selectedSessionId : null
+    if (soundEnabled && shouldChime(fresh, watching)) playChime()
+  }, [snapshot, soundEnabled, selectedSessionId])
 
   let content: JSX.Element
   if (auth === 'checking') content = <FullScreen>Loading…</FullScreen>
