@@ -43,14 +43,14 @@ export function ProjectRail({
 }): JSX.Element {
   return (
     <div className={clsx(
-      'flex w-10 shrink-0 flex-col items-center gap-2 pb-3',
-      // Electron: the traffic lights (~x13–65) spill past this 40px rail, so a
+      'flex w-12 shrink-0 flex-col items-center gap-2 pb-3',
+      // Electron: the traffic lights (~x13–65) spill past this 48px rail, so a
       // right margin holds the sidebar (and, collapsed, the session pane) a
-      // comfortable distance clear of them; pt drops the first chip below them.
-      isElectron() ? 'mr-8 pt-2' : 'pt-3',
+      // comfortable distance clear of them. The draggable band below covers the
+      // lights and pads the first chip clear of them.
+      isElectron() ? 'mr-6' : 'pt-3',
     )}>
-      {/* Electron: a draggable band over the floating traffic lights. */}
-      {isElectron() && <div className="titlebar-drag h-6 w-full shrink-0" aria-hidden="true" />}
+      {isElectron() && <div className="titlebar-drag h-5 w-full shrink-0" aria-hidden="true" />}
       {projects.map((p) => {
         const active = p.slug === activeProjectSlug
         const color = projectColor(p.slug)
@@ -65,13 +65,13 @@ export function ProjectRail({
             <span
               className={clsx(
                 'absolute left-0 -ml-1.5 w-0.5 rounded-r-full bg-text transition-all',
-                active ? 'h-5' : 'h-0 group-hover:h-3',
+                active ? 'h-6' : 'h-0 group-hover:h-4',
               )}
             />
             <span
               className={clsx(
-                'flex h-7 w-7 items-center justify-center text-[13px] font-semibold transition-all',
-                active ? 'rounded-lg' : 'rounded-2xl group-hover:rounded-lg',
+                'flex h-9 w-9 items-center justify-center text-[15px] font-semibold transition-all',
+                active ? 'rounded-xl' : 'rounded-[18px] group-hover:rounded-xl',
               )}
               // Quiet identity treatment: a dark tint of the project hue for
               // the fill, a light pastel of it for the initial — active just

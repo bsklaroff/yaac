@@ -38,10 +38,10 @@ export function NewProjectButton(): JSX.Element {
       <button
         onClick={() => setOpen(true)}
         title="New project"
-        className="flex h-7 w-7 items-center justify-center rounded-2xl bg-surface-2 text-text-dim transition-all
-          hover:rounded-[9px] hover:bg-surface-3 hover:text-accent"
+        className="flex h-9 w-9 items-center justify-center rounded-[18px] bg-surface-2 text-text-dim transition-all
+          hover:rounded-xl hover:bg-surface-3 hover:text-accent"
       >
-        <AddIcon size={14} />
+        <AddIcon size={16} />
       </button>
 
       <Dialog.Portal>
