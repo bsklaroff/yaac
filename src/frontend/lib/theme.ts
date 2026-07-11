@@ -36,17 +36,24 @@ export function applyThemeAttribute(pref: ThemePref, root?: HTMLElement): void {
 }
 
 /**
- * The theme actually in effect (light or dark), resolving 'system' against the
- * OS. Reads the live <html data-theme> the CSS keys off, so callers that can't
- * see CSS variables — e.g. the xterm canvas, which needs concrete colors —
- * stay in sync with the rest of the UI. Defaults to dark when the OS
- * preference can't be read.
+ * The theme actually in effect (light or dark), for callers that can't see CSS
+ * variables — e.g. the xterm canvas, which needs concrete colors. Derived from
+ * the app's *rendered* --color-bg rather than re-resolving data-theme + the OS:
+ * in Electron matchMedia can disagree with the CSS media query, which would
+ * leak the light terminal into a dark app. Reading the applied background can't
+ * disagree with what the UI shows. Defaults to dark when it can't be read.
  */
 export function resolveEffectiveTheme(): 'light' | 'dark' {
-  const attr = typeof document !== 'undefined' ? document.documentElement.getAttribute('data-theme') : null
-  if (attr === 'light' || attr === 'dark') return attr
-  if (typeof window !== 'undefined' && window.matchMedia) {
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-  }
-  return 'dark'
+  if (typeof document === 'undefined' || typeof getComputedStyle !== 'function') return 'dark'
+  const bg = getComputedStyle(document.documentElement).getPropertyValue('--color-bg').trim()
+  return isLightColor(bg) ? 'light' : 'dark'
+}
+
+/** Whether a `#rgb`/`#rrggbb` color is light (perceived luminance > 0.5). */
+function isLightColor(hex: string): boolean {
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex)
+  if (!m) return false
+  const h = m[1].length === 3 ? m[1].replace(/(.)/g, '$1$1') : m[1]
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16))
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.5
 }

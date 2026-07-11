@@ -44,27 +44,25 @@ describe('applyThemeAttribute', () => {
 })
 
 describe('resolveEffectiveTheme', () => {
-  afterEach(() => {
-    document.documentElement.removeAttribute('data-theme')
-    vi.unstubAllGlobals()
-  })
+  const mockBg = (value: string): void => {
+    vi.spyOn(window, 'getComputedStyle').mockReturnValue(
+      { getPropertyValue: () => value } as unknown as CSSStyleDeclaration,
+    )
+  }
+  afterEach(() => vi.restoreAllMocks())
 
-  it('returns a forced light/dark attribute directly', () => {
-    document.documentElement.setAttribute('data-theme', 'light')
-    expect(resolveEffectiveTheme()).toBe('light')
-    document.documentElement.setAttribute('data-theme', 'dark')
+  it('is dark when the rendered --color-bg is dark', () => {
+    mockBg('#0b0b0d')
     expect(resolveEffectiveTheme()).toBe('dark')
   })
 
-  it('follows the OS under system', () => {
-    document.documentElement.setAttribute('data-theme', 'system')
-    vi.stubGlobal('matchMedia', (q: string) => ({
-      matches: q.includes('dark'), addEventListener() {}, removeEventListener() {},
-    }))
-    expect(resolveEffectiveTheme()).toBe('dark')
-    vi.stubGlobal('matchMedia', (_q: string) => ({
-      matches: false, addEventListener() {}, removeEventListener() {},
-    }))
+  it('is light when the rendered --color-bg is light', () => {
+    mockBg('#eeedec')
     expect(resolveEffectiveTheme()).toBe('light')
+  })
+
+  it('defaults to dark when --color-bg is unreadable', () => {
+    mockBg('')
+    expect(resolveEffectiveTheme()).toBe('dark')
   })
 })
