@@ -43,6 +43,12 @@ export {
   ArrowLeft as NavBackIcon,
   ArrowRight as NavForwardIcon,
   RefreshCw as ReloadIcon,
+  House as HomeIcon,
+  Copy as CopyIcon,
+  Inspect as DevToolsIcon,
+  Smartphone as MobileIcon,
+  Tablet as TabletIcon,
+  Monitor as DesktopIcon,
 } from 'lucide-react'
 
 /** Display name per agent tool (proper brand casing, incl. OpenCode). */

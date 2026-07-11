@@ -84,4 +84,41 @@ describe('SessionPreview (Electron)', () => {
     render(<SessionPreview sessionId="abc" ports={[detected(5173, 15173)]} currentPort={5173} onSwitchPort={() => {}} />)
     expect(screen.queryByLabelText('Preview port')).toBeNull()
   })
+
+  it('has an overflow menu whose actions drive the webview', async () => {
+    setElectron(true)
+    const { container } = render(
+      <SessionPreview sessionId="abc" ports={[detected(5173, 15173)]} currentPort={5173} onSwitchPort={() => {}} />,
+    )
+    const wv = container.querySelector('webview')
+    const openDevTools = vi.fn()
+    const loadURL = vi.fn()
+    Object.assign(wv as object, { openDevTools, loadURL })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preview menu' }))
+    fireEvent.click(await screen.findByText('Open DevTools'))
+    expect(openDevTools).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preview menu' }))
+    fireEvent.click(await screen.findByText('Home'))
+    expect(loadURL).toHaveBeenCalledWith('http://localhost:15173/')
+  })
+
+  it('constrains the webview to a device width, with a clearable pill', async () => {
+    setElectron(true)
+    const { container } = render(
+      <SessionPreview sessionId="abc" ports={[detected(5173, 15173)]} currentPort={5173} onSwitchPort={() => {}} />,
+    )
+    const host = container.querySelector('webview')?.parentElement as HTMLElement
+    expect(host.style.width).toBe('100%')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preview menu' }))
+    fireEvent.click(await screen.findByText(/Mobile/))
+    expect(host.style.width).toBe('375px')
+
+    const pill = screen.getByRole('button', { name: 'Reset width' })
+    fireEvent.click(pill)
+    expect(host.style.width).toBe('100%')
+    expect(screen.queryByRole('button', { name: 'Reset width' })).toBeNull()
+  })
 })

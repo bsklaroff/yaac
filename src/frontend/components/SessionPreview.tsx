@@ -1,31 +1,49 @@
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
+import { Menu } from '@base-ui/react/menu'
 import { isElectron } from '@/frontend/lib/platform'
 import { windowApi } from '@/frontend/components/WindowControls'
 import { previewUrl, normalizePreviewNav } from '@/frontend/lib/preview'
-import { NavBackIcon, NavForwardIcon, ReloadIcon, OpenLinkIcon, PreviewIcon, LoadingIcon } from '@/frontend/lib/icons'
+import {
+  NavBackIcon, NavForwardIcon, ReloadIcon, OpenLinkIcon, PreviewIcon, LoadingIcon,
+  MoreIcon, HomeIcon, CopyIcon, DevToolsIcon, MobileIcon, TabletIcon, DesktopIcon,
+  CheckIcon, CloseIcon,
+} from '@/frontend/lib/icons'
 import type { PortMapping } from '@/shared/types'
 
 /**
  * The subset of Electron's WebviewTag DOM API the preview drives. The element
  * is created imperatively (below), so this is a plain cast target — no JSX
  * intrinsic-element augmentation, which avoids cross-tsconfig type friction.
+ * The methods are called optionally (`?.()`) so a stray call outside Electron
+ * can't throw.
  */
 interface PreviewWebview extends HTMLElement {
   reload(): void
+  reloadIgnoringCache(): void
   goBack(): void
   goForward(): void
   canGoBack(): boolean
   canGoForward(): boolean
   getURL(): string
   loadURL(url: string): Promise<void>
+  openDevTools(): void
 }
+
+/** Viewport-width presets for the responsive control. `null` = fill the pane. */
+const DEVICE_PRESETS: { label: string; width: number | null; Icon: typeof DesktopIcon }[] = [
+  { label: 'Full', width: null, Icon: DesktopIcon },
+  { label: 'Mobile', width: 375, Icon: MobileIcon },
+  { label: 'Tablet', width: 768, Icon: TabletIcon },
+]
 
 /**
  * A per-session embedded browser pane pointed at a dev server running inside
  * the session pod (reached over a loopback forwarded port). The chrome —
- * back/forward/reload, an editable address, open-external — follows the app
- * theme; the webview shows the app in its own colors, VS-Code-terminal style.
+ * back/forward/reload, an editable address, open-external, and an overflow
+ * menu (home / copy URL / responsive widths / hard reload / devtools) —
+ * follows the app theme; the webview shows the app in its own colors,
+ * VS-Code-terminal style.
  *
  * The <webview> is created and driven imperatively in a ref: letting React
  * reconcile it would reload the page (losing scroll/route) on every parent
@@ -58,6 +76,8 @@ export function SessionPreview({
   const [canForward, setCanForward] = useState(false)
   const [loading, setLoading] = useState(true)
   const [failed, setFailed] = useState(false)
+  // Constrain the webview to a device width to check responsive layouts.
+  const [deviceWidth, setDeviceWidth] = useState<number | null>(null)
 
   // Create the webview once per session; wire its navigation events.
   useEffect(() => {
@@ -116,13 +136,17 @@ export function SessionPreview({
     }
   }, [url])
 
-  const reload = (): void => wvRef.current?.reload()
-  const goBack = (): void => wvRef.current?.goBack()
-  const goForward = (): void => wvRef.current?.goForward()
+  const reload = (): void => wvRef.current?.reload?.()
+  const hardReload = (): void => wvRef.current?.reloadIgnoringCache?.()
+  const goBack = (): void => wvRef.current?.goBack?.()
+  const goForward = (): void => wvRef.current?.goForward?.()
+  const goHome = (): void => { if (url) void wvRef.current?.loadURL?.(url) }
+  const openDevTools = (): void => wvRef.current?.openDevTools?.()
+  const copyUrl = (): void => { void navigator.clipboard?.writeText(address || url || '') }
   const openExternal = (): void => { if (url) windowApi()?.openExternal(address || url) }
   const submitAddress = (): void => {
     const dest = normalizePreviewNav(editing ?? '', hostPort)
-    if (dest) void wvRef.current?.loadURL(dest)
+    if (dest) void wvRef.current?.loadURL?.(dest)
     setEditing(null)
   }
 
@@ -148,6 +172,9 @@ export function SessionPreview({
 
   const iconBtn = 'flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-dim '
     + 'transition hover:bg-surface-2 hover:text-text disabled:opacity-30 disabled:hover:bg-transparent'
+  const menuItem = 'flex w-full cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-xs '
+    + 'text-text-dim outline-none data-[highlighted]:bg-surface-3 data-[highlighted]:text-text'
+  const activePreset = DEVICE_PRESETS.find((p) => p.width === deviceWidth)
 
   return (
     <div className="flex h-full flex-col bg-surface">
@@ -187,13 +214,73 @@ export function SessionPreview({
           className="min-w-0 flex-1 rounded bg-bg px-2 py-0.5 font-mono text-[11px] text-text-dim
             outline-none focus:text-text"
         />
+        {/* Active responsive width: a clearable pill so it's obvious why the
+            page is narrow, and one click back to full. */}
+        {activePreset && activePreset.width !== null && (
+          <button
+            onClick={() => setDeviceWidth(null)}
+            title="Reset to full width"
+            aria-label="Reset width"
+            className="flex shrink-0 items-center gap-1 rounded bg-surface-2 px-1.5 py-0.5
+              text-[10px] text-text-dim transition hover:text-text"
+          >
+            {activePreset.label} {activePreset.width}
+            <CloseIcon size={9} />
+          </button>
+        )}
         <button onClick={openExternal} title="Open in browser" aria-label="Open in browser" className={iconBtn}>
           <OpenLinkIcon size={12} />
         </button>
+
+        <Menu.Root>
+          <Menu.Trigger aria-label="Preview menu" title="More" className={iconBtn}>
+            <MoreIcon size={14} />
+          </Menu.Trigger>
+          <Menu.Portal>
+            <Menu.Positioner side="bottom" align="end" sideOffset={6}>
+              <Menu.Popup className="min-w-[180px] rounded-lg border border-border bg-surface-2 p-1 text-text
+                shadow-[0_12px_32px_var(--shadow-color)] outline-none transition-opacity duration-100
+                data-[starting-style]:opacity-0 data-[ending-style]:opacity-0">
+                <Menu.Item className={menuItem} onClick={goHome}>
+                  <HomeIcon size={14} /> Home
+                </Menu.Item>
+                <Menu.Item className={menuItem} onClick={copyUrl}>
+                  <CopyIcon size={14} /> Copy URL
+                </Menu.Item>
+                <div className="my-1 h-px bg-border" />
+                <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-text-faint">
+                  Responsive
+                </div>
+                {DEVICE_PRESETS.map((p) => (
+                  <Menu.Item key={p.label} className={menuItem} onClick={() => setDeviceWidth(p.width)}>
+                    <p.Icon size={14} />
+                    <span className="flex-1">{p.label}{p.width ? ` · ${p.width}` : ''}</span>
+                    {deviceWidth === p.width && <CheckIcon size={13} />}
+                  </Menu.Item>
+                ))}
+                <div className="my-1 h-px bg-border" />
+                <Menu.Item className={menuItem} onClick={hardReload}>
+                  <ReloadIcon size={13} /> Reload ignoring cache
+                </Menu.Item>
+                <Menu.Item className={menuItem} onClick={openDevTools}>
+                  <DevToolsIcon size={14} /> Open DevTools
+                </Menu.Item>
+              </Menu.Popup>
+            </Menu.Positioner>
+          </Menu.Portal>
+        </Menu.Root>
       </div>
 
-      <div className="relative min-h-0 flex-1 bg-white">
-        <div ref={hostRef} className="absolute inset-0" />
+      <div className="relative min-h-0 flex-1 bg-bg">
+        {/* Center the (optionally width-constrained) device frame; the bg-bg
+            backdrop shows as letterboxing on the sides when constrained. */}
+        <div className="absolute inset-0 flex justify-center overflow-hidden">
+          <div
+            ref={hostRef}
+            style={{ width: deviceWidth ?? '100%' }}
+            className={clsx('h-full bg-white', deviceWidth !== null && 'border-x border-border')}
+          />
+        </div>
         {hostPort === undefined ? (
           <PreviewOverlay>
             <LoadingIcon size={18} className="animate-spin text-text-faint" />
