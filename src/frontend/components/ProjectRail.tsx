@@ -43,12 +43,12 @@ export function ProjectRail({
 }): JSX.Element {
   return (
     <div className={clsx(
-      'flex w-12 shrink-0 flex-col items-center gap-2 pb-3',
-      // Electron: the traffic lights (~x13–65) spill past this 48px rail, so a
-      // right margin holds the sidebar (and, collapsed, the session pane) a
-      // comfortable distance clear of them. The draggable band below covers the
-      // lights and pads the first chip clear of them.
-      isElectron() ? 'mr-6' : 'pt-3',
+      'flex w-16 shrink-0 flex-col items-center gap-2 pb-3',
+      // Electron: this rail is wide enough (64px) to host the traffic lights
+      // (~x13–65) itself, so the sidebar sits right after it with a normal gap
+      // — no awkward margin. The draggable band below covers the lights and
+      // pads the first chip clear of them.
+      isElectron() ? '' : 'pt-3',
     )}>
       {isElectron() && <div className="titlebar-drag h-5 w-full shrink-0" aria-hidden="true" />}
       {projects.map((p) => {
@@ -70,8 +70,8 @@ export function ProjectRail({
             />
             <span
               className={clsx(
-                'flex h-9 w-9 items-center justify-center text-[15px] font-semibold transition-all',
-                active ? 'rounded-xl' : 'rounded-[18px] group-hover:rounded-xl',
+                'flex h-10 w-10 items-center justify-center text-[16px] font-semibold transition-all',
+                active ? 'rounded-xl' : 'rounded-[20px] group-hover:rounded-xl',
               )}
               // Quiet identity treatment: a dark tint of the project hue for
               // the fill, a light pastel of it for the initial — active just

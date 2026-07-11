@@ -96,10 +96,10 @@ export function SettingsButton(): JSX.Element {
       <button
         onClick={() => openSettings()}
         title="Settings"
-        className="flex h-9 w-9 items-center justify-center rounded-[18px] text-text-faint transition-all
+        className="flex h-10 w-10 items-center justify-center rounded-[20px] text-text-faint transition-all
           hover:rounded-xl hover:text-text-dim"
       >
-        <SettingsIcon size={16} />
+        <SettingsIcon size={18} />
       </button>
 
       <Dialog.Portal>
