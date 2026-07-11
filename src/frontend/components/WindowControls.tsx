@@ -6,6 +6,7 @@ interface YaacWindow {
   minimize: () => void
   toggleMaximize: () => void
   close: () => void
+  openExternal: (url: string) => void
 }
 
 /** The bridge, or undefined in a browser / before the preload loads. */

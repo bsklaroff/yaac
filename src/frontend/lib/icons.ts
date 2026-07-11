@@ -39,6 +39,10 @@ export {
   ExternalLink as OpenLinkIcon,
   Maximize2 as ExpandIcon,
   Minimize2 as CollapseIcon,
+  Globe as PreviewIcon,
+  ArrowLeft as NavBackIcon,
+  ArrowRight as NavForwardIcon,
+  RefreshCw as ReloadIcon,
 } from 'lucide-react'
 
 /** Display name per agent tool (proper brand casing, incl. OpenCode). */

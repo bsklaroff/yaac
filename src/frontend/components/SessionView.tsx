@@ -3,6 +3,8 @@ import clsx from 'clsx'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useUiStore } from '@/frontend/store'
 import { SessionTerminal } from '@/frontend/components/SessionTerminal'
+import { SessionPreview } from '@/frontend/components/SessionPreview'
+import { isPreviewTarget, previewPort, previewLabel } from '@/frontend/lib/preview'
 import { SessionActionsMenu } from '@/frontend/components/SessionActionsMenu'
 import { CreatingPlaceholder } from '@/frontend/components/CreatingPlaceholder'
 import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
@@ -73,6 +75,7 @@ function rootEdgeAt(px: number, py: number, w: number, h: number): Exclude<DropE
 
 function paneName(target: string, terminals: SessionTerminalEntry[] | undefined): string {
   if (target === 'agent') return 'Agent'
+  if (isPreviewTarget(target)) return previewLabel(target)
   const entry = terminals?.find((t) => t.target === target)
   return entry?.name ?? 'window'
 }
@@ -150,7 +153,9 @@ export function SessionView({
     const liveSet = new Set(live)
     let next = cur
     for (const t of leafTargets(next)) {
-      if (!liveSet.has(t)) next = next && removeLeaf(next, t)
+      // Preview leaves aren't tmux windows — they're owned by the preview
+      // auto-open/close logic, so this window-driven sync must leave them be.
+      if (!liveSet.has(t) && !isPreviewTarget(t)) next = next && removeLeaf(next, t)
     }
     for (const t of live) {
       next = addLeafToLargest(next, t, wsSize.w || 1200, wsSize.h || 800)
@@ -289,6 +294,14 @@ export function SessionView({
     void killSessionTerminal(sid, target)
       .catch((e: unknown) => console.error('kill terminal failed', e))
       .finally(refetchTerminals)
+  }
+
+  // Close a preview pane: just drop the leaf — there's no tmux window to kill,
+  // and no confirm (a preview is cheap to reopen from the port chip).
+  const closePreview = (target: string): void => {
+    if (!sid || !layout) return
+    setSessionLayout(sid, removeLeaf(layout, target))
+    setOpened((prev) => prev.filter((k) => k !== `${sid}|${target}`))
   }
 
   // --- divider drag ---
@@ -520,25 +533,39 @@ export function SessionView({
                 {paneName(target, terminals)}
               </span>
               <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/pane:opacity-100">
-                <button
-                  onClick={() => openShell({ target, dir: 'row' })}
-                  title="New shell right"
-                  aria-label={`New shell right of ${paneName(target, terminals)}`}
-                  className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
-                    hover:bg-surface-2 hover:text-text"
-                >
-                  <SplitRightIcon size={11} />
-                </button>
-                <button
-                  onClick={() => openShell({ target, dir: 'col' })}
-                  title="New shell below"
-                  aria-label={`New shell below ${paneName(target, terminals)}`}
-                  className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
-                    hover:bg-surface-2 hover:text-text"
-                >
-                  <SplitDownIcon size={11} />
-                </button>
-                {target !== 'agent' && (
+                {!isPreviewTarget(target) && (
+                  <>
+                    <button
+                      onClick={() => openShell({ target, dir: 'row' })}
+                      title="New shell right"
+                      aria-label={`New shell right of ${paneName(target, terminals)}`}
+                      className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
+                        hover:bg-surface-2 hover:text-text"
+                    >
+                      <SplitRightIcon size={11} />
+                    </button>
+                    <button
+                      onClick={() => openShell({ target, dir: 'col' })}
+                      title="New shell below"
+                      aria-label={`New shell below ${paneName(target, terminals)}`}
+                      className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
+                        hover:bg-surface-2 hover:text-text"
+                    >
+                      <SplitDownIcon size={11} />
+                    </button>
+                  </>
+                )}
+                {isPreviewTarget(target) ? (
+                  <button
+                    onClick={() => closePreview(target)}
+                    title="Close preview"
+                    aria-label={`Close ${paneName(target, terminals)}`}
+                    className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
+                      hover:bg-surface-2 hover:text-text"
+                  >
+                    <CloseIcon size={11} />
+                  </button>
+                ) : target !== 'agent' && (
                   <button
                     onClick={() => setConfirmKill({ target, name: paneName(target, terminals) })}
                     title="Kill terminal"
@@ -574,7 +601,17 @@ export function SessionView({
                   >
                     {paneName(t, terminals)}
                   </button>
-                  {t !== 'agent' && (
+                  {isPreviewTarget(t) ? (
+                    <button
+                      onClick={() => closePreview(t)}
+                      title="Close preview"
+                      aria-label={`Close ${paneName(t, terminals)}`}
+                      className="absolute right-0.5 flex h-4 w-4 items-center justify-center rounded
+                        text-text-faint opacity-0 transition hover:text-text group-hover/tab:opacity-100"
+                    >
+                      <CloseIcon size={10} />
+                    </button>
+                  ) : t !== 'agent' && (
                     <button
                       onClick={() => setConfirmKill({ target: t, name: paneName(t, terminals) })}
                       title={`Kill ${paneName(t, terminals)}`}
@@ -605,6 +642,7 @@ export function SessionView({
           const sep = key.indexOf('|')
           const id = key.slice(0, sep)
           const target = key.slice(sep + 1)
+          const preview = isPreviewTarget(target)
           const pane = id === sid && tiled ? panes.find((p) => p.target === target) : undefined
           const style = pane
             ? {
@@ -621,12 +659,21 @@ export function SessionView({
                   height: wsSize.h - HEADER_H - PAD,
                 }
               : undefined
+          // Terminals stay mounted while hidden (instant switch-back, live PTY);
+          // a preview webview is torn down off-screen (a hidden one keeps
+          // hammering the dev server) and re-navigates cheaply on return.
+          if (preview && !style) return null
+          const cp = preview ? previewPort(target) : null
+          const hostPort = cp !== null
+            ? session?.forwardedPorts.find((p) => p.containerPort === cp)?.hostPort
+            : undefined
           return (
             <div
               key={key}
               // The wrapper (bg-bg) mirrors the xterm background exactly, so the
               // padding around the terminal is seamless — both follow the app
               // theme (dark terminal on the dark shell, light on the light one).
+              // A preview fills its pane flush (its own chrome, no padding).
               style={style}
               // Keep the active-terminal record in step with focus changes
               // the DOM makes on its own (clicking into a tiled pane), so
@@ -635,14 +682,20 @@ export function SessionView({
               onFocusCapture={() => useUiStore.getState().setActiveTab(id, target)}
               className={clsx('absolute', !style && 'invisible left-0 top-0 h-full w-full')}
             >
-              <div className="h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">
-                <SessionTerminal
-                  key={`${key}:${terminalNonces[id] ?? 0}`}
-                  sessionId={id}
-                  target={target}
-                  focusKey={id === sid && target === focusTarget ? focusNonce : undefined}
-                />
-              </div>
+              {preview && cp !== null ? (
+                <div className="h-full w-full overflow-hidden rounded-md">
+                  <SessionPreview sessionId={id} containerPort={cp} hostPort={hostPort} />
+                </div>
+              ) : (
+                <div className="h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">
+                  <SessionTerminal
+                    key={`${key}:${terminalNonces[id] ?? 0}`}
+                    sessionId={id}
+                    target={target}
+                    focusKey={id === sid && target === focusTarget ? focusNonce : undefined}
+                  />
+                </div>
+              )}
             </div>
           )
         })}

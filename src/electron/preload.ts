@@ -10,4 +10,6 @@ contextBridge.exposeInMainWorld('yaacWindow', {
   minimize: () => ipcRenderer.send('window:minimize'),
   toggleMaximize: () => ipcRenderer.send('window:toggle-maximize'),
   close: () => ipcRenderer.send('window:close'),
+  // Open a URL in the system browser (the preview's "open external" action).
+  openExternal: (url: string) => ipcRenderer.send('window:open-external', url),
 })

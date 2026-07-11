@@ -319,6 +319,9 @@ async function boot(): Promise<void> {
 ipcMain.on('window:minimize', () => win?.minimize())
 ipcMain.on('window:toggle-maximize', () => { if (win?.isMaximized()) win.unmaximize(); else win?.maximize() })
 ipcMain.on('window:close', () => win?.close())
+ipcMain.on('window:open-external', (_e, url: unknown) => {
+  if (typeof url === 'string' && /^https?:/.test(url)) void shell.openExternal(url)
+})
 
 // Constrain preview <webview> guests: open any new window or off-loopback
 // navigation (an OAuth hop, an external link) in the system browser rather
