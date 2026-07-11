@@ -370,6 +370,37 @@ export interface SessionListEntry {
   forwardedPorts: PortMapping[]
 }
 
+/** How a file changed, mapped from git's name-status letters. */
+export type ChangeStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'typechange'
+
+/** One changed file in a session's worktree, relative to the fork base. */
+export interface SessionChange {
+  path: string
+  status: ChangeStatus
+  additions: number
+  deletions: number
+  /** Git reported the file as binary (no line counts / textual diff). */
+  binary: boolean
+}
+
+/**
+ * The review diff for a session — everything the agent changed since the
+ * worktree forked from its base branch (committed + staged + unstaged +
+ * untracked), computed with a throwaway index so it never disturbs the
+ * agent's own git state.
+ */
+export interface SessionChanges {
+  /** The base commit the diff is taken against (merge-base with the fork
+   *  point), or HEAD when no upstream is resolvable. */
+  base: string
+  files: SessionChange[]
+  /** The combined unified diff; the client splits it into per-file hunks.
+   *  Capped for size — see `truncated`. */
+  diff: string
+  /** True when the diff body was capped for size; `files` stays complete. */
+  truncated: boolean
+}
+
 export interface StaleSessionInfo {
   jobName: string
   projectSlug: string
