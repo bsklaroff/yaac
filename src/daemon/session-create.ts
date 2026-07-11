@@ -99,6 +99,7 @@ import {
   buildStatusRight,
   registerSessionForwarders,
 } from '@/lib/session/port-forwarders'
+import { ensureSessionDetector } from '@/lib/session/port-detector'
 import { AGENT_TOOLS } from '@/shared/types'
 import type { AgentTool, PortMapping, YaacConfig, InitCommandSpec } from '@/shared/types'
 
@@ -1233,6 +1234,10 @@ export async function createSession(
     const stop = startPortForwarders(kubectlRelay(jobName), forwardedPorts)
     registerSessionForwarders(sessionId, stop, forwardedPorts)
   }
+
+  // Watch for dev servers the agent starts, so their ports auto-forward and
+  // surface as previewable — independent of any static `portForward` config.
+  ensureSessionDetector(sessionId, jobName)
 
   return {
     sessionId,

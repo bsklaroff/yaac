@@ -10,6 +10,7 @@ import { listSessionPods } from '@/lib/k8s/pods'
 import { resolveProjectConfig } from '@/lib/project/config'
 import { isTmuxSessionAlive } from '@/lib/session/cleanup'
 import { hasSessionForwarders, provisionSessionForwarders } from '@/lib/session/port-forwarders'
+import { ensureSessionDetector } from '@/lib/session/port-detector'
 
 interface RestoreCandidate {
   jobName: string
@@ -39,6 +40,7 @@ export async function restoreAllSessionForwarders(): Promise<void> {
     try {
       const config = await resolveProjectConfig(projectSlug) ?? {}
       await provisionSessionForwarders(projectSlug, sessionId, jobName, config.portForward)
+      ensureSessionDetector(sessionId, jobName)
     } catch (err) {
       console.error(
         `[daemon] restore forwarders for ${sessionId.slice(0, 8)}: `

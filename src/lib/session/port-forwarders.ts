@@ -16,28 +16,55 @@ import type { ReservedPort } from '@/lib/container/port'
 import { CONTAINER_TMUX_SOCK } from '@/shared/paths'
 import type { PortForwardConfig, PortMapping } from '@/shared/types'
 
-interface SessionForwarders {
+/** A single dynamically-detected forward: its mapping plus its own teardown. */
+interface DynamicForwarder {
+  mapping: PortMapping
   stop: () => void
-  ports: PortMapping[]
+}
+
+interface SessionForwarders {
+  /** Teardown for the static `portForward` batch (no-op when none). */
+  batchStop: () => void
+  /** Static `portForward` mappings (detected flag absent). */
+  batchPorts: PortMapping[]
+  /** Whether the static batch has been provisioned — the restore pass's
+   *  idempotency guard keys on this, not on mere entry existence, since the
+   *  detector can create an entry (dynamic ports only) before any batch. */
+  batchProvisioned: boolean
+  /** Detected forwards keyed by containerPort (each `detected: true`). */
+  dynamic: Map<number, DynamicForwarder>
+  /** Teardown for the per-session port detector loop, if running. */
+  detectorStop?: () => void
 }
 
 const forwarders = new Map<string, SessionForwarders>()
+
+/** Get or lazily create the forwarder entry for a session. Lazy creation
+ *  lets the detector attach to a session that declared no static ports. */
+function ensure(sessionId: string): SessionForwarders {
+  let entry = forwarders.get(sessionId)
+  if (!entry) {
+    entry = { batchStop: () => {}, batchPorts: [], batchProvisioned: false, dynamic: new Map() }
+    forwarders.set(sessionId, entry)
+  }
+  return entry
+}
 
 export function registerSessionForwarders(
   sessionId: string,
   stop: () => void,
   ports: ReadonlyArray<PortMapping>,
 ): void {
-  if (forwarders.has(sessionId)) {
-    // Already have forwarders for this session; drop the new ones to
+  const entry = ensure(sessionId)
+  if (entry.batchProvisioned) {
+    // Already have a static batch for this session; drop the new one to
     // avoid leaking handles.
     stop()
     return
   }
-  forwarders.set(sessionId, {
-    stop,
-    ports: ports.map(({ containerPort, hostPort }) => ({ containerPort, hostPort })),
-  })
+  entry.batchStop = stop
+  entry.batchPorts = ports.map(({ containerPort, hostPort }) => ({ containerPort, hostPort }))
+  entry.batchProvisioned = true
 }
 
 /**
@@ -45,24 +72,91 @@ export function registerSessionForwarders(
  * when none are registered. Feeds the `forwardedPorts` field of
  * session-list entries (and thus the webapp snapshot) — the registry is
  * the daemon's only record of which host ports a session actually holds.
+ * Static (config) ports come first, then detected ones.
  */
 export function getSessionPorts(sessionId: string): PortMapping[] {
-  return forwarders.get(sessionId)?.ports ?? []
+  const entry = forwarders.get(sessionId)
+  if (!entry) return []
+  return [...entry.batchPorts, ...[...entry.dynamic.values()].map((d) => d.mapping)]
+}
+
+/** Whether a container port is already forwarded (static or detected) for a
+ *  session — the detector's guard against double-forwarding a port that a
+ *  static `portForward` entry already covers. */
+export function hasForwardedPort(sessionId: string, containerPort: number): boolean {
+  const entry = forwarders.get(sessionId)
+  if (!entry) return false
+  return entry.batchPorts.some((p) => p.containerPort === containerPort)
+    || entry.dynamic.has(containerPort)
+}
+
+/** Add a detected forward (marked `detected: true`) to a session's set. A
+ *  no-op if that container port is already tracked, dropping the new stop. */
+export function addDetectedForwarder(
+  sessionId: string,
+  mapping: PortMapping,
+  stop: () => void,
+): void {
+  const entry = ensure(sessionId)
+  if (entry.dynamic.has(mapping.containerPort)) {
+    stop()
+    return
+  }
+  entry.dynamic.set(mapping.containerPort, {
+    mapping: { containerPort: mapping.containerPort, hostPort: mapping.hostPort, detected: true },
+    stop,
+  })
+}
+
+/** Tear down a single detected forward (the pod stopped listening on it). */
+export function removeDetectedForwarder(sessionId: string, containerPort: number): void {
+  const entry = forwarders.get(sessionId)
+  const dyn = entry?.dynamic.get(containerPort)
+  if (!entry || !dyn) return
+  entry.dynamic.delete(containerPort)
+  try {
+    dyn.stop()
+  } catch {
+    // Best-effort — a wedged relay shouldn't block detector reconciliation.
+  }
+}
+
+/** Register the detector loop's teardown so session teardown kills it too.
+ *  A no-op if a detector is already recorded, dropping the new stop. */
+export function setSessionDetector(sessionId: string, stop: () => void): void {
+  const entry = ensure(sessionId)
+  if (entry.detectorStop) {
+    stop()
+    return
+  }
+  entry.detectorStop = stop
+}
+
+/** Whether a detector loop is already running for a session. */
+export function hasSessionDetector(sessionId: string): boolean {
+  return !!forwarders.get(sessionId)?.detectorStop
 }
 
 export function stopSessionForwarders(sessionId: string): void {
   const entry = forwarders.get(sessionId)
   if (!entry) return
   forwarders.delete(sessionId)
+  // Detector first so it stops adding dynamic forwards mid-teardown.
+  try { entry.detectorStop?.() } catch { /* best-effort */ }
+  for (const dyn of entry.dynamic.values()) {
+    try { dyn.stop() } catch { /* best-effort */ }
+  }
   try {
-    entry.stop()
+    entry.batchStop()
   } catch {
     // Best-effort teardown — a wedged forwarder shouldn't block delete.
   }
 }
 
+/** Whether a session's static forwarders have been provisioned. The restore
+ *  pass skips sessions that already have them. */
 export function hasSessionForwarders(sessionId: string): boolean {
-  return forwarders.has(sessionId)
+  return forwarders.get(sessionId)?.batchProvisioned ?? false
 }
 
 /**

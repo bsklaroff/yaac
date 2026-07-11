@@ -263,6 +263,14 @@ export interface GitCredentialsFile {
 export interface PortMapping {
   containerPort: number
   hostPort: number
+  /**
+   * True when the daemon's port detector discovered this forward by
+   * watching the pod's listening sockets (a dev server the agent started),
+   * as opposed to a static `portForward` config entry. Detected ports have
+   * passed an HTTP probe, so clients treat them as previewable and auto-open
+   * the first one; static ports (flag absent) stay manual.
+   */
+  detected?: boolean
 }
 
 // --- auth/list ---

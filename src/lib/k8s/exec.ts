@@ -43,3 +43,14 @@ export function interactiveExecArgs(jobName: string, command: string[]): string[
 export function stdinExecArgs(jobName: string, command: string[]): string[] {
   return ['exec', '-n', k8sNamespace(), '-i', execTarget(jobName), '--', ...command]
 }
+
+/**
+ * argv for a streaming, non-interactive exec (`kubectl exec` with no
+ * `-i`/`-it`) — used by the port detector's long-lived poll loop, which only
+ * reads the command's stdout and never writes to it. Without a TTY the
+ * in-pod `sleep` loop runs unbuffered and kubectl streams each poll's output
+ * as it is produced.
+ */
+export function streamExecArgs(jobName: string, command: string[]): string[] {
+  return ['exec', '-n', k8sNamespace(), execTarget(jobName), '--', ...command]
+}
