@@ -174,6 +174,12 @@ vi.mock('@/lib/session/port-forwarders', () => ({
   registerSessionForwarders: vi.fn(),
 }))
 
+// The dev-server detector spawns a long-lived kubectl exec; stub it out so
+// session-create unit tests neither touch the cluster nor leak a poll loop.
+vi.mock('@/lib/session/port-detector', () => ({
+  ensureSessionDetector: vi.fn(),
+}))
+
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import { buildAgentCmd, createSession, resolveInitWindows, retoolSpare } from '@/daemon/session-create'

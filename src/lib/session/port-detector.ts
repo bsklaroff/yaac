@@ -176,8 +176,15 @@ function defaultDeps(): PortDetectorDeps {
       })
       return {
         onData: (cb) => child.stdout?.on('data', (d: Buffer) => cb(d.toString('utf8'))),
-        onExit: (cb) => child.on('close', cb),
-        kill: () => child.kill(),
+        onExit: (cb) => {
+          // Fire the exit callback once on either close or a spawn error
+          // (ENOENT) — an unhandled 'error' event would otherwise throw.
+          let fired = false
+          const fire = (): void => { if (!fired) { fired = true; cb() } }
+          child.on('close', fire)
+          child.on('error', fire)
+        },
+        kill: () => { try { child.kill() } catch { /* already gone */ } },
       }
     },
     openForward: async (jobName, containerPort) => {
