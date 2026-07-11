@@ -32,7 +32,7 @@
     "test:watch": "vitest",
     "frontend:dev": "vite",
     "frontend:build": "vite build",
-    "electron:build": "tsup --config tsup.electron.config.ts",
+    "electron:build": "tsup --config tsup.electron.config.ts && tsup --config tsup.preload.config.ts",
     "electron:dev": "bash scripts/dev-app.sh",
     "app:stage": "tsx scripts/stage-app.ts",
     "app:build": "pnpm build && pnpm electron:build && pnpm app:stage && electron-builder --config electron-builder.yml",

@@ -1,7 +1,8 @@
 import path from 'node:path'
 import { existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { spawn, execFileSync } from 'node:child_process'
-import { app, BrowserWindow, Tray, Menu, Notification, nativeImage, nativeTheme, screen } from 'electron'
+import { app, BrowserWindow, Tray, Menu, Notification, nativeImage, nativeTheme, ipcMain, screen } from 'electron'
 import WebSocket from 'ws'
 import { readLock, isLockLive, type DaemonLock } from '@/shared/lock'
 import { readBuildId } from '@/shared/build-id'
@@ -174,15 +175,17 @@ async function createWindow(url: string): Promise<void> {
     // Match the OS appearance so a light-mode window doesn't flash the dark
     // shell at the edges during a resize. Kept in sync below.
     backgroundColor: backgroundColorFor(nativeTheme.shouldUseDarkColors),
-    // Modern macOS chrome: hide the title bar and let the traffic lights float
-    // over the UI. The webapp reserves a draggable top strip for them when it
-    // detects Electron (src/frontend/App.tsx + .titlebar-drag).
-    titleBarStyle: 'hiddenInset',
-    // Centered on the rail region (x0–72) so the lights line up with the chips
-    // below them, which are centered in that same region.
-    trafficLightPosition: { x: 14, y: 7 },
-    webPreferences: { contextIsolation: true, nodeIntegration: false },
+    // Hide the title bar AND the native traffic lights (setWindowButtonVisibility
+    // below) — the webapp draws its own monochrome controls (WindowControls.tsx)
+    // and reserves draggable strips (.titlebar-drag) so the window still moves.
+    titleBarStyle: 'hidden',
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: path.join(path.dirname(fileURLToPath(import.meta.url)), 'preload.cjs'),
+    },
   })
+  win.setWindowButtonVisibility(false)
   // Reveal only once the renderer has painted — no empty flash on open.
   win.once('ready-to-show', () => win?.show())
   // Follow live OS light/dark switches (System mode) for the native backing.
@@ -297,6 +300,12 @@ async function boot(): Promise<void> {
   const code = await fetchBootstrapCode(daemonLock.port, daemonLock.secret)
   await createWindow(buildAuthedRendererUrl(rendererBase(daemonLock.port), code))
 }
+
+// The custom window controls (WindowControls.tsx) drive the window through the
+// preload bridge. Registered once, they act on whichever window is current.
+ipcMain.on('window:minimize', () => win?.minimize())
+ipcMain.on('window:toggle-maximize', () => { if (win?.isMaximized()) win.unmaximize(); else win?.maximize() })
+ipcMain.on('window:close', () => win?.close())
 
 void app.whenReady().then(() => {
   // Proper macOS menu (yaac app menu + Edit menu for terminal copy/paste).

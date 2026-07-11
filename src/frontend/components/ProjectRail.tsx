@@ -2,6 +2,7 @@ import type { JSX } from 'react'
 import clsx from 'clsx'
 import { NewProjectButton } from '@/frontend/components/NewProjectButton'
 import { SettingsButton } from '@/frontend/components/SettingsButton'
+import { WindowControls } from '@/frontend/components/WindowControls'
 import { isElectron } from '@/frontend/lib/platform'
 import type { ProjectSummary } from '@/shared/types'
 
@@ -46,12 +47,12 @@ export function ProjectRail({
       // This 64px rail plus the 8px gap to the sidebar read as one region (the
       // sidebar's border is what bounds it), so the chips are centered in that
       // whole 72px region, not this column: pl-2 nudges them right to its
-      // center. Electron hosts the traffic lights here; the draggable band
-      // below covers them and pads the first chip clear.
+      // center. In Electron the custom window controls sit at the top, centered
+      // the same way, so they line up with the chips.
       'flex w-16 shrink-0 flex-col items-center gap-2 pb-3 pl-2',
-      isElectron() ? '' : 'pt-3',
+      isElectron() ? 'pt-2' : 'pt-3',
     )}>
-      {isElectron() && <div className="titlebar-drag h-5 w-full shrink-0" aria-hidden="true" />}
+      {isElectron() && <WindowControls className="h-5" />}
       {projects.map((p) => {
         const active = p.slug === activeProjectSlug
         const color = projectColor(p.slug)
