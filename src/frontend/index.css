@@ -11,11 +11,11 @@
    * that the panes' drop shadows actually read against it. */
   --color-base: #0f0f12;
   --color-bg: #0b0b0d;
-  --color-surface: #141417;
-  --color-surface-2: #1a1a1f;
-  --color-surface-3: #22222a;
-  --color-border: #2a2a33;
-  --color-border-strong: #3a3a45;
+  --color-surface: #1b1b21;
+  --color-surface-2: #26262d;
+  --color-surface-3: #32323b;
+  --color-border: #3a3a44;
+  --color-border-strong: #4c4c56;
   --color-text: #e7e7ea;
   --color-text-dim: #9a9aa4;
   --color-text-faint: #6a6a74;
@@ -52,11 +52,11 @@
 [data-theme="dark"] {
   --color-base: #0f0f12;
   --color-bg: #0b0b0d;
-  --color-surface: #141417;
-  --color-surface-2: #1a1a1f;
-  --color-surface-3: #22222a;
-  --color-border: #2a2a33;
-  --color-border-strong: #3a3a45;
+  --color-surface: #1b1b21;
+  --color-surface-2: #26262d;
+  --color-surface-3: #32323b;
+  --color-border: #3a3a44;
+  --color-border-strong: #4c4c56;
   --color-text: #e7e7ea;
   --color-text-dim: #9a9aa4;
   --color-text-faint: #6a6a74;
