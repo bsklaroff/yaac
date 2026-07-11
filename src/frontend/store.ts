@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { addLeafToLargest, isLayoutNode, leaf, leafTargets, splitLeaf, type LayoutNode } from '@/frontend/lib/layout'
 import { PREVIEW_TARGET } from '@/frontend/lib/preview'
+import { CHANGES_TARGET } from '@/frontend/lib/changesApi'
 import { DEFAULT_BINDINGS, type BindingMap, type Chord, type ShortcutId } from '@/frontend/lib/shortcuts'
 import { applyThemeAttribute, loadThemePref, persistThemePref, type ThemePref } from '@/frontend/lib/theme'
 import type { AgentTool, DeletedSessionEntry, ProvisioningSessionEntry, SessionListEntry } from '@/shared/types'
@@ -203,16 +204,22 @@ export function persistPreviewHandled(handled: Record<string, true>): void {
 }
 
 /**
- * Insert the single preview leaf into a session's layout: split the agent
- * pane (preview to its right) when present, else split the largest pane; a
- * layout that already has a preview is returned unchanged. Exported for tests.
+ * Insert a single special (non-terminal) leaf — preview or changes — into a
+ * session's layout: split the agent pane (new leaf to its right) when present,
+ * else split the largest pane; a layout that already has it is returned
+ * unchanged. Exported for tests.
  */
-export function injectPreviewLeaf(base: LayoutNode | null): LayoutNode {
+export function injectPaneLeaf(base: LayoutNode | null, target: string): LayoutNode {
   const root = base ?? leaf('agent')
   const targets = leafTargets(root)
-  if (targets.includes(PREVIEW_TARGET)) return root
-  if (targets.includes('agent')) return splitLeaf(root, 'agent', PREVIEW_TARGET, 'row')
-  return addLeafToLargest(root, PREVIEW_TARGET, 1200, 800)
+  if (targets.includes(target)) return root
+  if (targets.includes('agent')) return splitLeaf(root, 'agent', target, 'row')
+  return addLeafToLargest(root, target, 1200, 800)
+}
+
+/** The preview-specific injector (kept for the auto-open/open-preview paths). */
+export function injectPreviewLeaf(base: LayoutNode | null): LayoutNode {
+  return injectPaneLeaf(base, PREVIEW_TARGET)
 }
 
 /**
@@ -347,6 +354,8 @@ interface UiState {
   /** Manually open/focus the preview pane (the header chip). Seeds the shown
    *  port when unset, and marks the session handled. */
   openPreview: (sessionId: string, containerPort?: number) => void
+  /** Open/focus the changes (review-diff) pane for a session. */
+  openChanges: (sessionId: string) => void
   /** Whether the session sidebar is shown. */
   sidebarOpen: boolean
   /** Light/dark preference. 'system' follows the OS; setThemePref persists it
@@ -540,6 +549,14 @@ export const useUiStore = create<UiState>((set) => ({
       previewHandled: { ...s.previewHandled, [sessionId]: true },
       previewPort,
       activeTabs: { ...s.activeTabs, [sessionId]: PREVIEW_TARGET },
+      focusNonce: s.focusNonce + 1,
+    }
+  }),
+  openChanges: (sessionId) => set((s) => {
+    const base = sessionId in s.layouts ? s.layouts[sessionId] : leaf('agent')
+    return {
+      layouts: { ...s.layouts, [sessionId]: injectPaneLeaf(base, CHANGES_TARGET) },
+      activeTabs: { ...s.activeTabs, [sessionId]: CHANGES_TARGET },
       focusNonce: s.focusNonce + 1,
     }
   }),

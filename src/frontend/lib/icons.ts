@@ -49,6 +49,7 @@ export {
   Smartphone as MobileIcon,
   Tablet as TabletIcon,
   Monitor as DesktopIcon,
+  FileDiff as ChangesIcon,
 } from 'lucide-react'
 
 /** Display name per agent tool (proper brand casing, incl. OpenCode). */

@@ -4,9 +4,11 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useUiStore } from '@/frontend/store'
 import { SessionTerminal } from '@/frontend/components/SessionTerminal'
 import { SessionPreview } from '@/frontend/components/SessionPreview'
+import { SessionChanges } from '@/frontend/components/SessionChanges'
 import { isPreviewTarget, previewLabel } from '@/frontend/lib/preview'
+import { isChangesTarget } from '@/frontend/lib/changesApi'
 import { isElectron } from '@/frontend/lib/platform'
-import { PreviewIcon } from '@/frontend/lib/icons'
+import { PreviewIcon, ChangesIcon } from '@/frontend/lib/icons'
 import { SessionActionsMenu } from '@/frontend/components/SessionActionsMenu'
 import { CreatingPlaceholder } from '@/frontend/components/CreatingPlaceholder'
 import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
@@ -82,8 +84,15 @@ function paneName(
 ): string {
   if (target === 'agent') return 'Agent'
   if (isPreviewTarget(target)) return previewLabel(previewPort)
+  if (isChangesTarget(target)) return 'Changes'
   const entry = terminals?.find((t) => t.target === target)
   return entry?.name ?? 'window'
+}
+
+/** Preview and changes are special (non-terminal) panes: kept out of the
+ *  tmux-window sync, closed without a kill-confirm. */
+function isSpecialPane(target: string): boolean {
+  return isPreviewTarget(target) || isChangesTarget(target)
 }
 
 export function SessionView({
@@ -108,6 +117,7 @@ export function SessionView({
   const previewPortMap = useUiStore((s) => s.previewPort)
   const setPreviewPort = useUiStore((s) => s.setPreviewPort)
   const openPreview = useUiStore((s) => s.openPreview)
+  const openChanges = useUiStore((s) => s.openChanges)
   const queryClient = useQueryClient()
   const sessions = snapshot?.sessions ?? []
   const session = sessions.find((s) => s.sessionId === selectedSessionId)
@@ -172,9 +182,9 @@ export function SessionView({
     const liveSet = new Set(live)
     let next = cur
     for (const t of leafTargets(next)) {
-      // Preview leaves aren't tmux windows — they're owned by the preview
-      // auto-open/close logic, so this window-driven sync must leave them be.
-      if (!liveSet.has(t) && !isPreviewTarget(t)) next = next && removeLeaf(next, t)
+      // Preview/changes leaves aren't tmux windows — they're owned by their
+      // own open/close logic, so this window-driven sync must leave them be.
+      if (!liveSet.has(t) && !isSpecialPane(t)) next = next && removeLeaf(next, t)
     }
     for (const t of live) {
       next = addLeafToLargest(next, t, wsSize.w || 1200, wsSize.h || 800)
@@ -277,8 +287,8 @@ export function SessionView({
           if (!ctx.activeTab || ctx.activeTab === 'agent') return
           e.preventDefault()
           e.stopPropagation()
-          // A preview just closes (no tmux window, no confirm).
-          if (isPreviewTarget(ctx.activeTab)) {
+          // A preview/changes pane just closes (no tmux window, no confirm).
+          if (isSpecialPane(ctx.activeTab)) {
             const st = useUiStore.getState()
             const cur = ctx.sid in st.layouts ? st.layouts[ctx.sid] : null
             if (cur) st.setSessionLayout(ctx.sid, removeLeaf(cur, ctx.activeTab))
@@ -323,9 +333,9 @@ export function SessionView({
       .finally(refetchTerminals)
   }
 
-  // Close a preview pane: just drop the leaf — there's no tmux window to kill,
-  // and no confirm (a preview is cheap to reopen from the port chip).
-  const closePreview = (target: string): void => {
+  // Close a special (preview/changes) pane: just drop the leaf — there's no
+  // tmux window to kill, and no confirm (both are cheap to reopen).
+  const closePane = (target: string): void => {
     if (!sid || !layout) return
     setSessionLayout(sid, removeLeaf(layout, target))
     setOpened((prev) => prev.filter((k) => k !== `${sid}|${target}`))
@@ -487,6 +497,16 @@ export function SessionView({
           >
             <AddIcon size={14} />
           </button>
+          <button
+            onClick={() => openChanges(session.sessionId)}
+            title="Review changes"
+            aria-label="Review changes"
+            className="flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px]
+              text-text-dim transition hover:bg-surface-2 hover:text-text"
+          >
+            <ChangesIcon size={13} />
+            Changes
+          </button>
           <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[session.tool]}</span>
           {embedPreview && detectedPorts.length > 0 && (
             <button
@@ -572,7 +592,7 @@ export function SessionView({
                 {paneName(target, terminals, previewPortForSession)}
               </span>
               <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/pane:opacity-100">
-                {!isPreviewTarget(target) && (
+                {!isSpecialPane(target) && (
                   <>
                     <button
                       onClick={() => openShell({ target, dir: 'row' })}
@@ -594,11 +614,11 @@ export function SessionView({
                     </button>
                   </>
                 )}
-                {isPreviewTarget(target) ? (
+                {isSpecialPane(target) ? (
                   <button
-                    onClick={() => closePreview(target)}
-                    title="Close preview"
-                    aria-label={`Close ${paneName(target, terminals)}`}
+                    onClick={() => closePane(target)}
+                    title="Close pane"
+                    aria-label={`Close ${paneName(target, terminals, previewPortForSession)}`}
                     className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
                       hover:bg-surface-2 hover:text-text"
                   >
@@ -640,11 +660,11 @@ export function SessionView({
                   >
                     {paneName(t, terminals, previewPortForSession)}
                   </button>
-                  {isPreviewTarget(t) ? (
+                  {isSpecialPane(t) ? (
                     <button
-                      onClick={() => closePreview(t)}
-                      title="Close preview"
-                      aria-label={`Close ${paneName(t, terminals)}`}
+                      onClick={() => closePane(t)}
+                      title="Close pane"
+                      aria-label={`Close ${paneName(t, terminals, previewPortForSession)}`}
                       className="absolute right-0.5 flex h-4 w-4 items-center justify-center rounded
                         text-text-faint opacity-0 transition hover:text-text group-hover/tab:opacity-100"
                     >
@@ -682,6 +702,8 @@ export function SessionView({
           const id = key.slice(0, sep)
           const target = key.slice(sep + 1)
           const preview = isPreviewTarget(target)
+          const changes = isChangesTarget(target)
+          const special = preview || changes
           const pane = id === sid && tiled ? panes.find((p) => p.target === target) : undefined
           const style = pane
             ? {
@@ -699,11 +721,11 @@ export function SessionView({
                 }
               : undefined
           // Terminals stay mounted while hidden (instant switch-back, live PTY);
-          // a preview webview is torn down off-screen (a hidden one keeps
-          // hammering the dev server) and re-navigates cheaply on return.
-          // A preview only has a `style` when it's the selected session's pane,
-          // so detectedPorts / previewPortForSession (both for sid) apply.
-          if (preview && !style) return null
+          // a preview/changes pane is torn down off-screen (a hidden one keeps
+          // polling the pod) and cheaply re-mounts on return. Both only have a
+          // `style` for the selected session, so detectedPorts /
+          // previewPortForSession (both for sid) apply.
+          if (special && !style) return null
           return (
             <div
               key={key}
@@ -727,6 +749,10 @@ export function SessionView({
                     currentPort={previewPortForSession}
                     onSwitchPort={(p) => setPreviewPort(id, p)}
                   />
+                </div>
+              ) : changes ? (
+                <div className="h-full w-full overflow-hidden rounded-md">
+                  <SessionChanges sessionId={id} />
                 </div>
               ) : (
                 <div className="h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">
