@@ -66,7 +66,9 @@ export function ProjectRail({
           >
             <span
               className={clsx(
-                'absolute left-0 -ml-1.5 w-0.5 rounded-r-full bg-text transition-all',
+                // Flush to the window's left edge (the chip sits ~16px in after
+                // the region centering, so pull the bar back the same amount).
+                'absolute left-0 -ml-4 w-0.5 rounded-r-full bg-text transition-all',
                 active ? 'h-6' : 'h-0 group-hover:h-4',
               )}
             />
