@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import { Hono } from 'hono'
-import { contentTypeFor, registerStaticRoutes, SPA_CSP } from '#static'
+import { contentTypeFor, registerStaticRoutes, spaCsp } from '#static'
 
 describe('contentTypeFor', () => {
   it('maps known extensions', () => {
@@ -39,7 +39,8 @@ describe('registerStaticRoutes', () => {
     const res = await app.request('/')
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toContain('text/html')
-    expect(res.headers.get('content-security-policy')).toBe(SPA_CSP)
+    expect(res.headers.get('content-security-policy'))
+      .toBe(spaCsp('<!doctype html><title>yaac</title>'))
     expect(res.headers.get('cache-control')).toBe('no-cache')
     expect(await res.text()).toContain('yaac')
   })
@@ -55,5 +56,19 @@ describe('registerStaticRoutes', () => {
   it('404s a missing asset', async () => {
     const res = await app.request('/assets/missing.js')
     expect(res.status).toBe(404)
+  })
+})
+
+describe('spaCsp', () => {
+  it("keeps script-src 'self'-only when the html has no inline scripts", () => {
+    expect(spaCsp('<!doctype html>')).toContain("script-src 'self'; ")
+  })
+
+  it('admits each inline <script> body by its sha256 hash', () => {
+    const csp = spaCsp('<script>var a=1</script><script src="/x.js"></script><script>var b=2</script>')
+    // sha256('var a=1') / sha256('var b=2'), base64 — what the browser computes.
+    const hashes = csp.match(/'sha256-[^']+'/g)
+    expect(hashes).toHaveLength(2)
+    expect(csp).toContain(`script-src 'self' ${hashes![0]} ${hashes![1]}; `)
   })
 })

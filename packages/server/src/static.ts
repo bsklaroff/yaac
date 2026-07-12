@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { readFile } from 'node:fs/promises'
 import type { Hono } from 'hono'
@@ -8,15 +9,23 @@ import type { Hono } from 'hono'
  * `connect-src` allows ws/wss for the `/events` and future PTY sockets.
  * `style-src 'unsafe-inline'` is the one relaxation — Vite/React inject a
  * little inline style; tightening to hashes is a later polish pass.
+ * Inline <script> bodies in the served index.html (the pre-paint theme
+ * init) are admitted by hash, computed from the html itself so the policy
+ * can never drift from the markup — script-src stays 'self'-only for
+ * everything else.
  */
-export const SPA_CSP =
-  "default-src 'self'; "
-  + "script-src 'self'; "
-  + "style-src 'self' 'unsafe-inline'; "
-  + "img-src 'self' data:; "
-  + "connect-src 'self' ws: wss:; "
-  + "base-uri 'self'; "
-  + "frame-ancestors 'none'"
+export function spaCsp(html: string): string {
+  const hashes = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+    .map(([, body]) => ` 'sha256-${createHash('sha256').update(body).digest('base64')}'`)
+    .join('')
+  return "default-src 'self'; "
+    + `script-src 'self'${hashes}; `
+    + "style-src 'self' 'unsafe-inline'; "
+    + "img-src 'self' data:; "
+    + "connect-src 'self' ws: wss:; "
+    + "base-uri 'self'; "
+    + "frame-ancestors 'none'"
+}
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -56,7 +65,7 @@ export function registerStaticRoutes(app: Hono, frontendDir: string): void {
     const html = await readFile(indexPath, 'utf8').catch(() => null)
     if (html === null) return c.notFound()
     c.header('Content-Type', 'text/html; charset=utf-8')
-    c.header('Content-Security-Policy', SPA_CSP)
+    c.header('Content-Security-Policy', spaCsp(html))
     c.header('Cache-Control', 'no-cache')
     return c.body(html)
   })
