@@ -61,7 +61,11 @@ tsconfig); packages deliberately have no typecheck scripts.
 The desktop app (`pnpm desktop:dev` / `desktop:build`) is not part of `pnpm
 build` — the npm artifact never includes it. It is an Electron shell whose
 main process loads the server origin into the window, so the SPA it displays
-is whatever the target server serves (see apps/desktop/README.md).
+is whatever the target server serves (see apps/desktop/README.md). It lives
+in the tray (close hides; Quit never stops the server) and surfaces waiting
+sessions via `/events`. `pnpm desktop:package` / `desktop:install` build the
+unsigned macOS .app — the bundled server is staged from the root publish
+artifact (`pnpm pack`, no hand-kept dependency list) plus a standalone Node.
 
 ## Runtime Architecture
 
