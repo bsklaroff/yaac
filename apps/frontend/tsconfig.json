@@ -11,16 +11,11 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "paths": {
-      "@yaac/shared/*": [
-        "../../packages/shared/src/*"
-      ]
-    }
+    "paths": {}
   },
   "include": [
     "src",
     "test",
-    "vite.config.ts",
-    "hash-imports.ts"
+    "vite.config.ts"
   ]
 }

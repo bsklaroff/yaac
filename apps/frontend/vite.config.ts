@@ -4,16 +4,14 @@ import { readFileSync } from 'node:fs'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
-// Relative import (not @yaac/shared): Vite loads this config through esbuild,
-// which would try to resolve a bare @yaac/* specifier against Node at
-// config-load time. The rest of the frontend imports @yaac/shared normally.
-import { DEFAULT_SERVER_PORT } from '../../packages/shared/src/server-port-default'
+// Resolved at config-load time: Vite externalizes bare imports to their real
+// .ts paths and Node loads them via type stripping — needs Node >= 22.18.
+import { DEFAULT_SERVER_PORT } from '@yaac/shared/server-port-default'
 import {
   SERVER_LOCK_FILENAME,
   isLockLive,
   parseServerLock,
-} from '../../packages/shared/src/server-lock-file'
-import { frontendHashImports } from './hash-imports'
+} from '@yaac/shared/server-lock-file'
 
 /**
  * The server prefers DEFAULT_SERVER_PORT (or its --port / YAAC_SERVER_PORT
@@ -66,7 +64,7 @@ proxy['/pty'] = { target, changeOrigin: true, ws: true }
 
 export default defineConfig({
   root: 'src',
-  plugins: [react(), tailwindcss(), frontendHashImports()],
+  plugins: [react(), tailwindcss()],
   server: {
     port: 1420,
     strictPort: true,

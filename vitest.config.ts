@@ -1,5 +1,4 @@
 import { defineConfig } from 'vitest/config'
-import { frontendHashImports } from './apps/frontend/hash-imports'
 
 // Every project is inline (`extends: true`) so the shared test policy —
 // timeouts, isolation setupFiles, ordering — lives in exactly one file.
@@ -45,7 +44,6 @@ export default defineConfig({
       // `// @vitest-environment jsdom`.
       unitProject('apps/frontend', {
         esbuild: { jsx: 'automatic' },
-        plugins: [frontendHashImports()],
       }),
       unitProject('packages/server'),
       unitProject('packages/shared'),

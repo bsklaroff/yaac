@@ -5,6 +5,7 @@
   "type": "module",
   "imports": {
     "#*": [
+      "./src/*",
       "./src/*.ts",
       "./src/*.tsx"
     ]

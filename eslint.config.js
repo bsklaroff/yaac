@@ -166,17 +166,6 @@ export default tseslint.config(
     },
   },
 
-  // The frontend vite config loads through esbuild at config-load time,
-  // which can't resolve @yaac/* bare specifiers — it legitimately uses
-  // relative imports into packages/shared leaf modules. Scoped to that one
-  // file (listed after the zones so it wins there): a blanket *.config.ts
-  // exemption would let any future config file cross package boundaries
-  // unnoticed.
-  {
-    files: ['apps/frontend/vite.config.ts'],
-    rules: { '@typescript-eslint/no-restricted-imports': 'off' },
-  },
-
   // process.env may only be read in @yaac/shared's env.ts, which centralizes
   // every yaac variable's default and validation. Sanctioned reads elsewhere
   // carry an inline `eslint-disable-next-line no-process-env`.
