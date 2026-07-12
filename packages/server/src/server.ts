@@ -4,13 +4,7 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { setCookie } from 'hono/cookie'
 import { denyBrowserCors, requestLogger } from '#auth'
-import {
-  cookieOrBearerAuth,
-  createWebAuthStore,
-  hostHeaderCheck,
-  SESSION_COOKIE,
-  type WebAuthStore,
-} from '#web-auth'
+import { cookieOrBearerAuth, hostHeaderCheck, SESSION_COOKIE } from '#web-auth'
 import { registerStaticRoutes } from '#static'
 import { toErrorBody } from '#errors'
 import { projectApp } from '#routes/project'
@@ -30,14 +24,10 @@ export interface ServerAppDeps {
   secret: string
   buildId: string
   /**
-   * Browser-auth store (bootstrap code + session cookies). Optional so
-   * existing in-process tests can keep calling `buildApp({secret,
-   * buildId})`; a fresh store is created when omitted.
-   */
-  store?: WebAuthStore
-  /**
-   * Durable-token store. Optional for the same reason; a fresh empty
-   * store (nothing but the lock secret authenticates) when omitted.
+   * Token store (durable client tokens + one-time exchange tokens + web
+   * sessions). Optional so existing in-process tests can keep calling
+   * `buildApp({secret, buildId})`; a fresh empty store (nothing but the
+   * lock secret authenticates) is created when omitted.
    */
   tokens?: TokenStore
 }
@@ -48,7 +38,6 @@ export interface ServerAppDeps {
  * can be driven with `new Request(...)` directly).
  */
 export function buildApp(deps: ServerAppDeps) {
-  const store = deps.store ?? createWebAuthStore()
   const tokens = deps.tokens ?? createTokenStore()
   const app = new Hono()
 
@@ -61,7 +50,7 @@ export function buildApp(deps: ServerAppDeps) {
   })
   app.use('*', hostHeaderCheck())
   app.use('*', denyBrowserCors())
-  app.use('*', cookieOrBearerAuth(deps.secret, store, tokens))
+  app.use('*', cookieOrBearerAuth(deps.secret, tokens))
 
   app.onError((err: Error, c: Context) => {
     const { status, body } = toErrorBody(err)
@@ -73,21 +62,22 @@ export function buildApp(deps: ServerAppDeps) {
     404,
   ))
 
-  // Browser auth bootstrap. Public (allowlisted in cookieOrBearerAuth):
-  // exchanges a one-time code for an HttpOnly session cookie. Never log
-  // the code value — only ok/fail.
-  app.post('/auth/bootstrap', async (c) => {
+  // Browser session mint. POST is public (allowlisted in
+  // cookieOrBearerAuth): exchanges a token — one-time from `yaac open`,
+  // or a pasted durable token — for an HttpOnly session cookie. Never
+  // log the token value — only ok/fail.
+  app.post('/auth/web-session', async (c) => {
     const body: unknown = await c.req.json().catch(() => null)
-    const code = (body as { code?: unknown } | null)?.code
-    if (typeof code !== 'string' || code.length === 0) {
-      serverLog('[server] bootstrap fail')
-      return c.json({ error: { code: 'BAD_REQUEST', message: 'missing bootstrap code' } }, 400)
+    const token = (body as { token?: unknown } | null)?.token
+    if (typeof token !== 'string' || token.length === 0) {
+      serverLog('[server] web-session exchange fail')
+      return c.json({ error: { code: 'BAD_REQUEST', message: 'missing token' } }, 400)
     }
-    const sessionId = store.consumeBootstrap(code)
+    const sessionId = tokens.consumeExchange(token)
     if (!sessionId) {
-      serverLog('[server] bootstrap fail')
+      serverLog('[server] web-session exchange fail')
       return c.json(
-        { error: { code: 'BAD_BOOTSTRAP', message: 'invalid or expired bootstrap code' } },
+        { error: { code: 'BAD_TOKEN', message: 'invalid or expired token' } },
         401,
       )
     }
@@ -102,14 +92,13 @@ export function buildApp(deps: ServerAppDeps) {
       // browsers drop Secure cookies set over http.
       secure: env.trustProxy && c.req.header('x-forwarded-proto') === 'https',
     })
-    serverLog('[server] bootstrap ok')
+    serverLog('[server] web-session exchange ok')
     return c.body(null, 204)
   })
 
-  // Authenticated (CLI bearer / existing cookie): return the current
-  // bootstrap code so `yaac open` can build a ready-to-open authed URL
-  // without scraping the server log. Not public — requires a credential.
-  app.get('/auth/bootstrap-code', (c) => c.json({ code: store.currentCode() }))
+  // Authenticated (cookie or bearer) no-op: the SPA probes it on load to
+  // learn whether its session cookie is still good.
+  app.get('/auth/web-session', (c) => c.body(null, 204))
 
   // Serve the built SPA bundle when present (production: dist/frontend).
   // Absent in dev/test (Vite serves the app instead), so guard on it.

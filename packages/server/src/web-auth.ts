@@ -1,104 +1,19 @@
-import crypto from 'node:crypto'
 import type { MiddlewareHandler } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { env } from '@yaac/shared/env'
 
-/**
- * How long a freshly minted bootstrap code stays valid. Generous (24h)
- * on purpose: the code is single-use, 256-bit, and already retrievable
- * from `yaac server logs` for the server's lifetime, so a short TTL adds
- * little security but creates a real "code expired before I opened the
- * browser" papercut. It still rotates on every successful exchange.
- */
-export const BOOTSTRAP_TTL_MS = 24 * 60 * 60 * 1000
-
 /** Name of the HttpOnly cookie that carries a webapp session. */
 export const SESSION_COOKIE = 'yaac_session'
 
-/** Upper bound on retained webapp sessions (oldest evicted first). */
-export const MAX_SESSIONS = 64
-
-/**
- * Holds the single live bootstrap code and the set of minted browser
- * session ids. One instance per server lifetime; sessions die when the
- * server (and this in-memory store) goes away.
- *
- * The bootstrap code is single-use and time-bounded: a successful
- * exchange rotates it (so the consumed code can't be replayed) and mints
- * a fresh session id. See `plans/webapp-frontend.md` for the threat model.
- */
-export interface WebAuthStore {
-  /** The bootstrap code to advertise in the start banner / `?bootstrap=`. */
-  currentCode(): string
-  /**
-   * Validate and consume a bootstrap code. Returns a new session id on
-   * success (and rotates the code), or null if the code is wrong,
-   * already consumed, or older than the TTL.
-   */
-  consumeBootstrap(code: string, nowMs?: number): string | null
-  /** True if `id` is a session minted by a prior bootstrap exchange. */
-  isValidSession(id: string): boolean
-}
-
-export function createWebAuthStore(
-  opts: {
-    ttlMs?: number
-    now?: () => number
-    /** Sessions to restore (e.g. persisted across a server restart). */
-    initialSessions?: Iterable<string>
-    /** Called whenever the live session set changes, for persistence. */
-    onSessionsChanged?: (sessions: string[]) => void
-  } = {},
-): WebAuthStore {
-  const ttlMs = opts.ttlMs ?? BOOTSTRAP_TTL_MS
-  const now = opts.now ?? ((): number => Date.now())
-  const sessions = new Set<string>(opts.initialSessions ?? [])
-  const persist = (): void => opts.onSessionsChanged?.([...sessions])
-  // Each bootstrap mints a session that's never explicitly revoked, so
-  // cap the set (FIFO — Set preserves insertion order) to keep the
-  // persisted file bounded across many `yaac open` invocations.
-  const trim = (): void => {
-    while (sessions.size > MAX_SESSIONS) {
-      const oldest = sessions.values().next().value
-      if (oldest === undefined) break
-      sessions.delete(oldest)
-    }
-  }
-  trim()
-  let code = newToken()
-  let codeIssuedAt = now()
-
-  return {
-    currentCode: () => code,
-    consumeBootstrap: (input, nowMs) => {
-      const t = nowMs ?? now()
-      if (t - codeIssuedAt > ttlMs) return null
-      if (!constantTimeEqual(input, code)) return null
-      // Single-use: rotate the code so this exact value can never be
-      // replayed, and reset the clock for the next client.
-      code = newToken()
-      codeIssuedAt = t
-      const id = newToken()
-      sessions.add(id)
-      trim()
-      persist()
-      return id
-    },
-    isValidSession: (id) => sessions.has(id),
-  }
-}
-
-function newToken(): string {
-  return crypto.randomBytes(32).toString('hex')
-}
-
 /**
  * Routes reachable without any credential: the SPA shell, its hashed
- * assets, the health probe, and the bootstrap exchange itself.
+ * assets, the health probe, and the token→cookie exchange itself. The
+ * exchange is public only for POST — GET /auth/web-session is the
+ * authenticated "is my cookie still good" probe and must stay gated.
  */
-export function isPublicPath(path: string): boolean {
+export function isPublicPath(method: string, path: string): boolean {
   if (path === '/health') return true
-  if (path === '/auth/bootstrap') return true
+  if (path === '/auth/web-session') return method === 'POST'
   if (path === '/') return true
   if (path.startsWith('/assets/')) return true
   return false
@@ -107,33 +22,34 @@ export function isPublicPath(path: string): boolean {
 /**
  * Accept a request if it carries either a matching bearer (CLI) or a
  * valid `yaac_session` cookie (webapp). Public paths skip the check.
- * Replaces the bearer-only middleware so both clients share one gate.
  *
  * A presented-but-wrong bearer is answered with `BAD_BEARER` rather than
  * the generic `UNAUTHENTICATED`: the CLI client re-reads its credential
  * source and retries exactly once on that code (a restarted server
  * rotates the lock secret out from under a long-lived CLI process).
  *
- * `tokens` (when given) extends the bearer check to durable client
- * tokens, so remote CLIs — which can never read the lock file — pass the
- * same gate. Structural type rather than the TokenStore import to keep
- * this module free of server-store dependencies.
+ * `tokens` extends the bearer check to durable client tokens (remote
+ * CLIs can never read the lock file) and owns the web sessions the
+ * cookie is checked against. Structural type rather than the TokenStore
+ * import to keep this module free of server-store dependencies.
  */
 export function cookieOrBearerAuth(
   secret: string,
-  store: WebAuthStore,
-  tokens?: { isValidToken(candidate: string): boolean },
+  tokens: {
+    isValidToken(candidate: string): boolean
+    isValidSession(candidate: string): boolean
+  },
 ): MiddlewareHandler {
   return async (c, next) => {
-    if (isPublicPath(c.req.path)) return next()
+    if (isPublicPath(c.req.method, c.req.path)) return next()
 
     const header = c.req.header('authorization') ?? ''
     const match = /^Bearer\s+(.+)$/i.exec(header)
     if (match && constantTimeEqual(match[1], secret)) return next()
-    if (match && tokens?.isValidToken(match[1])) return next()
+    if (match && tokens.isValidToken(match[1])) return next()
 
     const sid = getCookie(c, SESSION_COOKIE)
-    if (sid && store.isValidSession(sid)) return next()
+    if (sid && tokens.isValidSession(sid)) return next()
 
     if (match) {
       return c.json(

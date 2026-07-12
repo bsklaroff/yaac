@@ -118,7 +118,7 @@ describe('yaac remote (real CLI + real server)', () => {
     const open = await runYaac(testEnv.env, 'open', '--no-browser')
     expect(open.exitCode, open.stderr).toBe(0)
     expect(open.stdout.trim()).toMatch(
-      new RegExp(`^${origin().replace(/[.:/]/g, '\\$&')}/\\?bootstrap=[0-9a-f]+$`),
+      new RegExp(`^${origin().replace(/[.:/]/g, '\\$&')}/\\?token=[0-9a-f]+$`),
     )
   })
 })

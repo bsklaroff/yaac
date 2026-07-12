@@ -1,31 +1,33 @@
 import { useState, type FormEvent, type JSX } from 'react'
 import { Form } from '@base-ui/react/form'
 import { Field } from '@base-ui/react/field'
-import { postBootstrap } from '#lib/bootstrap'
+import { postWebSession } from '#lib/webSession'
 
 /**
- * First-open / expired-session screen. The server logs a one-time URL
- * (`yaac server logs`); the user can open it directly or paste just the
- * code here. Built on Base UI's Form + Field — the server "invalid code"
+ * First-open / expired-session screen. `yaac open` prints a one-time
+ * URL (so does the server start banner — `yaac server logs`); the user
+ * can open it directly or paste a token here. One-time and durable
+ * tokens (`yaac auth token create`) both work — the exchange is the
+ * same. Built on Base UI's Form + Field — the server "invalid token"
  * result surfaces through the Form `errors` prop into `Field.Error`.
  */
-export function BootstrapSplash({ onAuthed }: { onAuthed: () => void }): JSX.Element {
+export function ConnectSplash({ onAuthed }: { onAuthed: () => void }): JSX.Element {
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
 
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault()
-    const raw = new FormData(event.currentTarget).get('code')
-    const code = (typeof raw === 'string' ? raw : '').trim()
-    if (!code) return
+    const raw = new FormData(event.currentTarget).get('token')
+    const token = (typeof raw === 'string' ? raw : '').trim()
+    if (!token) return
     setBusy(true)
     setErrors({})
     try {
-      const ok = await postBootstrap(code)
+      const ok = await postWebSession(token)
       if (ok) onAuthed()
-      else setErrors({ code: 'Invalid or expired code. Restart the server for a fresh one.' })
+      else setErrors({ token: 'Invalid or expired token. Run `yaac open` for a fresh URL.' })
     } catch {
-      setErrors({ code: 'Could not reach the server.' })
+      setErrors({ token: 'Could not reach the server.' })
     } finally {
       setBusy(false)
     }
@@ -36,18 +38,19 @@ export function BootstrapSplash({ onAuthed }: { onAuthed: () => void }): JSX.Ele
       <div className="w-full max-w-md px-8">
         <h1 className="text-2xl font-semibold tracking-tight text-text">Connect to yaac</h1>
         <p className="mt-3 text-sm text-text-dim">
-          Open the URL from <code className="text-text">yaac server logs</code>, or paste the
-          one-time bootstrap code below.
+          Open the URL printed by <code className="text-text">yaac open</code>, or paste a
+          token (one-time, or from <code className="text-text">yaac auth token create</code>)
+          below.
         </p>
         <Form
           errors={errors}
           onSubmit={(e) => void submit(e)}
           className="mt-6 flex flex-col gap-3"
         >
-          <Field.Root name="code" className="flex flex-col gap-1">
-            <Field.Label className="sr-only">Bootstrap code</Field.Label>
+          <Field.Root name="token" className="flex flex-col gap-1">
+            <Field.Label className="sr-only">Token</Field.Label>
             <Field.Control
-              placeholder="bootstrap code"
+              placeholder="token"
               autoFocus
               className="rounded-md border border-border bg-surface-2 px-3 py-2 font-mono text-sm
                 text-text outline-none focus:border-border-strong"

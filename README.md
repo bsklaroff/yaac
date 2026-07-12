@@ -92,9 +92,9 @@ terminal (xterm.js) attached to each session's tmux. `yaac open --no-browser`
 prints the URL instead of launching a browser.
 
 It's local-first — the server binds `127.0.0.1` only, and the browser
-authenticates with an `HttpOnly` cookie obtained from a one-time bootstrap
-code that `yaac open` handles for you (no manual pasting). The CLI and web
-app drive the same on-disk state, so you can mix them freely.
+authenticates with an `HttpOnly` cookie obtained from a one-time token
+that `yaac open` mints and exchanges for you (no manual pasting). The CLI
+and web app drive the same on-disk state, so you can mix them freely.
 
 ## CLI
 

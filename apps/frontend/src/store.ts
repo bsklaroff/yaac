@@ -74,7 +74,7 @@ export function loadSelection(): PersistedSelection {
 /**
  * Persist the selection to localStorage and mirror it into the URL bar as
  * `?project=&session=` query params (replaceState — no navigation; unrelated
- * params like `bootstrap` are preserved). The SPA is served only at `/`, so
+ * params like `token` are preserved). The SPA is served only at `/`, so
  * query params (not a path) keep deep links working on a hard reload.
  * Best-effort. Exported for tests.
  */

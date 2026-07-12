@@ -35,11 +35,11 @@ describe('persistSelection', () => {
     expect(params.has('session')).toBe(false)
   })
 
-  it('preserves unrelated query params such as bootstrap', () => {
-    window.history.replaceState({}, '', '/?bootstrap=abc')
+  it('preserves unrelated query params such as token', () => {
+    window.history.replaceState({}, '', '/?token=abc')
     persistSelection('proj', 'sess')
     const params = new URLSearchParams(window.location.search)
-    expect(params.get('bootstrap')).toBe('abc')
+    expect(params.get('token')).toBe('abc')
     expect(params.get('project')).toBe('proj')
     expect(params.get('session')).toBe('sess')
   })

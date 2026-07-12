@@ -1,14 +1,12 @@
 import crypto from 'node:crypto'
 import net from 'node:net'
 import { spawn } from 'node:child_process'
-import fs from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { serve, type ServerType } from '@hono/node-server'
 import { createNodeWebSocket } from '@hono/node-ws'
 import { buildApp } from '#server'
 import { authAgentHub } from '#auth-agent'
-import { createWebAuthStore } from '#web-auth'
 import { createTokenStore, loadTokens, saveTokens } from '#token-store'
 import { EventHub } from '#events'
 import { bridge, killViewSession, newViewName, parsePtySize, parsePtyTarget, spawnAttachPty, type SocketLike } from '#pty-bridge'
@@ -29,7 +27,7 @@ import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-po
 import { resolveServerTarget, type ServerTarget } from '@yaac/shared/server-client'
 import { ensureAuthDaemonSpawned } from '@yaac/shared/auth-daemon'
 import { ensureDataDir } from '@yaac/shared/project-paths'
-import { serverLogPath, webSessionsPath } from '@yaac/shared/paths'
+import { serverLogPath } from '@yaac/shared/paths'
 import { startBackgroundLoop } from '#background-loop'
 import { gcOrphanEphemeralModuleDirs } from '#lib/session/cleanup'
 import { gcOrphanProjectRegistries } from '#lib/k8s/project-registry'
@@ -138,14 +136,9 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   }
 
   const secret = crypto.randomBytes(32).toString('hex')
-  // Restore webapp sessions persisted by a prior server so a restart
-  // (e.g. a rebuild) doesn't force every browser to re-bootstrap.
-  const store = createWebAuthStore({
-    initialSessions: await loadWebSessions(),
-    onSessionsChanged: (sessions) => void saveWebSessions(sessions),
-  })
-  // Durable client tokens survive restarts by design — they're what
-  // remote CLIs hold instead of the per-boot lock secret.
+  // Tokens survive restarts by design: durable ones are what remote CLIs
+  // hold instead of the per-boot lock secret, and persisted web sessions
+  // mean a restart (e.g. a rebuild) doesn't log every browser out.
   const tokens = createTokenStore({
     initialTokens: await loadTokens(),
     onChanged: (entries) => {
@@ -159,7 +152,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // status flip. The first notification publishes immediately; bursts
   // (server start seeding N pods) coalesce into one trailing rebuild.
   onSessionListChanged(coalesceCalls(() => { void hub.publishSnapshot() }, 150))
-  const app = buildApp({ secret, buildId, store, tokens })
+  const app = buildApp({ secret, buildId, tokens })
 
   // WebSocket event stream. Registered here (not in buildApp) so buildApp's
   // return type stays the plain Hono app the CLI's typed RPC client infers
@@ -276,9 +269,9 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   }
   const torPrefix = env.useTor ? '(using tor) ' : ''
   serverLog(`[server] ${torPrefix}listening on 127.0.0.1:${port} lock=${serverLockPath()}`)
-  // Start banner for the webapp: a one-time, time-bounded bootstrap URL.
-  // The code is single-use; reopen with a fresh one after `server restart`.
-  serverLog(`[server] open http://127.0.0.1:${port}/?bootstrap=${store.currentCode()}`)
+  // Start banner for the webapp: a ready-to-open URL carrying a one-time
+  // exchange token (single-use, time-bounded; `yaac open` mints fresh ones).
+  serverLog(`[server] open http://127.0.0.1:${port}/?token=${tokens.mintExchangeToken().token}`)
 
   // Register signal handlers BEFORE the async startup steps below. Node's
   // default SIGTERM/SIGINT action is to terminate immediately, bypassing
@@ -501,8 +494,8 @@ export async function restartServer(): Promise<void> {
   await startServer()
 }
 
-export function buildWebappUrl(baseUrl: string, code: string): string {
-  return `${baseUrl}/?bootstrap=${code}`
+export function buildWebappUrl(baseUrl: string, token: string): string {
+  return `${baseUrl}/?token=${token}`
 }
 
 export interface OpenWebappOptions {
@@ -516,10 +509,11 @@ export interface OpenWebappOptions {
 }
 
 /**
- * Entry point for `yaac open`. Resolves the server target, fetches a
- * fresh bootstrap code over the authenticated API, and launches the
- * browser straight into the authenticated webapp — no log-scraping or
- * code-pasting. The URL is always printed (stdout) so it's scriptable.
+ * Entry point for `yaac open`. Resolves the server target, mints a
+ * one-time exchange token over the authenticated /tokens API (the same
+ * endpoint every client registers through), and launches the browser
+ * straight into the authenticated webapp — no log-scraping or
+ * token-pasting. The URL is always printed (stdout) so it's scriptable.
  *
  * The local server is auto-started only when resolution fails on the
  * local-lock path; a configured remote (or the test hatch) resolves
@@ -549,13 +543,18 @@ export async function openWebapp(opts: OpenWebappOptions = {}): Promise<void> {
     // resolution/spawn hiccup — sign-in cards will say what to run
   }
 
-  const res = await fetchImpl(`${target.baseUrl}/auth/bootstrap-code`, {
-    headers: { authorization: `Bearer ${target.secret}` },
+  const res = await fetchImpl(`${target.baseUrl}/tokens`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${target.secret}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ kind: 'one-time' }),
   })
-  if (!res.ok) throw new Error(`failed to fetch bootstrap code (HTTP ${res.status})`)
-  const { code } = await res.json() as { code: string }
+  if (!res.ok) throw new Error(`failed to mint a one-time token (HTTP ${res.status})`)
+  const { token } = await res.json() as { token: string }
 
-  const url = buildWebappUrl(target.baseUrl, code)
+  const url = buildWebappUrl(target.baseUrl, token)
   console.log(url)
   if (opts.noBrowser) return
   launch(url)
@@ -623,24 +622,6 @@ function findTsxCli(): string | null {
     return createRequire(import.meta.url).resolve('tsx/cli')
   } catch {
     return null // tsx not installed (production build) — caller falls back
-  }
-}
-
-async function loadWebSessions(): Promise<string[]> {
-  try {
-    const raw = await fs.readFile(webSessionsPath(), 'utf8')
-    const parsed: unknown = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []
-  } catch {
-    return [] // no file yet, or unreadable — start fresh
-  }
-}
-
-async function saveWebSessions(sessions: string[]): Promise<void> {
-  try {
-    await fs.writeFile(webSessionsPath(), JSON.stringify(sessions), { mode: 0o600 })
-  } catch (err) {
-    serverLog(`[server] failed to persist web sessions: ${String(err)}`)
   }
 }
 

@@ -56,13 +56,15 @@ describe('durable token auth flow (real server)', () => {
     const stat = await fs.stat(path.join(testEnv.dataDir, 'tokens.json'))
     expect(stat.mode & 0o777).toBe(0o600)
 
-    // List (via the token itself) masks the value.
+    // List (via the token itself) masks the value. Alongside the durable
+    // token sits the one-time entry the server's start banner minted.
     const list = await fetch(url('/tokens'), {
       headers: { authorization: `Bearer ${entry.token}` },
     })
     expect(list.status).toBe(200)
-    const listBody = await list.json() as { tokens: Array<{ name: string; masked: string }> }
-    expect(listBody.tokens).toHaveLength(1)
+    const listBody = await list.json() as { tokens: Array<{ name: string; kind: string; masked: string }> }
+    expect(listBody.tokens.filter((t) => t.kind === 'durable')).toHaveLength(1)
+    expect(listBody.tokens.filter((t) => t.kind === 'one-time')).toHaveLength(1)
     expect(JSON.stringify(listBody)).not.toContain(entry.token)
 
     // Revoke, then the token is a BAD_BEARER while the lock secret works.

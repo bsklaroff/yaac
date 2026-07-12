@@ -12,7 +12,7 @@ SERVER (on the tailnet)
 
 USER MACHINE (laptop, also on the tailnet)
   yaac CLI  ── RPC + terminal WebSockets (durable token) ─►  server
-  browser   ── https://srv.<tailnet>.ts.net (bootstrap cookie)
+  browser   ── https://srv.<tailnet>.ts.net (session cookie)
   yaac auth server ── outbound WS ─► server   (runs Claude/Codex sign-ins
                                                locally, ships the bundle back)
 
@@ -73,7 +73,7 @@ token (`yaac auth token revoke laptop` on the server) fails with
 instructions to re-run `yaac remote set`.
 
 On the phone: run `yaac open` on the laptop and open the printed
-`https://…/?bootstrap=<code>` URL there (the code is single-use; mint a
+`https://…/?token=<token>` URL there (the token is single-use; mint a
 fresh one any time with another `yaac open`).
 
 ## What works remotely
@@ -119,7 +119,9 @@ Semantics to keep in mind:
   server is exactly as loopback-only as before.
 - **Tokens are durable and revocable** per device: a lost laptop is
   `yaac auth token revoke laptop` on the server — no restart, no effect on
-  other clients or browser sessions.
+  other clients or browser sessions. Browser sessions are tokens too
+  (`kind: web` in `yaac auth token list`), so a leaked cookie is revoked
+  the same way.
 - Credentials always travel over the authenticated RPC channel (`PUT
   /auth/:tool`), never through the relay socket or the browser.
 

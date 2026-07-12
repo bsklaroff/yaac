@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import { api, ApiError } from './lib/apiClient'
-import { readBootstrapCode, postBootstrap, stripBootstrapFromUrl } from './lib/bootstrap'
+import { readExchangeToken, postWebSession, stripTokenFromUrl } from './lib/webSession'
 import { createSession } from './lib/createSession'
 import { deleteSessionOptimistic } from './lib/deleteSessionFlow'
 import { cycleDeltaFor, matchShortcut, mergeBindings, resolveCycleTarget } from './lib/shortcuts'
@@ -16,16 +16,16 @@ import {
 import { ProjectRail } from './components/ProjectRail'
 import { Sidebar, sidebarRowIds } from './components/Sidebar'
 import { SessionView } from './components/SessionView'
-import { BootstrapSplash } from './components/BootstrapSplash'
+import { ConnectSplash } from './components/ConnectSplash'
 import { ConfirmDialog } from './components/ui/ConfirmDialog'
 import type { ServerSnapshot, SessionListEntry } from '@yaac/shared/types'
 
-type AuthState = 'checking' | 'authed' | 'needs-bootstrap'
+type AuthState = 'checking' | 'authed' | 'needs-token'
 
 /** Hit a protected endpoint to see if the session cookie is still good. */
 async function probeAuth(): Promise<boolean> {
   try {
-    await api.get('/auth/bootstrap-code')
+    await api.get('/auth/web-session')
     return true
   } catch (err) {
     // 401 → not authed; anything else (server down) → show the splash too
@@ -41,17 +41,17 @@ function App(): JSX.Element {
   useEffect(() => {
     let cancelled = false
     void (async () => {
-      const code = readBootstrapCode()
-      if (code) {
-        const ok = await postBootstrap(code)
-        stripBootstrapFromUrl()
+      const token = readExchangeToken()
+      if (token) {
+        const ok = await postWebSession(token)
+        stripTokenFromUrl()
         if (ok) {
           if (!cancelled) setAuth('authed')
           return
         }
       }
       const authed = await probeAuth()
-      if (!cancelled) setAuth(authed ? 'authed' : 'needs-bootstrap')
+      if (!cancelled) setAuth(authed ? 'authed' : 'needs-token')
     })()
     return () => { cancelled = true }
   }, [])
@@ -61,7 +61,7 @@ function App(): JSX.Element {
   const snapshot = useSnapshot()
 
   if (auth === 'checking') return <FullScreen>Loading…</FullScreen>
-  if (auth === 'needs-bootstrap') return <BootstrapSplash onAuthed={() => setAuth('authed')} />
+  if (auth === 'needs-token') return <ConnectSplash onAuthed={() => setAuth('authed')} />
 
   return <Workspace snapshot={snapshot} connected={connected} />
 }

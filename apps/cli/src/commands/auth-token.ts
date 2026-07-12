@@ -24,7 +24,9 @@ export async function authTokenList(): Promise<void> {
     return
   }
   for (const t of tokens) {
-    console.log(`${t.name.padEnd(20)} ${t.masked.padEnd(12)} created ${t.createdAt.slice(0, 10)}`)
+    console.log(
+      `${t.name.padEnd(20)} ${t.kind.padEnd(9)} ${t.masked.padEnd(12)} created ${t.createdAt.slice(0, 10)}`,
+    )
   }
 }
 

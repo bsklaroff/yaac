@@ -3,36 +3,36 @@ import { buildWebappUrl, openWebapp } from '#cli'
 import type { ServerTarget } from '@yaac/shared/server-client'
 
 describe('buildWebappUrl', () => {
-  it('builds a URL on the target origin carrying the bootstrap code', () => {
+  it('builds a URL on the target origin carrying the exchange token', () => {
     expect(buildWebappUrl('http://127.0.0.1:54213', 'abc123'))
-      .toBe('http://127.0.0.1:54213/?bootstrap=abc123')
-    expect(buildWebappUrl('https://srv.tailnet.ts.net', 'c0de'))
-      .toBe('https://srv.tailnet.ts.net/?bootstrap=c0de')
+      .toBe('http://127.0.0.1:54213/?token=abc123')
+    expect(buildWebappUrl('https://srv.tailnet.ts.net', 't0k3n'))
+      .toBe('https://srv.tailnet.ts.net/?token=t0k3n')
   })
 })
 
 const local: ServerTarget = { baseUrl: 'http://127.0.0.1:9999', secret: 's', remote: false }
 const remote: ServerTarget = { baseUrl: 'https://srv.ts.net', secret: 'tok', remote: true }
 
-function fakeFetch(code: string): typeof fetch {
+function fakeFetch(token: string): typeof fetch {
   return vi.fn().mockResolvedValue({
     ok: true,
-    json: () => Promise.resolve({ code }),
+    json: () => Promise.resolve({ token }),
   }) as unknown as typeof fetch
 }
 
 describe('openWebapp', () => {
-  it('fetches a code and launches the browser with the authed URL', async () => {
+  it('mints a one-time token and launches the browser with the authed URL', async () => {
     const launch = vi.fn()
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     await openWebapp({
       ensureServer: () => Promise.resolve(),
       resolveTarget: () => Promise.resolve(local),
-      fetchImpl: fakeFetch('CODE123'),
+      fetchImpl: fakeFetch('TOKEN123'),
       launch,
     })
-    expect(launch).toHaveBeenCalledWith('http://127.0.0.1:9999/?bootstrap=CODE123')
-    expect(logSpy).toHaveBeenCalledWith('http://127.0.0.1:9999/?bootstrap=CODE123')
+    expect(launch).toHaveBeenCalledWith('http://127.0.0.1:9999/?token=TOKEN123')
+    expect(logSpy).toHaveBeenCalledWith('http://127.0.0.1:9999/?token=TOKEN123')
     logSpy.mockRestore()
   })
 
@@ -47,11 +47,11 @@ describe('openWebapp', () => {
       launch,
     })
     expect(launch).not.toHaveBeenCalled()
-    expect(logSpy).toHaveBeenCalledWith('http://127.0.0.1:9999/?bootstrap=X')
+    expect(logSpy).toHaveBeenCalledWith('http://127.0.0.1:9999/?token=X')
     logSpy.mockRestore()
   })
 
-  it('a resolved remote target skips ensureServer and uses the remote origin', async () => {
+  it('a resolved remote target skips ensureServer and mints via POST /tokens', async () => {
     const ensureServer = vi.fn().mockResolvedValue(undefined)
     const launch = vi.fn()
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
@@ -63,9 +63,11 @@ describe('openWebapp', () => {
       launch,
     })
     expect(ensureServer).not.toHaveBeenCalled()
-    expect(launch).toHaveBeenCalledWith('https://srv.ts.net/?bootstrap=R')
+    expect(launch).toHaveBeenCalledWith('https://srv.ts.net/?token=R')
     const call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit]
-    expect(call[0]).toBe('https://srv.ts.net/auth/bootstrap-code')
+    expect(call[0]).toBe('https://srv.ts.net/tokens')
+    expect(call[1].method).toBe('POST')
+    expect(JSON.parse(call[1].body as string)).toEqual({ kind: 'one-time' })
     expect(new Headers(call[1].headers).get('authorization')).toBe('Bearer tok')
     logSpy.mockRestore()
   })

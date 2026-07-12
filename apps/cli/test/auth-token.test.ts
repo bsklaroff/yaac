@@ -61,13 +61,14 @@ describe('yaac auth token commands', () => {
       $get: vi.fn().mockResolvedValue({
         ok: true,
         json: () => Promise.resolve({
-          tokens: [{ name: 'laptop', masked: 'abcd1234…', createdAt: '2026-07-09T00:00:00.000Z' }],
+          tokens: [{ name: 'laptop', kind: 'durable', masked: 'abcd1234…', createdAt: '2026-07-09T00:00:00.000Z' }],
         }),
       }),
     })
     await authTokenList()
     const printed = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
     expect(printed).toContain('laptop')
+    expect(printed).toContain('durable')
     expect(printed).toContain('abcd1234…')
     expect(printed).toContain('2026-07-09')
 

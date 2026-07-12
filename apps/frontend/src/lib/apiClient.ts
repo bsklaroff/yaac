@@ -4,7 +4,7 @@
  * `yaac_session` cookie automatically — no token handling here.
  *
  * Responsibilities: JSON encode/decode, throw on non-2xx, and surface a
- * 401 as a typed error so the app can drop back to the bootstrap splash.
+ * 401 as a typed error so the app can drop back to the connect splash.
  */
 export class ApiError extends Error {
   constructor(public readonly status: number, message: string) {

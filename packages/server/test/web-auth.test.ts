@@ -3,86 +3,29 @@ import { Hono } from 'hono'
 import {
   constantTimeEqual,
   cookieOrBearerAuth,
-  createWebAuthStore,
   hostHeaderCheck,
   isAllowedHost,
   isPublicPath,
-  MAX_SESSIONS,
   SESSION_COOKIE,
 } from '#web-auth'
-
-describe('createWebAuthStore', () => {
-  it('exchanges the current code for a session id and rotates the code', () => {
-    const store = createWebAuthStore()
-    const code = store.currentCode()
-    const sid = store.consumeBootstrap(code)
-    expect(sid).toBeTypeOf('string')
-    expect(store.isValidSession(sid as string)).toBe(true)
-    // Single-use: the code is rotated, so the old value no longer works.
-    expect(store.currentCode()).not.toBe(code)
-    expect(store.consumeBootstrap(code)).toBeNull()
-  })
-
-  it('rejects a mismatched code', () => {
-    const store = createWebAuthStore()
-    expect(store.consumeBootstrap('not-the-code')).toBeNull()
-  })
-
-  it('rejects a code older than the TTL', () => {
-    const store = createWebAuthStore({ ttlMs: 1000, now: () => 0 })
-    const code = store.currentCode()
-    expect(store.consumeBootstrap(code, 1001)).toBeNull()
-    // Within the window still works.
-    expect(store.consumeBootstrap(code, 1000)).toBeTypeOf('string')
-  })
-
-  it('mints distinct session ids and validates only minted ones', () => {
-    const store = createWebAuthStore()
-    const a = store.consumeBootstrap(store.currentCode())
-    const b = store.consumeBootstrap(store.currentCode())
-    expect(a).not.toBe(b)
-    expect(store.isValidSession('never-minted')).toBe(false)
-  })
-
-  it('restores initialSessions (persistence across restart)', () => {
-    const store = createWebAuthStore({ initialSessions: ['restored-id'] })
-    expect(store.isValidSession('restored-id')).toBe(true)
-    expect(store.isValidSession('other')).toBe(false)
-  })
-
-  it('notifies onSessionsChanged when sessions are minted', () => {
-    const snapshots: string[][] = []
-    const store = createWebAuthStore({ onSessionsChanged: (s) => snapshots.push(s) })
-    const sid = store.consumeBootstrap(store.currentCode()) as string
-    expect(snapshots.at(-1)).toContain(sid)
-  })
-
-  it('caps retained sessions at MAX_SESSIONS, evicting the oldest', () => {
-    let latest: string[] = []
-    const store = createWebAuthStore({ onSessionsChanged: (s) => { latest = s } })
-    const ids: string[] = []
-    for (let i = 0; i < MAX_SESSIONS + 5; i++) {
-      const id = store.consumeBootstrap(store.currentCode())
-      if (id) ids.push(id)
-    }
-    expect(latest).toHaveLength(MAX_SESSIONS)
-    expect(store.isValidSession(ids[0])).toBe(false) // oldest evicted
-    expect(store.isValidSession(ids[ids.length - 1])).toBe(true) // newest kept
-  })
-})
+import { createTokenStore } from '#token-store'
 
 describe('isPublicPath', () => {
-  it('allows the SPA shell, assets, health, and bootstrap', () => {
-    expect(isPublicPath('/')).toBe(true)
-    expect(isPublicPath('/assets/index-abc.js')).toBe(true)
-    expect(isPublicPath('/health')).toBe(true)
-    expect(isPublicPath('/auth/bootstrap')).toBe(true)
+  it('allows the SPA shell, assets, health, and the POST exchange', () => {
+    expect(isPublicPath('GET', '/')).toBe(true)
+    expect(isPublicPath('GET', '/assets/index-abc.js')).toBe(true)
+    expect(isPublicPath('GET', '/health')).toBe(true)
+    expect(isPublicPath('POST', '/auth/web-session')).toBe(true)
+  })
+
+  it('keeps the GET web-session probe authenticated', () => {
+    expect(isPublicPath('GET', '/auth/web-session')).toBe(false)
   })
 
   it('does not allow API paths', () => {
-    expect(isPublicPath('/session/list')).toBe(false)
-    expect(isPublicPath('/auth/list')).toBe(false)
-    expect(isPublicPath('/events')).toBe(false)
+    expect(isPublicPath('GET', '/session/list')).toBe(false)
+    expect(isPublicPath('GET', '/auth/list')).toBe(false)
+    expect(isPublicPath('GET', '/events')).toBe(false)
   })
 })
 
@@ -121,13 +64,18 @@ describe('isAllowedHost', () => {
   })
 })
 
-function appWithAuth(): { app: Hono; store: ReturnType<typeof createWebAuthStore> } {
-  const store = createWebAuthStore()
+function appWithAuth(): { app: Hono; tokens: ReturnType<typeof createTokenStore> } {
+  const tokens = createTokenStore()
   const app = new Hono()
-  app.use('*', cookieOrBearerAuth('shh', store))
+  app.use('*', cookieOrBearerAuth('shh', tokens))
   app.get('/health', (c) => c.text('ok'))
   app.get('/session/list', (c) => c.text('protected ok'))
-  return { app, store }
+  return { app, tokens }
+}
+
+/** A fresh web-session secret, minted the way the exchange route does. */
+function mintSession(tokens: ReturnType<typeof createTokenStore>): string {
+  return tokens.consumeExchange(tokens.mintExchangeToken().token) as string
 }
 
 describe('cookieOrBearerAuth', () => {
@@ -164,28 +112,31 @@ describe('cookieOrBearerAuth', () => {
     expect(body.error.code).toBe('BAD_BEARER')
   })
 
-  it('accepts a durable token bearer when a token store is wired', async () => {
-    const store = createWebAuthStore()
-    const app = new Hono()
-    app.use('*', cookieOrBearerAuth('shh', store, { isValidToken: (t) => t === 'durable' }))
-    app.get('/session/list', (c) => c.text('protected ok'))
+  it('accepts a durable token bearer', async () => {
+    const { app, tokens } = appWithAuth()
+    const entry = tokens.create('laptop')
 
     const ok = await app.request('/session/list', {
-      headers: { authorization: 'Bearer durable' },
+      headers: { authorization: `Bearer ${entry.token}` },
     })
     expect(ok.status).toBe(200)
+  })
 
-    const bad = await app.request('/session/list', {
-      headers: { authorization: 'Bearer other' },
-    })
-    expect(bad.status).toBe(401)
-    const body = await bad.json() as { error: { code: string } }
-    expect(body.error.code).toBe('BAD_BEARER')
+  it('rejects a one-time token or a web session presented as a bearer', async () => {
+    const { app, tokens } = appWithAuth()
+    for (const bearer of [tokens.mintExchangeToken().token, mintSession(tokens)]) {
+      const res = await app.request('/session/list', {
+        headers: { authorization: `Bearer ${bearer}` },
+      })
+      expect(res.status).toBe(401)
+      const body = await res.json() as { error: { code: string } }
+      expect(body.error.code).toBe('BAD_BEARER')
+    }
   })
 
   it('lets a valid cookie override a stale bearer', async () => {
-    const { app, store } = appWithAuth()
-    const sid = store.consumeBootstrap(store.currentCode()) as string
+    const { app, tokens } = appWithAuth()
+    const sid = mintSession(tokens)
     const res = await app.request('/session/list', {
       headers: {
         authorization: 'Bearer stale',
@@ -196,8 +147,8 @@ describe('cookieOrBearerAuth', () => {
   })
 
   it('accepts a valid session cookie and rejects an invalid one', async () => {
-    const { app, store } = appWithAuth()
-    const sid = store.consumeBootstrap(store.currentCode()) as string
+    const { app, tokens } = appWithAuth()
+    const sid = mintSession(tokens)
     expect(sid.length).toBeGreaterThan(0)
 
     const ok = await app.request('/session/list', {
@@ -209,6 +160,15 @@ describe('cookieOrBearerAuth', () => {
       headers: { cookie: `${SESSION_COOKIE}=bogus` },
     })
     expect(bad.status).toBe(401)
+  })
+
+  it('rejects a durable token presented as a cookie', async () => {
+    const { app, tokens } = appWithAuth()
+    const entry = tokens.create('laptop')
+    const res = await app.request('/session/list', {
+      headers: { cookie: `${SESSION_COOKIE}=${entry.token}` },
+    })
+    expect(res.status).toBe(401)
   })
 })
 

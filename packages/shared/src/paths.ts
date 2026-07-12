@@ -75,18 +75,11 @@ export function serverLogPath(): string {
 }
 
 /**
- * Persisted webapp session ids (0600). Lets a server restart keep browser
- * sessions valid so users don't re-bootstrap on every rebuild. Sessions
- * are bearer-equivalent, so this file is as sensitive as the lock file.
- */
-export function webSessionsPath(): string {
-  return path.join(getDataDir(), '.web-sessions.json')
-}
-
-/**
- * Durable client tokens (0600). Unlike the lock secret these survive
- * server restarts — they are what remote CLIs authenticate with — so the
- * file is exactly as sensitive as the lock file.
+ * Client tokens (0600): durable remote-CLI tokens, pending one-time
+ * exchange tokens, and browser web sessions. Unlike the lock secret
+ * these survive server restarts — remote CLIs authenticate with them and
+ * browsers keep their cookies across a rebuild — so the file is exactly
+ * as sensitive as the lock file.
  */
 export function tokensPath(): string {
   return path.join(getDataDir(), 'tokens.json')
