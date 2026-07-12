@@ -5,6 +5,18 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>yaac</title>
+    <!-- Set the theme before first paint so a forced light/dark choice never
+         flashes the other palette. Mirrors loadThemePref() in lib/theme.ts;
+         'system' (the default) then follows the prefers-color-scheme media
+         query in index.css. -->
+    <script>
+      try {
+        var t = localStorage.getItem('yaac.theme.v1')
+        document.documentElement.dataset.theme = t === 'light' || t === 'dark' ? t : 'system'
+      } catch (e) {
+        document.documentElement.dataset.theme = 'system'
+      }
+    </script>
   </head>
 
   <body>

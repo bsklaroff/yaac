@@ -325,6 +325,29 @@ describe('view mode (tiles vs tabs)', () => {
   })
 })
 
+describe('theme preference', () => {
+  afterEach(() => {
+    delete (globalThis as Record<string, unknown>).localStorage
+  })
+
+  it('setThemePref updates state and persists', () => {
+    const store = new Map<string, string>()
+    ;(globalThis as Record<string, unknown>).localStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => { store.set(k, String(v)) },
+    }
+    useUiStore.getState().setThemePref('light')
+    expect(useUiStore.getState().themePref).toBe('light')
+    expect(store.get('yaac.theme.v1')).toBe('light')
+    // (applyThemeAttribute's <html data-theme> write is covered in
+    // theme.test.ts under jsdom; there is no document here.)
+  })
+
+  it('defaults to system', () => {
+    expect(useUiStore.getState().themePref).toBe('system')
+  })
+})
+
 describe('settings modal state', () => {
   it('openSettings opens on the last-viewed section when none is given', () => {
     useUiStore.getState().setSettingsSection('shortcuts')

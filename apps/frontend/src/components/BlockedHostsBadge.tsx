@@ -59,7 +59,7 @@ export function BlockedHostsBadge({
       <Popover.Portal>
         <Popover.Positioner side="bottom" align="end" sideOffset={4}>
           <Popover.Popup className="max-w-xs rounded-lg border border-border bg-surface-2 p-1 text-text
-            shadow-[0_12px_32px_rgba(0,0,0,0.5)] outline-none transition-opacity duration-100
+            shadow-[0_12px_32px_var(--shadow-color)] outline-none transition-opacity duration-100
             data-[starting-style]:opacity-0 data-[ending-style]:opacity-0">
             <div className="px-2 pb-0.5 pt-1 text-[11px] font-medium text-text-faint">Blocked hosts</div>
             <ul className="max-h-64 overflow-y-auto">

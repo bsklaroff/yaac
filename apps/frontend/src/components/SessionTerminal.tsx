@@ -9,6 +9,8 @@ import { LoadingIcon } from '#lib/icons'
 import { patchForcedSelection, patchKeepSelection } from '#lib/selection'
 import { CYCLE_IDS, matchShortcut } from '#lib/shortcuts'
 import { enableWebglRenderer } from '#lib/webgl-renderer'
+import { resolveEffectiveTheme } from '#lib/theme'
+import { terminalTheme } from '#lib/terminalTheme'
 import { useUiStore } from '#store'
 import { INITIAL_RECONNECT_DELAY_MS, nextReconnectDelay } from '#lib/reconnect'
 
@@ -36,6 +38,8 @@ export function SessionTerminal({
 }): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<XTerm | null>(null)
+  // Re-render the terminal's palette when the user switches theme (below).
+  const themePref = useUiStore((s) => s.themePref)
   // Invisible until the first attach settles: tmux redraws the whole screen
   // on attach (shrinking the oversized session window to this grid), and
   // revealing only the settled frame is what keeps a fresh session from
@@ -55,14 +59,10 @@ export function SessionTerminal({
       // Alt is our hand-the-mouse-to-tmux modifier (see patchForcedSelection
       // below); don't let xterm also fake arrow-key presses on Alt+click.
       altClickMovesCursor: false,
-      // Matches --color-bg: the terminal sits in its own dark rounded block
-      // inset within the surface card.
-      theme: {
-        background: '#0b0b0d',
-        foreground: '#e7e7ea',
-        // A clearly visible highlight for mouse selections to copy from.
-        selectionBackground: '#3a3d4d',
-      },
+      // Follows the app theme (dark terminal on the dark shell, light on the
+      // light one) and matches --color-bg so it's seamless with its wrapper.
+      // Kept in step with live theme changes by the effect below.
+      theme: terminalTheme(resolveEffectiveTheme()),
     })
 
     // Copy/paste. xterm never copies a selection on its own, so wire the
@@ -283,6 +283,21 @@ export function SessionTerminal({
     if (focusKey === undefined) return
     termRef.current?.focus()
   }, [focusKey])
+
+  // Repaint the terminal in the app's theme when it changes. themePref covers
+  // manual System/Light/Dark switches; the matchMedia listener covers the OS
+  // flipping while in 'system'. xterm applies options.theme live.
+  useEffect(() => {
+    const apply = (): void => {
+      if (termRef.current) termRef.current.options.theme = terminalTheme(resolveEffectiveTheme())
+    }
+    apply()
+    const mq = typeof window !== 'undefined' && window.matchMedia
+      ? window.matchMedia('(prefers-color-scheme: dark)')
+      : null
+    mq?.addEventListener('change', apply)
+    return () => mq?.removeEventListener('change', apply)
+  }, [themePref])
 
   return (
     <div className="relative h-full w-full">

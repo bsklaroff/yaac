@@ -22,6 +22,12 @@
   --color-accent: #d4875f;
   --color-accent-soft: #8a5a3d;
 
+  /* Card edges / dividers. A hair of white on the dark cards; the light
+   * palette flips these to a hair of black so edges still read on white
+   * (a plain white/[0.06] border would vanish there). */
+  --color-hairline: rgb(255 255 255 / 0.06);
+  --color-hairline-soft: rgb(255 255 255 / 0.04);
+
   /* For transient states like SessionTerminal's connecting notice. */
   --animate-fade-in: fade-in 200ms ease-out both;
 
@@ -29,6 +35,88 @@
     from { opacity: 0; }
     to { opacity: 1; }
   }
+}
+
+/*
+ * Palettes. The @theme block above is the dark base; these override the same
+ * custom properties — which every Tailwind color utility resolves through
+ * var() — so the whole UI recolors with no per-class dark: variants.
+ *
+ * Selectors are attribute-based (not :root-scoped) so a SUBTREE can force its
+ * own theme independent of the app (the way VS Code keeps its integrated
+ * terminal dark under a light theme). That's why the dark block repeats the
+ * base values — a nested data-theme="dark" must re-assert them to override an
+ * inherited light palette.
+ */
+[data-theme="dark"] {
+  --color-base: #0f0f12;
+  --color-bg: #0b0b0d;
+  --color-surface: #141417;
+  --color-surface-2: #1a1a1f;
+  --color-surface-3: #22222a;
+  --color-border: #2a2a33;
+  --color-border-strong: #3a3a45;
+  --color-text: #e7e7ea;
+  --color-text-dim: #9a9aa4;
+  --color-text-faint: #6a6a74;
+  --color-accent: #d4875f;
+  --color-accent-soft: #8a5a3d;
+  --color-hairline: rgb(255 255 255 / 0.06);
+  --color-hairline-soft: rgb(255 255 255 / 0.04);
+}
+
+/* Light palette: white elevated cards on a near-white shell, near-black text,
+ * rust accent. The neutrals carry only a whisper of warmth (heavily
+ * desaturated from the original Cursor-like paper, which read too brown).
+ * Applied for a forced light choice and, below, for system-follows-light —
+ * CSS can't share a declaration list. */
+[data-theme="light"] {
+  --color-base: #fcfcfb;       /* near-white shell the cards float on */
+  --color-bg: #eeedec;         /* soft neutral wash — settings nav, loading, window bg */
+  --color-surface: #ffffff;    /* white cards, panes, popups — the elevated surface */
+  --color-surface-2: #e9e8e7;  /* hover/selected fills, menu popups */
+  --color-surface-3: #dfdedd;  /* highlighted menu item — a touch deeper */
+  --color-border: #e1e0df;     /* subtle hairline */
+  --color-border-strong: #c9c8c5;
+  --color-text: #323130;       /* near-black */
+  --color-text-dim: #757471;   /* medium gray */
+  --color-text-faint: #a2a09e;
+  --color-accent: #bd5a2a;     /* rust-orange accent, richer on white */
+  --color-accent-soft: #d59a6a;
+  --color-hairline: rgb(0 0 0 / 0.08);
+  --color-hairline-soft: rgb(0 0 0 / 0.05);
+}
+
+@media (prefers-color-scheme: light) {
+  [data-theme="system"] {
+    --color-base: #fcfcfb;
+    --color-bg: #eeedec;
+    --color-surface: #ffffff;
+    --color-surface-2: #e9e8e7;
+    --color-surface-3: #dfdedd;
+    --color-border: #e1e0df;
+    --color-border-strong: #c9c8c5;
+    --color-text: #323130;
+    --color-text-dim: #757471;
+    --color-text-faint: #a2a09e;
+    --color-accent: #bd5a2a;
+    --color-accent-soft: #d59a6a;
+    --color-hairline: rgb(0 0 0 / 0.08);
+    --color-hairline-soft: rgb(0 0 0 / 0.05);
+  }
+}
+
+/*
+ * Card / menu / modal drop-shadow color. Follows the APP (root) theme only —
+ * strong on the dark shell, barely-there on the light one — and is deliberately
+ * kept off the nestable [data-theme] blocks above so a dark subtree still
+ * casts the light-mode shadow when it sits on the light base. Root-scoped, so
+ * nested data-theme="dark" subtrees inherit it rather than resetting it.
+ */
+:root { --shadow-color: rgb(0 0 0 / 0.44); }
+:root[data-theme="light"] { --shadow-color: rgb(0 0 0 / 0.10); }
+@media (prefers-color-scheme: light) {
+  :root[data-theme="system"] { --shadow-color: rgb(0 0 0 / 0.10); }
 }
 
 /*
@@ -60,12 +148,22 @@ body,
   height: 3px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #2a2a33;
+  background: var(--color-border);
   border-radius: 3px;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: #3a3a45;
+  background: var(--color-border-strong);
 }
 *::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* Electron only: the strip App.tsx reserves for the floating macOS traffic
+   lights doubles as the window's drag handle. Interactive children opt out
+   with .no-drag. (No effect in a browser — these are -webkit-app-region.) */
+.titlebar-drag {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
 }

@@ -39,12 +39,19 @@ import {
 import { ProjectSettings } from '#components/settings/ProjectSettings'
 import { FileEditor } from '#components/settings/FileEditor'
 import { useUiStore, type SettingsSection } from '#store'
+import type { ThemePref } from '#lib/theme'
 import type { AgentTool, OpencodeProvider, ToolAuthSummary, ToolInstallView, ToolLoginView } from '@yaac/shared/types'
 
 // iPadOS reports as "Macintosh" in modern Safari; both want the ⌘/⌥ glyphs.
 const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent)
 
 const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode']
+
+const THEMES: { value: ThemePref; label: string }[] = [
+  { value: 'system', label: 'System' },
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' },
+]
 
 const SECTIONS: { key: SettingsSection; label: string; Icon: typeof GeneralIcon }[] = [
   { key: 'general', label: 'General', Icon: GeneralIcon },
@@ -66,6 +73,8 @@ export function SettingsButton(): JSX.Element {
   const openSettings = useUiStore((s) => s.openSettings)
   const closeSettings = useUiStore((s) => s.closeSettings)
   const setSection = useUiStore((s) => s.setSettingsSection)
+  const themePref = useUiStore((s) => s.themePref)
+  const setThemePref = useUiStore((s) => s.setThemePref)
   const [tool, setTool] = useState<AgentTool | null>(null)
   const queryClient = useQueryClient()
 
@@ -98,11 +107,11 @@ export function SettingsButton(): JSX.Element {
           data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
         <Dialog.Popup className="fixed left-1/2 top-1/2 flex h-[480px] max-h-[calc(100vh-4rem)] w-[720px]
           max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl border
-          border-white/[0.06] bg-surface text-text shadow-[0_16px_48px_rgba(0,0,0,0.5)] outline-none
+          border-hairline bg-surface text-text shadow-[0_16px_48px_var(--shadow-color)] outline-none
           transition duration-150 data-[starting-style]:scale-95 data-[starting-style]:opacity-0
           data-[ending-style]:scale-95 data-[ending-style]:opacity-0">
           {/* Left nav */}
-          <div className="flex w-44 shrink-0 flex-col gap-0.5 border-r border-white/[0.04] bg-bg/50 p-2">
+          <div className="flex w-44 shrink-0 flex-col gap-0.5 border-r border-hairline-soft bg-bg/50 p-2">
             <Dialog.Title className="px-2 pb-2 pt-1 text-xs font-semibold text-text-dim">Settings</Dialog.Title>
             {SECTIONS.map(({ key, label, Icon }) => (
               <button
@@ -154,6 +163,33 @@ export function SettingsButton(): JSX.Element {
                           <Radio.Indicator className="h-1.5 w-1.5 rounded-full bg-surface data-[unchecked]:hidden" />
                         </Radio.Root>
                         {TOOL_LABEL[t]}
+                      </label>
+                    ))}
+                  </RadioGroup>
+                </Field>
+                <Field
+                  label="Theme"
+                  hint="Follows your system appearance unless you pick one."
+                >
+                  <RadioGroup
+                    value={themePref}
+                    onValueChange={(value) => setThemePref(value as ThemePref)}
+                    className="flex flex-col gap-1"
+                  >
+                    {THEMES.map((t) => (
+                      <label
+                        key={t.value}
+                        className="flex w-fit cursor-default items-center gap-2.5 rounded-md py-1 pr-2 text-xs
+                          text-text-dim transition hover:text-text"
+                      >
+                        <Radio.Root
+                          value={t.value}
+                          className="flex h-4 w-4 items-center justify-center rounded-full border border-border-strong
+                            transition data-[checked]:border-accent data-[checked]:bg-accent"
+                        >
+                          <Radio.Indicator className="h-1.5 w-1.5 rounded-full bg-surface data-[unchecked]:hidden" />
+                        </Radio.Root>
+                        {t.label}
                       </label>
                     ))}
                   </RadioGroup>
@@ -335,7 +371,7 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
       )}
 
       {!summary && expanded && (
-        <div className="mt-2 flex flex-col gap-2 border-t border-white/[0.04] pt-2">
+        <div className="mt-2 flex flex-col gap-2 border-t border-hairline-soft pt-2">
           {tool !== 'opencode' && (
             <>
               <CliSignIn tool={tool} onDone={() => { setJustSignedIn(true); onChanged() }} />
