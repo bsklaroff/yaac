@@ -5,7 +5,7 @@ import tseslint from 'typescript-eslint'
 const RELATIVE_PARENT = { group: ['..*'], message: 'Relative parent imports are not allowed.' }
 
 export default tseslint.config(
-  { ignores: ['dist', 'apps/*/dist'] },
+  { ignores: ['dist', 'apps/*/dist', 'apps/desktop/dist-app', 'apps/desktop/staging'] },
   {
     extends: [
       ...tseslint.configs.recommendedTypeChecked,

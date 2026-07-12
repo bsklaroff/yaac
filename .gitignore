@@ -2,3 +2,5 @@ node_modules/
 dist/
 .env
 .eslintcache
+apps/desktop/dist-app/
+apps/desktop/staging/

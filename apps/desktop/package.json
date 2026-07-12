@@ -9,7 +9,10 @@
   },
   "scripts": {
     "build": "tsup",
-    "dev": "tsup && electron ."
+    "dev": "tsup && electron .",
+    "dev:isolated": "bash scripts/dev-app.sh",
+    "app:build": "pnpm -w build && tsup && tsx scripts/stage-server.ts && electron-builder --config electron-builder.yml",
+    "app:install": "pnpm app:build && tsx scripts/install-app.ts"
   },
   "dependencies": {
     "@yaac/shared": "workspace:*",
@@ -19,6 +22,8 @@
     "@types/node": "catalog:",
     "@types/ws": "catalog:",
     "electron": "43.0.0",
-    "tsup": "catalog:"
+    "electron-builder": "26.15.3",
+    "tsup": "catalog:",
+    "tsx": "catalog:"
   }
 }

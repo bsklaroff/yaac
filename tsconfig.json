@@ -7,6 +7,7 @@
     "packages/*/test",
     "test",
     "scripts",
+    "apps/*/scripts",
     "*.config.ts",
     "apps/*/tsup.config.ts",
     "k8s/proxy/*.ts",

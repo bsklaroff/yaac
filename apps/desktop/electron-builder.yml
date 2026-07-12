@@ -1,0 +1,26 @@
+appId: com.bsklaroff.yaac
+productName: yaac
+directories:
+  output: dist-app
+# The Electron main (dist/main.js) bundles its own deps (ws), so it needs no
+# node_modules. The server + its production node_modules + a standalone Node
+# ship UNPACKED as extraResources (a standalone Node can't read app.asar),
+# staged by scripts/stage-server.ts.
+asar: false
+npmRebuild: false
+files:
+  - dist/**
+  - package.json
+# The server (dist/ + its production node_modules, incl. node-pty's native
+# binary) and the standalone Node are copied into the app by the afterPack hook
+# — electron-builder's extraResources strips node_modules, so a plain fs copy
+# is the reliable path.
+afterPack: ./scripts/after-pack.cjs
+mac:
+  target:
+    - dir
+  icon: build/icon.png
+  # Unsigned for a local double-clickable build; signing + notarization + .dmg
+  # are a fast-follow.
+  identity: null
+  category: public.app-category.developer-tools

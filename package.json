@@ -33,6 +33,8 @@
     "frontend:build": "pnpm --filter @yaac/frontend build",
     "desktop:dev": "pnpm --filter @yaac/desktop dev",
     "desktop:build": "pnpm --filter @yaac/desktop build",
+    "desktop:package": "pnpm --filter @yaac/desktop app:build",
+    "desktop:install": "pnpm --filter @yaac/desktop app:install",
     "prepare": "./setup-git.sh",
     "prepublishOnly": "pnpm build"
   },

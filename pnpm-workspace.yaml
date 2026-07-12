@@ -25,6 +25,8 @@ catalog:
 allowBuilds:
   cpu-features: false
   electron: false
+  # electron-builder transitive; only builds Windows installers — never used.
+  electron-winstaller: false
   esbuild: false
   protobufjs: false
   ssh2: false
