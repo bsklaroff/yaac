@@ -401,6 +401,33 @@ export interface SessionChanges {
   truncated: boolean
 }
 
+/** Whether a spawned sub-agent is still working or has returned. */
+export type SubAgentStatus = 'running' | 'done'
+
+/**
+ * One sub-agent the session's coding agent spawned (Claude's `Agent` tool /
+ * Codex subagent threads / OpenCode child sessions), normalized across tools.
+ */
+export interface SubAgent {
+  /** Stable id — the parent tool_use id for Claude. */
+  id: string
+  /** The sub-agent type, e.g. "general-purpose", "Explore". */
+  type: string
+  /** The task/description it was given at spawn. */
+  task: string
+  status: SubAgentStatus
+  /** Final output text, once done. */
+  result?: string
+  /** Epoch ms when spawned / completed (from transcript timestamps). */
+  spawnedAt?: number
+  completedAt?: number
+}
+
+/** The sub-agent tree for a session — what the coding agent fanned out into. */
+export interface SessionAgents {
+  agents: SubAgent[]
+}
+
 export interface StaleSessionInfo {
   jobName: string
   projectSlug: string

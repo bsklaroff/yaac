@@ -23,6 +23,7 @@ import { notifySessionListChanged } from '@/daemon/sessions-changed'
 import { createShellWindow, listSessionTerminals, killWindowTerminal } from '@/daemon/terminals'
 import { setSessionTitle } from '@/lib/session/titles'
 import { getSessionChanges } from '@/lib/session/changes'
+import { getSessionAgents } from '@/lib/session/agents'
 
 export const sessionApp = new Hono()
   .get(
@@ -232,6 +233,12 @@ export const sessionApp = new Hono()
   .get('/:id/changes', async (c) => {
     const { jobName } = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
     return c.json(await getSessionChanges(jobName))
+  })
+  // The session's sub-agent tree — what the coding agent fanned out into.
+  // Reads the host-side transcript, so it works for stopped sessions too.
+  .get('/:id/agents', async (c) => {
+    const { projectSlug, sessionId } = await resolveSessionContainer(c.req.param('id'))
+    return c.json(await getSessionAgents(projectSlug, sessionId))
   })
   // Create a scratch-shell window in the session's `yaac` tmux session,
   // returning its entry so the client can open a pane immediately.
