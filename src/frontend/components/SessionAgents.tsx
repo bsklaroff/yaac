@@ -101,7 +101,7 @@ function AgentRow({ agent, open, onToggle }: { agent: SubAgent; open: boolean; o
         ) : (
           <LoadingIcon size={12} className="shrink-0 animate-spin text-[#d29922]" />
         )}
-        <span className="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[10px] text-text-dim">
+        <span className="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-dim">
           {agent.type}
         </span>
         <span className="min-w-0 flex-1 truncate text-[11px] text-text">{agent.task || '(no description)'}</span>
@@ -110,9 +110,9 @@ function AgentRow({ agent, open, onToggle }: { agent: SubAgent; open: boolean; o
       {open && (
         <div className="border-t border-hairline bg-bg px-3 py-2">
           {agent.result ? (
-            <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.5] text-text-dim">
+            <div className="whitespace-pre-wrap break-words text-[12px] leading-[1.55] text-text-dim">
               {agent.result}
-            </pre>
+            </div>
           ) : (
             <p className="text-[11px] text-text-faint">{done ? 'No result text.' : 'Still working…'}</p>
           )}
