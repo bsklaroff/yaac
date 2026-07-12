@@ -17,6 +17,7 @@ import { ProjectRail } from './components/ProjectRail'
 import { Sidebar, sidebarRowIds } from './components/Sidebar'
 import { SessionView } from './components/SessionView'
 import { ConnectSplash } from './components/ConnectSplash'
+import { isElectron } from './lib/platform'
 import { ConfirmDialog } from './components/ui/ConfirmDialog'
 import type { ServerSnapshot, SessionListEntry } from '@yaac/shared/types'
 
@@ -60,10 +61,24 @@ function App(): JSX.Element {
   const { connected } = useEvents(auth === 'authed')
   const snapshot = useSnapshot()
 
-  if (auth === 'checking') return <FullScreen>Loading…</FullScreen>
-  if (auth === 'needs-token') return <ConnectSplash onAuthed={() => setAuth('authed')} />
+  let content: JSX.Element
+  if (auth === 'checking') content = <FullScreen>Loading…</FullScreen>
+  else if (auth === 'needs-token') content = <ConnectSplash onAuthed={() => setAuth('authed')} />
+  else content = <Workspace snapshot={snapshot} connected={connected} />
 
-  return <Workspace snapshot={snapshot} connected={connected} />
+  // In Electron the title bar is hidden and the traffic lights float over the
+  // UI. The full-screen states (loading/connect) reserve a thin draggable
+  // strip for the lights; the workspace instead pulls its own top row (rail /
+  // sidebar header / session bar) up level with them, so that band isn't dead
+  // space — it carries its own drag regions and light clearance. A browser
+  // tab gets neither, so it always renders content flush.
+  const isWorkspace = auth === 'authed'
+  return (
+    <div className="flex h-full flex-col bg-base">
+      {isElectron() && !isWorkspace && <div className="titlebar-drag h-7 shrink-0" aria-hidden="true" />}
+      <div className="min-h-0 flex-1">{content}</div>
+    </div>
+  )
 }
 
 /** A session's display name for dialog copy — title, else prompt (which can
@@ -279,7 +294,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
           sessions={scoped}
           provisioning={scopedProvisioning}
           connected={connected}
-          gitAuthFailures={(activeProjectSlug && snapshot?.gitAuthFailures[activeProjectSlug]) || []}
+          gitAuthFailures={(activeProjectSlug && snapshot?.gitAuthFailures?.[activeProjectSlug]) || []}
         />
       )}
       <div className="min-w-0 flex-1 p-2">

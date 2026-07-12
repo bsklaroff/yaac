@@ -2,6 +2,7 @@ import type { JSX } from 'react'
 import clsx from 'clsx'
 import { NewProjectButton } from '#components/NewProjectButton'
 import { SettingsButton } from '#components/SettingsButton'
+import { isElectron } from '#lib/platform'
 import type { ProjectSummary } from '@yaac/shared/types'
 
 /**
@@ -41,7 +42,10 @@ export function ProjectRail({
   onSelect: (slug: string) => void
 }): JSX.Element {
   return (
-    <div className="flex w-10 shrink-0 flex-col items-center gap-2 py-3">
+    <div className={clsx('flex w-10 shrink-0 flex-col items-center gap-2 pb-3', isElectron() ? 'pt-2' : 'pt-3')}>
+      {/* Electron: a draggable band over the floating traffic lights, which
+          also pushes the first project chip clear of them. */}
+      {isElectron() && <div className="titlebar-drag h-6 w-full shrink-0" aria-hidden="true" />}
       {projects.map((p) => {
         const active = p.slug === activeProjectSlug
         const color = projectColor(p.slug)

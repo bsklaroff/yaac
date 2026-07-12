@@ -21,7 +21,9 @@ const ITEM = 'flex w-full cursor-default items-center rounded-md px-2 py-1.5 tex
  * Tools without a stored credential can't create: their item reads "Sign in"
  * and opens settings → credentials with that tool's form expanded instead.
  */
-export function NewSessionButton({ projectSlug }: { projectSlug: string }): JSX.Element {
+export function NewSessionButton(
+  { projectSlug, variant = 'icon' }: { projectSlug: string; variant?: 'icon' | 'cta' },
+): JSX.Element {
   const provision = useProvisionSession()
   const auth = useAuthList()
   const configured = configuredTools(auth)
@@ -40,19 +42,31 @@ export function NewSessionButton({ projectSlug }: { projectSlug: string }): JSX.
       // since the app-start fetch — re-pull while the menu is up.
       if (open) void queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
     }}>
-      <Menu.Trigger
-        title="New session"
-        className="flex h-5 w-5 items-center justify-center rounded text-text-dim transition hover:bg-surface-2
-          hover:text-accent data-[popup-open]:bg-surface-2 data-[popup-open]:text-accent"
-      >
-        <AddIcon size={14} />
-      </Menu.Trigger>
+      {variant === 'cta' ? (
+        // Labeled call-to-action for empty states — same tool menu, bigger target.
+        <Menu.Trigger
+          title="New session"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-3 py-1.5
+            text-xs font-medium text-text-dim transition hover:border-accent/50 hover:text-accent
+            data-[popup-open]:border-accent/50 data-[popup-open]:text-accent"
+        >
+          <AddIcon size={14} /> New session
+        </Menu.Trigger>
+      ) : (
+        <Menu.Trigger
+          title="New session"
+          className="flex h-5 w-5 items-center justify-center rounded text-text-dim transition hover:bg-surface-2
+            hover:text-accent data-[popup-open]:bg-surface-2 data-[popup-open]:text-accent"
+        >
+          <AddIcon size={14} />
+        </Menu.Trigger>
+      )}
       <Menu.Portal>
         {/* align=start: the popup extends right (over the pane area) instead of
             left across the sidebar content. */}
         <Menu.Positioner side="bottom" align="start" sideOffset={6}>
           <Menu.Popup className="min-w-[180px] rounded-lg border border-border bg-surface-2 p-1 text-text
-            shadow-[0_12px_32px_rgba(0,0,0,0.5)] outline-none transition-opacity duration-100
+            shadow-[0_12px_32px_var(--shadow-color)] outline-none transition-opacity duration-100
             data-[starting-style]:opacity-0 data-[ending-style]:opacity-0">
             <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">New session</div>
             {TOOLS.map((t) => configured.has(t) ? (

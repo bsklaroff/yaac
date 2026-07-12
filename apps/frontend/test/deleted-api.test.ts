@@ -31,4 +31,20 @@ describe('getDeletedSessions', () => {
 
     expect(fetchMock.mock.calls[0][0] as string).toContain('limit=25')
   })
+
+  it('degrades to an empty list when the server lacks the route (404)', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false, status: 404, text: () => Promise.resolve('no route'),
+    }) as unknown as typeof fetch
+
+    expect(await getDeletedSessions('proj')).toEqual([])
+  })
+
+  it('still throws on non-404 errors', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false, status: 500, text: () => Promise.resolve('boom'),
+    }) as unknown as typeof fetch
+
+    await expect(getDeletedSessions('proj')).rejects.toMatchObject({ status: 500 })
+  })
 })

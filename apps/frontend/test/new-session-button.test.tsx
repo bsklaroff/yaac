@@ -80,4 +80,14 @@ describe('NewSessionButton', () => {
     expect(state.settingsSection).toBe('credentials')
     expect(state.settingsFocusTool).toBe('codex')
   })
+
+  it('renders a labeled trigger in the cta variant', () => {
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <NewSessionButton projectSlug="proj" variant="cta" />
+      </QueryClientProvider>,
+    )
+    // The icon variant's trigger is icon-only; the CTA carries a visible label.
+    expect(screen.getByRole('button', { name: /New session/ }).textContent).toContain('New session')
+  })
 })

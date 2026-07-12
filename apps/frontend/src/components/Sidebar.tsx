@@ -2,8 +2,9 @@ import { useEffect, useLayoutEffect, useRef, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { useQuery } from '@tanstack/react-query'
 import { Collapsible } from '@base-ui/react/collapsible'
-import { ChevronIcon, CloseIcon, LoadingIcon, RestartIcon, TOOL_LABEL } from '#lib/icons'
+import { ChevronIcon, CloseIcon, LoadingIcon, RestartIcon, SidebarIcon, TOOL_LABEL } from '#lib/icons'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
+import { EmptyState } from '#components/ui/EmptyState'
 import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
 import { ImageBuildIndicator } from '#components/ImageBuildIndicator'
 import { NewSessionButton } from '#components/NewSessionButton'
@@ -75,16 +76,20 @@ export function Sidebar({
   // Hide sessions whose delete is in flight (optimistic) until the snapshot
   // drops them, so the empty state keys off what's actually shown.
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
+  const toggleSidebar = useUiStore((s) => s.toggleSidebar)
   const shown = sessions.filter((s) => !pendingDeleteIds.includes(s.sessionId))
   const visibleCount = shown.filter((s) => GROUPS.some((g) => g.status === s.status)).length
 
   return (
-    <aside className="flex h-full w-64 flex-col text-text">
-      <div className="flex h-11 shrink-0 items-center gap-2 pl-4 pr-2">
-        {projectSlug
-          ? <ProjectActionsMenu slug={projectSlug} remoteUrl={projectRemoteUrl} />
-          : <span className="font-semibold tracking-tight">yaac</span>}
-        <div className="ml-auto flex items-center gap-2">
+    <aside className="my-2 ml-2 flex w-64 flex-col overflow-hidden rounded-lg
+      border border-hairline bg-surface text-text">
+      <div className="titlebar-drag flex h-11 shrink-0 items-center gap-2 pl-4 pr-2">
+        <div className="no-drag flex min-w-0 items-center">
+          {projectSlug
+            ? <ProjectActionsMenu slug={projectSlug} remoteUrl={projectRemoteUrl} />
+            : <span className="font-semibold tracking-tight">yaac</span>}
+        </div>
+        <div className="ml-auto flex items-center gap-2 no-drag">
           <UsageBadge />
           <ImageBuildIndicator />
           {!connected && <span className="text-xs text-amber-400/80">reconnecting…</span>}
@@ -98,13 +103,34 @@ export function Sidebar({
             />
           )}
           {projectSlug && <NewSessionButton projectSlug={projectSlug} />}
+          <button
+            onClick={toggleSidebar}
+            title="Hide sidebar"
+            aria-label="Hide sidebar"
+            className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
+              hover:bg-surface-2 hover:text-text-dim"
+          >
+            <SidebarIcon size={14} />
+          </button>
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto py-1">
-        {!projectSlug && <Empty label="No project selected" />}
+        {!projectSlug && (
+          <EmptyState
+            compact
+            className="py-10"
+            title="No project selected"
+            description="Pick a project from the rail on the left."
+          />
+        )}
         {projectSlug && visibleCount === 0 && provisioning.length === 0 && (
-          <Empty label="No sessions yet — start one with +" />
+          <EmptyState
+            compact
+            className="py-10"
+            title="No sessions yet"
+            description="Start one with the + above."
+          />
         )}
         {provisioning.map((p) => <ProvisioningRow key={p.sessionId} entry={p} />)}
         {GROUPS.map((g) => (
@@ -440,8 +466,4 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
       />
     </div>
   )
-}
-
-function Empty({ label }: { label: string }): JSX.Element {
-  return <div className="px-4 py-2 text-sm text-text-faint">{label}</div>
 }

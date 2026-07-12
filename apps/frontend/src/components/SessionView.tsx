@@ -6,7 +6,9 @@ import { SessionTerminal } from '#components/SessionTerminal'
 import { SessionActionsMenu } from '#components/SessionActionsMenu'
 import { CreatingPlaceholder } from '#components/CreatingPlaceholder'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { AddIcon, CloseIcon, SidebarIcon, SplitDownIcon, SplitRightIcon, TabsIcon, TilesIcon, TOOL_LABEL } from '#lib/icons'
+import { AddIcon, CloseIcon, SidebarIcon, SplitDownIcon, SplitRightIcon, TabsIcon, TerminalIcon, TilesIcon, TOOL_LABEL } from '#lib/icons'
+import { EmptyState } from '#components/ui/EmptyState'
+import { NewSessionButton } from '#components/NewSessionButton'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
 import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
 import { ForwardedPortLinks } from '#components/ForwardedPortLinks'
@@ -88,6 +90,8 @@ export function SessionView({
   const layouts = useUiStore((s) => s.layouts)
   const setSessionLayout = useUiStore((s) => s.setSessionLayout)
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
+  const sidebarOpen = useUiStore((s) => s.sidebarOpen)
+  const activeProjectSlug = useUiStore((s) => s.activeProjectSlug)
   const viewMode = useUiStore((s) => s.viewMode)
   const setViewMode = useUiStore((s) => s.setViewMode)
   const activeTabs = useUiStore((s) => s.activeTabs)
@@ -98,7 +102,7 @@ export function SessionView({
   const sid = session?.sessionId ?? null
   // Project-wide flag; shown in the header because a rejected credential
   // fails git fetch/push inside this session too.
-  const gitAuthFailures = (session && snapshot?.gitAuthFailures[session.projectSlug]) || []
+  const gitAuthFailures = (session && snapshot?.gitAuthFailures?.[session.projectSlug]) || []
 
   // The provisioning placeholder owns the main pane only when its row is the
   // selected one (and no real session of that id exists yet) — so it never
@@ -389,32 +393,40 @@ export function SessionView({
       {/* Slim session bar on the base layer — the panes are the cards. */}
       {creatingHere ? (
         <header className="flex h-8 shrink-0 items-center gap-2.5 px-2 text-xs">
-          <button
-            onClick={toggleSidebar}
-            title="Toggle sidebar"
-            aria-label="Toggle sidebar"
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
-              hover:bg-surface-2 hover:text-text-dim"
-          >
-            <SidebarIcon size={14} />
-          </button>
-          <span className="min-w-0 flex-1 truncate font-medium text-text-dim">
+          {/* Only when the sidebar is collapsed — the reopen affordance. When
+              open, its toggle lives in the sidebar header (next to +). */}
+          {!sidebarOpen && (
+            <button
+              onClick={toggleSidebar}
+              title="Show sidebar"
+              aria-label="Show sidebar"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
+                hover:bg-surface-2 hover:text-text-dim"
+            >
+              <SidebarIcon size={14} />
+            </button>
+          )}
+          <span className="titlebar-drag min-w-0 flex-1 truncate font-medium text-text-dim">
             {creatingHere.kind === 'restart' ? 'Restarting session' : 'New session'}
           </span>
           <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[creatingHere.tool]}</span>
         </header>
       ) : session ? (
         <header className="flex h-8 shrink-0 items-center gap-2.5 px-2 text-xs">
-          <button
-            onClick={toggleSidebar}
-            title="Toggle sidebar"
-            aria-label="Toggle sidebar"
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
-              hover:bg-surface-2 hover:text-text-dim"
-          >
-            <SidebarIcon size={14} />
-          </button>
-          <span className="min-w-0 flex-1 truncate font-medium text-text">
+          {/* Only when the sidebar is collapsed — the reopen affordance. When
+              open, its toggle lives in the sidebar header (next to +). */}
+          {!sidebarOpen && (
+            <button
+              onClick={toggleSidebar}
+              title="Show sidebar"
+              aria-label="Show sidebar"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
+                hover:bg-surface-2 hover:text-text-dim"
+            >
+              <SidebarIcon size={14} />
+            </button>
+          )}
+          <span className="titlebar-drag min-w-0 flex-1 truncate font-medium text-text">
             {session.title || session.prompt || 'New session'}
           </span>
           <button
@@ -452,16 +464,22 @@ export function SessionView({
           <SessionActionsMenu sessionId={session.sessionId} currentTitle={session.title ?? ''} />
         </header>
       ) : (
-        <header className="flex h-8 shrink-0 items-center px-2">
-          <button
-            onClick={toggleSidebar}
-            title="Toggle sidebar"
-            aria-label="Toggle sidebar"
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
-              hover:bg-surface-2 hover:text-text-dim"
-          >
-            <SidebarIcon size={14} />
-          </button>
+        <header className="titlebar-drag flex h-8 shrink-0 items-center px-2">
+          {/* Only when the sidebar is collapsed — the reopen affordance. When
+              open, its toggle lives in the sidebar header (next to +). */}
+          {!sidebarOpen && (
+            <div className="no-drag">
+              <button
+                onClick={toggleSidebar}
+                title="Show sidebar"
+                aria-label="Show sidebar"
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
+                  hover:bg-surface-2 hover:text-text-dim"
+              >
+                <SidebarIcon size={14} />
+              </button>
+            </div>
+          )}
         </header>
       )}
 
@@ -471,7 +489,15 @@ export function SessionView({
           confines its z-index so those popups render above it. */}
       <div ref={wsRef} className="relative isolate min-h-0 flex-1">
         {!session && !creatingHere && (
-          <div className="flex h-full items-center justify-center text-text-faint">No sessions yet</div>
+          <EmptyState
+            className="h-full"
+            icon={TerminalIcon}
+            title="No sessions yet"
+            description="Start a coding-agent session and it opens right here."
+            action={activeProjectSlug
+              ? <NewSessionButton projectSlug={activeProjectSlug} variant="cta" />
+              : undefined}
+          />
         )}
 
         {/* Pane cards (chrome) for the selected session — tiles mode. */}
@@ -480,8 +506,8 @@ export function SessionView({
             key={target}
             style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}
             className={clsx(
-              'absolute flex flex-col overflow-hidden rounded-lg border border-white/[0.06] bg-surface',
-              'shadow-[0_8px_24px_rgba(0,0,0,0.45)]',
+              'absolute flex flex-col overflow-hidden rounded-lg border border-hairline bg-surface',
+              'shadow-[0_8px_24px_var(--shadow-color)]',
               drag?.active && drag.src === target && 'opacity-60',
             )}
           >
@@ -532,7 +558,7 @@ export function SessionView({
             same layout-tree leaves the tiles mode arranges spatially. */}
         {session && !tiled && targets.length > 0 && (
           <section className="absolute inset-0 flex flex-col overflow-hidden rounded-lg border
-            border-white/[0.06] bg-surface shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
+            border-hairline bg-surface shadow-[0_8px_24px_var(--shadow-color)]">
             <div style={{ height: HEADER_H }} className="flex shrink-0 items-center gap-0.5 px-1.5">
               {targets.map((t) => (
                 <span key={t} className="group/tab relative flex items-center">
@@ -598,6 +624,9 @@ export function SessionView({
           return (
             <div
               key={key}
+              // The wrapper (bg-bg) mirrors the xterm background exactly, so the
+              // padding around the terminal is seamless — both follow the app
+              // theme (dark terminal on the dark shell, light on the light one).
               style={style}
               // Keep the active-terminal record in step with focus changes
               // the DOM makes on its own (clicking into a tiled pane), so
@@ -630,7 +659,7 @@ export function SessionView({
             )}
           >
             <div className={clsx(
-              'rounded-full bg-white/[0.06] transition-colors hover:bg-white/25',
+              'rounded-full bg-hairline transition-colors hover:bg-text-faint',
               d.dir === 'row' ? 'h-8 w-1' : 'h-1 w-8',
             )} />
           </div>
