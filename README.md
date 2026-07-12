@@ -16,7 +16,9 @@ yaac cluster setup   # podman machine + registry + kind cluster + Cilium
 The formula pulls in the whole toolchain: `node`, `kubectl`, `cilium-cli`,
 `podman` (>= 6.0), a pinned `kind` build (`yaac-kind` — see the
 [version-skew note](docs/cluster-setup.md#version-skew-podman-6x-needs-a-patched-kind)),
-and `krunkit` (from the `libkrun/krun` tap).
+and a patched `krunkit`+`libkrun` pair (`yaac-krunkit`/`yaac-libkrun` —
+stock krunkit never enables idmapped mounts over virtiofs, see
+[#27](https://github.com/bsklaroff/yaac/issues/27)).
 
 ### From source (development)
 
@@ -32,8 +34,7 @@ Install the toolchain the formula would otherwise pull in:
 ```sh
 brew trust bsklaroff/yaac
 brew trust libkrun/krun
-brew install node pnpm kubernetes-cli cilium-cli podman bsklaroff/yaac/yaac-kind
-brew install libkrun/krun/krunkit
+brew install node pnpm kubernetes-cli cilium-cli podman bsklaroff/yaac/yaac-kind bsklaroff/yaac/yaac-krunkit
 ```
 
 #### Linux

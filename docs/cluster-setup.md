@@ -35,8 +35,13 @@ settings — **rootful** (kind requires it) and the **libkrun provider**
 the VM's file sharing — libkrun's virtiofs has it, Apple's
 Virtualization.framework does not). `yaac cluster setup` applies both: it
 writes a `containers.conf.d` drop-in selecting libkrun and drives
-`podman machine init --rootful` + start. Use podman >= 6.0 with krunkit
->= 1.2.0: podman 6 passes krunkit's `--timesync` flag itself
+`podman machine init --rootful` + start. Use podman >= 6.0 with the tap's
+`yaac-krunkit` — a stock brew krunkit (<= 1.3.x) never selects the virtiofs
+permission semantics under which libkrun advertises idmapped-mount support,
+so session pods fail with `MOUNT_ATTR_IDMAP` EINVAL
+([#27](https://github.com/bsklaroff/yaac/issues/27); `yaac-krunkit` is
+upstream krunkit built against a patched `yaac-libkrun`). podman 6 passes
+krunkit's `--timesync` flag itself
 ([podman#28527](https://github.com/containers/podman/pull/28527)) and its
 machine image ships the vsock guest agent
 ([podman-machine-os#238](https://github.com/containers/podman-machine-os/pull/238)),

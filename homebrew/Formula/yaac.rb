@@ -1,7 +1,7 @@
 # Source of truth for the bsklaroff/homebrew-yaac tap (see ../README.md for
 # the release/sync flow). Lives in a tap rather than homebrew-core because the
-# macOS path depends on krunkit from the libkrun/krun tap, and core formulas
-# cannot depend on tap formulas.
+# macOS path depends on this tap's own krunkit/libkrun pair (and yaac-kind),
+# and core formulas cannot depend on tap formulas.
 class Yaac < Formula
   desc "Agent sandbox manager - parallel agent sessions on a local Kubernetes cluster"
   homepage "https://github.com/bsklaroff/yaac"
@@ -23,20 +23,15 @@ class Yaac < Formula
   on_macos do
     # libkrun is the only macOS virtualization stack whose virtiofs supports
     # idmapped mounts, which user-namespaced session pods writing hostPath
-    # volumes require. libkrun/krunkit are arm64-only. The tap-pinned libkrun
-    # (upstream v1.19.4 + a LinuxComplete-semantics backport) is temporary:
-    # without it the krunkit <= 1.3.x + libkrun 1.19.x pair never advertises
-    # FUSE ALLOW_IDMAP, so idmapped mounts fail with EINVAL — see
-    # Formula/libkrun.rb and https://github.com/bsklaroff/yaac/issues/27.
-    # Order matters (and deliberately trips brew audit's dep-order cop):
-    # krunkit's own unqualified libkrun dep resolves to libkrun/krun/libkrun,
-    # so a fresh install schedules BOTH libkruns into the same rack, and
-    # /opt/homebrew/opt/libkrun points at whichever keg installed last.
-    # Keeping the patched formula after krunkit guarantees the patched keg
-    # owns the opt path.
+    # volumes require — but only under LinuxComplete permission semantics,
+    # which the libkrun/krun tap's krunkit (<= 1.3.x) never selects, so
+    # session pods fail with MOUNT_ATTR_IDMAP EINVAL
+    # (https://github.com/bsklaroff/yaac/issues/27). yaac-krunkit is
+    # upstream krunkit built against the tap's patched yaac-libkrun; both
+    # are temporary carries — see Formula/yaac-krunkit.rb. krunkit/libkrun
+    # are arm64-only.
     depends_on arch: :arm64
-    depends_on "libkrun/krun/krunkit"
-    depends_on "bsklaroff/yaac/libkrun"
+    depends_on "bsklaroff/yaac/yaac-krunkit"
   end
 
   def install
@@ -59,9 +54,6 @@ class Yaac < Formula
       Verify everything with:
 
         yaac cluster check
-
-      If installing krunkit failed on a tap-trust error, run
-      `brew trust libkrun/krun` and retry.
     EOS
   end
 
