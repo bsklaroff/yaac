@@ -11,10 +11,17 @@ The code is a pnpm workspace. Cross-package imports use the package name
 (`@yaac/shared/types`); a package's own modules use Node subpath imports
 (`#lib/k8s/exec`, `#components/Foo`) via each package.json's `imports` map —
 there are no `#*` tsconfig `paths` entries and no resolver plugins.
-apps/frontend's `#*` map is a three-entry array serving two resolvers:
-Vite reads only the first entry (`./src/*`, which it extension-probes to
-find `.ts`/`.tsx`); tsc/eslint can't probe extensionless targets, skip it,
-and fall through to the explicit `./src/*.ts` / `./src/*.tsx` entries.
+All `imports`/`exports` map targets are output-form `./src/*.js` (the
+standard shape for TS packages) even though no `.js` files exist: every
+resolver in the toolchain substitutes the `.ts`/`.tsx` source — tsc/eslint
+(documented extension substitution), Vite, esbuild/tsup, and tsx. Two
+constraints follow. Package source must never run under raw `node` (which
+does not substitute) — all source execution goes through tsx, including
+the proxy container. And plain-Node-semantics resolvers can't read the
+maps: vitest `setupFiles` entries are explicit file paths for this reason.
+Don't "fix" a target to `./src/*` (tsc can't probe extensionless targets)
+or the frontend's to `./src/*.ts` (Vite reads only the first entry of an
+array target, so `.tsx` would break).
 
 | Package | Role | May import |
 |---|---|---|

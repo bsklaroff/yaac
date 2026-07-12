@@ -4,10 +4,10 @@
   "private": true,
   "type": "module",
   "imports": {
-    "#*": "./src/*.ts"
+    "#*": "./src/*.js"
   },
   "exports": {
-    "./*": "./src/*.ts",
+    "./*": "./src/*.js",
     "./package.json": "./package.json"
   },
   "dependencies": {

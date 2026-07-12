@@ -12,8 +12,11 @@ import { defineConfig } from 'vitest/config'
 // YAAC_DATA_DIR, YAAC_K8S_REGISTRY) so unit runs are identical on a host
 // and inside a yaac session. E2e keeps the nested env: the real CLI under
 // test genuinely needs it.
-const SETUP = ['@yaac/test-utils/vitest-setup']
-const UNIT_SETUP = [...SETUP, '@yaac/test-utils/unit-setup']
+// File paths, not @yaac/test-utils specifiers: vitest resolves setupFiles
+// with plain Node semantics, which can't substitute .ts sources for the
+// output-form (.js) targets in the package's exports map.
+const SETUP = ['./packages/test-utils/src/vitest-setup.ts']
+const UNIT_SETUP = [...SETUP, './packages/test-utils/src/unit-setup.ts']
 
 function unitProject(pkgDir: string, extra: object = {}) {
   return {
