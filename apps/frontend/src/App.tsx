@@ -17,11 +17,14 @@ import { ProjectRail } from './components/ProjectRail'
 import { Sidebar, sidebarRowIds } from './components/Sidebar'
 import { SessionView } from './components/SessionView'
 import { ConnectSplash } from './components/ConnectSplash'
+import { ClusterSetup } from './components/ClusterSetup'
+import { getClusterCheck } from './lib/clusterApi'
 import { isElectron } from './lib/platform'
 import { ConfirmDialog } from './components/ui/ConfirmDialog'
-import type { ServerSnapshot, SessionListEntry } from '@yaac/shared/types'
+import type { CheckResult, ServerSnapshot, SessionListEntry } from '@yaac/shared/types'
 
 type AuthState = 'checking' | 'authed' | 'needs-token'
+type ClusterState = 'ready' | 'not-ready'
 
 /** Hit a protected endpoint to see if the session cookie is still good. */
 async function probeAuth(): Promise<boolean> {
@@ -61,18 +64,40 @@ function App(): JSX.Element {
   const { connected } = useEvents(auth === 'authed')
   const snapshot = useSnapshot()
 
+  // Cluster gate, non-blocking: `cluster check` probes the cluster (a real
+  // pod) and can take many seconds, so render optimistically and only flip to
+  // the setup screen if the background check comes back not-ready. A check
+  // error (e.g. an older server without the route) is ignored so a transient
+  // or version-skew issue never locks the user out.
+  const [cluster, setCluster] = useState<ClusterState>('ready')
+  const [checkResults, setCheckResults] = useState<CheckResult[]>([])
+  useEffect(() => {
+    if (auth !== 'authed') return
+    let cancelled = false
+    void getClusterCheck()
+      .then((r) => {
+        if (cancelled || r.ok) return
+        setCheckResults(r.results)
+        setCluster('not-ready')
+      })
+      .catch(() => { /* stay optimistic on a check error */ })
+    return () => { cancelled = true }
+  }, [auth])
+
   let content: JSX.Element
   if (auth === 'checking') content = <FullScreen>Loading…</FullScreen>
   else if (auth === 'needs-token') content = <ConnectSplash onAuthed={() => setAuth('authed')} />
-  else content = <Workspace snapshot={snapshot} connected={connected} />
+  else if (cluster === 'not-ready') {
+    content = <ClusterSetup results={checkResults} onReady={() => setCluster('ready')} />
+  } else content = <Workspace snapshot={snapshot} connected={connected} />
 
   // In Electron the title bar is hidden and the traffic lights float over the
-  // UI. The full-screen states (loading/connect) reserve a thin draggable
-  // strip for the lights; the workspace instead pulls its own top row (rail /
-  // sidebar header / session bar) up level with them, so that band isn't dead
-  // space — it carries its own drag regions and light clearance. A browser
-  // tab gets neither, so it always renders content flush.
-  const isWorkspace = auth === 'authed'
+  // UI. The full-screen states (loading/connect/cluster) reserve a thin
+  // draggable strip for the lights; the workspace instead pulls its own top
+  // row (rail / sidebar header / session bar) up level with them, so that band
+  // isn't dead space — it carries its own drag regions and light clearance.
+  // A browser tab gets neither, so it always renders content flush.
+  const isWorkspace = auth === 'authed' && cluster === 'ready'
   return (
     <div className="flex h-full flex-col bg-base">
       {isElectron() && !isWorkspace && <div className="titlebar-drag h-7 shrink-0" aria-hidden="true" />}

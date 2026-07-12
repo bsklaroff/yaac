@@ -13,9 +13,9 @@ vi.mock('#lib/k8s/kubectl', () => ({
 import {
   formatCheckResult,
   runClusterCheck,
-  type CheckResult,
   type ClusterCheckDeps,
 } from '#lib/k8s/cluster-check'
+import type { CheckResult } from '@yaac/shared/types'
 import { kubectlGetJson, kubectlWithRetry } from '#lib/k8s/kubectl'
 import { sessionUid } from '#lib/container/image-builder'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'

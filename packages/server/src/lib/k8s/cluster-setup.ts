@@ -15,8 +15,8 @@ import {
   NODE_SYSFS_MOUNTPOINT,
   NODE_TASKSMAX_CONF,
   runClusterCheck,
-  type CheckResult,
 } from '#lib/k8s/cluster-check'
+import type { CheckResult } from '@yaac/shared/types'
 import { ensureRootfulPodmanHost, ROOTFUL_PODMAN_SOCKET } from '#lib/container/runtime'
 import { PACKAGE_ROOT } from '@yaac/shared/paths'
 import { env } from '@yaac/shared/env'
@@ -131,6 +131,17 @@ const defaultDeps: ClusterSetupDeps = {
   },
   fileExists: (p) => fs.access(p).then(() => true).catch(() => false),
   listDir: (p) => fs.readdir(p).catch(() => [] as string[]),
+}
+
+/**
+ * Deps for a setup driven over HTTP (POST /cluster/setup) instead of a TTY:
+ * progress lines go to the caller's stream, and the destructive-step gate
+ * auto-approves — the caller consented by invoking setup, and there is no
+ * terminal to prompt. Subprocess output (kind create, cilium install) still
+ * inherits the server's stdio; only `log` lines reach the stream.
+ */
+export function streamingClusterSetupDeps(log: (message: string) => void): ClusterSetupDeps {
+  return { ...defaultDeps, log, confirm: () => Promise.resolve(true) }
 }
 
 /**

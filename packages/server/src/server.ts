@@ -11,6 +11,7 @@ import { projectApp } from '#routes/project'
 import { sessionApp } from '#routes/session'
 import { toolApp } from '#routes/tool'
 import { authApp } from '#routes/auth'
+import { createClusterApp, type ClusterRouteDeps } from '#routes/cluster'
 import { createTokensApp } from '#routes/tokens'
 import { shortcutsApp } from '#routes/shortcuts'
 import { configApp } from '#routes/config'
@@ -30,6 +31,12 @@ export interface ServerAppDeps {
    * lock secret authenticates) is created when omitted.
    */
   tokens?: TokenStore
+  /**
+   * Cluster check/setup backing for /cluster. Optional for the same reason
+   * as `tokens`; the default shells out to kubectl/kind (never exercised by
+   * unit tests — they inject fakes).
+   */
+  cluster?: ClusterRouteDeps
 }
 
 /**
@@ -117,6 +124,7 @@ export function buildApp(deps: ServerAppDeps) {
     .route('/shortcuts', shortcutsApp)
     .route('/config', configApp)
     .route('/image', imageApp)
+    .route('/cluster', createClusterApp(deps.cluster))
 }
 
 export type AppType = ReturnType<typeof buildApp>

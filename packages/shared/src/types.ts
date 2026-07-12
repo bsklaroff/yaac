@@ -537,6 +537,24 @@ export interface ImageBuildEntry {
   finishedAt?: string
 }
 
+export type CheckStatus = 'pass' | 'fail' | 'warn' | 'skip'
+
+/** One line of `yaac cluster check` — also the GET /cluster/check wire shape
+ *  the webapp's first-run gate renders. */
+export interface CheckResult {
+  name: string
+  status: CheckStatus
+  detail: string
+  /** Actionable fix instructions, printed only on fail/warn. */
+  fix?: string
+}
+
+/** NDJSON events streamed by POST /cluster/setup, one JSON object per line. */
+export type ClusterSetupEvent =
+  | { type: 'progress'; message: string }
+  | { type: 'result'; ok: boolean }
+  | { type: 'error'; error: { message: string } }
+
 /**
  * Full picture of server-owned state the webapp renders. Hydrated from a
  * `snapshot` event on connect and replaced wholesale on every subsequent

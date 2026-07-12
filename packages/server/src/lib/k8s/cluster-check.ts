@@ -15,16 +15,9 @@ import { registryHost, registryReachable, pushImageToRegistry } from '#lib/k8s/r
 import { sessionUid } from '#lib/container/image-builder'
 import { getDataDir } from '@yaac/shared/paths'
 import { env } from '@yaac/shared/env'
-
-export type CheckStatus = 'pass' | 'fail' | 'warn' | 'skip'
-
-export interface CheckResult {
-  name: string
-  status: CheckStatus
-  detail: string
-  /** Actionable fix instructions, printed only on fail/warn. */
-  fix?: string
-}
+// CheckResult lives in @yaac/shared/types (a wire type: GET /cluster/check
+// returns it and the frontend renders it), not here with its producer.
+import type { CheckResult } from '@yaac/shared/types'
 
 /** Render one result as the CLI line `yaac cluster check` prints. */
 export function formatCheckResult(r: CheckResult): string {
