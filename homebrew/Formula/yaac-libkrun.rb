@@ -28,8 +28,15 @@ class YaacLibkrun < Formula
   depends_on arch: :arm64
   depends_on "dtc"
   depends_on "libepoxy"
-  depends_on "libkrunfw"
-  depends_on "virglrenderer"
+  # Fully qualified (upstream's own formula uses bare names): nothing else
+  # references the libkrun/krun tap anymore, so on a machine that never
+  # tapped it bare names fail to resolve ("No available formula") — and
+  # these must be that tap's builds regardless (libkrunfw is tap-only,
+  # virglrenderer is their patched fork). Dependency resolution refuses to
+  # auto-tap even qualified names, hence the README's explicit
+  # `brew tap libkrun/krun`.
+  depends_on "libkrun/krun/libkrunfw"
+  depends_on "libkrun/krun/virglrenderer"
   depends_on "xz"
 
   # Force LinuxComplete semantics so the virtiofs device advertises FUSE

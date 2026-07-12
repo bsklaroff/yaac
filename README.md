@@ -9,6 +9,7 @@ Agent sandbox manager — run many parallel agent sessions, each as an isolated 
 ```sh
 brew trust bsklaroff/yaac
 brew trust libkrun/krun
+brew tap libkrun/krun
 brew install bsklaroff/yaac/yaac
 yaac cluster setup   # podman machine + registry + kind cluster + Cilium
 ```
@@ -34,6 +35,7 @@ Install the toolchain the formula would otherwise pull in:
 ```sh
 brew trust bsklaroff/yaac
 brew trust libkrun/krun
+brew tap libkrun/krun
 brew install node pnpm kubernetes-cli cilium-cli podman bsklaroff/yaac/yaac-kind bsklaroff/yaac/yaac-krunkit
 ```
 

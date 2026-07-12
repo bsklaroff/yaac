@@ -9,6 +9,7 @@ End-user install (macOS, arm64):
 ```sh
 brew trust bsklaroff/yaac
 brew trust libkrun/krun
+brew tap libkrun/krun
 brew install bsklaroff/yaac/yaac
 yaac cluster setup
 ```
