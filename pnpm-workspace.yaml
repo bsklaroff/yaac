@@ -17,12 +17,14 @@ catalog:
   hono: 4.12.14
   simple-git: 3.35.2
   smol-toml: 1.6.1
+  tsup: 8.5.1
   tsx: 4.21.0
   ws: 8.21.0
   yaml: 2.9.0
   zod: 4.3.6
 allowBuilds:
   cpu-features: false
+  electron: true
   esbuild: false
   protobufjs: false
   ssh2: false
