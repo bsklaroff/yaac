@@ -5,7 +5,7 @@ import tseslint from 'typescript-eslint'
 const RELATIVE_PARENT = { group: ['..*'], message: 'Relative parent imports are not allowed.' }
 
 export default tseslint.config(
-  { ignores: ['dist'] },
+  { ignores: ['dist', 'apps/*/dist'] },
   {
     extends: [
       ...tseslint.configs.recommendedTypeChecked,
@@ -112,6 +112,28 @@ export default tseslint.config(
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
               message: 'apps/frontend may only depend on @yaac/shared.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  // desktop (Electron main): only @yaac/shared (+ self via #). Talking to
+  // the server goes through the shared typed client, same as the CLI; the
+  // window's content is the SPA served by the server, so nothing here may
+  // reach into @yaac/frontend or @yaac/server.
+  {
+    files: ['apps/desktop/src/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            RELATIVE_PARENT,
+            {
+              group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
+              message: 'apps/desktop may only depend on @yaac/shared.',
             },
           ],
         },

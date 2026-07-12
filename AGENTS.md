@@ -26,6 +26,7 @@ array target, so `.tsx` would break).
 | Package | Role | May import |
 |---|---|---|
 | `apps/cli` (`@yaac/cli`) | the published `yaac` bin: entry + commands | server, auth-daemon, shared |
+| `apps/desktop` (`@yaac/desktop`) | Electron shell: main-process launcher | shared only |
 | `apps/frontend` (`@yaac/frontend`) | React SPA | shared only |
 | `packages/server` (`@yaac/server`) | HTTP/WS daemon + all backend `lib/` | shared only |
 | `packages/auth-daemon` (`@yaac/auth-daemon`) | auth helper daemon | shared only |
@@ -56,6 +57,11 @@ root vitest.config.ts, so one file owns the timeouts and isolation setupFiles
 for every project; per-package vitest.config.ts files would not inherit them.
 `pnpm lint` is the single typecheck entry point (root tsconfig + the frontend
 tsconfig); packages deliberately have no typecheck scripts.
+
+The desktop app (`pnpm desktop:dev` / `desktop:build`) is not part of `pnpm
+build` — the npm artifact never includes it. It is an Electron shell whose
+main process loads the server origin into the window, so the SPA it displays
+is whatever the target server serves (see apps/desktop/README.md).
 
 ## Runtime Architecture
 

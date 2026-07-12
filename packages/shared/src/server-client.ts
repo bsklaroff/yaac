@@ -28,6 +28,14 @@ export interface GetClientOptions {
   resolveTarget?: () => Promise<ServerTarget>
   fetchImpl?: typeof fetch
   /**
+   * False for pure clients that ship no server code (the desktop
+   * shell): default target resolution skips the build-id match (see
+   * `resolveServerTarget`) and the remote build-skew warning is
+   * suppressed — such clients have no build identity to compare.
+   * Defaults to true.
+   */
+  requireBuildMatch?: boolean
+  /**
    * Interactive "please re-authenticate" handler. Invoked once when the
    * server replies with `AUTH_REQUIRED`; after it resolves the request
    * is retried once. Provided by the caller so this shared module has
@@ -48,7 +56,8 @@ export interface GetClientOptions {
 export async function createServerFetch(
   opts: GetClientOptions = {},
 ): Promise<(input: string, init?: RequestInit) => Promise<Response>> {
-  const resolveTarget = opts.resolveTarget ?? resolveServerTarget
+  const requireBuildMatch = opts.requireBuildMatch !== false
+  const resolveTarget = opts.resolveTarget ?? (() => resolveServerTarget({ requireBuildMatch }))
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch
   const onAuthRequired = opts.onAuthRequired ?? (async () => { /* no-op */ })
 
@@ -67,7 +76,7 @@ export async function createServerFetch(
     )
 
     let res = await send()
-    if (target.remote && !buildSkewChecked && res.headers.get('x-yaac-build-id')) {
+    if (requireBuildMatch && target.remote && !buildSkewChecked && res.headers.get('x-yaac-build-id')) {
       buildSkewChecked = true
       const cliBuildId = await readBuildId().catch(() => null)
       const skew = cliBuildId
@@ -138,17 +147,19 @@ export async function toClientError(
 /**
  * Pure decision: is this lock usable, and if not, why? Callers surface
  * the message to the user with instructions on how to recover. Kept
- * pure so unit tests can exercise every branch without I/O.
+ * pure so unit tests can exercise every branch without I/O. A null
+ * `cliBuildId` skips the version comparison — client-only callers
+ * (`requireBuildMatch: false`) have no build identity to compare.
  */
 export function describeLockMismatch(
   lock: ServerLock | null,
   isLive: boolean,
-  cliBuildId: string,
+  cliBuildId: string | null,
 ): string | null {
   if (!lock || !isLive) {
     return 'yaac server is not running. Start it with: yaac server start'
   }
-  if (lock.buildId !== cliBuildId) {
+  if (cliBuildId !== null && lock.buildId !== cliBuildId) {
     return (
       'yaac server is running an outdated version '
       + `(server buildId ${lock.buildId}, CLI buildId ${cliBuildId}). `
@@ -188,8 +199,15 @@ export function describeBuildSkew(
  *    server, authenticated by its durable token.
  * 3. The local lock (today's behavior): must be live and build-matched,
  *    else throw with the exact recovery command.
+ *
+ * `requireBuildMatch: false` drops the build-match half of step 3: pure
+ * clients that ship no server code (the desktop shell) have no build id
+ * to read, and any server they can reach serves them the matching SPA —
+ * they only need the lock to be live.
  */
-export async function resolveServerTarget(): Promise<ServerTarget> {
+export async function resolveServerTarget(
+  opts: { requireBuildMatch?: boolean } = {},
+): Promise<ServerTarget> {
   const envUrl = testEnv.serverUrlOverride
   const envSecret = testEnv.serverSecretOverride
   if (envUrl && envSecret) {
@@ -201,7 +219,7 @@ export async function resolveServerTarget(): Promise<ServerTarget> {
     return { baseUrl: remote.url, secret: remote.token, remote: true }
   }
 
-  const cliBuildId = await readBuildId()
+  const cliBuildId = opts.requireBuildMatch === false ? null : await readBuildId()
   const existing = await readLock()
   const live = existing ? await isLockLive(existing) : false
   const mismatch = describeLockMismatch(existing, live, cliBuildId)

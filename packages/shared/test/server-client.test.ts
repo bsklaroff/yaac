@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } 
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
+import http from 'node:http'
+import type { AddressInfo } from 'node:net'
 import {
   createServerFetch,
   describeBuildSkew,
@@ -11,6 +13,7 @@ import {
   toClientError,
   type ServerTarget,
 } from '#server-client'
+import { writeLock } from '#lock'
 import { writeRemote } from '#remote'
 import { setDataDir } from '#paths'
 
@@ -94,6 +97,24 @@ describe('createServerFetch', () => {
     await serverFetch('/project/list')
     const skewCalls = errorSpy.mock.calls.filter((c) => /differs from this CLI/.test(String(c[0])))
     expect(skewCalls).toHaveLength(1)
+    errorSpy.mockClear()
+    vi.unstubAllEnvs()
+  })
+
+  it('requireBuildMatch: false suppresses the remote build-skew warning', async () => {
+    vi.stubEnv('YAAC_BUILD_ID', 'local-build')
+    const remote: ServerTarget = { baseUrl: 'https://srv.ts.net', secret: 'tok', remote: true }
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const fetchImpl = vi.fn(() => Promise.resolve(
+      jsonResponse('[]', 200, { 'x-yaac-build-id': 'other-build' }),
+    ))
+    const serverFetch = await createServerFetch({
+      resolveTarget: () => Promise.resolve(remote),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      requireBuildMatch: false,
+    })
+    await serverFetch('/project/list')
+    expect(errorSpy).not.toHaveBeenCalled()
     errorSpy.mockClear()
     vi.unstubAllEnvs()
   })
@@ -205,6 +226,50 @@ describe('resolveServerTarget', () => {
   it('with no remote at all, the local lock path is used', async () => {
     await expect(resolveServerTarget()).rejects.toThrow(/not running/)
   })
+
+  // A live lock needs a real pid and a /health responder; this process's
+  // pid plus a throwaway HTTP server satisfy isLockLive.
+  async function startHealthServer(): Promise<{ port: number, close: () => Promise<void> }> {
+    const srv = http.createServer((_req, res) => {
+      res.statusCode = 200
+      res.end('{"ok":true}')
+    })
+    await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', resolve))
+    const port = (srv.address() as AddressInfo).port
+    return {
+      port,
+      close: () => new Promise((resolve) => srv.close(() => resolve())),
+    }
+  }
+
+  it('by default rejects a live lock whose buildId differs', async () => {
+    const { port, close } = await startHealthServer()
+    try {
+      await writeLock({ pid: process.pid, port, secret: 'shh', startedAt: 1, buildId: 'other-build' })
+      await expect(resolveServerTarget()).rejects.toThrow(/outdated version/)
+    } finally {
+      await close()
+    }
+  })
+
+  it('requireBuildMatch: false accepts any live lock without reading a build id', async () => {
+    // No injected build id: the default path would throw "broken install"
+    // before even reading the lock; client-only mode must never need one.
+    vi.stubEnv('YAAC_BUILD_ID', undefined)
+    const { port, close } = await startHealthServer()
+    try {
+      await writeLock({ pid: process.pid, port, secret: 'shh', startedAt: 1, buildId: 'someone-elses-build' })
+      const target = await resolveServerTarget({ requireBuildMatch: false })
+      expect(target).toEqual({ baseUrl: `http://127.0.0.1:${port}`, secret: 'shh', remote: false })
+    } finally {
+      await close()
+    }
+  })
+
+  it('requireBuildMatch: false still requires a live lock', async () => {
+    vi.stubEnv('YAAC_BUILD_ID', undefined)
+    await expect(resolveServerTarget({ requireBuildMatch: false })).rejects.toThrow(/not running/)
+  })
 })
 
 describe('describeBuildSkew', () => {
@@ -247,6 +312,15 @@ describe('describeLockMismatch', () => {
 
   it('returns null when the live server matches the CLI buildId', () => {
     expect(describeLockMismatch(lock, true, 'abc')).toBeNull()
+  })
+
+  it('a null cliBuildId skips the version comparison (client-only caller)', () => {
+    expect(describeLockMismatch(lock, true, null)).toBeNull()
+  })
+
+  it('a null cliBuildId still reports a dead server', () => {
+    const msg = describeLockMismatch(lock, false, null)
+    expect(msg).toMatch(/not running/)
   })
 })
 
