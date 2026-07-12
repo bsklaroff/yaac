@@ -372,6 +372,13 @@ interface SessionSetupParams {
   options: SessionCreateOptions
   gitUser: { name: string; email: string }
   forwardedPorts: ReservedPort[]
+  /**
+   * `origin/<defaultBranch>` when the worktree was freshly created —
+   * `startJobWithSetup` then sets the session branch's upstream from
+   * inside the pod. Unset when resuming onto an existing worktree, whose
+   * upstream is left untouched.
+   */
+  upstreamStartPoint?: string
 }
 
 /** Poll until the session pod is Ready, failing fast on terminal states. */
@@ -419,11 +426,23 @@ async function waitForPodReady(jobName: string, timeoutMs = 180_000): Promise<vo
   throw new Error(`session pod for ${jobName} not ready after ${timeoutMs}ms (${lastDetail})`)
 }
 
+/**
+ * Per-project tail of the in-flight in-pod upstream-config execs. Each
+ * fresh session sets its branch upstream from inside its own pod (see
+ * below), and that write takes git's config lock on the shared
+ * `/repo/.git/config` — two concurrent creates on one project (a user
+ * create and a prewarm spare warm, say) would race it and fail one side
+ * with "could not lock config file". The server is a single process, so
+ * chaining the execs per project is sufficient mutual exclusion;
+ * different projects still run in parallel.
+ */
+const upstreamConfigQueues = new Map<string, Promise<void>>()
+
 async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   const {
     imageRef, jobName, projectSlug, sessionId, env, hostPathMounts,
     proxyHost, nested, virtualCluster, tool, config, options,
-    gitUser, forwardedPorts,
+    gitUser, forwardedPorts, upstreamStartPoint,
   } = params
 
   const manifest = buildSessionJobManifest({
@@ -478,6 +497,30 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   await containerExec(jobName, `git config --global user.email '${shellEscape(gitUser.email)}'`)
   await containerExec(jobName, 'git config --global --add safe.directory /workspace')
   await containerExec(jobName, 'git config --global --add safe.directory /repo')
+
+  // Set the session branch's upstream from INSIDE the pod, not on the host
+  // at worktree-add time. A host-side rewrite of the shared
+  // /repo/.git/config replaces the file's inode underneath the VM-kernel
+  // virtiofs cache that every session pod reads through, and any in-pod
+  // git command racing the stale window dies with "fatal: unknown error
+  // occurred while reading the configuration files" until the cache
+  // expires (see addWorktree). A write from inside a pod goes through that
+  // same shared cache, so every pod — and the host, which reads the real
+  // filesystem — observes it coherently.
+  if (upstreamStartPoint) {
+    const prev = upstreamConfigQueues.get(projectSlug) ?? Promise.resolve()
+    // A failed predecessor must not poison the queue — each exec gets its
+    // own verdict.
+    const run = prev.catch(() => { /* predecessor's caller saw its error */ }).then(async () => {
+      await containerExec(jobName, `git -C /workspace branch --set-upstream-to '${shellEscape(upstreamStartPoint)}'`)
+    })
+    upstreamConfigQueues.set(projectSlug, run)
+    try {
+      await run
+    } finally {
+      if (upstreamConfigQueues.get(projectSlug) === run) upstreamConfigQueues.delete(projectSlug)
+    }
+  }
 
   // Start the agent tool in a tmux session
   const addDirFlags = [...(options.addDir ?? []), ...(options.addDirRw ?? [])]
@@ -788,12 +831,14 @@ export async function createSession(
   // Create worktree (or reuse an existing one when resuming)
   await fs.mkdir(worktreesDir(projectSlug), { recursive: true })
   const worktreeExists = await fs.access(wtDir).then(() => true).catch(() => false)
+  let upstreamStartPoint: string | undefined
   if (options.resume && worktreeExists) {
     emit(`Reusing existing worktree at ${wtDir}`, options)
   } else {
     const defaultBranch = await getDefaultBranch(repo)
     emit(`Creating worktree from ${defaultBranch}...`, options)
     await addWorktree(repo, wtDir, `agent/${sessionId}`, `origin/${defaultBranch}`)
+    upstreamStartPoint = `origin/${defaultBranch}`
   }
 
   // Build container env. Unlike the podman create API (whose Env field
@@ -1195,7 +1240,7 @@ export async function createSession(
   const setupParams: SessionSetupParams = {
     imageRef, jobName, projectSlug, sessionId, env, hostPathMounts,
     proxyHost, nested, virtualCluster, tool, config, options,
-    gitUser, forwardedPorts,
+    gitUser, forwardedPorts, upstreamStartPoint,
   }
 
   emit(`Creating session job ${jobName}...`, options)

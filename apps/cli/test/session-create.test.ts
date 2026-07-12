@@ -673,6 +673,18 @@ describe('createSession', () => {
     expect(respawn).toContain('codex --yolo')
   })
 
+  it('sets the branch upstream from inside the pod, not on the host', async () => {
+    // Host-side writes to the shared /repo/.git/config go stale under the
+    // virtiofs cache session pods read through (transient "unknown error
+    // occurred while reading the configuration files" in-pod), so tracking
+    // is configured by an in-pod exec after worktree creation.
+    await createSession('demo', { tool: 'claude', sessionId: 'abcd1234' })
+
+    const cmds = mockContainerExec.mock.calls.map((args) => args[1])
+    expect(cmds.some((c) =>
+      c.includes("git -C /workspace branch --set-upstream-to 'origin/main'"))).toBe(true)
+  })
+
   it('configures tmux for truecolor (RGB) passthrough to the attached terminal', async () => {
     await createSession('demo', { tool: 'claude', sessionId: 'abcd1234' })
 
@@ -728,6 +740,14 @@ describe('createSession', () => {
       })
       expect(addWorktree).not.toHaveBeenCalled()
       expect(messages.some((m) => m.includes('Reusing existing worktree'))).toBe(true)
+    })
+
+    it('leaves the upstream of a reused worktree untouched', async () => {
+      mockAccess.mockResolvedValue(undefined)
+      await createSession('demo', { resume: true, sessionId: 'abcd1234' })
+
+      const cmds = mockContainerExec.mock.calls.map((args) => args[1])
+      expect(cmds.some((c) => c.includes('--set-upstream-to'))).toBe(false)
     })
 
     it('still calls addWorktree when the worktree directory is missing', async () => {

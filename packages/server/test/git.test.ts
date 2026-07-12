@@ -70,26 +70,38 @@ describe('git helpers', () => {
     expect(branch.trim()).toBe('agent/test-session')
   })
 
-  it('creates a worktree with upstream tracking', async () => {
+  it('creates a worktree from a start point without writing tracking config', async () => {
     // Clone so we have a remote called "origin"
     const cloneDir = path.join(tmpDir, 'clone')
     await cloneRepo(sourceRepo, cloneDir, null)
 
     const defaultBranch = await getDefaultBranch(cloneDir)
+    const configPath = path.join(cloneDir, '.git', 'config')
+    const configBefore = await fs.readFile(configPath, 'utf8')
     const wtPath = path.join(tmpDir, 'worktree')
-    await addWorktree(cloneDir, wtPath, 'agent/test-tracked', `origin/${defaultBranch}`)
+    await addWorktree(cloneDir, wtPath, 'agent/test-untracked', `origin/${defaultBranch}`)
 
-    // Verify the branch tracks origin/<default>
+    // The branch starts at the remote head...
     const git = simpleGit(wtPath)
-    const tracking = await git.raw(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])
-    expect(tracking.trim()).toBe(`origin/${defaultBranch}`)
+    const head = await git.revparse(['HEAD'])
+    const remoteHead = await git.revparse([`origin/${defaultBranch}`])
+    expect(head.trim()).toBe(remoteHead.trim())
+
+    // ...but no tracking entry may be written: host-side rewrites of the
+    // shared .git/config go stale under the virtiofs cache session pods
+    // read through (transient "unknown error occurred while reading the
+    // configuration files" in-pod). The upstream is set from inside the
+    // pod at session setup instead.
+    const configAfter = await fs.readFile(configPath, 'utf8')
+    expect(configAfter).toBe(configBefore)
+    await expect(
+      git.raw(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']),
+    ).rejects.toThrow()
   })
 
-  it('serializes concurrent worktree adds on one repo (git config lock race)', async () => {
-    // Tracking setup writes .git/config; unserialized concurrent adds race
-    // its lock and fail with "could not lock config file .git/config" —
-    // observed when a prewarm spare spawn and a user create hit the same
-    // project simultaneously.
+  it('concurrent worktree adds on one repo all succeed', async () => {
+    // With --no-track nothing writes .git/config, so concurrent adds have
+    // no lock to race and need no serialization — they must all land.
     const cloneDir = path.join(tmpDir, 'clone')
     await cloneRepo(sourceRepo, cloneDir, null)
     const defaultBranch = await getDefaultBranch(cloneDir)
@@ -104,13 +116,13 @@ describe('git helpers', () => {
     await expect(Promise.all(adds)).resolves.toBeDefined()
 
     for (let i = 0; i < 5; i++) {
-      const tracking = await simpleGit(path.join(tmpDir, `wt-${i}`))
-        .raw(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])
-      expect(tracking.trim()).toBe(`origin/${defaultBranch}`)
+      const branch = await simpleGit(path.join(tmpDir, `wt-${i}`))
+        .revparse(['--abbrev-ref', 'HEAD'])
+      expect(branch.trim()).toBe(`agent/concurrent-${i}`)
     }
   })
 
-  it('a failed worktree add does not poison later adds on the same repo', async () => {
+  it('a failed worktree add does not affect a concurrent add on the same repo', async () => {
     const cloneDir = path.join(tmpDir, 'clone')
     await cloneRepo(sourceRepo, cloneDir, null)
     const defaultBranch = await getDefaultBranch(cloneDir)

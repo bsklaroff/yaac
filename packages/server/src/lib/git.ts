@@ -172,32 +172,19 @@ export async function fetchOrigin(
 }
 
 /**
- * Per-repo tail of the in-flight `addWorktree` chain. Concurrent adds on
- * one repo race git's `.git/config` lock (`worktree add -b … origin/…`
- * and `branch --set-upstream-to` both write branch config), failing one
- * side with "could not lock config file .git/config: File exists" — seen
- * when a prewarm spare spawn and a user create hit the same project
- * simultaneously. Serializing per repo removes the race; different repos
- * still add in parallel.
+ * Add a session worktree. `--no-track` is deliberate: setting up branch
+ * tracking here would write the shared `.git/config` from the host, and a
+ * host-side write replaces the file's inode underneath the VM-kernel
+ * virtiofs cache that session pods read `/repo/.git` through — until the
+ * stale dentry expires (a few seconds), every git command in a pod dies
+ * with "fatal: unknown error occurred while reading the configuration
+ * files". The upstream is configured from inside the pod instead (see
+ * `startJobWithSetup`), where the write stays cache-coherent for all pods
+ * and the host alike. With no config write left here, concurrent adds no
+ * longer race git's config.lock and need no serialization.
  */
-const worktreeAddQueues = new Map<string, Promise<void>>()
-
 export async function addWorktree(repoPath: string, worktreePath: string, branchName: string, startPoint?: string): Promise<void> {
-  const prev = worktreeAddQueues.get(repoPath) ?? Promise.resolve()
-  // A failed predecessor must not poison the queue — each add gets its
-  // own verdict.
-  const run = prev.catch(() => { /* predecessor's caller saw its error */ }).then(async () => {
-    const args = ['worktree', 'add', worktreePath, '-b', branchName]
-    if (startPoint) args.push(startPoint)
-    await simpleGit(repoPath).raw(args)
-    if (startPoint) {
-      await simpleGit(repoPath).raw(['branch', '--set-upstream-to', startPoint, branchName])
-    }
-  })
-  worktreeAddQueues.set(repoPath, run)
-  try {
-    await run
-  } finally {
-    if (worktreeAddQueues.get(repoPath) === run) worktreeAddQueues.delete(repoPath)
-  }
+  const args = ['worktree', 'add', '--no-track', worktreePath, '-b', branchName]
+  if (startPoint) args.push(startPoint)
+  await simpleGit(repoPath).raw(args)
 }
