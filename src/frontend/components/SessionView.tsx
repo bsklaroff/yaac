@@ -5,10 +5,12 @@ import { useUiStore } from '@/frontend/store'
 import { SessionTerminal } from '@/frontend/components/SessionTerminal'
 import { SessionPreview } from '@/frontend/components/SessionPreview'
 import { SessionChanges } from '@/frontend/components/SessionChanges'
+import { SessionAgents } from '@/frontend/components/SessionAgents'
 import { isPreviewTarget, previewLabel } from '@/frontend/lib/preview'
 import { isChangesTarget } from '@/frontend/lib/changesApi'
+import { isAgentsTarget } from '@/frontend/lib/agentsApi'
 import { isElectron } from '@/frontend/lib/platform'
-import { PreviewIcon, ChangesIcon } from '@/frontend/lib/icons'
+import { PreviewIcon, ChangesIcon, AgentsIcon } from '@/frontend/lib/icons'
 import { SessionActionsMenu } from '@/frontend/components/SessionActionsMenu'
 import { CreatingPlaceholder } from '@/frontend/components/CreatingPlaceholder'
 import { ConfirmDialog } from '@/frontend/components/ui/ConfirmDialog'
@@ -85,14 +87,15 @@ function paneName(
   if (target === 'agent') return 'Agent'
   if (isPreviewTarget(target)) return previewLabel(previewPort)
   if (isChangesTarget(target)) return 'Changes'
+  if (isAgentsTarget(target)) return 'Agents'
   const entry = terminals?.find((t) => t.target === target)
   return entry?.name ?? 'window'
 }
 
-/** Preview and changes are special (non-terminal) panes: kept out of the
- *  tmux-window sync, closed without a kill-confirm. */
+/** Preview, changes, and agents are special (non-terminal) panes: kept out of
+ *  the tmux-window sync, closed without a kill-confirm. */
 function isSpecialPane(target: string): boolean {
-  return isPreviewTarget(target) || isChangesTarget(target)
+  return isPreviewTarget(target) || isChangesTarget(target) || isAgentsTarget(target)
 }
 
 export function SessionView({
@@ -118,6 +121,7 @@ export function SessionView({
   const setPreviewPort = useUiStore((s) => s.setPreviewPort)
   const openPreview = useUiStore((s) => s.openPreview)
   const openChanges = useUiStore((s) => s.openChanges)
+  const openAgents = useUiStore((s) => s.openAgents)
   const queryClient = useQueryClient()
   const sessions = snapshot?.sessions ?? []
   const session = sessions.find((s) => s.sessionId === selectedSessionId)
@@ -507,6 +511,16 @@ export function SessionView({
             <ChangesIcon size={13} />
             Changes
           </button>
+          <button
+            onClick={() => openAgents(session.sessionId)}
+            title="Sub-agents"
+            aria-label="Sub-agents"
+            className="flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px]
+              text-text-dim transition hover:bg-surface-2 hover:text-text"
+          >
+            <AgentsIcon size={13} />
+            Agents
+          </button>
           <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[session.tool]}</span>
           {embedPreview && detectedPorts.length > 0 && (
             <button
@@ -703,7 +717,8 @@ export function SessionView({
           const target = key.slice(sep + 1)
           const preview = isPreviewTarget(target)
           const changes = isChangesTarget(target)
-          const special = preview || changes
+          const agents = isAgentsTarget(target)
+          const special = preview || changes || agents
           const pane = id === sid && tiled ? panes.find((p) => p.target === target) : undefined
           const style = pane
             ? {
@@ -753,6 +768,10 @@ export function SessionView({
               ) : changes ? (
                 <div className="h-full w-full overflow-hidden rounded-md">
                   <SessionChanges sessionId={id} />
+                </div>
+              ) : agents ? (
+                <div className="h-full w-full overflow-hidden rounded-md">
+                  <SessionAgents sessionId={id} />
                 </div>
               ) : (
                 <div className="h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">

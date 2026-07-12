@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { addLeafToLargest, isLayoutNode, leaf, leafTargets, splitLeaf, type LayoutNode } from '@/frontend/lib/layout'
 import { PREVIEW_TARGET } from '@/frontend/lib/preview'
 import { CHANGES_TARGET } from '@/frontend/lib/changesApi'
+import { AGENTS_TARGET } from '@/frontend/lib/agentsApi'
 import { DEFAULT_BINDINGS, type BindingMap, type Chord, type ShortcutId } from '@/frontend/lib/shortcuts'
 import { applyThemeAttribute, loadThemePref, persistThemePref, type ThemePref } from '@/frontend/lib/theme'
 import type { AgentTool, DeletedSessionEntry, ProvisioningSessionEntry, SessionListEntry } from '@/shared/types'
@@ -356,6 +357,8 @@ interface UiState {
   openPreview: (sessionId: string, containerPort?: number) => void
   /** Open/focus the changes (review-diff) pane for a session. */
   openChanges: (sessionId: string) => void
+  /** Open/focus the Agents (sub-agent tree) pane for a session. */
+  openAgents: (sessionId: string) => void
   /** Whether the session sidebar is shown. */
   sidebarOpen: boolean
   /** Light/dark preference. 'system' follows the OS; setThemePref persists it
@@ -557,6 +560,14 @@ export const useUiStore = create<UiState>((set) => ({
     return {
       layouts: { ...s.layouts, [sessionId]: injectPaneLeaf(base, CHANGES_TARGET) },
       activeTabs: { ...s.activeTabs, [sessionId]: CHANGES_TARGET },
+      focusNonce: s.focusNonce + 1,
+    }
+  }),
+  openAgents: (sessionId) => set((s) => {
+    const base = sessionId in s.layouts ? s.layouts[sessionId] : leaf('agent')
+    return {
+      layouts: { ...s.layouts, [sessionId]: injectPaneLeaf(base, AGENTS_TARGET) },
+      activeTabs: { ...s.activeTabs, [sessionId]: AGENTS_TARGET },
       focusNonce: s.focusNonce + 1,
     }
   }),

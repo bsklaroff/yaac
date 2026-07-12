@@ -50,6 +50,7 @@ export {
   Tablet as TabletIcon,
   Monitor as DesktopIcon,
   FileDiff as ChangesIcon,
+  Bot as AgentsIcon,
 } from 'lucide-react'
 
 /** Display name per agent tool (proper brand casing, incl. OpenCode). */
