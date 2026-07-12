@@ -1,0 +1,30 @@
+{
+  "name": "@yaac/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "imports": {
+    "#*": "./src/*.js"
+  },
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "dev:vite": "vite",
+    "build:vite": "vite build",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-fs": "2.5.1",
+    "@tauri-apps/plugin-http": "2.5.9",
+    "@tauri-apps/plugin-shell": "2.3.5",
+    "@yaac/shared": "workspace:*",
+    "hono": "catalog:"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
+    "@types/node": "catalog:",
+    "@yaac/server": "workspace:*",
+    "vite": "catalog:"
+  }
+}

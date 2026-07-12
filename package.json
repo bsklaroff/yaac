@@ -21,8 +21,8 @@
   "scripts": {
     "build": "tsup && tsx scripts/check-cli-externals.ts && pnpm --filter @yaac/frontend build && rm -rf dist/frontend && cp -r apps/frontend/dist dist/frontend && cp -r dockerfiles k8s dist/ && rm -rf dist/k8s/proxy/node_modules dist/k8s/proxy/test dist/k8s/relay/node_modules && tsx scripts/write-build-id.ts",
     "dev": "tsx apps/cli/src/cli.ts",
-    "watch": "tsx watch --clear-screen=false --include 'apps/**/src/**' --include 'packages/**/src/**' --include 'dockerfiles/**' --include 'k8s/**' --include package.json --include 'apps/*/package.json' --include 'packages/*/package.json' --include pnpm-lock.yaml --include tsup.config.ts --include 'apps/frontend/vite.config.ts' --exclude '**/node_modules/**' --exclude 'k8s/proxy/test/**' scripts/dev-watch.ts",
-    "lint": "tsc --noEmit && tsc --noEmit -p apps/frontend/tsconfig.json && eslint .",
+    "watch": "tsx watch --clear-screen=false --include 'apps/**/src/**' --include 'packages/**/src/**' --include 'dockerfiles/**' --include 'k8s/**' --include package.json --include 'apps/*/package.json' --include 'packages/*/package.json' --include pnpm-lock.yaml --include tsup.config.ts --include 'apps/frontend/vite.config.ts' --exclude '**/node_modules/**' --exclude 'k8s/proxy/test/**' --exclude 'apps/desktop/**' scripts/dev-watch.ts",
+    "lint": "tsc --noEmit && tsc --noEmit -p apps/frontend/tsconfig.json && tsc --noEmit -p apps/desktop/tsconfig.json && eslint .",
     "test": "vitest run",
     "test:unit": "vitest run --project 'unit:*'",
     "test:e2e": "vitest run --project e2e",
@@ -31,6 +31,8 @@
     "test:watch": "vitest",
     "frontend:dev": "pnpm --filter @yaac/frontend dev",
     "frontend:build": "pnpm --filter @yaac/frontend build",
+    "desktop:dev": "pnpm --filter @yaac/desktop dev",
+    "desktop:build": "pnpm --filter @yaac/desktop build",
     "prepare": "./setup-git.sh",
     "prepublishOnly": "pnpm build"
   },
@@ -55,6 +57,7 @@
     "@types/ws": "catalog:",
     "@yaac/auth-daemon": "workspace:*",
     "@yaac/cli": "workspace:*",
+    "@yaac/desktop": "workspace:*",
     "@yaac/frontend": "workspace:*",
     "@yaac/server": "workspace:*",
     "@yaac/shared": "workspace:*",

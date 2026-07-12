@@ -1,37 +1,16 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { getDataDir } from '#paths'
-
-/**
- * The one configured remote server (`~/.yaac/remote.json`, 0600). yaac
- * deliberately supports a single remote rather than named contexts —
- * `enabled` is the switch back to the local server without losing the
- * token. Growing this into a named map later is a client-side-only
- * change.
- */
-export interface RemoteConfig {
-  url: string
-  token: string
-  enabled: boolean
-}
+import { REMOTE_CONFIG_FILENAME, parseRemoteConfig, type RemoteConfig } from '#remote-config-file'
 
 export function remoteConfigPath(): string {
-  return path.join(getDataDir(), 'remote.json')
+  return path.join(getDataDir(), REMOTE_CONFIG_FILENAME)
 }
 
 /** Absent, unparseable, or wrong-shaped file → null (no remote). */
 export async function readRemote(): Promise<RemoteConfig | null> {
   try {
-    const raw = await fs.readFile(remoteConfigPath(), 'utf8')
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return null
-    const cfg = parsed as Record<string, unknown>
-    if (
-      typeof cfg.url !== 'string'
-      || typeof cfg.token !== 'string'
-      || typeof cfg.enabled !== 'boolean'
-    ) return null
-    return { url: cfg.url, token: cfg.token, enabled: cfg.enabled }
+    return parseRemoteConfig(await fs.readFile(remoteConfigPath(), 'utf8'))
   } catch {
     return null
   }

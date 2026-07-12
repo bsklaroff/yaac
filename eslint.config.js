@@ -5,7 +5,7 @@ import tseslint from 'typescript-eslint'
 const RELATIVE_PARENT = { group: ['..*'], message: 'Relative parent imports are not allowed.' }
 
 export default tseslint.config(
-  { ignores: ['dist'] },
+  { ignores: ['dist', 'apps/desktop/src-tauri/target', 'apps/desktop/src-tauri/gen'] },
   {
     extends: [
       ...tseslint.configs.recommendedTypeChecked,
@@ -14,7 +14,7 @@ export default tseslint.config(
     languageOptions: {
       globals: globals.node,
       parserOptions: {
-        project: ['./tsconfig.json', './apps/frontend/tsconfig.json'],
+        project: ['./tsconfig.json', './apps/frontend/tsconfig.json', './apps/desktop/tsconfig.json'],
         tsconfigRootDir: import.meta.dirname,
       },
     },
@@ -112,6 +112,30 @@ export default tseslint.config(
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
               message: 'apps/frontend may only depend on @yaac/shared.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  // desktop launcher: only @yaac/shared values (+ self via #); type-only from
+  // other workspace packages is fine (the Hono AppType from @yaac/server).
+  // The launcher runs in a webview, so anything it value-imports must be
+  // browser-bundleable — the dependency-free *-file modules, not their
+  // node:fs-owning siblings.
+  {
+    files: ['apps/desktop/src/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            RELATIVE_PARENT,
+            {
+              group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
+              allowTypeImports: true,
+              message: 'apps/desktop may only value-import @yaac/shared (type-only from other packages OK).',
             },
           ],
         },

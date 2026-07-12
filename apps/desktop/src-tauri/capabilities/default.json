@@ -1,0 +1,35 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "launcher",
+  "description": "Launcher page only: read the yaac config files, health-check/start the local server, and mint a one-time web token. Applies to the tauri://localhost origin in the main window; the SPA (loaded from the server origin) gets no IPC because no capability carries a remote context. The https scope is host-wildcarded because the remote origin is user-configured at runtime; only launcher code can invoke plugin-http.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "http://127.0.0.1:*" },
+        { "url": "http://localhost:*" },
+        { "url": "https://*:*" }
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-text-file",
+      "allow": [
+        { "path": "$HOME/.yaac/remote.json" },
+        { "path": "$HOME/.yaac/.server.lock" }
+      ]
+    },
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "yaac-server-start",
+          "cmd": "yaac",
+          "args": ["server", "start"],
+          "sidecar": false
+        }
+      ]
+    }
+  ]
+}

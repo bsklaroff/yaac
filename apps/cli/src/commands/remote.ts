@@ -5,8 +5,8 @@ import {
   normalizeRemoteUrl,
   readRemote,
   writeRemote,
-  type RemoteConfig,
 } from '@yaac/shared/remote'
+import type { RemoteConfig } from '@yaac/shared/remote-config-file'
 import { maskToken } from '@yaac/shared/mask'
 
 const PROBE_TIMEOUT_MS = 5000

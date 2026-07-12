@@ -12,5 +12,5 @@
     "k8s/proxy/test",
     "k8s/relay/*.ts"
   ],
-  "exclude": ["node_modules", "dist", "apps/frontend"]
+  "exclude": ["node_modules", "dist", "apps/frontend", "apps/desktop"]
 }

@@ -48,6 +48,7 @@ export default defineConfig({
       unitProject('apps/frontend', {
         esbuild: { jsx: 'automatic' },
       }),
+      unitProject('apps/desktop'),
       unitProject('packages/server'),
       unitProject('packages/shared'),
       unitProject('packages/auth-daemon'),

@@ -1,0 +1,28 @@
+[package]
+name = "yaac-desktop"
+version = "0.1.0"
+description = "yaac desktop shell: a webview launcher that lands on the yaac server origin"
+license = "MIT"
+edition = "2021"
+
+# Exact pinning happens through Cargo.lock (committed), the Cargo analog of
+# `pnpm add -E`. Regenerate it with `cargo update` inside src-tauri/ on a
+# machine with a Rust toolchain.
+
+[lib]
+name = "yaac_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-fs = "2"
+tauri-plugin-http = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-opener = "2"
+# Not published to crates.io (tauri-apps ships it as a git crate); pinned by
+# rev. GUI apps get launchd's/the DE's minimal PATH — without the fix,
+# spawning `yaac` fails for Homebrew/nvm installs on macOS.
+fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs", rev = "c4c45d503ea115a839aae718d02f79e7c7f0f673" }

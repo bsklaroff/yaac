@@ -2,7 +2,7 @@
 - Every exported function must have a unit test in its own package's `test/` dir (e.g. `packages/server/test/`, `apps/cli/test/`).
 - Every CLI command argument and option must have an e2e test in `test/e2e-cli/` (or `test/e2e/`) at the repo root.
 - **NEVER take credit for authoring code** — do not add "Co-Authored-By" lines, or any other AI attribution to commit messages, PR descriptions, or code comments
-- Always use `pnpm lint` for linting (runs `tsc --noEmit`, the frontend `tsc`, and `eslint`).
+- Always use `pnpm lint` for linting (runs `tsc --noEmit`, the frontend and desktop `tsc`s, and `eslint`).
 - Limit all git commit message lines to 80 characters maximum.
 
 ## Repository Layout
@@ -26,6 +26,7 @@ array target, so `.tsx` would break).
 | Package | Role | May import |
 |---|---|---|
 | `apps/cli` (`@yaac/cli`) | the published `yaac` bin: entry + commands | server, auth-daemon, shared |
+| `apps/desktop` (`@yaac/desktop`) | Tauri shell: webview launcher + `src-tauri/` | shared only (type-only from server OK) |
 | `apps/frontend` (`@yaac/frontend`) | React SPA | shared only |
 | `packages/server` (`@yaac/server`) | HTTP/WS daemon + all backend `lib/` | shared only |
 | `packages/auth-daemon` (`@yaac/auth-daemon`) | auth helper daemon | shared only |
@@ -54,8 +55,15 @@ All vitest projects — the co-located `unit:<pkg>` suites plus the root
 `test/api`, `test/e2e`, and `test/e2e-cli` trees — are defined inline in the
 root vitest.config.ts, so one file owns the timeouts and isolation setupFiles
 for every project; per-package vitest.config.ts files would not inherit them.
-`pnpm lint` is the single typecheck entry point (root tsconfig + the frontend
-tsconfig); packages deliberately have no typecheck scripts.
+`pnpm lint` is the single typecheck entry point (root tsconfig + the
+DOM-typed frontend and desktop tsconfigs); packages deliberately have no
+typecheck scripts.
+
+The desktop app (`pnpm desktop:dev` / `desktop:build`) is not part of `pnpm
+build` — the npm artifact never includes it. Building it needs a local Rust
+toolchain (rustup; on Linux also the webkit2gtk-4.1 dev packages — see
+apps/desktop/README.md). Its launcher navigates the webview to the server
+origin, so the SPA it displays is whatever the target server serves.
 
 ## Runtime Architecture
 

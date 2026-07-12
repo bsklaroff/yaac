@@ -2,3 +2,7 @@ node_modules/
 dist/
 .env
 .eslintcache
+
+# Tauri build artifacts (apps/desktop)
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
