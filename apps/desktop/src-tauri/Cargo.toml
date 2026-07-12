@@ -18,6 +18,10 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# generate_context! embeds the tauri.conf.json `plugins` section as
+# serde_json::Value literals resolved against this crate, so serde_json
+# must be a direct dependency.
+serde_json = "1"
 tauri-plugin-fs = "2"
 tauri-plugin-http = "2"
 tauri-plugin-shell = "2"
