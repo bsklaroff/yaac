@@ -24,7 +24,7 @@ catalog:
   zod: 4.3.6
 allowBuilds:
   cpu-features: false
-  electron: true
+  electron: false
   esbuild: false
   protobufjs: false
   ssh2: false
