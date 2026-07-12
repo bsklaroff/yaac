@@ -46,11 +46,6 @@ const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(naviga
 
 const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode']
 
-// lucide-react (1.17.0) ships types via the legacy `typings` field with no
-// `exports` map; typescript-eslint doesn't follow that through the `#lib/icons`
-// re-export, so it widens these icon components to `any`. tsc resolves them and
-// type-checks this file clean, so the disable is scoped to just this literal.
-/* eslint-disable @typescript-eslint/no-unsafe-assignment */
 const SECTIONS: { key: SettingsSection; label: string; Icon: typeof GeneralIcon }[] = [
   { key: 'general', label: 'General', Icon: GeneralIcon },
   { key: 'shortcuts', label: 'Shortcuts', Icon: KeyboardIcon },
@@ -58,7 +53,6 @@ const SECTIONS: { key: SettingsSection; label: string; Icon: typeof GeneralIcon 
   { key: 'project', label: 'Project Config', Icon: ProjectConfigIcon },
   { key: 'userDockerfile', label: 'User Dockerfile', Icon: DockerIcon },
 ]
-/* eslint-enable @typescript-eslint/no-unsafe-assignment */
 
 /**
  * Rail gear → settings. Notion-style modal: a left nav of sections over a
