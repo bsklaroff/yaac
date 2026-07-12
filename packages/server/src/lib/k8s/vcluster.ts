@@ -277,10 +277,9 @@ const NO_UNCONFINED = (cs: string): string =>
  * load-bearing gate, and requiring an explicit `false` on
  * hostUsers: true pods would deny every ordinary synced pod.
  *
- * The rule exactly admits the nested-session securityContext and the
- * redirect-init/relay container shapes (NET_ADMIN init + uid-1337
- * relay under hostUsers: false) — the M4 stretch syncs those into host
- * pods unchanged.
+ * The rule exactly admits the nested-session securityContext (namespaced
+ * capability adds under hostUsers: false) that an inner yaac's synced
+ * session pods carry.
  */
 export function buildVclusterPodGuardPolicyManifest(
   name: string,
@@ -345,9 +344,8 @@ export function buildVclusterPodGuardPolicyManifest(
         },
         {
           // The caps rule. Evaluated across containers AND
-          // initContainers (variables.cs): every session-shaped pod
-          // carries the redirect-init (NET_ADMIN) and relay
-          // (drop-ALL, allowPrivilegeEscalation: false) init containers.
+          // initContainers (variables.cs) so a cap grant can't ride
+          // in on an init container.
           expression:
             `variables.userns || (${NO_CAPS_OR_APE('variables.cs')} && ${NO_CAPS_OR_APE('variables.ecs')})`,
           message:

@@ -252,8 +252,8 @@ describe('pod guard (VAP)', () => {
     expect(exprs).toContain('hostPort')
     expect(exprs).toContain('privileged')
     // The caps rule keys on hostUsers: false (variables.userns) and
-    // covers containers + initContainers (variables.cs) — every
-    // session-shaped pod carries redirect-init (NET_ADMIN) and relay.
+    // covers containers + initContainers (variables.cs) so a cap
+    // grant can't ride in on an init container.
     expect(exprs).toContain('variables.userns ||')
     expect(exprs).toContain('capabilities')
     expect(exprs).toContain('allowPrivilegeEscalation')

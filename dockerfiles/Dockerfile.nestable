@@ -69,8 +69,10 @@ RUN chmod u-s /usr/bin/newuidmap /usr/bin/newgidmap && \
 # Engine config. Every nested container shares the pod's namespaces:
 # netns=host means a container's listener binds directly in the pod netns
 # (curl localhost just works; `docker run -p` is a no-op) and its egress
-# stays on the pod's transparent redirect (locally-originated traffic — see
-# k8s/redirect-init/redirect.sh). base_hosts_file extends the pod's
+# stays on the session's transparent redirect (Cilium's egress CEC matches
+# the pod's traffic, and nested containers share the pod netns — see
+# buildEgressRedirectCecManifest in packages/server/src/lib/k8s/bootstrap.ts).
+# base_hosts_file extends the pod's
 # hostAliases (e.g. the per-project registry name) into nested containers.
 # Container-private networks (the default `docker compose` bridge,
 # `docker run --network ...`) are NOT supported in-pod: the userspace
