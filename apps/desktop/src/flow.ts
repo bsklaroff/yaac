@@ -25,6 +25,13 @@ export interface FlowDeps {
   /** Mint the one-time exchange token (see #mint); throws with a descriptive message. */
   mintToken(): Promise<string>
   onStatus(text: string): void
+  /**
+   * Base URL to load in the window instead of the server origin — frontend
+   * dev points at Vite (:1420), which proxies /auth (and the rest of the API)
+   * back to the server so the token exchange stays same-origin. The server
+   * target itself still resolves normally (mint talks to the real server).
+   */
+  rendererBaseUrl?: string
 }
 
 export type FlowResult =
@@ -89,8 +96,11 @@ export async function runFlow(deps: FlowDeps): Promise<FlowResult> {
         })
   }
 
-  deps.onStatus(`Opening ${target.baseUrl}…`)
-  return { ok: true, url: buildWebappUrl(target.baseUrl, token) }
+  // Trailing slashes stripped so both origin shapes compose with the /?token=
+  // suffix (target.baseUrl is already bare).
+  const base = deps.rendererBaseUrl?.replace(/\/+$/, '') ?? target.baseUrl
+  deps.onStatus(`Opening ${base}…`)
+  return { ok: true, url: buildWebappUrl(base, token) }
 }
 
 /** Twin of `buildWebappUrl` (packages/server/src/cli.ts); the token is hex, so encoding is defensive only. */

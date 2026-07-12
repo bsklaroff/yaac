@@ -194,6 +194,41 @@ describe('env (configuration)', () => {
     })
   })
 
+  describe('desktopRendererUrl', () => {
+    it('is undefined when YAAC_DESKTOP_RENDERER_URL is unset', () => {
+      vi.stubEnv('YAAC_DESKTOP_RENDERER_URL', undefined)
+      expect(env.desktopRendererUrl).toBeUndefined()
+    })
+
+    it('returns the override when set', () => {
+      vi.stubEnv('YAAC_DESKTOP_RENDERER_URL', 'http://localhost:1420/')
+      expect(env.desktopRendererUrl).toBe('http://localhost:1420/')
+    })
+  })
+
+  describe('desktopDev', () => {
+    it('is false when YAAC_DESKTOP_DEV is unset', () => {
+      vi.stubEnv('YAAC_DESKTOP_DEV', undefined)
+      expect(env.desktopDev).toBe(false)
+    })
+
+    it.each(['', '0', 'false', 'FALSE'])(
+      'is false when YAAC_DESKTOP_DEV=%j',
+      (value) => {
+        vi.stubEnv('YAAC_DESKTOP_DEV', value)
+        expect(env.desktopDev).toBe(false)
+      },
+    )
+
+    it.each(['1', 'true', 'yes'])(
+      'is true when YAAC_DESKTOP_DEV=%j',
+      (value) => {
+        vi.stubEnv('YAAC_DESKTOP_DEV', value)
+        expect(env.desktopDev).toBe(true)
+      },
+    )
+  })
+
   describe('allowedHosts', () => {
     it('defaults to an empty list', () => {
       vi.stubEnv('YAAC_ALLOWED_HOSTS', undefined)

@@ -10,6 +10,7 @@ interface FakeOptions {
   resolve?: Array<ServerTarget | Error>
   start?: () => Promise<{ code: number | null, stderr: string }>
   mint?: () => Promise<string>
+  rendererBaseUrl?: string
 }
 
 function fakeDeps(opts: FakeOptions = {}) {
@@ -27,6 +28,7 @@ function fakeDeps(opts: FakeOptions = {}) {
     onStatus: (text) => {
       statuses.push(text)
     },
+    rendererBaseUrl: opts.rendererBaseUrl,
   }
   return { deps, statuses, start }
 }
@@ -97,6 +99,14 @@ describe('runFlow', () => {
   it('remote happy path', async () => {
     const { deps } = fakeDeps({ resolve: [REMOTE], mint: () => Promise.resolve('rem0te') })
     expect(await runFlow(deps)).toEqual({ ok: true, url: `${REMOTE.baseUrl}/?token=rem0te` })
+  })
+  it('rendererBaseUrl overrides the landing origin (Vite dev), not the target', async () => {
+    const { deps, statuses } = fakeDeps({ rendererBaseUrl: 'http://localhost:1420/' })
+    // The trailing slash is normalized away before /?token= is appended.
+    expect(await runFlow(deps)).toEqual({ ok: true, url: 'http://localhost:1420/?token=t0ken' })
+    // Mint still talked to the real target; only the final URL is overridden.
+    expect(statuses).toContain(`Connecting to ${LOCAL.baseUrl}…`)
+    expect(statuses).toContain('Opening http://localhost:1420…')
   })
   it('local mint failure → local-flavored error with restart hint', async () => {
     const { deps } = fakeDeps({ mint: () => Promise.reject(new Error('fetch failed')) })
