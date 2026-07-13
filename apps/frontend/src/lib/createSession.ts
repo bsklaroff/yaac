@@ -1,4 +1,4 @@
-import { api } from './apiClient'
+import { rpc, expectOk } from './rpc'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import type { AgentTool } from '@yaac/shared/types'
 
@@ -50,14 +50,14 @@ export async function restartSession(
 /** Dismiss a provisioning row (drops the server registry entry; used for a
  *  failed create/restart). Idempotent server-side. */
 export async function dismissProvisioning(sessionId: string): Promise<void> {
-  await api.post(`/session/provisioning/${encodeURIComponent(sessionId)}/dismiss`)
+  await expectOk(rpc.session.provisioning[':id'].dismiss.$post({ param: { id: sessionId } }))
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
-  await api.post('/session/delete', { sessionId })
+  await expectOk(rpc.session.delete.$post({ json: { sessionId } }))
 }
 
 /** Set a session's display title (blank clears it back to the prompt). */
 export async function renameSession(sessionId: string, title: string): Promise<void> {
-  await api.post(`/session/${encodeURIComponent(sessionId)}/title`, { title })
+  await expectOk(rpc.session[':id'].title.$post({ param: { id: sessionId }, json: { title } }))
 }

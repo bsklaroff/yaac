@@ -1,15 +1,15 @@
-import { api } from './apiClient'
+import { rpc, unwrap, expectOk } from './rpc'
 
 /**
  * Image-build registry reads. Build metadata (status, layer, step N/M)
  * arrives in the snapshot; the raw podman log tail is deliberately not in
  * snapshots, so the build overlay polls it here while open.
  */
-export async function getImageBuildLog(id: string): Promise<{ log: string }> {
-  return api.get<{ log: string }>(`/image/builds/${encodeURIComponent(id)}/log`)
+export function getImageBuildLog(id: string): Promise<{ log: string }> {
+  return unwrap(rpc.image.builds[':id'].log.$get({ param: { id } }))
 }
 
 /** Dismiss a finished (typically failed) build entry. */
-export async function dismissImageBuild(id: string): Promise<void> {
-  return api.del<void>(`/image/builds/${encodeURIComponent(id)}`)
+export function dismissImageBuild(id: string): Promise<void> {
+  return expectOk(rpc.image.builds[':id'].$delete({ param: { id } }))
 }

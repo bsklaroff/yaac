@@ -1,4 +1,4 @@
-import { api, ApiError } from './apiClient'
+import { rpc, unwrap, ApiError } from './rpc'
 import type { DeletedSessionEntry } from '@yaac/shared/types'
 
 /**
@@ -13,9 +13,10 @@ export async function getDeletedSessions(
   projectSlug: string,
   limit = 25,
 ): Promise<DeletedSessionEntry[]> {
-  const params = new URLSearchParams({ project: projectSlug, limit: String(limit) })
   try {
-    return await api.get<DeletedSessionEntry[]>(`/session/list-deleted?${params.toString()}`)
+    return await unwrap(rpc.session['list-deleted'].$get({
+      query: { project: projectSlug, limit: String(limit) },
+    }))
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) return []
     throw err

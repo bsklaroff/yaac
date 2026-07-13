@@ -1,24 +1,34 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-
-vi.mock('#lib/apiClient', () => ({
-  api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), del: vi.fn() },
-}))
-
-import { api } from '#lib/apiClient'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { dismissImageBuild, getImageBuildLog } from '#lib/imageBuildsApi'
 
-beforeEach(() => {
-  vi.clearAllMocks()
-})
+const realFetch = globalThis.fetch
+afterEach(() => { globalThis.fetch = realFetch })
+
+function stub(json: unknown, status = 200): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn().mockResolvedValue({
+    ok: status < 400,
+    status,
+    json: () => Promise.resolve(json),
+    text: () => Promise.resolve(''),
+  })
+  globalThis.fetch = fetchMock as unknown as typeof fetch
+  return fetchMock
+}
 
 describe('image builds api calls', () => {
-  it('getImageBuildLog GETs the build log route', async () => {
-    await getImageBuildLog('build-7')
-    expect(api.get).toHaveBeenCalledWith('/image/builds/build-7/log')
+  it('getImageBuildLog GETs the build log route and unwraps { log }', async () => {
+    const fetchMock = stub({ log: 'step 1/3' })
+    expect(await getImageBuildLog('build-7')).toEqual({ log: 'step 1/3' })
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/image/builds/build-7/log')
+    expect(init.method ?? 'GET').toBe('GET')
   })
 
   it('dismissImageBuild DELETEs the build route', async () => {
+    const fetchMock = stub(undefined, 204)
     await dismissImageBuild('build-7')
-    expect(api.del).toHaveBeenCalledWith('/image/builds/build-7')
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/image/builds/build-7')
+    expect(init.method).toBe('DELETE')
   })
 })

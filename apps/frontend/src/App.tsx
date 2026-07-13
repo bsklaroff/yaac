@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
-import { api, ApiError } from './lib/apiClient'
 import { readExchangeToken, postWebSession, stripTokenFromUrl } from './lib/webSession'
 import { createSession } from './lib/createSession'
 import { deleteSessionOptimistic } from './lib/deleteSessionFlow'
@@ -26,15 +25,18 @@ import type { CheckResult, ServerSnapshot, SessionListEntry } from '@yaac/shared
 type AuthState = 'checking' | 'authed' | 'needs-token'
 type ClusterState = 'ready' | 'not-ready'
 
-/** Hit a protected endpoint to see if the session cookie is still good. */
+/** Hit a protected endpoint to see if the session cookie is still good. This
+ *  bootstrap probe stays on a raw fetch: the route is unauthenticated-adjacent
+ *  and not part of the typed RPC surface, and any failure (401 or server down)
+ *  should show the splash rather than a blank screen. */
 async function probeAuth(): Promise<boolean> {
   try {
-    await api.get('/auth/web-session')
-    return true
-  } catch (err) {
-    // 401 → not authed; anything else (server down) → show the splash too
-    // rather than a blank screen.
-    if (err instanceof ApiError && err.status === 401) return false
+    const res = await fetch('/auth/web-session', {
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' },
+    })
+    return res.ok
+  } catch {
     return false
   }
 }

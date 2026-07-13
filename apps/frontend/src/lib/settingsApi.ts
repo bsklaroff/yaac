@@ -1,22 +1,22 @@
-import { api } from './apiClient'
+import { rpc, unwrap, expectOk } from './rpc'
 import type { Chord, ShortcutId } from './shortcuts'
 import type { AgentTool, AuthListResult, OpencodeProvider, ToolInstallView, ToolLoginView } from '@yaac/shared/types'
 
 export async function getDefaultTool(): Promise<AgentTool | null> {
-  const res = await api.get<{ tool: AgentTool | null }>('/tool/get')
-  return res.tool
+  const { tool } = await unwrap(rpc.tool.get.$get())
+  return tool
 }
 
 export async function setDefaultTool(tool: AgentTool): Promise<void> {
-  await api.post('/tool/set', { tool })
+  await expectOk(rpc.tool.set.$post({ json: { tool } }))
 }
 
 export async function getAuthList(): Promise<AuthListResult> {
-  return api.get<AuthListResult>('/auth/list')
+  return unwrap(rpc.auth.list.$get())
 }
 
 export async function addGitCredential(pattern: string, token: string): Promise<void> {
-  await api.post('/auth/git/credentials', { kind: 'https', pattern, token })
+  await expectOk(rpc.auth.git.credentials.$post({ json: { kind: 'https', pattern, token } }))
 }
 
 /** Save a pasted API key as the tool's credential (provider: opencode only). */
@@ -25,73 +25,78 @@ export async function setToolApiKey(
   apiKey: string,
   provider?: OpencodeProvider,
 ): Promise<void> {
-  await api.put(`/auth/${tool}`, { kind: 'api-key', apiKey, ...(provider ? { provider } : {}) })
+  await expectOk(rpc.auth[':tool'].$put({
+    param: { tool },
+    json: { kind: 'api-key', apiKey, ...(provider ? { provider } : {}) },
+  }))
 }
 
 /** Sign out — drop the tool's stored credential. */
 export async function clearToolAuth(tool: AgentTool): Promise<void> {
-  await api.post('/auth/clear', { service: tool })
+  await expectOk(rpc.auth.clear.$post({ json: { service: tool } }))
 }
 
-/** Kick off a server-run vendor-CLI browser sign-in (claude/codex). */
+/** Kick off a server-run vendor-CLI browser sign-in (claude/codex). The route
+ *  only serves those two tools; runtime param validation guards the cast. */
 export async function startToolLogin(tool: AgentTool): Promise<ToolLoginView> {
-  return api.post<ToolLoginView>(`/auth/${tool}/login/start`)
+  return unwrap(rpc.auth[':tool'].login.start.$post({ param: { tool: tool as 'claude' | 'codex' } }))
 }
 
 /** Poll a sign-in flow's state. */
 export async function getToolLogin(id: string): Promise<ToolLoginView> {
-  return api.get<ToolLoginView>(`/auth/login/${id}`)
+  return unwrap(rpc.auth.login[':id'].$get({ param: { id } }))
 }
 
 /** Forward a line to the login CLI's stdin (claude's paste-back code). */
 export async function sendToolLoginInput(id: string, text: string): Promise<ToolLoginView> {
-  return api.post<ToolLoginView>(`/auth/login/${id}/input`, { text })
+  return unwrap(rpc.auth.login[':id'].input.$post({ param: { id }, json: { text } }))
 }
 
 /** Abort a sign-in flow. */
 export async function cancelToolLogin(id: string): Promise<void> {
-  await api.post(`/auth/login/${id}/cancel`)
+  await expectOk(rpc.auth.login[':id'].cancel.$post({ param: { id } }))
 }
 
-/** Kick off a server-run install of the tool's CLI (offered on cliMissing). */
+/** Kick off a server-run install of the tool's CLI (offered on cliMissing).
+ *  Claude/codex only, same as login. */
 export async function startToolInstall(tool: AgentTool): Promise<ToolInstallView> {
-  return api.post<ToolInstallView>(`/auth/${tool}/install/start`)
+  return unwrap(rpc.auth[':tool'].install.start.$post({ param: { tool: tool as 'claude' | 'codex' } }))
 }
 
 /** Poll an install flow's state. */
 export async function getToolInstall(id: string): Promise<ToolInstallView> {
-  return api.get<ToolInstallView>(`/auth/install/${id}`)
+  return unwrap(rpc.auth.install[':id'].$get({ param: { id } }))
 }
 
 /** Abort an install flow. */
 export async function cancelToolInstall(id: string): Promise<void> {
-  await api.post(`/auth/install/${id}/cancel`)
+  await expectOk(rpc.auth.install[':id'].cancel.$post({ param: { id } }))
 }
 
 /** Saved keyboard-shortcut overrides, keyed by command id (empty when none). */
 export async function getShortcutOverrides(): Promise<Record<string, Chord>> {
-  const res = await api.get<{ overrides: Record<string, Chord> }>('/shortcuts/get')
-  return res.overrides
+  const { overrides } = await unwrap(rpc.shortcuts.get.$get())
+  return overrides
 }
 
 /** Persist a single command's rebind. */
 export async function setShortcutOverride(id: ShortcutId, chord: Chord): Promise<void> {
-  await api.post('/shortcuts/set', { id, chord })
+  await expectOk(rpc.shortcuts.set.$post({ json: { id, chord } }))
 }
 
 /** Drop every override, restoring the factory defaults. */
 export async function resetShortcuts(): Promise<void> {
-  await api.post('/shortcuts/reset')
+  await expectOk(rpc.shortcuts.reset.$post())
 }
 
 /** Read the global user Dockerfile (~/.yaac/Dockerfile.user); '' when unset. */
 export async function getUserDockerfile(): Promise<string> {
-  const res = await api.get<{ content: string }>('/config/user-dockerfile')
-  return res.content
+  const { content } = await unwrap(rpc.config['user-dockerfile'].$get())
+  return content
 }
 
 /** Write (or clear, when empty) the global user Dockerfile. Validated
  *  server-side: a non-empty file must layer on `${BASE_IMAGE}`. */
 export async function saveUserDockerfile(content: string): Promise<void> {
-  await api.put('/config/user-dockerfile', { content })
+  await expectOk(rpc.config['user-dockerfile'].$put({ json: { content } }))
 }
