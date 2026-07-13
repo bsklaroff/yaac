@@ -6,6 +6,8 @@ import { listSessionJobs, listSessionPods, sessionJobName } from '#lib/k8s/pods'
 import { k8sNamespace, kubectlWithRetry } from '#lib/k8s/kubectl'
 import { execTarget } from '#lib/k8s/exec'
 import { evictOpencodeProbeCache } from '#lib/session/opencode-status'
+import { recordSessionDeleted } from '#lib/session/deleted-store'
+import { markSessionTerminating } from '#lib/session/terminating'
 import { evictSessionStatus } from '#lib/session/status-store'
 import { proxyClient } from '#lib/container/proxy-client'
 import { buildPromoterShellCommand, promoteSessionImages } from '#lib/container/image-promoter'
@@ -255,6 +257,15 @@ export async function cleanupSession(params: {
 }): Promise<void> {
   const { jobName, projectSlug, sessionId } = params
 
+  // Mark terminating BEFORE evicting the status below: in the gap before
+  // Kubernetes stamps the pod's deletionTimestamp, this is what keeps the
+  // display path rendering "terminating…" instead of a stray waiting spell.
+  markSessionTerminating(sessionId)
+
+  // Stamp the deletion time so the deleted-session view can order by
+  // recency (best-effort; falls back to transcript mtime if unwritten).
+  await recordSessionDeleted(projectSlug, sessionId)
+
   // Drop any cached tmux-alive / opencode-probe entry and the watcher-fed
   // status-store row so a subsequent caller doesn't see a stale value
   // from this session (or, in the worst case, a value belonging to a
@@ -334,6 +345,13 @@ export async function cleanupSessionDetached(params: {
   // stdio-ignored child, so without this line a session reaped by the
   // background loop vanishes with no trace in the server log.
   serverLog(`[server] session teardown: session=${sessionId} job=${jobName} project=${projectSlug}`)
+
+  // Mark terminating BEFORE evicting the status below (see cleanupSession).
+  markSessionTerminating(sessionId)
+
+  // Stamp the deletion time so the deleted-session view can order by
+  // recency (best-effort; falls back to transcript mtime if unwritten).
+  await recordSessionDeleted(projectSlug, sessionId)
 
   tmuxAliveCache.delete(tmuxAliveKey(projectSlug, sessionId))
   agentStartedCache.delete(tmuxAliveKey(projectSlug, sessionId))

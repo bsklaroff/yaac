@@ -24,7 +24,7 @@ function pod(over: Partial<SessionPod>): SessionPod {
   return {
     jobName: 'yaac-proj-x', podName: 'yaac-proj-x-abc', sessionId: 'sid',
     projectSlug: 'proj', tool: 'claude', phase: 'Running', running: true,
-    createdAtMs: 0, labels: {}, ...over,
+    terminating: false, createdAtMs: 0, labels: {}, ...over,
   }
 }
 

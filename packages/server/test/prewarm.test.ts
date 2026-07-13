@@ -72,6 +72,7 @@ function spare(o: Partial<SessionPod> = {}): SessionPod {
     tool: 'claude',
     phase: 'Running',
     running: true,
+    terminating: false,
     createdAtMs: 1_000,
     labels: { [LABEL_PREWARMED]: 'true' },
     ...o,

@@ -67,6 +67,7 @@ describe('deleteSession', () => {
       tool: 'claude',
       phase: 'Running',
       running: true,
+      terminating: false,
       createdAtMs: 1_700_000_000_000,
       labels: {},
       ...overrides,

@@ -6,6 +6,8 @@ import { worktreeUpstreamBranch } from '#lib/git'
 import { claudeDir, codexTranscriptDir, getProjectsDir, projectDir, repoDir } from '@yaac/shared/project-paths'
 import { getSessionFirstMessage, normalizeTool } from '#lib/session/status'
 import { ensureOpencodeFirstMessageCaptured, listOpencodeMetaEntries } from '#lib/session/opencode-status'
+import { listDeletedAt } from '#lib/session/deleted-store'
+import { isSessionTerminating, pruneTerminating } from '#lib/session/terminating'
 import { isSessionStreamHealthy, readSessionStatus, readSessionWaitingSince } from '#lib/session/status-store'
 import { probeAgentPaneState, probeTmuxLiveness, cleanupSessionDetached, type TmuxLiveness } from '#lib/session/cleanup'
 import { getSessionPorts } from '#lib/session/port-forwarders'
@@ -41,11 +43,25 @@ export async function classifySessionPods(
   nowMs: number,
   probeLiveness: (slug: string, sessionId: string) => Promise<TmuxLiveness>,
   graceMs: number,
-): Promise<{ running: SessionPod[]; stale: StaleSessionInfo[]; indeterminate: SessionPod[] }> {
+): Promise<{
+  running: SessionPod[]
+  stale: StaleSessionInfo[]
+  indeterminate: SessionPod[]
+  terminating: SessionPod[]
+}> {
   const running: SessionPod[] = []
   const stale: StaleSessionInfo[] = []
   const indeterminate: SessionPod[] = []
+  const terminating: SessionPod[] = []
   for (const p of pods) {
+    // A pod on its way out (deletionTimestamp set, or a delete just issued)
+    // is neither active nor stale: it renders as a "terminating…" row and is
+    // already being torn down, so keep it out of both the probe path and the
+    // reaper's targets.
+    if (p.terminating || (!!p.sessionId && isSessionTerminating(p.sessionId))) {
+      terminating.push(p)
+      continue
+    }
     if (p.running && p.projectSlug && p.sessionId) {
       const liveness = await probeLiveness(p.projectSlug, p.sessionId)
       if (liveness === 'alive') {
@@ -71,7 +87,7 @@ export async function classifySessionPods(
     const zombie = p.running
     stale.push({ jobName: p.jobName, projectSlug: p.projectSlug, sessionId: p.sessionId, zombie })
   }
-  return { running, stale, indeterminate }
+  return { running, stale, indeterminate, terminating }
 }
 
 async function ensureProjectExists(slug: string): Promise<void> {
@@ -154,12 +170,20 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
   // stuck spare is still reaped.
   pods = pods.filter((p) => !isPrewarmed(p))
 
-  const { running, stale } = await classifySessionPods(
+  const { running, stale, terminating } = await classifySessionPods(
     pods, Date.now(), watcherDisplayLiveness, testEnv.startingGraceMs,
   )
 
-  // User-assigned titles, one file read per project.
-  const titleSlugs = [...new Set(running.map((p) => p.projectSlug).filter((v): v is string => !!v))]
+  // Forget terminating marks whose pod is gone (teardown finished) or that
+  // outlived the TTL (a failed teardown), so the set can't leak or strand a
+  // permanently-greyed row.
+  pruneTerminating(new Set(pods.map((p) => p.sessionId).filter((v): v is string => !!v)), Date.now())
+
+  // User-assigned titles, one file read per project — for both live and
+  // terminating rows (the latter keep their title on the way out).
+  const titleSlugs = [...new Set(
+    [...running, ...terminating].map((p) => p.projectSlug).filter((v): v is string => !!v),
+  )]
   const titlesBySlug = new Map(await Promise.all(
     titleSlugs.map(async (slug) => [slug, await getSessionTitles(slug)] as const),
   ))
@@ -202,6 +226,34 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
     }),
   )
 
+  // Terminating rows: a distinct, non-interactive placeholder. Status is
+  // forced to 'running' (never read from the status store, which was evicted
+  // at teardown and would default to 'waiting' — the flash we're killing) and
+  // waitingSinceMs is omitted, so no attention badge fires. The first-message
+  // read is the cached-transcript overload (no jobName) so it never probes the
+  // dying container.
+  const terminatingRows: SessionListEntry[] = await Promise.all(
+    terminating.map(async (p): Promise<SessionListEntry> => {
+      const tool = normalizeTool(p.tool)
+      const prompt = p.sessionId && p.projectSlug
+        ? await getSessionFirstMessage(p.projectSlug, p.sessionId, tool)
+        : undefined
+      return {
+        sessionId: p.sessionId,
+        projectSlug: p.projectSlug,
+        tool,
+        status: 'running',
+        terminating: true,
+        createdAt: formatUtcTimestamp(p.createdAtMs),
+        prompt,
+        title: p.projectSlug ? titlesBySlug.get(p.projectSlug)?.[p.sessionId] : undefined,
+        blockedHosts: [],
+        forwardedPorts: [],
+      }
+    }),
+  )
+  sessions.push(...terminatingRows)
+
   // Project-wide git credential failures — independent of the session set
   // (a bad token persists with zero running sessions and blocks new ones).
   const allGitAuthFailures = await readAllGitAuthFailures()
@@ -229,7 +281,7 @@ export async function reconcileStaleSessions(): Promise<void> {
   }
   const nowMs = Date.now()
   const graceMs = testEnv.startingGraceMs
-  const { running, stale, indeterminate } = await classifySessionPods(pods, nowMs, probeTmuxLiveness, graceMs)
+  const { running, stale, indeterminate, terminating } = await classifySessionPods(pods, nowMs, probeTmuxLiveness, graceMs)
 
   // Surface the near-miss: a running pod we deliberately did NOT reap
   // because its tmux probe was inconclusive (transient kubectl-exec
@@ -277,10 +329,25 @@ export async function reconcileStaleSessions(): Promise<void> {
     // Job list unavailable — the pod-based sweep below still runs.
   }
 
+  // Out-of-band terminating sweep: a pod carrying a deletionTimestamp that
+  // this process didn't issue (an external `kubectl delete pod`, or a delete
+  // from a prior server run whose in-memory mark was lost) and that's stuck
+  // past the grace window. Re-issuing the idempotent Job delete resumes the
+  // teardown; deletes we issued ourselves stay marked and are skipped here.
+  const stuckTerminating: Array<{ jobName: string; projectSlug: string; sessionId: string }> = []
+  for (const p of terminating) {
+    if (!p.terminating || !p.projectSlug || !p.sessionId) continue
+    if (isSessionTerminating(p.sessionId)) continue
+    const ageMs = p.createdAtMs > 0 ? nowMs - p.createdAtMs : Infinity
+    if (ageMs < graceMs) continue
+    stuckTerminating.push({ jobName: p.jobName, projectSlug: p.projectSlug, sessionId: p.sessionId })
+  }
+
   const targets = [
     ...stale.map((s) => ({ jobName: s.jobName, projectSlug: s.projectSlug, sessionId: s.sessionId })),
     ...placeholderStale.map((s) => ({ jobName: s.jobName, projectSlug: s.projectSlug, sessionId: s.sessionId })),
     ...orphanTargets,
+    ...stuckTerminating,
   ]
   if (targets.length === 0) return
 
@@ -295,6 +362,9 @@ export async function reconcileStaleSessions(): Promise<void> {
   }
   for (const o of orphanTargets) {
     serverLog(`[server] stale-reaper: reaping session=${o.sessionId} job=${o.jobName} (orphan Job, no backing pod)`)
+  }
+  for (const t of stuckTerminating) {
+    serverLog(`[server] stale-reaper: reaping session=${t.sessionId} job=${t.jobName} (terminating out-of-band past grace)`)
   }
 
   await Promise.all(targets.map((t) =>
@@ -345,6 +415,16 @@ export async function captureOpencodeFirstMessages(): Promise<void> {
  * are read — parsing each JSONL only for the rows the caller will render.
  * Pass `undefined` / `0` to disable the limit.
  */
+/** A deleted-session entry plus the ms-precision timestamps the listing
+ *  sorts by (the entry's own strings are truncated to second precision for
+ *  display). `deletedAtMs` is set only when a deletion time was recorded. */
+interface CollectedDeleted {
+  entry: DeletedSessionEntry
+  birthtimeMs: number
+  lastActiveMs: number
+  deletedAtMs?: number
+}
+
 export async function listDeletedSessions(
   projectFilter?: string,
   limit?: number,
@@ -377,9 +457,10 @@ export async function listDeletedSessions(
    * Scan one per-tool record dir for deleted-session files: readdir →
    * filter by extension → skip active session ids → stat. A missing dir
    * or an unstattable file is skipped silently. Tracks ms-precision
-   * birthtime alongside each entry so the sort is stable across files
-   * created in the same second (createdAt is truncated to second
-   * precision for display). These are server-written regular files
+   * birthtime and mtime alongside each entry: mtime (last transcript
+   * append) is the last-activity signal, and birthtime tiebreaks the sort
+   * for entries created in the same second (createdAt is truncated to
+   * second precision for display). These are server-written regular files
    * (never symlinks), so plain `fs.stat` is used.
    */
   async function collectDeleted(
@@ -387,8 +468,8 @@ export async function listDeletedSessions(
     ext: string,
     tool: DeletedSessionEntry['tool'],
     slug: string,
-  ): Promise<Array<{ entry: DeletedSessionEntry; birthtimeMs: number }>> {
-    const out: Array<{ entry: DeletedSessionEntry; birthtimeMs: number }> = []
+  ): Promise<CollectedDeleted[]> {
+    const out: CollectedDeleted[] = []
     let files: string[]
     try {
       files = await fs.readdir(dir)
@@ -407,8 +488,10 @@ export async function listDeletedSessions(
             projectSlug: slug,
             tool,
             createdAt: formatUtcTimestamp(stat.birthtimeMs),
+            lastActiveAt: formatUtcTimestamp(stat.mtimeMs),
           },
           birthtimeMs: stat.birthtimeMs,
+          lastActiveMs: stat.mtimeMs,
         })
       } catch {
         continue
@@ -417,7 +500,7 @@ export async function listDeletedSessions(
     return out
   }
 
-  const collected: Array<{ entry: DeletedSessionEntry; birthtimeMs: number }> = []
+  const collected: CollectedDeleted[] = []
   for (const slug of slugs) {
     collected.push(...await collectDeleted(
       path.join(claudeDir(slug), 'projects', '-workspace'), '.jsonl', 'claude', slug,
@@ -429,23 +512,49 @@ export async function listDeletedSessions(
     // session id) is written only for opencode sessions and survives
     // container teardown, making it the authoritative deleted-session
     // record — the same source getDeletedSessionOpencodeFirstUserMessage
-    // reads from. Its rows carry their capture time directly, standing in
-    // for the file birthtime the transcript arms stat.
+    // reads from. opencode leaves no host transcript, so there's no
+    // per-turn activity signal: last-activity is approximated as the later
+    // of the meta row's first-message capture and its creation time.
     for (const meta of await listOpencodeMetaEntries(slug)) {
       if (activeSessionIds.has(meta.sessionId)) continue
+      const birthtimeMs = meta.createdAt.getTime()
+      const capturedMs = meta.capturedAt ? Date.parse(meta.capturedAt) : NaN
+      const lastActiveMs = Number.isNaN(capturedMs) ? birthtimeMs : Math.max(birthtimeMs, capturedMs)
       collected.push({
         entry: {
           sessionId: meta.sessionId,
           projectSlug: slug,
           tool: 'opencode',
-          createdAt: formatUtcTimestamp(meta.createdAt.getTime()),
+          createdAt: formatUtcTimestamp(birthtimeMs),
+          lastActiveAt: formatUtcTimestamp(lastActiveMs),
         },
-        birthtimeMs: meta.createdAt.getTime(),
+        birthtimeMs,
+        lastActiveMs,
       })
     }
   }
 
-  collected.sort((a, b) => b.birthtimeMs - a.birthtimeMs)
+  // Enrich with recorded deletion times (the primary sort key), one query
+  // per project. A session removed out-of-band has no row and falls back to
+  // its last-activity time.
+  const deletedAtSlugs = [...new Set(collected.map((r) => r.entry.projectSlug))]
+  const deletedAtBySlug = new Map(await Promise.all(
+    deletedAtSlugs.map(async (slug) => [slug, await listDeletedAt(slug)] as const),
+  ))
+  for (const r of collected) {
+    const deletedAt = deletedAtBySlug.get(r.entry.projectSlug)?.get(r.entry.sessionId)
+    if (deletedAt) {
+      r.deletedAtMs = deletedAt.getTime()
+      r.entry.deletedAt = formatUtcTimestamp(r.deletedAtMs)
+    }
+  }
+
+  // Newest-deleted first: sort by recorded deletion time, falling back to
+  // last-activity for out-of-band deletions, with birthtime as a stable
+  // tiebreak within the same second.
+  collected.sort((a, b) =>
+    (b.deletedAtMs ?? b.lastActiveMs) - (a.deletedAtMs ?? a.lastActiveMs)
+    || b.birthtimeMs - a.birthtimeMs)
   const slice = limit && limit > 0 ? collected.slice(0, limit) : collected
   const capped = slice.map((r) => r.entry)
   const deletedTitleSlugs = [...new Set(capped.map((e) => e.projectSlug))]

@@ -190,7 +190,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   const provision = useProvisionSession()
   const rowIds = sidebarRowIds(scopedProvisioning, scoped, pendingDeleteIds)
   const attentionTarget = resolveAttentionTarget(
-    scoped.filter((s) => !pendingDeleteIds.includes(s.sessionId)),
+    scoped.filter((s) => !s.terminating && !pendingDeleteIds.includes(s.sessionId)),
     readWaiting,
   )
   const authList = useAuthList()
@@ -206,7 +206,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   }
   const [confirmDelete, setConfirmDelete] = useState<SessionListEntry | null>(null)
   const selectedSession = selectedSessionId && !pendingDeleteIds.includes(selectedSessionId)
-    ? sessions.find((s) => s.sessionId === selectedSessionId) ?? null
+    ? sessions.find((s) => s.sessionId === selectedSessionId && !s.terminating) ?? null
     : null
   const shortcutCtx = useRef({ rowIds, selectedSessionId, selectedSession, newSession, attentionTarget })
   shortcutCtx.current = { rowIds, selectedSessionId, selectedSession, newSession, attentionTarget }
@@ -273,7 +273,10 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   useEffect(() => {
     if (!activeProjectSlug) return
     if (selectedSessionId && scopedProvisioning.some((p) => p.sessionId === selectedSessionId)) return
-    const visible = scoped.filter((s) => !pendingDeleteIds.includes(s.sessionId))
+    // Terminating rows are excluded so a session deleted out from under the
+    // user (CLI/reaper) auto-navigates to a live one instead of showing a
+    // dying container.
+    const visible = scoped.filter((s) => !s.terminating && !pendingDeleteIds.includes(s.sessionId))
     if (visible.length === 0) return
     if (selectedSessionId && visible.some((s) => s.sessionId === selectedSessionId)) return
     const pick = visible.find((s) => s.status === 'waiting') ?? visible[0]

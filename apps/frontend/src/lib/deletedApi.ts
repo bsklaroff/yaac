@@ -12,7 +12,7 @@ import type { DeletedSessionEntry } from '@yaac/shared/types'
  */
 export async function getDeletedSessions(
   projectSlug: string,
-  limit = 25,
+  limit = 100,
 ): Promise<DeletedSessionEntry[]> {
   try {
     return await rpc.session['list-deleted'].$get({

@@ -1,9 +1,9 @@
-import { useEffect, useLayoutEffect, useRef, useState, type JSX } from 'react'
+import { useLayoutEffect, useRef, useState, type JSX } from 'react'
 import clsx from 'clsx'
-import { useQuery } from '@tanstack/react-query'
 import { Collapsible } from '@base-ui/react/collapsible'
-import { BranchIcon, ChevronIcon, CloseIcon, LoadingIcon, RestartIcon, SidebarIcon, TOOL_LABEL } from '#lib/icons'
+import { BranchIcon, ChevronIcon, CloseIcon, LoadingIcon, SidebarIcon, TOOL_LABEL } from '#lib/icons'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
+import { DeletedSessionsButton } from '#components/DeletedSessionsButton'
 import { EmptyState } from '#components/ui/EmptyState'
 import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
 import { ImageBuildIndicator } from '#components/ImageBuildIndicator'
@@ -11,12 +11,10 @@ import { NewSessionButton } from '#components/NewSessionButton'
 import { ProjectActionsMenu } from '#components/ProjectActionsMenu'
 import { UsageBadge } from '#components/UsageBadge'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { dismissProvisioning, restartSession } from '#lib/createSession'
+import { dismissProvisioning } from '#lib/createSession'
 import { deleteSessionOptimistic } from '#lib/deleteSessionFlow'
-import { getDeletedSessions } from '#lib/deletedApi'
-import { useProvisionSession } from '#lib/useProvisionSession'
 import { isUnreadWaiting, useUiStore } from '#store'
-import type { DeletedSessionEntry, GitAuthFailure, ProvisioningSessionEntry, SessionListEntry } from '@yaac/shared/types'
+import type { GitAuthFailure, ProvisioningSessionEntry, SessionListEntry } from '@yaac/shared/types'
 
 /** User-facing session groups, in triage order (Waiting first). */
 const GROUPS: { status: SessionListEntry['status']; label: string; defaultOpen: boolean }[] = [
@@ -26,16 +24,17 @@ const GROUPS: { status: SessionListEntry['status']; label: string; defaultOpen: 
 
 /**
  * The sidebar's selectable rows in display order — provisioning first, then
- * the session groups in triage order, minus mid-delete sessions. This is the
+ * the session groups in triage order, minus terminating sessions. This is the
  * list the Alt+↑/↓ session-switch shortcut steps through (Workspace owns the
- * handler). Deleted rows are excluded: clicking those restarts, not selects.
+ * handler). Terminating rows (server-marked, or a mid-flight optimistic
+ * delete) still render, greyed, but aren't selectable.
  */
 export function sidebarRowIds(
   provisioning: Pick<ProvisioningSessionEntry, 'sessionId'>[],
-  sessions: Pick<SessionListEntry, 'sessionId' | 'status'>[],
+  sessions: Pick<SessionListEntry, 'sessionId' | 'status' | 'terminating'>[],
   pendingDeleteIds: string[],
 ): string[] {
-  const shown = sessions.filter((s) => !pendingDeleteIds.includes(s.sessionId))
+  const shown = sessions.filter((s) => !s.terminating && !pendingDeleteIds.includes(s.sessionId))
   return [
     ...provisioning.map((p) => p.sessionId),
     ...GROUPS.flatMap((g) => shown.filter((s) => s.status === g.status).map((s) => s.sessionId)),
@@ -73,12 +72,14 @@ export function Sidebar({
   /** The active project's rejected git credentials (project-wide flag). */
   gitAuthFailures: GitAuthFailure[]
 }): JSX.Element {
-  // Hide sessions whose delete is in flight (optimistic) until the snapshot
-  // drops them, so the empty state keys off what's actually shown.
-  const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
+  // Sessions on their way out stay visible as greyed "terminating…" rows
+  // (SessionRow styles them) rather than vanishing, so the list doesn't jump.
+  // The empty state keys off whether any group has rows, terminating included.
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
-  const shown = sessions.filter((s) => !pendingDeleteIds.includes(s.sessionId))
-  const visibleCount = shown.filter((s) => GROUPS.some((g) => g.status === s.status)).length
+  const visibleCount = sessions.filter((s) => GROUPS.some((g) => g.status === s.status)).length
+  // Re-fetch the deleted list whenever the active set changes (a just-deleted
+  // session appears, a restarted one drops).
+  const activeSignature = sessions.map((s) => s.sessionId).sort().join(',')
 
   return (
     <aside className="my-2 ml-2 flex w-64 flex-col overflow-hidden rounded-lg
@@ -102,6 +103,7 @@ export function Sidebar({
               className="hover:bg-[#d65858]/25"
             />
           )}
+          {projectSlug && <DeletedSessionsButton projectSlug={projectSlug} activeSignature={activeSignature} />}
           {projectSlug && <NewSessionButton projectSlug={projectSlug} />}
           <button
             onClick={toggleSidebar}
@@ -138,121 +140,11 @@ export function Sidebar({
             key={g.status}
             label={g.label}
             defaultOpen={g.defaultOpen}
-            sessions={shown.filter((s) => s.status === g.status)}
+            sessions={sessions.filter((s) => s.status === g.status)}
           />
         ))}
-        {projectSlug && (
-          <DeletedGroup
-            projectSlug={projectSlug}
-            activeSignature={sessions.map((s) => s.sessionId).sort().join(',')}
-          />
-        )}
       </div>
     </aside>
-  )
-}
-
-/**
- * Deleted sessions for the project (containers gone, transcripts kept).
- * Collapsed by default; lazy-loaded and re-fetched whenever the active-session
- * set changes (so a just-deleted session appears and a restarted one drops).
- * Clicking a row restarts it via the same optimistic "starting" flow.
- */
-function DeletedGroup({
-  projectSlug,
-  activeSignature,
-}: {
-  projectSlug: string
-  activeSignature: string
-}): JSX.Element | null {
-  const [open, setOpen] = useState(false)
-  const [restarting, setRestarting] = useState<string[]>([])
-  const [confirm, setConfirm] = useState<DeletedSessionEntry | null>(null)
-  const provision = useProvisionSession()
-  const optimisticDeleted = useUiStore((s) => s.optimisticDeleted)
-  const removeOptimisticDeleted = useUiStore((s) => s.removeOptimisticDeleted)
-
-  const { data } = useQuery({
-    queryKey: ['deleted', projectSlug, activeSignature],
-    queryFn: () => getDeletedSessions(projectSlug),
-    staleTime: 2000,
-  })
-
-  // Once list-deleted catches up to an optimistic entry, drop the optimistic
-  // copy (the fetched one takes over — same id, no flicker).
-  useEffect(() => {
-    if (!data) return
-    const fetched = new Set(data.map((d) => d.sessionId))
-    for (const e of optimisticDeleted) if (fetched.has(e.sessionId)) removeOptimisticDeleted(e.sessionId)
-  }, [data, optimisticDeleted, removeOptimisticDeleted])
-
-  // Merge optimistic just-deleted entries (for this project) ahead of the
-  // fetched list, de-duped, minus any mid-restart.
-  const fetchedIds = new Set((data ?? []).map((d) => d.sessionId))
-  const merged = [
-    ...optimisticDeleted.filter((e) => e.projectSlug === projectSlug && !fetchedIds.has(e.sessionId)),
-    ...(data ?? []),
-  ]
-  const rows = merged.filter((d) => !restarting.includes(d.sessionId))
-  // Hide the group entirely when there's nothing to show (and it's closed),
-  // so it doesn't add weight for projects with no deleted sessions.
-  if (rows.length === 0 && !open) return null
-
-  const onConfirmRestart = (entry: DeletedSessionEntry): void => {
-    setConfirm(null)
-    setRestarting((r) => [...r, entry.sessionId])
-    removeOptimisticDeleted(entry.sessionId)
-    provision(projectSlug, entry.tool, 'restart', entry.sessionId,
-      (sid, onProgress) => restartSession(sid, onProgress, { projectSlug, tool: entry.tool }))
-  }
-
-  return (
-    <Collapsible.Root open={open} onOpenChange={setOpen} className="py-1">
-      <Collapsible.Trigger className="flex w-full items-center gap-1 px-3 py-1 text-xs font-medium
-        text-text-faint outline-none transition hover:text-text-dim">
-        <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
-        <span>Deleted</span>
-        <span className="text-text-faint/70">{rows.length}</span>
-      </Collapsible.Trigger>
-      <Collapsible.Panel>
-        {rows.length === 0 && (
-          <div className="px-4 py-2 text-xs text-text-faint">No deleted sessions</div>
-        )}
-        {rows.map((d) => (
-          <button
-            key={d.sessionId}
-            onClick={() => setConfirm(d)}
-            title="Restart this session"
-            className="group/d mx-2 flex w-[calc(100%-1rem)] flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left
-              text-sm text-text-dim transition hover:bg-surface-2/60 hover:text-text"
-          >
-            <span className="flex items-center gap-2">
-              <span className="truncate font-medium">{d.title || d.prompt || 'New session'}</span>
-              <RestartIcon
-                size={13}
-                className="ml-auto shrink-0 text-text-faint opacity-0 transition-opacity group-hover/d:opacity-100"
-              />
-            </span>
-            <span className="flex items-center gap-2 text-xs text-text-faint">
-              <span className="truncate">{relativeAge(d.createdAt)}</span>
-              <span className="ml-auto shrink-0">{TOOL_LABEL[d.tool]}</span>
-            </span>
-          </button>
-        ))}
-      </Collapsible.Panel>
-
-      <ConfirmDialog
-        open={!!confirm}
-        onOpenChange={(next) => { if (!next) setConfirm(null) }}
-        destructive={false}
-        title="Restart this session?"
-        description={confirm
-          ? `Recreates the container and resumes ${TOOL_LABEL[confirm.tool]} from where it left off${confirm.prompt ? `:\n“${confirm.prompt}”` : '.'}`
-          : ''}
-        confirmLabel="Restart"
-        onConfirm={() => { if (confirm) onConfirmRestart(confirm) }}
-      />
-    </Collapsible.Root>
   )
 }
 
@@ -380,15 +272,44 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
   const selectedSessionId = useUiStore((s) => s.selectedSessionId)
   const selectSession = useUiStore((s) => s.selectSession)
   const readWaiting = useUiStore((s) => s.readWaiting)
+  const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [hovered, setHovered] = useState(false)
   const unread = isUnreadWaiting(session, readWaiting)
+  // The container is being torn down — server-marked, or an optimistic delete
+  // not yet reflected in the snapshot. Either way the row is on its way out.
+  const terminating = session.terminating || pendingDeleteIds.includes(session.sessionId)
 
-  // Close the dialog immediately; the shared flow hides the row
+  // Close the dialog immediately; the shared flow marks the row terminating
   // optimistically and restores it if the delete fails.
   const onConfirmDelete = (): void => {
     setConfirmDelete(false)
     deleteSessionOptimistic(session)
+  }
+
+  // A terminating row is a non-interactive, greyed placeholder: no pulse, no
+  // unread bubble, no delete × — just a spinner and a "terminating…" line. It
+  // vanishes when the snapshot drops the session.
+  if (terminating) {
+    return (
+      <div className="mx-2">
+        <div
+          aria-disabled="true"
+          className="flex w-full cursor-default flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left text-sm opacity-60"
+        >
+          <span className="flex items-center gap-2">
+            <LoadingIcon size={11} className="shrink-0 animate-spin text-text-faint" />
+            <span className="truncate font-medium text-text-dim">
+              {session.title || session.prompt || 'New session'}
+            </span>
+          </span>
+          <span className="flex items-center gap-2 text-xs text-text-faint">
+            <span className="truncate">terminating…</span>
+            <span className="ml-auto shrink-0">{TOOL_LABEL[session.tool]}</span>
+          </span>
+        </div>
+      </div>
+    )
   }
 
   return (

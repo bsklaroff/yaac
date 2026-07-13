@@ -68,6 +68,11 @@ export interface SessionPod {
   phase: string
   /** True when the pod is Running and not terminating. */
   running: boolean
+  /** The pod has a deletionTimestamp — Kubernetes is tearing it down. Kept
+   *  distinct from `running` (which folds it in) so the display path can
+   *  render the session as a "terminating…" placeholder instead of dropping
+   *  it or misreading it as stale. */
+  terminating: boolean
   /** Pod creationTimestamp as epoch ms. */
   createdAtMs: number
   labels: Record<string, string>
@@ -124,6 +129,7 @@ export function mapSessionPodItem({ metadata, status }: SessionPodItem): Session
     tool: metadata.labels[LABEL_TOOL],
     phase: status.phase,
     running: status.phase === 'Running' && !terminating,
+    terminating,
     createdAtMs: Date.parse(metadata.creationTimestamp),
     labels: metadata.labels,
   }

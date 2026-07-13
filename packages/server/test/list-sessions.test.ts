@@ -18,6 +18,8 @@ import { listSessionPods, LABEL_PREWARMED, type SessionPod } from '#lib/k8s/pods
 import type * as podsModule from '#lib/k8s/pods'
 import * as cleanup from '#lib/session/cleanup'
 import * as opencodeStatus from '#lib/session/opencode-status'
+import { recordSessionDeleted } from '#lib/session/deleted-store'
+import { markSessionTerminating, isSessionTerminating, _clearTerminatingForTests } from '#lib/session/terminating'
 import { closeDb } from '#lib/db/client'
 import {
   claudeDir,
@@ -53,17 +55,50 @@ describe('listActiveSessions', () => {
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
     _clearListActiveInflightForTests()
+    _clearTerminatingForTests()
     mockListPods.mockReset()
     mockListPods.mockResolvedValue([])
   })
 
   afterEach(async () => {
+    _clearTerminatingForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
   })
 
   it('throws NOT_FOUND when the project filter points at an unknown slug', async () => {
     await expect(listActiveSessions('does-not-exist')).rejects.toMatchObject({ code: 'NOT_FOUND' })
+  })
+
+  it('renders a terminating pod as a non-interactive terminating row, not stale', async () => {
+    mockListPods.mockResolvedValue([{
+      jobName: 'yaac-demo-dying',
+      podName: 'yaac-demo-dying-x1',
+      sessionId: 'dying',
+      projectSlug: 'demo',
+      tool: 'claude',
+      phase: 'Running',
+      running: false,
+      terminating: true,
+      createdAtMs: 1_000,
+      labels: {},
+    }])
+    const result = await listActiveSessions()
+    expect(result.stale).toEqual([])
+    expect(result.sessions).toHaveLength(1)
+    const row = result.sessions[0]
+    expect(row.sessionId).toBe('dying')
+    expect(row.terminating).toBe(true)
+    // Forced 'running' with no waiting stamp, so no attention badge fires.
+    expect(row.status).toBe('running')
+    expect(row.waitingSinceMs).toBeUndefined()
+  })
+
+  it('prunes a terminating mark once its pod is gone', async () => {
+    markSessionTerminating('ghost')
+    mockListPods.mockResolvedValue([]) // pod already torn down
+    await listActiveSessions()
+    expect(isSessionTerminating('ghost')).toBe(false)
   })
 
   it('returns empty arrays with no session pods', async () => {
@@ -81,6 +116,7 @@ describe('listActiveSessions', () => {
       tool: 'claude',
       phase: 'Running',
       running: true,
+      terminating: false,
       createdAtMs: 1_000,
       labels: { [LABEL_PREWARMED]: 'true' },
     }])
@@ -115,6 +151,7 @@ describe('listActiveSessions', () => {
         tool: 'claude',
         phase: 'Running',
         running: true,
+        terminating: false,
         createdAtMs: 1_000,
         labels: {},
       },
@@ -126,6 +163,7 @@ describe('listActiveSessions', () => {
         tool: 'claude',
         phase: 'Running',
         running: true,
+        terminating: false,
         createdAtMs: 1_000,
         labels: {},
       },
@@ -146,6 +184,7 @@ describe('listActiveSessions', () => {
         tool: 'claude',
         phase: 'Running',
         running: true,
+        terminating: false,
         createdAtMs: 1_000,
         labels: {},
       },
@@ -157,6 +196,7 @@ describe('listActiveSessions', () => {
         tool: 'claude',
         phase: 'Running',
         running: true,
+        terminating: false,
         createdAtMs: 1_000,
         labels: {},
       },
@@ -227,6 +267,7 @@ describe('listDeletedSessions', () => {
       tool: 'claude',
       phase: 'Running',
       running: true,
+      terminating: false,
       createdAtMs: 0,
       labels: {},
     }])
@@ -234,7 +275,7 @@ describe('listDeletedSessions', () => {
     expect(result).toEqual([])
   })
 
-  it('sorts newest first', async () => {
+  it('sorts by last activity (mtime) newest-first when nothing was recorded', async () => {
     await writeProject('demo')
     const sessionsDir = path.join(claudeDir('demo'), 'projects', '-workspace')
     await fs.mkdir(sessionsDir, { recursive: true })
@@ -242,10 +283,29 @@ describe('listDeletedSessions', () => {
     const newPath = path.join(sessionsDir, 'new.jsonl')
     await fs.writeFile(oldPath, '{}\n')
     await fs.writeFile(newPath, '{}\n')
-    // Backdate the first file so lstat.birthtime sorts it older.
+    // Backdate the first file's mtime so it reads as less-recently-active.
     await fs.utimes(oldPath, new Date('2026-01-01'), new Date('2026-01-01'))
     const result = await listDeletedSessions('demo')
     expect(result.map((r) => r.sessionId)).toEqual(['new', 'old'])
+    // Every entry carries its last-activity time (the mtime it sorted by).
+    expect(result.every((r) => typeof r.lastActiveAt === 'string')).toBe(true)
+  })
+
+  it('orders by recorded deletion time ahead of raw last activity', async () => {
+    await writeProject('demo')
+    const sessionsDir = path.join(claudeDir('demo'), 'projects', '-workspace')
+    await fs.mkdir(sessionsDir, { recursive: true })
+    await fs.writeFile(path.join(sessionsDir, 'a.jsonl'), '{}\n')
+    await fs.writeFile(path.join(sessionsDir, 'b.jsonl'), '{}\n')
+    // `a` was last active long ago but deleted just now; `b` was active more
+    // recently but has no recorded deletion. Newest-deleted-first ⇒ a before b.
+    await fs.utimes(path.join(sessionsDir, 'a.jsonl'), new Date('2026-01-01'), new Date('2026-01-01'))
+    await fs.utimes(path.join(sessionsDir, 'b.jsonl'), new Date('2026-06-01'), new Date('2026-06-01'))
+    await recordSessionDeleted('demo', 'a')
+    const result = await listDeletedSessions('demo')
+    expect(result.map((r) => r.sessionId)).toEqual(['a', 'b'])
+    expect(result.find((r) => r.sessionId === 'a')?.deletedAt).toBeDefined()
+    expect(result.find((r) => r.sessionId === 'b')?.deletedAt).toBeUndefined()
   })
 
   it('caps results to the requested limit after sorting newest-first', async () => {
@@ -315,6 +375,7 @@ describe('captureOpencodeFirstMessages', () => {
       tool: overrides.tool,
       phase: 'Running',
       running: true,
+      terminating: false,
       createdAtMs: 0,
       labels: {},
     }

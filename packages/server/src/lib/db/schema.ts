@@ -41,6 +41,17 @@ export const sessionTitles = snakeCase.table('session_titles', {
   title: text().notNull(),
 }, (t) => [primaryKey({ columns: [t.projectSlug, t.sessionId] })])
 
+/** When each session was deleted — the deleted-session view's primary sort
+ *  key ("newest-deleted first"). Written on every delete path; the listing
+ *  falls back to transcript mtime for sessions with no row here (removed
+ *  out-of-band). Keyed by (projectSlug, sessionId); the tool isn't stored
+ *  because the derive-from-disk scan already knows it. */
+export const deletedSessions = snakeCase.table('deleted_sessions', {
+  projectSlug: text().notNull(),
+  sessionId: text().notNull(),
+  deletedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.projectSlug, t.sessionId] })])
+
 /** Cached opencode first-message snapshots. `createdAt` replaces the meta
  *  file's birthtime that deleted-session listing sorts by. */
 export const opencodeSessionMeta = snakeCase.table('opencode_session_meta', {

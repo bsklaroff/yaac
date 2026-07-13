@@ -20,6 +20,7 @@ vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import { listSessionPods, listSessionJobs } from '#lib/k8s/pods'
 import { probeTmuxLiveness, probeAgentPaneState, cleanupSessionDetached } from '#lib/session/cleanup'
+import { markSessionTerminating, _clearTerminatingForTests } from '#lib/session/terminating'
 import { serverLog } from '#log'
 import { reconcileStaleSessions } from '#lib/session/list'
 
@@ -40,6 +41,7 @@ function pod(sessionId: string, running = true): podsModule.SessionPod {
     tool: 'claude',
     phase: running ? 'Running' : 'Failed',
     running,
+    terminating: false,
     createdAtMs: 1,
     labels: {},
   }
@@ -57,6 +59,7 @@ describe('reconcileStaleSessions', () => {
     mockPaneProbe.mockReset().mockResolvedValue('started')
     mockCleanup.mockClear()
     mockLog.mockClear()
+    _clearTerminatingForTests()
   })
 
   it('reaps a running pod whose tmux is conclusively dead, and audits it', async () => {
@@ -94,6 +97,28 @@ describe('reconcileStaleSessions', () => {
 
     expect(mockCleanup).not.toHaveBeenCalled()
     expect(loggedLines()).toBe('')
+  })
+
+  it('reaps an out-of-band terminating pod past grace that we did not mark', async () => {
+    // deletionTimestamp set (terminating), never entered our registry — an
+    // external delete stuck past grace. Re-issue the idempotent teardown.
+    mockListPods.mockResolvedValue([{ ...pod('term-1'), terminating: true }])
+
+    await reconcileStaleSessions()
+
+    expect(mockCleanup).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 'term-1', jobName: 'yaac-proj-term-1' }),
+    )
+    expect(loggedLines()).toContain('terminating out-of-band past grace')
+  })
+
+  it('does NOT re-reap a terminating pod whose teardown we already issued', async () => {
+    markSessionTerminating('term-2')
+    mockListPods.mockResolvedValue([{ ...pod('term-2'), terminating: true }])
+
+    await reconcileStaleSessions()
+
+    expect(mockCleanup).not.toHaveBeenCalled()
   })
 
   it('reaps a live-tmux pod whose agent pane is still the placeholder past grace', async () => {

@@ -299,6 +299,7 @@ function pod(opts: {
     tool: opts.tool ?? 'claude',
     phase: opts.running === false ? 'Pending' : 'Running',
     running: opts.running !== false,
+    terminating: false,
     createdAtMs: 0,
     labels: {
       [JOB_NAME_LABEL]: `yaac-${slug}-${opts.sessionId}`,

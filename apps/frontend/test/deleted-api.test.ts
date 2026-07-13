@@ -37,13 +37,13 @@ describe('getDeletedSessions', () => {
     expect(result).toEqual(entries)
   })
 
-  it('defaults the limit to 25', async () => {
+  it('defaults the limit to 100', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve([]) })
     globalThis.fetch = fetchMock as unknown as typeof fetch
 
     await getDeletedSessions('proj')
 
-    expect(fetchMock.mock.calls[0][0] as string).toContain('limit=25')
+    expect(fetchMock.mock.calls[0][0] as string).toContain('limit=100')
   })
 
   it('degrades to an empty list when the server lacks the route (404)', async () => {

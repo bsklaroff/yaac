@@ -382,6 +382,11 @@ export interface SessionListEntry {
   projectSlug: string
   tool: AgentTool
   status: 'running' | 'waiting'
+  /** The session's container is being torn down (its pod has a deletion
+   *  timestamp, or a delete was just issued). Orthogonal to `status`: the
+   *  row is on its way out and should render as a non-interactive
+   *  "terminating…" placeholder rather than a live session. */
+  terminating?: boolean
   /** Pod created time as 'YYYY-MM-DD HH:MM:SS' (UTC). */
   createdAt: string
   /** Epoch ms when the current waiting spell began, stamped by the
@@ -427,8 +432,16 @@ export interface DeletedSessionEntry {
   sessionId: string
   projectSlug: string
   tool: AgentTool
-  /** 'YYYY-MM-DD HH:MM:SS' (UTC). */
+  /** 'YYYY-MM-DD HH:MM:SS' (UTC). Session birth time. */
   createdAt: string
+  /** Last-activity time as 'YYYY-MM-DD HH:MM:SS' (UTC) — the transcript's
+   *  mtime for claude/codex; for opencode (no host transcript) the later of
+   *  its first-message capture and creation time, so it's approximate. */
+  lastActiveAt?: string
+  /** When the session was deleted, as 'YYYY-MM-DD HH:MM:SS' (UTC). Recorded
+   *  at delete time; the primary sort key (newest-deleted first). Absent for
+   *  sessions removed out-of-band, which fall back to `lastActiveAt`. */
+  deletedAt?: string
   /** First user message from the transcript, if any. */
   prompt?: string
   /** User-assigned display title (survives delete; ids are stable). */

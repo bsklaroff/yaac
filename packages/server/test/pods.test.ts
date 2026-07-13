@@ -133,6 +133,7 @@ describe('listSessionPods', () => {
       tool: 'codex',
       phase: 'Running',
       running: true,
+      terminating: false,
       createdAtMs: Date.parse('2026-06-01T00:00:00Z'),
       labels: expect.any(Object) as Record<string, string>,
     }])
@@ -180,9 +181,12 @@ describe('listSessionPods', () => {
     const pods = await listSessionPods()
     expect(pods[0].running).toBe(false)
     expect(pods[0].phase).toBe('Pending')
-    // Running phase but terminating → not running.
+    // A pending (not deleting) pod is not terminating.
+    expect(pods[0].terminating).toBe(false)
+    // Running phase but terminating → not running, and flagged terminating.
     expect(pods[1].phase).toBe('Running')
     expect(pods[1].running).toBe(false)
+    expect(pods[1].terminating).toBe(true)
   })
 
   it('throws when status.phase is missing', async () => {
@@ -215,6 +219,7 @@ describe('findSessionPod', () => {
       tool: 'claude',
       phase: 'Running',
       running: true,
+      terminating: false,
       createdAtMs: 0,
       labels: {},
       ...overrides,

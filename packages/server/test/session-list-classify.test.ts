@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { classifySessionPods } from '#lib/session/list'
+import { markSessionTerminating, _clearTerminatingForTests } from '#lib/session/terminating'
 import type { TmuxLiveness } from '#lib/session/cleanup'
 import type { SessionPod } from '#lib/k8s/pods'
 
@@ -19,6 +20,7 @@ function pod(overrides: {
   sessionId?: string
   project?: string
   running?: boolean
+  terminating?: boolean
   phase?: string
   ageMs?: number
 }): SessionPod {
@@ -34,12 +36,15 @@ function pod(overrides: {
     tool: 'claude',
     phase: overrides.phase ?? (running ? 'Running' : 'Failed'),
     running,
+    terminating: overrides.terminating ?? false,
     createdAtMs,
     labels: {},
   }
 }
 
 describe('classifySessionPods', () => {
+  afterEach(() => _clearTerminatingForTests())
+
   it('puts running pods with live tmux into the running bucket', async () => {
     const p = pod({})
     const result = await classifySessionPods([p], now(), probe('alive'), GRACE_MS)
@@ -153,5 +158,30 @@ describe('classifySessionPods', () => {
     expect(zeroGrace.stale).toHaveLength(1)
     const largeGrace = await classifySessionPods([p], now(), probe('alive'), 10_000)
     expect(largeGrace.stale).toEqual([])
+  })
+
+  it('routes a pod with a deletionTimestamp to the terminating bucket, never stale', async () => {
+    // Old enough to be stale and probe dead — but terminating wins, so it's
+    // neither reaped nor shown as active.
+    const p = pod({ jobName: 'yaac-proj-term', sessionId: 't1', terminating: true, ageMs: GRACE_MS + 5_000 })
+    const result = await classifySessionPods([p], now(), probe('dead'), GRACE_MS)
+    expect(result.terminating).toEqual([p])
+    expect(result.running).toEqual([])
+    expect(result.stale).toEqual([])
+  })
+
+  it('routes a registry-marked session to terminating without probing it', async () => {
+    markSessionTerminating('s1')
+    const p = pod({ sessionId: 's1' })
+    const probeFn = vi.fn<(slug: string, sessionId: string) => Promise<TmuxLiveness>>().mockResolvedValue('alive')
+    const result = await classifySessionPods([p], now(), probeFn, GRACE_MS)
+    expect(result.terminating).toEqual([p])
+    expect(result.running).toEqual([])
+    expect(probeFn).not.toHaveBeenCalled()
+  })
+
+  it('leaves the terminating bucket empty for ordinary pods', async () => {
+    const result = await classifySessionPods([pod({})], now(), probe('alive'), GRACE_MS)
+    expect(result.terminating).toEqual([])
   })
 })

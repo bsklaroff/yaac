@@ -133,12 +133,14 @@ function renderDeleted(
   const promptWidth = Math.max(10, termWidth - fixedWidth)
 
   console.log('')
-  console.log(`${'SESSION'.padEnd(10)} ${'PROJECT'.padEnd(projectWidth)} ${'TOOL'.padEnd(toolWidth)} ${'CREATED'.padEnd(19)}  PROMPT`)
+  console.log(`${'SESSION'.padEnd(10)} ${'PROJECT'.padEnd(projectWidth)} ${'TOOL'.padEnd(toolWidth)} ${'DELETED'.padEnd(19)}  PROMPT`)
   console.log(`${'-'.repeat(10)} ${'-'.repeat(projectWidth)} ${'-'.repeat(toolWidth)} ${'-'.repeat(19)}  ${'-'.repeat(Math.min(promptWidth, 40))}`)
 
   for (const s of deleted) {
     const promptText = truncatePrompt(s.prompt, promptWidth)
-    console.log(`${s.sessionId.slice(0, 8).padEnd(10)} ${s.projectSlug.padEnd(projectWidth)} ${s.tool.padEnd(toolWidth)} ${s.createdAt}  ${promptText}`)
+    // The row's sort key: recorded deletion time, else last activity, else birth.
+    const when = s.deletedAt ?? s.lastActiveAt ?? s.createdAt
+    console.log(`${s.sessionId.slice(0, 8).padEnd(10)} ${s.projectSlug.padEnd(projectWidth)} ${s.tool.padEnd(toolWidth)} ${when}  ${promptText}`)
   }
   if (limit !== undefined && deleted.length >= limit) {
     console.log(`(showing most recent ${limit}; pass --all or -n <num> to see more)`)

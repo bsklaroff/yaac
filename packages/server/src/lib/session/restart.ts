@@ -8,6 +8,7 @@ import {
   worktreesDir,
 } from '@yaac/shared/project-paths'
 import { cleanupSession } from '#lib/session/cleanup'
+import { clearSessionTerminating } from '#lib/session/terminating'
 import { hasOpencodeMeta } from '#lib/session/opencode-status'
 import { normalizeTool } from '#lib/session/status'
 import { createSession, type SessionCreateResult } from '#session-create'
@@ -121,6 +122,11 @@ export async function restartSession(
     opts.onProgress?.(`Stopping session job ${jobName}...`)
     await cleanupSession({ jobName, projectSlug, sessionId })
   }
+
+  // A restart reuses the session id, so drop any terminating mark left by the
+  // cleanup above (or an earlier teardown) before the fresh pod comes up —
+  // otherwise the new session would render as "terminating…".
+  clearSessionTerminating(sessionId)
 
   return createSession(projectSlug, {
     resume: true,

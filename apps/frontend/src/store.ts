@@ -220,19 +220,19 @@ export function isUnreadWaiting(
  * Per-project count of unread waiting sessions — waiting and not yet viewed
  * during the current waiting spell. Drives the rail attention badge, so a
  * waiting session the user has already looked at doesn't keep flagging.
- * Sessions whose delete is in flight are excluded: a terminating pod
- * lingers in the snapshot for a few seconds reading as a fresh 'waiting'
- * spell (its status entry is evicted before the pod drops), and must not
- * flash the badge on its way out.
+ * Terminating sessions never count: the server marks them `terminating` (and
+ * forces their status off 'waiting'), and a UI-initiated delete not yet
+ * reflected in the snapshot is covered by `pendingDeleteIds` — either way a
+ * session on its way out must not flash the badge.
  */
 export function unreadWaitingBySlug(
-  sessions: Pick<SessionListEntry, 'sessionId' | 'projectSlug' | 'status' | 'waitingSinceMs'>[],
+  sessions: Pick<SessionListEntry, 'sessionId' | 'projectSlug' | 'status' | 'waitingSinceMs' | 'terminating'>[],
   readWaiting: Record<string, number>,
   pendingDeleteIds: string[] = [],
 ): Record<string, number> {
   const out: Record<string, number> = {}
   for (const s of sessions) {
-    if (pendingDeleteIds.includes(s.sessionId)) continue
+    if (s.terminating || pendingDeleteIds.includes(s.sessionId)) continue
     if (isUnreadWaiting(s, readWaiting)) {
       out[s.projectSlug] = (out[s.projectSlug] ?? 0) + 1
     }
@@ -317,11 +317,12 @@ interface UiState {
    *  these only bridge the gap until the first snapshot frame carries the id,
    *  then they're pruned. */
   optimisticProvisioning: ProvisioningSessionEntry[]
-  /** Sessions whose delete was confirmed — hidden optimistically until the
-   *  server's (detached) cleanup completes and the snapshot drops them. */
+  /** Sessions whose delete was confirmed — rendered as "terminating…"
+   *  optimistically (bridging the gap before the snapshot carries the
+   *  server's own `terminating` flag) until the snapshot drops them. */
   pendingDeleteIds: string[]
   /** Just-deleted sessions (that had history) shown optimistically in the
-   *  Deleted group until the server's list-deleted catches up. */
+   *  deleted-sessions view until the server's list-deleted catches up. */
   optimisticDeleted: DeletedSessionEntry[]
   /** Read marks for waiting sessions: sessionId → waitingSinceMs of the
    *  spell the user viewed. Keying by spell means a mark from an earlier
@@ -358,6 +359,11 @@ interface UiState {
   openSettings: (section?: SettingsSection, focusTool?: AgentTool) => void
   closeSettings: () => void
   setSettingsSection: (section: SettingsSection) => void
+  /** Whether the full-screen deleted-sessions view is open. Opened from the
+   *  sidebar header; scoped to the active project when rendered. */
+  deletedOverlayOpen: boolean
+  openDeletedOverlay: () => void
+  closeDeletedOverlay: () => void
   /** Add a locally-initiated provisioning row (dedup by id). */
   addOptimisticProvisioning: (entry: ProvisioningSessionEntry) => void
   /** Patch a tracked optimistic row's message or error (no-op if absent). */
@@ -434,6 +440,9 @@ export const useUiStore = create<UiState>((set) => ({
   })),
   closeSettings: () => set({ settingsOpen: false, settingsFocusTool: null }),
   setSettingsSection: (section) => set({ settingsSection: section }),
+  deletedOverlayOpen: false,
+  openDeletedOverlay: () => set({ deletedOverlayOpen: true }),
+  closeDeletedOverlay: () => set({ deletedOverlayOpen: false }),
   addOptimisticProvisioning: (entry) => set((s) => (
     s.optimisticProvisioning.some((e) => e.sessionId === entry.sessionId)
       ? s

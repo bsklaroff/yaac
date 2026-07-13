@@ -19,6 +19,7 @@ function pod(o: Partial<SessionPod> & { prewarmed?: boolean } = {}): SessionPod 
     tool: 'claude',
     phase: 'Running',
     running: true,
+    terminating: false,
     createdAtMs: 1_000,
     labels: labels ?? (prewarmed ? { [LABEL_PREWARMED]: 'true' } : {}),
     ...rest,

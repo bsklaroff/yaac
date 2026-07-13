@@ -86,6 +86,7 @@ function sessionPod(opts: { podName: string; sessionId: string; slug?: string })
     tool: 'claude',
     phase: 'Running',
     running: true,
+    terminating: false,
     createdAtMs: Date.parse('2026-06-01T00:00:00Z'),
     labels: {
       [JOB_NAME_LABEL]: `yaac-${opts.slug ?? 'demo'}-${opts.sessionId}`,

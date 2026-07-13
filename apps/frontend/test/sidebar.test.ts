@@ -15,11 +15,20 @@ describe('sidebarRowIds', () => {
     expect(rows).toEqual(['prov-1', 'wait-1', 'run-1', 'run-2'])
   })
 
-  it('excludes mid-delete sessions, matching the rendered list', () => {
+  it('excludes optimistically-deleting sessions (pendingDeleteIds)', () => {
     const rows = sidebarRowIds(
       [],
       [session('a', 'waiting'), session('b', 'running')],
       ['a'],
+    )
+    expect(rows).toEqual(['b'])
+  })
+
+  it('excludes server-marked terminating rows (they render but are not selectable)', () => {
+    const rows = sidebarRowIds(
+      [],
+      [{ sessionId: 'a', status: 'running', terminating: true }, session('b', 'running')],
+      [],
     )
     expect(rows).toEqual(['b'])
   })

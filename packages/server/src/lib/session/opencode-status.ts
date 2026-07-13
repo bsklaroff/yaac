@@ -213,11 +213,12 @@ export async function hasOpencodeMeta(projectSlug: string, sessionId: string): P
  *  files; opencode sessions leave no transcript on the host). */
 export async function listOpencodeMetaEntries(
   slug: string,
-): Promise<Array<{ sessionId: string; createdAt: Date }>> {
+): Promise<Array<{ sessionId: string; createdAt: Date; capturedAt: string | null }>> {
   const db = await getDb()
   return db.select({
     sessionId: opencodeSessionMeta.sessionId,
     createdAt: opencodeSessionMeta.createdAt,
+    capturedAt: opencodeSessionMeta.capturedAt,
   }).from(opencodeSessionMeta).where(eq(opencodeSessionMeta.projectSlug, slug))
 }
 

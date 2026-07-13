@@ -39,6 +39,7 @@ function pod(overrides: Partial<SessionPod> = {}): SessionPod {
     tool: 'claude',
     phase: 'Running',
     running: true,
+    terminating: false,
     createdAtMs: 1_000_000,
     labels: {},
     ...overrides,

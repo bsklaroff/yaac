@@ -76,6 +76,7 @@ import {
   _clearTmuxAliveCacheForTests,
   _clearAgentStartedCacheForTests,
 } from '#lib/session/cleanup'
+import { isSessionTerminating, _clearTerminatingForTests } from '#lib/session/terminating'
 import { serverLog } from '#log'
 import { setDataDir } from '@yaac/shared/project-paths'
 
@@ -93,6 +94,7 @@ function podWithSession(sessionId: string): podsModule.SessionPod {
     tool: 'claude',
     phase: 'Running',
     running: true,
+    terminating: false,
     createdAtMs: 0,
     labels: {},
   }
@@ -339,6 +341,19 @@ describe('cleanupSessionDetached', () => {
     expect(logged).toContain('session=s-audit')
     expect(logged).toContain('job=yaac-p-s-audit')
     expect(logged).toContain('project=proj-a')
+  })
+
+  it('marks the session terminating so the display path can render it', async () => {
+    _clearTerminatingForTests()
+    execFileMock.mockReset()
+    execFileMock.mockResolvedValue(undefined)
+    await cleanupSessionDetached({
+      jobName: 'yaac-p-s-mark',
+      projectSlug: 'proj-a',
+      sessionId: 's-mark',
+    })
+    expect(isSessionTerminating('s-mark')).toBe(true)
+    _clearTerminatingForTests()
   })
 })
 
