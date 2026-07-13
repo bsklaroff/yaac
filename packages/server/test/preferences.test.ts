@@ -1,15 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
+import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { getDb, closeDb } from '#lib/db/client'
+import { preferences, shortcutOverrides } from '#lib/db/schema'
 import {
-  preferencesPath,
-  loadPreferences,
-  savePreferences,
   getDefaultTool,
   setDefaultTool,
   setDefaultToolChecked,
   isValidTool,
+  isSerializedChord,
   getShortcutOverrides,
   setShortcutOverride,
   clearShortcutOverrides,
@@ -24,88 +22,37 @@ const chord = (code: string, over: Partial<SerializedChord> = {}): SerializedCho
 describe('preferences', () => {
   let tmpDir: string
 
-  beforeEach(async () => {
+  // One PGlite per file: cold-init is the expensive part, so the tests
+  // share a data dir and wipe the tables instead of recreating it.
+  beforeAll(async () => {
     tmpDir = await createTempDataDir()
   })
 
-  afterEach(async () => {
+  afterAll(async () => {
+    await closeDb()
     await cleanupTempDir(tmpDir)
   })
 
-  it('preferencesPath returns path inside data dir', () => {
-    expect(preferencesPath()).toBe(path.join(getDataDir(), '.preferences.json'))
+  beforeEach(async () => {
+    const db = await getDb()
+    await db.delete(shortcutOverrides)
+    await db.delete(preferences)
   })
 
-  describe('loadPreferences', () => {
-    it('returns empty object when file is missing', async () => {
-      const result = await loadPreferences()
-      expect(result).toEqual({})
-    })
-
-    it('returns preferences from valid file', async () => {
-      await fs.writeFile(
-        preferencesPath(),
-        JSON.stringify({ defaultTool: 'codex' }),
-      )
-      const result = await loadPreferences()
-      expect(result).toEqual({ defaultTool: 'codex' })
-    })
-
-    it('ignores invalid defaultTool values', async () => {
-      await fs.writeFile(
-        preferencesPath(),
-        JSON.stringify({ defaultTool: 'invalid' }),
-      )
-      const result = await loadPreferences()
-      expect(result).toEqual({})
-    })
-
-    it('returns empty object for invalid JSON', async () => {
-      await fs.writeFile(preferencesPath(), 'not json')
-      const result = await loadPreferences()
-      expect(result).toEqual({})
-    })
-
-    it('returns empty object when file is an array', async () => {
-      await fs.writeFile(preferencesPath(), '[]')
-      const result = await loadPreferences()
-      expect(result).toEqual({})
-    })
-  })
-
-  describe('savePreferences', () => {
-    it('writes preferences to file', async () => {
-      await savePreferences({ defaultTool: 'claude' })
-      const raw = await fs.readFile(preferencesPath(), 'utf8')
-      expect(JSON.parse(raw)).toEqual({ defaultTool: 'claude' })
-    })
-  })
-
-  describe('getDefaultTool', () => {
+  describe('getDefaultTool / setDefaultTool', () => {
     it('returns undefined when no preference set', async () => {
-      const tool = await getDefaultTool()
-      expect(tool).toBeUndefined()
+      expect(await getDefaultTool()).toBeUndefined()
     })
 
-    it('returns the configured tool', async () => {
-      await savePreferences({ defaultTool: 'codex' })
-      const tool = await getDefaultTool()
-      expect(tool).toBe('codex')
-    })
-  })
-
-  describe('setDefaultTool', () => {
-    it('sets the default tool', async () => {
+    it('round-trips the configured tool', async () => {
       await setDefaultTool('codex')
-      const prefs = await loadPreferences()
-      expect(prefs.defaultTool).toBe('codex')
+      expect(await getDefaultTool()).toBe('codex')
     })
 
-    it('overwrites existing default tool', async () => {
+    it('overwrites an existing default tool', async () => {
       await setDefaultTool('claude')
       await setDefaultTool('codex')
-      const prefs = await loadPreferences()
-      expect(prefs.defaultTool).toBe('codex')
+      expect(await getDefaultTool()).toBe('codex')
     })
   })
 
@@ -125,12 +72,24 @@ describe('preferences', () => {
     })
   })
 
+  describe('isSerializedChord', () => {
+    it('accepts a full chord', () => {
+      expect(isSerializedChord(chord('KeyG'))).toBe(true)
+    })
+
+    it('rejects partial or non-object values', () => {
+      expect(isSerializedChord({ code: 'KeyW' })).toBe(false) // missing modifiers
+      expect(isSerializedChord({ ...chord('KeyG'), alt: 'yes' })).toBe(false)
+      expect(isSerializedChord(null)).toBe(false)
+      expect(isSerializedChord('KeyG')).toBe(false)
+    })
+  })
+
   describe('setDefaultToolChecked', () => {
     it('persists a valid tool and returns it', async () => {
       const saved = await setDefaultToolChecked('codex')
       expect(saved).toBe('codex')
-      const prefs = await loadPreferences()
-      expect(prefs.defaultTool).toBe('codex')
+      expect(await getDefaultTool()).toBe('codex')
     })
 
     it('throws VALIDATION for an unknown tool', async () => {
@@ -151,7 +110,7 @@ describe('preferences', () => {
       await setShortcutOverride('new-session', chord('KeyG'))
       expect(await getShortcutOverrides()).toEqual({ 'new-session': chord('KeyG') })
       // The unrelated preference is untouched.
-      expect((await loadPreferences()).defaultTool).toBe('codex')
+      expect(await getDefaultTool()).toBe('codex')
     })
 
     it('accumulates overrides and overwrites one in place', async () => {
@@ -169,17 +128,7 @@ describe('preferences', () => {
       await setShortcutOverride('new-session', chord('KeyG'))
       await clearShortcutOverrides()
       expect(await getShortcutOverrides()).toEqual({})
-      expect((await loadPreferences()).defaultTool).toBe('claude')
-    })
-
-    it('loadPreferences drops malformed shortcut entries', async () => {
-      await fs.writeFile(preferencesPath(), JSON.stringify({
-        shortcuts: {
-          'new-session': chord('KeyG'),
-          'bad': { code: 'KeyW' }, // missing modifier flags
-        },
-      }))
-      expect((await loadPreferences()).shortcuts).toEqual({ 'new-session': chord('KeyG') })
+      expect(await getDefaultTool()).toBe('claude')
     })
   })
 })

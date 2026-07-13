@@ -6,12 +6,12 @@ import * as pods from '@yaac/server/lib/k8s/pods'
 import * as cleanup from '@yaac/server/lib/session/cleanup'
 import * as sessionCreate from '@yaac/server/session-create'
 import { resolveRestartTarget, restartSession } from '@yaac/server/lib/session/restart'
+import { saveOpencodeMeta } from '@yaac/server/lib/session/opencode-status'
+import { closeDb } from '@yaac/server/lib/db/client'
 import { sessionRestart } from '#commands/session-restart'
 import {
   claudeDir,
   codexTranscriptDir,
-  opencodeMetaDir,
-  opencodeMetaFile,
   worktreesDir,
   projectDir,
 } from '@yaac/shared/project-paths'
@@ -52,6 +52,7 @@ describe('resolveRestartTarget', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks()
+    await closeDb()
     await cleanupTempDir(tmpDir)
   })
 
@@ -114,12 +115,11 @@ describe('resolveRestartTarget', () => {
     expect(info.jobName).toBeNull()
   })
 
-  it('detects tool=opencode from the meta file when no jsonl transcript exists', async () => {
+  it('detects tool=opencode from the meta snapshot when no jsonl transcript exists', async () => {
     listSpy.mockResolvedValueOnce([])
     await fs.mkdir(projectDir('demo'), { recursive: true })
     await fs.mkdir(path.join(worktreesDir('demo'), 'ocsess'), { recursive: true })
-    await fs.mkdir(opencodeMetaDir('demo'), { recursive: true })
-    await fs.writeFile(opencodeMetaFile('demo', 'ocsess'), '{}')
+    await saveOpencodeMeta('demo', 'ocsess', { firstMessage: 'build a thing' })
     const info = await resolveRestartTarget('ocsess')
     expect(info.tool).toBe('opencode')
     expect(info.jobName).toBeNull()
@@ -184,6 +184,7 @@ describe('restartSession', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks()
+    await closeDb()
     await cleanupTempDir(tmpDir)
   })
 

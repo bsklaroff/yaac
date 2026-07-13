@@ -196,3 +196,20 @@ helpers via `@yaac/test-utils/setup`)
   `.server.lock` keeps single-writer.
 - PGlite adds ~50-100MB RSS to the server; drizzle `latest` dist-tag is still 0.45.x — everything
   pinned exact via catalog so nothing floats.
+
+## As-built deviations (2026-07-13)
+
+- **Casing is declared in the schema, not the driver/kit config.** drizzle v1 replaced the
+  old `casing: 'snake_case'` driver/kit option with a schema-level API: tables are defined
+  via `snakeCase.table(...)` (`drizzle-orm/pg-core`), so column identifiers derive from the
+  camelCase TS keys (`createdAt` → `created_at`) with no explicit name args, consistently
+  across drizzle-kit generate and runtime queries. (The old config key is silently ignored
+  by kit v1's `generate` — verified empirically before switching to the new API.)
+- **drizzle-kit v1 migration layout**: one datestamped dir per migration
+  (`drizzle/<ts>_init/{migration.sql,snapshot.json}`), no `meta/_journal.json`. The
+  `drizzle-orm/pglite` migrator consumes it directly.
+- The post-lock DB init (`getDb` → `importLegacyJsonStores` → `restoreTokens(loadTokens())`)
+  runs *before* the start-banner `mintExchangeToken()` — that mint's `onChanged` persist
+  rewrites the whole tokens table from the in-memory set, so restore must happen first.
+- The build script's copy step is `rm -rf dist/drizzle && cp -r …` — tsup's `clean` only
+  removes its own outputs (same reason the frontend copy is preceded by `rm -rf`).

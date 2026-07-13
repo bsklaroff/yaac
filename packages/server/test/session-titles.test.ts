@@ -1,11 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import fs from 'node:fs/promises'
-import path from 'node:path'
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { projectDir } from '@yaac/shared/project-paths'
+import { getDb, closeDb } from '#lib/db/client'
+import { sessionTitles } from '#lib/db/schema'
 import {
   MAX_TITLE_LENGTH,
-  sessionTitlesPath,
   normalizeTitle,
   getSessionTitles,
   setSessionTitle,
@@ -14,16 +12,20 @@ import {
 describe('session titles', () => {
   let tmpDir: string
 
-  beforeEach(async () => {
+  // One PGlite per file: cold-init is the expensive part, so the tests
+  // share a data dir and wipe the table instead of recreating it.
+  beforeAll(async () => {
     tmpDir = await createTempDataDir()
   })
 
-  afterEach(async () => {
+  afterAll(async () => {
+    await closeDb()
     await cleanupTempDir(tmpDir)
   })
 
-  it('sessionTitlesPath lives inside the project dir', () => {
-    expect(sessionTitlesPath('proj')).toBe(path.join(projectDir('proj'), 'session-titles.json'))
+  beforeEach(async () => {
+    const db = await getDb()
+    await db.delete(sessionTitles)
   })
 
   it('normalizeTitle collapses whitespace and caps the length', () => {
@@ -40,18 +42,19 @@ describe('session titles', () => {
     expect(await getSessionTitles('other')).toEqual({ 'sid-1': 'unrelated' })
   })
 
+  it('overwrites an existing title in place', async () => {
+    await setSessionTitle('proj', 'sid-1', 'first name')
+    await setSessionTitle('proj', 'sid-1', 'second name')
+    expect(await getSessionTitles('proj')).toEqual({ 'sid-1': 'second name' })
+  })
+
   it('a blank title clears the entry', async () => {
     await setSessionTitle('proj', 'sid-1', 'temp name')
     await setSessionTitle('proj', 'sid-1', '   ')
     expect(await getSessionTitles('proj')).toEqual({})
   })
 
-  it('returns {} for a missing or corrupt file', async () => {
+  it('returns {} for a project with no titles', async () => {
     expect(await getSessionTitles('nope')).toEqual({})
-    await fs.mkdir(projectDir('bad'), { recursive: true })
-    await fs.writeFile(sessionTitlesPath('bad'), 'not json')
-    expect(await getSessionTitles('bad')).toEqual({})
-    await fs.writeFile(sessionTitlesPath('bad'), JSON.stringify({ a: 1, b: 'ok', c: '' }))
-    expect(await getSessionTitles('bad')).toEqual({ b: 'ok' })
   })
 })

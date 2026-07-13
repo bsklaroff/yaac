@@ -16,11 +16,10 @@ import { listSessionPods, LABEL_PREWARMED, type SessionPod } from '#lib/k8s/pods
 import type * as podsModule from '#lib/k8s/pods'
 import * as cleanup from '#lib/session/cleanup'
 import * as opencodeStatus from '#lib/session/opencode-status'
+import { closeDb } from '#lib/db/client'
 import {
   claudeDir,
   getProjectsDir,
-  opencodeMetaDir,
-  opencodeMetaFile,
   projectDir,
 } from '@yaac/shared/project-paths'
 import {
@@ -57,6 +56,7 @@ describe('listActiveSessions', () => {
   })
 
   afterEach(async () => {
+    await closeDb()
     await cleanupTempDir(tmpDir)
   })
 
@@ -142,6 +142,7 @@ describe('listDeletedSessions', () => {
   })
 
   afterEach(async () => {
+    await closeDb()
     await cleanupTempDir(tmpDir)
   })
 
@@ -234,12 +235,10 @@ describe('listDeletedSessions', () => {
 
   it('enumerates opencode sessions from the meta cache with no active pod', async () => {
     await writeProject('demo')
-    await fs.mkdir(opencodeMetaDir('demo'), { recursive: true })
-    await fs.writeFile(
-      opencodeMetaFile('demo', 'ocsess'),
-      JSON.stringify({ firstMessage: 'build a thing', capturedAt: '2026-05-01T00:00:00.000Z' }),
-    )
-    await fs.writeFile(path.join(opencodeMetaDir('demo'), 'ignoreme.txt'), 'not json')
+    await opencodeStatus.saveOpencodeMeta('demo', 'ocsess', {
+      firstMessage: 'build a thing',
+      capturedAt: '2026-05-01T00:00:00.000Z',
+    })
     const result = await listDeletedSessions('demo')
     expect(result).toHaveLength(1)
     expect(result[0]).toMatchObject({
@@ -285,6 +284,7 @@ describe('captureOpencodeFirstMessages', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks()
+    await closeDb()
     await cleanupTempDir(tmpDir)
   })
 
@@ -326,6 +326,7 @@ describe('listActiveSessions project filter', () => {
   })
 
   afterEach(async () => {
+    await closeDb()
     await cleanupTempDir(tmpDir)
   })
 

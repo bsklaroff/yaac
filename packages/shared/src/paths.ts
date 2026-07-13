@@ -74,17 +74,6 @@ export function serverLogPath(): string {
   return path.join(getDataDir(), 'server.log')
 }
 
-/**
- * Client tokens (0600): durable remote-CLI tokens, pending one-time
- * exchange tokens, and browser web sessions. Unlike the lock secret
- * these survive server restarts — remote CLIs authenticate with them and
- * browsers keep their cookies across a rebuild — so the file is exactly
- * as sensitive as the lock file.
- */
-export function tokensPath(): string {
-  return path.join(getDataDir(), 'tokens.json')
-}
-
 export async function ensureDataDir(): Promise<void> {
   await fs.mkdir(getProjectsDir(), { recursive: true })
 }

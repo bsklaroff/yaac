@@ -38,9 +38,12 @@ describe('yaac auth token (real CLI + real server)', () => {
     expect(revoke.exitCode, revoke.stderr).toBe(0)
     expect(revoke.stdout).toMatch(/Revoked token 'laptop'/)
 
+    // The start banner always mints a one-time exchange token, so the
+    // list is never empty — assert the durable token is gone instead.
     const empty = await runYaac(testEnv.env, 'auth', 'token', 'list')
     expect(empty.exitCode).toBe(0)
-    expect(empty.stdout).toMatch(/No tokens/)
+    expect(empty.stdout).not.toContain('laptop')
+    expect(empty.stdout).not.toMatch(/durable/)
   })
 
   it('duplicate create fails with the conflict message', async () => {

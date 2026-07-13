@@ -1,23 +1,18 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import { projectDir } from '@yaac/shared/project-paths'
+import { and, eq } from 'drizzle-orm'
+import { getDb } from '#lib/db/client'
+import { sessionTitles } from '#lib/db/schema'
 
 /**
- * Session titles, stored per project in
- * `<projectDir>/session-titles.json` ({ sessionId: title }). Holds both
- * user-assigned titles and model-generated ones (the title-generation loop
- * fills in untitled sessions; a user rename overwrites via the same
- * `setSessionTitle`). Titles are display-only: the transcript-derived first
- * message remains the fallback label everywhere. Stored outside the
- * container so they survive delete + restart (session ids are stable
- * across restarts).
+ * Session titles, stored in the server DB keyed by (project, session).
+ * Holds both user-assigned titles and model-generated ones (the
+ * title-generation loop fills in untitled sessions; a user rename
+ * overwrites via the same `setSessionTitle`). Titles are display-only: the
+ * transcript-derived first message remains the fallback label everywhere.
+ * Stored outside the container so they survive delete + restart (session
+ * ids are stable across restarts).
  */
 
 export const MAX_TITLE_LENGTH = 120
-
-export function sessionTitlesPath(slug: string): string {
-  return path.join(projectDir(slug), 'session-titles.json')
-}
 
 /** Normalize a user-supplied title: collapse whitespace, cap the length.
  *  Returns '' for a blank title (which clears the entry). */
@@ -26,29 +21,28 @@ export function normalizeTitle(raw: string): string {
 }
 
 export async function getSessionTitles(slug: string): Promise<Record<string, string>> {
-  try {
-    const raw = await fs.readFile(sessionTitlesPath(slug), 'utf8')
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return {}
-    const out: Record<string, string> = {}
-    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof v === 'string' && v !== '') out[k] = v
-    }
-    return out
-  } catch {
-    return {}
-  }
+  const db = await getDb()
+  const rows = await db.select().from(sessionTitles).where(eq(sessionTitles.projectSlug, slug))
+  const out: Record<string, string> = {}
+  for (const row of rows) out[row.sessionId] = row.title
+  return out
 }
 
 /** Set (or, with a blank title, clear) a session's title. */
 export async function setSessionTitle(slug: string, sessionId: string, title: string): Promise<void> {
-  const titles = await getSessionTitles(slug)
+  const db = await getDb()
   const normalized = normalizeTitle(title)
   if (normalized === '') {
-    delete titles[sessionId]
+    await db.delete(sessionTitles).where(and(
+      eq(sessionTitles.projectSlug, slug),
+      eq(sessionTitles.sessionId, sessionId),
+    ))
   } else {
-    titles[sessionId] = normalized
+    await db.insert(sessionTitles)
+      .values({ projectSlug: slug, sessionId, title: normalized })
+      .onConflictDoUpdate({
+        target: [sessionTitles.projectSlug, sessionTitles.sessionId],
+        set: { title: normalized },
+      })
   }
-  await fs.mkdir(projectDir(slug), { recursive: true })
-  await fs.writeFile(sessionTitlesPath(slug), JSON.stringify(titles, null, 2) + '\n')
 }

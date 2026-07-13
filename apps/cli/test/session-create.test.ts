@@ -99,7 +99,6 @@ vi.mock('@yaac/shared/project-paths', () => ({
   codexDir: vi.fn((slug: string) => `/tmp/${slug}/codex`),
   opencodeConfigDir: vi.fn((slug: string) => `/tmp/${slug}/opencode-config`),
   opencodeDataDir: vi.fn((slug: string, sessionId: string) => `/tmp/${slug}/opencode-data/${sessionId}`),
-  opencodeMetaDir: vi.fn((slug: string) => `/tmp/${slug}/opencode-meta`),
   cachedPackagesDir: vi.fn((slug: string) => `/tmp/${slug}/.cached-packages`),
   cacheVolumeDir: vi.fn((slug: string, key: string) => `/tmp/${slug}/cache-volumes/${key}`),
   codexTranscriptDir: vi.fn((slug: string) => `/tmp/${slug}/transcripts`),
@@ -452,7 +451,6 @@ describe('createSession', () => {
 
     expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/claude', { recursive: true })
     expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/codex', { recursive: true })
-    expect(mockMkdir).toHaveBeenCalledWith('/tmp/demo/opencode-meta', { recursive: true })
   })
 
   it('injects no per-pod egress sidecars and points the pod resolver at the proxy', async () => {

@@ -2,9 +2,9 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { listSessionJobs, listSessionPods, isPrewarmed, type SessionPod } from '#lib/k8s/pods'
 import { getActivePodWatcher } from '#lib/k8s/pod-watch'
-import { claudeDir, codexTranscriptDir, getProjectsDir, opencodeMetaDir, projectDir } from '@yaac/shared/project-paths'
+import { claudeDir, codexTranscriptDir, getProjectsDir, projectDir } from '@yaac/shared/project-paths'
 import { getSessionFirstMessage, normalizeTool } from '#lib/session/status'
-import { ensureOpencodeFirstMessageCaptured } from '#lib/session/opencode-status'
+import { ensureOpencodeFirstMessageCaptured, listOpencodeMetaEntries } from '#lib/session/opencode-status'
 import { isSessionStreamHealthy, readSessionStatus, readSessionWaitingSince } from '#lib/session/status-store'
 import { probeAgentPaneState, probeTmuxLiveness, cleanupSessionDetached, type TmuxLiveness } from '#lib/session/cleanup'
 import { getSessionPorts } from '#lib/session/port-forwarders'
@@ -423,8 +423,20 @@ export async function listDeletedSessions(
     // session id) is written only for opencode sessions and survives
     // container teardown, making it the authoritative deleted-session
     // record — the same source getDeletedSessionOpencodeFirstUserMessage
-    // reads from.
-    collected.push(...await collectDeleted(opencodeMetaDir(slug), '.json', 'opencode', slug))
+    // reads from. Its rows carry their capture time directly, standing in
+    // for the file birthtime the transcript arms stat.
+    for (const meta of await listOpencodeMetaEntries(slug)) {
+      if (activeSessionIds.has(meta.sessionId)) continue
+      collected.push({
+        entry: {
+          sessionId: meta.sessionId,
+          projectSlug: slug,
+          tool: 'opencode',
+          createdAt: formatUtcTimestamp(meta.createdAt.getTime()),
+        },
+        birthtimeMs: meta.createdAt.getTime(),
+      })
+    }
   }
 
   collected.sort((a, b) => b.birthtimeMs - a.birthtimeMs)

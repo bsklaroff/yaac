@@ -12,8 +12,8 @@ import {
  * The durable-token lifecycle over the real server HTTP surface: mint
  * with the lock secret (the loopback bootstrap path), authenticate with
  * the token instead of the secret, revoke, and observe the token die
- * while the lock secret keeps working. Also pins persistence: tokens.json
- * lands in the data dir at 0600.
+ * while the lock secret keeps working. Also pins persistence: the server
+ * DB directory lands in the data dir at 0700 (tokens are plaintext inside).
  */
 describe('durable token auth flow (real server)', () => {
   let testEnv: YaacTestEnv
@@ -52,9 +52,12 @@ describe('durable token auth flow (real server)', () => {
     })
     expect(viaToken.status).toBe(200)
 
-    // Persisted at 0600 for the next server boot.
-    const stat = await fs.stat(path.join(testEnv.dataDir, 'tokens.json'))
-    expect(stat.mode & 0o777).toBe(0o600)
+    // Persisted for the next server boot: the DB dir exists at 0700 (the
+    // server is a separate process holding the single-process PGlite, so
+    // the rows themselves are asserted via behavior, not read here).
+    const stat = await fs.stat(path.join(testEnv.dataDir, 'db'))
+    expect(stat.isDirectory()).toBe(true)
+    expect(stat.mode & 0o777).toBe(0o700)
 
     // List (via the token itself) masks the value. Alongside the durable
     // token sits the one-time entry the server's start banner minted.

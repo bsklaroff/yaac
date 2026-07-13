@@ -1,9 +1,9 @@
 import crypto from 'node:crypto'
-import fs from 'node:fs/promises'
 import { ServerError } from '@yaac/shared/errors'
 import { constantTimeEqual } from '#web-auth'
 import { maskToken } from '@yaac/shared/mask'
-import { tokensPath } from '@yaac/shared/paths'
+import { getDb } from '#lib/db/client'
+import { tokens as tokensTable } from '#lib/db/schema'
 
 /**
  * All client credentials the server hands out, in one store. Three kinds:
@@ -18,8 +18,8 @@ import { tokensPath } from '@yaac/shared/paths'
  *   HttpOnly session cookie. Never a valid bearer either; listed and
  *   revocable like a durable token so a leaked cookie can be killed.
  *
- * Plaintext at rest, matching the lock-secret convention — the file is
- * 0600 under the data dir.
+ * Plaintext at rest, matching the lock-secret convention — persisted in
+ * the server DB, whose directory is 0700 under the data dir.
  */
 export type TokenKind = 'durable' | 'one-time' | 'web'
 
@@ -58,6 +58,13 @@ export interface TokenStore {
   isValidToken(candidate: string): boolean
   /** Cookie check: web sessions only. */
   isValidSession(candidate: string): boolean
+  /**
+   * Merge persisted entries into the live store, by name; an in-memory
+   * entry wins a collision. The store is built empty at boot and restored
+   * from the DB only after the server lock is held, so an exchange or
+   * `create` can legitimately race in first.
+   */
+  restoreTokens(restored: TokenEntry[]): void
 }
 
 /**
@@ -197,6 +204,12 @@ export function createTokenStore(opts: {
       entries.some((e) => e.kind === 'durable' && constantTimeEqual(candidate, e.token)),
     isValidSession: (candidate) =>
       entries.some((e) => e.kind === 'web' && constantTimeEqual(candidate, e.token)),
+    restoreTokens: (restored) => {
+      const live = new Set(entries.map((e) => e.name))
+      // Prepend: restored entries predate anything minted since boot, and
+      // the per-kind FIFO trim treats array order as age.
+      entries.unshift(...restored.filter((e) => !live.has(e.name)))
+    },
   }
 }
 
@@ -204,37 +217,39 @@ function newToken(): string {
   return crypto.randomBytes(32).toString('hex')
 }
 
-const KINDS: readonly TokenKind[] = ['durable', 'one-time', 'web']
-
 /**
- * Read the persisted tokens; absent or unparseable file → empty store.
- * Entries written before kinds existed carry no `kind` — they were all
- * durable client tokens, so default accordingly.
+ * Read the persisted tokens from the DB. Ordered by (createdAt, name) —
+ * deterministic and chronologically correct for the per-kind FIFO trim
+ * except same-millisecond ties, where either eviction choice is harmless.
  */
 export async function loadTokens(): Promise<TokenEntry[]> {
-  try {
-    const raw = await fs.readFile(tokensPath(), 'utf8')
-    const parsed: unknown = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed
-      .filter((e): e is Omit<TokenEntry, 'kind'> & { kind?: unknown } =>
-        !!e && typeof e === 'object'
-        && typeof (e as TokenEntry).name === 'string'
-        && typeof (e as TokenEntry).token === 'string'
-        && typeof (e as TokenEntry).createdAt === 'string')
-      .map((e) => ({
-        ...e,
-        kind: KINDS.includes(e.kind as TokenKind) ? e.kind as TokenKind : 'durable',
-      }))
-  } catch {
-    return []
-  }
+  const db = await getDb()
+  const rows = await db.select().from(tokensTable)
+    .orderBy(tokensTable.createdAt, tokensTable.name)
+  return rows.map((row) => ({
+    name: row.name,
+    token: row.token,
+    kind: row.kind as TokenKind,
+    createdAt: row.createdAt,
+    ...(row.expiresAt === null ? {} : { expiresAt: row.expiresAt }),
+  }))
 }
 
-/** Persist atomically (tmp + rename) at 0600, like the lock file. */
+/** Persist the full set — a transactional DELETE-all + INSERT, the DB port
+ *  of the old whole-file rewrite. The in-memory `entries` array stays the
+ *  live store of record. */
 export async function saveTokens(tokens: TokenEntry[]): Promise<void> {
-  const p = tokensPath()
-  const tmp = `${p}.${process.pid}.tmp`
-  await fs.writeFile(tmp, JSON.stringify(tokens, null, 2), { mode: 0o600 })
-  await fs.rename(tmp, p)
+  const db = await getDb()
+  await db.transaction(async (tx) => {
+    await tx.delete(tokensTable)
+    if (tokens.length > 0) {
+      await tx.insert(tokensTable).values(tokens.map((e) => ({
+        name: e.name,
+        token: e.token,
+        kind: e.kind,
+        createdAt: e.createdAt,
+        expiresAt: e.expiresAt ?? null,
+      })))
+    }
+  })
 }

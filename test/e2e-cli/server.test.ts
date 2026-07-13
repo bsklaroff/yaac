@@ -239,9 +239,11 @@ describe('yaac server logs (real CLI)', () => {
       let stdout = ''
       child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
 
-      await waitFor(() => stdout.includes('initial\n'), 3000)
+      // Generous budgets: the first wait absorbs the CLI's tsx cold start,
+      // which can exceed 3s on a loaded or virtualized host.
+      await waitFor(() => stdout.includes('initial\n'), 15000)
       await fs.appendFile(serverLogPath(), 'appended\n')
-      await waitFor(() => stdout.includes('appended\n'), 3000)
+      await waitFor(() => stdout.includes('appended\n'), 5000)
 
       expect(stdout).toContain('initial\n')
       expect(stdout).toContain('appended\n')

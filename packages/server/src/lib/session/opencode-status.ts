@@ -1,6 +1,7 @@
-import fs from 'node:fs/promises'
+import { and, eq } from 'drizzle-orm'
 import { containerExec } from '#lib/k8s/exec'
-import { opencodeMetaFile } from '@yaac/shared/project-paths'
+import { getDb } from '#lib/db/client'
+import { opencodeSessionMeta } from '#lib/db/schema'
 import type { OpencodeSessionMeta } from '@yaac/shared/types'
 
 /**
@@ -162,35 +163,62 @@ async function loadOpencodeMeta(
   projectSlug: string,
   sessionId: string,
 ): Promise<OpencodeSessionMeta | null> {
-  try {
-    const raw = await fs.readFile(opencodeMetaFile(projectSlug, sessionId), 'utf8')
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return null
-    const o = parsed as Record<string, unknown>
-    const result: OpencodeSessionMeta = {}
-    if (typeof o.firstMessage === 'string') result.firstMessage = o.firstMessage
-    if (typeof o.capturedAt === 'string') result.capturedAt = o.capturedAt
-    return result
-  } catch {
-    return null
-  }
+  const db = await getDb()
+  const rows = await db.select().from(opencodeSessionMeta).where(and(
+    eq(opencodeSessionMeta.projectSlug, projectSlug),
+    eq(opencodeSessionMeta.sessionId, sessionId),
+  ))
+  const row = rows[0]
+  if (!row) return null
+  const result: OpencodeSessionMeta = {}
+  if (row.firstMessage !== null) result.firstMessage = row.firstMessage
+  if (row.capturedAt !== null) result.capturedAt = row.capturedAt
+  return result
 }
 
-async function saveOpencodeMeta(
+/** Persist a first-message snapshot. Exported for test seeding — production
+ *  writes all come from getSessionOpencodeFirstUserMessage. */
+export async function saveOpencodeMeta(
   projectSlug: string,
   sessionId: string,
   meta: OpencodeSessionMeta,
 ): Promise<void> {
   try {
-    await fs.writeFile(
-      opencodeMetaFile(projectSlug, sessionId),
-      JSON.stringify(meta, null, 2) + '\n',
-    )
+    const db = await getDb()
+    const values = {
+      firstMessage: meta.firstMessage ?? null,
+      capturedAt: meta.capturedAt ?? null,
+    }
+    await db.insert(opencodeSessionMeta)
+      .values({ projectSlug, sessionId, ...values })
+      .onConflictDoUpdate({
+        target: [opencodeSessionMeta.projectSlug, opencodeSessionMeta.sessionId],
+        set: values,
+      })
   } catch {
-    // Non-fatal: meta-file caching is for deleted-session lookups; if
-    // we can't write, getSessionOpencodeFirstUserMessage just falls
-    // back to re-probing next time.
+    // Non-fatal: meta caching is for deleted-session lookups; if we
+    // can't write, getSessionOpencodeFirstUserMessage just falls back
+    // to re-probing next time.
   }
+}
+
+/** Whether a first-message snapshot exists — the marker that a session ran
+ *  opencode, used by restart's tool inference once the pod is gone. */
+export async function hasOpencodeMeta(projectSlug: string, sessionId: string): Promise<boolean> {
+  return (await loadOpencodeMeta(projectSlug, sessionId)) !== null
+}
+
+/** All snapshots for a project, with when each was first captured — the
+ *  opencode arm of deleted-session listing (claude/codex list transcript
+ *  files; opencode sessions leave no transcript on the host). */
+export async function listOpencodeMetaEntries(
+  slug: string,
+): Promise<Array<{ sessionId: string; createdAt: Date }>> {
+  const db = await getDb()
+  return db.select({
+    sessionId: opencodeSessionMeta.sessionId,
+    createdAt: opencodeSessionMeta.createdAt,
+  }).from(opencodeSessionMeta).where(eq(opencodeSessionMeta.projectSlug, slug))
 }
 
 /**
@@ -200,9 +228,9 @@ async function saveOpencodeMeta(
  * session switcher displays — using it here keeps the two views in
  * sync.
  *
- * Successful captures are persisted to opencodeMetaFile so subsequent
- * lookups (including for deleted sessions whose container is gone)
- * return the cached value without needing to re-probe.
+ * Successful captures are persisted to the DB so subsequent lookups
+ * (including for deleted sessions whose container is gone) return the
+ * cached value without needing to re-probe.
  */
 export async function getSessionOpencodeFirstUserMessage(
   projectSlug: string,
@@ -227,7 +255,7 @@ export async function getSessionOpencodeFirstUserMessage(
 
 /**
  * Deleted-session first-message lookup: the Job is gone, so probe
- * isn't an option. Reads straight from the cached meta file.
+ * isn't an option. Reads straight from the cached snapshot.
  */
 export async function getDeletedSessionOpencodeFirstUserMessage(
   projectSlug: string,
@@ -243,7 +271,7 @@ export async function getDeletedSessionOpencodeFirstUserMessage(
  * background loop so a record exists for `session list -d` / restart even
  * when no client is polling /session/list (the only other trigger).
  *
- * Short-circuits on a cheap meta-file read once captured, so steady-state
+ * Short-circuits on a cheap meta read once captured, so steady-state
  * ticks don't re-probe settled sessions. Probing only persists when
  * opencode has generated a title (i.e. a message was submitted), so this
  * preserves parity with claude/codex — a session with no messages yet

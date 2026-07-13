@@ -9,7 +9,8 @@ import {
   loadClaudeCredentialsFile,
   saveClaudeOAuthBundle,
 } from '@yaac/shared/tool-auth'
-import { loadPreferences } from '@yaac/server/lib/project/preferences'
+import { getDefaultTool } from '@yaac/server/lib/project/preferences'
+import { closeDb } from '@yaac/server/lib/db/client'
 import type * as projectAddModule from '@yaac/server/lib/project/add'
 import type * as cliResolveModule from '@yaac/auth-daemon/cli-resolve'
 import type { ProjectMeta, ClaudeOAuthBundle } from '@yaac/shared/types'
@@ -161,6 +162,7 @@ describe('write routes', () => {
   })
 
   afterEach(async () => {
+    await closeDb()
     await cleanupTempDir(tmpDir)
   })
 
@@ -534,7 +536,7 @@ describe('write routes', () => {
       const res = await client.tool.set.$post({ json: { tool: 'codex' } })
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ tool: 'codex' })
-      expect((await loadPreferences()).defaultTool).toBe('codex')
+      expect(await getDefaultTool()).toBe('codex')
     })
   })
 

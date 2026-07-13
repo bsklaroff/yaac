@@ -5,10 +5,10 @@ import {
   claudeDir,
   codexTranscriptDir,
   getProjectsDir,
-  opencodeMetaFile,
   worktreesDir,
 } from '@yaac/shared/project-paths'
 import { cleanupSession } from '#lib/session/cleanup'
+import { hasOpencodeMeta } from '#lib/session/opencode-status'
 import { normalizeTool } from '#lib/session/status'
 import { createSession, type SessionCreateResult } from '#session-create'
 import { ServerError } from '@yaac/shared/errors'
@@ -42,7 +42,7 @@ async function detectToolFromTranscript(slug: string, sessionId: string): Promis
   if (await fileExists(claudeJsonl)) return 'claude'
   const codexJsonl = path.join(codexTranscriptDir(slug), `${sessionId}.jsonl`)
   if (await fileExists(codexJsonl)) return 'codex'
-  if (await fileExists(opencodeMetaFile(slug, sessionId))) return 'opencode'
+  if (await hasOpencodeMeta(slug, sessionId)) return 'opencode'
   return 'claude'
 }
 

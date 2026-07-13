@@ -19,9 +19,9 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsup && tsx scripts/check-cli-externals.ts && pnpm --filter @yaac/frontend build && rm -rf dist/frontend && cp -r apps/frontend/dist dist/frontend && cp -r dockerfiles k8s dist/ && rm -rf dist/k8s/proxy/node_modules dist/k8s/proxy/test dist/k8s/relay/node_modules && tsx scripts/write-build-id.ts",
+    "build": "tsup && tsx scripts/check-cli-externals.ts && pnpm --filter @yaac/frontend build && rm -rf dist/frontend && cp -r apps/frontend/dist dist/frontend && cp -r dockerfiles k8s dist/ && rm -rf dist/drizzle && cp -r packages/server/drizzle dist/drizzle && rm -rf dist/k8s/proxy/node_modules dist/k8s/proxy/test dist/k8s/relay/node_modules && tsx scripts/write-build-id.ts",
     "dev": "tsx apps/cli/src/cli.ts",
-    "watch": "tsx watch --clear-screen=false --include 'apps/**/src/**' --include 'packages/**/src/**' --include 'dockerfiles/**' --include 'k8s/**' --include package.json --include 'apps/*/package.json' --include 'packages/*/package.json' --include pnpm-lock.yaml --include tsup.config.ts --include 'apps/frontend/vite.config.ts' --exclude '**/node_modules/**' --exclude 'k8s/proxy/test/**' --exclude 'apps/desktop/**' scripts/dev-watch.ts",
+    "watch": "tsx watch --clear-screen=false --include 'apps/**/src/**' --include 'packages/**/src/**' --include 'packages/server/drizzle/**' --include 'dockerfiles/**' --include 'k8s/**' --include package.json --include 'apps/*/package.json' --include 'packages/*/package.json' --include pnpm-lock.yaml --include tsup.config.ts --include 'apps/frontend/vite.config.ts' --exclude '**/node_modules/**' --exclude 'k8s/proxy/test/**' --exclude 'apps/desktop/**' scripts/dev-watch.ts",
     "lint": "tsc --noEmit && tsc --noEmit -p apps/frontend/tsconfig.json && eslint .",
     "test": "vitest run",
     "test:unit": "vitest run --project 'unit:*'",
@@ -41,12 +41,14 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-code": "2.1.111",
+    "@electric-sql/pglite": "catalog:",
     "@hono/node-server": "catalog:",
     "@hono/node-ws": "catalog:",
     "@hono/zod-validator": "catalog:",
     "@lydell/node-pty": "catalog:",
     "@openai/codex": "0.121.0",
     "commander": "catalog:",
+    "drizzle-orm": "catalog:",
     "hono": "catalog:",
     "simple-git": "catalog:",
     "smol-toml": "catalog:",

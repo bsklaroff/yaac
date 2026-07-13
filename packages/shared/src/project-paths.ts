@@ -138,18 +138,6 @@ export function opencodeDataDir(slug: string, sessionId: string): string {
   return path.join(projectDir(slug), 'opencode-data', sessionId)
 }
 
-/**
- * Per-yaac-session metadata cache. Stores the first-message snapshot
- * keyed by yaac session ID so deleted sessions retain their preview.
- */
-export function opencodeMetaDir(slug: string): string {
-  return path.join(projectDir(slug), 'opencode-meta')
-}
-
-export function opencodeMetaFile(slug: string, sessionId: string): string {
-  return path.join(opencodeMetaDir(slug), `${sessionId}.json`)
-}
-
 export function worktreesDir(slug: string): string {
   return path.join(projectDir(slug), 'worktrees')
 }

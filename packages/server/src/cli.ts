@@ -8,6 +8,8 @@ import { createNodeWebSocket } from '@hono/node-ws'
 import { buildApp } from '#server'
 import { authAgentHub } from '#auth-agent'
 import { createTokenStore, loadTokens, saveTokens } from '#token-store'
+import { closeDb, getDb } from '#lib/db/client'
+import { importLegacyJsonStores } from '#lib/db/legacy-import'
 import { EventHub } from '#events'
 import { bridge, killViewSession, newViewName, parsePtySize, parsePtyTarget, spawnAttachPty, type SocketLike } from '#pty-bridge'
 import { coalesceCalls, notifySessionListChanged, onSessionListChanged } from '#sessions-changed'
@@ -138,9 +140,10 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   const secret = crypto.randomBytes(32).toString('hex')
   // Tokens survive restarts by design: durable ones are what remote CLIs
   // hold instead of the per-boot lock secret, and persisted web sessions
-  // mean a restart (e.g. a rebuild) doesn't log every browser out.
+  // mean a restart (e.g. a rebuild) doesn't log every browser out. The
+  // store starts empty here and is restored from the DB post-acquireLock —
+  // the DB must not be opened before the single-writer lock is held.
   const tokens = createTokenStore({
-    initialTokens: await loadTokens(),
     onChanged: (entries) => {
       saveTokens(entries).catch((err: unknown) =>
         serverLog(`[server] failed to persist tokens: ${String(err)}`))
@@ -267,6 +270,24 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     await new Promise<void>((resolve) => server.close(() => resolve()))
     return
   }
+  // Open the DB only now that the lock is held (it is the single-writer
+  // guard for PGlite), sweep any legacy JSON stores into it, and restore
+  // the persisted tokens into the store built empty above — all before the
+  // start banner below mints its exchange token, whose onChanged persist
+  // rewrites the full token table from the in-memory set. A failure here
+  // means preferences/titles/tokens would silently not persist, so fail
+  // the start rather than run half-alive.
+  try {
+    await getDb()
+    await importLegacyJsonStores()
+    tokens.restoreTokens(await loadTokens())
+  } catch (err) {
+    serverLog(`[server] db init failed: ${String(err)}`)
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    await removeLock(process.pid)
+    process.exit(1)
+  }
+
   const torPrefix = env.useTor ? '(using tor) ' : ''
   serverLog(`[server] ${torPrefix}listening on 127.0.0.1:${port} lock=${serverLockPath()}`)
   // Start banner for the webapp: a ready-to-open URL carrying a one-time
@@ -322,6 +343,13 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     // the CLI watches to decide whether to restart.
     await Promise.race([
       new Promise<void>((resolve) => server.close(() => resolve())),
+      new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+    ])
+    // Checkpoint the DB so PGlite reopens clean across dev-watch restarts.
+    // Bounded like server.close(): a wedged close must not block lock
+    // removal (WAL replay bounds any damage).
+    await Promise.race([
+      closeDb().catch((err: unknown) => serverLog(`[server] db close failed: ${String(err)}`)),
       new Promise<void>((resolve) => setTimeout(resolve, 3000)),
     ])
     // Pass our pid so a shutdown that dragged past stopServer's 3s

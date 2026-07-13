@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getProjectsDir, projectDir } from '@yaac/shared/project-paths'
+import { closeDb } from '#lib/db/client'
 import { setDefaultTool } from '#lib/project/preferences'
 import { pickNextStreamSession } from '#stream-picker'
 import type { WaitingSession } from '#lib/session/waiting'
@@ -73,6 +74,7 @@ describe('pickNextStreamSession', () => {
   })
 
   afterEach(async () => {
+    await closeDb()
     await cleanupTempDir(tmpDir)
   })
 

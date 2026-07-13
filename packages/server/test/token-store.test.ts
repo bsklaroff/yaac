@@ -1,7 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import os from 'node:os'
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
+import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import {
   createTokenStore,
   EXCHANGE_TTL_MS,
@@ -11,9 +9,10 @@ import {
   saveTokens,
   type TokenEntry,
 } from '#token-store'
+import { getDb, closeDb } from '#lib/db/client'
+import { tokens as tokensTable } from '#lib/db/schema'
 import { maskToken } from '@yaac/shared/mask'
 import { ServerError } from '@yaac/shared/errors'
-import { setDataDir, tokensPath } from '@yaac/shared/paths'
 
 describe('createTokenStore', () => {
   it('mints a durable 64-hex token with an ISO createdAt', () => {
@@ -83,6 +82,37 @@ describe('createTokenStore', () => {
     expect(snapshots.at(-1)).toHaveLength(2)
     store.revoke('old')
     expect(snapshots.at(-1)?.map((e) => e.name)).toEqual(['new'])
+  })
+
+  it('restoreTokens merges persisted entries, the in-memory one winning by name', () => {
+    const store = createTokenStore()
+    const live = store.create('laptop')
+    const stale: TokenEntry = {
+      name: 'laptop', token: 'e'.repeat(64), kind: 'durable', createdAt: '2026-01-01T00:00:00.000Z',
+    }
+    const other: TokenEntry = {
+      name: 'phone', token: 'f'.repeat(64), kind: 'durable', createdAt: '2026-01-01T00:00:00.000Z',
+    }
+    store.restoreTokens([stale, other])
+    expect(store.isValidToken(live.token)).toBe(true)
+    expect(store.isValidToken(stale.token)).toBe(false)
+    expect(store.isValidToken(other.token)).toBe(true)
+    expect(store.list().map((e) => e.name).sort()).toEqual(['laptop', 'phone'])
+  })
+
+  it('restored entries count as oldest for the per-kind FIFO cap', () => {
+    const store = createTokenStore()
+    const durable = store.create('laptop')
+    const restored: TokenEntry = {
+      name: 'web-restored', token: 'a'.repeat(64), kind: 'web', createdAt: '2026-01-01T00:00:00.000Z',
+    }
+    store.restoreTokens([restored])
+    let last = ''
+    for (let i = 0; i < MAX_WEB_SESSIONS; i++) {
+      last = store.consumeExchange(durable.token) as string
+    }
+    expect(store.isValidSession(restored.token)).toBe(false) // evicted first
+    expect(store.isValidSession(last)).toBe(true)
   })
 })
 
@@ -177,20 +207,28 @@ describe('maskToken', () => {
   })
 })
 
-describe('loadTokens / saveTokens', () => {
-  let dir: string
+describe('loadTokens / saveTokens (DB-backed)', () => {
+  let tmpDir: string
+
+  // One PGlite per file: cold-init is the expensive part, so the tests
+  // share a data dir and wipe the table instead of recreating it.
+  // (Pre-kind and malformed legacy tokens.json files are exercised in
+  // db-legacy-import.test.ts — the DB rows always carry a kind.)
+  beforeAll(async () => {
+    tmpDir = await createTempDataDir()
+  })
+
+  afterAll(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
 
   beforeEach(async () => {
-    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-tokens-'))
-    setDataDir(dir)
+    const db = await getDb()
+    await db.delete(tokensTable)
   })
 
-  afterEach(async () => {
-    setDataDir('')
-    await fs.rm(dir, { recursive: true, force: true })
-  })
-
-  it('round-trips entries of every kind at mode 0600', async () => {
+  it('round-trips entries of every kind, including expiresAt', async () => {
     const now = new Date().toISOString()
     const entries: TokenEntry[] = [
       { name: 'laptop', token: 'b'.repeat(64), kind: 'durable', createdAt: now },
@@ -198,24 +236,26 @@ describe('loadTokens / saveTokens', () => {
       { name: 'web-01234567', token: 'd'.repeat(64), kind: 'web', createdAt: now },
     ]
     await saveTokens(entries)
-    const stat = await fs.stat(tokensPath())
-    expect(stat.mode & 0o777).toBe(0o600)
     expect(await loadTokens()).toEqual(entries)
   })
 
-  it('returns [] for a missing file', async () => {
+  it('returns [] when nothing has been persisted', async () => {
     expect(await loadTokens()).toEqual([])
   })
 
-  it('defaults pre-kind entries to durable (old tokens.json files)', async () => {
-    await fs.writeFile(tokensPath(), JSON.stringify([{ name: 'old', token: 't', createdAt: 'c' }]))
-    expect(await loadTokens()).toEqual([{ name: 'old', token: 't', createdAt: 'c', kind: 'durable' }])
+  it('orders by (createdAt, name)', async () => {
+    await saveTokens([
+      { name: 'z-late', token: 't1', kind: 'durable', createdAt: '2026-02-01T00:00:00.000Z' },
+      { name: 'b-tie', token: 't2', kind: 'durable', createdAt: '2026-01-01T00:00:00.000Z' },
+      { name: 'a-tie', token: 't3', kind: 'durable', createdAt: '2026-01-01T00:00:00.000Z' },
+    ])
+    expect((await loadTokens()).map((e) => e.name)).toEqual(['a-tie', 'b-tie', 'z-late'])
   })
 
-  it('returns [] for garbage and drops malformed entries', async () => {
-    await fs.writeFile(tokensPath(), 'not json')
-    expect(await loadTokens()).toEqual([])
-    await fs.writeFile(tokensPath(), JSON.stringify([{ name: 'ok', token: 't', createdAt: 'c' }, { nope: 1 }, 'str']))
-    expect(await loadTokens()).toEqual([{ name: 'ok', token: 't', createdAt: 'c', kind: 'durable' }])
+  it('replaces the previous set wholesale', async () => {
+    const now = new Date().toISOString()
+    await saveTokens([{ name: 'first', token: 't1', kind: 'durable', createdAt: now }])
+    await saveTokens([{ name: 'second', token: 't2', kind: 'durable', createdAt: now }])
+    expect((await loadTokens()).map((e) => e.name)).toEqual(['second'])
   })
 })

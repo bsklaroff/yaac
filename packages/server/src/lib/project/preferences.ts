@@ -1,6 +1,6 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import { getDataDir, ensureDataDir } from '@yaac/shared/project-paths'
+import { eq } from 'drizzle-orm'
+import { getDb } from '#lib/db/client'
+import { preferences, shortcutOverrides } from '#lib/db/schema'
 import { ServerError } from '@yaac/shared/errors'
 import type { AgentTool } from '@yaac/shared/types'
 
@@ -15,16 +15,10 @@ export interface SerializedChord {
   shift: boolean
 }
 
-export interface PreferencesFile {
-  defaultTool?: AgentTool
-  /** Keyboard-shortcut overrides, keyed by command id. Only ids the user has
-   *  rebound appear; the frontend overlays these on its factory defaults. */
-  shortcuts?: Record<string, SerializedChord>
-}
-
-/** Structural guard for a stored chord — entries arrive from a JSON file that
- *  may be hand-edited or written by an older/newer build. */
-function isSerializedChord(value: unknown): value is SerializedChord {
+/** Structural guard for a stored chord — used by the legacy JSON import,
+ *  whose entries come from a file that may be hand-edited or written by an
+ *  older/newer build. */
+export function isSerializedChord(value: unknown): value is SerializedChord {
   if (typeof value !== 'object' || value === null) return false
   const c = value as Record<string, unknown>
   return typeof c.code === 'string'
@@ -34,82 +28,52 @@ function isSerializedChord(value: unknown): value is SerializedChord {
     && typeof c.shift === 'boolean'
 }
 
-/** Read the shortcuts map from a parsed prefs object, dropping malformed
- *  entries. */
-function parseShortcuts(value: unknown): Record<string, SerializedChord> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {}
-  const out: Record<string, SerializedChord> = {}
-  for (const [id, chord] of Object.entries(value as Record<string, unknown>)) {
-    if (isSerializedChord(chord)) out[id] = chord
-  }
-  return out
-}
-
-export function preferencesPath(): string {
-  return path.join(getDataDir(), '.preferences.json')
-}
-
-export async function loadPreferences(): Promise<PreferencesFile> {
-  try {
-    const raw = await fs.readFile(preferencesPath(), 'utf8')
-    const parsed: unknown = JSON.parse(raw)
-    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-      const obj = parsed as Record<string, unknown>
-      const result: PreferencesFile = {}
-      if (
-        obj.defaultTool === 'claude'
-        || obj.defaultTool === 'codex'
-        || obj.defaultTool === 'opencode'
-      ) {
-        result.defaultTool = obj.defaultTool
-      }
-      const shortcuts = parseShortcuts(obj.shortcuts)
-      if (Object.keys(shortcuts).length > 0) result.shortcuts = shortcuts
-      return result
-    }
-    return {}
-  } catch {
-    return {}
-  }
-}
-
-export async function savePreferences(prefs: PreferencesFile): Promise<void> {
-  await ensureDataDir()
-  await fs.writeFile(
-    preferencesPath(),
-    JSON.stringify(prefs, null, 2) + '\n',
-  )
-}
+/** `preferences` row key for the default session tool. */
+export const DEFAULT_TOOL_KEY = 'default_tool'
 
 export async function getDefaultTool(): Promise<AgentTool | undefined> {
-  const prefs = await loadPreferences()
-  return prefs.defaultTool
+  const db = await getDb()
+  const rows = await db.select().from(preferences).where(eq(preferences.key, DEFAULT_TOOL_KEY))
+  const value = rows[0]?.value
+  return value !== undefined && isValidTool(value) ? value : undefined
 }
 
 export async function setDefaultTool(tool: AgentTool): Promise<void> {
-  const prefs = await loadPreferences()
-  prefs.defaultTool = tool
-  await savePreferences(prefs)
+  const db = await getDb()
+  await db.insert(preferences)
+    .values({ key: DEFAULT_TOOL_KEY, value: tool })
+    .onConflictDoUpdate({ target: preferences.key, set: { value: tool } })
 }
 
 /** All saved shortcut overrides (empty when none are set). */
 export async function getShortcutOverrides(): Promise<Record<string, SerializedChord>> {
-  const prefs = await loadPreferences()
-  return prefs.shortcuts ?? {}
+  const db = await getDb()
+  const rows = await db.select().from(shortcutOverrides)
+  const out: Record<string, SerializedChord> = {}
+  for (const row of rows) {
+    out[row.commandId] = {
+      code: row.code,
+      alt: row.alt,
+      ctrl: row.ctrl,
+      meta: row.meta,
+      shift: row.shift,
+    }
+  }
+  return out
 }
 
 /** Persist a single command's rebind, leaving the other overrides intact. */
 export async function setShortcutOverride(id: string, chord: SerializedChord): Promise<void> {
-  const prefs = await loadPreferences()
-  prefs.shortcuts = { ...prefs.shortcuts, [id]: chord }
-  await savePreferences(prefs)
+  const db = await getDb()
+  await db.insert(shortcutOverrides)
+    .values({ commandId: id, ...chord })
+    .onConflictDoUpdate({ target: shortcutOverrides.commandId, set: { ...chord } })
 }
 
 /** Drop every shortcut override, restoring the factory defaults. */
 export async function clearShortcutOverrides(): Promise<void> {
-  const prefs = await loadPreferences()
-  delete prefs.shortcuts
-  await savePreferences(prefs)
+  const db = await getDb()
+  await db.delete(shortcutOverrides)
 }
 
 const VALID_TOOLS: AgentTool[] = ['claude', 'codex', 'opencode']
@@ -129,4 +93,3 @@ export async function setDefaultToolChecked(toolName: string): Promise<AgentTool
   await setDefaultTool(toolName)
   return toolName
 }
-

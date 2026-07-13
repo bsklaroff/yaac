@@ -55,7 +55,6 @@ import {
   nestedYaacDataDir,
   opencodeConfigDir,
   opencodeDataDir,
-  opencodeMetaDir,
   cachedPackagesDir,
   cacheVolumeDir,
   sessionVclusterDir,
@@ -1081,11 +1080,8 @@ export async function createSession(
   await fs.mkdir(codex, { recursive: true })
   // Per-yaac-session opencode data dir (sqlite DB + sessions). Per-session
   // isolation sidesteps opencode upstream #5241 concurrent-write issues.
-  // Also create the meta dir so opencode-status helpers can write first-
-  // message snapshots without racing on parent-dir creation.
   await fs.mkdir(opencodeData, { recursive: true })
   await fs.mkdir(opencodeConfig, { recursive: true })
-  await fs.mkdir(opencodeMetaDir(projectSlug), { recursive: true })
   await fs.mkdir(cachedPackages, { recursive: true })
 
   // Refresh the per-project placeholder credential files from the current

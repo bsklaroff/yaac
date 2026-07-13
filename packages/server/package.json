@@ -6,16 +6,21 @@
   "imports": {
     "#*": "./src/*.js"
   },
+  "scripts": {
+    "db:generate": "drizzle-kit generate"
+  },
   "exports": {
     "./*": "./src/*.js",
     "./package.json": "./package.json"
   },
   "dependencies": {
+    "@electric-sql/pglite": "catalog:",
     "@hono/node-server": "catalog:",
     "@hono/node-ws": "catalog:",
     "@hono/zod-validator": "catalog:",
     "@lydell/node-pty": "catalog:",
     "@yaac/shared": "workspace:*",
+    "drizzle-orm": "catalog:",
     "hono": "catalog:",
     "simple-git": "catalog:",
     "smol-toml": "catalog:",
@@ -24,6 +29,7 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "@yaac/test-utils": "workspace:*"
+    "@yaac/test-utils": "workspace:*",
+    "drizzle-kit": "1.0.0-rc.4"
   }
 }
