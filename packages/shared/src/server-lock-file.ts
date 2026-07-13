@@ -64,6 +64,38 @@ export async function isLockLive(lock: ServerLock): Promise<boolean> {
   }
 }
 
+/**
+ * A lock is "ready" when the server is not just live but has finished its
+ * startup initialization (DB open + first-boot migrations) and can serve
+ * real requests. `yaac server start` waits on this: the port binds and the
+ * lock is written before that init runs, and the init blocks the single
+ * event loop, so `isLockLive` can pass during the brief responsive window
+ * beforehand — printing "server started" while the very next command's
+ * `/health` probe times out against the frozen loop. Liveness (isLockLive)
+ * stays the coarser signal used for lock reclamation / start idempotency,
+ * where "ready" would wrongly classify a still-initializing server as stale.
+ */
+export async function isLockReady(lock: ServerLock): Promise<boolean> {
+  if (!pidExists(lock.pid)) return false
+  try {
+    const ctl = new AbortController()
+    const timer = setTimeout(() => ctl.abort(), 500)
+    try {
+      const res = await fetch(`http://127.0.0.1:${lock.port}/health`, {
+        headers: { authorization: `Bearer ${lock.secret}` },
+        signal: ctl.signal,
+      })
+      if (!res.ok) return false
+      const body = await res.json() as { ready?: unknown }
+      return body.ready === true
+    } finally {
+      clearTimeout(timer)
+    }
+  } catch {
+    return false
+  }
+}
+
 function pidExists(pid: number): boolean {
   try {
     process.kill(pid, 0)

@@ -11,6 +11,7 @@ import {
 } from '#lock'
 import {
   isLockLive,
+  isLockReady,
   isServerLock,
   parseServerLock,
   type ServerLock,
@@ -157,6 +158,62 @@ describe('server lock', () => {
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()))
       }
+    })
+  })
+
+  describe('isLockReady', () => {
+    // Spin up a fake /health that returns `body` so we can vary the `ready`
+    // field independently of liveness.
+    async function withHealth(
+      body: string,
+      run: (lock: ServerLock) => Promise<void>,
+    ): Promise<void> {
+      const server = http.createServer((req, res) => {
+        if (req.url === '/health') {
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end(body)
+        } else {
+          res.writeHead(404).end()
+        }
+      })
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+      const addr = server.address()
+      if (!addr || typeof addr === 'string') throw new Error('bad address')
+      try {
+        await run({ pid: process.pid, port: addr.port, secret: 's', startedAt: 0, buildId: 'b' })
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()))
+      }
+    }
+
+    it('returns false for a dead pid without probing', async () => {
+      const lock: ServerLock = { pid: 999_999, port: 1, secret: 's', startedAt: 0, buildId: 'b' }
+      expect(await isLockReady(lock)).toBe(false)
+    })
+
+    it('returns false when the pid is alive but no server listens', async () => {
+      const lock: ServerLock = { pid: process.pid, port: 1, secret: 's', startedAt: 0, buildId: 'b' }
+      expect(await isLockReady(lock)).toBe(false)
+    })
+
+    it('returns true when /health reports ready: true', async () => {
+      await withHealth('{"ok":true,"ready":true}', async (lock) => {
+        expect(await isLockReady(lock)).toBe(true)
+      })
+    })
+
+    it('returns false when /health is live but reports ready: false', async () => {
+      // The exact race the readiness gate closes: the server is up and
+      // answering, but still initializing, so it must not be treated as ready.
+      await withHealth('{"ok":true,"ready":false}', async (lock) => {
+        expect(await isLockReady(lock)).toBe(false)
+      })
+    })
+
+    it('returns false when /health omits the ready field (older/partial body)', async () => {
+      await withHealth('{"ok":true}', async (lock) => {
+        expect(await isLockReady(lock)).toBe(false)
+      })
     })
   })
 

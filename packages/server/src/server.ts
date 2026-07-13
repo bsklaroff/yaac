@@ -37,6 +37,16 @@ export interface ServerAppDeps {
    * unit tests — they inject fakes).
    */
   cluster?: ClusterRouteDeps
+  /**
+   * Reports whether startup initialization (DB open + first-boot
+   * migrations) has finished. Surfaced on `/health` as `ready` so `yaac
+   * server start` can wait for genuine readiness — the port binds and the
+   * lock is written before that init runs, and the init blocks the single
+   * event loop, so a bare liveness probe can pass in the responsive window
+   * beforehand and print "server started" prematurely. Defaults to
+   * always-ready for in-process tests that never boot the DB.
+   */
+  isReady?: () => boolean
 }
 
 /**
@@ -46,6 +56,7 @@ export interface ServerAppDeps {
  */
 export function buildApp(deps: ServerAppDeps) {
   const tokens = deps.tokens ?? createTokenStore()
+  const isReady = deps.isReady ?? (() => true)
   const app = new Hono()
 
   app.use('*', requestLogger())
@@ -115,7 +126,7 @@ export function buildApp(deps: ServerAppDeps) {
   }
 
   return app
-    .get('/health', (c) => c.json({ ok: true, buildId: deps.buildId }))
+    .get('/health', (c) => c.json({ ok: true, buildId: deps.buildId, ready: isReady() }))
     .route('/project', projectApp)
     .route('/session', sessionApp)
     .route('/tool', toolApp)

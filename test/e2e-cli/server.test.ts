@@ -123,6 +123,11 @@ describe('yaac server start / stop / restart (real CLI)', () => {
     expect(lock!.port).toBeLessThan(testEnv.serverPort + MAX_PORT_PROBES)
     const res = await fetch(`http://127.0.0.1:${lock!.port}/health`)
     expect(res.status).toBe(200)
+    // `server start` returns only once the server is ready (DB init done),
+    // not merely bound — so /health reports ready: true by the time the
+    // command's exit is observed. This is what lets the next init command
+    // (e.g. `yaac auth ...`) reach the server instead of racing its boot.
+    expect(await res.json()).toMatchObject({ ok: true, ready: true })
   })
 
   it('`server start` is idempotent when the running version matches', async () => {

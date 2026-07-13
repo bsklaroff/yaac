@@ -24,7 +24,7 @@ import {
   readLock,
   removeLock,
 } from '@yaac/shared/lock'
-import { isLockLive, type ServerLock } from '@yaac/shared/server-lock-file'
+import { isLockLive, isLockReady, type ServerLock } from '@yaac/shared/server-lock-file'
 import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-port'
 import { resolveServerTarget, type ServerTarget } from '@yaac/shared/server-client'
 import { ensureAuthDaemonSpawned } from '@yaac/shared/auth-daemon'
@@ -150,12 +150,16 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     },
   })
   const hub = new EventHub()
+  // Flipped true once the post-lock DB init below finishes. Surfaced on
+  // `/health` as `ready` so `yaac server start` waits for genuine readiness
+  // instead of the pre-init responsive window (see waitForReadyLock).
+  let ready = false
   // Push a fresh snapshot the moment session state changes — a create /
   // restart from a route handler, a pod-watch event, or a watcher-fed
   // status flip. The first notification publishes immediately; bursts
   // (server start seeding N pods) coalesce into one trailing rebuild.
   onSessionListChanged(coalesceCalls(() => { void hub.publishSnapshot() }, 150))
-  const app = buildApp({ secret, buildId, tokens })
+  const app = buildApp({ secret, buildId, tokens, isReady: () => ready })
 
   // WebSocket event stream. Registered here (not in buildApp) so buildApp's
   // return type stays the plain Hono app the CLI's typed RPC client infers
@@ -287,6 +291,10 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     await removeLock(process.pid)
     process.exit(1)
   }
+  // DB is open and migrated: the server can now serve real requests, not
+  // just answer /health. Set synchronously here so the flag is true before
+  // control returns to the event loop and any queued request is processed.
+  ready = true
 
   const torPrefix = env.useTor ? '(using tor) ' : ''
   serverLog(`[server] ${torPrefix}listening on 127.0.0.1:${port} lock=${serverLockPath()}`)
@@ -459,7 +467,13 @@ export async function startServer(): Promise<void> {
   if (existing) await removeLock()
 
   await spawnServerDetached()
-  const fresh = await waitForLiveLock(5000)
+  // Wait for readiness, not bare liveness: the server writes its lock and
+  // answers /health before it opens the DB and runs first-boot migrations,
+  // which block the event loop for seconds. Returning on the pre-init
+  // /health would print "server started" while the next command's liveness
+  // probe times out against the frozen loop. 30s comfortably covers a
+  // cold-start migration (a few seconds) plus headroom on a loaded host.
+  const fresh = await waitForReadyLock(30_000)
   if (fresh.buildId !== cliBuildId) {
     throw new Error(
       `server buildId ${fresh.buildId} does not match CLI buildId ${cliBuildId}`,
@@ -653,14 +667,14 @@ function findTsxCli(): string | null {
   }
 }
 
-async function waitForLiveLock(timeoutMs: number): Promise<ServerLock> {
+async function waitForReadyLock(timeoutMs: number): Promise<ServerLock> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const lock = await readLock()
-    if (lock && await isLockLive(lock)) return lock
+    if (lock && await isLockReady(lock)) return lock
     await new Promise((r) => setTimeout(r, 100))
   }
-  throw new Error('server did not start within 5s')
+  throw new Error(`server did not become ready within ${Math.round(timeoutMs / 1000)}s`)
 }
 
 export interface ServerLogsOptions {
