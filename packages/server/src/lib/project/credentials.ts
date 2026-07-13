@@ -142,7 +142,9 @@ export async function writeProxySecrets(secrets: Record<string, string>): Promis
  *   - SCP-style: [user@]<host>:<path>[.git]
  * `<path>` may be any depth — a single segment (e.g. Gerrit-style `repo`) or
  * a deeper path (e.g. `group/sub/repo`). Throws on ssh://, http://, explicit
- * ports, or unparseable input.
+ * ports, or unparseable input. A trailing slash on `<path>` is stripped —
+ * left in, `path.split('/').pop()` (used to derive the project slug) would
+ * return an empty string instead of the repo name.
  */
 export interface ParsedGitRemote {
   scheme: 'https' | 'ssh'
@@ -166,7 +168,7 @@ export function parseGitRemote(remoteUrl: string): ParsedGitRemote {
     if (url.port) {
       throw new Error(`Custom HTTPS ports are not supported: "${remoteUrl}"`)
     }
-    const path = url.pathname.replace(/^\//, '').replace(/\.git$/, '')
+    const path = url.pathname.replace(/^\//, '').replace(/\/$/, '').replace(/\.git$/, '')
     if (!path) {
       throw new Error(`Cannot parse repo path from URL: ${remoteUrl}`)
     }
@@ -175,7 +177,7 @@ export function parseGitRemote(remoteUrl: string): ParsedGitRemote {
   const m = SCP_REGEX.exec(remoteUrl)
   if (m) {
     const host = m[2]
-    const path = m[3].replace(/\.git$/, '')
+    const path = m[3].replace(/\/$/, '').replace(/\.git$/, '')
     if (!path) {
       throw new Error(`Cannot parse repo path from URL: ${remoteUrl}`)
     }
