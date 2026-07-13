@@ -9,7 +9,7 @@ import {
   spawnAuthDaemonDetached,
   writeAuthDaemonLock,
 } from '@yaac/shared/auth-daemon'
-import { getRpcClient, resolveServerTarget, toClientError } from '@yaac/shared/server-client'
+import { getRpcClient, resolveServerTarget } from '@yaac/shared/server-client'
 import { buildAuthPayload } from '@yaac/shared/tool-auth-interactive'
 import { maskToken } from '@yaac/shared/mask'
 
@@ -42,11 +42,10 @@ export async function runAuthDaemon(): Promise<void> {
   // this machine's data dir.
   setToolLoginPersistence(async (tool, result) => {
     const client = await getRpcClient()
-    const res = await client.auth[':tool'].$put({
+    await client.auth[':tool'].$put({
       param: { tool },
       json: buildAuthPayload(tool, result),
     })
-    if (!res.ok) throw await toClientError(res)
   })
 
   await writeAuthDaemonLock({ pid: process.pid, baseUrl: target.baseUrl, startedAt: Date.now() })

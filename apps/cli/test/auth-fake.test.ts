@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { authFake } from '#commands/auth-fake'
 import { getRpcClient } from '@yaac/shared/server-client'
+import { ServerError } from '@yaac/shared/errors'
 import type * as serverClientModule from '@yaac/shared/server-client'
 
 vi.mock('@yaac/shared/server-client', async (importOriginal) => {
@@ -8,7 +9,6 @@ vi.mock('@yaac/shared/server-client', async (importOriginal) => {
   return {
     ...actual,
     getRpcClient: vi.fn(),
-    toClientError: vi.fn().mockResolvedValue(new Error('server error')),
   }
 })
 
@@ -39,7 +39,9 @@ describe('authFake', () => {
   })
 
   it('throws when the server returns an error response', async () => {
-    const post = vi.fn().mockResolvedValue({ ok: false })
+    // The throwing RPC client rejects on a non-2xx; the command lets it
+    // propagate (no per-call ok check).
+    const post = vi.fn().mockRejectedValue(new ServerError('INTERNAL', 'server error'))
     mockClient(post)
     await expect(authFake('github')).rejects.toThrow('server error')
   })

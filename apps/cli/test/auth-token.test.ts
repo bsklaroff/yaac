@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, type MockInstance } from 'vitest'
 import { authTokenCreate, authTokenList, authTokenRevoke } from '#commands/auth-token'
 import { getRpcClient } from '@yaac/shared/server-client'
+import { ServerError } from '@yaac/shared/errors'
 import type * as serverClientModule from '@yaac/shared/server-client'
 
 vi.mock('@yaac/shared/server-client', async (importOriginal) => {
@@ -8,10 +9,6 @@ vi.mock('@yaac/shared/server-client', async (importOriginal) => {
   return {
     ...actual,
     getRpcClient: vi.fn(),
-    toClientError: vi.fn().mockImplementation(async (res: Response) => {
-      const body = await res.json() as { error?: { message?: string } }
-      return new Error(body.error?.message ?? `server ${res.status}`)
-    }),
   }
 })
 
@@ -47,11 +44,9 @@ describe('yaac auth token commands', () => {
 
   it('create surfaces the server error', async () => {
     mockClient({
-      $post: vi.fn().mockResolvedValue({
-        ok: false,
-        status: 409,
-        json: () => Promise.resolve({ error: { code: 'CONFLICT', message: "a token named 'laptop' already exists" } }),
-      }),
+      $post: vi.fn().mockRejectedValue(
+        new ServerError('CONFLICT', "a token named 'laptop' already exists"),
+      ),
     })
     await expect(authTokenCreate('laptop')).rejects.toThrow(/already exists/)
   })

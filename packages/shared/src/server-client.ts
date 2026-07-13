@@ -1,11 +1,10 @@
-import { hc } from 'hono/client'
 import { readBuildId } from '#build-id'
 import { testEnv } from '#env'
 import { readLock } from '#lock'
 import { isLockLive, type ServerLock } from '#server-lock-file'
 import { readRemote } from '#remote'
+import { createRpcClient, type FetchLike } from '#rpc-core'
 import type { ServerErrorBody } from '#errors'
-import type { AppType } from '@yaac/server/server'
 
 /**
  * Where a CLI invocation sends its requests. Local lock, configured
@@ -133,17 +132,6 @@ async function peekErrorBody(res: Response): Promise<ServerErrorBody | null> {
   }
 }
 
-export async function toClientError(
-  res: { status: number; json(): Promise<unknown> },
-): Promise<Error> {
-  try {
-    const body = await res.json() as ServerErrorBody
-    return new Error(body.error.message)
-  } catch {
-    return new Error(`server returned ${res.status}`)
-  }
-}
-
 /**
  * Pure decision: is this lock usable, and if not, why? Callers surface
  * the message to the user with instructions on how to recover. Kept
@@ -239,31 +227,28 @@ export function exitOnClientError(err: unknown): never {
 }
 
 /**
- * Typed Hono RPC client for the server. Returns an `hc<AppType>(...)`
- * proxy whose route methods infer request bodies, params, and
- * response shapes directly from the server's route handlers.
- *
- * The underlying fetch is produced by `createServerFetch`, so lock
- * resolution and AUTH_REQUIRED / BAD_BEARER retry logic are shared.
+ * Typed Hono RPC client for the server. Built by the shared
+ * `createRpcClient` (so a non-2xx rejects with a `ServerError` — callers
+ * never check `res.ok`), over a fetch from `createServerFetch` (so lock
+ * resolution and AUTH_REQUIRED / BAD_BEARER retry logic are shared).
  *
  * Usage:
  *   const client = await getRpcClient()
- *   const res = await client.project.list.$get()
+ *   const projects = await client.project.list.$get().then((r) => r.json())
  */
 export async function getRpcClient(opts: GetClientOptions = {}) {
   const serverFetch = await createServerFetch(opts)
 
-  // `hc` bakes the base URL into every request. We discard it via
-  // `extractPathAndSearch` and route to the live server's port, so
-  // this host is just a placeholder.
-  return hc<AppType>('http://server.local/', {
-    fetch: (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string'
-        ? input
-        : input instanceof URL
-          ? input.href
-          : input.url
-      return serverFetch(url, init)
-    },
-  })
+  // `hc` bakes the base URL into every request. `createServerFetch`
+  // discards it via `extractPathAndSearch` and routes to the live
+  // server's port, so this host is just a placeholder.
+  const fetchLike: FetchLike = (input, init) => {
+    const url = typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.href
+        : input.url
+    return serverFetch(url, init)
+  }
+  return createRpcClient('http://server.local/', fetchLike)
 }

@@ -6,14 +6,12 @@
  * build-id checks (`requireBuildMatch: false`): the shell is a pure
  * client with no build identity of its own.
  */
-import { getRpcClient, toClientError, type GetClientOptions } from '@yaac/shared/server-client'
+import { getRpcClient, type GetClientOptions } from '@yaac/shared/server-client'
 
 export async function mintWebToken(opts: GetClientOptions = {}): Promise<string> {
   // Forced off, not defaulted: the shell ships no server code, so no
   // caller of this package ever has a build id to match.
   const client = await getRpcClient({ ...opts, requireBuildMatch: false })
-  const res = await client.tokens.$post({ json: { kind: 'one-time' } })
-  if (!res.ok) throw await toClientError(res)
-  const { token } = await res.json()
+  const { token } = await client.tokens.$post({ json: { kind: 'one-time' } }).then((r) => r.json())
   return token
 }

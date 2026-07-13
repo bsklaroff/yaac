@@ -1,5 +1,5 @@
 import readline from 'node:readline/promises'
-import { getRpcClient, toClientError } from '#commands/rpc'
+import { getRpcClient } from '#commands/rpc'
 import type { ToolLoginView } from '@yaac/shared/types'
 
 /**
@@ -18,9 +18,7 @@ export type RelayedLoginOutcome = 'success' | 'cli-missing' | 'error'
 
 export async function runRelayedToolLogin(tool: 'claude' | 'codex'): Promise<RelayedLoginOutcome> {
   const client = await getRpcClient()
-  const start = await client.auth[':tool'].login.start.$post({ param: { tool } })
-  if (!start.ok) throw await toClientError(start)
-  let view = await start.json() as ToolLoginView
+  let view = await client.auth[':tool'].login.start.$post({ param: { tool } }).then((r) => r.json()) as ToolLoginView
   const id = view.id
 
   console.log('Complete the sign-in in your browser — vendor CLI output follows.')
@@ -49,13 +47,14 @@ export async function runRelayedToolLogin(tool: 'claude' | 'codex'): Promise<Rel
         const text = pasted
         pasted = null
         if (text) {
-          const input = await client.auth.login[':id'].input.$post({ param: { id }, json: { text } })
-          if (!input.ok) console.error((await toClientError(input)).message)
+          try {
+            await client.auth.login[':id'].input.$post({ param: { id }, json: { text } })
+          } catch (err) {
+            console.error(err instanceof Error ? err.message : String(err))
+          }
         }
       }
-      const res = await client.auth.login[':id'].$get({ param: { id } })
-      if (!res.ok) throw await toClientError(res)
-      view = await res.json() as ToolLoginView
+      view = await client.auth.login[':id'].$get({ param: { id } }).then((r) => r.json()) as ToolLoginView
       printNew(view.output)
     }
   } finally {

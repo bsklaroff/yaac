@@ -1,4 +1,4 @@
-import { rpc, expectOk } from './rpc'
+import { rpc } from './rpc'
 
 /**
  * Allow a previously-blocked host for a session. `persist: false` widens only
@@ -12,8 +12,8 @@ export async function allowBlockedHost(
   host: string,
   opts: { persist: boolean },
 ): Promise<void> {
-  await expectOk(rpc.session[':id']['allow-host'].$post({
+  await rpc.session[':id']['allow-host'].$post({
     param: { id: sessionId },
     json: { host, persist: opts.persist },
-  }))
+  })
 }

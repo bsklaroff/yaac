@@ -2,13 +2,21 @@ import { describe, it, expect } from 'vitest'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { zv } from '#routes/validator'
+import { toErrorBody } from '#errors'
 
 describe('zv', () => {
-  const app = new Hono().post(
-    '/add',
-    zv('json', z.object({ remoteUrl: z.string().min(1) })),
-    (c) => c.json({ got: c.req.valid('json').remoteUrl }),
-  )
+  // zv throws on bad input; the server's `app.onError` serializes the throw
+  // to the wire error body, so mirror that here to test the end-to-end shape.
+  const app = new Hono()
+    .onError((err, c) => {
+      const { status, body } = toErrorBody(err)
+      return c.json(body, status as 400 | 401 | 404 | 409 | 500 | 503)
+    })
+    .post(
+      '/add',
+      zv('json', z.object({ remoteUrl: z.string().min(1) })),
+      (c) => c.json({ got: c.req.valid('json').remoteUrl }),
+    )
 
   async function post(body: unknown): Promise<Response> {
     return await app.request('/add', {

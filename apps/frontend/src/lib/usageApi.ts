@@ -1,4 +1,4 @@
-import { rpc, expectOk } from '#lib/rpc'
+import { rpc } from '#lib/rpc'
 
 /**
  * Nudge the server to refresh plan usage now — fired when the usage popover
@@ -6,5 +6,5 @@ import { rpc, expectOk } from '#lib/rpc'
  * the refreshed numbers arrive via the pushed snapshot (not this response).
  */
 export function requestUsageRefresh(): Promise<void> {
-  return expectOk(rpc.auth.claude.usage.refresh.$post())
+  return rpc.auth.claude.usage.refresh.$post().then(() => {})
 }

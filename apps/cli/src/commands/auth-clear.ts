@@ -1,11 +1,9 @@
 import readline from 'node:readline/promises'
-import { getRpcClient, toClientError } from '#commands/rpc'
+import { getRpcClient } from '#commands/rpc'
 
 export async function authClear(): Promise<void> {
   const client = await getRpcClient()
-  const summaryRes = await client.auth.list.$get()
-  if (!summaryRes.ok) throw await toClientError(summaryRes)
-  const { gitCredentials, toolAuth } = await summaryRes.json()
+  const { gitCredentials, toolAuth } = await client.auth.list.$get().then((r) => r.json())
 
   if (gitCredentials.length === 0 && toolAuth.length === 0) {
     console.log('No credentials configured.')
@@ -25,10 +23,9 @@ export async function authClear(): Promise<void> {
         // Path segment must be URL-encoded: patterns like "github.com/acme/*"
         // carry literal slashes that the Hono client would otherwise pass
         // through, breaking the :pattern route match.
-        const res = await client.auth.git.credentials[':pattern'].$delete({
+        await client.auth.git.credentials[':pattern'].$delete({
           param: { pattern: encodeURIComponent(pattern) },
         })
-        if (!res.ok) throw await toClientError(res)
         console.log(`Removed git credential for pattern "${pattern}".`)
       },
     })
@@ -41,8 +38,7 @@ export async function authClear(): Promise<void> {
     entries.push({
       label: `${label} credentials (${entry.keyPreview})`,
       run: async () => {
-        const res = await client.auth.clear.$post({ json: { service: entry.tool } })
-        if (!res.ok) throw await toClientError(res)
+        await client.auth.clear.$post({ json: { service: entry.tool } })
         console.log(`Removed ${label} credentials.`)
       },
     })
@@ -58,8 +54,7 @@ export async function authClear(): Promise<void> {
   rl.close()
 
   if (answer.toLowerCase() === 'all') {
-    const res = await client.auth.clear.$post({ json: { service: 'all' } })
-    if (!res.ok) throw await toClientError(res)
+    await client.auth.clear.$post({ json: { service: 'all' } })
     console.log('All credentials removed.')
     return
   }

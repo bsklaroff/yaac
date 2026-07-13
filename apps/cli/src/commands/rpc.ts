@@ -1,7 +1,7 @@
 import { getRpcClient as getRpcClientRaw, type GetClientOptions } from '@yaac/shared/server-client'
 import { authUpdate } from '#commands/auth-update'
 
-export { toClientError, exitOnClientError } from '@yaac/shared/server-client'
+export { exitOnClientError } from '@yaac/shared/server-client'
 
 /**
  * Command-side RPC client. Identical to `getRpcClient` from shared,

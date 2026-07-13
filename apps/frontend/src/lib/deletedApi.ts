@@ -1,4 +1,5 @@
-import { rpc, unwrap, ApiError } from './rpc'
+import { rpc } from './rpc'
+import { ServerError } from '@yaac/shared/errors'
 import type { DeletedSessionEntry } from '@yaac/shared/types'
 
 /**
@@ -14,11 +15,11 @@ export async function getDeletedSessions(
   limit = 25,
 ): Promise<DeletedSessionEntry[]> {
   try {
-    return await unwrap(rpc.session['list-deleted'].$get({
+    return await rpc.session['list-deleted'].$get({
       query: { project: projectSlug, limit: String(limit) },
-    }))
+    }).then((r) => r.json())
   } catch (err) {
-    if (err instanceof ApiError && err.status === 404) return []
+    if (err instanceof ServerError && err.code === 'NOT_FOUND') return []
     throw err
   }
 }

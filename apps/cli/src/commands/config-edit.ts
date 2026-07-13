@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { getRpcClient, toClientError } from '#commands/rpc'
+import { getRpcClient } from '#commands/rpc'
 import { editFile } from '#commands/edit-file'
 
 /**
@@ -37,8 +37,8 @@ async function discardScratch(edit: ScratchEdit): Promise<void> {
   await fs.rm(edit.tmpDir, { recursive: true, force: true })
 }
 
-function failKeepingEdits(err: Error, edit: ScratchEdit): void {
-  console.error(err.message)
+function failKeepingEdits(err: unknown, edit: ScratchEdit): void {
+  console.error(err instanceof Error ? err.message : String(err))
   console.error(`Your edits are kept at ${edit.tmpPath}`)
   process.exitCode = 1
 }
@@ -51,16 +51,13 @@ function failKeepingEdits(err: Error, edit: ScratchEdit): void {
  */
 export async function configEditProject(slug: string): Promise<void> {
   const client = await getRpcClient()
-  const res = await client.project[':slug'].config.raw.$get({ param: { slug } })
-  if (!res.ok) throw await toClientError(res)
-  const { content } = await res.json()
+  const { content } = await client.project[':slug'].config.raw.$get({ param: { slug } }).then((r) => r.json())
 
   const edit = await editInScratch('yaac-config.json', content)
   if (!edit) return
 
   if (edit.text.trim() === '') {
-    const del = await client.project[':slug'].config.$delete({ param: { slug } })
-    if (!del.ok) throw await toClientError(del)
+    await client.project[':slug'].config.$delete({ param: { slug } })
     await discardScratch(edit)
     console.log('Cleared project config — defaults apply.')
     return
@@ -76,9 +73,10 @@ export async function configEditProject(slug: string): Promise<void> {
     )
     return
   }
-  const put = await client.project[':slug'].config.$put({ param: { slug }, json: { config: parsed } })
-  if (!put.ok) {
-    failKeepingEdits(await toClientError(put), edit)
+  try {
+    await client.project[':slug'].config.$put({ param: { slug }, json: { config: parsed } })
+  } catch (err) {
+    failKeepingEdits(err, edit)
     return
   }
   await discardScratch(edit)
@@ -88,19 +86,18 @@ export async function configEditProject(slug: string): Promise<void> {
 /** `yaac config edit-dockerfile <project>` — the project's Dockerfile.yaac. */
 export async function configEditDockerfile(slug: string): Promise<void> {
   const client = await getRpcClient()
-  const res = await client.project[':slug'].dockerfile.$get({ param: { slug } })
-  if (!res.ok) throw await toClientError(res)
-  const { content } = await res.json()
+  const { content } = await client.project[':slug'].dockerfile.$get({ param: { slug } }).then((r) => r.json())
 
   const edit = await editInScratch('Dockerfile.yaac', content)
   if (!edit) return
 
-  const put = await client.project[':slug'].dockerfile.$put({
-    param: { slug },
-    json: { content: edit.text },
-  })
-  if (!put.ok) {
-    failKeepingEdits(await toClientError(put), edit)
+  try {
+    await client.project[':slug'].dockerfile.$put({
+      param: { slug },
+      json: { content: edit.text },
+    })
+  } catch (err) {
+    failKeepingEdits(err, edit)
     return
   }
   await discardScratch(edit)
@@ -112,16 +109,15 @@ export async function configEditDockerfile(slug: string): Promise<void> {
 /** `yaac config edit-user-dockerfile` — the global Dockerfile.user. */
 export async function configEditUserDockerfile(): Promise<void> {
   const client = await getRpcClient()
-  const res = await client.config['user-dockerfile'].$get()
-  if (!res.ok) throw await toClientError(res)
-  const { content } = await res.json()
+  const { content } = await client.config['user-dockerfile'].$get().then((r) => r.json())
 
   const edit = await editInScratch('Dockerfile.user', content)
   if (!edit) return
 
-  const put = await client.config['user-dockerfile'].$put({ json: { content: edit.text } })
-  if (!put.ok) {
-    failKeepingEdits(await toClientError(put), edit)
+  try {
+    await client.config['user-dockerfile'].$put({ json: { content: edit.text } })
+  } catch (err) {
+    failKeepingEdits(err, edit)
     return
   }
   await discardScratch(edit)

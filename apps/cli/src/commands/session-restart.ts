@@ -1,6 +1,6 @@
 import { validateAddDirs } from '#commands/add-dirs'
 import { ensureGitIdentity } from '#commands/git-identity'
-import { getRpcClient, toClientError } from '#commands/rpc'
+import { getRpcClient } from '#commands/rpc'
 import { attachSessionPty } from '#commands/ws-terminal'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { testEnv } from '@yaac/shared/env'
@@ -45,7 +45,6 @@ export async function sessionRestart(
       gitUser,
     },
   })
-  if (!res.ok) throw await toClientError(res)
 
   const result = await consumeNdjsonStream<SessionRestartResult>(res)
 

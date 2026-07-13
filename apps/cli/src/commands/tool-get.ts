@@ -1,10 +1,8 @@
-import { getRpcClient, toClientError } from '#commands/rpc'
+import { getRpcClient } from '#commands/rpc'
 
 export async function toolGet(): Promise<void> {
   const client = await getRpcClient()
-  const res = await client.tool.get.$get()
-  if (!res.ok) throw await toClientError(res)
-  const result = await res.json()
+  const result = await client.tool.get.$get().then((r) => r.json())
   if (result.tool) {
     console.log(result.tool)
   } else {

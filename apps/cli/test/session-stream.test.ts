@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { sessionStream } from '#commands/session-stream'
 import { attachSessionPty } from '#commands/ws-terminal'
 import { getRpcClient } from '@yaac/shared/server-client'
+import { ServerError } from '@yaac/shared/errors'
 import type * as serverClientModule from '@yaac/shared/server-client'
 
 vi.mock('#commands/ws-terminal', () => ({
@@ -13,10 +14,6 @@ vi.mock('@yaac/shared/server-client', async (importOriginal) => {
   return {
     ...actual,
     getRpcClient: vi.fn(),
-    toClientError: vi.fn().mockImplementation(async (res: Response) => {
-      const body = await res.json() as { error?: { message?: string } }
-      return new Error(body.error?.message ?? `server ${res.status}`)
-    }),
   }
 })
 
@@ -111,11 +108,8 @@ describe('sessionStream', () => {
   })
 
   it('propagates server errors', async () => {
-    const post = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 500,
-      json: () => Promise.resolve({ error: { code: 'INTERNAL', message: 'boom' } }),
-    })
+    // The throwing RPC client rejects on a non-2xx response.
+    const post = vi.fn().mockRejectedValue(new ServerError('INTERNAL', 'boom'))
     vi.mocked(getRpcClient).mockResolvedValue({
       session: { stream: { next: { $post: post } } },
     } as unknown as Awaited<ReturnType<typeof getRpcClient>>)

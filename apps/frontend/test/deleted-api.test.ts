@@ -4,6 +4,20 @@ import { getDeletedSessions } from '#lib/deletedApi'
 const realFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = realFetch })
 
+/** A non-2xx fetch result carrying the shared error envelope, which the RPC
+ *  client turns into a thrown ServerError. `clone` returns itself so the
+ *  client can read the body. */
+function errorStub(status: number, error: { code: string; message: string }): typeof fetch {
+  const res = {
+    ok: false,
+    status,
+    json: () => Promise.resolve({ error }),
+    text: () => Promise.resolve(JSON.stringify({ error })),
+    clone() { return this },
+  }
+  return vi.fn().mockResolvedValue(res) as unknown as typeof fetch
+}
+
 describe('getDeletedSessions', () => {
   it('requests the project-scoped list-deleted endpoint with a limit', async () => {
     const entries = [{ sessionId: 'a', projectSlug: 'p', tool: 'claude', createdAt: '2026-01-01 00:00:00' }]
@@ -33,18 +47,14 @@ describe('getDeletedSessions', () => {
   })
 
   it('degrades to an empty list when the server lacks the route (404)', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: false, status: 404, text: () => Promise.resolve('no route'),
-    }) as unknown as typeof fetch
+    globalThis.fetch = errorStub(404, { code: 'NOT_FOUND', message: 'no route' })
 
     expect(await getDeletedSessions('proj')).toEqual([])
   })
 
   it('still throws on non-404 errors', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: false, status: 500, text: () => Promise.resolve('boom'),
-    }) as unknown as typeof fetch
+    globalThis.fetch = errorStub(500, { code: 'INTERNAL', message: 'boom' })
 
-    await expect(getDeletedSessions('proj')).rejects.toMatchObject({ status: 500 })
+    await expect(getDeletedSessions('proj')).rejects.toMatchObject({ code: 'INTERNAL', httpStatus: 500 })
   })
 })

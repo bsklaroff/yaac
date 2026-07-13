@@ -11,6 +11,8 @@ export type ErrorCode =
   | 'AUTH_REQUIRED'
   | 'AUTH_AGENT_DISCONNECTED'
   | 'BAD_BEARER'
+  | 'UNAUTHENTICATED'
+  | 'BAD_HOST'
   | 'INTERNAL'
 
 export interface ServerErrorBody {
@@ -40,6 +42,8 @@ export function defaultStatus(code: ErrorCode): number {
     case 'AUTH_REQUIRED': return 401
     case 'AUTH_AGENT_DISCONNECTED': return 503
     case 'BAD_BEARER': return 401
+    case 'UNAUTHENTICATED': return 401
+    case 'BAD_HOST': return 403
     case 'INTERNAL': return 500
   }
 }

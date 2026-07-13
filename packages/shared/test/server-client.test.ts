@@ -10,7 +10,6 @@ import {
   describeLockMismatch,
   exitOnClientError,
   resolveServerTarget,
-  toClientError,
   type ServerTarget,
 } from '#server-client'
 import { writeLock } from '#lock'
@@ -321,24 +320,6 @@ describe('describeLockMismatch', () => {
   it('a null cliBuildId still reports a dead server', () => {
     const msg = describeLockMismatch(lock, false, null)
     expect(msg).toMatch(/not running/)
-  })
-})
-
-describe('toClientError', () => {
-  it('extracts the server-supplied message from a JSON error body', async () => {
-    const res = new Response('{"error":{"code":"NOT_FOUND","message":"project foo"}}', {
-      status: 404,
-      headers: { 'content-type': 'application/json' },
-    })
-    const err = await toClientError(res)
-    expect(err).toBeInstanceOf(Error)
-    expect(err.message).toBe('project foo')
-  })
-
-  it('falls back to a status-carrying message when the body is not JSON', async () => {
-    const res = new Response('not json', { status: 502 })
-    const err = await toClientError(res)
-    expect(err.message).toBe('server returned 502')
   })
 })
 

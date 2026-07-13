@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { validateAddDirs } from '#commands/add-dirs'
 import { ensureGitIdentity } from '#commands/git-identity'
-import { getRpcClient, toClientError } from '#commands/rpc'
+import { getRpcClient } from '#commands/rpc'
 import { attachSessionPty } from '#commands/ws-terminal'
 import { resolveServerTarget } from '@yaac/shared/server-client'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
@@ -71,7 +71,6 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
       gitUser,
     },
   })
-  if (!res.ok) throw await toClientError(res)
 
   const result = await consumeNdjsonStream<SessionCreateResult>(res)
 

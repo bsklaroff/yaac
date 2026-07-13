@@ -1,4 +1,4 @@
-import { getRpcClient, toClientError } from '#commands/rpc'
+import { getRpcClient } from '#commands/rpc'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 
 interface RebuildResult {
@@ -15,7 +15,6 @@ interface RebuildResult {
 export async function projectRebuild(projectSlug: string): Promise<void> {
   const client = await getRpcClient()
   const res = await client.project[':slug'].rebuild.$post({ param: { slug: projectSlug } })
-  if (!res.ok) throw await toClientError(res)
 
   const result = await consumeNdjsonStream<RebuildResult>(res)
   console.log(`Rebuilt ${result.projectSlug} → ${result.finalTag}`)

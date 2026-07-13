@@ -7,6 +7,7 @@ import {
 } from '#commands/config-edit'
 import { editFile } from '#commands/edit-file'
 import { getRpcClient } from '@yaac/shared/server-client'
+import { ServerError } from '@yaac/shared/errors'
 import type * as serverClientModule from '@yaac/shared/server-client'
 
 vi.mock('#commands/edit-file', () => ({
@@ -18,10 +19,6 @@ vi.mock('@yaac/shared/server-client', async (importOriginal) => {
   return {
     ...actual,
     getRpcClient: vi.fn(),
-    toClientError: vi.fn().mockImplementation(async (res: Response) => {
-      const body = await res.json() as { error?: { message?: string } }
-      return new Error(body.error?.message ?? `server ${res.status}`)
-    }),
   }
 })
 
@@ -115,11 +112,7 @@ describe('configEditProject', () => {
 
   it('a server validation failure keeps the scratch file too', async () => {
     editorWrites('{ "virtualCluster": true, "nestedContainers": false }')
-    configPut.mockResolvedValue({
-      ok: false,
-      status: 400,
-      json: () => Promise.resolve({ error: { code: 'VALIDATION', message: 'virtualCluster requires nestedContainers' } }),
-    })
+    configPut.mockRejectedValue(new ServerError('VALIDATION', 'virtualCluster requires nestedContainers'))
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
     await configEditProject('demo')
@@ -132,11 +125,7 @@ describe('configEditProject', () => {
   })
 
   it('propagates a NOT_FOUND before opening the editor', async () => {
-    rawGet.mockResolvedValue({
-      ok: false,
-      status: 404,
-      json: () => Promise.resolve({ error: { code: 'NOT_FOUND', message: 'project nope not found' } }),
-    })
+    rawGet.mockRejectedValue(new ServerError('NOT_FOUND', 'project nope not found'))
     await expect(configEditProject('nope')).rejects.toThrow('project nope not found')
     expect(editFile).not.toHaveBeenCalled()
   })
@@ -200,11 +189,7 @@ describe('configEditUserDockerfile', () => {
 
   it('a rejected (non-layered) Dockerfile keeps the scratch file', async () => {
     editorWrites('FROM scratch\n')
-    put.mockResolvedValue({
-      ok: false,
-      status: 400,
-      json: () => Promise.resolve({ error: { code: 'VALIDATION', message: 'user Dockerfile must be layered' } }),
-    })
+    put.mockRejectedValue(new ServerError('VALIDATION', 'user Dockerfile must be layered'))
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
     await configEditUserDockerfile()

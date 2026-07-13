@@ -4,7 +4,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import * as childProcess from 'node:child_process'
-import { getRpcClient, resolveServerTarget, toClientError } from '@yaac/shared/server-client'
+import { getRpcClient, resolveServerTarget } from '@yaac/shared/server-client'
 import { ensureAuthDaemon } from '@yaac/shared/auth-daemon'
 import { runRelayedToolLogin } from '#commands/relayed-login'
 import { validatePattern, parsePattern } from '@yaac/shared/credentials'
@@ -136,10 +136,9 @@ async function runHttpsUpdate(): Promise<void> {
     process.exit(1)
   }
   const client = await getRpcClient()
-  const res = await client.auth.git.credentials.$post({
+  await client.auth.git.credentials.$post({
     json: { kind: 'https', pattern, token },
   })
-  if (!res.ok) throw await toClientError(res)
   console.log(`Credential saved for pattern "${pattern}".`)
 }
 
@@ -199,10 +198,9 @@ async function runSshUpdate(): Promise<void> {
   }
 
   const client = await getRpcClient()
-  const res = await client.auth.git.credentials.$post({
+  await client.auth.git.credentials.$post({
     json: { kind: 'ssh', pattern, privateKeyPath, knownHostsEntry },
   })
-  if (!res.ok) throw await toClientError(res)
   console.log(`SSH credential saved for pattern "${pattern}".`)
 }
 
@@ -246,7 +244,6 @@ async function runToolUpdate(tool: AgentTool): Promise<void> {
 
   const payload = buildAuthPayload(tool, result)
   const client = await getRpcClient()
-  const res = await client.auth[':tool'].$put({ param: { tool }, json: payload })
-  if (!res.ok) throw await toClientError(res)
+  await client.auth[':tool'].$put({ param: { tool }, json: payload })
   console.log(`${label} credentials saved.`)
 }

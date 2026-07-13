@@ -2,11 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.mock('#commands/rpc', () => ({
   getRpcClient: vi.fn(),
-  toClientError: vi.fn(() => Promise.resolve(new Error('client error'))),
 }))
 
 import { getRpcClient } from '#commands/rpc'
 import { projectRebuild } from '#commands/project-rebuild'
+import { ServerError } from '@yaac/shared/errors'
 
 function ndjsonResponse(events: unknown[], status = 200): Response {
   const body = events.map((e) => JSON.stringify(e)).join('\n') + '\n'
@@ -61,9 +61,16 @@ describe('projectRebuild', () => {
     await expect(projectRebuild('myproject')).rejects.toThrow(/without a result/)
   })
 
-  it('surfaces a non-ok HTTP response via toClientError', async () => {
-    mockClient(() => ndjsonResponse([], 500))
+  it('propagates a server error thrown by the client on a non-2xx response', async () => {
+    // The throwing RPC client rejects before any stream is read.
+    vi.mocked(getRpcClient).mockResolvedValue({
+      project: {
+        ':slug': {
+          rebuild: { $post: vi.fn().mockRejectedValue(new ServerError('INTERNAL', 'server returned 500')) },
+        },
+      },
+    } as never)
 
-    await expect(projectRebuild('myproject')).rejects.toThrow('client error')
+    await expect(projectRebuild('myproject')).rejects.toThrow('server returned 500')
   })
 })

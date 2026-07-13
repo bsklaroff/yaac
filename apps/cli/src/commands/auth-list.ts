@@ -1,11 +1,9 @@
-import { getRpcClient, toClientError } from '#commands/rpc'
+import { getRpcClient } from '#commands/rpc'
 import type { ToolAuthSummary } from '@yaac/shared/types'
 
 export async function authList(): Promise<void> {
   const client = await getRpcClient()
-  const res = await client.auth.list.$get()
-  if (!res.ok) throw await toClientError(res)
-  const result = await res.json()
+  const result = await client.auth.list.$get().then((r) => r.json())
 
   console.log('Git credentials:')
   if (result.gitCredentials.length === 0) {

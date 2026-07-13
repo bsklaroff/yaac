@@ -12,6 +12,8 @@ describe('shared errors', () => {
         AUTH_REQUIRED: 401,
         AUTH_AGENT_DISCONNECTED: 503,
         BAD_BEARER: 401,
+        UNAUTHENTICATED: 401,
+        BAD_HOST: 403,
         INTERNAL: 500,
       }
       for (const [code, status] of Object.entries(expected)) {

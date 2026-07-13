@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { ServerError } from '@yaac/shared/errors'
 import { dismissImageBuild, getImageBuildLog, listImageBuilds } from '#image-builds'
 
 /**
@@ -12,7 +13,7 @@ export const imageApp = new Hono()
   .get('/builds/:id/log', (c) => {
     const log = getImageBuildLog(c.req.param('id'))
     if (log === undefined) {
-      return c.json({ error: { code: 'NOT_FOUND', message: 'no such build' } }, 404)
+      throw new ServerError('NOT_FOUND', 'no such build')
     }
     return c.json({ log })
   })

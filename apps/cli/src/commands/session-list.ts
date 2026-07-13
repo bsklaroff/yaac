@@ -1,4 +1,4 @@
-import { getRpcClient, toClientError } from '#commands/rpc'
+import { getRpcClient } from '#commands/rpc'
 import type {
   DeletedSessionEntry,
   GitAuthFailure,
@@ -21,17 +21,14 @@ export async function sessionList(projectSlug?: string, options: SessionListOpti
     const query: { project?: string; limit?: string } = {}
     if (projectSlug) query.project = projectSlug
     if (limit !== undefined) query.limit = String(limit)
-    const res = await client.session['list-deleted'].$get({ query })
-    if (!res.ok) throw await toClientError(res)
-    renderDeleted(await res.json(), projectSlug, limit)
+    const deleted = await client.session['list-deleted'].$get({ query }).then((r) => r.json())
+    renderDeleted(deleted, projectSlug, limit)
     return
   }
 
-  const res = await client.session.list.$get({
+  const result = await client.session.list.$get({
     query: projectSlug ? { project: projectSlug } : {},
-  })
-  if (!res.ok) throw await toClientError(res)
-  const result = await res.json()
+  }).then((r) => r.json())
 
   if (result.sessions.length === 0) {
     const suffix = projectSlug ? ` for project "${projectSlug}"` : ''
