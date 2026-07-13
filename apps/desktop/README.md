@@ -49,17 +49,46 @@ is impossible (the SPA comes from the server it talks to).
 ## Run
 
 ```sh
-pnpm desktop:dev                                # tsup-bundle the main process, then electron .
-pnpm desktop:build                              # just the bundle (dist/main.js)
-pnpm --filter @yaac/desktop dev:isolated        # isolated dev instance, see below
+pnpm desktop:dev     # tsup-bundle the main process, then electron .
+pnpm desktop:hot     # same, but the window loads Vite for frontend hot-reload
+pnpm desktop:build   # just the bundle (dist/main.js)
 ```
 
-The isolated dev instance (`scripts/dev-app.sh`) coexists with an installed
-build: its own data dir (`~/.yaac-dev`), server port (8788), k8s namespace
-(`yaac-dev`), and Electron identity/storage (`yaac (dev)` via
-`YAAC_DESKTOP_DEV=1`). It runs Vite for frontend HMR and points the window at
-it with `YAAC_DESKTOP_RENDERER_URL=http://localhost:1420/` (Vite proxies the
-API back to the server, so the token exchange stays same-origin).
+All of these share one data dir and one server: the boot flow resolves the
+same target an installed build would (enabled `~/.yaac/remote.json`, else the
+local `~/.yaac/.server.lock`), starting a local server if none is up. A dev
+run differs from the installed app only in spawning `yaac` from PATH rather
+than the bundled Node.
+
+**`desktop:dev`** loads the SPA the resolved server serves, so frontend edits
+need a rebuild. **`desktop:hot`** (`scripts/dev-hot.sh`) instead points the
+window at the Vite dev server for live frontend HMR: it ensures the shared
+server is up (so Vite reads its real port from the lock), starts Vite on
+`:1420`, then launches Electron with
+`YAAC_DESKTOP_RENDERER_URL=http://localhost:1420/`. Only the *renderer*
+hot-reloads — main-process (`src/*.ts`) changes still need a restart.
+
+### How the boot flow authenticates (both modes)
+
+`src/flow.ts` always resolves the real server target and mints a one-time
+exchange token against it (`POST /tokens`, the same call `yaac open` makes);
+`YAAC_DESKTOP_RENDERER_URL` never changes *which* server is minted against,
+only the origin the window then loads. The window opens `<base>/?token=…`, and
+the SPA (`App.tsx`) trades that token for an HttpOnly session cookie at
+`POST /auth/web-session`, then scrubs it from the URL.
+
+- **`desktop:dev` / installed:** `<base>` is the server origin, so the exchange
+  and every later API/WS call are same-origin to the server directly.
+- **`desktop:hot`:** `<base>` is `http://localhost:1420`, so the SPA loads from
+  Vite. The exchange and all API/WS calls are relative (`/auth/web-session`,
+  `/session`, `/events`, `/pty`), so they hit Vite same-origin and its proxy
+  forwards them to the server it read from the lock — the cookie lands on the
+  `localhost:1420` origin, exactly like the browser `pnpm frontend:dev` flow.
+
+Plain `pnpm frontend:dev` (browser, no shell) is the same picture minus the
+mint step: open `http://localhost:1420/` and, with no `?token=` in the URL, the
+SPA falls through to the sign-in splash — paste a token from `yaac auth token
+create`, or open the Vite URL with a `?token=` you minted yourself.
 
 The desktop app is not part of `pnpm build`; the published npm artifact never
 includes it.

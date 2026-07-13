@@ -31,15 +31,7 @@ import { backgroundColorFor } from '#theme-bg'
 import { buildTrayBitmap } from '#tray-icon'
 import { boundsVisibleOn, readWindowState, saveWindowState } from '#window-state'
 
-// Dev identity, decided before app-ready: a dev run renames itself and
-// relocates userData so it never shares single-instance state, window
-// bounds, or cookies with an installed yaac.app.
-if (env.desktopDev) {
-  app.setName('yaac (dev)')
-  app.setPath('userData', path.join(app.getPath('appData'), 'yaac-dev'))
-} else {
-  app.setName('yaac')
-}
+app.setName('yaac')
 
 let win: BrowserWindow | null = null
 let tray: Tray | null = null

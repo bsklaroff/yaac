@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup && electron .",
-    "dev:isolated": "bash scripts/dev-app.sh",
+    "dev:hot": "bash scripts/dev-hot.sh",
     "app:build": "pnpm -w build && tsup && tsx scripts/stage-server.ts && electron-builder --config electron-builder.yml",
     "app:install": "pnpm app:build && tsx scripts/install-app.ts"
   },

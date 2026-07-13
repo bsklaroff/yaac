@@ -165,25 +165,12 @@ export const env = {
 
   /**
    * `YAAC_DESKTOP_RENDERER_URL` — override for the URL the desktop shell's
-   * window loads (frontend dev points it at Vite, which proxies the API back
-   * to the server). Unset → the resolved server origin.
+   * window loads (the `desktop:hot` dev flow points it at Vite, which proxies
+   * the API back to the server for frontend hot-reload). Unset → the resolved
+   * server origin.
    */
   get desktopRendererUrl(): string | undefined {
     return process.env.YAAC_DESKTOP_RENDERER_URL
-  },
-
-  /**
-   * `YAAC_DESKTOP_DEV` — marks a dev run of the desktop shell so it renames
-   * itself ('yaac (dev)') and relocates Electron's userData, letting it run
-   * side-by-side with an installed app. Same truthy semantics as
-   * `YAAC_USE_TOR`: unset, empty, "0", "false" → off.
-   */
-  get desktopDev(): boolean {
-    const raw = process.env.YAAC_DESKTOP_DEV
-    if (raw === undefined) return false
-    const v = raw.trim().toLowerCase()
-    if (v === '' || v === '0' || v === 'false') return false
-    return true
   },
 }
 

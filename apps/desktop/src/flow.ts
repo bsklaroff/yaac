@@ -26,10 +26,11 @@ export interface FlowDeps {
   mintToken(): Promise<string>
   onStatus(text: string): void
   /**
-   * Base URL to load in the window instead of the server origin — frontend
-   * dev points at Vite (:1420), which proxies /auth (and the rest of the API)
-   * back to the server so the token exchange stays same-origin. The server
-   * target itself still resolves normally (mint talks to the real server).
+   * Base URL to load in the window instead of the server origin — the
+   * `desktop:hot` dev flow points it at Vite (:1420), which proxies /auth (and
+   * the rest of the API) back to the server so the token exchange stays
+   * same-origin. The server target itself still resolves normally (mint talks
+   * to the real server).
    */
   rendererBaseUrl?: string
 }
