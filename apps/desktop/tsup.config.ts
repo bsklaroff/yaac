@@ -21,8 +21,12 @@ export default defineConfig({
   // ws is CJS: its internal require('events')/require('net') — and the
   // try/catch'd optional-native requires (bufferutil, utf-8-validate, which
   // fail into the pure-JS fallback) — need a real `require` in the ESM
-  // bundle. esbuild doesn't inject one, so provide it.
+  // bundle. esbuild doesn't inject one, so provide it. The import is
+  // aliased because the banner is raw text prepended after bundling:
+  // esbuild can't rename around it, so a bare `createRequire` collides
+  // with any source module whose own `import { createRequire }` from
+  // node:module is preserved in the output (e.g. shared/auth-daemon).
   banner: {
-    js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);",
+    js: "import { createRequire as __banner_createRequire } from 'node:module'; const require = __banner_createRequire(import.meta.url);",
   },
 })
