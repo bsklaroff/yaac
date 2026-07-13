@@ -3,7 +3,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { getDataDir } from '#paths'
-import { resolveServerTarget } from '#server-client'
+import { resolveServerTarget, type ServerTarget } from '#server-client'
 
 /**
  * Client-side lifecycle of the auth server — the login broker that runs
@@ -13,6 +13,9 @@ import { resolveServerTarget } from '#server-client'
  *
  * Lives in shared (not src/auth-daemon) because commands may only import
  * from shared: `yaac auth update` and `yaac open` call ensureAuthDaemon().
+ * The desktop shell is the second caller class: it can't use the CLI
+ * self-invocation or the default target resolution (an Electron process
+ * has neither a yaac argv[1] nor a build id), so both are overridable.
  */
 
 export interface AuthDaemonLock {
@@ -64,12 +67,18 @@ export function isPidLive(pid: number): boolean {
   }
 }
 
+/** How to launch `yaac auth server run`. */
+export interface AuthDaemonInvocation {
+  bin: string
+  args: string[]
+}
+
 /**
  * Relaunch ourselves as `yaac auth server run`, detached. Mirrors the
  * main server's self-invocation: production reuses node + the bundled
  * entry; dev respawns via tsx so the loader is set up in the child.
  */
-function resolveAuthDaemonInvocation(): { bin: string; args: string[] } {
+function resolveAuthDaemonInvocation(): AuthDaemonInvocation {
   const entry = process.argv[1] ?? ''
   const cmd = ['auth', 'server', 'run']
   if (entry.endsWith('.ts')) {
@@ -83,13 +92,24 @@ function resolveAuthDaemonInvocation(): { bin: string; args: string[] } {
   return { bin: process.execPath, args: [entry, ...cmd] }
 }
 
-export async function spawnAuthDaemonDetached(): Promise<void> {
-  const { bin, args } = resolveAuthDaemonInvocation()
-  const child = spawn(bin, args, {
+export interface SpawnAuthDaemonOptions {
+  /**
+   * Defaults to relaunching this process (CLI self-invocation) — callers
+   * whose process is not the yaac CLI (the desktop shell) must override.
+   */
+  invocation?: AuthDaemonInvocation
+  /** Daemon env (e.g. a login-shell-hydrated PATH); defaults to process.env. */
+  env?: NodeJS.ProcessEnv
+  spawnImpl?: typeof spawn
+}
+
+export async function spawnAuthDaemonDetached(opts: SpawnAuthDaemonOptions = {}): Promise<void> {
+  const { bin, args } = opts.invocation ?? resolveAuthDaemonInvocation()
+  const child = (opts.spawnImpl ?? spawn)(bin, args, {
     detached: true,
     stdio: 'ignore',
     // eslint-disable-next-line no-process-env -- forward the full host env to the detached subprocess
-    env: process.env,
+    env: opts.env ?? process.env,
   })
   child.unref()
   await new Promise<void>((resolve, reject) => {
@@ -113,6 +133,16 @@ async function agentConnected(baseUrl: string, secret: string): Promise<boolean>
   }
 }
 
+export interface EnsureAuthDaemonSpawnedOptions extends SpawnAuthDaemonOptions {
+  /**
+   * Pre-resolved target; defaults to resolveServerTarget(). Pure clients
+   * (the desktop shell) must pass their requireBuildMatch:false target —
+   * the default resolve would readBuildId() and throw in their process.
+   */
+  target?: ServerTarget
+  killImpl?: (pid: number, signal: NodeJS.Signals) => void
+}
+
 /**
  * Make sure an auth server process for the currently resolved main
  * server exists on this machine, restarting one pointed at a different
@@ -120,20 +150,22 @@ async function agentConnected(baseUrl: string, secret: string): Promise<boolean>
  * for the agent to connect — `yaac open` uses this fire-and-mostly-
  * forget variant so opening the webapp never blocks on the broker.
  */
-export async function ensureAuthDaemonSpawned(): Promise<{ baseUrl: string; secret: string }> {
-  const target = await resolveServerTarget()
+export async function ensureAuthDaemonSpawned(
+  opts: EnsureAuthDaemonSpawnedOptions = {},
+): Promise<{ baseUrl: string; secret: string }> {
+  const target = opts.target ?? await resolveServerTarget()
 
   const lock = await readAuthDaemonLock()
   const live = lock !== null && isPidLive(lock.pid)
   if (live && lock.baseUrl !== target.baseUrl) {
     // Pointed at the wrong server — restart against the current target.
     try {
-      process.kill(lock.pid, 'SIGTERM')
+      (opts.killImpl ?? process.kill)(lock.pid, 'SIGTERM')
     } catch { /* already gone */ }
     await removeAuthDaemonLock()
   }
   if (!live || lock?.baseUrl !== target.baseUrl) {
-    await spawnAuthDaemonDetached()
+    await spawnAuthDaemonDetached(opts)
   }
   return { baseUrl: target.baseUrl, secret: target.secret }
 }

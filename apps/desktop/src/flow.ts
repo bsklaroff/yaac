@@ -22,6 +22,13 @@ export interface FlowDeps {
   resolveTarget(): Promise<ServerTarget>
   /** Run `yaac server start` to completion; rejects only when yaac can't be spawned. */
   startLocalServer(): Promise<RunResult>
+  /**
+   * Best-effort: ensure the machine-local login broker runs against `target`
+   * (the same call `yaac open` makes). Fired, never awaited or propagated —
+   * the packaged path resolves the login-shell PATH (up to 5s) and must not
+   * delay landing the window.
+   */
+  ensureAuthDaemon(target: ServerTarget): Promise<void>
   /** Mint the one-time exchange token (see #mint); throws with a descriptive message. */
   mintToken(): Promise<string>
   onStatus(text: string): void
@@ -78,6 +85,11 @@ export async function runFlow(deps: FlowDeps): Promise<FlowResult> {
       })
     }
   }
+
+  // Best-effort, fire-and-forget: the SPA's sign-in cards need the login
+  // broker on this machine. Never block or fail the window on it — a failed
+  // spawn just leaves the cards saying what to run.
+  void deps.ensureAuthDaemon(target).catch(() => { /* best-effort */ })
 
   deps.onStatus(`Connecting to ${target.baseUrl}…`)
   let token: string

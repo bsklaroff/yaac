@@ -4,9 +4,10 @@ An Electron shell around the yaac webapp. There is no bundled frontend and no
 renderer code: the main process resolves the target server (enabled
 `~/.yaac/remote.json`, else the local `~/.yaac/.server.lock` — without the
 CLI's build-id match, since the shell ships no server code to match), spawns
-`yaac server start` when the local daemon is down, mints a one-time exchange
-token (POST /tokens — the same endpoint `yaac open` uses, via the shared
-typed client), and loads `<server-origin>/?token=…` into the window. From
+`yaac server start` when the local daemon is down, ensures the machine-local
+auth-daemon (login broker) best-effort like `yaac open` does, mints a one-time
+exchange token (POST /tokens — the same endpoint `yaac open` uses, via the
+shared typed client), and loads `<server-origin>/?token=…` into the window. From
 then on the window is a plain browser on the server origin, so the SPA,
 cookie auth, and WebSockets behave exactly like the webapp, and version skew
 is impossible (the SPA comes from the server it talks to).
@@ -38,13 +39,14 @@ is impossible (the SPA comes from the server it talks to).
 
 - Nothing beyond the repo's usual `pnpm install` (the `electron` dev
   dependency downloads its prebuilt binary on install).
-- For dev runs: the `yaac` CLI on PATH for local-server auto-start. GUI
-  launches with a minimal PATH self-heal: on ENOENT the spawn retries once
-  with the login shell's PATH (`src/server-process.ts`). The packaged app
-  instead runs its bundled Node + CLI and resolves the login-shell PATH up
-  front (the *server* needs it to find kubectl/podman/tmux from a Finder
-  launch). Only PATH is hydrated — other shell-profile env vars don't reach
-  a packaged server.
+- For dev runs: the `yaac` CLI on PATH for local-server auto-start and the
+  auth-daemon spawn. GUI launches with a minimal PATH self-heal: on ENOENT
+  the server spawn retries once with the login shell's PATH
+  (`src/server-process.ts`). The packaged app instead runs its bundled Node +
+  CLI and resolves the login-shell PATH up front (the *children* need it from
+  a Finder launch — kubectl/podman/tmux for the server, claude/codex/npm/brew
+  for the auth-daemon). Only PATH is hydrated — other shell-profile env vars
+  don't reach a packaged server.
 
 ## Run
 
@@ -59,6 +61,13 @@ same target an installed build would (enabled `~/.yaac/remote.json`, else the
 local `~/.yaac/.server.lock`), starting a local server if none is up. A dev
 run differs from the installed app only in spawning `yaac` from PATH rather
 than the bundled Node.
+
+Each window open also fires a best-effort `ensureAuthDaemonSpawned` against
+the resolved target (local or remote — the broker is machine-scoped), sharing
+`~/.yaac/.auth-daemon.lock` with the CLI: no double daemon next to `yaac
+open`, and a daemon pointed at a stale target (the remote setting flipped) is
+restarted. Fire-and-forget — a failed spawn never blocks or fails the window;
+the SPA's sign-in cards still say what to run by hand.
 
 **`desktop:dev`** loads the SPA the resolved server serves, so frontend edits
 need a rebuild. **`desktop:hot`** (`scripts/dev-hot.sh`) instead points the
@@ -120,8 +129,6 @@ notices there is no cluster and offers setup, streaming
 
 ## v1 limitations (accepted)
 
-- The shell does not spawn the auth-daemon (`yaac open` does, in-process);
-  the SPA's sign-in cards explain what to run when it matters.
 - Switching local↔remote means flipping `yaac remote on|off` and relaunching
   the app; an in-app picker is deferred.
 - A renderer-side manual Light/Dark override recolors the page but not the
@@ -143,3 +150,11 @@ dock and notifies once, and clicking the notification focuses the window;
 Quit leaves `yaac server status` running; window bounds survive a relaunch;
 the error dialogs: `yaac` off PATH → "yaac CLI not found"; stopped remote →
 "Could not connect to the remote server".
+
+And the auth-daemon: after launch, `yaac auth server status` shows running +
+connected (with `target: https://…` when remote is on); Quit leaves it
+running, and a relaunch spawns no second one (lock idempotency); flipping
+`yaac remote on|off` + relaunch repoints it (baseUrl-mismatch restart). For
+the packaged app, launch from Finder (minimal PATH) and drive a Claude
+sign-in from the SPA card — success proves the daemon found `claude` via the
+hydrated login-shell PATH.

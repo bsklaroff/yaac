@@ -9,6 +9,7 @@ const REMOTE: ServerTarget = { baseUrl: 'https://srv.ts.net', secret: 't', remot
 interface FakeOptions {
   resolve?: Array<ServerTarget | Error>
   start?: () => Promise<{ code: number | null, stderr: string }>
+  ensure?: (target: ServerTarget) => Promise<void>
   mint?: () => Promise<string>
   rendererBaseUrl?: string
 }
@@ -17,6 +18,7 @@ function fakeDeps(opts: FakeOptions = {}) {
   const resolutions = [...(opts.resolve ?? [LOCAL])]
   const statuses: string[] = []
   const start = vi.fn(opts.start ?? (() => Promise.resolve({ code: 0, stderr: '' })))
+  const ensure = vi.fn(opts.ensure ?? (() => Promise.resolve()))
   const deps: FlowDeps = {
     resolveTarget: () => {
       const next = resolutions.shift()
@@ -24,20 +26,23 @@ function fakeDeps(opts: FakeOptions = {}) {
       return next instanceof Error ? Promise.reject(next) : Promise.resolve(next)
     },
     startLocalServer: start,
+    ensureAuthDaemon: ensure,
     mintToken: opts.mint ?? (() => Promise.resolve('t0ken')),
     onStatus: (text) => {
       statuses.push(text)
     },
     rendererBaseUrl: opts.rendererBaseUrl,
   }
-  return { deps, statuses, start }
+  return { deps, statuses, start, ensure }
 }
 
 describe('runFlow', () => {
-  it('local happy path: resolve, mint, url — no spawn', async () => {
-    const { deps, statuses, start } = fakeDeps()
+  it('local happy path: resolve, ensure auth daemon, mint, url — no spawn', async () => {
+    const { deps, statuses, start, ensure } = fakeDeps()
     expect(await runFlow(deps)).toEqual({ ok: true, url: `${LOCAL.baseUrl}/?token=t0ken` })
     expect(start).not.toHaveBeenCalled()
+    expect(ensure).toHaveBeenCalledTimes(1)
+    expect(ensure).toHaveBeenCalledWith(LOCAL)
     expect(statuses).toEqual([
       'Locating yaac server…',
       `Connecting to ${LOCAL.baseUrl}…`,
@@ -45,14 +50,23 @@ describe('runFlow', () => {
     ])
   })
   it('server down: starts it, re-resolves, lands', async () => {
-    const { deps, statuses } = fakeDeps({
+    const { deps, statuses, ensure } = fakeDeps({
       resolve: [new Error('yaac server is not running. Start it with: yaac server start'), LOCAL],
     })
     expect(await runFlow(deps)).toEqual({ ok: true, url: `${LOCAL.baseUrl}/?token=t0ken` })
     expect(statuses).toContain('Starting the local yaac server…')
+    // Ensured against the re-resolved target, after the server came up.
+    expect(ensure).toHaveBeenCalledWith(LOCAL)
+  })
+  it('a failed auth-daemon ensure never fails the flow', async () => {
+    const { deps, ensure } = fakeDeps({
+      ensure: () => Promise.reject(new Error('spawn yaac ENOENT')),
+    })
+    expect(await runFlow(deps)).toEqual({ ok: true, url: `${LOCAL.baseUrl}/?token=t0ken` })
+    expect(ensure).toHaveBeenCalledTimes(1)
   })
   it('spawn failure → yaac-CLI-not-found error', async () => {
-    const { deps } = fakeDeps({
+    const { deps, ensure } = fakeDeps({
       resolve: [new Error('not running')],
       start: () => Promise.reject(new Error('spawn yaac ENOENT')),
     })
@@ -61,6 +75,8 @@ describe('runFlow', () => {
       ok: false,
       error: { title: 'yaac CLI not found', detail: 'spawn yaac ENOENT' },
     })
+    // No target ever resolved — nothing to point the auth daemon at.
+    expect(ensure).not.toHaveBeenCalled()
   })
   it('non-zero exit → stderr surfaced verbatim', async () => {
     const { deps } = fakeDeps({
@@ -74,12 +90,13 @@ describe('runFlow', () => {
     })
   })
   it('started but still unresolvable → not-reachable error', async () => {
-    const { deps } = fakeDeps({ resolve: [new Error('down'), new Error('still down')] })
+    const { deps, ensure } = fakeDeps({ resolve: [new Error('down'), new Error('still down')] })
     const result = await runFlow(deps)
     expect(result).toMatchObject({
       ok: false,
       error: { title: 'yaac server did not become reachable', detail: 'still down' },
     })
+    expect(ensure).not.toHaveBeenCalled()
   })
   it('remote target: never spawns, mint failure gets remote-flavored error', async () => {
     const { deps, start } = fakeDeps({
@@ -96,9 +113,10 @@ describe('runFlow', () => {
     })
     expect(start).not.toHaveBeenCalled()
   })
-  it('remote happy path', async () => {
-    const { deps } = fakeDeps({ resolve: [REMOTE], mint: () => Promise.resolve('rem0te') })
+  it('remote happy path: the auth daemon is ensured against the remote too', async () => {
+    const { deps, ensure } = fakeDeps({ resolve: [REMOTE], mint: () => Promise.resolve('rem0te') })
     expect(await runFlow(deps)).toEqual({ ok: true, url: `${REMOTE.baseUrl}/?token=rem0te` })
+    expect(ensure).toHaveBeenCalledWith(REMOTE)
   })
   it('rendererBaseUrl overrides the landing origin (Vite dev), not the target', async () => {
     const { deps, statuses } = fakeDeps({ rendererBaseUrl: 'http://localhost:1420/' })

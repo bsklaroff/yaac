@@ -33,7 +33,10 @@ export async function runAuthDaemon(): Promise<void> {
     return
   }
 
-  const target = await resolveServerTarget()
+  // Pure client: the broker repairs nothing on a version mismatch and only
+  // needs the server to be live — and when the desktop .app spawns us, our
+  // build id may legitimately differ from the running server's.
+  const target = await resolveServerTarget({ requireBuildMatch: false })
 
   // Completed logins land on the (possibly remote) main server, not on
   // this machine's data dir.

@@ -7,11 +7,10 @@
  * it never owns the server: close hides to the tray, Quit quits the shell
  * only, and the server keeps running (it was never ours to stop). While in
  * the tray it follows the `/events` stream as a bearer client to surface
- * waiting sessions (dock badge, tray status, notifications).
- *
- * Known v1 limitations (accepted, revisit if they bite): unlike `yaac open`,
- * the shell does not spawn the auth-daemon (`ensureAuthDaemonSpawned` is
- * in-process CLI code); the SPA's sign-in cards say what to run instead.
+ * waiting sessions (dock badge, tray status, notifications). Each window
+ * open also ensures the auth-daemon best-effort, like `yaac open` — and
+ * like the server, Quit leaves it running (machine-scoped, shared with the
+ * CLI; never ours to stop).
  */
 import path from 'node:path'
 import {
@@ -26,7 +25,7 @@ import { runFlow } from '#flow'
 import { appMenuTemplate } from '#menu'
 import { mintWebToken } from '#mint'
 import { errorBoxText, splashUrl } from '#messages'
-import { resolveServerCommand, runYaacServerStart } from '#server-process'
+import { ensureAuthDaemonRunning, resolveYaacCommand, runYaacServerStart } from '#server-process'
 import { backgroundColorFor } from '#theme-bg'
 import { buildTrayBitmap } from '#tray-icon'
 import { boundsVisibleOn, readWindowState, saveWindowState } from '#window-state'
@@ -110,9 +109,17 @@ async function openWindow(): Promise<boolean> {
   const result = await runFlow({
     resolveTarget,
     startLocalServer: () => runYaacServerStart(
-      resolveServerCommand(app.isPackaged ? process.resourcesPath : null),
+      resolveYaacCommand(app.isPackaged ? process.resourcesPath : null, ['server', 'start']),
       { hydratePath: app.isPackaged },
     ),
+    ensureAuthDaemon: (target) => ensureAuthDaemonRunning({
+      target,
+      command: resolveYaacCommand(
+        app.isPackaged ? process.resourcesPath : null,
+        ['auth', 'server', 'run'],
+      ),
+      hydratePath: app.isPackaged,
+    }),
     mintToken: mintWebToken,
     onStatus: (text) => {
       void w.loadURL(splashUrl(text)).catch(() => { /* superseded by the next load */ })

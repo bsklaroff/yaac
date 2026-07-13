@@ -1,8 +1,12 @@
 import { EventEmitter } from 'node:events'
 import type { execFile } from 'node:child_process'
 import { describe, expect, it, vi } from 'vitest'
+import type { ensureAuthDaemonSpawned } from '@yaac/shared/auth-daemon'
+import type { ServerTarget } from '@yaac/shared/server-client'
 import type { SpawnImpl } from '#server-process'
-import { loginShellPath, resolveServerCommand, runYaacServerStart } from '#server-process'
+import {
+  ensureAuthDaemonRunning, loginShellPath, resolveYaacCommand, runYaacServerStart,
+} from '#server-process'
 
 interface FakeOutcome {
   error?: NodeJS.ErrnoException
@@ -37,14 +41,15 @@ function enoent(): NodeJS.ErrnoException {
   return err
 }
 
-describe('resolveServerCommand', () => {
+describe('resolveYaacCommand', () => {
   it('spawns yaac from PATH in dev (no resources dir)', () => {
-    expect(resolveServerCommand(null)).toEqual({ bin: 'yaac', args: ['server', 'start'] })
+    expect(resolveYaacCommand(null, ['server', 'start'])).toEqual({ bin: 'yaac', args: ['server', 'start'] })
+    expect(resolveYaacCommand(null, ['auth', 'server', 'run'])).toEqual({ bin: 'yaac', args: ['auth', 'server', 'run'] })
   })
   it('runs the bundled node + staged cli.js when packaged', () => {
-    expect(resolveServerCommand('/Applications/yaac.app/Contents/Resources')).toEqual({
+    expect(resolveYaacCommand('/Applications/yaac.app/Contents/Resources', ['auth', 'server', 'run'])).toEqual({
       bin: '/Applications/yaac.app/Contents/Resources/node/node',
-      args: ['/Applications/yaac.app/Contents/Resources/server/dist/cli.js', 'server', 'start'],
+      args: ['/Applications/yaac.app/Contents/Resources/server/dist/cli.js', 'auth', 'server', 'run'],
     })
   })
 })
@@ -52,7 +57,7 @@ describe('resolveServerCommand', () => {
 describe('runYaacServerStart', () => {
   it('resolves with the exit code and trimmed stderr', async () => {
     const { impl, calls } = fakeSpawn([{ code: 1, stderr: 'boom\n' }])
-    expect(await runYaacServerStart(resolveServerCommand(null), {
+    expect(await runYaacServerStart(resolveYaacCommand(null, ['server', 'start']), {
       spawnImpl: impl, resolvePath: () => Promise.resolve(null),
     })).toEqual({ code: 1, stderr: 'boom' })
     expect(calls).toEqual([{ cmd: 'yaac', args: ['server', 'start'], path: undefined }])
@@ -60,14 +65,14 @@ describe('runYaacServerStart', () => {
   it('on ENOENT retries once with the login-shell PATH', async () => {
     const { impl, calls } = fakeSpawn([{ error: enoent() }, { code: 0 }])
     const resolvePath = vi.fn(() => Promise.resolve('/opt/homebrew/bin:/usr/bin'))
-    expect(await runYaacServerStart(resolveServerCommand(null), {
+    expect(await runYaacServerStart(resolveYaacCommand(null, ['server', 'start']), {
       spawnImpl: impl, resolvePath,
     })).toEqual({ code: 0, stderr: '' })
     expect(calls[1].path).toBe('/opt/homebrew/bin:/usr/bin')
   })
   it('rethrows ENOENT when no login-shell PATH resolves', async () => {
     const { impl } = fakeSpawn([{ error: enoent() }])
-    await expect(runYaacServerStart(resolveServerCommand(null), {
+    await expect(runYaacServerStart(resolveYaacCommand(null, ['server', 'start']), {
       spawnImpl: impl, resolvePath: () => Promise.resolve(null),
     })).rejects.toThrow('ENOENT')
   })
@@ -75,7 +80,7 @@ describe('runYaacServerStart', () => {
     const err: NodeJS.ErrnoException = new Error('EACCES')
     err.code = 'EACCES'
     const { impl, calls } = fakeSpawn([{ error: err }, { code: 0 }])
-    await expect(runYaacServerStart(resolveServerCommand(null), {
+    await expect(runYaacServerStart(resolveYaacCommand(null, ['server', 'start']), {
       spawnImpl: impl, resolvePath: () => Promise.resolve('/bin'),
     })).rejects.toThrow('EACCES')
     expect(calls).toHaveLength(1)
@@ -83,7 +88,7 @@ describe('runYaacServerStart', () => {
 
   it('hydratePath resolves the login-shell PATH up front (packaged)', async () => {
     const { impl, calls } = fakeSpawn([{ code: 0 }])
-    const cmd = resolveServerCommand('/App/Resources')
+    const cmd = resolveYaacCommand('/App/Resources', ['server', 'start'])
     const resolvePath = vi.fn(() => Promise.resolve('/opt/homebrew/bin:/usr/bin'))
     await runYaacServerStart(cmd, { spawnImpl: impl, resolvePath, hydratePath: true })
     expect(resolvePath).toHaveBeenCalledTimes(1)
@@ -95,10 +100,52 @@ describe('runYaacServerStart', () => {
   })
   it('hydratePath keeps the inherited env when no PATH resolves', async () => {
     const { impl, calls } = fakeSpawn([{ code: 0 }])
-    await runYaacServerStart(resolveServerCommand('/App/Resources'), {
+    await runYaacServerStart(resolveYaacCommand('/App/Resources', ['server', 'start']), {
       spawnImpl: impl, resolvePath: () => Promise.resolve(null), hydratePath: true,
     })
     expect(calls[0].path).toBeUndefined()
+  })
+})
+
+describe('ensureAuthDaemonRunning', () => {
+  const TARGET: ServerTarget = { baseUrl: 'http://127.0.0.1:8787', secret: 's', remote: false }
+  const CMD = resolveYaacCommand('/App/Resources', ['auth', 'server', 'run'])
+  const fakeEnsure = () => vi.fn(
+    (() => Promise.resolve({ baseUrl: TARGET.baseUrl, secret: TARGET.secret })) as typeof ensureAuthDaemonSpawned,
+  )
+
+  it('forwards the target and invocation with the inherited env (dev)', async () => {
+    const ensureImpl = fakeEnsure()
+    await ensureAuthDaemonRunning({ target: TARGET, command: CMD, ensureImpl })
+    expect(ensureImpl).toHaveBeenCalledTimes(1)
+    expect(ensureImpl).toHaveBeenCalledWith({ target: TARGET, invocation: CMD, env: undefined })
+  })
+  it('hydratePath hands the daemon the login-shell PATH over the inherited env', async () => {
+    const ensureImpl = fakeEnsure()
+    const resolvePath = vi.fn(() => Promise.resolve('/opt/homebrew/bin:/usr/bin'))
+    await ensureAuthDaemonRunning({
+      target: TARGET, command: CMD, hydratePath: true, resolvePath, ensureImpl,
+    })
+    expect(resolvePath).toHaveBeenCalledTimes(1)
+    expect(ensureImpl).toHaveBeenCalledWith({
+      target: TARGET,
+      invocation: CMD,
+      env: { ...process.env, PATH: '/opt/homebrew/bin:/usr/bin' },
+    })
+  })
+  it('hydratePath keeps the inherited env when no PATH resolves', async () => {
+    const ensureImpl = fakeEnsure()
+    await ensureAuthDaemonRunning({
+      target: TARGET, command: CMD, hydratePath: true, resolvePath: () => Promise.resolve(null), ensureImpl,
+    })
+    expect(ensureImpl).toHaveBeenCalledWith({ target: TARGET, invocation: CMD, env: undefined })
+  })
+  it('propagates ensure failures (the swallow lives in the flow)', async () => {
+    const ensureImpl = vi.fn(
+      (() => Promise.reject(new Error('spawn yaac ENOENT'))) as typeof ensureAuthDaemonSpawned,
+    )
+    await expect(ensureAuthDaemonRunning({ target: TARGET, command: CMD, ensureImpl }))
+      .rejects.toThrow('ENOENT')
   })
 })
 
