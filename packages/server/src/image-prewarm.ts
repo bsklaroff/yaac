@@ -24,9 +24,10 @@ import { hasBlockingFailure } from '#image-builds'
 import { serverLog } from '#log'
 import { env, testEnv } from '@yaac/shared/env'
 
-/** How long a failed chain build blocks the sweep from retrying. Dismissing
- *  the failure in the webapp (or editing the Dockerfile, which changes the
- *  tag) re-enables the sweep immediately; session creates always bypass it. */
+/** How long a failed chain build blocks the sweep from retrying. Hitting
+ *  retry in the webapp (which forgets the failed entry) or editing the
+ *  Dockerfile (which changes the tag) re-enables the sweep immediately;
+ *  dismissing the row does not; session creates always bypass it. */
 const FAILED_RETRY_MS = 10 * 60_000
 
 /** Projects with a prewarm task in flight; added synchronously before the

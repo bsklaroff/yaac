@@ -92,7 +92,7 @@ export function Sidebar({
         </div>
         <div className="ml-auto flex items-center gap-2 no-drag">
           <UsageBadge />
-          <ImageBuildIndicator />
+          <ImageBuildIndicator projectSlug={projectSlug} />
           {!connected && <span className="text-xs text-amber-400/80">reconnecting…</span>}
           {/* Project-wide: the stored credential is the project's, so the
               flag lives on the project header, not on individual sessions. */}

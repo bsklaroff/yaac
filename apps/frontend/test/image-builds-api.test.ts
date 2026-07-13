@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { dismissImageBuild, getImageBuildLog } from '#lib/imageBuildsApi'
+import { dismissImageBuild, getImageBuildLog, retryImageBuild } from '#lib/imageBuildsApi'
 
 const realFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = realFetch })
@@ -30,5 +30,13 @@ describe('image builds api calls', () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toBe('/image/builds/build-7')
     expect(init.method).toBe('DELETE')
+  })
+
+  it('retryImageBuild POSTs the retry route', async () => {
+    const fetchMock = stub(undefined, 202)
+    await retryImageBuild('build-7')
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/image/builds/build-7/retry')
+    expect(init.method).toBe('POST')
   })
 })

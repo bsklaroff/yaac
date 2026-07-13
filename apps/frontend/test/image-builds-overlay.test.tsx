@@ -5,10 +5,11 @@ import { render, screen, fireEvent, cleanup, act } from '@testing-library/react'
 vi.mock('#lib/imageBuildsApi', () => ({
   getImageBuildLog: vi.fn(),
   dismissImageBuild: vi.fn().mockResolvedValue(undefined),
+  retryImageBuild: vi.fn().mockResolvedValue(undefined),
 }))
 
 import { ImageBuildsOverlay } from '#components/ImageBuildsOverlay'
-import { dismissImageBuild, getImageBuildLog } from '#lib/imageBuildsApi'
+import { dismissImageBuild, getImageBuildLog, retryImageBuild } from '#lib/imageBuildsApi'
 import type { ImageBuildEntry } from '@yaac/shared/types'
 
 const mockGetLog = vi.mocked(getImageBuildLog)
@@ -112,6 +113,13 @@ describe('ImageBuildsOverlay', () => {
     expect(mockGetLog).toHaveBeenCalledWith('old-failed')
   })
 
+  it('labels a proxy sidecar build', async () => {
+    const builds = [build({ layer: 'proxy', projectSlugs: [], status: 'succeeded' })]
+    render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={builds} />)
+    await flushEffects()
+    expect(screen.getByText('proxy sidecar')).toBeTruthy()
+  })
+
   it('dismisses a finished build and never offers dismiss on a running one', async () => {
     const builds = [
       build({ id: 'running-build' }),
@@ -124,5 +132,23 @@ describe('ImageBuildsOverlay', () => {
     expect(dismissButtons).toHaveLength(1)
     fireEvent.click(dismissButtons[0])
     expect(vi.mocked(dismissImageBuild)).toHaveBeenCalledWith('old-failed')
+  })
+
+  it('offers Retry only on a failed build, wired to retryImageBuild', async () => {
+    const builds = [
+      build({ id: 'ok-build', status: 'succeeded' }),
+      build({ id: 'bad-build', tag: 'yaac-tools:def', status: 'failed', error: 'x' }),
+    ]
+    render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={builds} />)
+    await flushEffects()
+
+    // Retry appears once (on the failed row), while both finished rows can be dismissed.
+    const retryButtons = screen.getAllByRole('button', { name: 'Retry build' })
+    expect(retryButtons).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: 'Dismiss build entry' })).toHaveLength(2)
+
+    fireEvent.click(retryButtons[0])
+    expect(vi.mocked(retryImageBuild)).toHaveBeenCalledWith('bad-build')
+    expect(vi.mocked(dismissImageBuild)).not.toHaveBeenCalled()
   })
 })

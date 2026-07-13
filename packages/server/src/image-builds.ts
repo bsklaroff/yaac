@@ -6,10 +6,14 @@
  * /image/builds/:id/log` and polled only while the overlay is open (streaming
  * log lines through snapshots would rebuild the full snapshot at line rate).
  *
- * The server is a single process, so a module-level map is enough. Succeeded
- * entries age out after a short retention; failed entries stay until
- * dismissed or superseded by a retry, and gate the background prewarm sweep's
- * backoff via `hasBlockingFailure`.
+ * The server is a single process, so a module-level map is enough. Finished
+ * entries (succeeded and failed alike) persist until the user dismisses them —
+ * `dismiss` hides a row from the list but keeps the record, so a dismissed
+ * failure still gates the background prewarm sweep's backoff via
+ * `hasBlockingFailure` (dismissing is an acknowledgement, not a retry). An
+ * explicit retry (`forgetImageBuild` + rebuild) or a superseding build clears
+ * that backoff. A hard `MAX_ENTRIES` cap bounds memory; nothing ages out on a
+ * timer.
  */
 import { notifySessionListChanged } from '#sessions-changed'
 import { stripAnsi } from '@yaac/shared/ansi'
@@ -21,7 +25,7 @@ export type ImageBuildReason = 'session' | 'prewarm' | 'rebuild'
 interface BuildRecord {
   id: string
   tag: string
-  layer: ImageLayerName | 'push'
+  layer: ImageLayerName | 'push' | 'proxy'
   action: 'build' | 'push'
   projectSlugs: string[]
   reason: ImageBuildReason
@@ -34,6 +38,9 @@ interface BuildRecord {
   log: string
   startedAt: number
   finishedAt?: number
+  /** User dismissed this finished row: hidden from `listImageBuilds` but kept
+   *  so a dismissed failure still backs off the prewarm sweep. */
+  dismissed?: boolean
 }
 
 const entries = new Map<string, BuildRecord>()
@@ -42,7 +49,6 @@ let seq = 0
 /** Per-entry log tail cap; with MAX_ENTRIES this bounds memory at ~2MB. */
 const LOG_CAP = 64_000
 const MAX_ENTRIES = 30
-const SUCCEEDED_RETENTION_MS = 5 * 60_000
 const STEP_TEXT_MAX = 120
 
 /**
@@ -56,20 +62,17 @@ export function parseBuildStep(line: string): { current: number; total: number; 
   return { current: Number(m[1]), total: Number(m[2]), text: m[3].slice(0, STEP_TEXT_MAX) }
 }
 
-/** Drop aged-out succeeded entries, then enforce the entry cap (oldest
- *  finished first — running entries are never dropped). */
+/** Enforce the entry cap as a memory backstop — nothing ages out on a timer,
+ *  so finished rows persist until dismissed. Over the cap, drop dismissed rows
+ *  first (already hidden), then the oldest finished ones; running entries are
+ *  never dropped. */
 function prune(): void {
-  const now = Date.now()
-  for (const [id, e] of entries) {
-    if (e.status === 'succeeded' && e.finishedAt !== undefined && now - e.finishedAt > SUCCEEDED_RETENTION_MS) {
-      entries.delete(id)
-    }
-  }
   if (entries.size <= MAX_ENTRIES) return
-  const finished = [...entries.values()]
+  const droppable = [...entries.values()]
     .filter((e) => e.status !== 'running')
-    .sort((a, b) => a.startedAt - b.startedAt)
-  for (const e of finished) {
+    .sort((a, b) => Number(b.dismissed ?? false) - Number(a.dismissed ?? false)
+      || a.startedAt - b.startedAt)
+  for (const e of droppable) {
     if (entries.size <= MAX_ENTRIES) break
     entries.delete(e.id)
   }
@@ -83,9 +86,11 @@ function prune(): void {
  */
 export function registerImageBuild(input: {
   tag: string
-  layer: ImageLayerName | 'push'
+  layer: ImageLayerName | 'push' | 'proxy'
   action: 'build' | 'push'
-  projectSlug: string
+  /** Omitted for shared infrastructure builds with no owning project (the
+   *  proxy sidecar), which register with an empty `projectSlugs`. */
+  projectSlug?: string
   reason: ImageBuildReason
 }): string {
   for (const [id, e] of entries) {
@@ -99,7 +104,7 @@ export function registerImageBuild(input: {
     tag: input.tag,
     layer: input.layer,
     action: input.action,
-    projectSlugs: [input.projectSlug],
+    projectSlugs: input.projectSlug ? [input.projectSlug] : [],
     reason: input.reason,
     status: 'running',
     log: '',
@@ -157,9 +162,24 @@ export function failImageBuild(id: string, error: string): void {
   notifySessionListChanged()
 }
 
-/** Drop a finished entry (user dismissed it). Running entries are kept —
- *  their coordinator owns the lifecycle. Returns whether anything changed. */
+/** Hide a finished row from the list (user dismissed the × ). The record is
+ *  kept, so a dismissed failure still backs off the prewarm sweep —
+ *  dismissing is an acknowledgement, not a retry. Running entries are left
+ *  alone; their coordinator owns the lifecycle. Returns whether anything
+ *  changed. */
 export function dismissImageBuild(id: string): boolean {
+  const e = entries.get(id)
+  if (!e || e.status === 'running' || e.dismissed) return false
+  e.dismissed = true
+  notifySessionListChanged()
+  return true
+}
+
+/** Drop a finished entry entirely — the explicit retry path. Unlike
+ *  `dismiss`, this removes the record, so a failure stops backing off the
+ *  prewarm sweep and the rebuild can proceed immediately. Running entries are
+ *  kept. Returns whether anything changed. */
+export function forgetImageBuild(id: string): boolean {
   const e = entries.get(id)
   if (!e || e.status === 'running') return false
   entries.delete(id)
@@ -167,26 +187,39 @@ export function dismissImageBuild(id: string): boolean {
   return true
 }
 
-/** Snapshot projection of the registry, newest first. Prunes aged entries. */
+/** Wire-shape projection of one build record. */
+function project(e: BuildRecord): ImageBuildEntry {
+  return {
+    id: e.id,
+    tag: e.tag,
+    layer: e.layer,
+    action: e.action,
+    projectSlugs: [...e.projectSlugs],
+    reason: e.reason,
+    status: e.status,
+    ...(e.stepCurrent !== undefined ? { stepCurrent: e.stepCurrent } : {}),
+    ...(e.stepTotal !== undefined ? { stepTotal: e.stepTotal } : {}),
+    ...(e.stepText !== undefined ? { stepText: e.stepText } : {}),
+    ...(e.error !== undefined ? { error: e.error } : {}),
+    startedAt: formatUtcTimestamp(e.startedAt),
+    ...(e.finishedAt !== undefined ? { finishedAt: formatUtcTimestamp(e.finishedAt) } : {}),
+  }
+}
+
+/** Snapshot projection of the registry, newest first, minus dismissed rows. */
 export function listImageBuilds(): ImageBuildEntry[] {
   prune()
   return [...entries.values()]
+    .filter((e) => !e.dismissed)
     .sort((a, b) => b.startedAt - a.startedAt || b.id.localeCompare(a.id))
-    .map((e) => ({
-      id: e.id,
-      tag: e.tag,
-      layer: e.layer,
-      action: e.action,
-      projectSlugs: [...e.projectSlugs],
-      reason: e.reason,
-      status: e.status,
-      ...(e.stepCurrent !== undefined ? { stepCurrent: e.stepCurrent } : {}),
-      ...(e.stepTotal !== undefined ? { stepTotal: e.stepTotal } : {}),
-      ...(e.stepText !== undefined ? { stepText: e.stepText } : {}),
-      ...(e.error !== undefined ? { error: e.error } : {}),
-      startedAt: formatUtcTimestamp(e.startedAt),
-      ...(e.finishedAt !== undefined ? { finishedAt: formatUtcTimestamp(e.finishedAt) } : {}),
-    }))
+    .map(project)
+}
+
+/** Projected view of a single entry (dismissed or not) — used by the retry
+ *  path to read a build's target (owning project slugs, or none for infra). */
+export function getImageBuild(id: string): ImageBuildEntry | undefined {
+  const e = entries.get(id)
+  return e ? project(e) : undefined
 }
 
 /** The accumulated log tail for one entry, or undefined if unknown. */
@@ -197,8 +230,9 @@ export function getImageBuildLog(id: string): string | undefined {
 /**
  * Whether a recent failure covers any of `tags`. The prewarm sweep uses this
  * to back off a chain whose build just failed instead of retrying every 5s
- * tick; dismissing the failure (or editing the Dockerfile, which changes the
- * tag) re-enables the sweep immediately.
+ * tick. Dismissed failures still count (dismissing only hides the row); the
+ * backoff clears when the window lapses, the Dockerfile changes (a new tag),
+ * or the user hits retry (which forgets the entry).
  */
 export function hasBlockingFailure(tags: string[], retryAfterMs: number): boolean {
   const cutoff = Date.now() - retryAfterMs

@@ -16,6 +16,12 @@ import { k8sNamespace, kubectlGetJson, kubectlWithRetry } from '#lib/k8s/kubectl
 import { pushImageToRegistry, registryHasTag, registryRef } from '#lib/k8s/registry'
 import { ServicePortForward } from '#lib/k8s/port-forward'
 import { listSshEntries } from '#lib/project/credentials'
+import {
+  failImageBuild,
+  finishImageBuild,
+  ingestImageBuildLine,
+  registerImageBuild,
+} from '#image-builds'
 import { serverLog } from '#log'
 import { env, testEnv } from '@yaac/shared/env'
 
@@ -548,8 +554,20 @@ export class ProxyClient {
           'Restart the test run so the global setup can rebuild it.',
         )
       }
+      // Track the build in the shared registry so it surfaces in the webapp's
+      // "building" UX like every other image build. It has no owning project
+      // (shared infrastructure), so it registers with an empty projectSlugs.
+      const id = registerImageBuild({ tag: localTag, layer: 'proxy', action: 'build', reason: 'session' })
       serverLog(`[build] starting ${localTag} (proxy sidecar)`)
-      await buildImage(localTag, path.join(PROXY_DIR, 'Dockerfile'), PROXY_DIR)
+      try {
+        await buildImage(localTag, path.join(PROXY_DIR, 'Dockerfile'), PROXY_DIR, undefined, {
+          onLog: (line) => ingestImageBuildLine(id, line),
+        })
+        finishImageBuild(id)
+      } catch (err) {
+        failImageBuild(id, err instanceof Error ? err.message : String(err))
+        throw err
+      }
     }
     return pushImageToRegistry(localTag)
   }

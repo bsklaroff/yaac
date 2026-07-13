@@ -5,6 +5,8 @@ import {
   dismissImageBuild,
   failImageBuild,
   finishImageBuild,
+  forgetImageBuild,
+  getImageBuild,
   getImageBuildLog,
   hasBlockingFailure,
   ingestImageBuildLine,
@@ -71,6 +73,29 @@ describe('image-builds registry', () => {
       register({ action: 'build' })
       register({ action: 'push', layer: 'push' })
       expect(listImageBuilds()).toHaveLength(2)
+    })
+
+    it('registers an infra build with no owning project (empty projectSlugs)', () => {
+      registerImageBuild({ tag: 'yaac-proxy:xyz', layer: 'proxy', action: 'build', reason: 'session' })
+      const [entry] = listImageBuilds()
+      expect(entry.layer).toBe('proxy')
+      expect(entry.projectSlugs).toEqual([])
+    })
+  })
+
+  describe('getImageBuild', () => {
+    it('projects a single entry and returns undefined for an unknown id', () => {
+      const id = register()
+      expect(getImageBuild(id)?.tag).toBe('yaac-base:abc123')
+      expect(getImageBuild('missing')).toBeUndefined()
+    })
+
+    it('still returns a dismissed entry (so retry can read its target)', () => {
+      const id = register()
+      failImageBuild(id, 'boom')
+      dismissImageBuild(id)
+      expect(listImageBuilds()).toEqual([])
+      expect(getImageBuild(id)?.projectSlugs).toEqual(['proj-a'])
     })
   })
 
@@ -172,31 +197,40 @@ describe('image-builds registry', () => {
       expect(entry.error).toBe('podman build exited with code 1')
     })
 
-    it('dismissImageBuild drops finished entries but never running ones', () => {
+    it('dismissImageBuild hides a finished row (once) but never a running one', () => {
       const running = register({ tag: 'a:1' })
       const failed = register({ tag: 'b:2' })
       failImageBuild(failed, 'boom')
 
       expect(dismissImageBuild(running)).toBe(false)
       expect(dismissImageBuild(failed)).toBe(true)
-      expect(dismissImageBuild(failed)).toBe(false)
+      expect(dismissImageBuild(failed)).toBe(false) // already dismissed
+      expect(listImageBuilds().map((e) => e.id)).toEqual([running])
+    })
+
+    it('forgetImageBuild removes a finished entry entirely but never a running one', () => {
+      const running = register({ tag: 'a:1' })
+      const failed = register({ tag: 'b:2' })
+      failImageBuild(failed, 'boom')
+
+      expect(forgetImageBuild(running)).toBe(false)
+      expect(forgetImageBuild(failed)).toBe(true)
+      expect(forgetImageBuild(failed)).toBe(false) // gone
+      expect(getImageBuild(failed)).toBeUndefined()
       expect(listImageBuilds().map((e) => e.id)).toEqual([running])
     })
   })
 
   describe('retention and caps', () => {
-    it('ages out succeeded entries after the retention window, keeps failed', () => {
+    it('keeps finished entries indefinitely — nothing ages out on a timer', () => {
       vi.useFakeTimers()
       const ok = register({ tag: 'ok:1' })
       const bad = register({ tag: 'bad:2' })
       finishImageBuild(ok)
       failImageBuild(bad, 'boom')
 
-      vi.advanceTimersByTime(4 * 60_000)
-      expect(listImageBuilds()).toHaveLength(2)
-
-      vi.advanceTimersByTime(2 * 60_000)
-      expect(listImageBuilds().map((e) => e.tag)).toEqual(['bad:2'])
+      vi.advanceTimersByTime(60 * 60_000) // an hour later
+      expect(listImageBuilds().map((e) => e.tag).sort()).toEqual(['bad:2', 'ok:1'])
     })
 
     it('caps total entries, dropping oldest finished first and never running', () => {
@@ -236,10 +270,17 @@ describe('image-builds registry', () => {
       expect(hasBlockingFailure(['other:3'], 10 * 60_000)).toBe(false)
     })
 
-    it('clears when the failure is dismissed', () => {
+    it('still blocks after a dismiss (dismiss only hides the row)', () => {
       const id = register({ tag: 'yaac-base:abc' })
       failImageBuild(id, 'boom')
       dismissImageBuild(id)
+      expect(hasBlockingFailure(['yaac-base:abc'], 10 * 60_000)).toBe(true)
+    })
+
+    it('clears when the failure is forgotten (the retry path)', () => {
+      const id = register({ tag: 'yaac-base:abc' })
+      failImageBuild(id, 'boom')
+      forgetImageBuild(id)
       expect(hasBlockingFailure(['yaac-base:abc'], 10 * 60_000)).toBe(false)
     })
   })

@@ -1,7 +1,14 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Hono } from 'hono'
+
+// The retry route only wires HTTP → retryImageBuild; its rebuild orchestration
+// (prewarm / proxy) is unit-tested in image-retry.test.ts. Mock it here so the
+// route test stays hermetic and doesn't pull in the proxy client.
+vi.mock('#image-retry', () => ({ retryImageBuild: vi.fn() }))
+
 import { imageApp } from '#routes/image'
 import { toErrorBody } from '#errors'
+import { retryImageBuild } from '#image-retry'
 import {
   clearAllImageBuildsForTests,
   failImageBuild,
@@ -26,7 +33,7 @@ function register(): string {
 }
 
 describe('image routes', () => {
-  beforeEach(() => { clearAllImageBuildsForTests() })
+  beforeEach(() => { clearAllImageBuildsForTests(); vi.clearAllMocks() })
   afterEach(() => { clearAllImageBuildsForTests() })
 
   it('GET /builds lists registry entries', async () => {
@@ -65,5 +72,18 @@ describe('image routes', () => {
     expect(res.status).toBe(204)
     const list = await (await app.request('/builds')).json() as ImageBuildEntry[]
     expect(list.map((b) => b.id)).toEqual([id])
+  })
+
+  it('POST /builds/:id/retry retries and returns 202', async () => {
+    vi.mocked(retryImageBuild).mockReturnValue(true)
+    const res = await app.request('/builds/build-1/retry', { method: 'POST' })
+    expect(res.status).toBe(202)
+    expect(vi.mocked(retryImageBuild)).toHaveBeenCalledWith('build-1')
+  })
+
+  it('POST /builds/:id/retry 404s when there is nothing to retry', async () => {
+    vi.mocked(retryImageBuild).mockReturnValue(false)
+    const res = await app.request('/builds/nope/retry', { method: 'POST' })
+    expect(res.status).toBe(404)
   })
 })

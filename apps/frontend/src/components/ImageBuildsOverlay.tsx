@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { Dialog } from '@base-ui/react/dialog'
-import { CheckIcon, CloseIcon, LoadingIcon, WarningIcon } from '#lib/icons'
-import { dismissImageBuild, getImageBuildLog } from '#lib/imageBuildsApi'
+import { CheckIcon, CloseIcon, LoadingIcon, RestartIcon, WarningIcon } from '#lib/icons'
+import { dismissImageBuild, getImageBuildLog, retryImageBuild } from '#lib/imageBuildsApi'
 import type { ImageBuildEntry } from '@yaac/shared/types'
 
 /** Human relative age from the entry's UTC 'YYYY-MM-DD HH:MM:SS' time. */
@@ -23,6 +23,14 @@ function shortTag(tag: string): string {
   const idx = tag.lastIndexOf(':')
   if (idx < 0) return tag
   return `${tag.slice(0, idx)}:${tag.slice(idx + 1, idx + 7)}`
+}
+
+/** Human label for a row: the chain layer, a registry push, or the shared
+ *  proxy sidecar image (which isn't part of any project chain). */
+function buildLabel(b: ImageBuildEntry): string {
+  if (b.action === 'push') return 'push'
+  if (b.layer === 'proxy') return 'proxy sidecar'
+  return `${b.layer} layer`
 }
 
 function StatusIcon({ status }: { status: ImageBuildEntry['status'] }): JSX.Element {
@@ -119,9 +127,7 @@ export function ImageBuildsOverlay({
                     >
                       <span className="flex items-center gap-1.5 text-xs">
                         <StatusIcon status={b.status} />
-                        <span className="font-medium">
-                          {b.action === 'push' ? 'push' : `${b.layer} layer`}
-                        </span>
+                        <span className="font-medium">{buildLabel(b)}</span>
                         <span className="truncate font-mono text-text-faint">{shortTag(b.tag)}</span>
                       </span>
                       <span className="truncate text-[11px] text-text-dim">
@@ -138,16 +144,30 @@ export function ImageBuildsOverlay({
                       )}
                     </button>
                     {b.status !== 'running' && (
-                      <button
-                        type="button"
-                        onClick={() => { void dismissImageBuild(b.id).catch(() => {}) }}
-                        title="Dismiss (a failed chain retries on the next background pass)"
-                        aria-label="Dismiss build entry"
-                        className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded
-                          text-text-faint transition hover:bg-surface-3 hover:text-text"
-                      >
-                        <CloseIcon size={11} />
-                      </button>
+                      <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5">
+                        {b.status === 'failed' && (
+                          <button
+                            type="button"
+                            onClick={() => { void retryImageBuild(b.id).catch(() => {}) }}
+                            title="Retry build"
+                            aria-label="Retry build"
+                            className="flex h-5 w-5 items-center justify-center rounded
+                              text-text-faint transition hover:bg-surface-3 hover:text-text"
+                          >
+                            <RestartIcon size={11} />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => { void dismissImageBuild(b.id).catch(() => {}) }}
+                          title="Dismiss (hides this row; does not rebuild)"
+                          aria-label="Dismiss build entry"
+                          className="flex h-5 w-5 items-center justify-center rounded
+                            text-text-faint transition hover:bg-surface-3 hover:text-text"
+                        >
+                          <CloseIcon size={11} />
+                        </button>
+                      </div>
                     )}
                   </li>
                 ))}

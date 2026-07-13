@@ -544,10 +544,14 @@ export type ImageLayerName = 'base' | 'tools' | 'nestable' | 'project' | 'user'
 export interface ImageBuildEntry {
   id: string
   tag: string
-  /** Which chain step this is; `'push'` for a registry push. */
-  layer: ImageLayerName | 'push'
+  /** Which chain step this is; `'push'` for a registry push, `'proxy'` for
+   *  the shared egress-proxy sidecar image (not part of a project chain). */
+  layer: ImageLayerName | 'push' | 'proxy'
   action: 'build' | 'push'
-  /** Every project that requested this tag (joiners attach their slug). */
+  /** Every project that requested this tag (joiners attach their slug).
+   *  Empty for shared infrastructure builds with no owning project (the
+   *  proxy sidecar) — the webapp always shows those regardless of the
+   *  active project. */
   projectSlugs: string[]
   reason: 'session' | 'prewarm' | 'rebuild'
   status: 'running' | 'succeeded' | 'failed'
