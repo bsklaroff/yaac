@@ -50,6 +50,10 @@ export const sessionApp = new Hono()
       addDir: z.array(z.string()).optional(),
       addDirRw: z.array(z.string()).optional(),
       tool: z.enum(['claude', 'codex', 'opencode']).optional(),
+      // Reference branch for the fresh worktree (no `origin/` prefix).
+      // Omitted → the project's referenceBranch config default, else the
+      // remote default branch.
+      branch: z.string().min(1).optional(),
       gitUser: z.object({ name: z.string(), email: z.string() }).optional(),
     })),
     (c) => {
@@ -64,9 +68,12 @@ export const sessionApp = new Hono()
         // Fast path: claim a prewarmed spare for this project + tool. Skipped
         // when --add-dir is requested (the spare lacks those mounts). A claim
         // returns the spare's own id and registers no provisioning row — the
-        // unhidden session lists in the very next snapshot.
+        // unhidden session lists in the very next snapshot. A spare warmed
+        // from a different branch is re-branched inside the claim.
         if (!body.addDir?.length && !body.addDirRw?.length) {
-          const claimed = await tryClaimPrewarmed(body.project, tool, body.gitUser, onProgress)
+          const claimed = await tryClaimPrewarmed(
+            body.project, tool, body.gitUser, onProgress, body.branch,
+          )
           if (claimed) return claimed
         }
 
@@ -77,6 +84,7 @@ export const sessionApp = new Hono()
         }
         if (body.addDir) opts.addDir = body.addDir
         if (body.addDirRw) opts.addDirRw = body.addDirRw
+        if (body.branch) opts.branch = body.branch
         if (body.gitUser) opts.gitUser = body.gitUser
         // Register before the long await so the row shows up instantly and
         // survives a browser reload (the stream keeps running server-side).

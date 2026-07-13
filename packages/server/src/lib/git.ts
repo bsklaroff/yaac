@@ -151,6 +151,50 @@ export async function getDefaultBranch(repoPath: string): Promise<string> {
   return branch.trim()
 }
 
+/** True when `refs/remotes/origin/<branch>` exists in the repo. */
+export async function remoteBranchExists(repoPath: string, branch: string): Promise<boolean> {
+  try {
+    // --quiet suppresses stderr, and simple-git then resolves the exit-1
+    // miss with empty output instead of rejecting — so key on the output
+    // (a hit prints the SHA), keeping the catch for non-repo errors.
+    const out = await simpleGit(repoPath).raw(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`])
+    return out.trim().length > 0
+  } catch {
+    return false
+  }
+}
+
+/**
+ * All remote-tracking branch names (without the `origin/` prefix), most
+ * recently committed first — the order a branch picker wants on top.
+ * Excludes the `HEAD` symref.
+ */
+export async function listRemoteBranches(repoPath: string): Promise<string[]> {
+  const out = await simpleGit(repoPath).raw([
+    'for-each-ref', '--sort=-committerdate', '--format=%(refname:strip=3)', 'refs/remotes/origin',
+  ])
+  return out.split('\n').map((l) => l.trim()).filter((l) => l.length > 0 && l !== 'HEAD')
+}
+
+/**
+ * The branch a worktree branch tracks, read from the repo's config
+ * (`branch.<name>.merge` = `refs/heads/<branch>`), or null when no
+ * upstream is recorded. For session branches (`agent/<sessionId>`) this is
+ * the durable record of the reference branch the session was created from:
+ * `startJobWithSetup` writes it before the tmux session exists, and the
+ * claim-time re-branch prep rewrites it.
+ */
+export async function worktreeUpstreamBranch(repoPath: string, branchName: string): Promise<string | null> {
+  let merge: string
+  try {
+    merge = await simpleGit(repoPath).raw(['config', '--get', `branch.${branchName}.merge`])
+  } catch {
+    return null // unset — git config --get exits 1
+  }
+  const match = merge.trim().match(/^refs\/heads\/(.+)$/)
+  return match ? match[1] : null
+}
+
 export async function fetchOrigin(
   repoPath: string,
   credential: ResolvedGitCredential | null,

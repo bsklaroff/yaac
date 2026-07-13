@@ -216,6 +216,13 @@ export interface YaacConfig {
    * Unset → `["node_modules"]`. Empty array disables the feature.
    */
   ephemeralModulesPaths?: string[]
+  /**
+   * Default reference branch for new sessions: the branch on `origin`
+   * (written without the `origin/` prefix, e.g. "develop") that fresh
+   * session worktrees are created from and set upstream to. A per-create
+   * `branch` option overrides it. Unset → the remote's default branch.
+   */
+  referenceBranch?: string
 }
 
 export interface HttpsGitCredentialEntry {
@@ -393,6 +400,10 @@ export interface SessionListEntry {
    *  forwarder registry). Empty until forwarders are (re)provisioned —
    *  briefly so after a server restart, before the restore pass runs. */
   forwardedPorts: PortMapping[]
+  /** The remote branch this session's worktree tracks (its reference
+   *  branch), read from the session branch's recorded upstream. Unset when
+   *  the upstream record is missing or unreadable. */
+  baseBranch?: string
 }
 
 export interface StaleSessionInfo {

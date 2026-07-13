@@ -25,6 +25,34 @@ export async function saveProjectConfig(slug: string, config: unknown): Promise<
   return saved.config
 }
 
+export interface ProjectBranches {
+  /** Remote-tracking branch names, newest-committed first. */
+  branches: string[]
+  defaultBranch: string
+  referenceBranch: string | null
+}
+
+/**
+ * Branch data for the new-session picker. Without `refresh` this reads the
+ * local remote-tracking refs (instant); with it the server fetches from the
+ * remote first so a just-pushed branch appears.
+ */
+export async function getProjectBranches(slug: string, opts: { refresh?: boolean } = {}): Promise<ProjectBranches> {
+  return await rpc.project[':slug'].branches.$get({
+    param: { slug },
+    query: opts.refresh ? { refresh: '1' } : {},
+  }).then((r) => r.json())
+}
+
+/** Set (or clear, with null) the project's default reference branch. */
+export async function setProjectReferenceBranch(slug: string, branch: string | null): Promise<string | null> {
+  const { referenceBranch } = await rpc.project[':slug']['reference-branch'].$put({
+    param: { slug },
+    json: { branch },
+  }).then((r) => r.json())
+  return referenceBranch
+}
+
 /** Read the per-project Dockerfile.yaac ('' when the project has none). */
 export async function getProjectDockerfile(slug: string): Promise<string> {
   const { content } = await rpc.project[':slug'].dockerfile.$get({ param: { slug } }).then((r) => r.json())

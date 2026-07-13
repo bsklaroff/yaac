@@ -653,6 +653,47 @@ describe('parseProjectConfig — ephemeralModulesPaths', () => {
   })
 })
 
+describe('parseProjectConfig — referenceBranch', () => {
+  it('accepts a plain branch name', () => {
+    const result = parseProjectConfig(JSON.stringify({ referenceBranch: 'develop' }))
+    expect(result.referenceBranch).toBe('develop')
+  })
+
+  it('accepts slashed branch names', () => {
+    const result = parseProjectConfig(JSON.stringify({ referenceBranch: 'release/2.x' }))
+    expect(result.referenceBranch).toBe('release/2.x')
+  })
+
+  it('treats an absent field as not-set', () => {
+    const result = parseProjectConfig('{}')
+    expect(result.referenceBranch).toBeUndefined()
+  })
+
+  it('rejects non-string and empty values', () => {
+    expect(() => parseProjectConfig(JSON.stringify({ referenceBranch: 5 })))
+      .toThrow(/non-empty string/)
+    expect(() => parseProjectConfig(JSON.stringify({ referenceBranch: '' })))
+      .toThrow(/non-empty string/)
+  })
+
+  it('rejects an origin/ prefix', () => {
+    expect(() => parseProjectConfig(JSON.stringify({ referenceBranch: 'origin/develop' })))
+      .toThrow(/drop the "origin\/" prefix/)
+  })
+
+  it('rejects whitespace', () => {
+    expect(() => parseProjectConfig(JSON.stringify({ referenceBranch: 'my branch' })))
+      .toThrow(/whitespace/)
+  })
+
+  it('rejects leading dash and .. sequences', () => {
+    expect(() => parseProjectConfig(JSON.stringify({ referenceBranch: '-flag' })))
+      .toThrow(/not a valid branch name/)
+    expect(() => parseProjectConfig(JSON.stringify({ referenceBranch: 'a..b' })))
+      .toThrow(/not a valid branch name/)
+  })
+})
+
 describe('resolveEphemeralModulesPaths', () => {
   it('returns ["node_modules"] when config is null', () => {
     expect(resolveEphemeralModulesPaths(null)).toEqual(['node_modules'])

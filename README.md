@@ -125,6 +125,9 @@ yaac project <command>
 yaac session <command>
   create [options] <project>  Create a new session for a project
     -t, --tool <tool>         Agent tool to use (claude, codex, or opencode)
+    -b, --branch <branch>     Reference branch for the worktree (defaults to
+                              the project's referenceBranch config, else the
+                              remote default branch)
     --add-dir <path>          Mount a host directory read-only (repeatable)
     --add-dir-rw <path>       Mount a host directory read-write (repeatable)
   list [options] [project]    List active sessions
@@ -291,7 +294,8 @@ Example `yaac-config.json` with all options:
   },
   "initCommands": ["pnpm install"],
   "addAllowedUrls": ["internal.corp.example.com", "*.mycdn.example.com"],
-  "hideInitPane": false
+  "hideInitPane": false,
+  "referenceBranch": "develop"
 }
 ```
 
@@ -330,6 +334,7 @@ Example `yaac-config.json` with all options:
 - **setAllowedUrls** — completely replaces the default allowlist with the given list of host patterns. Cannot be used together with `addAllowedUrls`. Set to `["*"]` to allow all outbound URLs (disables filtering), or `[]` to block all external network access. If the resolved list does not include `api.anthropic.com` or `github.com`, a warning is printed since sessions require these to function.
 - **nestedContainers** — run an in-pod rootless podman so `docker build` / `docker run` / `docker compose up --build` work inside the session exactly as a project README instructs (the `docker` CLI talks to podman's Docker-API socket). See [Nested containers and virtual clusters](#nested-containers-and-virtual-clusters).
 - **virtualCluster** — give each session its own virtual kubernetes cluster (vcluster) plus a per-project push registry. Implies `nestedContainers` (setting `"nestedContainers": false` alongside it is a config error).
+- **referenceBranch** — the branch on `origin` (no `origin/` prefix) that new session worktrees are created from and set upstream to. Unset → the remote's default branch. A per-create pick overrides it: `yaac session create --branch <branch>`, or the branch typeahead in the webapp's new-session popover (which can also pin a new default). Changing it affects new sessions only — existing worktrees keep their base, and prewarmed spares are re-pointed at claim time rather than invalidated.
 
 ## Environment variables
 

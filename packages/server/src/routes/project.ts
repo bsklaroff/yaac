@@ -6,7 +6,11 @@ import { listProjects } from '#lib/project/list'
 import { getProjectDetail, resolveProjectConfigWithSource, assertProjectExists } from '#lib/project/detail'
 import { addProject } from '#lib/project/add'
 import { removeProject } from '#lib/project/remove'
-import { writeProjectConfig, removeProjectConfig, readProjectConfigRaw } from '#lib/project/local-config'
+import { writeProjectConfig, removeProjectConfig, readProjectConfigRaw, setProjectReferenceBranch } from '#lib/project/local-config'
+import { getProjectBranches } from '#lib/project/branches'
+import { remoteBranchExists } from '#lib/git'
+import { repoDir } from '@yaac/shared/project-paths'
+import { ServerError } from '@yaac/shared/errors'
 import { readProjectDockerfile, writeProjectDockerfile } from '#lib/project/dockerfile'
 import { rebuildProjectImage, pushImageShared } from '#lib/container/build-coordinator'
 import { toErrorBody } from '#errors'
@@ -52,6 +56,36 @@ export const projectApp = new Hono()
     await removeProjectConfig(c.req.param('slug'))
     return c.body(null, 204)
   })
+  // Branch data for the new-session picker: local remote-tracking refs
+  // (instant), or freshly fetched with ?refresh=1.
+  .get(
+    '/:slug/branches',
+    zv('query', z.object({ refresh: z.string().optional() })),
+    async (c) => {
+      const refresh = c.req.valid('query').refresh === '1'
+      return c.json(await getProjectBranches(c.req.param('slug'), { refresh }))
+    },
+  )
+  // Set (or clear, with null) the project's default reference branch —
+  // the picker's "set as default". Existence-checked against the local
+  // remote-tracking refs so a typo'd default fails here, not at the next
+  // session create.
+  .put(
+    '/:slug/reference-branch',
+    zv('json', z.object({ branch: z.string().min(1).nullable() })),
+    async (c) => {
+      const slug = c.req.param('slug')
+      const { branch } = c.req.valid('json')
+      // Unknown project must surface as NOT_FOUND, not a bogus "branch not
+      // found" from probing a repo dir that isn't there.
+      await assertProjectExists(slug)
+      if (branch !== null && !(await remoteBranchExists(repoDir(slug), branch))) {
+        throw new ServerError('VALIDATION', `branch "${branch}" not found on origin.`)
+      }
+      const config = await setProjectReferenceBranch(slug, branch)
+      return c.json({ referenceBranch: config.referenceBranch ?? null })
+    },
+  )
   .get('/:slug/dockerfile', async (c) =>
     c.json({ content: await readProjectDockerfile(c.req.param('slug')) }))
   .put(

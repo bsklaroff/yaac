@@ -18,14 +18,26 @@
  * configured default at warm time — is recorded in the `yaac.tool` label so
  * matching claims stay instant.
  *
+ * Spares are branch-agnostic the same way: one warmed on a different
+ * reference branch is re-branched at claim time (`rebranchSpare` — worktree
+ * reset + upstream rewrite + window respawns), so any spare serves any
+ * branch and a changed project default never invalidates the pool.
+ *
  * The server is a single process (lock-file enforced), so module-level state
  * is sufficient mutual exclusion — no kubernetes optimistic concurrency.
  */
+import simpleGit from 'simple-git'
 import { containerExec } from '#lib/k8s/exec'
 import { k8sNamespace, kubectlWithRetry } from '#lib/k8s/kubectl'
 import { LABEL_PREWARMED, LABEL_TOOL, isPrewarmed, listSessionPods, type SessionPod } from '#lib/k8s/pods'
 import { cleanupSessionDetached, isTmuxSessionAlive } from '#lib/session/cleanup'
-import { retoolSpare, shellEscape, type SessionCreateResult } from '#session-create'
+import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBranch } from '#lib/git'
+import { resolveProjectConfig } from '#lib/project/config'
+import { resolveCredentialForUrl } from '#lib/project/credentials'
+import { rebranchSpare, retoolSpare, shellEscape, type SessionCreateResult } from '#session-create'
+import { repoDir } from '@yaac/shared/project-paths'
+import { ServerError } from '@yaac/shared/errors'
+import { testEnv } from '@yaac/shared/env'
 import type { AgentTool } from '@yaac/shared/types'
 
 /**
@@ -131,22 +143,52 @@ export function computePrewarmPlan(
 }
 
 /**
- * Try to claim a ready prewarmed spare for `(projectSlug, tool)`. Returns the
- * claimed session's result (its own id) or `undefined` to fall through to a
- * full cold create. Never throws — any failure degrades to a cold create.
+ * Resolve the branch a claim must re-branch its spare onto, or null when the
+ * spare's baked worktree already matches. Pure — the IO (config read,
+ * upstream lookup, default-branch probe) lives in the caller.
  *
- * Spares are tool-agnostic, so any running spare is claimable; one booted
- * with a different tool is retooled first (`retoolSpare`). The label call is
- * the commit point: a crash after it leaves a normal session (no orphaned
- * state); a crash before it leaves the spare reusable — except once retool
- * mutations have started, when a failed spare is tainted (registration,
- * window name, and label may disagree) and is reaped instead of released.
+ * Both sides fall back to the repo's default branch: a create with no
+ * explicit branch wants the *current* config default (the spare may have
+ * been warmed before the default changed), and a spare with no recorded
+ * upstream (the write is guaranteed before tmux exists, so this is
+ * effectively unreachable for a claimable spare) is treated as warmed from
+ * the default.
+ */
+export function resolveRebranchTarget(params: {
+  requestedBranch: string | undefined
+  configReferenceBranch: string | undefined
+  spareUpstreamBranch: string | null
+  defaultBranch: string
+}): string | null {
+  const desired = params.requestedBranch ?? params.configReferenceBranch ?? params.defaultBranch
+  const spareBranch = params.spareUpstreamBranch ?? params.defaultBranch
+  return desired === spareBranch ? null : desired
+}
+
+/**
+ * Try to claim a ready prewarmed spare for `(projectSlug, tool, branch)`.
+ * Returns the claimed session's result (its own id) or `undefined` to fall
+ * through to a full cold create. Never throws on infra failures — those
+ * degrade to a cold create. The one exception is a VALIDATION error for a
+ * requested branch that doesn't exist on origin: it propagates (before any
+ * mutation, so the spare is released untouched) because a cold create is
+ * doomed to the same user error.
+ *
+ * Spares are tool- and branch-agnostic, so any running spare is claimable:
+ * one warmed on a different reference branch is re-branched first
+ * (`rebranchSpare`), one booted with a different tool is retooled
+ * (`retoolSpare`). The label call is the commit point: a crash after it
+ * leaves a normal session (no orphaned state); a crash before it leaves the
+ * spare reusable — except once re-branch/retool mutations have started, when
+ * a failed spare is tainted (worktree, registration, window names, and label
+ * may disagree) and is reaped instead of released.
  */
 export async function tryClaimPrewarmed(
   projectSlug: string,
   tool: AgentTool,
   gitUser: { name: string; email: string } | undefined,
   emit: (message: string) => void,
+  branch?: string,
 ): Promise<SessionCreateResult | undefined> {
   let reserved: string | undefined
   let chosen: SessionPod | undefined
@@ -177,6 +219,45 @@ export async function tryClaimPrewarmed(
     }
     if (!chosen) return undefined
 
+    // Branch prep: the spare's warmed branch is read from its recorded
+    // upstream (`branch.agent/<id>.merge` in the shared /repo/.git/config —
+    // written before the tmux session exists, so always present on a
+    // claimable spare). No new state: prep's own --set-upstream-to keeps
+    // the record current.
+    const repo = repoDir(projectSlug)
+    const config = await resolveProjectConfig(projectSlug) ?? {}
+    const rebranchTo = resolveRebranchTarget({
+      requestedBranch: branch,
+      configReferenceBranch: config.referenceBranch,
+      spareUpstreamBranch: await worktreeUpstreamBranch(repo, `agent/${chosen.sessionId}`),
+      defaultBranch: await getDefaultBranch(repo),
+    })
+
+    if (rebranchTo !== null) {
+      // The claim path is otherwise zero-network; a re-branch must fetch so
+      // the target ref exists and is current. Same e2e fixture escape hatch
+      // as the cold path (pre-populated bare repos, no reachable remote).
+      if (!testEnv.e2eSkipFetch) {
+        const remoteUrl = (await simpleGit(repo).remote(['get-url', 'origin']))?.trim() ?? ''
+        await fetchOrigin(repo, await resolveCredentialForUrl(remoteUrl))
+      }
+      if (!(await remoteBranchExists(repo, rebranchTo))) {
+        // Pre-mutation user error: propagate instead of burning the spare
+        // on a cold create that hits the identical VALIDATION failure.
+        const source = branch ? 'the requested branch' : 'referenceBranch in yaac-config.json'
+        throw new ServerError(
+          'VALIDATION',
+          `branch "${rebranchTo}" not found on origin — check ${source}.`,
+        )
+      }
+      const sha = (await simpleGit(repo).revparse([`refs/remotes/origin/${rebranchTo}`])).trim()
+      emit(`Switching prewarmed session to branch ${rebranchTo}...`)
+      mutated = true
+      // Skip the agent respawn when a retool follows — its respawn (with
+      // the new tool) supersedes it.
+      await rebranchSpare(chosen, rebranchTo, sha, chosen.tool === tool)
+    }
+
     if (chosen.tool !== tool) {
       emit(`Switching prewarmed session to ${tool}...`)
       mutated = true
@@ -200,13 +281,16 @@ export async function tryClaimPrewarmed(
 
     emit('Using prewarmed session...')
     return { sessionId: chosen.sessionId, jobName: chosen.jobName, tool, forwardedPorts: [] }
-  } catch {
-    // Any failure (cluster unreachable, label race lost) → cold create. A
-    // spare that failed mid-retool is tainted — reap it so a later claim
-    // can't pick up its inconsistent state; the reconciler warms a fresh
-    // one. Keep the reservation (jobNames are never reused, so the leaked
-    // entry is inert) so a concurrent claim can't grab the dying pod before
-    // the detached teardown lands.
+  } catch (err) {
+    // A pre-mutation VALIDATION error (unknown branch) is the user's to
+    // see — a cold create would fail identically, so don't degrade.
+    if (!mutated && err instanceof ServerError && err.code === 'VALIDATION') throw err
+    // Any other failure (cluster unreachable, label race lost) → cold
+    // create. A spare that failed mid-retool/re-branch is tainted — reap it
+    // so a later claim can't pick up its inconsistent state; the reconciler
+    // warms a fresh one. Keep the reservation (jobNames are never reused,
+    // so the leaked entry is inert) so a concurrent claim can't grab the
+    // dying pod before the detached teardown lands.
     if (chosen && mutated) {
       const { jobName, projectSlug: slug, sessionId } = chosen
       cleanupSessionDetached({ jobName, projectSlug: slug, sessionId })

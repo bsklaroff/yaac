@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { execFile } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { promisify } from 'node:util'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
 vi.mock('#lib/k8s/pods', async (importOriginal) => {
@@ -91,6 +93,47 @@ describe('listActiveSessions', () => {
   it('throws RUNTIME_UNAVAILABLE when the pod listing fails', async () => {
     mockListPods.mockRejectedValueOnce(new Error('connection refused'))
     await expect(listActiveSessions()).rejects.toMatchObject({ code: 'RUNTIME_UNAVAILABLE' })
+  })
+
+  it('surfaces the tracked reference branch from the repo upstream record', async () => {
+    await writeProject('demo')
+    // The upstream record is plain git config in the project repo — no
+    // worktree needed for the read.
+    const repo = path.join(getProjectsDir(), 'demo', 'repo')
+    await fs.mkdir(repo, { recursive: true })
+    const run = promisify(execFile)
+    await run('git', ['init', '-q'], { cwd: repo })
+    await run('git', ['config', 'branch.agent/tracked.remote', 'origin'], { cwd: repo })
+    await run('git', ['config', 'branch.agent/tracked.merge', 'refs/heads/release/2.x'], { cwd: repo })
+
+    mockListPods.mockResolvedValue([
+      {
+        jobName: 'yaac-demo-tracked',
+        podName: 'yaac-demo-tracked-x1',
+        sessionId: 'tracked',
+        projectSlug: 'demo',
+        tool: 'claude',
+        phase: 'Running',
+        running: true,
+        createdAtMs: 1_000,
+        labels: {},
+      },
+      {
+        jobName: 'yaac-demo-norecord',
+        podName: 'yaac-demo-norecord-x1',
+        sessionId: 'norecord',
+        projectSlug: 'demo',
+        tool: 'claude',
+        phase: 'Running',
+        running: true,
+        createdAtMs: 1_000,
+        labels: {},
+      },
+    ])
+    const result = await listActiveSessions('demo')
+    const bySession = new Map(result.sessions.map((s) => [s.sessionId, s]))
+    expect(bySession.get('tracked')?.baseBranch).toBe('release/2.x')
+    expect(bySession.get('norecord')?.baseBranch).toBeUndefined()
   })
 
   it('carries the forwarder registry port mappings on each entry', async () => {

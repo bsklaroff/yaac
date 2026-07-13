@@ -41,6 +41,7 @@ export {
   ExternalLink as OpenLinkIcon,
   Maximize2 as ExpandIcon,
   Minimize2 as CollapseIcon,
+  GitBranch as BranchIcon,
 } from 'lucide-react'
 
 /** Display name per agent tool (proper brand casing, incl. OpenCode). */

@@ -150,6 +150,7 @@ vi.mock('@yaac/server/lib/git', () => ({
   addWorktree: vi.fn().mockResolvedValue(undefined),
   getDefaultBranch: vi.fn().mockResolvedValue('main'),
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
+  remoteBranchExists: vi.fn().mockResolvedValue(true),
   writeKnownHostsFile: vi.fn().mockResolvedValue(undefined),
   isTorEnabled: vi.fn().mockReturnValue(false),
 }))
@@ -191,7 +192,7 @@ import simpleGit from 'simple-git'
 import { resolveCredentialForUrl, loadKnownHostsEntryForHost } from '@yaac/server/lib/project/credentials'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { resolveAllowedHosts } from '@yaac/server/lib/container/default-allowed-hosts'
-import { addWorktree, getDefaultBranch, fetchOrigin } from '@yaac/server/lib/git'
+import { addWorktree, getDefaultBranch, fetchOrigin, remoteBranchExists } from '@yaac/server/lib/git'
 import { kubectlRelay, reserveAvailablePort, startPortForwarders } from '@yaac/server/lib/container/port'
 import { buildStatusRight, registerSessionForwarders } from '@yaac/server/lib/session/port-forwarders'
 
@@ -271,6 +272,7 @@ describe('createSession', () => {
     vi.mocked(addWorktree).mockResolvedValue(undefined)
     vi.mocked(getDefaultBranch).mockResolvedValue('main')
     vi.mocked(fetchOrigin).mockResolvedValue(undefined)
+    vi.mocked(remoteBranchExists).mockResolvedValue(true)
     vi.mocked(getGitUserConfigShared).mockResolvedValue({ name: 'Test User', email: 'test@example.com' })
     mockLoadToolAuth.mockResolvedValue(null)
     vi.mocked(proxyServiceClusterIp).mockResolvedValue('10.96.0.5')
@@ -298,6 +300,43 @@ describe('createSession', () => {
       hostPort: 3000,
       server: { close: vi.fn() },
     } as never)
+  })
+
+  it('creates the worktree from an explicitly requested branch and tracks it', async () => {
+    const result = await createSession('demo', { tool: 'claude', branch: 'dev' })
+    expect(vi.mocked(addWorktree)).toHaveBeenCalledWith(
+      '/tmp/demo/repo',
+      `/tmp/demo/worktrees/${result?.sessionId}`,
+      `agent/${result?.sessionId}`,
+      'origin/dev',
+    )
+    const upstreamCall = mockContainerExec.mock.calls.find(([, cmd]) => cmd.includes('--set-upstream-to'))
+    expect(upstreamCall?.[1]).toContain("'origin/dev'")
+  })
+
+  it('falls back to the configured referenceBranch, with an explicit branch winning', async () => {
+    vi.mocked(resolveProjectConfig).mockResolvedValue({ referenceBranch: 'develop' })
+    await createSession('demo', { tool: 'claude' })
+    expect(vi.mocked(addWorktree)).toHaveBeenLastCalledWith(
+      expect.anything(), expect.anything(), expect.anything(), 'origin/develop',
+    )
+
+    await createSession('demo', { tool: 'claude', branch: 'dev' })
+    expect(vi.mocked(addWorktree)).toHaveBeenLastCalledWith(
+      expect.anything(), expect.anything(), expect.anything(), 'origin/dev',
+    )
+    expect(vi.mocked(getDefaultBranch)).not.toHaveBeenCalled()
+  })
+
+  it('rejects a requested branch missing from origin, naming the source', async () => {
+    vi.mocked(remoteBranchExists).mockResolvedValue(false)
+    await expect(createSession('demo', { tool: 'claude', branch: 'ghost' }))
+      .rejects.toThrow(/branch "ghost" not found on origin — check the requested branch/)
+
+    vi.mocked(resolveProjectConfig).mockResolvedValue({ referenceBranch: 'ghost' })
+    await expect(createSession('demo', { tool: 'claude' }))
+      .rejects.toThrow(/check referenceBranch in yaac-config\.json/)
+    expect(vi.mocked(addWorktree)).not.toHaveBeenCalled()
   })
 
   it('returns a session descriptor with the job name, without attaching', async () => {

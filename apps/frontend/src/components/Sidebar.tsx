@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { useQuery } from '@tanstack/react-query'
 import { Collapsible } from '@base-ui/react/collapsible'
-import { ChevronIcon, CloseIcon, LoadingIcon, RestartIcon, SidebarIcon, TOOL_LABEL } from '#lib/icons'
+import { BranchIcon, ChevronIcon, CloseIcon, LoadingIcon, RestartIcon, SidebarIcon, TOOL_LABEL } from '#lib/icons'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
 import { EmptyState } from '#components/ui/EmptyState'
 import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
@@ -420,7 +420,14 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
           <MarqueeTitle text={session.title || session.prompt || 'New session'} hovered={hovered} />
         </span>
         <span className="flex items-center gap-2 text-xs text-text-faint">
-          <span className="truncate">{relativeAge(session.createdAt)}</span>
+          <span className="shrink-0">{relativeAge(session.createdAt)}</span>
+          {/* The remote branch this session's worktree tracks. */}
+          {session.baseBranch && (
+            <span className="flex min-w-0 items-center gap-1" title={`Tracking origin/${session.baseBranch}`}>
+              <BranchIcon size={10} className="shrink-0" />
+              <span className="truncate font-mono text-[11px]">{session.baseBranch}</span>
+            </span>
+          )}
           {/* Tool name moved off the title line so the title can run full-width;
               hidden when the blocked-hosts badge claims the bottom-right. */}
           {session.blockedHosts.length === 0 && (

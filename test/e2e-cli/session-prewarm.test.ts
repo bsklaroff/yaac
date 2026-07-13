@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import simpleGit from 'simple-git'
-import { cloneRepo } from '@yaac/server/lib/git'
+import { cloneRepo, worktreeUpstreamBranch } from '@yaac/server/lib/git'
 import { listSessionPods, isPrewarmed } from '@yaac/server/lib/k8s/pods'
 import { listActiveSessions } from '@yaac/server/lib/session/list'
 import { listProjects } from '@yaac/server/lib/project/list'
@@ -18,6 +18,7 @@ import {
   requirePodman,
   requireCluster,
   cleanupSessionJobs,
+  execInJob,
 } from '@yaac/test-utils/setup'
 import {
   startMockLLM,
@@ -62,7 +63,11 @@ describe('yaac prewarmed sessions', () => {
     testEnv = await createYaacTestEnv()
     mockLLM = await startMockLLM()
     mockGit = await startMockGit()
-    await seedMockGitRepo(mockGit, 'repo-demo', { files: { 'README.md': '# demo\n' } })
+    await seedMockGitRepo(mockGit, 'repo-demo', {
+      files: { 'README.md': '# demo\n' },
+      // A second branch so the claim-time re-branch prep has a target.
+      extraBranches: { dev: { 'dev-only.txt': 'dev content\n' } },
+    })
   })
 
   afterEach(async () => {
@@ -170,11 +175,15 @@ describe('yaac prewarmed sessions', () => {
     }, 150_000)
     expect(refilled.tool).toBe('claude')
 
-    // 6. Spares are tool-agnostic: a create for a different tool claims the
-    //    claude-warmed spare and retools it instead of cold-provisioning.
-    const third = await runYaac(serverEnv, 'session', 'create', 'repo-demo', '--tool', 'codex')
+    // 6. Spares are tool- AND branch-agnostic: a create for a different tool
+    //    and a different reference branch claims the claude/main-warmed spare,
+    //    re-branches its worktree, and retools it — no cold provisioning.
+    const third = await runYaac(
+      serverEnv, 'session', 'create', 'repo-demo', '--tool', 'codex', '--branch', 'dev',
+    )
     if (third.exitCode !== 0) console.error(third.stdout, third.stderr)
     expect(third.exitCode).toBe(0)
+    expect(third.stdout).toContain('Switching prewarmed session to branch dev...')
     expect(third.stdout).toContain('Switching prewarmed session to codex...')
     expect(third.stdout).toContain('Using prewarmed session...')
 
@@ -183,5 +192,18 @@ describe('yaac prewarmed sessions', () => {
     expect(retooled).toBeDefined()
     expect(isPrewarmed(retooled!)).toBe(false)
     expect(retooled!.tool).toBe('codex')
+
+    // The re-branch actually landed: the worktree tracks origin/dev and has
+    // the branch's file, and the shared repo config records the new upstream.
+    const { stdout: upstream } = await execInJob(retooled!.jobName, [
+      'git', '-C', '/workspace', 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}',
+    ])
+    expect(upstream.trim()).toBe('origin/dev')
+    const { stdout: devFile } = await execInJob(retooled!.jobName, ['cat', '/workspace/dev-only.txt'])
+    expect(devFile).toBe('dev content\n')
+    expect(await worktreeUpstreamBranch(
+      path.join(testEnv.dataDir, 'projects', 'repo-demo', 'repo'),
+      `agent/${retooled!.sessionId}`,
+    )).toBe('dev')
   }, 420_000)
 })

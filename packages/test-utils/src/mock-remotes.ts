@@ -463,11 +463,22 @@ export async function startMockGit(): Promise<MockGit> {
  * file set committed on the default branch, then run `git update-server-info`
  * so the dumb-HTTP protocol can serve it. Uses the host's git binary, not
  * the pod's — simpler and avoids round-tripping through kubectl exec.
+ *
+ * `extraBranches` pushes additional branches forked from the default branch,
+ * each layering its own files on top — the fixture for reference-branch
+ * tests. A project cloned after seeding carries remote-tracking refs for
+ * every branch, which is what the skip-fetch e2e paths rely on.
  */
 export async function seedMockGitRepo(
   mockGit: MockGit,
   name: string,
-  opts: { files: Record<string, string>; branch?: string; authorName?: string; authorEmail?: string } = { files: {} },
+  opts: {
+    files: Record<string, string>
+    branch?: string
+    extraBranches?: Record<string, Record<string, string>>
+    authorName?: string
+    authorEmail?: string
+  } = { files: {} },
 ): Promise<void> {
   const branch = opts.branch ?? 'main'
   const bareDir = path.join(mockGit.reposDir, `${name}.git`)
@@ -500,6 +511,20 @@ export async function seedMockGitRepo(
     await execFileAsync('git', ['init', '--bare', '-b', branch], { cwd: bareDir })
     await runGit(workdir, ['remote', 'add', 'origin', bareDir])
     await runGit(workdir, ['push', 'origin', branch])
+
+    for (const [extraBranch, extraFiles] of Object.entries(opts.extraBranches ?? {})) {
+      await runGit(workdir, ['checkout', '-b', extraBranch, branch])
+      for (const [relPath, content] of Object.entries(extraFiles)) {
+        const abs = path.join(workdir, relPath)
+        await fs.mkdir(path.dirname(abs), { recursive: true })
+        await fs.writeFile(abs, content)
+      }
+      await runGit(workdir, ['add', '-A'])
+      await runGit(workdir, ['commit', '-m', `commit on ${extraBranch}`])
+      await runGit(workdir, ['push', 'origin', extraBranch])
+      await runGit(workdir, ['checkout', branch])
+    }
+
     await execFileAsync('git', ['update-server-info'], { cwd: bareDir })
 
     // Ensure mock-git's pod user can read everything

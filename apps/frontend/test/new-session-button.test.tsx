@@ -3,6 +3,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import type { AuthListResult } from '@yaac/shared/types'
+import type { ProjectBranches } from '#lib/projectApi'
 
 const provision = vi.hoisted(() => vi.fn())
 
@@ -12,11 +13,17 @@ vi.mock('#lib/settingsApi', () => ({
 vi.mock('#lib/createSession', () => ({
   createSession: vi.fn(),
 }))
+vi.mock('#lib/projectApi', () => ({
+  getProjectBranches: vi.fn(),
+  setProjectReferenceBranch: vi.fn(),
+}))
 vi.mock('#lib/useProvisionSession', () => ({
   useProvisionSession: () => provision,
 }))
 
 import { NewSessionButton } from '#components/NewSessionButton'
+import { createSession } from '#lib/createSession'
+import { getProjectBranches, setProjectReferenceBranch } from '#lib/projectApi'
 import { getAuthList } from '#lib/settingsApi'
 import { useUiStore } from '#store'
 
@@ -36,15 +43,23 @@ const CLAUDE_ONLY: AuthListResult = {
   ],
 }
 
+const BRANCHES: ProjectBranches = {
+  branches: ['main', 'dev', 'release/2.x'],
+  defaultBranch: 'main',
+  referenceBranch: null,
+}
+
 beforeEach(() => {
   useUiStore.setState({ settingsOpen: false, settingsSection: 'general', settingsFocusTool: null })
   vi.clearAllMocks()
   vi.mocked(getAuthList).mockResolvedValue(CLAUDE_ONLY)
+  vi.mocked(getProjectBranches).mockResolvedValue(BRANCHES)
+  vi.mocked(setProjectReferenceBranch).mockImplementation((_slug, branch) => Promise.resolve(branch))
 })
 
 afterEach(cleanup)
 
-/** Render the button and open its tool menu, waiting for the auth list. */
+/** Render the button and open its popover, waiting for the auth list. */
 async function openMenu(): Promise<void> {
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -54,6 +69,9 @@ async function openMenu(): Promise<void> {
   fireEvent.click(screen.getByRole('button', { name: 'New session' }))
   await waitFor(() => expect(screen.getByText('Claude')).toBeTruthy())
 }
+
+const branchInput = (): HTMLInputElement =>
+  screen.getByLabelText<HTMLInputElement>('Reference branch')
 
 describe('NewSessionButton', () => {
   it('creates a session for a tool with credentials', async () => {
@@ -89,5 +107,65 @@ describe('NewSessionButton', () => {
     )
     // The icon variant's trigger is icon-only; the CTA carries a visible label.
     expect(screen.getByRole('button', { name: /New session/ }).textContent).toContain('New session')
+  })
+
+  it('prefills the branch input with the project default', async () => {
+    vi.mocked(getProjectBranches).mockResolvedValue({ ...BRANCHES, referenceBranch: 'dev' })
+    await openMenu()
+    await waitFor(() => expect(branchInput().value).toBe('dev'))
+  })
+
+  it('creates on the default branch without sending a branch', async () => {
+    provision.mockImplementation(
+      (_slug, _tool, _kind, sid: string, op: (sid: string, p: () => void) => unknown) => {
+        void op(sid, () => {})
+      })
+    await openMenu()
+    await waitFor(() => expect(branchInput().value).toBe('main'))
+
+    fireEvent.click(screen.getByText('Claude'))
+    expect(vi.mocked(createSession)).toHaveBeenCalledWith(
+      'proj', 'claude', expect.any(Function), expect.any(String), undefined,
+    )
+  })
+
+  it('typeahead filters the branch list and a picked branch rides the create', async () => {
+    provision.mockImplementation(
+      (_slug, _tool, _kind, sid: string, op: (sid: string, p: () => void) => unknown) => {
+        void op(sid, () => {})
+      })
+    await openMenu()
+    await waitFor(() => expect(branchInput().value).toBe('main'))
+
+    fireEvent.change(branchInput(), { target: { value: 're' } })
+    // 'release/2.x' matches; 'dev' does not.
+    expect(screen.getByText('release/2.x')).toBeTruthy()
+    expect(screen.queryByText('dev')).toBeNull()
+
+    fireEvent.click(screen.getByText('release/2.x'))
+    expect(branchInput().value).toBe('release/2.x')
+
+    fireEvent.click(screen.getByText('Claude'))
+    expect(vi.mocked(createSession)).toHaveBeenCalledWith(
+      'proj', 'claude', expect.any(Function), expect.any(String), 'release/2.x',
+    )
+  })
+
+  it('pins the picked branch as the project default', async () => {
+    await openMenu()
+    await waitFor(() => expect(branchInput().value).toBe('main'))
+
+    // Pinning the current default is a no-op — the button is disabled.
+    const pin = screen.getByRole('button', { name: 'Set as default branch' })
+    expect((pin as HTMLButtonElement).disabled).toBe(true)
+
+    fireEvent.change(branchInput(), { target: { value: 'dev' } })
+    expect((pin as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(pin)
+
+    expect(vi.mocked(setProjectReferenceBranch)).toHaveBeenCalledWith('proj', 'dev')
+    // The pinned branch becomes the default resolution — pin disables again.
+    await waitFor(() => expect((pin as HTMLButtonElement).disabled).toBe(true))
+    expect(branchInput().value).toBe('dev')
   })
 })

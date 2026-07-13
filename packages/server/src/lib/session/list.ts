@@ -2,7 +2,8 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { listSessionJobs, listSessionPods, isPrewarmed, type SessionPod } from '#lib/k8s/pods'
 import { getActivePodWatcher } from '#lib/k8s/pod-watch'
-import { claudeDir, codexTranscriptDir, getProjectsDir, projectDir } from '@yaac/shared/project-paths'
+import { worktreeUpstreamBranch } from '#lib/git'
+import { claudeDir, codexTranscriptDir, getProjectsDir, projectDir, repoDir } from '@yaac/shared/project-paths'
 import { getSessionFirstMessage, normalizeTool } from '#lib/session/status'
 import { ensureOpencodeFirstMessageCaptured, listOpencodeMetaEntries } from '#lib/session/opencode-status'
 import { isSessionStreamHealthy, readSessionStatus, readSessionWaitingSince } from '#lib/session/status-store'
@@ -177,9 +178,13 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
           forwardedPorts: [],
         }
       }
-      const [prompt, blockedHosts] = await Promise.all([
+      const [prompt, blockedHosts, baseBranch] = await Promise.all([
         getSessionFirstMessage(p.projectSlug, p.sessionId, tool, p.jobName),
         readBlockedHosts(p.sessionId),
+        // The session branch's recorded upstream (branch.agent/<id>.merge in
+        // the shared repo config) — written at setup, rewritten by a claim's
+        // re-branch prep, so it's authoritative for a listed session.
+        worktreeUpstreamBranch(repoDir(p.projectSlug), `agent/${p.sessionId}`).catch(() => null),
       ])
       return {
         sessionId: p.sessionId,
@@ -192,6 +197,7 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
         title: titlesBySlug.get(p.projectSlug)?.[p.sessionId],
         blockedHosts,
         forwardedPorts: getSessionPorts(p.sessionId),
+        baseBranch: baseBranch ?? undefined,
       }
     }),
   )

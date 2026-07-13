@@ -4,7 +4,7 @@ import { AGENT_TOOLS } from '@yaac/shared/types'
 import type { YaacConfig, InitCommandSpec } from '@yaac/shared/types'
 import { projectConfigDir } from '@yaac/shared/project-paths'
 
-const KNOWN_KEYS = new Set(['envPassthrough', 'env', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'portForward', 'bindMounts', 'hideInitPane', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths', 'nestedContainers', 'virtualCluster'])
+const KNOWN_KEYS = new Set(['envPassthrough', 'env', 'envSecretProxy', 'cacheVolumes', 'initCommands', 'portForward', 'bindMounts', 'hideInitPane', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths', 'nestedContainers', 'virtualCluster', 'referenceBranch'])
 
 /** Default when `ephemeralModulesPaths` is unset — redirect the root
  *  node_modules only. Set to `[]` in yaac-config.json to opt out. */
@@ -114,6 +114,32 @@ export function parseInitCommands(raw: unknown): string[] | InitCommandSpec[] {
     specs.push(spec)
   }
   return specs
+}
+
+/**
+ * Parse the `referenceBranch` field: the name of a branch on `origin`,
+ * written without the `origin/` prefix. Only cheap shape checks live here —
+ * existence on the remote is validated where the value is used (session
+ * create) or set (the reference-branch route), since the parser has no
+ * repo access.
+ */
+export function parseReferenceBranch(raw: unknown): string {
+  if (typeof raw !== 'string' || raw.length === 0) {
+    throw new Error('yaac-config.json: referenceBranch must be a non-empty string')
+  }
+  if (raw.startsWith('origin/')) {
+    throw new Error(
+      `yaac-config.json: referenceBranch "${raw}" must be a bare branch name — `
+      + 'drop the "origin/" prefix (it would resolve to origin/origin/...)',
+    )
+  }
+  if (/\s/.test(raw)) {
+    throw new Error('yaac-config.json: referenceBranch must not contain whitespace')
+  }
+  if (raw.startsWith('-') || raw.includes('..')) {
+    throw new Error(`yaac-config.json: referenceBranch "${raw}" is not a valid branch name`)
+  }
+  return raw
 }
 
 /** Expand `$VAR` and `${VAR}` references in a string using `process.env`. */
@@ -347,6 +373,10 @@ export function parseProjectConfig(raw: string): YaacConfig {
       normalized.push(trimmed)
     }
     config.ephemeralModulesPaths = normalized
+  }
+
+  if (obj.referenceBranch !== undefined) {
+    config.referenceBranch = parseReferenceBranch(obj.referenceBranch)
   }
 
   return config

@@ -14,6 +14,9 @@ export interface SessionCreateOptions {
   addDir?: string[]
   addDirRw?: string[]
   tool?: AgentTool
+  /** Reference branch for the worktree (no `origin/` prefix). Omitted →
+   *  the server resolves the project's configured default. */
+  branch?: string
 }
 
 interface SessionCreateResult {
@@ -66,6 +69,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     json: {
       project: projectSlug,
       tool: options.tool,
+      branch: options.branch,
       addDir: options.addDir,
       addDirRw: options.addDirRw,
       gitUser,

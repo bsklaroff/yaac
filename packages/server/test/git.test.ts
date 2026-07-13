@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import simpleGit from 'simple-git'
-import { cloneRepo, getDefaultBranch, addWorktree, fetchOrigin, injectTokenIntoUrl, torEnv, buildHostSideGitSshCommand, writeKnownHostsFile, isGitAuthError } from '#lib/git'
+import { cloneRepo, getDefaultBranch, addWorktree, fetchOrigin, injectTokenIntoUrl, torEnv, buildHostSideGitSshCommand, writeKnownHostsFile, isGitAuthError, remoteBranchExists, listRemoteBranches, worktreeUpstreamBranch } from '#lib/git'
 import { formatSshCommand, getGitUserConfig, torSshOpts } from '@yaac/shared/git'
 
 describe('git helpers', () => {
@@ -230,6 +230,59 @@ describe('git helpers', () => {
     const result = injectTokenIntoUrl('https://github.com', 'tok')
     expect(result).toContain('x-access-token')
     expect(result).toContain('tok')
+  })
+
+  it('remoteBranchExists distinguishes present and missing remote branches', async () => {
+    const srcGit = simpleGit(sourceRepo)
+    await srcGit.checkoutLocalBranch('develop')
+    const defaultBranch = await getDefaultBranch(sourceRepo)
+    await srcGit.checkout(defaultBranch)
+
+    const cloneDir = path.join(tmpDir, 'clone-branches')
+    await cloneRepo(sourceRepo, cloneDir, null)
+
+    expect(await remoteBranchExists(cloneDir, defaultBranch)).toBe(true)
+    expect(await remoteBranchExists(cloneDir, 'develop')).toBe(true)
+    expect(await remoteBranchExists(cloneDir, 'no-such-branch')).toBe(false)
+  })
+
+  it('listRemoteBranches returns names newest-committed first, without HEAD', async () => {
+    const srcGit = simpleGit(sourceRepo)
+    const defaultBranch = await getDefaultBranch(sourceRepo)
+    await srcGit.checkoutLocalBranch('develop')
+    // A later commit so develop sorts ahead of the default branch. The
+    // committer date needs to actually differ — git timestamps are
+    // second-granular, so pin them explicitly instead of sleeping.
+    await fs.writeFile(path.join(sourceRepo, 'dev.txt'), 'dev\n')
+    await srcGit.add('.')
+    await srcGit.env({
+      ...process.env,
+      GIT_AUTHOR_DATE: '2030-01-01T00:00:00Z',
+      GIT_COMMITTER_DATE: '2030-01-01T00:00:00Z',
+    }).commit('develop commit')
+    await srcGit.checkout(defaultBranch)
+
+    const cloneDir = path.join(tmpDir, 'clone-list')
+    await cloneRepo(sourceRepo, cloneDir, null)
+
+    const branches = await listRemoteBranches(cloneDir)
+    expect(branches[0]).toBe('develop')
+    expect(branches).toContain(defaultBranch)
+    expect(branches).not.toContain('HEAD')
+  })
+
+  it('worktreeUpstreamBranch reads the tracked branch, null when unset', async () => {
+    const cloneDir = path.join(tmpDir, 'clone-upstream')
+    await cloneRepo(sourceRepo, cloneDir, null)
+    const defaultBranch = await getDefaultBranch(cloneDir)
+
+    const wtPath = path.join(tmpDir, 'wt-upstream')
+    await addWorktree(cloneDir, wtPath, 'agent/up-test', `origin/${defaultBranch}`)
+    // addWorktree deliberately writes no tracking config
+    expect(await worktreeUpstreamBranch(cloneDir, 'agent/up-test')).toBeNull()
+
+    await simpleGit(wtPath).raw(['branch', '--set-upstream-to', `origin/${defaultBranch}`])
+    expect(await worktreeUpstreamBranch(cloneDir, 'agent/up-test')).toBe(defaultBranch)
   })
 
 })

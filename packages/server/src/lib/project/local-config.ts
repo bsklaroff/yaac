@@ -67,6 +67,37 @@ export async function addAllowedHostToProjectConfig(slug: string, host: string):
 }
 
 /**
+ * Set (or clear, with null) a config's default reference branch, returning a
+ * new config. Pure.
+ */
+export function withReferenceBranch(config: YaacConfig, branch: string | null): YaacConfig {
+  if (branch === null) {
+    const { referenceBranch: _dropped, ...rest } = config
+    return rest
+  }
+  return { ...config, referenceBranch: branch }
+}
+
+/**
+ * Persist the project's default reference branch into the stored config
+ * overlay (the same read-modify-write as addAllowedHostToProjectConfig).
+ * `null` clears the field, falling back to the remote default branch.
+ * Branch-name shape is validated by writeProjectConfig's re-parse;
+ * existence on origin is the caller's concern (the route checks it against
+ * the local repo so a typo'd default fails at set time, not at the next
+ * create).
+ */
+export async function setProjectReferenceBranch(slug: string, branch: string | null): Promise<YaacConfig> {
+  let overlay: YaacConfig | null
+  try {
+    overlay = await resolveProjectConfig(slug)
+  } catch (err) {
+    throw new ServerError('VALIDATION', err instanceof Error ? err.message : String(err))
+  }
+  return writeProjectConfig(slug, withReferenceBranch(overlay ?? {}, branch))
+}
+
+/**
  * Read the per-project yaac-config.json as raw text ('' when absent),
  * without parsing. The editing flow needs the verbatim bytes so a
  * malformed file can be opened and repaired — the parsed read would

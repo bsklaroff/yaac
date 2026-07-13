@@ -34,8 +34,14 @@ export async function createSession(
   tool: AgentTool,
   onProgress: (message: string) => void,
   sessionId?: string,
+  branch?: string,
 ): Promise<CreateSessionResult> {
-  const body = sessionId ? { project, tool, sessionId } : { project, tool }
+  const body = {
+    project,
+    tool,
+    ...(sessionId ? { sessionId } : {}),
+    ...(branch ? { branch } : {}),
+  }
   return await streamSessionOp('/session/create', body, onProgress) as CreateSessionResult
 }
 

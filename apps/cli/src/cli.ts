@@ -184,6 +184,7 @@ session
   .description('Create a new session for a project')
   .argument('<project>', 'Project slug')
   .option('-t, --tool <tool>', 'Agent tool to use (claude, codex, or opencode)')
+  .option('-b, --branch <branch>', 'Reference branch for the worktree (defaults to the project\'s referenceBranch config, else the remote default branch)')
   .option('--add-dir <path>', 'Mount a host directory as read-only (repeatable)', collect, [])
   .option('--add-dir-rw <path>', 'Mount a host directory as read-write (repeatable)', collect, [])
   .action(async (project: string, options: Parameters<typeof sessionCreate>[1]) => {

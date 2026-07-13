@@ -264,13 +264,14 @@ describe('yaac session create suite (real CLI + real server + mocked remotes)', 
     opts: {
       yaacConfig?: Record<string, unknown>
       files?: Record<string, string>
+      extraBranches?: Record<string, Record<string, string>>
     } = {},
   ): Promise<string> {
     const files: Record<string, string> = {
       'README.md': '# demo\n',
       ...(opts.files ?? {}),
     }
-    await seedMockGitRepo(mockGit!, slug, { files })
+    await seedMockGitRepo(mockGit!, slug, { files, extraBranches: opts.extraBranches })
 
     const projectPath = path.join(testEnv.dataDir, 'projects', slug)
     const repoPath = path.join(projectPath, 'repo')
@@ -1272,6 +1273,35 @@ describe('yaac session create suite (real CLI + real server + mocked remotes)', 
       ])
       const inside: unknown = JSON.parse(catOut.trim())
       expect(inside).toEqual({ model: 'anthropic/claude-sonnet-4-5' })
+    }, 60_000)
+  })
+
+  describe('reference branch', () => {
+    // The --branch override's happy path (on a prewarmed claim) lives in
+    // session-prewarm.test.ts; here: the config-default path on a cold
+    // create, and the validation failure (which never creates a pod).
+    it('a bare create lands on the configured referenceBranch and tracks it', async () => {
+      await setupProject('branchy', {
+        yaacConfig: { referenceBranch: 'dev' },
+        extraBranches: { dev: { 'dev-only.txt': 'dev content\n' } },
+      })
+      const { jobName, stdout } = await createSession('branchy')
+      expect(stdout).toContain('Creating worktree from dev...')
+
+      const { stdout: upstream } = await execInJob(jobName, [
+        'git', '-C', '/workspace', 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}',
+      ])
+      expect(upstream.trim()).toBe('origin/dev')
+      const { stdout: devFile } = await execInJob(jobName, ['cat', '/workspace/dev-only.txt'])
+      expect(devFile).toBe('dev content\n')
+    }, 240_000)
+
+    it('--branch rejects a branch missing from origin without creating a pod', async () => {
+      const podsBefore = (await listSessionPods('branchy')).length
+      const bad = await runYaac(serverEnv, 'session', 'create', 'branchy', '--branch', 'ghost')
+      expect(bad.exitCode).not.toBe(0)
+      expect(bad.stdout + bad.stderr).toContain('branch "ghost" not found on origin')
+      expect((await listSessionPods('branchy')).length).toBe(podsBefore)
     }, 60_000)
   })
 })
