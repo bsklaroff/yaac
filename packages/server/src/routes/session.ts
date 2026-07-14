@@ -51,7 +51,7 @@ export const sessionApp = new Hono()
       sessionId: z.string().uuid().optional(),
       addDir: z.array(z.string()).optional(),
       addDirRw: z.array(z.string()).optional(),
-      tool: z.enum(['claude', 'codex', 'opencode']).optional(),
+      tool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional(),
       // Reference branch for the fresh worktree (no `origin/` prefix).
       // Omitted → the project's referenceBranch config default, else the
       // remote default branch.
@@ -103,7 +103,7 @@ export const sessionApp = new Hono()
       // entry) so the provisioning row can render while restart resolves the
       // target authoritatively. The CLI omits them — it doesn't need the row.
       projectSlug: z.string().optional(),
-      tool: z.enum(['claude', 'codex', 'opencode']).optional(),
+      tool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional(),
       addDir: z.array(z.string()).optional(),
       addDirRw: z.array(z.string()).optional(),
       gitUser: z.object({ name: z.string(), email: z.string() }).optional(),
@@ -161,11 +161,11 @@ export const sessionApp = new Hono()
     '/stream/next',
     zv('json', z.object({
       project: z.string().optional(),
-      tool: z.enum(['claude', 'codex', 'opencode']).optional(),
+      tool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional(),
       visited: z.array(z.string()).default([]),
       lastVisited: z.string().optional(),
       lastProjectSlug: z.string().optional(),
-      lastTool: z.enum(['claude', 'codex', 'opencode']).optional(),
+      lastTool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional(),
       lastOutcome: z.enum(['detached', 'closed_blank', 'closed_prompted', 'none']).default('none'),
     })),
     async (c) => {

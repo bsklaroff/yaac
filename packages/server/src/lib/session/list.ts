@@ -6,6 +6,7 @@ import { worktreeUpstreamBranch } from '#lib/git'
 import { claudeDir, codexTranscriptDir, getProjectsDir, projectDir, repoDir } from '@yaac/shared/project-paths'
 import { getSessionFirstMessage, normalizeTool } from '#lib/session/status'
 import { ensureOpencodeFirstMessageCaptured, listOpencodeMetaEntries } from '#lib/session/opencode-status'
+import { listPiSessionRecords } from '#lib/session/pi-status'
 import { listDeletedInfo } from '#lib/session/deleted-store'
 import { isSessionTerminating, pruneTerminating } from '#lib/session/terminating'
 import { isSessionStreamHealthy, readSessionStatus, readSessionWaitingSince } from '#lib/session/status-store'
@@ -561,6 +562,23 @@ export async function listDeletedSessions(
         },
         birthtimeMs,
         lastActiveMs,
+      })
+    }
+    // pi leaves host JSONL logs (one subdir per session), so — unlike
+    // opencode — its deleted sessions are enumerated straight from disk.
+    for (const rec of await listPiSessionRecords(slug)) {
+      if (activeSessionIds.has(rec.sessionId)) continue
+      collected.push({
+        entry: {
+          sessionId: rec.sessionId,
+          projectSlug: slug,
+          tool: 'pi',
+          createdAt: formatUtcTimestamp(rec.birthtimeMs),
+          lastActiveAt: formatUtcTimestamp(rec.lastActiveMs),
+          seen: false, // overwritten below when a deleted_sessions row exists
+        },
+        birthtimeMs: rec.birthtimeMs,
+        lastActiveMs: rec.lastActiveMs,
       })
     }
   }

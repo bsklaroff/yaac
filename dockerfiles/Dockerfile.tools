@@ -11,6 +11,18 @@ RUN ARCH="$(dpkg --print-architecture)" && if [ "$ARCH" = "amd64" ]; then ARCH=x
     tar -xz -C /usr/local --strip-components=1 && \
     ln -sf /usr/local/bin/nvim /usr/local/bin/vi && \
     ln -sf /usr/local/bin/nvim /usr/local/bin/vim
+# fd (sharkdp/fd) for pi's file-search tool. pi otherwise auto-downloads the
+# latest sharkdp/fd release into ~/.pi/agent/bin the first time the tool runs
+# when no `fd`/`fdfind` is on PATH; pre-staging the same release binary on PATH
+# lets pi find it and skips that runtime fetch (which would hit GitHub through
+# the egress proxy). pi's other tool binary, ripgrep (`rg`), ships in the base
+# image. Keep in step with sharkdp/fd's latest release.
+RUN ARCH="$(dpkg --print-architecture)" && \
+    case "$ARCH" in amd64) ARCH=x86_64 ;; arm64) ARCH=aarch64 ;; esac && \
+    FD_VERSION=10.4.2 && \
+    curl -fsSL "https://github.com/sharkdp/fd/releases/download/v${FD_VERSION}/fd-v${FD_VERSION}-${ARCH}-unknown-linux-gnu.tar.gz" | \
+    tar -xz -C /usr/local/bin --strip-components=1 --wildcards '*/fd' && \
+    chmod +x /usr/local/bin/fd
 USER yaac
 ENV EDITOR=nvim
 
@@ -21,4 +33,5 @@ ENV EDITOR=nvim
 RUN npm install -g chrome-devtools-mcp@0.24.0
 RUN npm install -g @openai/codex
 RUN npm install -g opencode-ai
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 RUN curl -fsSL https://claude.ai/install.sh | bash

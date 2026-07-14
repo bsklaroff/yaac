@@ -60,4 +60,5 @@ export const TOOL_LABEL: Record<AgentTool, string> = {
   claude: 'Claude',
   codex: 'Codex',
   opencode: 'OpenCode',
+  pi: 'Pi',
 }

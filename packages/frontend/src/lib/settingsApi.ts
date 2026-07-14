@@ -1,6 +1,6 @@
 import { api } from './api'
 import type { Chord, ShortcutId } from './shortcuts'
-import type { AgentTool, AuthListResult, OpencodeProvider, ToolInstallView, ToolLoginView } from '@yaac/shared/types'
+import type { AgentTool, AuthListResult, ToolInstallView, ToolLoginView } from '@yaac/shared/types'
 
 export async function getDefaultTool(): Promise<AgentTool | null> {
   const { tool } = await api.tool.get.$get()
@@ -19,11 +19,11 @@ export async function addGitCredential(pattern: string, token: string): Promise<
   await api.auth.git.credentials.$post({ json: { kind: 'https', pattern, token } })
 }
 
-/** Save a pasted API key as the tool's credential (provider: opencode only). */
+/** Save a pasted API key as the tool's credential (provider: opencode/pi only). */
 export async function setToolApiKey(
   tool: AgentTool,
   apiKey: string,
-  provider?: OpencodeProvider,
+  provider?: string,
 ): Promise<void> {
   await api.auth[':tool'].$put({
     param: { tool },

@@ -73,7 +73,8 @@ export async function authUpdate(): Promise<void> {
   console.log('  2) Claude Code (Anthropic)')
   console.log('  3) Codex (OpenAI)')
   console.log('  4) OpenCode (OpenRouter or NeuralWatt)')
-  const answer = (await rl.question('Choice [1-4]: ')).trim()
+  console.log('  5) Pi (OpenRouter, Anthropic, or OpenAI)')
+  const answer = (await rl.question('Choice [1-5]: ')).trim()
   rl.close()
 
   if (answer === '1') {
@@ -90,6 +91,10 @@ export async function authUpdate(): Promise<void> {
   }
   if (answer === '4') {
     await runToolUpdate('opencode')
+    return
+  }
+  if (answer === '5') {
+    await runToolUpdate('pi')
     return
   }
   console.log('Cancelled.')
@@ -208,10 +213,11 @@ async function runToolUpdate(tool: AgentTool): Promise<void> {
   const label =
     tool === 'claude' ? 'Claude Code' :
     tool === 'codex' ? 'Codex' :
+    tool === 'pi' ? 'Pi' :
     'OpenCode'
 
-  // Shortcut paths that capture a result directly: the e2e hook and
-  // opencode's api-key prompt.
+  // Shortcut paths that capture a result directly: the e2e hook and the
+  // opencode/pi api-key prompt.
   let result = await runToolLogin(tool).catch((err: unknown) => {
     console.error(err instanceof Error ? err.message : String(err))
     process.exit(1)

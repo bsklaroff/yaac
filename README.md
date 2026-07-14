@@ -1,6 +1,6 @@
 # Yet Another Agent Container
 
-Agent sandbox manager — run many parallel agent sessions, each as an isolated Kubernetes Job on a local single-node cluster. Supports Claude Code, Codex CLI, and OpenCode.
+Agent sandbox manager — run many parallel agent sessions, each as an isolated Kubernetes Job on a local single-node cluster. Supports Claude Code, Codex CLI, OpenCode, and Pi.
 
 ## Install
 
@@ -124,7 +124,7 @@ yaac project <command>
 
 yaac session <command>
   create [options] <project>  Create a new session for a project
-    -t, --tool <tool>         Agent tool to use (claude, codex, or opencode)
+    -t, --tool <tool>         Agent tool to use (claude, codex, opencode, or pi)
     -b, --branch <branch>     Reference branch for the worktree (defaults to
                               the project's referenceBranch config, else the
                               remote default branch)
@@ -137,13 +137,13 @@ yaac session <command>
   shell <container-id>        Open a raw shell in the session container
   stream [options] [project]  Stream through waiting sessions, attaching to
                               each in turn
-    -t, --tool <tool>         Agent tool for new sessions (claude, codex, or opencode)
+    -t, --tool <tool>         Agent tool for new sessions (claude, codex, opencode, or pi)
   monitor [options] [project] Poll and display active sessions in real-time
     -n, --interval <seconds>  Refresh interval in seconds (default: 5)
 
 yaac tool <command>
   get                 Show the current default agent tool
-  set <tool>          Set the default agent tool (claude, codex, or opencode)
+  set <tool>          Set the default agent tool (claude, codex, opencode, or pi)
 
 yaac config <command>
   edit <project>              Open the project's yaac-config.json in $EDITOR
@@ -152,7 +152,7 @@ yaac config <command>
 
 yaac auth <command>
   list                List configured credentials (masked)
-  update              Add or update credentials (GitHub, Claude Code, Codex, or OpenCode)
+  update              Add or update credentials (GitHub, Claude Code, Codex, OpenCode, or Pi)
   clear               Remove stored credentials (interactive)
   token <command>     Durable access tokens for remote clients
     create <name>       Mint a token (printed once) for a remote client
@@ -184,6 +184,7 @@ yaac centralizes credentials on the host and injects them into session traffic t
 - `~/.yaac/.credentials/claude.json` — Claude Code credentials (OAuth bundle or API key)
 - `~/.yaac/.credentials/codex.json` — Codex credentials
 - `~/.yaac/.credentials/opencode.json` — OpenCode credentials (OpenRouter API key)
+- `~/.yaac/.credentials/pi.json` — Pi credentials (OpenRouter, Anthropic, or OpenAI API key)
 
 The proxy pod mounts this directory RW (hostPath) and reads credentials at request time, so updates via `yaac auth update` propagate to every running session immediately without needing to restart pods. The proxy is reachable only inside the cluster (ClusterIP Service); the server talks to it over a loopback `kubectl port-forward`.
 
@@ -219,9 +220,9 @@ Token injection only happens over HTTPS. Plain HTTP requests through the proxy n
 
 ### Agent tool credentials
 
-yaac also manages the API credentials for the agent tool itself, so Claude Code, Codex, and OpenCode don't need to authenticate inside each container. On first run (or via `yaac auth update`), yaac runs the tool's native login flow on the host and stores the resulting credentials. OpenCode is API-key only (OpenRouter): the key stays on the host and the proxy swaps the in-container placeholder on requests to openrouter.ai.
+yaac also manages the API credentials for the agent tool itself, so Claude Code, Codex, OpenCode, and Pi don't need to authenticate inside each container. On first run (or via `yaac auth update`), yaac runs the tool's native login flow on the host and stores the resulting credentials. OpenCode is API-key only (OpenRouter): the key stays on the host and the proxy swaps the in-container placeholder on requests to openrouter.ai. Pi is likewise API-key only, against a chosen provider (OpenRouter, Anthropic, or OpenAI): the key stays on the host and the proxy swaps the in-container placeholder on requests to that provider's host (as `Authorization: Bearer`, or `x-api-key` for Anthropic).
 
-For Claude Code OAuth, each project's `.claude/.credentials.json` inside the container holds placeholder tokens (`yaac-ph-access` / `yaac-ph-refresh`) together with the real `expiresAt` and scopes. The proxy transparently rewrites outbound API calls, swaps the placeholder refresh token on refresh requests, and writes refreshed bundles back to the host file — so real tokens never enter the container filesystem. For API-key mode (both tools) the proxy injects the key as an outbound header.
+For Claude Code OAuth, each project's `.claude/.credentials.json` inside the container holds placeholder tokens (`yaac-ph-access` / `yaac-ph-refresh`) together with the real `expiresAt` and scopes. The proxy transparently rewrites outbound API calls, swaps the placeholder refresh token on refresh requests, and writes refreshed bundles back to the host file — so real tokens never enter the container filesystem. For API-key mode the proxy injects the key as an outbound header.
 
 ## Session layout
 
@@ -236,9 +237,10 @@ Each session runs as a single-pod Kubernetes Job with the following hostPath mou
 | `~/.yaac/projects/<project>/codex/` | `/home/yaac/.codex` | Codex configuration and transcripts |
 | `~/.yaac/projects/<project>/opencode-config/` | `/home/yaac/.config/opencode` | OpenCode configuration (shared per project) |
 | `~/.yaac/projects/<project>/opencode-data/<session-id>` | `/home/yaac/.local/share/opencode` | OpenCode session data (per session) |
+| `~/.yaac/projects/<project>/pi-sessions/<session-id>` | `/home/yaac/.pi/agent/sessions` | Pi session logs (per session) |
 | `~/.yaac/projects/<project>/.cached-packages` | `/home/yaac/.cached-packages` | Per-project package-manager caches |
 
-The session container runs as user `yaac` with home directory `/home/yaac`. All project data is stored under `~/.yaac/projects/<repo-name>/` on the host — which is why the cluster node must have your home directory extraMounted (see [Cluster setup](docs/cluster-setup.md#what-it-wires-up)). The repo plus the Claude and Codex state directories are shared across all sessions within a project (but isolated between projects), so those sessions can inspect each other's history; OpenCode session data is per-session to avoid concurrent-write issues in its database. Each session gets its own git worktree.
+The session container runs as user `yaac` with home directory `/home/yaac`. All project data is stored under `~/.yaac/projects/<repo-name>/` on the host — which is why the cluster node must have your home directory extraMounted (see [Cluster setup](docs/cluster-setup.md#what-it-wires-up)). The repo plus the Claude and Codex state directories are shared across all sessions within a project (but isolated between projects), so those sessions can inspect each other's history; OpenCode and Pi session data are per-session (OpenCode to avoid concurrent-write issues in its database, Pi so `pi --continue` resumes only that session's log). Each session gets its own git worktree.
 
 The `.cached-packages` directory is shared by every session within the project, so package-manager caches survive session teardown and are reused across sessions. pnpm's default `store-dir` is pre-configured to `/home/yaac/.cached-packages/pnpm-store`, so `pnpm install` populates the per-project store automatically with no extra configuration.
 
@@ -322,7 +324,7 @@ Example `yaac-config.json` with all options:
     ```json
     "initCommands": ["pnpm install", "pnpm build"]
     ```
-  - **Object list** — one tmux window per entry, so multiple long-running processes (e.g. a backend and a frontend dev server) run in parallel and can be inspected independently. Each entry has a `name` (the tmux window name; must not collide with the agent window — `claude` / `codex` / `opencode` / `init` / `yaac` are reserved), a `commands` array (chained with `&&` inside that window), and an optional `hidePane` that overrides the top-level `hideInitPane` for this window. Windows are spawned independently, so any shared setup (e.g. `pnpm install`) should be listed in each window that needs it:
+  - **Object list** — one tmux window per entry, so multiple long-running processes (e.g. a backend and a frontend dev server) run in parallel and can be inspected independently. Each entry has a `name` (the tmux window name; must not collide with the agent window — `claude` / `codex` / `opencode` / `pi` / `init` / `yaac` are reserved), a `commands` array (chained with `&&` inside that window), and an optional `hidePane` that overrides the top-level `hideInitPane` for this window. Windows are spawned independently, so any shared setup (e.g. `pnpm install`) should be listed in each window that needs it:
     ```json
     "initCommands": [
       { "name": "backend",  "commands": ["pnpm install", "pnpm dev:backend"] },
@@ -375,8 +377,9 @@ These are set by the build or the test harness; production reads several of them
 | `YAAC_SERVER_URL` / `YAAC_SERVER_SECRET` | _(unset)_ | Point the CLI at an in-process server without the lock file (tests). |
 | `YAAC_E2E_NO_ATTACH` | _(unset)_ | `1` skips the post-provision terminal attach (no-TTY e2e). |
 | `YAAC_E2E_SKIP_FETCH` | _(unset)_ | `1` skips the host-side git fetch during create (e2e fixtures pre-populate the repo). |
-| `YAAC_E2E_CLAUDE_LOGIN` / `YAAC_E2E_CODEX_LOGIN` / `YAAC_E2E_OPENCODE_LOGIN` | _(unset)_ | Short-circuit the native tool login with a serialized OAuth bundle (claude/codex) or raw api key (opencode). |
+| `YAAC_E2E_CLAUDE_LOGIN` / `YAAC_E2E_CODEX_LOGIN` / `YAAC_E2E_OPENCODE_LOGIN` / `YAAC_E2E_PI_LOGIN` | _(unset)_ | Short-circuit the native tool login with a serialized OAuth bundle (claude/codex) or raw api key (opencode/pi). |
 | `YAAC_E2E_OPENCODE_PROVIDER` | _(unset)_ | Picks the opencode provider during e2e login (defaults to openrouter). |
+| `YAAC_E2E_PI_PROVIDER` | _(unset)_ | Picks the pi provider during e2e login (defaults to openrouter). |
 
 The proxy and relay sidecar containers read their own internal variables (`API_PORT`, `PROXY_AUTH_SECRET`, `TRANSPARENT_HTTPS_PORT`, `TRANSPARENT_HTTP_PORT`, `TRANSPARENT_TUNNEL_PORT`, `DNS_STUB_PORT`, `USE_TOR`, and the `KUBERNETES_SERVICE_*` pair). The server and cluster inject these when building each pod spec — they are not user-configurable.
 

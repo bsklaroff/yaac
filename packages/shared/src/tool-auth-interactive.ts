@@ -9,6 +9,12 @@ import {
   type OpencodeProvider,
   type ToolAuthKind,
 } from '#types'
+import {
+  PI_DEFAULT_PROVIDER,
+  PI_PROVIDERS,
+  parsePiProvider,
+  type PiProvider,
+} from '#pi-providers'
 import { testEnv } from '#env'
 
 /**
@@ -193,6 +199,8 @@ export interface ToolLoginResult {
   codexBundle?: CodexOAuthBundle
   /** opencode only — backend the captured api-key authenticates against. */
   opencodeProvider?: OpencodeProvider
+  /** pi only — provider the captured api-key authenticates against. */
+  piProvider?: PiProvider
 }
 
 /**
@@ -219,6 +227,15 @@ export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult | n
       const bundle = JSON.parse(hookRaw) as CodexOAuthBundle
       return { apiKey: bundle.accessToken, kind: 'oauth', codexBundle: bundle }
     }
+    if (tool === 'pi') {
+      // pi: the env var holds a raw api-key; an optional sibling var picks the
+      // provider so e2e can drive any provider branch without a TTY.
+      return {
+        apiKey: hookRaw,
+        kind: 'api-key',
+        piProvider: parsePiProvider(testEnv.piProviderHook),
+      }
+    }
     // opencode: the env var holds a raw api-key; an optional sibling var
     // picks the provider (defaults to openrouter) so e2e can drive the
     // NeuralWatt branch without a TTY.
@@ -229,9 +246,9 @@ export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult | n
     }
   }
 
-  if (tool === 'opencode') {
-    // No native login flow — OpenRouter is api-key only and we don't
-    // shell out to `opencode auth login` in v1.
+  if (tool === 'opencode' || tool === 'pi') {
+    // No native login flow — both are api-key only and we don't shell out to
+    // a vendor `auth login` for them.
     return promptForApiKey(tool)
   }
 
@@ -244,7 +261,9 @@ export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult | n
  * credentials to the server.
  */
 export type ToolAuthPayload =
-  | { kind: 'api-key'; apiKey: string; provider?: OpencodeProvider }
+  // `provider` is a raw wire string (opencode/pi); the server coerces it with
+  // the tool's own parser.
+  | { kind: 'api-key'; apiKey: string; provider?: string }
   | { kind: 'oauth'; bundle: ClaudeOAuthBundle | CodexOAuthBundle }
 
 /** Shape a login result into the `PUT /auth/:tool` body. */
@@ -263,6 +282,13 @@ export function buildAuthPayload(tool: AgentTool, result: ToolLoginResult): Tool
       kind: 'api-key',
       apiKey: result.apiKey,
       provider: result.opencodeProvider ?? 'openrouter',
+    }
+  }
+  if (tool === 'pi') {
+    return {
+      kind: 'api-key',
+      apiKey: result.apiKey,
+      provider: result.piProvider ?? PI_DEFAULT_PROVIDER,
     }
   }
   return { kind: 'api-key', apiKey: result.apiKey }
@@ -291,19 +317,40 @@ async function promptForOpencodeProvider(
 }
 
 /**
- * Prompt the user to paste their API key directly. For opencode, first asks
+ * Prompt for which provider a pi api-key authenticates against. Numbered from
+ * the provider registry; the first entry is the default (bare enter).
+ */
+async function promptForPiProvider(
+  rl: readline.Interface,
+): Promise<PiProvider> {
+  console.log('Which pi provider?')
+  PI_PROVIDERS.forEach((p, i) => {
+    console.log(`  ${i + 1}) ${p.label}${i === 0 ? ' (default)' : ''}`)
+  })
+  const answer = (await rl.question(`Choice [1-${PI_PROVIDERS.length}]: `)).trim()
+  const idx = Number(answer) - 1
+  return PI_PROVIDERS[idx]?.id ?? PI_DEFAULT_PROVIDER
+}
+
+/**
+ * Prompt the user to paste their API key directly. For opencode/pi, first asks
  * which provider the key belongs to so the session and proxy know which env
  * var / host to use.
  */
 export async function promptForApiKey(tool: AgentTool): Promise<ToolLoginResult> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
   let opencodeProvider: OpencodeProvider | undefined
+  let piProvider: PiProvider | undefined
   if (tool === 'opencode') {
     opencodeProvider = await promptForOpencodeProvider(rl)
+  }
+  if (tool === 'pi') {
+    piProvider = await promptForPiProvider(rl)
   }
   const label =
     tool === 'claude' ? 'Anthropic API key or OAuth token' :
     tool === 'codex' ? 'OpenAI API key' :
+    tool === 'pi' ? `${PI_PROVIDERS.find((p) => p.id === piProvider)?.label ?? 'pi'} API key` :
     opencodeProvider === 'neuralwatt' ? 'NeuralWatt API key' :
     'OpenRouter API key'
   const key = (await rl.question(`Paste your ${label}: `)).trim()
@@ -312,5 +359,5 @@ export async function promptForApiKey(tool: AgentTool): Promise<ToolLoginResult>
     console.error('Key cannot be empty.')
     process.exit(1)
   }
-  return { apiKey: key, kind: detectAuthKind(tool, key), opencodeProvider }
+  return { apiKey: key, kind: detectAuthKind(tool, key), opencodeProvider, piProvider }
 }

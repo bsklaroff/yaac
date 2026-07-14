@@ -22,6 +22,7 @@ async function toolAuthSummary(tool: AgentTool): Promise<ToolAuthSummary | null>
     keyPreview: maskKey(entry.apiKey),
     savedAt: entry.savedAt,
     opencodeProvider: entry.opencodeProvider,
+    piProvider: entry.piProvider,
   }
 }
 
@@ -31,15 +32,17 @@ async function toolAuthSummary(tool: AgentTool): Promise<ToolAuthSummary | null>
  * API keys.
  */
 export async function listAuth(): Promise<AuthListResult> {
-  const [gitCredentials, claude, codex, opencode] = await Promise.all([
+  const [gitCredentials, claude, codex, opencode, pi] = await Promise.all([
     listEntries(),
     toolAuthSummary('claude'),
     toolAuthSummary('codex'),
     toolAuthSummary('opencode'),
+    toolAuthSummary('pi'),
   ])
   const toolAuth: ToolAuthSummary[] = []
   if (claude) toolAuth.push(claude)
   if (codex) toolAuth.push(codex)
   if (opencode) toolAuth.push(opencode)
+  if (pi) toolAuth.push(pi)
   return { gitCredentials, toolAuth }
 }

@@ -11,6 +11,7 @@ import { cleanupSession } from '#lib/session/cleanup'
 import { clearSessionDeleted } from '#lib/session/deleted-store'
 import { clearSessionTerminating } from '#lib/session/terminating'
 import { hasOpencodeMeta } from '#lib/session/opencode-status'
+import { hasPiSessionLog } from '#lib/session/pi-status'
 import { normalizeTool } from '#lib/session/status'
 import { createSession, type SessionCreateResult } from '#session-create'
 import { ServerError } from '@yaac/shared/errors'
@@ -34,7 +35,7 @@ async function fileExists(p: string): Promise<boolean> {
 
 /**
  * Pick the tool for a reaped session by looking at which per-tool artifact
- * survived: claude/codex leave a transcript jsonl, opencode leaves a meta
+ * survived: claude/codex/pi leave a JSONL log, opencode leaves a meta
  * snapshot keyed by session id. Prefers claude when several exist
  * (shouldn't happen — a session is created with a single tool) so the
  * resume path has deterministic fallback behaviour.
@@ -44,6 +45,7 @@ async function detectToolFromTranscript(slug: string, sessionId: string): Promis
   if (await fileExists(claudeJsonl)) return 'claude'
   const codexJsonl = path.join(codexTranscriptDir(slug), `${sessionId}.jsonl`)
   if (await fileExists(codexJsonl)) return 'codex'
+  if (await hasPiSessionLog(slug, sessionId)) return 'pi'
   if (await hasOpencodeMeta(slug, sessionId)) return 'opencode'
   return 'claude'
 }

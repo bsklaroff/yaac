@@ -10,7 +10,7 @@ import { AUTH_LIST_KEY, configuredTools, useAuthList } from '#lib/useAuthList'
 import { useUiStore } from '#store'
 import type { AgentTool } from '@yaac/shared/types'
 
-const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode']
+const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
 const ITEM = 'flex w-full cursor-default items-center rounded-md px-2 py-1.5 text-xs outline-none '
   + 'text-text-dim hover:bg-surface-3 hover:text-text'
 

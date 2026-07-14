@@ -55,6 +55,7 @@ import {
   nestedYaacDataDir,
   opencodeConfigDir,
   opencodeDataDir,
+  piSessionsDir,
   cachedPackagesDir,
   cacheVolumeDir,
   sessionVclusterDir,
@@ -100,6 +101,11 @@ import {
 } from '#lib/session/port-forwarders'
 import { AGENT_TOOLS } from '@yaac/shared/types'
 import type { AgentTool, PortMapping, YaacConfig, InitCommandSpec } from '@yaac/shared/types'
+import { PI_DEFAULT_PROVIDER, piProviderInfo, type PiProvider } from '@yaac/shared/pi-providers'
+
+/** In-pod dir pi writes its JSONL session logs to (PI_CODING_AGENT_SESSION_DIR
+ *  points here; the host-side `piSessionsDir` is mounted at this path). */
+const PI_SESSIONS_CONTAINER_DIR = '/home/yaac/.pi/agent/sessions'
 
 export function shellEscape(str: string): string {
   return str.replace(/'/g, "'\\''")
@@ -154,12 +160,28 @@ export function buildAgentCmd(
   sessionId: string,
   addDirFlags: string,
   resume = false,
+  /** pi only — provider whose default model is passed to `pi --model`. */
+  piProvider?: PiProvider,
 ): string {
   if (tool === 'codex') {
     return [
       'codex --yolo',
       resume ? `resume ${sessionId}` : '',
       addDirFlags,
+    ].filter(Boolean).join(' ')
+  }
+  if (tool === 'pi') {
+    // pi runs its TUI in tmux (like claude/codex). `--approve` accepts the
+    // project trust prompt for the run; pi has no sandbox and executes tools
+    // without per-call approval. `--model <provider>/<id>` selects the
+    // provider (pi reads that provider's api-key env var, which the proxy
+    // swaps). `-c` resumes the one session in this pod's mounted session dir
+    // (PI_CODING_AGENT_SESSION_DIR). addDirFlags is dropped: pi has no
+    // --add-dir equivalent.
+    const model = piProviderInfo(piProvider ?? PI_DEFAULT_PROVIDER).defaultModel
+    return [
+      `pi --approve --model ${model}`,
+      resume ? '-c' : '',
     ].filter(Boolean).join(' ')
   }
   if (tool === 'opencode') {
@@ -226,6 +248,9 @@ export async function retoolSpare(
 ): Promise<void> {
   const config: YaacConfig = await resolveProjectConfig(spare.projectSlug) ?? {}
   const remoteUrl = (await simpleGit(repoDir(spare.projectSlug)).remote(['get-url', 'origin']))?.trim() ?? ''
+  // pi's launch command embeds its provider's default model, so a retool to pi
+  // needs the stored provider (from the single pi.json credential).
+  const piProvider = tool === 'pi' ? (await loadToolAuthEntry('pi'))?.piProvider : undefined
   await proxyClient.registerSession(
     spare.sessionId,
     buildSessionRegistration({ config, remoteUrl, tool, projectSlug: spare.projectSlug }),
@@ -233,7 +258,7 @@ export async function retoolSpare(
   await containerExec(spare.jobName, `${TMUX} rename-window -t yaac:${spare.tool} ${tool}`)
   await containerExec(
     spare.jobName,
-    `${TMUX} respawn-window -k -t yaac:${tool} '${buildAgentCmd(tool, spare.sessionId, '', false)}'`,
+    `${TMUX} respawn-window -k -t yaac:${tool} '${buildAgentCmd(tool, spare.sessionId, '', false, piProvider)}'`,
   )
   await verifyAgentWindowAlive(spare.jobName, tool)
 }
@@ -288,8 +313,10 @@ export function buildRebranchPrep(params: {
   /** Agent window to respawn, or null when a retool follows (its own
    *  respawn supersedes this one). */
   respawnTool: AgentTool | null
+  /** pi only — provider for the respawn's `pi --model` (see buildAgentCmd). */
+  piProvider?: PiProvider
 }): RebranchPrepCommands {
-  const { branch, sha, config, sessionId, respawnTool } = params
+  const { branch, sha, config, sessionId, respawnTool, piProvider } = params
   const windowExecs: string[] = []
   for (const win of resolveInitWindows(config)) {
     // hidePane windows are gone once their command finishes, so the kill
@@ -300,7 +327,7 @@ export function buildRebranchPrep(params: {
   }
   if (respawnTool) {
     windowExecs.push(
-      `${TMUX} respawn-window -k -t yaac:${respawnTool} '${buildAgentCmd(respawnTool, sessionId, '', false)}'`,
+      `${TMUX} respawn-window -k -t yaac:${respawnTool} '${buildAgentCmd(respawnTool, sessionId, '', false, piProvider)}'`,
     )
   }
   const cleanExcludes = workspaceMountPaths(config)
@@ -328,12 +355,16 @@ export async function rebranchSpare(
   respawnAgent: boolean,
 ): Promise<void> {
   const config: YaacConfig = await resolveProjectConfig(spare.projectSlug) ?? {}
+  const piProvider = respawnAgent && spare.tool === 'pi'
+    ? (await loadToolAuthEntry('pi'))?.piProvider
+    : undefined
   const prep = buildRebranchPrep({
     branch,
     sha,
     config,
     sessionId: spare.sessionId,
     respawnTool: respawnAgent ? spare.tool as AgentTool : null,
+    piProvider,
   })
   await containerExec(spare.jobName, prep.resetExec)
   await withUpstreamConfigLock(spare.projectSlug, async () => {
@@ -506,6 +537,8 @@ interface SessionSetupParams {
   /** Set for virtualCluster sessions — the per-project push registry. */
   virtualCluster?: boolean
   tool: AgentTool
+  /** pi only — provider whose default model drives `pi --model`. */
+  piProvider?: PiProvider
   config: YaacConfig
   options: SessionCreateOptions
   gitUser: { name: string; email: string }
@@ -610,7 +643,7 @@ export function initWindowCommand(win: InitWindow): string {
 async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   const {
     imageRef, jobName, projectSlug, sessionId, env, hostPathMounts,
-    proxyHost, nested, virtualCluster, tool, config, options,
+    proxyHost, nested, virtualCluster, tool, piProvider, config, options,
     gitUser, forwardedPorts, upstreamStartPoint,
   } = params
 
@@ -687,10 +720,11 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
     .map((p) => `--add-dir /add-dir${shellEscape(p)}`)
     .join(' ')
 
-  const agentCmd = buildAgentCmd(tool, sessionId, addDirFlags, options.resume === true)
+  const agentCmd = buildAgentCmd(tool, sessionId, addDirFlags, options.resume === true, piProvider)
   const toolLabel =
     tool === 'codex' ? 'Codex' :
     tool === 'opencode' ? 'OpenCode' :
+    tool === 'pi' ? 'Pi' :
     'Claude Code'
   emit(`Starting ${toolLabel}...`, options)
   // Open the tmux session with a placeholder keepalive (`sleep infinity`)
@@ -1094,6 +1128,7 @@ export async function createSession(
     claude: await loadToolAuthEntry('claude'),
     codex: await loadToolAuthEntry('codex'),
     opencode: await loadToolAuthEntry('opencode'),
+    pi: await loadToolAuthEntry('pi'),
   }
 
   // Register this session's state (envSecretProxy rules, allowlist, repo
@@ -1191,6 +1226,14 @@ export async function createSession(
   if (toolAuthByTool.codex?.kind === 'api-key') {
     env.push(`OPENAI_API_KEY=${PLACEHOLDER_API_KEY}`)
   }
+  if (toolAuthByTool.pi?.kind === 'api-key') {
+    // pi is api-key only. It reads the provider's env var (OPENROUTER_API_KEY
+    // / ANTHROPIC_API_KEY / OPENAI_API_KEY) and sends the key to that
+    // provider's host, which the proxy swaps for the real key (Bearer for
+    // OpenRouter/OpenAI, x-api-key for Anthropic — see pi-providers.ts).
+    const info = piProviderInfo(toolAuthByTool.pi.piProvider ?? PI_DEFAULT_PROVIDER)
+    env.push(`${info.envVar}=${PLACEHOLDER_API_KEY}`)
+  }
   // Codex OAuth: Codex reads the placeholder bundle from the mounted
   // .codex/auth.json. Setting OPENAI_API_KEY would risk steering Codex
   // into api-key mode instead of ChatGPT OAuth.
@@ -1221,6 +1264,14 @@ export async function createSession(
   // (only opencode reads it) so a spare retooled to opencode gets it.
   env.push('OPENCODE_ENABLE_EXA=true')
 
+  // pi session logs: point pi at the host-mounted per-session dir so its
+  // JSONL transcripts are readable on the host (first-message / status) and
+  // `pi -c` resumes only this session. Skip pi's startup version check so a
+  // fresh pod doesn't stall on a network probe. Set unconditionally (only pi
+  // reads them) so a spare retooled to pi gets them.
+  env.push(`PI_CODING_AGENT_SESSION_DIR=${PI_SESSIONS_CONTAINER_DIR}`)
+  env.push('PI_SKIP_VERSION_CHECK=1')
+
   // Port forwarding: reserve host ports in the server process so no
   // other process can claim them between discovery and the forwarder
   // starting up. The server owns the forwarders for the session's
@@ -1242,6 +1293,7 @@ export async function createSession(
   const codex = codexDir(projectSlug)
   const opencodeData = opencodeDataDir(projectSlug, sessionId)
   const opencodeConfig = opencodeConfigDir(projectSlug)
+  const piSessions = piSessionsDir(projectSlug, sessionId)
   const cachedPackages = cachedPackagesDir(projectSlug)
 
   await fs.mkdir(claude, { recursive: true })
@@ -1250,6 +1302,8 @@ export async function createSession(
   // isolation sidesteps opencode upstream #5241 concurrent-write issues.
   await fs.mkdir(opencodeData, { recursive: true })
   await fs.mkdir(opencodeConfig, { recursive: true })
+  // Per-yaac-session pi session-log dir (mounted at PI_SESSIONS_CONTAINER_DIR).
+  await fs.mkdir(piSessions, { recursive: true })
   await fs.mkdir(cachedPackages, { recursive: true })
 
   // Refresh the per-project placeholder credential files from the current
@@ -1364,6 +1418,7 @@ export async function createSession(
     { hostPath: codex, mountPath: '/home/yaac/.codex' },
     { hostPath: opencodeData, mountPath: '/home/yaac/.local/share/opencode' },
     { hostPath: opencodeConfig, mountPath: '/home/yaac/.config/opencode' },
+    { hostPath: piSessions, mountPath: PI_SESSIONS_CONTAINER_DIR },
     { hostPath: cachedPackages, mountPath: '/home/yaac/.cached-packages' },
     { hostPath: tmuxHostDir, mountPath: CONTAINER_TMUX_DIR },
     ...cacheVolumeEntries.map(([key, containerPath]): HostPathMount => ({
@@ -1403,7 +1458,9 @@ export async function createSession(
   const maxStartAttempts = 3
   const setupParams: SessionSetupParams = {
     imageRef, jobName, projectSlug, sessionId, env, hostPathMounts,
-    proxyHost, nested, virtualCluster, tool, config, options,
+    proxyHost, nested, virtualCluster, tool,
+    piProvider: toolAuthByTool.pi?.piProvider,
+    config, options,
     gitUser, forwardedPorts, upstreamStartPoint,
   }
 

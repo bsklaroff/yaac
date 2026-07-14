@@ -18,6 +18,10 @@ describe('normalizeTool', () => {
     expect(normalizeTool('opencode')).toBe('opencode')
   })
 
+  it('returns pi when the raw label is pi', () => {
+    expect(normalizeTool('pi')).toBe('pi')
+  })
+
   it('returns claude for an empty string', () => {
     expect(normalizeTool('')).toBe('claude')
   })

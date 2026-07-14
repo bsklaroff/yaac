@@ -6,7 +6,7 @@ import {
 } from '@yaac/shared/tool-auth'
 import { ServerError } from '@yaac/shared/errors'
 
-export type ClearAuthTarget = 'all' | 'claude' | 'codex' | 'opencode'
+export type ClearAuthTarget = 'all' | 'claude' | 'codex' | 'opencode' | 'pi'
 
 /**
  * Remove the stored credentials identified by `target`. `all` wipes
@@ -17,7 +17,7 @@ export type ClearAuthTarget = 'all' | 'claude' | 'codex' | 'opencode'
  * `DELETE /auth/git/credentials/:pattern` route so this helper doesn't
  * need to care about partial git clears.
  *
- * opencode has no per-project placeholder files to clean up
+ * opencode and pi have no per-project placeholder files to clean up
  * (api-key auth flows through env var + proxy MITM, not a placeholder
  * bundle on disk inside the container).
  */
@@ -27,6 +27,7 @@ export async function clearAuth(target: ClearAuthTarget): Promise<void> {
     await removeToolAuth('claude')
     await removeToolAuth('codex')
     await removeToolAuth('opencode')
+    await removeToolAuth('pi')
     await cleanupProjectClaudePlaceholders()
     await cleanupProjectCodexPlaceholders()
     return
@@ -43,6 +44,10 @@ export async function clearAuth(target: ClearAuthTarget): Promise<void> {
   }
   if (target === 'opencode') {
     await removeToolAuth('opencode')
+    return
+  }
+  if (target === 'pi') {
+    await removeToolAuth('pi')
     return
   }
   throw new ServerError('VALIDATION', `Unknown clear target "${String(target)}".`)

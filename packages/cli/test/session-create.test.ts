@@ -99,6 +99,7 @@ vi.mock('@yaac/shared/project-paths', () => ({
   codexDir: vi.fn((slug: string) => `/tmp/${slug}/codex`),
   opencodeConfigDir: vi.fn((slug: string) => `/tmp/${slug}/opencode-config`),
   opencodeDataDir: vi.fn((slug: string, sessionId: string) => `/tmp/${slug}/opencode-data/${sessionId}`),
+  piSessionsDir: vi.fn((slug: string, sessionId: string) => `/tmp/${slug}/pi-sessions/${sessionId}`),
   cachedPackagesDir: vi.fn((slug: string) => `/tmp/${slug}/.cached-packages`),
   cacheVolumeDir: vi.fn((slug: string, key: string) => `/tmp/${slug}/cache-volumes/${key}`),
   codexTranscriptDir: vi.fn((slug: string) => `/tmp/${slug}/transcripts`),
@@ -379,6 +380,38 @@ describe('createSession', () => {
     const env = appliedJobManifest().spec.template.spec.containers[0].env
     expect(env).toContainEqual({ name: 'NEURALWATT_API_KEY', value: 'test-placeholder-key' })
     expect(env.map((e) => e.name)).not.toContain('OPENROUTER_API_KEY')
+  })
+
+  it('seeds ANTHROPIC_API_KEY + the pi session dir when the pi credential uses anthropic', async () => {
+    mockLoadToolAuth.mockImplementation((tool) => Promise.resolve(tool === 'pi' ? {
+      tool: 'pi',
+      kind: 'api-key',
+      apiKey: 'sk-ant-real',
+      savedAt: new Date().toISOString(),
+      piProvider: 'anthropic',
+    } : null))
+    await createSession('demo', { tool: 'pi', sessionId: 'abcd1234' })
+
+    const env = appliedJobManifest().spec.template.spec.containers[0].env
+    // anthropic provider → ANTHROPIC_API_KEY placeholder (claude is unconfigured here).
+    expect(env).toContainEqual({ name: 'ANTHROPIC_API_KEY', value: 'test-placeholder-key' })
+    // pi session-log dir + version-check skip are seeded unconditionally.
+    expect(env).toContainEqual({ name: 'PI_CODING_AGENT_SESSION_DIR', value: '/home/yaac/.pi/agent/sessions' })
+    expect(env).toContainEqual({ name: 'PI_SKIP_VERSION_CHECK', value: '1' })
+  })
+
+  it('seeds OPENAI_API_KEY when the pi credential uses the openai provider', async () => {
+    mockLoadToolAuth.mockImplementation((tool) => Promise.resolve(tool === 'pi' ? {
+      tool: 'pi',
+      kind: 'api-key',
+      apiKey: 'sk-oai-real',
+      savedAt: new Date().toISOString(),
+      piProvider: 'openai',
+    } : null))
+    await createSession('demo', { tool: 'pi', sessionId: 'abcd1234' })
+
+    const env = appliedJobManifest().spec.template.spec.containers[0].env
+    expect(env).toContainEqual({ name: 'OPENAI_API_KEY', value: 'test-placeholder-key' })
   })
 
   it('seeds every credentialed tool\'s placeholder env on any session (spares are retoolable)', async () => {

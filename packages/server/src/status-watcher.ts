@@ -4,6 +4,7 @@ import { isPrewarmed, type SessionPod } from '#lib/k8s/pods'
 import { classifyClaudeTitle } from '#lib/session/claude-status'
 import { classifyCodexTitle } from '#lib/session/codex-status'
 import { classifyOpencodePane } from '#lib/session/opencode-status'
+import { classifyPiPane } from '#lib/session/pi-status'
 import { normalizeTool } from '#lib/session/status'
 import {
   evictSessionStatus,
@@ -72,21 +73,32 @@ export interface StatusWatcherDeps {
 }
 
 /**
+ * Whether a tool's status is read from the rendered pane (capture-pane +
+ * %output dirty bit) rather than the pane's OSC title. opencode and pi both
+ * render their busy/idle state into the pane and expose no reliable title
+ * signal; claude/codex push it through the title.
+ */
+function usesPaneCapture(tool: AgentTool): boolean {
+  return tool === 'opencode' || tool === 'pi'
+}
+
+/**
  * Classify a watcher observation for a tool: the pane's OSC title for
- * claude/codex, captured pane content for opencode.
+ * claude/codex, captured pane content for opencode/pi.
  */
 export function classifyAgentObservation(tool: AgentTool, observed: string): SessionAgentStatus {
   if (tool === 'codex') return classifyCodexTitle(observed)
   if (tool === 'opencode') return classifyOpencodePane(observed)
+  if (tool === 'pi') return classifyPiPane(observed)
   return classifyClaudeTitle(observed)
 }
 
 function spawnKubectlAttach(jobName: string, tool: AgentTool): AttachChild {
   // read-only: the watcher must never inject input; ignore-size: keep
-  // this client out of window-size negotiation (the opencode classifier
-  // reads the rendered grid); no-output for title-based tools so agent
+  // this client out of window-size negotiation (the pane-capture classifiers
+  // read the rendered grid); no-output for title-based tools so agent
   // TUI redraws don't stream through the exec connection for nothing.
-  const flags = tool === 'opencode' ? 'read-only,ignore-size' : 'read-only,ignore-size,no-output'
+  const flags = usesPaneCapture(tool) ? 'read-only,ignore-size' : 'read-only,ignore-size,no-output'
   return spawn('kubectl', stdinExecArgs(jobName, [
     'tmux', '-S', CONTAINER_TMUX_SOCK, '-C', 'attach-session', '-t', 'yaac', '-f', flags,
   ]), { stdio: ['pipe', 'pipe', 'pipe'] })
@@ -195,8 +207,8 @@ export class SessionStatusWatcher {
     if (generation !== this.streamGeneration || this.stopped) return
     this.agentPaneId = paneId
 
-    if (tool === 'opencode') {
-      const pane = await send('capture-pane -pJ -t yaac:opencode.0')
+    if (usesPaneCapture(tool)) {
+      const pane = await send(`capture-pane -pJ -t yaac:${tool}.0`)
       if (generation !== this.streamGeneration || this.stopped) return
       this.recordStatus(classifyAgentObservation(tool, pane))
     } else {
@@ -225,8 +237,8 @@ export class SessionStatusWatcher {
       this.recordStatus(classifyAgentObservation(this.session.tool, n.value))
       return
     }
-    // %output — only meaningful as opencode's capture dirty bit.
-    if (this.session.tool !== 'opencode' || n.paneId !== this.agentPaneId) return
+    // %output — only meaningful as the pane-capture tools' dirty bit.
+    if (!usesPaneCapture(this.session.tool) || n.paneId !== this.agentPaneId) return
     this.scheduleCapture(generation)
   }
 
@@ -254,12 +266,12 @@ export class SessionStatusWatcher {
     this.captureDirty = false
     try {
       const pane = await withTimeout(
-        client.send('capture-pane -pJ -t yaac:opencode.0'),
+        client.send(`capture-pane -pJ -t yaac:${this.session.tool}.0`),
         this.commandTimeoutMs,
         'tmux capture-pane',
       )
       if (generation !== this.streamGeneration || this.stopped) return
-      this.recordStatus(classifyAgentObservation('opencode', pane))
+      this.recordStatus(classifyAgentObservation(this.session.tool, pane))
     } catch (err) {
       this.onStreamDown(generation, `capture failed: ${String(err)}`)
       return

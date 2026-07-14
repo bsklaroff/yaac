@@ -40,12 +40,28 @@ import { ProjectSettings } from '#components/settings/ProjectSettings'
 import { FileEditor } from '#components/settings/FileEditor'
 import { useUiStore, type SettingsSection } from '#store'
 import type { ThemePref } from '#lib/theme'
-import type { AgentTool, OpencodeProvider, ToolAuthSummary, ToolInstallView, ToolLoginView } from '@yaac/shared/types'
+import type { AgentTool, ToolAuthSummary, ToolInstallView, ToolLoginView } from '@yaac/shared/types'
+import { PI_PROVIDERS } from '@yaac/shared/pi-providers'
 
 // iPadOS reports as "Macintosh" in modern Safari; both want the ⌘/⌥ glyphs.
 const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent)
 
-const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode']
+const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
+
+/**
+ * Provider picker options for the api-key-only tools. Each key selects which
+ * backend the pasted key authenticates against (env var + proxy host); the
+ * first entry is the default. Tools not listed here have no provider.
+ */
+const PROVIDER_OPTIONS: Partial<Record<AgentTool, { id: string; label: string }[]>> = {
+  opencode: [{ id: 'openrouter', label: 'OpenRouter' }, { id: 'neuralwatt', label: 'NeuralWatt' }],
+  pi: PI_PROVIDERS.map((p) => ({ id: p.id, label: p.label })),
+}
+
+/** Default provider id for a tool that has a picker, else undefined. */
+function defaultProvider(tool: AgentTool): string | undefined {
+  return PROVIDER_OPTIONS[tool]?.[0].id
+}
 
 const THEMES: { value: ThemePref; label: string }[] = [
   { value: 'system', label: 'System' },
@@ -305,11 +321,12 @@ function CredentialsPane(): JSX.Element {
   )
 }
 
-/** What the key-paste input asks for, per tool (and opencode provider). */
-function apiKeyLabel(tool: AgentTool, provider: OpencodeProvider): string {
+/** What the key-paste input asks for, per tool (and opencode/pi provider). */
+function apiKeyLabel(tool: AgentTool, provider: string | undefined): string {
   if (tool === 'claude') return 'Anthropic API key'
   if (tool === 'codex') return 'OpenAI API key'
-  return provider === 'neuralwatt' ? 'NeuralWatt API key' : 'OpenRouter API key'
+  const label = PROVIDER_OPTIONS[tool]?.find((o) => o.id === provider)?.label
+  return label ? `${label} API key` : 'API key'
 }
 
 /**
@@ -326,7 +343,8 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
   const [busy, setBusy] = useState<'save' | 'signout' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [justSignedIn, setJustSignedIn] = useState(false)
-  const [provider, setProvider] = useState<OpencodeProvider>('openrouter')
+  const providerOptions = PROVIDER_OPTIONS[tool]
+  const [provider, setProvider] = useState<string>(defaultProvider(tool) ?? 'openrouter')
 
   // Opened via a "Sign in" affordance elsewhere (new-session menu) — land
   // with this tool's form already open.
@@ -356,7 +374,7 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
     const apiKey = (typeof raw === 'string' ? raw : '').trim()
     if (!apiKey) return
     await run('save', async () => {
-      await setToolApiKey(tool, apiKey, tool === 'opencode' ? provider : undefined)
+      await setToolApiKey(tool, apiKey, providerOptions ? provider : undefined)
       formElement.reset()
     })
   }
@@ -366,7 +384,10 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
       <div className="flex items-center justify-between">
         <span className="truncate font-mono text-text-dim">
           {tool}
-          {summary && ` · ${summary.opencodeProvider ? `${summary.opencodeProvider} · ` : ''}${summary.kind}`}
+          {summary && ` · ${(() => {
+            const p = summary.opencodeProvider ?? summary.piProvider
+            return p ? `${p} · ` : ''
+          })()}${summary.kind}`}
         </span>
         {summary ? (
           <span className="ml-2 flex shrink-0 items-center gap-2">
@@ -397,7 +418,7 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
 
       {!summary && expanded && (
         <div className="mt-2 flex flex-col gap-2 border-t border-hairline-soft pt-2">
-          {tool !== 'opencode' && (
+          {!providerOptions && (
             <>
               <CliSignIn tool={tool} onDone={() => { setJustSignedIn(true); onChanged() }} />
               <p className="text-[11px] text-text-faint">
@@ -405,26 +426,26 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
               </p>
             </>
           )}
-          {tool === 'opencode' && (
+          {providerOptions && (
             <RadioGroup
               value={provider}
-              onValueChange={(value) => setProvider(value as OpencodeProvider)}
+              onValueChange={(value) => setProvider(value)}
               className="flex gap-3"
             >
-              {(['openrouter', 'neuralwatt'] as const).map((p) => (
+              {providerOptions.map((p) => (
                 <label
-                  key={p}
+                  key={p.id}
                   className="flex cursor-default items-center gap-1.5 text-[11px] text-text-dim transition
                     hover:text-text"
                 >
                   <Radio.Root
-                    value={p}
+                    value={p.id}
                     className="flex h-3.5 w-3.5 items-center justify-center rounded-full border
                       border-border-strong transition data-[checked]:border-accent data-[checked]:bg-accent"
                   >
                     <Radio.Indicator className="h-1.5 w-1.5 rounded-full bg-surface data-[unchecked]:hidden" />
                   </Radio.Root>
-                  {p === 'openrouter' ? 'OpenRouter' : 'NeuralWatt'}
+                  {p.label}
                 </label>
               ))}
             </RadioGroup>

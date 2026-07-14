@@ -1,8 +1,9 @@
 import { z } from 'zod'
+import type { PiProvider } from '#pi-providers'
 
-export type AgentTool = 'claude' | 'codex' | 'opencode'
+export type AgentTool = 'claude' | 'codex' | 'opencode' | 'pi'
 
-export const AGENT_TOOLS: readonly AgentTool[] = ['claude', 'codex', 'opencode']
+export const AGENT_TOOLS: readonly AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
 
 export type ToolAuthKind = 'api-key' | 'oauth'
 
@@ -104,6 +105,19 @@ export type OpencodeCredentialsFile = {
 }
 
 /**
+ * Shape of `~/.yaac/.credentials/pi.json`. Only api-key — pi integration in
+ * yaac authenticates via an api-key for one of the providers in
+ * `pi-providers.ts`. `provider` picks which env var carries the key and which
+ * host the proxy swaps the placeholder on.
+ */
+export type PiCredentialsFile = {
+  kind: 'api-key'
+  provider: PiProvider
+  savedAt: string
+  apiKey: string
+}
+
+/**
  * Per-yaac-session opencode metadata cache. Stores the first-message
  * snapshot so deleted-session listings can still surface it without
  * needing to spin up a sqlite reader against the persisted DB.
@@ -128,6 +142,8 @@ export interface ToolAuthEntry {
   savedAt: string
   /** opencode only — which backend the stored api-key authenticates against. */
   opencodeProvider?: OpencodeProvider
+  /** pi only — which provider the stored api-key authenticates against. */
+  piProvider?: PiProvider
 }
 
 export interface ProjectMeta {
@@ -170,7 +186,7 @@ export interface SecretProxyRule {
  */
 export interface InitCommandSpec {
   /** tmux window name. Must be unique, kebab-ish, and must not collide
-   *  with the agent window name (claude/codex/opencode). */
+   *  with the agent window name (claude/codex/opencode/pi). */
   name: string
   /** Commands chained with `&&` inside this window. */
   commands: string[]
@@ -281,6 +297,8 @@ export interface ToolAuthSummary {
   savedAt: string
   /** opencode only — which backend the stored api-key authenticates against. */
   opencodeProvider?: OpencodeProvider
+  /** pi only — which provider the stored api-key authenticates against. */
+  piProvider?: PiProvider
 }
 
 export interface AuthListResult {
@@ -492,9 +510,9 @@ export interface DeletedSessionEntry {
   tool: AgentTool
   /** 'YYYY-MM-DD HH:MM:SS' (UTC). Session birth time. */
   createdAt: string
-  /** Last-activity time as 'YYYY-MM-DD HH:MM:SS' (UTC) — the transcript's
-   *  mtime for claude/codex; for opencode (no host transcript) the later of
-   *  its first-message capture and creation time, so it's approximate. */
+  /** Last-activity time as 'YYYY-MM-DD HH:MM:SS' (UTC) — the newest log's
+   *  mtime for claude/codex/pi; for opencode (no host transcript) the later
+   *  of its first-message capture and creation time, so it's approximate. */
   lastActiveAt?: string
   /** When the session was deleted, as 'YYYY-MM-DD HH:MM:SS' (UTC). Recorded
    *  at delete time; the primary sort key (newest-deleted first). Absent for

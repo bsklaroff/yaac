@@ -76,7 +76,7 @@ export async function clearShortcutOverrides(): Promise<void> {
   await db.delete(shortcutOverrides)
 }
 
-const VALID_TOOLS: AgentTool[] = ['claude', 'codex', 'opencode']
+const VALID_TOOLS: AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
 
 export function isValidTool(value: string): value is AgentTool {
   return VALID_TOOLS.includes(value as AgentTool)

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { buildAgentCmd } from '#session-create'
+import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/pi-providers'
 
 describe('buildAgentCmd', () => {
   describe('codex tool', () => {
@@ -21,6 +22,31 @@ describe('buildAgentCmd', () => {
     it('combines resume with add-dir flags', () => {
       const cmd = buildAgentCmd('codex', 'abc', '--add-dir /add-dir/tmp', true)
       expect(cmd).toBe('codex --yolo resume abc --add-dir /add-dir/tmp')
+    })
+  })
+
+  describe('pi tool', () => {
+    const defaultModel = piProviderInfo(PI_DEFAULT_PROVIDER).defaultModel
+    const anthropicModel = piProviderInfo('anthropic').defaultModel
+
+    it('uses --approve and the default provider model when none is given', () => {
+      const cmd = buildAgentCmd('pi', 'sess-1', '')
+      expect(cmd).toBe(`pi --approve --model ${defaultModel}`)
+    })
+
+    it('uses the given provider default model', () => {
+      const cmd = buildAgentCmd('pi', 'sess-1', '', false, 'anthropic')
+      expect(cmd).toBe(`pi --approve --model ${anthropicModel}`)
+    })
+
+    it('appends -c when resuming', () => {
+      const cmd = buildAgentCmd('pi', 'sess-1', '', true, 'anthropic')
+      expect(cmd).toBe(`pi --approve --model ${anthropicModel} -c`)
+    })
+
+    it('drops add-dir flags (pi has no --add-dir)', () => {
+      const cmd = buildAgentCmd('pi', 'sess-1', '--add-dir /add-dir/tmp')
+      expect(cmd).toBe(`pi --approve --model ${defaultModel}`)
     })
   })
 

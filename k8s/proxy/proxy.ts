@@ -139,6 +139,7 @@ const GITHUB_CREDS_FILE = path.join(CREDENTIALS_DIR, 'github.json')
 const CLAUDE_CREDS_FILE = path.join(CREDENTIALS_DIR, 'claude.json')
 const CODEX_CREDS_FILE = path.join(CREDENTIALS_DIR, 'codex.json')
 const OPENCODE_CREDS_FILE = path.join(CREDENTIALS_DIR, 'opencode.json')
+const PI_CREDS_FILE = path.join(CREDENTIALS_DIR, 'pi.json')
 const PROXY_SECRETS_FILE = path.join(CREDENTIALS_DIR, 'proxy-secrets.json')
 
 const CLAUDE_TOKEN_URL_HOST = 'platform.claude.com'
@@ -164,6 +165,25 @@ type OpencodeProvider = 'openrouter' | 'neuralwatt'
 /** The host an opencode provider's api-key authenticates against. */
 function opencodeProviderHost(provider: OpencodeProvider): string {
   return provider === 'neuralwatt' ? NEURALWATT_API_HOST : OPENROUTER_API_HOST
+}
+
+// pi: api-key only, like opencode, but across more providers and with two
+// header styles. The credential records the provider; the swap targets that
+// provider's host only. Keep in sync with packages/shared/src/pi-providers.ts
+// (the proxy bundles independently and can't import from src/).
+type PiProvider = 'openrouter' | 'anthropic' | 'openai'
+
+/** The host a pi provider's api-key authenticates against. */
+function piProviderHost(provider: PiProvider): string {
+  if (provider === 'anthropic') return ANTHROPIC_API_HOST
+  if (provider === 'openai') return OPENAI_API_HOST
+  return OPENROUTER_API_HOST
+}
+
+/** Which request header carries pi's key: Anthropic uses x-api-key, the
+ *  Bearer-style providers use Authorization. */
+function piProviderAuthHeader(provider: PiProvider): 'authorization' | 'x-api-key' {
+  return provider === 'anthropic' ? 'x-api-key' : 'authorization'
 }
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -202,6 +222,8 @@ type CodexCreds =
   | { kind: 'api-key'; apiKey: string }
 
 type OpencodeCreds = { kind: 'api-key'; apiKey: string; provider: OpencodeProvider }
+
+type PiCreds = { kind: 'api-key'; apiKey: string; provider: PiProvider }
 
 // NOTE: keep in sync with packages/shared/src/credentials.ts and
 // packages/server/src/lib/project/credentials.ts. The proxy bundles independently and can't
@@ -455,6 +477,24 @@ function readOpencodeCreds(): OpencodeCreds | null {
       // `provider` was added later — default to openrouter for files written
       // before it existed.
       const provider: OpencodeProvider = o.provider === 'neuralwatt' ? 'neuralwatt' : 'openrouter'
+      return { kind: 'api-key', apiKey: o.apiKey, provider }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+function readPiCreds(): PiCreds | null {
+  try {
+    const raw = fs.readFileSync(PI_CREDS_FILE, 'utf8')
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return null
+    const o = parsed as Record<string, unknown>
+    if (o.kind === 'api-key' && typeof o.apiKey === 'string' && o.apiKey) {
+      const provider: PiProvider =
+        o.provider === 'anthropic' ? 'anthropic' :
+        o.provider === 'openai' ? 'openai' : 'openrouter'
       return { kind: 'api-key', apiKey: o.apiKey, provider }
     }
     return null
@@ -1247,6 +1287,34 @@ function buildDynamicRules(
           value: 'Bearer ' + creds.apiKey,
         }],
       })
+    }
+  }
+
+  // pi credential swap. Same shape as opencode, but the provider decides
+  // which header carries the placeholder: Anthropic sends `x-api-key`, the
+  // Bearer-style providers send `Authorization: Bearer`. Gated on session
+  // tool=pi + the placeholder sentinel + the host matching the credential's
+  // provider, so unrelated traffic passes through untouched.
+  if (sessionTool.get(sessionId) === 'pi') {
+    const creds = readPiCreds()
+    if (creds && hostname === piProviderHost(creds.provider)) {
+      if (piProviderAuthHeader(creds.provider) === 'x-api-key') {
+        if (headerValue(reqHeaders, 'x-api-key') === PLACEHOLDER_API_KEY) {
+          rules.push({
+            pathPattern: '*',
+            injections: [{ action: 'set_header', name: 'x-api-key', value: creds.apiKey }],
+          })
+        }
+      } else if (headerValue(reqHeaders, 'authorization') === 'Bearer ' + PLACEHOLDER_API_KEY) {
+        rules.push({
+          pathPattern: '*',
+          injections: [{
+            action: 'set_header',
+            name: 'Authorization',
+            value: 'Bearer ' + creds.apiKey,
+          }],
+        })
+      }
     }
   }
 

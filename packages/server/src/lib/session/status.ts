@@ -5,11 +5,13 @@ import {
   getSessionOpencodeFirstUserMessage,
   getDeletedSessionOpencodeFirstUserMessage,
 } from '#lib/session/opencode-status'
+import { getSessionPiFirstUserMessage } from '#lib/session/pi-status'
 
 /** Normalize a raw `yaac.tool` label value into an AgentTool. */
 export function normalizeTool(raw: string | undefined): AgentTool {
   if (raw === 'codex') return 'codex'
   if (raw === 'opencode') return 'opencode'
+  if (raw === 'pi') return 'pi'
   return 'claude'
 }
 
@@ -27,6 +29,7 @@ export async function getSessionFirstMessage(
   jobName?: string,
 ): Promise<string | undefined> {
   if (tool === 'codex') return getSessionCodexFirstUserMessage(projectSlug, sessionId)
+  if (tool === 'pi') return getSessionPiFirstUserMessage(projectSlug, sessionId)
   if (tool === 'opencode') {
     if (jobName) {
       return getSessionOpencodeFirstUserMessage(projectSlug, sessionId, jobName)

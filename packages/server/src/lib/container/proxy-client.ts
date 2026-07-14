@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import type { SecretProxyRule } from '@yaac/shared/types'
+import type { AgentTool, SecretProxyRule } from '@yaac/shared/types'
 import { imageExists } from '#lib/container/runtime'
 import { PROXY_DIR } from '@yaac/shared/project-paths'
 import { buildImage, contextHash } from '#lib/container/image-builder'
@@ -232,7 +232,7 @@ export class ProxyClient {
       repoUrl?: string
       // Required: the proxy gates all agent-credential injection on the
       // registered tool — a session registered without one gets none.
-      tool: 'claude' | 'codex' | 'opencode'
+      tool: AgentTool
       // Required: the proxy keys its git-auth-failure records by the
       // session's owning project.
       projectSlug: string

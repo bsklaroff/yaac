@@ -77,7 +77,7 @@ describe('NewSessionButton', () => {
   it('creates a session for a tool with credentials', async () => {
     await openMenu()
 
-    await waitFor(() => expect(screen.queryAllByText('Sign in').length).toBe(2))
+    await waitFor(() => expect(screen.queryAllByText('Sign in').length).toBe(3))
     fireEvent.click(screen.getByText('Claude'))
 
     expect(provision).toHaveBeenCalledTimes(1)
@@ -89,7 +89,7 @@ describe('NewSessionButton', () => {
   it('routes a credential-less tool to settings → credentials instead of creating', async () => {
     await openMenu()
 
-    await waitFor(() => expect(screen.queryAllByText('Sign in').length).toBe(2))
+    await waitFor(() => expect(screen.queryAllByText('Sign in').length).toBe(3))
     fireEvent.click(screen.getByText('Codex'))
 
     expect(provision).not.toHaveBeenCalled()

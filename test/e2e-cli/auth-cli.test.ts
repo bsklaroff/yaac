@@ -283,7 +283,7 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
 
   describe('auth update', () => {
     it('prints "Cancelled." when the user picks an invalid menu option', async () => {
-      // The update menu is static (git/claude/codex/opencode) regardless
+      // The update menu is static (git/claude/codex/opencode/pi) regardless
       // of what credentials exist, so no reset is needed.
       const { stdout, exitCode } = await runYaac(
         testEnv.env, 'auth', 'update', { stdin: 'x\n' },
@@ -448,6 +448,44 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
       expect(parsed.kind).toBe('api-key')
       expect(parsed.apiKey).toBe('nw-test-key')
       expect(parsed.provider).toBe('neuralwatt')
+    })
+
+    it('persists a Pi (OpenRouter) api key via the test-only login hook', async () => {
+      // YAAC_E2E_PI_LOGIN holds a raw api key string — pi is api-key-only and
+      // skips any native CLI spawn. With no provider override the credential
+      // defaults to openrouter. Menu choice 5 selects Pi.
+      const env = { ...testEnv.env, YAAC_E2E_PI_LOGIN: 'sk-or-v1-pi-test-key' }
+      const { stdout, exitCode } = await runYaac(env, 'auth', 'update', { stdin: '5\n' })
+      expect(exitCode).toBe(0)
+      expect(stdout).toContain('Pi credentials saved.')
+
+      const credsPath = path.join(testEnv.dataDir, '.credentials', 'pi.json')
+      const raw = await fs.readFile(credsPath, 'utf8')
+      const parsed = JSON.parse(raw) as {
+        kind: string; apiKey?: string; savedAt?: string; provider?: string
+      }
+      expect(parsed.kind).toBe('api-key')
+      expect(parsed.apiKey).toBe('sk-or-v1-pi-test-key')
+      expect(parsed.provider).toBe('openrouter')
+      expect(typeof parsed.savedAt).toBe('string')
+    })
+
+    it('persists a Pi Anthropic api key when the provider hook is set', async () => {
+      const env = {
+        ...testEnv.env,
+        YAAC_E2E_PI_LOGIN: 'sk-ant-pi-test-key',
+        YAAC_E2E_PI_PROVIDER: 'anthropic',
+      }
+      const { stdout, exitCode } = await runYaac(env, 'auth', 'update', { stdin: '5\n' })
+      expect(exitCode).toBe(0)
+      expect(stdout).toContain('Pi credentials saved.')
+
+      const credsPath = path.join(testEnv.dataDir, '.credentials', 'pi.json')
+      const raw = await fs.readFile(credsPath, 'utf8')
+      const parsed = JSON.parse(raw) as { kind: string; apiKey?: string; provider?: string }
+      expect(parsed.kind).toBe('api-key')
+      expect(parsed.apiKey).toBe('sk-ant-pi-test-key')
+      expect(parsed.provider).toBe('anthropic')
     })
   })
 

@@ -1,5 +1,5 @@
 import { api } from '#commands/api'
-import type { ToolAuthSummary } from '@yaac/shared/types'
+import { AGENT_TOOLS, type AgentTool, type ToolAuthSummary } from '@yaac/shared/types'
 
 export async function authList(): Promise<void> {
   const result = await api.auth.list.$get()
@@ -19,18 +19,19 @@ export async function authList(): Promise<void> {
 
   console.log('')
   console.log('Tool credentials:')
-  printToolAuth('claude', result.toolAuth.find((t) => t.tool === 'claude'))
-  printToolAuth('codex', result.toolAuth.find((t) => t.tool === 'codex'))
-  printToolAuth('opencode', result.toolAuth.find((t) => t.tool === 'opencode'))
+  for (const tool of AGENT_TOOLS) {
+    printToolAuth(tool, result.toolAuth.find((t) => t.tool === tool))
+  }
 }
 
-function printToolAuth(label: 'claude' | 'codex' | 'opencode', entry: ToolAuthSummary | undefined): void {
+function printToolAuth(label: AgentTool, entry: ToolAuthSummary | undefined): void {
   const padded = label.padEnd(9)
   if (!entry) {
     console.log(`  ${padded} not configured`)
     return
   }
   const kindLabel = entry.kind === 'oauth' ? 'oauth' : 'api-key'
-  const providerLabel = entry.opencodeProvider ? `${entry.opencodeProvider}, ` : ''
+  const provider = entry.opencodeProvider ?? entry.piProvider
+  const providerLabel = provider ? `${provider}, ` : ''
   console.log(`  ${padded} ${entry.keyPreview}  (${providerLabel}${kindLabel}, saved ${entry.savedAt.slice(0, 10)})`)
 }

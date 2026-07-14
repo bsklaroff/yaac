@@ -114,6 +114,20 @@ describe('Settings → Credentials', () => {
     await waitFor(() => expect(setToolApiKey).toHaveBeenCalledWith('opencode', 'nw-key', 'neuralwatt'))
   })
 
+  it('saves a pi key with the picked provider (no web sign-in offered)', async () => {
+    await openCredentials()
+
+    fireEvent.click(within(toolRow('pi')).getByRole('button', { name: 'Sign in' }))
+    expect(screen.queryByText(/Sign in with/)).toBeNull()
+
+    // pi's provider picker exposes OpenRouter / Anthropic / OpenAI; pick Anthropic.
+    fireEvent.click(screen.getByText('Anthropic'))
+    fireEvent.change(screen.getByPlaceholderText('Anthropic API key'), { target: { value: 'sk-ant-key' } })
+    fireEvent.submit(screen.getByPlaceholderText('Anthropic API key').closest('form') as HTMLFormElement)
+
+    await waitFor(() => expect(setToolApiKey).toHaveBeenCalledWith('pi', 'sk-ant-key', 'anthropic'))
+  })
+
   it('signs a configured tool out', async () => {
     await openCredentials()
 

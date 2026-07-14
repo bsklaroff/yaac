@@ -165,7 +165,7 @@ project
 
 project
   .command('rebuild')
-  .description("Rebuild the project's tools layer (claude/codex/opencode) with --no-cache")
+  .description("Rebuild the project's tools layer (claude/codex/opencode/pi) with --no-cache")
   .argument('<project>', 'Project slug')
   .action(projectRebuild)
 
@@ -183,7 +183,7 @@ session
   .command('create')
   .description('Create a new session for a project')
   .argument('<project>', 'Project slug')
-  .option('-t, --tool <tool>', 'Agent tool to use (claude, codex, or opencode)')
+  .option('-t, --tool <tool>', 'Agent tool to use (claude, codex, opencode, or pi)')
   .option('-b, --branch <branch>', 'Reference branch for the worktree (defaults to the project\'s referenceBranch config, else the remote default branch)')
   .option('--add-dir <path>', 'Mount a host directory as read-only (repeatable)', collect, [])
   .option('--add-dir-rw <path>', 'Mount a host directory as read-write (repeatable)', collect, [])
@@ -233,7 +233,7 @@ session
   .command('stream')
   .description('Stream through waiting sessions, attaching to each in turn')
   .argument('[project]', 'Filter by project slug (auto-creates sessions if none waiting)')
-  .option('-t, --tool <tool>', 'Agent tool for newly created sessions (claude, codex, or opencode)')
+  .option('-t, --tool <tool>', 'Agent tool for newly created sessions (claude, codex, opencode, or pi)')
   .action(async (project: string | undefined, options: { tool?: AgentTool }) => {
     await sessionStream(project, options.tool)
   })
@@ -260,7 +260,7 @@ tool
 tool
   .command('set')
   .description('Set the default agent tool')
-  .argument('<tool>', 'Agent tool to use (claude, codex, or opencode)')
+  .argument('<tool>', 'Agent tool to use (claude, codex, opencode, or pi)')
   .action(toolSet)
 
 const config = program
@@ -329,7 +329,7 @@ auth
 
 auth
   .command('update')
-  .description('Add or update credentials (GitHub, Claude Code, Codex, or OpenCode)')
+  .description('Add or update credentials (GitHub, Claude Code, Codex, OpenCode, or Pi)')
   .action(authUpdate)
 
 auth

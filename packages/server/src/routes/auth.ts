@@ -41,7 +41,7 @@ export const authApp = new Hono()
   })
   .post(
     '/clear',
-    zv('json', z.object({ service: z.enum(['all', 'claude', 'codex', 'opencode']) })),
+    zv('json', z.object({ service: z.enum(['all', 'claude', 'codex', 'opencode', 'pi']) })),
     async (c) => {
       const { service } = c.req.valid('json')
       await clearAuth(service)
@@ -147,14 +147,15 @@ export const authApp = new Hono()
   })
   .put(
     '/:tool',
-    zv('param', z.object({ tool: z.enum(['claude', 'codex', 'opencode']) })),
+    zv('param', z.object({ tool: z.enum(['claude', 'codex', 'opencode', 'pi']) })),
     zv('json', z.discriminatedUnion('kind', [
       z.object({
         kind: z.literal('api-key'),
         apiKey: z.string().min(1),
-        // opencode only — which backend the key authenticates against.
-        // Ignored for claude/codex. Defaults to openrouter when absent.
-        provider: z.enum(['openrouter', 'neuralwatt']).optional(),
+        // opencode/pi only — which backend the key authenticates against.
+        // Ignored for claude/codex; the server coerces it with the tool's own
+        // parser (unknown → the tool's default provider).
+        provider: z.string().optional(),
       }),
       z.object({
         kind: z.literal('oauth'),

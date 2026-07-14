@@ -24,11 +24,12 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'chatgpt.com',
   'ab.chatgpt.com',
 
-  // OpenCode / OpenRouter / NeuralWatt
+  // OpenCode / OpenRouter / NeuralWatt / Pi
   'openrouter.ai',
   'api.neuralwatt.com',
   'opencode.ai',
   'models.dev',
+  'pi.dev',
   // Exa MCP — backs opencode's websearch tool when OPENCODE_ENABLE_EXA is set
   'mcp.exa.ai',
 

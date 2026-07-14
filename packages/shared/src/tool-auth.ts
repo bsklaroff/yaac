@@ -8,6 +8,7 @@ import {
   claudeDir,
   codexDir,
   opencodeCredentialsPath,
+  piCredentialsPath,
   projectClaudeCredentialsFile,
   projectCodexAuthFile,
 } from '#project-paths'
@@ -23,8 +24,9 @@ import {
   type CodexCredentialsFile,
   type CodexOAuthBundle,
   type OpencodeCredentialsFile,
-  type OpencodeProvider,
+  type PiCredentialsFile,
 } from '#types'
+import { parsePiProvider } from '#pi-providers'
 import {
   parseOpencodeProvider,
   type ToolLoginResult,
@@ -158,6 +160,31 @@ export async function saveOpencodeCredentialsFile(creds: OpencodeCredentialsFile
   )
 }
 
+export async function loadPiCredentialsFile(): Promise<PiCredentialsFile | null> {
+  try {
+    const raw = await fs.readFile(piCredentialsPath(), 'utf8')
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return null
+    const o = parsed as Record<string, unknown>
+    if (o.kind === 'api-key' && typeof o.savedAt === 'string' && typeof o.apiKey === 'string' && o.apiKey !== '') {
+      const provider = parsePiProvider(typeof o.provider === 'string' ? o.provider : undefined)
+      return { kind: 'api-key', provider, savedAt: o.savedAt, apiKey: o.apiKey }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+export async function savePiCredentialsFile(creds: PiCredentialsFile): Promise<void> {
+  await ensureCredentialsDir()
+  await fs.writeFile(
+    piCredentialsPath(),
+    JSON.stringify(creds, null, 2) + '\n',
+    { mode: 0o600 },
+  )
+}
+
 /**
  * Load the stored auth entry for a specific tool.
  * Returns null if no credentials are configured.
@@ -180,6 +207,17 @@ export async function loadToolAuthEntry(tool: AgentTool): Promise<ToolAuthEntry 
       opencodeProvider: f.provider,
     }
   }
+  if (tool === 'pi') {
+    const f = await loadPiCredentialsFile()
+    if (!f) return null
+    return {
+      tool: 'pi',
+      kind: 'api-key',
+      apiKey: f.apiKey,
+      savedAt: f.savedAt,
+      piProvider: f.provider,
+    }
+  }
   const f = await loadCodexCredentialsFile()
   if (!f) return null
   const apiKey = f.kind === 'oauth' ? f.codexOauth.accessToken : f.apiKey
@@ -195,7 +233,9 @@ export async function saveToolAuth(
   tool: AgentTool,
   apiKey: string,
   kind: ToolAuthKind,
-  opencodeProvider?: OpencodeProvider,
+  /** Raw provider string for provider-scoped tools (opencode/pi); each tool
+   *  coerces it with its own parser + default. Ignored for claude/codex. */
+  provider?: string,
 ): Promise<void> {
   const savedAt = new Date().toISOString()
   if (tool === 'claude') {
@@ -225,7 +265,18 @@ export async function saveToolAuth(
     // inject.
     await saveOpencodeCredentialsFile({
       kind: 'api-key',
-      provider: opencodeProvider ?? 'openrouter',
+      provider: parseOpencodeProvider(provider),
+      savedAt,
+      apiKey,
+    })
+    return
+  }
+  if (tool === 'pi') {
+    // pi is api-key only in yaac (OAuth rejected at persistToolAuthPayload);
+    // store defensively as api-key so the proxy still has a key to inject.
+    await savePiCredentialsFile({
+      kind: 'api-key',
+      provider: parsePiProvider(provider),
       savedAt,
       apiKey,
     })
@@ -255,6 +306,7 @@ export async function removeToolAuth(tool: AgentTool): Promise<boolean> {
   const target =
     tool === 'claude' ? claudeCredentialsPath() :
     tool === 'codex' ? codexCredentialsPath() :
+    tool === 'pi' ? piCredentialsPath() :
     opencodeCredentialsPath()
   try {
     await fs.unlink(target)
@@ -280,7 +332,7 @@ export async function persistToolLogin(tool: AgentTool, result: ToolLoginResult)
     await fanOutCodexPlaceholders(result.codexBundle)
     return
   }
-  await saveToolAuth(tool, result.apiKey, result.kind, result.opencodeProvider)
+  await saveToolAuth(tool, result.apiKey, result.kind, result.piProvider ?? result.opencodeProvider)
 }
 
 /**
@@ -289,13 +341,14 @@ export async function persistToolLogin(tool: AgentTool, result: ToolLoginResult)
  * don't recognize.
  */
 export async function persistToolAuthPayload(tool: AgentTool, payload: unknown): Promise<void> {
-  if (tool !== 'claude' && tool !== 'codex' && tool !== 'opencode') {
+  if (tool !== 'claude' && tool !== 'codex' && tool !== 'opencode' && tool !== 'pi') {
     throw new ServerError('VALIDATION', `Unknown tool "${String(tool)}".`)
   }
   if (!payload || typeof payload !== 'object') {
     throw new ServerError('VALIDATION', 'Expected { kind, ... } body.')
   }
   const p = payload as Record<string, unknown>
+  const providerRaw = typeof p.provider === 'string' ? p.provider : undefined
   if (p.kind === 'api-key') {
     if (typeof p.apiKey !== 'string' || p.apiKey === '') {
       throw new ServerError('VALIDATION', 'api-key payload requires a non-empty apiKey.')
@@ -303,15 +356,14 @@ export async function persistToolAuthPayload(tool: AgentTool, payload: unknown):
     await persistToolLogin(tool, {
       apiKey: p.apiKey,
       kind: 'api-key',
-      opencodeProvider: tool === 'opencode'
-        ? parseOpencodeProvider(typeof p.provider === 'string' ? p.provider : undefined)
-        : undefined,
+      opencodeProvider: tool === 'opencode' ? parseOpencodeProvider(providerRaw) : undefined,
+      piProvider: tool === 'pi' ? parsePiProvider(providerRaw) : undefined,
     })
     return
   }
   if (p.kind === 'oauth') {
-    if (tool === 'opencode') {
-      throw new ServerError('VALIDATION', 'opencode only supports api-key auth.')
+    if (tool === 'opencode' || tool === 'pi') {
+      throw new ServerError('VALIDATION', `${tool} only supports api-key auth.`)
     }
     if (tool === 'claude') {
       if (!isClaudeOAuthBundle(p.bundle)) {

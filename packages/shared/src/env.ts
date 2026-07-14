@@ -247,14 +247,21 @@ export const testEnv = {
     return process.env.YAAC_E2E_OPENCODE_PROVIDER
   },
 
+  /** `YAAC_E2E_PI_PROVIDER` — picks the pi provider for e2e (defaults to openrouter). */
+  get piProviderHook(): string | undefined {
+    return process.env.YAAC_E2E_PI_PROVIDER
+  },
+
   /**
-   * `YAAC_E2E_{CLAUDE,CODEX,OPENCODE}_LOGIN` — short-circuits the native tool
-   * login flow with a serialized OAuth bundle (claude/codex) or a raw api key
-   * (opencode). Returns the raw payload for the given tool, or `undefined`.
+   * `YAAC_E2E_{CLAUDE,CODEX,OPENCODE,PI}_LOGIN` — short-circuits the native
+   * tool login flow with a serialized OAuth bundle (claude/codex) or a raw api
+   * key (opencode/pi). Returns the raw payload for the given tool, or
+   * `undefined`.
    */
   toolLoginHook(tool: AgentTool): string | undefined {
     if (tool === 'claude') return process.env.YAAC_E2E_CLAUDE_LOGIN
     if (tool === 'codex') return process.env.YAAC_E2E_CODEX_LOGIN
+    if (tool === 'pi') return process.env.YAAC_E2E_PI_LOGIN
     return process.env.YAAC_E2E_OPENCODE_LOGIN
   },
 

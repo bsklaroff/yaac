@@ -39,6 +39,10 @@ export function opencodeCredentialsPath(): string {
   return path.join(credentialsDir(), 'opencode.json')
 }
 
+export function piCredentialsPath(): string {
+  return path.join(credentialsDir(), 'pi.json')
+}
+
 /**
  * File holding envSecretProxy values (env var name -> secret), written by
  * the server before each session registration. Injection rules sent to
@@ -136,6 +140,23 @@ export function opencodeConfigDir(slug: string): string {
  */
 export function opencodeDataDir(slug: string, sessionId: string): string {
   return path.join(projectDir(slug), 'opencode-data', sessionId)
+}
+
+/** Per-project root holding every pi session's log dir (one subdir per id). */
+export function piSessionsRootDir(slug: string): string {
+  return path.join(projectDir(slug), 'pi-sessions')
+}
+
+/**
+ * Per-yaac-session pi data root. Bind-mounted into the container and pointed
+ * at by `PI_CODING_AGENT_SESSION_DIR`, so pi writes its JSONL session logs
+ * here. Per-session (like `opencodeDataDir`) so `pi --continue` resumes only
+ * this session's log, and persists across container teardown so
+ * `yaac session list -d` first-message lookups still work — pi's logs are
+ * plain JSONL the server reads directly (no meta cache needed).
+ */
+export function piSessionsDir(slug: string, sessionId: string): string {
+  return path.join(piSessionsRootDir(slug), sessionId)
 }
 
 export function worktreesDir(slug: string): string {

@@ -6,6 +6,7 @@ import {
   claudeCredentialsPath,
   codexCredentialsPath,
   opencodeCredentialsPath,
+  piCredentialsPath,
   projectClaudeCredentialsFile,
   claudeDir,
   projectDir,
@@ -17,6 +18,7 @@ import {
   loadClaudeCredentialsFile,
   loadCodexCredentialsFile,
   loadOpencodeCredentialsFile,
+  loadPiCredentialsFile,
   removeToolAuth,
   buildPlaceholderBundle,
   writeProjectClaudePlaceholder,
@@ -380,6 +382,76 @@ describe('tool-auth', () => {
     it('rejects an oauth payload for opencode (api-key only)', async () => {
       await expect(
         persistToolAuthPayload('opencode', {
+          kind: 'oauth',
+          bundle: { accessToken: 'x', refreshToken: 'y', expiresAt: 1, scopes: [] },
+        }),
+      ).rejects.toMatchObject({ code: 'VALIDATION' })
+    })
+  })
+
+  describe('pi (OpenRouter / Anthropic / OpenAI)', () => {
+    it('detectAuthKind always returns api-key for pi', () => {
+      expect(detectAuthKind('pi', 'sk-or-anything')).toBe('api-key')
+      expect(detectAuthKind('pi', 'sk-ant-oat01-claude-looking')).toBe('api-key')
+    })
+
+    it('persists a pi api-key and round-trips through loadToolAuthEntry', async () => {
+      await persistToolAuthPayload('pi', { kind: 'api-key', apiKey: 'sk-or-pi-roundtrip' })
+      const entry = await loadToolAuthEntry('pi')
+      expect(entry).toMatchObject({
+        tool: 'pi',
+        kind: 'api-key',
+        apiKey: 'sk-or-pi-roundtrip',
+        // No provider in the payload defaults to openrouter.
+        piProvider: 'openrouter',
+      })
+      expect(typeof entry?.savedAt).toBe('string')
+    })
+
+    it('persists the anthropic provider from the payload', async () => {
+      await persistToolAuthPayload('pi', { kind: 'api-key', apiKey: 'sk-ant-key', provider: 'anthropic' })
+      const entry = await loadToolAuthEntry('pi')
+      expect(entry).toMatchObject({ tool: 'pi', kind: 'api-key', apiKey: 'sk-ant-key', piProvider: 'anthropic' })
+      expect((await loadPiCredentialsFile())?.provider).toBe('anthropic')
+    })
+
+    it('persists the openai provider from the payload', async () => {
+      await persistToolAuthPayload('pi', { kind: 'api-key', apiKey: 'sk-oai-key', provider: 'openai' })
+      expect((await loadToolAuthEntry('pi'))?.piProvider).toBe('openai')
+    })
+
+    it('saveToolAuth records the pi provider', async () => {
+      await saveToolAuth('pi', 'sk-ant-direct', 'api-key', 'anthropic')
+      expect((await loadToolAuthEntry('pi'))?.piProvider).toBe('anthropic')
+    })
+
+    it('defaults provider to openrouter for an unknown provider value', async () => {
+      await saveToolAuth('pi', 'sk-or-legacy', 'api-key')
+      await fs.writeFile(
+        piCredentialsPath(),
+        JSON.stringify({ kind: 'api-key', savedAt: '2025-01-01T00:00:00.000Z', apiKey: 'sk-or-legacy', provider: 'neuralwatt' }),
+      )
+      expect((await loadPiCredentialsFile())?.provider).toBe('openrouter')
+      expect((await loadToolAuthEntry('pi'))?.piProvider).toBe('openrouter')
+    })
+
+    it('loadToolAuthEntry returns null when no pi creds are saved', async () => {
+      expect(await loadToolAuthEntry('pi')).toBeNull()
+    })
+
+    it('removeToolAuth deletes pi credentials and returns true', async () => {
+      await persistToolAuthPayload('pi', { kind: 'api-key', apiKey: 'sk-or-rm' })
+      expect(await removeToolAuth('pi')).toBe(true)
+      expect(await loadToolAuthEntry('pi')).toBeNull()
+    })
+
+    it('removeToolAuth returns false when no pi creds exist', async () => {
+      expect(await removeToolAuth('pi')).toBe(false)
+    })
+
+    it('rejects an oauth payload for pi (api-key only)', async () => {
+      await expect(
+        persistToolAuthPayload('pi', {
           kind: 'oauth',
           bundle: { accessToken: 'x', refreshToken: 'y', expiresAt: 1, scopes: [] },
         }),
