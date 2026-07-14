@@ -347,8 +347,16 @@ export async function cleanupSessionDetached(params: {
   /** Why the session died, when a reaper (not the user) is tearing it
    *  down — persisted so the deleted-session view can say so. */
   cause?: SessionDeathCause
+  /** Skip the deleted-store write, leaving whatever cause is already
+   *  recorded intact. Set when the caller is *resuming* a teardown yaac
+   *  already recorded — e.g. the stale reaper re-issuing the delete for a
+   *  session whose in-memory terminating mark was lost to a server restart
+   *  or the TTL. Re-recording there would overwrite the true cause (a plain
+   *  user delete, or an earlier reaped death) with a spurious out-of-band
+   *  reason. */
+  preserveDeletedRecord?: boolean
 }): Promise<void> {
-  const { jobName, projectSlug, sessionId, cause } = params
+  const { jobName, projectSlug, sessionId, cause, preserveDeletedRecord } = params
 
   // Audit every teardown: the actual work below runs as a detached,
   // stdio-ignored child, so without this line a session reaped by the
@@ -364,8 +372,11 @@ export async function cleanupSessionDetached(params: {
   // Stamp the deletion time (and death cause, when a reaper supplied one)
   // so the deleted-session view can order by recency and say why the
   // session went away (best-effort; falls back to transcript mtime if
-  // unwritten).
-  await recordSessionDeleted(projectSlug, sessionId, cause)
+  // unwritten). Skipped when resuming a teardown yaac already recorded, so
+  // the existing cause survives (see `preserveDeletedRecord`).
+  if (!preserveDeletedRecord) {
+    await recordSessionDeleted(projectSlug, sessionId, cause)
+  }
 
   tmuxAliveCache.delete(tmuxAliveKey(projectSlug, sessionId))
   agentStartedCache.delete(tmuxAliveKey(projectSlug, sessionId))

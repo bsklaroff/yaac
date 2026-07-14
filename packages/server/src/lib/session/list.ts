@@ -339,11 +339,13 @@ export async function reconcileStaleSessions(): Promise<void> {
     // Job list unavailable — the pod-based sweep below still runs.
   }
 
-  // Out-of-band terminating sweep: a pod carrying a deletionTimestamp that
-  // this process didn't issue (an external `kubectl delete pod`, or a delete
-  // from a prior server run whose in-memory mark was lost) and that's stuck
-  // past the grace window. Re-issuing the idempotent Job delete resumes the
-  // teardown; deletes we issued ourselves stay marked and are skipped here.
+  // Stuck-terminating sweep: a pod carrying a deletionTimestamp that this
+  // process isn't currently marking, stuck past the grace window — an external
+  // `kubectl delete pod`, or a yaac delete whose in-memory mark was lost
+  // (server restart, TTL). Re-issuing the idempotent Job delete resumes the
+  // teardown either way; the cause split below (ours vs out-of-band) is
+  // decided from the durable deleted-store, not the mark. Deletes we're still
+  // marking stay skipped here.
   const stuckTerminating: Array<{ jobName: string; projectSlug: string; sessionId: string }> = []
   for (const p of terminating) {
     if (!p.terminating || !p.projectSlug || !p.sessionId) continue
@@ -351,6 +353,27 @@ export async function reconcileStaleSessions(): Promise<void> {
     const ageMs = p.createdAtMs > 0 ? nowMs - p.createdAtMs : Infinity
     if (ageMs < graceMs) continue
     stuckTerminating.push({ jobName: p.jobName, projectSlug: p.projectSlug, sessionId: p.sessionId })
+  }
+
+  // A stuck-terminating pod that yaac itself deleted (its in-memory mark was
+  // lost to a server restart or the TTL while teardown dragged) looks, by pod
+  // state alone, exactly like a real out-of-band `kubectl delete`. The durable
+  // tell is the deleted-store row yaac writes when it issues a delete: a
+  // session with a record was ours, so resume its (idempotent) teardown but
+  // preserve the recorded cause — restamping it "removed outside yaac" would
+  // clobber a plain user delete (or an earlier reaped death). Only a
+  // record-less terminating pod is genuinely out-of-band.
+  const ourStuck: typeof stuckTerminating = []
+  const externalStuck: typeof stuckTerminating = []
+  if (stuckTerminating.length > 0) {
+    const deletedBySlug = new Map(await Promise.all(
+      [...new Set(stuckTerminating.map((t) => t.projectSlug))].map(async (slug) =>
+        [slug, await listDeletedInfo(slug).catch((): Map<string, unknown> => new Map())] as const),
+    ))
+    for (const t of stuckTerminating) {
+      if (deletedBySlug.get(t.projectSlug)?.has(t.sessionId)) ourStuck.push(t)
+      else externalStuck.push(t)
+    }
   }
 
   const targets = [
@@ -367,10 +390,11 @@ export async function reconcileStaleSessions(): Promise<void> {
       cause: { reason: 'never-started' as const },
     })),
     ...orphanTargets.map((o) => ({ ...o, cause: { reason: 'orphaned' as const } })),
-    ...stuckTerminating.map((t) => ({
+    ...externalStuck.map((t) => ({
       ...t,
       cause: { reason: 'orphaned' as const, detail: 'pod deleted out-of-band' },
     })),
+    ...ourStuck.map((t) => ({ ...t, preserveDeletedRecord: true as const })),
   ]
   if (targets.length === 0) return
 
@@ -391,8 +415,11 @@ export async function reconcileStaleSessions(): Promise<void> {
   for (const o of orphanTargets) {
     serverLog(`[server] stale-reaper: reaping session=${o.sessionId} job=${o.jobName} (orphan Job, no backing pod)`)
   }
-  for (const t of stuckTerminating) {
+  for (const t of externalStuck) {
     serverLog(`[server] stale-reaper: reaping session=${t.sessionId} job=${t.jobName} (terminating out-of-band past grace)`)
+  }
+  for (const t of ourStuck) {
+    serverLog(`[server] stale-reaper: resuming teardown session=${t.sessionId} job=${t.jobName} (terminating mark lost; yaac-issued delete)`)
   }
 
   await Promise.all(targets.map((t) =>

@@ -18,9 +18,15 @@ vi.mock('#lib/session/cleanup', () => ({
 
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
+// The reaper reads the deleted-store to tell a yaac-issued delete (whose
+// in-memory terminating mark was lost) from a real out-of-band delete —
+// stub it so these tests never open a DB.
+vi.mock('#lib/session/deleted-store', () => ({ listDeletedInfo: vi.fn() }))
+
 import { listSessionPods, listSessionJobs } from '#lib/k8s/pods'
 import { probeTmuxLiveness, probeAgentPaneState, cleanupSessionDetached } from '#lib/session/cleanup'
 import { markSessionTerminating, _clearTerminatingForTests } from '#lib/session/terminating'
+import { listDeletedInfo } from '#lib/session/deleted-store'
 import { serverLog } from '#log'
 import { reconcileStaleSessions } from '#lib/session/list'
 
@@ -29,6 +35,7 @@ const mockListJobs = vi.mocked(listSessionJobs)
 const mockProbe = vi.mocked(probeTmuxLiveness)
 const mockPaneProbe = vi.mocked(probeAgentPaneState)
 const mockCleanup = vi.mocked(cleanupSessionDetached)
+const mockListDeletedInfo = vi.mocked(listDeletedInfo)
 const mockLog = vi.mocked(serverLog)
 
 // createdAtMs=1 (epoch) is always older than any grace window.
@@ -58,6 +65,7 @@ describe('reconcileStaleSessions', () => {
     mockProbe.mockReset()
     mockPaneProbe.mockReset().mockResolvedValue('started')
     mockCleanup.mockClear()
+    mockListDeletedInfo.mockReset().mockResolvedValue(new Map())
     mockLog.mockClear()
     _clearTerminatingForTests()
   })
@@ -121,16 +129,49 @@ describe('reconcileStaleSessions', () => {
   })
 
   it('reaps an out-of-band terminating pod past grace that we did not mark', async () => {
-    // deletionTimestamp set (terminating), never entered our registry — an
-    // external delete stuck past grace. Re-issue the idempotent teardown.
+    // deletionTimestamp set (terminating), never entered our registry, and no
+    // deleted-store row — a genuine external delete stuck past grace. Re-issue
+    // the idempotent teardown and stamp the out-of-band cause.
     mockListPods.mockResolvedValue([{ ...pod('term-1'), terminating: true }])
 
     await reconcileStaleSessions()
 
     expect(mockCleanup).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionId: 'term-1', jobName: 'yaac-proj-term-1' }),
+      expect.objectContaining({
+        sessionId: 'term-1',
+        jobName: 'yaac-proj-term-1',
+        cause: { reason: 'orphaned', detail: 'pod deleted out-of-band' },
+      }),
     )
     expect(loggedLines()).toContain('terminating out-of-band past grace')
+  })
+
+  it('does NOT mislabel a yaac-deleted terminating pod whose mark was lost', async () => {
+    // Same pod state as the out-of-band case (terminating, no in-memory mark:
+    // dropped by a restart or the TTL), but the durable deleted-store row
+    // proves yaac issued this delete. Resume teardown WITHOUT restamping so
+    // the real cause (a plain user delete) survives — no "removed outside
+    // yaac".
+    mockListPods.mockResolvedValue([{ ...pod('term-ours'), terminating: true }])
+    mockListDeletedInfo.mockResolvedValue(new Map([
+      ['term-ours', { deletedAt: new Date(0), seen: false }],
+    ]))
+
+    await reconcileStaleSessions()
+
+    expect(mockCleanup).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'term-ours',
+        jobName: 'yaac-proj-term-ours',
+        preserveDeletedRecord: true,
+      }),
+    )
+    // Crucially, no out-of-band cause is forwarded.
+    expect(mockCleanup).toHaveBeenCalledTimes(1)
+    expect(mockCleanup.mock.calls[0][0]).not.toHaveProperty('cause')
+    const log = loggedLines()
+    expect(log).toContain('resuming teardown session=term-ours')
+    expect(log).not.toContain('out-of-band')
   })
 
   it('does NOT re-reap a terminating pod whose teardown we already issued', async () => {

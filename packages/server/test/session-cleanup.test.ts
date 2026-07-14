@@ -411,6 +411,25 @@ describe('cleanupSessionDetached', () => {
     const logged = mockServerLog.mock.calls.map(([m]) => m).join('\n')
     expect(logged).not.toContain('cause=')
   })
+
+  it('preserveDeletedRecord skips the deleted-store write, leaving the cause intact', async () => {
+    // Resuming a teardown yaac already recorded (its terminating mark was lost)
+    // must not re-record — that would clobber the real cause with a stray one.
+    mockRecordDeleted.mockClear()
+    execFileMock.mockReset()
+    execFileMock.mockResolvedValue(undefined)
+    await cleanupSessionDetached({
+      jobName: 'yaac-p-s-resume',
+      projectSlug: 'proj-a',
+      sessionId: 's-resume',
+      preserveDeletedRecord: true,
+    })
+
+    expect(mockRecordDeleted).not.toHaveBeenCalled()
+    // The teardown itself still runs (idempotent Job delete resumes).
+    const spawned = spawnMock.mock.calls.some(([cmd]) => cmd === 'sh')
+    expect(spawned).toBe(true)
+  })
 })
 
 describe('classifyTmuxProbeError', () => {
