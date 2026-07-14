@@ -18,6 +18,7 @@ import { pickNextStreamSession } from '#stream-picker'
 import { notifySessionListChanged } from '#sessions-changed'
 import { createShellWindow, listSessionTerminals, killWindowTerminal } from '#terminals'
 import { setSessionTitle } from '#lib/session/titles'
+import { getSessionChanges } from '#lib/session/changes'
 
 export const sessionApp = new Hono()
   .get(
@@ -173,6 +174,12 @@ export const sessionApp = new Hono()
   .get('/:id/terminals', async (c) => {
     const { jobName } = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
     return c.json(await listSessionTerminals(jobName))
+  })
+  // The session's review diff — everything changed in the worktree since it
+  // forked from the base branch (committed + working + untracked).
+  .get('/:id/changes', async (c) => {
+    const { jobName } = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
+    return c.json(await getSessionChanges(jobName))
   })
   // Create a scratch-shell window in the session's `yaac` tmux session,
   // returning its entry so the client can open a pane immediately.
