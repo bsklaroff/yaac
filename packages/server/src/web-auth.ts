@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import type { MiddlewareHandler } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { env } from '@yaac/shared/env'
@@ -45,7 +46,7 @@ export function cookieOrBearerAuth(
 
     const header = c.req.header('authorization') ?? ''
     const match = /^Bearer\s+(.+)$/i.exec(header)
-    if (match && constantTimeEqual(match[1], secret)) return next()
+    if (match && timingSafeStrEqual(match[1], secret)) return next()
     if (match && tokens.isValidToken(match[1])) return next()
 
     const sid = getCookie(c, SESSION_COOKIE)
@@ -111,9 +112,12 @@ export function hostHeaderCheck(): MiddlewareHandler {
   }
 }
 
-export function constantTimeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false
-  let diff = 0
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
-  return diff === 0
+export function timingSafeStrEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a)
+  const bb = Buffer.from(b)
+  // timingSafeEqual throws on unequal-length inputs; a length mismatch is not
+  // itself secret (these are fixed-width tokens), so short-circuit it. The
+  // point is not to leak — via the compare's timing — how long a matching
+  // prefix an attacker guessed.
+  return ab.length === bb.length && crypto.timingSafeEqual(ab, bb)
 }

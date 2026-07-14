@@ -39,6 +39,7 @@ import { parsePp2Header } from './pp2'
 import { DNS_QTYPE_A, buildDnsResponse, isInternalName, parseDnsQuery } from './dns-stub'
 import { PodSessionIndex, fetchSessionByPodIp, parseVclusterAttribution, startPodWatch } from './pod-watch'
 import { SYSTEM_ROOTS_PATH, combineCaBundle } from './ca-bundle'
+import { timingSafeStrEqual } from './secure-compare'
 
 // Control-API listener (CA cert, registrations, ssh-agent keys). Renamed
 // from PORT now that no session egress reaches it — it is purely the API.
@@ -1993,7 +1994,8 @@ function dispatchToUpstream(
 
 function checkAuth(req: http.IncomingMessage): boolean {
   const auth = req.headers.authorization
-  return auth === `Bearer ${PROXY_AUTH_SECRET}`
+  if (typeof auth !== 'string') return false
+  return timingSafeStrEqual(auth, `Bearer ${PROXY_AUTH_SECRET}`)
 }
 
 function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): void {

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { Hono } from 'hono'
 import {
-  constantTimeEqual,
+  timingSafeStrEqual,
   cookieOrBearerAuth,
   hostHeaderCheck,
   isAllowedHost,
@@ -172,16 +172,16 @@ describe('cookieOrBearerAuth', () => {
   })
 })
 
-describe('constantTimeEqual', () => {
+describe('timingSafeStrEqual', () => {
   it('matches equal strings and rejects unequal ones', () => {
-    expect(constantTimeEqual('secret', 'secret')).toBe(true)
-    expect(constantTimeEqual('secret', 'secreT')).toBe(false)
+    expect(timingSafeStrEqual('secret', 'secret')).toBe(true)
+    expect(timingSafeStrEqual('secret', 'secreT')).toBe(false)
   })
 
   it('rejects length mismatches without throwing', () => {
-    expect(constantTimeEqual('short', 'longer-value')).toBe(false)
-    expect(constantTimeEqual('', 'x')).toBe(false)
-    expect(constantTimeEqual('', '')).toBe(true)
+    expect(timingSafeStrEqual('short', 'longer-value')).toBe(false)
+    expect(timingSafeStrEqual('', 'x')).toBe(false)
+    expect(timingSafeStrEqual('', '')).toBe(true)
   })
 })
 

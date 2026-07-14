@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
 import { ServerError } from '@yaac/shared/errors'
-import { constantTimeEqual } from '#web-auth'
+import { timingSafeStrEqual } from '#web-auth'
 import { maskToken } from '@yaac/shared/mask'
 import { getDb } from '#lib/db/client'
 import { tokens as tokensTable } from '#lib/db/schema'
@@ -177,7 +177,7 @@ export function createTokenStore(opts: {
     consumeExchange: (candidate) => {
       const dropped = pruneExpired()
       const match = entries.find((e) =>
-        (e.kind === 'one-time' || e.kind === 'durable') && constantTimeEqual(candidate, e.token))
+        (e.kind === 'one-time' || e.kind === 'durable') && timingSafeStrEqual(candidate, e.token))
       if (!match) {
         if (dropped) changed()
         return null
@@ -201,9 +201,9 @@ export function createTokenStore(opts: {
       return true
     },
     isValidToken: (candidate) =>
-      entries.some((e) => e.kind === 'durable' && constantTimeEqual(candidate, e.token)),
+      entries.some((e) => e.kind === 'durable' && timingSafeStrEqual(candidate, e.token)),
     isValidSession: (candidate) =>
-      entries.some((e) => e.kind === 'web' && constantTimeEqual(candidate, e.token)),
+      entries.some((e) => e.kind === 'web' && timingSafeStrEqual(candidate, e.token)),
     restoreTokens: (restored) => {
       const live = new Set(entries.map((e) => e.name))
       // Prepend: restored entries predate anything minted since boot, and
