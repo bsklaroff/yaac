@@ -840,6 +840,15 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
     'set-option -g bell-action any',
     'set-option -g visual-bell off',
     'set-option -g allow-passthrough on',
+    // Forward CSI-u "extended keys" to any pane app that opts in. The `on`
+    // mode negotiates per-app (a shell, or an agent that never requests them,
+    // is unaffected), so this can't regress classic key encoding. Agent TUIs
+    // use it to tell modified Enter (Shift/Ctrl+Enter) apart from a plain
+    // newline; pi prints a startup warning when it finds this off. Server-
+    // global, so it survives the claim-time respawn and every view session.
+    // (Silences pi's warning and enables the native-CLI path; the webapp pane
+    // needs extra xterm.js + terminal-features work to actually carry them.)
+    'set-option -g extended-keys on',
     // Advertise 24-bit (truecolor) support so tmux forwards RGB escape
     // sequences to the attached terminal — the embedded xterm.js pane and the
     // CLI's host emulator are both truecolor-capable — instead of quantizing
