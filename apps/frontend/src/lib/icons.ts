@@ -42,6 +42,17 @@ export {
   Maximize2 as ExpandIcon,
   Minimize2 as CollapseIcon,
   GitBranch as BranchIcon,
+  Globe as PreviewIcon,
+  ArrowLeft as NavBackIcon,
+  ArrowRight as NavForwardIcon,
+  RefreshCw as ReloadIcon,
+  House as HomeIcon,
+  Copy as CopyIcon,
+  Inspect as DevToolsIcon,
+  Smartphone as MobileIcon,
+  Tablet as TabletIcon,
+  Monitor as DesktopIcon,
+  FileDiff as ChangesIcon,
 } from 'lucide-react'
 
 /** Display name per agent tool (proper brand casing, incl. OpenCode). */

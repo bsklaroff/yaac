@@ -3,10 +3,18 @@ import clsx from 'clsx'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useUiStore } from '#store'
 import { SessionTerminal } from '#components/SessionTerminal'
+import { SessionPreview } from '#components/SessionPreview'
+import { SessionChanges } from '#components/SessionChanges'
+import { isPreviewTarget, previewLabel } from '#lib/preview'
+import { isChangesTarget } from '#lib/changesApi'
+import { isElectron } from '#lib/platform'
 import { SessionActionsMenu } from '#components/SessionActionsMenu'
 import { CreatingPlaceholder } from '#components/CreatingPlaceholder'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { AddIcon, CloseIcon, SidebarIcon, SplitDownIcon, SplitRightIcon, TabsIcon, TerminalIcon, TilesIcon, TOOL_LABEL } from '#lib/icons'
+import {
+  AddIcon, ChangesIcon, CloseIcon, PreviewIcon, SidebarIcon, SplitDownIcon, SplitRightIcon, TabsIcon, TerminalIcon,
+  TilesIcon, TOOL_LABEL,
+} from '#lib/icons'
 import { EmptyState } from '#components/ui/EmptyState'
 import { NewSessionButton } from '#components/NewSessionButton'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
@@ -71,10 +79,22 @@ function rootEdgeAt(px: number, py: number, w: number, h: number): Exclude<DropE
   return dists[0][1] <= ROOT_EDGE_MARGIN ? dists[0][0] : null
 }
 
-function paneName(target: string, terminals: SessionTerminalEntry[] | undefined): string {
+function paneName(
+  target: string,
+  terminals: SessionTerminalEntry[] | undefined,
+  previewPort?: number,
+): string {
   if (target === 'agent') return 'Agent'
+  if (isPreviewTarget(target)) return previewLabel(previewPort)
+  if (isChangesTarget(target)) return 'Changes'
   const entry = terminals?.find((t) => t.target === target)
   return entry?.name ?? 'window'
+}
+
+/** Preview and changes are special (non-terminal) panes: kept out of the
+ *  tmux-window sync, closed without a kill-confirm. */
+function isSpecialPane(target: string): boolean {
+  return isPreviewTarget(target) || isChangesTarget(target)
 }
 
 export function SessionView({
@@ -96,6 +116,10 @@ export function SessionView({
   const setViewMode = useUiStore((s) => s.setViewMode)
   const activeTabs = useUiStore((s) => s.activeTabs)
   const focusTerminal = useUiStore((s) => s.focusTerminal)
+  const previewPortMap = useUiStore((s) => s.previewPort)
+  const setPreviewPort = useUiStore((s) => s.setPreviewPort)
+  const openPreview = useUiStore((s) => s.openPreview)
+  const openChanges = useUiStore((s) => s.openChanges)
   const queryClient = useQueryClient()
   const sessions = snapshot?.sessions ?? []
   const session = sessions.find((s) => s.sessionId === selectedSessionId)
@@ -103,6 +127,14 @@ export function SessionView({
   // Project-wide flag; shown in the header because a rejected credential
   // fails git fetch/push inside this session too.
   const gitAuthFailures = (session && snapshot?.gitAuthFailures?.[session.projectSlug]) || []
+
+  // Forwarded (portForward-config) ports drive the embedded preview in the
+  // desktop app; in a browser build there's no embedded webview, so they fall
+  // back to external-tab chips instead.
+  const embedPreview = isElectron()
+  const previewPorts = session?.forwardedPorts ?? []
+  const chipPorts = embedPreview ? [] : previewPorts
+  const previewPortForSession = sid ? previewPortMap[sid] : undefined
 
   // The provisioning placeholder owns the main pane only when its row is the
   // selected one (and no real session of that id exists yet) — so it never
@@ -150,7 +182,9 @@ export function SessionView({
     const liveSet = new Set(live)
     let next = cur
     for (const t of leafTargets(next)) {
-      if (!liveSet.has(t)) next = next && removeLeaf(next, t)
+      // Preview/changes leaves aren't tmux windows — they're owned by their
+      // own open/close logic, so this window-driven sync must leave them be.
+      if (!liveSet.has(t) && !isSpecialPane(t)) next = next && removeLeaf(next, t)
     }
     for (const t of live) {
       next = addLeafToLargest(next, t, wsSize.w || 1200, wsSize.h || 800)
@@ -248,13 +282,21 @@ export function SessionView({
           e.stopPropagation()
           ctx.openShell()
           return
-        case 'kill-terminal':
+        case 'kill-terminal': {
           // The agent pane isn't killable — leave the chord alone then.
           if (!ctx.activeTab || ctx.activeTab === 'agent') return
           e.preventDefault()
           e.stopPropagation()
+          // A preview/changes pane just closes (no tmux window, no confirm).
+          if (isSpecialPane(ctx.activeTab)) {
+            const st = useUiStore.getState()
+            const cur = ctx.sid in st.layouts ? st.layouts[ctx.sid] : null
+            if (cur) st.setSessionLayout(ctx.sid, removeLeaf(cur, ctx.activeTab))
+            return
+          }
           setConfirmKill({ target: ctx.activeTab, name: paneName(ctx.activeTab, ctx.terminals) })
           return
+        }
         case 'prev-terminal':
         case 'next-terminal': {
           const delta = cycleDeltaFor(id)
@@ -289,6 +331,14 @@ export function SessionView({
     void killSessionTerminal(sid, target)
       .catch((e: unknown) => console.error('kill terminal failed', e))
       .finally(refetchTerminals)
+  }
+
+  // Close a special (preview/changes) pane: just drop the leaf — there's no
+  // tmux window to kill, and no confirm (both are cheap to reopen).
+  const closePane = (target: string): void => {
+    if (!sid || !layout) return
+    setSessionLayout(sid, removeLeaf(layout, target))
+    setOpened((prev) => prev.filter((k) => k !== `${sid}|${target}`))
   }
 
   // --- divider drag ---
@@ -447,9 +497,31 @@ export function SessionView({
           >
             <AddIcon size={14} />
           </button>
+          <button
+            onClick={() => openChanges(session.sessionId)}
+            title="Review changes"
+            aria-label="Review changes"
+            className="flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px]
+              text-text-dim transition hover:bg-surface-2 hover:text-text"
+          >
+            <ChangesIcon size={13} />
+            Changes
+          </button>
           <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[session.tool]}</span>
-          {session.forwardedPorts.length > 0 && (
-            <ForwardedPortLinks ports={session.forwardedPorts} iconSize={11} className="hover:bg-surface-2" />
+          {embedPreview && previewPorts.length > 0 && (
+            <button
+              onClick={() => openPreview(session.sessionId, previewPorts[0].containerPort)}
+              title="Open preview"
+              aria-label="Open preview"
+              className="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-[11px]
+                text-text-dim transition hover:bg-surface-2 hover:text-text"
+            >
+              <PreviewIcon size={11} />
+              Preview
+            </button>
+          )}
+          {chipPorts.length > 0 && (
+            <ForwardedPortLinks ports={chipPorts} iconSize={11} className="hover:bg-surface-2" />
           )}
           {gitAuthFailures.length > 0 && (
             <GitAuthFailureBadge
@@ -517,28 +589,42 @@ export function SessionView({
               className="group/pane flex shrink-0 cursor-grab select-none items-center gap-1.5 px-2.5 active:cursor-grabbing"
             >
               <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-text-dim">
-                {paneName(target, terminals)}
+                {paneName(target, terminals, previewPortForSession)}
               </span>
               <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/pane:opacity-100">
-                <button
-                  onClick={() => openShell({ target, dir: 'row' })}
-                  title="New shell right"
-                  aria-label={`New shell right of ${paneName(target, terminals)}`}
-                  className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
-                    hover:bg-surface-2 hover:text-text"
-                >
-                  <SplitRightIcon size={11} />
-                </button>
-                <button
-                  onClick={() => openShell({ target, dir: 'col' })}
-                  title="New shell below"
-                  aria-label={`New shell below ${paneName(target, terminals)}`}
-                  className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
-                    hover:bg-surface-2 hover:text-text"
-                >
-                  <SplitDownIcon size={11} />
-                </button>
-                {target !== 'agent' && (
+                {!isSpecialPane(target) && (
+                  <>
+                    <button
+                      onClick={() => openShell({ target, dir: 'row' })}
+                      title="New shell right"
+                      aria-label={`New shell right of ${paneName(target, terminals)}`}
+                      className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
+                        hover:bg-surface-2 hover:text-text"
+                    >
+                      <SplitRightIcon size={11} />
+                    </button>
+                    <button
+                      onClick={() => openShell({ target, dir: 'col' })}
+                      title="New shell below"
+                      aria-label={`New shell below ${paneName(target, terminals)}`}
+                      className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
+                        hover:bg-surface-2 hover:text-text"
+                    >
+                      <SplitDownIcon size={11} />
+                    </button>
+                  </>
+                )}
+                {isSpecialPane(target) ? (
+                  <button
+                    onClick={() => closePane(target)}
+                    title="Close pane"
+                    aria-label={`Close ${paneName(target, terminals, previewPortForSession)}`}
+                    className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
+                      hover:bg-surface-2 hover:text-text"
+                  >
+                    <CloseIcon size={11} />
+                  </button>
+                ) : target !== 'agent' && (
                   <button
                     onClick={() => setConfirmKill({ target, name: paneName(target, terminals) })}
                     title="Kill terminal"
@@ -572,9 +658,19 @@ export function SessionView({
                         : 'text-text-faint hover:text-text-dim',
                     )}
                   >
-                    {paneName(t, terminals)}
+                    {paneName(t, terminals, previewPortForSession)}
                   </button>
-                  {t !== 'agent' && (
+                  {isSpecialPane(t) ? (
+                    <button
+                      onClick={() => closePane(t)}
+                      title="Close pane"
+                      aria-label={`Close ${paneName(t, terminals, previewPortForSession)}`}
+                      className="absolute right-0.5 flex h-4 w-4 items-center justify-center rounded
+                        text-text-faint opacity-0 transition hover:text-text group-hover/tab:opacity-100"
+                    >
+                      <CloseIcon size={10} />
+                    </button>
+                  ) : t !== 'agent' && (
                     <button
                       onClick={() => setConfirmKill({ target: t, name: paneName(t, terminals) })}
                       title={`Kill ${paneName(t, terminals)}`}
@@ -605,6 +701,9 @@ export function SessionView({
           const sep = key.indexOf('|')
           const id = key.slice(0, sep)
           const target = key.slice(sep + 1)
+          const preview = isPreviewTarget(target)
+          const changes = isChangesTarget(target)
+          const special = preview || changes
           const pane = id === sid && tiled ? panes.find((p) => p.target === target) : undefined
           const style = pane
             ? {
@@ -621,12 +720,19 @@ export function SessionView({
                   height: wsSize.h - HEADER_H - PAD,
                 }
               : undefined
+          // Terminals stay mounted while hidden (instant switch-back, live PTY);
+          // a preview/changes pane is torn down off-screen (a hidden one keeps
+          // polling the pod) and cheaply re-mounts on return. Both only have a
+          // `style` for the selected session, so previewPorts /
+          // previewPortForSession (both for sid) apply.
+          if (special && !style) return null
           return (
             <div
               key={key}
               // The wrapper (bg-bg) mirrors the xterm background exactly, so the
               // padding around the terminal is seamless — both follow the app
               // theme (dark terminal on the dark shell, light on the light one).
+              // A preview fills its pane flush (its own chrome, no padding).
               style={style}
               // Keep the active-terminal record in step with focus changes
               // the DOM makes on its own (clicking into a tiled pane), so
@@ -635,14 +741,29 @@ export function SessionView({
               onFocusCapture={() => useUiStore.getState().setActiveTab(id, target)}
               className={clsx('absolute', !style && 'invisible left-0 top-0 h-full w-full')}
             >
-              <div className="h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">
-                <SessionTerminal
-                  key={`${key}:${terminalNonces[id] ?? 0}`}
-                  sessionId={id}
-                  target={target}
-                  focusKey={id === sid && target === focusTarget ? focusNonce : undefined}
-                />
-              </div>
+              {preview ? (
+                <div className="h-full w-full overflow-hidden rounded-md">
+                  <SessionPreview
+                    sessionId={id}
+                    ports={previewPorts}
+                    currentPort={previewPortForSession}
+                    onSwitchPort={(p) => setPreviewPort(id, p)}
+                  />
+                </div>
+              ) : changes ? (
+                <div className="h-full w-full overflow-hidden rounded-md">
+                  <SessionChanges sessionId={id} />
+                </div>
+              ) : (
+                <div className="h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">
+                  <SessionTerminal
+                    key={`${key}:${terminalNonces[id] ?? 0}`}
+                    sessionId={id}
+                    target={target}
+                    focusKey={id === sid && target === focusTarget ? focusNonce : undefined}
+                  />
+                </div>
+              )}
             </div>
           )
         })}

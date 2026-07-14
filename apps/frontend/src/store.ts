@@ -1,5 +1,7 @@
 import { create } from 'zustand'
-import { isLayoutNode, type LayoutNode } from '#lib/layout'
+import { addLeafToLargest, isLayoutNode, leaf, leafTargets, splitLeaf, type LayoutNode } from '#lib/layout'
+import { PREVIEW_TARGET } from '#lib/preview'
+import { CHANGES_TARGET } from '#lib/changesApi'
 import { DEFAULT_BINDINGS, type BindingMap, type Chord, type ShortcutId } from '#lib/shortcuts'
 import { applyThemeAttribute, loadThemePref, persistThemePref, type ThemePref } from '#lib/theme'
 import type { AgentTool, DeletedSessionEntry, ProvisioningSessionEntry, SessionListEntry } from '@yaac/shared/types'
@@ -196,6 +198,25 @@ export function persistLayouts(layouts: Record<string, LayoutNode | null>): void
 }
 
 /**
+ * Insert a single special (non-terminal) leaf — preview or changes — into a
+ * session's layout: split the agent pane (new leaf to its right) when present,
+ * else split the largest pane; a layout that already has it is returned
+ * unchanged. Exported for tests.
+ */
+export function injectPaneLeaf(base: LayoutNode | null, target: string): LayoutNode {
+  const root = base ?? leaf('agent')
+  const targets = leafTargets(root)
+  if (targets.includes(target)) return root
+  if (targets.includes('agent')) return splitLeaf(root, 'agent', target, 'row')
+  return addLeafToLargest(root, target, 1200, 800)
+}
+
+/** The preview-specific injector (kept for the auto-open/open-preview paths). */
+export function injectPreviewLeaf(base: LayoutNode | null): LayoutNode {
+  return injectPaneLeaf(base, PREVIEW_TARGET)
+}
+
+/**
  * Merge server-snapshot provisioning rows with local optimistic ones, deduped
  * by sessionId (the snapshot wins — it carries the live message/error), sorted
  * by createdAt then id for a stable sidebar order. The optimistic copy only
@@ -312,6 +333,16 @@ interface UiState {
   /** Per-session workspace layout tree. Missing key = the default single
    *  agent pane; null = an explicitly emptied workspace. */
   layouts: Record<string, LayoutNode | null>
+  /** Per-session container port the (single) preview pane currently shows.
+   *  Missing = show the first forwarded port. */
+  previewPort: Record<string, number>
+  /** Point the preview pane at another forwarded port (toolbar dropdown). */
+  setPreviewPort: (sessionId: string, containerPort: number) => void
+  /** Open/focus the preview pane (the header chip). Seeds the shown port
+   *  when unset. */
+  openPreview: (sessionId: string, containerPort?: number) => void
+  /** Open/focus the changes (review-diff) pane for a session. */
+  openChanges: (sessionId: string) => void
   /** Whether the session sidebar is shown. */
   sidebarOpen: boolean
   /** Light/dark preference. 'system' follows the OS; setThemePref persists it
@@ -434,6 +465,7 @@ export const useUiStore = create<UiState>((set) => ({
   focusNonce: 0,
   terminalNonces: {},
   layouts: loadPersistedLayouts(),
+  previewPort: {},
   sidebarOpen: true,
   themePref: loadThemePref(),
   soundEnabled: loadSoundEnabled(),
@@ -493,6 +525,31 @@ export const useUiStore = create<UiState>((set) => ({
   setSessionLayout: (sessionId, layout) => set((s) => ({
     layouts: { ...s.layouts, [sessionId]: layout },
   })),
+  setPreviewPort: (sessionId, containerPort) => set((s) => (
+    s.previewPort[sessionId] === containerPort
+      ? s
+      : { previewPort: { ...s.previewPort, [sessionId]: containerPort } }
+  )),
+  openPreview: (sessionId, containerPort) => set((s) => {
+    const base = sessionId in s.layouts ? s.layouts[sessionId] : leaf('agent')
+    const previewPort = containerPort !== undefined && s.previewPort[sessionId] === undefined
+      ? { ...s.previewPort, [sessionId]: containerPort }
+      : s.previewPort
+    return {
+      layouts: { ...s.layouts, [sessionId]: injectPreviewLeaf(base) },
+      previewPort,
+      activeTabs: { ...s.activeTabs, [sessionId]: PREVIEW_TARGET },
+      focusNonce: s.focusNonce + 1,
+    }
+  }),
+  openChanges: (sessionId) => set((s) => {
+    const base = sessionId in s.layouts ? s.layouts[sessionId] : leaf('agent')
+    return {
+      layouts: { ...s.layouts, [sessionId]: injectPaneLeaf(base, CHANGES_TARGET) },
+      activeTabs: { ...s.activeTabs, [sessionId]: CHANGES_TARGET },
+      focusNonce: s.focusNonce + 1,
+    }
+  }),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setThemePref: (pref) => {
     persistThemePref(pref)

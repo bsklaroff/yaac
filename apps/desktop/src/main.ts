@@ -29,6 +29,7 @@ import { errorBoxText, splashUrl } from '#messages'
 import { ensureAuthDaemonRunning, resolveYaacCommand, runYaacServerStart } from '#server-process'
 import { backgroundColorFor } from '#theme-bg'
 import { buildTrayBitmap } from '#tray-icon'
+import { hardenGuestWebPreferences, isLocalPreviewUrl, sanitizeWebviewSrc } from '#webview-guard'
 import { boundsVisibleOn, readWindowState, saveWindowState } from '#window-state'
 
 app.setName('yaac')
@@ -81,9 +82,18 @@ async function createWindow(): Promise<BrowserWindow> {
       // Let the attention chime play without a prior click (it fires on a
       // background event — a session flipping to waiting), not a user gesture.
       autoplayPolicy: 'no-user-gesture-required',
+      // Enable the <webview> the session preview embeds. Guests are hardened
+      // and pinned to loopback below (will-attach-webview + web-contents-created).
+      webviewTag: true,
     },
   })
   if (process.platform === 'darwin') w.setWindowButtonVisibility(false)
+  // Harden every preview <webview> before it attaches: strip any preload,
+  // force Node off / isolation on, and refuse a non-loopback src.
+  w.webContents.on('will-attach-webview', (_e, webPreferences, params) => {
+    hardenGuestWebPreferences(webPreferences as unknown as Record<string, unknown>)
+    params.src = sanitizeWebviewSrc(params.src)
+  })
   w.once('ready-to-show', () => w.show())
   const onThemeChange = (): void => {
     w.setBackgroundColor(backgroundColorFor(nativeTheme.shouldUseDarkColors))
@@ -222,6 +232,23 @@ ipcMain.on('window:toggle-maximize', () => { if (win?.isMaximized()) win.unmaxim
 ipcMain.on('window:close', () => win?.close())
 ipcMain.on('window:open-external', (_e, url: unknown) => {
   if (typeof url === 'string' && /^https?:/.test(url)) void shell.openExternal(url)
+})
+
+// Constrain preview <webview> guests: open any new window or off-loopback
+// navigation (an OAuth hop, an external link) in the system browser rather
+// than inside the preview, which stays pinned to the dev server.
+app.on('web-contents-created', (_event, contents) => {
+  if (contents.getType() !== 'webview') return
+  contents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/.test(url)) void shell.openExternal(url)
+    return { action: 'deny' }
+  })
+  contents.on('will-navigate', (e, url) => {
+    if (!isLocalPreviewUrl(url)) {
+      e.preventDefault()
+      if (/^https?:/.test(url)) void shell.openExternal(url)
+    }
+  })
 })
 
 async function boot(): Promise<void> {
