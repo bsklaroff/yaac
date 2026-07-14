@@ -1,14 +1,14 @@
 import { useEffect, useState, type JSX } from 'react'
 import clsx from 'clsx'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Dialog } from '@base-ui/react/dialog'
 import { CloseIcon, DeleteIcon, RestartIcon, TOOL_LABEL } from '#lib/icons'
 import { EmptyState } from '#components/ui/EmptyState'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { restartSession } from '#lib/createSession'
-import { getDeletedSessions } from '#lib/deletedApi'
+import { getDeletedSessions, markDeathSeen } from '#lib/deletedApi'
 import { useProvisionSession } from '#lib/useProvisionSession'
-import { useUiStore } from '#store'
+import { isUnseenDeath, useUiStore } from '#store'
 import { describeSessionDeathReason } from '@yaac/shared/death-reason'
 import type { DeletedSessionEntry } from '@yaac/shared/types'
 
@@ -54,6 +54,7 @@ export function DeletedSessionsButton({
   const optimisticDeleted = useUiStore((s) => s.optimisticDeleted)
   const removeOptimisticDeleted = useUiStore((s) => s.removeOptimisticDeleted)
   const provision = useProvisionSession()
+  const queryClient = useQueryClient()
 
   const [queryText, setQueryText] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -85,11 +86,30 @@ export function DeletedSessionsButton({
     ...(data ?? []),
   ].filter((d) => !restarting.includes(d.sessionId))
 
+  // Unseen abnormal deaths across the whole list (search-independent) drive the
+  // sidebar notification dot.
+  const unseenDeaths = merged.filter(isUnseenDeath).length
+
   const q = queryText.trim().toLowerCase()
   const rows = q
     ? merged.filter((d) => `${label(d)} ${TOOL_LABEL[d.tool]}`.toLowerCase().includes(q))
     : merged
   const selected = rows.find((d) => d.sessionId === selectedId) ?? rows[0] ?? null
+
+  // Viewing a death's detail marks it seen server-side (durable, shared across
+  // clients) and optimistically flips `seen` in the cached list so the dot /
+  // highlight clear instantly. Runs for the auto-selected top row and for any
+  // row the user clicks; only while the overlay is open. The `!selected.seen`
+  // guard stops the cache patch from re-triggering this effect (and re-POSTing);
+  // the partial query-key matcher survives activeSignature changing.
+  useEffect(() => {
+    if (!open || !selected?.deathReason || selected.seen) return
+    void markDeathSeen(projectSlug, selected.sessionId)
+    queryClient.setQueriesData<DeletedSessionEntry[]>(
+      { queryKey: ['deleted', projectSlug] },
+      (old) => old?.map((e) => (e.sessionId === selected.sessionId ? { ...e, seen: true } : e)),
+    )
+  }, [open, selected, projectSlug, queryClient])
 
   const onConfirmRestart = (entry: DeletedSessionEntry): void => {
     setConfirm(null)
@@ -115,6 +135,15 @@ export function DeletedSessionsButton({
         >
           <DeleteIcon size={13} className="shrink-0" />
           <span>Deleted sessions</span>
+          {/* Decorative unread dot (aria-hidden so it stays out of the button's
+              accessible name); the title is a hover tooltip. */}
+          {unseenDeaths > 0 && (
+            <span
+              aria-hidden="true"
+              title={`${unseenDeaths} session${unseenDeaths > 1 ? 's' : ''} died unexpectedly`}
+              className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
+            />
+          )}
         </button>
       )}
 
@@ -158,17 +187,24 @@ export function DeletedSessionsButton({
                   {rows.length === 0 && (
                     <li className="px-2 py-2 text-xs text-text-faint">No matches.</li>
                   )}
-                  {rows.map((d) => (
+                  {rows.map((d) => {
+                    const unseen = isUnseenDeath(d)
+                    return (
                     <li key={d.sessionId}>
                       <button
                         type="button"
                         onClick={() => setSelectedId(d.sessionId)}
                         className={clsx(
                           'flex w-full flex-col gap-0.5 rounded-md px-2.5 py-2 text-left transition',
-                          selected?.sessionId === d.sessionId ? 'bg-surface-2' : 'hover:bg-surface-2/50',
+                          selected?.sessionId === d.sessionId
+                            ? 'bg-surface-2'
+                            : unseen ? 'bg-amber-500/10 hover:bg-amber-500/15' : 'hover:bg-surface-2/50',
                         )}
                       >
-                        <span className="truncate text-sm font-medium text-text-dim">{label(d)}</span>
+                        <span className="flex items-center gap-1.5">
+                          {unseen && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
+                          <span className="truncate text-sm font-medium text-text-dim">{label(d)}</span>
+                        </span>
                         <span className="flex items-center gap-2 text-[11px] text-text-faint">
                           <span className="truncate">
                             {d.deathReason
@@ -179,7 +215,8 @@ export function DeletedSessionsButton({
                         </span>
                       </button>
                     </li>
-                  ))}
+                    )
+                  })}
                 </ul>
               </div>
 

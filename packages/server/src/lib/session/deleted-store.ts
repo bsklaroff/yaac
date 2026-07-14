@@ -16,19 +16,23 @@ import type { SessionDeathCause, SessionDeathReason } from '@yaac/shared/types'
  */
 
 /** Per-session row of the deleted-store: when it was removed, plus the
- *  reaper-derived cause when it died rather than being deleted. */
+ *  reaper-derived cause when it died rather than being deleted, and whether
+ *  the user has viewed that death's detail yet. */
 export interface DeletedSessionRecord {
   deletedAt: Date
   deathReason?: SessionDeathReason
   deathDetail?: string
+  seen: boolean
 }
 
 /** Upsert the deletion record for a session: `deletedAt` becomes now, and
  *  the death columns are always overwritten — `cause` when the reaper
  *  supplies one, null on a plain delete, so a reused session id can never
- *  inherit a stale cause from a previous life. Best-effort: a failed write
- *  just means the listing falls back to mtime ordering for this row, so it
- *  never blocks teardown (mirrors saveOpencodeMeta). */
+ *  inherit a stale cause from a previous life. `seen` resets to false on
+ *  every (re-)record so a re-died reused id re-flags the notification.
+ *  Best-effort: a failed write just means the listing falls back to mtime
+ *  ordering for this row, so it never blocks teardown (mirrors
+ *  saveOpencodeMeta). */
 export async function recordSessionDeleted(
   projectSlug: string,
   sessionId: string,
@@ -44,11 +48,28 @@ export async function recordSessionDeleted(
       .values({ projectSlug, sessionId, ...deathColumns })
       .onConflictDoUpdate({
         target: [deletedSessions.projectSlug, deletedSessions.sessionId],
-        set: { deletedAt: new Date(), ...deathColumns },
+        set: { deletedAt: new Date(), seen: false, ...deathColumns },
       })
   } catch {
     // Non-fatal: without the row the deleted listing sorts this session by
     // its transcript mtime instead of its exact deletion time.
+  }
+}
+
+/** Mark an abnormal death as seen (the user viewed its detail in the deleted
+ *  overlay). Best-effort — a lost write just re-shows the notification dot,
+ *  which the next view clears again. No-op for a session with no row. */
+export async function recordDeathSeen(projectSlug: string, sessionId: string): Promise<void> {
+  try {
+    const db = await getDb()
+    await db.update(deletedSessions)
+      .set({ seen: true })
+      .where(and(
+        eq(deletedSessions.projectSlug, projectSlug),
+        eq(deletedSessions.sessionId, sessionId),
+      ))
+  } catch {
+    // Non-fatal — see above.
   }
 }
 
@@ -60,11 +81,13 @@ export async function listDeletedInfo(slug: string): Promise<Map<string, Deleted
     deletedAt: deletedSessions.deletedAt,
     deathReason: deletedSessions.deathReason,
     deathDetail: deletedSessions.deathDetail,
+    seen: deletedSessions.seen,
   }).from(deletedSessions).where(eq(deletedSessions.projectSlug, slug))
   return new Map(rows.map((r) => [r.sessionId, {
     deletedAt: r.deletedAt,
     deathReason: (r.deathReason ?? undefined) as SessionDeathReason | undefined,
     deathDetail: r.deathDetail ?? undefined,
+    seen: r.seen,
   }]))
 }
 

@@ -6,12 +6,12 @@ import type { DeletedSessionEntry } from '@yaac/shared/types'
 
 const provision = vi.hoisted(() => vi.fn())
 
-vi.mock('#lib/deletedApi', () => ({ getDeletedSessions: vi.fn() }))
+vi.mock('#lib/deletedApi', () => ({ getDeletedSessions: vi.fn(), markDeathSeen: vi.fn() }))
 vi.mock('#lib/createSession', () => ({ restartSession: vi.fn() }))
 vi.mock('#lib/useProvisionSession', () => ({ useProvisionSession: () => provision }))
 
 import { DeletedSessionsButton } from '#components/DeletedSessionsButton'
-import { getDeletedSessions } from '#lib/deletedApi'
+import { getDeletedSessions, markDeathSeen } from '#lib/deletedApi'
 import { useUiStore } from '#store'
 
 // jsdom has no ResizeObserver; Base UI needs one to exist.
@@ -29,6 +29,7 @@ const entry = (over: Partial<DeletedSessionEntry> = {}): DeletedSessionEntry => 
   tool: 'claude',
   createdAt: '2026-07-13 00:00:00',
   deletedAt: '2026-07-13 01:00:00',
+  seen: false,
   ...over,
 })
 
@@ -41,6 +42,7 @@ beforeEach(() => {
   useUiStore.setState({ deletedOverlayOpen: false, optimisticDeleted: [] })
   vi.clearAllMocks()
   vi.mocked(getDeletedSessions).mockResolvedValue(TWO)
+  vi.mocked(markDeathSeen).mockResolvedValue(undefined)
 })
 
 afterEach(cleanup)
@@ -119,6 +121,45 @@ describe('DeletedSessionsButton', () => {
     fireEvent.click(screen.getByRole('button', { name: /Restart/ }))
     const dialog = await screen.findByRole('alertdialog')
     expect(within(dialog).getByText(/This session died: out of memory/)).toBeTruthy()
+  })
+
+  it('flags an unseen abnormal death with a notification dot on the entry point', async () => {
+    vi.mocked(getDeletedSessions).mockResolvedValue([
+      entry({ sessionId: 's3', title: 'OOMed run', deathReason: 'oom' }),
+    ])
+    renderButton()
+    // Dot shows without opening the overlay (title doubles as tooltip + hook).
+    expect(await screen.findByTitle('1 session died unexpectedly')).toBeTruthy()
+  })
+
+  it('shows no notification dot when every deletion was user-initiated', async () => {
+    renderButton() // TWO are plain deletes (no deathReason)
+    await screen.findByRole('button', { name: 'Deleted sessions' })
+    expect(screen.queryByTitle(/died unexpectedly/)).toBeNull()
+  })
+
+  it('marks the death seen server-side and clears the dot once its detail is viewed', async () => {
+    vi.mocked(getDeletedSessions).mockResolvedValue([
+      entry({ sessionId: 's3', title: 'OOMed run', deathReason: 'oom' }),
+    ])
+    await open() // sole died row auto-selected → its detail is on screen → seen
+    // Persisted via the server, and the cached list is optimistically patched so
+    // the dot clears without waiting for a refetch.
+    await waitFor(() => expect(markDeathSeen).toHaveBeenCalledWith('proj', 's3'))
+    await waitFor(() => expect(screen.queryByTitle(/died unexpectedly/)).toBeNull())
+  })
+
+  it('keeps the dot until each died row is individually viewed', async () => {
+    vi.mocked(getDeletedSessions).mockResolvedValue([
+      entry({ sessionId: 's1', title: 'Plain delete' }),
+      entry({ sessionId: 's3', title: 'OOMed run', deathReason: 'oom' }),
+    ])
+    await open() // top row (plain delete) auto-selected → the died row stays unseen
+    expect(await screen.findByTitle('1 session died unexpectedly')).toBeTruthy()
+    expect(markDeathSeen).not.toHaveBeenCalled() // the plain delete isn't a death
+    fireEvent.click(screen.getAllByText('OOMed run')[0]) // view it → marked seen
+    await waitFor(() => expect(markDeathSeen).toHaveBeenCalledWith('proj', 's3'))
+    await waitFor(() => expect(screen.queryByTitle(/died unexpectedly/)).toBeNull())
   })
 
   it('labels a plain delete as Deleted with no Cause row', async () => {

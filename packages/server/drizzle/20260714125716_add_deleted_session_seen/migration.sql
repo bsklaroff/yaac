@@ -1,0 +1,1 @@
+ALTER TABLE "deleted_sessions" ADD COLUMN "seen" boolean DEFAULT false NOT NULL;

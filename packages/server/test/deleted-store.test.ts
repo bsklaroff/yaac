@@ -5,6 +5,7 @@ import { getDb, closeDb } from '#lib/db/client'
 import { deletedSessions } from '#lib/db/schema'
 import {
   recordSessionDeleted,
+  recordDeathSeen,
   listDeletedInfo,
   clearSessionDeleted,
 } from '#lib/session/deleted-store'
@@ -84,6 +85,27 @@ describe('deleted-session store', () => {
     const row = (await listDeletedInfo('proj')).get('sid-1')
     expect(row?.deathReason).toBe('oom')
     expect(row?.deathDetail).toBeUndefined()
+  })
+
+  it('a fresh record is unseen; recordDeathSeen marks it seen', async () => {
+    await recordSessionDeleted('proj', 'sid-1', { reason: 'oom' })
+    expect((await listDeletedInfo('proj')).get('sid-1')?.seen).toBe(false)
+    await recordDeathSeen('proj', 'sid-1')
+    expect((await listDeletedInfo('proj')).get('sid-1')?.seen).toBe(true)
+  })
+
+  it('a re-record resets seen so a re-died reused id re-flags', async () => {
+    await recordSessionDeleted('proj', 'sid-1', { reason: 'oom' })
+    await recordDeathSeen('proj', 'sid-1')
+    expect((await listDeletedInfo('proj')).get('sid-1')?.seen).toBe(true)
+    // Session restarted and died again → re-record must clear the seen mark.
+    await recordSessionDeleted('proj', 'sid-1', { reason: 'crashed' })
+    expect((await listDeletedInfo('proj')).get('sid-1')?.seen).toBe(false)
+  })
+
+  it('recordDeathSeen is a no-op for a session with no row', async () => {
+    await expect(recordDeathSeen('proj', 'ghost')).resolves.toBeUndefined()
+    expect((await listDeletedInfo('proj')).size).toBe(0)
   })
 
   it('clearSessionDeleted removes only the targeted row', async () => {

@@ -23,3 +23,19 @@ export async function getDeletedSessions(
     throw err
   }
 }
+
+/**
+ * Mark an abnormal death as seen — the user viewed its detail in the deleted
+ * overlay, so the notification dot / row highlight should clear. Persisted on
+ * the server (deleted_sessions row) so the acknowledgement is durable and
+ * shared across clients. Best-effort: a failed write just re-shows the dot,
+ * which the next view clears again, so callers fire-and-forget.
+ */
+export async function markDeathSeen(projectSlug: string, sessionId: string): Promise<void> {
+  try {
+    await api.session['mark-death-seen'].$post({ json: { projectSlug, sessionId } })
+  } catch {
+    // Best-effort: a lost write just re-shows the dot, which the next view
+    // clears again. Swallow so fire-and-forget callers need no .catch.
+  }
+}

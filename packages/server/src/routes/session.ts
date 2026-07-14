@@ -3,6 +3,7 @@ import { Hono } from 'hono'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
 import { listActiveSessions, listDeletedSessions } from '#lib/session/list'
+import { recordDeathSeen } from '#lib/session/deleted-store'
 import { getSessionDetail, getSessionBlockedHosts, getSessionPrompt } from '#lib/session/detail'
 import { deleteSession } from '#lib/session/delete'
 import { restartSession } from '#lib/session/restart'
@@ -133,6 +134,21 @@ export const sessionApp = new Hono()
       const { sessionId } = c.req.valid('json')
       const info = await deleteSession(sessionId)
       return c.json(info)
+    },
+  )
+  // Acknowledge that the user has viewed an abnormal death's detail, clearing
+  // the "Deleted sessions" notification dot / row highlight. Persisted on the
+  // deleted_sessions row so the mark is durable and shared across clients.
+  .post(
+    '/mark-death-seen',
+    zv('json', z.object({
+      projectSlug: z.string().min(1),
+      sessionId: z.string().min(1),
+    })),
+    async (c) => {
+      const { projectSlug, sessionId } = c.req.valid('json')
+      await recordDeathSeen(projectSlug, sessionId)
+      return c.body(null, 204)
     },
   )
   .post('/provisioning/:id/dismiss', (c) => {

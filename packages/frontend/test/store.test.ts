@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
-  isUnreadWaiting, loadViewMode, mergeProvisioning, resolveAttentionTarget, resolveNewSessionTool,
-  unreadWaitingBySlug, useUiStore,
+  isUnreadWaiting, isUnseenDeath, loadViewMode, mergeProvisioning, resolveAttentionTarget,
+  resolveNewSessionTool, unreadWaitingBySlug, useUiStore,
 } from '#store'
 import type { ProvisioningSessionEntry } from '@yaac/shared/types'
 
@@ -31,7 +31,8 @@ describe('pending-delete tracking', () => {
 
 describe('optimistic deleted tracking', () => {
   const entry = (sessionId: string) => ({
-    sessionId, projectSlug: 'p', tool: 'claude' as const, createdAt: '2026-01-01 00:00:00', prompt: 'hi',
+    sessionId, projectSlug: 'p', tool: 'claude' as const, createdAt: '2026-01-01 00:00:00',
+    prompt: 'hi', seen: false,
   })
 
   it('addOptimisticDeleted prepends, with no duplicates', () => {
@@ -82,6 +83,18 @@ describe('read-waiting tracking', () => {
       { sessionId: 'other', waitingSinceMs: 500 },
     ])
     expect(useUiStore.getState()).toBe(before)
+  })
+})
+
+describe('isUnseenDeath', () => {
+  it('flags an abnormal death the server has not marked seen', () => {
+    expect(isUnseenDeath({ deathReason: 'oom', seen: false })).toBe(true)
+    expect(isUnseenDeath({ deathReason: 'oom', seen: true })).toBe(false)
+  })
+
+  it('never flags a plain user delete (no deathReason), seen or not', () => {
+    expect(isUnseenDeath({ seen: false })).toBe(false)
+    expect(isUnseenDeath({ deathReason: undefined, seen: false })).toBe(false)
   })
 })
 

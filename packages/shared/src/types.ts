@@ -508,6 +508,11 @@ export interface DeletedSessionEntry {
   deathReason?: SessionDeathReason
   /** Evidence accompanying `deathReason` (exit code, eviction message, …). */
   deathDetail?: string
+  /** Whether the user has viewed this death's detail — clears the "Deleted
+   *  sessions" notification dot / row highlight. Server-persisted (on the
+   *  deleted_sessions row) so the acknowledgement is durable and shared across
+   *  clients; only meaningful when `deathReason` is set. */
+  seen: boolean
 }
 
 /** A webapp-attachable terminal inside a session's container (beyond the

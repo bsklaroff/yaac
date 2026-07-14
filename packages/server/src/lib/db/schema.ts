@@ -48,13 +48,18 @@ export const sessionTitles = snakeCase.table('session_titles', {
  *  because the derive-from-disk scan already knows it. `deathReason` /
  *  `deathDetail` (a SessionDeathReason + free-form evidence) are set only
  *  when the stale reaper — not the user — removed the session; a plain
- *  delete writes them null so a reused id can't inherit a stale cause. */
+ *  delete writes them null so a reused id can't inherit a stale cause.
+ *  `seen` tracks whether the user has viewed an abnormal death's detail (the
+ *  "Deleted sessions" notification dot / row highlight); it rides the row so
+ *  the acknowledgement is durable across devices and daemon restarts. It
+ *  resets to false on every (re-)record so a re-died reused id re-flags. */
 export const deletedSessions = snakeCase.table('deleted_sessions', {
   projectSlug: text().notNull(),
   sessionId: text().notNull(),
   deletedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   deathReason: text(),
   deathDetail: text(),
+  seen: boolean().notNull().default(false),
 }, (t) => [primaryKey({ columns: [t.projectSlug, t.sessionId] })])
 
 /** Cached opencode first-message snapshots. `createdAt` replaces the meta

@@ -516,6 +516,9 @@ export async function listDeletedSessions(
             tool,
             createdAt: formatUtcTimestamp(stat.birthtimeMs),
             lastActiveAt: formatUtcTimestamp(stat.mtimeMs),
+            // Overwritten below for sessions with a deleted_sessions row; a
+            // session removed out-of-band (no row, no death) stays false.
+            seen: false,
           },
           birthtimeMs: stat.birthtimeMs,
           lastActiveMs: stat.mtimeMs,
@@ -554,6 +557,7 @@ export async function listDeletedSessions(
           tool: 'opencode',
           createdAt: formatUtcTimestamp(birthtimeMs),
           lastActiveAt: formatUtcTimestamp(lastActiveMs),
+          seen: false, // overwritten below when a deleted_sessions row exists
         },
         birthtimeMs,
         lastActiveMs,
@@ -575,6 +579,7 @@ export async function listDeletedSessions(
       r.entry.deletedAt = formatUtcTimestamp(r.deletedAtMs)
       r.entry.deathReason = record.deathReason
       r.entry.deathDetail = record.deathDetail
+      r.entry.seen = record.seen
     }
   }
 

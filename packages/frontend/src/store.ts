@@ -254,6 +254,19 @@ export function isUnreadWaiting(
 }
 
 /**
+ * Whether a deleted session died for an abnormal reason the user hasn't looked
+ * at yet. Only the stale reaper sets deathReason (a plain user delete leaves it
+ * null), so this flags exactly the unexpected deaths. `seen` is server-persisted
+ * on the deleted_sessions row and resets to false when a reused id dies anew, so
+ * a re-death re-flags without any client-side spell keying.
+ */
+export function isUnseenDeath(
+  entry: Pick<DeletedSessionEntry, 'deathReason' | 'seen'>,
+): boolean {
+  return !!entry.deathReason && !entry.seen
+}
+
+/**
  * Per-project count of unread waiting sessions — waiting and not yet viewed
  * during the current waiting spell. Drives the rail attention badge, so a
  * waiting session the user has already looked at doesn't keep flagging.

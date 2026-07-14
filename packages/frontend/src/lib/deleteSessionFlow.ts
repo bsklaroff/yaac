@@ -24,6 +24,9 @@ export function deleteSessionOptimistic(session: SessionListEntry): void {
       createdAt: session.createdAt,
       prompt: session.prompt,
       title: session.title,
+      // A user delete, never an abnormal death, so `seen` is moot — but the
+      // type requires it and isUnseenDeath keys off deathReason anyway.
+      seen: false,
     })
   }
   void deleteSession(id).catch((e: unknown) => {
