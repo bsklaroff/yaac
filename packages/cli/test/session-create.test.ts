@@ -99,7 +99,7 @@ vi.mock('@yaac/shared/project-paths', () => ({
   codexDir: vi.fn((slug: string) => `/tmp/${slug}/codex`),
   opencodeConfigDir: vi.fn((slug: string) => `/tmp/${slug}/opencode-config`),
   opencodeDataDir: vi.fn((slug: string, sessionId: string) => `/tmp/${slug}/opencode-data/${sessionId}`),
-  piSessionsDir: vi.fn((slug: string, sessionId: string) => `/tmp/${slug}/pi-sessions/${sessionId}`),
+  piDir: vi.fn((slug: string) => `/tmp/${slug}/pi`),
   cachedPackagesDir: vi.fn((slug: string) => `/tmp/${slug}/.cached-packages`),
   cacheVolumeDir: vi.fn((slug: string, key: string) => `/tmp/${slug}/cache-volumes/${key}`),
   codexTranscriptDir: vi.fn((slug: string) => `/tmp/${slug}/transcripts`),
@@ -513,6 +513,7 @@ describe('createSession', () => {
       '/tmp/demo/codex',
       '/tmp/demo/opencode-data/abcd1234',
       '/tmp/demo/opencode-config',
+      '/tmp/demo/pi',
       '/tmp/demo/.cached-packages',
       '/tmp/demo/sessions/abcd1234/tmux',
     ]))

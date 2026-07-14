@@ -142,21 +142,25 @@ export function opencodeDataDir(slug: string, sessionId: string): string {
   return path.join(projectDir(slug), 'opencode-data', sessionId)
 }
 
-/** Per-project root holding every pi session's log dir (one subdir per id). */
-export function piSessionsRootDir(slug: string): string {
-  return path.join(projectDir(slug), 'pi-sessions')
+/**
+ * Per-project pi home. Bind-mounted at `/home/yaac/.pi/` inside the container
+ * (the whole `.pi` dir, mirroring `claudeDir`/`~/.claude`), so every session's
+ * settings, extensions, and JSONL session logs are shared across all sessions
+ * of the project. Persists across container teardown, so `yaac session list -d`
+ * first-message lookups read the logs directly (no meta cache needed).
+ */
+export function piDir(slug: string): string {
+  return path.join(projectDir(slug), 'pi')
 }
 
 /**
- * Per-yaac-session pi data root. Bind-mounted into the container and pointed
- * at by `PI_CODING_AGENT_SESSION_DIR`, so pi writes its JSONL session logs
- * here. Per-session (like `opencodeDataDir`) so `pi --continue` resumes only
- * this session's log, and persists across container teardown so
- * `yaac session list -d` first-message lookups still work — pi's logs are
- * plain JSONL the server reads directly (no meta cache needed).
+ * Directory holding pi's JSONL session logs (one `<timestamp>_<sessionId>.jsonl`
+ * per session) under the mounted pi home. pi addresses each session by id via
+ * `--session-id`, so the server reads a session's log by matching that id in
+ * the filename rather than isolating each session in its own dir.
  */
-export function piSessionsDir(slug: string, sessionId: string): string {
-  return path.join(piSessionsRootDir(slug), sessionId)
+export function piSessionsDir(slug: string): string {
+  return path.join(piDir(slug), 'agent', 'sessions')
 }
 
 export function worktreesDir(slug: string): string {

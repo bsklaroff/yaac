@@ -34,84 +34,104 @@ describe('classifyPiPane', () => {
 
 describe('pi first-message + session records', () => {
   const slug = 'proj'
-  const sessionId = 'sess-1'
   let tmpDir: string
 
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-status-test-'))
     setDataDir(tmpDir)
-    await fs.mkdir(piSessionsDir(slug, sessionId), { recursive: true })
+    // All of a project's pi logs share one dir (mirroring ~/.claude); pi names
+    // each `<timestamp>_<sessionId>.jsonl` and the server keys off that id.
+    await fs.mkdir(piSessionsDir(slug), { recursive: true })
   })
 
   afterEach(async () => {
     await fs.rm(tmpDir, { recursive: true, force: true })
   })
 
-  function writeLog(fileName: string, entries: Record<string, unknown>[]): Promise<void> {
+  // `ts` (the timestamp prefix) orders logs chronologically; `sessionId` is the
+  // id pi embeds so the server can tell one session's logs from another's.
+  function writeLog(ts: string, sessionId: string, entries: Record<string, unknown>[]): Promise<void> {
     const body = entries.map((e) => JSON.stringify(e)).join('\n') + '\n'
-    return fs.writeFile(path.join(piSessionsDir(slug, sessionId), fileName), body)
+    return fs.writeFile(path.join(piSessionsDir(slug), `${ts}_${sessionId}.jsonl`), body)
   }
 
   it('returns the first user message (string content)', async () => {
-    await writeLog('100_a.jsonl', [
+    await writeLog('100', 'sess-1', [
       { type: 'session', id: 'x' },
       { type: 'message', message: { role: 'user', content: 'fix the login bug' } },
       { type: 'message', message: { role: 'assistant', content: 'on it' } },
     ])
-    expect(await getSessionPiFirstUserMessage(slug, sessionId)).toBe('fix the login bug')
+    expect(await getSessionPiFirstUserMessage(slug, 'sess-1')).toBe('fix the login bug')
   })
 
   it('joins array text content parts', async () => {
-    await writeLog('100_a.jsonl', [
+    await writeLog('100', 'sess-1', [
       {
         type: 'message',
         message: { role: 'user', content: [{ type: 'text', text: 'hello ' }, { type: 'text', text: 'world' }] },
       },
     ])
-    expect(await getSessionPiFirstUserMessage(slug, sessionId)).toBe('hello world')
+    expect(await getSessionPiFirstUserMessage(slug, 'sess-1')).toBe('hello world')
   })
 
   it('ignores assistant messages and non-message entries', async () => {
-    await writeLog('100_a.jsonl', [
+    await writeLog('100', 'sess-1', [
       { type: 'tool', name: 'bash' },
       { type: 'message', message: { role: 'assistant', content: 'thinking' } },
       { type: 'message', message: { role: 'user', content: 'the real prompt' } },
     ])
-    expect(await getSessionPiFirstUserMessage(slug, sessionId)).toBe('the real prompt')
+    expect(await getSessionPiFirstUserMessage(slug, 'sess-1')).toBe('the real prompt')
   })
 
   it('reads the oldest log first when several exist', async () => {
     // Filenames sort chronologically by their timestamp prefix.
-    await writeLog('200_b.jsonl', [{ type: 'message', message: { role: 'user', content: 'newer' } }])
-    await writeLog('100_a.jsonl', [{ type: 'message', message: { role: 'user', content: 'older' } }])
-    expect(await getSessionPiFirstUserMessage(slug, sessionId)).toBe('older')
+    await writeLog('200', 'sess-1', [{ type: 'message', message: { role: 'user', content: 'newer' } }])
+    await writeLog('100', 'sess-1', [{ type: 'message', message: { role: 'user', content: 'older' } }])
+    expect(await getSessionPiFirstUserMessage(slug, 'sess-1')).toBe('older')
   })
 
   it('falls through to a later log when the first has no user message', async () => {
-    await writeLog('100_a.jsonl', [{ type: 'message', message: { role: 'assistant', content: 'no user here' } }])
-    await writeLog('200_b.jsonl', [{ type: 'message', message: { role: 'user', content: 'found me' } }])
-    expect(await getSessionPiFirstUserMessage(slug, sessionId)).toBe('found me')
+    await writeLog('100', 'sess-1', [{ type: 'message', message: { role: 'assistant', content: 'no user here' } }])
+    await writeLog('200', 'sess-1', [{ type: 'message', message: { role: 'user', content: 'found me' } }])
+    expect(await getSessionPiFirstUserMessage(slug, 'sess-1')).toBe('found me')
+  })
+
+  it('reads only the requested session when the shared dir holds several', async () => {
+    await writeLog('100', 'sess-1', [{ type: 'message', message: { role: 'user', content: 'from one' } }])
+    await writeLog('100', 'sess-2', [{ type: 'message', message: { role: 'user', content: 'from two' } }])
+    expect(await getSessionPiFirstUserMessage(slug, 'sess-1')).toBe('from one')
+    expect(await getSessionPiFirstUserMessage(slug, 'sess-2')).toBe('from two')
   })
 
   it('returns undefined when no logs exist', async () => {
     expect(await getSessionPiFirstUserMessage(slug, 'other-session')).toBeUndefined()
   })
 
-  it('reports hasPiSessionLog by presence of a jsonl file', async () => {
-    expect(await hasPiSessionLog(slug, sessionId)).toBe(false)
-    await writeLog('100_a.jsonl', [{ type: 'message', message: { role: 'user', content: 'hi' } }])
-    expect(await hasPiSessionLog(slug, sessionId)).toBe(true)
+  it('reports hasPiSessionLog by presence of a matching jsonl file', async () => {
+    expect(await hasPiSessionLog(slug, 'sess-1')).toBe(false)
+    await writeLog('100', 'sess-1', [{ type: 'message', message: { role: 'user', content: 'hi' } }])
+    expect(await hasPiSessionLog(slug, 'sess-1')).toBe(true)
     expect(await hasPiSessionLog(slug, 'no-such-session')).toBe(false)
   })
 
-  it('lists a record per session subdir that holds a log', async () => {
-    await writeLog('100_a.jsonl', [{ type: 'message', message: { role: 'user', content: 'hi' } }])
-    // An empty session dir (no jsonl) is not a record.
-    await fs.mkdir(piSessionsDir(slug, 'empty-session'), { recursive: true })
+  it('lists a record per distinct session id in the shared dir', async () => {
+    await writeLog('100', 'sess-1', [{ type: 'message', message: { role: 'user', content: 'hi' } }])
+    await writeLog('150', 'sess-2', [{ type: 'message', message: { role: 'user', content: 'yo' } }])
+    // A log without the `<ts>_<id>` separator has no session id, so no record.
+    await fs.writeFile(path.join(piSessionsDir(slug), 'stray.jsonl'), '{}\n')
     const records = await listPiSessionRecords(slug)
-    expect(records.map((r) => r.sessionId)).toEqual([sessionId])
-    expect(records[0].birthtimeMs).toBeGreaterThan(0)
-    expect(records[0].lastActiveMs).toBeGreaterThan(0)
+    expect(records.map((r) => r.sessionId).sort()).toEqual(['sess-1', 'sess-2'])
+    for (const r of records) {
+      expect(r.birthtimeMs).toBeGreaterThan(0)
+      expect(r.lastActiveMs).toBeGreaterThan(0)
+    }
+  })
+
+  it('merges multiple logs sharing a session id into one record', async () => {
+    await writeLog('100', 'sess-1', [{ type: 'message', message: { role: 'user', content: 'first' } }])
+    await writeLog('200', 'sess-1', [{ type: 'message', message: { role: 'user', content: 'second' } }])
+    const records = await listPiSessionRecords(slug)
+    expect(records.map((r) => r.sessionId)).toEqual(['sess-1'])
   })
 
   it('returns no records for a project with no pi sessions', async () => {

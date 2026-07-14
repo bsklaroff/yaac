@@ -55,7 +55,7 @@ import {
   nestedYaacDataDir,
   opencodeConfigDir,
   opencodeDataDir,
-  piSessionsDir,
+  piDir,
   cachedPackagesDir,
   cacheVolumeDir,
   sessionVclusterDir,
@@ -103,9 +103,12 @@ import { AGENT_TOOLS } from '@yaac/shared/types'
 import type { AgentTool, PortMapping, YaacConfig, InitCommandSpec } from '@yaac/shared/types'
 import { PI_DEFAULT_PROVIDER, piProviderInfo, type PiProvider } from '@yaac/shared/pi-providers'
 
+/** In-pod pi home. The host-side `piDir` is mounted here (the whole `.pi`,
+ *  mirroring `~/.claude`), so every session's pi logs are visible to all. */
+const PI_CONTAINER_HOME = '/home/yaac/.pi'
 /** In-pod dir pi writes its JSONL session logs to (PI_CODING_AGENT_SESSION_DIR
- *  points here; the host-side `piSessionsDir` is mounted at this path). */
-const PI_SESSIONS_CONTAINER_DIR = '/home/yaac/.pi/agent/sessions'
+ *  points here; it lives under the mounted `PI_CONTAINER_HOME`). */
+const PI_SESSIONS_CONTAINER_DIR = `${PI_CONTAINER_HOME}/agent/sessions`
 
 export function shellEscape(str: string): string {
   return str.replace(/'/g, "'\\''")
@@ -175,14 +178,12 @@ export function buildAgentCmd(
     // project trust prompt for the run; pi has no sandbox and executes tools
     // without per-call approval. `--model <provider>/<id>` selects the
     // provider (pi reads that provider's api-key env var, which the proxy
-    // swaps). `-c` resumes the one session in this pod's mounted session dir
-    // (PI_CODING_AGENT_SESSION_DIR). addDirFlags is dropped: pi has no
-    // --add-dir equivalent.
+    // swaps). `--session-id <id>` addresses this session by id in the shared
+    // `.pi` home — creating it on a fresh run, resuming it otherwise (the same
+    // flag both ways, like `claude --session-id`), so `resume` needs no branch.
+    // addDirFlags is dropped: pi has no --add-dir equivalent.
     const model = piProviderInfo(piProvider ?? PI_DEFAULT_PROVIDER).defaultModel
-    return [
-      `pi --approve --model ${model}`,
-      resume ? '-c' : '',
-    ].filter(Boolean).join(' ')
+    return `pi --approve --model ${model} --session-id ${sessionId}`
   }
   if (tool === 'opencode') {
     // --port + --hostname enable opencode's built-in HTTP server on
@@ -1273,11 +1274,12 @@ export async function createSession(
   // (only opencode reads it) so a spare retooled to opencode gets it.
   env.push('OPENCODE_ENABLE_EXA=true')
 
-  // pi session logs: point pi at the host-mounted per-session dir so its
-  // JSONL transcripts are readable on the host (first-message / status) and
-  // `pi -c` resumes only this session. Skip pi's startup version check so a
-  // fresh pod doesn't stall on a network probe. Set unconditionally (only pi
-  // reads them) so a spare retooled to pi gets them.
+  // Point pi at its session-log dir inside the mounted `.pi` home so its JSONL
+  // transcripts are readable on the host (first-message / status). pi resumes
+  // by `--session-id` (buildAgentCmd), so the shared home holding every
+  // session's logs is fine. Skip pi's startup version check so a fresh pod
+  // doesn't stall on a network probe. Set unconditionally (only pi reads them)
+  // so a spare retooled to pi gets them.
   env.push(`PI_CODING_AGENT_SESSION_DIR=${PI_SESSIONS_CONTAINER_DIR}`)
   env.push('PI_SKIP_VERSION_CHECK=1')
 
@@ -1302,7 +1304,7 @@ export async function createSession(
   const codex = codexDir(projectSlug)
   const opencodeData = opencodeDataDir(projectSlug, sessionId)
   const opencodeConfig = opencodeConfigDir(projectSlug)
-  const piSessions = piSessionsDir(projectSlug, sessionId)
+  const pi = piDir(projectSlug)
   const cachedPackages = cachedPackagesDir(projectSlug)
 
   await fs.mkdir(claude, { recursive: true })
@@ -1311,8 +1313,9 @@ export async function createSession(
   // isolation sidesteps opencode upstream #5241 concurrent-write issues.
   await fs.mkdir(opencodeData, { recursive: true })
   await fs.mkdir(opencodeConfig, { recursive: true })
-  // Per-yaac-session pi session-log dir (mounted at PI_SESSIONS_CONTAINER_DIR).
-  await fs.mkdir(piSessions, { recursive: true })
+  // Per-project pi home (mounted at PI_CONTAINER_HOME); pi creates the
+  // agent/sessions subdir under it on first run.
+  await fs.mkdir(pi, { recursive: true })
   await fs.mkdir(cachedPackages, { recursive: true })
 
   // Refresh the per-project placeholder credential files from the current
@@ -1427,7 +1430,7 @@ export async function createSession(
     { hostPath: codex, mountPath: '/home/yaac/.codex' },
     { hostPath: opencodeData, mountPath: '/home/yaac/.local/share/opencode' },
     { hostPath: opencodeConfig, mountPath: '/home/yaac/.config/opencode' },
-    { hostPath: piSessions, mountPath: PI_SESSIONS_CONTAINER_DIR },
+    { hostPath: pi, mountPath: PI_CONTAINER_HOME },
     { hostPath: cachedPackages, mountPath: '/home/yaac/.cached-packages' },
     { hostPath: tmuxHostDir, mountPath: CONTAINER_TMUX_DIR },
     ...cacheVolumeEntries.map(([key, containerPath]): HostPathMount => ({

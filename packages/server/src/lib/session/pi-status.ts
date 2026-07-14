@@ -1,17 +1,19 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { Dirent } from 'node:fs'
-import { piSessionsDir, piSessionsRootDir } from '@yaac/shared/project-paths'
+import { piSessionsDir } from '@yaac/shared/project-paths'
 import { scanJsonlForward } from '#lib/session/jsonl'
 
 /**
  * Status classification + first-message lookup for pi (earendil) sessions.
  *
- * Unlike opencode, pi writes plain JSONL session logs to a host-mounted dir
- * (`piSessionsDir`, pointed at by PI_CODING_AGENT_SESSION_DIR), so the
- * first-message lookup reads those files directly on the host — no HTTP probe
- * and no DB meta cache. The files persist across container teardown, so the
- * live and deleted-session lookups are the same read.
+ * Unlike opencode, pi writes plain JSONL session logs (one
+ * `<timestamp>_<sessionId>.jsonl` per session) into the shared, host-mounted
+ * `.pi` home (`piSessionsDir`), so the first-message lookup reads those files
+ * directly on the host — no HTTP probe and no DB meta cache. A session's logs
+ * are matched by the id pi embeds in the filename (from our `--session-id`).
+ * The files persist across container teardown, so the live and deleted-session
+ * lookups are the same read.
  *
  * Status is read from the rendered tmux pane (window `yaac:pi.0`), captured by
  * the session's status watcher (`src/server/status-watcher.ts`) over its
@@ -95,6 +97,26 @@ async function listPiJsonlFiles(dir: string): Promise<string[]> {
 }
 
 /**
+ * The session id embedded in a pi log filename. pi names each log
+ * `<timestamp>_<sessionId>.jsonl` (we pass our session id via `--session-id`);
+ * the timestamp prefix carries no underscore, so the id is everything after
+ * the first one. Returns undefined for a name without that separator.
+ */
+function sessionIdFromPiLog(file: string): string | undefined {
+  const base = path.basename(file, '.jsonl')
+  const sep = base.indexOf('_')
+  if (sep < 0) return undefined
+  const id = base.slice(sep + 1)
+  return id.length > 0 ? id : undefined
+}
+
+/** A session's pi logs (oldest first), matched by id within the shared home. */
+async function piLogsForSession(projectSlug: string, sessionId: string): Promise<string[]> {
+  const files = await listPiJsonlFiles(piSessionsDir(projectSlug))
+  return files.filter((f) => sessionIdFromPiLog(f) === sessionId)
+}
+
+/**
  * First user message for a pi session, used by `yaac session list` to show a
  * prompt preview. Reads the oldest session log's first `role:"user"` entry;
  * falls through to later logs if the first has none (e.g. an empty session).
@@ -105,7 +127,7 @@ export async function getSessionPiFirstUserMessage(
   projectSlug: string,
   sessionId: string,
 ): Promise<string | undefined> {
-  const files = await listPiJsonlFiles(piSessionsDir(projectSlug, sessionId))
+  const files = await piLogsForSession(projectSlug, sessionId)
   for (const file of files) {
     const msg = await scanJsonlForward(file, (entry) => getUserMessageText(entry as PiMessageEntry))
     if (msg !== undefined) return msg
@@ -118,34 +140,36 @@ export async function getSessionPiFirstUserMessage(
  * restart's tool inference once the pod is gone.
  */
 export async function hasPiSessionLog(projectSlug: string, sessionId: string): Promise<boolean> {
-  const files = await listPiJsonlFiles(piSessionsDir(projectSlug, sessionId))
+  const files = await piLogsForSession(projectSlug, sessionId)
   return files.length > 0
 }
 
 /**
- * Deleted-session records for every pi session of a project: one per session
- * subdir under `piSessionsRootDir` that still holds a JSONL log. birthtime
- * (oldest log) is the creation signal; mtime (newest log) is last-activity —
- * the pi arm of `listDeletedSessions` (pi leaves host JSONL, unlike opencode,
- * so no meta cache is consulted).
+ * Deleted-session records for every pi session of a project: one per session id
+ * found among the JSONL logs in the shared `.pi` home. Logs are grouped by the
+ * id in their filename (a session normally has one log, but a resume from a
+ * different cwd can leave a second sharing that id). birthtime (oldest log) is
+ * the creation signal; mtime (newest log) is last-activity — the pi arm of
+ * `listDeletedSessions` (pi leaves host JSONL, unlike opencode, so no meta
+ * cache is consulted).
  */
 export async function listPiSessionRecords(
   slug: string,
 ): Promise<Array<{ sessionId: string; birthtimeMs: number; lastActiveMs: number }>> {
-  let dirents: Dirent[]
-  try {
-    dirents = await fs.readdir(piSessionsRootDir(slug), { withFileTypes: true })
-  } catch {
-    return []
+  const files = await listPiJsonlFiles(piSessionsDir(slug))
+  const byId = new Map<string, string[]>()
+  for (const f of files) {
+    const id = sessionIdFromPiLog(f)
+    if (id === undefined) continue
+    const group = byId.get(id)
+    if (group) group.push(f)
+    else byId.set(id, [f])
   }
   const records: Array<{ sessionId: string; birthtimeMs: number; lastActiveMs: number }> = []
-  for (const d of dirents) {
-    if (!d.isDirectory()) continue
-    const files = await listPiJsonlFiles(piSessionsDir(slug, d.name))
-    if (files.length === 0) continue
+  for (const [sessionId, group] of byId) {
     let birthtimeMs = Infinity
     let lastActiveMs = 0
-    for (const f of files) {
+    for (const f of group) {
       try {
         const s = await fs.stat(f)
         birthtimeMs = Math.min(birthtimeMs, s.birthtimeMs)
@@ -155,7 +179,7 @@ export async function listPiSessionRecords(
       }
     }
     if (!Number.isFinite(birthtimeMs)) continue
-    records.push({ sessionId: d.name, birthtimeMs, lastActiveMs })
+    records.push({ sessionId, birthtimeMs, lastActiveMs })
   }
   return records
 }

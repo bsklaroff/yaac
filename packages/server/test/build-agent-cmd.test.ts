@@ -29,24 +29,24 @@ describe('buildAgentCmd', () => {
     const defaultModel = piProviderInfo(PI_DEFAULT_PROVIDER).defaultModel
     const anthropicModel = piProviderInfo('anthropic').defaultModel
 
-    it('uses --approve and the default provider model when none is given', () => {
+    it('uses --approve, the default provider model, and --session-id when none is given', () => {
       const cmd = buildAgentCmd('pi', 'sess-1', '')
-      expect(cmd).toBe(`pi --approve --model ${defaultModel}`)
+      expect(cmd).toBe(`pi --approve --model ${defaultModel} --session-id sess-1`)
     })
 
     it('uses the given provider default model', () => {
       const cmd = buildAgentCmd('pi', 'sess-1', '', false, 'anthropic')
-      expect(cmd).toBe(`pi --approve --model ${anthropicModel}`)
+      expect(cmd).toBe(`pi --approve --model ${anthropicModel} --session-id sess-1`)
     })
 
-    it('appends -c when resuming', () => {
+    it('addresses the session by id when resuming (same command as create)', () => {
       const cmd = buildAgentCmd('pi', 'sess-1', '', true, 'anthropic')
-      expect(cmd).toBe(`pi --approve --model ${anthropicModel} -c`)
+      expect(cmd).toBe(`pi --approve --model ${anthropicModel} --session-id sess-1`)
     })
 
     it('drops add-dir flags (pi has no --add-dir)', () => {
       const cmd = buildAgentCmd('pi', 'sess-1', '--add-dir /add-dir/tmp')
-      expect(cmd).toBe(`pi --approve --model ${defaultModel}`)
+      expect(cmd).toBe(`pi --approve --model ${defaultModel} --session-id sess-1`)
     })
   })
 
