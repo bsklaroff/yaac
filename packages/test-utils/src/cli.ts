@@ -12,7 +12,7 @@ import { e2eMkdtemp } from '#tmp'
 
 const REPO_ROOT = findRepoRoot(path.dirname(fileURLToPath(import.meta.url)))
 const TSX_CLI = createRequire(import.meta.url).resolve('tsx/cli')
-const ENTRY = path.join(REPO_ROOT, 'apps', 'cli', 'src', 'cli.ts')
+const ENTRY = path.join(REPO_ROOT, 'packages', 'cli', 'src', 'cli.ts')
 
 /**
  * Cross-worker mutex so only one `yaac server run` is live at a time
