@@ -450,6 +450,11 @@ interface UiState {
   deletedOverlayOpen: boolean
   openDeletedOverlay: () => void
   closeDeletedOverlay: () => void
+  /** Whether the full-screen skills view is open. Opened from the sidebar
+   *  header; scoped to the active project when rendered. */
+  skillsOverlayOpen: boolean
+  openSkillsOverlay: () => void
+  closeSkillsOverlay: () => void
   /** Add a locally-initiated provisioning row (dedup by id). */
   addOptimisticProvisioning: (entry: ProvisioningSessionEntry) => void
   /** Patch a tracked optimistic row's message or error (no-op if absent). */
@@ -534,6 +539,10 @@ export const useUiStore = create<UiState>((set) => ({
   deletedOverlayOpen: false,
   openDeletedOverlay: () => set({ deletedOverlayOpen: true }),
   closeDeletedOverlay: () => set({ deletedOverlayOpen: false }),
+
+  skillsOverlayOpen: false,
+  openSkillsOverlay: () => set({ skillsOverlayOpen: true }),
+  closeSkillsOverlay: () => set({ skillsOverlayOpen: false }),
   addOptimisticProvisioning: (entry) => set((s) => (
     s.optimisticProvisioning.some((e) => e.sessionId === entry.sessionId)
       ? s

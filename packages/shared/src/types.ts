@@ -500,6 +500,51 @@ export interface SessionDeathCause {
   detail?: string
 }
 
+/**
+ * Which on-disk tier a skill was discovered from. Bundled skills (embedded in
+ * the agent binary) are deliberately excluded — there is no supported way to
+ * enumerate them. Personal/plugin/project are all loose `SKILL.md` files.
+ */
+export type SkillSource = 'personal' | 'plugin' | 'project'
+
+/** One discovered agent skill (a `SKILL.md`), summarized for a listing. */
+export interface SkillSummary {
+  /** Stable, source-qualified id used to fetch the full body. */
+  id: string
+  /** Invocation name — frontmatter `name`, else the skill directory name. */
+  name: string
+  /** `description` with `when_to_use` appended. Empty when the frontmatter is
+   *  absent or malformed (the skill still loads, per Claude Code semantics). */
+  description: string
+  source: SkillSource
+  /** For plugin skills, the plugin the skill came from. */
+  sourceLabel?: string
+  /** False when frontmatter sets `user-invocable: false` (hidden from `/`). */
+  userInvocable: boolean
+  /** False when frontmatter sets `disable-model-invocation: true`. */
+  modelInvocable: boolean
+  /** Parsed `allowed-tools` (space/comma string or YAML list), if present. */
+  allowedTools?: string[]
+  /** Set when a higher-precedence skill shares this name (personal > project). */
+  shadowedBy?: SkillSource
+}
+
+/** All personal + plugin + project skills available to a project's agent. */
+export interface ProjectSkills {
+  skills: SkillSummary[]
+}
+
+/** A single skill's full `SKILL.md`, for the on-demand detail view. */
+export interface SkillDetail {
+  id: string
+  name: string
+  source: SkillSource
+  /** Raw frontmatter key→value (list values joined for display). */
+  frontmatter: Record<string, string>
+  /** The markdown body after the frontmatter block. */
+  body: string
+}
+
 export interface StaleSessionInfo {
   jobName: string
   projectSlug: string

@@ -53,6 +53,7 @@ export {
   Tablet as TabletIcon,
   Monitor as DesktopIcon,
   FileDiff as ChangesIcon,
+  Sparkles as SkillsIcon,
 } from 'lucide-react'
 
 /** Display name per agent tool (proper brand casing, incl. OpenCode). */

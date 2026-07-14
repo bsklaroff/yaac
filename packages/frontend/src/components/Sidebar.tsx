@@ -9,6 +9,7 @@ import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
 import { ImageBuildIndicator } from '#components/ImageBuildIndicator'
 import { NewSessionButton } from '#components/NewSessionButton'
 import { ProjectActionsMenu } from '#components/ProjectActionsMenu'
+import { SkillsButton } from '#components/SkillsButton'
 import { UsageBadge } from '#components/UsageBadge'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { dismissProvisioning } from '#lib/createSession'
@@ -93,6 +94,7 @@ export function Sidebar({
           </div>
           <div className="flex shrink-0 items-center gap-2 no-drag">
             {!connected && <span className="text-xs text-amber-400/80">reconnecting…</span>}
+            {projectSlug && <SkillsButton projectSlug={projectSlug} />}
             {projectSlug && <NewSessionButton projectSlug={projectSlug} />}
             <button
               onClick={toggleSidebar}

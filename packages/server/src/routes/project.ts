@@ -8,6 +8,7 @@ import { addProject } from '#lib/project/add'
 import { removeProject } from '#lib/project/remove'
 import { writeProjectConfig, removeProjectConfig, readProjectConfigRaw, setProjectReferenceBranch } from '#lib/project/local-config'
 import { getProjectBranches } from '#lib/project/branches'
+import { getProjectSkills, getSkillDetail } from '#lib/skills/discover'
 import { remoteBranchExists } from '#lib/git'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
@@ -84,6 +85,32 @@ export const projectApp = new Hono()
       }
       const config = await setProjectReferenceBranch(slug, branch)
       return c.json({ referenceBranch: config.referenceBranch ?? null })
+    },
+  )
+  // Personal + plugin + project SKILL.md files a project's agent can use, for
+  // the given tool (default claude). A pure host-side read of each agent's
+  // explicit skill dirs, so it needs no running session.
+  .get(
+    '/:slug/skills',
+    zv('query', z.object({ tool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional() })),
+    async (c) => {
+      const slug = c.req.param('slug')
+      await assertProjectExists(slug)
+      return c.json(await getProjectSkills(c.req.valid('query').tool ?? 'claude', slug))
+    },
+  )
+  // The full SKILL.md for one skill, fetched on demand when a row is expanded.
+  .get(
+    '/:slug/skills/body',
+    zv('query', z.object({
+      id: z.string().min(1),
+      tool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional(),
+    })),
+    async (c) => {
+      const slug = c.req.param('slug')
+      await assertProjectExists(slug)
+      const { id, tool } = c.req.valid('query')
+      return c.json(await getSkillDetail(tool ?? 'claude', slug, id))
     },
   )
   .get('/:slug/dockerfile', async (c) =>
