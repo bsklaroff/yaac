@@ -144,6 +144,42 @@ describe('SessionChanges', () => {
     expect(screen.getByText('new-name.ts')).toBeTruthy()
   })
 
+  it('syntax-highlights the diff for a recognized language', async () => {
+    mock.mockResolvedValue({
+      base: 'abc',
+      files: [{ path: 'src/app.ts', status: 'added', additions: 1, deletions: 0, binary: false }],
+      diff: [
+        'diff --git a/src/app.ts b/src/app.ts',
+        '--- /dev/null',
+        '+++ b/src/app.ts',
+        '@@ -0,0 +1 @@',
+        '+const answer = 42',
+      ].join('\n'),
+      truncated: false,
+    })
+    renderPane()
+    expect((await screen.findByText('const')).className).toContain('tok-keyword')
+    expect(screen.getByText('42').className).toContain('tok-number')
+  })
+
+  it('renders an unrecognized language as plain, un-tokenized text', async () => {
+    mock.mockResolvedValue({
+      base: 'abc',
+      files: [{ path: 'notes.unknownext', status: 'added', additions: 1, deletions: 0, binary: false }],
+      diff: [
+        'diff --git a/notes.unknownext b/notes.unknownext',
+        '--- /dev/null',
+        '+++ b/notes.unknownext',
+        '@@ -0,0 +1 @@',
+        '+const answer = 42',
+      ].join('\n'),
+      truncated: false,
+    })
+    renderPane()
+    const line = await screen.findByText('const answer = 42')
+    expect(line.className).not.toContain('tok-')
+  })
+
   it('shows an empty state when nothing changed', async () => {
     mock.mockResolvedValue({ base: 'abc', files: [], diff: '', truncated: false })
     renderPane()

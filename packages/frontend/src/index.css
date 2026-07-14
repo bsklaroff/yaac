@@ -169,3 +169,64 @@ body,
 .no-drag {
   -webkit-app-region: no-drag;
 }
+
+/*
+ * Syntax-highlight token colors for the Changes diff view. Same theming model
+ * as the palette above — dark base, re-asserted for nested dark subtrees, with
+ * a light override (and the system-follows-light variant CSS can't share).
+ * @lezer/highlight's classHighlighter emits the `tok-*` classes; scoping to
+ * `.diff-hl` keeps them off the CodeMirror config editors, which theme
+ * themselves. Values are GitHub's prettylights palette, which is tuned for
+ * exactly this: colored code over a diff's green/red line tints.
+ */
+:root,
+[data-theme="dark"] {
+  --syntax-keyword: #ff7b72;
+  --syntax-string: #a5d6ff;
+  --syntax-comment: #8b949e;
+  --syntax-constant: #79c0ff;
+  --syntax-entity: #d2a8ff;
+  --syntax-type: #ffa657;
+  --syntax-invalid: #f85149;
+}
+[data-theme="light"] {
+  --syntax-keyword: #cf222e;
+  --syntax-string: #0a3069;
+  --syntax-comment: #6e7781;
+  --syntax-constant: #0550ae;
+  --syntax-entity: #8250df;
+  --syntax-type: #953800;
+  --syntax-invalid: #cf222e;
+}
+@media (prefers-color-scheme: light) {
+  [data-theme="system"] {
+    --syntax-keyword: #cf222e;
+    --syntax-string: #0a3069;
+    --syntax-comment: #6e7781;
+    --syntax-constant: #0550ae;
+    --syntax-entity: #8250df;
+    --syntax-type: #953800;
+    --syntax-invalid: #cf222e;
+  }
+}
+
+.diff-hl .tok-keyword { color: var(--syntax-keyword); }
+.diff-hl .tok-string,
+.diff-hl .tok-string2 { color: var(--syntax-string); }
+.diff-hl .tok-comment { color: var(--syntax-comment); font-style: italic; }
+.diff-hl .tok-number,
+.diff-hl .tok-bool,
+.diff-hl .tok-atom,
+.diff-hl .tok-literal { color: var(--syntax-constant); }
+.diff-hl .tok-definition,
+.diff-hl .tok-macroName,
+.diff-hl .tok-meta { color: var(--syntax-entity); }
+.diff-hl .tok-typeName,
+.diff-hl .tok-className,
+.diff-hl .tok-namespace { color: var(--syntax-type); }
+.diff-hl .tok-heading { color: var(--syntax-keyword); font-weight: 600; }
+.diff-hl .tok-strong { font-weight: 600; }
+.diff-hl .tok-emphasis { font-style: italic; }
+.diff-hl .tok-link,
+.diff-hl .tok-url { color: var(--syntax-entity); text-decoration: underline; }
+.diff-hl .tok-invalid { color: var(--syntax-invalid); text-decoration: underline wavy; }

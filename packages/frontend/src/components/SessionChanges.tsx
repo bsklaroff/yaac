@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useUiStore } from '#store'
 import { getSessionChanges } from '#lib/changesApi'
 import { indexDiffsByPath, type DiffLine, type ParsedFileDiff } from '#lib/diff'
+import { highlightLine, languageForPath, type HighlightLanguage } from '#lib/highlight'
 import { LoadingIcon, WarningIcon, ChevronIcon } from '#lib/icons'
 import type { ChangeStatus, SessionChange } from '@yaac/shared/types'
 
@@ -193,7 +194,7 @@ function FileAccordion({
       {open && (
         <div className="overflow-x-auto border-t border-hairline bg-bg">
           {diff && !diff.binary && diff.lines.length > 0 ? (
-            <DiffView lines={diff.lines} />
+            <DiffView lines={diff.lines} language={languageForPath(file.path)} />
           ) : (
             <div className="px-3 py-2 text-[11px] text-text-faint">
               {file.binary ? 'Binary file — no preview' : 'No textual diff'}
@@ -205,9 +206,15 @@ function FileAccordion({
   )
 }
 
-function DiffView({ lines }: { lines: DiffLine[] }): JSX.Element {
+function DiffView({ lines, language }: { lines: DiffLine[]; language: HighlightLanguage | null }): JSX.Element {
+  // Tokenize each code line once per (lines, language); hunk headers and the
+  // no-language case stay plain. `diff-hl` scopes the tok-* colors (index.css).
+  const highlighted = useMemo(
+    () => (language ? lines.map((line) => (line.kind === 'hunk' ? null : highlightLine(line.text, language))) : null),
+    [lines, language],
+  )
   return (
-    <div className="min-w-full font-mono text-[11px] leading-[1.5]">
+    <div className="diff-hl min-w-full font-mono text-[11px] leading-[1.5]">
       {lines.map((line, idx) => {
         if (line.kind === 'hunk') {
           return (
@@ -217,6 +224,7 @@ function DiffView({ lines }: { lines: DiffLine[] }): JSX.Element {
           )
         }
         const num = line.kind === 'del' ? line.oldNo : line.newNo
+        const segments = highlighted?.[idx] ?? null
         return (
           <div
             key={idx}
@@ -235,7 +243,11 @@ function DiffView({ lines }: { lines: DiffLine[] }): JSX.Element {
             )}>
               {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '}
             </span>
-            <span className="pr-3 text-text">{line.text}</span>
+            <span className="pr-3 text-text">
+              {segments
+                ? segments.map((seg, i) => <span key={i} className={seg.className}>{seg.text}</span>)
+                : line.text}
+            </span>
           </div>
         )
       })}
