@@ -1,5 +1,5 @@
 import { readBuildId } from '@yaac/shared/build-id'
-import { describeBuildSkew } from '@yaac/shared/server-client'
+import { describeBuildSkew } from '@yaac/shared/server-api'
 import {
   clearRemote,
   normalizeRemoteUrl,

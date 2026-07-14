@@ -1,7 +1,7 @@
 import { Command, Argument, type Help } from 'commander'
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports -- the repo-root package.json is the published @bsklaroff/yaac manifest and the single source of truth for the CLI version (inlined by tsup at build time).
 import pkg from '../../../package.json' with { type: 'json' }
-import { exitOnClientError } from '@yaac/shared/server-client'
+import { exitOnApiError } from '@yaac/shared/server-api'
 import { projectAdd } from '#commands/project-add'
 import { projectList } from '#commands/project-list'
 import { projectRebuild } from '#commands/project-rebuild'
@@ -393,4 +393,4 @@ authToken
   .argument('<name>', 'Device name of the token to revoke')
   .action(authTokenRevoke)
 
-program.parseAsync().catch(exitOnClientError)
+program.parseAsync().catch(exitOnApiError)

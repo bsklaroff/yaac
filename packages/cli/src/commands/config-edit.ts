@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { getRpcClient } from '#commands/rpc'
+import { api } from '#commands/api'
 import { editFile } from '#commands/edit-file'
 
 /**
@@ -50,14 +50,12 @@ function failKeepingEdits(err: unknown, edit: ScratchEdit): void {
  * file is always parseable. Emptying the buffer clears the config.
  */
 export async function configEditProject(slug: string): Promise<void> {
-  const client = await getRpcClient()
-  const { content } = await client.project[':slug'].config.raw.$get({ param: { slug } }).then((r) => r.json())
-
+  const { content } = await api.project[':slug'].config.raw.$get({ param: { slug } })
   const edit = await editInScratch('yaac-config.json', content)
   if (!edit) return
 
   if (edit.text.trim() === '') {
-    await client.project[':slug'].config.$delete({ param: { slug } })
+    await api.project[':slug'].config.$delete({ param: { slug } })
     await discardScratch(edit)
     console.log('Cleared project config — defaults apply.')
     return
@@ -74,7 +72,7 @@ export async function configEditProject(slug: string): Promise<void> {
     return
   }
   try {
-    await client.project[':slug'].config.$put({ param: { slug }, json: { config: parsed } })
+    await api.project[':slug'].config.$put({ param: { slug }, json: { config: parsed } })
   } catch (err) {
     failKeepingEdits(err, edit)
     return
@@ -85,14 +83,12 @@ export async function configEditProject(slug: string): Promise<void> {
 
 /** `yaac config edit-dockerfile <project>` — the project's Dockerfile.yaac. */
 export async function configEditDockerfile(slug: string): Promise<void> {
-  const client = await getRpcClient()
-  const { content } = await client.project[':slug'].dockerfile.$get({ param: { slug } }).then((r) => r.json())
-
+  const { content } = await api.project[':slug'].dockerfile.$get({ param: { slug } })
   const edit = await editInScratch('Dockerfile.yaac', content)
   if (!edit) return
 
   try {
-    await client.project[':slug'].dockerfile.$put({
+    await api.project[':slug'].dockerfile.$put({
       param: { slug },
       json: { content: edit.text },
     })
@@ -108,14 +104,12 @@ export async function configEditDockerfile(slug: string): Promise<void> {
 
 /** `yaac config edit-user-dockerfile` — the global Dockerfile.user. */
 export async function configEditUserDockerfile(): Promise<void> {
-  const client = await getRpcClient()
-  const { content } = await client.config['user-dockerfile'].$get().then((r) => r.json())
-
+  const { content } = await api.config['user-dockerfile'].$get()
   const edit = await editInScratch('Dockerfile.user', content)
   if (!edit) return
 
   try {
-    await client.config['user-dockerfile'].$put({ json: { content: edit.text } })
+    await api.config['user-dockerfile'].$put({ json: { content: edit.text } })
   } catch (err) {
     failKeepingEdits(err, edit)
     return

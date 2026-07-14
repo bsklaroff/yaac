@@ -13,7 +13,7 @@
  */
 import { execFile, spawn } from 'node:child_process'
 import path from 'node:path'
-import type { ServerTarget } from '@yaac/shared/server-client'
+import type { ServerTarget } from '@yaac/shared/server-api'
 import { ensureAuthDaemonSpawned } from '@yaac/shared/auth-daemon'
 
 export interface RunResult {

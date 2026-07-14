@@ -963,19 +963,17 @@ describe('resolveInitWindows', () => {
   })
 })
 
-import type * as serverClientModule from '@yaac/shared/server-client'
 import type * as allowedHostsModule from '@yaac/server/lib/container/default-allowed-hosts'
 import type * as sharedGitModule from '@yaac/shared/git'
 
-vi.mock('@yaac/shared/server-client', async (importOriginal) => {
-  const actual = await importOriginal<typeof serverClientModule>()
-  return {
-    ...actual,
-    getRpcClient: vi.fn(),
-  }
-})
+// sessionCreate posts to the streaming /session/create route via the `api`
+// singleton; the leaf resolves to a raw streaming Response (the client only
+// unwraps JSON routes), which `consumeNdjsonStream` reads.
+const { mockPost } = vi.hoisted(() => ({ mockPost: vi.fn() }))
+vi.mock('#commands/api', () => ({
+  api: { session: { create: { $post: mockPost } } },
+}))
 
-import { getRpcClient } from '@yaac/shared/server-client'
 import { getGitUserConfig as getGitUserConfigShared } from '@yaac/shared/git'
 
 function streamingResponse(lines: string[]): { ok: true; body: ReadableStream<Uint8Array> } {
@@ -992,7 +990,6 @@ function streamingResponse(lines: string[]): { ok: true; body: ReadableStream<Ui
 }
 
 describe('sessionCreate (CLI shim)', () => {
-  const mockPost = vi.fn()
   const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
 
   beforeEach(() => {
@@ -1005,11 +1002,6 @@ describe('sessionCreate (CLI shim)', () => {
     vi.mocked(resolveProjectConfig).mockResolvedValue({})
     vi.mocked(getGitUserConfigShared).mockResolvedValue({ name: 'Test', email: 't@x.io' })
     mockSpawn.mockImplementation(() => mockAttachedChild() as never)
-    vi.mocked(getRpcClient).mockResolvedValue({
-      session: {
-        create: { $post: mockPost },
-      },
-    } as unknown as Awaited<ReturnType<typeof getRpcClient>>)
     mockPost.mockResolvedValue(streamingResponse([
       JSON.stringify({ type: 'progress', message: 'Fetching latest from remote...' }),
       JSON.stringify({ type: 'progress', message: 'Creating session job yaac-demo-sess-123...' }),

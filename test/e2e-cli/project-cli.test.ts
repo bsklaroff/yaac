@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createYaacTestEnv, spawnYaacServer, runYaac, type YaacTestEnv, type SpawnedServer } from '@yaac/test-utils/cli'
 import { createTestRepo, addTestProject } from '@yaac/test-utils/setup'
-import { makeServerRpcClient } from '@yaac/test-utils/rpc'
+import { makeServerApiClient } from '@yaac/test-utils/api'
 
 /**
  * Merged e2e coverage for `yaac project` (list/add), `yaac project rebuild`,
@@ -310,7 +310,7 @@ describe('yaac config (real CLI + real server)', () => {
     // hits at load time; `nestedContainers` must parse cleanly.
     await seedProject('demo-nested')
 
-    const client = makeServerRpcClient(server)
+    const client = makeServerApiClient(server)
 
     const nested = await client.project[':slug'].config.$put({
       param: { slug: 'demo-nested' },
@@ -322,7 +322,7 @@ describe('yaac config (real CLI + real server)', () => {
   it('accepts virtualCluster but rejects it alongside nestedContainers: false', async () => {
     await seedProject('demo-vcluster')
 
-    const client = makeServerRpcClient(server)
+    const client = makeServerApiClient(server)
 
     const vcluster = await client.project[':slug'].config.$put({
       param: { slug: 'demo-vcluster' },

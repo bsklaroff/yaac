@@ -1,4 +1,4 @@
-import { getRpcClient } from '#commands/rpc'
+import { api } from '#commands/api'
 import type {
   DeletedSessionEntry,
   GitAuthFailure,
@@ -14,21 +14,19 @@ export interface SessionListOptions {
 export const DELETED_DEFAULT_LIMIT = 25
 
 export async function sessionList(projectSlug?: string, options: SessionListOptions = {}): Promise<void> {
-  const client = await getRpcClient()
-
   if (options.deleted) {
     const limit = resolveDeletedLimit(options)
     const query: { project?: string; limit?: string } = {}
     if (projectSlug) query.project = projectSlug
     if (limit !== undefined) query.limit = String(limit)
-    const deleted = await client.session['list-deleted'].$get({ query }).then((r) => r.json())
+    const deleted = await api.session['list-deleted'].$get({ query })
     renderDeleted(deleted, projectSlug, limit)
     return
   }
 
-  const result = await client.session.list.$get({
+  const result = await api.session.list.$get({
     query: projectSlug ? { project: projectSlug } : {},
-  }).then((r) => r.json())
+  })
 
   if (result.sessions.length === 0) {
     const suffix = projectSlug ? ` for project "${projectSlug}"` : ''

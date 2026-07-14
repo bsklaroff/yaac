@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { buildApp } from '@yaac/server/server'
-import { makeTestRpcClient } from '@yaac/test-utils/rpc'
+import { makeTestApiClient } from '@yaac/test-utils/api'
 
 const chord = { code: 'KeyG', alt: true, ctrl: false, meta: false, shift: false }
 
@@ -17,14 +17,14 @@ describe('shortcuts route', () => {
   })
 
   it('GET /shortcuts/get returns no overrides initially', async () => {
-    const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+    const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
     const res = await client.shortcuts.get.$get()
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ overrides: {} })
   })
 
   it('POST /shortcuts/set persists a rebind that GET then reflects', async () => {
-    const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+    const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
     const set = await client.shortcuts.set.$post({ json: { id: 'new-session', chord } })
     expect(set.status).toBe(200)
     expect(await set.json()).toEqual({ ok: true })
@@ -34,7 +34,7 @@ describe('shortcuts route', () => {
   })
 
   it('POST /shortcuts/set rejects a malformed chord', async () => {
-    const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+    const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
     const res = await client.shortcuts.set.$post({
       // @ts-expect-error — chord is missing modifier flags on purpose
       json: { id: 'new-session', chord: { code: 'KeyG' } },
@@ -43,7 +43,7 @@ describe('shortcuts route', () => {
   })
 
   it('POST /shortcuts/reset clears every override', async () => {
-    const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+    const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
     await client.shortcuts.set.$post({ json: { id: 'new-session', chord } })
     const reset = await client.shortcuts.reset.$post()
     expect(reset.status).toBe(200)

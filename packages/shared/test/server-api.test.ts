@@ -8,10 +8,10 @@ import {
   createServerFetch,
   describeBuildSkew,
   describeLockMismatch,
-  exitOnClientError,
+  exitOnApiError,
   resolveServerTarget,
   type ServerTarget,
-} from '#server-client'
+} from '#server-api'
 import { writeLock } from '#lock'
 import { writeRemote } from '#remote'
 import { setDataDir } from '#paths'
@@ -32,7 +32,7 @@ describe('createServerFetch', () => {
       expect(auth).toBe('Bearer shh')
       return Promise.resolve(jsonResponse('[]'))
     })
-    const serverFetch = await createServerFetch({
+    const serverFetch = createServerFetch({
       resolveTarget: () => Promise.resolve(target),
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
@@ -51,7 +51,7 @@ describe('createServerFetch', () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(jsonResponse('{"error":{"code":"BAD_BEARER","message":"x"}}', 401))
       .mockResolvedValueOnce(jsonResponse('[]'))
-    const serverFetch = await createServerFetch({
+    const serverFetch = createServerFetch({
       resolveTarget,
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
@@ -70,7 +70,7 @@ describe('createServerFetch', () => {
     const fetchImpl = vi.fn(() => Promise.resolve(
       jsonResponse('{"error":{"code":"BAD_BEARER","message":"x"}}', 401),
     ))
-    const serverFetch = await createServerFetch({
+    const serverFetch = createServerFetch({
       resolveTarget: () => Promise.resolve(remote),
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
@@ -88,7 +88,7 @@ describe('createServerFetch', () => {
     const fetchImpl = vi.fn(() => Promise.resolve(
       jsonResponse('[]', 200, { 'x-yaac-build-id': 'other-build' }),
     ))
-    const serverFetch = await createServerFetch({
+    const serverFetch = createServerFetch({
       resolveTarget: () => Promise.resolve(remote),
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
@@ -107,7 +107,7 @@ describe('createServerFetch', () => {
     const fetchImpl = vi.fn(() => Promise.resolve(
       jsonResponse('[]', 200, { 'x-yaac-build-id': 'other-build' }),
     ))
-    const serverFetch = await createServerFetch({
+    const serverFetch = createServerFetch({
       resolveTarget: () => Promise.resolve(remote),
       fetchImpl: fetchImpl as unknown as typeof fetch,
       requireBuildMatch: false,
@@ -123,7 +123,7 @@ describe('createServerFetch', () => {
     const fetchImpl = vi.fn(() => Promise.resolve(
       jsonResponse('[]', 200, { 'x-yaac-build-id': 'other-build' }),
     ))
-    const serverFetch = await createServerFetch({
+    const serverFetch = createServerFetch({
       resolveTarget: () => Promise.resolve(target),
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
@@ -140,7 +140,7 @@ describe('createServerFetch', () => {
         401,
       ))
       .mockResolvedValueOnce(jsonResponse('{"ok":true}'))
-    const serverFetch = await createServerFetch({
+    const serverFetch = createServerFetch({
       resolveTarget: () => Promise.resolve(target),
       fetchImpl: fetchImpl as unknown as typeof fetch,
       onAuthRequired,
@@ -157,7 +157,7 @@ describe('createServerFetch', () => {
       '{"error":{"code":"AUTH_REQUIRED","message":"still need login"}}',
       401,
     )))
-    const serverFetch = await createServerFetch({
+    const serverFetch = createServerFetch({
       resolveTarget: () => Promise.resolve(target),
       fetchImpl: fetchImpl as unknown as typeof fetch,
       onAuthRequired,
@@ -173,7 +173,7 @@ describe('createServerFetch', () => {
     const fetchImpl = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
       Promise.resolve(jsonResponse('[]')),
     )
-    const serverFetch = await createServerFetch({
+    const serverFetch = createServerFetch({
       resolveTarget: () => Promise.resolve(target),
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
@@ -323,7 +323,7 @@ describe('describeLockMismatch', () => {
   })
 })
 
-describe('exitOnClientError', () => {
+describe('exitOnApiError', () => {
   const exitSpy = vi.spyOn(process, 'exit')
   const errorSpy = vi.spyOn(console, 'error')
 
@@ -345,13 +345,13 @@ describe('exitOnClientError', () => {
   })
 
   it('prints the message and exits 1 for any Error', () => {
-    expect(() => exitOnClientError(new Error('boom'))).toThrow()
+    expect(() => exitOnApiError(new Error('boom'))).toThrow()
     expect(exitSpy).toHaveBeenCalledWith(1)
     expect(errorSpy).toHaveBeenCalledWith('boom')
   })
 
   it('stringifies non-Error rejections', () => {
-    expect(() => exitOnClientError('oops')).toThrow()
+    expect(() => exitOnApiError('oops')).toThrow()
     expect(exitSpy).toHaveBeenCalledWith(1)
     expect(errorSpy).toHaveBeenCalledWith('oops')
   })

@@ -9,7 +9,7 @@ import {
   spawnAuthDaemonDetached,
   writeAuthDaemonLock,
 } from '@yaac/shared/auth-daemon'
-import { getRpcClient, resolveServerTarget } from '@yaac/shared/server-client'
+import { getApiClient, resolveServerTarget } from '@yaac/shared/server-api'
 import { buildAuthPayload } from '@yaac/shared/tool-auth-interactive'
 import { maskToken } from '@yaac/shared/mask'
 
@@ -41,7 +41,7 @@ export async function runAuthDaemon(): Promise<void> {
   // Completed logins land on the (possibly remote) main server, not on
   // this machine's data dir.
   setToolLoginPersistence(async (tool, result) => {
-    const client = await getRpcClient()
+    const client = getApiClient()
     await client.auth[':tool'].$put({
       param: { tool },
       json: buildAuthPayload(tool, result),

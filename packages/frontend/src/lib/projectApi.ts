@@ -1,27 +1,27 @@
-import { rpc } from './rpc'
+import { api } from './api'
 import type { YaacConfig } from '@yaac/shared/types'
 
 /** Clone a git repo as a new project. Throws ServerError (e.g. AUTH_REQUIRED). */
 export async function addProject(remoteUrl: string): Promise<{ slug: string }> {
-  const { project } = await rpc.project.add.$post({ json: { remoteUrl } }).then((r) => r.json())
+  const { project } = await api.project.add.$post({ json: { remoteUrl } })
   return project
 }
 
 /** Remove a project (and its sessions/worktrees). */
 export async function removeProject(slug: string): Promise<void> {
-  await rpc.project[':slug'].$delete({ param: { slug } })
+  await api.project[':slug'].$delete({ param: { slug } })
 }
 
 /** Read the per-project yaac-config.json overlay (null when unset). */
 export async function getProjectConfig(slug: string): Promise<YaacConfig | null> {
-  const { config } = await rpc.project[':slug'].config.$get({ param: { slug } }).then((r) => r.json())
+  const { config } = await api.project[':slug'].config.$get({ param: { slug } })
   return config
 }
 
 /** Write the per-project yaac-config.json overlay. Validated server-side;
  *  throws ServerError with the parser message on malformed config. */
 export async function saveProjectConfig(slug: string, config: unknown): Promise<YaacConfig> {
-  const saved = await rpc.project[':slug'].config.$put({ param: { slug }, json: { config } }).then((r) => r.json())
+  const saved = await api.project[':slug'].config.$put({ param: { slug }, json: { config } })
   return saved.config
 }
 
@@ -38,29 +38,29 @@ export interface ProjectBranches {
  * remote first so a just-pushed branch appears.
  */
 export async function getProjectBranches(slug: string, opts: { refresh?: boolean } = {}): Promise<ProjectBranches> {
-  return await rpc.project[':slug'].branches.$get({
+  return await api.project[':slug'].branches.$get({
     param: { slug },
     query: opts.refresh ? { refresh: '1' } : {},
-  }).then((r) => r.json())
+  })
 }
 
 /** Set (or clear, with null) the project's default reference branch. */
 export async function setProjectReferenceBranch(slug: string, branch: string | null): Promise<string | null> {
-  const { referenceBranch } = await rpc.project[':slug']['reference-branch'].$put({
+  const { referenceBranch } = await api.project[':slug']['reference-branch'].$put({
     param: { slug },
     json: { branch },
-  }).then((r) => r.json())
+  })
   return referenceBranch
 }
 
 /** Read the per-project Dockerfile.yaac ('' when the project has none). */
 export async function getProjectDockerfile(slug: string): Promise<string> {
-  const { content } = await rpc.project[':slug'].dockerfile.$get({ param: { slug } }).then((r) => r.json())
+  const { content } = await api.project[':slug'].dockerfile.$get({ param: { slug } })
   return content
 }
 
 /** Write (or clear, when empty) the per-project Dockerfile.yaac. Takes
  *  effect on the next `yaac project rebuild`. */
 export async function saveProjectDockerfile(slug: string, content: string): Promise<void> {
-  await rpc.project[':slug'].dockerfile.$put({ param: { slug }, json: { content } })
+  await api.project[':slug'].dockerfile.$put({ param: { slug }, json: { content } })
 }

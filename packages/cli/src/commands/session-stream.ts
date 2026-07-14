@@ -1,5 +1,5 @@
 import readline from 'node:readline/promises'
-import { getRpcClient } from '#commands/rpc'
+import { api } from '#commands/api'
 import { attachSessionPty } from '#commands/ws-terminal'
 import { testEnv } from '@yaac/shared/env'
 import type { AgentTool, StreamOutcome } from '@yaac/shared/types'
@@ -23,7 +23,6 @@ async function promptForProject(projects: string[], message: string): Promise<st
 }
 
 export async function sessionStream(project?: string, tool?: AgentTool): Promise<void> {
-  const client = await getRpcClient()
   const visited: string[] = []
   let lastVisited: string | undefined
   let lastProjectSlug: string | undefined
@@ -32,7 +31,7 @@ export async function sessionStream(project?: string, tool?: AgentTool): Promise
   let currentProject = project
 
   while (true) {
-    const body = await client.session.stream.next.$post({
+    const body = await api.session.stream.next.$post({
       json: {
         project: currentProject,
         tool,
@@ -42,7 +41,7 @@ export async function sessionStream(project?: string, tool?: AgentTool): Promise
         lastTool,
         lastOutcome,
       },
-    }).then((r) => r.json())
+    })
 
     if (body.done) {
       if (body.reason === 'closed_blank') {

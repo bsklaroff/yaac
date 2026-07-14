@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { eventsWsUrl, startEventsMonitor, type EventsSocket } from '#events'
-import type { ServerTarget } from '@yaac/shared/server-client'
+import type { ServerTarget } from '@yaac/shared/server-api'
 
 const target = (port: number): ServerTarget =>
   ({ baseUrl: `http://127.0.0.1:${port}`, secret: `secret-${port}`, remote: false })

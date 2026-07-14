@@ -1,9 +1,8 @@
 import readline from 'node:readline/promises'
-import { getRpcClient } from '#commands/rpc'
+import { api } from '#commands/api'
 
 export async function authClear(): Promise<void> {
-  const client = await getRpcClient()
-  const { gitCredentials, toolAuth } = await client.auth.list.$get().then((r) => r.json())
+  const { gitCredentials, toolAuth } = await api.auth.list.$get()
 
   if (gitCredentials.length === 0 && toolAuth.length === 0) {
     console.log('No credentials configured.')
@@ -23,7 +22,7 @@ export async function authClear(): Promise<void> {
         // Path segment must be URL-encoded: patterns like "github.com/acme/*"
         // carry literal slashes that the Hono client would otherwise pass
         // through, breaking the :pattern route match.
-        await client.auth.git.credentials[':pattern'].$delete({
+        await api.auth.git.credentials[':pattern'].$delete({
           param: { pattern: encodeURIComponent(pattern) },
         })
         console.log(`Removed git credential for pattern "${pattern}".`)
@@ -38,7 +37,7 @@ export async function authClear(): Promise<void> {
     entries.push({
       label: `${label} credentials (${entry.keyPreview})`,
       run: async () => {
-        await client.auth.clear.$post({ json: { service: entry.tool } })
+        await api.auth.clear.$post({ json: { service: entry.tool } })
         console.log(`Removed ${label} credentials.`)
       },
     })
@@ -54,7 +53,7 @@ export async function authClear(): Promise<void> {
   rl.close()
 
   if (answer.toLowerCase() === 'all') {
-    await client.auth.clear.$post({ json: { service: 'all' } })
+    await api.auth.clear.$post({ json: { service: 'all' } })
     console.log('All credentials removed.')
     return
   }

@@ -24,6 +24,7 @@ describe('getDeletedSessions', () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
       json: () => Promise.resolve(entries),
     })
     globalThis.fetch = fetchMock as unknown as typeof fetch
@@ -38,7 +39,7 @@ describe('getDeletedSessions', () => {
   })
 
   it('defaults the limit to 100', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve([]) })
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, headers: new Headers({ 'content-type': 'application/json' }), json: () => Promise.resolve([]) })
     globalThis.fetch = fetchMock as unknown as typeof fetch
 
     await getDeletedSessions('proj')

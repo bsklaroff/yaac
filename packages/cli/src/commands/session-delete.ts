@@ -1,7 +1,6 @@
-import { getRpcClient } from '#commands/rpc'
+import { api } from '#commands/api'
 
 export async function sessionDelete(idOrName: string): Promise<void> {
-  const client = await getRpcClient()
-  const info = await client.session.delete.$post({ json: { sessionId: idOrName } }).then((r) => r.json())
+  const info = await api.session.delete.$post({ json: { sessionId: idOrName } })
   console.log(`Session ${info.sessionId} scheduled for cleanup.`)
 }

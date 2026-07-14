@@ -1,4 +1,4 @@
-import { getRpcClient } from '#commands/rpc'
+import { api } from '#commands/api'
 
 /**
  * Mint a durable token for a remote client. The server returns the full
@@ -6,15 +6,13 @@ import { getRpcClient } from '#commands/rpc'
  * handling warning on stderr.
  */
 export async function authTokenCreate(name: string): Promise<void> {
-  const client = await getRpcClient()
-  const entry = await client.tokens.$post({ json: { name } }).then((r) => r.json())
+  const entry = await api.tokens.$post({ json: { name } })
   console.error(`Token '${entry.name}' created — store it now, it is shown only once.`)
   console.log(entry.token)
 }
 
 export async function authTokenList(): Promise<void> {
-  const client = await getRpcClient()
-  const { tokens } = await client.tokens.$get().then((r) => r.json())
+  const { tokens } = await api.tokens.$get()
   if (tokens.length === 0) {
     console.log('No tokens. Create one with: yaac auth token create <name>')
     return
@@ -27,7 +25,6 @@ export async function authTokenList(): Promise<void> {
 }
 
 export async function authTokenRevoke(name: string): Promise<void> {
-  const client = await getRpcClient()
-  await client.tokens[':name'].$delete({ param: { name } })
+  await api.tokens[':name'].$delete({ param: { name } })
   console.log(`Revoked token '${name}'.`)
 }

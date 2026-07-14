@@ -19,6 +19,7 @@ describe('getClusterCheck', () => {
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
       json: () => Promise.resolve({ ok: false, results: [{ name: 'kind', status: 'fail', detail: 'no cluster' }] }),
     }) as unknown as typeof fetch
     const r = await getClusterCheck()

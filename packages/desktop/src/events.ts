@@ -1,4 +1,4 @@
-import type { ServerTarget } from '@yaac/shared/server-client'
+import type { ServerTarget } from '@yaac/shared/server-api'
 import type { ServerSnapshot } from '@yaac/shared/types'
 import { parseSnapshotMessage } from '#attention'
 

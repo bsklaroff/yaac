@@ -26,7 +26,7 @@ import {
 } from '@yaac/shared/lock'
 import { isLockLive, isLockReady, type ServerLock } from '@yaac/shared/server-lock-file'
 import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-port'
-import { resolveServerTarget, type ServerTarget } from '@yaac/shared/server-client'
+import { resolveServerTarget, type ServerTarget } from '@yaac/shared/server-api'
 import { ensureAuthDaemonSpawned } from '@yaac/shared/auth-daemon'
 import { ensureDataDir } from '@yaac/shared/project-paths'
 import { serverLogPath } from '@yaac/shared/paths'

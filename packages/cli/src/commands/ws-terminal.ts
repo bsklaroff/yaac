@@ -1,5 +1,5 @@
 import WebSocket from 'ws'
-import { resolveServerTarget } from '@yaac/shared/server-client'
+import { resolveServerTarget } from '@yaac/shared/server-api'
 
 /**
  * CLI-side terminal transport: attach the user's terminal to a session

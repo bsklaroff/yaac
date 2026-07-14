@@ -4,7 +4,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import * as childProcess from 'node:child_process'
-import { getRpcClient, resolveServerTarget } from '@yaac/shared/server-client'
+import { getApiClient, resolveServerTarget } from '@yaac/shared/server-api'
 import { ensureAuthDaemon } from '@yaac/shared/auth-daemon'
 import { runRelayedToolLogin } from '#commands/relayed-login'
 import { validatePattern, parsePattern } from '@yaac/shared/credentials'
@@ -135,7 +135,7 @@ async function runHttpsUpdate(): Promise<void> {
     console.error('Token cannot be empty.')
     process.exit(1)
   }
-  const client = await getRpcClient()
+  const client = getApiClient()
   await client.auth.git.credentials.$post({
     json: { kind: 'https', pattern, token },
   })
@@ -197,7 +197,7 @@ async function runSshUpdate(): Promise<void> {
     process.exit(1)
   }
 
-  const client = await getRpcClient()
+  const client = getApiClient()
   await client.auth.git.credentials.$post({
     json: { kind: 'ssh', pattern, privateKeyPath, knownHostsEntry },
   })
@@ -243,7 +243,7 @@ async function runToolUpdate(tool: AgentTool): Promise<void> {
   }
 
   const payload = buildAuthPayload(tool, result)
-  const client = await getRpcClient()
+  const client = getApiClient()
   await client.auth[':tool'].$put({ param: { tool }, json: payload })
   console.log(`${label} credentials saved.`)
 }

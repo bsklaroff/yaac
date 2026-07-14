@@ -17,7 +17,7 @@ import type * as projectAddModule from '@yaac/server/lib/project/add'
 import type * as cliResolveModule from '@yaac/auth-daemon/cli-resolve'
 import type { ProjectMeta, ClaudeOAuthBundle } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
-import { makeTestRpcClient } from '@yaac/test-utils/rpc'
+import { makeTestApiClient } from '@yaac/test-utils/api'
 
 vi.mock('@yaac/server/session-create', () => ({
   createSession: vi.fn(),
@@ -188,7 +188,7 @@ describe('write routes', () => {
       mockAddProject.mockResolvedValue({
         project: { slug: 'foo', remoteUrl: 'https://github.com/x/foo', addedAt: 'now' },
       })
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.project.add.$post({ json: { remoteUrl: 'x/foo' } })
       expect(res.status).toBe(200)
       expect(mockAddProject).toHaveBeenCalledWith('x/foo')
@@ -198,7 +198,7 @@ describe('write routes', () => {
   describe('DELETE /project/:slug', () => {
     it('delegates to removeProject and returns 204', async () => {
       mockRemoveProject.mockResolvedValue(undefined)
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.project[':slug'].$delete({ param: { slug: 'demo' } })
       expect(res.status).toBe(204)
       expect(mockRemoveProject).toHaveBeenCalledWith('demo')
@@ -217,7 +217,7 @@ describe('write routes', () => {
 
     it('writes the config and returns it', async () => {
       await writeProject('demo')
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.project[':slug'].config.$put({
         param: { slug: 'demo' },
         json: { config: { envPassthrough: ['X'] } },
@@ -235,13 +235,13 @@ describe('write routes', () => {
   describe('DELETE /project/:slug/config', () => {
     it('returns 204 when the project exists', async () => {
       await writeProject('demo')
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.project[':slug'].config.$delete({ param: { slug: 'demo' } })
       expect(res.status).toBe(204)
     })
 
     it('returns 404 for an unknown project', async () => {
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.project[':slug'].config.$delete({ param: { slug: 'nope' } })
       expect(res.status).toBe(404)
     })
@@ -275,7 +275,7 @@ describe('write routes', () => {
 
     it('GET /project/:slug/branches lists branches with the default and reference branch', async () => {
       await writeProjectWithRepo('demo')
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.project[':slug'].branches.$get({ param: { slug: 'demo' }, query: {} })
       expect(res.status).toBe(200)
       const body = await res.json() as BranchesBody
@@ -290,7 +290,7 @@ describe('write routes', () => {
       const git = simpleGit(sourceRepo)
       await git.checkoutLocalBranch('feature/late')
       await git.checkout('main')
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.project[':slug'].branches.$get({
         param: { slug: 'demo' },
         query: { refresh: '1' },
@@ -300,14 +300,14 @@ describe('write routes', () => {
     })
 
     it('GET returns 404 for an unknown project', async () => {
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.project[':slug'].branches.$get({ param: { slug: 'nope' }, query: {} })
       expect(res.status).toBe(404)
     })
 
     it('PUT /project/:slug/reference-branch sets, reflects in GET, and clears with null', async () => {
       await writeProjectWithRepo('demo')
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
 
       const set = await client.project[':slug']['reference-branch'].$put({
         param: { slug: 'demo' },
@@ -329,7 +329,7 @@ describe('write routes', () => {
 
     it('PUT rejects a branch that does not exist on origin', async () => {
       await writeProjectWithRepo('demo')
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.project[':slug']['reference-branch'].$put({
         param: { slug: 'demo' },
         json: { branch: 'no-such-branch' },
@@ -340,7 +340,7 @@ describe('write routes', () => {
     })
 
     it('PUT returns 404 for an unknown project', async () => {
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.project[':slug']['reference-branch'].$put({
         param: { slug: 'nope' },
         json: { branch: 'develop' },
@@ -352,14 +352,14 @@ describe('write routes', () => {
   describe('GET /project/:slug/dockerfile', () => {
     it('returns empty content when the project has none', async () => {
       await writeProject('demo')
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.project[':slug'].dockerfile.$get({ param: { slug: 'demo' } })
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ content: '' })
     })
 
     it('returns 404 for an unknown project', async () => {
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.project[':slug'].dockerfile.$get({ param: { slug: 'nope' } })
       expect(res.status).toBe(404)
     })
@@ -377,7 +377,7 @@ describe('write routes', () => {
 
     it('writes the Dockerfile and returns it', async () => {
       await writeProject('demo')
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.project[':slug'].dockerfile.$put({
         param: { slug: 'demo' },
         json: { content: 'FROM ubuntu:24.04\n' },
@@ -394,14 +394,14 @@ describe('write routes', () => {
 
   describe('GET/PUT /config/user-dockerfile', () => {
     it('returns empty content when unset', async () => {
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.config['user-dockerfile'].$get()
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ content: '' })
     })
 
     it('writes a layered user Dockerfile and returns it', async () => {
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const content = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo hi\n'
       const res = await client.config['user-dockerfile'].$put({ json: { content } })
       expect(res.status).toBe(200)
@@ -409,7 +409,7 @@ describe('write routes', () => {
     })
 
     it('rejects a non-layered user Dockerfile with 400', async () => {
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.config['user-dockerfile'].$put({
         json: { content: 'FROM ubuntu:24.04\n' },
       })
@@ -449,7 +449,7 @@ describe('write routes', () => {
           tool: 'claude',
         })
       })
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.session.create.$post({
         json: {
           project: 'demo',
@@ -480,7 +480,7 @@ describe('write routes', () => {
 
     it('emits a terminal error event when createSession throws', async () => {
       mockCreateSession.mockRejectedValue(new ServerError('VALIDATION', 'no github token'))
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.session.create.$post({ json: { project: 'demo' } })
       expect(res.status).toBe(200)
       const events = (await res.text()).trim().split('\n').map((l) => JSON.parse(l) as unknown)
@@ -493,7 +493,7 @@ describe('write routes', () => {
       mockCreateSession.mockResolvedValue({
         sessionId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude',
       })
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.session.create.$post({ json: { project: 'demo', branch: 'dev' } })
       expect(res.status).toBe(200)
       await res.text()
@@ -514,7 +514,7 @@ describe('write routes', () => {
         sessionId: 'sess-x', jobName: 'j', forwardedPorts: [], tool: 'claude',
       })
       const id = '11111111-1111-4111-8111-111111111111'
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.session.create.$post({ json: { project: 'demo', sessionId: id } })
       expect(res.status).toBe(200)
       await res.text()
@@ -536,14 +536,14 @@ describe('write routes', () => {
   describe('POST /session/provisioning/:id/dismiss', () => {
     it('removes the registry entry and returns 204', async () => {
       registerProvisioning({ sessionId: 'dz-1', projectSlug: 'demo', tool: 'claude', kind: 'create' })
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.session.provisioning[':id'].dismiss.$post({ param: { id: 'dz-1' } })
       expect(res.status).toBe(204)
       expect(listProvisioning().some((p) => p.sessionId === 'dz-1')).toBe(false)
     })
 
     it('is idempotent for an unknown id', async () => {
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.session.provisioning[':id'].dismiss.$post({ param: { id: 'nope' } })
       expect(res.status).toBe(204)
     })
@@ -570,7 +570,7 @@ describe('write routes', () => {
           tool: 'claude',
         })
       })
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.session.restart.$post({
         json: {
           sessionId: 'sess-x',
@@ -602,7 +602,7 @@ describe('write routes', () => {
 
     it('emits a terminal error event when restartSession throws', async () => {
       mockRestartSession.mockRejectedValue(new ServerError('NOT_FOUND', 'missing'))
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.session.restart.$post({ json: { sessionId: 'nope' } })
       expect(res.status).toBe(200)
       const events = (await res.text()).trim().split('\n').map((l) => JSON.parse(l) as unknown)
@@ -628,7 +628,7 @@ describe('write routes', () => {
         projectSlug: 'demo',
         jobName: 'yaac-demo-sess-x',
       })
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.session.delete.$post({ json: { sessionId: 'sess-x' } })
       expect(res.status).toBe(200)
       expect(mockDeleteSession).toHaveBeenCalledWith('sess-x')
@@ -648,7 +648,7 @@ describe('write routes', () => {
     it('rejects an unknown tool value with VALIDATION', async () => {
       // Schema accepts any string; setDefaultToolChecked does the enum
       // check and throws VALIDATION, so we can go through the typed client.
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.tool.set.$post({ json: { tool: 'gemini' } })
       expect(res.status).toBe(400)
       const body = await res.json() as unknown as { error: { code: string } }
@@ -656,7 +656,7 @@ describe('write routes', () => {
     })
 
     it('persists the tool and returns the saved value', async () => {
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.tool.set.$post({ json: { tool: 'codex' } })
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ tool: 'codex' })
@@ -676,7 +676,7 @@ describe('write routes', () => {
 
     it('clears claude credentials when service=claude', async () => {
       await saveClaudeOAuthBundle(SAMPLE_BUNDLE)
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.auth.clear.$post({ json: { service: 'claude' } })
       expect(res.status).toBe(204)
       expect(await loadClaudeCredentialsFile()).toBeNull()
@@ -694,7 +694,7 @@ describe('write routes', () => {
     })
 
     it('adds an https credential', async () => {
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.auth.git.credentials.$post({
         json: { kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_new' },
       })
@@ -705,7 +705,7 @@ describe('write routes', () => {
     })
 
     it('surfaces invalid patterns as VALIDATION', async () => {
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.auth.git.credentials.$post({
         json: { kind: 'https', pattern: '*', token: 'ghp_x' },
       })
@@ -716,7 +716,7 @@ describe('write routes', () => {
   describe('DELETE /auth/git/credentials/:pattern', () => {
     it('removes an existing credential', async () => {
       await addEntry({ kind: 'https', pattern: 'github.com/acme/*', token: 'ghp_acme' })
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.auth.git.credentials[':pattern'].$delete({
         param: { pattern: encodeURIComponent('github.com/acme/*') },
       })
@@ -725,7 +725,7 @@ describe('write routes', () => {
     })
 
     it('returns 404 for an unknown pattern', async () => {
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.auth.git.credentials[':pattern'].$delete({
         param: { pattern: 'unknown' },
       })
@@ -736,7 +736,7 @@ describe('write routes', () => {
   describe('PUT /auth/git/credentials', () => {
     it('replaces the entire credential list', async () => {
       await addEntry({ kind: 'https', pattern: 'github.com/old/*', token: 'ghp_old' })
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.auth.git.credentials.$put({
         json: { credentials: [{ kind: 'https', pattern: 'github.com/new/*', token: 'ghp_new' }] },
       })
@@ -758,7 +758,7 @@ describe('write routes', () => {
 
   describe('PUT /auth/:tool', () => {
     it('persists a claude api-key payload', async () => {
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.auth[':tool'].$put({
         param: { tool: 'claude' },
         json: { kind: 'api-key', apiKey: 'sk-ant-api03-new' },
@@ -778,7 +778,7 @@ describe('write routes', () => {
     })
 
     it('rejects api-key payloads with empty apiKey', async () => {
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.auth[':tool'].$put({
         param: { tool: 'claude' },
         json: { kind: 'api-key', apiKey: '' },
@@ -806,7 +806,7 @@ describe('write routes', () => {
 
     it('returns AUTH_AGENT_DISCONNECTED (503) when no auth server is connected', async () => {
       teardownAgent() // drop the loopback agent for this case
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const res = await client.auth[':tool'].login.start.$post({ param: { tool: 'claude' } })
       expect(res.status).toBe(503)
       const body = await res.json() as unknown as { error: { code: string; message: string } }
@@ -816,7 +816,7 @@ describe('write routes', () => {
     })
 
     it('reports agent connectivity on GET /auth/agent', async () => {
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const connectedRes = await client.auth.agent.$get()
       expect(await connectedRes.json()).toEqual({ connected: true })
       teardownAgent()
@@ -826,7 +826,7 @@ describe('write routes', () => {
     })
 
     it('start → poll → success over the wire', async () => {
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const startRes = await client.auth[':tool'].login.start.$post({ param: { tool: 'codex' } })
       if (!startRes.ok) throw new Error('login start failed')
       const started = await startRes.json()
@@ -847,7 +847,7 @@ describe('write routes', () => {
 
     it('rejects non-code input as VALIDATION through the route', async () => {
       process.env.FAKE_LOGIN_MODE = 'need-input'
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const startRes = await client.auth[':tool'].login.start.$post({ param: { tool: 'claude' } })
       if (!startRes.ok) throw new Error('login start failed')
       const started = await startRes.json()
@@ -862,7 +862,7 @@ describe('write routes', () => {
     })
 
     it('404s polling or feeding input to an unknown session; cancel is a no-op 204', async () => {
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const get = await client.auth.login[':id'].$get({ param: { id: 'nope' } })
       expect(get.status).toBe(404)
       const input = await client.auth.login[':id'].input.$post({ param: { id: 'nope' }, json: { text: 'x' } })
@@ -887,7 +887,7 @@ describe('write routes', () => {
     })
 
     it('start → poll → success over the wire', async () => {
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const startRes = await client.auth[':tool'].install.start.$post({ param: { tool: 'claude' } })
       if (!startRes.ok) throw new Error('install start failed')
       const started = await startRes.json()
@@ -907,7 +907,7 @@ describe('write routes', () => {
     })
 
     it('404s polling an unknown install; cancel is a no-op 204', async () => {
-      const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
       const get = await client.auth.install[':id'].$get({ param: { id: 'nope' } })
       expect(get.status).toBe(404)
       const cancel = await client.auth.install[':id'].cancel.$post({ param: { id: 'nope' } })

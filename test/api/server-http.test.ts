@@ -5,7 +5,7 @@ import {
   type YaacTestEnv,
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
-import { makeServerRpcClient } from '@yaac/test-utils/rpc'
+import { makeServerApiClient } from '@yaac/test-utils/api'
 import { clusterAvailable } from '@yaac/test-utils/setup'
 
 /**
@@ -22,12 +22,12 @@ const haveCluster = await clusterAvailable()
 describe('yaac server HTTP surface (real server)', () => {
   let testEnv: YaacTestEnv
   let server: SpawnedServer
-  let client: ReturnType<typeof makeServerRpcClient>
+  let client: ReturnType<typeof makeServerApiClient>
 
   beforeEach(async () => {
     testEnv = await createYaacTestEnv()
     server = await spawnYaacServer(testEnv.env)
-    client = makeServerRpcClient(server)
+    client = makeServerApiClient(server)
   })
 
   afterEach(async () => {

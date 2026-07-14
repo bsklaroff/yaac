@@ -18,7 +18,7 @@ import {
   app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, screen, shell, Tray,
 } from 'electron'
 import WebSocket from 'ws'
-import { resolveServerTarget } from '@yaac/shared/server-client'
+import { resolveServerTarget } from '@yaac/shared/server-api'
 import { env } from '@yaac/shared/env'
 import { AttentionMonitor, badgeText, notificationFor, type WaitingSession } from '#attention'
 import { startEventsMonitor, type EventsSocket } from '#events'

@@ -1,21 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { sessionStream } from '#commands/session-stream'
 import { attachSessionPty } from '#commands/ws-terminal'
-import { getRpcClient } from '@yaac/shared/server-client'
 import { ServerError } from '@yaac/shared/errors'
-import type * as serverClientModule from '@yaac/shared/server-client'
+
+// sessionStream reads the /session/stream/next JSON route via the `api`
+// singleton, which resolves to the already-unwrapped body.
+const { post } = vi.hoisted(() => ({ post: vi.fn() }))
+vi.mock('#commands/api', () => ({
+  api: { session: { stream: { next: { $post: post } } } },
+}))
 
 vi.mock('#commands/ws-terminal', () => ({
   attachSessionPty: vi.fn().mockResolvedValue(undefined),
 }))
-
-vi.mock('@yaac/shared/server-client', async (importOriginal) => {
-  const actual = await importOriginal<typeof serverClientModule>()
-  return {
-    ...actual,
-    getRpcClient: vi.fn(),
-  }
-})
 
 type StreamResponse =
   | { done: true; reason: 'no_active' | 'closed_blank' | 'needs_project'; candidates?: string[] }
@@ -29,24 +26,21 @@ type StreamResponse =
       lastVisited: string
     }
 
-function mockStream(responses: StreamResponse[]): { post: ReturnType<typeof vi.fn> } {
-  const post = vi.fn()
+function mockStream(responses: StreamResponse[]): void {
+  post.mockReset()
   for (const r of responses) {
-    post.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(r) })
+    post.mockResolvedValueOnce(r)
   }
-  vi.mocked(getRpcClient).mockResolvedValue({
-    session: { stream: { next: { $post: post } } },
-  } as unknown as Awaited<ReturnType<typeof getRpcClient>>)
-  return { post }
 }
 
 describe('sessionStream', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    post.mockReset()
   })
 
   it('exits when the server reports done:no_active', async () => {
-    const { post } = mockStream([{ done: true, reason: 'no_active' }])
+    mockStream([{ done: true, reason: 'no_active' }])
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
 
     await sessionStream()
@@ -67,7 +61,7 @@ describe('sessionStream', () => {
   })
 
   it('auto-selects a single candidate from needs_project and retries', async () => {
-    const { post } = mockStream([
+    mockStream([
       { done: true, reason: 'needs_project', candidates: ['only-one'] },
       { done: true, reason: 'no_active' },
     ])
@@ -79,7 +73,7 @@ describe('sessionStream', () => {
   })
 
   it('attaches sessions returned by the server until it reports done', async () => {
-    const { post } = mockStream([
+    mockStream([
       {
         done: false,
         sessionId: 'abc',
@@ -108,11 +102,9 @@ describe('sessionStream', () => {
   })
 
   it('propagates server errors', async () => {
-    // The throwing RPC client rejects on a non-2xx response.
-    const post = vi.fn().mockRejectedValue(new ServerError('INTERNAL', 'boom'))
-    vi.mocked(getRpcClient).mockResolvedValue({
-      session: { stream: { next: { $post: post } } },
-    } as unknown as Awaited<ReturnType<typeof getRpcClient>>)
+    // The throwing API client rejects on a non-2xx response.
+    post.mockReset()
+    post.mockRejectedValue(new ServerError('INTERNAL', 'boom'))
 
     await expect(sessionStream()).rejects.toThrow('boom')
   })

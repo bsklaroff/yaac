@@ -1,5 +1,5 @@
 import readline from 'node:readline/promises'
-import { getRpcClient } from '#commands/rpc'
+import { api } from '#commands/api'
 import type { ToolLoginView } from '@yaac/shared/types'
 
 /**
@@ -17,8 +17,7 @@ const POLL_MS = 700
 export type RelayedLoginOutcome = 'success' | 'cli-missing' | 'error'
 
 export async function runRelayedToolLogin(tool: 'claude' | 'codex'): Promise<RelayedLoginOutcome> {
-  const client = await getRpcClient()
-  let view = await client.auth[':tool'].login.start.$post({ param: { tool } }).then((r) => r.json()) as ToolLoginView
+  let view = await api.auth[':tool'].login.start.$post({ param: { tool } }) as ToolLoginView
   const id = view.id
 
   console.log('Complete the sign-in in your browser — vendor CLI output follows.')
@@ -48,13 +47,13 @@ export async function runRelayedToolLogin(tool: 'claude' | 'codex'): Promise<Rel
         pasted = null
         if (text) {
           try {
-            await client.auth.login[':id'].input.$post({ param: { id }, json: { text } })
+            await api.auth.login[':id'].input.$post({ param: { id }, json: { text } })
           } catch (err) {
             console.error(err instanceof Error ? err.message : String(err))
           }
         }
       }
-      view = await client.auth.login[':id'].$get({ param: { id } }).then((r) => r.json()) as ToolLoginView
+      view = await api.auth.login[':id'].$get({ param: { id } }) as ToolLoginView
       printNew(view.output)
     }
   } finally {

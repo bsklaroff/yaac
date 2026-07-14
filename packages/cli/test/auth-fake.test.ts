@@ -1,21 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { authFake } from '#commands/auth-fake'
-import { getRpcClient } from '@yaac/shared/server-client'
+import { getApiClient } from '@yaac/shared/server-api'
 import { ServerError } from '@yaac/shared/errors'
-import type * as serverClientModule from '@yaac/shared/server-client'
+import type * as serverApiModule from '@yaac/shared/server-api'
 
-vi.mock('@yaac/shared/server-client', async (importOriginal) => {
-  const actual = await importOriginal<typeof serverClientModule>()
+// authFake builds its client via the shared factory (it bypasses the
+// authUpdate-injecting singleton), so mock the factory itself. It's now
+// synchronous, hence mockReturnValue.
+vi.mock('@yaac/shared/server-api', async (importOriginal) => {
+  const actual = await importOriginal<typeof serverApiModule>()
   return {
     ...actual,
-    getRpcClient: vi.fn(),
+    getApiClient: vi.fn(),
   }
 })
 
 function mockClient(post: ReturnType<typeof vi.fn>): void {
-  vi.mocked(getRpcClient).mockResolvedValue({
+  vi.mocked(getApiClient).mockReturnValue({
     auth: { fake: { $post: post } },
-  } as unknown as Awaited<ReturnType<typeof getRpcClient>>)
+  } as unknown as ReturnType<typeof getApiClient>)
 }
 
 describe('authFake', () => {
@@ -25,21 +28,21 @@ describe('authFake', () => {
   })
 
   it('posts kind "claude-oauth" to the server', async () => {
-    const post = vi.fn().mockResolvedValue({ ok: true })
+    const post = vi.fn().mockResolvedValue(undefined)
     mockClient(post)
     await authFake('claude-oauth')
     expect(post).toHaveBeenCalledWith({ json: { kind: 'claude-oauth' } })
   })
 
   it('posts kind "github" to the server', async () => {
-    const post = vi.fn().mockResolvedValue({ ok: true })
+    const post = vi.fn().mockResolvedValue(undefined)
     mockClient(post)
     await authFake('github')
     expect(post).toHaveBeenCalledWith({ json: { kind: 'github' } })
   })
 
   it('throws when the server returns an error response', async () => {
-    // The throwing RPC client rejects on a non-2xx; the command lets it
+    // The throwing API client rejects on a non-2xx; the command lets it
     // propagate (no per-call ok check).
     const post = vi.fn().mockRejectedValue(new ServerError('INTERNAL', 'server error'))
     mockClient(post)

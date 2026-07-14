@@ -3,7 +3,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { getDataDir } from '#paths'
-import { resolveServerTarget, type ServerTarget } from '#server-client'
+import { resolveServerTarget, type ServerTarget } from '#server-api'
 
 /**
  * Client-side lifecycle of the auth server — the login broker that runs

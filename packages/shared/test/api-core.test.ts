@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { throwingFetch, createRpcClient, createRawRpcClient } from '#rpc-core'
+import { throwingFetch, createApiClient, createRawApiClient } from '#api-core'
 import { ServerError } from '#errors'
 
 function jsonResponse(body: string, status = 200): Response {
@@ -29,26 +29,47 @@ describe('throwingFetch', () => {
   })
 })
 
-describe('createRpcClient / createRawRpcClient', () => {
-  it('createRpcClient rejects with a ServerError on a non-2xx route response', async () => {
+describe('createApiClient / createRawApiClient', () => {
+  it('createApiClient rejects with a ServerError on a non-2xx route response', async () => {
     const fetchImpl = vi.fn(() =>
       Promise.resolve(jsonResponse('{"error":{"code":"VALIDATION","message":"bad"}}', 400)),
     )
-    const client = createRpcClient('http://server.local/', fetchImpl as unknown as typeof fetch)
+    const client = createApiClient('http://server.local/', fetchImpl as unknown as typeof fetch)
     await expect(client.tool.get.$get()).rejects.toMatchObject({ code: 'VALIDATION', message: 'bad' })
   })
 
-  it('createRpcClient resolves the success body', async () => {
+  it('createApiClient resolves the parsed body directly on a JSON route (no .json() unwrap)', async () => {
     const fetchImpl = vi.fn(() => Promise.resolve(jsonResponse('{"tool":"codex"}')))
-    const client = createRpcClient('http://server.local/', fetchImpl as unknown as typeof fetch)
-    expect(await client.tool.get.$get().then((r) => r.json())).toEqual({ tool: 'codex' })
+    const client = createApiClient('http://server.local/', fetchImpl as unknown as typeof fetch)
+    expect(await client.tool.get.$get()).toEqual({ tool: 'codex' })
   })
 
-  it('createRawRpcClient returns the raw non-2xx response for the caller to inspect', async () => {
+  it('createApiClient resolves undefined for a 204 (no body to parse)', async () => {
+    const fetchImpl = vi.fn(() => Promise.resolve(new Response(null, { status: 204 })))
+    const client = createApiClient('http://server.local/', fetchImpl as unknown as typeof fetch)
+    expect(await client.tool.get.$get()).toBeUndefined()
+  })
+
+  it('createApiClient hands back the raw Response for a non-JSON (streaming) body', async () => {
+    // A route hono types as a stream/text format resolves to the live Response
+    // (content-type is not application/json), so callers can read res.body.
+    const fetchImpl = vi.fn(() =>
+      Promise.resolve(new Response('{"type":"result"}\n', {
+        status: 200,
+        headers: { 'content-type': 'application/x-ndjson' },
+      })),
+    )
+    const client = createApiClient('http://server.local/', fetchImpl as unknown as typeof fetch)
+    const res = await client.tool.get.$get()
+    expect(res).toBeInstanceOf(Response)
+    expect((res as unknown as Response).body).not.toBeNull()
+  })
+
+  it('createRawApiClient returns the raw non-2xx response for the caller to inspect', async () => {
     const fetchImpl = vi.fn(() =>
       Promise.resolve(jsonResponse('{"error":{"code":"VALIDATION","message":"bad"}}', 400)),
     )
-    const client = createRawRpcClient('http://server.local/', fetchImpl as unknown as typeof fetch)
+    const client = createRawApiClient('http://server.local/', fetchImpl as unknown as typeof fetch)
     const res = await client.tool.get.$get()
     expect(res.status).toBe(400)
   })

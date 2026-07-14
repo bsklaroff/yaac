@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events'
 import type { execFile } from 'node:child_process'
 import { describe, expect, it, vi } from 'vitest'
 import type { ensureAuthDaemonSpawned } from '@yaac/shared/auth-daemon'
-import type { ServerTarget } from '@yaac/shared/server-client'
+import type { ServerTarget } from '@yaac/shared/server-api'
 import type { SpawnImpl } from '#server-process'
 import {
   ensureAuthDaemonRunning, loginShellPath, resolveYaacCommand, runYaacServerStart,

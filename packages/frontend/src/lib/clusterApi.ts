@@ -1,9 +1,9 @@
-import { rpc } from './rpc'
+import { api } from './api'
 import type { CheckResult, ClusterSetupEvent } from '@yaac/shared/types'
 
 /** Is the cluster ready for sessions, and the per-check breakdown. */
 export function getClusterCheck(): Promise<{ ok: boolean; results: CheckResult[] }> {
-  return rpc.cluster.check.$get().then((r) => r.json())
+  return api.cluster.check.$get()
 }
 
 /**

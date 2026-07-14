@@ -3,7 +3,7 @@ import { testEnv } from '#env'
 import { readLock } from '#lock'
 import { isLockLive, type ServerLock } from '#server-lock-file'
 import { readRemote } from '#remote'
-import { createRpcClient, type FetchLike } from '#rpc-core'
+import { createApiClient, type FetchLike } from '#api-core'
 import type { ServerErrorBody } from '#errors'
 
 /**
@@ -19,7 +19,7 @@ export interface ServerTarget {
   remote: boolean
 }
 
-export interface GetClientOptions {
+export interface ApiClientOptions {
   /**
    * Injected for tests. Resolves the server target (base URL + bearer)
    * to use for requests.
@@ -47,35 +47,38 @@ export interface GetClientOptions {
 
 /**
  * Returns a fetch-shaped function that targets the resolved server:
- * caches the target, injects the bearer header, and handles
- * BAD_BEARER / AUTH_REQUIRED retry. Input paths may be a bare pathname
- * or a full URL — only the path+search are used; the host is always
- * the resolved target. Consumed by `getRpcClient`.
+ * lazily resolves + caches the target, injects the bearer header, and
+ * handles BAD_BEARER / AUTH_REQUIRED retry. Input paths may be a bare
+ * pathname or a full URL — only the path+search are used; the host is
+ * always the resolved target. Consumed by `getApiClient`.
  */
-export async function createServerFetch(
-  opts: GetClientOptions = {},
-): Promise<(input: string, init?: RequestInit) => Promise<Response>> {
+export function createServerFetch(
+  opts: ApiClientOptions = {},
+): (input: string, init?: RequestInit) => Promise<Response> {
   const requireBuildMatch = opts.requireBuildMatch !== false
   const resolveTarget = opts.resolveTarget ?? (() => resolveServerTarget({ requireBuildMatch }))
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch
   const onAuthRequired = opts.onAuthRequired ?? (async () => { /* no-op */ })
 
-  let target = await resolveTarget()
+  // Resolved on the first request, not at construction, so a module can hold
+  // the client as a singleton: the lock/remote target (and any test env
+  // override) is read when the first call goes out, not at import.
+  let target: ServerTarget | undefined
   // Once per client: a remote server and this CLI upgrade independently,
   // so surface (but don't fail on) a build mismatch. Local targets never
-  // get here skewed — the lock resolution hard-fails first. Checked
-  // lazily so purely-local use never touches the build-id file.
+  // get here skewed — the lock resolution hard-fails first.
   let buildSkewChecked = false
 
   return async (input, init = {}) => {
+    let active = target ?? (target = await resolveTarget())
     const pathAndSearch = extractPathAndSearch(input)
     const send = (): Promise<Response> => fetchImpl(
-      `${target.baseUrl}${pathAndSearch}`,
-      withAuth(init, target.secret),
+      `${active.baseUrl}${pathAndSearch}`,
+      withAuth(init, active.secret),
     )
 
     let res = await send()
-    if (requireBuildMatch && target.remote && !buildSkewChecked && res.headers.get('x-yaac-build-id')) {
+    if (requireBuildMatch && active.remote && !buildSkewChecked && res.headers.get('x-yaac-build-id')) {
       buildSkewChecked = true
       const cliBuildId = await readBuildId().catch(() => null)
       const skew = cliBuildId
@@ -88,16 +91,17 @@ export async function createServerFetch(
     const body = await peekErrorBody(res)
     if (body?.error.code === 'BAD_BEARER') {
       const refreshed = await resolveTarget()
-      if (refreshed.secret !== target.secret || refreshed.baseUrl !== target.baseUrl) {
+      if (refreshed.secret !== active.secret || refreshed.baseUrl !== active.baseUrl) {
         target = refreshed
+        active = refreshed
         res = await send()
-      } else if (target.remote) {
+      } else if (active.remote) {
         // Re-resolving can't help a remote target (there is no lock to
         // re-read); tell the user how to fix the token instead.
         throw new Error(
-          `remote server at ${target.baseUrl} rejected the token. `
+          `remote server at ${active.baseUrl} rejected the token. `
           + 'Mint a new one on the server (yaac auth token create <name>) and run: '
-          + `yaac remote set ${target.baseUrl} --token <token>`,
+          + `yaac remote set ${active.baseUrl} --token <token>`,
         )
       }
     } else if (body?.error.code === 'AUTH_REQUIRED') {
@@ -220,24 +224,25 @@ export async function resolveServerTarget(
  * Print the error's message and exit 1. Calls `process.exit` —
  * never returns.
  */
-export function exitOnClientError(err: unknown): never {
+export function exitOnApiError(err: unknown): never {
   const message = err instanceof Error ? err.message : String(err)
   console.error(message)
   process.exit(1)
 }
 
 /**
- * Typed Hono RPC client for the server. Built by the shared
- * `createRpcClient` (so a non-2xx rejects with a `ServerError` — callers
- * never check `res.ok`), over a fetch from `createServerFetch` (so lock
- * resolution and AUTH_REQUIRED / BAD_BEARER retry logic are shared).
+ * Typed Hono API client for the server. Built by the shared `createApiClient`
+ * (so a non-2xx rejects with a `ServerError` and a success resolves to its
+ * unwrapped body — callers never check `res.ok` or call `res.json()`), over a
+ * fetch from `createServerFetch` (so lock resolution and AUTH_REQUIRED /
+ * BAD_BEARER retry logic are shared). Synchronous — the target resolves
+ * lazily on the first request — so callers can hold the result as a singleton.
  *
  * Usage:
- *   const client = await getRpcClient()
- *   const projects = await client.project.list.$get().then((r) => r.json())
+ *   const projects = await api.project.list.$get()
  */
-export async function getRpcClient(opts: GetClientOptions = {}) {
-  const serverFetch = await createServerFetch(opts)
+export function getApiClient(opts: ApiClientOptions = {}) {
+  const serverFetch = createServerFetch(opts)
 
   // `hc` bakes the base URL into every request. `createServerFetch`
   // discards it via `extractPathAndSearch` and routes to the live
@@ -250,5 +255,5 @@ export async function getRpcClient(opts: GetClientOptions = {}) {
         : input.url
     return serverFetch(url, init)
   }
-  return createRpcClient('http://server.local/', fetchLike)
+  return createApiClient('http://server.local/', fetchLike)
 }

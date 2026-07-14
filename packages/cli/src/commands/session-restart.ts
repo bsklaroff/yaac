@@ -1,6 +1,6 @@
 import { validateAddDirs } from '#commands/add-dirs'
 import { ensureGitIdentity } from '#commands/git-identity'
-import { getRpcClient } from '#commands/rpc'
+import { api } from '#commands/api'
 import { attachSessionPty } from '#commands/ws-terminal'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { testEnv } from '@yaac/shared/env'
@@ -36,8 +36,7 @@ export async function sessionRestart(
     return
   }
 
-  const client = await getRpcClient()
-  const res = await client.session.restart.$post({
+  const res = await api.session.restart.$post({
     json: {
       sessionId,
       addDir: options.addDir,

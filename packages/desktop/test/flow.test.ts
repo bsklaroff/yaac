@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ServerTarget } from '@yaac/shared/server-client'
+import type { ServerTarget } from '@yaac/shared/server-api'
 import type { FlowDeps } from '#flow'
 import { buildWebappUrl, runFlow } from '#flow'
 

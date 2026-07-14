@@ -8,12 +8,12 @@
  * (`plans/remote-server-hosting.md`: the origin IS the context).
  *
  * Target resolution and the typed client come verbatim from
- * @yaac/shared/server-client — the desktop main is a Node process, so it
+ * @yaac/shared/server-api — the desktop main is a Node process, so it
  * reuses the CLI's own machinery (enabled remote.json, else the local
  * lock; prescriptive errors; BAD_BEARER re-resolve). Deps are injected so
  * every branch unit-tests without Electron, processes, or a server.
  */
-import type { ServerTarget } from '@yaac/shared/server-client'
+import type { ServerTarget } from '@yaac/shared/server-api'
 import type { RunResult } from '#server-process'
 import type { LaunchError } from '#messages'
 

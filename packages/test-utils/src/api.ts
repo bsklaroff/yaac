@@ -5,12 +5,16 @@ import type { SpawnedServer } from '#cli'
 type ServerApp = ReturnType<typeof buildApp>
 
 /**
- * Wrap an in-memory `buildApp(...)` instance as a typed Hono RPC client.
+ * Wrap an in-memory `buildApp(...)` instance as a raw typed Hono API client.
  * Injects the bearer header on every request and dispatches through
  * `app.fetch`, so no port is bound. Uses a loopback host so the server's
  * Host-header check accepts it (the real CLI likewise targets 127.0.0.1).
+ *
+ * Raw on purpose: unlike the app's `createApiClient`, this neither throws on
+ * non-2xx nor unwraps the body, so contract tests can assert status codes and
+ * read `res.json()` themselves.
  */
-export function makeTestRpcClient(app: ServerApp, secret = 'shh') {
+export function makeTestApiClient(app: ServerApp, secret = 'shh') {
   return hc<AppType>('http://127.0.0.1/', {
     fetch: (input: RequestInfo | URL, init?: RequestInit) => {
       const headers = new Headers(init?.headers ?? {})
@@ -22,11 +26,11 @@ export function makeTestRpcClient(app: ServerApp, secret = 'shh') {
 }
 
 /**
- * Typed Hono RPC client that speaks to a real spawned server subprocess
- * over HTTP. Mirrors `makeTestRpcClient` but issues real network calls
- * against `server.lock.port` with the server's bearer secret.
+ * Raw typed Hono API client that speaks to a real spawned server subprocess
+ * over HTTP. Mirrors `makeTestApiClient` (also raw) but issues real network
+ * calls against `server.lock.port` with the server's bearer secret.
  */
-export function makeServerRpcClient(server: SpawnedServer) {
+export function makeServerApiClient(server: SpawnedServer) {
   return hc<AppType>(`http://127.0.0.1:${server.lock.port}/`, {
     fetch: (input: RequestInfo | URL, init?: RequestInit) => {
       const headers = new Headers(init?.headers ?? {})

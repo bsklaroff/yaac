@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { buildWebappUrl, openWebapp } from '#cli'
-import type { ServerTarget } from '@yaac/shared/server-client'
+import type { ServerTarget } from '@yaac/shared/server-api'
 
 describe('buildWebappUrl', () => {
   it('builds a URL on the target origin carrying the exchange token', () => {

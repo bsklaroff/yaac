@@ -1,4 +1,4 @@
-import { rpc } from './rpc'
+import { api } from './api'
 import { ServerError } from '@yaac/shared/errors'
 import type { DeletedSessionEntry } from '@yaac/shared/types'
 
@@ -15,9 +15,9 @@ export async function getDeletedSessions(
   limit = 100,
 ): Promise<DeletedSessionEntry[]> {
   try {
-    return await rpc.session['list-deleted'].$get({
+    return await api.session['list-deleted'].$get({
       query: { project: projectSlug, limit: String(limit) },
-    }).then((r) => r.json())
+    })
   } catch (err) {
     if (err instanceof ServerError && err.code === 'NOT_FOUND') return []
     throw err

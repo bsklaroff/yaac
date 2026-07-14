@@ -1,7 +1,6 @@
-import { getRpcClient } from '#commands/rpc'
+import { api } from '#commands/api'
 
 export async function toolSet(toolName: string): Promise<void> {
-  const client = await getRpcClient()
-  const { tool } = await client.tool.set.$post({ json: { tool: toolName } }).then((r) => r.json())
+  const { tool } = await api.tool.set.$post({ json: { tool: toolName } })
   console.log(`Default tool set to "${tool}".`)
 }

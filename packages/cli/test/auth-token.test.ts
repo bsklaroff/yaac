@@ -1,22 +1,18 @@
 import { describe, it, expect, vi, beforeEach, type MockInstance } from 'vitest'
 import { authTokenCreate, authTokenList, authTokenRevoke } from '#commands/auth-token'
-import { getRpcClient } from '@yaac/shared/server-client'
 import { ServerError } from '@yaac/shared/errors'
-import type * as serverClientModule from '@yaac/shared/server-client'
 
-vi.mock('@yaac/shared/server-client', async (importOriginal) => {
-  const actual = await importOriginal<typeof serverClientModule>()
-  return {
-    ...actual,
-    getRpcClient: vi.fn(),
-  }
-})
+// The commands use the shared `api` singleton; mock it so the leaf request
+// methods resolve to already-unwrapped bodies (the real client unwraps).
+const { post, get, del } = vi.hoisted(() => ({
+  post: vi.fn(),
+  get: vi.fn(),
+  del: vi.fn(),
+}))
 
-function mockClient(routes: Record<string, unknown>): void {
-  vi.mocked(getRpcClient).mockResolvedValue(
-    { tokens: routes } as unknown as Awaited<ReturnType<typeof getRpcClient>>,
-  )
-}
+vi.mock('#commands/api', () => ({
+  api: { tokens: { $post: post, $get: get, [':name']: { $delete: del } } },
+}))
 
 describe('yaac auth token commands', () => {
   let logSpy: MockInstance<typeof console.log>
@@ -29,11 +25,7 @@ describe('yaac auth token commands', () => {
   })
 
   it('create prints the token to stdout and the warning to stderr', async () => {
-    const post = vi.fn().mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve({ name: 'laptop', token: 'f'.repeat(64), createdAt: 'now' }),
-    })
-    mockClient({ $post: post })
+    post.mockResolvedValue({ name: 'laptop', token: 'f'.repeat(64), createdAt: 'now' })
 
     await authTokenCreate('laptop')
 
@@ -43,22 +35,13 @@ describe('yaac auth token commands', () => {
   })
 
   it('create surfaces the server error', async () => {
-    mockClient({
-      $post: vi.fn().mockRejectedValue(
-        new ServerError('CONFLICT', "a token named 'laptop' already exists"),
-      ),
-    })
+    post.mockRejectedValue(new ServerError('CONFLICT', "a token named 'laptop' already exists"))
     await expect(authTokenCreate('laptop')).rejects.toThrow(/already exists/)
   })
 
   it('list prints masked summaries, or guidance when empty', async () => {
-    mockClient({
-      $get: vi.fn().mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({
-          tokens: [{ name: 'laptop', kind: 'durable', masked: 'abcd1234…', createdAt: '2026-07-09T00:00:00.000Z' }],
-        }),
-      }),
+    get.mockResolvedValue({
+      tokens: [{ name: 'laptop', kind: 'durable', masked: 'abcd1234…', createdAt: '2026-07-09T00:00:00.000Z' }],
     })
     await authTokenList()
     const printed = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
@@ -68,14 +51,13 @@ describe('yaac auth token commands', () => {
     expect(printed).toContain('2026-07-09')
 
     logSpy.mockClear()
-    mockClient({ $get: vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ tokens: [] }) }) })
+    get.mockResolvedValue({ tokens: [] })
     await authTokenList()
     expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/yaac auth token create/))
   })
 
   it('revoke deletes by name and confirms', async () => {
-    const del = vi.fn().mockResolvedValue({ ok: true, status: 204 })
-    mockClient({ ':name': { $delete: del } })
+    del.mockResolvedValue(undefined)
 
     await authTokenRevoke('laptop')
 

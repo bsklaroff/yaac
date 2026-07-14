@@ -7,6 +7,7 @@ afterEach(() => { globalThis.fetch = realFetch })
 function stub(json: unknown = [], status = 200): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn().mockResolvedValue({
     ok: status < 400,
+    headers: new Headers({ 'content-type': 'application/json' }),
     status,
     json: () => Promise.resolve(json),
     text: () => Promise.resolve(''),

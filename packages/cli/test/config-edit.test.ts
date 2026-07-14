@@ -6,25 +6,36 @@ import {
   configEditUserDockerfile,
 } from '#commands/config-edit'
 import { editFile } from '#commands/edit-file'
-import { getRpcClient } from '@yaac/shared/server-client'
 import { ServerError } from '@yaac/shared/errors'
-import type * as serverClientModule from '@yaac/shared/server-client'
 
 vi.mock('#commands/edit-file', () => ({
   editFile: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('@yaac/shared/server-client', async (importOriginal) => {
-  const actual = await importOriginal<typeof serverClientModule>()
-  return {
-    ...actual,
-    getRpcClient: vi.fn(),
-  }
-})
+// The commands use the shared `api` singleton, which resolves each request to
+// its already-unwrapped body (reads) or undefined (void writes). Mock the
+// singleton with a leaf fn per route.
+const h = vi.hoisted(() => ({
+  rawGet: vi.fn(),
+  configPut: vi.fn(),
+  configDelete: vi.fn(),
+  dockerGet: vi.fn(),
+  dockerPut: vi.fn(),
+  userGet: vi.fn(),
+  userPut: vi.fn(),
+}))
 
-function okJson(body: unknown): { ok: true; json: () => Promise<unknown> } {
-  return { ok: true, json: () => Promise.resolve(body) }
-}
+vi.mock('#commands/api', () => ({
+  api: {
+    project: {
+      ':slug': {
+        config: { raw: { $get: h.rawGet }, $put: h.configPut, $delete: h.configDelete },
+        dockerfile: { $get: h.dockerGet, $put: h.dockerPut },
+      },
+    },
+    config: { 'user-dockerfile': { $get: h.userGet, $put: h.userPut } },
+  },
+}))
 
 /** Make the mocked $EDITOR overwrite the scratch file with `text`. */
 function editorWrites(text: string): void {
@@ -34,24 +45,15 @@ function editorWrites(text: string): void {
 }
 
 describe('configEditProject', () => {
-  let rawGet: ReturnType<typeof vi.fn>
-  let configPut: ReturnType<typeof vi.fn>
-  let configDelete: ReturnType<typeof vi.fn>
+  const { rawGet, configPut, configDelete } = h
 
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(editFile).mockReset().mockResolvedValue(undefined)
     process.exitCode = undefined
-    rawGet = vi.fn().mockResolvedValue(okJson({ content: '{\n  "env": {}\n}\n' }))
-    configPut = vi.fn().mockResolvedValue(okJson({ config: {} }))
-    configDelete = vi.fn().mockResolvedValue({ ok: true, status: 204 })
-    vi.mocked(getRpcClient).mockResolvedValue({
-      project: {
-        ':slug': {
-          config: { raw: { $get: rawGet }, $put: configPut, $delete: configDelete },
-        },
-      },
-    } as unknown as Awaited<ReturnType<typeof getRpcClient>>)
+    rawGet.mockResolvedValue({ content: '{\n  "env": {}\n}\n' })
+    configPut.mockResolvedValue(undefined)
+    configDelete.mockResolvedValue(undefined)
   })
 
   afterEach(() => {
@@ -132,18 +134,14 @@ describe('configEditProject', () => {
 })
 
 describe('configEditDockerfile', () => {
-  let get: ReturnType<typeof vi.fn>
-  let put: ReturnType<typeof vi.fn>
+  const { dockerGet: get, dockerPut: put } = h
 
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(editFile).mockReset().mockResolvedValue(undefined)
     process.exitCode = undefined
-    get = vi.fn().mockResolvedValue(okJson({ content: '' }))
-    put = vi.fn().mockResolvedValue(okJson({ content: 'RUN true\n' }))
-    vi.mocked(getRpcClient).mockResolvedValue({
-      project: { ':slug': { dockerfile: { $get: get, $put: put } } },
-    } as unknown as Awaited<ReturnType<typeof getRpcClient>>)
+    get.mockResolvedValue({ content: '' })
+    put.mockResolvedValue(undefined)
   })
 
   it('round-trips the edited content verbatim', async () => {
@@ -160,18 +158,14 @@ describe('configEditDockerfile', () => {
 })
 
 describe('configEditUserDockerfile', () => {
-  let get: ReturnType<typeof vi.fn>
-  let put: ReturnType<typeof vi.fn>
+  const { userGet: get, userPut: put } = h
 
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(editFile).mockReset().mockResolvedValue(undefined)
     process.exitCode = undefined
-    get = vi.fn().mockResolvedValue(okJson({ content: '' }))
-    put = vi.fn().mockResolvedValue(okJson({ content: 'x' }))
-    vi.mocked(getRpcClient).mockResolvedValue({
-      config: { 'user-dockerfile': { $get: get, $put: put } },
-    } as unknown as Awaited<ReturnType<typeof getRpcClient>>)
+    get.mockResolvedValue({ content: '' })
+    put.mockResolvedValue(undefined)
   })
 
   it('edits over the config route (server-host file, works remotely)', async () => {

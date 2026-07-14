@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ServerTarget } from '@yaac/shared/server-client'
+import type { ServerTarget } from '@yaac/shared/server-api'
 import { mintWebToken } from '#mint'
 
 const TARGET: ServerTarget = { baseUrl: 'http://127.0.0.1:8787', secret: 'sekrit', remote: false }

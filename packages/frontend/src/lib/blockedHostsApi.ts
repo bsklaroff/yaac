@@ -1,4 +1,4 @@
-import { rpc } from './rpc'
+import { api } from './api'
 
 /**
  * Allow a previously-blocked host for a session. `persist: false` widens only
@@ -12,7 +12,7 @@ export async function allowBlockedHost(
   host: string,
   opts: { persist: boolean },
 ): Promise<void> {
-  await rpc.session[':id']['allow-host'].$post({
+  await api.session[':id']['allow-host'].$post({
     param: { id: sessionId },
     json: { host, persist: opts.persist },
   })

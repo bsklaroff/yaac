@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { buildApp } from '@yaac/server/server'
-import { makeTestRpcClient } from '@yaac/test-utils/rpc'
+import { makeTestApiClient } from '@yaac/test-utils/api'
 
 const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
 
@@ -33,7 +33,7 @@ describe('buildApp', () => {
   })
 
   it('GET /project/list returns [] on a fresh data dir', async () => {
-    const client = makeTestRpcClient(buildApp({ secret: 'shh', buildId: 'test-build-id' }))
+    const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test-build-id' }))
     const res = await client.project.list.$get()
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual([])

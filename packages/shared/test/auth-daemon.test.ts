@@ -4,7 +4,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { EventEmitter } from 'node:events'
 import type { spawn } from 'node:child_process'
-import type { ServerTarget } from '#server-client'
+import type { ServerTarget } from '#server-api'
 import {
   ensureAuthDaemonSpawned,
   readAuthDaemonLock,

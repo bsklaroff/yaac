@@ -2,9 +2,9 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { validateAddDirs } from '#commands/add-dirs'
 import { ensureGitIdentity } from '#commands/git-identity'
-import { getRpcClient } from '#commands/rpc'
+import { api } from '#commands/api'
 import { attachSessionPty } from '#commands/ws-terminal'
-import { resolveServerTarget } from '@yaac/shared/server-client'
+import { resolveServerTarget } from '@yaac/shared/server-api'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { getProjectsDir } from '@yaac/shared/paths'
 import { testEnv } from '@yaac/shared/env'
@@ -64,8 +64,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
   // Tool is sent only when explicit (--tool). The server resolves the
   // configured default (yaac tool set) when omitted, so a bare create matches
   // the prewarmed spare the server keeps for that tool.
-  const client = await getRpcClient()
-  const res = await client.session.create.$post({
+  const res = await api.session.create.$post({
     json: {
       project: projectSlug,
       tool: options.tool,

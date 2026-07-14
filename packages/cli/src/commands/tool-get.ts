@@ -1,8 +1,7 @@
-import { getRpcClient } from '#commands/rpc'
+import { api } from '#commands/api'
 
 export async function toolGet(): Promise<void> {
-  const client = await getRpcClient()
-  const result = await client.tool.get.$get().then((r) => r.json())
+  const result = await api.tool.get.$get()
   if (result.tool) {
     console.log(result.tool)
   } else {

@@ -1,8 +1,7 @@
-import { getRpcClient } from '#commands/rpc'
+import { api } from '#commands/api'
 
 export async function projectList(): Promise<void> {
-  const client = await getRpcClient()
-  const projects = await client.project.list.$get().then((r) => r.json())
+  const projects = await api.project.list.$get()
 
   if (projects.length === 0) {
     console.log('No projects found. Add one with: yaac project add <remote-url>')
