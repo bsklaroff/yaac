@@ -29,24 +29,43 @@ describe('buildAgentCmd', () => {
     const defaultModel = piProviderInfo(PI_DEFAULT_PROVIDER).defaultModel
     const anthropicModel = piProviderInfo('anthropic').defaultModel
 
+    // pi's command routes stderr through sed so the first line matching its
+    // fresh-run "Warning: No project session found with id ..." warning is
+    // dropped from the pane (see buildAgentCmd).
+    const wrapped = (piCmd: string) =>
+      `${piCmd} 2> >(sed -u "0,/^Warning: No project session found with id .*creating a new session with that id\\.$/{//d}" >&2)`
+
     it('uses --approve, the default provider model, and --session-id when none is given', () => {
       const cmd = buildAgentCmd('pi', 'sess-1', '')
-      expect(cmd).toBe(`pi --approve --model ${defaultModel} --session-id sess-1`)
+      expect(cmd).toBe(wrapped(`pi --approve --model ${defaultModel} --session-id sess-1`))
     })
 
     it('uses the given provider default model', () => {
       const cmd = buildAgentCmd('pi', 'sess-1', '', false, 'anthropic')
-      expect(cmd).toBe(`pi --approve --model ${anthropicModel} --session-id sess-1`)
+      expect(cmd).toBe(wrapped(`pi --approve --model ${anthropicModel} --session-id sess-1`))
     })
 
     it('addresses the session by id when resuming (same command as create)', () => {
       const cmd = buildAgentCmd('pi', 'sess-1', '', true, 'anthropic')
-      expect(cmd).toBe(`pi --approve --model ${anthropicModel} --session-id sess-1`)
+      expect(cmd).toBe(wrapped(`pi --approve --model ${anthropicModel} --session-id sess-1`))
     })
 
     it('drops add-dir flags (pi has no --add-dir)', () => {
       const cmd = buildAgentCmd('pi', 'sess-1', '--add-dir /add-dir/tmp')
-      expect(cmd).toBe(`pi --approve --model ${defaultModel} --session-id sess-1`)
+      expect(cmd).toBe(wrapped(`pi --approve --model ${defaultModel} --session-id sess-1`))
+    })
+
+    it('filters the fresh-run warning without single quotes (survives respawn wrapper)', () => {
+      const cmd = buildAgentCmd('pi', 'sess-1', '')
+      // Must never contain a single quote: it is embedded in tmux
+      // `respawn-window '<cmd>'`, itself passed through the host `sh -c`. The
+      // sed pattern uses `.*` instead of the literal quotes around the id so
+      // the whole command stays single-quote-free.
+      expect(cmd).not.toContain("'")
+      // Anchored (^…$) so a genuine error is never swallowed, and `0,/re/{//d}`
+      // deletes only the first occurrence.
+      expect(cmd).toContain('2> >(sed -u "0,/^Warning: ')
+      expect(cmd).toContain('creating a new session with that id\\.$/{//d}" >&2)')
     })
   })
 

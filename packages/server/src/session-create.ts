@@ -183,7 +183,30 @@ export function buildAgentCmd(
     // flag both ways, like `claude --session-id`), so `resume` needs no branch.
     // addDirFlags is dropped: pi has no --add-dir equivalent.
     const model = piProviderInfo(piProvider ?? PI_DEFAULT_PROVIDER).defaultModel
-    return `pi --approve --model ${model} --session-id ${sessionId}`
+    const pi = `pi --approve --model ${model} --session-id ${sessionId}`
+    // On a fresh run that `--session-id` names a session that doesn't exist
+    // yet, so pi prints a yellow "Warning: No project session found with id
+    // '<id>'; creating a new session with that id." to stderr, which then
+    // lingers at the top of the pane for the whole session. The id is
+    // caller-chosen by design (it must match yaac's so pi embeds it in the
+    // JSONL log filename — see lib/session/pi-status.ts), so this fires on
+    // every new pi session; it is expected, not an error.
+    //
+    // Route pi's stderr through sed to drop exactly that one line, leaving the
+    // TUI (stdout) and any genuine stderr (auth failures, bad-model errors)
+    // intact. The match is anchored to the whole line (`^…$`) with `.*`
+    // standing in for the variable id — precise enough that a real error is
+    // never swallowed — and `0,/re/{//d}` deletes only the *first* match, since
+    // the warning is printed once at startup. Off a TTY pi emits this line as
+    // plain text (chalk auto-disables color, and the pod sets no FORCE_COLOR),
+    // so the anchors hold; `sed -u` keeps surviving lines unbuffered so a
+    // startup error still reaches the pane before pi exits. tmux runs this
+    // under the pod's zsh (SHELL=/bin/zsh), so process substitution is
+    // available; the pattern uses `.*` rather than the literal quotes around
+    // the id, keeping the whole string free of single quotes so it survives the
+    // single-quoted `respawn-window '<cmd>'` wrapper it is embedded in.
+    const warn = 'No project session found with id .*creating a new session with that id'
+    return `${pi} 2> >(sed -u "0,/^Warning: ${warn}\\.$/{//d}" >&2)`
   }
   if (tool === 'opencode') {
     // --port + --hostname enable opencode's built-in HTTP server on
