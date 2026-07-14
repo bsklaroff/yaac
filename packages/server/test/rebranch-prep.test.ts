@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
+  buildAgentWindowCheck,
   buildRebranchPrep,
   initWindowCommand,
   withUpstreamConfigLock,
@@ -7,6 +8,14 @@ import {
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 
 const TMUX = `tmux -S ${CONTAINER_TMUX_SOCK}`
+
+describe('buildAgentWindowCheck', () => {
+  it('probes for the agent window after a settle delay', () => {
+    expect(buildAgentWindowCheck('claude')).toBe(
+      `sh -c "sleep 1; ${TMUX} list-windows -t =yaac -F '#{window_name}' | grep -qxF claude"`,
+    )
+  })
+})
 
 describe('initWindowCommand', () => {
   it('creates a visible window with remain-on-exit chained on', () => {

@@ -183,15 +183,42 @@ export function buildAgentCmd(
 }
 
 /**
+ * In-pod probe that the agent window survived a claim-time respawn.
+ * `respawn-window` reports success even when its command dies instantly
+ * (e.g. the tool binary is missing from the image the spare was warmed
+ * from): the pane exits, tmux closes the window, and the yaac session
+ * lives on through its init windows — so the claim would hand over a
+ * "healthy" session whose agent pane silently falls back to the
+ * lowest-index window (see attachArgs). The in-pod sleep gives a doomed
+ * command time to exit before the existence probe; a slow crash past it
+ * still slips through — this catches the deterministic spawn-failure
+ * class, not every crash.
+ */
+export function buildAgentWindowCheck(tool: AgentTool): string {
+  return `sh -c "sleep 1; ${TMUX} list-windows -t =yaac -F '#{window_name}' | grep -qxF ${tool}"`
+}
+
+async function verifyAgentWindowAlive(jobName: string, tool: AgentTool): Promise<void> {
+  try {
+    await containerExec(jobName, buildAgentWindowCheck(tool))
+  } catch {
+    throw new Error(
+      `agent "${tool}" exited right after its respawn in ${jobName} — `
+      + 'likely not installed in the image this spare was warmed from',
+    )
+  }
+}
+
+/**
  * Swap a prewarmed spare's booted agent for a different tool at claim time.
  * Spares are provisioned tool-agnostically (mounts, env placeholders, and
  * per-tool config cover every tool), so only three things are keyed to the
  * booted tool: the proxy registration (drives credential injection), the
  * agent tmux window's name, and the process running in it. Re-registers the
- * proxy session, then renames + respawns the agent window. The pod's tool
- * label flips in the claim's commit call. Throws on failure — the caller
- * must treat the spare as tainted (registration, window name, and label may
- * disagree) and reap it.
+ * proxy session, then renames + respawns the agent window and verifies the
+ * respawned agent survived. The pod's tool label flips in the claim's
+ * commit call. Throws on failure — the caller must treat the spare as
+ * tainted (registration, window name, and label may disagree) and reap it.
  */
 export async function retoolSpare(
   spare: { jobName: string; sessionId: string; projectSlug: string; tool: string },
@@ -208,6 +235,7 @@ export async function retoolSpare(
     spare.jobName,
     `${TMUX} respawn-window -k -t yaac:${tool} '${buildAgentCmd(tool, spare.sessionId, '', false)}'`,
   )
+  await verifyAgentWindowAlive(spare.jobName, tool)
 }
 
 /** The in-pod commands that re-point a prewarmed spare's worktree at a
@@ -312,6 +340,7 @@ export async function rebranchSpare(
     await containerExec(spare.jobName, prep.upstreamExec)
   })
   for (const cmd of prep.windowExecs) await containerExec(spare.jobName, cmd)
+  if (respawnAgent) await verifyAgentWindowAlive(spare.jobName, spare.tool as AgentTool)
 }
 
 // Keep in lockstep with the @anthropic-ai/claude-code dependency: if it
