@@ -96,6 +96,37 @@ authenticates with an `HttpOnly` cookie obtained from a one-time token
 that `yaac open` mints and exchanges for you (no manual pasting). The CLI
 and web app drive the same on-disk state, so you can mix them freely.
 
+### Desktop app
+
+The same web app is also available as a macOS Electron shell (`@yaac/desktop`).
+It has no bundled frontend of its own: the main process resolves the target
+server (remote if enabled, else the local daemon — starting one if none is
+up), mints the same one-time token `yaac open` does, and loads the server
+origin into a native window. It lives in the tray (close hides, Quit stops
+only the shell) and badges the dock for waiting sessions. It is not part of
+`pnpm build` and never ships in the npm artifact.
+
+No extra prerequisites beyond the repo's `pnpm install` (the `electron` dev
+dependency downloads its binary on install); dev runs also need the `yaac`
+CLI on PATH for local-server and auth-daemon auto-start. Run it from the repo
+root:
+
+```sh
+pnpm desktop:dev     # tsup-bundle the main process, then launch electron
+pnpm desktop:hot     # same, but the window loads Vite for frontend hot-reload
+pnpm desktop:build   # just build the main-process bundle (dist/main.js)
+```
+
+To build a standalone (unsigned) macOS `.app`:
+
+```sh
+pnpm desktop:package   # build + stage the bundled server → electron-builder (dist-app/)
+pnpm desktop:install   # the above, then install into /Applications
+```
+
+See [`packages/desktop/README.md`](packages/desktop/README.md) for the boot
+and auth flow, packaging internals, and the by-hand verification matrix.
+
 ## CLI
 
 ```
