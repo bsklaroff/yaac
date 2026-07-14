@@ -122,13 +122,13 @@ importers:
         version: link:packages/auth-daemon
       '@yaac/cli':
         specifier: workspace:*
-        version: link:apps/cli
+        version: link:packages/cli
       '@yaac/desktop':
         specifier: workspace:*
-        version: link:apps/desktop
+        version: link:packages/desktop
       '@yaac/frontend':
         specifier: workspace:*
-        version: link:apps/frontend
+        version: link:packages/frontend
       '@yaac/server':
         specifier: workspace:*
         version: link:packages/server
@@ -160,17 +160,58 @@ importers:
         specifier: 4.1.3
         version: 4.1.3(@types/node@25.5.2)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@7.0.4(@types/node@25.5.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.9.0))
 
-  apps/cli:
+  k8s/proxy:
+    dependencies:
+      node-forge:
+        specifier: 1.3.1
+        version: 1.3.1
+      socks:
+        specifier: 2.8.9
+        version: 2.8.9
+      socks-proxy-agent:
+        specifier: 10.0.0
+        version: 10.0.0
+      tsx:
+        specifier: 4.21.0
+        version: 4.21.0
+    devDependencies:
+      '@types/node-forge':
+        specifier: 1.3.14
+        version: 1.3.14
+
+  packages/auth-daemon:
+    dependencies:
+      '@lydell/node-pty':
+        specifier: 'catalog:'
+        version: 1.1.0
+      '@yaac/shared':
+        specifier: workspace:*
+        version: link:../shared
+      ws:
+        specifier: 'catalog:'
+        version: 8.21.0
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 25.5.2
+      '@types/ws':
+        specifier: 'catalog:'
+        version: 8.18.1
+      '@yaac/test-utils':
+        specifier: workspace:*
+        version: link:../test-utils
+
+  packages/cli:
     dependencies:
       '@yaac/auth-daemon':
         specifier: workspace:*
-        version: link:../../packages/auth-daemon
+        version: link:../auth-daemon
       '@yaac/server':
         specifier: workspace:*
-        version: link:../../packages/server
+        version: link:../server
       '@yaac/shared':
         specifier: workspace:*
-        version: link:../../packages/shared
+        version: link:../shared
       commander:
         specifier: 'catalog:'
         version: 14.0.3
@@ -189,13 +230,13 @@ importers:
         version: 8.18.1
       '@yaac/test-utils':
         specifier: workspace:*
-        version: link:../../packages/test-utils
+        version: link:../test-utils
 
-  apps/desktop:
+  packages/desktop:
     dependencies:
       '@yaac/shared':
         specifier: workspace:*
-        version: link:../../packages/shared
+        version: link:../shared
       ws:
         specifier: 'catalog:'
         version: 8.21.0
@@ -219,7 +260,7 @@ importers:
         specifier: 'catalog:'
         version: 4.21.0
 
-  apps/frontend:
+  packages/frontend:
     dependencies:
       '@base-ui/react':
         specifier: 1.5.0
@@ -253,7 +294,7 @@ importers:
         version: 6.0.0
       '@yaac/shared':
         specifier: workspace:*
-        version: link:../../packages/shared
+        version: link:../shared
       clsx:
         specifier: 2.1.1
         version: 2.1.1
@@ -306,47 +347,6 @@ importers:
       vite:
         specifier: 7.0.4
         version: 7.0.4(@types/node@25.5.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.9.0)
-
-  k8s/proxy:
-    dependencies:
-      node-forge:
-        specifier: 1.3.1
-        version: 1.3.1
-      socks:
-        specifier: 2.8.9
-        version: 2.8.9
-      socks-proxy-agent:
-        specifier: 10.0.0
-        version: 10.0.0
-      tsx:
-        specifier: 4.21.0
-        version: 4.21.0
-    devDependencies:
-      '@types/node-forge':
-        specifier: 1.3.14
-        version: 1.3.14
-
-  packages/auth-daemon:
-    dependencies:
-      '@lydell/node-pty':
-        specifier: 'catalog:'
-        version: 1.1.0
-      '@yaac/shared':
-        specifier: workspace:*
-        version: link:../shared
-      ws:
-        specifier: 'catalog:'
-        version: 8.21.0
-    devDependencies:
-      '@types/node':
-        specifier: 'catalog:'
-        version: 25.5.2
-      '@types/ws':
-        specifier: 'catalog:'
-        version: 8.18.1
-      '@yaac/test-utils':
-        specifier: workspace:*
-        version: link:../test-utils
 
   packages/server:
     dependencies:

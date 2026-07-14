@@ -2,7 +2,7 @@
  * The dependency-free half of the server-lock contract: the lock's shape and
  * liveness semantics, with no `#…` or `@yaac/*` imports. Split out of
  * `#lock` (which owns the file I/O rooted at getDataDir()) so that
- * `apps/frontend/vite.config.ts` — loaded through esbuild, which can resolve
+ * `packages/frontend/vite.config.ts` — loaded through esbuild, which can resolve
  * neither bare `@yaac/*` specifiers nor package `imports` maps at
  * config-load time — can share the exact same parsing and liveness rules via
  * a relative import instead of hand-rolling them.

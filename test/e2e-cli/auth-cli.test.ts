@@ -30,7 +30,7 @@ import {
  *
  * The YAAC_E2E_*_LOGIN / YAAC_E2E_OPENCODE_PROVIDER hooks are read by
  * the CLI process (runToolLogin in packages/shared/src/tool-auth-interactive.ts,
- * called from apps/cli/src/commands/auth-update.ts — "interactive tool-login must
+ * called from packages/cli/src/commands/auth-update.ts — "interactive tool-login must
  * happen CLI-side"), never by the server, so they are passed per-runYaac
  * call and the shared server needs no special env.
  */

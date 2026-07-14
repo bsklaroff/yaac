@@ -1,5 +1,5 @@
 - Always install dependencies with exact versions: `pnpm add -E <package>` (or `pnpm add -DE <package>` for dev deps). Add package-scoped deps in that package's directory (`pnpm --filter @yaac/<pkg> add -E …`). Deps shared by several manifests are pinned once in the `catalog:` section of pnpm-workspace.yaml and referenced as `"<pkg>": "catalog:"` — except in k8s/proxy, whose manifest is npm-installed inside the image build (npm can't resolve `catalog:`).
-- Every exported function must have a unit test in its own package's `test/` dir (e.g. `packages/server/test/`, `apps/cli/test/`).
+- Every exported function must have a unit test in its own package's `test/` dir (e.g. `packages/server/test/`, `packages/cli/test/`).
 - Every CLI command argument and option must have an e2e test in `test/e2e-cli/` (or `test/e2e/`) at the repo root.
 - **NEVER take credit for authoring code** — do not add "Co-Authored-By" lines, or any other AI attribution to commit messages, PR descriptions, or code comments
 - Always use `pnpm lint` for linting (runs `tsc --noEmit`, the frontend `tsc`, and `eslint`).
@@ -26,9 +26,9 @@ array target, so `.tsx` would break).
 
 | Package | Role | May import |
 |---|---|---|
-| `apps/cli` (`@yaac/cli`) | the published `yaac` bin: entry + commands | server, auth-daemon, shared |
-| `apps/desktop` (`@yaac/desktop`) | Electron shell: main-process launcher | shared only |
-| `apps/frontend` (`@yaac/frontend`) | React SPA | shared only |
+| `packages/cli` (`@yaac/cli`) | the published `yaac` bin: entry + commands | server, auth-daemon, shared |
+| `packages/desktop` (`@yaac/desktop`) | Electron shell: main-process launcher | shared only |
+| `packages/frontend` (`@yaac/frontend`) | React SPA | shared only |
 | `packages/server` (`@yaac/server`) | HTTP/WS daemon + all backend `lib/` | shared only |
 | `packages/auth-daemon` (`@yaac/auth-daemon`) | auth helper daemon | shared only |
 | `packages/shared` (`@yaac/shared`) | wire types + cross-cutting utils | nothing (type-only from others OK) |
@@ -37,8 +37,9 @@ array target, so `.tsx` would break).
 
 Boundaries are enforced by pnpm strict `node_modules` (an undeclared package
 won't resolve) plus eslint import-restriction zones scoped to `src/**`
-(so tests are unrestricted bar the no-parent-import rule). apps never import
-apps; packages never import apps; server and auth-daemon never import each
+(so tests are unrestricted bar the no-parent-import rule). The app packages
+(cli, desktop, frontend) never import each other; the library packages never
+import an app package; server and auth-daemon never import each
 other — anything they share lives in `@yaac/shared`. Under `src/`,
 `process.env` may only be read in `packages/shared/src/env.ts` (enforced by
 `no-process-env` on `src/**`); the rare sanctioned reads elsewhere carry an
@@ -46,8 +47,8 @@ inline disable with a justification, and `packages/test-utils` (test
 infrastructure) is exempt.
 
 The root `package.json` is the publishable `@bsklaroff/yaac`; `pnpm build`
-bundles `apps/cli` (tsup) to `dist/cli.js` and copies the SPA (built by vite
-to `apps/frontend/dist`) into `dist/frontend`. tsup leaves npm deps external,
+bundles `packages/cli` (tsup) to `dist/cli.js` and copies the SPA (built by
+vite to `packages/frontend/dist`) into `dist/frontend`. tsup leaves npm deps external,
 so the published CLI resolves them from the root manifest — the build fails
 if `dist/cli.js` imports one missing there (`scripts/check-cli-externals.ts`).
 Publish with `pnpm publish` (it rewrites `catalog:` pins; npm would not).
@@ -62,7 +63,7 @@ tsconfig); packages deliberately have no typecheck scripts.
 The desktop app (`pnpm desktop:dev` / `desktop:build`) is not part of `pnpm
 build` — the npm artifact never includes it. It is an Electron shell whose
 main process loads the server origin into the window, so the SPA it displays
-is whatever the target server serves (see apps/desktop/README.md). It lives
+is whatever the target server serves (see packages/desktop/README.md). It lives
 in the tray (close hides; Quit never stops the server) and surfaces waiting
 sessions via `/events`. `pnpm desktop:package` / `desktop:install` build the
 unsigned macOS .app — the bundled server is staged from the root publish

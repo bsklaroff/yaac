@@ -31,7 +31,7 @@ describe('findRepoRoot', () => {
   const here = path.dirname(new URL(import.meta.url).pathname)
 
   it('walks up past per-package package.json files to the workspace marker', async () => {
-    // Every apps/* and packages/* dir has a package.json; only the repo
+    // Every packages/* dir has a package.json; only the repo
     // root has pnpm-workspace.yaml — the walk must not stop early.
     const root = findRepoRoot(here)
     expect(root).toBe(path.resolve(here, '..', '..', '..'))

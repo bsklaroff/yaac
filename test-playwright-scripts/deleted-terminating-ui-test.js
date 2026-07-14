@@ -10,7 +10,7 @@
  *   - the search box filters the list, and a no-match query shows "No matches."
  *
  * Unlike the other scripts here, this one does NOT need a running server: it
- * serves the built SPA (apps/frontend/dist) from a throwaway static server and
+ * serves the built SPA (packages/frontend/dist) from a throwaway static server and
  * MOCKS the backend — the /events WebSocket delivers a snapshot carrying a
  * terminating session, and /session/list-deleted returns ordered entries. That
  * isolates the changed frontend code from the live cluster/session stack (handy
@@ -38,10 +38,10 @@ function requirePlaywright() {
 const { chromium } = requirePlaywright()
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const DIST = path.join(REPO, 'apps/frontend/dist')
+const DIST = path.join(REPO, 'packages/frontend/dist')
 const SHOTS = process.env.SCREENSHOT_DIR
 if (!fs.existsSync(path.join(DIST, 'index.html'))) {
-  console.error('apps/frontend/dist not found — run `pnpm frontend:build` first.')
+  console.error('packages/frontend/dist not found — run `pnpm frontend:build` first.')
   process.exit(1)
 }
 if (SHOTS) fs.mkdirSync(SHOTS, { recursive: true })

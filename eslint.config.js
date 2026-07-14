@@ -5,7 +5,7 @@ import tseslint from 'typescript-eslint'
 const RELATIVE_PARENT = { group: ['..*'], message: 'Relative parent imports are not allowed.' }
 
 export default tseslint.config(
-  { ignores: ['dist', 'apps/*/dist', 'apps/desktop/dist-app', 'apps/desktop/staging'] },
+  { ignores: ['dist', 'packages/*/dist', 'packages/desktop/dist-app', 'packages/desktop/staging'] },
   {
     extends: [
       ...tseslint.configs.recommendedTypeChecked,
@@ -14,7 +14,7 @@ export default tseslint.config(
     languageOptions: {
       globals: globals.node,
       parserOptions: {
-        project: ['./tsconfig.json', './apps/frontend/tsconfig.json'],
+        project: ['./tsconfig.json', './packages/frontend/tsconfig.json'],
         tsconfigRootDir: import.meta.dirname,
       },
     },
@@ -102,7 +102,7 @@ export default tseslint.config(
 
   // frontend: only @yaac/shared (+ self via #).
   {
-    files: ['apps/frontend/src/**/*.{ts,tsx}'],
+    files: ['packages/frontend/src/**/*.{ts,tsx}'],
     rules: {
       '@typescript-eslint/no-restricted-imports': [
         'error',
@@ -111,7 +111,7 @@ export default tseslint.config(
             RELATIVE_PARENT,
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
-              message: 'apps/frontend may only depend on @yaac/shared.',
+              message: 'packages/frontend may only depend on @yaac/shared.',
             },
           ],
         },
@@ -124,7 +124,7 @@ export default tseslint.config(
   // window's content is the SPA served by the server, so nothing here may
   // reach into @yaac/frontend or @yaac/server.
   {
-    files: ['apps/desktop/src/**/*.ts'],
+    files: ['packages/desktop/src/**/*.ts'],
     rules: {
       '@typescript-eslint/no-restricted-imports': [
         'error',
@@ -133,7 +133,7 @@ export default tseslint.config(
             RELATIVE_PARENT,
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
-              message: 'apps/desktop may only depend on @yaac/shared.',
+              message: 'packages/desktop may only depend on @yaac/shared.',
             },
           ],
         },
@@ -143,14 +143,14 @@ export default tseslint.config(
 
   // cli app: may wire server + auth-daemon + shared, but never the frontend.
   {
-    files: ['apps/cli/src/**/*.ts'],
+    files: ['packages/cli/src/**/*.ts'],
     rules: {
       '@typescript-eslint/no-restricted-imports': [
         'error',
         {
           patterns: [
             RELATIVE_PARENT,
-            { group: ['@yaac/frontend', '@yaac/frontend/*'], message: 'Apps must not import apps.' },
+            { group: ['@yaac/frontend', '@yaac/frontend/*'], message: '@yaac/cli must not import @yaac/frontend.' },
           ],
         },
       ],
@@ -163,7 +163,7 @@ export default tseslint.config(
   // run before any server exists). The negation chain re-includes each parent
   // dir (gitignore semantics: a leaf can't be un-ignored while its parent is).
   {
-    files: ['apps/cli/src/commands/**/*'],
+    files: ['packages/cli/src/commands/**/*'],
     rules: {
       '@typescript-eslint/no-restricted-imports': [
         'error',
@@ -192,7 +192,7 @@ export default tseslint.config(
   // every yaac variable's default and validation. Sanctioned reads elsewhere
   // carry an inline `eslint-disable-next-line no-process-env`.
   {
-    files: ['apps/*/src/**/*.{ts,tsx}', 'packages/*/src/**/*.ts'],
+    files: ['packages/*/src/**/*.{ts,tsx}'],
     rules: { 'no-process-env': 'error' },
   },
   {

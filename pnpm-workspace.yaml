@@ -1,5 +1,4 @@
 packages:
-  - "apps/*"
   - "packages/*"
   - "k8s/proxy"
 # Single source of truth for deps pinned in more than one manifest; refer to
@@ -35,5 +34,5 @@ allowBuilds:
 minimumReleaseAge: 10080
 minimumReleaseAgeExclude:
   # Adopted at days old (only release; the attention chime's one cue) after
-  # reading its full source — see apps/frontend/src/lib/sound.ts.
+  # reading its full source — see packages/frontend/src/lib/sound.ts.
   - cuelume

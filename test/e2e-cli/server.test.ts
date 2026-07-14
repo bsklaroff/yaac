@@ -76,7 +76,7 @@ describe('yaac server lifecycle (real CLI + real server)', () => {
     const wanted = testEnv.serverPort + 1
     const child = spawn(process.execPath, [
       path.resolve('node_modules/tsx/dist/cli.mjs'),
-      path.resolve('apps/cli/src/cli.ts'),
+      path.resolve('packages/cli/src/cli.ts'),
       'server', 'run', '--port', String(wanted),
     ], { env: testEnv.env, stdio: ['ignore', 'ignore', 'pipe'] })
     try {
@@ -237,7 +237,7 @@ describe('yaac server logs (real CLI)', () => {
 
     const child = spawn(process.execPath, [
       path.resolve('node_modules/tsx/dist/cli.mjs'),
-      path.resolve('apps/cli/src/cli.ts'),
+      path.resolve('packages/cli/src/cli.ts'),
       'server', 'logs', '-f',
     ], { env: testEnv.env, stdio: ['ignore', 'pipe', 'pipe'] })
     try {

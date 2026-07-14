@@ -41,14 +41,14 @@ export default defineConfig({
     hookTimeout: 600_000,
     projects: [
       // Co-located per-package unit tests. Names are `unit:<pkg>`.
-      unitProject('apps/cli'),
+      unitProject('packages/cli'),
       // .tsx component tests: transform JSX via esbuild (no react plugin
       // needed for tests); jsdom is selected per-file via
       // `// @vitest-environment jsdom`.
-      unitProject('apps/frontend', {
+      unitProject('packages/frontend', {
         esbuild: { jsx: 'automatic' },
       }),
-      unitProject('apps/desktop'),
+      unitProject('packages/desktop'),
       unitProject('packages/server'),
       unitProject('packages/shared'),
       unitProject('packages/auth-daemon'),

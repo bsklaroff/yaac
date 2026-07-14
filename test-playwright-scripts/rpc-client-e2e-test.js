@@ -1,5 +1,5 @@
 /*
- * End-to-end check of the frontend's Hono RPC client (apps/frontend/src/lib/
+ * End-to-end check of the frontend's Hono RPC client (packages/frontend/src/lib/
  * rpc.ts + the migrated lib/*Api modules) against the real running stack.
  *
  * Drives the running yaac server's webapp in real Chromium and exercises the

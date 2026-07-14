@@ -1,19 +1,17 @@
 {
   "extends": "./tsconfig.base.json",
   "include": [
-    "apps/*/src",
-    "apps/*/test",
     "packages/*/src",
     "packages/*/test",
     "test",
     "scripts",
-    "apps/*/scripts",
+    "packages/*/scripts",
     "*.config.ts",
-    "apps/*/tsup.config.ts",
+    "packages/*/tsup.config.ts",
     "packages/*/drizzle.config.ts",
     "k8s/proxy/*.ts",
     "k8s/proxy/test",
     "k8s/relay/*.ts"
   ],
-  "exclude": ["node_modules", "dist", "apps/frontend"]
+  "exclude": ["node_modules", "dist", "packages/frontend"]
 }
