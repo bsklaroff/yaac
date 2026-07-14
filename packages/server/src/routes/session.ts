@@ -20,6 +20,8 @@ import { notifySessionListChanged } from '#sessions-changed'
 import { createShellWindow, listSessionTerminals, killWindowTerminal } from '#terminals'
 import { setSessionTitle } from '#lib/session/titles'
 import { getSessionChanges } from '#lib/session/changes'
+import { worktreeUpstreamBranch } from '#lib/git'
+import { repoDir } from '@yaac/shared/project-paths'
 
 export const sessionApp = new Hono()
   .get(
@@ -198,8 +200,18 @@ export const sessionApp = new Hono()
     '/:id/changes',
     zv('query', z.object({ base: z.string().min(1).max(255).optional() })),
     async (c) => {
-      const { jobName } = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
-      return c.json(await getSessionChanges(jobName, c.req.valid('query').base))
+      const { jobName, sessionId, projectSlug } = await resolveSessionContainer(
+        c.req.param('id'), { requireRunning: true },
+      )
+      // The branch the session forked from (its recorded upstream, e.g. main),
+      // read host-side from the shared repo config — same source as the sidebar
+      // base label. Passed as the DEFAULT diff base so committed work stays
+      // visible even after the agent renames and pushes its branch, which makes
+      // the current branch's own @{upstream} collapse the merge-base to HEAD.
+      const forkBranch = await worktreeUpstreamBranch(
+        repoDir(projectSlug), `agent/${sessionId}`,
+      ).catch(() => null)
+      return c.json(await getSessionChanges(jobName, c.req.valid('query').base, forkBranch ?? undefined))
     },
   )
   // Create a scratch-shell window in the session's `yaac` tmux session,

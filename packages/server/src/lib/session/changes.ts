@@ -29,15 +29,27 @@ const M_DIFF = '@@DIFF@@'
  * unified diff against the base, each behind a marker. The temp index is
  * removed; the real one is never touched.
  *
- * `$1` is the optional base branch (see buildChangesScript). When set, the fork
- * point is taken against `origin/<base>`; when empty, against the branch's own
- * `@{upstream}` (else HEAD) — today's default. An explicit-but-unresolvable
- * base fails hard (exit 4) rather than silently diffing against HEAD, which
- * would misleadingly show only uncommitted work against the wrong base.
+ * Two optional args (see buildChangesScript):
+ *  - `$1` — an explicit base branch the user picked. The fork point is taken
+ *    against `origin/<$1>`; an explicit-but-unresolvable base fails hard
+ *    (exit 4) rather than silently diffing against the wrong base.
+ *  - `$2` — the branch the session forked from (its recorded upstream, e.g.
+ *    `main`), used as the DEFAULT when no explicit base is given. The fork
+ *    point is taken against `origin/<$2>`, falling back gracefully to the
+ *    current branch's `@{upstream}` then `HEAD`.
+ *
+ * Why `$2` and not just the current branch's `@{upstream}`: once the agent
+ * renames its branch and pushes it, `@{upstream}` points at that branch's OWN
+ * remote (`origin/<renamed>` == HEAD), so `merge-base @{upstream} HEAD`
+ * collapses to HEAD and every commit vanishes from the diff. Diffing against
+ * the recorded fork branch (`origin/main`) instead keeps the real fork point.
+ * With neither `$1` nor `$2` set, the bare `@{upstream}`-else-HEAD path
+ * remains as the last resort.
  */
 const POD_SCRIPT =
   'cd /workspace 2>/dev/null || exit 3; '
   + 'if [ -n "$1" ]; then base=$(git merge-base "origin/$1" HEAD 2>/dev/null) || exit 4; '
+  + 'elif [ -n "$2" ]; then base=$(git merge-base "origin/$2" HEAD 2>/dev/null || git merge-base @{upstream} HEAD 2>/dev/null || git rev-parse HEAD 2>/dev/null) || exit 4; '
   + 'else base=$(git merge-base @{upstream} HEAD 2>/dev/null || git rev-parse HEAD 2>/dev/null) || exit 4; fi; '
   // A FRESH (non-existent) index path — git rejects an empty mktemp file as an
   // index. $$ is the pod sh PID, unique per exec. add -A into it stages the
@@ -56,15 +68,20 @@ function shSingleQuote(s: string): string {
 }
 
 /**
- * Build the containerExec command tail: `sh -c <script> yaac-changes <base>`.
- * The script is single-quoted for the host shell; the caller-chosen base is
- * passed as the pod sh's `$1` positional — never interpolated into the script —
+ * Build the containerExec command tail:
+ * `sh -c <script> yaac-changes <base> <defaultBase>`.
+ * The script is single-quoted for the host shell; both branch args are passed
+ * as the pod sh's `$1`/`$2` positionals — never interpolated into the script —
  * so any value (slashes, quotes, shell metacharacters) reaches git as one
- * literal ref token and, if bogus, simply fails to resolve. An empty base
- * selects the default (`@{upstream}`) path.
+ * literal ref token and, if bogus, simply fails to resolve. `base` is the
+ * user's explicit pick (hard-fail); `defaultBase` is the session's fork branch
+ * used gracefully when no explicit base is given. Both empty selects the bare
+ * `@{upstream}`-else-HEAD default path.
  */
-export function buildChangesScript(base?: string): string {
-  return `sh -c ${shSingleQuote(POD_SCRIPT)} yaac-changes ${shSingleQuote((base ?? '').trim())}`
+export function buildChangesScript(base?: string, defaultBase?: string): string {
+  const baseArg = shSingleQuote((base ?? '').trim())
+  const defaultArg = shSingleQuote((defaultBase ?? '').trim())
+  return `sh -c ${shSingleQuote(POD_SCRIPT)} yaac-changes ${baseArg} ${defaultArg}`
 }
 
 /** Map a git name-status letter to our ChangeStatus. */
@@ -168,9 +185,12 @@ export function parseChangesOutput(raw: string, maxDiffBytes = MAX_DIFF_BYTES): 
 }
 
 /** Compute the review diff for a running session's worktree. `base`, when
- *  given, is a branch name whose `origin/<base>` fork point the diff is taken
- *  against (else the branch's own upstream fork point). */
-export async function getSessionChanges(jobName: string, base?: string): Promise<SessionChanges> {
-  const { stdout } = await containerExec(jobName, buildChangesScript(base), { timeout: 20_000, maxAttempts: 2 })
+ *  given, is a user-picked branch whose `origin/<base>` fork point the diff is
+ *  taken against. `defaultBase` is the session's recorded fork branch (e.g.
+ *  `main`), used as the default when no explicit `base` is given so committed
+ *  work stays visible even after the agent renames and pushes its branch (see
+ *  POD_SCRIPT). */
+export async function getSessionChanges(jobName: string, base?: string, defaultBase?: string): Promise<SessionChanges> {
+  const { stdout } = await containerExec(jobName, buildChangesScript(base, defaultBase), { timeout: 20_000, maxAttempts: 2 })
   return parseChangesOutput(stdout)
 }

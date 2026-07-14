@@ -130,41 +130,55 @@ describe('parseChangesOutput', () => {
 })
 
 describe('buildChangesScript', () => {
-  it('builds the default (no-base) script with an empty positional', () => {
+  it('builds the default (no-base) script with two empty positionals', () => {
     const s = buildChangesScript()
-    expect(s).toContain('@{upstream}')       // default fork base
+    expect(s).toContain('@{upstream}')       // last-resort default fork base
     expect(s).toContain('"origin/$1"')       // explicit-base branch present but unused
+    expect(s).toContain('"origin/$2"')       // default fork-branch present but unused
     expect(s).toContain('git add -A')
     expect(s).toContain('GIT_INDEX_FILE')
-    expect(s.endsWith("yaac-changes ''")).toBe(true)
+    expect(s.endsWith("yaac-changes '' ''")).toBe(true)
   })
 
   it('passes an explicit base as the pod sh $1 positional (diffed against origin/$1)', () => {
     const s = buildChangesScript('dev')
     expect(s).toContain('"origin/$1"')       // the ref is derived from $1, never interpolated
-    expect(s.endsWith("yaac-changes 'dev'")).toBe(true)
+    expect(s.endsWith("yaac-changes 'dev' ''")).toBe(true)
     expect(s).not.toContain('origin/dev')    // the branch name is never spliced into the script body
   })
 
-  it('single-quotes the base so shell metacharacters cannot break out of the token', () => {
+  it('passes the fork branch as the $2 default positional (graceful origin/$2 path)', () => {
+    const s = buildChangesScript(undefined, 'main')
+    expect(s).toContain('"origin/$2"')       // the default ref is derived from $2, never interpolated
+    expect(s.endsWith("yaac-changes '' 'main'")).toBe(true)
+    expect(s).not.toContain('origin/main')   // the branch name is never spliced into the script body
+  })
+
+  it('carries both an explicit base ($1) and a fork-branch default ($2)', () => {
+    const s = buildChangesScript('dev', 'main')
+    expect(s.endsWith("yaac-changes 'dev' 'main'")).toBe(true)
+  })
+
+  it('single-quotes both branches so shell metacharacters cannot break out of the token', () => {
     for (const evil of ['x; rm -rf /', '$(touch pwn)', '`id`', 'a && b', '| tee x']) {
-      const s = buildChangesScript(evil)
-      expect(s.endsWith("yaac-changes '" + evil + "'")).toBe(true)
+      expect(buildChangesScript(evil).endsWith("yaac-changes '" + evil + "' ''")).toBe(true)
+      expect(buildChangesScript(undefined, evil).endsWith("yaac-changes '' '" + evil + "'")).toBe(true)
     }
   })
 
-  it('escapes embedded single quotes in the base', () => {
-    expect(buildChangesScript("a'b").endsWith("yaac-changes 'a'\\''b'")).toBe(true)
+  it('escapes embedded single quotes in either branch', () => {
+    expect(buildChangesScript("a'b").endsWith("yaac-changes 'a'\\''b' ''")).toBe(true)
+    expect(buildChangesScript(undefined, "a'b").endsWith("yaac-changes '' 'a'\\''b'")).toBe(true)
   })
 
-  it('keeps the script body byte-identical regardless of the base', () => {
+  it('keeps the script body byte-identical regardless of the branches', () => {
     const body = (s: string): string => s.slice(0, s.lastIndexOf('yaac-changes'))
     expect(body(buildChangesScript('dev'))).toBe(body(buildChangesScript()))
-    expect(body(buildChangesScript('x; rm -rf /'))).toBe(body(buildChangesScript()))
+    expect(body(buildChangesScript('x; rm -rf /', 'main'))).toBe(body(buildChangesScript()))
   })
 
-  it('trims surrounding whitespace from the base', () => {
-    expect(buildChangesScript('  dev  ').endsWith("yaac-changes 'dev'")).toBe(true)
+  it('trims surrounding whitespace from both branches', () => {
+    expect(buildChangesScript('  dev  ', '  main  ').endsWith("yaac-changes 'dev' 'main'")).toBe(true)
   })
 })
 
@@ -194,6 +208,17 @@ describe('getSessionChanges', () => {
     await getSessionChanges('yaac-proj-abc', 'dev')
     const [, cmd] = mockExec.mock.calls.at(-1) ?? []
     expect(cmd).toContain('"origin/$1"')
-    expect(cmd).toContain("yaac-changes 'dev'")
+    expect(cmd).toContain("yaac-changes 'dev' ''")
+  })
+
+  it('forwards the fork-branch default into the pod script when no explicit base', async () => {
+    mockExec.mockResolvedValue({
+      stdout: 'BASE deadbeef\n@@NUMSTAT@@\n@@NAMESTATUS@@\n@@DIFF@@\n',
+      stderr: '',
+    })
+    await getSessionChanges('yaac-proj-abc', undefined, 'main')
+    const [, cmd] = mockExec.mock.calls.at(-1) ?? []
+    expect(cmd).toContain('"origin/$2"')
+    expect(cmd).toContain("yaac-changes '' 'main'")
   })
 })
