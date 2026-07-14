@@ -28,10 +28,11 @@ function relativeAge(utc: string | undefined): string {
 const label = (d: DeletedSessionEntry): string => d.title || d.prompt || 'New session'
 
 /**
- * Sidebar-header entry point to the deleted-sessions view plus the full-screen
- * modal it opens. Deleted sessions (containers gone, transcripts kept) are
- * project-scoped, so this lives in the sidebar; open state lives in the store
- * so the overlay is a sibling of the workspace, not nested in a row.
+ * Sidebar entry point to the deleted-sessions view plus the full-screen modal
+ * it opens. Rendered as a labeled button below the Waiting/Running groups.
+ * Deleted sessions (containers gone, transcripts kept) are project-scoped, so
+ * this lives in the sidebar; open state lives in the store so the overlay is a
+ * sibling of the workspace, not nested in a row.
  *
  * The overlay is a search-filtered master/detail list ordered newest-deleted
  * first; picking a row shows its history metadata and a Restart action that
@@ -58,11 +59,12 @@ export function DeletedSessionsButton({
   const [restarting, setRestarting] = useState<string[]>([])
   const [confirm, setConfirm] = useState<DeletedSessionEntry | null>(null)
 
-  // Fetch only while open — this is a browse surface, not a steady-state list.
+  // Fetch even while closed so the sidebar can hide the entry point when the
+  // project has no deleted sessions. Re-keys on the active set (activeSignature)
+  // so a just-deleted session shows up and a restarted one drops.
   const { data } = useQuery({
     queryKey: ['deleted', projectSlug, activeSignature],
     queryFn: () => getDeletedSessions(projectSlug, 100),
-    enabled: open,
     staleTime: 2000,
   })
 
@@ -101,15 +103,19 @@ export function DeletedSessionsButton({
 
   return (
     <Dialog.Root open={open} onOpenChange={(next) => { if (next) openOverlay(); else closeOverlay() }}>
-      <button
-        onClick={openOverlay}
-        title="Deleted sessions"
-        aria-label="Deleted sessions"
-        className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
-          hover:bg-surface-2 hover:text-text-dim"
-      >
-        <DeleteIcon size={14} />
-      </button>
+      {/* Entry point hidden until the project actually has deleted sessions
+          (optimistic or fetched). The overlay below stays mounted regardless so
+          an open dialog keeps its exit animation if the list empties out. */}
+      {merged.length > 0 && (
+        <button
+          onClick={openOverlay}
+          className="mt-1 flex w-full items-center gap-1.5 px-3 py-1 text-xs font-medium text-text-faint
+            outline-none transition hover:text-text-dim"
+        >
+          <DeleteIcon size={13} className="shrink-0" />
+          <span>Deleted sessions</span>
+        </button>
+      )}
 
       <Dialog.Portal>
         <Dialog.Backdrop className="fixed inset-0 bg-black/60 backdrop-blur-[1px] transition-opacity duration-150

@@ -103,7 +103,6 @@ export function Sidebar({
               className="hover:bg-[#d65858]/25"
             />
           )}
-          {projectSlug && <DeletedSessionsButton projectSlug={projectSlug} activeSignature={activeSignature} />}
           {projectSlug && <NewSessionButton projectSlug={projectSlug} />}
           <button
             onClick={toggleSidebar}
@@ -143,6 +142,7 @@ export function Sidebar({
             sessions={sessions.filter((s) => s.status === g.status)}
           />
         ))}
+        {projectSlug && <DeletedSessionsButton projectSlug={projectSlug} activeSignature={activeSignature} />}
       </div>
     </aside>
   )
