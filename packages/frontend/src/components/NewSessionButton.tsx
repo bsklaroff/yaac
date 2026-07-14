@@ -1,4 +1,4 @@
-import { useEffect, useState, type JSX } from 'react'
+import { useEffect, useRef, useState, type JSX } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Popover } from '@base-ui/react/popover'
 import clsx from 'clsx'
@@ -46,6 +46,7 @@ export function NewSessionButton(
   const queryClient = useQueryClient()
 
   const [open, setOpen] = useState(false)
+  const popupRef = useRef<HTMLDivElement>(null)
   // null = untouched: the input shows (and creates use) the project default.
   const [branchInput, setBranchInput] = useState<string | null>(null)
   const [pinPending, setPinPending] = useState(false)
@@ -136,7 +137,13 @@ export function NewSessionButton(
         {/* align=start: the popup extends right (over the pane area) instead of
             left across the sidebar content. */}
         <Popover.Positioner side="bottom" align="start" sideOffset={6}>
-          <Popover.Popup className="w-[240px] rounded-lg border border-border bg-surface-2 p-1 text-text
+          <Popover.Popup
+            ref={popupRef}
+            // Focus the popup itself, not the branch input — a blinking text
+            // cursor on every open is distracting. Focus stays inside the
+            // dialog so Escape/Tab and focus-return still work.
+            initialFocus={() => popupRef.current}
+            className="w-[240px] rounded-lg border border-border bg-surface-2 p-1 text-text
             shadow-[0_12px_32px_var(--shadow-color)] outline-none transition-opacity duration-100
             data-[starting-style]:opacity-0 data-[ending-style]:opacity-0">
             <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">New session</div>

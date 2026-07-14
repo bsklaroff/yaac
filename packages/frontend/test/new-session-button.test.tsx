@@ -109,6 +109,14 @@ describe('NewSessionButton', () => {
     expect(screen.getByRole('button', { name: /New session/ }).textContent).toContain('New session')
   })
 
+  it('does not focus the branch input on open (no distracting cursor blink)', async () => {
+    await openMenu()
+    await waitFor(() => expect(branchInput().value).toBe('main'))
+    // Focus lands on the popup dialog, not the branch input.
+    expect(document.activeElement).not.toBe(branchInput())
+    expect(document.activeElement?.getAttribute('role')).toBe('dialog')
+  })
+
   it('prefills the branch input with the project default', async () => {
     vi.mocked(getProjectBranches).mockResolvedValue({ ...BRANCHES, referenceBranch: 'dev' })
     await openMenu()
