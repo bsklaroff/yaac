@@ -19,7 +19,7 @@ import { EmptyState } from '#components/ui/EmptyState'
 import { NewSessionButton } from '#components/NewSessionButton'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
 import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
-import { ForwardedPortLinks } from '#components/ForwardedPortLinks'
+import { ForwardedPortLinks, portLinkLabel } from '#components/ForwardedPortLinks'
 import { getSessionTerminals, createShellTerminal, killSessionTerminal } from '#lib/terminalsApi'
 import { cycleDeltaFor, matchShortcut, resolveCycleTarget } from '#lib/shortcuts'
 import {
@@ -511,7 +511,7 @@ export function SessionView({
           {embedPreview && previewPorts.length > 0 && (
             <button
               onClick={() => openPreview(session.sessionId, previewPorts[0].containerPort)}
-              title="Open preview"
+              title={`Open preview (${previewPorts.map(portLinkLabel).join(', ')})`}
               aria-label="Open preview"
               className="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-[11px]
                 text-text-dim transition hover:bg-surface-2 hover:text-text"
