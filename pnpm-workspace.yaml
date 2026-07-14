@@ -33,3 +33,7 @@ allowBuilds:
   protobufjs: false
   ssh2: false
 minimumReleaseAge: 10080
+minimumReleaseAgeExclude:
+  # Adopted at days old (only release; the attention chime's one cue) after
+  # reading its full source — see apps/frontend/src/lib/sound.ts.
+  - cuelume

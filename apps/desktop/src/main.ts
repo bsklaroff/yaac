@@ -72,7 +72,14 @@ async function createWindow(): Promise<BrowserWindow> {
     trafficLightPosition: { x: 13, y: 7 },
     // The renderer is pure web content from the server origin — no preload,
     // no Node, fully sandboxed.
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      // Let the attention chime play without a prior click (it fires on a
+      // background event — a session flipping to waiting), not a user gesture.
+      autoplayPolicy: 'no-user-gesture-required',
+    },
   })
   w.once('ready-to-show', () => w.show())
   const onThemeChange = (): void => {

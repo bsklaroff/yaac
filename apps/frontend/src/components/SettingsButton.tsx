@@ -75,6 +75,8 @@ export function SettingsButton(): JSX.Element {
   const setSection = useUiStore((s) => s.setSettingsSection)
   const themePref = useUiStore((s) => s.themePref)
   const setThemePref = useUiStore((s) => s.setThemePref)
+  const soundEnabled = useUiStore((s) => s.soundEnabled)
+  const setSoundEnabled = useUiStore((s) => s.setSoundEnabled)
   const [tool, setTool] = useState<AgentTool | null>(null)
   const queryClient = useQueryClient()
 
@@ -193,6 +195,29 @@ export function SettingsButton(): JSX.Element {
                       </label>
                     ))}
                   </RadioGroup>
+                </Field>
+                <Field
+                  label="Sounds"
+                  hint="Play a chime when a session needs your input."
+                >
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={soundEnabled}
+                    aria-label="Sounds"
+                    onClick={() => setSoundEnabled(!soundEnabled)}
+                    className={clsx(
+                      'relative flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
+                      soundEnabled ? 'bg-accent' : 'bg-surface-3',
+                    )}
+                  >
+                    <span
+                      className={clsx(
+                        'h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
+                        soundEnabled ? 'translate-x-[18px]' : 'translate-x-0.5',
+                      )}
+                    />
+                  </button>
                 </Field>
               </section>
             )}
