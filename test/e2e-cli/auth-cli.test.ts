@@ -368,7 +368,7 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
         testEnv.env, 'auth', 'update',
         {
           stdinOnPrompt: [
-            { when: /Choice \[1-4\]: /, send: '1\n' },
+            { when: /Choice \[1-5\]: /, send: '1\n' },
             { when: /Choice \[a\/b\]: /, send: 'a\n' },
             { when: /Repo pattern: /, send: 'github.com/acme/*\n' },
             { when: /Token \(PAT\): /, send: 'ghp_test_token_xyz\n' },
@@ -390,7 +390,7 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
         testEnv.env, 'auth', 'update',
         {
           stdinOnPrompt: [
-            { when: /Choice \[1-4\]: /, send: '1\n' },
+            { when: /Choice \[1-5\]: /, send: '1\n' },
             { when: /Choice \[a\/b\]: /, send: 'a\n' },
             { when: /Repo pattern: /, send: '\n' },
           ],
@@ -405,7 +405,7 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
         testEnv.env, 'auth', 'update',
         {
           stdinOnPrompt: [
-            { when: /Choice \[1-4\]: /, send: '1\n' },
+            { when: /Choice \[1-5\]: /, send: '1\n' },
             { when: /Choice \[a\/b\]: /, send: 'a\n' },
             { when: /Repo pattern: /, send: 'acme/*\n' },
           ],
@@ -428,7 +428,7 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
         testEnv.env, 'auth', 'update',
         {
           stdinOnPrompt: [
-            { when: /Choice \[1-4\]: /, send: '1\n' },
+            { when: /Choice \[1-5\]: /, send: '1\n' },
             { when: /Choice \[a\/b\]: /, send: 'b\n' },
             { when: /Repo pattern: /, send: 'git.example.com/*\n' },
             { when: /Private key path/, send: `${keyPath}\n` },

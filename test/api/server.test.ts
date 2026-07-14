@@ -23,7 +23,7 @@ describe('buildApp', () => {
     // (no bearer) to prove the exemption still holds.
     const res = await app.request('/health')
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ ok: true, buildId: 'abc123' })
+    expect(await res.json()).toEqual({ ok: true, buildId: 'abc123', ready: true })
   })
 
   it('GET /project/list requires bearer auth', async () => {

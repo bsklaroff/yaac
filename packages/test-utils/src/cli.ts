@@ -6,7 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { setDataDir, findRepoRoot } from '@yaac/shared/paths'
 import { readLock } from '@yaac/shared/lock'
-import type { ServerLock } from '@yaac/shared/server-lock-file'
+import { isLockReady, type ServerLock } from '@yaac/shared/server-lock-file'
 import { TEST_NAMESPACE } from '#setup'
 import { e2eMkdtemp } from '#tmp'
 
@@ -202,32 +202,40 @@ export async function spawnYaacServer(env: NodeJS.ProcessEnv): Promise<SpawnedSe
     await releaseMutex()
   }
 
-  let child: ChildProcess
+  const child = spawn(process.execPath, [TSX_CLI, ENTRY, 'server', 'run', '--port', '0'], {
+    env,
+    stdio: ['ignore', 'ignore', 'pipe'],
+    // Make the server its own process-group leader (setsid) so `stop()`
+    // can signal the whole group. The server forks long-lived children
+    // (`kubectl port-forward`/`exec` relays) that inherit this pgid; a
+    // group kill reaps them even on the SIGKILL path, instead of leaving
+    // them orphaned to accumulate across the serialized e2e files until
+    // the cgroup pid ceiling is hit and `fork()` starts returning EAGAIN.
+    detached: true,
+  })
+
+  // Forward server stderr to the test worker's stderr when the debug
+  // flag is set — invaluable when a server subprocess dies before the
+  // CLI can observe a coherent error.
+  if (process.env.YAAC_TEST_DEBUG_SERVER === '1') {
+    child.stderr?.on('data', (chunk: Buffer) => {
+      process.stderr.write(`[server] ${chunk.toString()}`)
+    })
+  }
+
   let lock: ServerLock
   try {
-    child = spawn(process.execPath, [TSX_CLI, ENTRY, 'server', 'run', '--port', '0'], {
-      env,
-      stdio: ['ignore', 'ignore', 'pipe'],
-      // Make the server its own process-group leader (setsid) so `stop()`
-      // can signal the whole group. The server forks long-lived children
-      // (`kubectl port-forward`/`exec` relays) that inherit this pgid; a
-      // group kill reaps them even on the SIGKILL path, instead of leaving
-      // them orphaned to accumulate across the serialized e2e files until
-      // the cgroup pid ceiling is hit and `fork()` starts returning EAGAIN.
-      detached: true,
-    })
-
-    // Forward server stderr to the test worker's stderr when the debug
-    // flag is set — invaluable when a server subprocess dies before the
-    // CLI can observe a coherent error.
-    if (process.env.YAAC_TEST_DEBUG_SERVER === '1') {
-      child.stderr?.on('data', (chunk: Buffer) => {
-        process.stderr.write(`[server] ${chunk.toString()}`)
-      })
-    }
-
-    lock = await waitForLock(5000)
+    // 30s matches `yaac server start`'s readiness budget: opening PGlite and
+    // running first-boot migrations can take several seconds, more under the
+    // memory/CPU pressure of a full parallel run.
+    lock = await waitForLock(30_000)
   } catch (err) {
+    // Reap the spawned server before rethrowing. Without this, a readiness
+    // timeout leaves the child (and its process group) running: it never
+    // wrote a usable lock, no `stop()` is returned to the caller, and the
+    // orphaned servers pile up across the serialized suites until the box
+    // runs out of memory.
+    killGroup(child, 'SIGKILL')
     await releaseOnce()
     throw err
   }
@@ -293,10 +301,16 @@ async function waitForLock(timeoutMs: number): Promise<ServerLock> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const lock = await readLock()
-    if (lock) return lock
+    // Wait for genuine readiness (`/health` reports ready), not just the
+    // lock file: the port binds and the lock is written before the server
+    // opens its DB and mints the start-banner one-time token, so a caller
+    // that proceeds on the bare lock races those startup steps. Mirrors the
+    // real `yaac server start`, which waits on `isLockReady` for the same
+    // reason.
+    if (lock && await isLockReady(lock)) return lock
     await new Promise((r) => setTimeout(r, 100))
   }
-  throw new Error('server did not write the lock within timeout')
+  throw new Error('server did not become ready within timeout')
 }
 
 export interface RunYaacResult {
