@@ -9,6 +9,7 @@ import { restartSession } from '#lib/createSession'
 import { getDeletedSessions } from '#lib/deletedApi'
 import { useProvisionSession } from '#lib/useProvisionSession'
 import { useUiStore } from '#store'
+import { describeSessionDeathReason } from '@yaac/shared/death-reason'
 import type { DeletedSessionEntry } from '@yaac/shared/types'
 
 /** Human relative age from a UTC 'YYYY-MM-DD HH:MM:SS' time, '' if unset. */
@@ -170,7 +171,9 @@ export function DeletedSessionsButton({
                         <span className="truncate text-sm font-medium text-text-dim">{label(d)}</span>
                         <span className="flex items-center gap-2 text-[11px] text-text-faint">
                           <span className="truncate">
-                            {d.deletedAt ? `deleted ${relativeAge(d.deletedAt)}` : relativeAge(d.lastActiveAt ?? d.createdAt)}
+                            {d.deathReason
+                              ? `died ${relativeAge(d.deletedAt)} — ${describeSessionDeathReason(d.deathReason)}`
+                              : d.deletedAt ? `deleted ${relativeAge(d.deletedAt)}` : relativeAge(d.lastActiveAt ?? d.createdAt)}
                           </span>
                           <span className="ml-auto shrink-0">{TOOL_LABEL[d.tool]}</span>
                         </span>
@@ -189,7 +192,16 @@ export function DeletedSessionsButton({
                       <dt>Tool</dt><dd className="text-text-dim">{TOOL_LABEL[selected.tool]}</dd>
                       <dt>Created</dt><dd className="text-text-dim">{relativeAge(selected.createdAt) || '—'}</dd>
                       <dt>Last active</dt><dd className="text-text-dim">{relativeAge(selected.lastActiveAt) || '—'}</dd>
-                      <dt>Deleted</dt><dd className="text-text-dim">{relativeAge(selected.deletedAt) || '—'}</dd>
+                      <dt>{selected.deathReason ? 'Died' : 'Deleted'}</dt>
+                      <dd className="text-text-dim">{relativeAge(selected.deletedAt) || '—'}</dd>
+                      {selected.deathReason && (
+                        <>
+                          <dt>Cause</dt>
+                          <dd className="text-text-dim">
+                            {describeSessionDeathReason(selected.deathReason, selected.deathDetail)}
+                          </dd>
+                        </>
+                      )}
                     </dl>
                     {selected.prompt && (
                       <p className="mt-4 min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap rounded bg-bg/80 p-2.5
@@ -220,7 +232,8 @@ export function DeletedSessionsButton({
         destructive={false}
         title="Restart this session?"
         description={confirm
-          ? `Recreates the container and resumes ${TOOL_LABEL[confirm.tool]} from where it left off${confirm.prompt ? `:\n“${confirm.prompt}”` : '.'}`
+          ? (confirm.deathReason ? `This session died: ${describeSessionDeathReason(confirm.deathReason)}. ` : '')
+            + `Recreates the container and resumes ${TOOL_LABEL[confirm.tool]} from where it left off${confirm.prompt ? `:\n“${confirm.prompt}”` : '.'}`
           : ''}
         confirmLabel="Restart"
         onConfirm={() => { if (confirm) onConfirmRestart(confirm) }}

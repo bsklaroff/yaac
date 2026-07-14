@@ -1,28 +1,50 @@
 import { and, eq } from 'drizzle-orm'
 import { getDb } from '#lib/db/client'
 import { deletedSessions } from '#lib/db/schema'
+import type { SessionDeathCause, SessionDeathReason } from '@yaac/shared/types'
 
 /**
- * Records of when each session was deleted — the sort key for the
- * deleted-session view ("newest-deleted first"). A session's transcript
+ * Records of when — and, for reaped sessions, why — each session was
+ * deleted. `deletedAt` is the sort key for the deleted-session view
+ * ("newest-deleted first"); the death columns let that view distinguish "you
+ * deleted this" from "this died: out of memory". A session's transcript
  * (claude/codex) or opencode meta row is what makes it *appear* deleted;
- * this store only carries the moment it happened, so the listing can order
- * by recency instead of birth time. Written on every delete path via
- * `recordSessionDeleted`; the listing falls back to transcript mtime for
- * sessions removed out-of-band that were never recorded here.
+ * this store only carries the moment (and cause) of removal. Written on
+ * every delete path via `recordSessionDeleted`; the listing falls back to
+ * transcript mtime for sessions removed out-of-band that were never
+ * recorded here.
  */
 
-/** Upsert the deletion time for a session to now. Best-effort: a failed
- *  write just means the listing falls back to mtime ordering for this row,
- *  so it never blocks teardown (mirrors saveOpencodeMeta). */
-export async function recordSessionDeleted(projectSlug: string, sessionId: string): Promise<void> {
+/** Per-session row of the deleted-store: when it was removed, plus the
+ *  reaper-derived cause when it died rather than being deleted. */
+export interface DeletedSessionRecord {
+  deletedAt: Date
+  deathReason?: SessionDeathReason
+  deathDetail?: string
+}
+
+/** Upsert the deletion record for a session: `deletedAt` becomes now, and
+ *  the death columns are always overwritten — `cause` when the reaper
+ *  supplies one, null on a plain delete, so a reused session id can never
+ *  inherit a stale cause from a previous life. Best-effort: a failed write
+ *  just means the listing falls back to mtime ordering for this row, so it
+ *  never blocks teardown (mirrors saveOpencodeMeta). */
+export async function recordSessionDeleted(
+  projectSlug: string,
+  sessionId: string,
+  cause?: SessionDeathCause,
+): Promise<void> {
   try {
     const db = await getDb()
+    const deathColumns = {
+      deathReason: cause?.reason ?? null,
+      deathDetail: cause?.detail ?? null,
+    }
     await db.insert(deletedSessions)
-      .values({ projectSlug, sessionId })
+      .values({ projectSlug, sessionId, ...deathColumns })
       .onConflictDoUpdate({
         target: [deletedSessions.projectSlug, deletedSessions.sessionId],
-        set: { deletedAt: new Date() },
+        set: { deletedAt: new Date(), ...deathColumns },
       })
   } catch {
     // Non-fatal: without the row the deleted listing sorts this session by
@@ -30,14 +52,20 @@ export async function recordSessionDeleted(projectSlug: string, sessionId: strin
   }
 }
 
-/** Deletion times for a project, keyed by session id. */
-export async function listDeletedAt(slug: string): Promise<Map<string, Date>> {
+/** Deletion records for a project, keyed by session id. */
+export async function listDeletedInfo(slug: string): Promise<Map<string, DeletedSessionRecord>> {
   const db = await getDb()
   const rows = await db.select({
     sessionId: deletedSessions.sessionId,
     deletedAt: deletedSessions.deletedAt,
+    deathReason: deletedSessions.deathReason,
+    deathDetail: deletedSessions.deathDetail,
   }).from(deletedSessions).where(eq(deletedSessions.projectSlug, slug))
-  return new Map(rows.map((r) => [r.sessionId, r.deletedAt]))
+  return new Map(rows.map((r) => [r.sessionId, {
+    deletedAt: r.deletedAt,
+    deathReason: (r.deathReason ?? undefined) as SessionDeathReason | undefined,
+    deathDetail: r.deathDetail ?? undefined,
+  }]))
 }
 
 /** Drop a session's deletion record — called when its id is reused (a

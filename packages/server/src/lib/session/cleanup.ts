@@ -23,6 +23,7 @@ import {
   sessionDir,
 } from '@yaac/shared/project-paths'
 import { CONTAINER_TMUX_SOCK, getProjectsDir } from '@yaac/shared/paths'
+import type { SessionDeathCause } from '@yaac/shared/types'
 import { stopSessionForwarders } from '#lib/session/port-forwarders'
 import { serverLog } from '#log'
 
@@ -254,17 +255,22 @@ export async function cleanupSession(params: {
   jobName: string
   projectSlug: string
   sessionId: string
+  /** Why the session died, when a reaper (not the user) is tearing it
+   *  down — persisted so the deleted-session view can say so. */
+  cause?: SessionDeathCause
 }): Promise<void> {
-  const { jobName, projectSlug, sessionId } = params
+  const { jobName, projectSlug, sessionId, cause } = params
 
   // Mark terminating BEFORE evicting the status below: in the gap before
   // Kubernetes stamps the pod's deletionTimestamp, this is what keeps the
   // display path rendering "terminating…" instead of a stray waiting spell.
   markSessionTerminating(sessionId)
 
-  // Stamp the deletion time so the deleted-session view can order by
-  // recency (best-effort; falls back to transcript mtime if unwritten).
-  await recordSessionDeleted(projectSlug, sessionId)
+  // Stamp the deletion time (and death cause, when a reaper supplied one)
+  // so the deleted-session view can order by recency and say why the
+  // session went away (best-effort; falls back to transcript mtime if
+  // unwritten).
+  await recordSessionDeleted(projectSlug, sessionId, cause)
 
   // Drop any cached tmux-alive / opencode-probe entry and the watcher-fed
   // status-store row so a subsequent caller doesn't see a stale value
@@ -338,20 +344,28 @@ export async function cleanupSessionDetached(params: {
   jobName: string
   projectSlug: string
   sessionId: string
+  /** Why the session died, when a reaper (not the user) is tearing it
+   *  down — persisted so the deleted-session view can say so. */
+  cause?: SessionDeathCause
 }): Promise<void> {
-  const { jobName, projectSlug, sessionId } = params
+  const { jobName, projectSlug, sessionId, cause } = params
 
   // Audit every teardown: the actual work below runs as a detached,
   // stdio-ignored child, so without this line a session reaped by the
   // background loop vanishes with no trace in the server log.
-  serverLog(`[server] session teardown: session=${sessionId} job=${jobName} project=${projectSlug}`)
+  serverLog(
+    `[server] session teardown: session=${sessionId} job=${jobName} project=${projectSlug}`
+    + (cause ? ` cause=${cause.reason}${cause.detail ? ` (${cause.detail})` : ''}` : ''),
+  )
 
   // Mark terminating BEFORE evicting the status below (see cleanupSession).
   markSessionTerminating(sessionId)
 
-  // Stamp the deletion time so the deleted-session view can order by
-  // recency (best-effort; falls back to transcript mtime if unwritten).
-  await recordSessionDeleted(projectSlug, sessionId)
+  // Stamp the deletion time (and death cause, when a reaper supplied one)
+  // so the deleted-session view can order by recency and say why the
+  // session went away (best-effort; falls back to transcript mtime if
+  // unwritten).
+  await recordSessionDeleted(projectSlug, sessionId, cause)
 
   tmuxAliveCache.delete(tmuxAliveKey(projectSlug, sessionId))
   agentStartedCache.delete(tmuxAliveKey(projectSlug, sessionId))

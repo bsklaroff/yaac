@@ -45,11 +45,16 @@ export const sessionTitles = snakeCase.table('session_titles', {
  *  key ("newest-deleted first"). Written on every delete path; the listing
  *  falls back to transcript mtime for sessions with no row here (removed
  *  out-of-band). Keyed by (projectSlug, sessionId); the tool isn't stored
- *  because the derive-from-disk scan already knows it. */
+ *  because the derive-from-disk scan already knows it. `deathReason` /
+ *  `deathDetail` (a SessionDeathReason + free-form evidence) are set only
+ *  when the stale reaper — not the user — removed the session; a plain
+ *  delete writes them null so a reused id can't inherit a stale cause. */
 export const deletedSessions = snakeCase.table('deleted_sessions', {
   projectSlug: text().notNull(),
   sessionId: text().notNull(),
   deletedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  deathReason: text(),
+  deathDetail: text(),
 }, (t) => [primaryKey({ columns: [t.projectSlug, t.sessionId] })])
 
 /** Cached opencode first-message snapshots. `createdAt` replaces the meta

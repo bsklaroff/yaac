@@ -445,12 +445,36 @@ export interface SessionChanges {
   truncated: boolean
 }
 
+/**
+ * Why a session died, derived at reap time from the pod's terminal state
+ * and the reaper's own classification — the last chance to capture it,
+ * since the reaper's teardown deletes the Job (and with it the pod's
+ * `containerStatuses` and the Job's failure condition). Absent on a plain
+ * user delete.
+ */
+export type SessionDeathReason =
+  | 'oom'            // session container OOMKilled by the kernel
+  | 'evicted'        // pod evicted by the kubelet (node pressure)
+  | 'crashed'        // session container exited non-zero
+  | 'pod-stopped'    // pod left Running with no conclusive terminal state
+  | 'agent-exited'   // pod alive but the in-pod tmux server was gone
+  | 'never-started'  // session create was interrupted before the agent ran
+  | 'orphaned'       // Job/pod deleted out-of-band
+
+export interface SessionDeathCause {
+  reason: SessionDeathReason
+  /** Free-form evidence: exit code, eviction message, … */
+  detail?: string
+}
+
 export interface StaleSessionInfo {
   jobName: string
   projectSlug: string
   sessionId: string
   /** True when the pod is still running but tmux is gone. */
   zombie: boolean
+  /** Terminal-state evidence for the reap, when the pod carried any. */
+  deathCause?: SessionDeathCause
 }
 
 export interface ActiveSessionsResult {
@@ -480,6 +504,10 @@ export interface DeletedSessionEntry {
   prompt?: string
   /** User-assigned display title (survives delete; ids are stable). */
   title?: string
+  /** Why the session died, when the reaper (not the user) removed it. */
+  deathReason?: SessionDeathReason
+  /** Evidence accompanying `deathReason` (exit code, eviction message, …). */
+  deathDetail?: string
 }
 
 /** A webapp-attachable terminal inside a session's container (beyond the

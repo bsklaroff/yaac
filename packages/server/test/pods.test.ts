@@ -81,6 +81,7 @@ function rawPod(overrides: {
   phase?: string
   creationTimestamp?: string
   deletionTimestamp?: string
+  status?: Record<string, unknown>
 } = {}): Record<string, unknown> {
   return {
     metadata: {
@@ -95,7 +96,10 @@ function rawPod(overrides: {
       creationTimestamp: overrides.creationTimestamp ?? '2026-06-01T00:00:00Z',
       ...(overrides.deletionTimestamp ? { deletionTimestamp: overrides.deletionTimestamp } : {}),
     },
-    status: overrides.phase === undefined ? { phase: 'Running' } : { phase: overrides.phase },
+    status: {
+      phase: overrides.phase ?? 'Running',
+      ...(overrides.status ?? {}),
+    },
   }
 }
 
@@ -187,6 +191,65 @@ describe('listSessionPods', () => {
     expect(pods[1].phase).toBe('Running')
     expect(pods[1].running).toBe(false)
     expect(pods[1].terminating).toBe(true)
+  })
+
+  it('captures the session container terminated state as terminal', async () => {
+    mockGetJson.mockResolvedValue({
+      items: [rawPod({
+        phase: 'Failed',
+        status: {
+          containerStatuses: [{
+            state: {
+              terminated: {
+                exitCode: 137,
+                reason: 'OOMKilled',
+                finishedAt: '2026-06-01T02:00:00Z',
+              },
+            },
+          }],
+        },
+      })],
+    })
+    const pods = await listSessionPods()
+    expect(pods[0].terminal).toEqual({
+      podReason: undefined,
+      podMessage: undefined,
+      exitCode: 137,
+      containerReason: 'OOMKilled',
+      finishedAtMs: Date.parse('2026-06-01T02:00:00Z'),
+    })
+  })
+
+  it('captures pod-level eviction reason/message as terminal', async () => {
+    mockGetJson.mockResolvedValue({
+      items: [rawPod({
+        phase: 'Failed',
+        status: { reason: 'Evicted', message: 'The node was low on resource: memory.' },
+      })],
+    })
+    const pods = await listSessionPods()
+    expect(pods[0].terminal).toEqual({
+      podReason: 'Evicted',
+      podMessage: 'The node was low on resource: memory.',
+      exitCode: undefined,
+      containerReason: undefined,
+      finishedAtMs: undefined,
+    })
+  })
+
+  it('leaves terminal unset on healthy pods and on non-terminated containers', async () => {
+    mockGetJson.mockResolvedValue({
+      items: [
+        rawPod(),
+        rawPod({
+          phase: 'Pending',
+          status: { containerStatuses: [{ state: { waiting: { reason: 'ContainerCreating' } } }] },
+        }),
+      ],
+    })
+    const pods = await listSessionPods()
+    expect(pods[0].terminal).toBeUndefined()
+    expect(pods[1].terminal).toBeUndefined()
   })
 
   it('throws when status.phase is missing', async () => {

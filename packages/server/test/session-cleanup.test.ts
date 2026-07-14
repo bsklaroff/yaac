@@ -61,6 +61,12 @@ vi.mock('node:child_process', async () => {
 // real server.log on disk.
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
+// The deleted-store writes through PGlite — stub it so cleanup tests never
+// open a DB, and so cause forwarding can be asserted.
+vi.mock('#lib/session/deleted-store', () => ({
+  recordSessionDeleted: vi.fn().mockResolvedValue(undefined),
+}))
+
 import { promoteSessionImages } from '#lib/container/image-promoter'
 import { listSessionPods, listSessionJobs } from '#lib/k8s/pods'
 import type * as podsModule from '#lib/k8s/pods'
@@ -77,10 +83,12 @@ import {
   _clearAgentStartedCacheForTests,
 } from '#lib/session/cleanup'
 import { isSessionTerminating, _clearTerminatingForTests } from '#lib/session/terminating'
+import { recordSessionDeleted } from '#lib/session/deleted-store'
 import { serverLog } from '#log'
 import { setDataDir } from '@yaac/shared/project-paths'
 
 const mockServerLog = vi.mocked(serverLog)
+const mockRecordDeleted = vi.mocked(recordSessionDeleted)
 
 const mockListPods = vi.mocked(listSessionPods)
 const mockListJobs = vi.mocked(listSessionJobs)
@@ -299,6 +307,20 @@ describe('cleanupSession', () => {
     ]
     expect(promoteOrder).toBeLessThan(deleteOrder)
   })
+
+  it('forwards the death cause to the deleted-store', async () => {
+    mockRecordDeleted.mockClear()
+    execFileMock.mockReset()
+    execFileMock.mockResolvedValue(undefined)
+    await cleanupSession({
+      jobName: 'yaac-p-s-cause',
+      projectSlug: 'p',
+      sessionId: 's-cause',
+      cause: { reason: 'crashed', detail: 'exit code 1' },
+    })
+    expect(mockRecordDeleted).toHaveBeenCalledWith(
+      'p', 's-cause', { reason: 'crashed', detail: 'exit code 1' })
+  })
 })
 
 describe('cleanupSessionDetached', () => {
@@ -354,6 +376,40 @@ describe('cleanupSessionDetached', () => {
     })
     expect(isSessionTerminating('s-mark')).toBe(true)
     _clearTerminatingForTests()
+  })
+
+  it('persists the death cause and includes it in the audit line', async () => {
+    mockServerLog.mockClear()
+    mockRecordDeleted.mockClear()
+    execFileMock.mockReset()
+    execFileMock.mockResolvedValue(undefined)
+    await cleanupSessionDetached({
+      jobName: 'yaac-p-s-cause',
+      projectSlug: 'proj-a',
+      sessionId: 's-cause',
+      cause: { reason: 'oom', detail: 'exit code 137' },
+    })
+
+    expect(mockRecordDeleted).toHaveBeenCalledWith(
+      'proj-a', 's-cause', { reason: 'oom', detail: 'exit code 137' })
+    const logged = mockServerLog.mock.calls.map(([m]) => m).join('\n')
+    expect(logged).toContain('cause=oom (exit code 137)')
+  })
+
+  it('a causeless teardown records no cause and keeps the audit line bare', async () => {
+    mockServerLog.mockClear()
+    mockRecordDeleted.mockClear()
+    execFileMock.mockReset()
+    execFileMock.mockResolvedValue(undefined)
+    await cleanupSessionDetached({
+      jobName: 'yaac-p-s-nocause',
+      projectSlug: 'proj-a',
+      sessionId: 's-nocause',
+    })
+
+    expect(mockRecordDeleted).toHaveBeenCalledWith('proj-a', 's-nocause', undefined)
+    const logged = mockServerLog.mock.calls.map(([m]) => m).join('\n')
+    expect(logged).not.toContain('cause=')
   })
 })
 

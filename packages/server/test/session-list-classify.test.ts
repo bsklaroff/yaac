@@ -63,7 +63,10 @@ describe('classifySessionPods', () => {
     const stuck = { ...pod({ jobName: 'yaac-proj-stuck', sessionId: 'sp2', ageMs: GRACE_MS + 5_000 }), labels: { 'yaac.prewarmed': 'true' } }
     const stuckRes = await classifySessionPods([stuck], now(), probe('dead'), GRACE_MS)
     expect(stuckRes.stale).toEqual([
-      { jobName: 'yaac-proj-stuck', projectSlug: 'proj', sessionId: 'sp2', zombie: true },
+      {
+        jobName: 'yaac-proj-stuck', projectSlug: 'proj', sessionId: 'sp2', zombie: true,
+        deathCause: { reason: 'agent-exited' },
+      },
     ])
   })
 
@@ -72,7 +75,10 @@ describe('classifySessionPods', () => {
     const result = await classifySessionPods([p], now(), probe('dead'), GRACE_MS)
     expect(result.running).toEqual([])
     expect(result.stale).toEqual([
-      { jobName: 'yaac-proj-zombie', projectSlug: 'proj', sessionId: 'z1', zombie: true },
+      {
+        jobName: 'yaac-proj-zombie', projectSlug: 'proj', sessionId: 'z1', zombie: true,
+        deathCause: { reason: 'agent-exited' },
+      },
     ])
   })
 
@@ -91,8 +97,20 @@ describe('classifySessionPods', () => {
     const result = await classifySessionPods([p], now(), probe('alive'), GRACE_MS)
     expect(result.running).toEqual([])
     expect(result.stale).toEqual([
-      { jobName: 'yaac-proj-dead', projectSlug: 'proj', sessionId: 'd1', zombie: false },
+      {
+        jobName: 'yaac-proj-dead', projectSlug: 'proj', sessionId: 'd1', zombie: false,
+        deathCause: { reason: 'pod-stopped' },
+      },
     ])
+  })
+
+  it('derives the death cause from a stopped pod\'s terminal state', async () => {
+    const p = {
+      ...pod({ jobName: 'yaac-proj-oomed', sessionId: 'o1', running: false }),
+      terminal: { containerReason: 'OOMKilled', exitCode: 137 },
+    }
+    const result = await classifySessionPods([p], now(), probe('alive'), GRACE_MS)
+    expect(result.stale[0].deathCause).toEqual({ reason: 'oom', detail: 'exit code 137' })
   })
 
   it('skips young running-but-no-tmux pods during the startup grace window', async () => {
@@ -118,7 +136,10 @@ describe('classifySessionPods', () => {
     const p = pod({ jobName: 'yaac-proj-stuck', ageMs: GRACE_MS + 5_000 })
     const result = await classifySessionPods([p], now(), probe('dead'), GRACE_MS)
     expect(result.stale).toEqual([
-      { jobName: 'yaac-proj-stuck', projectSlug: 'proj', sessionId: 's1', zombie: true },
+      {
+        jobName: 'yaac-proj-stuck', projectSlug: 'proj', sessionId: 's1', zombie: true,
+        deathCause: { reason: 'agent-exited' },
+      },
     ])
   })
 
@@ -141,7 +162,10 @@ describe('classifySessionPods', () => {
     const p = pod({ jobName: 'abc123', sessionId: '', project: '', running: false })
     const result = await classifySessionPods([p], now(), probe('alive'), GRACE_MS)
     expect(result.stale).toEqual([
-      { jobName: 'abc123', projectSlug: '', sessionId: '', zombie: false },
+      {
+        jobName: 'abc123', projectSlug: '', sessionId: '', zombie: false,
+        deathCause: { reason: 'pod-stopped' },
+      },
     ])
   })
 

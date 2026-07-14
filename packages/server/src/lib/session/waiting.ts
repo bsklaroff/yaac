@@ -2,8 +2,9 @@ import { listSessionPods, isPrewarmed } from '#lib/k8s/pods'
 import { normalizeTool } from '#lib/session/status'
 import { readSessionStatus } from '#lib/session/status-store'
 import { isTmuxSessionAlive, cleanupSessionDetached } from '#lib/session/cleanup'
+import { deriveDeathCause } from '#lib/session/death-reason'
 import { testEnv } from '@yaac/shared/env'
-import type { AgentTool } from '@yaac/shared/types'
+import type { AgentTool, SessionDeathCause } from '@yaac/shared/types'
 
 export interface WaitingSession {
   jobName: string
@@ -23,7 +24,12 @@ export async function getWaitingSessions(
   const graceMs = testEnv.startingGraceMs
 
   const results: WaitingSession[] = []
-  const stale: Array<{ jobName: string; slug: string; sessionId: string }> = []
+  const stale: Array<{
+    jobName: string
+    slug: string
+    sessionId: string
+    cause: SessionDeathCause
+  }> = []
 
   for (const p of pods) {
     if (!p.sessionId || !p.projectSlug) continue
@@ -42,7 +48,14 @@ export async function getWaitingSessions(
       // almost certainly mid-creation, not stale.
       const ageMs = p.createdAtMs > 0 ? nowMs - p.createdAtMs : Infinity
       if (ageMs < graceMs) continue
-      stale.push({ jobName: p.jobName, slug: p.projectSlug, sessionId: p.sessionId })
+      // Same death classification as classifySessionPods: a pod that's
+      // still running only got here because tmux was gone.
+      stale.push({
+        jobName: p.jobName,
+        slug: p.projectSlug,
+        sessionId: p.sessionId,
+        cause: p.running ? { reason: 'agent-exited' } : deriveDeathCause(p),
+      })
       continue
     }
 
@@ -61,8 +74,8 @@ export async function getWaitingSessions(
 
   if (stale.length > 0) {
     console.log(`Cleaning up ${stale.length} stale session(s): ${stale.map((s) => s.sessionId.slice(0, 8)).join(', ')}`)
-    await Promise.all(stale.map(({ jobName, slug, sessionId }) =>
-      cleanupSessionDetached({ jobName, projectSlug: slug, sessionId }),
+    await Promise.all(stale.map(({ jobName, slug, sessionId, cause }) =>
+      cleanupSessionDetached({ jobName, projectSlug: slug, sessionId, cause }),
     ))
   }
 

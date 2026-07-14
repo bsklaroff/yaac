@@ -308,6 +308,23 @@ describe('listDeletedSessions', () => {
     expect(result.find((r) => r.sessionId === 'b')?.deletedAt).toBeUndefined()
   })
 
+  it('carries the recorded death cause on the entry', async () => {
+    await writeProject('demo')
+    const sessionsDir = path.join(claudeDir('demo'), 'projects', '-workspace')
+    await fs.mkdir(sessionsDir, { recursive: true })
+    await fs.writeFile(path.join(sessionsDir, 'died.jsonl'), '{}\n')
+    await fs.writeFile(path.join(sessionsDir, 'removed.jsonl'), '{}\n')
+    await recordSessionDeleted('demo', 'died', { reason: 'oom', detail: 'exit code 137' })
+    await recordSessionDeleted('demo', 'removed')
+    const result = await listDeletedSessions('demo')
+    const died = result.find((r) => r.sessionId === 'died')
+    expect(died?.deathReason).toBe('oom')
+    expect(died?.deathDetail).toBe('exit code 137')
+    const removed = result.find((r) => r.sessionId === 'removed')
+    expect(removed?.deathReason).toBeUndefined()
+    expect(removed?.deathDetail).toBeUndefined()
+  })
+
   it('caps results to the requested limit after sorting newest-first', async () => {
     await writeProject('demo')
     const sessionsDir = path.join(claudeDir('demo'), 'projects', '-workspace')

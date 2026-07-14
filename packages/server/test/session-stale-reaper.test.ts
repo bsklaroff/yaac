@@ -70,11 +70,32 @@ describe('reconcileStaleSessions', () => {
 
     expect(mockCleanup).toHaveBeenCalledTimes(1)
     expect(mockCleanup).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionId: 'zombie-1', jobName: 'yaac-proj-zombie-1' }),
+      expect.objectContaining({
+        sessionId: 'zombie-1',
+        jobName: 'yaac-proj-zombie-1',
+        cause: { reason: 'agent-exited' },
+      }),
     )
     const log = loggedLines()
     expect(log).toContain('reaping session=zombie-1')
     expect(log).toContain('tmux gone')
+  })
+
+  it('reaps a stopped pod with its derived death cause, and audits it', async () => {
+    mockListPods.mockResolvedValue([{
+      ...pod('oomed-1', false),
+      terminal: { containerReason: 'OOMKilled', exitCode: 137 },
+    }])
+
+    await reconcileStaleSessions()
+
+    expect(mockCleanup).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'oomed-1',
+        cause: { reason: 'oom', detail: 'exit code 137' },
+      }),
+    )
+    expect(loggedLines()).toContain('pod stopped: oom (exit code 137)')
   })
 
   it('does NOT reap on an inconclusive probe, and logs the near-miss', async () => {
@@ -166,7 +187,11 @@ describe('reconcileStaleSessions', () => {
     await reconcileStaleSessions()
 
     expect(mockCleanup).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionId: 'orphan-1', jobName: 'yaac-proj-orphan-1' }),
+      expect.objectContaining({
+        sessionId: 'orphan-1',
+        jobName: 'yaac-proj-orphan-1',
+        cause: { reason: 'orphaned' },
+      }),
     )
     expect(loggedLines()).toContain('orphan Job')
   })

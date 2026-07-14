@@ -127,20 +127,29 @@ function renderDeleted(
 
   const projectWidth = Math.max('PROJECT'.length, ...deleted.map((s) => s.projectSlug.length))
   const toolWidth = Math.max('TOOL'.length, ...deleted.map((s) => s.tool.length))
+  // The DIED column (reaper-recorded death reason) appears only when at
+  // least one row carries one, so all-user-delete listings stay unchanged.
+  const hasDeaths = deleted.some((s) => s.deathReason)
+  const diedWidth = hasDeaths
+    ? Math.max('DIED'.length, ...deleted.map((s) => (s.deathReason ?? '').length))
+    : 0
 
-  const fixedWidth = 10 + 1 + projectWidth + 1 + toolWidth + 1 + 19 + 2
+  const fixedWidth = 10 + 1 + projectWidth + 1 + toolWidth + 1 + 19 + (hasDeaths ? diedWidth + 1 : 0) + 2
   const termWidth = process.stdout.columns || 120
   const promptWidth = Math.max(10, termWidth - fixedWidth)
 
+  const diedHeader = hasDeaths ? ` ${'DIED'.padEnd(diedWidth)}` : ''
+  const diedRule = hasDeaths ? ` ${'-'.repeat(diedWidth)}` : ''
   console.log('')
-  console.log(`${'SESSION'.padEnd(10)} ${'PROJECT'.padEnd(projectWidth)} ${'TOOL'.padEnd(toolWidth)} ${'DELETED'.padEnd(19)}  PROMPT`)
-  console.log(`${'-'.repeat(10)} ${'-'.repeat(projectWidth)} ${'-'.repeat(toolWidth)} ${'-'.repeat(19)}  ${'-'.repeat(Math.min(promptWidth, 40))}`)
+  console.log(`${'SESSION'.padEnd(10)} ${'PROJECT'.padEnd(projectWidth)} ${'TOOL'.padEnd(toolWidth)} ${'DELETED'.padEnd(19)}${diedHeader}  PROMPT`)
+  console.log(`${'-'.repeat(10)} ${'-'.repeat(projectWidth)} ${'-'.repeat(toolWidth)} ${'-'.repeat(19)}${diedRule}  ${'-'.repeat(Math.min(promptWidth, 40))}`)
 
   for (const s of deleted) {
     const promptText = truncatePrompt(s.prompt, promptWidth)
     // The row's sort key: recorded deletion time, else last activity, else birth.
     const when = s.deletedAt ?? s.lastActiveAt ?? s.createdAt
-    console.log(`${s.sessionId.slice(0, 8).padEnd(10)} ${s.projectSlug.padEnd(projectWidth)} ${s.tool.padEnd(toolWidth)} ${when}  ${promptText}`)
+    const diedCell = hasDeaths ? ` ${(s.deathReason ?? '').padEnd(diedWidth)}` : ''
+    console.log(`${s.sessionId.slice(0, 8).padEnd(10)} ${s.projectSlug.padEnd(projectWidth)} ${s.tool.padEnd(toolWidth)} ${when}${diedCell}  ${promptText}`)
   }
   if (limit !== undefined && deleted.length >= limit) {
     console.log(`(showing most recent ${limit}; pass --all or -n <num> to see more)`)

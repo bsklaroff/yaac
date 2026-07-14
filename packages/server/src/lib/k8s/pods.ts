@@ -56,6 +56,25 @@ export function sessionJobName(projectSlug: string, sessionId: string): string {
   return `yaac-${safeSlug}-${sessionId}`.replace(/--+/g, '-')
 }
 
+/**
+ * Terminal-state evidence from a dead or dying pod — what the stale reaper
+ * reads to derive a session death reason before its own teardown deletes
+ * the pod (and with it, the only record of why the session died). Absent
+ * on healthy pods.
+ */
+export interface SessionPodTerminalState {
+  /** Pod-level `status.reason`, e.g. `Evicted`. */
+  podReason?: string
+  /** Pod-level `status.message` accompanying `podReason`. */
+  podMessage?: string
+  /** Session container's terminated exit code. */
+  exitCode?: number
+  /** Session container's terminated reason, e.g. `OOMKilled`. */
+  containerReason?: string
+  /** Session container's terminated `finishedAt` as epoch ms. */
+  finishedAtMs?: number
+}
+
 export interface SessionPod {
   /** Job name (`yaac-<slug>-<sessionId>`) — the stable session handle. */
   jobName: string
@@ -76,6 +95,8 @@ export interface SessionPod {
   /** Pod creationTimestamp as epoch ms. */
   createdAtMs: number
   labels: Record<string, string>
+  /** Set only when the pod carries terminal-state evidence. */
+  terminal?: SessionPodTerminalState
 }
 
 /** True when a pod is a prewarmed spare (carries the `yaac.prewarmed` label). */
@@ -113,7 +134,24 @@ export const sessionPodItemSchema = z.object({
     creationTimestamp: z.string().min(1),
     deletionTimestamp: z.string().optional(),
   }),
-  status: z.object({ phase: z.string().min(1) }),
+  status: z.object({
+    phase: z.string().min(1),
+    // Terminal-state evidence (all optional — absent on healthy pods):
+    // pod-level reason/message cover evictions, the first container status
+    // covers the session container's exit (index 0 is the session container,
+    // the same invariant session-create's waitForPodReady relies on).
+    reason: z.string().optional(),
+    message: z.string().optional(),
+    containerStatuses: z.array(z.object({
+      state: z.object({
+        terminated: z.object({
+          exitCode: z.number(),
+          reason: z.string().optional(),
+          finishedAt: z.string().optional(),
+        }).optional(),
+      }).optional(),
+    })).optional(),
+  }),
 })
 
 export type SessionPodItem = z.infer<typeof sessionPodItemSchema>
@@ -121,6 +159,19 @@ export type SessionPodItem = z.infer<typeof sessionPodItemSchema>
 /** Map a validated pod object to the SessionPod row the rest of yaac uses. */
 export function mapSessionPodItem({ metadata, status }: SessionPodItem): SessionPod {
   const terminating = metadata.deletionTimestamp !== undefined
+  const terminated = status.containerStatuses?.[0]?.state?.terminated
+  const terminal: SessionPodTerminalState | undefined =
+    terminated || status.reason
+      ? {
+          podReason: status.reason,
+          podMessage: status.message,
+          exitCode: terminated?.exitCode,
+          containerReason: terminated?.reason,
+          finishedAtMs: terminated?.finishedAt !== undefined
+            ? Date.parse(terminated.finishedAt)
+            : undefined,
+        }
+      : undefined
   return {
     jobName: metadata.labels[JOB_NAME_LABEL],
     podName: metadata.name,
@@ -132,6 +183,7 @@ export function mapSessionPodItem({ metadata, status }: SessionPodItem): Session
     terminating,
     createdAtMs: Date.parse(metadata.creationTimestamp),
     labels: metadata.labels,
+    ...(terminal ? { terminal } : {}),
   }
 }
 

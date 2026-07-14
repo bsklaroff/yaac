@@ -6,10 +6,11 @@ import { worktreeUpstreamBranch } from '#lib/git'
 import { claudeDir, codexTranscriptDir, getProjectsDir, projectDir, repoDir } from '@yaac/shared/project-paths'
 import { getSessionFirstMessage, normalizeTool } from '#lib/session/status'
 import { ensureOpencodeFirstMessageCaptured, listOpencodeMetaEntries } from '#lib/session/opencode-status'
-import { listDeletedAt } from '#lib/session/deleted-store'
+import { listDeletedInfo } from '#lib/session/deleted-store'
 import { isSessionTerminating, pruneTerminating } from '#lib/session/terminating'
 import { isSessionStreamHealthy, readSessionStatus, readSessionWaitingSince } from '#lib/session/status-store'
 import { probeAgentPaneState, probeTmuxLiveness, cleanupSessionDetached, type TmuxLiveness } from '#lib/session/cleanup'
+import { deriveDeathCause } from '#lib/session/death-reason'
 import { getSessionPorts } from '#lib/session/port-forwarders'
 import { readBlockedHosts } from '#lib/session/blocked-hosts'
 import { readAllGitAuthFailures } from '#lib/project/git-auth-failures'
@@ -84,8 +85,16 @@ export async function classifySessionPods(
     const ageMs = p.createdAtMs > 0 ? nowMs - p.createdAtMs : Infinity
     if (ageMs < graceMs) continue
 
+    // Classify the death while the evidence still exists: a zombie's pod is
+    // healthy (only tmux died), a stopped pod carries terminal state.
     const zombie = p.running
-    stale.push({ jobName: p.jobName, projectSlug: p.projectSlug, sessionId: p.sessionId, zombie })
+    stale.push({
+      jobName: p.jobName,
+      projectSlug: p.projectSlug,
+      sessionId: p.sessionId,
+      zombie,
+      deathCause: zombie ? { reason: 'agent-exited' } : deriveDeathCause(p),
+    })
   }
   return { running, stale, indeterminate, terminating }
 }
@@ -344,17 +353,35 @@ export async function reconcileStaleSessions(): Promise<void> {
   }
 
   const targets = [
-    ...stale.map((s) => ({ jobName: s.jobName, projectSlug: s.projectSlug, sessionId: s.sessionId })),
-    ...placeholderStale.map((s) => ({ jobName: s.jobName, projectSlug: s.projectSlug, sessionId: s.sessionId })),
-    ...orphanTargets,
-    ...stuckTerminating,
+    ...stale.map((s) => ({
+      jobName: s.jobName,
+      projectSlug: s.projectSlug,
+      sessionId: s.sessionId,
+      cause: s.deathCause,
+    })),
+    ...placeholderStale.map((s) => ({
+      jobName: s.jobName,
+      projectSlug: s.projectSlug,
+      sessionId: s.sessionId,
+      cause: { reason: 'never-started' as const },
+    })),
+    ...orphanTargets.map((o) => ({ ...o, cause: { reason: 'orphaned' as const } })),
+    ...stuckTerminating.map((t) => ({
+      ...t,
+      cause: { reason: 'orphaned' as const, detail: 'pod deleted out-of-band' },
+    })),
   ]
   if (targets.length === 0) return
 
   // Audit each reap with its reason before the (detached, silent)
-  // teardown runs, so a session disappearing is always explained.
+  // teardown runs, so a session disappearing is always explained. The
+  // derived cause rides along (cleanupSessionDetached echoes it too) so
+  // the log alone answers "why did this session die".
   for (const s of stale) {
-    const reason = s.zombie ? 'tmux gone, pod still running' : 'pod stopped'
+    const reason = s.zombie
+      ? 'tmux gone, pod still running'
+      : `pod stopped: ${s.deathCause?.reason ?? 'unknown'}`
+        + (s.deathCause?.detail ? ` (${s.deathCause.detail})` : '')
     serverLog(`[server] stale-reaper: reaping session=${s.sessionId} job=${s.jobName} (${reason})`)
   }
   for (const s of placeholderStale) {
@@ -534,18 +561,20 @@ export async function listDeletedSessions(
     }
   }
 
-  // Enrich with recorded deletion times (the primary sort key), one query
-  // per project. A session removed out-of-band has no row and falls back to
-  // its last-activity time.
+  // Enrich with recorded deletion times (the primary sort key) and death
+  // causes, one query per project. A session removed out-of-band has no row
+  // and falls back to its last-activity time.
   const deletedAtSlugs = [...new Set(collected.map((r) => r.entry.projectSlug))]
   const deletedAtBySlug = new Map(await Promise.all(
-    deletedAtSlugs.map(async (slug) => [slug, await listDeletedAt(slug)] as const),
+    deletedAtSlugs.map(async (slug) => [slug, await listDeletedInfo(slug)] as const),
   ))
   for (const r of collected) {
-    const deletedAt = deletedAtBySlug.get(r.entry.projectSlug)?.get(r.entry.sessionId)
-    if (deletedAt) {
-      r.deletedAtMs = deletedAt.getTime()
+    const record = deletedAtBySlug.get(r.entry.projectSlug)?.get(r.entry.sessionId)
+    if (record) {
+      r.deletedAtMs = record.deletedAt.getTime()
       r.entry.deletedAt = formatUtcTimestamp(r.deletedAtMs)
+      r.entry.deathReason = record.deathReason
+      r.entry.deathDetail = record.deathDetail
     }
   }
 

@@ -8,6 +8,7 @@ import {
   worktreesDir,
 } from '@yaac/shared/project-paths'
 import { cleanupSession } from '#lib/session/cleanup'
+import { clearSessionDeleted } from '#lib/session/deleted-store'
 import { clearSessionTerminating } from '#lib/session/terminating'
 import { hasOpencodeMeta } from '#lib/session/opencode-status'
 import { normalizeTool } from '#lib/session/status'
@@ -128,7 +129,7 @@ export async function restartSession(
   // otherwise the new session would render as "terminating…".
   clearSessionTerminating(sessionId)
 
-  return createSession(projectSlug, {
+  const result = await createSession(projectSlug, {
     resume: true,
     sessionId,
     tool,
@@ -137,4 +138,11 @@ export async function restartSession(
     gitUser: opts.gitUser,
     onProgress: opts.onProgress,
   })
+
+  // The session lives again — drop its deletion record (and any death cause
+  // from its previous life) so the deleted view can't show it as died. Only
+  // after createSession succeeds: a failed restart leaves the record intact.
+  await clearSessionDeleted(projectSlug, sessionId)
+
+  return result
 }

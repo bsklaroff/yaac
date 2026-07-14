@@ -105,6 +105,23 @@ describe('getWaitingSessions', () => {
       jobName: 'yaac-proj-dead',
       projectSlug: 'proj',
       sessionId: 'dead',
+      cause: { reason: 'pod-stopped' },
+    })
+  })
+
+  it('reaps a running pod whose tmux is gone as agent-exited', async () => {
+    mockListPods.mockResolvedValue([
+      pod({ jobName: 'yaac-proj-zombie', sessionId: 'zombie' }),
+    ])
+    mockIsTmuxAlive.mockResolvedValue(false)
+
+    const result = await getWaitingSessions()
+    expect(result).toEqual([])
+    expect(mockCleanupDetached).toHaveBeenCalledWith({
+      jobName: 'yaac-proj-zombie',
+      projectSlug: 'proj',
+      sessionId: 'zombie',
+      cause: { reason: 'agent-exited' },
     })
   })
 
@@ -159,6 +176,7 @@ describe('getWaitingSessions', () => {
       jobName: 'yaac-proj-young-stale',
       projectSlug: 'proj',
       sessionId: 'young-stale',
+      cause: { reason: 'pod-stopped' },
     })
   })
 })

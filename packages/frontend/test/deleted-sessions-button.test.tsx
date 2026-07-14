@@ -45,36 +45,41 @@ beforeEach(() => {
 
 afterEach(cleanup)
 
-/** Render the button + overlay and click the trigger to open it. */
-function open(): void {
+function renderButton(): void {
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <DeletedSessionsButton projectSlug="proj" activeSignature="s0" />
     </QueryClientProvider>,
   )
-  fireEvent.click(screen.getByRole('button', { name: 'Deleted sessions' }))
+}
+
+/** Render, wait for the (data-gated) sidebar entry point, and open the overlay. */
+async function open(): Promise<void> {
+  renderButton()
+  fireEvent.click(await screen.findByRole('button', { name: 'Deleted sessions' }))
 }
 
 describe('DeletedSessionsButton', () => {
-  it('fetches only after the overlay is opened', () => {
-    render(
-      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <DeletedSessionsButton projectSlug="proj" activeSignature="s0" />
-      </QueryClientProvider>,
-    )
-    expect(getDeletedSessions).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: 'Deleted sessions' }))
-    expect(getDeletedSessions).toHaveBeenCalledWith('proj', 100)
+  it('fetches on mount so the sidebar entry point can hide when empty', async () => {
+    renderButton()
+    // No user interaction — the list is needed up-front to decide visibility.
+    await waitFor(() => expect(getDeletedSessions).toHaveBeenCalledWith('proj', 100))
   })
 
-  it('shows an empty state when nothing is deleted', async () => {
+  it('hides the entry point when nothing is deleted', async () => {
     vi.mocked(getDeletedSessions).mockResolvedValue([])
-    open()
-    await waitFor(() => expect(screen.getByText('No deleted sessions')).toBeTruthy())
+    renderButton()
+    await waitFor(() => expect(getDeletedSessions).toHaveBeenCalled())
+    expect(screen.queryByRole('button', { name: 'Deleted sessions' })).toBeNull()
+  })
+
+  it('shows the entry point once deleted sessions exist', async () => {
+    renderButton()
+    expect(await screen.findByRole('button', { name: 'Deleted sessions' })).toBeTruthy()
   })
 
   it('lists deleted sessions and shows the selected one in the detail pane', async () => {
-    open()
+    await open()
     // First row auto-selected → its prompt (detail-only) is visible.
     await waitFor(() => expect(screen.getByText('fix the parser bug')).toBeTruthy())
     // The title appears in both the list row and the detail header.
@@ -85,7 +90,7 @@ describe('DeletedSessionsButton', () => {
   })
 
   it('filters the list by the search box', async () => {
-    open()
+    await open()
     await waitFor(() => expect(screen.getByText('fix the parser bug')).toBeTruthy())
     fireEvent.change(screen.getByPlaceholderText('Search…'), { target: { value: 'tests' } })
     // 'Fix parser' leaves both the filtered list and the detail pane.
@@ -93,8 +98,38 @@ describe('DeletedSessionsButton', () => {
     expect(screen.getAllByText('Add tests').length).toBeGreaterThan(0)
   })
 
+  it('renders a died row with its cause in the list, detail, and restart dialog', async () => {
+    vi.mocked(getDeletedSessions).mockResolvedValue([
+      entry({
+        sessionId: 's3',
+        title: 'OOMed run',
+        deathReason: 'oom',
+        deathDetail: 'exit code 137',
+      }),
+    ])
+    await open()
+    // Row subtitle carries the short description (no detail).
+    await waitFor(() => expect(
+      screen.getByText(/died .* — out of memory \(hit the session memory limit\)/)).toBeTruthy())
+    // Detail pane: the timestamp row is labeled Died, and Cause carries the detail.
+    expect(screen.getByText('Died')).toBeTruthy()
+    expect(screen.getByText('Cause')).toBeTruthy()
+    expect(screen.getByText(/out of memory \(hit the session memory limit\) — exit code 137/)).toBeTruthy()
+    // Restart dialog mentions the death.
+    fireEvent.click(screen.getByRole('button', { name: /Restart/ }))
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText(/This session died: out of memory/)).toBeTruthy()
+  })
+
+  it('labels a plain delete as Deleted with no Cause row', async () => {
+    await open()
+    await waitFor(() => expect(screen.getByText('fix the parser bug')).toBeTruthy())
+    expect(screen.getByText('Deleted')).toBeTruthy()
+    expect(screen.queryByText('Cause')).toBeNull()
+  })
+
   it('restarts a session and closes the overlay', async () => {
-    open()
+    await open()
     await waitFor(() => expect(screen.getByText('fix the parser bug')).toBeTruthy())
     // Detail's Restart → confirm dialog → confirm.
     fireEvent.click(screen.getByRole('button', { name: /Restart/ }))
