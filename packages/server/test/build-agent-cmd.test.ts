@@ -31,9 +31,10 @@ describe('buildAgentCmd', () => {
 
     // pi's command routes stderr through sed so the first line matching its
     // fresh-run "Warning: No project session found with id ..." warning is
-    // dropped from the pane (see buildAgentCmd).
+    // dropped from the pane. On a PTY pi color-wraps the line, so the leading
+    // `(\x1b\[[0-9;]*m)*` absorbs the SGR escapes (see buildAgentCmd).
     const wrapped = (piCmd: string) =>
-      `${piCmd} 2> >(sed -u "0,/^Warning: No project session found with id .*creating a new session with that id\\.$/{//d}" >&2)`
+      `${piCmd} 2> >(sed -u -E "0,/^(\\x1b\\[[0-9;]*m)*Warning: No project session found with id .*creating a new session with that id\\./{//d}" >&2)`
 
     it('uses --approve, the default provider model, and --session-id when none is given', () => {
       const cmd = buildAgentCmd('pi', 'sess-1', '')
@@ -62,10 +63,11 @@ describe('buildAgentCmd', () => {
       // sed pattern uses `.*` instead of the literal quotes around the id so
       // the whole command stays single-quote-free.
       expect(cmd).not.toContain("'")
-      // Anchored (^…$) so a genuine error is never swallowed, and `0,/re/{//d}`
-      // deletes only the first occurrence.
-      expect(cmd).toContain('2> >(sed -u "0,/^Warning: ')
-      expect(cmd).toContain('creating a new session with that id\\.$/{//d}" >&2)')
+      // Anchored at `^` (after any leading SGR color codes pi adds on a PTY) so
+      // a genuine error is never swallowed, and `0,/re/{//d}` deletes only the
+      // first occurrence.
+      expect(cmd).toContain('2> >(sed -u -E "0,/^(\\x1b\\[[0-9;]*m)*Warning: ')
+      expect(cmd).toContain('creating a new session with that id\\./{//d}" >&2)')
     })
   })
 

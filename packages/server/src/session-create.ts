@@ -194,19 +194,22 @@ export function buildAgentCmd(
     //
     // Route pi's stderr through sed to drop exactly that one line, leaving the
     // TUI (stdout) and any genuine stderr (auth failures, bad-model errors)
-    // intact. The match is anchored to the whole line (`^…$`) with `.*`
-    // standing in for the variable id — precise enough that a real error is
-    // never swallowed — and `0,/re/{//d}` deletes only the *first* match, since
-    // the warning is printed once at startup. Off a TTY pi emits this line as
-    // plain text (chalk auto-disables color, and the pod sets no FORCE_COLOR),
-    // so the anchors hold; `sed -u` keeps surviving lines unbuffered so a
-    // startup error still reaches the pane before pi exits. tmux runs this
-    // under the pod's zsh (SHELL=/bin/zsh), so process substitution is
-    // available; the pattern uses `.*` rather than the literal quotes around
-    // the id, keeping the whole string free of single quotes so it survives the
-    // single-quoted `respawn-window '<cmd>'` wrapper it is embedded in.
-    const warn = 'No project session found with id .*creating a new session with that id'
-    return `${pi} 2> >(sed -u "0,/^Warning: ${warn}\\.$/{//d}" >&2)`
+    // intact. `0,/re/{//d}` deletes only the *first* match (the warning prints
+    // once at startup), and `sed -u` keeps surviving lines unbuffered so a
+    // startup error still reaches the pane before pi exits. The pattern is
+    // anchored at `^` with `.*` standing in for the variable id and the full
+    // "creating a new session with that id." tail required, so a genuine error
+    // is never swallowed. It runs the agent with stdout on the pane's PTY, and
+    // pi colors this line via chalk keyed off *stdout* being a TTY — so it
+    // arrives on stderr wrapped in SGR escapes (`\x1b[33m…\x1b[39m`). The
+    // leading `(\x1b\[[0-9;]*m)*` absorbs those (zero-or-more, so a plain-text
+    // line off-TTY still matches). tmux runs this under the pod's zsh
+    // (SHELL=/bin/zsh), so process substitution is available; the pattern uses
+    // `.*` rather than the literal quotes around the id, keeping the whole
+    // string free of single quotes so it survives the single-quoted
+    // `respawn-window '<cmd>'` wrapper it is embedded in.
+    const warn = 'Warning: No project session found with id .*creating a new session with that id\\.'
+    return `${pi} 2> >(sed -u -E "0,/^(\\x1b\\[[0-9;]*m)*${warn}/{//d}" >&2)`
   }
   if (tool === 'opencode') {
     // --port + --hostname enable opencode's built-in HTTP server on
