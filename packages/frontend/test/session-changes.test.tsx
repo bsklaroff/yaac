@@ -1,15 +1,27 @@
 // @vitest-environment jsdom
-import { describe, it, expect, afterEach, beforeAll, afterAll, vi } from 'vitest'
-import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/react'
+import { describe, it, expect, afterEach, beforeAll, beforeEach, afterAll, vi } from 'vitest'
+import { render, screen, cleanup, waitFor, fireEvent, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { SessionChanges as SessionChangesData } from '@yaac/shared/types'
+import type { ProjectBranches } from '#lib/projectApi'
 
 vi.mock('#lib/changesApi', () => ({ getSessionChanges: vi.fn() }))
+vi.mock('#lib/projectApi', () => ({
+  getProjectBranches: vi.fn(),
+  projectBranchesKey: (slug: string) => ['project-branches', slug],
+}))
 import { getSessionChanges } from '#lib/changesApi'
+import { getProjectBranches } from '#lib/projectApi'
 import { SessionChanges } from '#components/SessionChanges'
 import { useUiStore } from '#store'
 
 const mock = vi.mocked(getSessionChanges)
+
+const BRANCHES: ProjectBranches = {
+  branches: ['main', 'dev', 'feature/x'],
+  defaultBranch: 'main',
+  referenceBranch: null,
+}
 
 const PAYLOAD: SessionChangesData = {
   base: 'abc123',
@@ -36,19 +48,27 @@ const PAYLOAD: SessionChangesData = {
   truncated: false,
 }
 
-function renderPane(): ReturnType<typeof render> {
+function renderPane({ baseBranch = 'main' }: { baseBranch?: string } = {}): ReturnType<typeof render> {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
-      <SessionChanges sessionId="s1" />
+      <SessionChanges sessionId="s1" projectSlug="proj" baseBranch={baseBranch} />
     </QueryClientProvider>,
   )
 }
+
+const BASE_TRIGGER = 'Choose the branch this diff is compared against'
 
 // jsdom has no layout engine, so scrollTop is inert there. Back it with a real
 // per-element value so the pane's scroll save + restore can be exercised.
 const realScrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTop')
 beforeAll(() => {
+  // jsdom has no ResizeObserver; Base UI's popover positioner needs one to exist.
+  globalThis.ResizeObserver ??= class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
   Object.defineProperty(HTMLElement.prototype, 'scrollTop', {
     configurable: true,
     get(this: { _scrollTop?: number }): number { return this._scrollTop ?? 0 },
@@ -59,12 +79,16 @@ afterAll(() => {
   if (realScrollTop) Object.defineProperty(HTMLElement.prototype, 'scrollTop', realScrollTop)
 })
 
-// The expanded-files set and scroll offset live in the shared store keyed by
-// session id, so clear them between tests to keep them isolated.
+beforeEach(() => {
+  vi.mocked(getProjectBranches).mockResolvedValue(BRANCHES)
+})
+
+// The expanded-files set, scroll offset, and chosen base live in the shared
+// store keyed by session id, so clear them between tests to keep them isolated.
 afterEach(() => {
   cleanup()
   mock.mockReset()
-  useUiStore.setState({ changesExpanded: {}, changesScroll: {} })
+  useUiStore.setState({ changesExpanded: {}, changesScroll: {}, changesBase: {} })
 })
 
 describe('SessionChanges', () => {
@@ -190,5 +214,47 @@ describe('SessionChanges', () => {
     mock.mockResolvedValue({ ...PAYLOAD, truncated: true })
     renderPane()
     await waitFor(() => expect(screen.getByText(/truncated/)).toBeTruthy())
+  })
+
+  it('shows the effective base branch in the header', async () => {
+    mock.mockResolvedValue(PAYLOAD)
+    renderPane({ baseBranch: 'main' })
+    await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
+    expect(screen.getByTitle(BASE_TRIGGER).textContent).toContain('main')
+  })
+
+  it('lets the user pick a different base, which refetches against it', async () => {
+    mock.mockResolvedValue(PAYLOAD)
+    renderPane({ baseBranch: 'main' })
+    await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
+
+    fireEvent.click(screen.getByTitle(BASE_TRIGGER))
+    await waitFor(() => expect(screen.getByRole('list')).toBeTruthy())
+    fireEvent.click(within(screen.getByRole('list')).getByText('dev'))
+
+    expect(useUiStore.getState().changesBase.s1).toBe('dev')
+    await waitFor(() => expect(mock).toHaveBeenCalledWith('s1', 'dev'))
+  })
+
+  it('clears the override when the session’s own base branch is picked', async () => {
+    useUiStore.setState({ changesBase: { s1: 'dev' } })
+    mock.mockResolvedValue(PAYLOAD)
+    renderPane({ baseBranch: 'main' })
+    await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
+    expect(mock).toHaveBeenCalledWith('s1', 'dev') // initial fetch used the override
+
+    fireEvent.click(screen.getByTitle(BASE_TRIGGER))
+    await waitFor(() => expect(screen.getByRole('list')).toBeTruthy())
+    fireEvent.click(within(screen.getByRole('list')).getByText('main'))
+
+    expect(useUiStore.getState().changesBase.s1).toBeUndefined()
+    await waitFor(() => expect(mock).toHaveBeenCalledWith('s1', undefined))
+  })
+
+  it('keeps the base picker reachable even when there are no changes', async () => {
+    mock.mockResolvedValue({ base: 'abc', files: [], diff: '', truncated: false })
+    renderPane({ baseBranch: 'main' })
+    await waitFor(() => expect(screen.getByText('No changes yet')).toBeTruthy())
+    expect(screen.getByTitle(BASE_TRIGGER)).toBeTruthy()
   })
 })

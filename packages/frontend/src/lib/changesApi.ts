@@ -10,7 +10,12 @@ export function isChangesTarget(target: string): boolean {
 }
 
 /** The session's review diff — everything changed in the worktree since it
- *  forked from the base branch. */
-export async function getSessionChanges(sessionId: string): Promise<SessionChanges> {
-  return api.session[':id'].changes.$get({ param: { id: sessionId } })
+ *  forked from the base branch. `base`, when given, overrides the branch the
+ *  diff is taken against (fork point vs `origin/<base>`); omitting it keeps the
+ *  session's own fork-base default. */
+export async function getSessionChanges(sessionId: string, base?: string): Promise<SessionChanges> {
+  return api.session[':id'].changes.$get({
+    param: { id: sessionId },
+    query: base ? { base } : {},
+  })
 }

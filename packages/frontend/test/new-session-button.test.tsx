@@ -16,6 +16,7 @@ vi.mock('#lib/createSession', () => ({
 vi.mock('#lib/projectApi', () => ({
   getProjectBranches: vi.fn(),
   setProjectReferenceBranch: vi.fn(),
+  projectBranchesKey: (slug: string) => ['project-branches', slug],
 }))
 vi.mock('#lib/useProvisionSession', () => ({
   useProvisionSession: () => provision,

@@ -752,7 +752,16 @@ export function SessionView({
                 </div>
               ) : changes ? (
                 <div className="h-full w-full overflow-hidden rounded-md">
-                  <SessionChanges sessionId={id} />
+                  {(() => {
+                    const cs = sessions.find((s) => s.sessionId === id)
+                    return (
+                      <SessionChanges
+                        sessionId={id}
+                        projectSlug={cs?.projectSlug ?? ''}
+                        baseBranch={cs?.baseBranch}
+                      />
+                    )
+                  })()}
                 </div>
               ) : (
                 <div className="h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">

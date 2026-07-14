@@ -1,11 +1,14 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, type JSX } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 'react'
 import clsx from 'clsx'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Popover } from '@base-ui/react/popover'
 import { useUiStore } from '#store'
 import { getSessionChanges } from '#lib/changesApi'
+import { getProjectBranches, projectBranchesKey } from '#lib/projectApi'
+import { BranchPicker } from '#components/BranchPicker'
 import { indexDiffsByPath, type DiffLine, type ParsedFileDiff } from '#lib/diff'
 import { highlightLine, languageForPath, type HighlightLanguage } from '#lib/highlight'
-import { LoadingIcon, WarningIcon, ChevronIcon } from '#lib/icons'
+import { LoadingIcon, WarningIcon, ChevronIcon, BranchIcon } from '#lib/icons'
 import type { ChangeStatus, SessionChange } from '@yaac/shared/types'
 
 /** One-letter status badge, colored per change kind. */
@@ -42,10 +45,17 @@ function PathLabel({ path, emphasis = 'text' }: { path: string; emphasis?: 'text
  * its diff inline (full width), so nothing is wasted on a side column. Polls
  * the server so it updates as work lands; read-only for now.
  */
-export function SessionChanges({ sessionId }: { sessionId: string }): JSX.Element {
+export function SessionChanges(
+  { sessionId, projectSlug, baseBranch }: { sessionId: string; projectSlug: string; baseBranch?: string },
+): JSX.Element {
+  // The base branch this diff is compared against. Absent ⇒ the session's own
+  // fork base (server default); a value ⇒ diff against origin/<value>'s fork
+  // point. Lives in the store keyed by session id, so it survives a tab switch.
+  const base = useUiStore((s) => s.changesBase[sessionId])
+  const setChangesBase = useUiStore((s) => s.setChangesBase)
   const { data, isLoading, isError, refetch } = useQuery({
-    queryKey: ['changes', sessionId],
-    queryFn: () => getSessionChanges(sessionId),
+    queryKey: ['changes', sessionId, base ?? null],
+    queryFn: () => getSessionChanges(sessionId, base),
     refetchInterval: 3000,
     staleTime: 1500,
   })
@@ -90,6 +100,35 @@ export function SessionChanges({ sessionId }: { sessionId: string }): JSX.Elemen
     el.scrollTop = useUiStore.getState().changesScroll[sessionId] ?? 0
   }, [sessionId, files.length])
 
+  // Base picker. It shares the sidebar's branch cache (projectBranchesKey), so a
+  // refresh in either place is seen by both; opening it refreshes from the
+  // remote in the background, exactly like the new-session popover.
+  const queryClient = useQueryClient()
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [pickerQuery, setPickerQuery] = useState('')
+  const { data: branchData } = useQuery({
+    queryKey: projectBranchesKey(projectSlug),
+    queryFn: () => getProjectBranches(projectSlug),
+    enabled: pickerOpen && projectSlug !== '',
+  })
+  useEffect(() => {
+    if (!pickerOpen || !projectSlug) return
+    getProjectBranches(projectSlug, { refresh: true })
+      .then((fresh) => queryClient.setQueryData(projectBranchesKey(projectSlug), fresh))
+      .catch(() => { /* stale-but-instant list stays */ })
+  }, [pickerOpen, projectSlug, queryClient])
+
+  // Picking the session's own fork branch clears the override (sends no base →
+  // the server default); any other branch diffs against its origin/<branch>.
+  const pickBase = (branch: string): void => {
+    setChangesBase(sessionId, branch === baseBranch ? undefined : branch)
+    setPickerOpen(false)
+    setPickerQuery('')
+  }
+  // Prefer a human branch name; fall back to a short SHA only when neither the
+  // override nor the session's tracked branch is known.
+  const baseLabel = base ?? baseBranch ?? (data?.base ? data.base.slice(0, 7) : 'base')
+
   const totals = files.reduce((a, f) => ({ add: a.add + f.additions, del: a.del + f.deletions }), { add: 0, del: 0 })
 
   if (isLoading) {
@@ -113,41 +152,85 @@ export function SessionChanges({ sessionId }: { sessionId: string }): JSX.Elemen
       </div>
     )
   }
-  if (files.length === 0) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-1 bg-surface px-4 text-center">
-        <p className="text-xs text-text-dim">No changes yet</p>
-        <p className="text-[11px] text-text-faint">Edits the agent makes in its worktree show up here.</p>
-      </div>
-    )
-  }
-
   return (
     <div className="flex h-full flex-col bg-surface">
-      <div className="flex h-7 shrink-0 items-center gap-3 border-b border-hairline px-3 text-[11px] text-text-dim">
-        <span>{files.length} file{files.length === 1 ? '' : 's'}</span>
-        <span className="text-[#3fb950]">+{totals.add}</span>
-        <span className="text-[#f85149]">−{totals.del}</span>
+      {/* Header is always present (even with no changes) so the base picker
+          stays reachable — otherwise a base that yields an empty diff would
+          trap the user with no way to switch back. */}
+      <div className="flex h-7 shrink-0 items-center gap-2 border-b border-hairline px-2 text-[11px] text-text-dim">
+        <Popover.Root
+          open={pickerOpen}
+          onOpenChange={(o) => { setPickerOpen(o); if (!o) setPickerQuery('') }}
+        >
+          <Popover.Trigger
+            title="Choose the branch this diff is compared against"
+            className="flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5 outline-none transition
+              hover:bg-surface-2 hover:text-text data-[popup-open]:bg-surface-2 data-[popup-open]:text-text"
+          >
+            <BranchIcon size={11} className="shrink-0 text-text-faint" />
+            <span className="max-w-[180px] truncate font-mono text-text-dim">{baseLabel}</span>
+            <ChevronIcon size={10} className="shrink-0 rotate-90 text-text-faint" />
+          </Popover.Trigger>
+          <Popover.Portal>
+            <Popover.Positioner side="bottom" align="start" sideOffset={6}>
+              <Popover.Popup
+                className="w-[240px] rounded-lg border border-border bg-surface-2 p-1 text-text
+                  shadow-[0_12px_32px_var(--shadow-color)] outline-none transition-opacity duration-100
+                  data-[starting-style]:opacity-0 data-[ending-style]:opacity-0"
+              >
+                <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">Diff base</div>
+                <BranchPicker
+                  branches={branchData?.branches ?? []}
+                  defaultBranch={baseBranch}
+                  query={pickerQuery}
+                  onQueryChange={setPickerQuery}
+                  onSelect={pickBase}
+                  showList
+                  placeholder={branchData ? 'filter branches…' : 'loading branches…'}
+                  ariaLabel="Base branch"
+                  className="px-1 pb-1"
+                />
+              </Popover.Popup>
+            </Popover.Positioner>
+          </Popover.Portal>
+        </Popover.Root>
+
+        {files.length > 0 ? (
+          <>
+            <span>{files.length} file{files.length === 1 ? '' : 's'}</span>
+            <span className="text-[#3fb950]">+{totals.add}</span>
+            <span className="text-[#f85149]">−{totals.del}</span>
+          </>
+        ) : (
+          <span className="text-text-faint">no changes</span>
+        )}
         {data?.truncated && (
           <span className="ml-auto text-text-faint">diff truncated (large changeset)</span>
         )}
       </div>
 
-      <div
-        ref={listRef}
-        onScroll={(e) => setChangesScroll(sessionId, e.currentTarget.scrollTop)}
-        className="min-h-0 flex-1 overflow-y-auto"
-      >
-        {files.map((f) => (
-          <FileAccordion
-            key={f.path}
-            file={f}
-            open={expanded.has(f.path)}
-            diff={diffMap.get(f.path)}
-            onToggle={() => toggle(f.path)}
-          />
-        ))}
-      </div>
+      {files.length === 0 ? (
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 px-4 text-center">
+          <p className="text-xs text-text-dim">No changes yet</p>
+          <p className="text-[11px] text-text-faint">Edits the agent makes in its worktree show up here.</p>
+        </div>
+      ) : (
+        <div
+          ref={listRef}
+          onScroll={(e) => setChangesScroll(sessionId, e.currentTarget.scrollTop)}
+          className="min-h-0 flex-1 overflow-y-auto"
+        >
+          {files.map((f) => (
+            <FileAccordion
+              key={f.path}
+              file={f}
+              open={expanded.has(f.path)}
+              diff={diffMap.get(f.path)}
+              onToggle={() => toggle(f.path)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   )
 }

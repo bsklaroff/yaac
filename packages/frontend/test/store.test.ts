@@ -363,6 +363,15 @@ describe('view mode (tiles vs tabs)', () => {
     useUiStore.getState().setChangesScroll('s1', 120)
     expect(useUiStore.getState().changesScroll).toBe(before)
   })
+
+  it('setChangesBase sets a per-session base branch and clears it when unset', () => {
+    useUiStore.getState().setChangesBase('s1', 'dev')
+    useUiStore.getState().setChangesBase('s2', 'main')
+    expect(useUiStore.getState().changesBase).toEqual({ s1: 'dev', s2: 'main' })
+    // Passing undefined removes just that session's entry.
+    useUiStore.getState().setChangesBase('s1', undefined)
+    expect(useUiStore.getState().changesBase).toEqual({ s2: 'main' })
+  })
 })
 
 describe('theme preference', () => {

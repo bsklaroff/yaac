@@ -30,7 +30,25 @@ describe('getSessionChanges', () => {
     const changes: SessionChanges = { base: 'abc123', files: [], diff: '', truncated: false }
     const fetchMock = stub(changes)
     const result = await getSessionChanges('abc-123')
-    expect(fetchMock.mock.calls[0][0] as string).toBe('/session/abc-123/changes')
+    const url = new URL(fetchMock.mock.calls[0][0] as string, 'http://localhost')
+    expect(url.pathname).toBe('/session/abc-123/changes')
+    expect(url.searchParams.get('base')).toBeNull()
     expect(result).toEqual(changes)
+  })
+
+  it('sends the chosen base as a query param', async () => {
+    const fetchMock = stub({ base: 'abc123', files: [], diff: '', truncated: false })
+    await getSessionChanges('abc-123', 'dev')
+    const url = new URL(fetchMock.mock.calls[0][0] as string, 'http://localhost')
+    expect(url.pathname).toBe('/session/abc-123/changes')
+    expect(url.searchParams.get('base')).toBe('dev')
+  })
+
+  it('url-encodes a base branch containing slashes', async () => {
+    const fetchMock = stub({ base: '', files: [], diff: '', truncated: false })
+    await getSessionChanges('abc-123', 'feature/foo')
+    const url = new URL(fetchMock.mock.calls[0][0] as string, 'http://localhost')
+    expect(url.pathname).toBe('/session/abc-123/changes')
+    expect(url.searchParams.get('base')).toBe('feature/foo')
   })
 })

@@ -24,14 +24,21 @@ const M_NAMESTATUS = '@@NAMESTATUS@@'
 const M_DIFF = '@@DIFF@@'
 
 /**
- * One-line pod-side script. Resolves the fork base (merge-base with the
- * branch's upstream, else HEAD), stages the whole working tree into a temp
- * index, and prints numstat + name-status + the full unified diff against the
- * base, each behind a marker. The temp index is removed; the real one is never
- * touched.
+ * The pod-side script body. Resolves the diff base, stages the whole working
+ * tree into a throwaway index, and prints numstat + name-status + the full
+ * unified diff against the base, each behind a marker. The temp index is
+ * removed; the real one is never touched.
+ *
+ * `$1` is the optional base branch (see buildChangesScript). When set, the fork
+ * point is taken against `origin/<base>`; when empty, against the branch's own
+ * `@{upstream}` (else HEAD) — today's default. An explicit-but-unresolvable
+ * base fails hard (exit 4) rather than silently diffing against HEAD, which
+ * would misleadingly show only uncommitted work against the wrong base.
  */
-const SCRIPT = "sh -c 'cd /workspace 2>/dev/null || exit 3; "
-  + 'base=$(git merge-base @{upstream} HEAD 2>/dev/null || git rev-parse HEAD 2>/dev/null) || exit 4; '
+const POD_SCRIPT =
+  'cd /workspace 2>/dev/null || exit 3; '
+  + 'if [ -n "$1" ]; then base=$(git merge-base "origin/$1" HEAD 2>/dev/null) || exit 4; '
+  + 'else base=$(git merge-base @{upstream} HEAD 2>/dev/null || git rev-parse HEAD 2>/dev/null) || exit 4; fi; '
   // A FRESH (non-existent) index path — git rejects an empty mktemp file as an
   // index. $$ is the pod sh PID, unique per exec. add -A into it stages the
   // whole working tree; the agent's real index is never touched.
@@ -40,7 +47,25 @@ const SCRIPT = "sh -c 'cd /workspace 2>/dev/null || exit 3; "
   + `printf "${M_NUMSTAT}\\n"; git diff --cached --numstat "$base"; `
   + `printf "${M_NAMESTATUS}\\n"; git diff --cached --name-status "$base"; `
   + `printf "${M_DIFF}\\n"; git diff --cached "$base"; `
-  + "rm -f \"$idx\"'"
+  + 'rm -f "$idx"'
+
+/** Single-quote a value for the host /bin/sh (containerExec runs its `cmd`
+ *  through a shell), so it reaches kubectl as one literal argv token. */
+function shSingleQuote(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`
+}
+
+/**
+ * Build the containerExec command tail: `sh -c <script> yaac-changes <base>`.
+ * The script is single-quoted for the host shell; the caller-chosen base is
+ * passed as the pod sh's `$1` positional — never interpolated into the script —
+ * so any value (slashes, quotes, shell metacharacters) reaches git as one
+ * literal ref token and, if bogus, simply fails to resolve. An empty base
+ * selects the default (`@{upstream}`) path.
+ */
+export function buildChangesScript(base?: string): string {
+  return `sh -c ${shSingleQuote(POD_SCRIPT)} yaac-changes ${shSingleQuote((base ?? '').trim())}`
+}
 
 /** Map a git name-status letter to our ChangeStatus. */
 export function statusFromCode(code: string): ChangeStatus {
@@ -142,8 +167,10 @@ export function parseChangesOutput(raw: string, maxDiffBytes = MAX_DIFF_BYTES): 
   return { base, files, diff, truncated }
 }
 
-/** Compute the review diff for a running session's worktree. */
-export async function getSessionChanges(jobName: string): Promise<SessionChanges> {
-  const { stdout } = await containerExec(jobName, SCRIPT, { timeout: 20_000, maxAttempts: 2 })
+/** Compute the review diff for a running session's worktree. `base`, when
+ *  given, is a branch name whose `origin/<base>` fork point the diff is taken
+ *  against (else the branch's own upstream fork point). */
+export async function getSessionChanges(jobName: string, base?: string): Promise<SessionChanges> {
+  const { stdout } = await containerExec(jobName, buildChangesScript(base), { timeout: 20_000, maxAttempts: 2 })
   return parseChangesOutput(stdout)
 }

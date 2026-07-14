@@ -11,6 +11,7 @@ import {
   parseNumstat,
   parseNameStatus,
   parseChangesOutput,
+  buildChangesScript,
   getSessionChanges,
 } from '#lib/session/changes'
 
@@ -128,6 +129,45 @@ describe('parseChangesOutput', () => {
   })
 })
 
+describe('buildChangesScript', () => {
+  it('builds the default (no-base) script with an empty positional', () => {
+    const s = buildChangesScript()
+    expect(s).toContain('@{upstream}')       // default fork base
+    expect(s).toContain('"origin/$1"')       // explicit-base branch present but unused
+    expect(s).toContain('git add -A')
+    expect(s).toContain('GIT_INDEX_FILE')
+    expect(s.endsWith("yaac-changes ''")).toBe(true)
+  })
+
+  it('passes an explicit base as the pod sh $1 positional (diffed against origin/$1)', () => {
+    const s = buildChangesScript('dev')
+    expect(s).toContain('"origin/$1"')       // the ref is derived from $1, never interpolated
+    expect(s.endsWith("yaac-changes 'dev'")).toBe(true)
+    expect(s).not.toContain('origin/dev')    // the branch name is never spliced into the script body
+  })
+
+  it('single-quotes the base so shell metacharacters cannot break out of the token', () => {
+    for (const evil of ['x; rm -rf /', '$(touch pwn)', '`id`', 'a && b', '| tee x']) {
+      const s = buildChangesScript(evil)
+      expect(s.endsWith("yaac-changes '" + evil + "'")).toBe(true)
+    }
+  })
+
+  it('escapes embedded single quotes in the base', () => {
+    expect(buildChangesScript("a'b").endsWith("yaac-changes 'a'\\''b'")).toBe(true)
+  })
+
+  it('keeps the script body byte-identical regardless of the base', () => {
+    const body = (s: string): string => s.slice(0, s.lastIndexOf('yaac-changes'))
+    expect(body(buildChangesScript('dev'))).toBe(body(buildChangesScript()))
+    expect(body(buildChangesScript('x; rm -rf /'))).toBe(body(buildChangesScript()))
+  })
+
+  it('trims surrounding whitespace from the base', () => {
+    expect(buildChangesScript('  dev  ').endsWith("yaac-changes 'dev'")).toBe(true)
+  })
+})
+
 describe('getSessionChanges', () => {
   it('runs the pod-side script via containerExec and parses its output', async () => {
     mockExec.mockResolvedValue({
@@ -144,5 +184,16 @@ describe('getSessionChanges', () => {
     expect(out.files).toEqual([
       { path: 'src/x.ts', status: 'modified', additions: 2, deletions: 1, binary: false },
     ])
+  })
+
+  it('forwards the chosen base branch into the pod script', async () => {
+    mockExec.mockResolvedValue({
+      stdout: 'BASE deadbeef\n@@NUMSTAT@@\n@@NAMESTATUS@@\n@@DIFF@@\n',
+      stderr: '',
+    })
+    await getSessionChanges('yaac-proj-abc', 'dev')
+    const [, cmd] = mockExec.mock.calls.at(-1) ?? []
+    expect(cmd).toContain('"origin/$1"')
+    expect(cmd).toContain("yaac-changes 'dev'")
   })
 })

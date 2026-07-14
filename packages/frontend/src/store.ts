@@ -391,6 +391,13 @@ interface UiState {
   changesScroll: Record<string, number>
   /** Record a session's Changes-pane scroll offset. */
   setChangesScroll: (sessionId: string, scrollTop: number) => void
+  /** Per-session base branch the Changes pane diffs against. In-memory like
+   *  changesExpanded — survives a tab/session switch, not a reload. Absent = the
+   *  session's own fork base (@{upstream}), i.e. today's default. */
+  changesBase: Record<string, string>
+  /** Set (or, with undefined, clear back to the default) a session's Changes
+   *  base branch. */
+  setChangesBase: (sessionId: string, branch: string | undefined) => void
   /** Locally-initiated provisioning rows, shown the instant create/restart is
    *  clicked. The server snapshot's `provisioning[]` is the source of truth;
    *  these only bridge the gap until the first snapshot frame carries the id,
@@ -503,6 +510,7 @@ export const useUiStore = create<UiState>((set) => ({
   activeTabs: {},
   changesExpanded: {},
   changesScroll: {},
+  changesBase: {},
   optimisticProvisioning: [],
   pendingDeleteIds: [],
   optimisticDeleted: [],
@@ -612,6 +620,12 @@ export const useUiStore = create<UiState>((set) => ({
       ? s
       : { changesScroll: { ...s.changesScroll, [sessionId]: scrollTop } }
   )),
+  setChangesBase: (sessionId, branch) => set((s) => {
+    const next = { ...s.changesBase }
+    if (branch) next[sessionId] = branch
+    else delete next[sessionId]
+    return { changesBase: next }
+  }),
   focusTerminal: (sessionId, target) => set((s) => ({
     activeTabs: { ...s.activeTabs, [sessionId]: target },
     focusNonce: s.focusNonce + 1,

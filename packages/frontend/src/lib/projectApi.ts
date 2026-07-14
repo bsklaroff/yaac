@@ -32,6 +32,12 @@ export interface ProjectBranches {
   referenceBranch: string | null
 }
 
+/** React Query key for a project's branch list — shared by every branch picker
+ *  (new-session popover, Changes-view base picker) so they hit one cache. */
+export function projectBranchesKey(slug: string): readonly [string, string] {
+  return ['project-branches', slug] as const
+}
+
 /**
  * Branch data for the new-session picker. Without `refresh` this reads the
  * local remote-tracking refs (instant); with it the server fetches from the

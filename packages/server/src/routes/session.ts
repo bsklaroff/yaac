@@ -192,11 +192,16 @@ export const sessionApp = new Hono()
     return c.json(await listSessionTerminals(jobName))
   })
   // The session's review diff — everything changed in the worktree since it
-  // forked from the base branch (committed + working + untracked).
-  .get('/:id/changes', async (c) => {
-    const { jobName } = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
-    return c.json(await getSessionChanges(jobName))
-  })
+  // forked from the base branch (committed + working + untracked). An optional
+  // `base` overrides the branch it's diffed against (fork point vs origin/<base>).
+  .get(
+    '/:id/changes',
+    zv('query', z.object({ base: z.string().min(1).max(255).optional() })),
+    async (c) => {
+      const { jobName } = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
+      return c.json(await getSessionChanges(jobName, c.req.valid('query').base))
+    },
+  )
   // Create a scratch-shell window in the session's `yaac` tmux session,
   // returning its entry so the client can open a pane immediately.
   .post('/:id/terminals', async (c) => {
