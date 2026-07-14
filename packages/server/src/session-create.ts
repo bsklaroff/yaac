@@ -1031,6 +1031,7 @@ export async function createSession(
     await ensureSessionVcluster({
       sessionId,
       allowedHostPathPrefix: nestedYaacDataDir(projectSlug, sessionId),
+      onProgress: (m) => emit(m, options),
     })
   }
 

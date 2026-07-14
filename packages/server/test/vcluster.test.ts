@@ -51,6 +51,7 @@ import {
   vclusterName,
   vclusterNamespace,
   waitForVclusterKubeconfig,
+  waitForVclusterNamespaceGone,
 } from '#lib/k8s/vcluster'
 import { LABEL_VCLUSTER_MANAGED_BY, VCLUSTER_API_PORT } from '#lib/k8s/pods'
 import {
@@ -419,6 +420,43 @@ describe('ensureSessionVcluster', () => {
     expect((applyCall![1] as { input: string }).input).toContain(`name: ${VC}`)
   })
 
+  it('holds every apply until a same-named Terminating namespace is gone', async () => {
+    // The restart race: teardown deleted the namespace with --wait=false
+    // and the re-create runs while it is still Terminating. Applying then
+    // would just patch doomed objects, silently lost when termination
+    // completes — so nothing may be applied until the namespace is gone.
+    // Applies seen at the moment of each namespace probe — must stay 0.
+    const appliesAtProbe: number[] = []
+    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+      if (args[1] === 'namespace' && args[2] === VCNS) {
+        appliesAtProbe.push(mockApply.mock.calls.length)
+        return Promise.resolve(appliesAtProbe.length === 1
+          ? { metadata: { deletionTimestamp: '2026-07-14T09:27:50Z' } }
+          : null)
+      }
+      if (args[1] === 'deployments') return Promise.resolve({ items: [] })
+      return Promise.resolve(null)
+    })
+    const onProgress = vi.fn()
+    // Fake timers so the wait's poll sleep doesn't cost real seconds.
+    vi.useFakeTimers()
+    try {
+      const done = ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x', onProgress })
+      await vi.advanceTimersByTimeAsync(2500)
+      await done
+    } finally {
+      vi.useRealTimers()
+    }
+
+    // Polled twice (Terminating, then gone) with nothing applied in between.
+    expect(appliesAtProbe).toEqual([0, 0])
+    expect(onProgress).toHaveBeenCalledWith(
+      'Waiting for the previous virtual cluster to finish terminating...',
+    )
+    // The full apply sequence then proceeded, namespace first.
+    expect(mockApply.mock.calls[0]?.[0]).toMatchObject({ kind: 'Namespace' })
+  })
+
   it('fails closed with no opt-out when the VAP API is missing', async () => {
     mockRetry.mockImplementation((args: string[]) => {
       if (args[1] === 'validatingadmissionpolicies') {
@@ -441,6 +479,48 @@ describe('ensureSessionVcluster', () => {
     expect(mockRetry).not.toHaveBeenCalledWith(
       expect.arrayContaining(['delete', 'service']),
     )
+  })
+})
+
+describe('waitForVclusterNamespaceGone', () => {
+  const TERMINATING = {
+    metadata: { deletionTimestamp: '2026-07-14T09:27:50Z' },
+  }
+
+  it('returns immediately when the namespace is absent', async () => {
+    mockGetJson.mockResolvedValue(null)
+    const onWaiting = vi.fn()
+    await waitForVclusterNamespaceGone(VC, { onWaiting })
+    expect(mockGetJson).toHaveBeenCalledTimes(1)
+    expect(mockGetJson).toHaveBeenCalledWith(['get', 'namespace', VCNS])
+    expect(onWaiting).not.toHaveBeenCalled()
+  })
+
+  it('returns immediately for a live (non-terminating) namespace', async () => {
+    // Present without a deletionTimestamp → the ensure-over-existing case;
+    // the caller's applies must proceed against the live vcluster.
+    mockGetJson.mockResolvedValue({ metadata: {} })
+    const onWaiting = vi.fn()
+    await waitForVclusterNamespaceGone(VC, { onWaiting })
+    expect(mockGetJson).toHaveBeenCalledTimes(1)
+    expect(onWaiting).not.toHaveBeenCalled()
+  })
+
+  it('polls a Terminating namespace until it is gone, signalling the wait once', async () => {
+    mockGetJson
+      .mockResolvedValueOnce(TERMINATING)
+      .mockResolvedValueOnce(TERMINATING)
+      .mockResolvedValueOnce(null)
+    const onWaiting = vi.fn()
+    await waitForVclusterNamespaceGone(VC, { pollMs: 1, onWaiting })
+    expect(mockGetJson).toHaveBeenCalledTimes(3)
+    expect(onWaiting).toHaveBeenCalledTimes(1)
+  })
+
+  it('times out with an actionable error when termination is stuck', async () => {
+    mockGetJson.mockResolvedValue(TERMINATING)
+    await expect(waitForVclusterNamespaceGone(VC, { timeoutMs: -1, pollMs: 1 }))
+      .rejects.toThrow(new RegExp(`still Terminating.*kubectl get namespace ${VCNS}`))
   })
 })
 

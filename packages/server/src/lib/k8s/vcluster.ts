@@ -559,6 +559,61 @@ export interface EnsureVclusterParams {
   sessionId: string
   /** VAP param: the only hostPath prefix synced pods may mount. */
   allowedHostPathPrefix: string
+  /** Progress hook (session-create's emit); called for slow waits. */
+  onProgress?: (message: string) => void
+}
+
+export interface WaitForVclusterNamespaceGoneOpts {
+  timeoutMs?: number
+  /** Poll interval; injectable so tests don't sleep real seconds. */
+  pollMs?: number
+  /** Invoked once, on the first probe that finds the namespace Terminating. */
+  onWaiting?: () => void
+}
+
+/**
+ * Wait for a Terminating same-named vcluster namespace to disappear.
+ *
+ * Teardown deletes the namespace with `--wait=false`, and a restart
+ * re-ensures the SAME name seconds later (session ids are stable across
+ * restarts) while termination — pod grace periods, Cilium endpoint
+ * cleanup, finalizers — takes minutes. Applying into the Terminating
+ * namespace does not fail: every old object still exists, so each apply
+ * lands as a PATCH on a doomed object (only CREATE is blocked in a
+ * terminating namespace) and the kubeconfig wait reads the doomed
+ * Secret — then termination completes and silently sweeps the "new"
+ * vcluster. The namespace being fully gone is the only safe re-create
+ * point.
+ *
+ * Returns immediately when the namespace is absent, or present without a
+ * deletionTimestamp (a live vcluster — the caller's applies are the
+ * normal ensure-over-existing path).
+ */
+export async function waitForVclusterNamespaceGone(
+  name: string,
+  opts: WaitForVclusterNamespaceGoneOpts = {},
+): Promise<void> {
+  const { timeoutMs = 10 * 60 * 1000, pollMs = 2000, onWaiting } = opts
+  const vcNs = vclusterNamespace(name)
+  const deadline = Date.now() + timeoutMs
+  let waited = false
+  for (;;) {
+    const ns = await kubectlGetJson<{ metadata?: { deletionTimestamp?: string } }>([
+      'get', 'namespace', vcNs,
+    ])
+    if (!ns || !ns.metadata?.deletionTimestamp) return
+    if (!waited) {
+      waited = true
+      onWaiting?.()
+    }
+    if (Date.now() > deadline) {
+      throw new Error(
+        `vcluster namespace ${vcNs} is still Terminating after ${timeoutMs}ms — `
+        + `the previous teardown is stuck; check: kubectl get namespace ${vcNs} -o yaml`,
+      )
+    }
+    await new Promise((r) => setTimeout(r, pollMs))
+  }
 }
 
 /**
@@ -581,6 +636,17 @@ export async function ensureSessionVcluster(p: EnsureVclusterParams): Promise<vo
       + '(kubernetes >= 1.30) — without it synced pods would be unguarded.',
     )
   }
+
+  // A same-named namespace still Terminating means a previous vcluster's
+  // teardown hasn't finished (the restart flow re-creates the same name
+  // seconds after cleanup). Applying below would "succeed" as patches on
+  // doomed objects and the whole vcluster would vanish when termination
+  // completes — so block until the namespace is actually gone.
+  await waitForVclusterNamespaceGone(name, {
+    onWaiting: () => p.onProgress?.(
+      'Waiting for the previous virtual cluster to finish terminating...',
+    ),
+  })
 
   // The vcluster's own namespace first (vcluster owns one per namespace).
   await kubectlApply(buildVclusterNamespaceManifest(name, p.sessionId))
