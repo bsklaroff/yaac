@@ -84,16 +84,33 @@ export function Sidebar({
   return (
     <aside className="my-2 ml-2 flex w-64 flex-col overflow-hidden rounded-lg
       border border-hairline bg-surface text-text">
-      <div className="titlebar-drag flex h-11 shrink-0 items-center gap-2 pl-4 pr-2">
-        <div className="no-drag flex min-w-0 items-center">
-          {projectSlug
-            ? <ProjectActionsMenu slug={projectSlug} remoteUrl={projectRemoteUrl} />
-            : <span className="font-semibold tracking-tight">yaac</span>}
+      <div className="shrink-0">
+        <div className="titlebar-drag flex h-11 items-center gap-2 pl-4 pr-2">
+          <div className="no-drag flex min-w-0 flex-1 items-center">
+            {projectSlug
+              ? <ProjectActionsMenu slug={projectSlug} remoteUrl={projectRemoteUrl} />
+              : <span className="font-semibold tracking-tight">yaac</span>}
+          </div>
+          <div className="flex shrink-0 items-center gap-2 no-drag">
+            {!connected && <span className="text-xs text-amber-400/80">reconnecting…</span>}
+            {projectSlug && <NewSessionButton projectSlug={projectSlug} />}
+            <button
+              onClick={toggleSidebar}
+              title="Hide sidebar"
+              aria-label="Hide sidebar"
+              className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
+                hover:bg-surface-2 hover:text-text-dim"
+            >
+              <SidebarIcon size={14} />
+            </button>
+          </div>
         </div>
-        <div className="ml-auto flex items-center gap-2 no-drag">
+        {/* Status chits sit on their own row below the name so a long project
+            name gets the full width of the header strip above. Collapses to
+            nothing (empty:hidden) when no chit has anything to show. */}
+        <div className="flex items-center gap-2 px-4 pb-2 empty:hidden">
           <UsageBadge />
           <ImageBuildIndicator projectSlug={projectSlug} />
-          {!connected && <span className="text-xs text-amber-400/80">reconnecting…</span>}
           {/* Project-wide: the stored credential is the project's, so the
               flag lives on the project header, not on individual sessions. */}
           {gitAuthFailures.length > 0 && (
@@ -103,16 +120,6 @@ export function Sidebar({
               className="hover:bg-[#d65858]/25"
             />
           )}
-          {projectSlug && <NewSessionButton projectSlug={projectSlug} />}
-          <button
-            onClick={toggleSidebar}
-            title="Hide sidebar"
-            aria-label="Hide sidebar"
-            className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
-              hover:bg-surface-2 hover:text-text-dim"
-          >
-            <SidebarIcon size={14} />
-          </button>
         </div>
       </div>
 
