@@ -8,7 +8,7 @@ import { SessionChanges } from '#components/SessionChanges'
 import { isPreviewTarget, previewLabel } from '#lib/preview'
 import { isChangesTarget } from '#lib/changesApi'
 import { isElectron } from '#lib/platform'
-import { SessionActionsMenu } from '#components/SessionActionsMenu'
+import { SessionTitle } from '#components/SessionTitle'
 import { CreatingPlaceholder } from '#components/CreatingPlaceholder'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import {
@@ -476,9 +476,11 @@ export function SessionView({
               <SidebarIcon size={14} />
             </button>
           )}
-          <span className="titlebar-drag min-w-0 flex-1 truncate font-medium text-text">
-            {session.title || session.prompt || 'New session'}
-          </span>
+          <SessionTitle
+            sessionId={session.sessionId}
+            title={session.title ?? ''}
+            prompt={session.prompt ?? ''}
+          />
           <button
             onClick={() => setViewMode(tiled ? 'tabs' : 'tiles')}
             title={tiled ? 'Switch to tabs' : 'Switch to tiles'}
@@ -507,7 +509,6 @@ export function SessionView({
             <ChangesIcon size={13} />
             Changes
           </button>
-          <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[session.tool]}</span>
           {embedPreview && previewPorts.length > 0 && (
             <button
               onClick={() => openPreview(session.sessionId, previewPorts[0].containerPort)}
@@ -533,7 +534,8 @@ export function SessionView({
           {session.blockedHosts.length > 0 && (
             <BlockedHostsBadge hosts={session.blockedHosts} sessionId={session.sessionId} iconSize={12} className="hover:bg-[#d65858]/25" />
           )}
-          <SessionActionsMenu sessionId={session.sessionId} currentTitle={session.title ?? ''} />
+          {/* Tool name sits at the far right, past any chits that appear. */}
+          <span className="shrink-0 text-[11px] text-text-faint">{TOOL_LABEL[session.tool]}</span>
         </header>
       ) : (
         <header className="titlebar-drag flex h-8 shrink-0 items-center px-2">
