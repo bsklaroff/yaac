@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, afterEach, vi } from 'vitest'
+import { describe, it, expect, afterEach, beforeAll, afterAll, vi } from 'vitest'
 import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { SessionChanges as SessionChangesData } from '@yaac/shared/types'
@@ -7,6 +7,7 @@ import type { SessionChanges as SessionChangesData } from '@yaac/shared/types'
 vi.mock('#lib/changesApi', () => ({ getSessionChanges: vi.fn() }))
 import { getSessionChanges } from '#lib/changesApi'
 import { SessionChanges } from '#components/SessionChanges'
+import { useUiStore } from '#store'
 
 const mock = vi.mocked(getSessionChanges)
 
@@ -35,16 +36,36 @@ const PAYLOAD: SessionChangesData = {
   truncated: false,
 }
 
-function renderPane(): void {
+function renderPane(): ReturnType<typeof render> {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(
+  return render(
     <QueryClientProvider client={qc}>
       <SessionChanges sessionId="s1" />
     </QueryClientProvider>,
   )
 }
 
-afterEach(() => { cleanup(); mock.mockReset() })
+// jsdom has no layout engine, so scrollTop is inert there. Back it with a real
+// per-element value so the pane's scroll save + restore can be exercised.
+const realScrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTop')
+beforeAll(() => {
+  Object.defineProperty(HTMLElement.prototype, 'scrollTop', {
+    configurable: true,
+    get(this: { _scrollTop?: number }): number { return this._scrollTop ?? 0 },
+    set(this: { _scrollTop?: number }, v: number): void { this._scrollTop = v },
+  })
+})
+afterAll(() => {
+  if (realScrollTop) Object.defineProperty(HTMLElement.prototype, 'scrollTop', realScrollTop)
+})
+
+// The expanded-files set and scroll offset live in the shared store keyed by
+// session id, so clear them between tests to keep them isolated.
+afterEach(() => {
+  cleanup()
+  mock.mockReset()
+  useUiStore.setState({ changesExpanded: {}, changesScroll: {} })
+})
 
 describe('SessionChanges', () => {
   it('lists changed files and auto-expands the first file’s diff', async () => {
@@ -66,6 +87,45 @@ describe('SessionChanges', () => {
 
     fireEvent.click(screen.getByTitle('src/app.ts'))
     expect(screen.queryByText('new1')).toBeNull() // collapsed
+  })
+
+  it('restores which files are expanded after the pane unmounts and remounts', async () => {
+    mock.mockResolvedValue(PAYLOAD)
+    renderPane()
+    await waitFor(() => expect(screen.getByTitle('new.ts')).toBeTruthy())
+    // Expand the second file (the first auto-opens), then collapse the first.
+    fireEvent.click(screen.getByTitle('new.ts'))
+    fireEvent.click(screen.getByTitle('src/app.ts'))
+    expect(screen.getByText('alpha')).toBeTruthy() // new.ts open
+    expect(screen.queryByText('new1')).toBeNull() // src/app.ts collapsed
+
+    // Navigating away tears the pane down (a different tab/session). Remounting
+    // must reproduce exactly the same accordion state, not re-auto-open.
+    cleanup()
+    renderPane()
+    await waitFor(() => expect(screen.getByText('alpha')).toBeTruthy())
+    expect(screen.queryByText('new1')).toBeNull() // stayed collapsed, not re-opened
+  })
+
+  it('records the file list’s scroll offset as the user scrolls', async () => {
+    mock.mockResolvedValue(PAYLOAD)
+    const { container } = renderPane()
+    await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
+    const list = container.querySelector('.overflow-y-auto')
+    if (!list) throw new Error('scroll container not found')
+    list.scrollTop = 140
+    fireEvent.scroll(list)
+    expect(useUiStore.getState().changesScroll.s1).toBe(140)
+  })
+
+  it('restores the saved scroll offset when the pane remounts', async () => {
+    useUiStore.setState({ changesScroll: { s1: 220 } })
+    mock.mockResolvedValue(PAYLOAD)
+    const { container } = renderPane()
+    await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
+    const list = container.querySelector('.overflow-y-auto')
+    if (!list) throw new Error('scroll container not found')
+    expect(list.scrollTop).toBe(220)
   })
 
   it('renders a renamed file as old → new with the old path in its title', async () => {

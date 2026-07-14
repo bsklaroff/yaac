@@ -362,6 +362,22 @@ interface UiState {
   /** Per-session active terminal: the visible tab in tabs mode, the
    *  last-focused pane in tiles mode. Tab-switch shortcuts cycle from it. */
   activeTabs: Record<string, string>
+  /** Per-session set of expanded file paths in the Changes (review-diff)
+   *  pane. Kept in the store — not SessionChanges' local state — so the
+   *  accordion survives the pane being torn down off-screen on a tab or
+   *  session switch, the same way previewPort survives it. A missing key
+   *  means the pane hasn't loaded for that session yet: SessionChanges seeds
+   *  it by auto-opening the first file, so any existing entry (even empty) is
+   *  the user's own choice and no auto-open reapplies. */
+  changesExpanded: Record<string, string[]>
+  /** Replace a session's expanded-files set in the Changes pane. */
+  setChangesExpanded: (sessionId: string, paths: string[]) => void
+  /** Per-session scroll offset of the Changes pane's file list, so returning
+   *  to the pane lands where the user left off. In-memory like
+   *  changesExpanded — it survives a tab/session switch, not a reload. */
+  changesScroll: Record<string, number>
+  /** Record a session's Changes-pane scroll offset. */
+  setChangesScroll: (sessionId: string, scrollTop: number) => void
   /** Locally-initiated provisioning rows, shown the instant create/restart is
    *  clicked. The server snapshot's `provisioning[]` is the source of truth;
    *  these only bridge the gap until the first snapshot frame carries the id,
@@ -472,6 +488,8 @@ export const useUiStore = create<UiState>((set) => ({
   viewMode: loadViewMode(),
   pinnedUsageMetric: loadPinnedUsageMetric(),
   activeTabs: {},
+  changesExpanded: {},
+  changesScroll: {},
   optimisticProvisioning: [],
   pendingDeleteIds: [],
   optimisticDeleted: [],
@@ -572,6 +590,14 @@ export const useUiStore = create<UiState>((set) => ({
     s.activeTabs[sessionId] === target
       ? s
       : { activeTabs: { ...s.activeTabs, [sessionId]: target } }
+  )),
+  setChangesExpanded: (sessionId, paths) => set((s) => ({
+    changesExpanded: { ...s.changesExpanded, [sessionId]: paths },
+  })),
+  setChangesScroll: (sessionId, scrollTop) => set((s) => (
+    s.changesScroll[sessionId] === scrollTop
+      ? s
+      : { changesScroll: { ...s.changesScroll, [sessionId]: scrollTop } }
   )),
   focusTerminal: (sessionId, target) => set((s) => ({
     activeTabs: { ...s.activeTabs, [sessionId]: target },

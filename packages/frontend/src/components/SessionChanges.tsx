@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, type JSX } from 'react'
 import clsx from 'clsx'
 import { useQuery } from '@tanstack/react-query'
+import { useUiStore } from '#store'
 import { getSessionChanges } from '#lib/changesApi'
 import { indexDiffsByPath, type DiffLine, type ParsedFileDiff } from '#lib/diff'
 import { LoadingIcon, WarningIcon, ChevronIcon } from '#lib/icons'
@@ -51,22 +52,42 @@ export function SessionChanges({ sessionId }: { sessionId: string }): JSX.Elemen
   const files = data?.files ?? []
   const diffMap = useMemo(() => indexDiffsByPath(data?.diff ?? ''), [data?.diff])
 
-  // Which files are expanded. The first file auto-opens once, so the pane
-  // isn't empty on arrival; everything else is collapsed until clicked.
-  const [expanded, setExpanded] = useState<Set<string>>(new Set())
-  const inited = useRef(false)
+  // Which files are expanded. This lives in the store keyed by session id, not
+  // in local state, so it survives the pane being torn down off-screen when the
+  // user switches tabs or sessions. A missing entry means we haven't loaded
+  // this session's changes yet: auto-open the first file so the pane isn't
+  // empty on arrival, then leave it to the user — an existing entry (even an
+  // empty one) is their choice and never gets re-seeded.
+  const expandedList = useUiStore((s) => s.changesExpanded[sessionId])
+  const setChangesExpanded = useUiStore((s) => s.setChangesExpanded)
+  const expanded = useMemo(() => new Set(expandedList ?? []), [expandedList])
   useEffect(() => {
-    if (!inited.current && files.length > 0) {
-      inited.current = true
-      setExpanded(new Set([files[0].path]))
+    if (expandedList === undefined && files.length > 0) {
+      setChangesExpanded(sessionId, [files[0].path])
     }
-  }, [files])
-  const toggle = (path: string): void => setExpanded((prev) => {
-    const next = new Set(prev)
+  }, [expandedList, files, sessionId, setChangesExpanded])
+  const toggle = (path: string): void => {
+    const next = new Set(expanded)
     if (next.has(path)) next.delete(path)
     else next.add(path)
-    return next
-  })
+    setChangesExpanded(sessionId, [...next])
+  }
+
+  // Scroll offset also lives in the store, so returning to the pane lands where
+  // the user left off. On remount the diff is already cached and the expanded
+  // state is applied synchronously, so the content height is present by layout
+  // time; restore once (guarded), then let the user drive. Later polls that
+  // don't change the file list won't re-run this — and if they do, the guard
+  // keeps us from yanking the scroll out from under the user.
+  const setChangesScroll = useUiStore((s) => s.setChangesScroll)
+  const listRef = useRef<HTMLDivElement | null>(null)
+  const restoredScroll = useRef(false)
+  useLayoutEffect(() => {
+    const el = listRef.current
+    if (!el || restoredScroll.current) return
+    restoredScroll.current = true
+    el.scrollTop = useUiStore.getState().changesScroll[sessionId] ?? 0
+  }, [sessionId, files.length])
 
   const totals = files.reduce((a, f) => ({ add: a.add + f.additions, del: a.del + f.deletions }), { add: 0, del: 0 })
 
@@ -111,7 +132,11 @@ export function SessionChanges({ sessionId }: { sessionId: string }): JSX.Elemen
         )}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div
+        ref={listRef}
+        onScroll={(e) => setChangesScroll(sessionId, e.currentTarget.scrollTop)}
+        className="min-h-0 flex-1 overflow-y-auto"
+      >
         {files.map((f) => (
           <FileAccordion
             key={f.path}

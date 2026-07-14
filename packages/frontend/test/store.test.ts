@@ -331,6 +331,25 @@ describe('view mode (tiles vs tabs)', () => {
     useUiStore.getState().focusTerminal('s1', 'window:@2')
     expect(useUiStore.getState().focusNonce).toBe(nonce + 2)
   })
+
+  it('setChangesExpanded stores the expanded-files set per session', () => {
+    useUiStore.getState().setChangesExpanded('s1', ['a.ts', 'b.ts'])
+    useUiStore.getState().setChangesExpanded('s2', [])
+    expect(useUiStore.getState().changesExpanded).toEqual({ s1: ['a.ts', 'b.ts'], s2: [] })
+    // A later call replaces that session's set without touching the others.
+    useUiStore.getState().setChangesExpanded('s1', ['a.ts'])
+    expect(useUiStore.getState().changesExpanded).toEqual({ s1: ['a.ts'], s2: [] })
+  })
+
+  it('setChangesScroll records the Changes-pane scroll offset per session and no-ops on the same value', () => {
+    useUiStore.getState().setChangesScroll('s1', 120)
+    useUiStore.getState().setChangesScroll('s2', 0)
+    expect(useUiStore.getState().changesScroll).toEqual({ s1: 120, s2: 0 })
+    // Re-recording the same offset keeps state identity (no needless render).
+    const before = useUiStore.getState().changesScroll
+    useUiStore.getState().setChangesScroll('s1', 120)
+    expect(useUiStore.getState().changesScroll).toBe(before)
+  })
 })
 
 describe('theme preference', () => {
