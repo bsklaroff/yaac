@@ -211,10 +211,74 @@ describe('yaac auth + tool (real CLI + shared server)', () => {
       })
     })
 
+    it('auth fake opencode-openrouter seeds a placeholder openrouter api-key', async () => {
+      const { exitCode, stderr } = await runYaac(testEnv.env, 'auth', 'fake', 'opencode-openrouter')
+      expect(exitCode, stderr).toBe(0)
+
+      const parsed = JSON.parse(await fs.readFile(credPath('opencode.json'), 'utf8')) as {
+        kind: string
+        provider: string
+        apiKey: string
+      }
+      expect(parsed.kind).toBe('api-key')
+      expect(parsed.provider).toBe('openrouter')
+      expect(parsed.apiKey).toBe('yaac-ph-api-key')
+    })
+
+    it('auth fake pi-openrouter seeds a placeholder openrouter api-key', async () => {
+      const { exitCode, stderr } = await runYaac(testEnv.env, 'auth', 'fake', 'pi-openrouter')
+      expect(exitCode, stderr).toBe(0)
+
+      const parsed = JSON.parse(await fs.readFile(credPath('pi.json'), 'utf8')) as {
+        kind: string
+        provider: string
+        apiKey: string
+      }
+      expect(parsed.kind).toBe('api-key')
+      expect(parsed.provider).toBe('openrouter')
+      expect(parsed.apiKey).toBe('yaac-ph-api-key')
+    })
+
+    it('seeds several kinds passed in one invocation (variadic)', async () => {
+      const { exitCode, stdout, stderr } = await runYaac(
+        testEnv.env, 'auth', 'fake', 'claude-oauth', 'opencode-openrouter', 'github',
+      )
+      expect(exitCode, stderr).toBe(0)
+      // One confirmation line per seeded kind.
+      expect(stdout).toContain('Claude OAuth')
+      expect(stdout).toContain('OpenCode OpenRouter')
+      expect(stdout).toContain('github.com/*')
+
+      const claude = JSON.parse(await fs.readFile(credPath('claude.json'), 'utf8')) as {
+        claudeAiOauth: { accessToken: string }
+      }
+      const opencode = JSON.parse(await fs.readFile(credPath('opencode.json'), 'utf8')) as {
+        provider: string
+        apiKey: string
+      }
+      const github = JSON.parse(await fs.readFile(credPath('github.json'), 'utf8')) as {
+        tokens: Array<{ kind: string; pattern: string; token: string }>
+      }
+      expect(claude.claudeAiOauth.accessToken).toBe('yaac-ph-access')
+      expect(opencode.provider).toBe('openrouter')
+      expect(opencode.apiKey).toBe('yaac-ph-api-key')
+      expect(github.tokens).toContainEqual({
+        kind: 'https',
+        pattern: 'github.com/*',
+        token: 'yaac-ph-gh-token',
+      })
+    })
+
     it('rejects an unknown kind', async () => {
       const { exitCode, stderr } = await runYaac(testEnv.env, 'auth', 'fake', 'bogus')
       expect(exitCode).not.toBe(0)
       expect(stderr).toMatch(/claude-oauth|github|Allowed choices/i)
+    })
+
+    it('requires at least one kind', async () => {
+      const { exitCode, stderr } = await runYaac(testEnv.env, 'auth', 'fake')
+      expect(exitCode).not.toBe(0)
+      expect(stderr).toMatch(/missing required argument|kinds/i)
     })
   })
 

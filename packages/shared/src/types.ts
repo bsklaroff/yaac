@@ -8,6 +8,21 @@ export const AGENT_TOOLS: readonly AgentTool[] = ['claude', 'codex', 'opencode',
 export type ToolAuthKind = 'api-key' | 'oauth'
 
 /**
+ * Credential kinds `yaac auth fake` can seed. Each seeds a proxy-placeholder
+ * credential (never a real secret) so a session authenticates through a parent
+ * yaac's MITM proxy — the yaac-in-yaac case (see lib/project/fake-auth.ts).
+ * Single source of truth shared by the CLI's `Argument.choices()` and the
+ * server route's zod validator, which must stay in lockstep.
+ */
+export const FAKE_AUTH_KINDS = [
+  'claude-oauth',
+  'opencode-openrouter',
+  'pi-openrouter',
+  'github',
+] as const
+export type FakeAuthKind = (typeof FAKE_AUTH_KINDS)[number]
+
+/**
  * Backend an opencode session authenticates against. Both are api-key only
  * and both are first-class opencode providers (registered in models.dev), so
  * the only runtime difference is which env var carries the key and which host

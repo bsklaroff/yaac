@@ -22,14 +22,14 @@ import { clusterCheck } from '#commands/cluster-check'
 import { clusterDelete } from '#commands/cluster-delete'
 import { clusterSetup } from '#commands/cluster-setup'
 import { configEditProject, configEditDockerfile, configEditUserDockerfile } from '#commands/config-edit'
-import { authFake, FAKE_AUTH_KINDS } from '#commands/auth-fake'
+import { authFake } from '#commands/auth-fake'
 import { authTokenCreate, authTokenList, authTokenRevoke } from '#commands/auth-token'
 import { remoteSet, remoteUnset, remoteOn, remoteOff, remoteStatus } from '#commands/remote'
 import { runAuthDaemon, startAuthDaemon, stopAuthDaemon, statusAuthDaemon } from '@yaac/auth-daemon/run'
 import { runServer, startServer, stopServer, restartServer, serverLogs, openWebapp } from '@yaac/server/cli'
 import { DEFAULT_SERVER_PORT } from '@yaac/shared/server-port'
 import { ensureRootfulPodmanHost } from '@yaac/server/lib/container/runtime'
-import type { AgentTool } from '@yaac/shared/types'
+import { FAKE_AUTH_KINDS, type AgentTool, type FakeAuthKind } from '@yaac/shared/types'
 import type { SessionMonitorOptions } from '#commands/session-monitor'
 
 // On Linux, yaac drives the rootful podman engine (CONTAINER_HOST). Set it once
@@ -341,10 +341,14 @@ auth
   .command('fake')
   .description('Seed fake credentials so sessions authenticate via a parent proxy (local/dev + yaac-in-yaac)')
   .addArgument(
-    new Argument('<kind>', 'Credential kind to seed (claude-oauth or github)')
-      .choices([...FAKE_AUTH_KINDS]),
+    new Argument(
+      '<kinds...>',
+      'Credential kinds to seed (claude-oauth, opencode-openrouter, pi-openrouter, github); pass one or more',
+    ).choices([...FAKE_AUTH_KINDS]),
   )
-  .action(authFake)
+  .action(async (kinds: FakeAuthKind[]) => {
+    await authFake(kinds)
+  })
 
 const authDaemon = auth
   .command('server')

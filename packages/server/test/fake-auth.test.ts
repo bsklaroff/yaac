@@ -4,10 +4,17 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import {
   buildFakeClaudeOAuthBundle,
   seedFakeClaudeOAuth,
+  seedFakeOpencodeOpenrouter,
+  seedFakePiOpenrouter,
   seedFakeGithubCredential,
+  seedFakeAuth,
   FAKE_GITHUB_PATTERN,
 } from '#lib/project/fake-auth'
-import { loadClaudeCredentialsFile } from '@yaac/shared/tool-auth'
+import {
+  loadClaudeCredentialsFile,
+  loadOpencodeCredentialsFile,
+  loadPiCredentialsFile,
+} from '@yaac/shared/tool-auth'
 import { loadCredentials, saveCredentials } from '#lib/project/credentials'
 import {
   projectDir,
@@ -17,6 +24,7 @@ import {
 import {
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_REFRESH_TOKEN,
+  PLACEHOLDER_API_KEY,
   PLACEHOLDER_GH_TOKEN,
 } from '@yaac/shared/tool-auth'
 
@@ -65,6 +73,37 @@ describe('fake-auth', () => {
       const raw = await fs.readFile(projectClaudeCredentialsFile('demo'), 'utf8')
       const parsed = JSON.parse(raw) as { claudeAiOauth: { accessToken: string } }
       expect(parsed.claudeAiOauth.accessToken).toBe(PLACEHOLDER_ACCESS_TOKEN)
+    })
+  })
+
+  describe('seedFakeOpencodeOpenrouter', () => {
+    it('seeds a placeholder openrouter api-key so the credential chains through a parent', async () => {
+      await seedFakeOpencodeOpenrouter()
+      const creds = await loadOpencodeCredentialsFile()
+      expect(creds?.kind).toBe('api-key')
+      expect(creds?.provider).toBe('openrouter')
+      expect(creds?.apiKey).toBe(PLACEHOLDER_API_KEY)
+      expect(typeof creds?.savedAt).toBe('string')
+    })
+  })
+
+  describe('seedFakePiOpenrouter', () => {
+    it('seeds a placeholder openrouter api-key so the credential chains through a parent', async () => {
+      await seedFakePiOpenrouter()
+      const creds = await loadPiCredentialsFile()
+      expect(creds?.kind).toBe('api-key')
+      expect(creds?.provider).toBe('openrouter')
+      expect(creds?.apiKey).toBe(PLACEHOLDER_API_KEY)
+      expect(typeof creds?.savedAt).toBe('string')
+    })
+  })
+
+  describe('seedFakeAuth', () => {
+    it('dispatches each kind to its seeder', async () => {
+      await seedFakeAuth('claude-oauth')
+      await seedFakeAuth('pi-openrouter')
+      expect((await loadClaudeCredentialsFile())?.kind).toBe('oauth')
+      expect((await loadPiCredentialsFile())?.apiKey).toBe(PLACEHOLDER_API_KEY)
     })
   })
 

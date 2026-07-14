@@ -7,9 +7,9 @@ import { requestPlanUsageRefresh } from '#plan-usage'
 import { authAgentHub } from '#auth-agent'
 import { addEntry, removeEntryChecked, replaceEntries } from '#lib/project/credentials'
 import { persistToolAuthPayload } from '@yaac/shared/tool-auth'
-import { seedFakeClaudeOAuth, seedFakeGithubCredential } from '#lib/project/fake-auth'
+import { seedFakeAuth } from '#lib/project/fake-auth'
 import { proxyClient } from '#lib/container/proxy-client'
-import { claudeOAuthBundleSchema, codexOAuthBundleSchema } from '@yaac/shared/types'
+import { claudeOAuthBundleSchema, codexOAuthBundleSchema, FAKE_AUTH_KINDS } from '@yaac/shared/types'
 
 const httpsCredentialSchema = z.object({
   kind: z.literal('https'),
@@ -50,13 +50,13 @@ export const authApp = new Hono()
   )
   .post(
     '/fake',
-    zv('json', z.object({ kind: z.enum(['claude-oauth', 'github']) })),
+    zv('json', z.object({ kinds: z.array(z.enum(FAKE_AUTH_KINDS)).min(1) })),
     async (c) => {
-      const { kind } = c.req.valid('json')
-      if (kind === 'claude-oauth') {
-        await seedFakeClaudeOAuth()
-      } else {
-        await seedFakeGithubCredential()
+      const { kinds } = c.req.valid('json')
+      // De-dupe so `auth fake github github` seeds once; order is irrelevant
+      // (each seed is independent).
+      for (const kind of new Set(kinds)) {
+        await seedFakeAuth(kind)
       }
       return c.body(null, 204)
     },

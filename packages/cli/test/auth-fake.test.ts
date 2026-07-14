@@ -27,18 +27,28 @@ describe('authFake', () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
   })
 
-  it('posts kind "claude-oauth" to the server', async () => {
+  it('posts a single kind as a one-element array', async () => {
     const post = vi.fn().mockResolvedValue(undefined)
     mockClient(post)
-    await authFake('claude-oauth')
-    expect(post).toHaveBeenCalledWith({ json: { kind: 'claude-oauth' } })
+    await authFake(['claude-oauth'])
+    expect(post).toHaveBeenCalledWith({ json: { kinds: ['claude-oauth'] } })
   })
 
-  it('posts kind "github" to the server', async () => {
+  it('posts every kind in one request', async () => {
     const post = vi.fn().mockResolvedValue(undefined)
     mockClient(post)
-    await authFake('github')
-    expect(post).toHaveBeenCalledWith({ json: { kind: 'github' } })
+    await authFake(['claude-oauth', 'opencode-openrouter', 'pi-openrouter', 'github'])
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(post).toHaveBeenCalledWith({
+      json: { kinds: ['claude-oauth', 'opencode-openrouter', 'pi-openrouter', 'github'] },
+    })
+  })
+
+  it('de-dupes repeated kinds before posting', async () => {
+    const post = vi.fn().mockResolvedValue(undefined)
+    mockClient(post)
+    await authFake(['github', 'github', 'claude-oauth'])
+    expect(post).toHaveBeenCalledWith({ json: { kinds: ['github', 'claude-oauth'] } })
   })
 
   it('throws when the server returns an error response', async () => {
@@ -46,6 +56,6 @@ describe('authFake', () => {
     // propagate (no per-call ok check).
     const post = vi.fn().mockRejectedValue(new ServerError('INTERNAL', 'server error'))
     mockClient(post)
-    await expect(authFake('github')).rejects.toThrow('server error')
+    await expect(authFake(['github'])).rejects.toThrow('server error')
   })
 })

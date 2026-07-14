@@ -1,12 +1,15 @@
 import {
   saveClaudeOAuthBundle,
+  saveOpencodeCredentialsFile,
+  savePiCredentialsFile,
   fanOutClaudePlaceholders,
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_REFRESH_TOKEN,
+  PLACEHOLDER_API_KEY,
   PLACEHOLDER_GH_TOKEN,
 } from '@yaac/shared/tool-auth'
 import { addEntry } from '#lib/project/credentials'
-import type { ClaudeOAuthBundle } from '@yaac/shared/types'
+import type { ClaudeOAuthBundle, FakeAuthKind } from '@yaac/shared/types'
 
 /** Credential pattern seeded by `auth fake github`. */
 export const FAKE_GITHUB_PATTERN = 'github.com/*'
@@ -55,6 +58,13 @@ export async function seedFakeClaudeOAuth(): Promise<void> {
   await fanOutClaudePlaceholders(bundle)
 }
 
+// NOTE: no `codex-oauth` fake kind. Codex sends a `ChatGPT-Account-Id` header
+// the proxy passes through unchanged, so a fake bundle's sentinel account id
+// would reach OpenAI alongside a parent's real access token (a mismatch) —
+// codex can't chain through a parent proxy the way the OAuth-token-only tools
+// (claude) and api-key tools (opencode/pi) can. Left out until the proxy also
+// owns the account id.
+
 /**
  * Seed a fake HTTPS GitHub credential (`github.com/*`) into the data dir.
  * The token is the proxy placeholder (`yaac-ph-gh-token`), not a random
@@ -67,4 +77,49 @@ export async function seedFakeClaudeOAuth(): Promise<void> {
  */
 export async function seedFakeGithubCredential(): Promise<void> {
   await addEntry({ kind: 'https', pattern: FAKE_GITHUB_PATTERN, token: PLACEHOLDER_GH_TOKEN })
+}
+
+/**
+ * Seed a fake OpenCode OpenRouter api-key credential. opencode is api-key only:
+ * the stored key is the proxy placeholder (`yaac-ph-api-key`), which a parent
+ * yaac's MITM proxy swaps for the real OpenRouter key on `openrouter.ai`. The
+ * inner swap (placeholder → the seeded placeholder) is a no-op that keeps the
+ * sentinel intact so the outer proxy does the real substitution — the same
+ * chaining trick as the OAuth bundles above.
+ */
+export async function seedFakeOpencodeOpenrouter(): Promise<void> {
+  await saveOpencodeCredentialsFile({
+    kind: 'api-key',
+    provider: 'openrouter',
+    savedAt: new Date().toISOString(),
+    apiKey: PLACEHOLDER_API_KEY,
+  })
+}
+
+/**
+ * Seed a fake Pi OpenRouter api-key credential. Same shape and chaining trick
+ * as `seedFakeOpencodeOpenrouter` — pi reads OpenRouter's key from
+ * `OPENROUTER_API_KEY` and the proxy swaps the placeholder on `openrouter.ai`.
+ */
+export async function seedFakePiOpenrouter(): Promise<void> {
+  await savePiCredentialsFile({
+    kind: 'api-key',
+    provider: 'openrouter',
+    savedAt: new Date().toISOString(),
+    apiKey: PLACEHOLDER_API_KEY,
+  })
+}
+
+/** Seed one fake credential by its `yaac auth fake` kind. */
+export async function seedFakeAuth(kind: FakeAuthKind): Promise<void> {
+  switch (kind) {
+    case 'claude-oauth':
+      return seedFakeClaudeOAuth()
+    case 'opencode-openrouter':
+      return seedFakeOpencodeOpenrouter()
+    case 'pi-openrouter':
+      return seedFakePiOpenrouter()
+    case 'github':
+      return seedFakeGithubCredential()
+  }
 }
