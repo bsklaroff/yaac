@@ -2,6 +2,7 @@ import type { JSX } from 'react'
 import clsx from 'clsx'
 import { NewProjectButton } from '#components/NewProjectButton'
 import { SettingsButton } from '#components/SettingsButton'
+import { WindowControls } from '#components/WindowControls'
 import { isElectron } from '#lib/platform'
 import type { ProjectSummary } from '@yaac/shared/types'
 
@@ -42,10 +43,16 @@ export function ProjectRail({
   onSelect: (slug: string) => void
 }): JSX.Element {
   return (
-    <div className={clsx('flex w-10 shrink-0 flex-col items-center gap-2 pb-3', isElectron() ? 'pt-2' : 'pt-3')}>
-      {/* Electron: a draggable band over the floating traffic lights, which
-          also pushes the first project chip clear of them. */}
-      {isElectron() && <div className="titlebar-drag h-6 w-full shrink-0" aria-hidden="true" />}
+    <div className={clsx(
+      // This 64px rail plus the 8px gap to the sidebar read as one region (the
+      // sidebar's border is what bounds it), so the chips are centered in that
+      // whole 72px region, not this column: pl-2 nudges them right to its
+      // center. In Electron the custom window controls sit at the top, centered
+      // the same way, so they line up with the chips.
+      'flex w-16 shrink-0 flex-col items-center gap-2 pb-3 pl-2',
+      isElectron() ? 'pt-2' : 'pt-3',
+    )}>
+      {isElectron() && <WindowControls className="h-5" />}
       {projects.map((p) => {
         const active = p.slug === activeProjectSlug
         const color = projectColor(p.slug)
@@ -59,14 +66,16 @@ export function ProjectRail({
           >
             <span
               className={clsx(
-                'absolute left-0 -ml-1.5 w-0.5 rounded-r-full bg-text transition-all',
-                active ? 'h-5' : 'h-0 group-hover:h-3',
+                // Flush to the window's left edge (the chip sits ~16px in after
+                // the region centering, so pull the bar back the same amount).
+                'absolute left-0 -ml-4 w-0.5 rounded-r-full bg-text transition-all',
+                active ? 'h-6' : 'h-0 group-hover:h-4',
               )}
             />
             <span
               className={clsx(
-                'flex h-7 w-7 items-center justify-center text-[13px] font-semibold transition-all',
-                active ? 'rounded-lg' : 'rounded-2xl group-hover:rounded-lg',
+                'flex h-10 w-10 items-center justify-center text-[16px] font-semibold transition-all',
+                active ? 'rounded-xl' : 'rounded-[20px] group-hover:rounded-xl',
               )}
               // Quiet identity treatment: a dark tint of the project hue for
               // the fill, a light pastel of it for the initial — active just

@@ -1,6 +1,6 @@
 import { defineConfig } from 'tsup'
 
-export default defineConfig({
+export default defineConfig([{
   entry: { main: 'src/main.ts' },
   format: 'esm',
   platform: 'node',
@@ -29,4 +29,15 @@ export default defineConfig({
   banner: {
     js: "import { createRequire as __banner_createRequire } from 'node:module'; const require = __banner_createRequire(import.meta.url);",
   },
-})
+}, {
+  // The preload runs sandboxed, where only a CommonJS script may use
+  // contextBridge/ipcRenderer — hence CJS with a .cjs extension (the package
+  // is type:module). `clean` is off so it doesn't wipe the main bundle the
+  // first config just built.
+  entry: { preload: 'src/preload.ts' },
+  format: 'cjs',
+  platform: 'node',
+  outExtension: () => ({ js: '.cjs' }),
+  clean: false,
+  external: ['electron'],
+}])

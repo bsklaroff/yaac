@@ -13,8 +13,9 @@
  * CLI; never ours to stop).
  */
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
-  app, BrowserWindow, dialog, Menu, nativeImage, nativeTheme, Notification, screen, shell, Tray,
+  app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, screen, shell, Tray,
 } from 'electron'
 import WebSocket from 'ws'
 import { resolveServerTarget } from '@yaac/shared/server-client'
@@ -66,21 +67,23 @@ async function createWindow(): Promise<BrowserWindow> {
     // Native backing matched to the OS appearance so resizes don't flash
     // the opposite shell color at the edges.
     backgroundColor: backgroundColorFor(nativeTheme.shouldUseDarkColors),
-    // No native title bar; the floating traffic lights sit over the SPA's
-    // top row, which reserves drag regions for them (see App.tsx).
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 13, y: 7 },
-    // The renderer is pure web content from the server origin — no preload,
-    // no Node, fully sandboxed.
+    // Hide the title bar AND the native traffic lights (setWindowButtonVisibility
+    // below) — the SPA draws its own monochrome controls (WindowControls.tsx)
+    // and reserves draggable strips (.titlebar-drag) so the window still moves.
+    titleBarStyle: 'hidden',
+    // The renderer is web content from the server origin — no Node, sandboxed;
+    // the preload exposes only the minimal window-control bridge.
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      preload: path.join(path.dirname(fileURLToPath(import.meta.url)), 'preload.cjs'),
       // Let the attention chime play without a prior click (it fires on a
       // background event — a session flipping to waiting), not a user gesture.
       autoplayPolicy: 'no-user-gesture-required',
     },
   })
+  if (process.platform === 'darwin') w.setWindowButtonVisibility(false)
   w.once('ready-to-show', () => w.show())
   const onThemeChange = (): void => {
     w.setBackgroundColor(backgroundColorFor(nativeTheme.shouldUseDarkColors))
@@ -211,6 +214,15 @@ function openEventsSocket(url: string, bearer: string): EventsSocket {
     close: () => socket.close(),
   }
 }
+
+// The custom window controls (WindowControls.tsx) drive the window through the
+// preload bridge. Registered once, they act on whichever window is current.
+ipcMain.on('window:minimize', () => win?.minimize())
+ipcMain.on('window:toggle-maximize', () => { if (win?.isMaximized()) win.unmaximize(); else win?.maximize() })
+ipcMain.on('window:close', () => win?.close())
+ipcMain.on('window:open-external', (_e, url: unknown) => {
+  if (typeof url === 'string' && /^https?:/.test(url)) void shell.openExternal(url)
+})
 
 async function boot(): Promise<void> {
   // Role-based menus: the app presents under its own name and Cmd-C/V/
