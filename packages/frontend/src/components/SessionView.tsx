@@ -769,6 +769,9 @@ export function SessionView({
                     key={`${key}:${terminalNonces[id] ?? 0}`}
                     sessionId={id}
                     target={target}
+                    // A positioned pane (has `style`) is on-screen; the rest are
+                    // kept-alive but hidden. Drives the terminal's WebGL context.
+                    visible={!!style}
                     focusKey={id === sid && target === focusTarget ? focusNonce : undefined}
                   />
                 </div>

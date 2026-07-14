@@ -12,7 +12,7 @@
  * scale, and scans pixel rows inside the block for seams: rows containing no
  * red at all. The DOM renderer runs as the control — expected to seam at at
  * least one fractional DPR, proving the harness can see the bug — and the
- * WebGL renderer (via the real enableWebglRenderer, bundled from source)
+ * WebGL renderer (via the real createWebglController, bundled from source)
  * must render zero seam rows at every DPR.
  *
  * Run: node test-playwright-scripts/xterm-webgl-row-gaps-test.js
@@ -28,7 +28,13 @@ import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const XTERM_DIR = path.join(ROOT, 'node_modules/@xterm/xterm')
+// pnpm's strict layout doesn't hoist @xterm/xterm to the repo root — it's a
+// frontend dep — so probe the package-local symlink too.
+const XTERM_DIR = [
+  path.join(ROOT, 'node_modules/@xterm/xterm'),
+  path.join(ROOT, 'packages/frontend/node_modules/@xterm/xterm'),
+].find((d) => fs.existsSync(path.join(d, 'css/xterm.css')))
+if (!XTERM_DIR) throw new Error('@xterm/xterm not found — run pnpm install')
 
 const DPRS = [1, 1.25, 1.5, 2]
 const BLOCK_ROWS = 20
@@ -101,7 +107,11 @@ async function measureSeams(browser, bundleFile, dpr, useWebgl) {
     })
     window.term = term
     term.open(document.getElementById('t'))
-    return wantWebgl ? window.webglr.enableWebglRenderer(term) : null
+    if (!wantWebgl) return null
+    window.webglr.createWebglController(term).setVisible(true)
+    // The WebGL renderer appends a <canvas> to the screen element; the DOM
+    // renderer uses a .xterm-rows div instead. A canvas means WebGL activated.
+    return document.querySelector('.xterm-screen canvas') !== null
   }, useWebgl)
   if (useWebgl && !webglLoaded) {
     await context.close()

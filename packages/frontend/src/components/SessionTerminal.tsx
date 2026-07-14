@@ -8,7 +8,7 @@ import { clipboardKeyAction } from '#lib/clipboard'
 import { LoadingIcon } from '#lib/icons'
 import { patchForcedSelection, patchKeepSelection } from '#lib/selection'
 import { CYCLE_IDS, matchShortcut } from '#lib/shortcuts'
-import { enableWebglRenderer } from '#lib/webgl-renderer'
+import { createWebglController, type WebglController } from '#lib/webgl-renderer'
 import { resolveEffectiveTheme } from '#lib/theme'
 import { terminalTheme } from '#lib/terminalTheme'
 import { useUiStore } from '#store'
@@ -26,11 +26,17 @@ const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(naviga
 export function SessionTerminal({
   sessionId,
   target = 'agent',
+  visible = true,
   focusKey,
 }: {
   sessionId: string
   /** /pty/attach target: 'agent', 'shell:<name>', or 'window:@<id>'. */
   target?: string
+  /** Whether this pane is on-screen. Drives the WebGL renderer's lifetime:
+   *  hidden (kept-alive) panes drop their WebGL context so a page full of
+   *  terminals can't exhaust the browser's context budget (see
+   *  createWebglController). Defaults to visible for standalone use. */
+  visible?: boolean
   /** When this changes to a defined value, drop keyboard focus into the
    *  terminal. The caller bumps it on selecting/opening the session; leaving
    *  it undefined (panes that shouldn't grab focus) is a no-op. */
@@ -38,6 +44,11 @@ export function SessionTerminal({
 }): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<XTerm | null>(null)
+  const webglRef = useRef<WebglController | null>(null)
+  // Read the live visibility inside the mount effect (which is keyed on the
+  // session/target, not visibility) without staling its closure.
+  const visibleRef = useRef(visible)
+  visibleRef.current = visible
   // Re-render the terminal's palette when the user switches theme (below).
   const themePref = useUiStore((s) => s.themePref)
   // Invisible until the first attach settles: tmux redraws the whole screen
@@ -101,9 +112,11 @@ export function SessionTerminal({
     // The DOM renderer's per-row CSS-pixel rounding leaves hairline gaps
     // between rows at fractional devicePixelRatios, slicing up solid-colored
     // output; the WebGL renderer tiles rows exactly on the device-pixel grid.
-    if (!enableWebglRenderer(term)) {
-      console.warn('WebGL2 unavailable: DOM renderer may show hairline gaps between rows')
-    }
+    // Its context is bound to visibility (see createWebglController): enable it
+    // now only if this pane mounted on-screen; the effect below tracks flips.
+    const webgl = createWebglController(term)
+    webglRef.current = webgl
+    webgl.setVisible(visibleRef.current)
     // tmux runs with `mouse on`, so stock xterm reports a plain drag to tmux
     // as mouse events and only selects text locally behind a modifier key.
     // Invert that: plain drag selects (copy/paste just works), Alt+drag
@@ -270,10 +283,22 @@ export function SessionTerminal({
         }
         ws.close()
       }
+      // Free the WebGL context before the terminal so a late context-loss
+      // callback can't touch a disposed terminal.
+      webgl.dispose()
+      webglRef.current = null
       term.dispose()
       termRef.current = null
     }
   }, [sessionId, target])
+
+  // Bind the WebGL context to visibility: a pane going off-screen releases its
+  // context (freeing a slot in the browser's limited pool), and coming back
+  // re-acquires one and repaints. The mount effect sets the initial state; this
+  // tracks later flips.
+  useEffect(() => {
+    webglRef.current?.setVisible(visible)
+  }, [visible])
 
   // Move keyboard focus into the terminal when the session is selected/opened.
   // This focuses xterm's hidden textarea only — it deliberately does NOT
