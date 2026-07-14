@@ -22,6 +22,18 @@ function splitPath(path: string): { dir: string; base: string } {
   return i === -1 ? { dir: '', base: path } : { dir: path.slice(0, i + 1), base: path.slice(i + 1) }
 }
 
+/** Render a path as a faint directory prefix + a basename; `emphasis="dim"`
+ *  mutes the basename (used for the "from" side of a rename). */
+function PathLabel({ path, emphasis = 'text' }: { path: string; emphasis?: 'text' | 'dim' }): JSX.Element {
+  const { dir, base } = splitPath(path)
+  return (
+    <>
+      {dir && <span className="text-text-faint">{dir}</span>}
+      <span className={emphasis === 'dim' ? 'text-text-dim' : 'text-text'}>{base}</span>
+    </>
+  )
+}
+
 /**
  * The session review pane: what the agent changed in its worktree since it
  * forked from the base branch. Files are an accordion — click one to expand
@@ -123,12 +135,13 @@ function FileAccordion({
   onToggle: () => void
 }): JSX.Element {
   const meta = STATUS_META[file.status]
-  const { dir, base } = splitPath(file.path)
+  // Renames/copies show `old → new`; git only sets oldPath for those.
+  const renamedFrom = file.oldPath && file.oldPath !== file.path ? file.oldPath : undefined
   return (
     <div className="border-b border-hairline">
       <button
         onClick={onToggle}
-        title={file.path}
+        title={renamedFrom ? `${renamedFrom} → ${file.path}` : file.path}
         aria-expanded={open}
         className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left text-[11px] text-text-dim
           transition hover:bg-surface-2"
@@ -136,8 +149,13 @@ function FileAccordion({
         <ChevronIcon size={12} className={clsx('shrink-0 text-text-faint transition-transform', open && 'rotate-90')} />
         <span className={clsx('w-2 shrink-0 text-center font-mono font-semibold', meta.className)}>{meta.letter}</span>
         <span className="min-w-0 flex-1 truncate">
-          {dir && <span className="text-text-faint">{dir}</span>}
-          <span className="text-text">{base}</span>
+          {renamedFrom && (
+            <>
+              <PathLabel path={renamedFrom} emphasis="dim" />
+              <span className="text-text-faint"> → </span>
+            </>
+          )}
+          <PathLabel path={file.path} />
         </span>
         {!file.binary && (
           <span className="shrink-0 font-mono text-[10px] text-text-faint">

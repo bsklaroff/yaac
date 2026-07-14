@@ -422,6 +422,9 @@ export interface SessionChange {
   deletions: number
   /** Git reported the file as binary (no line counts / textual diff). */
   binary: boolean
+  /** The pre-rename path, set only for `renamed`/`copied` files (git's "from"
+   *  side); `path` is the "to" side. */
+  oldPath?: string
 }
 
 /**

@@ -85,17 +85,24 @@ export function parseNumstat(text: string): Map<string, { additions: number; del
   return out
 }
 
-/** Parse `git diff --name-status` into {path,status} (rename → new path). */
-export function parseNameStatus(text: string): { path: string; status: ChangeStatus }[] {
-  const out: { path: string; status: ChangeStatus }[] = []
+/** A name-status row: the new path, its status, and (for R/C) the old path. */
+type NameStatusEntry = { path: string; status: ChangeStatus; oldPath?: string }
+
+/** Parse `git diff --name-status` into {path,status,oldPath?} (rename → new
+ *  path; oldPath is the "from" side of an R/C row). */
+export function parseNameStatus(text: string): NameStatusEntry[] {
+  const out: NameStatusEntry[] = []
   for (const line of text.split('\n')) {
     if (!line.trim()) continue
     const parts = line.split('\t')
     const code = parts[0]
     // R/C rows are `R100\told\tnew`; everything else `M\tpath`.
-    const path = (code[0] === 'R' || code[0] === 'C') ? parts[2] : parts[1]
+    const renameOrCopy = code[0] === 'R' || code[0] === 'C'
+    const path = renameOrCopy ? parts[2] : parts[1]
     if (!path) continue
-    out.push({ path, status: statusFromCode(code) })
+    const entry: NameStatusEntry = { path, status: statusFromCode(code) }
+    if (renameOrCopy && parts[1]) entry.oldPath = parts[1]
+    out.push(entry)
   }
   return out
 }
@@ -122,9 +129,11 @@ export function parseChangesOutput(raw: string, maxDiffBytes = MAX_DIFF_BYTES): 
   const nameStatus = parseNameStatus(section(raw, `${M_NAMESTATUS}\n`, M_DIFF))
   const rawDiff = section(raw, `${M_DIFF}\n`).replace(/^\n/, '')
 
-  const files: SessionChange[] = nameStatus.map(({ path, status }) => {
+  const files: SessionChange[] = nameStatus.map(({ path, status, oldPath }) => {
     const counts = numstat.get(path) ?? { additions: 0, deletions: 0, binary: false }
-    return { path, status, additions: counts.additions, deletions: counts.deletions, binary: counts.binary }
+    const change: SessionChange = { path, status, additions: counts.additions, deletions: counts.deletions, binary: counts.binary }
+    if (oldPath) change.oldPath = oldPath
+    return change
   })
 
   const truncated = rawDiff.length > maxDiffBytes

@@ -56,7 +56,15 @@ describe('parseNameStatus', () => {
       { path: 'src/new.ts', status: 'added' },
       { path: 'src/app.ts', status: 'modified' },
       { path: 'src/gone.ts', status: 'deleted' },
-      { path: 'renamed.ts', status: 'renamed' },
+      { path: 'renamed.ts', status: 'renamed', oldPath: 'old.ts' },
+    ])
+  })
+  it('captures the from-path of renames and copies, not other statuses', () => {
+    const out = parseNameStatus('R096\tsrc/old.ts\tsrc/new.ts\nC075\tlib/a.ts\tlib/b.ts\nM\tsrc/app.ts\n')
+    expect(out).toEqual([
+      { path: 'src/new.ts', status: 'renamed', oldPath: 'src/old.ts' },
+      { path: 'lib/b.ts', status: 'copied', oldPath: 'lib/a.ts' },
+      { path: 'src/app.ts', status: 'modified' },
     ])
   })
 })
@@ -95,6 +103,21 @@ describe('parseChangesOutput', () => {
     expect(out.diff.length).toBe(20)
     // The file list is still complete.
     expect(out.files).toHaveLength(2)
+  })
+
+  it('carries a rename through with its old path and counts', () => {
+    const renamed = [
+      'BASE abc123def',
+      '@@NUMSTAT@@',
+      '3\t1\tsrc/{old => new}/x.ts',
+      '@@NAMESTATUS@@',
+      'R096\tsrc/old/x.ts\tsrc/new/x.ts',
+      '@@DIFF@@',
+    ].join('\n')
+    const out = parseChangesOutput(renamed)
+    expect(out.files).toEqual([
+      { path: 'src/new/x.ts', status: 'renamed', additions: 3, deletions: 1, binary: false, oldPath: 'src/old/x.ts' },
+    ])
   })
 
   it('is empty-safe when nothing changed', () => {

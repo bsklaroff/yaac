@@ -68,6 +68,22 @@ describe('SessionChanges', () => {
     expect(screen.queryByText('new1')).toBeNull() // collapsed
   })
 
+  it('renders a renamed file as old → new with the old path in its title', async () => {
+    mock.mockResolvedValue({
+      base: 'abc',
+      files: [
+        { path: 'src/new-name.ts', status: 'renamed', additions: 0, deletions: 0, binary: false, oldPath: 'src/old-name.ts' },
+      ],
+      diff: '',
+      truncated: false,
+    })
+    renderPane()
+    // The row title spells out the full rename; both basenames render inline.
+    await waitFor(() => expect(screen.getByTitle('src/old-name.ts → src/new-name.ts')).toBeTruthy())
+    expect(screen.getByText('old-name.ts')).toBeTruthy()
+    expect(screen.getByText('new-name.ts')).toBeTruthy()
+  })
+
   it('shows an empty state when nothing changed', async () => {
     mock.mockResolvedValue({ base: 'abc', files: [], diff: '', truncated: false })
     renderPane()
