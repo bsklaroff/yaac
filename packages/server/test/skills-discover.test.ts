@@ -12,6 +12,29 @@ async function writeSkill(dir: string, contents: string): Promise<void> {
   await fs.writeFile(path.join(dir, 'SKILL.md'), contents)
 }
 
+async function writeFile(file: string, contents: string): Promise<void> {
+  await fs.mkdir(path.dirname(file), { recursive: true })
+  await fs.writeFile(file, contents)
+}
+
+/** Seed a Claude settings.json's `enabledPlugins` map so its plugins pass the
+ *  installed/enabled gate. Defaults to the project's user-tier settings. */
+async function seedClaudeEnabled(
+  s: string,
+  enabledPlugins: Record<string, boolean>,
+  file = path.join(claudeDir(s), 'settings.json'),
+): Promise<void> {
+  await writeFile(file, JSON.stringify({ enabledPlugins }))
+}
+
+/** Seed a Codex config.toml `[plugins]` table entry for a `<plugin>@<mkt>` id. */
+async function seedCodexPlugins(s: string, entries: Record<string, { enabled?: boolean }>): Promise<void> {
+  const body = Object.entries(entries)
+    .map(([id, cfg]) => `[plugins."${id}"]\n${cfg.enabled === undefined ? '' : `enabled = ${cfg.enabled}\n`}`)
+    .join('\n')
+  await writeFile(path.join(codexDir(s), 'config.toml'), body)
+}
+
 let tmp: string
 
 beforeEach(async () => {
@@ -24,11 +47,12 @@ beforeEach(async () => {
     path.join(claude, 'skills', 'push-branch'),
     '---\nname: push-branch\ndescription: Push to main\ndisable-model-invocation: true\n---\nbody-personal\n',
   )
-  // Plugin (nested marketplace tree)
+  // Plugin (nested marketplace tree), enabled in settings so it passes the gate
   await writeSkill(
     path.join(claude, 'plugins', 'marketplaces', 'off', 'plugins', 'code-review', 'skills', 'review'),
     '---\ndescription: Review a PR\nallowed-tools: [Read, Grep]\n---\nbody-plugin\n',
   )
+  await seedClaudeEnabled(slug, { 'code-review@off': true, 'imessage@off': true })
   // Project (repo checkout)
   await writeSkill(
     path.join(repoDir(slug), '.claude', 'skills', 'deploy'),
@@ -94,7 +118,41 @@ describe('getProjectSkills', () => {
     expect(skills.find((s) => s.name === 'deploy')?.shadowedBy).toBeUndefined()
   })
 
-  it('returns nothing for non-claude tools (not yet wired)', async () => {
+  it('excludes a plugin present in the marketplace clone but not enabled', async () => {
+    // `wallaby@off` is cloned to disk but absent from enabledPlugins.
+    await writeSkill(
+      path.join(claudeDir(slug), 'plugins', 'marketplaces', 'off', 'plugins', 'wallaby', 'skills', 'trace'),
+      '---\nname: trace\ndescription: uninstalled plugin\n---\nb',
+    )
+    const { skills } = await getProjectSkills('claude', slug)
+    expect(skills.find((s) => s.name === 'trace')).toBeUndefined()
+    // The enabled code-review plugin still shows.
+    expect(skills.find((s) => s.source === 'plugin' && s.name === 'review')).toBeDefined()
+  })
+
+  it('excludes a plugin explicitly disabled (enabledPlugins=false)', async () => {
+    await seedClaudeEnabled(slug, { 'code-review@off': false })
+    const { skills } = await getProjectSkills('claude', slug)
+    expect(skills.find((s) => s.source === 'plugin')).toBeUndefined()
+  })
+
+  it('enables a plugin from the project/local settings tiers, not just user', async () => {
+    // Only user-tier code-review is enabled by beforeEach; enable a second
+    // plugin via the repo-local settings.local.json tier.
+    await writeSkill(
+      path.join(claudeDir(slug), 'plugins', 'marketplaces', 'off', 'plugins', 'ripgrep', 'skills', 'search'),
+      '---\nname: search\ndescription: local-tier enabled\n---\nb',
+    )
+    await seedClaudeEnabled(
+      slug,
+      { 'ripgrep@off': true },
+      path.join(repoDir(slug), '.claude', 'settings.local.json'),
+    )
+    const { skills } = await getProjectSkills('claude', slug)
+    expect(skills.find((s) => s.name === 'search')).toBeDefined()
+  })
+
+  it('returns nothing for non-claude tools when nothing is set up', async () => {
     expect((await getProjectSkills('codex', slug)).skills).toEqual([])
   })
 
@@ -131,8 +189,12 @@ describe('getProjectSkills (codex)', () => {
       '---\nname: skill-creator\ndescription: bundled\n---\nb')
     await writeSkill(path.join(codexDir(slug), '.tmp', 'plugins', 'plugins', 'sentry', 'skills', 'sentry'),
       '---\nname: sentry\ndescription: cx plugin\n---\nb')
+    // A catalog plugin cloned to disk but never installed → excluded.
+    await writeSkill(path.join(codexDir(slug), '.tmp', 'plugins', 'plugins', 'stripe', 'skills', 'stripe'),
+      '---\nname: stripe\ndescription: cx uninstalled\n---\nb')
     await writeSkill(path.join(repoDir(slug), '.agents', 'skills', 'deploy'),
       '---\nname: deploy\ndescription: cx project\n---\nb')
+    await seedCodexPlugins(slug, { 'sentry@openai-curated': {} })
 
     const { skills } = await getProjectSkills('codex', slug)
     expect(skills.map((s) => `${s.source}:${s.name}`)).toEqual([
@@ -141,7 +203,17 @@ describe('getProjectSkills (codex)', () => {
       'project:deploy',
     ])
     expect(skills.find((s) => s.name === 'skill-creator')).toBeUndefined()
+    expect(skills.find((s) => s.name === 'stripe')).toBeUndefined() // not in config.toml
     expect(skills.find((s) => s.source === 'plugin')?.sourceLabel).toBe('sentry')
+  })
+
+  it('excludes a codex plugin whose config.toml entry is disabled', async () => {
+    await writeSkill(path.join(codexDir(slug), '.tmp', 'plugins', 'plugins', 'sentry', 'skills', 'sentry'),
+      '---\nname: sentry\ndescription: cx plugin\n---\nb')
+    await seedCodexPlugins(slug, { 'sentry@openai-curated': { enabled: false } })
+
+    const { skills } = await getProjectSkills('codex', slug)
+    expect(skills.find((s) => s.name === 'sentry')).toBeUndefined()
   })
 })
 

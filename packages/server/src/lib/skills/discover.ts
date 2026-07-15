@@ -10,6 +10,15 @@
  * plugin's resource dirs, or a marketplace's `.git`. Dispatch is keyed on
  * `AgentTool`; the wire type, route, and UI are agent-agnostic.
  *
+ * Plugin tiers are gated on the agent's *installed/enabled* set, not on mere
+ * on-disk presence: both Claude and Codex clone a marketplace's entire catalog
+ * to disk (hundreds of plugins) whether or not you installed them, so listing
+ * every dir would surface skills the agent can't actually invoke. Installing a
+ * plugin records it in the agent's config — Claude in `enabledPlugins` across
+ * its settings.json tiers, Codex in the `[plugins]` table of `config.toml` —
+ * and disabling flips it off there while leaving the clone in place. We read
+ * that config and keep only the enabled plugins.
+ *
  * Out of scope by design: skills embedded in an agent's binary (Claude's
  * bundled skills, Codex's `.system` tier) — there is no supported way to
  * enumerate the former, and the latter is excluded for parity.
@@ -17,6 +26,7 @@
 
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { parse as parseToml } from 'smol-toml'
 import { claudeDir, codexDir, opencodeConfigDir, piDir, repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 import type { AgentTool, ProjectSkills, SkillDetail, SkillSummary, SkillSource } from '@yaac/shared/types'
@@ -46,15 +56,48 @@ async function subdirs(dir: string): Promise<string[]> {
   }
 }
 
-/** Plugin containers under a Claude-style `plugins/` root, whose installed
- *  layout is `marketplaces/<marketplace>/{plugins,external_plugins}/<plugin>/skills/`. */
-async function claudePluginContainers(pluginsRoot: string): Promise<SkillContainer[]> {
+/** Read one Claude settings.json's `enabledPlugins` map, or `{}` when the file
+ *  is absent or unparseable. Keys are `<plugin>@<marketplace>`; values are
+ *  booleans (installing writes `true`, disabling writes `false`). */
+async function readEnabledPlugins(file: string): Promise<Record<string, unknown>> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(file, 'utf8')) as { enabledPlugins?: unknown }
+    const map = parsed.enabledPlugins
+    return map && typeof map === 'object' ? (map as Record<string, unknown>) : {}
+  } catch {
+    return {}
+  }
+}
+
+/** The `<plugin>@<marketplace>` ids Claude has enabled for a project, merged
+ *  across the user → project → local settings tiers (local wins, matching
+ *  Claude's own precedence). A plugin counts as installed exactly when its id
+ *  is present and truthy here, so plugins that only exist in the on-disk
+ *  marketplace clone — never installed — are excluded. */
+async function claudeEnabledPluginIds(slug: string): Promise<Set<string>> {
+  const repo = repoDir(slug)
+  const tiers = await Promise.all([
+    readEnabledPlugins(path.join(claudeDir(slug), 'settings.json')),
+    readEnabledPlugins(path.join(repo, '.claude', 'settings.json')),
+    readEnabledPlugins(path.join(repo, '.claude', 'settings.local.json')),
+  ])
+  const merged = Object.assign({}, ...tiers)
+  return new Set(Object.entries(merged).filter(([, on]) => on).map(([id]) => id))
+}
+
+/** Enabled plugin containers under a Claude-style `plugins/` root, whose
+ *  installed layout is `marketplaces/<marketplace>/{plugins,external_plugins}/<plugin>/skills/`.
+ *  The `<plugin>` and `<marketplace>` dir names are the same names Claude keys
+ *  `enabledPlugins` on, so a dir survives only when `<plugin>@<marketplace>` is
+ *  in `enabledIds`. */
+async function claudePluginContainers(pluginsRoot: string, enabledIds: Set<string>): Promise<SkillContainer[]> {
   const out: SkillContainer[] = []
   const marketplaces = path.join(pluginsRoot, 'marketplaces')
   for (const mkt of await subdirs(marketplaces)) {
     for (const group of ['plugins', 'external_plugins']) {
       const groupDir = path.join(marketplaces, mkt, group)
       for (const plugin of await subdirs(groupDir)) {
+        if (!enabledIds.has(`${plugin}@${mkt}`)) continue
         out.push({ dir: path.join(groupDir, plugin, 'skills'), source: 'plugin', sourceLabel: plugin })
       }
     }
@@ -62,22 +105,46 @@ async function claudePluginContainers(pluginsRoot: string): Promise<SkillContain
   return out
 }
 
-/** Plugin containers under Codex's marketplace clone at
- *  `.tmp/plugins/plugins/<plugin>/skills/`. */
-async function codexPluginContainers(pluginsDir: string): Promise<SkillContainer[]> {
-  const plugins = await subdirs(pluginsDir)
-  return plugins.map((plugin) => ({
-    dir: path.join(pluginsDir, plugin, 'skills'),
-    source: 'plugin' as const,
-    sourceLabel: plugin,
-  }))
+/** The plugin names Codex has enabled, read from the `[plugins]` table of its
+ *  `config.toml`. Each key is `<plugin>@<marketplace>`; installing writes the
+ *  entry and `enabled = false` disables it while leaving it installed. We key
+ *  on the base name (before `@`) because the clone under `.tmp/plugins/plugins`
+ *  is a single bundled marketplace, so the dir name alone identifies the
+ *  plugin. */
+async function codexEnabledPluginNames(configPath: string): Promise<Set<string>> {
+  let parsed: unknown
+  try {
+    parsed = parseToml(await fs.readFile(configPath, 'utf8'))
+  } catch {
+    return new Set()
+  }
+  const plugins = (parsed as { plugins?: Record<string, { enabled?: unknown }> }).plugins
+  if (!plugins || typeof plugins !== 'object') return new Set()
+  const out = new Set<string>()
+  for (const [id, cfg] of Object.entries(plugins)) {
+    if (cfg?.enabled === false) continue
+    out.add(id.split('@')[0])
+  }
+  return out
+}
+
+/** Enabled plugin containers under Codex's marketplace clone at
+ *  `.tmp/plugins/plugins/<plugin>/skills/` — a dir survives only when its
+ *  plugin is in `enabledNames`. */
+async function codexPluginContainers(pluginsDir: string, enabledNames: Set<string>): Promise<SkillContainer[]> {
+  const out: SkillContainer[] = []
+  for (const plugin of await subdirs(pluginsDir)) {
+    if (!enabledNames.has(plugin)) continue
+    out.push({ dir: path.join(pluginsDir, plugin, 'skills'), source: 'plugin', sourceLabel: plugin })
+  }
+  return out
 }
 
 async function claudeContainers(slug: string): Promise<SkillContainer[]> {
   const claude = claudeDir(slug)
   return [
     { dir: path.join(claude, 'skills'), source: 'personal' },
-    ...(await claudePluginContainers(path.join(claude, 'plugins'))),
+    ...(await claudePluginContainers(path.join(claude, 'plugins'), await claudeEnabledPluginIds(slug))),
     { dir: path.join(repoDir(slug), '.claude', 'skills'), source: 'project' },
   ]
 }
@@ -88,7 +155,10 @@ async function codexContainers(slug: string): Promise<SkillContainer[]> {
   // skipped for free (readContainer ignores dot-dirs).
   return [
     { dir: path.join(codex, 'skills'), source: 'personal' },
-    ...(await codexPluginContainers(path.join(codex, '.tmp', 'plugins', 'plugins'))),
+    ...(await codexPluginContainers(
+      path.join(codex, '.tmp', 'plugins', 'plugins'),
+      await codexEnabledPluginNames(path.join(codex, 'config.toml')),
+    )),
     { dir: path.join(repoDir(slug), '.agents', 'skills'), source: 'project' },
   ]
 }
