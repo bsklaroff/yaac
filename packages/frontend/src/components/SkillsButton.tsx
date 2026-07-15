@@ -1,6 +1,6 @@
 import { useState, type JSX } from 'react'
 import clsx from 'clsx'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { Dialog } from '@base-ui/react/dialog'
 import { CloseIcon, SkillsIcon, TOOL_LABEL } from '#lib/icons'
 import { EmptyState } from '#components/ui/EmptyState'
@@ -93,6 +93,9 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
     queryFn: () => getProjectSkills(projectSlug, tool),
     enabled: open,
     staleTime: 5_000,
+    // Keep the previous tool's list visible while the next one loads, so
+    // switching agents doesn't flash the pane to empty and back.
+    placeholderData: keepPreviousData,
   })
 
   const all = data?.skills ?? []
@@ -121,12 +124,17 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
           bg-surface p-4 text-text shadow-[0_16px_48px_var(--shadow-color)] outline-none transition duration-150
           data-[starting-style]:scale-95 data-[starting-style]:opacity-0 data-[ending-style]:scale-95
           data-[ending-style]:opacity-0">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Dialog.Title className="text-xs font-semibold text-text-dim">
-                Skills{all.length > 0 && <span className="ml-1.5 text-text-faint">({all.length})</span>}
-              </Dialog.Title>
-              {/* Per-agent selector — each tool loads skills from its own dirs. */}
+          <div className="flex items-center justify-between gap-3">
+            <Dialog.Title className="shrink-0 text-xs font-semibold text-text-dim">
+              Skills{all.length > 0 && (
+                <span className="ml-1.5 tabular-nums text-text-faint">({all.length})</span>
+              )}
+            </Dialog.Title>
+            <div className="flex items-center gap-2">
+              {/* Per-agent selector — each tool loads skills from its own dirs.
+                  Right-anchored beside Close so the variable-width title count
+                  (which shrinks to nothing while a tool loads or when empty) can
+                  never shift these buttons out from under the pointer. */}
               <div className="flex items-center gap-0.5 rounded-md bg-bg p-0.5">
                 {AGENT_TOOLS.map((t) => (
                   <button
@@ -134,23 +142,25 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
                     type="button"
                     onClick={() => { setTool(t); setSelectedId(null) }}
                     className={clsx(
-                      'rounded px-2 py-0.5 text-[11px] transition',
-                      tool === t ? 'bg-surface-2 text-text' : 'text-text-faint hover:text-text-dim',
+                      'rounded px-2.5 py-1.5 text-[11px] leading-none transition',
+                      tool === t
+                        ? 'bg-surface-2 font-medium text-text'
+                        : 'text-text-faint hover:text-text-dim',
                     )}
                   >
                     {TOOL_LABEL[t]}
                   </button>
                 ))}
               </div>
+              <Dialog.Close
+                title="Close"
+                aria-label="Close"
+                className="flex h-6 w-6 items-center justify-center rounded text-text-faint transition
+                  hover:bg-surface-2 hover:text-text"
+              >
+                <CloseIcon size={14} />
+              </Dialog.Close>
             </div>
-            <Dialog.Close
-              title="Close"
-              aria-label="Close"
-              className="flex h-6 w-6 items-center justify-center rounded text-text-faint transition
-                hover:bg-surface-2 hover:text-text"
-            >
-              <CloseIcon size={14} />
-            </Dialog.Close>
           </div>
 
           {!isLoading && all.length === 0 ? (
