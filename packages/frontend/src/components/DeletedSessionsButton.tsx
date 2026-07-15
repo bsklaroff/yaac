@@ -78,6 +78,20 @@ export function DeletedSessionsButton({
     for (const e of optimisticDeleted) if (fetched.has(e.sessionId)) removeOptimisticDeleted(e.sessionId)
   }, [data, optimisticDeleted, removeOptimisticDeleted])
 
+  // A restart reuses the session id and clears its deleted-store row, so once
+  // the restart takes effect the session drops out of the fetched list. Prune
+  // it from `restarting` then — the filter below has done its job. Otherwise a
+  // later re-delete of the same id re-enters `data` but stays hidden by that
+  // filter until a browser reload resets this component-local state.
+  useEffect(() => {
+    if (!data) return
+    const fetched = new Set(data.map((d) => d.sessionId))
+    setRestarting((r) => {
+      const next = r.filter((id) => fetched.has(id))
+      return next.length === r.length ? r : next
+    })
+  }, [data])
+
   // Merge optimistic just-deleted entries (this project) ahead of the fetched
   // list, de-duped, minus any mid-restart.
   const fetchedIds = new Set((data ?? []).map((d) => d.sessionId))

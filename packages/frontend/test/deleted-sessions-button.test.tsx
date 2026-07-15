@@ -184,4 +184,54 @@ describe('DeletedSessionsButton', () => {
     expect(provision.mock.calls[0][3]).toBe('s1')
     expect(useUiStore.getState().deletedOverlayOpen).toBe(false)
   })
+
+  it('re-lists a restarted session after it is deleted again', async () => {
+    // Bug: restarting a session left its id in a local mid-restart filter that
+    // was never cleared. Because a restart reuses the session id, removing that
+    // session again stayed hidden until a browser reload reset the component.
+    // Presence is observed here via the sidebar death dot, whose count is taken
+    // from the merged (post-filter) list.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    // s1 died and is unseen → the dot shows before the overlay is even opened.
+    vi.mocked(getDeletedSessions).mockResolvedValue([
+      entry({ sessionId: 's1', title: 'OOMed run', deathReason: 'oom' }),
+    ])
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <DeletedSessionsButton projectSlug="proj" activeSignature="sig-a" />
+      </QueryClientProvider>,
+    )
+    expect(await screen.findByTitle('1 session died unexpectedly')).toBeTruthy()
+
+    // Restart s1 from the overlay → records it mid-restart and closes the overlay.
+    fireEvent.click(await screen.findByRole('button', { name: 'Deleted sessions' }))
+    fireEvent.click(await screen.findByRole('button', { name: /Restart/ }))
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Restart' }))
+    expect(provision).toHaveBeenCalledTimes(1)
+
+    // Restart took hold: s1 is live again and leaves the deleted list. The active
+    // set changed, re-keying the query; the refetch comes back empty. That drop
+    // must prune s1 from the mid-restart filter.
+    vi.mocked(getDeletedSessions).mockResolvedValue([])
+    rerender(
+      <QueryClientProvider client={client}>
+        <DeletedSessionsButton projectSlug="proj" activeSignature="sig-b" />
+      </QueryClientProvider>,
+    )
+    await waitFor(() => expect(client.getQueryData(['deleted', 'proj', 'sig-b'])).toEqual([]))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Deleted sessions' })).toBeNull())
+
+    // s1 dies again and re-enters the deleted list. With the stale filter pruned,
+    // the death dot must reappear immediately — no browser reload needed.
+    vi.mocked(getDeletedSessions).mockResolvedValue([
+      entry({ sessionId: 's1', title: 'OOMed run', deathReason: 'oom' }),
+    ])
+    rerender(
+      <QueryClientProvider client={client}>
+        <DeletedSessionsButton projectSlug="proj" activeSignature="sig-c" />
+      </QueryClientProvider>,
+    )
+    expect(await screen.findByTitle('1 session died unexpectedly')).toBeTruthy()
+  })
 })
