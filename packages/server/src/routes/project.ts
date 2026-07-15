@@ -92,11 +92,17 @@ export const projectApp = new Hono()
   // explicit skill dirs, so it needs no running session.
   .get(
     '/:slug/skills',
-    zv('query', z.object({ tool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional() })),
+    zv('query', z.object({
+      tool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional(),
+      // The origin branch project (repo) skills + repo-side plugin settings are
+      // read from (default: the remote's default branch). Host tiers ignore it.
+      branch: z.string().optional(),
+    })),
     async (c) => {
       const slug = c.req.param('slug')
       await assertProjectExists(slug)
-      return c.json(await getProjectSkills(c.req.valid('query').tool ?? 'claude', slug))
+      const { tool, branch } = c.req.valid('query')
+      return c.json(await getProjectSkills(tool ?? 'claude', slug, branch))
     },
   )
   // The full SKILL.md for one skill, fetched on demand when a row is expanded.
@@ -105,12 +111,13 @@ export const projectApp = new Hono()
     zv('query', z.object({
       id: z.string().min(1),
       tool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional(),
+      branch: z.string().optional(),
     })),
     async (c) => {
       const slug = c.req.param('slug')
       await assertProjectExists(slug)
-      const { id, tool } = c.req.valid('query')
-      return c.json(await getSkillDetail(tool ?? 'claude', slug, id))
+      const { id, tool, branch } = c.req.valid('query')
+      return c.json(await getSkillDetail(tool ?? 'claude', slug, id, branch))
     },
   )
   .get('/:slug/dockerfile', async (c) =>

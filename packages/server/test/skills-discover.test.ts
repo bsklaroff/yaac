@@ -2,10 +2,38 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import simpleGit from 'simple-git'
 import { setDataDir, claudeDir, codexDir, opencodeConfigDir, piDir, repoDir } from '@yaac/shared/project-paths'
 import { getProjectSkills, getSkillDetail } from '#lib/skills/discover'
 
 const slug = 'proj'
+
+/** Commit `files` (relPath → contents) onto `branch` of a fresh repo at
+ *  `repoDir(s)` and publish the `origin/<branch>` remote-tracking ref discovery
+ *  reads from — without any network remote. Files already in the working tree
+ *  but not passed here stay uncommitted, so a test can prove ref reads ignore
+ *  the working copy. */
+async function commitRepoBranch(s: string, branch: string, files: Record<string, string>): Promise<void> {
+  const repo = repoDir(s)
+  await fs.mkdir(repo, { recursive: true })
+  const git = simpleGit(repo)
+  if (!(await git.checkIsRepo())) await git.raw(['init', '-b', 'main'])
+  await git.addConfig('user.email', 'test@example.com')
+  await git.addConfig('user.name', 'Test')
+  await git.checkout(['-B', branch])
+  const paths: string[] = []
+  for (const [rel, contents] of Object.entries(files)) {
+    const abs = path.join(repo, rel)
+    await fs.mkdir(path.dirname(abs), { recursive: true })
+    await fs.writeFile(abs, contents)
+    paths.push(rel)
+  }
+  await git.add(paths)
+  await git.commit(`skills on ${branch}`)
+  const sha = (await git.revparse(['HEAD'])).trim()
+  await git.raw(['update-ref', `refs/remotes/origin/${branch}`, sha])
+  await git.raw(['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+}
 
 async function writeSkill(dir: string, contents: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true })
@@ -252,5 +280,70 @@ describe('getProjectSkills (pi)', () => {
       'project:shared',
       'project:ship',
     ])
+  })
+})
+
+describe('getProjectSkills (origin branch)', () => {
+  // A fresh slug so beforeEach's working-tree writes for `proj` don't interfere.
+  const gslug = 'gitproj'
+
+  it('reads project skills from origin/<default>, ignoring uncommitted working-tree files', async () => {
+    await commitRepoBranch(gslug, 'main', {
+      '.claude/skills/committed/SKILL.md': '---\nname: committed\ndescription: on main\n---\nb',
+    })
+    // A working-tree-only skill must NOT appear — the ref read ignores it.
+    await writeSkill(path.join(repoDir(gslug), '.claude', 'skills', 'uncommitted'),
+      '---\nname: uncommitted\ndescription: working tree only\n---\nb')
+
+    const names = (await getProjectSkills('claude', gslug)).skills.map((s) => s.name)
+    expect(names).toContain('committed')
+    expect(names).not.toContain('uncommitted')
+  })
+
+  it('reads project skills from an explicitly selected branch', async () => {
+    await commitRepoBranch(gslug, 'main', {
+      '.claude/skills/on-main/SKILL.md': '---\nname: on-main\ndescription: main\n---\nb',
+    })
+    await commitRepoBranch(gslug, 'feature', {
+      '.claude/skills/on-feature/SKILL.md': '---\nname: on-feature\ndescription: feature\n---\nb',
+    })
+
+    const main = (await getProjectSkills('claude', gslug)).skills.map((s) => s.name)
+    expect(main).toContain('on-main')
+    expect(main).not.toContain('on-feature')
+
+    const feat = (await getProjectSkills('claude', gslug, 'feature')).skills.map((s) => s.name)
+    expect(feat).toContain('on-feature')
+    expect(feat).toContain('on-main') // feature was branched off main
+  })
+
+  it('gates plugins on enabledPlugins committed to the branch, not the working tree', async () => {
+    // The plugin is cloned to the host claude dir (a host tier)...
+    await writeSkill(
+      path.join(claudeDir(gslug), 'plugins', 'marketplaces', 'off', 'plugins', 'code-review', 'skills', 'review'),
+      '---\nname: review\ndescription: plugin\n---\nb',
+    )
+    // ...but enabled only via .claude/settings.json committed on the branch.
+    await commitRepoBranch(gslug, 'main', {
+      '.claude/settings.json': JSON.stringify({ enabledPlugins: { 'code-review@off': true } }),
+    })
+
+    const { skills } = await getProjectSkills('claude', gslug)
+    expect(skills.find((s) => s.source === 'plugin' && s.name === 'review')).toBeDefined()
+  })
+
+  it('serves the detail body from the selected branch', async () => {
+    await commitRepoBranch(gslug, 'main', {
+      '.claude/skills/doc/SKILL.md': '---\nname: doc\ndescription: d\n---\nfull-body-on-main\n',
+    })
+    const detail = await getSkillDetail('claude', gslug, 'project:doc')
+    expect(detail.body.trim()).toBe('full-body-on-main')
+  })
+
+  it('falls back to the working tree when no origin ref exists (local-only repo)', async () => {
+    await writeSkill(path.join(repoDir(gslug), '.claude', 'skills', 'wt'),
+      '---\nname: wt\ndescription: working tree\n---\nb')
+    const names = (await getProjectSkills('claude', gslug)).skills.map((s) => s.name)
+    expect(names).toContain('wt')
   })
 })

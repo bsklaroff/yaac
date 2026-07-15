@@ -1,10 +1,13 @@
-import { useState, type JSX } from 'react'
+import { useEffect, useState, type JSX } from 'react'
 import clsx from 'clsx'
-import { useQuery, keepPreviousData } from '@tanstack/react-query'
+import { useQuery, keepPreviousData, useQueryClient } from '@tanstack/react-query'
 import { Dialog } from '@base-ui/react/dialog'
-import { CloseIcon, SkillsIcon, TOOL_LABEL } from '#lib/icons'
+import { Popover } from '@base-ui/react/popover'
+import { BranchIcon, ChevronIcon, CloseIcon, SkillsIcon, TOOL_LABEL } from '#lib/icons'
+import { BranchPicker } from '#components/BranchPicker'
 import { EmptyState } from '#components/ui/EmptyState'
 import { getProjectSkills, getSkillBody } from '#lib/skillsApi'
+import { getProjectBranches, projectBranchesKey } from '#lib/projectApi'
 import { useUiStore } from '#store'
 import { AGENT_TOOLS, type AgentTool, type SkillSource, type SkillSummary } from '@yaac/shared/types'
 
@@ -34,11 +37,12 @@ function SkillTags({ skill }: { skill: SkillSummary }): JSX.Element {
 
 /** The read-only detail pane for the selected skill: metadata + full SKILL.md. */
 function SkillDetailPane(
-  { projectSlug, tool, skill }: { projectSlug: string; tool: AgentTool; skill: SkillSummary },
+  { projectSlug, tool, branch, skill }:
+  { projectSlug: string; tool: AgentTool; branch: string | undefined; skill: SkillSummary },
 ): JSX.Element {
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['skill-body', projectSlug, tool, skill.id],
-    queryFn: () => getSkillBody(projectSlug, skill.id, tool),
+    queryKey: ['skill-body', projectSlug, tool, branch ?? null, skill.id],
+    queryFn: () => getSkillBody(projectSlug, skill.id, tool, branch),
     staleTime: 30_000,
   })
   return (
@@ -87,16 +91,48 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
   const [queryText, setQueryText] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [tool, setTool] = useState<AgentTool>('claude')
+  // null = untouched: use the project's resolved default branch.
+  const [branch, setBranch] = useState<string | null>(null)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [pickerQuery, setPickerQuery] = useState('')
+
+  const queryClient = useQueryClient()
+  const { data: branchData } = useQuery({
+    queryKey: projectBranchesKey(projectSlug),
+    queryFn: () => getProjectBranches(projectSlug),
+    enabled: open && projectSlug !== '',
+  })
+  // Freshen the branch list from the remote in the background so a just-pushed
+  // branch appears, mirroring the changes/new-session pickers.
+  useEffect(() => {
+    if (!open || projectSlug === '') return
+    let cancelled = false
+    getProjectBranches(projectSlug, { refresh: true })
+      .then((fresh) => { if (!cancelled) queryClient.setQueryData(projectBranchesKey(projectSlug), fresh) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [open, projectSlug, queryClient])
+
+  const defaultBranch = branchData ? branchData.referenceBranch ?? branchData.defaultBranch : undefined
+  const effectiveBranch = branch ?? defaultBranch
 
   const { data, isLoading } = useQuery({
-    queryKey: ['skills', projectSlug, tool],
-    queryFn: () => getProjectSkills(projectSlug, tool),
+    queryKey: ['skills', projectSlug, tool, effectiveBranch ?? null],
+    queryFn: () => getProjectSkills(projectSlug, tool, effectiveBranch),
     enabled: open,
     staleTime: 5_000,
     // Keep the previous tool's list visible while the next one loads, so
     // switching agents doesn't flash the pane to empty and back.
     placeholderData: keepPreviousData,
   })
+
+  const pickBranch = (b: string): void => {
+    // Picking the resolved default clears the override back to it.
+    setBranch(b === defaultBranch ? null : b)
+    setPickerOpen(false)
+    setPickerQuery('')
+    setSelectedId(null)
+  }
 
   const all = data?.skills ?? []
   const q = queryText.trim().toLowerCase()
@@ -131,6 +167,46 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
               )}
             </Dialog.Title>
             <div className="flex items-center gap-2">
+              {/* Branch picker — project (repo) skills are read from origin/<branch>,
+                  the same branch the changes pane diffs against. First in the row so
+                  its variable-width label only shifts the group's left edge, leaving
+                  the agent selector and Close pinned right (see below). */}
+              <Popover.Root
+                open={pickerOpen}
+                onOpenChange={(o) => { setPickerOpen(o); if (!o) setPickerQuery('') }}
+              >
+                <Popover.Trigger
+                  title="Choose the origin branch project skills are read from"
+                  className="flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-text-dim outline-none
+                    transition hover:bg-surface-2 hover:text-text data-[popup-open]:bg-surface-2 data-[popup-open]:text-text"
+                >
+                  <BranchIcon size={11} className="shrink-0 text-text-faint" />
+                  <span className="max-w-[180px] truncate font-mono">{effectiveBranch ?? '…'}</span>
+                  <ChevronIcon size={10} className="shrink-0 rotate-90 text-text-faint" />
+                </Popover.Trigger>
+                <Popover.Portal>
+                  <Popover.Positioner side="bottom" align="start" sideOffset={6}>
+                    <Popover.Popup
+                      className="w-[240px] rounded-lg border border-border bg-surface-2 p-1 text-text
+                        shadow-[0_12px_32px_var(--shadow-color)] outline-none transition-opacity duration-100
+                        data-[starting-style]:opacity-0 data-[ending-style]:opacity-0"
+                    >
+                      <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">Skills branch</div>
+                      <BranchPicker
+                        branches={branchData?.branches ?? []}
+                        defaultBranch={defaultBranch}
+                        query={pickerQuery}
+                        onQueryChange={setPickerQuery}
+                        onSelect={pickBranch}
+                        showList
+                        placeholder={branchData ? 'filter branches…' : 'loading branches…'}
+                        ariaLabel="Skills branch"
+                        className="px-1 pb-1"
+                      />
+                    </Popover.Popup>
+                  </Popover.Positioner>
+                </Popover.Portal>
+              </Popover.Root>
               {/* Per-agent selector — each tool loads skills from its own dirs.
                   Right-anchored beside Close so the variable-width title count
                   (which shrinks to nothing while a tool loads or when empty) can
@@ -221,7 +297,7 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
 
               {/* Detail */}
               {selected
-                ? <SkillDetailPane key={selected.id} projectSlug={projectSlug} tool={tool} skill={selected} />
+                ? <SkillDetailPane key={selected.id} projectSlug={projectSlug} tool={tool} branch={effectiveBranch} skill={selected} />
                 : <div className="flex-1" />}
             </div>
           )}
