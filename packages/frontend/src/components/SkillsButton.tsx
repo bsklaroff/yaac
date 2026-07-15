@@ -15,6 +15,7 @@ const SOURCE_LABEL: Record<SkillSource, string> = {
   personal: 'Personal',
   plugin: 'Plugin',
   project: 'Project',
+  system: 'Built-in',
 }
 
 /** A one-line tag row: source, plugin name, and invocation caveats. */

@@ -16,6 +16,7 @@ import { coalesceCalls, notifySessionListChanged, onSessionListChanged } from '#
 import { resolveSessionContainer } from '#session-resolve'
 import { StatusWatcherManager } from '#status-watcher'
 import { PodWatcher, setActivePodWatcher } from '#lib/k8s/pod-watch'
+import { refreshClaudeBundledSkills } from '#lib/skills/claude-bundled'
 import { onSessionStatusChanged } from '#lib/session/status-store'
 import { readBuildId } from '@yaac/shared/build-id'
 import {
@@ -407,6 +408,11 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   onSessionStatusChanged(() => notifySessionListChanged())
   podWatcher.start()
   setActivePodWatcher(podWatcher)
+
+  // Populate the Claude bundled-skills cache (name + description from the
+  // official commands reference) for the skills viewer. Fire-and-forget: it's
+  // an in-memory best-effort fetch, so it never blocks startup or fails it.
+  void refreshClaudeBundledSkills()
 
   // Start the background loop before running orphan GC. The GC pass
   // hits the cluster API, and during a freeze cluster (saturated VM,

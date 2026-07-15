@@ -501,11 +501,14 @@ export interface SessionDeathCause {
 }
 
 /**
- * Which on-disk tier a skill was discovered from. Bundled skills (embedded in
- * the agent binary) are deliberately excluded — there is no supported way to
- * enumerate them. Personal/plugin/project are all loose `SKILL.md` files.
+ * Which on-disk tier a skill was discovered from. Personal/plugin/project are
+ * all loose `SKILL.md` files. `system` is a built-in tier the agent ships and
+ * materializes to disk — currently Codex's `.system/` skills under the
+ * host-mounted `~/.codex/skills/`. Skills embedded in an agent binary that are
+ * never written to a mounted dir (Claude's bundled skills) stay excluded —
+ * there is no supported way to enumerate them.
  */
-export type SkillSource = 'personal' | 'plugin' | 'project'
+export type SkillSource = 'personal' | 'plugin' | 'project' | 'system'
 
 /** One discovered agent skill (a `SKILL.md`), summarized for a listing. */
 export interface SkillSummary {

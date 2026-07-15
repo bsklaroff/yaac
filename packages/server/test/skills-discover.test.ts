@@ -5,6 +5,7 @@ import path from 'node:path'
 import simpleGit from 'simple-git'
 import { setDataDir, claudeDir, codexDir, opencodeConfigDir, piDir, repoDir } from '@yaac/shared/project-paths'
 import { getProjectSkills, getSkillDetail } from '#lib/skills/discover'
+import { setClaudeBundledSkills } from '#lib/skills/claude-bundled'
 
 const slug = 'proj'
 
@@ -68,6 +69,9 @@ let tmp: string
 beforeEach(async () => {
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-skills-test-'))
   setDataDir(tmp)
+  // The bundled-skills cache is populated by a startup fetch; keep it empty so
+  // per-project assertions don't see it unless a test opts in.
+  setClaudeBundledSkills([])
 
   const claude = claudeDir(slug)
   // Personal
@@ -208,11 +212,44 @@ describe('getSkillDetail', () => {
   })
 })
 
+describe('getProjectSkills (claude bundled tier)', () => {
+  it('appends cached bundled skills as list-only system skills, sorted last', async () => {
+    setClaudeBundledSkills([
+      { name: 'code-review', description: 'Review the current diff.' },
+      { name: 'deep-research', description: 'Fan out web searches.' },
+    ])
+    const { skills } = await getProjectSkills('claude', slug)
+    const system = skills.filter((s) => s.source === 'system')
+    expect(system.map((s) => `${s.sourceLabel}:${s.name}`)).toEqual([
+      'bundled:code-review',
+      'bundled:deep-research',
+    ])
+    expect(skills.at(-1)?.source).toBe('system') // system sorts after the on-disk tiers
+    expect(system.find((s) => s.name === 'code-review')).toMatchObject({
+      id: 'system:bundled:code-review',
+      description: 'Review the current diff.',
+    })
+  })
+
+  it('serves a placeholder body for a list-only bundled skill', async () => {
+    setClaudeBundledSkills([{ name: 'verify', description: 'Confirm a change works.' }])
+    const detail = await getSkillDetail('claude', slug, 'system:bundled:verify')
+    expect(detail).toMatchObject({ name: 'verify', source: 'system' })
+    expect(detail.body).toContain('Built-in Claude Code skill')
+  })
+
+  it('does not append the claude bundled tier to other tools', async () => {
+    setClaudeBundledSkills([{ name: 'code-review', description: 'x' }])
+    const { skills } = await getProjectSkills('codex', slug)
+    expect(skills.find((s) => s.sourceLabel === 'bundled')).toBeUndefined()
+  })
+})
+
 describe('getProjectSkills (codex)', () => {
-  it('reads codex personal + plugin + project dirs and excludes the hidden .system tier', async () => {
+  it('reads codex personal + plugin + project dirs plus the built-in .system tier', async () => {
     await writeSkill(path.join(codexDir(slug), 'skills', 'push-branch'),
       '---\nname: push-branch\ndescription: cx personal\n---\nb')
-    // OpenAI-bundled tier lives under a dot-hidden dir → must not be listed.
+    // OpenAI-bundled tier is materialized to a dot-hidden dir → surfaced as `system`.
     await writeSkill(path.join(codexDir(slug), 'skills', '.system', 'skill-creator'),
       '---\nname: skill-creator\ndescription: bundled\n---\nb')
     await writeSkill(path.join(codexDir(slug), '.tmp', 'plugins', 'plugins', 'sentry', 'skills', 'sentry'),
@@ -229,10 +266,24 @@ describe('getProjectSkills (codex)', () => {
       'personal:push-branch',
       'plugin:sentry',
       'project:deploy',
+      'system:skill-creator',
     ])
-    expect(skills.find((s) => s.name === 'skill-creator')).toBeUndefined()
+    expect(skills.find((s) => s.name === 'skill-creator')).toMatchObject({
+      source: 'system',
+      id: 'system:skill-creator',
+    })
     expect(skills.find((s) => s.name === 'stripe')).toBeUndefined() // not in config.toml
     expect(skills.find((s) => s.source === 'plugin')?.sourceLabel).toBe('sentry')
+  })
+
+  it('reads only .system, not other dot-hidden siblings of skills/, as built-in', async () => {
+    await writeSkill(path.join(codexDir(slug), 'skills', '.system', 'skill-creator'),
+      '---\nname: skill-creator\ndescription: bundled\n---\nb')
+    // A stray dot-dir that isn't the `.system` tier must not leak in.
+    await writeSkill(path.join(codexDir(slug), 'skills', '.cache', 'junk'),
+      '---\nname: junk\ndescription: not a skill\n---\nb')
+    const { skills } = await getProjectSkills('codex', slug)
+    expect(skills.map((s) => `${s.source}:${s.name}`)).toEqual(['system:skill-creator'])
   })
 
   it('excludes a codex plugin whose config.toml entry is disabled', async () => {

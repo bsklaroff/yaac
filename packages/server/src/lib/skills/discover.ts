@@ -29,9 +29,12 @@
  * (personal, plugins, Codex's `config.toml`) are never repo checks, so they
  * always read the on-disk files regardless of branch.
  *
- * Out of scope by design: skills embedded in an agent's binary (Claude's
- * bundled skills, Codex's `.system` tier) — there is no supported way to
- * enumerate the former, and the latter is excluded for parity.
+ * Built-in ("system") tiers come from two places. Codex materializes its
+ * `.system/` tier to the host-mounted `~/.codex/skills/.system/`, read on-disk
+ * like any other. Claude's bundled skills live only in its binary, so we take
+ * their name + description from Anthropic's official commands reference —
+ * fetched on server start and cached in memory (see lib/skills/claude-bundled.ts)
+ * — and append them as list-only `system` skills.
  */
 
 import fs from 'node:fs/promises'
@@ -42,6 +45,7 @@ import { claudeDir, codexDir, opencodeConfigDir, piDir, repoDir } from '@yaac/sh
 import { ServerError } from '@yaac/shared/errors'
 import type { AgentTool, ProjectSkills, SkillDetail, SkillSummary, SkillSource } from '@yaac/shared/types'
 import { getDefaultBranch, remoteBranchExists } from '#lib/git'
+import { getClaudeBundledSkills } from '#lib/skills/claude-bundled'
 import { parseSkillMd, fmString, fmBool, fmList, flattenFrontmatter } from '#lib/skills/parse'
 
 /**
@@ -263,11 +267,15 @@ async function claudeReaders(slug: string, ref: string | null): Promise<SkillRea
 
 async function codexReaders(slug: string, ref: string | null): Promise<SkillReader[]> {
   const codex = codexDir(slug)
-  // `skills/` is read directly, so the dot-hidden `.system/` bundled tier is
-  // skipped for free (readSkills ignores dot-dirs). config.toml is the host
+  // `skills/` is read directly (readSkills skips dot-dirs, so the sibling
+  // `.system/` and `.tmp/` aren't picked up as personal skills). Codex's
+  // built-in tier is materialized into `skills/.system/`, read by its own
+  // `system` reader pointed straight at it — the dot-skip only excludes the
+  // immediate skill-dir names, not the reader's root. config.toml is the host
   // install registry, not a repo check, so its read stays on-disk.
   return [
     fsReader(path.join(codex, 'skills'), 'personal'),
+    fsReader(path.join(codex, 'skills', '.system'), 'system'),
     ...(await codexPluginReaders(
       path.join(codex, '.tmp', 'plugins', 'plugins'),
       await codexEnabledPluginNames(path.join(codex, 'config.toml')),
@@ -380,13 +388,39 @@ function markShadowed(skills: DiscoveredSkill[]): void {
   }
 }
 
-const SOURCE_ORDER: Record<SkillSource, number> = { personal: 0, plugin: 1, project: 2 }
+const SOURCE_ORDER: Record<SkillSource, number> = { personal: 0, plugin: 1, project: 2, system: 3 }
+
+/** A short body shown for a list-only bundled skill — we have its name and
+ *  description from the docs, but not the full SKILL.md. */
+const BUNDLED_BODY =
+  'Built-in Claude Code skill. This summary is from Claude\'s official commands '
+  + 'reference (code.claude.com/docs/en/commands); the full instructions are '
+  + 'bundled in the Claude binary and load on demand when the skill runs.'
+
+/** Claude's bundled skills from the in-memory commands-reference cache, as
+ *  list-only `system` skills: real name + description, a placeholder body. */
+function claudeBundledDiscovered(): DiscoveredSkill[] {
+  return getClaudeBundledSkills().map((s): DiscoveredSkill => ({
+    id: skillId('system', 'bundled', s.name),
+    name: s.name,
+    description: s.description,
+    source: 'system',
+    sourceLabel: 'bundled',
+    userInvocable: true,
+    modelInvocable: true,
+    read: () => Promise.resolve(BUNDLED_BODY),
+  }))
+}
 
 async function discover(tool: AgentTool, slug: string, branch?: string): Promise<DiscoveredSkill[]> {
   const ref = await resolveRepoRef(repoDir(slug), branch)
   const readers = await readersFor(tool, slug, ref)
   const perReader = await Promise.all(readers.map(readSkills))
-  const all = dedupeById(perReader.flat())
+  const flat = perReader.flat()
+  // Claude's bundled built-ins live only in the binary; append their published
+  // name+description (list-only `system` skills) from the cached commands ref.
+  if (tool === 'claude') flat.push(...claudeBundledDiscovered())
+  const all = dedupeById(flat)
   markShadowed(all)
   all.sort((a, b) => SOURCE_ORDER[a.source] - SOURCE_ORDER[b.source] || a.name.localeCompare(b.name))
   return all
