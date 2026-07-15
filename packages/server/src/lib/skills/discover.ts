@@ -5,8 +5,8 @@
  *
  * Discovery reads the *explicit* directories each agent loads skills from at
  * their known layout, rather than recursively scanning a whole tree: every
- * skill lives at `<container>/<name>/SKILL.md`, so we shallow-`readdir` each
- * container and read the one file — never descending into `node_modules`, a
+ * skill lives at `<root>/<name>/SKILL.md`, so we shallow-`readdir` each skill
+ * root and read the one file — never descending into `node_modules`, a
  * plugin's resource dirs, or a marketplace's `.git`. Dispatch is keyed on
  * `AgentTool`; the wire type, route, and UI are agent-agnostic.
  *
@@ -46,13 +46,13 @@ import { parseSkillMd, fmString, fmBool, fmList, flattenFrontmatter } from '#lib
 
 /**
  * A source of `<name>/SKILL.md` skill dirs. Abstracted over the backing store
- * so a host directory (`fsContainer`) and a project tree at a git ref
- * (`gitContainer`) look the same to the scan: `list()` yields the immediate
+ * so a host directory (`fsReader`) and a project tree at a git ref
+ * (`gitReader`) look the same to the scan: `list()` yields the immediate
  * skill-dir names, `read(name)` yields that dir's `SKILL.md` (or null).
  */
-interface SkillContainer {
+interface SkillReader {
   source: SkillSource
-  /** For plugin containers, the plugin the skills came from. */
+  /** For plugin readers, the plugin the skills came from. */
   sourceLabel?: string
   list: () => Promise<string[]>
   read: (name: string) => Promise<string | null>
@@ -101,8 +101,8 @@ async function gitReadBlob(repoPath: string, ref: string, blobPath: string): Pro
   }
 }
 
-/** A container reading `<name>/SKILL.md` from a host directory. */
-function fsContainer(dir: string, source: SkillSource, sourceLabel?: string): SkillContainer {
+/** A reader over `<name>/SKILL.md` dirs in a host directory. */
+function fsReader(dir: string, source: SkillSource, sourceLabel?: string): SkillReader {
   return {
     source,
     sourceLabel,
@@ -111,14 +111,14 @@ function fsContainer(dir: string, source: SkillSource, sourceLabel?: string): Sk
   }
 }
 
-/** A container reading `<treePath>/<name>/SKILL.md` from a git ref. */
-function gitContainer(
+/** A reader over `<treePath>/<name>/SKILL.md` dirs at a git ref. */
+function gitReader(
   repoPath: string,
   ref: string,
   treePath: string,
   source: SkillSource,
   sourceLabel?: string,
-): SkillContainer {
+): SkillReader {
   return {
     source,
     sourceLabel,
@@ -129,16 +129,16 @@ function gitContainer(
 
 /** A project (repo) tier: `origin/<branch>` when `ref` resolves, else the
  *  on-disk working tree (local-only/unfetched repos). */
-function repoContainer(
+function repoReader(
   repoPath: string,
   ref: string | null,
   treePath: string,
   source: SkillSource,
   sourceLabel?: string,
-): SkillContainer {
+): SkillReader {
   return ref
-    ? gitContainer(repoPath, ref, treePath, source, sourceLabel)
-    : fsContainer(path.join(repoPath, treePath), source, sourceLabel)
+    ? gitReader(repoPath, ref, treePath, source, sourceLabel)
+    : fsReader(path.join(repoPath, treePath), source, sourceLabel)
 }
 
 /** Read a project (repo) file from `origin/<branch>` when `ref` is set, else
@@ -197,20 +197,20 @@ async function claudeEnabledPluginIds(slug: string, ref: string | null): Promise
   return new Set(Object.entries(merged).filter(([, on]) => on).map(([id]) => id))
 }
 
-/** Enabled plugin containers under a Claude-style `plugins/` root, whose
+/** Enabled plugin readers under a Claude-style `plugins/` root, whose
  *  installed layout is `marketplaces/<marketplace>/{plugins,external_plugins}/<plugin>/skills/`.
  *  The `<plugin>` and `<marketplace>` dir names are the same names Claude keys
  *  `enabledPlugins` on, so a dir survives only when `<plugin>@<marketplace>` is
  *  in `enabledIds`. */
-async function claudePluginContainers(pluginsRoot: string, enabledIds: Set<string>): Promise<SkillContainer[]> {
-  const out: SkillContainer[] = []
+async function claudePluginReaders(pluginsRoot: string, enabledIds: Set<string>): Promise<SkillReader[]> {
+  const out: SkillReader[] = []
   const marketplaces = path.join(pluginsRoot, 'marketplaces')
   for (const mkt of await subdirs(marketplaces)) {
     for (const group of ['plugins', 'external_plugins']) {
       const groupDir = path.join(marketplaces, mkt, group)
       for (const plugin of await subdirs(groupDir)) {
         if (!enabledIds.has(`${plugin}@${mkt}`)) continue
-        out.push(fsContainer(path.join(groupDir, plugin, 'skills'), 'plugin', plugin))
+        out.push(fsReader(path.join(groupDir, plugin, 'skills'), 'plugin', plugin))
       }
     }
   }
@@ -240,43 +240,43 @@ async function codexEnabledPluginNames(configPath: string): Promise<Set<string>>
   return out
 }
 
-/** Enabled plugin containers under Codex's marketplace clone at
+/** Enabled plugin readers under Codex's marketplace clone at
  *  `.tmp/plugins/plugins/<plugin>/skills/` — a dir survives only when its
  *  plugin is in `enabledNames`. */
-async function codexPluginContainers(pluginsDir: string, enabledNames: Set<string>): Promise<SkillContainer[]> {
-  const out: SkillContainer[] = []
+async function codexPluginReaders(pluginsDir: string, enabledNames: Set<string>): Promise<SkillReader[]> {
+  const out: SkillReader[] = []
   for (const plugin of await subdirs(pluginsDir)) {
     if (!enabledNames.has(plugin)) continue
-    out.push(fsContainer(path.join(pluginsDir, plugin, 'skills'), 'plugin', plugin))
+    out.push(fsReader(path.join(pluginsDir, plugin, 'skills'), 'plugin', plugin))
   }
   return out
 }
 
-async function claudeContainers(slug: string, ref: string | null): Promise<SkillContainer[]> {
+async function claudeReaders(slug: string, ref: string | null): Promise<SkillReader[]> {
   const claude = claudeDir(slug)
   return [
-    fsContainer(path.join(claude, 'skills'), 'personal'),
-    ...(await claudePluginContainers(path.join(claude, 'plugins'), await claudeEnabledPluginIds(slug, ref))),
-    repoContainer(repoDir(slug), ref, '.claude/skills', 'project'),
+    fsReader(path.join(claude, 'skills'), 'personal'),
+    ...(await claudePluginReaders(path.join(claude, 'plugins'), await claudeEnabledPluginIds(slug, ref))),
+    repoReader(repoDir(slug), ref, '.claude/skills', 'project'),
   ]
 }
 
-async function codexContainers(slug: string, ref: string | null): Promise<SkillContainer[]> {
+async function codexReaders(slug: string, ref: string | null): Promise<SkillReader[]> {
   const codex = codexDir(slug)
   // `skills/` is read directly, so the dot-hidden `.system/` bundled tier is
-  // skipped for free (readContainer ignores dot-dirs). config.toml is the host
+  // skipped for free (readSkills ignores dot-dirs). config.toml is the host
   // install registry, not a repo check, so its read stays on-disk.
   return [
-    fsContainer(path.join(codex, 'skills'), 'personal'),
-    ...(await codexPluginContainers(
+    fsReader(path.join(codex, 'skills'), 'personal'),
+    ...(await codexPluginReaders(
       path.join(codex, '.tmp', 'plugins', 'plugins'),
       await codexEnabledPluginNames(path.join(codex, 'config.toml')),
     )),
-    repoContainer(repoDir(slug), ref, '.agents/skills', 'project'),
+    repoReader(repoDir(slug), ref, '.agents/skills', 'project'),
   ]
 }
 
-function opencodeContainers(slug: string, ref: string | null): SkillContainer[] {
+function opencodeReaders(slug: string, ref: string | null): SkillReader[] {
   const cfg = opencodeConfigDir(slug)
   const repo = repoDir(slug)
   // opencode has no plugin-skills tier (its plugins are JS modules). Its own
@@ -284,35 +284,35 @@ function opencodeContainers(slug: string, ref: string | null): SkillContainer[] 
   // Claude- and agents-compatible locations. Ordered by precedence so the
   // dedupe below keeps the winning copy of a same-named skill.
   return [
-    fsContainer(path.join(cfg, 'skill'), 'personal'),
-    fsContainer(path.join(cfg, 'skills'), 'personal'),
-    fsContainer(path.join(claudeDir(slug), 'skills'), 'personal'),
-    repoContainer(repo, ref, '.opencode/skill', 'project'),
-    repoContainer(repo, ref, '.opencode/skills', 'project'),
-    repoContainer(repo, ref, '.claude/skills', 'project'),
-    repoContainer(repo, ref, '.agents/skills', 'project'),
+    fsReader(path.join(cfg, 'skill'), 'personal'),
+    fsReader(path.join(cfg, 'skills'), 'personal'),
+    fsReader(path.join(claudeDir(slug), 'skills'), 'personal'),
+    repoReader(repo, ref, '.opencode/skill', 'project'),
+    repoReader(repo, ref, '.opencode/skills', 'project'),
+    repoReader(repo, ref, '.claude/skills', 'project'),
+    repoReader(repo, ref, '.agents/skills', 'project'),
   ]
 }
 
-function piContainers(slug: string, ref: string | null): SkillContainer[] {
+function piReaders(slug: string, ref: string | null): SkillReader[] {
   const repo = repoDir(slug)
   // pi's whole `~/.pi` home is mounted per-project (piDir), so its global
   // `~/.pi/agent/skills` personal tier is host-visible. `~/.agents/skills` is
   // not mounted, so it isn't reachable. Project skills come from the repo.
   // `skills` plural only; no plugin tier.
   return [
-    fsContainer(path.join(piDir(slug), 'agent', 'skills'), 'personal'),
-    repoContainer(repo, ref, '.pi/skills', 'project'),
-    repoContainer(repo, ref, '.agents/skills', 'project'),
+    fsReader(path.join(piDir(slug), 'agent', 'skills'), 'personal'),
+    repoReader(repo, ref, '.pi/skills', 'project'),
+    repoReader(repo, ref, '.agents/skills', 'project'),
   ]
 }
 
-async function containersFor(tool: AgentTool, slug: string, ref: string | null): Promise<SkillContainer[]> {
+async function readersFor(tool: AgentTool, slug: string, ref: string | null): Promise<SkillReader[]> {
   switch (tool) {
-    case 'claude': return claudeContainers(slug, ref)
-    case 'codex': return codexContainers(slug, ref)
-    case 'opencode': return opencodeContainers(slug, ref)
-    case 'pi': return piContainers(slug, ref)
+    case 'claude': return claudeReaders(slug, ref)
+    case 'codex': return codexReaders(slug, ref)
+    case 'opencode': return opencodeReaders(slug, ref)
+    case 'pi': return piReaders(slug, ref)
   }
 }
 
@@ -342,25 +342,25 @@ function toSummary(
   }
 }
 
-/** Read every `<name>/SKILL.md` directly under one container. */
-async function readContainer(c: SkillContainer): Promise<DiscoveredSkill[]> {
+/** Read every `<name>/SKILL.md` a single reader exposes. */
+async function readSkills(reader: SkillReader): Promise<DiscoveredSkill[]> {
   const out: DiscoveredSkill[] = []
-  for (const name of await c.list()) {
+  for (const name of await reader.list()) {
     if (name.startsWith('.')) continue // hidden tiers (.system) and VCS dirs (.git)
-    const raw = await c.read(name)
+    const raw = await reader.read(name)
     if (raw == null) continue // a subdir without a SKILL.md is not a skill
     const summary = toSummary(raw, {
-      id: skillId(c.source, c.sourceLabel, name),
+      id: skillId(reader.source, reader.sourceLabel, name),
       dirName: name,
-      source: c.source,
-      sourceLabel: c.sourceLabel,
+      source: reader.source,
+      sourceLabel: reader.sourceLabel,
     })
-    out.push({ ...summary, read: () => c.read(name) })
+    out.push({ ...summary, read: () => reader.read(name) })
   }
   return out
 }
 
-/** Keep the first skill seen per id — containers are listed in precedence
+/** Keep the first skill seen per id — readers are listed in precedence
  *  order, so a native dir wins over a compat dir for the same-named skill. */
 function dedupeById(skills: DiscoveredSkill[]): DiscoveredSkill[] {
   const seen = new Set<string>()
@@ -384,9 +384,9 @@ const SOURCE_ORDER: Record<SkillSource, number> = { personal: 0, plugin: 1, proj
 
 async function discover(tool: AgentTool, slug: string, branch?: string): Promise<DiscoveredSkill[]> {
   const ref = await resolveRepoRef(repoDir(slug), branch)
-  const containers = await containersFor(tool, slug, ref)
-  const perContainer = await Promise.all(containers.map(readContainer))
-  const all = dedupeById(perContainer.flat())
+  const readers = await readersFor(tool, slug, ref)
+  const perReader = await Promise.all(readers.map(readSkills))
+  const all = dedupeById(perReader.flat())
   markShadowed(all)
   all.sort((a, b) => SOURCE_ORDER[a.source] - SOURCE_ORDER[b.source] || a.name.localeCompare(b.name))
   return all
@@ -401,7 +401,7 @@ export async function getProjectSkills(tool: AgentTool, slug: string, branch?: s
   return { skills }
 }
 
-/** The full `SKILL.md` for one skill, resolved by re-reading the containers and
+/** The full `SKILL.md` for one skill, resolved by re-reading the readers and
  *  matching the id — the client never supplies a filesystem path, so there is
  *  no traversal. `branch` must match the one the summary was listed under so the
  *  id resolves against the same tree. */
