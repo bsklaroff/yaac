@@ -11,7 +11,8 @@ import { createTokenStore, loadTokens, saveTokens } from '#token-store'
 import { closeDb, getDb } from '#lib/db/client'
 import { importLegacyJsonStores } from '#lib/db/legacy-import'
 import { EventHub } from '#events'
-import { bridge, killViewSession, newViewName, parsePtySize, parsePtyTarget, spawnAttachPty, type SocketLike } from '#pty-bridge'
+import { bridge, killViewSession, makeWindowResizer, newViewName, parsePtySize, parsePtyTarget, spawnAttachPty, type SocketLike } from '#pty-bridge'
+import { containerExec } from '#lib/k8s/exec'
 import { coalesceCalls, notifySessionListChanged, onSessionListChanged } from '#sessions-changed'
 import { resolveSessionContainer } from '#session-resolve'
 import { StatusWatcherManager } from '#status-watcher'
@@ -247,11 +248,25 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
               cb(Array.isArray(data) ? Buffer.concat(data) : data, isBinary)),
             onClose: (cb) => raw.on('close', () => cb()),
           }
+          // Webapp views (agent / window:@) pin their tmux window to the
+          // client via `window-size manual` + resize-window (see attachArgs),
+          // so their resizes must drive resize-window; the resizer serializes
+          // those execs. 'native' keeps default `latest` sizing and 'shell'
+          // has no tmux view, so neither needs one.
+          const resizer = target === 'shell' || target === 'native'
+            ? null
+            : makeWindowResizer(viewName, (cmd) =>
+                containerExec(jobName, cmd, { maxAttempts: 1 }).catch(() => {
+                  // view gone / pod race — the next resize (or none) is fine
+                }))
           // 'shell' is a raw zsh exec — no view session exists to clean up.
           const detach = target === 'shell'
             ? undefined
-            : (): void => void killViewSession(jobName, viewName)
-          bridge(ptyProc, sock, { detach })
+            : (): void => {
+                resizer?.dispose()
+                void killViewSession(jobName, viewName)
+              }
+          bridge(ptyProc, sock, { detach, resizeWindow: resizer?.resize })
           serverLog(`[server] pty attach: session=${id} job=${jobName}`)
         })()
       },

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import * as pty from '@lydell/node-pty'
 import type * as execModule from '#lib/k8s/exec'
 import { containerExec } from '#lib/k8s/exec'
-import { attachArgs, killViewSession, newViewName, parseControl, parsePtySize, parsePtyTarget, bridge, spawnAttachPty } from '#pty-bridge'
+import { attachArgs, killViewSession, makeWindowResizer, newViewName, parseControl, parsePtySize, parsePtyTarget, bridge, resizeWindowCmd, spawnAttachPty } from '#pty-bridge'
 import type { PtyLike, SocketLike } from '#pty-bridge'
 
 // Avoid loading/spawning the real node-pty native module in unit tests.
@@ -14,14 +14,15 @@ vi.mock('#lib/k8s/exec', async (importOriginal) => ({
 }))
 
 /** Every webapp attach creates its per-client grouped view session detached,
- *  with the chrome-less options applied before any client is attached —
- *  `status off` while detached is what keeps the attach a single window
- *  resize (the attached-create shape sized the window twice, eating the row
- *  below the agent's cursor when the agent missed the net-zero resize). */
+ *  with the chrome-less options applied before any client is attached:
+ *  `status off`, `prefix None`, and per-view `window-size manual` (which, with
+ *  the resize-window below, pins the shared window to this client — set per
+ *  view, never globally, since global manual segfaults tmux 3.4). */
 const VIEW_CREATE = (view: string, cols: number, rows: number): string =>
   `tmux -S /tmp/yaac-tmux/server new-session -d -t yaac -s ${view} -x ${cols} -y ${rows}`
   + ` \\; set-option -t ${view} status off`
   + ` \\; set-option -t ${view} prefix None`
+  + ` \\; set-option -t ${view} window-size manual`
 
 describe('newViewName', () => {
   it('generates unique view-session names', () => {
@@ -31,7 +32,7 @@ describe('newViewName', () => {
 })
 
 describe('attachArgs', () => {
-  it('pins the agent target to the lowest-index yaac window via a view session', () => {
+  it('pins the agent target to the lowest-index yaac window and sizes it to the client', () => {
     expect(attachArgs('yaac-demo-abc', 'agent', 'view-11aa22bb', { cols: 150, rows: 40 })).toEqual([
       'exec', '-n', 'yaac', '-it', 'job/yaac-demo-abc', '--',
       'sh', '-c',
@@ -39,11 +40,12 @@ describe('attachArgs', () => {
       + ` && ${VIEW_CREATE('view-11aa22bb', 150, 40)}`
       + ' && exec tmux -S /tmp/yaac-tmux/server attach-session -t view-11aa22bb'
       + " \\; select-window -t 'view-11aa22bb:^'"
+      + ' \\; resize-window -t view-11aa22bb -x 150 -y 40'
       + ' \\; set-option destroy-unattached on',
     ])
   })
 
-  it('builds a window-pinned view argv for window targets', () => {
+  it('builds a window-pinned view argv for window targets, sized to the client', () => {
     const argv = attachArgs('yaac-demo-abc', 'window:@3', 'view-11aa22bb', { cols: 80, rows: 24 })
     expect(argv.slice(0, 7)).toEqual([
       'exec', '-n', 'yaac', '-it', 'job/yaac-demo-abc', '--', 'sh',
@@ -51,17 +53,23 @@ describe('attachArgs', () => {
     const cmd = argv[8]
     expect(cmd).toContain(VIEW_CREATE('view-11aa22bb', 80, 24))
     expect(cmd).toContain("select-window -t '@3'")
+    expect(cmd).toContain('resize-window -t view-11aa22bb -x 80 -y 24')
+  })
+
+  it('sets window-size manual per view, never globally (global manual segfaults tmux 3.4)', () => {
+    const cmd = attachArgs('yaac-demo-abc', 'agent', 'view-11aa22bb', { cols: 150, rows: 40 })[8]
+    expect(cmd).toContain('set-option -t view-11aa22bb window-size manual')
+    expect(cmd).not.toContain('set-option -g window-size')
   })
 
   it('falls back to the 80x24 default size', () => {
     const cmd = attachArgs('yaac-demo-abc', 'agent', 'view-11aa22bb')[8]
     expect(cmd).toContain('new-session -d -t yaac -s view-11aa22bb -x 80 -y 24')
+    expect(cmd).toContain('resize-window -t view-11aa22bb -x 80 -y 24')
   })
 
   it('creates the view detached and sets destroy-unattached only after attaching', () => {
-    // Order matters twice over: `status off` must land while the view is
-    // detached (so attaching resizes the shared window exactly once, to the
-    // client size — no status-bar row intermediate), and destroy-unattached
+    // `status off` lands while the view is detached, and destroy-unattached
     // must not be set until the client is attached (a detached view with it
     // set could be reaped in the create→attach gap by any other client's
     // detach sweep).
@@ -96,6 +104,58 @@ describe('killViewSession', () => {
   })
 })
 
+describe('resizeWindowCmd', () => {
+  it('builds a resize-window targeting the view', () => {
+    expect(resizeWindowCmd('view-11aa22bb', 120, 40)).toBe(
+      'tmux -S /tmp/yaac-tmux/server resize-window -t view-11aa22bb -x 120 -y 40',
+    )
+  })
+})
+
+describe('makeWindowResizer', () => {
+  it('fires immediately when idle (no added latency)', () => {
+    const runs: string[] = []
+    const rz = makeWindowResizer('view-11aa22bb', (c) => { runs.push(c); return Promise.resolve() })
+    rz.resize(120, 40)
+    expect(runs).toEqual([resizeWindowCmd('view-11aa22bb', 120, 40)])
+  })
+
+  it('serializes execs: a burst while one is in flight coalesces to the newest size', async () => {
+    const runs: string[] = []
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    const rz = makeWindowResizer('view-11aa22bb', (c) => {
+      runs.push(c)
+      return runs.length === 1 ? gate : Promise.resolve()
+    })
+    rz.resize(100, 30) // in flight, blocked on the gate
+    rz.resize(110, 35) // superseded before the follow-up fires
+    rz.resize(120, 40) // the one queued follow-up
+    expect(runs).toEqual([resizeWindowCmd('view-11aa22bb', 100, 30)])
+    release()
+    await gate
+    await Promise.resolve() // let the completion pump run
+    expect(runs).toEqual([
+      resizeWindowCmd('view-11aa22bb', 100, 30),
+      resizeWindowCmd('view-11aa22bb', 120, 40), // 110x35 never hit the pod
+    ])
+  })
+
+  it('dispose drops a queued resize (connection closed mid-exec)', async () => {
+    const runs: string[] = []
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    const rz = makeWindowResizer('view-11aa22bb', (c) => { runs.push(c); return gate })
+    rz.resize(100, 30)
+    rz.resize(120, 40) // queued
+    rz.dispose()
+    release()
+    await gate
+    await Promise.resolve()
+    expect(runs).toEqual([resizeWindowCmd('view-11aa22bb', 100, 30)])
+  })
+})
+
 describe('parsePtyTarget', () => {
   it('validates targets, defaulting to agent', () => {
     expect(parsePtyTarget('agent')).toBe('agent')
@@ -124,6 +184,14 @@ describe('attachArgs (native)', () => {
     expect(cmd).not.toContain('prefix None')
     expect(cmd).not.toContain('select-window')
     expect(cmd).toMatch(/attach-session -t view-11aa22bb[\s\S]*destroy-unattached on$/)
+  })
+
+  it('keeps default (latest) window sizing: no manual, no resize-window', () => {
+    // Native has a status bar and lets the user switch windows, so it wants
+    // tmux's standard client-driven sizing — the webapp-only pin would fight it.
+    const cmd = attachArgs('yaac-demo-abc', 'native', 'view-11aa22bb', { cols: 150, rows: 40 })[8]
+    expect(cmd).not.toContain('window-size manual')
+    expect(cmd).not.toContain('resize-window')
   })
 
   it('still guards on the yaac session existing', () => {
@@ -238,6 +306,20 @@ describe('bridge', () => {
     bridge(pty, sock)
     sock.emitMessage('{"type":"resize","cols":100,"rows":30}', false)
     expect(pty.resized).toEqual([[100, 30]])
+  })
+
+  it('drives the tmux window resize alongside the PTY tty on resize', () => {
+    const pty = new FakePty()
+    const sock = new FakeSock()
+    const resizeWindow = vi.fn()
+    bridge(pty, sock, { resizeWindow })
+    sock.emitMessage('{"type":"resize","cols":100,"rows":30}', false)
+    expect(pty.resized).toEqual([[100, 30]])
+    expect(resizeWindow).toHaveBeenCalledWith(100, 30)
+    // only resize frames touch the window
+    resizeWindow.mockClear()
+    sock.emitMessage('{"type":"ping"}', false)
+    expect(resizeWindow).not.toHaveBeenCalled()
   })
 
   it('replies to ping with pong', () => {

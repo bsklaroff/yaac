@@ -59,20 +59,28 @@ export function newViewName(): string {
  *    bindings live in the root key table, which the prefix doesn't gate).
  *
  * The view session is created *detached* — sized to the client, `status off`
- * already applied — and only then attached. Creating it attached (the old
- * shape) sized the shared window twice within one command sequence: to
- * `client rows - 1` while the default status bar existed, then back to
- * `client rows` when `status off` landed. tmux's shrink step discards the
- * row *below* the agent's cursor (Claude's bottom hint line) and the grow
- * step restores a history line at the top instead, so the whole screen ends
- * one row lower with the bottom line gone. The agent only heals that if it
- * repaints — and when the two SIGWINCHes coalesce on a same-size reattach it
- * sees no net change and skips, leaving the session "slightly scrolled down"
- * until the first keystroke forces a repaint. Detached create + status off
- * first means attaching is a single resize to the client size (or none at
- * all when the size is unchanged), so the intermediate row-eating size never
- * exists. `destroy-unattached` is set only after the attach so nothing can
- * reap the view in the created-but-not-yet-attached gap.
+ * already applied — and only then attached. `destroy-unattached` is set only
+ * after the attach so nothing can reap the view in the created-but-not-yet-
+ * attached gap.
+ *
+ * WINDOW SIZING — a fresh session used to start "scrolled down a little with
+ * the right-hand columns cut off". The windows are shared across every grouped
+ * view, so under tmux's default (`window-size latest`) each window follows
+ * whichever *client viewing it* was most recently active — and there are often
+ * several at different sizes: a tiled sibling, a fresh attach briefly
+ * overlapping the one it replaces, or a laptop-sleep / network blip that
+ * strands a ghost client ("attached", but its kubectl exec died) at a stale
+ * size. Any of them can win, leaving the visible pane a few rows/cols off.
+ * The fix pins each webapp view's window to THIS client, immune to the others:
+ * `set-option -t <view> window-size manual` takes the view out of the
+ * negotiation, and `resize-window` sizes it to the client's grid — a
+ * per-view-manual window holds its size even while a `latest` ghost of another
+ * size views it. bridge()'s resizeWindow hook keeps it in step as the pane
+ * resizes later. Manual is set PER VIEW (after create), never globally:
+ * container tmux (3.4) segfaults if `new-session` runs while global
+ * `window-size` is `manual`, so the group option must stay `latest`.
+ * The native (CLI) attach keeps default `latest` sizing (its status bar and
+ * live window-switching want the standard behaviour).
  */
 export function attachArgs(
   jobName: string,
@@ -112,16 +120,76 @@ export function attachArgs(
     : `${viewName}:^`
   // select-window runs inside the attached client's sequence (like the old
   // shape) so a bare window id resolves within the view session, not the
-  // group's original.
+  // group's original. `window-size manual` on the view + `resize-window` pins
+  // the shared window to this client's grid (see the sizing note above); both
+  // must target this view specifically — global manual segfaults tmux 3.4.
   return interactiveExecArgs(jobName, [
     'sh', '-c',
     create
     + ` \\; set-option -t ${viewName} status off`
     + ` \\; set-option -t ${viewName} prefix None`
+    + ` \\; set-option -t ${viewName} window-size manual`
     + ` && exec ${tmux} attach-session -t ${viewName}`
     + ` \\; select-window -t '${window}'`
+    + ` \\; resize-window -t ${viewName} -x ${cols} -y ${rows}`
     + ' \\; set-option destroy-unattached on',
   ])
+}
+
+/** The tmux command to resize a webapp view's window to a client grid. The
+ *  view is `window-size manual` (see attachArgs), so this is what tracks live
+ *  browser-pane resizes — the client SIGWINCH alone no longer moves it. */
+export function resizeWindowCmd(viewName: string, cols: number, rows: number): string {
+  return `tmux -S ${CONTAINER_TMUX_SOCK} resize-window -t ${viewName} -x ${cols} -y ${rows}`
+}
+
+export interface WindowResizer {
+  /** Record a new client size. Fires immediately when idle; while an exec is
+   *  in flight only the newest size is kept, fired on completion. Property
+   *  (not method) form so a detached `resizer.resize` reference is safe to
+   *  hand to bridge(). */
+  resize: (cols: number, rows: number) => void
+  /** Drop any queued resize (connection closing). */
+  dispose: () => void
+}
+
+/**
+ * A "resize the view's tmux window to the client size" driver for bridge()'s
+ * resizeWindow hook. Execs are serialized: fire immediately when idle; while
+ * one is in flight remember only the newest size and fire it on completion.
+ * A lone resize gets no added latency, a burst (a divider drag emits one
+ * frame per column step) coalesces to at most one queued follow-up, and the
+ * last size always wins — the property a debounce can't give, since two
+ * concurrent execs can land out of order and pin the window at a stale size.
+ * `exec` is injected so the logic is unit-testable without kubectl; it must
+ * never reject (the caller swallows exec failures).
+ */
+export function makeWindowResizer(
+  viewName: string,
+  exec: (cmd: string) => Promise<unknown>,
+): WindowResizer {
+  let inFlight = false
+  let pending: { cols: number; rows: number } | null = null
+  const pump = (): void => {
+    if (inFlight || !pending) return
+    const p = pending
+    pending = null
+    inFlight = true
+    const done = (): void => {
+      inFlight = false
+      pump()
+    }
+    exec(resizeWindowCmd(viewName, p.cols, p.rows)).then(done, done)
+  }
+  return {
+    resize(cols, rows): void {
+      pending = { cols, rows }
+      pump()
+    },
+    dispose(): void {
+      pending = null
+    },
+  }
 }
 
 /**
@@ -211,7 +279,15 @@ const DETACH_GRACE_MS = 400
 export function bridge(
   ptyProc: PtyLike,
   sock: SocketLike,
-  opts: { detach?: () => void; detachGraceMs?: number } = {},
+  opts: {
+    detach?: () => void
+    detachGraceMs?: number
+    /** Called on every resize control frame (in addition to resizing the PTY's
+     *  own tty) so the caller can resize the tmux window to match — the webapp
+     *  view is `window-size manual`, where the tty SIGWINCH alone no longer
+     *  moves the window. */
+    resizeWindow?: (cols: number, rows: number) => void
+  } = {},
 ): void {
   const detachGraceMs = opts.detachGraceMs ?? DETACH_GRACE_MS
   ptyProc.onData((d) => {
@@ -239,6 +315,7 @@ export function bridge(
     if (!ctrl) return
     if (ctrl.type === 'resize' && ctrl.cols && ctrl.rows) {
       ptyProc.resize(ctrl.cols, ctrl.rows)
+      opts.resizeWindow?.(ctrl.cols, ctrl.rows)
     } else if (ctrl.type === 'signal' && ctrl.name) {
       ptyProc.kill(ctrl.name)
     } else if (ctrl.type === 'ping') {

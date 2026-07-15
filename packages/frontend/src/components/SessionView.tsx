@@ -225,6 +225,14 @@ export function SessionView({
   const liveIds = new Set(sessions.map((s) => s.sessionId))
   const mounted = opened.filter((key) => liveIds.has(key.slice(0, key.indexOf('|'))))
 
+  // Last shown rect per kept-alive terminal — hidden panes freeze here so
+  // re-showing them is resize-free (see the style computation below). Render-
+  // time cache writes are idempotent, so this is safe under re-renders.
+  const lastRects = useRef(new Map<string, { left: number; top: number; width: number; height: number }>())
+  for (const k of [...lastRects.current.keys()]) {
+    if (!mounted.includes(k)) lastRects.current.delete(k)
+  }
+
   const refetchTerminals = (): void => {
     void queryClient.invalidateQueries({ queryKey: ['terminals', sid] })
   }
@@ -707,6 +715,22 @@ export function SessionView({
           const changes = isChangesTarget(target)
           const special = preview || changes
           const pane = id === sid && tiled ? panes.find((p) => p.target === target) : undefined
+          // Hidden terminals never change size. With per-view `window-size
+          // manual` a pane resize round-trips resize-window to the server, and
+          // a switch that changed the pane's size flashed the stale window
+          // (overflow dots on the right) until it landed. So in tabs mode every
+          // terminal tab of the selected session shares the active tab's rect
+          // (the inactive ones merely invisible), and any other kept-alive pane
+          // freezes at the last rect it was shown with — switching tabs or
+          // sessions is a pure visibility flip, no resize at all. Special panes
+          // still unmount off-screen (below).
+          const tabsRect = {
+            left: PAD,
+            top: HEADER_H,
+            width: wsSize.w - PAD * 2,
+            height: wsSize.h - HEADER_H - PAD,
+          }
+          const onScreen = pane != null || (id === sid && !tiled && target === activeTab)
           const style = pane
             ? {
                 left: pane.rect.x + PAD,
@@ -714,14 +738,12 @@ export function SessionView({
                 width: pane.rect.w - PAD * 2,
                 height: pane.rect.h - HEADER_H - PAD,
               }
-            : id === sid && !tiled && target === activeTab
-              ? {
-                  left: PAD,
-                  top: HEADER_H,
-                  width: wsSize.w - PAD * 2,
-                  height: wsSize.h - HEADER_H - PAD,
-                }
-              : undefined
+            : id === sid && !tiled && (special ? target === activeTab : targets.includes(target))
+              ? tabsRect
+              : special
+                ? undefined
+                : lastRects.current.get(key)
+          if (!special && style) lastRects.current.set(key, style)
           // Terminals stay mounted while hidden (instant switch-back, live PTY);
           // a preview/changes pane is torn down off-screen (a hidden one keeps
           // polling the pod) and cheaply re-mounts on return. Both only have a
@@ -741,7 +763,7 @@ export function SessionView({
               // the cycle shortcut steps from the pane the user is actually
               // in. Re-recording a shortcut-driven focus is a store no-op.
               onFocusCapture={() => useUiStore.getState().setActiveTab(id, target)}
-              className={clsx('absolute', !style && 'invisible left-0 top-0 h-full w-full')}
+              className={clsx('absolute', !onScreen && 'invisible', !style && 'left-0 top-0 h-full w-full')}
             >
               {preview ? (
                 <div className="h-full w-full overflow-hidden rounded-md">
@@ -771,9 +793,10 @@ export function SessionView({
                     key={`${key}:${terminalNonces[id] ?? 0}`}
                     sessionId={id}
                     target={target}
-                    // A positioned pane (has `style`) is on-screen; the rest are
-                    // kept-alive but hidden. Drives the terminal's WebGL context.
-                    visible={!!style}
+                    // On-screen panes render; the rest are kept-alive but
+                    // hidden (a hidden tab keeps its rect, so it's the right
+                    // size the instant it's shown). Drives the WebGL context.
+                    visible={onScreen}
                     focusKey={id === sid && target === focusTarget ? focusNonce : undefined}
                   />
                 </div>
