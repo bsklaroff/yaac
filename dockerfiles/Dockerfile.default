@@ -38,6 +38,30 @@ ARG YAAC_UID=1000
 RUN userdel -r ubuntu 2>/dev/null; useradd -m -u ${YAAC_UID} -s /bin/zsh yaac && \
     echo 'yaac ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers && \
     chown -R yaac:yaac /opt/playwright-browsers
+# Replace the distro zshrc's compinit with a fast-path + background-refresh
+# variant. The distro's plain `compinit` re-validates the dump by counting
+# $fpath files, and inside a session pod that count comes out one off from
+# build time — so it re-scanned every completion function through the gVisor
+# gofer (10-30s) on the session's first shell, discarding the baked dump.
+# Ours: `compinit -C` trusts the dump unconditionally (instant, every
+# shell), then the FIRST interactive shell of a pod kicks off one detached
+# full compinit that rebuilds the dump against the live $fpath — so
+# completion files installed after the image build (or the runtime count
+# quirk) are folded in for every later shell, without any shell waiting.
+RUN echo 'skip_global_compinit=1' >> /etc/zsh/zshenv && cat <<'EOF' >> /etc/zsh/zshrc
+
+# yaac: fast completion init (the distro block above is skipped via
+# skip_global_compinit in /etc/zsh/zshenv). -C sources the image-baked
+# ~/.zcompdump without the audit or staleness scan; the once-per-pod
+# marker gates a detached full refresh so later shells see completions
+# added after the image was built.
+autoload -Uz compinit
+compinit -C
+if [[ ! -e $HOME/.zcompdump.refreshed ]]; then
+  : >| $HOME/.zcompdump.refreshed
+  (nice -n 19 zsh -fc 'autoload -Uz compinit && compinit && rm -f ~/.zcompdump.zwc && zcompile ~/.zcompdump' >/dev/null 2>&1 &)
+fi
+EOF
 USER yaac
 
 RUN npm config set prefix /home/yaac/.local
@@ -71,8 +95,9 @@ EOF
 # function under $fpath — thousands of cold gofer reads inside the gVisor
 # sentry, measured at 17–30s for a session's first interactive shell
 # (each pod's home overlay starts fresh, so every session paid it). With
-# the dump baked into the image, that first shell only pays the ~1s
-# dump-validity check like every later one.
+# the dump baked into the image and the global compinit patched to -C
+# (see the /etc/zsh/zshrc sed above), every shell — including the first —
+# just sources the dump.
 RUN zsh -c 'autoload -Uz compinit && compinit && zcompile ~/.zcompdump'
 
 WORKDIR /workspace
