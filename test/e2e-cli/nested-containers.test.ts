@@ -417,8 +417,8 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     ], { timeout: 120_000 })
     expect((await curlUntil('http://localhost:18080/')).trim()).toBe('hello-from-nested')
 
-    // docker compose up --build: the Dockerfile's RUN step exercises
-    // mount() inside the build userns (the SYS_ADMIN seccomp unlock).
+    // docker compose up --build: the Dockerfile's RUN step exercises the
+    // build path's overlay/proc/tmpfs mounts under the sentry.
     // network_mode: host keeps the service on the pod netns (the same
     // localhost-reachability as `docker run` above).
     await execInJob(name, [
@@ -432,6 +432,21 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     await execInJob(name, [
       'sh', '-c', 'cd /tmp/composeproj && docker compose down',
     ], { timeout: 60_000 }).catch(() => { /* best-effort */ })
+
+    // Chatty RUN step: floods stdout past the sentry's stdio-relay break
+    // (buildah's default oci isolation dies with EPIPE after a few tens
+    // of KB of RUN output — killing e.g. apt-get in real base builds —
+    // while quiet builds pass). The engine runs with
+    // BUILDAH_ISOLATION=chroot (session-create's engine start) exactly so
+    // this survives; FINAL_MARKER proves the step ran to completion.
+    const { stdout: floodOut } = await execInJob(name, [
+      'sh', '-c',
+      'mkdir -p /tmp/floodbuild && cd /tmp/floodbuild && '
+      + `printf 'FROM ${UPSTREAM_IMAGE_REF}\\nRUN i=0; while [ $i -lt 20000 ]; do echo line-$i; i=$((i+1)); done; echo FINAL_MARKER\\n' > Dockerfile && `
+      + 'docker build --no-cache -t yaac-flood-probe /tmp/floodbuild 2>&1 | tail -c 4000',
+    ], { timeout: 240_000 })
+    expect(floodOut).toContain('FINAL_MARKER')
+    expect(floodOut).not.toContain('broken pipe')
 
     // Blocked pull: example.com is not on the allowlist — the proxy
     // denies at the SNI judgment, fail-closed and fast (no hang).

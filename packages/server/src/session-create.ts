@@ -835,10 +835,20 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
     // bundle ({public roots} ∪ {proxy CA}) so both MITM'd and tunnelled
     // registries verify. Nested containers + build RUN steps get their own
     // CA trust from /etc/containers/containers.conf, independent of this.
+    //
+    // BUILDAH_ISOLATION=chroot: under buildah's default oci isolation the
+    // sentry breaks the RUN-step stdio relay after a few tens of KB of
+    // output — the step's writes hit EPIPE and chatty commands (apt-get)
+    // die with their own error codes while quiet builds pass (why the
+    // e2e never caught it). chroot isolation streams fine, keeps RUN on
+    // the pod netns, and holds setcap file caps on the tmpfs graphroot
+    // (all verified in-pod). Remote builds resolve isolation SERVER-side,
+    // so the service env covers every client: an inner yaac's podman,
+    // user `docker build`, and compose --build.
     await containerExec(
       jobName,
       'sudo -n sh -c \''
-      + `export SSL_CERT_FILE=${PROXY_CA_BUNDLE_PATH}; `
+      + `export SSL_CERT_FILE=${PROXY_CA_BUNDLE_PATH} BUILDAH_ISOLATION=chroot; `
       // `&` terminates the background command — no `;` may follow it.
       + 'podman system service --time=0 >/tmp/podman-service.log 2>&1 & i=0; '
       + 'while [ $i -lt 120 ] && ! [ -S /run/podman/podman.sock ]; do i=$((i+1)); sleep 0.5; done; '

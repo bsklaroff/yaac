@@ -74,8 +74,15 @@ service` as root with `SSL_CERT_FILE` exported inside the sudo shell (env_reset
 would strip it), a socket wait with a log-tail diagnostic on timeout, then
 `chmod 0755 /run/podman && chown yaac` so the yaac user drives the engine
 remotely — the image's `DOCKER_HOST`/`CONTAINER_HOST` point both CLIs at
-`/run/podman/podman.sock`. Nothing supervises or revives the engine: if it
-dies mid-session, the session is degraded until recreated.
+`/run/podman/podman.sock`. The service also exports
+`BUILDAH_ISOLATION=chroot`: under buildah's default oci isolation the sentry
+breaks the RUN-step stdio relay after a few tens of KB of output (EPIPE kills
+chatty steps like `apt-get`; quiet builds pass), while chroot isolation
+streams fine, keeps RUN on the pod netns, and holds setcap file caps on the
+tmpfs graphroot. Remote builds resolve isolation server-side, so the service
+env covers every client (an inner yaac's podman, user `docker build`, compose
+`--build`). Nothing supervises or revives the engine: if it dies mid-session,
+the session is degraded until recreated.
 
 ### Image promoter (cross-session build cache)
 
