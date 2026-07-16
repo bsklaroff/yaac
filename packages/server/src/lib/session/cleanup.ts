@@ -10,7 +10,7 @@ import { recordSessionDeleted } from '#lib/session/deleted-store'
 import { markSessionTerminating } from '#lib/session/terminating'
 import { evictSessionStatus, isSessionStreamHealthy } from '#lib/session/status-store'
 import { proxyClient } from '#lib/container/proxy-client'
-import { buildPromoterShellCommand, promoteSessionImages } from '#lib/container/image-promoter'
+import { salvageSessionImages } from '#lib/container/image-promoter'
 import {
   buildVclusterCleanupShellCommand,
   getVclusterStatus,
@@ -299,10 +299,10 @@ export async function cleanupSession(params: {
   await removeSessionFromProxy(sessionId)
 
   // Salvage built image layers into the project's shared store before the
-  // pod (and its graphroot emptyDir) is destroyed. Best-effort, and the
-  // in-pod script self-gates on the nested mounts, so non-nested sessions
+  // pod (and its graphroot tmpfs) is destroyed. Best-effort, and the
+  // in-pod survey self-gates on the nested mounts, so non-nested sessions
   // (and already-dead pods) no-op.
-  await promoteSessionImages(jobName)
+  await salvageSessionImages({ jobName, projectSlug, sessionId })
 
   // Delete the session Job; the pod's terminationGracePeriodSeconds (5s)
   // covers the graceful-stop window, so no separate stop step is needed.
@@ -407,10 +407,6 @@ export async function cleanupSessionDetached(params: {
   const sessionDirRm = `rm -rf '${sessDir.replace(/'/g, `'\\''`)}' 2>/dev/null || true`
 
   const script = [
-    // Promoter first: it execs into the pod, which the Job delete below
-    // destroys. Self-gating + `|| true`, so non-nested sessions and dead
-    // pods fall straight through to the delete.
-    buildPromoterShellCommand(jobName),
     `kubectl delete job ${jobName} -n ${k8sNamespace()} --ignore-not-found 2>/dev/null || true`,
     // vcluster teardown: pure label-selector deletes, so non-vcluster
     // sessions no-op (every line carries --ignore-not-found + `|| true`).
@@ -419,11 +415,24 @@ export async function cleanupSessionDetached(params: {
     sessionDirRm,
   ].join('; ')
 
-  const child = spawn('sh', ['-c', script], {
-    detached: true,
-    stdio: 'ignore',
-  })
-  child.unref()
+  const spawnDetachedTeardown = (): void => {
+    const child = spawn('sh', ['-c', script], {
+      detached: true,
+      stdio: 'ignore',
+    })
+    child.unref()
+  }
+
+  // Salvage first: it execs into the pod, which the Job delete destroys.
+  // Server-orchestrated (survey exec → node-side writer load — see
+  // salvageSessionImages) rather than part of the detached script, and
+  // bounded by its own timeouts so a wedged salvage can't strand the
+  // teardown. If the server dies in this window, the Job survives and the
+  // stale reaper resumes the (idempotent) teardown — the same recovery as
+  // a lost detached script. Failures are logged inside and never block.
+  void salvageSessionImages({ jobName, projectSlug, sessionId })
+    .catch(() => false)
+    .then(() => { spawnDetachedTeardown() })
 }
 
 /**

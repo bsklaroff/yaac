@@ -1,4 +1,5 @@
 import { reconcileStaleSessions, captureOpencodeFirstMessages } from '#lib/session/list'
+import { reconcileImageSalvage } from '#lib/session/salvage-reconcile'
 import { reconcileProxySshKeys } from '#lib/session/proxy-reconcile'
 import { reconcileVclusters } from '#lib/session/vcluster-reconcile'
 import { reconcileInnerRedirects } from '#lib/session/inner-redirect-reconcile'
@@ -62,6 +63,10 @@ function defaultTickSteps(): Array<() => Promise<void>> {
     // Keep one prewarmed spare per active project (after the stale sweep so
     // counts reflect just-reaped sessions). No-op when the pool size is 0.
     reconcilePrewarmPool,
+    // Mid-session image salvage (nested engines → shared store), so
+    // teardown only ships a delta. Internally throttled per session; the
+    // salvages themselves run detached, never blocking the tick.
+    () => reconcileImageSalvage(),
     captureOpencodeFirstMessages,
     // Model-generated titles for untitled sessions (right after first-message
     // capture so a fresh opencode prompt is eligible the same tick). Detached

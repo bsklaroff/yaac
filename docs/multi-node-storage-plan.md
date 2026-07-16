@@ -128,9 +128,11 @@ uid_map failed`), verified on the dev cluster. Decisions:
   trust the MITM proxy CA on registry pulls. Nested containers and build RUN
   steps get their CA trust from the mounted containers.conf.
 - **Shared image store** (`additionalimagestores`) over a gofer-served
-  hostPath works for read-back; the promoter writes it through a second
-  mount path. File caps drop through the gofer store (acceptable cache
-  degradation: a miss rebuilds). The store is root-owned — no chown-init.
+  hostPath works for read-back; it is populated NODE-side by the salvage
+  writer pod (image-promoter.ts) from a tar the session exports — the
+  in-sentry skopeo copy was 10x+ slower (per-file gofer RPCs) and dropped
+  file caps, which native writes preserve. The store is root-owned — no
+  chown-init.
 
 ### vcluster
 

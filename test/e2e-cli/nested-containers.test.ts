@@ -189,7 +189,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     return findSessionPod(slug)
   }
 
-  /** Wait for the detached cleanup (promoter → job delete) to finish. */
+  /** Wait for the detached cleanup (image salvage → job delete) to finish. */
   async function waitForJobGone(jobName: string, timeoutMs: number): Promise<void> {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
@@ -251,7 +251,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
 
     // Architectural wiring: the docker CLI speaks to the ROOTFUL in-pod
     // podman socket, the shared store is mounted rw (root-owned — the
-    // rootful engine + promoter read/write it as root), and the system
+    // rootful engine and the salvage survey use it as root), and the system
     // storage.conf points additionalimagestores at it.
     const { stdout: dockerVer } = await execInJob(name1, ['docker', 'version'], { timeout: 30_000 })
     expect(dockerVer.toLowerCase()).toContain('podman')
@@ -274,8 +274,8 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     expect(graphProbe.trim()).toBe('WRITABLE')
 
     // The shared image store's two mounts are the SAME directory: a write
-    // through the promoter's -dst mount is visible via the additional-store
-    // mount the session reads. Both are root-owned (the rootful promoter
+    // through the salvage's -dst mount is visible via the additional-store
+    // mount the session reads. Both are root-owned (the rootful survey
     // writes them), so probe via sudo.
     await execInJob(name1, [
       'sh', '-c', 'sudo sh -c "echo dst-probe > /var/lib/shared-images-dst/.yaac-write-probe"',
@@ -300,8 +300,8 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     expect(imageId1).toBeTruthy()
 
     // --- Delete session 1 ---
-    // Detached cleanup order: promoter (graphroot → shared store) → job
-    // delete. Job absence proves the whole pipeline ran.
+    // Detached cleanup order: image salvage (in-pod survey+save → node-side
+    // writer load) → job delete. Job absence proves the whole pipeline ran.
     const { exitCode: delExit } = await runYaac(serverEnv, 'session', 'delete', session1.sessionId)
     expect(delExit).toBe(0)
     await waitForJobGone(name1, 300_000)
@@ -324,10 +324,10 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     ])
     expect(id2raw.trim()).toBe(imageId1)
 
-    // Promoter pass-2 (tag restore): session 1's image is reachable in
-    // session 2 by NAME, not just by layer id. Pass 1 copies images by id
-    // (skopeo's @id transport drops names), so without the tag-restore
-    // pass the image would exist in the store but be unreferenceable as
+    // Salvage tag restore: session 1's image is reachable in
+    // session 2 by NAME, not just by layer id. The save/load handoff moves
+    // images by id (podman save of an id carries no names), so without the
+    // writer's tag pass the image would exist in the store but be unreferenceable as
     // `yaac-cache-probe:v1`. A by-name inspect against session 2's fresh
     // graphroot (which never built :v1) can only resolve through the
     // additional store, so a hit proves the restore ran.

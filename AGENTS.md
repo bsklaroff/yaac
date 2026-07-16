@@ -95,8 +95,9 @@ All container images used by e2e tests are pre-built in `test/global-setup.ts` b
 
 The global setup also mirrors digest-pinned upstream images into the local
 registry (no content hash — the digest IS the pin): `registry:2` for
-per-project registries (`packages/server/src/lib/k8s/project-registry.ts`) and the vcluster
-image set (`k8s/vcluster/images.json`).
+per-project registries (`packages/server/src/lib/k8s/project-registry.ts`), the vcluster
+image set (`k8s/vcluster/images.json`), and `quay.io/podman/stable` for the
+image-salvage writer pod (`packages/server/src/lib/container/image-promoter.ts`).
 
 **Rules:**
 - Never build images inside individual test workers — all builds belong in `test/global-setup.ts`.

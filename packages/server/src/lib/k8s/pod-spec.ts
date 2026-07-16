@@ -24,20 +24,21 @@ export const CA_BUNDLE_PATH = `${CA_MOUNT_DIR}/${CA_BUNDLE_KEY}`
  * In-container mount point of the cross-session shared image store
  * (`additionalimagestores` in the nestable image's storage.conf). Mounted
  * rw because podman unconditionally creates lock-file directories inside
- * the store path (containers/storage#1733) — the promoter is the only
- * intentional writer; session-side writes are lock files only.
+ * the store path (containers/storage#1733) — store CONTENT is only ever
+ * written node-side by the salvage writer pod (image-promoter.ts);
+ * session-side writes are lock files only.
  */
 export const SHARED_IMAGE_STORE_PATH = '/var/lib/shared-images'
 
 /**
- * A second mount of the SAME shared-image-store hostPath, used only as the
- * promoter's write-side destination root. Distinct path, same directory:
- * the store is also listed in `additionalimagestores`, which podman opens
- * with a read-only lock, so a destination addressed as
- * SHARED_IMAGE_STORE_PATH fails ("not a read-write lock"). Writing through
- * a different path that podman doesn't recognize as its own additional
- * store gets a read-write lock; the bytes land in the same directory the
- * next session reads.
+ * A second mount of the SAME shared-image-store hostPath, used by the
+ * salvage survey as its tar handoff directory (a bulk sequential write —
+ * the one gofer write pattern that's fast). Distinct path, same
+ * directory: the store is also listed in `additionalimagestores`, which
+ * podman opens with a read-only lock, so in-pod writes addressed under
+ * SHARED_IMAGE_STORE_PATH would collide with that lock; a separate path
+ * podman doesn't recognize as its own additional store stays out of the
+ * way, and the node-side writer sees the tar in the same directory.
  */
 export const SHARED_IMAGE_STORE_DST_PATH = '/var/lib/shared-images-dst'
 
@@ -149,8 +150,9 @@ export interface NestedContainersParams {
    * Node-local hostPath backing the cross-session shared image store
    * (`/var/lib/yaac/imagecache/<dataDirHash>/<projectSlug>`). Root-owned
    * `DirectoryOrCreate`: the rootful in-sandbox engine reads it (as its
-   * `additionalimagestores` lower) and the promoter writes it, both as root,
-   * so no ownership fixup is needed.
+   * `additionalimagestores` lower), the salvage survey drops its tar
+   * handoff in it, and the node-side writer pod populates it — all as
+   * root, so no ownership fixup is needed.
    */
   sharedImagesHostPath: string
 }

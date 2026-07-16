@@ -15,14 +15,11 @@ vi.mock('#lib/k8s/pods', async (importOriginal) => {
   }
 })
 
-// The promoter execs into the pod via shellKubectlWithRetry (a real
-// subprocess) — stub the module so cleanup unit tests never touch the
-// cluster, and so the hooks' presence/order can be asserted.
+// The salvage execs into pods via kubectl (real subprocesses) — stub the
+// module so cleanup unit tests never touch the cluster, and so the
+// hooks' presence/order can be asserted.
 vi.mock('#lib/container/image-promoter', () => ({
-  promoteSessionImages: vi.fn().mockResolvedValue(true),
-  buildPromoterShellCommand: vi.fn(
-    (jobName: string) => `kubectl exec job/${jobName} -- promoter || true`,
-  ),
+  salvageSessionImages: vi.fn().mockResolvedValue(true),
 }))
 
 const execFileMock = vi.fn<(cmd: string, args: string[], opts: unknown) => Promise<void | { stdout: string }>>()
@@ -67,7 +64,7 @@ vi.mock('#lib/session/deleted-store', () => ({
   recordSessionDeleted: vi.fn().mockResolvedValue(undefined),
 }))
 
-import { promoteSessionImages } from '#lib/container/image-promoter'
+import { salvageSessionImages } from '#lib/container/image-promoter'
 import { listSessionPods, listSessionJobs } from '#lib/k8s/pods'
 import type * as podsModule from '#lib/k8s/pods'
 import {
@@ -283,9 +280,9 @@ describe('cleanupSession', () => {
     expect(typeof cleanupSession).toBe('function')
   })
 
-  it('runs the image promoter before deleting the Job', async () => {
-    const mockPromote = vi.mocked(promoteSessionImages)
-    mockPromote.mockClear()
+  it('runs the image salvage before deleting the Job', async () => {
+    const mockSalvage = vi.mocked(salvageSessionImages)
+    mockSalvage.mockClear()
     execFileMock.mockReset()
     execFileMock.mockResolvedValue(undefined)
 
@@ -295,18 +292,20 @@ describe('cleanupSession', () => {
       sessionId: 's-promote',
     })
 
-    expect(mockPromote).toHaveBeenCalledWith('yaac-p-s-promote')
-    // The pod (and its graphroot emptyDir) must still exist when the
-    // promoter runs — the Job delete has to come after.
+    expect(mockSalvage).toHaveBeenCalledWith({
+      jobName: 'yaac-p-s-promote', projectSlug: 'p', sessionId: 's-promote',
+    })
+    // The pod (and its graphroot tmpfs) must still exist when the
+    // salvage runs — the Job delete has to come after.
     const deleteCall = execFileMock.mock.calls.find(
       ([cmd, args]) => cmd === 'kubectl' && args[0] === 'delete' && args.includes('yaac-p-s-promote'),
     )
     expect(deleteCall).toBeDefined()
-    const promoteOrder = mockPromote.mock.invocationCallOrder[0]
+    const salvageOrder = mockSalvage.mock.invocationCallOrder[0]
     const deleteOrder = execFileMock.mock.invocationCallOrder[
       execFileMock.mock.calls.indexOf(deleteCall!)
     ]
-    expect(promoteOrder).toBeLessThan(deleteOrder)
+    expect(salvageOrder).toBeLessThan(deleteOrder)
   })
 
   it('forwards the death cause to the deleted-store', async () => {
@@ -329,23 +328,33 @@ describe('cleanupSessionDetached', () => {
     expect(typeof cleanupSessionDetached).toBe('function')
   })
 
-  it('puts the promoter line ahead of the Job delete in the detached script', async () => {
+  it('completes the image salvage before spawning the Job-deleting script', async () => {
     spawnMock.mockClear()
     execFileMock.mockReset()
     execFileMock.mockResolvedValue(undefined)
+    const mockSalvage = vi.mocked(salvageSessionImages)
+    mockSalvage.mockClear()
     await cleanupSessionDetached({
       jobName: 'yaac-p-s-detached',
       projectSlug: 'p',
       sessionId: 's-detached',
     })
 
-    const call = spawnMock.mock.calls.find(([cmd]) => cmd === 'sh')
-    expect(call).toBeDefined()
-    const script = (call![1])[1]
-    const promoterIdx = script.indexOf('-- promoter || true')
-    const deleteIdx = script.indexOf('kubectl delete job yaac-p-s-detached')
-    expect(promoterIdx).toBeGreaterThanOrEqual(0)
-    expect(deleteIdx).toBeGreaterThan(promoterIdx)
+    // The salvage → spawn chain runs after the function returns (the
+    // caller must not block on a multi-minute salvage).
+    await vi.waitFor(() => {
+      expect(spawnMock.mock.calls.some(([cmd]) => cmd === 'sh')).toBe(true)
+    })
+    expect(mockSalvage).toHaveBeenCalledWith({
+      jobName: 'yaac-p-s-detached', projectSlug: 'p', sessionId: 's-detached',
+    })
+    const call = spawnMock.mock.calls.find(([cmd]) => cmd === 'sh')!
+    const script = (call[1])[1]
+    // The pod must outlive the salvage: the delete is only ever spawned
+    // after the salvage settles.
+    expect(mockSalvage.mock.invocationCallOrder[0])
+      .toBeLessThan(spawnMock.mock.invocationCallOrder[0])
+    expect(script).toContain('kubectl delete job yaac-p-s-detached')
   })
 
   it('audits the teardown so a reaped session is never silent', async () => {

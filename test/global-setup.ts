@@ -6,6 +6,7 @@ import { baseImageHash, fileHash, contextHash, ensureImageByTag, sessionUid } fr
 import { ensureRootfulPodmanHost } from '@yaac/server/lib/container/runtime'
 import { ensureRegistryImage } from '@yaac/server/lib/k8s/project-registry'
 import { ensureVclusterImages } from '@yaac/server/lib/k8s/vcluster'
+import { ensureSalvageWriterImage } from '@yaac/server/lib/container/image-promoter'
 import { pushImageToRegistry, registryReachable } from '@yaac/server/lib/k8s/registry'
 import { DOCKERFILES_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
 
@@ -167,11 +168,12 @@ export async function setup(): Promise<void> {
     for (const tag of [baseTag, toolsTag, nestableTag, proxyTag]) {
       await pushImageToRegistry(tag)
     }
-    // Per-project registry image (registry:2, digest-pinned mirror) and
-    // the vcluster image set, for virtualCluster e2e tests —
+    // Per-project registry image (registry:2, digest-pinned mirror),
+    // the vcluster image set, and the image-salvage writer (podman) —
     // pull-or-skip, then push, same as above.
     await ensureRegistryImage(false)
     await ensureVclusterImages(false)
+    await ensureSalvageWriterImage(false)
   } else {
     console.log('[global-setup] local registry not reachable — e2e tests requiring a cluster will fail')
   }
