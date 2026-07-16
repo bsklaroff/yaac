@@ -3,7 +3,7 @@ import path from 'node:path'
 import { setDataDir } from '@yaac/shared/paths'
 
 // Prevent parent git env vars from leaking into tests.
-// Without this, running tests from a git hook (e.g. pre-push) would
+// Without this, running tests from within a git hook or subprocess would
 // cause simpleGit in test helpers to operate on the real repo.
 delete process.env.GIT_DIR
 delete process.env.GIT_WORK_TREE

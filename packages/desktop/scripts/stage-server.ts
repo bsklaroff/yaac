@@ -47,7 +47,7 @@ if (manifestRaw.includes('catalog:')) {
 // Strip what a published-artifact install would choke on but never needs:
 // devDependencies (npm resolves their manifests even under --omit=dev, and
 // they include workspace-only @yaac/* names that aren't on the registry) and
-// lifecycle scripts (prepare would run setup-git.sh, which isn't packed).
+// lifecycle scripts (dev-only hooks that assume the source tree/repo).
 const manifest = JSON.parse(manifestRaw) as Record<string, unknown>
 delete manifest.devDependencies
 delete manifest.scripts

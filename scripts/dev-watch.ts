@@ -56,7 +56,7 @@ function run(cmd: string, args: string[]): Promise<void> {
     // guard against install->script->install recursion), which would stop
     // the nested `pnpm build` from auto-installing after package.json
     // changes; restore `install` so a stale node_modules self-heals. No
-    // recursion risk: our prepare script never invokes pnpm run.
+    // recursion risk: we define no install lifecycle scripts that run pnpm.
     const child = spawn(cmd, args, {
       cwd: repoRoot,
       stdio: 'inherit',
