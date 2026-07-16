@@ -1,6 +1,7 @@
 import { containerExec, execTarget } from '#lib/k8s/exec'
 import { dataDirHash, k8sNamespace } from '#lib/k8s/kubectl'
 import { NESTED_GRAPHROOT_PATH, SHARED_IMAGE_STORE_DST_PATH } from '#lib/k8s/pod-spec'
+import { shellQuote } from '#lib/shell'
 
 /**
  * Node-local hostPath backing a project's cross-session shared image
@@ -15,12 +16,14 @@ export function sharedImageStoreHostPath(projectSlug: string): string {
 }
 
 /**
- * Promoter script, run INSIDE the session pod (as yaac) just before the
- * Job is deleted. Copies images from the session's per-pod graphroot
- * (emptyDir — about to vanish with the pod) into the project's shared
- * image store, giving later sessions `docker build` layer-cache hits via
- * `additionalimagestores`. Three passes under an exclusive flock on the
- * shared store:
+ * Promoter script, run INSIDE the session pod — as root, via the image's
+ * passwordless sudo (see promoterExecCommand): the rootful graphroot and
+ * the shared store are both root-owned. Runs just before the Job is
+ * deleted, copying images from the session's per-pod graphroot (a tmpfs —
+ * about to vanish with the pod) into the project's shared image store,
+ * giving later sessions `docker build` layer-cache hits via
+ * `additionalimagestores`. Three passes under an exclusive host-side
+ * mkdir lock on the shared store (see the lock comment below):
  *
  *   1. Copy every image (tagged + dangling build intermediates) from the
  *      graphroot to the store by id, so layer blobs are available for
@@ -57,9 +60,26 @@ export const PROMOTER_SCRIPT = [
   `[ -d ${SHARED_IMAGE_STORE_DST_PATH} ] || exit 0`,
   'command -v podman >/dev/null 2>&1 || exit 0',
   'mkdir -p /tmp/dst-run',
-  `touch ${SHARED_IMAGE_STORE_DST_PATH}/.yaac-promoter.lock`,
-  `exec 9>${SHARED_IMAGE_STORE_DST_PATH}/.yaac-promoter.lock`,
-  'flock -x 9',
+  // Cross-POD mutual exclusion on the shared store. NOT flock: under
+  // gVisor, flock/fcntl locks live inside each pod's sentry and never
+  // reach the host kernel (the gofer protocol has no lock RPC), so two
+  // pods' promoters would each "hold" the exclusive lock and race the
+  // store (concurrent same-project teardowns — reaper sweeps, project
+  // removal). mkdir IS a real host operation through the gofer (atomic,
+  // EEXIST on collision), so a lock DIRECTORY excludes across sandboxes.
+  // A holder that died can't release: steal when the dir is >20min old
+  // (a live promoter finishes in minutes); rmdir races between stealers
+  // are safe — one mkdir wins. The EXIT trap releases on every shell
+  // exit, including the exec-timeout kill.
+  `lockdir=${SHARED_IMAGE_STORE_DST_PATH}/.yaac-promoter.lockdir`,
+  'while ! mkdir "$lockdir" 2>/dev/null; do',
+  '  if [ -n "$(find "$lockdir" -maxdepth 0 -mmin +20 2>/dev/null)" ]; then',
+  '    rmdir "$lockdir" 2>/dev/null || true',
+  '    continue',
+  '  fi',
+  '  sleep 3',
+  'done',
+  `trap 'rmdir "$lockdir" 2>/dev/null' EXIT`,
   // log() fans every step out to stdout (which cleanupSession surfaces in
   // the server log) AND appends to a persistent log inside the shared
   // store, so the detached teardown path still leaves an audit trail.
@@ -112,22 +132,25 @@ export const PROMOTER_SCRIPT = [
   'log "done"',
 ].join('\n')
 
-/**
- * Shell-escape one token by single-quoting it (and escaping any embedded
- * single quotes), so the joined string survives an outer `sh -c`.
- */
-function shellQuote(arg: string): string {
-  return `'${arg.replace(/'/g, `'\\''`)}'`
-}
-
 /** The in-container command tail that runs the promoter script. The engine
  *  is rootful, so the promoter's podman/skopeo calls run as root
  *  via the image's passwordless sudo — it reads the rootful graphroot and
  *  writes the shared store, both root-owned. */
 export function promoterExecCommand(): string {
-  // -H sets HOME to root's — the script references $HOME under `set -u`, and
-  // sudo's default env_reset can otherwise leave it unset.
-  return `sudo -H sh -c ${shellQuote(PROMOTER_SCRIPT)}`
+  // -n forbids a password prompt (kubectl exec has no tty); -H sets HOME
+  // to root's — the script references $HOME under `set -u`, and sudo's
+  // default env_reset can otherwise leave it unset.
+  const sudoRun = `exec sudo -n -H sh -c ${shellQuote(PROMOTER_SCRIPT)}`
+  // Cleanup invokes the promoter for EVERY session, and the script's own
+  // [ -d store ] self-gate can only run once sudo works — so gate on
+  // usable passwordless sudo first, and no-op quietly on images without
+  // it (custom Dockerfile.yaac images only need to honor YAAC_UID). Only
+  // nested sessions have anything to promote, and their engine start
+  // already hard-requires working sudo.
+  return `sh -c ${shellQuote(
+    'command -v sudo >/dev/null 2>&1 || exit 0; '
+    + `sudo -n true 2>/dev/null || exit 0; ${sudoRun}`,
+  )}`
 }
 
 /**

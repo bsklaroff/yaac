@@ -9,7 +9,11 @@ import {
   PROXY_APP_NAME,
   TRANSPARENT_HTTPS_PORT,
 } from '#lib/k8s/bootstrap'
-import { RUNTIME_CLASS_GVISOR, RUNTIME_CLASS_GVISOR_NESTED } from '#lib/k8s/gvisor'
+import {
+  RUNTIME_CLASS_GVISOR,
+  RUNTIME_CLASS_GVISOR_NESTED,
+  runtimeClassSpec,
+} from '#lib/k8s/gvisor'
 import { LABEL_SESSION_ID, runPodToCompletion } from '#lib/k8s/pods'
 import { NESTED_ENGINE_CAPS } from '#lib/k8s/pod-spec'
 import { vapAvailable } from '#lib/k8s/vcluster'
@@ -47,7 +51,6 @@ const KIND_SETUP_FIX = [
  * cluster-setup.ts (which imports them) so `yaac cluster setup --repair`
  * and the node-fixups check below can never drift apart.
  */
-export const NODE_SYSFS_MOUNTPOINT = '/mnt/sysfs'
 export const NODE_TASKSMAX_CONF = '/etc/systemd/system.conf.d/10-yaac-tasksmax.conf'
 export const NODE_MIN_FREE_KBYTES = 262144
 export const NODE_PIDS_LIMIT = 32768
@@ -82,10 +85,10 @@ const defaultDeps: ClusterCheckDeps = {
  *   4. podman present (the image build engine)
  *   5. local registry answering on the configured address
  *   6. yaac namespace exists / can be created
- *   6b. node fixups (warn-only, kind nodes only): the sysfs unmask,
- *      DefaultTasksMax, vm.min_free_kbytes, and node pids-limit that
- *      `yaac cluster setup` applies all live in node/VM state and vanish
- *      on restart — detect and point at `yaac cluster setup --repair`
+ *   6b. node fixups (warn-only, kind nodes only): DefaultTasksMax,
+ *      vm.min_free_kbytes, and node pids-limit that `yaac cluster setup`
+ *      applies all live in node/VM state and vanish on restart — detect and
+ *      point at `yaac cluster setup --repair`
  *   6c. gvisor: the gvisor/gvisor-nested RuntimeClasses exist AND a pod on
  *      the gvisor class is actually sentry-sandboxed (dmesg fingerprint) —
  *      session pods cannot run without it
@@ -272,13 +275,12 @@ const NODE_FIXUPS_FIX =
   + 'Re-apply them with: yaac cluster setup --repair'
 
 /**
- * Warn-level detection for the node fixups `yaac cluster setup` applies.
- * Only the sysfs unmask breaks pods immediately (the e2e probe below
- * catches it); the TasksMax / vm.min_free_kbytes / pids-limit fixups fail
- * much later — sessions die mid-flight under subagent fan-out or virtiofs
- * pressure — so sessions can look healthy on a cluster that lost them to a
- * restart. Probing is kind-specific (node name == podman container name):
- * a node that is not a podman container self-skips.
+ * Warn-level detection for the node fixups `yaac cluster setup` applies. The
+ * TasksMax / vm.min_free_kbytes / pids-limit fixups fail late — sessions die
+ * mid-flight under subagent fan-out or virtiofs pressure — so sessions can
+ * look healthy on a cluster that lost them to a restart. Probing is
+ * kind-specific (node name == podman container name): a node that is not a
+ * podman container self-skips.
  */
 async function runNodeFixupsCheck(deps: ClusterCheckDeps): Promise<CheckResult> {
   if (env.nested) {
@@ -300,8 +302,7 @@ async function runNodeFixupsCheck(deps: ClusterCheckDeps): Promise<CheckResult> 
       let report: string
       try {
         const res = await deps.run('podman', ['exec', node, 'sh', '-c',
-          `mountpoint -q ${NODE_SYSFS_MOUNTPOINT} && echo sysfs=ok || echo sysfs=missing; `
-          + `test -f ${NODE_TASKSMAX_CONF} && echo tasksmax=ok || echo tasksmax=missing; `
+          `test -f ${NODE_TASKSMAX_CONF} && echo tasksmax=ok || echo tasksmax=missing; `
           + 'echo minfree=$(cat /proc/sys/vm/min_free_kbytes); '
           + `echo svm=$(cat ${NODE_SRC_VALID_MARK_PATH})`,
         ])
@@ -312,7 +313,6 @@ async function runNodeFixupsCheck(deps: ClusterCheckDeps): Promise<CheckResult> 
           detail: `node "${node}" is not a podman container — kind node fixups not applicable`,
         }
       }
-      if (report.includes('sysfs=missing')) missing.add('sysfs unmask (userns pods)')
       if (report.includes('tasksmax=missing')) missing.add('DefaultTasksMax (subagent fan-out)')
       const minfree = Number(/minfree=(\d+)/.exec(report)?.[1] ?? '0')
       if (minfree < NODE_MIN_FREE_KBYTES) missing.add('vm.min_free_kbytes (virtiofs I/O)')
@@ -336,7 +336,7 @@ async function runNodeFixupsCheck(deps: ClusterCheckDeps): Promise<CheckResult> 
     }
     return {
       name: 'node-fixups', status: 'pass',
-      detail: 'sysfs unmask, TasksMax, vm sysctls, src_valid_mark, and pids-limit in place',
+      detail: 'TasksMax, vm sysctls, src_valid_mark, and pids-limit in place',
     }
   } catch (err) {
     return {
@@ -458,19 +458,28 @@ async function runGvisorRuntimeCheck(deps: ClusterCheckDeps): Promise<CheckResul
  * an explicit runtimeClassName, so a pod without one is either from a
  * pre-gVisor yaac or from a builder that missed the stamp. Warn rather
  * than fail — such pods still run (on the implicit default runtime), they
- * just predate the invariant.
+ * just predate the invariant. Sweeps the install namespace AND its
+ * per-vcluster child namespaces (`<ns>-vc-*`): the only pods that stamp
+ * no runtimeClassName themselves (vcluster control planes, synced /
+ * inner-yaac pods — the syncer and chart knobs set theirs) live there,
+ * so an install-namespace-only sweep would miss exactly the pods most
+ * likely to violate the invariant.
  */
 async function runRuntimeStampSweep(deps: ClusterCheckDeps): Promise<CheckResult> {
+  const ns = k8sNamespace()
   try {
-    const { stdout } = await deps.run('kubectl', [
-      'get', 'pods', '-n', k8sNamespace(), '-o', 'json',
-    ])
+    const { stdout } = await deps.run('kubectl', ['get', 'pods', '-A', '-o', 'json'])
     const items = (JSON.parse(stdout) as {
-      items: Array<{ metadata?: { name?: string }; spec?: { runtimeClassName?: string } }>
+      items: Array<{
+        metadata?: { name?: string; namespace?: string }
+        spec?: { runtimeClassName?: string }
+      }>
     }).items
+    const inScope = (podNs: string | undefined): boolean =>
+      podNs === ns || (podNs?.startsWith(`${ns}-vc-`) ?? false)
     const strays = items
-      .filter((p) => !p.spec?.runtimeClassName)
-      .map((p) => p.metadata?.name ?? '<unnamed>')
+      .filter((p) => inScope(p.metadata?.namespace) && !p.spec?.runtimeClassName)
+      .map((p) => `${p.metadata?.namespace ?? '?'}/${p.metadata?.name ?? '<unnamed>'}`)
     if (strays.length > 0) {
       const shown = strays.slice(0, 5).join(', ')
       return {
@@ -480,12 +489,12 @@ async function runRuntimeStampSweep(deps: ClusterCheckDeps): Promise<CheckResult
         fix: 'These pods predate the gVisor migration (or bypassed the yaac '
           + 'builders). They keep running on the implicit default runtime; '
           + 'restart the yaac server (re-rolls the proxy) and recreate old '
-          + 'sessions to converge.',
+          + 'sessions/vclusters to converge.',
       }
     }
     return {
       name: 'runtime-stamp', status: 'pass',
-      detail: `every pod in "${k8sNamespace()}" carries a runtimeClassName`,
+      detail: `every pod in "${ns}" and its vcluster namespaces carries a runtimeClassName`,
     }
   } catch (err) {
     return {
@@ -526,9 +535,8 @@ async function runEndToEndProbe(deps: ClusterCheckDeps): Promise<CheckResult> {
         // Mirror the session-pod containment (see buildSessionJobManifest):
         // a host pod carries the gvisor RuntimeClass (no userns), so the
         // probe proves hostPath reads/writes work through the gofer at the
-        // session uid. An inner yaac (a vcluster — no RuntimeClass objects)
-        // stamps nothing; the host syncer sets the gvisor runtime.
-        ...(env.nested ? {} : { runtimeClassName: RUNTIME_CLASS_GVISOR }),
+        // session uid. runtimeClassSpec stamps nothing for an inner yaac.
+        ...runtimeClassSpec({ inner: env.nested }),
         securityContext: { seccompProfile: { type: 'RuntimeDefault' } },
         containers: [{
           name: 'probe',

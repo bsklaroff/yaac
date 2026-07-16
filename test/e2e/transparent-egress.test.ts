@@ -22,7 +22,7 @@ import {
   TRANSPARENT_HTTPS_PORT,
   TUNNEL_INGRESS_PORT,
 } from '@yaac/server/lib/k8s/bootstrap'
-import { RUNTIME_CLASS_GVISOR } from '@yaac/server/lib/k8s/gvisor'
+import { runtimeClassSpec } from '@yaac/server/lib/k8s/gvisor'
 import { CA_CONFIGMAP_NAME } from '@yaac/server/lib/k8s/pod-spec'
 import { LABEL_SESSION_ID } from '@yaac/server/lib/k8s/pods'
 import {
@@ -232,9 +232,10 @@ async function startSessionPod(name: string, sessionId: string, proxyHost: strin
       automountServiceAccountToken: false,
       enableServiceLinks: false,
       // Mirror real session pods: the default gvisor tier, so the redirect
-      // and source-IP identity are verified against netstack egress. Nested
-      // runs keep the default runtime — a vcluster has no RuntimeClasses.
-      ...(IS_NESTED_YAAC ? {} : { runtimeClassName: RUNTIME_CLASS_GVISOR }),
+      // and source-IP identity are verified against netstack egress
+      // (runtimeClassSpec stamps nothing on a nested run — a vcluster has
+      // no RuntimeClasses).
+      ...runtimeClassSpec({ inner: IS_NESTED_YAAC }),
       dnsPolicy: 'None',
       dnsConfig: { nameservers: [proxyHost] },
       containers: [{

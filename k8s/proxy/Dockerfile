@@ -8,9 +8,12 @@ RUN apt-get update \
 RUN mkdir -p /data && chown node:node /data
 # The ssh-agent socket lives in /ssh-agent (a shared hostPath volume).
 # entrypoint.sh runs the real agent on a private socket here and bridges
-# a 0666 socket alongside it (socat) so user-namespaced session pods —
-# whose idmapped view of the agent socket shows its owner as an unmapped
-# uid — can still connect.
+# a 0666 socket alongside it (socat). Still required under gVisor (which
+# replaced the userns/idmap era): the socket is a real host socket via
+# the runsc handlers' host-uds=all, dialed cross-sandbox by session pods
+# whose users (the session uid, or in-sandbox root) don't match the
+# proxy's node user — without the world-writable bridge those connects
+# fail EACCES and git-over-ssh breaks in every session.
 RUN mkdir -p /ssh-agent && chown node:node /ssh-agent
 WORKDIR /app
 COPY package.json /app/package.json

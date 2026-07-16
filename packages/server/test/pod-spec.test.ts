@@ -7,6 +7,7 @@ import {
   CA_CONFIGMAP_NAME,
   CA_MOUNT_DIR,
   NESTED_GRAPHROOT_PATH,
+  NESTED_GRAPHROOT_TMPFS_BYTES,
   SHARED_IMAGE_STORE_DST_PATH,
   SHARED_IMAGE_STORE_PATH,
   assertSessionLabels,
@@ -305,6 +306,18 @@ describe('buildSessionJobManifest — nestedContainers', () => {
     const spec = build({ nested, innerYaac: true }).spec.template.spec
     expect(spec.runtimeClassName).toBeUndefined()
     expect(spec.hostUsers).toBeUndefined()
+  })
+
+  it('refuses a graphroot tmpfs at or above the pod memory limit', () => {
+    // tmpfs pages count against the pod cgroup — an oversized graphroot
+    // would turn builds into whole-session OOM kills.
+    expect(() => buildSessionJobManifest({
+      ...params(), nested, memoryLimitBytes: NESTED_GRAPHROOT_TMPFS_BYTES,
+    })).toThrow(/graphroot tmpfs/)
+    // Non-nested pods have no graphroot: any limit is fine.
+    expect(() => buildSessionJobManifest({
+      ...params(), memoryLimitBytes: 1024 ** 3,
+    })).not.toThrow()
   })
 
   it('adds the rootful engine caps and no fsGroup on the session container', () => {

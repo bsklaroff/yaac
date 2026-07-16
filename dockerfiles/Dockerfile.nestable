@@ -142,11 +142,12 @@ EOF
 # Rootful graphroot + cross-session shared image store. The graphroot lives
 # at podman's rootful default (/var/lib/containers/storage), backed by a
 # sentry-internal tmpfs the pod spec mounts at /var/lib/containers: gVisor's
-# gofer-backed volumes are 9p, which does NOT carry the security.capability
-# xattr, so a `docker build` RUN step doing `setcap` (apt/apk postinsts for
-# ping, nginx, …) fails on a gofer graphroot — only a sentry tmpfs upper
-# holds file caps (verified on the dev cluster; the docker-in-gvisor
-# tutorial's shape). Cost: layer data counts against the pod memory limit.
+# gofer filesystem refuses WRITES to the security.* xattr namespace
+# (goferfs checkXattrPermissions → EOPNOTSUPP), so a `docker build` RUN
+# step doing `setcap` (apt/apk postinsts for ping, nginx, …) fails on a
+# gofer-backed graphroot — only a sentry tmpfs upper holds file caps
+# (verified on the dev cluster; the docker-in-gvisor tutorial's shape).
+# Cost: layer data counts against the pod memory limit.
 # graphroot/runroot are set EXPLICITLY because once a [storage] section
 # exists podman refuses to default them ("runroot must be set").
 # additionalimagestores is the cross-session layer cache (a gofer-backed

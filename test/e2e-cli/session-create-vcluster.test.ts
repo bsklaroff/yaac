@@ -9,7 +9,7 @@ import {
   listSessionPods,
   type SessionPod,
 } from '@yaac/server/lib/k8s/pods'
-import { k8sNamespace, kubectlGetJson, kubectlWithRetry } from '@yaac/server/lib/k8s/kubectl'
+import { k8sNamespace, kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/lib/k8s/kubectl'
 import {
   removeSessionVcluster,
   vclusterName,
@@ -285,16 +285,54 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
     )
     expect(hostPathEvents).toContain('hostPath volumes must stay under the session nested data dir')
 
-    // VAP caps rejection: capabilities.add without hostUsers: false.
+    // Caps posture under gVisor: a tenant pod adding capabilities is
+    // ADMITTED — the syncer stamps runtimeClassName: gvisor on every
+    // synced pod (values.yaml), and the VAP admits cap grants only behind
+    // that sentry tier. Assert the containment is actually present on the
+    // synced pod (pre-gVisor, this same pod was denied outright).
     await execInJob(name, ['sh', '-c',
-      `printf 'apiVersion: v1\\nkind: Pod\\nmetadata:\\n  name: bad-caps\\nspec:\\n  restartPolicy: Never\\n  containers:\\n  - name: c\\n    image: ${INNER_IMAGE}\\n    command: ["sleep", "60"]\\n    securityContext:\\n      capabilities:\\n        add: ["NET_ADMIN"]\\n' | kubectl apply -f -`,
+      `printf 'apiVersion: v1\\nkind: Pod\\nmetadata:\\n  name: caps-ok\\nspec:\\n  restartPolicy: Never\\n  containers:\\n  - name: c\\n    image: ${INNER_IMAGE}\\n    command: ["sleep", "60"]\\n    securityContext:\\n      capabilities:\\n        add: ["NET_ADMIN"]\\n' | kubectl apply -f -`,
     ], { timeout: 30_000 })
-    const capsEvents = await untilOutput(
-      name,
-      ['sh', '-c', 'kubectl get events --field-selector involvedObject.name=bad-caps 2>/dev/null | cat'],
-      (out) => out.includes('denied'), 90_000,
-    )
-    expect(capsEvents).toContain('require hostUsers: false')
+    interface RawPodSpecs {
+      items: Array<{ metadata: { name: string }; spec?: { runtimeClassName?: string } }>
+    }
+    let capsSynced: RawPodSpecs['items'][number] | undefined
+    {
+      const deadline = Date.now() + 90_000
+      while (Date.now() < deadline && !capsSynced) {
+        const list = await kubectlGetJson<RawPodSpecs>([
+          'get', 'pods', '-n', vcNs, '-l', `${LABEL_VCLUSTER_MANAGED_BY}=${vcName}`,
+        ])
+        capsSynced = list?.items.find((p) => p.metadata.name.startsWith('caps-ok'))
+        if (!capsSynced) await new Promise((r) => setTimeout(r, 2000))
+      }
+    }
+    expect(capsSynced, 'cap-adding tenant pod synced to host (admitted behind the sentry)').toBeTruthy()
+    expect(capsSynced?.spec?.runtimeClassName, 'syncer stamped the gvisor tier').toBe('gvisor')
+
+    // The VAP backstop that stamp rides on: a managed-by-labeled pod
+    // reaching the host apiserver WITHOUT the gvisor tier (a regressed or
+    // compromised syncer stand-in, applied host-side) is denied at
+    // admission — this is what keeps cap grants gated if the values.yaml
+    // stamp ever stops applying.
+    await expect(kubectlApply({
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: {
+        name: 'vap-backstop-caps',
+        namespace: vcNs,
+        labels: { [LABEL_VCLUSTER_MANAGED_BY]: vcName },
+      },
+      spec: {
+        restartPolicy: 'Never',
+        containers: [{
+          name: 'c',
+          image: INNER_IMAGE,
+          command: ['sleep', '60'],
+          securityContext: { capabilities: { add: ['NET_ADMIN'] } },
+        }],
+      },
+    })).rejects.toThrow(/require the gvisor runtime tier/)
 
     // Full teardown: session delete deletes the vcluster's whole
     // namespace (sweeping the control plane, synced pods, policies, and

@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 interface FakeChild extends EventEmitter {
   stdin: PassThrough
   stdout: PassThrough
+  stderr: PassThrough
   kill: ReturnType<typeof vi.fn>
 }
 
@@ -16,6 +17,7 @@ vi.mock('node:child_process', () => ({
     const child = new EventEmitter() as FakeChild
     child.stdin = new PassThrough()
     child.stdout = new PassThrough()
+    child.stderr = new PassThrough()
     // Echo relay: everything written to stdin comes back on stdout, as if
     // the in-pod socat dialed a local echo server.
     child.stdin.on('data', (chunk: Buffer) => child.stdout.write(chunk))
@@ -31,7 +33,12 @@ vi.mock('#lib/k8s/kubectl', () => ({
   k8sNamespace: vi.fn(() => 'test-ns'),
 }))
 
+vi.mock('#log', () => ({
+  serverLog: vi.fn(),
+}))
+
 import { ExecTunnel } from '#lib/k8s/exec-tunnel'
+import { serverLog } from '#log'
 
 let tunnel: ExecTunnel | null = null
 
@@ -119,5 +126,40 @@ describe('ExecTunnel', () => {
     const next = await tunnel.ensure()
     expect(next).toBeGreaterThan(0)
     expect(tunnel.currentPort).toBe(next)
+  })
+
+  it('stop() during an in-flight start() aborts it — no resurrected listener', async () => {
+    // Server shutdown (disconnect) can race a background reconcile's
+    // ensure(): the listen callback must not repopulate a stopped tunnel
+    // and leak a listener that keeps the process alive.
+    tunnel = new ExecTunnel('yaac-proxy', 10255)
+    const pending = tunnel.ensure()
+    tunnel.stop()
+    await expect(pending).rejects.toThrow(/stopped during start/)
+    expect(tunnel.currentPort).toBeNull()
+
+    // A later ensure() starts cleanly (stop is not terminal).
+    const port = await tunnel.ensure()
+    expect(port).toBeGreaterThan(0)
+  })
+
+  it('logs relay stderr when the exec child fails', async () => {
+    tunnel = new ExecTunnel('yaac-proxy', 10255)
+    const port = await tunnel.ensure()
+    const sock = net.connect(port, '127.0.0.1')
+    await new Promise((r) => sock.once('connect', r))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(spawned).toHaveLength(1)
+
+    // e.g. an RBAC denial: kubectl writes the reason to stderr and exits
+    // non-zero — the tunnel must surface it, not swallow it.
+    const { child } = spawned[0]
+    child.stderr.write('error: unable to upgrade connection: Forbidden')
+    await new Promise((r) => setImmediate(r))
+    child.emit('close', 1)
+    expect(vi.mocked(serverLog)).toHaveBeenCalledWith(
+      expect.stringContaining('Forbidden'),
+    )
+    sock.destroy()
   })
 })

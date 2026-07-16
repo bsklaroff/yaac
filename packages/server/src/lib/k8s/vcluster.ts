@@ -150,43 +150,16 @@ export function addYaacLabels(
 }
 
 /**
- * Stamp `runtimeClassName` into every workload pod template of a rendered
- * multi-doc manifest stream that does not already carry one. The chart has
- * no knob for the control-plane StatefulSet's runtime (only synced pods,
- * via sync.toHost.pods.runtimeClassName in values.yaml), so this is the
- * post-render step that keeps the no-pod-without-runtimeClassName invariant
- * on the control plane too (gvisor — the apiserver/kine/SQLite are plain
- * userspace).
- */
-export function stampPodRuntimeClass(
-  manifestYaml: string,
-  runtimeClassName: string,
-): string {
-  const WORKLOAD_KINDS = new Set(['StatefulSet', 'Deployment', 'DaemonSet', 'Job', 'ReplicaSet'])
-  const out: string[] = []
-  for (const doc of YAML.parseAllDocuments(manifestYaml)) {
-    const obj = doc.toJS() as {
-      kind?: string
-      spec?: { template?: { spec?: Record<string, unknown> } }
-    } | null
-    if (!obj || typeof obj !== 'object' || !obj.kind) continue
-    const podSpec = obj.spec?.template?.spec
-    if (WORKLOAD_KINDS.has(obj.kind) && podSpec && podSpec.runtimeClassName === undefined) {
-      podSpec.runtimeClassName = runtimeClassName
-    }
-    out.push(YAML.stringify(obj, { lineWidth: 0 }))
-  }
-  return out.join('---\n')
-}
-
-/**
  * Render one session's vcluster manifests by running `helm template`
  * against the vendored chart tarball (offline) with the per-session
  * values passed as `--set` overrides, then stamping the yaac ownership
- * labels and the control-plane RuntimeClass. No vendored rendered
- * manifest, no placeholder substitution — the chart's own logic runs each
- * time, so a chart bump only needs `scripts/fetch-vcluster-chart.sh`
- * (re-vendor the tarball).
+ * labels. No vendored rendered manifest, no placeholder substitution —
+ * the chart's own logic runs each time, so a chart bump only needs
+ * `scripts/fetch-vcluster-chart.sh` (re-vendor the tarball). The
+ * control-plane pod's gvisor runtime rides the chart-native
+ * `controlPlane.statefulSet.runtimeClassName` knob in values.yaml (the
+ * syncer stamps synced pods via `sync.toHost.pods.runtimeClassName`
+ * there too), so no post-render runtime stamping is needed.
  */
 export async function renderVclusterManifests(p: VclusterRenderParams): Promise<string> {
   const helm = await ensureHelm()
@@ -209,10 +182,7 @@ export async function renderVclusterManifests(p: VclusterRenderParams): Promise<
     '--set-string', `controlPlane.proxy.extraSANs[0]=${apiHost}`,
     '--set-string', `exportKubeConfig.server=https://${apiHost}:${VCLUSTER_API_PORT}`,
   ], { maxBuffer: 16 * 1024 * 1024 })
-  return stampPodRuntimeClass(
-    addYaacLabels(stdout, vclusterLabels(name, p.sessionId)),
-    RUNTIME_CLASS_GVISOR,
-  )
+  return addYaacLabels(stdout, vclusterLabels(name, p.sessionId))
 }
 
 interface VclusterImageEntry {

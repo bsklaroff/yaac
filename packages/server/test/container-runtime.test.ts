@@ -40,9 +40,6 @@ import {
 } from '#lib/container/runtime'
 import { ensureKubernetes } from '#lib/k8s/kubectl'
 
-// ensurePodmanSocket is exercised against real sockets in
-// test/unit/ensure-podman-socket.test.ts — not duplicated here.
-
 describe('execFileAsync', () => {
   it('is the promisified execFile export', () => {
     expect(typeof execFileAsync).toBe('function')
@@ -61,17 +58,14 @@ describe('getSocketPath', () => {
     expect(getSocketPath()).toBeUndefined()
   })
 
-  it('returns the rootful system socket on a non-nested linux host', () => {
+  it('returns the rootful system socket on linux, nested or not', () => {
     if (process.platform === 'darwin') return
     delete process.env.YAAC_NESTED
     expect(getSocketPath()).toBe('/run/podman/podman.sock')
-  })
-
-  it('returns the rootless per-uid socket inside a nested session', () => {
-    if (process.platform === 'darwin') return
+    // Nested sessions drive the in-pod ROOTFUL engine at the same path
+    // (the sudo-started `podman system service`).
     process.env.YAAC_NESTED = '1'
-    const uid = process.getuid?.()
-    expect(getSocketPath()).toBe(`/run/user/${uid}/podman/podman.sock`)
+    expect(getSocketPath()).toBe('/run/podman/podman.sock')
   })
 })
 
@@ -82,7 +76,7 @@ describe('usesRootfulPodman', () => {
     else process.env.YAAC_NESTED = origNested
   })
 
-  it('is true on a non-nested linux host and false when nested', () => {
+  it('is true everywhere but darwin (nested engines are rootful too)', () => {
     if (process.platform === 'darwin') {
       expect(usesRootfulPodman()).toBe(false)
       return
@@ -90,7 +84,7 @@ describe('usesRootfulPodman', () => {
     delete process.env.YAAC_NESTED
     expect(usesRootfulPodman()).toBe(true)
     process.env.YAAC_NESTED = '1'
-    expect(usesRootfulPodman()).toBe(false)
+    expect(usesRootfulPodman()).toBe(true)
   })
 })
 
@@ -120,12 +114,12 @@ describe('ensureRootfulPodmanHost', () => {
     expect(process.env.CONTAINER_HOST).toBe('unix:///custom.sock')
   })
 
-  it('is a no-op inside a nested session', () => {
+  it('applies inside a nested session too (same rootful socket as the image ENV)', () => {
     if (process.platform === 'darwin') return
     process.env.YAAC_NESTED = '1'
     delete process.env.CONTAINER_HOST
     ensureRootfulPodmanHost()
-    expect(process.env.CONTAINER_HOST).toBeUndefined()
+    expect(process.env.CONTAINER_HOST).toBe('unix:///run/podman/podman.sock')
   })
 })
 

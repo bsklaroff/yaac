@@ -9,7 +9,7 @@ import {
   kubectlWithRetry,
 } from '#lib/k8s/kubectl'
 import { ensureCiliumCrds } from '#lib/k8s/cilium-crds'
-import { RUNTIME_CLASS_GVISOR } from '#lib/k8s/gvisor'
+import { runtimeClassSpec } from '#lib/k8s/gvisor'
 import {
   CA_BUNDLE_KEY,
   CA_CERT_PATH,
@@ -237,7 +237,8 @@ export async function ensureProxyAuthSecret(): Promise<string> {
  *
  * Exposure: ClusterIP Service only — no hostNetwork, no hostPort, no
  * NodePort. The proxy listens inside its pod's network namespace; the
- * server reaches it through a loopback `kubectl port-forward`.
+ * server reaches it through a loopback exec tunnel (see ExecTunnel —
+ * kubectl port-forward cannot reach a gVisor pod's netstack listener).
  */
 export function buildProxyDeploymentManifest(
   imageRef: string,
@@ -282,9 +283,8 @@ export function buildProxyDeploymentManifest(
           // NET_BIND_SERVICE, and the ssh-agent socket on the hostPath dir
           // stays a real host socket via the handler's host-uds=all (sessions
           // dial it cross-sandbox). The inner (nested) proxy is a vcluster
-          // tenant pod — its vcluster has no RuntimeClass objects, so nothing
-          // is stamped; the syncer sets the host-side runtime.
-          ...(opts.nested ? {} : { runtimeClassName: RUNTIME_CLASS_GVISOR }),
+          // tenant pod — runtimeClassSpec stamps nothing for it.
+          ...runtimeClassSpec({ inner: opts.nested }),
           // Nested (inner) proxy: resolve upstream hostnames via its OWN DNS
           // stub (loopback), not the vcluster CoreDNS. The inner proxy carries
           // `managed-by`, so the outer yaac's fallback redirect catches its

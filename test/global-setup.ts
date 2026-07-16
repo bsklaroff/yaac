@@ -3,7 +3,7 @@ import { promisify } from 'node:util'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { baseImageHash, fileHash, contextHash, ensureImageByTag, sessionUid } from '@yaac/server/lib/container/image-builder'
-import { ensurePodmanSocket, ensureRootfulPodmanHost, getSocketPath, usesRootfulPodman } from '@yaac/server/lib/container/runtime'
+import { ensureRootfulPodmanHost } from '@yaac/server/lib/container/runtime'
 import { ensureRegistryImage } from '@yaac/server/lib/k8s/project-registry'
 import { ensureVclusterImages } from '@yaac/server/lib/k8s/vcluster'
 import { pushImageToRegistry, registryReachable } from '@yaac/server/lib/k8s/registry'
@@ -113,8 +113,6 @@ async function cleanupLeakedTestNamespaces(): Promise<void> {
  */
 export async function setup(): Promise<void> {
   // Skip when podman is unavailable — tests that need it will fail on their own.
-  // On Linux, revive a crashed socket from a previous run before probing, since
-  // nothing else supervises `podman system service` in rootless containers.
   // Build images on the same rootful engine the cluster pulls from — otherwise
   // they land in a rootless store the kind node can't see.
   ensureRootfulPodmanHost()
@@ -122,18 +120,7 @@ export async function setup(): Promise<void> {
   try {
     await execFileAsync('podman', ['info', '--format', 'json'])
     podmanAvailable = true
-  } catch {
-    // The rootful system socket is systemd-managed (not self-revivable); only
-    // try to revive the rootless per-uid socket.
-    const socketPath = usesRootfulPodman() ? undefined : getSocketPath()
-    if (socketPath) {
-      try {
-        await ensurePodmanSocket(socketPath, { timeoutMs: 5_000 })
-        await execFileAsync('podman', ['info', '--format', 'json'])
-        podmanAvailable = true
-      } catch { /* not installed or revive failed */ }
-    }
-  }
+  } catch { /* not installed or not running — tests that need it will fail */ }
   if (!podmanAvailable) return
 
   // Wipe leaked build-engine containers from prior runs — orphans whose

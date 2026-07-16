@@ -13,7 +13,6 @@ import {
   NODE_MIN_FREE_KBYTES,
   NODE_PIDS_LIMIT,
   NODE_SRC_VALID_MARK_PATH,
-  NODE_SYSFS_MOUNTPOINT,
   NODE_TASKSMAX_CONF,
   runClusterCheck,
 } from '#lib/k8s/cluster-check'
@@ -31,8 +30,8 @@ import { env } from '@yaac/shared/env'
  * idempotently and with actionable error messages.
  *
  * Full mode recreates the cluster from scratch (delete + create). `--repair`
- * re-applies only the node fixups that vanish on a node/VM restart (sysfs
- * unmask, DefaultTasksMax, vm sysctls, pids-limit, registry wiring) without
+ * re-applies only the node fixups that vanish on a node/VM restart
+ * (DefaultTasksMax, vm sysctls, pids-limit, registry wiring) without
  * touching the cluster itself. Both modes also ensure the pinned gVisor
  * runtime (runsc install + RuntimeClasses — see #lib/k8s/gvisor): idempotent,
  * and the way an existing cluster picks gVisor up on a yaac upgrade.
@@ -447,14 +446,12 @@ async function installCilium(deps: ClusterSetupDeps, cluster: string): Promise<v
 }
 
 /**
- * The per-node fixups: containerd
- * registry hosts.toml, the unmasked sysfs mount for userns pods
- * (kind#3436), DefaultTasksMax + VM memory sysctls (subagent fan-out and
- * virtiofs allocations die without them), src_valid_mark=0 (session egress
- * TPROXY — see the comment at the write below), and the node container's
- * own PID ceiling. All of these live in node/VM state that resets on
- * restart — `yaac cluster setup --repair` re-applies them, and
- * `yaac cluster check` warns when they are missing.
+ * The per-node fixups: containerd registry hosts.toml, DefaultTasksMax + VM
+ * memory sysctls (subagent fan-out and virtiofs allocations die without
+ * them), src_valid_mark=0 (session egress TPROXY — see the comment at the
+ * write below), and the node container's own PID ceiling. All of these live
+ * in node/VM state that resets on restart — `yaac cluster setup --repair`
+ * re-applies them, and `yaac cluster check` warns when they are missing.
  */
 async function applyNodeFixups(deps: ClusterSetupDeps, node: string): Promise<void> {
   deps.log(`Applying node fixups to ${node}...`)
@@ -462,11 +459,6 @@ async function applyNodeFixups(deps: ClusterSetupDeps, node: string): Promise<vo
   const registryDir = `/etc/containerd/certs.d/localhost:${port}`
   await deps.run('podman', ['exec', node, 'sh', '-c',
     `mkdir -p '${registryDir}' && printf '[host."http://${REGISTRY_CONTAINER_NAME}:5000"]\\n' > '${registryDir}/hosts.toml'`,
-  ])
-  // Idempotent (unlike the shell script, which only ran on fresh nodes):
-  // re-mounting sysfs on an already-fixed node would stack mounts.
-  await deps.run('podman', ['exec', node, 'sh', '-c',
-    `mkdir -p ${NODE_SYSFS_MOUNTPOINT} && { mountpoint -q ${NODE_SYSFS_MOUNTPOINT} || mount -t sysfs none ${NODE_SYSFS_MOUNTPOINT}; }`,
   ])
   await deps.run('podman', ['exec', node, 'sh', '-c',
     'mkdir -p /etc/systemd/system.conf.d\n'

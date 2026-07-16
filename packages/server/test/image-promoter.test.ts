@@ -1,8 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import crypto from 'node:crypto'
+import { execFile } from 'node:child_process'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { promisify } from 'node:util'
+
+const execFileAsync = promisify(execFile)
 
 vi.mock('#lib/k8s/exec', async (importOriginal) => {
   const actual = await importOriginal<typeof execModule>()
@@ -60,9 +64,15 @@ describe('PROMOTER_SCRIPT', () => {
     expect(lines[2]).toBe('command -v podman >/dev/null 2>&1 || exit 0')
   })
 
-  it('serializes on an exclusive flock inside the shared store', () => {
-    expect(PROMOTER_SCRIPT).toContain(`exec 9>${SHARED_IMAGE_STORE_DST_PATH}/.yaac-promoter.lock`)
-    expect(PROMOTER_SCRIPT).toContain('flock -x 9')
+  it('serializes cross-pod via a host-side mkdir lock (flock is sentry-local under gVisor)', () => {
+    expect(PROMOTER_SCRIPT).toContain(`lockdir=${SHARED_IMAGE_STORE_DST_PATH}/.yaac-promoter.lockdir`)
+    expect(PROMOTER_SCRIPT).toContain('while ! mkdir "$lockdir" 2>/dev/null; do')
+    // Stale-holder steal (a died promoter can never rmdir its own lock).
+    expect(PROMOTER_SCRIPT).toContain('-mmin +20')
+    // Release on every shell exit.
+    expect(PROMOTER_SCRIPT).toContain(`trap 'rmdir "$lockdir" 2>/dev/null' EXIT`)
+    // No flock anywhere: under gVisor it never reaches the host kernel.
+    expect(PROMOTER_SCRIPT).not.toContain('flock')
   })
 
   it('writes through the dst path to dodge the read-only additional-store lock', () => {
@@ -85,14 +95,26 @@ describe('PROMOTER_SCRIPT', () => {
   it('reads the source from the graphroot path the sqlite db was created under', () => {
     expect(PROMOTER_SCRIPT).toContain(`${NESTED_GRAPHROOT_PATH}/storage/overlay-images`)
   })
+
+  it('is valid POSIX shell, as is the exec command wrapping it', async () => {
+    // sh -n parses without executing — catches quoting/structure breakage
+    // in the generated script and in the sudo-gate wrapper around it.
+    await expect(execFileAsync('sh', ['-n', '-c', PROMOTER_SCRIPT])).resolves.toBeTruthy()
+    await expect(execFileAsync('sh', ['-n', '-c', promoterExecCommand()])).resolves.toBeTruthy()
+  })
 })
 
 describe('promoterExecCommand', () => {
-  it('single-quotes the script for the in-pod sh -c, escaping embedded quotes', () => {
+  it('gates on usable passwordless sudo before the sudo-run script', () => {
     const cmd = promoterExecCommand()
-    // Rootful engine → the promoter runs under sudo (-H sets $HOME for the
-    // script's `set -u`).
-    expect(cmd.startsWith("sudo -H sh -c '")).toBe(true)
+    // Images without passwordless sudo (custom Dockerfile.yaac) must
+    // no-op quietly — the script's own store self-gate needs sudo to run.
+    expect(cmd.startsWith("sh -c '")).toBe(true)
+    expect(cmd).toContain('command -v sudo >/dev/null 2>&1 || exit 0')
+    expect(cmd).toContain('sudo -n true 2>/dev/null || exit 0')
+    // Rootful engine → the promoter itself runs under sudo (-n: no
+    // password prompt; -H sets $HOME for the script's `set -u`).
+    expect(cmd).toContain('exec sudo -n -H sh -c ')
     expect(cmd.endsWith("'")).toBe(true)
     // Embedded single quotes survive via the '\'' dance.
     expect(cmd).toContain("'\\''")
@@ -123,7 +145,7 @@ describe('promoteSessionImages', () => {
 describe('buildPromoterShellCommand', () => {
   it('builds a kubectl exec one-liner that never fails the detached script', () => {
     const cmd = buildPromoterShellCommand('yaac-demo-abc')
-    expect(cmd.startsWith('kubectl exec -n yaac job/yaac-demo-abc -- sudo -H sh -c ')).toBe(true)
+    expect(cmd.startsWith('kubectl exec -n yaac job/yaac-demo-abc -- sh -c ')).toBe(true)
     expect(cmd.endsWith('|| true')).toBe(true)
     // Same in-pod command as the in-process path.
     expect(cmd).toContain(promoterExecCommand())

@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { Agent } from 'undici'
 import type { AgentTool, SecretProxyRule } from '@yaac/shared/types'
 import { imageExists } from '#lib/container/runtime'
 import { PROXY_DIR } from '@yaac/shared/project-paths'
@@ -15,7 +16,7 @@ import {
 import { k8sNamespace, kubectlGetJson, kubectlWithRetry } from '#lib/k8s/kubectl'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#lib/k8s/registry'
 import { ExecTunnel } from '#lib/k8s/exec-tunnel'
-import { RUNTIME_CLASS_GVISOR } from '#lib/k8s/gvisor'
+import { runtimeClassSpec } from '#lib/k8s/gvisor'
 import { listSshEntries } from '#lib/project/credentials'
 import {
   failImageBuild,
@@ -148,6 +149,37 @@ export interface ProxyClientConfig {
   requirePrebuilt?: boolean
 }
 
+/**
+ * Dedicated connection pool for the control tunnel, doing two jobs the
+ * global fetch defaults get wrong for an exec-relay transport:
+ *  - keepAliveTimeout 60s outlives the ~5s background reconcile tick
+ *    (undici's 4s default does not), so one exec relay serves many
+ *    requests instead of a fresh kubectl exec + apiserver round trip per
+ *    tick. The proxy's API server holds its side open for 75s (> ours,
+ *    so the server never closes a connection the pool still trusts).
+ *  - headersTimeout 15s restores the deleted ServicePortForward's
+ *    fail-fast: the tunnel's local listener always accepts instantly,
+ *    so a wedged apiserver otherwise black-holes every proxy call for
+ *    undici's 300s default.
+ *  - connections 8 caps concurrent relays (each is a kubectl process +
+ *    an apiserver exec stream) under session-create fan-out.
+ */
+const tunnelDispatcher = new Agent({
+  keepAliveTimeout: 60_000,
+  headersTimeout: 15_000,
+  bodyTimeout: 60_000,
+  connections: 8,
+})
+
+/**
+ * fetch through the tunnel's pooled, fail-fast dispatcher. Uses the
+ * global fetch (undici at runtime — `dispatcher` is honored, though the
+ * DOM-shaped RequestInit type doesn't declare it), so tests stubbing
+ * globalThis.fetch keep intercepting proxy calls.
+ */
+const tunnelFetch = (url: string, init: RequestInit = {}): Promise<Response> =>
+  fetch(url, { ...init, dispatcher: tunnelDispatcher } as RequestInit)
+
 export class ProxyClient {
   private running = false
   private authSecret: string | null = null
@@ -208,7 +240,7 @@ export class ProxyClient {
   }
 
   async getCaCert(): Promise<string> {
-    const res = await fetch(`${this.baseUrl}/ca.pem`)
+    const res = await tunnelFetch(`${this.baseUrl}/ca.pem`)
     if (!res.ok) throw new Error(`Failed to fetch CA cert: ${res.status}`)
     return res.text()
   }
@@ -221,7 +253,7 @@ export class ProxyClient {
    * trust set with a superset. See docs/nested-ca-combined-bundle.md.
    */
   async getCaBundle(): Promise<string> {
-    const res = await fetch(`${this.baseUrl}/ca-bundle.pem`)
+    const res = await tunnelFetch(`${this.baseUrl}/ca-bundle.pem`)
     if (!res.ok) throw new Error(`Failed to fetch CA bundle: ${res.status}`)
     return res.text()
   }
@@ -241,7 +273,7 @@ export class ProxyClient {
       upstreamRedirects?: Record<string, UpstreamRedirect>
     },
   ): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/sessions/${encodeURIComponent(sessionId)}`, {
+    const res = await tunnelFetch(`${this.baseUrl}/sessions/${encodeURIComponent(sessionId)}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -272,7 +304,7 @@ export class ProxyClient {
    * evicted on the next push.
    */
   async registerVclusterAttribution(podSessions: Record<string, string>): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/vcluster-attribution`, {
+    const res = await tunnelFetch(`${this.baseUrl}/vcluster-attribution`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -287,7 +319,7 @@ export class ProxyClient {
   }
 
   async removeSession(sessionId: string): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/sessions/${encodeURIComponent(sessionId)}`, {
+    const res = await tunnelFetch(`${this.baseUrl}/sessions/${encodeURIComponent(sessionId)}`, {
       method: 'DELETE',
       headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
     })
@@ -307,7 +339,7 @@ export class ProxyClient {
    * non-OK status throws.
    */
   async allowHost(sessionId: string, host: string): Promise<boolean> {
-    const res = await fetch(
+    const res = await tunnelFetch(
       `${this.baseUrl}/sessions/${encodeURIComponent(sessionId)}/allow-host`,
       {
         method: 'POST',
@@ -336,7 +368,7 @@ export class ProxyClient {
   async attachIfRunning(): Promise<boolean> {
     if (this.running) {
       try {
-        const res = await fetch(`${this.baseUrl}/healthz`)
+        const res = await tunnelFetch(`${this.baseUrl}/healthz`)
         if (res.ok) return true
       } catch {
         this.running = false
@@ -346,7 +378,7 @@ export class ProxyClient {
       const secret = await readExistingProxyAuthSecret()
       if (!secret) return false
       await this.forward.ensure()
-      const res = await fetch(`${this.baseUrl}/healthz`)
+      const res = await tunnelFetch(`${this.baseUrl}/healthz`)
       if (!res.ok) return false
       this.authSecret = secret
       this.running = true
@@ -364,7 +396,7 @@ export class ProxyClient {
    */
   async uploadSshKey(host: string, keyPath: string, knownHostsEntry: string): Promise<void> {
     const keyPem = await fs.readFile(keyPath, 'utf8')
-    const res = await fetch(`${this.baseUrl}/agent/keys`, {
+    const res = await tunnelFetch(`${this.baseUrl}/agent/keys`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -380,7 +412,7 @@ export class ProxyClient {
 
   /** Clear every identity from the proxy's ssh-agent. */
   async clearSshKeys(): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/agent/keys`, {
+    const res = await tunnelFetch(`${this.baseUrl}/agent/keys`, {
       method: 'DELETE',
       headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
     })
@@ -392,7 +424,7 @@ export class ProxyClient {
 
   /** List identities currently loaded into the proxy's ssh-agent. */
   async listAgentKeys(): Promise<Array<{ fingerprint: string; comment: string }>> {
-    const res = await fetch(`${this.baseUrl}/agent/keys`, {
+    const res = await tunnelFetch(`${this.baseUrl}/agent/keys`, {
       headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
     })
     if (!res.ok) {
@@ -452,7 +484,7 @@ export class ProxyClient {
    * write-through persisted, so nothing re-registers them at runtime).
    */
   async listSessions(): Promise<string[]> {
-    const res = await fetch(`${this.baseUrl}/sessions`, {
+    const res = await tunnelFetch(`${this.baseUrl}/sessions`, {
       headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
     })
     if (!res.ok) {
@@ -482,7 +514,7 @@ export class ProxyClient {
     // strategy swaps the pod.
     if (this.running) {
       try {
-        const res = await fetch(`${this.baseUrl}/healthz`)
+        const res = await tunnelFetch(`${this.baseUrl}/healthz`)
         if (res.ok) {
           if (await this.isDeployedProxyCurrent()) return
           serverLog('[server] proxy deployment is stale (image or runtime) — redeploying')
@@ -545,7 +577,9 @@ export class ProxyClient {
         } } }
       }>(['get', 'deployment', PROXY_APP_NAME, '-n', k8sNamespace()])
       const podSpec = deployment?.spec?.template?.spec
-      const expectedRuntime = env.nested ? undefined : RUNTIME_CLASS_GVISOR
+      // Same policy call the manifest builder makes (bootstrap.ts), so the
+      // currency check can never drift from what a bootstrap would stamp.
+      const expectedRuntime = runtimeClassSpec({ inner: env.nested }).runtimeClassName
       return podSpec?.containers?.[0]?.image === expected
         && podSpec?.runtimeClassName === expectedRuntime
     } catch {
@@ -591,7 +625,7 @@ export class ProxyClient {
   private async waitForHealthy(): Promise<void> {
     for (let i = 0; i < 30; i++) {
       try {
-        const res = await fetch(`${this.baseUrl}/healthz`)
+        const res = await tunnelFetch(`${this.baseUrl}/healthz`)
         if (res.ok) return
       } catch {
         // not ready yet — possibly a dead tunnel; respawn it

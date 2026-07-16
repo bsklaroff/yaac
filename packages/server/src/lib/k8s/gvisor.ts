@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { shellQuote } from '#lib/shell'
 
 /**
  * gVisor (runsc) is the runtime for every yaac-managed pod. The sentry is the
@@ -27,6 +28,28 @@ export const GVISOR_VERSION = '20260706.0'
  */
 export const RUNTIME_CLASS_GVISOR = 'gvisor'
 export const RUNTIME_CLASS_GVISOR_NESTED = 'gvisor-nested'
+
+/**
+ * THE runtime-class policy, as a spreadable pod-spec fragment — the single
+ * encoding of which tier a yaac-created pod runs on, used by every manifest
+ * builder and by the checks that compare against what a builder would stamp:
+ *  - `inner`: the pod is created by an inner (nested) yaac against its
+ *    vcluster, which has no RuntimeClass objects — stamp nothing; the
+ *    vcluster syncer sets the host-side runtime
+ *    (sync.toHost.pods.runtimeClassName in k8s/vcluster/values.yaml).
+ *  - `nested`: the pod hosts the in-sandbox container engine — the
+ *    gvisor-nested tier (raw/packet sockets).
+ *  - otherwise: the default gvisor tier.
+ * Either way there is no user namespace: the sentry is the containment.
+ */
+export function runtimeClassSpec(
+  opts: { inner?: boolean; nested?: boolean },
+): { runtimeClassName?: string } {
+  if (opts.inner) return {}
+  return {
+    runtimeClassName: opts.nested ? RUNTIME_CLASS_GVISOR_NESTED : RUNTIME_CLASS_GVISOR,
+  }
+}
 
 /** containerd runtime handler names the RuntimeClasses map to. */
 export const RUNSC_HANDLER = 'runsc'
@@ -148,11 +171,6 @@ export function buildRuntimeClassManifests(): Array<Record<string, unknown>> {
   }))
 }
 
-/** Single-quote one token for embedding in an `sh -c` script. */
-function shq(arg: string): string {
-  return `'${arg.replace(/'/g, `'\\''`)}'`
-}
-
 export interface GvisorSetupDeps {
   /** execFile-style runner, injectable for tests. */
   run: (
@@ -183,14 +201,14 @@ function downloadScript(url: string, file: string, dest: string): string {
     'set -e',
     'tmp=$(mktemp -d)',
     'cd "$tmp"',
-    `curl -fsSL ${shq(url)} -o ${file}`,
-    `curl -fsSL ${shq(`${url}.sha512`)} -o ${file}.sha512`,
+    `curl -fsSL ${shellQuote(url)} -o ${file}`,
+    `curl -fsSL ${shellQuote(`${url}.sha512`)} -o ${file}.sha512`,
     'if command -v sha512sum >/dev/null 2>&1; then'
     + ` sha512sum -c ${file}.sha512 >/dev/null;`
     + ` else shasum -a 512 -c ${file}.sha512 >/dev/null; fi`,
     `chmod 0755 ${file}`,
-    `mkdir -p ${shq(path.dirname(dest))}`,
-    `mv ${file} ${shq(dest)}`,
+    `mkdir -p ${shellQuote(path.dirname(dest))}`,
+    `mv ${file} ${shellQuote(dest)}`,
     'cd /',
     'rm -rf "$tmp"',
   ].join(' && ')
@@ -267,7 +285,7 @@ export async function installGvisorOnNode(
     ])
     if (current !== content) {
       await deps.run('podman', [
-        'exec', node, 'sh', '-c', `printf '%s' ${shq(content)} > ${configPath}`,
+        'exec', node, 'sh', '-c', `printf '%s' ${shellQuote(content)} > ${configPath}`,
       ])
       changed = true
     }
@@ -280,20 +298,35 @@ export async function installGvisorOnNode(
     const block = gvisorContainerdRuntimesToml(criRuntimesPluginKey(containerdConfig))
     await deps.run('podman', [
       'exec', node, 'sh', '-c',
-      `printf '\\n%s' ${shq(block)} >> /etc/containerd/config.toml`,
+      `printf '\\n%s' ${shellQuote(block)} >> /etc/containerd/config.toml`,
     ])
     changed = true
   }
 
-  if (changed) {
-    deps.log(`Restarting containerd on ${node} to pick up the runsc handlers...`)
-    await deps.run('podman', ['exec', node, 'systemctl', 'restart', 'containerd'])
+  if (!changed) {
+    // Files in place does not prove the RUNNING containerd has the
+    // handlers: a failed/interrupted restart on a previous run leaves
+    // exactly this on-disk state, and skipping the restart on it would
+    // make `--repair` (the documented fix) unable to ever repair it. Ask
+    // the live CRI which runtimes it registered.
+    const { stdout: live } = await deps.run('podman', ['exec', node, 'sh', '-c',
+      'out=$(crictl info 2>/dev/null || true); '
+      + `{ echo "$out" | grep -q '"${RUNSC_HANDLER}"'; } && `
+      + `{ echo "$out" | grep -q '"${RUNSC_NESTED_HANDLER}"'; } && `
+      + 'echo handlers=live || echo handlers=missing',
+    ])
+    if (live.includes('handlers=live')) {
+      deps.log(`gVisor ${GVISOR_VERSION} already installed on ${node}.`)
+      return
+    }
+    deps.log(`runsc handlers not registered in the running containerd on ${node} — restarting...`)
   } else {
-    deps.log(`gVisor ${GVISOR_VERSION} already installed on ${node}.`)
+    deps.log(`Restarting containerd on ${node} to pick up the runsc handlers...`)
   }
+  await deps.run('podman', ['exec', node, 'systemctl', 'restart', 'containerd'])
 }
 
-/** Apply the three RuntimeClasses (idempotent) via kubectl. */
+/** Apply both RuntimeClasses (idempotent) via kubectl. */
 export async function applyGvisorRuntimeClasses(
   kubectlContext: string,
   deps: Pick<GvisorSetupDeps, 'runStreaming'>,
@@ -316,8 +349,19 @@ export async function ensureGvisorRuntime(
   deps: GvisorSetupDeps,
 ): Promise<void> {
   if (nodes.length === 0) return
-  const { stdout: unameOut } = await deps.run('podman', ['exec', nodes[0], 'uname', '-m'])
-  const binaries = await ensureGvisorNodeBinaries(gvisorNodeArch(unameOut), deps)
-  for (const node of nodes) await installGvisorOnNode(node, binaries, deps)
+  // Arch is probed per node (a multi-node set can mix arches); binaries
+  // are downloaded once per distinct arch and shared across its nodes.
+  const archByNode = new Map<string, 'x86_64' | 'aarch64'>()
+  for (const node of nodes) {
+    const { stdout } = await deps.run('podman', ['exec', node, 'uname', '-m'])
+    archByNode.set(node, gvisorNodeArch(stdout))
+  }
+  const binariesByArch = new Map<string, { runsc: string; shim: string }>()
+  for (const arch of new Set(archByNode.values())) {
+    binariesByArch.set(arch, await ensureGvisorNodeBinaries(arch, deps))
+  }
+  for (const node of nodes) {
+    await installGvisorOnNode(node, binariesByArch.get(archByNode.get(node)!)!, deps)
+  }
   await applyGvisorRuntimeClasses(kubectlContext, deps)
 }

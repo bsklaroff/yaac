@@ -112,13 +112,12 @@ describe('runClusterSetup', () => {
     expect(deps.runStreaming.mock.calls.some(([, a]) => a[0] === 'status' && a.includes('--wait'))).toBe(true)
     expect(runCalls.some(([f, a]) => f === 'kubectl' && a.includes('--for=condition=Ready'))).toBe(true)
 
-    // Node fixups: hosts.toml + sysfs + TasksMax/sysctls via podman exec,
-    // then the node container's pids ceiling, then the network connect.
+    // Node fixups: hosts.toml + TasksMax/sysctls via podman exec, then the
+    // node container's pids ceiling, then the network connect.
     const execCmds = runCalls
       .filter(([f, a]) => f === 'podman' && a[0] === 'exec')
       .map(([, a]) => a[a.length - 1])
     expect(execCmds.some((c) => c.includes('hosts.toml'))).toBe(true)
-    expect(execCmds.some((c) => c.includes('mount -t sysfs'))).toBe(true)
     expect(execCmds.some((c) => c.includes('DefaultTasksMax=infinity'))).toBe(true)
     expect(execCmds.some((c) => c.includes('min_free_kbytes'))).toBe(true)
     expect(execCmds.some((c) => c.includes('src_valid_mark'))).toBe(true)

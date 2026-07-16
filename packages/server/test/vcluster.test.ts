@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import YAML from 'yaml'
 
@@ -46,7 +47,6 @@ import {
   getVclusterStatus,
   listVclusterNamespaces,
   renderVclusterManifests,
-  stampPodRuntimeClass,
   vclusterCleanupKubectlArgs,
   vclusterKubeconfigSecretName,
   vclusterName,
@@ -137,34 +137,6 @@ describe('addYaacLabels', () => {
   })
 })
 
-describe('stampPodRuntimeClass', () => {
-  const STS =
-    'apiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n  name: yvc-x\n'
-    + 'spec:\n  template:\n    spec:\n      containers: []\n'
-
-  it('stamps workload pod templates that carry none', () => {
-    const out = stampPodRuntimeClass(STS, 'runc')
-    const [sts] = parseDocs(out) as unknown as Array<{
-      spec: { template: { spec: { runtimeClassName?: string } } }
-    }>
-    expect(sts.spec.template.spec.runtimeClassName).toBe('runc')
-  })
-
-  it('never overrides an existing runtimeClassName', () => {
-    const withClass = STS.replace('containers: []', 'containers: []\n      runtimeClassName: gvisor')
-    const [sts] = parseDocs(stampPodRuntimeClass(withClass, 'runc')) as unknown as Array<{
-      spec: { template: { spec: { runtimeClassName?: string } } }
-    }>
-    expect(sts.spec.template.spec.runtimeClassName).toBe('gvisor')
-  })
-
-  it('leaves non-workload objects untouched', () => {
-    const svc = 'apiVersion: v1\nkind: Service\nmetadata:\n  name: s\nspec:\n  type: ClusterIP\n'
-    const out = stampPodRuntimeClass(svc, 'runc')
-    expect(out).not.toContain('runtimeClassName')
-  })
-})
-
 describe('renderVclusterManifests', () => {
   beforeEach(() => {
     // ensureHelm: helm on PATH; helm template: a tiny three-object stream
@@ -221,12 +193,21 @@ describe('renderVclusterManifests', () => {
     expect(out).not.toContain('yaac.session-id:')
   })
 
-  it('stamps the control-plane pod template onto the gvisor tier', async () => {
-    const out = await renderVclusterManifests({ sessionId: SID })
-    const sts = parseDocs(out).find((o) => o.kind === 'StatefulSet') as unknown as {
-      spec: { template: { spec: { runtimeClassName?: string } } }
+  it('renders with the vendored values file that pins both gvisor runtime knobs', async () => {
+    await renderVclusterManifests({ sessionId: SID })
+    const tmpl = mockExec.mock.calls.find((c) => c[0] === 'helm' && (c[1] as string[])[0] === 'template')
+    const args = tmpl![1] as string[]
+    const valuesPath = args[args.indexOf('--values') + 1]
+    // The gvisor runtime rides values.yaml, not a post-render stamp: the
+    // chart-native knobs cover the control-plane StatefulSet and every
+    // synced pod. Pin both here so a values edit can't silently drop the
+    // no-pod-without-runtimeClassName invariant.
+    const values = YAML.parse(readFileSync(valuesPath, 'utf8')) as {
+      controlPlane?: { statefulSet?: { runtimeClassName?: string } }
+      sync?: { toHost?: { pods?: { runtimeClassName?: string } } }
     }
-    expect(sts.spec.template.spec.runtimeClassName).toBe('gvisor')
+    expect(values.controlPlane?.statefulSet?.runtimeClassName).toBe('gvisor')
+    expect(values.sync?.toHost?.pods?.runtimeClassName).toBe('gvisor')
   })
 })
 

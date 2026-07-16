@@ -59,10 +59,12 @@ Idmap support by filesystem, for reference (kernel 7.0 / K8s 1.36):
 
 Dropping the userns as containment also deleted real complexity: the
 rootless-podman contortions in the nested image are gone, and the userns-tier
-node prerequisites (unmasked sysfs / kind#3436, idmapped-mount filesystem
-checks, the macOS libkrun-efi ≥ 1.17 floor) are obsolete. And per-workload
-capability carve-outs stopped being security decisions: in-sandbox caps grant
-no host authority.
+node prerequisites lose their rationale. The unmasked-sysfs fixup (kind#3436)
+is removed; the idmapped-mount filesystem constraints (ext4/xfs on Linux, the
+macOS libkrun-efi ≥ 1.17 floor) no longer bind — though libkrun stays yaac's
+macOS podman-machine provider for now, pending a fresh-setup test on the
+default provider. And per-workload capability carve-outs stopped being
+security decisions: in-sandbox caps grant no host authority.
 
 References:
 [Kernel Recipes: idmapped mounts](https://archives.kernel-recipes.org/wp-content/uploads/2025/01/brauner_christian_idmapped_mounts.pdf),
@@ -104,12 +106,13 @@ uid_map failed`), verified on the dev cluster. Decisions:
   Engine config lives at the rootful system paths
   (`/etc/containers/{containers,storage}.conf`).
 - **Graphroot is a tmpfs.** `security.capability` (what `docker build`
-  `setcap` steps write) sticks only on a sentry-internal tmpfs — not on the
-  gofer-backed 9p emptyDir, and not on fuse-overlayfs (which the sentry
-  refuses to mount). So the graphroot is a Memory emptyDir promoted to a
-  sentry tmpfs via a `dev.gvisor.spec.mount.<vol>.type=tmpfs` annotation,
-  sized below the pod memory limit (a huge build ENOSPCs rather than OOMs;
-  layer data is in RAM).
+  `setcap` steps write) sticks only on a sentry-internal tmpfs — goferfs
+  refuses writes to the `security.*` xattr namespace on gofer-backed
+  (hostPath/emptyDir) volumes, and fuse-overlayfs the sentry refuses to
+  mount. So the graphroot is a Memory emptyDir promoted to a sentry tmpfs
+  via a `dev.gvisor.spec.mount.<vol>.type=tmpfs` annotation, sized below
+  the pod memory limit (a huge build ENOSPCs rather than OOMs; layer data
+  is in RAM).
 - **Engine caps.** `NESTED_ENGINE_CAPS` (SYS_ADMIN, SYS_CHROOT, MKNOD,
   SETFCAP, NET_RAW, NET_ADMIN, SYS_PTRACE, SYS_RESOURCE) — no host authority
   under the sentry.
@@ -126,7 +129,7 @@ uid_map failed`), verified on the dev cluster. Decisions:
   steps get their CA trust from the mounted containers.conf.
 - **Shared image store** (`additionalimagestores`) over a gofer-served
   hostPath works for read-back; the promoter writes it through a second
-  mount path. File caps drop through the 9p store (acceptable cache
+  mount path. File caps drop through the gofer store (acceptable cache
   degradation: a miss rebuilds). The store is root-owned — no chown-init.
 
 ### vcluster

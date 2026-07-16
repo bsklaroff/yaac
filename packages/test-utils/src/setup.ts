@@ -6,7 +6,7 @@ import { promisify } from 'node:util'
 import simpleGit from 'simple-git'
 import { setDataDir, getDataDir, projectDir, repoDir, claudeDir } from '@yaac/shared/project-paths'
 import { cloneRepo } from '@yaac/server/lib/git'
-import { ensurePodmanSocket, ensureRootfulPodmanHost, getSocketPath, usesRootfulPodman } from '@yaac/server/lib/container/runtime'
+import { ensureRootfulPodmanHost } from '@yaac/server/lib/container/runtime'
 import {
   dataDirHash,
   k8sNamespace,
@@ -226,24 +226,14 @@ let _podmanAlive = false
  * Throws if podman is not available. Use in beforeAll/test bodies
  * so tests fail loudly instead of silently passing.
  *
- * Only a prior success is cached — failures always re-probe and try to
- * revive a dead `podman system service` before giving up. This prevents
- * one flaky test that takes out the shared socket from cascading to
- * every later test in the same worker.
+ * Only a prior success is cached — failures always re-probe. No revive:
+ * every engine yaac talks to is managed elsewhere (macOS machine, host
+ * systemd socket, or the session-create-started in-pod engine).
  */
 export async function requirePodman(): Promise<void> {
   if (_podmanAlive) return
   ensureRootfulPodmanHost()
   if (await podmanAvailable()) { _podmanAlive = true; return }
-  // The rootful system socket is systemd-managed and can't be self-revived;
-  // only the rootless per-uid socket has a `podman system service` to restart.
-  const socketPath = usesRootfulPodman() ? undefined : getSocketPath()
-  if (socketPath) {
-    try {
-      await ensurePodmanSocket(socketPath, { timeoutMs: 5_000 })
-    } catch { /* fall through to the second probe */ }
-    if (await podmanAvailable()) { _podmanAlive = true; return }
-  }
   throw new Error('Podman is not available. Start it with: podman machine start')
 }
 

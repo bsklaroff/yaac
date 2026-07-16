@@ -1,4 +1,4 @@
-import { RUNTIME_CLASS_GVISOR, RUNTIME_CLASS_GVISOR_NESTED } from '#lib/k8s/gvisor'
+import { runtimeClassSpec } from '#lib/k8s/gvisor'
 import { LABEL_SESSION_ID } from '#lib/k8s/pods'
 
 /** ConfigMap (cluster-scoped to the yaac namespace) holding the proxy CA. */
@@ -45,11 +45,14 @@ export const SHARED_IMAGE_STORE_DST_PATH = '/var/lib/shared-images-dst'
  * In-container path of the per-session ROOTFUL podman graphroot — podman's
  * default `/var/lib/containers/storage` lives under this dir (the image's
  * storage.conf sets graphroot there). Backed by a sentry-internal tmpfs
- * (see NESTED_GRAPHROOT_ANNOTATIONS): under gVisor the gofer serves hostPath/
- * emptyDir volumes as 9p, which cannot hold the `security.capability` xattr,
- * so a `docker build` RUN step doing `setcap` fails on a gofer graphroot —
- * only a tmpfs upper carries file caps. This is the docker-in-gvisor
- * tutorial's shape; the cost is that layer data counts against pod memory.
+ * (see NESTED_GRAPHROOT_ANNOTATIONS): gVisor's gofer filesystem refuses
+ * WRITES to the `security.*` xattr namespace (goferfs
+ * checkXattrPermissions → EOPNOTSUPP — the unprivileged host-side gofer
+ * couldn't set `security.capability` on host files anyway), so a `docker
+ * build` RUN step doing `setcap` fails on any gofer-backed (hostPath/
+ * emptyDir) graphroot — only a sentry tmpfs holds file caps. This is the
+ * docker-in-gvisor tutorial's shape; the cost is that layer data counts
+ * against pod memory.
  */
 export const NESTED_GRAPHROOT_PATH = '/var/lib/containers'
 
@@ -186,12 +189,15 @@ export function parseEnvEntry(entry: string): { name: string; value: string } {
  * Pure — no cluster access — so the full spec shape is unit-testable.
  */
 export function buildSessionJobManifest(p: SessionJobParams): Record<string, unknown> {
-  // Inner-yaac pods stamp nothing (the vcluster has no RuntimeClass objects;
-  // the syncer sets the host runtime). Host pods stamp gvisor-nested when
-  // `nested` (raw/packet sockets for the in-sandbox engine), else gvisor.
-  const runtimeClassName = p.innerYaac
-    ? undefined
-    : (p.nested ? RUNTIME_CLASS_GVISOR_NESTED : RUNTIME_CLASS_GVISOR)
+  if (p.nested && NESTED_GRAPHROOT_TMPFS_BYTES >= p.memoryLimitBytes) {
+    // tmpfs pages count against the pod's memory cgroup: a graphroot at or
+    // above the pod limit turns every large build into a whole-session OOM
+    // kill instead of a graphroot ENOSPC.
+    throw new Error(
+      `nested graphroot tmpfs (${NESTED_GRAPHROOT_TMPFS_BYTES}) must stay below `
+      + `the pod memory limit (${p.memoryLimitBytes})`,
+    )
+  }
   const volumes: Array<Record<string, unknown>> = []
   const volumeMounts: Array<Record<string, unknown>> = []
 
@@ -219,7 +225,7 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
   if (p.nested) {
     // Per-session ROOTFUL graphroot: a Memory-medium emptyDir promoted to a
     // sentry-internal tmpfs by NESTED_GRAPHROOT_ANNOTATIONS so `docker build`
-    // setcap steps work (gofer 9p drops the security.capability xattr). Owned
+    // setcap steps work (goferfs refuses security.* xattr writes). Owned
     // by root — the rootful engine runs as root, so no fsGroup/chown. sizeLimit
     // mirrors the annotation's size= so the scheduler accounts for it.
     volumes.push({
@@ -272,10 +278,9 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
           // Containment for in-container root (reachable via the image's
           // passwordless sudo, a feature — agents install packages
           // mid-session) is the sentry: in-sandbox root is a fiction with no
-          // host authority. No user namespace anywhere — a host pod carries
-          // the gvisor RuntimeClass, an inner-yaac pod gets its runtime from
-          // the vcluster syncer (see runtimeClassName above).
-          ...(runtimeClassName ? { runtimeClassName } : {}),
+          // host authority. No user namespace anywhere — see runtimeClassSpec
+          // for the tier policy (gvisor / gvisor-nested / inner stamps none).
+          ...runtimeClassSpec({ inner: p.innerYaac, nested: !!p.nested }),
           // DNS: session pods resolve against the proxy's UDP/53 stub, which is
           // split-horizon — internal names (`*.svc`) are forwarded to the
           // cluster CoreDNS so the pod learns live ClusterIPs (the registry,

@@ -822,26 +822,31 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
         `sudo sh -c "mkdir -p ${confDir} && printf '%s\\n' ${lines} > ${confDir}/yaac-project-registry.conf"`,
       )
     }
-    // Start the rootful engine (as root, via the image's passwordless sudo),
-    // then wait for its socket and hand it to the yaac user: /run/podman is
-    // created root:0700, so make it traversable and give the socket to yaac.
+    // Start the rootful engine (as root, via the image's passwordless
+    // sudo), wait for its socket, and hand it to the yaac user — one exec:
+    // /run/podman is created root:0700, so make it traversable and give
+    // the socket to yaac. On timeout the script exits 1 with the engine
+    // log tail, so a dead-on-arrival engine surfaces its real error here
+    // instead of a bare chown failure.
     //
     // SSL_CERT_FILE must be set INSIDE the sudo'd shell: the engine (a Go
-    // binary) trusts the MITM proxy CA for registry pulls via this var, but
-    // sudo's env_reset strips the pod env the rootless engine used to
-    // inherit. Point it at the combined bundle ({public roots} ∪ {proxy CA})
-    // so both MITM'd (proxy-CA-signed) and tunnelled (real-cert) registries
-    // verify. Nested containers + build RUN steps get their own CA trust from
-    // /etc/containers/containers.conf (volumes/env), independent of this.
+    // binary) trusts the MITM proxy CA for registry pulls via this var,
+    // but sudo's env_reset strips the pod env. It points at the combined
+    // bundle ({public roots} ∪ {proxy CA}) so both MITM'd and tunnelled
+    // registries verify. Nested containers + build RUN steps get their own
+    // CA trust from /etc/containers/containers.conf, independent of this.
     await containerExec(
       jobName,
-      `sudo sh -c 'export SSL_CERT_FILE=${PROXY_CA_BUNDLE_PATH}; `
-      + `podman system service --time=0 >/tmp/podman-service.log 2>&1 &'`,
-    )
-    await containerExec(
-      jobName,
-      "sudo sh -c 'for i in $(seq 1 120); do [ -S /run/podman/podman.sock ] && break; sleep 0.5; done;"
-      + " chmod 0755 /run/podman && chown yaac /run/podman/podman.sock'",
+      'sudo -n sh -c \''
+      + `export SSL_CERT_FILE=${PROXY_CA_BUNDLE_PATH}; `
+      // `&` terminates the background command — no `;` may follow it.
+      + 'podman system service --time=0 >/tmp/podman-service.log 2>&1 & i=0; '
+      + 'while [ $i -lt 120 ] && ! [ -S /run/podman/podman.sock ]; do i=$((i+1)); sleep 0.5; done; '
+      + 'if ! [ -S /run/podman/podman.sock ]; then'
+      + ' echo "yaac: in-pod podman engine did not create /run/podman/podman.sock within 60s; engine log tail:" >&2;'
+      + ' tail -n 20 /tmp/podman-service.log >&2 || true; exit 1; fi; '
+      + 'chmod 0755 /run/podman && chown yaac /run/podman/podman.sock\'',
+      { maxAttempts: 1, timeout: 90_000 },
     )
     emit('Waiting for the in-pod container engine...', options)
     const deadline = Date.now() + 60_000

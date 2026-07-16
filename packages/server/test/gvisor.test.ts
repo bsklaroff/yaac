@@ -18,6 +18,7 @@ import {
   RUNTIME_CLASS_GVISOR,
   RUNTIME_CLASS_GVISOR_NESTED,
   runscShimConfigToml,
+  runtimeClassSpec,
   type GvisorSetupDeps,
 } from '#lib/k8s/gvisor'
 
@@ -122,6 +123,19 @@ describe('gvisorContainerdRuntimesToml', () => {
   })
 })
 
+describe('runtimeClassSpec', () => {
+  it('stamps gvisor by default and gvisor-nested for nested pods', () => {
+    expect(runtimeClassSpec({})).toEqual({ runtimeClassName: RUNTIME_CLASS_GVISOR })
+    expect(runtimeClassSpec({ nested: true }))
+      .toEqual({ runtimeClassName: RUNTIME_CLASS_GVISOR_NESTED })
+  })
+
+  it('stamps nothing for inner-yaac pods (the vcluster syncer sets the host runtime)', () => {
+    expect(runtimeClassSpec({ inner: true })).toEqual({})
+    expect(runtimeClassSpec({ inner: true, nested: true })).toEqual({})
+  })
+})
+
 describe('buildRuntimeClassManifests', () => {
   it('emits gvisor and gvisor-nested mapped to their handlers', () => {
     const manifests = buildRuntimeClassManifests()
@@ -167,6 +181,9 @@ function installedNodeRun(): RunMock {
     if (script.includes('--version')) {
       return Promise.resolve({ stdout: `runsc version release-${GVISOR_VERSION}\nspec: 1.2.1\n`, stderr: '' })
     }
+    if (script.includes('crictl info')) {
+      return Promise.resolve({ stdout: 'handlers=live\n', stderr: '' })
+    }
     if (script.includes(`cat ${NODE_RUNSC_CONFIG_PATH}`)) {
       return Promise.resolve({ stdout: runscShimConfigToml('gvisor'), stderr: '' })
     }
@@ -203,13 +220,32 @@ describe('installGvisorOnNode', () => {
     expect(calls.some((c) => c === 'podman exec yaac-control-plane systemctl restart containerd')).toBe(true)
   })
 
-  it('is a no-op (no restart) when everything is already in place', async () => {
+  it('is a no-op (no restart) when everything is in place AND the handlers are live', async () => {
     const deps = makeDeps(installedNodeRun())
     await installGvisorOnNode('yaac-control-plane', binaries, deps)
 
     const calls = deps.run.mock.calls.map(([file, args]) => `${file} ${(args).join(' ')}`)
     expect(calls.some((c) => c.includes('podman cp'))).toBe(false)
     expect(calls.some((c) => c.includes('restart containerd'))).toBe(false)
+  })
+
+  it('restarts containerd when configs are in place but the handlers are not live', async () => {
+    // The interrupted-restart state: every file compares equal, but the
+    // running containerd never reloaded — a naive changed-only restart
+    // would leave `--repair` unable to repair it.
+    const run = vi.fn((file: string, args: string[]) => {
+      const script = args.join(' ')
+      if (script.includes('crictl info')) {
+        return Promise.resolve({ stdout: 'handlers=missing\n', stderr: '' })
+      }
+      return installedNodeRun()(file, args)
+    }) as RunMock
+    const deps = makeDeps(run)
+    await installGvisorOnNode('yaac-control-plane', binaries, deps)
+
+    const calls = deps.run.mock.calls.map(([file, args]) => `${file} ${(args).join(' ')}`)
+    expect(calls.some((c) => c.includes('podman cp'))).toBe(false)
+    expect(calls.some((c) => c.includes('restart containerd'))).toBe(true)
   })
 
   it('picks the version-3 plugin key when the node config declares it', async () => {
@@ -234,7 +270,7 @@ describe('installGvisorOnNode', () => {
 })
 
 describe('applyGvisorRuntimeClasses', () => {
-  it('applies all three RuntimeClasses via kubectl in the given context', async () => {
+  it('applies both RuntimeClasses via kubectl in the given context', async () => {
     const deps = makeDeps()
     await applyGvisorRuntimeClasses('kind-yaac', deps)
 
@@ -265,6 +301,27 @@ describe('ensureGvisorRuntime', () => {
       .filter((c) => c.includes('--version'))
     expect(versionProbes).toHaveLength(2)
     expect(deps.runStreaming).toHaveBeenCalledOnce()
+  })
+
+  it('probes arch per node and installs each node with its own arch binaries', async () => {
+    const run = vi.fn((file: string, args: string[]) => {
+      if (args.includes('uname')) {
+        // node-a is x86_64, node-b is aarch64 — a mixed-arch node set.
+        const arch = args[1] === 'node-a' ? 'x86_64' : 'aarch64'
+        return Promise.resolve({ stdout: `${arch}\n`, stderr: '' })
+      }
+      return Promise.resolve({ stdout: '', stderr: '' })
+    }) as RunMock
+    const deps = makeDeps(run)
+    deps.fileExists.mockResolvedValue(true) // binaries cached: no downloads
+    await ensureGvisorRuntime(['node-a', 'node-b'], 'kind-yaac', deps)
+
+    const cps = deps.run.mock.calls
+      .filter(([file, args]) => file === 'podman' && args[0] === 'cp')
+      .map(([, args]) => (args).join(' '))
+    expect(cps.some((c) => c.includes('node-a:') && c.includes(`-${GVISOR_VERSION}-x86_64`))).toBe(true)
+    expect(cps.some((c) => c.includes('node-b:') && c.includes(`-${GVISOR_VERSION}-aarch64`))).toBe(true)
+    expect(cps.some((c) => c.includes('node-a:') && c.includes('aarch64'))).toBe(false)
   })
 
   it('does nothing for an empty node list', async () => {

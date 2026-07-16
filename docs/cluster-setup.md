@@ -152,15 +152,11 @@ only kind's provider breaks.
    credentials via `hostPath`, which resolves on the *node*. Mounting
    `$HOME` into the node at the same path makes node == host for everything
    yaac touches.
-3. **Unmasked sysfs mount on the node** — a user-namespace pod
-   (`hostUsers: false`) will not start while kind's `/sys` masks make sysfs
-   "not fully visible"
-   ([kind#3436](https://github.com/kubernetes-sigs/kind/issues/3436)).
-4. **Node limits** — `DefaultTasksMax=infinity` + VM memory sysctls inside
+3. **Node limits** — `DefaultTasksMax=infinity` + VM memory sysctls inside
    the node and a raised pids-limit on the node container, so subagent
    fan-out and virtiofs I/O don't die with
    `fork: resource temporarily unavailable`.
-5. **The gVisor runtime** — a pinned `runsc` +
+4. **The gVisor runtime** — a pinned `runsc` +
    `containerd-shim-runsc-v1` copied into every node, two runsc handlers
    registered in the node containerd config (`runsc` and `runsc-nested`,
    each with its own `/etc/containerd/runsc*.toml` flag file — both set
@@ -173,9 +169,9 @@ only kind's provider breaks.
 
 ## Node fixups vanish on restart
 
-The sysfs mount and the node limits live in node/VM state and **vanish on a
-node or VM restart** (e.g. after restarting the podman machine). Re-apply
-them without recreating the cluster:
+The node limits live in node/VM state and **vanish on a node or VM restart**
+(e.g. after restarting the podman machine). Re-apply them without recreating
+the cluster:
 
 ```sh
 yaac cluster setup --repair

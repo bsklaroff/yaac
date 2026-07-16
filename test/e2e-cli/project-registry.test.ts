@@ -188,8 +188,11 @@ describe.skipIf(IS_NESTED_YAAC)('yaac per-project registry (real CLI + real serv
     expect(cross).toContain('CROSS_BLOCKED')
 
     // The insecure drop-in scopes plain-HTTP trust to exactly this host.
+    // Written to /etc/containers (the ROOTFUL engine's config dir) by
+    // session-create via sudo — the per-user path is dead since the
+    // rootless engine was dropped.
     const { stdout: conf } = await execInJob(name, [
-      'cat', '/home/yaac/.config/containers/registries.conf.d/yaac-project-registry.conf',
+      'cat', '/etc/containers/registries.conf.d/yaac-project-registry.conf',
     ])
     expect(conf).toContain(`location = "${regHost}"`)
     expect(conf).toContain('insecure = true')

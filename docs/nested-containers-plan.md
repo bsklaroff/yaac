@@ -10,7 +10,8 @@ nested containers, see `docs/nested-ca-combined-bundle.md`.
 
 Two opt-in capabilities are layered here:
 
-- **`nestedContainers`** — an in-pod rootless podman so `docker build` /
+- **`nestedContainers`** — an in-pod ROOTFUL podman (real root inside the
+  gVisor sentry — the upstream docker-in-gvisor shape) so `docker build` /
   `docker run` / `docker compose up --build` work inside a session exactly as a
   project README instructs (the `docker` CLI talks to podman's Docker-API
   socket). Non-nested sessions are byte-for-byte unchanged.
@@ -30,7 +31,7 @@ There is **no `--vcluster` CLI flag** — `virtualCluster` is config-only (set i
 
 ## Image layer
 
-`dockerfiles/Dockerfile.nestable` (in-pod rootless podman + the `docker` CLI +
+`dockerfiles/Dockerfile.nestable` (in-pod rootful podman + the `docker` CLI +
 the compose plugin) is inserted conditionally into the image chain
 (default → tools → **nestable** → project `Dockerfile.yaac`) only when
 `nestedContainers` is set; it is skipped for a standalone `Dockerfile.yaac`.
@@ -40,43 +41,53 @@ image also trusts the proxy CA for every nested container and `docker build` RUN
 step via a combined CA bundle (`Dockerfile.nestable:114-137`, see
 `docs/nested-ca-combined-bundle.md`).
 
-## In-pod rootless podman (`nestedContainers`)
+## In-pod rootful podman (`nestedContainers`)
 
-`src/lib/k8s/pod-spec.ts` gains an optional `nested` branch
-(`pod-spec.ts:163-271`); non-nested output is unchanged. When nested the session
-container/pod gains:
+The engine runs as REAL root inside the gVisor sentry (`gvisor-nested`
+RuntimeClass — see `src/lib/k8s/gvisor.ts`). In-sandbox root is a sentry
+fiction with no host authority, so the rootless apparatus of the pre-gVisor
+era (subuid maps, id-map helper caps, keyring/pivot_root workarounds, the
+`/proc` bind) is gone. `src/lib/k8s/pod-spec.ts` gains an optional `nested`
+branch; non-nested output is unchanged. When nested the session container/pod
+gains:
 
 - **securityContext**: `seccompProfile: RuntimeDefault` plus
-  `capabilities.add: ["SYS_ADMIN"]`. The cap is held in the pod's user namespace
-  (`hostUsers: false` is already set), so it confers no host authority — it
-  exists to let containerd's static RuntimeDefault profile compile the
-  mount-family syscalls rootless podman needs for overlay/proc/tmpfs mounts in
-  its userns. `allowPrivilegeEscalation` is forced true by the kubelet for any
-  CAP_SYS_ADMIN holder (also the existing implicit default).
-- **graphroot**: an `emptyDir` at `/home/yaac/.local/share/containers`
-  (`NESTED_GRAPHROOT_PATH`), chowned to the session uid via the pod `fsGroup`
-  (kubelet chowns ownership-managed volumes only, so hostPath worktree/cred
-  mounts are untouched).
+  `capabilities.add: NESTED_ENGINE_CAPS` (SYS_ADMIN, SYS_CHROOT, MKNOD,
+  SETFCAP, NET_RAW, NET_ADMIN, SYS_PTRACE, SYS_RESOURCE). Under the sentry
+  these grant no host authority — the broad in-sandbox caps are the upstream
+  docker-in-gvisor posture, and the `gvisor-nested` handler adds
+  `net-raw`/`allow-packet-socket-write` for the engine's raw sockets.
+- **graphroot**: podman's rootful default (`/var/lib/containers/storage`)
+  on a sentry-internal tmpfs (`NESTED_GRAPHROOT_ANNOTATIONS` promotes the
+  Memory-medium emptyDir): gVisor's gofer filesystem refuses writes to the
+  `security.*` xattr namespace, so `docker build` setcap steps only work on
+  a sentry tmpfs. Root-owned — no fsGroup/chown. Its size is capped below
+  the pod memory limit (asserted in `buildSessionJobManifest`).
 - **shared cross-session image store**: a node-local hostPath
   (`sharedImageStoreHostPath`) mounted rw at `/var/lib/shared-images`
-  (`SHARED_IMAGE_STORE_PATH`) as a podman `additionalimagestores` entry. It is
-  root-owned `DirectoryOrCreate`, so a tiny chown initContainer (`runAsUser: 0`
-  = root-in-userns) hands it to the session uid; this init runs **first**, ahead
-  of the egress machinery (`pod-spec.ts:235-246`).
+  (`SHARED_IMAGE_STORE_PATH`) as a podman `additionalimagestores` entry.
+  Root-owned `DirectoryOrCreate`; the rootful engine reads it and the
+  promoter writes it, both as root, so no chown initContainer exists anymore.
 
-A dedicated `podman` tmux window runs `podman system service` so the socket
-stays alive across exec sessions; session-create reads `config.nestedContainers`
-and passes the flag through `ensureImage` and the `nested` pod-spec params.
+session-create starts the engine with one sudo'd exec: `podman system
+service` as root with `SSL_CERT_FILE` exported inside the sudo shell (env_reset
+would strip it), a socket wait with a log-tail diagnostic on timeout, then
+`chmod 0755 /run/podman && chown yaac` so the yaac user drives the engine
+remotely — the image's `DOCKER_HOST`/`CONTAINER_HOST` point both CLIs at
+`/run/podman/podman.sock`. Nothing supervises or revives the engine: if it
+dies mid-session, the session is degraded until recreated.
 
 ### Image promoter (cross-session build cache)
 
 `src/lib/container/image-promoter.ts` copies images out of the per-session
 graphroot into the shared store with `skopeo copy containers-storage: →
-containers-storage:`, flock-serialized, three passes including a 168h dangling
-prune (the GC story for the store). It runs best-effort during cleanup from both
-paths — `promoteSessionImages` and the detached `buildPromoterShellCommand` in
-`src/lib/session/cleanup.ts:162,238` — giving real `docker build` layer-cache
-hits across a project's sessions.
+containers-storage:` (run as root via the image's passwordless sudo), three
+passes including a 168h dangling prune (the GC story for the store).
+Cross-pod serialization is a host-side mkdir lock in the store — NOT flock,
+which under gVisor is sentry-local and never reaches the host kernel. It runs
+best-effort during cleanup from both paths — `promoteSessionImages` and the
+detached `buildPromoterShellCommand` in `src/lib/session/cleanup.ts` — giving
+real `docker build` layer-cache hits across a project's sessions.
 
 ## Per-project push registries (`virtualCluster` only)
 
@@ -140,10 +151,12 @@ on an emptyDir, no PVC) per session:
   `buildVclusterPodGuardBindingManifest`, `vclusterGuardName`) restricts hostPath
   volumes to the session's nested-yaac dir and denies
   hostNetwork/hostPID/hostIPC/hostPorts/privileged; added capabilities are
-  allowed only under `hostUsers: false`. The guard is applied **before** the
-  syncer exists (so the first synced pod, CoreDNS, is already covered) and
-  `ensureSessionVcluster` fails closed when the VAP API is missing
-  (`vcluster.ts:602`, `vapAvailable` at `vcluster.ts:526`).
+  allowed only behind the gVisor sentry tier (`runtimeClassName` gvisor /
+  gvisor-nested — the syncer stamps gvisor on every synced pod via
+  values.yaml, and the VAP is the backstop if that stamp ever regresses).
+  The guard is applied **before** the syncer exists (so the first synced pod,
+  CoreDNS, is already covered) and `ensureSessionVcluster` fails closed when
+  the VAP API is missing (`vcluster.ts:602`, `vapAvailable`).
 - **Policies**: a per-session NetworkPolicy admitting the session pod to the
   vcluster API on 8443 and intra-session traffic
   (`buildVclusterSessionNetworkPolicyManifest`), plus a CiliumNetworkPolicy
@@ -195,9 +208,11 @@ above and named via `hostAliases` (in-cluster) / hosts.toml (the node).
 
 ## cluster-check probes
 
-`yaac cluster check` gains a warn-level `nested-mount` probe (runs
-`mount -t tmpfs` under the nested securityContext in a userns to confirm rootless
-podman's prerequisite) and a `vap` row (`cluster-check.ts:90-93,182-183`).
+`yaac cluster check` gains a warn-level `nested-mount` probe (in-sandbox root
+runs `mount -t tmpfs` under the real nested containment — `gvisor-nested` +
+`NESTED_ENGINE_CAPS` — the core sentry prerequisite for the rootful engine)
+and a `vap` row, plus the `gvisor` gate and `runtime-stamp` sweep described in
+`cluster-check.ts`.
 
 ## Implementation notes (divergences from the original plan)
 
@@ -212,9 +227,14 @@ podman's prerequisite) and a `vap` row (`cluster-check.ts:90-93,182-183`).
 - **No `--vcluster` CLI flag** — descoped; `virtualCluster` is set in
   `yaac-config.json` only.
 - **The `squat/generic-device-plugin` DaemonSet and `k8s/seccomp-nested.json`
-  fallback profile were deliberately not built** — the namespaced
-  `SYS_ADMIN` + `RuntimeDefault` path unlocked the mount-family syscalls without
-  either fallback, and plain `docker run`/`docker build` need no `/dev/net/tun`.
+  fallback profile were deliberately not built** — first the namespaced
+  `SYS_ADMIN` + `RuntimeDefault` path and now the gVisor sentry (which ignores
+  pod seccomp and installs its own host filter) made both fallbacks moot, and
+  plain `docker run`/`docker build` need no `/dev/net/tun`.
+- **The rootless era is over**: the userns (`hostUsers: false`) + subuid +
+  fsGroup-graphroot design this plan originally specified was replaced
+  wholesale by the rootful-in-sentry model above when the fleet moved to
+  gVisor (`f3109f0`).
 - The **obsolete sidecar egress layer** (`yaac-redirect-init` + `yaac-relay`,
   `k8s/redirect-init/`, `k8s/relay/`, `redirect.sh`'s `EXTRA_TCP_ACCEPT`) that
   the original plan composed against **no longer exists** — egress is now the

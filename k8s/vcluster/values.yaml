@@ -27,6 +27,11 @@ controlPlane:
     image:
       # OSS syncer, not the default vcluster-pro.
       repository: loft-sh/vcluster-oss
+    # The control-plane pod (apiserver/kine/SQLite — plain userspace) runs
+    # on the sentry like every yaac pod, keeping the
+    # no-pod-without-runtimeClassName invariant fleet-wide. Chart-native
+    # knob, so a chart bump cannot silently drop the stamp.
+    runtimeClassName: gvisor
     persistence:
       volumeClaim:
         # emptyDir datastore: per-session vclusters are disposable.

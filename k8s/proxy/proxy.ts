@@ -2452,6 +2452,16 @@ const server = http.createServer((req, res) => {
   handleApiRequest(req, res)
 })
 
+// The yaac server reaches this API through an exec+socat relay whose
+// setup costs an apiserver round trip per TCP connection, so its client
+// pools connections with a 60s keep-alive (proxy-client's dispatcher).
+// Outlive that pool: a server-side timeout below the client's would close
+// pooled connections between the server's ~5s background reconcile ticks
+// and force a fresh relay per tick. headersTimeout must exceed
+// keepAliveTimeout so an idle pooled connection isn't killed mid-reuse.
+server.keepAliveTimeout = 75_000
+server.headersTimeout = 80_000
+
 server.on('error', (err: Error) => {
   console.error('[proxy] Server error:', err)
 })

@@ -62,16 +62,23 @@ async function happyResponses(
     return { stdout: 'GVISOR_SANDBOXED\n', stderr: '' }
   }
   if (file === 'kubectl' && args[0] === 'get' && args[1] === 'pods') {
-    // runtime-stamp sweep: every pod carries a runtimeClassName.
+    // runtime-stamp sweep (-A): every in-scope pod carries a
+    // runtimeClassName; kube-system pods are out of scope by namespace.
     return {
       stdout: JSON.stringify({
-        items: [{ metadata: { name: 'yaac-proxy-abc' }, spec: { runtimeClassName: 'gvisor' } }],
+        items: [
+          {
+            metadata: { name: 'yaac-proxy-abc', namespace: 'test-ns' },
+            spec: { runtimeClassName: 'gvisor' },
+          },
+          { metadata: { name: 'coredns-xyz', namespace: 'kube-system' }, spec: {} },
+        ],
       }),
       stderr: '',
     }
   }
   if (file === 'podman' && args[0] === 'exec') {
-    return { stdout: 'sysfs=ok\ntasksmax=ok\nminfree=262144\nsvm=0\n', stderr: '' }
+    return { stdout: 'tasksmax=ok\nminfree=262144\nsvm=0\n', stderr: '' }
   }
   if (file === 'podman' && args[0] === 'inspect') {
     return { stdout: '32768\n', stderr: '' }
@@ -305,9 +312,9 @@ describe('runClusterCheck', () => {
     const run = happyRun()
     run.mockImplementation(async (file: string, args: string[]) => {
       if (file === 'podman' && args[0] === 'exec') {
-        // Node restarted: the sysfs mount and TasksMax conf are gone and
-        // the sysctl is back at its tiny default.
-        return { stdout: 'sysfs=missing\ntasksmax=missing\nminfree=67584\nsvm=1\n', stderr: '' }
+        // Node restarted: the TasksMax conf is gone and the sysctl is back
+        // at its tiny default.
+        return { stdout: 'tasksmax=missing\nminfree=67584\nsvm=1\n', stderr: '' }
       }
       if (file === 'podman' && args[0] === 'inspect') {
         return { stdout: '2048\n', stderr: '' } // podman's default pids ceiling
@@ -317,13 +324,12 @@ describe('runClusterCheck', () => {
     const { ok, results } = await runClusterCheck(makeDeps({ run }))
     const fixups = byName(results, 'node-fixups')
     expect(fixups).toMatchObject({ status: 'warn' })
-    expect(fixups?.detail).toContain('sysfs unmask')
     expect(fixups?.detail).toContain('DefaultTasksMax')
     expect(fixups?.detail).toContain('vm.min_free_kbytes')
     expect(fixups?.detail).toContain('src_valid_mark')
     expect(fixups?.detail).toContain('pids-limit')
     expect(fixups?.fix).toContain('yaac cluster setup --repair')
-    expect(ok).toBe(true) // warn-only: the sysfs half also trips the probe when it matters
+    expect(ok).toBe(true) // warn-only: these fixups fail late, not at pod start
   })
 
   it('skips node-fixups when the node is not a podman container (non-kind backend)', async () => {
@@ -384,8 +390,17 @@ describe('runClusterCheck', () => {
         return Promise.resolve({
           stdout: JSON.stringify({
             items: [
-              { metadata: { name: 'yaac-proxy-abc' }, spec: { runtimeClassName: 'gvisor' } },
-              { metadata: { name: 'yaac-old-session' }, spec: {} },
+              {
+                metadata: { name: 'yaac-proxy-abc', namespace: 'test-ns' },
+                spec: { runtimeClassName: 'gvisor' },
+              },
+              { metadata: { name: 'yaac-old-session', namespace: 'test-ns' }, spec: {} },
+              // The vcluster child namespaces are in scope — that's where
+              // the pods relying on external stamps (syncer, chart knob)
+              // live, i.e. the likeliest invariant violations.
+              { metadata: { name: 'coredns-tenant', namespace: 'test-ns-vc-abcd1234' }, spec: {} },
+              // Other namespaces are not yaac's to police.
+              { metadata: { name: 'coredns-xyz', namespace: 'kube-system' }, spec: {} },
             ],
           }),
           stderr: '',
@@ -396,8 +411,10 @@ describe('runClusterCheck', () => {
     const { ok, results } = await runClusterCheck(makeDeps({ run }))
     const stamp = byName(results, 'runtime-stamp')
     expect(stamp).toMatchObject({ status: 'warn' })
-    expect(stamp?.detail).toContain('yaac-old-session')
+    expect(stamp?.detail).toContain('test-ns/yaac-old-session')
+    expect(stamp?.detail).toContain('test-ns-vc-abcd1234/coredns-tenant')
     expect(stamp?.detail).not.toContain('yaac-proxy-abc')
+    expect(stamp?.detail).not.toContain('kube-system')
     expect(ok).toBe(true) // warn-only: pods without a RuntimeClass keep running
   })
 
