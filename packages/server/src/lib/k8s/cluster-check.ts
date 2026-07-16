@@ -55,6 +55,21 @@ export const NODE_TASKSMAX_CONF = '/etc/systemd/system.conf.d/10-yaac-tasksmax.c
 export const NODE_MIN_FREE_KBYTES = 262144
 export const NODE_PIDS_LIMIT = 32768
 export const NODE_SRC_VALID_MARK_PATH = '/proc/sys/net/ipv4/conf/all/src_valid_mark'
+/**
+ * kubelet cAdvisor housekeeping interval (default 10s). Its per-container
+ * process stats readlink EVERY open fd of EVERY process in each container
+ * cgroup per tick; a gVisor session sandbox concentrates ~9k host fds in
+ * one sentry process (directfs handles, gofer channels), so at the default
+ * interval kubelet alone burned 1.5–2 cores on a 5-session node (pprof:
+ * >90% in cadvisor processStatsFromProcs → syscall.Readlink). 60s cuts
+ * that ~6x; the cost is slower node-level stats (metrics/eviction
+ * reaction) — session OOMs are enforced by the pod memcg limit and are
+ * unaffected.
+ */
+export const NODE_KUBELET_HOUSEKEEPING_INTERVAL = '60s'
+/** kubeadm-written kubelet flags file the fixup edits (kind node fs —
+ *  persists across node restarts, unlike the sysctl fixups). */
+export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
 
 export interface ClusterCheckDeps {
   /** execFile-style runner, injectable for tests. */
@@ -86,9 +101,10 @@ const defaultDeps: ClusterCheckDeps = {
  *   5. local registry answering on the configured address
  *   6. yaac namespace exists / can be created
  *   6b. node fixups (warn-only, kind nodes only): DefaultTasksMax,
- *      vm.min_free_kbytes, and node pids-limit that `yaac cluster setup`
- *      applies all live in node/VM state and vanish on restart — detect and
- *      point at `yaac cluster setup --repair`
+ *      vm.min_free_kbytes, the kubelet housekeeping interval, and node
+ *      pids-limit that `yaac cluster setup` applies — most live in node/VM
+ *      state and vanish on restart — detect and point at
+ *      `yaac cluster setup --repair`
  *   6c. gvisor: the gvisor/gvisor-nested RuntimeClasses exist AND a pod on
  *      the gvisor class is actually sentry-sandboxed (dmesg fingerprint) —
  *      session pods cannot run without it
@@ -306,7 +322,9 @@ async function runNodeFixupsCheck(deps: ClusterCheckDeps): Promise<CheckResult> 
         const res = await deps.run('podman', ['exec', node, 'sh', '-c',
           `test -f ${NODE_TASKSMAX_CONF} && echo tasksmax=ok || echo tasksmax=missing; `
           + 'echo minfree=$(cat /proc/sys/vm/min_free_kbytes); '
-          + `echo svm=$(cat ${NODE_SRC_VALID_MARK_PATH})`,
+          + `echo svm=$(cat ${NODE_SRC_VALID_MARK_PATH}); `
+          + `grep -q -- '--housekeeping-interval=${NODE_KUBELET_HOUSEKEEPING_INTERVAL}' `
+          + `${NODE_KUBELET_FLAGS_ENV} && echo hk=ok || echo hk=missing`,
         ])
         report = res.stdout
       } catch {
@@ -321,6 +339,11 @@ async function runNodeFixupsCheck(deps: ClusterCheckDeps): Promise<CheckResult> 
       // src_valid_mark=1 (inherited from a VPN'd host) martian-drops every
       // TPROXY'd egress SYN — see applyNodeFixups in cluster-setup.ts.
       if (/svm=1/.test(report)) missing.add('src_valid_mark=0 (session egress TPROXY)')
+      // Default-interval cAdvisor housekeeping burns whole kubelet cores
+      // against gVisor sandboxes — see NODE_KUBELET_HOUSEKEEPING_INTERVAL.
+      if (report.includes('hk=missing')) {
+        missing.add('kubelet housekeeping-interval (cAdvisor stats CPU)')
+      }
       const { stdout: pidsRaw } = await deps.run('podman', [
         'inspect', '--format', '{{.HostConfig.PidsLimit}}', node,
       ])
@@ -338,7 +361,7 @@ async function runNodeFixupsCheck(deps: ClusterCheckDeps): Promise<CheckResult> 
     }
     return {
       name: 'node-fixups', status: 'pass',
-      detail: 'TasksMax, vm sysctls, src_valid_mark, and pids-limit in place',
+      detail: 'TasksMax, vm sysctls, src_valid_mark, kubelet housekeeping, and pids-limit in place',
     }
   } catch (err) {
     return {

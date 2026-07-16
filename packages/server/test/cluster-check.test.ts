@@ -83,7 +83,7 @@ async function happyResponses(
     }
   }
   if (file === 'podman' && args[0] === 'exec') {
-    return { stdout: 'tasksmax=ok\nminfree=262144\nsvm=0\n', stderr: '' }
+    return { stdout: 'tasksmax=ok\nminfree=262144\nsvm=0\nhk=ok\n', stderr: '' }
   }
   if (file === 'podman' && args[0] === 'inspect') {
     return { stdout: '32768\n', stderr: '' }
@@ -318,8 +318,9 @@ describe('runClusterCheck', () => {
     run.mockImplementation(async (file: string, args: string[]) => {
       if (file === 'podman' && args[0] === 'exec') {
         // Node restarted: the TasksMax conf is gone and the sysctl is back
-        // at its tiny default.
-        return { stdout: 'tasksmax=missing\nminfree=67584\nsvm=1\n', stderr: '' }
+        // at its tiny default; a pre-fixup node also lacks the kubelet
+        // housekeeping flag.
+        return { stdout: 'tasksmax=missing\nminfree=67584\nsvm=1\nhk=missing\n', stderr: '' }
       }
       if (file === 'podman' && args[0] === 'inspect') {
         return { stdout: '2048\n', stderr: '' } // podman's default pids ceiling
@@ -332,6 +333,7 @@ describe('runClusterCheck', () => {
     expect(fixups?.detail).toContain('DefaultTasksMax')
     expect(fixups?.detail).toContain('vm.min_free_kbytes')
     expect(fixups?.detail).toContain('src_valid_mark')
+    expect(fixups?.detail).toContain('kubelet housekeeping-interval')
     expect(fixups?.detail).toContain('pids-limit')
     expect(fixups?.fix).toContain('yaac cluster setup --repair')
     expect(ok).toBe(true) // warn-only: these fixups fail late, not at pod start

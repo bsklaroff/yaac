@@ -121,6 +121,12 @@ describe('runClusterSetup', () => {
     expect(execCmds.some((c) => c.includes('DefaultTasksMax=infinity'))).toBe(true)
     expect(execCmds.some((c) => c.includes('min_free_kbytes'))).toBe(true)
     expect(execCmds.some((c) => c.includes('src_valid_mark'))).toBe(true)
+    // kubelet housekeeping interval: idempotent kubeadm-flags.env edit,
+    // restarting kubelet only when the flag was absent.
+    expect(execCmds.some((c) =>
+      c.includes('--housekeeping-interval=60s')
+      && c.includes('/var/lib/kubelet/kubeadm-flags.env')
+      && c.includes('systemctl restart kubelet'))).toBe(true)
     expect(runCalls.some(([f, a]) => f === 'podman' && a[0] === 'update' && a.includes('32768'))).toBe(true)
     expect(runCalls.some(([f, a]) => f === 'podman' && a[0] === 'network' && a[1] === 'connect')).toBe(true)
 

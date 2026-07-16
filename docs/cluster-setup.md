@@ -155,7 +155,11 @@ only kind's provider breaks.
 3. **Node limits** — `DefaultTasksMax=infinity` + VM memory sysctls inside
    the node and a raised pids-limit on the node container, so subagent
    fan-out and virtiofs I/O don't die with
-   `fork: resource temporarily unavailable`.
+   `fork: resource temporarily unavailable`. Also `--housekeeping-interval=60s`
+   in the kubelet flags (kubeadm-flags.env): at the 10s default, cAdvisor's
+   per-container process stats readlink every open fd of every process each
+   tick, and gVisor session sandboxes concentrate ~9k fds per sentry — kubelet
+   alone burned 1.5–2 cores on a busy node before this.
 4. **The gVisor runtime** — a pinned `runsc` +
    `containerd-shim-runsc-v1` copied into every node, two runsc handlers
    registered in the node containerd config (`runsc` and `runsc-nested`,

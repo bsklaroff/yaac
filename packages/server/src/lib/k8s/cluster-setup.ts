@@ -10,6 +10,8 @@ import { ensurePinnedBinary } from '#lib/k8s/pinned-binary'
 import { ensureLocalRegistry, registryHost, REGISTRY_CONTAINER_NAME } from '#lib/k8s/registry'
 import {
   formatCheckResult,
+  NODE_KUBELET_FLAGS_ENV,
+  NODE_KUBELET_HOUSEKEEPING_INTERVAL,
   NODE_MIN_FREE_KBYTES,
   NODE_PIDS_LIMIT,
   NODE_SRC_VALID_MARK_PATH,
@@ -449,9 +451,12 @@ async function installCilium(deps: ClusterSetupDeps, cluster: string): Promise<v
  * The per-node fixups: containerd registry hosts.toml, DefaultTasksMax + VM
  * memory sysctls (subagent fan-out and virtiofs allocations die without
  * them), src_valid_mark=0 (session egress TPROXY — see the comment at the
- * write below), and the node container's own PID ceiling. All of these live
- * in node/VM state that resets on restart — `yaac cluster setup --repair`
- * re-applies them, and `yaac cluster check` warns when they are missing.
+ * write below), the kubelet housekeeping interval (see
+ * NODE_KUBELET_HOUSEKEEPING_INTERVAL — default-interval cAdvisor stats
+ * burned whole cores against gVisor sandboxes), and the node container's
+ * own PID ceiling. Most of these live in node/VM state that resets on
+ * restart — `yaac cluster setup --repair` re-applies them, and `yaac
+ * cluster check` warns when they are missing.
  */
 async function applyNodeFixups(deps: ClusterSetupDeps, node: string): Promise<void> {
   deps.log(`Applying node fixups to ${node}...`)
@@ -463,9 +468,22 @@ async function applyNodeFixups(deps: ClusterSetupDeps, node: string): Promise<vo
   await deps.run('podman', ['exec', node, 'sh', '-c',
     'mkdir -p /etc/systemd/system.conf.d\n'
     + `printf '[Manager]\\nDefaultTasksMax=infinity\\n' > ${NODE_TASKSMAX_CONF}\n`
-    + 'systemctl server-reexec\n'
+    + 'systemctl daemon-reexec\n'
     + `echo ${NODE_MIN_FREE_KBYTES} > /proc/sys/vm/min_free_kbytes\n`
     + 'echo 40 > /proc/sys/vm/compaction_proactiveness\n',
+  ])
+  // kubelet housekeeping interval: prepend the flag to the kubeadm-written
+  // flags env (idempotent — skipped when the exact flag is already there;
+  // any stale different-value copy is stripped first) and restart kubelet
+  // only when the file actually changed. The file lives in the node
+  // container's filesystem, so unlike the sysctls above it survives node
+  // restarts.
+  const hkFlag = `--housekeeping-interval=${NODE_KUBELET_HOUSEKEEPING_INTERVAL}`
+  await deps.run('podman', ['exec', node, 'sh', '-c',
+    `if ! grep -q -- '${hkFlag}' ${NODE_KUBELET_FLAGS_ENV}; then `
+    + `sed -i -e 's/ *--housekeeping-interval=[^ "]*//g' `
+    + `-e 's/^KUBELET_KUBEADM_ARGS="/KUBELET_KUBEADM_ARGS="${hkFlag} /' ${NODE_KUBELET_FLAGS_ENV}`
+    + ' && systemctl restart kubelet; fi',
   ])
   // src_valid_mark MUST be 0 or Cilium's L7 egress redirect black-holes every
   // session's outbound TCP. wg-quick (and other VPN tooling) sets
