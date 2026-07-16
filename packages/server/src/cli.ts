@@ -11,7 +11,7 @@ import { createTokenStore, loadTokens, saveTokens } from '#token-store'
 import { closeDb, getDb } from '#lib/db/client'
 import { importLegacyJsonStores } from '#lib/db/legacy-import'
 import { EventHub } from '#events'
-import { bridge, killViewSession, makeWindowResizer, newViewName, parsePtySize, parsePtyTarget, spawnAttachPty, type SocketLike } from '#pty-bridge'
+import { bridge, killViewSession, makeWindowResizer, newViewName, parsePtySize, parsePtyTarget, spawnAttachPty, sweepGhostViews, type SocketLike } from '#pty-bridge'
 import { containerExec } from '#lib/k8s/exec'
 import { coalesceCalls, notifySessionListChanged, onSessionListChanged } from '#sessions-changed'
 import { resolveSessionContainer } from '#session-resolve'
@@ -207,6 +207,11 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     },
   })))
 
+  // Live tmux view sessions per job, for the ghost sweep on attach: every
+  // view-* session in a pod that isn't in here belongs to a dead connection
+  // (crashed server, killed kubectl, sleep-dropped exec) and gets reaped.
+  const liveViews = new Map<string, Set<string>>()
+
   // PTY bridge: one embedded terminal per connection, attached to the
   // session's tmux. Path is /pty/attach (not /session/...) to avoid
   // colliding with the GET /session/:id route. Auth rides the upgrade.
@@ -240,6 +245,17 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
             return
           }
           const viewName = newViewName()
+          // Register this view as live, then reap any ghosts in the pod —
+          // view-* sessions no connection owns (see sweepGhostViews). The
+          // registry add precedes the sweep's listing, so a concurrent
+          // attach can never reap this view.
+          if (target !== 'shell') {
+            const views = liveViews.get(jobName) ?? new Set<string>()
+            views.add(viewName)
+            liveViews.set(jobName, views)
+            void sweepGhostViews(jobName, views, (j, cmd) =>
+              containerExec(j, cmd, { maxAttempts: 1 }))
+          }
           const ptyProc = spawnAttachPty(jobName, size, target, viewName)
           const sock: SocketLike = {
             send: (data) => raw.send(data),
@@ -264,6 +280,9 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
             ? undefined
             : (): void => {
                 resizer?.dispose()
+                const views = liveViews.get(jobName)
+                views?.delete(viewName)
+                if (views?.size === 0) liveViews.delete(jobName)
                 void killViewSession(jobName, viewName)
               }
           bridge(ptyProc, sock, { detach, resizeWindow: resizer?.resize })

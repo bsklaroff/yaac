@@ -192,6 +192,56 @@ export function makeWindowResizer(
   }
 }
 
+/** Command listing every tmux session name in the pod, one per line. */
+export function listSessionsCmd(): string {
+  return `tmux -S ${CONTAINER_TMUX_SOCK} list-sessions -F '#{session_name}'`
+}
+
+/** Ghost views among `names`: view sessions no live connection owns. The
+ *  name-shape check keeps arbitrary session names (yaac, user-created) out
+ *  of the kill list even if they happen to start with "view-". */
+export function ghostViews(names: string[], live: ReadonlySet<string>): string[] {
+  return names.filter((n) => /^view-[0-9a-f]{8}$/.test(n) && !live.has(n))
+}
+
+/** One tmux invocation killing all the given view sessions; the command
+ *  sequence keeps going past a view that already died on its own. */
+export function killViewsCmd(views: string[]): string {
+  return `tmux -S ${CONTAINER_TMUX_SOCK} ${views.map((v) => `kill-session -t ${v}`).join(' \\; ')}`
+}
+
+/**
+ * Reap ghost view sessions in a session pod. A view is per-connection and
+ * dies with it (kill-session on socket close, destroy-unattached as the
+ * backstop) — but an ungraceful end (server restart or crash, kubectl killed
+ * mid-attach, a laptop sleep dropping the exec stream) strands the in-pod
+ * tmux client, which pins its view session "attached" forever; pods have
+ * been seen carrying dozens. Windows are pinned per view now, so ghosts no
+ * longer skew sizing — they're a slow leak of pod memory and tmux state,
+ * swept here on every fresh attach. `live` is read after the listing
+ * returns, so views attached mid-sweep are never treated as ghosts.
+ */
+export async function sweepGhostViews(
+  jobName: string,
+  live: ReadonlySet<string>,
+  exec: (jobName: string, cmd: string) => Promise<{ stdout: string }>,
+): Promise<void> {
+  let listed: { stdout: string }
+  try {
+    listed = await exec(jobName, listSessionsCmd())
+  } catch {
+    return // pod gone or tmux not up yet — nothing to sweep
+  }
+  const names = listed.stdout.split('\n').map((s) => s.trim()).filter(Boolean)
+  const ghosts = ghostViews(names, live)
+  if (ghosts.length === 0) return
+  try {
+    await exec(jobName, killViewsCmd(ghosts))
+  } catch {
+    // raced away (view self-destroyed, pod terminating) — fine
+  }
+}
+
 /**
  * Detach a webapp client by destroying its per-client view session. With
  * `prefix None` on view sessions there is no detach keystroke to write, and

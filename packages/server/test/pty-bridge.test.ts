@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import * as pty from '@lydell/node-pty'
 import type * as execModule from '#lib/k8s/exec'
 import { containerExec } from '#lib/k8s/exec'
-import { attachArgs, killViewSession, makeWindowResizer, newViewName, parseControl, parsePtySize, parsePtyTarget, bridge, resizeWindowCmd, spawnAttachPty } from '#pty-bridge'
+import { attachArgs, ghostViews, killViewsCmd, killViewSession, listSessionsCmd, makeWindowResizer, newViewName, parseControl, parsePtySize, parsePtyTarget, bridge, resizeWindowCmd, spawnAttachPty, sweepGhostViews } from '#pty-bridge'
 import type { PtyLike, SocketLike } from '#pty-bridge'
 
 // Avoid loading/spawning the real node-pty native module in unit tests.
@@ -101,6 +101,56 @@ describe('killViewSession', () => {
   it('swallows exec failures (no such session, pod gone)', async () => {
     vi.mocked(containerExec).mockRejectedValueOnce(new Error('no such session'))
     await expect(killViewSession('yaac-demo-abc', 'view-11aa22bb')).resolves.toBeUndefined()
+  })
+})
+
+describe('ghost view sweep', () => {
+  it('listSessionsCmd lists session names one per line', () => {
+    expect(listSessionsCmd()).toBe("tmux -S /tmp/yaac-tmux/server list-sessions -F '#{session_name}'")
+  })
+
+  it('ghostViews keeps only unowned view-shaped names', () => {
+    const live = new Set(['view-11aa22bb'])
+    expect(ghostViews(
+      ['yaac', 'view-11aa22bb', 'view-deadbeef', 'view-nothex!', 'view-badc0ffee', 'my-session'],
+      live,
+    )).toEqual(['view-deadbeef'])
+  })
+
+  it('killViewsCmd chains kills into one tmux invocation', () => {
+    expect(killViewsCmd(['view-deadbeef', 'view-aabbccdd'])).toBe(
+      'tmux -S /tmp/yaac-tmux/server kill-session -t view-deadbeef'
+      + ' \\; kill-session -t view-aabbccdd',
+    )
+  })
+
+  it('sweepGhostViews kills exactly the ghosts', async () => {
+    const calls: string[] = []
+    const exec = (_job: string, cmd: string): Promise<{ stdout: string }> => {
+      calls.push(cmd)
+      return Promise.resolve({ stdout: 'yaac\nview-11aa22bb\nview-deadbeef\n' })
+    }
+    await sweepGhostViews('yaac-demo', new Set(['view-11aa22bb']), exec)
+    expect(calls).toEqual([
+      listSessionsCmd(),
+      killViewsCmd(['view-deadbeef']),
+    ])
+  })
+
+  it('sweepGhostViews is a no-op when every view is owned', async () => {
+    const calls: string[] = []
+    const exec = (_job: string, cmd: string): Promise<{ stdout: string }> => {
+      calls.push(cmd)
+      return Promise.resolve({ stdout: 'yaac\nview-11aa22bb\n' })
+    }
+    await sweepGhostViews('yaac-demo', new Set(['view-11aa22bb']), exec)
+    expect(calls).toEqual([listSessionsCmd()])
+  })
+
+  it('sweepGhostViews swallows exec failures (pod gone, tmux not up)', async () => {
+    await expect(
+      sweepGhostViews('yaac-demo', new Set(), () => Promise.reject(new Error('no pod'))),
+    ).resolves.toBeUndefined()
   })
 })
 
