@@ -51,7 +51,6 @@
     "hono": "catalog:",
     "simple-git": "catalog:",
     "smol-toml": "catalog:",
-    "undici": "catalog:",
     "ws": "catalog:",
     "yaml": "catalog:",
     "zod": "catalog:"

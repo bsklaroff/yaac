@@ -22,8 +22,8 @@ import { serverLog } from '#log'
  * veth, which netstack does answer). kubectl exec runs the relay INSIDE
  * the sandbox, where localhost is netstack-local, so it works on both
  * runtimes. Each fresh connection costs an exec round trip through the
- * apiserver (~100ms), amortized by the proxy client's keep-alive
- * dispatcher; nothing user-facing rides this tunnel. A relay whose pod
+ * apiserver (~100ms), amortized by connection reuse (the proxy's
+ * Keep-Alive hint); nothing user-facing rides this tunnel. A relay whose pod
  * is gone fails per-connection and self-heals on the next request — no
  * long-lived child to babysit — and relay stderr is logged on failure so
  * RBAC/socat/kubeconfig breakage is diagnosable instead of a bare socket

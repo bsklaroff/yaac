@@ -24,7 +24,6 @@
     "hono": "catalog:",
     "simple-git": "catalog:",
     "smol-toml": "catalog:",
-    "undici": "catalog:",
     "yaml": "catalog:",
     "zod": "catalog:"
   },

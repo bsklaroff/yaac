@@ -2449,16 +2449,20 @@ function forwardPlainHttp(
 // it (HTTP, HTTPS, SSH) rides the relay-fed transparent listeners, gated by
 // the per-connection PP2 token.
 const server = http.createServer((req, res) => {
+  // The yaac server reaches this API through an exec+socat relay whose
+  // setup costs an apiserver round trip per TCP connection. Its fetch
+  // pool idles connections out after only 4s by default — shorter than
+  // the ~5s background reconcile tick — so hint it to hold them for 60s
+  // (undici honors the server's Keep-Alive timeout hint), letting one
+  // relay serve many requests instead of a fresh kubectl exec per tick.
+  res.setHeader('Keep-Alive', 'timeout=60')
   handleApiRequest(req, res)
 })
 
-// The yaac server reaches this API through an exec+socat relay whose
-// setup costs an apiserver round trip per TCP connection, so its client
-// pools connections with a 60s keep-alive (proxy-client's dispatcher).
-// Outlive that pool: a server-side timeout below the client's would close
-// pooled connections between the server's ~5s background reconcile ticks
-// and force a fresh relay per tick. headersTimeout must exceed
-// keepAliveTimeout so an idle pooled connection isn't killed mid-reuse.
+// Outlive the hinted client pool: a server-side timeout below the
+// client's would close pooled connections the client still trusts.
+// headersTimeout must exceed keepAliveTimeout so an idle pooled
+// connection isn't killed mid-reuse.
 server.keepAliveTimeout = 75_000
 server.headersTimeout = 80_000
 

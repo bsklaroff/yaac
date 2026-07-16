@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { Agent } from 'undici'
 import type { AgentTool, SecretProxyRule } from '@yaac/shared/types'
 import { imageExists } from '#lib/container/runtime'
 import { PROXY_DIR } from '@yaac/shared/project-paths'
@@ -150,35 +149,23 @@ export interface ProxyClientConfig {
 }
 
 /**
- * Dedicated connection pool for the control tunnel, doing two jobs the
- * global fetch defaults get wrong for an exec-relay transport:
- *  - keepAliveTimeout 60s outlives the ~5s background reconcile tick
- *    (undici's 4s default does not), so one exec relay serves many
- *    requests instead of a fresh kubectl exec + apiserver round trip per
- *    tick. The proxy's API server holds its side open for 75s (> ours,
- *    so the server never closes a connection the pool still trusts).
- *  - headersTimeout 15s restores the deleted ServicePortForward's
- *    fail-fast: the tunnel's local listener always accepts instantly,
- *    so a wedged apiserver otherwise black-holes every proxy call for
- *    undici's 300s default.
- *  - connections 8 caps concurrent relays (each is a kubectl process +
- *    an apiserver exec stream) under session-create fan-out.
- */
-const tunnelDispatcher = new Agent({
-  keepAliveTimeout: 60_000,
-  headersTimeout: 15_000,
-  bodyTimeout: 60_000,
-  connections: 8,
-})
-
-/**
- * fetch through the tunnel's pooled, fail-fast dispatcher. Uses the
- * global fetch (undici at runtime — `dispatcher` is honored, though the
- * DOM-shaped RequestInit type doesn't declare it), so tests stubbing
- * globalThis.fetch keep intercepting proxy calls.
+ * fetch for the control tunnel, fixing the two things the bare global
+ * fetch gets wrong for an exec-relay transport:
+ *  - a 15s default timeout restores the deleted ServicePortForward's
+ *    fail-fast: the tunnel's local listener always accepts instantly, so
+ *    a wedged apiserver otherwise black-holes every proxy call for
+ *    fetch's ~300s header timeout.
+ *  - connection reuse across the ~5s background reconcile ticks rides
+ *    the SERVER side: the proxy's API responses carry a
+ *    `Keep-Alive: timeout=60` hint, which fetch's pool honors over its
+ *    4s idle default (verified) — one exec relay serves many requests
+ *    instead of a fresh kubectl exec + apiserver round trip per tick.
+ * Deliberately the global fetch, not a custom undici dispatcher: Node's
+ * fetch bundles its own undici, and a dispatcher from the npm package
+ * is rejected across majors (and tests stub globalThis.fetch).
  */
 const tunnelFetch = (url: string, init: RequestInit = {}): Promise<Response> =>
-  fetch(url, { ...init, dispatcher: tunnelDispatcher } as RequestInit)
+  fetch(url, { signal: AbortSignal.timeout(15_000), ...init })
 
 export class ProxyClient {
   private running = false
