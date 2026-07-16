@@ -12,6 +12,11 @@ import {
   setSessionStreamHealth,
   type SessionAgentStatus,
 } from '#lib/session/status-store'
+import {
+  registerSessionControlStream,
+  unregisterSessionControlStream,
+  type ControlStreamSend,
+} from '#lib/session/control-stream-registry'
 import { ControlModeClient, type ControlModeNotification } from '#control-mode'
 import { serverLog } from '#log'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
@@ -117,6 +122,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<
 export class SessionStatusWatcher {
   private child: AttachChild | null = null
   private client: ControlModeClient | null = null
+  private registeredSend: ControlStreamSend | null = null
   private agentPaneId: string | null = null
   private stopped = false
   private streamGeneration = 0
@@ -221,6 +227,14 @@ export class SessionStatusWatcher {
       setSessionStreamHealth(this.session.slug, this.session.sessionId, true)
     }
 
+    // The stream is proven end to end — publish it as the session's
+    // command channel so read-only tmux queries (the webapp terminals
+    // listing) ride this connection instead of spawning their own exec.
+    const channel: ControlStreamSend = (cmd) =>
+      withTimeout(client.send(cmd), this.commandTimeoutMs, `tmux ${cmd.split(' ')[0]}`)
+    this.registeredSend = channel
+    registerSessionControlStream(this.session.jobName, channel)
+
     this.backoffMs = this.respawnDelayMs
     this.heartbeatTimer = setInterval(() => void this.heartbeat(generation), this.heartbeatIntervalMs)
   }
@@ -315,6 +329,10 @@ export class SessionStatusWatcher {
     if (this.captureTimer) clearTimeout(this.captureTimer)
     this.captureTimer = null
     this.captureDirty = false
+    if (this.registeredSend) {
+      unregisterSessionControlStream(this.session.jobName, this.registeredSend)
+      this.registeredSend = null
+    }
     this.client?.fail(new Error('stream torn down'))
     this.client = null
     this.child?.kill('SIGTERM')

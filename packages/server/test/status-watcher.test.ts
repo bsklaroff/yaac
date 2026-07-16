@@ -13,6 +13,10 @@ import {
   setSessionStatus,
   _resetSessionStatusStoreForTests,
 } from '#lib/session/status-store'
+import {
+  sessionControlStreamSend,
+  _clearControlStreamRegistryForTests,
+} from '#lib/session/control-stream-registry'
 import { JOB_NAME_LABEL, LABEL_PREWARMED, LABEL_PROJECT, LABEL_SESSION_ID, LABEL_TOOL, type SessionPod } from '#lib/k8s/pods'
 
 class FakeAttachChild implements AttachChild {
@@ -93,6 +97,7 @@ let watchers: SessionStatusWatcher[] = []
 
 beforeEach(() => {
   _resetSessionStatusStoreForTests()
+  _clearControlStreamRegistryForTests()
 })
 
 afterEach(() => {
@@ -126,6 +131,30 @@ describe('SessionStatusWatcher (title tools)', () => {
     expect(sent).toContain('refresh-client -B "status:%7:#{pane_title}"')
     // No classification yet — absent entry reads as waiting.
     expect(readSessionStatus('demo', 's1')).toBe('waiting')
+  })
+
+  it('publishes the proven stream as the session command channel and retires it with the stream', async () => {
+    const { watcher, children } = makeWatcher('claude')
+    watchers.push(watcher)
+    watcher.start()
+    const child = children[0]
+    // Not registered while still attaching (registration happens only
+    // after the pane-id and subscribe replies prove the stream).
+    expect(sessionControlStreamSend('yaac-demo-s1')).toBeUndefined()
+    await connectTitleWatcher(child)
+    const send = sessionControlStreamSend('yaac-demo-s1')
+    expect(send).toBeDefined()
+
+    // A command through the channel rides the same control-mode stream.
+    const reply = send!('list-windows -t yaac')
+    await vi.waitFor(() => expect(child.commandCount).toBe(3))
+    expect(child.writes.join('')).toContain('list-windows -t yaac')
+    child.feedReply('0|@0|claude')
+    await expect(reply).resolves.toBe('0|@0|claude')
+
+    // Stream death unregisters the channel (until the respawn re-proves one).
+    child.emitExit()
+    expect(sessionControlStreamSend('yaac-demo-s1')).toBeUndefined()
   })
 
   it('classifies pushed title values from the subscription', async () => {

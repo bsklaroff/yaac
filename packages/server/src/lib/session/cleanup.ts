@@ -8,7 +8,7 @@ import { execTarget } from '#lib/k8s/exec'
 import { evictOpencodeProbeCache } from '#lib/session/opencode-status'
 import { recordSessionDeleted } from '#lib/session/deleted-store'
 import { markSessionTerminating } from '#lib/session/terminating'
-import { evictSessionStatus } from '#lib/session/status-store'
+import { evictSessionStatus, isSessionStreamHealthy } from '#lib/session/status-store'
 import { proxyClient } from '#lib/container/proxy-client'
 import { buildPromoterShellCommand, promoteSessionImages } from '#lib/container/image-promoter'
 import {
@@ -70,15 +70,20 @@ async function removeSessionFromProxy(sessionId: string): Promise<void> {
 export type TmuxLiveness = 'alive' | 'dead' | 'unknown'
 
 /**
- * Short-TTL cache for tmux-liveness results, keyed by
+ * Cache for exec-probed tmux-liveness results, keyed by
  * `${slug}/${sessionId}`. Each entry holds either a settled
  * (value, expiresAt) row or an in-flight Promise so concurrent
- * callers coalesce onto the same probe. Without this, /session/list
- * (called every ~5s by the UI), the background loop's
- * `hasLiveSessions`, and the stream-picker each run the same
- * has-session check independently for every session pod.
+ * callers coalesce onto the same probe.
+ *
+ * This is the FALLBACK path: sessions with a healthy status-watcher
+ * stream short-circuit to `alive` in `probeTmuxLiveness` and never
+ * reach the exec probe, so in steady state only watcher-less pods pay
+ * it — prewarmed spares (no watchers by design) and sessions whose
+ * stream is down or still attaching. The TTL bounds those pods' exec
+ * rate against the 5s background tick (reap latency for a conclusive
+ * `dead` grows by at most the TTL, well inside the reaper's grace).
  */
-const TMUX_ALIVE_TTL_MS = 2_000
+const TMUX_ALIVE_TTL_MS = 15_000
 const TMUX_PROBE_TIMEOUT_MS = 2_000
 
 type TmuxAliveEntry =
@@ -159,14 +164,23 @@ async function probeTmuxLivenessUncached(slug: string, sessionId: string): Promi
 }
 
 /**
- * Tri-state tmux liveness for the given session, cached for
- * `TMUX_ALIVE_TTL_MS` with in-flight coalescing so the underlying
- * `kubectl exec` runs at most once per session per TTL window.
+ * Tri-state tmux liveness for the given session. A healthy
+ * status-watcher stream answers `alive` with no exec at all — the
+ * watcher's control-mode client is attached to the in-pod tmux server
+ * and heartbeats it, which is conclusive proof of life (tmux dying
+ * closes the stream immediately, and a wedged stream fails its
+ * heartbeat within ~30s, flipping the health bit). Everything else
+ * falls back to the exec probe, cached for `TMUX_ALIVE_TTL_MS` with
+ * in-flight coalescing so the underlying `kubectl exec` runs at most
+ * once per session per TTL window.
  *
  * Use this (not `isTmuxSessionAlive`) anywhere a not-alive verdict drives
  * a destructive action: an `unknown` result must be kept, not reaped.
+ * The short-circuit only ever strengthens that guarantee — stream health
+ * can produce `alive`, never `dead`.
  */
 export async function probeTmuxLiveness(slug: string, sessionId: string): Promise<TmuxLiveness> {
+  if (isSessionStreamHealthy(slug, sessionId)) return 'alive'
   const key = tmuxAliveKey(slug, sessionId)
   const now = Date.now()
   const cached = tmuxAliveCache.get(key)

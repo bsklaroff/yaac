@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type * as execModule from '#lib/k8s/exec'
 import { containerExec } from '#lib/k8s/exec'
 import {
+  registerSessionControlStream,
+  _clearControlStreamRegistryForTests,
+} from '#lib/session/control-stream-registry'
+import {
   createShellWindow,
   killWindowTerminal,
   listSessionTerminals,
@@ -20,6 +24,7 @@ const out = (stdout: string): Promise<{ stdout: string; stderr: string }> =>
 
 beforeEach(() => {
   exec.mockReset()
+  _clearControlStreamRegistryForTests()
 })
 
 describe('parseWindowList', () => {
@@ -68,6 +73,28 @@ describe('listSessionTerminals', () => {
     exec.mockRejectedValueOnce(new Error('pod gone'))
     expect(await listSessionTerminals('yaac-demo')).toEqual([])
   })
+
+  it('rides a registered control stream instead of spawning an exec', async () => {
+    const sent: string[] = []
+    registerSessionControlStream('yaac-demo', (cmd) => {
+      sent.push(cmd)
+      return Promise.resolve('0|@0|claude\n1|@1|init')
+    })
+    expect(await listSessionTerminals('yaac-demo')).toEqual([
+      { target: 'window:@1', name: 'init' },
+    ])
+    expect(sent[0]).toContain("list-windows -t yaac -F '#{window_index}|#{window_id}|#{window_name}'")
+    expect(exec).not.toHaveBeenCalled()
+  })
+
+  it('falls back to exec when the stream send fails', async () => {
+    registerSessionControlStream('yaac-demo', () => Promise.reject(new Error('stream died')))
+    exec.mockReturnValueOnce(out('0|@0|claude\n1|@1|init\n'))
+    expect(await listSessionTerminals('yaac-demo')).toEqual([
+      { target: 'window:@1', name: 'init' },
+    ])
+    expect(exec).toHaveBeenCalledOnce()
+  })
 })
 
 describe('createShellWindow', () => {
@@ -82,6 +109,25 @@ describe('createShellWindow', () => {
     exec.mockReturnValueOnce(out('0|@0|claude\n'))
     exec.mockReturnValueOnce(out('garbage'))
     await expect(createShellWindow('yaac-demo')).rejects.toThrow('no window id')
+  })
+
+  it('mutations never ride the (read-only) control stream — only the listing does', async () => {
+    const sent: string[] = []
+    registerSessionControlStream('yaac-demo', (cmd) => {
+      sent.push(cmd)
+      return Promise.resolve('0|@0|claude\n1|@1|shell')
+    })
+    exec.mockReturnValueOnce(out('@7\n'))
+    expect(await createShellWindow('yaac-demo')).toEqual({ target: 'window:@7', name: 'shell-2' })
+    // The listing rode the stream; the new-window mutation went via exec.
+    expect(sent).toHaveLength(1)
+    expect(exec).toHaveBeenCalledOnce()
+    expect(exec.mock.calls[0][1]).toContain('new-window')
+
+    exec.mockReturnValueOnce(out(''))
+    await killWindowTerminal('yaac-demo', 'window:@1')
+    expect(sent).toHaveLength(2)
+    expect(exec.mock.calls[1][1]).toContain('kill-window -t @1')
   })
 })
 

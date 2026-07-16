@@ -83,6 +83,7 @@ import {
   _clearAgentStartedCacheForTests,
 } from '#lib/session/cleanup'
 import { isSessionTerminating, _clearTerminatingForTests } from '#lib/session/terminating'
+import { setSessionStreamHealth, _resetSessionStatusStoreForTests } from '#lib/session/status-store'
 import { recordSessionDeleted } from '#lib/session/deleted-store'
 import { serverLog } from '#log'
 import { setDataDir } from '@yaac/shared/project-paths'
@@ -509,6 +510,21 @@ describe('probeTmuxLiveness', () => {
     ])
     expect([a, b, c]).toEqual(['alive', 'alive', 'alive'])
     expect(execFileMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('short-circuits to alive on a healthy watcher stream — no exec at all', async () => {
+    setSessionStreamHealth('p', 's-streamed', true)
+    try {
+      await expect(probeTmuxLiveness('p', 's-streamed')).resolves.toBe('alive')
+      expect(execFileMock).not.toHaveBeenCalled()
+      // Health gone (stream died) → back to the exec probe.
+      setSessionStreamHealth('p', 's-streamed', false)
+      execFileMock.mockResolvedValue(undefined)
+      await expect(probeTmuxLiveness('p', 's-streamed')).resolves.toBe('alive')
+      expect(execFileMock).toHaveBeenCalledTimes(1)
+    } finally {
+      _resetSessionStatusStoreForTests()
+    }
   })
 })
 

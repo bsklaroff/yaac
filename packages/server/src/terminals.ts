@@ -1,4 +1,5 @@
 import { containerExec } from '#lib/k8s/exec'
+import { sessionControlStreamSend } from '#lib/session/control-stream-registry'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import type { SessionTerminalEntry } from '@yaac/shared/types'
 
@@ -52,7 +53,25 @@ export function nextShellName(existing: SessionTerminalEntry[]): string {
   }
 }
 
+/**
+ * Run a READ-ONLY tmux command against the session, preferring the
+ * status watcher's persistent control-mode stream (no exec spawned)
+ * and falling back to a one-shot `kubectl exec` when no stream is up
+ * (prewarmed spares, stream mid-respawn) or the stream send fails.
+ * Mutating commands (new-window, kill-window) must not come through
+ * here — the watcher's client is attached read-only and tmux refuses
+ * non-CMD_READONLY commands from it.
+ */
 async function tmuxOut(jobName: string, tmuxArgs: string): Promise<string> {
+  const send = sessionControlStreamSend(jobName)
+  if (send) {
+    try {
+      return await send(tmuxArgs)
+    } catch {
+      // Stream just died (the watcher is tearing it down and will
+      // respawn) — fall through to the exec path for this call.
+    }
+  }
   try {
     const { stdout } = await containerExec(
       jobName,
