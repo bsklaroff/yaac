@@ -42,8 +42,19 @@ brew install node pnpm kubernetes-cli cilium-cli podman bsklaroff/yaac/yaac-kind
 #### Linux
 
 ```sh
-sudo apt install podman nodejs npm acl   # Debian/Ubuntu 26.04+
-sudo npm install -g pnpm
+# Debian/Ubuntu 26.04+. Note: NOT nodejs/npm from apt — Debian's Node is
+# built without the TypeScript type-stripper the frontend build needs
+# (see below). Install Node via nvm instead.
+sudo apt install podman acl
+
+# Node via nvm: its official builds ship the type-stripper (Node >= 22.18).
+# 22.22.2 matches the repo's .nvmrc; pnpm installs into nvm's user-owned
+# prefix, so no sudo.
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.6/install.sh | bash
+export NVM_DIR="$HOME/.nvm" && \. "$NVM_DIR/nvm.sh"   # or just open a new shell
+nvm install 22.22.2 && nvm alias default 22.22.2
+npm install -g pnpm
+
 curl -fsSLo kind "https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-$(dpkg --print-architecture)"
 sudo install -m 755 kind /usr/local/bin/kind && rm kind
 curl -fsSLo kubectl "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/$(dpkg --print-architecture)/kubectl"
@@ -55,6 +66,13 @@ sudo systemctl enable --now podman.socket
 sudo setfacl -m u:$USER:x /run/podman
 sudo setfacl -m u:$USER:rw /run/podman/podman.sock
 ```
+
+Don't install Node from apt on Linux: Debian/Ubuntu build their `nodejs`
+package without Node's built-in TypeScript type-stripper (Amaro), which the
+frontend's Vite build relies on to load its `.ts` config. With the apt build,
+`pnpm build` dies at `vite build` with `ERR_NO_TYPESCRIPT` /
+`Unknown file extension ".ts"`. nvm installs the official Node binaries, which
+enable type-stripping by default (Node >= 22.18), so the build works.
 
 The apt-shipped podman 5.x works fine on Linux and pairs with stock kind
 v0.32.0; only podman 6.x needs the pinned kind build (see the
