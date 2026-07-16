@@ -50,9 +50,10 @@ export const SHARED_IMAGE_STORE_DST_PATH = '/var/lib/shared-images-dst'
  * checkXattrPermissions → EOPNOTSUPP — the unprivileged host-side gofer
  * couldn't set `security.capability` on host files anyway), so a `docker
  * build` RUN step doing `setcap` fails on any gofer-backed (hostPath/
- * emptyDir) graphroot — only a sentry tmpfs holds file caps. This is the
- * docker-in-gvisor tutorial's shape; the cost is that layer data counts
- * against pod memory.
+ * emptyDir) graphroot — only a sentry tmpfs holds file caps. The tmpfs is
+ * DISK-backed: runsc pages it against a `.gvisor.filestore.*` file it
+ * creates inside the (disk-medium) emptyDir, so layer data is reclaimable
+ * page cache on the node's disk, not memory pinned against the pod limit.
  */
 export const NESTED_GRAPHROOT_PATH = '/var/lib/containers'
 
@@ -63,24 +64,44 @@ export const NESTED_GRAPHROOT_PATH = '/var/lib/containers'
 export const NESTED_GRAPHROOT_VOLUME = 'podman-graphroot'
 
 /**
- * Size cap for the tmpfs graphroot. Held below memoryLimitBytes so a large
- * build ENOSPCs on the graphroot rather than OOM-killing the whole session
- * (tmpfs pages count against the pod's memory cgroup — see the 8GiB OOM
- * note). Tunable; sized to leave room for the agent + engine within the
- * default 8GiB pod limit.
+ * Size cap for the tmpfs graphroot — the sentry enforces it (`size=` mount
+ * option), so an oversized build ENOSPCs inside the build instead of
+ * filling the node's disk. Disk-backed (see NESTED_GRAPHROOT_ANNOTATIONS),
+ * so this is an ephemeral-storage budget, not pod memory — independent of
+ * memoryLimitBytes.
  */
-export const NESTED_GRAPHROOT_TMPFS_BYTES = 4 * 1024 ** 3
+export const NESTED_GRAPHROOT_TMPFS_BYTES = 8 * 1024 ** 3
+
+/**
+ * emptyDir sizeLimit for the graphroot volume: the sentry's `size=` cap
+ * plus slack. The filestore file kubelet sees can carry sentry metadata
+ * beyond the byte cap it enforces; a sizeLimit at exactly the cap would
+ * race kubelet's du-based eviction (which kills the whole session) against
+ * the sentry's ENOSPC (which fails just the write). The slack makes
+ * eviction unreachable while still bounding a runaway volume.
+ */
+export const NESTED_GRAPHROOT_SIZELIMIT_BYTES = NESTED_GRAPHROOT_TMPFS_BYTES + 1024 ** 3
 
 /**
  * Pod-template annotations that make the graphroot a sentry-INTERNAL tmpfs
- * (not a gofer-proxied emptyDir): `type: tmpfs` swaps the gofer mount for an
- * in-sentry tmpfs that supports file-capability xattrs, `share: container`
- * scopes it to the pod, `size=` bounds it. Passed through to runsc by the
- * containerd `pod_annotations = ["dev.gvisor.*"]` allowlist (see
- * gvisorContainerdRuntimesToml).
+ * (not a gofer-proxied emptyDir) with file-capability xattr support, DISK
+ * backed. gVisor's containerd shim resolves the volume name to its kubelet
+ * emptyDir path and infers the medium from the annotation's `type`
+ * (pkg/shim/v1/utils/volumes.go):
+ *  - `type: tmpfs` → the container mount arrives at runsc as type tmpfs →
+ *    memory-backed sentry tmpfs (pages pinned against the pod cgroup);
+ *  - `type: bind` → the container mount stays a bind, the shim still
+ *    rewrites the HINT type to tmpfs for an (empty) emptyDir → runsc mounts
+ *    a sentry tmpfs paged against a self filestore file in the emptyDir —
+ *    node-disk page cache, reclaimable under memory pressure.
+ * `share: container` scopes it to the pod; `size=` bounds it (sentry
+ * ENOSPC). Passed through to runsc by the containerd
+ * `pod_annotations = ["dev.gvisor.*"]` allowlist (see
+ * gvisorContainerdRuntimesToml). Verified live: setcap works, a forced
+ * cgroup reclaim pages a 2GiB graphroot down to ~0 with intact readback.
  */
 export const NESTED_GRAPHROOT_ANNOTATIONS: Record<string, string> = {
-  [`dev.gvisor.spec.mount.${NESTED_GRAPHROOT_VOLUME}.type`]: 'tmpfs',
+  [`dev.gvisor.spec.mount.${NESTED_GRAPHROOT_VOLUME}.type`]: 'bind',
   [`dev.gvisor.spec.mount.${NESTED_GRAPHROOT_VOLUME}.share`]: 'container',
   [`dev.gvisor.spec.mount.${NESTED_GRAPHROOT_VOLUME}.options`]:
     `rw,size=${NESTED_GRAPHROOT_TMPFS_BYTES}`,
@@ -189,15 +210,6 @@ export function parseEnvEntry(entry: string): { name: string; value: string } {
  * Pure — no cluster access — so the full spec shape is unit-testable.
  */
 export function buildSessionJobManifest(p: SessionJobParams): Record<string, unknown> {
-  if (p.nested && NESTED_GRAPHROOT_TMPFS_BYTES >= p.memoryLimitBytes) {
-    // tmpfs pages count against the pod's memory cgroup: a graphroot at or
-    // above the pod limit turns every large build into a whole-session OOM
-    // kill instead of a graphroot ENOSPC.
-    throw new Error(
-      `nested graphroot tmpfs (${NESTED_GRAPHROOT_TMPFS_BYTES}) must stay below `
-      + `the pod memory limit (${p.memoryLimitBytes})`,
-    )
-  }
   const volumes: Array<Record<string, unknown>> = []
   const volumeMounts: Array<Record<string, unknown>> = []
 
@@ -223,14 +235,16 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
   volumeMounts.push({ name: 'proxy-ca', mountPath: CA_MOUNT_DIR, readOnly: true })
 
   if (p.nested) {
-    // Per-session ROOTFUL graphroot: a Memory-medium emptyDir promoted to a
-    // sentry-internal tmpfs by NESTED_GRAPHROOT_ANNOTATIONS so `docker build`
-    // setcap steps work (goferfs refuses security.* xattr writes). Owned
-    // by root — the rootful engine runs as root, so no fsGroup/chown. sizeLimit
-    // mirrors the annotation's size= so the scheduler accounts for it.
+    // Per-session ROOTFUL graphroot: a disk emptyDir promoted to a
+    // disk-backed sentry-internal tmpfs by NESTED_GRAPHROOT_ANNOTATIONS so
+    // `docker build` setcap steps work (goferfs refuses security.* xattr
+    // writes) without layer data pinning pod memory. Owned by root — the
+    // rootful engine runs as root, so no fsGroup/chown. sizeLimit bounds
+    // ephemeral-storage above the sentry's size= cap (see
+    // NESTED_GRAPHROOT_SIZELIMIT_BYTES).
     volumes.push({
       name: NESTED_GRAPHROOT_VOLUME,
-      emptyDir: { medium: 'Memory', sizeLimit: String(NESTED_GRAPHROOT_TMPFS_BYTES) },
+      emptyDir: { sizeLimit: String(NESTED_GRAPHROOT_SIZELIMIT_BYTES) },
     })
     volumeMounts.push({ name: NESTED_GRAPHROOT_VOLUME, mountPath: NESTED_GRAPHROOT_PATH })
     // Cross-session shared image store (additionalimagestores). rw — see

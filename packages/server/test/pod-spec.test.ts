@@ -308,15 +308,11 @@ describe('buildSessionJobManifest — nestedContainers', () => {
     expect(spec.hostUsers).toBeUndefined()
   })
 
-  it('refuses a graphroot tmpfs at or above the pod memory limit', () => {
-    // tmpfs pages count against the pod cgroup — an oversized graphroot
-    // would turn builds into whole-session OOM kills.
+  it('allows a graphroot cap at or above the pod memory limit (disk-backed)', () => {
+    // The graphroot is disk-backed page cache, not pod memory — its size is
+    // deliberately decoupled from memoryLimitBytes.
     expect(() => buildSessionJobManifest({
       ...params(), nested, memoryLimitBytes: NESTED_GRAPHROOT_TMPFS_BYTES,
-    })).toThrow(/graphroot tmpfs/)
-    // Non-nested pods have no graphroot: any limit is fine.
-    expect(() => buildSessionJobManifest({
-      ...params(), memoryLimitBytes: 1024 ** 3,
     })).not.toThrow()
   })
 
@@ -335,22 +331,28 @@ describe('buildSessionJobManifest — nestedContainers', () => {
     })
   })
 
-  it('backs the graphroot with a sized tmpfs emptyDir + gVisor tmpfs annotations', () => {
+  it('backs the graphroot with a disk emptyDir + gVisor disk-tmpfs annotations', () => {
     const m = build({ nested })
     const spec = m.spec.template.spec
-    const cap = 4 * 1024 ** 3
+    const cap = 8 * 1024 ** 3
+    // Disk medium (no `medium: Memory`): runsc pages the sentry tmpfs
+    // against a filestore file inside this emptyDir on the node's disk.
+    // sizeLimit carries slack above the sentry's size= cap so kubelet
+    // eviction can't race the sentry's ENOSPC.
     expect(spec.volumes).toContainEqual({
       name: 'podman-graphroot',
-      emptyDir: { medium: 'Memory', sizeLimit: String(cap) },
+      emptyDir: { sizeLimit: String(cap + 1024 ** 3) },
     })
     expect(spec.containers[0].volumeMounts).toContainEqual({
       name: 'podman-graphroot',
       mountPath: NESTED_GRAPHROOT_PATH,
     })
     // The runsc mount annotations make it a sentry tmpfs (file caps for
-    // setcap builds); keyed on the volume name.
+    // setcap builds); keyed on the volume name. `type: bind` (not tmpfs) is
+    // what selects the DISK-backed variant — see
+    // NESTED_GRAPHROOT_ANNOTATIONS.
     expect(m.spec.template.metadata.annotations).toEqual({
-      'dev.gvisor.spec.mount.podman-graphroot.type': 'tmpfs',
+      'dev.gvisor.spec.mount.podman-graphroot.type': 'bind',
       'dev.gvisor.spec.mount.podman-graphroot.share': 'container',
       'dev.gvisor.spec.mount.podman-graphroot.options': `rw,size=${cap}`,
     })

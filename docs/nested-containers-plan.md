@@ -58,11 +58,16 @@ gains:
   docker-in-gvisor posture, and the `gvisor-nested` handler adds
   `net-raw`/`allow-packet-socket-write` for the engine's raw sockets.
 - **graphroot**: podman's rootful default (`/var/lib/containers/storage`)
-  on a sentry-internal tmpfs (`NESTED_GRAPHROOT_ANNOTATIONS` promotes the
-  Memory-medium emptyDir): gVisor's gofer filesystem refuses writes to the
-  `security.*` xattr namespace, so `docker build` setcap steps only work on
-  a sentry tmpfs. Root-owned — no fsGroup/chown. Its size is capped below
-  the pod memory limit (asserted in `buildSessionJobManifest`).
+  on a DISK-backed sentry-internal tmpfs (`NESTED_GRAPHROOT_ANNOTATIONS`
+  promotes a plain disk emptyDir; the `type: bind` annotation is what
+  selects the disk-backed variant — runsc pages the tmpfs against a
+  `.gvisor.filestore.*` file inside the emptyDir): gVisor's gofer
+  filesystem refuses writes to the `security.*` xattr namespace, so
+  `docker build` setcap steps only work on a sentry tmpfs — and the disk
+  filestore keeps layer data out of pod memory (reclaimable node page
+  cache, not cgroup-pinned tmpfs pages). Root-owned — no fsGroup/chown.
+  The sentry's `size=` cap ENOSPCs oversized builds; the emptyDir
+  sizeLimit sits above it so kubelet eviction can't fire first.
 - **shared cross-session image store**: a node-local hostPath
   (`sharedImageStoreHostPath`) mounted rw at `/var/lib/shared-images`
   (`SHARED_IMAGE_STORE_PATH`) as a podman `additionalimagestores` entry.
