@@ -156,10 +156,9 @@ export function SessionTerminal({
     // No scroll pinning is needed at reveal: the tmux client runs in the
     // alternate screen buffer for the whole attach, so there is no xterm
     // scrollback to be unpinned from (viewportY === baseY === 0 always).
-    // The "session starts a line down, bottom line hidden until a keypress"
-    // bug lived in the tmux window itself — the attach-time status-bar
-    // resize dance eating the row below the agent's cursor — and is fixed
-    // at the source in the server's attachArgs (see pty-bridge.ts).
+    // Sizing is handled at the source too — the server pins this view's tmux
+    // window to this client's grid (window-size manual + resize-window, see
+    // pty-bridge attachArgs), so the settled frame already fits the pane.
     const gate = createSettleGate(() => setSettled(true), { hasContent })
 
     let ws: WebSocket | null = null
@@ -237,7 +236,13 @@ export function SessionTerminal({
       connect()
     }
     const onVisible = (): void => {
-      if (document.visibilityState === 'visible') reconnectNow()
+      if (document.visibilityState !== 'visible') return
+      reconnectNow()
+      // Repaint from the buffer: returning to the tab after a system sleep
+      // can leave the WebGL canvas silently blanked (no contextlost fires,
+      // so the controller can't see it). The buffer is intact, so one full
+      // refresh restores the frame.
+      term.refresh(0, term.rows - 1)
     }
     document.addEventListener('visibilitychange', onVisible)
     window.addEventListener('online', reconnectNow)

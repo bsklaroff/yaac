@@ -151,6 +151,24 @@ describe('createWebglController', () => {
     expect(fake.state.instances).toHaveLength(4)
   })
 
+  it('refills the loss budget for well-separated losses (sleep/wake, not thrash)', () => {
+    vi.useFakeTimers()
+    try {
+      const { term } = fakeTerm()
+      createWebglController(term).setVisible(true)
+      // Losses hours apart are independent incidents — each gets a fresh
+      // context instead of slowly exhausting the burst cap.
+      for (let i = 0; i < 6; i++) {
+        vi.advanceTimersByTime(31_000)
+        last().fireContextLoss()
+      }
+      expect(fake.state.instances).toHaveLength(7)
+      expect(last().disposed).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('resets the loss budget on the next show', () => {
     const { term } = fakeTerm()
     const ctl = createWebglController(term)
