@@ -2,9 +2,35 @@ import crypto from 'node:crypto'
 import type { MiddlewareHandler } from 'hono'
 import { getCookie } from 'hono/cookie'
 import { env } from '@yaac/shared/env'
+import { getDataDir } from '@yaac/shared/paths'
 
-/** Name of the HttpOnly cookie that carries a webapp session. */
-export const SESSION_COOKIE = 'yaac_session'
+/** Base name of the HttpOnly cookie that carries a webapp session. */
+export const SESSION_COOKIE_BASE = 'yaac_session'
+
+let cookieNameCache: { dir: string; name: string } | null = null
+
+/**
+ * Name of THIS server instance's webapp session cookie —
+ * `yaac_session_<hash>`, where `<hash>` is a short digest of the server's
+ * data dir. Cookies are scoped by host, not by port, so two yaac servers
+ * reachable under one hostname — e.g. an outer server behind `tailscale
+ * serve` (https) and a nested one on a forwarded http port — would otherwise
+ * share the bare `yaac_session` cookie and clobber each other's sessions.
+ * Worse, the https server's `Secure` cookie blocks the http server from
+ * storing a same-named one at all (browsers refuse to let an insecure origin
+ * overwrite a Secure cookie), stranding the nested webapp unauthenticated.
+ * The data dir is unique per install (1:1 with the server lock), so hashing
+ * it gives each co-hosted server an independent cookie. Memoized per data
+ * dir; re-derives when it changes (tests call `setDataDir`).
+ */
+export function sessionCookieName(): string {
+  const dir = getDataDir()
+  if (cookieNameCache?.dir === dir) return cookieNameCache.name
+  const suffix = crypto.createHash('sha256').update(dir).digest('hex').slice(0, 8)
+  const name = `${SESSION_COOKIE_BASE}_${suffix}`
+  cookieNameCache = { dir, name }
+  return name
+}
 
 /**
  * Routes reachable without any credential: the SPA shell, its hashed
@@ -22,7 +48,7 @@ export function isPublicPath(method: string, path: string): boolean {
 
 /**
  * Accept a request if it carries either a matching bearer (CLI) or a
- * valid `yaac_session` cookie (webapp). Public paths skip the check.
+ * valid webapp session cookie. Public paths skip the check.
  *
  * A presented-but-wrong bearer is answered with `BAD_BEARER` rather than
  * the generic `UNAUTHENTICATED`: the CLI client re-reads its credential
@@ -49,7 +75,7 @@ export function cookieOrBearerAuth(
     if (match && timingSafeStrEqual(match[1], secret)) return next()
     if (match && tokens.isValidToken(match[1])) return next()
 
-    const sid = getCookie(c, SESSION_COOKIE)
+    const sid = getCookie(c, sessionCookieName())
     if (sid && tokens.isValidSession(sid)) return next()
 
     if (match) {

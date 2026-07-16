@@ -93,7 +93,9 @@ try {
   await splashHeading(page1).waitFor({ state: 'hidden' })
   check('workspace shown, not the splash', !(await splashHeading(page1).isVisible()))
   const cookies = await ctx1.cookies(APP_URL)
-  const session = cookies.find((c) => c.name === 'yaac_session')
+  // The cookie name is `yaac_session_<datadir-hash>` (per-instance, so
+  // co-hosted servers don't collide), not a bare `yaac_session`.
+  const session = cookies.find((c) => c.name.startsWith('yaac_session'))
   check('yaac_session cookie set (HttpOnly)', !!session && session.httpOnly)
   await shot(page1, 'workspace-after-token-exchange.png')
 

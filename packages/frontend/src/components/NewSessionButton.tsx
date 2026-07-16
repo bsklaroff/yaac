@@ -7,6 +7,7 @@ import { BranchPicker } from '#components/BranchPicker'
 import { createSession } from '#lib/createSession'
 import { getProjectBranches, projectBranchesKey, setProjectReferenceBranch, type ProjectBranches } from '#lib/projectApi'
 import { useProvisionSession } from '#lib/useProvisionSession'
+import { randomUUID } from '#lib/uuid'
 import { AUTH_LIST_KEY, configuredTools, useAuthList } from '#lib/useAuthList'
 import { useUiStore } from '#store'
 import type { AgentTool } from '@yaac/shared/types'
@@ -72,7 +73,7 @@ export function NewSessionButton(
   const isDefault = branchValue === (defaultResolved ?? '')
 
   const create = (tool: AgentTool): void => {
-    const sessionId = crypto.randomUUID()
+    const sessionId = randomUUID()
     const branch = branchValue && !isDefault ? branchValue : undefined
     setOpen(false)
     provision(projectSlug, tool, 'create', sessionId,

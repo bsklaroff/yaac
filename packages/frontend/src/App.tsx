@@ -7,6 +7,7 @@ import { getShortcutOverrides } from './lib/settingsApi'
 import { configuredTools, useAuthList } from './lib/useAuthList'
 import { useEvents } from './lib/useEvents'
 import { useProvisionSession } from './lib/useProvisionSession'
+import { randomUUID } from './lib/uuid'
 import { useSnapshot } from './lib/useSnapshot'
 import {
   mergeProvisioning, persistSelection, resolveAttentionTarget, resolveNewSessionTool, unreadWaitingBySlug,
@@ -220,7 +221,7 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
     const slug = activeProjectSlug
     const tool = resolveNewSessionTool(sessions, selectedSessionId, configured)
     if (!tool) return
-    const sessionId = crypto.randomUUID()
+    const sessionId = randomUUID()
     provision(slug, tool, 'create', sessionId,
       (sid, onProgress) => createSession(slug, tool, onProgress, sid))
   }

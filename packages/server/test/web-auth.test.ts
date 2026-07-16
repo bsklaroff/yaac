@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { Hono } from 'hono'
 import {
   timingSafeStrEqual,
@@ -6,9 +6,11 @@ import {
   hostHeaderCheck,
   isAllowedHost,
   isPublicPath,
-  SESSION_COOKIE,
+  SESSION_COOKIE_BASE,
+  sessionCookieName,
 } from '#web-auth'
 import { createTokenStore } from '#token-store'
+import { getDataDir, setDataDir } from '@yaac/shared/paths'
 
 describe('isPublicPath', () => {
   it('allows the SPA shell, assets, health, and the POST exchange', () => {
@@ -140,7 +142,7 @@ describe('cookieOrBearerAuth', () => {
     const res = await app.request('/session/list', {
       headers: {
         authorization: 'Bearer stale',
-        cookie: `${SESSION_COOKIE}=${sid}`,
+        cookie: `${sessionCookieName()}=${sid}`,
       },
     })
     expect(res.status).toBe(200)
@@ -152,12 +154,12 @@ describe('cookieOrBearerAuth', () => {
     expect(sid.length).toBeGreaterThan(0)
 
     const ok = await app.request('/session/list', {
-      headers: { cookie: `${SESSION_COOKIE}=${sid}` },
+      headers: { cookie: `${sessionCookieName()}=${sid}` },
     })
     expect(ok.status).toBe(200)
 
     const bad = await app.request('/session/list', {
-      headers: { cookie: `${SESSION_COOKIE}=bogus` },
+      headers: { cookie: `${sessionCookieName()}=bogus` },
     })
     expect(bad.status).toBe(401)
   })
@@ -166,9 +168,31 @@ describe('cookieOrBearerAuth', () => {
     const { app, tokens } = appWithAuth()
     const entry = tokens.create('laptop')
     const res = await app.request('/session/list', {
-      headers: { cookie: `${SESSION_COOKIE}=${entry.token}` },
+      headers: { cookie: `${sessionCookieName()}=${entry.token}` },
     })
     expect(res.status).toBe(401)
+  })
+})
+
+describe('sessionCookieName', () => {
+  const original = getDataDir()
+  afterEach(() => setDataDir(original))
+
+  it('derives yaac_session_<hash> from the data dir', () => {
+    setDataDir('/home/ben/.yaac')
+    expect(sessionCookieName()).toMatch(new RegExp(`^${SESSION_COOKIE_BASE}_[0-9a-f]{8}$`))
+  })
+
+  it('is stable for a given data dir', () => {
+    setDataDir('/some/data/dir')
+    expect(sessionCookieName()).toBe(sessionCookieName())
+  })
+
+  it('gives co-hosted servers distinct names (the shared-host collision fix)', () => {
+    setDataDir('/home/ben/.yaac')
+    const outer = sessionCookieName()
+    setDataDir('/home/ben/.yaac/projects/yaac/sessions/abc/nested-yaac')
+    expect(sessionCookieName()).not.toBe(outer)
   })
 })
 

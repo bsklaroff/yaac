@@ -52,7 +52,7 @@ describe('browser auth web-session exchange (full HTTP exchange)', () => {
     const res = await exchange(await mintOneTime())
     expect(res.status).toBe(204)
     const setCookie = res.headers.get('set-cookie') ?? ''
-    expect(setCookie).toMatch(/yaac_session=[0-9a-f]{64}/)
+    expect(setCookie).toMatch(/yaac_session_[0-9a-f]{8}=[0-9a-f]{64}/)
     expect(setCookie).toContain('HttpOnly')
     expect(setCookie).toContain('SameSite=Strict')
 

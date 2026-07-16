@@ -114,6 +114,39 @@ authenticates with an `HttpOnly` cookie obtained from a one-time token
 that `yaac open` mints and exchanges for you (no manual pasting). The CLI
 and web app drive the same on-disk state, so you can mix them freely.
 
+### Remote access over Tailscale
+
+To reach the server from another device, run it on an always-on machine and
+join both to a private [Tailscale](https://tailscale.com) tailnet. The server
+keeps binding `127.0.0.1`; a `tailscale serve` proxy terminates TLS on the
+tailnet and forwards to it, so remote access is opt-in and off by default —
+never expose it with `tailscale funnel`. On the server:
+
+```sh
+tailscale up
+tailscale serve --bg 8787                            # tailnet-only TLS proxy
+export YAAC_ALLOWED_HOSTS=<host>.<tailnet>.ts.net    # admit the tailnet host
+export YAAC_TRUST_PROXY=1                            # trust the proxy's TLS
+yaac server restart
+yaac auth token create laptop                        # per-device token (once)
+```
+
+Put the two env vars in the server's permanent environment (a systemd unit
+or shell profile) and restart it — a detached restart won't inherit an
+interactive `export`. Then browse to `https://<host>.<tailnet>.ts.net` (the
+hostname over HTTPS, not `ip:8787`), or point a client CLI at it with
+`yaac remote set https://<host>.<tailnet>.ts.net --token <token>`. See
+[docs/remote-hosting.md](docs/remote-hosting.md) for the full flow — client
+and phone setup, forwarded-port reachability, and the security model.
+
+A session's forwarded ports (a dev server, or a nested yaac's own web UI)
+bind the server's loopback by default. To reach them from other tailnet
+devices, set `YAAC_FORWARD_BIND` to the server's tailnet IP (from `tailscale
+ip -4`) and restart; the webapp's port chips then link to
+`http://<host>.<tailnet>.ts.net:<port>`. Those listeners are plain http and
+reachable by any tailnet device (not yaac-token-gated), so keep this to a
+personal tailnet.
+
 ### Desktop app
 
 The same web app is also available as a macOS Electron shell (`@yaac/desktop`).
@@ -216,9 +249,6 @@ yaac remote <command>
   on | off               Toggle the configured remote without re-entering the token
   status                 Show the configured remote (masked token)
 ```
-
-See [docs/remote-hosting.md](docs/remote-hosting.md) for running the server
-on an always-on server and using this machine as a thin client.
 
 Detach from a tmux session with `Ctrl-B D`. Kill the tmux session (and the
 container) with `Ctrl-B K` (custom binding, not standard tmux). Open a new

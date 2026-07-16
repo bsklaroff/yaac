@@ -4,7 +4,7 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { setCookie } from 'hono/cookie'
 import { denyBrowserCors, requestLogger } from '#auth'
-import { cookieOrBearerAuth, hostHeaderCheck, SESSION_COOKIE } from '#web-auth'
+import { cookieOrBearerAuth, hostHeaderCheck, sessionCookieName } from '#web-auth'
 import { registerStaticRoutes } from '#static'
 import { toErrorBody } from '#errors'
 import { projectApp } from '#routes/project'
@@ -99,7 +99,7 @@ export function buildApp(deps: ServerAppDeps) {
         401,
       )
     }
-    setCookie(c, SESSION_COOKIE, sessionId, {
+    setCookie(c, sessionCookieName(), sessionId, {
       httpOnly: true,
       sameSite: 'Strict',
       path: '/',
