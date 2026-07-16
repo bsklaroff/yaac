@@ -62,6 +62,7 @@ import {
   piDir,
   cachedPackagesDir,
   cacheVolumeDir,
+  sessionDir,
   sessionVclusterDir,
   worktreeDir,
   worktreesDir,
@@ -98,6 +99,7 @@ import {
 import { addWorktree, getDefaultBranch, fetchOrigin, isGitAuthError, remoteBranchExists } from '#lib/git'
 import { ensureCodexHooksJson, ensureCodexConfigToml } from '#lib/session/codex-hooks'
 import { ensureOpencodeConfigJson } from '#lib/session/opencode-config'
+import { builtinSkillsDir, stageBuiltinSkills, builtinSkillMounts } from '#lib/skills/builtin'
 import { ServerError } from '@yaac/shared/errors'
 import {
   buildStatusRight,
@@ -1501,6 +1503,30 @@ export async function createSession(
     env.push(`YAAC_K8S_REGISTRY=${projectRegistryHost(projectSlug)}`)
   }
 
+  // yaac's own bundled skills: stage a fresh copy under the session dir and
+  // mount them read-only into every tool's personal skills root below. Copied
+  // per session so they track the installed yaac version, and never written
+  // into the persisted per-project config dirs (no staleness). Removed with the
+  // session dir on cleanup.
+  const builtinSkillsStaging = path.join(sessionDir(projectSlug, sessionId), 'builtin-skills')
+  const builtinSkillNames = await stageBuiltinSkills(builtinSkillsDir(), builtinSkillsStaging)
+  if (builtinSkillNames.length > 0) {
+    // Pre-create each tool's personal skills root (server-owned) before the
+    // pod mounts a skill at `<root>/<name>`. Otherwise the kubelet creates the
+    // intervening `skills/` dir as root:root to host the nested mount, which
+    // would block the non-root agent from adding its own personal skills there.
+    // Only the per-skill leaf mountpoints stay kubelet-owned (empty, and
+    // skipped by discovery, so no stale skill ever surfaces). Best-effort: a
+    // skills-dir permission hiccup must never fail session creation — the skill
+    // still mounts; at worst the agent can't add same-root personal skills.
+    await Promise.allSettled([
+      fs.mkdir(path.join(claude, 'skills'), { recursive: true }),
+      fs.mkdir(path.join(codex, 'skills'), { recursive: true }),
+      fs.mkdir(path.join(opencodeConfig, 'skills'), { recursive: true }),
+      fs.mkdir(path.join(pi, 'agent', 'skills'), { recursive: true }),
+    ])
+  }
+
   const hostPathMounts: HostPathMount[] = [
     { hostPath: wtDir, mountPath: '/workspace' },
     { hostPath: `${repo}/.git`, mountPath: '/repo/.git' },
@@ -1539,6 +1565,7 @@ export async function createSession(
       hostPath: m.hostBacking,
       mountPath: m.containerPath,
     })),
+    ...builtinSkillMounts(builtinSkillsStaging, builtinSkillNames),
     ...vclusterMounts,
     ...sshMounts,
   ]

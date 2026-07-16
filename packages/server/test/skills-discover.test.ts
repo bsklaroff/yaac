@@ -6,6 +6,7 @@ import simpleGit from 'simple-git'
 import { setDataDir, claudeDir, codexDir, opencodeConfigDir, piDir, repoDir } from '@yaac/shared/project-paths'
 import { getProjectSkills, getSkillDetail } from '#lib/skills/discover'
 import { setClaudeBundledSkills } from '#lib/skills/claude-bundled'
+import { setBuiltinSkillsDir } from '#lib/skills/builtin'
 
 const slug = 'proj'
 
@@ -72,6 +73,9 @@ beforeEach(async () => {
   // The bundled-skills cache is populated by a startup fetch; keep it empty so
   // per-project assertions don't see it unless a test opts in.
   setClaudeBundledSkills([])
+  // yaac's shipped builtin-skills tier reads a real packaged dir; point it at a
+  // missing dir so per-project assertions don't see it unless a test opts in.
+  setBuiltinSkillsDir(path.join(tmp, 'no-builtins'))
 
   const claude = claudeDir(slug)
   // Personal
@@ -98,6 +102,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  setBuiltinSkillsDir(null)
   await fs.rm(tmp, { recursive: true, force: true })
 })
 
@@ -242,6 +247,40 @@ describe('getProjectSkills (claude bundled tier)', () => {
     setClaudeBundledSkills([{ name: 'code-review', description: 'x' }])
     const { skills } = await getProjectSkills('codex', slug)
     expect(skills.find((s) => s.sourceLabel === 'bundled')).toBeUndefined()
+  })
+})
+
+describe('getProjectSkills (yaac builtin tier)', () => {
+  async function seedBuiltin(): Promise<void> {
+    const dir = path.join(tmp, 'builtin-skills')
+    await writeSkill(
+      path.join(dir, 'yaac-welcome'),
+      '---\nname: yaac-welcome\ndescription: Orient yourself in a yaac session.\n---\nwelcome-body\n',
+    )
+    setBuiltinSkillsDir(dir)
+  }
+
+  it.each(['claude', 'codex', 'opencode', 'pi'] as const)(
+    'injects the yaac builtin tier into every tool as system/yaac (%s)',
+    async (tool) => {
+      await seedBuiltin()
+      const { skills } = await getProjectSkills(tool, slug)
+      expect(skills.find((s) => s.sourceLabel === 'yaac')).toMatchObject({
+        id: 'system:yaac:yaac-welcome',
+        name: 'yaac-welcome',
+        source: 'system',
+        description: 'Orient yourself in a yaac session.',
+      })
+      // system sorts after the on-disk tiers, so the builtin skill is last.
+      expect(skills.at(-1)).toMatchObject({ source: 'system', sourceLabel: 'yaac' })
+    },
+  )
+
+  it('serves the full SKILL.md body for a builtin skill (not a placeholder)', async () => {
+    await seedBuiltin()
+    const detail = await getSkillDetail('claude', slug, 'system:yaac:yaac-welcome')
+    expect(detail).toMatchObject({ name: 'yaac-welcome', source: 'system' })
+    expect(detail.body.trim()).toBe('welcome-body')
   })
 })
 

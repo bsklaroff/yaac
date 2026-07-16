@@ -494,11 +494,11 @@ export interface SessionDeathCause {
 
 /**
  * Which on-disk tier a skill was discovered from. Personal/plugin/project are
- * all loose `SKILL.md` files. `system` is a built-in tier the agent ships and
- * materializes to disk — currently Codex's `.system/` skills under the
- * host-mounted `~/.codex/skills/`. Skills embedded in an agent binary that are
- * never written to a mounted dir (Claude's bundled skills) stay excluded —
- * there is no supported way to enumerate them.
+ * all loose `SKILL.md` files. `system` is a built-in tier: an agent's own
+ * bundled skills (Codex's `.system/` under the host-mounted `~/.codex/skills/`,
+ * or Claude's binary-bundled skills read list-only from its docs, `sourceLabel`
+ * `bundled`), plus the skills yaac itself ships and injects into every session
+ * (`sourceLabel` `yaac`; see server lib/skills/builtin.ts).
  */
 export type SkillSource = 'personal' | 'plugin' | 'project' | 'system'
 

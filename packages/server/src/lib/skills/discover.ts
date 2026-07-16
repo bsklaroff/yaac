@@ -46,6 +46,7 @@ import { ServerError } from '@yaac/shared/errors'
 import type { AgentTool, ProjectSkills, SkillDetail, SkillSummary, SkillSource } from '@yaac/shared/types'
 import { getDefaultBranch, remoteBranchExists } from '#lib/git'
 import { getClaudeBundledSkills } from '#lib/skills/claude-bundled'
+import { builtinSkillsDir } from '#lib/skills/builtin'
 import { parseSkillMd, fmString, fmBool, fmList, flattenFrontmatter } from '#lib/skills/parse'
 
 /**
@@ -415,6 +416,11 @@ function claudeBundledDiscovered(): DiscoveredSkill[] {
 async function discover(tool: AgentTool, slug: string, branch?: string): Promise<DiscoveredSkill[]> {
   const ref = await resolveRepoRef(repoDir(slug), branch)
   const readers = await readersFor(tool, slug, ref)
+  // yaac's own bundled skills — shipped in the package and injected into every
+  // tool's personal root at session create (see lib/skills/builtin.ts). Read
+  // the install dir directly here, since pod-less discovery can't see the
+  // in-pod mounts; surfaced as `system`/`yaac` for every tool.
+  readers.push(fsReader(builtinSkillsDir(), 'system', 'yaac'))
   const perReader = await Promise.all(readers.map(readSkills))
   const flat = perReader.flat()
   // Claude's bundled built-ins live only in the binary; append their published
