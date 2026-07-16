@@ -27,11 +27,12 @@ controlPlane:
     image:
       # OSS syncer, not the default vcluster-pro.
       repository: loft-sh/vcluster-oss
-    # The control-plane pod (apiserver/kine/SQLite — plain userspace) runs
-    # on the sentry like every yaac pod, keeping the
-    # no-pod-without-runtimeClassName invariant fleet-wide. Chart-native
-    # knob, so a chart bump cannot silently drop the stamp.
-    runtimeClassName: gvisor
+    # No runtimeClassName: the control-plane pod (apiserver/kine/SQLite)
+    # is trusted yaac infra and runs on runc. It only runs vendored
+    # vcluster code, so the sentry buys no containment — and an
+    # apiserver+datastore is exactly the syscall-heavy workload whose
+    # sentry starves the node (see gvisor.ts). What tenants schedule
+    # stays sandboxed via sync.toHost.pods.runtimeClassName below.
     persistence:
       volumeClaim:
         # emptyDir datastore: per-session vclusters are disposable.
@@ -123,7 +124,8 @@ sync:
       # which a single syncer stamp can't target per-pod). The VAP pod guard
       # requires this tier as the containment for any pod adding capabilities
       # (see buildVclusterPodGuardPolicyManifest). Explicit so the
-      # no-pod-without-runtimeClassName invariant holds fleet-wide.
+      # every-untrusted-pod-is-sandboxed invariant (cluster check's
+      # runtime-stamp sweep) holds for everything a vcluster schedules.
       runtimeClassName: gvisor
     networkPolicies:
       # DELIBERATELY OFF (security). Syncing tenant NetworkPolicies to the

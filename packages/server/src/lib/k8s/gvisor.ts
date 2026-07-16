@@ -2,12 +2,20 @@ import path from 'node:path'
 import { shellQuote } from '#lib/shell'
 
 /**
- * gVisor (runsc) is the runtime for every yaac-managed pod. The sentry is the
- * containment layer for in-container root, which drops the idmapped-mount
- * prerequisite that ruled shared filesystems (NFS) out and takes host-kernel
- * 0-days off the table for the whole fleet. Cluster infrastructure in
- * kube-system (Cilium, CoreDNS, control plane) stays on runc — Cilium IS the
- * host datapath; "everything on gVisor" means every pod yaac creates.
+ * gVisor (runsc) is the runtime for every pod that hosts UNTRUSTED code:
+ * session pods (agents run arbitrary commands; in-container root via the
+ * image's passwordless sudo is a feature) and vcluster-synced tenant pods.
+ * The sentry is the containment layer for in-container root, which drops
+ * the idmapped-mount prerequisite that ruled shared filesystems (NFS) out
+ * and takes host-kernel 0-days off the table for those workloads.
+ *
+ * Trusted yaac infrastructure — the proxy, project registries, node-write
+ * pods, vcluster control planes — runs on runc, like kube-system. It only
+ * runs yaac-shipped code, so the sentry buys no containment there, and its
+ * cost is real: each sandbox is a systrap sentry + gofer (hundreds of
+ * threads, heavy sys-time), and a fleet of them starved an 8-core node to
+ * load ~40 with multi-second kubectl execs and pods stuck terminating for
+ * minutes.
  *
  * This module owns the cluster-setup side: the pinned runsc +
  * containerd-shim-runsc-v1 install on every kind node (pinned-binary
@@ -20,9 +28,11 @@ import { shellQuote } from '#lib/shell'
 export const GVISOR_VERSION = '20260706.0'
 
 /**
- * RuntimeClass names stamped by the manifest builders. Every pod yaac creates
- * on a real cluster carries one explicitly (cluster check sweeps for strays):
- *  - `gvisor`: the default tier — runsc with systrap; no user namespace.
+ * RuntimeClass names stamped by the manifest builders. Every UNTRUSTED pod
+ * yaac creates on a real cluster carries one explicitly (cluster check
+ * sweeps for strays); infra pods stamp none (runc via the cluster default):
+ *  - `gvisor`: the default sandboxed tier — runsc with systrap; no user
+ *    namespace.
  *  - `gvisor-nested`: runsc with raw-socket allowances for the in-sandbox
  *    container engine that nested sessions run.
  */
@@ -30,9 +40,11 @@ export const RUNTIME_CLASS_GVISOR = 'gvisor'
 export const RUNTIME_CLASS_GVISOR_NESTED = 'gvisor-nested'
 
 /**
- * THE runtime-class policy, as a spreadable pod-spec fragment — the single
- * encoding of which tier a yaac-created pod runs on, used by every manifest
- * builder and by the checks that compare against what a builder would stamp:
+ * THE runtime-class policy for SESSION-TIER pods (pods that run untrusted
+ * agent workloads, and the check probes that emulate them), as a spreadable
+ * pod-spec fragment — the single encoding of which sandbox tier such a pod
+ * runs on, used by the session manifest builder and by the checks that
+ * compare against what it would stamp:
  *  - `inner`: the pod is created by an inner (nested) yaac against its
  *    vcluster, which has no RuntimeClass objects — stamp nothing; the
  *    vcluster syncer sets the host-side runtime
@@ -41,6 +53,9 @@ export const RUNTIME_CLASS_GVISOR_NESTED = 'gvisor-nested'
  *    gvisor-nested tier (raw/packet sockets).
  *  - otherwise: the default gvisor tier.
  * Either way there is no user namespace: the sentry is the containment.
+ * Trusted infra pods (proxy, registries, node-write, vcluster control
+ * planes) don't call this — they stamp nothing and run on runc (see the
+ * module doc).
  */
 export function runtimeClassSpec(
   opts: { inner?: boolean; nested?: boolean },

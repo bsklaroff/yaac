@@ -265,7 +265,7 @@ yaac centralizes credentials on the host and injects them into session traffic t
 - `~/.yaac/.credentials/opencode.json` — OpenCode credentials (OpenRouter API key)
 - `~/.yaac/.credentials/pi.json` — Pi credentials (OpenRouter, Anthropic, or OpenAI API key)
 
-The proxy pod mounts this directory RW (hostPath) and reads credentials at request time, so updates via `yaac auth update` propagate to every running session immediately without needing to restart pods. The proxy is reachable only inside the cluster (ClusterIP Service); the server talks to it over a loopback exec tunnel (`kubectl exec` + socat — `kubectl port-forward` cannot reach gVisor-sandboxed pods).
+The proxy pod mounts this directory RW (hostPath) and reads credentials at request time, so updates via `yaac auth update` propagate to every running session immediately without needing to restart pods. The proxy is reachable only inside the cluster (ClusterIP Service); the server talks to it over a loopback exec tunnel (`kubectl exec` + socat, which works regardless of the pod's runtime tier).
 
 ### GitHub tokens
 

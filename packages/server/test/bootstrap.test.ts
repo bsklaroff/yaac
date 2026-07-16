@@ -209,11 +209,11 @@ describe('buildProxyDeploymentManifest', () => {
     })
   })
 
-  it('runs under the gvisor RuntimeClass on the host; the inner proxy stamps none (no RuntimeClasses in a vcluster)', () => {
+  it('stamps no RuntimeClass — trusted infra runs on runc (host and inner alike)', () => {
     const plain = build() as unknown as {
       spec: { template: { spec: { runtimeClassName?: string } } }
     }
-    expect(plain.spec.template.spec.runtimeClassName).toBe('gvisor')
+    expect(plain.spec.template.spec.runtimeClassName).toBeUndefined()
     const nested = buildProxyDeploymentManifest('img', { nested: true }) as unknown as {
       spec: { template: { spec: { runtimeClassName?: string } } }
     }

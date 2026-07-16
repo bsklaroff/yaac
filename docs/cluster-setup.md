@@ -163,9 +163,12 @@ only kind's provider breaks.
    `allow-suid` so the image's passwordless `sudo` works inside the sentry,
    `runsc-nested` additionally allows raw/packet sockets for the in-pod
    engine), and the `gvisor` and `gvisor-nested` RuntimeClasses applied to
-   the cluster. Every pod yaac creates carries one explicitly; plain sessions
-   run on `gvisor`, nested-containers sessions run the rootful in-pod engine
-   on `gvisor-nested`.
+   the cluster. Every pod hosting untrusted code carries one explicitly:
+   plain sessions run on `gvisor`, nested-containers sessions run the
+   rootful in-pod engine on `gvisor-nested`, and vcluster-synced tenant
+   pods are stamped `gvisor` by the syncer. Trusted yaac infra (the proxy,
+   registries, node-write pods, vcluster control planes) runs on runc — a
+   sentry per infra pod starves the node for no containment gain.
 
 ## Node fixups vanish on restart
 
@@ -181,13 +184,17 @@ yaac cluster setup --repair
 
 ## Runtimes and uids
 
-Session containment is the **gVisor sentry**: every pod yaac creates (the
-session, the proxy, registries, probe pods) runs under the `gvisor`
-RuntimeClass, where in-container root — the image grants passwordless sudo so
-agents can `apt-get install` mid-session — is a sandbox fiction with no host
-authority, and no user namespace is used. Nested-containers sessions run
-their in-pod container engine as **real root inside the sentry** on the
-`gvisor-nested` RuntimeClass (the sentry is the containment).
+Session containment is the **gVisor sentry**: every pod running untrusted
+code (sessions, vcluster-synced tenant pods, the check's probe pods) runs
+under the `gvisor` RuntimeClass, where in-container root — the image grants
+passwordless sudo so agents can `apt-get install` mid-session — is a sandbox
+fiction with no host authority, and no user namespace is used.
+Nested-containers sessions run their in-pod container engine as **real root
+inside the sentry** on the `gvisor-nested` RuntimeClass (the sentry is the
+containment). Trusted yaac infra (proxy, registries, node-write pods,
+vcluster control planes) runs unsandboxed on runc: it only executes
+yaac-shipped code, and the sentries' CPU cost is what matters at fleet
+scale.
 
 Under gVisor there is no user namespace and no idmap, so hostPath files are
 presented at their real node-side uids (the gofer preserves them), and the
@@ -205,16 +212,15 @@ namespace, and the node fixups, asserts the RuntimeClasses exist and that a
 `gvisor`-class pod really runs inside the sentry, then runs an end-to-end
 probe pod — on the gvisor tier, like session pods — that exercises all of
 the wiring above, including a hostPath **write** at the session uid. It
-ends with a sweep warning about any install-namespace pod running without
-an explicit `runtimeClassName` (pods predating the gVisor migration). Run
-it whenever sessions fail to start.
+ends with a sweep warning about any untrusted pod (session-labeled or
+vcluster-synced) running without a gvisor-tier `runtimeClassName` (pods
+predating the gVisor migration). Run it whenever sessions fail to start.
 
 > **v1 limits:** single-node clusters only (the hostPath model assumes
 > node == host). The server's control traffic reaches the proxy through a
-> loopback exec tunnel (`kubectl exec` + socat — `kubectl port-forward`
-> cannot reach gVisor pods, whose listeners live in the sentry's netstack,
-> not the pod netns kernel stack); nothing yaac deploys listens on host
-> interfaces.
+> loopback exec tunnel (`kubectl exec` + socat — runtime-agnostic, unlike
+> `kubectl port-forward`, which cannot reach gVisor pods); nothing yaac
+> deploys listens on host interfaces.
 
 ## Deleting the cluster
 

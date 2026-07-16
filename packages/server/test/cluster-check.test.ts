@@ -62,15 +62,20 @@ async function happyResponses(
     return { stdout: 'GVISOR_SANDBOXED\n', stderr: '' }
   }
   if (file === 'kubectl' && args[0] === 'get' && args[1] === 'pods') {
-    // runtime-stamp sweep (-A): every in-scope pod carries a
-    // runtimeClassName; kube-system pods are out of scope by namespace.
+    // runtime-stamp sweep (-A): every untrusted (session-labeled / synced)
+    // pod is gvisor-sandboxed; unstamped infra (the proxy) is fine, and
+    // kube-system pods are out of scope by namespace.
     return {
       stdout: JSON.stringify({
         items: [
           {
-            metadata: { name: 'yaac-proxy-abc', namespace: 'test-ns' },
+            metadata: {
+              name: 'yaac-session-abc', namespace: 'test-ns',
+              labels: { 'yaac.session-id': 'abc' },
+            },
             spec: { runtimeClassName: 'gvisor' },
           },
+          { metadata: { name: 'yaac-proxy-abc', namespace: 'test-ns' }, spec: {} },
           { metadata: { name: 'coredns-xyz', namespace: 'kube-system' }, spec: {} },
         ],
       }),
@@ -383,22 +388,35 @@ describe('runClusterCheck', () => {
     })
   })
 
-  it('warns (without failing) on runtime-stamp when a pod lacks a runtimeClassName', async () => {
+  it('warns (without failing) on runtime-stamp when an untrusted pod is not gvisor-sandboxed', async () => {
     const run = happyRun()
     run.mockImplementation((file: string, args: string[]) => {
       if (file === 'kubectl' && args[0] === 'get' && args[1] === 'pods') {
         return Promise.resolve({
           stdout: JSON.stringify({
             items: [
+              // Unstamped infra is deliberate (runc) — never flagged.
+              { metadata: { name: 'yaac-proxy-abc', namespace: 'test-ns' }, spec: {} },
+              // A session pod without the gvisor tier is the violation.
               {
-                metadata: { name: 'yaac-proxy-abc', namespace: 'test-ns' },
-                spec: { runtimeClassName: 'gvisor' },
+                metadata: {
+                  name: 'yaac-old-session', namespace: 'test-ns',
+                  labels: { 'yaac.session-id': 'old' },
+                },
+                spec: {},
               },
-              { metadata: { name: 'yaac-old-session', namespace: 'test-ns' }, spec: {} },
-              // The vcluster child namespaces are in scope — that's where
-              // the pods relying on external stamps (syncer, chart knob)
-              // live, i.e. the likeliest invariant violations.
-              { metadata: { name: 'coredns-tenant', namespace: 'test-ns-vc-abcd1234' }, spec: {} },
+              // The vcluster child namespaces are in scope — synced tenant
+              // pods (syncer-labeled) rely on the values.yaml knob for
+              // their stamp, i.e. the likeliest invariant violation.
+              {
+                metadata: {
+                  name: 'coredns-tenant', namespace: 'test-ns-vc-abcd1234',
+                  labels: { 'vcluster.loft.sh/managed-by': 'yvc-abcd1234' },
+                },
+                spec: {},
+              },
+              // The vcluster control plane is trusted infra: unstamped, unlabeled, unflagged.
+              { metadata: { name: 'yvc-abcd1234-0', namespace: 'test-ns-vc-abcd1234' }, spec: {} },
               // Other namespaces are not yaac's to police.
               { metadata: { name: 'coredns-xyz', namespace: 'kube-system' }, spec: {} },
             ],
@@ -414,8 +432,9 @@ describe('runClusterCheck', () => {
     expect(stamp?.detail).toContain('test-ns/yaac-old-session')
     expect(stamp?.detail).toContain('test-ns-vc-abcd1234/coredns-tenant')
     expect(stamp?.detail).not.toContain('yaac-proxy-abc')
+    expect(stamp?.detail).not.toContain('yvc-abcd1234-0')
     expect(stamp?.detail).not.toContain('kube-system')
-    expect(ok).toBe(true) // warn-only: pods without a RuntimeClass keep running
+    expect(ok).toBe(true) // warn-only: unsandboxed pods keep running
   })
 
   it('passes the egress check when a session-labeled pod cannot reach the apiserver', async () => {

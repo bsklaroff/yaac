@@ -15,7 +15,6 @@ import {
 import { k8sNamespace, kubectlGetJson, kubectlWithRetry } from '#lib/k8s/kubectl'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#lib/k8s/registry'
 import { ExecTunnel } from '#lib/k8s/exec-tunnel'
-import { runtimeClassSpec } from '#lib/k8s/gvisor'
 import { listSshEntries } from '#lib/project/credentials'
 import {
   failImageBuild,
@@ -542,17 +541,18 @@ export class ProxyClient {
    * True when the deployed proxy Deployment matches what this server
    * would deploy: the image carries the current content hash of the
    * proxy source (the tag encodes the build context's hash — see
-   * resolveProxyImageTag) AND the pod template carries the RuntimeClass
-   * the manifest builder stamps (gvisor on the host; none when nested —
-   * a vcluster has no RuntimeClass objects). The runtime half is what
-   * lets a manifest-shape-only upgrade (the gVisor migration) converge:
-   * attachIfRunning() marks a healthy pre-existing proxy running without
-   * inspecting it, and the proxy image alone can be byte-identical
-   * across such an upgrade, so an image-only check would keep the old
-   * pod forever. A missing Deployment counts as stale so the bootstrap
-   * recreates it. kubectl errors count as current: the caller is on the
-   * fast path with a demonstrably healthy proxy, and falling through to
-   * a bootstrap would just fail on the same broken kubectl.
+   * resolveProxyImageTag) AND the pod template carries no RuntimeClass,
+   * matching the manifest builder (trusted infra runs on runc — see the
+   * gvisor.ts module doc). The runtime half is what lets a
+   * manifest-shape-only upgrade (gVisor on, then infra back off it)
+   * converge: attachIfRunning() marks a healthy pre-existing proxy
+   * running without inspecting it, and the proxy image alone can be
+   * byte-identical across such an upgrade, so an image-only check would
+   * keep the old pod forever. A missing Deployment counts as stale so
+   * the bootstrap recreates it. kubectl errors count as current: the
+   * caller is on the fast path with a demonstrably healthy proxy, and
+   * falling through to a bootstrap would just fail on the same broken
+   * kubectl.
    */
   async isDeployedProxyCurrent(): Promise<boolean> {
     try {
@@ -564,11 +564,10 @@ export class ProxyClient {
         } } }
       }>(['get', 'deployment', PROXY_APP_NAME, '-n', k8sNamespace()])
       const podSpec = deployment?.spec?.template?.spec
-      // Same policy call the manifest builder makes (bootstrap.ts), so the
-      // currency check can never drift from what a bootstrap would stamp.
-      const expectedRuntime = runtimeClassSpec({ inner: env.nested }).runtimeClassName
+      // The builder (bootstrap.ts) stamps no runtimeClassName, so a stamped
+      // deployment (a gVisor-era proxy) is stale and gets re-rolled.
       return podSpec?.containers?.[0]?.image === expected
-        && podSpec?.runtimeClassName === expectedRuntime
+        && podSpec?.runtimeClassName === undefined
     } catch {
       return true
     }

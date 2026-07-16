@@ -193,20 +193,21 @@ describe('renderVclusterManifests', () => {
     expect(out).not.toContain('yaac.session-id:')
   })
 
-  it('renders with the vendored values file that pins both gvisor runtime knobs', async () => {
+  it('renders with the vendored values file: synced pods on gvisor, control plane on runc', async () => {
     await renderVclusterManifests({ sessionId: SID })
     const tmpl = mockExec.mock.calls.find((c) => c[0] === 'helm' && (c[1] as string[])[0] === 'template')
     const args = tmpl![1] as string[]
     const valuesPath = args[args.indexOf('--values') + 1]
-    // The gvisor runtime rides values.yaml, not a post-render stamp: the
-    // chart-native knobs cover the control-plane StatefulSet and every
-    // synced pod. Pin both here so a values edit can't silently drop the
-    // no-pod-without-runtimeClassName invariant.
+    // Runtime tiers ride values.yaml, not a post-render stamp. Pin both
+    // knobs here so a values edit can't silently unsandbox synced tenant
+    // pods (they must stay gvisor — the VAP guard keys on it) or put the
+    // control plane back on the sentry (trusted infra runs on runc; an
+    // apiserver+datastore sentry starves the node — see gvisor.ts).
     const values = YAML.parse(readFileSync(valuesPath, 'utf8')) as {
       controlPlane?: { statefulSet?: { runtimeClassName?: string } }
       sync?: { toHost?: { pods?: { runtimeClassName?: string } } }
     }
-    expect(values.controlPlane?.statefulSet?.runtimeClassName).toBe('gvisor')
+    expect(values.controlPlane?.statefulSet?.runtimeClassName).toBeUndefined()
     expect(values.sync?.toHost?.pods?.runtimeClassName).toBe('gvisor')
   })
 })

@@ -156,10 +156,10 @@ export function addYaacLabels(
  * labels. No vendored rendered manifest, no placeholder substitution —
  * the chart's own logic runs each time, so a chart bump only needs
  * `scripts/fetch-vcluster-chart.sh` (re-vendor the tarball). The
- * control-plane pod's gvisor runtime rides the chart-native
- * `controlPlane.statefulSet.runtimeClassName` knob in values.yaml (the
- * syncer stamps synced pods via `sync.toHost.pods.runtimeClassName`
- * there too), so no post-render runtime stamping is needed.
+ * control-plane pod stamps no runtime (trusted infra on runc — see
+ * gvisor.ts); synced pods get their gvisor runtime from the syncer via
+ * `sync.toHost.pods.runtimeClassName` in values.yaml, so no post-render
+ * runtime stamping is needed.
  */
 export async function renderVclusterManifests(p: VclusterRenderParams): Promise<string> {
   const helm = await ensureHelm()

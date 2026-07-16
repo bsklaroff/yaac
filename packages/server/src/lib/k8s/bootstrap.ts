@@ -9,7 +9,6 @@ import {
   kubectlWithRetry,
 } from '#lib/k8s/kubectl'
 import { ensureCiliumCrds } from '#lib/k8s/cilium-crds'
-import { runtimeClassSpec } from '#lib/k8s/gvisor'
 import {
   CA_BUNDLE_KEY,
   CA_CERT_PATH,
@@ -238,7 +237,8 @@ export async function ensureProxyAuthSecret(): Promise<string> {
  * Exposure: ClusterIP Service only — no hostNetwork, no hostPort, no
  * NodePort. The proxy listens inside its pod's network namespace; the
  * server reaches it through a loopback exec tunnel (see ExecTunnel —
- * kubectl port-forward cannot reach a gVisor pod's netstack listener).
+ * runtime-agnostic, kept even though the runc proxy could also be
+ * port-forwarded, so the tunnel doesn't churn with the runtime tier).
  */
 export function buildProxyDeploymentManifest(
   imageRef: string,
@@ -278,13 +278,13 @@ export function buildProxyDeploymentManifest(
           serviceAccountName: PROXY_SA_NAME,
           automountServiceAccountToken: true,
           enableServiceLinks: false,
-          // Host proxy runs under the sentry like every yaac pod: SNI/Host
-          // routing is pure userspace, the DNS stub binds via in-sandbox
-          // NET_BIND_SERVICE, and the ssh-agent socket on the hostPath dir
-          // stays a real host socket via the handler's host-uds=all (sessions
-          // dial it cross-sandbox). The inner (nested) proxy is a vcluster
-          // tenant pod — runtimeClassSpec stamps nothing for it.
-          ...runtimeClassSpec({ inner: opts.nested }),
+          // No runtimeClassName: the proxy is trusted yaac infra and runs on
+          // runc — the sentry buys no containment for yaac-shipped code and
+          // its CPU cost starves the node (see the gvisor.ts module doc).
+          // The ssh-agent socket on the hostPath dir is then a plain host
+          // socket, which sandboxed sessions still dial fine through their
+          // own handler's host-uds=all. The inner (nested) proxy is a
+          // vcluster tenant pod and equally stamps nothing.
           // Nested (inner) proxy: resolve upstream hostnames via its OWN DNS
           // stub (loopback), not the vcluster CoreDNS. The inner proxy carries
           // `managed-by`, so the outer yaac's fallback redirect catches its

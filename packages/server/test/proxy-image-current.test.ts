@@ -52,9 +52,9 @@ describe('ProxyClient.isDeployedProxyCurrent', () => {
     mockContextHash.mockResolvedValue('abc123')
   })
 
-  it('returns true when the deployed image and RuntimeClass both match', async () => {
+  it('returns true when the image matches and no RuntimeClass is stamped', async () => {
     mockKubectlGetJson.mockResolvedValueOnce(
-      deployedProxy('localhost:5001/yaac-test-proxy:abc123', 'gvisor'),
+      deployedProxy('localhost:5001/yaac-test-proxy:abc123'),
     )
     const c = new ProxyClient({ image: 'yaac-test-proxy' })
     await expect(c.isDeployedProxyCurrent()).resolves.toBe(true)
@@ -62,18 +62,18 @@ describe('ProxyClient.isDeployedProxyCurrent', () => {
 
   it('returns false when the deployed image was built from older source', async () => {
     mockKubectlGetJson.mockResolvedValueOnce(
-      deployedProxy('localhost:5001/yaac-test-proxy:stale00', 'gvisor'),
+      deployedProxy('localhost:5001/yaac-test-proxy:stale00'),
     )
     const c = new ProxyClient({ image: 'yaac-test-proxy' })
     await expect(c.isDeployedProxyCurrent()).resolves.toBe(false)
   })
 
-  it('returns false when the pod template lacks the gvisor RuntimeClass (manifest-only upgrade)', async () => {
+  it('returns false when the pod template still carries a RuntimeClass (manifest-only upgrade)', async () => {
     // A manifest-only change: the proxy image is byte-identical, but a
-    // Deployment that carries no runtimeClassName is stale. An image-only
-    // check would keep the old pod forever.
+    // Deployment stamped gvisor (the gVisor-era proxy — infra now runs on
+    // runc) is stale. An image-only check would keep the old pod forever.
     mockKubectlGetJson.mockResolvedValueOnce(
-      deployedProxy('localhost:5001/yaac-test-proxy:abc123'),
+      deployedProxy('localhost:5001/yaac-test-proxy:abc123', 'gvisor'),
     )
     const c = new ProxyClient({ image: 'yaac-test-proxy' })
     await expect(c.isDeployedProxyCurrent()).resolves.toBe(false)
@@ -120,7 +120,7 @@ describe('ProxyClient.ensureRunning staleness gate', () => {
   it('returns on the fast path when the deployed proxy is current', async () => {
     const c = attachedClient()
     mockKubectlGetJson.mockResolvedValueOnce(
-      deployedProxy('localhost:5001/yaac-test-proxy:abc123', 'gvisor'),
+      deployedProxy('localhost:5001/yaac-test-proxy:abc123'),
     )
     const bootstrap = vi.spyOn(
       c as unknown as { ensureProxyImage: () => Promise<string> },
@@ -134,7 +134,7 @@ describe('ProxyClient.ensureRunning staleness gate', () => {
   it('falls through to the full bootstrap when the deployed image is stale', async () => {
     const c = attachedClient()
     mockKubectlGetJson.mockResolvedValue(
-      deployedProxy('localhost:5001/yaac-test-proxy:stale00', 'gvisor'),
+      deployedProxy('localhost:5001/yaac-test-proxy:stale00'),
     )
     const bootstrap = vi
       .spyOn(
@@ -150,7 +150,7 @@ describe('ProxyClient.ensureRunning staleness gate', () => {
   it('falls through to the full bootstrap when only the RuntimeClass is stale', async () => {
     const c = attachedClient()
     mockKubectlGetJson.mockResolvedValue(
-      deployedProxy('localhost:5001/yaac-test-proxy:abc123'),
+      deployedProxy('localhost:5001/yaac-test-proxy:abc123', 'gvisor'),
     )
     const bootstrap = vi
       .spyOn(

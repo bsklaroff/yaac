@@ -14,7 +14,7 @@ import {
   RUNTIME_CLASS_GVISOR_NESTED,
   runtimeClassSpec,
 } from '#lib/k8s/gvisor'
-import { LABEL_SESSION_ID, runPodToCompletion } from '#lib/k8s/pods'
+import { LABEL_SESSION_ID, LABEL_VCLUSTER_MANAGED_BY, runPodToCompletion } from '#lib/k8s/pods'
 import { NESTED_ENGINE_CAPS } from '#lib/k8s/pod-spec'
 import { vapAvailable } from '#lib/k8s/vcluster'
 import { registryHost, registryReachable, pushImageToRegistry } from '#lib/k8s/registry'
@@ -109,9 +109,11 @@ const defaultDeps: ClusterCheckDeps = {
  *      (gvisor-nested + the engine's in-sandbox caps) in-sandbox root can
  *      mount a tmpfs — the core sentry prerequisite for the rootful in-pod
  *      engine (nestedContainers; suid/file-caps are covered by the e2e)
- *  11. runtime-stamp (warn-only): no pod in the install namespace runs
- *      without an explicit runtimeClassName — the fleet-wide invariant
- *      the manifest builders uphold
+ *  11. runtime-stamp (warn-only): every UNTRUSTED pod — session pods
+ *      (yaac.session-id label) and vcluster-synced tenant pods (the
+ *      syncer's managed-by label) — carries a gvisor-tier
+ *      runtimeClassName. Trusted infra (proxy, registries, node-write,
+ *      vcluster control planes) deliberately stamps none and runs on runc.
  */
 export async function runClusterCheck(
   deps: ClusterCheckDeps = defaultDeps,
@@ -263,8 +265,8 @@ export async function runClusterCheck(
   // vcluster creation without it, fail-closed)
   add(await runVapAvailabilityCheck())
 
-  // 11. runtime-stamp sweep (warn-only): every pod in the install
-  // namespace must carry an explicit runtimeClassName.
+  // 11. runtime-stamp sweep (warn-only): every untrusted pod must carry a
+  // gvisor-tier runtimeClassName.
   add(await runRuntimeStampSweep(deps))
 
   return { ok: !results.some((r) => r.status === 'fail'), results }
@@ -454,47 +456,53 @@ async function runGvisorRuntimeCheck(deps: ClusterCheckDeps): Promise<CheckResul
 }
 
 /**
- * Fleet-wide invariant sweep (warn-only): every pod yaac creates carries
- * an explicit runtimeClassName, so a pod without one is either from a
- * pre-gVisor yaac or from a builder that missed the stamp. Warn rather
- * than fail — such pods still run (on the implicit default runtime), they
- * just predate the invariant. Sweeps the install namespace AND its
- * per-vcluster child namespaces (`<ns>-vc-*`): the only pods that stamp
- * no runtimeClassName themselves (vcluster control planes, synced /
- * inner-yaac pods — the syncer and chart knobs set theirs) live there,
- * so an install-namespace-only sweep would miss exactly the pods most
- * likely to violate the invariant.
+ * Sandbox invariant sweep (warn-only): every pod hosting UNTRUSTED code
+ * carries a gvisor-tier runtimeClassName. That's session pods (the
+ * yaac.session-id label — stamped by the session builder, and propagated
+ * verbatim for an inner yaac's synced sessions) and vcluster-synced tenant
+ * pods (the syncer's managed-by label, which a tenant cannot suppress).
+ * Trusted infra — proxy, registries, node-write pods, vcluster control
+ * planes — deliberately stamps no runtime and runs on runc, so it is NOT
+ * flagged. An unsandboxed match is either from a gVisor-less yaac era or
+ * from a builder/values knob that lost the stamp. Warn rather than fail —
+ * such pods still run, just without the sentry. Sweeps the install
+ * namespace AND its per-vcluster child namespaces (`<ns>-vc-*`), where the
+ * synced pods live.
  */
 async function runRuntimeStampSweep(deps: ClusterCheckDeps): Promise<CheckResult> {
   const ns = k8sNamespace()
+  const sandboxed = new Set<string>([RUNTIME_CLASS_GVISOR, RUNTIME_CLASS_GVISOR_NESTED])
   try {
     const { stdout } = await deps.run('kubectl', ['get', 'pods', '-A', '-o', 'json'])
     const items = (JSON.parse(stdout) as {
       items: Array<{
-        metadata?: { name?: string; namespace?: string }
+        metadata?: { name?: string; namespace?: string; labels?: Record<string, string> }
         spec?: { runtimeClassName?: string }
       }>
     }).items
     const inScope = (podNs: string | undefined): boolean =>
       podNs === ns || (podNs?.startsWith(`${ns}-vc-`) ?? false)
+    const untrusted = (labels: Record<string, string> | undefined): boolean =>
+      !!labels && (LABEL_SESSION_ID in labels || LABEL_VCLUSTER_MANAGED_BY in labels)
     const strays = items
-      .filter((p) => inScope(p.metadata?.namespace) && !p.spec?.runtimeClassName)
+      .filter((p) => inScope(p.metadata?.namespace)
+        && untrusted(p.metadata?.labels)
+        && !sandboxed.has(p.spec?.runtimeClassName ?? ''))
       .map((p) => `${p.metadata?.namespace ?? '?'}/${p.metadata?.name ?? '<unnamed>'}`)
     if (strays.length > 0) {
       const shown = strays.slice(0, 5).join(', ')
       return {
         name: 'runtime-stamp', status: 'warn',
-        detail: `pod(s) without an explicit runtimeClassName: ${shown}`
+        detail: `untrusted pod(s) without a gvisor-tier runtimeClassName: ${shown}`
           + (strays.length > 5 ? ` (+${strays.length - 5} more)` : ''),
         fix: 'These pods predate the gVisor migration (or bypassed the yaac '
-          + 'builders). They keep running on the implicit default runtime; '
-          + 'restart the yaac server (re-rolls the proxy) and recreate old '
-          + 'sessions/vclusters to converge.',
+          + 'builders). They keep running unsandboxed on the default '
+          + 'runtime; recreate old sessions/vclusters to converge.',
       }
     }
     return {
       name: 'runtime-stamp', status: 'pass',
-      detail: `every pod in "${ns}" and its vcluster namespaces carries a runtimeClassName`,
+      detail: `every untrusted pod in "${ns}" and its vcluster namespaces is gvisor-sandboxed`,
     }
   } catch (err) {
     return {
