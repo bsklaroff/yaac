@@ -9,6 +9,7 @@ import {
   kubectlWithRetry,
 } from '#lib/k8s/kubectl'
 import { ensureCiliumCrds } from '#lib/k8s/cilium-crds'
+import { RUNTIME_CLASS_GVISOR } from '#lib/k8s/gvisor'
 import {
   CA_BUNDLE_KEY,
   CA_CERT_PATH,
@@ -276,6 +277,14 @@ export function buildProxyDeploymentManifest(
           serviceAccountName: PROXY_SA_NAME,
           automountServiceAccountToken: true,
           enableServiceLinks: false,
+          // Host proxy runs under the sentry like every yaac pod: SNI/Host
+          // routing is pure userspace, the DNS stub binds via in-sandbox
+          // NET_BIND_SERVICE, and the ssh-agent socket on the hostPath dir
+          // stays a real host socket via the handler's host-uds=all (sessions
+          // dial it cross-sandbox). The inner (nested) proxy is a vcluster
+          // tenant pod — its vcluster has no RuntimeClass objects, so nothing
+          // is stamped; the syncer sets the host-side runtime.
+          ...(opts.nested ? {} : { runtimeClassName: RUNTIME_CLASS_GVISOR }),
           // Nested (inner) proxy: resolve upstream hostnames via its OWN DNS
           // stub (loopback), not the vcluster CoreDNS. The inner proxy carries
           // `managed-by`, so the outer yaac's fallback redirect catches its

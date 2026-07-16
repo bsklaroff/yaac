@@ -50,6 +50,10 @@ function happyRun(file: string, args: string[]): Promise<{ stdout: string; stder
   if (file === 'sh' && args[1] === 'command -v cilium') {
     return Promise.resolve({ stdout: '/usr/local/bin/cilium\n', stderr: '' })
   }
+  // The gVisor install probes the node arch before fetching binaries.
+  if (file === 'podman' && args[0] === 'exec' && args.includes('uname')) {
+    return Promise.resolve({ stdout: 'aarch64\n', stderr: '' })
+  }
   return Promise.resolve({ stdout: '', stderr: '' })
 }
 
@@ -120,6 +124,21 @@ describe('runClusterSetup', () => {
     expect(execCmds.some((c) => c.includes('src_valid_mark'))).toBe(true)
     expect(runCalls.some(([f, a]) => f === 'podman' && a[0] === 'update' && a.includes('32768'))).toBe(true)
     expect(runCalls.some(([f, a]) => f === 'podman' && a[0] === 'network' && a[1] === 'connect')).toBe(true)
+
+    // gVisor runtime: pinned binaries fetched (checksum-verified), copied
+    // into the node, containerd restarted, RuntimeClasses applied.
+    const shScripts = runCalls
+      .filter(([f, a]) => f === 'sh' && a[0] === '-c')
+      .map(([, a]) => a[1])
+    expect(shScripts.some((s) => s.includes('gvisor/releases/release') && s.includes('/runsc'))).toBe(true)
+    expect(runCalls.some(([f, a]) => f === 'podman' && a[0] === 'cp'
+      && String(a[2]).includes('runsc'))).toBe(true)
+    expect(execCmds.some((c) => c.includes('restart containerd') || c.includes('runsc'))
+      || runCalls.some(([f, a]) => f === 'podman' && a.join(' ').includes('restart containerd'))).toBe(true)
+    const rcApply = deps.runStreaming.mock.calls.find(([f, a]) => f === 'kubectl' && a.includes('apply'))
+    expect(rcApply).toBeDefined()
+    expect(rcApply?.[1]).toEqual(['--context', 'kind-yaac', 'apply', '-f', '-'])
+    expect(rcApply?.[2]?.input).toContain('"gvisor-nested"')
 
     expect(deps.check).toHaveBeenCalledOnce()
   })
@@ -243,9 +262,11 @@ describe('runClusterSetup', () => {
 
     expect(ok).toBe(true)
     expect(deps.ensureRegistry).toHaveBeenCalledOnce()
-    // No delete/create/cilium — only the fixups and the finishing check.
+    // No delete/create/cilium — only the fixups (incl. the gVisor install,
+    // whose RuntimeClass apply is the one streaming call) and the check.
     expect(deps.run.mock.calls.some(([f, a]) => f === 'kind' && a[0] === 'delete')).toBe(false)
-    expect(deps.runStreaming).not.toHaveBeenCalled()
+    expect(deps.runStreaming.mock.calls.every(([f]) => f === 'kubectl')).toBe(true)
+    expect(deps.runStreaming.mock.calls.some(([f, a]) => f === 'kubectl' && a.includes('apply'))).toBe(true)
     expect(deps.run.mock.calls.some(([f, a]) => f === 'podman' && a[0] === 'exec')).toBe(true)
     expect(deps.check).toHaveBeenCalledOnce()
   })

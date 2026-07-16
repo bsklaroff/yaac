@@ -1,6 +1,6 @@
 # Yet Another Agent Container
 
-Agent sandbox manager — run many parallel agent sessions, each as an isolated Kubernetes Job on a local single-node cluster. Supports Claude Code, Codex CLI, OpenCode, and Pi.
+Agent sandbox manager — run many parallel agent sessions, each isolated in its own gVisor sandbox on a k8s cluster. Supports Claude Code, Codex CLI, OpenCode, and Pi.
 
 ## Install
 
@@ -235,7 +235,7 @@ yaac centralizes credentials on the host and injects them into session traffic t
 - `~/.yaac/.credentials/opencode.json` — OpenCode credentials (OpenRouter API key)
 - `~/.yaac/.credentials/pi.json` — Pi credentials (OpenRouter, Anthropic, or OpenAI API key)
 
-The proxy pod mounts this directory RW (hostPath) and reads credentials at request time, so updates via `yaac auth update` propagate to every running session immediately without needing to restart pods. The proxy is reachable only inside the cluster (ClusterIP Service); the server talks to it over a loopback `kubectl port-forward`.
+The proxy pod mounts this directory RW (hostPath) and reads credentials at request time, so updates via `yaac auth update` propagate to every running session immediately without needing to restart pods. The proxy is reachable only inside the cluster (ClusterIP Service); the server talks to it over a loopback exec tunnel (`kubectl exec` + socat — `kubectl port-forward` cannot reach gVisor-sandboxed pods).
 
 ### GitHub tokens
 
@@ -466,7 +466,7 @@ Layer order: default → Dockerfile.tools (agent CLIs; rebuilt by `yaac project 
 **`virtualCluster: true`** additionally gives the session its own kubernetes cluster:
 
 - `kubectl` inside the session is preconfigured (`KUBECONFIG`) against a per-session [vcluster](https://www.vcluster.com/); `kubectl get nodes`, `kubectl run`, deployments, services, and inner NetworkPolicies all work. Pods created in the vcluster actually run on the host cluster, confined to the session: they can reach their own vcluster's API and each other, and nothing else (no host apiserver, no internet — in v1 synced pods have no upstream egress at all).
-- A synced-pod admission guard (ValidatingAdmissionPolicy, kubernetes >= 1.30) blocks hostNetwork/hostPID/hostIPC/hostPorts/privileged, restricts hostPath volumes to the session's `nested-yaac` data dir, and requires a user namespace (`hostUsers: false`) for added capabilities. vcluster creation fails closed (with no opt-out) when the VAP API is missing.
+- A synced-pod admission guard (ValidatingAdmissionPolicy, kubernetes >= 1.30) blocks hostNetwork/hostPID/hostIPC/hostPorts/privileged, restricts hostPath volumes to the session's `nested-yaac` data dir, and requires the gVisor runtime tier (the sentry) for added capabilities. vcluster creation fails closed (with no opt-out) when the VAP API is missing.
 - Each project gets a plain-HTTP push registry (`registry:2`) reachable from its sessions as `yaac-reg-<project>.<namespace>.svc:5000` — build an image, `docker push` it there, and `kubectl run` the pushed ref in the vcluster (the node pulls it through a containerd `hosts.toml` mapping). Only the project's own sessions can reach its registry. Stale content-hash tags accumulate until project removal or cluster recreate (registry:2 has no safe online GC).
 - Each vcluster costs roughly 0.5Gi of memory, so mind how many vcluster sessions run at once.
 

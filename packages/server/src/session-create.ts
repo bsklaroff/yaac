@@ -3,10 +3,14 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
 import { ensureContainerRuntime } from '#lib/container/runtime'
-import { sessionUid } from '#lib/container/image-builder'
 import { ensureImage, pushImageShared } from '#lib/container/build-coordinator'
 import { sharedImageStoreHostPath } from '#lib/container/image-promoter'
-import { proxyClient, SSH_AGENT_MOUNT, SSH_AGENT_SOCKET_PATH } from '#lib/container/proxy-client'
+import {
+  proxyClient,
+  PROXY_CA_BUNDLE_PATH,
+  SSH_AGENT_MOUNT,
+  SSH_AGENT_SOCKET_PATH,
+} from '#lib/container/proxy-client'
 import { buildSessionRegistration, syncProxySecrets } from '#lib/session/proxy-registration'
 import { resolveAllowedHosts } from '#lib/container/default-allowed-hosts'
 import { reserveAvailablePort, startPortForwarders, kubectlRelay } from '#lib/container/port'
@@ -561,6 +565,8 @@ interface SessionSetupParams {
   /** Live proxy Service ClusterIP — the pod's resolver + egress redirect target. */
   proxyHost: string
   nested?: NestedContainersParams
+  /** Inner (nested) yaac — don't stamp a RuntimeClass (see SessionJobParams). */
+  innerYaac?: boolean
   /** Set for virtualCluster sessions — the per-project push registry. */
   virtualCluster?: boolean
   tool: AgentTool
@@ -670,8 +676,8 @@ export function initWindowCommand(win: InitWindow): string {
 async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   const {
     imageRef, jobName, projectSlug, sessionId, env, hostPathMounts,
-    proxyHost, nested, virtualCluster, tool, piProvider, config, options,
-    gitUser, forwardedPorts, upstreamStartPoint,
+    proxyHost, nested, innerYaac, virtualCluster, tool, piProvider, config,
+    options, gitUser, forwardedPorts, upstreamStartPoint,
   } = params
 
   const manifest = buildSessionJobManifest({
@@ -694,16 +700,16 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
     memoryLimitBytes: 8 * 1024 ** 3,
     proxyHost,
     nested,
+    innerYaac,
   })
   await kubectlApply(manifest)
   await waitForPodReady(jobName)
 
   // No ownership fixup is needed for server-created hostPath mounts: the
   // image's yaac user is built with the server's uid (YAAC_UID build arg,
-  // see sessionUid in image-builder), and the pod's idmapped mounts
-  // present host uids identically, so server-owned dirs are yaac-writable
-  // as-is. In-container chowns would also be wrong cross-platform: on
-  // Linux they rewrite the real host uid to a per-pod userns value.
+  // see sessionUid in image-builder). Under gVisor there is no userns and no
+  // idmapped mount, so numeric uids pass through raw — server-owned dirs are
+  // yaac-writable as-is.
 
   // Fix worktree git pointers for in-container paths
   await containerExec(jobName, `sh -c "echo 'gitdir: /repo/.git/worktrees/${sessionId}' > /workspace/.git"`)
@@ -782,17 +788,17 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   // badly in the webapp's xterm.js pane.)
   await containerExec(jobName, `env COLORTERM=truecolor ${TMUX} -u new-session -d -s yaac -n ${tool} -x 500 -y 200 'sleep infinity'`)
 
-  // Nested sessions: start the in-pod rootless podman engine (it serves
-  // the Docker Engine API on the socket DOCKER_HOST points at). This is
-  // the k8s port of the pre-migration `podman exec -d <ctr> podman system
-  // service`: a detached background process, not a tmux window. kubectl
-  // exec has no `-d`, so background it with all fds redirected to a log
-  // file — the exec stream then closes and `containerExec` returns while
-  // the service keeps running, reparented to the container's catatonit
-  // init. Then gate on `docker version` so a broken engine (e.g. a cluster
-  // that refuses the userns mount) fails here with a clear error instead
-  // of a confusing "cannot connect to docker" the first time the agent
-  // runs.
+  // Nested sessions: start the in-pod ROOTFUL podman engine (it serves the
+  // Docker Engine API on the socket DOCKER_HOST points at). The engine runs
+  // as real root inside the sentry — `sudo podman system service` — and the
+  // socket it creates under root-owned /run/podman is opened to the yaac
+  // user (who runs the agent + docker CLI). Backgrounded with all
+  // fds redirected to a log file — kubectl exec has no `-d`, so the exec
+  // stream closes and `containerExec` returns while the service keeps
+  // running, reparented to the container's catatonit init. Then gate on
+  // `docker version` so a broken engine fails here with a clear error
+  // instead of a confusing "cannot connect to docker" the first time the
+  // agent runs.
   if (nested) {
     // virtualCluster sessions: drop a registries.conf.d entry marking the
     // per-project registry (plain HTTP on :5000) insecure, so user-driven
@@ -801,7 +807,11 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
     // nestable image layer. The single quotes around the printf args are
     // safe: the drop-in contains double quotes only.
     if (virtualCluster) {
-      const confDir = '/home/yaac/.config/containers/registries.conf.d'
+      // Rootful engine reads /etc/containers/registries.conf.d — sudo to
+      // write there (per-project host, so it can't live in the shared image
+      // layer). The single quotes around the printf args are safe: the
+      // drop-in contains double quotes only.
+      const confDir = '/etc/containers/registries.conf.d'
       const lines = projectRegistryConfDropIn(projectSlug)
         .split('\n')
         .filter((l) => l.length > 0)
@@ -809,12 +819,29 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
         .join(' ')
       await containerExec(
         jobName,
-        `sh -c "mkdir -p ${confDir} && printf '%s\\n' ${lines} > ${confDir}/yaac-project-registry.conf"`,
+        `sudo sh -c "mkdir -p ${confDir} && printf '%s\\n' ${lines} > ${confDir}/yaac-project-registry.conf"`,
       )
     }
+    // Start the rootful engine (as root, via the image's passwordless sudo),
+    // then wait for its socket and hand it to the yaac user: /run/podman is
+    // created root:0700, so make it traversable and give the socket to yaac.
+    //
+    // SSL_CERT_FILE must be set INSIDE the sudo'd shell: the engine (a Go
+    // binary) trusts the MITM proxy CA for registry pulls via this var, but
+    // sudo's env_reset strips the pod env the rootless engine used to
+    // inherit. Point it at the combined bundle ({public roots} ∪ {proxy CA})
+    // so both MITM'd (proxy-CA-signed) and tunnelled (real-cert) registries
+    // verify. Nested containers + build RUN steps get their own CA trust from
+    // /etc/containers/containers.conf (volumes/env), independent of this.
     await containerExec(
       jobName,
-      `sh -c 'podman system service --time=0 >/tmp/podman-service.log 2>&1 &'`,
+      `sudo sh -c 'export SSL_CERT_FILE=${PROXY_CA_BUNDLE_PATH}; `
+      + `podman system service --time=0 >/tmp/podman-service.log 2>&1 &'`,
+    )
+    await containerExec(
+      jobName,
+      "sudo sh -c 'for i in $(seq 1 120); do [ -S /run/podman/podman.sock ] && break; sleep 0.5; done;"
+      + " chmod 0755 /run/podman && chown yaac /run/podman/podman.sock'",
     )
     emit('Waiting for the in-pod container engine...', options)
     const deadline = Date.now() + 60_000
@@ -1149,11 +1176,14 @@ export async function createSession(
   // Nested-containers pod wiring: shared image store hostPath (node-local)
   // + graphroot/securityContext branch in the manifest.
   const nested: NestedContainersParams | undefined = nestedContainers
-    ? {
-      uid: sessionUid(),
-      sharedImagesHostPath: sharedImageStoreHostPath(projectSlug),
-    }
+    ? { sharedImagesHostPath: sharedImageStoreHostPath(projectSlug) }
     : undefined
+
+  // Inside a nested (inner) yaac no runtimeClassName is stamped — the
+  // vcluster has no RuntimeClass objects, and the syncer sets the synced
+  // pod's host runtime. Host pods get gvisor (pod-spec maps nested to the
+  // gvisor-nested handler).
+  const innerYaac = yaacEnv.nested
 
   // Load every tool's stored credential, not just the active tool's: pods
   // are provisioned tool-agnostically (a prewarmed spare can be retooled to
@@ -1496,7 +1526,7 @@ export async function createSession(
   const maxStartAttempts = 3
   const setupParams: SessionSetupParams = {
     imageRef, jobName, projectSlug, sessionId, env, hostPathMounts,
-    proxyHost, nested, virtualCluster, tool,
+    proxyHost, nested, innerYaac, virtualCluster, tool,
     piProvider: toolAuthByTool.pi?.piProvider,
     config, options,
     gitUser, forwardedPorts, upstreamStartPoint,

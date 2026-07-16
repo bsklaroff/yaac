@@ -5,6 +5,7 @@ import readline from 'node:readline/promises'
 import { spawn } from 'node:child_process'
 import { parse as parseToml } from 'smol-toml'
 import { execFileAsync } from '#lib/k8s/kubectl'
+import { ensureGvisorRuntime } from '#lib/k8s/gvisor'
 import { ensurePinnedBinary } from '#lib/k8s/pinned-binary'
 import { ensureLocalRegistry, registryHost, REGISTRY_CONTAINER_NAME } from '#lib/k8s/registry'
 import {
@@ -32,7 +33,9 @@ import { env } from '@yaac/shared/env'
  * Full mode recreates the cluster from scratch (delete + create). `--repair`
  * re-applies only the node fixups that vanish on a node/VM restart (sysfs
  * unmask, DefaultTasksMax, vm sysctls, pids-limit, registry wiring) without
- * touching the cluster itself.
+ * touching the cluster itself. Both modes also ensure the pinned gVisor
+ * runtime (runsc install + RuntimeClasses — see #lib/k8s/gvisor): idempotent,
+ * and the way an existing cluster picks gVisor up on a yaac upgrade.
  */
 
 /** Cilium version installed into the cluster (chart/agent). */
@@ -189,6 +192,7 @@ export async function runClusterSetup(
     deps.log(`Re-applying node fixups on kind cluster "${cluster}"...`)
     await deps.ensureRegistry()
     for (const node of nodes) await applyNodeFixups(deps, node)
+    await ensureGvisorRuntime(nodes, `kind-${cluster}`, deps)
     await connectRegistryToKindNetwork(deps)
   } else {
     await deps.ensureRegistry()
@@ -196,6 +200,7 @@ export async function runClusterSetup(
     await installCilium(deps, cluster)
     const nodes = await kindNodes(deps, cluster)
     for (const node of nodes) await applyNodeFixups(deps, node)
+    await ensureGvisorRuntime(nodes, `kind-${cluster}`, deps)
     await connectRegistryToKindNetwork(deps)
   }
 

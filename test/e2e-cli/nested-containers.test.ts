@@ -249,36 +249,36 @@ describe.skipIf(IS_NESTED_YAAC)('yaac nested containers (real CLI + real server 
     const session1 = await createSession(slug)
     const name1 = session1.jobName
 
-    // Architectural wiring: docker CLI speaks to the in-pod rootless
-    // podman socket, the shared store is mounted rw and yaac-owned, and
+    // Architectural wiring: the docker CLI speaks to the ROOTFUL in-pod
+    // podman socket, the shared store is mounted rw (root-owned — the
+    // rootful engine + promoter read/write it as root), and the system
     // storage.conf points additionalimagestores at it.
     const { stdout: dockerVer } = await execInJob(name1, ['docker', 'version'], { timeout: 30_000 })
     expect(dockerVer.toLowerCase()).toContain('podman')
     const { stdout: storageConf } = await execInJob(name1, [
-      'cat', '/home/yaac/.config/containers/storage.conf',
+      'cat', '/etc/containers/storage.conf',
     ])
     expect(storageConf).toContain('/var/lib/shared-images')
+    // Root-owned hostPath (DirectoryOrCreate) — no chown-init under rootful.
     const { stdout: storeOwner } = await execInJob(name1, [
       'stat', '-c', '%u', '/var/lib/shared-images',
     ])
-    expect(storeOwner.trim()).toBe((process.getuid?.() ?? 1000).toString())
+    expect(storeOwner.trim()).toBe('0')
 
-    // The graphroot emptyDir is writable by the unprivileged session user
-    // (the pod fsGroup chowns the emptyDir to the session gid). podman
-    // already populated it to come up, but assert a direct write too.
+    // The rootful graphroot (a root-owned tmpfs at /var/lib/containers) is
+    // populated by the engine; assert a root write lands.
     const { stdout: graphProbe } = await execInJob(name1, [
       'sh', '-c',
-      'echo probe > /home/yaac/.local/share/containers/.yaac-write-probe && echo WRITABLE',
+      'sudo sh -c "echo probe > /var/lib/containers/.yaac-write-probe" && echo WRITABLE',
     ])
     expect(graphProbe.trim()).toBe('WRITABLE')
 
-    // The shared image store's two mounts are the SAME chowned directory:
-    // a write through the promoter's -dst mount is visible via the
-    // additional-store mount the session reads — and both are writable by
-    // the session user (the chown init handed off the root-owned
-    // DirectoryOrCreate hostPath).
+    // The shared image store's two mounts are the SAME directory: a write
+    // through the promoter's -dst mount is visible via the additional-store
+    // mount the session reads. Both are root-owned (the rootful promoter
+    // writes them), so probe via sudo.
     await execInJob(name1, [
-      'sh', '-c', 'echo dst-probe > /var/lib/shared-images-dst/.yaac-write-probe',
+      'sh', '-c', 'sudo sh -c "echo dst-probe > /var/lib/shared-images-dst/.yaac-write-probe"',
     ])
     const { stdout: storeProbe } = await execInJob(name1, [
       'sh', '-c', 'cat /var/lib/shared-images/.yaac-write-probe',

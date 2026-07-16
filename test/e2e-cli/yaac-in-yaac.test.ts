@@ -162,8 +162,10 @@ describe.skipIf(process.env.YAAC_E2E_NESTED_YAAC !== '1')(
         'sh', '-c', 'echo "$YAAC_NESTED|$YAAC_DATA_DIR|$YAAC_K8S_REGISTRY"',
       ])
       // YAAC_K8S_REGISTRY is the project registry host:port, no path prefix
-      // (projectRegistryHost — the registry is already project-scoped).
-      expect(envOut).toMatch(/^1\|\/.*nested-yaac\|yaac-reg-.*\.svc:5000\s*$/)
+      // (projectRegistryHost — the registry is already project-scoped). It's
+      // the full `.svc.cluster.local` FQDN (a bare `.svc` would be sinkholed
+      // by the proxy's split-horizon DNS).
+      expect(envOut).toMatch(/^1\|\/.*nested-yaac\|yaac-reg-.*\.svc\.cluster\.local:5000\s*$/)
 
       // Copy the source in and install deps (linux natives) through the
       // proxy — registry.npmjs.org is on the default allowlist.

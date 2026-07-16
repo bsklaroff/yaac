@@ -14,7 +14,8 @@ import {
 } from '#lib/k8s/bootstrap'
 import { k8sNamespace, kubectlGetJson, kubectlWithRetry } from '#lib/k8s/kubectl'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#lib/k8s/registry'
-import { ServicePortForward } from '#lib/k8s/port-forward'
+import { ExecTunnel } from '#lib/k8s/exec-tunnel'
+import { RUNTIME_CLASS_GVISOR } from '#lib/k8s/gvisor'
 import { listSshEntries } from '#lib/project/credentials'
 import {
   failImageBuild,
@@ -150,7 +151,7 @@ export interface ProxyClientConfig {
 export class ProxyClient {
   private running = false
   private authSecret: string | null = null
-  private readonly forward = new ServicePortForward(PROXY_APP_NAME, PROXY_PORT)
+  private readonly forward = new ExecTunnel(PROXY_APP_NAME, PROXY_PORT)
   // In-flight ensureRunning() promise used as a mutex so concurrent
   // callers (e.g. two parallel session creates) don't race into two
   // parallel bootstrap passes.
@@ -159,8 +160,9 @@ export class ProxyClient {
   constructor(private config: ProxyClientConfig) {}
 
   /**
-   * Server-side base URL: a loopback `kubectl port-forward` into the
-   * Service. The proxy itself is reachable only inside the cluster.
+   * Server-side base URL: a loopback exec tunnel into the proxy pod
+   * (kubectl exec + socat — see ExecTunnel for why not `kubectl
+   * port-forward`). The proxy itself is reachable only inside the cluster.
    */
   private get baseUrl(): string {
     const port = this.forward.currentPort
@@ -470,19 +472,20 @@ export class ProxyClient {
 
   private async ensureRunningImpl(): Promise<void> {
     // Fast path: already verified in this process. Gated on the deployed
-    // image still matching the current proxy source — attachIfRunning()
-    // (background reconciles, cleanup) marks a pre-existing proxy running
-    // without ever looking at its image, so without this check a
-    // healthy-but-outdated proxy would never pick up new k8s/proxy code.
-    // On mismatch, fall through to the full bootstrap: it rebuilds the
-    // image under its fresh content-hash tag and re-applies the
-    // Deployment, whose Recreate strategy swaps the pod.
+    // Deployment still matching this build (image content hash + the
+    // stamped RuntimeClass) — attachIfRunning() (background reconciles,
+    // cleanup) marks a pre-existing proxy running without ever looking at
+    // it, so without this check a healthy-but-outdated proxy would never
+    // pick up new k8s/proxy code or a manifest-shape change. On mismatch,
+    // fall through to the full bootstrap: it re-resolves the image under
+    // its content-hash tag and re-applies the Deployment, whose Recreate
+    // strategy swaps the pod.
     if (this.running) {
       try {
         const res = await fetch(`${this.baseUrl}/healthz`)
         if (res.ok) {
-          if (await this.isDeployedImageCurrent()) return
-          serverLog('[server] proxy image is stale — rebuilding and redeploying')
+          if (await this.isDeployedProxyCurrent()) return
+          serverLog('[server] proxy deployment is stale (image or runtime) — redeploying')
         }
       } catch {
         this.running = false
@@ -517,21 +520,34 @@ export class ProxyClient {
   }
 
   /**
-   * True when the deployed proxy Deployment's image matches the current
-   * content hash of the proxy source (the tag encodes the build
-   * context's hash — see resolveProxyImageTag). A missing Deployment
-   * counts as stale so the bootstrap recreates it. kubectl errors count
-   * as current: the caller is on the fast path with a demonstrably
-   * healthy proxy, and falling through to a bootstrap would just fail on
-   * the same broken kubectl.
+   * True when the deployed proxy Deployment matches what this server
+   * would deploy: the image carries the current content hash of the
+   * proxy source (the tag encodes the build context's hash — see
+   * resolveProxyImageTag) AND the pod template carries the RuntimeClass
+   * the manifest builder stamps (gvisor on the host; none when nested —
+   * a vcluster has no RuntimeClass objects). The runtime half is what
+   * lets a manifest-shape-only upgrade (the gVisor migration) converge:
+   * attachIfRunning() marks a healthy pre-existing proxy running without
+   * inspecting it, and the proxy image alone can be byte-identical
+   * across such an upgrade, so an image-only check would keep the old
+   * pod forever. A missing Deployment counts as stale so the bootstrap
+   * recreates it. kubectl errors count as current: the caller is on the
+   * fast path with a demonstrably healthy proxy, and falling through to
+   * a bootstrap would just fail on the same broken kubectl.
    */
-  async isDeployedImageCurrent(): Promise<boolean> {
+  async isDeployedProxyCurrent(): Promise<boolean> {
     try {
       const expected = registryRef(await resolveProxyImageTag(this.config.image))
       const deployment = await kubectlGetJson<{
-        spec?: { template?: { spec?: { containers?: Array<{ image?: string }> } } }
+        spec?: { template?: { spec?: {
+          runtimeClassName?: string
+          containers?: Array<{ image?: string }>
+        } } }
       }>(['get', 'deployment', PROXY_APP_NAME, '-n', k8sNamespace()])
-      return deployment?.spec?.template?.spec?.containers?.[0]?.image === expected
+      const podSpec = deployment?.spec?.template?.spec
+      const expectedRuntime = env.nested ? undefined : RUNTIME_CLASS_GVISOR
+      return podSpec?.containers?.[0]?.image === expected
+        && podSpec?.runtimeClassName === expectedRuntime
     } catch {
       return true
     }
@@ -588,9 +604,9 @@ export class ProxyClient {
 
   /**
    * Drop the server-side control tunnel without touching the deployed
-   * proxy. Called from server shutdown — without it the `kubectl
-   * port-forward` child outlives the server (orphaned to PID 1) and each
-   * restart stacks another one.
+   * proxy. Called from server shutdown — without it the tunnel's exec
+   * relay children outlive the server (orphaned to PID 1) and each
+   * restart stacks more.
    */
   disconnect(): void {
     this.forward.stop()

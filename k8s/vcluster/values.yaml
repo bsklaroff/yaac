@@ -109,6 +109,17 @@ sync:
     # break the redirect selectors (see the nesting e2e).
     pods:
       enabled: true
+      # Every synced pod carries the `gvisor` RuntimeClass (registered by
+      # `yaac cluster setup`), so everything a vcluster schedules runs on the
+      # sentry. The default tier (not gvisor-nested) — synced pods are
+      # ordinary tenant/CoreDNS workloads; an inner yaac's own nested SESSION
+      # pods still build their engine fine on this handler (only
+      # in-nested-container raw sockets, e.g. ping, want the -nested handler,
+      # which a single syncer stamp can't target per-pod). The VAP pod guard
+      # requires this tier as the containment for any pod adding capabilities
+      # (see buildVclusterPodGuardPolicyManifest). Explicit so the
+      # no-pod-without-runtimeClassName invariant holds fleet-wide.
+      runtimeClassName: gvisor
     networkPolicies:
       # DELIBERATELY OFF (security). Syncing tenant NetworkPolicies to the
       # host lets anything inside the vcluster create an allow-all egress

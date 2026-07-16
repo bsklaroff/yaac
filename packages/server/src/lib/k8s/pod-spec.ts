@@ -1,3 +1,4 @@
+import { RUNTIME_CLASS_GVISOR, RUNTIME_CLASS_GVISOR_NESTED } from '#lib/k8s/gvisor'
 import { LABEL_SESSION_ID } from '#lib/k8s/pods'
 
 /** ConfigMap (cluster-scoped to the yaac namespace) holding the proxy CA. */
@@ -36,17 +37,71 @@ export const SHARED_IMAGE_STORE_PATH = '/var/lib/shared-images'
  * SHARED_IMAGE_STORE_PATH fails ("not a read-write lock"). Writing through
  * a different path that podman doesn't recognize as its own additional
  * store gets a read-write lock; the bytes land in the same directory the
- * next session reads. Mirrors the pre-migration promoter's `/dst` mount.
+ * next session reads.
  */
 export const SHARED_IMAGE_STORE_DST_PATH = '/var/lib/shared-images-dst'
 
 /**
- * In-container path of the per-session podman graphroot (an emptyDir, so
- * its lifetime matches the single-pod Job). The kind node mounts a real
- * filesystem at /var, so kubelet emptyDirs support native rootless
- * overlay (no fuse).
+ * In-container path of the per-session ROOTFUL podman graphroot — podman's
+ * default `/var/lib/containers/storage` lives under this dir (the image's
+ * storage.conf sets graphroot there). Backed by a sentry-internal tmpfs
+ * (see NESTED_GRAPHROOT_ANNOTATIONS): under gVisor the gofer serves hostPath/
+ * emptyDir volumes as 9p, which cannot hold the `security.capability` xattr,
+ * so a `docker build` RUN step doing `setcap` fails on a gofer graphroot —
+ * only a tmpfs upper carries file caps. This is the docker-in-gvisor
+ * tutorial's shape; the cost is that layer data counts against pod memory.
  */
-export const NESTED_GRAPHROOT_PATH = '/home/yaac/.local/share/containers'
+export const NESTED_GRAPHROOT_PATH = '/var/lib/containers'
+
+/**
+ * Name of the graphroot volume — referenced by the gVisor mount annotations
+ * (dev.gvisor.spec.mount.<name>.*), which key on the volume name.
+ */
+export const NESTED_GRAPHROOT_VOLUME = 'podman-graphroot'
+
+/**
+ * Size cap for the tmpfs graphroot. Held below memoryLimitBytes so a large
+ * build ENOSPCs on the graphroot rather than OOM-killing the whole session
+ * (tmpfs pages count against the pod's memory cgroup — see the 8GiB OOM
+ * note). Tunable; sized to leave room for the agent + engine within the
+ * default 8GiB pod limit.
+ */
+export const NESTED_GRAPHROOT_TMPFS_BYTES = 4 * 1024 ** 3
+
+/**
+ * Pod-template annotations that make the graphroot a sentry-INTERNAL tmpfs
+ * (not a gofer-proxied emptyDir): `type: tmpfs` swaps the gofer mount for an
+ * in-sentry tmpfs that supports file-capability xattrs, `share: container`
+ * scopes it to the pod, `size=` bounds it. Passed through to runsc by the
+ * containerd `pod_annotations = ["dev.gvisor.*"]` allowlist (see
+ * gvisorContainerdRuntimesToml).
+ */
+export const NESTED_GRAPHROOT_ANNOTATIONS: Record<string, string> = {
+  [`dev.gvisor.spec.mount.${NESTED_GRAPHROOT_VOLUME}.type`]: 'tmpfs',
+  [`dev.gvisor.spec.mount.${NESTED_GRAPHROOT_VOLUME}.share`]: 'container',
+  [`dev.gvisor.spec.mount.${NESTED_GRAPHROOT_VOLUME}.options`]:
+    `rw,size=${NESTED_GRAPHROOT_TMPFS_BYTES}`,
+}
+
+/**
+ * In-sandbox capabilities the rootful nested engine needs. Under the sentry
+ * these grant NO host authority (the sandbox's host process is unprivileged
+ * regardless), so this is the upstream docker-in-gvisor posture — broad
+ * in-sandbox caps — not a host-security decision:
+ *  - SYS_ADMIN, SYS_CHROOT: crun mount() family + pivot_root for container
+ *    rootfs (overlay/proc/tmpfs).
+ *  - MKNOD: device nodes (/dev/null, …) in containers.
+ *  - SETFCAP: `setcap` in `docker build` RUN steps (apt/apk postinsts for
+ *    ping, nginx, …) — the reason the graphroot must be a tmpfs.
+ *  - NET_RAW, NET_ADMIN: raw sockets + in-netstack route/iptables config for
+ *    nested containers (the gvisor-nested handler also passes --net-raw).
+ *  - SYS_PTRACE, SYS_RESOURCE: debuggers / rlimit raises some builds need.
+ * Verified end-to-end on the dev cluster (pull, run, build+setcap, promote).
+ */
+export const NESTED_ENGINE_CAPS = [
+  'SYS_ADMIN', 'SYS_CHROOT', 'MKNOD', 'SETFCAP',
+  'NET_RAW', 'NET_ADMIN', 'SYS_PTRACE', 'SYS_RESOURCE',
+]
 
 export interface HostPathMount {
   hostPath: string
@@ -67,15 +122,11 @@ export interface HostPathMount {
  */
 export interface NestedContainersParams {
   /**
-   * uid of the in-image yaac user (= the server uid, see sessionUid).
-   * Used as the pod fsGroup so the kubelet chowns the graphroot emptyDir,
-   * and as the chown target for the shared image store.
-   */
-  uid: number
-  /**
    * Node-local hostPath backing the cross-session shared image store
    * (`/var/lib/yaac/imagecache/<dataDirHash>/<projectSlug>`). Root-owned
-   * `DirectoryOrCreate` — a chown init container hands it to `uid`.
+   * `DirectoryOrCreate`: the rootful in-sandbox engine reads it (as its
+   * `additionalimagestores` lower) and the promoter writes it, both as root,
+   * so no ownership fixup is needed.
    */
   sharedImagesHostPath: string
 }
@@ -108,6 +159,14 @@ export interface SessionJobParams {
   proxyHost: string
   /** In-pod podman wiring; absent for non-nested sessions. */
   nested?: NestedContainersParams
+  /**
+   * True for a pod created by an inner (nested) yaac against its vcluster,
+   * which has no RuntimeClass objects — so no `runtimeClassName` is stamped
+   * and the vcluster syncer sets the host-side runtime. A host pod (the
+   * default) is stamped `gvisor`, or `gvisor-nested` when `nested` is set.
+   * Either way there is no user namespace: the sentry is the containment.
+   */
+  innerYaac?: boolean
   /** Matches the podman-era `container.stop({t: 5})` grace. */
   terminationGracePeriodSeconds?: number
 }
@@ -127,6 +186,12 @@ export function parseEnvEntry(entry: string): { name: string; value: string } {
  * Pure — no cluster access — so the full spec shape is unit-testable.
  */
 export function buildSessionJobManifest(p: SessionJobParams): Record<string, unknown> {
+  // Inner-yaac pods stamp nothing (the vcluster has no RuntimeClass objects;
+  // the syncer sets the host runtime). Host pods stamp gvisor-nested when
+  // `nested` (raw/packet sockets for the in-sandbox engine), else gvisor.
+  const runtimeClassName = p.innerYaac
+    ? undefined
+    : (p.nested ? RUNTIME_CLASS_GVISOR_NESTED : RUNTIME_CLASS_GVISOR)
   const volumes: Array<Record<string, unknown>> = []
   const volumeMounts: Array<Record<string, unknown>> = []
 
@@ -152,11 +217,16 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
   volumeMounts.push({ name: 'proxy-ca', mountPath: CA_MOUNT_DIR, readOnly: true })
 
   if (p.nested) {
-    // Per-session graphroot: emptyDir, chowned to the yaac uid via the
-    // pod fsGroup (fsGroup touches ownership-managed volumes only —
-    // hostPath mounts are unaffected).
-    volumes.push({ name: 'podman-graphroot', emptyDir: {} })
-    volumeMounts.push({ name: 'podman-graphroot', mountPath: NESTED_GRAPHROOT_PATH })
+    // Per-session ROOTFUL graphroot: a Memory-medium emptyDir promoted to a
+    // sentry-internal tmpfs by NESTED_GRAPHROOT_ANNOTATIONS so `docker build`
+    // setcap steps work (gofer 9p drops the security.capability xattr). Owned
+    // by root — the rootful engine runs as root, so no fsGroup/chown. sizeLimit
+    // mirrors the annotation's size= so the scheduler accounts for it.
+    volumes.push({
+      name: NESTED_GRAPHROOT_VOLUME,
+      emptyDir: { medium: 'Memory', sizeLimit: String(NESTED_GRAPHROOT_TMPFS_BYTES) },
+    })
+    volumeMounts.push({ name: NESTED_GRAPHROOT_VOLUME, mountPath: NESTED_GRAPHROOT_PATH })
     // Cross-session shared image store (additionalimagestores). rw — see
     // SHARED_IMAGE_STORE_PATH. Mounted at a second path too
     // (SHARED_IMAGE_STORE_DST_PATH) so the teardown promoter can write to
@@ -180,7 +250,11 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
     spec: {
       backoffLimit: 0,
       template: {
-        metadata: { labels: p.labels },
+        metadata: {
+          labels: p.labels,
+          // Nested pods carry the gVisor graphroot-tmpfs annotations.
+          ...(p.nested ? { annotations: NESTED_GRAPHROOT_ANNOTATIONS } : {}),
+        },
         spec: {
           restartPolicy: 'Never',
           terminationGracePeriodSeconds: p.terminationGracePeriodSeconds ?? 5,
@@ -188,27 +262,20 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
           // credentials, and no service-discovery env pollution.
           automountServiceAccountToken: false,
           enableServiceLinks: false,
-          // The runtime's default seccomp profile — podman applied this
-          // by default, kubernetes leaves pods unconfined without it.
-          // Nested sessions add fsGroup so the kubelet chowns the
-          // graphroot emptyDir to the yaac uid.
+          // The runtime's default seccomp profile — podman applied this by
+          // default, kubernetes leaves pods unconfined without it. (runsc
+          // ignores it and installs its own host seccomp; harmless.) The
+          // rootful nested graphroot is a root-owned tmpfs, so no fsGroup.
           securityContext: {
             seccompProfile: { type: 'RuntimeDefault' },
-            ...(p.nested ? { fsGroup: p.nested.uid } : {}),
           },
-          // Run every session pod in a user namespace: in-container root
-          // (reachable via the image's passwordless sudo, a feature —
-          // agents install packages mid-session) maps to an unprivileged
-          // node uid, restoring the containment the rootless-podman
-          // backend had. Requirements the cluster must satisfy: an
-          // unmasked sysfs mount on the kind node (`yaac cluster setup`
-          // applies it; kind#3436) and idmapped-mount support on the
-          // filesystem behind hostPath volumes — ext4/xfs/btrfs on
-          // Linux; on macOS this means the libkrun podman-machine
-          // provider with libkrun-efi >= 1.17 (applehv's virtiofs server
-          // does not negotiate FUSE idmap support). See "Cluster setup"
-          // in the README; `yaac cluster check` probes this end to end.
-          hostUsers: false,
+          // Containment for in-container root (reachable via the image's
+          // passwordless sudo, a feature — agents install packages
+          // mid-session) is the sentry: in-sandbox root is a fiction with no
+          // host authority. No user namespace anywhere — a host pod carries
+          // the gvisor RuntimeClass, an inner-yaac pod gets its runtime from
+          // the vcluster syncer (see runtimeClassName above).
+          ...(runtimeClassName ? { runtimeClassName } : {}),
           // DNS: session pods resolve against the proxy's UDP/53 stub, which is
           // split-horizon — internal names (`*.svc`) are forwarded to the
           // cluster CoreDNS so the pod learns live ClusterIPs (the registry,
@@ -218,26 +285,6 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
           // this resolver the only one.
           dnsPolicy: 'None',
           dnsConfig: { nameservers: [p.proxyHost] },
-          // Nested sessions prepend a chown init container: the shared image
-          // store hostPath is root-owned (DirectoryOrCreate), and
-          // root-in-userns (hostUsers: false) hands it to the yaac uid —
-          // idmapped-mount identity across pods is proven by the
-          // cluster-check uid probe.
-          ...(p.nested ? {
-            initContainers: [{
-              name: 'yaac-imagestore-init',
-              image: p.image,
-              imagePullPolicy: 'IfNotPresent',
-              securityContext: { runAsUser: 0 },
-              command: [
-                'sh', '-c',
-                `chown ${p.nested.uid}:${p.nested.uid} ${SHARED_IMAGE_STORE_PATH}`,
-              ],
-              volumeMounts: [
-                { name: 'shared-images', mountPath: SHARED_IMAGE_STORE_PATH },
-              ],
-            }],
-          } : {}),
           containers: [
             {
               name: 'session',
@@ -248,18 +295,15 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
               workingDir: '/workspace',
               env: p.env.map(parseEnvEntry),
               volumeMounts,
-              // Nested only: seccompProfile stays RuntimeDefault; the
-              // userns-scoped SYS_ADMIN (hostUsers: false — no host
-              // authority) exists to make containerd's static profile
-              // compile the mount-family syscalls into the seccomp
-              // allowlist, which rootless podman needs for overlay/proc/
-              // tmpfs mounts (and `docker build` RUN steps cannot avoid
-              // mount()). No explicit allowPrivilegeEscalation: the kubelet
-              // forces it true whenever a container holds CAP_SYS_ADMIN, so
-              // setting it would be redundant (and false would be rejected).
+              // Nested only: the in-sandbox capabilities the rootful engine
+              // needs (NESTED_ENGINE_CAPS). Under the sentry they grant no
+              // host authority. No explicit allowPrivilegeEscalation: the
+              // kubelet forces it true whenever a container holds
+              // CAP_SYS_ADMIN, so setting it would be redundant (and false
+              // would be rejected).
               ...(p.nested ? {
                 securityContext: {
-                  capabilities: { add: ['SYS_ADMIN'] },
+                  capabilities: { add: NESTED_ENGINE_CAPS },
                 },
               } : {}),
               resources: {

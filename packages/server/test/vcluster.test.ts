@@ -46,6 +46,7 @@ import {
   getVclusterStatus,
   listVclusterNamespaces,
   renderVclusterManifests,
+  stampPodRuntimeClass,
   vclusterCleanupKubectlArgs,
   vclusterKubeconfigSecretName,
   vclusterName,
@@ -136,9 +137,38 @@ describe('addYaacLabels', () => {
   })
 })
 
+describe('stampPodRuntimeClass', () => {
+  const STS =
+    'apiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n  name: yvc-x\n'
+    + 'spec:\n  template:\n    spec:\n      containers: []\n'
+
+  it('stamps workload pod templates that carry none', () => {
+    const out = stampPodRuntimeClass(STS, 'runc')
+    const [sts] = parseDocs(out) as unknown as Array<{
+      spec: { template: { spec: { runtimeClassName?: string } } }
+    }>
+    expect(sts.spec.template.spec.runtimeClassName).toBe('runc')
+  })
+
+  it('never overrides an existing runtimeClassName', () => {
+    const withClass = STS.replace('containers: []', 'containers: []\n      runtimeClassName: gvisor')
+    const [sts] = parseDocs(stampPodRuntimeClass(withClass, 'runc')) as unknown as Array<{
+      spec: { template: { spec: { runtimeClassName?: string } } }
+    }>
+    expect(sts.spec.template.spec.runtimeClassName).toBe('gvisor')
+  })
+
+  it('leaves non-workload objects untouched', () => {
+    const svc = 'apiVersion: v1\nkind: Service\nmetadata:\n  name: s\nspec:\n  type: ClusterIP\n'
+    const out = stampPodRuntimeClass(svc, 'runc')
+    expect(out).not.toContain('runtimeClassName')
+  })
+})
+
 describe('renderVclusterManifests', () => {
   beforeEach(() => {
-    // ensureHelm: helm on PATH; helm template: a tiny two-object stream.
+    // ensureHelm: helm on PATH; helm template: a tiny three-object stream
+    // (the StatefulSet standing in for the control-plane pod template).
     mockExec.mockReset()
     mockExec.mockImplementation(((file: string, args: string[]) => {
       if (file === 'helm' && args[0] === 'version') {
@@ -150,7 +180,9 @@ describe('renderVclusterManifests', () => {
             'apiVersion: v1\nkind: Service\nmetadata:\n  name: '
             + `${VC}\n  namespace: test-ns\nspec: {}\n`
             + '---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: '
-            + `${VC}\nspec: {}\n`,
+            + `${VC}\nspec: {}\n`
+            + '---\napiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n  name: '
+            + `${VC}\nspec:\n  template:\n    spec:\n      containers: []\n`,
           stderr: '',
         })
       }
@@ -178,7 +210,7 @@ describe('renderVclusterManifests', () => {
   it('stamps the yaac ownership labels (but never yaac.session-id) on the rendered objects', async () => {
     const out = await renderVclusterManifests({ sessionId: SID })
     const objs = parseDocs(out)
-    expect(objs.map((o) => o.kind)).toEqual(['Service', 'Deployment'])
+    expect(objs.map((o) => o.kind)).toEqual(['Service', 'Deployment', 'StatefulSet'])
     for (const o of objs) {
       expect(o.metadata.labels[LABEL_VCLUSTER]).toBe(VC)
       expect(o.metadata.labels[LABEL_VCLUSTER_SESSION_ID]).toBe(SID)
@@ -187,6 +219,14 @@ describe('renderVclusterManifests', () => {
     // The ownership labels carry the session id, but the synced-pod
     // egress label (yaac.session-id) is never stamped here.
     expect(out).not.toContain('yaac.session-id:')
+  })
+
+  it('stamps the control-plane pod template onto the gvisor tier', async () => {
+    const out = await renderVclusterManifests({ sessionId: SID })
+    const sts = parseDocs(out).find((o) => o.kind === 'StatefulSet') as unknown as {
+      spec: { template: { spec: { runtimeClassName?: string } } }
+    }
+    expect(sts.spec.template.spec.runtimeClassName).toBe('gvisor')
   })
 })
 
@@ -252,13 +292,19 @@ describe('pod guard (VAP)', () => {
     expect(exprs).toContain('hostNetwork')
     expect(exprs).toContain('hostPort')
     expect(exprs).toContain('privileged')
-    // The caps rule keys on hostUsers: false (variables.userns) and
-    // covers containers + initContainers (variables.cs) so a cap
-    // grant can't ride in on an init container.
-    expect(exprs).toContain('variables.userns ||')
+    // The caps rule admits a grant behind the gvisor sentry tier
+    // (variables.sandboxed), across containers + initContainers
+    // (variables.cs) so a cap grant can't ride in on an init container.
+    expect(exprs).toContain('variables.sandboxed ||')
     expect(exprs).toContain('capabilities')
     expect(exprs).toContain('allowPrivilegeEscalation')
     expect(exprs).toContain("seccompProfile.type == 'Unconfined'")
+    // The sandboxed signal is the gvisor / gvisor-nested runtime tier.
+    const sandboxedVar = (m.spec as unknown as {
+      variables: Array<{ name: string; expression: string }>
+    }).variables.find((v) => v.name === 'sandboxed')
+    expect(sandboxedVar?.expression).toContain("runtimeClassName == 'gvisor'")
+    expect(sandboxedVar?.expression).toContain("runtimeClassName == 'gvisor-nested'")
   })
 
   it('escapes the prefix for the CEL string literal', () => {

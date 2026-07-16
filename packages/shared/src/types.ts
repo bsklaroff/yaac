@@ -216,10 +216,10 @@ export interface YaacConfig {
   envSecretProxy?: Record<string, SecretProxyRule>
   cacheVolumes?: Record<string, string>
   /**
-   * Run an in-pod rootless podman so `docker build` / `docker run` /
-   * `docker compose` work inside sessions. Adds the nestable image layer
-   * and the nested pod-spec branch (userns-scoped SYS_ADMIN, graphroot
-   * emptyDir, shared image store).
+   * Run an in-pod rootful podman so `docker build` / `docker run` /
+   * `docker compose` work inside sessions. Adds the nestable image layer and
+   * the nested pod-spec branch (gvisor-nested runtime, in-sandbox engine
+   * caps, tmpfs graphroot, shared image store).
    */
   nestedContainers?: boolean
   /**

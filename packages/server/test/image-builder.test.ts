@@ -240,7 +240,7 @@ describe('image-builder prerequisites', () => {
     expect(content).toContain('opencode-ai')
   })
 
-  it('Dockerfile.nestable layers in-pod podman with the docker CLI on the tools image', async () => {
+  it('Dockerfile.nestable layers rootful in-pod podman with the docker CLI on the tools image', async () => {
     const dockerfilePath = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
     const content = await fs.readFile(dockerfilePath, 'utf8')
     expect(content).toMatch(/^ARG BASE_IMAGE\n/m)
@@ -252,16 +252,28 @@ describe('image-builder prerequisites', () => {
     // Container-private networks aren't supported in-pod, so no userspace
     // network helper is installed (host netns is the only mode).
     expect(content).not.toContain('default_rootless_network_cmd')
-    // The uid the server injects shapes the subuid ranges and socket path.
-    expect(content).toMatch(/^ARG YAAC_UID=1000$/m)
-    expect(content).toContain('DOCKER_HOST=unix:///run/user/${YAAC_UID}/podman/podman.sock')
+    // Rootful engine: the agent (yaac user) drives it over the rootful
+    // podman socket, which session-create opens after `sudo podman system
+    // service`. Both CLIs point there — docker via DOCKER_HOST, podman via
+    // CONTAINER_HOST (which auto-enables podman's remote mode).
+    expect(content).toContain('DOCKER_HOST=unix:///run/podman/podman.sock')
+    expect(content).toContain('CONTAINER_HOST=unix:///run/podman/podman.sock')
     // Everything shares the pod's namespaces — nested egress must stay on
     // the pod-netns redirect (locally-originated traffic).
     expect(content).toContain('netns="host"')
-    // Rootless-podman-in-kubernetes settings: the pod userns refuses the
-    // per-container keyring and pivot_root.
-    expect(content).toContain('keyring=false')
-    expect(content).toContain('no_pivot_root=true')
+    // The rootless apparatus is DELETED under the sentry — no subuid maps,
+    // no newuidmap/newgidmap caps, and no rootless workarounds (keyring /
+    // pivot_root work as real root in-sandbox).
+    expect(content).not.toContain('subuid')
+    expect(content).not.toContain('newuidmap')
+    expect(content).not.toContain('keyring=false')
+    expect(content).not.toContain('no_pivot_root=true')
+    // Rootful engine config lives system-wide in /etc/containers.
+    expect(content).toContain('/etc/containers/containers.conf')
+    expect(content).toContain('/etc/containers/storage.conf')
+    // Rootful graphroot at podman's default (a tmpfs is mounted there by
+    // the pod spec so setcap builds keep their file caps).
+    expect(content).toContain('graphroot = "/var/lib/containers/storage"')
     // Cross-session layer cache rides additionalimagestores.
     expect(content).toContain('additionalimagestores = ["/var/lib/shared-images"]')
     // Nested containers auto-trust the session's MITM CA. Two trust shapes:
@@ -289,9 +301,6 @@ describe('image-builder prerequisites', () => {
     // The replace-vars must never point at the bare proxy CA (that breaks
     // tunnelled hosts — the exact regression the combined bundle fixes).
     expect(content).not.toContain('CURL_CA_BUNDLE=/etc/yaac/certs/proxy-ca.pem')
-    // newuidmap/newgidmap carry file caps, not setuid.
-    expect(content).toContain('setcap cap_setuid+ep /usr/bin/newuidmap')
-    expect(content).toContain('setcap cap_setgid+ep /usr/bin/newgidmap')
     // The engine is started by a detached server exec, not an entrypoint
     // override — the image keeps the base catatonit keepalive.
     expect(content).not.toMatch(/^ENTRYPOINT/m)

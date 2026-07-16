@@ -8,6 +8,7 @@ import {
   kubectlGetJson,
   kubectlWithRetry,
 } from '#lib/k8s/kubectl'
+import { RUNTIME_CLASS_GVISOR } from '#lib/k8s/gvisor'
 import { LABEL_PROJECT, LABEL_SESSION_ID, runPodToCompletion } from '#lib/k8s/pods'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#lib/k8s/registry'
 import { imageExists } from '#lib/container/runtime'
@@ -115,9 +116,11 @@ function registryLabels(projectSlug: string): Record<string, string> {
 }
 
 /**
- * Build the registry:2 Deployment. Plain root, no hostUsers — trusted
- * infra like the proxy. Recreate strategy: two pods would race over the
- * node-local storage hostPath during a rolling overlap.
+ * Build the registry:2 Deployment. Plain root under the gvisor
+ * RuntimeClass — trusted infra like the proxy, sandboxed like every yaac
+ * pod (in-sandbox root grants no host authority). Recreate strategy: two
+ * pods would race over the node-local storage hostPath during a rolling
+ * overlap.
  */
 export function buildProjectRegistryDeploymentManifest(
   projectSlug: string,
@@ -140,6 +143,7 @@ export function buildProjectRegistryDeploymentManifest(
       template: {
         metadata: { labels: registryLabels(projectSlug) },
         spec: {
+          runtimeClassName: RUNTIME_CLASS_GVISOR,
           automountServiceAccountToken: false,
           enableServiceLinks: false,
           containers: [
@@ -348,6 +352,11 @@ function buildNodeWritePodManifest(
     },
     spec: {
       nodeName,
+      // Sandboxed like every yaac pod; the node-file writes go through the
+      // gofer (host I/O), so hostPath semantics are unchanged. nodeName
+      // pinning is unaffected — RuntimeClass resolution happens at the
+      // kubelet, not the scheduler.
+      runtimeClassName: RUNTIME_CLASS_GVISOR,
       restartPolicy: 'Never',
       automountServiceAccountToken: false,
       enableServiceLinks: false,

@@ -209,6 +209,17 @@ describe('buildProxyDeploymentManifest', () => {
     })
   })
 
+  it('runs under the gvisor RuntimeClass on the host; the inner proxy stamps none (no RuntimeClasses in a vcluster)', () => {
+    const plain = build() as unknown as {
+      spec: { template: { spec: { runtimeClassName?: string } } }
+    }
+    expect(plain.spec.template.spec.runtimeClassName).toBe('gvisor')
+    const nested = buildProxyDeploymentManifest('img', { nested: true }) as unknown as {
+      spec: { template: { spec: { runtimeClassName?: string } } }
+    }
+    expect(nested.spec.template.spec.runtimeClassName).toBeUndefined()
+  })
+
   it('nested (inner) proxy: resolves DNS via its own loopback stub, not vcluster CoreDNS', () => {
     const plain = build() as unknown as {
       spec: { template: { spec: { dnsPolicy?: string; dnsConfig?: unknown } } }

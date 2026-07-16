@@ -33,46 +33,66 @@ vi.mock('#log', async (importOriginal) => ({
   pipeToServerLog: vi.fn(),
 }))
 
-function deploymentWithImage(image: string): object {
-  return { spec: { template: { spec: { containers: [{ image }] } } } }
+function deployedProxy(image: string, runtimeClassName?: string): object {
+  return {
+    spec: {
+      template: {
+        spec: {
+          ...(runtimeClassName !== undefined ? { runtimeClassName } : {}),
+          containers: [{ image }],
+        },
+      },
+    },
+  }
 }
 
-describe('ProxyClient.isDeployedImageCurrent', () => {
+describe('ProxyClient.isDeployedProxyCurrent', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockContextHash.mockResolvedValue('abc123')
   })
 
-  it('returns true when the deployed image carries the current content hash', async () => {
+  it('returns true when the deployed image and RuntimeClass both match', async () => {
     mockKubectlGetJson.mockResolvedValueOnce(
-      deploymentWithImage('localhost:5001/yaac-test-proxy:abc123'),
+      deployedProxy('localhost:5001/yaac-test-proxy:abc123', 'gvisor'),
     )
     const c = new ProxyClient({ image: 'yaac-test-proxy' })
-    await expect(c.isDeployedImageCurrent()).resolves.toBe(true)
+    await expect(c.isDeployedProxyCurrent()).resolves.toBe(true)
   })
 
   it('returns false when the deployed image was built from older source', async () => {
     mockKubectlGetJson.mockResolvedValueOnce(
-      deploymentWithImage('localhost:5001/yaac-test-proxy:stale00'),
+      deployedProxy('localhost:5001/yaac-test-proxy:stale00', 'gvisor'),
     )
     const c = new ProxyClient({ image: 'yaac-test-proxy' })
-    await expect(c.isDeployedImageCurrent()).resolves.toBe(false)
+    await expect(c.isDeployedProxyCurrent()).resolves.toBe(false)
+  })
+
+  it('returns false when the pod template lacks the gvisor RuntimeClass (manifest-only upgrade)', async () => {
+    // A manifest-only change: the proxy image is byte-identical, but a
+    // Deployment that carries no runtimeClassName is stale. An image-only
+    // check would keep the old pod forever.
+    mockKubectlGetJson.mockResolvedValueOnce(
+      deployedProxy('localhost:5001/yaac-test-proxy:abc123'),
+    )
+    const c = new ProxyClient({ image: 'yaac-test-proxy' })
+    await expect(c.isDeployedProxyCurrent()).resolves.toBe(false)
   })
 
   it('returns false when the Deployment is missing (bootstrap must recreate it)', async () => {
     mockKubectlGetJson.mockResolvedValueOnce(null)
     const c = new ProxyClient({ image: 'yaac-test-proxy' })
-    await expect(c.isDeployedImageCurrent()).resolves.toBe(false)
+    await expect(c.isDeployedProxyCurrent()).resolves.toBe(false)
   })
 
   it('returns true when kubectl fails — a healthy proxy must not be churned on a transient error', async () => {
     mockKubectlGetJson.mockRejectedValueOnce(new Error('connection refused'))
     const c = new ProxyClient({ image: 'yaac-test-proxy' })
-    await expect(c.isDeployedImageCurrent()).resolves.toBe(true)
+    await expect(c.isDeployedProxyCurrent()).resolves.toBe(true)
   })
 })
 
-describe('ProxyClient.ensureRunning image staleness gate', () => {
+describe('ProxyClient.ensureRunning staleness gate', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockContextHash.mockResolvedValue('abc123')
@@ -97,10 +117,10 @@ describe('ProxyClient.ensureRunning image staleness gate', () => {
     return c
   }
 
-  it('returns on the fast path when the deployed image is current', async () => {
+  it('returns on the fast path when the deployed proxy is current', async () => {
     const c = attachedClient()
     mockKubectlGetJson.mockResolvedValueOnce(
-      deploymentWithImage('localhost:5001/yaac-test-proxy:abc123'),
+      deployedProxy('localhost:5001/yaac-test-proxy:abc123', 'gvisor'),
     )
     const bootstrap = vi.spyOn(
       c as unknown as { ensureProxyImage: () => Promise<string> },
@@ -114,7 +134,23 @@ describe('ProxyClient.ensureRunning image staleness gate', () => {
   it('falls through to the full bootstrap when the deployed image is stale', async () => {
     const c = attachedClient()
     mockKubectlGetJson.mockResolvedValue(
-      deploymentWithImage('localhost:5001/yaac-test-proxy:stale00'),
+      deployedProxy('localhost:5001/yaac-test-proxy:stale00', 'gvisor'),
+    )
+    const bootstrap = vi
+      .spyOn(
+        c as unknown as { ensureProxyImage: () => Promise<string> },
+        'ensureProxyImage',
+      )
+      .mockRejectedValueOnce(new Error('bootstrap reached'))
+    await expect(c.ensureRunning()).rejects.toThrow('bootstrap reached')
+    expect(bootstrap).toHaveBeenCalledOnce()
+    vi.unstubAllGlobals()
+  })
+
+  it('falls through to the full bootstrap when only the RuntimeClass is stale', async () => {
+    const c = attachedClient()
+    mockKubectlGetJson.mockResolvedValue(
+      deployedProxy('localhost:5001/yaac-test-proxy:abc123'),
     )
     const bootstrap = vi
       .spyOn(

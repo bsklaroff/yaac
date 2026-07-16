@@ -139,6 +139,7 @@ describe('manifest builders', () => {
           automountServiceAccountToken: boolean
           enableServiceLinks: boolean
           hostUsers?: boolean
+          runtimeClassName?: string
           securityContext?: object
           containers: Array<{
             image: string
@@ -171,7 +172,9 @@ describe('manifest builders', () => {
     const spec = m.spec.template.spec
     expect(spec.automountServiceAccountToken).toBe(false)
     expect(spec.enableServiceLinks).toBe(false)
-    // Trusted infra, like the proxy: plain root, no hostUsers branch.
+    // Trusted infra, like the proxy: plain root under the gvisor sandbox,
+    // no hostUsers branch.
+    expect(spec.runtimeClassName).toBe('gvisor')
     expect(spec.hostUsers).toBeUndefined()
     expect(spec.securityContext).toBeUndefined()
     expect(spec.containers[0].image).toBe('localhost:5001/yaac-registry2:abc')
@@ -308,6 +311,7 @@ describe('node-write pod builders', () => {
       automountServiceAccountToken: boolean
       enableServiceLinks: boolean
       hostUsers?: boolean
+      runtimeClassName?: string
       securityContext?: object
       containers: Array<{
         image: string
@@ -336,7 +340,10 @@ describe('node-write pod builders', () => {
     expect(m.spec.restartPolicy).toBe('Never')
     expect(m.spec.automountServiceAccountToken).toBe(false)
     expect(m.spec.enableServiceLinks).toBe(false)
-    // Trusted infra, like the registry itself: plain root, no hostUsers.
+    // Trusted infra, like the registry itself: plain root, no hostUsers,
+    // sandboxed under the gvisor RuntimeClass (nodeName pinning is
+    // unaffected — RuntimeClass resolves at the kubelet, not the scheduler).
+    expect(m.spec.runtimeClassName).toBe('gvisor')
     expect(m.spec.hostUsers).toBeUndefined()
     expect(m.spec.securityContext).toBeUndefined()
     expect(m.spec.containers[0].image).toBe('localhost:5001/yaac-registry2:abc')
@@ -362,6 +369,7 @@ describe('node-write pod builders', () => {
     ) as unknown as Pod
     expect(m.metadata.name).toBe(`${projectRegistryName('demo')}-cleanup-0`)
     expect(m.spec.nodeName).toBe('yaac-control-plane')
+    expect(m.spec.runtimeClassName).toBe('gvisor')
     // Parent mounts: removing the child dirs themselves (today's residue
     // semantics) is impossible from inside a mount of the child.
     expect(m.spec.volumes).toEqual([

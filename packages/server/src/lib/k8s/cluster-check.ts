@@ -9,7 +9,9 @@ import {
   PROXY_APP_NAME,
   TRANSPARENT_HTTPS_PORT,
 } from '#lib/k8s/bootstrap'
+import { RUNTIME_CLASS_GVISOR, RUNTIME_CLASS_GVISOR_NESTED } from '#lib/k8s/gvisor'
 import { LABEL_SESSION_ID, runPodToCompletion } from '#lib/k8s/pods'
+import { NESTED_ENGINE_CAPS } from '#lib/k8s/pod-spec'
 import { vapAvailable } from '#lib/k8s/vcluster'
 import { registryHost, registryReachable, pushImageToRegistry } from '#lib/k8s/registry'
 import { sessionUid } from '#lib/container/image-builder'
@@ -84,21 +86,29 @@ const defaultDeps: ClusterCheckDeps = {
  *      DefaultTasksMax, vm.min_free_kbytes, and node pids-limit that
  *      `yaac cluster setup` applies all live in node/VM state and vanish
  *      on restart — detect and point at `yaac cluster setup --repair`
+ *   6c. gvisor: the gvisor/gvisor-nested RuntimeClasses exist AND a pod on
+ *      the gvisor class is actually sentry-sandboxed (dmesg fingerprint) —
+ *      session pods cannot run without it
  *   7. end-to-end probe: push a tiny image to the registry, run a pod
- *      from `localhost:5001/...` that reads a nonce file from a hostPath
- *      mount of the data dir and writes a marker back at the session uid
- *      — proves in-cluster registry pulls, host-visible hostPath, AND
- *      unprivileged hostPath writes in one shot
- *   8. egress enforcement: a session-labeled pod cannot reach the apiserver
- *      (CNI enforces policy) and cannot dial a proxy transparent port
- *      directly (the forgery lock — its egress default-deny admits no such
- *      route, so only the Cilium redirect can reach those ports)
+ *      from `localhost:5001/...` (on the default gvisor tier) that reads
+ *      a nonce file from a hostPath mount of the data dir and writes a
+ *      marker back at the session uid — proves in-cluster registry
+ *      pulls, host-visible hostPath, AND unprivileged hostPath writes
+ *      through the gofer in one shot
+ *   8. egress enforcement: a session-labeled pod (gvisor, like real
+ *      sessions) cannot reach the apiserver (CNI enforces policy) and
+ *      cannot dial a proxy transparent port directly (the forgery lock —
+ *      its egress default-deny admits no such route, so only the Cilium
+ *      redirect can reach those ports)
  *   9. envoy-config: the CiliumEnvoyConfig CRDs exist (the cluster-level
  *      egress redirect needs `envoyConfig.enabled` — `yaac cluster setup`)
  *  10. nested-mount (warn-only): under the nested session securityContext
- *      (userns-scoped SYS_ADMIN, RuntimeDefault) an unprivileged user can
- *      mount tmpfs inside a user namespace — the rootless-podman
- *      prerequisite for nestedContainers sessions
+ *      (gvisor-nested + the engine's in-sandbox caps) in-sandbox root can
+ *      mount a tmpfs — the core sentry prerequisite for the rootful in-pod
+ *      engine (nestedContainers; suid/file-caps are covered by the e2e)
+ *  11. runtime-stamp (warn-only): no pod in the install namespace runs
+ *      without an explicit runtimeClassName — the fleet-wide invariant
+ *      the manifest builders uphold
  */
 export async function runClusterCheck(
   deps: ClusterCheckDeps = defaultDeps,
@@ -184,26 +194,37 @@ export async function runClusterCheck(
     })
   }
 
-  // 6b–7. node fixups + end-to-end probe (skipped when prerequisites
-  // already failed)
+  // 6b–7. node fixups + gvisor + end-to-end probe (skipped when
+  // prerequisites already failed)
   const PROBE_GATES = [
-    'node-fixups', 'probe', 'egress', 'envoy-config', 'nested-mount', 'vap',
+    'node-fixups', 'gvisor', 'probe', 'egress', 'envoy-config',
+    'nested-mount', 'vap', 'runtime-stamp',
   ] as const
-  if (results.some((r) => r.status === 'fail')) {
-    for (const name of PROBE_GATES) {
-      add({ name, status: 'skip', detail: 'skipped — fix the failures above first' })
+  const skipFrom = (from: (typeof PROBE_GATES)[number], detail: string): void => {
+    for (const name of PROBE_GATES.slice(PROBE_GATES.indexOf(from))) {
+      add({ name, status: 'skip', detail })
     }
+  }
+  if (results.some((r) => r.status === 'fail')) {
+    skipFrom('node-fixups', 'skipped — fix the failures above first')
     return { ok: false, results }
   }
   add(await runNodeFixupsCheck(deps))
+  add(await runGvisorRuntimeCheck(deps))
+
+  // The e2e probe schedules a pod on the gvisor tier — with the
+  // RuntimeClass missing it would sit Pending to its full timeout, so a
+  // gvisor failure gates it.
+  if (results.some((r) => r.status === 'fail')) {
+    skipFrom('probe', 'skipped — fix the failures above first')
+    return { ok: false, results }
+  }
   add(await runEndToEndProbe(deps))
 
   // 8. egress-lockdown probe (same prerequisites as the e2e probe, plus
   // the probe image it pushed)
   if (results.some((r) => r.status === 'fail')) {
-    for (const name of PROBE_GATES.slice(2)) {
-      add({ name, status: 'skip', detail: 'skipped — fix the failures above first' })
-    }
+    skipFrom('egress', 'skipped — fix the failures above first')
     return { ok: false, results }
   }
   // Inner yaac (a vcluster session, YAAC_NESTED=1): the remaining gates
@@ -217,7 +238,7 @@ export async function runClusterCheck(
   // no in-vcluster equivalent; vcluster-in-vcluster is refused.
   if (env.nested) {
     add({ name: 'egress', status: 'skip', detail: 'skipped — nested yaac (inner-session egress is enforced host-side)' })
-    for (const name of ['envoy-config', 'nested-mount', 'vap']) {
+    for (const name of ['envoy-config', 'nested-mount', 'vap', 'runtime-stamp']) {
       add({ name, status: 'skip', detail: 'skipped — nested yaac (not applicable inside a vcluster)' })
     }
     return { ok: !results.some((r) => r.status === 'fail'), results }
@@ -238,6 +259,10 @@ export async function runClusterCheck(
   // virtualCluster sessions need it — the synced-pod guard refuses
   // vcluster creation without it, fail-closed)
   add(await runVapAvailabilityCheck())
+
+  // 11. runtime-stamp sweep (warn-only): every pod in the install
+  // namespace must carry an explicit runtimeClassName.
+  add(await runRuntimeStampSweep(deps))
 
   return { ok: !results.some((r) => r.status === 'fail'), results }
 }
@@ -323,6 +348,154 @@ async function runNodeFixupsCheck(deps: ClusterCheckDeps): Promise<CheckResult> 
 }
 
 /**
+ * Make the probe image available in the local registry (pulling/tagging
+ * the busybox source once) and return its in-cluster ref — shared by every
+ * probe that schedules a pod.
+ */
+async function ensureProbeImage(deps: ClusterCheckDeps): Promise<string> {
+  try {
+    await deps.run('podman', ['image', 'inspect', PROBE_LOCAL_TAG])
+  } catch {
+    await deps.run('podman', ['pull', PROBE_SOURCE_IMAGE], { timeout: 120_000 })
+    await deps.run('podman', ['tag', PROBE_SOURCE_IMAGE, PROBE_LOCAL_TAG])
+  }
+  return deps.pushImage(PROBE_LOCAL_TAG)
+}
+
+const GVISOR_PROBE_POD_NAME = 'yaac-cluster-check-gvisor'
+
+const GVISOR_FIX =
+  'Install the gVisor runtime with: yaac cluster setup --repair\n'
+  + '(copies pinned runsc + containerd-shim-runsc-v1 onto the kind node, '
+  + 'registers the runsc handlers in containerd, and applies the '
+  + 'gvisor/gvisor-nested RuntimeClasses)'
+
+/**
+ * The gVisor gate: session pods run under `runtimeClassName: gvisor` with no
+ * user namespace, so a cluster without the RuntimeClasses (or with a handler
+ * that silently falls through to runc — which would run in-container root
+ * UNSANDBOXED) cannot run sessions safely. Two halves: the RuntimeClasses
+ * exist, and a pod on the gvisor class is provably inside the sentry —
+ * gVisor's dmesg prints its own boot messages ("Starting gVisor..."), while a
+ * runc pod sees the node kernel's ring buffer.
+ */
+async function runGvisorRuntimeCheck(deps: ClusterCheckDeps): Promise<CheckResult> {
+  if (env.nested) {
+    return {
+      name: 'gvisor', status: 'skip',
+      detail: 'skipped — nested yaac (the host cluster owns the runtime)',
+    }
+  }
+  try {
+    const { stdout } = await deps.run('kubectl', [
+      'get', 'runtimeclass', '-o', 'jsonpath={.items[*].metadata.name}',
+    ])
+    const present = new Set(stdout.trim().split(/\s+/).filter(Boolean))
+    const missing = [RUNTIME_CLASS_GVISOR, RUNTIME_CLASS_GVISOR_NESTED]
+      .filter((n) => !present.has(n))
+    if (missing.length > 0) {
+      return {
+        name: 'gvisor', status: 'fail',
+        detail: `missing RuntimeClass(es): ${missing.join(', ')}`,
+        fix: GVISOR_FIX,
+      }
+    }
+
+    const imageRef = await ensureProbeImage(deps)
+    const { phase, logs } = await runPodToCompletion({
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: { name: GVISOR_PROBE_POD_NAME, namespace: k8sNamespace() },
+      spec: {
+        restartPolicy: 'Never',
+        runtimeClassName: RUNTIME_CLASS_GVISOR,
+        automountServiceAccountToken: false,
+        enableServiceLinks: false,
+        containers: [{
+          name: 'probe',
+          image: imageRef,
+          command: [
+            'sh', '-c',
+            'dmesg 2>/dev/null | grep -qi gvisor'
+            + ' && echo GVISOR_SANDBOXED || echo GVISOR_NOT_SANDBOXED',
+          ],
+        }],
+      },
+    }, {
+      timeoutMs: 90_000,
+      kubectl: (args) => deps.run('kubectl', args),
+      apply: deps.apply,
+    })
+    if (phase !== 'Succeeded') {
+      return {
+        name: 'gvisor', status: 'fail',
+        detail: `gvisor probe pod ended in phase ${phase} — runsc cannot run pods on this node`,
+        fix: GVISOR_FIX,
+      }
+    }
+    if (!logs.includes('GVISOR_SANDBOXED')) {
+      return {
+        name: 'gvisor', status: 'fail',
+        detail: 'a pod on the gvisor RuntimeClass is not sentry-sandboxed — the handler is not actually runsc',
+        fix: GVISOR_FIX,
+      }
+    }
+    return {
+      name: 'gvisor', status: 'pass',
+      detail: 'RuntimeClasses present; gvisor pods run inside the sentry',
+    }
+  } catch (err) {
+    return {
+      name: 'gvisor', status: 'fail',
+      detail: `gvisor probe errored (${truncate(err)})`,
+      fix: GVISOR_FIX,
+    }
+  }
+}
+
+/**
+ * Fleet-wide invariant sweep (warn-only): every pod yaac creates carries
+ * an explicit runtimeClassName, so a pod without one is either from a
+ * pre-gVisor yaac or from a builder that missed the stamp. Warn rather
+ * than fail — such pods still run (on the implicit default runtime), they
+ * just predate the invariant.
+ */
+async function runRuntimeStampSweep(deps: ClusterCheckDeps): Promise<CheckResult> {
+  try {
+    const { stdout } = await deps.run('kubectl', [
+      'get', 'pods', '-n', k8sNamespace(), '-o', 'json',
+    ])
+    const items = (JSON.parse(stdout) as {
+      items: Array<{ metadata?: { name?: string }; spec?: { runtimeClassName?: string } }>
+    }).items
+    const strays = items
+      .filter((p) => !p.spec?.runtimeClassName)
+      .map((p) => p.metadata?.name ?? '<unnamed>')
+    if (strays.length > 0) {
+      const shown = strays.slice(0, 5).join(', ')
+      return {
+        name: 'runtime-stamp', status: 'warn',
+        detail: `pod(s) without an explicit runtimeClassName: ${shown}`
+          + (strays.length > 5 ? ` (+${strays.length - 5} more)` : ''),
+        fix: 'These pods predate the gVisor migration (or bypassed the yaac '
+          + 'builders). They keep running on the implicit default runtime; '
+          + 'restart the yaac server (re-rolls the proxy) and recreate old '
+          + 'sessions to converge.',
+      }
+    }
+    return {
+      name: 'runtime-stamp', status: 'pass',
+      detail: `every pod in "${k8sNamespace()}" carries a runtimeClassName`,
+    }
+  } catch (err) {
+    return {
+      name: 'runtime-stamp', status: 'warn',
+      detail: `could not sweep pods (${truncate(err)})`,
+    }
+  }
+}
+
+/**
  * The one check that exercises the full wiring: registry pull from inside
  * the cluster plus host-visible hostPath mounts. Failure modes map to the
  * two pieces of cluster setup yaac cannot do itself (containerd registry
@@ -342,13 +515,7 @@ async function runEndToEndProbe(deps: ClusterCheckDeps): Promise<CheckResult> {
 
     // Make sure the probe image exists locally, then push it through the
     // same registry path session images take.
-    try {
-      await deps.run('podman', ['image', 'inspect', PROBE_LOCAL_TAG])
-    } catch {
-      await deps.run('podman', ['pull', PROBE_SOURCE_IMAGE], { timeout: 120_000 })
-      await deps.run('podman', ['tag', PROBE_SOURCE_IMAGE, PROBE_LOCAL_TAG])
-    }
-    const imageRef = await deps.pushImage(PROBE_LOCAL_TAG)
+    const imageRef = await ensureProbeImage(deps)
 
     const manifest = {
       apiVersion: 'v1',
@@ -356,10 +523,12 @@ async function runEndToEndProbe(deps: ClusterCheckDeps): Promise<CheckResult> {
       metadata: { name: PROBE_POD_NAME, namespace: ns },
       spec: {
         restartPolicy: 'Never',
-        // Mirror the session-pod hardening (see buildSessionJobManifest):
-        // the probe must prove the cluster can run user-namespaced pods
-        // with idmapped hostPath mounts, not just pull images.
-        hostUsers: false,
+        // Mirror the session-pod containment (see buildSessionJobManifest):
+        // a host pod carries the gvisor RuntimeClass (no userns), so the
+        // probe proves hostPath reads/writes work through the gofer at the
+        // session uid. An inner yaac (a vcluster — no RuntimeClass objects)
+        // stamps nothing; the host syncer sets the gvisor runtime.
+        ...(env.nested ? {} : { runtimeClassName: RUNTIME_CLASS_GVISOR }),
         securityContext: { seccompProfile: { type: 'RuntimeDefault' } },
         containers: [{
           name: 'probe',
@@ -394,11 +563,9 @@ async function runEndToEndProbe(deps: ClusterCheckDeps): Promise<CheckResult> {
           + 'cluster (kind local-registry setup).\nIf it failed mounting '
           + `/probe, the node cannot see ${dataDir} — add an extraMounts `
           + 'entry for your home directory to the kind config.\n'
-          + 'If it failed with a sysfs or MOUNT_ATTR_IDMAP error, the '
-          + 'cluster cannot run user-namespaced pods — run '
-          + '`yaac cluster setup --repair` (re-applies the sysfs fix), and '
-          + 'on macOS use the libkrun podman-machine provider with '
-          + 'libkrun-efi >= 1.17 (see "Cluster setup" in the README).\n'
+          + 'If it never got past Pending or failed with a runsc/'
+          + 'RuntimeClass error, the gvisor runtime is broken — run '
+          + '`yaac cluster setup --repair` (reinstalls pinned runsc).\n'
           + 'If it failed writing /probe/.cluster-check-write, uid '
           + `${sessionUid()} cannot write hostPath mounts — see the uid `
           + 'notes in "Cluster setup" in the README.',
@@ -512,6 +679,11 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
       },
       spec: {
         restartPolicy: 'Never',
+        // The gvisor tier, like the real session pods this probe stands in
+        // for — so the verdict also covers policy enforcement on netstack
+        // traffic (the egress model is host-side/veth-level and must hold
+        // regardless of the pod's runtime).
+        runtimeClassName: RUNTIME_CLASS_GVISOR,
         containers: [{
           name: 'probe',
           image: imageRef,
@@ -617,15 +789,17 @@ async function runEnvoyConfigCheck(deps: ClusterCheckDeps): Promise<CheckResult>
 const NESTED_PROBE_POD_NAME = 'yaac-cluster-check-nested'
 
 /**
- * Warn-level gate for nestedContainers sessions: under the exact nested
- * session securityContext — hostUsers: false, seccomp RuntimeDefault, the
- * unprivileged session uid with a userns-scoped SYS_ADMIN grant — an
- * `unshare -U -r -m` user namespace must be able to mount tmpfs. That is
- * the rootless-podman prerequisite (overlay/proc/tmpfs mounts inside the
- * userns it creates; `docker build` RUN steps cannot avoid mount()): the
- * cap makes containerd's static RuntimeDefault profile compile the
- * mount-family syscalls into the seccomp allowlist. A containerd version
- * that doesn't unlock the family via the namespaced cap fails here.
+ * Warn-level gate for nestedContainers sessions (the rootful in-sandbox
+ * engine). Reproduces the core sentry prerequisite the engine depends on,
+ * under the real nested containment (gvisor-nested + the engine's in-sandbox
+ * caps, no userns): the in-sandbox root must be able to `mount` (SYS_ADMIN
+ * honored under the sentry) — every container start and `docker build` RUN
+ * does overlay/proc/tmpfs mounts. A cluster whose runsc-nested handler is
+ * broken (or absent) fails to start the pod at all. The richer prerequisites
+ * the engine also needs — `allow-suid` for the `sudo`-started service, file
+ * caps on the tmpfs graphroot — are verified end to end by the
+ * nested-containers e2e;
+ * this probe stays busybox-simple (no sudo/setcap in the probe image).
  */
 async function runNestedMountProbe(deps: ClusterCheckDeps): Promise<CheckResult> {
   const ns = k8sNamespace()
@@ -639,22 +813,22 @@ async function runNestedMountProbe(deps: ClusterCheckDeps): Promise<CheckResult>
         restartPolicy: 'Never',
         automountServiceAccountToken: false,
         enableServiceLinks: false,
-        hostUsers: false,
+        // The nested tier: gvisor-nested, no userns — the sentry is the
+        // containment (mirrors buildSessionJobManifest's nested+gvisor path).
+        runtimeClassName: RUNTIME_CLASS_GVISOR_NESTED,
         securityContext: { seccompProfile: { type: 'RuntimeDefault' } },
         containers: [{
           name: 'probe',
           image: imageRef,
-          // The nested session-container securityContext, verbatim (see
-          // buildSessionJobManifest's nested branch).
+          // Run as in-sandbox root (the rootful engine's shape) with its
+          // in-sandbox caps; SYS_ADMIN is what mount() needs.
           securityContext: {
-            runAsUser: sessionUid(),
-            capabilities: { add: ['SYS_ADMIN'] },
-            allowPrivilegeEscalation: true,
+            runAsUser: 0,
+            capabilities: { add: NESTED_ENGINE_CAPS },
           },
           command: [
             'sh', '-c',
-            'mkdir -p /tmp/m && '
-            + "unshare -U -r -m sh -c 'mount -t tmpfs none /tmp/m' "
+            'mkdir -p /tmp/m && mount -t tmpfs none /tmp/m '
             + '&& echo NESTED_MOUNT_OK || echo NESTED_MOUNT_FAIL',
           ],
         }],
@@ -674,19 +848,19 @@ async function runNestedMountProbe(deps: ClusterCheckDeps): Promise<CheckResult>
     if (logs.includes('NESTED_MOUNT_OK')) {
       return {
         name: 'nested-mount', status: 'pass',
-        detail: 'userns-scoped SYS_ADMIN unlocks rootless mounts (nestedContainers ready)',
+        detail: 'in-sandbox mount under gvisor-nested verified (nestedContainers ready)',
       }
     }
     return {
       name: 'nested-mount', status: 'warn',
-      detail: 'mounting tmpfs inside a user namespace failed under the nested securityContext'
+      detail: 'mounting tmpfs under the gvisor-nested sentry failed'
         + ` (logs: ${logs.trim().slice(0, 80) || 'empty'})`,
       fix: NESTED_MOUNT_FIX,
     }
   } catch (err) {
     return {
       name: 'nested-mount', status: 'warn',
-      detail: `nested userns-mount probe errored (${truncate(err)})`,
+      detail: `nested sentry-mount probe errored (${truncate(err)})`,
       fix: NESTED_MOUNT_FIX,
     }
   }
@@ -694,9 +868,9 @@ async function runNestedMountProbe(deps: ClusterCheckDeps): Promise<CheckResult>
 
 const NESTED_MOUNT_FIX =
   'Only nestedContainers sessions are affected (docker build/run in-pod). '
-  + 'This containerd version does not unlock the mount syscall family via '
-  + 'the userns-scoped SYS_ADMIN grant — nested sessions on this cluster '
-  + 'cannot mount overlay/proc/tmpfs inside their build userns.'
+  + 'The gvisor-nested runsc handler is broken or the sentry refuses the '
+  + 'mount — run `yaac cluster setup --repair` to reinstall runsc and rewrite '
+  + 'the handlers.'
 
 /**
  * Warn-only gate for virtualCluster sessions: the synced-pod guard is a

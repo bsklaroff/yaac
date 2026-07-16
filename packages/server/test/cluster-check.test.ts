@@ -55,6 +55,21 @@ async function happyResponses(
   if (file === 'kubectl' && args[0] === 'get' && args[1] === 'nodes') {
     return { stdout: JSON.stringify({ items: [{}] }), stderr: '' }
   }
+  if (file === 'kubectl' && args[0] === 'get' && args[1] === 'runtimeclass') {
+    return { stdout: 'gvisor gvisor-nested runc', stderr: '' }
+  }
+  if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-gvisor') {
+    return { stdout: 'GVISOR_SANDBOXED\n', stderr: '' }
+  }
+  if (file === 'kubectl' && args[0] === 'get' && args[1] === 'pods') {
+    // runtime-stamp sweep: every pod carries a runtimeClassName.
+    return {
+      stdout: JSON.stringify({
+        items: [{ metadata: { name: 'yaac-proxy-abc' }, spec: { runtimeClassName: 'gvisor' } }],
+      }),
+      stderr: '',
+    }
+  }
   if (file === 'podman' && args[0] === 'exec') {
     return { stdout: 'sysfs=ok\ntasksmax=ok\nminfree=262144\nsvm=0\n', stderr: '' }
   }
@@ -141,11 +156,13 @@ describe('runClusterCheck', () => {
       ['registry', 'pass'],
       ['namespace', 'pass'],
       ['node-fixups', 'pass'],
+      ['gvisor', 'pass'],
       ['probe', 'pass'],
       ['egress', 'pass'],
       ['envoy-config', 'pass'],
       ['nested-mount', 'pass'],
       ['vap', 'pass'],
+      ['runtime-stamp', 'pass'],
     ])
     expect(ok).toBe(true)
     expect(byName(results, 'envoy-config')?.detail).toContain('CiliumEnvoyConfig CRDs present')
@@ -159,7 +176,8 @@ describe('runClusterCheck', () => {
     const podManifest = probePod as {
       kind: string
       spec: {
-        hostUsers: boolean
+        hostUsers?: boolean
+        runtimeClassName?: string
         securityContext: { seccompProfile: { type: string } }
         containers: Array<{
           securityContext?: { runAsUser?: number }
@@ -170,9 +188,10 @@ describe('runClusterCheck', () => {
     }
     expect(podManifest.kind).toBe('Pod')
     expect(podManifest.spec.volumes[0].hostPath.path).toBe(getDataDir())
-    // The probe mirrors the session-pod hardening so it catches clusters
-    // that cannot run user-namespaced pods.
-    expect(podManifest.spec.hostUsers).toBe(false)
+    // The probe mirrors the session-pod containment: the default gvisor
+    // tier with no user namespace (the sentry replaces it).
+    expect(podManifest.spec.runtimeClassName).toBe('gvisor')
+    expect(podManifest.spec.hostUsers).toBeUndefined()
     expect(podManifest.spec.securityContext).toEqual({
       seccompProfile: { type: 'RuntimeDefault' },
     })
@@ -202,8 +221,9 @@ describe('runClusterCheck', () => {
       expect(byName(results, 'probe')?.status).toBe('pass')
       // egress is enforced host-side for a vcluster's synced pods (not
       // probeable from in here), so it self-skips along with the rest.
-      // node-fixups likewise: there is no podman-hosted node in here.
-      for (const name of ['node-fixups', 'egress', 'envoy-config', 'nested-mount', 'vap']) {
+      // node-fixups likewise: there is no podman-hosted node in here, and
+      // the gvisor runtime is the host cluster's concern.
+      for (const name of ['node-fixups', 'gvisor', 'egress', 'envoy-config', 'nested-mount', 'vap', 'runtime-stamp']) {
         expect(byName(results, name)?.status).toBe('skip')
       }
     } finally {
@@ -320,6 +340,67 @@ describe('runClusterCheck', () => {
     expect(fixups?.detail).toContain('not a podman container')
   })
 
+  it('fails gvisor (and skips the probes) when a RuntimeClass is missing', async () => {
+    const run = happyRun()
+    run.mockImplementation((file: string, args: string[]) => {
+      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'runtimeclass') {
+        return Promise.resolve({ stdout: 'runc', stderr: '' })
+      }
+      return happyResponses(file, args)
+    })
+    const { ok, results } = await runClusterCheck(makeDeps({ run }))
+    expect(ok).toBe(false)
+    const gvisor = byName(results, 'gvisor')
+    expect(gvisor).toMatchObject({ status: 'fail' })
+    expect(gvisor?.detail).toContain('gvisor-nested')
+    expect(gvisor?.fix).toContain('yaac cluster setup --repair')
+    // A gvisor pod would sit Pending to its timeout — the probes skip.
+    expect(byName(results, 'probe')).toMatchObject({ status: 'skip' })
+    expect(byName(results, 'egress')).toMatchObject({ status: 'skip' })
+  })
+
+  it('fails gvisor when a pod on the gvisor class is not sentry-sandboxed', async () => {
+    const run = happyRun()
+    run.mockImplementation((file: string, args: string[]) => {
+      if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-gvisor') {
+        // The handler silently ran the pod on runc: the node kernel's
+        // ring buffer has no sentry boot messages.
+        return Promise.resolve({ stdout: 'GVISOR_NOT_SANDBOXED\n', stderr: '' })
+      }
+      return happyResponses(file, args)
+    })
+    const { ok, results } = await runClusterCheck(makeDeps({ run }))
+    expect(ok).toBe(false)
+    expect(byName(results, 'gvisor')).toMatchObject({
+      status: 'fail',
+      detail: expect.stringContaining('not sentry-sandboxed') as string,
+    })
+  })
+
+  it('warns (without failing) on runtime-stamp when a pod lacks a runtimeClassName', async () => {
+    const run = happyRun()
+    run.mockImplementation((file: string, args: string[]) => {
+      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'pods') {
+        return Promise.resolve({
+          stdout: JSON.stringify({
+            items: [
+              { metadata: { name: 'yaac-proxy-abc' }, spec: { runtimeClassName: 'gvisor' } },
+              { metadata: { name: 'yaac-old-session' }, spec: {} },
+            ],
+          }),
+          stderr: '',
+        })
+      }
+      return happyResponses(file, args)
+    })
+    const { ok, results } = await runClusterCheck(makeDeps({ run }))
+    const stamp = byName(results, 'runtime-stamp')
+    expect(stamp).toMatchObject({ status: 'warn' })
+    expect(stamp?.detail).toContain('yaac-old-session')
+    expect(stamp?.detail).not.toContain('yaac-proxy-abc')
+    expect(ok).toBe(true) // warn-only: pods without a RuntimeClass keep running
+  })
+
   it('passes the egress check when a session-labeled pod cannot reach the apiserver', async () => {
     const { results } = await runClusterCheck(makeDeps())
     expect(byName(results, 'egress')).toMatchObject({
@@ -331,22 +412,11 @@ describe('runClusterCheck', () => {
   it('fails the egress check when the CNI does not enforce NetworkPolicy', async () => {
     const run = happyRun()
     run.mockImplementation(async (file: string, args: string[]) => {
-      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'nodes') {
-        return { stdout: JSON.stringify({ items: [{}] }), stderr: '' }
-      }
-      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'svc') {
-        return { stdout: '10.96.0.1', stderr: '' }
-      }
       if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-egress') {
         // Policy not enforced: the probe reached the apiserver.
         return { stdout: 'NP_REACHED\n', stderr: '' }
       }
-      if (file === 'kubectl' && args[0] === 'logs') {
-        const nonce = await fs.readFile(path.join(getDataDir(), '.cluster-check-nonce'), 'utf8')
-        await simulateProbeWrite()
-        return { stdout: `${nonce}\n`, stderr: '' }
-      }
-      return { stdout: '', stderr: '' }
+      return happyResponses(file, args)
     })
     const { ok, results } = await runClusterCheck(makeDeps({ run }))
     expect(ok).toBe(false)
@@ -408,7 +478,8 @@ describe('runClusterCheck', () => {
       .map((c) => c[0] as { kind: string; metadata?: { name?: string } })
       .find((m) => m.kind === 'Pod' && m.metadata?.name === 'yaac-cluster-check-nested') as {
       spec: {
-        hostUsers: boolean
+        hostUsers?: boolean
+        runtimeClassName?: string
         securityContext: { seccompProfile: { type: string } }
         containers: Array<{
           securityContext?: Record<string, unknown>
@@ -417,24 +488,27 @@ describe('runClusterCheck', () => {
       }
     } | undefined
     expect(probePod).toBeDefined()
-    // The probe mirrors the nested session pod: userns + RuntimeDefault +
-    // the session uid carrying a userns-scoped SYS_ADMIN grant.
-    expect(probePod?.spec.hostUsers).toBe(false)
+    // The probe mirrors the nested tier: gvisor-nested, no userns (the sentry
+    // is the containment), in-sandbox root with the engine's caps.
+    expect(probePod?.spec.runtimeClassName).toBe('gvisor-nested')
+    expect(probePod?.spec.hostUsers).toBeUndefined()
     expect(probePod?.spec.securityContext).toEqual({
       seccompProfile: { type: 'RuntimeDefault' },
     })
     expect(probePod?.spec.containers[0].securityContext).toEqual({
-      runAsUser: sessionUid(),
-      capabilities: { add: ['SYS_ADMIN'] },
-      allowPrivilegeEscalation: true,
+      runAsUser: 0,
+      capabilities: {
+        add: [
+          'SYS_ADMIN', 'SYS_CHROOT', 'MKNOD', 'SETFCAP',
+          'NET_RAW', 'NET_ADMIN', 'SYS_PTRACE', 'SYS_RESOURCE',
+        ],
+      },
     })
-    // The rootless-podman prerequisite: tmpfs mount inside an unprivileged
-    // user namespace.
-    expect(probePod?.spec.containers[0].command.join(' ')).toContain('unshare -U -r -m')
+    // The core sentry prerequisite: in-sandbox root can mount a tmpfs.
     expect(probePod?.spec.containers[0].command.join(' ')).toContain('mount -t tmpfs')
   })
 
-  it('warns (without failing) when the userns mount is refused', async () => {
+  it('warns (without failing) when the nested sentry mount fails', async () => {
     const run = happyRun()
     run.mockImplementation(async (file: string, args: string[]) => {
       if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-nested') {
@@ -445,7 +519,7 @@ describe('runClusterCheck', () => {
     const { ok, results } = await runClusterCheck(makeDeps({ run }))
     const nested = byName(results, 'nested-mount')
     expect(nested).toMatchObject({ status: 'warn' })
-    expect(nested?.fix).toContain('userns-scoped SYS_ADMIN grant')
+    expect(nested?.fix).toContain('cluster setup --repair')
     expect(ok).toBe(true) // warn-only — only nestedContainers sessions are affected
   })
 
@@ -472,7 +546,13 @@ describe('runClusterCheck', () => {
   })
 
   it('fails the probe with wiring hints when the pod ends in a non-Succeeded phase', async () => {
-    mockGetJson.mockResolvedValue({ status: { phase: 'Failed' } })
+    // Only the e2e probe pod fails — the gvisor probe (a different pod
+    // name) keeps succeeding so the probe is reached at all.
+    mockGetJson.mockImplementation((args: string[]) => Promise.resolve(
+      args.includes('yaac-cluster-check')
+        ? { status: { phase: 'Failed' } }
+        : happyGetJson(args),
+    ))
     const { ok, results } = await runClusterCheck(makeDeps())
     expect(ok).toBe(false)
     const probe = byName(results, 'probe')
@@ -484,16 +564,13 @@ describe('runClusterCheck', () => {
   it('fails the probe when the pod write never reaches the host', async () => {
     const run = happyRun()
     run.mockImplementation(async (file: string, args: string[]) => {
-      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'nodes') {
-        return { stdout: JSON.stringify({ items: [{}] }), stderr: '' }
-      }
       // Probe logs return the right nonce, but the pod's write marker
       // never appears host-side (uid mismatch / read-only wiring).
-      if (file === 'kubectl' && args[0] === 'logs') {
+      if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check') {
         const nonce = await fs.readFile(path.join(getDataDir(), '.cluster-check-nonce'), 'utf8')
         return { stdout: `${nonce}\n`, stderr: '' }
       }
-      return { stdout: '', stderr: '' }
+      return happyResponses(file, args)
     })
     const { ok, results } = await runClusterCheck(makeDeps({ run }))
     expect(ok).toBe(false)
@@ -506,13 +583,10 @@ describe('runClusterCheck', () => {
   it('fails the probe when the pod reads stale hostPath data', async () => {
     const run = happyRun()
     run.mockImplementation((file: string, args: string[]) => {
-      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'nodes') {
-        return Promise.resolve({ stdout: JSON.stringify({ items: [{}] }), stderr: '' })
-      }
-      if (file === 'kubectl' && args[0] === 'logs') {
+      if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check') {
         return Promise.resolve({ stdout: 'some-stale-nonce\n', stderr: '' })
       }
-      return Promise.resolve({ stdout: '', stderr: '' })
+      return happyResponses(file, args)
     })
     const { ok, results } = await runClusterCheck(makeDeps({ run }))
     expect(ok).toBe(false)

@@ -120,9 +120,14 @@ function shellQuote(arg: string): string {
   return `'${arg.replace(/'/g, `'\\''`)}'`
 }
 
-/** The in-container command tail that runs the promoter script. */
+/** The in-container command tail that runs the promoter script. The engine
+ *  is rootful, so the promoter's podman/skopeo calls run as root
+ *  via the image's passwordless sudo — it reads the rootful graphroot and
+ *  writes the shared store, both root-owned. */
 export function promoterExecCommand(): string {
-  return `sh -c ${shellQuote(PROMOTER_SCRIPT)}`
+  // -H sets HOME to root's — the script references $HOME under `set -u`, and
+  // sudo's default env_reset can otherwise leave it unset.
+  return `sudo -H sh -c ${shellQuote(PROMOTER_SCRIPT)}`
 }
 
 /**

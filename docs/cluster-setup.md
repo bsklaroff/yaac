@@ -152,14 +152,24 @@ only kind's provider breaks.
    credentials via `hostPath`, which resolves on the *node*. Mounting
    `$HOME` into the node at the same path makes node == host for everything
    yaac touches.
-3. **Unmasked sysfs mount on the node** — session pods run in user
-   namespaces (`hostUsers: false`), and the kernel refuses to start them
-   while kind's `/sys` masks make sysfs "not fully visible"
+3. **Unmasked sysfs mount on the node** — a user-namespace pod
+   (`hostUsers: false`) will not start while kind's `/sys` masks make sysfs
+   "not fully visible"
    ([kind#3436](https://github.com/kubernetes-sigs/kind/issues/3436)).
 4. **Node limits** — `DefaultTasksMax=infinity` + VM memory sysctls inside
    the node and a raised pids-limit on the node container, so subagent
    fan-out and virtiofs I/O don't die with
    `fork: resource temporarily unavailable`.
+5. **The gVisor runtime** — a pinned `runsc` +
+   `containerd-shim-runsc-v1` copied into every node, two runsc handlers
+   registered in the node containerd config (`runsc` and `runsc-nested`,
+   each with its own `/etc/containerd/runsc*.toml` flag file — both set
+   `allow-suid` so the image's passwordless `sudo` works inside the sentry,
+   `runsc-nested` additionally allows raw/packet sockets for the in-pod
+   engine), and the `gvisor` and `gvisor-nested` RuntimeClasses applied to
+   the cluster. Every pod yaac creates carries one explicitly; plain sessions
+   run on `gvisor`, nested-containers sessions run the rootful in-pod engine
+   on `gvisor-nested`.
 
 ## Node fixups vanish on restart
 
@@ -173,33 +183,41 @@ yaac cluster setup --repair
 
 `yaac cluster check` detects when they're missing and points here.
 
-## User namespaces and uids
+## Runtimes and uids
 
-User namespaces are what keep in-container root unprivileged: the session
-image grants passwordless sudo (agents can `apt-get install` mid-session),
-and the userns maps uid 0 in the pod to a throwaway unprivileged uid on the
-node — the same containment rootless podman gave the pre-kubernetes backend.
+Session containment is the **gVisor sentry**: every pod yaac creates (the
+session, the proxy, registries, probe pods) runs under the `gvisor`
+RuntimeClass, where in-container root — the image grants passwordless sudo so
+agents can `apt-get install` mid-session — is a sandbox fiction with no host
+authority, and no user namespace is used. Nested-containers sessions run
+their in-pod container engine as **real root inside the sentry** on the
+`gvisor-nested` RuntimeClass (the sentry is the containment).
 
-The idmapped mounts that come with user namespaces present hostPath files at
-their real node-side uids, so the session image builds its `yaac` user with
-the server's uid (`YAAC_UID` build arg, baked in automatically and folded
-into the image tag). Nothing to configure — but if your uid ever changes,
-images rebuild on their own, and a standalone `Dockerfile.yaac` that creates
-its own user should honor `ARG YAAC_UID` the same way
-`dockerfiles/Dockerfile.default` does, or its writes to `/workspace` will
-fail with `Permission denied`.
+Under gVisor there is no user namespace and no idmap, so hostPath files are
+presented at their real node-side uids (the gofer preserves them), and the
+session image builds its `yaac` user with the server's uid
+(`YAAC_UID` build arg, baked in automatically and folded into the image
+tag). Nothing to configure — but if your uid ever changes, images rebuild
+on their own, and a standalone `Dockerfile.yaac` that creates its own user
+should honor `ARG YAAC_UID` the same way `dockerfiles/Dockerfile.default`
+does, or its writes to `/workspace` will fail with `Permission denied`.
 
 ## Verifying
 
 `yaac cluster check` verifies kubectl, the cluster, the registry, the
-namespace, and the node fixups, then runs an end-to-end probe pod —
-user-namespaced, like session pods — that exercises all of the wiring above,
-including a hostPath **write** at the session uid. Run it whenever sessions
-fail to start.
+namespace, and the node fixups, asserts the RuntimeClasses exist and that a
+`gvisor`-class pod really runs inside the sentry, then runs an end-to-end
+probe pod — on the gvisor tier, like session pods — that exercises all of
+the wiring above, including a hostPath **write** at the session uid. It
+ends with a sweep warning about any install-namespace pod running without
+an explicit `runtimeClassName` (pods predating the gVisor migration). Run
+it whenever sessions fail to start.
 
 > **v1 limits:** single-node clusters only (the hostPath model assumes
 > node == host). The server's control traffic reaches the proxy through a
-> loopback `kubectl port-forward`; nothing yaac deploys listens on host
+> loopback exec tunnel (`kubectl exec` + socat — `kubectl port-forward`
+> cannot reach gVisor pods, whose listeners live in the sentry's netstack,
+> not the pod netns kernel stack); nothing yaac deploys listens on host
 > interfaces.
 
 ## Deleting the cluster

@@ -80,13 +80,14 @@ interface Manifest {
   spec: {
     backoffLimit: number
     template: {
-      metadata: { labels: Record<string, string> }
+      metadata: { labels: Record<string, string>; annotations?: Record<string, string> }
       spec: {
         restartPolicy: string
         terminationGracePeriodSeconds: number
         automountServiceAccountToken: boolean
         enableServiceLinks: boolean
         hostUsers?: boolean
+        runtimeClassName?: string
         dnsPolicy?: string
         dnsConfig?: { nameservers: string[] }
         securityContext: { seccompProfile: { type: string }; fsGroup?: number }
@@ -122,7 +123,7 @@ interface Manifest {
           name: string
           hostPath?: { path: string; type: string }
           configMap?: { name: string }
-          emptyDir?: Record<string, never>
+          emptyDir?: { medium?: string; sizeLimit?: string }
         }>
       }
     }
@@ -156,10 +157,24 @@ describe('buildSessionJobManifest', () => {
     expect(spec.enableServiceLinks).toBe(false)
   })
 
-  it('hardens the pod: default seccomp profile and a user namespace', () => {
+  it('hardens the pod: default seccomp profile', () => {
     const spec = build().spec.template.spec
     expect(spec.securityContext).toEqual({ seccompProfile: { type: 'RuntimeDefault' } })
-    expect(spec.hostUsers).toBe(false)
+  })
+
+  it('host pod: stamps the gvisor RuntimeClass and no user namespace', () => {
+    const spec = build().spec.template.spec
+    expect(spec.runtimeClassName).toBe('gvisor')
+    // The sentry is the containment — no hostUsers key at all.
+    expect(spec.hostUsers).toBeUndefined()
+  })
+
+  it('inner yaac: stamps no RuntimeClass and no userns', () => {
+    // Inside a vcluster there are no RuntimeClass objects; the host syncer
+    // sets the runtime. No userns of its own (incompatible with gvisor).
+    const spec = build({ innerYaac: true }).spec.template.spec
+    expect(spec.runtimeClassName).toBeUndefined()
+    expect(spec.hostUsers).toBeUndefined()
   })
 
   it('defaults terminationGracePeriodSeconds to 5 and honors an override', () => {
@@ -260,7 +275,6 @@ describe('buildSessionJobManifest', () => {
 
 describe('buildSessionJobManifest — nestedContainers', () => {
   const nested: NestedContainersParams = {
-    uid: 501,
     sharedImagesHostPath: '/var/lib/yaac/imagecache/ddh16/demo',
   }
 
@@ -273,36 +287,63 @@ describe('buildSessionJobManifest — nestedContainers', () => {
     expect(spec.securityContext).toEqual({ seccompProfile: { type: 'RuntimeDefault' } })
     expect(spec.initContainers).toBeUndefined()
     expect(spec.volumes.some((v) => v.name === 'podman-graphroot' || v.name === 'shared-images')).toBe(false)
+    // No graphroot-tmpfs annotations on a non-nested pod.
+    expect(build().spec.template.metadata.annotations).toBeUndefined()
     expect(spec.containers[0].resources).toEqual({
       requests: { memory: String(1 * 1024 ** 3) },
       limits: { memory: String(8 * 1024 ** 3) },
     })
   })
 
-  it('keeps RuntimeDefault and adds only SYS_ADMIN on the session container', () => {
+  it('nested host pod: maps to the gvisor-nested handler, no userns', () => {
     const spec = build({ nested }).spec.template.spec
-    // seccompProfile stays RuntimeDefault — the userns-scoped cap is what
-    // unlocks the mount family in containerd's profile, not Unconfined.
-    expect(spec.securityContext.seccompProfile).toEqual({ type: 'RuntimeDefault' })
-    expect(spec.hostUsers).toBe(false)
-    // No explicit allowPrivilegeEscalation — the kubelet forces it true
-    // under CAP_SYS_ADMIN, so it would be redundant.
+    expect(spec.runtimeClassName).toBe('gvisor-nested')
+    expect(spec.hostUsers).toBeUndefined()
+  })
+
+  it('inner-yaac nested: no RuntimeClass, no userns', () => {
+    const spec = build({ nested, innerYaac: true }).spec.template.spec
+    expect(spec.runtimeClassName).toBeUndefined()
+    expect(spec.hostUsers).toBeUndefined()
+  })
+
+  it('adds the rootful engine caps and no fsGroup on the session container', () => {
+    const spec = build({ nested }).spec.template.spec
+    // seccompProfile stays RuntimeDefault (runsc installs its own host
+    // seccomp regardless); no fsGroup — the rootful graphroot is root-owned.
+    expect(spec.securityContext).toEqual({ seccompProfile: { type: 'RuntimeDefault' } })
     expect(spec.containers[0].securityContext).toEqual({
-      capabilities: { add: ['SYS_ADMIN'] },
+      capabilities: {
+        add: [
+          'SYS_ADMIN', 'SYS_CHROOT', 'MKNOD', 'SETFCAP',
+          'NET_RAW', 'NET_ADMIN', 'SYS_PTRACE', 'SYS_RESOURCE',
+        ],
+      },
     })
   })
 
-  it('sets fsGroup to the yaac uid for the graphroot emptyDir', () => {
-    const spec = build({ nested }).spec.template.spec
-    expect(spec.securityContext.fsGroup).toBe(501)
-    expect(spec.volumes).toContainEqual({ name: 'podman-graphroot', emptyDir: {} })
+  it('backs the graphroot with a sized tmpfs emptyDir + gVisor tmpfs annotations', () => {
+    const m = build({ nested })
+    const spec = m.spec.template.spec
+    const cap = 4 * 1024 ** 3
+    expect(spec.volumes).toContainEqual({
+      name: 'podman-graphroot',
+      emptyDir: { medium: 'Memory', sizeLimit: String(cap) },
+    })
     expect(spec.containers[0].volumeMounts).toContainEqual({
       name: 'podman-graphroot',
       mountPath: NESTED_GRAPHROOT_PATH,
     })
+    // The runsc mount annotations make it a sentry tmpfs (file caps for
+    // setcap builds); keyed on the volume name.
+    expect(m.spec.template.metadata.annotations).toEqual({
+      'dev.gvisor.spec.mount.podman-graphroot.type': 'tmpfs',
+      'dev.gvisor.spec.mount.podman-graphroot.share': 'container',
+      'dev.gvisor.spec.mount.podman-graphroot.options': `rw,size=${cap}`,
+    })
   })
 
-  it('mounts the shared image store rw and chowns it via a first init container', () => {
+  it('mounts the shared image store rw at both paths with no chown init', () => {
     const spec = build({ nested }).spec.template.spec
     expect(spec.volumes).toContainEqual({
       name: 'shared-images',
@@ -319,19 +360,9 @@ describe('buildSessionJobManifest — nestedContainers', () => {
       name: 'shared-images',
       mountPath: SHARED_IMAGE_STORE_DST_PATH,
     })
-
-    // The chown init is the ONLY init container now (egress is redirected at
-    // the cluster level) — root-in-userns, on the session image itself.
-    expect(spec.initContainers?.map((c) => c.name)).toEqual(['yaac-imagestore-init'])
-    const chown = spec.initContainers![0]
-    expect(chown.image).toBe('localhost:5000/yaac-tools:abc')
-    expect(chown.securityContext).toEqual({ runAsUser: 0 })
-    expect(chown.command).toEqual([
-      'sh', '-c', `chown 501:501 ${SHARED_IMAGE_STORE_PATH}`,
-    ])
-    expect(chown.volumeMounts).toEqual([
-      { name: 'shared-images', mountPath: SHARED_IMAGE_STORE_PATH },
-    ])
+    // The rootful engine reads/writes the store as root, so there is no
+    // chown init container anymore.
+    expect(spec.initContainers).toBeUndefined()
   })
 
   it('keeps the resources identical to a non-nested pod (memory only)', () => {

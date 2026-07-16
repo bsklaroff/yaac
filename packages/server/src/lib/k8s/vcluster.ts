@@ -11,6 +11,10 @@ import {
   kubectlGetJson,
   kubectlWithRetry,
 } from '#lib/k8s/kubectl'
+import {
+  RUNTIME_CLASS_GVISOR,
+  RUNTIME_CLASS_GVISOR_NESTED,
+} from '#lib/k8s/gvisor'
 import { LABEL_SESSION_ID, LABEL_VCLUSTER_MANAGED_BY, VCLUSTER_API_PORT } from '#lib/k8s/pods'
 import { ensurePinnedBinary } from '#lib/k8s/pinned-binary'
 import { pushImageToRegistry, registryHasTag, registryHost } from '#lib/k8s/registry'
@@ -146,12 +150,43 @@ export function addYaacLabels(
 }
 
 /**
+ * Stamp `runtimeClassName` into every workload pod template of a rendered
+ * multi-doc manifest stream that does not already carry one. The chart has
+ * no knob for the control-plane StatefulSet's runtime (only synced pods,
+ * via sync.toHost.pods.runtimeClassName in values.yaml), so this is the
+ * post-render step that keeps the no-pod-without-runtimeClassName invariant
+ * on the control plane too (gvisor — the apiserver/kine/SQLite are plain
+ * userspace).
+ */
+export function stampPodRuntimeClass(
+  manifestYaml: string,
+  runtimeClassName: string,
+): string {
+  const WORKLOAD_KINDS = new Set(['StatefulSet', 'Deployment', 'DaemonSet', 'Job', 'ReplicaSet'])
+  const out: string[] = []
+  for (const doc of YAML.parseAllDocuments(manifestYaml)) {
+    const obj = doc.toJS() as {
+      kind?: string
+      spec?: { template?: { spec?: Record<string, unknown> } }
+    } | null
+    if (!obj || typeof obj !== 'object' || !obj.kind) continue
+    const podSpec = obj.spec?.template?.spec
+    if (WORKLOAD_KINDS.has(obj.kind) && podSpec && podSpec.runtimeClassName === undefined) {
+      podSpec.runtimeClassName = runtimeClassName
+    }
+    out.push(YAML.stringify(obj, { lineWidth: 0 }))
+  }
+  return out.join('---\n')
+}
+
+/**
  * Render one session's vcluster manifests by running `helm template`
  * against the vendored chart tarball (offline) with the per-session
  * values passed as `--set` overrides, then stamping the yaac ownership
- * labels. No vendored rendered manifest, no placeholder substitution —
- * the chart's own logic runs each time, so a chart bump only needs
- * `scripts/fetch-vcluster-chart.sh` (re-vendor the tarball).
+ * labels and the control-plane RuntimeClass. No vendored rendered
+ * manifest, no placeholder substitution — the chart's own logic runs each
+ * time, so a chart bump only needs `scripts/fetch-vcluster-chart.sh`
+ * (re-vendor the tarball).
  */
 export async function renderVclusterManifests(p: VclusterRenderParams): Promise<string> {
   const helm = await ensureHelm()
@@ -174,7 +209,10 @@ export async function renderVclusterManifests(p: VclusterRenderParams): Promise<
     '--set-string', `controlPlane.proxy.extraSANs[0]=${apiHost}`,
     '--set-string', `exportKubeConfig.server=https://${apiHost}:${VCLUSTER_API_PORT}`,
   ], { maxBuffer: 16 * 1024 * 1024 })
-  return addYaacLabels(stdout, vclusterLabels(name, p.sessionId))
+  return stampPodRuntimeClass(
+    addYaacLabels(stdout, vclusterLabels(name, p.sessionId)),
+    RUNTIME_CLASS_GVISOR,
+  )
 }
 
 interface VclusterImageEntry {
@@ -238,10 +276,10 @@ export function buildVclusterNamespaceManifest(
 // (separate variables — CEL list concat across distinct schema types
 // does not type-check).
 //
-// NET_BIND_SERVICE is the one cap admitted without a user namespace: it
-// only permits binding <1024 ports inside the pod's OWN netns — no node
-// authority — and vcluster's deployed CoreDNS carries it (vestigially;
-// it listens on 1053). Everything else stays gated on hostUsers: false.
+// NET_BIND_SERVICE is the one cap admitted without the sentry tier: it only
+// permits binding <1024 ports inside the pod's OWN netns — no node authority
+// — and vcluster's deployed CoreDNS carries it (vestigially; it listens on
+// 1053). Everything else is gated on the gvisor runtime tier.
 const NO_CAPS_OR_APE = (cs: string): string =>
   `${cs}.all(c, !has(c.securityContext) || (`
   + '(!has(c.securityContext.capabilities) || !has(c.securityContext.capabilities.add) || '
@@ -260,26 +298,26 @@ const NO_UNCONFINED = (cs: string): string =>
  * hostPath prefix is inlined as a CEL literal (see
  * VCLUSTER_POD_GUARD_POLICY for why no paramRef).
  *
- * What it enforces, and why `hostUsers: false` is the load-bearing gate:
- * a synced pod could otherwise combine the default `hostUsers: true`
- * with `capabilities.add` (or allowPrivilegeEscalation) + Unconfined
- * into real node authority — NET_ADMIN under host users would let a pod
- * rewrite host netfilter, strictly worse than SYS_ADMIN-in-userns. So:
+ * A capability grant is safe only behind a containment boundary: a synced
+ * pod could otherwise combine the default `hostUsers: true` with
+ * `capabilities.add` (or allowPrivilegeEscalation) + Unconfined into real
+ * node authority — NET_ADMIN under host users would let a pod rewrite host
+ * netfilter. The boundary here is the gVisor sentry: the syncer stamps
+ * `gvisor` on every synced pod (values.yaml), and in-sandbox caps carry no
+ * host authority. So:
  *   - hostPath volumes only under the session's nested data dir (param)
  *   - no hostNetwork / hostPID / hostIPC / hostPorts / privileged
- *   - capabilities.add or an explicit allowPrivilegeEscalation: true
- *     require `hostUsers: false`; seccomp Unconfined is denied outright
+ *   - capabilities.add or an explicit allowPrivilegeEscalation: true require
+ *     the gvisor runtime tier; seccomp Unconfined is denied outright
  *
- * CEL nil-handling: an absent allowPrivilegeEscalation defaults to TRUE
- * at runtime, but the rule deliberately matches only an explicit
- * `true` — nil with no added caps is the stock pod default (file caps
- * cannot exceed the bounding set), `capabilities.add` is the
- * load-bearing gate, and requiring an explicit `false` on
- * hostUsers: true pods would deny every ordinary synced pod.
+ * CEL nil-handling: an absent allowPrivilegeEscalation defaults to TRUE at
+ * runtime, but the rule matches only an explicit `true` — nil with no added
+ * caps is the stock pod default (file caps cannot exceed the bounding set),
+ * and `capabilities.add` is the load-bearing gate.
  *
- * The rule exactly admits the nested-session securityContext (namespaced
- * capability adds under hostUsers: false) that an inner yaac's synced
- * session pods carry.
+ * The rule admits the nested-session securityContext (the rootful engine's
+ * in-sandbox capability adds under the gvisor tier) that an inner yaac's
+ * synced session pods carry.
  */
 export function buildVclusterPodGuardPolicyManifest(
   name: string,
@@ -315,8 +353,14 @@ export function buildVclusterPodGuardPolicyManifest(
             'has(object.spec.ephemeralContainers) ? object.spec.ephemeralContainers : []',
         },
         {
-          name: 'userns',
-          expression: 'has(object.spec.hostUsers) && object.spec.hostUsers == false',
+          // The gVisor sentry is the containment boundary for caps —
+          // in-sandbox caps grant no host authority. The syncer stamps one
+          // of these on every synced pod.
+          name: 'sandboxed',
+          expression:
+            'has(object.spec.runtimeClassName) && '
+            + `(object.spec.runtimeClassName == '${RUNTIME_CLASS_GVISOR}' `
+            + `|| object.spec.runtimeClassName == '${RUNTIME_CLASS_GVISOR_NESTED}')`,
         },
       ],
       validations: [
@@ -343,14 +387,15 @@ export function buildVclusterPodGuardPolicyManifest(
           message: 'privileged containers are not allowed for vcluster pods',
         },
         {
-          // The caps rule. Evaluated across containers AND
-          // initContainers (variables.cs) so a cap grant can't ride
-          // in on an init container.
+          // The caps rule. Evaluated across containers AND initContainers
+          // (variables.cs) so a cap grant can't ride in on an init
+          // container. A capability grant needs the gvisor sentry tier.
           expression:
-            `variables.userns || (${NO_CAPS_OR_APE('variables.cs')} && ${NO_CAPS_OR_APE('variables.ecs')})`,
+            'variables.sandboxed '
+            + `|| (${NO_CAPS_OR_APE('variables.cs')} && ${NO_CAPS_OR_APE('variables.ecs')})`,
           message:
             'capabilities.add (beyond NET_BIND_SERVICE) / allowPrivilegeEscalation '
-            + 'require hostUsers: false (userns)',
+            + 'require the gvisor runtime tier',
         },
         {
           expression:

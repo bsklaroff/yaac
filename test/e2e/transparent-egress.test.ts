@@ -22,6 +22,7 @@ import {
   TRANSPARENT_HTTPS_PORT,
   TUNNEL_INGRESS_PORT,
 } from '@yaac/server/lib/k8s/bootstrap'
+import { RUNTIME_CLASS_GVISOR } from '@yaac/server/lib/k8s/gvisor'
 import { CA_CONFIGMAP_NAME } from '@yaac/server/lib/k8s/pod-spec'
 import { LABEL_SESSION_ID } from '@yaac/server/lib/k8s/pods'
 import {
@@ -230,6 +231,10 @@ async function startSessionPod(name: string, sessionId: string, proxyHost: strin
       restartPolicy: 'Never',
       automountServiceAccountToken: false,
       enableServiceLinks: false,
+      // Mirror real session pods: the default gvisor tier, so the redirect
+      // and source-IP identity are verified against netstack egress. Nested
+      // runs keep the default runtime — a vcluster has no RuntimeClasses.
+      ...(IS_NESTED_YAAC ? {} : { runtimeClassName: RUNTIME_CLASS_GVISOR }),
       dnsPolicy: 'None',
       dnsConfig: { nameservers: [proxyHost] },
       containers: [{
@@ -365,10 +370,12 @@ describe('cilium-level transparent egress (source-IP identity)', () => {
 
   it.skipIf(IS_NESTED_YAAC)('allowHost widens a live session so a blocked host becomes reachable', async () => {
     // Session B's allowlist is [tlsHost] only, so the HTTP echo is blocked.
+    // A transparent-HTTP block is an in-band 403 (forwardPlainHttp), not a
+    // socket reset — curl without -f exits 0 on it, so assert on the body.
     const before = await curlInPod(
       podB, `--resolve ${echoHost}:80:${FAKE_IP_A} "http://${echoHost}/before"`,
     )
-    expect(before.exit).not.toBe(0)
+    expect(before.out, before.out).toContain('Blocked by URL allowlist')
 
     // Widen the running session's allowlist in place (no re-create, no restart).
     expect(await client.allowHost(sessionB, echoHost)).toBe(true)

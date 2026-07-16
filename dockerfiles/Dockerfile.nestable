@@ -17,15 +17,12 @@ Pin-Priority: 100
 EOF
 RUN apt-get update && \
     apt-get install -y --no-install-recommends -t plucky podman crun skopeo && \
-    apt-get install -y --no-install-recommends uidmap libcap2-bin && \
     rm -rf /var/lib/apt/lists/*
 
 # Docker CLI + compose plugin — both routed at DOCKER_HOST below to the
-# rootless podman socket, which serves the Docker Engine API. Running a real
-# dockerd here would need a second rootlesskit userns nested under podman's;
-# the kernel refuses the inner /proc remount because of the standard
-# /proc/{acpi,scsi,kcore,...} masks, so containers fail to start. Podman's
-# socket avoids that nesting. Buildx is omitted on purpose — its default
+# ROOTFUL podman socket, which serves the Docker Engine API. Running a real
+# dockerd here would need a second nested engine under podman; the podman
+# socket avoids that. Buildx is omitted on purpose — its default
 # docker-container driver wants to pull moby/buildkit, which our egress
 # proxy forbids; compose falls back to the classic build endpoint that
 # podman implements.
@@ -47,115 +44,74 @@ RUN ARCH="$(dpkg --print-architecture)" && \
       -o /usr/local/bin/kubectl && \
     chmod +x /usr/local/bin/kubectl
 
-# Nested-podman subuid/subgid ranges. These must reference ids that
-# actually exist in *this* pod's user namespace — not the host's subuid
-# range. The session pod (hostUsers: false) maps the standard 65536 ids,
-# so sticking to inside-ids 1..65535 always fits the map; anything >= 65536
-# would make newuidmap reject the id_map write with EPERM. The single id
-# the yaac user/group already occupies is punched out of each range —
-# podman refuses a sub*id mapping that includes the caller's own uid/gid.
-# subuid and subgid are computed separately because, after the base image
-# removes ubuntu (uid/gid 1000), useradd can land the yaac user's uid and
-# its primary group's gid on different numbers.
-ARG YAAC_UID=1000
-RUN U="$(id -u yaac)" && G="$(id -g yaac)" && \
-    printf 'yaac:1:%s\nyaac:%s:%s\n' "$((U - 1))" "$((U + 1))" "$((65535 - U))" > /etc/subuid && \
-    printf 'yaac:1:%s\nyaac:%s:%s\n' "$((G - 1))" "$((G + 1))" "$((65535 - G))" > /etc/subgid
-
-RUN chmod u-s /usr/bin/newuidmap /usr/bin/newgidmap && \
-    setcap cap_setuid+ep /usr/bin/newuidmap && \
-    setcap cap_setgid+ep /usr/bin/newgidmap
-
-# Engine config. Every nested container shares the pod's namespaces:
-# netns=host means a container's listener binds directly in the pod netns
-# (curl localhost just works; `docker run -p` is a no-op) and its egress
-# stays on the session's transparent redirect (Cilium's egress CEC matches
-# the pod's traffic, and nested containers share the pod netns — see
-# buildEgressRedirectCecManifest in packages/server/src/lib/k8s/bootstrap.ts).
-# base_hosts_file extends the pod's
-# hostAliases (e.g. the per-project registry name) into nested containers.
-# Container-private networks (the default `docker compose` bridge,
-# `docker run --network ...`) are NOT supported in-pod: the userspace
-# network helpers fail under the pod's nested-userns sandbox (pasta's
-# pivot_root and slirp4netns/netavark's /proc/sys writes are both refused),
-# so neither is installed — use `network_mode: host`.
-# keyring=false: the pod's userns refuses the per-container kernel session
-# keyring crun would otherwise create (EPERM). no_pivot_root=true: crun
-# falls back to chroot — pivot_root is likewise refused inside the pod's
-# userns. Both are the standard rootless-podman-in-kubernetes settings.
+# Rootful-in-sandbox podman: the engine runs as REAL root inside the gVisor
+# sentry — the upstream-tested docker-in-gvisor shape
+# (https://gvisor.dev/docs/tutorials/docker-in-gvisor/). In-sandbox root is a
+# sentry fiction with no host authority, so no rootless apparatus is needed:
+# no id-map ranges, no id-map helper caps, no host userns, no keyring/
+# pivot_root workarounds, no /proc bind — pivot_root, fresh /proc, and kernel
+# keyrings all work under the sentry.
+# The agent runs as the yaac user and drives the engine over the socket
+# (DOCKER_HOST); the socket is served by a root `podman system service` that
+# session-create starts (via sudo) and opens to the yaac user.
+#
+# Every nested container shares the pod's namespaces: netns=host means a
+# container's listener binds directly in the pod netns (curl localhost just
+# works; `docker run -p` is a no-op) and its egress stays on the session's
+# transparent redirect (Cilium's egress CEC matches the pod's traffic, and
+# nested containers share the pod netns — see buildEgressRedirectCecManifest
+# in packages/server/src/lib/k8s/bootstrap.ts). base_hosts_file extends the
+# pod's hostAliases (e.g. the per-project registry name) into nested
+# containers. Container-private networks (the default `docker compose`
+# bridge, `docker run --network ...`) are still NOT supported in-pod — the
+# userspace network helpers (pasta/slirp4netns/netavark) don't run under the
+# sentry netstack — so use `network_mode: host`.
+#
+# CA trust rides here (rootful engine reads /etc/containers/containers.conf,
+# not the per-user file). Two delivery mechanisms, because env and volumes
+# reach different places:
+#   VOLUMES reach BOTH `podman run` and `docker build` RUN steps; ENV
+#   reaches `podman run` but NOT `docker build` RUN (buildah does not apply
+#   containers.conf [containers] env to build steps — verified by
+#   test/e2e-cli/nested-containers.test.ts). So build-time trust must ride a
+#   volume, not an env var.
+# The trust set must be the union {public roots} ∪ {proxy CA} for the
+# own-bundle tools (curl, requests, cargo, git-libcurl) that ignore
+# SSL_CERT_FILE and REPLACE their whole trust set with a single file —
+# pointed at the lone proxy CA they reject the REAL certs of every tunnelled
+# host (most allowlisted registries/mirrors). The combined bundle (public
+# roots + proxy CA) is served by the proxy's /ca-bundle.pem and mounted here.
+# See docs/nested-ca-combined-bundle.md.
+#   CA-CERTIFICATES DROP-IN — the bare proxy CA is bind-mounted as a source
+#     cert in /usr/local/share/ca-certificates/. `update-ca-certificates`
+#     (run by `apt-get install ca-certificates`, the usual way a build gains
+#     HTTPS, and by many packages' triggers) folds it into the image's real
+#     roots, producing the correct union in the image's own
+#     /etc/ssl/certs/ca-certificates.crt — which curl reads by default with
+#     no env. This is the build-time path. We must NOT bind-mount over
+#     /etc/ssl/certs/ca-certificates.crt directly: that file is what
+#     update-ca-certificates rewrites (temp file + rename), and rename() onto
+#     a bind-mountpoint fails EBUSY, so the ca-certificates postinst — and
+#     the whole build — fails. The drop-in composes with
+#     update-ca-certificates instead of fighting it. (A build that runs curl
+#     against a MITM host WITHOUT ever installing/refreshing ca-certificates
+#     won't pick this up; that path is covered at run-time by the env vars
+#     below, or by running update-ca-certificates.)
+#   ENV (run-time) — SSL_CERT_FILE/NODE_EXTRA_CA_CERTS additively on the bare
+#     proxy CA; CURL_CA_BUNDLE/REQUESTS_CA_BUNDLE/CARGO_HTTP_CAINFO/
+#     GIT_SSL_CAINFO on the combined bundle, for the own-bundle tools
+#     (notably requests/cargo) that read neither the OS store nor
+#     SSL_CERT_FILE.
 RUN cat <<'EOF' > /etc/containers/containers.conf
 [containers]
 netns="host"
-userns="host"
 ipcns="host"
 utsns="host"
 cgroupns="host"
 cgroups="disabled"
-keyring=false
 log_driver="k8s-file"
 base_hosts_file="/etc/hosts"
-[engine]
-cgroup_manager="cgroupfs"
-events_logger="file"
-runtime="crun"
-no_pivot_root=true
-EOF
-
-# docker-CLI parity for unqualified image names: `docker pull nginx` means
-# docker.io. Static and baked — nested pulls go straight through the MITM
-# proxy (allowlisted upstream registries), so there is no per-project
-# registry remap here.
-RUN cat <<'EOF' > /etc/containers/registries.conf
-unqualified-search-registries = ["docker.io"]
-EOF
-
-# User-level engine config:
-#   - /proc volume: rootless podman in a pod cannot mount a fresh /proc
-#     (the pod's /proc carries the standard runtime masks), so bind the
-#     pod's /proc into nested containers.
-#   - proxy-CA trust: every nested container (and every `docker build` RUN
-#     step) auto-trusts the session's MITM CA with zero user cooperation.
-#     Two delivery mechanisms, because env and volumes reach different places:
-#       VOLUMES reach BOTH `podman run` and `docker build` RUN steps; ENV
-#       reaches `podman run` but NOT `docker build` RUN (buildah does not
-#       apply containers.conf [containers] env to build steps — verified by
-#       test/e2e-cli/nested-containers.test.ts). So build-time trust must
-#       ride a volume, not an env var.
-#     The trust set must be the union {public roots} ∪ {proxy CA} for the
-#     own-bundle tools (curl, requests, cargo, git-libcurl) that ignore
-#     SSL_CERT_FILE and REPLACE their whole trust set with a single file —
-#     pointed at the lone proxy CA they reject the REAL certs of every
-#     tunnelled host (most allowlisted registries/mirrors). The combined
-#     bundle (public roots + proxy CA) is served by the proxy's
-#     /ca-bundle.pem and mounted here. See docs/nested-ca-combined-bundle.md.
-#       CA-CERTIFICATES DROP-IN — the bare proxy CA is bind-mounted as a
-#         source cert in /usr/local/share/ca-certificates/. `update-ca-
-#         certificates` (run by `apt-get install ca-certificates`, the usual
-#         way a build gains HTTPS, and by many packages' triggers) folds it
-#         into the image's real roots, producing the correct union in the
-#         image's own /etc/ssl/certs/ca-certificates.crt — which curl reads
-#         by default with no env. This is the build-time path. We must NOT
-#         bind-mount over /etc/ssl/certs/ca-certificates.crt directly: that
-#         file is what update-ca-certificates rewrites (temp file + rename),
-#         and rename() onto a bind-mountpoint fails EBUSY, so the
-#         ca-certificates postinst — and the whole build — fails. The drop-in
-#         composes with update-ca-certificates instead of fighting it. (A
-#         build that runs curl against a MITM host WITHOUT ever installing/
-#         refreshing ca-certificates won't pick this up; that path is covered
-#         at run-time by the env vars below, or by running
-#         update-ca-certificates.)
-#       ENV (run-time) — SSL_CERT_FILE/NODE_EXTRA_CA_CERTS additively on the
-#         bare proxy CA; CURL_CA_BUNDLE/REQUESTS_CA_BUNDLE/CARGO_HTTP_CAINFO/
-#         GIT_SSL_CAINFO on the combined bundle, for the own-bundle tools
-#         (notably requests/cargo) that read neither the OS store nor
-#         SSL_CERT_FILE.
-RUN mkdir -p /home/yaac/.config/containers && \
-    mkdir -p /home/yaac/.local/share/containers && \
-    mkdir -p /var/lib/shared-images
-RUN cat <<'EOF' > /home/yaac/.config/containers/containers.conf
-[containers]
 volumes = [
-  "/proc:/proc",
   "/etc/yaac/certs/proxy-ca.pem:/etc/yaac/certs/proxy-ca.pem:ro",
   "/etc/yaac/certs/ca-bundle.pem:/etc/yaac/certs/ca-bundle.pem:ro",
   "/etc/yaac/certs/proxy-ca.pem:/usr/local/share/ca-certificates/yaac-proxy-ca.crt:ro",
@@ -169,19 +125,50 @@ env = [
   "GIT_SSL_CAINFO=/etc/yaac/certs/ca-bundle.pem",
 ]
 default_sysctls = []
+[engine]
+cgroup_manager="cgroupfs"
+events_logger="file"
+runtime="crun"
 EOF
-RUN cat <<'EOF' > /home/yaac/.config/containers/storage.conf
+
+# docker-CLI parity for unqualified image names: `docker pull nginx` means
+# docker.io. Static and baked — nested pulls go straight through the MITM
+# proxy (allowlisted upstream registries), so there is no per-project
+# registry remap here.
+RUN cat <<'EOF' > /etc/containers/registries.conf
+unqualified-search-registries = ["docker.io"]
+EOF
+
+# Rootful graphroot + cross-session shared image store. The graphroot lives
+# at podman's rootful default (/var/lib/containers/storage), backed by a
+# sentry-internal tmpfs the pod spec mounts at /var/lib/containers: gVisor's
+# gofer-backed volumes are 9p, which does NOT carry the security.capability
+# xattr, so a `docker build` RUN step doing `setcap` (apt/apk postinsts for
+# ping, nginx, …) fails on a gofer graphroot — only a sentry tmpfs upper
+# holds file caps (verified on the dev cluster; the docker-in-gvisor
+# tutorial's shape). Cost: layer data counts against the pod memory limit.
+# graphroot/runroot are set EXPLICITLY because once a [storage] section
+# exists podman refuses to default them ("runroot must be set").
+# additionalimagestores is the cross-session layer cache (a gofer-backed
+# hostPath — reads fine; the promoter writes it); file caps drop through it,
+# an acceptable cache degradation (miss → rebuild), never a correctness break.
+RUN mkdir -p /var/lib/containers /var/lib/shared-images
+RUN cat <<'EOF' > /etc/containers/storage.conf
 [storage]
 driver = "overlay"
+runroot = "/run/containers/storage"
+graphroot = "/var/lib/containers/storage"
 
 [storage.options]
 additionalimagestores = ["/var/lib/shared-images"]
 EOF
-RUN chown yaac:yaac -R /home/yaac/.local/share/containers /home/yaac/.config /var/lib/shared-images
-
-RUN mkdir -p /run/user/${YAAC_UID}/podman && chown yaac:yaac -R /run/user/${YAAC_UID}
 
 USER yaac
-ENV _CONTAINERS_USERNS_CONFIGURED=""
-ENV XDG_RUNTIME_DIR=/run/user/${YAAC_UID}
-ENV DOCKER_HOST=unix:///run/user/${YAAC_UID}/podman/podman.sock
+# Both CLIs target the ROOTFUL engine over its socket: docker is always a
+# client (DOCKER_HOST), and podman auto-enters remote mode when CONTAINER_HOST
+# is set — so the yaac user drives the root daemon without sudo, and a bare
+# `podman pull/build/push` (the agent's, and an inner yaac server's image
+# machinery) reaches the same engine. `sudo` strips both via env_reset, so the
+# root `podman system service` and the promoter still run as a local engine.
+ENV DOCKER_HOST=unix:///run/podman/podman.sock
+ENV CONTAINER_HOST=unix:///run/podman/podman.sock

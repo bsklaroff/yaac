@@ -90,7 +90,9 @@ describe('PROMOTER_SCRIPT', () => {
 describe('promoterExecCommand', () => {
   it('single-quotes the script for the in-pod sh -c, escaping embedded quotes', () => {
     const cmd = promoterExecCommand()
-    expect(cmd.startsWith("sh -c '")).toBe(true)
+    // Rootful engine → the promoter runs under sudo (-H sets $HOME for the
+    // script's `set -u`).
+    expect(cmd.startsWith("sudo -H sh -c '")).toBe(true)
     expect(cmd.endsWith("'")).toBe(true)
     // Embedded single quotes survive via the '\'' dance.
     expect(cmd).toContain("'\\''")
@@ -121,7 +123,7 @@ describe('promoteSessionImages', () => {
 describe('buildPromoterShellCommand', () => {
   it('builds a kubectl exec one-liner that never fails the detached script', () => {
     const cmd = buildPromoterShellCommand('yaac-demo-abc')
-    expect(cmd.startsWith('kubectl exec -n yaac job/yaac-demo-abc -- sh -c ')).toBe(true)
+    expect(cmd.startsWith('kubectl exec -n yaac job/yaac-demo-abc -- sudo -H sh -c ')).toBe(true)
     expect(cmd.endsWith('|| true')).toBe(true)
     // Same in-pod command as the in-process path.
     expect(cmd).toContain(promoterExecCommand())
