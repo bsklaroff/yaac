@@ -66,6 +66,15 @@ alias ls='ls --color=auto'
 alias grep='grep --color=auto'
 EOF
 
+# Pre-generate (and zcompile) the zsh completion dump. Debian's global
+# /etc/zsh/zshrc runs compinit, whose FIRST run scans every completion
+# function under $fpath — thousands of cold gofer reads inside the gVisor
+# sentry, measured at 17–30s for a session's first interactive shell
+# (each pod's home overlay starts fresh, so every session paid it). With
+# the dump baked into the image, that first shell only pays the ~1s
+# dump-validity check like every later one.
+RUN zsh -c 'autoload -Uz compinit && compinit && zcompile ~/.zcompdump'
+
 WORKDIR /workspace
 # catatonit acts as PID 1, reaping zombies (orphaned conmon etc.) and
 # forwarding signals.  Without a real init, rootless podman leaks zombie
