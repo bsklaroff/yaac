@@ -80,6 +80,15 @@ ENV HOME=/home/yaac
 ENV PATH="/home/yaac/.local/bin:${PATH}"
 ENV SHELL=/bin/zsh
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+# /workspace is a gVisor gofer mount (lisafs+directfs), so every lstat is
+# sentry-mediated (~0.6ms cold, vs ~µs on a native bind mount). `git status`
+# refreshes the index by lstat-ing all tracked files, and on a session's cold
+# first shell that step crosses git's default 2s delayed-progress threshold,
+# painting a "Refresh index: N/N" bar that never appeared pre-gVisor. Push the
+# threshold out so the cosmetic bar stays hidden; a genuinely long op (>10s)
+# still surfaces one. Set via ENV (not zshrc) to cover every shell and any
+# git invoked by tooling, not just interactive zsh.
+ENV GIT_PROGRESS_DELAY=10
 
 RUN cat <<'EOF' > ~/.zshrc
 HISTSIZE=10000
