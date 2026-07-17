@@ -50,6 +50,10 @@ const HEADER_H = 28
 const PAD = 3
 /** Pointer must travel this far before a header-drag becomes a move. */
 const DRAG_THRESHOLD = 5
+/** Most sessions eagerly attached (hidden) after a page load — each costs a
+ *  kubectl-exec PTY on the server, so a large install shouldn't fan out
+ *  dozens at once. Sessions past the cap attach on first view, as before. */
+const EAGER_ATTACH_MAX = 12
 /** Dragging within this many px of a workspace edge targets the ROOT —
  *  dropping there gives the pane a full-height/width half of the whole
  *  workspace instead of splitting an individual pane. */
@@ -232,6 +236,42 @@ export function SessionView({
   for (const k of [...lastRects.current.keys()]) {
     if (!mounted.includes(k)) lastRects.current.delete(k)
   }
+
+  // Eager attach: after a reload the keep-alive set starts empty, so every
+  // session's first click paid the attach chain plus the settle-gate
+  // "Connecting…" mask. Instead, mount every live session's agent pane
+  // (hidden) as soon as the workspace is measured — they attach and settle
+  // off-screen, and a sidebar click becomes the same pure visibility flip
+  // as switching back to an already-viewed session. Agent only: it's the
+  // tab a fresh page reveals (activeTabs don't persist), it exists for
+  // every session, and it avoids trusting persisted layouts whose window
+  // ids may be stale. Each pane's rect is pre-seeded to the tabs-mode rect
+  // so the hidden terminal attaches at exactly the size a click reveals —
+  // no resize round trip at reveal. Capped so a large install doesn't fan
+  // out dozens of kubectl PTYs at once; uncovered sessions just keep the
+  // old click-to-attach behavior.
+  const eagerIdsKey = sessions
+    .filter((s) => !s.terminating)
+    .slice(0, EAGER_ATTACH_MAX)
+    .map((s) => s.sessionId)
+    .join(',')
+  useEffect(() => {
+    if (wsSize.w <= 0 || wsSize.h <= 0 || eagerIdsKey === '') return
+    const keys = eagerIdsKey.split(',').map((id) => `${id}|agent`)
+    const rect = {
+      left: PAD,
+      top: HEADER_H,
+      width: wsSize.w - PAD * 2,
+      height: wsSize.h - HEADER_H - PAD,
+    }
+    for (const k of keys) {
+      if (!lastRects.current.has(k)) lastRects.current.set(k, rect)
+    }
+    setOpened((prev) => {
+      const fresh = keys.filter((k) => !prev.includes(k))
+      return fresh.length ? [...prev, ...fresh] : prev
+    })
+  }, [eagerIdsKey, wsSize.w, wsSize.h])
 
   const refetchTerminals = (): void => {
     void queryClient.invalidateQueries({ queryKey: ['terminals', sid] })
