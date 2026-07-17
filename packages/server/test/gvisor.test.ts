@@ -83,6 +83,9 @@ describe('runscShimConfigToml', () => {
     // Both tiers honor the setuid bit — the image's passwordless sudo is a
     // feature (google/gvisor#5299 is gated behind this flag).
     expect(toml).toContain('allow-suid = "true"')
+    // root:self ONLY — `all:` would wrap hostPath volumes in an ephemeral
+    // overlay and silently discard session-dir writes.
+    expect(toml).toContain('overlay2 = "root:self"')
     expect(toml).not.toContain('net-raw')
   })
 
@@ -91,6 +94,7 @@ describe('runscShimConfigToml', () => {
     expect(toml).toContain('platform = "systrap"')
     expect(toml).toContain('host-uds = "all"')
     expect(toml).toContain('allow-suid = "true"')
+    expect(toml).toContain('overlay2 = "root:self"')
     expect(toml).toContain('net-raw = "true"')
     expect(toml).toContain('allow-packet-socket-write = "true"')
   })

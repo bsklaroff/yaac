@@ -109,6 +109,13 @@ export function gvisorNodeArch(unameM: string): 'x86_64' | 'aarch64' {
  *    default, google/gvisor#5299). The image's passwordless `sudo` is a
  *    feature; this is a euid transition INSIDE the sentry only — the
  *    sandbox's host process stays unprivileged.
+ *  - overlay2 root:self: back the container ROOTFS's writable layer with a
+ *    sentry-internal overlay paged against a filestore in the rootfs dir,
+ *    so rootfs writes (/tmp, in-session apt installs, …) never round-trip
+ *    the gofer. Rootfs-only on purpose: `all:` would wrap hostPath volumes
+ *    too, making session-dir and shared-image-store writes ephemeral.
+ *    Rootfs writes were already ephemeral (containerd discards the
+ *    snapshot), so this changes performance, not semantics.
  *  - nested additionally allows raw/packet sockets, which the in-sandbox
  *    container engine drives — scoped to this handler.
  */
@@ -120,6 +127,7 @@ export function runscShimConfigToml(handler: 'gvisor' | 'gvisor-nested'): string
     '  platform = "systrap"',
     '  host-uds = "all"',
     '  allow-suid = "true"',
+    '  overlay2 = "root:self"',
   ]
   if (handler === 'gvisor-nested') {
     lines.push('  net-raw = "true"')
