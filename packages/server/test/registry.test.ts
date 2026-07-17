@@ -207,6 +207,15 @@ describe('pushImageToRegistry', () => {
     )
   })
 
+  it('passes --compression-format through (trust-split zstd parent pushes)', async () => {
+    fetchMock.mockResolvedValue(fetchResponse({ ok: false, status: 404 }))
+    await pushImageToRegistry('yaac-tools:abc', { compressionFormat: 'zstd' })
+    expect(spawnedChildren[0].args).toEqual([
+      'push', '--tls-verify=false', '--compression-format', 'zstd',
+      'yaac-tools:abc', 'localhost:5001/yaac-tools:abc',
+    ])
+  })
+
   it('force-pushes even when the tag is already present (rebuild path)', async () => {
     fetchMock.mockResolvedValue(fetchResponse({ ok: true })) // manifest HEAD hit
     const ref = await pushImageToRegistry('yaac-tools:abc', { force: true })

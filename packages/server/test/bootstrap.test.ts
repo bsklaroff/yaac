@@ -58,6 +58,9 @@ import {
   buildProxyServiceManifest,
   buildSessionEgressRedirectCnpManifest,
   buildEgressWorldDenyCiliumPolicyManifest,
+  buildBuilderRoleGuardPolicyManifest,
+  buildBuilderRoleGuardBindingManifest,
+  BUILDER_ROLE_GUARD_NAME,
   EGRESS_WORLD_DENY_NAME,
   ensureCaConfigMap,
   ensureNamespace,
@@ -343,6 +346,10 @@ describe('buildEgressWorldDenyCiliumPolicyManifest', () => {
       .toEqual([
         { key: 'app', operator: 'NotIn', values: ['yaac-proxy'] },
         { key: 'yaac.session-id', operator: 'DoesNotExist' },
+        // Trust-split builder pods need direct egress (registry DNATs to a
+        // kind-network IP = world; RUN steps fetch upstreams) and a Cilium
+        // deny beats any allow — so they are carved out of the selector.
+        { key: 'yaac.role', operator: 'NotIn', values: ['builder'] },
       ])
     expect(m.spec.egressDeny).toEqual([{ toEntities: ['world'] }])
   })
@@ -350,6 +357,64 @@ describe('buildEgressWorldDenyCiliumPolicyManifest', () => {
   it('exempts only the proxy, by an unforgeable trusted-server label', () => {
     const m = buildEgressWorldDenyCiliumPolicyManifest() as unknown as Cnp
     expect(m.spec.endpointSelector.matchExpressions[0].values).toEqual(['yaac-proxy'])
+  })
+})
+
+describe('builder role guard (ValidatingAdmissionPolicy)', () => {
+  interface Vap {
+    apiVersion: string
+    kind: string
+    metadata: { name: string }
+    spec: {
+      failurePolicy: string
+      matchConstraints: { resourceRules: Array<Record<string, unknown>> }
+      matchConditions: Array<{ name: string; expression: string }>
+      validations: Array<{ expression: string; message: string }>
+    }
+  }
+
+  it('matches only pods carrying yaac.role=builder, on create AND update', () => {
+    const m = buildBuilderRoleGuardPolicyManifest() as unknown as Vap
+    expect(m.kind).toBe('ValidatingAdmissionPolicy')
+    expect(m.metadata.name).toBe(BUILDER_ROLE_GUARD_NAME)
+    expect(m.spec.failurePolicy).toBe('Fail')
+    expect(m.spec.matchConstraints.resourceRules).toEqual([{
+      apiGroups: [''],
+      apiVersions: ['v1'],
+      operations: ['CREATE', 'UPDATE'],
+      resources: ['pods'],
+    }])
+    // The label predicate is a matchCondition, so unlabeled pods are
+    // entirely untouched by the policy.
+    expect(m.spec.matchConditions).toHaveLength(1)
+    expect(m.spec.matchConditions[0].expression)
+      .toContain("object.metadata.labels['yaac.role'] == 'builder'")
+  })
+
+  it('denies ServiceAccount creators and non-gvisor carriers', () => {
+    const m = buildBuilderRoleGuardPolicyManifest() as unknown as Vap
+    const exprs = m.spec.validations.map((v) => v.expression)
+    // A session's only path to pod creation (a vcluster syncer) is an SA;
+    // session pods themselves hold no token. The trusted server is a cert
+    // user, never an SA.
+    expect(exprs).toContain("!request.userInfo.username.startsWith('system:serviceaccount:')")
+    // And the label may only describe an actually-sandboxed pod.
+    expect(exprs).toContain(
+      "has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'gvisor'",
+    )
+  })
+
+  it('binds cluster-wide with Deny — the label is reserved in every namespace', () => {
+    const m = buildBuilderRoleGuardBindingManifest() as unknown as {
+      kind: string
+      metadata: { name: string }
+      spec: { policyName: string; validationActions: string[]; matchResources?: unknown }
+    }
+    expect(m.kind).toBe('ValidatingAdmissionPolicyBinding')
+    expect(m.spec.policyName).toBe(BUILDER_ROLE_GUARD_NAME)
+    expect(m.spec.validationActions).toEqual(['Deny'])
+    // No matchResources: vcluster session namespaces are covered too.
+    expect(m.spec.matchResources).toBeUndefined()
   })
 })
 

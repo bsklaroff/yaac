@@ -71,6 +71,8 @@ function makeDeps(
     log: overrides.log ?? vi.fn(),
     confirm: overrides.confirm ?? vi.fn().mockResolvedValue(false),
     ensureRegistry: overrides.ensureRegistry ?? vi.fn().mockResolvedValue(undefined),
+    exposeRegistry: overrides.exposeRegistry
+      ?? vi.fn().mockResolvedValue('yaac-registry.yaac.svc.cluster.local:5000'),
     check: overrides.check ?? vi.fn().mockResolvedValue({ ok: true, results: [] }),
     platform: overrides.platform ?? 'linux',
     homedir: overrides.homedir ?? ((): string => '/home/tester'),
@@ -91,6 +93,8 @@ describe('runClusterSetup', () => {
 
     expect(ok).toBe(true)
     expect(deps.ensureRegistry).toHaveBeenCalledOnce()
+    // In-cluster registry Service for trust-split builder pods.
+    expect(deps.exposeRegistry).toHaveBeenCalledOnce()
 
     // Cluster recreated: delete (best-effort) then create from the bundled
     // config with $HOME substituted, under the podman provider.
@@ -266,6 +270,7 @@ describe('runClusterSetup', () => {
 
     expect(ok).toBe(true)
     expect(deps.ensureRegistry).toHaveBeenCalledOnce()
+    expect(deps.exposeRegistry).toHaveBeenCalledOnce()
     // No delete/create/cilium — only the fixups (incl. the gVisor install,
     // whose RuntimeClass apply is the one streaming call) and the check.
     expect(deps.run.mock.calls.some(([f, a]) => f === 'kind' && a[0] === 'delete')).toBe(false)

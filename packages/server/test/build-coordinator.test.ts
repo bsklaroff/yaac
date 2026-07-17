@@ -16,6 +16,21 @@ vi.mock('#lib/k8s/registry', () => ({
   registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
 }))
 
+const leaseInstances = vi.hoisted(
+  () => [] as Array<{ acquire: ReturnType<typeof vi.fn>; release: ReturnType<typeof vi.fn> }>,
+)
+const mockBuildLayerInPod = vi.hoisted(() => vi.fn())
+vi.mock('#lib/container/builder-pod', () => {
+  class FakeLease {
+    acquire = vi.fn().mockResolvedValue('builder-pod-x')
+    release = vi.fn().mockResolvedValue(undefined)
+    constructor() {
+      leaseInstances.push(this as unknown as (typeof leaseInstances)[number])
+    }
+  }
+  return { BuilderPodLease: FakeLease, buildLayerInPod: mockBuildLayerInPod }
+})
+
 vi.mock('#log', () => ({
   serverLog: vi.fn(),
 }))
@@ -147,10 +162,12 @@ describe('build coordinator', () => {
 
   describe('ensureImage', () => {
     it('coalesces the shared base and fans out distinct downstream layers', async () => {
+      // Downstream fixtures use a trusted name: single-flight coalescing is
+      // name-agnostic, and host-built layers keep the deferred-build hooks.
       const base = layer('yaac-base:shared')
       mockResolveChain.mockImplementation((slug: string) => Promise.resolve({
-        layers: [base, layer(`yaac-user-${slug}:x`, 'user')],
-        finalTag: `yaac-user-${slug}:x`,
+        layers: [base, layer(`yaac-tools-${slug}:x`, 'tools')],
+        finalTag: `yaac-tools-${slug}:x`,
       }))
       const builds = deferBuilds()
 
@@ -161,16 +178,16 @@ describe('build coordinator', () => {
       await vi.waitFor(() => { expect(mockBuildImage).toHaveBeenCalledTimes(1) })
       expect(mockBuildImage.mock.calls[0][0]).toBe('yaac-base:shared')
 
-      // Base resolves → both project layers build in parallel.
+      // Base resolves → both downstream layers build in parallel.
       builds.get('yaac-base:shared')!.resolve()
       await vi.waitFor(() => { expect(mockBuildImage).toHaveBeenCalledTimes(3) })
       const tags = mockBuildImage.mock.calls.slice(1).map((c) => c[0]).sort()
-      expect(tags).toEqual(['yaac-user-proj-a:x', 'yaac-user-proj-b:x'])
+      expect(tags).toEqual(['yaac-tools-proj-a:x', 'yaac-tools-proj-b:x'])
 
-      builds.get('yaac-user-proj-a:x')!.resolve()
-      builds.get('yaac-user-proj-b:x')!.resolve()
-      expect(await a).toBe('yaac-user-proj-a:x')
-      expect(await b).toBe('yaac-user-proj-b:x')
+      builds.get('yaac-tools-proj-a:x')!.resolve()
+      builds.get('yaac-tools-proj-b:x')!.resolve()
+      expect(await a).toBe('yaac-tools-proj-a:x')
+      expect(await b).toBe('yaac-tools-proj-b:x')
     })
 
     it('skips layers whose tag already exists', async () => {
@@ -258,12 +275,33 @@ describe('build coordinator', () => {
       expect(listImageBuilds()).toEqual([])
     })
 
-    it('pushes even a present tag when forced', async () => {
+    it('pushes even a present tag when forced (host holds the fresh bytes)', async () => {
       mockHasTag.mockResolvedValue(true)
+      mockImageExists.mockResolvedValue(true)
       mockPush.mockResolvedValue('localhost:5001/t:1')
       await pushImageShared('t:1', { projectSlug: 'a', reason: 'rebuild' }, { force: true })
       expect(mockPush).toHaveBeenCalledTimes(1)
       expect(mockPush.mock.calls[0][1]).toMatchObject({ force: true })
+    })
+
+    it('treats a forced push of a registry-only tag as already satisfied', async () => {
+      // A cluster-pod-built layer: never in the host store, force-pushed to
+      // the registry by its own builder pod. Nothing local to push.
+      mockHasTag.mockResolvedValue(true)
+      mockImageExists.mockResolvedValue(false)
+      const ref = await pushImageShared(
+        't:1', { projectSlug: 'a', reason: 'rebuild' }, { force: true },
+      )
+      expect(ref).toBe('localhost:5001/t:1')
+      expect(mockPush).not.toHaveBeenCalled()
+    })
+
+    it('passes the compression format through to the push', async () => {
+      mockPush.mockResolvedValue('localhost:5001/t:1')
+      await pushImageShared(
+        't:1', { projectSlug: 'a', reason: 'session' }, { compressionFormat: 'zstd' },
+      )
+      expect(mockPush.mock.calls[0][1]).toMatchObject({ compressionFormat: 'zstd' })
     })
 
     it('coalesces concurrent pushes of the same tag', async () => {
@@ -301,12 +339,16 @@ describe('build coordinator', () => {
 
       const result = await rebuildProjectImage('p')
       expect(result).toBe('yaac-user-p:3')
-      // Base untouched; tools removed+rebuilt no-cache; user removed+rebuilt cached.
-      expect(mockRemoveImage.mock.calls.map((c) => c[0])).toEqual(['yaac-tools:2', 'yaac-user-p:3'])
+      // Base untouched; tools removed+rebuilt no-cache on host. The user
+      // layer is untrusted: no host removal (its tag never exists there)
+      // and the rebuild runs in a builder pod, with the normal cache.
+      expect(mockRemoveImage.mock.calls.map((c) => c[0])).toEqual(['yaac-tools:2'])
       expect(mockBuildImage.mock.calls.map((c) => [c[0], (c[4] as { noCache?: boolean }).noCache])).toEqual([
         ['yaac-tools:2', true],
-        ['yaac-user-p:3', false],
       ])
+      expect(mockBuildLayerInPod).toHaveBeenCalledTimes(1)
+      expect(mockBuildLayerInPod.mock.calls[0][0]).toMatchObject({ tag: 'yaac-user-p:3' })
+      expect(mockBuildLayerInPod.mock.calls[0][1]).toMatchObject({ noCache: false })
       expect(listImageBuilds().every((e) => e.reason === 'rebuild')).toBe(true)
     })
 
@@ -317,6 +359,96 @@ describe('build coordinator', () => {
       })
       await expect(rebuildProjectImage('p')).rejects.toThrow(/standalone Dockerfile\.yaac/)
       expect(mockRemoveImage).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('trust-split routing (always on)', () => {
+    beforeEach(() => {
+      leaseInstances.length = 0
+    })
+    afterEach(() => {
+      vi.unstubAllEnvs()
+    })
+
+    function trustSplitChain(): { layers: ImageLayer[]; finalTag: string } {
+      const tools = layer('yaac-tools:t1', 'tools')
+      const project: ImageLayer = {
+        tag: 'yaac-base:p1',
+        name: 'project',
+        dockerfile: '/cfg/Dockerfile.yaac',
+        context: '/cfg',
+        buildArgs: { BASE_IMAGE: 'yaac-tools:t1' },
+        contentHash: 'p1',
+      }
+      return { layers: [tools, project], finalTag: 'yaac-base:p1' }
+    }
+
+    it('routes untrusted layers to the builder pod and pushes the parent zstd', async () => {
+      mockResolveChain.mockResolvedValue(trustSplitChain())
+      mockImageExists.mockResolvedValue(true) // tools present on host
+      mockHasTag.mockResolvedValue(false) // project tag absent from registry
+      mockPush.mockResolvedValue('localhost:5001/yaac-tools:t1')
+      mockBuildLayerInPod.mockResolvedValue(undefined)
+
+      await ensureImage('proj')
+
+      // Trusted layer skipped via host inspect; untrusted built in the pod.
+      expect(mockBuildImage).not.toHaveBeenCalled()
+      expect(mockBuildLayerInPod).toHaveBeenCalledTimes(1)
+      expect(mockBuildLayerInPod.mock.calls[0][0]).toMatchObject({ tag: 'yaac-base:p1' })
+      // The pod pulls its parent from the registry: pushed first, zstd.
+      expect(mockPush).toHaveBeenCalledTimes(1)
+      expect(mockPush.mock.calls[0][0]).toBe('yaac-tools:t1')
+      expect(mockPush.mock.calls[0][1]).toMatchObject({ compressionFormat: 'zstd' })
+      // The pod build received the request's lease, and it was released.
+      expect(leaseInstances).toHaveLength(1)
+      expect(mockBuildLayerInPod.mock.calls[0][1]).toMatchObject({ lease: leaseInstances[0] })
+      expect(leaseInstances[0].release).toHaveBeenCalledTimes(1)
+    })
+
+    it('skips untrusted layers via the registry, not the host store', async () => {
+      mockResolveChain.mockResolvedValue(trustSplitChain())
+      mockImageExists.mockResolvedValue(true)
+      mockHasTag.mockResolvedValue(true) // project tag already in the registry
+      await ensureImage('proj')
+      expect(mockBuildImage).not.toHaveBeenCalled()
+      expect(mockBuildLayerInPod).not.toHaveBeenCalled()
+      expect(mockPush).not.toHaveBeenCalled()
+    })
+
+    it('keeps untrusted layers on host podman in a nested install', async () => {
+      vi.stubEnv('YAAC_NESTED', '1')
+      mockResolveChain.mockResolvedValue(trustSplitChain())
+      mockImageExists.mockResolvedValue(false)
+      await ensureImage('proj')
+      expect(mockBuildLayerInPod).not.toHaveBeenCalled()
+      expect(mockBuildImage).toHaveBeenCalledTimes(2)
+    })
+
+    it('rebuild force-pushes the rebuilt host parent before the pod rebuild', async () => {
+      mockResolveChain.mockResolvedValue(trustSplitChain())
+      mockImageExists.mockResolvedValue(true) // rebuilt tools sits on host
+      mockPush.mockResolvedValue('localhost:5001/yaac-tools:t1')
+      mockBuildLayerInPod.mockResolvedValue(undefined)
+
+      await rebuildProjectImage('proj')
+
+      // Rebuild changes bytes under the unchanged tools tag — a plain push
+      // would HEAD-skip and hand the builder pod stale bytes.
+      expect(mockPush).toHaveBeenCalledTimes(1)
+      expect(mockPush.mock.calls[0][0]).toBe('yaac-tools:t1')
+      expect(mockPush.mock.calls[0][1]).toMatchObject({
+        force: true,
+        compressionFormat: 'zstd',
+      })
+      // Tools rebuilt host-side (--no-cache); project rebuilt in the pod.
+      expect(mockBuildImage).toHaveBeenCalledTimes(1)
+      expect(mockBuildImage.mock.calls[0][0]).toBe('yaac-tools:t1')
+      expect(mockBuildLayerInPod).toHaveBeenCalledTimes(1)
+      // Host remove ran only for the host layer; cluster-pod remove no-ops.
+      expect(mockRemoveImage.mock.calls.map((c) => c[0])).toEqual(['yaac-tools:t1'])
+      expect(leaseInstances).toHaveLength(1)
+      expect(leaseInstances[0].release).toHaveBeenCalledTimes(1)
     })
   })
 })

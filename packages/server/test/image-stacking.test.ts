@@ -18,6 +18,8 @@ describe('ensureImage layer stacking', () => {
   afterEach(async () => {
     vi.restoreAllMocks()
     vi.doUnmock('node:child_process')
+    vi.doUnmock('#lib/k8s/registry')
+    vi.doUnmock('#lib/container/builder-pod')
     await cleanupTempDir(dataDir)
   })
 
@@ -59,6 +61,34 @@ describe('ensureImage layer stacking', () => {
         process.nextTick(() => emitter.emit('close', 0))
         return emitter
       }),
+    }))
+
+    // Untrusted layers route to the builder-pod engine (trust-split is
+    // always on). Mock it to record the same `build <tag> [args]` rows the
+    // spawn fake records for host builds, so stacking assertions read one
+    // uniform operations log; registry mocked so the untrusted-layer
+    // exists-check (registryHasTag) never touches the network.
+    vi.doMock('#lib/k8s/registry', () => ({
+      registryHasTag: vi.fn().mockResolvedValue(false),
+      registryRef: (tag: string) => `localhost:5001/${tag}`,
+      pushImageToRegistry: vi.fn().mockResolvedValue('pushed'),
+    }))
+    vi.doMock('#lib/container/builder-pod', () => ({
+      BuilderPodLease: class {
+        acquire(): Promise<string> { return Promise.resolve('builder-pod') }
+        release(): Promise<void> { return Promise.resolve() }
+      },
+      buildLayerInPod: vi.fn(
+        (
+          layer: { tag: string; buildArgs?: Record<string, string> },
+          ctx: { noCache?: boolean },
+        ) => {
+          const pairs = Object.entries(layer.buildArgs ?? {}).map(([k, v]) => `${k}=${v}`)
+          const suffix = pairs.length ? ` [${pairs.join(',')}]` : ''
+          operations.push(`build ${layer.tag}${suffix}${ctx.noCache ? ' --no-cache' : ''}`)
+          return Promise.resolve()
+        },
+      ),
     }))
 
     // Dynamic imports are required: vi.resetModules() above invalidates the

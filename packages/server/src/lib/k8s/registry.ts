@@ -137,17 +137,30 @@ export async function removeLocalRegistry(): Promise<void> {
  * an unchanged tag (`yaac project rebuild`'s --no-cache tools refresh).
  * `--tls-verify=false` because the local registry is plain HTTP on
  * loopback.
+ *
+ * `compressionFormat: 'zstd'` is used for trusted-layer pushes feeding
+ * builder-pod parent pulls: zstd layers cut a pod's empty-graphroot parent
+ * pull from 65.6s to 40.4s (measured, docs/trust-split-builds-plan.md) at
+ * no meaningful host-side push cost. Node containerd pulls of zstd blobs
+ * (the session-pod path) are validated — see the plan doc.
  */
 export async function pushImageToRegistry(
   localTag: string,
-  opts: { onLog?: (line: string) => void; force?: boolean } = {},
+  opts: {
+    onLog?: (line: string) => void
+    force?: boolean
+    compressionFormat?: 'zstd' | 'gzip'
+  } = {},
 ): Promise<string> {
   const ref = registryRef(localTag)
   if (!opts.force && await registryHasTag(localTag)) return ref
 
+  const compressionArgs = opts.compressionFormat
+    ? ['--compression-format', opts.compressionFormat]
+    : []
   serverLog(`[registry] pushing ${localTag} -> ${ref}`)
   await new Promise<void>((resolve, reject) => {
-    const child = spawn('podman', ['push', '--tls-verify=false', localTag, ref], {
+    const child = spawn('podman', ['push', '--tls-verify=false', ...compressionArgs, localTag, ref], {
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 600_000,
     })

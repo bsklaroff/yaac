@@ -5,6 +5,7 @@ import { reconcileVclusters } from '#lib/session/vcluster-reconcile'
 import { reconcileInnerRedirects } from '#lib/session/inner-redirect-reconcile'
 import { reconcileStaleTproxyRules } from '#lib/session/tproxy-gc-reconcile'
 import { reconcileHostImageGc } from '#lib/container/image-gc'
+import { reconcileBuilderPodGc } from '#lib/container/builder-pod'
 import { reconcileVclusterAttribution } from '#lib/session/vcluster-attribution-reconcile'
 import { reconcilePrewarmPool } from '#prewarm-reconcile'
 import { reconcileImagePrewarm } from '#image-prewarm'
@@ -96,6 +97,10 @@ function defaultTickSteps(): Array<() => Promise<void>> {
     // prune the chains they pinned. Throttled internally to every few
     // hours; a no-op on e2e servers (per-run namespaces skip it).
     reconcileHostImageGc,
+    // Leaked trust-split builder pods (server crashed mid-build): the
+    // normal path deletes them inline; this label sweep is the backstop.
+    // Throttled internally — most ticks are a no-op.
+    () => reconcileBuilderPodGc(),
   ]
 }
 

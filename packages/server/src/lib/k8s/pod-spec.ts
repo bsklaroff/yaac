@@ -101,11 +101,22 @@ export const NESTED_GRAPHROOT_SIZELIMIT_BYTES = NESTED_GRAPHROOT_TMPFS_BYTES + 1
  * gvisorContainerdRuntimesToml). Verified live: setcap works, a forced
  * cgroup reclaim pages a 2GiB graphroot down to ~0 with intact readback.
  */
-export const NESTED_GRAPHROOT_ANNOTATIONS: Record<string, string> = {
-  [`dev.gvisor.spec.mount.${NESTED_GRAPHROOT_VOLUME}.type`]: 'bind',
-  [`dev.gvisor.spec.mount.${NESTED_GRAPHROOT_VOLUME}.share`]: 'container',
-  [`dev.gvisor.spec.mount.${NESTED_GRAPHROOT_VOLUME}.options`]:
-    `rw,size=${NESTED_GRAPHROOT_TMPFS_BYTES}`,
+export const NESTED_GRAPHROOT_ANNOTATIONS: Record<string, string> =
+  graphrootMountAnnotations(NESTED_GRAPHROOT_TMPFS_BYTES)
+
+/**
+ * The annotation set above, parameterized on the sentry tmpfs size cap so
+ * other podman-in-gvisor pods (the ephemeral builder pods of
+ * docs/trust-split-builds-plan.md) can size their graphroot independently
+ * of session pods. Keys on NESTED_GRAPHROOT_VOLUME — the pod must mount
+ * its graphroot emptyDir under that volume name.
+ */
+export function graphrootMountAnnotations(sizeBytes: number): Record<string, string> {
+  return {
+    [`dev.gvisor.spec.mount.${NESTED_GRAPHROOT_VOLUME}.type`]: 'bind',
+    [`dev.gvisor.spec.mount.${NESTED_GRAPHROOT_VOLUME}.share`]: 'container',
+    [`dev.gvisor.spec.mount.${NESTED_GRAPHROOT_VOLUME}.options`]: `rw,size=${sizeBytes}`,
+  }
 }
 
 /**

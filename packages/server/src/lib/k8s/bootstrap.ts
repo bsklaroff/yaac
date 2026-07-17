@@ -21,6 +21,7 @@ import {
   LABEL_VCLUSTER_MANAGED_BY,
   VCLUSTER_API_PORT,
 } from '#lib/k8s/pods'
+import { RUNTIME_CLASS_GVISOR } from '#lib/k8s/gvisor'
 import { credentialsDir, getDataDir } from '@yaac/shared/project-paths'
 import { env } from '@yaac/shared/env'
 
@@ -120,6 +121,13 @@ export const VCLUSTER_FALLBACK_PRIORITY = 90
  */
 export const LABEL_ROLE = 'yaac.role'
 export const ROLE_INNER_PROXY = 'inner-proxy'
+/**
+ * Role of the ephemeral runsc builder pods that execute untrusted image
+ * layers (docs/trust-split-builds-plan.md). Referenced by the world-deny
+ * exclusion below and by the builder-pod reap sweep; defined here (not in
+ * builder-pod.ts) so the policy builder needs no import from lib/container.
+ */
+export const ROLE_BUILDER = 'builder'
 /**
  * Label stamped on the host objects `reconcileInnerRedirects` projects into a
  * vcluster's namespace, so the prune pass can list exactly its own writes and
@@ -465,9 +473,87 @@ export function buildEgressWorldDenyCiliumPolicyManifest(): Record<string, unkno
         matchExpressions: [
           { key: 'app', operator: 'NotIn', values: [PROXY_APP_NAME] },
           { key: LABEL_SESSION_ID, operator: 'DoesNotExist' },
+          // Ephemeral builder pods (trust-split untrusted image builds)
+          // need direct egress: their parent/product registry traffic
+          // DNATs to the registry's kind-network IP (world to Cilium),
+          // and RUN steps fetch upstream packages. A deny would override
+          // any allow, so they must be excluded here, not allowed
+          // elsewhere. NotIn matches pods without the label, so every
+          // other non-session pod stays covered.
+          { key: LABEL_ROLE, operator: 'NotIn', values: [ROLE_BUILDER] },
         ],
       },
       egressDeny: [{ toEntities: ['world'] }],
+    },
+  }
+}
+
+/** Name of the builder-role admission guard (policy + binding). */
+export const BUILDER_ROLE_GUARD_NAME = 'yaac-builder-role-guard'
+
+/**
+ * Admission guard making `yaac.role=builder` unfakeable: the label is
+ * policy-bearing (the world-deny exclusion above), so nothing untrusted
+ * may mint it. The only API identities untrusted code can ever hold are
+ * ServiceAccounts — session pods carry no token at all, and the one
+ * session-reachable pod-create path (a vcluster's syncer materializing
+ * virtual pods on the host) authenticates as its SA. The trusted server
+ * and operators act as cert users. So: builder-labeled pods must not be
+ * created or updated by any ServiceAccount, and must run under the
+ * gvisor RuntimeClass (the label describes a sandboxed builder; a runc
+ * pod wearing it is a bug or an attack either way). UPDATE is matched so
+ * the label can't be patched onto an existing pod after admission.
+ */
+export function buildBuilderRoleGuardPolicyManifest(): Record<string, unknown> {
+  return {
+    apiVersion: 'admissionregistration.k8s.io/v1',
+    kind: 'ValidatingAdmissionPolicy',
+    metadata: { name: BUILDER_ROLE_GUARD_NAME },
+    spec: {
+      failurePolicy: 'Fail',
+      matchConstraints: {
+        resourceRules: [{
+          apiGroups: [''],
+          apiVersions: ['v1'],
+          operations: ['CREATE', 'UPDATE'],
+          resources: ['pods'],
+        }],
+      },
+      matchConditions: [{
+        name: 'carries-builder-role',
+        expression:
+          `has(object.metadata.labels) && '${LABEL_ROLE}' in object.metadata.labels `
+          + `&& object.metadata.labels['${LABEL_ROLE}'] == '${ROLE_BUILDER}'`,
+      }],
+      validations: [
+        {
+          expression: "!request.userInfo.username.startsWith('system:serviceaccount:')",
+          message:
+            `the ${LABEL_ROLE}=${ROLE_BUILDER} label is reserved for yaac's `
+            + 'server-created builder pods and may not be set by service accounts',
+        },
+        {
+          expression:
+            'has(object.spec.runtimeClassName) '
+            + `&& object.spec.runtimeClassName == '${RUNTIME_CLASS_GVISOR}'`,
+          message: `${LABEL_ROLE}=${ROLE_BUILDER} pods must run under the `
+            + `${RUNTIME_CLASS_GVISOR} RuntimeClass`,
+        },
+      ],
+    },
+  }
+}
+
+/** Cluster-wide binding (no matchResources): the label is reserved in
+ *  every namespace, including vcluster session namespaces. */
+export function buildBuilderRoleGuardBindingManifest(): Record<string, unknown> {
+  return {
+    apiVersion: 'admissionregistration.k8s.io/v1',
+    kind: 'ValidatingAdmissionPolicyBinding',
+    metadata: { name: BUILDER_ROLE_GUARD_NAME },
+    spec: {
+      policyName: BUILDER_ROLE_GUARD_NAME,
+      validationActions: ['Deny'],
     },
   }
 }

@@ -12,6 +12,7 @@ import {
   SHARED_IMAGE_STORE_PATH,
   assertSessionLabels,
   buildSessionJobManifest,
+  graphrootMountAnnotations,
   parseEnvEntry,
   type NestedContainersParams,
   type SessionJobParams,
@@ -355,6 +356,14 @@ describe('buildSessionJobManifest — nestedContainers', () => {
       'dev.gvisor.spec.mount.podman-graphroot.type': 'bind',
       'dev.gvisor.spec.mount.podman-graphroot.share': 'container',
       'dev.gvisor.spec.mount.podman-graphroot.options': `rw,size=${cap}`,
+    })
+  })
+
+  it('parameterizes the graphroot annotations on size (builder pods use 16Gi)', () => {
+    expect(graphrootMountAnnotations(16 * 1024 ** 3)).toEqual({
+      'dev.gvisor.spec.mount.podman-graphroot.type': 'bind',
+      'dev.gvisor.spec.mount.podman-graphroot.share': 'container',
+      'dev.gvisor.spec.mount.podman-graphroot.options': `rw,size=${16 * 1024 ** 3}`,
     })
   })
 

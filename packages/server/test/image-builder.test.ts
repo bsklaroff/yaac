@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
-import { baseImageHash, contextHash, fileHash, parseContainerIgnore, sessionUid, isLayered } from '#lib/container/image-builder'
+import { baseImageHash, collectContextFiles, contextHash, fileHash, parseContainerIgnore, sessionUid, isLayered } from '#lib/container/image-builder'
 
 describe('fileHash', () => {
   it('produces a 16-char hex hash of file contents', async () => {
@@ -82,6 +82,25 @@ describe('baseImageHash', () => {
       // A uid change must invalidate the tag like a Dockerfile edit would.
       expect(hash501).not.toBe(hash1000)
       expect(hash501).not.toBe(await fileHash(dockerfile))
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('collectContextFiles', () => {
+  it('walks regular files, honoring the ignore set and skipping symlinks', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-ctx-'))
+    try {
+      await fs.writeFile(path.join(tmpDir, 'a.txt'), 'a')
+      await fs.mkdir(path.join(tmpDir, 'sub'))
+      await fs.writeFile(path.join(tmpDir, 'sub', 'b.txt'), 'b')
+      await fs.mkdir(path.join(tmpDir, 'ignored'))
+      await fs.writeFile(path.join(tmpDir, 'ignored', 'c.txt'), 'c')
+      await fs.symlink('a.txt', path.join(tmpDir, 'link.txt'))
+
+      const files = await collectContextFiles(tmpDir, '', new Set(['ignored']))
+      expect(files.sort()).toEqual(['a.txt', 'sub/b.txt'])
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true })
     }

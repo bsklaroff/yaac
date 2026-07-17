@@ -8,6 +8,8 @@ import { execFileAsync } from '#lib/k8s/kubectl'
 import { ensureGvisorRuntime } from '#lib/k8s/gvisor'
 import { ensurePinnedBinary } from '#lib/k8s/pinned-binary'
 import { ensureLocalRegistry, registryHost, REGISTRY_CONTAINER_NAME } from '#lib/k8s/registry'
+import { ensureRegistryClusterService } from '#lib/k8s/registry-service'
+import { ensureBuilderRoleGuard } from '#lib/container/builder-pod'
 import {
   formatCheckResult,
   NODE_KUBELET_FLAGS_ENV,
@@ -69,6 +71,10 @@ export interface ClusterSetupDeps {
   /** Interactive yes/no gate for destructive steps; false when not a TTY. */
   confirm: (question: string) => Promise<boolean>
   ensureRegistry: () => Promise<void>
+  /** Writes the in-cluster registry Service + EndpointSlice for builder
+   *  pods plus the builder-role admission guard; injectable so unit tests
+   *  never touch podman or the cluster. */
+  exposeRegistry: () => Promise<string>
   check: () => Promise<{ ok: boolean; results: CheckResult[] }>
   platform: NodeJS.Platform
   homedir: () => string
@@ -116,6 +122,11 @@ const defaultDeps: ClusterSetupDeps = {
   log: (m) => { console.log(m) },
   confirm: confirmDefault,
   ensureRegistry: ensureLocalRegistry,
+  exposeRegistry: async () => {
+    const host = await ensureRegistryClusterService()
+    await ensureBuilderRoleGuard()
+    return host
+  },
   check: () => runClusterCheck(),
   platform: process.platform,
   homedir: () => os.homedir(),
@@ -188,6 +199,7 @@ export async function runClusterSetup(
     for (const node of nodes) await applyNodeFixups(deps, node)
     await ensureGvisorRuntime(nodes, `kind-${cluster}`, deps)
     await connectRegistryToKindNetwork(deps)
+    await exposeRegistryInCluster(deps)
   } else {
     await deps.ensureRegistry()
     await recreateKindCluster(deps, cluster)
@@ -196,6 +208,7 @@ export async function runClusterSetup(
     for (const node of nodes) await applyNodeFixups(deps, node)
     await ensureGvisorRuntime(nodes, `kind-${cluster}`, deps)
     await connectRegistryToKindNetwork(deps)
+    await exposeRegistryInCluster(deps)
   }
 
   deps.log('\nVerifying with cluster check...')
@@ -517,6 +530,26 @@ async function connectRegistryToKindNetwork(deps: ClusterSetupDeps): Promise<voi
         + 'and re-run `yaac cluster setup --repair`.',
       )
     }
+  }
+}
+
+/**
+ * Write the in-cluster registry Service + EndpointSlice (used by builder
+ * pods to pull parents / push products) and the builder-role admission
+ * guard. Fails soft like the network connect above: the builder engine
+ * re-ensures both lazily before every untrusted build and throws loudly
+ * there.
+ */
+async function exposeRegistryInCluster(deps: ClusterSetupDeps): Promise<void> {
+  try {
+    const host = await deps.exposeRegistry()
+    deps.log(`Registry exposed to builder pods as ${host}.`)
+  } catch (err) {
+    deps.log(
+      'note: could not write the in-cluster registry Service '
+      + `(${err instanceof Error ? err.message.split('\n')[0] : String(err)}) — `
+      + 'trust-split image builds will retry this on first use.',
+    )
   }
 }
 

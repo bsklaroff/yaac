@@ -65,7 +65,14 @@ export function parseContainerIgnore(content: string): Set<string> {
   return patterns
 }
 
-async function collectContextFiles(root: string, rel: string, ignore: Set<string>): Promise<string[]> {
+/**
+ * Recursively collect a build context's regular files (context-relative
+ * paths), skipping ignored entries. Symlinks and empty directories are
+ * excluded — matching `contextHash`, which defines what the content-hash
+ * tag covers. Shared with the builder-pod context streamer so the bytes
+ * shipped to a sandboxed build are exactly the bytes the tag hashed.
+ */
+export async function collectContextFiles(root: string, rel: string, ignore: Set<string>): Promise<string[]> {
   const entries = await fs.readdir(path.join(root, rel), { withFileTypes: true })
   const out: string[] = []
   for (const entry of entries) {
