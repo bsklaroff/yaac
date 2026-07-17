@@ -82,6 +82,25 @@ export const ROLE_SALVAGE_WRITER = 'salvage-writer'
 /** In-writer mount point of the store hostPath. */
 const WRITER_STORE_PATH = '/store'
 
+/**
+ * Tagged generations kept per store repository. Content-hash rebuilds
+ * re-tag under the same repo (`yaac-base:<hash>`), and a tagged image
+ * pins its whole intermediate layer chain — without retirement the store
+ * grows ~3–4GB per rebuild, forever (measured 25GB after one day of e2e
+ * churn). Two generations cover current + one rollback/in-flight.
+ */
+export const STORE_GENERATIONS_KEPT = 2
+
+/**
+ * Age floor for the dangling prune. Retirement only untags; the space
+ * lives in the retired generations' now-dangling chains, which this
+ * prune cascades away. The floor exists for mid-build salvages: a chain
+ * salvaged from an in-progress build has a dangling head until a later
+ * salvage adds its children/tag, and builds run ~10–25min — 2h keeps
+ * such chains safely out of reach without retaining a week of churn.
+ */
+export const STORE_PRUNE_UNTIL = '2h'
+
 /** Host flock file serializing store writers (real kernel locks — the
  *  writer is a runc pod). Lives inside the store dir it guards. */
 const STORE_LOCK_FILE = `${WRITER_STORE_PATH}/.yaac-salvage.lock`
@@ -227,10 +246,17 @@ export function buildSalvageWriterPodManifest(
 /**
  * The writer-side script: load the session's tar into the store, restore
  * tags for ids already present (a rebuilt tag re-points to an existing
- * id without a new save), prune dangling store images older than 7d
- * (tag re-points accumulate otherwise — this is the store's GC), and
- * sweep stale handoff tars from crashed salvages. All under one host
- * flock so concurrent writers serialize.
+ * id without a new save), run the store's GC, and sweep stale handoff
+ * tars from crashed salvages. All under one host flock so concurrent
+ * writers serialize.
+ *
+ * The GC is generation retention: keep the newest STORE_GENERATIONS_KEPT
+ * tags per repository (untag the rest — podman removes the image only
+ * when its last name goes), then prune dangling images past the
+ * STORE_PRUNE_UNTIL floor. Retirement is what un-pins an old
+ * generation's intermediate chain; the prune is what cascades it away.
+ * Intermediates of kept generations have tagged descendants, so they are
+ * never dangling and the cross-session build cache survives.
  *
  * Tag pairs arrive as argv (`id ref` alternating) — validated by the
  * caller against IMAGE_ID / IMAGE_REF, never interpolated into the
@@ -250,7 +276,12 @@ export function buildWriterScript(sessionId: string): string {
     `  ${p} image exists "$1" 2>/dev/null && ${p} tag "$1" "$2" 2>/dev/null || true`,
     '  shift 2',
     'done',
-    `${p} image prune --filter dangling=true --filter until=168h -f >/dev/null 2>&1 || true`,
+    // --sort created lists newest first, so rows past the per-repo
+    // budget are the stale generations. Dangling rows list as <none>.
+    `${p} image ls --sort created --format '{{.Repository}} {{.Repository}}:{{.Tag}}' 2>/dev/null`
+    + ` | awk -v keep=${STORE_GENERATIONS_KEPT} '$1 != "<none>" && ++seen[$1] > keep { print $2 }'`
+    + ` | while IFS= read -r stale; do ${p} rmi "$stale" >/dev/null 2>&1 || true; done`,
+    `${p} image prune --filter dangling=true --filter until=${STORE_PRUNE_UNTIL} -f >/dev/null 2>&1 || true`,
     // Crashed-salvage residue: partial/orphaned tars older than an hour.
     `find ${WRITER_STORE_PATH} -maxdepth 1 -name ".salvage-*.tar*" -mmin +60 -delete 2>/dev/null || true`,
     `echo "store-images $(${p} image ls -aq 2>/dev/null | wc -l | tr -d " ")"`,

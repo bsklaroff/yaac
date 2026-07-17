@@ -44,6 +44,8 @@ import {
   salvageTarName,
   salvageWriterPodName,
   sharedImageStoreHostPath,
+  STORE_GENERATIONS_KEPT,
+  STORE_PRUNE_UNTIL,
   surveyExecCommand,
 } from '#lib/container/image-promoter'
 
@@ -157,14 +159,27 @@ describe('buildSalvageWriterPodManifest', () => {
 })
 
 describe('buildWriterScript', () => {
-  it('loads the tar under the store flock, tags from argv pairs, prunes, sweeps stale tars', () => {
+  it('loads the tar under the store flock, tags from argv pairs, GCs, sweeps stale tars', () => {
     const script = buildWriterScript(SID)
     expect(script).toContain(`load -i /store/${salvageTarName(SID)}`)
     expect(script).toContain(`rm -f /store/${salvageTarName(SID)}`)
     expect(script).toContain('while [ "$#" -ge 2 ]')
     expect(script).toContain('tag "$1" "$2"')
-    expect(script).toContain('image prune --filter dangling=true --filter until=168h -f')
+    expect(script).toContain(
+      `image prune --filter dangling=true --filter until=${STORE_PRUNE_UNTIL} -f`,
+    )
     expect(script).toContain('-name ".salvage-*.tar*" -mmin +60 -delete')
+  })
+
+  it('retires tags past the per-repo generation budget before the prune', () => {
+    const script = buildWriterScript(SID)
+    // --sort created is newest-first, so rows past the budget are the
+    // stale generations; dangling rows (<none>) are never candidates.
+    expect(script).toContain('image ls --sort created')
+    expect(script).toContain(`awk -v keep=${STORE_GENERATIONS_KEPT} '$1 != "<none>"`)
+    expect(script).toContain('rmi "$stale"')
+    // Retirement must precede the dangling prune that cascades it.
+    expect(script.indexOf('rmi "$stale"')).toBeLessThan(script.indexOf('image prune'))
   })
 
   it('is valid POSIX shell', async () => {
