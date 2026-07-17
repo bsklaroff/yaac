@@ -17,11 +17,24 @@ import { deleteSessionOptimistic } from '#lib/deleteSessionFlow'
 import { isUnreadWaiting, useUiStore } from '#store'
 import type { GitAuthFailure, ProvisioningSessionEntry, SessionListEntry } from '@yaac/shared/types'
 
-/** User-facing session groups, in triage order (Waiting first). */
+/** User-facing session groups keyed by status, in triage order (Waiting
+ *  first). Terminating sessions are orthogonal to status and get their own
+ *  section rendered after these (see the Sidebar body). */
 const GROUPS: { status: SessionListEntry['status']; label: string; defaultOpen: boolean }[] = [
   { status: 'waiting', label: 'Waiting', defaultOpen: true },
   { status: 'running', label: 'Running', defaultOpen: true },
 ]
+
+/** A session is terminating when the server has marked it (its pod has a
+ *  deletionTimestamp, or a delete was just issued) or a client-side optimistic
+ *  delete is still in flight. Such rows get their own "Terminating" section and
+ *  render as non-interactive, greyed placeholders (see SessionRow). */
+function isTerminating(
+  session: Pick<SessionListEntry, 'sessionId' | 'terminating'>,
+  pendingDeleteIds: string[],
+): boolean {
+  return Boolean(session.terminating) || pendingDeleteIds.includes(session.sessionId)
+}
 
 /**
  * The sidebar's selectable rows in display order — provisioning first, then
@@ -35,10 +48,40 @@ export function sidebarRowIds(
   sessions: Pick<SessionListEntry, 'sessionId' | 'status' | 'terminating'>[],
   pendingDeleteIds: string[],
 ): string[] {
-  const shown = sessions.filter((s) => !s.terminating && !pendingDeleteIds.includes(s.sessionId))
+  const shown = sessions.filter((s) => !isTerminating(s, pendingDeleteIds))
   return [
     ...provisioning.map((p) => p.sessionId),
     ...GROUPS.flatMap((g) => shown.filter((s) => s.status === g.status).map((s) => s.sessionId)),
+  ]
+}
+
+/** One collapsible section in the sidebar. */
+export interface SidebarSection {
+  label: string
+  defaultOpen: boolean
+  sessions: SessionListEntry[]
+}
+
+/**
+ * Sidebar sections in render order: the status groups (Waiting, then Running)
+ * holding live sessions, then a Terminating section for sessions on their way
+ * out — status is orthogonal to termination, so a terminating session leaves
+ * its status group and lands here. Empty sections are kept in the list;
+ * SessionGroup renders nothing for them.
+ */
+export function sidebarSections(
+  sessions: SessionListEntry[],
+  pendingDeleteIds: string[],
+): SidebarSection[] {
+  const live = sessions.filter((s) => !isTerminating(s, pendingDeleteIds))
+  const terminating = sessions.filter((s) => isTerminating(s, pendingDeleteIds))
+  return [
+    ...GROUPS.map((g) => ({
+      label: g.label,
+      defaultOpen: g.defaultOpen,
+      sessions: live.filter((s) => s.status === g.status),
+    })),
+    { label: 'Terminating', defaultOpen: true, sessions: terminating },
   ]
 }
 
@@ -75,9 +118,13 @@ export function Sidebar({
 }): JSX.Element {
   // Sessions on their way out stay visible as greyed "terminating…" rows
   // (SessionRow styles them) rather than vanishing, so the list doesn't jump.
-  // The empty state keys off whether any group has rows, terminating included.
+  // They move to their own "Terminating" section instead of lingering under
+  // Waiting/Running. The empty state keys off whether any section has rows,
+  // terminating included.
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
-  const visibleCount = sessions.filter((s) => GROUPS.some((g) => g.status === s.status)).length
+  const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
+  const sections = sidebarSections(sessions, pendingDeleteIds)
+  const visibleCount = sections.reduce((n, sec) => n + sec.sessions.length, 0)
   // Re-fetch the deleted list whenever the active set changes (a just-deleted
   // session appears, a restarted one drops).
   const activeSignature = sessions.map((s) => s.sessionId).sort().join(',')
@@ -143,12 +190,12 @@ export function Sidebar({
           />
         )}
         {provisioning.map((p) => <ProvisioningRow key={p.sessionId} entry={p} />)}
-        {GROUPS.map((g) => (
+        {sections.map((section) => (
           <SessionGroup
-            key={g.status}
-            label={g.label}
-            defaultOpen={g.defaultOpen}
-            sessions={sessions.filter((s) => s.status === g.status)}
+            key={section.label}
+            label={section.label}
+            defaultOpen={section.defaultOpen}
+            sessions={section.sessions}
           />
         ))}
         {projectSlug && <DeletedSessionsButton projectSlug={projectSlug} activeSignature={activeSignature} />}
@@ -286,8 +333,9 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
   const [hovered, setHovered] = useState(false)
   const unread = isUnreadWaiting(session, readWaiting)
   // The container is being torn down — server-marked, or an optimistic delete
-  // not yet reflected in the snapshot. Either way the row is on its way out.
-  const terminating = session.terminating || pendingDeleteIds.includes(session.sessionId)
+  // not yet reflected in the snapshot. Either way the row is on its way out
+  // and the Sidebar has already routed it into the "Terminating" section.
+  const terminating = isTerminating(session, pendingDeleteIds)
 
   // Close the dialog immediately; the shared flow marks the row terminating
   // optimistically and restores it if the delete fails.
