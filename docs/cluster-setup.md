@@ -22,26 +22,36 @@ yaac splits the container runtime in two:
   hosts the kind node container.
 - **Kubernetes** runs the sessions — one Job (single-pod) per session, plus
   a shared proxy Deployment. yaac targets a **local single-node cluster**
-  (kind recommended). Session pods run with `hostUsers: false` (user
-  namespaces), so the filesystem backing your home directory must support
-  idmapped mounts — ext4/xfs/btrfs on Linux, libkrun's virtiofs on macOS
-  (see below).
+  (kind recommended). Session pods run under gVisor (runsc): the gofer
+  performs hostPath I/O as node root while the sentry enforces file
+  permissions on the ownership the backing filesystem reports, so that
+  filesystem must report **real file ownership**. Any normal Linux
+  filesystem does; on macOS this constrains the VM stack (see below).
 
 ## macOS: the podman machine
 
 On macOS, podman runs inside a VM, and yaac needs two non-default machine
-settings — **rootful** (kind requires it) and the **libkrun provider**
-(session pods run in user namespaces, which need idmapped-mount support on
-the VM's file sharing — libkrun's virtiofs has it, Apple's
-Virtualization.framework does not). `yaac cluster setup` applies both: it
-writes a `containers.conf.d` drop-in selecting libkrun and drives
-`podman machine init --rootful` + start. Use podman >= 6.0 with the tap's
-`yaac-krunkit` — a stock brew krunkit (<= 1.3.x) never selects the virtiofs
-permission semantics under which libkrun advertises idmapped-mount support,
-so session pods fail with `MOUNT_ATTR_IDMAP` EINVAL
-([#27](https://github.com/bsklaroff/yaac/issues/27); `yaac-krunkit` is
-upstream krunkit built against a patched `yaac-libkrun`). podman 6 passes
-krunkit's `--timesync` flag itself
+settings — **rootful** (kind requires it) and the **libkrun provider** with
+the tap's patched **`yaac-krunkit`**. Both halves of that requirement are
+about virtiofs **ownership semantics**: gVisor's gofer does hostPath I/O as
+node root while the sentry enforces file permissions on the ownership
+virtiofs reports, so the VM's file sharing must report real ownership.
+Apple's Virtualization.framework (applehv/vz) cannot — its virtiofs reports
+the accessing process as every file's owner ("dynamic ownership",
+[lima#1513](https://github.com/lima-vm/lima/issues/1513)), so the root
+gofer sees root-owned files and session uids can never write hostPath
+mounts; chown is silently swallowed and idmapped mounts fail EINVAL, so
+there is no remap escape hatch either. Stock krunkit (<= 1.3.x) fails the
+same way for a different reason: it hardcodes libkrun's `Simplified`
+virtiofs semantics, which also squash ownership to the accessor.
+`yaac-krunkit` is upstream krunkit built against a patched `yaac-libkrun`
+that forces `LinuxComplete` semantics, which report real host ownership
+(and advertise FUSE `ALLOW_IDMAP` — the `MOUNT_ATTR_IDMAP` EINVAL that
+first surfaced this, [#27](https://github.com/bsklaroff/yaac/issues/27),
+dates from when session pods used user namespaces instead of gVisor).
+`yaac cluster setup` applies both settings: it writes a `containers.conf.d`
+drop-in selecting libkrun and drives `podman machine init --rootful` +
+start. Use podman >= 6.0 — it passes krunkit's `--timesync` flag itself
 ([podman#28527](https://github.com/containers/podman/pull/28527)) and its
 machine image ships the vsock guest agent
 ([podman-machine-os#238](https://github.com/containers/podman-machine-os/pull/238)),
@@ -52,11 +62,7 @@ manual wiring.
 > **Upgrading from a pre-6.0 install:** a machine provisioned under podman
 > 5.x lacks the 6.0 image's guest wiring and must be recreated
 > (`podman machine rm` + re-init) — `yaac cluster setup` detects this and
-> prompts. If you added the old README's manual krunkit `--timesync`
-> wrapper, remove it
-> (`mv /opt/homebrew/bin/krunkit-real /opt/homebrew/bin/krunkit`); the
-> duplicated flag breaks machine start under podman 6, and
-> `yaac cluster setup` refuses to proceed until it's gone.
+> prompts.
 
 ## Linux: rootful podman
 

@@ -18,7 +18,9 @@ The formula pulls in the whole toolchain: `node`, `kubectl`, `cilium-cli`,
 `podman` (>= 6.0), a pinned `kind` build (`yaac-kind` — see the
 [version-skew note](docs/cluster-setup.md#version-skew-podman-6x-needs-a-patched-kind)),
 and a patched `krunkit`+`libkrun` pair (`yaac-krunkit`/`yaac-libkrun` —
-stock krunkit never enables idmapped mounts over virtiofs, see
+stock krunkit's virtiofs reports every file as owned by whichever process
+asks, which breaks hostPath writes from gVisor session pods; see the
+[machine notes](docs/cluster-setup.md#macos-the-podman-machine) and
 [#27](https://github.com/bsklaroff/yaac/issues/27)).
 
 ### From source (development)

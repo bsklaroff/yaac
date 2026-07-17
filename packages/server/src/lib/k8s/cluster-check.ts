@@ -606,8 +606,9 @@ async function runEndToEndProbe(deps: ClusterCheckDeps): Promise<CheckResult> {
           + 'RuntimeClass error, the gvisor runtime is broken — run '
           + '`yaac cluster setup --repair` (reinstalls pinned runsc).\n'
           + 'If it failed writing /probe/.cluster-check-write, uid '
-          + `${sessionUid()} cannot write hostPath mounts — see the uid `
-          + 'notes in "Cluster setup" in the README.',
+          + `${sessionUid()} cannot write hostPath mounts — see the `
+          + 'virtiofs ownership notes in docs/cluster-setup.md '
+          + '("macOS: the podman machine").',
       }
     }
     if (logs.trim() !== nonce) {
@@ -630,8 +631,8 @@ async function runEndToEndProbe(deps: ClusterCheckDeps): Promise<CheckResult> {
         fix: 'Session pods write hostPath mounts as the yaac user, whose '
           + 'uid is baked in at image build time to match the server\'s. '
           + 'Rebuild session images (delete stale yaac-base/yaac-tools '
-          + 'tags) and check the idmapped-mount notes in "Cluster setup" '
-          + 'in the README.',
+          + 'tags) and check the virtiofs ownership notes in '
+          + 'docs/cluster-setup.md ("macOS: the podman machine").',
       }
     }
     return {

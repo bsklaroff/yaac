@@ -21,15 +21,18 @@ class Yaac < Formula
   depends_on "bsklaroff/yaac/yaac-kind"
 
   on_macos do
-    # libkrun is the only macOS virtualization stack whose virtiofs supports
-    # idmapped mounts, which user-namespaced session pods writing hostPath
-    # volumes require — but only under LinuxComplete permission semantics,
-    # which the libkrun/krun tap's krunkit (<= 1.3.x) never selects, so
-    # session pods fail with MOUNT_ATTR_IDMAP EINVAL
-    # (https://github.com/bsklaroff/yaac/issues/27). yaac-krunkit is
-    # upstream krunkit built against the tap's patched yaac-libkrun; both
-    # are temporary carries — see Formula/yaac-krunkit.rb. krunkit/libkrun
-    # are arm64-only.
+    # libkrun is the only macOS virtualization stack whose virtiofs can
+    # report real file ownership, which gVisor session pods writing hostPath
+    # volumes require (the runsc gofer stats files as root; the sentry
+    # enforces permissions on what it sees) — but only under LinuxComplete
+    # permission semantics, which the libkrun/krun tap's krunkit (<= 1.3.x)
+    # never selects: its Simplified semantics report the accessing process
+    # as every file's owner, like Apple's applehv/vz virtiofs, so session
+    # uids cannot write hostPath mounts
+    # (https://github.com/bsklaroff/yaac/issues/27 is the userns-era
+    # symptom of the same limitation). yaac-krunkit is upstream krunkit
+    # built against the tap's patched yaac-libkrun; both are temporary
+    # carries — see Formula/yaac-krunkit.rb. krunkit/libkrun are arm64-only.
     depends_on arch: :arm64
     depends_on "bsklaroff/yaac/yaac-krunkit"
   end

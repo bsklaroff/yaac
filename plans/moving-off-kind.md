@@ -55,11 +55,18 @@ Probed by `src/lib/k8s/cluster-check.ts`:
 - **Single node**, with the server's `$HOME` visible on the node at the
   same path (hostPath model — `src/server/session-create.ts` mounts,
   kind's extraMount today).
-- **Userns pods**: `hostUsers: false` on every session pod
-  (`src/lib/k8s/pod-spec.ts`) ⇒ containerd 2.0+ and idmapped-mount
-  support on the filesystem backing hostPaths (ext4/xfs/btrfs on Linux;
-  libkrun virtiofs ≥ 1.17 on macOS — applehv/vz virtiofs does not have
-  it).
+- **gVisor session pods** (`src/lib/k8s/pod-spec.ts`) ⇒ the filesystem
+  backing hostPaths must report **real file ownership** to the node: the
+  runsc gofer does hostPath I/O as node root while the sentry enforces
+  DAC on the ownership the gofer sees. Any normal Linux filesystem on
+  Linux; on macOS only LinuxComplete-semantics libkrun virtiofs (the
+  tap's `yaac-krunkit`). applehv/vz virtiofs and stock krunkit's
+  `Simplified` semantics both report the accessing process as every
+  file's owner, so the root gofer sees root-owned files and non-root
+  session uids cannot write hostPath mounts (verified 2026-07: an applehv
+  machine passes every cluster-setup step but fails the cluster-check
+  probe exactly this way; chown is swallowed and idmapped mounts EINVAL,
+  so there is no node-side remap short of a bindfs layer).
 - **Cilium, non-negotiable**: fail-closed NetworkPolicy is the
   session-egress security model and the redirect is Cilium-native
   (`CiliumNetworkPolicy` + `CiliumEnvoyConfig`,
@@ -81,10 +88,10 @@ Probed by `src/lib/k8s/cluster-check.ts`:
 
 Rejected (unchanged verdicts from the original survey):
 
-- **Docker-backed kind**: Docker Desktop virtiofs has no idmapped-mount
-  support and long-standing ownership bugs (docker/for-mac#6243) — userns
-  pods writing hostPath `$HOME` break, the exact reason the README
-  mandates libkrun. Buys nothing on Linux.
+- **Docker-backed kind**: Docker Desktop virtiofs has long-standing
+  dynamic-ownership behavior (docker/for-mac#6243, VZ-based) — gVisor
+  session pods writing hostPath `$HOME` break, the exact reason the
+  README mandates the patched libkrun. Buys nothing on Linux.
 - **k3d**: podman support officially experimental, same
   node-in-container model — the sysfs/PID/TasksMax hack class survives —
   plus k3s-in-a-container quirks for zero structural gain. Same verdict
@@ -117,11 +124,13 @@ Time-boxed, on real macOS/arm64 hardware, before any commitment.
 
 1. **minikube krunkit vs Lima+k3s**, each evaluated against the
    constraint list, in order of kill-likelihood:
-   - idmapped-mount-capable virtiofs on a `$HOME` mount — a userns pod
+   - ownership-preserving virtiofs on a `$HOME` mount — a gVisor pod
      writes a hostPath at the session uid (reuse the `cluster check`
      probe pod). This is the load-bearing requirement and is unverified:
-     podman-machine-libkrun ≥ 1.17 has it, but whether minikube/Lima
-     surface the same virtiofs capability is unknown;
+     it needs LinuxComplete-semantics libkrun (the tap's `yaac-krunkit`);
+     whether minikube/Lima drive krunkit with those semantics — or can be
+     pointed at the patched build at all — is unknown, and their stock
+     krunkit's `Simplified` semantics fail the probe;
    - `hostUsers: false` pod admission (containerd 2.x in the node
      image/distro);
    - Cilium 1.19 + `envoyConfig.enabled` + the egress enforcement probe;
@@ -162,7 +171,7 @@ first backend that needs it.
 
 ## Exit criteria
 
-If spike 1 fails on idmapped mounts everywhere, stop: kind +
+If spike 1 fails on ownership-preserving virtiofs everywhere, stop: kind +
 podman-libkrun stays the macOS backend, and the shipped packaging plus
 the backend-agnostic refactors are still the whole win. If it passes,
 pick the winner as the macOS default and demote kind to

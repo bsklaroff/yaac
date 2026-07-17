@@ -1,10 +1,12 @@
-# Temporary carry for https://github.com/bsklaroff/yaac/issues/27 (see
-# yaac-libkrun.rb): upstream krunkit built against the tap's patched
-# yaac-libkrun, so its virtiofs advertises FUSE ALLOW_IDMAP and yaac's
-# user-namespaced session pods can idmap-mount their hostPath volumes.
-# Delete both formulas (and return yaac.rb to libkrun/krun/krunkit) once
-# krunkit ships against libkrun 2.x, where LinuxComplete is the builder
-# default.
+# Temporary carry (see yaac-libkrun.rb): upstream krunkit built against the
+# tap's patched yaac-libkrun, so its virtiofs runs LinuxComplete permission
+# semantics and reports real host file ownership — stock krunkit's
+# Simplified semantics report the accessing process as every file's owner,
+# which breaks hostPath writes from yaac's gVisor session pods
+# (https://github.com/bsklaroff/yaac/issues/27 is the userns-era symptom of
+# the same krunkit limitation). Delete both formulas (and return yaac.rb to
+# libkrun/krun/krunkit) once krunkit ships against libkrun 2.x, where
+# LinuxComplete is the builder default.
 #
 # Differences from libkrun/krun/krunkit:
 # - depends on the fully-qualified bsklaroff/yaac/yaac-libkrun, so the bare

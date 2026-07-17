@@ -1,12 +1,15 @@
-# Temporary carry for https://github.com/bsklaroff/yaac/issues/27: libkrun
-# only advertises FUSE ALLOW_IDMAP (idmapped mounts over virtiofs, which
-# yaac's user-namespaced session pods need for hostPath volumes) under
-# LinuxComplete permission semantics, and the libkrun/krun tap's krunkit
-# (<= 1.3.x) always passes Simplified — podman's generated device string
-# cannot override it. This is upstream libkrun v1.19.4 plus a one-line
-# backport of libkrun main d33afa5's builder behavior (LinuxComplete
-# hardcoded). The upstream fix is stranded behind libkrun's 2.0 C-API
-# break, which krunkit 1.3.x cannot load.
+# Temporary carry: only libkrun's LinuxComplete permission semantics report
+# real host file ownership over virtiofs — Simplified reports the accessing
+# process as every file's owner (and swallows chown), which breaks hostPath
+# writes from yaac's gVisor session pods (the runsc gofer stats files as
+# root, so the sentry sees root-owned files and denies session-uid writes).
+# The libkrun/krun tap's krunkit (<= 1.3.x) always passes Simplified —
+# podman's generated device string cannot override it. LinuxComplete also
+# advertises FUSE ALLOW_IDMAP, the userns-era symptom that first surfaced
+# this (https://github.com/bsklaroff/yaac/issues/27). This is upstream
+# libkrun v1.19.4 plus a one-line backport of libkrun main d33afa5's
+# builder behavior (LinuxComplete hardcoded). The upstream fix is stranded
+# behind libkrun's 2.0 C-API break, which krunkit 1.3.x cannot load.
 #
 # Consumed by yaac-krunkit, which links it via its /opt/homebrew/opt/
 # yaac-libkrun path — the bare name "libkrun" appears nowhere, so this

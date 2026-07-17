@@ -44,13 +44,6 @@ export const CILIUM_VERSION = '1.19.4'
 /** Pinned cilium CLI release fetched when no `cilium` is on PATH. */
 export const CILIUM_CLI_VERSION = 'v0.19.4'
 
-/**
- * The pre-podman-6 README had users wrap krunkit in a shell script (moving
- * the real binary here) to inject `--timesync`. podman 6 passes the flag
- * itself, so the wrapper would duplicate it and break machine start.
- */
-export const LEGACY_KRUNKIT_WRAPPER = '/opt/homebrew/bin/krunkit-real'
-
 /** A setup step failed in a way the user must resolve; message is the fix. */
 export class ClusterSetupError extends Error {}
 
@@ -621,26 +614,19 @@ async function initMachine(deps: ClusterSetupDeps): Promise<void> {
  * Drive the macOS machine into the state yaac needs — the two non-default
  * settings the README used to describe by hand, plus migration traps from
  * pre-brew installs:
- *   - provider = libkrun (idmapped-mount virtiofs for userns session pods;
- *     applehv/vz do not have it) — written as a containers.conf.d drop-in;
+ *   - provider = libkrun (virtiofs that reports real file ownership, which
+ *     gVisor session pods need: the runsc gofer does hostPath I/O as node
+ *     root while the sentry enforces DAC on the ownership the gofer sees.
+ *     applehv/vz virtiofs reports the accessing process as every file's
+ *     owner — the root gofer sees root-owned files, so non-root session
+ *     uids can never write hostPath mounts) — written as a
+ *     containers.conf.d drop-in;
  *   - rootful (kind's podman provider requires it);
- *   - a leftover krunkit `--timesync` wrapper from the podman-5 README
- *     instructions would duplicate the flag podman 6 passes itself and
- *     break machine start → detect and instruct removal;
  *   - a machine provisioned under podman 5.x lacks the 6.0 machine image's
  *     guest wiring (vsock qemu-guest-agent for timesync) and trips podman's
  *     config-version gate on start → prompt for the destructive rm+re-init.
  */
 export async function ensurePodmanMachineSetup(deps: ClusterSetupDeps): Promise<void> {
-  if (await deps.fileExists(LEGACY_KRUNKIT_WRAPPER)) {
-    throw new ClusterSetupError(
-      `Found ${LEGACY_KRUNKIT_WRAPPER} — the manual krunkit --timesync wrapper `
-      + 'from the pre-podman-6 README. podman 6 passes --timesync itself, so '
-      + 'the wrapper duplicates the flag and breaks machine start. Remove it:\n'
-      + `  mv ${LEGACY_KRUNKIT_WRAPPER} /opt/homebrew/bin/krunkit`,
-    )
-  }
-
   // Provider: base containers.conf, then conf.d drop-ins (later wins).
   const confDir = path.join(deps.homedir(), '.config', 'containers')
   const sources: string[] = []
@@ -653,12 +639,16 @@ export async function ensurePodmanMachineSetup(deps: ClusterSetupDeps): Promise<
   }
   if (effectiveMachineProvider(sources) !== 'libkrun') {
     deps.log('Setting the podman machine provider to libkrun '
-      + '(userns session pods need its idmapped-mount virtiofs)...')
+      + '(gVisor session pods need its ownership-preserving virtiofs)...')
     await deps.writeTextFile(
       providerDropinPath(deps),
-      '# Written by `yaac cluster setup`: session pods run in user namespaces,\n'
-      + '# which need idmapped-mount support on the VM\'s file sharing — libkrun\'s\n'
-      + '# virtiofs has it, applehv/vz do not.\n'
+      '# Written by `yaac cluster setup`: gVisor session pods need the VM\'s\n'
+      + '# file sharing to report real file ownership — the runsc gofer does\n'
+      + '# hostPath I/O as root while the sentry enforces permissions on the\n'
+      + '# ownership the gofer sees. libkrun\'s virtiofs passes ownership\n'
+      + '# through; applehv/vz virtiofs reports the accessing process as every\n'
+      + '# file\'s owner, so the root gofer sees root-owned files and non-root\n'
+      + '# session uids cannot write hostPath mounts.\n'
       + '[machine]\nprovider = "libkrun"\n',
     )
   }

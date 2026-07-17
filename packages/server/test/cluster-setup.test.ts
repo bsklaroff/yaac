@@ -11,7 +11,6 @@ import {
   ensurePodmanMachineSetup,
   isLegacyMachineError,
   kindEnv,
-  LEGACY_KRUNKIT_WRAPPER,
   runClusterSetup,
   streamingClusterSetupDeps,
   type ClusterSetupDeps,
@@ -450,16 +449,6 @@ describe('ensurePodmanMachineSetup', () => {
       return happyRun(file, args)
     }) as RunMock
   }
-
-  it('throws when the legacy krunkit --timesync wrapper is present', async () => {
-    const deps = darwinDeps({
-      fileExists: vi.fn((p: string) => Promise.resolve(p === LEGACY_KRUNKIT_WRAPPER)),
-    })
-    const err = await ensurePodmanMachineSetup(deps).catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(ClusterSetupError)
-    expect((err as Error).message).toContain('krunkit-real')
-    expect((err as Error).message).toContain('mv ')
-  })
 
   it('writes the libkrun drop-in and inits a rootful machine when none exists', async () => {
     const run = machineRun([], [{ Name: 'podman-machine-default', Running: false, Default: true }])

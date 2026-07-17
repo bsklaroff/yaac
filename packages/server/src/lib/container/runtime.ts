@@ -31,7 +31,8 @@ async function ensurePodmanMachine(): Promise<void> {
       + '  podman machine init --rootful\n'
       + '  podman machine start\n\n'
       + 'See "Install" in the yaac README — macOS needs the libkrun machine\n'
-      + 'provider so session pods can run in user namespaces.\n',
+      + 'provider (its virtiofs reports real file ownership, which gVisor\n'
+      + 'session pods need to write hostPath mounts).\n',
     )
     process.exit(1)
   }

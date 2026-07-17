@@ -29,10 +29,14 @@ yaac cluster setup
   switch `yaac.rb` to core `kind` once homebrew-core ships kind ≥ v0.33.0.
 - **`yaac-libkrun.rb`** — **temporary.** Upstream libkrun v1.19.4 plus a
   one-line backport (main's d33afa5) forcing `LinuxComplete` virtiofs
-  semantics, so the device advertises FUSE `ALLOW_IDMAP` — krunkit ≤ 1.3.x
-  always passes `Simplified` and podman's generated device string can't
-  override it, which breaks idmapped mounts over virtiofs
-  ([yaac#27](https://github.com/bsklaroff/yaac/issues/27)). The upstream
+  semantics — krunkit ≤ 1.3.x always passes `Simplified` and podman's
+  generated device string can't override it. `Simplified` reports the
+  accessing process as every file's owner and swallows chown, which breaks
+  hostPath writes from gVisor session pods: the runsc gofer stats files as
+  root, so the sentry sees root-owned files and denies session-uid writes.
+  `LinuxComplete` reports real host ownership (and advertises FUSE
+  `ALLOW_IDMAP` — the userns-era symptom that first surfaced this,
+  [yaac#27](https://github.com/bsklaroff/yaac/issues/27)). The upstream
   fix (d33afa5) is stranded behind libkrun's 2.0 C-API break, which krunkit
   1.3.x cannot load. Keg-only; consumed by `yaac-krunkit` via its opt path.
 - **`yaac-krunkit.rb`** — **temporary.** Upstream krunkit v1.3.2 built
@@ -43,9 +47,10 @@ yaac cluster setup
   (same `bin/krunkit` and firmware paths); migrating from an install that
   used the `libkrun/krun` tap:
   `brew uninstall --ignore-dependencies krunkit libkrun`, then
-  `brew install bsklaroff/yaac/yaac-krunkit`. Quick idmap probe, no cluster
-  needed:
-  `podman run --rm -v ~/.yaac:/mnt:idmap --uidmap 0:100000:65536 alpine true`
+  `brew install bsklaroff/yaac/yaac-krunkit`. Quick ownership probe, no
+  cluster needed (prints your real uid, e.g. `501`, under `LinuxComplete`;
+  the container uid `12345` under stock `Simplified` semantics):
+  `podman run --rm --user 12345 -v $HOME:/mnt:ro alpine stat -c %u /mnt`
   Delete both formulas (and return `yaac.rb` to `libkrun/krun/krunkit`)
   once krunkit ships against libkrun 2.x, where `LinuxComplete` is the
   builder default.
