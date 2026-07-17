@@ -806,13 +806,23 @@ describe('yaac session create suite (real CLI + real server + mocked remotes)', 
       // what's under test is yaac's title→status plumbing, not claude's
       // title behavior (pinned by the classifyClaudeTitle unit fixtures).
       //
-      // NOTE: this replaces claude with an inert sleep, so it must run
+      // NOTE: this replaces claude with an inert placeholder, so it must run
       // after the round-trip tests above.
+      //
+      // The placeholder must NOT be `sleep`: `yaac:claude` is the window
+      // `new-session` opened, i.e. `yaac:^`, and the stale-reaper's
+      // half-provisioned sweep (probeAgentPaneState) reads that window's
+      // `pane_current_command` and reaps any session still sitting on the
+      // `sleep infinity` create-time placeholder. A `sleep` here is
+      // indistinguishable from that, so the reaper deletes the Job mid-test
+      // (every later exec then 404s) unless a probe happened to memoize
+      // `started` first — a race against the background loop. `tail` reads
+      // as a started agent and is just as inert.
       await execInJob(jobName, [
         'tmux', '-S', CONTAINER_TMUX_SOCK, 'set-option', '-t', 'yaac', 'remain-on-exit', 'on',
       ])
       await execInJob(jobName, [
-        'tmux', '-S', CONTAINER_TMUX_SOCK, 'respawn-window', '-k', '-t', 'yaac:claude', 'sleep infinity',
+        'tmux', '-S', CONTAINER_TMUX_SOCK, 'respawn-window', '-k', '-t', 'yaac:claude', 'tail -f /dev/null',
       ])
 
       const setTitle = (title: string): Promise<{ stdout: string }> => execInJob(jobName, [

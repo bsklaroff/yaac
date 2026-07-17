@@ -80,12 +80,19 @@ describe('yaac server lifecycle (real CLI + real server)', () => {
       'server', 'run', '--port', String(wanted),
     ], { env: testEnv.env, stdio: ['ignore', 'ignore', 'pipe'] })
     try {
-      const deadline = Date.now() + 5000
+      // A cold `server run` takes ~7s just to bind and write the lock (tsx
+      // transpiles the dependency tree first), so the budget has to clear
+      // that by a wide margin under a loaded parallel run — at 5s this
+      // timed out and read `port` off an undefined lock. Only the lock is
+      // awaited, not `/health` readiness: the port is stamped at bind time,
+      // well before the DB init that `ready` gates on.
+      const deadline = Date.now() + 60_000
       let lock = await readLock()
       while (!lock && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 100))
         lock = await readLock()
       }
+      expect(lock, 'server never wrote its lock').not.toBeNull()
       expect(lock?.port).toBeGreaterThanOrEqual(wanted)
       expect(lock!.port).toBeLessThan(wanted + MAX_PORT_PROBES)
       const res = await fetch(`http://127.0.0.1:${lock!.port}/health`)

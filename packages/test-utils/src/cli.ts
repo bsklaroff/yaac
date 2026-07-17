@@ -225,10 +225,12 @@ export async function spawnYaacServer(env: NodeJS.ProcessEnv): Promise<SpawnedSe
 
   let lock: ServerLock
   try {
-    // 30s matches `yaac server start`'s readiness budget: opening PGlite and
-    // running first-boot migrations can take several seconds, more under the
-    // memory/CPU pressure of a full parallel run.
-    lock = await waitForLock(30_000)
+    // A cold `server run` needs ~12s to report ready on an idle machine (tsx
+    // transpiles the dependency tree, then PGlite opens and runs first-boot
+    // migrations against the fresh per-test data dir). 60s keeps a healthy
+    // server inside the budget under the memory/CPU pressure of a full
+    // parallel run, where 30s left too little headroom and timed out.
+    lock = await waitForLock(60_000)
   } catch (err) {
     // Reap the spawned server before rethrowing. Without this, a readiness
     // timeout leaves the child (and its process group) running: it never

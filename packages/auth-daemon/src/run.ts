@@ -76,7 +76,16 @@ export async function startAuthDaemon(): Promise<void> {
     return
   }
   await spawnAuthDaemonDetached()
-  const deadline = Date.now() + 5000
+  // The daemon writes its lock only after a full process boot (from source, a
+  // cold tsx transpile of the dependency tree) plus the `resolveServerTarget()`
+  // round-trip — ~6s from spawn on an idle machine, and more under load. The
+  // old 5s budget sat under that, so this reported failure while a perfectly
+  // healthy daemon was still starting: the lock landed ~1s AFTER the throw,
+  // leaving a running auth server behind a nonzero exit. Waiting longer is
+  // free in the success path (the loop returns the moment the lock appears);
+  // it only delays reporting a daemon that genuinely never starts.
+  const startTimeoutMs = 30_000
+  const deadline = Date.now() + startTimeoutMs
   while (Date.now() < deadline) {
     const lock = await readAuthDaemonLock()
     if (lock && isPidLive(lock.pid)) {
@@ -85,7 +94,7 @@ export async function startAuthDaemon(): Promise<void> {
     }
     await new Promise((r) => setTimeout(r, 100))
   }
-  throw new Error('auth server did not start within 5s')
+  throw new Error(`auth server did not start within ${startTimeoutMs / 1000}s`)
 }
 
 /** Entry point for `yaac auth server stop`. */
