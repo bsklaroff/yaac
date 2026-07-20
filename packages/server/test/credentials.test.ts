@@ -173,6 +173,16 @@ describe('credentials', () => {
     it('rejects garbage', () => {
       expect(() => parseGitRemote('not-a-url')).toThrow()
     })
+
+    it('strips a trailing slash from an https URL', () => {
+      expect(parseGitRemote('https://github.com/acme/repo/'))
+        .toEqual({ scheme: 'https', host: 'github.com', path: 'acme/repo' })
+    })
+
+    it('strips a trailing slash from an SCP-style URL', () => {
+      expect(parseGitRemote('git@github.com:acme/repo/'))
+        .toEqual({ scheme: 'ssh', host: 'github.com', path: 'acme/repo' })
+    })
   })
 
   describe('resolveCredentialForUrl', () => {
