@@ -3,48 +3,28 @@ import { describeBuildSkew } from '@yaac/shared/server-api'
 import {
   clearRemote,
   normalizeRemoteUrl,
+  probeRemote,
   readRemote,
+  withRemoteActivated,
   writeRemote,
   type RemoteConfig,
 } from '@yaac/shared/remote'
 import { maskToken } from '@yaac/shared/mask'
 
-const PROBE_TIMEOUT_MS = 5000
-
 /**
  * Configure (and enable) the remote server after verifying it end to
- * end: the origin answers /health, and the token authenticates against
- * a protected route. Build skew is a warning, not a failure — client
- * and server upgrade independently.
+ * end (probeRemote: /health plus an authenticated route). Build skew is
+ * a warning, not a failure — client and server upgrade independently.
+ * Previously set remotes stay in the config's `saved` list.
  */
 export async function remoteSet(url: string, opts: { token: string }): Promise<void> {
   const origin = normalizeRemoteUrl(url)
-
-  let health: Response
-  try {
-    health = await fetch(`${origin}/health`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
-  } catch (err) {
-    throw new Error(`cannot reach ${origin}: ${err instanceof Error ? err.message : String(err)}`)
-  }
-  if (!health.ok) throw new Error(`${origin}/health returned HTTP ${health.status}`)
-  const { buildId } = await health.json() as { ok: boolean; buildId: string }
-
-  // /health is public — only an authenticated call proves the token.
-  const check = await fetch(`${origin}/tokens`, {
-    headers: { authorization: `Bearer ${opts.token}` },
-    signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-  })
-  if (check.status === 401) {
-    throw new Error(
-      `token rejected by ${origin} — mint one on the server with: yaac auth token create <name>`,
-    )
-  }
-  if (!check.ok) throw new Error(`token check against ${origin} failed (HTTP ${check.status})`)
+  const { buildId } = await probeRemote(origin, opts.token)
 
   const skew = describeBuildSkew(buildId, await readBuildId())
   if (skew) console.error(skew)
 
-  await writeRemote({ url: origin, token: opts.token, enabled: true })
+  await writeRemote(withRemoteActivated(await readRemote(), origin, opts.token))
   console.log(`Remote set and enabled: ${origin}`)
 }
 
@@ -74,6 +54,10 @@ export async function remoteStatus(): Promise<void> {
   console.log(`url      ${cfg.url}`)
   console.log(`token    ${maskToken(cfg.token)}`)
   console.log(`enabled  ${cfg.enabled ? 'yes' : 'no'}`)
+  const others = cfg.saved.filter((s) => s.url !== cfg.url)
+  if (others.length > 0) {
+    console.log(`saved    ${others.map((s) => s.url).join(', ')}`)
+  }
 }
 
 async function requireRemote(): Promise<RemoteConfig> {

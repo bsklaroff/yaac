@@ -1,12 +1,14 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import {
   clearRemote,
   normalizeRemoteUrl,
+  probeRemote,
   readRemote,
   remoteConfigPath,
+  withRemoteActivated,
   writeRemote,
 } from '#remote'
 import { setDataDir } from '#paths'
@@ -25,7 +27,12 @@ describe('remote config store', () => {
   })
 
   it('round-trips the config at mode 0600', async () => {
-    const cfg = { url: 'https://srv.ts.net', token: 't0k', enabled: true }
+    const cfg = {
+      url: 'https://srv.ts.net',
+      token: 't0k',
+      enabled: true,
+      saved: [{ url: 'https://srv.ts.net', token: 't0k' }],
+    }
     await writeRemote(cfg)
     expect(await readRemote()).toEqual(cfg)
     const stat = await fs.stat(remoteConfigPath())
@@ -35,7 +42,7 @@ describe('remote config store', () => {
   it('returns null when absent, cleared, or malformed', async () => {
     expect(await readRemote()).toBeNull()
 
-    await writeRemote({ url: 'https://x', token: 't', enabled: false })
+    await writeRemote({ url: 'https://x', token: 't', enabled: false, saved: [] })
     await clearRemote()
     expect(await readRemote()).toBeNull()
     await clearRemote() // idempotent
@@ -44,6 +51,92 @@ describe('remote config store', () => {
     expect(await readRemote()).toBeNull()
     await fs.writeFile(remoteConfigPath(), JSON.stringify({ url: 'x' }))
     expect(await readRemote()).toBeNull()
+  })
+
+  it('folds the active remote into saved and drops malformed saved entries', async () => {
+    // A file written before `saved` existed.
+    await fs.mkdir(dir, { recursive: true })
+    await fs.writeFile(remoteConfigPath(), JSON.stringify({
+      url: 'https://old.ts.net', token: 'tok', enabled: true,
+    }))
+    expect((await readRemote())?.saved).toEqual([{ url: 'https://old.ts.net', token: 'tok' }])
+
+    await fs.writeFile(remoteConfigPath(), JSON.stringify({
+      url: 'https://a.ts.net',
+      token: 'ta',
+      enabled: false,
+      saved: [{ url: 'https://b.ts.net', token: 'tb' }, { url: 'https://c.ts.net' }, 'junk'],
+    }))
+    expect((await readRemote())?.saved).toEqual([
+      { url: 'https://a.ts.net', token: 'ta' },
+      { url: 'https://b.ts.net', token: 'tb' },
+    ])
+  })
+})
+
+describe('withRemoteActivated', () => {
+  it('starts a fresh config from null', () => {
+    expect(withRemoteActivated(null, 'https://a.ts.net', 'ta')).toEqual({
+      url: 'https://a.ts.net',
+      token: 'ta',
+      enabled: true,
+      saved: [{ url: 'https://a.ts.net', token: 'ta' }],
+    })
+  })
+
+  it('keeps other saved remotes and replaces the token of a re-set one', () => {
+    const existing = {
+      url: 'https://a.ts.net',
+      token: 'ta',
+      enabled: false,
+      saved: [
+        { url: 'https://a.ts.net', token: 'ta' },
+        { url: 'https://b.ts.net', token: 'tb' },
+      ],
+    }
+    expect(withRemoteActivated(existing, 'https://b.ts.net', 'tb2')).toEqual({
+      url: 'https://b.ts.net',
+      token: 'tb2',
+      enabled: true,
+      saved: [
+        { url: 'https://b.ts.net', token: 'tb2' },
+        { url: 'https://a.ts.net', token: 'ta' },
+      ],
+    })
+  })
+})
+
+describe('probeRemote', () => {
+  const jsonResponse = (body: unknown, status = 200): Response =>
+    new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('checks /health then the token, and returns the build id', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ ok: true, buildId: 'b1' }))
+      .mockResolvedValueOnce(jsonResponse({ tokens: [] }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(await probeRemote('https://srv.ts.net', 'tok')).toEqual({ buildId: 'b1' })
+    expect(fetchMock.mock.calls[0][0]).toBe('https://srv.ts.net/health')
+    const tokenCall = fetchMock.mock.calls[1] as [string, RequestInit]
+    expect(tokenCall[0]).toBe('https://srv.ts.net/tokens')
+    expect(new Headers(tokenCall[1].headers).get('authorization')).toBe('Bearer tok')
+  })
+
+  it('throws prescriptively on unreachable, unhealthy, or rejected-token servers', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')))
+    await expect(probeRemote('https://down.ts.net', 't')).rejects.toThrow(/cannot reach/)
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(jsonResponse({}, 500)))
+    await expect(probeRemote('https://srv.ts.net', 't')).rejects.toThrow(/HTTP 500/)
+
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ ok: true, buildId: 'b' }))
+      .mockResolvedValueOnce(jsonResponse({}, 401)))
+    await expect(probeRemote('https://srv.ts.net', 'bad'))
+      .rejects.toThrow(/token rejected.*yaac auth token create/s)
   })
 })
 

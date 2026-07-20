@@ -3,23 +3,35 @@ import path from 'node:path'
 import { getDataDir } from '#paths'
 
 /**
- * The one configured remote server (`~/.yaac/remote.json`, 0600). yaac
- * deliberately supports a single remote rather than named contexts —
- * `enabled` is the switch back to the local server without losing the
- * token. Growing this into a named map later is a client-side-only
- * change.
+ * The configured remote servers (`~/.yaac/remote.json`, 0600). `url` /
+ * `token` are the active remote and `enabled` is the switch back to the
+ * local server without losing the token; `saved` remembers every remote
+ * ever set so clients (the desktop shell's server picker) can switch
+ * back without re-entering a token. The machine still has one attachment
+ * at a time — `saved` is history, not contexts.
  */
+export interface SavedRemote {
+  url: string
+  token: string
+}
+
 export interface RemoteConfig {
   url: string
   token: string
   enabled: boolean
+  saved: SavedRemote[]
 }
 
 export function remoteConfigPath(): string {
   return path.join(getDataDir(), 'remote.json')
 }
 
-/** Absent, unparseable, or wrong-shaped file → null (no remote). */
+/**
+ * Absent, unparseable, or wrong-shaped file → null (no remote). The
+ * active remote is always folded into `saved` (files written before
+ * `saved` existed lack it), so callers can treat `saved` as the complete
+ * known-remotes list.
+ */
 export async function readRemote(): Promise<RemoteConfig | null> {
   try {
     const raw = await fs.readFile(remoteConfigPath(), 'utf8')
@@ -31,7 +43,17 @@ export async function readRemote(): Promise<RemoteConfig | null> {
       || typeof cfg.token !== 'string'
       || typeof cfg.enabled !== 'boolean'
     ) return null
-    return { url: cfg.url, token: cfg.token, enabled: cfg.enabled }
+    const saved = (Array.isArray(cfg.saved) ? cfg.saved : [])
+      .filter((s: unknown): s is SavedRemote => {
+        if (!s || typeof s !== 'object') return false
+        const r = s as Record<string, unknown>
+        return typeof r.url === 'string' && typeof r.token === 'string'
+      })
+      .map((s) => ({ url: s.url, token: s.token }))
+    if (!saved.some((s) => s.url === cfg.url)) {
+      saved.unshift({ url: cfg.url, token: cfg.token })
+    }
+    return { url: cfg.url, token: cfg.token, enabled: cfg.enabled, saved }
   } catch {
     return null
   }
@@ -70,4 +92,49 @@ export function normalizeRemoteUrl(raw: string): string {
     throw new Error(`remote URL must be a bare origin (no path/query/fragment): ${raw}`)
   }
   return url.origin
+}
+
+/**
+ * A config with `url`/`token` as the active, enabled remote, upserted
+ * into `saved` (an existing entry for the origin gets the new token).
+ * The other saved remotes carry over from `existing`.
+ */
+export function withRemoteActivated(
+  existing: RemoteConfig | null,
+  url: string,
+  token: string,
+): RemoteConfig {
+  const others = (existing?.saved ?? []).filter((s) => s.url !== url)
+  return { url, token, enabled: true, saved: [{ url, token }, ...others] }
+}
+
+const PROBE_TIMEOUT_MS = 5000
+
+/**
+ * Verify a remote end to end: the origin answers /health, and the token
+ * authenticates against a protected route (/health is public — only an
+ * authenticated call proves the token). Returns the server's build id so
+ * callers can warn on skew; throws a prescriptive error on any failure.
+ */
+export async function probeRemote(origin: string, token: string): Promise<{ buildId: string }> {
+  let health: Response
+  try {
+    health = await fetch(`${origin}/health`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
+  } catch (err) {
+    throw new Error(`cannot reach ${origin}: ${err instanceof Error ? err.message : String(err)}`)
+  }
+  if (!health.ok) throw new Error(`${origin}/health returned HTTP ${health.status}`)
+  const { buildId } = await health.json() as { ok: boolean; buildId: string }
+
+  const check = await fetch(`${origin}/tokens`, {
+    headers: { authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+  })
+  if (check.status === 401) {
+    throw new Error(
+      `token rejected by ${origin} — mint one on the server with: yaac auth token create <name>`,
+    )
+  }
+  if (!check.ok) throw new Error(`token check against ${origin} failed (HTTP ${check.status})`)
+  return { buildId }
 }

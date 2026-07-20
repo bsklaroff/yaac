@@ -326,8 +326,9 @@ export function resolveNewSessionTool(
   return configured.has(tool) ? tool : null
 }
 
-/** Sections of the settings modal (left-nav entries). */
-export type SettingsSection = 'general' | 'shortcuts' | 'credentials' | 'project' | 'schedules' | 'userDockerfile'
+/** Sections of the settings modal (left-nav entries). 'server' shows only in the desktop shell. */
+export type SettingsSection =
+  | 'general' | 'shortcuts' | 'credentials' | 'project' | 'schedules' | 'userDockerfile' | 'server'
 
 /** Local-only UI state (not server state — that lives in the snapshot). */
 interface UiState {

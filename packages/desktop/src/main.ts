@@ -19,6 +19,9 @@ import {
 } from 'electron'
 import WebSocket from 'ws'
 import { resolveServerTarget } from '@yaac/shared/server-api'
+import {
+  normalizeRemoteUrl, probeRemote, readRemote, withRemoteActivated, writeRemote,
+} from '@yaac/shared/remote'
 import { env } from '@yaac/shared/env'
 import { AttentionMonitor, badgeText, notificationFor, type WaitingSession } from '#attention'
 import { startEventsMonitor, type EventsSocket } from '#events'
@@ -27,6 +30,9 @@ import { appMenuTemplate } from '#menu'
 import { mintWebToken } from '#mint'
 import { errorBoxText, splashUrl } from '#messages'
 import { ensureAuthDaemonRunning, resolveYaacCommand, runYaacServerStart } from '#server-process'
+import {
+  addServerRemote, applyServerSwitch, getServerTargets, parseServerSelection, type ServerSwitchDeps,
+} from '#server-switch'
 import { backgroundColorFor } from '#theme-bg'
 import { buildTrayBitmap } from '#tray-icon'
 import { hardenGuestWebPreferences, isLocalPreviewUrl, sanitizeWebviewSrc } from '#webview-guard'
@@ -38,10 +44,11 @@ let win: BrowserWindow | null = null
 let tray: Tray | null = null
 let quitting = false
 let events: { stop: () => void } | null = null
-// One monitor for the process lifetime: its first-snapshot seeding suppresses
-// a notification burst on launch, and WS reconnects must not re-notify
-// ongoing waits.
-const attention = new AttentionMonitor()
+// One monitor per attached server: its first-snapshot seeding suppresses a
+// notification burst on launch, and WS reconnects must not re-notify ongoing
+// waits. Replaced only on a server switch, where the new server's ongoing
+// waits deserve the same silence.
+let attention = new AttentionMonitor()
 
 function resolveTarget(): ReturnType<typeof resolveServerTarget> {
   // The shell ships no server code, so it has no build id to match
@@ -225,6 +232,56 @@ function openEventsSocket(url: string, bearer: string): EventsSocket {
   }
 }
 
+function startEvents(): void {
+  events?.stop()
+  events = startEventsMonitor({
+    resolveTarget,
+    openSocket: openEventsSocket,
+    onSnapshot: (snapshot) => {
+      const { waitingCount, toNotify } = attention.update(snapshot)
+      applyAttention(waitingCount, toNotify)
+    },
+  })
+}
+
+/**
+ * After a server switch: clear the badge/tray, seed a fresh attention
+ * monitor, point the events socket at the new target, and re-run the boot
+ * flow so the window lands authed on the new origin.
+ */
+function relandOnNewServer(): void {
+  attention = new AttentionMonitor()
+  applyAttention(0, [])
+  startEvents()
+  void openWindow()
+}
+
+// The SPA's Server settings section (desktop-only) drives these. Handlers
+// reply with the outcome before the reland tears the calling renderer down.
+const serverSwitchDeps: ServerSwitchDeps = {
+  readRemote,
+  writeRemote,
+  activate: withRemoteActivated,
+  probeRemote,
+  normalizeUrl: normalizeRemoteUrl,
+}
+ipcMain.handle('server:targets', () => getServerTargets(serverSwitchDeps))
+ipcMain.handle('server:switch', async (_e, raw: unknown) => {
+  const sel = parseServerSelection(raw)
+  if (!sel) return { ok: false, error: 'invalid selection' }
+  const outcome = await applyServerSwitch(sel, serverSwitchDeps)
+  if (outcome.ok && outcome.changed) setImmediate(() => relandOnNewServer())
+  return outcome
+})
+ipcMain.handle('server:add-remote', async (_e, url: unknown, token: unknown) => {
+  if (typeof url !== 'string' || typeof token !== 'string') {
+    return { ok: false, error: 'invalid arguments' }
+  }
+  const outcome = await addServerRemote(url, token, serverSwitchDeps)
+  if (outcome.ok && outcome.changed) setImmediate(() => relandOnNewServer())
+  return outcome
+})
+
 // The custom window controls (WindowControls.tsx) drive the window through the
 // preload bridge. Registered once, they act on whichever window is current.
 ipcMain.on('window:minimize', () => win?.minimize())
@@ -260,14 +317,7 @@ async function boot(): Promise<void> {
     return
   }
   createTray()
-  events = startEventsMonitor({
-    resolveTarget,
-    openSocket: openEventsSocket,
-    onSnapshot: (snapshot) => {
-      const { waitingCount, toNotify } = attention.update(snapshot)
-      applyAttention(waitingCount, toNotify)
-    },
-  })
+  startEvents()
 }
 
 void app.whenReady().then(boot)

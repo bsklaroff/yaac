@@ -13,3 +13,12 @@ contextBridge.exposeInMainWorld('yaacWindow', {
   // Open a URL in the system browser (the preview's "open external" action).
   openExternal: (url: string) => ipcRenderer.send('window:open-external', url),
 })
+
+// The server picker (Settings → Server, rendered only when this bridge
+// exists). Selections and results are plain JSON — origins only, never
+// tokens; the main process re-validates every payload (#server-switch).
+contextBridge.exposeInMainWorld('yaacServer', {
+  targets: () => ipcRenderer.invoke('server:targets'),
+  switchTo: (selection: unknown) => ipcRenderer.invoke('server:switch', selection),
+  addRemote: (url: string, token: string) => ipcRenderer.invoke('server:add-remote', url, token),
+})

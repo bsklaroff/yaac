@@ -202,7 +202,7 @@ describe('resolveServerTarget', () => {
   })
 
   it('the env hatch wins over an enabled remote', async () => {
-    await writeRemote({ url: 'https://srv.ts.net', token: 'tok', enabled: true })
+    await writeRemote({ url: 'https://srv.ts.net', token: 'tok', enabled: true, saved: [] })
     vi.stubEnv('YAAC_SERVER_URL', 'http://127.0.0.1:1234/')
     vi.stubEnv('YAAC_SERVER_SECRET', 'env-secret')
     const target = await resolveServerTarget()
@@ -210,13 +210,13 @@ describe('resolveServerTarget', () => {
   })
 
   it('an enabled remote wins over the local lock', async () => {
-    await writeRemote({ url: 'https://srv.ts.net', token: 'tok', enabled: true })
+    await writeRemote({ url: 'https://srv.ts.net', token: 'tok', enabled: true, saved: [] })
     const target = await resolveServerTarget()
     expect(target).toEqual({ baseUrl: 'https://srv.ts.net', secret: 'tok', remote: true })
   })
 
   it('a disabled remote falls through to the local lock path', async () => {
-    await writeRemote({ url: 'https://srv.ts.net', token: 'tok', enabled: false })
+    await writeRemote({ url: 'https://srv.ts.net', token: 'tok', enabled: false, saved: [] })
     // No lock in the temp data dir → the local branch throws its
     // "not running" guidance, proving the remote was skipped.
     await expect(resolveServerTarget()).rejects.toThrow(/yaac server start/)

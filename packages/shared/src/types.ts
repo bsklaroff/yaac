@@ -761,3 +761,23 @@ export interface ServerSnapshot {
 /** Messages the server pushes over `/events`. */
 export type ServerEvent =
   | { type: 'snapshot'; data: ServerSnapshot }
+
+/**
+ * Desktop-shell server picker, over the preload bridge (`window.yaacServer`).
+ * The renderer only ever sees origins — remote tokens stay in the main
+ * process (remote.json).
+ */
+export type DesktopServerSelection =
+  | { kind: 'local' }
+  | { kind: 'remote'; url: string }
+
+export interface DesktopServerTargets {
+  current: DesktopServerSelection
+  /** Origins of every remote ever configured (remote.json `saved`). */
+  saved: string[]
+}
+
+/** `changed: true` means the shell is about to reland the window on the new server. */
+export type DesktopServerOutcome =
+  | { ok: true; changed: boolean }
+  | { ok: false; error: string }

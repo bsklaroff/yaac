@@ -12,6 +12,7 @@ import {
   KeyIcon,
   ProjectConfigIcon,
   ScheduleIcon,
+  ServerIcon,
   SettingsIcon,
   TOOL_LABEL,
 } from '#lib/icons'
@@ -39,6 +40,8 @@ import {
 } from '#lib/shortcuts'
 import { ProjectSettings } from '#components/settings/ProjectSettings'
 import { ScheduleSettings } from '#components/settings/ScheduleSettings'
+import { ServerSettings } from '#components/settings/ServerSettings'
+import { serverBridge } from '#lib/desktopServer'
 import { FileEditor } from '#components/settings/FileEditor'
 import { BuildFiles } from '#components/settings/BuildFiles'
 import { userBuildFilesApi } from '#lib/buildFilesApi'
@@ -76,12 +79,23 @@ const THEMES: { value: ThemePref; label: string }[] = [
 
 const SECTIONS: { key: SettingsSection; label: string; Icon: typeof GeneralIcon }[] = [
   { key: 'general', label: 'General', Icon: GeneralIcon },
+  { key: 'server', label: 'Server', Icon: ServerIcon },
   { key: 'shortcuts', label: 'Shortcuts', Icon: KeyboardIcon },
   { key: 'credentials', label: 'Credentials', Icon: KeyIcon },
   { key: 'project', label: 'Project Config', Icon: ProjectConfigIcon },
   { key: 'schedules', label: 'Schedules', Icon: ScheduleIcon },
   { key: 'userDockerfile', label: 'User Dockerfile', Icon: DockerIcon },
 ]
+
+/**
+ * The nav entries for this environment. 'server' switches which server the
+ * desktop shell attaches to, so it exists only where the preload bridge
+ * does — in a plain browser the tab is already bound to the origin that
+ * served it and the section would be a no-op.
+ */
+function visibleSections(): typeof SECTIONS {
+  return serverBridge() ? SECTIONS : SECTIONS.filter((s) => s.key !== 'server')
+}
 
 /**
  * Rail gear → settings. Notion-style modal: a left nav of sections over a
@@ -137,7 +151,7 @@ export function SettingsButton(): JSX.Element {
           {/* Left nav */}
           <div className="flex w-44 shrink-0 flex-col gap-0.5 border-r border-hairline-soft bg-bg/50 p-2">
             <Dialog.Title className="px-2 pb-2 pt-1 text-xs font-semibold text-text-dim">Settings</Dialog.Title>
-            {SECTIONS.map(({ key, label, Icon }) => (
+            {visibleSections().map(({ key, label, Icon }) => (
               <button
                 key={key}
                 onClick={() => setSection(key)}
@@ -243,6 +257,8 @@ export function SettingsButton(): JSX.Element {
                 </Field>
               </section>
             )}
+
+            {section === 'server' && <ServerSettings />}
 
             {section === 'shortcuts' && <ShortcutsPane />}
 
