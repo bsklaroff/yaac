@@ -138,7 +138,7 @@ describe('handleSpawnRequest', () => {
     await settle()
   })
 
-  it('threads a model override into the create when the resolved tool is claude', async () => {
+  it('threads a model override into the create', async () => {
     const { deps, createSessionFn } = makeDeps({ mintIdFn: () => 'minted-id' })
     const result = await handleSpawnRequest(
       makeReq({ tool: 'claude', model: 'claude-opus-4-8' }), deps,
@@ -154,13 +154,18 @@ describe('handleSpawnRequest', () => {
     await settle()
   })
 
-  it('rejects a model override when the resolved tool is not claude', async () => {
+  it('threads a provider/model override for a non-claude tool', async () => {
     // No explicit tool: resolves to the caller's own tool (codex).
-    const { deps, createSessionFn } = makeDeps()
-    const result = await handleSpawnRequest(makeReq({ model: 'claude-opus-4-8' }), deps)
-    expect(result.ok).toBe(false)
-    expect(result.error).toContain('only supported for the claude tool')
-    expect(createSessionFn).not.toHaveBeenCalled()
+    const { deps, createSessionFn } = makeDeps({ mintIdFn: () => 'minted-id' })
+    const result = await handleSpawnRequest(
+      makeReq({ model: 'openai/gpt-5.2' }), deps,
+    )
+    expect(result.ok).toBe(true)
+    expect(createSessionFn.mock.calls[0][1]).toMatchObject({
+      tool: 'codex',
+      model: 'openai/gpt-5.2',
+    })
+    await settle()
   })
 
   it('rejects a malformed model without creating', async () => {

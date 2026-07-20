@@ -23,6 +23,33 @@ describe('buildAgentCmd', () => {
       const cmd = buildAgentCmd('codex', 'abc', '--add-dir /add-dir/tmp', true)
       expect(cmd).toBe('codex --yolo resume abc --add-dir /add-dir/tmp')
     })
+
+    it('inserts --model when a model override is given', () => {
+      const cmd = buildAgentCmd('codex', 'sess-1', '', false, undefined, 'gpt-5.2-codex')
+      expect(cmd).toBe('codex --yolo --model gpt-5.2-codex')
+    })
+
+    it('places --model after the resume subcommand (codex resume parses it)', () => {
+      const cmd = buildAgentCmd('codex', 'abc', '', true, undefined, 'gpt-5.2-codex')
+      expect(cmd).toBe('codex --yolo resume abc --model gpt-5.2-codex')
+    })
+  })
+
+  describe('opencode tool', () => {
+    it('starts the loopback server and omits model flags by default', () => {
+      const cmd = buildAgentCmd('opencode', 'sess-1', '')
+      expect(cmd).toBe('opencode --port 4096 --hostname 127.0.0.1')
+    })
+
+    it('appends --continue when resuming', () => {
+      const cmd = buildAgentCmd('opencode', 'sess-1', '', true)
+      expect(cmd).toBe('opencode --port 4096 --hostname 127.0.0.1 --continue')
+    })
+
+    it('inserts a provider/model override', () => {
+      const cmd = buildAgentCmd('opencode', 'sess-1', '', false, undefined, 'anthropic/claude-opus-4-8')
+      expect(cmd).toBe('opencode --port 4096 --hostname 127.0.0.1 --model anthropic/claude-opus-4-8')
+    })
   })
 
   describe('pi tool', () => {
@@ -54,6 +81,11 @@ describe('buildAgentCmd', () => {
     it('drops add-dir flags (pi has no --add-dir)', () => {
       const cmd = buildAgentCmd('pi', 'sess-1', '--add-dir /add-dir/tmp')
       expect(cmd).toBe(wrapped(`pi --approve --model ${defaultModel} --session-id sess-1`))
+    })
+
+    it('prefers an explicit model override over the provider default', () => {
+      const cmd = buildAgentCmd('pi', 'sess-1', '', false, 'anthropic', 'openai/gpt-5.2')
+      expect(cmd).toBe(wrapped('pi --approve --model openai/gpt-5.2 --session-id sess-1'))
     })
 
     it('filters the fresh-run warning without single quotes (survives respawn wrapper)', () => {
@@ -104,8 +136,11 @@ describe('buildAgentCmd', () => {
   })
 
   describe('MODEL_RE', () => {
-    it('accepts model ids and aliases', () => {
-      for (const m of ['claude-opus-4-8', 'opus', 'claude-sonnet-5', 'us.anthropic.claude-fable-5:0']) {
+    it('accepts model ids, aliases, and provider/model paths', () => {
+      for (const m of [
+        'claude-opus-4-8', 'opus', 'claude-sonnet-5', 'us.anthropic.claude-fable-5:0',
+        'anthropic/claude-opus-4-8', 'fireworks/accounts/fireworks/models/kimi-k2p6',
+      ]) {
         expect(MODEL_RE.test(m)).toBe(true)
       }
     })

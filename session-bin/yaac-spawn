@@ -3,8 +3,9 @@
 #
 # Usage: yaac-spawn [--tool claude|codex|opencode|pi] [--model <model>] "<prompt>"
 #
-# --model (claude tool only) launches the new session's agent with
-# `claude --model <model>`, e.g. claude-opus-4-8 or opus.
+# --model launches the new session's agent with `--model <model>`: a
+# model id or alias for claude/codex (e.g. opus), provider/model for
+# opencode and pi (e.g. anthropic/claude-opus-4-8).
 #
 # Prints the new session's id on success. Fire-and-forget: the session
 # provisions in the background; watch it in the yaac webapp.
