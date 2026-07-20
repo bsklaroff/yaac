@@ -1,7 +1,8 @@
 import { useLayoutEffect, useRef, useState, type JSX } from 'react'
 import clsx from 'clsx'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Collapsible } from '@base-ui/react/collapsible'
-import { BranchIcon, ChevronIcon, CloseIcon, LoadingIcon, SidebarIcon, TOOL_LABEL } from '#lib/icons'
+import { BranchIcon, ChevronIcon, CloseIcon, LoadingIcon, PinIcon, RestartIcon, SidebarIcon, TOOL_LABEL } from '#lib/icons'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
 import { DeletedSessionsButton } from '#components/DeletedSessionsButton'
 import { EmptyState } from '#components/ui/EmptyState'
@@ -12,14 +13,17 @@ import { ProjectActionsMenu } from '#components/ProjectActionsMenu'
 import { SkillsButton } from '#components/SkillsButton'
 import { UsageBadge } from '#components/UsageBadge'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { dismissProvisioning } from '#lib/createSession'
+import { dismissProvisioning, restartSession, setSessionBackground } from '#lib/createSession'
+import { getDeletedSessions } from '#lib/deletedApi'
 import { deleteSessionOptimistic } from '#lib/deleteSessionFlow'
+import { useProvisionSession } from '#lib/useProvisionSession'
 import { isUnreadWaiting, useUiStore } from '#store'
-import type { GitAuthFailure, ProvisioningSessionEntry, SessionListEntry } from '@yaac/shared/types'
+import { describeSessionDeathReason } from '@yaac/shared/death-reason'
+import type { DeletedSessionEntry, GitAuthFailure, ProvisioningSessionEntry, SessionListEntry } from '@yaac/shared/types'
 
 /** User-facing session groups keyed by status, in triage order (Waiting
- *  first). Terminating sessions are orthogonal to status and get their own
- *  section rendered after these (see the Sidebar body). */
+ *  first). Background pins and terminating are orthogonal to status and get
+ *  their own sections rendered after these (see sidebarSections). */
 const GROUPS: { status: SessionListEntry['status']; label: string; defaultOpen: boolean }[] = [
   { status: 'waiting', label: 'Waiting', defaultOpen: true },
   { status: 'running', label: 'Running', defaultOpen: true },
@@ -38,20 +42,23 @@ function isTerminating(
 
 /**
  * The sidebar's selectable rows in display order — provisioning first, then
- * the session groups in triage order, minus terminating sessions. This is the
- * list the Alt+↑/↓ session-switch shortcut steps through (Workspace owns the
- * handler). Terminating rows (server-marked, or a mid-flight optimistic
- * delete) still render, greyed, but aren't selectable.
+ * the session groups in triage order, then the Background pins, minus
+ * terminating sessions. This is the list the Alt+↑/↓ session-switch shortcut
+ * steps through (Workspace owns the handler). Terminating rows (server-marked,
+ * or a mid-flight optimistic delete) still render, greyed, but aren't
+ * selectable — nor are deleted Background rows (nothing to open).
  */
 export function sidebarRowIds(
   provisioning: Pick<ProvisioningSessionEntry, 'sessionId'>[],
-  sessions: Pick<SessionListEntry, 'sessionId' | 'status' | 'terminating'>[],
+  sessions: Pick<SessionListEntry, 'sessionId' | 'status' | 'terminating' | 'background'>[],
   pendingDeleteIds: string[],
 ): string[] {
   const shown = sessions.filter((s) => !isTerminating(s, pendingDeleteIds))
+  const foreground = shown.filter((s) => !s.background)
   return [
     ...provisioning.map((p) => p.sessionId),
-    ...GROUPS.flatMap((g) => shown.filter((s) => s.status === g.status).map((s) => s.sessionId)),
+    ...GROUPS.flatMap((g) => foreground.filter((s) => s.status === g.status).map((s) => s.sessionId)),
+    ...shown.filter((s) => s.background).map((s) => s.sessionId),
   ]
 }
 
@@ -60,27 +67,36 @@ export interface SidebarSection {
   label: string
   defaultOpen: boolean
   sessions: SessionListEntry[]
+  /** Deleted-but-pinned rows (Background section only) — rendered after the
+   *  active rows as non-selectable placeholders with a restart action. */
+  deleted?: DeletedSessionEntry[]
 }
 
 /**
  * Sidebar sections in render order: the status groups (Waiting, then Running)
- * holding live sessions, then a Terminating section for sessions on their way
- * out — status is orthogonal to termination, so a terminating session leaves
- * its status group and lands here. Empty sections are kept in the list;
- * SessionGroup renders nothing for them.
+ * holding live sessions, then Background holding every pinned session —
+ * whatever its state: running, waiting, terminating, or deleted (the
+ * `deletedBackground` rows) — then a Terminating section for unpinned
+ * sessions on their way out. Status is orthogonal to both pins and
+ * termination, so a pinned or terminating session leaves its status group.
+ * Empty sections are kept in the list; SessionGroup renders nothing for them.
  */
 export function sidebarSections(
   sessions: SessionListEntry[],
   pendingDeleteIds: string[],
+  deletedBackground: DeletedSessionEntry[] = [],
 ): SidebarSection[] {
-  const live = sessions.filter((s) => !isTerminating(s, pendingDeleteIds))
-  const terminating = sessions.filter((s) => isTerminating(s, pendingDeleteIds))
+  const foreground = sessions.filter((s) => !s.background)
+  const background = sessions.filter((s) => Boolean(s.background))
+  const live = foreground.filter((s) => !isTerminating(s, pendingDeleteIds))
+  const terminating = foreground.filter((s) => isTerminating(s, pendingDeleteIds))
   return [
     ...GROUPS.map((g) => ({
       label: g.label,
       defaultOpen: g.defaultOpen,
       sessions: live.filter((s) => s.status === g.status),
     })),
+    { label: 'Background', defaultOpen: true, sessions: background, deleted: deletedBackground },
     { label: 'Terminating', defaultOpen: true, sessions: terminating },
   ]
 }
@@ -123,11 +139,35 @@ export function Sidebar({
   // terminating included.
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
-  const sections = sidebarSections(sessions, pendingDeleteIds)
-  const visibleCount = sections.reduce((n, sec) => n + sec.sessions.length, 0)
+  const optimisticDeleted = useUiStore((s) => s.optimisticDeleted)
   // Re-fetch the deleted list whenever the active set changes (a just-deleted
   // session appears, a restarted one drops).
   const activeSignature = sessions.map((s) => s.sessionId).sort().join(',')
+
+  // Deleted sessions feed the Background section's pinned-but-deleted rows.
+  // Same query key as DeletedSessionsButton, so the two share one fetch.
+  const { data: deletedList } = useQuery({
+    queryKey: ['deleted', projectSlug, activeSignature],
+    queryFn: () => getDeletedSessions(projectSlug ?? '', 100),
+    enabled: !!projectSlug,
+    staleTime: 2000,
+  })
+  // Pinned deleted rows: optimistic just-deleted entries ahead of the fetched
+  // list (de-duped), minus anything active again — a session mid-termination
+  // is still in the snapshot (its Background row renders the terminating
+  // placeholder), and one mid-restart has a provisioning row instead.
+  const activeIds = new Set(sessions.map((s) => s.sessionId))
+  const provisioningIds = new Set(provisioning.map((p) => p.sessionId))
+  const fetchedIds = new Set((deletedList ?? []).map((d) => d.sessionId))
+  const deletedBackground = [
+    ...optimisticDeleted.filter((e) => e.projectSlug === projectSlug && !fetchedIds.has(e.sessionId)),
+    ...(deletedList ?? []),
+  ].filter((d) => d.background && !activeIds.has(d.sessionId) && !provisioningIds.has(d.sessionId))
+
+  const sections = sidebarSections(sessions, pendingDeleteIds, deletedBackground)
+  const visibleCount = sections.reduce(
+    (n, sec) => n + sec.sessions.length + (sec.deleted?.length ?? 0), 0,
+  )
 
   return (
     <aside className="my-2 ml-2 flex w-64 flex-col overflow-hidden rounded-lg
@@ -196,6 +236,7 @@ export function Sidebar({
             label={section.label}
             defaultOpen={section.defaultOpen}
             sessions={section.sessions}
+            deleted={section.deleted}
           />
         ))}
         {projectSlug && <DeletedSessionsButton projectSlug={projectSlug} activeSignature={activeSignature} />}
@@ -262,14 +303,17 @@ function ProvisioningRow({ entry }: { entry: ProvisioningSessionEntry }): JSX.El
 function SessionGroup({
   label,
   sessions,
+  deleted = [],
   defaultOpen,
 }: {
   label: string
   sessions: SessionListEntry[]
+  /** Deleted-but-pinned rows, rendered after the active ones (Background). */
+  deleted?: DeletedSessionEntry[]
   defaultOpen: boolean
 }): JSX.Element | null {
   const [open, setOpen] = useState(defaultOpen)
-  if (sessions.length === 0) return null
+  if (sessions.length === 0 && deleted.length === 0) return null
 
   return (
     <Collapsible.Root open={open} onOpenChange={setOpen} className="py-1">
@@ -277,10 +321,11 @@ function SessionGroup({
         text-text-faint outline-none transition hover:text-text-dim">
         <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
         <span>{label}</span>
-        <span className="text-text-faint/70">{sessions.length}</span>
+        <span className="text-text-faint/70">{sessions.length + deleted.length}</span>
       </Collapsible.Trigger>
       <Collapsible.Panel>
         {sessions.map((s) => <SessionRow key={s.sessionId} session={s} />)}
+        {deleted.map((d) => <DeletedSessionRow key={d.sessionId} entry={d} />)}
       </Collapsible.Panel>
     </Collapsible.Root>
   )
@@ -344,6 +389,13 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
     deleteSessionOptimistic(session)
   }
 
+  // Pin/unpin to the Background section. The server pushes a fresh snapshot,
+  // so the row regroups without optimistic state.
+  const toggleBackground = (): void => {
+    void setSessionBackground(session.projectSlug, session.sessionId, !session.background)
+      .catch((e: unknown) => console.error('background toggle failed', e))
+  }
+
   // A terminating row is a non-interactive, greyed placeholder: no pulse, no
   // unread bubble, no delete × — just a spinner and a "terminating…" line. It
   // vanishes when the snapshot drops the session.
@@ -382,9 +434,9 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
           selectedSessionId === session.sessionId && 'bg-surface-2 hover:bg-surface-2',
         )}
       >
-        {/* Title fills the row; only on hover does it inset to clear the delete
-            × and marquee-scroll when it's too long to fit. */}
-        <span className="flex items-center gap-2 group-hover:pr-6">
+        {/* Title fills the row; only on hover does it inset to clear the pin
+            + delete buttons and marquee-scroll when it's too long to fit. */}
+        <span className="flex items-center gap-2 group-hover:pr-12">
           {/* Live pulse: the session's agent is actively running. A square,
               so it can't be mistaken for the round unread bubble below. */}
           {session.status === 'running' && (
@@ -428,8 +480,18 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
         </span>
       )}
 
-      {/* Overlaid as a sibling (not nested in the row button) and pointer-inert
-          until hover, so it can't swallow clicks meant for selecting the row. */}
+      {/* Overlaid as siblings (not nested in the row button) and pointer-inert
+          until hover, so they can't swallow clicks meant for selecting the row. */}
+      <button
+        onClick={toggleBackground}
+        title={session.background ? 'Remove from background' : 'Move to background'}
+        aria-label={session.background ? 'Remove from background' : 'Move to background'}
+        className="absolute right-8 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
+          opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
+          group-hover:pointer-events-auto group-hover:opacity-100"
+      >
+        <PinIcon size={13} className={clsx(session.background && 'rotate-45')} />
+      </button>
       <button
         onClick={() => setConfirmDelete(true)}
         title="Delete session"
@@ -448,6 +510,97 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
         description="Stops and removes the session's container. The session history and worktree will be saved, and can be restarted."
         confirmLabel="Delete"
         onConfirm={onConfirmDelete}
+      />
+    </div>
+  )
+}
+
+/**
+ * A pinned session whose container is gone — the Background section keeps its
+ * row (deleted sessions still appear in the full "Deleted sessions" overlay
+ * too). Non-selectable: there's nothing to open until it's restarted. Hover
+ * offers the same pin toggle as live rows (unpinning drops the row) and a
+ * restart, which reuses the deleted-overlay flow: a provisioning row replaces
+ * this one while the container is recreated.
+ */
+function DeletedSessionRow({ entry }: { entry: DeletedSessionEntry }): JSX.Element {
+  const provision = useProvisionSession()
+  const queryClient = useQueryClient()
+  const removeOptimisticDeleted = useUiStore((s) => s.removeOptimisticDeleted)
+  const [confirmRestart, setConfirmRestart] = useState(false)
+
+  const onConfirmRestart = (): void => {
+    setConfirmRestart(false)
+    removeOptimisticDeleted(entry.sessionId)
+    provision(entry.projectSlug, entry.tool, 'restart', entry.sessionId,
+      (sid, onProgress) => restartSession(sid, onProgress, { projectSlug: entry.projectSlug, tool: entry.tool }))
+  }
+
+  // The deleted list isn't snapshot-pushed, so clear the pin in the cached
+  // query (and any optimistic copy) for an instant regroup; the server write
+  // makes it durable.
+  const unpin = (): void => {
+    queryClient.setQueriesData<DeletedSessionEntry[]>(
+      { queryKey: ['deleted', entry.projectSlug] },
+      (old) => old?.map((e) => (e.sessionId === entry.sessionId ? { ...e, background: undefined } : e)),
+    )
+    removeOptimisticDeleted(entry.sessionId)
+    void setSessionBackground(entry.projectSlug, entry.sessionId, false)
+      .catch((e: unknown) => console.error('background toggle failed', e))
+  }
+
+  const deletedLine = entry.deathReason
+    ? `died${entry.deletedAt ? ` ${relativeAge(entry.deletedAt)}` : ''} — ${describeSessionDeathReason(entry.deathReason)}`
+    : entry.deletedAt
+      ? `deleted ${relativeAge(entry.deletedAt)}`
+      : 'deleted'
+
+  return (
+    <div className="group relative mx-2">
+      <div className="flex w-full cursor-default flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left text-sm opacity-60">
+        <span className="flex items-center gap-2 group-hover:pr-12">
+          <span className="truncate font-medium text-text-dim">
+            {entry.title || entry.prompt || 'New session'}
+          </span>
+        </span>
+        <span className="flex items-center gap-2 text-xs text-text-faint">
+          <span className="truncate">{deletedLine}</span>
+          <span className="ml-auto shrink-0">{TOOL_LABEL[entry.tool]}</span>
+        </span>
+      </div>
+
+      {/* Same overlay-button pattern as live rows: pin toggle left of the
+          action slot, which here restarts instead of deletes. */}
+      <button
+        onClick={unpin}
+        title="Remove from background"
+        aria-label="Remove from background"
+        className="absolute right-8 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
+          opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
+          group-hover:pointer-events-auto group-hover:opacity-100"
+      >
+        <PinIcon size={13} className="rotate-45" />
+      </button>
+      <button
+        onClick={() => setConfirmRestart(true)}
+        title="Restart session"
+        aria-label="Restart session"
+        className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
+          opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
+          group-hover:pointer-events-auto group-hover:opacity-100"
+      >
+        <RestartIcon size={13} />
+      </button>
+
+      <ConfirmDialog
+        open={confirmRestart}
+        onOpenChange={setConfirmRestart}
+        destructive={false}
+        title="Restart this session?"
+        description={(entry.deathReason ? `This session died: ${describeSessionDeathReason(entry.deathReason)}. ` : '')
+          + `Recreates the container and resumes ${TOOL_LABEL[entry.tool]} from where it left off.`}
+        confirmLabel="Restart"
+        onConfirm={onConfirmRestart}
       />
     </div>
   )

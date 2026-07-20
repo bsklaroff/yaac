@@ -62,6 +62,16 @@ export const deletedSessions = snakeCase.table('deleted_sessions', {
   seen: boolean().notNull().default(false),
 }, (t) => [primaryKey({ columns: [t.projectSlug, t.sessionId] })])
 
+/** Sessions pinned to the sidebar's "Background" section. Row present =
+ *  pinned; unpin deletes the row. Keyed by (projectSlug, sessionId) like the
+ *  other per-session side tables so the pin survives delete + restart
+ *  (session ids are stable across restarts) — a deleted background session
+ *  keeps its sidebar row with a restart action. */
+export const backgroundSessions = snakeCase.table('background_sessions', {
+  projectSlug: text().notNull(),
+  sessionId: text().notNull(),
+}, (t) => [primaryKey({ columns: [t.projectSlug, t.sessionId] })])
+
 /** Cached opencode first-message snapshots. `createdAt` replaces the meta
  *  file's birthtime that deleted-session listing sorts by. */
 export const opencodeSessionMeta = snakeCase.table('opencode_session_meta', {

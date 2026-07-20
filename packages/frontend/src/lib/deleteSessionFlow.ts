@@ -27,6 +27,9 @@ export function deleteSessionOptimistic(session: SessionListEntry): void {
       // A user delete, never an abnormal death, so `seen` is moot — but the
       // type requires it and isUnseenDeath keys off deathReason anyway.
       seen: false,
+      // Carry the pin so a deleted background session keeps its sidebar row
+      // without waiting for the deleted list to refetch.
+      background: session.background,
     })
   }
   void deleteSession(id).catch((e: unknown) => {

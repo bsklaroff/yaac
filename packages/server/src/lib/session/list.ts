@@ -16,6 +16,7 @@ import { getSessionPorts } from '#lib/session/port-forwarders'
 import { readBlockedHosts } from '#lib/session/blocked-hosts'
 import { readAllGitAuthFailures } from '#lib/project/git-auth-failures'
 import { getSessionTitles } from '#lib/session/titles'
+import { listBackgroundSessionIds } from '#lib/session/background'
 import { ServerError } from '@yaac/shared/errors'
 import { serverLog } from '#log'
 import { testEnv } from '@yaac/shared/env'
@@ -197,6 +198,11 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
   const titlesBySlug = new Map(await Promise.all(
     titleSlugs.map(async (slug) => [slug, await getSessionTitles(slug)] as const),
   ))
+  // Background pins, batched the same way — terminating rows keep their pin
+  // so they stay in the Background section on the way out.
+  const backgroundBySlug = new Map(await Promise.all(
+    titleSlugs.map(async (slug) => [slug, await listBackgroundSessionIds(slug)] as const),
+  ))
 
   const sessions: SessionListEntry[] = await Promise.all(
     running.map(async (p): Promise<SessionListEntry> => {
@@ -232,6 +238,7 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
         blockedHosts,
         forwardedPorts: getSessionPorts(p.sessionId),
         baseBranch: baseBranch ?? undefined,
+        background: backgroundBySlug.get(p.projectSlug)?.has(p.sessionId) || undefined,
       }
     }),
   )
@@ -259,6 +266,9 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
         title: p.projectSlug ? titlesBySlug.get(p.projectSlug)?.[p.sessionId] : undefined,
         blockedHosts: [],
         forwardedPorts: [],
+        background: p.projectSlug
+          ? backgroundBySlug.get(p.projectSlug)?.has(p.sessionId) || undefined
+          : undefined,
       }
     }),
   )
@@ -628,13 +638,26 @@ export async function listDeletedSessions(
     }
   }
 
+  // Mark background pins before the limit slice — a pinned deleted session
+  // drives a sidebar row, so it must survive the cap no matter how far down
+  // the newest-deleted ordering it falls.
+  const backgroundSlugs = [...new Set(collected.map((r) => r.entry.projectSlug))]
+  const backgroundBySlug = new Map(await Promise.all(
+    backgroundSlugs.map(async (slug) => [slug, await listBackgroundSessionIds(slug)] as const),
+  ))
+  for (const r of collected) {
+    if (backgroundBySlug.get(r.entry.projectSlug)?.has(r.entry.sessionId)) r.entry.background = true
+  }
+
   // Newest-deleted first: sort by recorded deletion time, falling back to
   // last-activity for out-of-band deletions, with birthtime as a stable
   // tiebreak within the same second.
   collected.sort((a, b) =>
     (b.deletedAtMs ?? b.lastActiveMs) - (a.deletedAtMs ?? a.lastActiveMs)
     || b.birthtimeMs - a.birthtimeMs)
-  const slice = limit && limit > 0 ? collected.slice(0, limit) : collected
+  const slice = limit && limit > 0
+    ? collected.filter((r, i) => i < limit || r.entry.background)
+    : collected
   const capped = slice.map((r) => r.entry)
   const deletedTitleSlugs = [...new Set(capped.map((e) => e.projectSlug))]
   const deletedTitles = new Map(await Promise.all(

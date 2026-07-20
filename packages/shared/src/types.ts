@@ -434,6 +434,11 @@ export interface SessionListEntry {
    *  branch), read from the session branch's recorded upstream. Unset when
    *  the upstream record is missing or unreadable. */
   baseBranch?: string
+  /** Pinned to the sidebar's "Background" section. Orthogonal to `status`
+   *  and `terminating`: a background session stays in that section whatever
+   *  state it's in (and, via `DeletedSessionEntry.background`, even after
+   *  deletion). Server-persisted so the pin survives restarts. */
+  background?: boolean
 }
 
 /** How a file changed, mapped from git's name-status letters. */
@@ -586,6 +591,10 @@ export interface DeletedSessionEntry {
    *  deleted_sessions row) so the acknowledgement is durable and shared across
    *  clients; only meaningful when `deathReason` is set. */
   seen: boolean
+  /** Pinned to the sidebar's "Background" section — the pin survives
+   *  deletion (session ids are stable across restarts), so a deleted
+   *  background session keeps a sidebar row with a restart action. */
+  background?: boolean
 }
 
 /** A webapp-attachable terminal inside a session's container (beyond the

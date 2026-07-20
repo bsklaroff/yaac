@@ -19,6 +19,7 @@ import { pickNextStreamSession } from '#stream-picker'
 import { notifySessionListChanged } from '#sessions-changed'
 import { createShellWindow, listSessionTerminals, killWindowTerminal } from '#terminals'
 import { setSessionTitle } from '#lib/session/titles'
+import { setSessionBackground } from '#lib/session/background'
 import { getSessionChanges } from '#lib/session/changes'
 import { worktreeUpstreamBranch } from '#lib/git'
 import { repoDir } from '@yaac/shared/project-paths'
@@ -160,6 +161,24 @@ export const sessionApp = new Hono()
     async (c) => {
       const { projectSlug, sessionId } = c.req.valid('json')
       await recordDeathSeen(projectSlug, sessionId)
+      return c.body(null, 204)
+    },
+  )
+  // Pin (or unpin) a session to the sidebar's "Background" section. Takes an
+  // explicit projectSlug (like /mark-death-seen) rather than resolving the
+  // container: the target may be a deleted session with no pod to resolve.
+  .post(
+    '/set-background',
+    zv('json', z.object({
+      projectSlug: z.string().min(1),
+      sessionId: z.string().min(1),
+      background: z.boolean(),
+    })),
+    async (c) => {
+      const { projectSlug, sessionId, background } = c.req.valid('json')
+      await setSessionBackground(projectSlug, sessionId, background)
+      // Push a fresh snapshot so the sidebar regroups immediately.
+      notifySessionListChanged()
       return c.body(null, 204)
     },
   )

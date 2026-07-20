@@ -67,3 +67,14 @@ export async function deleteSession(sessionId: string): Promise<void> {
 export async function renameSession(sessionId: string, title: string): Promise<void> {
   await api.session[':id'].title.$post({ param: { id: sessionId }, json: { title } })
 }
+
+/** Pin (or unpin) a session to the sidebar's "Background" section. Addressed
+ *  by (project, session) rather than a container lookup so it works for
+ *  deleted sessions too — the pin outlives the container. */
+export async function setSessionBackground(
+  projectSlug: string,
+  sessionId: string,
+  background: boolean,
+): Promise<void> {
+  await api.session['set-background'].$post({ json: { projectSlug, sessionId, background } })
+}
