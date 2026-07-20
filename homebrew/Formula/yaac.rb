@@ -6,8 +6,9 @@ class Yaac < Formula
   desc "Agent sandbox manager - parallel agent sessions on a local Kubernetes cluster"
   homepage "https://github.com/bsklaroff/yaac"
   url "https://registry.npmjs.org/@bsklaroff/yaac/-/yaac-<VERSION>.tgz"
-  # Recompute on every release: curl -fsSL <url> | shasum -a 256
-  sha256 "REPLACE_WITH_TARBALL_SHA256_AFTER_NPM_PUBLISH"
+  # <VERSION>/<SHA256> are filled from the published npm tarball by
+  # `pnpm release` (by hand: curl -fsSL <url> | shasum -a 256)
+  sha256 "<SHA256>"
   license "MIT"
 
   depends_on "cilium-cli"

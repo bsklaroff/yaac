@@ -16,11 +16,21 @@ files:
 # — electron-builder's extraResources strips node_modules, so a plain fs copy
 # is the reliable path.
 afterPack: ./scripts/after-pack.cjs
+# Only the .dmg (release builds) gets an artifact; the version in its name
+# comes from -c.extraMetadata.version (the root package version) — this
+# package.json deliberately stays 0.0.0.
+artifactName: ${productName}-${version}-${arch}.${ext}
 mac:
   target:
     - dir
-  icon: build/icon.png
-  # Unsigned for a local double-clickable build; signing + notarization + .dmg
-  # are a fast-follow.
+  # Unsigned local build by default (identity: null skips signing), so
+  # `pnpm desktop:package` needs no credentials. `pnpm release`
+  # (scripts/release.ts) overrides on the CLI: --mac dmg, -c.mac.identity
+  # (Developer ID), -c.mac.notarize=true (notarytool env vars). The
+  # hardened runtime + entitlements below only take effect when signing.
   identity: null
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  icon: build/icon.png
   category: public.app-category.developer-tools

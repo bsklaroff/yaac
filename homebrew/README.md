@@ -1,8 +1,10 @@
 # Homebrew tap source
 
-Source of truth for the `bsklaroff/homebrew-yaac` tap. The formulas here are
-copied verbatim into that repo's `Formula/` directory — this directory exists
-so formula changes are reviewed alongside the code they package.
+Source of truth for the `bsklaroff/homebrew-yaac` tap. The formulas and the
+cask here are copied into that repo's `Formula/` and `Casks/` directories
+(`yaac.rb` and the cask with their `<VERSION>`/`<SHA256>` placeholders
+filled) — this directory exists so packaging changes are reviewed alongside
+the code they package.
 
 End-user install (macOS, arm64):
 
@@ -12,6 +14,12 @@ brew trust libkrun/krun
 brew tap libkrun/krun
 brew install bsklaroff/yaac/yaac
 yaac cluster setup
+```
+
+Desktop app (optional, after the above):
+
+```sh
+brew install --cask bsklaroff/yaac/yaac-desktop
 ```
 
 ## Formulas
@@ -55,23 +63,45 @@ yaac cluster setup
   once krunkit ships against libkrun 2.x, where `LinuxComplete` is the
   builder default.
 
+## Cask
+
+- **`yaac-desktop.rb`** — installs the signed + notarized desktop app (an
+  Electron shell around the yaac webapp, `packages/desktop`) from the DMG
+  attached to the matching `vX.Y.Z` GitHub Release. arm64-only, and
+  versioned in lockstep with the `yaac` formula — one release covers both.
+  The token is `yaac-desktop` so it never collides with the `yaac` formula.
+
 ## Release flow
 
-1. Bump `version` in the root `package.json` (the CLI reads it at build time),
-   then publish: `pnpm publish` (the `prepublishOnly` hook rebuilds `dist/`).
-   Use `pnpm publish`, not `npm publish` — pnpm rewrites the `catalog:`
-   version specifiers to their pinned versions in the published manifest.
-2. Compute the tarball hash:
+One version (the root `package.json`'s) drives the npm package, the
+`vX.Y.Z` git tag and GitHub Release, the desktop app, the formula, and the
+cask. Two scripts:
 
-   ```sh
-   curl -fsSL https://registry.npmjs.org/@bsklaroff/yaac/-/yaac-<VERSION>.tgz | shasum -a 256
-   ```
+1. `pnpm release:prep [patch|minor|major|X.Y.Z]` (default patch; runs
+   anywhere with push rights + `gh`, including a yaac session) — bumps the
+   root version, commits and tags `vX.Y.Z`, pushes both, and opens a
+   **draft** GitHub Release with notes from the commits since the previous
+   release.
+2. `pnpm release` (macOS arm64 only; needs `gh` auth, `npm login`, and the
+   signing env printed by the script — `YAAC_MAC_SIGNING_IDENTITY`,
+   `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`) — checks the
+   tag out in a throwaway worktree, publishes to npm with `pnpm publish`
+   (pnpm, not npm: it rewrites the `catalog:` version specifiers in the
+   published manifest), builds + signs + notarizes the desktop DMG, uploads
+   it and publishes the release, then pushes `Formula/` + `Casks/` to the
+   tap in one commit (set `YAAC_TAP_DIR` to reuse an existing checkout).
+   The publish step is skipped if the version is already on npm, so a
+   failed later step can just be re-run.
 
-3. Copy `Formula/*.rb` into the `bsklaroff/homebrew-yaac` repo, filling in
-   the `<VERSION>` and `sha256` placeholders in `yaac.rb`, and push.
+Manual fallback (what the scripts automate): compute
+`curl -fsSL https://registry.npmjs.org/@bsklaroff/yaac/-/yaac-<VERSION>.tgz
+| shasum -a 256` (formula) and `shasum -a 256 <dmg>` (cask), copy
+`Formula/*.rb` and `Casks/yaac-desktop.rb` into the tap repo with the
+`<VERSION>`/`<SHA256>` placeholders filled, and push.
 
 ## Creating the tap (one-time)
 
-Create a GitHub repo named `bsklaroff/homebrew-yaac` containing a `Formula/`
-directory with these files. `brew tap bsklaroff/yaac` then resolves it
-automatically (`brew install bsklaroff/yaac/yaac` taps implicitly).
+Create a GitHub repo named `bsklaroff/homebrew-yaac` containing `Formula/`
+and `Casks/` directories with these files. `brew tap bsklaroff/yaac` then
+resolves it automatically (`brew install bsklaroff/yaac/yaac` taps
+implicitly).

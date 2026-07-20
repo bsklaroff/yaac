@@ -121,7 +121,25 @@ a real Node ABI with no Node install on the target machine.
 (electron-builder's extraResources strips node_modules), and
 `scripts/install-app.ts` installs with `ditto` — a dereferencing copy breaks
 the Electron framework's `Versions/Current` symlinks and crashes the GPU
-process on launch. Signing, notarization, and a `.dmg` are a fast-follow.
+process on launch.
+
+## Releasing (signed + notarized DMG)
+
+Releases are cut by the repo-root scripts (see homebrew/README.md "Release
+flow" for the full picture — one root version covers npm, this app, and the
+Homebrew formula + cask): `pnpm release:prep` tags `vX.Y.Z` and opens a
+draft GitHub Release; `pnpm release` (macOS arm64, Developer ID +
+notarytool env) rebuilds at that tag and runs the same electron-builder
+config with CLI overrides — `--mac dmg`, `-c.mac.identity`,
+`-c.mac.notarize=true`, and `-c.extraMetadata.version=X.Y.Z` (this
+package.json deliberately stays `0.0.0`; the bundle version is injected
+from the root manifest). Signing covers the staged server + Node because
+electron-builder signs *after* the afterPack hook; hardened-runtime
+entitlements live in `build/entitlements.mac.plist` (JIT allowances that
+Electron and the bundled Node's V8 both need). The DMG lands on the GitHub
+Release and ships via the `yaac-desktop` Homebrew cask; the local
+`desktop:package`/`desktop:install` flow above stays unsigned and needs no
+credentials.
 
 First run on a fresh machine: the SPA's cluster gate (`GET /cluster/check`)
 notices there is no cluster and offers setup, streaming

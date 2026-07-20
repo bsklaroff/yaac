@@ -51,7 +51,11 @@ bundles `packages/cli` (tsup) to `dist/cli.js` and copies the SPA (built by
 vite to `packages/frontend/dist`) into `dist/frontend`. tsup leaves npm deps external,
 so the published CLI resolves them from the root manifest — the build fails
 if `dist/cli.js` imports one missing there (`scripts/check-cli-externals.ts`).
-Publish with `pnpm publish` (it rewrites `catalog:` pins; npm would not).
+Publish with `pnpm publish` (it rewrites `catalog:` pins; npm would not) —
+normally via the release scripts: `pnpm release:prep` (version bump + tag +
+draft GitHub Release, runs anywhere) then `pnpm release` (npm publish +
+signed/notarized desktop DMG + tap update, macOS only); see
+homebrew/README.md "Release flow".
 
 All vitest projects — the co-located `unit:<pkg>` suites plus the root
 `test/api`, `test/e2e`, and `test/e2e-cli` trees — are defined inline in the
