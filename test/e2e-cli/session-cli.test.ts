@@ -13,6 +13,7 @@ import {
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
 import { addTestProject, createTestRepo, requirePodman, requireCluster } from '@yaac/test-utils/setup'
+import { firstSnapshot } from '@yaac/test-utils/events-ws'
 
 /**
  * Merged session-CLI suite: one shared `createYaacTestEnv()` + one shared
@@ -115,37 +116,6 @@ function openWs(url: string, headers: Record<string, string>): {
     ws.once('unexpected-response', (_req, res) => resolve(res.statusCode ?? 0))
   })
   return { ws, text, binary: () => Buffer.concat(chunks).toString('utf8'), opened, failed }
-}
-
-interface ProvisioningEntry {
-  sessionId: string
-  projectSlug: string
-  tool: string
-  kind: 'create' | 'restart'
-  message: string
-  error?: string
-  createdAt: string
-}
-interface Snapshot { sessions: unknown[]; provisioning: ProvisioningEntry[] }
-
-/** Open a WS and resolve the first `snapshot` frame's data (what a connecting
- *  or reloading browser hydrates from). */
-async function firstSnapshot(url: string, secret: string): Promise<Snapshot> {
-  const ws = new WebSocket(url, { headers: { authorization: `Bearer ${secret}` } })
-  try {
-    const frame = await new Promise<Snapshot>((resolve, reject) => {
-      ws.once('error', reject)
-      ws.on('message', (data, isBinary) => {
-        if (isBinary) return
-        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer)
-        const parsed = JSON.parse(buf.toString('utf8')) as { type: string; data: Snapshot }
-        if (parsed.type === 'snapshot') resolve(parsed.data)
-      })
-    })
-    return frame
-  } finally {
-    ws.close()
-  }
 }
 
 /**
@@ -265,7 +235,6 @@ describe('provisioning sessions in the server snapshot (real server, no containe
     const base = `http://127.0.0.1:${server.lock.port}`
     const auth: Record<string, string> = { authorization: `Bearer ${server.lock.secret}` }
     const sessionId = crypto.randomUUID()
-    const wsUrl = `ws://127.0.0.1:${server.lock.port}/events`
 
     // A create against a non-existent project: the route registers the
     // provisioning entry up front, then createSession throws NOT_FOUND fast →
@@ -282,12 +251,12 @@ describe('provisioning sessions in the server snapshot (real server, no containe
 
     // Reconnect (as a reloaded browser would) — the snapshot must still carry
     // the provisioning entry, with its kind, a createdAt, and the error.
-    let snap = await firstSnapshot(wsUrl, server.lock.secret)
+    let snap = await firstSnapshot(server.lock.port, server.lock.secret)
     let entry = snap.provisioning.find((p) => p.sessionId === sessionId)
     // Give the fail-after-reject a beat if the very first reconnect raced it.
     for (let i = 0; i < 20 && !entry?.error; i++) {
       await sleep(100)
-      snap = await firstSnapshot(wsUrl, server.lock.secret)
+      snap = await firstSnapshot(server.lock.port, server.lock.secret)
       entry = snap.provisioning.find((p) => p.sessionId === sessionId)
     }
     expect(entry).toBeDefined()
@@ -303,7 +272,7 @@ describe('provisioning sessions in the server snapshot (real server, no containe
     })
     expect(dismiss.status).toBe(204)
 
-    const after = await firstSnapshot(wsUrl, server.lock.secret)
+    const after = await firstSnapshot(server.lock.port, server.lock.secret)
     expect(after.provisioning.some((p) => p.sessionId === sessionId)).toBe(false)
   }, 30_000)
 })

@@ -463,10 +463,16 @@ importers:
       tsx:
         specifier: 'catalog:'
         version: 4.21.0
+      ws:
+        specifier: 'catalog:'
+        version: 8.21.0
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
         version: 25.5.2
+      '@types/ws':
+        specifier: 'catalog:'
+        version: 8.18.1
 
 packages:
 

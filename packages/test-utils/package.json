@@ -16,9 +16,11 @@
     "@yaac/shared": "workspace:*",
     "hono": "catalog:",
     "simple-git": "catalog:",
-    "tsx": "catalog:"
+    "tsx": "catalog:",
+    "ws": "catalog:"
   },
   "devDependencies": {
-    "@types/node": "catalog:"
+    "@types/node": "catalog:",
+    "@types/ws": "catalog:"
   }
 }

@@ -6,6 +6,7 @@ import { schedules } from '#lib/db/schema'
 import { listSchedules } from '#lib/project/schedules'
 import { cronDue, reconcileSchedules } from '#schedule-reconcile'
 import { setDefaultTool } from '#lib/project/preferences'
+import { listProvisioning, clearAllProvisioningForTests } from '#provisioning'
 import { preferences } from '#lib/db/schema'
 
 // Local-time constructor keeps the expectations valid in any timezone.
@@ -51,6 +52,7 @@ describe('reconcileSchedules', () => {
   })
 
   beforeEach(async () => {
+    clearAllProvisioningForTests()
     const db = await getDb()
     await db.delete(schedules)
     await db.delete(preferences)
@@ -89,7 +91,12 @@ describe('reconcileSchedules', () => {
     expect(createSessionFn.mock.calls[0][1]).toMatchObject({
       tool: 'claude',
       initialPrompt: 'do the thing',
+      sessionId: expect.any(String) as string,
+      onProgress: expect.any(Function) as (message: string) => void,
     })
+    // The fired session provisioned under a sidebar row (same lifecycle as a
+    // user create); the row is gone once the detached create resolves.
+    await vi.waitFor(() => expect(listProvisioning()).toEqual([]))
 
     // Same tick time again: the fire is anchored, nothing re-fires.
     await reconcileSchedules({ now: () => at(9, 30), createSessionFn })
@@ -150,5 +157,11 @@ describe('reconcileSchedules', () => {
     expect(createSessionFn).toHaveBeenCalledTimes(1)
     const [row] = await listSchedules('proj-a')
     expect(row.lastFiredAt).toBe(at(9, 30).toISOString())
+    // The lost fire stays visible as a failed provisioning row until dismissed.
+    expect(listProvisioning()[0]).toMatchObject({
+      projectSlug: 'proj-a',
+      kind: 'create',
+      error: 'image build exploded',
+    })
   })
 })

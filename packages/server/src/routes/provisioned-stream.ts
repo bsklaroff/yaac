@@ -1,12 +1,7 @@
 import type { Context } from 'hono'
 import { stream } from 'hono/streaming'
-import {
-  updateProvisioningMessage,
-  failProvisioning,
-  removeProvisioning,
-} from '#provisioning'
+import { runProvisioned } from '#provisioning'
 import { toErrorBody } from '#errors'
-import { notifySessionListChanged } from '#sessions-changed'
 
 /**
  * Writer side of the NDJSON provisioning streams shared by the session
@@ -14,12 +9,12 @@ import { notifySessionListChanged } from '#sessions-changed'
  * terminal `{type:'result'}` or `{type:'error'}` (errors thrown inside a hono
  * stream callback are swallowed, so `run` failures are caught and emitted).
  *
- * `run` does the actual provisioning and gets an `onProgress` that mirrors
- * each step into the provisioning registry (webapp, snapshot-driven) AND the
- * NDJSON stream (CLI), keeping both in sync. Registering the `sessionId` row
- * is the caller's job (create only registers after its prewarm fast path
- * misses; restart only when the webapp supplied the row's project) — all
- * registry calls here are no-ops while no row exists.
+ * The provisioning-registry row lifecycle (webapp, snapshot-driven) is
+ * `runProvisioned`'s job — this layer only mirrors the same progress and
+ * outcome onto the NDJSON stream (CLI), keeping both in sync. Registering the
+ * `sessionId` row is the caller's job (create only registers after its prewarm
+ * fast path misses; restart only when the webapp supplied the row's project) —
+ * all registry calls are no-ops while no row exists.
  */
 export function streamProvisioned(
   c: Context,
@@ -29,23 +24,15 @@ export function streamProvisioned(
   c.header('Content-Type', 'application/x-ndjson')
   return stream(c, async (s) => {
     const write = (event: unknown) => s.writeln(JSON.stringify(event))
-    const onProgress = (message: string): void => {
-      updateProvisioningMessage(sessionId, message)
-      void write({ type: 'progress', message })
-    }
     try {
-      const result = await run(onProgress)
-      // Setup is complete — drop the provisioning row (its notify pushes the
-      // snapshot that swaps it for the now-ready session; buildSnapshot hides
-      // the session while the row exists). Before the result write, so a
-      // client gone mid-provision can't leave the row stuck.
-      removeProvisioning(sessionId)
+      const result = await runProvisioned(sessionId, (onProgress) =>
+        run((message) => {
+          onProgress(message)
+          void write({ type: 'progress', message })
+        }))
       await write({ type: 'result', result })
-      notifySessionListChanged()
     } catch (err) {
-      const { body: errBody } = toErrorBody(err)
-      failProvisioning(sessionId, errBody.error.message)
-      await write({ type: 'error', error: errBody.error })
+      await write({ type: 'error', error: toErrorBody(err).body.error })
     }
   })
 }

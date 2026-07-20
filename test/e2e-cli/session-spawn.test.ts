@@ -26,6 +26,7 @@ import {
   type MockLLM,
   type MockGit,
 } from '@yaac/test-utils/mock-remotes'
+import { collectSnapshots } from '@yaac/test-utils/events-ws'
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
@@ -148,11 +149,29 @@ describe('yaac-spawn from inside a session (real CLI + server + cluster)', () =>
   })
 
   it('spawns a sibling session with the prompt delivered to its agent', async () => {
+    // Watch the webapp snapshot stream: a spawned session must provision in
+    // the sidebar exactly like a user-initiated create (row while building,
+    // then the ready session in its place).
+    const sub = collectSnapshots(server!.lock.port, server!.lock.secret)
+    await sub.opened
+
     const PROMPT = 'hello from spawn e2e'
     const { exitCode, output } = await runSpawn(`"${PROMPT}"`)
     expect(exitCode).toBe(0)
     const newSessionId = output.trim()
     expect(newSessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+
+    // The provisioning row for the minted id shows while the create runs.
+    let sawRow = false
+    for (let i = 0; i < 150 && !sawRow; i++) {
+      const row = sub.latest()?.provisioning.find((p) => p.sessionId === newSessionId)
+      if (row) {
+        expect(row.kind).toBe('create')
+        expect(row.projectSlug).toBe(SLUG)
+        sawRow = true
+      } else await sleep(200)
+    }
+    expect(sawRow).toBe(true)
 
     // The new pod appears in the same project under the minted session id.
     let spawned: SessionPod | undefined
@@ -165,6 +184,20 @@ describe('yaac-spawn from inside a session (real CLI + server + cluster)', () =>
     expect(spawned?.projectSlug).toBe(SLUG)
     // Tool defaulted to the caller's (claude — no --tool given).
     expect(spawned?.tool).toBe('claude')
+
+    // Hand-off: once the create resolves, the row drops and the session
+    // lists — never both at once (buildSnapshot hides the session while its
+    // row exists).
+    let handedOff = false
+    for (let i = 0; i < 180 && !handedOff; i++) {
+      const snap = sub.latest()
+      handedOff = snap !== null
+        && snap.sessions.some((s) => s.sessionId === newSessionId)
+        && !snap.provisioning.some((p) => p.sessionId === newSessionId)
+      if (!handedOff) await sleep(1000)
+    }
+    expect(handedOff).toBe(true)
+    sub.ws.close()
 
     // The prompt lands in the spawned agent's pane (typed via the same
     // tmux paste path schedule fires use). claude may still be booting;
@@ -186,7 +219,7 @@ describe('yaac-spawn from inside a session (real CLI + server + cluster)', () =>
     }
     if (!found) console.error('final spawned pane:\n' + pane)
     expect(found).toBe(true)
-  }, 300_000)
+  }, 420_000)
 
   it('surfaces the server rejection for an unknown tool', async () => {
     // 'bogus' passes the proxy's charset check; the server's AGENT_TOOLS

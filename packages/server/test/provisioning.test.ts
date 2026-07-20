@@ -9,10 +9,12 @@ import {
   updateProvisioningMessage,
   failProvisioning,
   removeProvisioning,
+  runProvisioned,
   listProvisioning,
   clearAllProvisioningForTests,
 } from '#provisioning'
 import { notifySessionListChanged } from '#sessions-changed'
+import { ServerError } from '@yaac/shared/errors'
 
 const notify = vi.mocked(notifySessionListChanged)
 
@@ -88,6 +90,40 @@ describe('removeProvisioning', () => {
     notify.mockClear()
     removeProvisioning('missing')
     expect(notify).not.toHaveBeenCalled()
+  })
+})
+
+describe('runProvisioned', () => {
+  it('mirrors progress into the row, drops it on success, and returns the result', async () => {
+    register('a')
+    let messageDuringRun: string | undefined
+    const result = await runProvisioned('a', (onProgress) => {
+      onProgress('Creating job...')
+      messageDuringRun = listProvisioning()[0]?.message
+      return Promise.resolve('done')
+    })
+    expect(result).toBe('done')
+    expect(messageDuringRun).toBe('Creating job...')
+    expect(listProvisioning()).toEqual([])
+  })
+
+  it('marks the row failed via the error taxonomy and rethrows', async () => {
+    register('a')
+    await expect(
+      runProvisioned('a', () => Promise.reject(new ServerError('NOT_FOUND', 'missing'))),
+    ).rejects.toThrow('missing')
+    expect(listProvisioning()[0]).toMatchObject({ sessionId: 'a', error: 'missing' })
+  })
+
+  it('leaves the registry alone when the caller never registered a row', async () => {
+    notify.mockClear()
+    await runProvisioned('unregistered', (onProgress) => {
+      onProgress('step')
+      return Promise.resolve(1)
+    })
+    expect(listProvisioning()).toEqual([])
+    // Only the post-success snapshot push — registry no-ops don't notify.
+    expect(notify).toHaveBeenCalledTimes(1)
   })
 })
 

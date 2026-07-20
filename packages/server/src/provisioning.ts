@@ -13,6 +13,7 @@
  * are set up, and clients must keep rendering the row, not attach to a
  * half-built session.
  */
+import { toErrorBody } from '#errors'
 import { notifySessionListChanged } from '#sessions-changed'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { AgentTool, ProvisioningSessionEntry } from '@yaac/shared/types'
@@ -76,6 +77,36 @@ export function failProvisioning(sessionId: string, error: string): void {
  *  it actually removed something, to avoid a spurious broadcast. */
 export function removeProvisioning(sessionId: string): void {
   if (entries.delete(sessionId)) notifySessionListChanged()
+}
+
+/**
+ * Run a provisioning task with the row's lifecycle managed: each progress
+ * message mirrors into the row, success drops it (plus a snapshot push so the
+ * now-ready session lists in its place), failure marks it failed — kept until
+ * dismissed — and rethrows. Registering the row is the caller's job; every
+ * registry call here is a no-op while no row exists (e.g. the create route's
+ * prewarm fast path). This is the single codepath behind every provisioning
+ * surface: the HTTP create/restart streams layer NDJSON on top, and the
+ * headless reconcilers (spawn, schedules) call it directly so their sessions
+ * provision in the sidebar exactly like a user-initiated create.
+ */
+export async function runProvisioned<T>(
+  sessionId: string,
+  run: (onProgress: (message: string) => void) => Promise<T>,
+): Promise<T> {
+  try {
+    const result = await run((message) => updateProvisioningMessage(sessionId, message))
+    // Drop the row before the caller sees the result — its notify pushes the
+    // snapshot that swaps it for the now-ready session (buildSnapshot hides
+    // the session while the row exists), and a client gone mid-provision
+    // can't leave the row stuck.
+    removeProvisioning(sessionId)
+    notifySessionListChanged()
+    return result
+  } catch (err) {
+    failProvisioning(sessionId, toErrorBody(err).body.error.message)
+    throw err
+  }
 }
 
 /** Snapshot projection of the registry, oldest first. */

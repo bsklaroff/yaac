@@ -3,8 +3,9 @@
  * egress proxy holds each session's `POST http://yaac.internal/spawn` open
  * in an in-memory queue; this step drains that queue over the control API,
  * starts one headless session per request in the CALLER's project (exactly
- * how the schedule reconciler fires — no terminal, no progress stream), and
- * posts the minted session id back so the proxy answers the waiting pod.
+ * how the schedule reconciler fires — no terminal, no NDJSON stream; progress
+ * surfaces only through the webapp's provisioning row), and posts the minted
+ * session id back so the proxy answers the waiting pod.
  *
  * A drain is a claim: a crash between drain and create loses the fire (the
  * pod's request 504s at the proxy TTL), never doubles it — the same
@@ -19,6 +20,7 @@ import {
 } from '#lib/container/proxy-client'
 import { listSessionPods, type SessionPod } from '#lib/k8s/pods'
 import { getDefaultTool } from '#lib/project/preferences'
+import { registerProvisioning, runProvisioned } from '#provisioning'
 import { createSession, type SessionCreateOptions, type SessionCreateResult } from '#session-create'
 import { serverLog } from '#log'
 
@@ -107,13 +109,20 @@ export async function handleSpawnRequest(
   const newSessionId = (deps.mintIdFn ?? (() => crypto.randomUUID()))()
   const projectSlug = caller.projectSlug
   inFlightByCaller.set(req.sessionId, inFlight + 1)
+  // Register the sidebar row before detaching, then run the create under the
+  // same row lifecycle as a user-initiated create — the spawned session shows
+  // provisioning progress in the webapp and a failed spawn leaves a failed
+  // row (dismissable) instead of vanishing silently.
+  registerProvisioning({ sessionId: newSessionId, projectSlug, tool, kind: 'create' })
   // Detached, like the schedule reconciler: the caller gets the minted id
   // immediately; a failed create is a lost fire, logged here.
-  void (deps.createSessionFn ?? createSession)(projectSlug, {
-    tool,
-    initialPrompt: req.prompt,
-    sessionId: newSessionId,
-  }).then(
+  void runProvisioned(newSessionId, (onProgress) =>
+    (deps.createSessionFn ?? createSession)(projectSlug, {
+      tool,
+      initialPrompt: req.prompt,
+      sessionId: newSessionId,
+      onProgress,
+    })).then(
     () => serverLog(`[spawn] ${req.sessionId.slice(0, 8)}... spawned session ${newSessionId.slice(0, 8)}... in ${projectSlug}`),
     (err: unknown) => serverLog(`[spawn] session create for ${req.sessionId.slice(0, 8)}... failed: ${String(err)}`),
   ).finally(() => {

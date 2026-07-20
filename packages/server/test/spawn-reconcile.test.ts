@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { listProvisioning, clearAllProvisioningForTests } from '#provisioning'
 import type { PendingSpawn, SpawnResultWire } from '#lib/container/proxy-client'
 import type { SessionPod } from '#lib/k8s/pods'
 import type { SessionCreateOptions, SessionCreateResult } from '#session-create'
@@ -58,6 +59,10 @@ function makeDeps(over: Parameters<typeof handleSpawnRequest>[1] = {}): {
 /** Let detached createSession .then/.finally chains settle. */
 const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
+beforeEach(() => {
+  clearAllProvisioningForTests()
+})
+
 describe('handleSpawnRequest', () => {
   it('spawns in the caller project with the minted id and returns ok', async () => {
     const { deps, createSessionFn } = makeDeps({ mintIdFn: () => 'minted-id' })
@@ -67,8 +72,44 @@ describe('handleSpawnRequest', () => {
       tool: 'codex', // the caller's own tool, absent an explicit request
       initialPrompt: 'write the report',
       sessionId: 'minted-id',
+      onProgress: expect.any(Function) as (message: string) => void,
     })
     await settle()
+  })
+
+  it('provisions under a sidebar row: registered on spawn, dropped on success', async () => {
+    let rowDuringCreate: ReturnType<typeof listProvisioning>[number] | undefined
+    const { deps } = makeDeps({
+      mintIdFn: () => 'minted-id',
+      createSessionFn: vi.fn().mockImplementation((_slug, opts: SessionCreateOptions) => {
+        opts.onProgress?.('Creating job...')
+        rowDuringCreate = listProvisioning().find((p) => p.sessionId === 'minted-id')
+        return Promise.resolve({ sessionId: 'minted-id', jobName: 'j', forwardedPorts: [], tool: 'codex' })
+      }),
+    })
+    expect((await handleSpawnRequest(makeReq(), deps)).ok).toBe(true)
+    expect(rowDuringCreate).toMatchObject({
+      sessionId: 'minted-id',
+      projectSlug: 'proj',
+      tool: 'codex',
+      kind: 'create',
+      message: 'Creating job...',
+    })
+    await settle()
+    expect(listProvisioning()).toEqual([])
+  })
+
+  it('keeps a failed row (dismissable) when the detached create rejects', async () => {
+    const { deps } = makeDeps({
+      mintIdFn: () => 'minted-id',
+      createSessionFn: vi.fn().mockRejectedValue(new Error('image build exploded')),
+    })
+    expect((await handleSpawnRequest(makeReq(), deps)).ok).toBe(true)
+    await settle()
+    expect(listProvisioning()[0]).toMatchObject({
+      sessionId: 'minted-id',
+      error: 'image build exploded',
+    })
   })
 
   it('prefers an explicitly requested tool over the caller tool', async () => {

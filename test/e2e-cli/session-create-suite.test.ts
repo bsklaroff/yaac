@@ -31,6 +31,7 @@ import {
   type MockLLM,
   type MockGit,
 } from '@yaac/test-utils/mock-remotes'
+import { collectSnapshots } from '@yaac/test-utils/events-ws'
 
 const execFileAsync = promisify(execFile)
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
@@ -103,36 +104,6 @@ function openWs(url: string, headers: Record<string, string>): {
   })
   opened.catch(() => {})
   return { ws, text, binary: () => Buffer.concat(chunks).toString('utf8'), opened }
-}
-
-interface ProvisioningEntry {
-  sessionId: string
-  projectSlug: string
-  tool: string
-  kind: 'create' | 'restart'
-  error?: string
-}
-interface Snapshot { sessions: unknown[]; provisioning: ProvisioningEntry[] }
-
-/** Collect every `snapshot` frame off a persistent WS, exposing the latest. */
-function collectSnapshots(url: string, secret: string): {
-  ws: WebSocket
-  opened: Promise<void>
-  latest: () => Snapshot | null
-} {
-  const ws = new WebSocket(url, { headers: { authorization: `Bearer ${secret}` } })
-  let latest: Snapshot | null = null
-  ws.on('message', (data, isBinary) => {
-    if (isBinary) return
-    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer)
-    const parsed = JSON.parse(buf.toString('utf8')) as { type: string; data: Snapshot }
-    if (parsed.type === 'snapshot') latest = parsed.data
-  })
-  const opened = new Promise<void>((resolve, reject) => {
-    ws.once('open', resolve)
-    ws.once('error', reject)
-  })
-  return { ws, opened, latest: () => latest }
 }
 
 function makeJwt(payload: Record<string, unknown>): string {
@@ -953,7 +924,7 @@ describe('yaac session create suite (real CLI + real server + mocked remotes)', 
       const sessionId = randomUUID()
 
       // Watch the snapshot stream while the create runs.
-      const sub = collectSnapshots(`ws://127.0.0.1:${server!.lock.port}/events`, server!.lock.secret)
+      const sub = collectSnapshots(server!.lock.port, server!.lock.secret)
       await sub.opened
 
       // Fire the webapp create (don't await — we want to observe the in-flight row).
@@ -994,7 +965,7 @@ describe('yaac session create suite (real CLI + real server + mocked remotes)', 
       let droppedFromProvisioning = false
       for (let i = 0; i < 100; i++) {
         const snap = sub.latest()
-        if (snap && snap.sessions.some((s) => (s as { sessionId: string }).sessionId === sessionId)
+        if (snap && snap.sessions.some((s) => s.sessionId === sessionId)
           && !snap.provisioning.some((p) => p.sessionId === sessionId)) {
           droppedFromProvisioning = true
           break
