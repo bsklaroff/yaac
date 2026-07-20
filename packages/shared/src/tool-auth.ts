@@ -26,11 +26,8 @@ import {
   type OpencodeCredentialsFile,
   type PiCredentialsFile,
 } from '#types'
-import { parsePiProvider } from '#pi-providers'
-import {
-  parseOpencodeProvider,
-  type ToolLoginResult,
-} from '#tool-auth-interactive'
+import { parseOpencodeProvider, parsePiProvider } from '#tool-providers'
+import { type ToolLoginResult } from '#tool-auth-interactive'
 
 /** Placeholder tokens written into project-local Claude credentials. */
 export const PLACEHOLDER_ACCESS_TOKEN = 'yaac-ph-access'

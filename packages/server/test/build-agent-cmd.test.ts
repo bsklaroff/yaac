@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { buildAgentCmd } from '#session-create'
-import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/pi-providers'
+import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 
 describe('buildAgentCmd', () => {
   describe('codex tool', () => {

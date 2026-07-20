@@ -1,26 +1,24 @@
 import { describe, it, expect } from 'vitest'
 import type http from 'node:http'
+import { PI_PROVIDER_HOSTS } from 'yaac-proxy-sidecar/tool-providers.generated'
 
 /**
  * Tests for the proxy's placeholder-gated pi credential injection.
  * Mirrors the relevant slice of `buildDynamicRules` in k8s/proxy/proxy.ts —
  * the proxy runs in its own container and can't be imported directly, so we
- * copy the logic under test.
+ * copy the logic under test. The provider→host table is the real generated
+ * one (imported), so a regen that drops/moves a host is caught here.
  *
- * pi is api-key only, across multiple providers, and — unlike opencode — the
- * provider decides which header carries the key: OpenRouter/OpenAI use
- * `Authorization: Bearer`, Anthropic uses `x-api-key`. Injection fires when
+ * pi is api-key only, across many providers. Which header carries the key
+ * varies by provider (Anthropic-style uses `x-api-key`, the rest use
+ * `Authorization: Bearer`), so the proxy substitutes the placeholder wherever
+ * it appears rather than tracking the header per provider. Injection fires when
  * the session is registered as tool=pi AND the request host matches the
- * credential's provider host AND the inbound placeholder header matches. Every
- * other combination passes through unchanged.
+ * credential's provider host AND the placeholder is present. Every other
+ * combination passes through unchanged.
  */
 
 const PLACEHOLDER_API_KEY = 'yaac-ph-api-key'
-const ANTHROPIC_API_HOST = 'api.anthropic.com'
-const OPENAI_API_HOST = 'api.openai.com'
-const OPENROUTER_API_HOST = 'openrouter.ai'
-
-type PiProvider = 'openrouter' | 'anthropic' | 'openai'
 
 type Injection = { action: 'set_header'; name: string; value: string }
 
@@ -29,17 +27,7 @@ type InjectionRule = {
   injections: Injection[]
 }
 
-type PiCreds = { kind: 'api-key'; apiKey: string; provider: PiProvider }
-
-function piProviderHost(provider: PiProvider): string {
-  if (provider === 'anthropic') return ANTHROPIC_API_HOST
-  if (provider === 'openai') return OPENAI_API_HOST
-  return OPENROUTER_API_HOST
-}
-
-function piProviderAuthHeader(provider: PiProvider): 'authorization' | 'x-api-key' {
-  return provider === 'anthropic' ? 'x-api-key' : 'authorization'
-}
+type PiCreds = { kind: 'api-key'; apiKey: string; provider: string }
 
 function headerValue(
   headers: http.IncomingHttpHeaders,
@@ -51,6 +39,18 @@ function headerValue(
   return undefined
 }
 
+// Mirror of proxy.ts swapApiKeyHeader: substitute the placeholder wherever it
+// appears (x-api-key first, then Authorization: Bearer).
+function swapApiKeyHeader(reqHeaders: http.IncomingHttpHeaders, apiKey: string): InjectionRule[] {
+  if (headerValue(reqHeaders, 'x-api-key') === PLACEHOLDER_API_KEY) {
+    return [{ pathPattern: '*', injections: [{ action: 'set_header', name: 'x-api-key', value: apiKey }] }]
+  }
+  if (headerValue(reqHeaders, 'authorization') === 'Bearer ' + PLACEHOLDER_API_KEY) {
+    return [{ pathPattern: '*', injections: [{ action: 'set_header', name: 'Authorization', value: 'Bearer ' + apiKey }] }]
+  }
+  return []
+}
+
 function buildPiRules(
   sessionTool: string | undefined,
   creds: PiCreds | null,
@@ -59,22 +59,18 @@ function buildPiRules(
 ): InjectionRule[] {
   if (sessionTool !== 'pi') return []
   if (!creds) return []
-  if (hostname !== piProviderHost(creds.provider)) return []
-  if (piProviderAuthHeader(creds.provider) === 'x-api-key') {
-    if (headerValue(reqHeaders, 'x-api-key') !== PLACEHOLDER_API_KEY) return []
-    return [{ pathPattern: '*', injections: [{ action: 'set_header', name: 'x-api-key', value: creds.apiKey }] }]
-  }
-  if (headerValue(reqHeaders, 'authorization') !== 'Bearer ' + PLACEHOLDER_API_KEY) return []
-  return [{
-    pathPattern: '*',
-    injections: [{ action: 'set_header', name: 'Authorization', value: 'Bearer ' + creds.apiKey }],
-  }]
+  if (hostname !== PI_PROVIDER_HOSTS[creds.provider]) return []
+  return swapApiKeyHeader(reqHeaders, creds.apiKey)
 }
+
+const OPENROUTER_API_HOST = PI_PROVIDER_HOSTS['openrouter']
+const ANTHROPIC_API_HOST = PI_PROVIDER_HOSTS['anthropic']
+const GROQ_API_HOST = PI_PROVIDER_HOSTS['groq']
 
 describe('pi credential injection gating', () => {
   const orCreds: PiCreds = { kind: 'api-key', apiKey: 'sk-or-real', provider: 'openrouter' }
   const anthCreds: PiCreds = { kind: 'api-key', apiKey: 'sk-ant-real', provider: 'anthropic' }
-  const oaiCreds: PiCreds = { kind: 'api-key', apiKey: 'sk-oai-real', provider: 'openai' }
+  const groqCreds: PiCreds = { kind: 'api-key', apiKey: 'gsk-real', provider: 'groq' }
 
   it('injects the OpenRouter key as Authorization Bearer', () => {
     const rules = buildPiRules('pi', orCreds, OPENROUTER_API_HOST, {
@@ -86,17 +82,7 @@ describe('pi credential injection gating', () => {
     }])
   })
 
-  it('injects the OpenAI key as Authorization Bearer', () => {
-    const rules = buildPiRules('pi', oaiCreds, OPENAI_API_HOST, {
-      authorization: 'Bearer ' + PLACEHOLDER_API_KEY,
-    })
-    expect(rules).toEqual([{
-      pathPattern: '*',
-      injections: [{ action: 'set_header', name: 'Authorization', value: 'Bearer sk-oai-real' }],
-    }])
-  })
-
-  it('injects the Anthropic key as x-api-key (not Authorization)', () => {
+  it('injects the Anthropic key as x-api-key (the header pi actually uses)', () => {
     const rules = buildPiRules('pi', anthCreds, ANTHROPIC_API_HOST, {
       'x-api-key': PLACEHOLDER_API_KEY,
     })
@@ -106,11 +92,28 @@ describe('pi credential injection gating', () => {
     }])
   })
 
-  it('does not inject Anthropic when the placeholder rides Authorization instead of x-api-key', () => {
-    const rules = buildPiRules('pi', anthCreds, ANTHROPIC_API_HOST, {
+  it('injects a newly-supported provider (groq) on its generated host', () => {
+    expect(GROQ_API_HOST).toBe('api.groq.com')
+    const rules = buildPiRules('pi', groqCreds, GROQ_API_HOST, {
       authorization: 'Bearer ' + PLACEHOLDER_API_KEY,
     })
-    expect(rules).toEqual([])
+    expect(rules).toEqual([{
+      pathPattern: '*',
+      injections: [{ action: 'set_header', name: 'Authorization', value: 'Bearer gsk-real' }],
+    }])
+  })
+
+  it('substitutes wherever the placeholder rides — x-api-key wins when both are present', () => {
+    // The proxy substitutes in place, so whichever header the tool put the
+    // sentinel in gets the real key; x-api-key takes precedence when both do.
+    const rules = buildPiRules('pi', anthCreds, ANTHROPIC_API_HOST, {
+      'x-api-key': PLACEHOLDER_API_KEY,
+      authorization: 'Bearer ' + PLACEHOLDER_API_KEY,
+    })
+    expect(rules).toEqual([{
+      pathPattern: '*',
+      injections: [{ action: 'set_header', name: 'x-api-key', value: 'sk-ant-real' }],
+    }])
   })
 
   it('does not inject on a host that does not match the credential provider', () => {
@@ -119,6 +122,13 @@ describe('pi credential injection gating', () => {
     })).toEqual([])
     expect(buildPiRules('pi', anthCreds, OPENROUTER_API_HOST, {
       'x-api-key': PLACEHOLDER_API_KEY,
+    })).toEqual([])
+  })
+
+  it('does not inject for an unknown provider (no generated host)', () => {
+    const bogus: PiCreds = { kind: 'api-key', apiKey: 'x', provider: 'not-a-provider' }
+    expect(buildPiRules('pi', bogus, OPENROUTER_API_HOST, {
+      authorization: 'Bearer ' + PLACEHOLDER_API_KEY,
     })).toEqual([])
   })
 
@@ -159,18 +169,10 @@ describe('pi credential injection gating', () => {
   })
 })
 
-describe('piProviderHost', () => {
-  it('maps each provider to its API host', () => {
-    expect(piProviderHost('openrouter')).toBe(OPENROUTER_API_HOST)
-    expect(piProviderHost('anthropic')).toBe(ANTHROPIC_API_HOST)
-    expect(piProviderHost('openai')).toBe(OPENAI_API_HOST)
-  })
-})
-
-describe('piProviderAuthHeader', () => {
-  it('uses x-api-key only for anthropic', () => {
-    expect(piProviderAuthHeader('anthropic')).toBe('x-api-key')
-    expect(piProviderAuthHeader('openrouter')).toBe('authorization')
-    expect(piProviderAuthHeader('openai')).toBe('authorization')
+describe('PI_PROVIDER_HOSTS (generated)', () => {
+  it('maps the well-known providers to their hosts', () => {
+    expect(PI_PROVIDER_HOSTS['openrouter']).toBe('openrouter.ai')
+    expect(PI_PROVIDER_HOSTS['anthropic']).toBe('api.anthropic.com')
+    expect(PI_PROVIDER_HOSTS['openai']).toBe('api.openai.com')
   })
 })

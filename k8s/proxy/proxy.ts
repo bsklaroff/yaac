@@ -40,6 +40,7 @@ import { DNS_QTYPE_A, buildDnsResponse, isInternalName, parseDnsQuery } from './
 import { PodSessionIndex, fetchSessionByPodIp, parseVclusterAttribution, startPodWatch } from './pod-watch'
 import { SYSTEM_ROOTS_PATH, combineCaBundle } from './ca-bundle'
 import { timingSafeStrEqual } from './secure-compare'
+import { OPENCODE_PROVIDER_HOSTS, PI_PROVIDER_HOSTS } from './tool-providers.generated'
 
 // Control-API listener (CA cert, registrations, ssh-agent keys). Renamed
 // from PORT now that no session egress reaches it — it is purely the API.
@@ -154,38 +155,15 @@ const OPENAI_TOKEN_URL_PATH = '/oauth/token'
 // swap for codex sessions.
 const CHATGPT_HOST = 'chatgpt.com'
 const CODEX_DEFAULT_REFRESH_WINDOW_MS = 28 * 24 * 60 * 60 * 1000
-// opencode: api-key only. The proxy swaps the placeholder Bearer for the real
-// key on the provider's host when the session is registered as tool=opencode.
-// OpenRouter and NeuralWatt are the two supported backends; the credential
-// records which one, and the swap targets that provider's host only.
-const OPENROUTER_API_HOST = 'openrouter.ai'
-const NEURALWATT_API_HOST = 'api.neuralwatt.com'
-
-type OpencodeProvider = 'openrouter' | 'neuralwatt'
-
-/** The host an opencode provider's api-key authenticates against. */
-function opencodeProviderHost(provider: OpencodeProvider): string {
-  return provider === 'neuralwatt' ? NEURALWATT_API_HOST : OPENROUTER_API_HOST
-}
-
-// pi: api-key only, like opencode, but across more providers and with two
-// header styles. The credential records the provider; the swap targets that
-// provider's host only. Keep in sync with packages/shared/src/pi-providers.ts
-// (the proxy bundles independently and can't import from src/).
-type PiProvider = 'openrouter' | 'anthropic' | 'openai'
-
-/** The host a pi provider's api-key authenticates against. */
-function piProviderHost(provider: PiProvider): string {
-  if (provider === 'anthropic') return ANTHROPIC_API_HOST
-  if (provider === 'openai') return OPENAI_API_HOST
-  return OPENROUTER_API_HOST
-}
-
-/** Which request header carries pi's key: Anthropic uses x-api-key, the
- *  Bearer-style providers use Authorization. */
-function piProviderAuthHeader(provider: PiProvider): 'authorization' | 'x-api-key' {
-  return provider === 'anthropic' ? 'x-api-key' : 'authorization'
-}
+// opencode and pi are api-key only. The proxy swaps the placeholder key for
+// the real one on the chosen provider's host when the session is registered as
+// that tool. The provider→host tables are code-generated from each tool's own
+// registry (models.dev for opencode, the pi package for pi) — see
+// ./tool-providers.generated and scripts/gen-tool-providers.ts. The credential
+// records which provider; the swap targets that provider's host only. Which
+// header carries the key (Authorization: Bearer vs x-api-key) varies by
+// provider, so the swap substitutes the placeholder wherever it appears rather
+// than assuming one header (see swapApiKeyHeader).
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -222,9 +200,9 @@ type CodexCreds =
   | { kind: 'oauth'; bundle: CodexOAuthBundle }
   | { kind: 'api-key'; apiKey: string }
 
-type OpencodeCreds = { kind: 'api-key'; apiKey: string; provider: OpencodeProvider }
+type OpencodeCreds = { kind: 'api-key'; apiKey: string; provider: string }
 
-type PiCreds = { kind: 'api-key'; apiKey: string; provider: PiProvider }
+type PiCreds = { kind: 'api-key'; apiKey: string; provider: string }
 
 // NOTE: keep in sync with packages/shared/src/credentials.ts and
 // packages/server/src/lib/project/credentials.ts. The proxy bundles independently and can't
@@ -476,8 +454,9 @@ function readOpencodeCreds(): OpencodeCreds | null {
     const o = parsed as Record<string, unknown>
     if (o.kind === 'api-key' && typeof o.apiKey === 'string' && o.apiKey) {
       // `provider` was added later — default to openrouter for files written
-      // before it existed.
-      const provider: OpencodeProvider = o.provider === 'neuralwatt' ? 'neuralwatt' : 'openrouter'
+      // before it existed. Unknown providers resolve to no host below, so the
+      // key is simply never swapped (fail-closed) rather than validated here.
+      const provider = typeof o.provider === 'string' && o.provider ? o.provider : 'openrouter'
       return { kind: 'api-key', apiKey: o.apiKey, provider }
     }
     return null
@@ -493,9 +472,7 @@ function readPiCreds(): PiCreds | null {
     if (!parsed || typeof parsed !== 'object') return null
     const o = parsed as Record<string, unknown>
     if (o.kind === 'api-key' && typeof o.apiKey === 'string' && o.apiKey) {
-      const provider: PiProvider =
-        o.provider === 'anthropic' ? 'anthropic' :
-        o.provider === 'openai' ? 'openai' : 'openrouter'
+      const provider = typeof o.provider === 'string' && o.provider ? o.provider : 'openrouter'
       return { kind: 'api-key', apiKey: o.apiKey, provider }
     }
     return null
@@ -1102,8 +1079,18 @@ function hostNeedsDynamicMitm(sessionId: string | null, hostname: string, port: 
   if (hostname === OPENAI_API_HOST) return true
   if (hostname === OPENAI_TOKEN_URL_HOST) return true
   if (hostname === CHATGPT_HOST) return true
-  if (hostname === OPENROUTER_API_HOST) return true
-  if (hostname === NEURALWATT_API_HOST) return true
+  // opencode / pi: MITM the session's chosen provider host so the api-key swap
+  // in buildDynamicRules can run. Matches that swap's gating exactly — only the
+  // one host the registered tool's credential points at.
+  const tool = sessionId ? sessionTool.get(sessionId) : undefined
+  if (tool === 'opencode') {
+    const creds = readOpencodeCreds()
+    if (creds && hostname === OPENCODE_PROVIDER_HOSTS[creds.provider]) return true
+  }
+  if (tool === 'pi') {
+    const creds = readPiCreds()
+    if (creds && hostname === PI_PROVIDER_HOSTS[creds.provider]) return true
+  }
   if (sessionId && sessionHasHttpsCredentialForHost(sessionId, hostname)) return true
   // gh CLI: MITM the GitHub API host so we can swap the placeholder GH_TOKEN
   // for the session's real git token (api.github.com is not the git remote
@@ -1148,6 +1135,33 @@ function headerValue(
   if (typeof v === 'string') return v
   if (Array.isArray(v)) return v[0]
   return undefined
+}
+
+/**
+ * Swap the api-key placeholder for the real key on an opencode/pi request,
+ * wherever the sentinel appears. api-key-only tools send the key in whichever
+ * header the provider's API expects — `x-api-key` for Anthropic-style
+ * providers, `Authorization: Bearer` for the rest — so rather than tracking
+ * the header per provider we substitute in place: the real key lands in the
+ * same header the tool put the sentinel. A no-op when the request carries a
+ * user-supplied key (no sentinel) rather than the placeholder.
+ */
+function swapApiKeyHeader(
+  rules: InjectionRule[],
+  reqHeaders: http.IncomingHttpHeaders,
+  apiKey: string,
+): void {
+  if (headerValue(reqHeaders, 'x-api-key') === PLACEHOLDER_API_KEY) {
+    rules.push({
+      pathPattern: '*',
+      injections: [{ action: 'set_header', name: 'x-api-key', value: apiKey }],
+    })
+  } else if (headerValue(reqHeaders, 'authorization') === 'Bearer ' + PLACEHOLDER_API_KEY) {
+    rules.push({
+      pathPattern: '*',
+      injections: [{ action: 'set_header', name: 'Authorization', value: 'Bearer ' + apiKey }],
+    })
+  }
 }
 
 /**
@@ -1268,54 +1282,25 @@ function buildDynamicRules(
     }
   }
 
-  // opencode credential swap. api-key only; the container's
-  // OPENROUTER_API_KEY / NEURALWATT_API_KEY env carries the placeholder,
-  // opencode sends `Bearer <placeholder>`, and the proxy substitutes the real
-  // key here. Gated on session tool=opencode + the placeholder sentinel + the
-  // host matching the credential's provider, so unrelated traffic (or a user
-  // manually carrying their own key) passes through untouched.
+  // opencode / pi credential swap. Both are api-key only: the container's env
+  // carries the chosen provider's key var set to the placeholder, the tool
+  // sends the placeholder to the provider's host, and the proxy substitutes
+  // the real key here. Gated on the session's registered tool + the host
+  // matching the credential's provider + the placeholder sentinel, so
+  // unrelated traffic (or a user manually carrying their own key) passes
+  // through untouched. Which header carries the key varies by provider
+  // (x-api-key for Anthropic-style, Authorization: Bearer for the rest), so
+  // swapApiKeyHeader substitutes wherever the sentinel appears.
   if (sessionTool.get(sessionId) === 'opencode') {
     const creds = readOpencodeCreds()
-    const incomingAuth = headerValue(reqHeaders, 'authorization')
-    if (creds
-      && hostname === opencodeProviderHost(creds.provider)
-      && incomingAuth === 'Bearer ' + PLACEHOLDER_API_KEY) {
-      rules.push({
-        pathPattern: '*',
-        injections: [{
-          action: 'set_header',
-          name: 'Authorization',
-          value: 'Bearer ' + creds.apiKey,
-        }],
-      })
+    if (creds && hostname === OPENCODE_PROVIDER_HOSTS[creds.provider]) {
+      swapApiKeyHeader(rules, reqHeaders, creds.apiKey)
     }
   }
-
-  // pi credential swap. Same shape as opencode, but the provider decides
-  // which header carries the placeholder: Anthropic sends `x-api-key`, the
-  // Bearer-style providers send `Authorization: Bearer`. Gated on session
-  // tool=pi + the placeholder sentinel + the host matching the credential's
-  // provider, so unrelated traffic passes through untouched.
   if (sessionTool.get(sessionId) === 'pi') {
     const creds = readPiCreds()
-    if (creds && hostname === piProviderHost(creds.provider)) {
-      if (piProviderAuthHeader(creds.provider) === 'x-api-key') {
-        if (headerValue(reqHeaders, 'x-api-key') === PLACEHOLDER_API_KEY) {
-          rules.push({
-            pathPattern: '*',
-            injections: [{ action: 'set_header', name: 'x-api-key', value: creds.apiKey }],
-          })
-        }
-      } else if (headerValue(reqHeaders, 'authorization') === 'Bearer ' + PLACEHOLDER_API_KEY) {
-        rules.push({
-          pathPattern: '*',
-          injections: [{
-            action: 'set_header',
-            name: 'Authorization',
-            value: 'Bearer ' + creds.apiKey,
-          }],
-        })
-      }
+    if (creds && hostname === PI_PROVIDER_HOSTS[creds.provider]) {
+      swapApiKeyHeader(rules, reqHeaders, creds.apiKey)
     }
   }
 

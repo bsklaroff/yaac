@@ -72,8 +72,8 @@ export async function authUpdate(): Promise<void> {
   console.log('  1) Git credentials (HTTPS token or SSH key)')
   console.log('  2) Claude Code (Anthropic)')
   console.log('  3) Codex (OpenAI)')
-  console.log('  4) OpenCode (OpenRouter or NeuralWatt)')
-  console.log('  5) Pi (OpenRouter, Anthropic, or OpenAI)')
+  console.log('  4) OpenCode (any supported provider)')
+  console.log('  5) Pi (any supported provider)')
   const answer = (await rl.question('Choice [1-5]: ')).trim()
   rl.close()
 

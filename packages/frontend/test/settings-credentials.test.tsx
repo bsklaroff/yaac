@@ -3,6 +3,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
 import type { AuthListResult } from '@yaac/shared/types'
+import { OPENCODE_PROVIDERS, PI_PROVIDERS } from '@yaac/shared/tool-providers'
 
 vi.mock('#lib/settingsApi', () => ({
   getDefaultTool: vi.fn().mockResolvedValue('claude'),
@@ -78,6 +79,15 @@ function toolRow(tool: string): HTMLElement {
   return row
 }
 
+/** Drive the searchable provider picker: filter by label, then click the row. */
+async function pickProvider(label: string): Promise<void> {
+  fireEvent.change(screen.getByPlaceholderText('Search providers…'), { target: { value: label } })
+  fireEvent.click(await screen.findByText(label))
+}
+
+const NEURALWATT_LABEL = OPENCODE_PROVIDERS.find((p) => p.id === 'neuralwatt')?.label ?? 'neuralwatt'
+const PI_ANTHROPIC_LABEL = PI_PROVIDERS.find((p) => p.id === 'anthropic')?.label ?? 'anthropic'
+
 describe('Settings → Credentials', () => {
   it('shows every tool: configured ones with a masked key, the rest with Sign in', async () => {
     await openCredentials()
@@ -107,9 +117,9 @@ describe('Settings → Credentials', () => {
     fireEvent.click(within(toolRow('opencode')).getByRole('button', { name: 'Sign in' }))
     expect(screen.queryByText(/Sign in with/)).toBeNull()
 
-    fireEvent.click(screen.getByText('NeuralWatt'))
-    fireEvent.change(screen.getByPlaceholderText('NeuralWatt API key'), { target: { value: 'nw-key' } })
-    fireEvent.submit(screen.getByPlaceholderText('NeuralWatt API key').closest('form') as HTMLFormElement)
+    await pickProvider(NEURALWATT_LABEL)
+    fireEvent.change(screen.getByPlaceholderText(`${NEURALWATT_LABEL} API key`), { target: { value: 'nw-key' } })
+    fireEvent.submit(screen.getByPlaceholderText(`${NEURALWATT_LABEL} API key`).closest('form') as HTMLFormElement)
 
     await waitFor(() => expect(setToolApiKey).toHaveBeenCalledWith('opencode', 'nw-key', 'neuralwatt'))
   })
@@ -120,10 +130,10 @@ describe('Settings → Credentials', () => {
     fireEvent.click(within(toolRow('pi')).getByRole('button', { name: 'Sign in' }))
     expect(screen.queryByText(/Sign in with/)).toBeNull()
 
-    // pi's provider picker exposes OpenRouter / Anthropic / OpenAI; pick Anthropic.
-    fireEvent.click(screen.getByText('Anthropic'))
-    fireEvent.change(screen.getByPlaceholderText('Anthropic API key'), { target: { value: 'sk-ant-key' } })
-    fireEvent.submit(screen.getByPlaceholderText('Anthropic API key').closest('form') as HTMLFormElement)
+    // pi's provider picker is a searchable list; filter to and pick Anthropic.
+    await pickProvider(PI_ANTHROPIC_LABEL)
+    fireEvent.change(screen.getByPlaceholderText(`${PI_ANTHROPIC_LABEL} API key`), { target: { value: 'sk-ant-key' } })
+    fireEvent.submit(screen.getByPlaceholderText(`${PI_ANTHROPIC_LABEL} API key`).closest('form') as HTMLFormElement)
 
     await waitFor(() => expect(setToolApiKey).toHaveBeenCalledWith('pi', 'sk-ant-key', 'anthropic'))
   })

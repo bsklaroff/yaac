@@ -6,15 +6,21 @@ import {
   type AgentTool,
   type ClaudeOAuthBundle,
   type CodexOAuthBundle,
-  type OpencodeProvider,
   type ToolAuthKind,
 } from '#types'
 import {
+  OPENCODE_DEFAULT_PROVIDER,
+  OPENCODE_PROVIDERS,
   PI_DEFAULT_PROVIDER,
   PI_PROVIDERS,
+  opencodeProviderInfo,
+  parseOpencodeProvider,
   parsePiProvider,
+  piProviderInfo,
+  type OpencodeProvider,
   type PiProvider,
-} from '#pi-providers'
+  type ToolProviderInfo,
+} from '#tool-providers'
 import { testEnv } from '#env'
 
 /**
@@ -295,41 +301,30 @@ export function buildAuthPayload(tool: AgentTool, result: ToolLoginResult): Tool
 }
 
 /**
- * Coerce a raw provider string to an OpencodeProvider, defaulting to
- * 'openrouter' for anything unrecognized (including undefined).
+ * Prompt for which provider an opencode/pi api-key authenticates against. Both
+ * tools support 100+ / dozens of providers (a numbered menu is out), so the
+ * user types the provider id; "?" lists them all and a bare Enter takes the
+ * default. Re-prompts on an unrecognized id. Returns a raw string — the caller
+ * coerces it with the tool's `parse*Provider`.
  */
-export function parseOpencodeProvider(value: string | undefined): OpencodeProvider {
-  return value === 'neuralwatt' ? 'neuralwatt' : 'openrouter'
-}
-
-/**
- * Prompt for which backend an opencode api-key authenticates against.
- * Defaults to OpenRouter when the user just hits enter.
- */
-async function promptForOpencodeProvider(
+async function promptForProvider(
   rl: readline.Interface,
-): Promise<OpencodeProvider> {
-  console.log('Which opencode provider?')
-  console.log('  1) OpenRouter (default)')
-  console.log('  2) NeuralWatt')
-  const answer = (await rl.question('Choice [1-2]: ')).trim()
-  return answer === '2' ? 'neuralwatt' : 'openrouter'
-}
-
-/**
- * Prompt for which provider a pi api-key authenticates against. Numbered from
- * the provider registry; the first entry is the default (bare enter).
- */
-async function promptForPiProvider(
-  rl: readline.Interface,
-): Promise<PiProvider> {
-  console.log('Which pi provider?')
-  PI_PROVIDERS.forEach((p, i) => {
-    console.log(`  ${i + 1}) ${p.label}${i === 0 ? ' (default)' : ''}`)
-  })
-  const answer = (await rl.question(`Choice [1-${PI_PROVIDERS.length}]: `)).trim()
-  const idx = Number(answer) - 1
-  return PI_PROVIDERS[idx]?.id ?? PI_DEFAULT_PROVIDER
+  tool: 'opencode' | 'pi',
+  list: readonly ToolProviderInfo[],
+  defaultId: string,
+): Promise<string> {
+  console.log(`Which ${tool} provider? Type its id, "?" to list all ${list.length}, or Enter for "${defaultId}".`)
+  for (;;) {
+    const answer = (await rl.question(`Provider [${defaultId}]: `)).trim()
+    if (!answer) return defaultId
+    if (answer === '?') {
+      for (const p of list) console.log(`  ${p.id}  —  ${p.label}`)
+      continue
+    }
+    const match = list.find((p) => p.id === answer)
+    if (match) return match.id
+    console.log(`Unknown provider "${answer}". Type "?" to see the full list.`)
+  }
 }
 
 /**
@@ -342,17 +337,21 @@ export async function promptForApiKey(tool: AgentTool): Promise<ToolLoginResult>
   let opencodeProvider: OpencodeProvider | undefined
   let piProvider: PiProvider | undefined
   if (tool === 'opencode') {
-    opencodeProvider = await promptForOpencodeProvider(rl)
+    opencodeProvider = parseOpencodeProvider(
+      await promptForProvider(rl, 'opencode', OPENCODE_PROVIDERS, OPENCODE_DEFAULT_PROVIDER),
+    )
   }
   if (tool === 'pi') {
-    piProvider = await promptForPiProvider(rl)
+    piProvider = parsePiProvider(
+      await promptForProvider(rl, 'pi', PI_PROVIDERS, PI_DEFAULT_PROVIDER),
+    )
   }
   const label =
     tool === 'claude' ? 'Anthropic API key or OAuth token' :
     tool === 'codex' ? 'OpenAI API key' :
-    tool === 'pi' ? `${PI_PROVIDERS.find((p) => p.id === piProvider)?.label ?? 'pi'} API key` :
-    opencodeProvider === 'neuralwatt' ? 'NeuralWatt API key' :
-    'OpenRouter API key'
+    tool === 'opencode' && opencodeProvider ? `${opencodeProviderInfo(opencodeProvider).label} API key` :
+    tool === 'pi' && piProvider ? `${piProviderInfo(piProvider).label} API key` :
+    'API key'
   const key = (await rl.question(`Paste your ${label}: `)).trim()
   rl.close()
   if (!key) {

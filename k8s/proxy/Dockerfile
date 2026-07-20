@@ -19,6 +19,7 @@ WORKDIR /app
 COPY package.json /app/package.json
 RUN npm install --omit=dev
 COPY proxy.ts /app/proxy.ts
+COPY tool-providers.generated.ts /app/tool-providers.generated.ts
 COPY ca-bundle.ts /app/ca-bundle.ts
 COPY transparent.ts /app/transparent.ts
 COPY pp2.ts /app/pp2.ts

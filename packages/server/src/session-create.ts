@@ -105,7 +105,13 @@ import {
 } from '#lib/session/port-forwarders'
 import { AGENT_TOOLS } from '@yaac/shared/types'
 import type { AgentTool, PortMapping, YaacConfig, InitCommandSpec } from '@yaac/shared/types'
-import { PI_DEFAULT_PROVIDER, piProviderInfo, type PiProvider } from '@yaac/shared/pi-providers'
+import {
+  OPENCODE_DEFAULT_PROVIDER,
+  PI_DEFAULT_PROVIDER,
+  opencodeProviderInfo,
+  piProviderInfo,
+  type PiProvider,
+} from '@yaac/shared/tool-providers'
 
 /** In-pod pi home. The host-side `piDir` is mounted here (the whole `.pi`,
  *  mirroring `~/.claude`), so every session's pi logs are visible to all. */
@@ -187,7 +193,12 @@ export function buildAgentCmd(
     // flag both ways, like `claude --session-id`), so `resume` needs no branch.
     // addDirFlags is dropped: pi has no --add-dir equivalent.
     const model = piProviderInfo(piProvider ?? PI_DEFAULT_PROVIDER).defaultModel
-    const pi = `pi --approve --model ${model} --session-id ${sessionId}`
+    // `--model` is dropped only if the chosen provider has no generated
+    // default (every current pi provider has one; guarded so a future
+    // registry gap falls back to pi's own default rather than `--model
+    // undefined`).
+    const modelFlag = model ? ` --model ${model}` : ''
+    const pi = `pi --approve${modelFlag} --session-id ${sessionId}`
     // On a fresh run that `--session-id` names a session that doesn't exist
     // yet, so pi prints a yellow "Warning: No project session found with id
     // '<id>'; creating a new session with that id." to stderr, which then
@@ -1293,25 +1304,22 @@ export async function createSession(
   // Claude OAuth: Claude Code reads the placeholder bundle from the mounted
   // .claude/.credentials.json, so no env var is needed.
   if (toolAuthByTool.opencode?.kind === 'api-key') {
-    // opencode is api-key only. Depending on the credential's provider it
-    // reads OPENROUTER_API_KEY (openrouter.ai) or NEURALWATT_API_KEY
-    // (api.neuralwatt.com) from env and sends `Authorization: Bearer <key>`
-    // to that host, which the proxy swaps for the real key. Both are
-    // first-class opencode providers (models.dev), so no opencode.json
-    // provider block is needed.
-    const envVar = toolAuthByTool.opencode.opencodeProvider === 'neuralwatt'
-      ? 'NEURALWATT_API_KEY'
-      : 'OPENROUTER_API_KEY'
-    env.push(`${envVar}=${PLACEHOLDER_API_KEY}`)
+    // opencode is api-key only. It reads the chosen provider's env var (every
+    // provider is a first-class models.dev provider, so no opencode.json block
+    // is needed) and sends the key to that provider's host, which the proxy
+    // swaps for the real key. The env var + host come from the generated
+    // provider table.
+    const info = opencodeProviderInfo(toolAuthByTool.opencode.opencodeProvider ?? OPENCODE_DEFAULT_PROVIDER)
+    env.push(`${info.envVar}=${PLACEHOLDER_API_KEY}`)
   }
   if (toolAuthByTool.codex?.kind === 'api-key') {
     env.push(`OPENAI_API_KEY=${PLACEHOLDER_API_KEY}`)
   }
   if (toolAuthByTool.pi?.kind === 'api-key') {
-    // pi is api-key only. It reads the provider's env var (OPENROUTER_API_KEY
-    // / ANTHROPIC_API_KEY / OPENAI_API_KEY) and sends the key to that
-    // provider's host, which the proxy swaps for the real key (Bearer for
-    // OpenRouter/OpenAI, x-api-key for Anthropic — see pi-providers.ts).
+    // pi is api-key only. It reads the chosen provider's env var and sends the
+    // key to that provider's host, which the proxy swaps for the real key
+    // (whichever of Authorization: Bearer / x-api-key carries the sentinel).
+    // The env var + host come from the generated provider table.
     const info = piProviderInfo(toolAuthByTool.pi.piProvider ?? PI_DEFAULT_PROVIDER)
     env.push(`${info.envVar}=${PLACEHOLDER_API_KEY}`)
   }

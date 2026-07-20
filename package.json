@@ -21,6 +21,7 @@
   "scripts": {
     "build": "tsup && tsx scripts/check-cli-externals.ts && pnpm --filter @yaac/frontend build && rm -rf dist/frontend && cp -r packages/frontend/dist dist/frontend && cp -r dockerfiles k8s dist/ && rm -rf dist/drizzle && cp -r packages/server/drizzle dist/drizzle && rm -rf dist/k8s/proxy/node_modules dist/k8s/proxy/test dist/k8s/relay/node_modules && tsx scripts/write-build-id.ts",
     "dev": "tsx packages/cli/src/cli.ts",
+  "gen:providers": "tsx scripts/gen-tool-providers.ts",
     "watch": "tsx watch --clear-screen=false --include 'packages/**/src/**' --include 'packages/server/drizzle/**' --include 'dockerfiles/**' --include 'k8s/**' --include package.json --include 'packages/*/package.json' --include pnpm-lock.yaml --include tsup.config.ts --include 'packages/frontend/vite.config.ts' --exclude '**/node_modules/**' --exclude 'k8s/proxy/test/**' --exclude 'packages/desktop/**' scripts/dev-watch.ts",
     "lint": "tsc --noEmit && tsc --noEmit -p packages/frontend/tsconfig.json && eslint .",
     "test": "vitest run",

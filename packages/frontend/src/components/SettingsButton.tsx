@@ -41,7 +41,7 @@ import { FileEditor } from '#components/settings/FileEditor'
 import { useUiStore, type SettingsSection } from '#store'
 import type { ThemePref } from '#lib/theme'
 import type { AgentTool, ToolAuthSummary, ToolInstallView, ToolLoginView } from '@yaac/shared/types'
-import { PI_PROVIDERS } from '@yaac/shared/pi-providers'
+import { OPENCODE_PROVIDERS, PI_PROVIDERS } from '@yaac/shared/tool-providers'
 
 // iPadOS reports as "Macintosh" in modern Safari; both want the ⌘/⌥ glyphs.
 const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent)
@@ -53,8 +53,9 @@ const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
  * backend the pasted key authenticates against (env var + proxy host); the
  * first entry is the default. Tools not listed here have no provider.
  */
-const PROVIDER_OPTIONS: Partial<Record<AgentTool, { id: string; label: string }[]>> = {
-  opencode: [{ id: 'openrouter', label: 'OpenRouter' }, { id: 'neuralwatt', label: 'NeuralWatt' }],
+interface ProviderOption { id: string; label: string }
+const PROVIDER_OPTIONS: Partial<Record<AgentTool, ProviderOption[]>> = {
+  opencode: OPENCODE_PROVIDERS.map((p) => ({ id: p.id, label: p.label })),
   pi: PI_PROVIDERS.map((p) => ({ id: p.id, label: p.label })),
 }
 
@@ -329,6 +330,66 @@ function apiKeyLabel(tool: AgentTool, provider: string | undefined): string {
   return label ? `${label} API key` : 'API key'
 }
 
+/** Max provider rows rendered at once; the rest surface by narrowing the search. */
+const PROVIDER_VISIBLE_LIMIT = 50
+
+/**
+ * Searchable provider picker for the api-key-only tools. opencode exposes 150+
+ * providers (models.dev) and pi a few dozen, so this filters an inline,
+ * scrollable list by a search box rather than showing a radio row. The stored
+ * value is the provider id.
+ */
+function ProviderCombobox({ options, value, onChange }: {
+  options: ProviderOption[]
+  value: string
+  onChange: (id: string) => void
+}): JSX.Element {
+  const [query, setQuery] = useState('')
+  const q = query.trim().toLowerCase()
+  const matches = q
+    ? options.filter((o) => o.label.toLowerCase().includes(q) || o.id.toLowerCase().includes(q))
+    : options
+  const shown = matches.slice(0, PROVIDER_VISIBLE_LIMIT)
+  const hidden = matches.length - shown.length
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Search providers…"
+        className="w-full rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-xs
+          text-text outline-none focus:border-border-strong"
+      />
+      <div className="max-h-40 overflow-y-auto rounded-md border border-hairline-soft">
+        {shown.length === 0 ? (
+          <p className="px-2 py-1.5 text-[11px] text-text-faint">No providers found.</p>
+        ) : (
+          shown.map((o) => (
+            <button
+              key={o.id}
+              type="button"
+              onClick={() => onChange(o.id)}
+              className={clsx(
+                'flex w-full items-center justify-between gap-2 px-2 py-1 text-left text-[11px] transition',
+                o.id === value
+                  ? 'bg-surface-3 text-text'
+                  : 'text-text-dim hover:bg-surface-2 hover:text-text',
+              )}
+            >
+              <span className="truncate">{o.label}</span>
+              <span className="shrink-0 font-mono text-[10px] text-text-faint">{o.id}</span>
+            </button>
+          ))
+        )}
+        {hidden > 0 && (
+          <p className="px-2 py-1 text-[10px] text-text-faint">+{hidden} more — keep typing to narrow.</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
 /**
  * One tool's credential row. Signed in: masked key + sign-out. Signed out:
  * a "Sign in" expander with the tool's available methods.
@@ -427,28 +488,11 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
             </>
           )}
           {providerOptions && (
-            <RadioGroup
+            <ProviderCombobox
+              options={providerOptions}
               value={provider}
-              onValueChange={(value) => setProvider(value)}
-              className="flex gap-3"
-            >
-              {providerOptions.map((p) => (
-                <label
-                  key={p.id}
-                  className="flex cursor-default items-center gap-1.5 text-[11px] text-text-dim transition
-                    hover:text-text"
-                >
-                  <Radio.Root
-                    value={p.id}
-                    className="flex h-3.5 w-3.5 items-center justify-center rounded-full border
-                      border-border-strong transition data-[checked]:border-accent data-[checked]:bg-accent"
-                  >
-                    <Radio.Indicator className="h-1.5 w-1.5 rounded-full bg-surface data-[unchecked]:hidden" />
-                  </Radio.Root>
-                  {p.label}
-                </label>
-              ))}
-            </RadioGroup>
+              onChange={setProvider}
+            />
           )}
           <form onSubmit={(e) => void saveKey(e)} className="flex gap-2">
             <input

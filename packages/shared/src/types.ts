@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { PiProvider } from '#pi-providers'
+import type { OpencodeProvider, PiProvider } from '#tool-providers'
 
 export type AgentTool = 'claude' | 'codex' | 'opencode' | 'pi'
 
@@ -21,16 +21,6 @@ export const FAKE_AUTH_KINDS = [
   'github',
 ] as const
 export type FakeAuthKind = (typeof FAKE_AUTH_KINDS)[number]
-
-/**
- * Backend an opencode session authenticates against. Both are api-key only
- * and both are first-class opencode providers (registered in models.dev), so
- * the only runtime difference is which env var carries the key and which host
- * the proxy swaps the placeholder on. Stored on the opencode credential and
- * chosen at `yaac auth update` time; legacy credentials (no provider field)
- * load as 'openrouter'.
- */
-export type OpencodeProvider = 'openrouter' | 'neuralwatt'
 
 /**
  * Claude Code's native OAuth bundle. Stored under the "claudeAiOauth" key in
@@ -108,9 +98,11 @@ export type CodexCredentialsFile =
 
 /**
  * Shape of `~/.yaac/.credentials/opencode.json`. Only api-key — opencode
- * integration in yaac authenticates via an api-key for either OpenRouter or
- * NeuralWatt. `provider` defaults to 'openrouter' on load for credentials
- * written before the field existed.
+ * integration in yaac authenticates via an api-key for one of the providers in
+ * the generated registry (`tool-providers.ts`). `provider` picks which env var
+ * carries the key and which host the proxy swaps the placeholder on, and
+ * defaults to 'openrouter' on load for credentials written before the field
+ * existed.
  */
 export type OpencodeCredentialsFile = {
   kind: 'api-key'
@@ -121,9 +113,9 @@ export type OpencodeCredentialsFile = {
 
 /**
  * Shape of `~/.yaac/.credentials/pi.json`. Only api-key — pi integration in
- * yaac authenticates via an api-key for one of the providers in
- * `pi-providers.ts`. `provider` picks which env var carries the key and which
- * host the proxy swaps the placeholder on.
+ * yaac authenticates via an api-key for one of the providers in the generated
+ * registry (`tool-providers.ts`). `provider` picks which env var carries the
+ * key and which host the proxy swaps the placeholder on.
  */
 export type PiCredentialsFile = {
   kind: 'api-key'

@@ -31,8 +31,8 @@ import {
   claudeKeychainService,
   detectAuthKind,
   extractClaudeOAuthBundle,
-  parseOpencodeProvider,
 } from '#tool-auth-interactive'
+import { parseOpencodeProvider } from '#tool-providers'
 import { ServerError } from '#errors'
 import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '#types'
 
