@@ -124,6 +124,28 @@ export function collectProxySecrets(
   return secrets
 }
 
+/**
+ * A queued in-session `yaac-spawn` request, as drained from the proxy.
+ * Wire shape mirrors k8s/proxy/spawn-queue.ts (SpawnRequest sans
+ * enqueuedAtMs) — the proxy bundles independently; keep them in sync.
+ */
+export interface PendingSpawn {
+  requestId: string
+  /** The CALLING session (attributed by the proxy from the pod source IP). */
+  sessionId: string
+  prompt: string
+  tool?: string
+}
+
+/** Mirror of k8s/proxy/spawn-queue.ts SpawnResult — keep in sync. */
+export interface SpawnResultWire {
+  requestId: string
+  ok: boolean
+  /** New session id when ok. */
+  sessionId?: string
+  error?: string
+}
+
 // --- ProxyClient ---
 
 /** Path inside session and proxy pods where the ssh-agent socket lives. */
@@ -342,6 +364,43 @@ export class ProxyClient {
       throw new Error(`Failed to allow host: ${res.status} ${text}`)
     }
     return true
+  }
+
+  /**
+   * Drain the proxy's queued in-session `yaac-spawn` requests. A drain is a
+   * claim — the proxy hands each request out exactly once and holds the
+   * session's HTTP response open until `postSpawnResults` (or its TTL).
+   */
+  async fetchPendingSpawns(): Promise<PendingSpawn[]> {
+    const res = await tunnelFetch(`${this.baseUrl}/spawn/pending`, {
+      headers: { 'Authorization': `Bearer ${this.requireAuthSecret()}` },
+    })
+    // A proxy pod predating the spawn feature has no such route. Quietly
+    // nothing-pending: it redeploys on the next ensureRunning (session
+    // create), and logging would recur every background tick until then.
+    if (res.status === 404) return []
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Failed to fetch pending spawns: ${res.status} ${text}`)
+    }
+    return await res.json() as PendingSpawn[]
+  }
+
+  /** Complete drained spawn requests — the proxy answers the waiting pods. */
+  async postSpawnResults(results: SpawnResultWire[]): Promise<void> {
+    if (results.length === 0) return
+    const res = await tunnelFetch(`${this.baseUrl}/spawn/results`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.requireAuthSecret()}`,
+      },
+      body: JSON.stringify(results),
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Failed to post spawn results: ${res.status} ${text}`)
+    }
   }
 
   /**

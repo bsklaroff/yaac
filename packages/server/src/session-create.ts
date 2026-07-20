@@ -100,6 +100,7 @@ import { addWorktree, getDefaultBranch, fetchOrigin, isGitAuthError, remoteBranc
 import { ensureCodexHooksJson, ensureCodexConfigToml } from '#lib/session/codex-hooks'
 import { ensureOpencodeConfigJson } from '#lib/session/opencode-config'
 import { builtinSkillsDir, stageBuiltinSkills, builtinSkillMounts } from '#lib/skills/builtin'
+import { sessionBinDir, stageSessionBin, sessionBinMounts } from '#lib/session/spawn-script'
 import { ServerError } from '@yaac/shared/errors'
 import {
   buildStatusRight,
@@ -1581,6 +1582,11 @@ export async function createSession(
   // session dir on cleanup.
   const builtinSkillsStaging = path.join(sessionDir(projectSlug, sessionId), 'builtin-skills')
   const builtinSkillNames = await stageBuiltinSkills(builtinSkillsDir(), builtinSkillsStaging)
+
+  // In-session helper commands (yaac-spawn): staged like the builtin skills
+  // and File-mounted read-only onto /usr/local/bin in the pod.
+  const sessionBinStaging = path.join(sessionDir(projectSlug, sessionId), 'bin')
+  const sessionBinNames = await stageSessionBin(sessionBinDir(), sessionBinStaging)
   if (builtinSkillNames.length > 0) {
     // Pre-create each tool's personal skills root (server-owned) before the
     // pod mounts a skill at `<root>/<name>`. Otherwise the kubelet creates the
@@ -1637,6 +1643,7 @@ export async function createSession(
       mountPath: m.containerPath,
     })),
     ...builtinSkillMounts(builtinSkillsStaging, builtinSkillNames),
+    ...sessionBinMounts(sessionBinStaging, sessionBinNames),
     ...vclusterMounts,
     ...sshMounts,
   ]

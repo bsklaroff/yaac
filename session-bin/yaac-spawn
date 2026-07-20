@@ -1,0 +1,39 @@
+#!/bin/sh
+# yaac-spawn — start a new yaac session in this project with a prompt.
+#
+# Usage: yaac-spawn [--tool claude|codex|opencode|pi] "<prompt>"
+#
+# Prints the new session's id on success. Fire-and-forget: the session
+# provisions in the background; watch it in the yaac webapp.
+#
+# Talks to the yaac egress proxy at its magic host — plain HTTP on the
+# transparent egress path, attributed to this session by source pod IP.
+# Keep the host in sync with k8s/proxy/spawn-queue.ts SPAWN_MAGIC_HOST.
+set -u
+
+tool=""
+if [ "${1:-}" = "--tool" ]; then
+  tool="${2:?yaac-spawn: --tool needs a value}"
+  shift 2
+fi
+if [ $# -ne 1 ] || [ -z "$1" ]; then
+  echo "usage: yaac-spawn [--tool <tool>] \"<prompt>\"" >&2
+  exit 2
+fi
+
+url="http://yaac.internal/spawn${tool:+?tool=$tool}"
+# Raw text body (no JSON escaping); --max-time outlives the proxy's 60s
+# queue TTL so its self-describing 504 surfaces instead of a curl timeout.
+resp=$(printf '%s' "$1" | curl -sS --max-time 90 \
+  -H 'Content-Type: text/plain; charset=utf-8' \
+  --data-binary @- -w '\n%{http_code}' "$url") || {
+  echo "yaac-spawn: cannot reach the yaac proxy" >&2
+  exit 1
+}
+code=$(printf '%s\n' "$resp" | tail -n 1)
+body=$(printf '%s\n' "$resp" | sed '$d')
+if [ "$code" != "200" ]; then
+  echo "yaac-spawn: ${body:-request failed} (HTTP $code)" >&2
+  exit 1
+fi
+printf '%s\n' "$body"

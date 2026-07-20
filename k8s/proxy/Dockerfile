@@ -26,6 +26,7 @@ COPY pp2.ts /app/pp2.ts
 COPY pod-watch.ts /app/pod-watch.ts
 COPY dns-stub.ts /app/dns-stub.ts
 COPY secure-compare.ts /app/secure-compare.ts
+COPY spawn-queue.ts /app/spawn-queue.ts
 COPY torrc /etc/tor/torrc
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh

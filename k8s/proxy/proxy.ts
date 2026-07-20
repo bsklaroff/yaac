@@ -38,6 +38,14 @@ import {
 import { parsePp2Header } from './pp2'
 import { DNS_QTYPE_A, buildDnsResponse, isInternalName, parseDnsQuery } from './dns-stub'
 import { PodSessionIndex, fetchSessionByPodIp, parseVclusterAttribution, startPodWatch } from './pod-watch'
+import {
+  SPAWN_MAGIC_HOST,
+  SPAWN_MAX_BODY_BYTES,
+  SPAWN_PATH,
+  SpawnQueue,
+  validateSpawnRequest,
+} from './spawn-queue'
+import type { SpawnResult } from './spawn-queue'
 import { SYSTEM_ROOTS_PATH, combineCaBundle } from './ca-bundle'
 import { timingSafeStrEqual } from './secure-compare'
 import { OPENCODE_PROVIDER_HOSTS, PI_PROVIDER_HOSTS } from './tool-providers.generated'
@@ -108,15 +116,29 @@ const vclusterPodSession = new Map<string, string>()
 // Last-applied attribution content, so the every-tick re-push logs only on change.
 let lastVclusterAttributionKey = ''
 
-async function resolveSession(ip: string): Promise<string | undefined> {
+interface ResolvedSession {
+  sessionId: string
+  /**
+   * True when the source IP was attributed via the server-pushed vcluster
+   * map rather than a directly-watched session pod. Spawn requests key on
+   * this: nested workloads must spawn against their own (inner) yaac, so
+   * the outer proxy refuses them.
+   */
+  viaVclusterAttribution: boolean
+}
+
+async function resolveSession(ip: string): Promise<ResolvedSession | undefined> {
   const cached = podIndex.resolve(ip)
-  if (cached) return cached
+  if (cached) return { sessionId: cached, viaVclusterAttribution: false }
   // Server-supplied attribution for a vcluster's chained egress (the pod-watch
   // can't see those cross-namespace source pods).
   const vc = vclusterPodSession.get(ip)
-  if (vc) return vc
+  if (vc) return { sessionId: vc, viaVclusterAttribution: true }
   // Cache-miss fallback: a new pod's first packet can beat its watch event.
-  try { return await fetchSessionByPodIp(podIndex, ip) } catch { return undefined }
+  try {
+    const fetched = await fetchSessionByPodIp(podIndex, ip)
+    return fetched ? { sessionId: fetched, viaVclusterAttribution: false } : undefined
+  } catch { return undefined }
 }
 
 // When USE_TOR=1, route every upstream connection through the Tor SOCKS
@@ -1935,6 +1957,20 @@ function dispatchToUpstream(
   // the guarantee hold for every dispatch path.
   clientSocket.pause()
 
+  // The spawn endpoint is HTTP-only (the transparent HTTP listener handles it
+  // before the allowlist). A stray HTTPS/CONNECT attempt would otherwise land
+  // in the blocked-hosts record and confuse the webapp badge — hint instead.
+  if (hostname === SPAWN_MAGIC_HOST) {
+    console.log(`[proxy] spawn magic host dialed on ${opts.writeConnectOk ? 'CONNECT' : 'HTTPS'} — use http://${SPAWN_MAGIC_HOST}${SPAWN_PATH}`)
+    if (opts.writeConnectOk) {
+      clientSocket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
+      clientSocket.end()
+    } else {
+      clientSocket.destroy()
+    }
+    return
+  }
+
   if (!isHostAllowed(sessionId, hostname)) {
     const label = opts.writeConnectOk ? 'CONNECT' : 'transparent HTTPS'
     console.log(`[proxy] BLOCKED ${label} to ${hostname}:${port ?? '443'} (not in allowlist)`)
@@ -2245,6 +2281,47 @@ function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse): 
     return
   }
 
+  // In-session spawn requests: the server drains pending requests each
+  // background tick (drain = claim, at-most-once) ...
+  if (req.method === 'GET' && req.url === '/spawn/pending') {
+    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(spawnQueue.drain()))
+    return
+  }
+
+  // ... and posts back results, which complete the held session responses.
+  if (req.method === 'POST' && req.url === '/spawn/results') {
+    if (!checkAuth(req)) { res.writeHead(401); res.end('Unauthorized'); return }
+    let body = ''
+    req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
+    req.on('end', () => {
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(body)
+      } catch {
+        res.writeHead(400); res.end('Invalid JSON'); return
+      }
+      if (!Array.isArray(parsed)) { res.writeHead(400); res.end('Invalid body: need results array'); return }
+      let completed = 0
+      for (const item of parsed) {
+        if (!item || typeof item !== 'object') continue
+        const r = item as Record<string, unknown>
+        if (typeof r.requestId !== 'string' || typeof r.ok !== 'boolean') continue
+        const result: SpawnResult = {
+          requestId: r.requestId,
+          ok: r.ok,
+          sessionId: typeof r.sessionId === 'string' ? r.sessionId : undefined,
+          error: typeof r.error === 'string' ? r.error : undefined,
+        }
+        if (spawnQueue.complete(result)) completed++
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ completed }))
+    })
+    return
+  }
+
   res.writeHead(404)
   res.end('Not found')
 }
@@ -2491,7 +2568,7 @@ const PP2_TIMEOUT_MS = 10_000
 function resolveSessionBySourceIp(
   socket: net.Socket,
   label: string,
-  next: (sessionId: string, leftover: Buffer) => void,
+  next: (sessionId: string, leftover: Buffer, viaVclusterAttribution: boolean) => void,
 ): void {
   socket.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code !== 'ECONNRESET') {
@@ -2526,9 +2603,9 @@ function resolveSessionBySourceIp(
     let leftover = buf.subarray(res.bytesConsumed)
     const buffer = (chunk2: Buffer): void => { leftover = Buffer.concat([leftover, chunk2]) }
     socket.on('data', buffer)
-    void resolveSession(srcIp).then((sessionId) => {
+    void resolveSession(srcIp).then((resolved) => {
       socket.removeListener('data', buffer)
-      if (!sessionId) {
+      if (!resolved) {
         console.log(`[proxy] BLOCKED transparent ${label} from ${peer}: source ${srcIp} is not a known session pod`)
         socket.destroy()
         return
@@ -2536,7 +2613,7 @@ function resolveSessionBySourceIp(
       // Hand the post-header bytes to `next` directly (the HTTPS peeker / HTTP
       // path each unshift once at dispatch; a second unshift would not
       // reliably re-emit to a freshly-added 'data' listener).
-      next(sessionId, leftover)
+      next(resolved.sessionId, leftover, resolved.viaVclusterAttribution)
     })
   }
   socket.on('data', onData)
@@ -2605,10 +2682,73 @@ const transparentHttpsServer = net.createServer((socket) => {
 // Origin-form HTTP after the PP2 preamble: feed the post-header stream
 // into an internal http.Server (the `emit('connection')` pattern handleMitm
 // already uses) and carry the verified session id on the socket.
-type IdentifiedSocket = net.Socket & { yaacSessionId?: string }
+type IdentifiedSocket = net.Socket & { yaacSessionId?: string; yaacVclusterAttributed?: boolean }
+
+// In-session spawn requests (see spawn-queue.ts). Held responses expire on a
+// coarse sweep — precision doesn't matter, only that abandoned requests
+// eventually 504 instead of leaking.
+const spawnQueue = new SpawnQueue()
+setInterval(() => { spawnQueue.expire() }, 5_000).unref()
+
+/**
+ * `POST http://yaac.internal/spawn` from inside a session: validate, then
+ * hold the response open until the server drains the queue and posts the
+ * result (or the TTL sweep 504s it). Runs BEFORE the allowlist — spawning
+ * works in every session without registration and is never recorded as a
+ * blocked host.
+ */
+function handleSpawnRequest(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  sessionId: string,
+  viaVclusterAttribution: boolean,
+): void {
+  const respond = (status: number, body: string): void => {
+    res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8' })
+    res.end(body)
+  }
+  const url = new URL(req.url ?? '/', `http://${SPAWN_MAGIC_HOST}`)
+  if (url.pathname !== SPAWN_PATH) { respond(404, 'Not found'); return }
+  if (req.method !== 'POST') { respond(405, 'Method not allowed'); return }
+  if (viaVclusterAttribution) {
+    respond(403, 'spawn is not available to nested workloads via the outer proxy')
+    return
+  }
+  const tool = url.searchParams.get('tool') ?? undefined
+
+  const chunks: Buffer[] = []
+  let received = 0
+  let overflow = false
+  req.on('data', (chunk: Buffer) => {
+    received += chunk.length
+    if (received > SPAWN_MAX_BODY_BYTES) {
+      if (!overflow) { overflow = true; respond(413, 'prompt too large') }
+      req.destroy()
+      return
+    }
+    chunks.push(chunk)
+  })
+  req.on('end', () => {
+    if (overflow) return
+    const prompt = Buffer.concat(chunks).toString('utf8')
+    const valid = validateSpawnRequest(prompt, tool)
+    if (!valid.ok) { respond(valid.status, valid.error); return }
+    // No-op the completer once the caller is gone; the entry still expires
+    // off the queue on the normal TTL sweep.
+    let gone = false
+    res.on('close', () => { gone = true })
+    const enqueued = spawnQueue.enqueue(
+      { sessionId, prompt, tool },
+      (status, body) => { if (!gone) respond(status, body) },
+    )
+    if (!enqueued.ok) { respond(enqueued.status, enqueued.error); return }
+    console.log(`[proxy] spawn request from session ${sessionId.slice(0, 8)}... queued (${enqueued.requestId.slice(0, 8)}...)`)
+  })
+}
 
 const internalHttpServer = http.createServer((req, res) => {
-  const sessionId = (req.socket as IdentifiedSocket).yaacSessionId
+  const socket = req.socket as IdentifiedSocket
+  const sessionId = socket.yaacSessionId
   if (!sessionId) {
     // Unreachable: sockets reach this server only after token verification.
     res.writeHead(403, { 'Content-Type': 'text/plain' }); res.end('No identity'); return
@@ -2623,6 +2763,10 @@ const internalHttpServer = http.createServer((req, res) => {
     res.end('Missing or malformed Host header')
     return
   }
+  if (target.hostname === SPAWN_MAGIC_HOST) {
+    handleSpawnRequest(req, res, sessionId, socket.yaacVclusterAttributed === true)
+    return
+  }
   forwardPlainHttp(req, res, sessionId, {
     hostname: target.hostname,
     port: target.port,
@@ -2631,8 +2775,9 @@ const internalHttpServer = http.createServer((req, res) => {
 })
 
 const transparentHttpServer = net.createServer((socket) => {
-  resolveSessionBySourceIp(socket, 'HTTP', (sessionId, leftover) => {
+  resolveSessionBySourceIp(socket, 'HTTP', (sessionId, leftover, viaVclusterAttribution) => {
     ;(socket as IdentifiedSocket).yaacSessionId = sessionId
+    ;(socket as IdentifiedSocket).yaacVclusterAttributed = viaVclusterAttribution
     if (leftover.length > 0) socket.unshift(leftover)
     internalHttpServer.emit('connection', socket)
   })

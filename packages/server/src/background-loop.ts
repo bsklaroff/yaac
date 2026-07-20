@@ -1,6 +1,7 @@
 import { reconcileStaleSessions, captureOpencodeFirstMessages } from '#lib/session/list'
 import { reconcileImageSalvage } from '#lib/session/salvage-reconcile'
 import { reconcileProxySshKeys } from '#lib/session/proxy-reconcile'
+import { reconcileSpawnRequests } from '#lib/session/spawn-reconcile'
 import { reconcileVclusters } from '#lib/session/vcluster-reconcile'
 import { reconcileInnerRedirects } from '#lib/session/inner-redirect-reconcile'
 import { reconcileStaleTproxyRules } from '#lib/session/tproxy-gc-reconcile'
@@ -62,6 +63,9 @@ function defaultTickSteps(): Array<() => Promise<void>> {
     // Fire due cron schedules (detached headless session creates). After the
     // stale sweep so a fire never lands in a namespace mid-reap.
     () => reconcileSchedules(),
+    // Service in-session `yaac-spawn` requests queued at the egress proxy
+    // (detached headless session creates, same shape as schedule fires).
+    () => reconcileSpawnRequests(),
     // Keep every project's image chain built and pushed (detached tasks, so
     // a minutes-long build never blocks the tick). Before the prewarm pool:
     // a spare's createSession then joins the already-running builds.

@@ -1,0 +1,199 @@
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import simpleGit from 'simple-git'
+import { cloneRepo } from '@yaac/server/lib/git'
+import { listSessionPods, type SessionPod } from '@yaac/server/lib/k8s/pods'
+import {
+  createYaacTestEnv,
+  spawnYaacServer,
+  runYaac,
+  type YaacTestEnv,
+  type SpawnedServer,
+} from '@yaac/test-utils/cli'
+import {
+  requirePodman,
+  requireCluster,
+  execInJob,
+  cleanupSessionJobs,
+} from '@yaac/test-utils/setup'
+import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
+import {
+  startMockLLM,
+  startMockGit,
+  seedMockGitRepo,
+  cleanupMocks,
+  type MockLLM,
+  type MockGit,
+} from '@yaac/test-utils/mock-remotes'
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * End-to-end coverage for in-session spawning: a session pod runs the
+ * auto-installed `yaac-spawn` command, the request rides the transparent
+ * HTTP egress path to the proxy's magic host, the server's background tick
+ * drains it and fires a headless create, and the new session comes up in
+ * the same project with the prompt typed into its agent pane.
+ */
+describe('yaac-spawn from inside a session (real CLI + server + cluster)', () => {
+  const SLUG = 'spawner'
+  let testEnv: YaacTestEnv
+  let server: SpawnedServer | null = null
+  let mockLLM: MockLLM | null = null
+  let mockGit: MockGit | null = null
+  let serverEnv: NodeJS.ProcessEnv
+  let jobA = ''
+
+  beforeAll(async () => {
+    await requirePodman()
+    await requireCluster()
+
+    testEnv = await createYaacTestEnv()
+    const credsDir = path.join(testEnv.dataDir, '.credentials')
+    await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
+    await fs.writeFile(path.join(credsDir, 'github.json'), JSON.stringify({
+      tokens: [{ pattern: 'test-org/*', token: 'fake-ghp-token' }],
+    }) + '\n')
+    await fs.writeFile(path.join(credsDir, 'claude.json'), JSON.stringify({
+      kind: 'api-key',
+      savedAt: new Date().toISOString(),
+      apiKey: 'sk-ant-fake-real-key',
+    }) + '\n')
+    await fs.writeFile(
+      testEnv.gitConfigPath,
+      '[user]\n\tname = Test User\n\temail = test@example.com\n',
+    )
+
+    mockLLM = await startMockLLM()
+    mockGit = await startMockGit()
+    const llmTarget = { host: mockLLM.host, port: mockLLM.port, tls: false }
+    const gitTarget = { host: mockGit.host, port: mockGit.port, tls: false }
+    serverEnv = {
+      ...testEnv.env,
+      YAAC_E2E_UPSTREAM_REDIRECTS: JSON.stringify({
+        'github.com': gitTarget,
+        'api.github.com': gitTarget,
+        'api.anthropic.com': llmTarget,
+        'statsig.anthropic.com': llmTarget,
+        'api.statsig.com': llmTarget,
+        'platform.claude.com': llmTarget,
+        'docs.claude.com': llmTarget,
+        'code.claude.com': llmTarget,
+        'claude.com': llmTarget,
+        'claude.ai': llmTarget,
+        'mcp-proxy.anthropic.com': llmTarget,
+      }),
+      YAAC_E2E_SKIP_FETCH: '1',
+      YAAC_E2E_NO_ATTACH: '1',
+    }
+    server = await spawnYaacServer(serverEnv)
+
+    // Stage the project as if `yaac project add` had cloned it (the
+    // session-create-suite pattern: local bare repo, github-shaped remote).
+    await seedMockGitRepo(mockGit, SLUG, { files: { 'README.md': '# demo\n' } })
+    const projectPath = path.join(testEnv.dataDir, 'projects', SLUG)
+    const repoPath = path.join(projectPath, 'repo')
+    await fs.mkdir(path.join(projectPath, 'claude'), { recursive: true })
+    await cloneRepo(path.join(mockGit.reposDir, `${SLUG}.git`), repoPath, null)
+    const fakeRemote = `https://github.com/test-org/${SLUG}.git`
+    await simpleGit(repoPath).remote(['set-url', 'origin', fakeRemote])
+    await fs.writeFile(path.join(projectPath, 'project.json'), JSON.stringify({
+      slug: SLUG,
+      remoteUrl: fakeRemote,
+      addedAt: new Date().toISOString(),
+    }) + '\n')
+
+    const { stdout, stderr, exitCode } = await runYaac(serverEnv, 'session', 'create', SLUG)
+    if (exitCode !== 0) {
+      throw new Error(`session create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
+    }
+    const pods = await listSessionPods(SLUG)
+    if (pods.length !== 1) throw new Error(`expected 1 session pod, found ${pods.length}`)
+    jobA = pods[0].jobName
+  }, 300_000)
+
+  afterAll(async () => {
+    if (server) await server.stop()
+    server = null
+    await cleanupSessionJobs()
+    await cleanupMocks([mockLLM, mockGit])
+    mockLLM = null
+    mockGit = null
+    await testEnv.cleanup()
+  })
+
+  /** Run yaac-spawn in session A, capturing exit code + combined output
+   *  ourselves (execInJob throws-and-retries on non-zero exits). */
+  async function runSpawn(args: string): Promise<{ exitCode: number; output: string }> {
+    const { stdout } = await execInJob(jobA, [
+      'sh', '-c', `yaac-spawn ${args} 2>&1; echo "EXIT:$?"`,
+    ], { timeout: 120_000 })
+    const m = /\nEXIT:(\d+)\s*$/.exec(stdout) ?? /^EXIT:(\d+)\s*$/.exec(stdout)
+    if (!m) throw new Error(`no exit marker in output:\n${stdout}`)
+    return { exitCode: Number(m[1]), output: stdout.slice(0, m.index) }
+  }
+
+  it('is installed on PATH as a read-only file', async () => {
+    const { stdout } = await execInJob(jobA, ['sh', '-c', 'command -v yaac-spawn'])
+    expect(stdout.trim()).toBe('/usr/local/bin/yaac-spawn')
+    // Read-only mount: a session cannot tamper with the host-staged copy.
+    const { output, exitCode } = await runSpawn('') // also covers usage error
+    expect(exitCode).toBe(2)
+    expect(output).toContain('usage:')
+    const { stdout: rw } = await execInJob(jobA, [
+      'sh', '-c', 'sh -c ">> /usr/local/bin/yaac-spawn" 2>&1; echo "EXIT:$?"',
+    ])
+    expect(rw).not.toContain('EXIT:0')
+  })
+
+  it('spawns a sibling session with the prompt delivered to its agent', async () => {
+    const PROMPT = 'hello from spawn e2e'
+    const { exitCode, output } = await runSpawn(`"${PROMPT}"`)
+    expect(exitCode).toBe(0)
+    const newSessionId = output.trim()
+    expect(newSessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+
+    // The new pod appears in the same project under the minted session id.
+    let spawned: SessionPod | undefined
+    for (let i = 0; i < 120 && !spawned?.running; i++) {
+      const pods = await listSessionPods(SLUG)
+      spawned = pods.find((p) => p.sessionId === newSessionId)
+      if (!spawned?.running) await sleep(1000)
+    }
+    expect(spawned?.running).toBe(true)
+    expect(spawned?.projectSlug).toBe(SLUG)
+    // Tool defaulted to the caller's (claude — no --tool given).
+    expect(spawned?.tool).toBe('claude')
+
+    // The prompt lands in the spawned agent's pane (typed via the same
+    // tmux paste path schedule fires use). claude may still be booting;
+    // poll the pane until the text renders.
+    let pane = ''
+    let found = false
+    for (let i = 0; i < 60; i++) {
+      try {
+        const { stdout } = await execInJob(spawned!.jobName, [
+          'sh', '-c',
+          `tmux -S ${CONTAINER_TMUX_SOCK} capture-pane -t yaac:claude -p -S - -E - 2>&1`,
+        ], { timeout: 10_000 })
+        pane = stdout
+        if (pane.includes(PROMPT)) { found = true; break }
+      } catch {
+        // pod/tmux not ready yet
+      }
+      await sleep(1000)
+    }
+    if (!found) console.error('final spawned pane:\n' + pane)
+    expect(found).toBe(true)
+  }, 300_000)
+
+  it('surfaces the server rejection for an unknown tool', async () => {
+    // 'bogus' passes the proxy's charset check; the server's AGENT_TOOLS
+    // validation rejects it — proving the full round trip of the error path.
+    const { exitCode, output } = await runSpawn('--tool bogus "x"')
+    expect(exitCode).toBe(1)
+    expect(output).toContain('bogus')
+    expect(output).toContain('HTTP 422')
+  }, 120_000)
+})
