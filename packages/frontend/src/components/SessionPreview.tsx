@@ -65,7 +65,11 @@ export function SessionPreview({
 }): JSX.Element {
   const shownPort = currentPort ?? ports[0]?.containerPort
   const hostPort = ports.find((p) => p.containerPort === shownPort)?.hostPort
-  const url = hostPort !== undefined ? previewUrl(hostPort) : null
+  // Forwarded ports bind the interface the app was served from, so the
+  // preview follows the page host — localhost locally, the tailnet name
+  // when attached to a remote server.
+  const hostname = window.location.hostname
+  const url = hostPort !== undefined ? previewUrl(hostname, hostPort) : null
   const electron = isElectron()
 
   const hostRef = useRef<HTMLDivElement>(null)
@@ -145,7 +149,7 @@ export function SessionPreview({
   const copyUrl = (): void => { void navigator.clipboard?.writeText(address || url || '') }
   const openExternal = (): void => { if (url) windowApi()?.openExternal(address || url) }
   const submitAddress = (): void => {
-    const dest = normalizePreviewNav(editing ?? '', hostPort)
+    const dest = normalizePreviewNav(editing ?? '', hostname, hostPort)
     if (dest) void wvRef.current?.loadURL?.(dest)
     setEditing(null)
   }
@@ -163,7 +167,7 @@ export function SessionPreview({
             rel="noreferrer"
             className="rounded bg-surface-2 px-2 py-1 font-mono text-[11px] text-text-dim transition hover:text-text"
           >
-            Open localhost:{hostPort}
+            Open {hostname}:{hostPort}
           </a>
         )}
       </div>

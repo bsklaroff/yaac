@@ -19,9 +19,15 @@ export function previewLabel(port: number | undefined): string {
   return port === undefined ? 'Preview' : `Preview :${port}`
 }
 
-/** The loopback URL the preview webview loads for a forwarded host port. */
-export function previewUrl(hostPort: number): string {
-  return `http://localhost:${hostPort}/`
+/**
+ * The URL the preview webview loads for a forwarded host port, on the host
+ * the webapp itself was loaded from — `localhost` when served locally, the
+ * tailnet name when served remotely (the forwarders bind that interface via
+ * YAAC_FORWARD_BIND). Always plain http: forwarded dev-server ports carry no
+ * TLS even when the app itself is served over https.
+ */
+export function previewUrl(hostname: string, hostPort: number): string {
+  return `http://${hostname}:${hostPort}/`
 }
 
 /**
@@ -29,11 +35,15 @@ export function previewUrl(hostPort: number): string {
  * used as-is; anything else is treated as a path (or bare host) on the current
  * forwarded port. Returns null when there's nothing to navigate to.
  */
-export function normalizePreviewNav(raw: string, hostPort: number | undefined): string | null {
+export function normalizePreviewNav(
+  raw: string,
+  hostname: string,
+  hostPort: number | undefined,
+): string | null {
   const trimmed = raw.trim()
   if (!trimmed) return null
   if (/^https?:\/\//i.test(trimmed)) return trimmed
   if (hostPort === undefined) return null
   const path = trimmed.startsWith('/') ? trimmed : `/${trimmed}`
-  return `http://localhost:${hostPort}${path}`
+  return `http://${hostname}:${hostPort}${path}`
 }

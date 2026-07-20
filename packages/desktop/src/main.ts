@@ -35,7 +35,7 @@ import {
 } from '#server-switch'
 import { backgroundColorFor } from '#theme-bg'
 import { buildTrayBitmap } from '#tray-icon'
-import { hardenGuestWebPreferences, isLocalPreviewUrl, sanitizeWebviewSrc } from '#webview-guard'
+import { appHostFromUrl, hardenGuestWebPreferences, isAllowedPreviewUrl, sanitizeWebviewSrc } from '#webview-guard'
 import { boundsVisibleOn, readWindowState, saveWindowState } from '#window-state'
 
 app.setName('yaac')
@@ -96,10 +96,11 @@ async function createWindow(): Promise<BrowserWindow> {
   })
   if (process.platform === 'darwin') w.setWindowButtonVisibility(false)
   // Harden every preview <webview> before it attaches: strip any preload,
-  // force Node off / isolation on, and refuse a non-loopback src.
+  // force Node off / isolation on, and refuse a src off loopback and the
+  // attached server's host (where a remote server's forwarded ports live).
   w.webContents.on('will-attach-webview', (_e, webPreferences, params) => {
     hardenGuestWebPreferences(webPreferences as unknown as Record<string, unknown>)
-    params.src = sanitizeWebviewSrc(params.src)
+    params.src = sanitizeWebviewSrc(params.src, appHostFromUrl(w.webContents.getURL()))
   })
   w.once('ready-to-show', () => w.show())
   const onThemeChange = (): void => {
@@ -291,9 +292,11 @@ ipcMain.on('window:open-external', (_e, url: unknown) => {
   if (typeof url === 'string' && /^https?:/.test(url)) void shell.openExternal(url)
 })
 
-// Constrain preview <webview> guests: open any new window or off-loopback
-// navigation (an OAuth hop, an external link) in the system browser rather
-// than inside the preview, which stays pinned to the dev server.
+// Constrain preview <webview> guests: open any new window or navigation off
+// the allowed preview hosts (an OAuth hop, an external link) in the system
+// browser rather than inside the preview, which stays pinned to the dev
+// server — reached via loopback locally, or the attached server's host when
+// remote (its forwarded ports bind that interface).
 app.on('web-contents-created', (_event, contents) => {
   if (contents.getType() !== 'webview') return
   contents.setWindowOpenHandler(({ url }) => {
@@ -301,7 +304,8 @@ app.on('web-contents-created', (_event, contents) => {
     return { action: 'deny' }
   })
   contents.on('will-navigate', (e, url) => {
-    if (!isLocalPreviewUrl(url)) {
+    const embedderUrl = contents.hostWebContents?.getURL() ?? ''
+    if (!isAllowedPreviewUrl(url, appHostFromUrl(embedderUrl))) {
       e.preventDefault()
       if (/^https?:/.test(url)) void shell.openExternal(url)
     }

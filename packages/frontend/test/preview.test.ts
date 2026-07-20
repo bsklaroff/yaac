@@ -26,22 +26,24 @@ describe('previewLabel', () => {
 })
 
 describe('previewUrl', () => {
-  it('builds the loopback url for a host port', () => {
-    expect(previewUrl(15173)).toBe('http://localhost:15173/')
+  it('builds a plain-http url on the page host for a host port', () => {
+    expect(previewUrl('localhost', 15173)).toBe('http://localhost:15173/')
+    expect(previewUrl('mybox.tail1234.ts.net', 15173)).toBe('http://mybox.tail1234.ts.net:15173/')
   })
 })
 
 describe('normalizePreviewNav', () => {
   it('uses a full http(s) url as-is', () => {
-    expect(normalizePreviewNav('https://example.com/x', 15173)).toBe('https://example.com/x')
-    expect(normalizePreviewNav('http://localhost:3000/', 15173)).toBe('http://localhost:3000/')
+    expect(normalizePreviewNav('https://example.com/x', 'localhost', 15173)).toBe('https://example.com/x')
+    expect(normalizePreviewNav('http://localhost:3000/', 'localhost', 15173)).toBe('http://localhost:3000/')
   })
   it('treats other input as a path on the current host port', () => {
-    expect(normalizePreviewNav('/dashboard', 15173)).toBe('http://localhost:15173/dashboard')
-    expect(normalizePreviewNav('settings', 15173)).toBe('http://localhost:15173/settings')
+    expect(normalizePreviewNav('/dashboard', 'localhost', 15173)).toBe('http://localhost:15173/dashboard')
+    expect(normalizePreviewNav('settings', 'mybox.tail1234.ts.net', 15173))
+      .toBe('http://mybox.tail1234.ts.net:15173/settings')
   })
   it('returns null when empty or when a path has no port', () => {
-    expect(normalizePreviewNav('   ', 15173)).toBeNull()
-    expect(normalizePreviewNav('/x', undefined)).toBeNull()
+    expect(normalizePreviewNav('   ', 'localhost', 15173)).toBeNull()
+    expect(normalizePreviewNav('/x', 'localhost', undefined)).toBeNull()
   })
 })
