@@ -20,9 +20,10 @@ yaac-spawn [--tool claude|codex|opencode|pi] [--model <model>] "<prompt>"
 - **`--tool`** (optional): which agent tool the new session runs. Omitted, it
   defaults to this session's own tool, then the configured project default,
   then `claude`.
-- **`--model`** (optional, claude tool only): model the new session's agent
-  launches with (`claude --model <model>`), e.g. `claude-opus-4-8` or `opus`.
-  Rejected when the resolved tool isn't claude.
+- **`--model`** (optional): model the new session's agent launches with
+  (`--model <model>`). A model id or alias for claude/codex (e.g.
+  `claude-opus-4-8` or `opus`); `provider/model` for opencode and pi (e.g.
+  `anthropic/claude-opus-4-8`).
 
 On success it prints the **new session's id** on stdout and exits 0. On failure
 it prints an error to stderr and exits non-zero.

@@ -176,27 +176,34 @@ function emit(message: string, options: SessionCreateOptions): void {
  * Allowed shape for a `--model` override. Deliberately strict: the value is
  * embedded bare in agent launch commands that travel inside single-quoted
  * `respawn-window '<cmd>'` wrappers (see buildAgentCmd), so no quotes,
- * whitespace, or shell metacharacters — model ids and aliases
- * (`claude-opus-4-8`, `opus`) never need them.
+ * whitespace, or shell metacharacters — model ids, aliases, and
+ * `provider/model` paths (`claude-opus-4-8`, `opus`,
+ * `anthropic/claude-opus-4-8`) never need them.
  */
-export const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/
+export const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/
 
 export function buildAgentCmd(
   tool: AgentTool,
   sessionId: string,
   addDirFlags: string,
   resume = false,
-  /** pi only — provider whose default model is passed to `pi --model`. */
+  /** pi only — provider whose default model is passed to `pi --model`
+   *  when no explicit `model` override is given. */
   piProvider?: PiProvider,
-  /** claude only — model passed to `claude --model`. Validated by the
-   *  create route to MODEL_RE, so it is safe to embed bare in the
-   *  single-quoted respawn-window wrapper. */
+  /** Model passed to the agent's `--model` flag: a model id or alias for
+   *  claude/codex (`opus`, `gpt-5.2-codex`), `provider/model` for
+   *  opencode and pi. Validated by the create route to MODEL_RE, so it is
+   *  safe to embed bare in the single-quoted respawn-window wrapper. */
   model?: string,
 ): string {
   if (tool === 'codex') {
+    // --model goes after the resume subcommand (like addDirFlags): codex
+    // defines -m/--model on both the root TUI command and `codex resume`,
+    // so trailing placement binds it to whichever command runs.
     return [
       'codex --yolo',
       resume ? `resume ${sessionId}` : '',
+      model ? `--model ${model}` : '',
       addDirFlags,
     ].filter(Boolean).join(' ')
   }
@@ -209,12 +216,15 @@ export function buildAgentCmd(
     // `.pi` home — creating it on a fresh run, resuming it otherwise (the same
     // flag both ways, like `claude --session-id`), so `resume` needs no branch.
     // addDirFlags is dropped: pi has no --add-dir equivalent.
-    const model = piProviderInfo(piProvider ?? PI_DEFAULT_PROVIDER).defaultModel
-    // `--model` is dropped only if the chosen provider has no generated
-    // default (every current pi provider has one; guarded so a future
-    // registry gap falls back to pi's own default rather than `--model
-    // undefined`).
-    const modelFlag = model ? ` --model ${model}` : ''
+    // An explicit override wins over the provider's generated default; the
+    // proxy only swaps the authenticated provider's key, so an override
+    // naming a different provider surfaces as an auth error in the pane.
+    const piModel = model ?? piProviderInfo(piProvider ?? PI_DEFAULT_PROVIDER).defaultModel
+    // `--model` is dropped only if there is no override and the chosen
+    // provider has no generated default (every current pi provider has one;
+    // guarded so a future registry gap falls back to pi's own default rather
+    // than `--model undefined`).
+    const modelFlag = piModel ? ` --model ${piModel}` : ''
     const pi = `pi --approve${modelFlag} --session-id ${sessionId}`
     // On a fresh run that `--session-id` names a session that doesn't exist
     // yet, so pi prints a yellow "Warning: No project session found with id
@@ -249,10 +259,13 @@ export function buildAgentCmd(
     // there (via `kubectl exec curl`) for status + first-message lookup.
     // --continue resumes the one session stored in the per-yaac-session
     // data dir (isolated per container — no cwd-collision concern).
+    // --model takes `provider/model`; omitted, opencode uses the model
+    // persisted in its shared config (or its own default).
     // addDirFlags is dropped: opencode has no --add-dir equivalent.
     return [
       'opencode',
       '--port 4096 --hostname 127.0.0.1',
+      model ? `--model ${model}` : '',
       resume ? '--continue' : '',
     ].filter(Boolean).join(' ')
   }
@@ -365,9 +378,9 @@ async function verifyAgentWindowAlive(jobName: string, tool: AgentTool): Promise
 export async function retoolSpare(
   spare: { jobName: string; sessionId: string; projectSlug: string; tool: string },
   tool: AgentTool,
-  /** claude only — model for the respawned agent (see buildAgentCmd). Also
-   *  the reason a claim may retool a spare to its *own* tool: the booted
-   *  agent has no model flag, so a model override forces this respawn. */
+  /** Model for the respawned agent (see buildAgentCmd). Also the reason a
+   *  claim may retool a spare to its *own* tool: the booted agent has no
+   *  model flag, so a model override forces this respawn. */
   model?: string,
 ): Promise<void> {
   const config: YaacConfig = await resolveProjectConfig(spare.projectSlug) ?? {}
@@ -640,8 +653,9 @@ export interface SessionCreateOptions {
    */
   initialPrompt?: string
   /**
-   * Claude-only model override for the agent's launch command
-   * (`claude --model <model>`). Validated to MODEL_RE by the create route.
+   * Model override for the agent's launch command (`--model <model>`): a
+   * model id or alias for claude/codex, `provider/model` for opencode and
+   * pi (see buildAgentCmd). Validated to MODEL_RE by the create route.
    * Not persisted: a restart resumes with the default model.
    */
   model?: string

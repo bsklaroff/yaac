@@ -189,10 +189,10 @@ export async function tryClaimPrewarmed(
   gitUser: { name: string; email: string } | undefined,
   emit: (message: string) => void,
   branch?: string,
-  /** claude only — model override for the agent's launch command. Spares
-   *  boot their agent with no model flag, so a model override always
-   *  respawns the claimed spare's agent (via retoolSpare, even when the
-   *  booted tool already matches). */
+  /** Model override for the agent's launch command. Spares boot their
+   *  agent with no model flag, so a model override always respawns the
+   *  claimed spare's agent (via retoolSpare, even when the booted tool
+   *  already matches). */
   model?: string,
 ): Promise<SessionCreateResult | undefined> {
   let reserved: string | undefined

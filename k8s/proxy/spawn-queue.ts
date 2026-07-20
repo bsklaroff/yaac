@@ -38,7 +38,7 @@ export interface SpawnRequest {
   sessionId: string
   prompt: string
   tool?: string
-  /** Claude-only model override for the spawned session's agent. */
+  /** Model override for the spawned session's agent. */
   model?: string
   enqueuedAtMs: number
 }
@@ -71,7 +71,7 @@ export function validateSpawnRequest(
   }
   // Shape check mirroring the server's MODEL_RE (packages/server
   // session-create.ts) — the server re-validates before use.
-  if (model !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(model)) {
+  if (model !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$/.test(model)) {
     return { ok: false, status: 400, error: `invalid model '${model}'` }
   }
   return { ok: true }

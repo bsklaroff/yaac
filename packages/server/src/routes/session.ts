@@ -62,7 +62,8 @@ export const sessionApp = new Hono()
       gitUser: z.object({ name: z.string(), email: z.string() }).optional(),
       // Initial prompt typed into the agent pane once it's up.
       prompt: z.string().min(1).max(10000).optional(),
-      // Claude-only model override (`claude --model <model>`). MODEL_RE
+      // Model override for the agent's launch command (`--model <model>`;
+      // `provider/model` for opencode and pi — see buildAgentCmd). MODEL_RE
       // keeps it safe to embed in the single-quoted agent launch command.
       model: z.string().regex(MODEL_RE).max(100).optional(),
     })),
@@ -74,12 +75,6 @@ export const sessionApp = new Hono()
         // configured default (yaac tool set), else claude. This is the tool the
         // prewarm pool warms, so a bare create matches its spare.
         const tool = body.tool ?? (await getDefaultTool()) ?? 'claude'
-        if (body.model !== undefined && tool !== 'claude') {
-          throw new ServerError(
-            'VALIDATION',
-            `--model is only supported for the claude tool (resolved tool: ${tool}).`,
-          )
-        }
 
         // Fast path: claim a prewarmed spare for this project + tool. Skipped
         // when --add-dir is requested (the spare lacks those mounts). A claim

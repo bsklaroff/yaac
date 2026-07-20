@@ -108,9 +108,6 @@ export async function handleSpawnRequest(
     ?? callerTool
     ?? (await (deps.getDefaultToolFn ?? getDefaultTool)())
     ?? 'claude'
-  if (req.model !== undefined && tool !== 'claude') {
-    return fail(`--model is only supported for the claude tool (resolved tool: ${tool})`)
-  }
 
   const newSessionId = (deps.mintIdFn ?? (() => crypto.randomUUID()))()
   const projectSlug = caller.projectSlug

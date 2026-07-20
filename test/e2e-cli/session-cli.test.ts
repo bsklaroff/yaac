@@ -587,17 +587,23 @@ describe('with seeded projects', () => {
       expect(stderr).toMatch(/No git credential configured/)
     })
 
-    it('rejects --model for a non-claude tool via server VALIDATION', async () => {
+    it('accepts --model for a non-claude tool (passes through to the git-credential check)', async () => {
+      // Mirrors the --tool opencode case above: a codex create with a
+      // provider/model override clears validation (any tool takes --model
+      // now) and trips the missing-credential check downstream — cheap
+      // proof the flag is wired through without standing up a container.
       const repo = path.join(testEnv.scratchDir, 'repo-demo-model-tool')
       await createTestRepo(repo)
       await addTestProject(repo)
+      await simpleGit(path.join(testEnv.dataDir, 'projects', 'repo-demo-model-tool', 'repo'))
+        .remote(['set-url', 'origin', 'https://github.com/test-org/repo-demo-model-tool.git'])
 
-      const { stdout, stderr, exitCode } = await runYaac(
+      const { stderr, exitCode } = await runYaac(
         testEnv.env, 'session', 'create', 'repo-demo-model-tool',
-        '--tool', 'codex', '--model', 'claude-opus-4-8',
+        '--tool', 'codex', '--model', 'gpt-5.2-codex',
       )
       expect(exitCode).not.toBe(0)
-      expect(stdout + stderr).toMatch(/--model is only supported for the claude tool/)
+      expect(stderr).toMatch(/No git credential configured/)
     })
 
     it('rejects a --model value with shell-unsafe characters via schema validation', async () => {

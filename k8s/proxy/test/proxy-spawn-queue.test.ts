@@ -51,6 +51,7 @@ describe('validateSpawnRequest', () => {
   it('accepts model ids and rejects values outside the safe charset', () => {
     expect(validateSpawnRequest('p', 'claude', 'claude-opus-4-8')).toEqual({ ok: true })
     expect(validateSpawnRequest('p', undefined, 'opus')).toEqual({ ok: true })
+    expect(validateSpawnRequest('p', 'opencode', 'anthropic/claude-opus-4-8')).toEqual({ ok: true })
     expect(validateSpawnRequest('p', 'claude', "o'pus").ok).toBe(false)
     expect(validateSpawnRequest('p', 'claude', 'a model').ok).toBe(false)
     expect(validateSpawnRequest('p', 'claude', '-opus').ok).toBe(false)

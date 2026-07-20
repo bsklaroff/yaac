@@ -135,7 +135,7 @@ export interface PendingSpawn {
   sessionId: string
   prompt: string
   tool?: string
-  /** Claude-only model override for the spawned session's agent. */
+  /** Model override for the spawned session's agent. */
   model?: string
 }
 

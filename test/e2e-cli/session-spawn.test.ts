@@ -256,11 +256,14 @@ describe('yaac-spawn from inside a session (real CLI + server + cluster)', () =>
     expect(startCmd).toContain('claude --dangerously-skip-permissions --model claude-opus-4-8')
   }, 300_000)
 
-  it('surfaces the server rejection for a model override on a non-claude tool', async () => {
-    const { exitCode, output } = await runSpawn('--tool codex --model claude-opus-4-8 "x"')
+  it('surfaces the proxy rejection for a model value outside the safe charset', async () => {
+    // `;` passes shell/URL handling in yaac-spawn but fails the proxy's
+    // MODEL_RE mirror — proving the model validation round trip without
+    // provisioning a session.
+    const { exitCode, output } = await runSpawn('--model "opus;rm" "x"')
     expect(exitCode).toBe(1)
-    expect(output).toContain('only supported for the claude tool')
-    expect(output).toContain('HTTP 422')
+    expect(output).toContain('invalid model')
+    expect(output).toContain('HTTP 400')
   }, 120_000)
 
   it('surfaces the server rejection for an unknown tool', async () => {

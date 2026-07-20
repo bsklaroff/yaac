@@ -19,7 +19,8 @@ export interface SessionCreateOptions {
   branch?: string
   /** Initial prompt typed into the agent pane once the session is up. */
   prompt?: string
-  /** Claude-only model override for the agent (`claude --model <model>`). */
+  /** Model override for the agent's launch command (`--model <model>`):
+   *  an id or alias for claude/codex, `provider/model` for opencode/pi. */
   model?: string
 }
 
