@@ -416,6 +416,21 @@ describe('runPodToCompletion', () => {
     expect(mockGetJson).toHaveBeenCalledTimes(1)
   })
 
+  it('fails fast with phase Deleted when the pod vanishes after apply', async () => {
+    // NotFound (null) after a successful apply: something deleted the pod
+    // out from under the poller — it can never complete, so no polling
+    // until the deadline.
+    mockGetJson.mockResolvedValue(null)
+    const start = Date.now()
+    await expect(runPodToCompletion(MANIFEST, { timeoutMs: 60_000 }))
+      .resolves.toEqual({ phase: 'Deleted', logs: '' })
+    expect(Date.now() - start).toBeLessThan(5_000)
+    expect(mockGetJson).toHaveBeenCalledTimes(1)
+    // The cleanup delete still runs.
+    expect(mockRetry.mock.calls.map((c) => c[0]).at(-1)).toEqual(
+      ['delete', 'pod', 'yaac-oneshot', '-n', 'test-ns', '--ignore-not-found'])
+  })
+
   it('returns the last seen phase when the deadline passes without a terminal one', async () => {
     mockGetJson.mockResolvedValue({ status: { phase: 'Pending' } })
     const { phase } = await runPodToCompletion(MANIFEST, { timeoutMs: 5, pollMs: 1 })

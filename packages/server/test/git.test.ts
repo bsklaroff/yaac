@@ -155,6 +155,27 @@ describe('git helpers', () => {
     expect(log.latest?.message).toBe('second commit')
   })
 
+  it('concurrent fetches on one repo all succeed', async () => {
+    // Fetches are serialized per repo: unserialized, two fetches moving the
+    // same remote-tracking ref race git's per-ref locks and one dies with
+    // "cannot lock ref 'refs/remotes/origin/<branch>'".
+    const cloneDir = path.join(tmpDir, 'clone')
+    await cloneRepo(sourceRepo, cloneDir, null)
+
+    // Move the remote so every fetch has the same ref update to apply.
+    const srcGit = simpleGit(sourceRepo)
+    await fs.writeFile(path.join(sourceRepo, 'new-file.txt'), 'new content\n')
+    await srcGit.add('.')
+    await srcGit.commit('second commit')
+
+    const fetches = Array.from({ length: 5 }, () => fetchOrigin(cloneDir, null))
+    await expect(Promise.all(fetches)).resolves.toBeDefined()
+
+    const defaultBranch = await getDefaultBranch(cloneDir)
+    const log = await simpleGit(cloneDir).log([`origin/${defaultBranch}`])
+    expect(log.latest?.message).toBe('second commit')
+  })
+
   it('creates worktree from startPoint with latest remote content', async () => {
     // Clone the source repo
     const cloneDir = path.join(tmpDir, 'clone')

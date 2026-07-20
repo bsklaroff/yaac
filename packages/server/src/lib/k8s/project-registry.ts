@@ -9,6 +9,7 @@ import {
   kubectlWithRetry,
 } from '#lib/k8s/kubectl'
 import { LABEL_PROJECT, LABEL_SESSION_ID, runPodToCompletion } from '#lib/k8s/pods'
+import { createKeyedMutex } from '#lib/keyed-mutex'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#lib/k8s/registry'
 import { imageExists } from '#lib/container/runtime'
 import { projectDir } from '@yaac/shared/project-paths'
@@ -22,6 +23,14 @@ export const REGISTRY_APP_LABEL = 'yaac-registry'
  * `yaac.data-dir-hash` + `yaac.session-id`).
  */
 export const LABEL_REGISTRY_DATA_DIR_HASH = 'yaac.registry-data-dir-hash'
+/**
+ * Marker label on the one-shot node-write pods (hosts writer / cleanup),
+ * value = the pod's kind. Distinguishes them from the registry
+ * Deployment's pod, which carries the same registry labels — the stray
+ * sweep in `writeNodeRegistryHostsToml` selects on this label's existence
+ * so it can never delete the registry itself.
+ */
+export const LABEL_NODE_WRITE = 'yaac.node-write'
 /**
  * In-cluster port of the per-project registry. Deliberately not 443/80:
  * Cilium redirects those to the proxy, whereas 5000 rides the per-project
@@ -112,6 +121,19 @@ function registryLabels(projectSlug: string): Record<string, string> {
     [LABEL_PROJECT]: projectSlug,
     [LABEL_REGISTRY_DATA_DIR_HASH]: dataDirHash(),
   }
+}
+
+/**
+ * kubectl label selector matching every registry object of this project
+ * scoped to this install (coexisting installs sharing a namespace never
+ * touch each other's registries).
+ */
+function registrySelector(projectSlug: string): string {
+  return [
+    `app=${REGISTRY_APP_LABEL}`,
+    `${LABEL_PROJECT}=${projectSlug}`,
+    `${LABEL_REGISTRY_DATA_DIR_HASH}=${dataDirHash()}`,
+  ].join(',')
 }
 
 /**
@@ -325,14 +347,19 @@ export function buildRegistryEgressNetworkPolicyManifest(
  * node is a container on its own podman engine. Pinned by `nodeName`
  * (bypasses the scheduler, so taints cannot strand it), plain root like
  * the registry itself, `restartPolicy: Never` — the caller polls it to a
- * terminal phase and deletes it. It reuses the registry:2 mirror image
- * (already in the local registry, and on the node once the registry
- * Deployment has rolled out), and its registry labels both put it under
- * the deny-all egress NetworkPolicy (it needs no network) and inside the
- * removal selector's scope.
+ * terminal phase and deletes it. Names carry a per-run random suffix so
+ * two runs can never fight over one pod name (delete each other's pod
+ * mid-poll); strays from crashed runs are reaped by label — the
+ * `LABEL_NODE_WRITE` sweep before each hosts write, and
+ * `removeProjectRegistry`'s by-selector delete. It reuses the registry:2
+ * mirror image (already in the local registry, and on the node once the
+ * registry Deployment has rolled out), and its registry labels both put
+ * it under the deny-all egress NetworkPolicy (it needs no network) and
+ * inside the removal selector's scope.
  */
 function buildNodeWritePodManifest(
   projectSlug: string,
+  kind: 'hosts' | 'cleanup',
   name: string,
   nodeName: string,
   imageRef: string,
@@ -346,7 +373,7 @@ function buildNodeWritePodManifest(
     metadata: {
       name,
       namespace: k8sNamespace(),
-      labels: registryLabels(projectSlug),
+      labels: { ...registryLabels(projectSlug), [LABEL_NODE_WRITE]: kind },
     },
     spec: {
       nodeName,
@@ -379,11 +406,13 @@ export function buildRegistryHostsWriterPodManifest(
   nodeName: string,
   vip: string,
   nodeIndex: number,
+  runId: string,
 ): Record<string, unknown> {
   const content = `[host."http://${vip}:${PROJECT_REGISTRY_PORT}"]`
   return buildNodeWritePodManifest(
     projectSlug,
-    `${projectRegistryName(projectSlug)}-hosts-${nodeIndex}`,
+    'hosts',
+    `${projectRegistryName(projectSlug)}-hosts-${nodeIndex}-${runId}`,
     nodeName,
     imageRef,
     `printf '%s\\n' '${content}' > /host-certs/hosts.toml`,
@@ -411,10 +440,12 @@ export function buildRegistryCleanupPodManifest(
   imageRef: string,
   nodeName: string,
   nodeIndex: number,
+  runId: string,
 ): Record<string, unknown> {
   return buildNodeWritePodManifest(
     projectSlug,
-    `${projectRegistryName(projectSlug)}-cleanup-${nodeIndex}`,
+    'cleanup',
+    `${projectRegistryName(projectSlug)}-cleanup-${nodeIndex}-${runId}`,
     nodeName,
     imageRef,
     `rm -rf '/host-certs/${projectRegistryHost(projectSlug)}' '/host-storage/${projectSlug}'`,
@@ -503,11 +534,24 @@ export async function writeNodeRegistryHostsToml(projectSlug: string): Promise<v
   ])
   const vip = svc?.spec?.clusterIP
   if (!vip) throw new Error(`project registry Service ${projectRegistryName(projectSlug)} has no ClusterIP yet`)
+  // Reap stray writer/cleanup pods left by crashed runs (a daemon killed
+  // mid-poll never reaches runPodToCompletion's cleanup delete, and the
+  // per-run name suffix means no later namesake delete collects them).
+  // The node-write marker keeps the registry Deployment's pod out of the
+  // selector's reach.
+  await kubectlWithRetry([
+    'delete', 'pod', '-l', `${registrySelector(projectSlug)},${LABEL_NODE_WRITE}`,
+    '-n', k8sNamespace(), '--ignore-not-found',
+  ])
   const imageRef = registryRef(REGISTRY_MIRROR_TAG)
+  const runId = crypto.randomBytes(4).toString('hex')
   for (const [i, node] of (await listNodeNames()).entries()) {
-    await runNodeWritePod(buildRegistryHostsWriterPodManifest(projectSlug, imageRef, node, vip, i))
+    await runNodeWritePod(buildRegistryHostsWriterPodManifest(projectSlug, imageRef, node, vip, i, runId))
   }
 }
+
+/** Per-project queue behind `ensureProjectRegistry` (see its doc). */
+const registryEnsureMutex = createKeyedMutex()
 
 /**
  * Idempotently stand up the project's registry (Deployment + Service + the
@@ -516,21 +560,31 @@ export async function writeNodeRegistryHostsToml(projectSlug: string): Promise<v
  * need no registry. The Service's ClusterIP is allocator-assigned and never
  * deleted, so `apply` is a no-op on it after first creation (the pin and its
  * immutable-field migration are gone).
+ *
+ * Serialized per project: concurrent creates on one project are routine
+ * (a user create racing a prewarm spare spawn, cron fires, and queued
+ * yaac-spawn requests — all bursting on the first background tick after a
+ * daemon start), and unserialized ensures would interleave the applies,
+ * rollout waits, and node-write pod runs. The ensure is idempotent, so
+ * the queued caller's turn is quick; different projects still ensure in
+ * parallel.
  */
 export async function ensureProjectRegistry(projectSlug: string): Promise<void> {
-  const name = projectRegistryName(projectSlug)
-  const ns = k8sNamespace()
-  const imageRef = await ensureRegistryImage()
+  await registryEnsureMutex(projectSlug, async () => {
+    const name = projectRegistryName(projectSlug)
+    const ns = k8sNamespace()
+    const imageRef = await ensureRegistryImage()
 
-  await kubectlApply(buildProjectRegistryDeploymentManifest(projectSlug, imageRef))
-  await kubectlApply(buildProjectRegistryServiceManifest(projectSlug))
-  await kubectlApply(buildRegistrySessionsNetworkPolicyManifest(projectSlug))
-  await kubectlApply(buildRegistryIngressCnpManifest(projectSlug))
-  await kubectlApply(buildRegistryEgressNetworkPolicyManifest(projectSlug))
-  await kubectlWithRetry([
-    'rollout', 'status', `deployment/${name}`, '-n', ns, '--timeout=120s',
-  ], { timeout: 130_000, maxAttempts: 2 })
-  await writeNodeRegistryHostsToml(projectSlug)
+    await kubectlApply(buildProjectRegistryDeploymentManifest(projectSlug, imageRef))
+    await kubectlApply(buildProjectRegistryServiceManifest(projectSlug))
+    await kubectlApply(buildRegistrySessionsNetworkPolicyManifest(projectSlug))
+    await kubectlApply(buildRegistryIngressCnpManifest(projectSlug))
+    await kubectlApply(buildRegistryEgressNetworkPolicyManifest(projectSlug))
+    await kubectlWithRetry([
+      'rollout', 'status', `deployment/${name}`, '-n', ns, '--timeout=120s',
+    ], { timeout: 130_000, maxAttempts: 2 })
+    await writeNodeRegistryHostsToml(projectSlug)
+  })
 }
 
 /**
@@ -541,11 +595,7 @@ export async function ensureProjectRegistry(projectSlug: string): Promise<void> 
  * the kinds so stray writer/cleanup pods from crashed runs are reaped.
  */
 export async function removeProjectRegistry(projectSlug: string): Promise<void> {
-  const selector = [
-    `app=${REGISTRY_APP_LABEL}`,
-    `${LABEL_PROJECT}=${projectSlug}`,
-    `${LABEL_REGISTRY_DATA_DIR_HASH}=${dataDirHash()}`,
-  ].join(',')
+  const selector = registrySelector(projectSlug)
 
   // Node-side residue exists only if the registry itself ever did (both
   // dirs are written by the Deployment's pod and the hosts writer). Probe
@@ -569,10 +619,11 @@ export async function removeProjectRegistry(projectSlug: string): Promise<void> 
   if (!hadRegistry) return
 
   const imageRef = registryRef(REGISTRY_MIRROR_TAG)
+  const runId = crypto.randomBytes(4).toString('hex')
   for (const [i, node] of (await listNodeNames()).entries()) {
     // Best-effort: the cluster may be recreated or unreachable — and the
     // storage was node-local, so it is already gone with the old node.
-    await runNodeWritePod(buildRegistryCleanupPodManifest(projectSlug, imageRef, node, i))
+    await runNodeWritePod(buildRegistryCleanupPodManifest(projectSlug, imageRef, node, i, runId))
       .catch(() => { /* node-side residue is harmless */ })
   }
 }

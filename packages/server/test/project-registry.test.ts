@@ -22,6 +22,7 @@ vi.mock('#lib/container/runtime', () => ({
 }))
 
 import {
+  LABEL_NODE_WRITE,
   LABEL_REGISTRY_DATA_DIR_HASH,
   PROJECT_REGISTRY_PORT,
   REGISTRY_APP_LABEL,
@@ -324,15 +325,18 @@ describe('node-write pod builders', () => {
 
   it('writer pod pins the node and mounts only this registry\'s certs.d dir', () => {
     const m = buildRegistryHostsWriterPodManifest(
-      'demo', 'localhost:5001/yaac-registry2:abc', 'yaac-control-plane', '10.96.0.50', 0,
+      'demo', 'localhost:5001/yaac-registry2:abc', 'yaac-control-plane', '10.96.0.50', 0, 'ab12cd34',
     ) as unknown as Pod
     expect(m.kind).toBe('Pod')
-    expect(m.metadata.name).toBe(`${projectRegistryName('demo')}-hosts-0`)
+    // The per-run suffix keeps concurrent runs from fighting over one pod
+    // name (each would delete the other's pod mid-poll).
+    expect(m.metadata.name).toBe(`${projectRegistryName('demo')}-hosts-0-ab12cd34`)
     expect(m.metadata.namespace).toBe('test-ns')
     expect(m.metadata.labels).toEqual({
       app: REGISTRY_APP_LABEL,
       'yaac.project': 'demo',
       [LABEL_REGISTRY_DATA_DIR_HASH]: 'ddh16',
+      [LABEL_NODE_WRITE]: 'hosts',
     })
     // nodeName bypasses the scheduler — exact parity with the old
     // every-node podman-exec loop, taints cannot strand the pod.
@@ -364,9 +368,10 @@ describe('node-write pod builders', () => {
 
   it('cleanup pod mounts the parents and removes both residue dirs', () => {
     const m = buildRegistryCleanupPodManifest(
-      'demo', 'localhost:5001/yaac-registry2:abc', 'yaac-control-plane', 0,
+      'demo', 'localhost:5001/yaac-registry2:abc', 'yaac-control-plane', 0, 'ab12cd34',
     ) as unknown as Pod
-    expect(m.metadata.name).toBe(`${projectRegistryName('demo')}-cleanup-0`)
+    expect(m.metadata.name).toBe(`${projectRegistryName('demo')}-cleanup-0-ab12cd34`)
+    expect(m.metadata.labels[LABEL_NODE_WRITE]).toBe('cleanup')
     expect(m.spec.nodeName).toBe('yaac-control-plane')
     expect(m.spec.runtimeClassName).toBeUndefined()
     // Parent mounts: removing the child dirs themselves (today's residue
@@ -456,12 +461,50 @@ describe('ensureProjectRegistry', () => {
     const script = pod.spec.containers[0].command[2]
     expect(script).toContain(`http://10.96.0.50:${PROJECT_REGISTRY_PORT}`)
     expect(mockExec).not.toHaveBeenCalled()
-    // The writer pod is pre-cleaned and deleted after completion.
-    expect(mockRetry).toHaveBeenCalledWith(
-      ['delete', 'pod', `${projectRegistryName('demo')}-hosts-0`, '-n', 'test-ns', '--ignore-not-found'],
-    )
+    // Stray node-write pods from crashed runs are swept by label first —
+    // scoped by the marker label so the registry Deployment's pod (same
+    // registry labels) is out of reach.
+    expect(mockRetry).toHaveBeenCalledWith([
+      'delete', 'pod',
+      '-l', `app=${REGISTRY_APP_LABEL},yaac.project=demo,${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16,${LABEL_NODE_WRITE}`,
+      '-n', 'test-ns', '--ignore-not-found',
+    ])
+    // The writer pod (per-run unique name) is pre-cleaned and deleted
+    // after completion.
+    const namedPodDeletes = mockRetry.mock.calls
+      .map((c) => c[0])
+      .filter((a) => a[0] === 'delete' && a[1] === 'pod' && a[2] !== '-l')
+    expect(namedPodDeletes).toHaveLength(2)
+    for (const args of namedPodDeletes) {
+      expect(args[2]).toMatch(
+        new RegExp(`^${projectRegistryName('demo')}-hosts-0-[0-9a-f]{8}$`))
+    }
     // The ClusterIP is allocator-assigned and never deleted — no migration.
     expect(mockRetry).not.toHaveBeenCalledWith(expect.arrayContaining(['delete', 'service']))
+  })
+
+  it('serializes concurrent ensures for one project', async () => {
+    let releaseRollout!: () => void
+    const gate = new Promise<void>((r) => { releaseRollout = r })
+    let rollouts = 0
+    mockRetry.mockImplementation((args: string[]) => {
+      if (args[0] === 'rollout' && ++rollouts === 1) {
+        return gate.then(() => ({ stdout: '', stderr: '' }))
+      }
+      return Promise.resolve({ stdout: '', stderr: '' })
+    })
+
+    const first = ensureProjectRegistry('demo')
+    const second = ensureProjectRegistry('demo')
+    await new Promise((r) => setTimeout(r, 10))
+    // The second ensure has not started while the first waits on its
+    // rollout: only the first's five object applies have happened (its
+    // writer pod comes after the rollout).
+    expect(mockApply).toHaveBeenCalledTimes(5)
+
+    releaseRollout()
+    await Promise.all([first, second])
+    expect(mockApply).toHaveBeenCalledTimes(12)
   })
 
   it('surfaces a failed writer pod with its logs (session create must not proceed)', async () => {

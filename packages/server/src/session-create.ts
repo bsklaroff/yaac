@@ -16,6 +16,7 @@ import { resolveAllowedHosts } from '#lib/container/default-allowed-hosts'
 import { reserveAvailablePort, startPortForwarders, kubectlRelay } from '#lib/container/port'
 import type { ReservedPort } from '#lib/container/port'
 import { containerExec } from '#lib/k8s/exec'
+import { createKeyedMutex } from '#lib/keyed-mutex'
 import { dataDirHash, k8sNamespace, kubectlApply, kubectlGetJson, kubectlWithRetry } from '#lib/k8s/kubectl'
 // Aliased: this module uses a local `env: string[]` for the pod's env vars.
 import { env as yaacEnv, testEnv } from '@yaac/shared/env'
@@ -711,33 +712,23 @@ async function waitForPodReady(jobName: string, timeoutMs = 180_000): Promise<vo
 }
 
 /**
- * Per-project tail of the in-flight in-pod upstream-config execs. Each
+ * Per-project queue for the in-flight in-pod upstream-config execs. Each
  * fresh session sets its branch upstream from inside its own pod (see
  * below), and that write takes git's config lock on the shared
  * `/repo/.git/config` — two concurrent creates on one project (a user
  * create and a prewarm spare warm, say) would race it and fail one side
- * with "could not lock config file". The server is a single process, so
- * chaining the execs per project is sufficient mutual exclusion;
- * different projects still run in parallel.
+ * with "could not lock config file".
  */
-const upstreamConfigQueues = new Map<string, Promise<void>>()
+const upstreamConfigMutex = createKeyedMutex()
 
 /**
  * Run `task` serialized against every other in-flight upstream-config write
  * for the project. Both the fresh-create setup and the claim-time re-branch
  * prep write `branch.<name>.merge` into the shared `/repo/.git/config`
- * (taking git's config lock), so all such writes flow through here. A failed
- * predecessor does not poison the queue — each task gets its own verdict.
+ * (taking git's config lock), so all such writes flow through here.
  */
 export async function withUpstreamConfigLock(projectSlug: string, task: () => Promise<void>): Promise<void> {
-  const prev = upstreamConfigQueues.get(projectSlug) ?? Promise.resolve()
-  const run = prev.catch(() => { /* predecessor's caller saw its error */ }).then(task)
-  upstreamConfigQueues.set(projectSlug, run)
-  try {
-    await run
-  } finally {
-    if (upstreamConfigQueues.get(projectSlug) === run) upstreamConfigQueues.delete(projectSlug)
-  }
+  await upstreamConfigMutex(projectSlug, task)
 }
 
 /**

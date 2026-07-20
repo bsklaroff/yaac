@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
+import { createKeyedMutex } from '#lib/keyed-mutex'
 import type { ResolvedGitCredential } from '#lib/project/credentials'
 import { env } from '@yaac/shared/env'
 import { formatSshCommand, torSshOpts } from '@yaac/shared/git'
@@ -195,24 +196,36 @@ export async function worktreeUpstreamBranch(repoPath: string, branchName: strin
   return match ? match[1] : null
 }
 
+/**
+ * Per-repo queue for fetches: two concurrent fetches on one repo race
+ * git's per-ref locks when both try to move the same remote-tracking ref
+ * ("cannot lock ref 'refs/remotes/origin/<b>'") — routine on the shared
+ * project repo when a user create, a prewarm spare's re-branch prep, or a
+ * branch listing fetch at once. Keyed by repo path (the contended
+ * resource); fetches on different repos still run in parallel.
+ */
+const fetchOriginMutex = createKeyedMutex()
+
 export async function fetchOrigin(
   repoPath: string,
   credential: ResolvedGitCredential | null,
 ): Promise<void> {
-  if (credential?.kind === 'https') {
-    const git = gitWithCredentialEnv(repoPath, torEnv())
-    const remoteUrl = (await git.remote(['get-url', 'origin']))!.trim()
-    const authedUrl = injectTokenIntoUrl(remoteUrl, credential.token)
-    await git.raw(['fetch', authedUrl, '+refs/heads/*:refs/remotes/origin/*', '--update-head-ok'])
-    return
-  }
-  if (credential?.kind === 'ssh') {
-    const knownHostsPath = await ensureKnownHostsFileForCredential(credential)
-    const env = gitEnvForCredential(credential, knownHostsPath)
-    await gitWithCredentialEnv(repoPath, env).fetch('origin')
-    return
-  }
-  await gitWithCredentialEnv(repoPath, torEnv()).fetch('origin')
+  await fetchOriginMutex(repoPath, async () => {
+    if (credential?.kind === 'https') {
+      const git = gitWithCredentialEnv(repoPath, torEnv())
+      const remoteUrl = (await git.remote(['get-url', 'origin']))!.trim()
+      const authedUrl = injectTokenIntoUrl(remoteUrl, credential.token)
+      await git.raw(['fetch', authedUrl, '+refs/heads/*:refs/remotes/origin/*', '--update-head-ok'])
+      return
+    }
+    if (credential?.kind === 'ssh') {
+      const knownHostsPath = await ensureKnownHostsFileForCredential(credential)
+      const env = gitEnvForCredential(credential, knownHostsPath)
+      await gitWithCredentialEnv(repoPath, env).fetch('origin')
+      return
+    }
+    await gitWithCredentialEnv(repoPath, torEnv()).fetch('origin')
+  })
 }
 
 /**

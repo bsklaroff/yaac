@@ -94,7 +94,10 @@ yaac auth list                    # masked credentials
 
 Full command reference is in `README.md` (`## CLI`). A session create
 (`yaac session create <project>`) builds an image and launches a k8s Job —
-slow; only run it when you specifically need a live session.
+slow; only run it when you specifically need a live session. On success it
+**attaches to the session's tmux** and never exits — from a script, expect
+to kill/timeout it (the session is fine) and clean up with
+`yaac session delete <id>`.
 
 ## Run — human path
 

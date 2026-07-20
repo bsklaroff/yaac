@@ -271,7 +271,11 @@ export interface RunPodOptions {
 }
 
 export interface PodRunResult {
-  /** Terminal phase, or the last phase seen when the deadline passed. */
+  /**
+   * Terminal phase; the sentinel `Deleted` when the pod vanished mid-poll
+   * (deleted out from under us — it can never complete); or the last
+   * phase seen when the deadline passed.
+   */
   phase: string
   /** Pod logs, best-effort ('' when unavailable). */
   logs: string
@@ -301,7 +305,15 @@ export async function runPodToCompletion(
       const pod = await kubectlGetJson<{ status?: { phase?: string } }>([
         'get', 'pod', name, '-n', namespace,
       ])
-      phase = pod?.status?.phase ?? 'Unknown'
+      // NotFound after a successful apply means something deleted the pod
+      // out from under us (a namesake run in another process, an external
+      // sweep). It can never reach a terminal phase — fail fast instead
+      // of polling NotFound until the deadline.
+      if (pod === null) {
+        phase = 'Deleted'
+        break
+      }
+      phase = pod.status?.phase ?? 'Unknown'
       if (phase === 'Succeeded' || phase === 'Failed') break
       await new Promise((r) => setTimeout(r, opts.pollMs ?? 1000))
     }
