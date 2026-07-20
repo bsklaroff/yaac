@@ -27,6 +27,18 @@ containerdConfigPatches:
 - |-
   [plugins."io.containerd.grpc.v1.cri".registry]
     config_path = "/etc/containerd/certs.d"
+kubeadmConfigPatches:
+# Let pods use the host's swap. kind's default kubelet config only
+# *tolerates* swap on the node (failSwapOn: false); without a swapBehavior
+# the default is NoSwap, which pins every pod's memory. LimitedSwap (the
+# only supported behavior since NodeSwap went GA) grants swap to Burstable
+# pods proportionally to their memory request — yaac session pods request
+# less memory than their limit, so they qualify.
+- |
+  kind: KubeletConfiguration
+  apiVersion: kubelet.config.k8s.io/v1beta1
+  memorySwap:
+    swapBehavior: LimitedSwap
 nodes:
 - role: control-plane
   extraMounts:
