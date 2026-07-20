@@ -53,6 +53,7 @@ export {
   Tablet as TabletIcon,
   Monitor as DesktopIcon,
   FileDiff as ChangesIcon,
+  Search as SearchIcon,
   Sparkles as SkillsIcon,
 } from 'lucide-react'
 

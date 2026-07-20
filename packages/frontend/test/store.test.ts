@@ -372,6 +372,27 @@ describe('view mode (tiles vs tabs)', () => {
     useUiStore.getState().setChangesBase('s1', undefined)
     expect(useUiStore.getState().changesBase).toEqual({ s2: 'main' })
   })
+
+  it('setChangesFind sets a per-session find query and clears it on the empty string', () => {
+    useUiStore.getState().setChangesFind('s1', 'foo')
+    useUiStore.getState().setChangesFind('s2', 'bar')
+    expect(useUiStore.getState().changesFind).toEqual({ s1: 'foo', s2: 'bar' })
+    // An empty query removes just that session's entry.
+    useUiStore.getState().setChangesFind('s1', '')
+    expect(useUiStore.getState().changesFind).toEqual({ s2: 'bar' })
+  })
+
+  it('setChangesFindPending raises and clears the focus request, no-oping on the same value', () => {
+    expect(useUiStore.getState().changesFindPending).toBe(false)
+    useUiStore.getState().setChangesFindPending(true)
+    expect(useUiStore.getState().changesFindPending).toBe(true)
+    useUiStore.getState().setChangesFindPending(false)
+    expect(useUiStore.getState().changesFindPending).toBe(false)
+    // Clearing an already-clear flag keeps state identity (no needless render).
+    const before = useUiStore.getState()
+    useUiStore.getState().setChangesFindPending(false)
+    expect(useUiStore.getState()).toBe(before)
+  })
 })
 
 describe('theme preference', () => {

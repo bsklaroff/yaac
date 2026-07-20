@@ -93,6 +93,7 @@ describe('matchShortcut', () => {
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyD'))).toBe('delete-session')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyW'))).toBe('kill-terminal')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyB'))).toBe('jump-attention')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyF'))).toBe('find-changes')
     expect(matchShortcut(DEFAULT_BINDINGS, key('ArrowUp'))).toBe('prev-session')
     expect(matchShortcut(DEFAULT_BINDINGS, key('ArrowDown'))).toBe('next-session')
     expect(matchShortcut(DEFAULT_BINDINGS, key('ArrowLeft'))).toBe('prev-terminal')

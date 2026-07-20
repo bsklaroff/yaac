@@ -6,9 +6,9 @@ import { useUiStore } from '#store'
 import { getSessionChanges } from '#lib/changesApi'
 import { getProjectBranches, projectBranchesKey } from '#lib/projectApi'
 import { BranchPicker } from '#components/BranchPicker'
-import { indexDiffsByPath, type DiffLine, type ParsedFileDiff } from '#lib/diff'
+import { changeMatchesQuery, indexDiffsByPath, type DiffLine, type ParsedFileDiff } from '#lib/diff'
 import { highlightLine, languageForPath, type HighlightLanguage } from '#lib/highlight'
-import { LoadingIcon, WarningIcon, ChevronIcon, BranchIcon } from '#lib/icons'
+import { LoadingIcon, WarningIcon, ChevronIcon, BranchIcon, SearchIcon } from '#lib/icons'
 import type { ChangeStatus, SessionChange } from '@yaac/shared/types'
 
 /** One-letter status badge, colored per change kind. */
@@ -60,8 +60,33 @@ export function SessionChanges(
     staleTime: 1500,
   })
 
-  const files = data?.files ?? []
+  const files = useMemo(() => data?.files ?? [], [data?.files])
   const diffMap = useMemo(() => indexDiffsByPath(data?.diff ?? ''), [data?.diff])
+
+  // Find. The query filters the file list by path or diff content; it lives in
+  // the store keyed by session id (like the expanded set) so it survives the
+  // pane being torn down on a tab or session switch. The find-changes shortcut
+  // raises changesFindPending after opening the pane; the mounted pane consumes
+  // it — focus + select the input — so opening by the header button (no flag)
+  // never grabs focus.
+  const find = useUiStore((s) => s.changesFind[sessionId]) ?? ''
+  const setChangesFind = useUiStore((s) => s.setChangesFind)
+  const findPending = useUiStore((s) => s.changesFindPending)
+  const setChangesFindPending = useUiStore((s) => s.setChangesFindPending)
+  const findRef = useRef<HTMLInputElement | null>(null)
+  useEffect(() => {
+    // The input only exists once loading settles (the spinner/error branches
+    // return early below), so leave the flag pending until it's mounted —
+    // isLoading in the deps re-runs this when the data arrives.
+    if (!findPending || !findRef.current) return
+    setChangesFindPending(false)
+    findRef.current.focus()
+    findRef.current.select()
+  }, [findPending, isLoading, setChangesFindPending])
+  const visible = useMemo(
+    () => files.filter((f) => changeMatchesQuery(f, diffMap.get(f.path), find)),
+    [files, diffMap, find],
+  )
 
   // Which files are expanded. This lives in the store keyed by session id, not
   // in local state, so it survives the pane being torn down off-screen when the
@@ -129,7 +154,8 @@ export function SessionChanges(
   // override nor the session's tracked branch is known.
   const baseLabel = base ?? baseBranch ?? (data?.base ? data.base.slice(0, 7) : 'base')
 
-  const totals = files.reduce((a, f) => ({ add: a.add + f.additions, del: a.del + f.deletions }), { add: 0, del: 0 })
+  // Totals follow the filter, so the header always describes the listed files.
+  const totals = visible.reduce((a, f) => ({ add: a.add + f.additions, del: a.del + f.deletions }), { add: 0, del: 0 })
 
   if (isLoading) {
     return (
@@ -197,16 +223,40 @@ export function SessionChanges(
 
         {files.length > 0 ? (
           <>
-            <span>{files.length} file{files.length === 1 ? '' : 's'}</span>
+            <span>
+              {find !== ''
+                ? `${visible.length} of ${files.length} files`
+                : `${files.length} file${files.length === 1 ? '' : 's'}`}
+            </span>
             <span className="text-[#3fb950]">+{totals.add}</span>
             <span className="text-[#f85149]">−{totals.del}</span>
           </>
         ) : (
           <span className="text-text-faint">no changes</span>
         )}
-        {data?.truncated && (
-          <span className="ml-auto text-text-faint">diff truncated (large changeset)</span>
-        )}
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          {data?.truncated && (
+            <span className="text-text-faint">diff truncated (large changeset)</span>
+          )}
+          <SearchIcon size={11} className="shrink-0 text-text-faint" />
+          <input
+            ref={findRef}
+            value={find}
+            onChange={(e) => setChangesFind(sessionId, e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== 'Escape') return
+              // First Escape clears the filter, a second one leaves the box.
+              e.stopPropagation()
+              if (find !== '') setChangesFind(sessionId, '')
+              else e.currentTarget.blur()
+            }}
+            placeholder="find"
+            aria-label="Find in changes"
+            spellCheck={false}
+            className="w-28 rounded bg-transparent px-1 py-0.5 text-[11px] text-text outline-none
+              transition placeholder:text-text-faint focus:bg-surface-2"
+          />
+        </div>
       </div>
 
       {files.length === 0 ? (
@@ -214,13 +264,17 @@ export function SessionChanges(
           <p className="text-xs text-text-dim">No changes yet</p>
           <p className="text-[11px] text-text-faint">Edits the agent makes in its worktree show up here.</p>
         </div>
+      ) : visible.length === 0 ? (
+        <div className="flex min-h-0 flex-1 items-center justify-center px-4 text-center">
+          <p className="text-xs text-text-dim">No files match “{find}”</p>
+        </div>
       ) : (
         <div
           ref={listRef}
           onScroll={(e) => setChangesScroll(sessionId, e.currentTarget.scrollTop)}
           className="min-h-0 flex-1 overflow-y-auto"
         >
-          {files.map((f) => (
+          {visible.map((f) => (
             <FileAccordion
               key={f.path}
               file={f}

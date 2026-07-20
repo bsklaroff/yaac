@@ -305,7 +305,8 @@ export function SessionView({
 
   // Workspace shortcuts: Alt+←/Alt+→ cycle terminals left/right — the
   // webapp-level replacement for tmux's prefix bindings (webapp panes run
-  // with `prefix None`) — Alt+T opens a new scratch shell, and Alt+W kills
+  // with `prefix None`) — Alt+T opens a new scratch shell, Alt+F opens the
+  // changes pane and focuses its find box, and Alt+W kills
   // the active terminal, through the same confirm dialog as the pane ×
   // (Alt+N, new session, and Alt+D, delete session, live in App's
   // Workspace, which owns project scope). Captured on window so the chord
@@ -345,6 +346,14 @@ export function SessionView({
           setConfirmKill({ target: ctx.activeTab, name: paneName(ctx.activeTab, ctx.terminals) })
           return
         }
+        case 'find-changes':
+          // Open (or surface) the changes pane, then ask its find box to take
+          // focus — SessionChanges consumes the pending flag once mounted.
+          e.preventDefault()
+          e.stopPropagation()
+          state.openChanges(ctx.sid)
+          state.setChangesFindPending(true)
+          return
         case 'prev-terminal':
         case 'next-terminal': {
           const delta = cycleDeltaFor(id)

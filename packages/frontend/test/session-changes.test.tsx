@@ -88,7 +88,10 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   mock.mockReset()
-  useUiStore.setState({ changesExpanded: {}, changesScroll: {}, changesBase: {} })
+  useUiStore.setState({
+    changesExpanded: {}, changesScroll: {}, changesBase: {},
+    changesFind: {}, changesFindPending: false,
+  })
 })
 
 describe('SessionChanges', () => {
@@ -249,6 +252,65 @@ describe('SessionChanges', () => {
 
     expect(useUiStore.getState().changesBase.s1).toBeUndefined()
     await waitFor(() => expect(mock).toHaveBeenCalledWith('s1', undefined))
+  })
+
+  it('filters the file list by a path substring, with a filtered count in the header', async () => {
+    mock.mockResolvedValue(PAYLOAD)
+    renderPane()
+    await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Find in changes'), { target: { value: 'new.ts' } })
+    expect(screen.getByText('1 of 2 files')).toBeTruthy()
+    expect(screen.getByTitle('new.ts')).toBeTruthy()
+    expect(screen.queryByTitle('src/app.ts')).toBeNull()
+  })
+
+  it('filters by diff content, not just the path', async () => {
+    mock.mockResolvedValue(PAYLOAD)
+    renderPane()
+    await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
+    // 'alpha' appears only inside new.ts's diff.
+    fireEvent.change(screen.getByLabelText('Find in changes'), { target: { value: 'alpha' } })
+    expect(screen.getByTitle('new.ts')).toBeTruthy()
+    expect(screen.queryByTitle('src/app.ts')).toBeNull()
+  })
+
+  it('shows a no-match state, and Escape clears the query', async () => {
+    mock.mockResolvedValue(PAYLOAD)
+    renderPane()
+    await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
+    const input = screen.getByLabelText('Find in changes')
+    fireEvent.change(input, { target: { value: 'zzz-nothing' } })
+    expect(screen.getByText('No files match “zzz-nothing”')).toBeTruthy()
+    expect(screen.getByText('0 of 2 files')).toBeTruthy()
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(useUiStore.getState().changesFind.s1).toBeUndefined()
+    expect(screen.getByText('2 files')).toBeTruthy()
+  })
+
+  it('keeps the query across a pane unmount/remount (store-backed)', async () => {
+    mock.mockResolvedValue(PAYLOAD)
+    renderPane()
+    await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Find in changes'), { target: { value: 'new.ts' } })
+    cleanup()
+    renderPane()
+    await waitFor(() => expect(screen.getByText('1 of 2 files')).toBeTruthy())
+    expect(screen.getByLabelText<HTMLInputElement>('Find in changes').value).toBe('new.ts')
+  })
+
+  it('consumes a pending find-focus request by focusing the find box', async () => {
+    mock.mockResolvedValue(PAYLOAD)
+    useUiStore.setState({ changesFindPending: true })
+    renderPane()
+    await waitFor(() => expect(useUiStore.getState().changesFindPending).toBe(false))
+    expect(document.activeElement).toBe(screen.getByLabelText('Find in changes'))
+  })
+
+  it('does not grab focus when the pane mounts without a pending request', async () => {
+    mock.mockResolvedValue(PAYLOAD)
+    renderPane()
+    await waitFor(() => expect(screen.getByText('2 files')).toBeTruthy())
+    expect(document.activeElement).not.toBe(screen.getByLabelText('Find in changes'))
   })
 
   it('keeps the base picker reachable even when there are no changes', async () => {

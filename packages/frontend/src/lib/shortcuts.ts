@@ -29,6 +29,7 @@ export type ShortcutId =
   | 'delete-session'
   | 'kill-terminal'
   | 'jump-attention'
+  | 'find-changes'
   | 'prev-session'
   | 'next-session'
   | 'prev-terminal'
@@ -66,6 +67,8 @@ export const SHORTCUTS: ShortcutDef[] = [
     description: 'Close the active terminal (asks to confirm).', defaultChord: alt('KeyW') },
   { id: 'jump-attention', label: 'Jump to attention',
     description: 'Select the session that most needs attention.', defaultChord: alt('KeyB') },
+  { id: 'find-changes', label: 'Find in changes',
+    description: 'Open the Changes pane and focus its find box.', defaultChord: alt('KeyF') },
   { id: 'prev-session', label: 'Previous session',
     description: 'Select the previous session in the sidebar.', defaultChord: alt('ArrowUp') },
   { id: 'next-session', label: 'Next session',

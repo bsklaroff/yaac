@@ -398,6 +398,18 @@ interface UiState {
   /** Set (or, with undefined, clear back to the default) a session's Changes
    *  base branch. */
   setChangesBase: (sessionId: string, branch: string | undefined) => void
+  /** Per-session find query filtering the Changes pane's file list. In-memory
+   *  like changesExpanded — survives a tab/session switch, not a reload.
+   *  Absent = no filter. */
+  changesFind: Record<string, string>
+  /** Set (or, with '', clear) a session's Changes find query. */
+  setChangesFind: (sessionId: string, query: string) => void
+  /** One-shot "focus the Changes find box" request, raised by the find-changes
+   *  shortcut alongside openChanges. The mounted SessionChanges pane consumes
+   *  it (focuses its input, then clears the flag), so a pane mounted later —
+   *  e.g. opened by the header button — never steals focus for a stale press. */
+  changesFindPending: boolean
+  setChangesFindPending: (pending: boolean) => void
   /** Locally-initiated provisioning rows, shown the instant create/restart is
    *  clicked. The server snapshot's `provisioning[]` is the source of truth;
    *  these only bridge the gap until the first snapshot frame carries the id,
@@ -516,6 +528,8 @@ export const useUiStore = create<UiState>((set) => ({
   changesExpanded: {},
   changesScroll: {},
   changesBase: {},
+  changesFind: {},
+  changesFindPending: false,
   optimisticProvisioning: [],
   pendingDeleteIds: [],
   optimisticDeleted: [],
@@ -635,6 +649,15 @@ export const useUiStore = create<UiState>((set) => ({
     else delete next[sessionId]
     return { changesBase: next }
   }),
+  setChangesFind: (sessionId, query) => set((s) => {
+    const next = { ...s.changesFind }
+    if (query) next[sessionId] = query
+    else delete next[sessionId]
+    return { changesFind: next }
+  }),
+  setChangesFindPending: (pending) => set((s) => (
+    s.changesFindPending === pending ? s : { changesFindPending: pending }
+  )),
   focusTerminal: (sessionId, target) => set((s) => ({
     activeTabs: { ...s.activeTabs, [sessionId]: target },
     focusNonce: s.focusNonce + 1,

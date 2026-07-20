@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseUnifiedDiff, indexDiffsByPath } from '#lib/diff'
+import { parseUnifiedDiff, indexDiffsByPath, changeMatchesQuery } from '#lib/diff'
 
 const DIFF = [
   'diff --git a/src/app.ts b/src/app.ts',
@@ -63,5 +63,35 @@ describe('indexDiffsByPath', () => {
     expect(map.get('src/app.ts')?.lines.length).toBe(5)
     expect(map.get('new.ts')?.binary).toBe(false)
     expect(map.has('logo.png')).toBe(true)
+  })
+})
+
+describe('changeMatchesQuery', () => {
+  const map = indexDiffsByPath(DIFF)
+  const app = { path: 'src/app.ts' }
+
+  it('matches every file on an empty query', () => {
+    expect(changeMatchesQuery(app, map.get(app.path), '')).toBe(true)
+    expect(changeMatchesQuery({ path: 'logo.png' }, map.get('logo.png'), '')).toBe(true)
+  })
+
+  it('matches on a path substring, case-insensitively', () => {
+    expect(changeMatchesQuery(app, map.get(app.path), 'APP.TS')).toBe(true)
+    expect(changeMatchesQuery(app, map.get(app.path), 'nope/')).toBe(false)
+  })
+
+  it('matches the old path of a rename', () => {
+    const renamed = { path: 'src/new-name.ts', oldPath: 'src/old-name.ts' }
+    expect(changeMatchesQuery(renamed, undefined, 'old-name')).toBe(true)
+  })
+
+  it('matches diff content (any line kind) but not hunk headers', () => {
+    expect(changeMatchesQuery(app, map.get(app.path), 'line2 CHANGED')).toBe(true) // add
+    expect(changeMatchesQuery(app, map.get(app.path), 'line1')).toBe(true) // context
+    expect(changeMatchesQuery(app, map.get(app.path), '@@ -1,2')).toBe(false) // hunk header
+  })
+
+  it('is false for a content query with no diff to search', () => {
+    expect(changeMatchesQuery({ path: 'logo.png' }, undefined, 'line1')).toBe(false)
   })
 })

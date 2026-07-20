@@ -95,3 +95,21 @@ export function indexDiffsByPath(diff: string): Map<string, ParsedFileDiff> {
   for (const f of parseUnifiedDiff(diff)) map.set(f.path, f)
   return map
 }
+
+/**
+ * Whether a changed file matches a find query: a case-insensitive substring
+ * of its path (either side of a rename) or of any code line in its diff.
+ * Hunk headers are skipped — their line numbers aren't content. An empty
+ * query matches everything, so an unfiltered list needs no special case.
+ */
+export function changeMatchesQuery(
+  file: { path: string; oldPath?: string },
+  diff: ParsedFileDiff | undefined,
+  query: string,
+): boolean {
+  const q = query.toLowerCase()
+  if (q === '') return true
+  if (file.path.toLowerCase().includes(q)) return true
+  if (file.oldPath && file.oldPath.toLowerCase().includes(q)) return true
+  return diff?.lines.some((l) => l.kind !== 'hunk' && l.text.toLowerCase().includes(q)) ?? false
+}
