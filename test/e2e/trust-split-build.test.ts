@@ -11,7 +11,8 @@ import {
   TEST_IMAGE_PREFIX,
   IS_NESTED_YAAC,
 } from '@yaac/test-utils/setup'
-import { projectConfigDir } from '@yaac/shared/project-paths'
+import { projectBuildDir, userBuildDir } from '@yaac/server/lib/project/build-dirs'
+import { writeBuildFile } from '@yaac/server/lib/project/build-files'
 import { ensureImage } from '@yaac/server/lib/container/build-coordinator'
 import { ensureBuilderRoleGuard } from '@yaac/server/lib/container/builder-pod'
 import { BUILDER_ROLE_GUARD_NAME } from '@yaac/server/lib/k8s/bootstrap'
@@ -73,10 +74,14 @@ const DOCKERFILE_V2 = [
   '',
 ].join('\n')
 
+// COPY proves the build-files flow end to end: a support file written into
+// the user build dir ships to the builder pod (tar stream) and lands in
+// the image.
 const DOCKERFILE_USER = [
   'ARG BASE_IMAGE',
   'FROM ${BASE_IMAGE}',
   `RUN echo user-step-${NONCE} > /tmp/marker-user`,
+  'COPY nvim/note.txt /tmp/marker-copied',
   '',
 ].join('\n')
 
@@ -84,7 +89,7 @@ let restoreNamespace: (() => void) | null = null
 let tempDataDir: string | null = null
 
 async function writeProjectDockerfile(content: string): Promise<void> {
-  const dir = projectConfigDir(PROJECT_SLUG)
+  const dir = projectBuildDir(PROJECT_SLUG)
   await fs.mkdir(dir, { recursive: true })
   await fs.writeFile(path.join(dir, 'Dockerfile.yaac'), content)
 }
@@ -221,7 +226,10 @@ describe.skipIf(IS_NESTED_YAAC)('trust-split builds', () => {
     // builder pod must cache-hit the unchanged instruction prefix from the
     // registry (--cache-from), then build the user layer in the same pod. ---
     await writeProjectDockerfile(DOCKERFILE_V2)
-    await fs.writeFile(path.join(tempDataDir!, 'Dockerfile.user'), DOCKERFILE_USER)
+    await fs.mkdir(userBuildDir(), { recursive: true })
+    await fs.writeFile(path.join(userBuildDir(), 'Dockerfile.user'), DOCKERFILE_USER)
+    // A support file next to Dockerfile.user — the COPY source above.
+    await writeBuildFile(userBuildDir(), 'nvim/note.txt', Buffer.from(`copied-${NONCE}\n`))
     const chain2 = await resolveImageChain(PROJECT_SLUG, TEST_IMAGE_PREFIX)
     const projectTag2 = chain2.layers.find((l) => l.name === 'project')?.tag
     const userTag = chain2.layers.find((l) => l.name === 'user')?.tag
@@ -252,7 +260,10 @@ describe.skipIf(IS_NESTED_YAAC)('trust-split builds', () => {
           name: 'verify',
           image: registryRef(userTag!),
           imagePullPolicy: 'Always',
-          command: ['/bin/sh', '-c', 'cat /tmp/marker-one /tmp/marker-three /tmp/marker-user'],
+          command: [
+            '/bin/sh', '-c',
+            'cat /tmp/marker-one /tmp/marker-three /tmp/marker-user /tmp/marker-copied',
+          ],
         }],
       },
     }, { timeoutMs: 180_000 })
@@ -260,6 +271,17 @@ describe.skipIf(IS_NESTED_YAAC)('trust-split builds', () => {
     expect(run.logs).toContain('step-one')
     expect(run.logs).toContain('step-three')
     expect(run.logs).toContain('user-step')
+    // The uploaded support file was streamed into the builder pod's
+    // context and COPY'd into the image.
+    expect(run.logs).toContain('copied-')
+
+    // Editing a support file re-tags the user layer (context files are
+    // part of the content hash) — resolution only, no third build needed.
+    await writeBuildFile(userBuildDir(), 'nvim/note.txt', Buffer.from(`edited-${NONCE}\n`))
+    const chain3 = await resolveImageChain(PROJECT_SLUG, TEST_IMAGE_PREFIX)
+    const userTag3 = chain3.layers.find((l) => l.name === 'user')?.tag
+    expect(userTag3).toBeTruthy()
+    expect(userTag3).not.toBe(userTag)
 
     // --- No builder pods left behind (inline delete on release). ---
     const leftover = await kubectlGetJson<{

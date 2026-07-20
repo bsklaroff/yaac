@@ -269,7 +269,9 @@ describe('yaac config (real CLI + real server)', () => {
     )
     expect(exitCode, stderr).toBe(0)
 
-    const target = path.join(testEnv.dataDir, 'projects', 'demo-dockerfile', 'config', 'Dockerfile.yaac')
+    const target = path.join(
+      testEnv.dataDir, 'projects', 'demo-dockerfile', 'config', 'build', 'Dockerfile.yaac',
+    )
     expect(await fs.readFile(target, 'utf8')).toBe('RUN echo dockerfile-marker\n')
   })
 
@@ -282,7 +284,7 @@ describe('yaac config (real CLI + real server)', () => {
     )
     expect(exitCode, stderr).toBe(0)
 
-    const target = path.join(testEnv.dataDir, 'Dockerfile.user')
+    const target = path.join(testEnv.dataDir, 'build', 'Dockerfile.user')
     expect(await fs.readFile(target, 'utf8')).toBe(layered)
   })
 

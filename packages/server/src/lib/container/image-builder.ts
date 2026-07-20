@@ -2,7 +2,13 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { DOCKERFILES_DIR, getDataDir, projectConfigDir } from '@yaac/shared/project-paths'
+import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
+import {
+  PROJECT_DOCKERFILE,
+  USER_DOCKERFILE,
+  resolveProjectBuildDir,
+  resolveUserBuildDir,
+} from '#lib/project/build-dirs'
 import { imageExists } from '#lib/container/runtime'
 import { serverLog, pipeToServerLog } from '#log'
 import type { ImageLayerName } from '@yaac/shared/types'
@@ -212,8 +218,13 @@ export async function resolveImageChain(
   const layers: ImageLayer[] = []
 
   // Layer 1: <prefix>-base
-  // Read Dockerfile.yaac from the per-machine config dir, or fall back to Dockerfile.default.
-  const localDockerfile = path.join(projectConfigDir(projectSlug), 'Dockerfile.yaac')
+  // Read Dockerfile.yaac from the per-machine build dir, or fall back to
+  // Dockerfile.default. The build dir is the layer's whole build context:
+  // support files next to the Dockerfile ship to the build and are part
+  // of the layer's content hash, so editing one re-tags the image just
+  // like a Dockerfile edit.
+  const projectBuild = await resolveProjectBuildDir(projectSlug)
+  const localDockerfile = path.join(projectBuild, PROJECT_DOCKERFILE)
   let yaacDockerfile: string | null = null
   let yaacContent: string | null = null
 
@@ -299,22 +310,24 @@ export async function resolveImageChain(
   // hash chain.
   const parentTag = nestableTag ?? toolsTag
   const parentHash = nestableHash ?? toolsHash
+  // The context hash covers the Dockerfile itself plus every support file
+  // in the build dir.
+  const projectContextHash = yaacDockerfile ? await contextHash(projectBuild) : null
   const baseHash = yaacIsLayered
-    ? stringHash(`${parentHash!}:${stringHash(yaacContent!)}`)
+    ? stringHash(`${parentHash!}:${projectContextHash!}`)
     : yaacDockerfile
-      ? stringHash(`${stringHash(yaacContent!)}:uid=${uid}`)
+      ? stringHash(`${projectContextHash!}:uid=${uid}`)
       : parentHash!
   const baseTag = yaacDockerfile
     ? `${prefix}-base:${baseHash}`
     : parentTag!
 
   if (yaacDockerfile) {
-    const baseContext = path.dirname(yaacDockerfile)
     layers.push({
       tag: baseTag,
       name: 'project',
       dockerfile: yaacDockerfile,
-      context: baseContext,
+      context: projectBuild,
       buildArgs: yaacIsLayered
         ? { BASE_IMAGE: parentTag! }
         : { YAAC_UID: String(uid) },
@@ -325,8 +338,11 @@ export async function resolveImageChain(
   let effectiveTag = baseTag
   const effectiveHash = baseHash
 
-  // Layer 2 (optional): <prefix>-user-<slug> (from ~/.yaac/Dockerfile.user)
-  const userDockerfile = path.join(getDataDir(), 'Dockerfile.user')
+  // Layer 2 (optional): <prefix>-user-<slug> (from ~/.yaac/build/
+  // Dockerfile.user). Same containment rule as the project layer: the
+  // build dir is the whole context, hashed as a unit.
+  const userBuild = await resolveUserBuildDir()
+  const userDockerfile = path.join(userBuild, USER_DOCKERFILE)
   if (await fileExists(userDockerfile)) {
     const userContent = await fs.readFile(userDockerfile, 'utf8')
     if (!isLayered(userContent)) {
@@ -336,14 +352,13 @@ export async function resolveImageChain(
         'Example:\n  ARG BASE_IMAGE\n  FROM ${BASE_IMAGE}',
       )
     }
-    const userContentHash = stringHash(userContent)
-    const userHash = stringHash(`${effectiveHash}:${userContentHash}`)
+    const userHash = stringHash(`${effectiveHash}:${await contextHash(userBuild)}`)
     const userTag = `${prefix}-user-${projectSlug}:${userHash}`
     layers.push({
       tag: userTag,
       name: 'user',
       dockerfile: userDockerfile,
-      context: getDataDir(),
+      context: userBuild,
       buildArgs: { BASE_IMAGE: effectiveTag },
       contentHash: userHash,
     })

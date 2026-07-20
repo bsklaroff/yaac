@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type JSX, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { useQueryClient } from '@tanstack/react-query'
 import { Dialog } from '@base-ui/react/dialog'
@@ -38,6 +38,8 @@ import {
 } from '#lib/shortcuts'
 import { ProjectSettings } from '#components/settings/ProjectSettings'
 import { FileEditor } from '#components/settings/FileEditor'
+import { BuildFiles } from '#components/settings/BuildFiles'
+import { userBuildFilesApi } from '#lib/buildFilesApi'
 import { useUiStore, type SettingsSection } from '#store'
 import type { ThemePref } from '#lib/theme'
 import type { AgentTool, ToolAuthSummary, ToolInstallView, ToolLoginView } from '@yaac/shared/types'
@@ -245,32 +247,53 @@ export function SettingsButton(): JSX.Element {
 
             {section === 'project' && <ProjectSettings />}
 
-            {section === 'userDockerfile' && (
-              <section>
-                <h2 className="text-sm font-semibold">User Dockerfile</h2>
-                <Field
-                  label="Dockerfile.user"
-                  hint={(
-                    <>
-                      Layered atop every project image. Must start with{' '}
-                      <code className="text-text-dim">{'ARG BASE_IMAGE'}</code> and{' '}
-                      <code className="text-text-dim">{'FROM ${BASE_IMAGE}'}</code>.
-                    </>
-                  )}
-                >
-                  <FileEditor
-                    title="Dockerfile.user"
-                    language="dockerfile"
-                    load={getUserDockerfile}
-                    save={saveUserDockerfile}
-                  />
-                </Field>
-              </section>
-            )}
+            {section === 'userDockerfile' && <UserDockerfilePane />}
           </div>
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>
+  )
+}
+
+/**
+ * The global user image layer: the Dockerfile.user editor plus the support
+ * files sharing its build dir (the layer's whole build context).
+ */
+function UserDockerfilePane(): JSX.Element {
+  const filesApi = useMemo(() => userBuildFilesApi(), [])
+  return (
+    <section>
+      <h2 className="text-sm font-semibold">User Dockerfile</h2>
+      <Field
+        label="Dockerfile.user"
+        hint={(
+          <>
+            Layered atop every project image. Must start with{' '}
+            <code className="text-text-dim">{'ARG BASE_IMAGE'}</code> and{' '}
+            <code className="text-text-dim">{'FROM ${BASE_IMAGE}'}</code>.
+          </>
+        )}
+      >
+        <FileEditor
+          title="Dockerfile.user"
+          language="dockerfile"
+          load={getUserDockerfile}
+          save={saveUserDockerfile}
+        />
+      </Field>
+      <Field
+        label="Build files"
+        hint={(
+          <>
+            Files stored next to Dockerfile.user as its build context — reference them
+            with <code className="text-text-dim">COPY</code>. Changes apply on the next
+            rebuild or session create.
+          </>
+        )}
+      >
+        <BuildFiles filesApi={filesApi} title="Dockerfile.user" />
+      </Field>
+    </section>
   )
 }
 

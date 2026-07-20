@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { projectConfigDir, getProjectsDir, getDataDir } from '@yaac/shared/project-paths'
+import { getProjectsDir } from '@yaac/shared/project-paths'
+import { projectBuildDir, userBuildDir } from '#lib/project/build-dirs'
 import {
   readProjectDockerfile,
   writeProjectDockerfile,
@@ -54,10 +55,10 @@ describe('writeProjectDockerfile', () => {
     await expect(writeProjectDockerfile('missing', LAYERED)).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 
-  it('writes the content to config/Dockerfile.yaac', async () => {
+  it('writes the content to config/build/Dockerfile.yaac', async () => {
     await writeProject('demo')
     await writeProjectDockerfile('demo', LAYERED)
-    const raw = await fs.readFile(path.join(projectConfigDir('demo'), 'Dockerfile.yaac'), 'utf8')
+    const raw = await fs.readFile(path.join(projectBuildDir('demo'), 'Dockerfile.yaac'), 'utf8')
     expect(raw).toBe(LAYERED)
   })
 
@@ -72,7 +73,7 @@ describe('writeProjectDockerfile', () => {
     await writeProjectDockerfile('demo', LAYERED)
     await writeProjectDockerfile('demo', '   \n')
     expect(await readProjectDockerfile('demo')).toBe('')
-    await expect(fs.access(path.join(projectConfigDir('demo'), 'Dockerfile.yaac'))).rejects.toThrow()
+    await expect(fs.access(path.join(projectBuildDir('demo'), 'Dockerfile.yaac'))).rejects.toThrow()
   })
 })
 
@@ -88,7 +89,7 @@ describe('readUserDockerfile / writeUserDockerfile', () => {
   it('round-trips a layered Dockerfile', async () => {
     await writeUserDockerfile(LAYERED)
     expect(await readUserDockerfile()).toBe(LAYERED)
-    const raw = await fs.readFile(path.join(getDataDir(), 'Dockerfile.user'), 'utf8')
+    const raw = await fs.readFile(path.join(userBuildDir(), 'Dockerfile.user'), 'utf8')
     expect(raw).toBe(LAYERED)
   })
 
@@ -100,6 +101,6 @@ describe('readUserDockerfile / writeUserDockerfile', () => {
     await writeUserDockerfile(LAYERED)
     await writeUserDockerfile('')
     expect(await readUserDockerfile()).toBe('')
-    await expect(fs.access(path.join(getDataDir(), 'Dockerfile.user'))).rejects.toThrow()
+    await expect(fs.access(path.join(userBuildDir(), 'Dockerfile.user'))).rejects.toThrow()
   })
 })

@@ -98,11 +98,17 @@ describe('removeProjectConfig', () => {
     })
   })
 
-  it('removes an existing config directory', async () => {
+  it('removes only yaac-config.json, keeping the rest of the config dir', async () => {
     await writeProject('demo')
     await writeProjectConfig('demo', { envPassthrough: ['B'] })
+    const dockerfile = path.join(projectConfigDir('demo'), 'build', 'Dockerfile.yaac')
+    await fs.mkdir(path.dirname(dockerfile), { recursive: true })
+    await fs.writeFile(dockerfile, 'FROM ubuntu\n')
+
     await removeProjectConfig('demo')
-    await expect(fs.access(projectConfigDir('demo'))).rejects.toThrow()
+
+    await expect(fs.access(path.join(projectConfigDir('demo'), 'yaac-config.json'))).rejects.toThrow()
+    expect(await fs.readFile(dockerfile, 'utf8')).toBe('FROM ubuntu\n')
   })
 
   it('is a no-op when no config dir exists', async () => {

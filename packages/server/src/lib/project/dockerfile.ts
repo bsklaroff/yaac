@@ -1,18 +1,23 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { projectConfigDir, getDataDir } from '@yaac/shared/project-paths'
 import { assertProjectExists } from '#lib/project/detail'
 import { isLayered } from '#lib/container/image-builder'
+import {
+  PROJECT_DOCKERFILE,
+  USER_DOCKERFILE,
+  resolveProjectBuildDir,
+  resolveUserBuildDir,
+} from '#lib/project/build-dirs'
 import { ServerError } from '@yaac/shared/errors'
 
-/** Per-project layered/standalone Dockerfile (config/Dockerfile.yaac). */
-function projectDockerfilePath(slug: string): string {
-  return path.join(projectConfigDir(slug), 'Dockerfile.yaac')
+/** Per-project layered/standalone Dockerfile (config/build/Dockerfile.yaac). */
+async function projectDockerfilePath(slug: string): Promise<string> {
+  return path.join(await resolveProjectBuildDir(slug), PROJECT_DOCKERFILE)
 }
 
 /** Global user Dockerfile applied as the top layer of every project image. */
-function userDockerfilePath(): string {
-  return path.join(getDataDir(), 'Dockerfile.user')
+async function userDockerfilePath(): Promise<string> {
+  return path.join(await resolveUserBuildDir(), USER_DOCKERFILE)
 }
 
 async function readFileOrEmpty(filePath: string): Promise<string> {
@@ -29,7 +34,7 @@ async function readFileOrEmpty(filePath: string): Promise<string> {
  */
 export async function readProjectDockerfile(slug: string): Promise<string> {
   await assertProjectExists(slug)
-  return readFileOrEmpty(projectDockerfilePath(slug))
+  return readFileOrEmpty(await projectDockerfilePath(slug))
 }
 
 /**
@@ -39,7 +44,7 @@ export async function readProjectDockerfile(slug: string): Promise<string> {
  */
 export async function writeProjectDockerfile(slug: string, content: string): Promise<void> {
   await assertProjectExists(slug)
-  const filePath = projectDockerfilePath(slug)
+  const filePath = await projectDockerfilePath(slug)
   if (content.trim().length === 0) {
     await fs.rm(filePath, { force: true })
     return
@@ -50,7 +55,7 @@ export async function writeProjectDockerfile(slug: string, content: string): Pro
 
 /** Read the global user Dockerfile. Returns '' when unset. */
 export async function readUserDockerfile(): Promise<string> {
-  return readFileOrEmpty(userDockerfilePath())
+  return readFileOrEmpty(await userDockerfilePath())
 }
 
 /**
@@ -61,7 +66,7 @@ export async function readUserDockerfile(): Promise<string> {
  * the build-time check in the image builder.
  */
 export async function writeUserDockerfile(content: string): Promise<void> {
-  const filePath = userDockerfilePath()
+  const filePath = await userDockerfilePath()
   if (content.trim().length === 0) {
     await fs.rm(filePath, { force: true })
     return

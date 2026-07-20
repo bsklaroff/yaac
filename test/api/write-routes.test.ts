@@ -385,7 +385,7 @@ describe('write routes', () => {
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ content: 'FROM ubuntu:24.04\n' })
       const raw = await fs.readFile(
-        path.join(projectConfigDir('demo'), 'Dockerfile.yaac'),
+        path.join(projectConfigDir('demo'), 'build', 'Dockerfile.yaac'),
         'utf8',
       )
       expect(raw).toBe('FROM ubuntu:24.04\n')
@@ -414,6 +414,103 @@ describe('write routes', () => {
         json: { content: 'FROM ubuntu:24.04\n' },
       })
       expect(res.status).toBe(400)
+    })
+  })
+
+  describe('project build files', () => {
+    it('round-trips save → list → read → delete', async () => {
+      await writeProject('demo')
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const bf = client.project[':slug']['build-files']
+
+      const put = await bf.file.$put({
+        param: { slug: 'demo' },
+        json: { path: 'nvim/init.lua', content: 'print(1)\n' },
+      })
+      expect(put.status).toBe(200)
+      expect(await put.json()).toEqual({ path: 'nvim/init.lua', size: 9, binary: false })
+
+      const list = await bf.$get({ param: { slug: 'demo' } })
+      expect(await list.json()).toEqual({
+        files: [{ path: 'nvim/init.lua', size: 9, binary: false }],
+      })
+
+      const read = await bf.file.$get({ param: { slug: 'demo' }, query: { path: 'nvim/init.lua' } })
+      expect(await read.json()).toEqual({
+        path: 'nvim/init.lua', size: 9, binary: false, content: 'print(1)\n',
+      })
+
+      const del = await bf.file.$delete({ param: { slug: 'demo' }, query: { path: 'nvim' } })
+      expect(del.status).toBe(204)
+      const relist = await bf.$get({ param: { slug: 'demo' } })
+      expect(await relist.json()).toEqual({ files: [] })
+    })
+
+    it('stores a base64 upload and reads it back as binary', async () => {
+      await writeProject('demo')
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const bf = client.project[':slug']['build-files']
+      const bytes = Buffer.from([0, 1, 2, 3])
+
+      const put = await bf.file.$put({
+        param: { slug: 'demo' },
+        json: { path: 'blob.bin', contentBase64: bytes.toString('base64') },
+      })
+      expect(await put.json()).toEqual({ path: 'blob.bin', size: 4, binary: true })
+
+      const read = await bf.file.$get({ param: { slug: 'demo' }, query: { path: 'blob.bin' } })
+      expect(await read.json()).toEqual({ path: 'blob.bin', size: 4, binary: true, content: null })
+      const raw = await fs.readFile(path.join(projectConfigDir('demo'), 'build', 'blob.bin'))
+      expect(raw.equals(bytes)).toBe(true)
+    })
+
+    it('rejects traversal, reserved names, and ambiguous bodies with 400', async () => {
+      await writeProject('demo')
+      const app = buildApp({ secret: 'shh', buildId: 'test' })
+
+      const traverse = await app.request(
+        '/project/demo/build-files/file?path=..%2F..%2Fetc%2Fpasswd',
+        withAuth(),
+      )
+      expect(traverse.status).toBe(400)
+
+      const reserved = await app.request('/project/demo/build-files/file', withAuth({
+        method: 'PUT',
+        body: JSON.stringify({ path: 'Dockerfile.yaac', content: 'FROM x\n' }),
+      }))
+      expect(reserved.status).toBe(400)
+
+      const both = await app.request('/project/demo/build-files/file', withAuth({
+        method: 'PUT',
+        body: JSON.stringify({ path: 'a', content: 'x', contentBase64: 'eA==' }),
+      }))
+      expect(both.status).toBe(400)
+    })
+
+    it('returns 404 for an unknown project or missing file', async () => {
+      await writeProject('demo')
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const bf = client.project[':slug']['build-files']
+      expect((await bf.$get({ param: { slug: 'nope' } })).status).toBe(404)
+      expect((await bf.file.$get({ param: { slug: 'demo' }, query: { path: 'nope' } })).status).toBe(404)
+    })
+  })
+
+  describe('user build files', () => {
+    it('round-trips against the user build dir', async () => {
+      const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
+      const bf = client.config['user-build-files']
+
+      const put = await bf.file.$put({ json: { path: 'gitconfig', content: '[user]\n' } })
+      expect(put.status).toBe(200)
+
+      const list = await bf.$get()
+      expect(await list.json()).toEqual({
+        files: [{ path: 'gitconfig', size: 7, binary: false }],
+      })
+
+      const del = await bf.file.$delete({ query: { path: 'gitconfig' } })
+      expect(del.status).toBe(204)
     })
   })
 

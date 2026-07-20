@@ -5,7 +5,7 @@ import { json } from '@codemirror/lang-json'
 import { StreamLanguage } from '@codemirror/language'
 import { dockerFile } from '@codemirror/legacy-modes/mode/dockerfile'
 
-export type CodeLanguage = 'json' | 'dockerfile'
+export type CodeLanguage = 'json' | 'dockerfile' | 'text'
 
 /**
  * Thin controlled CodeMirror wrapper. Keeps the editor library referenced
@@ -34,7 +34,13 @@ export function CodeEditor({
         theme="dark"
         height={height}
         className="h-full"
-        extensions={language === 'json' ? [json()] : [StreamLanguage.define(dockerFile)]}
+        extensions={
+          language === 'json'
+            ? [json()]
+            : language === 'dockerfile'
+              ? [StreamLanguage.define(dockerFile)]
+              : [] // 'text': no highlighting
+        }
         basicSetup={{ foldGutter: false, highlightActiveLine: false }}
       />
     </div>

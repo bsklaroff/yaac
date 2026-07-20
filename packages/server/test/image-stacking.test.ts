@@ -346,4 +346,51 @@ describe('ensureImage layer stacking', () => {
     expect(operations).toEqual(['build img:tag [K=v] --no-cache'])
   })
 
+  it('folds build-context support files into the project and user layer tags', async () => {
+    const projectBuild = path.join(dataDir, 'projects', 'myproject', 'config', 'build')
+    const userBuild = path.join(dataDir, 'build')
+    await fs.mkdir(path.join(dataDir, 'projects', 'myproject', 'repo'), { recursive: true })
+    await fs.mkdir(projectBuild, { recursive: true })
+    await fs.mkdir(userBuild, { recursive: true })
+    await fs.writeFile(path.join(projectBuild, 'Dockerfile.yaac'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo custom\n')
+    await fs.writeFile(path.join(userBuild, 'Dockerfile.user'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n')
+
+    const { resolveImageChain } = await loadModule()
+    const tagsByName = async (): Promise<Record<string, string>> => {
+      const { layers } = await resolveImageChain('myproject', 'yaac')
+      return Object.fromEntries(layers.map((l) => [l.name, l.tag]))
+    }
+
+    const first = await tagsByName()
+    expect(await tagsByName()).toEqual(first) // stable while nothing changes
+
+    // A new project support file re-tags the project layer (and the user
+    // layer downstream of it), but not the shared tools layer.
+    await fs.writeFile(path.join(projectBuild, 'init.lua'), 'print(1)\n')
+    const second = await tagsByName()
+    expect(second.tools).toBe(first.tools)
+    expect(second.project).not.toBe(first.project)
+    expect(second.user).not.toBe(first.user)
+
+    // A new user support file re-tags only the user layer.
+    await fs.writeFile(path.join(userBuild, 'nvimrc'), 'set number\n')
+    const third = await tagsByName()
+    expect(third.project).toBe(second.project)
+    expect(third.user).not.toBe(second.user)
+  })
+
+  it('serves the project Dockerfile from a legacy config/ location via migration', async () => {
+    const configDir = path.join(dataDir, 'projects', 'myproject', 'config')
+    await fs.mkdir(path.join(dataDir, 'projects', 'myproject', 'repo'), { recursive: true })
+    await fs.mkdir(configDir, { recursive: true })
+    await fs.writeFile(path.join(configDir, 'Dockerfile.yaac'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo custom\n')
+
+    const { resolveImageChain } = await loadModule()
+    const { layers } = await resolveImageChain('myproject', 'yaac')
+    const project = layers.find((l) => l.name === 'project')
+    expect(project?.dockerfile).toBe(path.join(configDir, 'build', 'Dockerfile.yaac'))
+    expect(project?.context).toBe(path.join(configDir, 'build'))
+    await expect(fs.access(path.join(configDir, 'Dockerfile.yaac'))).rejects.toThrow()
+  })
+
 })

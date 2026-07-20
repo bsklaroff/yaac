@@ -100,9 +100,10 @@ export const BUILDER_PUSH_TIMEOUT_MS = 120_000
 export const BUILDER_CONTEXT_TIMEOUT_MS = 120_000
 
 /**
- * Sanity cap on the streamed build context. Matters for `Dockerfile.user`,
- * whose context is the whole data dir — an unignored session store would
- * otherwise ship gigabytes into the pod.
+ * Sanity cap on the streamed build context. Contexts are dedicated build
+ * dirs (Dockerfile + user-managed support files); the build-files API
+ * mirrors this cap at upload time so a folder that grows past it fails
+ * there rather than at the next build.
  */
 export const BUILDER_CONTEXT_MAX_BYTES = 512 * 1024 ** 2
 

@@ -13,6 +13,8 @@ import { remoteBranchExists } from '#lib/git'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 import { readProjectDockerfile, writeProjectDockerfile } from '#lib/project/dockerfile'
+import { resolveProjectBuildDir } from '#lib/project/build-dirs'
+import { buildFilesApp } from '#routes/build-files'
 import { rebuildProjectImage, pushImageShared } from '#lib/container/build-coordinator'
 import { toErrorBody } from '#errors'
 import { testEnv } from '@yaac/shared/env'
@@ -120,6 +122,15 @@ export const projectApp = new Hono()
       return c.json(await getSkillDetail(tool ?? 'claude', slug, id, branch))
     },
   )
+  // Support files living next to Dockerfile.yaac in the project's build
+  // dir — its whole build context (COPY-able, part of the image tag).
+  .route('/:slug/build-files', buildFilesApp(async (c) => {
+    // The generic Context can't see the mount path's :slug, so param() is
+    // string | undefined here; the mount guarantees it exists.
+    const slug = c.req.param('slug') ?? ''
+    await assertProjectExists(slug)
+    return resolveProjectBuildDir(slug)
+  }))
   .get('/:slug/dockerfile', async (c) =>
     c.json({ content: await readProjectDockerfile(c.req.param('slug')) }))
   .put(

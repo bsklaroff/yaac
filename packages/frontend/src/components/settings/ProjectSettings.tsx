@@ -1,11 +1,13 @@
-import { useCallback, useState, type JSX } from 'react'
+import { useCallback, useMemo, useState, type JSX } from 'react'
 import { FileEditor } from '#components/settings/FileEditor'
+import { BuildFiles } from '#components/settings/BuildFiles'
 import {
   getProjectConfig,
   saveProjectConfig,
   getProjectDockerfile,
   saveProjectDockerfile,
 } from '#lib/projectApi'
+import { projectBuildFilesApi } from '#lib/buildFilesApi'
 import { useSnapshot } from '#lib/useSnapshot'
 import { useUiStore } from '#store'
 
@@ -47,6 +49,8 @@ export function ProjectSettings(): JSX.Element {
     }
     await saveProjectConfig(slug, parsed)
   }, [slug])
+
+  const filesApi = useMemo(() => (slug ? projectBuildFilesApi(slug) : null), [slug])
 
   const loadDockerfile = useCallback(
     (): Promise<string> => (slug ? getProjectDockerfile(slug) : Promise.resolve('')),
@@ -111,6 +115,18 @@ export function ProjectSettings(): JSX.Element {
                 load={loadDockerfile}
                 save={saveDockerfile}
               />
+            </div>
+          </div>
+
+          <div className="mt-6">
+            <div className="text-xs font-medium text-text">Build files</div>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
+              Files stored next to the Dockerfile as its build context — reference them
+              with <code className="text-text-dim">COPY</code>. Changes apply on the next
+              rebuild or session create.
+            </p>
+            <div className="mt-2">
+              {filesApi && <BuildFiles key={`files:${slug}`} filesApi={filesApi} title={slug} />}
             </div>
           </div>
         </>

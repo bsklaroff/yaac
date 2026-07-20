@@ -113,9 +113,12 @@ export async function readProjectConfigRaw(slug: string): Promise<string> {
 }
 
 /**
- * Remove the per-project config directory. No-op if absent.
+ * Remove the per-project yaac-config.json. No-op if absent. Only the
+ * config file — the config dir also holds the project's build dir
+ * (Dockerfile.yaac + its build-context files), which clearing the JSON
+ * overlay must not touch.
  */
 export async function removeProjectConfig(slug: string): Promise<void> {
   await ensureProjectExists(slug)
-  await fs.rm(projectConfigDir(slug), { recursive: true, force: true })
+  await fs.rm(path.join(projectConfigDir(slug), 'yaac-config.json'), { force: true })
 }
