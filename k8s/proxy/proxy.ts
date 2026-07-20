@@ -2715,6 +2715,7 @@ function handleSpawnRequest(
     return
   }
   const tool = url.searchParams.get('tool') ?? undefined
+  const model = url.searchParams.get('model') ?? undefined
 
   const chunks: Buffer[] = []
   let received = 0
@@ -2731,14 +2732,14 @@ function handleSpawnRequest(
   req.on('end', () => {
     if (overflow) return
     const prompt = Buffer.concat(chunks).toString('utf8')
-    const valid = validateSpawnRequest(prompt, tool)
+    const valid = validateSpawnRequest(prompt, tool, model)
     if (!valid.ok) { respond(valid.status, valid.error); return }
     // No-op the completer once the caller is gone; the entry still expires
     // off the queue on the normal TTL sweep.
     let gone = false
     res.on('close', () => { gone = true })
     const enqueued = spawnQueue.enqueue(
-      { sessionId, prompt, tool },
+      { sessionId, prompt, tool, model },
       (status, body) => { if (!gone) respond(status, body) },
     )
     if (!enqueued.ok) { respond(enqueued.status, enqueued.error); return }

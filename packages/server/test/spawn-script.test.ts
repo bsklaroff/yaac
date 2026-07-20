@@ -26,9 +26,10 @@ describe('sessionBinDir', () => {
     expect(sessionBinDir().endsWith(path.join('session-bin'))).toBe(true)
   })
 
-  it('the shipped dir contains an executable-stageable yaac-spawn', async () => {
+  it('the shipped dir contains an executable-stageable yaac-spawn and yaac-watch-prs', async () => {
     const names = await stageSessionBin(sessionBinDir(), await makeTmpDir())
     expect(names).toContain('yaac-spawn')
+    expect(names).toContain('yaac-watch-prs')
   })
 })
 

@@ -21,7 +21,7 @@ import {
 import { listSessionPods, type SessionPod } from '#lib/k8s/pods'
 import { getDefaultTool } from '#lib/project/preferences'
 import { registerProvisioning, runProvisioned } from '#provisioning'
-import { createSession, type SessionCreateOptions, type SessionCreateResult } from '#session-create'
+import { createSession, MODEL_RE, type SessionCreateOptions, type SessionCreateResult } from '#session-create'
 import { serverLog } from '#log'
 
 /** Prompt character limit — mirrors the schedule route and the proxy check. */
@@ -81,6 +81,9 @@ export async function handleSpawnRequest(
   if (req.tool !== undefined && !(AGENT_TOOLS as readonly string[]).includes(req.tool)) {
     return fail(`invalid tool '${req.tool}' (expected one of: ${AGENT_TOOLS.join(', ')})`)
   }
+  if (req.model !== undefined && !MODEL_RE.test(req.model)) {
+    return fail(`invalid model '${req.model}'`)
+  }
 
   let caller: SessionPod | undefined
   try {
@@ -105,6 +108,9 @@ export async function handleSpawnRequest(
     ?? callerTool
     ?? (await (deps.getDefaultToolFn ?? getDefaultTool)())
     ?? 'claude'
+  if (req.model !== undefined && tool !== 'claude') {
+    return fail(`--model is only supported for the claude tool (resolved tool: ${tool})`)
+  }
 
   const newSessionId = (deps.mintIdFn ?? (() => crypto.randomUUID()))()
   const projectSlug = caller.projectSlug
@@ -121,6 +127,7 @@ export async function handleSpawnRequest(
       tool,
       initialPrompt: req.prompt,
       sessionId: newSessionId,
+      model: req.model,
       onProgress,
     })).then(
     () => serverLog(`[spawn] ${req.sessionId.slice(0, 8)}... spawned session ${newSessionId.slice(0, 8)}... in ${projectSlug}`),

@@ -19,6 +19,8 @@ export interface SessionCreateOptions {
   branch?: string
   /** Initial prompt typed into the agent pane once the session is up. */
   prompt?: string
+  /** Claude-only model override for the agent (`claude --model <model>`). */
+  model?: string
 }
 
 interface SessionCreateResult {
@@ -75,6 +77,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
       addDirRw: options.addDirRw,
       gitUser,
       prompt: options.prompt,
+      model: options.model,
     },
   })
 

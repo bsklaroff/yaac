@@ -38,6 +38,8 @@ export interface SpawnRequest {
   sessionId: string
   prompt: string
   tool?: string
+  /** Claude-only model override for the spawned session's agent. */
+  model?: string
   enqueuedAtMs: number
 }
 
@@ -55,6 +57,7 @@ export type SpawnCompleter = (status: number, body: string) => void
 export function validateSpawnRequest(
   prompt: string,
   tool: string | undefined,
+  model?: string,
 ): { ok: true } | { ok: false; status: number; error: string } {
   if (prompt.trim().length === 0) {
     return { ok: false, status: 400, error: 'prompt must not be empty' }
@@ -65,6 +68,11 @@ export function validateSpawnRequest(
   // Shape check only — the server validates against its real tool list.
   if (tool !== undefined && !/^[a-z0-9-]{1,32}$/.test(tool)) {
     return { ok: false, status: 400, error: `invalid tool '${tool}'` }
+  }
+  // Shape check mirroring the server's MODEL_RE (packages/server
+  // session-create.ts) — the server re-validates before use.
+  if (model !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(model)) {
+    return { ok: false, status: 400, error: `invalid model '${model}'` }
   }
   return { ok: true }
 }
@@ -92,7 +100,7 @@ export class SpawnQueue {
   }
 
   enqueue(
-    req: { sessionId: string; prompt: string; tool?: string },
+    req: { sessionId: string; prompt: string; tool?: string; model?: string },
     complete: SpawnCompleter,
     now: number = Date.now(),
   ): { ok: true; requestId: string } | { ok: false; status: number; error: string } {
@@ -104,7 +112,7 @@ export class SpawnQueue {
     }
     const requestId = crypto.randomUUID()
     this.pending.set(requestId, {
-      req: { requestId, sessionId: req.sessionId, prompt: req.prompt, tool: req.tool, enqueuedAtMs: now },
+      req: { requestId, sessionId: req.sessionId, prompt: req.prompt, tool: req.tool, model: req.model, enqueuedAtMs: now },
       complete,
     })
     return { ok: true, requestId }

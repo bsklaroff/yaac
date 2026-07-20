@@ -120,7 +120,7 @@ describe('tryClaimPrewarmed', () => {
     const result = await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)
 
     expect(result).toEqual({ sessionId: 'spare1', jobName: 'yaac-p-spare', tool: 'claude', forwardedPorts: [] })
-    expect(mockRetool).toHaveBeenCalledWith(expect.objectContaining({ jobName: 'yaac-p-spare' }), 'claude')
+    expect(mockRetool).toHaveBeenCalledWith(expect.objectContaining({ jobName: 'yaac-p-spare' }), 'claude', undefined)
     expect(mockKubectl).toHaveBeenCalledWith([
       'label', 'pod', 'yaac-p-spare-x', '-n', 'ns',
       `${LABEL_PREWARMED}-`, `${LABEL_TOOL}=claude`, '--overwrite',
@@ -245,7 +245,32 @@ describe('tryClaimPrewarmed', () => {
     const result = await tryClaimPrewarmed('p', 'claude', GIT_USER, emit, 'dev')
     expect(result?.tool).toBe('claude')
     expect(mockRebranch).toHaveBeenCalledWith(expect.anything(), 'dev', 'cafebabe1234', false)
-    expect(mockRetool).toHaveBeenCalledWith(expect.objectContaining({ jobName: 'yaac-p-spare' }), 'claude')
+    expect(mockRetool).toHaveBeenCalledWith(expect.objectContaining({ jobName: 'yaac-p-spare' }), 'claude', undefined)
+  })
+
+  it('a model override retools a spare whose tool already matches (agent must respawn with --model)', async () => {
+    mockListPods.mockResolvedValue([spare()])
+    const result = await tryClaimPrewarmed('p', 'claude', GIT_USER, emit, undefined, 'claude-opus-4-8')
+    expect(result?.sessionId).toBe('spare1')
+    expect(mockRetool).toHaveBeenCalledWith(
+      expect.objectContaining({ jobName: 'yaac-p-spare' }), 'claude', 'claude-opus-4-8',
+    )
+    // Same tool: no retool announcement, and the commit keeps the plain
+    // label-removal shape (no tool-label overwrite).
+    expect(emit).not.toHaveBeenCalledWith('Switching prewarmed session to claude...')
+    expect(mockKubectl).toHaveBeenCalledWith(
+      ['label', 'pod', 'yaac-p-spare-x', '-n', 'ns', `${LABEL_PREWARMED}-`],
+    )
+  })
+
+  it('a model override on a re-branched claim skips the rebranch respawn (retool respawns with --model)', async () => {
+    mockListPods.mockResolvedValue([spare()])
+    const result = await tryClaimPrewarmed('p', 'claude', GIT_USER, emit, 'dev', 'claude-opus-4-8')
+    expect(result?.sessionId).toBe('spare1')
+    expect(mockRebranch).toHaveBeenCalledWith(expect.anything(), 'dev', 'cafebabe1234', false)
+    expect(mockRetool).toHaveBeenCalledWith(
+      expect.objectContaining({ jobName: 'yaac-p-spare' }), 'claude', 'claude-opus-4-8',
+    )
   })
 
   it('propagates VALIDATION for an unknown branch and releases the spare untouched', async () => {

@@ -1301,6 +1301,23 @@ describe('yaac session create suite (real CLI + real server + mocked remotes)', 
     }, 240_000)
   })
 
+  describe('model override (--model)', () => {
+    it('launches claude with the requested --model', async () => {
+      await setupProject('modeled')
+      const { jobName } = await createSession(
+        'modeled', '--tool', 'claude', '--model', 'claude-opus-4-8',
+      )
+
+      // The agent window's launch command carries the override — the flag
+      // claude was actually started with, whatever the TUI renders.
+      const { stdout: startCmd } = await execInJob(jobName, [
+        'sh', '-c',
+        `tmux -S ${CONTAINER_TMUX_SOCK} display -p -t yaac:claude "#{pane_start_command}"`,
+      ])
+      expect(startCmd).toContain('claude --dangerously-skip-permissions --model claude-opus-4-8')
+    }, 240_000)
+  })
+
   describe('reference branch', () => {
     // The --branch override's happy path (on a prewarmed claim) lives in
     // session-prewarm.test.ts; here: the config-default path on a cold

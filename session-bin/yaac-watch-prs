@@ -1,0 +1,84 @@
+#!/bin/sh
+# yaac-watch-prs — poll GitHub for new PRs on this project's repo and spawn
+# a sibling review session (via yaac-spawn) for each one.
+#
+# Usage: yaac-watch-prs [--interval <seconds>] [--model <model>]
+#                       [--prompt <text>] [--once]
+#
+# Run it inside a yaac session (e.g. in a spare shell window) and leave it
+# running. Every --interval seconds (default 60) it lists the repo's open
+# PRs with `gh`; each PR it hasn't seen before gets a claude session spawned
+# with --model (default claude-opus-4-8) whose prompt (default: run the
+# /code-review skill) tells the agent to check out the PR's head branch
+# first. Cross-repo (fork) PRs are skipped with a warning — their head
+# branch doesn't exist on origin.
+#
+# Seen PR numbers persist in $HOME/.yaac-watch-prs-seen (one per line) for
+# this session's lifetime. On first run every currently-open PR is marked
+# seen without spawning, so only PRs opened while the watcher runs get
+# reviews; delete a number from the file to re-review that PR.
+#
+# Needs `gh` and `jq` (both in yaac's default session image); gh
+# authenticates via the session's GH_TOKEN and infers the repo from the
+# /workspace git remote. --once does a single poll and exits (testing).
+set -u
+
+interval=60
+model="claude-opus-4-8"
+prompt="Invoke the /code-review skill to review this PR's diff against the default branch."
+once=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --interval) interval="${2:?yaac-watch-prs: --interval needs a value}"; shift 2 ;;
+    --model) model="${2:?yaac-watch-prs: --model needs a value}"; shift 2 ;;
+    --prompt) prompt="${2:?yaac-watch-prs: --prompt needs a value}"; shift 2 ;;
+    --once) once=1; shift ;;
+    *) echo "usage: yaac-watch-prs [--interval <seconds>] [--model <model>] [--prompt <text>] [--once]" >&2; exit 2 ;;
+  esac
+done
+
+for cmd in gh jq yaac-spawn; do
+  command -v "$cmd" >/dev/null 2>&1 || { echo "yaac-watch-prs: $cmd not found" >&2; exit 1; }
+done
+cd /workspace || exit 1
+
+state="${YAAC_WATCH_PRS_STATE:-$HOME/.yaac-watch-prs-seen}"
+
+list_prs() {
+  gh pr list --state open --limit 100 \
+    --json number,title,headRefName,isCrossRepository \
+    --jq '.[] | "\(.number)\t\(.isCrossRepository)\t\(.headRefName)\t\(.title)"'
+}
+
+if [ ! -f "$state" ]; then
+  # Baseline: mark everything already open as seen so only PRs opened while
+  # the watcher runs get review sessions.
+  list_prs | cut -f1 > "$state" || { echo "yaac-watch-prs: initial gh pr list failed" >&2; exit 1; }
+  echo "baseline: $(wc -l < "$state" | tr -d ' ') already-open PR(s) marked seen (state: $state)"
+fi
+
+echo "watching for new PRs every ${interval}s; reviews spawn with model $model"
+
+while :; do
+  prs=$(list_prs) || echo "yaac-watch-prs: gh pr list failed; retrying next poll" >&2
+  printf '%s\n' "$prs" | while IFS="$(printf '\t')" read -r number cross branch title; do
+    [ -n "$number" ] || continue
+    grep -qx "$number" "$state" && continue
+    echo "$number" >> "$state"
+    if [ "$cross" = "true" ]; then
+      echo "PR #$number ($title) is from a fork — head branch not on origin; skipping" >&2
+      continue
+    fi
+    echo "new PR #$number: $title ($branch) — spawning review session..."
+    full_prompt="You are reviewing PR #$number (\"$title\"). First check out its head branch: run \`git fetch origin $branch && git reset --hard origin/$branch\`. Then: $prompt"
+    if id=$(yaac-spawn --tool claude --model "$model" "$full_prompt"); then
+      echo "spawned session $id for PR #$number"
+    else
+      # Leave the PR marked seen — a create that failed once shouldn't
+      # retry every poll; remove its number from $state to retry.
+      echo "yaac-spawn for PR #$number failed" >&2
+    fi
+  done
+  [ "$once" = "1" ] && break
+  sleep "$interval"
+done

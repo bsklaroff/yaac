@@ -1,7 +1,10 @@
 #!/bin/sh
 # yaac-spawn — start a new yaac session in this project with a prompt.
 #
-# Usage: yaac-spawn [--tool claude|codex|opencode|pi] "<prompt>"
+# Usage: yaac-spawn [--tool claude|codex|opencode|pi] [--model <model>] "<prompt>"
+#
+# --model (claude tool only) launches the new session's agent with
+# `claude --model <model>`, e.g. claude-opus-4-8 or opus.
 #
 # Prints the new session's id on success. Fire-and-forget: the session
 # provisions in the background; watch it in the yaac webapp.
@@ -12,16 +15,25 @@
 set -u
 
 tool=""
-if [ "${1:-}" = "--tool" ]; then
-  tool="${2:?yaac-spawn: --tool needs a value}"
-  shift 2
-fi
+model=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --tool) tool="${2:?yaac-spawn: --tool needs a value}"; shift 2 ;;
+    --model) model="${2:?yaac-spawn: --model needs a value}"; shift 2 ;;
+    *) break ;;
+  esac
+done
 if [ $# -ne 1 ] || [ -z "$1" ]; then
-  echo "usage: yaac-spawn [--tool <tool>] \"<prompt>\"" >&2
+  echo "usage: yaac-spawn [--tool <tool>] [--model <model>] \"<prompt>\"" >&2
   exit 2
 fi
 
-url="http://yaac.internal/spawn${tool:+?tool=$tool}"
+# tool/model values are option-shaped tokens (validated proxy- and
+# server-side); neither needs URL encoding.
+query=""
+[ -n "$tool" ] && query="tool=$tool"
+[ -n "$model" ] && query="${query:+$query&}model=$model"
+url="http://yaac.internal/spawn${query:+?$query}"
 # Raw text body (no JSON escaping); --max-time outlives the proxy's 60s
 # queue TTL so its self-describing 504 surfaces instead of a curl timeout.
 resp=$(printf '%s' "$1" | curl -sS --max-time 90 \

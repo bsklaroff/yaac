@@ -172,6 +172,15 @@ function emit(message: string, options: SessionCreateOptions): void {
   options.onProgress?.(message)
 }
 
+/**
+ * Allowed shape for a `--model` override. Deliberately strict: the value is
+ * embedded bare in agent launch commands that travel inside single-quoted
+ * `respawn-window '<cmd>'` wrappers (see buildAgentCmd), so no quotes,
+ * whitespace, or shell metacharacters — model ids and aliases
+ * (`claude-opus-4-8`, `opus`) never need them.
+ */
+export const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/
+
 export function buildAgentCmd(
   tool: AgentTool,
   sessionId: string,
@@ -179,6 +188,10 @@ export function buildAgentCmd(
   resume = false,
   /** pi only — provider whose default model is passed to `pi --model`. */
   piProvider?: PiProvider,
+  /** claude only — model passed to `claude --model`. Validated by the
+   *  create route to MODEL_RE, so it is safe to embed bare in the
+   *  single-quoted respawn-window wrapper. */
+  model?: string,
 ): string {
   if (tool === 'codex') {
     return [
@@ -245,6 +258,7 @@ export function buildAgentCmd(
   }
   return [
     'CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions',
+    model ? `--model ${model}` : '',
     resume ? `--resume ${sessionId}` : `--session-id ${sessionId}`,
     addDirFlags,
   ].filter(Boolean).join(' ')
@@ -351,6 +365,10 @@ async function verifyAgentWindowAlive(jobName: string, tool: AgentTool): Promise
 export async function retoolSpare(
   spare: { jobName: string; sessionId: string; projectSlug: string; tool: string },
   tool: AgentTool,
+  /** claude only — model for the respawned agent (see buildAgentCmd). Also
+   *  the reason a claim may retool a spare to its *own* tool: the booted
+   *  agent has no model flag, so a model override forces this respawn. */
+  model?: string,
 ): Promise<void> {
   const config: YaacConfig = await resolveProjectConfig(spare.projectSlug) ?? {}
   const remoteUrl = (await simpleGit(repoDir(spare.projectSlug)).remote(['get-url', 'origin']))?.trim() ?? ''
@@ -364,7 +382,7 @@ export async function retoolSpare(
   await containerExec(spare.jobName, `${TMUX} rename-window -t yaac:${spare.tool} ${tool}`)
   await containerExec(
     spare.jobName,
-    `${TMUX} respawn-window -k -t yaac:${tool} '${buildAgentCmd(tool, spare.sessionId, '', false, piProvider)}'`,
+    `${TMUX} respawn-window -k -t yaac:${tool} '${buildAgentCmd(tool, spare.sessionId, '', false, piProvider, model)}'`,
   )
   await verifyAgentWindowAlive(spare.jobName, tool)
 }
@@ -622,6 +640,12 @@ export interface SessionCreateOptions {
    */
   initialPrompt?: string
   /**
+   * Claude-only model override for the agent's launch command
+   * (`claude --model <model>`). Validated to MODEL_RE by the create route.
+   * Not persisted: a restart resumes with the default model.
+   */
+  model?: string
+  /**
    * Called for each user-visible progress message during provisioning.
    * The HTTP route forwards these to the CLI as NDJSON events so
    * `yaac session create` can show what the server is doing.
@@ -824,7 +848,7 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
     .map((p) => `--add-dir /add-dir${shellEscape(p)}`)
     .join(' ')
 
-  const agentCmd = buildAgentCmd(tool, sessionId, addDirFlags, options.resume === true, piProvider)
+  const agentCmd = buildAgentCmd(tool, sessionId, addDirFlags, options.resume === true, piProvider, options.model)
   const toolLabel =
     tool === 'codex' ? 'Codex' :
     tool === 'opencode' ? 'OpenCode' :

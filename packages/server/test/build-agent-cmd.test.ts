@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildAgentCmd } from '#session-create'
+import { buildAgentCmd, MODEL_RE } from '#session-create'
 import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 
 describe('buildAgentCmd', () => {
@@ -90,6 +90,30 @@ describe('buildAgentCmd', () => {
     it('combines resume with add-dir flags', () => {
       const cmd = buildAgentCmd('claude', 'abc', '--add-dir /add-dir/tmp', true)
       expect(cmd).toBe('CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --resume abc --add-dir /add-dir/tmp')
+    })
+
+    it('inserts --model when a model override is given', () => {
+      const cmd = buildAgentCmd('claude', 'sess-1', '', false, undefined, 'claude-opus-4-8')
+      expect(cmd).toBe('CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --model claude-opus-4-8 --session-id sess-1')
+    })
+
+    it('combines a model override with resume', () => {
+      const cmd = buildAgentCmd('claude', 'sess-1', '', true, undefined, 'opus')
+      expect(cmd).toBe('CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --model opus --resume sess-1')
+    })
+  })
+
+  describe('MODEL_RE', () => {
+    it('accepts model ids and aliases', () => {
+      for (const m of ['claude-opus-4-8', 'opus', 'claude-sonnet-5', 'us.anthropic.claude-fable-5:0']) {
+        expect(MODEL_RE.test(m)).toBe(true)
+      }
+    })
+
+    it('rejects values unsafe for the single-quoted respawn wrapper', () => {
+      for (const m of ["o'pus", 'a model', 'x;y', 'a$b', '-opus', '', 'a`b', 'a[1m]']) {
+        expect(MODEL_RE.test(m)).toBe(false)
+      }
     })
   })
 })

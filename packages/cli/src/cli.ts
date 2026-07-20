@@ -191,6 +191,7 @@ session
   .option('--add-dir <path>', 'Mount a host directory as read-only (repeatable)', collect, [])
   .option('--add-dir-rw <path>', 'Mount a host directory as read-write (repeatable)', collect, [])
   .option('-p, --prompt <text>', 'Initial prompt typed into the agent once the session is up')
+  .option('-m, --model <model>', 'Model for the agent (claude tool only), e.g. claude-opus-4-8 or opus')
   .action(async (project: string, options: Parameters<typeof sessionCreate>[1]) => {
     await sessionCreate(project, options)
   })

@@ -47,6 +47,15 @@ describe('validateSpawnRequest', () => {
     expect(validateSpawnRequest('p', '../etc').ok).toBe(false)
     expect(validateSpawnRequest('p', 'x'.repeat(33)).ok).toBe(false)
   })
+
+  it('accepts model ids and rejects values outside the safe charset', () => {
+    expect(validateSpawnRequest('p', 'claude', 'claude-opus-4-8')).toEqual({ ok: true })
+    expect(validateSpawnRequest('p', undefined, 'opus')).toEqual({ ok: true })
+    expect(validateSpawnRequest('p', 'claude', "o'pus").ok).toBe(false)
+    expect(validateSpawnRequest('p', 'claude', 'a model').ok).toBe(false)
+    expect(validateSpawnRequest('p', 'claude', '-opus').ok).toBe(false)
+    expect(validateSpawnRequest('p', 'claude', 'x'.repeat(101)).ok).toBe(false)
+  })
 })
 
 describe('SpawnQueue', () => {
@@ -60,6 +69,21 @@ describe('SpawnQueue', () => {
     expect(drained[0].prompt).toBe('do the thing')
     expect(q.complete({ requestId, ok: true, sessionId: 'new-id' })).toBe(true)
     expect(completed()).toEqual({ status: 200, body: 'new-id' })
+  })
+
+  it('carries tool and model through enqueue → drain', () => {
+    const q = new SpawnQueue()
+    let completion: unknown
+    const res = q.enqueue(
+      { sessionId: 's1', prompt: 'p', tool: 'claude', model: 'claude-opus-4-8' },
+      () => { completion = true },
+      0,
+    )
+    if (!res.ok) throw new Error('enqueue rejected')
+    const drained = q.drain()
+    expect(drained[0].tool).toBe('claude')
+    expect(drained[0].model).toBe('claude-opus-4-8')
+    expect(completion).toBeUndefined()
   })
 
   it('completes a failed result as a 422 with the error text', () => {

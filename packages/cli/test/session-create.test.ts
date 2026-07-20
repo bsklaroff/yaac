@@ -753,6 +753,16 @@ describe('createSession', () => {
     expect(respawn).toContain('codex --yolo')
   })
 
+  it('threads a model override into the claude agent respawn command', async () => {
+    await createSession('demo', { tool: 'claude', sessionId: 'abcd1234', model: 'claude-opus-4-8' })
+
+    const respawn = mockContainerExec.mock.calls
+      .map((args) => args[1])
+      .find((c) => c.includes('respawn-window'))
+    expect(respawn).toBeDefined()
+    expect(respawn).toContain('claude --dangerously-skip-permissions --model claude-opus-4-8 --session-id abcd1234')
+  })
+
   it('sets the branch upstream from inside the pod, not on the host', async () => {
     // Host-side writes to the shared /repo/.git/config go stale under the
     // virtiofs cache session pods read through (transient "unknown error

@@ -138,6 +138,8 @@ describe('yaac-spawn from inside a session (real CLI + server + cluster)', () =>
   it('is installed on PATH as a read-only file', async () => {
     const { stdout } = await execInJob(jobA, ['sh', '-c', 'command -v yaac-spawn'])
     expect(stdout.trim()).toBe('/usr/local/bin/yaac-spawn')
+    const { stdout: watchPrs } = await execInJob(jobA, ['sh', '-c', 'command -v yaac-watch-prs'])
+    expect(watchPrs.trim()).toBe('/usr/local/bin/yaac-watch-prs')
     // Read-only mount: a session cannot tamper with the host-staged copy.
     const { output, exitCode } = await runSpawn('') // also covers usage error
     expect(exitCode).toBe(2)
@@ -220,6 +222,46 @@ describe('yaac-spawn from inside a session (real CLI + server + cluster)', () =>
     if (!found) console.error('final spawned pane:\n' + pane)
     expect(found).toBe(true)
   }, 420_000)
+
+  it('spawns a sibling whose claude launches with the requested --model', async () => {
+    const { exitCode, output } = await runSpawn('--model claude-opus-4-8 "review something"')
+    expect(exitCode).toBe(0)
+    const newSessionId = output.trim()
+    expect(newSessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+
+    let spawned: SessionPod | undefined
+    for (let i = 0; i < 120 && !spawned?.running; i++) {
+      const pods = await listSessionPods(SLUG)
+      spawned = pods.find((p) => p.sessionId === newSessionId)
+      if (!spawned?.running) await sleep(1000)
+    }
+    expect(spawned?.running).toBe(true)
+
+    // The agent window's launch command carries the override — poll while
+    // the agent window may still be respawning from its placeholder.
+    let startCmd = ''
+    for (let i = 0; i < 60; i++) {
+      try {
+        const { stdout } = await execInJob(spawned!.jobName, [
+          'sh', '-c',
+          `tmux -S ${CONTAINER_TMUX_SOCK} display -p -t yaac:claude "#{pane_start_command}" 2>&1`,
+        ], { timeout: 10_000 })
+        startCmd = stdout
+        if (startCmd.includes('--model')) break
+      } catch {
+        // pod/tmux not ready yet
+      }
+      await sleep(1000)
+    }
+    expect(startCmd).toContain('claude --dangerously-skip-permissions --model claude-opus-4-8')
+  }, 300_000)
+
+  it('surfaces the server rejection for a model override on a non-claude tool', async () => {
+    const { exitCode, output } = await runSpawn('--tool codex --model claude-opus-4-8 "x"')
+    expect(exitCode).toBe(1)
+    expect(output).toContain('only supported for the claude tool')
+    expect(output).toContain('HTTP 422')
+  }, 120_000)
 
   it('surfaces the server rejection for an unknown tool', async () => {
     // 'bogus' passes the proxy's charset check; the server's AGENT_TOOLS

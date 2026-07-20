@@ -189,6 +189,11 @@ export async function tryClaimPrewarmed(
   gitUser: { name: string; email: string } | undefined,
   emit: (message: string) => void,
   branch?: string,
+  /** claude only — model override for the agent's launch command. Spares
+   *  boot their agent with no model flag, so a model override always
+   *  respawns the claimed spare's agent (via retoolSpare, even when the
+   *  booted tool already matches). */
+  model?: string,
 ): Promise<SessionCreateResult | undefined> {
   let reserved: string | undefined
   let chosen: SessionPod | undefined
@@ -254,14 +259,14 @@ export async function tryClaimPrewarmed(
       emit(`Switching prewarmed session to branch ${rebranchTo}...`)
       mutated = true
       // Skip the agent respawn when a retool follows — its respawn (with
-      // the new tool) supersedes it.
-      await rebranchSpare(chosen, rebranchTo, sha, chosen.tool === tool)
+      // the new tool, and any model override) supersedes it.
+      await rebranchSpare(chosen, rebranchTo, sha, chosen.tool === tool && model === undefined)
     }
 
-    if (chosen.tool !== tool) {
-      emit(`Switching prewarmed session to ${tool}...`)
+    if (chosen.tool !== tool || model !== undefined) {
+      if (chosen.tool !== tool) emit(`Switching prewarmed session to ${tool}...`)
       mutated = true
-      await retoolSpare(chosen, tool)
+      await retoolSpare(chosen, tool, model)
     }
 
     // Commit: drop the prewarmed label (stamping the new tool in the same

@@ -587,6 +587,32 @@ describe('with seeded projects', () => {
       expect(stderr).toMatch(/No git credential configured/)
     })
 
+    it('rejects --model for a non-claude tool via server VALIDATION', async () => {
+      const repo = path.join(testEnv.scratchDir, 'repo-demo-model-tool')
+      await createTestRepo(repo)
+      await addTestProject(repo)
+
+      const { stdout, stderr, exitCode } = await runYaac(
+        testEnv.env, 'session', 'create', 'repo-demo-model-tool',
+        '--tool', 'codex', '--model', 'claude-opus-4-8',
+      )
+      expect(exitCode).not.toBe(0)
+      expect(stdout + stderr).toMatch(/--model is only supported for the claude tool/)
+    })
+
+    it('rejects a --model value with shell-unsafe characters via schema validation', async () => {
+      const repo = path.join(testEnv.scratchDir, 'repo-demo-model-bad')
+      await createTestRepo(repo)
+      await addTestProject(repo)
+
+      const { stderr, exitCode } = await runYaac(
+        testEnv.env, 'session', 'create', 'repo-demo-model-bad',
+        '--tool', 'claude', '--model', "opus'; rm -rf /",
+      )
+      expect(exitCode).not.toBe(0)
+      expect(stderr.toLowerCase()).toContain('model')
+    })
+
     it('rejects a relative --add-dir path with an absolute-path error', async () => {
       const repo = path.join(testEnv.scratchDir, 'repo-demo-adddir')
       await createTestRepo(repo)

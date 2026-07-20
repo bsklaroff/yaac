@@ -135,6 +135,8 @@ export interface PendingSpawn {
   sessionId: string
   prompt: string
   tool?: string
+  /** Claude-only model override for the spawned session's agent. */
+  model?: string
 }
 
 /** Mirror of k8s/proxy/spawn-queue.ts SpawnResult — keep in sync. */

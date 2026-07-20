@@ -7,7 +7,7 @@ import { recordDeathSeen } from '#lib/session/deleted-store'
 import { getSessionDetail, getSessionBlockedHosts, getSessionPrompt } from '#lib/session/detail'
 import { deleteSession } from '#lib/session/delete'
 import { restartSession } from '#lib/session/restart'
-import { createSession, typeInitialPrompt, type SessionCreateOptions } from '#session-create'
+import { createSession, typeInitialPrompt, MODEL_RE, type SessionCreateOptions } from '#session-create'
 import { tryClaimPrewarmed } from '#prewarm'
 import { getDefaultTool } from '#lib/project/preferences'
 import { registerProvisioning, removeProvisioning } from '#provisioning'
@@ -62,6 +62,9 @@ export const sessionApp = new Hono()
       gitUser: z.object({ name: z.string(), email: z.string() }).optional(),
       // Initial prompt typed into the agent pane once it's up.
       prompt: z.string().min(1).max(10000).optional(),
+      // Claude-only model override (`claude --model <model>`). MODEL_RE
+      // keeps it safe to embed in the single-quoted agent launch command.
+      model: z.string().regex(MODEL_RE).max(100).optional(),
     })),
     (c) => {
       const body = c.req.valid('json')
@@ -71,6 +74,12 @@ export const sessionApp = new Hono()
         // configured default (yaac tool set), else claude. This is the tool the
         // prewarm pool warms, so a bare create matches its spare.
         const tool = body.tool ?? (await getDefaultTool()) ?? 'claude'
+        if (body.model !== undefined && tool !== 'claude') {
+          throw new ServerError(
+            'VALIDATION',
+            `--model is only supported for the claude tool (resolved tool: ${tool}).`,
+          )
+        }
 
         // Fast path: claim a prewarmed spare for this project + tool. Skipped
         // when --add-dir is requested (the spare lacks those mounts). A claim
@@ -79,7 +88,7 @@ export const sessionApp = new Hono()
         // from a different branch is re-branched inside the claim.
         if (!body.addDir?.length && !body.addDirRw?.length) {
           const claimed = await tryClaimPrewarmed(
-            body.project, tool, body.gitUser, onProgress, body.branch,
+            body.project, tool, body.gitUser, onProgress, body.branch, body.model,
           )
           if (claimed) {
             // The spare's agent booted with no prompt; type it in now.
@@ -101,6 +110,7 @@ export const sessionApp = new Hono()
         if (body.branch) opts.branch = body.branch
         if (body.gitUser) opts.gitUser = body.gitUser
         if (body.prompt !== undefined) opts.initialPrompt = body.prompt
+        if (body.model !== undefined) opts.model = body.model
         // Register before the long await so the row shows up instantly and
         // survives a browser reload (the stream keeps running server-side).
         registerProvisioning({ sessionId, projectSlug: body.project, tool, kind: 'create' })

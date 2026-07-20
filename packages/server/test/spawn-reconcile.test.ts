@@ -138,6 +138,41 @@ describe('handleSpawnRequest', () => {
     await settle()
   })
 
+  it('threads a model override into the create when the resolved tool is claude', async () => {
+    const { deps, createSessionFn } = makeDeps({ mintIdFn: () => 'minted-id' })
+    const result = await handleSpawnRequest(
+      makeReq({ tool: 'claude', model: 'claude-opus-4-8' }), deps,
+    )
+    expect(result.ok).toBe(true)
+    expect(createSessionFn).toHaveBeenCalledWith('proj', {
+      tool: 'claude',
+      initialPrompt: 'write the report',
+      sessionId: 'minted-id',
+      model: 'claude-opus-4-8',
+      onProgress: expect.any(Function) as (message: string) => void,
+    })
+    await settle()
+  })
+
+  it('rejects a model override when the resolved tool is not claude', async () => {
+    // No explicit tool: resolves to the caller's own tool (codex).
+    const { deps, createSessionFn } = makeDeps()
+    const result = await handleSpawnRequest(makeReq({ model: 'claude-opus-4-8' }), deps)
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain('only supported for the claude tool')
+    expect(createSessionFn).not.toHaveBeenCalled()
+  })
+
+  it('rejects a malformed model without creating', async () => {
+    const { deps, createSessionFn } = makeDeps()
+    const result = await handleSpawnRequest(
+      makeReq({ tool: 'claude', model: "opus'; rm -rf /" }), deps,
+    )
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain('invalid model')
+    expect(createSessionFn).not.toHaveBeenCalled()
+  })
+
   it('rejects an invalid requested tool without creating', async () => {
     const { deps, createSessionFn } = makeDeps()
     const result = await handleSpawnRequest(makeReq({ tool: 'not-a-tool' }), deps)
