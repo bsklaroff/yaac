@@ -8,6 +8,7 @@ import { reconcileHostImageGc } from '#lib/container/image-gc'
 import { reconcileBuilderPodGc } from '#lib/container/builder-pod'
 import { reconcileVclusterAttribution } from '#lib/session/vcluster-attribution-reconcile'
 import { reconcilePrewarmPool } from '#prewarm-reconcile'
+import { reconcileSchedules } from '#schedule-reconcile'
 import { reconcileImagePrewarm } from '#image-prewarm'
 import { reconcileGeneratedTitles } from '#title-generation'
 import { serverLog } from '#log'
@@ -58,6 +59,9 @@ function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
 function defaultTickSteps(): Array<() => Promise<void>> {
   return [
     reconcileStaleSessions,
+    // Fire due cron schedules (detached headless session creates). After the
+    // stale sweep so a fire never lands in a namespace mid-reap.
+    () => reconcileSchedules(),
     // Keep every project's image chain built and pushed (detached tasks, so
     // a minutes-long build never blocks the tick). Before the prewarm pool:
     // a spare's createSession then joins the already-running builds.

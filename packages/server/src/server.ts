@@ -10,6 +10,7 @@ import { toErrorBody } from '#errors'
 import { projectApp } from '#routes/project'
 import { sessionApp } from '#routes/session'
 import { toolApp } from '#routes/tool'
+import { scheduleApp } from '#routes/schedule'
 import { authApp } from '#routes/auth'
 import { createClusterApp, type ClusterRouteDeps } from '#routes/cluster'
 import { createTokensApp } from '#routes/tokens'
@@ -130,6 +131,7 @@ export function buildApp(deps: ServerAppDeps) {
     .route('/project', projectApp)
     .route('/session', sessionApp)
     .route('/tool', toolApp)
+    .route('/schedule', scheduleApp)
     .route('/tokens', createTokensApp(tokens))
     .route('/auth', authApp)
     .route('/shortcuts', shortcutsApp)

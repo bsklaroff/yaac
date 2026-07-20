@@ -55,6 +55,7 @@ export {
   FileDiff as ChangesIcon,
   Search as SearchIcon,
   Sparkles as SkillsIcon,
+  CalendarClock as ScheduleIcon,
 } from 'lucide-react'
 
 /** Display name per agent tool (proper brand casing, incl. OpenCode). */

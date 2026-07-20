@@ -1286,6 +1286,50 @@ describe('yaac session create suite (real CLI + real server + mocked remotes)', 
     }, 60_000)
   })
 
+  describe('initial prompt (--prompt)', () => {
+    it('types the prompt into the agent pane and submits it, no attach needed', async () => {
+      const projectPath = await setupProject('prompted')
+      // Pre-seed claude's onboarding state (same as the kitchen-sink
+      // session) so the TUI lands directly on its chat prompt — a
+      // scheduled/headless create has no user to click through wizards.
+      await fs.writeFile(path.join(projectPath, 'claude.json'), JSON.stringify({
+        hasCompletedOnboarding: true,
+        lastOnboardingVersion: '2.1.116',
+        customApiKeyResponses: { approved: ['yaac-ph-api-key'], rejected: [] },
+        projects: {
+          '/repo': { hasTrustDialogAccepted: true },
+          '/workspace': { hasTrustDialogAccepted: true },
+        },
+      }) + '\n')
+      await fs.mkdir(path.join(projectPath, 'claude'), { recursive: true })
+      await fs.writeFile(path.join(projectPath, 'claude', 'settings.json'), JSON.stringify({
+        skipDangerousModePermissionPrompt: true,
+      }) + '\n')
+
+      const marker = 'summarize the pinned issues'
+      const { jobName } = await createSession(
+        'prompted', '--tool', 'claude', '--prompt', marker,
+      )
+
+      // The prompt is pasted + submitted server-side (buildPromptPasteCmd)
+      // with nobody attached; claude sends it to the (mock) LLM, whose
+      // reply rendering in the pane proves the full type-and-submit path.
+      let pane = ''
+      let ok = false
+      for (let i = 0; i < 60; i++) {
+        const { stdout } = await execInJob(jobName, [
+          'sh', '-c',
+          `tmux -S ${CONTAINER_TMUX_SOCK} capture-pane -t yaac:claude -p -S - -E - 2>&1`,
+        ])
+        pane = stdout
+        if (pane.includes(marker) && pane.includes('Hello from mock')) { ok = true; break }
+        await sleep(1000)
+      }
+      if (!ok) console.error('final pane:\n' + pane)
+      expect(ok).toBe(true)
+    }, 240_000)
+  })
+
   describe('reference branch', () => {
     // The --branch override's happy path (on a prewarmed claim) lives in
     // session-prewarm.test.ts; here: the config-default path on a cold

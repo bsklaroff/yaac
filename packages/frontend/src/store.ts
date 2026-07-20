@@ -327,7 +327,7 @@ export function resolveNewSessionTool(
 }
 
 /** Sections of the settings modal (left-nav entries). */
-export type SettingsSection = 'general' | 'shortcuts' | 'credentials' | 'project' | 'userDockerfile'
+export type SettingsSection = 'general' | 'shortcuts' | 'credentials' | 'project' | 'schedules' | 'userDockerfile'
 
 /** Local-only UI state (not server state — that lives in the snapshot). */
 interface UiState {

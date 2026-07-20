@@ -20,6 +20,7 @@
     "@hono/zod-validator": "catalog:",
     "@lydell/node-pty": "catalog:",
     "@yaac/shared": "workspace:*",
+    "croner": "10.0.1",
     "drizzle-orm": "catalog:",
     "hono": "catalog:",
     "simple-git": "catalog:",

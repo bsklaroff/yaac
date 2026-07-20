@@ -11,6 +11,7 @@ import {
   KeyboardIcon,
   KeyIcon,
   ProjectConfigIcon,
+  ScheduleIcon,
   SettingsIcon,
   TOOL_LABEL,
 } from '#lib/icons'
@@ -37,6 +38,7 @@ import {
   SHORTCUTS, chordFromEvent, chordsEqual, formatChord, isModifierCode, validateChord, type ShortcutId,
 } from '#lib/shortcuts'
 import { ProjectSettings } from '#components/settings/ProjectSettings'
+import { ScheduleSettings } from '#components/settings/ScheduleSettings'
 import { FileEditor } from '#components/settings/FileEditor'
 import { BuildFiles } from '#components/settings/BuildFiles'
 import { userBuildFilesApi } from '#lib/buildFilesApi'
@@ -77,6 +79,7 @@ const SECTIONS: { key: SettingsSection; label: string; Icon: typeof GeneralIcon 
   { key: 'shortcuts', label: 'Shortcuts', Icon: KeyboardIcon },
   { key: 'credentials', label: 'Credentials', Icon: KeyIcon },
   { key: 'project', label: 'Project Config', Icon: ProjectConfigIcon },
+  { key: 'schedules', label: 'Schedules', Icon: ScheduleIcon },
   { key: 'userDockerfile', label: 'User Dockerfile', Icon: DockerIcon },
 ]
 
@@ -246,6 +249,8 @@ export function SettingsButton(): JSX.Element {
             {section === 'credentials' && <CredentialsPane />}
 
             {section === 'project' && <ProjectSettings />}
+
+            {section === 'schedules' && <ScheduleSettings />}
 
             {section === 'userDockerfile' && <UserDockerfilePane />}
           </div>

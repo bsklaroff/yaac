@@ -249,6 +249,66 @@ export function buildAgentCmd(
 }
 
 /**
+ * In-pod command that delivers an initial prompt to the agent's pane: it
+ * pastes the text into the TUI's input and submits it. Three timing hazards
+ * shape the script — a prompt pasted into a TUI that is still starting up
+ * is silently discarded (observed with claude in the create e2e suite), and
+ * with no user attached nothing would ever re-send it:
+ *
+ *  1. Readiness gate: wait for `#{alternate_on}` — every agent TUI switches
+ *     the pane to the alternate screen when its render loop comes up, which
+ *     is the earliest tool-agnostic "accepting input" signal. Falls through
+ *     after 60s so a TUI that never flips still gets a best-effort paste.
+ *  2. Verified paste: paste, then check `capture-pane` for the prompt's
+ *     first line (its first 40 chars — the pane is created 500 cols wide
+ *     and nothing attaches before provisioning finishes, so no wrap) and
+ *     re-paste until it is visibly in the input box.
+ *  3. Submit + guard: Enter is sent separately (a paste never
+ *     self-submits) and re-sent after a beat — a TUI finishing its startup
+ *     render can keep the pasted text but drop the first Enter; on an
+ *     already-submitted prompt the repeat is a no-op on an empty input box.
+ *
+ * The prompt travels base64-encoded — its alphabet has no quotes or shell
+ * metacharacters, so arbitrary text (quotes, `$`, newlines) survives the
+ * host shell and the in-pod single-quoted `sh -c` with no escaping logic;
+ * `paste-buffer -p` honors bracketed paste so a multiline prompt lands in
+ * the input box instead of submitting line by line.
+ */
+export function buildPromptPasteCmd(tool: AgentTool, prompt: string): string {
+  const b64 = Buffer.from(prompt, 'utf8').toString('base64')
+  const target = `-t yaac:${tool}`
+  // First non-empty line anchors the paste verification; a whitespace-only
+  // prompt (nothing capture-pane could match) degrades to one blind paste.
+  const probeLine = prompt.split('\n').find((l) => l.trim() !== '')?.slice(0, 40)
+  const probeB64 = probeLine === undefined
+    ? undefined
+    : Buffer.from(probeLine, 'utf8').toString('base64')
+  const paste = `printf %s ${b64} | base64 -d | ${TMUX} load-buffer -b yaac-prompt -; `
+    + `${TMUX} paste-buffer -p -d -b yaac-prompt ${target}`
+  const script =
+    `i=0; while [ $i -lt 120 ]; do [ "$(${TMUX} display -p ${target} "#{alternate_on}")" = "1" ] && break; i=$((i+1)); sleep 0.5; done; `
+    + 'sleep 1; '
+    + (probeB64 === undefined
+      ? `${paste}; `
+      : `probe="$(printf %s ${probeB64} | base64 -d)"; `
+        + `i=0; while [ $i -lt 10 ]; do ${TMUX} capture-pane ${target} -p | grep -qF -- "$probe" && break; `
+        + `${paste}; i=$((i+1)); sleep 2; done; `)
+    + `${TMUX} send-keys ${target} Enter; sleep 2; ${TMUX} send-keys ${target} Enter`
+  return `sh -c '${script}'`
+}
+
+/** Type `prompt` into a running session's agent pane (see buildPromptPasteCmd). */
+export async function typeInitialPrompt(
+  jobName: string,
+  tool: AgentTool,
+  prompt: string,
+): Promise<void> {
+  // One attempt with a generous budget: the script itself retries, and a
+  // kubectl-level retry after a partial run could paste the prompt twice.
+  await containerExec(jobName, buildPromptPasteCmd(tool, prompt), { maxAttempts: 1, timeout: 120_000 })
+}
+
+/**
  * In-pod probe that the agent window survived a claim-time respawn.
  * `respawn-window` reports success even when its command dies instantly
  * (e.g. the tool binary is missing from the image the spare was warmed
@@ -553,6 +613,12 @@ export interface SessionCreateOptions {
    * up-front (prompting when missing) and passes it in.
    */
   gitUser?: { name: string; email: string }
+  /**
+   * Initial prompt typed into the agent's tmux pane once the agent window
+   * is up (pasted + submitted, not passed on the agent's command line).
+   * Used by scheduled session starts and `session create --prompt`.
+   */
+  initialPrompt?: string
   /**
    * Called for each user-visible progress message during provisioning.
    * The HTTP route forwards these to the CLI as NDJSON events so
@@ -958,6 +1024,11 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   // placeholder and starts the agent in the same window, preserving the
   // tmux state we just built.
   await containerExec(jobName, `${TMUX} respawn-window -k -t yaac:${tool} '${agentCmd}'`)
+
+  if (options.initialPrompt !== undefined) {
+    emit('Sending initial prompt...', options)
+    await typeInitialPrompt(jobName, tool, options.initialPrompt)
+  }
 }
 
 /**

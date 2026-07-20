@@ -7,7 +7,7 @@ import { recordDeathSeen } from '#lib/session/deleted-store'
 import { getSessionDetail, getSessionBlockedHosts, getSessionPrompt } from '#lib/session/detail'
 import { deleteSession } from '#lib/session/delete'
 import { restartSession } from '#lib/session/restart'
-import { createSession, type SessionCreateOptions } from '#session-create'
+import { createSession, typeInitialPrompt, type SessionCreateOptions } from '#session-create'
 import { tryClaimPrewarmed } from '#prewarm'
 import { getDefaultTool } from '#lib/project/preferences'
 import { registerProvisioning, removeProvisioning } from '#provisioning'
@@ -59,6 +59,8 @@ export const sessionApp = new Hono()
       // remote default branch.
       branch: z.string().min(1).optional(),
       gitUser: z.object({ name: z.string(), email: z.string() }).optional(),
+      // Initial prompt typed into the agent pane once it's up.
+      prompt: z.string().min(1).max(10000).optional(),
     })),
     (c) => {
       const body = c.req.valid('json')
@@ -78,7 +80,14 @@ export const sessionApp = new Hono()
           const claimed = await tryClaimPrewarmed(
             body.project, tool, body.gitUser, onProgress, body.branch,
           )
-          if (claimed) return claimed
+          if (claimed) {
+            // The spare's agent booted with no prompt; type it in now.
+            if (body.prompt !== undefined) {
+              onProgress('Sending initial prompt...')
+              await typeInitialPrompt(claimed.jobName, claimed.tool, body.prompt)
+            }
+            return claimed
+          }
         }
 
         const opts: SessionCreateOptions = {
@@ -90,6 +99,7 @@ export const sessionApp = new Hono()
         if (body.addDirRw) opts.addDirRw = body.addDirRw
         if (body.branch) opts.branch = body.branch
         if (body.gitUser) opts.gitUser = body.gitUser
+        if (body.prompt !== undefined) opts.initialPrompt = body.prompt
         // Register before the long await so the row shows up instantly and
         // survives a browser reload (the stream keeps running server-side).
         registerProvisioning({ sessionId, projectSlug: body.project, tool, kind: 'create' })

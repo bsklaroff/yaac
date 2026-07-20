@@ -17,6 +17,8 @@ export interface SessionCreateOptions {
   /** Reference branch for the worktree (no `origin/` prefix). Omitted →
    *  the server resolves the project's configured default. */
   branch?: string
+  /** Initial prompt typed into the agent pane once the session is up. */
+  prompt?: string
 }
 
 interface SessionCreateResult {
@@ -72,6 +74,7 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
       addDir: options.addDir,
       addDirRw: options.addDirRw,
       gitUser,
+      prompt: options.prompt,
     },
   })
 

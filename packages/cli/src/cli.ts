@@ -18,6 +18,9 @@ import { authClear } from '#commands/auth-clear'
 import { authList } from '#commands/auth-list'
 import { toolGet } from '#commands/tool-get'
 import { toolSet } from '#commands/tool-set'
+import { scheduleAdd } from '#commands/schedule-add'
+import { scheduleList } from '#commands/schedule-list'
+import { scheduleRm } from '#commands/schedule-rm'
 import { clusterCheck } from '#commands/cluster-check'
 import { clusterDelete } from '#commands/cluster-delete'
 import { clusterSetup } from '#commands/cluster-setup'
@@ -187,6 +190,7 @@ session
   .option('-b, --branch <branch>', 'Reference branch for the worktree (defaults to the project\'s referenceBranch config, else the remote default branch)')
   .option('--add-dir <path>', 'Mount a host directory as read-only (repeatable)', collect, [])
   .option('--add-dir-rw <path>', 'Mount a host directory as read-write (repeatable)', collect, [])
+  .option('-p, --prompt <text>', 'Initial prompt typed into the agent once the session is up')
   .action(async (project: string, options: Parameters<typeof sessionCreate>[1]) => {
     await sessionCreate(project, options)
   })
@@ -262,6 +266,34 @@ tool
   .description('Set the default agent tool')
   .argument('<tool>', 'Agent tool to use (claude, codex, opencode, or pi)')
   .action(toolSet)
+
+const schedule = program
+  .command('schedule')
+  .description('Manage cron-scheduled session starts')
+  .configureHelp({ formatHelp: nestedHelp })
+
+schedule
+  .command('add')
+  .description('Schedule sessions to start on a cron expression with an initial prompt')
+  .argument('<project>', 'Project slug')
+  .requiredOption('-c, --cron <spec>', 'Cron expression, evaluated in the server\'s local time (e.g. "0 9 * * 1-5")')
+  .requiredOption('-p, --prompt <text>', 'Initial prompt typed into each fired session\'s agent')
+  .option('-t, --tool <tool>', 'Agent tool for fired sessions (claude, codex, opencode, or pi); defaults to the configured default tool')
+  .action(async (project: string, options: Parameters<typeof scheduleAdd>[1]) => {
+    await scheduleAdd(project, options)
+  })
+
+schedule
+  .command('list')
+  .description('List schedules')
+  .argument('[project]', 'Filter by project slug')
+  .action(scheduleList)
+
+schedule
+  .command('rm')
+  .description('Remove a schedule')
+  .argument('<schedule-id>', 'Schedule id (or the unique prefix shown by "schedule list")')
+  .action(scheduleRm)
 
 const config = program
   .command('config')
