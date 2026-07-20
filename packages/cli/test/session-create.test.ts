@@ -14,6 +14,11 @@ vi.mock('node:fs/promises', () => ({
     writeFile: vi.fn().mockResolvedValue(undefined),
     readFile: vi.fn().mockRejectedValue(new Error('missing')),
     chmod: vi.fn().mockResolvedValue(undefined),
+    // Built-in skill staging: rm the stage dir, list (readdir) the bundled
+    // skills, cp each across. An empty readdir stages nothing.
+    rm: vi.fn().mockResolvedValue(undefined),
+    readdir: vi.fn().mockResolvedValue([]),
+    cp: vi.fn().mockResolvedValue(undefined),
   },
 }))
 
@@ -202,6 +207,7 @@ const mockAccess = vi.mocked(fs.access)
 const mockMkdir = vi.mocked(fs.mkdir)
 const mockWriteFile = vi.mocked(fs.writeFile)
 const mockReadFile = vi.mocked(fs.readFile)
+const mockReaddir = vi.mocked(fs.readdir)
 const mockApply = vi.mocked(kubectlApply)
 const mockGetJson = vi.mocked(kubectlGetJson)
 const mockKubectlRetry = vi.mocked(kubectlWithRetry)
@@ -264,6 +270,9 @@ describe('createSession', () => {
     mockMkdir.mockResolvedValue(undefined)
     mockWriteFile.mockResolvedValue(undefined)
     mockReadFile.mockRejectedValue(new Error('missing'))
+    // resetAllMocks strips the module-mock impls: re-prime readdir so the
+    // built-in skill staging sees "no bundled skills" instead of undefined.
+    mockReaddir.mockResolvedValue([])
     vi.mocked(ensureContainerRuntime).mockResolvedValue(undefined)
     vi.mocked(ensureImage).mockResolvedValue('yaac-test-image')
     vi.mocked(pushImageShared).mockResolvedValue('localhost:5000/yaac-test-image')
