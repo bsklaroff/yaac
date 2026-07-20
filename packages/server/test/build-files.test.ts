@@ -9,6 +9,7 @@ import {
   listBuildFiles,
   readBuildFile,
   writeBuildFile,
+  renameBuildFile,
   deleteBuildFile,
 } from '#lib/project/build-files'
 
@@ -121,6 +122,61 @@ describe('build files', () => {
     it('rejects a path crossing an existing file', async () => {
       await writeBuildFile(root, 'a', Buffer.from('file'))
       await expect(writeBuildFile(root, 'a/b', Buffer.from('x')))
+        .rejects.toMatchObject({ code: 'VALIDATION' })
+    })
+  })
+
+  describe('renameBuildFile', () => {
+    it('renames a file, creating parent folders, and reports the new entry', async () => {
+      await writeBuildFile(root, 'a.txt', Buffer.from('hello'))
+      const entry = await renameBuildFile(root, 'a.txt', 'nvim/lua/b.txt')
+      expect(entry).toEqual({ path: 'nvim/lua/b.txt', size: 5, binary: false })
+      expect(await fs.readFile(path.join(root, 'nvim/lua/b.txt'), 'utf8')).toBe('hello')
+      await expect(readBuildFile(root, 'a.txt')).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    })
+
+    it('renames a folder recursively', async () => {
+      await writeBuildFile(root, 'nvim/init.lua', Buffer.from('x'))
+      await writeBuildFile(root, 'nvim/lua/opts.lua', Buffer.from('y'))
+      await renameBuildFile(root, 'nvim', 'editor')
+      expect((await listBuildFiles(root)).map((f) => f.path))
+        .toEqual(['editor/init.lua', 'editor/lua/opts.lua'])
+    })
+
+    it('flags a renamed binary file', async () => {
+      await writeBuildFile(root, 'blob', Buffer.from([0, 1, 2]))
+      expect(await renameBuildFile(root, 'blob', 'theme.bin'))
+        .toEqual({ path: 'theme.bin', size: 3, binary: true })
+    })
+
+    it('is a no-op success when source and destination are the same', async () => {
+      await writeBuildFile(root, 'a.txt', Buffer.from('hi'))
+      expect(await renameBuildFile(root, 'a.txt', './a.txt'))
+        .toEqual({ path: 'a.txt', size: 2, binary: false })
+    })
+
+    it('throws NOT_FOUND for a missing source', async () => {
+      await expect(renameBuildFile(root, 'nope', 'other'))
+        .rejects.toMatchObject({ code: 'NOT_FOUND' })
+    })
+
+    it('refuses to clobber an existing destination', async () => {
+      await writeBuildFile(root, 'a.txt', Buffer.from('a'))
+      await writeBuildFile(root, 'b.txt', Buffer.from('b'))
+      await expect(renameBuildFile(root, 'a.txt', 'b.txt'))
+        .rejects.toMatchObject({ code: 'VALIDATION' })
+      // Both files are untouched.
+      expect(await fs.readFile(path.join(root, 'a.txt'), 'utf8')).toBe('a')
+      expect(await fs.readFile(path.join(root, 'b.txt'), 'utf8')).toBe('b')
+    })
+
+    it('rejects escaping or reserved source and destination paths', async () => {
+      await writeBuildFile(root, 'a.txt', Buffer.from('a'))
+      await expect(renameBuildFile(root, 'a.txt', '../escape'))
+        .rejects.toMatchObject({ code: 'VALIDATION' })
+      await expect(renameBuildFile(root, 'a.txt', 'Dockerfile.user'))
+        .rejects.toThrow(/Dockerfile editor/)
+      await expect(renameBuildFile(root, '../etc/passwd', 'a.txt'))
         .rejects.toMatchObject({ code: 'VALIDATION' })
     })
   })

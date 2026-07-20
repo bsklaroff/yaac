@@ -56,6 +56,15 @@ describe('projectBuildFilesApi', () => {
     expect(JSON.parse(init.body as string)).toEqual({ path: 'b.bin', contentBase64: 'AAE=' })
   })
 
+  it('rename POSTs /rename with { from, to }', async () => {
+    const fetchMock = stub({ path: 'b.txt', size: 1, binary: false })
+    await projectBuildFilesApi('demo').rename('a.txt', 'b.txt')
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/project/demo/build-files/rename')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body as string)).toEqual({ from: 'a.txt', to: 'b.txt' })
+  })
+
   it('remove DELETEs /file with the path query', async () => {
     const fetchMock = stub(undefined, 200)
     await projectBuildFilesApi('demo').remove('a.txt')

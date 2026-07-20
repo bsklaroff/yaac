@@ -5,6 +5,7 @@ import {
   deleteBuildFile,
   listBuildFiles,
   readBuildFile,
+  renameBuildFile,
   writeBuildFile,
 } from '#lib/project/build-files'
 
@@ -45,6 +46,14 @@ export function buildFilesApp(resolveRoot: (c: Context) => Promise<string>) {
           ? Buffer.from(content, 'utf8')
           : Buffer.from(contentBase64!, 'base64')
         return c.json(await writeBuildFile(await resolveRoot(c), rel, data))
+      },
+    )
+    .post(
+      '/rename',
+      zv('json', z.object({ from: z.string().min(1), to: z.string().min(1) })),
+      async (c) => {
+        const { from, to } = c.req.valid('json')
+        return c.json(await renameBuildFile(await resolveRoot(c), from, to))
       },
     )
     .delete(

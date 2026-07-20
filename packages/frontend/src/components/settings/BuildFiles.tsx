@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type JSX } fr
 import clsx from 'clsx'
 import { FileEditor } from '#components/settings/FileEditor'
 import type { CodeLanguage } from '#components/ui/CodeEditor'
-import { DeleteIcon } from '#lib/icons'
+import { DeleteIcon, RenameIcon } from '#lib/icons'
 import type { BuildFileEntry, BuildFilesApi } from '#lib/buildFilesApi'
 
 function errMessage(e: unknown): string {
@@ -95,6 +95,22 @@ export function BuildFiles({ filesApi, title }: {
     }
   }
 
+  const renameFile = async (from: string): Promise<void> => {
+    const raw = window.prompt(`Rename ${from} to:`, from)
+    const to = raw?.trim()
+    if (!to || to === from) return
+    setError(null)
+    try {
+      await filesApi.rename(from, to)
+      // Follow the open editor to the new path (file or a parent folder move).
+      if (selected === from) setSelected(to)
+      else if (selected?.startsWith(`${from}/`)) setSelected(`${to}${selected.slice(from.length)}`)
+      await refresh()
+    } catch (e) {
+      setError(errMessage(e))
+    }
+  }
+
   const removeFile = async (path: string): Promise<void> => {
     if (!window.confirm(`Delete ${path}?`)) return
     setError(null)
@@ -154,6 +170,15 @@ export function BuildFiles({ filesApi, title }: {
               <span className="shrink-0 font-mono text-[10px] text-text-faint">
                 {f.binary && 'binary · '}{formatSize(f.size)}
               </span>
+              <button
+                type="button"
+                onClick={() => void renameFile(f.path)}
+                title={`Rename ${f.path}`}
+                aria-label={`Rename ${f.path}`}
+                className="shrink-0 rounded p-0.5 text-text-faint transition hover:text-text"
+              >
+                <RenameIcon size={12} />
+              </button>
               <button
                 type="button"
                 onClick={() => void removeFile(f.path)}

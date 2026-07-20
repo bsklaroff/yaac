@@ -26,6 +26,8 @@ export interface BuildFilesApi {
   saveText(path: string, content: string): Promise<BuildFileEntry>
   /** Upload raw bytes (base64 over the same JSON route as text saves). */
   upload(path: string, data: ArrayBuffer): Promise<BuildFileEntry>
+  /** Rename (move) a file or folder; rejects if the destination exists. */
+  rename(from: string, to: string): Promise<BuildFileEntry>
   remove(path: string): Promise<void>
 }
 
@@ -49,6 +51,7 @@ export function projectBuildFilesApi(slug: string): BuildFilesApi {
     saveText: (path, content) => bf.file.$put({ param: { slug }, json: { path, content } }),
     upload: (path, data) =>
       bf.file.$put({ param: { slug }, json: { path, contentBase64: encodeBase64(data) } }),
+    rename: (from, to) => bf.rename.$post({ param: { slug }, json: { from, to } }),
     remove: async (path) => {
       await bf.file.$delete({ param: { slug }, query: { path } })
     },
@@ -64,6 +67,7 @@ export function userBuildFilesApi(): BuildFilesApi {
     saveText: (path, content) => bf.file.$put({ json: { path, content } }),
     upload: (path, data) =>
       bf.file.$put({ json: { path, contentBase64: encodeBase64(data) } }),
+    rename: (from, to) => bf.rename.$post({ json: { from, to } }),
     remove: async (path) => {
       await bf.file.$delete({ query: { path } })
     },

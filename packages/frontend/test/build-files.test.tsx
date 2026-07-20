@@ -47,6 +47,16 @@ function fakeApi(initial: Record<string, string | Uint8Array> = {}): BuildFilesA
       store.set(path, new Uint8Array(data))
       return Promise.resolve(entry(path))
     },
+    rename: (from, to) => {
+      if (store.has(to)) return Promise.reject(new Error(`path already exists: ${to}`))
+      for (const key of [...store.keys()]) {
+        if (key === from || key.startsWith(`${from}/`)) {
+          store.set(`${to}${key.slice(from.length)}`, store.get(key)!)
+          store.delete(key)
+        }
+      }
+      return Promise.resolve(entry(to))
+    },
     remove: (path) => {
       for (const key of [...store.keys()]) {
         if (key === path || key.startsWith(`${path}/`)) store.delete(key)
@@ -119,6 +129,21 @@ describe('BuildFiles', () => {
       expect(confirmSpy).toHaveBeenCalledWith('Delete a.txt?')
     } finally {
       confirmSpy.mockRestore()
+    }
+  })
+
+  it('renames a file via the prompt', async () => {
+    const filesApi = fakeApi({ 'a.txt': 'x' })
+    const promptSpy = vi.spyOn(window, 'prompt').mockReturnValue('nvim/b.txt')
+    try {
+      render(<BuildFiles filesApi={filesApi} title="demo" />)
+      fireEvent.click(await screen.findByRole('button', { name: 'Rename a.txt' }))
+      await screen.findByText('nvim/b.txt')
+      expect(promptSpy).toHaveBeenCalledWith('Rename a.txt to:', 'a.txt')
+      expect(filesApi.store.has('a.txt')).toBe(false)
+      expect(filesApi.store.get('nvim/b.txt')).toBe('x')
+    } finally {
+      promptSpy.mockRestore()
     }
   })
 

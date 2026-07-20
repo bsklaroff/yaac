@@ -158,6 +158,51 @@ export async function writeBuildFile(root: string, rel: string, data: Buffer): P
   return { path: path.relative(root, abs), size: data.length, binary: data.includes(0) }
 }
 
+/**
+ * Rename (move) one file or folder within the build dir. Both paths go
+ * through `resolveBuildFilePath`, so neither can escape the root or touch a
+ * root Dockerfile (those stay behind their validated editor). Refuses to
+ * clobber an existing destination — a rename must never silently overwrite —
+ * and creates the destination's parent folders as needed. Total bytes are
+ * unchanged, so no context-cap check is required.
+ */
+export async function renameBuildFile(root: string, from: string, to: string): Promise<BuildFileEntry> {
+  const src = resolveBuildFilePath(root, from)
+  const dst = resolveBuildFilePath(root, to)
+  let stat
+  try {
+    stat = await fs.stat(src)
+  } catch {
+    throw new ServerError('NOT_FOUND', `no build file at ${from}`)
+  }
+  if (src !== dst) {
+    try {
+      await fs.access(dst)
+      throw new ServerError('VALIDATION', `path already exists: ${to}`)
+    } catch (err) {
+      if (err instanceof ServerError) throw err
+      // ENOENT — the destination is free, so fall through to the rename.
+    }
+  }
+  try {
+    await fs.mkdir(path.dirname(dst), { recursive: true })
+    await fs.rename(src, dst)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    // A path segment crossing an existing file, or a move onto a non-empty
+    // dir, is a caller mistake, not a crash.
+    if (code === 'ENOTDIR' || code === 'EEXIST' || code === 'EISDIR') {
+      throw new ServerError('VALIDATION', `path conflicts with an existing entry: ${to}`)
+    }
+    throw err
+  }
+  return {
+    path: path.relative(root, dst),
+    size: stat.size,
+    binary: stat.isFile() ? await isBinaryFile(dst) : false,
+  }
+}
+
 /** Delete one file or folder (recursive). */
 export async function deleteBuildFile(root: string, rel: string): Promise<void> {
   const abs = resolveBuildFilePath(root, rel)
