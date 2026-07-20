@@ -12,6 +12,12 @@ stale. Discovery surfaces them as the `system` / `yaac` tier.
 See `packages/server/src/lib/skills/builtin.ts` (staging + mounts) and
 `packages/server/src/lib/skills/discover.ts` (discovery).
 
-No skills ship yet — drop a `<name>/SKILL.md` dir in here to add one. Keep
-names distinct from what users are likely to name their own personal skills
-(the two share a directory in-pod).
+Add a skill by dropping a `<name>/SKILL.md` dir in here. Keep names distinct
+from what users are likely to name their own personal skills (the two share a
+directory in-pod).
+
+Shipped skills:
+
+- **`yaac-autoconfig`** — generate a `yaac-config.json` template for the current
+  repo (install/build/start the project + forward its ports) for the user to
+  apply to their project config.
