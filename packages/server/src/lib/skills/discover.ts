@@ -391,6 +391,15 @@ function markShadowed(skills: DiscoveredSkill[]): void {
 
 const SOURCE_ORDER: Record<SkillSource, number> = { personal: 0, plugin: 1, project: 2, system: 3 }
 
+/** Sort rank finer than source alone: within the `system` tier, yaac's own
+ *  shipped built-ins (`sourceLabel` `yaac`) sort above the agent's
+ *  binary-bundled built-ins so the viewer can head them as two distinct
+ *  groups ("yaac built-in" then "<agent> built-in"). */
+function groupRank(s: SkillSummary): number {
+  if (s.source !== 'system') return SOURCE_ORDER[s.source]
+  return s.sourceLabel === 'yaac' ? SOURCE_ORDER.system : SOURCE_ORDER.system + 1
+}
+
 /** A short body shown for a list-only bundled skill — we have its name and
  *  description from the docs, but not the full SKILL.md. */
 const BUNDLED_BODY =
@@ -428,7 +437,7 @@ async function discover(tool: AgentTool, slug: string, branch?: string): Promise
   if (tool === 'claude') flat.push(...claudeBundledDiscovered())
   const all = dedupeById(flat)
   markShadowed(all)
-  all.sort((a, b) => SOURCE_ORDER[a.source] - SOURCE_ORDER[b.source] || a.name.localeCompare(b.name))
+  all.sort((a, b) => groupRank(a) - groupRank(b) || a.name.localeCompare(b.name))
   return all
 }
 

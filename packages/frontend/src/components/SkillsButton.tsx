@@ -18,6 +18,29 @@ const SOURCE_LABEL: Record<SkillSource, string> = {
   system: 'Built-in',
 }
 
+/**
+ * List grouping is finer than `source` alone: the `system` tier holds both
+ * yaac's own shipped built-ins (`sourceLabel` `yaac`) and the agent binary's
+ * bundled built-ins, and we head them as two separate sections — "yaac
+ * built-in" above the agent's own "<Agent> built-in".
+ */
+type SkillGroup = 'personal' | 'plugin' | 'project' | 'yaac' | 'tool'
+
+function skillGroup(s: SkillSummary): SkillGroup {
+  if (s.source !== 'system') return s.source
+  return s.sourceLabel === 'yaac' ? 'yaac' : 'tool'
+}
+
+function groupLabel(group: SkillGroup, tool: AgentTool): string {
+  switch (group) {
+    case 'personal': return 'Personal'
+    case 'plugin': return 'Plugin'
+    case 'project': return 'Project'
+    case 'yaac': return 'yaac built-in'
+    case 'tool': return `${TOOL_LABEL[tool]} built-in`
+  }
+}
+
 /** A one-line tag row: source, plugin name, and invocation caveats. */
 function SkillTags({ skill }: { skill: SkillSummary }): JSX.Element {
   const tags: string[] = [SOURCE_LABEL[skill.source]]
@@ -80,9 +103,10 @@ function SkillDetailPane(
  * in the sidebar header and its open state lives in the store.
  *
  * The overlay is a search-filtered master/detail list grouped by source;
- * picking a row fetches and shows its full `SKILL.md`. Bundled skills (embedded
- * in the agent binary) are intentionally excluded — there is no supported way
- * to enumerate them.
+ * picking a row fetches and shows its full `SKILL.md`. The built-in (`system`)
+ * tier is split into two sections: yaac's own shipped skills ("yaac built-in")
+ * above the agent's binary-bundled skills ("<Agent> built-in") — the latter are
+ * list-only (name + description from the agent's docs), with a placeholder body.
  */
 export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Element {
   const open = useUiStore((s) => s.skillsOverlayOpen)
@@ -244,7 +268,7 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
             <EmptyState
               className="flex-1"
               title={`No ${TOOL_LABEL[tool]} skills found`}
-              description="Personal, plugin, and project SKILL.md files show up here. Skills built into the agent binary aren't listed."
+              description="Personal, plugin, project, and built-in SKILL.md files show up here."
             />
           ) : (
             <div className="flex min-h-0 flex-1 gap-3">
@@ -264,12 +288,13 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
                     </li>
                   )}
                   {rows.map((s, i) => {
-                    const showHeader = i === 0 || rows[i - 1].source !== s.source
+                    const group = skillGroup(s)
+                    const showHeader = i === 0 || skillGroup(rows[i - 1]) !== group
                     return (
                       <li key={s.id}>
                         {showHeader && (
                           <div className="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wide text-text-faint">
-                            {SOURCE_LABEL[s.source]}
+                            {groupLabel(group, tool)}
                           </div>
                         )}
                         <button

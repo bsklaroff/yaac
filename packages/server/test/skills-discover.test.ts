@@ -282,6 +282,19 @@ describe('getProjectSkills (yaac builtin tier)', () => {
     expect(detail).toMatchObject({ name: 'yaac-welcome', source: 'system' })
     expect(detail.body.trim()).toBe('welcome-body')
   })
+
+  it('sorts the yaac builtin tier above the agent bundled tier within system', async () => {
+    await seedBuiltin()
+    // A bundled skill whose name sorts before the yaac one: rank, not name,
+    // must still place yaac first so the viewer heads them as two groups.
+    setClaudeBundledSkills([{ name: 'aardvark-review', description: 'x' }])
+    const { skills } = await getProjectSkills('claude', slug)
+    const system = skills.filter((s) => s.source === 'system')
+    expect(system.map((s) => `${s.sourceLabel}:${s.name}`)).toEqual([
+      'yaac:yaac-welcome',
+      'bundled:aardvark-review',
+    ])
+  })
 })
 
 describe('getProjectSkills (codex)', () => {
