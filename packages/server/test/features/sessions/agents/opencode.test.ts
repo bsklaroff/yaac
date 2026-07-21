@@ -23,7 +23,7 @@ import { getDb, closeDb } from '#platform/db/client'
 import { opencodeSessionMeta } from '#platform/db/schema'
 import {
   pickOpencodeSession,
-  classifyOpencodePane,
+  OPENCODE_BUSY_MARKERS,
   getSessionOpencodeFirstUserMessage,
   getDeletedSessionOpencodeFirstUserMessage,
   ensureOpencodeFirstMessageCaptured,
@@ -41,8 +41,8 @@ const mockListPods = vi.mocked(listSessionPods)
 /**
  * The HTTP probe (`curl /session`) goes through `containerExec`; the
  * helper installs a dispatching implementation so tests control it.
- * (Pane classification is watcher-fed now — `classifyOpencodePane` is
- * tested directly on strings.)
+ * (Busy/idle classification runs inside tmux now — the markers are pinned
+ * here and validated end-to-end by verify-tmux-status-format.js.)
  */
 function mockProbeResult(result: { stdout: string; stderr: string } | Error): void {
   mockedExec.mockImplementation((_jobName: string, cmd: string) => {
@@ -127,53 +127,17 @@ describe('opencode-status', () => {
     })
   })
 
-  describe('classifyOpencodePane', () => {
-    it('classifies "esc interrupt" as running', () => {
-      expect(classifyOpencodePane('Some output here\n  esc interrupt\n')).toBe('running')
-    })
-
-    it('classifies "esc again to interrupt" (after one ESC) as running', () => {
-      expect(classifyOpencodePane('  esc again to interrupt\n')).toBe('running')
-    })
-
-    it('classifies the animated busy strip as running', () => {
-      // Live opencode 1.17.11 footer: an 8-cell strip mixing ■ and ⬝,
-      // then the interrupt hint. Either signal alone must be enough —
-      // a narrow pane can truncate the hint away.
-      expect(classifyOpencodePane('   ■■■■■⬝⬝⬝  esc interrupt\n')).toBe('running')
-      expect(classifyOpencodePane('   ⬝⬝⬝⬝⬝⬝⬝⬝\n')).toBe('running')
-      expect(classifyOpencodePane('   ■■■■\n')).toBe('running')
-      expect(classifyOpencodePane('   ■⬝■⬝\n')).toBe('running')
-    })
-
-    it('does not treat short block runs as the busy strip', () => {
-      // Bullets or box-drawing in transcript text can contain a few ■/⬝
-      // cells; only a run of 4+ counts as the strip.
-      expect(classifyOpencodePane('■ item one\n■ item two\n')).toBe('waiting')
-      expect(classifyOpencodePane('■■■ almost\n')).toBe('waiting')
-    })
-
-    it('classifies an idle pane (no markers) as waiting', () => {
-      expect(classifyOpencodePane('> _\nReady\n')).toBe('waiting')
-    })
-
-    it('classifies a permission dialog as waiting (busy footer is replaced)', () => {
-      // Permission / question dialogs are footer panels: the status line
-      // carrying the strip and interrupt hint only renders when no panel
-      // is open, so a user-blocked pane carries neither signal.
-      expect(classifyOpencodePane(
-        '△ Permission required\n  ⚙ Call tool bash\n  enter allow\n',
-      )).toBe('waiting')
-    })
-
-    it('classifies a question dialog as waiting', () => {
-      expect(classifyOpencodePane(
-        'Pick one:\n  > A\n    B\n  enter submit  esc dismiss\n',
-      )).toBe('waiting')
-    })
-
-    it('matches the interrupt hint case-insensitively', () => {
-      expect(classifyOpencodePane('ESC INTERRUPT\n')).toBe('running')
+  describe('OPENCODE_BUSY_MARKERS', () => {
+    it('pins the tmux-ERE busy markers the status format searches for', () => {
+      // These are encoded into a tmux content-search format by
+      // busyStatusFormat (status-watcher.ts) and validated against a live
+      // tmux by test-playwright-scripts/verify-tmux-status-format.js. The
+      // interrupt hint covers "esc interrupt" / "esc again to interrupt";
+      // the strip is 4+ ■/⬝ cells (short runs in transcript text don't count).
+      expect(OPENCODE_BUSY_MARKERS).toEqual([
+        'esc\\s+(again\\s+to\\s+)?interrupt',
+        '[■⬝][■⬝][■⬝][■⬝]',
+      ])
     })
   })
 

@@ -4,10 +4,12 @@
  *
  * The stream is both channels at once:
  * - notifications push state at us (`%subscription-changed` carries the
- *   agent pane's OSC title inline; `%output` is the opencode dirty bit),
+ *   subscribed status format's value inline; `%output` — a pane's raw
+ *   redraw bytes — is parsed but unused, since the watchers attach
+ *   `no-output`),
  * - commands ride the same connection (`send()` writes a command line
  *   and resolves with the `%begin`/`%end`-framed reply body), which is
- *   what makes the heartbeat and `capture-pane` free of extra execs.
+ *   what makes the heartbeat free of extra execs.
  *
  * Protocol facts this encodes (verified against tmux 3.4, the version
  * in the session image):

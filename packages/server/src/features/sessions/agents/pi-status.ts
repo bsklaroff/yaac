@@ -15,32 +15,31 @@ import { scanJsonlForward } from '#features/sessions/jsonl'
  * The files persist across container teardown, so the live and deleted-session
  * lookups are the same read.
  *
- * Status is read from the rendered tmux pane (window `yaac:pi.0`), captured by
- * the session's status watcher (`src/server/status-watcher.ts`) over its
- * persistent control-mode stream — the same `%output`-dirty-bit path opencode
- * uses — and classified with `classifyPiPane`.
+ * Status is read from the rendered tmux pane (window `yaac:pi.0`). The busy/idle
+ * classification runs *inside tmux*: the session's status watcher
+ * (`src/server/status-watcher.ts`) subscribes to a format built from
+ * `PI_BUSY_MARKERS`, so only the resolved word crosses the control-mode stream
+ * — the rendered pane never does, the same path opencode uses.
  */
 
 /**
- * Classify a captured pi tmux pane into `running` / `waiting`.
+ * Busy markers for a pi pane, as tmux ERE patterns (see `busyStatusFormat` in
+ * status-watcher.ts). Any match in the visible pane means `running`; none means
+ * `waiting` (a still-booting pane, or one sitting at the prompt).
  *
  * pi does not document a busy/idle terminal-title signal, so we read the
  * rendered pane: while a turn is in flight pi shows an interrupt hint
- * ("esc to interrupt" / "esc to cancel") and/or a "working"/"thinking"
- * status; a pane waiting for input carries neither. Defaults to `waiting`
- * (a still-booting pane, or one sitting at the prompt).
+ * ("esc to interrupt" / "esc to cancel") and/or a "working"/"thinking" status.
  *
- * NOTE: the exact markers are validated against a live pi session — refine
- * these patterns if pi's footer wording differs.
+ * tmux-ERE constraints (matched case-insensitively via `#{C/ri:}`): use `(...)`
+ * not `(?:...)`, no `{n,}` intervals. NOTE: the exact markers are validated
+ * against a live pi session — refine these patterns if pi's footer wording
+ * differs.
  */
-const PI_INTERRUPT_HINT = /esc\s+(?:to\s+)?(?:interrupt|cancel|stop)/i
-const PI_WORKING_HINT = /\b(?:thinking|working|generating|streaming|running)\b/i
-
-export function classifyPiPane(paneContent: string): 'running' | 'waiting' {
-  if (PI_INTERRUPT_HINT.test(paneContent)) return 'running'
-  if (PI_WORKING_HINT.test(paneContent)) return 'running'
-  return 'waiting'
-}
+export const PI_BUSY_MARKERS: readonly string[] = [
+  'esc\\s+(to\\s+)?(interrupt|cancel|stop)',
+  '\\b(thinking|working|generating|streaming|running)\\b',
+]
 
 interface PiMessageEntry {
   type?: unknown

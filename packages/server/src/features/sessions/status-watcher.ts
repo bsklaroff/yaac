@@ -3,8 +3,8 @@ import { stdinExecArgs } from '#platform/k8s/exec'
 import { isPrewarmed, type SessionPod } from '#platform/k8s/pods'
 import { classifyClaudeTitle } from '#features/sessions/agents/claude-status'
 import { classifyCodexTitle } from '#features/sessions/agents/codex'
-import { classifyOpencodePane } from '#features/sessions/agents/opencode'
-import { classifyPiPane } from '#features/sessions/agents/pi-status'
+import { OPENCODE_BUSY_MARKERS } from '#features/sessions/agents/opencode'
+import { PI_BUSY_MARKERS } from '#features/sessions/agents/pi-status'
 import { normalizeTool } from '#features/sessions/state'
 import {
   evictSessionStatus,
@@ -26,18 +26,25 @@ import type { AgentTool } from '@yaac/shared/types'
  * Per-session status watchers: one persistent tmux control-mode client
  * per running session pod, held open through `kubectl exec -i` (no TTY
  * — control mode must not run under a PTY). Together with the pod
- * watcher this replaces every timer-driven status probe:
+ * watcher this replaces every timer-driven status probe.
  *
- * - claude / codex: the watcher subscribes to the agent pane's
- *   `#{pane_title}` (`refresh-client -B`); tmux pushes the current
- *   value at the first ~1s format check and again on every change, so
- *   there is no unclassified window — critical because an idle pane
- *   emits no output, ever.
- * - opencode: status lives in the rendered pane, so `%output` events
- *   for the agent pane are a dirty bit that triggers a debounced
- *   `capture-pane` over the same stream. claude/codex attach with the
- *   `no-output` client flag instead, so their TUI redraw traffic never
- *   crosses the exec stream.
+ * Every tool is classified the same way: the watcher subscribes
+ * (`refresh-client -B`) to a per-tool status format and tmux pushes the
+ * resolved value at the first ~1s format check and again on every change,
+ * so there is no unclassified window — critical because an idle pane emits
+ * no output, ever. The format differs by where the tool exposes its state:
+ *
+ * - claude / codex publish busy/idle in the pane's OSC title, so the
+ *   format is `#{pane_title}` and the pushed value is classified in the
+ *   server (`classifyAgentObservation`).
+ * - opencode / pi render it into the pane, so the format is a
+ *   `busyStatusFormat` that searches the visible grid (`#{C/ri:}`)
+ *   *inside tmux* and pushes the already-resolved `running`/`waiting`.
+ *
+ * Because no tool's status is read from raw pane output, every watcher
+ * attaches with the `no-output` client flag (`attachClientFlags`): agent
+ * TUI redraws never cross the exec stream — only the short status value
+ * does.
  *
  * A heartbeat command every `heartbeatIntervalMs` doubles as the wedge
  * detector (a hung exec stream would otherwise freeze status forever):
@@ -64,13 +71,11 @@ export interface WatchedSession {
 
 export interface StatusWatcherDeps {
   /** Injected for tests — replaces the real kubectl-exec spawn. */
-  spawnAttach?: (jobName: string, tool: AgentTool) => AttachChild
+  spawnAttach?: (jobName: string) => AttachChild
   /** Heartbeat cadence over the open stream. Default 20s. */
   heartbeatIntervalMs?: number
   /** Init-command / heartbeat reply deadline. Default 10s. */
   commandTimeoutMs?: number
-  /** Quiet window after an %output burst before re-capturing. Default 300ms. */
-  captureDebounceMs?: number
   /** First respawn delay after a stream death; doubles to the max. */
   respawnDelayMs?: number
   maxRespawnDelayMs?: number
@@ -78,34 +83,60 @@ export interface StatusWatcherDeps {
 }
 
 /**
- * Whether a tool's status is read from the rendered pane (capture-pane +
- * %output dirty bit) rather than the pane's OSC title. opencode and pi both
- * render their busy/idle state into the pane and expose no reliable title
- * signal; claude/codex push it through the title.
+ * The tmux status format a tool's watcher subscribes to. claude/codex expose
+ * busy/idle in the pane's OSC title, so the format is `#{pane_title}` and the
+ * pushed value is classified server-side (`classifyAgentObservation`).
+ * opencode/pi render it into the pane, so the format resolves the verdict
+ * inside tmux and pushes `running`/`waiting` directly.
  */
-function usesPaneCapture(tool: AgentTool): boolean {
-  return tool === 'opencode' || tool === 'pi'
+function statusFormat(tool: AgentTool): string {
+  if (tool === 'opencode') return busyStatusFormat(OPENCODE_BUSY_MARKERS)
+  if (tool === 'pi') return busyStatusFormat(PI_BUSY_MARKERS)
+  return '#{pane_title}'
 }
 
 /**
- * Classify a watcher observation for a tool: the pane's OSC title for
- * claude/codex, captured pane content for opencode/pi.
+ * Build a tmux format that resolves to `running`/`waiting` by searching the
+ * visible pane for any of `markers` (each an ERE, matched case-insensitively
+ * via `#{C/ri:}` — a content search over the visible grid). The markers are
+ * OR'd; a match in the pane means `running`, none means `waiting`.
+ *
+ * Markers must obey tmux-ERE limits (see the agent modules' definitions): no
+ * `(?:...)` (use `(...)`), no `{n,}` interval (whose `}` would close the
+ * `#{...}`), and no literal `,` (the `#{||:}`/`#{?}` argument separator).
+ */
+export function busyStatusFormat(markers: readonly string[]): string {
+  const anyBusy = markers
+    .map((m) => `#{C/ri:${m}}`)
+    .reduceRight((acc, probe) => (acc ? `#{||:${probe},${acc}}` : probe), '')
+  return `#{?${anyBusy},running,waiting}`
+}
+
+/**
+ * Classify a pushed subscription value for a tool. claude/codex push the pane
+ * title (classified by the Braille-spinner prefix); opencode/pi push an
+ * already-resolved verdict from their tmux-side `busyStatusFormat`.
  */
 export function classifyAgentObservation(tool: AgentTool, observed: string): SessionAgentStatus {
   if (tool === 'codex') return classifyCodexTitle(observed)
-  if (tool === 'opencode') return classifyOpencodePane(observed)
-  if (tool === 'pi') return classifyPiPane(observed)
+  if (tool === 'opencode' || tool === 'pi') return observed.trim() === 'running' ? 'running' : 'waiting'
   return classifyClaudeTitle(observed)
 }
 
-function spawnKubectlAttach(jobName: string, tool: AgentTool): AttachChild {
-  // read-only: the watcher must never inject input; ignore-size: keep
-  // this client out of window-size negotiation (the pane-capture classifiers
-  // read the rendered grid); no-output for title-based tools so agent
-  // TUI redraws don't stream through the exec connection for nothing.
-  const flags = usesPaneCapture(tool) ? 'read-only,ignore-size' : 'read-only,ignore-size,no-output'
+/**
+ * tmux attach-client flags for a status watcher. `read-only` (it must never
+ * inject input), `ignore-size` (kept out of window-size negotiation, so it
+ * can't reshape the grid the content search reads), and `no-output` (no tool's
+ * status comes from raw pane output, so agent TUI redraws never cross the exec
+ * stream — only the subscription's short status value does).
+ */
+export function attachClientFlags(): string {
+  return 'read-only,ignore-size,no-output'
+}
+
+function spawnKubectlAttach(jobName: string): AttachChild {
   return spawn('kubectl', stdinExecArgs(jobName, [
-    'tmux', '-S', CONTAINER_TMUX_SOCK, '-C', 'attach-session', '-t', 'yaac', '-f', flags,
+    'tmux', '-S', CONTAINER_TMUX_SOCK, '-C', 'attach-session', '-t', 'yaac', '-f', attachClientFlags(),
   ]), { stdio: ['pipe', 'pipe', 'pipe'] })
 }
 
@@ -130,14 +161,10 @@ export class SessionStatusWatcher {
   private respawnTimer: NodeJS.Timeout | null = null
   private heartbeatTimer: NodeJS.Timeout | null = null
   private heartbeatInFlight = false
-  private captureTimer: NodeJS.Timeout | null = null
-  private captureInFlight = false
-  private captureDirty = false
 
-  private readonly spawnAttach: (jobName: string, tool: AgentTool) => AttachChild
+  private readonly spawnAttach: (jobName: string) => AttachChild
   private readonly heartbeatIntervalMs: number
   private readonly commandTimeoutMs: number
-  private readonly captureDebounceMs: number
   private readonly respawnDelayMs: number
   private readonly maxRespawnDelayMs: number
   private readonly log: (msg: string) => void
@@ -146,7 +173,6 @@ export class SessionStatusWatcher {
     this.spawnAttach = deps.spawnAttach ?? spawnKubectlAttach
     this.heartbeatIntervalMs = deps.heartbeatIntervalMs ?? 20_000
     this.commandTimeoutMs = deps.commandTimeoutMs ?? 10_000
-    this.captureDebounceMs = deps.captureDebounceMs ?? 300
     this.respawnDelayMs = deps.respawnDelayMs ?? 1_000
     this.maxRespawnDelayMs = deps.maxRespawnDelayMs ?? 30_000
     this.log = deps.log ?? serverLog
@@ -168,11 +194,11 @@ export class SessionStatusWatcher {
   private connect(): void {
     if (this.stopped) return
     const generation = ++this.streamGeneration
-    const { sessionId, jobName, tool } = this.session
+    const { sessionId, jobName } = this.session
 
     let child: AttachChild
     try {
-      child = this.spawnAttach(jobName, tool)
+      child = this.spawnAttach(jobName)
     } catch (err) {
       this.log(`[server] status-watcher ${sessionId}: spawn failed: ${String(err)}`)
       this.scheduleRespawn()
@@ -199,9 +225,10 @@ export class SessionStatusWatcher {
 
   /**
    * Post-attach setup, all over the stream: resolve the agent pane id,
-   * then either subscribe to its title (claude/codex) or take the
-   * initial pane capture (opencode — its subscription is the %output
-   * dirty bit, which needs no registration).
+   * then subscribe to the tool's status format. tmux pushes the current
+   * value at its next ~1s format check, so the first classification
+   * arrives without any change; until then the attach itself already
+   * proves tmux is up.
    */
   private async init(generation: number, client: ControlModeClient): Promise<void> {
     const { tool } = this.session
@@ -213,19 +240,14 @@ export class SessionStatusWatcher {
     if (generation !== this.streamGeneration || this.stopped) return
     this.agentPaneId = paneId
 
-    if (usesPaneCapture(tool)) {
-      const pane = await send(`capture-pane -pJ -t yaac:${tool}.0`)
-      if (generation !== this.streamGeneration || this.stopped) return
-      this.recordStatus(classifyAgentObservation(tool, pane))
-    } else {
-      await send(`refresh-client -B "status:${paneId}:#{pane_title}"`)
-      if (generation !== this.streamGeneration || this.stopped) return
-      // The subscription pushes the current title at tmux's next ~1s
-      // format check, so the first classification arrives without any
-      // title change. Until then the attach itself already proves tmux
-      // is up.
-      setSessionStreamHealth(this.session.slug, this.session.sessionId, true)
-    }
+    // Single-quote the -B argument: tmux processes C escapes (`\b`, `\t`, …)
+    // inside double quotes, which would corrupt an ERE word boundary in the
+    // status format; single quotes carry the format string literally. Safe
+    // because the format literal never contains a `'` (a pane title's runtime
+    // value is expanded later, per-client — it's not on this command line).
+    await send(`refresh-client -B 'status:${paneId}:${statusFormat(tool)}'`)
+    if (generation !== this.streamGeneration || this.stopped) return
+    setSessionStreamHealth(this.session.slug, this.session.sessionId, true)
 
     // The stream is proven end to end — publish it as the session's
     // command channel so read-only tmux queries (the webapp terminals
@@ -251,48 +273,12 @@ export class SessionStatusWatcher {
       this.recordStatus(classifyAgentObservation(this.session.tool, n.value))
       return
     }
-    // %output — only meaningful as the pane-capture tools' dirty bit.
-    if (!usesPaneCapture(this.session.tool) || n.paneId !== this.agentPaneId) return
-    this.scheduleCapture(generation)
+    // %output — never subscribed to now (every watcher attaches no-output),
+    // so agent pane redraws don't reach us. Ignored if one ever does.
   }
 
   private recordStatus(status: SessionAgentStatus): void {
     setSessionStatus(this.session.slug, this.session.sessionId, status)
-  }
-
-  /** Debounced-trailing capture: bursts of %output collapse to one. */
-  private scheduleCapture(generation: number): void {
-    if (this.captureInFlight) {
-      this.captureDirty = true
-      return
-    }
-    if (this.captureTimer) return
-    this.captureTimer = setTimeout(() => {
-      this.captureTimer = null
-      void this.capture(generation)
-    }, this.captureDebounceMs)
-  }
-
-  private async capture(generation: number): Promise<void> {
-    const client = this.client
-    if (!client || generation !== this.streamGeneration || this.stopped) return
-    this.captureInFlight = true
-    this.captureDirty = false
-    try {
-      const pane = await withTimeout(
-        client.send(`capture-pane -pJ -t yaac:${this.session.tool}.0`),
-        this.commandTimeoutMs,
-        'tmux capture-pane',
-      )
-      if (generation !== this.streamGeneration || this.stopped) return
-      this.recordStatus(classifyAgentObservation(this.session.tool, pane))
-    } catch (err) {
-      this.onStreamDown(generation, `capture failed: ${String(err)}`)
-      return
-    } finally {
-      this.captureInFlight = false
-    }
-    if (this.captureDirty) this.scheduleCapture(generation)
   }
 
   /**
@@ -326,9 +312,6 @@ export class SessionStatusWatcher {
   private teardownStream(): void {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
     this.heartbeatTimer = null
-    if (this.captureTimer) clearTimeout(this.captureTimer)
-    this.captureTimer = null
-    this.captureDirty = false
     if (this.registeredSend) {
       unregisterSessionControlStream(this.session.jobName, this.registeredSend)
       this.registeredSend = null

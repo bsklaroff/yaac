@@ -5,30 +5,23 @@ import os from 'node:os'
 
 import { setDataDir, piSessionsDir } from '@yaac/shared/project-paths'
 import {
-  classifyPiPane,
+  PI_BUSY_MARKERS,
   getSessionPiFirstUserMessage,
   hasPiSessionLog,
   listPiSessionRecords,
 } from '#features/sessions/agents/pi-status'
 
-describe('classifyPiPane', () => {
-  it('returns running when the pane shows an interrupt hint', () => {
-    expect(classifyPiPane('… esc to interrupt')).toBe('running')
-    expect(classifyPiPane('press esc to cancel')).toBe('running')
-  })
-
-  it('returns running when the pane shows a working indicator', () => {
-    expect(classifyPiPane('Thinking…')).toBe('running')
-    expect(classifyPiPane('Generating response')).toBe('running')
-  })
-
-  it('returns waiting for an idle prompt pane', () => {
-    expect(classifyPiPane('> ')).toBe('waiting')
-    expect(classifyPiPane('Ready. Type a message.')).toBe('waiting')
-  })
-
-  it('returns waiting for an empty pane', () => {
-    expect(classifyPiPane('')).toBe('waiting')
+describe('PI_BUSY_MARKERS', () => {
+  it('pins the tmux-ERE busy markers the status format searches for', () => {
+    // Encoded into a tmux content-search format by busyStatusFormat
+    // (status-watcher.ts) and validated against a live tmux by
+    // test-playwright-scripts/verify-tmux-status-format.js. The interrupt
+    // hint covers "esc to interrupt" / "esc to cancel" / "esc to stop"; the
+    // working hint covers thinking/working/generating/streaming/running.
+    expect(PI_BUSY_MARKERS).toEqual([
+      'esc\\s+(to\\s+)?(interrupt|cancel|stop)',
+      '\\b(thinking|working|generating|streaming|running)\\b',
+    ])
   })
 })
 

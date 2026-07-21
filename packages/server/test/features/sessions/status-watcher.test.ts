@@ -3,6 +3,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   SessionStatusWatcher,
   StatusWatcherManager,
+  attachClientFlags,
+  busyStatusFormat,
   classifyAgentObservation,
   type AttachChild,
   type WatchedSession,
@@ -63,7 +65,6 @@ function session(tool: WatchedSession['tool']): WatchedSession {
 function makeWatcher(tool: WatchedSession['tool'], deps: {
   heartbeatIntervalMs?: number
   commandTimeoutMs?: number
-  captureDebounceMs?: number
   respawnDelayMs?: number
 } = {}): { watcher: SessionStatusWatcher; children: FakeAttachChild[] } {
   const children: FakeAttachChild[] = []
@@ -75,7 +76,6 @@ function makeWatcher(tool: WatchedSession['tool'], deps: {
     },
     heartbeatIntervalMs: deps.heartbeatIntervalMs ?? 60_000,
     commandTimeoutMs: deps.commandTimeoutMs ?? 1_000,
-    captureDebounceMs: deps.captureDebounceMs ?? 5,
     respawnDelayMs: deps.respawnDelayMs ?? 5,
     maxRespawnDelayMs: 20,
     log: () => { /* quiet */ },
@@ -83,11 +83,11 @@ function makeWatcher(tool: WatchedSession['tool'], deps: {
   return { watcher, children }
 }
 
-/** Drive a claude/codex watcher through banner + pane-id + subscribe. */
-async function connectTitleWatcher(child: FakeAttachChild): Promise<void> {
+/** Drive a watcher through banner + pane-id + status-format subscribe. */
+async function connectWatcher(child: FakeAttachChild, paneId = '%7'): Promise<void> {
   child.feedBanner()
   await vi.waitFor(() => expect(child.commandCount).toBe(1)) // display-message pane-id
-  child.feedReply('%7')
+  child.feedReply(paneId)
   await vi.waitFor(() => expect(child.commandCount).toBe(2)) // refresh-client -B
   child.feedReply('')
   await vi.waitFor(() => expect(isSessionStreamHealthy('demo', 's1')).toBe(true))
@@ -105,6 +105,30 @@ afterEach(() => {
   watchers = []
 })
 
+describe('attachClientFlags', () => {
+  it('attaches every watcher with no-output so agent TUI redraws never cross the exec stream', () => {
+    // No tool's status is read from raw pane output any more — claude/codex
+    // ride the title subscription, opencode/pi a tmux-side content search —
+    // so the client never needs %output.
+    const flags = attachClientFlags().split(',')
+    expect(flags).toContain('no-output')
+    expect(flags).toContain('read-only')
+    expect(flags).toContain('ignore-size')
+  })
+})
+
+describe('busyStatusFormat', () => {
+  it('ORs each marker into a case-insensitive content search that resolves running/waiting', () => {
+    expect(busyStatusFormat(['esc\\s+interrupt', '[■⬝][■⬝][■⬝][■⬝]'])).toBe(
+      '#{?#{||:#{C/ri:esc\\s+interrupt},#{C/ri:[■⬝][■⬝][■⬝][■⬝]}},running,waiting}',
+    )
+  })
+
+  it('degenerates to a single probe for one marker', () => {
+    expect(busyStatusFormat(['working'])).toBe('#{?#{C/ri:working},running,waiting}')
+  })
+})
+
 describe('classifyAgentObservation', () => {
   it('classifies claude/codex titles by the Braille-spinner prefix', () => {
     expect(classifyAgentObservation('claude', '⠋ Fixing the bug')).toBe('running')
@@ -113,9 +137,13 @@ describe('classifyAgentObservation', () => {
     expect(classifyAgentObservation('codex', '[ ! ] Action Required project')).toBe('waiting')
   })
 
-  it('classifies opencode pane content by busy markers', () => {
-    expect(classifyAgentObservation('opencode', 'stuff\n■■■■■⬝⬝⬝  esc interrupt\n')).toBe('running')
-    expect(classifyAgentObservation('opencode', 'a quiet prompt')).toBe('waiting')
+  it('passes through opencode/pi verdicts already resolved tmux-side', () => {
+    // The subscription format yields the word directly; the watcher only
+    // trims and maps it (never re-classifies pane content).
+    expect(classifyAgentObservation('opencode', 'running')).toBe('running')
+    expect(classifyAgentObservation('opencode', 'waiting')).toBe('waiting')
+    expect(classifyAgentObservation('pi', ' running ')).toBe('running')
+    expect(classifyAgentObservation('pi', 'waiting')).toBe('waiting')
   })
 })
 
@@ -125,10 +153,10 @@ describe('SessionStatusWatcher (title tools)', () => {
     watchers.push(watcher)
     watcher.start()
     const child = children[0]
-    await connectTitleWatcher(child)
+    await connectWatcher(child)
     const sent = child.writes.join('')
     expect(sent).toContain("display-message -p -t yaac:claude.0 '#{pane_id}'")
-    expect(sent).toContain('refresh-client -B "status:%7:#{pane_title}"')
+    expect(sent).toContain("refresh-client -B 'status:%7:#{pane_title}'")
     // No classification yet — absent entry reads as waiting.
     expect(readSessionStatus('demo', 's1')).toBe('waiting')
   })
@@ -141,7 +169,7 @@ describe('SessionStatusWatcher (title tools)', () => {
     // Not registered while still attaching (registration happens only
     // after the pane-id and subscribe replies prove the stream).
     expect(sessionControlStreamSend('yaac-demo-s1')).toBeUndefined()
-    await connectTitleWatcher(child)
+    await connectWatcher(child)
     const send = sessionControlStreamSend('yaac-demo-s1')
     expect(send).toBeDefined()
 
@@ -162,7 +190,7 @@ describe('SessionStatusWatcher (title tools)', () => {
     watchers.push(watcher)
     watcher.start()
     const child = children[0]
-    await connectTitleWatcher(child)
+    await connectWatcher(child)
 
     child.feed('%subscription-changed status $0 @0 0 %7 : ⠋ working\n')
     expect(readSessionStatus('demo', 's1')).toBe('running')
@@ -176,7 +204,7 @@ describe('SessionStatusWatcher (title tools)', () => {
     watchers.push(watcher)
     watcher.start()
     const child = children[0]
-    await connectTitleWatcher(child)
+    await connectWatcher(child)
 
     child.feed('%subscription-changed status $0 @0 0 %9 : ⠋ other pane\n')
     child.feed('%subscription-changed other $0 @0 0 %7 : ⠋ other name\n')
@@ -188,7 +216,7 @@ describe('SessionStatusWatcher (title tools)', () => {
     watchers.push(watcher)
     watcher.start()
     const child = children[0]
-    await connectTitleWatcher(child)
+    await connectWatcher(child)
     child.feed('%subscription-changed status $0 @0 0 %7 : ⠋ working\n')
     expect(readSessionStatus('demo', 's1')).toBe('running')
 
@@ -218,7 +246,7 @@ describe('SessionStatusWatcher (title tools)', () => {
     watchers.push(watcher)
     watcher.start()
     const child = children[0]
-    await connectTitleWatcher(child)
+    await connectWatcher(child)
     // Heartbeat fires but we never feed a reply → timeout → respawn.
     // Later generations keep timing out during init (nothing answers
     // them either), so the child count only grows from here.
@@ -235,7 +263,7 @@ describe('SessionStatusWatcher (title tools)', () => {
     watchers.push(watcher)
     watcher.start()
     const child = children[0]
-    await connectTitleWatcher(child)
+    await connectWatcher(child)
     await vi.waitFor(() => expect(child.commandCount).toBe(3)) // heartbeat sent
     child.feedReply('ok')
     await new Promise((r) => setTimeout(r, 30))
@@ -259,7 +287,7 @@ describe('SessionStatusWatcher (title tools)', () => {
     watchers.push(watcher)
     watcher.start()
     const child = children[0]
-    await connectTitleWatcher(child)
+    await connectWatcher(child)
     watcher.stop()
     expect(child.killed).toBe(true)
     child.emitExit()
@@ -268,47 +296,44 @@ describe('SessionStatusWatcher (title tools)', () => {
   })
 })
 
-describe('SessionStatusWatcher (opencode)', () => {
-  async function connectOpencode(child: FakeAttachChild, initialPane: string): Promise<void> {
-    child.feedBanner()
-    await vi.waitFor(() => expect(child.commandCount).toBe(1)) // pane id
-    child.feedReply('%2')
-    await vi.waitFor(() => expect(child.commandCount).toBe(2)) // initial capture
-    child.feedReply(initialPane)
-    await vi.waitFor(() => expect(isSessionStreamHealthy('demo', 's1')).toBe(true))
-  }
-
-  it('takes an initial capture and classifies it', async () => {
+describe('SessionStatusWatcher (pane tools)', () => {
+  it('subscribes opencode to its tmux-side busy format (no capture-pane, no %output)', async () => {
     const { watcher, children } = makeWatcher('opencode')
     watchers.push(watcher)
     watcher.start()
-    await connectOpencode(children[0], '■■■■■⬝⬝⬝  esc interrupt')
+    const child = children[0]
+    await connectWatcher(child, '%2')
+    const sent = child.writes.join('')
+    expect(sent).toContain("display-message -p -t yaac:opencode.0 '#{pane_id}'")
+    // The subscription carries a content-search format that resolves the
+    // verdict inside tmux; the pane is never captured.
+    expect(sent).toContain("refresh-client -B 'status:%2:#{?#{||:#{C/ri:")
+    expect(sent).not.toContain('capture-pane')
+  })
+
+  it('records the verdict pushed by the tmux-side subscription', async () => {
+    const { watcher, children } = makeWatcher('pi')
+    watchers.push(watcher)
+    watcher.start()
+    const child = children[0]
+    await connectWatcher(child, '%2')
+
+    // opencode/pi push an already-resolved word, not pane content.
+    child.feed('%subscription-changed status $0 @0 0 %2 : running\n')
     expect(readSessionStatus('demo', 's1')).toBe('running')
-    expect(children[0].writes.join('')).toContain('capture-pane -pJ -t yaac:opencode.0')
+    child.feed('%subscription-changed status $0 @0 0 %2 : waiting\n')
+    expect(readSessionStatus('demo', 's1')).toBe('waiting')
   })
 
-  it('re-captures after %output bursts (debounced) and reclassifies', async () => {
-    const { watcher, children } = makeWatcher('opencode', { captureDebounceMs: 5 })
+  it('ignores stray %output (the watcher attaches no-output, so it never re-captures)', async () => {
+    const { watcher, children } = makeWatcher('opencode')
     watchers.push(watcher)
     watcher.start()
     const child = children[0]
-    await connectOpencode(child, '■■■■■⬝⬝⬝  esc interrupt')
-
-    child.feed('%output %2 chunk1\n%output %2 chunk2\n%output %2 chunk3\n')
-    await vi.waitFor(() => expect(child.commandCount).toBe(3)) // one debounced capture
-    child.feedReply('back to a quiet prompt')
-    await vi.waitFor(() => expect(readSessionStatus('demo', 's1')).toBe('waiting'))
-  })
-
-  it('ignores %output from other panes', async () => {
-    const { watcher, children } = makeWatcher('opencode', { captureDebounceMs: 5 })
-    watchers.push(watcher)
-    watcher.start()
-    const child = children[0]
-    await connectOpencode(child, 'quiet')
-    child.feed('%output %9 not-the-agent\n')
+    await connectWatcher(child, '%2')
+    child.feed('%output %2 leftover redraw bytes\n')
     await new Promise((r) => setTimeout(r, 25))
-    expect(child.commandCount).toBe(2)
+    expect(child.commandCount).toBe(2) // no capture-pane issued
   })
 })
 

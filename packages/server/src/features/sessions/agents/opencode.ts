@@ -13,17 +13,17 @@ import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
 import type { OpencodeSessionMeta } from '@yaac/shared/types'
 
 /**
- * Status classification + first-message lookup for opencode sessions.
+ * Status markers + first-message lookup for opencode sessions.
  *
  * Status is read from the rendered tmux pane (window `yaac:opencode.0`),
  * not opencode's `/session/status` HTTP endpoint. The HTTP `type` field
  * (`idle` | `busy` | `retry`) stays at `busy` while opencode is paused on
  * a tool-permission prompt or a question-tool prompt — both states where
- * yaac should report `waiting`. Pane content carries unambiguous markers
- * for each. The pane is captured by the session's status watcher
- * (`src/server/status-watcher.ts`) over its persistent control-mode
- * stream — `%output` events are the dirty bit — and classified with
- * `classifyOpencodePane`; reads happen via the status store.
+ * yaac should report `waiting`. The pane carries unambiguous markers for
+ * each. The busy/idle classification runs *inside tmux*: the session's
+ * status watcher (`src/server/status-watcher.ts`) subscribes to a format
+ * built from `OPENCODE_BUSY_MARKERS`, so only the resolved word crosses
+ * the control-mode stream — the rendered pane never does.
  *
  * First-message lookup still goes through the HTTP server: opencode
  * auto-populates `session.title` from the first user prompt, which is
@@ -75,27 +75,29 @@ export function evictOpencodeProbeCache(slug: string, sessionId: string): void {
 }
 
 /**
- * Classify a captured opencode tmux pane into `running` / `waiting`.
+ * Busy markers for an opencode pane, as tmux ERE patterns (see
+ * `busyStatusFormat` in status-watcher.ts). Any match in the visible pane
+ * means `running`; none means `waiting`.
  *
  * While a turn is in flight the footer status line renders an animated
- * strip of ■/⬝ cells followed by the interrupt hint ("esc interrupt",
- * or "esc again to interrupt" after one ESC) — either marker means
- * `running`. Everything else is `waiting`: the status line only exists
- * when no footer panel is open (`footer.view.tsx` renders it under
- * `!panel() && !menu()`), and permission / question dialogs are panels,
- * so a dialog *replaces* the busy markers rather than overlaying them.
- * That's why the old dialog special-cases are gone — a user-blocked
- * pane simply carries neither signal (verified against opencode
- * 1.17.11: a busy footer reads e.g. "■■■■■⬝⬝⬝  esc interrupt").
+ * strip of ■/⬝ cells followed by the interrupt hint ("esc interrupt", or
+ * "esc again to interrupt" after one ESC) — either marker means `running`.
+ * Everything else is `waiting`: the status line only exists when no footer
+ * panel is open (`footer.view.tsx` renders it under `!panel() && !menu()`),
+ * and permission / question dialogs are panels, so a dialog *replaces* the
+ * busy markers rather than overlaying them — a user-blocked pane simply
+ * carries neither signal (verified against opencode 1.17.11: a busy footer
+ * reads e.g. "■■■■■⬝⬝⬝  esc interrupt").
+ *
+ * tmux-ERE constraints (matched case-insensitively via `#{C/ri:}`): use
+ * `(...)` not `(?:...)`, and spell repetition out — a `{n,}` interval's `}`
+ * would close the surrounding `#{...}`. The busy strip is therefore four
+ * explicit ■/⬝ cells (four-or-more, since the search is unanchored).
  */
-const INTERRUPT_HINT = /esc\s+(?:again\s+to\s+)?interrupt/i
-const BUSY_STRIP = /(?:■|⬝){4,}/
-
-export function classifyOpencodePane(paneContent: string): 'running' | 'waiting' {
-  if (INTERRUPT_HINT.test(paneContent)) return 'running'
-  if (BUSY_STRIP.test(paneContent)) return 'running'
-  return 'waiting'
-}
+export const OPENCODE_BUSY_MARKERS: readonly string[] = [
+  'esc\\s+(again\\s+to\\s+)?interrupt',
+  '[■⬝][■⬝][■⬝][■⬝]',
+]
 
 async function runProbe(jobName: string): Promise<OpencodeProbe | null> {
   // One kubectl exec → curl /session. -sf suppresses output on curl
