@@ -2,44 +2,44 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { buildApp } from '@yaac/server/server'
+import { buildApp } from '@yaac/server/main/server'
 import simpleGit from 'simple-git'
 import { projectConfigDir, getProjectsDir, projectDir, claudeDir, codexDir, repoDir } from '@yaac/shared/project-paths'
-import { cloneRepo } from '@yaac/server/lib/git'
-import { addEntry, loadCredentials } from '@yaac/server/lib/project/credentials'
+import { cloneRepo } from '@yaac/server/platform/git'
+import { addEntry, loadCredentials } from '@yaac/server/features/projects/credentials'
 import {
   loadClaudeCredentialsFile,
   saveClaudeOAuthBundle,
 } from '@yaac/shared/tool-auth'
-import { getDefaultTool } from '@yaac/server/lib/project/preferences'
-import { closeDb } from '@yaac/server/lib/db/client'
-import type * as projectAddModule from '@yaac/server/lib/project/add'
+import { getDefaultTool } from '@yaac/server/features/projects/preferences'
+import { closeDb } from '@yaac/server/platform/db/client'
+import type * as projectAddModule from '@yaac/server/features/projects/add'
 import type * as cliResolveModule from '@yaac/auth-daemon/cli-resolve'
 import type { ProjectMeta, ClaudeOAuthBundle } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
 import { makeTestApiClient } from '@yaac/test-utils/api'
 
-vi.mock('@yaac/server/session-create', () => ({
+vi.mock('@yaac/server/features/sessions/create', () => ({
   createSession: vi.fn(),
 }))
 
-vi.mock('@yaac/server/lib/session/delete', () => ({
+vi.mock('@yaac/server/features/sessions/delete', () => ({
   deleteSession: vi.fn(),
 }))
 
-vi.mock('@yaac/server/lib/session/restart', () => ({
+vi.mock('@yaac/server/features/sessions/restart', () => ({
   restartSession: vi.fn(),
 }))
 
-vi.mock('@yaac/server/lib/project/add', async () => {
-  const actual = await vi.importActual<typeof projectAddModule>('@yaac/server/lib/project/add')
+vi.mock('@yaac/server/features/projects/add', async () => {
+  const actual = await vi.importActual<typeof projectAddModule>('@yaac/server/features/projects/add')
   return {
     ...actual,
     addProject: vi.fn(),
   }
 })
 
-vi.mock('@yaac/server/lib/project/remove', () => ({
+vi.mock('@yaac/server/features/projects/remove', () => ({
   removeProject: vi.fn(),
 }))
 
@@ -53,13 +53,13 @@ vi.mock('@yaac/auth-daemon/cli-resolve', async () => {
   }
 })
 
-import { createSession } from '@yaac/server/session-create'
-import { deleteSession } from '@yaac/server/lib/session/delete'
-import { restartSession } from '@yaac/server/lib/session/restart'
-import { addProject } from '@yaac/server/lib/project/add'
-import { removeProject } from '@yaac/server/lib/project/remove'
-import { registerProvisioning, listProvisioning, clearAllProvisioningForTests } from '@yaac/server/provisioning'
-import { authAgentHub } from '@yaac/server/auth-agent'
+import { createSession } from '@yaac/server/features/sessions/create'
+import { deleteSession } from '@yaac/server/features/sessions/delete'
+import { restartSession } from '@yaac/server/features/sessions/restart'
+import { addProject } from '@yaac/server/features/projects/add'
+import { removeProject } from '@yaac/server/features/projects/remove'
+import { registerProvisioning, listProvisioning, clearAllProvisioningForTests } from '@yaac/server/features/sessions/provisioning'
+import { authAgentHub } from '@yaac/server/features/auth/agent'
 import type { AgentOp } from '@yaac/shared/auth-agent-protocol'
 import { CLAUDE_STUB, CODEX_STUB, INSTALL_STUB } from '@yaac/test-utils/fixtures'
 import {

@@ -1,4 +1,4 @@
-import { ClusterSetupError, runClusterSetup } from '@yaac/server/lib/k8s/cluster-setup'
+import { ClusterSetupError, runClusterSetup } from '@yaac/server/features/cluster/setup'
 
 export interface ClusterSetupCliOptions {
   repair?: boolean

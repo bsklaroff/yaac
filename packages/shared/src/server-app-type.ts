@@ -7,4 +7,4 @@
  * `@yaac/shared` — reaches the type through here. This is a type-only
  * re-export: nothing from `@yaac/server` survives into a consumer's bundle.
  */
-export type { AppType } from '@yaac/server/server'
+export type { AppType } from '@yaac/server/main/server'

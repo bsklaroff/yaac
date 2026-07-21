@@ -2,8 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import simpleGit from 'simple-git'
-import { cloneRepo } from '@yaac/server/lib/git'
-import { listSessionPods, type SessionPod } from '@yaac/server/lib/k8s/pods'
+import { cloneRepo } from '@yaac/server/platform/git'
+import { listSessionPods, type SessionPod } from '@yaac/server/platform/k8s/pods'
 import {
   createYaacTestEnv,
   spawnYaacServer,

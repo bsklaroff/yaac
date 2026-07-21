@@ -5,17 +5,17 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import simpleGit from 'simple-git'
 import { setDataDir, getDataDir, projectDir, repoDir, claudeDir } from '@yaac/shared/project-paths'
-import { cloneRepo } from '@yaac/server/lib/git'
-import { ensureRootfulPodmanHost } from '@yaac/server/lib/container/runtime'
+import { cloneRepo } from '@yaac/server/platform/git'
+import { ensureRootfulPodmanHost } from '@yaac/server/platform/container/runtime'
 import {
   dataDirHash,
   k8sNamespace,
   kubectlWithRetry,
   type KubectlExecOptions,
-} from '@yaac/server/lib/k8s/kubectl'
-import { LABEL_DATA_DIR_HASH, LABEL_SESSION_ID } from '@yaac/server/lib/k8s/pods'
+} from '@yaac/server/platform/k8s/kubectl'
+import { LABEL_DATA_DIR_HASH, LABEL_SESSION_ID } from '@yaac/server/platform/k8s/pods'
 import type { ProjectMeta } from '@yaac/shared/types'
-import type { ProxyClientConfig } from '@yaac/server/lib/container/proxy-client'
+import type { ProxyClientConfig } from '@yaac/server/features/sessions/egress/proxy-client'
 import { e2eMkdtemp } from '#tmp'
 
 const execFileAsync = promisify(execFile)

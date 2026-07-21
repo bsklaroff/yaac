@@ -18,7 +18,7 @@ import fs from 'node:fs'
 import https from 'node:https'
 
 const SA_DIR = '/var/run/secrets/kubernetes.io/serviceaccount'
-/** Must match LABEL_SESSION_ID in packages/server/src/lib/k8s/pods.ts (proxy can't import src/). */
+/** Must match LABEL_SESSION_ID in packages/server/src/platform/k8s/pods.ts (proxy can't import src/). */
 export const LABEL_SESSION_ID = 'yaac.session-id'
 
 /** The shape we read out of a Pod object (only the fields we need). */

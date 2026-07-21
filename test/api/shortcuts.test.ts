@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { buildApp } from '@yaac/server/server'
+import { buildApp } from '@yaac/server/main/server'
 import { makeTestApiClient } from '@yaac/test-utils/api'
 
 const chord = { code: 'KeyG', alt: true, ctrl: false, meta: false, shift: false }

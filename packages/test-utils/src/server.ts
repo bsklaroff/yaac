@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import { serve, type ServerType } from '@hono/node-server'
-import { buildApp } from '@yaac/server/server'
-import type { TokenStore } from '@yaac/server/token-store'
+import { buildApp } from '@yaac/server/main/server'
+import type { TokenStore } from '@yaac/server/http/token-store'
 
 export interface InProcessServer {
   baseUrl: string

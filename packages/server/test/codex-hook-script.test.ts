@@ -138,7 +138,7 @@ describe('codex SessionStart hook script', () => {
 describe('codex hook script in session-create.ts matches the unit test copy', () => {
   it('has not drifted', async () => {
     const src = await fs.readFile(
-      path.resolve(__dirname, '..', 'src', 'session-create.ts'),
+      path.resolve(__dirname, '..', 'src', 'features', 'sessions', 'create.ts'),
       'utf8',
     )
     // Script is written as a joined string array — reconstruct the

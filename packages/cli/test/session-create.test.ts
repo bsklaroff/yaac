@@ -29,20 +29,20 @@ vi.mock('simple-git', () => ({
   })),
 }))
 
-vi.mock('@yaac/server/lib/container/runtime', () => ({
+vi.mock('@yaac/server/platform/container/runtime', () => ({
   ensureContainerRuntime: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('@yaac/server/lib/container/image-builder', () => ({
+vi.mock('@yaac/server/features/images/image-builder', () => ({
   sessionUid: vi.fn(() => 1000),
 }))
 
-vi.mock('@yaac/server/lib/container/build-coordinator', () => ({
+vi.mock('@yaac/server/features/images/build-coordinator', () => ({
   ensureImage: vi.fn().mockResolvedValue('yaac-test-image'),
   pushImageShared: vi.fn().mockResolvedValue('localhost:5000/yaac-test-image'),
 }))
 
-vi.mock('@yaac/server/lib/k8s/kubectl', () => ({
+vi.mock('@yaac/server/platform/k8s/kubectl', () => ({
   dataDirHash: vi.fn(() => 'ddh0123456789abc'),
   k8sNamespace: vi.fn(() => 'yaac'),
   kubectlApply: vi.fn().mockResolvedValue(undefined),
@@ -53,12 +53,12 @@ vi.mock('@yaac/server/lib/k8s/kubectl', () => ({
 // Keep bootstrap real except proxyServiceClusterIp, which would otherwise hit
 // the (pod-shaped) kubectlGetJson mock and throw — the pod's DNS nameserver is
 // the live proxy ClusterIP read here.
-vi.mock('@yaac/server/lib/k8s/bootstrap', async (importOriginal) => ({
+vi.mock('@yaac/server/features/cluster/bootstrap', async (importOriginal) => ({
   ...(await importOriginal()),
   proxyServiceClusterIp: vi.fn().mockResolvedValue('10.96.0.5'),
 }))
 
-vi.mock('@yaac/server/lib/k8s/exec', () => ({
+vi.mock('@yaac/server/platform/k8s/exec', () => ({
   containerExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
@@ -68,7 +68,7 @@ vi.mock('#commands/ws-terminal', () => ({
   attachSessionPty: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('@yaac/server/lib/container/proxy-client', () => ({
+vi.mock('@yaac/server/features/sessions/egress/proxy-client', () => ({
   SSH_AGENT_MOUNT: '/ssh-agent',
   SSH_AGENT_SOCKET_PATH: '/ssh-agent/socket',
   proxyClient: {
@@ -81,7 +81,7 @@ vi.mock('@yaac/server/lib/container/proxy-client', () => ({
   collectProxySecrets: vi.fn().mockReturnValue({}),
 }))
 
-vi.mock('@yaac/server/lib/container/default-allowed-hosts', async (importOriginal) => {
+vi.mock('@yaac/server/features/sessions/egress/default-allowed-hosts', async (importOriginal) => {
   const actual = await importOriginal<typeof allowedHostsModule>()
   return {
     ...actual,
@@ -91,7 +91,7 @@ vi.mock('@yaac/server/lib/container/default-allowed-hosts', async (importOrigina
   }
 })
 
-vi.mock('@yaac/server/lib/container/port', () => ({
+vi.mock('@yaac/server/platform/container/port', () => ({
   reserveAvailablePort: vi.fn(),
   startPortForwarders: vi.fn().mockReturnValue(vi.fn()),
   kubectlRelay: vi.fn().mockReturnValue(() => ({})),
@@ -120,13 +120,13 @@ vi.mock('@yaac/shared/project-paths', () => ({
   PACKAGE_ROOT: '/tmp/yaac-package',
 }))
 
-vi.mock('@yaac/server/lib/project/config', () => ({
+vi.mock('@yaac/server/features/projects/config', () => ({
   resolveProjectConfig: vi.fn().mockResolvedValue({}),
   resolveEphemeralModulesPaths: () => [],
   ephemeralModulesSlotKey: (p: string) => (p === 'node_modules' ? 'root' : p.replace(/\//g, '_')),
 }))
 
-vi.mock('@yaac/server/lib/project/credentials', () => ({
+vi.mock('@yaac/server/features/projects/credentials', () => ({
   resolveCredentialForUrl: vi.fn().mockResolvedValue({ kind: 'https', token: 'token' }),
   parseGitRemote: (url: string) => {
     if (url.startsWith('https://')) {
@@ -152,7 +152,7 @@ vi.mock('@yaac/shared/tool-auth', () => ({
   PLACEHOLDER_GH_TOKEN: 'test-placeholder-gh-token',
 }))
 
-vi.mock('@yaac/server/lib/git', () => ({
+vi.mock('@yaac/server/platform/git', () => ({
   addWorktree: vi.fn().mockResolvedValue(undefined),
   getDefaultBranch: vi.fn().mockResolvedValue('main'),
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
@@ -169,38 +169,38 @@ vi.mock('@yaac/shared/git', async (importOriginal) => {
   }
 })
 
-vi.mock('@yaac/server/lib/session/codex-hooks', () => ({
+vi.mock('@yaac/server/features/sessions/agents/codex-hooks', () => ({
   ensureCodexHooksJson: vi.fn().mockResolvedValue(undefined),
   ensureCodexConfigToml: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('@yaac/server/lib/session/opencode-config', () => ({
+vi.mock('@yaac/server/features/sessions/agents/opencode-config', () => ({
   ensureOpencodeConfigJson: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('@yaac/server/lib/session/port-forwarders', () => ({
+vi.mock('@yaac/server/features/sessions/forwarders/port-forwarders', () => ({
   buildStatusRight: vi.fn().mockReturnValue(' stub-status '),
   registerSessionForwarders: vi.fn(),
 }))
 
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
-import { buildAgentCmd, createSession, resolveInitWindows, retoolSpare } from '@yaac/server/session-create'
+import { buildAgentCmd, createSession, resolveInitWindows, retoolSpare } from '@yaac/server/features/sessions/create'
 import { sessionCreate } from '#commands/session-create'
-import { ensureContainerRuntime } from '@yaac/server/lib/container/runtime'
-import { ensureImage, pushImageShared } from '@yaac/server/lib/container/build-coordinator'
-import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/lib/k8s/kubectl'
-import { containerExec } from '@yaac/server/lib/k8s/exec'
-import { proxyServiceClusterIp } from '@yaac/server/lib/k8s/bootstrap'
-import { proxyClient } from '@yaac/server/lib/container/proxy-client'
-import { resolveProjectConfig } from '@yaac/server/lib/project/config'
+import { ensureContainerRuntime } from '@yaac/server/platform/container/runtime'
+import { ensureImage, pushImageShared } from '@yaac/server/features/images/build-coordinator'
+import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/platform/k8s/kubectl'
+import { containerExec } from '@yaac/server/platform/k8s/exec'
+import { proxyServiceClusterIp } from '@yaac/server/features/cluster/bootstrap'
+import { proxyClient } from '@yaac/server/features/sessions/egress/proxy-client'
+import { resolveProjectConfig } from '@yaac/server/features/projects/config'
 import simpleGit from 'simple-git'
-import { resolveCredentialForUrl, loadKnownHostsEntryForHost } from '@yaac/server/lib/project/credentials'
+import { resolveCredentialForUrl, loadKnownHostsEntryForHost } from '@yaac/server/features/projects/credentials'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
-import { resolveAllowedHosts } from '@yaac/server/lib/container/default-allowed-hosts'
-import { addWorktree, getDefaultBranch, fetchOrigin, remoteBranchExists } from '@yaac/server/lib/git'
-import { kubectlRelay, reserveAvailablePort, startPortForwarders } from '@yaac/server/lib/container/port'
-import { buildStatusRight, registerSessionForwarders } from '@yaac/server/lib/session/port-forwarders'
+import { resolveAllowedHosts } from '@yaac/server/features/sessions/egress/default-allowed-hosts'
+import { addWorktree, getDefaultBranch, fetchOrigin, remoteBranchExists } from '@yaac/server/platform/git'
+import { kubectlRelay, reserveAvailablePort, startPortForwarders } from '@yaac/server/platform/container/port'
+import { buildStatusRight, registerSessionForwarders } from '@yaac/server/features/sessions/forwarders/port-forwarders'
 
 const mockSpawn = vi.mocked(spawn)
 const mockAccess = vi.mocked(fs.access)
@@ -1016,7 +1016,7 @@ describe('resolveInitWindows', () => {
   })
 })
 
-import type * as allowedHostsModule from '@yaac/server/lib/container/default-allowed-hosts'
+import type * as allowedHostsModule from '@yaac/server/features/sessions/egress/default-allowed-hosts'
 import type * as sharedGitModule from '@yaac/shared/git'
 
 // sessionCreate posts to the streaming /session/create route via the `api`

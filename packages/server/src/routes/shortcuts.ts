@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
-import { clearShortcutOverrides, getShortcutOverrides, setShortcutOverride } from '#lib/project/preferences'
+import { clearShortcutOverrides, getShortcutOverrides, setShortcutOverride } from '#features/projects/preferences'
 
 /** A keyboard chord: a physical key `code` plus the four modifier states.
  *  Mirrors the frontend `Chord`; validation lives here so the server needn't

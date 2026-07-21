@@ -7,7 +7,7 @@ import {
   readBuildFile,
   renameBuildFile,
   writeBuildFile,
-} from '#lib/project/build-files'
+} from '#features/projects/build-files'
 
 /**
  * Routes over one build dir's support files, mounted twice: under

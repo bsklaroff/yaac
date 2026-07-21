@@ -1,5 +1,5 @@
 import { hc } from 'hono/client'
-import type { buildApp, AppType } from '@yaac/server/server'
+import type { buildApp, AppType } from '@yaac/server/main/server'
 import type { SpawnedServer } from '#cli'
 
 type ServerApp = ReturnType<typeof buildApp>

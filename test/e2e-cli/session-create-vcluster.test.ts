@@ -2,20 +2,20 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import simpleGit from 'simple-git'
-import { cloneRepo } from '@yaac/server/lib/git'
+import { cloneRepo } from '@yaac/server/platform/git'
 import {
   LABEL_VCLUSTER_MANAGED_BY,
   VCLUSTER_API_PORT,
   listSessionPods,
   type SessionPod,
-} from '@yaac/server/lib/k8s/pods'
-import { k8sNamespace, kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/lib/k8s/kubectl'
+} from '@yaac/server/platform/k8s/pods'
+import { k8sNamespace, kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/platform/k8s/kubectl'
 import {
   removeSessionVcluster,
   vclusterName,
   vclusterNamespace,
-} from '@yaac/server/lib/k8s/vcluster'
-import { removeProjectRegistry } from '@yaac/server/lib/k8s/project-registry'
+} from '@yaac/server/features/cluster/vcluster'
+import { removeProjectRegistry } from '@yaac/server/features/cluster/project-registry'
 import {
   createYaacTestEnv,
   spawnYaacServer,

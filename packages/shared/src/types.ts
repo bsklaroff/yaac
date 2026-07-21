@@ -651,7 +651,7 @@ export type PickNextResult =
 
 /**
  * Project row in the snapshot. Structurally matches `ProjectListEntry`
- * from `@/lib/project/list`; inlined here so this module stays
+ * from `features/projects/list`; inlined here so this module stays
  * browser-safe (the frontend imports it without pulling node-only lib
  * files into its type graph).
  */

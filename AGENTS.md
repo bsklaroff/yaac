@@ -1,16 +1,16 @@
 - Always install dependencies with exact versions: `pnpm add -E <package>` (or `pnpm add -DE <package>` for dev deps). Add package-scoped deps in that package's directory (`pnpm --filter @yaac/<pkg> add -E …`). Deps shared by several manifests are pinned once in the `catalog:` section of pnpm-workspace.yaml and referenced as `"<pkg>": "catalog:"` — except in k8s/proxy, whose manifest is npm-installed inside the image build (npm can't resolve `catalog:`).
-- Every exported function must have a unit test in its own package's `test/` dir (e.g. `packages/server/test/`, `packages/cli/test/`).
+- Every exported function must have a unit test in its own package's `test/` dir (e.g. `packages/server/test/`, `packages/cli/test/`). In `packages/server`, `test/` mirrors the `src/` layout in domain subfolders (`test/features/<domain>/`, `test/platform/…`, `test/http/`, `test/main/`, `test/routes/`) — place a new test under the subfolder matching the module it covers; the vitest include glob recurses so no config change is needed.
 - Every CLI command argument and option must have an e2e test in `test/e2e-cli/` (or `test/e2e/`) at the repo root.
 - **NEVER take credit for authoring code** — do not add "Co-Authored-By" lines, or any other AI attribution to commit messages, PR descriptions, or code comments
 - Always use `pnpm lint` for linting (runs `tsc --noEmit`, the frontend `tsc`, and `eslint`).
-- A DB schema change (`packages/server/src/lib/db/schema.ts`) needs a Drizzle migration: generate it with a descriptive name via `pnpm --filter @yaac/server exec drizzle-kit generate --name <change>` (e.g. `add_deleted_sessions`), and commit the emitted `packages/server/drizzle/<timestamp>_<name>/` dir. Never keep drizzle's auto-generated random suffix (`<timestamp>_<adjective_noun>`, e.g. `melodic_polaris`) — if you already generated one, delete that dir and re-run with `--name`. Migrations apply automatically on server start (`getDb()` runs `migrate()`).
+- A DB schema change (`packages/server/src/platform/db/schema.ts`) needs a Drizzle migration: generate it with a descriptive name via `pnpm --filter @yaac/server exec drizzle-kit generate --name <change>` (e.g. `add_deleted_sessions`), and commit the emitted `packages/server/drizzle/<timestamp>_<name>/` dir. Never keep drizzle's auto-generated random suffix (`<timestamp>_<adjective_noun>`, e.g. `melodic_polaris`) — if you already generated one, delete that dir and re-run with `--name`. Migrations apply automatically on server start (`getDb()` runs `migrate()`).
 - Limit all git commit message lines to 80 characters maximum.
 
 ## Repository Layout
 
 The code is a pnpm workspace. Cross-package imports use the package name
 (`@yaac/shared/types`); a package's own modules use Node subpath imports
-(`#lib/k8s/exec`, `#components/Foo`) via each package.json's `imports` map —
+(`#platform/k8s/exec`, `#components/Foo`) via each package.json's `imports` map —
 there are no `#*` tsconfig `paths` entries and no resolver plugins.
 All `imports`/`exports` map targets are output-form `./src/*.js` (the
 standard shape for TS packages) even though no `.js` files exist: every
@@ -29,7 +29,7 @@ array target, so `.tsx` would break).
 | `packages/cli` (`@yaac/cli`) | the published `yaac` bin: entry + commands | server, auth-daemon, shared |
 | `packages/desktop` (`@yaac/desktop`) | Electron shell: main-process launcher | shared only |
 | `packages/frontend` (`@yaac/frontend`) | React SPA | shared only |
-| `packages/server` (`@yaac/server`) | HTTP/WS daemon + all backend `lib/` | shared only |
+| `packages/server` (`@yaac/server`) | HTTP/WS daemon + all backend logic | shared only |
 | `packages/auth-daemon` (`@yaac/auth-daemon`) | auth helper daemon | shared only |
 | `packages/shared` (`@yaac/shared`) | wire types + cross-cutting utils | nothing (type-only from others OK) |
 | `packages/test-utils` (`@yaac/test-utils`) | shared test helpers + fixtures | server, shared |
@@ -72,7 +72,7 @@ artifact (`pnpm pack`, no hand-kept dependency list) plus a standalone Node.
 ## Runtime Architecture
 
 - Sessions run as Kubernetes Jobs (one single-pod Job per session) on a local single-node cluster; podman is only the image build engine (`podman build`/`podman push` to the local registry on `localhost:5000`).
-- All cluster access shells out to `kubectl` (no kubernetes client library) — matching the podman-CLI convention. Helpers live in `packages/server/src/lib/k8s/`.
+- All cluster access shells out to `kubectl` (no kubernetes client library) — matching the podman-CLI convention. Primitive helpers live in `packages/server/src/platform/k8s/`; cluster lifecycle (setup/check/delete/vcluster/registry) lives in `packages/server/src/features/cluster/`.
 - E2e tests require a wired-up cluster (`yaac cluster setup`, verified by `yaac cluster check`); unit tests must not touch podman or the cluster.
 
 ## Playwright Test Scripts
@@ -95,15 +95,15 @@ All container images used by e2e tests are pre-built in `test/global-setup.ts` b
 
 The global setup also mirrors digest-pinned upstream images into the local
 registry (no content hash — the digest IS the pin): `registry:2` for
-per-project registries (`packages/server/src/lib/k8s/project-registry.ts`), the vcluster
+per-project registries (`packages/server/src/features/cluster/project-registry.ts`), the vcluster
 image set (`k8s/vcluster/images.json`), and `quay.io/podman/stable` for the
-image-salvage writer pod (`packages/server/src/lib/container/image-promoter.ts`).
+image-salvage writer pod (`packages/server/src/features/images/image-promoter.ts`).
 
 **Rules:**
 - Never build images inside individual test workers — all builds belong in `test/global-setup.ts`.
 - E2e tests must pass `requirePrebuilt: true` so they fail fast if an image is missing or stale rather than racing to build.
 - When adding a new sidecar or container image, add it to the global setup with a content-hash tag and use `requirePrebuilt` in tests.
-- For single-file images (Dockerfiles), use `fileHash()`. For multi-file build contexts, use `contextHash()` — both from `packages/server/src/lib/container/image-builder.ts`. `contextHash()` honors the context's `.containerignore` (literal paths only — it must match podman's exclusions exactly), so keep dev-only files like co-located tests listed there or they churn the image tag.
+- For single-file images (Dockerfiles), use `fileHash()`. For multi-file build contexts, use `contextHash()` — both from `packages/server/src/features/images/image-builder.ts`. `contextHash()` honors the context's `.containerignore` (literal paths only — it must match podman's exclusions exactly), so keep dev-only files like co-located tests listed there or they churn the image tag.
 - E2e workers isolate cluster objects in per-run namespaces (`YAAC_K8S_NAMESPACE=yaac-test-<run-id>`).
 - E2e test data dirs (and mock-remote repo stores) are hostPath-mounted into pods, so their path must be visible to the pod's node. They are created under `e2eTmpBase()` (`packages/test-utils/src/tmp.ts`): on a host that's `os.tmpdir()` — so on a kind host set `TMPDIR` to a path under your home directory (hostPath paths must match on host and node, and kind's node-internal tmpfs `/tmp` cannot be replaced by an extraMount). Inside a nested yaac session (`YAAC_NESTED=1`) it's the node-shared `$YAAC_DATA_DIR/e2e-tmp` — the pod's `/tmp` and `$HOME` are overlay filesystems the node can't see (hostPath mounts there hang Pending), and scratch there is removed with the session dir on cleanup.
 - Tests that can't run inside a nested yaac session (in-cluster Cilium datapath assertions, vcluster-in-vcluster, podman `kind` network) are gated on `IS_NESTED_YAAC` (`packages/test-utils/src/setup.ts`) via `describe.skipIf` / `it.skipIf`. The session-create e2e family (own server+proxy+mocks) runs nested ungated — it assumes the outer server projects per-install inner redirects (docs/yaac-in-yaac-inner-egress.md); egress timeouts nested mean the host yaac predates that and needs upgrading.

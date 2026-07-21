@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { Hono } from 'hono'
-import { denyBrowserCors, requestLogger } from '@yaac/server/auth'
+import { denyBrowserCors, requestLogger } from '@yaac/server/http/auth'
 
 function buildTestApp(): Hono {
   const app = new Hono()

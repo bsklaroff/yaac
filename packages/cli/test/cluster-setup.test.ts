@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest'
 
-vi.mock('@yaac/server/lib/k8s/cluster-setup', () => {
+vi.mock('@yaac/server/features/cluster/setup', () => {
   class ClusterSetupError extends Error {}
   return { runClusterSetup: vi.fn(), ClusterSetupError }
 })
 
 import { clusterSetup } from '#commands/cluster-setup'
-import { ClusterSetupError, runClusterSetup } from '@yaac/server/lib/k8s/cluster-setup'
+import { ClusterSetupError, runClusterSetup } from '@yaac/server/features/cluster/setup'
 
 const mockRun = vi.mocked(runClusterSetup)
 

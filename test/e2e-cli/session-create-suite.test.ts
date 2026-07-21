@@ -7,8 +7,8 @@ import http from 'node:http'
 import path from 'node:path'
 import WebSocket from 'ws'
 import simpleGit from 'simple-git'
-import { cloneRepo } from '@yaac/server/lib/git'
-import { listSessionPods, type SessionPod } from '@yaac/server/lib/k8s/pods'
+import { cloneRepo } from '@yaac/server/platform/git'
+import { listSessionPods, type SessionPod } from '@yaac/server/platform/k8s/pods'
 import {
   createYaacTestEnv,
   spawnYaacServer,
@@ -1135,7 +1135,7 @@ describe('yaac session create suite (real CLI + real server + mocked remotes)', 
 
     it('boots opencode and exposes its HTTP API on 127.0.0.1:4096 inside the container', async () => {
       // The yaac status + first-message helpers in
-      // packages/server/src/lib/session/opencode-status.ts depend on these endpoints being
+      // packages/server/src/features/sessions/agents/opencode-status.ts depend on these endpoints being
       // reachable via `kubectl exec curl` — without this test the entire
       // opencode status pipeline is unverified by CI.
       //

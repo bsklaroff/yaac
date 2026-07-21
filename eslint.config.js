@@ -158,10 +158,11 @@ export default tseslint.config(
   },
 
   // commands: thin RPC/presentation. Only sibling commands (#commands/…),
-  // @yaac/shared, and the four sanctioned host-side k8s modules
-  // (exec attaches/streams via `kubectl exec -it`; cluster-check/setup/delete
-  // run before any server exists). The negation chain re-includes each parent
-  // dir (gitignore semantics: a leaf can't be un-ignored while its parent is).
+  // @yaac/shared, and the four sanctioned host-side modules — exec
+  // (platform/k8s/exec, attaches/streams via `kubectl exec -it`) and cluster
+  // check/setup/delete (features/cluster/*, run before any server exists). The
+  // negation chain re-includes each parent dir (gitignore semantics: a leaf
+  // can't be un-ignored while its parent is).
   {
     files: ['packages/cli/src/commands/**/*'],
     rules: {
@@ -175,12 +176,16 @@ export default tseslint.config(
                 '@yaac/*',
                 '!@yaac/shared', '!@yaac/shared/*',
                 '!@yaac/server', '@yaac/server/*',
-                '!@yaac/server/lib', '@yaac/server/lib/*',
-                '!@yaac/server/lib/k8s', '@yaac/server/lib/k8s/*',
-                '!@yaac/server/lib/k8s/exec', '!@yaac/server/lib/k8s/cluster-check',
-                '!@yaac/server/lib/k8s/cluster-setup', '!@yaac/server/lib/k8s/cluster-delete',
+                '!@yaac/server/platform', '@yaac/server/platform/*',
+                '!@yaac/server/platform/k8s', '@yaac/server/platform/k8s/*',
+                '!@yaac/server/platform/k8s/exec',
+                '!@yaac/server/features', '@yaac/server/features/*',
+                '!@yaac/server/features/cluster', '@yaac/server/features/cluster/*',
+                '!@yaac/server/features/cluster/check',
+                '!@yaac/server/features/cluster/setup',
+                '!@yaac/server/features/cluster/delete',
               ],
-              message: 'commands may only import #commands/…, @yaac/shared, and @yaac/server/lib/k8s/{exec,cluster-check,cluster-setup,cluster-delete}.',
+              message: 'commands may only import #commands/…, @yaac/shared, and @yaac/server/{platform/k8s/exec,features/cluster/{check,setup,delete}}.',
             },
           ],
         },

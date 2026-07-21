@@ -9,14 +9,14 @@ import {
 import { readLock } from '@yaac/shared/lock'
 import { requirePodman, requireCluster, IS_NESTED_YAAC, TEST_PROXY_CONFIG } from '@yaac/test-utils/setup'
 import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
-import { ProxyClient } from '@yaac/server/lib/container/proxy-client'
-import { PROXY_APP_NAME, PROXY_AUTH_SECRET_NAME, PROXY_PORT } from '@yaac/server/lib/k8s/bootstrap'
+import { ProxyClient } from '@yaac/server/features/sessions/egress/proxy-client'
+import { PROXY_APP_NAME, PROXY_AUTH_SECRET_NAME, PROXY_PORT } from '@yaac/server/features/cluster/bootstrap'
 import {
   k8sNamespace,
   kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
-} from '@yaac/server/lib/k8s/kubectl'
+} from '@yaac/server/platform/k8s/kubectl'
 
 /**
  * Regression test for server-restart proxy churn: restarting the server

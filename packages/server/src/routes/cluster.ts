@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { stream } from 'hono/streaming'
-import { runClusterCheck } from '#lib/k8s/cluster-check'
-import { runClusterSetup, ClusterSetupError, streamingClusterSetupDeps } from '#lib/k8s/cluster-setup'
+import { runClusterCheck } from '#features/cluster/check'
+import { runClusterSetup, ClusterSetupError, streamingClusterSetupDeps } from '#features/cluster/setup'
 import type { CheckResult, ClusterSetupEvent } from '@yaac/shared/types'
 
 /**

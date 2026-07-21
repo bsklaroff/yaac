@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { buildApp } from '@yaac/server/server'
+import { buildApp } from '@yaac/server/main/server'
 import { makeTestApiClient } from '@yaac/test-utils/api'
-import { closeDb } from '@yaac/server/lib/db/client'
-import { recordSessionDeleted, listDeletedInfo } from '@yaac/server/lib/session/deleted-store'
+import { closeDb } from '@yaac/server/platform/db/client'
+import { recordSessionDeleted, listDeletedInfo } from '@yaac/server/features/sessions/deleted-store'
 
 describe('POST /session/mark-death-seen', () => {
   let tmpDir: string

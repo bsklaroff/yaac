@@ -2,11 +2,11 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import simpleGit from 'simple-git'
-import { cloneRepo, worktreeUpstreamBranch } from '@yaac/server/lib/git'
-import { listSessionPods, isPrewarmed } from '@yaac/server/lib/k8s/pods'
-import { listActiveSessions } from '@yaac/server/lib/session/list'
-import { listProjects } from '@yaac/server/lib/project/list'
-import { isTmuxSessionAlive } from '@yaac/server/lib/session/cleanup'
+import { cloneRepo, worktreeUpstreamBranch } from '@yaac/server/platform/git'
+import { listSessionPods, isPrewarmed } from '@yaac/server/platform/k8s/pods'
+import { listActiveSessions } from '@yaac/server/features/sessions/list'
+import { listProjects } from '@yaac/server/features/projects/list'
+import { isTmuxSessionAlive } from '@yaac/server/features/sessions/cleanup'
 import {
   createYaacTestEnv,
   spawnYaacServer,

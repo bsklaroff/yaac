@@ -2,12 +2,12 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { baseImageHash, fileHash, contextHash, ensureImageByTag, sessionUid } from '@yaac/server/lib/container/image-builder'
-import { ensureRootfulPodmanHost } from '@yaac/server/lib/container/runtime'
-import { ensureRegistryImage } from '@yaac/server/lib/k8s/project-registry'
-import { ensureVclusterImages } from '@yaac/server/lib/k8s/vcluster'
-import { ensureSalvageWriterImage } from '@yaac/server/lib/container/image-promoter'
-import { pushImageToRegistry, registryReachable } from '@yaac/server/lib/k8s/registry'
+import { baseImageHash, fileHash, contextHash, ensureImageByTag, sessionUid } from '@yaac/server/features/images/image-builder'
+import { ensureRootfulPodmanHost } from '@yaac/server/platform/container/runtime'
+import { ensureRegistryImage } from '@yaac/server/features/cluster/project-registry'
+import { ensureVclusterImages } from '@yaac/server/features/cluster/vcluster'
+import { ensureSalvageWriterImage } from '@yaac/server/features/images/image-promoter'
+import { pushImageToRegistry, registryReachable } from '@yaac/server/features/cluster/registry'
 import { DOCKERFILES_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
 
 const execFileAsync = promisify(execFile)
@@ -29,7 +29,7 @@ const execFileAsync = promisify(execFile)
  * without `-test-` (e.g. yaac-base, yaac-proxy, yaac-user-<slug>), so
  * a running real server's artifacts are never matched, and the
  * `yaac-registry` container (registry:2 image) is untouched. See
- * `src/lib/container/image-builder.ts` — the test suite opts into
+ * `src/features/images/image-builder.ts` — the test suite opts into
  * `imagePrefix: 'yaac-test'` to get this namespace separation.
  */
 async function pruneTestContainers(): Promise<void> {
