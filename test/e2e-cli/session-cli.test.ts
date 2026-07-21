@@ -21,7 +21,7 @@ import { firstSnapshot } from '@yaac/test-utils/events-ws'
  * server. Spawning a server (and waiting on the cross-worker server mutex)
  * dominated the wall-clock of the small per-command files this merges:
  * session-attach, session-delete, session-shell, session-restart,
- * session-list, session-monitor, session-stream, open, the validation-only
+ * session-list, session-monitor, open, the validation-only
  * session-create tests, the no-container server-ws describe, and the
  * no-container session-provisioning describe.
  *
@@ -40,8 +40,8 @@ import { firstSnapshot } from '@yaac/test-utils/events-ws'
  * Cluster/podman requirements (from the source files): session resolution
  * (attach/shell/delete/restart) lists pods/jobs via kubectl; session list —
  * and each monitor render — queries pods via kubectl even for empty states;
- * pickNextStreamSession always calls listSessionPods; and `createSession`
- * runs `ensureContainerRuntime()` (podman + kubernetes round-trip) before
+ * and `createSession` runs `ensureContainerRuntime()` (podman + kubernetes
+ * round-trip) before
  * the credential checks the create tests target. So the shared beforeAll
  * requires both podman and a reachable cluster.
  */
@@ -174,12 +174,6 @@ describe('empty state (must run before any state is seeded)', () => {
     expect(exitCode).toBe(0)
     expect(stdout).toContain('No active sessions')
     expect(stdout).toContain('yaac session create')
-  })
-
-  it('session stream exits with the empty-state message when no projects exist', async () => {
-    const { stdout, exitCode } = await runYaac(testEnv.env, 'session', 'stream')
-    expect(exitCode).toBe(0)
-    expect(stdout).toContain('No projects found')
   })
 
   it('session monitor renders the header with the default interval and the empty session list', async () => {
@@ -336,14 +330,6 @@ describe('validation errors (no state created)', () => {
     expect(stderr.toLowerCase()).toMatch(/not found|no-such-project/)
   })
 
-  it('session stream errors when the --tool flag is not claude, codex, or opencode', async () => {
-    const { stderr, exitCode } = await runYaac(
-      testEnv.env, 'session', 'stream', '--tool', 'mystery',
-    )
-    expect(exitCode).not.toBe(0)
-    expect(stderr.toLowerCase()).toMatch(/tool|mystery/)
-  })
-
   it('session create errors out fast when the project slug does not exist', async () => {
     const { stderr, exitCode } = await runYaac(testEnv.env, 'session', 'create', 'nope')
     expect(exitCode).not.toBe(0)
@@ -490,30 +476,6 @@ describe('with seeded projects', () => {
       const stdout = await runMonitorUntilFirstRender('proj-mon', '-n', '1')
       expect(stdout).toMatch(/\(every 1s/)
       expect(stdout).toContain('No active sessions for project "proj-mon"')
-    })
-  })
-
-  describe('yaac session stream (real CLI + real server)', () => {
-    it('exits after the user cancels the project-selection prompt', async () => {
-      const repoA = path.join(testEnv.scratchDir, 'proj-a')
-      const repoB = path.join(testEnv.scratchDir, 'proj-b')
-      await createTestRepo(repoA)
-      await createTestRepo(repoB)
-      await addTestProject(repoA)
-      await addTestProject(repoB)
-
-      // Send a non-numeric answer so the CLI hits the "Invalid selection."
-      // branch and returns "No project selected. Exiting session stream."
-      // (Other tests' projects also appear in the prompt — the assertions
-      // only require proj-a/proj-b to be listed and the cancel to land.)
-      const { stdout, exitCode } = await runYaac(
-        testEnv.env, 'session', 'stream', { stdin: 'x\n' },
-      )
-      expect(exitCode).toBe(0)
-      expect(stdout).toContain('Select a project')
-      expect(stdout).toContain('proj-a')
-      expect(stdout).toContain('proj-b')
-      expect(stdout).toContain('No project selected')
     })
   })
 

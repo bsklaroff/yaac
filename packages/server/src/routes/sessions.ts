@@ -15,7 +15,6 @@ import { streamProvisioned } from '#routes/provisioned-stream'
 import { ServerError } from '@yaac/shared/errors'
 import { allowSessionHost } from '#features/sessions/egress/allow-host'
 import { resolveSessionContainer } from '#features/sessions/resolve'
-import { pickNextStreamSession } from '#features/sessions/stream-picker'
 import { notifySessionListChanged } from '#features/sessions/notify'
 import { createShellWindow, listSessionTerminals, killWindowTerminal } from '#features/terminals/terminals'
 import { setSessionTitle } from '#features/titles/titles'
@@ -193,23 +192,6 @@ export const sessionApp = new Hono()
     removeProvisioning(c.req.param('id'))
     return c.body(null, 204)
   })
-  .post(
-    '/stream/next',
-    zv('json', z.object({
-      project: z.string().optional(),
-      tool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional(),
-      visited: z.array(z.string()).default([]),
-      lastVisited: z.string().optional(),
-      lastProjectSlug: z.string().optional(),
-      lastTool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional(),
-      lastOutcome: z.enum(['detached', 'closed_blank', 'closed_prompted', 'none']).default('none'),
-    })),
-    async (c) => {
-      const body = c.req.valid('json')
-      const result = await pickNextStreamSession(body)
-      return c.json(result)
-    },
-  )
   .post(
     '/:id/title',
     zv('json', z.object({ title: z.string().max(500) })),

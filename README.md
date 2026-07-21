@@ -219,9 +219,6 @@ yaac session <command>
   delete <session-id>         Delete a session and clean up its resources
   attach <container-id>       Attach to the agent tmux session
   shell <container-id>        Open a raw shell in the session container
-  stream [options] [project]  Stream through waiting sessions, attaching to
-                              each in turn
-    -t, --tool <tool>         Agent tool for new sessions (claude, codex, opencode, or pi)
   monitor [options] [project] Poll and display active sessions in real-time
     -n, --interval <seconds>  Refresh interval in seconds (default: 5)
 

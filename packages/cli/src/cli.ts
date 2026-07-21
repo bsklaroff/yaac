@@ -11,7 +11,6 @@ import { sessionDelete } from '#commands/session-delete'
 import { sessionRestart } from '#commands/session-restart'
 import { sessionAttach } from '#commands/session-attach'
 import { sessionShell } from '#commands/session-shell'
-import { sessionStream } from '#commands/session-stream'
 import { sessionMonitor } from '#commands/session-monitor'
 import { authUpdate } from '#commands/auth-update'
 import { authClear } from '#commands/auth-clear'
@@ -32,7 +31,7 @@ import { runAuthDaemon, startAuthDaemon, stopAuthDaemon, statusAuthDaemon } from
 import { runServer, startServer, stopServer, restartServer, serverLogs, openWebapp } from '@yaac/server/main/cli'
 import { DEFAULT_SERVER_PORT } from '@yaac/shared/server-port'
 import { ensureRootfulPodmanHost } from '@yaac/server/platform/container/runtime'
-import { FAKE_AUTH_KINDS, type AgentTool, type FakeAuthKind } from '@yaac/shared/types'
+import { FAKE_AUTH_KINDS, type FakeAuthKind } from '@yaac/shared/types'
 import type { SessionMonitorOptions } from '#commands/session-monitor'
 
 // On Linux, yaac drives the rootful podman engine (CONTAINER_HOST). Set it once
@@ -233,15 +232,6 @@ session
   .description('Open an interactive zsh shell in the session container')
   .argument('<container-id>', 'Session ID or container name')
   .action(sessionShell)
-
-session
-  .command('stream')
-  .description('Stream through waiting sessions, attaching to each in turn')
-  .argument('[project]', 'Filter by project slug (auto-creates sessions if none waiting)')
-  .option('-t, --tool <tool>', 'Agent tool for newly created sessions (claude, codex, opencode, or pi)')
-  .action(async (project: string | undefined, options: { tool?: AgentTool }) => {
-    await sessionStream(project, options.tool)
-  })
 
 session
   .command('monitor')

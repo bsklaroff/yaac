@@ -607,42 +607,6 @@ export interface SessionTerminalEntry {
   name: string
 }
 
-// --- session stream picker ---
-
-export type StreamOutcome = 'detached' | 'closed_blank' | 'closed_prompted' | 'none'
-
-export interface PickNextInput {
-  project?: string
-  tool?: AgentTool
-  visited: string[]
-  lastVisited?: string
-  /**
-   * Project slug of the last-attached session. The server uses it to
-   * look up the session transcript if the session disappeared between
-   * this call and the previous one — which tells us whether the user
-   * closed a blank session.
-   */
-  lastProjectSlug?: string
-  lastTool?: AgentTool
-  lastOutcome: StreamOutcome
-}
-
-export type PickNextResult =
-  | {
-      done: false
-      sessionId: string
-      jobName: string
-      projectSlug: string
-      tool: AgentTool
-      visited: string[]
-      lastVisited: string
-    }
-  | {
-      done: true
-      reason: 'no_active' | 'closed_blank' | 'needs_project'
-      candidates?: string[]
-    }
-
 // ---------------------------------------------------------------------------
 // Webapp event stream — pushed over the `/events` WebSocket. The slice
 // pushes a full snapshot on connect and after each background-loop tick
