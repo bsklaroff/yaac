@@ -14,7 +14,7 @@ import { serverLog } from '#log'
  * rules from CILIUM_PRE_mangle). Every vcluster teardown leaks its
  * inner-redirect CEC's six rules this way, so they accumulate without bound
  * under session churn — the same CEC-churn residue that has wedged egress
- * before (docs/yaac-in-yaac-inner-egress.md).
+ * before (docs/nested-containers.md).
  *
  * This lives in the reconcile loop, NOT the vcluster teardown path, because
  * teardown is the wrong moment: namespace deletion runs `--wait=false`, and

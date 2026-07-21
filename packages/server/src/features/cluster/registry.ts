@@ -140,7 +140,7 @@ export async function removeLocalRegistry(): Promise<void> {
  *
  * `compressionFormat: 'zstd'` is used for trusted-layer pushes feeding
  * builder-pod parent pulls: zstd layers cut a pod's empty-graphroot parent
- * pull from 65.6s to 40.4s (measured, docs/trust-split-builds-plan.md) at
+ * pull from 65.6s to 40.4s (measured, docs/trust-split-builds.md) at
  * no meaningful host-side push cost. Node containerd pulls of zstd blobs
  * (the session-pod path) are validated — see the plan doc.
  */

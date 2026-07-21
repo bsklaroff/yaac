@@ -79,7 +79,7 @@ export const PROXY_SA_NAME = 'yaac-proxy'
  * Inner (nested / yaac-in-yaac) redirect objects. The server projects these
  * into a managed vcluster's host namespace so the vcluster's synced pods are
  * redirected to that session's *inner* proxy at higher precedence than the
- * outer redirect (see docs/yaac-in-yaac-inner-egress.md). The session pod
+ * outer redirect (see docs/nested-containers.md). The session pod
  * never gets host RBAC — the server rebuilds them from these trusted builders.
  */
 export const INNER_EGRESS_REDIRECT_CEC_NAME = 'yaac-inner-egress-redirect'
@@ -97,7 +97,7 @@ export const INNER_PROXY_INGRESS_CNP_NAME = 'yaac-inner-proxy-ingress'
  * fallback CNP (for tenant isolation) but references that shared CCEC, so
  * creating/destroying a vcluster adds/removes NO Envoy listeners — the churn
  * that otherwise triggers a node-wide "regenerate all endpoints" and wedges
- * every session's egress (see docs/yaac-in-yaac-inner-egress.md).
+ * every session's egress (see docs/nested-containers.md).
  *
  * One shared base name: the per-vcluster CNP uses it verbatim; the cluster-scoped
  * CCEC suffixes it with the install namespace (`vclusterFallbackCcecName`).
@@ -123,7 +123,7 @@ export const LABEL_ROLE = 'yaac.role'
 export const ROLE_INNER_PROXY = 'inner-proxy'
 /**
  * Role of the ephemeral runsc builder pods that execute untrusted image
- * layers (docs/trust-split-builds-plan.md). Referenced by the world-deny
+ * layers (docs/trust-split-builds.md). Referenced by the world-deny
  * exclusion below and by the builder-pod reap sweep; defined here (not in
  * builder-pod.ts) so the policy builder needs no import from lib/container.
  */

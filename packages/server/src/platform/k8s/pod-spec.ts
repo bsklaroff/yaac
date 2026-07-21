@@ -10,7 +10,7 @@ export const CA_CONFIGMAP_KEY = 'proxy-ca.pem'
  * `{public roots} ∪ {proxy CA}`. The own-bundle tools in nested containers
  * (curl / requests / cargo / git-libcurl) point CURL_CA_BUNDLE & friends at
  * it — a superset, so they trust the proxy on intercepted hosts AND real
- * upstreams on tunnelled hosts. See docs/nested-ca-combined-bundle.md.
+ * upstreams on tunnelled hosts. See docs/nested-containers.md.
  */
 export const CA_BUNDLE_KEY = 'ca-bundle.pem'
 /** Directory inside session pods where the CA ConfigMap is mounted. */
@@ -107,7 +107,7 @@ export const NESTED_GRAPHROOT_ANNOTATIONS: Record<string, string> =
 /**
  * The annotation set above, parameterized on the sentry tmpfs size cap so
  * other podman-in-gvisor pods (the ephemeral builder pods of
- * docs/trust-split-builds-plan.md) can size their graphroot independently
+ * docs/trust-split-builds.md) can size their graphroot independently
  * of session pods. Keys on NESTED_GRAPHROOT_VOLUME — the pod must mount
  * its graphroot emptyDir under that volume name.
  */

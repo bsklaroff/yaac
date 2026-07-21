@@ -1,7 +1,7 @@
 /**
  * The build-engine seam: routes each image layer to the engine that
  * executes its `podman build`, keyed on layer trust
- * (docs/trust-split-builds-plan.md).
+ * (docs/trust-split-builds.md).
  *
  * Routing is a WHITELIST: only the yaac-shipped layers — `base`, `tools`,
  * `nestable`, whose Dockerfiles live in the install's DOCKERFILES_DIR with

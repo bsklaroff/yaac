@@ -10,7 +10,7 @@
  * every host the proxy tunnels (npm, PyPI, crates.io, …). The fix is to
  * point those vars at a single file that is the UNION
  * `{public roots} ∪ {proxy CA}` — a superset, so "replace" semantics become
- * correct. See docs/nested-ca-combined-bundle.md.
+ * correct. See docs/nested-containers.md.
  */
 
 /** Path to the image's public roots (provided by the ca-certificates pkg). */

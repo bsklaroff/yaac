@@ -185,8 +185,7 @@ describe('empty state (must run before any state is seeded)', () => {
 })
 
 /**
- * Wire-level coverage for the server's WebSocket surface, per the test
- * strategy in plans/webapp-server-follow-up.md:
+ * Wire-level coverage for the server's WebSocket surface:
  *  - /events sends a `snapshot` frame on connect (see the empty-state
  *    describe above) and rejects missing auth.
  *  - /pty/attach reports an error for unknown sessions.

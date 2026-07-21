@@ -11,15 +11,15 @@ in-cluster: a
 controller (client-go/controller-runtime) converges the cluster to it.
 
 Motivation is architectural, not CPU. The event-driven refactor
-(`plans/event-driven-k8s-control.md`) already removes the polling and
+(`docs/plans/event-driven-k8s-control.md`) already removes the polling and
 process-per-stream overhead inside the current single-process design; an
 operator is the *next* shape, and its trigger conditions are the plans
 already on the shelf:
 
-- **Remote hosting** (`plans/remote-server-hosting.md`): a server detached
+- **Remote hosting** (`docs/remote-hosting.md`): a server detached
   from the cluster needs convergence to happen cluster-side.
-- **Multi-node** (`docs/multi-node-storage-plan.md`,
-  `plans/moving-off-kind.md`): scheduling and healing across nodes wants a
+- **Multi-node** (`docs/plans/multi-node-storage-plan.md`,
+  `docs/plans/moving-off-kind.md`): scheduling and healing across nodes wants a
   resident controller, not a laptop process.
 - **Sessions governed while no server runs**: today reaping, kubeconfig
   heal, and prewarm maintenance stop when the server stops (sleep,
@@ -153,7 +153,7 @@ used for vcluster synced pods).
   `YAAC_K8S_NAMESPACE` scoping today) vs cluster-scoped with install
   labels.
 - Status → frontend latency: server informs on Session status (same
-  informer layer as `plans/event-driven-k8s-control.md`) — verify the
+  informer layer as `docs/plans/event-driven-k8s-control.md`) — verify the
   hub's 150ms coalesce still holds end-to-end.
 
 ## Prior art: kubernetes-sigs/agent-sandbox

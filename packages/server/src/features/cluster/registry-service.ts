@@ -1,6 +1,6 @@
 /**
  * In-cluster exposure of the shared `yaac-registry` container for builder
- * pods (docs/trust-split-builds-plan.md).
+ * pods (docs/trust-split-builds.md).
  *
  * The registry is a podman container on the podman `kind` network — the
  * kind NODE reaches it by container name via containerd's hosts.toml, but

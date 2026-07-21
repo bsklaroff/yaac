@@ -122,7 +122,7 @@ async function pruneInnerRedirects(vcNamespace: string, desired: Set<string>): P
 
 /**
  * Background-loop tick step for yaac-in-yaac inner egress (design B,
- * docs/yaac-in-yaac-inner-egress.md). Projects only the DYNAMIC inner
+ * docs/nested-containers.md). Projects only the DYNAMIC inner
  * overrides — the part that depends on inner yaac proxies existing. For each
  * managed vcluster:
  *

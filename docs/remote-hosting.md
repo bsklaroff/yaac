@@ -129,7 +129,7 @@ Semantics to keep in mind:
 
 - **Reboot durability** (systemd unit for the server, cluster restart on
   boot) — run `yaac cluster setup --repair && yaac server start` after a
-  server reboot for now; see `plans/remote-server-hosting.md` (Layer 3).
+  server reboot for now.
 - `yaac port-forward`-style tunnels that preserve `localhost:<port>` on the
   client.
-- Multi-user access — the design notes live in the remote-hosting plan.
+- Multi-user access.

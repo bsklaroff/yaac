@@ -4,8 +4,7 @@
  * hand back the authed URL to load — `<origin>/?token=…`, the same URL
  * `yaac open` builds. The SPA trades the token for its session cookie at
  * POST /auth/web-session; from then on the window is a plain browser on
- * the server origin, exactly like the webapp
- * (`plans/remote-server-hosting.md`: the origin IS the context).
+ * the server origin, exactly like the webapp (the origin IS the context).
  *
  * Target resolution and the typed client come verbatim from
  * @yaac/shared/server-api — the desktop main is a Node process, so it

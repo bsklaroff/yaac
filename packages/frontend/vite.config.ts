@@ -47,8 +47,8 @@ async function resolveServerPort(): Promise<number> {
 const serverPort = await resolveServerPort()
 const target = `http://127.0.0.1:${serverPort}`
 
-// Bare-path API surface proxied to the server (see webapp-frontend.md:
-// the slice keeps the existing paths rather than a /v1 prefix).
+// Bare-path API surface proxied to the server: the slice keeps the
+// existing paths rather than a /v1 prefix.
 const apiPrefixes = ['/session', '/project', '/tool', '/auth', '/shortcuts', '/prewarm', '/health', '/image', '/cluster']
 
 interface ProxyEntry {

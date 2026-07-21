@@ -295,7 +295,7 @@ one integration smoke against a stub `herdr` + real `yaac`.
 
 - No reconcile/bridge process (per the user); herdr is a launcher only.
 - No yaac server/HTTP/auth changes; no herdr references in the yaac repo.
-- No remote topology (would need the unimplemented `plans/remote-server-hosting.md`
+- No remote topology (would need remote hosting, `docs/remote-hosting.md`,
   + attach over the server's `/pty/attach` WebSocket).
 - No `herdr pane report-agent` state pushing (screen detection already covers all
   three tools).

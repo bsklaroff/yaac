@@ -1,6 +1,6 @@
 /**
  * Ephemeral runsc builder pods — the `cluster-pod` build engine
- * (docs/trust-split-builds-plan.md).
+ * (docs/trust-split-builds.md).
  *
  * Untrusted Dockerfiles (`Dockerfile.yaac` / `Dockerfile.user` — user- and
  * agent-editable) never execute on the host podman engine. Each build
