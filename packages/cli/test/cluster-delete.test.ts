@@ -2,11 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } fr
 
 vi.mock('@yaac/server/features/cluster/delete', () => {
   class ClusterDeleteError extends Error {}
-  return { runClusterDelete: vi.fn(), ClusterDeleteError }
+  return { runClusterDelete: vi.fn(), ClusterDeleteError } satisfies Partial<typeof clusterDeleteModule>
 })
 
 import { clusterDelete } from '#commands/cluster-delete'
 import { ClusterDeleteError, runClusterDelete } from '@yaac/server/features/cluster/delete'
+import type * as clusterDeleteModule from '@yaac/server/features/cluster/delete'
 
 const mockRun = vi.mocked(runClusterDelete)
 

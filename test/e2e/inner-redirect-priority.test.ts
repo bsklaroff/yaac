@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { requireCluster, IS_NESTED_YAAC } from '@yaac/test-utils/setup'
 import { k8sNamespace, kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/platform/k8s/kubectl'
-import { SESSION_REDIRECT_PRIORITY, VCLUSTER_FALLBACK_PRIORITY } from '@yaac/server/features/cluster/bootstrap'
+import { SESSION_REDIRECT_PRIORITY, VCLUSTER_FALLBACK_PRIORITY } from '@yaac/server/features/cluster/proxy-constants'
 
 // A dedicated, policy-free namespace: the install namespace carries yaac's
 // egress world-deny (a Cilium *deny*, which overrides our redirect *allow*),

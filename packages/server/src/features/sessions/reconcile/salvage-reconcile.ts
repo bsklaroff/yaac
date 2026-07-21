@@ -1,6 +1,6 @@
 import { isPrewarmed, listSessionPods } from '#platform/k8s/pods'
 import { getActivePodWatcher } from '#platform/k8s/pod-watch'
-import { isSessionTerminating } from '#features/sessions/terminating'
+import { isSessionTerminating } from '#features/sessions/state'
 import { salvageSessionImages } from '#features/images/image-promoter'
 
 /**

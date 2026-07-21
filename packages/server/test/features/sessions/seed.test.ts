@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs/promises'
-import { seedClaudeJson, seedClaudeSettings } from '#features/sessions/create'
+import { seedClaudeJson, seedClaudeSettings } from '#features/sessions/seed'
 
 let dir: string
 let file: string

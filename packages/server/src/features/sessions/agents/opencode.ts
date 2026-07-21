@@ -1,7 +1,15 @@
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import { and, eq } from 'drizzle-orm'
 import { containerExec } from '#platform/k8s/exec'
 import { getDb } from '#platform/db/client'
 import { opencodeSessionMeta } from '#platform/db/schema'
+import { listSessionPods } from '#platform/k8s/pods'
+import { classifySessionPods } from '#features/sessions/classify'
+import { probeTmuxLiveness } from '#features/sessions/cleanup'
+import { normalizeTool } from '#features/sessions/state'
+import { testEnv } from '@yaac/shared/env'
+import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
 import type { OpencodeSessionMeta } from '@yaac/shared/types'
 
 /**
@@ -286,4 +294,80 @@ export async function ensureOpencodeFirstMessageCaptured(
   const meta = await loadOpencodeMeta(projectSlug, sessionId)
   if (meta?.firstMessage) return
   await getSessionOpencodeFirstUserMessage(projectSlug, sessionId, jobName)
+}
+
+/**
+ * Persist the first-message snapshot for running opencode sessions that
+ * don't have one yet, so `session list -d` and restart retain a record
+ * even when no client polls /session/list (otherwise the only trigger).
+ * Designed to run from the server background loop.
+ *
+ * opencode is the only tool whose snapshot is probe-driven — claude and
+ * codex write their transcripts directly on message submit — so this
+ * targets opencode sessions and is a no-op for the rest. Each capture
+ * is best-effort and self-skips once a snapshot exists (see
+ * `ensureOpencodeFirstMessageCaptured`).
+ */
+export async function captureOpencodeFirstMessages(snapshot?: TickSnapshot): Promise<void> {
+  let pods
+  try {
+    pods = await (snapshot ? snapshot.pods() : listSessionPods())
+  } catch {
+    return
+  }
+  const { running } = await classifySessionPods(
+    pods, Date.now(), probeTmuxLiveness, testEnv.startingGraceMs,
+  )
+  await Promise.all(running.map(async (p) => {
+    if (normalizeTool(p.tool) !== 'opencode') return
+    if (!p.sessionId || !p.projectSlug || !p.jobName) return
+    try {
+      await ensureOpencodeFirstMessageCaptured(p.projectSlug, p.sessionId, p.jobName)
+    } catch {
+      // best-effort — next tick retries
+    }
+  }))
+}
+
+// ---------------------------------------------------------------------------
+// Config seeding
+// ---------------------------------------------------------------------------
+
+interface OpencodeConfig {
+  permission?: Record<string, unknown>
+  [key: string]: unknown
+}
+
+/**
+ * Ensures the shared opencode.json grants the websearch permission so
+ * opencode's Exa-backed websearch tool is usable. Merges with any
+ * existing keys rather than overwriting — opencode itself writes to
+ * this file via `Config.updateGlobal()` (model selection, etc.).
+ *
+ * The tool is also gated on `OPENCODE_ENABLE_EXA=true` in the
+ * container env; without that env var the tool isn't registered no
+ * matter what the permission says.
+ */
+export async function ensureOpencodeConfigJson(
+  opencodeConfigDir: string,
+): Promise<void> {
+  const configPath = path.join(opencodeConfigDir, 'opencode.json')
+
+  let config: OpencodeConfig = {}
+  try {
+    const raw = await fs.readFile(configPath, 'utf8')
+    const parsed: unknown = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      config = parsed as OpencodeConfig
+    }
+  } catch {
+    // No existing config or invalid — start fresh
+  }
+
+  const permission: Record<string, unknown> = config.permission ?? {}
+  if (permission.websearch === 'allow') return
+
+  permission.websearch = 'allow'
+  config.permission = permission
+  await fs.writeFile(configPath, JSON.stringify(config, null, 2) + '\n')
 }

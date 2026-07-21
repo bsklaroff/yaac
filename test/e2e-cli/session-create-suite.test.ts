@@ -1104,7 +1104,7 @@ describe('yaac session create suite (real CLI + real server + mocked remotes)', 
 
     it('boots opencode and exposes its HTTP API on 127.0.0.1:4096 inside the container', async () => {
       // The yaac status + first-message helpers in
-      // packages/server/src/features/sessions/agents/opencode-status.ts depend on these endpoints being
+      // packages/server/src/features/sessions/agents/opencode.ts depend on these endpoints being
       // reachable via `kubectl exec curl` — without this test the entire
       // opencode status pipeline is unverified by CI.
       //

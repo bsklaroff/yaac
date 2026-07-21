@@ -128,12 +128,14 @@ describe('runProvisioned', () => {
 })
 
 describe('listProvisioning', () => {
-  it('projects to the wire shape, sorted oldest first', () => {
+  it('projects to the wire shape, sorted oldest first (insertion order)', () => {
     register('b')
     register('a')
     const list = listProvisioning()
-    // Both registered ~now; tie broken by sessionId for determinism.
-    expect(list.map((e) => e.sessionId)).toEqual(['a', 'b'])
+    // Ordered by a monotonic insertion counter, so 'b' (registered first)
+    // comes first regardless of whether the two share a millisecond clock
+    // read — the sessionId tiebreak used to flip this under parallel load.
+    expect(list.map((e) => e.sessionId)).toEqual(['b', 'a'])
     expect(list[0].createdAt).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
   })
 })

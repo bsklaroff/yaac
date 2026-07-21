@@ -15,6 +15,9 @@ import { getDefaultTool } from '@yaac/server/features/projects/preferences'
 import { closeDb } from '@yaac/server/platform/db/client'
 import type * as sessionCreateModule from '@yaac/server/features/sessions/create'
 import type * as projectAddModule from '@yaac/server/features/projects/add'
+import type * as sessionDeleteModule from '@yaac/server/features/sessions/delete'
+import type * as sessionRestartModule from '@yaac/server/features/sessions/restart'
+import type * as projectRemoveModule from '@yaac/server/features/projects/remove'
 import type * as cliResolveModule from '@yaac/auth-daemon/cli-resolve'
 import type { ProjectMeta, ClaudeOAuthBundle } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
@@ -30,11 +33,11 @@ vi.mock('@yaac/server/features/sessions/create', async () => {
 
 vi.mock('@yaac/server/features/sessions/delete', () => ({
   deleteSession: vi.fn(),
-}))
+} satisfies Partial<typeof sessionDeleteModule>))
 
 vi.mock('@yaac/server/features/sessions/restart', () => ({
   restartSession: vi.fn(),
-}))
+} satisfies Partial<typeof sessionRestartModule>))
 
 vi.mock('@yaac/server/features/projects/add', async () => {
   const actual = await vi.importActual<typeof projectAddModule>('@yaac/server/features/projects/add')
@@ -46,7 +49,7 @@ vi.mock('@yaac/server/features/projects/add', async () => {
 
 vi.mock('@yaac/server/features/projects/remove', () => ({
   removeProject: vi.fn(),
-}))
+} satisfies Partial<typeof projectRemoveModule>))
 
 // The install flow's post-exit verification resolves the CLI on the real
 // machine — mocked so the route tests pass regardless of what's installed.

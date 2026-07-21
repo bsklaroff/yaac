@@ -2,7 +2,9 @@ import { describe, it, expect, vi } from 'vitest'
 
 // prewarm.ts pulls these heavy modules in transitively; the pure planner +
 // isPrewarmed never touch them, so stub them out to keep the test light.
-vi.mock('#features/sessions/create', () => ({ shellEscape: (s: string) => s }))
+// (shellEscape now lives in the light agent-command module, so it loads real.)
+vi.mock('#features/sessions/create', () => ({ createSession: vi.fn() }))
+vi.mock('#features/sessions/spare-pool', () => ({ retoolSpare: vi.fn(), rebranchSpare: vi.fn() }))
 vi.mock('#features/sessions/cleanup', () => ({ isTmuxSessionAlive: vi.fn() }))
 
 import { computePrewarmPlan } from '#features/images/prewarm'

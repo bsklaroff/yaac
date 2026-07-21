@@ -23,7 +23,7 @@ import {
   kubectlApply,
 } from '#platform/k8s/kubectl'
 import { REGISTRY_CONTAINER_NAME } from '#features/cluster/registry'
-import { ensureNamespace } from '#features/cluster/bootstrap'
+import { ensureNamespace } from '#features/cluster/proxy-apply'
 
 /** Service (and EndpointSlice) name — matches the container name. */
 export const REGISTRY_SERVICE_NAME = 'yaac-registry'

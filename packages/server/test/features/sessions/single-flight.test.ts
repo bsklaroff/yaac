@@ -27,14 +27,15 @@ vi.mock('#features/sessions/egress/blocked-hosts', () => ({
   readBlockedHosts: vi.fn().mockResolvedValue([]),
 }))
 
-vi.mock('#features/sessions/status', () => ({
-  getSessionStatus: vi.fn().mockResolvedValue('running'),
+vi.mock('#features/sessions/state', async (importOriginal) => ({
+  ...(await importOriginal<typeof stateModule>()),
   getSessionFirstMessage: vi.fn().mockResolvedValue(undefined),
   normalizeTool: vi.fn().mockReturnValue('claude'),
 }))
 
 import { listSessionPods } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
+import type * as stateModule from '#features/sessions/state'
 import {
   listActiveSessions,
   _clearListActiveInflightForTests,

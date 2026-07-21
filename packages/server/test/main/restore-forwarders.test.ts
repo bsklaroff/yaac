@@ -26,7 +26,7 @@ import type * as podsModule from '#platform/k8s/pods'
 import { resolveProjectConfig } from '#features/projects/config'
 import { isTmuxSessionAlive } from '#features/sessions/cleanup'
 import { hasSessionForwarders, provisionSessionForwarders } from '#features/sessions/forwarders/port-forwarders'
-import { restoreAllSessionForwarders } from '#features/sessions/forwarders/restore-forwarders'
+import { restoreAllSessionForwarders } from '#main/server-run'
 
 const mockListPods = vi.mocked(listSessionPods)
 const mockResolveConfig = vi.mocked(resolveProjectConfig)

@@ -2,7 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.mock('#features/sessions/create', () => ({
   createSession: vi.fn(),
-  shellEscape: (s: string) => s,
+}))
+vi.mock('#features/sessions/spare-pool', () => ({
+  retoolSpare: vi.fn(),
+  rebranchSpare: vi.fn(),
 }))
 vi.mock('#features/sessions/cleanup', () => ({
   cleanupSessionDetached: vi.fn(),

@@ -5,10 +5,11 @@ vi.mock('@yaac/server/features/cluster/check', () => ({
   formatCheckResult: vi.fn(
     (r: { name: string; status: string }) => `[${r.status}] ${r.name}`,
   ),
-}))
+} satisfies Partial<typeof clusterCheckModule>))
 
 import { clusterCheck } from '#commands/cluster-check'
 import { formatCheckResult, runClusterCheck } from '@yaac/server/features/cluster/check'
+import type * as clusterCheckModule from '@yaac/server/features/cluster/check'
 
 const mockRun = vi.mocked(runClusterCheck)
 const mockFormat = vi.mocked(formatCheckResult)

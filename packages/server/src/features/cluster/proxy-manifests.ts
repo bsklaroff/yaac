@@ -1,20 +1,5 @@
-import crypto from 'node:crypto'
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import {
-  dataDirHash,
-  k8sNamespace,
-  kubectlApply,
-  kubectlGetJson,
-  kubectlWithRetry,
-} from '#platform/k8s/kubectl'
-import { ensureCiliumCrds } from '#platform/k8s/cilium-crds'
-import {
-  CA_BUNDLE_KEY,
-  CA_CERT_PATH,
-  CA_CONFIGMAP_KEY,
-  CA_CONFIGMAP_NAME,
-} from '#platform/k8s/pod-spec'
+import { dataDirHash, k8sNamespace } from '#platform/k8s/kubectl'
+import { CA_CONFIGMAP_KEY } from '#platform/k8s/pod-spec'
 import {
   LABEL_DATA_DIR_HASH,
   LABEL_SESSION_ID,
@@ -22,139 +7,45 @@ import {
   VCLUSTER_API_PORT,
 } from '#platform/k8s/pods'
 import { RUNTIME_CLASS_GVISOR } from '#platform/k8s/gvisor'
-import { credentialsDir, getDataDir } from '@yaac/shared/project-paths'
+import { credentialsDir } from '@yaac/shared/project-paths'
 import { env } from '@yaac/shared/env'
+import { proxyDataHostDir, sshAgentHostDir } from '#features/cluster/proxy-apply'
+import {
+  BUILDER_ROLE_GUARD_NAME,
+  DNS_STUB_PORT,
+  EGRESS_REDIRECT_CEC_NAME,
+  EGRESS_WORLD_DENY_NAME,
+  INNER_EGRESS_REDIRECT_CEC_NAME,
+  INNER_PROXY_INGRESS_CNP_NAME,
+  INNER_SESSION_EGRESS_REDIRECT_CNP_NAME,
+  LABEL_PROJECTION,
+  LABEL_ROLE,
+  OUTER_CA_CONFIGMAP_NAME,
+  PROJECTION_INNER_REDIRECT,
+  PROXY_APP_NAME,
+  PROXY_AUTH_SECRET_NAME,
+  PROXY_INGRESS_CNP_NAME,
+  PROXY_PORT,
+  PROXY_SA_NAME,
+  ROLE_BUILDER,
+  ROLE_INNER_PROXY,
+  SESSION_EGRESS_REDIRECT_CNP_NAME,
+  SESSION_REDIRECT_PRIORITY,
+  SSH_TUNNEL_SENTINEL,
+  TRANSPARENT_HTTP_PORT,
+  TRANSPARENT_HTTPS_PORT,
+  TRANSPARENT_TUNNEL_PORT,
+  TUNNEL_INGRESS_PORT,
+  VCLUSTER_FALLBACK_PRIORITY,
+  VCLUSTER_FALLBACK_REDIRECT_NAME,
+} from '#features/cluster/proxy-constants'
 
-/** Deployment/Service name and pod selector label of the shared proxy. */
-export const PROXY_APP_NAME = 'yaac-proxy'
-/** Secret holding the server→proxy bearer secret. */
-export const PROXY_AUTH_SECRET_NAME = 'yaac-proxy-auth'
-/** Port the proxy serves inside the cluster (container + Service port). */
-export const PROXY_PORT = 10255
-/**
- * Transparent egress listeners: session pods' outbound 443/80 is DNAT'd
- * here by their redirect init container (TLS-SNI / Host-header routing,
- * source-pod-IP identity — see k8s/proxy/proxy.ts).
- */
-export const TRANSPARENT_HTTPS_PORT = 10256
-export const TRANSPARENT_HTTP_PORT = 10257
-/**
- * Transparent tunnel listener: the relay forwards SSH (git's ncat
- * ProxyCommand, pointed at the relay's loopback CONNECT port) here behind
- * a PP2 identity header. The listener verifies the token, parses the
- * `CONNECT host:port`, and tunnels — so SSH authenticates with the same
- * per-connection credential as HTTP(S), with no `x:<sessionId>` in the
- * workload's env.
- */
-export const TRANSPARENT_TUNNEL_PORT = 10258
-/**
- * Port the per-pod git SSH `ncat` ProxyCommand dials (a sentinel address, not
- * a real host). Cilium redirects egress to SSH_TUNNEL_SENTINEL:this-port
- * through the node Envoy to the proxy's transparent tunnel listener, so SSH
- * gets the same source-IP-via-PP2 identity as HTTP(S). ncat still sends
- * `CONNECT host:22`, so the proxy learns the real destination for the
- * allowlist (a raw port-22 redirect would lose the hostname — DNS is a stub).
- */
-export const TUNNEL_INGRESS_PORT = 10259
-/**
- * Sentinel address the SSH ncat ProxyCommand dials. Never a real host: it
- * only exists to be matched and redirected by Cilium. In the RFC2544
- * benchmark range (like the DNS stub's 198.18.0.1), so it can never route.
- */
-export const SSH_TUNNEL_SENTINEL = '198.18.0.2'
-/** UDP port the proxy's DNS stub serves (Service + container; needs
- * CAP_NET_BIND_SERVICE so the non-root proxy can bind <1024). */
-export const DNS_STUB_PORT = 53
-/** CiliumEnvoyConfig that programs the node Envoy to forward redirected
- * session egress to the proxy's transparent listeners. */
-export const EGRESS_REDIRECT_CEC_NAME = 'yaac-egress-redirect'
-/** CiliumNetworkPolicy that L7-redirects session-pod egress into the CEC. */
-export const SESSION_EGRESS_REDIRECT_CNP_NAME = 'yaac-session-egress-redirect'
-/** CiliumNetworkPolicy locking the proxy's transparent ports to Envoy/host. */
-export const PROXY_INGRESS_CNP_NAME = 'yaac-proxy-ingress'
-/** ServiceAccount the proxy uses to watch pods (source-IP -> session). */
-export const PROXY_SA_NAME = 'yaac-proxy'
-
-/**
- * Inner (nested / yaac-in-yaac) redirect objects. The server projects these
- * into a managed vcluster's host namespace so the vcluster's synced pods are
- * redirected to that session's *inner* proxy at higher precedence than the
- * outer redirect (see docs/nested-containers.md). The session pod
- * never gets host RBAC — the server rebuilds them from these trusted builders.
- */
-export const INNER_EGRESS_REDIRECT_CEC_NAME = 'yaac-inner-egress-redirect'
-export const INNER_SESSION_EGRESS_REDIRECT_CNP_NAME = 'yaac-inner-session-egress-redirect'
-export const INNER_PROXY_INGRESS_CNP_NAME = 'yaac-inner-proxy-ingress'
-/**
- * The outer yaac's low-precedence fallback redirect for a vcluster's synced
- * pods (→ the OUTER proxy), so they have working egress from the moment they
- * exist — before/without any inner yaac.
- *
- * The listeners live in a single SHARED, cluster-scoped
- * `CiliumClusterwideEnvoyConfig` (one per install, name install-scoped via
- * `vclusterFallbackCcecName` to avoid collisions between the real install and
- * ephemeral e2e `yaac-test-<run-id>` installs). Each vcluster keeps its own
- * fallback CNP (for tenant isolation) but references that shared CCEC, so
- * creating/destroying a vcluster adds/removes NO Envoy listeners — the churn
- * that otherwise triggers a node-wide "regenerate all endpoints" and wedges
- * every session's egress (see docs/nested-containers.md).
- *
- * One shared base name: the per-vcluster CNP uses it verbatim; the cluster-scoped
- * CCEC suffixes it with the install namespace (`vclusterFallbackCcecName`).
- */
-export const VCLUSTER_FALLBACK_REDIRECT_NAME = 'yaac-vcluster-fallback-redirect'
-/**
- * `toPorts.listener.priority` (lower number = higher precedence; unset is the
- * lowest, ~126). EVERY yaac's session-egress redirect uses the SAME normal
- * value — so an inner yaac is fully transparent (no special band) and its
- * projected redirect naturally beats the outer fallback. The outer's
- * vcluster-fallback uses a deliberately lower precedence so any inner override
- * wins. Spike 2026-06-16 proved lower-wins (explicit beats unset); the nesting
- * e2e pins the explicit-vs-explicit case.
- */
-export const SESSION_REDIRECT_PRIORITY = 50
-export const VCLUSTER_FALLBACK_PRIORITY = 90
-/**
- * Role label + value the inner proxy pod carries so the inner override can
- * exclude it (loop-free): the inner proxy is NOT redirected to itself, so its
- * own upstream dials fall through to the outer redirect → outer proxy → world.
- */
-export const LABEL_ROLE = 'yaac.role'
-export const ROLE_INNER_PROXY = 'inner-proxy'
-/**
- * Role of the ephemeral runsc builder pods that execute untrusted image
- * layers (docs/trust-split-builds.md). Referenced by the world-deny
- * exclusion below and by the builder-pod reap sweep; defined here (not in
- * builder-pod.ts) so the policy builder needs no import from lib/container.
- */
-export const ROLE_BUILDER = 'builder'
-/**
- * Label stamped on the host objects `reconcileInnerRedirects` projects into a
- * vcluster's namespace, so the prune pass can list exactly its own writes and
- * never touch the vcluster's egress floor (which shares the `app` label).
- * Per-install objects also carry `LABEL_DATA_DIR_HASH` = the owning inner
- * install, the prune key.
- */
-export const LABEL_PROJECTION = 'yaac.projection'
-export const PROJECTION_INNER_REDIRECT = 'inner-redirect'
-/**
- * Nested (inner) proxy only. The inner proxy's chained upstream dial
- * (inner session → inner proxy → OUTER proxy → internet) terminates TLS at
- * the outer proxy, which presents a leaf signed by the OUTER proxy's MITM CA.
- * The stock proxy dials upstream with Node's default trust store, so without
- * the outer CA that dial fails with "self-signed certificate in certificate
- * chain" and the inner session has no internet. The server projects the outer
- * CA into the vcluster as this ConfigMap; the inner proxy mounts it and points
- * NODE_EXTRA_CA_CERTS at it (additive trust — the real roots still apply). The
- * inner yaac reads the outer CA from its own session-pod trust mount
- * (pod-spec CA_CERT_PATH).
- */
-export const OUTER_CA_CONFIGMAP_NAME = 'yaac-outer-proxy-ca'
 /** Mount dir + file for the projected outer CA inside the inner proxy. A
  * dedicated dir (not the session CA mount) so it never collides with the
  * inner proxy's own CA material. */
 const OUTER_CA_MOUNT_DIR = '/etc/yaac/outer-ca'
 const OUTER_CA_PATH = `${OUTER_CA_MOUNT_DIR}/${CA_CONFIGMAP_KEY}`
+
 /**
  * Pod securityContext running the proxy as the server's own host uid/gid.
  * The proxy reads/writes hostPath dirs the server creates (the CA in
@@ -181,61 +72,6 @@ export function proxyRunAsSecurityContext(): Record<string, unknown> {
     )
   }
   return { securityContext: { runAsUser: uid, runAsGroup: gid, fsGroup: gid } }
-}
-
-/**
- * Host directory shared between the proxy pod (which runs ssh-agent on a
- * socket here) and session pods (which point SSH_AUTH_SOCK at it).
- * Single-node assumption: hostPath UNIX sockets only cross pods on the
- * same node.
- */
-export function sshAgentHostDir(): string {
-  return path.join(getDataDir(), 'run', 'ssh-agent')
-}
-
-/**
- * Host directory backing the proxy's `/data` (CA key/cert, tor state).
- * Persisting it across pod replacements keeps the MITM CA stable, so
- * session pods' mounted CA stays valid through proxy image upgrades.
- */
-export function proxyDataHostDir(): string {
-  return path.join(getDataDir(), 'run', 'proxy-data')
-}
-
-export async function ensureNamespace(): Promise<void> {
-  await kubectlApply({
-    apiVersion: 'v1',
-    kind: 'Namespace',
-    metadata: { name: k8sNamespace() },
-  })
-}
-
-interface RawSecret {
-  data?: Record<string, string>
-}
-
-/**
- * Ensure the proxy auth Secret exists and return its value. The secret is
- * generated once per cluster and read back on every server start —
- * replacing the podman-era trick of recovering it from the proxy
- * container's env on adoption.
- */
-export async function ensureProxyAuthSecret(): Promise<string> {
-  const existing = await kubectlGetJson<RawSecret>([
-    'get', 'secret', PROXY_AUTH_SECRET_NAME, '-n', k8sNamespace(),
-  ])
-  const encoded = existing?.data?.secret
-  if (encoded) return Buffer.from(encoded, 'base64').toString('utf8')
-
-  const secret = crypto.randomBytes(32).toString('hex')
-  await kubectlApply({
-    apiVersion: 'v1',
-    kind: 'Secret',
-    metadata: { name: PROXY_AUTH_SECRET_NAME, namespace: k8sNamespace() },
-    type: 'Opaque',
-    data: { secret: Buffer.from(secret).toString('base64') },
-  })
-  return secret
 }
 
 /**
@@ -423,9 +259,6 @@ export function buildOuterProxyCaConfigMapManifest(caPem: string): Record<string
   }
 }
 
-/** Blanket world-egress deny (CiliumNetworkPolicy) — see the builder. */
-export const EGRESS_WORLD_DENY_NAME = 'yaac-egress-world-deny'
-
 /**
  * Blanket CiliumNetworkPolicy denying egress to the `world` entity
  * (everything outside the cluster) for every pod in the install
@@ -487,9 +320,6 @@ export function buildEgressWorldDenyCiliumPolicyManifest(): Record<string, unkno
     },
   }
 }
-
-/** Name of the builder-role admission guard (policy + binding). */
-export const BUILDER_ROLE_GUARD_NAME = 'yaac-builder-role-guard'
 
 /**
  * Admission guard making `yaac.role=builder` unfakeable: the label is
@@ -1175,120 +1005,4 @@ export function buildProxyServiceManifest(): Record<string, unknown> {
       ],
     },
   }
-}
-
-/**
- * Apply the proxy Deployment + Service and wait for the rollout. `kubectl
- * apply` is the drift reconciler: when the proxy image hash changes, the
- * Deployment's pod template changes and kubernetes replaces the pod —
- * the declarative successor to the podman-era hash-in-the-container-name
- * scheme plus manual stale-proxy GC.
- */
-/**
- * The live ClusterIP of the proxy Service — read at pod-create as the session
- * pods' DNS nameserver + egress redirect target. Allocator-assigned (no longer
- * pinned) for both the top-level and the vcluster-allocated inner proxy; stable
- * because the Service is never deleted/recreated. (The spike confirmed synced
- * pods reach vcluster ClusterIPs and that an explicit dnsConfig survives sync.)
- */
-export async function proxyServiceClusterIp(): Promise<string> {
-  const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
-    'get', 'service', PROXY_APP_NAME, '-n', k8sNamespace(),
-  ])
-  const ip = svc?.spec?.clusterIP
-  if (!ip) throw new Error('proxy Service has no ClusterIP yet')
-  return ip
-}
-
-export async function ensureProxyResources(
-  imageRef: string,
-  opts: { nested?: boolean } = {},
-): Promise<void> {
-  // Pre-create the credentials dir with tight permissions before any pod
-  // mounts it — DirectoryOrCreate would make it root-owned 0755.
-  await fs.mkdir(credentialsDir(), { recursive: true, mode: 0o700 })
-  await fs.mkdir(sshAgentHostDir(), { recursive: true })
-  await fs.mkdir(proxyDataHostDir(), { recursive: true })
-
-  // Nested (inner) yaac: its vcluster has no Cilium, so install the CEC/CNP
-  // CRDs (permissive) before the CEC/CNP applies below would otherwise fail
-  // with "no matches for kind". The inner yaac owns its vcluster — the host
-  // never reaches in to register them.
-  if (opts.nested) {
-    await ensureCiliumCrds()
-    // Project the OUTER proxy's CA into the vcluster so the inner proxy's
-    // chained upstream dial (inner proxy → outer proxy) trusts the outer MITM
-    // leaf — without it every inner-session HTTPS request fails closed with
-    // "self-signed certificate in certificate chain". The inner yaac reads the
-    // outer CA from its own session-pod trust mount (it already trusts it to
-    // reach its own upstream). Applied before the Deployment so the mount
-    // resolves on first schedule.
-    const outerCaPem = await fs.readFile(CA_CERT_PATH, 'utf8')
-    await kubectlApply(buildOuterProxyCaConfigMapManifest(outerCaPem))
-  }
-
-  // SA + RBAC before the Deployment, which references the SA so the proxy
-  // can watch pods (source-IP → session). The Service's ClusterIP is
-  // allocator-assigned and never deleted, so `apply` is a no-op on it after
-  // first creation — no immutable-field migration needed (the pin is gone).
-  await kubectlApply(buildProxyServiceAccountManifest())
-  await kubectlApply(buildProxyRoleManifest())
-  await kubectlApply(buildProxyRoleBindingManifest())
-  await kubectlApply(buildProxyDeploymentManifest(imageRef, opts))
-  await kubectlApply(buildProxyServiceManifest())
-  // The egress lockdown, applied with the proxy so it exists before any
-  // session pod can be scheduled (sessions require ensureRunning()). CEC
-  // before the CNP that references its listeners.
-  await kubectlApply(buildEgressRedirectCecManifest())
-  await kubectlApply(buildSessionEgressRedirectCnpManifest())
-  // The shared, cluster-scoped fallback redirect for vcluster synced pods.
-  // Applied once here (not per-vcluster) so each vcluster's fallback CNP can
-  // reference it by kind without adding/removing Envoy listeners on create —
-  // the churn that otherwise wedges every session's egress. HOST-ONLY: a nested
-  // yaac creates no vcluster sessions (vcluster-in-vcluster is rejected) so it
-  // never references this, and its vcluster only has the permissive CEC/CNP CRDs
-  // (ensureCiliumCrds, above) — applying a CiliumClusterwideEnvoyConfig there
-  // would fail "no matches for kind". The outer server owns the host-side
-  // redirect for every vcluster's synced pods, including a nested yaac's.
-  if (!opts.nested) {
-    await kubectlApply(buildVclusterFallbackRedirectCcecManifest())
-  }
-  // Lock the proxy's transparent ports to the node Envoy (forgery guard).
-  await kubectlApply(buildProxyIngressCnpManifest())
-  // Blanket world-egress deny over non-session pods — the authoritative
-  // backstop a vcluster tenant cannot widen (see builder).
-  await kubectlApply(buildEgressWorldDenyCiliumPolicyManifest())
-  await kubectlWithRetry([
-    'rollout', 'status', `deployment/${PROXY_APP_NAME}`,
-    '-n', k8sNamespace(),
-    '--timeout=180s',
-  ], { timeout: 190_000, maxAttempts: 2 })
-}
-
-interface RawConfigMap {
-  data?: Record<string, string>
-}
-
-/**
- * Upsert the proxy-CA ConfigMap that every session pod mounts. Carries two
- * keys: the bare proxy CA (additive trust — SSL_CERT_FILE/NODE_EXTRA_CA_CERTS)
- * and the combined bundle `{public roots} ∪ {proxy CA}` (replace-semantics
- * trust for the own-bundle tools — CURL_CA_BUNDLE & friends). Skips the write
- * when both stored values already match (the common case — the proxy persists
- * its CA in /data and only regenerates when that volume is lost).
- */
-export async function ensureCaConfigMap(caPem: string, caBundlePem: string): Promise<void> {
-  const existing = await kubectlGetJson<RawConfigMap>([
-    'get', 'configmap', CA_CONFIGMAP_NAME, '-n', k8sNamespace(),
-  ])
-  if (
-    existing?.data?.[CA_CONFIGMAP_KEY] === caPem &&
-    existing?.data?.[CA_BUNDLE_KEY] === caBundlePem
-  ) return
-  await kubectlApply({
-    apiVersion: 'v1',
-    kind: 'ConfigMap',
-    metadata: { name: CA_CONFIGMAP_NAME, namespace: k8sNamespace() },
-    data: { [CA_CONFIGMAP_KEY]: caPem, [CA_BUNDLE_KEY]: caBundlePem },
-  })
 }

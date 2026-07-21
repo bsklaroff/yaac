@@ -10,8 +10,8 @@ vi.mock('#platform/k8s/pods', async (importOriginal) => {
   }
 })
 
-vi.mock('#features/sessions/status', async (importOriginal) => {
-  const actual = await importOriginal<typeof statusModule>()
+vi.mock('#features/sessions/state', async (importOriginal) => {
+  const actual = await importOriginal<typeof stateModule>()
   return {
     ...actual,
     getSessionFirstMessage: vi.fn().mockResolvedValue(undefined),
@@ -20,7 +20,7 @@ vi.mock('#features/sessions/status', async (importOriginal) => {
 
 import { listSessionPods, type SessionPod } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
-import type * as statusModule from '#features/sessions/status'
+import type * as stateModule from '#features/sessions/state'
 import {
   setSessionStatus,
   _resetSessionStatusStoreForTests,

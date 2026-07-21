@@ -1,11 +1,24 @@
-import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from 'vitest'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import os from 'node:os'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
 vi.mock('#platform/k8s/exec', () => ({
   containerExec: vi.fn(),
 }))
 
+vi.mock('#platform/k8s/pods', async (importOriginal) => {
+  const actual = await importOriginal<typeof podsModule>()
+  return {
+    ...actual,
+    listSessionPods: vi.fn().mockResolvedValue([]),
+  }
+})
+
 import { containerExec } from '#platform/k8s/exec'
+import { listSessionPods, type SessionPod } from '#platform/k8s/pods'
+import type * as podsModule from '#platform/k8s/pods'
 import { getDb, closeDb } from '#platform/db/client'
 import { opencodeSessionMeta } from '#platform/db/schema'
 import {
@@ -14,13 +27,16 @@ import {
   getSessionOpencodeFirstUserMessage,
   getDeletedSessionOpencodeFirstUserMessage,
   ensureOpencodeFirstMessageCaptured,
+  captureOpencodeFirstMessages,
   saveOpencodeMeta,
   hasOpencodeMeta,
   listOpencodeMetaEntries,
+  ensureOpencodeConfigJson,
   _clearOpencodeProbeCacheForTests,
-} from '#features/sessions/agents/opencode-status'
+} from '#features/sessions/agents/opencode'
 
 const mockedExec = vi.mocked(containerExec)
+const mockListPods = vi.mocked(listSessionPods)
 
 /**
  * The HTTP probe (`curl /session`) goes through `containerExec`; the
@@ -246,5 +262,163 @@ describe('opencode-status', () => {
       await ensureOpencodeFirstMessageCaptured('proj', 'sid', 'container')
       expect(await hasOpencodeMeta('proj', 'sid')).toBe(false)
     })
+  })
+})
+
+describe('captureOpencodeFirstMessages', () => {
+  let tmpDir: string
+
+  function pod(overrides: { sessionId: string; tool: string }): SessionPod {
+    return {
+      jobName: `yaac-demo-${overrides.sessionId}`,
+      podName: `yaac-demo-${overrides.sessionId}-x1`,
+      sessionId: overrides.sessionId,
+      projectSlug: 'demo',
+      tool: overrides.tool,
+      phase: 'Running',
+      running: true,
+      terminating: false,
+      createdAtMs: 0,
+      labels: {},
+    }
+  }
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+    mockedExec.mockReset()
+    _clearOpencodeProbeCacheForTests()
+    mockListPods.mockReset()
+  })
+
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  it('captures only running opencode sessions, skipping other tools', async () => {
+    mockListPods.mockResolvedValue([
+      pod({ sessionId: 'ocsess', tool: 'opencode' }),
+      pod({ sessionId: 'clsess', tool: 'claude' }),
+    ])
+    // Probe returns no session — the capture path still runs the curl exec
+    // for the opencode pod, which is the observable we assert on. Only the
+    // opencode session is probed; the claude session is filtered out before
+    // any exec (containerExec is used solely for the `/session` probe).
+    mockProbeResult(sessionsStdout([]))
+
+    await captureOpencodeFirstMessages()
+
+    expect(mockedExec.mock.calls.map((c) => c[0])).toEqual(['yaac-demo-ocsess'])
+  })
+
+  it('returns early without capturing when the cluster is unavailable', async () => {
+    mockListPods.mockRejectedValue(new Error('down'))
+
+    await expect(captureOpencodeFirstMessages()).resolves.toBeUndefined()
+    expect(mockedExec).not.toHaveBeenCalled()
+  })
+})
+
+interface OpencodeConfig {
+  permission?: Record<string, unknown>
+  [key: string]: unknown
+}
+
+describe('ensureOpencodeConfigJson', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'opencode-config-test-'))
+  })
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true })
+  })
+
+  it('creates opencode.json from scratch when none exists', async () => {
+    await ensureOpencodeConfigJson(tmpDir)
+    const raw = await fs.readFile(path.join(tmpDir, 'opencode.json'), 'utf8')
+    const parsed = JSON.parse(raw) as OpencodeConfig
+    expect(parsed.permission?.websearch).toBe('allow')
+  })
+
+  it('preserves existing top-level keys and adds the permission', async () => {
+    const existing: OpencodeConfig = {
+      $schema: 'https://opencode.ai/config.json',
+      model: 'anthropic/claude-sonnet-4-5',
+    }
+    await fs.writeFile(
+      path.join(tmpDir, 'opencode.json'),
+      JSON.stringify(existing),
+    )
+
+    await ensureOpencodeConfigJson(tmpDir)
+    const raw = await fs.readFile(path.join(tmpDir, 'opencode.json'), 'utf8')
+    const parsed = JSON.parse(raw) as OpencodeConfig
+
+    expect(parsed.$schema).toBe('https://opencode.ai/config.json')
+    expect(parsed.model).toBe('anthropic/claude-sonnet-4-5')
+    expect(parsed.permission?.websearch).toBe('allow')
+  })
+
+  it('preserves existing sibling permissions', async () => {
+    const existing: OpencodeConfig = {
+      permission: { edit: 'ask' },
+    }
+    await fs.writeFile(
+      path.join(tmpDir, 'opencode.json'),
+      JSON.stringify(existing),
+    )
+
+    await ensureOpencodeConfigJson(tmpDir)
+    const raw = await fs.readFile(path.join(tmpDir, 'opencode.json'), 'utf8')
+    const parsed = JSON.parse(raw) as OpencodeConfig
+
+    expect(parsed.permission?.edit).toBe('ask')
+    expect(parsed.permission?.websearch).toBe('allow')
+  })
+
+  it('does not rewrite when websearch is already allowed', async () => {
+    await ensureOpencodeConfigJson(tmpDir)
+    const beforeStat = await fs.stat(path.join(tmpDir, 'opencode.json'))
+    await new Promise((r) => setTimeout(r, 50))
+    await ensureOpencodeConfigJson(tmpDir)
+    const afterStat = await fs.stat(path.join(tmpDir, 'opencode.json'))
+    expect(afterStat.mtimeMs).toBe(beforeStat.mtimeMs)
+  })
+
+  it('overwrites a non-allow websearch permission', async () => {
+    const existing: OpencodeConfig = {
+      permission: { websearch: 'ask' },
+    }
+    await fs.writeFile(
+      path.join(tmpDir, 'opencode.json'),
+      JSON.stringify(existing),
+    )
+
+    await ensureOpencodeConfigJson(tmpDir)
+    const raw = await fs.readFile(path.join(tmpDir, 'opencode.json'), 'utf8')
+    const parsed = JSON.parse(raw) as OpencodeConfig
+
+    expect(parsed.permission?.websearch).toBe('allow')
+  })
+
+  it('handles invalid existing opencode.json gracefully', async () => {
+    await fs.writeFile(path.join(tmpDir, 'opencode.json'), 'not valid json')
+    await ensureOpencodeConfigJson(tmpDir)
+
+    const raw = await fs.readFile(path.join(tmpDir, 'opencode.json'), 'utf8')
+    const parsed = JSON.parse(raw) as OpencodeConfig
+    expect(parsed.permission?.websearch).toBe('allow')
+  })
+
+  it('handles a non-object existing opencode.json gracefully', async () => {
+    await fs.writeFile(path.join(tmpDir, 'opencode.json'), '[]')
+    await ensureOpencodeConfigJson(tmpDir)
+
+    const raw = await fs.readFile(path.join(tmpDir, 'opencode.json'), 'utf8')
+    const parsed = JSON.parse(raw) as OpencodeConfig
+    expect(parsed.permission?.websearch).toBe('allow')
   })
 })

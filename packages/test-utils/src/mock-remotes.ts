@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { baseImageHash } from '@yaac/server/features/images/image-builder'
 import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
-import { ensureNamespace } from '@yaac/server/features/cluster/bootstrap'
+import { ensureNamespace } from '@yaac/server/features/cluster/proxy-apply'
 import {
   k8sNamespace,
   kubectlApply,

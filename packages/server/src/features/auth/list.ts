@@ -3,11 +3,8 @@ import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import type {
   AgentTool,
   AuthListResult,
-  GitCredentialSummary,
   ToolAuthSummary,
 } from '@yaac/shared/types'
-
-export type { AuthListResult, GitCredentialSummary, ToolAuthSummary }
 
 function maskKey(key: string): string {
   return key.length > 4 ? '***' + key.slice(-4) : '****'

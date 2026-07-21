@@ -43,10 +43,12 @@ import {
   LABEL_ROLE,
   ROLE_BUILDER,
   EGRESS_WORLD_DENY_NAME,
+} from '#features/cluster/proxy-constants'
+import {
   buildEgressWorldDenyCiliumPolicyManifest,
   buildBuilderRoleGuardPolicyManifest,
   buildBuilderRoleGuardBindingManifest,
-} from '#features/cluster/bootstrap'
+} from '#features/cluster/proxy-manifests'
 import { vapAvailable } from '#features/cluster/vcluster'
 import { RUNTIME_CLASS_GVISOR } from '#platform/k8s/gvisor'
 import {
@@ -65,9 +67,6 @@ import {
 } from '#features/images/image-builder'
 import type { EngineBuildContext } from '#features/images/build-engine'
 import { serverLog, pipeToServerLog } from '#log'
-
-/** `yaac.role` value on builder pods (reaped by reconcileBuilderPodGc). */
-export { ROLE_BUILDER }
 
 /**
  * Sentry tmpfs cap for the builder graphroot: parent chain (~5GB for the

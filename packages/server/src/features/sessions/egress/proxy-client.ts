@@ -9,9 +9,8 @@ import {
   ensureNamespace,
   ensureProxyAuthSecret,
   ensureProxyResources,
-  PROXY_APP_NAME,
-  PROXY_PORT,
-} from '#features/cluster/bootstrap'
+} from '#features/cluster/proxy-apply'
+import { PROXY_APP_NAME, PROXY_PORT } from '#features/cluster/proxy-constants'
 import { k8sNamespace, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#features/cluster/registry'
 import { ExecTunnel } from '#platform/k8s/exec-tunnel'

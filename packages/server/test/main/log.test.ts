@@ -5,7 +5,7 @@ import path from 'node:path'
 import { PassThrough } from 'node:stream'
 import { setDataDir, serverLogPath } from '@yaac/shared/paths'
 import { serverLog, pipeToServerLog } from '#log'
-import { serverLogs } from '#main/cli'
+import { serverLogs } from '#main/lifecycle'
 
 describe('serverLog', () => {
   let dataDir: string

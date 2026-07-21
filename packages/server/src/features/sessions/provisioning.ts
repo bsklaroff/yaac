@@ -28,9 +28,14 @@ interface ProvisioningEntry {
   message: string
   error?: string
   startedAt: number
+  /** Monotonic insertion order, the sort tiebreak. `startedAt` (a wall-clock
+   *  ms read) can tie or straddle a millisecond between two back-to-back
+   *  registers, which flips their order under load; this never does. */
+  seq: number
 }
 
 const entries = new Map<string, ProvisioningEntry>()
+let nextSeq = 0
 
 /** Track a new in-flight provision (idempotent overwrite on the same id, e.g.
  *  a retry). Pushes a fresh snapshot so the row appears immediately. Every
@@ -50,6 +55,7 @@ export function registerProvisioning(input: {
     kind: input.kind,
     message: input.message ?? 'Starting…',
     startedAt: Date.now(),
+    seq: nextSeq++,
   })
   notifySessionListChanged()
 }
@@ -109,10 +115,10 @@ export async function runProvisioned<T>(
   }
 }
 
-/** Snapshot projection of the registry, oldest first. */
+/** Snapshot projection of the registry, oldest first (by insertion order). */
 export function listProvisioning(): ProvisioningSessionEntry[] {
   return [...entries.values()]
-    .sort((a, b) => a.startedAt - b.startedAt || a.sessionId.localeCompare(b.sessionId))
+    .sort((a, b) => a.startedAt - b.startedAt || a.seq - b.seq)
     .map((e) => ({
       sessionId: e.sessionId,
       projectSlug: e.projectSlug,

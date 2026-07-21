@@ -1,7 +1,7 @@
 import { findSessionPod, listSessionPods } from '#platform/k8s/pods'
 import { getVclusterStatus, type VclusterStatus } from '#features/cluster/vcluster'
 import { ServerError } from '@yaac/shared/errors'
-import { getSessionFirstMessage, normalizeTool } from '#features/sessions/status'
+import { getSessionFirstMessage, normalizeTool } from '#features/sessions/state'
 import { readBlockedHosts } from '#features/sessions/egress/blocked-hosts'
 import { readGitAuthFailures } from '#features/projects/git-auth-failures'
 import type { AgentTool, GitAuthFailure } from '@yaac/shared/types'

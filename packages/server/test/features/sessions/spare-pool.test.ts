@@ -1,36 +1,9 @@
-import { describe, it, expect, vi } from 'vitest'
-import {
-  buildAgentWindowCheck,
-  buildRebranchPrep,
-  initWindowCommand,
-  withUpstreamConfigLock,
-} from '#features/sessions/create'
+import { describe, it, expect } from 'vitest'
+import { buildRebranchPrep } from '#features/sessions/spare-pool'
+import { initWindowCommand } from '#features/sessions/agent-command'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 
 const TMUX = `tmux -S ${CONTAINER_TMUX_SOCK}`
-
-describe('buildAgentWindowCheck', () => {
-  it('probes for the agent window after a settle delay', () => {
-    expect(buildAgentWindowCheck('claude')).toBe(
-      `sh -c "sleep 1; ${TMUX} list-windows -t =yaac -F '#{window_name}' | grep -qxF claude"`,
-    )
-  })
-})
-
-describe('initWindowCommand', () => {
-  it('creates a visible window with remain-on-exit chained on', () => {
-    const cmd = initWindowCommand({ name: 'init', cmd: 'pnpm install', hidePane: false })
-    expect(cmd).toBe(
-      `${TMUX} new-window -d -t yaac -n init 'cd /workspace && pnpm install'`
-      + ' \\; set-option -t yaac:init remain-on-exit on',
-    )
-  })
-
-  it('omits remain-on-exit for hidden panes', () => {
-    const cmd = initWindowCommand({ name: 'deps', cmd: 'pnpm install', hidePane: true })
-    expect(cmd).toBe(`${TMUX} new-window -d -t yaac -n deps 'cd /workspace && pnpm install'`)
-  })
-})
 
 describe('buildRebranchPrep', () => {
   it('resets by SHA and cleans without -x, excluding the default node_modules mount', () => {
@@ -107,55 +80,5 @@ describe('buildRebranchPrep', () => {
       branch: 'dev', sha: 'abc123', config: {}, sessionId: 's1', respawnTool: null,
     })
     expect(prep.windowExecs).toEqual([])
-  })
-})
-
-describe('withUpstreamConfigLock', () => {
-  it('serializes tasks on one project', async () => {
-    const order: string[] = []
-    let releaseFirst!: () => void
-    const gate = new Promise<void>((r) => { releaseFirst = r })
-
-    const first = withUpstreamConfigLock('p', async () => {
-      order.push('first-start')
-      await gate
-      order.push('first-end')
-    })
-    const second = withUpstreamConfigLock('p', () => {
-      order.push('second')
-      return Promise.resolve()
-    })
-
-    // Give the second task a chance to (incorrectly) run early.
-    await new Promise((r) => setTimeout(r, 10))
-    expect(order).toEqual(['first-start'])
-
-    releaseFirst()
-    await Promise.all([first, second])
-    expect(order).toEqual(['first-start', 'first-end', 'second'])
-  })
-
-  it('runs different projects concurrently', async () => {
-    const order: string[] = []
-    let releaseA!: () => void
-    const gateA = new Promise<void>((r) => { releaseA = r })
-
-    const a = withUpstreamConfigLock('a', async () => { await gateA; order.push('a') })
-    const b = withUpstreamConfigLock('b', () => { order.push('b'); return Promise.resolve() })
-
-    await b
-    expect(order).toEqual(['b']) // b did not wait on a
-    releaseA()
-    await a
-  })
-
-  it('a failed predecessor does not poison the queue', async () => {
-    const failing = withUpstreamConfigLock('p', () => Promise.reject(new Error('boom')))
-    const task = vi.fn(() => Promise.resolve())
-    const ok = withUpstreamConfigLock('p', task)
-
-    await expect(failing).rejects.toThrow('boom')
-    await expect(ok).resolves.toBeUndefined()
-    expect(task).toHaveBeenCalledTimes(1)
   })
 })

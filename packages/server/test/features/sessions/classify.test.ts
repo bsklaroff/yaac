@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { classifySessionPods } from '#features/sessions/list'
-import { markSessionTerminating, _clearTerminatingForTests } from '#features/sessions/terminating'
+import { classifySessionPods } from '#features/sessions/classify'
+import { markSessionTerminating, _clearTerminatingForTests } from '#features/sessions/state'
 import type { TmuxLiveness } from '#features/sessions/cleanup'
 import type { SessionPod } from '#platform/k8s/pods'
 

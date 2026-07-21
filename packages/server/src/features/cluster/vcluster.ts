@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import YAML from 'yaml'
-import { buildVclusterFallbackRedirectCnpManifest } from '#features/cluster/bootstrap'
+import { buildVclusterFallbackRedirectCnpManifest } from '#features/cluster/proxy-manifests'
 import {
   dataDirHash,
   execFileAsync,

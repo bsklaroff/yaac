@@ -36,8 +36,6 @@ import {
 } from '#features/images/image-builds'
 import type { ImageLayerName } from '@yaac/shared/types'
 
-export type { ImageBuildReason }
-
 interface BuildContext {
   projectSlug: string
   reason: ImageBuildReason

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { buildWebappUrl, openWebapp } from '#main/cli'
+import { buildWebappUrl, openWebapp } from '#main/webapp'
 import type { ServerTarget } from '@yaac/shared/server-api'
 
 describe('buildWebappUrl', () => {

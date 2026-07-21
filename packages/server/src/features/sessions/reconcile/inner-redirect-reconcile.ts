@@ -2,14 +2,16 @@ import {
   buildInnerEgressRedirectCecManifest,
   buildInnerProxyIngressCnpManifest,
   buildInnerSessionEgressRedirectCnpManifest,
+  innerRedirectObjectName,
+} from '#features/cluster/proxy-manifests'
+import {
   INNER_EGRESS_REDIRECT_CEC_NAME,
   INNER_PROXY_INGRESS_CNP_NAME,
   INNER_SESSION_EGRESS_REDIRECT_CNP_NAME,
-  innerRedirectObjectName,
   LABEL_PROJECTION,
   PROJECTION_INNER_REDIRECT,
   PROXY_APP_NAME,
-} from '#features/cluster/bootstrap'
+} from '#features/cluster/proxy-constants'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
 import { LABEL_DATA_DIR_HASH, LABEL_VCLUSTER_MANAGED_BY } from '#platform/k8s/pods'
 import type { TickSnapshot } from '#platform/k8s/tick-snapshot'

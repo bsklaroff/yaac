@@ -7,8 +7,6 @@ vi.mock('#platform/k8s/kubectl', () => ({
   kubectlApply: vi.fn().mockResolvedValue(undefined),
   kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
-// bootstrap.ts (imported for the real builders) only uses isTorEnabled from git.
-vi.mock('#platform/git', () => ({ isTorEnabled: vi.fn(() => false) }))
 vi.mock('#features/cluster/vcluster', () => ({
   listVclusterNamespaces: vi.fn().mockResolvedValue([]),
 }))
@@ -29,7 +27,7 @@ import {
   INNER_SESSION_EGRESS_REDIRECT_CNP_NAME,
   LABEL_PROJECTION,
   PROJECTION_INNER_REDIRECT,
-} from '#features/cluster/bootstrap'
+} from '#features/cluster/proxy-constants'
 import { LABEL_DATA_DIR_HASH } from '#platform/k8s/pods'
 
 const mockGetJson = vi.mocked(kubectlGetJson)

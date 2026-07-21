@@ -34,12 +34,8 @@ import {
   type HostPathMount,
   type NestedContainersParams,
 } from '#platform/k8s/pod-spec'
-import {
-  proxyServiceClusterIp,
-  sshAgentHostDir,
-  SSH_TUNNEL_SENTINEL,
-  TUNNEL_INGRESS_PORT,
-} from '#features/cluster/bootstrap'
+import { proxyServiceClusterIp, sshAgentHostDir } from '#features/cluster/proxy-apply'
+import { SSH_TUNNEL_SENTINEL, TUNNEL_INGRESS_PORT } from '#features/cluster/proxy-constants'
 import {
   ensureProjectRegistry,
   projectRegistryConfDropIn,
@@ -72,12 +68,10 @@ import {
 } from '@yaac/shared/project-paths'
 import {
   CONTAINER_TMUX_DIR,
-  CONTAINER_TMUX_SOCK,
 } from '@yaac/shared/paths'
 import {
   resolveProjectConfig,
   resolveEphemeralModulesPaths,
-  ephemeralModulesSlotKey,
 } from '#features/projects/config'
 import {
   resolveCredentialForUrl,
@@ -98,8 +92,17 @@ import {
   PLACEHOLDER_GH_TOKEN,
 } from '@yaac/shared/tool-auth'
 import { addWorktree, getDefaultBranch, fetchOrigin, isGitAuthError, remoteBranchExists } from '#platform/git'
-import { ensureCodexHooksJson, ensureCodexConfigToml } from '#features/sessions/agents/codex-hooks'
-import { ensureOpencodeConfigJson } from '#features/sessions/agents/opencode-config'
+import { ensureCodexHooksJson, ensureCodexConfigToml } from '#features/sessions/agents/codex'
+import { ensureOpencodeConfigJson } from '#features/sessions/agents/opencode'
+import {
+  shellEscape,
+  TMUX,
+  resolveInitWindows,
+  initWindowCommand,
+  buildAgentCmd,
+  typeInitialPrompt,
+} from '#features/sessions/agent-command'
+import { seedClaudeJson, seedClaudeSettings, prepareEphemeralMounts } from '#features/sessions/seed'
 import { builtinSkillsDir, stageBuiltinSkills, builtinSkillMounts } from '#features/skills/builtin'
 import { sessionBinDir, stageSessionBin, sessionBinMounts } from '#features/sessions/spawn-script'
 import { ServerError } from '@yaac/shared/errors'
@@ -108,7 +111,7 @@ import {
   registerSessionForwarders,
 } from '#features/sessions/forwarders/port-forwarders'
 import { AGENT_TOOLS } from '@yaac/shared/types'
-import type { AgentTool, PortMapping, YaacConfig, InitCommandSpec } from '@yaac/shared/types'
+import type { AgentTool, PortMapping, YaacConfig } from '@yaac/shared/types'
 import {
   OPENCODE_DEFAULT_PROVIDER,
   PI_DEFAULT_PROVIDER,
@@ -124,492 +127,10 @@ const PI_CONTAINER_HOME = '/home/yaac/.pi'
  *  points here; it lives under the mounted `PI_CONTAINER_HOME`). */
 const PI_SESSIONS_CONTAINER_DIR = `${PI_CONTAINER_HOME}/agent/sessions`
 
-export function shellEscape(str: string): string {
-  return str.replace(/'/g, "'\\''")
-}
-
-// Every in-container `tmux` invocation routes through this prefix so
-// the server socket lands on a host-mounted dir. Liveness and
-// pane-content probes still go through `kubectl exec` because UNIX
-// socket connect()s don't cross the hostPath boundary portably.
-const TMUX = `tmux -S ${CONTAINER_TMUX_SOCK}`
-
-export interface InitWindow {
-  name: string
-  /** Already shell-escaped and joined with `&&`. */
-  cmd: string
-  /** When false, the window is set `remain-on-exit on` so the user can
-   *  inspect output after the commands finish or error. */
-  hidePane: boolean
-}
-
-/**
- * Resolve `config.initCommands` into the concrete set of tmux windows to
- * spawn. Pure (no side effects) so it can be unit-tested directly.
- *
- *   - string[]            → one `init` window with the commands chained `&&`
- *   - InitCommandSpec[]   → one window per spec, name taken from spec.name
- *   - undefined / []      → no windows
- */
-export function resolveInitWindows(config: YaacConfig): InitWindow[] {
-  const entries = config.initCommands
-  if (!entries || entries.length === 0) return []
-
-  const topHide = config.hideInitPane ?? false
-  if (typeof entries[0] === 'string') {
-    const cmd = (entries as string[]).map(shellEscape).join(' && ')
-    return [{ name: 'init', cmd, hidePane: topHide }]
-  }
-  return (entries as InitCommandSpec[]).map((e) => ({
-    name: e.name,
-    cmd: e.commands.map(shellEscape).join(' && '),
-    hidePane: e.hidePane ?? topHide,
-  }))
-}
-
 function emit(message: string, options: SessionCreateOptions): void {
   console.log(message)
   options.onProgress?.(message)
 }
-
-/**
- * Allowed shape for a `--model` override. Deliberately strict: the value is
- * embedded bare in agent launch commands that travel inside single-quoted
- * `respawn-window '<cmd>'` wrappers (see buildAgentCmd), so no quotes,
- * whitespace, or shell metacharacters — model ids, aliases, and
- * `provider/model` paths (`claude-opus-4-8`, `opus`,
- * `anthropic/claude-opus-4-8`) never need them.
- */
-export const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/
-
-export function buildAgentCmd(
-  tool: AgentTool,
-  sessionId: string,
-  resume = false,
-  /** pi only — provider whose default model is passed to `pi --model`
-   *  when no explicit `model` override is given. */
-  piProvider?: PiProvider,
-  /** Model passed to the agent's `--model` flag: a model id or alias for
-   *  claude/codex (`opus`, `gpt-5.2-codex`), `provider/model` for
-   *  opencode and pi. Validated by the create route to MODEL_RE, so it is
-   *  safe to embed bare in the single-quoted respawn-window wrapper. */
-  model?: string,
-): string {
-  if (tool === 'codex') {
-    // --model goes after the resume subcommand: codex defines -m/--model on
-    // both the root TUI command and `codex resume`, so trailing placement
-    // binds it to whichever command runs.
-    return [
-      'codex --yolo',
-      resume ? `resume ${sessionId}` : '',
-      model ? `--model ${model}` : '',
-    ].filter(Boolean).join(' ')
-  }
-  if (tool === 'pi') {
-    // pi runs its TUI in tmux (like claude/codex). `--approve` accepts the
-    // project trust prompt for the run; pi has no sandbox and executes tools
-    // without per-call approval. `--model <provider>/<id>` selects the
-    // provider (pi reads that provider's api-key env var, which the proxy
-    // swaps). `--session-id <id>` addresses this session by id in the shared
-    // `.pi` home — creating it on a fresh run, resuming it otherwise (the same
-    // flag both ways, like `claude --session-id`), so `resume` needs no branch.
-    // An explicit override wins over the provider's generated default; the
-    // proxy only swaps the authenticated provider's key, so an override
-    // naming a different provider surfaces as an auth error in the pane.
-    const piModel = model ?? piProviderInfo(piProvider ?? PI_DEFAULT_PROVIDER).defaultModel
-    // `--model` is dropped only if there is no override and the chosen
-    // provider has no generated default (every current pi provider has one;
-    // guarded so a future registry gap falls back to pi's own default rather
-    // than `--model undefined`).
-    const modelFlag = piModel ? ` --model ${piModel}` : ''
-    const pi = `pi --approve${modelFlag} --session-id ${sessionId}`
-    // On a fresh run that `--session-id` names a session that doesn't exist
-    // yet, so pi prints a yellow "Warning: No project session found with id
-    // '<id>'; creating a new session with that id." to stderr, which then
-    // lingers at the top of the pane for the whole session. The id is
-    // caller-chosen by design (it must match yaac's so pi embeds it in the
-    // JSONL log filename — see lib/session/pi-status.ts), so this fires on
-    // every new pi session; it is expected, not an error.
-    //
-    // Route pi's stderr through sed to drop exactly that one line, leaving the
-    // TUI (stdout) and any genuine stderr (auth failures, bad-model errors)
-    // intact. `0,/re/{//d}` deletes only the *first* match (the warning prints
-    // once at startup), and `sed -u` keeps surviving lines unbuffered so a
-    // startup error still reaches the pane before pi exits. The pattern is
-    // anchored at `^` with `.*` standing in for the variable id and the full
-    // "creating a new session with that id." tail required, so a genuine error
-    // is never swallowed. It runs the agent with stdout on the pane's PTY, and
-    // pi colors this line via chalk keyed off *stdout* being a TTY — so it
-    // arrives on stderr wrapped in SGR escapes (`\x1b[33m…\x1b[39m`). The
-    // leading `(\x1b\[[0-9;]*m)*` absorbs those (zero-or-more, so a plain-text
-    // line off-TTY still matches). tmux runs this under the pod's zsh
-    // (SHELL=/bin/zsh), so process substitution is available; the pattern uses
-    // `.*` rather than the literal quotes around the id, keeping the whole
-    // string free of single quotes so it survives the single-quoted
-    // `respawn-window '<cmd>'` wrapper it is embedded in.
-    const warn = 'Warning: No project session found with id .*creating a new session with that id\\.'
-    return `${pi} 2> >(sed -u -E "0,/^(\\x1b\\[[0-9;]*m)*${warn}/{//d}" >&2)`
-  }
-  if (tool === 'opencode') {
-    // --port + --hostname enable opencode's built-in HTTP server on
-    // container loopback. yaac reads /session and /session/status from
-    // there (via `kubectl exec curl`) for status + first-message lookup.
-    // --continue resumes the one session stored in the per-yaac-session
-    // data dir (isolated per container — no cwd-collision concern).
-    // --model takes `provider/model`; omitted, opencode uses the model
-    // persisted in its shared config (or its own default).
-    return [
-      'opencode',
-      '--port 4096 --hostname 127.0.0.1',
-      model ? `--model ${model}` : '',
-      resume ? '--continue' : '',
-    ].filter(Boolean).join(' ')
-  }
-  return [
-    'CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions',
-    model ? `--model ${model}` : '',
-    resume ? `--resume ${sessionId}` : `--session-id ${sessionId}`,
-  ].filter(Boolean).join(' ')
-}
-
-/**
- * In-pod command that delivers an initial prompt to the agent's pane: it
- * pastes the text into the TUI's input and submits it. Three timing hazards
- * shape the script — a prompt pasted into a TUI that is still starting up
- * is silently discarded (observed with claude in the create e2e suite), and
- * with no user attached nothing would ever re-send it:
- *
- *  1. Readiness gate: wait for `#{alternate_on}` — every agent TUI switches
- *     the pane to the alternate screen when its render loop comes up, which
- *     is the earliest tool-agnostic "accepting input" signal. Falls through
- *     after 60s so a TUI that never flips still gets a best-effort paste.
- *  2. Verified paste: paste, then check `capture-pane` for the prompt's
- *     first line (its first 40 chars — the pane is created 500 cols wide
- *     and nothing attaches before provisioning finishes, so no wrap) and
- *     re-paste until it is visibly in the input box.
- *  3. Submit + guard: Enter is sent separately (a paste never
- *     self-submits) and re-sent after a beat — a TUI finishing its startup
- *     render can keep the pasted text but drop the first Enter; on an
- *     already-submitted prompt the repeat is a no-op on an empty input box.
- *
- * The prompt travels base64-encoded — its alphabet has no quotes or shell
- * metacharacters, so arbitrary text (quotes, `$`, newlines) survives the
- * host shell and the in-pod single-quoted `sh -c` with no escaping logic;
- * `paste-buffer -p` honors bracketed paste so a multiline prompt lands in
- * the input box instead of submitting line by line.
- */
-export function buildPromptPasteCmd(tool: AgentTool, prompt: string): string {
-  const b64 = Buffer.from(prompt, 'utf8').toString('base64')
-  const target = `-t yaac:${tool}`
-  // First non-empty line anchors the paste verification; a whitespace-only
-  // prompt (nothing capture-pane could match) degrades to one blind paste.
-  const probeLine = prompt.split('\n').find((l) => l.trim() !== '')?.slice(0, 40)
-  const probeB64 = probeLine === undefined
-    ? undefined
-    : Buffer.from(probeLine, 'utf8').toString('base64')
-  const paste = `printf %s ${b64} | base64 -d | ${TMUX} load-buffer -b yaac-prompt -; `
-    + `${TMUX} paste-buffer -p -d -b yaac-prompt ${target}`
-  const script =
-    `i=0; while [ $i -lt 120 ]; do [ "$(${TMUX} display -p ${target} "#{alternate_on}")" = "1" ] && break; i=$((i+1)); sleep 0.5; done; `
-    + 'sleep 1; '
-    + (probeB64 === undefined
-      ? `${paste}; `
-      : `probe="$(printf %s ${probeB64} | base64 -d)"; `
-        + `i=0; while [ $i -lt 10 ]; do ${TMUX} capture-pane ${target} -p | grep -qF -- "$probe" && break; `
-        + `${paste}; i=$((i+1)); sleep 2; done; `)
-    + `${TMUX} send-keys ${target} Enter; sleep 2; ${TMUX} send-keys ${target} Enter`
-  return `sh -c '${script}'`
-}
-
-/** Type `prompt` into a running session's agent pane (see buildPromptPasteCmd). */
-export async function typeInitialPrompt(
-  jobName: string,
-  tool: AgentTool,
-  prompt: string,
-): Promise<void> {
-  // One attempt with a generous budget: the script itself retries, and a
-  // kubectl-level retry after a partial run could paste the prompt twice.
-  await containerExec(jobName, buildPromptPasteCmd(tool, prompt), { maxAttempts: 1, timeout: 120_000 })
-}
-
-/**
- * In-pod probe that the agent window survived a claim-time respawn.
- * `respawn-window` reports success even when its command dies instantly
- * (e.g. the tool binary is missing from the image the spare was warmed
- * from): the pane exits, tmux closes the window, and the yaac session
- * lives on through its init windows — so the claim would hand over a
- * "healthy" session whose agent pane silently falls back to the
- * lowest-index window (see attachArgs). The in-pod sleep gives a doomed
- * command time to exit before the existence probe; a slow crash past it
- * still slips through — this catches the deterministic spawn-failure
- * class, not every crash.
- */
-export function buildAgentWindowCheck(tool: AgentTool): string {
-  return `sh -c "sleep 1; ${TMUX} list-windows -t =yaac -F '#{window_name}' | grep -qxF ${tool}"`
-}
-
-async function verifyAgentWindowAlive(jobName: string, tool: AgentTool): Promise<void> {
-  try {
-    await containerExec(jobName, buildAgentWindowCheck(tool))
-  } catch {
-    throw new Error(
-      `agent "${tool}" exited right after its respawn in ${jobName} — `
-      + 'likely not installed in the image this spare was warmed from',
-    )
-  }
-}
-
-/**
- * Swap a prewarmed spare's booted agent for a different tool at claim time.
- * Spares are provisioned tool-agnostically (mounts, env placeholders, and
- * per-tool config cover every tool), so only three things are keyed to the
- * booted tool: the proxy registration (drives credential injection), the
- * agent tmux window's name, and the process running in it. Re-registers the
- * proxy session, then renames + respawns the agent window and verifies the
- * respawned agent survived. The pod's tool label flips in the claim's
- * commit call. Throws on failure — the caller must treat the spare as
- * tainted (registration, window name, and label may disagree) and reap it.
- */
-export async function retoolSpare(
-  spare: { jobName: string; sessionId: string; projectSlug: string; tool: string },
-  tool: AgentTool,
-  /** Model for the respawned agent (see buildAgentCmd). Also the reason a
-   *  claim may retool a spare to its *own* tool: the booted agent has no
-   *  model flag, so a model override forces this respawn. */
-  model?: string,
-): Promise<void> {
-  const config: YaacConfig = await resolveProjectConfig(spare.projectSlug) ?? {}
-  const remoteUrl = (await simpleGit(repoDir(spare.projectSlug)).remote(['get-url', 'origin']))?.trim() ?? ''
-  // pi's launch command embeds its provider's default model, so a retool to pi
-  // needs the stored provider (from the single pi.json credential).
-  const piProvider = tool === 'pi' ? (await loadToolAuthEntry('pi'))?.piProvider : undefined
-  await proxyClient.registerSession(
-    spare.sessionId,
-    buildSessionRegistration({ config, remoteUrl, tool, projectSlug: spare.projectSlug }),
-  )
-  await containerExec(spare.jobName, `${TMUX} rename-window -t yaac:${spare.tool} ${tool}`)
-  await containerExec(
-    spare.jobName,
-    `${TMUX} respawn-window -k -t yaac:${tool} '${buildAgentCmd(tool, spare.sessionId, false, piProvider, model)}'`,
-  )
-  await verifyAgentWindowAlive(spare.jobName, tool)
-}
-
-/** The in-pod commands that re-point a prewarmed spare's worktree at a
- *  different reference branch. Assembled by `buildRebranchPrep` (pure, so
- *  the command set is unit-testable) and executed by `rebranchSpare`. */
-export interface RebranchPrepCommands {
-  /** Moves `agent/<id>` to the resolved SHA and drops non-ignored strays.
-   *  Deliberately `clean -fd`, not `-x`: ephemeral-modules mounts
-   *  (node_modules) and cache volumes are live mount points whose contents
-   *  a `-x` clean would empty; ignored build artifacts that survive are
-   *  regenerated by the respawned init windows. */
-  resetExec: string
-  /** Rewrites `branch.agent/<id>.merge` in the shared /repo/.git/config —
-   *  must run under `withUpstreamConfigLock`. */
-  upstreamExec: string
-  /** Kill + re-create every init window (they ran against the old
-   *  checkout), then respawn the agent window when requested — the spare's
-   *  booted agent read the old checkout at startup and holds no
-   *  conversation yet, so a respawn loses nothing. */
-  windowExecs: string[]
-}
-
-/**
- * Workspace-relative paths that are live mount points inside the pod —
- * ephemeral-modules redirects (`/workspace/node_modules` by default), plus
- * any cacheVolumes / bindMounts targeting a path under /workspace. `git
- * clean` must skip them: in a repo that doesn't gitignore them they're
- * untracked directories, and removing a mount point fails (EBUSY), which
- * would taint every re-branch.
- */
-function workspaceMountPaths(config: YaacConfig): string[] {
-  const underWorkspace = (p: string): string | null =>
-    p.startsWith('/workspace/') ? p.slice('/workspace/'.length) : null
-  return [
-    ...resolveEphemeralModulesPaths(config),
-    ...Object.values(config.cacheVolumes ?? {}).map(underWorkspace),
-    ...(config.bindMounts ?? []).map((b) => underWorkspace(b.containerPath)),
-  ].filter((p): p is string => p !== null && p.length > 0)
-}
-
-export function buildRebranchPrep(params: {
-  branch: string
-  /** Resolved `refs/remotes/origin/<branch>` SHA. The reset uses the SHA,
-   *  not the ref name: host-fetch writes reach pods through the virtiofs
-   *  cache with a possible seconds-stale window for replaced files
-   *  (packed-refs), while new object files are new dentries and safe. */
-  sha: string
-  config: YaacConfig
-  sessionId: string
-  /** Agent window to respawn, or null when a retool follows (its own
-   *  respawn supersedes this one). */
-  respawnTool: AgentTool | null
-  /** pi only — provider for the respawn's `pi --model` (see buildAgentCmd). */
-  piProvider?: PiProvider
-}): RebranchPrepCommands {
-  const { branch, sha, config, sessionId, respawnTool, piProvider } = params
-  const windowExecs: string[] = []
-  for (const win of resolveInitWindows(config)) {
-    // hidePane windows are gone once their command finishes, so the kill
-    // must tolerate a missing window; `|| true` also keeps containerExec's
-    // retry from hammering a kill that already succeeded.
-    windowExecs.push(`sh -c "${TMUX} kill-window -t yaac:${win.name} 2>/dev/null || true"`)
-    windowExecs.push(initWindowCommand(win))
-  }
-  if (respawnTool) {
-    windowExecs.push(
-      `${TMUX} respawn-window -k -t yaac:${respawnTool} '${buildAgentCmd(respawnTool, sessionId, false, piProvider)}'`,
-    )
-  }
-  const cleanExcludes = workspaceMountPaths(config)
-    .map((p) => ` -e '${shellEscape(p)}'`)
-    .join('')
-  return {
-    resetExec: `sh -c "git -C /workspace reset --hard ${sha} && git -C /workspace clean -fd${cleanExcludes}"`,
-    upstreamExec: `git -C /workspace branch --set-upstream-to 'origin/${shellEscape(branch)}'`,
-    windowExecs,
-  }
-}
-
-/**
- * Re-point a prewarmed spare's baked worktree at a different reference
- * branch at claim time — the branch analogue of `retoolSpare`, so any spare
- * serves any branch. The caller resolves the SHA (host-side, post-fetch) and
- * validates the branch exists BEFORE calling; from the first exec on, a
- * failure means the spare is tainted (worktree, upstream, and windows may
- * disagree) and the caller must reap it.
- */
-export async function rebranchSpare(
-  spare: { jobName: string; sessionId: string; projectSlug: string; tool: string },
-  branch: string,
-  sha: string,
-  respawnAgent: boolean,
-): Promise<void> {
-  const config: YaacConfig = await resolveProjectConfig(spare.projectSlug) ?? {}
-  const piProvider = respawnAgent && spare.tool === 'pi'
-    ? (await loadToolAuthEntry('pi'))?.piProvider
-    : undefined
-  const prep = buildRebranchPrep({
-    branch,
-    sha,
-    config,
-    sessionId: spare.sessionId,
-    respawnTool: respawnAgent ? spare.tool as AgentTool : null,
-    piProvider,
-  })
-  await containerExec(spare.jobName, prep.resetExec)
-  await withUpstreamConfigLock(spare.projectSlug, async () => {
-    await containerExec(spare.jobName, prep.upstreamExec)
-  })
-  for (const cmd of prep.windowExecs) await containerExec(spare.jobName, cmd)
-  if (respawnAgent) await verifyAgentWindowAlive(spare.jobName, spare.tool as AgentTool)
-}
-
-// Keep in lockstep with the @anthropic-ai/claude-code dependency: if it
-// ships a newer onboarding flow, a stale value lets the first-run wizard
-// reappear. `lastOnboardingVersion` must be >= the running CLI version.
-const CLAUDE_ONBOARDING_VERSION = '2.1.111'
-
-interface ClaudeJsonState {
-  hasCompletedOnboarding?: boolean
-  lastOnboardingVersion?: string
-  customApiKeyResponses?: { approved?: string[]; rejected?: string[] }
-  projects?: Record<string, { hasTrustDialogAccepted?: boolean } | undefined>
-  [key: string]: unknown
-}
-
-/**
- * Ensure `~/.claude.json` exists (it is hostPath-mounted as a file) and seed
- * claude-code's onboarding state so its first-run wizard (theme picker, then
- * the login screen) is skipped. Merges into any existing state so
- * claude-code's own keys (oauthAccount, migrations, …) survive. The agent
- * runs in /workspace; /repo is the git worktree root.
- */
-export async function seedClaudeJson(claudeJsonPath: string): Promise<void> {
-  let state: ClaudeJsonState = {}
-  try {
-    state = JSON.parse(await fs.readFile(claudeJsonPath, 'utf8')) as ClaudeJsonState
-  } catch {
-    // missing or invalid — start fresh
-  }
-  state.hasCompletedOnboarding = true
-  state.lastOnboardingVersion = CLAUDE_ONBOARDING_VERSION
-  const approved = new Set([...(state.customApiKeyResponses?.approved ?? []), 'yaac-ph-api-key'])
-  state.customApiKeyResponses = { approved: [...approved], rejected: state.customApiKeyResponses?.rejected ?? [] }
-  const projects = { ...state.projects }
-  for (const dir of ['/workspace', '/repo']) {
-    projects[dir] = { ...projects[dir], hasTrustDialogAccepted: true }
-  }
-  state.projects = projects
-  await fs.writeFile(claudeJsonPath, JSON.stringify(state, null, 2) + '\n')
-}
-
-/**
- * Seed `~/.claude/settings.json` so claude-code skips the one-time
- * "Bypass Permissions mode" warning. yaac runs the agent with permission
- * bypass inside a sandboxed pod — exactly the case the warning says
- * is safe — so showing it on every session is pure friction. Merges into
- * any existing settings (e.g. the theme claude-code writes itself).
- *
- * Also raises `cleanupPeriodDays` from claude-code's 30-day default to
- * 100 years: session transcripts live in the project's hostPath-mounted
- * `.claude` dir and yaac owns their lifecycle, so claude-code must never
- * garbage-collect them on startup. (0 would disable transcript
- * persistence entirely, not cleanup — hence a large finite value.)
- * codex and opencode need no equivalent: neither expires sessions.
- */
-export async function seedClaudeSettings(settingsPath: string): Promise<void> {
-  let settings: Record<string, unknown> = {}
-  try {
-    settings = JSON.parse(await fs.readFile(settingsPath, 'utf8')) as Record<string, unknown>
-  } catch {
-    // missing or invalid — start fresh
-  }
-  settings.skipDangerousModePermissionPrompt = true
-  settings.cleanupPeriodDays = 36500
-  await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n')
-}
-
-interface EphemeralMount {
-  /** Relative path under /workspace (e.g. "node_modules"). */
-  rel: string
-  /** Host backing dir — the hostPath mount source. */
-  hostBacking: string
-  /** Absolute in-container path — the mount target. */
-  containerPath: string
-}
-
-/**
- * Resolve per-session ephemeral-module mount descriptors and ensure
- * each backing directory exists on the host before the Job is created.
- *
- * Each `rel` becomes a hostPath mount from
- * `<cachedPackages>/modules/<sessionId>/<slotKey>` on host to
- * `/workspace/<rel>` inside the container. Keeping the backing dirs
- * under the same `.cached-packages` mount as the pnpm store preserves
- * hardlink affinity (same superblock → `link(2)` does not hit EXDEV),
- * and nothing lands on the host worktree.
- */
-async function prepareEphemeralMounts(
-  cachedPackages: string,
-  sessionId: string,
-  relPaths: string[],
-): Promise<EphemeralMount[]> {
-  const mounts: EphemeralMount[] = []
-  for (const rel of relPaths) {
-    const slot = ephemeralModulesSlotKey(rel)
-    const hostBacking = path.join(cachedPackages, 'modules', sessionId, slot)
-    await fs.mkdir(hostBacking, { recursive: true })
-    mounts.push({
-      rel,
-      hostBacking,
-      containerPath: `/workspace/${rel}`,
-    })
-  }
-  return mounts
-}
-
 
 export interface SessionCreateOptions {
   /** Pre-generated session ID (used by resume to know the Job name upfront). */
@@ -760,19 +281,6 @@ const upstreamConfigMutex = createKeyedMutex()
  */
 export async function withUpstreamConfigLock(projectSlug: string, task: () => Promise<void>): Promise<void> {
   await upstreamConfigMutex(projectSlug, task)
-}
-
-/**
- * The tmux invocation that creates one init-command window. Shared between
- * fresh-session setup and the claim-time re-branch prep so a re-created
- * window is indistinguishable from a warm-time one. Without remain-on-exit
- * the window closes when its command finishes — and the webapp pane/tab
- * follows the window list, so a hidePane init window shows while running and
- * disappears once done.
- */
-export function initWindowCommand(win: InitWindow): string {
-  return `${TMUX} new-window -d -t yaac -n ${win.name} 'cd /workspace && ${win.cmd}'`
-    + (win.hidePane ? '' : ` \\; set-option -t yaac:${win.name} remain-on-exit on`)
 }
 
 async function startJobWithSetup(params: SessionSetupParams): Promise<void> {

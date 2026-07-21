@@ -15,7 +15,7 @@ import { projectBuildDir, userBuildDir } from '@yaac/server/features/projects/bu
 import { writeBuildFile } from '@yaac/server/features/projects/build-files'
 import { ensureImage } from '@yaac/server/features/images/build-coordinator'
 import { ensureBuilderRoleGuard } from '@yaac/server/features/images/builder-pod'
-import { BUILDER_ROLE_GUARD_NAME } from '@yaac/server/features/cluster/bootstrap'
+import { BUILDER_ROLE_GUARD_NAME } from '@yaac/server/features/cluster/proxy-constants'
 import { resolveImageChain } from '@yaac/server/features/images/image-builder'
 import { imageExists } from '@yaac/server/platform/container/runtime'
 import { registryHasTag, registryRef } from '@yaac/server/features/cluster/registry'

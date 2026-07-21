@@ -79,7 +79,7 @@ import {
   _clearTmuxAliveCacheForTests,
   _clearAgentStartedCacheForTests,
 } from '#features/sessions/cleanup'
-import { isSessionTerminating, _clearTerminatingForTests } from '#features/sessions/terminating'
+import { isSessionTerminating, _clearTerminatingForTests } from '#features/sessions/state'
 import { setSessionStreamHealth, _resetSessionStatusStoreForTests } from '#features/sessions/status-store'
 import { recordSessionDeleted } from '#features/sessions/deleted-store'
 import { serverLog } from '#log'

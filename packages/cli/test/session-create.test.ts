@@ -31,16 +31,16 @@ vi.mock('simple-git', () => ({
 
 vi.mock('@yaac/server/platform/container/runtime', () => ({
   ensureContainerRuntime: vi.fn().mockResolvedValue(undefined),
-}))
+} satisfies Partial<typeof runtimeModule>))
 
 vi.mock('@yaac/server/features/images/image-builder', () => ({
   sessionUid: vi.fn(() => 1000),
-}))
+} satisfies Partial<typeof imageBuilderModule>))
 
 vi.mock('@yaac/server/features/images/build-coordinator', () => ({
   ensureImage: vi.fn().mockResolvedValue('yaac-test-image'),
   pushImageShared: vi.fn().mockResolvedValue('localhost:5000/yaac-test-image'),
-}))
+} satisfies Partial<typeof buildCoordinatorModule>))
 
 vi.mock('@yaac/server/platform/k8s/kubectl', () => ({
   dataDirHash: vi.fn(() => 'ddh0123456789abc'),
@@ -48,19 +48,19 @@ vi.mock('@yaac/server/platform/k8s/kubectl', () => ({
   kubectlApply: vi.fn().mockResolvedValue(undefined),
   kubectlGetJson: vi.fn(),
   kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-}))
+} satisfies Partial<typeof kubectlModule>))
 
 // Keep bootstrap real except proxyServiceClusterIp, which would otherwise hit
 // the (pod-shaped) kubectlGetJson mock and throw — the pod's DNS nameserver is
 // the live proxy ClusterIP read here.
-vi.mock('@yaac/server/features/cluster/bootstrap', async (importOriginal) => ({
+vi.mock('@yaac/server/features/cluster/proxy-apply', async (importOriginal) => ({
   ...(await importOriginal()),
   proxyServiceClusterIp: vi.fn().mockResolvedValue('10.96.0.5'),
 }))
 
 vi.mock('@yaac/server/platform/k8s/exec', () => ({
   containerExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
-}))
+} satisfies Partial<typeof execModule>))
 
 // The CLI command attaches over the server PTY WebSocket after
 // provisioning — mock the transport so no socket is opened.
@@ -79,6 +79,9 @@ vi.mock('@yaac/server/features/sessions/egress/proxy-client', () => ({
   },
   buildRulesFromConfig: vi.fn().mockReturnValue([]),
   collectProxySecrets: vi.fn().mockReturnValue({}),
+  // NOT tsc-guarded: the mocked `proxyClient` is a deliberate 4-method subset
+  // of the 26-member `ProxyClient` class, which `satisfies Partial<…>` rejects
+  // (a partial object value is not assignable to the full property type).
 }))
 
 vi.mock('@yaac/server/features/sessions/egress/default-allowed-hosts', async (importOriginal) => {
@@ -95,7 +98,7 @@ vi.mock('@yaac/server/platform/container/port', () => ({
   reserveAvailablePort: vi.fn(),
   startPortForwarders: vi.fn().mockReturnValue(vi.fn()),
   kubectlRelay: vi.fn().mockReturnValue(() => ({})),
-}))
+} satisfies Partial<typeof portModule>))
 
 vi.mock('@yaac/shared/project-paths', () => ({
   repoDir: vi.fn((slug: string) => `/tmp/${slug}/repo`),
@@ -124,7 +127,7 @@ vi.mock('@yaac/server/features/projects/config', () => ({
   resolveProjectConfig: vi.fn().mockResolvedValue({}),
   resolveEphemeralModulesPaths: () => [],
   ephemeralModulesSlotKey: (p: string) => (p === 'node_modules' ? 'root' : p.replace(/\//g, '_')),
-}))
+} satisfies Partial<typeof projectConfigModule>))
 
 vi.mock('@yaac/server/features/projects/credentials', () => ({
   resolveCredentialForUrl: vi.fn().mockResolvedValue({ kind: 'https', token: 'token' }),
@@ -140,7 +143,7 @@ vi.mock('@yaac/server/features/projects/credentials', () => ({
   },
   loadKnownHostsEntryForHost: vi.fn().mockResolvedValue(null),
   writeProxySecrets: vi.fn().mockResolvedValue(undefined),
-}))
+} satisfies Partial<typeof credentialsModule>))
 
 vi.mock('@yaac/shared/tool-auth', () => ({
   loadToolAuthEntry: vi.fn().mockResolvedValue(null),
@@ -158,8 +161,7 @@ vi.mock('@yaac/server/platform/git', () => ({
   fetchOrigin: vi.fn().mockResolvedValue(undefined),
   remoteBranchExists: vi.fn().mockResolvedValue(true),
   writeKnownHostsFile: vi.fn().mockResolvedValue(undefined),
-  isTorEnabled: vi.fn().mockReturnValue(false),
-}))
+} satisfies Partial<typeof gitModule>))
 
 vi.mock('@yaac/shared/git', async (importOriginal) => {
   const actual = await importOriginal<typeof sharedGitModule>()
@@ -169,29 +171,31 @@ vi.mock('@yaac/shared/git', async (importOriginal) => {
   }
 })
 
-vi.mock('@yaac/server/features/sessions/agents/codex-hooks', () => ({
+vi.mock('@yaac/server/features/sessions/agents/codex', () => ({
   ensureCodexHooksJson: vi.fn().mockResolvedValue(undefined),
   ensureCodexConfigToml: vi.fn().mockResolvedValue(undefined),
-}))
+} satisfies Partial<typeof codexAgentModule>))
 
-vi.mock('@yaac/server/features/sessions/agents/opencode-config', () => ({
+vi.mock('@yaac/server/features/sessions/agents/opencode', () => ({
   ensureOpencodeConfigJson: vi.fn().mockResolvedValue(undefined),
-}))
+} satisfies Partial<typeof opencodeAgentModule>))
 
 vi.mock('@yaac/server/features/sessions/forwarders/port-forwarders', () => ({
   buildStatusRight: vi.fn().mockReturnValue(' stub-status '),
   registerSessionForwarders: vi.fn(),
-}))
+} satisfies Partial<typeof portForwardersModule>))
 
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
-import { buildAgentCmd, createSession, resolveInitWindows, retoolSpare } from '@yaac/server/features/sessions/create'
+import { createSession } from '@yaac/server/features/sessions/create'
+import { buildAgentCmd, resolveInitWindows } from '@yaac/server/features/sessions/agent-command'
+import { retoolSpare } from '@yaac/server/features/sessions/spare-pool'
 import { sessionCreate } from '#commands/session-create'
 import { ensureContainerRuntime } from '@yaac/server/platform/container/runtime'
 import { ensureImage, pushImageShared } from '@yaac/server/features/images/build-coordinator'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '@yaac/server/platform/k8s/kubectl'
 import { containerExec } from '@yaac/server/platform/k8s/exec'
-import { proxyServiceClusterIp } from '@yaac/server/features/cluster/bootstrap'
+import { proxyServiceClusterIp } from '@yaac/server/features/cluster/proxy-apply'
 import { proxyClient } from '@yaac/server/features/sessions/egress/proxy-client'
 import { resolveProjectConfig } from '@yaac/server/features/projects/config'
 import simpleGit from 'simple-git'
@@ -995,6 +999,18 @@ describe('resolveInitWindows', () => {
 
 import type * as allowedHostsModule from '@yaac/server/features/sessions/egress/default-allowed-hosts'
 import type * as sharedGitModule from '@yaac/shared/git'
+import type * as codexAgentModule from '@yaac/server/features/sessions/agents/codex'
+import type * as opencodeAgentModule from '@yaac/server/features/sessions/agents/opencode'
+import type * as runtimeModule from '@yaac/server/platform/container/runtime'
+import type * as imageBuilderModule from '@yaac/server/features/images/image-builder'
+import type * as buildCoordinatorModule from '@yaac/server/features/images/build-coordinator'
+import type * as kubectlModule from '@yaac/server/platform/k8s/kubectl'
+import type * as execModule from '@yaac/server/platform/k8s/exec'
+import type * as portModule from '@yaac/server/platform/container/port'
+import type * as projectConfigModule from '@yaac/server/features/projects/config'
+import type * as credentialsModule from '@yaac/server/features/projects/credentials'
+import type * as gitModule from '@yaac/server/platform/git'
+import type * as portForwardersModule from '@yaac/server/features/sessions/forwarders/port-forwarders'
 
 // sessionCreate posts to the streaming /session/create route via the `api`
 // singleton; the leaf resolves to a raw streaming Response (the client only

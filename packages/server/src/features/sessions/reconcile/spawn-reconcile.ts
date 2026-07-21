@@ -21,7 +21,8 @@ import {
 import { listSessionPods, type SessionPod } from '#platform/k8s/pods'
 import { getDefaultTool } from '#features/projects/preferences'
 import { registerProvisioning, runProvisioned } from '#features/sessions/provisioning'
-import { createSession, MODEL_RE, type SessionCreateOptions, type SessionCreateResult } from '#features/sessions/create'
+import { createSession, type SessionCreateOptions, type SessionCreateResult } from '#features/sessions/create'
+import { MODEL_RE } from '#features/sessions/agent-command'
 import { serverLog } from '#log'
 
 /** Prompt character limit — mirrors the schedule route and the proxy check. */

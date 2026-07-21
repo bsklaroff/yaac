@@ -2,11 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } fr
 
 vi.mock('@yaac/server/features/cluster/setup', () => {
   class ClusterSetupError extends Error {}
-  return { runClusterSetup: vi.fn(), ClusterSetupError }
+  return { runClusterSetup: vi.fn(), ClusterSetupError } satisfies Partial<typeof clusterSetupModule>
 })
 
 import { clusterSetup } from '#commands/cluster-setup'
 import { ClusterSetupError, runClusterSetup } from '@yaac/server/features/cluster/setup'
+import type * as clusterSetupModule from '@yaac/server/features/cluster/setup'
 
 const mockRun = vi.mocked(runClusterSetup)
 

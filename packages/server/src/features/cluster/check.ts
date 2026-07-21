@@ -5,10 +5,9 @@ import { execFileAsync, k8sNamespace, kubectlApply } from '#platform/k8s/kubectl
 import {
   buildProxyIngressCnpManifest,
   buildSessionEgressRedirectCnpManifest,
-  ensureNamespace,
-  PROXY_APP_NAME,
-  TRANSPARENT_HTTPS_PORT,
-} from '#features/cluster/bootstrap'
+} from '#features/cluster/proxy-manifests'
+import { ensureNamespace } from '#features/cluster/proxy-apply'
+import { PROXY_APP_NAME, TRANSPARENT_HTTPS_PORT } from '#features/cluster/proxy-constants'
 import {
   RUNTIME_CLASS_GVISOR,
   RUNTIME_CLASS_GVISOR_NESTED,

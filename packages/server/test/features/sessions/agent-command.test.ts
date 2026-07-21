@@ -1,6 +1,46 @@
-import { describe, it, expect } from 'vitest'
-import { buildAgentCmd, MODEL_RE } from '#features/sessions/create'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import {
+  shellEscape,
+  buildAgentCmd,
+  MODEL_RE,
+  buildPromptPasteCmd,
+  typeInitialPrompt,
+  buildAgentWindowCheck,
+  initWindowCommand,
+} from '#features/sessions/agent-command'
+import { containerExec } from '#platform/k8s/exec'
 import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
+import { AGENT_TOOLS } from '@yaac/shared/types'
+import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
+
+vi.mock('#platform/k8s/exec', () => ({
+  containerExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+  execTarget: (jobName: string) => `job/${jobName}`,
+}))
+
+const TMUX = `tmux -S ${CONTAINER_TMUX_SOCK}`
+
+describe('shellEscape', () => {
+  it('returns simple strings unchanged', () => {
+    expect(shellEscape('hello world')).toBe('hello world')
+  })
+
+  it('escapes single quotes', () => {
+    expect(shellEscape("it's a test")).toBe("it'\\''s a test")
+  })
+
+  it('escapes multiple single quotes', () => {
+    expect(shellEscape("don't can't won't")).toBe("don'\\''t can'\\''t won'\\''t")
+  })
+
+  it('leaves double quotes and other chars alone', () => {
+    expect(shellEscape('say "hello" & goodbye')).toBe('say "hello" & goodbye')
+  })
+
+  it('handles empty string', () => {
+    expect(shellEscape('')).toBe('')
+  })
+})
 
 describe('buildAgentCmd', () => {
   describe('codex tool', () => {
@@ -125,5 +165,96 @@ describe('buildAgentCmd', () => {
         expect(MODEL_RE.test(m)).toBe(false)
       }
     })
+  })
+})
+
+/** Pull the paste's base64 payload back out of the generated command. */
+function embeddedPrompt(cmd: string): string {
+  const match = /printf %s ([A-Za-z0-9+/=]+) \| base64 -d \| tmux[^|]*load-buffer/.exec(cmd)
+  expect(match).not.toBeNull()
+  return Buffer.from(match![1], 'base64').toString('utf8')
+}
+
+describe('buildPromptPasteCmd', () => {
+  it('round-trips arbitrary prompt text through the base64 payload', () => {
+    const nasty = 'say "hi" && don\'t eval `$HOME`\nsecond line — ünïcode'
+    expect(embeddedPrompt(buildPromptPasteCmd('claude', nasty))).toBe(nasty)
+  })
+
+  it('verifies the paste against the first line, capped at 40 columns', () => {
+    const prompt = `${'x'.repeat(60)} tail\nsecond line`
+    const cmd = buildPromptPasteCmd('claude', prompt)
+    const probe = /probe="\$\(printf %s ([A-Za-z0-9+/=]+) \| base64 -d\)"/.exec(cmd)
+    expect(probe).not.toBeNull()
+    expect(Buffer.from(probe![1], 'base64').toString('utf8')).toBe('x'.repeat(40))
+  })
+
+  it('never embeds the raw prompt, and stays single-quote-clean for the host shell', () => {
+    const nasty = "it's $HOME; \"quoted\""
+    const cmd = buildPromptPasteCmd('claude', nasty)
+    expect(cmd).not.toContain('$HOME')
+    // The one single-quote pair is the outer sh -c wrapper; the script body
+    // must not contain any (the host shell would split the command there).
+    expect(cmd.startsWith("sh -c '")).toBe(true)
+    expect(cmd.endsWith("'")).toBe(true)
+    expect(cmd.slice("sh -c '".length, -1)).not.toContain("'")
+  })
+
+  it.each(AGENT_TOOLS)('targets the %s agent window', (tool) => {
+    const cmd = buildPromptPasteCmd(tool, 'prompt')
+    expect(cmd).toContain(`paste-buffer -p -d -b yaac-prompt -t yaac:${tool}`)
+    expect(cmd).toContain(`send-keys -t yaac:${tool} Enter`)
+  })
+
+  it('gates on the alternate screen, verify-pastes, then submits with a guard resend', () => {
+    const cmd = buildPromptPasteCmd('codex', 'hello')
+    // Order matters: alternate_on readiness gate → paste-until-visible loop
+    // (capture-pane grep) → Enter → delayed second Enter for a TUI that
+    // dropped the first one mid-startup-render.
+    expect(cmd).toMatch(
+      /while .*alternate_on.* sleep 0\.5; done; sleep 1; probe=.*; i=0; while .*capture-pane .* grep -qF -- "\$probe" && break; printf %s \S+ \| base64 -d \| .*load-buffer .*; .*paste-buffer -p .*; i=.*; sleep 2; done; .*send-keys .* Enter; sleep 2; .*send-keys .* Enter'$/,
+    )
+  })
+
+  it('degrades to a single blind paste for a whitespace-only prompt', () => {
+    const cmd = buildPromptPasteCmd('claude', ' \n ')
+    expect(cmd).not.toContain('probe=')
+    expect(cmd).toContain('paste-buffer -p -d -b yaac-prompt -t yaac:claude')
+  })
+})
+
+describe('typeInitialPrompt', () => {
+  beforeEach(() => vi.mocked(containerExec).mockClear())
+
+  it('execs the paste command in the session job, single-attempt (a retry could double-paste)', async () => {
+    await typeInitialPrompt('yaac-job-1', 'claude', 'hello there')
+    expect(containerExec).toHaveBeenCalledWith(
+      'yaac-job-1',
+      buildPromptPasteCmd('claude', 'hello there'),
+      { maxAttempts: 1, timeout: 120_000 },
+    )
+  })
+})
+
+describe('buildAgentWindowCheck', () => {
+  it('probes for the agent window after a settle delay', () => {
+    expect(buildAgentWindowCheck('claude')).toBe(
+      `sh -c "sleep 1; ${TMUX} list-windows -t =yaac -F '#{window_name}' | grep -qxF claude"`,
+    )
+  })
+})
+
+describe('initWindowCommand', () => {
+  it('creates a visible window with remain-on-exit chained on', () => {
+    const cmd = initWindowCommand({ name: 'init', cmd: 'pnpm install', hidePane: false })
+    expect(cmd).toBe(
+      `${TMUX} new-window -d -t yaac -n init 'cd /workspace && pnpm install'`
+      + ' \\; set-option -t yaac:init remain-on-exit on',
+    )
+  })
+
+  it('omits remain-on-exit for hidden panes', () => {
+    const cmd = initWindowCommand({ name: 'deps', cmd: 'pnpm install', hidePane: true })
+    expect(cmd).toBe(`${TMUX} new-window -d -t yaac -n deps 'cd /workspace && pnpm install'`)
   })
 })

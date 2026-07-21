@@ -2,10 +2,10 @@ import { spawn } from 'node:child_process'
 import { stdinExecArgs } from '#platform/k8s/exec'
 import { isPrewarmed, type SessionPod } from '#platform/k8s/pods'
 import { classifyClaudeTitle } from '#features/sessions/agents/claude-status'
-import { classifyCodexTitle } from '#features/sessions/agents/codex-status'
-import { classifyOpencodePane } from '#features/sessions/agents/opencode-status'
+import { classifyCodexTitle } from '#features/sessions/agents/codex'
+import { classifyOpencodePane } from '#features/sessions/agents/opencode'
 import { classifyPiPane } from '#features/sessions/agents/pi-status'
-import { normalizeTool } from '#features/sessions/status'
+import { normalizeTool } from '#features/sessions/state'
 import {
   evictSessionStatus,
   setSessionStatus,

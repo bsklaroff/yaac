@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-vi.mock('#features/sessions/create', () => ({
+vi.mock('#features/sessions/agent-command', () => ({
   shellEscape: (s: string) => s.replace(/'/g, "'\\''"),
+}))
+vi.mock('#features/sessions/spare-pool', () => ({
   retoolSpare: vi.fn(),
   rebranchSpare: vi.fn(),
 }))
@@ -42,7 +44,7 @@ import type * as podsModule from '#platform/k8s/pods'
 import { cleanupSessionDetached, isTmuxSessionAlive } from '#features/sessions/cleanup'
 import { kubectlWithRetry } from '#platform/k8s/kubectl'
 import { containerExec } from '#platform/k8s/exec'
-import { rebranchSpare, retoolSpare } from '#features/sessions/create'
+import { rebranchSpare, retoolSpare } from '#features/sessions/spare-pool'
 import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBranch } from '#platform/git'
 import { resolveProjectConfig } from '#features/projects/config'
 import { ServerError } from '@yaac/shared/errors'

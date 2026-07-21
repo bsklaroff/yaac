@@ -16,12 +16,12 @@ import {
 } from '@yaac/test-utils/setup'
 import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
 import { ProxyClient } from '@yaac/server/features/sessions/egress/proxy-client'
+import { proxyServiceClusterIp } from '@yaac/server/features/cluster/proxy-apply'
 import {
-  proxyServiceClusterIp,
   SSH_TUNNEL_SENTINEL,
   TRANSPARENT_HTTPS_PORT,
   TUNNEL_INGRESS_PORT,
-} from '@yaac/server/features/cluster/bootstrap'
+} from '@yaac/server/features/cluster/proxy-constants'
 import { runtimeClassSpec } from '@yaac/server/platform/k8s/gvisor'
 import { CA_CONFIGMAP_NAME } from '@yaac/server/platform/k8s/pod-spec'
 import { LABEL_SESSION_ID } from '@yaac/server/platform/k8s/pods'

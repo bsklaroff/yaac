@@ -10,7 +10,7 @@ import { readLock } from '@yaac/shared/lock'
 import { requirePodman, requireCluster, IS_NESTED_YAAC, TEST_PROXY_CONFIG } from '@yaac/test-utils/setup'
 import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
 import { ProxyClient } from '@yaac/server/features/sessions/egress/proxy-client'
-import { PROXY_APP_NAME, PROXY_AUTH_SECRET_NAME, PROXY_PORT } from '@yaac/server/features/cluster/bootstrap'
+import { PROXY_APP_NAME, PROXY_AUTH_SECRET_NAME, PROXY_PORT } from '@yaac/server/features/cluster/proxy-constants'
 import {
   k8sNamespace,
   kubectlApply,

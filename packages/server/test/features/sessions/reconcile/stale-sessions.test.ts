@@ -25,10 +25,10 @@ vi.mock('#features/sessions/deleted-store', () => ({ listDeletedInfo: vi.fn() })
 
 import { listSessionPods, listSessionJobs } from '#platform/k8s/pods'
 import { probeTmuxLiveness, probeAgentPaneState, cleanupSessionDetached } from '#features/sessions/cleanup'
-import { markSessionTerminating, _clearTerminatingForTests } from '#features/sessions/terminating'
+import { markSessionTerminating, _clearTerminatingForTests } from '#features/sessions/state'
 import { listDeletedInfo } from '#features/sessions/deleted-store'
 import { serverLog } from '#log'
-import { reconcileStaleSessions } from '#features/sessions/list'
+import { reconcileStaleSessions } from '#features/sessions/reconcile/stale-sessions'
 
 const mockListPods = vi.mocked(listSessionPods)
 const mockListJobs = vi.mocked(listSessionJobs)

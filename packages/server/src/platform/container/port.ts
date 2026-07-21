@@ -4,8 +4,6 @@ import { stdinExecArgs } from '#platform/k8s/exec'
 import { env } from '@yaac/shared/env'
 import type { PortMapping } from '@yaac/shared/types'
 
-export type { PortMapping }
-
 export interface ReservedPort extends PortMapping {
   /** Pre-bound server holding the port so no other process can claim it. */
   server: net.Server

@@ -1,4 +1,5 @@
-import { reconcileStaleSessions, captureOpencodeFirstMessages } from '#features/sessions/list'
+import { reconcileStaleSessions } from '#features/sessions/reconcile/stale-sessions'
+import { captureOpencodeFirstMessages } from '#features/sessions/agents/opencode'
 import { reconcileImageSalvage } from '#features/sessions/reconcile/salvage-reconcile'
 import { reconcileProxySshKeys } from '#features/sessions/reconcile/proxy-reconcile'
 import { reconcileSpawnRequests } from '#features/sessions/reconcile/spawn-reconcile'

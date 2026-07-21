@@ -4,11 +4,11 @@ import { Hono } from 'hono'
 // The retry route only wires HTTP → retryImageBuild; its rebuild orchestration
 // (prewarm / proxy) is unit-tested in image-retry.test.ts. Mock it here so the
 // route test stays hermetic and doesn't pull in the proxy client.
-vi.mock('#features/images/image-retry', () => ({ retryImageBuild: vi.fn() }))
+vi.mock('#features/images/image-prewarm', () => ({ retryImageBuild: vi.fn() }))
 
 import { imageApp } from '#routes/images'
 import { toErrorBody } from '#http/errors'
-import { retryImageBuild } from '#features/images/image-retry'
+import { retryImageBuild } from '#features/images/image-prewarm'
 import {
   clearAllImageBuildsForTests,
   failImageBuild,

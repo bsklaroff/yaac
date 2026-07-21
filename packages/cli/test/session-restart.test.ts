@@ -6,7 +6,7 @@ import * as pods from '@yaac/server/platform/k8s/pods'
 import * as cleanup from '@yaac/server/features/sessions/cleanup'
 import * as sessionCreate from '@yaac/server/features/sessions/create'
 import { resolveRestartTarget, restartSession } from '@yaac/server/features/sessions/restart'
-import { saveOpencodeMeta } from '@yaac/server/features/sessions/agents/opencode-status'
+import { saveOpencodeMeta } from '@yaac/server/features/sessions/agents/opencode'
 import { closeDb } from '@yaac/server/platform/db/client'
 import { sessionRestart } from '#commands/session-restart'
 import {

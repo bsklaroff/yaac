@@ -11,7 +11,7 @@ import {
   getDeletedSessionOpencodeFirstUserMessage,
   hasOpencodeMeta,
   listOpencodeMetaEntries,
-} from '#features/sessions/agents/opencode-status'
+} from '#features/sessions/agents/opencode'
 import { loadTokens } from '#http/token-store'
 
 // The legacy on-disk layout, rebuilt by hand: the production path builders

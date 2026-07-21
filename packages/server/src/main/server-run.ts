@@ -1,8 +1,5 @@
 import crypto from 'node:crypto'
 import net from 'node:net'
-import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { serve, type ServerType } from '@hono/node-server'
 import { createNodeWebSocket } from '@hono/node-ws'
 import { buildApp } from '#main/server'
@@ -26,20 +23,18 @@ import {
   readLock,
   removeLock,
 } from '@yaac/shared/lock'
-import { isLockLive, isLockReady, type ServerLock } from '@yaac/shared/server-lock-file'
+import { isLockLive } from '@yaac/shared/server-lock-file'
 import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-port'
-import { resolveServerTarget, type ServerTarget } from '@yaac/shared/server-api'
-import { ensureAuthDaemonSpawned } from '@yaac/shared/auth-daemon'
 import { ensureDataDir } from '@yaac/shared/project-paths'
-import { serverLogPath } from '@yaac/shared/paths'
 import { startBackgroundLoop } from '#main/background-loop'
-import { gcOrphanEphemeralModuleDirs } from '#features/sessions/cleanup'
+import { gcOrphanEphemeralModuleDirs, isTmuxSessionAlive } from '#features/sessions/cleanup'
 import { gcOrphanProjectRegistries } from '#features/cluster/project-registry'
-import { ensureNamespace } from '#features/cluster/bootstrap'
+import { ensureNamespace } from '#features/cluster/proxy-apply'
 import { ensureLocalRegistry } from '#features/cluster/registry'
 import { proxyClient } from '#features/sessions/egress/proxy-client'
-import { restoreAllSessionForwarders } from '#features/sessions/forwarders/restore-forwarders'
-import { stopAllSessionForwarders } from '#features/sessions/forwarders/port-forwarders'
+import { hasSessionForwarders, provisionSessionForwarders, stopAllSessionForwarders } from '#features/sessions/forwarders/port-forwarders'
+import { listSessionPods } from '#platform/k8s/pods'
+import { resolveProjectConfig } from '#features/projects/config'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
 
@@ -63,7 +58,7 @@ interface RawWebSocket {
 // through a host-machine Tor SOCKS endpoint (default 127.0.0.1:9050).
 // Fail loud at startup if it's unreachable rather than letting the first
 // git operation fail with an opaque connection-refused.
-async function preflightHostTor(): Promise<void> {
+export async function preflightHostTor(): Promise<void> {
   if (!env.useTor) return
   const url = new URL(env.torSocksUrl)
   const host = url.hostname
@@ -474,301 +469,46 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     .catch((err) => serverLog(`[server] orphan registry GC failed: ${String(err)}`))
 }
 
-/**
- * Entry point for `yaac server start`.
- *
- * - If a server is already running with the matching buildId, no-op.
- * - If running with a different buildId, throw — the user should
- *   `yaac server restart`.
- * - Otherwise clean any stale lock, spawn `yaac server run` detached,
- *   and wait up to 5s for the new lock to appear.
- */
-export async function startServer(): Promise<void> {
-  await preflightHostTor()
-  await ensureDataDir()
-  const cliBuildId = await readBuildId()
-
-  const existing = await readLock()
-  if (existing && await isLockLive(existing)) {
-    if (existing.buildId === cliBuildId) {
-      console.error(`[yaac] server already running pid=${existing.pid} port=${existing.port}`)
-      return
-    }
-    throw new Error(
-      'yaac server is running an outdated version '
-      + `(server buildId ${existing.buildId}, CLI buildId ${cliBuildId}). `
-      + 'Restart it with: yaac server restart',
-    )
-  }
-
-  // Lock file present but not live (pid dead or /health unresponsive) —
-  // the next spawn's idempotency check would overwrite it anyway, but
-  // clearing first keeps the "wait for new lock" poll simple.
-  if (existing) await removeLock()
-
-  await spawnServerDetached()
-  // Wait for readiness, not bare liveness: the server writes its lock and
-  // answers /health before it opens the DB and runs first-boot migrations,
-  // which block the event loop for seconds. Returning on the pre-init
-  // /health would print "server started" while the next command's liveness
-  // probe times out against the frozen loop. 30s comfortably covers a
-  // cold-start migration (a few seconds) plus headroom on a loaded host.
-  const fresh = await waitForReadyLock(30_000)
-  if (fresh.buildId !== cliBuildId) {
-    throw new Error(
-      `server buildId ${fresh.buildId} does not match CLI buildId ${cliBuildId}`,
-    )
-  }
-  const torPrefix = env.useTor ? '(using tor) ' : ''
-  console.error(`[yaac] ${torPrefix}server started pid=${fresh.pid} port=${fresh.port}`)
+interface RestoreCandidate {
+  jobName: string
+  projectSlug: string
+  sessionId: string
 }
 
 /**
- * Entry point for `yaac server stop`. SIGTERMs the running server and
- * waits for its shutdown handler to unlink the lock. Force-removes the
- * lock if the server doesn't exit within 3s.
+ * Server-startup pass that rebuilds port forwarders for every live yaac
+ * session pod. A server restart loses the in-memory forwarder registry
+ * while session pods keep running with stale `status-right` info, so
+ * without this pass the tmux bars lie about which ports are
+ * actually forwarded.
  */
-export async function stopServer(): Promise<void> {
-  const existing = await readLock()
-  if (!existing) {
-    console.error('[yaac] server is not running')
-    return
-  }
-  if (!await isLockLive(existing)) {
-    await removeLock()
-    console.error(`[yaac] removed stale lock (pid ${existing.pid})`)
+export async function restoreAllSessionForwarders(): Promise<void> {
+  let pods
+  try {
+    pods = await listSessionPods()
+  } catch (err) {
+    console.error('[server] restore forwarders: list session pods failed:', err)
     return
   }
 
-  try {
-    process.kill(existing.pid, 'SIGTERM')
-  } catch {
-    // Process already gone — still need to clear the lock below.
+  const candidates: RestoreCandidate[] = []
+  for (const p of pods) {
+    if (!p.running) continue
+    if (!p.sessionId || !p.projectSlug || !p.jobName) continue
+    if (hasSessionForwarders(p.sessionId)) continue
+    if (!(await isTmuxSessionAlive(p.projectSlug, p.sessionId))) continue
+    candidates.push({ jobName: p.jobName, projectSlug: p.projectSlug, sessionId: p.sessionId })
   }
 
-  // The server's shutdown path is bounded to ~6s worst case (3s loop
-  // drain + 3s server close) under heavy parallel load. Poll with
-  // headroom so a healthy SIGTERM-driven exit isn't misreported as a
-  // "force-removed stale lock".
-  const deadline = Date.now() + 10_000
-  while (Date.now() < deadline) {
-    const cur = await readLock()
-    if (!cur || cur.pid !== existing.pid) {
-      console.error(`[yaac] server stopped (pid ${existing.pid})`)
-      return
+  await Promise.allSettled(candidates.map(async ({ jobName, projectSlug, sessionId }) => {
+    try {
+      const config = await resolveProjectConfig(projectSlug) ?? {}
+      await provisionSessionForwarders(projectSlug, sessionId, jobName, config.portForward)
+    } catch (err) {
+      console.error(
+        `[server] restore forwarders for ${sessionId.slice(0, 8)}: `
+        + (err instanceof Error ? err.message : String(err)),
+      )
     }
-    await new Promise((r) => setTimeout(r, 50))
-  }
-  // Server didn't clean up in time. Remove the lock ourselves — the old
-  // process is either gone or wedged, either way it's no longer the
-  // source of truth.
-  const cur = await readLock()
-  if (cur && cur.pid === existing.pid) await removeLock()
-  console.error(`[yaac] force-removed stale lock (pid ${existing.pid})`)
-}
-
-/**
- * Entry point for `yaac server restart`. Stops any running server, then
- * starts a fresh one.
- */
-export async function restartServer(): Promise<void> {
-  await stopServer()
-  await startServer()
-}
-
-export function buildWebappUrl(baseUrl: string, token: string): string {
-  return `${baseUrl}/?token=${token}`
-}
-
-export interface OpenWebappOptions {
-  /** Print the URL instead of launching a browser. */
-  noBrowser?: boolean
-  // Injected for tests; default to the real implementations.
-  ensureServer?: () => Promise<void>
-  resolveTarget?: () => Promise<ServerTarget>
-  fetchImpl?: typeof fetch
-  launch?: (url: string) => void
-}
-
-/**
- * Entry point for `yaac open`. Resolves the server target, mints a
- * one-time exchange token over the authenticated /tokens API (the same
- * endpoint every client registers through), and launches the browser
- * straight into the authenticated webapp — no log-scraping or
- * token-pasting. The URL is always printed (stdout) so it's scriptable.
- *
- * The local server is auto-started only when resolution fails on the
- * local-lock path; a configured remote (or the test hatch) resolves
- * up front and must never trigger a local server spawn.
- */
-export async function openWebapp(opts: OpenWebappOptions = {}): Promise<void> {
-  const ensureServer = opts.ensureServer ?? startServer
-  const resolveTarget = opts.resolveTarget ?? resolveServerTarget
-  const fetchImpl = opts.fetchImpl ?? ((input, init) => fetch(input, init))
-  const launch = opts.launch ?? openBrowser
-
-  let target: ServerTarget
-  try {
-    target = await resolveTarget()
-  } catch {
-    // Only the local-lock branch throws (server down / build mismatch).
-    // Start it and re-resolve; a second failure surfaces to the user.
-    await ensureServer()
-    target = await resolveTarget()
-  }
-
-  // Best-effort: the webapp's sign-in cards need the login broker on
-  // this machine. Never block or fail `yaac open` on it.
-  try {
-    await ensureAuthDaemonSpawned()
-  } catch {
-    // resolution/spawn hiccup — sign-in cards will say what to run
-  }
-
-  const res = await fetchImpl(`${target.baseUrl}/tokens`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${target.secret}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (!res.ok) throw new Error(`failed to mint a one-time token (HTTP ${res.status})`)
-  const { token } = await res.json() as { token: string }
-
-  const url = buildWebappUrl(target.baseUrl, token)
-  console.log(url)
-  if (opts.noBrowser) return
-  launch(url)
-}
-
-function openBrowser(url: string): void {
-  const { cmd, args } = process.platform === 'darwin'
-    ? { cmd: 'open', args: [url] }
-    : process.platform === 'win32'
-      ? { cmd: 'cmd', args: ['/c', 'start', '', url] }
-      : { cmd: 'xdg-open', args: [url] }
-  try {
-    const child = spawn(cmd, args, { detached: true, stdio: 'ignore' })
-    child.on('error', () => {
-      console.error(`[yaac] couldn't launch a browser — open this URL manually:\n  ${url}`)
-    })
-    child.unref()
-  } catch {
-    console.error(`[yaac] couldn't launch a browser — open this URL manually:\n  ${url}`)
-  }
-}
-
-async function spawnServerDetached(): Promise<void> {
-  const { bin, args } = resolveServerInvocation()
-  const child = spawn(bin, args, {
-    detached: true,
-    stdio: 'ignore',
-    // eslint-disable-next-line no-process-env -- forward the full host env to the detached server subprocess
-    env: process.env,
-  })
-  child.unref()
-  // If the spawn itself fails immediately (e.g. ENOENT), surface it.
-  await new Promise<void>((resolve, reject) => {
-    child.once('error', reject)
-    // A spawned detached process won't emit a useful signal here, so
-    // give it a tick and assume success — the lock poll will catch
-    // the actual failure mode (e.g. "server never wrote the lock").
-    setTimeout(resolve, 50)
-  })
-}
-
-/**
- * Figure out how to relaunch ourselves as `yaac server run`.
- *
- * - Production build (`dist/cli.js`): `process.execPath` is node and
- *   `argv[1]` is the bundled entry — just reuse both.
- * - Dev (source `.ts` files): we're running under tsx. tsx strips its
- *   own CLI script from argv before running the target, so `argv[1]`
- *   is the source entry (`src/cli.ts`). Respawn via tsx's CLI so the
- *   loader is set up again in the child.
- */
-function resolveServerInvocation(): { bin: string; args: string[] } {
-  const entry = process.argv[1] ?? ''
-  if (entry.endsWith('.ts')) {
-    const tsxCli = findTsxCli()
-    if (tsxCli) return { bin: process.execPath, args: [tsxCli, entry, 'server', 'run'] }
-    // Fallback: launch via node and hope NODE_OPTIONS carries the loader.
-    return { bin: process.execPath, args: [entry, 'server', 'run'] }
-  }
-  return { bin: process.execPath, args: [entry, 'server', 'run'] }
-}
-
-function findTsxCli(): string | null {
-  try {
-    return createRequire(import.meta.url).resolve('tsx/cli')
-  } catch {
-    return null // tsx not installed (production build) — caller falls back
-  }
-}
-
-async function waitForReadyLock(timeoutMs: number): Promise<ServerLock> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    const lock = await readLock()
-    if (lock && await isLockReady(lock)) return lock
-    await new Promise((r) => setTimeout(r, 100))
-  }
-  throw new Error(`server did not become ready within ${Math.round(timeoutMs / 1000)}s`)
-}
-
-export interface ServerLogsOptions {
-  /** Keep printing as new lines are appended to the log file. */
-  follow?: boolean
-  /** Print only the last N lines (before following, if combined with follow). */
-  lines?: number
-}
-
-/**
- * Entry point for `yaac server logs`. Prints ~/.yaac/server.log to stdout
- * by spawning stock `tail` (flags limited to those shared by BSD and GNU
- * tail — macOS and Linux are the only supported platforms).
- *
- * - No options: prints the whole file (`tail -n +1`).
- * - `--lines N`: prints only the last N lines (`tail -n N`).
- * - `--follow`: keeps printing as content is appended (`tail -F`, which
- *   also handles the file appearing later and truncation/replacement).
- */
-export async function serverLogs(opts: ServerLogsOptions = {}): Promise<void> {
-  const logPath = serverLogPath()
-
-  if (!existsSync(logPath)) {
-    if (!opts.follow) {
-      console.error(`[yaac] no server log at ${logPath}`)
-      return
-    }
-    console.error(`[yaac] no server log at ${logPath} yet — waiting for it`)
-  }
-
-  const args = opts.follow ? ['-F'] : []
-  // `-n +1` = from the first line (whole file); `-n N` = last N lines.
-  // Negative N would flip tail into last-|N|-lines mode — clamp to 0,
-  // matching the old "print nothing" behavior.
-  args.push('-n', opts.lines !== undefined ? String(Math.max(0, opts.lines)) : '+1')
-  args.push(logPath)
-
-  // stderr is dropped: the missing-file case is reported above, and in
-  // follow mode `tail -F` narrates retries/rotation we don't want shown.
-  const child = spawn('tail', args, { stdio: ['ignore', 'pipe', 'ignore'] })
-  child.stdout.pipe(process.stdout, { end: false })
-
-  await new Promise<void>((resolve, reject) => {
-    // Forward Ctrl-C so tail dies with us instead of being orphaned.
-    const onSigint = (): void => { child.kill('SIGINT') }
-    process.on('SIGINT', onSigint)
-    child.on('error', (err) => {
-      process.off('SIGINT', onSigint)
-      reject(err)
-    })
-    child.on('close', (code, signal) => {
-      process.off('SIGINT', onSigint)
-      if (code === 0 || signal === 'SIGINT') resolve()
-      else reject(new Error(`tail exited with ${signal ?? `code ${code}`}`))
-    })
-  })
+  }))
 }

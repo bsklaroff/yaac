@@ -23,7 +23,7 @@ import {
   SALVAGE_INTERVAL_MS,
   _resetSalvageReconcileForTests,
 } from '#features/sessions/reconcile/salvage-reconcile'
-import { markSessionTerminating, _clearTerminatingForTests } from '#features/sessions/terminating'
+import { markSessionTerminating, _clearTerminatingForTests } from '#features/sessions/state'
 
 function pod(sessionId: string, over: Partial<SessionPod> = {}): SessionPod {
   return {

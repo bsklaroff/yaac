@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { proxyDataHostDir } from '#features/cluster/bootstrap'
+import { proxyDataHostDir } from '#features/cluster/proxy-apply'
 
 /**
  * Host path of the proxy's blocked-hosts write-through file. The proxy
