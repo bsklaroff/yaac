@@ -156,11 +156,6 @@ export function SessionTerminal({
     // No scroll pinning is needed at reveal: the tmux client runs in the
     // alternate screen buffer for the whole attach, so there is no xterm
     // scrollback to be unpinned from (viewportY === baseY === 0 always).
-    // Sizing is handled at the source too — the server pins this view's tmux
-    // window to this client's grid (window-size manual + resize-window, see
-    // pty-bridge attachArgs), so the settled frame already fits the pane.
-    const gate = createSettleGate(() => setSettled(true), { hasContent })
-
     let ws: WebSocket | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined
     let reconnectDelay = INITIAL_RECONNECT_DELAY_MS
@@ -172,6 +167,22 @@ export function SessionTerminal({
         ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
       }
     }
+
+    // Re-pin the tmux window to our current grid once the attach settles. The
+    // window is pinned server-side by the attach's own resize-window at the
+    // size we connected with (window-size manual, see pty-bridge attachArgs) —
+    // but a session that opened straight into a split resized this pane right
+    // after connecting, and that pre-split resize-window can land after the
+    // client's follow-up resize frame, leaving the agent window stuck wider
+    // than the pane (its output clipped on the right, its bottom prompt wrong)
+    // until the next resize. Settle fires well after the attach, so re-sending
+    // the settled size here lands last and wins, matching the window to the
+    // pane the moment it's revealed.
+    const gate = createSettleGate(() => {
+      setSettled(true)
+      fit.fit()
+      sendResize()
+    }, { hasContent })
 
     // (Re)attach to the session's tmux. The tmux server in the pod is
     // persistent and survives client detaches, so a fresh socket re-attaches
