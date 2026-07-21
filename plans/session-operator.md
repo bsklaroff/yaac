@@ -5,7 +5,8 @@
 Today the Node server is simultaneously the UX API, the data plane, and
 the thing that makes the cluster match intent — where intent lives only in
 that process's memory and the imperative call stacks of
-`src/session-create.ts`. This plan moves the third role in-cluster: a
+`src/features/sessions/create.ts`. This plan moves the third role
+in-cluster: a
 `Session` custom resource becomes the persisted source of truth and a Go
 controller (client-go/controller-runtime) converges the cluster to it.
 

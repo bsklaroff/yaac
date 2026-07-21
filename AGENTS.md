@@ -72,7 +72,7 @@ artifact (`pnpm pack`, no hand-kept dependency list) plus a standalone Node.
 ## Runtime Architecture
 
 - Sessions run as Kubernetes Jobs (one single-pod Job per session) on a local single-node cluster; podman is only the image build engine (`podman build`/`podman push` to the local registry on `localhost:5000`).
-- All cluster access shells out to `kubectl` (no kubernetes client library) — matching the podman-CLI convention. Primitive helpers live in `packages/server/src/platform/k8s/`; cluster lifecycle (setup/check/delete/vcluster/registry) lives in `packages/server/src/features/cluster/`.
+- Cluster access uses the `@kubernetes/client-node` library wherever a library call applies (reads, informers/watches); `kubectl exec` is used only where a library call doesn't make sense — streaming into session pods (PTYs, port-forward relays, tmux control-mode status). Primitive helpers live in `packages/server/src/platform/k8s/`; cluster lifecycle (setup/check/delete/vcluster/registry) lives in `packages/server/src/features/cluster/`.
 - E2e tests require a wired-up cluster (`yaac cluster setup`, verified by `yaac cluster check`); unit tests must not touch podman or the cluster.
 
 ## Playwright Test Scripts
