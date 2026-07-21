@@ -51,8 +51,6 @@ export const sessionApp = new Hono()
       // reload-matchable before any round-trip; the CLI omits it and the
       // server mints one.
       sessionId: z.string().uuid().optional(),
-      addDir: z.array(z.string()).optional(),
-      addDirRw: z.array(z.string()).optional(),
       tool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional(),
       // Reference branch for the fresh worktree (no `origin/` prefix).
       // Omitted → the project's referenceBranch config default, else the
@@ -75,23 +73,20 @@ export const sessionApp = new Hono()
         // prewarm pool warms, so a bare create matches its spare.
         const tool = body.tool ?? (await getDefaultTool()) ?? 'claude'
 
-        // Fast path: claim a prewarmed spare for this project + tool. Skipped
-        // when --add-dir is requested (the spare lacks those mounts). A claim
+        // Fast path: claim a prewarmed spare for this project + tool. A claim
         // returns the spare's own id and registers no provisioning row — the
         // unhidden session lists in the very next snapshot. A spare warmed
         // from a different branch is re-branched inside the claim.
-        if (!body.addDir?.length && !body.addDirRw?.length) {
-          const claimed = await tryClaimPrewarmed(
-            body.project, tool, body.gitUser, onProgress, body.branch, body.model,
-          )
-          if (claimed) {
-            // The spare's agent booted with no prompt; type it in now.
-            if (body.prompt !== undefined) {
-              onProgress('Sending initial prompt...')
-              await typeInitialPrompt(claimed.jobName, claimed.tool, body.prompt)
-            }
-            return claimed
+        const claimed = await tryClaimPrewarmed(
+          body.project, tool, body.gitUser, onProgress, body.branch, body.model,
+        )
+        if (claimed) {
+          // The spare's agent booted with no prompt; type it in now.
+          if (body.prompt !== undefined) {
+            onProgress('Sending initial prompt...')
+            await typeInitialPrompt(claimed.jobName, claimed.tool, body.prompt)
           }
+          return claimed
         }
 
         const opts: SessionCreateOptions = {
@@ -99,8 +94,6 @@ export const sessionApp = new Hono()
           onProgress,
           tool, // resolved default applies when --tool was omitted
         }
-        if (body.addDir) opts.addDir = body.addDir
-        if (body.addDirRw) opts.addDirRw = body.addDirRw
         if (body.branch) opts.branch = body.branch
         if (body.gitUser) opts.gitUser = body.gitUser
         if (body.prompt !== undefined) opts.initialPrompt = body.prompt
@@ -121,8 +114,6 @@ export const sessionApp = new Hono()
       // target authoritatively. The CLI omits them — it doesn't need the row.
       projectSlug: z.string().optional(),
       tool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional(),
-      addDir: z.array(z.string()).optional(),
-      addDirRw: z.array(z.string()).optional(),
       gitUser: z.object({ name: z.string(), email: z.string() }).optional(),
     })),
     (c) => {
@@ -137,8 +128,6 @@ export const sessionApp = new Hono()
       }
       return streamProvisioned(c, body.sessionId, (onProgress) =>
         restartSession(body.sessionId, {
-          addDir: body.addDir,
-          addDirRw: body.addDirRw,
           gitUser: body.gitUser,
           onProgress,
         }))

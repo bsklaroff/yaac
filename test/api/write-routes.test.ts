@@ -13,15 +13,20 @@ import {
 } from '@yaac/shared/tool-auth'
 import { getDefaultTool } from '@yaac/server/features/projects/preferences'
 import { closeDb } from '@yaac/server/platform/db/client'
+import type * as sessionCreateModule from '@yaac/server/features/sessions/create'
 import type * as projectAddModule from '@yaac/server/features/projects/add'
 import type * as cliResolveModule from '@yaac/auth-daemon/cli-resolve'
 import type { ProjectMeta, ClaudeOAuthBundle } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
 import { makeTestApiClient } from '@yaac/test-utils/api'
 
-vi.mock('@yaac/server/features/sessions/create', () => ({
-  createSession: vi.fn(),
-}))
+vi.mock('@yaac/server/features/sessions/create', async () => {
+  const actual = await vi.importActual<typeof sessionCreateModule>('@yaac/server/features/sessions/create')
+  return {
+    ...actual,
+    createSession: vi.fn(),
+  }
+})
 
 vi.mock('@yaac/server/features/sessions/delete', () => ({
   deleteSession: vi.fn(),
@@ -671,7 +676,6 @@ describe('write routes', () => {
       const res = await client.session.restart.$post({
         json: {
           sessionId: 'sess-x',
-          addDir: ['/tmp/ro'],
           gitUser: { name: 'A', email: 'a@b' },
         },
       })
@@ -692,7 +696,6 @@ describe('write routes', () => {
         },
       ])
       expect(mockRestartSession).toHaveBeenCalledWith('sess-x', expect.objectContaining({
-        addDir: ['/tmp/ro'],
         gitUser: { name: 'A', email: 'a@b' },
       }))
     })

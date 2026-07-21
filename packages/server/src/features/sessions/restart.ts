@@ -102,8 +102,6 @@ export async function resolveRestartTarget(idOrName: string): Promise<RestartRes
 }
 
 export interface RestartSessionOptions {
-  addDir?: string[]
-  addDirRw?: string[]
   gitUser?: { name: string; email: string }
   onProgress?: (message: string) => void
 }
@@ -112,8 +110,7 @@ export interface RestartSessionOptions {
  * Tear down any existing Job for `idOrName` (preserving the worktree)
  * and spin up a fresh one that resumes the same session via
  * `claude --resume` / `codex resume`. All env, config, proxy rules, and
- * port forwarders come from the project config — addDir / addDirRw are
- * the only per-invocation inputs because they're not persisted anywhere.
+ * port forwarders come from the project config.
  */
 export async function restartSession(
   idOrName: string,
@@ -135,8 +132,6 @@ export async function restartSession(
     resume: true,
     sessionId,
     tool,
-    addDir: opts.addDir,
-    addDirRw: opts.addDirRw,
     gitUser: opts.gitUser,
     onProgress: opts.onProgress,
   })

@@ -176,19 +176,12 @@ const session = program
   .description('Manage sessions')
   .configureHelp({ formatHelp: nestedHelp })
 
-function collect(val: string, arr: string[]): string[] {
-  arr.push(val)
-  return arr
-}
-
 session
   .command('create')
   .description('Create a new session for a project')
   .argument('<project>', 'Project slug')
   .option('-t, --tool <tool>', 'Agent tool to use (claude, codex, opencode, or pi)')
   .option('-b, --branch <branch>', 'Reference branch for the worktree (defaults to the project\'s referenceBranch config, else the remote default branch)')
-  .option('--add-dir <path>', 'Mount a host directory as read-only (repeatable)', collect, [])
-  .option('--add-dir-rw <path>', 'Mount a host directory as read-write (repeatable)', collect, [])
   .option('-p, --prompt <text>', 'Initial prompt typed into the agent once the session is up')
   .option('-m, --model <model>', 'Model for the agent: an id or alias for claude/codex (e.g. opus), provider/model for opencode and pi')
   .action(async (project: string, options: Parameters<typeof sessionCreate>[1]) => {
@@ -214,10 +207,8 @@ session
   .command('restart')
   .description('Restart a session: kill its container, reuse its worktree, resume the agent')
   .argument('<session-id>', 'Session ID, container name, or container ID')
-  .option('--add-dir <path>', 'Mount a host directory as read-only (repeatable)', collect, [])
-  .option('--add-dir-rw <path>', 'Mount a host directory as read-write (repeatable)', collect, [])
-  .action(async (sessionId: string, options: Parameters<typeof sessionRestart>[1]) => {
-    await sessionRestart(sessionId, options)
+  .action(async (sessionId: string) => {
+    await sessionRestart(sessionId)
   })
 
 session

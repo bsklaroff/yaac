@@ -223,18 +223,14 @@ describe('restartSession', () => {
     }))
   })
 
-  it('forwards addDir / addDirRw / gitUser into createSession', async () => {
+  it('forwards gitUser into createSession', async () => {
     listSpy.mockResolvedValueOnce([pod()])
 
     await restartSession('abcd1234', {
-      addDir: ['/tmp/ro'],
-      addDirRw: ['/tmp/rw'],
       gitUser: { name: 'A', email: 'a@b' },
     })
 
     expect(createSpy).toHaveBeenCalledWith('demo', expect.objectContaining({
-      addDir: ['/tmp/ro'],
-      addDirRw: ['/tmp/rw'],
       gitUser: { name: 'A', email: 'a@b' },
     }))
   })
@@ -243,21 +239,5 @@ describe('restartSession', () => {
 describe('sessionRestart (CLI shim)', () => {
   it('is exported as a function', () => {
     expect(typeof sessionRestart).toBe('function')
-  })
-
-  it('rejects a relative --add-dir path without hitting the server', async () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => { /* noop */ })
-    const prevExitCode = process.exitCode
-    process.exitCode = 0
-    try {
-      await sessionRestart('sess-x', { addDir: ['relative/path'] })
-      expect(process.exitCode).toBe(1)
-      expect(errorSpy).toHaveBeenCalled()
-      const msg = (errorSpy.mock.calls[0]?.[0] as string | undefined) ?? ''
-      expect(msg).toMatch(/absolute/i)
-    } finally {
-      errorSpy.mockRestore()
-      process.exitCode = prevExitCode
-    }
   })
 })

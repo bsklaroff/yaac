@@ -1,14 +1,8 @@
-import { validateAddDirs } from '#commands/add-dirs'
 import { ensureGitIdentity } from '#commands/git-identity'
 import { api } from '#commands/api'
 import { attachSessionPty } from '#commands/ws-terminal'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { testEnv } from '@yaac/shared/env'
-
-export interface SessionRestartOptions {
-  addDir?: string[]
-  addDirRw?: string[]
-}
 
 interface SessionRestartResult {
   sessionId?: string
@@ -23,13 +17,7 @@ interface SessionRestartResult {
  */
 export async function sessionRestart(
   sessionId: string,
-  options: SessionRestartOptions,
 ): Promise<string | undefined> {
-  if (!(await validateAddDirs(options))) {
-    process.exitCode = 1
-    return
-  }
-
   const gitUser = await ensureGitIdentity()
   if (!gitUser) {
     process.exitCode = 1
@@ -39,8 +27,6 @@ export async function sessionRestart(
   const res = await api.session.restart.$post({
     json: {
       sessionId,
-      addDir: options.addDir,
-      addDirRw: options.addDirRw,
       gitUser,
     },
   })

@@ -212,8 +212,6 @@ yaac session <command>
     -b, --branch <branch>     Reference branch for the worktree (defaults to
                               the project's referenceBranch config, else the
                               remote default branch)
-    --add-dir <path>          Mount a host directory read-only (repeatable)
-    --add-dir-rw <path>       Mount a host directory read-write (repeatable)
   list [options] [project]    List active sessions
     -d, --deleted             List deleted sessions from agent history
   delete <session-id>         Delete a session and clean up its resources
@@ -394,8 +392,6 @@ Example `yaac-config.json` with all options:
   - **`hostPath`** — absolute path on the host (required). Environment variables like `$HOME` or `${HOME}` are expanded.
   - **`containerPath`** — absolute path inside the container (required).
   - **`mode`** — `"ro"` for read-only or `"rw"` for read-write (required).
-
-  For ad-hoc mounts at session creation time, use the `--add-dir` / `--add-dir-rw` CLI flags instead. These mount the host directory under `/add-dir/<host-path>` inside the container and automatically pass it to Claude Code via `--add-dir`.
 - **cacheVolumes** — per-project persistent cache directories mounted into the container. Keys are cache names (backed by `~/.yaac/projects/<project>/cache-volumes/<name>` on the host), values are absolute container paths. Caches persist across sessions. Note: a per-project `~/.yaac/projects/<project>/.cached-packages` directory is already bind-mounted at `/home/yaac/.cached-packages` on every container for pnpm (and other package-manager caches you want to share across sessions), so you don't need a `cacheVolumes` entry for pnpm's store.
 - **initCommands** — commands run inside the container after it starts (e.g. `pnpm install` against the warm shared cache). These run on every session, not just the first. Accepts two shapes (cannot be mixed):
   - **String list** — all commands are chained with `&&` and run in a single tmux window named `init`, parallel to the agent:

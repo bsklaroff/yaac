@@ -185,7 +185,6 @@ export const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/
 export function buildAgentCmd(
   tool: AgentTool,
   sessionId: string,
-  addDirFlags: string,
   resume = false,
   /** pi only — provider whose default model is passed to `pi --model`
    *  when no explicit `model` override is given. */
@@ -197,14 +196,13 @@ export function buildAgentCmd(
   model?: string,
 ): string {
   if (tool === 'codex') {
-    // --model goes after the resume subcommand (like addDirFlags): codex
-    // defines -m/--model on both the root TUI command and `codex resume`,
-    // so trailing placement binds it to whichever command runs.
+    // --model goes after the resume subcommand: codex defines -m/--model on
+    // both the root TUI command and `codex resume`, so trailing placement
+    // binds it to whichever command runs.
     return [
       'codex --yolo',
       resume ? `resume ${sessionId}` : '',
       model ? `--model ${model}` : '',
-      addDirFlags,
     ].filter(Boolean).join(' ')
   }
   if (tool === 'pi') {
@@ -215,7 +213,6 @@ export function buildAgentCmd(
     // swaps). `--session-id <id>` addresses this session by id in the shared
     // `.pi` home — creating it on a fresh run, resuming it otherwise (the same
     // flag both ways, like `claude --session-id`), so `resume` needs no branch.
-    // addDirFlags is dropped: pi has no --add-dir equivalent.
     // An explicit override wins over the provider's generated default; the
     // proxy only swaps the authenticated provider's key, so an override
     // naming a different provider surfaces as an auth error in the pane.
@@ -261,7 +258,6 @@ export function buildAgentCmd(
     // data dir (isolated per container — no cwd-collision concern).
     // --model takes `provider/model`; omitted, opencode uses the model
     // persisted in its shared config (or its own default).
-    // addDirFlags is dropped: opencode has no --add-dir equivalent.
     return [
       'opencode',
       '--port 4096 --hostname 127.0.0.1',
@@ -273,7 +269,6 @@ export function buildAgentCmd(
     'CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions',
     model ? `--model ${model}` : '',
     resume ? `--resume ${sessionId}` : `--session-id ${sessionId}`,
-    addDirFlags,
   ].filter(Boolean).join(' ')
 }
 
@@ -395,7 +390,7 @@ export async function retoolSpare(
   await containerExec(spare.jobName, `${TMUX} rename-window -t yaac:${spare.tool} ${tool}`)
   await containerExec(
     spare.jobName,
-    `${TMUX} respawn-window -k -t yaac:${tool} '${buildAgentCmd(tool, spare.sessionId, '', false, piProvider, model)}'`,
+    `${TMUX} respawn-window -k -t yaac:${tool} '${buildAgentCmd(tool, spare.sessionId, false, piProvider, model)}'`,
   )
   await verifyAgentWindowAlive(spare.jobName, tool)
 }
@@ -464,7 +459,7 @@ export function buildRebranchPrep(params: {
   }
   if (respawnTool) {
     windowExecs.push(
-      `${TMUX} respawn-window -k -t yaac:${respawnTool} '${buildAgentCmd(respawnTool, sessionId, '', false, piProvider)}'`,
+      `${TMUX} respawn-window -k -t yaac:${respawnTool} '${buildAgentCmd(respawnTool, sessionId, false, piProvider)}'`,
     )
   }
   const cleanExcludes = workspaceMountPaths(config)
@@ -617,8 +612,6 @@ async function prepareEphemeralMounts(
 
 
 export interface SessionCreateOptions {
-  addDir?: string[]
-  addDirRw?: string[]
   /** Pre-generated session ID (used by resume to know the Job name upfront). */
   sessionId?: string
   /** Agent tool to run inside the container (default: 'claude'). */
@@ -858,11 +851,7 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   }
 
   // Start the agent tool in a tmux session
-  const addDirFlags = [...(options.addDir ?? []), ...(options.addDirRw ?? [])]
-    .map((p) => `--add-dir /add-dir${shellEscape(p)}`)
-    .join(' ')
-
-  const agentCmd = buildAgentCmd(tool, sessionId, addDirFlags, options.resume === true, piProvider, options.model)
+  const agentCmd = buildAgentCmd(tool, sessionId, options.resume === true, piProvider, options.model)
   const toolLabel =
     tool === 'codex' ? 'Codex' :
     tool === 'opencode' ? 'OpenCode' :
@@ -1077,18 +1066,6 @@ export async function createSession(
     await fs.access(projectDir(projectSlug))
   } catch {
     throw new ServerError('NOT_FOUND', `project ${projectSlug} not found`)
-  }
-
-  // Validate --add-dir / --add-dir-rw paths
-  for (const dirPath of [...(options.addDir ?? []), ...(options.addDirRw ?? [])]) {
-    if (!path.isAbsolute(dirPath)) {
-      throw new ServerError('VALIDATION', `--add-dir path must be absolute: "${dirPath}"`)
-    }
-    try {
-      await fs.access(dirPath)
-    } catch {
-      throw new ServerError('VALIDATION', `--add-dir path not found: "${dirPath}"`)
-    }
   }
 
   if (options.resume && !options.sessionId) {
@@ -1648,23 +1625,12 @@ export async function createSession(
       hostPath: cacheVolumeDir(projectSlug, key),
       mountPath: containerPath,
     })),
-    // User bindMounts and --add-dir paths may point at files or
-    // directories — omit `type` so the kubelet mounts whatever exists.
+    // User bindMounts may point at files or directories — omit `type` so
+    // the kubelet mounts whatever exists.
     ...(config.bindMounts ?? []).map(({ hostPath, containerPath, mode }): HostPathMount => ({
       hostPath,
       mountPath: containerPath,
       readOnly: mode === 'ro',
-      type: '',
-    })),
-    ...(options.addDir ?? []).map((p): HostPathMount => ({
-      hostPath: p,
-      mountPath: `/add-dir${p}`,
-      readOnly: true,
-      type: '',
-    })),
-    ...(options.addDirRw ?? []).map((p): HostPathMount => ({
-      hostPath: p,
-      mountPath: `/add-dir${p}`,
       type: '',
     })),
     ...ephemeralMounts.map((m): HostPathMount => ({

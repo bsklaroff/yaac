@@ -26,8 +26,8 @@ Two opt-in capabilities are layered here:
 an explicit `virtualCluster: true, nestedContainers: false` is a parse error.
 `SessionCreateOptions`/`YaacConfig` expose both (`src/shared/types.ts:184-192`).
 There is **no `--vcluster` CLI flag** — `virtualCluster` is config-only (set in
-`yaac-config.json`); `session create` exposes only `-t/--tool`, `--add-dir`,
-`--add-dir-rw` (`src/cli.ts:157-167`).
+`yaac-config.json`); `session create` exposes only `-t/--tool`, `-b/--branch`,
+`-p/--prompt`, and `-m/--model`.
 
 ## Image layer
 

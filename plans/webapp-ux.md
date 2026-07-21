@@ -182,10 +182,6 @@ session id is generated up front, so:
 - Once the real session lands it replaces the row and stays selected,
   opening its first terminal.
 
-**PENDING:** add-directory pickers for read-only (`--add-dir`) and
-read-write (`--add-dir-rw`) mounts, and the absolute-path validation
-that would accompany them. There is no add-dir UI yet.
-
 ### New project
 
 The rail "+" opens a real **modal** (Base UI Dialog): a single input

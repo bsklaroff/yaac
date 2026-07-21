@@ -5,49 +5,39 @@ import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers
 describe('buildAgentCmd', () => {
   describe('codex tool', () => {
     it('omits prompt arguments', () => {
-      const cmd = buildAgentCmd('codex', 'sess-1', '')
+      const cmd = buildAgentCmd('codex', 'sess-1')
       expect(cmd).toBe('codex --yolo')
     })
 
-    it('includes add-dir flags', () => {
-      const cmd = buildAgentCmd('codex', 'sess-1', '--add-dir /add-dir/tmp')
-      expect(cmd).toBe('codex --yolo --add-dir /add-dir/tmp')
-    })
-
     it('inserts the resume subcommand when resuming', () => {
-      const cmd = buildAgentCmd('codex', 'sess-1', '', true)
+      const cmd = buildAgentCmd('codex', 'sess-1', true)
       expect(cmd).toBe('codex --yolo resume sess-1')
     })
 
-    it('combines resume with add-dir flags', () => {
-      const cmd = buildAgentCmd('codex', 'abc', '--add-dir /add-dir/tmp', true)
-      expect(cmd).toBe('codex --yolo resume abc --add-dir /add-dir/tmp')
-    })
-
     it('inserts --model when a model override is given', () => {
-      const cmd = buildAgentCmd('codex', 'sess-1', '', false, undefined, 'gpt-5.2-codex')
+      const cmd = buildAgentCmd('codex', 'sess-1', false, undefined, 'gpt-5.2-codex')
       expect(cmd).toBe('codex --yolo --model gpt-5.2-codex')
     })
 
     it('places --model after the resume subcommand (codex resume parses it)', () => {
-      const cmd = buildAgentCmd('codex', 'abc', '', true, undefined, 'gpt-5.2-codex')
+      const cmd = buildAgentCmd('codex', 'abc', true, undefined, 'gpt-5.2-codex')
       expect(cmd).toBe('codex --yolo resume abc --model gpt-5.2-codex')
     })
   })
 
   describe('opencode tool', () => {
     it('starts the loopback server and omits model flags by default', () => {
-      const cmd = buildAgentCmd('opencode', 'sess-1', '')
+      const cmd = buildAgentCmd('opencode', 'sess-1')
       expect(cmd).toBe('opencode --port 4096 --hostname 127.0.0.1')
     })
 
     it('appends --continue when resuming', () => {
-      const cmd = buildAgentCmd('opencode', 'sess-1', '', true)
+      const cmd = buildAgentCmd('opencode', 'sess-1', true)
       expect(cmd).toBe('opencode --port 4096 --hostname 127.0.0.1 --continue')
     })
 
     it('inserts a provider/model override', () => {
-      const cmd = buildAgentCmd('opencode', 'sess-1', '', false, undefined, 'anthropic/claude-opus-4-8')
+      const cmd = buildAgentCmd('opencode', 'sess-1', false, undefined, 'anthropic/claude-opus-4-8')
       expect(cmd).toBe('opencode --port 4096 --hostname 127.0.0.1 --model anthropic/claude-opus-4-8')
     })
   })
@@ -64,32 +54,27 @@ describe('buildAgentCmd', () => {
       `${piCmd} 2> >(sed -u -E "0,/^(\\x1b\\[[0-9;]*m)*Warning: No project session found with id .*creating a new session with that id\\./{//d}" >&2)`
 
     it('uses --approve, the default provider model, and --session-id when none is given', () => {
-      const cmd = buildAgentCmd('pi', 'sess-1', '')
+      const cmd = buildAgentCmd('pi', 'sess-1')
       expect(cmd).toBe(wrapped(`pi --approve --model ${defaultModel} --session-id sess-1`))
     })
 
     it('uses the given provider default model', () => {
-      const cmd = buildAgentCmd('pi', 'sess-1', '', false, 'anthropic')
+      const cmd = buildAgentCmd('pi', 'sess-1', false, 'anthropic')
       expect(cmd).toBe(wrapped(`pi --approve --model ${anthropicModel} --session-id sess-1`))
     })
 
     it('addresses the session by id when resuming (same command as create)', () => {
-      const cmd = buildAgentCmd('pi', 'sess-1', '', true, 'anthropic')
+      const cmd = buildAgentCmd('pi', 'sess-1', true, 'anthropic')
       expect(cmd).toBe(wrapped(`pi --approve --model ${anthropicModel} --session-id sess-1`))
     })
 
-    it('drops add-dir flags (pi has no --add-dir)', () => {
-      const cmd = buildAgentCmd('pi', 'sess-1', '--add-dir /add-dir/tmp')
-      expect(cmd).toBe(wrapped(`pi --approve --model ${defaultModel} --session-id sess-1`))
-    })
-
     it('prefers an explicit model override over the provider default', () => {
-      const cmd = buildAgentCmd('pi', 'sess-1', '', false, 'anthropic', 'openai/gpt-5.2')
+      const cmd = buildAgentCmd('pi', 'sess-1', false, 'anthropic', 'openai/gpt-5.2')
       expect(cmd).toBe(wrapped('pi --approve --model openai/gpt-5.2 --session-id sess-1'))
     })
 
     it('filters the fresh-run warning without single quotes (survives respawn wrapper)', () => {
-      const cmd = buildAgentCmd('pi', 'sess-1', '')
+      const cmd = buildAgentCmd('pi', 'sess-1')
       // Must never contain a single quote: it is embedded in tmux
       // `respawn-window '<cmd>'`, itself passed through the host `sh -c`. The
       // sed pattern uses `.*` instead of the literal quotes around the id so
@@ -105,32 +90,22 @@ describe('buildAgentCmd', () => {
 
   describe('claude tool', () => {
     it('omits prompt flags', () => {
-      const cmd = buildAgentCmd('claude', 'sess-1', '')
+      const cmd = buildAgentCmd('claude', 'sess-1')
       expect(cmd).toBe('CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --session-id sess-1')
     })
 
-    it('includes session-id and add-dir flags', () => {
-      const cmd = buildAgentCmd('claude', 'abc', '--add-dir /add-dir/tmp')
-      expect(cmd).toBe('CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --session-id abc --add-dir /add-dir/tmp')
-    })
-
     it('swaps --session-id for --resume when resuming', () => {
-      const cmd = buildAgentCmd('claude', 'sess-1', '', true)
+      const cmd = buildAgentCmd('claude', 'sess-1', true)
       expect(cmd).toBe('CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --resume sess-1')
     })
 
-    it('combines resume with add-dir flags', () => {
-      const cmd = buildAgentCmd('claude', 'abc', '--add-dir /add-dir/tmp', true)
-      expect(cmd).toBe('CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --resume abc --add-dir /add-dir/tmp')
-    })
-
     it('inserts --model when a model override is given', () => {
-      const cmd = buildAgentCmd('claude', 'sess-1', '', false, undefined, 'claude-opus-4-8')
+      const cmd = buildAgentCmd('claude', 'sess-1', false, undefined, 'claude-opus-4-8')
       expect(cmd).toBe('CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --model claude-opus-4-8 --session-id sess-1')
     })
 
     it('combines a model override with resume', () => {
-      const cmd = buildAgentCmd('claude', 'sess-1', '', true, undefined, 'opus')
+      const cmd = buildAgentCmd('claude', 'sess-1', true, undefined, 'opus')
       expect(cmd).toBe('CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --model opus --resume sess-1')
     })
   })

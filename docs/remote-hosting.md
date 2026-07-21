@@ -95,7 +95,7 @@ against a local or remote server:
 
 Semantics to keep in mind:
 
-- **Paths are server-host paths.** `yaac session create --add-dir <path>`
+- **Paths are server-host paths.** A project's `bindMounts` host paths
   and the SSH credential's private-key path refer to the server's
   filesystem.
 - **Machine-scoped commands** operate wherever they run and ignore the

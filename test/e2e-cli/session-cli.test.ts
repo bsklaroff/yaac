@@ -308,22 +308,6 @@ describe('validation errors (no state created)', () => {
     expect(stderr).toMatch(/No session found/i)
   })
 
-  it('session restart rejects a relative --add-dir path with an absolute-path error', async () => {
-    const { stderr, exitCode } = await runYaac(
-      testEnv.env, 'session', 'restart', 'sess-x', '--add-dir', 'relative/path',
-    )
-    expect(exitCode).not.toBe(0)
-    expect(stderr).toMatch(/absolute/i)
-  })
-
-  it('session restart rejects a missing --add-dir-rw path with a not-found error', async () => {
-    const { stderr, exitCode } = await runYaac(
-      testEnv.env, 'session', 'restart', 'sess-x', '--add-dir-rw', '/definitely-missing-dir',
-    )
-    expect(exitCode).not.toBe(0)
-    expect(stderr).toMatch(/not found/i)
-  })
-
   it('session list <project> 404s with a helpful message for an unknown slug', async () => {
     const { stderr, exitCode } = await runYaac(testEnv.env, 'session', 'list', 'no-such-project')
     expect(exitCode).not.toBe(0)
@@ -579,18 +563,6 @@ describe('with seeded projects', () => {
       )
       expect(exitCode).not.toBe(0)
       expect(stderr.toLowerCase()).toContain('model')
-    })
-
-    it('rejects a relative --add-dir path with an absolute-path error', async () => {
-      const repo = path.join(testEnv.scratchDir, 'repo-demo-adddir')
-      await createTestRepo(repo)
-      await addTestProject(repo)
-
-      const { stderr, exitCode } = await runYaac(
-        testEnv.env, 'session', 'create', 'repo-demo-adddir', '--add-dir', 'relative/path',
-      )
-      expect(exitCode).not.toBe(0)
-      expect(stderr).toMatch(/absolute/i)
     })
   })
 })

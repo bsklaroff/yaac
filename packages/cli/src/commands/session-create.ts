@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { validateAddDirs } from '#commands/add-dirs'
 import { ensureGitIdentity } from '#commands/git-identity'
 import { api } from '#commands/api'
 import { attachSessionPty } from '#commands/ws-terminal'
@@ -11,8 +10,6 @@ import { testEnv } from '@yaac/shared/env'
 import type { AgentTool } from '@yaac/shared/types'
 
 export interface SessionCreateOptions {
-  addDir?: string[]
-  addDirRw?: string[]
   tool?: AgentTool
   /** Reference branch for the worktree (no `origin/` prefix). Omitted →
    *  the server resolves the project's configured default. */
@@ -53,11 +50,6 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
     }
   }
 
-  if (!(await validateAddDirs(options))) {
-    process.exitCode = 1
-    return
-  }
-
   // Resolve git identity locally so we can prompt when it's missing.
   // The server gets the already-resolved pair.
   const gitUser = await ensureGitIdentity()
@@ -74,8 +66,6 @@ export async function sessionCreate(projectSlug: string, options: SessionCreateO
       project: projectSlug,
       tool: options.tool,
       branch: options.branch,
-      addDir: options.addDir,
-      addDirRw: options.addDirRw,
       gitUser,
       prompt: options.prompt,
       model: options.model,

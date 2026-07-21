@@ -45,7 +45,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  * One server + one mock-LLM/mock-Git pair serves the whole file, and one
  * "kitchen-sink" claude session carries every orthogonal per-session feature
  * (envPassthrough, cacheVolumes, initCommands, portForward, bindMounts,
- * --add-dir, node_modules redirect) so we don't pay a pod bring-up per
+ * node_modules redirect) so we don't pay a pod bring-up per
  * feature. This file replaces the former session-create-happy / -claude /
  * -codex / -opencode / -features, session-status, port-forward, the PTY half
  * of server-ws, and the hand-off half of session-provisioning.
@@ -345,21 +345,15 @@ describe('yaac session create suite (real CLI + real server + mocked remotes)', 
     let projectPath = ''
     let roDir = ''
     let rwDir = ''
-    let addRoDir = ''
-    let addRwDir = ''
 
     beforeAll(async () => {
       roDir = path.join(testEnv.scratchDir, 'ro-data')
       rwDir = path.join(testEnv.scratchDir, 'rw-data')
-      addRoDir = path.join(testEnv.scratchDir, 'ro-extra')
-      addRwDir = path.join(testEnv.scratchDir, 'rw-extra')
-      for (const d of [roDir, rwDir, addRoDir, addRwDir]) {
+      for (const d of [roDir, rwDir]) {
         await fs.mkdir(d, { recursive: true })
       }
       await fs.writeFile(path.join(roDir, 'readme.txt'), 'read-only content')
       await fs.writeFile(path.join(rwDir, 'data.txt'), 'writable content')
-      await fs.writeFile(path.join(addRoDir, 'hello.txt'), 'read-only extra')
-      await fs.writeFile(path.join(addRwDir, 'data.txt'), 'writable extra')
 
       projectPath = await setupProject('kitchen', {
         // Real Node projects gitignore node_modules; seed the same so
@@ -401,10 +395,7 @@ describe('yaac session create suite (real CLI + real server + mocked remotes)', 
         skipDangerousModePermissionPrompt: true,
       }) + '\n')
 
-      const created = await createSession(
-        'kitchen', '--tool', 'claude',
-        '--add-dir', addRoDir, '--add-dir-rw', addRwDir,
-      )
+      const created = await createSession('kitchen', '--tool', 'claude')
       jobName = created.jobName
 
       // Parse the CLI's progress stream for the resolved host ports. Each
@@ -504,28 +495,6 @@ describe('yaac session create suite (real CLI + real server + mocked remotes)', 
         'cat', '/mnt/rw-data/new.txt',
       ])
       expect(newContent.trim()).toBe('new-data')
-    }, 60_000)
-
-    it('--add-dir mounts read-only, --add-dir-rw mounts read-write', async () => {
-      const { stdout: roOut } = await execInJob(jobName, [
-        'cat', `/add-dir${addRoDir}/hello.txt`,
-      ])
-      expect(roOut.trim()).toBe('read-only extra')
-      await expect(execInJob(jobName, [
-        'sh', '-c', `echo test > /add-dir${addRoDir}/fail.txt`,
-      ])).rejects.toThrow()
-
-      const { stdout: rwOut } = await execInJob(jobName, [
-        'cat', `/add-dir${addRwDir}/data.txt`,
-      ])
-      expect(rwOut.trim()).toBe('writable extra')
-      await execInJob(jobName, [
-        'sh', '-c', `echo new-data > /add-dir${addRwDir}/new.txt`,
-      ])
-      const { stdout: newOut } = await execInJob(jobName, [
-        'cat', `/add-dir${addRwDir}/new.txt`,
-      ])
-      expect(newOut.trim()).toBe('new-data')
     }, 60_000)
 
     it('surfaces forwarded host ports in the tmux status bar', async () => {

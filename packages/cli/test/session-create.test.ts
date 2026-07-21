@@ -576,24 +576,6 @@ describe('createSession', () => {
     expect(sshCmd).not.toContain('abcd1234')
   })
 
-  it('mounts --add-dir read-only and --add-dir-rw read-write with the no-check hostPath type', async () => {
-    await createSession('demo', { sessionId: 'abcd1234', addDir: ['/host/extra'], addDirRw: ['/host/rw'] })
-
-    const manifest = appliedJobManifest()
-    const { volumes, containers } = manifest.spec.template.spec
-
-    const roVol = volumes.find((v) => v.hostPath?.path === '/host/extra')
-    expect(roVol?.hostPath?.type).toBe('')
-    const roMount = containers[0].volumeMounts.find((m) => m.mountPath === '/add-dir/host/extra')
-    expect(roMount?.readOnly).toBe(true)
-    expect(roMount?.name).toBe(roVol?.name)
-
-    const rwVol = volumes.find((v) => v.hostPath?.path === '/host/rw')
-    expect(rwVol?.hostPath?.type).toBe('')
-    const rwMount = containers[0].volumeMounts.find((m) => m.mountPath === '/add-dir/host/rw')
-    expect(rwMount?.readOnly).toBeUndefined()
-  })
-
   it('adds the placeholder API key env for claude api-key auth', async () => {
     mockLoadToolAuth.mockImplementation((tool) =>
       Promise.resolve(tool === 'claude' ? { kind: 'api-key' } as never : null))
@@ -882,36 +864,31 @@ describe('createSession', () => {
 
 describe('buildAgentCmd', () => {
   it('returns the codex respawn command unchanged', () => {
-    const fresh = buildAgentCmd('codex', 'sid-abc', '--add-dir /add-dir/x', false)
-    expect(fresh).toBe('codex --yolo --add-dir /add-dir/x')
-    const resume = buildAgentCmd('codex', 'sid-abc', '', true)
+    const fresh = buildAgentCmd('codex', 'sid-abc', false)
+    expect(fresh).toBe('codex --yolo')
+    const resume = buildAgentCmd('codex', 'sid-abc', true)
     expect(resume).toBe('codex --yolo resume sid-abc')
   })
 
   it('returns the claude respawn command unchanged', () => {
-    const fresh = buildAgentCmd('claude', 'sid-abc', '', false)
+    const fresh = buildAgentCmd('claude', 'sid-abc', false)
     expect(fresh).toBe(
       'CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --session-id sid-abc',
     )
-    const resume = buildAgentCmd('claude', 'sid-abc', '', true)
+    const resume = buildAgentCmd('claude', 'sid-abc', true)
     expect(resume).toBe(
       'CLAUDE_CODE_NO_FLICKER=1 claude --dangerously-skip-permissions --resume sid-abc',
     )
   })
 
   it('launches opencode with --port + --hostname so the in-container HTTP server is reachable', () => {
-    const fresh = buildAgentCmd('opencode', 'sid-abc', '', false)
+    const fresh = buildAgentCmd('opencode', 'sid-abc', false)
     expect(fresh).toBe('opencode --port 4096 --hostname 127.0.0.1')
   })
 
   it('passes --continue when resuming an opencode session', () => {
-    const resume = buildAgentCmd('opencode', 'sid-abc', '', true)
+    const resume = buildAgentCmd('opencode', 'sid-abc', true)
     expect(resume).toBe('opencode --port 4096 --hostname 127.0.0.1 --continue')
-  })
-
-  it('drops add-dir flags for opencode (no CLI equivalent in opencode)', () => {
-    const cmd = buildAgentCmd('opencode', 'sid-abc', '--add-dir /add-dir/x', false)
-    expect(cmd).toBe('opencode --port 4096 --hostname 127.0.0.1')
   })
 })
 
