@@ -2,9 +2,13 @@
  * `pnpm watch` — dev loop for working on yaac itself (including inside
  * a yaac-in-yaac session). package.json runs this under `tsx watch`,
  * which reruns it whenever a build input changes; each run does
- * `pnpm build` then `yaac server start`, falling back to `yaac server
- * restart` when start refuses (live server on an older buildId), so
- * the running server always matches the CLI's buildId. The build is
+ * `pnpm build:watch` then `yaac server start`, falling back to `yaac
+ * server restart` when start refuses (live server on an older
+ * buildId), so the running server always matches the CLI's buildId.
+ * `build:watch` mirrors `pnpm build` but skips the ~20s vite/rollup
+ * frontend build when its inputs are unchanged (see
+ * scripts/build-frontend-if-changed.ts), so a server- or CLI-only save
+ * rebuilds in a few seconds without a rollup memory spike. The build is
  * deterministic (buildId is a content hash of the code in dist/ —
  * dockerfiles/ and k8s/ are runtime-read data the server picks up
  * without a restart, so saves there rebuild dist but leave the server
@@ -14,7 +18,7 @@
  * (re)start and the watcher waits for the next change. Ctrl-C stops
  * the watcher but leaves the server running.
  *
- * Each `pnpm build` re-opts into pnpm's verify-deps-before-run
+ * Each `pnpm build:watch` re-opts into pnpm's verify-deps-before-run
  * auto-install (pnpm disables it for nested script runs), so a
  * node_modules that drifted from package.json — e.g. after a git pull
  * — heals on the next rerun; pnpm-lock.yaml is watched so a manual
@@ -77,7 +81,7 @@ function run(cmd: string, args: string[]): Promise<void> {
 }
 
 try {
-  await run('pnpm', ['build'])
+  await run('pnpm', ['build:watch'])
   const cli = path.join(repoRoot, 'dist', 'cli.js')
   try {
     await run(process.execPath, [cli, 'server', 'start'])
