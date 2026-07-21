@@ -1,12 +1,12 @@
 import { create } from 'zustand'
-import { addLeafToLargest, isLayoutNode, leaf, leafTargets, splitLeaf, type LayoutNode } from '#lib/layout'
+import { addColumn, isWorkspace, singleColumn, withActive, type Workspace } from '#lib/layout'
 import { PREVIEW_TARGET } from '#lib/preview'
 import { CHANGES_TARGET } from '#lib/changesApi'
 import { DEFAULT_BINDINGS, type BindingMap, type Chord, type ShortcutId } from '#lib/shortcuts'
 import { applyThemeAttribute, loadThemePref, persistThemePref, type ThemePref } from '#lib/theme'
 import type { AgentTool, DeletedSessionEntry, ProvisioningSessionEntry, SessionListEntry } from '@yaac/shared/types'
 
-const LAYOUTS_LS_KEY = 'yaac.layouts.v1'
+const LAYOUTS_LS_KEY = 'yaac.layouts.v2'
 const VIEWMODE_LS_KEY = 'yaac.viewmode.v1'
 const SELECTION_LS_KEY = 'yaac.selection.v1'
 const READ_WAITING_LS_KEY = 'yaac.readwaiting.v1'
@@ -139,16 +139,16 @@ export function persistPinnedUsageMetric(key: string | null): void {
 
 /** Read persisted workspace layouts, dropping anything structurally
  *  invalid (exported for tests). */
-export function loadPersistedLayouts(): Record<string, LayoutNode | null> {
+export function loadPersistedLayouts(): Record<string, Workspace | null> {
   try {
     if (typeof localStorage === 'undefined') return {}
     const raw = localStorage.getItem(LAYOUTS_LS_KEY)
     if (!raw) return {}
     const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return {}
-    const out: Record<string, LayoutNode | null> = {}
+    const out: Record<string, Workspace | null> = {}
     for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-      if (v === null || isLayoutNode(v)) out[k] = v
+      if (v === null || isWorkspace(v)) out[k] = v
     }
     return out
   } catch {
@@ -188,7 +188,7 @@ export function persistReadWaiting(marks: Record<string, number>): void {
 }
 
 /** Persist workspace layouts; best-effort (exported for tests). */
-export function persistLayouts(layouts: Record<string, LayoutNode | null>): void {
+export function persistLayouts(layouts: Record<string, Workspace | null>): void {
   try {
     if (typeof localStorage === 'undefined') return
     localStorage.setItem(LAYOUTS_LS_KEY, JSON.stringify(layouts))
@@ -198,21 +198,16 @@ export function persistLayouts(layouts: Record<string, LayoutNode | null>): void
 }
 
 /**
- * Insert a single special (non-terminal) leaf — preview or changes — into a
- * session's layout: split the agent pane (new leaf to its right) when present,
- * else split the largest pane; a layout that already has it is returned
- * unchanged. Exported for tests.
+ * Insert a special (non-terminal) pane — preview or changes — into a session's
+ * workspace as a new equal-width column beside the existing panes; a workspace
+ * already showing it is returned unchanged. Exported for tests.
  */
-export function injectPaneLeaf(base: LayoutNode | null, target: string): LayoutNode {
-  const root = base ?? leaf('agent')
-  const targets = leafTargets(root)
-  if (targets.includes(target)) return root
-  if (targets.includes('agent')) return splitLeaf(root, 'agent', target, 'row')
-  return addLeafToLargest(root, target, 1200, 800)
+export function injectPaneLeaf(base: Workspace | null, target: string): Workspace {
+  return addColumn(base ?? singleColumn('agent'), target)
 }
 
 /** The preview-specific injector (kept for the auto-open/open-preview paths). */
-export function injectPreviewLeaf(base: LayoutNode | null): LayoutNode {
+export function injectPreviewLeaf(base: Workspace | null): Workspace {
   return injectPaneLeaf(base, PREVIEW_TARGET)
 }
 
@@ -344,9 +339,10 @@ interface UiState {
   /** Per-session counter; bumping one forces that terminal to remount +
    *  reattach (e.g. after a restart) without disturbing the others. */
   terminalNonces: Record<string, number>
-  /** Per-session workspace layout tree. Missing key = the default single
-   *  agent pane; null = an explicitly emptied workspace. */
-  layouts: Record<string, LayoutNode | null>
+  /** Per-session workspace: a row of equal-width columns, each a tabbed group.
+   *  Missing key = the default single agent column; null = an explicitly
+   *  emptied workspace. */
+  layouts: Record<string, Workspace | null>
   /** Per-session container port the (single) preview pane currently shows.
    *  Missing = show the first forwarded port. */
   previewPort: Record<string, number>
@@ -479,9 +475,9 @@ interface UiState {
   /** Jump to a specific session, switching the active project to match. */
   openSession: (projectSlug: string, sessionId: string) => void
   reconnectTerminal: (sessionId: string) => void
-  /** Replace a session's workspace layout (trees are built with the pure
-   *  helpers in lib/layout). */
-  setSessionLayout: (sessionId: string, layout: LayoutNode | null) => void
+  /** Replace a session's workspace layout (built with the pure helpers in
+   *  lib/layout). */
+  setSessionLayout: (sessionId: string, layout: Workspace | null) => void
   toggleSidebar: () => void
   setViewMode: (mode: ViewMode) => void
   /** Record a session's active terminal without moving keyboard focus —
@@ -594,7 +590,7 @@ export const useUiStore = create<UiState>((set) => ({
       : { previewPort: { ...s.previewPort, [sessionId]: containerPort } }
   )),
   openPreview: (sessionId, containerPort) => set((s) => {
-    const base = sessionId in s.layouts ? s.layouts[sessionId] : leaf('agent')
+    const base = sessionId in s.layouts ? s.layouts[sessionId] : singleColumn('agent')
     const previewPort = containerPort !== undefined && s.previewPort[sessionId] === undefined
       ? { ...s.previewPort, [sessionId]: containerPort }
       : s.previewPort
@@ -606,7 +602,7 @@ export const useUiStore = create<UiState>((set) => ({
     }
   }),
   openChanges: (sessionId) => set((s) => {
-    const base = sessionId in s.layouts ? s.layouts[sessionId] : leaf('agent')
+    const base = sessionId in s.layouts ? s.layouts[sessionId] : singleColumn('agent')
     return {
       layouts: { ...s.layouts, [sessionId]: injectPaneLeaf(base, CHANGES_TARGET) },
       activeTabs: { ...s.activeTabs, [sessionId]: CHANGES_TARGET },
@@ -659,10 +655,21 @@ export const useUiStore = create<UiState>((set) => ({
   setChangesFindPending: (pending) => set((s) => (
     s.changesFindPending === pending ? s : { changesFindPending: pending }
   )),
-  focusTerminal: (sessionId, target) => set((s) => ({
-    activeTabs: { ...s.activeTabs, [sessionId]: target },
-    focusNonce: s.focusNonce + 1,
-  })),
+  focusTerminal: (sessionId, target) => set((s) => {
+    // Also surface the target in its column: cycle shortcuts / preview / changes
+    // may focus a pane that's currently a hidden tab, and it must become the
+    // column's active (visible) tab. Missing key = the default agent column;
+    // withActive is a no-op (same reference) when the target is already active
+    // or absent — only then touch `layouts`, so a plain focus doesn't churn the
+    // persisted workspace.
+    const cur = sessionId in s.layouts ? s.layouts[sessionId] : singleColumn('agent')
+    const next = withActive(cur, target)
+    return {
+      ...(next === cur ? {} : { layouts: { ...s.layouts, [sessionId]: next } }),
+      activeTabs: { ...s.activeTabs, [sessionId]: target },
+      focusNonce: s.focusNonce + 1,
+    }
+  }),
   beginDelete: (sessionId) => set((s) => (
     s.pendingDeleteIds.includes(sessionId)
       ? s

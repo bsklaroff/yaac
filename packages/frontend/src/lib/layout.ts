@@ -1,19 +1,12 @@
 /**
- * Tiling layout tree for a session's terminal workspace. A layout is a
- * binary tree: leaves are terminal panes (identified by their /pty/attach
- * target — unique per session), splits divide space horizontally ('row':
- * panes side by side) or vertically ('col': stacked).
+ * Workspace layout for a session's terminals. In full-window (tiles) mode the
+ * workspace is a flat, left-to-right list of equal-width columns; each column
+ * is a "window group" holding one or more tabbed panes (identified by their
+ * /pty/attach target — unique per session). There is no vertical stacking:
+ * panes sit side by side as columns, and multiple panes in one slot are tabs.
  *
- * All operations are pure — callers store the returned tree.
+ * All operations are pure — callers store the returned workspace.
  */
-
-export type SplitDir = 'row' | 'col'
-
-export type LayoutNode =
-  | { type: 'leaf'; target: string }
-  | { type: 'split'; dir: SplitDir; ratio: number; a: LayoutNode; b: LayoutNode }
-
-export type DropEdge = 'left' | 'right' | 'top' | 'bottom' | 'center'
 
 export interface Rect {
   x: number
@@ -22,52 +15,160 @@ export interface Rect {
   h: number
 }
 
-export interface PaneRect {
-  target: string
+/** A window group: an equal-width column holding one or more tabbed panes.
+ *  `active` is the visible tab and is always a member of `tabs`. */
+export interface WindowGroup {
+  tabs: string[]
+  active: string
+}
+
+/** A session workspace: left-to-right, equal-width columns. */
+export type Workspace = WindowGroup[]
+
+/** A column with the pixel rect it occupies. */
+export interface ColumnRect {
+  group: WindowGroup
   rect: Rect
 }
 
-export interface DividerRect {
-  /** Path to the split node from the root: '' = root, then 'a'/'b' steps. */
-  path: string
-  dir: SplitDir
-  /** The divider's own hit area (the gap between the two child rects). */
-  rect: Rect
-  /** The split node's full box — drags compute the new ratio against it. */
-  box: Rect
+/** Where a dragged pane would land: as a tab of column `group`, or as a new
+ *  column inserted at `index` (0..columns.length). */
+export type DropTarget =
+  | { kind: 'tab'; group: number }
+  | { kind: 'column'; index: number }
+
+function group(tabs: string[], active: string): WindowGroup {
+  return { tabs, active }
 }
 
-export function leaf(target: string): LayoutNode {
-  return { type: 'leaf', target }
+/** The default single-column workspace showing one pane. */
+export function singleColumn(target: string): Workspace {
+  return [group([target], target)]
 }
 
-/** Structural validation for trees from untrusted storage (localStorage). */
-export function isLayoutNode(v: unknown): v is LayoutNode {
-  if (!v || typeof v !== 'object') return false
-  const n = v as Record<string, unknown>
-  if (n.type === 'leaf') return typeof n.target === 'string' && n.target.length > 0
-  if (n.type === 'split') {
-    return (n.dir === 'row' || n.dir === 'col')
-      && typeof n.ratio === 'number' && n.ratio > 0 && n.ratio < 1
-      && isLayoutNode(n.a) && isLayoutNode(n.b)
-  }
-  return false
+/** Structural validation for workspaces from untrusted storage (localStorage).
+ *  An empty array (an explicitly emptied workspace) is valid. */
+export function isWorkspace(v: unknown): v is Workspace {
+  if (!Array.isArray(v)) return false
+  return v.every((g) => {
+    if (!g || typeof g !== 'object') return false
+    const n = g as Record<string, unknown>
+    if (!Array.isArray(n.tabs) || n.tabs.length === 0) return false
+    if (!n.tabs.every((t) => typeof t === 'string' && t.length > 0)) return false
+    return typeof n.active === 'string' && n.tabs.includes(n.active)
+  })
 }
 
-/** All pane targets in the tree, left-to-right. */
-export function leafTargets(node: LayoutNode | null): string[] {
-  if (!node) return []
-  if (node.type === 'leaf') return [node.target]
-  return [...leafTargets(node.a), ...leafTargets(node.b)]
+/** All pane targets in the workspace, left-to-right, top tab first. */
+export function paneTargets(ws: Workspace | null): string[] {
+  if (!ws) return []
+  return ws.flatMap((g) => g.tabs)
+}
+
+/** Index of the column containing `target`, or -1. */
+export function groupIndexOf(ws: Workspace | null, target: string): number {
+  if (!ws) return -1
+  return ws.findIndex((g) => g.tabs.includes(target))
 }
 
 /**
- * The pane keyboard focus should land in when a session becomes selected or
- * a shortcut switches terminals. `activeTab` is the session's last-active
- * terminal as stored (possibly stale — it's validated here). Tabs mode shows
- * one pane at a time, so the visible tab wins; tiles mode shows them all, so
- * prefer the last-active pane, then the agent (the one you talk to), then
- * the first leaf. Null when the session has no panes.
+ * Append `target` as a new single-tab column. A workspace already containing
+ * the target (in any column) is returned unchanged; a null base starts fresh.
+ */
+export function addColumn(ws: Workspace | null, target: string): Workspace {
+  const base = ws ?? []
+  if (paneTargets(base).includes(target)) return base
+  return [...base, group([target], target)]
+}
+
+/**
+ * Add `target` as a new (active) tab of the column at `groupIdx`. A workspace
+ * already containing the target anywhere, or an out-of-range index, is
+ * returned unchanged.
+ */
+export function addTab(ws: Workspace, groupIdx: number, target: string): Workspace {
+  if (groupIdx < 0 || groupIdx >= ws.length) return ws
+  if (paneTargets(ws).includes(target)) return ws
+  return ws.map((g, i) => (i === groupIdx ? group([...g.tabs, target], target) : g))
+}
+
+/**
+ * Remove `target` from whatever column holds it. A column emptied by the
+ * removal drops out; if the removed tab was that column's active one, the tab
+ * at the same position (clamped) becomes active. Returns the (possibly empty)
+ * workspace.
+ */
+export function removeTarget(ws: Workspace | null, target: string): Workspace {
+  if (!ws) return []
+  if (groupIndexOf(ws, target) === -1) return ws
+  const out: Workspace = []
+  for (const g of ws) {
+    if (!g.tabs.includes(target)) {
+      out.push(g)
+      continue
+    }
+    const idx = g.tabs.indexOf(target)
+    const tabs = g.tabs.filter((t) => t !== target)
+    if (tabs.length === 0) continue
+    const active = g.active === target ? tabs[Math.min(idx, tabs.length - 1)] : g.active
+    out.push(group(tabs, active))
+  }
+  return out
+}
+
+/**
+ * Move the `src` pane out of its column and append it as the active tab of the
+ * column at `destGroupIdx` (indexed into the current `ws`). A no-op when `src`
+ * is missing or already a tab of the destination column.
+ */
+export function moveTargetToGroup(ws: Workspace, src: string, destGroupIdx: number): Workspace {
+  const gi = groupIndexOf(ws, src)
+  if (gi === -1) return ws
+  if (destGroupIdx < 0 || destGroupIdx >= ws.length) return ws
+  if (gi === destGroupIdx) return ws
+  // Identify the destination by a stable member — removeTarget may drop src's
+  // old column and shift indices, but never touches the destination column.
+  const destFirst = ws[destGroupIdx].tabs[0]
+  const removed = removeTarget(ws, src)
+  const destIdx = groupIndexOf(removed, destFirst)
+  if (destIdx === -1) return ws
+  return removed.map((g, i) => (i === destIdx ? group([...g.tabs, src], src) : g))
+}
+
+/**
+ * Move the `src` pane into its own new column at `insertIdx` (an index into
+ * the current column list, 0..ws.length). Pulls it out of its old column
+ * first. A no-op when `src` already sits alone in a column at that position.
+ */
+export function moveTargetToColumn(ws: Workspace, src: string, insertIdx: number): Workspace {
+  const gi = groupIndexOf(ws, src)
+  if (gi === -1) return ws
+  const alone = ws[gi].tabs.length === 1
+  if (alone && (insertIdx === gi || insertIdx === gi + 1)) return ws
+  const removed = removeTarget(ws, src)
+  // Removing src collapses its old column only when it was alone; that shifts
+  // every later index (including the insertion point) one to the left.
+  const shift = alone && gi < insertIdx ? 1 : 0
+  const at = Math.max(0, Math.min(removed.length, insertIdx - shift))
+  return [...removed.slice(0, at), group([src], src), ...removed.slice(at)]
+}
+
+/** Make `target` the active tab of its column. No-op if absent or already
+ *  active (returns the same reference). */
+export function withActive(ws: Workspace | null, target: string): Workspace {
+  if (!ws) return []
+  const gi = groupIndexOf(ws, target)
+  if (gi === -1 || ws[gi].active === target) return ws
+  return ws.map((g, i) => (i === gi ? group(g.tabs, target) : g))
+}
+
+/**
+ * The pane keyboard focus should land in when a session becomes selected or a
+ * shortcut switches terminals. `activeTab` is the session's last-active
+ * terminal as stored (possibly stale — validated here). Tabs mode shows one
+ * pane at a time, so the visible tab wins; tiles mode shows every column, so
+ * prefer the last-active pane, then the agent (the one you talk to), then the
+ * first pane. Null when the session has no panes.
  */
 export function focusPaneTarget(
   targets: string[],
@@ -81,185 +182,32 @@ export function focusPaneTarget(
   return targets[0] ?? null
 }
 
-const clampRatio = (r: number): number => Math.min(0.9, Math.max(0.1, r))
-
-/**
- * Split the leaf showing `ontoTarget` in two, placing `newTarget` after
- * (right/below) or before it. Returns the tree unchanged if `ontoTarget`
- * isn't present or `newTarget` already is.
- */
-export function splitLeaf(
-  node: LayoutNode,
-  ontoTarget: string,
-  newTarget: string,
-  dir: SplitDir,
-  after = true,
-): LayoutNode {
-  if (leafTargets(node).includes(newTarget)) return node
-  const walk = (n: LayoutNode): LayoutNode => {
-    if (n.type === 'leaf') {
-      if (n.target !== ontoTarget) return n
-      const fresh = leaf(newTarget)
-      return { type: 'split', dir, ratio: 0.5, a: after ? n : fresh, b: after ? fresh : n }
-    }
-    return { ...n, a: walk(n.a), b: walk(n.b) }
-  }
-  return walk(node)
-}
-
-/** Remove the leaf showing `target`; its sibling takes the split's place.
- *  Removing the only leaf yields null (an empty workspace). */
-export function removeLeaf(node: LayoutNode, target: string): LayoutNode | null {
-  if (node.type === 'leaf') return node.target === target ? null : node
-  const a = removeLeaf(node.a, target)
-  const b = removeLeaf(node.b, target)
-  if (a === node.a && b === node.b) return node
-  if (!a) return b
-  if (!b) return a
-  return { ...node, a, b }
-}
-
-/** Swap the positions of two leaves. */
-export function swapLeaves(node: LayoutNode, t1: string, t2: string): LayoutNode {
-  if (t1 === t2) return node
-  const walk = (n: LayoutNode): LayoutNode => {
-    if (n.type === 'leaf') {
-      if (n.target === t1) return leaf(t2)
-      if (n.target === t2) return leaf(t1)
-      return n
-    }
-    return { ...n, a: walk(n.a), b: walk(n.b) }
-  }
-  return walk(node)
-}
-
-/** Set a split's ratio by its path ('' = root, then 'a'/'b' steps). */
-export function setRatioAt(node: LayoutNode, path: string, ratio: number): LayoutNode {
-  if (node.type !== 'split') return node
-  if (path === '') return { ...node, ratio: clampRatio(ratio) }
-  const step = path[0]
-  const rest = path.slice(1)
-  if (step === 'a') return { ...node, a: setRatioAt(node.a, rest, ratio) }
-  if (step === 'b') return { ...node, b: setRatioAt(node.b, rest, ratio) }
-  return node
+/** Partition `rect` into equal-width columns, leaving `gap` px between them. */
+export function computeColumns(ws: Workspace | null, rect: Rect, gap: number): ColumnRect[] {
+  if (!ws || ws.length === 0) return []
+  const n = ws.length
+  const w = Math.max(0, (rect.w - gap * (n - 1)) / n)
+  return ws.map((g, i) => ({
+    group: g,
+    rect: { x: rect.x + i * (w + gap), y: rect.y, w, h: rect.h },
+  }))
 }
 
 /**
- * Move the `src` pane onto the `dest` pane: dropping on an edge re-splits
- * dest in that direction; dropping on the center swaps the two panes.
+ * Which drop zone a horizontal position falls in over a laid-out column list:
+ * the central band of a column tabs the pane into it; the outer thirds (and
+ * the gaps/edges between columns) insert it as a new column at that index.
  */
-export function moveLeaf(node: LayoutNode, src: string, dest: string, edge: DropEdge): LayoutNode {
-  if (src === dest) return node
-  const targets = leafTargets(node)
-  if (!targets.includes(src) || !targets.includes(dest)) return node
-  if (edge === 'center') return swapLeaves(node, src, dest)
-  const without = removeLeaf(node, src)
-  if (!without) return node
-  const dir: SplitDir = edge === 'left' || edge === 'right' ? 'row' : 'col'
-  const after = edge === 'right' || edge === 'bottom'
-  return splitLeaf(without, dest, src, dir, after)
-}
-
-/**
- * Move the `src` pane to a workspace edge: it becomes one half of a new
- * root split (full height for left/right, full width for top/bottom), with
- * the rest of the layout as the other half. No-op if src is the only pane.
- */
-export function moveLeafToRoot(
-  node: LayoutNode,
-  src: string,
-  edge: Exclude<DropEdge, 'center'>,
-): LayoutNode {
-  if (!leafTargets(node).includes(src)) return node
-  const without = removeLeaf(node, src)
-  if (!without) return node
-  const dir: SplitDir = edge === 'left' || edge === 'right' ? 'row' : 'col'
-  const after = edge === 'right' || edge === 'bottom'
-  return {
-    type: 'split',
-    dir,
-    ratio: 0.5,
-    a: after ? without : leaf(src),
-    b: after ? leaf(src) : without,
-  }
-}
-
-/**
- * Insert `target` as a new leaf by splitting the largest pane (by area,
- * with the tree laid out into a w×h rect) — row-split when that pane is
- * wider than tall, col-split otherwise. An empty tree becomes a single
- * leaf; a tree already containing the target is returned unchanged.
- */
-export function addLeafToLargest(
-  node: LayoutNode | null,
-  target: string,
-  w: number,
-  h: number,
-): LayoutNode {
-  if (!node) return leaf(target)
-  if (leafTargets(node).includes(target)) return node
-  const { panes } = computeLayout(node, { x: 0, y: 0, w, h }, 0)
-  const largest = [...panes].sort((a, b) => b.rect.w * b.rect.h - a.rect.w * a.rect.h)[0]
-  const dir: SplitDir = largest.rect.w >= largest.rect.h ? 'row' : 'col'
-  return splitLeaf(node, largest.target, target, dir)
-}
-
-/** Partition `rect` by the tree, leaving `gap` px between panes. Returns
- *  every pane's rect and every divider's hit area. */
-export function computeLayout(
-  node: LayoutNode | null,
-  rect: Rect,
-  gap: number,
-): { panes: PaneRect[]; dividers: DividerRect[] } {
-  const panes: PaneRect[] = []
-  const dividers: DividerRect[] = []
-  if (!node) return { panes, dividers }
-
-  const walk = (n: LayoutNode, r: Rect, path: string): void => {
-    if (n.type === 'leaf') {
-      panes.push({ target: n.target, rect: r })
-      return
-    }
-    if (n.dir === 'row') {
-      const aw = Math.max(0, r.w * n.ratio - gap / 2)
-      const bw = Math.max(0, r.w * (1 - n.ratio) - gap / 2)
-      walk(n.a, { x: r.x, y: r.y, w: aw, h: r.h }, path + 'a')
-      walk(n.b, { x: r.x + aw + gap, y: r.y, w: bw, h: r.h }, path + 'b')
-      dividers.push({ path, dir: 'row', rect: { x: r.x + aw, y: r.y, w: gap, h: r.h }, box: r })
-    } else {
-      const ah = Math.max(0, r.h * n.ratio - gap / 2)
-      const bh = Math.max(0, r.h * (1 - n.ratio) - gap / 2)
-      walk(n.a, { x: r.x, y: r.y, w: r.w, h: ah }, path + 'a')
-      walk(n.b, { x: r.x, y: r.y + ah + gap, w: r.w, h: bh }, path + 'b')
-      dividers.push({ path, dir: 'col', rect: { x: r.x, y: r.y + ah, w: r.w, h: gap }, box: r })
+export function dropTargetAt(cols: ColumnRect[], px: number): DropTarget {
+  for (let i = 0; i < cols.length; i++) {
+    const r = cols[i].rect
+    if (px < r.x) return { kind: 'column', index: i }
+    if (px <= r.x + r.w) {
+      const rel = r.w > 0 ? (px - r.x) / r.w : 0.5
+      if (rel < 0.25) return { kind: 'column', index: i }
+      if (rel > 0.75) return { kind: 'column', index: i + 1 }
+      return { kind: 'tab', group: i }
     }
   }
-  walk(node, rect, '')
-  return { panes, dividers }
-}
-
-/** Which drop zone a point falls in within a pane (edge thirds, else center). */
-export function dropEdgeFor(rect: Rect, px: number, py: number): DropEdge {
-  const rx = rect.w > 0 ? (px - rect.x) / rect.w : 0.5
-  const ry = rect.h > 0 ? (py - rect.y) / rect.h : 0.5
-  const dists: Array<[DropEdge, number]> = [
-    ['left', rx],
-    ['right', 1 - rx],
-    ['top', ry],
-    ['bottom', 1 - ry],
-  ]
-  dists.sort((d1, d2) => d1[1] - d2[1])
-  const [edge, dist] = dists[0]
-  return dist > 0.34 ? 'center' : edge
-}
-
-/** The rect a drop highlight should cover for a given edge of a pane. */
-export function dropHighlightRect(rect: Rect, edge: DropEdge): Rect {
-  switch (edge) {
-    case 'left': return { ...rect, w: rect.w / 2 }
-    case 'right': return { ...rect, x: rect.x + rect.w / 2, w: rect.w / 2 }
-    case 'top': return { ...rect, h: rect.h / 2 }
-    case 'bottom': return { ...rect, y: rect.y + rect.h / 2, h: rect.h / 2 }
-    case 'center': return rect
-  }
+  return { kind: 'column', index: cols.length }
 }

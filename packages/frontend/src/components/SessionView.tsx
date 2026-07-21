@@ -12,7 +12,7 @@ import { SessionTitle } from '#components/SessionTitle'
 import { CreatingPlaceholder } from '#components/CreatingPlaceholder'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import {
-  AddIcon, ChangesIcon, CloseIcon, PreviewIcon, SidebarIcon, SplitDownIcon, SplitRightIcon, TabsIcon, TerminalIcon,
+  AddIcon, ChangesIcon, CloseIcon, PreviewIcon, SidebarIcon, TabsIcon, TerminalIcon,
   TilesIcon, TOOL_LABEL,
 } from '#lib/icons'
 import { EmptyState } from '#components/ui/EmptyState'
@@ -23,45 +23,34 @@ import { ForwardedPortLinks, portLinkLabel } from '#components/ForwardedPortLink
 import { getSessionTerminals, createShellTerminal, killSessionTerminal } from '#lib/terminalsApi'
 import { cycleDeltaFor, matchShortcut, resolveCycleTarget } from '#lib/shortcuts'
 import {
-  addLeafToLargest,
-  computeLayout,
-  dropEdgeFor,
-  dropHighlightRect,
+  addColumn,
+  addTab,
+  computeColumns,
+  dropTargetAt,
   focusPaneTarget,
-  leaf,
-  leafTargets,
-  moveLeaf,
-  moveLeafToRoot,
-  removeLeaf,
-  setRatioAt,
-  splitLeaf,
-  type DropEdge,
-  type LayoutNode,
-  type PaneRect,
-  type SplitDir,
+  moveTargetToColumn,
+  moveTargetToGroup,
+  paneTargets,
+  removeTarget,
+  singleColumn,
+  type ColumnRect,
+  type DropTarget,
+  type Workspace,
 } from '#lib/layout'
 import type { ServerSnapshot, ProvisioningSessionEntry, SessionTerminalEntry } from '@yaac/shared/types'
 
-/** Gap between pane cards (the dividers live in it). */
+/** Gap between column cards. */
 const GAP = 8
 /** Pane card header height. */
 const HEADER_H = 28
 /** Pane card inner padding around the terminal block. */
 const PAD = 3
-/** Pointer must travel this far before a header-drag becomes a move. */
+/** Pointer must travel this far before a tab-drag becomes a move. */
 const DRAG_THRESHOLD = 5
 /** Most sessions eagerly attached (hidden) after a page load — each costs a
  *  kubectl-exec PTY on the server, so a large install shouldn't fan out
  *  dozens at once. Sessions past the cap attach on first view, as before. */
 const EAGER_ATTACH_MAX = 12
-/** Dragging within this many px of a workspace edge targets the ROOT —
- *  dropping there gives the pane a full-height/width half of the whole
- *  workspace instead of splitting an individual pane. */
-const ROOT_EDGE_MARGIN = 28
-
-type DropTarget =
-  | { kind: 'pane'; dest: string; edge: DropEdge }
-  | { kind: 'root'; edge: Exclude<DropEdge, 'center'> }
 
 interface DragState {
   src: string
@@ -69,18 +58,6 @@ interface DragState {
   startY: number
   active: boolean
   over?: DropTarget
-}
-
-/** Root-edge hit test: the closest workspace edge within the margin. */
-function rootEdgeAt(px: number, py: number, w: number, h: number): Exclude<DropEdge, 'center'> | null {
-  const dists: Array<[Exclude<DropEdge, 'center'>, number]> = [
-    ['left', px],
-    ['right', w - px],
-    ['top', py],
-    ['bottom', h - py],
-  ]
-  dists.sort((a, b) => a[1] - b[1])
-  return dists[0][1] <= ROOT_EDGE_MARGIN ? dists[0][0] : null
 }
 
 function paneName(
@@ -145,9 +122,9 @@ export function SessionView({
   // hijacks a session you're viewing; you click the row to see its status.
   const creatingHere = session ? null : provisioning.find((p) => p.sessionId === selectedSessionId) ?? null
 
-  // The session's workspace tree: missing key = the default single agent
-  // pane; null = explicitly emptied.
-  const layout: LayoutNode | null = sid ? (sid in layouts ? layouts[sid] : leaf('agent')) : null
+  // The session's workspace: missing key = the default single agent column;
+  // null = explicitly emptied.
+  const layout: Workspace | null = sid ? (sid in layouts ? layouts[sid] : singleColumn('agent')) : null
 
   // The container's terminals beyond the agent (initCommands windows and
   // scratch shells) — drives which panes exist, and their names.
@@ -159,7 +136,7 @@ export function SessionView({
     staleTime: 5_000,
   })
 
-  // Workspace pixel size (panes are absolutely positioned from the tree).
+  // Workspace pixel size (columns are absolutely positioned from it).
   const wsRef = useRef<HTMLDivElement>(null)
   const [wsSize, setWsSize] = useState({ w: 0, h: 0 })
   useEffect(() => {
@@ -181,24 +158,26 @@ export function SessionView({
   // measure; the split heuristic just needs an aspect ratio.
   useEffect(() => {
     if (!sid || !session || !terminals) return
-    const cur: LayoutNode | null = sid in layouts ? layouts[sid] : leaf('agent')
+    const cur: Workspace | null = sid in layouts ? layouts[sid] : singleColumn('agent')
     const live = ['agent', ...terminals.map((t) => t.target)]
     const liveSet = new Set(live)
-    let next = cur
-    for (const t of leafTargets(next)) {
-      // Preview/changes leaves aren't tmux windows — they're owned by their
-      // own open/close logic, so this window-driven sync must leave them be.
-      if (!liveSet.has(t) && !isSpecialPane(t)) next = next && removeLeaf(next, t)
+    let next: Workspace | null = cur
+    for (const t of paneTargets(next)) {
+      // Preview/changes panes aren't tmux windows — they're owned by their own
+      // open/close logic, so this window-driven sync must leave them be.
+      if (!liveSet.has(t) && !isSpecialPane(t)) next = removeTarget(next, t)
     }
     for (const t of live) {
-      next = addLeafToLargest(next, t, wsSize.w || 1200, wsSize.h || 800)
+      // New windows (init commands, scratch shells) show up as their own
+      // equal-width column; the user's arrangement is otherwise kept.
+      next = addColumn(next, t)
     }
     if (next !== cur) setSessionLayout(sid, next)
-  }, [sid, session, terminals, layouts, setSessionLayout, wsSize.w, wsSize.h])
+  }, [sid, session, terminals, layouts, setSessionLayout])
 
-  // Tabs mode renders the same layout-tree leaves one at a time; the tree
-  // stays canonical so toggling back to tiles restores the arrangement.
-  const targets = leafTargets(layout)
+  // Tabs mode renders all the workspace's panes as one tabbed window; the
+  // workspace stays canonical so toggling back to tiles restores the columns.
+  const targets = paneTargets(layout)
   const activeTab = sid
     ? (activeTabs[sid] && targets.includes(activeTabs[sid]) ? activeTabs[sid] : targets[0])
     : undefined
@@ -210,16 +189,22 @@ export function SessionView({
   // focusPaneTarget validates it and prefers the agent pane in tiles mode
   // when nothing was made active yet.
   const focusTarget = sid ? focusPaneTarget(targets, activeTabs[sid], tiled) : null
-  const { panes, dividers } = computeLayout(layout, { x: 0, y: 0, w: wsSize.w, h: wsSize.h }, GAP)
-  const panesRef = useRef<PaneRect[]>(panes)
-  panesRef.current = panes
+  // Equal-width columns; each column shows its active tab. Off-screen tabs are
+  // the other tabs of a column (kept alive, hidden). No dividers — widths are
+  // always equal.
+  const cols = computeColumns(layout, { x: 0, y: 0, w: wsSize.w, h: wsSize.h }, GAP)
+  const colsRef = useRef<ColumnRect[]>(cols)
+  colsRef.current = cols
+  // The visible pane rect per column (its active tab) — drives keep-alive
+  // positioning and the drop highlight.
+  const activePaneRect = new Map(cols.map((c) => [c.group.active, c.rect]))
 
   // Keep-alive: every session|target ever shown stays mounted (hidden) so
   // switching back is instant. Panes closed explicitly are dropped.
   const [opened, setOpened] = useState<string[]>([])
   useEffect(() => {
     if (!sid || !layout) return
-    const keys = leafTargets(layout).map((t) => `${sid}|${t}`)
+    const keys = paneTargets(layout).map((t) => `${sid}|${t}`)
     setOpened((prev) => {
       const fresh = keys.filter((k) => !prev.includes(k))
       return fresh.length ? [...prev, ...fresh] : prev
@@ -277,10 +262,11 @@ export function SessionView({
     void queryClient.invalidateQueries({ queryKey: ['terminals', sid] })
   }
 
-  /** Create a scratch-shell window and open its pane — split `onto`, or
-   *  the largest pane. The server returns the new window id up front, so
-   *  the pane opens without waiting for the next terminals poll. */
-  const openShell = (onto?: { target: string; dir: SplitDir }): void => {
+  /** Create a scratch-shell window and open its pane — as a tab of the column
+   *  at `onto.groupIdx`, or as a new column. The server returns the new window
+   *  id up front, so the pane opens without waiting for the next terminals
+   *  poll. */
+  const openShell = (onto?: { groupIdx: number }): void => {
     if (!sid) return
     void createShellTerminal(sid)
       .then((entry) => {
@@ -289,10 +275,12 @@ export function SessionView({
           (old) => old ? [...old.filter((t) => t.target !== entry.target), entry] : [entry],
         )
         const state = useUiStore.getState()
-        const cur = sid in state.layouts ? state.layouts[sid] : leaf('agent')
-        const next = onto && cur
-          ? splitLeaf(cur, onto.target, entry.target, onto.dir)
-          : addLeafToLargest(cur, entry.target, wsSize.w || 1200, wsSize.h || 800)
+        const cur = sid in state.layouts ? state.layouts[sid] : singleColumn('agent')
+        let next = onto && cur ? addTab(cur, onto.groupIdx, entry.target) : addColumn(cur, entry.target)
+        // The column may have gone away between the click and the shell
+        // resolving (out-of-range addTab is a no-op) — fall back to a column
+        // so the shell always appears.
+        if (!paneTargets(next).includes(entry.target)) next = addColumn(cur, entry.target)
         state.setSessionLayout(sid, next)
         state.focusTerminal(sid, entry.target)
       })
@@ -340,7 +328,7 @@ export function SessionView({
           if (isSpecialPane(ctx.activeTab)) {
             const st = useUiStore.getState()
             const cur = ctx.sid in st.layouts ? st.layouts[ctx.sid] : null
-            if (cur) st.setSessionLayout(ctx.sid, removeLeaf(cur, ctx.activeTab))
+            if (cur) st.setSessionLayout(ctx.sid, removeTarget(cur, ctx.activeTab))
             return
           }
           setConfirmKill({ target: ctx.activeTab, name: paneName(ctx.activeTab, ctx.terminals) })
@@ -383,7 +371,7 @@ export function SessionView({
       ['terminals', sid],
       (old) => old?.filter((t) => t.target !== target),
     )
-    setSessionLayout(sid, removeLeaf(layout, target))
+    setSessionLayout(sid, removeTarget(layout, target))
     setOpened((prev) => prev.filter((k) => k !== `${sid}|${target}`))
     void killSessionTerminal(sid, target)
       .catch((e: unknown) => console.error('kill terminal failed', e))
@@ -394,42 +382,20 @@ export function SessionView({
   // tmux window to kill, and no confirm (both are cheap to reopen).
   const closePane = (target: string): void => {
     if (!sid || !layout) return
-    setSessionLayout(sid, removeLeaf(layout, target))
+    setSessionLayout(sid, removeTarget(layout, target))
     setOpened((prev) => prev.filter((k) => k !== `${sid}|${target}`))
   }
 
-  // --- divider drag ---
-  const onDividerDown = (e: ReactPointerEvent, path: string, dir: SplitDir, box: { x: number; y: number; w: number; h: number }): void => {
-    e.preventDefault()
-    if (!sid) return
-    const ws = wsRef.current
-    if (!ws) return
-    const wsRect = ws.getBoundingClientRect()
-    const onMove = (ev: globalThis.PointerEvent): void => {
-      const cur = useUiStore.getState()
-      const node = sid in cur.layouts ? cur.layouts[sid] : leaf('agent')
-      if (!node) return
-      const pos = dir === 'row' ? ev.clientX - wsRect.left - box.x : ev.clientY - wsRect.top - box.y
-      const total = dir === 'row' ? box.w : box.h
-      if (total <= 0) return
-      cur.setSessionLayout(sid, setRatioAt(node, path, pos / total))
-    }
-    const onUp = (): void => {
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-    }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
-  }
-
-  // --- pane drag (move/rearrange) ---
+  // --- tab drag (rearrange columns / merge into tabs) ---
   const [drag, setDrag] = useState<DragState | null>(null)
   const dragRef = useRef<DragState | null>(null)
   dragRef.current = drag
 
-  const onHeaderDown = (e: ReactPointerEvent, src: string): void => {
-    // Buttons inside the header (split/close) handle their own clicks.
-    if ((e.target as HTMLElement).closest('button')) return
+  // A tab is both a drag handle and a click target: a press that never crosses
+  // the threshold selects the tab (onSelect), one that does moves the pane —
+  // onto another column's central band it becomes a tab there, into a gap /
+  // outer third it becomes a new column at that index.
+  const onTabDown = (e: ReactPointerEvent, src: string, onSelect: () => void): void => {
     e.preventDefault()
     if (!sid) return
     const ws = wsRef.current
@@ -448,20 +414,7 @@ export function SessionView({
       const active = d.active || dist > DRAG_THRESHOLD
       if (!active) return
       const px = ev.clientX - wsRect.left
-      const py = ev.clientY - wsRect.top
-      // Workspace edges win over pane edges: they're the only way to carve
-      // out a full-height/width half when no single pane spans the axis.
-      const rootEdge = rootEdgeAt(px, py, wsRect.width, wsRect.height)
-      let over: DropTarget | undefined
-      if (rootEdge) {
-        over = { kind: 'root', edge: rootEdge }
-      } else {
-        const hit = panesRef.current.find((p) =>
-          px >= p.rect.x && px <= p.rect.x + p.rect.w && py >= p.rect.y && py <= p.rect.y + p.rect.h)
-        if (hit && hit.target !== d.src) {
-          over = { kind: 'pane', dest: hit.target, edge: dropEdgeFor(hit.rect, px, py) }
-        }
-      }
+      const over = dropTargetAt(colsRef.current, px)
       const next: DragState = { ...d, active, over }
       dragRef.current = next
       setDrag(next)
@@ -471,29 +424,89 @@ export function SessionView({
       window.removeEventListener('pointerup', onUp)
       const d = dragRef.current
       setDrag(null)
-      if (!d?.active || !d.over) return
+      if (!d) return
+      if (!d.active) { onSelect(); return }
+      if (!d.over) return
       const cur = useUiStore.getState()
-      const node = sid in cur.layouts ? cur.layouts[sid] : leaf('agent')
+      const node = sid in cur.layouts ? cur.layouts[sid] : singleColumn('agent')
       if (!node) return
-      const moved = d.over.kind === 'root'
-        ? moveLeafToRoot(node, d.src, d.over.edge)
-        : moveLeaf(node, d.src, d.over.dest, d.over.edge)
+      const moved = d.over.kind === 'tab'
+        ? moveTargetToGroup(node, d.src, d.over.group)
+        : moveTargetToColumn(node, d.src, d.over.index)
       cur.setSessionLayout(sid, moved)
     }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
   }
 
-  const dropHighlight = drag?.active && drag.over
-    ? (() => {
-        const over = drag.over
-        if (over.kind === 'root') {
-          return dropHighlightRect({ x: 0, y: 0, w: wsSize.w, h: wsSize.h }, over.edge)
-        }
-        const pane = panes.find((p) => p.target === over.dest)
-        return pane ? dropHighlightRect(pane.rect, over.edge) : null
-      })()
-    : null
+  // While dragging: a filled box over the column the pane would tab into, or a
+  // thin insertion bar where a new column would open.
+  const dropHighlight: { rect: { x: number; y: number; w: number; h: number }; bar: boolean } | null =
+    drag?.active && drag.over
+      ? (() => {
+          const over = drag.over
+          if (over.kind === 'tab') {
+            const col = cols[over.group]
+            return col ? { rect: col.rect, bar: false } : null
+          }
+          const i = over.index
+          const barW = 3
+          let cx: number
+          if (cols.length === 0) cx = wsSize.w / 2
+          else if (i <= 0) cx = cols[0].rect.x - GAP / 2
+          else if (i >= cols.length) {
+            const last = cols[cols.length - 1].rect
+            cx = last.x + last.w + GAP / 2
+          } else cx = cols[i].rect.x - GAP / 2
+          return { rect: { x: cx - barW / 2, y: 0, w: barW, h: wsSize.h }, bar: true }
+        })()
+      : null
+
+  /** A tab in a column strip (tiles) or the single tab bar (tabs). Draggable
+   *  tabs double as click targets — see onTabDown. */
+  const renderTab = (
+    t: string,
+    opts: { isActive: boolean; onSelect: () => void; draggable: boolean },
+  ): JSX.Element => (
+    <span key={t} className="group/tab relative flex items-center">
+      <button
+        onPointerDown={opts.draggable ? (e) => onTabDown(e, t, opts.onSelect) : undefined}
+        onClick={opts.draggable ? undefined : opts.onSelect}
+        className={clsx(
+          'rounded px-2 py-0.5 text-[11px] transition',
+          opts.draggable && 'cursor-grab select-none active:cursor-grabbing',
+          t !== 'agent' && 'pr-5',
+          drag?.active && drag.src === t && 'opacity-60',
+          opts.isActive
+            ? 'bg-surface-3 font-medium text-text'
+            : 'text-text-faint hover:text-text-dim',
+        )}
+      >
+        {paneName(t, terminals, previewPortForSession)}
+      </button>
+      {isSpecialPane(t) ? (
+        <button
+          onClick={() => closePane(t)}
+          title="Close pane"
+          aria-label={`Close ${paneName(t, terminals, previewPortForSession)}`}
+          className="absolute right-0.5 flex h-4 w-4 items-center justify-center rounded
+            text-text-faint opacity-0 transition hover:text-text group-hover/tab:opacity-100"
+        >
+          <CloseIcon size={10} />
+        </button>
+      ) : t !== 'agent' && (
+        <button
+          onClick={() => setConfirmKill({ target: t, name: paneName(t, terminals) })}
+          title={`Kill ${paneName(t, terminals)}`}
+          aria-label={`Kill ${paneName(t, terminals)}`}
+          className="absolute right-0.5 flex h-4 w-4 items-center justify-center rounded
+            text-text-faint opacity-0 transition hover:text-text group-hover/tab:opacity-100"
+        >
+          <CloseIcon size={10} />
+        </button>
+      )}
+    </span>
+  )
 
   return (
     <main className="flex h-full min-w-0 flex-col">
@@ -631,117 +644,46 @@ export function SessionView({
           />
         )}
 
-        {/* Pane cards (chrome) for the selected session — tiles mode. */}
-        {session && tiled && panes.map(({ target, rect }) => (
+        {/* Column cards (chrome) for the selected session — tiles mode. Each
+            column is a tabbed window; its body is filled by the kept-alive
+            terminals below. */}
+        {session && tiled && cols.map(({ group, rect }, gi) => (
           <section
-            key={target}
+            key={gi}
             style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}
-            className={clsx(
-              'absolute flex flex-col overflow-hidden rounded-lg border border-hairline bg-surface',
-              'shadow-[0_8px_24px_var(--shadow-color)]',
-              drag?.active && drag.src === target && 'opacity-60',
-            )}
+            className="absolute flex flex-col overflow-hidden rounded-lg border border-hairline
+              bg-surface shadow-[0_8px_24px_var(--shadow-color)]"
           >
-            <div
-              onPointerDown={(e) => onHeaderDown(e, target)}
-              style={{ height: HEADER_H }}
-              className="group/pane flex shrink-0 cursor-grab select-none items-center gap-1.5 px-2.5 active:cursor-grabbing"
-            >
-              <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-text-dim">
-                {paneName(target, terminals, previewPortForSession)}
-              </span>
-              <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/pane:opacity-100">
-                {!isSpecialPane(target) && (
-                  <>
-                    <button
-                      onClick={() => openShell({ target, dir: 'row' })}
-                      title="New shell right"
-                      aria-label={`New shell right of ${paneName(target, terminals)}`}
-                      className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
-                        hover:bg-surface-2 hover:text-text"
-                    >
-                      <SplitRightIcon size={11} />
-                    </button>
-                    <button
-                      onClick={() => openShell({ target, dir: 'col' })}
-                      title="New shell below"
-                      aria-label={`New shell below ${paneName(target, terminals)}`}
-                      className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
-                        hover:bg-surface-2 hover:text-text"
-                    >
-                      <SplitDownIcon size={11} />
-                    </button>
-                  </>
-                )}
-                {isSpecialPane(target) ? (
-                  <button
-                    onClick={() => closePane(target)}
-                    title="Close pane"
-                    aria-label={`Close ${paneName(target, terminals, previewPortForSession)}`}
-                    className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
-                      hover:bg-surface-2 hover:text-text"
-                  >
-                    <CloseIcon size={11} />
-                  </button>
-                ) : target !== 'agent' && (
-                  <button
-                    onClick={() => setConfirmKill({ target, name: paneName(target, terminals) })}
-                    title="Kill terminal"
-                    aria-label={`Kill ${paneName(target, terminals)}`}
-                    className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
-                      hover:bg-surface-2 hover:text-text"
-                  >
-                    <CloseIcon size={11} />
-                  </button>
-                )}
-              </span>
+            <div style={{ height: HEADER_H }} className="flex shrink-0 items-center gap-0.5 px-1.5">
+              {group.tabs.map((t) => renderTab(t, {
+                isActive: group.active === t,
+                onSelect: () => focusTerminal(session.sessionId, t),
+                draggable: true,
+              }))}
+              <button
+                onClick={() => openShell({ groupIdx: gi })}
+                title="New shell"
+                aria-label="New shell tab"
+                className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
+                  hover:bg-surface-2 hover:text-text"
+              >
+                <AddIcon size={12} />
+              </button>
             </div>
           </section>
         ))}
 
-        {/* Tabs mode: one full-bleed card; the strip switches between the
-            same layout-tree leaves the tiles mode arranges spatially. */}
+        {/* Tabs mode: one full-bleed card; the strip switches between all the
+            workspace's panes the tiles mode arranges into columns. */}
         {session && !tiled && targets.length > 0 && (
           <section className="absolute inset-0 flex flex-col overflow-hidden rounded-lg border
             border-hairline bg-surface shadow-[0_8px_24px_var(--shadow-color)]">
             <div style={{ height: HEADER_H }} className="flex shrink-0 items-center gap-0.5 px-1.5">
-              {targets.map((t) => (
-                <span key={t} className="group/tab relative flex items-center">
-                  <button
-                    onClick={() => focusTerminal(session.sessionId, t)}
-                    className={clsx(
-                      'rounded px-2 py-0.5 text-[11px] transition',
-                      t !== 'agent' && 'pr-5',
-                      activeTab === t
-                        ? 'bg-surface-3 font-medium text-text'
-                        : 'text-text-faint hover:text-text-dim',
-                    )}
-                  >
-                    {paneName(t, terminals, previewPortForSession)}
-                  </button>
-                  {isSpecialPane(t) ? (
-                    <button
-                      onClick={() => closePane(t)}
-                      title="Close pane"
-                      aria-label={`Close ${paneName(t, terminals, previewPortForSession)}`}
-                      className="absolute right-0.5 flex h-4 w-4 items-center justify-center rounded
-                        text-text-faint opacity-0 transition hover:text-text group-hover/tab:opacity-100"
-                    >
-                      <CloseIcon size={10} />
-                    </button>
-                  ) : t !== 'agent' && (
-                    <button
-                      onClick={() => setConfirmKill({ target: t, name: paneName(t, terminals) })}
-                      title={`Kill ${paneName(t, terminals)}`}
-                      aria-label={`Kill ${paneName(t, terminals)}`}
-                      className="absolute right-0.5 flex h-4 w-4 items-center justify-center rounded
-                        text-text-faint opacity-0 transition hover:text-text group-hover/tab:opacity-100"
-                    >
-                      <CloseIcon size={10} />
-                    </button>
-                  )}
-                </span>
-              ))}
+              {targets.map((t) => renderTab(t, {
+                isActive: activeTab === t,
+                onSelect: () => focusTerminal(session.sessionId, t),
+                draggable: false,
+              }))}
               <button
                 onClick={() => openShell()}
                 title="New shell"
@@ -763,7 +705,9 @@ export function SessionView({
           const preview = isPreviewTarget(target)
           const changes = isChangesTarget(target)
           const special = preview || changes
-          const pane = id === sid && tiled ? panes.find((p) => p.target === target) : undefined
+          // In tiles mode a pane is on-screen when it's the active tab of its
+          // column; its rect is that column's body.
+          const colRect = id === sid && tiled ? activePaneRect.get(target) : undefined
           // Hidden terminals never change size. With per-view `window-size
           // manual` a pane resize round-trips resize-window to the server, and
           // a switch that changed the pane's size flashed the stale window
@@ -779,13 +723,13 @@ export function SessionView({
             width: wsSize.w - PAD * 2,
             height: wsSize.h - HEADER_H - PAD,
           }
-          const onScreen = pane != null || (id === sid && !tiled && target === activeTab)
-          const style = pane
+          const onScreen = colRect != null || (id === sid && !tiled && target === activeTab)
+          const style = colRect
             ? {
-                left: pane.rect.x + PAD,
-                top: pane.rect.y + HEADER_H,
-                width: pane.rect.w - PAD * 2,
-                height: pane.rect.h - HEADER_H - PAD,
+                left: colRect.x + PAD,
+                top: colRect.y + HEADER_H,
+                width: colRect.w - PAD * 2,
+                height: colRect.h - HEADER_H - PAD,
               }
             : id === sid && !tiled && (special ? target === activeTab : targets.includes(target))
               ? tabsRect
@@ -854,29 +798,22 @@ export function SessionView({
           )
         })}
 
-        {/* Split dividers (drag to resize). */}
-        {session && tiled && dividers.map((d) => (
-          <div
-            key={d.path || 'root'}
-            onPointerDown={(e) => onDividerDown(e, d.path, d.dir, d.box)}
-            style={{ left: d.rect.x, top: d.rect.y, width: d.rect.w, height: d.rect.h }}
-            className={clsx(
-              'absolute z-10 flex items-center justify-center',
-              d.dir === 'row' ? 'cursor-col-resize' : 'cursor-row-resize',
-            )}
-          >
-            <div className={clsx(
-              'rounded-full bg-hairline transition-colors hover:bg-text-faint',
-              d.dir === 'row' ? 'h-8 w-1' : 'h-1 w-8',
-            )} />
-          </div>
-        ))}
-
-        {/* Drop highlight while dragging a pane. */}
+        {/* Drop highlight while dragging a pane: a filled box to tab into a
+            column, or a thin bar where a new column would open. */}
         {dropHighlight && (
           <div
-            style={{ left: dropHighlight.x, top: dropHighlight.y, width: dropHighlight.w, height: dropHighlight.h }}
-            className="pointer-events-none absolute z-20 rounded-lg border border-accent/60 bg-accent/15"
+            style={{
+              left: dropHighlight.rect.x,
+              top: dropHighlight.rect.y,
+              width: dropHighlight.rect.w,
+              height: dropHighlight.rect.h,
+            }}
+            className={clsx(
+              'pointer-events-none absolute z-20',
+              dropHighlight.bar
+                ? 'rounded-full bg-accent'
+                : 'rounded-lg border border-accent/60 bg-accent/15',
+            )}
           />
         )}
 

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { loadPersistedLayouts, persistLayouts } from '#store'
-import { leaf, splitLeaf } from '#lib/layout'
+import { addColumn, singleColumn } from '#lib/layout'
 
 // Minimal localStorage stand-in for the node test environment.
 function stubLocalStorage(): Map<string, string> {
@@ -24,36 +24,46 @@ describe('layout persistence', () => {
     delete (globalThis as Record<string, unknown>).localStorage
   })
 
-  it('round-trips layouts (including null = emptied)', () => {
+  it('round-trips workspaces (including null = emptied)', () => {
     const layouts = {
-      s1: splitLeaf(leaf('agent'), 'agent', 'shell:shell', 'row'),
+      s1: addColumn(singleColumn('agent'), 'shell:shell'),
       s2: null,
     }
     persistLayouts(layouts)
     expect(loadPersistedLayouts()).toEqual(layouts)
   })
 
-  it('drops structurally invalid trees on load', () => {
-    store.set('yaac.layouts.v1', JSON.stringify({
-      ok: { type: 'leaf', target: 'agent' },
-      bad1: { type: 'split', dir: 'diagonal', ratio: 0.5, a: { type: 'leaf', target: 'x' }, b: { type: 'leaf', target: 'y' } },
-      bad2: { type: 'leaf' },
+  it('drops structurally invalid workspaces on load', () => {
+    store.set('yaac.layouts.v2', JSON.stringify({
+      ok: [{ tabs: ['agent'], active: 'agent' }],
+      // active not a member of tabs
+      bad1: [{ tabs: ['x'], active: 'y' }],
+      // empty tabs
+      bad2: [{ tabs: [], active: 'x' }],
+      // not an array of groups
       bad3: 42,
+      // old binary-tree shape is no longer valid
+      bad4: { type: 'leaf', target: 'agent' },
     }))
-    expect(loadPersistedLayouts()).toEqual({ ok: { type: 'leaf', target: 'agent' } })
+    expect(loadPersistedLayouts()).toEqual({ ok: [{ tabs: ['agent'], active: 'agent' }] })
+  })
+
+  it('ignores layouts saved under the old (v1) key', () => {
+    store.set('yaac.layouts.v1', JSON.stringify({ s1: { type: 'leaf', target: 'agent' } }))
+    expect(loadPersistedLayouts()).toEqual({})
   })
 
   it('survives garbage and absence', () => {
     expect(loadPersistedLayouts()).toEqual({})
-    store.set('yaac.layouts.v1', '{{{')
+    store.set('yaac.layouts.v2', '{{{')
     expect(loadPersistedLayouts()).toEqual({})
-    store.set('yaac.layouts.v1', '"a string"')
+    store.set('yaac.layouts.v2', '"a string"')
     expect(loadPersistedLayouts()).toEqual({})
   })
 
   it('is a no-op without localStorage', () => {
     delete (globalThis as Record<string, unknown>).localStorage
     expect(loadPersistedLayouts()).toEqual({})
-    expect(() => persistLayouts({ s: leaf('agent') })).not.toThrow()
+    expect(() => persistLayouts({ s: singleColumn('agent') })).not.toThrow()
   })
 })
