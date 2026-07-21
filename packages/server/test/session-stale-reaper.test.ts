@@ -243,4 +243,23 @@ describe('reconcileStaleSessions', () => {
     await expect(reconcileStaleSessions()).resolves.toBeUndefined()
     expect(mockCleanup).not.toHaveBeenCalled()
   })
+
+  it('reads pods and jobs from the tick snapshot when one is provided', async () => {
+    const snapshot = {
+      pods: vi.fn().mockResolvedValue([pod('zombie-1')]),
+      jobs: vi.fn().mockResolvedValue([]),
+      vclusters: vi.fn(),
+    }
+    mockProbe.mockResolvedValue('dead' as TmuxLiveness)
+
+    await reconcileStaleSessions(snapshot)
+
+    expect(mockListPods).not.toHaveBeenCalled()
+    expect(mockListJobs).not.toHaveBeenCalled()
+    expect(snapshot.pods).toHaveBeenCalledTimes(1)
+    expect(snapshot.jobs).toHaveBeenCalledTimes(1)
+    expect(mockCleanup).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 'zombie-1' }),
+    )
+  })
 })

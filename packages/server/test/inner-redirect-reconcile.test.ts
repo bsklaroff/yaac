@@ -14,7 +14,12 @@ vi.mock('#lib/k8s/vcluster', () => ({
 }))
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
-import { reconcileInnerRedirects } from '#lib/session/inner-redirect-reconcile'
+import {
+  reconcileInnerRedirects,
+  INNER_REDIRECT_INTERVAL_MS,
+  _resetInnerRedirectThrottleForTests,
+} from '#lib/session/inner-redirect-reconcile'
+import type { TickSnapshot } from '#lib/k8s/tick-snapshot'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#lib/k8s/kubectl'
 import { listVclusterNamespaces } from '#lib/k8s/vcluster'
 import { serverLog } from '#log'
@@ -82,6 +87,7 @@ const LEGACY_DELETE =
 describe('reconcileInnerRedirects', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    _resetInnerRedirectThrottleForTests()
     mockList.mockResolvedValue([])
     wireGets({})
   })
@@ -187,12 +193,37 @@ describe('reconcileInnerRedirects', () => {
     mockList.mockResolvedValue([VC])
     wireGets({ services: [proxySvc(SVC_AMBIENT)] }) // pre-per-install inner yaac
 
-    await reconcileInnerRedirects()
-    await reconcileInnerRedirects()
+    // Distinct past-interval timestamps so both passes actually run.
+    await reconcileInnerRedirects(INNER_REDIRECT_INTERVAL_MS)
+    await reconcileInnerRedirects(INNER_REDIRECT_INTERVAL_MS * 2)
 
+    expect(mockList).toHaveBeenCalledTimes(2)
     expect(mockApply).not.toHaveBeenCalled()
     expect(mockLog).toHaveBeenCalledTimes(1)
     expect(String(mockLog.mock.calls[0][0])).toContain(SVC_AMBIENT)
+  })
+
+  it('throttles: a second run inside the interval is a no-op', async () => {
+    mockList.mockResolvedValue([VC])
+    wireGets({ services: [proxySvc(SVC_AMBIENT, HASH_AMBIENT)] })
+
+    await reconcileInnerRedirects(INNER_REDIRECT_INTERVAL_MS)
+    await reconcileInnerRedirects(INNER_REDIRECT_INTERVAL_MS + 1_000)
+
+    expect(mockList).toHaveBeenCalledTimes(1)
+  })
+
+  it('reads the vcluster list from the tick snapshot when one is provided', async () => {
+    const snapshot = {
+      vclusters: vi.fn().mockResolvedValue([VC]),
+    } as unknown as TickSnapshot
+    wireGets({ services: [proxySvc(SVC_AMBIENT, HASH_AMBIENT)] })
+
+    await reconcileInnerRedirects(undefined, snapshot)
+
+    expect(mockList).not.toHaveBeenCalled()
+    expect(appliedNames().map((a) => a.name)).toContain(
+      `${INNER_EGRESS_REDIRECT_CEC_NAME}-${HASH_AMBIENT}`)
   })
 
   it('non-proxy synced services never trigger a projection', async () => {

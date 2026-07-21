@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { listSessionJobs, listSessionPods } from '#lib/k8s/pods'
+import type { TickSnapshot } from '#lib/k8s/tick-snapshot'
 import {
   listVclusterNamespaces,
   removeSessionVcluster,
@@ -26,13 +27,19 @@ import { sessionVclusterDir } from '@yaac/shared/project-paths'
  * `nowMs` is injectable for tests; defaults to the wall clock (the
  * orphan-GC grace window is the only time-dependent part).
  */
-export async function reconcileVclusters(nowMs: number = Date.now()): Promise<void> {
-  const vclusters = await listVclusterNamespaces()
+export async function reconcileVclusters(
+  nowMs: number = Date.now(),
+  snapshot?: TickSnapshot,
+): Promise<void> {
+  const vclusters = await (snapshot ? snapshot.vclusters() : listVclusterNamespaces())
   if (vclusters.length === 0) return
 
   // Union of pod + Job session ids, same as the modules GC: a Job
   // mid-recreate only shows in the Job list and must not be reaped.
-  const [pods, jobs] = await Promise.all([listSessionPods(), listSessionJobs()])
+  const [pods, jobs] = await Promise.all([
+    snapshot ? snapshot.pods() : listSessionPods(),
+    snapshot ? snapshot.jobs() : listSessionJobs(),
+  ])
   const liveSids = new Set([
     ...pods.map((p) => p.sessionId),
     ...jobs.map((j) => j.sessionId),

@@ -12,6 +12,7 @@ import {
 } from '#lib/k8s/bootstrap'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#lib/k8s/kubectl'
 import { LABEL_DATA_DIR_HASH, LABEL_VCLUSTER_MANAGED_BY } from '#lib/k8s/pods'
+import type { TickSnapshot } from '#lib/k8s/tick-snapshot'
 import { listVclusterNamespaces } from '#lib/k8s/vcluster'
 import { serverLog } from '#log'
 
@@ -27,6 +28,16 @@ interface InnerProxy {
 
 /** Unlabeled-service notes already logged, to avoid per-tick log spam. */
 const loggedUnlabeled = new Set<string>()
+
+/** Min interval between reconcile passes — see reconcileInnerRedirects. */
+export const INNER_REDIRECT_INTERVAL_MS = 30_000
+
+let lastRunMs = 0
+
+/** Reset the throttle (tests only). */
+export function _resetInnerRedirectThrottleForTests(): void {
+  lastRunMs = 0
+}
 
 /**
  * Discover the host-synced inner proxy Services in a vcluster's namespace —
@@ -138,9 +149,20 @@ async function pruneInnerRedirects(vcNamespace: string, desired: Set<string>): P
  * The session pod never gets host RBAC: the server (host cluster-admin) is the
  * sole writer and rebuilds from trusted builders, so a tenant can't author an
  * escape. Idempotent and best-effort; the loop isolates step errors.
+ * Throttled to INNER_REDIRECT_INTERVAL_MS — the per-vcluster reconcile is
+ * several kubectl calls (service discovery, prune listings, re-applies), far
+ * too heavy for every 5s tick. The cost of the interval: a freshly-appeared
+ * inner proxy waits up to this long for its projection upgrade, during which
+ * its install's synced pods stay on the (containment-equivalent) outer-proxy
+ * fallback seeded at vcluster creation.
  */
-export async function reconcileInnerRedirects(): Promise<void> {
-  const vclusters = await listVclusterNamespaces()
+export async function reconcileInnerRedirects(
+  nowMs: number = Date.now(),
+  snapshot?: TickSnapshot,
+): Promise<void> {
+  if (nowMs - lastRunMs < INNER_REDIRECT_INTERVAL_MS) return
+  lastRunMs = nowMs
+  const vclusters = await (snapshot ? snapshot.vclusters() : listVclusterNamespaces())
   if (vclusters.length === 0) return
 
   for (const { name, namespace } of vclusters) {

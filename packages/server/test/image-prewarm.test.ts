@@ -13,6 +13,7 @@ vi.mock('#log', () => ({ serverLog: vi.fn() }))
 import {
   prewarmProjectImage,
   reconcileImagePrewarm,
+  PREWARM_SWEEP_INTERVAL_MS,
   _resetImagePrewarmForTests,
 } from '#image-prewarm'
 import { listProjects } from '#lib/project/list'
@@ -118,29 +119,46 @@ describe('image prewarm', () => {
       mockEnsureImage.mockImplementation(() =>
         new Promise((res) => { release = () => res('yaac-tools:t') }))
 
-      await reconcileImagePrewarm()
-      await reconcileImagePrewarm()
+      // Distinct past-interval timestamps so the sweep throttle never skips —
+      // the in-flight mark is what must dedupe here.
+      await reconcileImagePrewarm(PREWARM_SWEEP_INTERVAL_MS)
+      await reconcileImagePrewarm(PREWARM_SWEEP_INTERVAL_MS * 2)
       expect(mockEnsureImage).toHaveBeenCalledTimes(1)
 
       release()
       await flush()
-      await reconcileImagePrewarm()
+      await reconcileImagePrewarm(PREWARM_SWEEP_INTERVAL_MS * 3)
       await flush()
       expect(mockEnsureImage).toHaveBeenCalledTimes(2)
     })
 
-    it('logs a failed prewarm and retries it on a later tick', async () => {
+    it('logs a failed prewarm and retries it on a later sweep', async () => {
       mockListProjects.mockResolvedValue([project('p')])
       mockEnsureImage.mockRejectedValueOnce(new Error('podman build exited with code 1'))
 
-      await reconcileImagePrewarm()
+      await reconcileImagePrewarm(PREWARM_SWEEP_INTERVAL_MS)
       await flush()
       expect(vi.mocked(serverLog)).toHaveBeenCalledWith(
         expect.stringContaining('[image-prewarm] p:'))
 
-      await reconcileImagePrewarm()
+      await reconcileImagePrewarm(PREWARM_SWEEP_INTERVAL_MS * 2)
       await flush()
       expect(mockEnsureImage).toHaveBeenCalledTimes(2)
+    })
+
+    it('throttles: a sweep inside the interval is a no-op', async () => {
+      mockListProjects.mockResolvedValue([project('p')])
+
+      await reconcileImagePrewarm(PREWARM_SWEEP_INTERVAL_MS)
+      await flush()
+      await reconcileImagePrewarm(PREWARM_SWEEP_INTERVAL_MS + 5_000)
+      await flush()
+      expect(mockListProjects).toHaveBeenCalledTimes(1)
+      expect(mockEnsureImage).toHaveBeenCalledTimes(1)
+
+      await reconcileImagePrewarm(PREWARM_SWEEP_INTERVAL_MS * 2)
+      await flush()
+      expect(mockListProjects).toHaveBeenCalledTimes(2)
     })
   })
 

@@ -12,7 +12,10 @@ vi.mock('#log', () => ({ serverLog: vi.fn() }))
 import {
   buildVclusterAttribution,
   reconcileVclusterAttribution,
+  VCLUSTER_ATTRIBUTION_INTERVAL_MS,
+  _resetVclusterAttributionForTests,
 } from '#lib/session/vcluster-attribution-reconcile'
+import type { TickSnapshot } from '#lib/k8s/tick-snapshot'
 import { kubectlGetJson } from '#lib/k8s/kubectl'
 import { listVclusterNamespaces } from '#lib/k8s/vcluster'
 
@@ -25,6 +28,7 @@ const vc = (sid: string, ns: string): {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  _resetVclusterAttributionForTests()
   mockAttach.mockResolvedValue(true)
   mockRegister.mockResolvedValue(undefined)
 })
@@ -69,5 +73,30 @@ describe('reconcileVclusterAttribution', () => {
     mockGetJson.mockResolvedValue({ items: [{ status: { podIP: '10.0.0.9' } }] })
     await reconcileVclusterAttribution()
     expect(mockRegister).not.toHaveBeenCalled()
+  })
+
+  it('throttles: a second run inside the interval is a no-op', async () => {
+    mockList.mockResolvedValue([vc('s1', 'yaac-vc-1')])
+    mockGetJson.mockResolvedValue({ items: [{ status: { podIP: '10.0.0.1' } }] })
+
+    await reconcileVclusterAttribution(VCLUSTER_ATTRIBUTION_INTERVAL_MS)
+    await reconcileVclusterAttribution(VCLUSTER_ATTRIBUTION_INTERVAL_MS + 1_000)
+    expect(mockList).toHaveBeenCalledTimes(1)
+    expect(mockRegister).toHaveBeenCalledTimes(1)
+
+    await reconcileVclusterAttribution(VCLUSTER_ATTRIBUTION_INTERVAL_MS * 2)
+    expect(mockRegister).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads the vcluster list from the tick snapshot when one is provided', async () => {
+    const snapshot = {
+      vclusters: vi.fn().mockResolvedValue([vc('s1', 'yaac-vc-1')]),
+    } as unknown as TickSnapshot
+    mockGetJson.mockResolvedValue({ items: [{ status: { podIP: '10.0.0.1' } }] })
+
+    await reconcileVclusterAttribution(undefined, snapshot)
+
+    expect(mockList).not.toHaveBeenCalled()
+    expect(mockRegister).toHaveBeenCalledWith({ '10.0.0.1': 's1' })
   })
 })

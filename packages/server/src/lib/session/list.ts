@@ -2,6 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { listSessionJobs, listSessionPods, isPrewarmed, type SessionPod } from '#lib/k8s/pods'
 import { getActivePodWatcher } from '#lib/k8s/pod-watch'
+import type { TickSnapshot } from '#lib/k8s/tick-snapshot'
 import { worktreeUpstreamBranch } from '#lib/git'
 import { claudeDir, codexTranscriptDir, getProjectsDir, projectDir, repoDir } from '@yaac/shared/project-paths'
 import { getSessionFirstMessage, normalizeTool } from '#lib/session/status'
@@ -139,6 +140,49 @@ export function _clearListActiveInflightForTests(): void {
 }
 
 /**
+ * Session-branch upstream cache, keyed `<slug>/<sessionId>`. The upstream
+ * (`branch.agent/<id>.merge`) is written during create (or a claim's
+ * re-branch prep) before the session ever lists as a user session, and
+ * nothing rewrites it while the session runs — but a spare mid-claim can
+ * still be listed before its rewrite lands, so entries expire on a short
+ * TTL rather than living forever. Without this, every 5s snapshot rebuild
+ * spawned one `git config` subprocess per running session.
+ */
+const UPSTREAM_BRANCH_CACHE_TTL_MS = 60_000
+const upstreamBranchCache = new Map<string, { value: string | null; atMs: number }>()
+
+/** Test-only: drop cached upstream branches. */
+export function _clearUpstreamBranchCacheForTests(): void {
+  upstreamBranchCache.clear()
+}
+
+async function cachedUpstreamBranch(
+  slug: string,
+  sessionId: string,
+  nowMs: number,
+): Promise<string | null> {
+  const key = `${slug}/${sessionId}`
+  const hit = upstreamBranchCache.get(key)
+  if (hit && nowMs - hit.atMs < UPSTREAM_BRANCH_CACHE_TTL_MS) return hit.value
+  // Lazy sweep so entries for long-gone sessions can't accumulate
+  // unboundedly in a long-lived server.
+  if (upstreamBranchCache.size > 256) {
+    for (const [k, v] of upstreamBranchCache) {
+      if (nowMs - v.atMs >= UPSTREAM_BRANCH_CACHE_TTL_MS) upstreamBranchCache.delete(k)
+    }
+  }
+  try {
+    const value = await worktreeUpstreamBranch(repoDir(slug), `agent/${sessionId}`)
+    upstreamBranchCache.set(key, { value, atMs: nowMs })
+    return value
+  } catch {
+    // Transient read failure — keep any expired hit rather than caching
+    // the failure; the next rebuild retries.
+    return hit?.value ?? null
+  }
+}
+
+/**
  * Enumerate session pods for a project (or all projects), splitting
  * them into the active-session rows the renderer displays and the stale
  * set the caller is expected to tear down.
@@ -224,7 +268,7 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
         // The session branch's recorded upstream (branch.agent/<id>.merge in
         // the shared repo config) — written at setup, rewritten by a claim's
         // re-branch prep, so it's authoritative for a listed session.
-        worktreeUpstreamBranch(repoDir(p.projectSlug), `agent/${p.sessionId}`).catch(() => null),
+        cachedUpstreamBranch(p.projectSlug, p.sessionId, Date.now()),
       ])
       return {
         sessionId: p.sessionId,
@@ -292,10 +336,10 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
  * one broken session can't block the rest; designed to be called from
  * the server background loop.
  */
-export async function reconcileStaleSessions(): Promise<void> {
+export async function reconcileStaleSessions(snapshot?: TickSnapshot): Promise<void> {
   let pods
   try {
-    pods = await listSessionPods()
+    pods = await (snapshot ? snapshot.pods() : listSessionPods())
   } catch {
     return
   }
@@ -338,7 +382,7 @@ export async function reconcileStaleSessions(): Promise<void> {
   // list and reap any job past the grace window with no backing pod.
   const orphanTargets: Array<{ jobName: string; projectSlug: string; sessionId: string }> = []
   try {
-    const jobs = await listSessionJobs()
+    const jobs = await (snapshot ? snapshot.jobs() : listSessionJobs())
     const podSessionIds = new Set(pods.map((p) => p.sessionId))
     for (const j of jobs) {
       if (podSessionIds.has(j.sessionId)) continue
@@ -449,10 +493,10 @@ export async function reconcileStaleSessions(): Promise<void> {
  * is best-effort and self-skips once a snapshot exists (see
  * `ensureOpencodeFirstMessageCaptured`).
  */
-export async function captureOpencodeFirstMessages(): Promise<void> {
+export async function captureOpencodeFirstMessages(snapshot?: TickSnapshot): Promise<void> {
   let pods
   try {
-    pods = await listSessionPods()
+    pods = await (snapshot ? snapshot.pods() : listSessionPods())
   } catch {
     return
   }

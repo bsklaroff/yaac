@@ -98,6 +98,35 @@ describe('startBackgroundLoop', () => {
     expect(consoleErrorSpy).toHaveBeenCalled()
   })
 
+  it('passes one shared snapshot to every step in a tick, and a fresh one next tick', async () => {
+    const seen: unknown[] = []
+    const stepA = vi.fn().mockImplementation((snap: unknown) => { seen.push(snap); return Promise.resolve() })
+    const stepB = vi.fn().mockImplementation((snap: unknown) => { seen.push(snap); return Promise.resolve() })
+    const abortCtrl = new AbortController()
+
+    let sleepCount = 0
+    const sleep = vi.fn().mockImplementation(() => {
+      sleepCount++
+      if (sleepCount >= 2) abortCtrl.abort()
+      return Promise.resolve()
+    })
+
+    await startBackgroundLoop({
+      signal: abortCtrl.signal,
+      intervalMs: 1000,
+      sleep,
+      tickSteps: [stepA, stepB],
+    })
+
+    // Two ticks × two steps. Within a tick both steps share one snapshot;
+    // across ticks the snapshot is fresh.
+    expect(seen).toHaveLength(4)
+    expect(seen[0]).toBeDefined()
+    expect(seen[1]).toBe(seen[0])
+    expect(seen[3]).toBe(seen[2])
+    expect(seen[2]).not.toBe(seen[0])
+  })
+
   it('isolates per-step failures — a throwing step does not skip later steps or halt the loop', async () => {
     const stepA = vi.fn().mockRejectedValue(new Error('boom'))
     const stepB = vi.fn().mockResolvedValue(undefined)

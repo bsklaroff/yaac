@@ -15,6 +15,7 @@ import {
   streamingClusterSetupDeps,
   type ClusterSetupDeps,
 } from '#lib/k8s/cluster-setup'
+import { NODE_KUBELET_HOUSEKEEPING_INTERVAL } from '#lib/k8s/cluster-check'
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -127,7 +128,7 @@ describe('runClusterSetup', () => {
     // kubelet housekeeping interval: idempotent kubeadm-flags.env edit,
     // restarting kubelet only when the flag was absent.
     expect(execCmds.some((c) =>
-      c.includes('--housekeeping-interval=60s')
+      c.includes(`--housekeeping-interval=${NODE_KUBELET_HOUSEKEEPING_INTERVAL}`)
       && c.includes('/var/lib/kubelet/kubeadm-flags.env')
       && c.includes('systemctl restart kubelet'))).toBe(true)
     expect(runCalls.some(([f, a]) => f === 'podman' && a[0] === 'update' && a.includes('32768'))).toBe(true)

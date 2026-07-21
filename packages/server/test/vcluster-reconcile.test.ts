@@ -109,6 +109,19 @@ describe('reconcileVclusters', () => {
     await expect(fs.readFile(configPath, 'utf8')).resolves.toBe('kubeconfig-bytes\n')
   })
 
+  it('reads all three listings from the tick snapshot when one is provided', async () => {
+    const snapshot = {
+      pods: vi.fn().mockResolvedValue([]),
+      jobs: vi.fn().mockResolvedValue([]),
+      vclusters: vi.fn().mockResolvedValue([vcInfo('yvc-deadbeef', 'deadbeef-1111')]),
+    }
+    await reconcileVclusters(NOW, snapshot)
+    expect(mockList).not.toHaveBeenCalled()
+    expect(mockPods).not.toHaveBeenCalled()
+    expect(mockJobs).not.toHaveBeenCalled()
+    expect(mockRemove).toHaveBeenCalledWith('yvc-deadbeef')
+  })
+
   it('leaves a present kubeconfig untouched', async () => {
     mockList.mockResolvedValue([vcInfo('yvc-deadbeef', 'deadbeef-1111')])
     mockPods.mockResolvedValue([

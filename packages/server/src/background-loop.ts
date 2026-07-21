@@ -12,6 +12,7 @@ import { reconcilePrewarmPool } from '#prewarm-reconcile'
 import { reconcileSchedules } from '#schedule-reconcile'
 import { reconcileImagePrewarm } from '#image-prewarm'
 import { reconcileGeneratedTitles } from '#title-generation'
+import { createTickSnapshot, type TickSnapshot } from '#lib/k8s/tick-snapshot'
 import { serverLog } from '#log'
 
 export interface BackgroundLoopDeps {
@@ -26,9 +27,10 @@ export interface BackgroundLoopDeps {
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>
   /**
    * Injected for tests — overrides the tick body. Each element runs in
-   * sequence with per-step error isolation. Defaults to the real tick.
+   * sequence with per-step error isolation, and receives the tick's
+   * shared cluster-listing snapshot. Defaults to the real tick.
    */
-  tickSteps?: Array<() => Promise<void>>
+  tickSteps?: Array<(snapshot: TickSnapshot) => Promise<void>>
   /**
    * Called after every completed tick (including the immediate first
    * one). Used to push a fresh state snapshot to webapp clients once
@@ -57,7 +59,7 @@ function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
   })
 }
 
-function defaultTickSteps(): Array<() => Promise<void>> {
+function defaultTickSteps(): Array<(snapshot: TickSnapshot) => Promise<void>> {
   return [
     reconcileStaleSessions,
     // Fire due cron schedules (detached headless session creates). After the
@@ -69,7 +71,8 @@ function defaultTickSteps(): Array<() => Promise<void>> {
     // Keep every project's image chain built and pushed (detached tasks, so
     // a minutes-long build never blocks the tick). Before the prewarm pool:
     // a spare's createSession then joins the already-running builds.
-    reconcileImagePrewarm,
+    // Throttled internally — most ticks are a no-op.
+    () => reconcileImagePrewarm(),
     // Keep one prewarmed spare per active project (after the stale sweep so
     // counts reflect just-reaped sessions). No-op when the pool size is 0.
     reconcilePrewarmPool,
@@ -89,22 +92,24 @@ function defaultTickSteps(): Array<() => Promise<void>> {
     // lazily by the first session create's ensureRunning().
     reconcileProxySshKeys,
     // Per-session vclusters: orphan GC + host-side kubeconfig heal.
-    reconcileVclusters,
+    (snapshot) => reconcileVclusters(Date.now(), snapshot),
     // yaac-in-yaac: project the inner egress redirect for a vcluster's synced
-    // pods once its inner proxy is up (or prune it when gone).
-    reconcileInnerRedirects,
+    // pods once its inner proxy is up (or prune it when gone). Throttled
+    // internally — most ticks are a no-op.
+    (snapshot) => reconcileInnerRedirects(Date.now(), snapshot),
     // yaac-in-yaac: tell the outer proxy which outer session owns each
     // vcluster's pods, so their chained egress is attributed + allowlist-judged
     // (the proxy can't resolve those cross-namespace source pods itself).
-    reconcileVclusterAttribution,
+    // Throttled internally — most ticks are a no-op.
+    (snapshot) => reconcileVclusterAttribution(Date.now(), snapshot),
     // GC the TPROXY rules Cilium leaks when a CEC is deleted (vcluster
     // churn residue). Throttled internally — most ticks are a no-op. After
     // reconcileInnerRedirects so a CEC it just (re)applied reads as live.
-    reconcileStaleTproxyRules,
+    () => reconcileStaleTproxyRules(),
     // Host podman image GC: retire stale content-hash generations and
     // prune the chains they pinned. Throttled internally to every few
     // hours; a no-op on e2e servers (per-run namespaces skip it).
-    reconcileHostImageGc,
+    () => reconcileHostImageGc(),
     // Leaked trust-split builder pods (server crashed mid-build): the
     // normal path deletes them inline; this label sweep is the backstop.
     // Throttled internally — most ticks are a no-op.
@@ -127,6 +132,10 @@ export async function startBackgroundLoop(deps: BackgroundLoopDeps): Promise<voi
   const steps = deps.tickSteps ?? defaultTickSteps()
 
   const runTick = async (): Promise<void> => {
+    // One lazily-fetched listing snapshot shared by every step in this
+    // tick — the steps that need pods/jobs/vclusters all read the same
+    // kubectl list instead of each running their own.
+    const snapshot = createTickSnapshot()
     for (const step of steps) {
       // Bail out of the tick as soon as shutdown signals. A step that's
       // already in flight still runs to completion — that's the point of
@@ -135,7 +144,7 @@ export async function startBackgroundLoop(deps: BackgroundLoopDeps): Promise<voi
       // work behind a signal the server has already seen.
       if (signal.aborted) return
       try {
-        await step()
+        await step(snapshot)
       } catch (err) {
         serverLog(`[server] loop step ${step.name || 'anon'} failed: ${String(err)}`)
       }

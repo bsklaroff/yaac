@@ -94,4 +94,16 @@ describe('reconcilePrewarmPool', () => {
     await flush()
     expect(inFlight.size).toBe(0)
   })
+
+  it('reads pods from the tick snapshot when one is provided', async () => {
+    const snapshot = {
+      pods: vi.fn().mockResolvedValue([pod({ jobName: 'yaac-p-real', sessionId: 'r1' })]),
+      jobs: vi.fn(),
+      vclusters: vi.fn(),
+    }
+    await reconcilePrewarmPool(snapshot)
+    expect(mockListPods).not.toHaveBeenCalled()
+    expect(snapshot.pods).toHaveBeenCalledTimes(1)
+    expect(mockCreate).toHaveBeenCalledWith('p', { tool: 'claude', prewarm: true })
+  })
 })

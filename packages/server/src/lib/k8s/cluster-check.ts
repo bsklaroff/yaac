@@ -61,12 +61,13 @@ export const NODE_SRC_VALID_MARK_PATH = '/proc/sys/net/ipv4/conf/all/src_valid_m
  * cgroup per tick; a gVisor session sandbox concentrates ~9k host fds in
  * one sentry process (directfs handles, gofer channels), so at the default
  * interval kubelet alone burned 1.5–2 cores on a 5-session node (pprof:
- * >90% in cadvisor processStatsFromProcs → syscall.Readlink). 60s cuts
- * that ~6x; the cost is slower node-level stats (metrics/eviction
- * reaction) — session OOMs are enforced by the pod memcg limit and are
- * unaffected.
+ * >90% in cadvisor processStatsFromProcs → syscall.Readlink). Even at 60s
+ * a 4-session node still measured kubelet at ~1.1 cores with >90% of its
+ * profile in the same readlink storm, so the interval is stretched to
+ * 300s; the cost is slower node-level stats (metrics/eviction reaction) —
+ * session OOMs are enforced by the pod memcg limit and are unaffected.
  */
-export const NODE_KUBELET_HOUSEKEEPING_INTERVAL = '60s'
+export const NODE_KUBELET_HOUSEKEEPING_INTERVAL = '300s'
 /** kubeadm-written kubelet flags file the fixup edits (kind node fs —
  *  persists across node restarts, unlike the sysctl fixups). */
 export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
