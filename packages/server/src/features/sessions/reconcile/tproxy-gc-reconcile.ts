@@ -9,7 +9,7 @@ import { kubectlGetJson } from '#platform/k8s/kubectl'
 import { serverLog } from '#log'
 
 /**
- * Background-loop tick step: garbage-collect the TPROXY rules Cilium leaks
+ * Reconcile step: garbage-collect the TPROXY rules Cilium leaks
  * when a CiliumEnvoyConfig is deleted (it never removes the per-listener
  * rules from CILIUM_PRE_mangle). Every vcluster teardown leaks its
  * inner-redirect CEC's six rules this way, so they accumulate without bound

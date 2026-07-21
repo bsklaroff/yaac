@@ -1,12 +1,6 @@
 import { proxyClient } from '#features/sessions/egress/proxy-client'
-import { kubectlGetJson } from '#platform/k8s/kubectl'
-import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
-import { listVclusterNamespaces, type VclusterNamespaceInfo } from '#features/cluster/vcluster'
+import { createTickSnapshot, type TickSnapshot } from '#platform/k8s/tick-snapshot'
 import { serverLog } from '#log'
-
-interface RawPodList {
-  items?: Array<{ status?: { podIP?: string } }>
-}
 
 /**
  * Build `{ podIP: outerSessionId }` for every managed vcluster's host pods.
@@ -21,15 +15,12 @@ interface RawPodList {
  * judges chained egress against the OWNING outer session's allowlist.
  */
 export async function buildVclusterAttribution(
-  vclusters?: VclusterNamespaceInfo[],
+  snapshot: TickSnapshot,
 ): Promise<Record<string, string>> {
-  vclusters ??= await listVclusterNamespaces()
   const map: Record<string, string> = {}
-  for (const { namespace, sessionId } of vclusters) {
-    const pods = await kubectlGetJson<RawPodList>(['get', 'pods', '-n', namespace, '-o', 'json'])
-    for (const pod of pods?.items ?? []) {
-      const ip = pod.status?.podIP
-      if (ip) map[ip] = sessionId
+  for (const vc of await snapshot.vclusters()) {
+    for (const pod of await snapshot.vclusterPods(vc.namespace)) {
+      if (pod.podIP) map[pod.podIP] = vc.sessionId
     }
   }
   return map
@@ -42,43 +33,25 @@ function serialize(map: Record<string, string>): string {
 
 let lastPushed: string | null = null
 
-/**
- * Min interval between attribution rebuilds. Each rebuild runs one
- * `kubectl get pods` per vcluster namespace — at the 5s tick cadence that
- * was constant child-process churn scaling with vcluster count. The cost
- * of the interval: a brand-new inner pod's chained egress can fail-closed
- * at the outer proxy for up to this long before its IP is attributed (in
- * practice an inner pod takes longer than this to boot and first dial
- * out), and outer-proxy restart recovery is delayed by the same bound.
- */
-export const VCLUSTER_ATTRIBUTION_INTERVAL_MS = 15_000
-
-let lastRunMs = 0
-
-/** Reset the throttle + last-pushed state (tests only). */
+/** Reset the last-pushed state (tests only). */
 export function _resetVclusterAttributionForTests(): void {
-  lastRunMs = 0
   lastPushed = null
 }
 
 /**
- * Background-loop tick step: push the vcluster attribution map to the outer
- * proxy (see buildVclusterAttribution). Full-replace, so a torn-down pod's IP is
+ * Reconcile step: push the vcluster attribution map to the outer proxy
+ * (see buildVclusterAttribution). Full-replace, so a torn-down pod's IP is
  * evicted on the next push. attach-only (never bootstraps the proxy, matching
- * the other proxy reconcilers). A non-empty map is pushed every eligible tick
- * so the outer proxy recovers its attribution after a restart; an empty map is
- * pushed only on the transition to empty (e.g. the last vcluster was deleted).
- * Throttled to VCLUSTER_ATTRIBUTION_INTERVAL_MS.
+ * the other proxy reconcilers). A non-empty map is pushed on every run —
+ * vcluster pod deltas fire it within milliseconds of an IP appearing, and the
+ * fast-poll cadence re-pushes so the outer proxy recovers its attribution
+ * after a restart; an empty map is pushed only on the transition to empty
+ * (e.g. the last vcluster was deleted).
  */
 export async function reconcileVclusterAttribution(
-  nowMs: number = Date.now(),
-  snapshot?: TickSnapshot,
+  snapshot: TickSnapshot = createTickSnapshot(),
 ): Promise<void> {
-  if (nowMs - lastRunMs < VCLUSTER_ATTRIBUTION_INTERVAL_MS) return
-  lastRunMs = nowMs
-  const map = await buildVclusterAttribution(
-    await (snapshot ? snapshot.vclusters() : listVclusterNamespaces()),
-  )
+  const map = await buildVclusterAttribution(snapshot)
   const serialized = serialize(map)
   if (Object.keys(map).length === 0 && serialized === lastPushed) return
   if (!(await proxyClient.attachIfRunning())) return

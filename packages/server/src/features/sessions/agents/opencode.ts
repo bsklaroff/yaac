@@ -277,7 +277,7 @@ export async function getDeletedSessionOpencodeFirstUserMessage(
 /**
  * Capture-and-persist the first-message snapshot for a live opencode
  * session, but only if one isn't already cached. Driven by the server
- * background loop so a record exists for `session list -d` / restart even
+ * reconciler so a record exists for `session list -d` / restart even
  * when no client is polling /session/list (the only other trigger).
  *
  * Short-circuits on a cheap meta read once captured, so steady-state
@@ -300,7 +300,7 @@ export async function ensureOpencodeFirstMessageCaptured(
  * Persist the first-message snapshot for running opencode sessions that
  * don't have one yet, so `session list -d` and restart retain a record
  * even when no client polls /session/list (otherwise the only trigger).
- * Designed to run from the server background loop.
+ * Designed to run from the server reconciler.
  *
  * opencode is the only tool whose snapshot is probe-driven — claude and
  * codex write their transcripts directly on message submit — so this

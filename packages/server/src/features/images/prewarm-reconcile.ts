@@ -1,5 +1,5 @@
 /**
- * Background-loop step that keeps the prewarmed-session pool at its target:
+ * Reconcile step that keeps the prewarmed-session pool at its target:
  * one spare per active project, booting the configured default tool (spares
  * are tool-agnostic — a claim for another tool retools them). Spawns spares
  * via `createSession({ prewarm: true })` and reaps excess / idle ones via

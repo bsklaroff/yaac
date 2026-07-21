@@ -1,5 +1,5 @@
 /**
- * Background-loop step that fires cron schedules: for each `schedules` row
+ * Reconcile step that fires cron schedules: for each `schedules` row
  * whose cron spec has come due, start one headless session in the row's
  * project with the row's prompt typed into the agent — no terminal, no
  * NDJSON stream; progress surfaces only through the webapp's provisioning

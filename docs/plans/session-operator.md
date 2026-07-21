@@ -10,11 +10,12 @@ in-cluster: a
 `Session` custom resource becomes the persisted source of truth and a Go
 controller (client-go/controller-runtime) converges the cluster to it.
 
-Motivation is architectural, not CPU. The event-driven refactor
-(`docs/plans/event-driven-k8s-control.md`) already removes the polling and
-process-per-stream overhead inside the current single-process design; an
-operator is the *next* shape, and its trigger conditions are the plans
-already on the shelf:
+Motivation is architectural, not CPU. The event-driven control layer
+(`docs/event-driven-reconcile.md`) already removes the polling overhead
+inside the current single-process design, and
+`docs/plans/event-driven-k8s-control.md` covers the remaining
+process-per-stream work; an operator is the *next* shape, and its
+trigger conditions are the plans already on the shelf:
 
 - **Remote hosting** (`docs/remote-hosting.md`): a server detached
   from the cluster needs convergence to happen cluster-side.
@@ -153,7 +154,7 @@ used for vcluster synced pods).
   `YAAC_K8S_NAMESPACE` scoping today) vs cluster-scoped with install
   labels.
 - Status → frontend latency: server informs on Session status (same
-  informer layer as `docs/plans/event-driven-k8s-control.md`) — verify the
+  informer layer as `docs/event-driven-reconcile.md`) — verify the
   hub's 150ms coalesce still holds end-to-end.
 
 ## Prior art: kubernetes-sigs/agent-sandbox

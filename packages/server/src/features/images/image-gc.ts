@@ -114,7 +114,7 @@ export function resetHostImageGcState(): void {
 }
 
 /**
- * Background-loop tick step. Gated to the default install: e2e servers
+ * Reconcile step. Gated to the default install: e2e servers
  * (per-run `YAAC_K8S_NAMESPACE`) share the host engine, and a GC firing
  * at every test-server boot could retire generations a concurrent run's
  * `requirePrebuilt` sessions still resolve on the host. The long-running

@@ -2,6 +2,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import YAML from 'yaml'
+import { z } from 'zod'
 import { buildVclusterFallbackRedirectCnpManifest } from '#features/cluster/proxy-manifests'
 import {
   dataDirHash,
@@ -540,10 +541,43 @@ export interface VclusterNamespaceInfo {
   creationTimestamp: string
 }
 
-interface RawNamespaceList {
-  items: Array<{
-    metadata: { name: string; labels?: Record<string, string>; creationTimestamp?: string }
-  }>
+/**
+ * Raw-object schemas shared by the kubectl lists below and the informer
+ * caches (which see class instances with Date timestamps from list calls
+ * and raw JSON from watch events — hence the union).
+ */
+const namespaceObjectSchema = z.object({
+  metadata: z.object({
+    name: z.string().min(1),
+    labels: z.record(z.string(), z.string()).optional(),
+    creationTimestamp: z.union([z.string(), z.date()]).optional(),
+  }),
+})
+
+/**
+ * Validate+map one raw Namespace object to VclusterNamespaceInfo;
+ * null = malformed or not a vcluster namespace (missing ownership labels).
+ */
+export function mapVclusterNamespaceObject(obj: unknown): VclusterNamespaceInfo | null {
+  const res = namespaceObjectSchema.safeParse(obj)
+  if (!res.success) return null
+  const { name: namespace, labels, creationTimestamp } = res.data.metadata
+  const name = labels?.[LABEL_VCLUSTER]
+  const sessionId = labels?.[LABEL_VCLUSTER_SESSION_ID]
+  if (!name || !sessionId) return null
+  return {
+    name,
+    sessionId,
+    namespace,
+    creationTimestamp: creationTimestamp instanceof Date
+      ? creationTimestamp.toISOString()
+      : creationTimestamp ?? '',
+  }
+}
+
+/** The label selector `listVclusterNamespaces` and its informer share. */
+export function vclusterNamespaceSelector(): string {
+  return `${LABEL_VCLUSTER},${LABEL_VCLUSTER_DATA_DIR_HASH}=${dataDirHash()}`
 }
 
 /**
@@ -553,21 +587,67 @@ interface RawNamespaceList {
  * never landed is still GC'd.
  */
 export async function listVclusterNamespaces(): Promise<VclusterNamespaceInfo[]> {
-  const list = await kubectlGetJson<RawNamespaceList>([
-    'get', 'namespaces',
-    '-l', `${LABEL_VCLUSTER},${LABEL_VCLUSTER_DATA_DIR_HASH}=${dataDirHash()}`,
+  const list = await kubectlGetJson<{ items: unknown[] }>([
+    'get', 'namespaces', '-l', vclusterNamespaceSelector(),
   ])
-  return (list?.items ?? []).flatMap((n) => {
-    const name = n.metadata.labels?.[LABEL_VCLUSTER]
-    const sessionId = n.metadata.labels?.[LABEL_VCLUSTER_SESSION_ID]
-    if (!name || !sessionId) return []
-    return [{
-      name,
-      sessionId,
-      namespace: n.metadata.name,
-      creationTimestamp: n.metadata.creationTimestamp ?? '',
-    }]
-  })
+  return (list?.items ?? []).flatMap((n) => mapVclusterNamespaceObject(n) ?? [])
+}
+
+/** A pod inside a vcluster's host namespace (attribution reads the IP). */
+export interface VclusterPod {
+  name: string
+  podIP?: string
+}
+
+const vclusterPodObjectSchema = z.object({
+  metadata: z.object({ name: z.string().min(1) }),
+  status: z.object({ podIP: z.string().optional() }).optional(),
+})
+
+export function mapVclusterPodObject(obj: unknown): VclusterPod | null {
+  const res = vclusterPodObjectSchema.safeParse(obj)
+  if (!res.success) return null
+  const podIP = res.data.status?.podIP
+  return { name: res.data.metadata.name, ...(podIP ? { podIP } : {}) }
+}
+
+/** All pods in a vcluster's host namespace (informer-cache fallback). */
+export async function listVclusterPods(namespace: string): Promise<VclusterPod[]> {
+  const list = await kubectlGetJson<{ items: unknown[] }>(['get', 'pods', '-n', namespace])
+  return (list?.items ?? []).flatMap((p) => mapVclusterPodObject(p) ?? [])
+}
+
+/** A syncer-managed Service in a vcluster's host namespace. */
+export interface VclusterService {
+  name: string
+  labels: Record<string, string>
+}
+
+const vclusterServiceObjectSchema = z.object({
+  metadata: z.object({
+    name: z.string().min(1),
+    labels: z.record(z.string(), z.string()).optional(),
+  }),
+})
+
+export function mapVclusterServiceObject(obj: unknown): VclusterService | null {
+  const res = vclusterServiceObjectSchema.safeParse(obj)
+  if (!res.success) return null
+  return { name: res.data.metadata.name, labels: res.data.metadata.labels ?? {} }
+}
+
+/**
+ * The syncer-managed Services in a vcluster's host namespace
+ * (informer-cache fallback; the inner-redirect step filters proxies out).
+ */
+export async function listVclusterServices(
+  namespace: string,
+  vcName: string,
+): Promise<VclusterService[]> {
+  const list = await kubectlGetJson<{ items: unknown[] }>([
+    'get', 'services', '-n', namespace, '-l', `${LABEL_VCLUSTER_MANAGED_BY}=${vcName}`,
+  ])
+  return (list?.items ?? []).flatMap((s) => mapVclusterServiceObject(s) ?? [])
 }
 
 export interface EnsureVclusterParams {

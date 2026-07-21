@@ -246,9 +246,12 @@ describe('reconcileStaleSessions', () => {
 
   it('reads pods and jobs from the tick snapshot when one is provided', async () => {
     const snapshot = {
+      resync: true,
       pods: vi.fn().mockResolvedValue([pod('zombie-1')]),
       jobs: vi.fn().mockResolvedValue([]),
       vclusters: vi.fn(),
+      vclusterPods: vi.fn(() => Promise.resolve([])),
+      vclusterServices: vi.fn(() => Promise.resolve([])),
     }
     mockProbe.mockResolvedValue('dead' as TmuxLiveness)
 

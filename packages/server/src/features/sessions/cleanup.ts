@@ -374,7 +374,7 @@ export async function cleanupSessionDetached(params: {
 
   // Audit every teardown: the actual work below runs as a detached,
   // stdio-ignored child, so without this line a session reaped by the
-  // background loop vanishes with no trace in the server log.
+  // reconciler vanishes with no trace in the server log.
   serverLog(
     `[server] session teardown: session=${sessionId} job=${jobName} project=${projectSlug}`
     + (cause ? ` cause=${cause.reason}${cause.detail ? ` (${cause.detail})` : ''}` : ''),

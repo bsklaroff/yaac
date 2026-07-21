@@ -7,19 +7,16 @@ vi.mock('#platform/k8s/kubectl', () => ({
   kubectlApply: vi.fn().mockResolvedValue(undefined),
   kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
-vi.mock('#features/cluster/vcluster', () => ({
-  listVclusterNamespaces: vi.fn().mockResolvedValue([]),
-}))
+vi.mock('#platform/k8s/tick-snapshot', () => ({ createTickSnapshot: vi.fn() }))
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import {
   reconcileInnerRedirects,
-  INNER_REDIRECT_INTERVAL_MS,
-  _resetInnerRedirectThrottleForTests,
+  _resetInnerRedirectStateForTests,
 } from '#features/sessions/reconcile/inner-redirect-reconcile'
 import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
+import type { VclusterNamespaceInfo, VclusterService } from '#features/cluster/vcluster'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
-import { listVclusterNamespaces } from '#features/cluster/vcluster'
 import { serverLog } from '#log'
 import {
   INNER_EGRESS_REDIRECT_CEC_NAME,
@@ -33,37 +30,54 @@ import { LABEL_DATA_DIR_HASH } from '#platform/k8s/pods'
 const mockGetJson = vi.mocked(kubectlGetJson)
 const mockApply = vi.mocked(kubectlApply)
 const mockRetry = vi.mocked(kubectlWithRetry)
-const mockList = vi.mocked(listVclusterNamespaces)
 const mockLog = vi.mocked(serverLog)
 
-const VC = { name: 'yvc-1', sessionId: 's1', namespace: 'yaac-vc-1', creationTimestamp: '' }
+const VC: VclusterNamespaceInfo =
+  { name: 'yvc-1', sessionId: 's1', namespace: 'yaac-vc-1', creationTimestamp: '' }
 // vcluster-translated inner proxy Services, one per inner install.
 const SVC_AMBIENT = 'yaac-proxy-x-yaac-x-yvc-1'
 const SVC_E2E = 'yaac-proxy-x-yaac-test-ab12-x-yvc-1'
 const HASH_AMBIENT = 'aaaa000000000001'
 const HASH_E2E = 'eeee000000000002'
 
+/**
+ * Fake one pass's cluster view: the vcluster list and its (single) host
+ * namespace's syncer-managed Services now come from the snapshot, not kubectl.
+ */
+function snap(opts: {
+  vclusters?: VclusterNamespaceInfo[]
+  services?: VclusterService[]
+  resync?: boolean
+} = {}): TickSnapshot {
+  return {
+    resync: opts.resync ?? true,
+    pods: () => Promise.resolve([]),
+    jobs: () => Promise.resolve([]),
+    vclusters: () => Promise.resolve(opts.vclusters ?? [VC]),
+    vclusterPods: () => Promise.resolve([]),
+    vclusterServices: () => Promise.resolve(opts.services ?? []),
+  }
+}
+
 interface FakeObject { metadata: { name: string; labels?: Record<string, string> } }
 
 /**
- * Route kubectlGetJson by query: the services discovery vs the two projected-
- * object prune listings (`get <kind> -l yaac.projection=inner-redirect`).
+ * Route kubectlGetJson: only the two projected-object prune listings
+ * (`get <kind> -l yaac.projection=inner-redirect`) remain on kubectl.
  */
 function wireGets(opts: {
-  services?: FakeObject[]
   projectedCecs?: FakeObject[]
   projectedCnps?: FakeObject[]
 }): void {
   mockGetJson.mockImplementation((args) => {
-    if (args[1] === 'services') return Promise.resolve({ items: opts.services ?? [] })
     if (args[1] === 'ciliumenvoyconfig') return Promise.resolve({ items: opts.projectedCecs ?? [] })
     if (args[1] === 'ciliumnetworkpolicy') return Promise.resolve({ items: opts.projectedCnps ?? [] })
     return Promise.resolve(null)
   })
 }
 
-function proxySvc(name: string, installHash?: string): FakeObject {
-  return { metadata: { name, labels: installHash ? { [LABEL_DATA_DIR_HASH]: installHash } : {} } }
+function proxySvc(name: string, installHash?: string): VclusterService {
+  return { name, labels: installHash ? { [LABEL_DATA_DIR_HASH]: installHash } : {} }
 }
 
 function appliedNames(): Array<{ kind: string; name: string; namespace: string }> {
@@ -85,22 +99,20 @@ const LEGACY_DELETE =
 describe('reconcileInnerRedirects', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    _resetInnerRedirectThrottleForTests()
-    mockList.mockResolvedValue([])
+    _resetInnerRedirectStateForTests()
     wireGets({})
   })
 
   it('no-ops when there are no managed vclusters', async () => {
-    await reconcileInnerRedirects()
+    await reconcileInnerRedirects(snap({ vclusters: [] }))
     expect(mockApply).not.toHaveBeenCalled()
     expect(mockRetry).not.toHaveBeenCalled()
+    expect(mockGetJson).not.toHaveBeenCalled()
   })
 
   it('projects one CEC+override per inner install plus the shared ingress lock', async () => {
-    mockList.mockResolvedValue([VC])
-    wireGets({ services: [proxySvc(SVC_E2E, HASH_E2E), proxySvc(SVC_AMBIENT, HASH_AMBIENT)] })
-
-    await reconcileInnerRedirects()
+    await reconcileInnerRedirects(
+      snap({ services: [proxySvc(SVC_E2E, HASH_E2E), proxySvc(SVC_AMBIENT, HASH_AMBIENT)] }))
 
     // Sorted by service name (deterministic): 'yaac-proxy-x-yaac-test-…'
     // precedes 'yaac-proxy-x-yaac-x-…' ('t' < 'x') — the very ordering that
@@ -136,9 +148,7 @@ describe('reconcileInnerRedirects', () => {
   })
 
   it('prunes a vanished install but keeps the survivors', async () => {
-    mockList.mockResolvedValue([VC])
     wireGets({
-      services: [proxySvc(SVC_AMBIENT, HASH_AMBIENT)], // the e2e install is gone
       projectedCecs: [
         { metadata: { name: `${INNER_EGRESS_REDIRECT_CEC_NAME}-${HASH_AMBIENT}` } },
         { metadata: { name: `${INNER_EGRESS_REDIRECT_CEC_NAME}-${HASH_E2E}` } },
@@ -150,7 +160,8 @@ describe('reconcileInnerRedirects', () => {
       ],
     })
 
-    await reconcileInnerRedirects()
+    // The e2e install is gone from the snapshot's Services.
+    await reconcileInnerRedirects(snap({ services: [proxySvc(SVC_AMBIENT, HASH_AMBIENT)] }))
 
     expect(retryCalls()).toEqual([
       LEGACY_DELETE,
@@ -166,9 +177,7 @@ describe('reconcileInnerRedirects', () => {
   })
 
   it('prunes everything (including the ingress lock) when no inner proxy remains', async () => {
-    mockList.mockResolvedValue([VC])
     wireGets({
-      services: [],
       projectedCecs: [{ metadata: { name: `${INNER_EGRESS_REDIRECT_CEC_NAME}-${HASH_AMBIENT}` } }],
       projectedCnps: [
         { metadata: { name: `${INNER_SESSION_EGRESS_REDIRECT_CNP_NAME}-${HASH_AMBIENT}` } },
@@ -176,7 +185,7 @@ describe('reconcileInnerRedirects', () => {
       ],
     })
 
-    await reconcileInnerRedirects()
+    await reconcileInnerRedirects(snap({ services: [] }))
 
     expect(appliedNames()).toEqual([])
     expect(retryCalls()).toEqual([
@@ -188,65 +197,87 @@ describe('reconcileInnerRedirects', () => {
   })
 
   it('ignores (and logs once) a yaac-proxy Service without an install label', async () => {
-    mockList.mockResolvedValue([VC])
-    wireGets({ services: [proxySvc(SVC_AMBIENT)] }) // pre-per-install inner yaac
+    // Pre-per-install inner yaac. Resync passes so both actually run.
+    await reconcileInnerRedirects(snap({ services: [proxySvc(SVC_AMBIENT)] }))
+    await reconcileInnerRedirects(snap({ services: [proxySvc(SVC_AMBIENT)] }))
 
-    // Distinct past-interval timestamps so both passes actually run.
-    await reconcileInnerRedirects(INNER_REDIRECT_INTERVAL_MS)
-    await reconcileInnerRedirects(INNER_REDIRECT_INTERVAL_MS * 2)
-
-    expect(mockList).toHaveBeenCalledTimes(2)
     expect(mockApply).not.toHaveBeenCalled()
     expect(mockLog).toHaveBeenCalledTimes(1)
     expect(String(mockLog.mock.calls[0][0])).toContain(SVC_AMBIENT)
   })
 
-  it('throttles: a second run inside the interval is a no-op', async () => {
-    mockList.mockResolvedValue([VC])
-    wireGets({ services: [proxySvc(SVC_AMBIENT, HASH_AMBIENT)] })
-
-    await reconcileInnerRedirects(INNER_REDIRECT_INTERVAL_MS)
-    await reconcileInnerRedirects(INNER_REDIRECT_INTERVAL_MS + 1_000)
-
-    expect(mockList).toHaveBeenCalledTimes(1)
-  })
-
-  it('reads the vcluster list from the tick snapshot when one is provided', async () => {
-    const snapshot = {
-      vclusters: vi.fn().mockResolvedValue([VC]),
-    } as unknown as TickSnapshot
-    wireGets({ services: [proxySvc(SVC_AMBIENT, HASH_AMBIENT)] })
-
-    await reconcileInnerRedirects(undefined, snapshot)
-
-    expect(mockList).not.toHaveBeenCalled()
-    expect(appliedNames().map((a) => a.name)).toContain(
-      `${INNER_EGRESS_REDIRECT_CEC_NAME}-${HASH_AMBIENT}`)
-  })
-
   it('non-proxy synced services never trigger a projection', async () => {
-    mockList.mockResolvedValue([VC])
-    wireGets({ services: [{ metadata: { name: 'some-app-x-yaac-x-yvc-1', labels: { [LABEL_DATA_DIR_HASH]: HASH_E2E } } }] })
-
-    await reconcileInnerRedirects()
+    await reconcileInnerRedirects(snap({
+      services: [{ name: 'some-app-x-yaac-x-yvc-1', labels: { [LABEL_DATA_DIR_HASH]: HASH_E2E } }],
+    }))
 
     expect(mockApply).not.toHaveBeenCalled()
     expect(mockLog).not.toHaveBeenCalled()
   })
 
   it('lists projected objects by the projection label, never by app alone', async () => {
-    mockList.mockResolvedValue([VC])
-    wireGets({ services: [proxySvc(SVC_AMBIENT, HASH_AMBIENT)] })
-
-    await reconcileInnerRedirects()
+    await reconcileInnerRedirects(snap({ services: [proxySvc(SVC_AMBIENT, HASH_AMBIENT)] }))
 
     const listSelectors = mockGetJson.mock.calls
       .map(([args]) => args)
-      .filter((a) => a[1] !== 'services')
       .map((a) => a[a.indexOf('-l') + 1])
     expect(listSelectors).toEqual([
       `${LABEL_PROJECTION}=${PROJECTION_INNER_REDIRECT}`,
       `${LABEL_PROJECTION}=${PROJECTION_INNER_REDIRECT}`,
+    ])
+  })
+
+  it('delta pass with an unchanged projection performs no kubectl work', async () => {
+    const services = [proxySvc(SVC_AMBIENT, HASH_AMBIENT)]
+    await reconcileInnerRedirects(snap({ services, resync: false }))
+    expect(mockApply).toHaveBeenCalled() // first pass projects
+
+    // Same desired state on a delta pass: the memo skips the namespace
+    // entirely — pod/service churn must not become apply spam.
+    vi.clearAllMocks()
+    await reconcileInnerRedirects(snap({ services, resync: false }))
+    expect(mockGetJson).not.toHaveBeenCalled()
+    expect(mockApply).not.toHaveBeenCalled()
+    expect(mockRetry).not.toHaveBeenCalled()
+
+    // A changed desired state on a delta pass does re-project.
+    await reconcileInnerRedirects(snap({
+      services: [...services, proxySvc(SVC_E2E, HASH_E2E)],
+      resync: false,
+    }))
+    expect(appliedNames().map((a) => a.name)).toContain(
+      `${INNER_EGRESS_REDIRECT_CEC_NAME}-${HASH_E2E}`)
+  })
+
+  it('resync pass re-prunes and re-applies even when nothing changed', async () => {
+    const services = [proxySvc(SVC_AMBIENT, HASH_AMBIENT)]
+    await reconcileInnerRedirects(snap({ services, resync: true }))
+
+    vi.clearAllMocks()
+    await reconcileInnerRedirects(snap({ services, resync: true }))
+    expect(retryCalls()).toContain(LEGACY_DELETE)
+    expect(appliedNames().map((a) => a.name)).toEqual([
+      `${INNER_EGRESS_REDIRECT_CEC_NAME}-${HASH_AMBIENT}`,
+      `${INNER_SESSION_EGRESS_REDIRECT_CNP_NAME}-${HASH_AMBIENT}`,
+      INNER_PROXY_INGRESS_CNP_NAME,
+    ])
+  })
+
+  it('drops the memo when the namespace disappears, so a comeback re-projects', async () => {
+    const services = [proxySvc(SVC_AMBIENT, HASH_AMBIENT)]
+    await reconcileInnerRedirects(snap({ services, resync: false }))
+
+    // The vcluster is torn down: its memo entry is dropped...
+    await reconcileInnerRedirects(snap({ vclusters: [], resync: false }))
+
+    // ...so the same namespace coming back (same desired state) is
+    // projected again instead of being skipped by a stale memo.
+    vi.clearAllMocks()
+    await reconcileInnerRedirects(snap({ services, resync: false }))
+    expect(appliedNames().map((a) => a.name)).toEqual([
+      `${INNER_EGRESS_REDIRECT_CEC_NAME}-${HASH_AMBIENT}`,
+      `${INNER_SESSION_EGRESS_REDIRECT_CNP_NAME}-${HASH_AMBIENT}`,
+      INNER_PROXY_INGRESS_CNP_NAME,
     ])
   })
 })

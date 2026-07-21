@@ -818,7 +818,7 @@ export async function createSession(
   // their values by name; the values land in the proxy-secrets
   // credentials file first so the registration's secretRefs resolve from
   // the proxy's first request onward. The same builder backs the
-  // background loop's backstop reconciler.
+  // reconciler's resync backstop.
   await syncProxySecrets(config)
   await proxyClient.registerSession(
     sessionId,

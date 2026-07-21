@@ -19,8 +19,12 @@ import {
   findSessionPod,
   listSessionJobs,
   listSessionPods,
+  mapSessionJobObject,
+  mapSessionPodObject,
   runPodToCompletion,
   sessionJobName,
+  sessionJobSelector,
+  toEpochMs,
   type SessionPod,
 } from '#platform/k8s/pods'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
@@ -364,6 +368,96 @@ describe('listSessionJobs', () => {
   it('returns [] when the list call yields null', async () => {
     mockGetJson.mockResolvedValue(null)
     await expect(listSessionJobs()).resolves.toEqual([])
+  })
+})
+
+describe('toEpochMs', () => {
+  it('parses ISO strings (kubectl JSON and watch events)', () => {
+    expect(toEpochMs('2026-06-01T00:00:00Z')).toBe(Date.parse('2026-06-01T00:00:00Z'))
+  })
+
+  it('reads Date instances (informer list-call class objects)', () => {
+    expect(toEpochMs(new Date(1_750_000_000_000))).toBe(1_750_000_000_000)
+  })
+})
+
+describe('mapSessionPodObject', () => {
+  it('maps a valid raw pod object to a SessionPod', () => {
+    expect(mapSessionPodObject(rawPod())).toEqual({
+      jobName: 'yaac-demo-s1',
+      podName: 'yaac-demo-s1-x1y2z',
+      sessionId: 's1',
+      projectSlug: 'demo',
+      tool: 'codex',
+      phase: 'Running',
+      running: true,
+      terminating: false,
+      createdAtMs: Date.parse('2026-06-01T00:00:00Z'),
+      labels: expect.any(Object) as Record<string, string>,
+    })
+  })
+
+  it('accepts a Date creationTimestamp (informer list-call class objects)', () => {
+    const raw = rawPod()
+    ;(raw.metadata as { creationTimestamp: unknown }).creationTimestamp =
+      new Date('2026-06-01T00:00:00Z')
+    expect(mapSessionPodObject(raw)?.createdAtMs).toBe(Date.parse('2026-06-01T00:00:00Z'))
+  })
+
+  it('returns null for malformed objects instead of throwing', () => {
+    expect(mapSessionPodObject({})).toBeNull()
+    // Missing the job-name label.
+    expect(mapSessionPodObject(rawPod({
+      labels: {
+        [LABEL_SESSION_ID]: 's1',
+        [LABEL_PROJECT]: 'demo',
+        [LABEL_TOOL]: 'codex',
+      },
+    }))).toBeNull()
+  })
+})
+
+function rawJob(): {
+  metadata: { name: string; labels: Record<string, string>; creationTimestamp: string | Date }
+} {
+  return {
+    metadata: {
+      name: 'yaac-demo-s1',
+      labels: { [LABEL_SESSION_ID]: 's1', [LABEL_PROJECT]: 'demo' },
+      creationTimestamp: '2026-06-01T00:00:00Z',
+    },
+  }
+}
+
+describe('mapSessionJobObject', () => {
+  it('maps a valid raw Job object to a SessionJob', () => {
+    expect(mapSessionJobObject(rawJob())).toEqual({
+      jobName: 'yaac-demo-s1',
+      sessionId: 's1',
+      projectSlug: 'demo',
+      createdAtMs: Date.parse('2026-06-01T00:00:00Z'),
+    })
+  })
+
+  it('accepts a Date creationTimestamp (informer list-call class objects)', () => {
+    const raw = rawJob()
+    raw.metadata.creationTimestamp = new Date('2026-06-01T00:00:00Z')
+    expect(mapSessionJobObject(raw)?.createdAtMs).toBe(Date.parse('2026-06-01T00:00:00Z'))
+  })
+
+  it('returns null when the labels are missing or the object is malformed', () => {
+    const raw = rawJob()
+    raw.metadata.labels = {}
+    expect(mapSessionJobObject(raw)).toBeNull()
+    expect(mapSessionJobObject({})).toBeNull()
+  })
+})
+
+describe('sessionJobSelector', () => {
+  it('scopes by data-dir-hash and requires the session-id label', () => {
+    expect(sessionJobSelector()).toBe('yaac.data-dir-hash=ddh0123456789abc,yaac.session-id')
+    expect(sessionJobSelector()).toContain(LABEL_DATA_DIR_HASH)
+    expect(sessionJobSelector()).toContain(LABEL_SESSION_ID)
   })
 })
 

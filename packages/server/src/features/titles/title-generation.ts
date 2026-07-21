@@ -1,5 +1,5 @@
 /**
- * Background-loop step that gives otherwise-untitled sessions a
+ * Reconcile step that gives otherwise-untitled sessions a
  * model-generated title summarizing their first user message, written into
  * the same per-project store as user renames (`session-titles.json`) — a
  * rename simply overwrites the entry, and only sessions with no title at

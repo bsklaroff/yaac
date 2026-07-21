@@ -1,5 +1,5 @@
 /**
- * Background-loop step that services in-session `yaac-spawn` requests: the
+ * Reconcile step that services in-session `yaac-spawn` requests: the
  * egress proxy holds each session's `POST http://yaac.internal/spawn` open
  * in an in-memory queue; this step drains that queue over the control API,
  * starts one headless session per request in the CALLER's project (exactly

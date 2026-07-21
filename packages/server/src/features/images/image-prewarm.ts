@@ -1,5 +1,5 @@
 /**
- * Background-loop step that keeps every project's image chain built and
+ * Reconcile step that keeps every project's image chain built and
  * pushed, so session create finds warm images instead of paying a podman
  * build (minutes after a Dockerfile.default edit) inside the create request.
  *

@@ -28,7 +28,7 @@ export function _resetSessionListChangedForTests(): void {
  * Wrap a listener so notification bursts coalesce: the first call fires
  * immediately (a session create should push its snapshot with zero
  * added latency), further calls inside `windowMs` collapse into one
- * trailing call. Keeps pod-watch event storms (server start seeding N
+ * trailing call. Keeps informer event storms (server start seeding N
  * pods, a multi-session teardown) from stampeding snapshot rebuilds.
  */
 export function coalesceCalls(fn: () => void, windowMs: number): () => void {

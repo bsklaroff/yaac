@@ -1,32 +1,70 @@
 import { listSessionJobs, listSessionPods, type SessionJob, type SessionPod } from '#platform/k8s/pods'
-import { listVclusterNamespaces, type VclusterNamespaceInfo } from '#features/cluster/vcluster'
+import {
+  listVclusterNamespaces,
+  listVclusterPods,
+  listVclusterServices,
+  type VclusterNamespaceInfo,
+  type VclusterPod,
+  type VclusterService,
+} from '#features/cluster/vcluster'
+import { getActiveClusterCache } from '#platform/k8s/cluster-cache'
 
 /**
- * One background-loop tick's shared view of the cluster listings several
- * steps need. Each getter runs its kubectl list at most once per snapshot
- * (the loop creates a fresh one every tick) and is lazy — a listing no
- * step asks for is never fetched. Before this, four steps each ran their
- * own `kubectl get pods` (plus jobs and vcluster-namespace lists) every
- * 5s tick; the child-process churn was a measurable slice of steady-state
- * server CPU.
+ * One reconcile pass's shared view of the cluster. Each getter answers
+ * from the active ClusterCache when its informer is healthy — the normal
+ * case, costing nothing — and falls back to a one-shot kubectl list when
+ * the cache is absent (unit tests, direct lib use) or degraded (watch
+ * down). The fallback is the destructive-step safety story: the stale
+ * reaper and vcluster GC never act on a cache known to be stale.
  *
- * A failed listing stays failed for the whole tick (every consumer sees
- * the same rejection) — steps already treat a listing failure as "skip
- * this tick", and the next tick's fresh snapshot retries.
+ * Getters memoize per snapshot so every step in a pass sees one
+ * point-in-time view; a failed fallback listing stays failed for the
+ * whole pass (steps treat that as "skip"), and the next pass retries.
  */
 export interface TickSnapshot {
+  /**
+   * True on the periodic full-resync pass (and for direct invocations
+   * outside the reconciler). Steps may skip no-op work on delta passes
+   * but must do their full heal when this is set.
+   */
+  resync: boolean
   pods(): Promise<SessionPod[]>
   jobs(): Promise<SessionJob[]>
   vclusters(): Promise<VclusterNamespaceInfo[]>
+  /** Pods inside one vcluster's host namespace. */
+  vclusterPods(namespace: string): Promise<VclusterPod[]>
+  /** Syncer-managed Services inside one vcluster's host namespace. */
+  vclusterServices(vc: Pick<VclusterNamespaceInfo, 'namespace' | 'name'>): Promise<VclusterService[]>
 }
 
-export function createTickSnapshot(): TickSnapshot {
-  let pods: Promise<SessionPod[]> | null = null
-  let jobs: Promise<SessionJob[]> | null = null
-  let vclusters: Promise<VclusterNamespaceInfo[]> | null = null
+export function createTickSnapshot(resync = true): TickSnapshot {
+  const memo = new Map<string, Promise<unknown>>()
+  const get = <T>(key: string, fromCache: () => T[] | null, list: () => Promise<T[]>): Promise<T[]> => {
+    let p = memo.get(key) as Promise<T[]> | undefined
+    if (!p) {
+      const cached = fromCache()
+      p = cached !== null ? Promise.resolve(cached) : list()
+      memo.set(key, p)
+    }
+    return p
+  }
+  const cache = getActiveClusterCache()
   return {
-    pods: () => (pods ??= listSessionPods()),
-    jobs: () => (jobs ??= listSessionJobs()),
-    vclusters: () => (vclusters ??= listVclusterNamespaces()),
+    resync,
+    pods: () => get('pods',
+      () => (cache?.healthy('session-pods') ? cache.sessionPods() : null),
+      () => listSessionPods()),
+    jobs: () => get('jobs',
+      () => (cache?.healthy('session-jobs') ? cache.sessionJobs() : null),
+      () => listSessionJobs()),
+    vclusters: () => get('vclusters',
+      () => (cache?.healthy('vcluster-namespaces') ? cache.vclusterNamespaces() : null),
+      () => listVclusterNamespaces()),
+    vclusterPods: (namespace) => get(`vcluster-pods:${namespace}`,
+      () => cache?.vclusterPods(namespace) ?? null,
+      () => listVclusterPods(namespace)),
+    vclusterServices: (vc) => get(`vcluster-services:${vc.namespace}`,
+      () => cache?.vclusterServices(vc.namespace) ?? null,
+      () => listVclusterServices(vc.namespace, vc.name)),
   }
 }

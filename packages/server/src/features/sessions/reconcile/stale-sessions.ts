@@ -12,7 +12,7 @@ import type { StaleSessionInfo } from '@yaac/shared/types'
  * Tear down stale session Jobs (pod stopped, or running with a dead
  * tmux session) across every project. Swallows individual failures so
  * one broken session can't block the rest; designed to be called from
- * the server background loop.
+ * the server reconciler.
  */
 export async function reconcileStaleSessions(snapshot?: TickSnapshot): Promise<void> {
   let pods

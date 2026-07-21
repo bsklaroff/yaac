@@ -45,6 +45,7 @@
     "@hono/node-server": "catalog:",
     "@hono/node-ws": "catalog:",
     "@hono/zod-validator": "catalog:",
+    "@kubernetes/client-node": "catalog:",
     "@lydell/node-pty": "catalog:",
     "@openai/codex": "0.121.0",
     "commander": "catalog:",

@@ -113,13 +113,24 @@ export function isPrewarmed(pod: SessionPod): boolean {
 export const JOB_NAME_LABEL = 'batch.kubernetes.io/job-name'
 
 /**
+ * Timestamps arrive as ISO strings from kubectl JSON and informer watch
+ * events (raw JSON), but as `Date` instances from informer list calls
+ * (client-node deserializes those into generated classes) — accept both.
+ */
+const timestampSchema = z.union([z.string().min(1), z.date()])
+
+export function toEpochMs(ts: string | Date): number {
+  return typeof ts === 'string' ? Date.parse(ts) : ts.getTime()
+}
+
+/**
  * Every field below is guaranteed: name/creationTimestamp/phase by the
  * API server, the yaac labels by session-create (the label selector
  * admits only yaac-created session objects). A validation failure is
  * therefore a yaac bug or a hand-edited object — fail the whole list
  * loudly up-front rather than mapping rows with silently empty fields.
  *
- * Exported (with `mapSessionPodItem`) so the pod watcher can validate
+ * Exported (with `mapSessionPodItem`) so the informer cache can validate
  * and map individual watch-event objects with the same rules.
  */
 export const sessionPodItemSchema = z.object({
@@ -131,8 +142,8 @@ export const sessionPodItemSchema = z.object({
       [LABEL_PROJECT]: z.string().min(1),
       [LABEL_TOOL]: z.string().min(1),
     }).catchall(z.string()),
-    creationTimestamp: z.string().min(1),
-    deletionTimestamp: z.string().optional(),
+    creationTimestamp: timestampSchema,
+    deletionTimestamp: timestampSchema.optional(),
   }),
   status: z.object({
     phase: z.string().min(1),
@@ -147,7 +158,7 @@ export const sessionPodItemSchema = z.object({
         terminated: z.object({
           exitCode: z.number(),
           reason: z.string().optional(),
-          finishedAt: z.string().optional(),
+          finishedAt: timestampSchema.optional(),
         }).optional(),
       }).optional(),
     })).optional(),
@@ -168,7 +179,7 @@ export function mapSessionPodItem({ metadata, status }: SessionPodItem): Session
           exitCode: terminated?.exitCode,
           containerReason: terminated?.reason,
           finishedAtMs: terminated?.finishedAt !== undefined
-            ? Date.parse(terminated.finishedAt)
+            ? toEpochMs(terminated.finishedAt)
             : undefined,
         }
       : undefined
@@ -181,27 +192,48 @@ export function mapSessionPodItem({ metadata, status }: SessionPodItem): Session
     phase: status.phase,
     running: status.phase === 'Running' && !terminating,
     terminating,
-    createdAtMs: Date.parse(metadata.creationTimestamp),
+    createdAtMs: toEpochMs(metadata.creationTimestamp),
     labels: metadata.labels,
     ...(terminal ? { terminal } : {}),
   }
+}
+
+/** Validate+map one raw pod object (informer events); null = malformed. */
+export function mapSessionPodObject(obj: unknown): SessionPod | null {
+  const res = sessionPodItemSchema.safeParse(obj)
+  return res.success ? mapSessionPodItem(res.data) : null
 }
 
 const sessionPodListSchema = z.object({
   items: z.array(sessionPodItemSchema),
 })
 
+const sessionJobItemSchema = z.object({
+  metadata: z.object({
+    name: z.string().min(1),
+    labels: z.object({
+      [LABEL_SESSION_ID]: z.string().min(1),
+      [LABEL_PROJECT]: z.string().min(1),
+    }).catchall(z.string()),
+    creationTimestamp: timestampSchema,
+  }),
+})
+
+/** Validate+map one raw Job object (informer events); null = malformed. */
+export function mapSessionJobObject(obj: unknown): SessionJob | null {
+  const res = sessionJobItemSchema.safeParse(obj)
+  if (!res.success) return null
+  const { metadata } = res.data
+  return {
+    jobName: metadata.name,
+    sessionId: metadata.labels[LABEL_SESSION_ID],
+    projectSlug: metadata.labels[LABEL_PROJECT],
+    createdAtMs: toEpochMs(metadata.creationTimestamp),
+  }
+}
+
 const sessionJobListSchema = z.object({
-  items: z.array(z.object({
-    metadata: z.object({
-      name: z.string().min(1),
-      labels: z.object({
-        [LABEL_SESSION_ID]: z.string().min(1),
-        [LABEL_PROJECT]: z.string().min(1),
-      }).catchall(z.string()),
-      creationTimestamp: z.string().min(1),
-    }),
-  })),
+  items: z.array(sessionJobItemSchema),
 })
 
 /** Validate a kubectl list payload, naming the object kind in the error. */
@@ -330,20 +362,19 @@ export async function runPodToCompletion(
 /**
  * List session Jobs for this install. Used by the orphan-Job sweep: a Job
  * whose pod was evicted/deleted out-of-band is invisible to the pod-based
- * reaper, so the background loop cross-references this list.
+ * reaper, so the reconciler cross-references this list.
  * Throws when the payload fails sessionJobListSchema validation.
  */
 export async function listSessionJobs(): Promise<SessionJob[]> {
-  const selector = `${LABEL_DATA_DIR_HASH}=${dataDirHash()},${LABEL_SESSION_ID}`
   const list = await kubectlGetJson<unknown>([
-    'get', 'jobs', '-n', k8sNamespace(), '-l', selector,
+    'get', 'jobs', '-n', k8sNamespace(), '-l', sessionJobSelector(),
   ])
   if (!list) return []
   const { items } = parseListPayload(sessionJobListSchema, list, 'job')
-  return items.map(({ metadata }) => ({
-    jobName: metadata.name,
-    sessionId: metadata.labels[LABEL_SESSION_ID],
-    projectSlug: metadata.labels[LABEL_PROJECT],
-    createdAtMs: Date.parse(metadata.creationTimestamp),
-  }))
+  return items.flatMap((item) => mapSessionJobObject(item) ?? [])
+}
+
+/** The label selector `listSessionJobs` and the Jobs informer share. */
+export function sessionJobSelector(): string {
+  return `${LABEL_DATA_DIR_HASH}=${dataDirHash()},${LABEL_SESSION_ID}`
 }

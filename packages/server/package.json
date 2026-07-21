@@ -18,6 +18,7 @@
     "@hono/node-server": "catalog:",
     "@hono/node-ws": "catalog:",
     "@hono/zod-validator": "catalog:",
+    "@kubernetes/client-node": "catalog:",
     "@lydell/node-pty": "catalog:",
     "@yaac/shared": "workspace:*",
     "croner": "10.0.1",

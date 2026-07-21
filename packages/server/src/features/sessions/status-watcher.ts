@@ -352,7 +352,7 @@ export class SessionStatusWatcher {
 
 /**
  * Keeps one `SessionStatusWatcher` per running, non-prewarmed session
- * pod. `sync` is driven by pod-watch changes: a pod that appears (or a
+ * pod. `sync` is driven by informer pod deltas: a pod that appears (or a
  * claimed spare that loses its prewarm label) gets a watcher; a pod
  * that disappears has its watcher stopped and its store entry evicted,
  * so a restart reusing the session id never sees stale status.

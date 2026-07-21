@@ -7,7 +7,7 @@ import { proxyDataHostDir } from '#features/cluster/proxy-apply'
  * writes `/data/blocked-hosts.json` (sessionId -> hostnames) atomically
  * whenever a session's blocked set grows; /data is a hostPath, so the
  * server reads the live state straight off the filesystem — no proxy
- * HTTP round-trip, no background-loop snapshotting, no staleness.
+ * HTTP round-trip, no reconcile-pass snapshotting, no staleness.
  */
 export function blockedHostsStatePath(): string {
   return path.join(proxyDataHostDir(), 'blocked-hosts.json')

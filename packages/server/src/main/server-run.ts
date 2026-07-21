@@ -13,7 +13,7 @@ import { containerExec } from '#platform/k8s/exec'
 import { coalesceCalls, notifySessionListChanged, onSessionListChanged } from '#features/sessions/notify'
 import { resolveSessionContainer } from '#features/sessions/resolve'
 import { StatusWatcherManager } from '#features/sessions/status-watcher'
-import { PodWatcher, setActivePodWatcher } from '#platform/k8s/pod-watch'
+import { ClusterCache, setActiveClusterCache } from '#platform/k8s/cluster-cache'
 import { refreshClaudeBundledSkills } from '#features/skills/claude-bundled'
 import { onSessionStatusChanged } from '#features/sessions/status-store'
 import { readBuildId } from '@yaac/shared/build-id'
@@ -26,7 +26,7 @@ import {
 import { isLockLive } from '@yaac/shared/server-lock-file'
 import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-port'
 import { ensureDataDir } from '@yaac/shared/project-paths'
-import { startBackgroundLoop } from '#main/background-loop'
+import { startReconciler } from '#main/reconciler'
 import { gcOrphanEphemeralModuleDirs, isTmuxSessionAlive } from '#features/sessions/cleanup'
 import { gcOrphanProjectRegistries } from '#features/cluster/project-registry'
 import { ensureNamespace } from '#features/cluster/proxy-apply'
@@ -152,7 +152,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // instead of the pre-init responsive window (see waitForReadyLock).
   let ready = false
   // Push a fresh snapshot the moment session state changes — a create /
-  // restart from a route handler, a pod-watch event, or a watcher-fed
+  // restart from a route handler, an informer delta, or a watcher-fed
   // status flip. The first notification publishes immediately; bursts
   // (server start seeding N pods) coalesce into one trailing rebuild.
   onSessionListChanged(coalesceCalls(() => { void hub.publishSnapshot() }, 150))
@@ -338,7 +338,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // still running would otherwise leak the lock file.
   const abortCtrl = new AbortController()
   let loopDone: Promise<void> | null = null
-  let podWatcher: PodWatcher | null = null
+  let clusterCache: ClusterCache | null = null
   let statusWatchers: StatusWatcherManager | null = null
   let shuttingDown = false
   const shutdown = async (signal: string): Promise<void> => {
@@ -346,11 +346,12 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     shuttingDown = true
     serverLog(`[server] ${signal} — shutting down`)
     abortCtrl.abort()
-    // Stop the push-fed state layer first: the pod watch child and every
-    // per-session control-mode exec are long-lived kubectl processes
-    // that would otherwise outlive the server (orphaned to PID 1).
-    setActivePodWatcher(null)
-    podWatcher?.stop()
+    // Stop the push-fed state layer first: the informer watches hold open
+    // apiserver connections, and every per-session control-mode exec is a
+    // long-lived kubectl process that would otherwise outlive the server
+    // (orphaned to PID 1).
+    setActiveClusterCache(null)
+    clusterCache?.stop()
     statusWatchers?.stopAll()
     if (loopDone) {
       // Bound the loop drain the same way we bound server.close() below.
@@ -391,7 +392,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
       new Promise<void>((resolve) => setTimeout(resolve, 3000)),
     ])
     // Pass our pid so a shutdown that dragged past stopServer's 3s
-    // force-remove window (e.g. wedged background loop) can't unlink a
+    // force-remove window (e.g. wedged reconciler) can't unlink a
     // successor server's lock.
     await removeLock(process.pid)
     process.exit(0)
@@ -420,41 +421,41 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     serverLog(`[server] restore forwarders failed: ${String(err)}`)
   }
 
-  // Push-fed session state: one kubectl pod watch keeps the display
-  // path's pod cache current and drives the per-session status watchers
-  // (tmux control-mode streams feeding the status store). Both fire
-  // sessions-changed, so snapshots push the moment state changes
-  // instead of at the next reconcile tick. The 5s loop below stays as
-  // the convergence/backstop path and is unaffected.
-  podWatcher = new PodWatcher()
+  // Push-fed session state: the informer caches keep the display path's
+  // pod cache current, drive the per-session status watchers (tmux
+  // control-mode streams feeding the status store), and feed the
+  // reconciler's delta triggers. Pod deltas fire sessions-changed, so
+  // snapshots push the moment state changes.
+  clusterCache = new ClusterCache()
   statusWatchers = new StatusWatcherManager()
-  const watcher = podWatcher
+  const cache = clusterCache
   const manager = statusWatchers
-  podWatcher.onChange(() => {
-    manager.sync(watcher.getPods())
+  clusterCache.onDelta((source) => {
+    if (source !== 'session-pods') return
+    manager.sync(cache.sessionPods())
     notifySessionListChanged()
   })
   onSessionStatusChanged(() => notifySessionListChanged())
-  podWatcher.start()
-  setActivePodWatcher(podWatcher)
+  clusterCache.start()
+  setActiveClusterCache(clusterCache)
 
   // Populate the Claude bundled-skills cache (name + description from the
   // official commands reference) for the skills viewer. Fire-and-forget: it's
   // an in-memory best-effort fetch, so it never blocks startup or fails it.
   void refreshClaudeBundledSkills()
 
-  // Start the background loop before running orphan GC. The GC pass
-  // hits the cluster API, and during a freeze cluster (saturated VM,
-  // user restarting repeatedly) it can take minutes — blocking the
-  // first reconcile tick that whole time. Running it concurrently with
-  // the loop lets the server serve the reconcile path right away while
-  // the GC drains in the background.
-  loopDone = startBackgroundLoop({
+  // Start the reconciler before running orphan GC. The GC pass hits the
+  // cluster API, and during a frozen cluster (saturated VM, user
+  // restarting repeatedly) it can take minutes — blocking the first
+  // reconcile pass that whole time. Running it concurrently lets the
+  // server serve the reconcile path right away while the GC drains in
+  // the background.
+  loopDone = startReconciler({
     signal: abortCtrl.signal,
-    // After each reconciliation tick, push a fresh snapshot to any
-    // connected webapp clients (no-op when none are connected, and only
-    // broadcasts when the state actually changed).
-    onTick: () => hub.publishSnapshot(),
+    // After each reconcile pass, push a fresh snapshot to any connected
+    // webapp clients (no-op when none are connected, and only broadcasts
+    // when the state actually changed).
+    onPass: () => hub.publishSnapshot(),
   })
 
   // Remove per-session `.cached-packages/modules/<sid>` dirs whose

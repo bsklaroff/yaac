@@ -111,9 +111,12 @@ describe('reconcileVclusters', () => {
 
   it('reads all three listings from the tick snapshot when one is provided', async () => {
     const snapshot = {
+      resync: true,
       pods: vi.fn().mockResolvedValue([]),
       jobs: vi.fn().mockResolvedValue([]),
       vclusters: vi.fn().mockResolvedValue([vcInfo('yvc-deadbeef', 'deadbeef-1111')]),
+      vclusterPods: vi.fn(() => Promise.resolve([])),
+      vclusterServices: vi.fn(() => Promise.resolve([])),
     }
     await reconcileVclusters(NOW, snapshot)
     expect(mockList).not.toHaveBeenCalled()

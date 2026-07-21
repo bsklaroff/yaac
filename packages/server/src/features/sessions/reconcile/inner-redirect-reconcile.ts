@@ -13,9 +13,9 @@ import {
   PROXY_APP_NAME,
 } from '#features/cluster/proxy-constants'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
-import { LABEL_DATA_DIR_HASH, LABEL_VCLUSTER_MANAGED_BY } from '#platform/k8s/pods'
-import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
-import { listVclusterNamespaces } from '#features/cluster/vcluster'
+import { LABEL_DATA_DIR_HASH } from '#platform/k8s/pods'
+import { createTickSnapshot, type TickSnapshot } from '#platform/k8s/tick-snapshot'
+import type { VclusterService } from '#features/cluster/vcluster'
 import { serverLog } from '#log'
 
 interface RawObjectList {
@@ -28,23 +28,29 @@ interface InnerProxy {
   installHash: string
 }
 
-/** Unlabeled-service notes already logged, to avoid per-tick log spam. */
+/** Unlabeled-service notes already logged, to avoid per-pass log spam. */
 const loggedUnlabeled = new Set<string>()
 
-/** Min interval between reconcile passes — see reconcileInnerRedirects. */
-export const INNER_REDIRECT_INTERVAL_MS = 30_000
+/**
+ * Per-namespace serialization of the last successfully-applied projection.
+ * Delta passes whose recomputed desired state matches skip the pass's
+ * kubectl work entirely — pod/service churn must not become apply spam —
+ * while resync passes ignore it, re-asserting the objects so externally
+ * mutated projections heal within the resync interval.
+ */
+const lastProjected = new Map<string, string>()
 
-let lastRunMs = 0
-
-/** Reset the throttle (tests only). */
-export function _resetInnerRedirectThrottleForTests(): void {
-  lastRunMs = 0
+/** Reset the projection memo + log dedupe (tests only). */
+export function _resetInnerRedirectStateForTests(): void {
+  lastProjected.clear()
+  loggedUnlabeled.clear()
 }
 
 /**
- * Discover the host-synced inner proxy Services in a vcluster's namespace —
- * one per inner yaac install (the nested session's own server, plus any
- * per-run e2e servers an agent spawns inside it).
+ * Select the host-synced inner proxy Services among a vcluster namespace's
+ * syncer-managed Services — one per inner yaac install (the nested
+ * session's own server, plus any per-run e2e servers an agent spawns
+ * inside it).
  *
  * The inner yaac creates a `yaac-proxy` Service inside its vcluster; the syncer
  * lands it in the host namespace under a translated name
@@ -57,23 +63,12 @@ export function _resetInnerRedirectThrottleForTests(): void {
  * the label (an inner yaac older than this scheme) gets no projection: its
  * sessions stay on the outer-proxy fallback, contained but without inner
  * governance — recreate the nested session to upgrade it.
- *
- * MUST-VERIFY (N4 e2e): the synced Service label shape — validated end to end
- * only once the nesting e2e runs against an outer server with this code.
  */
-async function findInnerProxyServices(
-  vcNamespace: string,
-  vcName: string,
-): Promise<InnerProxy[]> {
-  const list = await kubectlGetJson<RawObjectList>([
-    'get', 'services', '-n', vcNamespace,
-    '-l', `${LABEL_VCLUSTER_MANAGED_BY}=${vcName}`,
-  ])
+function selectInnerProxies(vcNamespace: string, services: VclusterService[]): InnerProxy[] {
   const proxies: InnerProxy[] = []
-  for (const svc of list?.items ?? []) {
-    const { name, labels } = svc.metadata
+  for (const { name, labels } of services) {
     if (name !== PROXY_APP_NAME && !name.startsWith(`${PROXY_APP_NAME}-`)) continue
-    const installHash = labels?.[LABEL_DATA_DIR_HASH]
+    const installHash = labels[LABEL_DATA_DIR_HASH]
     if (!installHash) {
       const key = `${vcNamespace}/${name}`
       if (!loggedUnlabeled.has(key)) {
@@ -123,7 +118,7 @@ async function pruneInnerRedirects(vcNamespace: string, desired: Set<string>): P
 }
 
 /**
- * Background-loop tick step for yaac-in-yaac inner egress (design B,
+ * Reconcile step for yaac-in-yaac inner egress (design B,
  * docs/nested-containers.md). Projects only the DYNAMIC inner
  * overrides — the part that depends on inner yaac proxies existing. For each
  * managed vcluster:
@@ -145,30 +140,28 @@ async function pruneInnerRedirects(vcNamespace: string, desired: Set<string>): P
  * vcluster-creation time (ensureSessionVcluster) and torn down with the
  * namespace. Nothing in the system deletes it once created (a tenant has no host
  * RBAC; CNPs/NetworkPolicies don't sync out of the vcluster), so there is no
- * per-tick reassert. Trade-off: a change to the fallback builder reaches a
+ * per-pass reassert. Trade-off: a change to the fallback builder reaches a
  * running vcluster only on recreate.
  *
  * The session pod never gets host RBAC: the server (host cluster-admin) is the
  * sole writer and rebuilds from trusted builders, so a tenant can't author an
- * escape. Idempotent and best-effort; the loop isolates step errors.
- * Throttled to INNER_REDIRECT_INTERVAL_MS — the per-vcluster reconcile is
- * several kubectl calls (service discovery, prune listings, re-applies), far
- * too heavy for every 5s tick. The cost of the interval: a freshly-appeared
- * inner proxy waits up to this long for its projection upgrade, during which
- * its install's synced pods stay on the (containment-equivalent) outer-proxy
- * fallback seeded at vcluster creation.
+ * escape. Idempotent and best-effort; the reconciler isolates step errors.
+ * Service deltas fire it within milliseconds of an inner proxy appearing;
+ * the `lastProjected` memo keeps unrelated churn from re-running the
+ * per-vcluster kubectl work.
  */
 export async function reconcileInnerRedirects(
-  nowMs: number = Date.now(),
-  snapshot?: TickSnapshot,
+  snapshot: TickSnapshot = createTickSnapshot(),
 ): Promise<void> {
-  if (nowMs - lastRunMs < INNER_REDIRECT_INTERVAL_MS) return
-  lastRunMs = nowMs
-  const vclusters = await (snapshot ? snapshot.vclusters() : listVclusterNamespaces())
-  if (vclusters.length === 0) return
+  const vclusters = await snapshot.vclusters()
+  for (const ns of [...lastProjected.keys()]) {
+    if (!vclusters.some((vc) => vc.namespace === ns)) lastProjected.delete(ns)
+  }
 
-  for (const { name, namespace } of vclusters) {
-    const proxies = await findInnerProxyServices(namespace, name)
+  for (const vc of vclusters) {
+    const proxies = selectInnerProxies(vc.namespace, await snapshot.vclusterServices(vc))
+    const serialized = proxies.map((p) => `${p.serviceName}=${p.installHash}`).join(',')
+    if (!snapshot.resync && lastProjected.get(vc.namespace) === serialized) continue
 
     const desired = new Set<string>()
     for (const p of proxies) {
@@ -179,14 +172,15 @@ export async function reconcileInnerRedirects(
       desired.add(`ciliumnetworkpolicy/${INNER_PROXY_INGRESS_CNP_NAME}`)
     }
 
-    await pruneInnerRedirects(namespace, desired)
+    await pruneInnerRedirects(vc.namespace, desired)
     for (const p of proxies) {
       // CEC before the CNP that references its listeners.
-      await kubectlApply(buildInnerEgressRedirectCecManifest(namespace, p.serviceName, p.installHash))
-      await kubectlApply(buildInnerSessionEgressRedirectCnpManifest(namespace, name, p.installHash))
+      await kubectlApply(buildInnerEgressRedirectCecManifest(vc.namespace, p.serviceName, p.installHash))
+      await kubectlApply(buildInnerSessionEgressRedirectCnpManifest(vc.namespace, vc.name, p.installHash))
     }
     if (proxies.length > 0) {
-      await kubectlApply(buildInnerProxyIngressCnpManifest(namespace, name))
+      await kubectlApply(buildInnerProxyIngressCnpManifest(vc.namespace, vc.name))
     }
+    lastProjected.set(vc.namespace, serialized)
   }
 }

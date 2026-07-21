@@ -11,7 +11,7 @@ import {
 import { sessionVclusterDir } from '@yaac/shared/project-paths'
 
 /**
- * Background-loop tick step for per-session vclusters:
+ * Reconcile step for per-session vclusters:
  *
  *   - Orphan GC: a vcluster whose owning session no longer exists (pod
  *     AND Job gone — covers crashes, reaped zombies, out-of-band

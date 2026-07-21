@@ -13,9 +13,9 @@ vi.mock('#platform/k8s/pods', async (importOriginal) => ({
   listSessionPods: mockListPods,
 }))
 
-const mockGetWatcher = vi.hoisted(() => vi.fn())
-vi.mock('#platform/k8s/pod-watch', () => ({
-  getActivePodWatcher: mockGetWatcher,
+const mockGetCache = vi.hoisted(() => vi.fn())
+vi.mock('#platform/k8s/cluster-cache', () => ({
+  getActiveClusterCache: mockGetCache,
 }))
 
 import {
@@ -44,7 +44,7 @@ function pod(sessionId: string, over: Partial<SessionPod> = {}): SessionPod {
 beforeEach(() => {
   mockSalvage.mockReset().mockResolvedValue(true)
   mockListPods.mockReset().mockResolvedValue([])
-  mockGetWatcher.mockReset().mockReturnValue(null)
+  mockGetCache.mockReset().mockReturnValue(null)
   _resetSalvageReconcileForTests()
   _clearTerminatingForTests()
 })
@@ -93,14 +93,14 @@ describe('reconcileImageSalvage', () => {
   })
 
   it('prefers the pod watcher cache and survives a pod-list failure', async () => {
-    const getPods = vi.fn().mockReturnValue([pod('s-watched')])
-    mockGetWatcher.mockReturnValue({ getPods })
+    const sessionPods = vi.fn().mockReturnValue([pod('s-watched')])
+    mockGetCache.mockReturnValue({ sessionPods })
     await reconcileImageSalvage(1_000)
-    expect(getPods).toHaveBeenCalled()
+    expect(sessionPods).toHaveBeenCalled()
     expect(mockListPods).not.toHaveBeenCalled()
     expect(mockSalvage).toHaveBeenCalledTimes(1)
 
-    mockGetWatcher.mockReturnValue(null)
+    mockGetCache.mockReturnValue(null)
     mockListPods.mockRejectedValue(new Error('cluster down'))
     await expect(reconcileImageSalvage(2_000)).resolves.toBeUndefined()
   })

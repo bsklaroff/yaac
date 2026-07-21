@@ -1,5 +1,5 @@
 import { isPrewarmed, listSessionPods } from '#platform/k8s/pods'
-import { getActivePodWatcher } from '#platform/k8s/pod-watch'
+import { getActiveClusterCache } from '#platform/k8s/cluster-cache'
 import { isSessionTerminating } from '#features/sessions/state'
 import { salvageSessionImages } from '#features/images/image-promoter'
 
@@ -27,7 +27,7 @@ export function _resetSalvageReconcileForTests(): void {
 }
 
 /**
- * One background-loop tick: pick the sessions whose interval elapsed and
+ * One reconcile pass: pick the sessions whose interval elapsed and
  * kick their salvages (detached — a multi-minute first salvage must not
  * wedge the loop; salvageSessionImages coalesces per session, so a
  * teardown arriving mid-run shares the same promise instead of racing).
@@ -37,7 +37,7 @@ export async function reconcileImageSalvage(
 ): Promise<void> {
   let pods
   try {
-    pods = getActivePodWatcher()?.getPods() ?? await listSessionPods()
+    pods = getActiveClusterCache()?.sessionPods() ?? await listSessionPods()
   } catch {
     return
   }

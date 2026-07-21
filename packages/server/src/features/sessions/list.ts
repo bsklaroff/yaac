@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { listSessionPods, isPrewarmed } from '#platform/k8s/pods'
-import { getActivePodWatcher } from '#platform/k8s/pod-watch'
+import { getActiveClusterCache } from '#platform/k8s/cluster-cache'
 import { worktreeUpstreamBranch } from '#platform/git'
 import { projectDir, repoDir } from '@yaac/shared/project-paths'
 import {
@@ -109,13 +109,13 @@ export async function listActiveSessions(projectFilter?: string): Promise<Active
 async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSessionsResult> {
   if (projectFilter) await ensureProjectExists(projectFilter)
 
-  // In the server the pod watcher's push-fed cache answers instantly;
-  // the one-shot kubectl list is the fallback for watcher-less contexts
-  // (unit tests, a watcher that hasn't started yet).
-  const watcher = getActivePodWatcher()
+  // In the server the informer's push-fed cache answers instantly; the
+  // one-shot kubectl list is the fallback for cache-less contexts (unit
+  // tests, a cache that hasn't started yet).
+  const cache = getActiveClusterCache()
   let pods
-  if (watcher) {
-    pods = watcher.getPods(projectFilter)
+  if (cache) {
+    pods = cache.sessionPods(projectFilter)
   } else {
     try {
       pods = await listSessionPods(projectFilter)
