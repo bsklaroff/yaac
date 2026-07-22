@@ -172,8 +172,7 @@ vi.mock('@yaac/shared/git', async (importOriginal) => {
 })
 
 vi.mock('@yaac/server/features/sessions/agents/codex', () => ({
-  ensureCodexHooksJson: vi.fn().mockResolvedValue(undefined),
-  ensureCodexConfigToml: vi.fn().mockResolvedValue(undefined),
+  removeLegacyCodexHook: vi.fn().mockResolvedValue(undefined),
 } satisfies Partial<typeof codexAgentModule>))
 
 vi.mock('@yaac/server/features/sessions/agents/opencode', () => ({

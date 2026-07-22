@@ -35,3 +35,51 @@ RUN npm install -g @openai/codex
 RUN npm install -g opencode-ai
 RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 RUN curl -fsSL https://claude.ai/install.sh | bash
+
+# Codex transcript-discovery hook, installed as a Codex *managed hook* in the
+# trusted /etc/codex layer. Codex gates hooks declared in the user-writable
+# ~/.codex/hooks.json behind a per-change `/hooks` trust approval; managed
+# hooks under /etc/codex are trusted by policy and bypass that gate, so this
+# runs in every session with no manual approval prompt. The SessionStart hook
+# reads Codex's hook-input JSON on stdin, extracts transcript_path, and
+# symlinks it into ~/.codex/.yaac-transcripts/<YAAC_SESSION_ID>.jsonl
+# (YAAC_SESSION_ID is injected into the pod env by session-create) so yaac can
+# find each session's rollout JSONL. In requirements.toml: `managed_dir` scopes
+# where managed-hook commands may live, `[features] hooks` pins the (default-on)
+# hook engine, and `apps = false` disables the codex_apps MCP server whose
+# handshake fails and warns on startup (openai/codex#16550). The system
+# config.toml layer sets check_for_update_on_startup = false so a fresh pod
+# skips codex's startup update probe (against api.github.com) and drops
+# straight to the agent input instead of stalling on a version check — which
+# matters for yaac-spawn's unattended sessions. The script text is exercised by
+# packages/server/test/codex-hook-script.test.ts. Verified against codex-cli
+# 0.144.5.
+USER root
+RUN mkdir -p /etc/codex/hooks && cat <<'HOOK' > /etc/codex/hooks/yaac-session-start.sh
+#!/bin/sh
+INPUT=$(cat)
+TRANSCRIPT=$(echo "$INPUT" | sed -n 's/.*"transcript_path"\s*:\s*"\([^"]*\)".*/\1/p')
+if [ -n "$TRANSCRIPT" ] && [ -n "$YAAC_SESSION_ID" ]; then
+  LINK_DIR=/home/yaac/.codex/.yaac-transcripts
+  mkdir -p "$LINK_DIR"
+  REL=$(python3 -c "import os.path; print(os.path.relpath('$TRANSCRIPT', '$LINK_DIR'))")
+  ln -sf "$REL" "$LINK_DIR/$YAAC_SESSION_ID.jsonl"
+fi
+HOOK
+RUN printf 'check_for_update_on_startup = false\n' > /etc/codex/config.toml
+RUN chmod 755 /etc/codex/hooks/yaac-session-start.sh && cat <<'REQ' > /etc/codex/requirements.toml
+[features]
+hooks = true
+apps = false
+
+[hooks]
+managed_dir = "/etc/codex/hooks"
+
+[[hooks.SessionStart]]
+matcher = "*"
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "/etc/codex/hooks/yaac-session-start.sh"
+timeout = 10
+REQ
+USER yaac

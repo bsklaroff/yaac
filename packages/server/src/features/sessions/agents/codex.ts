@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import * as TOML from 'smol-toml'
 import { codexTranscriptFile } from '@yaac/shared/project-paths'
 import { scanJsonlForward } from '#features/sessions/jsonl'
 
@@ -68,9 +67,16 @@ export async function getSessionCodexFirstUserMessage(projectSlug: string, sessi
 }
 
 // ---------------------------------------------------------------------------
-// Hooks + config seeding
+// Legacy hook cleanup
 // ---------------------------------------------------------------------------
 
+/**
+ * Command of the SessionStart hook yaac used to seed per-session into the
+ * user-writable ~/.codex/hooks.json. The transcript-discovery hook now ships
+ * as a Codex *managed hook* baked into the image at /etc/codex (see
+ * dockerfiles/Dockerfile.tools), which Codex trusts by policy — so nothing is
+ * written into the mounted codex dir anymore.
+ */
 const YAAC_HOOK_COMMAND = '/home/yaac/.codex/.yaac-hook.sh'
 
 interface CodexHookEntry {
@@ -90,79 +96,34 @@ interface CodexHooksFile {
 }
 
 /**
- * Ensures the codex hooks.json contains our SessionStart hook, merging
- * with any existing user-defined hooks rather than overwriting them.
+ * Removes the legacy yaac SessionStart hook from a project's persisted
+ * ~/.codex/hooks.json (and deletes the old .yaac-hook.sh script), for projects
+ * created before the managed hook existed. Left in place, that stale
+ * user-layer hook would keep triggering Codex's `/hooks` trust-approval prompt
+ * whenever it isn't already trusted — the exact prompt the managed hook exists
+ * to avoid. Best-effort and idempotent: a project with no hooks.json (the
+ * common case going forward) is a no-op.
  */
-export async function ensureCodexHooksJson(codexPath: string): Promise<void> {
+export async function removeLegacyCodexHook(codexPath: string): Promise<void> {
+  await fs.rm(path.join(codexPath, '.yaac-hook.sh'), { force: true })
+
   const hooksJsonPath = path.join(codexPath, 'hooks.json')
-
-  let existing: CodexHooksFile = { hooks: {} }
+  let existing: CodexHooksFile
   try {
-    const raw = await fs.readFile(hooksJsonPath, 'utf8')
-    existing = JSON.parse(raw) as CodexHooksFile
+    existing = JSON.parse(await fs.readFile(hooksJsonPath, 'utf8')) as CodexHooksFile
   } catch {
-    // No existing hooks.json or invalid — start fresh
-  }
-
-  if (!existing.hooks) existing.hooks = {}
-  if (!existing.hooks.SessionStart) existing.hooks.SessionStart = []
-
-  // Check if our hook is already present
-  const hasYaacHook = existing.hooks.SessionStart.some((m) =>
-    m.hooks?.some((h) => h.command === YAAC_HOOK_COMMAND),
-  )
-
-  if (!hasYaacHook) {
-    existing.hooks.SessionStart.push({
-      matcher: '*',
-      hooks: [{
-        type: 'command',
-        command: YAAC_HOOK_COMMAND,
-        timeout: 10,
-      }],
-    })
-  }
-
-  await fs.writeFile(hooksJsonPath, JSON.stringify(existing, null, 2) + '\n')
-}
-
-/**
- * Ensures the codex config.toml has the settings we need, merging with any
- * existing configuration rather than overwriting it.
- *
- * - check_for_update_on_startup = false: skips codex's startup update probe
- *   against api.github.com so a fresh pod drops straight to the agent input
- *   instead of stalling on (or prompting about) a version check. This matters
- *   for yaac-spawn, which expects an unattended session to reach the prompt.
- * - [features] codex_hooks = true: enables the hooks we install via hooks.json
- * - [features] apps = false: disables the codex_apps MCP server, which fails to
- *   handshake against chatgpt.com/backend-api/wham/apps and surfaces a
- *   startup warning on every session.
- *   See https://github.com/openai/codex/issues/16550
- */
-export async function ensureCodexConfigToml(codexPath: string): Promise<void> {
-  const configPath = path.join(codexPath, 'config.toml')
-
-  let config: Record<string, unknown> = {}
-  try {
-    const raw = await fs.readFile(configPath, 'utf8')
-    config = TOML.parse(raw) as Record<string, unknown>
-  } catch {
-    // No existing config or invalid — start fresh
-  }
-
-  const features = (config.features ?? {}) as Record<string, unknown>
-  if (
-    config.check_for_update_on_startup === false &&
-    features.codex_hooks === true &&
-    features.apps === false
-  ) {
+    // No hooks.json (or unreadable) — nothing to clean up.
     return
   }
+  if (!existing?.hooks?.SessionStart) return
 
-  config.check_for_update_on_startup = false
-  features.codex_hooks = true
-  features.apps = false
-  config.features = features
-  await fs.writeFile(configPath, TOML.stringify(config))
+  const isYaacMatcher = (m: CodexHookMatcher): boolean =>
+    m.hooks?.some((h) => h.command === YAAC_HOOK_COMMAND) ?? false
+  const kept = existing.hooks.SessionStart.filter((m) => !isYaacMatcher(m))
+  if (kept.length === existing.hooks.SessionStart.length) return // no yaac entry
+
+  if (kept.length > 0) existing.hooks.SessionStart = kept
+  else delete existing.hooks.SessionStart
+
+  await fs.writeFile(hooksJsonPath, JSON.stringify(existing, null, 2) + '\n')
 }

@@ -5,18 +5,18 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 
 /**
- * The Codex SessionStart hook script lives inline in
- * `packages/server/src/session-create.ts` (written into the container's codex
- * dir on each session start). It reads Codex's hook-input JSON on
- * stdin, extracts `transcript_path`, and symlinks it into
- * `.yaac-transcripts/<YAAC_SESSION_ID>.jsonl` so yaac can find the
- * transcript for each session.
+ * The Codex SessionStart hook script ships as a managed hook baked into the
+ * image at `/etc/codex/hooks/yaac-session-start.sh`
+ * (`dockerfiles/Dockerfile.tools`). It reads Codex's hook-input JSON on stdin,
+ * extracts `transcript_path`, and symlinks it into
+ * `.yaac-transcripts/<YAAC_SESSION_ID>.jsonl` so yaac can find the transcript
+ * for each session.
  *
- * We reproduce the exact script contents here and run it against a
- * temp dir rather than inside a container — the script's behaviour
- * only depends on `sh`, `sed`, `python3`, and `ln`, all available on
- * the test host. If we regress the inlined version in
- * session-create.ts, update this constant.
+ * We reproduce the exact script contents here and run it against a temp dir
+ * rather than inside a container — the script's behaviour only depends on
+ * `sh`, `sed`, `python3`, and `ln`, all available on the test host. The guard
+ * at the bottom asserts this copy hasn't drifted from the one baked into
+ * Dockerfile.tools; if you change one, change both.
  */
 const HOOK_SCRIPT = [
   '#!/bin/sh',
@@ -134,20 +134,24 @@ describe('codex SessionStart hook script', () => {
   })
 })
 
-// Guard against the inlined script drifting from this test's copy.
-describe('codex hook script in session-create.ts matches the unit test copy', () => {
+// Guard against the baked script (and its managed-hook registration) drifting
+// from this test's copy.
+describe('codex managed hook in Dockerfile.tools matches the unit test copy', () => {
   it('has not drifted', async () => {
-    const src = await fs.readFile(
-      path.resolve(__dirname, '..', 'src', 'features', 'sessions', 'create.ts'),
+    const dockerfile = await fs.readFile(
+      path.resolve(__dirname, '..', '..', '..', 'dockerfiles', 'Dockerfile.tools'),
       'utf8',
     )
-    // Script is written as a joined string array — reconstruct the
-    // relevant portion and assert it matches our harness's copy sans
-    // the LINK_DIR override.
-    // The script is JS-quoted in the source (single-quoted array entries,
-    // with \' escapes for inner single-quotes), so match on raw bytes.
-    expect(src).toContain('TRANSCRIPT=$(echo "$INPUT" | sed -n ')
-    expect(src).toContain('/home/yaac/.codex/.yaac-transcripts')
-    expect(src).toContain('ln -sf "$REL" "$LINK_DIR/$YAAC_SESSION_ID.jsonl"')
+    // The script is baked verbatim via a quoted heredoc, so match on raw bytes.
+    // LINK_DIR is hardcoded in the baked copy (the test harness above overrides
+    // it via $YAAC_LINK_DIR), so assert the container path directly.
+    expect(dockerfile).toContain('TRANSCRIPT=$(echo "$INPUT" | sed -n ')
+    expect(dockerfile).toContain('LINK_DIR=/home/yaac/.codex/.yaac-transcripts')
+    expect(dockerfile).toContain('ln -sf "$REL" "$LINK_DIR/$YAAC_SESSION_ID.jsonl"')
+    // And that it is registered as a managed SessionStart hook.
+    expect(dockerfile).toContain('managed_dir = "/etc/codex/hooks"')
+    expect(dockerfile).toContain('command = "/etc/codex/hooks/yaac-session-start.sh"')
+    // The system config.toml layer skips codex's startup update probe.
+    expect(dockerfile).toContain('check_for_update_on_startup = false')
   })
 })

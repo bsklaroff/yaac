@@ -92,7 +92,7 @@ import {
   PLACEHOLDER_GH_TOKEN,
 } from '@yaac/shared/tool-auth'
 import { addWorktree, getDefaultBranch, fetchOrigin, isGitAuthError, remoteBranchExists } from '#platform/git'
-import { ensureCodexHooksJson, ensureCodexConfigToml } from '#features/sessions/agents/codex'
+import { removeLegacyCodexHook } from '#features/sessions/agents/codex'
 import { ensureOpencodeConfigJson } from '#features/sessions/agents/opencode'
 import {
   shellEscape,
@@ -1013,29 +1013,17 @@ export async function createSession(
   await seedClaudeJson(claudeJson)
   await seedClaudeSettings(path.join(claude, 'settings.json'))
 
-  // Codex: transcript symlink dir + a SessionStart hook that symlinks the
-  // transcript into a directory keyed by YAAC session ID, so yaac can read
-  // it directly.
+  // Codex: pre-create the transcript symlink dir (host-side readers like the
+  // deleted-session list and restart expect it to exist). The SessionStart
+  // hook that populates it — symlinking each session's rollout JSONL into
+  // .yaac-transcripts/<YAAC_SESSION_ID>.jsonl — now ships as a Codex managed
+  // hook baked into the image at /etc/codex (dockerfiles/Dockerfile.tools),
+  // which Codex trusts by policy, so nothing is seeded into the mounted codex
+  // dir. For projects predating the managed hook, strip the stale user-layer
+  // hook so it stops triggering Codex's /hooks trust-approval prompt.
   const transcriptDir = codexTranscriptDir(projectSlug)
   await fs.mkdir(transcriptDir, { recursive: true })
-  const hookScript = path.join(codex, '.yaac-hook.sh')
-  await fs.writeFile(hookScript, [
-    '#!/bin/sh',
-    '# Reads JSON from stdin (Codex SessionStart hook) and symlinks the',
-    '# transcript so yaac can find the right JSONL for this session.',
-    '# Uses a relative symlink so it resolves on both host and container.',
-    'INPUT=$(cat)',
-    'TRANSCRIPT=$(echo "$INPUT" | sed -n \'s/.*"transcript_path"\\s*:\\s*"\\([^"]*\\)".*/\\1/p\')',
-    'if [ -n "$TRANSCRIPT" ] && [ -n "$YAAC_SESSION_ID" ]; then',
-    '  LINK_DIR=/home/yaac/.codex/.yaac-transcripts',
-    '  mkdir -p "$LINK_DIR"',
-    '  REL=$(python3 -c "import os.path; print(os.path.relpath(\'$TRANSCRIPT\', \'$LINK_DIR\'))")',
-    '  ln -sf "$REL" "$LINK_DIR/$YAAC_SESSION_ID.jsonl"',
-    'fi',
-  ].join('\n') + '\n')
-  await fs.chmod(hookScript, 0o755)
-  await ensureCodexHooksJson(codex)
-  await ensureCodexConfigToml(codex)
+  await removeLegacyCodexHook(codex)
 
   // opencode: grant the websearch permission in the shared opencode.json so
   // the Exa-backed tool is usable (paired with OPENCODE_ENABLE_EXA above).
