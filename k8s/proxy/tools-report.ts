@@ -9,15 +9,19 @@ import {
   PI_PROVIDER_HOSTS,
   PI_PROVIDER_DEFAULT_MODELS,
   MODELS_BY_PROVIDER,
+  PI_MODELS_BY_PROVIDER,
 } from './tool-providers.generated'
 
 export const AGENT_TOOLS = ['claude', 'codex', 'opencode', 'pi'] as const
 export type AgentTool = (typeof AGENT_TOOLS)[number]
 
-// claude/codex authenticate against a fixed vendor host (opencode/pi resolve
-// theirs from the configured provider). These mirror proxy.ts's constants.
+// Vendor hosts, mirroring proxy.ts's constants. claude always authenticates
+// against api.anthropic.com (api-key and OAuth alike); codex splits by kind —
+// OAuth (ChatGPT) inference routes to chatgpt.com/backend-api, api-key to
+// api.openai.com. opencode/pi resolve theirs from the configured provider.
 const ANTHROPIC_API_HOST = 'api.anthropic.com'
 const OPENAI_API_HOST = 'api.openai.com'
+const CHATGPT_HOST = 'chatgpt.com'
 
 /** What the report needs about one tool's host credentials. */
 export type ToolCredsView =
@@ -51,28 +55,39 @@ export interface BuildToolsReportInput {
 
 /**
  * Accepted model ids for a tool, from the baked models.dev catalog. claude →
- * the `anthropic` provider, codex → `openai`, opencode → its configured
- * provider (opencode ids are models.dev ids), pi → its configured provider in
- * `provider/model` form (falling back to just the default when models.dev has
- * no matching provider). Empty when nothing is known — the tool still accepts
- * any id it recognizes; the list is a convenience, not an allowlist.
+ * claude → the `anthropic` provider (bare ids), codex → `openai` (bare ids),
+ * both from models.dev's tool-calling catalog. opencode and pi take
+ * `provider/model`, so their ids are prefixed with the configured provider —
+ * opencode from models.dev, pi from pi's own registry (which differs). pi falls
+ * back to its default when the registry lists nothing. Empty when nothing is
+ * known — the tool still accepts any id it recognizes; the list is a
+ * convenience, not an allowlist.
  */
 export function modelsForTool(tool: AgentTool, provider: string | undefined): string[] {
   if (tool === 'claude') return MODELS_BY_PROVIDER['anthropic'] ?? []
   if (tool === 'codex') return MODELS_BY_PROVIDER['openai'] ?? []
-  if (tool === 'opencode') return provider ? MODELS_BY_PROVIDER[provider] ?? [] : []
-  // pi: models are addressed as `provider/model`.
+  if (tool === 'opencode') {
+    // opencode's `--model` is `provider/model` (agent-command.ts), like pi.
+    return provider ? (MODELS_BY_PROVIDER[provider] ?? []).map((m) => `${provider}/${m}`) : []
+  }
+  // pi: `provider/model`, from pi's own catalog (not models.dev).
   if (!provider) return []
-  const base = MODELS_BY_PROVIDER[provider] ?? []
+  const base = PI_MODELS_BY_PROVIDER[provider] ?? []
   if (base.length) return base.map((m) => `${provider}/${m}`)
   const dflt = PI_PROVIDER_DEFAULT_MODELS[provider]
   return dflt ? [dflt] : []
 }
 
 /** The host a tool's api key authenticates against, if resolvable. */
-export function apiHostForTool(tool: AgentTool, provider: string | undefined): string | undefined {
+export function apiHostForTool(
+  tool: AgentTool,
+  provider: string | undefined,
+  kind: 'oauth' | 'api-key' | undefined,
+): string | undefined {
   if (tool === 'claude') return ANTHROPIC_API_HOST
-  if (tool === 'codex') return OPENAI_API_HOST
+  // Codex OAuth (ChatGPT) inference goes to chatgpt.com/backend-api, not the
+  // api-key host api.openai.com (see proxy.ts).
+  if (tool === 'codex') return kind === 'oauth' ? CHATGPT_HOST : OPENAI_API_HOST
   if (tool === 'opencode') return provider ? OPENCODE_PROVIDER_HOSTS[provider] : undefined
   return provider ? PI_PROVIDER_HOSTS[provider] : undefined
 }
@@ -87,7 +102,7 @@ export function buildToolsReport(input: BuildToolsReportInput): ToolsReport {
     entry.kind = cred.kind
     const provider = cred.provider
     if (tool === 'opencode' || tool === 'pi') entry.provider = provider
-    entry.apiHost = apiHostForTool(tool, provider)
+    entry.apiHost = apiHostForTool(tool, provider, cred.kind)
     if (tool === 'pi' && provider) entry.defaultModel = PI_PROVIDER_DEFAULT_MODELS[provider]
     if (input.includeModels) entry.models = modelsForTool(tool, provider)
     return entry

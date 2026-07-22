@@ -161,23 +161,30 @@ function buildOpencodeRows(db: Record<string, ModelsDevProvider>): ProviderRow[]
 }
 
 /**
- * Every models.dev provider's model-id list, keyed by provider id. Baked into
- * the proxy so `yaac-spawn --models` can report the accepted model ids for each
- * agent tool with no session-time fetch: claude → `anthropic`, codex → `openai`,
- * opencode → its configured provider, pi → its configured provider (ids largely
- * align with models.dev). Providers models.dev lists without models are omitted.
+ * Each models.dev provider's TOOL-CALLING model ids, keyed by provider id.
+ * Baked in so `yaac-spawn --models` can report usable `--model` values with no
+ * session-time fetch: claude → `anthropic`, codex → `openai`, opencode → its
+ * configured provider. Filtered to `tool_call` models because every agent tool
+ * drives models via tool calls — this drops embedding/image/tts/realtime
+ * entries (e.g. text-embedding-3-large) that an agent can't run, so the list is
+ * a set of candidate agent models, not the vendor's full catalog. pi has its
+ * own registry (see PI_MODELS_BY_PROVIDER); it does not use this map.
  */
 function buildModelsCatalog(db: Record<string, ModelsDevProvider>): Record<string, string[]> {
   const catalog: Record<string, string[]> = {}
   let modelCount = 0
   for (const [id, p] of Object.entries(db)) {
-    const models = p.models && typeof p.models === 'object' ? Object.keys(p.models) : []
-    if (models.length) {
-      catalog[id] = [...models].sort()
-      modelCount += models.length
+    const models = p.models && typeof p.models === 'object' ? p.models : {}
+    const ids = Object.entries(models)
+      .filter(([, m]) => (m as { tool_call?: unknown }).tool_call === true)
+      .map(([mid]) => mid)
+      .sort()
+    if (ids.length) {
+      catalog[id] = ids
+      modelCount += ids.length
     }
   }
-  console.log(`  models: ${modelCount} ids across ${Object.keys(catalog).length} providers`)
+  console.log(`  models (models.dev, tool-calling): ${modelCount} ids across ${Object.keys(catalog).length} providers`)
   return catalog
 }
 
@@ -250,6 +257,30 @@ async function buildPiRows(): Promise<ProviderRow[]> {
   return sortRows(rows)
 }
 
+/**
+ * pi's own per-provider model ids (bare, e.g. `claude-opus-4-8`), from its
+ * installed registry (`getBuiltinModels`). pi's catalog differs from models.dev
+ * — it is pi's curated per-provider list — so `yaac-spawn --models` reports it
+ * for pi rather than reusing the models.dev map. (pi still accepts any
+ * `provider/model` at runtime; this is the convenience list.)
+ */
+async function buildPiModelsCatalog(): Promise<Record<string, string[]>> {
+  const root = piPackageRoot()
+  const piAi = path.join(root, 'node_modules', '@earendil-works', 'pi-ai', 'dist')
+  const all = await importPi(path.join(piAi, 'providers', 'all.js'))
+  const getBuiltinProviders = all.getBuiltinProviders as () => string[]
+  const getBuiltinModels = all.getBuiltinModels as (provider: string) => { id: string }[]
+
+  const catalog: Record<string, string[]> = {}
+  let modelCount = 0
+  for (const provider of getBuiltinProviders()) {
+    const ids = getBuiltinModels(provider).map((m) => m.id).sort()
+    if (ids.length) { catalog[provider] = ids; modelCount += ids.length }
+  }
+  console.log(`  models (pi registry): ${modelCount} ids across ${Object.keys(catalog).length} providers`)
+  return catalog
+}
+
 // ── emit ────────────────────────────────────────────────────────────────
 
 function sortRows(rows: ProviderRow[]): ProviderRow[] {
@@ -295,12 +326,12 @@ function piDefaultModelsMap(rows: ProviderRow[]): string {
   return `export const PI_PROVIDER_DEFAULT_MODELS: Record<string, string> = {\n${entries}\n}`
 }
 
-function modelsCatalogMap(catalog: Record<string, string[]>): string {
+function modelsCatalogMap(name: string, catalog: Record<string, string[]>): string {
   const entries = Object.keys(catalog)
     .sort()
     .map((id) => `  ${JSON.stringify(id)}: [${catalog[id].map((m) => JSON.stringify(m)).join(', ')}],`)
     .join('\n')
-  return `export const MODELS_BY_PROVIDER: Record<string, string[]> = {\n${entries}\n}`
+  return `export const ${name}: Record<string, string[]> = {\n${entries}\n}`
 }
 
 /**
@@ -313,6 +344,7 @@ function generatedFile(
   opencode: ProviderRow[],
   pi: ProviderRow[],
   catalog: Record<string, string[]>,
+  piModels: Record<string, string[]>,
   header: string,
 ): string {
   return `/* eslint-disable */
@@ -363,19 +395,23 @@ ${hostMap('PI_PROVIDER_HOSTS', pi)}
 
 ${piDefaultModelsMap(pi)}
 
-// ── Model catalog: every models.dev provider's accepted model ids ────────
+// ── Model catalogs: candidate --model values per provider ────────────────
 // Served by \`GET yaac.internal/tools?models=1\` (yaac-spawn --models) so a
 // session can discover valid \`--model\` values without a network fetch; also
-// available to the app (e.g. a model picker).
+// available to the app (e.g. a model picker). MODELS_BY_PROVIDER is models.dev's
+// tool-calling models (claude → anthropic, codex → openai, opencode → provider);
+// PI_MODELS_BY_PROVIDER is pi's own registry, which differs from models.dev.
 
-${modelsCatalogMap(catalog)}
+${modelsCatalogMap('MODELS_BY_PROVIDER', catalog)}
+
+${modelsCatalogMap('PI_MODELS_BY_PROVIDER', piModels)}
 `
 }
 
 async function main(): Promise<void> {
   console.log('Generating tool provider tables…')
   const db = await fetchModelsDev()
-  const [pi] = await Promise.all([buildPiRows()])
+  const [pi, piModels] = await Promise.all([buildPiRows(), buildPiModelsCatalog()])
   const opencode = buildOpencodeRows(db)
   const catalog = buildModelsCatalog(db)
 
@@ -392,7 +428,7 @@ async function main(): Promise<void> {
   const header = `// Sources: opencode → models.dev (opencode-ai ${opencodeVer}); ` +
     `pi → @earendil-works/pi-coding-agent ${pkgVersion(piRoot)}.`
 
-  const content = generatedFile(opencode, pi, catalog, header)
+  const content = generatedFile(opencode, pi, catalog, piModels, header)
   const sharedPath = path.join(REPO_ROOT, 'packages', 'shared', 'src', 'tool-providers.generated.ts')
   const proxyPath = path.join(REPO_ROOT, 'k8s', 'proxy', 'tool-providers.generated.ts')
   fs.writeFileSync(sharedPath, content)

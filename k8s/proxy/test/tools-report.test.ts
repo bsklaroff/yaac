@@ -6,7 +6,7 @@ import {
   type AgentTool,
   type ToolCredsView,
 } from 'yaac-proxy-sidecar/tools-report'
-import { MODELS_BY_PROVIDER } from 'yaac-proxy-sidecar/tool-providers.generated'
+import { MODELS_BY_PROVIDER, PI_MODELS_BY_PROVIDER } from 'yaac-proxy-sidecar/tool-providers.generated'
 
 /** All-unauthed baseline; individual tests flip in the tools they exercise. */
 function creds(over: Partial<Record<AgentTool, ToolCredsView>> = {}): Record<AgentTool, ToolCredsView> {
@@ -19,28 +19,45 @@ function creds(over: Partial<Record<AgentTool, ToolCredsView>> = {}): Record<Age
   }
 }
 
-describe('MODELS_BY_PROVIDER (baked catalog)', () => {
+describe('baked model catalogs', () => {
   it('carries non-empty model lists for the fixed claude/codex providers', () => {
     expect(MODELS_BY_PROVIDER['anthropic']?.length).toBeGreaterThan(0)
     expect(MODELS_BY_PROVIDER['openai']?.length).toBeGreaterThan(0)
   })
+
+  it('excludes non-agent (non-tool-calling) models like embeddings', () => {
+    // The generator keeps only tool_call models, so embedding/image ids that an
+    // agent can't run must not appear (the review flagged text-embedding-3-large).
+    expect(MODELS_BY_PROVIDER['openai']).not.toContain('text-embedding-3-large')
+    expect(MODELS_BY_PROVIDER['openai']?.some((m) => m.startsWith('text-embedding'))).toBe(false)
+    // codex-family agent models are still present.
+    expect(MODELS_BY_PROVIDER['openai']).toContain('gpt-5-codex')
+  })
+
+  it('has a pi-registry catalog distinct from models.dev', () => {
+    expect(PI_MODELS_BY_PROVIDER['anthropic']?.length).toBeGreaterThan(0)
+  })
 })
 
 describe('modelsForTool', () => {
-  it('maps claude → anthropic and codex → openai catalogs', () => {
+  it('maps claude → anthropic and codex → openai catalogs (bare ids)', () => {
     expect(modelsForTool('claude', undefined)).toEqual(MODELS_BY_PROVIDER['anthropic'])
     expect(modelsForTool('codex', undefined)).toEqual(MODELS_BY_PROVIDER['openai'])
   })
 
-  it('uses the configured provider for opencode', () => {
-    expect(modelsForTool('opencode', 'anthropic')).toEqual(MODELS_BY_PROVIDER['anthropic'])
+  it('prefixes opencode models with the configured provider (provider/model)', () => {
+    const oc = modelsForTool('opencode', 'anthropic')
+    expect(oc.length).toBeGreaterThan(0)
+    expect(oc.every((m) => m.startsWith('anthropic/'))).toBe(true)
+    expect(oc).toEqual((MODELS_BY_PROVIDER['anthropic'] ?? []).map((m) => `anthropic/${m}`))
     expect(modelsForTool('opencode', undefined)).toEqual([])
   })
 
-  it('prefixes pi models with the provider (provider/model form)', () => {
+  it('prefixes pi models and sources them from pi\'s own registry', () => {
     const pi = modelsForTool('pi', 'anthropic')
     expect(pi.length).toBeGreaterThan(0)
     expect(pi.every((m) => m.startsWith('anthropic/'))).toBe(true)
+    expect(pi).toEqual((PI_MODELS_BY_PROVIDER['anthropic'] ?? []).map((m) => `anthropic/${m}`))
   })
 
   it('returns [] for an unknown provider', () => {
@@ -71,6 +88,13 @@ describe('buildToolsReport', () => {
     expect(off.tools.find((t) => t.tool === 'claude')?.models).toBeUndefined()
     const on = buildToolsReport({ currentTool: null, includeModels: true, creds: creds({ claude: { authed: true, kind: 'api-key' } }) })
     expect(on.tools.find((t) => t.tool === 'claude')?.models?.length).toBeGreaterThan(0)
+  })
+
+  it('reports the codex host by credential kind (OAuth → chatgpt.com)', () => {
+    const oauth = buildToolsReport({ currentTool: 'codex', includeModels: false, creds: creds({ codex: { authed: true, kind: 'oauth' } }) })
+    expect(oauth.tools.find((t) => t.tool === 'codex')?.apiHost).toBe('chatgpt.com')
+    const apiKey = buildToolsReport({ currentTool: 'codex', includeModels: false, creds: creds({ codex: { authed: true, kind: 'api-key' } }) })
+    expect(apiKey.tools.find((t) => t.tool === 'codex')?.apiHost).toBe('api.openai.com')
   })
 
   it('attaches a pi default model for the configured provider', () => {
