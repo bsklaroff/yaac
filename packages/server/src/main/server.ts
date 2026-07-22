@@ -4,7 +4,7 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { setCookie } from 'hono/cookie'
 import { denyBrowserCors, requestLogger } from '#http/auth'
-import { cookieOrBearerAuth, hostHeaderCheck, sessionCookieName } from '#http/web-auth'
+import { cookieOrBearerAuth, fetchSiteCheck, hostHeaderCheck, isCredentialOptional, originHeaderCheck, sessionCookieName } from '#http/web-auth'
 import { registerStaticRoutes } from '#http/static'
 import { toErrorBody } from '#http/errors'
 import { projectApp } from '#routes/projects'
@@ -69,6 +69,13 @@ export function buildApp(deps: ServerAppDeps) {
   })
   app.use('*', hostHeaderCheck())
   app.use('*', denyBrowserCors())
+  // Reject cross-site requests two ways (both browser-set, JS-unforgeable,
+  // and effective on WS upgrades, which are never preflighted) so a loopback
+  // server without a credential is still safe against a malicious website:
+  // the request's Origin host, and the Fetch-metadata Sec-Fetch-Site signal.
+  // Hardening even when auth is on.
+  app.use('*', originHeaderCheck())
+  app.use('*', fetchSiteCheck())
   app.use('*', cookieOrBearerAuth(deps.secret, tokens))
 
   app.onError((err: Error, c: Context) => {
@@ -127,7 +134,15 @@ export function buildApp(deps: ServerAppDeps) {
   }
 
   return app
-    .get('/health', (c) => c.json({ ok: true, buildId: deps.buildId, ready: isReady() }))
+    // `authRequired` lets `yaac open` skip the one-time token when this
+    // deployment doesn't need a credential (loopback-only / nested). Public,
+    // so a client can read it before it has any credential.
+    .get('/health', (c) => c.json({
+      ok: true,
+      buildId: deps.buildId,
+      ready: isReady(),
+      authRequired: !isCredentialOptional(),
+    }))
     .route('/project', projectApp)
     .route('/session', sessionApp)
     .route('/tool', toolApp)

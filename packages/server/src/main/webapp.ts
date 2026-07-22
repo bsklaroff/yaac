@@ -3,8 +3,26 @@ import { resolveServerTarget, type ServerTarget } from '@yaac/shared/server-api'
 import { ensureAuthDaemonSpawned } from '@yaac/shared/auth-daemon'
 import { startServer } from '#main/lifecycle'
 
-export function buildWebappUrl(baseUrl: string, token: string): string {
-  return `${baseUrl}/?token=${token}`
+export function buildWebappUrl(baseUrl: string, token: string | null): string {
+  return token === null ? `${baseUrl}/` : `${baseUrl}/?token=${token}`
+}
+
+/**
+ * Ask the server (via public `/health`) whether it needs a credential. A
+ * loopback-only or nested server doesn't, so `yaac open` can skip the
+ * one-time token entirely. Defaults to `true` (mint the token) on any hiccup
+ * or an older server that doesn't report the field — never hand out a
+ * tokenless URL for a server that might reject it.
+ */
+async function serverNeedsCredential(baseUrl: string, fetchImpl: typeof fetch): Promise<boolean> {
+  try {
+    const res = await fetchImpl(`${baseUrl}/health`, {})
+    if (!res.ok) return true
+    const body = await res.json() as { authRequired?: unknown }
+    return body.authRequired !== false
+  } catch {
+    return true
+  }
 }
 
 export interface OpenWebappOptions {
@@ -52,16 +70,21 @@ export async function openWebapp(opts: OpenWebappOptions = {}): Promise<void> {
     // resolution/spawn hiccup — sign-in cards will say what to run
   }
 
-  const res = await fetchImpl(`${target.baseUrl}/tokens`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${target.secret}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({ kind: 'one-time' }),
-  })
-  if (!res.ok) throw new Error(`failed to mint a one-time token (HTTP ${res.status})`)
-  const { token } = await res.json() as { token: string }
+  // Skip the token when the server doesn't require one (loopback-only or
+  // nested) — the webapp authenticates with no credential there.
+  let token: string | null = null
+  if (await serverNeedsCredential(target.baseUrl, fetchImpl)) {
+    const res = await fetchImpl(`${target.baseUrl}/tokens`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${target.secret}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ kind: 'one-time' }),
+    })
+    if (!res.ok) throw new Error(`failed to mint a one-time token (HTTP ${res.status})`)
+    token = (await res.json() as { token: string }).token
+  }
 
   const url = buildWebappUrl(target.baseUrl, token)
   console.log(url)

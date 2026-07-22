@@ -15,18 +15,23 @@ describe('buildApp', () => {
 
   afterEach(async () => {
     await cleanupTempDir(tmpDir)
+    vi.unstubAllEnvs()
   })
 
   it('GET /health returns buildId + ok without auth', async () => {
     const app = buildApp({ secret: 'shh', buildId: 'abc123' })
     // /health is the auth-exempt probe; hit it with a bare request
-    // (no bearer) to prove the exemption still holds.
+    // (no bearer) to prove the exemption still holds. A loopback server is
+    // credential-optional by default, so it reports authRequired: false.
     const res = await app.request('/health')
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ ok: true, buildId: 'abc123', ready: true })
+    expect(await res.json()).toEqual({ ok: true, buildId: 'abc123', ready: true, authRequired: false })
   })
 
   it('GET /project/list requires bearer auth', async () => {
+    // A loopback server is credential-optional by default; force the gate on
+    // to assert the bearer requirement.
+    vi.stubEnv('YAAC_REQUIRE_AUTH', '1')
     const app = buildApp({ secret: 'shh', buildId: 'test-build-id' })
     const res = await app.request('/project/list')
     expect(res.status).toBe(401)

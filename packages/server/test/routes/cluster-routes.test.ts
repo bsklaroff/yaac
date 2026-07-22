@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { createClusterApp, type ClusterRouteDeps } from '#routes/cluster'
 import { buildApp } from '#main/server'
 import { ClusterSetupError } from '#features/cluster/setup'
@@ -20,6 +20,8 @@ function parseNdjson(text: string): ClusterSetupEvent[] {
 }
 
 describe('cluster routes', () => {
+  afterEach(() => vi.unstubAllEnvs())
+
   it('GET /check passes the deps result through', async () => {
     const app = createClusterApp(fakeDeps({
       check: () => Promise.resolve({ ok: false, results: [PASS, FAIL] }),
@@ -76,6 +78,9 @@ describe('cluster routes', () => {
   })
 
   it('is mounted behind auth in buildApp', async () => {
+    // A loopback server is credential-optional by default; this asserts the
+    // gate, so force it on.
+    vi.stubEnv('YAAC_REQUIRE_AUTH', '1')
     const check = vi.fn(() => Promise.resolve({ ok: true, results: [PASS] }))
     const app = buildApp({
       secret: 'shh', buildId: 'test-build-id',

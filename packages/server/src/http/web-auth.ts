@@ -47,8 +47,39 @@ export function isPublicPath(method: string, path: string): boolean {
 }
 
 /**
+ * True when the server is a purely-local deployment: bound loopback-only,
+ * with no remote hosting configured (`YAAC_ALLOWED_HOSTS` empty and
+ * `YAAC_TRUST_PROXY` unset).
+ */
+export function isLoopbackOnlyDeployment(): boolean {
+  return env.allowedHosts.length === 0 && !env.trustProxy
+}
+
+/**
+ * Whether the credential gate is skipped for this deployment — a browser or
+ * CLI reaching it needs no token. Skipped when the server isn't deliberately
+ * remote-fronted for direct external access:
+ *   - a pure loopback deployment (`isLoopbackOnlyDeployment`), or
+ *   - a nested yaac (`YAAC_NESTED`): it inherits the outer session's
+ *     `allowedHosts`/`trustProxy` as ambient env, but its only path in is the
+ *     outer server's port-forward — already tailnet-gated like any forwarded
+ *     port, not a remote-fronting of this inner server.
+ * `YAAC_REQUIRE_AUTH` forces the gate on regardless (shared machines; a
+ * deliberately-gated inner server; the auth-path tests). The Host + Origin +
+ * Sec-Fetch-Site guards still defeat a malicious website in every case. Read
+ * per request (never cached) so a restarted server — and tests — see current
+ * env.
+ */
+export function isCredentialOptional(): boolean {
+  if (env.requireAuth) return false
+  return env.nested || isLoopbackOnlyDeployment()
+}
+
+/**
  * Accept a request if it carries either a matching bearer (CLI) or a
- * valid webapp session cookie. Public paths skip the check.
+ * valid webapp session cookie. Public paths skip the check, and a
+ * deployment where the credential is optional skips it entirely (see
+ * `isCredentialOptional`) unless `YAAC_REQUIRE_AUTH` forces it on.
  *
  * A presented-but-wrong bearer is answered with `BAD_BEARER` rather than
  * the generic `UNAUTHENTICATED`: the CLI client re-reads its credential
@@ -69,6 +100,7 @@ export function cookieOrBearerAuth(
 ): MiddlewareHandler {
   return async (c, next) => {
     if (isPublicPath(c.req.method, c.req.path)) return next()
+    if (isCredentialOptional()) return next()
 
     const header = c.req.header('authorization') ?? ''
     const match = /^Bearer\s+(.+)$/i.exec(header)
@@ -133,6 +165,86 @@ export function hostHeaderCheck(): MiddlewareHandler {
     if (isAllowedHost(host, env.allowedHosts)) return next()
     return c.json(
       { error: { code: 'BAD_HOST', message: 'host not allowed' } },
+      403,
+    )
+  }
+}
+
+/**
+ * Whether a request's `Origin` is allowed. Mirrors `isAllowedHost`, applied
+ * to the origin's host: absent Origin (non-browser clients — CLI/undici,
+ * curl — and same-origin GETs, which browsers may send without one) is
+ * allowed; a present Origin must resolve to loopback or an allow-listed host.
+ *
+ * This is the load-bearing defense for a credential-free loopback server:
+ * `Origin` is browser-controlled and page JS cannot forge or drop it (a Fetch
+ * "forbidden header"; the WebSocket constructor has no header API), so a
+ * request from a malicious site arrives stamped with the attacker's origin
+ * and is rejected. `Origin: null` (opaque origins) is unparseable and fails
+ * closed. Kept as hardening even when the credential gate is on.
+ */
+export function isAllowedOrigin(origin: string | undefined, allowed: readonly string[] = []): boolean {
+  if (origin === undefined || origin === '') return true
+  let host: string
+  try {
+    host = new URL(origin).host
+  } catch {
+    return false
+  }
+  return isAllowedHost(host, allowed)
+}
+
+export function originHeaderCheck(): MiddlewareHandler {
+  return async (c, next) => {
+    // Read per request (never cached) so tests — and a server restarted with
+    // new env — see the current allowlist.
+    if (isAllowedOrigin(c.req.header('origin'), env.allowedHosts)) return next()
+    return c.json(
+      { error: { code: 'BAD_ORIGIN', message: 'origin not allowed' } },
+      403,
+    )
+  }
+}
+
+/**
+ * Fetch-metadata "resource isolation" check: reject a request the browser
+ * marks as coming from another site. `Sec-Fetch-Site` is set by the browser
+ * and page JS cannot forge it (like `Origin`), and the browser attaches it to
+ * more request shapes than `Origin` — so it catches cross-site requests even
+ * where `Origin` is absent. Complementary hardening alongside
+ * `isAllowedOrigin`; both must pass.
+ *
+ * Allowed: an absent header (non-browser clients, older browsers — `Origin`
+ * and Host still guard those), `same-origin` (the SPA's own fetches/WS), and
+ * `none` (a user-initiated load: typed URL, bookmark, `yaac open`). A
+ * cross-site *top-level document* navigation (GET + `Sec-Fetch-Mode: navigate`
+ * + `Sec-Fetch-Dest: document`) is allowed so the webapp stays linkable — but
+ * an embedded navigation (`Sec-Fetch-Dest: iframe`/`embed`/…) is not, so a
+ * site can't frame the app across origins. Everything else (`cross-site` /
+ * `same-site` sub-resource loads) is rejected.
+ */
+export function isAllowedFetchSite(
+  site: string | undefined,
+  mode: string | undefined,
+  dest: string | undefined,
+  method: string,
+): boolean {
+  if (site === undefined || site === '') return true
+  if (site === 'same-origin' || site === 'none') return true
+  if (method === 'GET' && mode === 'navigate' && dest === 'document') return true
+  return false
+}
+
+export function fetchSiteCheck(): MiddlewareHandler {
+  return async (c, next) => {
+    if (isAllowedFetchSite(
+      c.req.header('sec-fetch-site'),
+      c.req.header('sec-fetch-mode'),
+      c.req.header('sec-fetch-dest'),
+      c.req.method,
+    )) return next()
+    return c.json(
+      { error: { code: 'BAD_FETCH_SITE', message: 'cross-site request rejected' } },
       403,
     )
   }

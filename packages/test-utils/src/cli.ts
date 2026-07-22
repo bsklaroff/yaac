@@ -158,6 +158,11 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
     // every e2e server (and retitle sessions mid-assertion); the feature is
     // unit-tested with a stubbed runner instead.
     YAAC_AUTO_TITLES: '0',
+    // Keep the credential gate on for spawned servers. A loopback server is
+    // credential-optional by default, but e2e/api suites assert the
+    // authenticated behavior (the CLI authenticates with the lock secret),
+    // so spawned servers stay auth-on exactly as in production remote use.
+    YAAC_REQUIRE_AUTH: '1',
   }
 
   const cleanup = async (): Promise<void> => {

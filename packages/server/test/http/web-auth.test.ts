@@ -1,11 +1,17 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 import {
   timingSafeStrEqual,
   cookieOrBearerAuth,
   hostHeaderCheck,
+  isAllowedFetchSite,
   isAllowedHost,
+  isAllowedOrigin,
+  isCredentialOptional,
+  isLoopbackOnlyDeployment,
   isPublicPath,
+  fetchSiteCheck,
+  originHeaderCheck,
   SESSION_COOKIE_BASE,
   sessionCookieName,
 } from '#http/web-auth'
@@ -66,6 +72,115 @@ describe('isAllowedHost', () => {
   })
 })
 
+describe('isAllowedOrigin', () => {
+  it('allows an absent or empty Origin (non-browser clients, same-origin GETs)', () => {
+    expect(isAllowedOrigin(undefined)).toBe(true)
+    expect(isAllowedOrigin('')).toBe(true)
+  })
+
+  it('allows a loopback Origin on any port', () => {
+    expect(isAllowedOrigin('http://localhost:5173')).toBe(true)
+    expect(isAllowedOrigin('http://127.0.0.1:8787')).toBe(true)
+  })
+
+  it('rejects a website Origin', () => {
+    expect(isAllowedOrigin('https://evil.com')).toBe(false)
+    expect(isAllowedOrigin('https://evil.com:8787')).toBe(false)
+  })
+
+  it('fails closed on an opaque or unparseable Origin', () => {
+    expect(isAllowedOrigin('null')).toBe(false)
+    expect(isAllowedOrigin('not a url')).toBe(false)
+  })
+
+  it('admits an allow-listed host, loopback regardless of the list', () => {
+    const allowed = ['srv.tailnet.ts.net']
+    expect(isAllowedOrigin('https://srv.tailnet.ts.net', allowed)).toBe(true)
+    expect(isAllowedOrigin('https://other.ts.net', allowed)).toBe(false)
+    expect(isAllowedOrigin('http://localhost', allowed)).toBe(true)
+  })
+})
+
+describe('isLoopbackOnlyDeployment', () => {
+  afterEach(() => vi.unstubAllEnvs())
+
+  it('is true with no remote-host env (the default local posture)', () => {
+    expect(isLoopbackOnlyDeployment()).toBe(true)
+  })
+
+  it('is false once YAAC_ALLOWED_HOSTS or YAAC_TRUST_PROXY is set', () => {
+    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
+    expect(isLoopbackOnlyDeployment()).toBe(false)
+    vi.unstubAllEnvs()
+    vi.stubEnv('YAAC_TRUST_PROXY', '1')
+    expect(isLoopbackOnlyDeployment()).toBe(false)
+  })
+})
+
+describe('isCredentialOptional', () => {
+  // The suite defaults to YAAC_REQUIRE_AUTH=1; clear it to see the underlying
+  // posture. YAAC_NESTED is stripped by unit-setup, so it's off by default.
+  afterEach(() => vi.unstubAllEnvs())
+
+  it('is true for a pure loopback deployment', () => {
+    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
+    expect(isCredentialOptional()).toBe(true)
+  })
+
+  it('is false once remote hosting is configured (and not nested)', () => {
+    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
+    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
+    expect(isCredentialOptional()).toBe(false)
+  })
+
+  it('is true for a nested yaac even with inherited remote-host env', () => {
+    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
+    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
+    vi.stubEnv('YAAC_TRUST_PROXY', '1')
+    vi.stubEnv('YAAC_NESTED', '1')
+    expect(isCredentialOptional()).toBe(true)
+  })
+
+  it('is false whenever YAAC_REQUIRE_AUTH forces the gate on', () => {
+    vi.stubEnv('YAAC_REQUIRE_AUTH', '1')
+    vi.stubEnv('YAAC_NESTED', '1')
+    expect(isCredentialOptional()).toBe(false)
+    vi.unstubAllEnvs()
+    vi.stubEnv('YAAC_REQUIRE_AUTH', '1')
+    expect(isCredentialOptional()).toBe(false)
+  })
+})
+
+describe('isAllowedFetchSite', () => {
+  it('allows an absent header (non-browser / older browsers)', () => {
+    expect(isAllowedFetchSite(undefined, undefined, undefined, 'POST')).toBe(true)
+    expect(isAllowedFetchSite('', undefined, undefined, 'POST')).toBe(true)
+  })
+
+  it('allows same-origin and user-initiated (none) requests', () => {
+    expect(isAllowedFetchSite('same-origin', 'cors', 'empty', 'POST')).toBe(true)
+    expect(isAllowedFetchSite('none', 'navigate', 'document', 'GET')).toBe(true)
+  })
+
+  it('rejects cross-site and same-site sub-resource loads', () => {
+    expect(isAllowedFetchSite('cross-site', 'cors', 'empty', 'POST')).toBe(false)
+    expect(isAllowedFetchSite('cross-site', 'websocket', 'empty', 'GET')).toBe(false)
+    expect(isAllowedFetchSite('same-site', 'cors', 'empty', 'GET')).toBe(false)
+  })
+
+  it('allows a cross-site top-level document navigation (linkable webapp)', () => {
+    expect(isAllowedFetchSite('cross-site', 'navigate', 'document', 'GET')).toBe(true)
+  })
+
+  it('rejects a cross-site navigation that is not a top-level document', () => {
+    // Embedded (iframe/embed) navigation — a site trying to frame the app.
+    expect(isAllowedFetchSite('cross-site', 'navigate', 'iframe', 'GET')).toBe(false)
+    // Non-GET or missing dest.
+    expect(isAllowedFetchSite('cross-site', 'navigate', 'document', 'POST')).toBe(false)
+    expect(isAllowedFetchSite('cross-site', 'navigate', undefined, 'GET')).toBe(false)
+  })
+})
+
 function appWithAuth(): { app: Hono; tokens: ReturnType<typeof createTokenStore> } {
   const tokens = createTokenStore()
   const app = new Hono()
@@ -81,6 +196,11 @@ function mintSession(tokens: ReturnType<typeof createTokenStore>): string {
 }
 
 describe('cookieOrBearerAuth', () => {
+  // These assert the credential gate itself, so force it on (a loopback test
+  // server is credential-optional by default).
+  beforeEach(() => vi.stubEnv('YAAC_REQUIRE_AUTH', '1'))
+  afterEach(() => vi.unstubAllEnvs())
+
   it('allows public paths with no credentials', async () => {
     const res = await appWithAuth().app.request('/health')
     expect(res.status).toBe(200)
@@ -174,6 +294,50 @@ describe('cookieOrBearerAuth', () => {
   })
 })
 
+describe('cookieOrBearerAuth — loopback-only bypass', () => {
+  // The suite defaults to YAAC_REQUIRE_AUTH=1 (vitest-setup); clear it to
+  // exercise the default local posture where the gate is skipped.
+  afterEach(() => vi.unstubAllEnvs())
+
+  it('passes a protected path with no credential when loopback-only', async () => {
+    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
+    const res = await appWithAuth().app.request('/session/list')
+    expect(res.status).toBe(200)
+  })
+
+  it('does not even reject a wrong bearer when bypassed', async () => {
+    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
+    const res = await appWithAuth().app.request('/session/list', {
+      headers: { authorization: 'Bearer nope' },
+    })
+    expect(res.status).toBe(200)
+  })
+
+  it('re-enforces the gate when YAAC_REQUIRE_AUTH=1', async () => {
+    vi.stubEnv('YAAC_REQUIRE_AUTH', '1')
+    const res = await appWithAuth().app.request('/session/list')
+    expect(res.status).toBe(401)
+  })
+
+  it('re-enforces the gate once remote hosting is configured', async () => {
+    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
+    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
+    const res = await appWithAuth().app.request('/session/list')
+    expect(res.status).toBe(401)
+  })
+
+  it('bypasses a nested yaac despite inherited remote-host env', async () => {
+    // yaac-in-yaac: allowedHosts/trustProxy inherited from the outer session,
+    // but reachability is via the outer's (tailnet-gated) port-forward.
+    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
+    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
+    vi.stubEnv('YAAC_TRUST_PROXY', '1')
+    vi.stubEnv('YAAC_NESTED', '1')
+    const res = await appWithAuth().app.request('/session/list')
+    expect(res.status).toBe(200)
+  })
+})
+
 describe('sessionCookieName', () => {
   const original = getDataDir()
   afterEach(() => setDataDir(original))
@@ -247,5 +411,103 @@ describe('hostHeaderCheck', () => {
     } finally {
       vi.unstubAllEnvs()
     }
+  })
+})
+
+describe('originHeaderCheck', () => {
+  function appWithOriginCheck(): Hono {
+    const app = new Hono()
+    app.use('*', originHeaderCheck())
+    app.get('/x', (c) => c.text('ok'))
+    return app
+  }
+
+  it('allows a request with no Origin (CLI, same-origin GET)', async () => {
+    const res = await appWithOriginCheck().request('/x')
+    expect(res.status).toBe(200)
+  })
+
+  it('allows a loopback Origin (the SPA and the Vite dev proxy)', async () => {
+    const res = await appWithOriginCheck().request('/x', {
+      headers: { origin: 'http://localhost:5173' },
+    })
+    expect(res.status).toBe(200)
+  })
+
+  it('rejects a website Origin with BAD_ORIGIN', async () => {
+    const res = await appWithOriginCheck().request('/x', {
+      headers: { origin: 'https://evil.com' },
+    })
+    expect(res.status).toBe(403)
+    const body = await res.json() as { error: { code: string } }
+    expect(body.error.code).toBe('BAD_ORIGIN')
+  })
+
+  it('admits an Origin from YAAC_ALLOWED_HOSTS (read per request)', async () => {
+    const app = appWithOriginCheck()
+    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
+    try {
+      const ok = await app.request('/x', { headers: { origin: 'https://srv.tailnet.ts.net' } })
+      expect(ok.status).toBe(200)
+      const other = await app.request('/x', { headers: { origin: 'https://evil.com' } })
+      expect(other.status).toBe(403)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+})
+
+describe('fetchSiteCheck', () => {
+  function appWithFetchSiteCheck(): Hono {
+    const app = new Hono()
+    app.use('*', fetchSiteCheck())
+    app.get('/x', (c) => c.text('ok'))
+    app.post('/x', (c) => c.text('ok'))
+    return app
+  }
+
+  it('allows a request with no Sec-Fetch-Site (CLI, older browser)', async () => {
+    const res = await appWithFetchSiteCheck().request('/x')
+    expect(res.status).toBe(200)
+  })
+
+  it('allows same-origin requests (the SPA)', async () => {
+    const res = await appWithFetchSiteCheck().request('/x', {
+      method: 'POST',
+      headers: { 'sec-fetch-site': 'same-origin' },
+    })
+    expect(res.status).toBe(200)
+  })
+
+  it('rejects a cross-site request with BAD_FETCH_SITE', async () => {
+    const res = await appWithFetchSiteCheck().request('/x', {
+      method: 'POST',
+      headers: { 'sec-fetch-site': 'cross-site' },
+    })
+    expect(res.status).toBe(403)
+    const body = await res.json() as { error: { code: string } }
+    expect(body.error.code).toBe('BAD_FETCH_SITE')
+  })
+
+  it('allows a cross-site top-level document navigation', async () => {
+    const res = await appWithFetchSiteCheck().request('/x', {
+      headers: {
+        'sec-fetch-site': 'cross-site',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-dest': 'document',
+      },
+    })
+    expect(res.status).toBe(200)
+  })
+
+  it('rejects a cross-site embedded (iframe) navigation', async () => {
+    const res = await appWithFetchSiteCheck().request('/x', {
+      headers: {
+        'sec-fetch-site': 'cross-site',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-dest': 'iframe',
+      },
+    })
+    expect(res.status).toBe(403)
   })
 })
