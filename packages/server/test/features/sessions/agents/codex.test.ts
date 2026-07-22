@@ -253,6 +253,7 @@ describe('ensureCodexConfigToml', () => {
     await ensureCodexConfigToml(tmpDir)
     const raw = await fs.readFile(path.join(tmpDir, 'config.toml'), 'utf8')
     const parsed = TOML.parse(raw) as Record<string, Record<string, unknown>>
+    expect(parsed.check_for_update_on_startup).toBe(false)
     expect(parsed.features.codex_hooks).toBe(true)
     expect(parsed.features.apps).toBe(false)
   })
@@ -290,8 +291,10 @@ describe('ensureCodexConfigToml', () => {
     expect(parsed.features.apps).toBe(false)
   })
 
-  it('does not rewrite when both flags already set correctly', async () => {
+  it('does not rewrite when all settings already correct', async () => {
     await fs.writeFile(path.join(tmpDir, 'config.toml'), [
+      'check_for_update_on_startup = false',
+      '',
       '[features]',
       'codex_hooks = true',
       'apps = false',
@@ -316,6 +319,23 @@ describe('ensureCodexConfigToml', () => {
     const raw = await fs.readFile(path.join(tmpDir, 'config.toml'), 'utf8')
     const parsed = TOML.parse(raw) as Record<string, Record<string, unknown>>
 
+    expect(parsed.check_for_update_on_startup).toBe(false)
+    expect(parsed.features.codex_hooks).toBe(true)
+    expect(parsed.features.apps).toBe(false)
+  })
+
+  it('adds the update-check flag when only the feature flags are set', async () => {
+    await fs.writeFile(path.join(tmpDir, 'config.toml'), [
+      '[features]',
+      'codex_hooks = true',
+      'apps = false',
+    ].join('\n'))
+
+    await ensureCodexConfigToml(tmpDir)
+    const raw = await fs.readFile(path.join(tmpDir, 'config.toml'), 'utf8')
+    const parsed = TOML.parse(raw) as Record<string, Record<string, unknown>>
+
+    expect(parsed.check_for_update_on_startup).toBe(false)
     expect(parsed.features.codex_hooks).toBe(true)
     expect(parsed.features.apps).toBe(false)
   })

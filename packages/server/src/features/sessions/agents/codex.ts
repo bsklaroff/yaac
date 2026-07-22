@@ -127,11 +127,15 @@ export async function ensureCodexHooksJson(codexPath: string): Promise<void> {
 }
 
 /**
- * Ensures the codex config.toml has the [features] flags we need,
- * merging with any existing configuration rather than overwriting it.
+ * Ensures the codex config.toml has the settings we need, merging with any
+ * existing configuration rather than overwriting it.
  *
- * - codex_hooks = true: enables the hooks we install via hooks.json
- * - apps = false: disables the codex_apps MCP server, which fails to
+ * - check_for_update_on_startup = false: skips codex's startup update probe
+ *   against api.github.com so a fresh pod drops straight to the agent input
+ *   instead of stalling on (or prompting about) a version check. This matters
+ *   for yaac-spawn, which expects an unattended session to reach the prompt.
+ * - [features] codex_hooks = true: enables the hooks we install via hooks.json
+ * - [features] apps = false: disables the codex_apps MCP server, which fails to
  *   handshake against chatgpt.com/backend-api/wham/apps and surfaces a
  *   startup warning on every session.
  *   See https://github.com/openai/codex/issues/16550
@@ -148,8 +152,15 @@ export async function ensureCodexConfigToml(codexPath: string): Promise<void> {
   }
 
   const features = (config.features ?? {}) as Record<string, unknown>
-  if (features.codex_hooks === true && features.apps === false) return
+  if (
+    config.check_for_update_on_startup === false &&
+    features.codex_hooks === true &&
+    features.apps === false
+  ) {
+    return
+  }
 
+  config.check_for_update_on_startup = false
   features.codex_hooks = true
   features.apps = false
   config.features = features
