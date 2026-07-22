@@ -27,6 +27,7 @@ const snap = (sessions: Array<Partial<SessionListEntry>>): ServerSnapshot => ({
   gitAuthFailures: {},
   imageBuilds: [],
   planUsage: null,
+  codexPlanUsage: null,
 })
 
 describe('selectWaiting', () => {

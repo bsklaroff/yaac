@@ -42,6 +42,7 @@ function stubSnapshot(imageBuilds: ImageBuildEntry[]): void {
   vi.mocked(useSnapshot).mockReturnValue({
     sessions: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {}, imageBuilds,
     planUsage: null,
+    codexPlanUsage: null,
   } as ServerSnapshot)
 }
 

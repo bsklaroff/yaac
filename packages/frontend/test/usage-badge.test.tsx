@@ -47,7 +47,19 @@ function limit(overrides: Partial<PlanUsageLimit> = {}): PlanUsageLimit {
   }
 }
 
-const USAGE: PlanUsageResult = {
+function codexLimit(overrides: Partial<PlanUsageLimit> = {}): PlanUsageLimit {
+  return {
+    kind: 'codex_primary',
+    percent: 42,
+    severity: 'normal',
+    resetsAt: null,
+    modelName: null,
+    windowMinutes: 300,
+    ...overrides,
+  }
+}
+
+const CLAUDE_USAGE: PlanUsageResult = {
   available: true,
   subscriptionType: 'max',
   rateLimitTier: 'default_claude_max_20x',
@@ -58,10 +70,24 @@ const USAGE: PlanUsageResult = {
   ],
 }
 
-function stubSnapshot(planUsage: PlanUsageResult | null): void {
+const CODEX_USAGE: PlanUsageResult = {
+  available: true,
+  subscriptionType: 'plus',
+  rateLimitTier: null,
+  limits: [
+    codexLimit(),
+    codexLimit({ kind: 'codex_secondary', percent: 18, windowMinutes: 10080 }),
+  ],
+}
+
+function stubSnapshot(
+  planUsage: PlanUsageResult | null,
+  codexPlanUsage: PlanUsageResult | null = null,
+): void {
   vi.mocked(useSnapshot).mockReturnValue({
     sessions: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {}, imageBuilds: [],
     planUsage,
+    codexPlanUsage,
   } as ServerSnapshot)
 }
 
@@ -70,31 +96,44 @@ function pill(): HTMLElement {
 }
 
 describe('limitLabel', () => {
-  it('names the known limit kinds', () => {
-    expect(limitLabel(limit())).toBe('Current session (5h)')
-    expect(limitLabel(limit({ kind: 'weekly_all' }))).toBe('Weekly — all models')
-    expect(limitLabel(limit({ kind: 'weekly_scoped', modelName: 'Fable' }))).toBe('Weekly — Fable')
+  it('names the known Claude limit kinds', () => {
+    expect(limitLabel(limit(), 'claude')).toBe('Current session (5h)')
+    expect(limitLabel(limit({ kind: 'weekly_all' }), 'claude')).toBe('Weekly — all models')
+    expect(limitLabel(limit({ kind: 'weekly_scoped', modelName: 'Fable' }), 'claude')).toBe('Weekly — Fable')
   })
 
-  it('falls back to a humanized kind for unknown limits', () => {
-    expect(limitLabel(limit({ kind: 'weekly_scoped', modelName: null }))).toBe('weekly scoped')
-    expect(limitLabel(limit({ kind: 'monthly_all' }))).toBe('monthly all')
+  it('falls back to a humanized kind for unknown Claude limits', () => {
+    expect(limitLabel(limit({ kind: 'weekly_scoped', modelName: null }), 'claude')).toBe('weekly scoped')
+    expect(limitLabel(limit({ kind: 'monthly_all' }), 'claude')).toBe('monthly all')
+  })
+
+  it('labels Codex windows from their duration', () => {
+    expect(limitLabel(codexLimit({ windowMinutes: 300 }), 'codex')).toBe('5h limit')
+    expect(limitLabel(codexLimit({ windowMinutes: 60 }), 'codex')).toBe('1h limit')
+    expect(limitLabel(codexLimit({ windowMinutes: 10080 }), 'codex')).toBe('Weekly limit')
+    expect(limitLabel(codexLimit({ windowMinutes: null }), 'codex')).toBe('Usage')
   })
 })
 
 describe('metricKey', () => {
-  it('keys by kind, adding the model for scoped limits', () => {
-    expect(metricKey(limit())).toBe('session')
-    expect(metricKey(limit({ kind: 'weekly_all' }))).toBe('weekly_all')
-    expect(metricKey(limit({ kind: 'weekly_scoped', modelName: 'Fable' }))).toBe('weekly_scoped:Fable')
+  it('keys by tool and kind, adding the model for scoped limits', () => {
+    expect(metricKey('claude', limit())).toBe('claude:session')
+    expect(metricKey('claude', limit({ kind: 'weekly_all' }))).toBe('claude:weekly_all')
+    expect(metricKey('claude', limit({ kind: 'weekly_scoped', modelName: 'Fable' }))).toBe('claude:weekly_scoped:Fable')
+    expect(metricKey('codex', codexLimit())).toBe('codex:codex_primary')
   })
 })
 
 describe('pillTag', () => {
-  it('tags the session window by span and scoped limits by model', () => {
-    expect(pillTag(limit())).toBe('5h')
-    expect(pillTag(limit({ kind: 'weekly_all' }))).toBe('wk')
-    expect(pillTag(limit({ kind: 'weekly_scoped', modelName: 'Fable' }))).toBe('Fable')
+  it('tags Claude windows by span and scoped limits by model', () => {
+    expect(pillTag(limit(), 'claude')).toBe('5h')
+    expect(pillTag(limit({ kind: 'weekly_all' }), 'claude')).toBe('wk')
+    expect(pillTag(limit({ kind: 'weekly_scoped', modelName: 'Fable' }), 'claude')).toBe('Fable')
+  })
+
+  it('tags Codex windows from their duration', () => {
+    expect(pillTag(codexLimit({ windowMinutes: 300 }), 'codex')).toBe('5h')
+    expect(pillTag(codexLimit({ windowMinutes: 10080 }), 'codex')).toBe('wk')
   })
 })
 
@@ -106,6 +145,7 @@ describe('planLabel', () => {
 
   it('falls back to the bare plan without a multiplier tier', () => {
     expect(planLabel('max', null)).toBe('Max')
+    expect(planLabel('plus', null)).toBe('Plus')
     expect(planLabel('pro', 'default_claude_pro')).toBe('Pro')
     expect(planLabel(null, 'default_claude_max_20x')).toBeNull()
   })
@@ -149,86 +189,104 @@ describe('usageTone', () => {
 })
 
 describe('UsageBadge', () => {
-  it('renders nothing before the snapshot or usage arrives', () => {
+  it('renders nothing before the snapshot or any usage arrives', () => {
     vi.mocked(useSnapshot).mockReturnValue(undefined)
     render(<UsageBadge />)
     expect(screen.queryByRole('button')).toBeNull()
 
-    stubSnapshot(null)
+    stubSnapshot(null, null)
     render(<UsageBadge />)
     expect(screen.queryByRole('button')).toBeNull()
   })
 
-  it('renders nothing when usage is unavailable', () => {
-    stubSnapshot({ available: false, reason: 'api-key' })
+  it('renders nothing when every tool is unavailable or has no limits', () => {
+    stubSnapshot({ available: false, reason: 'api-key' }, null)
+    render(<UsageBadge />)
+    expect(screen.queryByRole('button')).toBeNull()
+    cleanup()
+
+    stubSnapshot(
+      { available: true, subscriptionType: 'max', rateLimitTier: null, limits: [] },
+      null,
+    )
     render(<UsageBadge />)
     expect(screen.queryByRole('button')).toBeNull()
   })
 
-  it('renders nothing when usage is available but has no limits', () => {
-    stubSnapshot({ available: true, subscriptionType: 'max', rateLimitTier: null, limits: [] })
+  it('shows the tightest limit across all tools on the trigger pill', () => {
+    // Claude tightest is 19, Codex tightest is 42 — the pill shows 42.
+    stubSnapshot(CLAUDE_USAGE, CODEX_USAGE)
     render(<UsageBadge />)
-    expect(screen.queryByRole('button')).toBeNull()
+    expect(pill().textContent).toBe('42%')
   })
 
-  it('shows the tightest limit on the trigger pill', () => {
-    stubSnapshot(USAGE)
+  it('renders a Codex-only readout when Claude is unavailable', () => {
+    stubSnapshot({ available: false, reason: 'api-key' }, CODEX_USAGE)
     render(<UsageBadge />)
-    expect(pill().textContent).toBe('19%')
+    expect(pill().textContent).toBe('42%')
+    fireEvent.click(pill())
+    expect(screen.getByText('Codex')).toBeTruthy()
+    expect(screen.queryByText('Claude')).toBeNull()
   })
 
-  it('opens a popover with one row per limit and the plan tier', () => {
-    stubSnapshot(USAGE)
+  it('opens a popover with a section per tool, its plan, and one row per limit', () => {
+    stubSnapshot(CLAUDE_USAGE, CODEX_USAGE)
     render(<UsageBadge />)
     fireEvent.click(pill())
 
     expect(screen.getByText('Plan usage')).toBeTruthy()
-    expect(screen.getByText('Max (20x) plan')).toBeTruthy()
+    // Section headers.
+    expect(screen.getByText('Claude')).toBeTruthy()
+    expect(screen.getByText('Max (20x)')).toBeTruthy()
+    expect(screen.getByText('Codex')).toBeTruthy()
+    expect(screen.getByText('Plus')).toBeTruthy()
+    // Claude rows.
     expect(screen.getByText('Current session (5h)')).toBeTruthy()
     expect(screen.getByText('Weekly — all models')).toBeTruthy()
     expect(screen.getByText('Weekly — Fable')).toBeTruthy()
-    expect(screen.getByText('6%')).toBeTruthy()
+    // Codex rows.
+    expect(screen.getByText('5h limit')).toBeTruthy()
+    expect(screen.getByText('Weekly limit')).toBeTruthy()
+    // A couple of unique percents.
     expect(screen.getByText('11%')).toBeTruthy()
+    expect(screen.getByText('18%')).toBeTruthy()
   })
 
   it('nudges a background usage refresh when opened', () => {
-    stubSnapshot(USAGE)
+    stubSnapshot(CLAUDE_USAGE, CODEX_USAGE)
     render(<UsageBadge />)
     expect(requestUsageRefresh).not.toHaveBeenCalled()
     fireEvent.click(pill())
     expect(requestUsageRefresh).toHaveBeenCalledTimes(1)
   })
 
-  it('pins a metric to the pill, switches pins, and unpins', () => {
-    stubSnapshot(USAGE)
+  it('pins metrics across tools, switches pins, and unpins', () => {
+    stubSnapshot(CLAUDE_USAGE, CODEX_USAGE)
     render(<UsageBadge />)
     fireEvent.click(pill())
 
-    // Pin the weekly Fable limit: the pill carries its tag + percent, and
-    // the row flags itself pressed.
-    fireEvent.click(screen.getByRole('button', { name: 'Pin Weekly — Fable' }))
+    // Pin the Claude weekly Fable limit: the pill carries its tag + percent.
+    fireEvent.click(screen.getByRole('button', { name: 'Pin Claude Weekly — Fable' }))
     expect(pill().textContent).toBe('Fable11%')
-    expect(screen.getByRole('button', { name: 'Unpin Weekly — Fable' })
-      .getAttribute('aria-pressed')).toBe('true')
+    expect(useUiStore.getState().pinnedUsageMetric).toBe('claude:weekly_scoped:Fable')
 
-    // Switch the pin to the session window.
-    fireEvent.click(screen.getByRole('button', { name: 'Pin Current session (5h)' }))
-    expect(pill().textContent).toBe('5h19%')
-    expect(screen.getByRole('button', { name: 'Pin Weekly — Fable' })
-      .getAttribute('aria-pressed')).toBe('false')
+    // Switch the pin to the Codex 5h window.
+    fireEvent.click(screen.getByRole('button', { name: 'Pin Codex 5h limit' }))
+    expect(pill().textContent).toBe('5h42%')
+    expect(useUiStore.getState().pinnedUsageMetric).toBe('codex:codex_primary')
 
     // Clicking the pinned row unpins — back to the tightest-limit default.
-    fireEvent.click(screen.getByRole('button', { name: 'Unpin Current session (5h)' }))
-    expect(pill().textContent).toBe('19%')
+    fireEvent.click(screen.getByRole('button', { name: 'Unpin Codex 5h limit' }))
+    expect(pill().textContent).toBe('42%')
     expect(useUiStore.getState().pinnedUsageMetric).toBeNull()
   })
 
   it('falls back to the tightest limit when the pinned metric is absent', () => {
-    useUiStore.setState({ pinnedUsageMetric: 'weekly_scoped:Opus' })
-    stubSnapshot(USAGE)
+    useUiStore.setState({ pinnedUsageMetric: 'claude:weekly_scoped:Opus' })
+    stubSnapshot(CLAUDE_USAGE, CODEX_USAGE)
     render(<UsageBadge />)
-    expect(pill().textContent).toBe('19%')
+    expect(pill().textContent).toBe('42%')
     // The pin is kept, not cleared — the limit may come back.
-    expect(useUiStore.getState().pinnedUsageMetric).toBe('weekly_scoped:Opus')
+    expect(useUiStore.getState().pinnedUsageMetric).toBe('claude:weekly_scoped:Opus')
   })
 })

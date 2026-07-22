@@ -2,11 +2,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   CLAUDE_PROFILE_URL,
   CLAUDE_USAGE_URL,
+  CODEX_USAGE_URL,
+  parseCodexPlanUsage,
   parsePlanUsageLimits,
   queryClaudePlanUsage,
   queryClaudeRateLimitTier,
+  queryCodexPlanUsage,
 } from '#features/auth/usage'
-import type { ClaudeOAuthBundle } from '@yaac/shared/types'
+import type { ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/shared/types'
 
 /** Trimmed copy of a real api/oauth/usage payload (fields we don't read kept
  *  where they exercise the ignore-the-rest behavior). */
@@ -224,5 +227,168 @@ describe('queryClaudeRateLimitTier', () => {
     expect(await queryClaudeRateLimitTier(bundle)).toBeNull()
     fetchMock.mockRejectedValueOnce(new Error('getaddrinfo ENOTFOUND'))
     expect(await queryClaudeRateLimitTier(bundle)).toBeNull()
+  })
+})
+
+/** Trimmed copy of a real wham/usage payload (reset-credit and spend-control
+ *  fields dropped; the ones kept exercise the ignore-the-rest behavior). The
+ *  flattened RateLimitStatusPayload shape: plan_type + rate_limit windows. */
+const CODEX_BODY = {
+  plan_type: 'plus',
+  rate_limit: {
+    allowed: true,
+    limit_reached: false,
+    primary_window: {
+      used_percent: 42,
+      limit_window_seconds: 18000, // 5h
+      reset_after_seconds: 3600,
+      reset_at: 1783670400,
+    },
+    secondary_window: {
+      used_percent: 18,
+      limit_window_seconds: 604800, // weekly
+      reset_after_seconds: 172800,
+      reset_at: 1784102400,
+    },
+  },
+  rate_limit_reset_credits: { available_count: 0 },
+}
+
+describe('parseCodexPlanUsage', () => {
+  it('normalizes the plan type and both rate-limit windows', () => {
+    expect(parseCodexPlanUsage(CODEX_BODY)).toEqual({
+      subscriptionType: 'plus',
+      limits: [
+        {
+          kind: 'codex_primary',
+          percent: 42,
+          severity: 'normal',
+          resetsAt: new Date(1783670400 * 1000).toISOString(),
+          modelName: null,
+          windowMinutes: 300,
+        },
+        {
+          kind: 'codex_secondary',
+          percent: 18,
+          severity: 'normal',
+          resetsAt: new Date(1784102400 * 1000).toISOString(),
+          modelName: null,
+          windowMinutes: 10080,
+        },
+      ],
+    })
+  })
+
+  it('tolerates a missing secondary window and window/reset sub-fields', () => {
+    expect(parseCodexPlanUsage({
+      plan_type: 'pro',
+      rate_limit: { primary_window: { used_percent: 5 } },
+    })).toEqual({
+      subscriptionType: 'pro',
+      limits: [
+        { kind: 'codex_primary', percent: 5, severity: 'normal', resetsAt: null, modelName: null, windowMinutes: null },
+      ],
+    })
+  })
+
+  it('reports no limits and a null plan when the rate_limit object is absent', () => {
+    expect(parseCodexPlanUsage({ plan_type: null })).toEqual({ subscriptionType: null, limits: [] })
+  })
+
+  it('throws on a body without a recognizable shape', () => {
+    expect(() => parseCodexPlanUsage('nope')).toThrow('unrecognized codex usage response shape')
+  })
+})
+
+describe('queryCodexPlanUsage', () => {
+  const fetchMock = vi.fn<typeof fetch>()
+
+  const bundle: CodexOAuthBundle = {
+    accessToken: 'ctok-123',
+    refreshToken: 'cref-123',
+    idTokenRawJwt: 'idtok',
+    expiresAt: 1783667619085,
+    lastRefresh: '2026-07-09T00:00:00.000Z',
+    accountId: 'acc-abc',
+  }
+
+  /** A JWT whose payload carries the account id under the OpenAI auth claim,
+   *  so the account-id header can be recovered without a stored accountId. */
+  function jwtWithAccount(id: string): string {
+    const payload = Buffer
+      .from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: id } }))
+      .toString('base64url')
+    return `h.${payload}.s`
+  }
+
+  beforeEach(() => {
+    fetchMock.mockReset()
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('queries wham/usage with the bearer and ChatGPT-Account-Id header', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify(CODEX_BODY), { status: 200 }))
+
+    const result = await queryCodexPlanUsage(bundle)
+    expect(result).toMatchObject({ available: true, subscriptionType: 'plus', rateLimitTier: null })
+    if (result.available) {
+      expect(result.limits).toHaveLength(2)
+      expect(result.limits[0]).toMatchObject({ kind: 'codex_primary', percent: 42, windowMinutes: 300 })
+    }
+
+    expect(fetchMock.mock.calls[0][0]).toBe(CODEX_USAGE_URL)
+    const headers = fetchMock.mock.calls[0][1]?.headers as Record<string, string>
+    expect(headers['Authorization']).toBe('Bearer ctok-123')
+    expect(headers['ChatGPT-Account-Id']).toBe('acc-abc')
+  })
+
+  it('recovers the account id from the access-token JWT when the bundle omits it', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify(CODEX_BODY), { status: 200 }))
+    await queryCodexPlanUsage({ ...bundle, accountId: undefined, accessToken: jwtWithAccount('acc-jwt') })
+    const headers = fetchMock.mock.calls[0][1]?.headers as Record<string, string>
+    expect(headers['ChatGPT-Account-Id']).toBe('acc-jwt')
+  })
+
+  it('omits the account-id header when neither the bundle nor the token carries one', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify(CODEX_BODY), { status: 200 }))
+    await queryCodexPlanUsage({ ...bundle, accountId: undefined, accessToken: 'not-a-jwt' })
+    const headers = fetchMock.mock.calls[0][1]?.headers as Record<string, string>
+    expect(headers['ChatGPT-Account-Id']).toBeUndefined()
+    expect(headers['Authorization']).toBe('Bearer not-a-jwt')
+  })
+
+  it('maps 401/403 to unauthorized', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('', { status: 401 }))
+    expect(await queryCodexPlanUsage(bundle)).toEqual({ available: false, reason: 'unauthorized' })
+    fetchMock.mockResolvedValueOnce(new Response('', { status: 403 }))
+    expect(await queryCodexPlanUsage(bundle)).toEqual({ available: false, reason: 'unauthorized' })
+  })
+
+  it('maps other upstream failures to an error with the status', async () => {
+    fetchMock.mockResolvedValue(new Response('', { status: 429 }))
+    expect(await queryCodexPlanUsage(bundle)).toEqual({
+      available: false,
+      reason: 'error',
+      message: 'codex usage endpoint returned 429',
+    })
+  })
+
+  it('maps network failures and unrecognized bodies to an error', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('getaddrinfo ENOTFOUND'))
+    expect(await queryCodexPlanUsage(bundle)).toEqual({
+      available: false,
+      reason: 'error',
+      message: 'getaddrinfo ENOTFOUND',
+    })
+    fetchMock.mockResolvedValueOnce(new Response('"nope"', { status: 200 }))
+    expect(await queryCodexPlanUsage(bundle)).toEqual({
+      available: false,
+      reason: 'error',
+      message: 'unrecognized codex usage response shape',
+    })
   })
 })

@@ -6,29 +6,42 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 vi.mock('#features/auth/usage', () => ({
   queryClaudePlanUsage: vi.fn(),
   queryClaudeRateLimitTier: vi.fn(),
+  queryCodexPlanUsage: vi.fn(),
 }))
 vi.mock('#features/auth/claude-oauth', () => ({
   refreshClaudeOAuthBundle: vi.fn(),
+}))
+vi.mock('#features/auth/codex-oauth', () => ({
+  refreshCodexOAuthBundle: vi.fn(),
 }))
 // serverLog writes files — silence it.
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 vi.mock('#features/sessions/notify', () => ({ notifySessionListChanged: vi.fn() }))
 
-import { queryClaudePlanUsage, queryClaudeRateLimitTier } from '#features/auth/usage'
+import { queryClaudePlanUsage, queryClaudeRateLimitTier, queryCodexPlanUsage } from '#features/auth/usage'
 import { refreshClaudeOAuthBundle } from '#features/auth/claude-oauth'
+import { refreshCodexOAuthBundle } from '#features/auth/codex-oauth'
 import { notifySessionListChanged } from '#features/sessions/notify'
 import {
   planUsageForSnapshot,
+  codexPlanUsageForSnapshot,
   requestPlanUsageRefresh,
   _resetPlanUsageForTests,
 } from '#features/auth/plan-usage'
 import { setDataDir } from '@yaac/shared/project-paths'
-import { loadClaudeCredentialsFile, saveClaudeCredentialsFile } from '@yaac/shared/tool-auth'
-import type { ClaudeOAuthBundle, PlanUsageResult } from '@yaac/shared/types'
+import {
+  loadClaudeCredentialsFile,
+  saveClaudeCredentialsFile,
+  loadCodexCredentialsFile,
+  saveCodexCredentialsFile,
+} from '@yaac/shared/tool-auth'
+import type { ClaudeOAuthBundle, CodexOAuthBundle, PlanUsageResult } from '@yaac/shared/types'
 
 const queryMock = vi.mocked(queryClaudePlanUsage)
 const tierMock = vi.mocked(queryClaudeRateLimitTier)
 const refreshMock = vi.mocked(refreshClaudeOAuthBundle)
+const codexQueryMock = vi.mocked(queryCodexPlanUsage)
+const codexRefreshMock = vi.mocked(refreshCodexOAuthBundle)
 
 const GOOD: PlanUsageResult = {
   available: true,
@@ -330,5 +343,132 @@ describe('planUsageForSnapshot', () => {
     expect(queryMock).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ accessToken: 'tok-fresh' }))
     const stored = await loadClaudeCredentialsFile()
     expect(stored?.kind === 'oauth' ? stored.claudeAiOauth.accessToken : null).toBe('tok-other')
+  })
+})
+
+const GOOD_CODEX: PlanUsageResult = {
+  available: true,
+  subscriptionType: 'plus',
+  rateLimitTier: null,
+  limits: [
+    { kind: 'codex_primary', percent: 42, severity: 'normal', resetsAt: null, modelName: null, windowMinutes: 300 },
+  ],
+}
+
+const CODEX_UNAUTHORIZED: PlanUsageResult = { available: false, reason: 'unauthorized' }
+
+const FRESH_CODEX: CodexOAuthBundle = {
+  accessToken: 'ctok-fresh',
+  refreshToken: 'cref-fresh',
+  idTokenRawJwt: 'id-fresh',
+  expiresAt: FAR_FUTURE_MS,
+  lastRefresh: '2026-07-09T00:00:00.000Z',
+  accountId: 'acc-123',
+}
+
+describe('codexPlanUsageForSnapshot', () => {
+  let tmpDir: string
+
+  async function seedCodexOAuth(overrides: Partial<CodexOAuthBundle> = {}): Promise<void> {
+    await saveCodexCredentialsFile({
+      kind: 'oauth',
+      savedAt: '2026-07-09T00:00:00.000Z',
+      codexOauth: {
+        accessToken: 'ctok-123',
+        refreshToken: 'cref-123',
+        idTokenRawJwt: 'id-123',
+        expiresAt: FAR_FUTURE_MS,
+        lastRefresh: '2026-07-09T00:00:00.000Z',
+        accountId: 'acc-123',
+        ...overrides,
+      },
+    })
+  }
+
+  async function seedCodexApiKey(): Promise<void> {
+    await saveCodexCredentialsFile({
+      kind: 'api-key',
+      savedAt: '2026-07-09T00:00:00.000Z',
+      apiKey: 'sk-openai-xyz',
+    })
+  }
+
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-codex-usage-'))
+    setDataDir(tmpDir)
+    _resetPlanUsageForTests()
+    codexQueryMock.mockReset()
+    codexRefreshMock.mockReset()
+    codexRefreshMock.mockResolvedValue(null)
+    vi.mocked(notifySessionListChanged).mockReset()
+    vi.useFakeTimers({ toFake: ['Date'] })
+  })
+
+  afterEach(async () => {
+    vi.useRealTimers()
+    await fs.rm(tmpDir, { recursive: true, force: true })
+  })
+
+  it('omits Codex (null) without ChatGPT credentials, never touching upstream', async () => {
+    expect(await codexPlanUsageForSnapshot()).toBeNull()
+    await seedCodexApiKey()
+    expect(await codexPlanUsageForSnapshot()).toBeNull()
+    expect(codexQueryMock).not.toHaveBeenCalled()
+  })
+
+  it('returns null while the first refresh is in flight, then the result', async () => {
+    await seedCodexOAuth()
+    codexQueryMock.mockResolvedValue(GOOD_CODEX)
+
+    expect(await codexPlanUsageForSnapshot()).toBeNull()
+    await flush()
+    expect(await codexPlanUsageForSnapshot()).toEqual(GOOD_CODEX)
+    expect(codexQueryMock).toHaveBeenCalledWith(expect.objectContaining({ accessToken: 'ctok-123' }))
+    expect(notifySessionListChanged).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not refresh proactively for a merely-expired but authorized token', async () => {
+    await seedCodexOAuth({ expiresAt: Date.now() - 1000 })
+    codexQueryMock.mockResolvedValue(GOOD_CODEX)
+
+    await codexPlanUsageForSnapshot()
+    await vi.waitFor(async () => expect(await codexPlanUsageForSnapshot()).toEqual(GOOD_CODEX))
+
+    // Unlike Claude, Codex queries with the stored token and never refreshes
+    // ahead of a 401 (its refresh tokens rotate).
+    expect(codexRefreshMock).not.toHaveBeenCalled()
+    expect(codexQueryMock).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ accessToken: 'ctok-123' }))
+  })
+
+  it('refreshes reactively and retries once when the query is unauthorized, then persists', async () => {
+    await seedCodexOAuth({ expiresAt: Date.now() - 1000 })
+    codexRefreshMock.mockResolvedValue(FRESH_CODEX)
+    codexQueryMock.mockResolvedValueOnce(CODEX_UNAUTHORIZED)
+    codexQueryMock.mockResolvedValueOnce(GOOD_CODEX)
+
+    await codexPlanUsageForSnapshot()
+    await vi.waitFor(async () => expect(await codexPlanUsageForSnapshot()).toEqual(GOOD_CODEX))
+
+    expect(codexRefreshMock).toHaveBeenCalledTimes(1)
+    expect(codexQueryMock).toHaveBeenCalledTimes(2)
+    expect(codexQueryMock).toHaveBeenLastCalledWith(expect.objectContaining({ accessToken: 'ctok-fresh' }))
+    // The fresh bundle reached the credentials file.
+    const stored = await loadCodexCredentialsFile()
+    expect(stored?.kind === 'oauth' ? stored.codexOauth : null).toEqual(FRESH_CODEX)
+  })
+
+  it('an on-demand nudge refreshes Codex too', async () => {
+    await seedCodexOAuth()
+    codexQueryMock.mockResolvedValue(GOOD_CODEX)
+    await codexPlanUsageForSnapshot()
+    await flush()
+    expect(codexQueryMock).toHaveBeenCalledTimes(1)
+
+    vi.setSystemTime(Date.now() + 2 * 60_000)
+    await requestPlanUsageRefresh()
+    await flush()
+    expect(codexQueryMock).toHaveBeenCalledTimes(2)
   })
 })

@@ -316,25 +316,33 @@ export interface AuthListResult {
 // --- subscription plan usage (server/plan-usage.ts, snapshot field) ---
 
 /**
- * One limit row from Anthropic's subscription usage endpoint
- * (GET api.anthropic.com/api/oauth/usage), normalized for the wire.
+ * One limit row from a tool's subscription usage endpoint, normalized for
+ * the wire. Covers both Claude (Anthropic's api/oauth/usage `limits[]`) and
+ * Codex (ChatGPT's wham/usage primary/secondary windows).
  */
 export interface PlanUsageLimit {
-  /** Upstream limit kind, e.g. 'session', 'weekly_all', 'weekly_scoped'. */
+  /** Limit kind. Claude: 'session', 'weekly_all', 'weekly_scoped'. Codex:
+   *  'codex_primary' (the shorter window) and 'codex_secondary' (weekly). */
   kind: string
   /** Utilization of this limit, 0–100. */
   percent: number
-  /** Upstream severity — 'normal' until the limit nears exhaustion. */
+  /** Upstream severity — 'normal' until the limit nears exhaustion. Codex
+   *  has no severity field, so its rows are always 'normal' (percent drives
+   *  the tone). */
   severity: string
   /** ISO timestamp when this limit's window resets, when reported. */
   resetsAt: string | null
   /** Model display name for per-model limits (e.g. 'Fable'), else null. */
   modelName: string | null
+  /** Window length in minutes when the upstream reports it (Codex windows,
+   *  so a 5h vs weekly label is derived rather than assumed); null for
+   *  Claude limits, which encode the window in `kind`. */
+  windowMinutes?: number | null
 }
 
 /**
- * Plan-usage query result. Only OAuth (subscription) credentials are
- * queryable; api-key auth and every failure path degrade to
+ * Plan-usage query result for one tool. Only OAuth (subscription)
+ * credentials are queryable; api-key auth and every failure path degrade to
  * `available: false` so the UI can simply hide the readout.
  */
 export type PlanUsageResult =
@@ -345,11 +353,13 @@ export type PlanUsageResult =
   }
   | {
     available: true
-    /** Plan tier from the stored OAuth bundle (e.g. 'max'), if known. */
+    /** Plan tier — Claude's OAuth bundle subscriptionType (e.g. 'max') or
+     *  Codex's plan_type (e.g. 'plus', 'pro', 'team'), if known. */
     subscriptionType: string | null
-    /** The org's rate-limit tier from the OAuth profile endpoint (e.g.
+    /** The org's rate-limit tier from Claude's OAuth profile endpoint (e.g.
      *  'default_claude_max_20x') — distinguishes Max 20x from Max 10x.
-     *  Null until the server's per-credential profile fetch lands. */
+     *  Null until the server's per-credential profile fetch lands, and
+     *  always null for Codex (no analogous multiplier). */
     rateLimitTier: string | null
     limits: PlanUsageLimit[]
   }
@@ -726,9 +736,14 @@ export interface ServerSnapshot {
    *  see ActiveSessionsResult.gitAuthFailures). */
   gitAuthFailures: Record<string, GitAuthFailure[]>
   imageBuilds: ImageBuildEntry[]
-  /** Subscription plan usage, refreshed server-side (server/plan-usage.ts).
-   *  Null until the first refresh after a webapp client connects lands. */
+  /** Claude subscription plan usage, refreshed server-side
+   *  (server/plan-usage.ts). Null until the first refresh after a webapp
+   *  client connects lands. */
   planUsage: PlanUsageResult | null
+  /** Codex (ChatGPT) subscription plan usage, refreshed server-side by the
+   *  same engine. Null until the first refresh lands, or when Codex isn't
+   *  signed in with a ChatGPT (OAuth) account. */
+  codexPlanUsage: PlanUsageResult | null
 }
 
 /** Messages the server pushes over `/events`. */

@@ -2,7 +2,7 @@ import { listActiveSessions } from '#features/sessions/list'
 import { listProjects } from '#features/projects/list'
 import { listProvisioning } from '#features/sessions/provisioning'
 import { listImageBuilds } from '#features/images/image-builds'
-import { planUsageForSnapshot } from '#features/auth/plan-usage'
+import { planUsageForSnapshot, codexPlanUsageForSnapshot } from '#features/auth/plan-usage'
 import { serverLog } from '#log'
 import type { ServerEvent, ServerSnapshot } from '@yaac/shared/types'
 
@@ -17,10 +17,11 @@ export interface WsLike {
  * connecting client needs zero follow-up round-trips.
  */
 export async function buildSnapshot(): Promise<ServerSnapshot> {
-  const [active, projects, planUsage] = await Promise.all([
+  const [active, projects, planUsage, codexPlanUsage] = await Promise.all([
     listActiveSessions(),
     listProjects(),
     planUsageForSnapshot(),
+    codexPlanUsageForSnapshot(),
   ])
   // A session with a provisioning entry is mid-create/mid-restart (or failed,
   // awaiting dismissal) — the row, not the session, is what clients should
@@ -40,6 +41,7 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
     gitAuthFailures: active.gitAuthFailures,
     imageBuilds: listImageBuilds(),
     planUsage,
+    codexPlanUsage,
   }
 }
 

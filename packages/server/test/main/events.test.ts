@@ -12,6 +12,7 @@ vi.mock('#features/projects/list', () => ({
 // keep unit-test snapshot builds inert.
 vi.mock('#features/auth/plan-usage', () => ({
   planUsageForSnapshot: vi.fn().mockResolvedValue(null),
+  codexPlanUsageForSnapshot: vi.fn().mockResolvedValue(null),
 }))
 
 import { EventHub, buildSnapshot, serializeEvent } from '#main/events'
@@ -25,6 +26,7 @@ function emptySnapshot(): ServerSnapshot {
   return {
     sessions: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {}, imageBuilds: [],
     planUsage: null,
+    codexPlanUsage: null,
   }
 }
 
@@ -132,6 +134,7 @@ describe('buildSnapshot', () => {
     expect(snap.gitAuthFailures).toEqual({})
     expect(Array.isArray(snap.imageBuilds)).toBe(true)
     expect(snap.planUsage).toBeNull()
+    expect(snap.codexPlanUsage).toBeNull()
   })
 })
 

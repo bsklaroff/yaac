@@ -1,5 +1,10 @@
 import { z } from 'zod'
-import type { ClaudeOAuthBundle, PlanUsageLimit, PlanUsageResult } from '@yaac/shared/types'
+import type {
+  ClaudeOAuthBundle,
+  CodexOAuthBundle,
+  PlanUsageLimit,
+  PlanUsageResult,
+} from '@yaac/shared/types'
 
 /**
  * The endpoint behind Claude Code's own /usage screen. Subscription-only:
@@ -118,6 +123,159 @@ export async function queryClaudePlanUsage(
       // refresh doesn't double the load on the rate-limited OAuth API.
       rateLimitTier: null,
       limits: parsePlanUsageLimits(await res.json()),
+    }
+  } catch (err) {
+    return {
+      available: false,
+      reason: 'error',
+      message: err instanceof Error ? err.message : String(err),
+    }
+  }
+}
+
+// ── Codex (ChatGPT) subscription usage ─────────────────────────────────
+
+/**
+ * The endpoint behind Codex CLI's own `/status` rate-limit readout, in
+ * ChatGPT auth mode: `chatgpt.com/backend-api/wham/usage`. Codex polls it on
+ * a 60s cadence; like Claude's, it authenticates with the OAuth access token
+ * as a Bearer plus the `ChatGPT-Account-Id` header, and knows nothing about
+ * api keys. Not reachable for api-key ("OPENAI_API_KEY") Codex auth.
+ */
+export const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
+
+/** One rolling window from wham/usage (RateLimitWindowSnapshot). `reset_at`
+ *  is a unix timestamp in seconds; `limit_window_seconds` is the window
+ *  length (5h = 18000, weekly = 604800). */
+const codexWindowSchema = z.object({
+  used_percent: z.number(),
+  limit_window_seconds: z.number().nullish(),
+  reset_at: z.number().nullish(),
+})
+
+/**
+ * The slice of wham/usage we consume. The payload flattens
+ * RateLimitStatusPayload (`plan_type`, `rate_limit`, …) with reset-credit
+ * fields; we read only the plan type and the two rate-limit windows.
+ */
+const codexUsageSchema = z.object({
+  plan_type: z.string().nullish(),
+  rate_limit: z.object({
+    primary_window: codexWindowSchema.nullish(),
+    secondary_window: codexWindowSchema.nullish(),
+  }).nullish(),
+})
+
+type CodexWindow = z.infer<typeof codexWindowSchema>
+
+function codexLimit(kind: 'codex_primary' | 'codex_secondary', w: CodexWindow): PlanUsageLimit {
+  return {
+    kind,
+    percent: w.used_percent,
+    // wham/usage carries no per-window severity; percent drives the tone.
+    severity: 'normal',
+    resetsAt: typeof w.reset_at === 'number' && w.reset_at > 0
+      ? new Date(w.reset_at * 1000).toISOString()
+      : null,
+    modelName: null,
+    windowMinutes: typeof w.limit_window_seconds === 'number'
+      ? Math.round(w.limit_window_seconds / 60)
+      : null,
+  }
+}
+
+/**
+ * Normalize a wham/usage payload to the wire shape. Returns the ChatGPT plan
+ * type and the primary/secondary windows (each present only when the upstream
+ * reports it). Throws when the body doesn't carry a recognizable
+ * `rate_limit` object.
+ */
+export function parseCodexPlanUsage(
+  body: unknown,
+): { subscriptionType: string | null; limits: PlanUsageLimit[] } {
+  const parsed = codexUsageSchema.safeParse(body)
+  if (!parsed.success) throw new Error('unrecognized codex usage response shape')
+  const rl = parsed.data.rate_limit
+  const limits: PlanUsageLimit[] = []
+  if (rl?.primary_window) limits.push(codexLimit('codex_primary', rl.primary_window))
+  if (rl?.secondary_window) limits.push(codexLimit('codex_secondary', rl.secondary_window))
+  return { subscriptionType: parsed.data.plan_type ?? null, limits }
+}
+
+/** Decode a JWT payload without verifying it — we only read display claims
+ *  (never trust these for auth). Returns null for anything unparseable. */
+function decodeJwtPayload(jwt: string): Record<string, unknown> | null {
+  const parts = jwt.split('.')
+  if (parts.length < 2) return null
+  try {
+    const json = Buffer.from(parts[1], 'base64url').toString('utf8')
+    const parsed: unknown = JSON.parse(json)
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null
+  } catch {
+    return null
+  }
+}
+
+/** The ChatGPT account id for the `ChatGPT-Account-Id` header: the bundle's
+ *  stored id, else the `chatgpt_account_id` claim carried in the access
+ *  token JWT (under the `https://api.openai.com/auth` namespace). */
+function codexAccountId(bundle: CodexOAuthBundle): string | null {
+  if (bundle.accountId) return bundle.accountId
+  const claims = decodeJwtPayload(bundle.accessToken)
+  const auth = claims?.['https://api.openai.com/auth']
+  if (auth && typeof auth === 'object') {
+    const id = (auth as Record<string, unknown>).chatgpt_account_id
+    if (typeof id === 'string' && id) return id
+  }
+  return null
+}
+
+function codexHeaders(bundle: CodexOAuthBundle): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Authorization': `Bearer ${bundle.accessToken}`,
+    // Codex identifies itself with a `codex_cli_rs`-flavored UA; a plain
+    // client UA is enough for the read-only usage endpoint.
+    'User-Agent': 'codex-cli',
+  }
+  const accountId = codexAccountId(bundle)
+  if (accountId) headers['ChatGPT-Account-Id'] = accountId
+  return headers
+}
+
+/**
+ * One plain query of the Codex usage endpoint with the given OAuth bundle.
+ * Never throws — HTTP failures and network errors come back as
+ * `{ available: false }`, mirroring queryClaudePlanUsage. Refresh cadence,
+ * caching, and 401-driven token refresh live with the caller
+ * (server/plan-usage.ts). A 401/403 means the access token is expired or
+ * revoked; the caller refreshes the bundle and retries before surfacing it.
+ */
+export async function queryCodexPlanUsage(
+  bundle: CodexOAuthBundle,
+): Promise<PlanUsageResult> {
+  try {
+    const res = await fetch(CODEX_USAGE_URL, {
+      headers: codexHeaders(bundle),
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (res.status === 401 || res.status === 403) {
+      return { available: false, reason: 'unauthorized' }
+    }
+    if (!res.ok) {
+      return {
+        available: false,
+        reason: 'error',
+        message: `codex usage endpoint returned ${res.status}`,
+      }
+    }
+    const { subscriptionType, limits } = parseCodexPlanUsage(await res.json())
+    return {
+      available: true,
+      subscriptionType,
+      // Codex has no separate rate-limit-tier multiplier; the plan type in
+      // subscriptionType is the whole story.
+      rateLimitTier: null,
+      limits,
     }
   } catch (err) {
     return {
