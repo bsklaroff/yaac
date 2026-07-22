@@ -1200,6 +1200,15 @@ describe('yaac session create suite (real CLI + real server + mocked remotes)', 
       ])
       expect(envOut.trim()).toBe('true')
 
+      // opencode is pinned to the last release whose TUI renders under gVisor;
+      // this env var stops it from self-upgrading past that pin on launch (a
+      // newer opencode leaves the agent pane blank — its native renderer never
+      // draws in the headless session tmux).
+      const { stdout: autoUpdOut } = await execInJob(jobName, [
+        'sh', '-c', 'printenv OPENCODE_DISABLE_AUTOUPDATE',
+      ])
+      expect(autoUpdOut.trim()).toBe('1')
+
       // The seeded opencode credential has no `provider` field, so it
       // defaults to OpenRouter — the container carries the
       // OPENROUTER_API_KEY placeholder (the proxy swaps it for the real key

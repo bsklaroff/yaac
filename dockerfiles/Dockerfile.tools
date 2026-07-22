@@ -32,7 +32,15 @@ ENV EDITOR=nvim
 # re-running the slow apt/Node base build.
 RUN npm install -g chrome-devtools-mcp@0.24.0
 RUN npm install -g @openai/codex
-RUN npm install -g opencode-ai
+# opencode-ai pinned to 1.0.142: it is the last release whose TUI renders under
+# gVisor. Starting at 1.0.143 opencode's native @opentui/core renderer blocks on
+# a terminal-capability handshake (pixel-resolution query) that our headless
+# session tmux never answers, so the agent pane stays blank (upstream
+# anomalyco/opencode#29802). The session env sets OPENCODE_DISABLE_AUTOUPDATE=1
+# (see packages/server/src/features/sessions/create.ts) so a launched pod can't
+# npm-upgrade itself back off this pin. Revisit when the upstream renderer is
+# fixed under gVisor.
+RUN npm install -g opencode-ai@1.0.142
 RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 RUN curl -fsSL https://claude.ai/install.sh | bash
 

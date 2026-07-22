@@ -441,6 +441,7 @@ describe('createSession', () => {
     expect(env).toContainEqual({ name: 'ANTHROPIC_API_KEY', value: 'test-placeholder-key' })
     expect(env).toContainEqual({ name: 'OPENROUTER_API_KEY', value: 'test-placeholder-key' })
     expect(env).toContainEqual({ name: 'OPENCODE_ENABLE_EXA', value: 'true' })
+    expect(env).toContainEqual({ name: 'OPENCODE_DISABLE_AUTOUPDATE', value: '1' })
     // …but no OPENAI_API_KEY: codex has no credential here, and for codex
     // OAuth the var would steer it into api-key mode.
     expect(env.map((e) => e.name)).not.toContain('OPENAI_API_KEY')

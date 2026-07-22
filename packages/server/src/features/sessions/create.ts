@@ -941,6 +941,17 @@ export async function createSession(
   // (only opencode reads it) so a spare retooled to opencode gets it.
   env.push('OPENCODE_ENABLE_EXA=true')
 
+  // Pin opencode to the baked-in version by stopping its startup self-upgrade.
+  // opencode npm-upgrades itself to the latest release on launch; every
+  // release after 1.0.142 renders a blank agent pane under gVisor — its native
+  // @opentui/core renderer blocks on a terminal-capability handshake that our
+  // headless session tmux never answers, so no frame is ever drawn. The image
+  // pins opencode-ai@1.0.142 (dockerfiles/Dockerfile.tools); without this the
+  // pod would silently upgrade back to a broken renderer (and hit the egress
+  // proxy doing it). Set unconditionally (only opencode reads it) so a spare
+  // retooled to opencode gets it.
+  env.push('OPENCODE_DISABLE_AUTOUPDATE=1')
+
   // Point pi at its session-log dir inside the mounted `.pi` home so its JSONL
   // transcripts are readable on the host (first-message / status). pi resumes
   // by `--session-id` (buildAgentCmd), so the shared home holding every
