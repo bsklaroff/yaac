@@ -1,84 +1,145 @@
 #!/bin/sh
-# yaac-watch-prs — poll GitHub for new PRs on this project's repo and spawn
-# a sibling review session (via yaac-spawn) for each one.
+# yaac-watch-prs — poll a GitHub repo's PR(s) for updates and print one line
+# per new event to stdout. It takes NO action of its own: the caller decides
+# what to do. Feed it to the agent's Monitor tool (each event line becomes a
+# notification the agent reacts to), or pipe it into a shell consumer.
 #
-# Usage: yaac-watch-prs [--interval <seconds>] [--model <model>]
-#                       [--prompt <text>] [--once]
+# Usage: yaac-watch-prs [--interval <seconds>] [--pr <number>]
+#                       [--events <list>] [--once]
 #
-# Run it inside a yaac session (e.g. in a spare shell window) and leave it
-# running. Every --interval seconds (default 60) it lists the repo's open
-# PRs with `gh`; each PR it hasn't seen before gets a claude session spawned
-# with --model (default claude-opus-4-8) whose prompt (default: run the
-# /code-review skill) tells the agent to check out the PR's head branch
-# first. Cross-repo (fork) PRs are skipped with a warning — their head
-# branch doesn't exist on origin.
+# --pr <number>   watch just this PR (default: all open PRs in the repo)
+# --events <list> comma-separated subset of: opened, comment, commit
+#                 (default: "opened" for all-PRs, "comment,commit" with --pr)
+# --interval <s>  seconds between polls (default 60)
+# --once          poll once and exit (dry run / testing)
 #
-# Seen PR numbers persist in $HOME/.yaac-watch-prs-seen (one per line) for
-# this session's lifetime. On first run every currently-open PR is marked
-# seen without spawning, so only PRs opened while the watcher runs get
-# reviews; delete a number from the file to re-review that PR.
+# Events — one greppable line each, on STDOUT (all status/errors go to stderr,
+# so stdout is a clean event stream):
+#   [opened]  PR #<n> by <author> (<branch>): <title>
+#   [comment] PR #<n> by <author> [<loc>]: <body>
+#   [commit]  PR #<n> <sha> by <author>: <subject>
+# where <loc> is a changed-file path (inline review comment) or a review
+# state (APPROVED/CHANGES_REQUESTED/…), absent for a top-level comment.
 #
-# Needs `gh` and `jq` (both in yaac's default session image); gh
-# authenticates via the session's GH_TOKEN and infers the repo from the
-# /workspace git remote. --once does a single poll and exits (testing).
+# On first run every current PR/comment/commit is recorded as seen WITHOUT
+# emitting, so only updates that land after the watcher starts are surfaced.
+# Seen state persists in $HOME/.yaac-watch-prs-seen (override via
+# YAAC_WATCH_PRS_STATE) for this session's lifetime. Comments authored by the
+# authenticated user are ignored, so your own replies never re-trigger it.
+#
+# Needs `gh` and `jq` (both in yaac's default session image); gh authenticates
+# via the session's GH_TOKEN and infers the repo from the /workspace git
+# remote. No yaac-specific dependencies — this is pure gh/jq.
 set -u
 
 interval=60
-model="claude-opus-4-8"
-prompt="Invoke the /code-review skill to review this PR's diff against the default branch."
+pr=""
+events=""
 once=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --interval) interval="${2:?yaac-watch-prs: --interval needs a value}"; shift 2 ;;
-    --model) model="${2:?yaac-watch-prs: --model needs a value}"; shift 2 ;;
-    --prompt) prompt="${2:?yaac-watch-prs: --prompt needs a value}"; shift 2 ;;
+    --pr) pr="${2:?yaac-watch-prs: --pr needs a value}"; shift 2 ;;
+    --events) events="${2:?yaac-watch-prs: --events needs a value}"; shift 2 ;;
     --once) once=1; shift ;;
-    *) echo "usage: yaac-watch-prs [--interval <seconds>] [--model <model>] [--prompt <text>] [--once]" >&2; exit 2 ;;
+    *) echo "usage: yaac-watch-prs [--interval <seconds>] [--pr <number>] [--events <list>] [--once]" >&2; exit 2 ;;
   esac
 done
 
-for cmd in gh jq yaac-spawn; do
+for cmd in gh jq; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "yaac-watch-prs: $cmd not found" >&2; exit 1; }
 done
 cd /workspace || exit 1
 
-state="${YAAC_WATCH_PRS_STATE:-$HOME/.yaac-watch-prs-seen}"
-
-list_prs() {
-  gh pr list --state open --limit 100 \
-    --json number,title,headRefName,isCrossRepository \
-    --jq '.[] | "\(.number)\t\(.isCrossRepository)\t\(.headRefName)\t\(.title)"'
-}
-
-if [ ! -f "$state" ]; then
-  # Baseline: mark everything already open as seen so only PRs opened while
-  # the watcher runs get review sessions.
-  list_prs | cut -f1 > "$state" || { echo "yaac-watch-prs: initial gh pr list failed" >&2; exit 1; }
-  echo "baseline: $(wc -l < "$state" | tr -d ' ') already-open PR(s) marked seen (state: $state)"
+# Default event set depends on scope: a single PR can't be "opened", so watch
+# its comments and commits; across all PRs the useful default is new PRs.
+if [ -z "$events" ]; then
+  if [ -n "$pr" ]; then events="comment,commit"; else events="opened"; fi
+fi
+for tok in $(printf '%s' "$events" | tr ',' ' '); do
+  case "$tok" in
+    opened|comment|commit) ;;
+    *) echo "yaac-watch-prs: unknown event '$tok' (want: opened, comment, commit)" >&2; exit 2 ;;
+  esac
+done
+case ",$events," in *,opened,*) want_opened=1 ;; *) want_opened=0 ;; esac
+case ",$events," in *,comment,*) want_comment=1 ;; *) want_comment=0 ;; esac
+case ",$events," in *,commit,*) want_commit=1 ;; *) want_commit=0 ;; esac
+if [ -n "$pr" ] && [ "$want_opened" = 1 ]; then
+  echo "yaac-watch-prs: 'opened' is meaningless with --pr; ignoring it" >&2
+  want_opened=0
 fi
 
-echo "watching for new PRs every ${interval}s; reviews spawn with model $model"
+state="${YAAC_WATCH_PRS_STATE:-$HOME/.yaac-watch-prs-seen}"
+me=$(gh api user --jq .login 2>/dev/null) || me=""
+# Field separator for jq→read: a non-whitespace unit-separator (0x1f) so empty
+# middle fields (e.g. a top-level comment's absent path) survive `read`, which
+# collapses runs of whitespace IFS like tab and would otherwise drop them.
+US=$(printf '\037')
 
-while :; do
-  prs=$(list_prs) || echo "yaac-watch-prs: gh pr list failed; retrying next poll" >&2
-  printf '%s\n' "$prs" | while IFS="$(printf '\t')" read -r number cross branch title; do
-    [ -n "$number" ] || continue
-    grep -qx "$number" "$state" && continue
-    echo "$number" >> "$state"
-    if [ "$cross" = "true" ]; then
-      echo "PR #$number ($title) is from a fork — head branch not on origin; skipping" >&2
-      continue
+# First run (no state file yet) → baseline pass: mark everything seen without
+# emitting, so only updates after startup surface.
+baseline=0
+if [ ! -f "$state" ]; then baseline=1; : > "$state"; fi
+
+# seen/mark/emit share the on-disk state file, so appends made inside the
+# `while read` subshells below persist and dedup across the whole run.
+emit() { # <dedup-key> <event-line>
+  grep -qxF "$1" "$state" && return 0
+  printf '%s\n' "$1" >> "$state"
+  [ "$baseline" = 1 ] && return 0
+  printf '%s\n' "$2"
+}
+
+poll() {
+  if [ -n "$pr" ]; then
+    prs="$pr"
+  else
+    prs=$(gh pr list --state open --limit 100 --json number --jq '.[].number' 2>/dev/null) \
+      || { echo "yaac-watch-prs: gh pr list failed; retrying next poll" >&2; return 0; }
+  fi
+
+  if [ "$want_opened" = 1 ]; then
+    gh pr list --state open --limit 100 --json number,headRefName,author,title \
+      --jq '.[] | [(.number|tostring), (.author.login // ""), .headRefName, .title] | join("\u001f")' 2>/dev/null \
+    | while IFS="$US" read -r n author branch title; do
+        [ -n "$n" ] || continue
+        emit "opened:$n" "[opened] PR #$n by $author ($branch): $title"
+      done || true
+  fi
+
+  for n in $prs; do
+    [ -n "$n" ] || continue
+    if [ "$want_comment" = 1 ]; then
+      # Top-level PR comments, inline review comments, and review summaries.
+      for src in "issues/$n/comments" "pulls/$n/comments" "pulls/$n/reviews"; do
+        gh api "repos/{owner}/{repo}/$src?per_page=100" \
+          --jq ".[] | select(.user.login != \"$me\") | select((.body // \"\") != \"\") | [(.id|tostring), .user.login, (.path // .state // \"\"), (.body | gsub(\"[\\r\\n]+\"; \" \"))] | join(\"\u001f\")" 2>/dev/null \
+        | while IFS="$US" read -r id author loc body; do
+            [ -n "$id" ] || continue
+            emit "comment:$src:$id" "[comment] PR #$n by $author${loc:+ [$loc]}: $body"
+          done || true
+      done
     fi
-    echo "new PR #$number: $title ($branch) — spawning review session..."
-    full_prompt="You are reviewing PR #$number (\"$title\"). First check out its head branch: run \`git fetch origin $branch && git reset --hard origin/$branch\`. Then: $prompt"
-    if id=$(yaac-spawn --tool claude --model "$model" "$full_prompt"); then
-      echo "spawned session $id for PR #$number"
-    else
-      # Leave the PR marked seen — a create that failed once shouldn't
-      # retry every poll; remove its number from $state to retry.
-      echo "yaac-spawn for PR #$number failed" >&2
+    if [ "$want_commit" = 1 ]; then
+      gh pr view "$n" --json commits \
+        --jq '.commits[] | [.oid, (.authors[0].login // .authors[0].name // ""), (.messageHeadline // "")] | join("\u001f")' 2>/dev/null \
+      | while IFS="$US" read -r oid author subj; do
+          [ -n "$oid" ] || continue
+          short=$(printf '%s' "$oid" | cut -c1-7)
+          emit "commit:$n:$oid" "[commit] PR #$n $short by $author: $subj"
+        done || true
     fi
   done
-  [ "$once" = "1" ] && break
+}
+
+scope_desc="all open PRs"; [ -n "$pr" ] && scope_desc="PR #$pr"
+[ "$baseline" = 1 ] && echo "yaac-watch-prs: baselining current state (no events on first pass)" >&2
+echo "watching $scope_desc every ${interval}s for: $events (state: $state)" >&2
+
+while :; do
+  poll
+  baseline=0
+  [ "$once" = 1 ] && break
   sleep "$interval"
 done

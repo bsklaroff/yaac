@@ -1,74 +1,93 @@
 ---
 name: yaac-watch-prs
-description: Watch this project's GitHub repo for newly opened PRs and spawn a sibling review session per PR, via the in-session `yaac-watch-prs` command. Use when the user asks to auto-review new PRs, watch the repo for PRs, or set up continuous PR review.
+description: Watch this project's GitHub repo for PR updates — newly opened PRs, new comments, or new commits — on one PR or all of them, emitting one line per event for you to act on. Use when the user asks to watch a PR (or the repo) for comments/commits/new PRs, auto-review new PRs, or drive a follow-up when a PR changes.
 ---
 
 You are running **inside a yaac session**. The `yaac-watch-prs` command
-(already on PATH) polls GitHub for newly opened PRs on this project's repo
-and, for each one, spawns a **sibling review session** through
-[`yaac-spawn`](../yaac-spawn/SKILL.md). Use it directly — this skill is just
-the manual.
+(already on PATH) polls this project's GitHub repo for PR updates and prints
+**one line per new event to stdout**. It takes **no action itself** — you
+decide what to do with each event. This skill is just the manual.
 
 ## Usage
 
 ```
-yaac-watch-prs [--interval <seconds>] [--model <model>] [--prompt <text>] [--once]
+yaac-watch-prs [--interval <seconds>] [--pr <number>] [--events <list>] [--once]
 ```
 
+- **`--pr <number>`** (optional): watch just this PR. Default: **all open
+  PRs** in the repo.
+- **`--events <list>`** (optional): comma-separated subset of `opened`,
+  `comment`, `commit`. Default: `opened` in all-PRs scope; `comment,commit`
+  with `--pr` (a single PR can't be "opened", so that token is ignored there).
+  - `opened` — a PR was newly opened (all-PRs scope only).
+  - `comment` — a new top-level PR comment, inline review comment, or review
+    summary. Comments authored by the authenticated user are skipped, so your
+    own replies never re-trigger it.
+  - `commit` — a new commit on a watched PR's head branch.
 - **`--interval`** (optional, default `60`): seconds between polls.
-- **`--model`** (optional, default `claude-opus-4-8`): model the spawned
-  review sessions' claude launches with (`claude --model <model>`). The
-  spawned tool is always claude.
-- **`--prompt`** (optional, default: invoke the `/code-review` skill on the
-  PR's diff against the default branch): what the review session is told to
-  do *after* checking out the PR's head branch — the checkout instruction is
-  prepended automatically.
-- **`--once`** (optional): a single poll instead of a loop, then exit —
-  useful for a dry run or testing.
+- **`--once`** (optional): a single poll then exit — a dry run.
 
-It is a **long-running foreground loop**: run it in a dedicated shell (e.g.
-a separate tmux window or backgrounded with `nohup ... &`), not in a way
-that blocks your own work. Output is one line per poll event; errors go to
-stderr and the loop keeps running.
+Each event is one greppable line on **stdout** (all status/errors go to
+stderr, so stdout is a clean event stream):
+
+```
+[opened]  PR #<n> by <author> (<branch>): <title>
+[comment] PR #<n> by <author> [<loc>]: <body>
+[commit]  PR #<n> <sha> by <author>: <subject>
+```
+
+`<loc>` is a changed-file path (inline review comment) or a review state
+(`APPROVED`/`CHANGES_REQUESTED`/…); it's absent for a top-level comment.
+
+## How to run it — pair it with the Monitor tool
+
+Because it emits one line per event, it's an ideal **Monitor** source: arm a
+**persistent** Monitor whose command is the watcher, and each event line
+arrives as a notification you react to. For example, to watch a specific PR
+for reviewer comments:
+
+```
+Monitor(command: "yaac-watch-prs --pr <n> --events comment",
+        description: "PR #<n> reviewer comments", persistent: true)
+```
+
+When a `[comment]` (or `[commit]`/`[opened]`) notification arrives, treat it
+as work to act on — it is an event, not a message from the user. What you do
+is up to the task: address the comment and push a fix, summarize it, spawn a
+sibling session with [`yaac-spawn`](../yaac-spawn/SKILL.md), etc.
+
+You can also run it as a plain foreground loop in a spare shell and read the
+lines yourself — but the Monitor path is preferred so it doesn't block your
+own work.
 
 ## What actually happens
 
-- Each poll runs `gh pr list` from `/workspace` (repo inferred from the git
-  remote, auth via this session's `GH_TOKEN`). Needs `gh` and `jq` — both in
-  yaac's default session image; the command fails fast with a clear error if
-  either is missing.
-- Every open PR **not seen before** gets a review session: `yaac-spawn
-  --tool claude --model <model>` with a prompt telling the agent to
-  `git fetch origin <head-branch> && git reset --hard origin/<head-branch>`
-  and then carry out the review prompt. The sibling provisions in the
-  background; the printed session id is watchable in the yaac webapp.
-- **Seen state** persists in `$HOME/.yaac-watch-prs-seen` (one PR number per
-  line; override the path via `YAAC_WATCH_PRS_STATE`). On the **first run**
-  every already-open PR is marked seen *without* spawning a review — only
-  PRs opened while the watcher runs get one. Delete a number from the file
-  to re-review that PR; pre-seed the file before the first run to control
-  the baseline.
-- **Fork PRs are skipped** with a warning: their head branch doesn't exist
-  on `origin`, so the spawned session couldn't check it out.
-- A PR whose spawn **fails** stays marked seen (no retry storm); remove its
-  number from the state file to retry.
-
-## Limits and caveats
-
+- Each poll runs `gh` from `/workspace` (repo inferred from the git remote,
+  auth via this session's `GH_TOKEN`). Needs `gh` and `jq` — both in yaac's
+  default session image; the command fails fast if either is missing. There
+  are **no yaac-specific dependencies** — it's pure `gh`/`jq`.
+- **Seen state** persists in `$HOME/.yaac-watch-prs-seen` (override the path
+  via `YAAC_WATCH_PRS_STATE`), keyed per event so each comment/commit/PR
+  fires at most once. On the **first run** every current PR/comment/commit is
+  recorded as seen *without emitting* — only updates that land while the
+  watcher runs are surfaced. Delete a key from the file to re-emit it.
 - `$HOME` is per-session, so the seen state lives only as long as this
-  session — a fresh watcher session re-baselines and will not re-review PRs
-  that opened before it started.
-- Spawns ride yaac-spawn's rate caps (at most 3 provisioning per caller); a
-  burst of many new PRs in one poll drains over subsequent polls' retries
-  only if you clear the failed ones from the state file — prefer a shorter
-  `--interval` over huge bursts.
-- The review session sees only the PR's **head branch on origin** at spawn
-  time — commits pushed after the spawn are not re-reviewed.
+  session — a fresh watcher re-baselines.
+
+## Auto-reviewing new PRs
+
+To reproduce a continuous PR-review setup, watch `opened` events and spawn a
+review session per PR yourself: arm `Monitor(command: "yaac-watch-prs
+--events opened", persistent: true)`, and on each `[opened] PR #<n> …`
+notification run `yaac-spawn --tool claude` with a prompt that checks out the
+PR's head branch (`git fetch origin <branch> && git reset --hard
+origin/<branch>`) and invokes `/code-review`. Keeping the spawn on your side
+(rather than baked into the watcher) lets you decide the tool, model, and
+prompt per event — and skip fork PRs, whose head branch isn't on `origin`.
 
 ## Guidance
 
-- Report the watcher's startup line (interval, model, state path) to the
-  user, and relay each "spawned session <id> for PR #N" line so they can
-  follow the reviews in the webapp.
-- Don't run more than one watcher per repo — each keeps its own seen state,
-  so two watchers double-review every PR.
+- Relay the watcher's startup line (scope, interval, events, state path) and
+  each event line to the user so they can follow along.
+- Don't run more than one watcher over the same scope — each keeps its own
+  seen state, so two watchers double-report every event.

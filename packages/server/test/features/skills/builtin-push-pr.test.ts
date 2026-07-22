@@ -4,32 +4,34 @@ import path from 'node:path'
 import { builtinSkillsDir, listBuiltinSkills } from '#features/skills/builtin'
 import { parseSkillMd, fmString } from '#features/skills/parse'
 
-// Guards the shipped yaac-watch-prs skill the same way the yaac-spawn test
-// does: a typo in the frontmatter (or a misplaced dir) would silently drop
+// Guards the shipped push-pr skill the same way the yaac-spawn/yaac-watch-prs
+// tests do: a typo in the frontmatter (or a misplaced dir) would silently drop
 // it from staging/discovery, since both paths only require a parseable
 // SKILL.md. Asserting on the real packaged dir keeps the skill wired in
 // without an integration run.
-describe('builtin yaac-watch-prs skill', () => {
+describe('builtin push-pr skill', () => {
   it('is discoverable in the packaged builtin-skills dir', async () => {
     const names = await listBuiltinSkills(builtinSkillsDir())
-    expect(names).toContain('yaac-watch-prs')
+    expect(names).toContain('push-pr')
   })
 
   it('has frontmatter with a matching name and a non-empty description', async () => {
     const raw = await fs.readFile(
-      path.join(builtinSkillsDir(), 'yaac-watch-prs', 'SKILL.md'),
+      path.join(builtinSkillsDir(), 'push-pr', 'SKILL.md'),
       'utf8',
     )
     const { frontmatter } = parseSkillMd(raw)
-    expect(fmString(frontmatter, 'name')).toBe('yaac-watch-prs')
+    expect(fmString(frontmatter, 'name')).toBe('push-pr')
     expect((fmString(frontmatter, 'description') ?? '').length).toBeGreaterThan(0)
   })
 
-  it('documents the same usage shape as the session-bin script', async () => {
+  it('drives the watch phase through the yaac-watch-prs command', async () => {
     const { body } = parseSkillMd(await fs.readFile(
-      path.join(builtinSkillsDir(), 'yaac-watch-prs', 'SKILL.md'),
+      path.join(builtinSkillsDir(), 'push-pr', 'SKILL.md'),
       'utf8',
     ))
-    expect(body).toContain('yaac-watch-prs [--interval <seconds>] [--pr <number>] [--events <list>] [--once]')
+    // The watch step must invoke the generalized watcher scoped to comments,
+    // matching the usage shape yaac-watch-prs documents.
+    expect(body).toContain('yaac-watch-prs --pr <pr-number> --events comment')
   })
 })
