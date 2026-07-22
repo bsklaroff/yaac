@@ -6,6 +6,7 @@ import { EventEmitter } from 'node:events'
 import type { spawn } from 'node:child_process'
 import type { ServerTarget } from '#server-api'
 import {
+  ensureAuthDaemon,
   ensureAuthDaemonSpawned,
   readAuthDaemonLock,
   spawnAuthDaemonDetached,
@@ -117,5 +118,48 @@ describe('ensureAuthDaemonSpawned', () => {
     await expect(ensureAuthDaemonSpawned({ invocation: INVOCATION, spawnImpl: impl }))
       .rejects.toThrow()
     expect(calls).toHaveLength(0)
+  })
+})
+
+describe('ensureAuthDaemon', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-authd-connect-'))
+    setDataDir(dir)
+    await writeAuthDaemonLock({ pid: process.pid, baseUrl: TARGET.baseUrl, startedAt: 1 })
+  })
+
+  afterEach(async () => {
+    vi.unstubAllGlobals()
+    setDataDir('')
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
+  it('returns when the main server reports a connected agent', async () => {
+    const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(
+      new Response(JSON.stringify({ connected: true })),
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await ensureAuthDaemon({ target: TARGET })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe(`${TARGET.baseUrl}/auth/agent`)
+    expect(init?.headers).toEqual({ authorization: `Bearer ${TARGET.secret}` })
+    expect(init?.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it('throws after its bounded connection wait expires', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(() => Promise.resolve(
+      new Response(JSON.stringify({ connected: false })),
+    )))
+
+    await expect(ensureAuthDaemon({
+      target: TARGET,
+      connectTimeoutMs: 10,
+      pollIntervalMs: 1,
+    })).rejects.toThrow('The auth server did not connect within 0.01s')
   })
 })

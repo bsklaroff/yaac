@@ -5,6 +5,9 @@ import { createRequire } from 'node:module'
 import { getDataDir } from '#paths'
 import { resolveServerTarget, type ServerTarget } from '#server-api'
 
+/** Cold-boot budget shared by automatic connection and explicit startup. */
+export const AUTH_DAEMON_BOOT_TIMEOUT_MS = 30_000
+
 /**
  * Client-side lifecycle of the auth server — the login broker that runs
  * on the user's machine, connects outbound to the (possibly remote) main
@@ -143,6 +146,13 @@ export interface EnsureAuthDaemonSpawnedOptions extends SpawnAuthDaemonOptions {
   killImpl?: (pid: number, signal: NodeJS.Signals) => void
 }
 
+export interface EnsureAuthDaemonOptions extends EnsureAuthDaemonSpawnedOptions {
+  /** Overrides the cold-boot budget; primarily useful for bounded callers and tests. */
+  connectTimeoutMs?: number
+  /** Overrides the connection poll interval. */
+  pollIntervalMs?: number
+}
+
 /**
  * Make sure an auth server process for the currently resolved main
  * server exists on this machine, restarting one pointed at a different
@@ -175,16 +185,24 @@ export async function ensureAuthDaemonSpawned(
  * reports the agent connected; throws so callers can fall back (e.g.
  * api-key entry).
  */
-export async function ensureAuthDaemon(): Promise<void> {
-  const target = await ensureAuthDaemonSpawned()
+export async function ensureAuthDaemon(
+  opts: EnsureAuthDaemonOptions = {},
+): Promise<void> {
+  const target = await ensureAuthDaemonSpawned(opts)
 
-  const deadline = Date.now() + 8000
+  // Match `auth server start`'s cold-boot budget. Starting from source can
+  // spend more than 8s loading the tsx dependency tree on a busy machine;
+  // the daemon is healthy once it finishes, so timing out earlier only
+  // forces the caller into an unnecessary fallback flow.
+  const connectTimeoutMs = opts.connectTimeoutMs ?? AUTH_DAEMON_BOOT_TIMEOUT_MS
+  const pollIntervalMs = opts.pollIntervalMs ?? 250
+  const deadline = Date.now() + connectTimeoutMs
   while (Date.now() < deadline) {
     if (await agentConnected(target.baseUrl, target.secret)) return
-    await new Promise((r) => setTimeout(r, 250))
+    await new Promise((r) => setTimeout(r, pollIntervalMs))
   }
   throw new Error(
-    'The auth server did not connect within 8s. '
+    `The auth server did not connect within ${connectTimeoutMs / 1000}s. `
     + 'Check `yaac auth server status` on this machine.',
   )
 }

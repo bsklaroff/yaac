@@ -2,6 +2,7 @@ import { connectAuthAgent } from '#connection'
 import { killAllToolLogins, setToolLoginPersistence } from '#tool-login'
 import { killAllToolInstalls } from '#tool-install'
 import {
+  AUTH_DAEMON_BOOT_TIMEOUT_MS,
   authDaemonLockPath,
   isPidLive,
   readAuthDaemonLock,
@@ -84,7 +85,7 @@ export async function startAuthDaemon(): Promise<void> {
   // leaving a running auth server behind a nonzero exit. Waiting longer is
   // free in the success path (the loop returns the moment the lock appears);
   // it only delays reporting a daemon that genuinely never starts.
-  const startTimeoutMs = 30_000
+  const startTimeoutMs = AUTH_DAEMON_BOOT_TIMEOUT_MS
   const deadline = Date.now() + startTimeoutMs
   while (Date.now() < deadline) {
     const lock = await readAuthDaemonLock()

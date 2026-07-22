@@ -328,9 +328,9 @@ describe('cilium-level transparent egress (source-IP identity)', () => {
     try { await client.stop() } catch { /* ok */ }
   })
 
-  // The positive-egress legs (reach/HTTP/CONNECT/DNS-stub) require the
-  // inner Cilium redirect, which is enforced host-side in a nested session;
-  // the fail-closed / source-IP / forgery-lock legs still hold and run.
+  // Positive egress and per-inner-session source-IP attribution require the
+  // inner Cilium redirect, which is enforced host-side in a nested session.
+  // The fail-closed and forgery-lock legs still hold and run there.
   it.skipIf(IS_NESTED_YAAC)('reaches an allowed host through SNI MITM with the mounted CA', async () => {
     // --resolve pins the never-routable IP: only the Cilium redirect can
     // deliver it. --cacert proves the proxy MITM'd with a leaf the mounted
@@ -355,7 +355,7 @@ describe('cilium-level transparent egress (source-IP identity)', () => {
     expect(r.exit).not.toBe(0)
   }, 60_000)
 
-  it('judges concurrent sessions by their own source IP', async () => {
+  it.skipIf(IS_NESTED_YAAC)('judges concurrent sessions by their own source IP', async () => {
     // podB's source IP maps to session B, whose allowlist has no MITM_HOST —
     // so the proxy denies it even though podA may reach it.
     const fromB = await curlInPod(
