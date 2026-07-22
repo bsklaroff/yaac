@@ -231,6 +231,17 @@ describe('env (configuration)', () => {
     })
   })
 
+  describe('requireAuth', () => {
+    it('is true only when YAAC_REQUIRE_AUTH is exactly "1"', () => {
+      vi.stubEnv('YAAC_REQUIRE_AUTH', '1')
+      expect(env.requireAuth).toBe(true)
+      vi.stubEnv('YAAC_REQUIRE_AUTH', 'true')
+      expect(env.requireAuth).toBe(false)
+      vi.stubEnv('YAAC_REQUIRE_AUTH', undefined)
+      expect(env.requireAuth).toBe(false)
+    })
+  })
+
   describe('forwardBind', () => {
     it('defaults to loopback', () => {
       vi.stubEnv('YAAC_FORWARD_BIND', undefined)

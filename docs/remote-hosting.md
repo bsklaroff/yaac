@@ -114,9 +114,28 @@ Semantics to keep in mind:
 - **Trust boundary = the tailnet.** Only enrolled devices can reach the
   `*.ts.net` name; WireGuard encrypts the wire and Serve adds real TLS
   (so the session cookie is `Secure`). Never use `tailscale funnel`.
-- **Remote access is opt-in and default-safe.** Without
-  `YAAC_ALLOWED_HOSTS` / `YAAC_TRUST_PROXY` and a `tailscale serve`, the
-  server is exactly as loopback-only as before.
+- **Remote access is opt-in.** Without `YAAC_ALLOWED_HOSTS` /
+  `YAAC_TRUST_PROXY` and a `tailscale serve`, the server binds loopback only
+  and no client credential is required (see below).
+- **A loopback-only server requires no credential.** When neither
+  `YAAC_ALLOWED_HOSTS` nor `YAAC_TRUST_PROXY` is set, the deployment is
+  local-only and the bearer/cookie check is skipped — a browser or CLI on the
+  same machine talks to it with no token, which is what makes local testing
+  frictionless. What still defends it against a malicious website you visit is
+  three browser-enforced, JS-unforgeable guards on every request *including*
+  WebSocket upgrades: the `Host` header must be loopback (DNS-rebind defense),
+  and the `Origin` host and `Sec-Fetch-Site` must not be cross-site (CSRF /
+  resource-isolation defense — the cookie is no longer carrying that load).
+  A local *process* is trusted (it can already reach loopback). Set
+  `YAAC_REQUIRE_AUTH=1` to force the credential back on — for a shared machine,
+  or to exercise the auth path. Configuring remote hosting (either var above)
+  re-enables the credential automatically.
+- **A nested yaac (`YAAC_NESTED`) also skips the credential**, even though it
+  inherits the outer session's `YAAC_ALLOWED_HOSTS` / `YAAC_TRUST_PROXY`. Those
+  are ambient env, not a remote-fronting of the inner server: a yaac-in-yaac
+  server is reachable only through the outer server's port-forward, already
+  tailnet-gated like any forwarded port (and never token-gated). `YAAC_REQUIRE_AUTH=1`
+  forces it on if you want the inner server independently gated.
 - **Tokens are durable and revocable** per device: a lost laptop is
   `yaac auth token revoke laptop` on the server — no restart, no effect on
   other clients or browser sessions. Browser sessions are tokens too

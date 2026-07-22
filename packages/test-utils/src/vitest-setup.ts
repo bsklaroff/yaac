@@ -18,9 +18,16 @@ delete process.env.GIT_WORK_TREE
 // here rather than in unit-setup because e2e/api servers inherit
 // `process.env` too, and the flags are wrong for them for the same reason.
 // Tests that exercise the flags stub them per-case.
-for (const key of ['YAAC_TRUST_PROXY', 'YAAC_ALLOWED_HOSTS'] as const) {
+for (const key of ['YAAC_TRUST_PROXY', 'YAAC_ALLOWED_HOSTS', 'YAAC_REQUIRE_AUTH'] as const) {
   delete process.env[key]
 }
+
+// Note the third key: stripping the first two makes every test server a
+// loopback-only deployment, which skips the bearer/cookie check by default —
+// matching the real local posture, so most tests need no credential at all.
+// The few tests that assert the credential gate opt in with
+// `YAAC_REQUIRE_AUTH=1` (per file/case); the shared API-client helpers still
+// send a bearer, which is simply ignored when the gate is off.
 
 // Isolate the default data dir so tests that incidentally trigger
 // serverLog() (or any other side effect rooted at getDataDir()) never

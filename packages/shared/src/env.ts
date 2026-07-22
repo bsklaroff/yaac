@@ -144,6 +144,18 @@ export const env = {
   },
 
   /**
+   * `YAAC_REQUIRE_AUTH` — set to `1` to force the credential gate on even for
+   * a purely-local (loopback-only) server. A loopback-only deployment skips
+   * the bearer/cookie requirement by default (a browser or CLI on the same
+   * machine needs no token); the Host + Origin guards still defend it against
+   * a malicious website. Set this to opt back into a credential — for a
+   * shared machine, or so the auth-path tests exercise the 401 gate.
+   */
+  get requireAuth(): boolean {
+    return process.env.YAAC_REQUIRE_AUTH === '1'
+  },
+
+  /**
    * `YAAC_FORWARD_BIND` — bind address for session port-forward listeners.
    * Default loopback (today's behavior); a remote-hosting server sets its
    * tailnet IP so forwarded dev servers are reachable from other tailnet

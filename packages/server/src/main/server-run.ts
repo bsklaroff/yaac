@@ -5,6 +5,7 @@ import { createNodeWebSocket } from '@hono/node-ws'
 import { buildApp } from '#main/server'
 import { authAgentHub } from '#features/auth/agent'
 import { createTokenStore, loadTokens, saveTokens } from '#http/token-store'
+import { isCredentialOptional } from '#http/web-auth'
 import { closeDb, getDb } from '#platform/db/client'
 import { importLegacyJsonStores } from '#platform/db/legacy-import'
 import { EventHub } from '#main/events'
@@ -359,9 +360,11 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
 
   const torPrefix = env.useTor ? '(using tor) ' : ''
   serverLog(`[server] ${torPrefix}listening on 127.0.0.1:${port} lock=${serverLockPath()}`)
-  // Start banner for the webapp: a ready-to-open URL carrying a one-time
-  // exchange token (single-use, time-bounded; `yaac open` mints fresh ones).
-  serverLog(`[server] open http://127.0.0.1:${port}/?token=${tokens.mintExchangeToken().token}`)
+  // Start banner for the webapp. A loopback-only / nested server needs no
+  // credential, so print a bare URL; otherwise carry a one-time exchange
+  // token (single-use, time-bounded; `yaac open` mints fresh ones).
+  const openQuery = isCredentialOptional() ? '' : `?token=${tokens.mintExchangeToken().token}`
+  serverLog(`[server] open http://127.0.0.1:${port}/${openQuery}`)
 
   // Register signal handlers BEFORE the async startup steps below. Node's
   // default SIGTERM/SIGINT action is to terminate immediately, bypassing

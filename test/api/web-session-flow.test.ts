@@ -15,6 +15,10 @@ describe('browser auth web-session exchange (full HTTP exchange)', () => {
   let server: InProcessServer
 
   beforeEach(async () => {
+    // This suite asserts the credential gate (exchange, bare-probe 401); a
+    // loopback server is credential-optional by default, so force it on.
+    // buildApp reads env live, so stubbing before boot is enough.
+    vi.stubEnv('YAAC_REQUIRE_AUTH', '1')
     tmpDir = await createTempDataDir()
     server = await bootInProcessServer()
   })
@@ -22,6 +26,7 @@ describe('browser auth web-session exchange (full HTTP exchange)', () => {
   afterEach(async () => {
     await server.stop()
     await cleanupTempDir(tmpDir)
+    vi.unstubAllEnvs()
   })
 
   /** Mint a one-time exchange token the way `yaac open` does. */
