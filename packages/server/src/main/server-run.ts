@@ -50,9 +50,21 @@ export interface ServerRunOptions {
 interface RawWebSocket {
   send(data: string | Uint8Array): void
   close(code?: number, reason?: string): void
+  ping(): void
+  terminate(): void
   on(event: 'message', cb: (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => void): void
   on(event: 'close', cb: () => void): void
+  on(event: 'pong', cb: () => void): void
 }
+
+/**
+ * Server-side heartbeat cadence for the auth-agent socket. The daemon pings
+ * us; we ping it back on this interval and drop the socket if a ping goes
+ * unanswered, so a silently-dead daemon (its host slept, network partitioned)
+ * stops looking connected and sign-in routes surface "disconnected" at once
+ * rather than forwarding ops that hang.
+ */
+const AGENT_HEARTBEAT_MS = 15_000
 
 // When YAAC_USE_TOR is set, the server routes its own git fetch/clone
 // through a host-machine Tor SOCKS endpoint (default 127.0.0.1:9050).
@@ -198,7 +210,26 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
           : Buffer.isBuffer(data) ? data.toString('utf8') : Buffer.from(data).toString('utf8')
         authAgentHub.ingest(text)
       })
-      raw.on('close', () => authAgentHub.handleDisconnect(sock))
+      // Liveness: ping the daemon each interval, terminating if the previous
+      // ping wasn't ponged. Seeded true so the first tick doesn't fault a
+      // just-opened socket. terminate() forces 'close' → handleDisconnect.
+      let alive = true
+      raw.on('pong', () => { alive = true })
+      const heartbeat = setInterval(() => {
+        if (!alive) {
+          raw.terminate()
+          return
+        }
+        alive = false
+        try {
+          raw.ping()
+        } catch { /* socket tore down between tick and ping */ }
+      }, AGENT_HEARTBEAT_MS)
+      heartbeat.unref?.()
+      raw.on('close', () => {
+        clearInterval(heartbeat)
+        authAgentHub.handleDisconnect(sock)
+      })
     },
   })))
 

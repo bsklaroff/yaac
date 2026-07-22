@@ -27,6 +27,14 @@ const VIEW_SAMPLE_MS = 300
 /** Reconnect backoff bounds. */
 const BACKOFF_MIN_MS = 1000
 const BACKOFF_MAX_MS = 10_000
+/**
+ * Heartbeat: ping the server on this cadence and expect a pong before the
+ * next tick. A half-open TCP connection (server host slept, NAT dropped the
+ * mapping, network partition) delivers no 'close', so without this the push
+ * socket would sit dead — silently swallowing sends and never reconnecting.
+ * A missed pong terminates the socket, which fires 'close' → reconnect.
+ */
+const HEARTBEAT_MS = 15_000
 
 function parseAgentOp(raw: string): AgentOp | null {
   let obj: unknown
@@ -58,6 +66,7 @@ export function connectAuthAgent(opts: {
   let ws: WebSocket | null = null
   let backoff = BACKOFF_MIN_MS
   let sampler: NodeJS.Timeout | null = null
+  let heartbeat: NodeJS.Timeout | null = null
   let reconnectTimer: NodeJS.Timeout | null = null
 
   // id → kind for flows this connection is responsible for pushing, and
@@ -130,11 +139,30 @@ export function connectAuthAgent(opts: {
     })
     ws = sock
 
+    // Flips true on every pong; the next heartbeat tick reads it to decide
+    // whether the last ping was answered. Seeded true so the first tick,
+    // one interval after 'open', doesn't fault a freshly-opened socket.
+    let alive = true
+    sock.on('pong', () => { alive = true })
+
     sock.on('open', () => {
       backoff = BACKOFF_MIN_MS
       opts.log(`connected to ${opts.baseUrl}`)
       sampler = setInterval(pushViews, VIEW_SAMPLE_MS)
       sampler.unref?.()
+      heartbeat = setInterval(() => {
+        if (!alive) {
+          // Previous ping went unanswered — the peer is gone. terminate()
+          // skips the close handshake and emits 'close' at once → reconnect.
+          sock.terminate()
+          return
+        }
+        alive = false
+        try {
+          sock.ping()
+        } catch { /* socket tore down between tick and ping */ }
+      }, HEARTBEAT_MS)
+      heartbeat.unref?.()
     })
 
     sock.on('message', (data: Buffer | Buffer[]) => {
@@ -148,6 +176,8 @@ export function connectAuthAgent(opts: {
     const scheduleReconnect = (): void => {
       if (sampler) clearInterval(sampler)
       sampler = null
+      if (heartbeat) clearInterval(heartbeat)
+      heartbeat = null
       // Flows can't reach the server anymore — kill them so vendor CLIs
       // don't linger headless (the server marks its views failed too).
       for (const [id, kind] of tracked) {
@@ -178,6 +208,7 @@ export function connectAuthAgent(opts: {
     stop: () => {
       stopped = true
       if (sampler) clearInterval(sampler)
+      if (heartbeat) clearInterval(heartbeat)
       if (reconnectTimer) clearTimeout(reconnectTimer)
       try {
         ws?.close(1000, 'auth server stopping')
