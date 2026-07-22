@@ -5,13 +5,14 @@
  *
  * Run with:  pnpm gen:providers
  *
- * Emits two committed artifacts from a single computed table:
+ * Emits ONE artifact, written byte-identically to two committed locations:
  *   - packages/shared/src/tool-providers.generated.ts  (server/frontend/CLI)
- *   - k8s/proxy/tool-providers.generated.ts            (proxy host lookup)
- * The proxy can't import from packages/shared (it bundles self-only, npm-
- * installed in its image build), so it gets its own generated copy in its
- * build context. Both derive from the same data here — no drift, no parallel
- * hand-maintained table.
+ *   - k8s/proxy/tool-providers.generated.ts            (egress proxy)
+ * It carries the provider rows, the proxy's host/default-model lookups, and the
+ * full models.dev model catalog (MODELS_BY_PROVIDER). The proxy can't import
+ * from packages/shared (it bundles self-only, npm-installed in its image
+ * build), so it gets its own copy of the same content in its build context —
+ * one source of truth, no drift.
  *
  * Sources:
  *   - opencode: models.dev (https://models.dev/api.json), the provider/model
@@ -96,6 +97,7 @@ interface ModelsDevProvider {
   env?: string[]
   npm?: string
   api?: string
+  models?: Record<string, unknown>
 }
 
 async function fetchModelsDev(): Promise<Record<string, ModelsDevProvider>> {
@@ -141,8 +143,7 @@ function hostFromUrl(url: string): string | null {
   }
 }
 
-async function buildOpencodeRows(): Promise<ProviderRow[]> {
-  const db = await fetchModelsDev()
+function buildOpencodeRows(db: Record<string, ModelsDevProvider>): ProviderRow[] {
   const rows: ProviderRow[] = []
   const skipped: string[] = []
   for (const [id, p] of Object.entries(db)) {
@@ -157,6 +158,34 @@ async function buildOpencodeRows(): Promise<ProviderRow[]> {
   console.log(`  opencode: ${rows.length} providers, ${skipped.length} skipped`)
   if (skipped.length) console.log(`    skipped: ${skipped.join(', ')}`)
   return sortRows(rows)
+}
+
+/**
+ * Each models.dev provider's TOOL-CALLING model ids, keyed by provider id.
+ * Baked in so `yaac-spawn --models` can report usable `--model` values with no
+ * session-time fetch: claude → `anthropic`, codex → `openai`, opencode → its
+ * configured provider. Filtered to `tool_call` models because every agent tool
+ * drives models via tool calls — this drops embedding/image/tts/realtime
+ * entries (e.g. text-embedding-3-large) that an agent can't run, so the list is
+ * a set of candidate agent models, not the vendor's full catalog. pi has its
+ * own registry (see PI_MODELS_BY_PROVIDER); it does not use this map.
+ */
+function buildModelsCatalog(db: Record<string, ModelsDevProvider>): Record<string, string[]> {
+  const catalog: Record<string, string[]> = {}
+  let modelCount = 0
+  for (const [id, p] of Object.entries(db)) {
+    const models = p.models && typeof p.models === 'object' ? p.models : {}
+    const ids = Object.entries(models)
+      .filter(([, m]) => (m as { tool_call?: unknown }).tool_call === true)
+      .map(([mid]) => mid)
+      .sort()
+    if (ids.length) {
+      catalog[id] = ids
+      modelCount += ids.length
+    }
+  }
+  console.log(`  models (models.dev, tool-calling): ${modelCount} ids across ${Object.keys(catalog).length} providers`)
+  return catalog
 }
 
 // ── pi: installed @earendil-works/pi-ai ─────────────────────────────────
@@ -228,6 +257,30 @@ async function buildPiRows(): Promise<ProviderRow[]> {
   return sortRows(rows)
 }
 
+/**
+ * pi's own per-provider model ids (bare, e.g. `claude-opus-4-8`), from its
+ * installed registry (`getBuiltinModels`). pi's catalog differs from models.dev
+ * — it is pi's curated per-provider list — so `yaac-spawn --models` reports it
+ * for pi rather than reusing the models.dev map. (pi still accepts any
+ * `provider/model` at runtime; this is the convenience list.)
+ */
+async function buildPiModelsCatalog(): Promise<Record<string, string[]>> {
+  const root = piPackageRoot()
+  const piAi = path.join(root, 'node_modules', '@earendil-works', 'pi-ai', 'dist')
+  const all = await importPi(path.join(piAi, 'providers', 'all.js'))
+  const getBuiltinProviders = all.getBuiltinProviders as () => string[]
+  const getBuiltinModels = all.getBuiltinModels as (provider: string) => { id: string }[]
+
+  const catalog: Record<string, string[]> = {}
+  let modelCount = 0
+  for (const provider of getBuiltinProviders()) {
+    const ids = getBuiltinModels(provider).map((m) => m.id).sort()
+    if (ids.length) { catalog[provider] = ids; modelCount += ids.length }
+  }
+  console.log(`  models (pi registry): ${modelCount} ids across ${Object.keys(catalog).length} providers`)
+  return catalog
+}
+
 // ── emit ────────────────────────────────────────────────────────────────
 
 function sortRows(rows: ProviderRow[]): ProviderRow[] {
@@ -259,11 +312,50 @@ function idTupleAndType(constName: string, typeName: string, rows: ProviderRow[]
   return `${tuple}\nexport type ${typeName} = (typeof ${constName})[number]`
 }
 
-function sharedFile(opencode: ProviderRow[], pi: ProviderRow[], header: string): string {
+function hostMap(name: string, rows: ProviderRow[]): string {
+  const entries = rows.map((r) => `  ${JSON.stringify(r.id)}: ${JSON.stringify(r.apiHost)},`).join('\n')
+  return `export const ${name}: Record<string, string> = {\n${entries}\n}`
+}
+
+/** pi provider id → default `provider/model` launch string (pi rows only). */
+function piDefaultModelsMap(rows: ProviderRow[]): string {
+  const entries = rows
+    .filter((r) => r.defaultModel)
+    .map((r) => `  ${JSON.stringify(r.id)}: ${JSON.stringify(r.defaultModel)},`)
+    .join('\n')
+  return `export const PI_PROVIDER_DEFAULT_MODELS: Record<string, string> = {\n${entries}\n}`
+}
+
+function modelsCatalogMap(name: string, catalog: Record<string, string[]>): string {
+  const entries = Object.keys(catalog)
+    .sort()
+    .map((id) => `  ${JSON.stringify(id)}: [${catalog[id].map((m) => JSON.stringify(m)).join(', ')}],`)
+    .join('\n')
+  return `export const ${name}: Record<string, string[]> = {\n${entries}\n}`
+}
+
+/**
+ * The single generated artifact, emitted byte-identically to both
+ * packages/shared/src/ and k8s/proxy/. The proxy bundles self-only (npm-
+ * installed in its image build) and can't import from packages/shared, so it
+ * carries its own copy — kept in sync by writing the exact same content to both.
+ */
+function generatedFile(
+  opencode: ProviderRow[],
+  pi: ProviderRow[],
+  catalog: Record<string, string[]>,
+  piModels: Record<string, string[]>,
+  header: string,
+): string {
   return `/* eslint-disable */
 // AUTO-GENERATED by scripts/gen-tool-providers.ts — DO NOT EDIT BY HAND.
-// Regenerate with: pnpm gen:providers
+// Regenerate with: pnpm gen:providers (from the repo root).
 ${header}
+//
+// Emitted byte-identically to packages/shared/src/tool-providers.generated.ts
+// and k8s/proxy/tool-providers.generated.ts. The proxy can't import from
+// packages/shared (self-only bundle), so it carries its own copy of this same
+// content.
 
 /**
  * One api-key provider row for an api-key-only agent tool (opencode / pi).
@@ -292,34 +384,36 @@ ${idTupleAndType('PI_PROVIDER_IDS', 'PiProviderId', pi)}
 export const PI_PROVIDERS: readonly ToolProviderInfo[] = [
 ${pi.map(rowLiteral).join('\n')}
 ]
-`
-}
 
-function hostMap(name: string, rows: ProviderRow[]): string {
-  const entries = rows.map((r) => `  ${JSON.stringify(r.id)}: ${JSON.stringify(r.apiHost)},`).join('\n')
-  return `export const ${name}: Record<string, string> = {\n${entries}\n}`
-}
-
-function proxyFile(opencode: ProviderRow[], pi: ProviderRow[], header: string): string {
-  return `/* eslint-disable */
-// AUTO-GENERATED by scripts/gen-tool-providers.ts — DO NOT EDIT BY HAND.
-// Regenerate with: pnpm gen:providers (from the repo root).
-${header}
-//
-// Proxy-side copy: the host each opencode/pi provider's api key authenticates
-// against. The proxy swaps the placeholder key only on this host for a session
-// registered as that tool. It can't import packages/shared (self-only bundle),
-// so it carries its own generated copy — kept in sync by the same codegen.
+// ── Provider host lookups (derived from the rows above) ──────────────────
+// The host each provider's api key authenticates against; the proxy swaps the
+// placeholder key only on this host for a session registered as that tool.
 
 ${hostMap('OPENCODE_PROVIDER_HOSTS', opencode)}
 
 ${hostMap('PI_PROVIDER_HOSTS', pi)}
+
+${piDefaultModelsMap(pi)}
+
+// ── Model catalogs: candidate --model values per provider ────────────────
+// Served by \`GET yaac.internal/tools?models=1\` (yaac-spawn --models) so a
+// session can discover valid \`--model\` values without a network fetch; also
+// available to the app (e.g. a model picker). MODELS_BY_PROVIDER is models.dev's
+// tool-calling models (claude → anthropic, codex → openai, opencode → provider);
+// PI_MODELS_BY_PROVIDER is pi's own registry, which differs from models.dev.
+
+${modelsCatalogMap('MODELS_BY_PROVIDER', catalog)}
+
+${modelsCatalogMap('PI_MODELS_BY_PROVIDER', piModels)}
 `
 }
 
 async function main(): Promise<void> {
   console.log('Generating tool provider tables…')
-  const [opencode, pi] = await Promise.all([buildOpencodeRows(), buildPiRows()])
+  const db = await fetchModelsDev()
+  const [pi, piModels] = await Promise.all([buildPiRows(), buildPiModelsCatalog()])
+  const opencode = buildOpencodeRows(db)
+  const catalog = buildModelsCatalog(db)
 
   const piRoot = piPackageRoot()
   const opencodeVer = (() => {
@@ -334,10 +428,11 @@ async function main(): Promise<void> {
   const header = `// Sources: opencode → models.dev (opencode-ai ${opencodeVer}); ` +
     `pi → @earendil-works/pi-coding-agent ${pkgVersion(piRoot)}.`
 
+  const content = generatedFile(opencode, pi, catalog, piModels, header)
   const sharedPath = path.join(REPO_ROOT, 'packages', 'shared', 'src', 'tool-providers.generated.ts')
   const proxyPath = path.join(REPO_ROOT, 'k8s', 'proxy', 'tool-providers.generated.ts')
-  fs.writeFileSync(sharedPath, sharedFile(opencode, pi, header))
-  fs.writeFileSync(proxyPath, proxyFile(opencode, pi, header))
+  fs.writeFileSync(sharedPath, content)
+  fs.writeFileSync(proxyPath, content)
   console.log(`Wrote ${path.relative(REPO_ROOT, sharedPath)}`)
   console.log(`Wrote ${path.relative(REPO_ROOT, proxyPath)}`)
 }

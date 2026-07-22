@@ -3,9 +3,22 @@
 #
 # Usage: yaac-spawn [--tool claude|codex|opencode|pi] [--model <model>] "<prompt>"
 #
-# --model launches the new session's agent with `--model <model>`: a
-# model id or alias for claude/codex (e.g. opus), provider/model for
-# opencode and pi (e.g. anthropic/claude-opus-4-8).
+# --tool picks the new session's agent — one of: claude, codex, opencode,
+# pi. Omitted, it inherits this session's tool, then the project default,
+# then claude. An unknown value is rejected (HTTP 422). The tool must be
+# logged in on the host (`yaac auth list`) — a session can't see host
+# credentials, so a valid-but-unconfigured tool still spawns but its agent
+# then fails to authenticate.
+#
+# --model launches that agent with `--model <model>`: any model id the
+# chosen tool accepts (there is no fixed list). A model id or alias for
+# claude/codex (e.g. opus); provider/model for opencode and pi (e.g.
+# anthropic/claude-opus-4-8), where the provider must be the one that tool
+# is authed for.
+#
+# --models lists which tools have host credentials (so their agent can
+# authenticate) and each tool's accepted model ids — run it before choosing
+# --tool/--model. --help/-h prints usage. Neither spawns a session.
 #
 # Prints the new session's id on success. Fire-and-forget: the session
 # provisions in the background; watch it in the yaac webapp.
@@ -15,17 +28,61 @@
 # Keep the host in sync with k8s/proxy/spawn-queue.ts SPAWN_MAGIC_HOST.
 set -u
 
+usage() {
+  cat <<'EOF'
+yaac-spawn — start a new yaac session in this project with a prompt.
+
+Usage:
+  yaac-spawn [--tool claude|codex|opencode|pi] [--model <model>] "<prompt>"
+  yaac-spawn --models             # list available tools + accepted model ids
+  yaac-spawn --help               # show this help
+
+Options:
+  --tool <tool>   agent for the new session: claude, codex, opencode, or pi.
+                  Omitted, inherits this session's tool, then the project
+                  default, then claude. Must be logged in on the host (see
+                  --models) or the new agent can't authenticate.
+  --model <model> model id the agent launches with — any id the tool accepts:
+                  a model id/alias for claude/codex (e.g. opus); provider/model
+                  for opencode and pi (e.g. anthropic/claude-opus-4-8).
+  --models        list which tools have host credentials and their accepted
+                  model ids (queries the yaac proxy). Does not spawn.
+  -h, --help      show this help. Does not spawn.
+
+Prints the new session's id on success; the session provisions in the
+background (watch it in the yaac webapp).
+EOF
+}
+
+# Query the proxy for which tools/models are available in this project.
+list_models() {
+  resp=$(curl -sS --max-time 30 -w '\n%{http_code}' "http://yaac.internal/tools?models=1") || {
+    echo "yaac-spawn: cannot reach the yaac proxy" >&2
+    return 1
+  }
+  code=$(printf '%s\n' "$resp" | tail -n 1)
+  body=$(printf '%s\n' "$resp" | sed '$d')
+  if [ "$code" != "200" ]; then
+    echo "yaac-spawn: ${body:-could not list available tools} (HTTP $code)" >&2
+    return 1
+  fi
+  printf '%s\n' "$body"
+}
+
 tool=""
 model=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --tool) tool="${2:?yaac-spawn: --tool needs a value}"; shift 2 ;;
     --model) model="${2:?yaac-spawn: --model needs a value}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    --models) list_models; exit $? ;;
     *) break ;;
   esac
 done
 if [ $# -ne 1 ] || [ -z "$1" ]; then
-  echo "usage: yaac-spawn [--tool <tool>] [--model <model>] \"<prompt>\"" >&2
+  echo "usage: yaac-spawn [--tool claude|codex|opencode|pi] [--model <model>] \"<prompt>\"" >&2
+  echo "       yaac-spawn --models   # list available tools + model ids; --help for more" >&2
   exit 2
 fi
 

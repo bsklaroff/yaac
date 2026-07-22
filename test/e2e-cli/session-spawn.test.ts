@@ -274,4 +274,27 @@ describe('yaac-spawn from inside a session (real CLI + server + cluster)', () =>
     expect(output).toContain('bogus')
     expect(output).toContain('HTTP 422')
   }, 120_000)
+
+  it('--models reports authed tools + model ids from the proxy', async () => {
+    // The proxy answers GET yaac.internal/tools from the host-mounted creds
+    // dir: only claude.json (api-key) is seeded here, so claude is authed and
+    // the rest are not — and the baked catalog supplies claude's model ids.
+    const { exitCode, output } = await runSpawn('--models')
+    expect(exitCode).toBe(0)
+    expect(output).toContain('current session tool: claude')
+    expect(output).toContain('claude-opus-4-8')
+    // codex/opencode/pi have no creds in this env.
+    expect(output).toContain('not configured')
+    expect(output).toMatch(/codex\s+not configured/)
+    // No session was spawned: the output is a report, not a session id.
+    expect(output).not.toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-/m)
+  }, 120_000)
+
+  it('--help prints usage documenting --models without touching the proxy', async () => {
+    const { exitCode, output } = await runSpawn('--help')
+    expect(exitCode).toBe(0)
+    expect(output).toContain('Usage:')
+    expect(output).toContain('--tool claude|codex|opencode|pi')
+    expect(output).toContain('--models')
+  }, 120_000)
 })

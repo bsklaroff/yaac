@@ -49,6 +49,12 @@ import type { SpawnResult } from './spawn-queue'
 import { SYSTEM_ROOTS_PATH, combineCaBundle } from './ca-bundle'
 import { timingSafeStrEqual } from './secure-compare'
 import { OPENCODE_PROVIDER_HOSTS, PI_PROVIDER_HOSTS } from './tool-providers.generated'
+import {
+  buildToolsReport,
+  formatToolsReport,
+  type AgentTool,
+  type ToolCredsView,
+} from './tools-report'
 
 // Control-API listener (CA cert, registrations, ssh-agent keys). Renamed
 // from PORT now that no session egress reaches it — it is purely the API.
@@ -2747,6 +2753,47 @@ function handleSpawnRequest(
   })
 }
 
+/**
+ * `GET http://yaac.internal/tools` from inside a session (yaac-spawn --models):
+ * report which agent tools have host credentials, their provider/host, and —
+ * with `?models=1` — their accepted model ids from the baked catalog. Answered
+ * synchronously from proxy-local state (mounted creds + the session's registered
+ * tool); no server round-trip, no network fetch. Like /spawn it runs BEFORE the
+ * allowlist and is attributed by source pod IP; it exposes tool/provider/model
+ * names only, never credential material.
+ */
+function handleToolsRequest(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  sessionId: string,
+  viaVclusterAttribution: boolean,
+): void {
+  const respond = (status: number, contentType: string, body: string): void => {
+    res.writeHead(status, { 'Content-Type': contentType })
+    res.end(body)
+  }
+  if (req.method !== 'GET') { respond(405, 'text/plain; charset=utf-8', 'Method not allowed'); return }
+  if (viaVclusterAttribution) {
+    respond(403, 'text/plain; charset=utf-8', 'tools is not available to nested workloads via the outer proxy')
+    return
+  }
+  const url = new URL(req.url ?? '/', `http://${SPAWN_MAGIC_HOST}`)
+  const includeModels = url.searchParams.get('models') === '1'
+  const asJson = url.searchParams.get('json') === '1'
+
+  const view = (creds: { kind: 'oauth' | 'api-key'; provider?: string } | null): ToolCredsView =>
+    creds ? { authed: true, kind: creds.kind, provider: creds.provider } : { authed: false }
+  const creds: Record<AgentTool, ToolCredsView> = {
+    claude: view(readClaudeCreds()),
+    codex: view(readCodexCreds()),
+    opencode: view(readOpencodeCreds()),
+    pi: view(readPiCreds()),
+  }
+  const report = buildToolsReport({ currentTool: sessionTool.get(sessionId) ?? null, creds, includeModels })
+  if (asJson) { respond(200, 'application/json; charset=utf-8', `${JSON.stringify(report, null, 2)}\n`); return }
+  respond(200, 'text/plain; charset=utf-8', formatToolsReport(report))
+}
+
 const internalHttpServer = http.createServer((req, res) => {
   const socket = req.socket as IdentifiedSocket
   const sessionId = socket.yaacSessionId
@@ -2765,6 +2812,11 @@ const internalHttpServer = http.createServer((req, res) => {
     return
   }
   if (target.hostname === SPAWN_MAGIC_HOST) {
+    const pathname = (req.url ?? '/').split('?', 1)[0]
+    if (pathname === '/tools') {
+      handleToolsRequest(req, res, sessionId, socket.yaacVclusterAttributed === true)
+      return
+    }
     handleSpawnRequest(req, res, sessionId, socket.yaacVclusterAttributed === true)
     return
   }
