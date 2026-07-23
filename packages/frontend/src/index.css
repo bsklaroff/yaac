@@ -40,6 +40,56 @@
 }
 
 /*
+ * Braille spinner for the sidebar's "running" indicator — the cycling-dot
+ * motion agent CLIs use to signal work in progress, so it reads as "working"
+ * at a glance and can't be mistaken for the still, round unread-waiting bubble.
+ *
+ * Drawn as the six dot positions the classic ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ spinner lights, laid
+ * out 2 columns × 3 rows, rather than a text glyph — the Braille Patterns block
+ * is missing from many systems' monospace fonts and would render as tofu. Each
+ * dot fades between lit and dim across the ten frames; step-end holds each
+ * frame so the lit arc clicks crisply from one position to the next. The dots
+ * are laid out row-major (d1 d4 / d2 d5 / d3 d6), which fixes the child order.
+ */
+.braille-spinner {
+  display: inline-grid;
+  grid-template-columns: repeat(2, 3px);
+  grid-auto-rows: 3px;
+  gap: 1.5px;
+}
+.braille-spinner > i {
+  width: 3px;
+  height: 3px;
+  border-radius: 9999px;
+  background: currentColor;
+}
+.braille-spinner > i:nth-child(1) { animation: braille-d1 800ms step-end infinite; }
+.braille-spinner > i:nth-child(2) { animation: braille-d4 800ms step-end infinite; }
+.braille-spinner > i:nth-child(3) { animation: braille-d2 800ms step-end infinite; }
+.braille-spinner > i:nth-child(4) { animation: braille-d5 800ms step-end infinite; }
+.braille-spinner > i:nth-child(5) { animation: braille-d3 800ms step-end infinite; }
+.braille-spinner > i:nth-child(6) { animation: braille-d6 800ms step-end infinite; }
+
+@keyframes braille-d1 {
+  0%,20% { opacity: 1 } 30%,60% { opacity: .2 } 70%,90% { opacity: 1 }
+}
+@keyframes braille-d2 {
+  0% { opacity: 1 } 10%,50% { opacity: .2 } 60%,90% { opacity: 1 }
+}
+@keyframes braille-d3 {
+  0%,30% { opacity: .2 } 40%,90% { opacity: 1 }
+}
+@keyframes braille-d4 {
+  0%,40% { opacity: 1 } 50%,80% { opacity: .2 } 90% { opacity: 1 }
+}
+@keyframes braille-d5 {
+  0% { opacity: .2 } 10%,50% { opacity: 1 } 60%,90% { opacity: .2 }
+}
+@keyframes braille-d6 {
+  0%,10% { opacity: .2 } 20%,70% { opacity: 1 } 80%,90% { opacity: .2 }
+}
+
+/*
  * Palettes. The @theme block above is the dark base; these override the same
  * custom properties — which every Tailwind color utility resolves through
  * var() — so the whole UI recolors with no per-class dark: variants.

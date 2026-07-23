@@ -437,12 +437,17 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
         {/* Title fills the row; only on hover does it inset to clear the pin
             + delete buttons and marquee-scroll when it's too long to fit. */}
         <span className="flex items-center gap-2 group-hover:pr-12">
-          {/* Live pulse: the session's agent is actively running. A square,
-              so it can't be mistaken for the round unread bubble below. */}
+          {/* Braille spinner: the session's agent is actively running. The
+              cycling glyph reads as "working" and can't be mistaken for the
+              round unread bubble below (which is a solid, still dot). */}
           {session.status === 'running' && (
-            <span className="relative flex h-1.5 w-1.5 shrink-0">
-              <span className="absolute h-full w-full animate-ping rounded-[2px] bg-emerald-400/60" />
-              <span className="h-1.5 w-1.5 rounded-[2px] bg-emerald-400" />
+            <span className="braille-spinner shrink-0 text-emerald-400" aria-hidden>
+              <i />
+              <i />
+              <i />
+              <i />
+              <i />
+              <i />
             </span>
           )}
           {/* Unread bubble: this session started waiting and hasn't been viewed. */}
