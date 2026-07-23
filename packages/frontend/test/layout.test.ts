@@ -7,6 +7,8 @@ import {
   focusPaneTarget,
   groupIndexOf,
   isWorkspace,
+  moveColumn,
+  moveTabInStrip,
   moveTargetToColumn,
   moveTargetToGroup,
   paneTargets,
@@ -131,6 +133,70 @@ describe('moveTargetToColumn', () => {
     const ws = two()
     expect(moveTargetToColumn(ws, 'agent', 0)).toBe(ws)
     expect(moveTargetToColumn(ws, 'agent', 1)).toBe(ws)
+  })
+})
+
+describe('moveColumn', () => {
+  /** Three single-pane columns: agent | shell:a | shell:b. */
+  const three = (): Workspace => addColumn(addColumn(singleColumn('agent'), 'shell:a'), 'shell:b')
+
+  it('moves the column holding the target one slot, in either direction', () => {
+    expect(paneTargets(moveColumn(three(), 'agent', 1))).toEqual(['shell:a', 'agent', 'shell:b'])
+    expect(paneTargets(moveColumn(three(), 'shell:b', -1))).toEqual(['agent', 'shell:b', 'shell:a'])
+  })
+
+  it('wraps around at both ends', () => {
+    expect(paneTargets(moveColumn(three(), 'agent', -1))).toEqual(['shell:a', 'shell:b', 'agent'])
+    expect(paneTargets(moveColumn(three(), 'shell:b', 1))).toEqual(['shell:b', 'agent', 'shell:a'])
+  })
+
+  it('moves the whole column when the target is a tab within a multi-tab column', () => {
+    // columns: [agent, shell:x] | [shell:b]; moving shell:x right carries agent with it
+    const ws = addColumn(addTab(singleColumn('agent'), 0, 'shell:x'), 'shell:b')
+    expect(moveColumn(ws, 'shell:x', 1)).toEqual([
+      { tabs: ['shell:b'], active: 'shell:b' },
+      { tabs: ['agent', 'shell:x'], active: 'shell:x' },
+    ])
+  })
+
+  it('no-ops (same reference) with fewer than two columns or an unknown target', () => {
+    const one = singleColumn('agent')
+    expect(moveColumn(one, 'agent', 1)).toBe(one)
+    const ws = two()
+    expect(moveColumn(ws, 'nope', 1)).toBe(ws)
+  })
+})
+
+describe('moveTabInStrip', () => {
+  /** One column of three tabs: agent, shell:a, shell:b (shell:b active). */
+  const strip = (): Workspace => addTab(addTab(singleColumn('agent'), 0, 'shell:a'), 0, 'shell:b')
+
+  it('reorders the target within the flat strip, in either direction', () => {
+    expect(paneTargets(moveTabInStrip(strip(), 'agent', 1))).toEqual(['shell:a', 'agent', 'shell:b'])
+    expect(paneTargets(moveTabInStrip(strip(), 'shell:b', -1))).toEqual(['agent', 'shell:b', 'shell:a'])
+  })
+
+  it('wraps around at both ends', () => {
+    expect(paneTargets(moveTabInStrip(strip(), 'agent', -1))).toEqual(['shell:a', 'shell:b', 'agent'])
+    expect(paneTargets(moveTabInStrip(strip(), 'shell:b', 1))).toEqual(['shell:b', 'agent', 'shell:a'])
+  })
+
+  it('preserves the column sizes, refilling them from the reordered strip', () => {
+    // columns sized [2, 1]: [agent, shell:a] | [shell:b]; move shell:a right.
+    const ws = addColumn(addTab(singleColumn('agent'), 0, 'shell:a'), 'shell:b')
+    const moved = moveTabInStrip(ws, 'shell:a', 1)
+    // Strip agent, shell:a, shell:b → agent, shell:b, shell:a; refilled 2 then 1.
+    expect(moved).toEqual([
+      { tabs: ['agent', 'shell:b'], active: 'agent' },
+      { tabs: ['shell:a'], active: 'shell:a' },
+    ])
+  })
+
+  it('no-ops (same reference) with fewer than two panes or an unknown target', () => {
+    const one = singleColumn('agent')
+    expect(moveTabInStrip(one, 'agent', 1)).toBe(one)
+    const ws = strip()
+    expect(moveTabInStrip(ws, 'nope', 1)).toBe(ws)
   })
 })
 

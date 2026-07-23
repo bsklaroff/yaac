@@ -89,20 +89,32 @@ describe('chordMatches', () => {
 describe('matchShortcut', () => {
   it('maps each default chord to its command', () => {
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyN'))).toBe('new-session')
-    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyT'))).toBe('new-shell')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyS'))).toBe('new-shell')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyD'))).toBe('delete-session')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyW'))).toBe('kill-terminal')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyB'))).toBe('jump-attention')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyC'))).toBe('open-changes')
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyF'))).toBe('find-changes')
-    expect(matchShortcut(DEFAULT_BINDINGS, key('ArrowUp'))).toBe('prev-session')
-    expect(matchShortcut(DEFAULT_BINDINGS, key('ArrowDown'))).toBe('next-session')
-    expect(matchShortcut(DEFAULT_BINDINGS, key('ArrowLeft'))).toBe('prev-terminal')
-    expect(matchShortcut(DEFAULT_BINDINGS, key('ArrowRight'))).toBe('next-terminal')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyP'))).toBe('open-preview')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('Comma'))).toBe('view-tabs')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('Period'))).toBe('view-tiles')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyK'))).toBe('prev-session')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyJ'))).toBe('next-session')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyH'))).toBe('prev-terminal')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyL'))).toBe('next-terminal')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyH', { shiftKey: true }))).toBe('move-terminal-left')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyL', { shiftKey: true }))).toBe('move-terminal-right')
   })
 
   it('returns null for an unbound chord', () => {
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyM'))).toBeNull()
     expect(matchShortcut(DEFAULT_BINDINGS, key('KeyN', { ctrlKey: true }))).toBeNull()
+  })
+
+  it('distinguishes the move commands from the cyclers by the Shift modifier', () => {
+    // Alt+H is prev-terminal; the Shift variant is a different command.
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyH'))).toBe('prev-terminal')
+    expect(matchShortcut(DEFAULT_BINDINGS, key('KeyH', { shiftKey: true }))).toBe('move-terminal-left')
   })
 
   it('honors a rebind', () => {
@@ -213,6 +225,8 @@ describe('formatCode', () => {
     expect(formatCode('ArrowLeft')).toBe('←')
     expect(formatCode('ArrowRight')).toBe('→')
     expect(formatCode('Enter')).toBe('Enter')
+    expect(formatCode('Comma')).toBe(',')
+    expect(formatCode('Period')).toBe('.')
     expect(formatCode('F5')).toBe('F5') // unknown → raw code
   })
 })
@@ -221,6 +235,8 @@ describe('formatChord', () => {
   it('renders modifier+key with +-separators off mac', () => {
     expect(formatChord(chord('KeyN'))).toBe('Alt+N')
     expect(formatChord(chord('KeyK', { alt: false, ctrl: true, shift: true }))).toBe('Ctrl+Shift+K')
+    expect(formatChord(chord('KeyH', { shift: true }))).toBe('Alt+Shift+H')
+    expect(formatChord(chord('Comma'))).toBe('Alt+,')
     expect(formatChord(chord('ArrowRight'))).toBe('Alt+→')
   })
 

@@ -153,6 +153,45 @@ export function moveTargetToColumn(ws: Workspace, src: string, insertIdx: number
   return [...removed.slice(0, at), group([src], src), ...removed.slice(at)]
 }
 
+/**
+ * Move the whole column holding `target` one slot left (`dir` -1) or right
+ * (`dir` 1) among the columns, wrapping around at both ends. This is the
+ * tiles-mode "move window" primitive. Returns the same reference when there's
+ * nothing to move (fewer than two columns, or an unknown target).
+ */
+export function moveColumn(ws: Workspace, target: string, dir: 1 | -1): Workspace {
+  const gi = groupIndexOf(ws, target)
+  if (gi === -1 || ws.length < 2) return ws
+  const to = (gi + dir + ws.length) % ws.length
+  const without = ws.filter((_, i) => i !== gi)
+  without.splice(to, 0, ws[gi])
+  return without
+}
+
+/**
+ * Move `target` one slot left (`dir` -1) or right (`dir` 1) within the flat
+ * left-to-right pane strip, wrapping around at both ends — the tabs-mode "move
+ * tab" primitive, where the workspace renders as one strip regardless of its
+ * columns. The reordered strip is refilled back into the existing columns
+ * preserving each column's size, so the column count stays stable (only which
+ * panes land in which column shifts). Returns the same reference when there's
+ * nothing to move (fewer than two panes, or an unknown target).
+ */
+export function moveTabInStrip(ws: Workspace, target: string, dir: 1 | -1): Workspace {
+  const flat = paneTargets(ws)
+  const from = flat.indexOf(target)
+  if (from === -1 || flat.length < 2) return ws
+  const to = (from + dir + flat.length) % flat.length
+  const without = flat.filter((_, i) => i !== from)
+  without.splice(to, 0, target)
+  let i = 0
+  return ws.map((g) => {
+    const tabs = without.slice(i, i + g.tabs.length)
+    i += g.tabs.length
+    return group(tabs, tabs.includes(g.active) ? g.active : tabs[0])
+  })
+}
+
 /** Make `target` the active tab of its column. No-op if absent or already
  *  active (returns the same reference). */
 export function withActive(ws: Workspace | null, target: string): Workspace {

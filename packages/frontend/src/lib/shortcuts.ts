@@ -21,7 +21,8 @@ export interface Chord {
 
 /**
  * The rebindable commands. The directional cycles are split into prev/next so
- * each direction is independently editable in the settings pane.
+ * each direction is independently editable in the settings pane; the move
+ * commands likewise split into left/right.
  */
 export type ShortcutId =
   | 'new-session'
@@ -29,11 +30,17 @@ export type ShortcutId =
   | 'delete-session'
   | 'kill-terminal'
   | 'jump-attention'
+  | 'open-changes'
   | 'find-changes'
+  | 'open-preview'
+  | 'view-tabs'
+  | 'view-tiles'
   | 'prev-session'
   | 'next-session'
   | 'prev-terminal'
   | 'next-terminal'
+  | 'move-terminal-left'
+  | 'move-terminal-right'
 
 /** A command's identity, human labels, and factory-default chord. */
 export interface ShortcutDef {
@@ -51,32 +58,52 @@ function alt(code: string): Chord {
   return { code, alt: true, ctrl: false, meta: false, shift: false }
 }
 
+/** Alt+Shift chord for a physical key — the "move" commands' default shape. */
+function altShift(code: string): Chord {
+  return { code, alt: true, ctrl: false, meta: false, shift: true }
+}
+
 /**
  * The command registry, in match-precedence and display order. Labels and
- * descriptions surface in Settings → Shortcuts; the defaults reproduce the
- * chords that were previously hardcoded across the workspace.
+ * descriptions surface in Settings → Shortcuts. The directional defaults are
+ * the vim-style home-row keys (h/j/k/l), leaving the arrow keys free for the
+ * terminal.
  */
 export const SHORTCUTS: ShortcutDef[] = [
   { id: 'new-session', label: 'New session',
     description: 'Create a session in the active project.', defaultChord: alt('KeyN') },
   { id: 'new-shell', label: 'New shell',
-    description: 'Open a scratch-shell terminal in the selected session.', defaultChord: alt('KeyT') },
+    description: 'Open a scratch-shell terminal in the selected session.', defaultChord: alt('KeyS') },
   { id: 'delete-session', label: 'Delete session',
     description: 'Delete the selected session (asks to confirm).', defaultChord: alt('KeyD') },
   { id: 'kill-terminal', label: 'Kill terminal',
     description: 'Close the active terminal (asks to confirm).', defaultChord: alt('KeyW') },
   { id: 'jump-attention', label: 'Jump to attention',
     description: 'Select the session that most needs attention.', defaultChord: alt('KeyB') },
+  { id: 'open-changes', label: 'Open changes',
+    description: 'Open the Changes (review-diff) pane.', defaultChord: alt('KeyC') },
   { id: 'find-changes', label: 'Find in changes',
     description: 'Open the Changes pane and focus its find box.', defaultChord: alt('KeyF') },
+  { id: 'open-preview', label: 'Open preview',
+    description: 'Open the preview pane for a forwarded port.', defaultChord: alt('KeyP') },
+  { id: 'view-tabs', label: 'Tabbed view',
+    description: 'Show the workspace as one tab strip.', defaultChord: alt('Comma') },
+  { id: 'view-tiles', label: 'Window view',
+    description: 'Show the workspace as side-by-side windows.', defaultChord: alt('Period') },
   { id: 'prev-session', label: 'Previous session',
-    description: 'Select the previous session in the sidebar.', defaultChord: alt('ArrowUp') },
+    description: 'Select the previous session in the sidebar.', defaultChord: alt('KeyK') },
   { id: 'next-session', label: 'Next session',
-    description: 'Select the next session in the sidebar.', defaultChord: alt('ArrowDown') },
+    description: 'Select the next session in the sidebar.', defaultChord: alt('KeyJ') },
   { id: 'prev-terminal', label: 'Previous terminal',
-    description: 'Focus the previous terminal in the tab strip.', defaultChord: alt('ArrowLeft') },
+    description: 'Focus the previous terminal in the tab strip.', defaultChord: alt('KeyH') },
   { id: 'next-terminal', label: 'Next terminal',
-    description: 'Focus the next terminal in the tab strip.', defaultChord: alt('ArrowRight') },
+    description: 'Focus the next terminal in the tab strip.', defaultChord: alt('KeyL') },
+  { id: 'move-terminal-left', label: 'Move terminal left',
+    description: 'Move the active terminal left (its window in tiles mode), wrapping around.',
+    defaultChord: altShift('KeyH') },
+  { id: 'move-terminal-right', label: 'Move terminal right',
+    description: 'Move the active terminal right (its window in tiles mode), wrapping around.',
+    defaultChord: altShift('KeyL') },
 ]
 
 /** All shortcut ids, in registry order (which is also match precedence). */
@@ -234,7 +261,7 @@ export function formatCode(code: string): string {
   const named: Record<string, string> = {
     ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓',
     Enter: 'Enter', Escape: 'Esc', Space: 'Space', Tab: 'Tab',
-    Backspace: 'Backspace', Delete: 'Delete',
+    Backspace: 'Backspace', Delete: 'Delete', Comma: ',', Period: '.',
   }
   if (code in named) return named[code]
   if (code.startsWith('Key')) return code.slice(3)

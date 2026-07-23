@@ -198,8 +198,8 @@ function Workspace({ snapshot, connected }: { snapshot: ServerSnapshot | undefin
   // Session shortcuts, window-captured so the chord is swallowed before
   // xterm's textarea handler could forward it to the PTY, and registered
   // here, not in Sidebar, so they work with the sidebar hidden too:
-  //  - Alt+↑/Alt+↓ step through the sidebar rows top-to-bottom (wrapping)
-  //    — the vertical sibling of SessionView's Alt+←/→ terminal cycler.
+  //  - Alt+K/Alt+J step through the sidebar rows top-to-bottom (wrapping)
+  //    — the vertical sibling of SessionView's Alt+H/Alt+L terminal cycler.
   //  - Alt+N starts a new session in the active project, with the selected
   //    session's tool (or claude) — ignored while that tool has no stored
   //    credential (sign in via settings → credentials).

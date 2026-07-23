@@ -28,6 +28,8 @@ import {
   computeColumns,
   dropTargetAt,
   focusPaneTarget,
+  moveColumn,
+  moveTabInStrip,
   moveTargetToColumn,
   moveTargetToGroup,
   paneTargets,
@@ -291,18 +293,19 @@ export function SessionView({
   // in it).
   const [confirmKill, setConfirmKill] = useState<{ target: string; name: string } | null>(null)
 
-  // Workspace shortcuts: Alt+←/Alt+→ cycle terminals left/right — the
-  // webapp-level replacement for tmux's prefix bindings (webapp panes run
-  // with `prefix None`) — Alt+T opens a new scratch shell, Alt+F opens the
-  // changes pane and focuses its find box, and Alt+W kills
-  // the active terminal, through the same confirm dialog as the pane ×
-  // (Alt+N, new session, and Alt+D, delete session, live in App's
-  // Workspace, which owns project scope). Captured on window so the chord
-  // is swallowed before xterm's textarea handler could forward it to the
-  // PTY; the ref keeps the single listener reading the current render's
-  // state.
-  const shortcutCtx = useRef({ sid, targets, activeTab, terminals, openShell })
-  shortcutCtx.current = { sid, targets, activeTab, terminals, openShell }
+  // Workspace shortcuts (all rebindable — these are the defaults): Alt+H/Alt+L
+  // cycle terminals left/right and Alt+Shift+H/Alt+Shift+L move the active one
+  // (its window in tiles mode) — the webapp-level replacement for tmux's prefix
+  // bindings (webapp panes run with `prefix None`) — Alt+S opens a new scratch
+  // shell, Alt+C opens the changes pane (Alt+F opens it and focuses its find
+  // box), Alt+P opens the preview pane, Alt+,/Alt+. switch the tabbed/window
+  // view, and Alt+W kills the active terminal through the same confirm dialog
+  // as the pane × (Alt+N, new session, and Alt+K/Alt+J, session cycle, live in
+  // App's Workspace, which owns project scope). Captured on window so the chord
+  // is swallowed before xterm's textarea handler could forward it to the PTY;
+  // the ref keeps the single listener reading the current render's state.
+  const shortcutCtx = useRef({ sid, targets, activeTab, terminals, openShell, previewPorts })
+  shortcutCtx.current = { sid, targets, activeTab, terminals, openShell, previewPorts }
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       const ctx = shortcutCtx.current
@@ -342,6 +345,45 @@ export function SessionView({
           state.openChanges(ctx.sid)
           state.setChangesFindPending(true)
           return
+        case 'open-changes':
+          e.preventDefault()
+          e.stopPropagation()
+          state.openChanges(ctx.sid)
+          return
+        case 'open-preview':
+          // Nothing to preview without a forwarded port — leave the chord alone.
+          if (ctx.previewPorts.length === 0) return
+          // Open/focus the preview pane; the store seeds the shown port lazily
+          // (the first forwarded port until the toolbar dropdown picks another).
+          e.preventDefault()
+          e.stopPropagation()
+          state.openPreview(ctx.sid)
+          return
+        case 'view-tabs':
+        case 'view-tiles':
+          e.preventDefault()
+          e.stopPropagation()
+          state.setViewMode(id === 'view-tabs' ? 'tabs' : 'tiles')
+          return
+        case 'move-terminal-left':
+        case 'move-terminal-right': {
+          // Reorder the active pane with wraparound: its whole window in tiles
+          // mode, its slot in the flat strip in tabs mode. Then re-focus it so
+          // it stays the visible/active pane after the shuffle.
+          if (!ctx.activeTab) return
+          e.preventDefault()
+          e.stopPropagation()
+          const dir = id === 'move-terminal-right' ? 1 : -1
+          const cur = ctx.sid in state.layouts ? state.layouts[ctx.sid] : singleColumn('agent')
+          if (!cur) return
+          const moved = state.viewMode === 'tiles'
+            ? moveColumn(cur, ctx.activeTab, dir)
+            : moveTabInStrip(cur, ctx.activeTab, dir)
+          if (moved === cur) return
+          state.setSessionLayout(ctx.sid, moved)
+          state.focusTerminal(ctx.sid, ctx.activeTab)
+          return
+        }
         case 'prev-terminal':
         case 'next-terminal': {
           const delta = cycleDeltaFor(id)
