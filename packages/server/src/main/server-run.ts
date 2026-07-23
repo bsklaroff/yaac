@@ -15,6 +15,7 @@ import { coalesceCalls, notifySessionListChanged, onSessionListChanged } from '#
 import { resolveSessionContainer } from '#features/sessions/resolve'
 import { StatusWatcherManager } from '#features/sessions/status-watcher'
 import { ClusterCache, setActiveClusterCache } from '#platform/k8s/cluster-cache'
+import { anySessionDirsExist, armDeferredClusterBoot } from '#platform/k8s/deferred-boot'
 import { refreshClaudeBundledSkills } from '#features/skills/claude-bundled'
 import { onSessionStatusChanged } from '#features/sessions/status-store'
 import { readBuildId } from '@yaac/shared/build-id'
@@ -434,74 +435,100 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   process.on('SIGTERM', () => void shutdown('SIGTERM'))
   process.on('SIGINT', () => void shutdown('SIGINT'))
 
-  // Best-effort cluster bootstrap: the local registry and the yaac
-  // namespace are cheap to ensure and needed by the first session.
-  // Failures are logged, not fatal — the server can serve project/auth
-  // RPCs without a cluster, and session creation surfaces its own
-  // RUNTIME_UNAVAILABLE with a pointer to `yaac cluster check`.
-  void (async () => {
-    await ensureLocalRegistry()
-    await ensureNamespace()
-  })().catch((err) => serverLog(`[server] cluster bootstrap failed: ${String(err)}`))
-
-  // A server restart loses the in-memory forwarder registry while
-  // running containers keep their tmux `status-right` advertising
-  // ports that aren't actually forwarded anymore. Rebuild forwarders
-  // for every live session container before we process RPCs so the
-  // displayed port mapping matches reality.
-  try {
-    await restoreAllSessionForwarders()
-  } catch (err) {
-    serverLog(`[server] restore forwarders failed: ${String(err)}`)
-  }
-
-  // Push-fed session state: the informer caches keep the display path's
-  // pod cache current, drive the per-session status watchers (tmux
-  // control-mode streams feeding the status store), and feed the
-  // reconciler's delta triggers. Pod deltas fire sessions-changed, so
-  // snapshots push the moment state changes.
-  clusterCache = new ClusterCache()
-  statusWatchers = new StatusWatcherManager()
-  const cache = clusterCache
-  const manager = statusWatchers
-  clusterCache.onDelta((source) => {
-    if (source !== 'session-pods') return
-    manager.sync(cache.sessionPods())
-    notifySessionListChanged()
-  })
-  onSessionStatusChanged(() => notifySessionListChanged())
-  clusterCache.start()
-  setActiveClusterCache(clusterCache)
-
   // Populate the Claude bundled-skills cache (name + description from the
   // official commands reference) for the skills viewer. Fire-and-forget: it's
   // an in-memory best-effort fetch, so it never blocks startup or fails it.
   void refreshClaudeBundledSkills()
 
-  // Start the reconciler before running orphan GC. The GC pass hits the
-  // cluster API, and during a frozen cluster (saturated VM, user
-  // restarting repeatedly) it can take minutes — blocking the first
-  // reconcile pass that whole time. Running it concurrently lets the
-  // server serve the reconcile path right away while the GC drains in
-  // the background.
-  loopDone = startReconciler({
-    signal: abortCtrl.signal,
-    // After each reconcile pass, push a fresh snapshot to any connected
-    // webapp clients (no-op when none are connected, and only broadcasts
-    // when the state actually changed).
-    onPass: () => hub.publishSnapshot(),
-  })
+  // Everything below touches the cluster — grouped so a NESTED server
+  // can defer it (see below).
+  const startClusterWork = async (): Promise<void> => {
+    // Best-effort cluster bootstrap: the local registry and the yaac
+    // namespace are cheap to ensure and needed by the first session.
+    // Failures are logged, not fatal — the server can serve project/auth
+    // RPCs without a cluster, and session creation surfaces its own
+    // RUNTIME_UNAVAILABLE with a pointer to `yaac cluster check`. Awaited
+    // (unlike the fire-and-forget GCs) so a deferred boot's trigger —
+    // the first session create — sees the namespace exist before it
+    // applies anything into it.
+    await (async () => {
+      await ensureLocalRegistry()
+      await ensureNamespace()
+    })().catch((err) => serverLog(`[server] cluster bootstrap failed: ${String(err)}`))
 
-  // Remove per-session `.cached-packages/modules/<sid>` dirs whose
-  // session container is gone — catches leftovers from crashes and host
-  // reboots.
-  void gcOrphanEphemeralModuleDirs()
-    .catch((err) => serverLog(`[server] orphan modules GC failed: ${String(err)}`))
+    // A server restart loses the in-memory forwarder registry while
+    // running containers keep their tmux `status-right` advertising
+    // ports that aren't actually forwarded anymore. Rebuild forwarders
+    // for every live session container before we process RPCs so the
+    // displayed port mapping matches reality.
+    try {
+      await restoreAllSessionForwarders()
+    } catch (err) {
+      serverLog(`[server] restore forwarders failed: ${String(err)}`)
+    }
 
-  // Remove per-project push registries whose project dir is gone —
-  // catches `project remove` runs that raced an unavailable cluster.
-  void gcOrphanProjectRegistries()
-    .catch((err) => serverLog(`[server] orphan registry GC failed: ${String(err)}`))
+    // Push-fed session state: the informer caches keep the display path's
+    // pod cache current, drive the per-session status watchers (tmux
+    // control-mode streams feeding the status store), and feed the
+    // reconciler's delta triggers. Pod deltas fire sessions-changed, so
+    // snapshots push the moment state changes.
+    const cache = new ClusterCache()
+    const manager = new StatusWatcherManager()
+    clusterCache = cache
+    statusWatchers = manager
+    cache.onDelta((source) => {
+      if (source !== 'session-pods') return
+      manager.sync(cache.sessionPods())
+      notifySessionListChanged()
+    })
+    onSessionStatusChanged(() => notifySessionListChanged())
+    cache.start()
+    setActiveClusterCache(cache)
+
+    // Start the reconciler before running orphan GC. The GC pass hits the
+    // cluster API, and during a frozen cluster (saturated VM, user
+    // restarting repeatedly) it can take minutes — blocking the first
+    // reconcile pass that whole time. Running it concurrently lets the
+    // server serve the reconcile path right away while the GC drains in
+    // the background.
+    loopDone = startReconciler({
+      signal: abortCtrl.signal,
+      // After each reconcile pass, push a fresh snapshot to any connected
+      // webapp clients (no-op when none are connected, and only broadcasts
+      // when the state actually changed).
+      onPass: () => hub.publishSnapshot(),
+    })
+
+    // Remove per-session `.cached-packages/modules/<sid>` dirs whose
+    // session container is gone — catches leftovers from crashes and host
+    // reboots.
+    void gcOrphanEphemeralModuleDirs()
+      .catch((err) => serverLog(`[server] orphan modules GC failed: ${String(err)}`))
+
+    // Remove per-project push registries whose project dir is gone —
+    // catches `project remove` runs that raced an unavailable cluster.
+    void gcOrphanProjectRegistries()
+      .catch((err) => serverLog(`[server] orphan registry GC failed: ${String(err)}`))
+  }
+
+  // A NESTED server's cluster is its session's born-at-zero vcluster
+  // (docs/vcluster-scale-to-zero.md) — attaching at boot is exactly what
+  // would wake it seconds after the create-time sleep, since `yaac
+  // server start` runs from the session's initCommands. With no
+  // sessions of its own yet, defer every cluster touch until the first
+  // real use (session create awaits it; any kubectl call kicks it). A
+  // RESTARTING nested server with live sessions attaches eagerly: those
+  // sessions need the caches and reconciler, and their vcluster — this
+  // vcluster — is already awake.
+  if (env.nested && !(await anySessionDirsExist())) {
+    armDeferredClusterBoot(async () => {
+      serverLog('[server] nested: first cluster use — attaching (caches, reconciler)')
+      await startClusterWork()
+    })
+    serverLog('[server] nested: cluster attach deferred until first use (vcluster stays asleep)')
+  } else {
+    await startClusterWork()
+  }
 }
 
 interface RestoreCandidate {

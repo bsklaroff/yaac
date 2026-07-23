@@ -49,6 +49,7 @@ import {
   waitForVclusterKubeconfig,
 } from '#features/cluster/vcluster'
 import { ensureActivator } from '#features/cluster/activator'
+import { awaitDeferredClusterBoot } from '#platform/k8s/deferred-boot'
 import {
   repoDir,
   claudeDir,
@@ -746,6 +747,13 @@ export async function createSession(
       env.push(`${name}=${val}`)
     }
   }
+
+  // A nested server defers its boot-time cluster attach so it doesn't
+  // wake its own born-at-zero vcluster; the first session create is the
+  // "cluster is really needed now" signal. Awaited so the namespace
+  // ensure inside it lands before anything below applies into it.
+  // Immediate no-op on the outer server (nothing is ever armed).
+  await awaitDeferredClusterBoot()
 
   // Proxy is always required — it reads the host-mounted credentials dir
   // directly and injects GitHub / Claude / Codex tokens into outbound HTTPS

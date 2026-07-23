@@ -145,14 +145,25 @@ narrow:
   hit the interception slice and wake it right back (the sleep's pods-gone
   wait then times out harmlessly).
 
+## The nested server defers its cluster attach
+
+A `yaac server start` run from a session's initCommands would otherwise wake
+the vcluster seconds after the create-time sleep: server boot ensures the
+namespace/registry, starts the informer caches, and runs the reconciler —
+all API touches. A NESTED server with no sessions of its own therefore arms
+its cluster boot instead of running it (`#platform/k8s/deferred-boot`), and
+the first real use fires it: session create awaits it explicitly (the
+namespace must exist before anything is applied into it), and any kubectl
+call kicks it as a fire-and-forget backstop. A restarting nested server that
+already has session dirs attaches eagerly — its sessions need the caches and
+reconciler, and its vcluster is already awake. The outer server never arms
+the latch, so every hook is a no-op there. Server readiness is DB-gated, not
+cluster-gated, so a deferred server still reports healthy.
+
 ## Limits
 
 - The vcluster stays up after its first wake — no re-sleep ("Tier B" needs a
   quiescence predicate and `/data` persistence).
-- A session whose init starts an inner yaac server wakes its vcluster almost
-  immediately (the inner server watches its apiserver); deferring those
-  watches until the inner server has work is a separate, unimplemented
-  optimization.
 - The containment objects (VAP guard, per-vcluster fallback CNP, projected
   redirects) are host objects that persist through sleep, and nothing runs
   while asleep, so the security floor is unaffected.

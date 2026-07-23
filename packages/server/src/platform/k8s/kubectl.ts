@@ -3,6 +3,7 @@ import crypto from 'node:crypto'
 import { promisify } from 'node:util'
 import { getDataDir } from '@yaac/shared/paths'
 import { testEnv } from '@yaac/shared/env'
+import { triggerDeferredClusterBoot } from '#platform/k8s/deferred-boot'
 
 export const execFileAsync = promisify(execFile)
 const execAsync = promisify(exec)
@@ -112,6 +113,10 @@ export async function kubectlWithRetry(
   args: string[],
   opts: KubectlExecOptions = {},
 ): Promise<{ stdout: string; stderr: string }> {
+  // Any cluster access means a deferred (nested) server is now using
+  // its cluster — kick the full boot (caches, reconciler) if it is
+  // still armed. No-op everywhere else.
+  triggerDeferredClusterBoot()
   return retryTransient(
     () => opts.input !== undefined
       ? execFileWithInput('kubectl', args, opts.input, opts.timeout)
@@ -155,6 +160,7 @@ export async function shellKubectlWithRetry(
   command: string,
   opts: KubectlExecOptions = {},
 ): Promise<{ stdout: string; stderr: string }> {
+  triggerDeferredClusterBoot()
   const execOpts: { timeout?: number } = opts.timeout ? { timeout: opts.timeout } : {}
   return retryTransient(
     async () => {
