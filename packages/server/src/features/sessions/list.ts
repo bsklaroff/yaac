@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { listSessionPods, isPrewarmed } from '#platform/k8s/pods'
+import { listSessionPods, isPrewarmed, type SessionPod } from '#platform/k8s/pods'
 import { getActiveClusterCache } from '#platform/k8s/cluster-cache'
+import { isDeferredClusterBootPending, triggerDeferredClusterBoot } from '#platform/k8s/deferred-boot'
 import { worktreeUpstreamBranch } from '#platform/git'
 import { projectDir, repoDir } from '@yaac/shared/project-paths'
 import {
@@ -113,9 +114,19 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
   // one-shot kubectl list is the fallback for cache-less contexts (unit
   // tests, a cache that hasn't started yet).
   const cache = getActiveClusterCache()
-  let pods
+  let pods: SessionPod[]
   if (cache) {
     pods = cache.sessionPods(projectFilter)
+  } else if (isDeferredClusterBootPending()) {
+    // A nested server whose deferred cluster attach hasn't finished has
+    // no session pods by construction (session create awaits the
+    // attach), so answer empty instantly instead of holding the caller
+    // — and the web-app's first snapshot, projects included — on a
+    // kubectl call to a still-waking vcluster. Still kick the attach:
+    // connecting the web app is a real use, and once it completes the
+    // caches push a fresh snapshot.
+    triggerDeferredClusterBoot()
+    pods = []
   } else {
     try {
       pods = await listSessionPods(projectFilter)

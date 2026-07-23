@@ -7,6 +7,7 @@ import {
   anySessionDirsExist,
   armDeferredClusterBoot,
   awaitDeferredClusterBoot,
+  isDeferredClusterBootPending,
   triggerDeferredClusterBoot,
 } from '#platform/k8s/deferred-boot'
 
@@ -70,6 +71,32 @@ describe('deferred cluster boot latch', () => {
     await Promise.all([a, b])
     expect(done).toBe(2)
     expect(boot).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports pending from arm until the boot settles, never on the outer server', async () => {
+    expect(isDeferredClusterBootPending()).toBe(false)
+
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    armDeferredClusterBoot(() => gate)
+    expect(isDeferredClusterBootPending()).toBe(true)
+
+    const run = awaitDeferredClusterBoot()
+    expect(isDeferredClusterBootPending()).toBe(true)
+    release()
+    await run
+    expect(isDeferredClusterBootPending()).toBe(false)
+  })
+
+  it('stops reporting pending after a failed boot too', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      armDeferredClusterBoot(() => Promise.reject(new Error('registry down')))
+      await awaitDeferredClusterBoot()
+      expect(isDeferredClusterBootPending()).toBe(false)
+    } finally {
+      warn.mockRestore()
+    }
   })
 })
 

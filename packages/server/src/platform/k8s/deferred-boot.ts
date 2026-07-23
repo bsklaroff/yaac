@@ -26,6 +26,7 @@ import { getProjectsDir } from '@yaac/shared/project-paths'
 
 let pending: (() => Promise<void>) | null = null
 let inflight: Promise<void> | null = null
+let settled = false
 
 /** Arm the deferred boot (nested server start, before any cluster work). */
 export function armDeferredClusterBoot(fn: () => Promise<void>): void {
@@ -44,9 +45,22 @@ export function awaitDeferredClusterBoot(): Promise<void> {
     pending = null
     inflight = fn().catch((err) => {
       console.warn(`[server] deferred cluster boot failed: ${String(err)}`)
+    }).finally(() => {
+      settled = true
     })
   }
   return inflight ?? Promise.resolve()
+}
+
+/**
+ * True while an armed boot has not finished — armed and unfired, or
+ * fired and still in flight. In that window the server has zero session
+ * pods by construction (session create awaits the boot), so cluster
+ * reads may answer empty instead of blocking on a still-waking
+ * vcluster. Always false on the outer server (never armed).
+ */
+export function isDeferredClusterBootPending(): boolean {
+  return pending !== null || (inflight !== null && !settled)
 }
 
 /** Fire-and-forget trigger — the kubectl choke-point backstop. */
@@ -58,6 +72,7 @@ export function triggerDeferredClusterBoot(): void {
 export function _resetDeferredClusterBootForTests(): void {
   pending = null
   inflight = null
+  settled = false
 }
 
 /**

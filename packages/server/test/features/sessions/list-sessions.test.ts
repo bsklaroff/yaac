@@ -26,6 +26,11 @@ import {
   listActiveSessions,
   _clearListActiveInflightForTests,
 } from '#features/sessions/list'
+import {
+  _resetDeferredClusterBootForTests,
+  armDeferredClusterBoot,
+  awaitDeferredClusterBoot,
+} from '#platform/k8s/deferred-boot'
 import { registerSessionForwarders, stopSessionForwarders } from '#features/sessions/forwarders/port-forwarders'
 import { ServerError } from '@yaac/shared/errors'
 import type { ProjectMeta } from '@yaac/shared/types'
@@ -50,18 +55,35 @@ describe('listActiveSessions', () => {
     tmpDir = await createTempDataDir()
     _clearListActiveInflightForTests()
     _clearTerminatingForTests()
+    _resetDeferredClusterBootForTests()
     mockListPods.mockReset()
     mockListPods.mockResolvedValue([])
   })
 
   afterEach(async () => {
     _clearTerminatingForTests()
+    _resetDeferredClusterBootForTests()
     await closeDb()
     await cleanupTempDir(tmpDir)
   })
 
   it('throws NOT_FOUND when the project filter points at an unknown slug', async () => {
     await expect(listActiveSessions('does-not-exist')).rejects.toMatchObject({ code: 'NOT_FOUND' })
+  })
+
+  it('answers empty without a cluster call while the deferred boot is pending', async () => {
+    const boot = vi.fn().mockResolvedValue(undefined)
+    armDeferredClusterBoot(boot)
+
+    const result = await listActiveSessions()
+    expect(result.sessions).toEqual([])
+    expect(result.stale).toEqual([])
+    expect(mockListPods).not.toHaveBeenCalled()
+
+    // The short-circuit still fires the attach (a web-app connect must
+    // wake the cluster) — it just doesn't wait for it.
+    await awaitDeferredClusterBoot()
+    expect(boot).toHaveBeenCalledTimes(1)
   })
 
   it('renders a terminating pod as a non-interactive terminating row, not stale', async () => {
