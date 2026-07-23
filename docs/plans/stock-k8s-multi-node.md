@@ -23,15 +23,17 @@ plane is remote and we do not `podman exec` the nodes.
 - **Consequence, accepted:** the runsc-install node surgery (§3) is
   unavoidable, so the portability ceiling below is the price of this security
   posture. Not universally portable, by design.
-- **Redirect + policy: one mechanism everywhere — per-pod-netns rules (Istio
-  ambient shape).** The node agent enters each session pod's network
-  namespace and programs default-deny, the ingress lock, and a transparent
-  TPROXY to the yaac proxy. Because the rules sit in the host-side pod netns
-  they are CNI-independent (upstream of the CNI datapath) and gVisor-safe
-  (host-kernel netfilter, not the sentry) — so Cilium is dropped entirely and
-  any minimal CNI works, local and managed (§4). Reuse istio-cni/ztunnel
-  *plumbing* only — ztunnel is not our egress proxy. One spike outstanding:
-  pod-netns TPROXY composing with gVisor's `fdbased` netstack.
+- **Redirect + policy: one mechanism everywhere — per-pod rules at the veth
+  peer (Istio ambient shape).** The node agent programs default-deny, the
+  ingress lock, and a transparent TPROXY to the yaac proxy in the **host-side
+  veth-peer netns** of each session pod. Because the rules sit upstream of the
+  CNI datapath they are CNI-independent and gVisor-safe (host-kernel netfilter,
+  not the sentry) — so Cilium is dropped entirely and any minimal CNI works,
+  local and managed (§4). Reuse istio-cni/ztunnel *plumbing* only — ztunnel is
+  not our egress proxy. **Spike resolved (validated 2026-07-23, see
+  `spikes/`):** the redirect must sit at the veth *peer*, not inside the pod
+  netns — gVisor's `fdbased` netstack emits egress as raw L2 frames via
+  AF_PACKET, so the pod netns's own IP-layer netfilter never sees it.
 
 Scope reality check (the runsc install, §3, is the binding constraint): the
 non-negotiable gVisor requirement means the target is **self-managed node
@@ -157,7 +159,20 @@ network namespace**, programmed by the node agent (§3 — the same privileged
 DaemonSet that installs runsc) through a **chained CNI plugin** that fires on
 pod-add. This is the Istio *ambient* shape.
 
-For each session pod, the node agent enters its host-side netns and installs:
+**Where the rules live (spike result).** A gVisor session pod runs runsc with
+the default `--network=sandbox` netstack: the sentry pulls the pod's IP/routes
+into its userspace netstack and drives `eth0` at L2 via an AF_PACKET socket
+(`fdbased`). In the host kernel the pod netns `eth0` therefore has no IP and no
+routes, and egress leaves as raw Ethernet frames — so **iptables/TPROXY inside
+the pod netns never sees it**. The rules go one hop out, in the **host-side
+veth-peer netns**, matching on the arrival interface. This is validated
+end-to-end (real runsc sandbox → veth → peer-netns TPROXY → transparent
+forwarder that recovers the original dst); scripts and the exact iptables
+recipe are in [`spikes/`](spikes/). `net-raw` (nested pods) does not change
+this — it only governs the guest's own raw sockets, not the fdbased transport.
+
+For each session pod, the node agent enters its **veth-peer** netns and
+installs:
 
 - **Default-deny egress** — only the redirect target and the DNS stub are
   reachable; everything else is dropped (fail-closed).
@@ -178,10 +193,11 @@ properties at once:
 2. **gVisor-safe.** Host-kernel netfilter, not the sentry's netstack (whose
    iptables-NAT gap sinks any in-*sandbox* redirect).
 3. **Tamper-proof + spoof-proof.** In-sandbox root has no syscall path to the
-   host netns; and a net-raw sandbox that forges packet source IPs still only
-   reaches its *own* netns's forwarder socket, so it cannot impersonate
-   another session. No separate anti-spoof rule needed — identity is by netns
-   topology.
+   veth-peer netns; and a net-raw sandbox that forges packet source IPs still
+   only reaches the forwarder for *its own* veth, so it cannot impersonate
+   another session. No separate anti-spoof rule needed — identity is by which
+   veth peer the frame arrives on (the forwarder recovers it from the arrival
+   netns/interface, not from the packet's src IP).
 
 **Reuse the plumbing, not the proxy.** ztunnel is an L4 mesh mTLS proxy; it
 does no egress TLS-MITM, allowlisting, or credential injection, so the yaac
@@ -200,11 +216,15 @@ own tested matrix has the *same* exceptions for the *same* privilege reasons
 (DPv2 forbids the istio-cni mount propagation; Autopilot forbids the
 privileged install), which is corroborating.
 
-**Spike:** confirm the pod-netns TPROXY composes with gVisor's `fdbased`
-netstack (sentry → veth → host-netns TPROXY → teleported socket) — Istio's
-cross-CNI testing does not cover the gVisor runtime, so this one is ours. The
+**Spike: done (2026-07-23), see [`spikes/`](spikes/).** Confirmed the veth-peer
+TPROXY composes with gVisor's `fdbased` netstack (real sentry → veth →
+peer-netns TPROXY → teleported IP_TRANSPARENT socket, original dst recovered)
+— Istio's cross-CNI testing does not cover the gVisor runtime, so this one was
+ours. It also corrected the attach point from "pod netns" to "veth peer" (see
+above). Still outstanding as implementation (not viability): a real gVisor pod
+on a **minimal/no-Cilium CNI**, redirected by the node agent, and the
 **forgery e2e** (a session pod reaching any un-allowlisted host, or
-impersonating another session, must fail — plain *and* nested classes) is the
+impersonating another session, must fail — plain *and* nested classes) as the
 acceptance gate.
 
 ### 5. Images: host podman + localhost registry → in-cluster builds + real registry
@@ -288,13 +308,13 @@ the CNI only hands out pod IPs and the whole design is CNI-independent.
 ## Phasing
 
 1. **Spikes (kill-order):**
-   - **Node agent (§4) owns all policy + redirect in the per-pod netns.** Via
-     a chained CNI plugin it programs default-deny egress, the ingress lock,
-     and a TPROXY steering `443/80/sentinel` to a per-pod forwarder socket
-     that forwards to the yaac proxy (unchanged). Key spike: the pod-netns
-     TPROXY composes with gVisor's `fdbased` netstack. Gate: the forgery e2e
-     (direct un-allowlisted egress + cross-session impersonation) passes for
-     plain *and* nested classes.
+   - **Node agent (§4) owns all policy + redirect at the veth peer.** Via a
+     chained CNI plugin it programs default-deny egress, the ingress lock, and
+     a TPROXY steering `443/80/sentinel` to a per-pod forwarder socket that
+     forwards to the yaac proxy (unchanged). Key spike (**done** — the
+     veth-peer TPROXY composes with gVisor's `fdbased` netstack; see
+     `spikes/`). Gate: the forgery e2e (direct un-allowlisted egress +
+     cross-session impersonation) passes for plain *and* nested classes.
    - gVisor installer DaemonSet on a target node pool; sentry probe green;
      survive a node-pool upgrade.
    - RWX (NFS-CSI) under gVisor: the storage plan's probe chain + perf
