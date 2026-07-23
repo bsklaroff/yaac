@@ -172,9 +172,15 @@ export async function runClusterCheck(
     return { ok: false, results }
   }
 
-  // 2. cluster reachable
+  // 2. cluster reachable. Nested, this first touch may be WAKING a
+  // scaled-to-zero vcluster: the activator holds the TLS handshake while
+  // the control plane boots (docs/vcluster-scale-to-zero.md), which
+  // client-go's ~32s discovery timeout rides out — so give kubectl the
+  // same headroom instead of killing it mid-wake at 10s.
   try {
-    await deps.run('kubectl', ['version', '--output', 'json'], { timeout: 10_000 })
+    await deps.run('kubectl', ['version', '--output', 'json'], {
+      timeout: env.nested ? 60_000 : 10_000,
+    })
     add({ name: 'cluster', status: 'pass', detail: 'API server reachable' })
   } catch (err) {
     add({
