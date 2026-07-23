@@ -5,7 +5,8 @@
  *
  * Run with:  pnpm gen:providers
  *
- * Emits ONE artifact, written byte-identically to two committed locations:
+ * Emits ONE provider-table artifact, written byte-identically to two committed
+ * locations:
  *   - packages/shared/src/tool-providers.generated.ts  (server/frontend/CLI)
  *   - k8s/proxy/tool-providers.generated.ts            (egress proxy)
  * It carries the provider rows, the proxy's host/default-model lookups, and the
@@ -13,6 +14,14 @@
  * from packages/shared (it bundles self-only, npm-installed in its image
  * build), so it gets its own copy of the same content in its build context —
  * one source of truth, no drift.
+ *
+ * Also emits the raw models.dev response to:
+ *   - dockerfiles/opencode-models.json
+ * Dockerfile.tools bakes it into the session image as opencode's models.dev
+ * cache file (~/.cache/opencode/models.json), so the TUI's model list is as
+ * fresh as the last regen instead of the catalog compiled into the pinned
+ * opencode binary at its release. Kept byte-exact as fetched — it must remain
+ * a valid models.dev api.json for opencode to parse.
  *
  * Sources:
  *   - opencode: models.dev (https://models.dev/api.json), the provider/model
@@ -100,19 +109,23 @@ interface ModelsDevProvider {
   models?: Record<string, unknown>
 }
 
-async function fetchModelsDev(): Promise<Record<string, ModelsDevProvider>> {
+/** The parsed models.dev database plus the raw response text — the raw form
+ *  is committed verbatim as dockerfiles/opencode-models.json. */
+async function fetchModelsDev(): Promise<{ db: Record<string, ModelsDevProvider>; raw: string }> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), 15_000)
   try {
     const res = await fetch('https://models.dev/api.json', { signal: ctrl.signal })
     if (!res.ok) throw new Error(`models.dev returned ${res.status}`)
     console.log('  source: models.dev/api.json (live)')
-    return (await res.json()) as Record<string, ModelsDevProvider>
+    const raw = await res.text()
+    return { db: JSON.parse(raw) as Record<string, ModelsDevProvider>, raw }
   } catch (err) {
     const cache = path.join(os.homedir(), '.cache', 'opencode', 'models.json')
     if (fs.existsSync(cache)) {
       console.log(`  source: ${cache} (models.dev fetch failed: ${err instanceof Error ? err.message : String(err)})`)
-      return JSON.parse(fs.readFileSync(cache, 'utf8')) as Record<string, ModelsDevProvider>
+      const raw = fs.readFileSync(cache, 'utf8')
+      return { db: JSON.parse(raw) as Record<string, ModelsDevProvider>, raw }
     }
     throw new Error(
       `Could not load models.dev (${err instanceof Error ? err.message : String(err)}) ` +
@@ -410,7 +423,7 @@ ${modelsCatalogMap('PI_MODELS_BY_PROVIDER', piModels)}
 
 async function main(): Promise<void> {
   console.log('Generating tool provider tables…')
-  const db = await fetchModelsDev()
+  const { db, raw } = await fetchModelsDev()
   const [pi, piModels] = await Promise.all([buildPiRows(), buildPiModelsCatalog()])
   const opencode = buildOpencodeRows(db)
   const catalog = buildModelsCatalog(db)
@@ -431,10 +444,17 @@ async function main(): Promise<void> {
   const content = generatedFile(opencode, pi, catalog, piModels, header)
   const sharedPath = path.join(REPO_ROOT, 'packages', 'shared', 'src', 'tool-providers.generated.ts')
   const proxyPath = path.join(REPO_ROOT, 'k8s', 'proxy', 'tool-providers.generated.ts')
+  // Raw catalog for the session image: Dockerfile.tools COPYs it in as
+  // opencode's models.dev cache file. Byte-exact as fetched (no reformat) so
+  // it stays a valid api.json; JSON carries no comment, so its provenance is
+  // documented where it's consumed (Dockerfile.tools) and here.
+  const modelsPath = path.join(REPO_ROOT, 'dockerfiles', 'opencode-models.json')
   fs.writeFileSync(sharedPath, content)
   fs.writeFileSync(proxyPath, content)
+  fs.writeFileSync(modelsPath, raw)
   console.log(`Wrote ${path.relative(REPO_ROOT, sharedPath)}`)
   console.log(`Wrote ${path.relative(REPO_ROOT, proxyPath)}`)
+  console.log(`Wrote ${path.relative(REPO_ROOT, modelsPath)}`)
 }
 
 await main()

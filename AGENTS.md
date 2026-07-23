@@ -89,7 +89,7 @@ All container images used by e2e tests are pre-built in `test/global-setup.ts` b
 | Image | Source |
 |-------|--------|
 | `yaac-test-base:<hash>` | `dockerfiles/Dockerfile.default` |
-| `yaac-test-tools:<hash>` | `dockerfiles/Dockerfile.tools` (layered on base) |
+| `yaac-test-tools:<hash>` | `dockerfiles/Dockerfile.tools` + `dockerfiles/opencode-models.json` (layered on base; hash via `toolsContentHash()`) |
 | `yaac-test-nestable:<hash>` | `dockerfiles/Dockerfile.nestable` (layered on tools) |
 | `yaac-test-proxy:<hash>` | `k8s/proxy/` (files not listed in its `.containerignore`) |
 

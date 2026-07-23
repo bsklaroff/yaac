@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { baseImageHash, fileHash, contextHash, ensureImageByTag, sessionUid } from '@yaac/server/features/images/image-builder'
+import { baseImageHash, fileHash, contextHash, toolsContentHash, ensureImageByTag, sessionUid } from '@yaac/server/features/images/image-builder'
 import { ensureRootfulPodmanHost } from '@yaac/server/platform/container/runtime'
 import { ensureRegistryImage } from '@yaac/server/features/cluster/project-registry'
 import { ensureVclusterImages } from '@yaac/server/features/cluster/vcluster'
@@ -138,9 +138,11 @@ export async function setup(): Promise<void> {
   await ensureImageByTag(baseTag, baseDockerfile, DOCKERFILES_DIR, { YAAC_UID: String(sessionUid()) })
 
   // --- Tools layer (Dockerfile.tools, layered on base) ---
+  // toolsContentHash covers the Dockerfile plus its COPY'd support files
+  // (the generated opencode models.dev catalog) — same helper as
+  // resolveImageChain so the two derive identical tags.
   const toolsDockerfile = path.join(DOCKERFILES_DIR, 'Dockerfile.tools')
-  const toolsContentHash = await fileHash(toolsDockerfile)
-  const toolsHash = crypto.createHash('sha256').update(`${baseHash}:${toolsContentHash}`).digest('hex').slice(0, 16)
+  const toolsHash = crypto.createHash('sha256').update(`${baseHash}:${await toolsContentHash()}`).digest('hex').slice(0, 16)
   const toolsTag = `yaac-test-tools:${toolsHash}`
   await ensureImageByTag(toolsTag, toolsDockerfile, DOCKERFILES_DIR, { BASE_IMAGE: baseTag })
 

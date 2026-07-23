@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
-import { baseImageHash, collectContextFiles, contextHash, fileHash, parseContainerIgnore, sessionUid, isLayered } from '#features/images/image-builder'
+import { baseImageHash, collectContextFiles, contextHash, fileHash, parseContainerIgnore, sessionUid, isLayered, toolsContentHash } from '#features/images/image-builder'
 
 describe('fileHash', () => {
   it('produces a 16-char hex hash of file contents', async () => {
@@ -29,6 +29,19 @@ describe('fileHash', () => {
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('toolsContentHash', () => {
+  it('produces a stable 16-char hex hash', async () => {
+    const hash = await toolsContentHash()
+    expect(hash).toMatch(/^[0-9a-f]{16}$/)
+    expect(await toolsContentHash()).toBe(hash)
+  })
+
+  it('folds the COPY support files in, not just the Dockerfile', async () => {
+    const dockerfileOnly = await fileHash(path.join(DOCKERFILES_DIR, 'Dockerfile.tools'))
+    expect(await toolsContentHash()).not.toBe(dockerfileOnly)
   })
 })
 

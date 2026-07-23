@@ -91,3 +91,27 @@ command = "/etc/codex/hooks/yaac-session-start.sh"
 timeout = 10
 REQ
 USER yaac
+
+# Seed opencode's per-install state so a fresh pod behaves like a warmed one.
+# Last in the file so a catalog regen doesn't invalidate the install layers
+# above. Two seeds:
+# - models.dev catalog cache: opencode serves ~/.cache/opencode/models.json
+#   when present and otherwise falls back to the catalog compiled into its
+#   binary at release, refreshing the cache only in the background — so
+#   without this seed a fresh pod's first /models list is as old as the
+#   pinned release. opencode-models.json is emitted by `pnpm gen:providers`
+#   (the same models.dev fetch that generates the provider tables); the baked
+#   catalog is as fresh as the last regen + image rebuild. The `version`
+#   stamp must match opencode's CACHE_VERSION ("14" at 1.0.142, no trailing
+#   newline) or startup wipes the cache dir, deleting the seeded file —
+#   re-verify it whenever the opencode pin moves. This support file is folded
+#   into the tools layer's content hash (toolsContentHash in
+#   packages/server/src/features/images/image-builder.ts) so a regen re-tags
+#   the image like a Dockerfile edit.
+# - kv.json: marks the once-per-install OpenRouter "subpar providers /
+#   OpenCode Zen" dialog as already dismissed; every pod is a fresh install,
+#   so it would otherwise interrupt every openrouter session.
+RUN mkdir -p ~/.cache/opencode ~/.local/state/opencode && \
+    printf 14 > ~/.cache/opencode/version && \
+    printf '{"openrouter_warning":true}' > ~/.local/state/opencode/kv.json
+COPY --chown=yaac:yaac opencode-models.json /home/yaac/.cache/opencode/models.json
