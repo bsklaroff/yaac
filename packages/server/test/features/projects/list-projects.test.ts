@@ -1,10 +1,28 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getProjectsDir } from '@yaac/shared/project-paths'
+
+vi.mock('#platform/k8s/pods', async (importOriginal) => {
+  const actual = await importOriginal<typeof podsModule>()
+  return {
+    ...actual,
+    listSessionPods: vi.fn().mockResolvedValue([]),
+  }
+})
+
+import { listSessionPods } from '#platform/k8s/pods'
+import type * as podsModule from '#platform/k8s/pods'
 import { listProjects } from '#features/projects/list'
+import {
+  _resetDeferredClusterBootForTests,
+  armDeferredClusterBoot,
+  awaitDeferredClusterBoot,
+} from '#platform/k8s/deferred-boot'
 import type { ProjectMeta } from '@yaac/shared/types'
+
+const mockListPods = vi.mocked(listSessionPods)
 
 async function writeProject(slug: string, meta: ProjectMeta): Promise<void> {
   const dir = path.join(getProjectsDir(), slug)
@@ -17,9 +35,13 @@ describe('listProjects', () => {
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
+    _resetDeferredClusterBootForTests()
+    mockListPods.mockReset()
+    mockListPods.mockResolvedValue([])
   })
 
   afterEach(async () => {
+    _resetDeferredClusterBootForTests()
     await cleanupTempDir(tmpDir)
   })
 
@@ -44,6 +66,21 @@ describe('listProjects', () => {
     })
     // Without podman the count is 0, not undefined.
     expect(typeof foo?.sessionCount).toBe('number')
+  })
+
+  it('answers with zero counts and no cluster call while the deferred boot is pending', async () => {
+    await writeProject('foo', { slug: 'foo', remoteUrl: 'https://example/foo', addedAt: '2026-01-01T00:00:00.000Z' })
+    const boot = vi.fn().mockResolvedValue(undefined)
+    armDeferredClusterBoot(boot)
+
+    const projects = await listProjects()
+    expect(projects.map((p) => p.slug)).toEqual(['foo'])
+    expect(projects[0]?.sessionCount).toBe(0)
+    expect(mockListPods).not.toHaveBeenCalled()
+
+    // The short-circuit still fires the attach — it just doesn't wait.
+    await awaitDeferredClusterBoot()
+    expect(boot).toHaveBeenCalledTimes(1)
   })
 
   it('skips entries with malformed project.json', async () => {

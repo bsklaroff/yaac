@@ -2,6 +2,10 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { getProjectsDir } from '@yaac/shared/project-paths'
 import { listSessionPods, isPrewarmed } from '#platform/k8s/pods'
+import {
+  isDeferredClusterBootPending,
+  triggerDeferredClusterBoot,
+} from '#platform/k8s/deferred-boot'
 import type { ProjectMeta } from '@yaac/shared/types'
 
 export interface ProjectListEntry {
@@ -54,6 +58,16 @@ export async function listProjects(): Promise<ProjectListEntry[]> {
 
 async function countSessionsByProject(): Promise<Record<string, number>> {
   const counts: Record<string, number> = {}
+  if (isDeferredClusterBootPending()) {
+    // A nested server whose deferred cluster attach hasn't finished has
+    // no session pods by construction, so every count is 0 — answer
+    // instantly instead of holding the first snapshot (and with it the
+    // web-app's project list) on a kubectl call to a still-waking
+    // vcluster. Kick the attach so the caches come up and push a fresh
+    // snapshot with real counts.
+    triggerDeferredClusterBoot()
+    return counts
+  }
   try {
     const pods = await listSessionPods()
     for (const p of pods) {

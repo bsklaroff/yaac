@@ -155,11 +155,12 @@ its cluster boot instead of running it (`#platform/k8s/deferred-boot`), and
 the first real use fires it: session create awaits it explicitly (the
 namespace must exist before anything is applied into it), and any kubectl
 call kicks it as a fire-and-forget backstop. While the attach is pending the
-session list answers empty without touching the cluster — there are no
-session pods by construction, and blocking would hold the web app's first
-snapshot (projects included) on the vcluster wake — while still kicking the
-attach, so connecting the web app wakes the cluster in the background but
-renders instantly. A restarting nested server that
+cluster reads feeding the web app's first snapshot answer without touching
+the cluster — the session list answers empty and the project list reports
+zero session counts, both true by construction since there are no session
+pods yet, and blocking either would hold the whole snapshot on the vcluster
+wake — while still kicking the attach, so connecting the web app wakes the
+cluster in the background but renders instantly. A restarting nested server that
 already has session dirs attaches eagerly — its sessions need the caches and
 reconciler, and its vcluster is already awake. The outer server never arms
 the latch, so every hook is a no-op there. Server readiness is DB-gated, not
