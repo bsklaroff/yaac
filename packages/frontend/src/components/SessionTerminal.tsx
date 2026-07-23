@@ -6,7 +6,7 @@ import '@xterm/xterm/css/xterm.css'
 import { createSettleGate } from '#lib/attach-settle'
 import { clipboardKeyAction } from '#lib/clipboard'
 import { LoadingIcon } from '#lib/icons'
-import { patchForcedSelection, patchKeepSelection } from '#lib/selection'
+import { patchClickForwarding, patchForcedSelection, patchKeepSelection } from '#lib/selection'
 import { CYCLE_IDS, matchShortcut } from '#lib/shortcuts'
 import { createWebglController, type WebglController } from '#lib/webgl-renderer'
 import { resolveEffectiveTheme } from '#lib/theme'
@@ -120,7 +120,9 @@ export function SessionTerminal({
     // tmux runs with `mouse on`, so stock xterm reports a plain drag to tmux
     // as mouse events and only selects text locally behind a modifier key.
     // Invert that: plain drag selects (copy/paste just works), Alt+drag
-    // (Option on macOS) goes to tmux for TUIs that want the mouse.
+    // (Option on macOS) goes to tmux for TUIs that want to drag. A plain click
+    // (no drag) is forwarded to tmux separately by patchClickForwarding below,
+    // so single-clicking a TUI button needs no modifier either.
     if (!patchForcedSelection(term)) {
       console.warn('xterm internals changed: drag reports to tmux instead of selecting')
     }
@@ -130,6 +132,12 @@ export function SessionTerminal({
     // re-asserts tmux emits on redraws.
     if (!patchKeepSelection(term)) {
       console.warn('xterm internals changed: selection clears eagerly again')
+    }
+    // Forward a plain click (no drag) to tmux so TUI buttons are clickable
+    // without the Alt modifier, while a plain drag still selects for copy.
+    const disposeClickForwarding = patchClickForwarding(term)
+    if (!disposeClickForwarding) {
+      console.warn('xterm internals changed: clicks need Alt to reach the TUI again')
     }
     fit.fit()
     termRef.current = term
@@ -287,6 +295,7 @@ export function SessionTerminal({
       dataSub.dispose()
       resizeSub.dispose()
       testHooks.__xterms?.delete(term)
+      disposeClickForwarding?.()
       if (ws) {
         // Drop handlers so a late close event can't touch the disposed
         // terminal; if still CONNECTING, close again once open so the
@@ -319,7 +328,8 @@ export function SessionTerminal({
   // Move keyboard focus into the terminal when the session is selected/opened.
   // This focuses xterm's hidden textarea only — it deliberately does NOT
   // synthesize a click on the screen, which would clobber any selection in
-  // progress (and, Alt-modified, would reach the TUI as a mouse event).
+  // progress (and, now that plain clicks forward, would reach the TUI as a
+  // click).
   useEffect(() => {
     if (focusKey === undefined) return
     termRef.current?.focus()

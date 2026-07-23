@@ -4,6 +4,7 @@ import { describe, it, expect } from 'vitest'
 import { Terminal } from '@xterm/xterm'
 import {
   forceLocalSelection,
+  patchClickForwarding,
   patchForcedSelection,
   patchKeepSelection,
 } from '#lib/selection'
@@ -48,6 +49,162 @@ describe('patchForcedSelection', () => {
     expect(bundle).toContain('clearSelection')
     expect(bundle).toContain('coreService')
     expect(bundle).toContain('triggerDataEvent')
+  })
+})
+
+describe('patchClickForwarding', () => {
+  type MouseListener = (e: MouseEvent) => void
+  type FakeEl = {
+    addEventListener: (type: string, fn: MouseListener) => void
+    removeEventListener: (type: string, fn: MouseListener) => void
+    dispatch: (type: string, e: Partial<MouseEvent>) => void
+    count: (type: string) => number
+  }
+  const fakeEl = (): FakeEl => {
+    const listeners: Record<string, Set<MouseListener>> = {}
+    return {
+      addEventListener(type, fn): void {
+        ;(listeners[type] ??= new Set()).add(fn)
+      },
+      removeEventListener(type, fn): void {
+        listeners[type]?.delete(fn)
+      },
+      dispatch(type, e): void {
+        listeners[type]?.forEach((fn) => fn(e as MouseEvent))
+      },
+      count(type): number {
+        return listeners[type]?.size ?? 0
+      },
+    }
+  }
+
+  type Sent = { col: number; row: number; button: number; action: number }
+  const fake = (
+    opts: { mouseActive?: boolean } = {},
+  ): {
+    term: Terminal
+    el: FakeEl
+    doc: FakeEl
+    sent: Sent[]
+    setSelection: (v: boolean) => void
+  } => {
+    const el = fakeEl()
+    const doc = fakeEl()
+    const sent: Sent[] = []
+    let hasSelection = false
+    const term = {
+      hasSelection: () => hasSelection,
+      _core: {
+        // Listeners bind to element; screenElement only feeds coordinates.
+        element: { ...el, ownerDocument: doc },
+        screenElement: { addEventListener() {}, removeEventListener() {} },
+        // These read `this` (like the real services), so the patch must call
+        // them bound — a bare-reference call would throw here.
+        _mouseService: {
+          _coords: { col: 4, row: 2, x: 40, y: 20 },
+          getMouseReportCoords(): { col: number; row: number; x: number; y: number } {
+            return this._coords
+          },
+        },
+        coreMouseService: {
+          areMouseEventsActive: opts.mouseActive ?? true,
+          _sink: sent,
+          triggerMouseEvent(e: Sent): boolean {
+            this._sink.push({ col: e.col, row: e.row, button: e.button, action: e.action })
+            return true
+          },
+        },
+      },
+    } as unknown as Terminal
+    // element is a shallow copy, so bind listeners on the same object the patch
+    // will (its addEventListener closes over `el`'s listener map).
+    return { term, el, doc, sent, setSelection: (v) => (hasSelection = v) }
+  }
+
+  const click = (el: FakeEl, doc: FakeEl, down: Partial<MouseEvent> = {}): void => {
+    el.dispatch('mousedown', { button: 0, altKey: false, ...down })
+    doc.dispatch('mouseup', {})
+  }
+
+  it('forwards a plain click as a press then release at the clicked cell', () => {
+    const { term, el, doc, sent } = fake()
+    expect(patchClickForwarding(term)).toBeTypeOf('function')
+    click(el, doc)
+    expect(sent).toEqual([
+      { col: 4, row: 2, button: 0, action: 1 }, // DOWN
+      { col: 4, row: 2, button: 0, action: 0 }, // UP
+    ])
+  })
+
+  it('does not forward when a drag or word-select made a selection', () => {
+    const { term, el, doc, sent, setSelection } = fake()
+    patchClickForwarding(term)
+    setSelection(true)
+    click(el, doc)
+    expect(sent).toEqual([])
+  })
+
+  it('does not forward an Alt+click (that gesture already reports itself)', () => {
+    const { term, el, doc, sent } = fake()
+    patchClickForwarding(term)
+    click(el, doc, { altKey: true })
+    expect(sent).toEqual([])
+  })
+
+  it('does not forward a non-primary button', () => {
+    const { term, el, doc, sent } = fake()
+    patchClickForwarding(term)
+    click(el, doc, { button: 2 })
+    expect(sent).toEqual([])
+  })
+
+  it('does not forward when the app is not tracking the mouse', () => {
+    const { term, el, doc, sent } = fake({ mouseActive: false })
+    patchClickForwarding(term)
+    click(el, doc)
+    expect(sent).toEqual([])
+  })
+
+  it('unbinds both listeners when disposed', () => {
+    const { term, el, doc, sent } = fake()
+    const dispose = patchClickForwarding(term)
+    expect(dispose).toBeTypeOf('function')
+    dispose!()
+    expect(el.count('mousedown')).toBe(0)
+    expect(doc.count('mouseup')).toBe(0)
+    click(el, doc)
+    expect(sent).toEqual([])
+  })
+
+  it('reports failure without throwing when the internals are missing', () => {
+    expect(patchClickForwarding({} as Terminal)).toBeNull()
+    expect(patchClickForwarding({ _core: {} } as unknown as Terminal)).toBeNull()
+    // screenElement present but the mouse services are not.
+    expect(
+      patchClickForwarding({
+        _core: { screenElement: fakeEl() },
+      } as unknown as Terminal),
+    ).toBeNull()
+  })
+
+  // Canaries for the pinned dependency, like the patchForcedSelection ones: an
+  // xterm upgrade that renames these must fail here, not silently send clicks
+  // back to needing Alt.
+  it('finds coreMouseService on a real Terminal instance', () => {
+    const term = new Terminal()
+    const core = (term as unknown as { _core?: { coreMouseService?: object } })._core
+    expect(core?.coreMouseService).toBeDefined()
+  })
+
+  it('still finds the private names in the shipped xterm bundle', () => {
+    const require = createRequire(import.meta.url)
+    const bundle = readFileSync(require.resolve('@xterm/xterm'), 'utf8')
+    expect(bundle).toContain('screenElement')
+    expect(bundle).toContain('_mouseService')
+    expect(bundle).toContain('getMouseReportCoords')
+    expect(bundle).toContain('coreMouseService')
+    expect(bundle).toContain('triggerMouseEvent')
+    expect(bundle).toContain('areMouseEventsActive')
   })
 })
 
