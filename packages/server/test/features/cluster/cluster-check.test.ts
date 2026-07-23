@@ -17,6 +17,10 @@ import {
 } from '#features/cluster/check'
 import type { CheckResult } from '@yaac/shared/types'
 import { kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
+import {
+  armDeferredClusterBoot,
+  _resetDeferredClusterBootForTests,
+} from '#platform/k8s/deferred-boot'
 import { sessionUid } from '#features/images/image-builder'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
 
@@ -154,6 +158,23 @@ describe('runClusterCheck', () => {
 
   afterEach(async () => {
     await cleanupTempDir(tmpDir)
+    _resetDeferredClusterBootForTests()
+  })
+
+  it('reports ready without probing while a deferred cluster attach is pending', async () => {
+    // A nested server that armed its cluster boot fronts an asleep
+    // (scale-to-zero) vcluster — the check must not wake it or time out.
+    armDeferredClusterBoot(async () => { /* never fired in this test */ })
+    const deps = makeDeps()
+
+    const { ok, results } = await runClusterCheck(deps)
+
+    expect(ok).toBe(true)
+    expect(results.map((r) => [r.name, r.status])).toEqual([['cluster', 'pass']])
+    // No probing: not a single kubectl/podman call, no probe pod applied.
+    expect(deps.run).not.toHaveBeenCalled()
+    expect(deps.apply).not.toHaveBeenCalled()
+    expect(deps.pushImage).not.toHaveBeenCalled()
   })
 
   it('passes every check on a healthy single-node cluster', async () => {

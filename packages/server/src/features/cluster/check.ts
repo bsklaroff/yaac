@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { execFileAsync, k8sNamespace, kubectlApply } from '#platform/k8s/kubectl'
+import { isDeferredClusterBootPending } from '#platform/k8s/deferred-boot'
 import {
   buildProxyIngressCnpManifest,
   buildSessionEgressRedirectCnpManifest,
@@ -136,6 +137,27 @@ export async function runClusterCheck(
 ): Promise<{ ok: boolean; results: CheckResult[] }> {
   const results: CheckResult[] = []
   const add = (r: CheckResult): void => { results.push(r) }
+
+  // A nested server whose deferred cluster attach hasn't fired yet fronts an
+  // intentionally-asleep (scale-to-zero) vcluster and has no sessions by
+  // construction (session create awaits the attach — see
+  // #platform/k8s/deferred-boot). Probing it here would either WAKE it — the
+  // very thing the deferral exists to prevent — or time out and surface as a
+  // spurious "API server unreachable", which flips the web app's cluster gate
+  // to the setup screen and blanks the workspace. Report ready without
+  // probing; the real attach fires (and the caches push a fresh snapshot) when
+  // the user actually creates a session. The CLI's `yaac cluster check` runs
+  // in its own process where nothing is ever armed, so this never masks a real
+  // failure there. Mirrors the same guard in sessions/list + projects/list.
+  if (isDeferredClusterBootPending()) {
+    return {
+      ok: true,
+      results: [{
+        name: 'cluster', status: 'pass',
+        detail: 'vcluster asleep (scale-to-zero) — wakes on first session',
+      }],
+    }
+  }
 
   // 1. kubectl present
   try {
