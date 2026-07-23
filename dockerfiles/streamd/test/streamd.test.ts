@@ -204,6 +204,18 @@ describe('pty streams', () => {
     expect(JSON.parse(exit!.payload.toString('utf8'))).toEqual({ code: 0 })
   })
 
+  it('spawns the child with TERM=xterm-256color (the session image TERM)', async () => {
+    const port = await startDaemon()
+    const { socket } = await handshake(port, {
+      token: TOKEN, kind: 'pty', cmd: ['sh', '-c', 'echo TERM=$TERM'], cols: 80, rows: 24,
+    })
+    const wire = await readAll(socket)
+    const parser = new FrameParser() as { feed(b: Buffer): Array<{ type: number; payload: Buffer }> }
+    const data = parser.feed(wire).filter((f) => f.type === FRAME_DATA)
+      .map((f) => f.payload.toString('utf8')).join('')
+    expect(data).toContain('TERM=xterm-256color')
+  })
+
   it('delivers input frames to the child TTY', async () => {
     const port = await startDaemon()
     const { socket } = await handshake(port, {

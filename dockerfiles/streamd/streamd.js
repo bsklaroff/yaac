@@ -157,7 +157,10 @@ function handlePty(socket, params, leftover) {
   let ptyProc
   try {
     ptyProc = pty.spawn(params.cmd[0], params.cmd.slice(1), {
-      name: 'xterm-color',
+      // The terminal type the spawned client (tmux attach) renders for.
+      // Must stay xterm-256color (the session image's TERM): a lesser
+      // entry like xterm-color drops civis/cnorm and 256-color output.
+      name: 'xterm-256color',
       cols,
       rows,
       cwd: process.env.HOME ?? '/',

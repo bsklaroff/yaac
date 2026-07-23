@@ -2967,7 +2967,12 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
     const sessionId = params.sessionId
 
     // Keep buffering bytes (the pipelined streamd handshake) that arrive
-    // while the pod IP resolves, so none are lost before the splice starts.
+    // before the splice starts — through BOTH async gaps: the pod-IP
+    // resolve and the pod dial itself. The socket is in flowing mode (the
+    // auth reader had a listener), and flowing data with no listener is
+    // DISCARDED — dropping the listener before the dial lands would eat a
+    // handshake tail that arrives in its own TCP segment, and the stream
+    // would hang to its timeout instead of splicing.
     let leftover = buf.subarray(nl + 1)
     const buffer = (chunk2: Buffer): void => { leftover = Buffer.concat([leftover, chunk2]) }
     socket.on('data', buffer)
@@ -2985,7 +2990,6 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
           console.error(`[proxy] relay pod lookup failed for ${sessionId.slice(0, 8)}...:`, (err as Error).message)
         }
       }
-      socket.removeListener('data', buffer)
       if (socket.destroyed) return
       if (!ip) {
         console.log(`[proxy] BLOCKED relay dial: unknown session ${sessionId.slice(0, 8)}...`)
@@ -2998,6 +3002,7 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
       let spliced = false
       target.on('connect', () => {
         spliced = true
+        socket.removeListener('data', buffer)
         if (leftover.length > 0) target.write(leftover)
         socket.pipe(target)
         target.pipe(socket)

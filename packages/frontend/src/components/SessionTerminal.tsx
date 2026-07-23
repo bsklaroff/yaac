@@ -231,7 +231,11 @@ export function SessionTerminal({
         gate.onClose()
         // Only announce a drop the user actually had — a connect that never
         // opened (e.g. pod gone) shouldn't spam the screen on every retry.
-        if (opened) term.write('\r\n\x1b[2m[disconnected, reconnecting…]\x1b[0m\r\n')
+        // Lead with CAN (0x18): a stream that died mid-escape-sequence leaves
+        // the parser inside that sequence, where it would swallow the banner
+        // and the reattach redraw as garbage — CAN returns it to ground from
+        // any state.
+        if (opened) term.write('\x18\r\n\x1b[2m[disconnected, reconnecting…]\x1b[0m\r\n')
         reconnectTimer = setTimeout(connect, reconnectDelay)
         reconnectDelay = nextReconnectDelay(reconnectDelay)
       }
