@@ -1,0 +1,5 @@
+# Dev-only files excluded from the dockerfiles/ build context (base/tools/
+# nestable layers). Must mirror dockerfiles/streamd/.containerignore, which
+# streamdContextHash() reads — keep the two in sync (literal paths only).
+streamd/test
+streamd/node_modules

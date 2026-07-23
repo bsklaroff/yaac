@@ -1,6 +1,4 @@
 import net from 'node:net'
-import { type ChildProcess, spawn } from 'node:child_process'
-import { stdinExecArgs } from '#platform/k8s/exec'
 import { env } from '@yaac/shared/env'
 import type { PortMapping } from '@yaac/shared/types'
 
@@ -9,8 +7,22 @@ export interface ReservedPort extends PortMapping {
   server: net.Server
 }
 
+/**
+ * The per-connection relay a forwarder spawns: a child-process-shaped
+ * object bridging stdin/stdout to a TCP endpoint. Real implementations are
+ * the stream-relay's `relayTcpFactory` (session port forwards — a `tcp`
+ * stream into the pod's streamd) and ExecTunnel's kubectl+socat child (the
+ * proxy control API), which both satisfy this shape.
+ */
+export interface RelayProcess {
+  stdin: NodeJS.WritableStream | null
+  stdout: NodeJS.ReadableStream | null
+  kill(): void
+  on(event: 'close' | 'error', cb: (...args: unknown[]) => void): void
+}
+
 /** A function that spawns a relay process bridging stdin/stdout to a TCP port. */
-export type RelayFactory = (containerPort: number) => ChildProcess
+export type RelayFactory = (containerPort: number) => RelayProcess
 
 /**
  * Try to listen on a port.  Returns the bound server on success, null on
@@ -49,21 +61,8 @@ export async function reserveAvailablePort(
 }
 
 /**
- * Create a RelayFactory that uses `kubectl exec -i` + `nc` to connect to
- * localhost inside the given session pod.  Using `localhost` instead of a
- * literal IP lets nc reach services bound to either IPv4 (127.0.0.1) or
- * IPv6 (::1) loopback.
- */
-export function kubectlRelay(jobName: string): RelayFactory {
-  return (containerPort) =>
-    spawn('kubectl', stdinExecArgs(jobName, ['nc', 'localhost', String(containerPort)]), {
-      stdio: ['pipe', 'pipe', 'ignore'],
-    })
-}
-
-/**
  * Start TCP servers on the host that forward connections into a container
- * by spawning a relay process (typically `podman exec nc`) per connection.
+ * by spawning a relay per connection.
  *
  * Accepts only {@link ReservedPort} entries whose `server` is already bound,
  * guaranteeing that the port cannot be stolen between discovery and use.
@@ -75,7 +74,7 @@ export function startPortForwarders(
   ports: ReservedPort[],
 ): () => void {
   const servers: net.Server[] = []
-  const activeRelays = new Set<ChildProcess>()
+  const activeRelays = new Set<RelayProcess>()
 
   for (const { containerPort, server } of ports) {
     server.on('connection', (client: net.Socket) => {
@@ -96,8 +95,8 @@ export function startPortForwarders(
       child.stdin.on('error', () => client.destroy())
       child.on('error', () => client.destroy())
       child.on('close', () => client.destroy())
-      client.on('error', () => { child.stdin?.destroy(); child.kill() })
-      client.on('close', () => { child.stdin?.destroy(); child.kill() })
+      client.on('error', () => { child.stdin?.end(); child.kill() })
+      client.on('close', () => { child.stdin?.end(); child.kill() })
     })
 
     servers.push(server)

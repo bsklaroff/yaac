@@ -38,6 +38,24 @@ export const SSH_TUNNEL_SENTINEL = '198.18.0.2'
 /** UDP port the proxy's DNS stub serves (Service + container; needs
  * CAP_NET_BIND_SERVICE so the non-root proxy can bind <1024). */
 export const DNS_STUB_PORT = 53
+/**
+ * Relay listener: the proxy's authenticated CONNECT into session pods'
+ * streamd (docs/stream-relay.md). The server dials it, sends one auth
+ * line ({token: proxyAuthSecret, sessionId}), and the proxy splices the
+ * rest of the stream to `podIP:POD_STREAM_PORT`. Present in every proxy,
+ * outer and inner (same image); only the addressing differs — a
+ * top-level server reaches it through one long-lived kubectl
+ * port-forward to the proxy Deployment (see stream-relay.ts), a nested
+ * server dials the inner proxy's pod IP on this port directly.
+ */
+export const RELAY_PORT = 10260
+/**
+ * TCP port of streamd, the in-pod stream daemon session pods run
+ * (dockerfiles/streamd). In gVisor this is the sentry netstack, reachable
+ * via the pod IP like any Service backend; only the proxy may dial it
+ * (buildSessionIngressLockCnpManifest).
+ */
+export const POD_STREAM_PORT = 10300
 /** CiliumEnvoyConfig that programs the node Envoy to forward redirected
  * session egress to the proxy's transparent listeners. */
 export const EGRESS_REDIRECT_CEC_NAME = 'yaac-egress-redirect'
@@ -45,6 +63,9 @@ export const EGRESS_REDIRECT_CEC_NAME = 'yaac-egress-redirect'
 export const SESSION_EGRESS_REDIRECT_CNP_NAME = 'yaac-session-egress-redirect'
 /** CiliumNetworkPolicy locking the proxy's transparent ports to Envoy/host. */
 export const PROXY_INGRESS_CNP_NAME = 'yaac-proxy-ingress'
+/** CiliumNetworkPolicy locking session-pod ingress to the proxy's relay
+ * dials on POD_STREAM_PORT (default-denying everything else). */
+export const SESSION_INGRESS_LOCK_CNP_NAME = 'yaac-session-ingress-lock'
 /** ServiceAccount the proxy uses to watch pods (source-IP -> session). */
 export const PROXY_SA_NAME = 'yaac-proxy'
 
@@ -58,6 +79,9 @@ export const PROXY_SA_NAME = 'yaac-proxy'
 export const INNER_EGRESS_REDIRECT_CEC_NAME = 'yaac-inner-egress-redirect'
 export const INNER_SESSION_EGRESS_REDIRECT_CNP_NAME = 'yaac-inner-session-egress-redirect'
 export const INNER_PROXY_INGRESS_CNP_NAME = 'yaac-inner-proxy-ingress'
+/** Projected per-vcluster lock: synced session pods accept streamd dials
+ * (POD_STREAM_PORT) from their vcluster's inner proxies only. */
+export const INNER_SESSION_INGRESS_LOCK_CNP_NAME = 'yaac-inner-session-ingress-lock'
 /**
  * The outer yaac's low-precedence fallback redirect for a vcluster's synced
  * pods (→ the OUTER proxy), so they have working egress from the moment they

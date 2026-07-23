@@ -5,7 +5,10 @@ import tseslint from 'typescript-eslint'
 const RELATIVE_PARENT = { group: ['..*'], message: 'Relative parent imports are not allowed.' }
 
 export default tseslint.config(
-  { ignores: ['dist', 'packages/*/dist', 'packages/desktop/dist-app', 'packages/desktop/staging'] },
+  // dockerfiles/streamd is plain JS baked into the base image (its test
+  // imports untyped .js modules), deliberately outside the tsconfig
+  // projects — vitest (unit:streamd) is its gate.
+  { ignores: ['dist', 'packages/*/dist', 'packages/desktop/dist-app', 'packages/desktop/staging', 'dockerfiles/streamd'] },
   {
     extends: [
       ...tseslint.configs.recommendedTypeChecked,

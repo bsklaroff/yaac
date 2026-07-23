@@ -66,13 +66,19 @@ function makeWatcher(tool: WatchedSession['tool'], deps: {
   heartbeatIntervalMs?: number
   commandTimeoutMs?: number
   respawnDelayMs?: number
-} = {}): { watcher: SessionStatusWatcher; children: FakeAttachChild[] } {
+} = {}): { watcher: SessionStatusWatcher; children: FakeAttachChild[]; revives: string[] } {
   const children: FakeAttachChild[] = []
+  const revives: string[] = []
   const watcher = new SessionStatusWatcher(session(tool), {
     spawnAttach: () => {
       const child = new FakeAttachChild()
       children.push(child)
       return child
+    },
+    // Injected so no test ever reaches the real kubectl-exec streamd boot.
+    reviveStreamd: (jobName) => {
+      revives.push(jobName)
+      return Promise.resolve()
     },
     heartbeatIntervalMs: deps.heartbeatIntervalMs ?? 60_000,
     commandTimeoutMs: deps.commandTimeoutMs ?? 1_000,
@@ -80,7 +86,7 @@ function makeWatcher(tool: WatchedSession['tool'], deps: {
     maxRespawnDelayMs: 20,
     log: () => { /* quiet */ },
   })
-  return { watcher, children }
+  return { watcher, children, revives }
 }
 
 /** Drive a watcher through banner + pane-id + status-format subscribe. */
@@ -280,6 +286,22 @@ describe('SessionStatusWatcher (title tools)', () => {
     await vi.waitFor(() => expect(child.commandCount).toBe(1))
     child.feed('%begin 1 101 1\ncan\'t find window\n%error 1 101 1\n')
     await vi.waitFor(() => expect(children.length).toBe(2))
+  })
+
+  it('re-execs streamd (self-heal) every third consecutive stream failure', async () => {
+    const { watcher, children, revives } = makeWatcher('claude', { respawnDelayMs: 1 })
+    watchers.push(watcher)
+    watcher.start()
+    // Three consecutive failed streams (each child dies before connecting).
+    for (let i = 1; i <= 3; i++) {
+      await vi.waitFor(() => expect(children.length).toBe(i))
+      children[i - 1].emitExit()
+    }
+    await vi.waitFor(() => expect(revives).toEqual(['yaac-demo-s1']))
+    // A successful connect resets the counter — no further revive fires.
+    await vi.waitFor(() => expect(children.length).toBe(4))
+    await connectWatcher(children[3])
+    expect(revives).toHaveLength(1)
   })
 
   it('stop() kills the child and prevents respawn', async () => {

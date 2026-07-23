@@ -12,7 +12,7 @@
  * point — with the agent's real index left untouched.
  */
 
-import { containerExec } from '#platform/k8s/exec'
+import { sessionExec } from '#platform/k8s/stream-relay'
 import type { ChangeStatus, SessionChange, SessionChanges } from '@yaac/shared/types'
 
 /** Cap the returned diff body so a huge changeset can't blow up the response;
@@ -191,6 +191,6 @@ export function parseChangesOutput(raw: string, maxDiffBytes = MAX_DIFF_BYTES): 
  *  work stays visible even after the agent renames and pushes its branch (see
  *  POD_SCRIPT). */
 export async function getSessionChanges(jobName: string, base?: string, defaultBase?: string): Promise<SessionChanges> {
-  const { stdout } = await containerExec(jobName, buildChangesScript(base, defaultBase), { timeout: 20_000, maxAttempts: 2 })
+  const { stdout } = await sessionExec(jobName, buildChangesScript(base, defaultBase), { timeout: 20_000, maxAttempts: 2 })
   return parseChangesOutput(stdout)
 }

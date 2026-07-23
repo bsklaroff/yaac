@@ -22,6 +22,7 @@ import {
   INNER_EGRESS_REDIRECT_CEC_NAME,
   INNER_PROXY_INGRESS_CNP_NAME,
   INNER_SESSION_EGRESS_REDIRECT_CNP_NAME,
+  INNER_SESSION_INGRESS_LOCK_CNP_NAME,
   LABEL_PROJECTION,
   PROJECTION_INNER_REDIRECT,
 } from '#features/cluster/proxy-constants'
@@ -124,6 +125,7 @@ describe('reconcileInnerRedirects', () => {
       { kind: 'CiliumEnvoyConfig', name: `${INNER_EGRESS_REDIRECT_CEC_NAME}-${HASH_AMBIENT}`, namespace: 'yaac-vc-1' },
       { kind: 'CiliumNetworkPolicy', name: `${INNER_SESSION_EGRESS_REDIRECT_CNP_NAME}-${HASH_AMBIENT}`, namespace: 'yaac-vc-1' },
       { kind: 'CiliumNetworkPolicy', name: INNER_PROXY_INGRESS_CNP_NAME, namespace: 'yaac-vc-1' },
+      { kind: 'CiliumNetworkPolicy', name: INNER_SESSION_INGRESS_LOCK_CNP_NAME, namespace: 'yaac-vc-1' },
     ])
 
     // Each CEC is EDS-backed by ITS OWN install's discovered Service, and each
@@ -173,6 +175,7 @@ describe('reconcileInnerRedirects', () => {
       `${INNER_EGRESS_REDIRECT_CEC_NAME}-${HASH_AMBIENT}`,
       `${INNER_SESSION_EGRESS_REDIRECT_CNP_NAME}-${HASH_AMBIENT}`,
       INNER_PROXY_INGRESS_CNP_NAME,
+      INNER_SESSION_INGRESS_LOCK_CNP_NAME,
     ])
   })
 
@@ -260,6 +263,7 @@ describe('reconcileInnerRedirects', () => {
       `${INNER_EGRESS_REDIRECT_CEC_NAME}-${HASH_AMBIENT}`,
       `${INNER_SESSION_EGRESS_REDIRECT_CNP_NAME}-${HASH_AMBIENT}`,
       INNER_PROXY_INGRESS_CNP_NAME,
+      INNER_SESSION_INGRESS_LOCK_CNP_NAME,
     ])
   })
 
@@ -278,6 +282,7 @@ describe('reconcileInnerRedirects', () => {
       `${INNER_EGRESS_REDIRECT_CEC_NAME}-${HASH_AMBIENT}`,
       `${INNER_SESSION_EGRESS_REDIRECT_CNP_NAME}-${HASH_AMBIENT}`,
       INNER_PROXY_INGRESS_CNP_NAME,
+      INNER_SESSION_INGRESS_LOCK_CNP_NAME,
     ])
   })
 })

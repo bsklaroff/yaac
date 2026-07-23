@@ -56,6 +56,11 @@ export default defineConfig({
       // Self-imports (yaac-proxy-sidecar/<mod>) resolve via the package's
       // own exports map — no alias needed.
       unitProject('k8s/proxy'),
+      // streamd (the in-pod stream daemon) is plain JS baked into the base
+      // image; its tests exercise the daemon in-process. Deliberately not
+      // in the root tsconfig (untyped .js imports), so vitest is its only
+      // gate.
+      unitProject('dockerfiles/streamd'),
       // api + e2e live in the root test/ tree (inherently cross-package).
       {
         extends: true,

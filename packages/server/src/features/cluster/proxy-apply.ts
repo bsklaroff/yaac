@@ -27,6 +27,7 @@ import {
   buildProxyServiceAccountManifest,
   buildProxyServiceManifest,
   buildSessionEgressRedirectCnpManifest,
+  buildSessionIngressLockCnpManifest,
   buildVclusterFallbackRedirectCcecManifest,
 } from '#features/cluster/proxy-manifests'
 
@@ -142,6 +143,10 @@ export async function ensureProxyResources(
   // before the CNP that references its listeners.
   await kubectlApply(buildEgressRedirectCecManifest())
   await kubectlApply(buildSessionEgressRedirectCnpManifest())
+  // Session-pod ingress lock: only the proxy's relay dials reach streamd;
+  // everything else is default-denied. Applied with the proxy for the same
+  // exists-before-any-session reason as the egress lockdown.
+  await kubectlApply(buildSessionIngressLockCnpManifest())
   // The shared, cluster-scoped fallback redirect for vcluster synced pods.
   // Applied once here (not per-vcluster) so each vcluster's fallback CNP can
   // reference it by kind without adding/removing Envoy listeners on create —

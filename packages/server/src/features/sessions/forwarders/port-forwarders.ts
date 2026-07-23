@@ -10,8 +10,8 @@
  * server-restart restore pass can't double-register.
  */
 
-import { containerExec } from '#platform/k8s/exec'
-import { kubectlRelay, reserveAvailablePort, startPortForwarders } from '#platform/container/port'
+import { relayTcpFactory, sessionExec } from '#platform/k8s/stream-relay'
+import { reserveAvailablePort, startPortForwarders } from '#platform/container/port'
 import type { ReservedPort } from '#platform/container/port'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import type { PortForwardConfig, PortMapping } from '@yaac/shared/types'
@@ -111,7 +111,7 @@ export async function setSessionStatusRight(
   ports: ReadonlyArray<PortMapping>,
 ): Promise<void> {
   const value = buildStatusRight(projectSlug, sessionId, ports)
-  await containerExec(
+  await sessionExec(
     jobName,
     `tmux -S ${CONTAINER_TMUX_SOCK} set-option -t yaac status-right '${shellEscape(value)}'`,
   )
@@ -146,7 +146,7 @@ export async function provisionSessionForwarders(
   if (reserved.length === 0) return []
 
   const mappings = reserved.map(({ containerPort, hostPort }) => ({ containerPort, hostPort }))
-  const stop = startPortForwarders(kubectlRelay(jobName), reserved)
+  const stop = startPortForwarders(relayTcpFactory(sessionId), reserved)
   registerSessionForwarders(sessionId, stop, mappings)
 
   return mappings

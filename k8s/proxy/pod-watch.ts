@@ -48,6 +48,12 @@ export function podSessionId(pod: WatchedPod): string | null {
  */
 export class PodSessionIndex {
   private byIp = new Map<string, string>()
+  // Reverse map for the relay listener (sessionId → podIP). Maintained
+  // alongside byIp; a replaced pod's upsert repoints the session at its new
+  // IP, and a DELETED event only evicts the reverse entry when it still
+  // points at the deleted pod's IP (the new pod's entry must survive the
+  // old pod's deletion event arriving late).
+  private byId = new Map<string, string>()
 
   /** Apply one watch event. ADDED/MODIFIED upsert; DELETED (or a pod that
    * lost its IP/label) evicts. */
@@ -56,15 +62,19 @@ export class PodSessionIndex {
     if (!ip) return
     const sid = podSessionId(ev.object)
     if (ev.type === 'DELETED' || sid === null) {
+      const evicted = this.byIp.get(ip)
       this.byIp.delete(ip)
+      if (evicted !== undefined && this.byId.get(evicted) === ip) this.byId.delete(evicted)
       return
     }
     this.byIp.set(ip, sid)
+    this.byId.set(sid, ip)
   }
 
   /** Rebuild the whole index from a list (the re-seed after a (re)connect). */
   replaceAll(pods: WatchedPod[]): void {
     this.byIp.clear()
+    this.byId.clear()
     for (const object of pods) this.apply({ type: 'ADDED', object })
   }
 
@@ -73,8 +83,14 @@ export class PodSessionIndex {
     return this.byIp.get(ip)
   }
 
+  /** Reverse lookup for the relay listener: the session's pod IP. */
+  resolveIp(sessionId: string): string | undefined {
+    return this.byId.get(sessionId)
+  }
+
   set(ip: string, sessionId: string): void {
     this.byIp.set(ip, sessionId)
+    this.byId.set(sessionId, ip)
   }
 
   get size(): number {
@@ -198,6 +214,33 @@ export async function startPodWatch(index: PodSessionIndex, cfg = loadApiConfig(
     }
     await new Promise((r) => setTimeout(r, 1000))
   }
+}
+
+/**
+ * Relay cache-miss fallback: a stream dial can beat the pod's watch event.
+ * Look the pod up by its session-id label, populate the index, and return
+ * its IP (or undefined → the relay fails closed).
+ */
+export async function fetchPodIpBySessionId(
+  index: PodSessionIndex,
+  sessionId: string,
+  cfg = loadApiConfig(),
+): Promise<string | undefined> {
+  let body = ''
+  await apiGet(
+    cfg,
+    `/api/v1/namespaces/${cfg.namespace}/pods?labelSelector=${encodeURIComponent(`${LABEL_SESSION_ID}=${sessionId}`)}`,
+    (line) => { body += line },
+  )
+  const list = JSON.parse(body) as { items?: WatchedPod[] }
+  for (const pod of list.items ?? []) {
+    const ip = pod.status?.podIP
+    if (ip && podSessionId(pod) === sessionId) {
+      index.set(ip, sessionId)
+      return ip
+    }
+  }
+  return undefined
 }
 
 /**

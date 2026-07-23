@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { and, eq } from 'drizzle-orm'
-import { containerExec } from '#platform/k8s/exec'
+import { sessionExec } from '#platform/k8s/stream-relay'
 import { getDb } from '#platform/db/client'
 import { opencodeSessionMeta } from '#platform/db/schema'
 import { listSessionPods } from '#platform/k8s/pods'
@@ -100,15 +100,15 @@ export const OPENCODE_BUSY_MARKERS: readonly string[] = [
 ]
 
 async function runProbe(jobName: string): Promise<OpencodeProbe | null> {
-  // One kubectl exec → curl /session. -sf suppresses output on curl
+  // One relay exec → curl /session. -sf suppresses output on curl
   // failure (HTTP server not up yet, etc.); we then see empty/non-JSON
   // below and return null.
   let stdout: string
   try {
-    const result = await containerExec(
+    const result = await sessionExec(
       jobName,
       'curl -sf http://127.0.0.1:4096/session',
-      { maxAttempts: 2, baseDelay: 100, timeout: PROBE_TIMEOUT_MS },
+      { maxAttempts: 2, timeout: PROBE_TIMEOUT_MS },
     )
     stdout = result.stdout
   } catch {

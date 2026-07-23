@@ -1,10 +1,9 @@
-import { execFile, spawn } from 'node:child_process'
-import { promisify } from 'node:util'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { listSessionJobs, listSessionPods, sessionJobName } from '#platform/k8s/pods'
 import { k8sNamespace, kubectlWithRetry } from '#platform/k8s/kubectl'
-import { execTarget } from '#platform/k8s/exec'
+import { RelayExecError, sessionExec } from '#platform/k8s/stream-relay'
 import { evictOpencodeProbeCache } from '#features/sessions/agents/opencode'
 import { recordSessionDeleted } from '#features/sessions/deleted-store'
 import { markSessionTerminating } from '#features/sessions/state'
@@ -26,8 +25,6 @@ import { CONTAINER_TMUX_SOCK, getProjectsDir } from '@yaac/shared/paths'
 import type { SessionDeathCause } from '@yaac/shared/types'
 import { stopSessionForwarders } from '#features/sessions/forwarders/port-forwarders'
 import { serverLog } from '#log'
-
-const execFileAsync = promisify(execFile)
 
 /**
  * Absolute host path to `<cachedPackages>/modules/<sessionId>` — the
@@ -107,55 +104,39 @@ export function _clearTmuxAliveCacheForTests(): void {
 }
 
 /**
- * Classify a failed `kubectl exec ... tmux has-session` into `dead`
+ * Classify a failed in-pod `tmux has-session` probe into `dead`
  * (conclusively no session) vs `unknown` (inconclusive — don't reap).
  *
- * `kubectl exec` prints `command terminated with exit code N` only when
- * the *remote* command actually ran and exited non-zero — i.e. tmux
- * executed in the pod and reported the session/server absent. That line,
- * plus tmux's own "no server/session" messages, are the only conclusive
- * "dead" signals. Everything else — exec timeout (the child is killed
- * with SIGTERM), API/transport errors (`Error from server`, dialing the
- * backend, connection refused, TLS timeout), a `kubectl` binary that's
- * missing, or a pod that momentarily 404s mid-race — is inconclusive.
+ * A `RelayExecError` means the probe REACHED the pod: streamd ran tmux
+ * and it exited nonzero — the session/server is absent. That is the only
+ * conclusive "dead" signal. Everything else — a relay dial failure (proxy
+ * down, streamd dead, pod gone mid-race), a timeout, a malformed result —
+ * proves nothing about the session and must be kept, not reaped.
  *
  * Exported for unit testing the dead/unknown split.
  */
 export function classifyTmuxProbeError(err: unknown): 'dead' | 'unknown' {
-  const e = (err ?? {}) as { killed?: boolean; stderr?: unknown }
-  // execFile's `timeout` kills the child (SIGTERM) — never conclusive.
-  if (e.killed) return 'unknown'
-  const stderr = typeof e.stderr === 'string'
-    ? e.stderr
-    : Buffer.isBuffer(e.stderr) ? e.stderr.toString('utf8') : ''
-  if (/command terminated with exit code/i.test(stderr)) return 'dead'
-  if (/can't find session|no server running|no current session|no sessions|error connecting to/i.test(stderr)) {
-    return 'dead'
-  }
-  return 'unknown'
+  return err instanceof RelayExecError ? 'dead' : 'unknown'
 }
 
 /**
  * Probe tmux liveness by running `tmux has-session` inside the session
- * pod via `kubectl exec`. We can't connect to the hostPath-mounted UNIX
- * socket from the host: the socket file is visible on the host but the
- * listening kernel state isn't host-connectable, so running the client
- * inside the container is the only portable signal.
+ * pod via its streamd (relay exec). We can't connect to the
+ * hostPath-mounted UNIX socket from the host: the socket file is visible
+ * on the host but the listening kernel state isn't host-connectable, so
+ * running the client inside the container is the only portable signal.
  *
  * Exit 0 → `alive`. A failure is split into `dead`/`unknown` by
- * `classifyTmuxProbeError` so a transient exec failure never masquerades
- * as a dead session.
+ * `classifyTmuxProbeError` so a transient transport failure never
+ * masquerades as a dead session.
  */
 async function probeTmuxLivenessUncached(slug: string, sessionId: string): Promise<TmuxLiveness> {
   const jobName = sessionJobName(slug, sessionId)
   try {
-    await execFileAsync(
-      'kubectl',
-      [
-        'exec', '-n', k8sNamespace(), execTarget(jobName), '--',
-        'tmux', '-S', CONTAINER_TMUX_SOCK, 'has-session', '-t', 'yaac',
-      ],
-      { timeout: TMUX_PROBE_TIMEOUT_MS },
+    await sessionExec(
+      jobName,
+      `tmux -S ${CONTAINER_TMUX_SOCK} has-session -t yaac`,
+      { timeout: TMUX_PROBE_TIMEOUT_MS, maxAttempts: 1 },
     )
     return 'alive'
   } catch (err) {
@@ -242,14 +223,10 @@ export async function probeAgentPaneState(slug: string, sessionId: string): Prom
   if (agentStartedCache.has(key)) return 'started'
   const jobName = sessionJobName(slug, sessionId)
   try {
-    const { stdout } = await execFileAsync(
-      'kubectl',
-      [
-        'exec', '-n', k8sNamespace(), execTarget(jobName), '--',
-        'tmux', '-S', CONTAINER_TMUX_SOCK, 'display-message', '-p', '-t', 'yaac:^',
-        '#{pane_current_command}',
-      ],
-      { timeout: TMUX_PROBE_TIMEOUT_MS },
+    const { stdout } = await sessionExec(
+      jobName,
+      `tmux -S ${CONTAINER_TMUX_SOCK} display-message -p -t 'yaac:^' '#{pane_current_command}'`,
+      { timeout: TMUX_PROBE_TIMEOUT_MS, maxAttempts: 1 },
     )
     if (stdout.trim() === 'sleep') return 'placeholder'
     agentStartedCache.add(key)

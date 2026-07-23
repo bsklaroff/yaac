@@ -1,5 +1,4 @@
-import { spawn } from 'node:child_process'
-import { stdinExecArgs } from '#platform/k8s/exec'
+import { bootStreamd, dialCtrlStream } from '#platform/k8s/stream-relay'
 import { isPrewarmed, type SessionPod } from '#platform/k8s/pods'
 import { classifyClaudeTitle } from '#features/sessions/agents/claude-status'
 import { classifyCodexTitle } from '#features/sessions/agents/codex'
@@ -24,9 +23,10 @@ import type { AgentTool } from '@yaac/shared/types'
 
 /**
  * Per-session status watchers: one persistent tmux control-mode client
- * per running session pod, held open through `kubectl exec -i` (no TTY
- * — control mode must not run under a PTY). Together with the pod
- * watcher this replaces every timer-driven status probe.
+ * per running session pod, held open as a relay `ctrl` stream into the
+ * pod's streamd (no TTY — control mode must not run under a PTY).
+ * Together with the pod watcher this replaces every timer-driven status
+ * probe.
  *
  * Every tool is classified the same way: the watcher subscribes
  * (`refresh-client -B`) to a per-tool status format and tmux pushes the
@@ -70,8 +70,13 @@ export interface WatchedSession {
 }
 
 export interface StatusWatcherDeps {
-  /** Injected for tests — replaces the real kubectl-exec spawn. */
-  spawnAttach?: (jobName: string) => AttachChild
+  /** Injected for tests — replaces the real relay ctrl-stream dial. */
+  spawnAttach?: (session: WatchedSession) => AttachChild
+  /**
+   * Injected for tests — the streamd self-heal (see scheduleRespawn).
+   * Default: `bootStreamd`, the one steady-state kubectl exec kept.
+   */
+  reviveStreamd?: (jobName: string) => Promise<void>
   /** Heartbeat cadence over the open stream. Default 20s. */
   heartbeatIntervalMs?: number
   /** Init-command / heartbeat reply deadline. Default 10s. */
@@ -134,10 +139,11 @@ export function attachClientFlags(): string {
   return 'read-only,ignore-size,no-output'
 }
 
-function spawnKubectlAttach(jobName: string): AttachChild {
-  return spawn('kubectl', stdinExecArgs(jobName, [
+/** The in-pod control-mode attach argv, dialed as a relay ctrl stream. */
+function spawnRelayAttach(session: WatchedSession): AttachChild {
+  return dialCtrlStream(session.sessionId, [
     'tmux', '-S', CONTAINER_TMUX_SOCK, '-C', 'attach-session', '-t', 'yaac', '-f', attachClientFlags(),
-  ]), { stdio: ['pipe', 'pipe', 'pipe'] })
+  ])
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
@@ -162,7 +168,10 @@ export class SessionStatusWatcher {
   private heartbeatTimer: NodeJS.Timeout | null = null
   private heartbeatInFlight = false
 
-  private readonly spawnAttach: (jobName: string) => AttachChild
+  private consecutiveFailures = 0
+
+  private readonly spawnAttach: (session: WatchedSession) => AttachChild
+  private readonly reviveStreamd: (jobName: string) => Promise<void>
   private readonly heartbeatIntervalMs: number
   private readonly commandTimeoutMs: number
   private readonly respawnDelayMs: number
@@ -170,7 +179,8 @@ export class SessionStatusWatcher {
   private readonly log: (msg: string) => void
 
   constructor(readonly session: WatchedSession, deps: StatusWatcherDeps = {}) {
-    this.spawnAttach = deps.spawnAttach ?? spawnKubectlAttach
+    this.spawnAttach = deps.spawnAttach ?? spawnRelayAttach
+    this.reviveStreamd = deps.reviveStreamd ?? bootStreamd
     this.heartbeatIntervalMs = deps.heartbeatIntervalMs ?? 20_000
     this.commandTimeoutMs = deps.commandTimeoutMs ?? 10_000
     this.respawnDelayMs = deps.respawnDelayMs ?? 1_000
@@ -194,11 +204,11 @@ export class SessionStatusWatcher {
   private connect(): void {
     if (this.stopped) return
     const generation = ++this.streamGeneration
-    const { sessionId, jobName } = this.session
+    const { sessionId } = this.session
 
     let child: AttachChild
     try {
-      child = this.spawnAttach(jobName)
+      child = this.spawnAttach(this.session)
     } catch (err) {
       this.log(`[server] status-watcher ${sessionId}: spawn failed: ${String(err)}`)
       this.scheduleRespawn()
@@ -214,7 +224,7 @@ export class SessionStatusWatcher {
     child.stdout?.on('data', (chunk) => {
       if (generation === this.streamGeneration) client.feed(chunk.toString())
     })
-    child.stderr?.on('data', () => { /* kubectl chatter — the exit path logs */ })
+    child.stderr?.on('data', () => { /* no stderr on ctrl streams — the exit path logs */ })
     child.on('error', (err) => this.onStreamDown(generation, `child error: ${String(err)}`))
     child.on('exit', () => this.onStreamDown(generation, 'stream closed'))
 
@@ -258,6 +268,7 @@ export class SessionStatusWatcher {
     registerSessionControlStream(this.session.jobName, channel)
 
     this.backoffMs = this.respawnDelayMs
+    this.consecutiveFailures = 0
     this.heartbeatTimer = setInterval(() => void this.heartbeat(generation), this.heartbeatIntervalMs)
   }
 
@@ -303,6 +314,7 @@ export class SessionStatusWatcher {
   private onStreamDown(generation: number, reason: string): void {
     if (generation !== this.streamGeneration) return
     this.streamGeneration++
+    this.consecutiveFailures++
     this.log(`[server] status-watcher ${this.session.sessionId}: ${reason}`)
     this.teardownStream()
     setSessionStreamHealth(this.session.slug, this.session.sessionId, false)
@@ -325,6 +337,18 @@ export class SessionStatusWatcher {
 
   private scheduleRespawn(): void {
     if (this.stopped || this.respawnTimer) return
+    // streamd self-heal: repeated stream deaths mean the daemon itself may
+    // be down (crashed, or a pod predating it) — no relay stream can fix
+    // that, so re-exec it via the one kubectl exec kept for this purpose.
+    // Every 3rd consecutive failure, so a proxy outage (streamd fine)
+    // doesn't hammer the apiserver with boots. Best-effort: if the pod is
+    // really dead the reaper owns it.
+    if (this.consecutiveFailures > 0 && this.consecutiveFailures % 3 === 0) {
+      this.log(`[server] status-watcher ${this.session.sessionId}: re-execing streamd (self-heal)`)
+      void this.reviveStreamd(this.session.jobName).catch((err: unknown) => {
+        this.log(`[server] status-watcher ${this.session.sessionId}: streamd revive failed: ${String(err)}`)
+      })
+    }
     this.respawnTimer = setTimeout(() => {
       this.respawnTimer = null
       this.connect()

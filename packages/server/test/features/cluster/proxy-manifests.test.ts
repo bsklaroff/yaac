@@ -45,7 +45,9 @@ import {
   PROXY_AUTH_SECRET_NAME,
   PROXY_INGRESS_CNP_NAME,
   PROXY_PORT,
+  POD_STREAM_PORT,
   PROXY_SA_NAME,
+  RELAY_PORT,
   ROLE_INNER_PROXY,
   SESSION_EGRESS_REDIRECT_CNP_NAME,
   SESSION_REDIRECT_PRIORITY,
@@ -58,7 +60,7 @@ import {
   VCLUSTER_FALLBACK_REDIRECT_NAME,
 } from '#features/cluster/proxy-constants'
 import { proxyDataHostDir, sshAgentHostDir } from '#features/cluster/proxy-apply'
-import { LABEL_DATA_DIR_HASH, LABEL_VCLUSTER_MANAGED_BY } from '#platform/k8s/pods'
+import { LABEL_DATA_DIR_HASH, LABEL_SESSION_ID, LABEL_VCLUSTER_MANAGED_BY } from '#platform/k8s/pods'
 import { credentialsDir } from '@yaac/shared/project-paths'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
@@ -185,6 +187,7 @@ describe('buildProxyDeploymentManifest', () => {
       { containerPort: TRANSPARENT_HTTPS_PORT },
       { containerPort: TRANSPARENT_HTTP_PORT },
       { containerPort: TRANSPARENT_TUNNEL_PORT },
+      { containerPort: RELAY_PORT },
       { containerPort: DNS_STUB_PORT, protocol: 'UDP' },
     ])
     // NET_BIND_SERVICE lets the non-root proxy bind udp/53 for the DNS stub.
@@ -194,6 +197,8 @@ describe('buildProxyDeploymentManifest', () => {
     expect(c.env).toContainEqual({ name: 'TRANSPARENT_HTTPS_PORT', value: String(TRANSPARENT_HTTPS_PORT) })
     expect(c.env).toContainEqual({ name: 'TRANSPARENT_HTTP_PORT', value: String(TRANSPARENT_HTTP_PORT) })
     expect(c.env).toContainEqual({ name: 'TRANSPARENT_TUNNEL_PORT', value: String(TRANSPARENT_TUNNEL_PORT) })
+    expect(c.env).toContainEqual({ name: 'RELAY_PORT', value: String(RELAY_PORT) })
+    expect(c.env).toContainEqual({ name: 'POD_STREAM_PORT', value: String(POD_STREAM_PORT) })
     expect(c.env).toContainEqual({
       name: 'PROXY_AUTH_SECRET',
       valueFrom: { secretKeyRef: { name: PROXY_AUTH_SECRET_NAME, key: 'secret' } },
@@ -354,6 +359,8 @@ describe('buildProxyServiceManifest', () => {
         labels: { app: PROXY_APP_NAME, [LABEL_DATA_DIR_HASH]: 'ddh0123456789abc' },
       },
       spec: {
+        // No relay entry and no NodePort: the server's relay dials ride a
+        // kubectl port-forward to the pod port (nested: a pod-IP dial).
         type: 'ClusterIP',
         // No pinned clusterIP: allocator-assigned, read live at pod-create.
         selector: { app: PROXY_APP_NAME },
@@ -512,9 +519,15 @@ describe('buildProxyIngressCnpManifest', () => {
     expect(m.spec.endpointSelector.matchLabels).toEqual({ app: PROXY_APP_NAME })
 
     const [host, session] = m.spec.ingress
-    // Control API (session registration + readiness probe): host only.
+    // Control API + relay NodePort (session registration, readiness probe,
+    // stream dials): host only — NodePort traffic is masqueraded to the
+    // node, while a session pod dialing the NodePort keeps its own identity
+    // and is dropped.
     expect(host.fromEntities).toEqual(['host'])
-    expect(host.toPorts[0].ports).toEqual([{ port: String(PROXY_PORT), protocol: 'TCP' }])
+    expect(host.toPorts[0].ports).toEqual([
+      { port: String(PROXY_PORT), protocol: 'TCP' },
+      { port: String(RELAY_PORT), protocol: 'TCP' },
+    ])
 
     // The redirected egress arrives with the session pod's identity (Cilium
     // preserves it through the Envoy proxy), so the transparent listeners +
@@ -584,6 +597,7 @@ describe('inner-redirect builders (yaac-in-yaac projection)', () => {
   const VC_NAME = 'yvc-abcd1234'
   const INNER_SVC = 'yaac-proxy-x-yaac-x-yvc-abcd1234' // vcluster-translated name
   const INSTALL = 'fedcba9876543210' // the inner install's data-dir-hash
+  const OWNER_SID = 'abcd1234-0000-1111-2222-333344445555' // owning outer session
 
   it('inner CEC: per-install name, EDS-backed by the inner proxy Service, in the vcluster namespace', () => {
     const m = buildInnerEgressRedirectCecManifest(VC_NS, INNER_SVC, INSTALL) as unknown as {
@@ -655,7 +669,7 @@ describe('inner-redirect builders (yaac-in-yaac projection)', () => {
   })
 
   it('inner proxy-ingress CNP: control host-only, transparent ports to managed-by pods', () => {
-    const m = buildInnerProxyIngressCnpManifest(VC_NS, VC_NAME) as unknown as {
+    const m = buildInnerProxyIngressCnpManifest(VC_NS, VC_NAME, OWNER_SID) as unknown as {
       metadata: { name: string; namespace: string; labels: Record<string, string> }
       spec: {
         endpointSelector: { matchLabels: Record<string, string> }
@@ -675,9 +689,16 @@ describe('inner-redirect builders (yaac-in-yaac projection)', () => {
       [LABEL_PROJECTION]: PROJECTION_INNER_REDIRECT,
     })
     expect(m.spec.endpointSelector.matchLabels).toEqual({ [LABEL_ROLE]: ROLE_INNER_PROXY })
-    const [host, session] = m.spec.ingress
+    const [host, relay, session] = m.spec.ingress
     expect(host.fromEntities).toEqual(['host'])
     expect(host.toPorts[0].ports).toEqual([{ port: String(PROXY_PORT), protocol: 'TCP' }])
+    // Relay: the OWNING outer session pod only (the nested server), matched
+    // cross-namespace by session-id + install namespace.
+    expect(relay.fromEndpoints?.[0].matchExpressions).toEqual([
+      { key: LABEL_SESSION_ID, operator: 'In', values: [OWNER_SID] },
+      { key: 'k8s:io.kubernetes.pod.namespace', operator: 'In', values: ['test-ns'] },
+    ])
+    expect(relay.toPorts[0].ports).toEqual([{ port: String(RELAY_PORT), protocol: 'TCP' }])
     expect(session.fromEndpoints?.[0].matchExpressions)
       .toEqual([{ key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [VC_NAME] }])
     expect(session.toPorts[0].ports.map((p) => p.port)).toEqual([

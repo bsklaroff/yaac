@@ -22,6 +22,13 @@ vi.mock('#features/images/image-promoter', () => ({
   salvageSessionImages: vi.fn().mockResolvedValue(true),
 }))
 
+// The tmux probes ride the stream relay now — stub only the transport;
+// the error classes stay real so classification is exercised for real.
+vi.mock('#platform/k8s/stream-relay', async (importOriginal) => {
+  const actual = await importOriginal<typeof relayModule>()
+  return { ...actual, sessionExec: vi.fn() }
+})
+
 const execFileMock = vi.fn<(cmd: string, args: string[], opts: unknown) => Promise<void | { stdout: string }>>()
 const spawnMock = vi.fn<(cmd: string, args: string[], opts: unknown) => void>()
 vi.mock('node:child_process', async () => {
@@ -65,6 +72,8 @@ vi.mock('#features/sessions/deleted-store', () => ({
 }))
 
 import { salvageSessionImages } from '#features/images/image-promoter'
+import { RelayDialError, RelayExecError, sessionExec } from '#platform/k8s/stream-relay'
+import type * as relayModule from '#platform/k8s/stream-relay'
 import { listSessionPods, listSessionJobs } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import {
@@ -88,6 +97,7 @@ import { setDataDir } from '@yaac/shared/project-paths'
 const mockServerLog = vi.mocked(serverLog)
 const mockRecordDeleted = vi.mocked(recordSessionDeleted)
 
+const sessionExecMock = vi.mocked(sessionExec)
 const mockListPods = vi.mocked(listSessionPods)
 const mockListJobs = vi.mocked(listSessionJobs)
 
@@ -112,6 +122,7 @@ describe('isTmuxSessionAlive', () => {
   beforeEach(async () => {
     _clearTmuxAliveCacheForTests()
     execFileMock.mockReset()
+    sessionExecMock.mockReset()
     dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-tmuxalive-'))
     setDataDir(dataDir)
   })
@@ -121,12 +132,14 @@ describe('isTmuxSessionAlive', () => {
   })
 
   function setProbeResult(slug: string, sid: string, alive: boolean): void {
-    const target = `job/yaac-${slug}-${sid}`
-    execFileMock.mockImplementation((_cmd: string, args: string[]) => {
-      if (args[0] === 'exec' && args.includes(target)) {
-        return alive ? Promise.resolve() : Promise.reject(new Error('has-session: no such session'))
+    const job = `yaac-${slug}-${sid}`
+    sessionExecMock.mockImplementation((jobName, cmd) => {
+      if (jobName === job && cmd.includes('has-session')) {
+        return alive
+          ? Promise.resolve({ stdout: '', stderr: '' })
+          : Promise.reject(new RelayExecError('exit 1', 1, '', "can't find session: yaac"))
       }
-      return Promise.reject(new Error('unexpected execFile call'))
+      return Promise.reject(new RelayDialError('unexpected sessionExec call'))
     })
   }
 
@@ -137,12 +150,9 @@ describe('isTmuxSessionAlive', () => {
   it('returns true when has-session exits 0', async () => {
     setProbeResult('p', 's-up', true)
     await expect(isTmuxSessionAlive('p', 's-up')).resolves.toBe(true)
-    expect(execFileMock).toHaveBeenCalledWith(
-      'kubectl',
-      [
-        'exec', '-n', 'yaac', 'job/yaac-p-s-up', '--',
-        'tmux', '-S', '/tmp/yaac-tmux/server', 'has-session', '-t', 'yaac',
-      ],
+    expect(sessionExecMock).toHaveBeenCalledWith(
+      'yaac-p-s-up',
+      'tmux -S /tmp/yaac-tmux/server has-session -t yaac',
       expect.objectContaining({ timeout: expect.any(Number) as number }),
     )
   })
@@ -166,14 +176,14 @@ describe('isTmuxSessionAlive', () => {
     const p2 = isTmuxSessionAlive('p', 's-coalesce')
     const p3 = isTmuxSessionAlive('p', 's-coalesce')
     await expect(Promise.all([p1, p2, p3])).resolves.toEqual([true, true, true])
-    expect(execFileMock).toHaveBeenCalledTimes(1)
+    expect(sessionExecMock).toHaveBeenCalledTimes(1)
   })
 
   it('caches per (slug, sid), not globally', async () => {
-    execFileMock.mockImplementation((_cmd: string, args: string[]) => {
-      return args.includes('job/yaac-p-s-a')
-        ? Promise.resolve()
-        : Promise.reject(new Error('no session'))
+    sessionExecMock.mockImplementation((jobName) => {
+      return jobName === 'yaac-p-s-a'
+        ? Promise.resolve({ stdout: '', stderr: '' })
+        : Promise.reject(new RelayExecError('exit 1', 1, '', 'no session'))
     })
     expect(await isTmuxSessionAlive('p', 's-a')).toBe(true)
     expect(await isTmuxSessionAlive('p', 's-b')).toBe(false)
@@ -204,6 +214,7 @@ describe('probeAgentPaneState', () => {
   beforeEach(async () => {
     _clearAgentStartedCacheForTests()
     execFileMock.mockReset()
+    sessionExecMock.mockReset()
     dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-agentpane-'))
     setDataDir(dataDir)
   })
@@ -213,27 +224,23 @@ describe('probeAgentPaneState', () => {
   })
 
   function setPaneCommand(slug: string, sid: string, command: string | Error): void {
-    const target = `job/yaac-${slug}-${sid}`
-    execFileMock.mockImplementation((_cmd: string, args: string[]) => {
-      if (args[0] === 'exec' && args.includes(target) && args.includes('display-message')) {
+    const job = `yaac-${slug}-${sid}`
+    sessionExecMock.mockImplementation((jobName, cmd) => {
+      if (jobName === job && cmd.includes('display-message')) {
         return command instanceof Error
           ? Promise.reject(command)
-          : Promise.resolve({ stdout: `${command}\n` })
+          : Promise.resolve({ stdout: `${command}\n`, stderr: '' })
       }
-      return Promise.reject(new Error('unexpected execFile call'))
+      return Promise.reject(new RelayDialError('unexpected sessionExec call'))
     })
   }
 
   it('reports the sleep keepalive as placeholder, targeting the first window', async () => {
     setPaneCommand('p', 's-half', 'sleep')
     await expect(probeAgentPaneState('p', 's-half')).resolves.toBe('placeholder')
-    expect(execFileMock).toHaveBeenCalledWith(
-      'kubectl',
-      [
-        'exec', '-n', 'yaac', 'job/yaac-p-s-half', '--',
-        'tmux', '-S', '/tmp/yaac-tmux/server', 'display-message', '-p', '-t', 'yaac:^',
-        '#{pane_current_command}',
-      ],
+    expect(sessionExecMock).toHaveBeenCalledWith(
+      'yaac-p-s-half',
+      "tmux -S /tmp/yaac-tmux/server display-message -p -t 'yaac:^' '#{pane_current_command}'",
       expect.objectContaining({ timeout: expect.any(Number) as number }),
     )
   })
@@ -250,7 +257,7 @@ describe('probeAgentPaneState', () => {
     // killed the placeholder; started is terminal) — and no exec runs.
     setPaneCommand('p', 's-memo', 'sleep')
     await expect(probeAgentPaneState('p', 's-memo')).resolves.toBe('started')
-    expect(execFileMock).toHaveBeenCalledTimes(1)
+    expect(sessionExecMock).toHaveBeenCalledTimes(1)
   })
 
   it('reports unknown on a probe failure, and keeps re-probing', async () => {
@@ -443,31 +450,16 @@ describe('cleanupSessionDetached', () => {
 })
 
 describe('classifyTmuxProbeError', () => {
-  it('is unknown when the probe timed out (child killed)', () => {
-    const err = Object.assign(new Error('timeout'), { killed: true, signal: 'SIGTERM' })
-    expect(classifyTmuxProbeError(err)).toBe('unknown')
+  it('is dead only when the probe reached the pod and tmux exited non-zero', () => {
+    // streamd ran tmux and it reported the session absent — conclusive.
+    expect(classifyTmuxProbeError(
+      new RelayExecError('exit 1', 1, '', "can't find session: yaac"),
+    )).toBe('dead')
   })
 
-  it('is dead when kubectl reports the remote command exited non-zero', () => {
-    // tmux actually ran in the pod and said "no session" — conclusive.
-    const err = Object.assign(new Error('exit 1'), { stderr: 'command terminated with exit code 1' })
-    expect(classifyTmuxProbeError(err)).toBe('dead')
-  })
-
-  it('is dead on tmux\'s own no-server / no-session messages', () => {
-    expect(classifyTmuxProbeError({ stderr: 'no server running on /tmp/yaac-tmux/server' })).toBe('dead')
-    expect(classifyTmuxProbeError({ stderr: "can't find session: yaac" })).toBe('dead')
-  })
-
-  it('reads stderr from a Buffer too', () => {
-    const err = { stderr: Buffer.from('command terminated with exit code 1') }
-    expect(classifyTmuxProbeError(err)).toBe('dead')
-  })
-
-  it('is unknown on a kubectl transport / API error (the false-positive source)', () => {
-    expect(classifyTmuxProbeError({ stderr: 'Error from server (NotFound): pods "x" not found' })).toBe('unknown')
-    expect(classifyTmuxProbeError({ stderr: 'error: unable to upgrade connection: container not found' })).toBe('unknown')
-    expect(classifyTmuxProbeError({ stderr: 'Unable to connect to the server: dial tcp: i/o timeout' })).toBe('unknown')
+  it('is unknown on transport failures — never a reap signal', () => {
+    expect(classifyTmuxProbeError(new RelayDialError('relay refused'))).toBe('unknown')
+    expect(classifyTmuxProbeError(new RelayDialError('stream read timeout after 2000ms'))).toBe('unknown')
   })
 
   it('is unknown when there is no usable error detail', () => {
@@ -483,6 +475,7 @@ describe('probeTmuxLiveness', () => {
   beforeEach(async () => {
     _clearTmuxAliveCacheForTests()
     execFileMock.mockReset()
+    sessionExecMock.mockReset()
     dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-tmuxprobe-'))
     setDataDir(dataDir)
   })
@@ -492,45 +485,41 @@ describe('probeTmuxLiveness', () => {
   })
 
   it('is alive when has-session exits 0', async () => {
-    execFileMock.mockResolvedValue(undefined)
+    sessionExecMock.mockResolvedValue({ stdout: '', stderr: '' })
     await expect(probeTmuxLiveness('p', 's-alive')).resolves.toBe('alive')
   })
 
   it('is dead when the remote tmux exits non-zero', async () => {
-    execFileMock.mockRejectedValue(
-      Object.assign(new Error('exit 1'), { stderr: 'command terminated with exit code 1' }),
-    )
+    sessionExecMock.mockRejectedValue(new RelayExecError('exit 1', 1, '', 'no server running'))
     await expect(probeTmuxLiveness('p', 's-dead')).resolves.toBe('dead')
   })
 
-  it('is unknown on a transient exec failure — never a reap signal', async () => {
-    execFileMock.mockRejectedValue(
-      Object.assign(new Error('boom'), { stderr: 'Unable to connect to the server: i/o timeout' }),
-    )
+  it('is unknown on a transient transport failure — never a reap signal', async () => {
+    sessionExecMock.mockRejectedValue(new RelayDialError('relay dial timeout'))
     await expect(probeTmuxLiveness('p', 's-blip')).resolves.toBe('unknown')
   })
 
   it('coalesces concurrent callers onto a single in-flight probe', async () => {
-    execFileMock.mockResolvedValue(undefined)
+    sessionExecMock.mockResolvedValue({ stdout: '', stderr: '' })
     const [a, b, c] = await Promise.all([
       probeTmuxLiveness('p', 's-coalesce'),
       probeTmuxLiveness('p', 's-coalesce'),
       probeTmuxLiveness('p', 's-coalesce'),
     ])
     expect([a, b, c]).toEqual(['alive', 'alive', 'alive'])
-    expect(execFileMock).toHaveBeenCalledTimes(1)
+    expect(sessionExecMock).toHaveBeenCalledTimes(1)
   })
 
-  it('short-circuits to alive on a healthy watcher stream — no exec at all', async () => {
+  it('short-circuits to alive on a healthy watcher stream — no probe at all', async () => {
     setSessionStreamHealth('p', 's-streamed', true)
     try {
       await expect(probeTmuxLiveness('p', 's-streamed')).resolves.toBe('alive')
-      expect(execFileMock).not.toHaveBeenCalled()
-      // Health gone (stream died) → back to the exec probe.
+      expect(sessionExecMock).not.toHaveBeenCalled()
+      // Health gone (stream died) → back to the relay probe.
       setSessionStreamHealth('p', 's-streamed', false)
-      execFileMock.mockResolvedValue(undefined)
+      sessionExecMock.mockResolvedValue({ stdout: '', stderr: '' })
       await expect(probeTmuxLiveness('p', 's-streamed')).resolves.toBe('alive')
-      expect(execFileMock).toHaveBeenCalledTimes(1)
+      expect(sessionExecMock).toHaveBeenCalledTimes(1)
     } finally {
       _resetSessionStatusStoreForTests()
     }

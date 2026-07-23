@@ -122,6 +122,27 @@ export const env = {
   },
 
   /**
+   * `YAAC_RELAY_ADDR` — explicit `host:port` override for the proxy relay
+   * (stream-relay.ts skips its address resolution entirely). Deployment
+   * escape hatch for hosts with a direct TCP route to the proxy pod
+   * (e.g. a server running on the cluster node itself), which skips the
+   * default kubectl port-forward hop. Unset → resolved automatically
+   * (a port-forward to the proxy Deployment, or the inner proxy's pod
+   * IP when nested).
+   */
+  get relayAddr(): { host: string; port: number } | undefined {
+    const raw = process.env.YAAC_RELAY_ADDR
+    if (!raw || raw.trim() === '') return undefined
+    const idx = raw.lastIndexOf(':')
+    const host = idx > 0 ? raw.slice(0, idx) : ''
+    const port = Number(raw.slice(idx + 1))
+    if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error(`YAAC_RELAY_ADDR must be host:port, got ${raw}`)
+    }
+    return { host, port }
+  },
+
+  /**
    * `YAAC_ALLOWED_HOSTS` — comma-separated extra hostnames the server's
    * Host-header check admits (e.g. the server's `srv.<tailnet>.ts.net`
    * MagicDNS name behind `tailscale serve`). Loopback is always allowed
@@ -225,6 +246,7 @@ export const testEnv = {
   get proxyImage(): string {
     return process.env.YAAC_PROXY_IMAGE ?? 'yaac-proxy'
   },
+
 
   /**
    * `YAAC_STARTING_GRACE_MS` — grace window protecting freshly-created session

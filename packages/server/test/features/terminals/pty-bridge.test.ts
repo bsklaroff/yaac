@@ -1,17 +1,20 @@
 import { describe, it, expect, vi } from 'vitest'
-import * as pty from '@lydell/node-pty'
-import type * as execModule from '#platform/k8s/exec'
-import { containerExec } from '#platform/k8s/exec'
+import type * as relayModule from '#platform/k8s/stream-relay'
+import { dialPtyStream, sessionExec } from '#platform/k8s/stream-relay'
 import { attachArgs, ghostViews, killViewsCmd, killViewSession, listSessionsCmd, makeWindowResizer, newViewName, parseControl, parsePtySize, parsePtyTarget, bridge, resizeWindowCmd, spawnAttachPty, sweepGhostViews } from '#features/terminals/pty-bridge'
 import type { PtyLike, SocketLike } from '#features/terminals/pty-bridge'
 
-// Avoid loading/spawning the real node-pty native module in unit tests.
-vi.mock('@lydell/node-pty', () => ({ spawn: vi.fn(() => ({})) }))
-// Keep the real argv builders; stub only the kubectl-exec runner.
-vi.mock('#platform/k8s/exec', async (importOriginal) => ({
-  ...await importOriginal<typeof execModule>(),
-  containerExec: vi.fn(() => Promise.resolve({ stdout: '', stderr: '' })),
+// Keep the real argv builders; stub only the relay transport.
+vi.mock('#platform/k8s/stream-relay', async (importOriginal) => ({
+  ...await importOriginal<typeof relayModule>(),
+  sessionExec: vi.fn(() => Promise.resolve({ stdout: '', stderr: '' })),
+  dialPtyStream: vi.fn(() => ({})),
 }))
+
+/** A full-length session Job name (the relay recovers the session id from
+ *  its UUID tail). */
+const SID = '0f9b2c4d-1111-2222-3333-444455556666'
+const JOB = `yaac-demo-${SID}`
 
 /** Every webapp attach creates its per-client grouped view session detached,
  *  with the chrome-less options applied before any client is attached:
@@ -33,8 +36,7 @@ describe('newViewName', () => {
 
 describe('attachArgs', () => {
   it('pins the agent target to the lowest-index yaac window and sizes it to the client', () => {
-    expect(attachArgs('yaac-demo-abc', 'agent', 'view-11aa22bb', { cols: 150, rows: 40 })).toEqual([
-      'exec', '-n', 'yaac', '-it', 'job/yaac-demo-abc', '--',
+    expect(attachArgs('agent', 'view-11aa22bb', { cols: 150, rows: 40 })).toEqual([
       'sh', '-c',
       'tmux -S /tmp/yaac-tmux/server has-session -t =yaac 2>/dev/null'
       + ` && ${VIEW_CREATE('view-11aa22bb', 150, 40)}`
@@ -46,24 +48,22 @@ describe('attachArgs', () => {
   })
 
   it('builds a window-pinned view argv for window targets, sized to the client', () => {
-    const argv = attachArgs('yaac-demo-abc', 'window:@3', 'view-11aa22bb', { cols: 80, rows: 24 })
-    expect(argv.slice(0, 7)).toEqual([
-      'exec', '-n', 'yaac', '-it', 'job/yaac-demo-abc', '--', 'sh',
-    ])
-    const cmd = argv[8]
+    const argv = attachArgs('window:@3', 'view-11aa22bb', { cols: 80, rows: 24 })
+    expect(argv.slice(0, 2)).toEqual(['sh', '-c'])
+    const cmd = argv[2]
     expect(cmd).toContain(VIEW_CREATE('view-11aa22bb', 80, 24))
     expect(cmd).toContain("select-window -t '@3'")
     expect(cmd).toContain('resize-window -t view-11aa22bb -x 80 -y 24')
   })
 
   it('sets window-size manual per view, never globally (global manual segfaults tmux 3.4)', () => {
-    const cmd = attachArgs('yaac-demo-abc', 'agent', 'view-11aa22bb', { cols: 150, rows: 40 })[8]
+    const cmd = attachArgs('agent', 'view-11aa22bb', { cols: 150, rows: 40 })[2]
     expect(cmd).toContain('set-option -t view-11aa22bb window-size manual')
     expect(cmd).not.toContain('set-option -g window-size')
   })
 
   it('falls back to the 80x24 default size', () => {
-    const cmd = attachArgs('yaac-demo-abc', 'agent', 'view-11aa22bb')[8]
+    const cmd = attachArgs('agent', 'view-11aa22bb')[2]
     expect(cmd).toContain('new-session -d -t yaac -s view-11aa22bb -x 80 -y 24')
     expect(cmd).toContain('resize-window -t view-11aa22bb -x 80 -y 24')
   })
@@ -73,7 +73,7 @@ describe('attachArgs', () => {
     // must not be set until the client is attached (a detached view with it
     // set could be reaped in the create→attach gap by any other client's
     // detach sweep).
-    const cmd = attachArgs('yaac-demo-abc', 'agent', 'view-11aa22bb', {})[8]
+    const cmd = attachArgs('agent', 'view-11aa22bb', {})[2]
     expect(cmd).toMatch(
       /new-session -d [^&]*status off[^&]* && exec [^;]*attach-session[\s\S]*destroy-unattached on$/,
     )
@@ -83,24 +83,24 @@ describe('attachArgs', () => {
     // Attaching before session-create has built the `yaac` tmux session must
     // fail (so the client retries), not let `new-session -t yaac` mint a
     // stale group whose bare-shell window poisons every subsequent view.
-    const cmd = attachArgs('yaac-demo-abc', 'agent', 'view-11aa22bb')[8]
+    const cmd = attachArgs('agent', 'view-11aa22bb')[2]
     expect(cmd).toMatch(/^tmux -S \S+ has-session -t =yaac 2>\/dev\/null && /)
   })
 })
 
 describe('killViewSession', () => {
   it('kills the view session inside the container', async () => {
-    await killViewSession('yaac-demo-abc', 'view-11aa22bb')
-    expect(containerExec).toHaveBeenCalledWith(
-      'yaac-demo-abc',
+    await killViewSession(JOB, 'view-11aa22bb')
+    expect(sessionExec).toHaveBeenCalledWith(
+      JOB,
       'tmux -S /tmp/yaac-tmux/server kill-session -t view-11aa22bb',
       { maxAttempts: 1 },
     )
   })
 
   it('swallows exec failures (no such session, pod gone)', async () => {
-    vi.mocked(containerExec).mockRejectedValueOnce(new Error('no such session'))
-    await expect(killViewSession('yaac-demo-abc', 'view-11aa22bb')).resolves.toBeUndefined()
+    vi.mocked(sessionExec).mockRejectedValueOnce(new Error('no such session'))
+    await expect(killViewSession(JOB, 'view-11aa22bb')).resolves.toBeUndefined()
   })
 })
 
@@ -227,8 +227,8 @@ describe('parsePtyTarget', () => {
 
 describe('attachArgs (native)', () => {
   it('keeps the tmux chrome: no status-off, no prefix-none, no select-window', () => {
-    const argv = attachArgs('yaac-demo-abc', 'native', 'view-11aa22bb', { cols: 150, rows: 40 })
-    const cmd = argv[8]
+    const argv = attachArgs('native', 'view-11aa22bb', { cols: 150, rows: 40 })
+    const cmd = argv[2]
     expect(cmd).toContain('new-session -d -t yaac -s view-11aa22bb -x 150 -y 40')
     expect(cmd).not.toContain('status off')
     expect(cmd).not.toContain('prefix None')
@@ -239,34 +239,30 @@ describe('attachArgs (native)', () => {
   it('keeps default (latest) window sizing: no manual, no resize-window', () => {
     // Native has a status bar and lets the user switch windows, so it wants
     // tmux's standard client-driven sizing — the webapp-only pin would fight it.
-    const cmd = attachArgs('yaac-demo-abc', 'native', 'view-11aa22bb', { cols: 150, rows: 40 })[8]
+    const cmd = attachArgs('native', 'view-11aa22bb', { cols: 150, rows: 40 })[2]
     expect(cmd).not.toContain('window-size manual')
     expect(cmd).not.toContain('resize-window')
   })
 
   it('still guards on the yaac session existing', () => {
-    const cmd = attachArgs('yaac-demo-abc', 'native', 'view-11aa22bb')[8]
+    const cmd = attachArgs('native', 'view-11aa22bb')[2]
     expect(cmd).toMatch(/^tmux -S \S+ has-session -t =yaac 2>\/dev\/null && /)
   })
 })
 
 describe('spawnAttachPty', () => {
-  it('spawns `kubectl` under a PTY with the attach argv and given size', () => {
-    spawnAttachPty('yaac-demo', { cols: 100, rows: 40 }, 'agent', 'view-11aa22bb')
-    expect(pty.spawn).toHaveBeenCalledWith(
-      'kubectl',
-      attachArgs('yaac-demo', 'agent', 'view-11aa22bb', { cols: 100, rows: 40 }),
-      expect.objectContaining({ name: 'xterm-color', cols: 100, rows: 40 }),
+  it('opens a relay pty stream with the attach argv and given size', () => {
+    spawnAttachPty(JOB, { cols: 100, rows: 40 }, 'agent', 'view-11aa22bb')
+    expect(dialPtyStream).toHaveBeenCalledWith(
+      SID,
+      attachArgs('agent', 'view-11aa22bb', { cols: 100, rows: 40 }),
+      { cols: 100, rows: 40 },
     )
   })
 
-  it('spawns a raw zsh exec (no tmux) for the shell target', () => {
-    spawnAttachPty('yaac-demo', { cols: 80, rows: 24 }, 'shell', 'view-11aa22bb')
-    expect(pty.spawn).toHaveBeenCalledWith(
-      'kubectl',
-      ['exec', '-n', 'yaac', '-it', 'job/yaac-demo', '--', 'zsh'],
-      expect.objectContaining({ name: 'xterm-color', cols: 80, rows: 24 }),
-    )
+  it('opens a raw zsh pty (no tmux) for the shell target', () => {
+    spawnAttachPty(JOB, { cols: 80, rows: 24 }, 'shell', 'view-11aa22bb')
+    expect(dialPtyStream).toHaveBeenCalledWith(SID, ['zsh'], { cols: 80, rows: 24 })
   })
 })
 

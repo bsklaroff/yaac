@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
+import net from 'node:net'
 import path from 'node:path'
 import { execFileAsync, k8sNamespace, kubectlApply } from '#platform/k8s/kubectl'
 import { isDeferredClusterBootPending } from '#platform/k8s/deferred-boot'
@@ -8,7 +9,7 @@ import {
   buildSessionEgressRedirectCnpManifest,
 } from '#features/cluster/proxy-manifests'
 import { ensureNamespace } from '#features/cluster/proxy-apply'
-import { PROXY_APP_NAME, TRANSPARENT_HTTPS_PORT } from '#features/cluster/proxy-constants'
+import { PROXY_APP_NAME, RELAY_PORT, TRANSPARENT_HTTPS_PORT } from '#features/cluster/proxy-constants'
 import {
   RUNTIME_CLASS_GVISOR,
   RUNTIME_CLASS_GVISOR_NESTED,
@@ -284,6 +285,10 @@ export async function runClusterCheck(
     for (const name of ['envoy-config', 'nested-mount', 'vap', 'runtime-stamp']) {
       add({ name, status: 'skip', detail: 'skipped — nested yaac (not applicable inside a vcluster)' })
     }
+    // The stream relay IS checkable nested: the inner proxy's pod IP must
+    // be dialable on the relay port (requires the outer yaac to project
+    // the inner ingress rules — an outdated host yaac breaks this).
+    add(await runNestedRelayCheck(deps))
     return { ok: !results.some((r) => r.status === 'fail'), results }
   }
 
@@ -291,6 +296,9 @@ export async function runClusterCheck(
 
   // 9. envoy-config: the CiliumEnvoyConfig CRDs must exist, or the
   // cluster-level egress redirect (the CEC) cannot be applied at all.
+  // (No top-level relay gate: the server reaches the relay through a
+  // kubectl port-forward, the same apiserver access the checks above
+  // already prove — there is no cluster-shape wiring to verify.)
   add(await runEnvoyConfigCheck(deps))
 
   // 10. nested userns-mount probe (warn-only: only nestedContainers
@@ -954,6 +962,52 @@ async function runVapAvailabilityCheck(): Promise<CheckResult> {
       + 'guard needs the ValidatingAdmissionPolicy API (kubernetes >= '
       + '1.30, enabled by default). vcluster creation fails closed '
       + 'without it.',
+  }
+}
+
+/**
+ * Nested: the relay is the inner proxy's pod IP on RELAY_PORT (a host pod
+ * IP by syncer write-back). A dialable listener proves the inner proxy is
+ * up AND the outer yaac projected the inner ingress rules (an outdated
+ * host yaac drops the dial).
+ */
+async function runNestedRelayCheck(deps: ClusterCheckDeps): Promise<CheckResult> {
+  let ip: string | undefined
+  try {
+    const { stdout } = await deps.run('kubectl', [
+      'get', 'pods', '-n', k8sNamespace(), '-l', `app=${PROXY_APP_NAME}`, '-o', 'json',
+    ])
+    const list = JSON.parse(stdout) as { items?: Array<{ status?: { podIP?: string; phase?: string } }> }
+    ip = list.items?.find((p) => p.status?.phase === 'Running')?.status?.podIP
+      ?? list.items?.[0]?.status?.podIP
+  } catch (err) {
+    return {
+      name: 'relay', status: 'warn',
+      detail: `could not list the inner proxy pod (${truncate(err)}) — relay unverified`,
+    }
+  }
+  if (!ip) {
+    return {
+      name: 'relay', status: 'warn',
+      detail: 'inner proxy not deployed yet — relay unverified',
+      fix: 'The inner proxy deploys on first session create; re-check afterwards.',
+    }
+  }
+  const dialable = await new Promise<boolean>((resolve) => {
+    const sock = net.connect({ host: ip, port: RELAY_PORT, timeout: 3_000 })
+    sock.on('connect', () => { sock.destroy(); resolve(true) })
+    sock.on('timeout', () => { sock.destroy(); resolve(false) })
+    sock.on('error', () => resolve(false))
+  })
+  if (dialable) {
+    return { name: 'relay', status: 'pass', detail: `inner proxy relay dialable at ${ip}:${RELAY_PORT}` }
+  }
+  return {
+    name: 'relay', status: 'fail',
+    detail: `inner proxy relay not dialable at ${ip}:${RELAY_PORT}`,
+    fix: 'The OUTER yaac must be new enough to project the inner relay '
+      + 'ingress rules (the same ordering contract as inner egress) — '
+      + 'upgrade the host yaac, then recreate this session.',
   }
 }
 

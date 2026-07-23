@@ -37,7 +37,7 @@ import {
 } from './transparent'
 import { parsePp2Header } from './pp2'
 import { DNS_QTYPE_A, buildDnsResponse, isInternalName, parseDnsQuery } from './dns-stub'
-import { PodSessionIndex, fetchSessionByPodIp, parseVclusterAttribution, startPodWatch } from './pod-watch'
+import { PodSessionIndex, fetchPodIpBySessionId, fetchSessionByPodIp, parseVclusterAttribution, startPodWatch } from './pod-watch'
 import {
   SPAWN_MAGIC_HOST,
   SPAWN_MAX_BODY_BYTES,
@@ -60,16 +60,22 @@ import {
 // from PORT now that no session egress reaches it — it is purely the API.
 const API_PORT = process.env.API_PORT
 const PROXY_AUTH_SECRET = process.env.PROXY_AUTH_SECRET
-// Transparent egress listeners: the per-pod relay forwards redirected
-// 443/80 here (PP2 identity, destination from TLS SNI / HTTP Host) and
-// SSH CONNECTs to the tunnel listener (destination from the CONNECT line).
+// Transparent egress listeners: the node-local Cilium Envoy forwards
+// redirected 443/80 here (PP2 identity, destination from TLS SNI / HTTP
+// Host) and SSH CONNECTs to the tunnel listener (destination from the
+// CONNECT line).
 const TRANSPARENT_HTTPS_PORT = process.env.TRANSPARENT_HTTPS_PORT
 const TRANSPARENT_HTTP_PORT = process.env.TRANSPARENT_HTTP_PORT
 const TRANSPARENT_TUNNEL_PORT = process.env.TRANSPARENT_TUNNEL_PORT
+// Stream relay: authenticated CONNECT from the yaac server into a session
+// pod's streamd (docs/stream-relay.md).
+const RELAY_PORT = process.env.RELAY_PORT
+const POD_STREAM_PORT = process.env.POD_STREAM_PORT
 if (!API_PORT || !PROXY_AUTH_SECRET || !TRANSPARENT_HTTPS_PORT || !TRANSPARENT_HTTP_PORT
-  || !TRANSPARENT_TUNNEL_PORT) {
+  || !TRANSPARENT_TUNNEL_PORT || !RELAY_PORT || !POD_STREAM_PORT) {
   console.error('[proxy] API_PORT, PROXY_AUTH_SECRET, TRANSPARENT_HTTPS_PORT, '
-    + 'TRANSPARENT_HTTP_PORT and TRANSPARENT_TUNNEL_PORT environment variables are required')
+    + 'TRANSPARENT_HTTP_PORT, TRANSPARENT_TUNNEL_PORT, RELAY_PORT and '
+    + 'POD_STREAM_PORT environment variables are required')
   process.exit(1)
 }
 const DATA_DIR = '/data'
@@ -2544,15 +2550,15 @@ server.listen(parseInt(API_PORT, 10), '0.0.0.0', () => {
 
 // ── Transparent listeners ──────────────────────────────────────────────
 //
-// Session pods' redirect init container REDIRECTs outbound 443/80 to the
-// per-pod yaac-relay, which recovers the original destination via
-// SO_ORIGINAL_DST and forwards here behind a PROXY protocol v2 header
-// whose TLV carries "<sessionId>:<token>". Identity is that
-// per-connection credential, verified against PROXY_AUTH_SECRET — not the
-// source IP — so a pod that merely reaches the port gets nothing without
-// it. Destination still comes from the TLS SNI (443) / HTTP Host (80)
-// after the PP2 header is consumed. Both listeners fail closed: no/invalid
-// PP2, a bad token, or (for HTTPS) an SNI-less ClientHello → destroy.
+// Session pods' outbound 443/80 (and the SSH tunnel sentinel) is
+// redirected here at the cluster level by the Cilium CEC + CNP: the
+// node-local Envoy forwards each connection wrapped in a PROXY protocol
+// v2 header carrying the eBPF-verified source pod IP. Identity is that
+// unspoofable source IP, resolved to a session via the pod-watch index
+// (see resolveSessionBySourceIp). Destination comes from the TLS SNI
+// (443) / HTTP Host (80) after the PP2 header is consumed. The listeners
+// fail closed: no/invalid PP2, an unknown source pod, or (for HTTPS) an
+// SNI-less ClientHello → destroy.
 
 /** Cap on bytes buffered while waiting for a parseable ClientHello. */
 const SNI_PEEK_MAX_BYTES = 64 * 1024
@@ -2909,6 +2915,119 @@ for (const [srv, portStr, label] of [
   })
 }
 
+// ── Stream relay (server ↔ session-pod streamd) ────────────────────────────
+//
+// A dumb authenticated CONNECT: the server dials in, sends ONE JSON auth
+// line `{"token": <proxyAuthSecret>, "sessionId": <sid>}`, and the relay
+// resolves the session's pod IP (pod-watch reverse index, labelSelector
+// list on a miss) and splices the rest of the stream to
+// `podIP:POD_STREAM_PORT` untouched — the streamd handshake, its reply,
+// and the payload are end-to-end server↔streamd. Per-stream refusals
+// (unknown session, pod dial failure) are ANSWERED with an error line
+// before closing: the server treats a silent close as a dead transport
+// and re-establishes its shared port-forward, so a stale session's probe
+// must not masquerade as one. Only a bad auth line closes silently (no
+// oracle for unauthenticated peers). An inner (vcluster) proxy runs this
+// same code against its own apiserver, whose synced pods carry host pod
+// IPs (syncer write-back), so nested streams need no extra branch.
+
+const RELAY_HANDSHAKE_MAX_BYTES = 4 * 1024
+const RELAY_HANDSHAKE_TIMEOUT_MS = 10_000
+
+function handleRelayConnection(socket: net.Socket, podStreamPort: number): void {
+  socket.on('error', () => { /* per-connection; close tears down the splice */ })
+  let buf = Buffer.alloc(0)
+  const timer = setTimeout(() => socket.destroy(), RELAY_HANDSHAKE_TIMEOUT_MS)
+
+  const onData = (chunk: Buffer): void => {
+    buf = Buffer.concat([buf, chunk])
+    const nl = buf.indexOf(0x0a)
+    if (nl < 0) {
+      if (buf.length > RELAY_HANDSHAKE_MAX_BYTES) { clearTimeout(timer); socket.destroy() }
+      return
+    }
+    socket.removeListener('data', onData)
+    clearTimeout(timer)
+
+    let params: { token?: unknown; sessionId?: unknown }
+    try {
+      params = JSON.parse(buf.subarray(0, nl).toString('utf8')) as typeof params
+    } catch {
+      socket.destroy()
+      return
+    }
+    if (
+      typeof params.token !== 'string' || typeof params.sessionId !== 'string'
+      || !timingSafeStrEqual(params.token, PROXY_AUTH_SECRET!)
+    ) {
+      console.log('[proxy] BLOCKED relay dial: bad auth line')
+      socket.destroy()
+      return
+    }
+    const sessionId = params.sessionId
+
+    // Keep buffering bytes (the pipelined streamd handshake) that arrive
+    // while the pod IP resolves, so none are lost before the splice starts.
+    let leftover = buf.subarray(nl + 1)
+    const buffer = (chunk2: Buffer): void => { leftover = Buffer.concat([leftover, chunk2]) }
+    socket.on('data', buffer)
+    // Answer refusals with a reply line (see the module comment): a
+    // silent close reads as a dead transport server-side.
+    const refuse = (error: string): void => {
+      socket.end(JSON.stringify({ ok: false, error: `relay: ${error}` }) + '\n')
+    }
+    void (async () => {
+      let ip = podIndex.resolveIp(sessionId)
+      if (!ip) {
+        try {
+          ip = await fetchPodIpBySessionId(podIndex, sessionId)
+        } catch (err) {
+          console.error(`[proxy] relay pod lookup failed for ${sessionId.slice(0, 8)}...:`, (err as Error).message)
+        }
+      }
+      socket.removeListener('data', buffer)
+      if (socket.destroyed) return
+      if (!ip) {
+        console.log(`[proxy] BLOCKED relay dial: unknown session ${sessionId.slice(0, 8)}...`)
+        refuse('unknown session')
+        return
+      }
+      // allowHalfOpen so an EOF from either end passes through the splice
+      // (pipe propagates the end()); the close handlers reap the pair.
+      const target = net.connect({ port: podStreamPort, host: ip, allowHalfOpen: true })
+      let spliced = false
+      target.on('connect', () => {
+        spliced = true
+        if (leftover.length > 0) target.write(leftover)
+        socket.pipe(target)
+        target.pipe(socket)
+      })
+      target.on('error', (err: NodeJS.ErrnoException) => {
+        // Pre-splice failure (streamd down / pod mid-teardown): answer it —
+        // a conclusive per-stream refusal, not a transport problem.
+        if (!spliced) refuse(`pod dial failed: ${err.code ?? err.message}`)
+        else socket.destroy()
+      })
+      target.on('close', () => {
+        if (spliced) socket.destroy()
+      })
+      socket.on('close', () => target.destroy())
+    })()
+  }
+  socket.on('data', onData)
+}
+
+const relayServer = net.createServer(
+  { allowHalfOpen: true },
+  (socket) => handleRelayConnection(socket, parseInt(POD_STREAM_PORT, 10)),
+)
+relayServer.on('error', (err: Error) => {
+  console.error('[proxy] Relay server error:', err)
+})
+relayServer.listen(parseInt(RELAY_PORT, 10), '0.0.0.0', () => {
+  console.log(`[proxy] stream relay listener on port ${RELAY_PORT}`)
+})
+
 // ── DNS stub (UDP/53), split-horizon ───────────────────────────────────────
 // Session pods resolve against the proxy. External names get the sinkhole;
 // internal names (`*.svc`) are forwarded to cluster DNS on the top-level proxy
@@ -2959,6 +3078,7 @@ process.on('SIGTERM', () => {
   transparentHttpsServer.close()
   transparentHttpServer.close()
   transparentTunnelServer.close()
+  relayServer.close()
   dnsServer?.close()
   server.close(() => process.exit(0))
 })

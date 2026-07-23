@@ -18,18 +18,22 @@ import {
   INNER_EGRESS_REDIRECT_CEC_NAME,
   INNER_PROXY_INGRESS_CNP_NAME,
   INNER_SESSION_EGRESS_REDIRECT_CNP_NAME,
+  INNER_SESSION_INGRESS_LOCK_CNP_NAME,
   LABEL_PROJECTION,
   LABEL_ROLE,
   OUTER_CA_CONFIGMAP_NAME,
+  POD_STREAM_PORT,
   PROJECTION_INNER_REDIRECT,
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
   PROXY_INGRESS_CNP_NAME,
   PROXY_PORT,
   PROXY_SA_NAME,
+  RELAY_PORT,
   ROLE_BUILDER,
   ROLE_INNER_PROXY,
   SESSION_EGRESS_REDIRECT_CNP_NAME,
+  SESSION_INGRESS_LOCK_CNP_NAME,
   SESSION_REDIRECT_PRIORITY,
   SSH_TUNNEL_SENTINEL,
   TRANSPARENT_HTTP_PORT,
@@ -159,6 +163,7 @@ export function buildProxyDeploymentManifest(
                 { containerPort: TRANSPARENT_HTTPS_PORT },
                 { containerPort: TRANSPARENT_HTTP_PORT },
                 { containerPort: TRANSPARENT_TUNNEL_PORT },
+                { containerPort: RELAY_PORT },
                 { containerPort: DNS_STUB_PORT, protocol: 'UDP' },
               ],
               env: [
@@ -166,6 +171,12 @@ export function buildProxyDeploymentManifest(
                 { name: 'TRANSPARENT_HTTPS_PORT', value: String(TRANSPARENT_HTTPS_PORT) },
                 { name: 'TRANSPARENT_HTTP_PORT', value: String(TRANSPARENT_HTTP_PORT) },
                 { name: 'TRANSPARENT_TUNNEL_PORT', value: String(TRANSPARENT_TUNNEL_PORT) },
+                // Stream relay (docs/stream-relay.md): the authenticated
+                // CONNECT into session pods' streamd. Same env for outer and
+                // inner proxies — only the addressing differs (NodePort vs
+                // pod-IP dial).
+                { name: 'RELAY_PORT', value: String(RELAY_PORT) },
+                { name: 'POD_STREAM_PORT', value: String(POD_STREAM_PORT) },
                 { name: 'DNS_STUB_PORT', value: String(DNS_STUB_PORT) },
                 {
                   name: 'PROXY_AUTH_SECRET',
@@ -639,9 +650,20 @@ export function buildProxyIngressCnpManifest(): Record<string, unknown> {
       endpointSelector: { matchLabels: { app: PROXY_APP_NAME } },
       ingress: [
         {
-          // Control API: the host server (session registration) + kubelet probe.
+          // Control API: the host server (session registration) + kubelet
+          // probe. The relay port rides the same host-only rule. The
+          // server's own relay dials arrive via kubectl port-forward —
+          // CRI dials localhost inside the pod netns, which never
+          // traverses this policy — so the network-side allowance exists
+          // for host-identity dials only (a node-local server using the
+          // YAAC_RELAY_ADDR direct-TCP override); session pods must not
+          // reach it, and don't (their identity is not host). The bearer
+          // auth line is the second gate.
           fromEntities: ['host'],
-          toPorts: [{ ports: [{ port: String(PROXY_PORT), protocol: 'TCP' }] }],
+          toPorts: [{ ports: [
+            { port: String(PROXY_PORT), protocol: 'TCP' },
+            { port: String(RELAY_PORT), protocol: 'TCP' },
+          ] }],
         },
         {
           // Redirected session egress (transparent listeners) + DNS stub. The
@@ -678,6 +700,38 @@ export function buildProxyIngressCnpManifest(): Record<string, unknown> {
             { port: String(TRANSPARENT_HTTP_PORT), protocol: 'TCP' },
             { port: String(TRANSPARENT_TUNNEL_PORT), protocol: 'TCP' },
           ] }],
+        },
+      ],
+    },
+  }
+}
+
+/**
+ * CiliumNetworkPolicy locking SESSION-POD ingress. Selecting every session
+ * pod with any ingress rule makes Cilium default-deny their ingress —
+ * before the relay nothing dialed session pods (no Services, no probes;
+ * kubelet exec is CRI, not network), so their ingress was default-allow by
+ * omission. The relay makes proxy→pod dialing real, so the lock ships with
+ * it: only the proxy may reach streamd (POD_STREAM_PORT), and nothing else
+ * reaches anything. Synced (inner) session pods live in vcluster
+ * namespaces, outside this namespaced policy — they get the projected
+ * inner equivalent (buildInnerSessionIngressLockCnpManifest).
+ */
+export function buildSessionIngressLockCnpManifest(): Record<string, unknown> {
+  return {
+    apiVersion: 'cilium.io/v2',
+    kind: 'CiliumNetworkPolicy',
+    metadata: {
+      name: SESSION_INGRESS_LOCK_CNP_NAME,
+      namespace: k8sNamespace(),
+      labels: { app: PROXY_APP_NAME },
+    },
+    spec: {
+      endpointSelector: { matchExpressions: [{ key: LABEL_SESSION_ID, operator: 'Exists' }] },
+      ingress: [
+        {
+          fromEndpoints: [{ matchLabels: { app: PROXY_APP_NAME } }],
+          toPorts: [{ ports: [{ port: String(POD_STREAM_PORT), protocol: 'TCP' }] }],
         },
       ],
     },
@@ -800,6 +854,8 @@ export function buildInnerSessionEgressRedirectCnpManifest(
 export function buildInnerProxyIngressCnpManifest(
   vcNamespace: string,
   vcName: string,
+  /** The OWNING outer session id — the only pod admitted to the relay. */
+  ownerSessionId: string,
 ): Record<string, unknown> {
   return {
     apiVersion: 'cilium.io/v2',
@@ -817,6 +873,18 @@ export function buildInnerProxyIngressCnpManifest(
           toPorts: [{ ports: [{ port: String(PROXY_PORT), protocol: 'TCP' }] }],
         },
         {
+          // Stream relay: the nested server — the OWNING outer session pod,
+          // in the install namespace — dials the inner proxy's pod IP
+          // directly (admitted on its side by the all-ports synced-pod rule
+          // of buildVclusterSessionNetworkPolicyManifest). Other sessions'
+          // pods stay locked out; the bearer auth line is the second gate.
+          fromEndpoints: [{ matchExpressions: [
+            { key: LABEL_SESSION_ID, operator: 'In', values: [ownerSessionId] },
+            { key: 'k8s:io.kubernetes.pod.namespace', operator: 'In', values: [k8sNamespace()] },
+          ] }],
+          toPorts: [{ ports: [{ port: String(RELAY_PORT), protocol: 'TCP' }] }],
+        },
+        {
           fromEndpoints: [{ matchExpressions: [
             { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [vcName] },
           ] }],
@@ -826,6 +894,45 @@ export function buildInnerProxyIngressCnpManifest(
             { port: String(TRANSPARENT_TUNNEL_PORT), protocol: 'TCP' },
             { port: String(DNS_STUB_PORT), protocol: 'UDP' },
           ] }],
+        },
+      ],
+    },
+  }
+}
+
+/**
+ * Projected per-vcluster session ingress lock — the inner counterpart of
+ * buildSessionIngressLockCnpManifest. Synced session pods (managed-by +
+ * a session-id label, synced verbatim from the inner install) accept
+ * streamd dials on POD_STREAM_PORT from their own vcluster's inner
+ * proxies only, default-denying all other ingress. Same projection
+ * lifecycle as the inner-redirect objects: applied by the OUTER server
+ * (the inner install has no host RBAC) and pruned with the namespace.
+ */
+export function buildInnerSessionIngressLockCnpManifest(
+  vcNamespace: string,
+  vcName: string,
+): Record<string, unknown> {
+  return {
+    apiVersion: 'cilium.io/v2',
+    kind: 'CiliumNetworkPolicy',
+    metadata: {
+      name: INNER_SESSION_INGRESS_LOCK_CNP_NAME,
+      namespace: vcNamespace,
+      labels: innerProjectionLabels(),
+    },
+    spec: {
+      endpointSelector: { matchExpressions: [
+        { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [vcName] },
+        { key: LABEL_SESSION_ID, operator: 'Exists' },
+      ] },
+      ingress: [
+        {
+          fromEndpoints: [{ matchExpressions: [
+            { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [vcName] },
+            { key: LABEL_ROLE, operator: 'In', values: [ROLE_INNER_PROXY] },
+          ] }],
+          toPorts: [{ ports: [{ port: String(POD_STREAM_PORT), protocol: 'TCP' }] }],
         },
       ],
     },
@@ -995,7 +1102,9 @@ export function buildProxyServiceManifest(): Record<string, unknown> {
       selector: { app: PROXY_APP_NAME },
       // port == targetPort throughout: the NetworkPolicy and the in-pod
       // egress filter list the post-translation (transport) port, so a
-      // remap would make policy and Service silently diverge.
+      // remap would make policy and Service silently diverge. No relay
+      // entry: the server's port-forward (and a nested server's pod-IP
+      // dial) target the pod port directly, never a Service port.
       ports: [
         { name: 'proxy', port: PROXY_PORT, targetPort: PROXY_PORT },
         { name: 'transparent-https', port: TRANSPARENT_HTTPS_PORT, targetPort: TRANSPARENT_HTTPS_PORT },

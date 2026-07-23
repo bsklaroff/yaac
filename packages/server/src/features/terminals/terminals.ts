@@ -1,4 +1,4 @@
-import { containerExec } from '#platform/k8s/exec'
+import { sessionExec } from '#platform/k8s/stream-relay'
 import { sessionControlStreamSend } from '#features/sessions/control-stream-registry'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import type { SessionTerminalEntry } from '@yaac/shared/types'
@@ -55,8 +55,8 @@ export function nextShellName(existing: SessionTerminalEntry[]): string {
 
 /**
  * Run a READ-ONLY tmux command against the session, preferring the
- * status watcher's persistent control-mode stream (no exec spawned)
- * and falling back to a one-shot `kubectl exec` when no stream is up
+ * status watcher's persistent control-mode stream (no new stream dialed)
+ * and falling back to a one-shot relay exec when no stream is up
  * (prewarmed spares, stream mid-respawn) or the stream send fails.
  * Mutating commands (new-window, kill-window) must not come through
  * here — the watcher's client is attached read-only and tmux refuses
@@ -69,11 +69,11 @@ async function tmuxOut(jobName: string, tmuxArgs: string): Promise<string> {
       return await send(tmuxArgs)
     } catch {
       // Stream just died (the watcher is tearing it down and will
-      // respawn) — fall through to the exec path for this call.
+      // respawn) — fall through to the one-shot path for this call.
     }
   }
   try {
-    const { stdout } = await containerExec(
+    const { stdout } = await sessionExec(
       jobName,
       `tmux -S ${CONTAINER_TMUX_SOCK} ${tmuxArgs}`,
       { maxAttempts: 1 },
@@ -94,7 +94,7 @@ export async function listSessionTerminals(jobName: string): Promise<SessionTerm
  *  (and open a pane) without waiting for the next terminals poll. */
 export async function createShellWindow(jobName: string): Promise<SessionTerminalEntry> {
   const name = nextShellName(await listSessionTerminals(jobName))
-  const { stdout } = await containerExec(
+  const { stdout } = await sessionExec(
     jobName,
     `tmux -S ${CONTAINER_TMUX_SOCK} new-window -d -P -F '#{window_id}' -t yaac -n ${name} -c /workspace`,
     { maxAttempts: 1 },
@@ -116,7 +116,7 @@ export async function killWindowTerminal(jobName: string, target: string): Promi
   if (rows.find((r) => r.index === agentIndex)?.id === id) {
     throw new Error('refusing to kill the agent window')
   }
-  await containerExec(
+  await sessionExec(
     jobName,
     `tmux -S ${CONTAINER_TMUX_SOCK} kill-window -t ${id}`,
     { maxAttempts: 1 },

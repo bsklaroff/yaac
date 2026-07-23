@@ -1,10 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
 
-vi.mock('#platform/k8s/exec', () => ({
-  containerExec: vi.fn(),
+vi.mock('#platform/k8s/stream-relay', () => ({
+  sessionExec: vi.fn(),
 }))
 
-import { containerExec } from '#platform/k8s/exec'
+import { sessionExec } from '#platform/k8s/stream-relay'
 import {
   statusFromCode,
   resolveRenamePath,
@@ -15,7 +15,7 @@ import {
   getSessionChanges,
 } from '#features/sessions/changes'
 
-const mockExec = vi.mocked(containerExec)
+const mockExec = vi.mocked(sessionExec)
 
 describe('statusFromCode', () => {
   it('maps git status letters', () => {
@@ -183,7 +183,7 @@ describe('buildChangesScript', () => {
 })
 
 describe('getSessionChanges', () => {
-  it('runs the pod-side script via containerExec and parses its output', async () => {
+  it('runs the pod-side script via the relay exec and parses its output', async () => {
     mockExec.mockResolvedValue({
       stdout: 'BASE cafe1234\n@@NUMSTAT@@\n2\t1\tsrc/x.ts\n@@NAMESTATUS@@\nM\tsrc/x.ts\n@@DIFF@@\n',
       stderr: '',

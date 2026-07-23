@@ -2,8 +2,10 @@
 
 The server consumes cluster state through watch-fed informer caches and
 reconciles on events, not on a polling clock. Reads ride
-`@kubernetes/client-node`; writes (`kubectlApply`/delete) and all streaming
-(exec, PTYs, port-forward relays) stay on `kubectl`.
+`@kubernetes/client-node`; writes (`kubectlApply`/delete) and the bounded
+provisioning execs stay on `kubectl`. Steady-state session streams (PTYs,
+status, port forwards, one-shot pod commands) ride the stream relay
+instead — see docs/stream-relay.md.
 
 ## Informer layer (`packages/server/src/platform/k8s/`)
 

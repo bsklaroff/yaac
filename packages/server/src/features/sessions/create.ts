@@ -13,9 +13,10 @@ import {
 } from '#features/sessions/egress/proxy-client'
 import { buildSessionRegistration, syncProxySecrets } from '#features/sessions/egress/proxy-registration'
 import { resolveAllowedHosts } from '#features/sessions/egress/default-allowed-hosts'
-import { reserveAvailablePort, startPortForwarders, kubectlRelay } from '#platform/container/port'
+import { reserveAvailablePort, startPortForwarders } from '#platform/container/port'
 import type { ReservedPort } from '#platform/container/port'
 import { containerExec } from '#platform/k8s/exec'
+import { bootStreamd, relayTcpFactory, sessionStreamToken } from '#platform/k8s/stream-relay'
 import { createKeyedMutex } from '#platform/keyed-mutex'
 import { dataDirHash, k8sNamespace, kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
 // Aliased: this module uses a local `env: string[]` for the pod's env vars.
@@ -317,6 +318,13 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
   })
   await kubectlApply(manifest)
   await waitForPodReady(jobName)
+
+  // Boot streamd (the in-pod stream daemon) first, so every stream that
+  // follows setup — status watcher, terminals, forwards, one-shot relay
+  // execs — has its in-pod side up the moment the pod lists as running.
+  // The pod env already carries YAAC_STREAM_TOKEN; prewarmed spares boot
+  // it here too (they take this same path).
+  await bootStreamd(jobName)
 
   // No ownership fixup is needed for server-created hostPath mounts: the
   // image's yaac user is built with the server's uid (YAAC_UID build arg,
@@ -849,6 +857,12 @@ export async function createSession(
   // container needs nothing but trust in the MITM CA.
   env.push(...proxyClient.getCaTrustEnv())
 
+  // streamd auth: the per-session token its handshake requires, derived
+  // from the install's proxy secret (no new storage — survives server
+  // restarts). Leaking it grants nothing: the ingress lock means only the
+  // proxy reaches streamd, and the token only opens the pod's OWN daemon.
+  env.push(`YAAC_STREAM_TOKEN=${await sessionStreamToken(sessionId)}`)
+
   // SSH provisioning: when the project's remote is SSH, expose the proxy's
   // ssh-agent into the pod (no private key inside the container) and
   // configure git's SSH transport to (a) use the agent for identity, (b)
@@ -1231,7 +1245,7 @@ export async function createSession(
   // owned by the server. These stay alive across user attaches/detaches
   // and are torn down only by delete or the reaper.
   if (forwardedPorts.length > 0) {
-    const stop = startPortForwarders(kubectlRelay(jobName), forwardedPorts)
+    const stop = startPortForwarders(relayTcpFactory(sessionId), forwardedPorts)
     registerSessionForwarders(sessionId, stop, forwardedPorts)
   }
 

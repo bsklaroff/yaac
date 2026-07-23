@@ -97,8 +97,13 @@ vi.mock('@yaac/server/features/sessions/egress/default-allowed-hosts', async (im
 vi.mock('@yaac/server/platform/container/port', () => ({
   reserveAvailablePort: vi.fn(),
   startPortForwarders: vi.fn().mockReturnValue(vi.fn()),
-  kubectlRelay: vi.fn().mockReturnValue(() => ({})),
 } satisfies Partial<typeof portModule>))
+
+vi.mock('@yaac/server/platform/k8s/stream-relay', () => ({
+  bootStreamd: vi.fn().mockResolvedValue(undefined),
+  relayTcpFactory: vi.fn().mockReturnValue(() => ({})),
+  sessionStreamToken: vi.fn().mockResolvedValue('stream-token'),
+}))
 
 vi.mock('@yaac/shared/project-paths', () => ({
   repoDir: vi.fn((slug: string) => `/tmp/${slug}/repo`),
@@ -202,7 +207,8 @@ import { resolveCredentialForUrl, loadKnownHostsEntryForHost } from '@yaac/serve
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { resolveAllowedHosts } from '@yaac/server/features/sessions/egress/default-allowed-hosts'
 import { addWorktree, getDefaultBranch, fetchOrigin, remoteBranchExists } from '@yaac/server/platform/git'
-import { kubectlRelay, reserveAvailablePort, startPortForwarders } from '@yaac/server/platform/container/port'
+import { reserveAvailablePort, startPortForwarders } from '@yaac/server/platform/container/port'
+import { relayTcpFactory } from '@yaac/server/platform/k8s/stream-relay'
 import { buildStatusRight, registerSessionForwarders } from '@yaac/server/features/sessions/forwarders/port-forwarders'
 
 const mockSpawn = vi.mocked(spawn)
@@ -217,7 +223,7 @@ const mockKubectlRetry = vi.mocked(kubectlWithRetry)
 const mockContainerExec = vi.mocked(containerExec)
 const mockReserveAvailablePort = vi.mocked(reserveAvailablePort)
 const mockStartForwarders = vi.mocked(startPortForwarders)
-const mockKubectlRelay = vi.mocked(kubectlRelay)
+const mockRelayTcpFactory = vi.mocked(relayTcpFactory)
 const mockRegisterSessionForwarders = vi.mocked(registerSessionForwarders)
 const mockLoadToolAuth = vi.mocked(loadToolAuthEntry)
 
@@ -306,7 +312,7 @@ describe('createSession', () => {
     mockKubectlRetry.mockResolvedValue({ stdout: '', stderr: '' })
     mockContainerExec.mockResolvedValue({ stdout: '', stderr: '' })
     mockStartForwarders.mockReturnValue(vi.fn())
-    mockKubectlRelay.mockReturnValue((() => ({})) as never)
+    mockRelayTcpFactory.mockReturnValue((() => ({})) as never)
     vi.mocked(buildStatusRight).mockReturnValue(' stub-status ')
     mockReserveAvailablePort.mockResolvedValue({
       containerPort: 3000,
@@ -665,12 +671,12 @@ describe('createSession', () => {
     const reserved = { containerPort: 3000, hostPort: 3001, server: { close: vi.fn() } }
     mockReserveAvailablePort.mockResolvedValueOnce(reserved as never)
     const relayFactory = (() => ({})) as never
-    mockKubectlRelay.mockReturnValue(relayFactory)
+    mockRelayTcpFactory.mockReturnValue(relayFactory)
 
     const result = await createSession('demo', { sessionId: 'abcd1234' })
 
     expect(mockReserveAvailablePort).toHaveBeenCalledWith(3000, 3000)
-    expect(mockKubectlRelay).toHaveBeenCalledWith('yaac-demo-abcd1234')
+    expect(mockRelayTcpFactory).toHaveBeenCalledWith('abcd1234')
     expect(mockStartForwarders).toHaveBeenCalledWith(relayFactory, [reserved])
     expect(mockRegisterSessionForwarders).toHaveBeenCalledWith(
       'abcd1234', expect.any(Function), [reserved],

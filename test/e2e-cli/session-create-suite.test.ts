@@ -17,11 +17,13 @@ import {
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
 import {
+  IS_NESTED_YAAC,
   requirePodman,
   requireCluster,
   execInJob,
   cleanupSessionJobs,
 } from '@yaac/test-utils/setup'
+import { k8sNamespace, kubectlWithRetry } from '@yaac/server/platform/k8s/kubectl'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import {
   startMockLLM,
@@ -737,6 +739,73 @@ describe('yaac session create suite (real CLI + real server + mocked remotes)', 
       ])
     }, 120_000)
 
+    it.skipIf(IS_NESTED_YAAC)('holds its streams with zero kubectl execs into session pods', async () => {
+      // The stream relay's measurable claim: in steady state — status
+      // watcher stream live, forward listeners registered, terminals just
+      // exercised — the server holds NO kubectl exec into any session pod.
+      // The relay's single `kubectl port-forward` and the control API's
+      // socat execs into the PROXY deployment are expected and excluded by
+      // the job/ filter. (Skipped nested: the inner server dials the inner
+      // proxy's pod IP — no port-forward child — and the base image has no
+      // ps.)
+      const { stdout } = await execFileAsync('ps', ['-A', '-o', 'ppid=,command='])
+      const serverPid = String(server!.lock.pid)
+      const children = stdout.split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.startsWith(`${serverPid} `))
+      const sessionPodExecs = children.filter(
+        (l) => /kubectl\s+exec\b/.test(l) && l.includes('job/'),
+      )
+      expect(sessionPodExecs).toEqual([])
+      const relayForwards = children.filter((l) => /kubectl\s+port-forward\b/.test(l))
+      expect(relayForwards).toHaveLength(1)
+    })
+
+    it.skipIf(IS_NESTED_YAAC)('locks streamd ingress to the proxy (session ingress lock CNP)', async () => {
+      const ns = k8sNamespace()
+      const { stdout: ipOut } = await kubectlWithRetry([
+        'get', 'pods', '-n', ns, '-l', `yaac.session-id=${sessionId}`,
+        '-o', 'jsonpath={.items[0].status.podIP}',
+      ])
+      const podIp = ipOut.trim()
+      expect(podIp).toMatch(/^\d+\.\d+\.\d+\.\d+$/)
+
+      // Positive control: the proxy CAN dial streamd — proves the daemon is
+      // up and the lock's allow rule admits proxy-identity traffic (so the
+      // negative below measures the CNP, not a dead daemon).
+      const dialScript =
+        `const s=require('net').connect(10300,'${podIp}');`
+        + "s.on('connect',()=>{console.log('CONNECTED');process.exit(0)});"
+        + "s.on('error',(e)=>{console.log('ERR:'+e.code);process.exit(1)});"
+        + "setTimeout(()=>{console.log('TIMEOUT');process.exit(1)},5000);"
+      const { stdout: fromProxy } = await kubectlWithRetry([
+        'exec', '-n', ns, 'deploy/yaac-proxy', '--', 'node', '-e', dialScript,
+      ], { timeout: 30_000 })
+      expect(fromProxy).toContain('CONNECTED')
+
+      // Negative: a non-proxy pod dialing streamd is default-denied by the
+      // session ingress lock (its SYN is dropped — nc times out). The probe
+      // runs the session image (guaranteed present on the node, has nc).
+      const { stdout: imgOut } = await kubectlWithRetry([
+        'get', 'pods', '-n', ns, '-l', `yaac.session-id=${sessionId}`,
+        '-o', 'jsonpath={.items[0].spec.containers[0].image}',
+      ])
+      const probeName = `streamd-lock-probe-${randomUUID().slice(0, 8)}`
+      try {
+        const { stdout: probeOut } = await kubectlWithRetry([
+          'run', probeName, '-n', ns, `--image=${imgOut.trim()}`,
+          '--restart=Never', '--attach', '--rm', '--command', '--',
+          'sh', '-c', `nc -w 5 ${podIp} 10300 </dev/null && echo STREAMD_OPEN || echo STREAMD_BLOCKED`,
+        ], { timeout: 120_000 })
+        expect(probeOut).toContain('STREAMD_BLOCKED')
+        expect(probeOut).not.toContain('STREAMD_OPEN')
+      } finally {
+        await kubectlWithRetry([
+          'delete', 'pod', probeName, '-n', ns, '--ignore-not-found', '--wait=false',
+        ]).catch(() => { /* --rm usually got it */ })
+      }
+    }, 180_000)
+
     it('pushes pane-title flips into session list, sticky across a watcher stream kill', async () => {
       // The push-fed status path: the server holds a tmux control-mode
       // watcher per session (status-watcher.ts) subscribed to the agent
@@ -796,12 +865,12 @@ describe('yaac session create suite (real CLI + real server + mocked remotes)', 
       await setTitle('⠋ marker-busy')
       await waitForListStatus('running', 20_000)
 
-      // Kill the watcher's kubectl exec child. Status must stay sticky
-      // (never blank / never reaped), and the watcher must respawn on its
-      // own — proven by the next title flip still landing. execFile (no
-      // shell) so no intermediate sh -c carries the pattern in its own
-      // cmdline — pkill would match and kill it too.
-      await execFileAsync('pkill', ['-f', `job/${jobName}.*attach-session`])
+      // Kill the watcher's stream at its IN-POD end (the tmux control-mode
+      // client streamd spawned — there is no host-side kubectl child per
+      // stream anymore). Status must stay sticky (never blank / never
+      // reaped), and the watcher must respawn on its own — proven by the
+      // next title flip still landing.
+      await execInJob(jobName, ['pkill', '-f', 'tmux.*-C attach-session'])
       const { stdout: afterKill } = await runYaac(serverEnv, 'session', 'list', 'kitchen')
       const row = afterKill.split('\n').find((l) => l.includes('kitchen') && !l.startsWith('SESSION'))
       expect(row).toBeDefined()

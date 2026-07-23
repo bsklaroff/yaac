@@ -8,8 +8,6 @@ vi.mock('#platform/k8s/kubectl', () => ({
 import {
   containerExec,
   execTarget,
-  interactiveExecArgs,
-  stdinExecArgs,
 } from '#platform/k8s/exec'
 import { shellKubectlWithRetry } from '#platform/k8s/kubectl'
 
@@ -47,21 +45,5 @@ describe('containerExec', () => {
   it('propagates failures', async () => {
     mockShell.mockRejectedValue(new Error('exec died'))
     await expect(containerExec('yaac-demo-abc', 'false')).rejects.toThrow('exec died')
-  })
-})
-
-describe('interactiveExecArgs', () => {
-  it('builds a -it argv with the command after --', () => {
-    expect(interactiveExecArgs('yaac-demo-abc', ['tmux', 'attach'])).toEqual([
-      'exec', '-n', 'test-ns', '-it', 'job/yaac-demo-abc', '--', 'tmux', 'attach',
-    ])
-  })
-})
-
-describe('stdinExecArgs', () => {
-  it('builds a -i (no TTY) argv for stdin-piped relays', () => {
-    expect(stdinExecArgs('yaac-demo-abc', ['nc', 'localhost', '3000'])).toEqual([
-      'exec', '-n', 'test-ns', '-i', 'job/yaac-demo-abc', '--', 'nc', 'localhost', '3000',
-    ])
   })
 })

@@ -13,7 +13,7 @@ controller (client-go/controller-runtime) converges the cluster to it.
 Motivation is architectural, not CPU. The event-driven control layer
 (`docs/event-driven-reconcile.md`) already removes the polling overhead
 inside the current single-process design, and
-`docs/plans/event-driven-k8s-control.md` covers the remaining
+`docs/stream-relay.md` (shipped) covers the remaining
 process-per-stream work; an operator is the *next* shape, and its
 trigger conditions are the plans already on the shelf:
 

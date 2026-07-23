@@ -2,12 +2,14 @@ import {
   buildInnerEgressRedirectCecManifest,
   buildInnerProxyIngressCnpManifest,
   buildInnerSessionEgressRedirectCnpManifest,
+  buildInnerSessionIngressLockCnpManifest,
   innerRedirectObjectName,
 } from '#features/cluster/proxy-manifests'
 import {
   INNER_EGRESS_REDIRECT_CEC_NAME,
   INNER_PROXY_INGRESS_CNP_NAME,
   INNER_SESSION_EGRESS_REDIRECT_CNP_NAME,
+  INNER_SESSION_INGRESS_LOCK_CNP_NAME,
   LABEL_PROJECTION,
   PROJECTION_INNER_REDIRECT,
   PROXY_APP_NAME,
@@ -170,6 +172,7 @@ export async function reconcileInnerRedirects(
     }
     if (proxies.length > 0) {
       desired.add(`ciliumnetworkpolicy/${INNER_PROXY_INGRESS_CNP_NAME}`)
+      desired.add(`ciliumnetworkpolicy/${INNER_SESSION_INGRESS_LOCK_CNP_NAME}`)
     }
 
     await pruneInnerRedirects(vc.namespace, desired)
@@ -179,7 +182,10 @@ export async function reconcileInnerRedirects(
       await kubectlApply(buildInnerSessionEgressRedirectCnpManifest(vc.namespace, vc.name, p.installHash))
     }
     if (proxies.length > 0) {
-      await kubectlApply(buildInnerProxyIngressCnpManifest(vc.namespace, vc.name))
+      await kubectlApply(buildInnerProxyIngressCnpManifest(vc.namespace, vc.name, vc.sessionId))
+      // Inner session ingress lock: synced session pods accept streamd
+      // dials from their vcluster's inner proxies only.
+      await kubectlApply(buildInnerSessionIngressLockCnpManifest(vc.namespace, vc.name))
     }
     lastProjected.set(vc.namespace, serialized)
   }

@@ -10,7 +10,7 @@ import { closeDb, getDb } from '#platform/db/client'
 import { importLegacyJsonStores } from '#platform/db/legacy-import'
 import { EventHub } from '#main/events'
 import { bridge, killViewSession, makeWindowResizer, newViewName, parsePtySize, parsePtyTarget, spawnAttachPty, sweepGhostViews, type SocketLike } from '#features/terminals/pty-bridge'
-import { containerExec } from '#platform/k8s/exec'
+import { invalidateRelayAddr, sessionExec } from '#platform/k8s/stream-relay'
 import { coalesceCalls, notifySessionListChanged, onSessionListChanged } from '#features/sessions/notify'
 import { resolveSessionContainer } from '#features/sessions/resolve'
 import { StatusWatcherManager } from '#features/sessions/status-watcher'
@@ -282,7 +282,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
             views.add(viewName)
             liveViews.set(jobName, views)
             void sweepGhostViews(jobName, views, (j, cmd) =>
-              containerExec(j, cmd, { maxAttempts: 1 }))
+              sessionExec(j, cmd, { maxAttempts: 1 }))
           }
           const ptyProc = spawnAttachPty(jobName, size, target, viewName)
           const sock: SocketLike = {
@@ -300,7 +300,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
           const resizer = target === 'shell' || target === 'native'
             ? null
             : makeWindowResizer(viewName, (cmd) =>
-                containerExec(jobName, cmd, { maxAttempts: 1 }).catch(() => {
+                sessionExec(jobName, cmd, { maxAttempts: 1 }).catch(() => {
                   // view gone / pod race — the next resize (or none) is fine
                 }))
           // 'shell' is a raw zsh exec — no view session exists to clean up.
@@ -400,15 +400,17 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
       ])
     }
     // Tear down every active port-forwarder before closing the server.
-    // Each forwarder owns a listener server and a set of long-lived
-    // `kubectl exec nc` relay children; without this they survive the
-    // server (orphaned to PID 1) and the next server stacks new ones on
-    // top via restoreAllSessionForwarders.
+    // Each forwarder owns a listener server and a set of live relay
+    // streams; without this the listeners survive the server (orphaned
+    // to PID 1) and the next server stacks new ones on top via
+    // restoreAllSessionForwarders.
     stopAllSessionForwarders()
 
-    // Same for the proxy control tunnel (`kubectl port-forward` child) —
-    // the deployed proxy itself stays up for the next server to adopt.
+    // Same for the proxy control tunnel and the stream relay's
+    // `kubectl port-forward` child — the deployed proxy itself stays up
+    // for the next server to adopt.
     proxyClient.disconnect()
+    invalidateRelayAddr()
 
     // @hono/node-server wraps a Node http.Server; close() refuses new
     // connections, drains in-flight requests, then fires the callback.

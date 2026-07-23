@@ -4,8 +4,9 @@ import path from 'node:path'
 import os from 'node:os'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-vi.mock('#platform/k8s/exec', () => ({
-  containerExec: vi.fn(),
+vi.mock('#platform/k8s/stream-relay', async (importOriginal) => ({
+  ...await importOriginal<typeof relayModule>(),
+  sessionExec: vi.fn(),
 }))
 
 vi.mock('#platform/k8s/pods', async (importOriginal) => {
@@ -16,7 +17,8 @@ vi.mock('#platform/k8s/pods', async (importOriginal) => {
   }
 })
 
-import { containerExec } from '#platform/k8s/exec'
+import { sessionExec } from '#platform/k8s/stream-relay'
+import type * as relayModule from '#platform/k8s/stream-relay'
 import { listSessionPods, type SessionPod } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import { getDb, closeDb } from '#platform/db/client'
@@ -35,7 +37,7 @@ import {
   _clearOpencodeProbeCacheForTests,
 } from '#features/sessions/agents/opencode'
 
-const mockedExec = vi.mocked(containerExec)
+const mockedExec = vi.mocked(sessionExec)
 const mockListPods = vi.mocked(listSessionPods)
 
 /**
@@ -268,12 +270,14 @@ describe('captureOpencodeFirstMessages', () => {
     // Probe returns no session — the capture path still runs the curl exec
     // for the opencode pod, which is the observable we assert on. Only the
     // opencode session is probed; the claude session is filtered out before
-    // any exec (containerExec is used solely for the `/session` probe).
+    // any curl (the tmux-liveness probes ride the same relay exec, so
+    // filter to the `/session` curls).
     mockProbeResult(sessionsStdout([]))
 
     await captureOpencodeFirstMessages()
 
-    expect(mockedExec.mock.calls.map((c) => c[0])).toEqual(['yaac-demo-ocsess'])
+    const curlCalls = mockedExec.mock.calls.filter((c) => String(c[1]).includes('curl'))
+    expect(curlCalls.map((c) => c[0])).toEqual(['yaac-demo-ocsess'])
   })
 
   it('returns early without capturing when the cluster is unavailable', async () => {

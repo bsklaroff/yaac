@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type * as execModule from '#platform/k8s/exec'
-import { containerExec } from '#platform/k8s/exec'
+import type * as relayModule from '#platform/k8s/stream-relay'
+import { sessionExec } from '#platform/k8s/stream-relay'
 import {
   registerSessionControlStream,
   _clearControlStreamRegistryForTests,
@@ -13,12 +13,12 @@ import {
   parseWindowList,
 } from '#features/terminals/terminals'
 
-vi.mock('#platform/k8s/exec', async (importOriginal) => ({
-  ...await importOriginal<typeof execModule>(),
-  containerExec: vi.fn(),
+vi.mock('#platform/k8s/stream-relay', async (importOriginal) => ({
+  ...await importOriginal<typeof relayModule>(),
+  sessionExec: vi.fn(),
 }))
 
-const exec = vi.mocked(containerExec)
+const exec = vi.mocked(sessionExec)
 const out = (stdout: string): Promise<{ stdout: string; stderr: string }> =>
   Promise.resolve({ stdout, stderr: '' })
 

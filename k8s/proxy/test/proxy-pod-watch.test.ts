@@ -63,6 +63,36 @@ describe('PodSessionIndex', () => {
     const idx = new PodSessionIndex()
     idx.set('10.0.0.9', 'sess-z')
     expect(idx.resolve('10.0.0.9')).toBe('sess-z')
+    expect(idx.resolveIp('sess-z')).toBe('10.0.0.9')
+  })
+
+  it('resolveIp reverse-resolves the session to its pod IP (the relay path)', () => {
+    const idx = new PodSessionIndex()
+    idx.apply({ type: 'ADDED', object: pod('10.0.0.1', 'sess-a') })
+    expect(idx.resolveIp('sess-a')).toBe('10.0.0.1')
+    idx.apply({ type: 'DELETED', object: pod('10.0.0.1', 'sess-a') })
+    expect(idx.resolveIp('sess-a')).toBeUndefined()
+  })
+
+  it('a replaced pod repoints the session; the old pod\'s late DELETED does not evict it', () => {
+    const idx = new PodSessionIndex()
+    idx.apply({ type: 'ADDED', object: pod('10.0.0.1', 'sess-a') })
+    // Replacement pod appears first (new IP)…
+    idx.apply({ type: 'ADDED', object: pod('10.0.0.2', 'sess-a') })
+    expect(idx.resolveIp('sess-a')).toBe('10.0.0.2')
+    // …then the OLD pod's DELETED arrives late: byIp evicts the old IP but
+    // the reverse entry must keep pointing at the live pod.
+    idx.apply({ type: 'DELETED', object: pod('10.0.0.1', 'sess-a') })
+    expect(idx.resolve('10.0.0.1')).toBeUndefined()
+    expect(idx.resolveIp('sess-a')).toBe('10.0.0.2')
+  })
+
+  it('replaceAll rebuilds the reverse index too', () => {
+    const idx = new PodSessionIndex()
+    idx.apply({ type: 'ADDED', object: pod('10.0.0.1', 'sess-a') })
+    idx.replaceAll([pod('10.0.0.2', 'sess-b')])
+    expect(idx.resolveIp('sess-a')).toBeUndefined()
+    expect(idx.resolveIp('sess-b')).toBe('10.0.0.2')
   })
 })
 

@@ -23,7 +23,7 @@ action, and self-clears when the fresh snapshot no longer lists it.
 
 Two adjacent plans shape the design:
 
-- **Data-plane relay / streamd** (`event-driven-k8s-control.md`) replaces the
+- **Data-plane relay / streamd** (`docs/stream-relay.md`) replaces the
   `kubectl exec … nc` forward relay with a `tcp` stream kind through an in-pod
   `streamd`, and *deletes* the kubectl stream paths. This changes how
   detection reads the pod (no `kubectl exec cat /proc/net/tcp`) and where the
@@ -188,7 +188,7 @@ the party influencing the click is the sandboxed party.
 
 ## Interaction with the streamd data-plane relay
 
-`event-driven-k8s-control.md` moves session streams onto an in-pod `streamd`
+`docs/stream-relay.md` moves session streams onto an in-pod `streamd`
 reached through the proxy relay, and deletes the kubectl stream paths. Impact
 on this feature:
 

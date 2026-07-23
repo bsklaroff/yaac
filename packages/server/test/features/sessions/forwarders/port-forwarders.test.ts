@@ -2,18 +2,18 @@ import { EventEmitter } from 'node:events'
 import type net from 'node:net'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
-vi.mock('#platform/k8s/exec', () => ({
-  containerExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+vi.mock('#platform/k8s/stream-relay', () => ({
+  sessionExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+  relayTcpFactory: vi.fn(),
 }))
 
 vi.mock('#platform/container/port', () => ({
   reserveAvailablePort: vi.fn(),
   startPortForwarders: vi.fn(),
-  kubectlRelay: vi.fn(),
 }))
 
-import { containerExec } from '#platform/k8s/exec'
-import { kubectlRelay, reserveAvailablePort, startPortForwarders } from '#platform/container/port'
+import { relayTcpFactory, sessionExec } from '#platform/k8s/stream-relay'
+import { reserveAvailablePort, startPortForwarders } from '#platform/container/port'
 import type { ReservedPort } from '#platform/container/port'
 import {
   buildStatusRight,
@@ -26,10 +26,10 @@ import {
   stopSessionForwarders,
 } from '#features/sessions/forwarders/port-forwarders'
 
-const mockExec = vi.mocked(containerExec)
+const mockExec = vi.mocked(sessionExec)
 const mockReserve = vi.mocked(reserveAvailablePort)
 const mockStartForwarders = vi.mocked(startPortForwarders)
-const mockKubectlRelay = vi.mocked(kubectlRelay)
+const mockRelayFactory = vi.mocked(relayTcpFactory)
 
 function makeReservedPort(hostPort: number, containerPort: number): ReservedPort {
   const server = new EventEmitter() as unknown as net.Server
@@ -171,7 +171,7 @@ describe('stopAllSessionForwarders', () => {
 describe('provisionSessionForwarders', () => {
   beforeEach(() => {
     vi.resetAllMocks()
-    mockKubectlRelay.mockReturnValue(vi.fn() as never)
+    mockRelayFactory.mockReturnValue(vi.fn() as never)
     mockStartForwarders.mockReturnValue(vi.fn())
   })
 
@@ -204,7 +204,7 @@ describe('provisionSessionForwarders', () => {
 
     expect(mockReserve).toHaveBeenNthCalledWith(1, 3000, 3000)
     expect(mockReserve).toHaveBeenNthCalledWith(2, 5432, 5432)
-    expect(mockKubectlRelay).toHaveBeenCalledWith('yaac-proj-sess-prov-2')
+    expect(mockRelayFactory).toHaveBeenCalledWith('sess-prov-2')
     expect(mockStartForwarders).toHaveBeenCalledTimes(1)
     expect(hasSessionForwarders('sess-prov-2')).toBe(true)
     // The registry serves the same mappings back for session-list rows.

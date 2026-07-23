@@ -57,6 +57,18 @@ export function sessionJobName(projectSlug: string, sessionId: string): string {
 }
 
 /**
+ * Recover the session id from a session Job name — always its last 36
+ * chars: the UUID tail survives `sessionJobName`'s collapsing untouched (a
+ * UUID has no consecutive dashes, and the slug part is trimmed before the
+ * join). Lets jobName-keyed call sites reach the relay, which addresses
+ * streams by session id.
+ */
+export function sessionIdFromJobName(jobName: string): string {
+  if (jobName.length < 36) throw new Error(`not a session job name: ${jobName}`)
+  return jobName.slice(-36)
+}
+
+/**
  * Terminal-state evidence from a dead or dying pod — what the stale reaper
  * reads to derive a session death reason before its own teardown deletes
  * the pod (and with it, the only record of why the session died). Absent

@@ -1,7 +1,6 @@
 import { randomBytes } from 'node:crypto'
-import * as pty from '@lydell/node-pty'
-import type { IPty } from '@lydell/node-pty'
-import { containerExec, interactiveExecArgs } from '#platform/k8s/exec'
+import { dialPtyStream, sessionExec } from '#platform/k8s/stream-relay'
+import { sessionIdFromJobName } from '#platform/k8s/pods'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 
 const DEFAULT_COLS = 80
@@ -44,9 +43,9 @@ export function newViewName(): string {
 }
 
 /**
- * Argv for attaching a tab's PTY: `kubectl exec -it job/<name> -- …`,
- * spawned under a PTY on the server so kubectl gets a real tty — the
- * same transport the CLI's `session attach` uses.
+ * In-pod argv for attaching a tab's PTY, spawned under a real PTY by the
+ * pod's streamd (a relay `pty` stream) — the same transport the CLI's
+ * `session attach` uses via the server's /pty/attach WebSocket.
  *
  * Every target attaches through a per-client grouped *view* session pinned
  * to a single window, so a webapp tab and a tmux window are the same thing:
@@ -83,7 +82,6 @@ export function newViewName(): string {
  * live window-switching want the standard behaviour).
  */
 export function attachArgs(
-  jobName: string,
   target: PtyTarget,
   viewName: string,
   size: { cols?: number; rows?: number } = {},
@@ -104,12 +102,12 @@ export function attachArgs(
   // `C-b d` — and the group's own current window. Only destroy-unattached
   // distinguishes it from a plain `attach-session -t yaac`.
   if (target === 'native') {
-    return interactiveExecArgs(jobName, [
+    return [
       'sh', '-c',
       create
       + ` && exec ${tmux} attach-session -t ${viewName}`
       + ' \\; set-option destroy-unattached on',
-    ])
+    ]
   }
 
   // Agent = the yaac session's lowest-index window (`^`): the agent window is
@@ -123,7 +121,7 @@ export function attachArgs(
   // group's original. `window-size manual` on the view + `resize-window` pins
   // the shared window to this client's grid (see the sizing note above); both
   // must target this view specifically — global manual segfaults tmux 3.4.
-  return interactiveExecArgs(jobName, [
+  return [
     'sh', '-c',
     create
     + ` \\; set-option -t ${viewName} status off`
@@ -133,7 +131,7 @@ export function attachArgs(
     + ` \\; select-window -t '${window}'`
     + ` \\; resize-window -t ${viewName} -x ${cols} -y ${rows}`
     + ' \\; set-option destroy-unattached on',
-  ])
+  ]
 }
 
 /** The tmux command to resize a webapp view's window to a client grid. The
@@ -245,15 +243,15 @@ export async function sweepGhostViews(
 /**
  * Detach a webapp client by destroying its per-client view session. With
  * `prefix None` on view sessions there is no detach keystroke to write, and
- * killing the host-side kubectl does not reliably terminate the exec'd tmux
- * client inside the container — kill-session works from outside the client
- * and `destroy-unattached` can't save a session that no longer exists.
+ * dropping the PTY stream does not always beat the in-pod tmux client to
+ * the punch — kill-session works from outside the client and
+ * `destroy-unattached` can't save a session that no longer exists.
  * Best-effort: "no such session" (closed before the attach landed, or
  * already reaped) and a gone pod are both fine.
  */
 export async function killViewSession(jobName: string, viewName: string): Promise<void> {
   try {
-    await containerExec(
+    await sessionExec(
       jobName,
       `tmux -S ${CONTAINER_TMUX_SOCK} kill-session -t ${viewName}`,
       { maxAttempts: 1 },
@@ -405,21 +403,16 @@ export function parsePtySize(
   return { cols: clamp(colsRaw), rows: clamp(rowsRaw) }
 }
 
-/** Spawn the attach PTY for a resolved session Job. The 'shell' target
- *  is a raw zsh exec (no tmux, no view session to clean up); everything
- *  else attaches through a per-client grouped tmux session. */
+/** Open the attach PTY for a resolved session Job — a relay `pty` stream
+ *  whose in-pod side spawns the argv under a real PTY. The 'shell' target
+ *  is a raw zsh (no tmux, no view session to clean up); everything else
+ *  attaches through a per-client grouped tmux session. */
 export function spawnAttachPty(
   jobName: string,
   size: { cols?: number; rows?: number },
   target: PtyTarget,
   viewName: string,
-): IPty {
-  const args = target === 'shell'
-    ? interactiveExecArgs(jobName, ['zsh'])
-    : attachArgs(jobName, target, viewName, size)
-  return pty.spawn('kubectl', args, {
-    name: 'xterm-color',
-    cols: size.cols ?? DEFAULT_COLS,
-    rows: size.rows ?? DEFAULT_ROWS,
-  })
+): PtyLike {
+  const argv = target === 'shell' ? ['zsh'] : attachArgs(target, viewName, size)
+  return dialPtyStream(sessionIdFromJobName(jobName), argv, size)
 }

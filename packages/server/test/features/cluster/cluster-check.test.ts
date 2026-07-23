@@ -259,6 +259,10 @@ describe('runClusterCheck', () => {
       for (const name of ['node-fixups', 'gvisor', 'egress', 'envoy-config', 'nested-mount', 'vap', 'runtime-stamp']) {
         expect(byName(results, name)?.status).toBe('skip')
       }
+      // The relay IS probed nested (the inner proxy's pod IP): with no
+      // inner proxy pod in the fake listing it degrades to a warn, never
+      // a fail.
+      expect(byName(results, 'relay')?.status).toBe('warn')
     } finally {
       delete process.env.YAAC_NESTED
     }

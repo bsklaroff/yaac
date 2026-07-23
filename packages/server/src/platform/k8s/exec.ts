@@ -14,6 +14,11 @@ export function execTarget(jobName: string): string {
  * transient API errors. `cmd` is a full shell-formatted command tail
  * (quoting handled by the caller) — the k8s replacement for
  * `podman exec <container> <cmd>`.
+ *
+ * Scope: session-create provisioning (the bounded setup execs that run
+ * before streamd exists, incl. claim-time retool/rebranch prep) and the
+ * streamd boot/self-heal itself. Steady-state session-pod commands ride
+ * the stream relay instead (`sessionExec` in platform/k8s/stream-relay).
  */
 export async function containerExec(
   jobName: string,
@@ -24,23 +29,4 @@ export async function containerExec(
     `kubectl exec -n ${k8sNamespace()} ${execTarget(jobName)} -- ${cmd}`,
     opts,
   )
-}
-
-/**
- * argv for an interactive `kubectl exec -it` into a session container —
- * used by the server's PTY bridge, which spawns kubectl under node-pty.
- * (The CLI's attach/shell commands ride the server's /pty/attach
- * WebSocket instead of exec'ing kubectl client-side.)
- */
-export function interactiveExecArgs(jobName: string, command: string[]): string[] {
-  return ['exec', '-n', k8sNamespace(), '-it', execTarget(jobName), '--', ...command]
-}
-
-/**
- * argv for a non-TTY stdin-piped exec (`kubectl exec -i`) — used by the
- * per-connection port-forward relays that pipe a TCP socket through `nc`
- * inside the container.
- */
-export function stdinExecArgs(jobName: string, command: string[]): string[] {
-  return ['exec', '-n', k8sNamespace(), '-i', execTarget(jobName), '--', ...command]
 }

@@ -1,0 +1,9 @@
+{
+  "name": "yaac-streamd",
+  "private": true,
+  "type": "module",
+  "description": "In-pod stream daemon for yaac session pods (PTY/ctrl/exec/tcp over the proxy relay)",
+  "dependencies": {
+    "@lydell/node-pty": "1.1.0"
+  }
+}

@@ -125,8 +125,8 @@ describe('ensureProxyResources', () => {
     const kinds = mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
     expect(kinds).toEqual([
       'ServiceAccount', 'Role', 'RoleBinding', 'Deployment', 'Service',
-      'CiliumEnvoyConfig', 'CiliumNetworkPolicy', 'CiliumClusterwideEnvoyConfig',
-      'CiliumNetworkPolicy', 'CiliumNetworkPolicy',
+      'CiliumEnvoyConfig', 'CiliumNetworkPolicy', 'CiliumNetworkPolicy',
+      'CiliumClusterwideEnvoyConfig', 'CiliumNetworkPolicy', 'CiliumNetworkPolicy',
     ])
     // The proxy Service ClusterIP is allocator-assigned and never deleted —
     // no pin migration, so ensureProxyResources issues no `delete service`.

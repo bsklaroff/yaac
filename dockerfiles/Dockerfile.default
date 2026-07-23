@@ -19,6 +19,14 @@ RUN ARCH="$(dpkg --print-architecture)" && if [ "$ARCH" = "amd64" ]; then ARCH=x
     curl -fsSL "https://nodejs.org/dist/v22.22.2/node-v22.22.2-linux-${ARCH}.tar.xz" | \
     tar -xJ -C /usr/local --strip-components=1
 RUN corepack enable
+# streamd: the in-pod stream daemon the server dials through the proxy
+# relay (PTY/ctrl/exec/tcp streams — the kubectl-exec replacement).
+# Installed under /opt with its prebuilt node-pty dependency; started by
+# session-create's setup exec, never by the image entrypoint. Its source
+# is folded into this layer's content hash (see baseImageHash), and
+# dockerfiles/.containerignore keeps its dev-only files out of the context.
+COPY streamd/ /opt/yaac/streamd/
+RUN cd /opt/yaac/streamd && npm install --omit=dev --no-audit --no-fund
 # Install both the full Chromium (symlinked to /opt/google/chrome for tools
 # that auto-detect it, e.g. chrome-devtools-mcp) and the headless shell that
 # Playwright's default `chromium.launch()` looks for. PLAYWRIGHT_BROWSERS_PATH

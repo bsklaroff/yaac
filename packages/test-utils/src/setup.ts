@@ -45,6 +45,7 @@ export const TEST_RUN_ID = crypto.randomBytes(4).toString('hex')
  */
 export const TEST_NAMESPACE = `yaac-test-${TEST_RUN_ID}`
 
+
 /**
  * True when the e2e suite runs inside a nested yaac session. Several
  * capabilities simply don't exist in a vcluster-backed inner session and

@@ -22,6 +22,7 @@ import {
   mapSessionJobObject,
   mapSessionPodObject,
   runPodToCompletion,
+  sessionIdFromJobName,
   sessionJobName,
   sessionJobSelector,
   toEpochMs,
@@ -72,6 +73,16 @@ describe('sessionJobName', () => {
   it('keeps the full yaac- prefix + UUID shape at exactly 63 chars for max slugs', () => {
     const name = sessionJobName('exactly-twenty-one-ch', SID)
     expect(name).toHaveLength(63)
+  })
+
+  it('sessionIdFromJobName recovers the UUID tail for any slug shape', () => {
+    for (const slug of ['demo', 'MyProj', 'my_proj.x', '-foo-', 'a'.repeat(40)]) {
+      expect(sessionIdFromJobName(sessionJobName(slug, SID))).toBe(SID)
+    }
+  })
+
+  it('sessionIdFromJobName rejects names too short to carry a session UUID', () => {
+    expect(() => sessionIdFromJobName('yaac-demo-abcd')).toThrow(/not a session job name/)
   })
 
   it('collapses double dashes', () => {
