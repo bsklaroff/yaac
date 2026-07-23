@@ -108,14 +108,97 @@ only the attach point and the identity basis move.
    scheme handled cleanly, and the thing most likely to sink the approach.
    (`--allow-packet-socket-write` stays off regardless.)
 
-## Acceptance gate (if spiked)
+## Spike results (2026-07-23) — viable
 
-A real gVisor session pod on **managed Cilium** (or a faithful DPv2-like
-eBPF-host-routing stand-in), with netstack DNAT rules installed by the chosen
-path, such that:
+Run against a **real runsc sandbox** (`--network=sandbox`, release-20260706.0)
+on the kind node, using hand-built veth/netns to isolate the netstack question
+from the node's Cilium (same rig as the veth-peer spike). Scripts and probes:
+[`netstack_dnat_spike.sh`](netstack_dnat_spike.sh), `raw_send_probe.c`,
+`pkt_send_probe.c` (reusing `connect_probe.c`, `tproxy_probe.c`). All four
+phases reproduce. The three open questions resolve as follows.
 
-- egress to an allowlisted host reaches it **through the proxy** (proxy sees
-  the connection; original dst recovered from SNI/Host/sentinel), and
-- egress to any un-allowlisted host **fails closed**, and
-- a `net-raw` session cannot bypass the OUTPUT hook and cannot forge its source
-  pod IP past the CNI's source-IP check — **plain and nested classes both**.
+**1. Install path — `--reproduce-nat` works.** A `nat` OUTPUT rule
+`-p tcp --dport 443 -j DNAT --to-destination <proxy>:<port>` written into the
+pod netns's *kernel* iptables is scraped at boot and becomes live in the
+sandbox netstack. The sandbox dialed `203.0.113.7:443` (TEST-NET, unroutable
+here) and the connection landed on the proxy listener at the proxy IP:port with
+`connect() rc=0 (ESTABLISHED)` — the destination was rewritten *inside the
+sandbox* before egress, and conntrack un-DNAT'd the replies (the handshake
+completed). So the chained-CNI-preinstalls-then-runsc-copies path is real; the
+`NET_ADMIN` init container is a fallback, not a necessity.
+
+**2. Original-dst recovery + identity — as feared.** The proxy's `getsockname`
+returns the *proxy* IP:port, not `203.0.113.7` — the original destination is
+**not** recoverable at a separate proxy pod, confirming SNI/Host/sentinel is
+mandatory. The proxy sees the connection sourced from the **pod IP**; that is
+the identity basis (see hardening below). Un-DNAT'd traffic **fails closed**:
+`203.0.113.7:80` (no rule) returned `connect() rc=-1`, zero packets on the wire.
+
+**3. Bypass surface — did not materialize, even for the nested class.** The
+concern most likely to sink the approach didn't. With `-net-raw=true` *and*
+`-allow-packet-socket-write=true` (the exact flags yaac's `gvisor-nested`
+handler sets) and `CAP_NET_RAW` granted in the bundle:
+- a hand-crafted SYN on a `SOCK_RAW`/`IP_HDRINCL` socket returned
+  **`ENETUNREACH`** — for the external dst *and* an on-link dst. Netstack's raw
+  IP output path is non-functional for arbitrary egress; nothing reached the
+  wire.
+- an `AF_PACKET` `SOCK_DGRAM` L2 injection found that the **only** interface
+  visible to guest packet sockets is `lo` (index 1); `eth0` is not exposed as a
+  packet-writable NIC at all (indexes 2–4 = `ENODEV`). A write to `lo` "sends"
+  but never reaches the peer.
+
+Net: on this netstack a capability-dropped *and* a `net-raw`+`packet-write`
+workload both fail to emit any frame that skips the OUTPUT `nat` hook onto
+`eth0`. The same limitation also blocks **source-IP spoofing from inside the
+sandbox** (the spoof needs exactly these dead paths), which directly bolsters
+the pod-IP identity basis.
+
+### Hardening the session identity
+
+Pod IP alone is weaker than the veth scheme's arrival-veth basis because, in
+principle, identity is *observed from the connection* rather than *established
+by the datapath*. Recover most of that strength without leaving
+`--network=sandbox`:
+
+- **Per-session DNAT target = per-session identity (strongest lever).** Give
+  each session a distinct proxy ingress (dedicated listener port, or dedicated
+  proxy ClusterIP) and bake it into that session's netstack DNAT rule at pod
+  setup. The workload lacks `CAP_NET_ADMIN`, so it cannot rewrite the netstack
+  rule (netstack gates all netfilter writes on `CAP_NET_ADMIN` — source-
+  established in `pkg/sentry/socket/netfilter`; empirical re-confirm is a small
+  follow-up) and can only ever reach *its* ingress. Identity becomes "which
+  trusted-provisioned ingress received the connection" — the direct analog of
+  "which veth," and tamper-proof. Source pod IP drops to a corroborating check.
+- **Authoritative IP→session resolution.** Map src pod IP → session via the k8s
+  pod informer the server already runs, never by trusting the connection. Hold
+  the binding for the conntrack lifetime; don't recycle a pod IP to a new
+  session until its connections drain.
+- **CNI anti-spoof + egress lockdown (defense in depth).** A NetworkPolicy
+  (enforced on gVisor pods even under DPv2) permitting egress *only* to the
+  proxy ingress means a confused/spoofed identity still can't reach another
+  session or the outside. On managed Cilium, source-IP verification (on by
+  default, non-disableable on DPv2) drops cross-pod forgery at the veth; on
+  minimal CNIs add veth-level anti-spoof (rp_filter/ebtables) since they lack it.
+
+Corollary for the plan: `allow-packet-socket-write` being **on** for the
+nested class does **not** open a DNAT bypass (the flag governs the guest's
+packet sockets, which can't reach `eth0`) — the "stays off regardless" note in
+the table above is a belt-and-suspenders default, not a load-bearing
+requirement.
+
+## Acceptance gate — status
+
+- ✅ egress to an allowlisted host reaches the proxy (dst rewritten in-sandbox,
+  conntrack un-DNATs replies), original dst carried out-of-band (SNI/Host/
+  sentinel confirmed necessary).
+- ✅ un-allowlisted egress fails closed (no route / no rule → connect fails).
+- ✅ a `net-raw` **and** `packet-write` session cannot bypass the OUTPUT hook
+  (raw-IP `ENETUNREACH`; `eth0` not an `AF_PACKET`-writable device) and cannot
+  forge its source pod IP from inside the sandbox (same dead paths).
+- ⏳ **remaining**: (a) a real gVisor pod on **managed Cilium** (not the
+  veth stand-in) end-to-end; (b) the **nested class's inner container engine** —
+  it drives netstack NICs for inner pods, a richer surface than the direct
+  `AF_PACKET` write tested here, and deserves its own targeted bypass check;
+  (c) an explicit netstack **filter default-deny** (fail-closed here was
+  no-route, not an installed `DROP`); (d) empirical re-confirm of the
+  `CAP_NET_ADMIN` tamper gate with an in-sandbox iptables write.
