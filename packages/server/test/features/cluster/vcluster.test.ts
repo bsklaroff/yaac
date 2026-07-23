@@ -48,6 +48,10 @@ import {
   listVclusterNamespaces,
   listVclusterPods,
   listVclusterServices,
+  sleepVcluster,
+  stripControlPlaneReplicas,
+  vclusterLabels,
+  vclusterPhase,
   mapVclusterNamespaceObject,
   mapVclusterPodObject,
   mapVclusterServiceObject,
@@ -158,7 +162,7 @@ describe('renderVclusterManifests', () => {
             'apiVersion: v1\nkind: Service\nmetadata:\n  name: '
             + `${VC}\n  namespace: test-ns\nspec: {}\n`
             + '---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: '
-            + `${VC}\nspec: {}\n`
+            + `${VC}\nspec:\n  replicas: 1\n`
             + '---\napiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n  name: '
             + `${VC}\nspec:\n  template:\n    spec:\n      containers: []\n`,
           stderr: '',
@@ -197,6 +201,12 @@ describe('renderVclusterManifests', () => {
     // The ownership labels carry the session id, but the synced-pod
     // egress label (yaac.session-id) is never stamped here.
     expect(out).not.toContain('yaac.session-id:')
+    // The control-plane replicas are stripped so yaac owns the count
+    // out-of-band (scale-to-zero survives re-applies).
+    const dep = parseDocs(out).find((o) => o.kind === 'Deployment') as unknown as {
+      spec?: { replicas?: number }
+    }
+    expect(dep.spec?.replicas).toBeUndefined()
   })
 
   it('renders with the vendored values file: synced pods on gvisor, control plane on runc', async () => {
@@ -374,6 +384,14 @@ describe('namespace + confinement policies', () => {
       .toEqual({ 'kubernetes.io/metadata.name': VCNS })
     expect(m.spec.egress[1].to[0].podSelector.matchLabels)
       .toEqual({ [LABEL_VCLUSTER_MANAGED_BY]: VC })
+    // The activator hole: while asleep the API ClusterIP DNATs to the
+    // activator pod (same install namespace), and Cilium enforces on the
+    // post-DNAT identity — without this rule the wake-triggering first
+    // touch would be dropped.
+    expect(m.spec.egress[2].to[0].namespaceSelector).toBeUndefined()
+    expect(m.spec.egress[2].to[0].podSelector.matchLabels)
+      .toEqual({ app: 'yaac-vc-activator' })
+    expect(m.spec.egress[2].ports).toEqual([{ protocol: 'TCP', port: VCLUSTER_API_PORT }])
   })
 
   it('locks the control plane to apiserver/host/kube-dns/own pods (CNP), in the vcluster ns', () => {
@@ -438,6 +456,8 @@ describe('ensureSessionVcluster', () => {
       'Namespace',
       'ValidatingAdmissionPolicy',
       'ValidatingAdmissionPolicyBinding',
+      'Role',
+      'RoleBinding',
       'NetworkPolicy',
       'CiliumNetworkPolicy',
       'CiliumNetworkPolicy',
@@ -513,6 +533,143 @@ describe('ensureSessionVcluster', () => {
     expect(mockRetry).not.toHaveBeenCalledWith(
       expect.arrayContaining(['delete', 'service']),
     )
+  })
+
+  it('reports freshness from the prior control-plane Deployment (born-at-zero gate)', async () => {
+    await expect(ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' }))
+      .resolves.toEqual({ freshlyCreated: true })
+
+    // A pre-existing Deployment means re-ensure over a live vcluster —
+    // the caller must NOT re-sleep it (its state.db is real).
+    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+      if (args[1] === 'deployment' && args[2] === VC) {
+        return Promise.resolve({ metadata: { name: VC } })
+      }
+      if (args[1] === 'deployments') return Promise.resolve({ items: [] })
+      return Promise.resolve(null)
+    })
+    await expect(ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' }))
+      .resolves.toEqual({ freshlyCreated: false })
+  })
+})
+
+describe('stripControlPlaneReplicas', () => {
+  it('removes spec.replicas from the control-plane Deployment only', () => {
+    const yaml = [
+      `apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: ${VC}\nspec:\n  replicas: 1\n  selector: {}\n`,
+      'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: other\nspec:\n  replicas: 2\n',
+      `apiVersion: v1\nkind: Service\nmetadata:\n  name: ${VC}\nspec: {}\n`,
+    ].join('---\n')
+    const out = stripControlPlaneReplicas(yaml, VC)
+    const objs = out.split(/^---$/m).map((d) => YAML.parse(d) as {
+      kind: string
+      metadata: { name: string }
+      spec?: { replicas?: number }
+    })
+    const cp = objs.find((o) => o.kind === 'Deployment' && o.metadata.name === VC) as {
+      spec?: { replicas?: number; selector?: unknown }
+    } | undefined
+    expect(cp?.spec?.replicas).toBeUndefined()
+    expect(cp?.spec?.selector).toBeDefined()
+    const other = objs.find((o) => o.metadata.name === 'other')
+    expect(other?.spec?.replicas).toBe(2)
+  })
+})
+
+describe('sleepVcluster', () => {
+  const ACTIVATOR_IP = '10.244.0.99'
+
+  beforeEach(() => {
+    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+      if (args[1] === 'secret' && args[2] === `${VC}-certs`) {
+        return Promise.resolve({ metadata: { name: `${VC}-certs` } })
+      }
+      if (args[1] === 'pods' && args.includes('app=yaac-vc-activator')) {
+        return Promise.resolve({
+          items: [{ status: { phase: 'Running', podIP: ACTIVATOR_IP } }],
+        })
+      }
+      // Control-plane pods: already gone.
+      if (args[1] === 'pods') return Promise.resolve({ items: [] })
+      return Promise.resolve(null)
+    })
+  })
+
+  it('intercepts the Service, scales to 0, then deletes the orphaned synced pods', async () => {
+    await sleepVcluster(VC, SID)
+
+    // 1. EndpointSlice → activator applied BEFORE the scale-down: a
+    // client touching the API mid-sleep lands on the activator (and
+    // just wakes the vcluster) rather than a black-holed ClusterIP.
+    const slice = mockApply.mock.calls
+      .map((c) => c[0] as {
+        kind: string
+        metadata: { name: string; namespace: string; labels: Record<string, string> }
+        endpoints: Array<{ addresses: string[] }>
+        ports: Array<{ name: string; port: number }>
+      })
+      .find((m) => m.kind === 'EndpointSlice')
+    expect(slice).toBeDefined()
+    expect(slice!.metadata.name).toBe(`yaac-sleep-${VC}`)
+    expect(slice!.metadata.namespace).toBe(VCNS)
+    expect(slice!.metadata.labels[LABEL_VCLUSTER]).toBe(VC)
+    expect(slice!.endpoints[0].addresses).toEqual([ACTIVATOR_IP])
+    // Endpoint ports match Service ports BY NAME — all three named ports
+    // must be enumerated or 8443 stays unrouted.
+    expect(slice!.ports.map((p) => p.name).sort()).toEqual(['https', 'kubelet', 'yaac-api'])
+    for (const p of slice!.ports) expect(p.port).toBe(VCLUSTER_API_PORT)
+
+    const scaleIdx = mockRetry.mock.calls.findIndex((c) => c[0][0] === 'scale')
+    expect(mockRetry.mock.calls[scaleIdx][0]).toEqual([
+      'scale', 'deployment', VC, '-n', VCNS, '--replicas=0',
+    ])
+    // 3. Synced host pods (CoreDNS) deleted by the unforgeable managed-by
+    // label — the syncer is down and cannot GC them itself.
+    const del = mockRetry.mock.calls.find((c) => c[0][0] === 'delete' && c[0][1] === 'pods')
+    expect(del).toBeDefined()
+    expect(del![0]).toContain(`${LABEL_VCLUSTER_MANAGED_BY}=${VC}`)
+  })
+
+  it('refuses to sleep when the certs secret is missing (activator could not serve it)', async () => {
+    mockGetJson.mockResolvedValue(null)
+    await expect(sleepVcluster(VC, SID)).rejects.toThrow(/certs/)
+    expect(mockApply).not.toHaveBeenCalled()
+    expect(mockRetry).not.toHaveBeenCalledWith(expect.arrayContaining(['scale']))
+  })
+
+  it('waits for the control-plane pod to terminate before deleting synced pods', async () => {
+    let cpPolls = 0
+    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+      if (args[1] === 'secret') return Promise.resolve({ metadata: {} })
+      if (args[1] === 'pods' && args.includes('app=yaac-vc-activator')) {
+        return Promise.resolve({ items: [{ status: { phase: 'Running', podIP: ACTIVATOR_IP } }] })
+      }
+      if (args[1] === 'pods') {
+        cpPolls += 1
+        return Promise.resolve(cpPolls === 1 ? { items: [{}] } : { items: [] })
+      }
+      return Promise.resolve(null)
+    })
+    await sleepVcluster(VC, SID, { pollMs: 1 })
+    expect(cpPolls).toBe(2)
+  })
+})
+
+describe('vclusterPhase', () => {
+  it('maps replicas/readiness to asleep | waking | ready', () => {
+    expect(vclusterPhase({ replicas: 0 }, 0)).toBe('asleep')
+    expect(vclusterPhase({ replicas: 1 }, 0)).toBe('waking')
+    expect(vclusterPhase({ replicas: 1 }, 1)).toBe('ready')
+  })
+})
+
+describe('vclusterLabels', () => {
+  it('carries the ownership + install-scope labels', () => {
+    expect(vclusterLabels(VC, SID)).toEqual({
+      [LABEL_VCLUSTER]: VC,
+      [LABEL_VCLUSTER_SESSION_ID]: SID,
+      [LABEL_VCLUSTER_DATA_DIR_HASH]: 'ddh16',
+    })
   })
 })
 
@@ -764,13 +921,17 @@ describe('getVclusterStatus', () => {
     await expect(getVclusterStatus(SID)).resolves.toBeNull()
   })
 
-  it('reports readiness from the deployment status', async () => {
-    mockGetJson.mockResolvedValue({ status: { readyReplicas: 1 } })
+  it('reports readiness + phase from the deployment', async () => {
+    mockGetJson.mockResolvedValue({ spec: { replicas: 1 }, status: { readyReplicas: 1 } })
     await expect(getVclusterStatus(SID)).resolves.toEqual({
       name: VC,
       ready: true,
+      phase: 'ready',
     })
-    mockGetJson.mockResolvedValue({ status: {} })
-    await expect(getVclusterStatus(SID)).resolves.toMatchObject({ ready: false })
+    mockGetJson.mockResolvedValue({ spec: { replicas: 1 }, status: {} })
+    await expect(getVclusterStatus(SID)).resolves.toMatchObject({ ready: false, phase: 'waking' })
+    // Scaled to zero → asleep (the activator wakes it on first touch).
+    mockGetJson.mockResolvedValue({ spec: { replicas: 0 }, status: {} })
+    await expect(getVclusterStatus(SID)).resolves.toMatchObject({ ready: false, phase: 'asleep' })
   })
 })

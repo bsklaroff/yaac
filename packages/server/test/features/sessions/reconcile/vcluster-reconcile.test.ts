@@ -11,16 +11,43 @@ vi.mock('#features/cluster/vcluster', () => ({
   VCLUSTER_ORPHAN_GRACE_MS: 15 * 60 * 1000,
   listVclusterNamespaces: vi.fn().mockResolvedValue([]),
   removeSessionVcluster: vi.fn().mockResolvedValue(undefined),
+  vclusterLabels: vi.fn((name: string, sessionId: string) => ({
+    'yaac.vcluster': name,
+    'yaac.vcluster-session-id': sessionId,
+  })),
   waitForVclusterKubeconfig: vi.fn().mockResolvedValue('kubeconfig-bytes\n'),
 }))
 
-import { reconcileVclusters } from '#features/sessions/reconcile/vcluster-reconcile'
+vi.mock('#features/cluster/activator', () => ({
+  getActivatorPodIp: vi.fn().mockResolvedValue('10.244.0.9'),
+  vclusterSleepSliceName: vi.fn((name: string) => `yaac-sleep-${name}`),
+  buildVclusterSleepEndpointSliceManifest: vi.fn(
+    (name: string, namespace: string, labels: Record<string, string>, ip: string) => ({
+      kind: 'EndpointSlice',
+      metadata: { name: `yaac-sleep-${name}`, namespace, labels },
+      endpoints: [{ addresses: [ip] }],
+    }),
+  ),
+}))
+
+vi.mock('#platform/k8s/kubectl', () => ({
+  kubectlApply: vi.fn().mockResolvedValue(undefined),
+  kubectlGetJson: vi.fn().mockResolvedValue(null),
+  kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+}))
+
+import {
+  healVclusterSleepState,
+  reconcileVclusters,
+} from '#features/sessions/reconcile/vcluster-reconcile'
 import { listSessionJobs, listSessionPods } from '#platform/k8s/pods'
 import {
   listVclusterNamespaces,
   removeSessionVcluster,
   waitForVclusterKubeconfig,
 } from '#features/cluster/vcluster'
+import { getActivatorPodIp } from '#features/cluster/activator'
+import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
 import { sessionVclusterDir } from '@yaac/shared/project-paths'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
@@ -29,6 +56,10 @@ const mockJobs = vi.mocked(listSessionJobs)
 const mockList = vi.mocked(listVclusterNamespaces)
 const mockRemove = vi.mocked(removeSessionVcluster)
 const mockWait = vi.mocked(waitForVclusterKubeconfig)
+const mockApply = vi.mocked(kubectlApply)
+const mockGetJson = vi.mocked(kubectlGetJson)
+const mockRetry = vi.mocked(kubectlWithRetry)
+const mockActivatorIp = vi.mocked(getActivatorPodIp)
 
 const NOW = Date.parse('2026-06-13T12:00:00Z')
 /** A vcluster old enough to be past the orphan-GC grace window. */
@@ -58,6 +89,12 @@ beforeEach(async () => {
   mockRemove.mockResolvedValue(undefined)
   mockWait.mockReset()
   mockWait.mockResolvedValue('kubeconfig-bytes\n')
+  mockApply.mockClear()
+  mockGetJson.mockReset()
+  mockGetJson.mockResolvedValue(null)
+  mockRetry.mockClear()
+  mockActivatorIp.mockReset()
+  mockActivatorIp.mockResolvedValue('10.244.0.9')
 })
 
 afterEach(async () => {
@@ -136,5 +173,86 @@ describe('reconcileVclusters', () => {
     await reconcileVclusters(NOW)
     expect(mockWait).not.toHaveBeenCalled()
     await expect(fs.readFile(path.join(dir, 'config'), 'utf8')).resolves.toBe('existing\n')
+  })
+})
+
+describe('healVclusterSleepState', () => {
+  const VC = 'yvc-deadbeef'
+  const NS = 'yaac-vc-deadbeef'
+  const SLICE = `yaac-sleep-${VC}`
+  const LABELS = { 'yaac.vcluster': VC }
+
+  function primeCluster(state: {
+    replicas: number
+    readyReplicas?: number
+    sliceIp?: string
+  }): void {
+    mockGetJson.mockImplementation((args: string[]): Promise<unknown> => {
+      if (args[1] === 'deployment') {
+        return Promise.resolve({
+          spec: { replicas: state.replicas },
+          status: { readyReplicas: state.readyReplicas ?? 0 },
+        })
+      }
+      if (args[1] === 'endpointslice') {
+        return Promise.resolve(state.sliceIp !== undefined
+          ? { endpoints: [{ addresses: [state.sliceIp] }] }
+          : null)
+      }
+      return Promise.resolve(null)
+    })
+  }
+
+  it('no-ops when the deployment is gone (vcluster mid-teardown)', async () => {
+    await healVclusterSleepState(VC, NS, LABELS)
+    expect(mockApply).not.toHaveBeenCalled()
+    expect(mockRetry).not.toHaveBeenCalled()
+  })
+
+  it('deletes a leftover slice once the vcluster is awake and serving', async () => {
+    primeCluster({ replicas: 1, readyReplicas: 1, sliceIp: '10.244.0.9' })
+    await healVclusterSleepState(VC, NS, LABELS)
+    expect(mockRetry).toHaveBeenCalledWith([
+      'delete', 'endpointslice', SLICE, '-n', NS, '--ignore-not-found',
+    ])
+    expect(mockApply).not.toHaveBeenCalled()
+  })
+
+  it('leaves the slice alone while the vcluster is WAKING (the activator still needs it)', async () => {
+    primeCluster({ replicas: 1, readyReplicas: 0, sliceIp: '10.244.0.9' })
+    await healVclusterSleepState(VC, NS, LABELS)
+    expect(mockRetry).not.toHaveBeenCalled()
+    expect(mockApply).not.toHaveBeenCalled()
+  })
+
+  it('re-points an asleep vcluster\'s slice at the live activator pod IP', async () => {
+    // The activator pod was replaced: the slice still targets the old IP,
+    // which would strand the asleep vcluster unreachable.
+    primeCluster({ replicas: 0, sliceIp: '10.244.0.1' })
+    await healVclusterSleepState(VC, NS, LABELS)
+    expect(mockApply).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'EndpointSlice',
+      endpoints: [{ addresses: ['10.244.0.9'] }],
+    }))
+  })
+
+  it('recreates a missing slice for an asleep vcluster (black-holed API)', async () => {
+    primeCluster({ replicas: 0 })
+    await healVclusterSleepState(VC, NS, LABELS)
+    expect(mockApply).toHaveBeenCalledWith(expect.objectContaining({ kind: 'EndpointSlice' }))
+  })
+
+  it('no-ops when the slice already targets the live activator', async () => {
+    primeCluster({ replicas: 0, sliceIp: '10.244.0.9' })
+    await healVclusterSleepState(VC, NS, LABELS)
+    expect(mockApply).not.toHaveBeenCalled()
+    expect(mockRetry).not.toHaveBeenCalled()
+  })
+
+  it('leaves state untouched when no activator pod is live', async () => {
+    primeCluster({ replicas: 0, sliceIp: '10.244.0.1' })
+    mockActivatorIp.mockRejectedValue(new Error('no running activator pod'))
+    await healVclusterSleepState(VC, NS, LABELS)
+    expect(mockApply).not.toHaveBeenCalled()
   })
 })

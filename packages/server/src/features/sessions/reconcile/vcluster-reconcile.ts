@@ -1,14 +1,67 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { listSessionJobs, listSessionPods } from '#platform/k8s/pods'
+import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
 import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
 import {
   listVclusterNamespaces,
   removeSessionVcluster,
   VCLUSTER_ORPHAN_GRACE_MS,
+  vclusterLabels,
   waitForVclusterKubeconfig,
 } from '#features/cluster/vcluster'
+import {
+  buildVclusterSleepEndpointSliceManifest,
+  getActivatorPodIp,
+  vclusterSleepSliceName,
+} from '#features/cluster/activator'
 import { sessionVclusterDir } from '@yaac/shared/project-paths'
+
+/**
+ * Converge one live vcluster's sleep interception (the EndpointSlice an
+ * asleep vcluster's API Service resolves to — docs/vcluster-scale-to-zero.md)
+ * with the control-plane Deployment's actual state:
+ *
+ *   - asleep (replicas 0): the slice must exist and target the LIVE
+ *     activator pod — an activator pod replacement changes the IP and
+ *     would otherwise strand every asleep vcluster unreachable; a
+ *     missing slice (reconcile raced a sleep, manual delete) is a
+ *     black-holed API and is recreated.
+ *   - awake and serving: the slice must be gone (the activator deletes
+ *     it on wake; this covers a failed delete). While WAKING the slice
+ *     is left alone — the activator still needs it to catch clients.
+ *
+ * `labels` are the vcluster ownership labels for a recreated slice.
+ */
+export async function healVclusterSleepState(
+  name: string,
+  namespace: string,
+  labels: Record<string, string>,
+): Promise<void> {
+  const dep = await kubectlGetJson<{
+    spec?: { replicas?: number }
+    status?: { readyReplicas?: number }
+  }>(['get', 'deployment', name, '-n', namespace])
+  if (!dep) return
+  const sliceName = vclusterSleepSliceName(name)
+  const slice = await kubectlGetJson<{ endpoints?: Array<{ addresses?: string[] }> }>([
+    'get', 'endpointslice', sliceName, '-n', namespace,
+  ])
+  if ((dep.spec?.replicas ?? 0) >= 1) {
+    if (slice && (dep.status?.readyReplicas ?? 0) >= 1) {
+      await kubectlWithRetry([
+        'delete', 'endpointslice', sliceName, '-n', namespace, '--ignore-not-found',
+      ])
+    }
+    return
+  }
+  // No live activator (not deployed yet, mid-replacement): nothing to
+  // point the slice at — leave state as-is and heal on a later tick.
+  const activatorIp = await getActivatorPodIp().catch(() => null)
+  if (!activatorIp) return
+  if (slice?.endpoints?.[0]?.addresses?.[0] === activatorIp) return
+  await kubectlApply(buildVclusterSleepEndpointSliceManifest(name, namespace, labels, activatorIp))
+}
 
 /**
  * Reconcile step for per-session vclusters:
@@ -46,7 +99,7 @@ export async function reconcileVclusters(
   ].filter((id) => !!id))
   const slugBySid = new Map(pods.map((p) => [p.sessionId, p.projectSlug]))
 
-  for (const { name, sessionId, creationTimestamp } of vclusters) {
+  for (const { name, sessionId, namespace, creationTimestamp } of vclusters) {
     if (!liveSids.has(sessionId)) {
       // Grace window: a vcluster created moments ago by an in-flight
       // session create has no live pod/Job advertising its session-id
@@ -59,6 +112,12 @@ export async function reconcileVclusters(
       console.log(`Removing orphan vcluster ${name} (session ${sessionId} is gone)`)
       await removeSessionVcluster(name)
       continue
+    }
+
+    try {
+      await healVclusterSleepState(name, namespace, vclusterLabels(name, sessionId))
+    } catch (err) {
+      console.warn(`vcluster sleep-state heal (${name}): ${(err as Error).message}`)
     }
 
     const slug = slugBySid.get(sessionId)

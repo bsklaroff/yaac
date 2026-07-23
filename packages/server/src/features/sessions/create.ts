@@ -44,9 +44,11 @@ import {
 import {
   ensureSessionVcluster,
   ensureVclusterImages,
+  sleepVcluster,
   vclusterName,
   waitForVclusterKubeconfig,
 } from '#features/cluster/vcluster'
+import { ensureActivator } from '#features/cluster/activator'
 import {
   repoDir,
   claudeDir,
@@ -762,17 +764,26 @@ export async function createSession(
   // The vcluster is created here so its cold start overlaps the
   // worktree/setup work below; the kubeconfig is awaited just before the
   // mounts are assembled.
+  let vclusterFreshlyCreated = false
   if (virtualCluster) {
     emit('Ensuring project registry...', options)
     await ensureProjectRegistry(projectSlug)
 
+    // The wake activator that serves this (and every) vcluster's
+    // scale-to-zero — before the vcluster so its pod IP is available to
+    // the sleep step below. Runs the proxy image the ensureRunning()
+    // above just built and pushed.
+    emit('Ensuring vcluster activator...', options)
+    await ensureActivator()
+
     emit('Creating virtual cluster...', options)
     await ensureVclusterImages()
-    await ensureSessionVcluster({
+    const { freshlyCreated } = await ensureSessionVcluster({
       sessionId,
       allowedHostPathPrefix: nestedYaacDataDir(projectSlug, sessionId),
       onProgress: (m) => emit(m, options),
     })
+    vclusterFreshlyCreated = freshlyCreated
   }
 
   // Egress: the session pod's outbound 443/80 is redirected to the proxy at
@@ -1071,6 +1082,21 @@ export async function createSession(
     await fs.writeFile(path.join(vcDir, 'config'), kubeconfig, { mode: 0o600 })
     vclusterMounts.push({ hostPath: vcDir, mountPath: '/home/yaac/.kube' })
     env.push('KUBECONFIG=/home/yaac/.kube/config')
+
+    // Born-at-zero: with the kubeconfig captured, the freshly-booted
+    // (never used) control plane is scaled to 0 — the activator wakes it
+    // on the session's first API touch. Only a vcluster THIS create
+    // booted may be slept: re-sleeping an existing one would discard its
+    // state.db. Best-effort — a failed sleep just leaves the vcluster
+    // running (the pre-scale-to-zero behavior).
+    if (vclusterFreshlyCreated) {
+      emit('Scaling idle virtual cluster to zero...', options)
+      try {
+        await sleepVcluster(vclusterName(sessionId), sessionId)
+      } catch (err) {
+        console.warn(`vcluster sleep (${sessionId}): ${(err as Error).message}`)
+      }
+    }
 
     // yaac-in-yaac preset: the nested data dir is mounted at the
     // IDENTICAL absolute path in the pod, because inner synced-pod

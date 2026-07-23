@@ -5,6 +5,13 @@ import YAML from 'yaml'
 import { z } from 'zod'
 import { buildVclusterFallbackRedirectCnpManifest } from '#features/cluster/proxy-manifests'
 import {
+  ACTIVATOR_APP_NAME,
+  buildActivatorVclusterRoleBindingManifest,
+  buildActivatorVclusterRoleManifest,
+  buildVclusterSleepEndpointSliceManifest,
+  getActivatorPodIp,
+} from '#features/cluster/activator'
+import {
   dataDirHash,
   execFileAsync,
   k8sNamespace,
@@ -151,6 +158,32 @@ export function addYaacLabels(
 }
 
 /**
+ * Strip `spec.replicas` from the control-plane Deployment so yaac owns
+ * the replica count out-of-band (scale-to-zero — see
+ * docs/vcluster-scale-to-zero.md). The chart renders `replicas: 1`; with
+ * the field absent from the applied config the first apply defaults to 1
+ * (the create-time boot), `kubectl scale` sets 0/1 afterwards, and later
+ * re-applies (server restart, re-ensure) never stomp the live value —
+ * the field is absent from both the config and the last-applied state.
+ */
+export function stripControlPlaneReplicas(manifestYaml: string, name: string): string {
+  const out: string[] = []
+  for (const doc of YAML.parseAllDocuments(manifestYaml)) {
+    const obj = doc.toJS() as {
+      kind?: string
+      metadata?: { name?: string }
+      spec?: { replicas?: number }
+    } | null
+    if (!obj || typeof obj !== 'object' || !obj.kind) continue
+    if (obj.kind === 'Deployment' && obj.metadata?.name === name && obj.spec) {
+      delete obj.spec.replicas
+    }
+    out.push(YAML.stringify(obj, { lineWidth: 0 }))
+  }
+  return out.join('---\n')
+}
+
+/**
  * Render one session's vcluster manifests by running `helm template`
  * against the vendored chart tarball (offline) with the per-session
  * values passed as `--set` overrides, then stamping the yaac ownership
@@ -183,7 +216,10 @@ export async function renderVclusterManifests(p: VclusterRenderParams): Promise<
     '--set-string', `controlPlane.proxy.extraSANs[0]=${apiHost}`,
     '--set-string', `exportKubeConfig.server=https://${apiHost}:${VCLUSTER_API_PORT}`,
   ], { maxBuffer: 16 * 1024 * 1024 })
-  return addYaacLabels(stdout, vclusterLabels(name, p.sessionId))
+  return stripControlPlaneReplicas(
+    addYaacLabels(stdout, vclusterLabels(name, p.sessionId)),
+    name,
+  )
 }
 
 interface VclusterImageEntry {
@@ -218,7 +254,8 @@ export async function ensureVclusterImages(
   }
 }
 
-function vclusterLabels(name: string, sessionId: string): Record<string, string> {
+/** Ownership labels stamped on every object a vcluster owns (GC keys). */
+export function vclusterLabels(name: string, sessionId: string): Record<string, string> {
   return {
     [LABEL_VCLUSTER]: name,
     [LABEL_VCLUSTER_SESSION_ID]: sessionId,
@@ -449,6 +486,15 @@ export function buildVclusterSessionNetworkPolicyManifest(
         },
         {
           to: [{ ...vcNsSelector, podSelector: { matchLabels: { [LABEL_VCLUSTER_MANAGED_BY]: name } } }],
+        },
+        {
+          // While the vcluster is asleep its API ClusterIP is intercepted
+          // by the activator (same install namespace as the session pod).
+          // Cilium enforces egress on the post-DNAT endpoint identity, so
+          // the wake-triggering first touch needs its own allowance — the
+          // rule above matches only the real control-plane pod.
+          to: [{ podSelector: { matchLabels: { app: ACTIVATOR_APP_NAME } } }],
+          ports: [{ protocol: 'TCP', port: VCLUSTER_API_PORT }],
         },
       ],
     },
@@ -716,8 +762,14 @@ export async function waitForVclusterNamespaceGone(
  * ever be admitted unguarded), then the confinement policies, then the
  * chart. Fail-closed on a missing VAP API — synced-pod containment
  * rests on the guard, so there is no opt-out.
+ *
+ * Returns whether the control plane was freshly created by this call —
+ * the caller's born-at-zero sleep applies only then (re-ensuring an
+ * existing vcluster must never discard its state by re-sleeping it).
  */
-export async function ensureSessionVcluster(p: EnsureVclusterParams): Promise<void> {
+export async function ensureSessionVcluster(
+  p: EnsureVclusterParams,
+): Promise<{ freshlyCreated: boolean }> {
   const name = vclusterName(p.sessionId)
   const vcNs = vclusterNamespace(name)
 
@@ -743,6 +795,13 @@ export async function ensureSessionVcluster(p: EnsureVclusterParams): Promise<vo
     ),
   })
 
+  // Freshness probe for the born-at-zero sleep decision: a pre-existing
+  // control-plane Deployment means this is a re-ensure over a live
+  // vcluster, which must not be re-slept (its state.db is real).
+  const priorDeployment = await kubectlGetJson<{ metadata?: { name?: string } }>([
+    'get', 'deployment', name, '-n', vcNs,
+  ])
+
   // The vcluster's own namespace first (vcluster owns one per namespace).
   await kubectlApply(buildVclusterNamespaceManifest(name, p.sessionId))
 
@@ -750,6 +809,12 @@ export async function ensureSessionVcluster(p: EnsureVclusterParams): Promise<vo
     buildVclusterPodGuardPolicyManifest(name, p.sessionId, p.allowedHostPathPrefix),
   )
   await kubectlApply(buildVclusterPodGuardBindingManifest(name, p.sessionId))
+
+  // The activator's per-vcluster grant (scale/certs/slice — see
+  // buildActivatorVclusterRoleManifest), scoped to this namespace and
+  // swept with it.
+  await kubectlApply(buildActivatorVclusterRoleManifest(name, vcNs, vclusterLabels(name, p.sessionId)))
+  await kubectlApply(buildActivatorVclusterRoleBindingManifest(vcNs, vclusterLabels(name, p.sessionId)))
 
   // The API Service's ClusterIP is allocator-assigned (no longer pinned), so
   // there is no immutable-field migration: the chart apply below creates it
@@ -775,6 +840,7 @@ export async function ensureSessionVcluster(p: EnsureVclusterParams): Promise<vo
   await kubectlWithRetry(['apply', '-f', '-'], {
     input: await renderVclusterManifests({ sessionId: p.sessionId }),
   })
+  return { freshlyCreated: priorDeployment === null }
 }
 
 /**
@@ -802,6 +868,88 @@ export async function waitForVclusterKubeconfig(
     }
     await new Promise((r) => setTimeout(r, 1000))
   }
+}
+
+export interface SleepVclusterOpts {
+  /** Poll interval for the control-plane-gone wait (tests inject). */
+  pollMs?: number
+  timeoutMs?: number
+}
+
+/**
+ * Scale a freshly-booted, UNUSED vcluster to zero (born-at-zero — see
+ * docs/vcluster-scale-to-zero.md). Reclaims the whole idle control
+ * plane (~330–390 MB) plus its CoreDNS pod until something touches the
+ * API, at which point the activator cold-starts it back.
+ *
+ * The `/data` emptyDir (kine's state.db) dies with the pod; on wake the
+ * control plane re-bootstraps a clean vcluster from the PKI persisted in
+ * the `<name>-certs` Secret, so the already-exported kubeconfig stays
+ * valid. That makes one rule load-bearing: only a vcluster nothing has
+ * written to may be slept — anything written between boot and sleep is
+ * silently lost. The create flow guarantees that by sleeping only a
+ * `freshlyCreated` vcluster, immediately after the kubeconfig export.
+ *
+ * Steps, in order:
+ *  1. Intercept the API Service (EndpointSlice → the activator) BEFORE
+ *     scaling down, so no client ever sees a black-hole ClusterIP — a
+ *     touch during the scale-down lands on the activator and simply
+ *     wakes the vcluster again.
+ *  2. Scale the control plane to 0 and wait for its pod to terminate
+ *     (the syncer must be gone before step 3 so it can't recreate
+ *     anything).
+ *  3. Delete the vcluster's synced host pods (CoreDNS). The syncer is
+ *     down and cannot GC them — left alone the synced CoreDNS pod runs
+ *     forever, burning the memory the sleep was meant to reclaim. They
+ *     are plain Pods (no host owner), so nothing recreates them; the
+ *     wake's fresh bootstrap recreates virtual + host CoreDNS from
+ *     scratch.
+ */
+export async function sleepVcluster(
+  name: string,
+  sessionId: string,
+  opts: SleepVclusterOpts = {},
+): Promise<void> {
+  const { pollMs = 1000, timeoutMs = 120_000 } = opts
+  const vcNs = vclusterNamespace(name)
+
+  // The activator serves the vcluster's identity from its certs Secret —
+  // without it (or a live activator pod) an asleep vcluster would be
+  // unreachable, so fail the sleep instead (the vcluster just stays up).
+  const certs = await kubectlGetJson<{ metadata?: { name?: string } }>([
+    'get', 'secret', `${name}-certs`, '-n', vcNs,
+  ])
+  if (!certs) throw new Error(`vcluster ${name} has no ${name}-certs secret — not sleeping`)
+  const activatorIp = await getActivatorPodIp()
+
+  await kubectlApply(buildVclusterSleepEndpointSliceManifest(
+    name, vcNs, vclusterLabels(name, sessionId), activatorIp,
+  ))
+  await kubectlWithRetry([
+    'scale', 'deployment', name, '-n', vcNs, '--replicas=0',
+  ])
+
+  // The control-plane pod, matched like the control-plane CNP: the
+  // chart labels minus the syncer-stamped managed-by no tenant pod can
+  // shed (see buildVclusterControlPlaneCnpManifest).
+  const cpSelector = `app=vcluster,release=${name},!${LABEL_VCLUSTER_MANAGED_BY}`
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const list = await kubectlGetJson<{ items?: unknown[] }>([
+      'get', 'pods', '-n', vcNs, '-l', cpSelector,
+    ])
+    if ((list?.items ?? []).length === 0) break
+    if (Date.now() > deadline) {
+      throw new Error(`vcluster ${name} control plane did not terminate within ${timeoutMs}ms`)
+    }
+    await new Promise((r) => setTimeout(r, pollMs))
+  }
+
+  await kubectlWithRetry([
+    'delete', 'pods', '-n', vcNs,
+    '-l', `${LABEL_VCLUSTER_MANAGED_BY}=${name}`,
+    '--ignore-not-found', '--wait=false',
+  ])
 }
 
 /**
@@ -858,17 +1006,37 @@ export async function removeSessionVcluster(name: string): Promise<void> {
 export interface VclusterStatus {
   name: string
   ready: boolean
+  /**
+   * asleep: scaled to zero, API intercepted by the activator (wakes on
+   * first touch). waking: scaled up but not yet serving — covers both
+   * the create-time boot and an activator-triggered wake; a wake that
+   * fails (apiserver won't boot) surfaces as a persistent `waking`
+   * rather than a hang. ready: serving.
+   */
+  phase: 'asleep' | 'waking' | 'ready'
+}
+
+/** Derive the status phase from the control-plane Deployment (exported
+ *  for unit tests; `getVclusterStatus` reads the live object). */
+export function vclusterPhase(spec: { replicas?: number } | undefined, readyReplicas: number): VclusterStatus['phase'] {
+  if ((spec?.replicas ?? 0) === 0) return 'asleep'
+  return readyReplicas >= 1 ? 'ready' : 'waking'
 }
 
 /** Status block for `SessionDetail`; null when the session has no vcluster. */
 export async function getVclusterStatus(sessionId: string): Promise<VclusterStatus | null> {
   const name = vclusterName(sessionId)
-  const dep = await kubectlGetJson<{ status?: { readyReplicas?: number } }>([
+  const dep = await kubectlGetJson<{
+    spec?: { replicas?: number }
+    status?: { readyReplicas?: number }
+  }>([
     'get', 'deployment', name, '-n', vclusterNamespace(name),
   ])
   if (!dep) return null
+  const readyReplicas = dep.status?.readyReplicas ?? 0
   return {
     name,
-    ready: (dep.status?.readyReplicas ?? 0) >= 1,
+    ready: readyReplicas >= 1,
+    phase: vclusterPhase(dep.spec, readyReplicas),
   }
 }

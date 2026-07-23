@@ -26,6 +26,8 @@ COPY transparent.ts /app/transparent.ts
 COPY pp2.ts /app/pp2.ts
 COPY pod-watch.ts /app/pod-watch.ts
 COPY dns-stub.ts /app/dns-stub.ts
+COPY activator.ts /app/activator.ts
+COPY activator-main.ts /app/activator-main.ts
 COPY secure-compare.ts /app/secure-compare.ts
 COPY spawn-queue.ts /app/spawn-queue.ts
 COPY torrc /etc/tor/torrc
