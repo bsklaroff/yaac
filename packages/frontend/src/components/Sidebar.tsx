@@ -1,8 +1,8 @@
-import { useLayoutEffect, useRef, useState, type JSX } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Collapsible } from '@base-ui/react/collapsible'
-import { BranchIcon, ChevronIcon, CloseIcon, LoadingIcon, PinIcon, RestartIcon, SidebarIcon, TOOL_LABEL } from '#lib/icons'
+import { BranchIcon, ChevronIcon, CloseIcon, LoadingIcon, PinIcon, RenameIcon, RestartIcon, SidebarIcon, TOOL_LABEL } from '#lib/icons'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
 import { DeletedSessionsButton } from '#components/DeletedSessionsButton'
 import { EmptyState } from '#components/ui/EmptyState'
@@ -13,7 +13,8 @@ import { ProjectActionsMenu } from '#components/ProjectActionsMenu'
 import { SkillsButton } from '#components/SkillsButton'
 import { UsageBadge } from '#components/UsageBadge'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { dismissProvisioning, restartSession, setSessionBackground } from '#lib/createSession'
+import { oneLine } from '#components/SessionTitle'
+import { dismissProvisioning, renameSession, restartSession, setSessionBackground } from '#lib/createSession'
 import { getDeletedSessions } from '#lib/deletedApi'
 import { deleteSessionOptimistic } from '#lib/deleteSessionFlow'
 import { useProvisionSession } from '#lib/useProvisionSession'
@@ -376,6 +377,12 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [hovered, setHovered] = useState(false)
+  const [editingTitle, setEditingTitle] = useState(false)
+  const [seed, setSeed] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+  // Enter/Escape unmount the input, which can fire a trailing blur; this flag
+  // makes that blur a no-op so a rename never fires twice (mirrors SessionTitle).
+  const skipBlur = useRef(false)
   const unread = isUnreadWaiting(session, readWaiting)
   // The container is being torn down — server-marked, or an optimistic delete
   // not yet reflected in the snapshot. Either way the row is on its way out
@@ -394,6 +401,35 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
   const toggleBackground = (): void => {
     void setSessionBackground(session.projectSlug, session.sessionId, !session.background)
       .catch((e: unknown) => console.error('background toggle failed', e))
+  }
+
+  useEffect(() => {
+    if (!editingTitle) return
+    const el = inputRef.current
+    if (!el) return
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
+  }, [editingTitle])
+
+  const startRename = (e: React.MouseEvent): void => {
+    e.stopPropagation()
+    skipBlur.current = false
+    setSeed(oneLine(session.title || session.prompt || ''))
+    setEditingTitle(true)
+  }
+
+  const commitRename = (value: string): void => {
+    skipBlur.current = true
+    setEditingTitle(false)
+    const next = oneLine(value)
+    if (next === seed) return
+    void renameSession(session.sessionId, next)
+      .catch((e: unknown) => console.error('rename failed', e))
+  }
+
+  const cancelRename = (): void => {
+    skipBlur.current = true
+    setEditingTitle(false)
   }
 
   // A terminating row is a non-interactive, greyed placeholder: no pulse, no
@@ -421,92 +457,134 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
     )
   }
 
+  // The age/branch/tool line, unchanged whether the title above it is the
+  // marquee display or the rename input.
+  const metaLine = (
+    <span className="flex items-center gap-2 text-xs text-text-faint">
+      <span className="shrink-0">{relativeAge(session.createdAt)}</span>
+      {/* The remote branch this session's worktree tracks. */}
+      {session.baseBranch && (
+        <span className="flex min-w-0 items-center gap-1" title={`Tracking origin/${session.baseBranch}`}>
+          <BranchIcon size={10} className="shrink-0" />
+          <span className="truncate font-mono text-[11px]">{session.baseBranch}</span>
+        </span>
+      )}
+      {/* Tool name moved off the title line so the title can run full-width;
+          hidden when the blocked-hosts badge claims the bottom-right. */}
+      {session.blockedHosts.length === 0 && (
+        <span className="ml-auto shrink-0">{TOOL_LABEL[session.tool]}</span>
+      )}
+    </span>
+  )
+
   return (
     <div
       className="group relative mx-2"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      <button
-        onClick={() => selectSession(session.sessionId)}
-        className={clsx(
-          'flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left text-sm transition hover:bg-surface-2/60',
-          selectedSessionId === session.sessionId && 'bg-surface-2 hover:bg-surface-2',
-        )}
-      >
-        {/* Title fills the row; only on hover does it inset to clear the pin
-            + delete buttons and marquee-scroll when it's too long to fit. */}
-        <span className="flex items-center gap-2 group-hover:pr-12">
-          {/* Braille spinner: the session's agent is actively running. The
-              cycling glyph reads as "working" and can't be mistaken for the
-              round unread bubble below (which is a solid, still dot). */}
-          {session.status === 'running' && (
-            <span className="braille-spinner shrink-0 text-emerald-400" aria-hidden>
-              <i />
-              <i />
-              <i />
-              <i />
-              <i />
-              <i />
+      {editingTitle ? (
+        <div className="flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left text-sm">
+          <span className="flex items-center gap-2">
+            <input
+              ref={inputRef}
+              aria-label="Session title"
+              defaultValue={seed}
+              placeholder="Session name"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); commitRename(e.currentTarget.value) }
+                else if (e.key === 'Escape') { e.preventDefault(); cancelRename() }
+              }}
+              onBlur={(e) => {
+                if (skipBlur.current) { skipBlur.current = false; return }
+                commitRename(e.currentTarget.value)
+              }}
+              className="min-w-0 flex-1 rounded border border-border-strong bg-bg px-1.5 py-0.5
+                text-sm font-medium text-text outline-none"
+            />
+          </span>
+          {metaLine}
+        </div>
+      ) : (
+        <>
+          <button
+            onClick={() => selectSession(session.sessionId)}
+            className={clsx(
+              'flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left text-sm transition hover:bg-surface-2/60',
+              selectedSessionId === session.sessionId && 'bg-surface-2 hover:bg-surface-2',
+            )}
+          >
+            {/* Title fills the row; only on hover does it inset to clear the rename
+                + pin + delete buttons and marquee-scroll when it's too long to fit. */}
+            <span className="flex items-center gap-2 group-hover:pr-16">
+              {/* Braille spinner: the session's agent is actively running. The
+                  cycling glyph reads as "working" and can't be mistaken for the
+                  round unread bubble below (which is a solid, still dot). */}
+              {session.status === 'running' && (
+                <span className="braille-spinner shrink-0 text-emerald-400" aria-hidden>
+                  <i />
+                  <i />
+                  <i />
+                  <i />
+                  <i />
+                  <i />
+                </span>
+              )}
+              {/* Unread bubble: this session started waiting and hasn't been viewed. */}
+              {unread && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
+              <MarqueeTitle text={session.title || session.prompt || 'New session'} hovered={hovered} />
             </span>
-          )}
-          {/* Unread bubble: this session started waiting and hasn't been viewed. */}
-          {unread && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
-          <MarqueeTitle text={session.title || session.prompt || 'New session'} hovered={hovered} />
-        </span>
-        <span className="flex items-center gap-2 text-xs text-text-faint">
-          <span className="shrink-0">{relativeAge(session.createdAt)}</span>
-          {/* The remote branch this session's worktree tracks. */}
-          {session.baseBranch && (
-            <span className="flex min-w-0 items-center gap-1" title={`Tracking origin/${session.baseBranch}`}>
-              <BranchIcon size={10} className="shrink-0" />
-              <span className="truncate font-mono text-[11px]">{session.baseBranch}</span>
-            </span>
-          )}
-          {/* Tool name moved off the title line so the title can run full-width;
-              hidden when the blocked-hosts badge claims the bottom-right. */}
-          {session.blockedHosts.length === 0 && (
-            <span className="ml-auto shrink-0">{TOOL_LABEL[session.tool]}</span>
-          )}
-        </span>
-      </button>
+            {metaLine}
+          </button>
 
-      {/* Overlaid as a sibling for the same reason as the delete × below:
-          the badge is a button and can't nest inside the row button. The
-          wrapper is pointer-inert so only the badge itself takes clicks. */}
-      {session.blockedHosts.length > 0 && (
-        <span className="pointer-events-none absolute bottom-1.5 right-1.5 flex items-center gap-1">
-          <BlockedHostsBadge
-            hosts={session.blockedHosts}
-            sessionId={session.sessionId}
-            iconSize={11}
-            className="pointer-events-auto hover:bg-[#d65858]/25"
-          />
-        </span>
+          {/* Overlaid as a sibling for the same reason as the delete × below:
+              the badge is a button and can't nest inside the row button. The
+              wrapper is pointer-inert so only the badge itself takes clicks. */}
+          {session.blockedHosts.length > 0 && (
+            <span className="pointer-events-none absolute bottom-1.5 right-1.5 flex items-center gap-1">
+              <BlockedHostsBadge
+                hosts={session.blockedHosts}
+                sessionId={session.sessionId}
+                iconSize={11}
+                className="pointer-events-auto hover:bg-[#d65858]/25"
+              />
+            </span>
+          )}
+
+          {/* Overlaid as siblings (not nested in the row button) and pointer-inert
+              until hover, so they can't swallow clicks meant for selecting the row. */}
+          <button
+            onClick={startRename}
+            title="Rename session"
+            aria-label="Rename session"
+            className="absolute right-14 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
+              opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
+              group-hover:pointer-events-auto group-hover:opacity-100"
+          >
+            <RenameIcon size={13} />
+          </button>
+          <button
+            onClick={toggleBackground}
+            title={session.background ? 'Remove from background' : 'Move to background'}
+            aria-label={session.background ? 'Remove from background' : 'Move to background'}
+            className="absolute right-8 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
+              opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
+              group-hover:pointer-events-auto group-hover:opacity-100"
+          >
+            <PinIcon size={13} className={clsx(session.background && 'rotate-45')} />
+          </button>
+          <button
+            onClick={() => setConfirmDelete(true)}
+            title="Delete session"
+            aria-label="Delete session"
+            className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
+              opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
+              group-hover:pointer-events-auto group-hover:opacity-100"
+          >
+            <CloseIcon size={14} />
+          </button>
+        </>
       )}
-
-      {/* Overlaid as siblings (not nested in the row button) and pointer-inert
-          until hover, so they can't swallow clicks meant for selecting the row. */}
-      <button
-        onClick={toggleBackground}
-        title={session.background ? 'Remove from background' : 'Move to background'}
-        aria-label={session.background ? 'Remove from background' : 'Move to background'}
-        className="absolute right-8 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
-          opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
-          group-hover:pointer-events-auto group-hover:opacity-100"
-      >
-        <PinIcon size={13} className={clsx(session.background && 'rotate-45')} />
-      </button>
-      <button
-        onClick={() => setConfirmDelete(true)}
-        title="Delete session"
-        aria-label="Delete session"
-        className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
-          opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
-          group-hover:pointer-events-auto group-hover:opacity-100"
-      >
-        <CloseIcon size={14} />
-      </button>
 
       <ConfirmDialog
         open={confirmDelete}

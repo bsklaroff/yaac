@@ -5,7 +5,7 @@ import { renameSession } from '#lib/createSession'
 /** Collapse whitespace to a single line, mirroring the server's title
  *  normalization — so the seeded field and the unchanged-check below agree
  *  even when the fallback prompt is multi-line or padded. */
-function oneLine(s: string): string {
+export function oneLine(s: string): string {
   return s.replace(/\s+/g, ' ').trim()
 }
 
@@ -81,7 +81,7 @@ export function SessionTitle({ sessionId, title, prompt }: {
   }
 
   return (
-    <div className="titlebar-drag flex min-w-0 flex-1 items-center gap-1.5">
+    <div className="titlebar-drag flex min-w-0 flex-1 items-center gap-0.5">
       {editing ? (
         <input
           ref={inputRef}
