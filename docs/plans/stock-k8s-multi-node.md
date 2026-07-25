@@ -1,4 +1,4 @@
-# Stock multi-node Kubernetes (e.g. DigitalOcean DOKS)
+# Stock multi-node Kubernetes (self-managed pools, EKS-AL, AKS-Ubuntu)
 
 Goal: run yaac on a multi-node, stock Kubernetes cluster — where the control
 plane is remote and we do not `podman exec` the nodes.
@@ -38,11 +38,16 @@ plane is remote and we do not `podman exec` the nodes.
 Scope reality check (the runsc install, §3, is the binding constraint): the
 non-negotiable gVisor requirement means the target is **self-managed node
 pools (droplets + k3s + own CNI) as the primary, fully-supported case**, with
-*some* managed engines as per-provider ports (DOKS / EKS-AL / AKS-Ubuntu,
-each vendor-unsupported for the runtime install), a **separate adapter for
-GKE** (adopt GKE Sandbox), and Autopilot / Fargate / Bottlerocket **out of
-scope**. "Runs on any stock managed cluster" is not achievable; DOKS is the
-reference *managed* port, not a universal guarantee.
+*some* managed engines as per-provider ports (EKS-AL / AKS-Ubuntu, each
+vendor-unsupported for the runtime install), a **separate adapter for GKE**
+(adopt GKE Sandbox on the legacy dataplane), and Autopilot / Fargate /
+Bottlerocket / **DOKS** out of scope — DOKS's CNI is a mandatory,
+non-replaceable Cilium (BYO-CNI unsupported), which defeats the §4 veth-peer
+redirect; DigitalOcean stays reachable via self-managed droplets + k3s.
+"Runs on any stock managed cluster" is not achievable; EKS-AL is the
+reference *managed* port, not a universal guarantee. The §4 datapath now has
+an implementation plan for the current backend:
+[`veth-peer-egress.md`](veth-peer-egress.md).
 
 This is the third track alongside two existing plans, and it subsumes parts
 of both:
@@ -144,9 +149,10 @@ runtime the clean way, so the node agent (§4) does it:
   mount-hint config; AKS Ubuntu). It is **blocked** on immutable OS (EKS
   Bottlerocket) and on the no-node-access tiers (GKE Autopilot, EKS
   Fargate); on **GKE** you must instead adopt GKE Sandbox (managed gVisor,
-  COS-only). So the reachable set is: self-managed (primary), DOKS, EKS-AL,
+  COS-only). So the reachable set is: self-managed (primary), EKS-AL,
   AKS-Ubuntu — the same envelope the §4 networking needs, since both ride
-  the same privileged node install.
+  the same privileged node install (DOKS passes this bar but fails §4's:
+  its Cilium CNI is not replaceable).
 - Spike: verify on a real target node — OS/containerd config include path,
   survival across a node-pool upgrade, the cluster-check sentry/dmesg probe.
 
@@ -210,8 +216,9 @@ The stream relay is already multi-node clean (streamd reached by pod IP;
 server↔proxy via apiserver exec/port-forward) — no node locality anywhere.
 
 **Portability = the §3 runsc-install envelope** (both need the same
-privileged node install): self-managed (primary), DOKS, EKS-AL, AKS-Ubuntu;
-out on GKE Dataplane V2 / Autopilot, Bottlerocket, Fargate. Istio ambient's
+privileged node install) **minus Cilium-mandated CNIs**: self-managed
+(primary), EKS-AL, AKS-Ubuntu; out on GKE Dataplane V2 / Autopilot,
+Bottlerocket, Fargate, DOKS (non-replaceable Cilium). Istio ambient's
 own tested matrix has the *same* exceptions for the *same* privilege reasons
 (DPv2 forbids the istio-cni mount propagation; Autopilot forbids the
 privileged install), which is corroborating.
@@ -330,7 +337,7 @@ the CNI only hands out pod IPs and the whole design is CNI-independent.
    installer, provider-aware check.
 4. **Multi-node rehearsal, then a real managed cluster:** multi-node kind
    with per-node extraMounts (from the storage plan) to shake out scheduling
-   bugs cheaply, then a real DOKS/self-managed cluster behind the spikes.
+   bugs cheaply, then a real EKS-AL/self-managed cluster behind the spikes.
 
 ## Open questions
 
