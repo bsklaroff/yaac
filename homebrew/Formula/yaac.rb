@@ -10,7 +10,6 @@ class Yaac < Formula
   sha256 "REPLACE_WITH_TARBALL_SHA256_AFTER_NPM_PUBLISH"
   license "MIT"
 
-  depends_on "cilium-cli"
   depends_on "kubernetes-cli"
   depends_on "node"
   # Core podman is >= 6.0 (needed for krunkit --timesync passthrough on
@@ -45,7 +44,7 @@ class Yaac < Formula
   def caveats
     <<~EOS
       Create the local cluster yaac runs sessions on (podman machine on
-      macOS, local registry, kind cluster, Cilium, node fixups):
+      macOS, local registry, kind cluster, Calico, node fixups):
 
         yaac cluster setup
 

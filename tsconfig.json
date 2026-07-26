@@ -10,7 +10,9 @@
     "packages/*/tsup.config.ts",
     "packages/*/drizzle.config.ts",
     "k8s/proxy/*.ts",
-    "k8s/proxy/test"
+    "k8s/proxy/test",
+    "k8s/netd/*.ts",
+    "k8s/netd/test"
   ],
   "exclude": ["node_modules", "dist", "packages/frontend"]
 }

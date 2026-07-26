@@ -18,7 +18,7 @@ import crypto from 'node:crypto'
 /**
  * Magic hostname the in-session `yaac-spawn` script POSTs to. Every external
  * name already resolves to the DNS sinkhole and rides the transparent HTTP
- * listener, so this needs no DNS or Cilium change — the proxy routes on the
+ * listener, so this needs no DNS or redirect change — the proxy routes on the
  * Host header alone. Keep in sync with session-bin/yaac-spawn.
  */
 export const SPAWN_MAGIC_HOST = 'yaac.internal'

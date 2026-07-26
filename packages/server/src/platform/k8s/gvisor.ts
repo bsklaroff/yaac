@@ -240,7 +240,7 @@ function downloadScript(url: string, file: string, dest: string): string {
 /**
  * Resolve the pinned runsc + shim binaries for the node architecture,
  * downloading (checksum-verified) into ~/.cache/yaac/bin on first use —
- * the pinned-binary convention (cilium CLI, helm), except never taken from
+ * the pinned-binary convention (helm), except never taken from
  * PATH: the node needs a specific linux/arch binary regardless of what the
  * host happens to have installed.
  */

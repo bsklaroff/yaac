@@ -60,7 +60,7 @@ import {
 // from PORT now that no session egress reaches it — it is purely the API.
 const API_PORT = process.env.API_PORT
 const PROXY_AUTH_SECRET = process.env.PROXY_AUTH_SECRET
-// Transparent egress listeners: the node-local Cilium Envoy forwards
+// Transparent egress listeners: netd's node-local Envoy forwards
 // redirected 443/80 here (PP2 identity, destination from TLS SNI / HTTP
 // Host) and SSH CONNECTs to the tunnel listener (destination from the
 // CONNECT line).
@@ -82,7 +82,7 @@ const DATA_DIR = '/data'
 // UDP/53 DNS stub: session pods point their resolver here. Optional so
 // non-cluster test runs can skip it.
 const DNS_STUB_PORT = process.env.DNS_STUB_PORT
-// Sinkhole answer for EXTERNAL names: decorative — Cilium redirects egress by
+// Sinkhole answer for EXTERNAL names: decorative — netd redirects egress by
 // port (443/80) and the proxy routes by SNI/Host, never by the dialed address.
 const DNS_SINKHOLE_IPV4 = '198.18.0.1'
 // Split-horizon DNS, top-level proxy only: forward `.cluster.local` names to
@@ -2551,10 +2551,10 @@ server.listen(parseInt(API_PORT, 10), '0.0.0.0', () => {
 // ── Transparent listeners ──────────────────────────────────────────────
 //
 // Session pods' outbound 443/80 (and the SSH tunnel sentinel) is
-// redirected here at the cluster level by the Cilium CEC + CNP: the
+// redirected here by netd's per-pod nat DNAT at the pod's veth peer: the
 // node-local Envoy forwards each connection wrapped in a PROXY protocol
-// v2 header carrying the eBPF-verified source pod IP. Identity is that
-// unspoofable source IP, resolved to a session via the pod-watch index
+// v2 header carrying the connection's real source pod IP. Identity is that
+// source IP, resolved to a session via the pod-watch index
 // (see resolveSessionBySourceIp). Destination comes from the TLS SNI
 // (443) / HTTP Host (80) after the PP2 header is consumed. The listeners
 // fail closed: no/invalid PP2, an unknown source pod, or (for HTTPS) an
@@ -2573,9 +2573,11 @@ const PP2_TIMEOUT_MS = 10_000
  * transparent socket, resolve the source pod IP it carries to a session id,
  * then hand that session id and the remaining stream to `next`. Any failure
  * destroys the socket — this is the fail-closed gate. Identity is the source
- * pod IP (Cilium sets it from eBPF-verified endpoint metadata, unspoofable);
- * the proxy-ingress CiliumNetworkPolicy ensures only the node Envoy can reach
- * these ports, so a session pod cannot dial in and forge a source.
+ * pod IP, which netd's Envoy stamps from the connection's real peer address
+ * (unforgeable: the redirect is keyed on the arrival veth, and neither a
+ * gVisor guest nor a Felix-policed runc pod can spoof its source). The
+ * proxy-ingress NetworkPolicy admits these ports from the node CIDRs only, so
+ * a session pod cannot dial in and forge a source.
  */
 function resolveSessionBySourceIp(
   socket: net.Socket,
@@ -3070,10 +3072,12 @@ if (dnsServer && DNS_STUB_PORT) {
 // Only in-cluster (a mounted SA). Local/test runs without it leave the index
 // empty, so transparent connections fail closed — which is correct.
 if (process.env.KUBERNETES_SERVICE_HOST) {
-  void startPodWatch(podIndex).catch((err: Error) => {
-    console.error('[proxy] pod-watch failed to start:', err.message)
+  try {
+    startPodWatch(podIndex)
+  } catch (err) {
+    console.error('[proxy] pod-watch failed to start:', (err as Error).message)
     process.exit(1)
-  })
+  }
 } else {
   console.warn('[proxy] no KUBERNETES_SERVICE_HOST — pod-watch disabled (not in-cluster)')
 }

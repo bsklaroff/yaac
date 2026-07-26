@@ -56,7 +56,7 @@ backend. Every connection opens with one JSON handshake line
 
 The handshake token is per-session — `HMAC-SHA256(proxyAuthSecret,
 sessionId)`, derived (never stored), injected as `YAAC_STREAM_TOKEN` at
-create. It is defense in depth alongside the ingress CNPs: a session
+create. It is defense in depth alongside the ingress NetworkPolicies: a session
 leaking its own token gains nothing, since only its own daemon accepts it
 and only the proxy can reach any daemon.
 
@@ -130,20 +130,20 @@ The relay makes proxy→pod dialing real, so pod ingress is locked down
 with it (before, nothing dialed session pods and their ingress was
 default-allow by omission):
 
-- Proxy ingress (`buildProxyIngressCnpManifest`): the relay port rides
+- Proxy ingress (`buildProxyIngressNpManifest`): the relay port rides
   the host-only rule. The server's own dials arrive via port-forward —
   CRI dials localhost inside the pod netns, never traversing policy —
   so the network-side allowance exists for host-identity dials only
   (the YAAC_RELAY_ADDR node-local case); session pods cannot reach it.
-- Session ingress lock (`buildSessionIngressLockCnpManifest`): session
+- Session ingress lock (`buildSessionIngressLockNpManifest`): session
   pods accept only `app=yaac-proxy` on 10300, default-denying all other
   ingress.
-- Nested, projected by the OUTER server alongside the inner-redirect
-  objects (the inner install has no host RBAC): the inner proxy accepts
+- Nested, applied by the OUTER server into the vcluster's host
+  namespace (the inner install has no host RBAC): the inner proxy accepts
   the relay port from its OWNING session pod only
-  (`buildInnerProxyIngressCnpManifest`), and synced session pods accept
+  (`buildInnerProxyIngressNpManifest`), and synced session pods accept
   10300 from their vcluster's inner proxies only
-  (`buildInnerSessionIngressLockCnpManifest`). As with inner egress, a
+  (`buildInnerSessionIngressLockNpManifest`). As with inner egress, a
   nested install only streams when the outer yaac is new enough to
   project these rules; `yaac cluster check` inside the session is the
   diagnostic (its `relay` check dials the inner proxy).

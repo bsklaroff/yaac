@@ -43,6 +43,7 @@ function healthyCache(): ClusterCache {
     vclusterNamespaces: () => [],
     vclusterPods: () => [{ name: 'vp', podIP: '10.0.0.9' }],
     vclusterServices: () => [{ name: 'yaac-proxy', labels: {} }],
+    vclusterConfigMaps: () => [{ name: 'yaac-redirect-claim-x-yaac-x-vc', data: {} }],
   } as unknown as ClusterCache
 }
 

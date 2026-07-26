@@ -144,6 +144,7 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
     YAAC_BUILD_ID: 'test-build-id',
     YAAC_IMAGE_PREFIX: 'yaac-test',
     YAAC_PROXY_IMAGE: 'yaac-test-proxy',
+    YAAC_NETD_IMAGE: 'yaac-test-netd',
     YAAC_K8S_NAMESPACE: TEST_NAMESPACE,
     YAAC_REQUIRE_PREBUILT_IMAGES: '1',
     // Prewarming is on by default in production, but a background pool that

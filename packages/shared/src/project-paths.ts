@@ -12,6 +12,20 @@ export { PACKAGE_ROOT, ensureDataDir, getDataDir, getProjectsDir, projectConfigD
 
 export const DOCKERFILES_DIR = path.join(PACKAGE_ROOT, 'dockerfiles')
 export const PROXY_DIR = path.join(PACKAGE_ROOT, 'k8s', 'proxy')
+/** Build context of the per-node network daemon (see k8s/netd/netd.ts). */
+export const NETD_DIR = path.join(PACKAGE_ROOT, 'k8s', 'netd')
+/** Pin for the Calico install manifest: version + checksum, no manifest
+ *  bytes (see features/cluster/setup.ts). */
+export const CALICO_DIR = path.join(PACKAGE_ROOT, 'k8s', 'calico')
+
+/**
+ * Where a verified Calico install manifest is cached. Under the data dir,
+ * not the install: it is downloaded content keyed by version, so it
+ * survives yaac upgrades and is dropped by removing the data dir.
+ */
+export function calicoManifestCachePath(version: string): string {
+  return path.join(getDataDir(), 'cache', `calico-${version}.yaml`)
+}
 
 /**
  * Top-level directory for all host-side credential files. Split into

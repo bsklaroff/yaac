@@ -1,8 +1,10 @@
 import { listSessionJobs, listSessionPods, type SessionJob, type SessionPod } from '#platform/k8s/pods'
 import {
+  listVclusterConfigMaps,
   listVclusterNamespaces,
   listVclusterPods,
   listVclusterServices,
+  type VclusterConfigMap,
   type VclusterNamespaceInfo,
   type VclusterPod,
   type VclusterService,
@@ -35,6 +37,8 @@ export interface TickSnapshot {
   vclusterPods(namespace: string): Promise<VclusterPod[]>
   /** Syncer-managed Services inside one vcluster's host namespace. */
   vclusterServices(vc: Pick<VclusterNamespaceInfo, 'namespace' | 'name'>): Promise<VclusterService[]>
+  /** ConfigMaps inside one vcluster's host namespace (claims live here). */
+  vclusterConfigMaps(namespace: string): Promise<VclusterConfigMap[]>
 }
 
 export function createTickSnapshot(resync = true): TickSnapshot {
@@ -66,5 +70,8 @@ export function createTickSnapshot(resync = true): TickSnapshot {
     vclusterServices: (vc) => get(`vcluster-services:${vc.namespace}`,
       () => cache?.vclusterServices(vc.namespace) ?? null,
       () => listVclusterServices(vc.namespace, vc.name)),
+    vclusterConfigMaps: (namespace) => get(`vcluster-configmaps:${namespace}`,
+      () => cache?.vclusterConfigMaps(namespace) ?? null,
+      () => listVclusterConfigMaps(namespace)),
   }
 }

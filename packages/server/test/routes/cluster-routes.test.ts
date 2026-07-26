@@ -35,7 +35,7 @@ describe('cluster routes', () => {
     const app = createClusterApp(fakeDeps({
       setup: (onProgress) => {
         onProgress('Creating kind cluster…')
-        onProgress('Installing Cilium…')
+        onProgress('Installing Calico…')
         return Promise.resolve(true)
       },
     }))
@@ -43,7 +43,7 @@ describe('cluster routes', () => {
     expect(res.status).toBe(200)
     expect(parseNdjson(await res.text())).toEqual([
       { type: 'progress', message: 'Creating kind cluster…' },
-      { type: 'progress', message: 'Installing Cilium…' },
+      { type: 'progress', message: 'Installing Calico…' },
       { type: 'result', ok: true },
     ])
   })

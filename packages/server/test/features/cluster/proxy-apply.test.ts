@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
+vi.mock('#features/cluster/cluster-cidrs', () => ({
+  nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
+  apiserverIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
+  resetClusterCidrCache: vi.fn(),
+}))
+
 vi.mock('#platform/k8s/kubectl', () => ({
   dataDirHash: vi.fn(() => 'ddh0123456789abc'),
   k8sNamespace: vi.fn(() => 'test-ns'),
@@ -10,12 +16,13 @@ vi.mock('#platform/k8s/kubectl', () => ({
   kubectlWithRetry: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
-// ensureProxyResources(nested) registers the Cilium CRDs into the vcluster;
-// no test here exercises the real CRD apply, so stub it out.
-vi.mock('#platform/k8s/cilium-crds', () => ({
-  ensureCiliumCrds: vi.fn().mockResolvedValue(undefined),
+// ensureProxyResources applies the netd DaemonSet on the host path; it
+// builds images and talks to the cluster, so stub it out.
+vi.mock('#features/cluster/netd', () => ({
+  ensureNetd: vi.fn().mockResolvedValue(undefined),
 }))
 
+import { ensureNetd } from '#features/cluster/netd'
 import {
   ensureCaConfigMap,
   ensureNamespace,
@@ -125,8 +132,8 @@ describe('ensureProxyResources', () => {
     const kinds = mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
     expect(kinds).toEqual([
       'ServiceAccount', 'Role', 'RoleBinding', 'Deployment', 'Service',
-      'CiliumEnvoyConfig', 'CiliumNetworkPolicy', 'CiliumNetworkPolicy',
-      'CiliumClusterwideEnvoyConfig', 'CiliumNetworkPolicy', 'CiliumNetworkPolicy',
+      // Session egress, session ingress lock, proxy ingress, world-deny.
+      'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy',
     ])
     // The proxy Service ClusterIP is allocator-assigned and never deleted —
     // no pin migration, so ensureProxyResources issues no `delete service`.
@@ -145,6 +152,7 @@ describe('ensureProxyResources', () => {
 
   it('nested: projects the outer CA ConfigMap (read from CA_CERT_PATH) before the Deployment', async () => {
     mockGetJson.mockResolvedValue(null)
+    vi.mocked(ensureNetd).mockClear()
     // mockRestore() also clears the call record, so assert before restoring.
     const readSpy = vi.spyOn(fs, 'readFile').mockResolvedValue('OUTER-CA-PEM')
     await ensureProxyResources('img', { nested: true })
@@ -163,10 +171,9 @@ describe('ensureProxyResources', () => {
     // schedule (a missing source would keep the pod ContainerCreating).
     const kinds = mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
     expect(kinds.indexOf('ConfigMap')).toBeLessThan(kinds.indexOf('Deployment'))
-    // The cluster-scoped fallback CCEC is HOST-ONLY: the nested vcluster has no
-    // CiliumClusterwideEnvoyConfig CRD (ensureCiliumCrds installs only CEC/CNP),
-    // and a nested yaac creates no vcluster sessions to reference it.
-    expect(kinds).not.toContain('CiliumClusterwideEnvoyConfig')
+    // netd runs nested too, in CLAIM mode: the inner install publishes what
+    // it wants redirected and the host validates and programs it.
+    expect(vi.mocked(ensureNetd)).toHaveBeenCalledWith({ nested: true })
     readSpy.mockRestore()
   })
 })

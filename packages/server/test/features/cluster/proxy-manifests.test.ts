@@ -11,56 +11,31 @@ vi.mock('#platform/k8s/kubectl', () => ({
 import {
   buildBuilderRoleGuardBindingManifest,
   buildBuilderRoleGuardPolicyManifest,
-  buildEgressRedirectCecManifest,
-  buildEgressWorldDenyCiliumPolicyManifest,
-  buildInnerEgressRedirectCecManifest,
-  buildInnerProxyIngressCnpManifest,
-  buildInnerSessionEgressRedirectCnpManifest,
   buildOuterProxyCaConfigMapManifest,
   buildProxyDeploymentManifest,
-  buildProxyIngressCnpManifest,
   buildProxyRoleBindingManifest,
   buildProxyRoleManifest,
   buildProxyServiceAccountManifest,
   buildProxyServiceManifest,
-  buildSessionEgressRedirectCnpManifest,
-  buildVclusterFallbackRedirectCcecManifest,
-  buildVclusterFallbackRedirectCnpManifest,
-  innerRedirectObjectName,
-  vclusterFallbackCcecName,
 } from '#features/cluster/proxy-manifests'
 import {
   BUILDER_ROLE_GUARD_NAME,
   DNS_STUB_PORT,
-  EGRESS_REDIRECT_CEC_NAME,
-  EGRESS_WORLD_DENY_NAME,
-  INNER_EGRESS_REDIRECT_CEC_NAME,
-  INNER_PROXY_INGRESS_CNP_NAME,
-  INNER_SESSION_EGRESS_REDIRECT_CNP_NAME,
-  LABEL_PROJECTION,
   LABEL_ROLE,
   OUTER_CA_CONFIGMAP_NAME,
-  PROJECTION_INNER_REDIRECT,
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
-  PROXY_INGRESS_CNP_NAME,
   PROXY_PORT,
-  POD_STREAM_PORT,
   PROXY_SA_NAME,
+  POD_STREAM_PORT,
   RELAY_PORT,
   ROLE_INNER_PROXY,
-  SESSION_EGRESS_REDIRECT_CNP_NAME,
-  SESSION_REDIRECT_PRIORITY,
-  SSH_TUNNEL_SENTINEL,
   TRANSPARENT_HTTP_PORT,
   TRANSPARENT_HTTPS_PORT,
   TRANSPARENT_TUNNEL_PORT,
-  TUNNEL_INGRESS_PORT,
-  VCLUSTER_FALLBACK_PRIORITY,
-  VCLUSTER_FALLBACK_REDIRECT_NAME,
 } from '#features/cluster/proxy-constants'
 import { proxyDataHostDir, sshAgentHostDir } from '#features/cluster/proxy-apply'
-import { LABEL_DATA_DIR_HASH, LABEL_SESSION_ID, LABEL_VCLUSTER_MANAGED_BY } from '#platform/k8s/pods'
+import { LABEL_DATA_DIR_HASH } from '#platform/k8s/pods'
 import { credentialsDir } from '@yaac/shared/project-paths'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
@@ -246,47 +221,6 @@ describe('buildProxyDeploymentManifest', () => {
   })
 })
 
-describe('buildEgressWorldDenyCiliumPolicyManifest', () => {
-  interface Cnp {
-    apiVersion: string
-    kind: string
-    metadata: { name: string; namespace: string; labels: Record<string, string> }
-    spec: {
-      endpointSelector: { matchExpressions: Array<{ key: string; operator: string; values?: string[] }> }
-      egressDeny: Array<{ toEntities: string[] }>
-    }
-  }
-
-  it('denies world for the whole install namespace except the proxy', () => {
-    const m = buildEgressWorldDenyCiliumPolicyManifest() as unknown as Cnp
-    expect(m.apiVersion).toBe('cilium.io/v2')
-    expect(m.kind).toBe('CiliumNetworkPolicy')
-    expect(m.metadata.name).toBe(EGRESS_WORLD_DENY_NAME)
-    expect(m.metadata.namespace).toBe('test-ns')
-    // Everything except the proxy (NotIn also matches no-app pods, so it
-    // catches session pods, registries, mocks). The exemption label is
-    // only settable by the trusted server on its own pods. Synced pods
-    // live in their own per-session namespaces, denied there.
-    // Excludes the proxy AND session pods — the latter are governed by the
-    // redirect CNP, whose world:443/80 allow a world-deny here would beat.
-    expect(m.spec.endpointSelector.matchExpressions)
-      .toEqual([
-        { key: 'app', operator: 'NotIn', values: ['yaac-proxy'] },
-        { key: 'yaac.session-id', operator: 'DoesNotExist' },
-        // Trust-split builder pods need direct egress (registry DNATs to a
-        // kind-network IP = world; RUN steps fetch upstreams) and a Cilium
-        // deny beats any allow — so they are carved out of the selector.
-        { key: 'yaac.role', operator: 'NotIn', values: ['builder'] },
-      ])
-    expect(m.spec.egressDeny).toEqual([{ toEntities: ['world'] }])
-  })
-
-  it('exempts only the proxy, by an unforgeable trusted-server label', () => {
-    const m = buildEgressWorldDenyCiliumPolicyManifest() as unknown as Cnp
-    expect(m.spec.endpointSelector.matchExpressions[0].values).toEqual(['yaac-proxy'])
-  })
-})
-
 describe('builder role guard (ValidatingAdmissionPolicy)', () => {
   interface Vap {
     apiVersion: string
@@ -353,10 +287,10 @@ describe('buildProxyServiceManifest', () => {
       metadata: {
         name: PROXY_APP_NAME,
         namespace: 'test-ns',
-        // The install identity rides the vcluster sync so the outer
-        // projection can attribute a synced inner-proxy Service to its
-        // inner install (findInnerProxyServices).
-        labels: { app: PROXY_APP_NAME, [LABEL_DATA_DIR_HASH]: 'ddh0123456789abc' },
+        // No install identity on the Service: the redirect is driven by
+        // validated claims naming POD IPs (features/cluster/redirect-claims.ts),
+        // so nothing reads a synced inner-proxy Service any more.
+        labels: { app: PROXY_APP_NAME },
       },
       spec: {
         // No relay entry and no NodePort: the server's relay dials ride a
@@ -381,185 +315,6 @@ describe('buildProxyServiceManifest', () => {
     }
     expect(m.spec.type).toBe('ClusterIP')
     expect(m.spec.clusterIP).toBeUndefined()
-  })
-})
-
-describe('buildEgressRedirectCecManifest', () => {
-  interface Cec {
-    apiVersion: string
-    kind: string
-    metadata: { name: string; namespace: string; annotations: Record<string, string> }
-    spec: {
-      backendServices: Array<{ name: string; namespace: string; number: string[] }>
-      resources: Array<Record<string, unknown>>
-    }
-  }
-  it('is an annotated CEC with three listener+cluster pairs to the proxy', () => {
-    const m = buildEgressRedirectCecManifest() as unknown as Cec
-    expect(m.apiVersion).toBe('cilium.io/v2')
-    expect(m.kind).toBe('CiliumEnvoyConfig')
-    expect(m.metadata.name).toBe(EGRESS_REDIRECT_CEC_NAME)
-    // The load-bearing annotation: without it Cilium binds the upstream to
-    // the client pod IP and forwarding to a fixed proxy dead-ends.
-    expect(m.metadata.annotations['cec.cilium.io/use-original-source-address']).toBe('false')
-    const listeners = m.spec.resources.filter(
-      (r) => String(r['@type']).endsWith('v3.Listener'),
-    )
-    const clusters = m.spec.resources.filter(
-      (r) => String(r['@type']).endsWith('v3.Cluster'),
-    )
-    expect(listeners).toHaveLength(3)
-    expect(clusters).toHaveLength(3)
-  })
-
-  it('resolves each upstream via an EDS cluster backed by the proxy Service port, with proxy-protocol v2', () => {
-    const m = buildEgressRedirectCecManifest() as unknown as Cec
-    const ns = 'test-ns'
-    // backendServices is what makes EDS resolve: Cilium syncs the proxy
-    // Service's endpoints (for these port numbers) into the clusters.
-    expect(m.spec.backendServices).toEqual([{
-      name: 'yaac-proxy',
-      namespace: ns,
-      number: [
-        String(TRANSPARENT_HTTPS_PORT),
-        String(TRANSPARENT_HTTP_PORT),
-        String(TRANSPARENT_TUNNEL_PORT),
-      ],
-    }])
-    const clusters = m.spec.resources.filter(
-      (r) => String(r['@type']).endsWith('v3.Cluster'),
-    ) as Array<{
-      name: string
-      type: string
-      transportSocket: { name: string; typedConfig: { config: { version: string } } }
-    }>
-    // EDS (not a static ClusterIP endpoint): the node-local Envoy makes
-    // upstream connections from the host netns, which do not traverse
-    // kube-proxy ClusterIP DNAT — a static ClusterIP dead-ends on connect.
-    // Cluster names must match `<ns>/<service>:<port>` for backendServices.
-    expect(clusters.map((c) => ({ name: c.name, type: c.type }))).toEqual([
-      { name: `${ns}/yaac-proxy:${TRANSPARENT_HTTPS_PORT}`, type: 'EDS' },
-      { name: `${ns}/yaac-proxy:${TRANSPARENT_HTTP_PORT}`, type: 'EDS' },
-      { name: `${ns}/yaac-proxy:${TRANSPARENT_TUNNEL_PORT}`, type: 'EDS' },
-    ])
-    for (const c of clusters) {
-      expect(c.transportSocket.name).toBe('envoy.transport_sockets.upstream_proxy_protocol')
-      expect(c.transportSocket.typedConfig.config.version).toBe('V2')
-    }
-  })
-})
-
-describe('buildSessionEgressRedirectCnpManifest', () => {
-  interface Cnp {
-    metadata: { name: string }
-    spec: {
-      endpointSelector: { matchExpressions: Array<{ key: string; operator: string }> }
-      egress: Array<{
-        toEntities?: string[]
-        toCIDRSet?: Array<{ cidr: string }>
-        toEndpoints?: Array<{ matchLabels: Record<string, string> }>
-        toPorts: Array<{ ports: Array<{ port: string; protocol: string }>; listener?: { envoyConfig: { name: string }; name: string } }>
-      }>
-    }
-  }
-  it('default-denies session egress except 443/80→Envoy, the SSH sentinel, and DNS', () => {
-    const m = buildSessionEgressRedirectCnpManifest() as unknown as Cnp
-    expect(m.metadata.name).toBe(SESSION_EGRESS_REDIRECT_CNP_NAME)
-    expect(m.spec.endpointSelector.matchExpressions)
-      .toEqual([{ key: 'yaac.session-id', operator: 'Exists' }])
-
-    const [https, http, ssh, dns] = m.spec.egress
-    expect(https.toEntities).toEqual(['world'])
-    expect(https.toPorts[0].ports[0]).toEqual({ port: '443', protocol: 'TCP' })
-    expect(https.toPorts[0].listener?.name).toBe('yaac-egress-https')
-    expect(https.toPorts[0].listener?.envoyConfig.name).toBe(EGRESS_REDIRECT_CEC_NAME)
-
-    expect(http.toPorts[0].ports[0]).toEqual({ port: '80', protocol: 'TCP' })
-    expect(http.toPorts[0].listener?.name).toBe('yaac-egress-http')
-
-    expect(ssh.toCIDRSet).toEqual([{ cidr: `${SSH_TUNNEL_SENTINEL}/32` }])
-    expect(ssh.toPorts[0].ports[0]).toEqual({ port: String(TUNNEL_INGRESS_PORT), protocol: 'TCP' })
-    expect(ssh.toPorts[0].listener?.name).toBe('yaac-egress-tunnel')
-
-    // DNS goes straight to the proxy stub (no Envoy listener).
-    expect(dns.toEndpoints).toEqual([{ matchLabels: { app: PROXY_APP_NAME } }])
-    expect(dns.toPorts[0].ports[0]).toEqual({ port: String(DNS_STUB_PORT), protocol: 'UDP' })
-    expect(dns.toPorts[0].listener).toBeUndefined()
-  })
-
-  it('has NO blanket in-cluster allowance — registry/vcluster flows come from scoped NetworkPolicies', () => {
-    const m = buildSessionEgressRedirectCnpManifest() as unknown as Cnp
-    // Exactly the four redirect/DNS rules. The old install-wide 5000/8443
-    // carve-out (toEndpoints [{}]) let any session reach any project's
-    // registry and any session's vcluster API (issue #17); those flows are
-    // now admitted only by the per-project registry NetworkPolicy and the
-    // per-session vcluster NetworkPolicy, unioned over this default-deny.
-    expect(m.spec.egress).toHaveLength(4)
-    for (const rule of m.spec.egress) {
-      expect(rule.toEndpoints ?? []).not.toContainEqual({})
-    }
-  })
-})
-
-describe('buildProxyIngressCnpManifest', () => {
-  interface Cnp {
-    metadata: { name: string }
-    spec: {
-      endpointSelector: { matchLabels: Record<string, string> }
-      ingress: Array<{
-        fromEntities?: string[]
-        fromEndpoints?: Array<{ matchExpressions: Array<{ key: string; operator: string }> }>
-        toPorts: Array<{ ports: Array<{ port: string; protocol: string }> }>
-      }>
-    }
-  }
-  it('keeps the control API host-only and opens transparent+DNS to session pods', () => {
-    const m = buildProxyIngressCnpManifest() as unknown as Cnp
-    expect(m.metadata.name).toBe(PROXY_INGRESS_CNP_NAME)
-    expect(m.spec.endpointSelector.matchLabels).toEqual({ app: PROXY_APP_NAME })
-
-    const [host, session] = m.spec.ingress
-    // Control API + relay NodePort (session registration, readiness probe,
-    // stream dials): host only — NodePort traffic is masqueraded to the
-    // node, while a session pod dialing the NodePort keeps its own identity
-    // and is dropped.
-    expect(host.fromEntities).toEqual(['host'])
-    expect(host.toPorts[0].ports).toEqual([
-      { port: String(PROXY_PORT), protocol: 'TCP' },
-      { port: String(RELAY_PORT), protocol: 'TCP' },
-    ])
-
-    // The redirected egress arrives with the session pod's identity (Cilium
-    // preserves it through the Envoy proxy), so the transparent listeners +
-    // DNS stub open to the session-id selector. The forgery lock is on the
-    // egress side (a direct dial never leaves the pod), not here.
-    expect(session.fromEndpoints?.[0].matchExpressions)
-      .toEqual([{ key: 'yaac.session-id', operator: 'Exists' }])
-    expect(session.toPorts[0].ports).toEqual([
-      { port: String(TRANSPARENT_HTTPS_PORT), protocol: 'TCP' },
-      { port: String(TRANSPARENT_HTTP_PORT), protocol: 'TCP' },
-      { port: String(TRANSPARENT_TUNNEL_PORT), protocol: 'TCP' },
-      { port: String(DNS_STUB_PORT), protocol: 'UDP' },
-    ])
-  })
-
-  it('admits a vcluster chained hop on the transparent ports cross-namespace (no DNS)', () => {
-    const m = buildProxyIngressCnpManifest() as unknown as Cnp
-    // yaac-in-yaac: an inner proxy's upstream dials (and pre-opt-in synced pods)
-    // chain to THIS proxy via the fallback redirect, arriving with the syncer's
-    // `managed-by` label from another namespace — admit them cross-namespace.
-    const chain = m.spec.ingress[2]
-    expect(chain.fromEndpoints?.[0].matchExpressions).toEqual([
-      { key: 'vcluster.loft.sh/managed-by', operator: 'Exists' },
-      { key: 'k8s:io.kubernetes.pod.namespace', operator: 'Exists' },
-    ])
-    // Transparent TCP only — the inner proxy sinkholes DNS via its own stub, so
-    // no 53 reaches the outer proxy from a vcluster pod.
-    expect(chain.toPorts[0].ports).toEqual([
-      { port: String(TRANSPARENT_HTTPS_PORT), protocol: 'TCP' },
-      { port: String(TRANSPARENT_HTTP_PORT), protocol: 'TCP' },
-      { port: String(TRANSPARENT_TUNNEL_PORT), protocol: 'TCP' },
-    ])
   })
 })
 
@@ -589,186 +344,5 @@ describe('buildOuterProxyCaConfigMapManifest', () => {
       metadata: { name: OUTER_CA_CONFIGMAP_NAME, namespace: 'test-ns' },
       data: { 'proxy-ca.pem': 'OUTER-PEM' },
     })
-  })
-})
-
-describe('inner-redirect builders (yaac-in-yaac projection)', () => {
-  const VC_NS = 'yaac-vc-abcd1234'
-  const VC_NAME = 'yvc-abcd1234'
-  const INNER_SVC = 'yaac-proxy-x-yaac-x-yvc-abcd1234' // vcluster-translated name
-  const INSTALL = 'fedcba9876543210' // the inner install's data-dir-hash
-  const OWNER_SID = 'abcd1234-0000-1111-2222-333344445555' // owning outer session
-
-  it('inner CEC: per-install name, EDS-backed by the inner proxy Service, in the vcluster namespace', () => {
-    const m = buildInnerEgressRedirectCecManifest(VC_NS, INNER_SVC, INSTALL) as unknown as {
-      metadata: { name: string; namespace: string; labels: Record<string, string>; annotations: Record<string, string> }
-      spec: {
-        backendServices: Array<{ name: string; namespace: string; number: string[] }>
-        resources: Array<{ '@type': string; name?: string; type?: string }>
-      }
-    }
-    expect(m.metadata.name).toBe(`${INNER_EGRESS_REDIRECT_CEC_NAME}-${INSTALL}`)
-    expect(m.metadata.name).toBe(innerRedirectObjectName(INNER_EGRESS_REDIRECT_CEC_NAME, INSTALL))
-    expect(m.metadata.namespace).toBe(VC_NS)
-    // Projection + install labels: the reconcile prune pass lists by these.
-    expect(m.metadata.labels).toEqual({
-      app: PROXY_APP_NAME,
-      [LABEL_PROJECTION]: PROJECTION_INNER_REDIRECT,
-      [LABEL_DATA_DIR_HASH]: INSTALL,
-    })
-    expect(m.metadata.annotations['cec.cilium.io/use-original-source-address']).toBe('false')
-    expect(m.spec.backendServices).toEqual([{
-      name: INNER_SVC,
-      namespace: VC_NS,
-      number: [String(TRANSPARENT_HTTPS_PORT), String(TRANSPARENT_HTTP_PORT), String(TRANSPARENT_TUNNEL_PORT)],
-    }])
-    const clusters = m.spec.resources.filter((r) => String(r['@type']).endsWith('v3.Cluster'))
-    expect(clusters.map((c) => ({ name: c.name, type: c.type }))).toEqual([
-      { name: `${VC_NS}/${INNER_SVC}:${TRANSPARENT_HTTPS_PORT}`, type: 'EDS' },
-      { name: `${VC_NS}/${INNER_SVC}:${TRANSPARENT_HTTP_PORT}`, type: 'EDS' },
-      { name: `${VC_NS}/${INNER_SVC}:${TRANSPARENT_TUNNEL_PORT}`, type: 'EDS' },
-    ])
-  })
-
-  it('inner override CNP: managed-by AND own install AND not inner-proxy, listeners at the normal priority', () => {
-    const m = buildInnerSessionEgressRedirectCnpManifest(VC_NS, VC_NAME, INSTALL) as unknown as {
-      metadata: { name: string; namespace: string; labels: Record<string, string> }
-      spec: {
-        endpointSelector: { matchExpressions: Array<{ key: string; operator: string; values: string[] }> }
-        egress: Array<{ toPorts: Array<{ ports: Array<{ port: string }>; listener?: { envoyConfig: { name: string }; name: string; priority?: number } }> }>
-      }
-    }
-    expect(m.metadata.name).toBe(`${INNER_SESSION_EGRESS_REDIRECT_CNP_NAME}-${INSTALL}`)
-    expect(m.metadata.namespace).toBe(VC_NS)
-    expect(m.metadata.labels).toEqual({
-      app: PROXY_APP_NAME,
-      [LABEL_PROJECTION]: PROJECTION_INNER_REDIRECT,
-      [LABEL_DATA_DIR_HASH]: INSTALL,
-    })
-    // Scope: this vcluster's synced pods OF THIS INSTALL, excluding the inner
-    // proxy (loop-free). Pods without an install label (e.g. test mocks) stay
-    // on the fallback.
-    expect(m.spec.endpointSelector.matchExpressions).toEqual([
-      { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [VC_NAME] },
-      { key: LABEL_DATA_DIR_HASH, operator: 'In', values: [INSTALL] },
-      { key: LABEL_ROLE, operator: 'NotIn', values: [ROLE_INNER_PROXY] },
-    ])
-    // Routing-only override: just the 3 world redirects (HTTPS, HTTP, tunnel).
-    // Intracluster + DNS come from the fallback (the inner proxy's DNS stub is a
-    // managed-by sibling there), so no DNS rule lives here.
-    expect(m.spec.egress).toHaveLength(3)
-    const listeners = m.spec.egress.map((e) => e.toPorts[0].listener).filter(Boolean)
-    expect(listeners).toHaveLength(3)
-    // Every redirect listener targets the install's OWN inner CEC at the
-    // NORMAL priority (same value any yaac uses — transparent), which beats
-    // the outer fallback.
-    for (const l of listeners) {
-      expect(l?.envoyConfig.name).toBe(`${INNER_EGRESS_REDIRECT_CEC_NAME}-${INSTALL}`)
-      expect(l?.priority).toBe(SESSION_REDIRECT_PRIORITY)
-    }
-  })
-
-  it('inner proxy-ingress CNP: control host-only, transparent ports to managed-by pods', () => {
-    const m = buildInnerProxyIngressCnpManifest(VC_NS, VC_NAME, OWNER_SID) as unknown as {
-      metadata: { name: string; namespace: string; labels: Record<string, string> }
-      spec: {
-        endpointSelector: { matchLabels: Record<string, string> }
-        ingress: Array<{
-          fromEntities?: string[]
-          fromEndpoints?: Array<{ matchExpressions: Array<{ key: string; operator: string; values: string[] }> }>
-          toPorts: Array<{ ports: Array<{ port: string; protocol: string }> }>
-        }>
-      }
-    }
-    // Shared per vcluster (unsuffixed): it selects EVERY install's inner proxy
-    // and its rules are install-independent. Carries the projection label (no
-    // install hash) so the prune pass removes it once no proxy remains.
-    expect(m.metadata.name).toBe(INNER_PROXY_INGRESS_CNP_NAME)
-    expect(m.metadata.labels).toEqual({
-      app: PROXY_APP_NAME,
-      [LABEL_PROJECTION]: PROJECTION_INNER_REDIRECT,
-    })
-    expect(m.spec.endpointSelector.matchLabels).toEqual({ [LABEL_ROLE]: ROLE_INNER_PROXY })
-    const [host, relay, session] = m.spec.ingress
-    expect(host.fromEntities).toEqual(['host'])
-    expect(host.toPorts[0].ports).toEqual([{ port: String(PROXY_PORT), protocol: 'TCP' }])
-    // Relay: the OWNING outer session pod only (the nested server), matched
-    // cross-namespace by session-id + install namespace.
-    expect(relay.fromEndpoints?.[0].matchExpressions).toEqual([
-      { key: LABEL_SESSION_ID, operator: 'In', values: [OWNER_SID] },
-      { key: 'k8s:io.kubernetes.pod.namespace', operator: 'In', values: ['test-ns'] },
-    ])
-    expect(relay.toPorts[0].ports).toEqual([{ port: String(RELAY_PORT), protocol: 'TCP' }])
-    expect(session.fromEndpoints?.[0].matchExpressions)
-      .toEqual([{ key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [VC_NAME] }])
-    expect(session.toPorts[0].ports.map((p) => p.port)).toEqual([
-      String(TRANSPARENT_HTTPS_PORT), String(TRANSPARENT_HTTP_PORT),
-      String(TRANSPARENT_TUNNEL_PORT), String(DNS_STUB_PORT),
-    ])
-  })
-
-  it('fallback CCEC: cluster-scoped (no namespace), install-scoped name, EDS → outer proxy', () => {
-    const m = buildVclusterFallbackRedirectCcecManifest() as unknown as {
-      kind: string
-      metadata: { name: string; namespace?: string; labels: Record<string, string> }
-      spec: {
-        backendServices: Array<{ name: string; namespace: string }>
-        resources: Array<{ '@type': string; name?: string }>
-      }
-    }
-    // Cluster-scoped: a CCEC so a per-vcluster CNP can reference it cross-ns.
-    expect(m.kind).toBe('CiliumClusterwideEnvoyConfig')
-    expect(m.metadata.namespace).toBeUndefined()
-    // Name + label are install-scoped so the real install and ephemeral
-    // yaac-test-* installs don't collide on the global CCEC name.
-    expect(m.metadata.name).toBe(vclusterFallbackCcecName('test-ns'))
-    expect(m.metadata.name).toBe('yaac-vcluster-fallback-redirect-test-ns')
-    expect(m.metadata.labels['yaac.install-namespace']).toBe('test-ns')
-    // EDS-resolves the OUTER proxy (k8sNamespace=test-ns).
-    expect(m.spec.backendServices[0]).toMatchObject({ name: 'yaac-proxy', namespace: 'test-ns' })
-    const clusters = m.spec.resources.filter((r) => String(r['@type']).endsWith('v3.Cluster'))
-    expect(clusters[0].name).toBe(`test-ns/yaac-proxy:${TRANSPARENT_HTTPS_PORT}`)
-  })
-
-  it('fallback CNP: ALL managed-by pods → outer proxy (low precedence) + intracluster', () => {
-    const m = buildVclusterFallbackRedirectCnpManifest(VC_NS, VC_NAME) as unknown as {
-      metadata: { name: string; namespace: string }
-      spec: {
-        endpointSelector: { matchExpressions: Array<{ key: string; operator: string; values: string[] }> }
-        egress: Array<{
-          toEntities?: string[]
-          toEndpoints?: Array<{ matchLabels?: Record<string, string>; matchExpressions?: Array<{ key: string; operator: string; values: string[] }> }>
-          toPorts?: Array<{ ports: Array<{ port: string; protocol: string }>; listener?: { envoyConfig: { kind: string; name: string }; priority?: number } }>
-        }>
-      }
-    }
-    expect(m.metadata.name).toBe(VCLUSTER_FALLBACK_REDIRECT_NAME)
-    expect(m.metadata.namespace).toBe(VC_NS)
-    // ALL synced pods (no inner-proxy exclusion — the inner proxy chains here).
-    expect(m.spec.endpointSelector.matchExpressions).toEqual([
-      { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [VC_NAME] },
-    ])
-    // The 3 world redirects target the SHARED cluster-scoped fallback CCEC
-    // (referenced by kind, cross-namespace) at the LOW precedence.
-    const listeners = m.spec.egress.flatMap((e) => e.toPorts ?? []).map((p) => p.listener).filter(Boolean)
-    expect(listeners).toHaveLength(3)
-    for (const l of listeners) {
-      expect(l?.envoyConfig.kind).toBe('CiliumClusterwideEnvoyConfig')
-      expect(l?.envoyConfig.name).toBe(vclusterFallbackCcecName('test-ns'))
-      expect(l?.priority).toBe(VCLUSTER_FALLBACK_PRIORITY)
-    }
-    // The fallback must lose to a normal-priority inner override.
-    expect(VCLUSTER_FALLBACK_PRIORITY).toBeGreaterThan(SESSION_REDIRECT_PRIORITY)
-    // Intracluster (folded in from the deleted k8s synced-pods NetworkPolicy):
-    // the vcluster API (control-plane pod on 8443) + any sibling synced pod.
-    const api = m.spec.egress.find((e) =>
-      e.toEndpoints?.[0].matchLabels?.app === 'vcluster' && !e.toPorts?.[0].listener)
-    expect(api?.toEndpoints?.[0].matchLabels).toEqual({ app: 'vcluster', release: VC_NAME })
-    expect(api?.toPorts?.[0].ports).toEqual([{ port: '8443', protocol: 'TCP' }])
-    const siblings = m.spec.egress.find((e) =>
-      e.toEndpoints?.[0].matchExpressions && !e.toPorts)
-    expect(siblings?.toEndpoints?.[0].matchExpressions).toEqual([
-      { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'In', values: [VC_NAME] },
-    ])
   })
 })

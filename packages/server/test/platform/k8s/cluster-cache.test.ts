@@ -168,7 +168,7 @@ describe('ClusterCache', () => {
     vcPods.emit('connect')
     vcPods.emit('add', { metadata: { name: 'syncer-0' }, status: { podIP: '10.1.2.3' } })
     expect(deltas).toContain('vcluster-pods')
-    expect(cache.vclusterPods('yvc-ns1')).toEqual([{ name: 'syncer-0', podIP: '10.1.2.3' }])
+    expect(cache.vclusterPods('yvc-ns1')).toEqual([{ labels: {}, name: 'syncer-0', podIP: '10.1.2.3' }])
     cache.stop()
   })
 

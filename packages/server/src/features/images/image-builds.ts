@@ -25,7 +25,7 @@ export type ImageBuildReason = 'session' | 'prewarm' | 'rebuild'
 interface BuildRecord {
   id: string
   tag: string
-  layer: ImageLayerName | 'push' | 'proxy'
+  layer: ImageLayerName | 'push' | 'proxy' | 'netd'
   action: 'build' | 'push'
   projectSlugs: string[]
   reason: ImageBuildReason
@@ -86,7 +86,7 @@ function prune(): void {
  */
 export function registerImageBuild(input: {
   tag: string
-  layer: ImageLayerName | 'push' | 'proxy'
+  layer: ImageLayerName | 'push' | 'proxy' | 'netd'
   action: 'build' | 'push'
   /** Omitted for shared infrastructure builds with no owning project (the
    *  proxy sidecar), which register with an empty `projectSlugs`. */

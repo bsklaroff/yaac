@@ -92,12 +92,15 @@ All container images used by e2e tests are pre-built in `test/global-setup.ts` b
 | `yaac-test-tools:<hash>` | `dockerfiles/Dockerfile.tools` + `dockerfiles/opencode-models.json` (layered on base; hash via `toolsContentHash()`) |
 | `yaac-test-nestable:<hash>` | `dockerfiles/Dockerfile.nestable` (layered on tools) |
 | `yaac-test-proxy:<hash>` | `k8s/proxy/` (files not listed in its `.containerignore`) |
+| `yaac-test-netd:<hash>` | `k8s/netd/` (files not listed in its `.containerignore`) |
 
 The global setup also mirrors digest-pinned upstream images into the local
 registry (no content hash — the digest IS the pin): `registry:2` for
 per-project registries (`packages/server/src/features/cluster/project-registry.ts`), the vcluster
 image set (`k8s/vcluster/images.json`), and `quay.io/podman/stable` for the
-image-salvage writer pod (`packages/server/src/features/images/image-promoter.ts`).
+image-salvage writer pod (`packages/server/src/features/images/image-promoter.ts`),
+and `envoyproxy/envoy` for netd's redirect sidecar
+(`packages/server/src/features/cluster/netd.ts`).
 
 **Rules:**
 - Never build images inside individual test workers — all builds belong in `test/global-setup.ts`.
@@ -106,7 +109,7 @@ image-salvage writer pod (`packages/server/src/features/images/image-promoter.ts
 - For single-file images (Dockerfiles), use `fileHash()`. For multi-file build contexts, use `contextHash()` — both from `packages/server/src/features/images/image-builder.ts`. `contextHash()` honors the context's `.containerignore` (literal paths only — it must match podman's exclusions exactly), so keep dev-only files like co-located tests listed there or they churn the image tag.
 - E2e workers isolate cluster objects in per-run namespaces (`YAAC_K8S_NAMESPACE=yaac-test-<run-id>`).
 - E2e test data dirs (and mock-remote repo stores) are hostPath-mounted into pods, so their path must be visible to the pod's node. They are created under `e2eTmpBase()` (`packages/test-utils/src/tmp.ts`): on a host that's `os.tmpdir()` — so on a kind host set `TMPDIR` to a path under your home directory (hostPath paths must match on host and node, and kind's node-internal tmpfs `/tmp` cannot be replaced by an extraMount). Inside a nested yaac session (`YAAC_NESTED=1`) it's the node-shared `$YAAC_DATA_DIR/e2e-tmp` — the pod's `/tmp` and `$HOME` are overlay filesystems the node can't see (hostPath mounts there hang Pending), and scratch there is removed with the session dir on cleanup.
-- Tests that can't run inside a nested yaac session (in-cluster Cilium datapath assertions, vcluster-in-vcluster, podman `kind` network) are gated on `IS_NESTED_YAAC` (`packages/test-utils/src/setup.ts`) via `describe.skipIf` / `it.skipIf`. The session-create e2e family (own server+proxy+mocks) runs nested ungated — it assumes the outer server projects per-install inner redirects (docs/nested-containers.md); egress timeouts nested mean the host yaac predates that and needs upgrading.
+- Tests that can't run inside a nested yaac session (host-side datapath assertions, vcluster-in-vcluster, podman `kind` network) are gated on `IS_NESTED_YAAC` (`packages/test-utils/src/setup.ts`) via `describe.skipIf` / `it.skipIf`. The session-create e2e family (own server+proxy+mocks) runs nested ungated — it assumes the host netd redirects the vcluster's synced pods (docs/nested-containers.md); egress timeouts nested mean the host yaac predates that and needs upgrading.
 
 ## Documentation (`docs/` vs `docs/plans/`)
 

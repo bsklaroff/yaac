@@ -165,7 +165,7 @@ pull on a rare, prewarm-hidden path.
 ## Security hardening
 
 - **Builder egress.** Builder pods are excluded from the world-deny
-  CiliumNetworkPolicy and carry an explicit allow-all egress
+  NetworkPolicy and carry an explicit allow-all egress
   NetworkPolicy — strictly better than a host build's unfiltered
   host-network egress. Optionally routable through the session proxy later
   with the combined CA bundle (see docs/nested-containers.md), the same

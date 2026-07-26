@@ -136,7 +136,7 @@ Two decisions to lock before writing it:
 
 - **Toolchain dependency.** The packaged app bundles its own server + Node,
   so it is self-contained *as a process* — but it still cannot run a session
-  without the cluster stack (podman, kind, cilium, krunkit) that lives in the
+  without the cluster stack (podman, kind, krunkit) that lives in the
   `yaac` formula. `depends_on formula: "bsklaroff/yaac/yaac"` pulls the whole
   stack and gives a desktop-first user `yaac cluster setup`, keeping one
   source of truth for the toolchain. **Recommended.** (Alternative:

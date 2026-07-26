@@ -9,7 +9,7 @@ export interface PinnedBinaryParams {
   version: string
   /** Release tarball URL for the current platform/arch. */
   url: string
-  /** Path of the binary inside the tarball (flat `cilium`, `linux-arm64/helm`). */
+  /** Path of the binary inside the tarball (e.g. `linux-arm64/helm`). */
   tarMember: string
   /** Leading path components to strip when the member sits in a subdir. */
   stripComponents?: number
@@ -27,10 +27,9 @@ export interface PinnedBinaryDeps {
 /**
  * Resolve a pinned external binary, preferring one on PATH and otherwise
  * fetching the pinned release once into ~/.cache/yaac/bin (curl | tar,
- * then mv + chmod). The shared download-and-pin convention behind the
- * cilium CLI (cluster-setup.ts ensureCiliumCli) and helm (vcluster.ts
- * ensureHelm); the binary fetch is the one network step, cached across
- * runs.
+ * then mv + chmod). The shared download-and-pin convention behind helm
+ * (vcluster.ts ensureHelm); the binary fetch is the one network step,
+ * cached across runs.
  */
 export async function ensurePinnedBinary(
   p: PinnedBinaryParams,

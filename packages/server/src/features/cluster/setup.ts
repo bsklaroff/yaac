@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -6,23 +7,24 @@ import { spawn } from 'node:child_process'
 import { parse as parseToml } from 'smol-toml'
 import { execFileAsync } from '#platform/k8s/kubectl'
 import { ensureGvisorRuntime } from '#platform/k8s/gvisor'
-import { ensurePinnedBinary } from '#platform/k8s/pinned-binary'
 import { ensureLocalRegistry, registryHost, REGISTRY_CONTAINER_NAME } from '#features/cluster/registry'
 import { ensureRegistryClusterService } from '#features/cluster/registry-service'
 import { ensureBuilderRoleGuard } from '#features/images/builder-pod'
+import { ensureNetd } from '#features/cluster/netd'
+import { resetClusterCidrCache } from '#features/cluster/cluster-cidrs'
 import {
   formatCheckResult,
   NODE_KUBELET_FLAGS_ENV,
   NODE_KUBELET_HOUSEKEEPING_INTERVAL,
   NODE_MIN_FREE_KBYTES,
   NODE_PIDS_LIMIT,
-  NODE_SRC_VALID_MARK_PATH,
   NODE_TASKSMAX_CONF,
   runClusterCheck,
 } from '#features/cluster/check'
 import type { CheckResult } from '@yaac/shared/types'
 import { ensureRootfulPodmanHost, ROOTFUL_PODMAN_SOCKET } from '#platform/container/runtime'
 import { PACKAGE_ROOT } from '@yaac/shared/paths'
+import { CALICO_DIR, calicoManifestCachePath } from '@yaac/shared/project-paths'
 import { env } from '@yaac/shared/env'
 
 /**
@@ -30,7 +32,7 @@ import { env } from '@yaac/shared/env'
  * plus the macOS podman-machine bootstrap the README used to describe by
  * hand. Brew (or any package manager) can only install binaries; everything
  * per-user and stateful — the rootful libkrun machine, the registry
- * container, the kind cluster, Cilium, the node fixups — happens here,
+ * container, the kind cluster, Calico, the node fixups — happens here,
  * idempotently and with actionable error messages.
  *
  * Full mode recreates the cluster from scratch (delete + create). `--repair`
@@ -41,10 +43,79 @@ import { env } from '@yaac/shared/env'
  * and the way an existing cluster picks gVisor up on a yaac upgrade.
  */
 
-/** Cilium version installed into the cluster (chart/agent). */
-export const CILIUM_VERSION = '1.19.4'
-/** Pinned cilium CLI release fetched when no `cilium` is on PATH. */
-export const CILIUM_CLI_VERSION = 'v0.19.4'
+/**
+ * Calico version installed as the CNI + policy engine.
+ *
+ * The manifest itself is not vendored — it is 350 KB of upstream YAML, and
+ * carrying it in the repo (and in the npm artifact) buys nothing that the
+ * pin does not: k8s/calico/ holds the SHA-256 of the release manifest, and
+ * setup fetches the bytes on demand and refuses anything that does not
+ * match. A version bump is then a two-line change (this const + the
+ * checksum), and the install is exactly as reproducible as a vendored copy.
+ */
+export const CALICO_VERSION = '3.32.1'
+
+/** Committed integrity pin for the fetched manifest (bare hex sha256). */
+const CALICO_SHA256_FILE = path.join(CALICO_DIR, 'calico.yaml.sha256')
+
+/**
+ * Upstream release manifest for a Calico version — the classic
+ * KDD/iptables install, at the tag rather than a moving branch.
+ */
+export function calicoManifestUrl(version: string = CALICO_VERSION): string {
+  return `https://raw.githubusercontent.com/projectcalico/calico/v${version}/manifests/calico.yaml`
+}
+
+function sha256Hex(text: string): string {
+  return crypto.createHash('sha256').update(text, 'utf8').digest('hex')
+}
+
+/**
+ * The pinned Calico manifest, from the per-version cache when it is there
+ * and verified, else downloaded once and cached.
+ *
+ * The checksum is the whole trust story: the cache is inside the data dir
+ * (writable, long-lived) and the download crosses the network, so both are
+ * verified against the committed hash on every use and a mismatch is fatal
+ * rather than "install it anyway". Fetching costs nothing in practice —
+ * setup already reaches the network for Calico's ~235 MB of images, the
+ * kind node image and the gVisor release — and the cache means a cluster
+ * recreate does not refetch.
+ */
+export async function ensureCalicoManifest(deps: ClusterSetupDeps): Promise<string> {
+  const pin = await deps.readTextFile(CALICO_SHA256_FILE)
+  const expected = pin?.trim().split(/\s+/)[0]
+  if (!expected) {
+    throw new ClusterSetupError(
+      `Calico manifest checksum not found at ${CALICO_SHA256_FILE} — broken install?`,
+    )
+  }
+  const cache = calicoManifestCachePath(CALICO_VERSION)
+  const cached = await deps.readTextFile(cache)
+  if (cached !== null && sha256Hex(cached) === expected) return cached
+
+  const url = calicoManifestUrl()
+  deps.log(`Fetching Calico ${CALICO_VERSION} manifest (one-time — cached at ${cache})...`)
+  let raw: string
+  try {
+    raw = await deps.fetchText(url)
+  } catch (err) {
+    throw new ClusterSetupError(
+      `Could not download the Calico manifest from ${url} `
+      + `(${err instanceof Error ? err.message.split('\n')[0] : String(err)}). `
+      + `Check network access, or drop a verified copy at ${cache} and re-run.`,
+    )
+  }
+  const actual = sha256Hex(raw)
+  if (actual !== expected) {
+    throw new ClusterSetupError(
+      `The Calico manifest at ${url} does not match the pinned checksum `
+      + `(expected ${expected}, got ${actual}) — not installing it.`,
+    )
+  }
+  await deps.writeTextFile(cache, raw)
+  return raw
+}
 
 /** A setup step failed in a way the user must resolve; message is the fix. */
 export class ClusterSetupError extends Error {}
@@ -58,7 +129,7 @@ export interface ClusterSetupDeps {
   /** execFile-style runner, injectable for tests. */
   run: typeof execFileAsync
   /**
-   * Runner for long, chatty subprocesses (kind create, cilium install,
+   * Runner for long, chatty subprocesses (kind create, calico apply,
    * podman machine init): inherits stdout/stderr so the user sees live
    * progress, optionally piping `input` to stdin.
    */
@@ -75,6 +146,9 @@ export interface ClusterSetupDeps {
    *  pods plus the builder-role admission guard; injectable so unit tests
    *  never touch podman or the cluster. */
   exposeRegistry: () => Promise<string>
+  /** Builds/pushes the netd + Envoy images and applies the DaemonSet.
+   *  Injectable for the same reason as exposeRegistry. */
+  ensureNetd: () => Promise<void>
   check: () => Promise<{ ok: boolean; results: CheckResult[] }>
   platform: NodeJS.Platform
   homedir: () => string
@@ -82,6 +156,8 @@ export interface ClusterSetupDeps {
   cpuCount: () => number
   readTextFile: (p: string) => Promise<string | null>
   writeTextFile: (p: string, content: string) => Promise<void>
+  /** HTTP GET of a text asset (the Calico manifest), injectable for tests. */
+  fetchText: (url: string) => Promise<string>
   fileExists: (p: string) => Promise<boolean>
   listDir: (p: string) => Promise<string[]>
 }
@@ -127,6 +203,7 @@ const defaultDeps: ClusterSetupDeps = {
     await ensureBuilderRoleGuard()
     return host
   },
+  ensureNetd,
   check: () => runClusterCheck(),
   platform: process.platform,
   homedir: () => os.homedir(),
@@ -139,13 +216,21 @@ const defaultDeps: ClusterSetupDeps = {
   },
   fileExists: (p) => fs.access(p).then(() => true).catch(() => false),
   listDir: (p) => fs.readdir(p).catch(() => [] as string[]),
+  fetchText: async (url) => {
+    // Node's fetch rather than curl: this runs on the host (unlike the
+    // gVisor fetch, which happens inside the node), and setup should not
+    // grow a host binary dependency for one GET.
+    const res = await fetch(url, { signal: AbortSignal.timeout(120_000) })
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`)
+    return res.text()
+  },
 }
 
 /**
  * Deps for a setup driven over HTTP (POST /cluster/setup) instead of a TTY:
  * progress lines go to the caller's stream, and the destructive-step gate
  * auto-approves — the caller consented by invoking setup, and there is no
- * terminal to prompt. Subprocess output (kind create, cilium install) still
+ * terminal to prompt. Subprocess output (kind create, calico apply) still
  * inherits the server's stdio; only `log` lines reach the stream.
  */
 export function streamingClusterSetupDeps(log: (message: string) => void): ClusterSetupDeps {
@@ -195,20 +280,32 @@ export async function runClusterSetup(
       )
     }
     deps.log(`Re-applying node fixups on kind cluster "${cluster}"...`)
+    // A repair pass is what you run after the node's address moved under it
+    // (a podman machine restart is the usual cause), so anything this process
+    // cached about "the node" is exactly what must not be reused below.
+    resetClusterCidrCache()
     await deps.ensureRegistry()
     for (const node of nodes) await applyNodeFixups(deps, node)
     await ensureGvisorRuntime(nodes, `kind-${cluster}`, deps)
     await connectRegistryToKindNetwork(deps)
     await exposeRegistryInCluster(deps)
+    await deployNetd(deps)
   } else {
     await deps.ensureRegistry()
     await recreateKindCluster(deps, cluster)
-    await installCilium(deps, cluster)
+    // The node `/32`s and pod CIDRs of the cluster that just went away say
+    // nothing about the one that replaced it. A long-lived server process
+    // (POST /cluster/setup) would otherwise render every policy below for the
+    // dead cluster — stale node addresses fail closed, and a stale pod-CIDR
+    // list makes netd's leading RETURNs miss, DNAT'ing pod-to-pod as world.
+    resetClusterCidrCache()
+    await installCalico(deps, cluster)
     const nodes = await kindNodes(deps, cluster)
     for (const node of nodes) await applyNodeFixups(deps, node)
     await ensureGvisorRuntime(nodes, `kind-${cluster}`, deps)
     await connectRegistryToKindNetwork(deps)
     await exposeRegistryInCluster(deps)
+    await deployNetd(deps)
   }
 
   deps.log('\nVerifying with cluster check...')
@@ -306,8 +403,8 @@ function kindPodmanSkewPossible(podmanVersionOut: string, kindVersionOut: string
 
 /**
  * The Linux counterpart to `ensurePodmanMachineSetup`: yaac runs kind on the
- * rootful podman engine (the cilium agent DaemonSet needs the cgroup2 root and
- * BPF filesystem rootless podman does not delegate — see
+ * rootful podman engine (the calico-node DaemonSet needs the host netfilter
+ * and routing access rootless podman does not delegate — see
  * docs/cluster-setup.md#linux-rootful-podman). `ensureRootfulPodmanHost` points
  * our env at the rootful socket; here we verify it actually answers, so `kind
  * create` fails with an actionable message instead of a bare connection error.
@@ -321,8 +418,8 @@ async function ensureRootfulPodmanReachable(deps: ClusterSetupDeps): Promise<voi
   } catch {
     throw new ClusterSetupError(
       'Rootful podman is not reachable. yaac runs kind on the rootful podman '
-      + 'engine on Linux (the cilium agent DaemonSet needs the cgroup2 root and '
-      + 'BPF filesystem that rootless podman does not delegate). Enable the '
+      + 'engine on Linux (the calico-node DaemonSet needs the host netfilter '
+      + 'and routing access that rootless podman does not delegate). Enable the '
       + 'socket and grant your user access:\n'
       + '  sudo systemctl enable --now podman.socket\n'
       + '  sudo setfacl -m u:$USER:x /run/podman\n'
@@ -372,7 +469,7 @@ async function kindNodes(deps: ClusterSetupDeps, cluster: string): Promise<strin
  * Delete + recreate the kind cluster from the bundled k8s/kind-config.yaml
  * ($HOME substituted — kind does not expand environment variables). No
  * --wait: the config disables the default CNI, so nodes cannot go Ready
- * until Cilium is installed.
+ * until Calico is installed.
  */
 async function recreateKindCluster(deps: ClusterSetupDeps, cluster: string): Promise<void> {
   const configPath = path.join(PACKAGE_ROOT, 'k8s', 'kind-config.yaml')
@@ -400,51 +497,39 @@ async function recreateKindCluster(deps: ClusterSetupDeps, cluster: string): Pro
 }
 
 /**
- * Resolve a cilium CLI, preferring one on PATH (the brew formula installs
- * cilium-cli) and otherwise fetching the pinned release once into
- * ~/.cache/yaac/bin (ensurePinnedBinary — the same convention as helm).
+ * Install Calico (pinned by checksum) as the CNI and policy engine. kindnet's
+ * NetworkPolicy engine fails OPEN — a new pod's first packets flow before
+ * its IP reaches the engine's nftables set — and session egress lockdown
+ * needs fail CLOSED. Calico's Felix gives that off the shelf: until it has
+ * programmed a workload's endpoint, traffic on that veth falls through the
+ * dispatch chain's "Unknown interface" DROP.
+ *
+ * Applied straight from the release manifest (no CLI to install, no chart
+ * to template): it is the classic KDD/iptables manifest, deliberately not
+ * the Tigera operator — yaac needs no operator-managed lifecycle, and the
+ * plain manifest keeps the installed object set auditable. Policy is
+ * enforced from plain `networking.k8s.io/v1` NetworkPolicy only; yaac
+ * installs no Calico CRs, which is what keeps the managed-cloud ports
+ * cheap (their provider-managed Calicos do not support Calico CRDs).
  */
-export async function ensureCiliumCli(deps: ClusterSetupDeps = defaultDeps): Promise<string> {
-  const plat = deps.platform === 'darwin' ? 'darwin' : 'linux'
-  const arch = process.arch === 'arm64' ? 'arm64' : 'amd64'
-  return ensurePinnedBinary({
-    bin: 'cilium',
-    displayName: 'cilium CLI',
-    version: CILIUM_CLI_VERSION,
-    url: `https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-${plat}-${arch}.tar.gz`,
-    // The release tarball is flat: the binary sits at its root.
-    tarMember: 'cilium',
-  }, {
-    run: deps.run,
-    homedir: deps.homedir,
-    fileExists: deps.fileExists,
-    log: deps.log,
-  })
-}
-
-/**
- * Install Cilium (pinned) as the CNI. kindnet's NetworkPolicy engine fails
- * OPEN, and session egress lockdown needs fail CLOSED — Cilium's CNI ADD
- * does not return until the pod's eBPF policy programs are attached.
- * envoyConfig.enabled installs the CiliumEnvoyConfig CRDs the cluster-level
- * egress redirect (bootstrap.ts buildEgressRedirectCecManifest) requires.
- */
-async function installCilium(deps: ClusterSetupDeps, cluster: string): Promise<void> {
-  const cli = await ensureCiliumCli(deps)
+async function installCalico(deps: ClusterSetupDeps, cluster: string): Promise<void> {
+  const raw = await ensureCalicoManifest(deps)
+  await sideloadCalicoImages(deps, cluster, raw)
   const context = `kind-${cluster}`
-  deps.log(`Installing Cilium ${CILIUM_VERSION} (envoyConfig enabled)...`)
+  deps.log(`Installing Calico ${CALICO_VERSION} (CNI + NetworkPolicy)...`)
   try {
-    await deps.runStreaming(cli, [
-      'install', '--context', context,
-      '--version', CILIUM_VERSION,
-      '--set', 'ipam.mode=kubernetes',
-      '--set', 'envoyConfig.enabled=true',
-    ])
-    await deps.runStreaming(cli, ['status', '--context', context, '--wait', '--wait-duration', '5m'])
+    await deps.runStreaming('kubectl', ['--context', context, 'apply', '-f', '-'], { input: raw })
+    // The DaemonSet going Available is what makes the node Ready (the CNI
+    // config only lands once calico-node has started), so wait on it first
+    // and let the node wait be the cheap confirmation.
+    await deps.run('kubectl', [
+      '--context', context,
+      'rollout', 'status', 'daemonset/calico-node', '-n', 'kube-system', '--timeout=300s',
+    ], { timeout: 310_000 })
   } catch (err) {
     throw new ClusterSetupError(
-      `Cilium install did not complete (${err instanceof Error ? err.message : String(err)}). `
-      + `Re-run \`yaac cluster setup\`, or inspect with \`${cli === 'cilium' ? 'cilium' : cli} status --context ${context}\`.`,
+      `Calico install did not complete (${err instanceof Error ? err.message : String(err)}). `
+      + `Re-run \`yaac cluster setup\`, or inspect with \`kubectl --context ${context} -n kube-system get pods -l k8s-app=calico-node\`.`,
     )
   }
   await deps.run('kubectl', [
@@ -454,10 +539,80 @@ async function installCilium(deps: ClusterSetupDeps, cluster: string): Promise<v
 }
 
 /**
+ * Image references in the Calico manifest. Parsed rather than hard-coded
+ * so a version bump stays a two-line change: repin, and the sideload
+ * follows whatever the new manifest names.
+ */
+export function calicoImageRefs(manifestYaml: string): string[] {
+  const refs = manifestYaml.match(/^\s*image:\s*(\S+)\s*$/gm) ?? []
+  return [...new Set(refs.map((line) => line.replace(/^\s*image:\s*/, '').trim()))].sort()
+}
+
+/**
+ * Put Calico's images on the node before applying the manifest.
+ *
+ * Without this, cluster setup spends over a minute waiting on the node to
+ * pull ~235 MB from quay.io — and pays it again on every recreate, since
+ * the node's image store dies with the node. calico-node's init
+ * containers pull serially (cni, then node), so the waits compound.
+ *
+ * Pulling to the HOST engine instead makes that cost one-time: the host
+ * store survives cluster recreation, so later setups only stream the
+ * layers into the node, which is roughly ten times faster than fetching
+ * them again. Every image is `imagePullPolicy: IfNotPresent`, so a
+ * preloaded one is used as-is and no pull happens at all.
+ *
+ * Fails soft: on any error the manifest still applies and the node falls
+ * back to pulling for itself — slower, but not broken.
+ */
+async function sideloadCalicoImages(
+  deps: ClusterSetupDeps,
+  cluster: string,
+  manifestYaml: string,
+): Promise<void> {
+  const refs = calicoImageRefs(manifestYaml)
+  if (refs.length === 0) return
+  try {
+    const missing: string[] = []
+    for (const ref of refs) {
+      try {
+        await deps.run('podman', ['image', 'exists', ref])
+      } catch {
+        missing.push(ref)
+      }
+    }
+    if (missing.length > 0) {
+      deps.log(`Fetching Calico images (${missing.length}, one-time — cached for later setups)...`)
+      for (const ref of missing) {
+        await deps.run('podman', ['pull', ref], { timeout: 600_000 })
+      }
+    }
+    // `kind load docker-image` is the obvious call and does not work
+    // under the podman provider; saving an archive ourselves and loading
+    // that does. The tar is large but short-lived.
+    const archive = path.join(os.tmpdir(), `yaac-calico-${process.pid}.tar`)
+    try {
+      deps.log('Loading Calico images onto the node...')
+      await deps.run('podman', ['save', '-o', archive, ...refs], { timeout: 300_000 })
+      await deps.run('kind', ['load', 'image-archive', archive, '--name', cluster], {
+        env: kindEnv(), timeout: 300_000,
+      })
+    } finally {
+      await fs.rm(archive, { force: true }).catch(() => { /* best-effort */ })
+    }
+  } catch (err) {
+    deps.log(
+      'note: could not preload Calico images '
+      + `(${err instanceof Error ? err.message.split('\n')[0] : String(err)}) — `
+      + 'the node will pull them itself, which is slower.',
+    )
+  }
+}
+
+/**
  * The per-node fixups: containerd registry hosts.toml, DefaultTasksMax + VM
  * memory sysctls (subagent fan-out and virtiofs allocations die without
- * them), src_valid_mark=0 (session egress TPROXY — see the comment at the
- * write below), the kubelet housekeeping interval (see
+ * them), the kubelet housekeeping interval (see
  * NODE_KUBELET_HOUSEKEEPING_INTERVAL — default-interval cAdvisor stats
  * burned whole cores against gVisor sandboxes), and the node container's
  * own PID ceiling. Most of these live in node/VM state that resets on
@@ -490,24 +645,6 @@ async function applyNodeFixups(deps: ClusterSetupDeps, node: string): Promise<vo
     + `sed -i -e 's/ *--housekeeping-interval=[^ "]*//g' `
     + `-e 's/^KUBELET_KUBEADM_ARGS="/KUBELET_KUBEADM_ARGS="${hkFlag} /' ${NODE_KUBELET_FLAGS_ENV}`
     + ' && systemctl restart kubelet; fi',
-  ])
-  // src_valid_mark MUST be 0 or Cilium's L7 egress redirect black-holes every
-  // session's outbound TCP. wg-quick (and other VPN tooling) sets
-  // net.ipv4.conf.all.src_valid_mark=1 on the host for its fwmark policy
-  // routing, and a new netns COPIES the host's ipv4 conf — so a node created
-  // while a VPN is up inherits it. With it set, reverse-path source
-  // validation includes the packet's fwmark in its fib lookup; a TPROXY'd
-  // SYN carries Cilium's 0x200 proxy mark, so the lookup hits Cilium's own
-  // "fwmark 0x200 -> table 2004 (local default dev lo)" delivery rule,
-  // resolves the SOURCE as a local address, and the kernel drops the SYN as
-  // a martian (kfree_skb reason IP_LOCAL_SOURCE in ip_rcv_finish_core).
-  // Symptom: the TPROXY iptables counter climbs but Envoy never sees a
-  // connection and no SYN-ACK is emitted; DNS (UDP via kube-proxy) still
-  // works. Zeroing it here is netns-scoped — the host VPN keeps its value.
-  // Triage tooling: scripts/diagnose-egress-tproxy.sh (cluster) and
-  // scripts/tproxy-host-test.sh (bare-host reproducer).
-  await deps.run('podman', ['exec', node, 'sh', '-c',
-    `echo 0 > ${NODE_SRC_VALID_MARK_PATH}`,
   ])
   await deps.run('podman', ['update', '--pids-limit', String(NODE_PIDS_LIMIT), node])
 }
@@ -549,6 +686,32 @@ async function exposeRegistryInCluster(deps: ClusterSetupDeps): Promise<void> {
       'note: could not write the in-cluster registry Service '
       + `(${err instanceof Error ? err.message.split('\n')[0] : String(err)}) — `
       + 'trust-split image builds will retry this on first use.',
+    )
+  }
+}
+
+/**
+ * Build/push the netd + Envoy images and apply the DaemonSet, so a
+ * freshly-set-up cluster can redirect session egress before any session
+ * exists — and so `check`'s datapath gate has something to verify.
+ *
+ * Runs in `--repair` too: like the gVisor install, this is how an existing
+ * cluster picks netd up on a yaac upgrade.
+ *
+ * Fails soft. The server re-ensures netd on every proxy bootstrap
+ * (ensureProxyResources), so a transient registry or build hiccup here
+ * self-heals on first session create rather than aborting the whole setup;
+ * the cluster check that follows reports it either way.
+ */
+async function deployNetd(deps: ClusterSetupDeps): Promise<void> {
+  deps.log('Deploying the netd egress redirect (DaemonSet)...')
+  try {
+    await deps.ensureNetd()
+  } catch (err) {
+    deps.log(
+      'note: could not deploy yaac-netd '
+      + `(${err instanceof Error ? err.message.split('\n')[0] : String(err)}) — `
+      + 'the server retries this when it next brings up the proxy.',
     )
   }
 }

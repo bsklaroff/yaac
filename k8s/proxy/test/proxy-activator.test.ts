@@ -4,7 +4,10 @@ import type { AddressInfo } from 'node:net'
 import type tls from 'node:tls'
 import { afterAll, describe, expect, it } from 'vitest'
 import forge from 'node-forge'
+import { ApiException, KubeConfig } from '@kubernetes/client-node'
 import {
+  activatorApis,
+  apiStatusCode,
   mintServingCert,
   parseVclusterSni,
   sleepSliceName,
@@ -12,6 +15,22 @@ import {
 } from 'yaac-proxy-sidecar/activator'
 
 const INSTALL_NS = 'test-ns'
+
+/** Kubeconfig aimed at the in-process fake apiserver, trusting its cert. */
+function testKubeConfig(port: number, caPem: string): KubeConfig {
+  const kubeConfig = new KubeConfig()
+  kubeConfig.loadFromOptions({
+    clusters: [{
+      name: 'fake',
+      server: `https://127.0.0.1:${port}`,
+      caData: Buffer.from(caPem).toString('base64'),
+    }],
+    users: [{ name: 'sa', token: 'test-token' }],
+    contexts: [{ name: 'ctx', cluster: 'fake', user: 'sa' }],
+    currentContext: 'ctx',
+  })
+  return kubeConfig
+}
 const VC = 'yvc-0a1b2c3d'
 const VCNS = `${INSTALL_NS}-vc-0a1b2c3d`
 const API_HOST = `${VC}.${VCNS}.svc.cluster.local`
@@ -156,6 +175,15 @@ describe('startActivator end-to-end', () => {
         if (req.method === 'GET' && url.endsWith(`/secrets/${VC}-certs`)) {
           res.end(JSON.stringify({ data: secretData }))
         } else if (url.endsWith(`/deployments/${VC}/scale`)) {
+          // A real apiserver 415s a patch that does not declare a
+          // recognized patch content type, so pin it here — otherwise the
+          // fake would happily accept a request production rejects.
+          if (req.method === 'PATCH'
+            && req.headers['content-type'] !== 'application/merge-patch+json') {
+            res.statusCode = 415
+            res.end(JSON.stringify({ message: `bad patch type ${req.headers['content-type']}` }))
+            return
+          }
           if (req.method === 'PATCH') replicas = 1
           req.resume()
           req.on('end', () => res.end(JSON.stringify({ spec: { replicas } })))
@@ -193,13 +221,9 @@ describe('startActivator end-to-end', () => {
       backendPort,
       installNamespace: INSTALL_NS,
       log: () => {},
-      api: {
-        host: '127.0.0.1',
-        port: String(kApiAddr.port),
-        token: 'test-token',
-        // Self-signed with a 127.0.0.1 IP SAN — its own PEM is the CA.
-        ca: Buffer.from(kApiCert.pair.certPem),
-      },
+      // A real KubeConfig, so the wake path drives the same typed clients
+      // and credential plumbing production uses rather than a test shim.
+      kubeConfig: testKubeConfig(kApiAddr.port, kApiCert.pair.certPem),
     })
     servers.push(activator)
     await new Promise<void>((r) => activator.once('listening', r))
@@ -259,5 +283,25 @@ describe('startActivator end-to-end', () => {
     // handshake itself fails — the activator serves nothing else.
     await expect(call(activatorPort, { servername: 'yvc-0a1b2c3d.other-vc-0a1b2c3d.svc.cluster.local' }))
       .rejects.toThrow()
+  })
+})
+
+describe('activatorApis', () => {
+  it('builds the three clients the wake path needs from one kubeconfig', () => {
+    const apis = activatorApis(testKubeConfig(6443, 'x'))
+    expect(typeof apis.core.readNamespacedSecret).toBe('function')
+    expect(typeof apis.apps.patchNamespacedDeploymentScale).toBe('function')
+    expect(typeof apis.discovery.deleteNamespacedEndpointSlice).toBe('function')
+  })
+})
+
+describe('apiStatusCode', () => {
+  it('surfaces the HTTP status of an API failure', () => {
+    expect(apiStatusCode(new ApiException(404, 'not found', {}, {}))).toBe(404)
+  })
+
+  it('returns null for anything that is not an API failure, so a transport\n   error is never mistaken for a benign 404', () => {
+    expect(apiStatusCode(new Error('ECONNREFUSED'))).toBeNull()
+    expect(apiStatusCode('nope')).toBeNull()
   })
 })

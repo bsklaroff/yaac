@@ -24,6 +24,8 @@ import {
   VCLUSTER_API_PORT,
 } from '#platform/k8s/pods'
 import { registryRef } from '#features/cluster/registry'
+import { apiserverIpBlocks, nodeIpBlocks } from '#features/cluster/cluster-cidrs'
+import { LABEL_VCLUSTER_NAMESPACE } from '#features/cluster/proxy-constants'
 import { resolveProxyImageTag } from '#features/sessions/egress/proxy-client'
 import { testEnv } from '@yaac/shared/env'
 
@@ -162,59 +164,66 @@ export function buildActivatorDeploymentManifest(imageRef: string): Record<strin
 }
 
 /**
- * The activator's containment CNP, both directions.
+ * The activator's containment NetworkPolicy, both directions.
  *
- * Ingress: its one port is reachable only by session pods (whose
- * intercepted API dials arrive carrying the session identity — Cilium
- * enforces on the post-DNAT endpoint) and the host (kubelet readiness
- * probe). A vcluster's synced pods never dial it: while asleep none
- * exist, and their fallback-redirect egress admits only `app=vcluster`
- * / sibling `managed-by` peers.
+ * Ingress: its one port is reachable by session pods (whose intercepted
+ * API dials arrive at the activator after kube-proxy's DNAT, so policy is
+ * evaluated on the activator as the destination) and by the node (the
+ * kubelet readiness probe). A vcluster's synced pods never dial it: while
+ * asleep none exist, and their egress floor admits only the node's
+ * redirect range and `managed-by` siblings.
  *
- * Egress: exactly the wake surface — the host apiserver (`host` too: on
- * kind the API Service DNATs to the node address) and vcluster
- * control-plane pods on 8443, matched cross-namespace by the chart
- * labels MINUS the syncer-stamped `managed-by` no tenant pod can shed
- * (the control-plane CNP's unforgeable-exclusion trick), so a synced
- * pod forging `app=vcluster` can never receive proxied wake traffic.
- * The explicit allow is also load-bearing at all: the install-wide
- * world-deny CNP (an egressDeny) selects the activator, and any
- * egress(-deny) section flips the endpoint into egress default-deny —
- * without this policy the activator cannot even reach the host API.
+ * Egress: exactly the wake surface — the host apiserver (an `ipBlock`
+ * over its real endpoint addresses, since NetworkPolicy matches the
+ * post-DNAT destination and never the Service VIP) and vcluster
+ * control-plane pods on 8443, matched cross-namespace by the chart labels
+ * MINUS the syncer-stamped `managed-by` no tenant pod can shed (the
+ * control-plane policy's unforgeable-exclusion trick), so a synced pod
+ * forging `app=vcluster` can never receive proxied wake traffic. The
+ * explicit allow is load-bearing at all because the install-wide
+ * world-deny policy selects the activator and default-denies its egress.
  * No DNS: the activator dials literal IPs only.
  */
-export function buildActivatorCnpManifest(): Record<string, unknown> {
+export function buildActivatorNetworkPolicyManifest(
+  nodeCidrs: string[],
+  apiserverCidrs: string[],
+): Record<string, unknown> {
+  const apiPort = { protocol: 'TCP', port: VCLUSTER_API_PORT }
+  const blocks = (cidrs: string[]): Array<Record<string, unknown>> =>
+    cidrs.map((cidr) => ({ ipBlock: { cidr } }))
   return {
-    apiVersion: 'cilium.io/v2',
-    kind: 'CiliumNetworkPolicy',
+    apiVersion: 'networking.k8s.io/v1',
+    kind: 'NetworkPolicy',
     metadata: {
       name: ACTIVATOR_APP_NAME,
       namespace: k8sNamespace(),
       labels: { app: ACTIVATOR_APP_NAME },
     },
     spec: {
-      endpointSelector: { matchLabels: { app: ACTIVATOR_APP_NAME } },
+      podSelector: { matchLabels: { app: ACTIVATOR_APP_NAME } },
+      policyTypes: ['Ingress', 'Egress'],
       ingress: [
+        { from: blocks(nodeCidrs), ports: [apiPort] },
         {
-          fromEntities: ['host'],
-          toPorts: [{ ports: [{ port: String(VCLUSTER_API_PORT), protocol: 'TCP' }] }],
-        },
-        {
-          fromEndpoints: [{ matchExpressions: [{ key: LABEL_SESSION_ID, operator: 'Exists' }] }],
-          toPorts: [{ ports: [{ port: String(VCLUSTER_API_PORT), protocol: 'TCP' }] }],
+          from: [{
+            podSelector: { matchExpressions: [{ key: LABEL_SESSION_ID, operator: 'Exists' }] },
+          }],
+          ports: [apiPort],
         },
       ],
       egress: [
-        { toEntities: ['kube-apiserver', 'host'] },
+        { to: blocks(apiserverCidrs) },
         {
-          toEndpoints: [{
-            matchLabels: { app: 'vcluster' },
-            matchExpressions: [
-              { key: 'k8s:io.kubernetes.pod.namespace', operator: 'Exists' },
-              { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'DoesNotExist' },
-            ],
+          to: [{
+            namespaceSelector: { matchLabels: { [LABEL_VCLUSTER_NAMESPACE]: 'true' } },
+            podSelector: {
+              matchLabels: { app: 'vcluster' },
+              matchExpressions: [
+                { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'DoesNotExist' },
+              ],
+            },
           }],
-          toPorts: [{ ports: [{ port: String(VCLUSTER_API_PORT), protocol: 'TCP' }] }],
+          ports: [apiPort],
         },
       ],
     },
@@ -291,7 +300,9 @@ export async function ensureActivator(): Promise<void> {
   const imageRef = registryRef(await resolveProxyImageTag(testEnv.proxyImage))
   await kubectlApply(buildActivatorServiceAccountManifest())
   await kubectlApply(buildActivatorDeploymentManifest(imageRef))
-  await kubectlApply(buildActivatorCnpManifest())
+  await kubectlApply(buildActivatorNetworkPolicyManifest(
+    await nodeIpBlocks(), await apiserverIpBlocks(),
+  ))
   await kubectlWithRetry([
     'rollout', 'status', `deployment/${ACTIVATOR_APP_NAME}`,
     '-n', k8sNamespace(),

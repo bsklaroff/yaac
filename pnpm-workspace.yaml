@@ -1,10 +1,11 @@
 packages:
   - "packages/*"
   - "k8s/proxy"
+  - "k8s/netd"
 # Single source of truth for deps pinned in more than one manifest; refer to
-# them as "catalog:". k8s/proxy is the one exception — its package.json is
-# npm-installed inside the proxy image build, and npm can't resolve catalog:
-# specifiers, so its pins stay inline.
+# them as "catalog:". k8s/proxy and k8s/netd are the exceptions — their
+# package.json files are npm-installed inside their image builds, and npm
+# can't resolve catalog: specifiers, so their pins stay inline.
 catalog:
   "@electric-sql/pglite": 0.5.4
   "@hono/node-server": 1.19.14

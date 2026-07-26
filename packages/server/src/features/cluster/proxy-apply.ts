@@ -7,7 +7,6 @@ import {
   kubectlGetJson,
   kubectlWithRetry,
 } from '#platform/k8s/kubectl'
-import { ensureCiliumCrds } from '#platform/k8s/cilium-crds'
 import {
   CA_BUNDLE_KEY,
   CA_CERT_PATH,
@@ -17,19 +16,21 @@ import {
 import { credentialsDir, getDataDir } from '@yaac/shared/project-paths'
 import { PROXY_APP_NAME, PROXY_AUTH_SECRET_NAME } from '#features/cluster/proxy-constants'
 import {
-  buildEgressRedirectCecManifest,
-  buildEgressWorldDenyCiliumPolicyManifest,
   buildOuterProxyCaConfigMapManifest,
   buildProxyDeploymentManifest,
-  buildProxyIngressCnpManifest,
   buildProxyRoleBindingManifest,
   buildProxyRoleManifest,
   buildProxyServiceAccountManifest,
   buildProxyServiceManifest,
-  buildSessionEgressRedirectCnpManifest,
-  buildSessionIngressLockCnpManifest,
-  buildVclusterFallbackRedirectCcecManifest,
 } from '#features/cluster/proxy-manifests'
+import {
+  buildEgressWorldDenyNpManifest,
+  buildProxyIngressNpManifest,
+  buildSessionEgressNpManifest,
+  buildSessionIngressLockNpManifest,
+} from '#features/cluster/policy-manifests'
+import { nodeIpBlocks } from '#features/cluster/cluster-cidrs'
+import { ensureNetd } from '#features/cluster/netd'
 
 /**
  * Host directory shared between the proxy pod (which runs ssh-agent on a
@@ -112,12 +113,10 @@ export async function ensureProxyResources(
   await fs.mkdir(sshAgentHostDir(), { recursive: true })
   await fs.mkdir(proxyDataHostDir(), { recursive: true })
 
-  // Nested (inner) yaac: its vcluster has no Cilium, so install the CEC/CNP
-  // CRDs (permissive) before the CEC/CNP applies below would otherwise fail
-  // with "no matches for kind". The inner yaac owns its vcluster — the host
-  // never reaches in to register them.
+  // Nested (inner) yaac: NetworkPolicy is a core API every vcluster
+  // already serves, so an inner install's policies apply with no CRD
+  // registration step of any kind.
   if (opts.nested) {
-    await ensureCiliumCrds()
     // Project the OUTER proxy's CA into the vcluster so the inner proxy's
     // chained upstream dial (inner proxy → outer proxy) trusts the outer MITM
     // leaf — without it every inner-session HTTPS request fails closed with
@@ -139,31 +138,22 @@ export async function ensureProxyResources(
   await kubectlApply(buildProxyDeploymentManifest(imageRef, opts))
   await kubectlApply(buildProxyServiceManifest())
   // The egress lockdown, applied with the proxy so it exists before any
-  // session pod can be scheduled (sessions require ensureRunning()). CEC
-  // before the CNP that references its listeners.
-  await kubectlApply(buildEgressRedirectCecManifest())
-  await kubectlApply(buildSessionEgressRedirectCnpManifest())
+  // session pod can be scheduled (sessions require ensureRunning()).
+  const nodeCidrs = await nodeIpBlocks()
+  await kubectlApply(buildSessionEgressNpManifest(nodeCidrs))
   // Session-pod ingress lock: only the proxy's relay dials reach streamd;
   // everything else is default-denied. Applied with the proxy for the same
   // exists-before-any-session reason as the egress lockdown.
-  await kubectlApply(buildSessionIngressLockCnpManifest())
-  // The shared, cluster-scoped fallback redirect for vcluster synced pods.
-  // Applied once here (not per-vcluster) so each vcluster's fallback CNP can
-  // reference it by kind without adding/removing Envoy listeners on create —
-  // the churn that otherwise wedges every session's egress. HOST-ONLY: a nested
-  // yaac creates no vcluster sessions (vcluster-in-vcluster is rejected) so it
-  // never references this, and its vcluster only has the permissive CEC/CNP CRDs
-  // (ensureCiliumCrds, above) — applying a CiliumClusterwideEnvoyConfig there
-  // would fail "no matches for kind". The outer server owns the host-side
-  // redirect for every vcluster's synced pods, including a nested yaac's.
-  if (!opts.nested) {
-    await kubectlApply(buildVclusterFallbackRedirectCcecManifest())
-  }
-  // Lock the proxy's transparent ports to the node Envoy (forgery guard).
-  await kubectlApply(buildProxyIngressCnpManifest())
-  // Blanket world-egress deny over non-session pods — the authoritative
-  // backstop a vcluster tenant cannot widen (see builder).
-  await kubectlApply(buildEgressWorldDenyCiliumPolicyManifest())
+  await kubectlApply(buildSessionIngressLockNpManifest())
+  // Lock the proxy's transparent ports to the node (forgery guard): only
+  // netd's Envoy, which runs in the node netns, may originate PP2.
+  await kubectlApply(buildProxyIngressNpManifest(nodeCidrs))
+  // World-egress default-deny over non-session, non-builder pods.
+  await kubectlApply(buildEgressWorldDenyNpManifest())
+  // The redirect layer. A nested install runs netd in CLAIM mode: its
+  // vcluster has no nodes, so it publishes what it wants redirected and the
+  // host validates and programs it (docs/nested-containers.md).
+  await ensureNetd({ nested: opts.nested ?? false })
   await kubectlWithRetry([
     'rollout', 'status', `deployment/${PROXY_APP_NAME}`,
     '-n', k8sNamespace(),

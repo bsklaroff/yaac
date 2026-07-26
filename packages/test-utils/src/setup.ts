@@ -51,9 +51,9 @@ export const TEST_NAMESPACE = `yaac-test-${TEST_RUN_ID}`
  * capabilities simply don't exist in a vcluster-backed inner session and
  * cannot be exercised from in here, so the tests that depend on them are
  * `skipIf`'d on this flag:
- *  - Cilium datapath assertions made from inside the cluster (egress is
+ *  - node datapath assertions made from inside the cluster (egress is
  *    enforced host-side for a nested session — `yaac cluster check` reports
- *    `egress: skipped`) — transparent-egress, inner-redirect-priority;
+ *    `egress: skipped`) — transparent-egress, netd-datapath;
  *  - vcluster-in-vcluster (`createSession` refuses it outright);
  *  - the podman `kind` network (the inner podman has no host network
  *    topology).

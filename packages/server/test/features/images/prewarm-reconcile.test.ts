@@ -106,6 +106,7 @@ describe('reconcilePrewarmPool', () => {
       vclusters: vi.fn(),
       vclusterPods: vi.fn(() => Promise.resolve([])),
       vclusterServices: vi.fn(() => Promise.resolve([])),
+      vclusterConfigMaps: vi.fn(() => Promise.resolve([])),
     }
     await reconcilePrewarmPool(snapshot)
     expect(mockListPods).not.toHaveBeenCalled()

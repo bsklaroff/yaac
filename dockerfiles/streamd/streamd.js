@@ -25,7 +25,7 @@
  *
  * The token is per-session (HMAC of the install's proxy secret and the
  * session id), handed to the pod as YAAC_STREAM_TOKEN. It is defense in
- * depth alongside the ingress CNP — a session leaking its own token
+ * depth alongside the ingress NetworkPolicy — a session leaking its own token
  * gains nothing (the listener only reaches its own pod).
  */
 

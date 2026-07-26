@@ -252,6 +252,7 @@ describe('reconcileStaleSessions', () => {
       vclusters: vi.fn(),
       vclusterPods: vi.fn(() => Promise.resolve([])),
       vclusterServices: vi.fn(() => Promise.resolve([])),
+      vclusterConfigMaps: vi.fn(() => Promise.resolve([])),
     }
     mockProbe.mockResolvedValue('dead' as TmuxLiveness)
 

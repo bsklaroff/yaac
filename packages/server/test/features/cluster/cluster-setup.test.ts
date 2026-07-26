@@ -1,13 +1,24 @@
+import crypto from 'node:crypto'
 import { describe, it, expect, vi, afterEach } from 'vitest'
+
+vi.mock('#features/cluster/cluster-cidrs', () => ({
+  nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
+  apiserverIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
+  clusterPodCidrs: vi.fn().mockResolvedValue(['10.244.0.0/16']),
+  resetClusterCidrCache: vi.fn(),
+}))
+
+import { resetClusterCidrCache } from '#features/cluster/cluster-cidrs'
 import {
-  CILIUM_CLI_VERSION,
-  CILIUM_VERSION,
+  CALICO_VERSION,
   ClusterSetupError,
+  calicoImageRefs,
+  calicoManifestUrl,
+  ensureCalicoManifest,
   confirmDefault,
   defaultMachineResources,
   diagnoseKindPodmanSkew,
   effectiveMachineProvider,
-  ensureCiliumCli,
   ensurePodmanMachineSetup,
   isLegacyMachineError,
   kindEnv,
@@ -47,14 +58,26 @@ function happyRun(file: string, args: string[]): Promise<{ stdout: string; stder
   if (file === 'kind' && args[0] === 'get' && args[1] === 'nodes') {
     return Promise.resolve({ stdout: 'yaac-control-plane\n', stderr: '' })
   }
-  if (file === 'sh' && args[1] === 'command -v cilium') {
-    return Promise.resolve({ stdout: '/usr/local/bin/cilium\n', stderr: '' })
-  }
   // The gVisor install probes the node arch before fetching binaries.
   if (file === 'podman' && args[0] === 'exec' && args.includes('uname')) {
     return Promise.resolve({ stdout: 'aarch64\n', stderr: '' })
   }
   return Promise.resolve({ stdout: '', stderr: '' })
+}
+
+/** Stand-in Calico manifest and its real checksum, so the pin verifies. */
+const FAKE_CALICO_MANIFEST = 'kind: DaemonSet\nmetadata:\n  name: calico-node\n'
+const FAKE_CALICO_SHA256 = crypto.createHash('sha256')
+  .update(FAKE_CALICO_MANIFEST, 'utf8').digest('hex')
+
+/**
+ * readTextFile over the three files setup reads: the Calico checksum pin,
+ * the cached Calico manifest, and the kind config.
+ */
+function fakeCalicoReadTextFile(p: string): Promise<string | null> {
+  if (p.endsWith('.sha256')) return Promise.resolve(`${FAKE_CALICO_SHA256}  calico.yaml\n`)
+  if (p.includes('calico')) return Promise.resolve(FAKE_CALICO_MANIFEST)
+  return Promise.resolve('extraMounts:\n- hostPath: $HOME\n  containerPath: $HOME\n')
 }
 
 function makeDeps(
@@ -74,14 +97,18 @@ function makeDeps(
     ensureRegistry: overrides.ensureRegistry ?? vi.fn().mockResolvedValue(undefined),
     exposeRegistry: overrides.exposeRegistry
       ?? vi.fn().mockResolvedValue('yaac-registry.yaac.svc.cluster.local:5000'),
+    ensureNetd: overrides.ensureNetd ?? vi.fn().mockResolvedValue(undefined),
     check: overrides.check ?? vi.fn().mockResolvedValue({ ok: true, results: [] }),
     platform: overrides.platform ?? 'linux',
     homedir: overrides.homedir ?? ((): string => '/home/tester'),
     totalmem: overrides.totalmem ?? ((): number => 64 * 1024 ** 3),
     cpuCount: overrides.cpuCount ?? ((): number => 10),
-    readTextFile: overrides.readTextFile
-      ?? vi.fn().mockResolvedValue('extraMounts:\n- hostPath: $HOME\n  containerPath: $HOME\n'),
+    // Setup reads the kind config (with $HOME to substitute) and, for
+    // Calico, the committed checksum plus a manifest that matches it —
+    // here the cached copy, so no download is attempted.
+    readTextFile: overrides.readTextFile ?? vi.fn(fakeCalicoReadTextFile),
     writeTextFile: overrides.writeTextFile ?? vi.fn().mockResolvedValue(undefined),
+    fetchText: overrides.fetchText ?? vi.fn().mockResolvedValue(FAKE_CALICO_MANIFEST),
     fileExists: overrides.fileExists ?? vi.fn().mockResolvedValue(false),
     listDir: overrides.listDir ?? vi.fn().mockResolvedValue([]),
   } as ClusterSetupDeps & { run: RunMock; runStreaming: StreamMock }
@@ -96,6 +123,9 @@ describe('runClusterSetup', () => {
     expect(deps.ensureRegistry).toHaveBeenCalledOnce()
     // In-cluster registry Service for trust-split builder pods.
     expect(deps.exposeRegistry).toHaveBeenCalledOnce()
+    // netd deployed before the check, so the datapath gate has something
+    // to verify on a freshly-created cluster.
+    expect(deps.ensureNetd).toHaveBeenCalledOnce()
 
     // Cluster recreated: delete (best-effort) then create from the bundled
     // config with $HOME substituted, under the podman provider.
@@ -108,12 +138,13 @@ describe('runClusterSetup', () => {
     expect(createCall?.[2]?.input).not.toContain('$HOME')
     expect(createCall?.[2]?.env?.KIND_EXPERIMENTAL_PROVIDER).toBe('podman')
 
-    // Cilium installed pinned with the envoy config knob, then waited on.
-    const ciliumInstall = deps.runStreaming.mock.calls.find(([, a]) => a[0] === 'install')
-    expect(ciliumInstall?.[0]).toBe('cilium')
-    expect(ciliumInstall?.[1]).toContain(CILIUM_VERSION)
-    expect(ciliumInstall?.[1]).toContain('envoyConfig.enabled=true')
-    expect(deps.runStreaming.mock.calls.some(([, a]) => a[0] === 'status' && a.includes('--wait'))).toBe(true)
+    // Calico applied from the verified manifest, then rolled out and the
+    // node waited Ready (nodes cannot go Ready before the CNI is up).
+    const calicoApply = deps.runStreaming.mock.calls
+      .find(([f, a]) => f === 'kubectl' && a.includes('apply') && a.includes('-f'))
+    expect(calicoApply?.[2]?.input).toContain('calico-node')
+    expect(runCalls.some(([f, a]) =>
+      f === 'kubectl' && a.includes('rollout') && a.includes('daemonset/calico-node'))).toBe(true)
     expect(runCalls.some(([f, a]) => f === 'kubectl' && a.includes('--for=condition=Ready'))).toBe(true)
 
     // Node fixups: hosts.toml + TasksMax/sysctls via podman exec, then the
@@ -124,7 +155,6 @@ describe('runClusterSetup', () => {
     expect(execCmds.some((c) => c.includes('hosts.toml'))).toBe(true)
     expect(execCmds.some((c) => c.includes('DefaultTasksMax=infinity'))).toBe(true)
     expect(execCmds.some((c) => c.includes('min_free_kbytes'))).toBe(true)
-    expect(execCmds.some((c) => c.includes('src_valid_mark'))).toBe(true)
     // kubelet housekeeping interval: idempotent kubeadm-flags.env edit,
     // restarting kubelet only when the flag was absent.
     expect(execCmds.some((c) =>
@@ -144,7 +174,10 @@ describe('runClusterSetup', () => {
       && String(a[2]).includes('runsc'))).toBe(true)
     expect(execCmds.some((c) => c.includes('restart containerd') || c.includes('runsc'))
       || runCalls.some(([f, a]) => f === 'podman' && a.join(' ').includes('restart containerd'))).toBe(true)
-    const rcApply = deps.runStreaming.mock.calls.find(([f, a]) => f === 'kubectl' && a.includes('apply'))
+    // The RuntimeClass apply, not the Calico one above — both stream a
+    // manifest through `kubectl apply -f -`, so match on the payload.
+    const rcApply = deps.runStreaming.mock.calls.find(([f, a, o]) =>
+      f === 'kubectl' && a.includes('apply') && (o?.input ?? '').includes('RuntimeClass'))
     expect(rcApply).toBeDefined()
     expect(rcApply?.[1]).toEqual(['--context', 'kind-yaac', 'apply', '-f', '-'])
     expect(rcApply?.[2]?.input).toContain('"gvisor-nested"')
@@ -265,6 +298,22 @@ describe('runClusterSetup', () => {
     expect((err as Error).message).toContain('bsklaroff/yaac/yaac-kind')
   })
 
+  it('drops the CIDR caches so a long-lived server cannot render for the dead cluster', async () => {
+    // A server-driven setup (POST /cluster/setup) outlives the cluster it
+    // replaces. Reusing the old node `/32`s names a host that no longer
+    // exists (every policy fails closed), and reusing the old pod CIDRs
+    // makes netd's leading RETURNs miss, DNAT'ing pod-to-pod into the proxy.
+    vi.mocked(resetClusterCidrCache).mockClear()
+    await runClusterSetup({}, makeDeps())
+    expect(resetClusterCidrCache).toHaveBeenCalled()
+  })
+
+  it('--repair drops the CIDR caches too — the node address is why you repair', async () => {
+    vi.mocked(resetClusterCidrCache).mockClear()
+    await runClusterSetup({ repair: true }, makeDeps())
+    expect(resetClusterCidrCache).toHaveBeenCalled()
+  })
+
   it('--repair re-applies fixups without recreating the cluster', async () => {
     const deps = makeDeps()
     const ok = await runClusterSetup({ repair: true }, deps)
@@ -272,7 +321,10 @@ describe('runClusterSetup', () => {
     expect(ok).toBe(true)
     expect(deps.ensureRegistry).toHaveBeenCalledOnce()
     expect(deps.exposeRegistry).toHaveBeenCalledOnce()
-    // No delete/create/cilium — only the fixups (incl. the gVisor install,
+    // Re-applied on --repair too: that is how an existing cluster picks
+    // netd up on a yaac upgrade (same rationale as the gVisor install).
+    expect(deps.ensureNetd).toHaveBeenCalledOnce()
+    // No delete/create/Calico — only the fixups (incl. the gVisor install,
     // whose RuntimeClass apply is the one streaming call) and the check.
     expect(deps.run.mock.calls.some(([f, a]) => f === 'kind' && a[0] === 'delete')).toBe(false)
     expect(deps.runStreaming.mock.calls.every(([f]) => f === 'kubectl')).toBe(true)
@@ -334,40 +386,6 @@ describe('diagnoseKindPodmanSkew', () => {
 
   it('is silent on unparseable version output', () => {
     expect(diagnoseKindPodmanSkew('garbage', 'garbage')).toBeNull()
-  })
-})
-
-describe('ensureCiliumCli', () => {
-  it('prefers a cilium on PATH', async () => {
-    const deps = makeDeps()
-    await expect(ensureCiliumCli(deps)).resolves.toBe('cilium')
-  })
-
-  it('returns the cached pinned binary without re-downloading', async () => {
-    const run = vi.fn((file: string, args: string[]) => {
-      if (file === 'sh' && args[1] === 'command -v cilium') {
-        return Promise.reject(new Error('not found'))
-      }
-      return happyRun(file, args)
-    }) as RunMock
-    const deps = makeDeps({ run, fileExists: vi.fn().mockResolvedValue(true) })
-    const bin = await ensureCiliumCli(deps)
-    expect(bin).toBe(`/home/tester/.cache/yaac/bin/cilium-${CILIUM_CLI_VERSION}`)
-    expect(run.mock.calls.filter(([f]) => f === 'sh')).toHaveLength(1)
-  })
-
-  it('downloads the pinned release when absent', async () => {
-    const run = vi.fn((file: string, args: string[]) => {
-      if (file === 'sh' && args[1] === 'command -v cilium') {
-        return Promise.reject(new Error('not found'))
-      }
-      return happyRun(file, args)
-    }) as RunMock
-    const deps = makeDeps({ run })
-    const bin = await ensureCiliumCli(deps)
-    expect(bin).toContain(`cilium-${CILIUM_CLI_VERSION}`)
-    const download = run.mock.calls.find(([f, a]) => f === 'sh' && a[1].includes('curl'))
-    expect(download?.[1][1]).toContain(`cilium-cli/releases/download/${CILIUM_CLI_VERSION}`)
   })
 })
 
@@ -624,5 +642,102 @@ describe('streamingClusterSetupDeps', () => {
   it('auto-approves confirms (no TTY; the caller already consented)', async () => {
     const deps = streamingClusterSetupDeps(() => { /* ignore */ })
     expect(await deps.confirm('delete the existing cluster?')).toBe(true)
+  })
+})
+
+describe('calicoManifestUrl', () => {
+  it('points at the release manifest for the pinned version, by tag', () => {
+    expect(calicoManifestUrl()).toBe(
+      `https://raw.githubusercontent.com/projectcalico/calico/v${CALICO_VERSION}/manifests/calico.yaml`,
+    )
+  })
+
+  it('takes an explicit version (used when repinning)', () => {
+    expect(calicoManifestUrl('3.99.0')).toContain('/calico/v3.99.0/manifests/')
+  })
+})
+
+describe('ensureCalicoManifest', () => {
+  /** readTextFile that serves the pin, plus whatever else the test wants. */
+  function reads(rest: (p: string) => string | null) {
+    return vi.fn((p: string) => Promise.resolve(
+      p.endsWith('.sha256') ? `${FAKE_CALICO_SHA256}  calico.yaml\n` : rest(p),
+    ))
+  }
+
+  it('uses the cached manifest when it matches the pin, without downloading', async () => {
+    const deps = makeDeps()
+    expect(await ensureCalicoManifest(deps)).toBe(FAKE_CALICO_MANIFEST)
+    expect(deps.fetchText).not.toHaveBeenCalled()
+    expect(deps.writeTextFile).not.toHaveBeenCalled()
+  })
+
+  it('downloads, verifies, and caches when the cache is absent', async () => {
+    const deps = makeDeps({ readTextFile: reads(() => null) })
+    expect(await ensureCalicoManifest(deps)).toBe(FAKE_CALICO_MANIFEST)
+    expect(deps.fetchText).toHaveBeenCalledWith(calicoManifestUrl())
+    const written = (deps.writeTextFile as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(written?.[0]).toContain(`calico-${CALICO_VERSION}.yaml`)
+    expect(written?.[1]).toBe(FAKE_CALICO_MANIFEST)
+  })
+
+  it('re-downloads when the cached copy no longer matches the pin', async () => {
+    // A tampered-with or truncated cache must not be trusted just because
+    // it is on disk — the checksum is checked on every use, not on write.
+    const deps = makeDeps({ readTextFile: reads(() => 'kind: DaemonSet # tampered\n') })
+    expect(await ensureCalicoManifest(deps)).toBe(FAKE_CALICO_MANIFEST)
+    expect(deps.fetchText).toHaveBeenCalledOnce()
+  })
+
+  it('refuses a download that fails the checksum, and caches nothing', async () => {
+    const deps = makeDeps({
+      readTextFile: reads(() => null),
+      fetchText: vi.fn().mockResolvedValue('kind: Evil\n'),
+    })
+    await expect(ensureCalicoManifest(deps)).rejects.toThrow(ClusterSetupError)
+    await expect(ensureCalicoManifest(deps)).rejects.toThrow(/does not match the pinned checksum/)
+    expect(deps.writeTextFile).not.toHaveBeenCalled()
+  })
+
+  it('reports an actionable error when the download fails', async () => {
+    const deps = makeDeps({
+      readTextFile: reads(() => null),
+      fetchText: vi.fn().mockRejectedValue(new Error('HTTP 503 Service Unavailable')),
+    })
+    await expect(ensureCalicoManifest(deps)).rejects.toThrow(
+      /Could not download the Calico manifest.*HTTP 503/s,
+    )
+  })
+
+  it('fails when the committed checksum is missing (broken install)', async () => {
+    const deps = makeDeps({ readTextFile: vi.fn(() => Promise.resolve(null)) })
+    await expect(ensureCalicoManifest(deps)).rejects.toThrow(/checksum not found/)
+  })
+})
+
+describe('calicoImageRefs', () => {
+  it('extracts the deduped, sorted image set from the vendored manifest', () => {
+    const yaml = [
+      '        - name: upgrade-ipam',
+      '          image: quay.io/calico/cni:v3.32.1',
+      '        - name: install-cni',
+      '          image: quay.io/calico/cni:v3.32.1',
+      '          image: quay.io/calico/node:v3.32.1',
+    ].join('\n')
+    expect(calicoImageRefs(yaml)).toEqual([
+      'quay.io/calico/cni:v3.32.1',
+      'quay.io/calico/node:v3.32.1',
+    ])
+  })
+
+  it('ignores anything that is not an image key', () => {
+    // Parsed rather than hard-coded so a version bump follows the
+    // manifest; it must not pick up prose or nested keys that merely
+    // mention an image.
+    expect(calicoImageRefs('  # image: not-a-ref\n  imagePullPolicy: IfNotPresent\n')).toEqual([])
+  })
+
+  it('returns nothing for an empty manifest', () => {
+    expect(calicoImageRefs('')).toEqual([])
   })
 })

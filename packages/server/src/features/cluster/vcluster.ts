@@ -3,7 +3,14 @@ import os from 'node:os'
 import path from 'node:path'
 import YAML from 'yaml'
 import { z } from 'zod'
-import { buildVclusterFallbackRedirectCnpManifest } from '#features/cluster/proxy-manifests'
+import {
+  buildInnerProxyIngressNpManifest,
+  buildInnerSessionIngressLockNpManifest,
+  buildVclusterControlPlaneNpManifest,
+  buildVclusterEgressFloorNpManifest,
+} from '#features/cluster/policy-manifests'
+import { apiserverIpBlocks, nodeIpBlocks } from '#features/cluster/cluster-cidrs'
+import { LABEL_VCLUSTER_NAMESPACE } from '#features/cluster/proxy-constants'
 import {
   ACTIVATOR_APP_NAME,
   buildActivatorVclusterRoleBindingManifest,
@@ -35,7 +42,7 @@ export const VCLUSTER_DIR = path.join(PACKAGE_ROOT, 'k8s', 'vcluster')
 /**
  * Pinned Helm version yaac shells out to for `helm template`: used from
  * PATH when present, otherwise fetched once and cached under
- * ~/.cache/yaac/bin (ensurePinnedBinary, shared with the cilium CLI).
+ * ~/.cache/yaac/bin (ensurePinnedBinary — the pinned-binary convention).
  */
 const HELM_VERSION = 'v3.16.4'
 
@@ -111,7 +118,7 @@ async function chartVersion(): Promise<string> {
 /**
  * Resolve a `helm` binary, preferring one on PATH and otherwise fetching
  * the pinned release once into ~/.cache/yaac/bin (ensurePinnedBinary,
- * shared with the cilium CLI). yaac only needs helm for `helm template`
+ * the pinned-binary convention). yaac only needs helm for `helm template`
  * against the vendored chart tarball (offline); the binary fetch is the
  * one network step, cached across runs.
  */
@@ -275,7 +282,13 @@ export function buildVclusterNamespaceManifest(
   return {
     apiVersion: 'v1',
     kind: 'Namespace',
-    metadata: { name: vclusterNamespace(name), labels: vclusterLabels(name, sessionId) },
+    metadata: {
+      name: vclusterNamespace(name),
+      // LABEL_VCLUSTER_NAMESPACE is what lets plain NetworkPolicy name
+      // these namespaces as peers: a namespaceSelector matches labels, so
+      // cross-namespace rules key on this rather than on a name pattern.
+      labels: { ...vclusterLabels(name, sessionId), [LABEL_VCLUSTER_NAMESPACE]: 'true' },
+    },
   }
 }
 
@@ -455,11 +468,11 @@ export function buildVclusterPodGuardBindingManifest(
  * are CROSS-NAMESPACE (namespaceSelector + podSelector). It admits the
  * session pod to reach ITS OWN vcluster API on 8443 and its synced pods
  * (managed-by label; the OSS syncer cannot stamp yaac.session-id, see
- * values.yaml). The SOLE egress hole for these flows: Cilium unions allow
- * rules across policies, so this punches a per-session hole through the
- * install-wide session-egress CNP's default-deny (which has no in-cluster
- * 8443 allowance — a blanket rule there would open every session's
- * vcluster API to every other session).
+ * values.yaml). The SOLE egress hole for these flows: NetworkPolicy
+ * unions allow rules, so this punches a per-session hole through the
+ * install-wide session-egress policy's default-deny (which has no
+ * in-cluster 8443 allowance — a blanket rule there would open every
+ * session's vcluster API to every other session).
  */
 export function buildVclusterSessionNetworkPolicyManifest(
   name: string,
@@ -490,63 +503,12 @@ export function buildVclusterSessionNetworkPolicyManifest(
         {
           // While the vcluster is asleep its API ClusterIP is intercepted
           // by the activator (same install namespace as the session pod).
-          // Cilium enforces egress on the post-DNAT endpoint identity, so
+          // NetworkPolicy is evaluated on the post-DNAT destination, so
           // the wake-triggering first touch needs its own allowance — the
           // rule above matches only the real control-plane pod.
           to: [{ podSelector: { matchLabels: { app: ACTIVATOR_APP_NAME } } }],
           ports: [{ protocol: 'TCP', port: VCLUSTER_API_PORT }],
         },
-      ],
-    },
-  }
-}
-
-/**
- * CiliumNetworkPolicy locking the vcluster control-plane pod down: it
- * holds host-API credentials and could otherwise be an egress escape
- * hatch (e.g. via webhooks). Allowed: the host apiserver + host entity
- * (kubelet proxying for exec/logs), kube-dns, its own synced pods, and
- * itself (the Service hairpin its kubelet port produces).
- *
- * `managed-by DoesNotExist` is load-bearing, not cosmetic: the real
- * control-plane pod is chart-created in the namespace and carries NO
- * managed-by label, whereas EVERY synced pod carries it (syncer-stamped,
- * unforgeable). Without this guard a tenant could create a synced pod
- * labelled `app=vcluster, release=<vc>` — those labels propagate to the
- * host pod — and, since CNP allows union, inherit this policy's
- * kube-apiserver + host egress, reaching the host API server directly.
- * The guard excludes every synced pod by the one label they cannot forge.
- */
-export function buildVclusterControlPlaneCnpManifest(
-  name: string,
-  sessionId: string,
-): Record<string, unknown> {
-  return {
-    apiVersion: 'cilium.io/v2',
-    kind: 'CiliumNetworkPolicy',
-    metadata: {
-      name: `${name}-control-plane`,
-      // The control-plane pod lives in the vcluster's own namespace.
-      namespace: vclusterNamespace(name),
-      labels: vclusterLabels(name, sessionId),
-    },
-    spec: {
-      endpointSelector: {
-        matchLabels: { app: 'vcluster', release: name },
-        matchExpressions: [{ key: LABEL_VCLUSTER_MANAGED_BY, operator: 'DoesNotExist' }],
-      },
-      egress: [
-        { toEntities: ['kube-apiserver', 'host'] },
-        {
-          toEndpoints: [{
-            matchLabels: {
-              'k8s:io.kubernetes.pod.namespace': 'kube-system',
-              'k8s-app': 'kube-dns',
-            },
-          }],
-        },
-        { toEndpoints: [{ matchLabels: { [LABEL_VCLUSTER_MANAGED_BY]: name } }] },
-        { toEndpoints: [{ matchLabels: { app: 'vcluster', release: name } }] },
       ],
     },
   }
@@ -639,14 +601,22 @@ export async function listVclusterNamespaces(): Promise<VclusterNamespaceInfo[]>
   return (list?.items ?? []).flatMap((n) => mapVclusterNamespaceObject(n) ?? [])
 }
 
-/** A pod inside a vcluster's host namespace (attribution reads the IP). */
+/**
+ * A pod inside a vcluster's host namespace. Attribution reads the IP; claim
+ * validation (redirect-claims.ts) reads both, since a claim may only name
+ * pod IPs the SYNCER stamped as belonging to that vcluster.
+ */
 export interface VclusterPod {
   name: string
   podIP?: string
+  labels: Record<string, string>
 }
 
 const vclusterPodObjectSchema = z.object({
-  metadata: z.object({ name: z.string().min(1) }),
+  metadata: z.object({
+    name: z.string().min(1),
+    labels: z.record(z.string(), z.string()).optional(),
+  }),
   status: z.object({ podIP: z.string().optional() }).optional(),
 })
 
@@ -654,7 +624,11 @@ export function mapVclusterPodObject(obj: unknown): VclusterPod | null {
   const res = vclusterPodObjectSchema.safeParse(obj)
   if (!res.success) return null
   const podIP = res.data.status?.podIP
-  return { name: res.data.metadata.name, ...(podIP ? { podIP } : {}) }
+  return {
+    name: res.data.metadata.name,
+    ...(podIP ? { podIP } : {}),
+    labels: res.data.metadata.labels ?? {},
+  }
 }
 
 /** All pods in a vcluster's host namespace (informer-cache fallback). */
@@ -683,8 +657,43 @@ export function mapVclusterServiceObject(obj: unknown): VclusterService | null {
 }
 
 /**
+ * A ConfigMap inside a vcluster's host namespace. Only the redirect-claim
+ * ones are read (picked out by name — isClaimConfigMapName), so this carries
+ * just their payload.
+ */
+export interface VclusterConfigMap {
+  name: string
+  data: Record<string, string>
+}
+
+const vclusterConfigMapObjectSchema = z.object({
+  metadata: z.object({ name: z.string().min(1) }),
+  data: z.record(z.string(), z.string()).optional(),
+})
+
+export function mapVclusterConfigMapObject(obj: unknown): VclusterConfigMap | null {
+  const res = vclusterConfigMapObjectSchema.safeParse(obj)
+  if (!res.success) return null
+  return { name: res.data.metadata.name, data: res.data.data ?? {} }
+}
+
+/**
+ * ConfigMaps in a vcluster's host namespace (informer-cache fallback). The
+ * synced redirect claims an inner install's claim-mode netd publishes are
+ * among them, picked out by name (redirect-claims.ts).
+ */
+export async function listVclusterConfigMaps(
+  namespace: string,
+): Promise<VclusterConfigMap[]> {
+  const list = await kubectlGetJson<{ items: unknown[] }>([
+    'get', 'configmaps', '-n', namespace,
+  ])
+  return (list?.items ?? []).flatMap((cm) => mapVclusterConfigMapObject(cm) ?? [])
+}
+
+/**
  * The syncer-managed Services in a vcluster's host namespace
- * (informer-cache fallback; the inner-redirect step filters proxies out).
+ * (informer-cache fallback).
  */
 export async function listVclusterServices(
   namespace: string,
@@ -717,7 +726,7 @@ export interface WaitForVclusterNamespaceGoneOpts {
  *
  * Teardown deletes the namespace with `--wait=false`, and a restart
  * re-ensures the SAME name seconds later (session ids are stable across
- * restarts) while termination — pod grace periods, Cilium endpoint
+ * restarts) while termination — pod grace periods, endpoint
  * cleanup, finalizers — takes minutes. Applying into the Terminating
  * namespace does not fail: every old object still exists, so each apply
  * lands as a PATCH on a doomed object (only CREATE is blocked in a
@@ -820,23 +829,30 @@ export async function ensureSessionVcluster(
   // there is no immutable-field migration: the chart apply below creates it
   // once and never needs to recreate it.
 
-  // Confinement BEFORE the control plane exists: Cilium fails closed, so the
+  // Confinement BEFORE the control plane exists: Calico fails closed, so the
   // synced-pod egress floor must be in place before the syncer creates its first
   // host pod (CoreDNS appears within seconds) — otherwise a pod with no policy
   // selecting it would get default-ALLOW egress, a cold-start window to raw
   // world. The session policy lives in the install namespace (it selects the
-  // session pod); the fallback redirect CNP (the synced-pod floor: default-deny
-  // + world→outer proxy + intracluster) and the control-plane CNP live in the
-  // vcluster namespace. The fallback CNP is a STATIC per-vcluster policy seeded
-  // here and torn down with the namespace — nothing deletes it in between, so
-  // the server reconcile does not re-assert it (it only projects the dynamic
-  // inner override once an inner yaac's proxy appears). Its redirect listeners
-  // live in the SHARED cluster-scoped fallback CCEC (created once at bootstrap,
-  // ensureProxyResources), referenced by kind — so creating a vcluster adds NO
-  // Envoy listener and never triggers a node-wide endpoint regeneration.
+  // session pod); the synced-pod egress floor (default-deny + world→the node's
+  // listener range + intracluster) and the control-plane policy live in the
+  // vcluster namespace. Both are STATIC per-vcluster NetworkPolicies seeded
+  // here and torn down with the namespace — nothing deletes them in between,
+  // so the server reconcile does not re-assert them. The redirect itself is
+  // not a policy object at all: netd programs it per synced-pod veth from
+  // what it observes on the node, so creating a vcluster adds no listener.
+  const [nodeCidrs, apiserverCidrs] = await Promise.all([nodeIpBlocks(), apiserverIpBlocks()])
   await kubectlApply(buildVclusterSessionNetworkPolicyManifest(name, p.sessionId))
-  await kubectlApply(buildVclusterFallbackRedirectCnpManifest(vcNs, name))
-  await kubectlApply(buildVclusterControlPlaneCnpManifest(name, p.sessionId))
+  await kubectlApply(buildVclusterEgressFloorNpManifest(vcNs, name, nodeCidrs))
+  await kubectlApply(buildVclusterControlPlaneNpManifest(
+    vcNs, name, vclusterLabels(name, p.sessionId), apiserverCidrs,
+  ))
+  // The inner locks are static per vcluster — they name only the vcluster
+  // and its owning session — so they ship with the namespace instead of
+  // being projected on a reconcile pass. netd discovers inner proxies
+  // itself, so no policy object here is dynamic.
+  await kubectlApply(buildInnerProxyIngressNpManifest(vcNs, name, p.sessionId, nodeCidrs))
+  await kubectlApply(buildInnerSessionIngressLockNpManifest(vcNs, name))
   await kubectlWithRetry(['apply', '-f', '-'], {
     input: await renderVclusterManifests({ sessionId: p.sessionId }),
   })
@@ -929,9 +945,9 @@ export async function sleepVcluster(
     'scale', 'deployment', name, '-n', vcNs, '--replicas=0',
   ])
 
-  // The control-plane pod, matched like the control-plane CNP: the
+  // The control-plane pod, matched like the control-plane policy: the
   // chart labels minus the syncer-stamped managed-by no tenant pod can
-  // shed (see buildVclusterControlPlaneCnpManifest).
+  // shed (see buildVclusterControlPlaneNpManifest).
   const cpSelector = `app=vcluster,release=${name},!${LABEL_VCLUSTER_MANAGED_BY}`
   const deadline = Date.now() + timeoutMs
   for (;;) {
@@ -955,15 +971,15 @@ export async function sleepVcluster(
 /**
  * Tear down one vcluster. With each vcluster in its own host namespace,
  * deleting the namespace removes everything inside it in one shot — the
- * control plane, synced pods, the fallback-redirect CNP and control-plane
- * policies, any server-projected inner-redirect objects, the RBAC
+ * control plane, synced pods, the egress floor and control-plane
+ * policies, the inner ingress locks, the RBAC
  * Role/RoleBinding, and the kubeconfig Secret. Things that live outside it
  * are unaffected: the cluster-scoped objects (ClusterRole/Binding, the VAP
  * policy/binding — deleted by our ownership label), the session NetworkPolicy
  * in the install namespace (it selects the session pod, so it can't move —
- * deleted by label there), and the SHARED fallback-redirect CCEC (a per-install
- * singleton the CNP references by kind; it serves every vcluster, so it is
- * intentionally NOT torn down here — it goes with the install).
+ * deleted by label there), and netd's node-level redirect state, which is
+ * per-install rather than per-vcluster: it drops the departed pods' rules on
+ * its next reconcile once the namespace's pods stop being observed.
  */
 export function vclusterCleanupKubectlArgs(name: string): string[][] {
   return [

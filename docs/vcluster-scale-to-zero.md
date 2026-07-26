@@ -29,7 +29,7 @@ vcluster was freshly created, never on a re-ensure over a live one:
    8443, the port that matters, unrouted.
 2. **Scales the control-plane Deployment to 0** and waits for its pod to
    terminate (matched by the chart labels minus the syncer-stamped
-   `managed-by`, the control-plane CNP's unforgeable-exclusion trick).
+   `managed-by`, the control-plane policy's unforgeable-exclusion trick).
 3. **Deletes the vcluster's synced host pods** (CoreDNS). The syncer is down
    and cannot GC them; left alone the synced CoreDNS pod would run forever,
    burning the memory the sleep was meant to reclaim. They are plain Pods with
@@ -119,13 +119,13 @@ narrow:
   Role + RoleBinding in each vcluster's namespace (get on the one certs
   Secret, get/patch on the one Deployment's scale, pod reads, delete on the
   one slice), torn down with the namespace. No cluster-wide grant exists.
-- Its CNP locks ingress to session pods + the host (kubelet probe) on 8443,
+- Its NetworkPolicy locks ingress to session pods + the node (kubelet probe) on 8443,
   and egress to exactly the wake surface: the host apiserver and control-plane
   pods on 8443. The explicit egress allow is also load-bearing: the
-  install-wide world-deny CNP (an egressDeny) selects the activator, and any
-  egress(-deny) section flips a Cilium endpoint into egress default-deny.
+  install-wide world-deny policy selects the activator, and any policy with
+  an Egress type flips a pod into egress default-deny.
 - The per-session vcluster NetworkPolicy admits the session pod to the
-  activator on 8443 — required because Cilium enforces egress on the
+  activator on 8443 — required because NetworkPolicy is evaluated on the
   **post-DNAT** endpoint identity, so while the ClusterIP is intercepted the
   first touch lands on the activator's identity, not the control plane's.
 
@@ -170,6 +170,6 @@ cluster-gated, so a deferred server still reports healthy.
 
 - The vcluster stays up after its first wake — no re-sleep ("Tier B" needs a
   quiescence predicate and `/data` persistence).
-- The containment objects (VAP guard, per-vcluster fallback CNP, projected
+- The containment objects (VAP guard, per-vcluster egress floor, the
   redirects) are host objects that persist through sleep, and nothing runs
   while asleep, so the security floor is unaffected.

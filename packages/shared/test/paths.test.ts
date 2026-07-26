@@ -24,6 +24,9 @@ import {
   PACKAGE_ROOT,
   DOCKERFILES_DIR,
   PROXY_DIR,
+  NETD_DIR,
+  CALICO_DIR,
+  calicoManifestCachePath,
 } from '#project-paths'
 import { serverLogPath, expandTilde, findRepoRoot } from '#paths'
 
@@ -144,5 +147,29 @@ describe('paths', () => {
     const proxyScript = path.join(PROXY_DIR, 'proxy.ts')
     const stat = await fs.stat(proxyScript)
     expect(stat.isFile()).toBe(true)
+  })
+
+  it('NETD_DIR contains netd.ts', async () => {
+    const netdScript = path.join(NETD_DIR, 'netd.ts')
+    const stat = await fs.stat(netdScript)
+    expect(stat.isFile()).toBe(true)
+  })
+
+  it('CALICO_DIR holds the checksum pin, not the manifest itself', async () => {
+    const pin = await fs.readFile(path.join(CALICO_DIR, 'calico.yaml.sha256'), 'utf8')
+    expect(pin.trim()).toMatch(/^[0-9a-f]{64}\b/)
+    await expect(fs.stat(path.join(CALICO_DIR, 'calico.yaml'))).rejects.toThrow()
+  })
+})
+
+describe('calicoManifestCachePath', () => {
+  afterEach(() => {
+    setDataDir('/tmp/yaac-path-test')
+  })
+
+  it('keys the cached manifest by version, under the data dir', () => {
+    setDataDir('/tmp/yaac-test')
+    expect(calicoManifestCachePath('3.32.1')).toBe('/tmp/yaac-test/cache/calico-3.32.1.yaml')
+    expect(calicoManifestCachePath('3.33.0')).toBe('/tmp/yaac-test/cache/calico-3.33.0.yaml')
   })
 })

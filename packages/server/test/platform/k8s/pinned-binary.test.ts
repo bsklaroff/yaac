@@ -68,21 +68,21 @@ describe('ensurePinnedBinary', () => {
     expect(log).toHaveBeenCalledWith('Downloading pinned helm v3.16.4...')
   })
 
-  it('extracts flat tarballs with no strip flag (the cilium shape)', async () => {
+  it('extracts flat tarballs with no strip flag', async () => {
     const log = vi.fn()
     const deps = makeDeps({ run: notOnPath(), log })
     await ensurePinnedBinary({
-      bin: 'cilium',
-      displayName: 'cilium CLI',
+      bin: 'flatbin',
+      displayName: 'flatbin CLI',
       version: 'v0.19.4',
-      url: 'https://example.test/cilium-linux-arm64.tar.gz',
-      tarMember: 'cilium',
+      url: 'https://example.test/flatbin-linux-arm64.tar.gz',
+      tarMember: 'flatbin',
     }, deps)
 
     const script = deps.run.mock.calls.find(([f, a]) => f === 'sh' && a[1].includes('curl'))![1][1]
     expect(script).not.toContain('--strip-components')
-    expect(script).toContain("-C '/home/tester/.cache/yaac/bin' 'cilium'")
-    expect(log).toHaveBeenCalledWith('Downloading pinned cilium CLI v0.19.4...')
+    expect(script).toContain("-C '/home/tester/.cache/yaac/bin' 'flatbin'")
+    expect(log).toHaveBeenCalledWith('Downloading pinned flatbin CLI v0.19.4...')
   })
 
   it('stays silent when no log sink is provided', async () => {

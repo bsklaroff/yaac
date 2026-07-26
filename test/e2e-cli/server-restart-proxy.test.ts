@@ -7,13 +7,11 @@ import {
   type YaacTestEnv,
 } from '@yaac/test-utils/cli'
 import { readLock } from '@yaac/shared/lock'
-import { requirePodman, requireCluster, IS_NESTED_YAAC, TEST_PROXY_CONFIG } from '@yaac/test-utils/setup'
-import { resolveTestBaseImageRef } from '@yaac/test-utils/mock-remotes'
+import { requirePodman, requireCluster, TEST_PROXY_CONFIG } from '@yaac/test-utils/setup'
 import { ProxyClient } from '@yaac/server/features/sessions/egress/proxy-client'
-import { PROXY_APP_NAME, PROXY_AUTH_SECRET_NAME, PROXY_PORT } from '@yaac/server/features/cluster/proxy-constants'
+import { PROXY_APP_NAME, PROXY_AUTH_SECRET_NAME } from '@yaac/server/features/cluster/proxy-constants'
 import {
   k8sNamespace,
-  kubectlApply,
   kubectlGetJson,
   kubectlWithRetry,
 } from '@yaac/server/platform/k8s/kubectl'
@@ -113,7 +111,6 @@ async function readProxyAuthSecret(): Promise<string | null> {
 
 describe('server restart preserves running proxy (real `yaac server restart`)', () => {
   let testEnv: YaacTestEnv
-  let probePodName: string | null = null
 
   beforeEach(async () => {
     testEnv = await createYaacTestEnv()
@@ -121,13 +118,6 @@ describe('server restart preserves running proxy (real `yaac server restart`)', 
 
   afterEach(async () => {
     await killServerByLock()
-    if (probePodName) {
-      await kubectlWithRetry([
-        'delete', 'pod', probePodName, '-n', k8sNamespace(),
-        '--ignore-not-found', '--wait=false', '--grace-period=1',
-      ]).catch(() => { /* best effort */ })
-      probePodName = null
-    }
     // Remove the proxy Deployment/Service so the next test's server
     // bootstraps from a clean namespace state.
     await kubectlWithRetry([
@@ -174,44 +164,10 @@ describe('server restart preserves running proxy (real `yaac server restart`)', 
     const secretBefore = await readProxyAuthSecret()
     expect(secretBefore).toBeTruthy()
 
-    // Launch a session-like pod in the namespace. This matches the
-    // production shape: a pod whose HTTPS_PROXY env would point at the
-    // proxy Service DNS name. The base image's entrypoint keeps it alive.
-    //
-    // Nested, a pod's direct dial to proxy:PROXY_PORT is denied BY DESIGN:
-    // the outer server's inner-redirect projection applies the shared
-    // inner-proxy ingress lock (buildInnerProxyIngressCnpManifest), which
-    // admits the control port from the host entity only — this is the
-    // forgery lock, same family as the transparent-egress direct-dial
-    // deny. Inner session egress rides the transparent redirect instead,
-    // so pod→Service reachability is a host-only assertion here; the
-    // proxy-pod/auth-secret preservation assertions below still run nested.
-    if (!IS_NESTED_YAAC) {
-      probePodName = `yaac-restart-test-sess-${crypto.randomBytes(4).toString('hex')}`
-      await kubectlApply({
-        apiVersion: 'v1',
-        kind: 'Pod',
-        metadata: {
-          name: probePodName,
-          namespace: k8sNamespace(),
-          labels: { 'yaac.test': 'true' },
-        },
-        spec: {
-          restartPolicy: 'Never',
-          automountServiceAccountToken: false,
-          enableServiceLinks: false,
-          containers: [{
-            name: 'probe',
-            image: await resolveTestBaseImageRef(),
-            imagePullPolicy: 'IfNotPresent',
-          }],
-        },
-      })
-
-      // Baseline: the session-like pod can reach the proxy through the
-      // ClusterIP Service — the address real session pods use.
-      await expectProxyReachable(probePodName)
-    }
+    // Baseline: the proxy is up and wired to its Service before the
+    // restart, so the post-restart assertion means "still up" rather than
+    // "was never checked".
+    await expectProxyReachable()
 
     const lockBefore = await readLock()
     expect(lockBefore).not.toBeNull()
@@ -246,12 +202,9 @@ describe('server restart preserves running proxy (real `yaac server restart`)', 
     const secretAfter = await readProxyAuthSecret()
     expect(secretAfter).toBe(secretBefore)
 
-    // The bug's actual symptom: the session-like pod must still be able
-    // to reach the proxy at the Service address. (Host-only — see the
-    // inner-proxy ingress lock note above.)
-    if (!IS_NESTED_YAAC) {
-      await expectProxyReachable(probePodName!)
-    }
+    // The bug's actual symptom: the proxy must still be serving at its
+    // Service address after the restart, not torn down or left unwired.
+    await expectProxyReachable()
 
     // Phase 2 — proxy pod replacement. The restart above already proved
     // the registration survives a server hand-off (the phantom session is
@@ -289,33 +242,49 @@ describe('server restart preserves running proxy (real `yaac server restart`)', 
   }, 300_000)
 })
 
-async function expectProxyReachable(podName: string): Promise<void> {
-  // Use the proxy's /healthz endpoint via the ClusterIP Service — same
-  // path a session pod's HTTPS_PROXY would tunnel to. We're checking
-  // network reachability, not credentialed forwarding.
-  // --noproxy '*' bypasses any http_proxy/HTTP_PROXY env inherited from
-  // the host (e.g. when running tests inside a dev container behind an
-  // egress proxy). Without it, curl tunnels through the egress proxy and
-  // gets 403'd on the cluster-internal address.
-  // Retry: the probe pod may come up before the proxy's HTTP listener
-  // (it generates a CA on first start), and DNS for a fresh Service can
-  // lag a beat.
-  const target = `http://${PROXY_APP_NAME}.${k8sNamespace()}.svc:${PROXY_PORT}/healthz`
-  const deadline = Date.now() + 30_000
-  let lastStdout = ''
-  while (Date.now() < deadline) {
-    try {
-      const { stdout } = await kubectlWithRetry([
-        'exec', '-n', k8sNamespace(), podName, '--',
-        'sh', '-c',
-        `curl -sf --noproxy '*' --connect-timeout 2 ${target} || echo UNREACHABLE`,
-      ], { timeout: 10_000 })
-      lastStdout = stdout.trim()
-      if (lastStdout === 'ok') return
-    } catch { /* pod still starting — retry */ }
-    await new Promise((r) => setTimeout(r, 500))
+/**
+ * Assert the proxy is up and correctly wired to its Service.
+ *
+ * Deliberately NOT probed from a pod. The proxy's control port is
+ * node-only by policy — the server registers sessions over it and the
+ * kubelet probes it, and no workload may reach it (see
+ * buildProxyIngressNpManifest). So this checks the two things a legal
+ * client can observe, which together cover the bug this test exists for:
+ *
+ *  - the Deployment reports a ready replica, which means kubelet's own
+ *    /healthz probe succeeded FROM THE NODE — the app is serving, not
+ *    merely scheduled; and
+ *  - the Service has a ready endpoint, so the address session pods are
+ *    pointed at actually resolves to that pod (a Ready pod behind a
+ *    broken selector would otherwise pass).
+ */
+async function expectProxyReachable(): Promise<void> {
+  interface RawDeploy { status?: { readyReplicas?: number } }
+  interface RawSlices {
+    items?: Array<{ endpoints?: Array<{ addresses?: string[]; conditions?: { ready?: boolean } }> }>
   }
-  expect(lastStdout).toBe('ok')
+  const deadline = Date.now() + 60_000
+  let ready = 0
+  let endpoints: string[] = []
+  for (;;) {
+    const dep = await kubectlGetJson<RawDeploy>([
+      'get', 'deployment', PROXY_APP_NAME, '-n', k8sNamespace(),
+    ]).catch(() => null)
+    ready = dep?.status?.readyReplicas ?? 0
+    const slices = await kubectlGetJson<RawSlices>([
+      'get', 'endpointslice', '-n', k8sNamespace(),
+      '-l', `kubernetes.io/service-name=${PROXY_APP_NAME}`,
+    ]).catch(() => null)
+    endpoints = (slices?.items ?? [])
+      .flatMap((s) => s.endpoints ?? [])
+      .filter((e) => e.conditions?.ready !== false)
+      .flatMap((e) => e.addresses ?? [])
+    if (ready >= 1 && endpoints.length > 0) return
+    if (Date.now() >= deadline) break
+    await new Promise((r) => setTimeout(r, 1000))
+  }
+  expect(ready, 'proxy Deployment has no ready replica').toBeGreaterThanOrEqual(1)
+  expect(endpoints, 'proxy Service has no ready endpoint').not.toHaveLength(0)
 }
 
 async function killServerByLock(): Promise<void> {

@@ -45,10 +45,10 @@ import {
   EGRESS_WORLD_DENY_NAME,
 } from '#features/cluster/proxy-constants'
 import {
-  buildEgressWorldDenyCiliumPolicyManifest,
-  buildBuilderRoleGuardPolicyManifest,
   buildBuilderRoleGuardBindingManifest,
+  buildBuilderRoleGuardPolicyManifest,
 } from '#features/cluster/proxy-manifests'
+import { buildEgressWorldDenyNpManifest } from '#features/cluster/policy-manifests'
 import { vapAvailable } from '#features/cluster/vcluster'
 import { RUNTIME_CLASS_GVISOR } from '#platform/k8s/gvisor'
 import {
@@ -423,7 +423,7 @@ async function streamContextToPod(
 }
 
 /** Builder egress: explicit allow-all for role=builder pods. The real
- *  gate is the world-deny CNP's builder exclusion; this keeps the intent
+ *  gate is the world-deny policy's builder exclusion; this keeps the intent
  *  declared even if a future default-deny NetworkPolicy lands in the
  *  namespace. */
 export function buildBuilderEgressNetworkPolicyManifest(): Record<string, unknown> {
@@ -465,18 +465,19 @@ export async function ensureBuilderRoleGuard(): Promise<void> {
 
 /**
  * Apply the builder-role admission guard and egress policy, and refresh
- * the world-deny CNP when it already exists in this namespace — an older
- * server may have written it without the builder exclusion, and a Cilium
- * deny cannot be overridden by any allow. Only refreshed (never
- * introduced): namespaces without the deny keep their existing posture.
+ * the world-deny policy when it already exists in this namespace — an
+ * older server may have written it without the builder exclusion, which
+ * would leave builder pods selected by a default-deny they need to be
+ * outside of. Only refreshed (never introduced): namespaces without it
+ * keep their existing posture.
  */
 async function ensureBuilderNetworkPolicies(): Promise<void> {
   await ensureBuilderRoleGuard()
   await kubectlApply(buildBuilderEgressNetworkPolicyManifest())
   const existing = await kubectlGetJson<Record<string, unknown>>([
-    'get', 'ciliumnetworkpolicy', EGRESS_WORLD_DENY_NAME, '-n', k8sNamespace(),
+    'get', 'networkpolicy', EGRESS_WORLD_DENY_NAME, '-n', k8sNamespace(),
   ]).catch(() => null)
-  if (existing) await kubectlApply(buildEgressWorldDenyCiliumPolicyManifest())
+  if (existing) await kubectlApply(buildEgressWorldDenyNpManifest())
 }
 
 /**

@@ -34,6 +34,7 @@ function snap(opts: {
     vclusters: () => Promise.resolve(opts.vclusters ?? []),
     vclusterPods: (ns: string) => Promise.resolve(opts.podsByNs?.[ns] ?? []),
     vclusterServices: () => Promise.resolve([]),
+    vclusterConfigMaps: () => Promise.resolve([]),
   }
 }
 
@@ -49,8 +50,8 @@ describe('buildVclusterAttribution', () => {
     const snapshot = snap({
       vclusters: [vc('s1', 'yaac-vc-1'), vc('s2', 'yaac-vc-2')],
       podsByNs: {
-        'yaac-vc-1': [{ name: 'p1', podIP: '10.0.0.1' }, { name: 'p2', podIP: '10.0.0.2' }],
-        'yaac-vc-2': [{ name: 'p3', podIP: '10.0.0.3' }],
+        'yaac-vc-1': [{ name: 'p1', podIP: '10.0.0.1', labels: {} }, { name: 'p2', podIP: '10.0.0.2', labels: {} }],
+        'yaac-vc-2': [{ name: 'p3', podIP: '10.0.0.3', labels: {} }],
       },
     })
     expect(await buildVclusterAttribution(snapshot)).toEqual({
@@ -61,7 +62,7 @@ describe('buildVclusterAttribution', () => {
   it('skips pods with no IP and is empty with no vclusters', async () => {
     const snapshot = snap({
       vclusters: [vc('s1', 'yaac-vc-1')],
-      podsByNs: { 'yaac-vc-1': [{ name: 'no-ip-yet' }] },
+      podsByNs: { 'yaac-vc-1': [{ name: 'no-ip-yet', labels: {} }] },
     })
     expect(await buildVclusterAttribution(snapshot)).toEqual({})
 
@@ -72,7 +73,7 @@ describe('buildVclusterAttribution', () => {
 describe('reconcileVclusterAttribution', () => {
   const ONE_POD = {
     vclusters: [vc('s1', 'yaac-vc-1')],
-    podsByNs: { 'yaac-vc-1': [{ name: 'p1', podIP: '10.0.0.1' }] },
+    podsByNs: { 'yaac-vc-1': [{ name: 'p1', podIP: '10.0.0.1', labels: {} }] },
   }
 
   it('pushes the attribution map to the proxy when it is attachable', async () => {

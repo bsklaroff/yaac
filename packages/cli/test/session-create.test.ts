@@ -549,8 +549,8 @@ describe('createSession', () => {
     await createSession('demo', { tool: 'claude', sessionId: 'abcd1234' })
 
     const spec = appliedJobManifest().spec.template.spec
-    // Egress is redirected at the cluster level (Cilium CEC + CNP) — the Job
-    // carries no redirect-init/relay init containers.
+    // Egress is redirected at the node level (netd's veth-peer DNAT) — the
+    // Job carries no redirect-init/relay init containers.
     expect(spec.initContainers).toBeUndefined()
     // The pod resolves DNS against the proxy Service's stub at its live
     // (allocator-assigned) ClusterIP, read via proxyServiceClusterIp;
@@ -564,8 +564,8 @@ describe('createSession', () => {
     expect(proxyClient).not.toHaveProperty('relayToken')
   })
 
-  it('routes SSH through the Cilium-redirected tunnel sentinel with no credential', async () => {
-    // SSH-scheme remote: ncat CONNECTs to the sentinel address that Cilium
+  it('routes SSH through the redirected tunnel sentinel with no credential', async () => {
+    // SSH-scheme remote: ncat CONNECTs to the sentinel address that netd
     // redirects to the proxy tunnel listener, carrying no proxy-auth — so
     // identity is the source pod IP (not a leakable bearer credential).
     vi.mocked(simpleGit).mockReturnValue({

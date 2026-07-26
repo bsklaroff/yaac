@@ -319,6 +319,18 @@ describe('testEnv (test-harness hooks)', () => {
     })
   })
 
+  describe('netdImage', () => {
+    it('defaults to "yaac-netd" when unset', () => {
+      // e2e servers must set this: with requirePrebuiltImages on, falling
+      // through to the production name demands a tag only a production
+      // install would have pushed.
+      vi.stubEnv('YAAC_NETD_IMAGE', undefined)
+      expect(testEnv.netdImage).toBe('yaac-netd')
+      vi.stubEnv('YAAC_NETD_IMAGE', 'yaac-test-netd')
+      expect(testEnv.netdImage).toBe('yaac-test-netd')
+    })
+  })
+
   describe('startingGraceMs', () => {
     it('defaults to 60000 when unset or blank', () => {
       vi.stubEnv('YAAC_STARTING_GRACE_MS', undefined)

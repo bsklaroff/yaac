@@ -190,7 +190,7 @@ export interface SessionJobParams {
   /**
    * Pinned proxy Service ClusterIP. Session pods point their resolver at it
    * (dnsConfig below) so the proxy's DNS stub answers, and their 443/80
-   * egress is redirected to it by the cluster-level Cilium CEC + CNP
+   * egress is redirected to it by netd's per-pod DNAT rules
    * (buildEgressRedirectCecManifest) — no per-pod redirect-init/relay sidecar.
    */
   proxyHost: string
@@ -312,7 +312,7 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
           // split-horizon — internal names (`*.svc`) are forwarded to the
           // cluster CoreDNS so the pod learns live ClusterIPs (the registry,
           // its vcluster API), while external names get a sinkhole IP since
-          // egress is port-redirected (cluster-level CEC + CNP, no per-pod
+          // egress is port-redirected on the node by netd (no per-pod
           // sidecar) and the proxy routes by SNI/Host. dnsPolicy None makes
           // this resolver the only one.
           dnsPolicy: 'None',
