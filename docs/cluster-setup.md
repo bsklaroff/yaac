@@ -11,7 +11,7 @@ yaac cluster setup
 The command bootstraps the podman machine on macOS (see below) — or expects a
 reachable rootful podman on Linux (see below) — starts the local registry,
 creates a kind cluster from the bundled `k8s/kind-config.yaml`, installs pinned
-Cilium (`envoyConfig.enabled=true` — the session-egress redirect needs it), and
+Calico (the CNI and NetworkPolicy engine) and netd (the session-egress redirect), and
 applies the node fixups.
 
 ## The split runtime
@@ -68,12 +68,12 @@ manual wiring.
 
 On Linux, yaac drives the **rootful** podman engine — the same choice as the
 macOS machine, for the same reason. kind's node runs as a container on this
-engine, and the cilium agent needs privileges that only exist in the initial
+engine, and the calico-node agent needs privileges that only exist in the initial
 user namespace. Under rootless podman the node lives in a user namespace,
 where the kernel denies the agent's `mount-bpf-fs` init container
 (`mount: /sys/fs/bpf: permission denied`), so the agent pod crash-loops in
 init and never leaves phase Pending: `yaac cluster setup` hangs at
-`1 pods of DaemonSet cilium are not ready / pod is pending` and times out.
+`1 pods of DaemonSet calico-node are not ready / pod is pending` and times out.
 Even on kernels new enough to permit that mount in a user namespace (>= 6.9),
 loading the datapath's BPF programs still needs CAP_BPF in the initial user
 namespace — rootful is required either way.
@@ -179,6 +179,14 @@ only kind's provider breaks.
    pods are stamped `gvisor` by the syncer. Trusted yaac infra (the proxy,
    registries, node-write pods, vcluster control planes) runs on runc — a
    sentry per infra pod starves the node for no containment gain.
+5. **Calico** — upstream's classic KDD/iptables release manifest for the
+   pinned version, fetched once and verified against the checksum committed
+   in `k8s/calico/`, then cached at
+   `$YAAC_DATA_DIR/cache/calico-<version>.yaml` so a cluster recreate does
+   not refetch. A checksum mismatch fails the setup. Calico's images are
+   pulled to the *host* engine and side-loaded onto the node, which keeps
+   the ~235 MB one-time rather than per-recreate. `k8s/calico/README.md`
+   has the repin recipe.
 
 ## Node fixups vanish on restart
 
@@ -239,7 +247,7 @@ yaac cluster delete        # prompts first; -y / --yes skips the prompt
 ```
 
 The teardown counterpart to `setup`. It deletes the kind cluster (which
-takes the node and everything living in it — Cilium, every vcluster, the
+takes the node and everything living in it — Calico, netd, every vcluster, the
 per-project registries, and all node-local storage) and removes the local
 `yaac-registry` container that sits beside it on podman. Running session pods
 stop, but nothing under the yaac data dir is touched: on-disk sessions and

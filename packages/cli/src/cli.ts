@@ -137,7 +137,7 @@ cluster
 
 cluster
   .command('setup')
-  .description('Create the kind cluster, registry, and Cilium wiring yaac needs (destructive: recreates the cluster)')
+  .description('Create the kind cluster, registry, and CNI wiring yaac needs (destructive: recreates the cluster)')
   .option('--repair', 'Re-apply the node fixups that vanish on node/VM restart, without recreating the cluster')
   .action(async (options: { repair?: boolean }) => {
     await clusterSetup(options)

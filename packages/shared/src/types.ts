@@ -667,9 +667,10 @@ export type ImageLayerName = 'base' | 'tools' | 'nestable' | 'project' | 'user'
 export interface ImageBuildEntry {
   id: string
   tag: string
-  /** Which chain step this is; `'push'` for a registry push, `'proxy'` for
-   *  the shared egress-proxy sidecar image (not part of a project chain). */
-  layer: ImageLayerName | 'push' | 'proxy'
+  /** Which chain step this is; `'push'` for a registry push, and `'proxy'`
+   *  / `'netd'` for the shared egress-proxy sidecar and per-node network
+   *  daemon images (neither part of a project chain). */
+  layer: ImageLayerName | 'push' | 'proxy' | 'netd'
   action: 'build' | 'push'
   /** Every project that requested this tag (joiners attach their slug).
    *  Empty for shared infrastructure builds with no owning project (the

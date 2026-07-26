@@ -9,6 +9,12 @@ interface K8sObj {
 const parseDocs = (s: string): K8sObj[] =>
   s.split(/^---$/m).map((d) => YAML.parse(d) as K8sObj)
 
+vi.mock('#features/cluster/cluster-cidrs', () => ({
+  nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
+  apiserverIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
+  resetClusterCidrCache: vi.fn(),
+}))
+
 vi.mock('#platform/k8s/kubectl', () => ({
   k8sNamespace: vi.fn(() => 'test-ns'),
   dataDirHash: vi.fn(() => 'ddh16'),
@@ -36,7 +42,6 @@ import {
   VCLUSTER_POD_GUARD_POLICY,
   addYaacLabels,
   buildVclusterCleanupShellCommand,
-  buildVclusterControlPlaneCnpManifest,
   buildVclusterNamespaceManifest,
   buildVclusterPodGuardBindingManifest,
   buildVclusterPodGuardPolicyManifest,
@@ -64,6 +69,7 @@ import {
   waitForVclusterKubeconfig,
   waitForVclusterNamespaceGone,
 } from '#features/cluster/vcluster'
+import { buildVclusterControlPlaneNpManifest } from '#features/cluster/policy-manifests'
 import { LABEL_VCLUSTER_MANAGED_BY, VCLUSTER_API_PORT } from '#platform/k8s/pods'
 import {
   execFileAsync,
@@ -385,39 +391,45 @@ describe('namespace + confinement policies', () => {
     expect(m.spec.egress[1].to[0].podSelector.matchLabels)
       .toEqual({ [LABEL_VCLUSTER_MANAGED_BY]: VC })
     // The activator hole: while asleep the API ClusterIP DNATs to the
-    // activator pod (same install namespace), and Cilium enforces on the
-    // post-DNAT identity — without this rule the wake-triggering first
-    // touch would be dropped.
+    // activator pod (same install namespace), and NetworkPolicy matches
+    // the post-DNAT destination — without this rule the wake-triggering
+    // first touch would be dropped.
     expect(m.spec.egress[2].to[0].namespaceSelector).toBeUndefined()
     expect(m.spec.egress[2].to[0].podSelector.matchLabels)
       .toEqual({ app: 'yaac-vc-activator' })
     expect(m.spec.egress[2].ports).toEqual([{ protocol: 'TCP', port: VCLUSTER_API_PORT }])
   })
 
-  it('locks the control plane to apiserver/host/kube-dns/own pods (CNP), in the vcluster ns', () => {
-    const m = buildVclusterControlPlaneCnpManifest(VC, SID) as {
+  it('locks the control plane to the apiserver/kube-dns/own pods, in the vcluster ns', () => {
+    const m = buildVclusterControlPlaneNpManifest(
+      VCNS, VC, { owner: 'x' }, ['10.89.0.7/32'],
+    ) as {
       apiVersion: string
       kind: string
-      metadata: { namespace: string }
+      metadata: { namespace: string; labels: Record<string, string> }
       spec: {
-        endpointSelector: {
+        podSelector: {
           matchLabels: Record<string, string>
           matchExpressions: Array<{ key: string; operator: string }>
         }
+        policyTypes: string[]
         egress: Array<Record<string, unknown>>
       }
     }
-    expect(m.apiVersion).toBe('cilium.io/v2')
-    expect(m.kind).toBe('CiliumNetworkPolicy')
+    expect(m.apiVersion).toBe('networking.k8s.io/v1')
+    expect(m.kind).toBe('NetworkPolicy')
     expect(m.metadata.namespace).toBe(VCNS)
-    expect(m.spec.endpointSelector.matchLabels).toEqual({ app: 'vcluster', release: VC })
+    expect(m.spec.podSelector.matchLabels).toEqual({ app: 'vcluster', release: VC })
+    expect(m.spec.policyTypes).toEqual(['Egress'])
     // managed-by DoesNotExist excludes synced pods unforgeably: a tenant could
     // forge `app=vcluster, release=<vc>` (those labels propagate to the host
-    // pod) and otherwise inherit this policy's kube-apiserver/host egress.
-    expect(m.spec.endpointSelector.matchExpressions).toEqual([
+    // pod) and otherwise inherit this policy's apiserver egress.
+    expect(m.spec.podSelector.matchExpressions).toEqual([
       { key: LABEL_VCLUSTER_MANAGED_BY, operator: 'DoesNotExist' },
     ])
-    expect(m.spec.egress[0]).toEqual({ toEntities: ['kube-apiserver', 'host'] })
+    // The apiserver as an ipBlock: NetworkPolicy matches the post-DNAT
+    // destination, so naming the Service VIP would never match.
+    expect(m.spec.egress[0]).toEqual({ to: [{ ipBlock: { cidr: '10.89.0.7/32' } }] })
     expect(JSON.stringify(m.spec.egress)).toContain('kube-dns')
     expect(JSON.stringify(m.spec.egress)).toContain(`"${LABEL_VCLUSTER_MANAGED_BY}":"${VC}"`)
   })
@@ -446,11 +458,10 @@ describe('ensureSessionVcluster', () => {
   it('applies namespace → guard → policies → vendored manifests, in that order', async () => {
     await ensureSessionVcluster({ sessionId: SID, allowedHostPathPrefix: '/x' })
 
-    // The dedicated namespace first, then the VAP guard + the CNI
-    // confinement (session NP, the fallback-redirect CNP — the synced-pod
-    // egress floor, whose listeners live in the shared cluster-scoped CCEC —
-    // then the control-plane CNP) — all BEFORE the control plane exists, so no
-    // synced pod is ever admitted unguarded/unconfined.
+    // The dedicated namespace first, then the VAP guard + every policy
+    // (session NP, the synced-pod egress floor, the control-plane lock, and
+    // the two inner locks) — all BEFORE the control plane exists, so no
+    // synced pod is ever admitted unguarded or unconfined.
     const kinds = mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
     expect(kinds).toEqual([
       'Namespace',
@@ -459,8 +470,10 @@ describe('ensureSessionVcluster', () => {
       'Role',
       'RoleBinding',
       'NetworkPolicy',
-      'CiliumNetworkPolicy',
-      'CiliumNetworkPolicy',
+      'NetworkPolicy',
+      'NetworkPolicy',
+      'NetworkPolicy',
+      'NetworkPolicy',
     ])
     // The dedicated namespace is the per-session vcluster namespace.
     const nsManifest = mockApply.mock.calls
@@ -837,14 +850,22 @@ describe('vclusterNamespaceSelector', () => {
 })
 
 describe('mapVclusterPodObject', () => {
-  it('maps the pod name and IP', () => {
-    expect(mapVclusterPodObject({ metadata: { name: 'p1' }, status: { podIP: '10.0.0.1' } }))
-      .toEqual({ name: 'p1', podIP: '10.0.0.1' })
+  it('maps the pod name, IP and labels', () => {
+    expect(mapVclusterPodObject({
+      metadata: { name: 'p1', labels: { 'vcluster.loft.sh/managed-by': 'yvc1' } },
+      status: { podIP: '10.0.0.1' },
+    })).toEqual({
+      name: 'p1', podIP: '10.0.0.1', labels: { 'vcluster.loft.sh/managed-by': 'yvc1' },
+    })
   })
 
-  it('omits podIP when the pod has none yet', () => {
-    expect(mapVclusterPodObject({ metadata: { name: 'p1' }, status: {} })).toEqual({ name: 'p1' })
-    expect(mapVclusterPodObject({ metadata: { name: 'p1' } })).toEqual({ name: 'p1' })
+  it('omits podIP when the pod has none yet, and defaults labels', () => {
+    // Claim validation reads the syncer's managed-by label off these, so a
+    // label-less pod must map to an empty record rather than be dropped.
+    expect(mapVclusterPodObject({ metadata: { name: 'p1' }, status: {} }))
+      .toEqual({ name: 'p1', labels: {} })
+    expect(mapVclusterPodObject({ metadata: { name: 'p1' } }))
+      .toEqual({ name: 'p1', labels: {} })
   })
 
   it('returns null for malformed objects', () => {
@@ -881,8 +902,8 @@ describe('listVclusterPods', () => {
       ],
     })
     await expect(listVclusterPods(VCNS)).resolves.toEqual([
-      { name: 'p1', podIP: '10.0.0.1' },
-      { name: 'p2' },
+      { name: 'p1', podIP: '10.0.0.1', labels: {} },
+      { name: 'p2', labels: {} },
     ])
     expect(mockGetJson).toHaveBeenCalledWith(['get', 'pods', '-n', VCNS])
   })

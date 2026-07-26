@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
+vi.mock('#features/cluster/cluster-cidrs', () => ({
+  nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
+  apiserverIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
+  resetClusterCidrCache: vi.fn(),
+}))
+
 vi.mock('#platform/k8s/kubectl', () => ({
   k8sNamespace: vi.fn(() => 'test-ns'),
   dataDirHash: vi.fn(() => 'ddh16'),
@@ -20,7 +26,7 @@ vi.mock('#features/sessions/egress/proxy-client', () => ({
 
 import {
   ACTIVATOR_APP_NAME,
-  buildActivatorCnpManifest,
+  buildActivatorNetworkPolicyManifest,
   buildActivatorDeploymentManifest,
   buildActivatorServiceAccountManifest,
   buildActivatorVclusterRoleBindingManifest,
@@ -30,7 +36,7 @@ import {
   getActivatorPodIp,
   vclusterSleepSliceName,
 } from '#features/cluster/activator'
-import { VCLUSTER_API_PORT } from '#platform/k8s/pods'
+import { LABEL_VCLUSTER_MANAGED_BY, VCLUSTER_API_PORT } from '#platform/k8s/pods'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
 
 const mockApply = vi.mocked(kubectlApply)
@@ -94,49 +100,45 @@ describe('buildActivatorDeploymentManifest', () => {
   })
 })
 
-describe('buildActivatorCnpManifest', () => {
-  it('locks ingress to session pods + host (probe)', () => {
-    const m = buildActivatorCnpManifest() as {
+describe('buildActivatorNetworkPolicyManifest', () => {
+  const NODES = ['10.89.0.7/32']
+  const APISERVER = ['10.89.0.7/32']
+
+  it('locks ingress to session pods + the node (kubelet probe)', () => {
+    const m = buildActivatorNetworkPolicyManifest(NODES, APISERVER) as {
       kind: string
       spec: {
-        endpointSelector: { matchLabels: Record<string, string> }
+        podSelector: { matchLabels: Record<string, string> }
         ingress: Array<Record<string, unknown>>
       }
     }
-    expect(m.kind).toBe('CiliumNetworkPolicy')
-    expect(m.spec.endpointSelector.matchLabels).toEqual({ app: ACTIVATOR_APP_NAME })
-    expect(m.spec.ingress[0]).toMatchObject({ fromEntities: ['host'] })
+    expect(m.kind).toBe('NetworkPolicy')
+    expect(m.spec.podSelector.matchLabels).toEqual({ app: ACTIVATOR_APP_NAME })
+    // Plain NP has no selector for the host network namespace, so the
+    // node is named by address.
+    expect(m.spec.ingress[0]).toMatchObject({ from: [{ ipBlock: { cidr: '10.89.0.7/32' } }] })
     expect(JSON.stringify(m.spec.ingress[1])).toContain('yaac.session-id')
     expect(JSON.stringify(m.spec.ingress)).toContain(String(VCLUSTER_API_PORT))
   })
 
-  it('allows egress only to the host API and unforgeable control-plane pods', () => {
-    const m = buildActivatorCnpManifest() as {
-      spec: {
-        egress: Array<{
-          toEntities?: string[]
-          toEndpoints?: Array<{
-            matchLabels?: Record<string, string>
-            matchExpressions?: Array<{ key: string; operator: string }>
-          }>
-          toPorts?: Array<{ ports: Array<{ port: string }> }>
-        }>
-      }
+  it('allows egress only to the apiserver and unforgeable control-plane pods', () => {
+    const m = buildActivatorNetworkPolicyManifest(NODES, APISERVER) as {
+      spec: { egress: Array<Record<string, unknown>> }
     }
-    // The explicit allow is load-bearing: the install-wide world-deny
-    // (an egressDeny) selects the activator, and any egress(-deny)
-    // section flips the endpoint into egress default-deny.
-    expect(m.spec.egress[0]).toEqual({ toEntities: ['kube-apiserver', 'host'] })
-    const cp = m.spec.egress[1]
-    expect(cp.toEndpoints?.[0].matchLabels).toEqual({ app: 'vcluster' })
-    // Cross-namespace (the namespace key) and excluding synced pods by
-    // the one label a tenant cannot shed.
-    expect(cp.toEndpoints?.[0].matchExpressions).toEqual([
-      { key: 'k8s:io.kubernetes.pod.namespace', operator: 'Exists' },
-      { key: 'vcluster.loft.sh/managed-by', operator: 'DoesNotExist' },
-    ])
-    expect(cp.toPorts?.[0].ports).toEqual([{ port: String(VCLUSTER_API_PORT), protocol: 'TCP' }])
-    expect(m.spec.egress).toHaveLength(2)
+    expect(m.spec.egress[0]).toEqual({ to: [{ ipBlock: { cidr: '10.89.0.7/32' } }] })
+    const cp = JSON.stringify(m.spec.egress[1])
+    expect(cp).toContain('vcluster')
+    // The unforgeable exclusion: a synced pod forging `app=vcluster` must
+    // not receive proxied wake traffic.
+    expect(cp).toContain('DoesNotExist')
+    expect(cp).toContain(LABEL_VCLUSTER_MANAGED_BY)
+  })
+
+  it('declares both policy types so egress is default-denied', () => {
+    const m = buildActivatorNetworkPolicyManifest(NODES, APISERVER) as {
+      spec: { policyTypes: string[] }
+    }
+    expect(m.spec.policyTypes).toEqual(['Ingress', 'Egress'])
   })
 })
 
@@ -239,10 +241,10 @@ describe('getActivatorPodIp', () => {
 })
 
 describe('ensureActivator', () => {
-  it('applies SA → Deployment → ingress CNP with the registry proxy image, then waits for rollout', async () => {
+  it('applies SA → Deployment → NetworkPolicy with the registry proxy image, then waits for rollout', async () => {
     await ensureActivator()
     const kinds = mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
-    expect(kinds).toEqual(['ServiceAccount', 'Deployment', 'CiliumNetworkPolicy'])
+    expect(kinds).toEqual(['ServiceAccount', 'Deployment', 'NetworkPolicy'])
     const dep = mockApply.mock.calls
       .map((c) => c[0] as { kind: string; spec?: { template: { spec: { containers: Array<{ image: string }> } } } })
       .find((m) => m.kind === 'Deployment')

@@ -171,7 +171,7 @@ nested `docker pull` goes through the MITM proxy, not this registry.
 - Three policies: a sessions→registry allow k8s NetworkPolicy (podSelector
   requires the project label *and* a `yaac.session-id`, keeping it off the
   registry pod itself), a deny-all egress k8s NetworkPolicy on the registry
-  pod, and a CiliumNetworkPolicy ingress lock confining the registry pod's
+  pod, and a NetworkPolicy ingress lock confining the registry pod's
   ingress to same-project sessions plus the host/remote-node entities.
 - Node containerd reaches it via a `hosts.toml` under
   `/etc/containerd/certs.d/` (see Service addressing below).
@@ -219,7 +219,7 @@ session:
   pod, CoreDNS, is already covered) and fails closed when the VAP API is
   missing.
 - **Policies**: a per-session NetworkPolicy admitting the session pod to
-  the vcluster API and intra-session traffic, plus a CiliumNetworkPolicy
+  the vcluster API and intra-session traffic, plus a NetworkPolicy
   locking the control-plane pod's egress (it holds host-API creds).
 - **Wiring**: created from session-create; the kubeconfig is polled out of
   the `vc-<name>` Secret and dir-mounted at `~/.kube`. Orphan GC +
@@ -237,120 +237,145 @@ the VAP allowlist prefix) and sets `YAAC_NESTED=1` plus the registry
 override. The recursion cap rejects `virtualCluster && YAAC_NESTED` — no
 vcluster-in-vcluster, so there is exactly one nesting level.
 
-### Inner egress via server projection
+### Inner egress: the inner install claims, the host programs
 
 Each inner session's egress is **transparently** redirected to the inner
-proxy at higher precedence than the outer redirect, and chains through the
-outer proxy for anything the inner allowlist doesn't specially handle.
-Allowlists compose by intersection (inner ∩ outer), fail-closed at both
-layers. "Transparent" means the inner yaac runs the **same** code path as
-a top-level yaac (one API target, its vcluster) with no nesting-aware
-branching and **no host-cluster credentials in the session pod**.
+proxy, and chains through the outer proxy for anything the inner allowlist
+doesn't specially handle. Allowlists compose by intersection (inner ∩
+outer), fail-closed at both layers. "Transparent" means the inner yaac runs
+the **same** code path as a top-level yaac (one API target, its vcluster)
+with **no host-cluster credentials in the session pod**.
 
-The inner yaac targets only its vcluster, including for its Cilium
-redirect CRDs (CEC/CNP). Those CRDs don't sync (they are cluster
-datapath), so the **outer server** — the sole host cluster-admin — watches
-each managed vcluster, recognizes yaac's own redirect shapes, and
-**rebuilds** the equivalent host CEC/CNP from its own trusted builders,
-re-scoped to the vcluster's `managed-by` selector and retargeted at the
-host-synced inner proxy. The session keeps zero host authority, and the
-server never copies untrusted policy, so a tenant cannot author an escape.
-The rejected alternative (handing the session a host SA token to write
-host policy directly) couldn't be transparent and would put a host
-credential in the agent's pod.
+The redirect itself is netfilter on a node, which a vcluster does not have
+and whose tenant must never be given authority over. So the decision and the
+enforcement are split, and the inner install owns the decision:
+
+- The inner install applies the **same netd DaemonSet** the outer one does,
+  in **claim mode**: one unprivileged container (no `hostNetwork`, no
+  capabilities, no Envoy) that runs the same rule-1 selection over its own
+  API and writes the result to a ConfigMap in its own namespace. Its
+  readiness means "my claim is published", so `cluster check`'s `datapath`
+  row means something inside a vcluster too.
+- The **vcluster syncer** copies that ConfigMap to the host namespace — the
+  claim-mode pod references it as a volume, which is what makes a
+  `configMaps.all: false` syncer copy it. Nothing reads the mount. No
+  component ever dials a vcluster's API for this, so the bridge cannot wake
+  a sleeping vcluster.
+- The **outer server** validates each claim against the host's own pod list
+  and republishes the survivors as `yaac-redirect-claims` in the install
+  namespace. netd's rule-2 input is therefore an outer-authored object: a
+  privileged daemon never parses tenant data.
+- The **host netd** re-validates and programs. It picks one egress target
+  per pod, recomputed on every relevant event:
+
+1. A session pod in the install namespace → that install's **outer** proxy.
+2. A vcluster-synced pod whose pod IP a validated claim names → the claiming
+   install's proxy **pod**.
+3. Any other synced pod — including a claimed proxy itself, and every pod no
+   claim names → the vcluster's owning install's **outer** proxy.
+
+Rules 2 and 3 are scoped to vcluster namespaces the install owns (the server
+names them `<install namespace>-vc-<vcluster>`). netd sees every namespace,
+and several installs share a node, so an unscoped netd would redirect a
+sibling install's synced pods at its own proxy.
+
+Rule 3 is what gives synced pods working, allowlisted egress from the moment
+they exist (before any inner yaac), and what makes chaining loop-free: a
+claimed proxy is never a source, so its own upstream dials ride rule 3 to
+the outer proxy. Publishing a claim IS an install's opt-in signal —
+publishing flips its pods to rule 2, withdrawing it (or losing the proxy pod
+the claim names) reverts them on netd's next pass.
+
+Several inner installs can share one vcluster (the ambient nested server
+plus any per-run e2e servers). Each runs its own claim-mode netd in its own
+namespace and publishes its own claim, identified by the `install` field
+(its data-dir hash); when two claims name the same pod, the lowest hash wins
+so the rendering never flaps.
 
 Data path for an inner-session pod's outbound request:
 
-1. Cilium redirects it via the **override** CNP (higher precedence than
-   the fallback) → node Envoy → the host-synced **inner proxy**.
-2. The inner proxy reads the PP2 source IP (a vcluster pod's
-   `status.podIP` is its host IP) and resolves it to an inner session via
-   its stock pod-watch on the vcluster API → inner allowlist → MITM/judge.
-3. The inner proxy dials the upstream. Its own egress
-   (`yaac.role=inner-proxy`, excluded from the override) is caught by the
-   **fallback** redirect → **outer proxy** → outer allowlist → internet.
-   The inner proxy trusts the outer CA via a projected ConfigMap.
+1. netd's per-pod DNAT rule sends it to the install's node-local Envoy
+   listener trio, where a filter chain matching the pod's source IP picks
+   the **inner** proxy's cluster (rule 2 above).
+2. Envoy recovers the original destination, stamps PROXY-protocol-v2 with
+   the pod's real source IP, and forwards to the claimed inner proxy pod.
+   The inner proxy resolves that IP to an inner session via its stock
+   pod-watch on the vcluster API (a vcluster pod's `status.podIP` is its
+   host IP) → inner allowlist → MITM/judge.
+3. The inner proxy dials the upstream. Its own egress rides rule 3 →
+   **outer proxy** → outer allowlist → internet. The inner proxy trusts
+   the outer CA via a projected ConfigMap.
 4. Net: inner ∩ outer, fail-closed at both layers, no proxy code change.
 
-Several inner installs can share one vcluster (the ambient nested server
-plus any per-run e2e servers), keyed by the `yaac.data-dir-hash` label
-every server stamps on its session pods, proxy Deployment pods, and proxy
-Service. A background-loop tick (`reconcileInnerRedirects`) runs one pass
-per managed vcluster: discover the host-synced inner-proxy Services (a
-Service's presence is that install's opt-in), rebuild one CEC + override
-CNP per install plus a shared per-vcluster inner-proxy ingress lock, then
-apply and prune by the `yaac.projection=inner-redirect` label (never by
-`app` alone, which the untouchable egress floor shares).
+The vcluster namespace still carries its own **NetworkPolicy** objects,
+applied by the outer server at vcluster-creation time: the synced-pod
+egress floor (the unforgeable containment boundary), the inner-proxy
+ingress lock, and the synced session-pod ingress lock. These are static —
+they name only the vcluster and its owning session — so they ship with the
+namespace rather than being reconciled per pass. A claim-mode netd needs no
+policy object of its own: the egress floor already admits the vcluster API.
 
-### Priority and the fallback CCEC
+### Why claims, not a privileged inner netd
 
-`toPorts.listener.priority` is **lower = higher precedence**:
+A netd that programs netfilter needs the node: `hostNetwork`, `NET_ADMIN`,
+the node's route table. A synced pod asking for any of that is denied by the
+vcluster's own ValidatingAdmissionPolicy, and must be — a netd driven by an
+API whose tenant is cluster-admin could be told a sibling session's pod IP
+(pod `status` is writable inside a vcluster) and would DNAT that session's
+veth. Claim mode asks for nothing the guard would have to except.
 
-- `SESSION_REDIRECT_PRIORITY` (50) is the same value **every** yaac's
-  session-egress redirect uses, outer and inner alike — so an inner yaac
-  is fully transparent, with no per-level band or nesting-aware priority
-  arithmetic. The projected override uses it.
-- `VCLUSTER_FALLBACK_PRIORITY` (90) is the outer yaac's low-precedence
-  fallback for a vcluster's synced pods → the outer proxy. It gives synced
-  pods working, allowlisted egress from the moment they exist (before any
-  inner yaac), and the override beats it for the session pods while the
-  inner-proxy pod stays on it and chains to the outer proxy (loop-free).
-
-`listener.priority` is undocumented and lower-wins is empirical; a
-mandatory e2e pins the explicit-vs-explicit override case and must be
-re-run on every Cilium upgrade — treat a regression as a release blocker.
-
-The fallback's redirect **listeners** live in a single shared,
-cluster-scoped `CiliumClusterwideEnvoyConfig` (one per install, so the
-real install and ephemeral e2e installs coexist), not a per-vcluster CEC.
-Creating/destroying a vcluster then adds/removes no Envoy listeners; a
-per-vcluster CEC would churn listeners on every session and trigger a
-node-wide endpoint regeneration that wedges every session's egress. Each
-vcluster still keeps its **own** fallback CNP — the unforgeable egress
-floor: default-deny + exactly 443/80/SSH → outer proxy + intracluster/DNS
-— referencing the shared CCEC cross-namespace by kind.
-
-### CRD registration in the vcluster
-
-For the inner yaac's `kubectl apply CiliumEnvoyConfig/CiliumNetworkPolicy`
-to succeed, the vcluster needs the Cilium CRD schemas — **definitions
-only, no operator/agent** (the host Cilium is the only datapath).
-`ensureCiliumCrds` installs **permissive**
-(`x-kubernetes-preserve-unknown-fields`) CEC/CNP CRDs. In a vcluster these
-objects are inert opt-in signals; the server projects the real,
-host-enforced redirect. Permissive schemas are safe because the objects
-come from yaac's own builders.
+Choosing exactly one target per pod also means there is no precedence to
+reason about: the selection IS the decision, evaluated in ordinary code that
+unit tests can pin, and adding a nesting level would change nothing. And an
+inner yaac still applies **no** datapath object to the host — its claim is a
+core-API ConfigMap, so its vcluster needs no CRD schemas of any kind.
 
 ### Trust model
 
 - The inner yaac/session pod holds **no host credential**
   (`automountServiceAccountToken: false`, vcluster-only kubeconfig); it can
-  only write to its vcluster.
-- The **server** is the only writer of host CEC/CNP and always **rebuilds**
-  from trusted builders — it never copies tenant-authored policy, so no
-  allow-all escape can reach the host. Scope is pinned to `managed-by=<vc>`,
-  so a vcluster's override can only affect its own synced pods.
-- The override CNPs are a *routing* preference, not the containment
-  boundary: the fallback CNP floor already default-denies every synced
-  pod's raw world. The override's `yaac.role != inner-proxy` exclusion and
-  `yaac.data-dir-hash` key are tenant-forgeable, but forging either is
-  non-escalating — a forged label lands the pod on the fallback → outer
-  proxy (still allowlisted), or on a sibling install's proxy, which
-  fail-closes unknown source IPs. Raw world is never reachable.
+  only write to its vcluster. Tenant-authored NetworkPolicies inside the
+  vcluster stay unsynced, so they never reach the host.
+- **netd is not a policy engine.** It programs only the redirect, and its
+  rules can only ever *add* reachability toward a proxy. Every allow/deny
+  is a plain NetworkPolicy enforced by Calico's Felix, authored solely by
+  the outer server from its own trusted builders.
+- The synced-pod egress floor is the containment boundary, and it selects
+  on the syncer-stamped `managed-by` label a tenant can neither forge nor
+  shed. It admits only the node's netd listener range, the vcluster API,
+  sibling synced pods, and the outer DNS stub — never raw world.
+- **A claim is not authenticated, it is confined.** Inside one session the
+  inner yaac and the agent code are the same trust domain, so no claim can
+  be attributed to "the real inner yaac"; the claim document is
+  tenant-writable and treated as such. What makes that harmless is the
+  invariant both the server and netd enforce: a claim may only name pod IPs
+  the HOST reports for that one vcluster's synced pods, which host IPAM
+  assigns and a tenant cannot mint. The worst a forged claim achieves is
+  aiming the tenant's own pods at the tenant's own pod, whose egress still
+  rides rule 3 to the outer proxy under the outer allowlist.
+- **Never a ClusterIP.** A claim naming a Service VIP would be dereferenced
+  by kube-proxy from the node's host netns, where a tenant-authored
+  Endpoints object can name any address on the internet and no
+  NetworkPolicy applies — an egress tunnel with no allowlist. Targets are
+  pod IPs, checked against the cluster pod CIDRs and against the live pod
+  list, for exactly this reason.
+- Bounded by construction: at most 64 claims per vcluster and 512 sources
+  per claim, so a tenant-writable document cannot amplify netd's rule count.
 
 ## Egress integration
 
-Session egress is the Cilium / pod-watch model, not in-pod iptables. A
-node-local Cilium Envoy redirects session-pod egress to the proxy's
-transparent listeners and stamps the source IP; the proxy resolves
-source-IP → session by reading the pod's `yaac.session-id` label off a
-pod-watch. Nested containers share the session pod's netns, so their
+Session egress is the netd / pod-watch model, not in-pod iptables. netd
+DNATs a session pod's outbound 443/80/ssh-sentinel at its veth to a
+node-local Envoy, which stamps the source IP into a PROXY-protocol
+preamble and forwards to the proxy's transparent listeners; the proxy
+resolves source-IP → session by reading the pod's `yaac.session-id` label
+off a pod-watch. Nested containers share the session pod's netns, so their
 `docker pull`/build traffic rides the same path with zero extra wiring;
 the proxy auto-appends the upstream registry + CDN hosts (docker.io,
 ghcr.io, quay.io and their CDNs) to the allowlist for nested sessions, and
-anything else is denied fail-closed. A vcluster's synced pods inherit the
-session's `yaac.session-id`, so the `yaac-session-egress-redirect` backstop confines
-them. In-cluster destinations (registry :5000, vcluster API :8443) are
+anything else is denied fail-closed. A vcluster's synced pods are confined by their
+namespace's own synced-pod egress floor (they carry the syncer's
+`managed-by` label, which no tenant can shed). In-cluster destinations (registry :5000, vcluster API :8443) are
 reached by their service-DNS names (Service addressing above) and admitted
 by the per-project / per-session NetworkPolicies.
 
@@ -360,4 +385,9 @@ by the per-project / per-session NetworkPolicies.
 root runs `mount -t tmpfs` under the real nested containment — the sentry
 prerequisite for the rootful engine) and a `vap` row, on top of the
 `gvisor` gate and `runtime-stamp` sweep. Nested (`YAAC_NESTED=1`)
-cluster-check skips the host-only gates.
+cluster-check skips the host-only gates — except `datapath`, which becomes
+the inner install's own half of it: its claim-mode netd must be publishing.
+That is warn-level while nothing is deployed (netd lands with the inner
+proxy on first session create) and a failure once a deployed one is not
+Ready, which is the silent case — the install believes it governs its
+sessions' egress and does not.

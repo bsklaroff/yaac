@@ -1,5 +1,12 @@
-import { describe, it, expect } from 'vitest'
-import { PodSessionIndex, podSessionId, parseVclusterAttribution } from 'yaac-proxy-sidecar/pod-watch'
+import { afterEach, beforeEach, describe, it, expect } from 'vitest'
+import { KubeConfig } from '@kubernetes/client-node'
+import {
+  PodSessionIndex,
+  _resetInClusterClientForTests,
+  inClusterClient,
+  parseVclusterAttribution,
+  podSessionId,
+} from 'yaac-proxy-sidecar/pod-watch'
 import type { WatchedPod } from 'yaac-proxy-sidecar/pod-watch'
 
 function pod(ip: string | undefined, sid: string | undefined): WatchedPod {
@@ -117,5 +124,45 @@ describe('parseVclusterAttribution', () => {
     expect(parseVclusterAttribution('null')).toBeNull()
     expect(parseVclusterAttribution('{"10.0.0.1":123}')).toBeNull()
     expect(parseVclusterAttribution('{"10.0.0.1":""}')).toBeNull()
+  })
+})
+
+describe('inClusterClient', () => {
+  const config = (namespace?: string): KubeConfig => {
+    const kubeConfig = new KubeConfig()
+    kubeConfig.loadFromOptions({
+      clusters: [{ name: 'c', server: 'https://10.96.0.1:443', skipTLSVerify: true }],
+      users: [{ name: 'u' }],
+      contexts: [{ name: 'ctx', cluster: 'c', user: 'u', ...(namespace ? { namespace } : {}) }],
+      currentContext: 'ctx',
+    })
+    return kubeConfig
+  }
+
+  beforeEach(() => { _resetInClusterClientForTests() })
+  afterEach(() => { _resetInClusterClientForTests() })
+
+  it('exposes the API client and the namespace it serves', () => {
+    const client = inClusterClient(config('yaac'))
+    expect(client.namespace).toBe('yaac')
+    expect(typeof client.core.listNamespacedPod).toBe('function')
+  })
+
+  it('memoizes, so the informer and the fallbacks share one credential source', () => {
+    const first = inClusterClient(config('yaac'))
+    expect(inClusterClient(config('other'))).toBe(first)
+  })
+
+  it('_resetInClusterClientForTests drops the memo', () => {
+    const first = inClusterClient(config('yaac'))
+    _resetInClusterClientForTests()
+    expect(inClusterClient(config('other'))).not.toBe(first)
+  })
+
+  it('refuses a config with no namespace rather than guessing one', () => {
+    // Outside a pod there is no ServiceAccount mount, so `loadFromCluster`
+    // leaves the namespace unset — resolving sessions against the wrong
+    // namespace would silently mis-attribute traffic.
+    expect(() => inClusterClient(config())).toThrow(/no in-cluster namespace/)
   })
 })

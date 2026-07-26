@@ -7,8 +7,9 @@ import { ensureRootfulPodmanHost } from '@yaac/server/platform/container/runtime
 import { ensureRegistryImage } from '@yaac/server/features/cluster/project-registry'
 import { ensureVclusterImages } from '@yaac/server/features/cluster/vcluster'
 import { ensureSalvageWriterImage } from '@yaac/server/features/images/image-promoter'
+import { ensureEnvoyImage } from '@yaac/server/features/cluster/netd'
 import { pushImageToRegistry, registryReachable } from '@yaac/server/features/cluster/registry'
-import { DOCKERFILES_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
+import { DOCKERFILES_DIR, NETD_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
 
 const execFileAsync = promisify(execFile)
 
@@ -62,9 +63,10 @@ async function pruneTestContainers(): Promise<void> {
 
 /**
  * Delete leaked per-run test namespaces (`yaac-test-<runId>`) from prior
- * interrupted runs, plus the cluster-scoped fallback CCECs they own. Cheap
- * best-effort sweep — every error (kubectl missing, cluster unreachable) is
- * swallowed.
+ * interrupted runs, and the cluster-scoped RBAC each run's netd owns
+ * (ClusterRole/Binding names are global, so they do not cascade with the
+ * namespace). Cheap best-effort sweep — every error (kubectl missing,
+ * cluster unreachable) is swallowed.
  */
 async function cleanupLeakedTestNamespaces(): Promise<void> {
   try {
@@ -82,25 +84,27 @@ async function cleanupLeakedTestNamespaces(): Promise<void> {
       )
     }
   } catch { /* kubectl or cluster absent — nothing to sweep */ }
-  // The fallback CCEC is cluster-scoped, so it does NOT cascade when its test
-  // namespace is deleted — sweep the ones owned by any `yaac-test-*` install.
+  // netd's ClusterRole/Binding are cluster-scoped, so deleting the
+  // namespace above leaves them behind. Filter on the owning install
+  // namespace — a bare `app=yaac-netd` selector would also match the REAL
+  // install's RBAC and break the developer's own cluster.
   try {
     const { stdout } = await execFileAsync('kubectl', [
-      'get', 'ciliumclusterwideenvoyconfig', '-l', 'app=yaac-proxy',
-      '-o', "jsonpath={range .items[*]}{.metadata.name}{'\\t'}{.metadata.labels.yaac\\.install-namespace}{'\\n'}{end}",
+      'get', 'clusterrole,clusterrolebinding', '-l', 'app=yaac-netd',
+      '-o', "jsonpath={range .items[*]}{.kind}/{.metadata.name}{'\\t'}{.metadata.labels.yaac\\.install-namespace}{'\\n'}{end}",
     ], { timeout: 10_000 })
     const leaked = stdout
       .split('\n')
       .map((line) => line.split('\t'))
       .filter(([, ns]) => ns?.startsWith('yaac-test-'))
-      .map(([name]) => name)
-    if (leaked.length === 0) return
-    await execFileAsync(
-      'kubectl',
-      ['delete', 'ciliumclusterwideenvoyconfig', ...leaked, '--ignore-not-found', '--wait=false'],
-      { timeout: 30_000 },
-    )
-  } catch { /* CRD absent or cluster unreachable — nothing to sweep */ }
+      .map(([ref]) => ref.toLowerCase())
+    if (leaked.length > 0) {
+      await execFileAsync(
+        'kubectl', ['delete', ...leaked, '--ignore-not-found', '--wait=false'],
+        { timeout: 30_000 },
+      )
+    }
+  } catch { /* cluster unreachable — nothing to sweep */ }
 }
 
 /**
@@ -163,11 +167,18 @@ export async function setup(): Promise<void> {
   const proxyTag = `yaac-test-proxy:${proxyHash}`
   await ensureImageByTag(proxyTag, path.join(PROXY_DIR, 'Dockerfile'), PROXY_DIR)
 
+  // --- netd (k8s/netd/) --- the per-node egress redirect daemon. Built
+  // here like the proxy so no test worker races a build; its Envoy
+  // sidecar is a digest-pinned mirror, handled below.
+  const netdHash = await contextHash(NETD_DIR)
+  const netdTag = `yaac-test-netd:${netdHash}`
+  await ensureImageByTag(netdTag, path.join(NETD_DIR, 'Dockerfile'), NETD_DIR)
+
   // Session/mock pods pull images from the local registry, not the podman
   // store — push everything up front so test workers never race a push.
   // pushImageToRegistry no-ops when the content-hash tag is already there.
   if (await registryReachable()) {
-    for (const tag of [baseTag, toolsTag, nestableTag, proxyTag]) {
+    for (const tag of [baseTag, toolsTag, nestableTag, proxyTag, netdTag]) {
       await pushImageToRegistry(tag)
     }
     // Per-project registry image (registry:2, digest-pinned mirror),
@@ -176,6 +187,7 @@ export async function setup(): Promise<void> {
     await ensureRegistryImage(false)
     await ensureVclusterImages(false)
     await ensureSalvageWriterImage(false)
+    await ensureEnvoyImage(false)
   } else {
     console.log('[global-setup] local registry not reachable — e2e tests requiring a cluster will fail')
   }

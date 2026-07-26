@@ -233,19 +233,33 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
       'sh', '-c', 'nc -w 4 -z 10.96.0.1 443 && echo REACHED || echo BLOCKED',
     ], { timeout: 30_000 })
     expect(apiserver).toContain('BLOCKED')
+    // World egress, probed as DATA rather than as a TCP handshake. netd
+    // redirects 443, so a bare connect to any address on that port
+    // completes against the node's Envoy by design — it proves nothing
+    // about reachability. What must fail is the session itself: the
+    // outer proxy refuses a host no allowlist admits. A non-redirected
+    // port is the complementary check, and there the NetworkPolicy
+    // default-deny is what answers.
     const { stdout: external } = await kubectlWithRetry([
       'exec', '-n', vcNs, syncedPod, '--',
-      'sh', '-c', 'nc -w 4 -z 1.1.1.1 443 && echo REACHED || echo BLOCKED',
+      'sh', '-c', 'curl -sS --max-time 10 -o /dev/null https://1.1.1.1/ '
+        + '&& echo REACHED || echo BLOCKED',
     ], { timeout: 30_000 })
-    expect(external).toContain('BLOCKED')
+    expect(external, 'a synced pod must not reach a non-allowlisted host').toContain('BLOCKED')
+    const { stdout: externalRaw } = await kubectlWithRetry([
+      'exec', '-n', vcNs, syncedPod, '--',
+      'sh', '-c', 'nc -w 4 -z 1.1.1.1 9999 && echo REACHED || echo BLOCKED',
+    ], { timeout: 30_000 })
+    expect(externalRaw, 'a synced pod must not reach an un-redirected port').toContain('BLOCKED')
 
     // Egress-escape attack: a tenant inside the vcluster creates an
     // allow-all egress NetworkPolicy targeting its own pod. This must NOT
     // grant the synced pod egress — two independent guards hold:
     //   (a) sync.toHost.networkPolicies is disabled, so the tenant NP
     //       never materializes on the host, and
-    //   (b) the vcluster namespace's blanket world-deny CiliumNetworkPolicy
-    //       denies world for every pod there regardless (deny beats allow).
+    //   (b) the vcluster namespace's synced-pod egress floor admits only
+    //       the node's netd listener range, the vcluster API, siblings and
+    //       the DNS stub — so even a unioned allow-all cannot widen it.
     await execInJob(name, ['sh', '-c',
       'printf \'apiVersion: networking.k8s.io/v1\\nkind: NetworkPolicy\\n'
       + 'metadata: {name: let-me-out}\\nspec:\\n  podSelector: {matchLabels: {run: inner-probe}}\\n'
@@ -263,9 +277,15 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
     // other namespace pods) still blocked.
     const { stdout: stillExternal } = await kubectlWithRetry([
       'exec', '-n', vcNs, syncedPod, '--',
-      'sh', '-c', 'nc -w 4 -z 1.1.1.1 443 && echo REACHED || echo BLOCKED',
+      'sh', '-c', 'curl -sS --max-time 10 -o /dev/null https://1.1.1.1/ '
+        + '&& echo REACHED || echo BLOCKED',
     ], { timeout: 30_000 })
     expect(stillExternal, 'allow-all tenant NP must not grant internet egress').toContain('BLOCKED')
+    const { stdout: stillRaw } = await kubectlWithRetry([
+      'exec', '-n', vcNs, syncedPod, '--',
+      'sh', '-c', 'nc -w 4 -z 1.1.1.1 9999 && echo REACHED || echo BLOCKED',
+    ], { timeout: 30_000 })
+    expect(stillRaw, 'allow-all tenant NP must not open un-redirected ports').toContain('BLOCKED')
     const { stdout: stillApiserver } = await kubectlWithRetry([
       'exec', '-n', vcNs, syncedPod, '--',
       'sh', '-c', 'nc -w 4 -z 10.96.0.1 443 && echo REACHED || echo BLOCKED',
@@ -387,7 +407,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac vcluster sessions (real CLI + real server 
 
     // --- Cross-session isolation (issue #17) ---
     // With the blanket in-cluster 8443 allowance gone from the session-egress
-    // CNP, a session's only hole to a vcluster API is its own per-session
+    // policy, a session's only hole to a vcluster API is its own per-session
     // NetworkPolicy — session A dialing session B's API must be dropped
     // (curl times out), even though B's API demonstrably serves (above).
     const bName = vclusterName(b.sessionId)

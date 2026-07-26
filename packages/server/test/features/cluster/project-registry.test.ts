@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
+vi.mock('#features/cluster/cluster-cidrs', () => ({
+  nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
+  apiserverIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
+  resetClusterCidrCache: vi.fn(),
+}))
+
 vi.mock('#platform/k8s/kubectl', () => ({
   k8sNamespace: vi.fn(() => 'test-ns'),
   dataDirHash: vi.fn(() => 'ddh16'),
@@ -34,7 +40,7 @@ import {
   buildRegistryCleanupPodManifest,
   buildRegistryEgressNetworkPolicyManifest,
   buildRegistryHostsWriterPodManifest,
-  buildRegistryIngressCnpManifest,
+  buildRegistryIngressNetworkPolicyManifest,
   buildRegistrySessionsNetworkPolicyManifest,
   ensureProjectRegistry,
   ensureRegistryImage,
@@ -246,43 +252,48 @@ describe('manifest builders', () => {
     }])
   })
 
-  it('locks registry ingress to same-project sessions and the node (host/remote-node)', () => {
-    const m = buildRegistryIngressCnpManifest('demo') as unknown as {
+  it('locks registry ingress to same-project sessions and the node', () => {
+    const m = buildRegistryIngressNetworkPolicyManifest('demo', ['10.89.0.7/32']) as unknown as {
       apiVersion: string
       kind: string
       metadata: { name: string; namespace: string; labels: Record<string, string> }
       spec: {
-        endpointSelector: { matchLabels: Record<string, string> }
+        podSelector: { matchLabels: Record<string, string> }
+        policyTypes: string[]
         ingress: Array<{
-          fromEndpoints?: Array<{
-            matchLabels: Record<string, string>
-            matchExpressions: Array<{ key: string; operator: string }>
+          from: Array<{
+            podSelector?: {
+              matchLabels: Record<string, string>
+              matchExpressions: Array<{ key: string; operator: string }>
+            }
+            ipBlock?: { cidr: string }
           }>
-          fromEntities?: string[]
-          toPorts: Array<{ ports: Array<{ port: string; protocol: string }> }>
+          ports: Array<{ protocol: string; port: number }>
         }>
       }
     }
-    expect(m.apiVersion).toBe('cilium.io/v2')
-    expect(m.kind).toBe('CiliumNetworkPolicy')
+    expect(m.apiVersion).toBe('networking.k8s.io/v1')
+    expect(m.kind).toBe('NetworkPolicy')
     expect(m.metadata.name).toBe(`${projectRegistryName('demo')}-ingress`)
     expect(m.metadata.namespace).toBe('test-ns')
-    expect(m.spec.endpointSelector.matchLabels)
+    expect(m.spec.podSelector.matchLabels)
       .toEqual({ app: REGISTRY_APP_LABEL, 'yaac.project': 'demo' })
+    expect(m.spec.policyTypes).toEqual(['Ingress'])
 
     const [sessions, node] = m.spec.ingress
     // Same-project sessions only — the receiving-side half of the
     // cross-project lock (the sessions NetworkPolicy is the egress half).
-    expect(sessions.fromEndpoints).toEqual([{
-      matchLabels: { 'yaac.project': 'demo' },
-      matchExpressions: [{ key: 'yaac.session-id', operator: 'Exists' }],
+    expect(sessions.from).toEqual([{
+      podSelector: {
+        matchLabels: { 'yaac.project': 'demo' },
+        matchExpressions: [{ key: 'yaac.session-id', operator: 'Exists' }],
+      },
     }])
-    expect(sessions.toPorts[0].ports)
-      .toEqual([{ port: String(PROJECT_REGISTRY_PORT), protocol: 'TCP' }])
-    // Kubelet probes and node containerd pulls arrive from the host netns.
-    expect(node.fromEntities).toEqual(['host', 'remote-node'])
-    expect(node.toPorts[0].ports)
-      .toEqual([{ port: String(PROJECT_REGISTRY_PORT), protocol: 'TCP' }])
+    expect(sessions.ports).toEqual([{ protocol: 'TCP', port: PROJECT_REGISTRY_PORT }])
+    // Kubelet probes and node containerd pulls arrive from the host netns,
+    // which plain NetworkPolicy can only name by address.
+    expect(node.from).toEqual([{ ipBlock: { cidr: '10.89.0.7/32' } }])
+    expect(node.ports).toEqual([{ protocol: 'TCP', port: PROJECT_REGISTRY_PORT }])
   })
 
   it('denies all registry-pod egress (nothing to fetch)', () => {
@@ -443,7 +454,7 @@ describe('ensureProjectRegistry', () => {
 
     const kinds = mockApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
     expect(kinds).toEqual([
-      'Deployment', 'Service', 'NetworkPolicy', 'CiliumNetworkPolicy', 'NetworkPolicy', 'Pod',
+      'Deployment', 'Service', 'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy', 'Pod',
     ])
     expect(mockRetry).toHaveBeenCalledWith(
       [
@@ -539,7 +550,7 @@ describe('removeProjectRegistry', () => {
     await removeProjectRegistry('demo')
     // `pod` in the kinds reaps stray writer/cleanup pods from crashed runs.
     expect(mockRetry).toHaveBeenCalledWith([
-      'delete', 'deployment,service,networkpolicy,ciliumnetworkpolicy,pod',
+      'delete', 'deployment,service,networkpolicy,pod',
       '-l', `app=${REGISTRY_APP_LABEL},yaac.project=demo,${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16`,
       '-n', 'test-ns', '--ignore-not-found',
     ])
@@ -563,7 +574,7 @@ describe('removeProjectRegistry', () => {
     await removeProjectRegistry('demo')
     // The by-selector delete still runs (reaps stray pods from crashes)...
     expect(mockRetry).toHaveBeenCalledWith([
-      'delete', 'deployment,service,networkpolicy,ciliumnetworkpolicy,pod',
+      'delete', 'deployment,service,networkpolicy,pod',
       '-l', `app=${REGISTRY_APP_LABEL},yaac.project=demo,${LABEL_REGISTRY_DATA_DIR_HASH}=ddh16`,
       '-n', 'test-ns', '--ignore-not-found',
     ])
@@ -609,7 +620,7 @@ describe('gcOrphanProjectRegistries', () => {
     // lifecycle (pre-delete + delete-after) also issues `delete pod` calls.
     const deletes = mockRetry.mock.calls
       .map((c) => c[0])
-      .filter((args) => args[0] === 'delete' && args[1] === 'deployment,service,networkpolicy,ciliumnetworkpolicy,pod')
+      .filter((args) => args[0] === 'delete' && args[1] === 'deployment,service,networkpolicy,pod')
     expect(deletes).toHaveLength(1)
     expect(deletes[0][3]).toContain('yaac.project=gone')
   })

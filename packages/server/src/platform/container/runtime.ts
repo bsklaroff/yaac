@@ -63,7 +63,7 @@ async function ensurePodmanLinux(): Promise<void> {
     '\nRootful podman is not reachable (yaac builds session images on the '
     + 'rootful podman engine on Linux — the kind node needs the cgroup2 root '
     + 'and BPF filesystem that rootless podman does not delegate, so the '
-    + 'cilium agent DaemonSet hangs under rootless). Install podman if needed, '
+    + 'calico-node DaemonSet hangs under rootless). Install podman if needed, '
     + 'then enable the socket and grant your user access:\n\n'
     + '  sudo apt install podman            # Debian/Ubuntu (or dnf on Fedora)\n'
     + '  sudo systemctl enable --now podman.socket\n'
@@ -86,7 +86,7 @@ export const ROOTFUL_PODMAN_SOCKET = '/run/podman/podman.sock'
  * macOS (where the rootful podman machine fills the role): on a Linux
  * host, kind's node runs as a container on this engine, and only a
  * rootful engine delegates the full cgroup2 root + BPF filesystem the
- * cilium agent DaemonSet needs to attach its programs — under rootless
+ * calico-node DaemonSet needs to program the node's netfilter — under rootless
  * podman that DaemonSet never goes Ready and `yaac cluster setup` hangs.
  * A nested (in-pod, `YAAC_NESTED`) yaac drives the session's rootful
  * in-sandbox engine remotely — the image's CONTAINER_HOST points every

@@ -26,8 +26,8 @@ filesystem itself is the remaining work.
 Every yaac-managed pod — session pods (plain *and* nested), the egress
 proxy, per-project registries, vcluster control planes and their synced
 pods, probe pods — runs under a `gvisor` RuntimeClass (runsc), no userns.
-Cluster infrastructure in kube-system (Cilium, CoreDNS, control plane) stays
-on runc — Cilium *is* the host datapath and cannot be sandboxed away from
+Cluster infrastructure in kube-system (Calico, CoreDNS, control plane) stays
+on runc — Calico *is* the host datapath and cannot be sandboxed away from
 the host kernel (the same scoping GKE Sandbox uses). "Every yaac pod" is the
 scope.
 

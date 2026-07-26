@@ -154,6 +154,7 @@ describe('reconcileVclusters', () => {
       vclusters: vi.fn().mockResolvedValue([vcInfo('yvc-deadbeef', 'deadbeef-1111')]),
       vclusterPods: vi.fn(() => Promise.resolve([])),
       vclusterServices: vi.fn(() => Promise.resolve([])),
+      vclusterConfigMaps: vi.fn(() => Promise.resolve([])),
     }
     await reconcileVclusters(NOW, snapshot)
     expect(mockList).not.toHaveBeenCalled()

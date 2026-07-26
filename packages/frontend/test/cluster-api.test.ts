@@ -35,14 +35,14 @@ describe('streamClusterSetup', () => {
       status: 200,
       body: streamBody([
         JSON.stringify({ type: 'progress', message: 'Creating cluster' }),
-        JSON.stringify({ type: 'progress', message: 'Installing Cilium' }),
+        JSON.stringify({ type: 'progress', message: 'Installing Calico' }),
         JSON.stringify({ type: 'result', ok: true }),
       ]),
     }) as unknown as typeof fetch
     const lines: string[] = []
     const ok = await streamClusterSetup((l) => lines.push(l))
     expect(ok).toBe(true)
-    expect(lines).toEqual(['Creating cluster', 'Installing Cilium'])
+    expect(lines).toEqual(['Creating cluster', 'Installing Calico'])
   })
 
   it('throws the server error message on an error event', async () => {

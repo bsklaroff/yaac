@@ -1,6 +1,6 @@
 /**
- * PROXY protocol v2 parsing for the proxy's transparent listeners. The
- * node-local Cilium Envoy prepends a PP2 header to every redirected
+ * PROXY protocol v2 parsing for the proxy's transparent listeners. netd's
+ * node-local Envoy prepends a PP2 header to every redirected
  * connection carrying the real source pod IP (AF_INET); the proxy parses it
  * here, then resolves that IP to a session (see pod-watch.ts) before the
  * existing SNI / Host handling. Zero deps and no side effects, so it is

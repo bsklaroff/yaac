@@ -12,7 +12,7 @@ Status and boundaries:
 
 - Brew packaging and `yaac cluster setup` (Phases 1–2 of the retired
   brew-packaging plan) shipped: the formula installs the toolchain, setup
-  provisions the machine/cluster/Cilium/fixups idempotently, `--repair`
+  provisions the machine/cluster/CNI/fixups idempotently, `--repair`
   re-applies the volatile node fixups, and the tap pins the kind+podman
   pair around the podman-6 skew (kind#4201).
 - The last *runtime* kind coupling is gone: the `podman exec <node>`
@@ -67,10 +67,15 @@ Probed by `src/lib/k8s/cluster-check.ts`:
   machine passes every cluster-setup step but fails the cluster-check
   probe exactly this way; chown is swallowed and idmapped mounts EINVAL,
   so there is no node-side remap short of a bindfs layer).
-- **Cilium, non-negotiable**: fail-closed NetworkPolicy is the
-  session-egress security model and the redirect is Cilium-native
-  (`CiliumNetworkPolicy` + `CiliumEnvoyConfig`,
-  `src/lib/k8s/bootstrap.ts`; installed with `envoyConfig.enabled=true`).
+- **Fail-closed NetworkPolicy + a veth-peer redirect, non-negotiable**:
+  fail-closed enforcement is the session-egress security model. Any target
+  must run a CNI whose policy engine fails CLOSED at pod birth and whose
+  datapath traverses host netfilter, so netd's nat redirect at the veth
+  peer sees pod egress. Calico (iptables) satisfies both; kindnet's engine
+  fails open, and eBPF CNIs that short-circuit the host stack (Cilium's
+  default host-routing) consume the frame before netfilter — see
+  docs/session-egress.md. Policy itself is plain `networking.k8s.io/v1`
+  NetworkPolicy only, which is what keeps managed-cloud ports cheap.
 - **Local registry** at `registryHost()` (default `localhost:5001`,
   `src/lib/k8s/registry.ts`) pullable by the node's containerd.
 - **Runtime binaries**: `kubectl` (context-agnostic), `podman` (build
@@ -101,7 +106,7 @@ Candidates:
 
 - **Native k3s (Linux): the end-state Linux backend.** Node == host
   literally: no extraMounts, no sysfs masking, no container PID caps,
-  host podman builds with no machine. Cilium-on-k3s
+  host podman builds with no machine. Calico-on-k3s
   (`--flannel-backend=none --disable-network-policy`) is well-trodden;
   recent k3s embeds containerd 2.x (userns pods). Not brew-manageable
   (root systemd service) — install stays a documented one-liner, with
@@ -110,7 +115,7 @@ Candidates:
   routes, both deleting the sysfs hack, the node-container PID cap, and
   the kind/podman skew:
   - **minikube krunkit driver** (minikube ≥ 1.37, homebrew-core; krunkit
-    ≥ 1.0): `--cni=false` + the existing Cilium install path,
+    ≥ 1.0): `--cni=false` + the existing Calico install path,
     `--mount-string` uses virtiofs on modern drivers. Friction: requires
     `vmnet-helper` installed with sudo.
   - **Lima template** (Lima ≥ 2.0, homebrew-core) with the experimental
@@ -133,7 +138,7 @@ Time-boxed, on real macOS/arm64 hardware, before any commitment.
      krunkit's `Simplified` semantics fail the probe;
    - `hostUsers: false` pod admission (containerd 2.x in the node
      image/distro);
-   - Cilium 1.19 + `envoyConfig.enabled` + the egress enforcement probe;
+   - Calico + netd + the egress enforcement probe;
    - registry reachability from node containerd;
    - sleep/clock behavior (krunkit `--timesync` must be passed by the VM
      manager the way podman 6 passes it).
@@ -143,7 +148,7 @@ Time-boxed, on real macOS/arm64 hardware, before any commitment.
    and `src/lib/container/proxy-client.ts:491` spawn `podman build`
    directly, and the push paths in `src/lib/k8s/registry.ts` assume host
    podman. Passing would remove host podman entirely on both platforms.
-3. **Linux end-state**: validate native k3s + Cilium against
+3. **Linux end-state**: validate native k3s + Calico against
    `yaac cluster check`; `yaac cluster setup` grows a k3s path.
 
 ## Main registry in-cluster (deferred from the old Phase 3)
@@ -182,7 +187,7 @@ supported-but-legacy.
 - Multi-node clusters (hostPath model assumes node == host; unchanged v1
   limit).
 - Windows/WSL2.
-- Replacing Cilium or the egress model — every backend choice bends
+- Replacing the CNI or the egress model — every backend choice bends
   around it, not the reverse.
 - Distro packages (apt/rpm) for the Linux k3s path — README one-liners
   first.

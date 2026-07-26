@@ -4,7 +4,7 @@
  * the proxy; the proxy's UDP handler (proxy.ts) is split-horizon:
  *
  *   - EXTERNAL names get a fixed sinkhole IP. That answer is decorative —
- *     Cilium redirects egress by port (443/80) and the proxy routes by TLS SNI
+ *     netd redirects egress by port (443/80) and the proxy routes by TLS SNI
  *     / HTTP Host, never by the dialed address — so a constant sinkhole is all
  *     a client needs, and resolving nothing real keeps the DNS-tunnelling
  *     channel closed.

@@ -1,6 +1,6 @@
 /**
  * Pinned llama.cpp runtime for local model inference. Fetches the
- * platform's CPU release archive from GitHub once (the ensureCiliumCli
+ * platform's CPU release archive from GitHub once (the ensurePinnedBinary
  * download-and-pin convention: ~/.cache/yaac, pinned tag, curl | tar),
  * fetches GGUF models into `<dataDir>/models`, and runs one-shot greedy
  * completions via the `llama-completion` binary. Each completion is a

@@ -22,7 +22,7 @@ export const LABEL_TOOL = 'yaac.tool'
 export const LABEL_VCLUSTER_MANAGED_BY = 'vcluster.loft.sh/managed-by'
 /**
  * Host-Service port the SESSION pod uses to reach the vcluster API.
- * Deliberately NOT 443: Cilium redirects session 443/80 egress to the proxy,
+ * Deliberately NOT 443: netd redirects session 443/80 egress to the proxy,
  * so the API the session dials lives on a port that rides the per-session
  * NetworkPolicy (buildVclusterSessionNetworkPolicyManifest) straight to the
  * control plane instead. values.yaml exposes it as the `yaac-api` Service

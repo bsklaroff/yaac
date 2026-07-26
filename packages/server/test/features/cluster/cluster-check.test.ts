@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
+vi.mock('#features/cluster/cluster-cidrs', () => ({
+  nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
+  apiserverIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
+  resetClusterCidrCache: vi.fn(),
+}))
+
 vi.mock('#platform/k8s/kubectl', () => ({
   execFileAsync: vi.fn(),
   k8sNamespace: vi.fn(() => 'test-ns'),
@@ -87,7 +93,7 @@ async function happyResponses(
     }
   }
   if (file === 'podman' && args[0] === 'exec') {
-    return { stdout: 'tasksmax=ok\nminfree=262144\nsvm=0\nhk=ok\n', stderr: '' }
+    return { stdout: 'tasksmax=ok\nminfree=262144\nhk=ok\n', stderr: '' }
   }
   if (file === 'podman' && args[0] === 'inspect') {
     return { stdout: '32768\n', stderr: '' }
@@ -101,9 +107,9 @@ async function happyResponses(
   if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-egress') {
     return { stdout: 'NP_BLOCKED\n', stderr: '' }
   }
-  if (file === 'kubectl' && args[0] === 'get' && args[1] === 'crd'
-    && args[2] === 'ciliumenvoyconfigs.cilium.io') {
-    return { stdout: 'ciliumenvoyconfigs.cilium.io', stderr: '' }
+  if (file === 'kubectl' && args[0] === 'get' && args[1] === 'daemonset') {
+    // Both datapath DaemonSets report fully rolled out.
+    return { stdout: '1/1', stderr: '' }
   }
   if (file === 'kubectl' && args[0] === 'logs' && args[1] === 'yaac-cluster-check-nested') {
     return { stdout: 'NESTED_MOUNT_OK\n', stderr: '' }
@@ -192,13 +198,13 @@ describe('runClusterCheck', () => {
       ['gvisor', 'pass'],
       ['probe', 'pass'],
       ['egress', 'pass'],
-      ['envoy-config', 'pass'],
+      ['datapath', 'pass'],
       ['nested-mount', 'pass'],
       ['vap', 'pass'],
       ['runtime-stamp', 'pass'],
     ])
     expect(ok).toBe(true)
-    expect(byName(results, 'envoy-config')?.detail).toContain('CiliumEnvoyConfig CRDs present')
+    expect(byName(results, 'datapath')?.detail).toContain('calico-node and yaac-netd ready')
 
     // Probe ran through the deps: image pushed, pod applied, pod deleted.
     expect(deps.pushImage).toHaveBeenCalledWith('yaac-cluster-probe:busybox-1.36')
@@ -256,13 +262,60 @@ describe('runClusterCheck', () => {
       // probeable from in here), so it self-skips along with the rest.
       // node-fixups likewise: there is no podman-hosted node in here, and
       // the gvisor runtime is the host cluster's concern.
-      for (const name of ['node-fixups', 'gvisor', 'egress', 'envoy-config', 'nested-mount', 'vap', 'runtime-stamp']) {
+      for (const name of ['node-fixups', 'gvisor', 'egress', 'nested-mount', 'vap', 'runtime-stamp']) {
         expect(byName(results, name)?.status).toBe('skip')
       }
+      // datapath IS checked nested, in this install's own terms: its
+      // claim-mode netd must be publishing, or the host leaves its sessions
+      // on the outer proxy's allowlist alone.
+      expect(byName(results, 'datapath')?.status).toBe('pass')
+      expect(byName(results, 'datapath')?.detail).toContain('claim mode')
       // The relay IS probed nested (the inner proxy's pod IP): with no
       // inner proxy pod in the fake listing it degrades to a warn, never
       // a fail.
       expect(byName(results, 'relay')?.status).toBe('warn')
+    } finally {
+      delete process.env.YAAC_NESTED
+    }
+  })
+
+  it('warns rather than fails when the nested claim-mode netd is not deployed yet', async () => {
+    // A preflight in a fresh nested install finds nothing: netd lands with
+    // the inner proxy on first session create.
+    process.env.YAAC_NESTED = '1'
+    try {
+      const run = happyRun()
+      run.mockImplementation(async (file: string, args: string[]) => {
+        if (file === 'kubectl' && args[0] === 'get' && args[1] === 'daemonset'
+          && args[2] === 'yaac-netd') {
+          throw new Error('daemonsets.apps "yaac-netd" not found')
+        }
+        return happyResponses(file, args)
+      })
+      const { ok, results } = await runClusterCheck(makeDeps({ run }))
+      expect(ok).toBe(true)
+      expect(byName(results, 'datapath')?.status).toBe('warn')
+    } finally {
+      delete process.env.YAAC_NESTED
+    }
+  })
+
+  it('fails the nested datapath gate when a deployed claim-mode netd is not ready', async () => {
+    process.env.YAAC_NESTED = '1'
+    try {
+      const run = happyRun()
+      run.mockImplementation(async (file: string, args: string[]) => {
+        if (file === 'kubectl' && args[0] === 'get' && args[1] === 'daemonset'
+          && args[2] === 'yaac-netd') {
+          return { stdout: '0/1', stderr: '' }
+        }
+        return happyResponses(file, args)
+      })
+      const { ok, results } = await runClusterCheck(makeDeps({ run }))
+      expect(ok).toBe(false)
+      const datapath = byName(results, 'datapath')
+      expect(datapath?.status).toBe('fail')
+      expect(datapath?.detail).toContain('OUTER proxy')
     } finally {
       delete process.env.YAAC_NESTED
     }
@@ -332,7 +385,7 @@ describe('runClusterCheck', () => {
     expect(byName(results, 'node-fixups')).toMatchObject({ status: 'skip' })
     expect(byName(results, 'probe')).toMatchObject({ status: 'skip' })
     expect(byName(results, 'egress')).toMatchObject({ status: 'skip' })
-    expect(byName(results, 'envoy-config')).toMatchObject({ status: 'skip' })
+    expect(byName(results, 'datapath')).toMatchObject({ status: 'skip' })
     expect(byName(results, 'nested-mount')).toMatchObject({ status: 'skip' })
     expect(deps.pushImage).not.toHaveBeenCalled()
     expect(deps.apply).not.toHaveBeenCalled()
@@ -345,7 +398,7 @@ describe('runClusterCheck', () => {
         // Node restarted: the TasksMax conf is gone and the sysctl is back
         // at its tiny default; a pre-fixup node also lacks the kubelet
         // housekeeping flag.
-        return { stdout: 'tasksmax=missing\nminfree=67584\nsvm=1\nhk=missing\n', stderr: '' }
+        return { stdout: 'tasksmax=missing\nminfree=67584\nhk=missing\n', stderr: '' }
       }
       if (file === 'podman' && args[0] === 'inspect') {
         return { stdout: '2048\n', stderr: '' } // podman's default pids ceiling
@@ -357,7 +410,6 @@ describe('runClusterCheck', () => {
     expect(fixups).toMatchObject({ status: 'warn' })
     expect(fixups?.detail).toContain('DefaultTasksMax')
     expect(fixups?.detail).toContain('vm.min_free_kbytes')
-    expect(fixups?.detail).toContain('src_valid_mark')
     expect(fixups?.detail).toContain('kubelet housekeeping-interval')
     expect(fixups?.detail).toContain('pids-limit')
     expect(fixups?.fix).toContain('yaac cluster setup --repair')
@@ -486,7 +538,7 @@ describe('runClusterCheck', () => {
     const egress = byName(results, 'egress')
     expect(egress).toMatchObject({ status: 'fail' })
     expect(egress?.detail).toContain('not enforcing NetworkPolicy')
-    expect(egress?.fix).toContain('kindnet')
+    expect(egress?.fix).toContain('Calico')
   })
 
   it('fails the egress check when a session pod can dial a transparent port (forgery lock open)', async () => {
@@ -508,28 +560,47 @@ describe('runClusterCheck', () => {
     expect(egress?.detail).toContain('forgery lock is open')
   })
 
-  it('passes envoy-config when the CiliumEnvoyConfig CRD is present', async () => {
+  it('passes datapath when calico-node and netd are both rolled out', async () => {
     const { results } = await runClusterCheck(makeDeps())
-    expect(byName(results, 'envoy-config')).toMatchObject({
+    expect(byName(results, 'datapath')).toMatchObject({
       status: 'pass',
-      detail: expect.stringContaining('CRDs present') as string,
+      detail: expect.stringContaining('policy enforced, egress redirected') as string,
     })
   })
 
-  it('fails envoy-config when the CiliumEnvoyConfig CRD is missing', async () => {
+  it('fails datapath when calico-node is not ready (policy unenforced)', async () => {
     const run = happyRun()
     run.mockImplementation(async (file: string, args: string[]) => {
-      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'crd'
-        && args[2] === 'ciliumenvoyconfigs.cilium.io') {
-        return { stdout: '', stderr: '' } // CRD absent
+      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'daemonset'
+        && args[2] === 'calico-node') {
+        return { stdout: '0/1', stderr: '' }
       }
       return happyResponses(file, args)
     })
     const { ok, results } = await runClusterCheck(makeDeps({ run }))
     expect(ok).toBe(false)
-    const envoy = byName(results, 'envoy-config')
-    expect(envoy).toMatchObject({ status: 'fail' })
-    expect(envoy?.fix).toContain('envoyConfig.enabled')
+    const datapath = byName(results, 'datapath')
+    expect(datapath).toMatchObject({ status: 'fail' })
+    expect(datapath?.detail).toContain('NetworkPolicy is not being enforced')
+  })
+
+  it('fails datapath when netd is absent (session egress has no redirect)', async () => {
+    // Fail-CLOSED, unlike a missing Calico: sessions lose egress rather
+    // than gaining unrestricted egress. The two are reported distinctly
+    // because the operator response differs.
+    const run = happyRun()
+    run.mockImplementation(async (file: string, args: string[]) => {
+      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'daemonset'
+        && args[2] === 'yaac-netd') {
+        throw new Error('daemonsets.apps "yaac-netd" not found')
+      }
+      return happyResponses(file, args)
+    })
+    const { ok, results } = await runClusterCheck(makeDeps({ run }))
+    expect(ok).toBe(false)
+    const datapath = byName(results, 'datapath')
+    expect(datapath).toMatchObject({ status: 'fail' })
+    expect(datapath?.detail).toContain('not deployed')
   })
 
   it('runs the nested-mount probe under the exact nested session securityContext', async () => {

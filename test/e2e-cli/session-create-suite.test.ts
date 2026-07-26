@@ -761,7 +761,7 @@ describe('yaac session create suite (real CLI + real server + mocked remotes)', 
       expect(relayForwards).toHaveLength(1)
     })
 
-    it.skipIf(IS_NESTED_YAAC)('locks streamd ingress to the proxy (session ingress lock CNP)', async () => {
+    it.skipIf(IS_NESTED_YAAC)('locks streamd ingress to the proxy (session ingress lock policy)', async () => {
       const ns = k8sNamespace()
       const { stdout: ipOut } = await kubectlWithRetry([
         'get', 'pods', '-n', ns, '-l', `yaac.session-id=${sessionId}`,
@@ -772,7 +772,7 @@ describe('yaac session create suite (real CLI + real server + mocked remotes)', 
 
       // Positive control: the proxy CAN dial streamd — proves the daemon is
       // up and the lock's allow rule admits proxy-identity traffic (so the
-      // negative below measures the CNP, not a dead daemon).
+      // negative below measures the policy, not a dead daemon).
       const dialScript =
         `const s=require('net').connect(10300,'${podIp}');`
         + "s.on('connect',()=>{console.log('CONNECTED');process.exit(0)});"

@@ -35,12 +35,12 @@ import {
 const execFileAsync = promisify(execFile)
 
 /**
- * End-to-end coverage of the Cilium-level egress redirect. Session pods are
+ * End-to-end coverage of the node-level egress redirect. Session pods are
  * BARE — no sidecars — carrying only the `yaac.session-id` label and a
- * `dnsConfig` pointed at the proxy. Their outbound 443/80 is redirected to
- * the proxy by the cluster-level CiliumEnvoyConfig + CiliumNetworkPolicy
- * (applied by ensureRunning); the proxy identifies each connection by the
- * Cilium-stamped source pod IP it watches, then routes by TLS SNI / Host.
+ * `dnsConfig` pointed at the proxy. Their outbound 443/80 is DNAT'd at
+ * their veth by netd to the node-local Envoy, which forwards to the proxy
+ * behind a PROXY-protocol preamble; the proxy identifies each connection
+ * by the stamped source pod IP it watches, then routes by TLS SNI / Host.
  * Every target IP is TEST-NET (192.0.2.0/24) via `curl --resolve`, so
  * reaching anything at all proves the redirect.
  */
@@ -213,7 +213,7 @@ async function startTlsEchoPod(name: string): Promise<{ host: string }> {
 
 /**
  * A bare session pod: the `yaac.session-id` label (so the proxy's pod-watch
- * resolves its source IP to a session and the redirect CNP selects it), the
+ * resolves its source IP to a session and netd selects it for redirect), the
  * proxy-CA mount for `curl --cacert`, and `dnsConfig` pointed at the proxy
  * VIP DNS stub. No sidecars, no proxy env vars — egress is redirected at the
  * cluster level.
@@ -272,7 +272,7 @@ async function curlUntilSuccess(
   }
 }
 
-describe('cilium-level transparent egress (source-IP identity)', () => {
+describe('node-level transparent egress (source-IP identity)', () => {
   const client = new ProxyClient(TEST_PROXY_CONFIG)
   const suffix = crypto.randomBytes(4).toString('hex')
 
@@ -329,10 +329,10 @@ describe('cilium-level transparent egress (source-IP identity)', () => {
   })
 
   // Positive egress and per-inner-session source-IP attribution require the
-  // inner Cilium redirect, which is enforced host-side in a nested session.
+  // inner redirect, which is programmed host-side in a nested session.
   // The fail-closed and forgery-lock legs still hold and run there.
   it.skipIf(IS_NESTED_YAAC)('reaches an allowed host through SNI MITM with the mounted CA', async () => {
-    // --resolve pins the never-routable IP: only the Cilium redirect can
+    // --resolve pins the never-routable IP: only the netd redirect can
     // deliver it. --cacert proves the proxy MITM'd with a leaf the mounted
     // yaac CA signs for api.anthropic.com. Identity is podA's source IP.
     const result = await curlUntilSuccess(
@@ -405,9 +405,9 @@ describe('cilium-level transparent egress (source-IP identity)', () => {
     expect(echoed.headers.host).toBe(echoHost)
   }, 60_000)
 
-  it.skipIf(IS_NESTED_YAAC)('tunnels an explicit CONNECT through the Cilium-redirected SSH sentinel', async () => {
+  it.skipIf(IS_NESTED_YAAC)('tunnels an explicit CONNECT through the redirected SSH sentinel', async () => {
     // `curl --proxy http://<sentinel>:<tunnel-port>` sends the same CONNECT
-    // git's ncat ProxyCommand does. Cilium redirects the sentinel through
+    // git's ncat ProxyCommand does. netd redirects the sentinel through
     // Envoy to the proxy tunnel listener, which reads CONNECT host:port and
     // tunnels to the (allowlisted) TLS echo. The upstream's own self-signed
     // cert reaching curl proves no MITM happened.
@@ -450,9 +450,10 @@ describe('cilium-level transparent egress (source-IP identity)', () => {
   }, 60_000)
 
   it('refuses a direct dial to a transparent listener (the forgery lock)', async () => {
-    // A session pod dialing the transparent HTTPS port directly would let it
-    // inject a forged PROXY-protocol source. The proxy-ingress CNP restricts
-    // those ports to the node Envoy, so the connect must fail.
+    // A session pod dialing the transparent HTTPS port directly would let
+    // it inject a forged PROXY-protocol source. The proxy-ingress
+    // NetworkPolicy admits those ports from the node CIDRs only — pods
+    // cannot reach them at all — so the connect must fail.
     const r = await curlInPod(
       podA, `-k --max-time 10 https://${proxyHost}:${TRANSPARENT_HTTPS_PORT}/`,
     )

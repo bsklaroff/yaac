@@ -7,7 +7,7 @@ import { env } from '@yaac/shared/env'
  * `yaac cluster delete` — tear down the local kind cluster and the local
  * registry container `yaac cluster setup` created, leaving on-disk sessions
  * and worktrees untouched. Deleting the cluster removes the node and
- * everything living inside it (Cilium, every vcluster, the per-project
+ * everything living inside it (Calico, netd, every vcluster, the per-project
  * registries, all node-local storage); the standalone registry container
  * lives beside the cluster on podman, so it is removed explicitly. Nothing
  * under the yaac data dir (projects, sessions, worktrees) is touched — a

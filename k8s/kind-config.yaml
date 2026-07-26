@@ -17,11 +17,11 @@ networking:
   # No kindnet: its NetworkPolicy engine (kube-network-policies) fails
   # OPEN — a new pod's first packets flow before its IP reaches the
   # engine's nftables set, so sessions would start with a brief window of
-  # unrestricted egress. `yaac cluster setup` installs Cilium instead,
-  # which fails CLOSED (a pod cannot start until its eBPF policy programs
-  # are attached). Cilium runs with ipam.mode=kubernetes, allocating pod
-  # IPs from the node's PodCIDR (kind's default podSubnet — nothing in
-  # yaac depends on its value).
+  # unrestricted egress. `yaac cluster setup` installs Calico instead,
+  # which fails CLOSED: until Felix has programmed a workload's endpoint,
+  # traffic on its veth hits the dispatch chain's "unknown interface"
+  # DROP. Calico allocates pod IPs from the cluster CIDR (kind's default
+  # podSubnet — nothing in yaac depends on its value).
   disableDefaultCNI: true
 containerdConfigPatches:
 - |-

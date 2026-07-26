@@ -5,11 +5,17 @@ import path from 'node:path'
 import { execFileAsync, k8sNamespace, kubectlApply } from '#platform/k8s/kubectl'
 import { isDeferredClusterBootPending } from '#platform/k8s/deferred-boot'
 import {
-  buildProxyIngressCnpManifest,
-  buildSessionEgressRedirectCnpManifest,
-} from '#features/cluster/proxy-manifests'
+  buildProxyIngressNpManifest,
+  buildSessionEgressNpManifest,
+} from '#features/cluster/policy-manifests'
+import { nodeIpBlocks } from '#features/cluster/cluster-cidrs'
+import { NETD_APP_NAME } from '#features/cluster/proxy-constants'
 import { ensureNamespace } from '#features/cluster/proxy-apply'
-import { PROXY_APP_NAME, RELAY_PORT, TRANSPARENT_HTTPS_PORT } from '#features/cluster/proxy-constants'
+import {
+  PROXY_APP_NAME,
+  RELAY_PORT,
+  TRANSPARENT_HTTPS_PORT,
+} from '#features/cluster/proxy-constants'
 import {
   RUNTIME_CLASS_GVISOR,
   RUNTIME_CLASS_GVISOR_NESTED,
@@ -44,7 +50,7 @@ const KIND_SETUP_FIX = [
   'Create a kind cluster wired for yaac by running:',
   '  yaac cluster setup',
   'It provisions the podman machine (macOS), the local registry, the kind',
-  'cluster (registry wiring + home extraMount), Cilium, and the node fixups.',
+  'cluster (registry wiring + home extraMount), Calico, and the node fixups.',
 ].join('\n')
 
 /**
@@ -55,7 +61,6 @@ const KIND_SETUP_FIX = [
 export const NODE_TASKSMAX_CONF = '/etc/systemd/system.conf.d/10-yaac-tasksmax.conf'
 export const NODE_MIN_FREE_KBYTES = 262144
 export const NODE_PIDS_LIMIT = 32768
-export const NODE_SRC_VALID_MARK_PATH = '/proc/sys/net/ipv4/conf/all/src_valid_mark'
 /**
  * kubelet cAdvisor housekeeping interval (default 10s). Its per-container
  * process stats readlink EVERY open fd of EVERY process in each container
@@ -119,10 +124,12 @@ const defaultDeps: ClusterCheckDeps = {
  *   8. egress enforcement: a session-labeled pod (gvisor, like real
  *      sessions) cannot reach the apiserver (CNI enforces policy) and
  *      cannot dial a proxy transparent port directly (the forgery lock —
- *      its egress default-deny admits no such route, so only the Cilium
- *      redirect can reach those ports)
- *   9. envoy-config: the CiliumEnvoyConfig CRDs exist (the cluster-level
- *      egress redirect needs `envoyConfig.enabled` — `yaac cluster setup`)
+ *      those ports are admitted from the node CIDRs only, so nothing but
+ *      netd's Envoy can reach them)
+ *   9. datapath: calico-node is Ready (NetworkPolicy is enforced at all)
+ *      and yaac-netd is Ready (session egress has a redirect). Nested, this
+ *      becomes "the claim-mode netd is publishing" — the inner install's own
+ *      half of the same guarantee, warn-level until it is deployed
  *  10. nested-mount (warn-only): under the nested session securityContext
  *      (gvisor-nested + the engine's in-sandbox caps) in-sandbox root can
  *      mount a tmpfs — the core sentry prerequisite for the rootful in-pod
@@ -247,7 +254,7 @@ export async function runClusterCheck(
   // 6b–7. node fixups + gvisor + end-to-end probe (skipped when
   // prerequisites already failed)
   const PROBE_GATES = [
-    'node-fixups', 'gvisor', 'probe', 'egress', 'envoy-config',
+    'node-fixups', 'gvisor', 'probe', 'egress', 'datapath',
     'nested-mount', 'vap', 'runtime-stamp',
   ] as const
   const skipFrom = (from: (typeof PROBE_GATES)[number], detail: string): void => {
@@ -269,26 +276,26 @@ export async function runClusterCheck(
     skipFrom('probe', 'skipped — fix the failures above first')
     return { ok: false, results }
   }
-  add(await runEndToEndProbe(deps))
-
-  // 8. egress-lockdown probe (same prerequisites as the e2e probe, plus
-  // the probe image it pushed)
-  if (results.some((r) => r.status === 'fail')) {
-    skipFrom('egress', 'skipped — fix the failures above first')
-    return { ok: false, results }
-  }
-  // Inner yaac (a vcluster session, YAAC_NESTED=1): the remaining gates
+  // Inner yaac (a vcluster session, YAAC_NESTED=1): most remaining gates
   // probe machinery that deliberately does not exist inside a vcluster, so
   // they self-skip. The egress gate is among them: an inner session's egress
-  // default-deny is enforced HOST-side (the server projects the redirect for
-  // the vcluster's synced pods — see docs/nested-containers.md), and
-  // the vcluster has no Cilium datapath or CRDs, so it cannot be probed from
-  // in here (applying the session-egress CNP errors "no matches for kind").
-  // The OUTER cluster-check verifies egress. envoy-config / vap likewise have
-  // no in-vcluster equivalent; vcluster-in-vcluster is refused.
+  // default-deny is enforced HOST-side (the host programs the redirect this
+  // install claims — see docs/nested-containers.md), so it cannot be probed
+  // in here; the OUTER cluster-check verifies it. vap has no in-vcluster
+  // equivalent; vcluster-in-vcluster is refused. datapath is the exception —
+  // this install owns half of it (its claim) and that half is checkable.
   if (env.nested) {
+    add(await runEndToEndProbe(deps))
+    if (results.some((r) => r.status === 'fail')) {
+      skipFrom('egress', 'skipped — fix the failures above first')
+      return { ok: false, results }
+    }
     add({ name: 'egress', status: 'skip', detail: 'skipped — nested yaac (inner-session egress is enforced host-side)' })
-    for (const name of ['envoy-config', 'nested-mount', 'vap', 'runtime-stamp']) {
+    // datapath IS checkable nested, in the inner install's own terms: its
+    // claim-mode netd must be publishing, or the host has nothing to program
+    // and inner sessions fall back to the outer proxy's allowlist alone.
+    add(await runClaimDatapathCheck(deps))
+    for (const name of ['nested-mount', 'vap', 'runtime-stamp']) {
       add({ name, status: 'skip', detail: 'skipped — nested yaac (not applicable inside a vcluster)' })
     }
     // The stream relay IS checkable nested: the inner proxy's pod IP must
@@ -298,19 +305,33 @@ export async function runClusterCheck(
     return { ok: !results.some((r) => r.status === 'fail'), results }
   }
 
-  add(await runNetworkPolicyProbe(deps))
+  // 8. The three pod-based probes, CONCURRENTLY. Each starts its own
+  // gVisor sandbox, and serially they were most of the check's wall time
+  // (~19s of a 71s `cluster setup`). They share nothing: distinct pod
+  // names, distinct nonce files, and the policies the egress probe
+  // applies are the ones the server applies anyway. The gvisor gate above
+  // still runs first, so none of them can sit Pending to its timeout
+  // waiting for a RuntimeClass that will never appear — which is the one
+  // ordering that was ever load-bearing.
+  const [probeResult, egressResult, nestedMountResult] = await Promise.all([
+    runEndToEndProbe(deps),
+    runNetworkPolicyProbe(deps),
+    runNestedMountProbe(deps),
+  ])
+  add(probeResult)
+  add(egressResult)
 
-  // 9. envoy-config: the CiliumEnvoyConfig CRDs must exist, or the
-  // cluster-level egress redirect (the CEC) cannot be applied at all.
-  // (No top-level relay gate: the server reaches the relay through a
-  // kubectl port-forward, the same apiserver access the checks above
-  // already prove — there is no cluster-shape wiring to verify.)
-  add(await runEnvoyConfigCheck(deps))
+  // 9. datapath: Calico enforcing + netd up. (No top-level relay gate:
+  // the server reaches the relay through a kubectl port-forward, the same
+  // apiserver access the checks above already prove — there is no
+  // cluster-shape wiring to verify.)
+  add(await runDatapathCheck(deps))
 
   // 10. nested userns-mount probe (warn-only: only nestedContainers
   // sessions need it — the tripwire for containerd versions where the
-  // namespaced SYS_ADMIN grant does not unlock the mount family)
-  add(await runNestedMountProbe(deps))
+  // namespaced SYS_ADMIN grant does not unlock the mount family). Ran
+  // above, alongside the other pod probes.
+  add(nestedMountResult)
 
   // 10b. ValidatingAdmissionPolicy availability (warn-only: only
   // virtualCluster sessions need it — the synced-pod guard refuses
@@ -358,7 +379,6 @@ async function runNodeFixupsCheck(deps: ClusterCheckDeps): Promise<CheckResult> 
         const res = await deps.run('podman', ['exec', node, 'sh', '-c',
           `test -f ${NODE_TASKSMAX_CONF} && echo tasksmax=ok || echo tasksmax=missing; `
           + 'echo minfree=$(cat /proc/sys/vm/min_free_kbytes); '
-          + `echo svm=$(cat ${NODE_SRC_VALID_MARK_PATH}); `
           + `grep -q -- '--housekeeping-interval=${NODE_KUBELET_HOUSEKEEPING_INTERVAL}' `
           + `${NODE_KUBELET_FLAGS_ENV} && echo hk=ok || echo hk=missing`,
         ])
@@ -372,9 +392,6 @@ async function runNodeFixupsCheck(deps: ClusterCheckDeps): Promise<CheckResult> 
       if (report.includes('tasksmax=missing')) missing.add('DefaultTasksMax (subagent fan-out)')
       const minfree = Number(/minfree=(\d+)/.exec(report)?.[1] ?? '0')
       if (minfree < NODE_MIN_FREE_KBYTES) missing.add('vm.min_free_kbytes (virtiofs I/O)')
-      // src_valid_mark=1 (inherited from a VPN'd host) martian-drops every
-      // TPROXY'd egress SYN — see applyNodeFixups in cluster-setup.ts.
-      if (/svm=1/.test(report)) missing.add('src_valid_mark=0 (session egress TPROXY)')
       // Default-interval cAdvisor housekeeping burns whole kubelet cores
       // against gVisor sandboxes — see NODE_KUBELET_HOUSEKEEPING_INTERVAL.
       if (report.includes('hk=missing')) {
@@ -397,7 +414,7 @@ async function runNodeFixupsCheck(deps: ClusterCheckDeps): Promise<CheckResult> 
     }
     return {
       name: 'node-fixups', status: 'pass',
-      detail: 'TasksMax, vm sysctls, src_valid_mark, kubelet housekeeping, and pids-limit in place',
+      detail: 'TasksMax, vm sysctls, kubelet housekeeping, and pids-limit in place',
     }
   } catch (err) {
     return {
@@ -702,16 +719,15 @@ const NETPOL_PROBE_POD_NAME = 'yaac-cluster-check-egress'
 async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResult> {
   const ns = k8sNamespace()
   try {
-    // The cluster-level egress lockdown: the redirect CNP default-denies
-    // session egress (admitting only 443/80→Envoy, the SSH sentinel, DNS,
-    // and the in-cluster registry/vcluster ports). That default-deny is ALSO
-    // the forgery lock — it leaves no egress rule to the proxy's transparent
-    // ports, so a session pod cannot dial one directly to inject a forged
-    // PROXY-protocol source. (The proxy-ingress CNP must open those ports to
-    // the session-pod identity, since Cilium preserves it through the Envoy
-    // redirect — see buildProxyIngressCnpManifest.)
-    await deps.apply(buildSessionEgressRedirectCnpManifest())
-    await deps.apply(buildProxyIngressCnpManifest())
+    // The cluster-level egress lockdown: the session NetworkPolicy admits
+    // world-ward egress ONLY to the node's netd listener range, so a pod
+    // cannot address the internet directly and cannot dial the proxy's
+    // transparent ports at all — those are admitted from the node CIDRs
+    // only (netd's Envoy is the sole legitimate caller, and the sole
+    // originator of PROXY-protocol preambles).
+    const nodeCidrs = await nodeIpBlocks()
+    await deps.apply(buildSessionEgressNpManifest(nodeCidrs))
+    await deps.apply(buildProxyIngressNpManifest(nodeCidrs))
     const { stdout: rawIp } = await deps.run('kubectl', [
       'get', 'svc', 'kubernetes', '-n', 'default', '-o', 'jsonpath={.spec.clusterIP}',
     ])
@@ -725,8 +741,8 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
 
     // When the proxy is deployed, also assert the forgery lock from the
     // same session-labeled pod: it must NOT be able to dial a transparent
-    // port directly. The block is on the pod's own egress (the redirect CNP
-    // default-deny above), not the proxy ingress. A direct connect that
+    // port directly. The block is on the pod's own egress (the session
+    // policy's default-deny above), not the proxy ingress. A direct connect that
     // SUCCEEDS would let a pod inject a forged PROXY-protocol source and
     // impersonate another session. Absent proxy → skip this half (it deploys
     // lazily on the first session create).
@@ -787,19 +803,19 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
         name: 'egress', status: 'fail',
         detail: 'a session-labeled pod reached the apiserver directly — the CNI is not enforcing NetworkPolicy',
         fix: 'Session egress lockdown fails open without NetworkPolicy '
-          + 'enforcement, leaving the proxy allowlist advisory. Use a recent '
-          + 'kind release (its kindnet CNI enforces NetworkPolicy), or '
-          + 'install an enforcing CNI / the kube-network-policies agent.',
+          + 'enforcement, leaving the proxy allowlist advisory. Re-run '
+          + '`yaac cluster setup`, which installs Calico as the CNI and '
+          + 'policy engine.',
       }
     }
     if (logs.includes('NP_PROXY_OPEN')) {
       return {
         name: 'egress', status: 'fail',
         detail: 'a session-labeled pod dialed a proxy transparent port directly — the forgery lock is open, so a pod could impersonate another session',
-        fix: 'The session-egress CiliumNetworkPolicy must default-deny egress '
-          + 'to the proxy transparent ports (it admits only 443/80→Envoy, the '
-          + 'SSH sentinel, and DNS). Restart the '
-          + 'yaac server so ensureProxyResources re-applies it.',
+        fix: 'The proxy-ingress NetworkPolicy must admit the transparent '
+          + 'ports from the node CIDRs only, and the session-egress policy '
+          + 'must admit nothing but the netd listener range. Restart the '
+          + 'yaac server so ensureProxyResources re-applies both.',
       }
     }
     if (logs.includes('NP_BLOCKED')) {
@@ -826,37 +842,105 @@ async function runNetworkPolicyProbe(deps: ClusterCheckDeps): Promise<CheckResul
 }
 
 /**
- * The CiliumEnvoyConfig CRDs must exist: the cluster-level egress redirect is
- * a CEC (buildEgressRedirectCecManifest), and without `envoyConfig.enabled`
- * on the Cilium install the CRD is absent, so the server's
- * ensureProxyResources apply would fail and session egress would have no
- * redirect at all. The behavioral gates (redirect / allowlist / forgery lock
- * / DNS stub) are exercised end to end by the transparent-egress e2e suite
- * against a deployed proxy; here we check only the prerequisite.
+ * The nested datapath gate: this install's claim-mode netd must be
+ * publishing what it wants redirected (features/cluster/redirect-claims.ts).
+ *
+ * There is no Calico half and no chain to inspect in here — a vcluster has
+ * no nodes. What can go wrong is the claim: without one the host leaves this
+ * install's session pods on the OUTER proxy, so they still reach the internet
+ * but under the outer allowlist alone rather than inner ∩ outer. That is a
+ * containment weakening a nested user cannot see from inside a session, so it
+ * is reported rather than skipped.
+ *
+ * Absent is a WARN, not a fail: netd deploys with the proxy on first session
+ * create, so a preflight in a fresh nested install legitimately finds
+ * nothing. Deployed-but-unready is a FAIL — that is the silent case, where
+ * the install believes it governs its sessions and does not.
  */
-async function runEnvoyConfigCheck(deps: ClusterCheckDeps): Promise<CheckResult> {
+async function runClaimDatapathCheck(deps: ClusterCheckDeps): Promise<CheckResult> {
+  const { stdout: netd } = await deps.run('kubectl', [
+    'get', 'daemonset', NETD_APP_NAME, '-n', k8sNamespace(),
+    '-o', 'jsonpath={.status.numberReady}/{.status.desiredNumberScheduled}',
+  ]).catch(() => ({ stdout: '' }))
+  if (!netd.trim()) {
+    return {
+      name: 'datapath', status: 'warn',
+      detail: `${NETD_APP_NAME} (claim mode) is not deployed yet — it lands with `
+        + 'the inner proxy on first session create',
+      fix: 'Until then this install claims nothing, so any pod it schedules is '
+        + 'redirected to the OUTER proxy and governed by the outer allowlist alone.',
+    }
+  }
+  const [ready, wanted] = netd.trim().split('/').map(Number)
+  if (!(ready > 0) || ready !== wanted) {
+    return {
+      name: 'datapath', status: 'fail',
+      detail: `${NETD_APP_NAME} (claim mode) is ${netd.trim()} ready — this install's `
+        + 'sessions are redirected to the OUTER proxy, not this one',
+      fix: 'The claim-mode netd publishes which pods this install wants '
+        + 'redirected to its own proxy. Inspect with '
+        + `\`kubectl -n ${k8sNamespace()} logs ds/${NETD_APP_NAME}\`.`,
+    }
+  }
+  return {
+    name: 'datapath', status: 'pass',
+    detail: `${NETD_APP_NAME} (claim mode) ready — this install's redirect is claimed`,
+  }
+}
+
+/**
+ * The datapath gate: Calico must be enforcing, and netd must be up with
+ * its redirect chain programmed.
+ *
+ * These are the two components session egress depends on, and they fail in
+ * opposite directions — which is why both are checked. Calico missing means
+ * NO policy enforcement, so the whole egress lockdown is advisory (the
+ * behavioural half of that is the `egress` probe above). netd missing means
+ * no redirect at all, which is fail-CLOSED: sessions simply lose egress.
+ * A user staring at "every session lost the internet" needs to be told
+ * which of the two it is.
+ */
+async function runDatapathCheck(deps: ClusterCheckDeps): Promise<CheckResult> {
   try {
-    const { stdout } = await deps.run('kubectl', [
-      'get', 'crd', 'ciliumenvoyconfigs.cilium.io',
-      '-o', 'jsonpath={.metadata.name}',
+    const { stdout: calico } = await deps.run('kubectl', [
+      'get', 'daemonset', 'calico-node', '-n', 'kube-system',
+      '-o', 'jsonpath={.status.numberReady}/{.status.desiredNumberScheduled}',
     ])
-    if (stdout.trim() === 'ciliumenvoyconfigs.cilium.io') {
+    const [calicoReady, calicoWanted] = calico.trim().split('/').map(Number)
+    if (!(calicoReady > 0) || calicoReady !== calicoWanted) {
       return {
-        name: 'envoy-config', status: 'pass',
-        detail: 'CiliumEnvoyConfig CRDs present (cluster-level egress redirect can be applied)',
+        name: 'datapath', status: 'fail',
+        detail: `calico-node is ${calico.trim()} ready — NetworkPolicy is not being enforced`,
+        fix: 'Calico is the CNI and policy engine. Re-run `yaac cluster setup`, '
+          + 'or inspect with `kubectl -n kube-system get pods -l k8s-app=calico-node`.',
+      }
+    }
+
+    const { stdout: netd } = await deps.run('kubectl', [
+      'get', 'daemonset', NETD_APP_NAME, '-n', k8sNamespace(),
+      '-o', 'jsonpath={.status.numberReady}/{.status.desiredNumberScheduled}',
+    ]).catch(() => ({ stdout: '' }))
+    const [netdReady, netdWanted] = netd.trim().split('/').map(Number)
+    if (!netd.trim() || !(netdReady > 0) || netdReady !== netdWanted) {
+      return {
+        name: 'datapath', status: 'fail',
+        detail: netd.trim()
+          ? `${NETD_APP_NAME} is ${netd.trim()} ready — session egress has no redirect`
+          : `${NETD_APP_NAME} is not deployed — session egress has no redirect`,
+        fix: 'netd steers session egress into the proxy. It deploys with the '
+          + 'proxy on first session create; restart the yaac server so '
+          + 'ensureProxyResources applies it, then inspect with '
+          + `\`kubectl -n ${k8sNamespace()} logs ds/${NETD_APP_NAME} -c netd\`.`,
       }
     }
     return {
-      name: 'envoy-config', status: 'fail',
-      detail: 'the ciliumenvoyconfigs.cilium.io CRD is missing — the egress-redirect CEC cannot be created',
-      fix: 'Cilium was installed without envoyConfig. Re-run '
-        + '`yaac cluster setup` (it installs Cilium with envoyConfig.enabled=true), '
-        + 'or `cilium upgrade --reuse-values --set envoyConfig.enabled=true`.',
+      name: 'datapath', status: 'pass',
+      detail: `calico-node and ${NETD_APP_NAME} ready (policy enforced, egress redirected)`,
     }
   } catch (err) {
     return {
-      name: 'envoy-config', status: 'fail',
-      detail: `could not query CRDs (${truncate(err)})`,
+      name: 'datapath', status: 'fail',
+      detail: `could not query the datapath components (${truncate(err)})`,
       fix: KIND_SETUP_FIX,
     }
   }

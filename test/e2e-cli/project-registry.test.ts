@@ -163,7 +163,7 @@ describe.skipIf(IS_NESTED_YAAC)('yaac per-project registry (real CLI + real serv
     expect(hostsOut).toContain(regVip)
 
     // The per-project sessions NetworkPolicy is the SOLE hole through the
-    // session-egress CNP's default-deny (no blanket in-cluster allowance
+    // session-egress policy's default-deny (no blanket in-cluster allowance
     // anymore): plain-HTTP :5000 answers from inside the session.
     const { stdout: ping } = await execInJob(name, [
       'sh', '-c', `curl -fsS --max-time 5 http://${regHost}/v2/ >/dev/null && echo REG_OK`,
@@ -173,9 +173,9 @@ describe.skipIf(IS_NESTED_YAAC)('yaac per-project registry (real CLI + real serv
     // --- Cross-project isolation (issue #17) ---
     // Stand up a SECOND project's registry (no session needed) and assert
     // this project's session cannot reach it: nothing admits the flow —
-    // the session-egress CNP has no in-cluster allowance, the other
+    // the session-egress policy has no in-cluster allowance, the other
     // project's sessions NetworkPolicy does not select this pod, and the
-    // other registry's ingress CNP does not admit it. curl must time out
+    // other registry's ingress policy does not admit it. curl must time out
     // (policy drop), not answer.
     const otherSlug = 'vc-registry-other'
     createdSlugs.push(otherSlug)

@@ -675,7 +675,7 @@ export async function createSession(
   // Recursion cap: an inner yaac (running inside a vcluster session)
   // must not stand up vcluster-in-vcluster — the depth buys nothing
   // (synced pods already run on the host node) and the inner cluster
-  // lacks the infrastructure (Cilium CRDs don't sync, no kind node).
+  // lacks the infrastructure (no kind node of its own).
   if (virtualCluster && yaacEnv.nested) {
     throw new ServerError(
       'VALIDATION',
@@ -803,10 +803,10 @@ export async function createSession(
   }
 
   // Egress: the session pod's outbound 443/80 is redirected to the proxy at
-  // the cluster level by the Cilium CEC + CNP (buildEgressRedirectCecManifest)
+  // the node level by netd's per-pod DNAT rules (k8s/netd)
   // — no per-pod sidecar. The pod also points its resolver at the proxy
   // (DNS stub) and dials the SSH tunnel sentinel; both are admitted by the
-  // same redirect CNP. The proxy identifies the session by the source pod IP
+  // same session NetworkPolicy. The proxy identifies the session by the source pod IP
   // it watches, so nothing per-session needs injecting here.
   //
   // The proxy Service ClusterIP is allocator-assigned (no longer pinned) — for
@@ -884,7 +884,7 @@ export async function createSession(
       { hostPath: sshAgentHostDir(), mountPath: SSH_AGENT_MOUNT, type: 'DirectoryOrCreate' },
       { hostPath: knownHostsFile, mountPath: containerKnownHosts, readOnly: true, type: 'File' },
     )
-    // ncat speaks CONNECT to a sentinel address that Cilium redirects
+    // ncat speaks CONNECT to a sentinel address that netd redirects
     // through the node Envoy to the proxy's tunnel listener — the same path
     // as HTTP(S). CONNECT carries the real host:port (so the allowlist sees
     // the hostname; a raw port-22 redirect would lose it), and Envoy stamps

@@ -15,10 +15,12 @@ import {
   type SessionPod,
 } from '#platform/k8s/pods'
 import {
+  mapVclusterConfigMapObject,
   mapVclusterNamespaceObject,
   mapVclusterPodObject,
   mapVclusterServiceObject,
   vclusterNamespaceSelector,
+  type VclusterConfigMap,
   type VclusterNamespaceInfo,
   type VclusterPod,
   type VclusterService,
@@ -28,7 +30,7 @@ import { serverLog } from '#log'
 /**
  * Every informer the server runs, in one registry: the install-scoped
  * session pods / session Jobs / vcluster namespaces watches, plus a
- * dynamic pods+services informer pair per live vcluster namespace
+ * dynamic pods+services+claims informer set per live vcluster namespace
  * (created and torn down as the namespaces cache changes). Consumers —
  * the reconciler, the status-watcher sync, the display path — read the
  * caches and subscribe to `onDelta` instead of listing the cluster.
@@ -39,6 +41,7 @@ export type DeltaSource =
   | 'vcluster-namespaces'
   | 'vcluster-pods'
   | 'vcluster-services'
+  | 'vcluster-configmaps'
 
 export interface ClusterCacheDeps {
   /** Threaded to every informer cache (tests inject fakes). */
@@ -50,6 +53,8 @@ export interface ClusterCacheDeps {
 interface VclusterInformers {
   pods: InformerCache<VclusterPod>
   services: InformerCache<VclusterService>
+  /** The synced redirect-claim ConfigMaps (picked out by name). */
+  configMaps: InformerCache<VclusterConfigMap>
 }
 
 export class ClusterCache {
@@ -106,6 +111,7 @@ export class ClusterCache {
     for (const entry of this.vcInformers.values()) {
       entry.pods.stop()
       entry.services.stop()
+      entry.configMaps.stop()
     }
     this.vcInformers.clear()
   }
@@ -140,6 +146,12 @@ export class ClusterCache {
     return entry?.services.healthy() ? entry.services.items() : null
   }
 
+  /** null when no healthy informer covers the namespace (caller lists live). */
+  vclusterConfigMaps(namespace: string): VclusterConfigMap[] | null {
+    const entry = this.vcInformers.get(namespace)
+    return entry?.configMaps.healthy() ? entry.configMaps.items() : null
+  }
+
   healthy(source: 'session-pods' | 'session-jobs' | 'vcluster-namespaces'): boolean {
     if (source === 'session-pods') return this.pods.healthy()
     if (source === 'session-jobs') return this.jobs.healthy()
@@ -171,7 +183,7 @@ export class ClusterCache {
     }
   }
 
-  /** Keep one pods+services informer pair per live vcluster namespace. */
+  /** Keep one pods+services+claims informer set per live vcluster namespace. */
   private syncVclusterInformers(): void {
     if (this.stopped) return
     const live = new Map(this.namespaces.items().map((v) => [v.namespace, v] as const))
@@ -179,6 +191,7 @@ export class ClusterCache {
       if (live.has(ns)) continue
       entry.pods.stop()
       entry.services.stop()
+      entry.configMaps.stop()
       this.vcInformers.delete(ns)
     }
     for (const [ns, vc] of live) {
@@ -198,9 +211,19 @@ export class ClusterCache {
         mapItem: mapVclusterServiceObject,
         keyOf: (s) => s.name,
       })
+      // No label selector: which ConfigMap is a claim is decided by name
+      // (isClaimConfigMapName), so the path does not depend on the syncer
+      // propagating labels. A vcluster namespace holds a handful of them.
+      const configMaps = this.buildCache<VclusterConfigMap>('vcluster-configmaps', {
+        path: `/api/v1/namespaces/${ns}/configmaps`,
+        listFn: () => getCoreApi().listNamespacedConfigMap({ namespace: ns }),
+        mapItem: mapVclusterConfigMapObject,
+        keyOf: (cm) => cm.name,
+      })
       pods.start()
       services.start()
-      this.vcInformers.set(ns, { pods, services })
+      configMaps.start()
+      this.vcInformers.set(ns, { pods, services, configMaps })
     }
   }
 }

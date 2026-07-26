@@ -247,6 +247,11 @@ export const testEnv = {
     return process.env.YAAC_PROXY_IMAGE ?? 'yaac-proxy'
   },
 
+  /** `YAAC_NETD_IMAGE` — netd image tag override. Production uses `yaac-netd`. */
+  get netdImage(): string {
+    return process.env.YAAC_NETD_IMAGE ?? 'yaac-netd'
+  },
+
 
   /**
    * `YAAC_STARTING_GRACE_MS` — grace window protecting freshly-created session

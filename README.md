@@ -11,10 +11,10 @@ brew trust bsklaroff/yaac
 brew trust libkrun/krun
 brew tap libkrun/krun
 brew install bsklaroff/yaac/yaac
-yaac cluster setup   # podman machine + registry + kind cluster + Cilium
+yaac cluster setup   # podman machine + registry + kind cluster + Calico + netd
 ```
 
-The formula pulls in the whole toolchain: `node`, `kubectl`, `cilium-cli`,
+The formula pulls in the whole toolchain: `node`, `kubectl`,
 `podman` (>= 6.0), a pinned `kind` build (`yaac-kind` — see the
 [version-skew note](docs/cluster-setup.md#version-skew-podman-6x-needs-a-patched-kind)),
 and a patched `krunkit`+`libkrun` pair (`yaac-krunkit`/`yaac-libkrun` —
@@ -38,7 +38,7 @@ Install the toolchain the formula would otherwise pull in:
 brew trust bsklaroff/yaac
 brew trust libkrun/krun
 brew tap libkrun/krun
-brew install node pnpm kubernetes-cli cilium-cli podman bsklaroff/yaac/yaac-kind bsklaroff/yaac/yaac-krunkit
+brew install node pnpm kubernetes-cli podman bsklaroff/yaac/yaac-kind bsklaroff/yaac/yaac-krunkit
 ```
 
 #### Linux
@@ -62,7 +62,7 @@ sudo install -m 755 kind /usr/local/bin/kind && rm kind
 curl -fsSLo kubectl "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/$(dpkg --print-architecture)/kubectl"
 sudo install -m 755 kubectl /usr/local/bin/kubectl && rm kubectl
 
-# yaac uses rootful podman on Linux (the cilium agent needs it); enable the
+# yaac uses rootful podman on Linux (the calico-node agent needs it); enable the
 # socket and grant your user access:
 sudo systemctl enable --now podman.socket
 sudo setfacl -m u:$USER:x /run/podman
@@ -80,8 +80,8 @@ The apt-shipped podman 5.x works fine on Linux and pairs with stock kind
 v0.32.0; only podman 6.x needs the pinned kind build (see the
 [version-skew note](docs/cluster-setup.md#version-skew-podman-6x-needs-a-patched-kind)).
 yaac drives the **rootful** podman engine on Linux — kind's node needs the
-cgroup2 root and BPF filesystem that rootless podman doesn't delegate, or the
-cilium agent DaemonSet hangs (see
+host netfilter and routing access that rootless podman doesn't delegate, or the
+calico-node DaemonSet hangs (see
 [Linux: rootful podman](docs/cluster-setup.md#linux-rootful-podman)).
 
 #### Both platforms
@@ -196,7 +196,7 @@ Commands:
 
 yaac cluster <command>
   check             Verify cluster prerequisites (kubectl, registry, hostPath wiring)
-  setup [--repair]  Create the kind cluster, registry, and Cilium wiring
+  setup [--repair]  Create the kind cluster, registry, and CNI wiring
                     (--repair re-applies the node fixups without recreating)
   delete [-y]       Delete the kind cluster and local registry, keeping
                     on-disk sessions and worktrees (-y skips confirmation)
@@ -406,7 +406,7 @@ Example `yaac-config.json` with all options:
     ]
     ```
 - **hideInitPane** — when `true`, the init commands tmux pane is automatically closed after the commands finish or error (default: `false`). When `false`, the pane is preserved with `remain-on-exit` so you can inspect the output.
-- **addAllowedUrls** — additional host patterns to allow on top of the [default allowlist](packages/server/src/lib/container/default-allowed-hosts.ts). By default, the proxy blocks outbound requests to hosts not on the default list. Use this to add extra hosts without replacing the defaults. Supports exact hostnames (`api.example.com`) and wildcards (`*.example.com`).
+- **addAllowedUrls** — additional host patterns to allow on top of the [default allowlist](packages/server/src/lib/container/default-allowed-hosts.ts). By default, the proxy blocks outbound requests to hosts not on the default list. (How a session's traffic reaches the proxy in the first place, and why it fails closed: [Session egress](docs/session-egress.md).) Use this to add extra hosts without replacing the defaults. Supports exact hostnames (`api.example.com`) and wildcards (`*.example.com`).
 - **setAllowedUrls** — completely replaces the default allowlist with the given list of host patterns. Cannot be used together with `addAllowedUrls`. Set to `["*"]` to allow all outbound URLs (disables filtering), or `[]` to block all external network access. If the resolved list does not include `api.anthropic.com` or `github.com`, a warning is printed since sessions require these to function.
 - **nestedContainers** — run an in-pod rootless podman so `docker build` / `docker run` / `docker compose up --build` work inside the session exactly as a project README instructs (the `docker` CLI talks to podman's Docker-API socket). See [Nested containers and virtual clusters](#nested-containers-and-virtual-clusters).
 - **virtualCluster** — give each session its own virtual kubernetes cluster (vcluster) plus a per-project push registry. Implies `nestedContainers` (setting `"nestedContainers": false` alongside it is a config error).

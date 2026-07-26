@@ -167,8 +167,8 @@ controller is controller-runtime-based with leader election, tracing, and
 `/metrics`, and there are generated Go/Python clients plus warm-pool load
 tests. Roughly, **it already is the generic half of this plan** (the
 "controller responsibilities" and "GC/teardown machinery" sections), while
-the yaac-domain half (vcluster, per-project registry, Cilium egress
-projections, image salvage) has no counterpart in it. So the decision this
+the yaac-domain half (vcluster, per-project registry, the netd egress
+redirect, image salvage) has no counterpart in it. So the decision this
 plan must add is *build-vs-adopt for the generic layer*, not just "write a
 controller."
 
@@ -290,10 +290,12 @@ controller (the `agent-sandbox-system` Deployment) alongside ours.
   `Finished` condition's `PodSucceeded`/`PodFailed`, so `deriveDeathCause`
   and its pod-terminal-state reads stay ours and stamp `Session.status`.
 - **Egress must stay yaac-owned.** agent-sandbox's `networkPolicy` is a
-  vanilla `NetworkPolicy`; our egress is Cilium `CiliumEnvoyConfig` +
-  `CiliumNetworkPolicy` redirect projections. Set
+  vanilla `NetworkPolicy`, which is also the dialect our own policies use
+  (docs/session-egress.md) — so the risk is not a schema mismatch but a
+  second author writing the same objects. Set
   `networkPolicyManagement: Unmanaged` (or bypass `SandboxTemplate`
-  entirely) so the controller never fights our CEC/CNP layer. Likewise our
+  entirely) so the controller never overwrites the session egress floor,
+  which is the whole fail-closed story. Likewise our
   pods are reached via the exec tunnel + host port-forwarders, not a
   Service, so set `spec.service: false`.
 - **Prewarm rebrand is the weakest fit — keep it yaac-side.** `SandboxClaim`
@@ -331,16 +333,17 @@ controller (the `agent-sandbox-system` Deployment) alongside ours.
   vs cluster-wide caches — this is already open question "CR namespace
   layout"; adopting agent-sandbox just means the *two* controllers must
   agree on it.
-- Interaction stays kubectl-shaped: yaac writes `Sandbox`/`Session` YAML and
-  watches, matching the existing "shell out to kubectl, no client library"
-  convention — the generated Go/Python clients are for the controller
-  itself, not the Node server.
+- Interaction fits the existing split: yaac writes `Sandbox`/`Session` YAML
+  with kubectl and watches it with a client-node informer, matching the
+  convention that writes and exec go through kubectl while reads and watches
+  go through the library — the generated Go/Python clients are for the
+  controller itself, not the Node server.
 
 ### Bottom line
 
 Adopt `Sandbox` as the pod/service/PVC/TTL/suspend primitive under a yaac
 `Session` controller; keep hand-written convergence only for vcluster,
-registry, Cilium egress, salvage, and the Job→Pod + sticky-death
+registry, egress policy, salvage, and the Job→Pod + sticky-death
 reconciliation. This shrinks Phases 1–3 materially. The open risks are the
 prewarm-rebrand impedance and the missing suspend/resume state model — both
 converge on the same unresolved decision as open question #1 (in-pod

@@ -1,0 +1,13 @@
+{
+  "name": "yaac-netd",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./*": "./*.js"
+  },
+  "dependencies": {
+    "@kubernetes/client-node": "1.4.0",
+    "tsx": "4.21.0"
+  }
+}

@@ -4,11 +4,10 @@ import { reconcileImageSalvage } from '#features/sessions/reconcile/salvage-reco
 import { reconcileProxySshKeys } from '#features/sessions/reconcile/proxy-reconcile'
 import { reconcileSpawnRequests } from '#features/sessions/reconcile/spawn-reconcile'
 import { reconcileVclusters } from '#features/sessions/reconcile/vcluster-reconcile'
-import { reconcileInnerRedirects } from '#features/sessions/reconcile/inner-redirect-reconcile'
-import { reconcileStaleTproxyRules } from '#features/sessions/reconcile/tproxy-gc-reconcile'
 import { reconcileHostImageGc } from '#features/images/image-gc'
 import { reconcileBuilderPodGc } from '#features/images/builder-pod'
 import { reconcileVclusterAttribution } from '#features/sessions/reconcile/vcluster-attribution-reconcile'
+import { reconcileRedirectClaims } from '#features/sessions/reconcile/redirect-claim-reconcile'
 import { reconcilePrewarmPool } from '#features/images/prewarm-reconcile'
 import { reconcileSchedules } from '#features/schedules/schedule-reconcile'
 import { reconcileImagePrewarm } from '#features/images/image-prewarm'
@@ -31,7 +30,7 @@ import { serverLog } from '#log'
  *   streams.
  * - resync: a 60s mark that runs EVERY step — the safety net for a missed
  *   event, and the driver for the internally-throttled hygiene steps
- *   (image prewarm/GC, salvage, tproxy GC, builder-pod GC).
+ *   (image prewarm/GC, salvage, builder-pod GC).
  *
  * Passes never overlap (steps share module state) and preserve the step
  * order below; each pass shares one TickSnapshot and isolates step errors.
@@ -78,18 +77,18 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // Per-session vclusters: orphan GC + host-side kubeconfig heal.
     { name: 'vclusters', triggers: ['vcluster-namespaces', 'session-pods', 'session-jobs'],
       run: (s) => reconcileVclusters(Date.now(), s) },
-    // yaac-in-yaac: project the inner egress redirect for a vcluster's synced
-    // pods once its inner proxy is up (or prune it when gone).
-    { name: 'inner-redirects', triggers: ['vcluster-namespaces', 'vcluster-services'],
-      run: (s) => reconcileInnerRedirects(s) },
     // yaac-in-yaac: tell the outer proxy which outer session owns each
     // vcluster's pods. Poll re-pushes cover outer-proxy restarts.
     { name: 'vcluster-attribution',
       triggers: ['vcluster-namespaces', 'vcluster-pods', 'poll'],
       run: (s) => reconcileVclusterAttribution(s) },
-    // GC the TPROXY rules Cilium leaks when a CEC is deleted. Throttled
-    // internally. After inner-redirects so a CEC it just applied reads live.
-    { name: 'tproxy-gc', triggers: [], run: () => reconcileStaleTproxyRules() },
+    // yaac-in-yaac: validate each vcluster's redirect claims and republish
+    // them for netd. Claim documents arrive through the vcluster syncer, so
+    // a ConfigMap delta is the signal; pod deltas matter too, since a claim
+    // is only as valid as the pod IPs it names.
+    { name: 'redirect-claims',
+      triggers: ['vcluster-namespaces', 'vcluster-configmaps', 'vcluster-pods'],
+      run: (s) => reconcileRedirectClaims(s) },
     // Host podman image GC. Throttled internally to every few hours.
     { name: 'host-image-gc', triggers: [], run: () => reconcileHostImageGc() },
     // Leaked trust-split builder pods (server crashed mid-build) — the label

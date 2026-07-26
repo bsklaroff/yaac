@@ -1,6 +1,6 @@
 # Static Helm values for the vendored vcluster chart
 # (vcluster-<VERSION>.tgz). Applied at session-create time by
-# packages/server/src/lib/k8s/vcluster.ts via `helm template`; the per-session values
+# packages/server/src/features/cluster/vcluster.ts via `helm template`; the per-session values
 # (registry, API host) are passed as `--set` overrides, so this file
 # carries no placeholders. The only post-render step is stamping the
 # yaac ownership labels onto every object (no global-labels knob in the
@@ -104,15 +104,24 @@ sync:
     #     the host. A pure tenant workload that sets none carries none.
     # Containment therefore keys on vcluster.loft.sh/managed-by — the ONE
     # label the SYNCER itself stamps on every synced pod, which a tenant
-    # cannot forge or suppress. The per-vcluster fallback-redirect CNP
-    # (buildVclusterFallbackRedirectCnpManifest), selecting managed-by, is
-    # the default-deny egress floor (world → outer proxy + intracluster),
-    # replacing yaac-session-egress for these pods. Any yaac labels that DO
-    # propagate are forgeable, so policy never relies on them for the
-    # containment boundary — only for non-escalating routing (inner-vs-outer
-    # proxy). Beware: this all rests on vcluster's default verbatim label
-    # propagation — a chart bump that starts translating pod labels would
-    # break the redirect selectors (see the nesting e2e).
+    # cannot forge or suppress. The per-vcluster egress floor
+    # (buildVclusterEgressFloorNpManifest), selecting managed-by, is the
+    # default-deny egress policy for these pods (the node's netd listener
+    # range, the vcluster API, sibling synced pods, the outer DNS stub),
+    # replacing yaac-session-egress for them. Every yaac label that DOES
+    # propagate is forgeable, so nothing — neither policy nor the redirect —
+    # relies on one: the inner redirect is driven by validated claims naming
+    # pod IPs (features/cluster/redirect-claims.ts), and pod IPs come from
+    # host IPAM.
+    #
+    # The claim's own path does depend on two syncer defaults, both
+    # fail-closed if a chart bump changes them (no claim -> the inner
+    # install's pods stay on the OUTER proxy, contained but not governed by
+    # the inner allowlist): configMaps sync with all=false, i.e. a configmap
+    # a synced pod REFERENCES is copied to the host (the claim-mode netd pod
+    # mounts its claim for exactly this reason), and the translated host name
+    # keeps the original as a prefix (how the server finds it). See the
+    # nesting e2e.
     pods:
       enabled: true
       # Every synced pod carries the `gvisor` RuntimeClass (registered by
@@ -133,9 +142,9 @@ sync:
       # NetworkPolicy that unions over our (allow-only) synced-pod
       # containment and grants its synced pod raw internet egress —
       # bypassing the proxy/allowlist entirely (verified). Synced-pod
-      # containment instead comes solely from the yaac-applied fallback
-      # redirect CNP (managed-by → default-deny + redirect to the outer
-      # proxy), which a tenant cannot widen. Cost: an inner yaac's own
+      # containment instead comes solely from the yaac-applied egress
+      # floor (managed-by → default-deny + the node listener range), which
+      # a tenant cannot widen. Cost: an inner yaac's own
       # NetworkPolicies are not enforced on the host — acceptable (inner
       # sessions are confined by the outer fallback regardless).
       enabled: false

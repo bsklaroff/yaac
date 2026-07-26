@@ -9,7 +9,7 @@ function be16(n: number): Buffer {
   return b
 }
 
-/** The AF_INET / STREAM PROXY-protocol-v2 header Cilium's Envoy stamps. */
+/** The AF_INET / STREAM PROXY-protocol-v2 header netd's Envoy stamps. */
 function afInet(
   srcIp = '10.244.0.5', srcPort = 54321, dstIp = '1.2.3.4', dstPort = 443,
 ): Buffer {

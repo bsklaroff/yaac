@@ -30,6 +30,12 @@ interface FakeChild extends EventEmitter {
 const spawned = vi.hoisted(() => [] as Array<{ file: string; args: string[]; child: FakeChild }>)
 const spawnState = vi.hoisted(() => ({ closeCode: 0 }))
 
+vi.mock('#features/cluster/cluster-cidrs', () => ({
+  nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
+  apiserverIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
+  resetClusterCidrCache: vi.fn(),
+}))
+
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof childProcessModule>()
   const fakeStream = (): FakeStream => ({
@@ -493,13 +499,13 @@ describe('buildLayerInPod', () => {
       .rejects.toThrow(/yaac cluster check/)
   })
 
-  it('refreshes the world-deny CNP only when it already exists', async () => {
-    mockKubectlGetJson.mockResolvedValue({ kind: 'CiliumNetworkPolicy' })
+  it('refreshes the world-deny policy only when it already exists', async () => {
+    mockKubectlGetJson.mockResolvedValue({ kind: 'NetworkPolicy' })
     const dir = await makeContext({ 'Dockerfile.yaac': 'FROM x\n' })
     const layer = projectLayer({ dockerfile: path.join(dir, 'Dockerfile.yaac'), context: dir })
     await buildLayerInPod(layer, { projectSlug: 'proj' })
     const kinds = mockKubectlApply.mock.calls.map((c) => (c[0] as { kind: string }).kind)
-    expect(kinds).toContain('CiliumNetworkPolicy')
+    expect(kinds).toContain('NetworkPolicy')
   })
 })
 

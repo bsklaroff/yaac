@@ -53,9 +53,10 @@ export default defineConfig({
       unitProject('packages/shared'),
       unitProject('packages/auth-daemon'),
       unitProject('packages/test-utils'),
-      // Self-imports (yaac-proxy-sidecar/<mod>) resolve via the package's
-      // own exports map — no alias needed.
+      // Self-imports (yaac-proxy-sidecar/<mod>, yaac-netd/<mod>) resolve
+      // via each package's own exports map — no alias needed.
       unitProject('k8s/proxy'),
+      unitProject('k8s/netd'),
       // streamd (the in-pod stream daemon) is plain JS baked into the base
       // image; its tests exercise the daemon in-process. Deliberately not
       // in the root tsconfig (untyped .js imports), so vitest is its only

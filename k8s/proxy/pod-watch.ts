@@ -1,23 +1,34 @@
 /**
  * Source-IP → session resolution for the transparent listeners.
  *
- * The node-local Cilium Envoy redirects session-pod egress here and stamps
+ * netd's node-local Envoy receives redirected session-pod egress and stamps
  * the real source pod IP in the upstream PROXY-protocol header (it cannot be
- * spoofed — Cilium sets it from eBPF-verified endpoint metadata). This module
+ * spoofed — Envoy reads it off the connection's own peer address). This module
  * turns that IP into a session id by reading the pod's own `yaac.session-id`
- * label, keeping a `podIP → sessionId` index fresh by watching the pods API
- * with the proxy's read-only ServiceAccount. Authoritative and self-
+ * label, keeping a `podIP → sessionId` index fresh from a client-node
+ * informer over this namespace's session pods. Authoritative and self-
  * correcting: a DELETED event evicts the IP, so a reused IP can never be
- * misattributed.
+ * misattributed, and the informer's every (re)list diffs against its own
+ * store and emits `delete` for anything that vanished while it was
+ * disconnected — so the index cannot accumulate ghosts.
  *
- * The index (PodSessionIndex) is pure and unit-tested; the network watch
+ * Using the library rather than a hand-rolled watch also fixes credential
+ * lifetime: the in-cluster config registers a `tokenFile` auth provider
+ * that re-reads the projected ServiceAccount token kubelet rotates. Reading
+ * that token once at startup eventually 401s a long-lived proxy, and the
+ * failure is quiet — the index simply stops learning about new session
+ * pods, whose traffic then fails closed as "unknown source".
+ *
+ * The index (PodSessionIndex) is pure and unit-tested; the informer wiring
  * (startPodWatch) is covered by e2e.
  */
 
-import fs from 'node:fs'
-import https from 'node:https'
-
-const SA_DIR = '/var/run/secrets/kubernetes.io/serviceaccount'
+import {
+  CoreV1Api,
+  KubeConfig,
+  makeInformer,
+  type KubernetesObject,
+} from '@kubernetes/client-node'
 /** Must match LABEL_SESSION_ID in packages/server/src/platform/k8s/pods.ts (proxy can't import src/). */
 export const LABEL_SESSION_ID = 'yaac.session-id'
 
@@ -124,96 +135,100 @@ export function parseVclusterAttribution(body: string): Map<string, string> | nu
   return out
 }
 
-// ── In-cluster API client (built-in https; no kube client library) ──────────
+// ── In-cluster API access (client-node) ────────────────────────────────────
 
-interface ApiConfig {
-  host: string
-  port: string
-  token: string
-  ca: Buffer
+/** Lazily-built in-cluster client + the namespace this proxy serves. */
+interface ApiClient {
+  core: CoreV1Api
   namespace: string
+  /** Kept so the informer and the API client share one credential source. */
+  kubeConfig: KubeConfig
 }
 
-function loadApiConfig(): ApiConfig {
-  const host = process.env.KUBERNETES_SERVICE_HOST
-  if (!host) throw new Error('KUBERNETES_SERVICE_HOST unset — proxy needs an in-cluster SA')
-  return {
-    host,
-    port: process.env.KUBERNETES_SERVICE_PORT_HTTPS ?? process.env.KUBERNETES_SERVICE_PORT ?? '443',
-    token: fs.readFileSync(`${SA_DIR}/token`, 'utf8').trim(),
-    ca: fs.readFileSync(`${SA_DIR}/ca.crt`),
-    namespace: fs.readFileSync(`${SA_DIR}/namespace`, 'utf8').trim(),
-  }
-}
-
-function apiGet(cfg: ApiConfig, pathAndQuery: string, onLine: (line: string) => void): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = https.get(
-      {
-        host: cfg.host,
-        port: cfg.port,
-        path: pathAndQuery,
-        ca: cfg.ca,
-        headers: { Authorization: `Bearer ${cfg.token}`, Accept: 'application/json' },
-      },
-      (res) => {
-        if (res.statusCode && res.statusCode >= 400) {
-          res.resume()
-          reject(new Error(`k8s API ${pathAndQuery} → ${res.statusCode}`))
-          return
-        }
-        res.setEncoding('utf8')
-        let buf = ''
-        res.on('data', (chunk: string) => {
-          buf += chunk
-          let nl: number
-          while ((nl = buf.indexOf('\n')) >= 0) {
-            const line = buf.slice(0, nl)
-            buf = buf.slice(nl + 1)
-            if (line.trim()) onLine(line)
-          }
-        })
-        res.on('end', () => {
-          if (buf.trim()) onLine(buf)
-          resolve()
-        })
-        res.on('error', reject)
-      },
-    )
-    req.on('error', reject)
-  })
-}
-
-const PODS_PATH = (ns: string): string =>
-  `/api/v1/namespaces/${ns}/pods?labelSelector=${encodeURIComponent(LABEL_SESSION_ID)}`
+let cachedClient: ApiClient | null = null
 
 /**
- * Seed the index from a list, then stream watch events into it, reconnecting
- * (with a re-list to evict anything missed) on every disconnect. Runs for the
- * proxy's lifetime; never resolves.
+ * In-cluster config: API host from the injected env, CA and namespace from
+ * the ServiceAccount mount, and a `tokenFile` auth provider that re-reads
+ * the rotating token rather than snapshotting it.
  */
-export async function startPodWatch(index: PodSessionIndex, cfg = loadApiConfig()): Promise<void> {
-  for (;;) {
-    try {
-      // List → seed. The whole body is one JSON object (a PodList).
-      let body = ''
-      await apiGet(cfg, `${PODS_PATH(cfg.namespace)}&resourceVersion=0`, (line) => { body += line })
-      const list = JSON.parse(body) as { items?: WatchedPod[]; metadata?: { resourceVersion?: string } }
-      index.replaceAll(list.items ?? [])
-      const rv = list.metadata?.resourceVersion ?? '0'
-      console.log(`[proxy] pod-watch: seeded ${index.size} session pod(s)`)
-
-      // Watch → stream newline-delimited events until the connection drops.
-      await apiGet(cfg, `${PODS_PATH(cfg.namespace)}&watch=1&resourceVersion=${rv}`, (line) => {
-        try {
-          index.apply(JSON.parse(line) as PodWatchEvent)
-        } catch { /* skip a torn line; the next re-list reconciles */ }
-      })
-    } catch (err) {
-      console.error('[proxy] pod-watch error, retrying:', (err as Error).message)
-    }
-    await new Promise((r) => setTimeout(r, 1000))
+export function inClusterClient(supplied?: KubeConfig): ApiClient {
+  if (cachedClient) return cachedClient
+  let kubeConfig = supplied
+  if (!kubeConfig) {
+    kubeConfig = new KubeConfig()
+    kubeConfig.loadFromCluster()
   }
+  const namespace = kubeConfig.getContextObject(kubeConfig.getCurrentContext())?.namespace
+  if (!namespace) {
+    throw new Error('proxy: no in-cluster namespace — is the ServiceAccount mounted?')
+  }
+  cachedClient = { core: kubeConfig.makeApiClient(CoreV1Api), namespace, kubeConfig }
+  return cachedClient
+}
+
+/** Reset the memoized client (tests only). */
+export function _resetInClusterClientForTests(): void {
+  cachedClient = null
+}
+
+/** Every session pod in this namespace — the informer's scope and its seed. */
+const SESSION_POD_SELECTOR = LABEL_SESSION_ID
+
+/**
+ * Feed `index` from an informer over this namespace's session pods, for the
+ * proxy's lifetime.
+ *
+ * The informer owns the list→watch cycle, resourceVersion bookkeeping, and
+ * relist-on-410; what it does NOT own is restart, because on any non-410
+ * error (a failed initial list included) it emits `error` and stops. Hence
+ * the backoff loop below — a proxy whose index stops updating fails every
+ * new session closed, so giving up is not an option.
+ */
+export function startPodWatch(index: PodSessionIndex, client = inClusterClient()): void {
+  const path = `/api/v1/namespaces/${client.namespace}/pods`
+  // client-node applies labelSelector to the WATCH only, so the list must
+  // carry it too or the seed would pull in every pod in the namespace.
+  const listFn = (): ReturnType<CoreV1Api['listNamespacedPod']> =>
+    client.core.listNamespacedPod({
+      namespace: client.namespace,
+      labelSelector: SESSION_POD_SELECTOR,
+    })
+  const informer = makeInformer(client.kubeConfig, path, listFn, SESSION_POD_SELECTOR)
+
+  const feed = (type: string) => (obj: KubernetesObject): void => {
+    index.apply({ type, object: obj as WatchedPod })
+  }
+  informer.on('add', feed('ADDED'))
+  informer.on('update', feed('MODIFIED'))
+  informer.on('delete', feed('DELETED'))
+
+  let backoffMs = 1_000
+  let startedAtMs = 0
+  let restartTimer: NodeJS.Timeout | null = null
+  const begin = (): void => {
+    startedAtMs = Date.now()
+    informer.start().catch((err: unknown) => { onError(err) })
+  }
+  const onError = (err: unknown): void => {
+    // A watch the apiserver dropped after a long, healthy life is routine;
+    // only rapid failures back off.
+    if (Date.now() - startedAtMs >= 60_000) backoffMs = 1_000
+    console.error(`[proxy] pod-watch: ${String(err)} — restart in ${backoffMs}ms`)
+    // One pending restart at a time: a failing start can emit both a
+    // rejected promise and an 'error' event, and each stacked timer would
+    // start another informer that never stops (same guard as netd's
+    // startResourceWatch).
+    if (restartTimer) return
+    restartTimer = setTimeout(() => {
+      restartTimer = null
+      begin()
+    }, backoffMs)
+    backoffMs = Math.min(backoffMs * 2, 30_000)
+  }
+  informer.on('error', (err: unknown) => { onError(err) })
+  informer.on('connect', () => { console.log('[proxy] pod-watch: connected') })
+  begin()
 }
 
 /**
@@ -224,18 +239,15 @@ export async function startPodWatch(index: PodSessionIndex, cfg = loadApiConfig(
 export async function fetchPodIpBySessionId(
   index: PodSessionIndex,
   sessionId: string,
-  cfg = loadApiConfig(),
+  client = inClusterClient(),
 ): Promise<string | undefined> {
-  let body = ''
-  await apiGet(
-    cfg,
-    `/api/v1/namespaces/${cfg.namespace}/pods?labelSelector=${encodeURIComponent(`${LABEL_SESSION_ID}=${sessionId}`)}`,
-    (line) => { body += line },
-  )
-  const list = JSON.parse(body) as { items?: WatchedPod[] }
-  for (const pod of list.items ?? []) {
+  const list = await client.core.listNamespacedPod({
+    namespace: client.namespace,
+    labelSelector: `${LABEL_SESSION_ID}=${sessionId}`,
+  })
+  for (const pod of list.items) {
     const ip = pod.status?.podIP
-    if (ip && podSessionId(pod) === sessionId) {
+    if (ip && podSessionId(pod as WatchedPod) === sessionId) {
       index.set(ip, sessionId)
       return ip
     }
@@ -251,17 +263,15 @@ export async function fetchPodIpBySessionId(
 export async function fetchSessionByPodIp(
   index: PodSessionIndex,
   ip: string,
-  cfg = loadApiConfig(),
+  client = inClusterClient(),
 ): Promise<string | undefined> {
-  let body = ''
-  await apiGet(
-    cfg,
-    `${PODS_PATH(cfg.namespace)}&fieldSelector=${encodeURIComponent(`status.podIP=${ip}`)}`,
-    (line) => { body += line },
-  )
-  const list = JSON.parse(body) as { items?: WatchedPod[] }
-  for (const pod of list.items ?? []) {
-    const sid = podSessionId(pod)
+  const list = await client.core.listNamespacedPod({
+    namespace: client.namespace,
+    labelSelector: SESSION_POD_SELECTOR,
+    fieldSelector: `status.podIP=${ip}`,
+  })
+  for (const pod of list.items) {
+    const sid = podSessionId(pod as WatchedPod)
     if (sid && pod.status?.podIP === ip) {
       index.set(ip, sid)
       return sid

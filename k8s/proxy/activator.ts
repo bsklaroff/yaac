@@ -27,14 +27,21 @@
  * back on the activator in a redirect loop.
  */
 
-import fs from 'node:fs'
 import https from 'node:https'
+import {
+  ApiException,
+  AppsV1Api,
+  CoreV1Api,
+  DiscoveryV1Api,
+  KubeConfig,
+  PatchStrategy,
+  setHeaderOptions,
+} from '@kubernetes/client-node'
 import tls from 'node:tls'
 import forge from 'node-forge'
 import type http from 'node:http'
 import type { Duplex } from 'node:stream'
 
-const SA_DIR = '/var/run/secrets/kubernetes.io/serviceaccount'
 
 /** Must match vclusterSleepSliceName in packages/server/src/features/cluster/activator.ts. */
 export function sleepSliceName(vcName: string): string {
@@ -108,63 +115,49 @@ export function mintServingCert(
   }
 }
 
-// ── In-cluster host-API client (built-in https; no kube client library) ─────
+// ── Host-API access ─────────────────────────────────────────────────────────
 
-export interface ApiConfig {
-  host: string
-  port: string
-  token: string
-  ca: Buffer
+/** The typed clients the wake path drives. */
+export interface ActivatorApis {
+  core: CoreV1Api
+  apps: AppsV1Api
+  discovery: DiscoveryV1Api
 }
 
-function loadApiConfig(): ApiConfig {
-  const host = process.env.KUBERNETES_SERVICE_HOST
-  if (!host) throw new Error('KUBERNETES_SERVICE_HOST unset — activator needs an in-cluster SA')
+/**
+ * Build the clients from a kubeconfig.
+ *
+ * Credentials are resolved per REQUEST by the library, not snapshotted at
+ * startup: the in-cluster config registers a `tokenFile` auth provider that
+ * re-reads the projected ServiceAccount token kubelet rotates. An activator
+ * holding a start-up copy would 401 after the first rotation and never
+ * recover — silently, since it only calls the apiserver when a sleeping
+ * vcluster is dialed, so the symptom surfaces as "waking hangs" long after
+ * the credential actually died.
+ */
+export function activatorApis(kubeConfig: KubeConfig): ActivatorApis {
   return {
-    host,
-    port: process.env.KUBERNETES_SERVICE_PORT_HTTPS ?? process.env.KUBERNETES_SERVICE_PORT ?? '443',
-    token: fs.readFileSync(`${SA_DIR}/token`, 'utf8').trim(),
-    ca: fs.readFileSync(`${SA_DIR}/ca.crt`),
+    core: kubeConfig.makeApiClient(CoreV1Api),
+    apps: kubeConfig.makeApiClient(AppsV1Api),
+    discovery: kubeConfig.makeApiClient(DiscoveryV1Api),
   }
 }
 
-interface ApiResponse {
-  status: number
-  body: string
+function inClusterApis(): ActivatorApis {
+  const kubeConfig = new KubeConfig()
+  kubeConfig.loadFromCluster()
+  return activatorApis(kubeConfig)
 }
 
-function apiRequest(
-  cfg: ApiConfig,
-  method: string,
-  path: string,
-  body?: string,
-  contentType = 'application/json',
-): Promise<ApiResponse> {
-  return new Promise((resolve, reject) => {
-    const req = https.request(
-      {
-        host: cfg.host,
-        port: cfg.port,
-        method,
-        path,
-        ca: cfg.ca,
-        headers: {
-          Authorization: `Bearer ${cfg.token}`,
-          Accept: 'application/json',
-          ...(body !== undefined ? { 'Content-Type': contentType } : {}),
-        },
-      },
-      (res) => {
-        let out = ''
-        res.setEncoding('utf8')
-        res.on('data', (c: string) => { out += c })
-        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: out }))
-        res.on('error', reject)
-      },
-    )
-    req.on('error', reject)
-    req.end(body)
-  })
+/** HTTP status behind a client-node failure, or null if it is not one. */
+export function apiStatusCode(err: unknown): number | null {
+  return err instanceof ApiException ? err.code : null
+}
+
+/** Status code when the error is an API error, else the raw message. */
+function describeApiError(err: unknown): string {
+  const code = apiStatusCode(err)
+  return code === null ? String(err) : String(code)
 }
 
 // ── Per-vcluster credential + wake state ────────────────────────────────────
@@ -208,7 +201,8 @@ export interface ActivatorOptions {
   /** Control-plane pod port; defaults to `port` (both 8443 in production).
    *  Injectable so tests can run listener and backend on one host. */
   backendPort?: number
-  api?: ApiConfig
+  /** Injectable so tests can point the clients at a fake apiserver. */
+  kubeConfig?: KubeConfig
   log?: (msg: string) => void
 }
 
@@ -219,7 +213,7 @@ const WAKE_POLL_MS = 500
 const DATAPATH_SETTLE_MS = 500
 
 export function startActivator(opts: ActivatorOptions): https.Server {
-  const api = opts.api ?? loadApiConfig()
+  const apis = opts.kubeConfig ? activatorApis(opts.kubeConfig) : inClusterApis()
   const log = opts.log ?? ((m: string) => console.log(`[activator] ${m}`))
   const backendPort = opts.backendPort ?? opts.port
 
@@ -232,9 +226,11 @@ export function startActivator(opts: ActivatorOptions): https.Server {
   async function loadCerts(vc: VclusterRef): Promise<VcCerts> {
     const hit = certsCache.get(vc.namespace)
     if (hit && hit.expires > Date.now()) return hit.certs
-    const res = await apiRequest(api, 'GET', `/api/v1/namespaces/${vc.namespace}/secrets/${vc.name}-certs`)
-    if (res.status !== 200) throw new Error(`get ${vc.name}-certs → ${res.status}`)
-    const secret = JSON.parse(res.body) as { data?: Record<string, string> }
+    const secret = await apis.core
+      .readNamespacedSecret({ namespace: vc.namespace, name: `${vc.name}-certs` })
+      .catch((err: unknown) => {
+        throw new Error(`get ${vc.name}-certs → ${describeApiError(err)}`)
+      })
     const apiHost = `${vc.name}.${vc.namespace}.svc.cluster.local`
     const certs = certsFromSecretData(secret.data ?? {}, vc, apiHost)
     certsCache.set(vc.namespace, { certs, expires: Date.now() + CERTS_TTL_MS })
@@ -249,18 +245,11 @@ export function startActivator(opts: ActivatorOptions): https.Server {
    * control plane.
    */
   async function controlPlanePodIp(vc: VclusterRef): Promise<string | null> {
-    const selector = encodeURIComponent(
-      `app=vcluster,release=${vc.name},!vcluster.loft.sh/managed-by`,
-    )
-    const res = await apiRequest(api, 'GET', `/api/v1/namespaces/${vc.namespace}/pods?labelSelector=${selector}`)
-    if (res.status !== 200) throw new Error(`list control-plane pods → ${res.status}`)
-    const list = JSON.parse(res.body) as {
-      items?: Array<{
-        metadata?: { deletionTimestamp?: string }
-        status?: { podIP?: string; phase?: string }
-      }>
-    }
-    for (const pod of list.items ?? []) {
+    const list = await apis.core.listNamespacedPod({
+      namespace: vc.namespace,
+      labelSelector: `app=vcluster,release=${vc.name},!vcluster.loft.sh/managed-by`,
+    })
+    for (const pod of list.items) {
       if (pod.metadata?.deletionTimestamp) continue
       if (pod.status?.phase === 'Running' && pod.status.podIP) return pod.status.podIP
     }
@@ -288,19 +277,11 @@ export function startActivator(opts: ActivatorOptions): https.Server {
    * (observed live as `connection refused`).
    */
   async function serviceRoutesToBackend(vc: VclusterRef): Promise<boolean> {
-    const selector = encodeURIComponent(`kubernetes.io/service-name=${vc.name}`)
-    const res = await apiRequest(
-      api, 'GET',
-      `/apis/discovery.k8s.io/v1/namespaces/${vc.namespace}/endpointslices?labelSelector=${selector}`,
-    )
-    if (res.status !== 200) throw new Error(`list endpointslices → ${res.status}`)
-    const list = JSON.parse(res.body) as {
-      items?: Array<{
-        metadata?: { labels?: Record<string, string> }
-        endpoints?: Array<{ conditions?: { ready?: boolean } }>
-      }>
-    }
-    for (const slice of list.items ?? []) {
+    const list = await apis.discovery.listNamespacedEndpointSlice({
+      namespace: vc.namespace,
+      labelSelector: `kubernetes.io/service-name=${vc.name}`,
+    })
+    for (const slice of list.items) {
       const managedBy = slice.metadata?.labels?.['endpointslice.kubernetes.io/managed-by']
       if (managedBy !== 'endpointslice-controller.k8s.io') continue
       if ((slice.endpoints ?? []).some((e) => e.conditions?.ready === true)) return true
@@ -310,17 +291,19 @@ export function startActivator(opts: ActivatorOptions): https.Server {
 
   async function performWake(vc: VclusterRef, servername: string): Promise<void> {
     const certs = await loadCerts(vc)
-    const depPath = `/apis/apps/v1/namespaces/${vc.namespace}/deployments/${vc.name}`
-    const scale = await apiRequest(api, 'GET', `${depPath}/scale`)
-    if (scale.status !== 200) throw new Error(`get scale ${vc.name} → ${scale.status}`)
-    const replicas = (JSON.parse(scale.body) as { spec?: { replicas?: number } }).spec?.replicas ?? 0
-    if (replicas === 0) {
+    const scale = await apis.apps
+      .readNamespacedDeploymentScale({ name: vc.name, namespace: vc.namespace })
+      .catch((err: unknown) => {
+        throw new Error(`get scale ${vc.name} → ${describeApiError(err)}`)
+      })
+    if ((scale.spec?.replicas ?? 0) === 0) {
       log(`waking ${vc.name} (scale 0 → 1)`)
-      const patch = await apiRequest(
-        api, 'PATCH', `${depPath}/scale`,
-        JSON.stringify({ spec: { replicas: 1 } }), 'application/merge-patch+json',
-      )
-      if (patch.status !== 200) throw new Error(`scale ${vc.name} to 1 → ${patch.status}`)
+      await apis.apps.patchNamespacedDeploymentScale(
+        { name: vc.name, namespace: vc.namespace, body: { spec: { replicas: 1 } } },
+        setHeaderOptions('Content-Type', PatchStrategy.MergePatch),
+      ).catch((err: unknown) => {
+        throw new Error(`scale ${vc.name} to 1 → ${describeApiError(err)}`)
+      })
     }
 
     const deadline = Date.now() + WAKE_TIMEOUT_MS
@@ -332,13 +315,13 @@ export function startActivator(opts: ActivatorOptions): https.Server {
         // The interception slice must be gone BEFORE any parked request
         // is answered: the 307's re-dial must route to the real
         // endpoint, not back here.
-        const del = await apiRequest(
-          api, 'DELETE',
-          `/apis/discovery.k8s.io/v1/namespaces/${vc.namespace}/endpointslices/${sleepSliceName(vc.name)}`,
-        )
-        if (del.status !== 200 && del.status !== 404) {
-          log(`warning: delete ${sleepSliceName(vc.name)} → ${del.status} (reconcile will retry)`)
-        }
+        await apis.discovery.deleteNamespacedEndpointSlice({
+          name: sleepSliceName(vc.name), namespace: vc.namespace,
+        }).catch((err: unknown) => {
+          // 404 is the benign race: another wake already removed it.
+          if (apiStatusCode(err) === 404) return
+          log(`warning: delete ${sleepSliceName(vc.name)} → ${describeApiError(err)} (reconcile will retry)`)
+        })
         // Brief settle so the datapath drops our just-deleted endpoint
         // before the re-dial: endpoint programming is fast but not
         // synchronous with the API write.

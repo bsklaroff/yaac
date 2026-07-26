@@ -41,7 +41,7 @@ import {
  * YAAC_K8S_REGISTRY) and inner `yaac cluster check` — which itself
  * exercises the prefix-host registry path, an inner probe pod synced to
  * the host (registry pull + hostPath write under the VAP guard), and
- * inner NetworkPolicy enforcement via host Cilium. Inner session create
+ * inner NetworkPolicy enforcement via the host CNI. Inner session create
  * is deliberately NOT exercised here: it would build the full session
  * image chain with the in-pod podman (apt + node + agent installers
  * through the proxy — tens of minutes more); run it manually when
@@ -184,9 +184,11 @@ describe.skipIf(process.env.YAAC_E2E_NESTED_YAAC !== '1')(
       // Inner cluster check: the inner server-free preflight against the
       // vcluster. The probe builds nothing — it pushes busybox through the
       // in-pod podman to the project registry and runs a synced probe pod
-      // from it under the VAP guard. The egress / envoy-config / nested-mount
-      // / vap gates self-skip under YAAC_NESTED (egress is enforced
-      // host-side, the rest have no in-vcluster equivalent).
+      // from it under the VAP guard. The egress / nested-mount / vap gates
+      // self-skip under YAAC_NESTED (egress is enforced host-side, the rest
+      // have no in-vcluster equivalent); datapath is warn-level here because
+      // no inner session exists yet, so this install has deployed no
+      // claim-mode netd and claims nothing.
       const { stdout: checkOut } = await execInJob(name, [
         'sh', '-c', 'cd /tmp/yaac && node_modules/.bin/tsx packages/cli/src/cli.ts cluster check 2>&1; echo "EXIT:$?"',
       ], { timeout: 900_000, maxAttempts: 1 })
@@ -195,6 +197,7 @@ describe.skipIf(process.env.YAAC_E2E_NESTED_YAAC !== '1')(
       expect(checkOut).toContain('✓ namespace')
       expect(checkOut).toContain('✓ probe')
       expect(checkOut).toContain('- egress')
+      expect(checkOut).toMatch(/datapath.*not deployed yet/)
       expect(checkOut).toMatch(/EXIT:0/)
 
       // (The vcluster-in-vcluster refusal is pinned by a unit test on

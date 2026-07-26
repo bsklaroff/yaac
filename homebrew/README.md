@@ -18,7 +18,7 @@ yaac cluster setup
 
 - **`yaac.rb`** — installs the published npm tarball (`@bsklaroff/yaac`; the
   unscoped `yaac` npm name was already taken) into `libexec` and symlinks
-  `bin/yaac`. Depends on core `node`, `kubernetes-cli`, `cilium-cli`,
+  `bin/yaac`. Depends on core `node`, `kubernetes-cli`,
   `podman` (≥ 6.0, already in core), the tap's `yaac-kind`, and — on
   macOS/arm64 — the tap's `yaac-krunkit` (which pulls `yaac-libkrun`).
   `helm` is not a dependency: yaac downloads a pinned helm on demand

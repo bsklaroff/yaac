@@ -1,5 +1,13 @@
 /** Deployment/Service name and pod selector label of the shared proxy. */
 export const PROXY_APP_NAME = 'yaac-proxy'
+/**
+ * DaemonSet/ServiceAccount name and pod selector label of netd, the
+ * redirect layer (features/cluster/netd.ts). Defined here with the other
+ * datapath names so the claim bridge (redirect-claims.ts) can select on it
+ * without importing the manifest builders.
+ */
+export const NETD_APP_NAME = 'yaac-netd'
+export const NETD_SA_NAME = 'yaac-netd'
 /** Secret holding the server→proxy bearer secret. */
 export const PROXY_AUTH_SECRET_NAME = 'yaac-proxy-auth'
 /** Port the proxy serves inside the cluster (container + Service port). */
@@ -22,7 +30,7 @@ export const TRANSPARENT_HTTP_PORT = 10257
 export const TRANSPARENT_TUNNEL_PORT = 10258
 /**
  * Port the per-pod git SSH `ncat` ProxyCommand dials (a sentinel address, not
- * a real host). Cilium redirects egress to SSH_TUNNEL_SENTINEL:this-port
+ * a real host). netd redirects egress to SSH_TUNNEL_SENTINEL:this-port
  * through the node Envoy to the proxy's transparent tunnel listener, so SSH
  * gets the same source-IP-via-PP2 identity as HTTP(S). ncat still sends
  * `CONNECT host:22`, so the proxy learns the real destination for the
@@ -31,7 +39,7 @@ export const TRANSPARENT_TUNNEL_PORT = 10258
 export const TUNNEL_INGRESS_PORT = 10259
 /**
  * Sentinel address the SSH ncat ProxyCommand dials. Never a real host: it
- * only exists to be matched and redirected by Cilium. In the RFC2544
+ * only exists to be matched and redirected by netd. In the RFC2544
  * benchmark range (like the DNS stub's 198.18.0.1), so it can never route.
  */
 export const SSH_TUNNEL_SENTINEL = '198.18.0.2'
@@ -53,90 +61,67 @@ export const RELAY_PORT = 10260
  * TCP port of streamd, the in-pod stream daemon session pods run
  * (dockerfiles/streamd). In gVisor this is the sentry netstack, reachable
  * via the pod IP like any Service backend; only the proxy may dial it
- * (buildSessionIngressLockCnpManifest).
+ * (buildSessionIngressLockNpManifest).
  */
 export const POD_STREAM_PORT = 10300
-/** CiliumEnvoyConfig that programs the node Envoy to forward redirected
- * session egress to the proxy's transparent listeners. */
-export const EGRESS_REDIRECT_CEC_NAME = 'yaac-egress-redirect'
-/** CiliumNetworkPolicy that L7-redirects session-pod egress into the CEC. */
-export const SESSION_EGRESS_REDIRECT_CNP_NAME = 'yaac-session-egress-redirect'
-/** CiliumNetworkPolicy locking the proxy's transparent ports to Envoy/host. */
-export const PROXY_INGRESS_CNP_NAME = 'yaac-proxy-ingress'
-/** CiliumNetworkPolicy locking session-pod ingress to the proxy's relay
- * dials on POD_STREAM_PORT (default-denying everything else). */
-export const SESSION_INGRESS_LOCK_CNP_NAME = 'yaac-session-ingress-lock'
-/** ServiceAccount the proxy uses to watch pods (source-IP -> session). */
-export const PROXY_SA_NAME = 'yaac-proxy'
+/**
+ * Reserved node-local port range netd's Envoy binds its listener trio
+ * in — one trio per install, not per target (see k8s/netd/ports.ts, which
+ * takes the base and slot count from the DaemonSet env so the range has
+ * one definition). Session pods' NetworkPolicy admits egress to
+ * the node on exactly this range — that is the ONLY world-ward egress they
+ * get, which is what makes a missing redirect fail closed rather than open.
+ *
+ * Reaching a listener directly is not an escalation: it only reaches
+ * Envoy, which always stamps the connection's real peer address into the
+ * PROXY-protocol header, so a pod cannot use it to impersonate another
+ * session. The proxy's transparent ports stay unreachable from pods.
+ */
+export const NETD_LISTENER_PORT_BASE = 15100
+export const NETD_LISTENER_PORT_END = 15999
+/** Trios the range holds; must satisfy BASE + SLOTS*3 - 1 <= END. */
+export const NETD_LISTENER_SLOTS = 300
+
+/** NetworkPolicy default-denying world egress across the install namespace. */
+export const EGRESS_WORLD_DENY_NAME = 'yaac-egress-world-deny'
+/** NetworkPolicy granting session pods their redirect egress. */
+export const SESSION_EGRESS_NP_NAME = 'yaac-session-egress'
+/** NetworkPolicy locking the proxy's ingress (transparent ports = node only). */
+export const PROXY_INGRESS_NP_NAME = 'yaac-proxy-ingress'
+/** NetworkPolicy locking session-pod ingress to the proxy's relay dials. */
+export const SESSION_INGRESS_LOCK_NP_NAME = 'yaac-session-ingress-lock'
+/** Per-vcluster NetworkPolicy: the synced-pod egress floor. */
+export const VCLUSTER_EGRESS_FLOOR_NP_NAME = 'yaac-vcluster-egress-floor'
+/** Per-vcluster NetworkPolicy: inner-proxy ingress. */
+export const INNER_PROXY_INGRESS_NP_NAME = 'yaac-inner-proxy-ingress'
+/** Per-vcluster NetworkPolicy: synced session-pod ingress lock. */
+export const INNER_SESSION_INGRESS_LOCK_NP_NAME = 'yaac-inner-session-ingress-lock'
+/**
+ * Label the server stamps on every vcluster namespace. Plain NetworkPolicy
+ * selects peer namespaces by label, so cross-namespace rules (a
+ * vcluster's pods reaching the outer proxy's DNS stub, the proxy
+ * admitting their chained egress) key on this rather than on a name
+ * pattern.
+ */
+export const LABEL_VCLUSTER_NAMESPACE = 'yaac.vcluster-namespace'
 
 /**
- * Inner (nested / yaac-in-yaac) redirect objects. The server projects these
- * into a managed vcluster's host namespace so the vcluster's synced pods are
- * redirected to that session's *inner* proxy at higher precedence than the
- * outer redirect (see docs/nested-containers.md). The session pod
- * never gets host RBAC — the server rebuilds them from these trusted builders.
- */
-export const INNER_EGRESS_REDIRECT_CEC_NAME = 'yaac-inner-egress-redirect'
-export const INNER_SESSION_EGRESS_REDIRECT_CNP_NAME = 'yaac-inner-session-egress-redirect'
-export const INNER_PROXY_INGRESS_CNP_NAME = 'yaac-inner-proxy-ingress'
-/** Projected per-vcluster lock: synced session pods accept streamd dials
- * (POD_STREAM_PORT) from their vcluster's inner proxies only. */
-export const INNER_SESSION_INGRESS_LOCK_CNP_NAME = 'yaac-inner-session-ingress-lock'
-/**
- * The outer yaac's low-precedence fallback redirect for a vcluster's synced
- * pods (→ the OUTER proxy), so they have working egress from the moment they
- * exist — before/without any inner yaac.
- *
- * The listeners live in a single SHARED, cluster-scoped
- * `CiliumClusterwideEnvoyConfig` (one per install, name install-scoped via
- * `vclusterFallbackCcecName` to avoid collisions between the real install and
- * ephemeral e2e `yaac-test-<run-id>` installs). Each vcluster keeps its own
- * fallback CNP (for tenant isolation) but references that shared CCEC, so
- * creating/destroying a vcluster adds/removes NO Envoy listeners — the churn
- * that otherwise triggers a node-wide "regenerate all endpoints" and wedges
- * every session's egress (see docs/nested-containers.md).
- *
- * One shared base name: the per-vcluster CNP uses it verbatim; the cluster-scoped
- * CCEC suffixes it with the install namespace (`vclusterFallbackCcecName`).
- */
-export const VCLUSTER_FALLBACK_REDIRECT_NAME = 'yaac-vcluster-fallback-redirect'
-/**
- * `toPorts.listener.priority` (lower number = higher precedence; unset is the
- * lowest, ~126). EVERY yaac's session-egress redirect uses the SAME normal
- * value — so an inner yaac is fully transparent (no special band) and its
- * projected redirect naturally beats the outer fallback. The outer's
- * vcluster-fallback uses a deliberately lower precedence so any inner override
- * wins. Spike 2026-06-16 proved lower-wins (explicit beats unset); the nesting
- * e2e pins the explicit-vs-explicit case.
- */
-export const SESSION_REDIRECT_PRIORITY = 50
-export const VCLUSTER_FALLBACK_PRIORITY = 90
-/**
- * Role label + value the inner proxy pod carries so the inner override can
- * exclude it (loop-free): the inner proxy is NOT redirected to itself, so its
- * own upstream dials fall through to the outer redirect → outer proxy → world.
+ * Role label + value the inner proxy pod carries so netd's target
+ * selection can exclude it (loop-free): the inner proxy is NOT redirected
+ * to itself, so its own upstream dials fall through to the outer proxy.
  */
 export const LABEL_ROLE = 'yaac.role'
 export const ROLE_INNER_PROXY = 'inner-proxy'
 /**
  * Role of the ephemeral runsc builder pods that execute untrusted image
  * layers (docs/trust-split-builds.md). Referenced by the world-deny
- * exclusion below and by the builder-pod reap sweep; defined here (not in
- * builder-pod.ts) so the policy builder needs no import from lib/container.
+ * exclusion and by the builder-pod reap sweep; defined here (not in
+ * builder-pod.ts) so the policy builder needs no import from features/images.
  */
 export const ROLE_BUILDER = 'builder'
 /**
- * Label stamped on the host objects `reconcileInnerRedirects` projects into a
- * vcluster's namespace, so the prune pass can list exactly its own writes and
- * never touch the vcluster's egress floor (which shares the `app` label).
- * Per-install objects also carry `LABEL_DATA_DIR_HASH` = the owning inner
- * install, the prune key.
- */
-export const LABEL_PROJECTION = 'yaac.projection'
-export const PROJECTION_INNER_REDIRECT = 'inner-redirect'
-/**
  * Nested (inner) proxy only. The inner proxy's chained upstream dial
- * (inner session → inner proxy → OUTER proxy → internet) terminates TLS at
+ * (inner session -> inner proxy -> OUTER proxy -> internet) terminates TLS at
  * the outer proxy, which presents a leaf signed by the OUTER proxy's MITM CA.
  * The stock proxy dials upstream with Node's default trust store, so without
  * the outer CA that dial fails with "self-signed certificate in certificate
@@ -148,8 +133,9 @@ export const PROJECTION_INNER_REDIRECT = 'inner-redirect'
  */
 export const OUTER_CA_CONFIGMAP_NAME = 'yaac-outer-proxy-ca'
 
-/** Blanket world-egress deny (CiliumNetworkPolicy) — see the builder. */
-export const EGRESS_WORLD_DENY_NAME = 'yaac-egress-world-deny'
+/** ServiceAccount the proxy uses to watch pods (source-IP -> session). */
+export const PROXY_SA_NAME = 'yaac-proxy'
+
 
 /** Name of the builder-role admission guard (policy + binding). */
 export const BUILDER_ROLE_GUARD_NAME = 'yaac-builder-role-guard'
