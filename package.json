@@ -54,6 +54,7 @@
     "@lydell/node-pty": "catalog:",
     "@openai/codex": "0.121.0",
     "commander": "catalog:",
+    "croner": "catalog:",
     "drizzle-orm": "catalog:",
     "hono": "catalog:",
     "simple-git": "catalog:",
