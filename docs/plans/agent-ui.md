@@ -45,8 +45,12 @@ yaac credentials are also install/project level (the host-mounted
 auth-kind gating anywhere**:
 
 - The ACP host attempts the adapter with whatever credentials the project
-  has. Auth is validated empirically at every adapter (re)spawn — via the
-  initialize/authenticate exchange — never inferred from credential kind.
+  has. Auth is validated empirically at every adapter (re)spawn:
+  `initialize`, then the `session/new`/`session/load` attempt — an
+  `auth_required` result (or an auth-classified prompt failure) is the
+  fallback signal. yaac never calls ACP `authenticate`: that is an
+  interactive login flow selected from the advertised `authMethods`, not
+  a credential health check, and yaac implements no login flow.
 - If auth fails at session create, creation falls back to a standard
   terminal (TUI) session and says why. If it fails on a later respawn
   (credentials changed after create), the pane shows a clear degraded
@@ -110,7 +114,13 @@ A new `features/agent-acp/` module, lifecycle-managed like
   in-pod), then `session/new` or `session/load`.
 - The ACP session id ↔ yaac session mapping persists in a new
   `acp_session_meta` table (Drizzle migration; precedent:
-  `opencode_session_meta`).
+  `opencode_session_meta`). The adapter generates its own SDK session id
+  (it does not adopt the yaac id the way `buildAgentCmd` does), so
+  everything that touches the SDK transcript resolves through this
+  mapping: the restart-as-terminal action resumes with `claude --resume
+  <acp session id>` — the generic restart path, which passes the yaac id,
+  would resume the wrong (empty) transcript — and first-message/title
+  extraction reads the transcript file under the ACP id.
 - **Event log with load epochs.** ACP `session/load` replays the entire
   conversation as `session/update` notifications before its response
   returns, so a naive append log would duplicate history on every
@@ -118,13 +128,26 @@ A new `features/agent-acp/` module, lifecycle-managed like
   suspended, the canonical log is rebuilt from the load replay, and the
   host atomically publishes a `reset` snapshot followed by sequenced live
   events. Browser events carry `{gen, seq}`; a client discards anything
-  from a stale generation. The log is bounded (size cap with a truncation
-  marker; full history is always recoverable from the next `session/load`).
+  from a stale generation. Bounding drops raw deltas, not the timeline:
+  the log keeps a compact materialized snapshot (merged chunks, collapsed
+  tool cards with truncated payloads) plus recent raw events, so a
+  same-generation reconnect always gets the full timeline in compact
+  form. Payloads truncated out of the snapshot are simply unavailable
+  until the `session/load` of the next adapter respawn — the host never
+  reloads the adapter mid-turn to recover them.
 - **Commands are request/ack.** Browser→server `prompt`, `cancel`,
   `set_config_option` (the preferred surface — session config options
   supersede legacy modes; a modes fallback covers agents that only expose
   modes), and permission responses all carry client request ids and are
-  acked, so a reconnecting client can tell delivered from dropped.
+  acked. Acks alone don't make delivery reconnect-safe (the socket can
+  die between `session/prompt` and the ack), so the host keeps a bounded
+  per-session ledger of processed command ids and outcomes keyed by
+  client identity and replays the cached ack on a duplicate — a client
+  that reconnects after a lost ack re-asks safely instead of double-
+  prompting. The ledger is in-memory: after a server restart, in-flight
+  commands settle as an explicit `unknown` outcome, and the client never
+  auto-retries a prompt/cancel/config mutation on `unknown` — the
+  timeline shows whether the turn actually ran, and the user decides.
 - **Permissions follow the ACP contract.** A `session/request_permission`
   carries agent-defined options; the pane renders those options verbatim
   and the response selects one of the supplied `optionId`s (or reports
@@ -132,9 +155,13 @@ A new `features/agent-acp/` module, lifecycle-managed like
   to attached clients correlated by request id; the first response wins
   and later ones are acked as stale. Normal permissiveness is governed by
   the agent's own config options (e.g. accept-edits), not a yaac side
-  channel. When **no client is attached**, the host answers after a
-  deadline by selecting an agent-offered reject/cancel-kind option —
-  deterministic and safe; it never auto-selects an allow option.
+  channel. **Every permission request starts a deadline** — client
+  attachment lengthens it but never disables it (a backgrounded browser
+  can hold its socket open indefinitely without answering). At the
+  deadline the host selects an agent-offered reject-kind option; ACP
+  option kinds are allow/reject only, so if no reject option is offered
+  it sends `session/cancel` and settles the request with the `cancelled`
+  outcome. It never invents an option and never auto-selects an allow.
 - **Status.** The shared session-list contract stays `running | waiting`
   (sidebar unread state, chime, tray, and next-waiting all key on
   `waiting`). ACP sessions additionally expose a detailed activity state
@@ -172,17 +199,18 @@ links are inert-by-default, and tool output is displayed as text.
 Reconnect uses the existing `lib/reconnect.ts` backoff plus the
 generation/sequence protocol above.
 
-## Known protocol gaps (accepted, with mitigations)
+## Protocol surface notes
 
-- **No usage/cost data in the ACP v1 spec.** If the pinned adapter emits a
-  usage extension, use it; otherwise per-turn usage can be merged
-  server-side from the SDK's transcript JSONL on the host mount —
-  additive later, not load-bearing.
-- **No context management from outside the protocol.** `/compact` and
-  similar are unavailable in the adapter, and a shell terminal cannot
-  reach the SDK session. Mitigation is restart-with-resume (the SDK
-  transcript survives); a context-pressure warning in the pane is a
-  follow-up.
+- **Usage/cost**: the stable `usage_update` session update carries the
+  current context (`used`/`size`, required) and optional cumulative
+  `cost`; the host consumes it when emitted — the pinned Claude adapter
+  emits the standard update — and the pane surfaces context pressure and
+  cost from it. Transcript-JSONL merging remains only as a fallback for
+  an older pinned adapter without the update.
+- **Slash commands**: the pane offers the agent's advertised
+  `available_commands_update` commands; `/compact` and friends go through
+  `session/prompt` like any prompt (the adapter supports compaction and
+  reports its status).
 - **Subagent attribution** rides an adapter extension
   (`_meta.claudeCode.parentToolUseId`); render nested tool calls under
   their parent when present, flat otherwise.
@@ -201,8 +229,8 @@ generation/sequence protocol above.
    mapping into the existing `running|waiting` contract plus the detailed
    activity state.
 3. **Interaction depth**: permission prompts (agent-supplied options,
-   no-client deadline policy), plan display, config-options panel, image
-   input, usage surfacing (adapter extension or transcript merge).
+   deadline policy), plan display, config-options panel, image input,
+   `usage_update` surfacing, slash-command palette.
 4. **Second agent**: wire one natively-ACP tool (e.g. Gemini CLI `--acp`)
    through the same host to prove the pane is agent-agnostic.
 
@@ -211,14 +239,17 @@ generation/sequence protocol above.
 - Unit (`packages/server/test/features/agent-acp/`): ACP client framing
   against a scripted fake adapter (initialize/capability negotiation,
   generation reset + replay dedup, fan-out, permission optionId flow and
-  no-client deadline, command acks, auth-failure fallback). Frontend:
+  deadline policy, command acks with lost-ack replay and unknown-outcome
+  settlement, auth-failure fallback). Frontend:
   timeline reducer (chunk accumulation, tool-card updates, stale-
   generation discard), composer, permission UI, sanitization.
 - E2e (`test/e2e/`): create an ACP-mode session against a mock
   Anthropic-API endpoint (egress mock precedent exists in the
   session-create e2e family), drive a prompt through the WS, assert
-  streamed updates, cancel, and `session/load` resume across a host
-  restart with no duplicated history. Any new CLI flag (e.g. `yaac
+  streamed updates, cancel, `session/load` resume across a host restart
+  with no duplicated history, a lost-ack reconnect that does not
+  double-prompt, and an ACP→terminal fallback restart that resumes the
+  mapped transcript with history preserved. Any new CLI flag (e.g. `yaac
   session create --interface acp`) gets an e2e-cli test per repo rule.
 - Adapter image bump = tools-image content-hash change; global setup
   rebuilds automatically; tests pass `requirePrebuilt: true` as usual.
