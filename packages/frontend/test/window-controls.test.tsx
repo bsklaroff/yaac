@@ -45,6 +45,20 @@ describe('WindowControls', () => {
     expect(bridge.toggleMaximize).toHaveBeenCalledExactlyOnceWith(true)
   })
 
+  it('labels the zoom button for the platform', () => {
+    render(<WindowControls />)
+    expect(screen.getByRole('button', { name: 'Zoom window' }).getAttribute('title')).toBe('Zoom')
+    cleanup()
+    Object.defineProperty(window.navigator, 'platform', { value: 'MacIntel', configurable: true })
+    try {
+      render(<WindowControls />)
+      expect(screen.getByRole('button', { name: 'Zoom window' }).getAttribute('title'))
+        .toBe('Full screen (⌥ to zoom)')
+    } finally {
+      Reflect.deleteProperty(window.navigator, 'platform')
+    }
+  })
+
   it('does not throw when the bridge is absent', () => {
     render(<WindowControls />)
     expect(() => fireEvent.click(screen.getByRole('button', { name: 'Close window' }))).not.toThrow()

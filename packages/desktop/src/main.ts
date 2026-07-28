@@ -44,6 +44,10 @@ app.setName('yaac')
 let win: BrowserWindow | null = null
 let tray: Tray | null = null
 let quitting = false
+// macOS animates full-screen transitions and documents isFullScreen() as
+// stale until enter-/leave-full-screen fires — zoom clicks are ignored while
+// a requested transition is in flight so a double-click can't re-request it.
+let fsTransitioning = false
 let events: { stop: () => void } | null = null
 // One monitor per attached server: its first-snapshot seeding suppresses a
 // notification burst on launch, and WS reconnects must not re-notify ongoing
@@ -96,6 +100,9 @@ async function createWindow(): Promise<BrowserWindow> {
     },
   })
   if (process.platform === 'darwin') w.setWindowButtonVisibility(false)
+  fsTransitioning = false
+  w.on('enter-full-screen', () => { fsTransitioning = false })
+  w.on('leave-full-screen', () => { fsTransitioning = false })
   // Harden every preview <webview> before it attaches: strip any preload,
   // force Node off / isolation on, and refuse a src off loopback and the
   // attached server's host (where a remote server's forwarded ports live).
@@ -117,9 +124,9 @@ async function createWindow(): Promise<BrowserWindow> {
   })
   // Close hides to the tray; only an explicit Quit destroys the window.
   w.on('close', (e) => {
-    // Full-screen bounds are the display, not a window geometry the user
-    // chose — keep the last windowed bounds instead.
-    if (!w.isFullScreen()) void saveWindowState(windowStateFile(), w.getBounds())
+    // getNormalBounds(): the last windowed geometry even when the window is
+    // currently maximized or full screen.
+    void saveWindowState(windowStateFile(), w.getNormalBounds())
     if (!quitting) {
       e.preventDefault()
       w.hide()
@@ -290,16 +297,20 @@ ipcMain.handle('server:add-remote', async (_e, url: unknown, token: unknown) => 
 // preload bridge. Registered once, they act on whichever window is current.
 ipcMain.on('window:minimize', () => win?.minimize())
 ipcMain.on('window:toggle-maximize', (_e, altKey: unknown) => {
-  if (!win) return
+  if (!win || fsTransitioning) return
   const action = zoomAction({
     platform: process.platform,
     altKey: altKey === true,
     isFullScreen: win.isFullScreen(),
     isMaximized: win.isMaximized(),
   })
-  if (action === 'exit-full-screen') win.setFullScreen(false)
-  else if (action === 'enter-full-screen') win.setFullScreen(true)
-  else if (action === 'unmaximize') win.unmaximize()
+  if (action === 'enter-full-screen' || action === 'exit-full-screen') {
+    fsTransitioning = true
+    // Safety valve: never wedge the button if the WM swallows the transition
+    // and the matching enter-/leave-full-screen event never fires.
+    setTimeout(() => { fsTransitioning = false }, 2000)
+    win.setFullScreen(action === 'enter-full-screen')
+  } else if (action === 'unmaximize') win.unmaximize()
   else win.maximize()
 })
 ipcMain.on('window:close', () => win?.close())
