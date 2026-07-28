@@ -4,7 +4,8 @@ import clsx from 'clsx'
 /** The window-control bridge the Electron preload exposes on `window`. */
 interface YaacWindow {
   minimize: () => void
-  toggleMaximize: () => void
+  /** altKey selects the macOS Option-click zoom (maximize) instead of full screen. */
+  toggleMaximize: (altKey?: boolean) => void
   close: () => void
   openExternal: (url: string) => void
 }
@@ -49,9 +50,9 @@ export function WindowControls({ className }: { className?: string }): JSX.Eleme
       <button
         type="button"
         aria-label="Zoom window"
-        title="Zoom"
+        title="Full screen (⌥ to zoom)"
         className={clsx(DOT, 'group-hover/wc:bg-[#28c840]')}
-        onClick={() => windowApi()?.toggleMaximize()}
+        onClick={(e) => windowApi()?.toggleMaximize(e.altKey)}
       >
         +
       </button>

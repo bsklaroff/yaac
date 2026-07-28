@@ -37,6 +37,7 @@ import { backgroundColorFor } from '#theme-bg'
 import { buildTrayBitmap } from '#tray-icon'
 import { appHostFromUrl, hardenGuestWebPreferences, isAllowedPreviewUrl, sanitizeWebviewSrc } from '#webview-guard'
 import { boundsVisibleOn, readWindowState, saveWindowState } from '#window-state'
+import { zoomAction } from '#window-zoom'
 
 app.setName('yaac')
 
@@ -116,7 +117,9 @@ async function createWindow(): Promise<BrowserWindow> {
   })
   // Close hides to the tray; only an explicit Quit destroys the window.
   w.on('close', (e) => {
-    void saveWindowState(windowStateFile(), w.getBounds())
+    // Full-screen bounds are the display, not a window geometry the user
+    // chose — keep the last windowed bounds instead.
+    if (!w.isFullScreen()) void saveWindowState(windowStateFile(), w.getBounds())
     if (!quitting) {
       e.preventDefault()
       w.hide()
@@ -286,7 +289,19 @@ ipcMain.handle('server:add-remote', async (_e, url: unknown, token: unknown) => 
 // The custom window controls (WindowControls.tsx) drive the window through the
 // preload bridge. Registered once, they act on whichever window is current.
 ipcMain.on('window:minimize', () => win?.minimize())
-ipcMain.on('window:toggle-maximize', () => { if (win?.isMaximized()) win.unmaximize(); else win?.maximize() })
+ipcMain.on('window:toggle-maximize', (_e, altKey: unknown) => {
+  if (!win) return
+  const action = zoomAction({
+    platform: process.platform,
+    altKey: altKey === true,
+    isFullScreen: win.isFullScreen(),
+    isMaximized: win.isMaximized(),
+  })
+  if (action === 'exit-full-screen') win.setFullScreen(false)
+  else if (action === 'enter-full-screen') win.setFullScreen(true)
+  else if (action === 'unmaximize') win.unmaximize()
+  else win.maximize()
+})
 ipcMain.on('window:close', () => win?.close())
 ipcMain.on('window:open-external', (_e, url: unknown) => {
   if (typeof url === 'string' && /^https?:/.test(url)) void shell.openExternal(url)
