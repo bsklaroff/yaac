@@ -37,7 +37,7 @@ import { backgroundColorFor } from '#theme-bg'
 import { buildTrayBitmap } from '#tray-icon'
 import { appHostFromUrl, hardenGuestWebPreferences, isAllowedPreviewUrl, sanitizeWebviewSrc } from '#webview-guard'
 import { boundsVisibleOn, readWindowState, saveWindowState } from '#window-state'
-import { zoomAction } from '#window-zoom'
+import { createFsTransitionGuard, zoomAction } from '#window-zoom'
 
 app.setName('yaac')
 
@@ -47,7 +47,7 @@ let quitting = false
 // macOS animates full-screen transitions and documents isFullScreen() as
 // stale until enter-/leave-full-screen fires — zoom clicks are ignored while
 // a requested transition is in flight so a double-click can't re-request it.
-let fsTransitioning = false
+const fsGuard = createFsTransitionGuard()
 let events: { stop: () => void } | null = null
 // One monitor per attached server: its first-snapshot seeding suppresses a
 // notification burst on launch, and WS reconnects must not re-notify ongoing
@@ -100,9 +100,9 @@ async function createWindow(): Promise<BrowserWindow> {
     },
   })
   if (process.platform === 'darwin') w.setWindowButtonVisibility(false)
-  fsTransitioning = false
-  w.on('enter-full-screen', () => { fsTransitioning = false })
-  w.on('leave-full-screen', () => { fsTransitioning = false })
+  fsGuard.settle()
+  w.on('enter-full-screen', () => fsGuard.settle())
+  w.on('leave-full-screen', () => fsGuard.settle())
   // Harden every preview <webview> before it attaches: strip any preload,
   // force Node off / isolation on, and refuse a src off loopback and the
   // attached server's host (where a remote server's forwarded ports live).
@@ -297,7 +297,7 @@ ipcMain.handle('server:add-remote', async (_e, url: unknown, token: unknown) => 
 // preload bridge. Registered once, they act on whichever window is current.
 ipcMain.on('window:minimize', () => win?.minimize())
 ipcMain.on('window:toggle-maximize', (_e, altKey: unknown) => {
-  if (!win || fsTransitioning) return
+  if (!win || fsGuard.active()) return
   const action = zoomAction({
     platform: process.platform,
     altKey: altKey === true,
@@ -305,10 +305,7 @@ ipcMain.on('window:toggle-maximize', (_e, altKey: unknown) => {
     isMaximized: win.isMaximized(),
   })
   if (action === 'enter-full-screen' || action === 'exit-full-screen') {
-    fsTransitioning = true
-    // Safety valve: never wedge the button if the WM swallows the transition
-    // and the matching enter-/leave-full-screen event never fires.
-    setTimeout(() => { fsTransitioning = false }, 2000)
+    fsGuard.begin()
     win.setFullScreen(action === 'enter-full-screen')
   } else if (action === 'unmaximize') win.unmaximize()
   else win.maximize()

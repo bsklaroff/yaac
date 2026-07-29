@@ -18,3 +18,36 @@ export function zoomAction(state: {
   if (state.platform === 'darwin' && !state.altKey) return 'enter-full-screen'
   return state.isMaximized ? 'unmaximize' : 'maximize'
 }
+
+/**
+ * Serializes full-screen transitions (macOS animates them and documents
+ * isFullScreen() as stale until enter-/leave-full-screen fires). begin() arms
+ * the guard when a transition is requested; settle() — wired to those events —
+ * disarms it. A fallback timer disarms after `timeoutMs` in case a WM never
+ * delivers the event; begin() and settle() cancel any pending timer, so a
+ * stale timer from an earlier transition can never disarm a later one.
+ */
+export function createFsTransitionGuard(timeoutMs = 2000): {
+  active: () => boolean
+  begin: () => void
+  settle: () => void
+} {
+  let armed = false
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const cancelTimer = (): void => {
+    if (timer) clearTimeout(timer)
+    timer = null
+  }
+  return {
+    active: () => armed,
+    begin: () => {
+      armed = true
+      cancelTimer()
+      timer = setTimeout(() => { armed = false; timer = null }, timeoutMs)
+    },
+    settle: () => {
+      armed = false
+      cancelTimer()
+    },
+  }
+}
