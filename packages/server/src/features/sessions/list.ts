@@ -13,6 +13,7 @@ import {
 } from '#features/sessions/state'
 import { readSessionStatus, readSessionWaitingSince } from '#features/sessions/status-store'
 import { getSessionPorts } from '#features/sessions/forwarders/port-forwarders'
+import { getUnforwardedPorts } from '#features/sessions/forwarders/port-detector'
 import { readBlockedHosts } from '#features/sessions/egress/blocked-hosts'
 import { readAllGitAuthFailures } from '#features/projects/git-auth-failures'
 import { getSessionTitles } from '#features/titles/titles'
@@ -176,6 +177,7 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
           createdAt: formatUtcTimestamp(p.createdAtMs),
           blockedHosts: [],
           forwardedPorts: [],
+          unforwardedPorts: [],
         }
       }
       const [prompt, blockedHosts, baseBranch] = await Promise.all([
@@ -197,6 +199,7 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
         title: titlesBySlug.get(p.projectSlug)?.[p.sessionId],
         blockedHosts,
         forwardedPorts: getSessionPorts(p.sessionId),
+        unforwardedPorts: getUnforwardedPorts(p.sessionId),
         baseBranch: baseBranch ?? undefined,
         background: backgroundBySlug.get(p.projectSlug)?.has(p.sessionId) || undefined,
       }
@@ -226,6 +229,7 @@ async function listActiveSessionsImpl(projectFilter?: string): Promise<ActiveSes
         title: p.projectSlug ? titlesBySlug.get(p.projectSlug)?.[p.sessionId] : undefined,
         blockedHosts: [],
         forwardedPorts: [],
+        unforwardedPorts: [],
         background: p.projectSlug
           ? backgroundBySlug.get(p.projectSlug)?.has(p.sessionId) || undefined
           : undefined,

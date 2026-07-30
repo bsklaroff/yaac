@@ -62,6 +62,12 @@ backend. Every connection opens with one JSON handshake line
   painting redraw fragments — while a lone keystroke echo pays no added
   latency. The server-side pty adapter likewise dispatches consecutive
   data frames from one chunk as a single callback (one WS message).
+- `ports {}` — push the pod's localhost-reachable LISTEN ports (parsed
+  in-pod from `/proc/net/tcp{,6}`, bounded, loopback/wildcard binds
+  only, streamd's own port excluded) as JSON lines: once on connect, on
+  every change, and re-sent as a keepalive. Feeds the server's
+  port detector (docs/auto-forward-ports.md); the poll only runs while
+  a ports stream is open.
 
 The handshake token is per-session — `HMAC-SHA256(proxyAuthSecret,
 sessionId)`, derived (never stored), injected as `YAAC_STREAM_TOKEN` at

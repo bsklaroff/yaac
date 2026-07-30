@@ -17,7 +17,7 @@ const entry = (
   extra: Partial<SessionListEntry> = {},
 ): SessionListEntry => ({
   sessionId, projectSlug: 'p', tool: 'claude', status, createdAt: '2026-01-01 00:00:00',
-  blockedHosts: [], forwardedPorts: [], ...extra,
+  blockedHosts: [], forwardedPorts: [], unforwardedPorts: [], ...extra,
 })
 
 const deletedEntry = (sessionId: string): DeletedSessionEntry => ({

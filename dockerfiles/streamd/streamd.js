@@ -22,6 +22,12 @@
  *                       the containerExec replacement for session pods.
  * - pty  {cmd, cols, rows}  spawn argv under a PTY; framed both ways
  *                       (see framing.js). Resize frames drive TIOCSWINSZ.
+ * - ports {}            push the pod's localhost-reachable LISTEN ports
+ *                       (see ports.js) as one JSON line {ports:[...]} —
+ *                       immediately, then on every change, and re-sent as
+ *                       a keepalive so the server can detect a wedged
+ *                       stream. streamd's own listen port is excluded
+ *                       authoritatively.
  *
  * The token is per-session (HMAC of the install's proxy secret and the
  * session id), handed to the pod as YAAC_STREAM_TOKEN. It is defense in
@@ -35,6 +41,7 @@ import { spawn } from 'node:child_process'
 import * as pty from '@lydell/node-pty'
 import { FRAME_DATA, FRAME_RESIZE, FRAME_SIGNAL, FRAME_EXIT, FrameParser, encodeFrame } from './framing.js'
 import { createOutputBatcher } from './batcher.js'
+import { readListeningPorts } from './ports.js'
 
 export const DEFAULT_STREAM_PORT = 10300
 
@@ -47,6 +54,11 @@ const MAX_STREAMS = 128
 const EXEC_OUTPUT_MAX_BYTES = 4 * 1024 * 1024
 /** Grace between SIGTERM on socket close and the follow-up SIGKILL. */
 const CHILD_KILL_GRACE_MS = 2_000
+/** How often a `ports` stream re-reads /proc/net for listener changes. */
+const PORTS_POLL_MS = 2_000
+/** A `ports` stream re-sends an unchanged set at this cadence so the
+ *  server can tell a quiet pod from a dead stream. */
+const PORTS_KEEPALIVE_MS = 30_000
 
 const SIGNAL_NAME = /^SIG[A-Z0-9]{1,12}$/
 
@@ -151,6 +163,42 @@ function handleExec(socket, params) {
   return { ok: true }
 }
 
+/**
+ * `ports` stream: push the pod's localhost-reachable LISTEN set as JSON
+ * lines. One line immediately (right after the {ok} reply), one on every
+ * change, and a keepalive re-send of the unchanged set so the server can
+ * distinguish "nothing new" from a dead stream. The poll only runs while
+ * a ports stream is open — an idle daemon costs nothing.
+ */
+function handlePorts(socket, _params, _leftover, ctx) {
+  let lastKey = null
+  let lastSentAt = 0
+  const emit = () => {
+    let ports
+    try {
+      ports = readListeningPorts(ctx.procNetDir)
+    } catch {
+      ports = []
+    }
+    // The daemon's own listener is infra, never a forward candidate —
+    // excluded here authoritatively rather than trusting the server.
+    ports = ports.filter((p) => p !== ctx.boundPort())
+    const key = ports.join(',')
+    const now = Date.now()
+    if (key === lastKey && now - lastSentAt < ctx.portsKeepaliveMs) return
+    lastKey = key
+    lastSentAt = now
+    socket.write(JSON.stringify({ ports }) + '\n')
+  }
+  const timer = setInterval(emit, ctx.portsPollMs)
+  // First emit is deferred so the {ok} handshake reply (written after
+  // this handler returns) stays the first line on the wire.
+  setImmediate(emit)
+  socket.on('close', () => clearInterval(timer))
+  socket.on('error', () => clearInterval(timer))
+  return { ok: true }
+}
+
 function handlePty(socket, params, leftover) {
   if (!isArgv(params.cmd)) return { ok: false, error: 'pty: cmd must be a non-empty argv array' }
   const cols = Number.isInteger(params.cols) && params.cols >= 1 && params.cols <= 1000 ? params.cols : 80
@@ -251,9 +299,23 @@ function handlePty(socket, params, leftover) {
  * unit-testable in-process: tests pass an ephemeral `port` and their own
  * `token`.
  */
-export function createStreamd({ token, port = DEFAULT_STREAM_PORT, host = '0.0.0.0' } = {}) {
+export function createStreamd({
+  token,
+  port = DEFAULT_STREAM_PORT,
+  host = '0.0.0.0',
+  procNetDir = '/proc/net',
+  portsPollMs = PORTS_POLL_MS,
+  portsKeepaliveMs = PORTS_KEEPALIVE_MS,
+} = {}) {
   if (!token) throw new Error('streamd: token is required')
   let active = 0
+  let boundPort = port
+  const ctx = {
+    procNetDir,
+    portsPollMs,
+    portsKeepaliveMs,
+    boundPort: () => boundPort,
+  }
 
   // allowHalfOpen: a client EOF (end of stdin for a ctrl stream, or a
   // forwarded TCP peer's half-close) must reach the child/target while
@@ -303,13 +365,13 @@ export function createStreamd({ token, port = DEFAULT_STREAM_PORT, host = '0.0.0
       }
 
       const leftover = buf.subarray(nl + 1)
-      const handlers = { tcp: handleTcp, ctrl: handleCtrl, exec: handleExec, pty: handlePty }
+      const handlers = { tcp: handleTcp, ctrl: handleCtrl, exec: handleExec, pty: handlePty, ports: handlePorts }
       const handler = handlers[params.kind]
       if (!handler) {
         refuse(`unknown kind ${JSON.stringify(params.kind)}`)
         return
       }
-      const result = handler(socket, params, leftover)
+      const result = handler(socket, params, leftover, ctx)
       if (!result.ok) {
         refuse(result.error)
         return
@@ -328,7 +390,8 @@ export function createStreamd({ token, port = DEFAULT_STREAM_PORT, host = '0.0.0
         server.once('error', reject)
         server.listen(port, host, () => {
           server.removeListener('error', reject)
-          resolve(server.address().port)
+          boundPort = server.address().port
+          resolve(boundPort)
         })
       })
     },

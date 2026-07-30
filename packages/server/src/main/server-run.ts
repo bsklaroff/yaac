@@ -14,6 +14,7 @@ import { invalidateRelayAddr, sessionExec } from '#platform/k8s/stream-relay'
 import { coalesceCalls, notifySessionListChanged, onSessionListChanged } from '#features/sessions/notify'
 import { resolveSessionContainer } from '#features/sessions/resolve'
 import { StatusWatcherManager } from '#features/sessions/status-watcher'
+import { PortDetectorManager } from '#features/sessions/forwarders/port-detector'
 import { ClusterCache, setActiveClusterCache } from '#platform/k8s/cluster-cache'
 import { anySessionDirsExist, armDeferredClusterBoot } from '#platform/k8s/deferred-boot'
 import { refreshClaudeBundledSkills } from '#features/skills/claude-bundled'
@@ -375,6 +376,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   let loopDone: Promise<void> | null = null
   let clusterCache: ClusterCache | null = null
   let statusWatchers: StatusWatcherManager | null = null
+  let portDetector: PortDetectorManager | null = null
   let shuttingDown = false
   const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return
@@ -388,6 +390,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     setActiveClusterCache(null)
     clusterCache?.stop()
     statusWatchers?.stopAll()
+    portDetector?.stopAll()
     if (loopDone) {
       // Bound the loop drain the same way we bound server.close() below.
       // Under parallel-test cluster pressure, an in-flight reap tick can
@@ -476,11 +479,16 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     // snapshots push the moment state changes.
     const cache = new ClusterCache()
     const manager = new StatusWatcherManager()
+    // Detected-listener streams (streamd `ports` pushes) feeding the
+    // snapshot's unforwardedPorts; a set change pushes a fresh snapshot.
+    const detector = new PortDetectorManager(() => notifySessionListChanged())
     clusterCache = cache
     statusWatchers = manager
+    portDetector = detector
     cache.onDelta((source) => {
       if (source !== 'session-pods') return
       manager.sync(cache.sessionPods())
+      detector.sync(cache.sessionPods())
       notifySessionListChanged()
     })
     onSessionStatusChanged(() => notifySessionListChanged())

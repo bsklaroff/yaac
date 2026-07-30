@@ -16,6 +16,8 @@ import { registerProvisioning, removeProvisioning } from '#features/sessions/pro
 import { streamProvisioned } from '#routes/provisioned-stream'
 import { ServerError } from '@yaac/shared/errors'
 import { allowSessionHost } from '#features/sessions/egress/allow-host'
+import { forwardSessionPort } from '#features/sessions/forwarders/forward-port'
+import { dismissSessionPort } from '#features/sessions/forwarders/port-detector'
 import { resolveSessionContainer } from '#features/sessions/resolve'
 import { notifySessionListChanged } from '#features/sessions/notify'
 import { createShellWindow, listSessionTerminals, killWindowTerminal } from '#features/terminals/terminals'
@@ -258,6 +260,45 @@ export const sessionApp = new Hono()
       const { host, persist } = c.req.valid('json')
       const target = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
       await allowSessionHost(target, host, { persist: persist ?? false })
+      notifySessionListChanged()
+      return c.body(null, 204)
+    },
+  )
+  // Forward a detected-but-unforwarded port (webapp click-to-forward). The
+  // port must be in the session's surfaced unforwarded set — forwardSessionPort
+  // rejects anything else, so the route can't be driven to open an arbitrary
+  // port. Persist/fan-out policy lives in forwardSessionPort.
+  .post(
+    '/:id/forward-port',
+    zv('json', z.object({
+      containerPort: z.number().int().min(1).max(65535),
+      persist: z.boolean().optional(),
+    })),
+    async (c) => {
+      const { containerPort, persist } = c.req.valid('json')
+      const target = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
+      const mapping = await forwardSessionPort(target, containerPort, { persist: persist ?? false })
+      // Fresh snapshot moves the port from unforwardedPorts into
+      // forwardedPorts, self-clearing the popover row.
+      notifySessionListChanged()
+      return c.json(mapping)
+    },
+  )
+  // Hide a detected port for this session (in-memory; resets with the server).
+  // Same guard as forward-port: only a currently-surfaced port is
+  // dismissable, so the dismissed set can't be grown arbitrarily.
+  .post(
+    '/:id/dismiss-port',
+    zv('json', z.object({ containerPort: z.number().int().min(1).max(65535) })),
+    async (c) => {
+      const { containerPort } = c.req.valid('json')
+      const target = await resolveSessionContainer(c.req.param('id'), { requireRunning: true })
+      if (!dismissSessionPort(target.sessionId, containerPort)) {
+        throw new ServerError(
+          'CONFLICT',
+          `port ${containerPort} is not an unforwarded listener in session ${target.sessionId.slice(0, 8)}`,
+        )
+      }
       notifySessionListChanged()
       return c.body(null, 204)
     },

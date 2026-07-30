@@ -4,6 +4,7 @@ import { listProvisioning } from '#features/sessions/provisioning'
 import { listImageBuilds } from '#features/images/image-builds'
 import { planUsageForSnapshot, codexPlanUsageForSnapshot } from '#features/auth/plan-usage'
 import { serverLog } from '#log'
+import { env } from '@yaac/shared/env'
 import type { ServerEvent, ServerSnapshot } from '@yaac/shared/types'
 
 /** Minimal surface the hub needs from a WebSocket connection. */
@@ -42,6 +43,7 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
     imageBuilds: listImageBuilds(),
     planUsage,
     codexPlanUsage,
+    forwardBindHost: env.forwardBind,
   }
 }
 

@@ -57,6 +57,7 @@ export {
   Sparkles as SkillsIcon,
   CalendarClock as ScheduleIcon,
   Server as ServerIcon,
+  Plug as PortIcon,
 } from 'lucide-react'
 
 /** Display name per agent tool (proper brand casing, incl. OpenCode). */

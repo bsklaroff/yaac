@@ -39,6 +39,7 @@ function session(overrides: Partial<SessionListEntry> = {}): SessionListEntry {
     prompt: 'please refactor the widget factory into a proper plugin system',
     blockedHosts: [],
     forwardedPorts: [],
+    unforwardedPorts: [],
     ...overrides,
   }
 }

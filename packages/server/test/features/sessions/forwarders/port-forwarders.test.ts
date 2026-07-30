@@ -16,6 +16,8 @@ import { relayTcpFactory, sessionExec } from '#platform/k8s/stream-relay'
 import { reserveAvailablePort, startPortForwarders } from '#platform/container/port'
 import type { ReservedPort } from '#platform/container/port'
 import {
+  MAX_FORWARDS_PER_SESSION,
+  addSessionForwarder,
   buildStatusRight,
   getSessionPorts,
   hasSessionForwarders,
@@ -32,7 +34,7 @@ const mockStartForwarders = vi.mocked(startPortForwarders)
 const mockRelayFactory = vi.mocked(relayTcpFactory)
 
 function makeReservedPort(hostPort: number, containerPort: number): ReservedPort {
-  const server = new EventEmitter() as unknown as net.Server
+  const server = Object.assign(new EventEmitter(), { close: vi.fn() }) as unknown as net.Server
   return { containerPort, hostPort, server }
 }
 
@@ -85,15 +87,23 @@ describe('registry: register/stop/hasSessionForwarders', () => {
     expect(hasSessionForwarders('sess-reg-1')).toBe(true)
   })
 
-  it('ignores a second registration and runs the duplicate stop', () => {
+  it('merges a second registration — nothing is torn down, stop stops both', () => {
+    // The create batch can land after a reactive addSessionForwarder made
+    // the entry (forward-port during the create window); dropping either
+    // side would kill live forwards, so registration merges.
     const first = vi.fn()
     const second = vi.fn()
     registerSessionForwarders('sess-reg-2', first, [{ containerPort: 3000, hostPort: 19000 }])
-    registerSessionForwarders('sess-reg-2', second, [{ containerPort: 3000, hostPort: 19999 }])
+    registerSessionForwarders('sess-reg-2', second, [{ containerPort: 8080, hostPort: 19999 }])
     expect(first).not.toHaveBeenCalled()
+    expect(second).not.toHaveBeenCalled()
+    expect(getSessionPorts('sess-reg-2')).toEqual([
+      { containerPort: 3000, hostPort: 19000 },
+      { containerPort: 8080, hostPort: 19999 },
+    ])
+    stopSessionForwarders('sess-reg-2')
+    expect(first).toHaveBeenCalledTimes(1)
     expect(second).toHaveBeenCalledTimes(1)
-    // The first registration's ports stay authoritative.
-    expect(getSessionPorts('sess-reg-2')).toEqual([{ containerPort: 3000, hostPort: 19000 }])
   })
 
   it('stopSessionForwarders invokes the stored stop and removes the entry', () => {
@@ -165,6 +175,104 @@ describe('stopAllSessionForwarders', () => {
     expect(stopB).toHaveBeenCalledTimes(1)
     expect(hasSessionForwarders('sess-all-3')).toBe(false)
     expect(hasSessionForwarders('sess-all-4')).toBe(false)
+  })
+})
+
+describe('addSessionForwarder', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+    mockRelayFactory.mockReturnValue(vi.fn() as never)
+    mockStartForwarders.mockReturnValue(vi.fn())
+  })
+
+  afterEach(() => {
+    stopSessionForwarders('sess-add-1')
+    stopSessionForwarders('sess-add-2')
+    stopSessionForwarders('sess-add-3')
+    stopSessionForwarders('sess-add-4')
+  })
+
+  it('reserves starting at the container port, starts one relay, and creates the entry', async () => {
+    mockReserve.mockResolvedValueOnce(makeReservedPort(8090, 8090))
+
+    const mapping = await addSessionForwarder('proj', 'sess-add-1', 'yaac-proj-sess-add-1', 8090)
+
+    expect(mockReserve).toHaveBeenCalledWith(8090, 8090)
+    expect(mockRelayFactory).toHaveBeenCalledWith('sess-add-1')
+    expect(mockStartForwarders).toHaveBeenCalledTimes(1)
+    expect(mapping).toEqual({ containerPort: 8090, hostPort: 8090 })
+    expect(getSessionPorts('sess-add-1')).toEqual([{ containerPort: 8090, hostPort: 8090 }])
+    // status-right refresh carries the new mapping.
+    expect(mockExec.mock.calls[0]?.[1] ?? '').toContain(':8090->8090')
+  })
+
+  it('appends to an existing entry and stop tears down both registrations', async () => {
+    const batchStop = vi.fn()
+    registerSessionForwarders('sess-add-2', batchStop, [{ containerPort: 3000, hostPort: 3000 }])
+    const appendStop = vi.fn()
+    mockStartForwarders.mockReturnValue(appendStop)
+    mockReserve.mockResolvedValueOnce(makeReservedPort(19091, 8091))
+
+    await addSessionForwarder('proj', 'sess-add-2', 'yaac-proj-sess-add-2', 8091)
+    expect(getSessionPorts('sess-add-2')).toEqual([
+      { containerPort: 3000, hostPort: 3000 },
+      { containerPort: 8091, hostPort: 19091 },
+    ])
+
+    stopSessionForwarders('sess-add-2')
+    expect(batchStop).toHaveBeenCalledTimes(1)
+    expect(appendStop).toHaveBeenCalledTimes(1)
+  })
+
+  it('is idempotent per container port', async () => {
+    mockReserve.mockResolvedValueOnce(makeReservedPort(8092, 8092))
+    const first = await addSessionForwarder('proj', 'sess-add-3', 'yaac-proj-sess-add-3', 8092)
+    const second = await addSessionForwarder('proj', 'sess-add-3', 'yaac-proj-sess-add-3', 8092)
+    expect(second).toEqual(first)
+    expect(mockReserve).toHaveBeenCalledTimes(1)
+    expect(mockStartForwarders).toHaveBeenCalledTimes(1)
+  })
+
+  it('concurrent requests for the same port converge on one forward', async () => {
+    // Both calls pass the pre-await checks; the loser must detect the
+    // winner's registration after its reservation lands, release the
+    // reserved socket, and return the winner's mapping.
+    const firstClose = vi.fn()
+    const secondClose = vi.fn()
+    const asReserved = (hostPort: number, close: () => void): ReservedPort => ({
+      containerPort: 8094,
+      hostPort,
+      server: Object.assign(new EventEmitter(), { close }) as unknown as net.Server,
+    })
+    mockReserve
+      .mockResolvedValueOnce(asReserved(8094, firstClose))
+      .mockResolvedValueOnce(asReserved(18094, secondClose))
+
+    const [a, b] = await Promise.all([
+      addSessionForwarder('proj', 'sess-add-5', 'yaac-proj-sess-add-5', 8094),
+      addSessionForwarder('proj', 'sess-add-5', 'yaac-proj-sess-add-5', 8094),
+    ])
+
+    expect(a).toEqual(b)
+    expect(mockStartForwarders).toHaveBeenCalledTimes(1)
+    expect(getSessionPorts('sess-add-5')).toHaveLength(1)
+    // Exactly one reservation (the loser's) was released.
+    expect(firstClose.mock.calls.length + secondClose.mock.calls.length).toBe(1)
+    stopSessionForwarders('sess-add-5')
+  })
+
+  it('rejects once the per-session forward cap is reached', async () => {
+    registerSessionForwarders(
+      'sess-add-4',
+      vi.fn(),
+      Array.from({ length: MAX_FORWARDS_PER_SESSION }, (_, i) => ({
+        containerPort: 9000 + i, hostPort: 9000 + i,
+      })),
+    )
+    await expect(
+      addSessionForwarder('proj', 'sess-add-4', 'yaac-proj-sess-add-4', 8093),
+    ).rejects.toThrow(/already holds/)
+    expect(mockReserve).not.toHaveBeenCalled()
   })
 })
 

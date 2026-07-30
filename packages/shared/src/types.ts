@@ -440,6 +440,11 @@ export interface SessionListEntry {
    *  forwarder registry). Empty until forwarders are (re)provisioned —
    *  briefly so after a server restart, before the restore pass runs. */
   forwardedPorts: PortMapping[]
+  /** Container ports with a live in-pod listener that is not forwarded —
+   *  detected via streamd's `ports` push, minus forwarded, dismissed,
+   *  sensitive, and infra ports. Drives the "forward this port?" badge;
+   *  self-clears when a port is forwarded or its listener stops. */
+  unforwardedPorts: number[]
   /** The remote branch this session's worktree tracks (its reference
    *  branch), read from the session branch's recorded upstream. Unset when
    *  the upstream record is missing or unreadable. */
@@ -745,6 +750,11 @@ export interface ServerSnapshot {
    *  same engine. Null until the first refresh lands, or when Codex isn't
    *  signed in with a ChatGPT (OAuth) account. */
   codexPlanUsage: PlanUsageResult | null
+  /** The host session port-forward listeners actually bind
+   *  (`YAAC_FORWARD_BIND`; loopback locally, the tailnet IP on a remote
+   *  host). Server-reported so UI exposure claims state the real bind —
+   *  the page origin can differ from it (e.g. an SSH tunnel). */
+  forwardBindHost: string
 }
 
 /** Messages the server pushes over `/events`. */

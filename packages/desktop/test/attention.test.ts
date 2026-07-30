@@ -19,6 +19,7 @@ const snap = (sessions: Array<Partial<SessionListEntry>>): ServerSnapshot => ({
     createdAt: '2026-01-01 00:00:00',
     blockedHosts: [],
     forwardedPorts: [],
+    unforwardedPorts: [],
     ...s,
   })),
   stale: [],
@@ -27,6 +28,7 @@ const snap = (sessions: Array<Partial<SessionListEntry>>): ServerSnapshot => ({
   gitAuthFailures: {},
   imageBuilds: [],
   planUsage: null,
+  forwardBindHost: '127.0.0.1',
   codexPlanUsage: null,
 })
 
