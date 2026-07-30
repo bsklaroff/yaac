@@ -8,7 +8,8 @@ import { contextBridge, ipcRenderer } from 'electron'
  */
 contextBridge.exposeInMainWorld('yaacWindow', {
   minimize: () => ipcRenderer.send('window:minimize'),
-  toggleMaximize: () => ipcRenderer.send('window:toggle-maximize'),
+  // altKey selects the macOS Option-click zoom (maximize) instead of full screen.
+  toggleMaximize: (altKey?: boolean) => ipcRenderer.send('window:toggle-maximize', altKey === true),
   close: () => ipcRenderer.send('window:close'),
   // Open a URL in the system browser (the preview's "open external" action).
   openExternal: (url: string) => ipcRenderer.send('window:open-external', url),

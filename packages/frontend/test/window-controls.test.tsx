@@ -34,7 +34,29 @@ describe('WindowControls', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Zoom window' }))
     expect(bridge.close).toHaveBeenCalledOnce()
     expect(bridge.minimize).toHaveBeenCalledOnce()
-    expect(bridge.toggleMaximize).toHaveBeenCalledOnce()
+    expect(bridge.toggleMaximize).toHaveBeenCalledExactlyOnceWith(false)
+  })
+
+  it('forwards Option-click on the zoom button as altKey', () => {
+    const bridge = { minimize: vi.fn(), toggleMaximize: vi.fn(), close: vi.fn() }
+    inject(bridge)
+    render(<WindowControls />)
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom window' }), { altKey: true })
+    expect(bridge.toggleMaximize).toHaveBeenCalledExactlyOnceWith(true)
+  })
+
+  it('labels the zoom button for the platform', () => {
+    render(<WindowControls />)
+    expect(screen.getByRole('button', { name: 'Zoom window' }).getAttribute('title')).toBe('Zoom')
+    cleanup()
+    Object.defineProperty(window.navigator, 'platform', { value: 'MacIntel', configurable: true })
+    try {
+      render(<WindowControls />)
+      expect(screen.getByRole('button', { name: 'Zoom window' }).getAttribute('title'))
+        .toBe('Full screen (⌥ to zoom)')
+    } finally {
+      Reflect.deleteProperty(window.navigator, 'platform')
+    }
   })
 
   it('does not throw when the bridge is absent', () => {

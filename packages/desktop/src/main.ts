@@ -37,12 +37,17 @@ import { backgroundColorFor } from '#theme-bg'
 import { buildTrayBitmap } from '#tray-icon'
 import { appHostFromUrl, hardenGuestWebPreferences, isAllowedPreviewUrl, sanitizeWebviewSrc } from '#webview-guard'
 import { boundsVisibleOn, readWindowState, saveWindowState } from '#window-state'
+import { createFsTransitionGuard, zoomAction } from '#window-zoom'
 
 app.setName('yaac')
 
 let win: BrowserWindow | null = null
 let tray: Tray | null = null
 let quitting = false
+// macOS animates full-screen transitions and documents isFullScreen() as
+// stale until enter-/leave-full-screen fires — zoom clicks are ignored while
+// a requested transition is in flight so a double-click can't re-request it.
+const fsGuard = createFsTransitionGuard()
 let events: { stop: () => void } | null = null
 // One monitor per attached server: its first-snapshot seeding suppresses a
 // notification burst on launch, and WS reconnects must not re-notify ongoing
@@ -95,6 +100,9 @@ async function createWindow(): Promise<BrowserWindow> {
     },
   })
   if (process.platform === 'darwin') w.setWindowButtonVisibility(false)
+  fsGuard.settle()
+  w.on('enter-full-screen', () => fsGuard.settle())
+  w.on('leave-full-screen', () => fsGuard.settle())
   // Harden every preview <webview> before it attaches: strip any preload,
   // force Node off / isolation on, and refuse a src off loopback and the
   // attached server's host (where a remote server's forwarded ports live).
@@ -116,7 +124,9 @@ async function createWindow(): Promise<BrowserWindow> {
   })
   // Close hides to the tray; only an explicit Quit destroys the window.
   w.on('close', (e) => {
-    void saveWindowState(windowStateFile(), w.getBounds())
+    // getNormalBounds(): the last windowed geometry even when the window is
+    // currently maximized or full screen.
+    void saveWindowState(windowStateFile(), w.getNormalBounds())
     if (!quitting) {
       e.preventDefault()
       w.hide()
@@ -286,7 +296,20 @@ ipcMain.handle('server:add-remote', async (_e, url: unknown, token: unknown) => 
 // The custom window controls (WindowControls.tsx) drive the window through the
 // preload bridge. Registered once, they act on whichever window is current.
 ipcMain.on('window:minimize', () => win?.minimize())
-ipcMain.on('window:toggle-maximize', () => { if (win?.isMaximized()) win.unmaximize(); else win?.maximize() })
+ipcMain.on('window:toggle-maximize', (_e, altKey: unknown) => {
+  if (!win || fsGuard.active()) return
+  const action = zoomAction({
+    platform: process.platform,
+    altKey: altKey === true,
+    isFullScreen: win.isFullScreen(),
+    isMaximized: win.isMaximized(),
+  })
+  if (action === 'enter-full-screen' || action === 'exit-full-screen') {
+    fsGuard.begin()
+    win.setFullScreen(action === 'enter-full-screen')
+  } else if (action === 'unmaximize') win.unmaximize()
+  else win.maximize()
+})
 ipcMain.on('window:close', () => win?.close())
 ipcMain.on('window:open-external', (_e, url: unknown) => {
   if (typeof url === 'string' && /^https?:/.test(url)) void shell.openExternal(url)
