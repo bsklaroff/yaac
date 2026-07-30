@@ -225,8 +225,8 @@ function handlePty(socket, params, leftover) {
     if (typeof ptyProc.resume === 'function') ptyProc.resume()
   })
   ptyProc.onExit(({ exitCode }) => {
-    batcher.flush() // ordering: all output precedes the exit frame
     try {
+      batcher.flush() // ordering: all output precedes the exit frame
       socket.write(encodeFrame(FRAME_EXIT, { code: exitCode }))
     } catch { /* socket gone */ }
     socket.end()

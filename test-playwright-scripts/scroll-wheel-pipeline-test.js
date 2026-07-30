@@ -20,7 +20,10 @@
  * one-way latency <-frame codec-> streamd `pty` stream -> `tmux attach`.
  * Three configs isolate the changes: old streamd + stock wheel (shipped
  * baseline), new streamd + stock wheel (batching alone), new streamd + paced
- * wheel (the full change). Prints per-config metrics and PASS/FAIL:
+ * wheel (the full change). The old-vs-new half needs a session image
+ * predating the batcher: when /opt/yaac/streamd already ships batcher.js the
+ * baseline config and its checks are SKIPped (old == new proves nothing).
+ * Prints per-config metrics and PASS/FAIL:
  *   - bytes(old) ≈ bytes(new-unpaced) while messages drop (batching merges,
  *     never adds);
  *   - paced report rate is bounded (≤ ~2/frame + backlog) and few reports
@@ -308,17 +311,24 @@ async function runConfig(browser, { variant, pacing, label }) {
   return { label, ...r }
 }
 
+// A baked streamd that already ships the batcher IS the "new" behavior:
+// comparing it against the workspace copy would silently assert old == new.
+const oldIsPreBatching = !fs.existsSync(path.join(OLD_STREAMD, 'batcher.js'))
+
 const browser = await pw.chromium.launch()
 let failures = 0
 try {
   const configs = [
-    { variant: 'old', pacing: false, label: 'old streamd + stock wheel (shipped)' },
+    ...(oldIsPreBatching
+      ? [{ variant: 'old', pacing: false, label: 'old streamd + stock wheel (shipped)' }]
+      : []),
     { variant: 'new', pacing: false, label: 'new streamd + stock wheel (batching only)' },
     { variant: 'new', pacing: true, label: 'new streamd + paced wheel (full change)' },
   ]
   const results = []
   for (const c of configs) results.push(await runConfig(browser, c))
-  const [oldStock, newStock, newPaced] = results
+  const oldStock = oldIsPreBatching ? results[0] : null
+  const [newStock, newPaced] = results.slice(-2)
 
   console.log(JSON.stringify(results, null, 2))
   const check = (name, ok) => {
@@ -326,12 +336,17 @@ try {
     if (!ok) failures++
   }
   check('every config scrolled into history', results.every((r) => r.scrolled))
-  check(`batching cuts message count (${oldStock.recvMessages} -> ${newStock.recvMessages})`,
-    newStock.recvMessages < oldStock.recvMessages)
-  check(`batching does not inflate bytes (${oldStock.recvBytes} -> ${newStock.recvBytes})`,
-    newStock.recvBytes < oldStock.recvBytes * 1.15)
-  check(`batching does not tear more cursor toggles (${oldStock.tornMessages} -> ${newStock.tornMessages})`,
-    newStock.tornMessages <= oldStock.tornMessages)
+  if (oldStock) {
+    check(`batching cuts message count (${oldStock.recvMessages} -> ${newStock.recvMessages})`,
+      newStock.recvMessages < oldStock.recvMessages)
+    check(`batching does not inflate bytes (${oldStock.recvBytes} -> ${newStock.recvBytes})`,
+      newStock.recvBytes < oldStock.recvBytes * 1.15)
+    check(`batching does not tear more cursor toggles (${oldStock.tornMessages} -> ${newStock.tornMessages})`,
+      newStock.tornMessages <= oldStock.tornMessages)
+  } else {
+    console.log('SKIP  old-vs-new batching checks (baked streamd already ships batcher.js;'
+      + ' run against a session image predating the change for the A/B)')
+  }
   // 2/frame @60Hz ≈ 12 per 100ms; allow headroom for frame jitter.
   check(`pacing bounds the report rate (peak/100ms ${newStock.peakReportsPer100ms} -> ${newPaced.peakReportsPer100ms})`,
     newPaced.peakReportsPer100ms <= 16 && newPaced.peakReportsPer100ms < newStock.peakReportsPer100ms)

@@ -21,9 +21,11 @@ import type { Terminal } from '@xterm/xterm'
  * report; only the timing and the queue bound are new.
  */
 
-/** Reports released per flush (one flush per animation frame). Above the
- *  browser's own wheel-event rate per frame, so pacing never slows a
- *  gesture down — it only stops backlog from outliving it. */
+/** Reports released per flush (one flush per animation frame). At or above
+ *  typical trackpad/wheel event rates per frame, so ordinary gestures are
+ *  not slowed; a free-spinning high-rate wheel can exceed it and is slowed
+ *  by design — the backlog cap below bounds how much of such a burst
+ *  survives the gesture. */
 const MAX_REPORTS_PER_FLUSH = 2
 /** Cap on queued reports; excess is dropped. Bounds how far the pane keeps
  *  scrolling after the gesture ends (tmux scrolls a few lines per report). */

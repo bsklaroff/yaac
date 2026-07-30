@@ -25,7 +25,9 @@
  *  the pacing item, while still spanning the burst of pty events one tmux
  *  redraw produces. */
 const BATCH_MS = 8
-/** Flush-at-once threshold; also the largest frame a flush emits. */
+/** Flush-at-once threshold. A flush can carry up to this plus the push
+ *  that crossed it (and a single larger push passes through whole) —
+ *  worst cases far under the codec's 1MB frame cap. */
 const MAX_BATCH_BYTES = 64 * 1024
 
 export function createOutputBatcher(write, { batchMs = BATCH_MS, maxBytes = MAX_BATCH_BYTES, now = Date.now } = {}) {
