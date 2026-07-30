@@ -34,6 +34,7 @@ import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 import * as pty from '@lydell/node-pty'
 import { FRAME_DATA, FRAME_RESIZE, FRAME_SIGNAL, FRAME_EXIT, FrameParser, encodeFrame } from './framing.js'
+import { createOutputBatcher } from './batcher.js'
 
 export const DEFAULT_STREAM_PORT = 10300
 
@@ -208,17 +209,23 @@ function handlePty(socket, params, leftover) {
   if (leftover.length > 0) onFrames(leftover)
   socket.on('data', onFrames)
 
+  // Output rides a micro-batcher (see batcher.js): coalescing the child's
+  // burst of small writes into one frame per window keeps every downstream
+  // hop at one message per batch and lets the browser paint a tmux redraw
+  // atomically instead of fragment by fragment.
   // Flow control: node-pty has no pull API, so pause the pty when the
   // socket's buffer backs up and resume on drain (a flooding child — `yes`
   // — must not balloon server memory).
-  ptyProc.onData((data) => {
-    const writable = socket.write(encodeFrame(FRAME_DATA, Buffer.from(data, 'utf8')))
+  const batcher = createOutputBatcher((buf) => {
+    const writable = socket.write(encodeFrame(FRAME_DATA, buf))
     if (!writable && typeof ptyProc.pause === 'function') ptyProc.pause()
   })
+  ptyProc.onData((data) => batcher.push(Buffer.from(data, 'utf8')))
   socket.on('drain', () => {
     if (typeof ptyProc.resume === 'function') ptyProc.resume()
   })
   ptyProc.onExit(({ exitCode }) => {
+    batcher.flush() // ordering: all output precedes the exit frame
     try {
       socket.write(encodeFrame(FRAME_EXIT, { code: exitCode }))
     } catch { /* socket gone */ }
@@ -231,7 +238,10 @@ function handlePty(socket, params, leftover) {
     kill()
     socket.destroy()
   })
-  socket.on('close', () => kill())
+  socket.on('close', () => {
+    batcher.dispose() // a live flush timer must not write to a dead socket
+    kill()
+  })
   socket.on('error', () => kill())
   return { ok: true }
 }
