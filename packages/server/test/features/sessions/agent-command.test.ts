@@ -4,11 +4,12 @@ import {
   buildAgentCmd,
   MODEL_RE,
   buildPromptPasteCmd,
+  buildPromptPasteBgCmd,
   typeInitialPrompt,
   buildAgentWindowCheck,
   initWindowCommand,
 } from '#features/sessions/agent-command'
-import { containerExec } from '#platform/k8s/exec'
+import { sessionExec } from '#platform/k8s/stream-relay'
 import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import { AGENT_TOOLS } from '@yaac/shared/types'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
@@ -16,6 +17,10 @@ import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 vi.mock('#platform/k8s/exec', () => ({
   containerExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
   execTarget: (jobName: string) => `job/${jobName}`,
+}))
+
+vi.mock('#platform/k8s/stream-relay', () => ({
+  sessionExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
 
 const TMUX = `tmux -S ${CONTAINER_TMUX_SOCK}`
@@ -223,15 +228,31 @@ describe('buildPromptPasteCmd', () => {
   })
 })
 
-describe('typeInitialPrompt', () => {
-  beforeEach(() => vi.mocked(containerExec).mockClear())
+describe('buildPromptPasteBgCmd', () => {
+  it('decodes the paste script to a pod file and detaches it with setsid', () => {
+    const cmd = buildPromptPasteBgCmd('claude', 'hello')
+    expect(cmd).toMatch(/^printf %s [A-Za-z0-9+/=]+ \| base64 -d > \/tmp\/\.yaac-prompt\.sh/)
+    expect(cmd).toContain('setsid sh /tmp/.yaac-prompt.sh >/tmp/yaac-prompt.log 2>&1 </dev/null &')
+  })
 
-  it('execs the paste command in the session job, single-attempt (a retry could double-paste)', async () => {
+  it('embeds exactly the script buildPromptPasteCmd wraps', () => {
+    const cmd = buildPromptPasteBgCmd('codex', "it's $HOME\nline 2")
+    const b64 = /^printf %s ([A-Za-z0-9+/=]+) \|/.exec(cmd)
+    expect(b64).not.toBeNull()
+    const script = Buffer.from(b64![1], 'base64').toString('utf8')
+    expect(`sh -c '${script}'`).toBe(buildPromptPasteCmd('codex', "it's $HOME\nline 2"))
+  })
+})
+
+describe('typeInitialPrompt', () => {
+  beforeEach(() => vi.mocked(sessionExec).mockClear())
+
+  it('relay-execs the detached paste command (fire-and-forget, in-pod retries)', async () => {
     await typeInitialPrompt('yaac-job-1', 'claude', 'hello there')
-    expect(containerExec).toHaveBeenCalledWith(
+    expect(sessionExec).toHaveBeenCalledWith(
       'yaac-job-1',
-      buildPromptPasteCmd('claude', 'hello there'),
-      { maxAttempts: 1, timeout: 120_000 },
+      buildPromptPasteBgCmd('claude', 'hello there'),
+      { timeout: 15_000 },
     )
   })
 })

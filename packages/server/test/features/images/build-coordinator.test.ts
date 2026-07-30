@@ -224,6 +224,33 @@ describe('build coordinator', () => {
       expect(mockBuildImage).not.toHaveBeenCalled()
       expect(listImageBuilds()).toEqual([])
     })
+
+    it('caches verified tags: the second ensure re-checks nothing (immutable tags)', async () => {
+      mockResolveChain.mockResolvedValue({
+        layers: [layer('t:1'), layer('t:2', 'tools')],
+        finalTag: 't:2',
+      })
+      mockImageExists.mockResolvedValue(true)
+      await ensureImage('proj', undefined, false, false)
+      expect(mockImageExists).toHaveBeenCalledTimes(2)
+      mockImageExists.mockClear()
+
+      await ensureImage('proj', undefined, false, false)
+      expect(mockImageExists).not.toHaveBeenCalled()
+      expect(mockBuildImage).not.toHaveBeenCalled()
+    })
+
+    it('caches a freshly built tag too — no exists probe on the next ensure', async () => {
+      mockResolveChain.mockResolvedValue({ layers: [layer('t:1')], finalTag: 't:1' })
+      mockImageExists.mockResolvedValue(false)
+      mockBuildImage.mockResolvedValue(undefined)
+      await ensureImage('proj', undefined, false, false)
+      mockImageExists.mockClear()
+
+      await ensureImage('proj', undefined, false, false)
+      expect(mockImageExists).not.toHaveBeenCalled()
+      expect(mockBuildImage).toHaveBeenCalledTimes(1)
+    })
   })
 
   describe('rebuildLayerExclusive', () => {
@@ -294,6 +321,53 @@ describe('build coordinator', () => {
       )
       expect(ref).toBe('localhost:5001/t:1')
       expect(mockPush).not.toHaveBeenCalled()
+    })
+
+    it('caches a verified registry tag — the second push skips even the HEAD', async () => {
+      mockHasTag.mockResolvedValue(true)
+      await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
+      mockHasTag.mockClear()
+
+      const ref = await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
+      expect(ref).toBe('localhost:5001/t:1')
+      expect(mockHasTag).not.toHaveBeenCalled()
+    })
+
+    it('caches a completed push the same way', async () => {
+      mockHasTag.mockResolvedValue(false)
+      mockPush.mockResolvedValue('localhost:5001/t:1')
+      await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
+      mockHasTag.mockClear()
+      mockPush.mockClear()
+
+      await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
+      expect(mockHasTag).not.toHaveBeenCalled()
+      expect(mockPush).not.toHaveBeenCalled()
+    })
+
+    it('a forced push bypasses the cache (rebuilds change bytes under the tag)', async () => {
+      mockHasTag.mockResolvedValue(true)
+      mockImageExists.mockResolvedValue(true)
+      mockPush.mockResolvedValue('localhost:5001/t:1')
+      await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
+
+      await pushImageShared('t:1', { projectSlug: 'a', reason: 'rebuild' }, { force: true })
+      expect(mockPush).toHaveBeenCalledTimes(1)
+    })
+
+    it('a rebuild invalidates the verified caches for its tag', async () => {
+      mockHasTag.mockResolvedValue(true)
+      await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
+      mockBuildImage.mockResolvedValue(undefined)
+      await rebuildLayerExclusive(
+        layer('t:1'), { projectSlug: 'a', reason: 'rebuild' }, { noCache: true },
+      )
+      mockHasTag.mockClear()
+
+      await pushImageShared('t:1', { projectSlug: 'a', reason: 'session' })
+      // The push cache was dropped with the rebuild — the registry is
+      // re-consulted instead of trusted.
+      expect(mockHasTag).toHaveBeenCalledTimes(1)
     })
 
     it('passes the compression format through to the push', async () => {

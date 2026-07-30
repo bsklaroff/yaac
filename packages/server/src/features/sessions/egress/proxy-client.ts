@@ -191,6 +191,16 @@ const tunnelFetch = (url: string, init: RequestInit = {}): Promise<Response> =>
 
 export class ProxyClient {
   private running = false
+  /**
+   * The deployed Deployment has been verified current (image content hash
+   * + runtime shape) by THIS process. Once true, ensureRunning()'s fast
+   * path skips the per-create `isDeployedProxyCurrent` re-check (a kubectl
+   * get + a proxy-context rehash): the expected image can only change with
+   * new server code, i.e. a server restart. attachIfRunning() never sets
+   * it — it marks a pre-existing proxy running without inspecting it, so
+   * the first ensureRunning() still performs the real check.
+   */
+  private deployVerifiedCurrent = false
   private authSecret: string | null = null
   private readonly forward = new ExecTunnel(PROXY_APP_NAME, PROXY_PORT)
   // In-flight ensureRunning() promise used as a mutex so concurrent
@@ -562,7 +572,11 @@ export class ProxyClient {
       try {
         const res = await tunnelFetch(`${this.baseUrl}/healthz`)
         if (res.ok) {
-          if (await this.isDeployedProxyCurrent()) return
+          if (this.deployVerifiedCurrent) return
+          if (await this.isDeployedProxyCurrent()) {
+            this.deployVerifiedCurrent = true
+            return
+          }
           serverLog('[server] proxy deployment is stale (image or runtime) — redeploying')
         }
       } catch {
@@ -570,6 +584,7 @@ export class ProxyClient {
       }
     }
 
+    this.deployVerifiedCurrent = false
     await ensureNamespace()
     this.authSecret = await ensureProxyAuthSecret()
 
@@ -581,6 +596,9 @@ export class ProxyClient {
     await this.forward.ensure()
     await this.waitForHealthy()
     this.running = true
+    // The bootstrap just (re)applied the current manifest — no re-check
+    // needed until the next process.
+    this.deployVerifiedCurrent = true
 
     // Distribute the proxy's CA to session pods via the ConfigMap: the bare
     // CA (additive trust) plus the combined bundle (roots + CA) the
@@ -713,6 +731,7 @@ export class ProxyClient {
       // cluster unreachable — nothing to stop
     }
     this.running = false
+    this.deployVerifiedCurrent = false
     this.authSecret = null
   }
 }

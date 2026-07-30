@@ -4,19 +4,33 @@ import { ensureKubernetes } from '#platform/k8s/kubectl'
 
 export const execFileAsync = promisify(execFile)
 
+let runtimeVerified = false
+
 /**
  * Verify both halves of the split runtime:
  *   - podman — the image build engine (`podman build` / `podman push`).
  *     Sessions never run on it; it only produces images for the registry.
  *   - kubernetes — the session runtime (one Job per session).
+ *
+ * Verified once per process: both halves are ~hundreds of ms of child
+ * processes on every session create, and a runtime that disappears mid-run
+ * surfaces immediately in whichever podman/kubectl call needs it — this
+ * check only exists to print install instructions on first contact.
  */
 export async function ensureContainerRuntime(): Promise<void> {
+  if (runtimeVerified) return
   if (process.platform === 'darwin') {
     await ensurePodmanMachine()
   } else {
     await ensurePodmanLinux()
   }
   await ensureKubernetes()
+  runtimeVerified = true
+}
+
+/** Test-only: forget the process-wide runtime verification. */
+export function _resetContainerRuntimeForTests(): void {
+  runtimeVerified = false
 }
 
 async function ensurePodmanMachine(): Promise<void> {

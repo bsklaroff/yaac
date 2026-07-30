@@ -24,6 +24,8 @@ import {
   relayTcpFactory,
   sessionExec,
   sessionStreamToken,
+  waitForStreamd,
+  type WaitForStreamdDeps,
 } from '#platform/k8s/stream-relay'
 import { FRAME_DATA, FRAME_EXIT, FRAME_RESIZE, FrameParser, encodeFrame } from '@yaac/shared/stream-frames'
 
@@ -286,5 +288,63 @@ describe('relayTcpFactory', () => {
     vi.stubEnv('YAAC_RELAY_ADDR', '127.0.0.1:1')
     const child = relayTcpFactory(SID)(3000)
     await new Promise<void>((resolve) => child.on('close', () => resolve()))
+  })
+})
+
+describe('waitForStreamd', () => {
+  // Fake timers make Date.now() advance through the injected sleep, so the
+  // heal threshold and deadline are exercised without real waiting.
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  function makeDeps(exec: WaitForStreamdDeps['exec']): WaitForStreamdDeps & {
+    boot: ReturnType<typeof vi.fn>
+  } {
+    return {
+      exec,
+      boot: vi.fn().mockResolvedValue(undefined),
+      sleepMs: (ms: number) => {
+        vi.advanceTimersByTime(ms)
+        return Promise.resolve()
+      },
+    }
+  }
+
+  it('returns as soon as a relay exec lands', async () => {
+    const deps = makeDeps(vi.fn().mockResolvedValue({ stdout: '', stderr: '' }))
+    await waitForStreamd(JOB, { timeoutMs: 1_000 }, deps)
+    expect(deps.boot).not.toHaveBeenCalled()
+  })
+
+  it('retries dial failures until streamd answers', async () => {
+    const exec = vi.fn()
+      .mockRejectedValueOnce(new RelayDialError('no route'))
+      .mockRejectedValueOnce(new RelayDialError('refused'))
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+    await waitForStreamd(JOB, { timeoutMs: 10_000 }, makeDeps(exec))
+    expect(exec).toHaveBeenCalledTimes(3)
+  })
+
+  it('rethrows a non-dial error immediately — the command ran, streamd is up', async () => {
+    const exec = vi.fn().mockRejectedValue(new RelayExecError('exit 1', 1, '', 'boom'))
+    const deps = makeDeps(exec)
+    await expect(waitForStreamd(JOB, { timeoutMs: 10_000 }, deps)).rejects.toThrow('exit 1')
+    expect(exec).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-boots streamd via kubectl exec once past half the budget, then keeps dialing', async () => {
+    const deps = makeDeps(vi.fn().mockImplementation(() =>
+      deps.boot.mock.calls.length > 0
+        ? Promise.resolve({ stdout: '', stderr: '' })
+        : Promise.reject(new RelayDialError('no route'))))
+    await waitForStreamd(JOB, { timeoutMs: 10_000 }, deps)
+    expect(deps.boot).toHaveBeenCalledTimes(1)
+  })
+
+  it('fails with the last dial error once the deadline passes', async () => {
+    const deps = makeDeps(vi.fn().mockRejectedValue(new RelayDialError('no route')))
+    await expect(waitForStreamd(JOB, { timeoutMs: 3_000 }, deps))
+      .rejects.toThrow(/streamd in .* not reachable after 3000ms: .*no route/)
+    expect(deps.boot).toHaveBeenCalledTimes(1)
   })
 })

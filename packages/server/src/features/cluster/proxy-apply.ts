@@ -87,20 +87,31 @@ export async function ensureProxyAuthSecret(): Promise<string> {
   return secret
 }
 
+let cachedProxyClusterIp: string | null = null
+
 /**
  * The live ClusterIP of the proxy Service — read at pod-create as the session
  * pods' DNS nameserver + egress redirect target. Allocator-assigned (no longer
  * pinned) for both the top-level and the vcluster-allocated inner proxy; stable
  * because the Service is never deleted/recreated. (The spike confirmed synced
  * pods reach vcluster ClusterIPs and that an explicit dnsConfig survives sync.)
+ * That stability is why the first read is cached for the process — it saves a
+ * kubectl child per session create.
  */
 export async function proxyServiceClusterIp(): Promise<string> {
+  if (cachedProxyClusterIp) return cachedProxyClusterIp
   const svc = await kubectlGetJson<{ spec?: { clusterIP?: string } }>([
     'get', 'service', PROXY_APP_NAME, '-n', k8sNamespace(),
   ])
   const ip = svc?.spec?.clusterIP
   if (!ip) throw new Error('proxy Service has no ClusterIP yet')
+  cachedProxyClusterIp = ip
   return ip
+}
+
+/** Test-only: forget the cached proxy Service ClusterIP. */
+export function _resetProxyClusterIpForTests(): void {
+  cachedProxyClusterIp = null
 }
 
 export async function ensureProxyResources(

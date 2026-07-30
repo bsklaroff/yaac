@@ -118,6 +118,7 @@ interface Manifest {
             capabilities?: { add?: string[] }
             allowPrivilegeEscalation?: boolean
           }
+          lifecycle?: { postStart?: { exec?: { command: string[] } } }
           volumeMounts: Array<{ name: string; mountPath: string; readOnly?: boolean }>
           resources: { requests: Record<string, string>; limits: Record<string, string> }
         }>
@@ -233,6 +234,18 @@ describe('buildSessionJobManifest', () => {
     const mounts = m.spec.template.spec.containers[0].volumeMounts
     expect(mounts[0]).toEqual({ name: 'hp-0', mountPath: '/mnt/ro', readOnly: true })
     expect(mounts[1]).toEqual({ name: 'hp-1', mountPath: '/mnt/rw' })
+  })
+
+  it('wires postStartExec as the session container postStart hook', () => {
+    const c = build({ postStartExec: ['/usr/local/bin/yaac-session-init'] })
+      .spec.template.spec.containers[0]
+    expect(c.lifecycle).toEqual({
+      postStart: { exec: { command: ['/usr/local/bin/yaac-session-init'] } },
+    })
+  })
+
+  it('emits no lifecycle block without postStartExec', () => {
+    expect(build().spec.template.spec.containers[0].lifecycle).toBeUndefined()
   })
 
   it('injects no per-pod egress sidecars — egress is redirected at the cluster level', () => {

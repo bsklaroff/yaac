@@ -599,3 +599,58 @@ export async function bootStreamd(jobName: string): Promise<void> {
     { maxAttempts: 1, timeout: 15_000 },
   )
 }
+
+/** Test seam for waitForStreamd (the module's own exec/boot functions). */
+export interface WaitForStreamdDeps {
+  exec: typeof sessionExec
+  boot: typeof bootStreamd
+  sleepMs: (ms: number) => Promise<void>
+}
+
+/**
+ * Gate on a session pod's streamd answering the relay — session-create's
+ * "in-pod setup done" signal. The pod's postStart hook (yaac-session-init)
+ * starts streamd last, so a successful relay exec proves the git config and
+ * tmux server it configured are in place, and every setup command that
+ * follows can ride the relay instead of kubectl exec.
+ *
+ * Dial failures are retried until the deadline: right after pod-Ready the
+ * proxy may not have observed the pod IP yet, and streamd's node process
+ * takes a beat to bind. Halfway through the budget, `bootStreamd` re-runs
+ * the daemon via kubectl exec once — the same self-heal the status watcher
+ * uses — so a streamd that failed to start in the hook still recovers.
+ */
+export async function waitForStreamd(
+  jobName: string,
+  opts: { timeoutMs?: number } = {},
+  deps?: WaitForStreamdDeps,
+): Promise<void> {
+  const d = deps ?? {
+    exec: sessionExec,
+    boot: bootStreamd,
+    sleepMs: (ms: number) => new Promise((r) => setTimeout(r, ms)),
+  }
+  const timeoutMs = opts.timeoutMs ?? 30_000
+  const deadline = Date.now() + timeoutMs
+  let healed = false
+  for (;;) {
+    try {
+      await d.exec(jobName, 'true', { maxAttempts: 1, timeout: 5_000 })
+      return
+    } catch (err) {
+      // A non-dial error means the pod ran the command — streamd is up but
+      // something else is wrong; surface it.
+      if (!(err instanceof RelayDialError)) throw err
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `streamd in ${jobName} not reachable after ${timeoutMs}ms: ${err.message}`,
+        )
+      }
+      if (!healed && Date.now() >= deadline - timeoutMs / 2) {
+        healed = true
+        await d.boot(jobName).catch(() => { /* dial loop keeps trying */ })
+      }
+      await d.sleepMs(300)
+    }
+  }
+}

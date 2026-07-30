@@ -52,6 +52,20 @@ const inflightBuilds = new Map<string, { id: string; promise: Promise<void> }>()
 const inflightPushes = new Map<string, Promise<string>>()
 
 /**
+ * Tags verified present (image store / registry respectively) this server
+ * run. Content-hash tags are immutable, so a verified tag never needs
+ * re-checking — this trades a `podman image exists` child process (and a
+ * registry HEAD) per layer per create for one per tag per run. `yaac
+ * project rebuild` changes bytes under unchanged tags, so the rebuild path
+ * invalidates before removing and re-verifies after. The residual staleness
+ * (someone prunes the podman store or wipes the registry mid-run) surfaces
+ * as a fail-fast ErrImagePull on the next session pod, same as any missing
+ * immutable tag.
+ */
+const realizedTags = new Set<string>()
+const pushedTags = new Set<string>()
+
+/**
  * Build one layer, coalescing with any in-flight build of the same tag.
  * The winner creates the build-registry entry and owns its lifecycle;
  * joiners attach their project slug and share the outcome (including a
@@ -99,6 +113,7 @@ async function runBuild(
       },
     })
     finishImageBuild(id)
+    realizedTags.add(layer.tag)
   } catch (err) {
     failImageBuild(id, err instanceof Error ? err.message : String(err))
     throw err
@@ -126,6 +141,12 @@ export async function rebuildLayerExclusive(
     if (!existing) break
     await existing.promise.catch(() => {})
   }
+
+  // The rebuild is about to remove the image — the verified-tag caches
+  // must not vouch for it (or its registry copy, which the rebuild
+  // force-pushes) until the fresh build lands.
+  realizedTags.delete(layer.tag)
+  pushedTags.delete(layer.tag)
 
   const id = registerImageBuild({
     tag: layer.tag,
@@ -161,7 +182,11 @@ export async function pushImageShared(
   const existing = inflightPushes.get(tag)
   if (existing) return existing
 
-  if (!opts.force && await registryHasTag(tag)) return registryRef(tag)
+  if (!opts.force && pushedTags.has(tag)) return registryRef(tag)
+  if (!opts.force && await registryHasTag(tag)) {
+    pushedTags.add(tag)
+    return registryRef(tag)
+  }
 
   // A force-push of a tag the host store never held (a cluster-pod-built
   // untrusted layer) is already satisfied: the builder pod force-pushed
@@ -189,6 +214,7 @@ export async function pushImageShared(
   })
     .then((ref) => {
       finishImageBuild(id)
+      pushedTags.add(tag)
       return ref
     })
     .catch((err: unknown) => {
@@ -257,7 +283,13 @@ export async function ensureImage(
       const engine = engineForLayer(layer.name)
       // An in-flight build means the tag doesn't exist yet — join it rather
       // than trusting the exists check (podman commits the tag at the end).
-      if (!inflightBuilds.has(layer.tag) && await engine.imageExists(layer.tag)) continue
+      if (!inflightBuilds.has(layer.tag)) {
+        if (realizedTags.has(layer.tag)) continue
+        if (await engine.imageExists(layer.tag)) {
+          realizedTags.add(layer.tag)
+          continue
+        }
+      }
 
       if (requirePrebuilt) {
         throw new Error(
@@ -374,8 +406,10 @@ export async function rebuildProjectImage(
   return finalTag
 }
 
-/** Test helper: forget all in-flight builds and pushes. */
+/** Test helper: forget all in-flight builds, pushes, and verified tags. */
 export function _clearBuildCoordinatorForTests(): void {
   inflightBuilds.clear()
   inflightPushes.clear()
+  realizedTags.clear()
+  pushedTags.clear()
 }

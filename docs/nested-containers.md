@@ -53,16 +53,19 @@ nested, its pod gains:
   at `/var/lib/shared-images` as a podman `additionalimagestores` entry.
   The rootful engine reads it and the promoter writes it, both as root.
 
-session-create starts the engine with one sudo'd exec: `podman system
+The pod's postStart setup script (`session-bin/yaac-session-init`) starts
+the engine in the background with one sudo'd shell: `podman system
 service` as root, a socket wait with a log-tail diagnostic on timeout,
 then handing the socket to the `yaac` user so both CLIs
-(`DOCKER_HOST`/`CONTAINER_HOST` → `/run/podman/podman.sock`) drive it. The
-service exports `BUILDAH_ISOLATION=chroot`: under buildah's default OCI
-isolation the sentry breaks the `RUN`-step stdio relay after tens of KB of
-output (EPIPE kills chatty steps like `apt-get`), while chroot isolation
-streams fine, keeps `RUN` on the pod netns, and holds setcap file caps on
-the tmpfs graphroot. Nothing supervises the engine: if it dies
-mid-session, the session is degraded until recreated.
+(`DOCKER_HOST`/`CONTAINER_HOST` → `/run/podman/podman.sock`) drive it;
+session-create gates on `docker version` over the stream relay before
+handing the session over. The service exports `BUILDAH_ISOLATION=chroot`:
+under buildah's default OCI isolation the sentry breaks the `RUN`-step
+stdio relay after tens of KB of output (EPIPE kills chatty steps like
+`apt-get`), while chroot isolation streams fine, keeps `RUN` on the pod
+netns, and holds setcap file caps on the tmpfs graphroot. Nothing
+supervises the engine: if it dies mid-session, the session is degraded
+until recreated.
 
 ### Image promoter (cross-session build cache)
 

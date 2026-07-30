@@ -37,6 +37,7 @@ import {
   imageExists,
   removeImage,
   usesRootfulPodman,
+  _resetContainerRuntimeForTests,
 } from '#platform/container/runtime'
 import { ensureKubernetes } from '#platform/k8s/kubectl'
 
@@ -127,6 +128,7 @@ describe('ensureContainerRuntime', () => {
   beforeEach(() => {
     execFileMock.mockReset()
     vi.mocked(ensureKubernetes).mockClear()
+    _resetContainerRuntimeForTests()
   })
 
   it('verifies the podman build engine, then the kubernetes session runtime', async () => {
@@ -148,6 +150,27 @@ describe('ensureContainerRuntime', () => {
       new Error('Kubernetes cluster is not reachable.'),
     )
     await expect(ensureContainerRuntime()).rejects.toThrow('not reachable')
+  })
+
+  it('verifies once per process — the second call spawns nothing', async () => {
+    execFileMock.mockResolvedValue({ stdout: '[{"Running": true}]', stderr: '' })
+    await ensureContainerRuntime()
+    execFileMock.mockClear()
+    vi.mocked(ensureKubernetes).mockClear()
+
+    await ensureContainerRuntime()
+
+    expect(execFileMock).not.toHaveBeenCalled()
+    expect(ensureKubernetes).not.toHaveBeenCalled()
+  })
+
+  it('does not cache a failed verification', async () => {
+    execFileMock.mockResolvedValue({ stdout: '[{"Running": true}]', stderr: '' })
+    vi.mocked(ensureKubernetes).mockRejectedValueOnce(new Error('down'))
+    await expect(ensureContainerRuntime()).rejects.toThrow('down')
+
+    await ensureContainerRuntime()
+    expect(ensureKubernetes).toHaveBeenCalledTimes(2)
   })
 })
 

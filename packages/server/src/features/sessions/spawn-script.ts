@@ -17,6 +17,15 @@ import path from 'node:path'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
 import type { HostPathMount } from '#platform/k8s/pod-spec'
 
+/**
+ * The one session-bin script session pods cannot function without: the
+ * postStart hook that performs the in-pod setup (git identity, tmux
+ * server, streamd). The other scripts are optional helpers — a stripped
+ * build missing them just lacks conveniences — but a create must fail
+ * loudly when this one didn't stage.
+ */
+export const SESSION_INIT_SCRIPT = 'yaac-session-init'
+
 let sourceDirOverride: string | null = null
 
 /**

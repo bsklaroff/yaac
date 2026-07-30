@@ -162,7 +162,7 @@ export const sessionPodItemSchema = z.object({
     // Terminal-state evidence (all optional — absent on healthy pods):
     // pod-level reason/message cover evictions, the first container status
     // covers the session container's exit (index 0 is the session container,
-    // the same invariant session-create's waitForPodReady relies on).
+    // the same invariant session-create's waitForJobPodReady relies on).
     reason: z.string().optional(),
     message: z.string().optional(),
     containerStatuses: z.array(z.object({
