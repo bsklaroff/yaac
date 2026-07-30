@@ -1,0 +1,35 @@
+import { api } from './api'
+
+/**
+ * Forward a detected-but-unforwarded container port for a session.
+ * `persist: false` opens a live forward for just this running session;
+ * `persist: true` also writes the port into the project's yaac-config.json
+ * (so future sessions inherit it) and fans the live forward out to the
+ * project's other running sessions. Either way the server pushes a fresh
+ * snapshot that moves the port from `unforwardedPorts` to `forwardedPorts`,
+ * so the badge updates on its own.
+ */
+export async function forwardDetectedPort(
+  sessionId: string,
+  containerPort: number,
+  opts: { persist: boolean },
+): Promise<void> {
+  await api.session[':id']['forward-port'].$post({
+    param: { id: sessionId },
+    json: { containerPort, persist: opts.persist },
+  })
+}
+
+/**
+ * Hide a detected port for this session (server-side, in-memory — resets on
+ * server restart). The pushed snapshot drops it from `unforwardedPorts`.
+ */
+export async function dismissDetectedPort(
+  sessionId: string,
+  containerPort: number,
+): Promise<void> {
+  await api.session[':id']['dismiss-port'].$post({
+    param: { id: sessionId },
+    json: { containerPort },
+  })
+}

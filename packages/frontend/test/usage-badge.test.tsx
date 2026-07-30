@@ -88,6 +88,7 @@ function stubSnapshot(
     sessions: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {}, imageBuilds: [],
     planUsage,
     codexPlanUsage,
+    forwardBindHost: '127.0.0.1',
   } as ServerSnapshot)
 }
 

@@ -18,6 +18,7 @@ import {
 import { EmptyState } from '#components/ui/EmptyState'
 import { NewSessionButton } from '#components/NewSessionButton'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
+import { UnforwardedPortsBadge } from '#components/UnforwardedPortsBadge'
 import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
 import { ForwardedPortLinks, portLinkLabel } from '#components/ForwardedPortLinks'
 import { getSessionTerminals, createShellTerminal, killSessionTerminal } from '#lib/terminalsApi'
@@ -635,6 +636,15 @@ export function SessionView({
           )}
           {chipPorts.length > 0 && (
             <ForwardedPortLinks ports={chipPorts} iconSize={11} className="hover:bg-surface-2" />
+          )}
+          {session.unforwardedPorts.length > 0 && (
+            <UnforwardedPortsBadge
+              ports={session.unforwardedPorts}
+              sessionId={session.sessionId}
+              exposeHost={snapshot?.forwardBindHost ?? '127.0.0.1'}
+              iconSize={11}
+              className="hover:bg-surface-3"
+            />
           )}
           {gitAuthFailures.length > 0 && (
             <GitAuthFailureBadge

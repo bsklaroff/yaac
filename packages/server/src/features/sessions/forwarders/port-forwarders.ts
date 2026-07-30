@@ -4,22 +4,30 @@
  * (see `createSession`) and must tear them down when the session is
  * deleted or reaped; this module is the handoff point.
  *
- * Concurrent attaches to the same session share a single forwarder
- * set — register only the first one, and let re-registration for a
- * sessionId that already has forwarders be a no-op so the
- * server-restart restore pass can't double-register.
+ * A session's entry accumulates registrations: the create/restore batch
+ * plus any reactive single-port appends (addSessionForwarder), merged so
+ * neither can tear the other down. The server-restart restore pass
+ * guards with hasSessionForwarders before provisioning, so it never
+ * double-registers a batch.
  */
 
 import { relayTcpFactory, sessionExec } from '#platform/k8s/stream-relay'
 import { reserveAvailablePort, startPortForwarders } from '#platform/container/port'
 import type { ReservedPort } from '#platform/container/port'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
+import { ServerError } from '@yaac/shared/errors'
 import type { PortForwardConfig, PortMapping } from '@yaac/shared/types'
 
 interface SessionForwarders {
-  stop: () => void
+  /** One stop-fn per registration: the create/restore batch plus any
+   *  later single-port appends (addSessionForwarder). */
+  stops: Array<() => void>
   ports: PortMapping[]
 }
+
+/** Ceiling on live forwards per session — bounds a hostile flood of
+ *  forward-port actions (and keeps well under streamd's stream cap). */
+export const MAX_FORWARDS_PER_SESSION = 32
 
 const forwarders = new Map<string, SessionForwarders>()
 
@@ -28,16 +36,19 @@ export function registerSessionForwarders(
   stop: () => void,
   ports: ReadonlyArray<PortMapping>,
 ): void {
-  if (forwarders.has(sessionId)) {
-    // Already have forwarders for this session; drop the new ones to
-    // avoid leaking handles.
-    stop()
+  const mapped = ports.map(({ containerPort, hostPort }) => ({ containerPort, hostPort }))
+  const entry = forwarders.get(sessionId)
+  if (entry) {
+    // Merge, never drop: create's batch registration can race a reactive
+    // addSessionForwarder from the forward-port route (the pod is Running
+    // — and its dev servers detectable — well before create returns).
+    // Dropping either side would tear down live forwards; a merged entry
+    // just holds both, and stopSessionForwarders runs every stop.
+    entry.stops.push(stop)
+    entry.ports.push(...mapped)
     return
   }
-  forwarders.set(sessionId, {
-    stop,
-    ports: ports.map(({ containerPort, hostPort }) => ({ containerPort, hostPort })),
-  })
+  forwarders.set(sessionId, { stops: [stop], ports: mapped })
 }
 
 /**
@@ -54,10 +65,12 @@ export function stopSessionForwarders(sessionId: string): void {
   const entry = forwarders.get(sessionId)
   if (!entry) return
   forwarders.delete(sessionId)
-  try {
-    entry.stop()
-  } catch {
-    // Best-effort teardown — a wedged forwarder shouldn't block delete.
+  for (const stop of entry.stops) {
+    try {
+      stop()
+    } catch {
+      // Best-effort teardown — a wedged forwarder shouldn't block delete.
+    }
   }
 }
 
@@ -150,4 +163,60 @@ export async function provisionSessionForwarders(
   registerSessionForwarders(sessionId, stop, mappings)
 
   return mappings
+}
+
+/**
+ * Forward ONE additional container port on a running session — the
+ * reactive path behind the webapp's "forward this port" action, appended
+ * to whatever forwarders the session already holds (creating its registry
+ * entry when it has none). Reserves a host port starting at the container
+ * port itself, starts a relay listener over the same RelayFactory the
+ * create/restore paths use, and refreshes tmux status-right so the bar
+ * matches the live set. Idempotent per container port.
+ */
+export async function addSessionForwarder(
+  projectSlug: string,
+  sessionId: string,
+  jobName: string,
+  containerPort: number,
+): Promise<PortMapping> {
+  const existing = getSessionPorts(sessionId).find((p) => p.containerPort === containerPort)
+  if (existing) return existing
+  if (getSessionPorts(sessionId).length >= MAX_FORWARDS_PER_SESSION) {
+    throw new ServerError(
+      'CONFLICT',
+      `session ${sessionId.slice(0, 8)} already holds ${MAX_FORWARDS_PER_SESSION} forwarded ports`,
+    )
+  }
+
+  const reserved = await reserveAvailablePort(containerPort, containerPort)
+
+  // Re-check after the await: a concurrent request for the same port may
+  // have won the race while we reserved — release ours and defer to it.
+  const winner = getSessionPorts(sessionId).find((p) => p.containerPort === containerPort)
+  if (winner || getSessionPorts(sessionId).length >= MAX_FORWARDS_PER_SESSION) {
+    reserved.server.close()
+    if (winner) return winner
+    throw new ServerError(
+      'CONFLICT',
+      `session ${sessionId.slice(0, 8)} already holds ${MAX_FORWARDS_PER_SESSION} forwarded ports`,
+    )
+  }
+
+  const mapping = { containerPort: reserved.containerPort, hostPort: reserved.hostPort }
+  const stop = startPortForwarders(relayTcpFactory(sessionId), [reserved])
+
+  const entry = forwarders.get(sessionId)
+  if (entry) {
+    entry.stops.push(stop)
+    entry.ports.push(mapping)
+  } else {
+    forwarders.set(sessionId, { stops: [stop], ports: [mapping] })
+  }
+
+  // Cosmetic — a failed status-right refresh must not undo a live forward.
+  await setSessionStatusRight(jobName, projectSlug, sessionId, getSessionPorts(sessionId))
+    .catch(() => {})
+
+  return mapping
 }

@@ -23,6 +23,7 @@ const session = (over: Partial<SessionListEntry> = {}): SessionListEntry => ({
   createdAt: '2026-07-02 10:00:00',
   blockedHosts: [],
   forwardedPorts: [],
+  unforwardedPorts: [],
   ...over,
 })
 

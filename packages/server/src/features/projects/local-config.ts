@@ -67,6 +67,37 @@ export async function addAllowedHostToProjectConfig(slug: string, host: string):
 }
 
 /**
+ * Append a container port to a config's `portForward` list, returning a new
+ * config. The host port starts at the container port itself (the same default
+ * a hand-written entry would usually pick). De-duplicates by containerPort,
+ * so re-adding a forwarded port is a no-op. Pure.
+ */
+export function withPortForward(config: YaacConfig, containerPort: number): YaacConfig {
+  const list = config.portForward ?? []
+  if (list.some((p) => p.containerPort === containerPort)) return config
+  return { ...config, portForward: [...list, { containerPort, hostPortStart: containerPort }] }
+}
+
+/**
+ * Persist a new port forward into a project's stored config overlay so every
+ * future session of the project inherits it — the `persist: true` half of the
+ * webapp's "forward this port" action. Same read-modify-write as
+ * addAllowedHostToProjectConfig.
+ */
+export async function addPortForwardToProjectConfig(
+  slug: string,
+  containerPort: number,
+): Promise<YaacConfig> {
+  let overlay: YaacConfig | null
+  try {
+    overlay = await resolveProjectConfig(slug)
+  } catch (err) {
+    throw new ServerError('VALIDATION', err instanceof Error ? err.message : String(err))
+  }
+  return writeProjectConfig(slug, withPortForward(overlay ?? {}, containerPort))
+}
+
+/**
  * Set (or clear, with null) a config's default reference branch, returning a
  * new config. Pure.
  */

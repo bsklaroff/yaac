@@ -43,6 +43,7 @@ function stubSnapshot(imageBuilds: ImageBuildEntry[]): void {
     sessions: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {}, imageBuilds,
     planUsage: null,
     codexPlanUsage: null,
+    forwardBindHost: '127.0.0.1',
   } as ServerSnapshot)
 }
 

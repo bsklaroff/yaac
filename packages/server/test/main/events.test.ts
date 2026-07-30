@@ -27,6 +27,7 @@ function emptySnapshot(): ServerSnapshot {
     sessions: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {}, imageBuilds: [],
     planUsage: null,
     codexPlanUsage: null,
+    forwardBindHost: '127.0.0.1',
   }
 }
 
@@ -168,7 +169,7 @@ describe('buildSnapshot provisioning', () => {
     vi.mocked(listActiveSessions).mockResolvedValueOnce({
       sessions: [{
         sessionId: 'prov-2', projectSlug: 'p', tool: 'claude',
-        status: 'waiting', createdAt: '2026-01-01 00:00:00', blockedHosts: [], forwardedPorts: [],
+        status: 'waiting', createdAt: '2026-01-01 00:00:00', blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
       gitAuthFailures: {},
@@ -183,7 +184,7 @@ describe('buildSnapshot provisioning', () => {
     vi.mocked(listActiveSessions).mockResolvedValue({
       sessions: [{
         sessionId: 'prov-3', projectSlug: 'p', tool: 'claude',
-        status: 'waiting', createdAt: '2026-01-01 00:00:00', blockedHosts: [], forwardedPorts: [],
+        status: 'waiting', createdAt: '2026-01-01 00:00:00', blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
       gitAuthFailures: {},

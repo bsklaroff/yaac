@@ -569,6 +569,155 @@ describe('yaac session create suite (real CLI + real server + mocked remotes)', 
       }
     }, 30_000)
 
+    // ── Auto-detected unforwarded ports (streamd `ports` push) ──────────
+    // Sequenced: detection first (it also pins down the denylist), then the
+    // live forward, then persist, then dismiss.
+
+    /** The kitchen session's snapshot row from /session/list. */
+    async function kitchenSession(): Promise<{
+      forwardedPorts: Array<{ containerPort: number; hostPort: number }>
+      unforwardedPorts: number[]
+    }> {
+      const res = await fetch(`${base}/session/list?project=kitchen`, { headers: auth })
+      expect(res.status).toBe(200)
+      const body = await res.json() as {
+        sessions: Array<{
+          forwardedPorts: Array<{ containerPort: number; hostPort: number }>
+          unforwardedPorts: number[]
+        }>
+      }
+      expect(body.sessions).toHaveLength(1)
+      return body.sessions[0]
+    }
+
+    async function waitForUnforwarded(
+      predicate: (ports: number[]) => boolean,
+      what: string,
+    ): Promise<number[]> {
+      let ports: number[] = []
+      for (let i = 0; i < 60; i++) {
+        ports = (await kitchenSession()).unforwardedPorts
+        if (predicate(ports)) return ports
+        await sleep(1000)
+      }
+      throw new Error(`${what} — last unforwardedPorts: [${ports.join(', ')}]`)
+    }
+
+    it('detects unforwarded listeners, never surfacing denylisted or forwarded ports', async () => {
+      // One ordinary listener plus one on the sensitive-port denylist
+      // (9229, node --inspect). Detection rides streamd's in-pod poll →
+      // relay push → server map → snapshot, so poll the list endpoint.
+      await startHttpServerInContainer(jobName, 8090, '127.0.0.1', 'detected server')
+      await startHttpServerInContainer(jobName, 9229, '127.0.0.1', 'sensitive server')
+
+      const unforwarded = await waitForUnforwarded(
+        (ports) => ports.includes(8090),
+        'listener on 8090 never surfaced in unforwardedPorts',
+      )
+      // The sensitive listener is up (the helper curled it) but hidden, as
+      // is yaac's own in-pod infra (streamd on 10300); the config-declared
+      // forwards are subtracted as already forwarded.
+      expect(unforwarded).not.toContain(9229)
+      expect(unforwarded).not.toContain(10300)
+      for (const { containerPort } of PORT_FORWARD) {
+        expect(unforwarded).not.toContain(containerPort)
+      }
+    }, 90_000)
+
+    it('forwards a detected port for this session and serves real traffic', async () => {
+      const res = await fetch(`${base}/session/${sessionId}/forward-port`, {
+        method: 'POST',
+        headers: { ...auth, 'content-type': 'application/json' },
+        body: JSON.stringify({ containerPort: 8090 }),
+      })
+      expect(res.status).toBe(200)
+      const mapping = await res.json() as { containerPort: number; hostPort: number }
+      expect(mapping.containerPort).toBe(8090)
+
+      const page = await httpGet(`http://127.0.0.1:${mapping.hostPort}/`)
+      expect(page.status).toBe(200)
+      expect(page.body).toBe('detected server')
+
+      // The snapshot moves the port from unforwarded to forwarded.
+      const session = await kitchenSession()
+      expect(session.unforwardedPorts).not.toContain(8090)
+      expect(session.forwardedPorts).toContainEqual(mapping)
+
+      // Now forwarded → subtracted from the offerable set, so a repeat
+      // request is rejected.
+      const again = await fetch(`${base}/session/${sessionId}/forward-port`, {
+        method: 'POST',
+        headers: { ...auth, 'content-type': 'application/json' },
+        body: JSON.stringify({ containerPort: 8090 }),
+      })
+      expect(again.status).toBe(409)
+    }, 60_000)
+
+    it('rejects forwarding a port with no detected listener', async () => {
+      const res = await fetch(`${base}/session/${sessionId}/forward-port`, {
+        method: 'POST',
+        headers: { ...auth, 'content-type': 'application/json' },
+        body: JSON.stringify({ containerPort: 8099 }),
+      })
+      expect(res.status).toBe(409)
+    }, 30_000)
+
+    it('persists a detected port into the project config and forwards it live', async () => {
+      await startHttpServerInContainer(jobName, 8091, '127.0.0.1', 'persisted server')
+      await waitForUnforwarded(
+        (ports) => ports.includes(8091),
+        'listener on 8091 never surfaced in unforwardedPorts',
+      )
+
+      const res = await fetch(`${base}/session/${sessionId}/forward-port`, {
+        method: 'POST',
+        headers: { ...auth, 'content-type': 'application/json' },
+        body: JSON.stringify({ containerPort: 8091, persist: true }),
+      })
+      expect(res.status).toBe(200)
+      const mapping = await res.json() as { containerPort: number; hostPort: number }
+
+      const page = await httpGet(`http://127.0.0.1:${mapping.hostPort}/`)
+      expect(page.body).toBe('persisted server')
+
+      // The project overlay gained the portForward entry (future sessions
+      // inherit it), alongside the create-time entries.
+      const configRaw = await fs.readFile(
+        path.join(projectPath, 'config', 'yaac-config.json'), 'utf8',
+      )
+      const config = JSON.parse(configRaw) as {
+        portForward: Array<{ containerPort: number; hostPortStart: number }>
+      }
+      expect(config.portForward).toContainEqual({ containerPort: 8091, hostPortStart: 8091 })
+      for (const entry of PORT_FORWARD) {
+        expect(config.portForward).toContainEqual(entry)
+      }
+    }, 90_000)
+
+    it('dismisses a detected port so it stops being offered', async () => {
+      await startHttpServerInContainer(jobName, 8092, '127.0.0.1', 'dismissed server')
+      await waitForUnforwarded(
+        (ports) => ports.includes(8092),
+        'listener on 8092 never surfaced in unforwardedPorts',
+      )
+
+      const res = await fetch(`${base}/session/${sessionId}/dismiss-port`, {
+        method: 'POST',
+        headers: { ...auth, 'content-type': 'application/json' },
+        body: JSON.stringify({ containerPort: 8092 }),
+      })
+      expect(res.status).toBe(204)
+      expect((await kitchenSession()).unforwardedPorts).not.toContain(8092)
+
+      // A dismissed port is also no longer forwardable.
+      const forward = await fetch(`${base}/session/${sessionId}/forward-port`, {
+        method: 'POST',
+        headers: { ...auth, 'content-type': 'application/json' },
+        body: JSON.stringify({ containerPort: 8092 }),
+      })
+      expect(forward.status).toBe(409)
+    }, 90_000)
+
     it('routes session HTTPS through proxy→redirect→mock with credential injection', async () => {
       // Drive a single HTTPS request from inside the session pod through
       // the proxy: `curl -k` because we don't ship the proxy's CA into the
