@@ -1,0 +1,156 @@
+#!/bin/sh
+# yaac-session-init — in-pod session setup, run as the session container's
+# postStart hook (staged and File-mounted read-only at /usr/local/bin like
+# every session-bin script, so it always tracks the installed yaac version).
+#
+# Everything here used to be a chain of per-command `kubectl exec` round
+# trips from the server (~300ms each through the apiserver + gVisor exec
+# machinery); running it in-pod at container start makes it a few local
+# milliseconds, and the kubelet holds the container's Ready transition until
+# the hook finishes — so "pod Ready" now implies this base setup is done.
+#
+# Steps that need host coordination stay server-side and ride the stream
+# relay once streamd (started last, below) answers:
+#   - the worktree gitdir rewrite (must wait for the host-side
+#     `git worktree add`, which runs concurrently with pod boot),
+#   - the branch-upstream write (serialized against other sessions of the
+#     project by a host-side lock),
+#   - init windows + the agent respawn (need the populated worktree).
+#
+# Inputs (env, set by session-create): YAAC_TOOL, YAAC_GIT_NAME,
+# YAAC_GIT_EMAIL, YAAC_STATUS_RIGHT, and for nested-containers sessions
+# YAAC_NESTED_ENGINE=1 plus optional YAAC_REGISTRY_CONF_B64.
+set -eu
+
+# Keep in sync with CONTAINER_TMUX_SOCK (packages/shared/src/paths.ts): the
+# socket lives on the host-mounted tmux dir so host-side probes can find it.
+TMUX="tmux -S /tmp/yaac-tmux/server"
+
+# Run from /, never the container's /workspace workingDir: the host-side
+# `git worktree add` populates /workspace CONCURRENTLY with this hook, and
+# its `.git` link file names the HOST admin path until the in-pod rewrite
+# (a later relay exec) fixes it. git does repository discovery from the
+# cwd even for `config --global`, and a gitfile pointing at a nonexistent
+# path is fatal — from / there is no repo to discover.
+cd /
+
+# Git identity and trust for the two mounted repo roots. --global writes the
+# image-local ~/.gitconfig (not a shared mount), so this is per-pod and never
+# races another session.
+git config --global user.name "$YAAC_GIT_NAME"
+git config --global user.email "$YAAC_GIT_EMAIL"
+git config --global --add safe.directory /workspace
+git config --global --add safe.directory /repo
+
+# Open the tmux session with a placeholder keepalive (`sleep infinity`)
+# instead of the agent. The agent is respawned in by the server once the
+# worktree is populated; a fast-failing command here would end the tmux
+# session before setup completed. The placeholder never reaches the user —
+# they attach after provisioning finishes.
+#
+# `-x`/`-y` set generous initial dimensions so the respawned agent inherits
+# a window larger than any realistic terminal. On attach, tmux shrinks the
+# window to fit the client — shrink-then-render is reliable for TUI apps.
+# Without this, the session is created at tmux's default 80x24 and a race
+# against the agent's startup render can leave it stuck at 80x24 until a
+# host-terminal resize forces a fresh SIGWINCH.
+#
+# `env COLORTERM=truecolor` seeds the tmux *server* environment (the server
+# forks from this first client), which every pane on it inherits — the
+# agent, init windows, and scratch shells. TUIs decide whether to emit
+# 24-bit color from COLORTERM in their own environment; without it they see
+# only TERM=tmux-256color and quantize their themes to the 256-color
+# palette before the RGB passthrough configured below can help.
+#
+# `-c /workspace` pins the session's start directory (we cd'd to / above):
+# the respawned agent and every later window run in the worktree.
+env COLORTERM=truecolor $TMUX -u new-session -d -s yaac -n "$YAAC_TOOL" -x 500 -y 200 -c /workspace 'sleep infinity'
+
+# Session UX options, one tmux invocation (command sequence via `\;`):
+#  - monitor-bell/bell-action: propagate terminal bells (\a) from any window
+#    through to the attached client so the user's emulator can surface
+#    notifications.
+#  - extended-keys on: forward CSI-u "extended keys" to any pane app that
+#    opts in. The `on` mode negotiates per-app, so it can't regress classic
+#    key encoding; agent TUIs use it to tell modified Enter apart from a
+#    plain newline (pi warns at startup when it's off).
+#  - default-terminal + terminal-features RGB: advertise 24-bit color so
+#    tmux forwards RGB escapes to the attached terminal instead of
+#    quantizing to the 256-color palette (what made delta's diff
+#    backgrounds unreadable).
+#  - bind-key k: C-b k kills the whole tmux server (session then reaped as
+#    a zombie) — guard the one-keystroke session killer with a confirm.
+$TMUX \
+  set-option -g history-limit 200000 \; \
+  set-option -g mouse on \; \
+  set-option -g focus-events on \; \
+  set-option -g monitor-bell on \; \
+  set-option -g bell-action any \; \
+  set-option -g visual-bell off \; \
+  set-option -g allow-passthrough on \; \
+  set-option -g extended-keys on \; \
+  set-option -g default-terminal tmux-256color \; \
+  set-option -as terminal-features ',*:RGB' \; \
+  set-option -t yaac status-right-length 80 \; \
+  set-option -t yaac status-right "$YAAC_STATUS_RIGHT" \; \
+  bind-key k confirm-before -p 'kill this yaac session? (y/n)' kill-server
+
+# Nested sessions: start the in-pod ROOTFUL podman engine (it serves the
+# Docker Engine API on the socket DOCKER_HOST points at). Backgrounded so
+# pod readiness isn't held on the engine's multi-second boot — the server
+# gates on `docker version` over the relay before anything needs it, and a
+# dead-on-arrival engine surfaces its log tail there.
+if [ "${YAAC_NESTED_ENGINE:-}" = "1" ]; then
+  # virtualCluster sessions: drop a registries.conf.d entry marking the
+  # per-project registry (plain HTTP on :5000) insecure, so user-driven
+  # `docker push` works without --tls-verify gymnastics. Written before the
+  # engine starts; per-project host, so it can't live in the shared
+  # nestable image layer. Rootful engine reads /etc/containers — sudo.
+  if [ -n "${YAAC_REGISTRY_CONF_B64:-}" ]; then
+    sudo -n mkdir -p /etc/containers/registries.conf.d
+    printf %s "$YAAC_REGISTRY_CONF_B64" | base64 -d \
+      | sudo -n tee /etc/containers/registries.conf.d/yaac-project-registry.conf >/dev/null
+  fi
+
+  # The engine runs as real root inside the sentry; the socket it creates
+  # under root-owned /run/podman is opened to the yaac user (who runs the
+  # agent + docker CLI). On timeout the script exits 1 with the engine log
+  # tail so the server-side `docker version` gate can point at it.
+  #
+  # SSL_CERT_FILE must be set INSIDE the sudo'd shell: the engine (a Go
+  # binary) trusts the MITM proxy CA for registry pulls via this var, but
+  # sudo's env_reset strips the pod env. It points at the combined bundle
+  # ({public roots} ∪ {proxy CA}) so both MITM'd and tunnelled registries
+  # verify — keep the path in sync with PROXY_CA_BUNDLE_PATH
+  # (packages/server/src/features/sessions/egress/proxy-client.ts).
+  #
+  # BUILDAH_ISOLATION=chroot: under buildah's default oci isolation the
+  # sentry breaks the RUN-step stdio relay after a few tens of KB of output.
+  # chroot isolation streams fine, keeps RUN on the pod netns, and holds
+  # setcap file caps on the tmpfs graphroot. Remote builds resolve isolation
+  # SERVER-side, so the service env covers every client.
+  cat > /tmp/yaac-engine-start.sh <<'EOF'
+export SSL_CERT_FILE=/etc/yaac/certs/ca-bundle.pem BUILDAH_ISOLATION=chroot
+podman system service --time=0 >/tmp/podman-service.log 2>&1 &
+i=0
+while [ $i -lt 120 ] && ! [ -S /run/podman/podman.sock ]; do i=$((i+1)); sleep 0.5; done
+if ! [ -S /run/podman/podman.sock ]; then
+  echo "yaac: in-pod podman engine did not create /run/podman/podman.sock within 60s; engine log tail:" >&2
+  tail -n 20 /tmp/podman-service.log >&2 || true
+  exit 1
+fi
+chmod 0755 /run/podman && chown yaac /run/podman/podman.sock
+EOF
+  # setsid + full redirection so the hook's exec stream can close while the
+  # engine keeps running, reparented to the container's catatonit init.
+  setsid sudo -n sh /tmp/yaac-engine-start.sh >/tmp/yaac-engine-setup.log 2>&1 </dev/null &
+fi
+
+# streamd LAST: its reachability over the stream relay is the server's
+# "in-pod setup done" signal — anything the relay can exec is guaranteed to
+# see the git config and tmux server configured above. Idempotent (a second
+# daemon exits on EADDRINUSE); the status watcher's self-heal re-runs the
+# same command via kubectl exec if it ever dies.
+setsid node /opt/yaac/streamd/main.js >>/tmp/streamd.log 2>&1 </dev/null &
+
+exit 0

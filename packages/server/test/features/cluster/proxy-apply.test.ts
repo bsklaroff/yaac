@@ -31,6 +31,7 @@ import {
   proxyServiceClusterIp,
   proxyDataHostDir,
   sshAgentHostDir,
+  resetProxyClusterIpCache,
 } from '#features/cluster/proxy-apply'
 import {
   OUTER_CA_CONFIGMAP_NAME,
@@ -108,6 +109,10 @@ describe('ensureProxyAuthSecret', () => {
 })
 
 describe('proxyServiceClusterIp', () => {
+  beforeEach(() => {
+    resetProxyClusterIpCache()
+  })
+
   it('returns the live (vcluster-allocated) ClusterIP of the proxy Service', async () => {
     mockGetJson.mockResolvedValue({ spec: { clusterIP: '10.96.92.236' } })
     expect(await proxyServiceClusterIp()).toBe('10.96.92.236')
@@ -116,6 +121,22 @@ describe('proxyServiceClusterIp', () => {
   it('throws if the Service has no ClusterIP yet', async () => {
     mockGetJson.mockResolvedValue({ spec: {} })
     await expect(proxyServiceClusterIp()).rejects.toThrow(/ClusterIP/)
+  })
+
+  it('caches the first read for the process (the Service is never recreated)', async () => {
+    mockGetJson.mockResolvedValue({ spec: { clusterIP: '10.96.92.236' } })
+    await proxyServiceClusterIp()
+    mockGetJson.mockClear()
+
+    expect(await proxyServiceClusterIp()).toBe('10.96.92.236')
+    expect(mockGetJson).not.toHaveBeenCalled()
+  })
+
+  it('does not cache a failed read', async () => {
+    mockGetJson.mockResolvedValueOnce({ spec: {} })
+    await expect(proxyServiceClusterIp()).rejects.toThrow(/ClusterIP/)
+    mockGetJson.mockResolvedValueOnce({ spec: { clusterIP: '10.96.0.7' } })
+    expect(await proxyServiceClusterIp()).toBe('10.96.0.7')
   })
 })
 

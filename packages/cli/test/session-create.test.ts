@@ -15,10 +15,12 @@ vi.mock('node:fs/promises', () => ({
     readFile: vi.fn().mockRejectedValue(new Error('missing')),
     chmod: vi.fn().mockResolvedValue(undefined),
     // Built-in skill staging: rm the stage dir, list (readdir) the bundled
-    // skills, cp each across. An empty readdir stages nothing.
+    // skills, cp each across. An empty readdir stages nothing. Session-bin
+    // staging copyFiles each listed script.
     rm: vi.fn().mockResolvedValue(undefined),
     readdir: vi.fn().mockResolvedValue([]),
     cp: vi.fn().mockResolvedValue(undefined),
+    copyFile: vi.fn().mockResolvedValue(undefined),
   },
 }))
 
@@ -103,6 +105,12 @@ vi.mock('@yaac/server/platform/k8s/stream-relay', () => ({
   bootStreamd: vi.fn().mockResolvedValue(undefined),
   relayTcpFactory: vi.fn().mockReturnValue(() => ({})),
   sessionStreamToken: vi.fn().mockResolvedValue('stream-token'),
+  sessionExec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+  waitForStreamd: vi.fn().mockResolvedValue(undefined),
+}))
+
+vi.mock('@yaac/server/platform/k8s/pod-wait', () => ({
+  waitForJobPodReady: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('@yaac/shared/project-paths', () => ({
@@ -208,7 +216,8 @@ import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { resolveAllowedHosts } from '@yaac/server/features/sessions/egress/default-allowed-hosts'
 import { addWorktree, getDefaultBranch, fetchOrigin, remoteBranchExists } from '@yaac/server/platform/git'
 import { reserveAvailablePort, startPortForwarders } from '@yaac/server/platform/container/port'
-import { relayTcpFactory } from '@yaac/server/platform/k8s/stream-relay'
+import { relayTcpFactory, sessionExec, waitForStreamd } from '@yaac/server/platform/k8s/stream-relay'
+import { waitForJobPodReady } from '@yaac/server/platform/k8s/pod-wait'
 import { buildStatusRight, registerSessionForwarders } from '@yaac/server/features/sessions/forwarders/port-forwarders'
 
 const mockSpawn = vi.mocked(spawn)
@@ -221,6 +230,9 @@ const mockApply = vi.mocked(kubectlApply)
 const mockGetJson = vi.mocked(kubectlGetJson)
 const mockKubectlRetry = vi.mocked(kubectlWithRetry)
 const mockContainerExec = vi.mocked(containerExec)
+const mockSessionExec = vi.mocked(sessionExec)
+const mockWaitForStreamd = vi.mocked(waitForStreamd)
+const mockWaitForPodReady = vi.mocked(waitForJobPodReady)
 const mockReserveAvailablePort = vi.mocked(reserveAvailablePort)
 const mockStartForwarders = vi.mocked(startPortForwarders)
 const mockRelayTcpFactory = vi.mocked(relayTcpFactory)
@@ -253,6 +265,7 @@ interface JobManifest {
         containers: Array<{
           image: string
           env: Array<{ name: string; value: string }>
+          lifecycle?: { postStart?: { exec?: { command: string[] } } }
           volumeMounts: Array<{ name: string; mountPath: string; readOnly?: boolean }>
         }>
         volumes: Array<{
@@ -280,8 +293,14 @@ describe('createSession', () => {
     mockWriteFile.mockResolvedValue(undefined)
     mockReadFile.mockRejectedValue(new Error('missing'))
     // resetAllMocks strips the module-mock impls: re-prime readdir so the
-    // built-in skill staging sees "no bundled skills" instead of undefined.
-    mockReaddir.mockResolvedValue([])
+    // built-in skill staging sees "no bundled skills", while session-bin
+    // staging finds the mandatory postStart script (createSession refuses
+    // to provision without yaac-session-init).
+    mockReaddir.mockImplementation(((dir: string) => Promise.resolve(
+      dir === '/tmp/yaac-package/session-bin'
+        ? [{ name: 'yaac-session-init', isFile: () => true }]
+        : [],
+    )) as never)
     vi.mocked(ensureContainerRuntime).mockResolvedValue(undefined)
     vi.mocked(ensureImage).mockResolvedValue('yaac-test-image')
     vi.mocked(pushImageShared).mockResolvedValue('localhost:5000/yaac-test-image')
@@ -302,15 +321,14 @@ describe('createSession', () => {
     /* eslint-enable @typescript-eslint/unbound-method */
     mockSpawn.mockImplementation(() => mockAttachedChild() as never)
     mockApply.mockResolvedValue(undefined)
-    // waitForPodReady polls this — default to "pod ready" so the flow runs
-    // straight through. Failure tests override it.
-    mockGetJson.mockResolvedValue({
-      items: [{
-        status: { phase: 'Running', containerStatuses: [{ ready: true }] },
-      }],
-    })
+    mockGetJson.mockResolvedValue(null)
+    // Pod boot + streamd default to healthy so the flow runs straight
+    // through. Failure tests override waitForJobPodReady.
+    mockWaitForPodReady.mockResolvedValue(undefined)
+    mockWaitForStreamd.mockResolvedValue(undefined)
     mockKubectlRetry.mockResolvedValue({ stdout: '', stderr: '' })
     mockContainerExec.mockResolvedValue({ stdout: '', stderr: '' })
+    mockSessionExec.mockResolvedValue({ stdout: '', stderr: '' })
     mockStartForwarders.mockReturnValue(vi.fn())
     mockRelayTcpFactory.mockReturnValue((() => ({})) as never)
     vi.mocked(buildStatusRight).mockReturnValue(' stub-status ')
@@ -329,7 +347,7 @@ describe('createSession', () => {
       `agent/${result?.sessionId}`,
       'origin/dev',
     )
-    const upstreamCall = mockContainerExec.mock.calls.find(([, cmd]) => cmd.includes('--set-upstream-to'))
+    const upstreamCall = mockSessionExec.mock.calls.find(([, cmd]) => cmd.includes('--set-upstream-to'))
     expect(upstreamCall?.[1]).toContain("'origin/dev'")
   })
 
@@ -356,6 +374,20 @@ describe('createSession', () => {
     await expect(createSession('demo', { tool: 'claude' }))
       .rejects.toThrow(/check referenceBranch in yaac-config\.json/)
     expect(vi.mocked(addWorktree)).not.toHaveBeenCalled()
+  })
+
+  it('a bad branch fails fast: one Job apply, one delete, no recreate retries', async () => {
+    // Worktree-leg failures are the create's inputs being bad, never the
+    // pod's — SetupInputError must skip the 3-attempt Job-recreate loop.
+    vi.mocked(remoteBranchExists).mockResolvedValue(false)
+    await expect(createSession('demo', { tool: 'claude', branch: 'ghost', sessionId: 'abcd1234' }))
+      .rejects.toThrow(/branch "ghost" not found/)
+
+    expect(mockApply).toHaveBeenCalledTimes(1)
+    const deleteCalls = mockKubectlRetry.mock.calls
+      .map((c) => c[0])
+      .filter((args) => args[0] === 'delete' && args[1] === 'job')
+    expect(deleteCalls).toHaveLength(1)
   })
 
   it('returns a session descriptor with the job name, without attaching', async () => {
@@ -645,7 +677,7 @@ describe('createSession', () => {
     // so server-created hostPath dirs are writable without privileged
     // fixups. A chown here would also corrupt host-side ownership on
     // Linux (idmapped mounts write the pod's userns uid through).
-    const cmds = mockContainerExec.mock.calls.map((c) => c[1])
+    const cmds = [...mockContainerExec.mock.calls, ...mockSessionExec.mock.calls].map((c) => c[1])
     expect(cmds.some((c) => c.includes('chown') || c.startsWith('sudo '))).toBe(false)
   })
 
@@ -685,8 +717,10 @@ describe('createSession', () => {
   })
 
   it('deletes the half-created Job after every failed startup attempt, including the last', async () => {
-    // waitForPodReady sees a terminal pod on every attempt.
-    mockGetJson.mockResolvedValue({ items: [{ status: { phase: 'Failed' } }] })
+    // The pod-ready watch sees a terminal pod on every attempt.
+    mockWaitForPodReady.mockRejectedValue(
+      new Error('session pod for yaac-demo-abcd1234 reached terminal phase Failed'),
+    )
 
     await expect(createSession('demo', { sessionId: 'abcd1234' })).rejects.toThrow(
       /terminal phase Failed/,
@@ -719,25 +753,26 @@ describe('createSession', () => {
 
     await createSession('demo', { tool: 'claude' })
 
-    const tmuxCmds = mockContainerExec.mock.calls
+    // Init windows + the agent respawn travel as ONE relay exec.
+    const windowsCmd = mockSessionExec.mock.calls
       .map((args) => args[1])
-      .filter((c) => c.includes('new-window'))
-    expect(tmuxCmds.some((c) => c.includes('-n backend') && c.includes('pnpm dev:backend'))).toBe(true)
-    expect(tmuxCmds.some((c) => c.includes('-n frontend') && c.includes('pnpm dev:frontend'))).toBe(true)
+      .find((c) => c.includes('new-window'))
+    expect(windowsCmd).toBeDefined()
+    expect(windowsCmd).toContain('-n backend')
+    expect(windowsCmd).toContain('pnpm dev:backend')
+    expect(windowsCmd).toContain('-n frontend')
+    expect(windowsCmd).toContain('pnpm dev:frontend')
 
-    const remainOnExitCmds = mockContainerExec.mock.calls
-      .map((args) => args[1])
-      .filter((c) => c.includes('remain-on-exit on'))
     // backend defaults to hidePane=false → keeps remain-on-exit; frontend
     // sets hidePane=true → no remain-on-exit.
-    expect(remainOnExitCmds.some((c) => c.includes('yaac:backend'))).toBe(true)
-    expect(remainOnExitCmds.some((c) => c.includes('yaac:frontend'))).toBe(false)
+    expect(windowsCmd).toContain('set-option -t yaac:backend remain-on-exit on')
+    expect(windowsCmd).not.toContain('yaac:frontend remain-on-exit on')
   })
 
   it('respawns the agent window with the tool command after tmux setup', async () => {
     await createSession('demo', { tool: 'codex', sessionId: 'abcd1234' })
 
-    const respawn = mockContainerExec.mock.calls
+    const respawn = mockSessionExec.mock.calls
       .map((args) => args[1])
       .find((c) => c.includes('respawn-window'))
     expect(respawn).toBeDefined()
@@ -748,7 +783,7 @@ describe('createSession', () => {
   it('threads a model override into the claude agent respawn command', async () => {
     await createSession('demo', { tool: 'claude', sessionId: 'abcd1234', model: 'claude-opus-4-8' })
 
-    const respawn = mockContainerExec.mock.calls
+    const respawn = mockSessionExec.mock.calls
       .map((args) => args[1])
       .find((c) => c.includes('respawn-window'))
     expect(respawn).toBeDefined()
@@ -762,31 +797,34 @@ describe('createSession', () => {
     // is configured by an in-pod exec after worktree creation.
     await createSession('demo', { tool: 'claude', sessionId: 'abcd1234' })
 
-    const cmds = mockContainerExec.mock.calls.map((args) => args[1])
+    const cmds = mockSessionExec.mock.calls.map((args) => args[1])
     expect(cmds.some((c) =>
       c.includes("git -C /workspace branch --set-upstream-to 'origin/main'"))).toBe(true)
   })
 
-  it('configures tmux for truecolor (RGB) passthrough to the attached terminal', async () => {
+  it('wires the postStart setup hook and the env that drives it', async () => {
     await createSession('demo', { tool: 'claude', sessionId: 'abcd1234' })
 
-    const cmds = mockContainerExec.mock.calls.map((args) => args[1])
-    // The `*` glob in the feature value stays single-quoted so the host
-    // shell in containerExec passes it literally instead of expanding it.
-    expect(cmds.some((c) => c.includes("set-option -as terminal-features ',*:RGB'"))).toBe(true)
-    expect(cmds.some((c) => c.includes('set-option -g default-terminal tmux-256color'))).toBe(true)
-    // The server-creating client carries COLORTERM=truecolor so every pane
-    // inherits it — TUIs (opencode et al.) only emit 24-bit color when they
-    // see it in their own environment.
-    const newSession = cmds.find((c) => c.includes('new-session -d -s yaac'))
-    expect(newSession).toBeDefined()
-    expect(newSession).toContain('env COLORTERM=truecolor ')
+    // Base setup (git identity, tmux server + options, streamd) runs in-pod
+    // via yaac-session-init — its inputs ride the container env.
+    const container = appliedJobManifest().spec.template.spec.containers[0]
+    expect(container.lifecycle).toEqual({
+      postStart: { exec: { command: ['/usr/local/bin/yaac-session-init'] } },
+    })
+    expect(container.env).toEqual(expect.arrayContaining([
+      { name: 'YAAC_TOOL', value: 'claude' },
+      { name: 'YAAC_GIT_NAME', value: 'Test User' },
+      { name: 'YAAC_GIT_EMAIL', value: 'test@example.com' },
+      { name: 'YAAC_STATUS_RIGHT', value: ' stub-status ' },
+    ]))
+    // The gate on the pod's own streamd replaces the old exec chain.
+    expect(mockWaitForStreamd).toHaveBeenCalledWith('yaac-demo-abcd1234')
   })
 
   it('rejects an init window name that collides with any agent tool window', async () => {
     vi.mocked(resolveProjectConfig).mockResolvedValue({
       // The config parser normally rejects 'claude' as reserved, but the
-      // collision guard inside startJobWithSetup is a belt-and-suspenders
+      // collision guard in validateInitWindows is a belt-and-suspenders
       // backstop — exercise it by feeding a config that bypasses the
       // parser path used in production.
       initCommands: [{ name: 'claude', commands: ['echo hi'] }],
@@ -828,7 +866,7 @@ describe('createSession', () => {
       mockAccess.mockResolvedValue(undefined)
       await createSession('demo', { resume: true, sessionId: 'abcd1234' })
 
-      const cmds = mockContainerExec.mock.calls.map((args) => args[1])
+      const cmds = mockSessionExec.mock.calls.map((args) => args[1])
       expect(cmds.some((c) => c.includes('--set-upstream-to'))).toBe(false)
     })
 

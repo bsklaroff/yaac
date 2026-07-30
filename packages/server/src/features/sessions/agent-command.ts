@@ -1,4 +1,5 @@
 import { containerExec } from '#platform/k8s/exec'
+import { sessionExec } from '#platform/k8s/stream-relay'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import {
   PI_DEFAULT_PROVIDER,
@@ -177,6 +178,11 @@ export function buildAgentCmd(
  * the input box instead of submitting line by line.
  */
 export function buildPromptPasteCmd(tool: AgentTool, prompt: string): string {
+  return `sh -c '${promptPasteScript(tool, prompt)}'`
+}
+
+/** The paste-and-submit shell script buildPromptPasteCmd wraps. */
+function promptPasteScript(tool: AgentTool, prompt: string): string {
   const b64 = Buffer.from(prompt, 'utf8').toString('base64')
   const target = `-t yaac:${tool}`
   // First non-empty line anchors the paste verification; a whitespace-only
@@ -187,7 +193,7 @@ export function buildPromptPasteCmd(tool: AgentTool, prompt: string): string {
     : Buffer.from(probeLine, 'utf8').toString('base64')
   const paste = `printf %s ${b64} | base64 -d | ${TMUX} load-buffer -b yaac-prompt -; `
     + `${TMUX} paste-buffer -p -d -b yaac-prompt ${target}`
-  const script =
+  return (
     `i=0; while [ $i -lt 120 ]; do [ "$(${TMUX} display -p ${target} "#{alternate_on}")" = "1" ] && break; i=$((i+1)); sleep 0.5; done; `
     + 'sleep 1; '
     + (probeB64 === undefined
@@ -196,18 +202,39 @@ export function buildPromptPasteCmd(tool: AgentTool, prompt: string): string {
         + `i=0; while [ $i -lt 10 ]; do ${TMUX} capture-pane ${target} -p | grep -qF -- "$probe" && break; `
         + `${paste}; i=$((i+1)); sleep 2; done; `)
     + `${TMUX} send-keys ${target} Enter; sleep 2; ${TMUX} send-keys ${target} Enter`
-  return `sh -c '${script}'`
+  )
 }
 
-/** Type `prompt` into a running session's agent pane (see buildPromptPasteCmd). */
+/**
+ * `buildPromptPasteCmd`, detached: decode the paste script to a pod-local
+ * file and setsid it, so the exec returns immediately instead of holding
+ * the caller through the script's readiness polling and settle sleeps
+ * (~5s+ on a fresh agent). The script survives the exec stream closing
+ * (reparented to the container's init), retries entirely in-pod, and logs
+ * to /tmp/yaac-prompt.log for postmortems. The script travels
+ * base64-encoded so its quoting survives the single shell pass unchanged.
+ */
+export function buildPromptPasteBgCmd(tool: AgentTool, prompt: string): string {
+  const b64 = Buffer.from(promptPasteScript(tool, prompt), 'utf8').toString('base64')
+  return `printf %s ${b64} | base64 -d > /tmp/.yaac-prompt.sh`
+    + ' && setsid sh /tmp/.yaac-prompt.sh >/tmp/yaac-prompt.log 2>&1 </dev/null &'
+}
+
+/**
+ * Type `prompt` into a running session's agent pane, fire-and-forget (see
+ * buildPromptPasteBgCmd). Rides the stream relay — both callers (session
+ * create, the spare-claim route) run after the pod's streamd is up.
+ * Single-attempt: RelayDialError also covers reply-read failures AFTER the
+ * command ran (readAll timeout, mid-read socket errors), and a retry there
+ * would detach a second paste script — duplicated paste or a stray empty
+ * submission.
+ */
 export async function typeInitialPrompt(
   jobName: string,
   tool: AgentTool,
   prompt: string,
 ): Promise<void> {
-  // One attempt with a generous budget: the script itself retries, and a
-  // kubectl-level retry after a partial run could paste the prompt twice.
-  await containerExec(jobName, buildPromptPasteCmd(tool, prompt), { maxAttempts: 1, timeout: 120_000 })
+  await sessionExec(jobName, buildPromptPasteBgCmd(tool, prompt), { maxAttempts: 1, timeout: 15_000 })
 }
 
 /**

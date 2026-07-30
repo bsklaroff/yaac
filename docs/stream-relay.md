@@ -3,14 +3,16 @@
 Every steady-state byte between the server and a session pod — terminal
 PTYs, the status watcher's tmux control stream, forwarded TCP, and
 one-shot pod commands — rides plain TCP through the proxy pod into an
-in-pod daemon, entirely off the apiserver. `kubectl exec` survives only
-where a stream cannot exist yet: session-create provisioning (the bounded
-setup execs that run before streamd is up, including the streamd boot
-itself and claim-time retool/rebranch prep) and non-session infra pods.
-Before the relay, each of these paths held a kubectl child per stream (or
-per TCP connection), and every chunk crossed pod → containerd shim →
-kubelet → apiserver → kubectl → server — with gVisor making the pod side
-extra expensive.
+in-pod daemon, entirely off the apiserver. Session-create provisioning
+rides it too: the pod's postStart hook (`session-bin/yaac-session-init`)
+starts streamd before the container reports Ready, so every setup command
+the server still runs (worktree gitdir rewrite, branch upstream, init
+windows + agent respawn) is a relay exec. `kubectl exec` survives only
+where no stream can exist: the streamd self-heal re-boot, claim-time
+retool/rebranch prep, and non-session infra pods. Before the relay, each
+of these paths held a kubectl child per stream (or per TCP connection),
+and every chunk crossed pod → containerd shim → kubelet → apiserver →
+kubectl → server — with gVisor making the pod side extra expensive.
 
 ## Architecture
 
@@ -32,9 +34,10 @@ write-back), so the same resolve-and-dial serves inner session pods.
 ### streamd (`dockerfiles/streamd/`)
 
 A small plain-JS Node daemon baked into the base image at
-`/opt/yaac/streamd` (with a prebuilt `@lydell/node-pty`), started by
-session-create's setup exec (`setsid node … &`) so it survives the exec
-stream closing. Its source is part of the base image's content hash, so
+`/opt/yaac/streamd` (with a prebuilt `@lydell/node-pty`), started last by
+the pod's postStart setup script (`setsid node … &`, reparented to the
+container init) — so a successful relay exec also proves the setup that
+precedes it (git config, tmux server) is in place. Its source is part of the base image's content hash, so
 editing it retags the image. It listens on `0.0.0.0:10300` — in gVisor
 that is the sentry netstack, reachable via the pod IP like any Service
 backend. Every connection opens with one JSON handshake line

@@ -197,6 +197,15 @@ export interface SessionJobParams {
   /** In-pod podman wiring; absent for non-nested sessions. */
   nested?: NestedContainersParams
   /**
+   * postStart lifecycle hook command (argv). Session pods run
+   * `yaac-session-init` here — the kubelet holds the container's Ready
+   * transition until the hook exits, so "pod Ready" implies the in-pod
+   * setup (git config, tmux server, streamd) is done. A hook that exits
+   * nonzero kills the container (restartPolicy Never → Job failure), which
+   * session-create's retry loop surfaces.
+   */
+  postStartExec?: string[]
+  /**
    * True for a pod created by an inner (nested) yaac against its vcluster,
    * which has no RuntimeClass objects — so no `runtimeClassName` is stamped
    * and the vcluster syncer sets the host-side runtime. A host pod (the
@@ -327,6 +336,9 @@ export function buildSessionJobManifest(p: SessionJobParams): Record<string, unk
               workingDir: '/workspace',
               env: p.env.map(parseEnvEntry),
               volumeMounts,
+              ...(p.postStartExec ? {
+                lifecycle: { postStart: { exec: { command: p.postStartExec } } },
+              } : {}),
               // Nested only: the in-sandbox capabilities the rootful engine
               // needs (NESTED_ENGINE_CAPS). Under the sentry they grant no
               // host authority. No explicit allowPrivilegeEscalation: the
