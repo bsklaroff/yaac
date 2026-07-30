@@ -488,11 +488,23 @@ export function dialPtyStream(
           socket.destroy()
           return
         }
+        // Consecutive data frames in one chunk dispatch as ONE callback:
+        // each callback becomes a WebSocket message to the browser, and a
+        // redraw burst split across frames should reach the terminal as a
+        // single write it can paint atomically (streamd batches at the
+        // source; this collapses whatever TCP re-fragments en route).
+        let text = ''
+        const flushText = (): void => {
+          if (text === '') return
+          const t = text
+          text = ''
+          for (const cb of dataCbs) cb(t)
+        }
         for (const f of frames) {
           if (f.type === FRAME_DATA) {
-            const text = f.payload.toString('utf8')
-            for (const cb of dataCbs) cb(text)
+            text += f.payload.toString('utf8')
           } else if (f.type === FRAME_EXIT) {
+            flushText() // ordering: output precedes the exit
             try {
               exitCode = (JSON.parse(f.payload.toString('utf8')) as { code?: number }).code ?? 0
             } catch {
@@ -501,6 +513,7 @@ export function dialPtyStream(
             emitExit(exitCode)
           }
         }
+        flushText()
       })
       socket.on('error', () => { /* 'close' follows */ })
       socket.on('close', () => emitExit(exitCode ?? 1))

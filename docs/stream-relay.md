@@ -52,7 +52,13 @@ backend. Every connection opens with one JSON handshake line
   (`[1B type][4B BE length][payload]`, codec mirrored in
   `@yaac/shared/stream-frames`): data/resize/signal in, data/exit out.
   Resize frames drive TIOCSWINSZ; output is paused against socket
-  backpressure (node-pty has no pull API).
+  backpressure (node-pty has no pull API). Output is micro-batched
+  (leading edge immediate, then one frame per ~8ms window, size-capped):
+  a tmux redraw burst reaches the browser as one message it can paint
+  atomically — fewer frames on every hop, no cursor flicker from
+  painting redraw fragments — while a lone keystroke echo pays no added
+  latency. The server-side pty adapter likewise dispatches consecutive
+  data frames from one chunk as a single callback (one WS message).
 
 The handshake token is per-session — `HMAC-SHA256(proxyAuthSecret,
 sessionId)`, derived (never stored), injected as `YAAC_STREAM_TOKEN` at

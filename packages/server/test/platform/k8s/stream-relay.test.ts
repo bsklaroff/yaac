@@ -253,6 +253,35 @@ describe('dialPtyStream', () => {
     expect(JSON.parse(resize!.payload.toString('utf8'))).toEqual({ cols: 120, rows: 40 })
   })
 
+  it('coalesces consecutive data frames in one chunk into one callback', async () => {
+    await withRelay((r) => {
+      // One TCP write carrying three data frames then the exit: the data
+      // must dispatch as ONE callback (one WS message downstream), and all
+      // of it must land before the exit fires.
+      okThen(r, Buffer.concat([
+        encodeFrame(FRAME_DATA, Buffer.from('a')),
+        encodeFrame(FRAME_DATA, Buffer.from('b')),
+        encodeFrame(FRAME_DATA, Buffer.from('c')),
+        encodeFrame(FRAME_EXIT, { code: 0 }),
+      ]))
+      r.socket.end()
+    })
+
+    const pty = dialPtyStream(SID, ['sh'], {})
+    const outputs: string[] = []
+    let outputsAtExit: string[] | null = null
+    const exit = new Promise<number>((resolve) => {
+      pty.onExit(({ exitCode }) => {
+        outputsAtExit = [...outputs]
+        resolve(exitCode)
+      })
+    })
+    pty.onData((d) => outputs.push(d))
+    expect(await exit).toBe(0)
+    expect(outputs).toEqual(['abc'])
+    expect(outputsAtExit).toEqual(['abc'])
+  })
+
   it('emits exit(1) when the dial fails (the frontend reconnect owns retries)', async () => {
     vi.stubEnv('YAAC_RELAY_ADDR', '127.0.0.1:1')
     const pty = dialPtyStream(SID, ['sh'], {})

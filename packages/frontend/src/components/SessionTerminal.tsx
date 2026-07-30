@@ -7,6 +7,7 @@ import { createSettleGate } from '#lib/attach-settle'
 import { clipboardKeyAction } from '#lib/clipboard'
 import { LoadingIcon } from '#lib/icons'
 import { patchClickForwarding, patchForcedSelection, patchKeepSelection } from '#lib/selection'
+import { patchWheelPacing } from '#lib/wheel-pacing'
 import { CYCLE_IDS, matchShortcut } from '#lib/shortcuts'
 import { createWebglController, type WebglController } from '#lib/webgl-renderer'
 import { resolveEffectiveTheme } from '#lib/theme'
@@ -138,6 +139,13 @@ export function SessionTerminal({
     const disposeClickForwarding = patchClickForwarding(term)
     if (!disposeClickForwarding) {
       console.warn('xterm internals changed: clicks need Alt to reach the TUI again')
+    }
+    // Scrolling is a remote operation (tmux redraws per wheel report), so
+    // pace reports onto animation frames with a bounded backlog — a flick's
+    // momentum tail must not keep the pane scrolling after the gesture ends.
+    const disposeWheelPacing = patchWheelPacing(term)
+    if (!disposeWheelPacing) {
+      console.warn('xterm internals changed: wheel reports reach tmux unpaced')
     }
     fit.fit()
     termRef.current = term
@@ -299,6 +307,7 @@ export function SessionTerminal({
       dataSub.dispose()
       resizeSub.dispose()
       testHooks.__xterms?.delete(term)
+      disposeWheelPacing?.()
       disposeClickForwarding?.()
       if (ws) {
         // Drop handlers so a late close event can't touch the disposed
