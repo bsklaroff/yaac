@@ -294,13 +294,38 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
     // trips are paid. Prewarmed spares take this same path.
     postStartExec: [`/usr/local/bin/${SESSION_INIT_SCRIPT}`],
   })
+  // Reject-only view of the worktree leg, raced against the boot waits
+  // below: its failures — unknown branch, referenceBranch typo, git auth —
+  // are the most common user-facing create errors, and before the legs ran
+  // concurrently they surfaced in well under a second. Racing them here
+  // keeps that: a bad input aborts the boot the moment it's known instead
+  // of paying image pull + gVisor boot + the streamd gate first. On
+  // worktree success it never settles, so the races resolve on their pod
+  // wait; the value is read at the join below.
+  const worktreeFailure: Promise<never> = worktree.then(
+    () => new Promise<never>(() => { /* success: races resolve on the pod wait */ }),
+    (err) => { throw new SetupInputError(err) },
+  )
+  // The races may both complete before a late worktree rejection lands (or
+  // never observe it when a wait throws first) — keep that from surfacing
+  // as an unhandled rejection; the join below still reads the real outcome.
+  worktreeFailure.catch(() => { /* observed via race/join */ })
+
   await kubectlApply(manifest)
-  await waitForJobPodReady(jobName)
+  // Each race can abandon a still-pending wait when the worktree leg
+  // rejects first — pre-mark the waits handled so a later rejection from
+  // an abandoned one (e.g. a timeout against the Job the retry loop is
+  // already deleting) can't surface as an unhandled rejection.
+  const podReady = waitForJobPodReady(jobName)
+  podReady.catch(() => { /* observed via race */ })
+  await Promise.race([podReady, worktreeFailure])
 
   // First relay contact doubles as the streamd readiness gate; every setup
   // command below rides the relay (single-digit ms per command) instead of
   // a ~300ms kubectl exec through the apiserver.
-  await waitForStreamd(jobName)
+  const streamdReady = waitForStreamd(jobName)
+  streamdReady.catch(() => { /* observed via race */ })
+  await Promise.race([streamdReady, worktreeFailure])
 
   // No ownership fixup is needed for server-created hostPath mounts: the
   // image's yaac user is built with the server's uid (YAAC_UID build arg,
@@ -310,8 +335,8 @@ async function startJobWithSetup(params: SessionSetupParams): Promise<void> {
 
   // The worktree checkout has been running concurrently with the pod boot;
   // everything below reads /workspace, so join it now. Its failures are the
-  // create's inputs being bad (unknown branch, fetch failure) — never the
-  // pod's fault — so they must not burn Job-recreate retries.
+  // create's inputs being bad — never the pod's fault — so they must not
+  // burn Job-recreate retries (SetupInputError fails the retry loop fast).
   let upstreamStartPoint: string | undefined
   try {
     ({ upstreamStartPoint } = await worktree)

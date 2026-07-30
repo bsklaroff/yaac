@@ -58,7 +58,7 @@ export interface PodReadyDeps {
   listPods: () => Promise<{ resourceVersion?: string; pods: V1Pod[] }>
   watchPods: (
     resourceVersion: string | undefined,
-    onEvent: (pod: V1Pod) => void,
+    onEvent: (eventType: string, pod: V1Pod) => void,
     onDone: (err: unknown) => void,
   ) => Promise<{ abort: () => void }>
 }
@@ -81,7 +81,7 @@ function realDeps(jobName: string): PodReadyDeps {
           labelSelector: selector,
           ...(resourceVersion ? { resourceVersion } : {}),
         },
-        (_type, obj) => onEvent(obj as V1Pod),
+        (type, obj) => onEvent(type, obj as V1Pod),
         (err) => onDone(err),
       )
       return { abort: () => controller.abort() }
@@ -147,7 +147,16 @@ export async function waitForJobPodReady(
       const timer = setTimeout(() => settle(() => resolve(false)), episodeMs)
       d.watchPods(
         listed.resourceVersion,
-        (pod) => {
+        (eventType, pod) => {
+          // A DELETED event carries the pod's LAST-KNOWN object — which may
+          // still read ready — for a pod that no longer exists (deleted
+          // out-of-band mid-boot). Never trust it as a verdict; end the
+          // episode so the re-list observes the true (absent) state.
+          if (eventType === 'DELETED') {
+            lastDetail = 'pod deleted while waiting'
+            settle(() => resolve(false))
+            return
+          }
           try {
             if (check(pod)) settle(() => resolve(true))
           } catch (err) {

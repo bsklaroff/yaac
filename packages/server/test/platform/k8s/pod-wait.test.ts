@@ -67,8 +67,11 @@ const CREATING = pod({
   containerStatuses: [{ ready: false, state: { waiting: { reason: 'ContainerCreating' } } } as never],
 })
 
-/** Deps whose watch immediately delivers `events` then stays open. */
-function fakeDeps(listPods: PodReadyDeps['listPods'], events: V1Pod[][]): {
+/** Deps whose watch immediately delivers `events` then stays open. Each
+ *  event is `[type, pod]`; a bare pod means an ADDED/MODIFIED-style event. */
+type FakeEvent = V1Pod | [string, V1Pod]
+
+function fakeDeps(listPods: PodReadyDeps['listPods'], events: FakeEvent[][]): {
   deps: PodReadyDeps
   aborts: number[]
 } {
@@ -79,7 +82,10 @@ function fakeDeps(listPods: PodReadyDeps['listPods'], events: V1Pod[][]): {
     watchPods: (_rv, onEvent) => {
       const mine = episode++
       aborts[mine] = 0
-      for (const p of events.shift() ?? []) onEvent(p)
+      for (const e of events.shift() ?? []) {
+        if (Array.isArray(e)) onEvent(e[0], e[1])
+        else onEvent('MODIFIED', e)
+      }
       return Promise.resolve({ abort: () => { aborts[mine]++ } })
     },
   }
@@ -128,6 +134,19 @@ describe('waitForJobPodReady', () => {
     )
     await expect(waitForJobPodReady('job-a', 2_000, deps))
       .rejects.toThrow(/cannot pull its image \(ErrImagePull\)/)
+  })
+
+  it('never trusts a DELETED event as ready — it re-lists instead', async () => {
+    // DELETED delivers the pod's last-known object, which can still read
+    // ready for a pod that no longer exists.
+    const listPods = vi.fn<PodReadyDeps['listPods']>()
+      .mockResolvedValueOnce({ resourceVersion: '1', pods: [CREATING] })
+      .mockResolvedValueOnce({ resourceVersion: '2', pods: [READY] })
+    const { deps } = fakeDeps(listPods, [[['DELETED', READY]], []])
+    await expect(waitForJobPodReady('job-a', 5_000, deps)).resolves.toBeUndefined()
+    // The DELETED event ended the first episode; readiness came from the
+    // second list, not the deleted pod's stale object.
+    expect(listPods).toHaveBeenCalledTimes(2)
   })
 
   it('re-lists after a watch ends and succeeds on the fresh list', async () => {

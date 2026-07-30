@@ -31,7 +31,7 @@ import {
   proxyServiceClusterIp,
   proxyDataHostDir,
   sshAgentHostDir,
-  _resetProxyClusterIpForTests,
+  resetProxyClusterIpCache,
 } from '#features/cluster/proxy-apply'
 import {
   OUTER_CA_CONFIGMAP_NAME,
@@ -110,7 +110,7 @@ describe('ensureProxyAuthSecret', () => {
 
 describe('proxyServiceClusterIp', () => {
   beforeEach(() => {
-    _resetProxyClusterIpForTests()
+    resetProxyClusterIpCache()
   })
 
   it('returns the live (vcluster-allocated) ClusterIP of the proxy Service', async () => {

@@ -376,6 +376,20 @@ describe('createSession', () => {
     expect(vi.mocked(addWorktree)).not.toHaveBeenCalled()
   })
 
+  it('a bad branch fails fast: one Job apply, one delete, no recreate retries', async () => {
+    // Worktree-leg failures are the create's inputs being bad, never the
+    // pod's — SetupInputError must skip the 3-attempt Job-recreate loop.
+    vi.mocked(remoteBranchExists).mockResolvedValue(false)
+    await expect(createSession('demo', { tool: 'claude', branch: 'ghost', sessionId: 'abcd1234' }))
+      .rejects.toThrow(/branch "ghost" not found/)
+
+    expect(mockApply).toHaveBeenCalledTimes(1)
+    const deleteCalls = mockKubectlRetry.mock.calls
+      .map((c) => c[0])
+      .filter((args) => args[0] === 'delete' && args[1] === 'job')
+    expect(deleteCalls).toHaveLength(1)
+  })
+
   it('returns a session descriptor with the job name, without attaching', async () => {
     const result = await createSession('demo', { tool: 'codex' })
 

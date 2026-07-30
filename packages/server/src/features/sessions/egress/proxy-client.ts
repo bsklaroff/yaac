@@ -9,6 +9,7 @@ import {
   ensureNamespace,
   ensureProxyAuthSecret,
   ensureProxyResources,
+  resetProxyClusterIpCache,
 } from '#features/cluster/proxy-apply'
 import { PROXY_APP_NAME, PROXY_PORT } from '#features/cluster/proxy-constants'
 import { k8sNamespace, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
@@ -733,6 +734,9 @@ export class ProxyClient {
     this.running = false
     this.deployVerifiedCurrent = false
     this.authSecret = null
+    // The Service was just deleted — a later ensure may allocate a new
+    // ClusterIP, so the per-process cache must not vouch for the old one.
+    resetProxyClusterIpCache()
   }
 }
 

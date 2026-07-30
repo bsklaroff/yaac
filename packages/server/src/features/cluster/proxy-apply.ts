@@ -109,8 +109,12 @@ export async function proxyServiceClusterIp(): Promise<string> {
   return ip
 }
 
-/** Test-only: forget the cached proxy Service ClusterIP. */
-export function _resetProxyClusterIpForTests(): void {
+/**
+ * Forget the cached proxy Service ClusterIP. Called from ProxyClient.stop()
+ * (the Service is deleted with the Deployment there, so a later ensure may
+ * allocate a new IP) and from test setup.
+ */
+export function resetProxyClusterIpCache(): void {
   cachedProxyClusterIp = null
 }
 

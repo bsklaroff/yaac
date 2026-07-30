@@ -224,13 +224,17 @@ export function buildPromptPasteBgCmd(tool: AgentTool, prompt: string): string {
  * Type `prompt` into a running session's agent pane, fire-and-forget (see
  * buildPromptPasteBgCmd). Rides the stream relay — both callers (session
  * create, the spare-claim route) run after the pod's streamd is up.
+ * Single-attempt: RelayDialError also covers reply-read failures AFTER the
+ * command ran (readAll timeout, mid-read socket errors), and a retry there
+ * would detach a second paste script — duplicated paste or a stray empty
+ * submission.
  */
 export async function typeInitialPrompt(
   jobName: string,
   tool: AgentTool,
   prompt: string,
 ): Promise<void> {
-  await sessionExec(jobName, buildPromptPasteBgCmd(tool, prompt), { timeout: 15_000 })
+  await sessionExec(jobName, buildPromptPasteBgCmd(tool, prompt), { maxAttempts: 1, timeout: 15_000 })
 }
 
 /**

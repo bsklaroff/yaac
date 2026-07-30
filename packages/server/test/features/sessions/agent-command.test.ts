@@ -247,12 +247,12 @@ describe('buildPromptPasteBgCmd', () => {
 describe('typeInitialPrompt', () => {
   beforeEach(() => vi.mocked(sessionExec).mockClear())
 
-  it('relay-execs the detached paste command (fire-and-forget, in-pod retries)', async () => {
+  it('relay-execs the detached paste command single-attempt (a retry could double-paste)', async () => {
     await typeInitialPrompt('yaac-job-1', 'claude', 'hello there')
     expect(sessionExec).toHaveBeenCalledWith(
       'yaac-job-1',
       buildPromptPasteBgCmd('claude', 'hello there'),
-      { timeout: 15_000 },
+      { maxAttempts: 1, timeout: 15_000 },
     )
   })
 })

@@ -8,6 +8,7 @@ import {
   validateInitWindows,
 } from '#features/sessions/setup-commands'
 import { SESSION_INIT_SCRIPT, sessionBinDir } from '#features/sessions/spawn-script'
+import { PROXY_CA_BUNDLE_PATH } from '#features/sessions/egress/proxy-client'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import { AGENT_TOOLS } from '@yaac/shared/types'
 
@@ -94,6 +95,14 @@ describe('yaac-session-init script', () => {
       // Both plain `$NAME` and defaulted `${NAME:-}` expansions count.
       expect(body).toMatch(new RegExp(`\\$\\{?${name}`))
     }
+  })
+
+  it('points the nested engine at the combined CA bundle (PROXY_CA_BUNDLE_PATH)', async () => {
+    // The engine-start block hardcodes the bundle path (sudo strips env, so
+    // the script can't read it from the pod) — pin it to the constant so a
+    // moved bundle can't silently break nested registry TLS.
+    const body = await fs.readFile(scriptPath, 'utf8')
+    expect(body).toContain(`SSL_CERT_FILE=${PROXY_CA_BUNDLE_PATH}`)
   })
 
   it('never does git work from /workspace (the checkout races the hook)', async () => {
