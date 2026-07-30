@@ -21,8 +21,11 @@ yaac-watch-prs [--interval <seconds>] [--pr <number>] [--events <list>] [--once]
   with `--pr` (a single PR can't be "opened", so that token is ignored there).
   - `opened` — a PR was newly opened (all-PRs scope only).
   - `comment` — a new top-level PR comment, inline review comment, or review
-    summary. Comments authored by the authenticated user are skipped, so your
-    own replies never re-trigger it.
+    summary. Comments from every author surface — including your own GitHub
+    account, which the user and sibling yaac sessions also post from, so
+    same-account comments can still be work for you. That means your **own**
+    replies come back as events too: recognize comments you yourself posted
+    (you know what you wrote) and ignore them instead of responding.
   - `commit` — a new commit on a watched PR's head branch.
 - **`--interval`** (optional, default `60`): seconds between polls.
 - **`--once`** (optional): a single poll then exit — a dry run.

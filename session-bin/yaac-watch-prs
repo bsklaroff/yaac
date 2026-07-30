@@ -24,8 +24,12 @@
 # On first run every current PR/comment/commit is recorded as seen WITHOUT
 # emitting, so only updates that land after the watcher starts are surfaced.
 # Seen state persists in $HOME/.yaac-watch-prs-seen (override via
-# YAAC_WATCH_PRS_STATE) for this session's lifetime. Comments authored by the
-# authenticated user are ignored, so your own replies never re-trigger it.
+# YAAC_WATCH_PRS_STATE) for this session's lifetime.
+#
+# No author filtering: comments from the authenticated account surface too —
+# the user and sibling yaac sessions post from the same account, so authorship
+# can't separate their comments from this session's own replies. The caller is
+# expected to recognize replies it posted itself and not act on them.
 #
 # Needs `gh` and `jq` (both in yaac's default session image); gh authenticates
 # via the session's GH_TOKEN and infers the repo from the /workspace git
@@ -71,7 +75,6 @@ if [ -n "$pr" ] && [ "$want_opened" = 1 ]; then
 fi
 
 state="${YAAC_WATCH_PRS_STATE:-$HOME/.yaac-watch-prs-seen}"
-me=$(gh api user --jq .login 2>/dev/null) || me=""
 # Field separator for jq→read: a non-whitespace unit-separator (0x1f) so empty
 # middle fields (e.g. a top-level comment's absent path) survive `read`, which
 # collapses runs of whitespace IFS like tab and would otherwise drop them.
@@ -114,7 +117,7 @@ poll() {
       # Top-level PR comments, inline review comments, and review summaries.
       for src in "issues/$n/comments" "pulls/$n/comments" "pulls/$n/reviews"; do
         gh api "repos/{owner}/{repo}/$src?per_page=100" \
-          --jq ".[] | select(.user.login != \"$me\") | select((.body // \"\") != \"\") | [(.id|tostring), .user.login, (.path // .state // \"\"), (.body | gsub(\"[\\r\\n]+\"; \" \"))] | join(\"\u001f\")" 2>/dev/null \
+          --jq ".[] | select((.body // \"\") != \"\") | [(.id|tostring), .user.login, (.path // .state // \"\"), (.body | gsub(\"[\\r\\n]+\"; \" \"))] | join(\"\u001f\")" 2>/dev/null \
         | while IFS="$US" read -r id author loc body; do
             [ -n "$id" ] || continue
             emit "comment:$src:$id" "[comment] PR #$n by $author${loc:+ [$loc]}: $body"

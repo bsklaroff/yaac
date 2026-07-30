@@ -66,15 +66,26 @@ Never use `git -C`, always just use `git` commands from the working directory.
     - `--events comment` (not `commit`) so your own fix commits, pushed in
       step 3 of the section below, don't notify you about themselves.
     - `yaac-watch-prs` baselines on its first poll, so only comments posted
-      *after* the watch starts surface, and it skips comments authored by your
-      own account.
+      *after* the watch starts surface. It does no author filtering: comments
+      from your own account posted by the user or by sibling yaac sessions
+      surface (address them like any reviewer comment), and so do your own
+      replies (recognize and ignore those — see below).
     - If the repo has no GitHub remote or the PR number can't be resolved,
       skip this step and just report the PR URL.
 
 ## Addressing comments while watching
 
 Each `[comment] PR #… by <author>[ <loc>]: <body>` notification is a monitor
-event, not a message from the user — act on it without waiting for the user:
+event, not a message from the user — act on it without waiting for the user.
+
+The watcher does not filter by author, so **your own replies come back as
+`[comment]` events**. Before acting on a notification, check whether it is a
+comment you posted yourself earlier in this session — if so, ignore it and
+keep watching; never reply to your own comment. Same-account comments you did
+*not* post (the user and sibling yaac sessions share the account) are real
+events — address them like any reviewer comment.
+
+For each notification:
 
 1. Read the full comment and surrounding thread for context
    (`gh pr view <pr-number> --comments`, or
