@@ -323,7 +323,7 @@ export function resolveNewSessionTool(
 
 /** Sections of the settings modal (left-nav entries). 'server' shows only in the desktop shell. */
 export type SettingsSection =
-  | 'general' | 'shortcuts' | 'credentials' | 'project' | 'schedules' | 'userDockerfile' | 'server'
+  | 'general' | 'shortcuts' | 'credentials' | 'project' | 'userDockerfile' | 'server'
 
 /** Local-only UI state (not server state — that lives in the snapshot). */
 interface UiState {

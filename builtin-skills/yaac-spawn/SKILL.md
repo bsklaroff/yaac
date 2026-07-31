@@ -52,7 +52,7 @@ it prints an error to stderr and exits non-zero.
 - The command POSTs the prompt to the yaac egress proxy (`yaac.internal`);
   the request is attributed to this session by pod IP — no token or config
   needed. The host server picks it up from its background loop and starts the
-  session the same way a scheduled session fires: headless, in this project.
+  session headless, in this project.
 - **Fire-and-forget.** The id you get back is minted *before* provisioning
   finishes; the create runs detached and takes tens of seconds. You cannot
   watch progress from here — the user follows it in the yaac webapp. If the

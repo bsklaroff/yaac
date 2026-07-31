@@ -706,21 +706,6 @@ export interface CheckResult {
   fix?: string
 }
 
-/** A cron schedule that starts a headless session in its project whenever
- *  `spec` (server-local time) comes due, typing `prompt` into the agent. */
-export interface ScheduleEntry {
-  id: string
-  projectSlug: string
-  /** Cron expression, evaluated in the server's local time. */
-  spec: string
-  /** Initial prompt typed into the new session's agent pane. */
-  prompt: string
-  /** Explicit tool, or null → the default tool at fire time. */
-  tool: AgentTool | null
-  createdAt: string
-  lastFiredAt: string | null
-}
-
 /** NDJSON events streamed by POST /cluster/setup, one JSON object per line. */
 export type ClusterSetupEvent =
   | { type: 'progress'; message: string }

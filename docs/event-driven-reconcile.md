@@ -64,9 +64,9 @@ Steps subscribe to triggers; three lanes feed one serialized executor:
   after a 250ms debounce so event storms coalesce. This is what makes
   vcluster attribution land within milliseconds of the pod appearing.
 - **poll (5s)** — for state no watch can see: the proxy's queued spawn
-  requests (local HTTP), due cron schedules (DB + clock), and in-pod tmux
-  death (the stale reaper; probes short-circuit on healthy status-watcher
-  streams and are TTL-cached, so this lane forks nothing).
+  requests (local HTTP) and in-pod tmux death (the stale reaper; probes
+  short-circuit on healthy status-watcher streams and are TTL-cached, so
+  this lane forks nothing).
 - **resync (60s)** — marks every step: the safety net for a missed event
   and the driver for the internally-throttled hygiene steps (image
   prewarm/GC, salvage, host-image GC, builder-pod GC). Snapshots carry a
@@ -76,8 +76,7 @@ Steps subscribe to triggers; three lanes feed one serialized executor:
 Passes never overlap (steps share module state) and run the canonical
 step order; step errors are isolated; after each pass the event hub
 publishes a state snapshot (deduped by serialized compare). Idle cost is
-the poll lane's cache reads plus one proxy HTTP call and one DB query —
-no kubectl forks.
+the poll lane's cache reads plus one proxy HTTP call — no kubectl forks.
 
 The server also reacts to `session-pods` deltas outside the reconciler:
 syncing the per-session status watchers and firing the debounced

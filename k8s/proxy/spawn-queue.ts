@@ -27,7 +27,7 @@ export const SPAWN_PATH = '/spawn'
 export const SPAWN_TTL_MS = 60_000
 /** Cap on the buffered request body (the prompt). */
 export const SPAWN_MAX_BODY_BYTES = 64 * 1024
-/** Prompt character limit — mirrors the schedule route's zod max. */
+/** Prompt character limit — mirrors the server's spawn reconciler. */
 export const SPAWN_MAX_PROMPT_CHARS = 10_000
 export const SPAWN_MAX_PENDING_PER_SESSION = 4
 export const SPAWN_MAX_PENDING_TOTAL = 32

@@ -568,9 +568,9 @@ const registryEnsureMutex = createKeyedMutex()
  * immutable-field migration are gone).
  *
  * Serialized per project: concurrent creates on one project are routine
- * (a user create racing a prewarm spare spawn, cron fires, and queued
- * yaac-spawn requests — all bursting on the first background tick after a
- * daemon start), and unserialized ensures would interleave the applies,
+ * (a user create racing a prewarm spare spawn and queued yaac-spawn
+ * requests — all bursting on the first background tick after a daemon
+ * start), and unserialized ensures would interleave the applies,
  * rollout waits, and node-write pod runs. The ensure is idempotent, so
  * the queued caller's turn is quick; different projects still ensure in
  * parallel.

@@ -21,7 +21,6 @@
     "@kubernetes/client-node": "catalog:",
     "@lydell/node-pty": "catalog:",
     "@yaac/shared": "workspace:*",
-    "croner": "catalog:",
     "drizzle-orm": "catalog:",
     "hono": "catalog:",
     "simple-git": "catalog:",

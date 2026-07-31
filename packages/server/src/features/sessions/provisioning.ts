@@ -93,7 +93,7 @@ export function removeProvisioning(sessionId: string): void {
  * registry call here is a no-op while no row exists (e.g. the create route's
  * prewarm fast path). This is the single codepath behind every provisioning
  * surface: the HTTP create/restart streams layer NDJSON on top, and the
- * headless reconcilers (spawn, schedules) call it directly so their sessions
+ * headless spawn reconciler calls it directly so its sessions
  * provision in the sidebar exactly like a user-initiated create.
  */
 export async function runProvisioned<T>(

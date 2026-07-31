@@ -201,8 +201,8 @@ describe('yaac-spawn from inside a session (real CLI + server + cluster)', () =>
     expect(handedOff).toBe(true)
     sub.ws.close()
 
-    // The prompt lands in the spawned agent's pane (typed via the same
-    // tmux paste path schedule fires use). claude may still be booting;
+    // The prompt lands in the spawned agent's pane (typed via the shared
+    // tmux paste path). claude may still be booting;
     // poll the pane until the text renders.
     let pane = ''
     let found = false

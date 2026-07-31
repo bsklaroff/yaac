@@ -1462,7 +1462,7 @@ describe('yaac session create suite (real CLI + real server + mocked remotes)', 
       const projectPath = await setupProject('prompted')
       // Pre-seed claude's onboarding state (same as the kitchen-sink
       // session) so the TUI lands directly on its chat prompt — a
-      // scheduled/headless create has no user to click through wizards.
+      // headless create has no user to click through wizards.
       await fs.writeFile(path.join(projectPath, 'claude.json'), JSON.stringify({
         hasCompletedOnboarding: true,
         lastOnboardingVersion: '2.1.116',

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { listProvisioning, clearAllProvisioningForTests } from '#features/sessions/provisioning'
 import type { PendingSpawn, SpawnResultWire } from '#features/sessions/egress/proxy-client'
 import type { SessionPod } from '#platform/k8s/pods'
+import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
 import type { SessionCreateOptions, SessionCreateResult } from '#features/sessions/create'
 import {
   SPAWN_MAX_IN_FLIGHT_PER_SESSION,
@@ -280,6 +281,41 @@ describe('reconcileSpawnRequests', () => {
       { requestId: 'a', ok: true, sessionId: 'minted-id' },
       { requestId: 'b', ok: false, error: 'calling session not found' },
     ])
+    await settle()
+  })
+
+  it('lists session pods once per drain, not once per request', async () => {
+    const listSessionPodsFn = vi.fn(() => Promise.resolve([makePod()]))
+    const { deps } = makeDeps({ listSessionPodsFn, mintIdFn: () => 'minted-id' })
+    await reconcileSpawnRequests({
+      ...deps,
+      attachIfRunningFn: () => Promise.resolve(true),
+      fetchPendingFn: () => Promise.resolve([
+        makeReq({ requestId: 'a', sessionId: 'nobody-1' }),
+        makeReq({ requestId: 'b', sessionId: 'nobody-2' }),
+        makeReq({ requestId: 'c', sessionId: 'nobody-3' }),
+      ]),
+      postResultsFn: () => Promise.resolve(),
+    })
+    expect(listSessionPodsFn).toHaveBeenCalledTimes(1)
+    await settle()
+  })
+
+  it('resolves callers from the tick snapshot when one is given', async () => {
+    const pods = vi.fn(() => Promise.resolve([makePod()]))
+    const posted: SpawnResultWire[][] = []
+    const { deps } = makeDeps({ mintIdFn: () => 'minted-id' })
+    await reconcileSpawnRequests({
+      ...deps,
+      // Snapshot wins over the module-level kubectl list; makeDeps' stub is
+      // dropped so a leaked direct listing would fail the caller lookup.
+      listSessionPodsFn: undefined,
+      attachIfRunningFn: () => Promise.resolve(true),
+      fetchPendingFn: () => Promise.resolve([makeReq(), makeReq({ requestId: 'r2' })]),
+      postResultsFn: (r) => { posted.push(r); return Promise.resolve() },
+    }, { resync: true, pods } as unknown as TickSnapshot)
+    expect(pods).toHaveBeenCalledTimes(1)
+    expect(posted[0].every((r) => r.ok)).toBe(true)
     await settle()
   })
 

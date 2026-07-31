@@ -2,14 +2,13 @@
  * Reconcile step that services in-session `yaac-spawn` requests: the
  * egress proxy holds each session's `POST http://yaac.internal/spawn` open
  * in an in-memory queue; this step drains that queue over the control API,
- * starts one headless session per request in the CALLER's project (exactly
- * how the schedule reconciler fires — no terminal, no NDJSON stream; progress
- * surfaces only through the webapp's provisioning row), and posts the minted
- * session id back so the proxy answers the waiting pod.
+ * starts one headless session per request in the CALLER's project (no
+ * terminal, no NDJSON stream; progress surfaces only through the webapp's
+ * provisioning row), and posts the minted session id back so the proxy
+ * answers the waiting pod.
  *
  * A drain is a claim: a crash between drain and create loses the fire (the
- * pod's request 504s at the proxy TTL), never doubles it — the same
- * at-most-once stance as the schedule reconciler's markFired-before-fire.
+ * pod's request 504s at the proxy TTL), never doubles it.
  */
 import crypto from 'node:crypto'
 import { AGENT_TOOLS, type AgentTool } from '@yaac/shared/types'
@@ -19,13 +18,14 @@ import {
   type SpawnResultWire,
 } from '#features/sessions/egress/proxy-client'
 import { listSessionPods, type SessionPod } from '#platform/k8s/pods'
+import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
 import { getDefaultTool } from '#features/projects/preferences'
 import { registerProvisioning, runProvisioned } from '#features/sessions/provisioning'
 import { createSession, type SessionCreateOptions, type SessionCreateResult } from '#features/sessions/create'
 import { MODEL_RE } from '#features/sessions/agent-command'
 import { serverLog } from '#log'
 
-/** Prompt character limit — mirrors the schedule route and the proxy check. */
+/** Prompt character limit — mirrors the proxy's check. */
 export const SPAWN_MAX_PROMPT_CHARS = 10_000
 /**
  * Cap on sessions a single caller may have provisioning at once via spawn.
@@ -47,8 +47,14 @@ export interface SpawnReconcileDeps {
   mintIdFn?: () => string
 }
 
-/** Drain queued spawn requests from the proxy and answer each one. */
-export async function reconcileSpawnRequests(deps: SpawnReconcileDeps = {}): Promise<void> {
+/**
+ * Drain queued spawn requests from the proxy and answer each one.
+ * `snapshot` keeps the caller lookup on the pass's shared cluster view.
+ */
+export async function reconcileSpawnRequests(
+  deps: SpawnReconcileDeps = {},
+  snapshot?: TickSnapshot,
+): Promise<void> {
   try {
     // attachIfRunning, not ensureRunning: this step must never bootstrap the
     // proxy (it deploys lazily on the first session create). No proxy → no
@@ -56,7 +62,14 @@ export async function reconcileSpawnRequests(deps: SpawnReconcileDeps = {}): Pro
     if (!(await (deps.attachIfRunningFn ?? (() => proxyClient.attachIfRunning()))())) return
     const pending = await (deps.fetchPendingFn ?? (() => proxyClient.fetchPendingSpawns()))()
     if (pending.length === 0) return
-    const results = await Promise.all(pending.map((req) => handleSpawnRequest(req, deps)))
+    // One pod listing per drain, shared by every request in the batch — the
+    // informer cache when it is healthy, otherwise a single kubectl list. A
+    // burst at the proxy's queue cap must not fan out into a fork per request.
+    const listPods = deps.listSessionPodsFn
+      ?? (snapshot ? () => snapshot.pods() : listSessionPods)
+    let pods: Promise<SessionPod[]> | undefined
+    const drainDeps: SpawnReconcileDeps = { ...deps, listSessionPodsFn: () => (pods ??= listPods()) }
+    const results = await Promise.all(pending.map((req) => handleSpawnRequest(req, drainDeps)))
     await (deps.postResultsFn ?? ((r: SpawnResultWire[]) => proxyClient.postSpawnResults(r)))(results)
   } catch (err) {
     serverLog(`[spawn] reconcile failed: ${String(err)}`)
@@ -101,7 +114,7 @@ export async function handleSpawnRequest(
   }
 
   // Tool precedence: explicit request > the caller's own tool > the
-  // configured default > claude (the schedule reconciler's fallback chain).
+  // configured default > claude.
   const callerTool = (AGENT_TOOLS as readonly string[]).includes(caller.tool)
     ? caller.tool as AgentTool
     : undefined
@@ -118,8 +131,8 @@ export async function handleSpawnRequest(
   // provisioning progress in the webapp and a failed spawn leaves a failed
   // row (dismissable) instead of vanishing silently.
   registerProvisioning({ sessionId: newSessionId, projectSlug, tool, kind: 'create' })
-  // Detached, like the schedule reconciler: the caller gets the minted id
-  // immediately; a failed create is a lost fire, logged here.
+  // Detached: the caller gets the minted id immediately; a failed create
+  // is a lost fire, logged here.
   void runProvisioned(newSessionId, (onProgress) =>
     (deps.createSessionFn ?? createSession)(projectSlug, {
       tool,

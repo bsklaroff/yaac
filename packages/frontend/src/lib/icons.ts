@@ -55,7 +55,6 @@ export {
   FileDiff as ChangesIcon,
   Search as SearchIcon,
   Sparkles as SkillsIcon,
-  CalendarClock as ScheduleIcon,
   Server as ServerIcon,
   Plug as PortIcon,
 } from 'lucide-react'

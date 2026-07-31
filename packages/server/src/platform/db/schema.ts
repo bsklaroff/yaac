@@ -82,22 +82,6 @@ export const opencodeSessionMeta = snakeCase.table('opencode_session_meta', {
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 }, (t) => [primaryKey({ columns: [t.projectSlug, t.sessionId] })])
 
-/** Cron-scheduled session starts. Each row starts one headless session in
- *  its project whenever `spec` (a cron expression, evaluated in server-local
- *  time) comes due while the daemon runs; `prompt` is typed into the new
- *  session's agent pane. `lastFiredAt` is the at-most-once anchor: it is
- *  persisted before the session create is launched, so a crash loses a fire
- *  rather than doubling it. `tool` null → the default tool at fire time. */
-export const schedules = snakeCase.table('schedules', {
-  id: text().primaryKey(),
-  projectSlug: text().notNull(),
-  spec: text().notNull(),
-  prompt: text().notNull(),
-  tool: text(),
-  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
-  lastFiredAt: timestamp({ withTimezone: true }),
-})
-
 /** All client credentials (durable bearers, one-time exchange tokens, web
  *  sessions) — faithful to TokenEntry. Name-uniqueness via PK matches the
  *  store's create() CONFLICT check; `expiresAt` is set only on `one-time`

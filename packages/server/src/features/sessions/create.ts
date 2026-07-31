@@ -176,7 +176,7 @@ export interface SessionCreateOptions {
   /**
    * Initial prompt typed into the agent's tmux pane once the agent window
    * is up (pasted + submitted, not passed on the agent's command line).
-   * Used by scheduled session starts and `session create --prompt`.
+   * Used by `yaac-spawn` and `session create --prompt`.
    */
   initialPrompt?: string
   /**

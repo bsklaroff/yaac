@@ -16,7 +16,6 @@ catalog:
   "@types/node": 25.5.2
   "@types/ws": 8.18.1
   commander: 14.0.3
-  croner: 10.0.1
   drizzle-orm: 1.0.0-rc.4
   hono: 4.12.14
   simple-git: 3.35.2

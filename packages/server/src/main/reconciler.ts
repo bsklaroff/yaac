@@ -9,7 +9,6 @@ import { reconcileBuilderPodGc } from '#features/images/builder-pod'
 import { reconcileVclusterAttribution } from '#features/sessions/reconcile/vcluster-attribution-reconcile'
 import { reconcileRedirectClaims } from '#features/sessions/reconcile/redirect-claim-reconcile'
 import { reconcilePrewarmPool } from '#features/images/prewarm-reconcile'
-import { reconcileSchedules } from '#features/schedules/schedule-reconcile'
 import { reconcileImagePrewarm } from '#features/images/image-prewarm'
 import { reconcileGeneratedTitles } from '#features/titles/title-generation'
 import { createTickSnapshot, type TickSnapshot } from '#platform/k8s/tick-snapshot'
@@ -24,10 +23,9 @@ import { serverLog } from '#log'
  *   namespaces and their pods/services) mark their sources dirty; a pass
  *   runs after a short debounce so event storms coalesce.
  * - poll: a 5s mark for the state no watch can see — the proxy's queued
- *   spawn requests, due cron schedules, and in-pod tmux death (the stale
- *   reaper). These are fork-free: cache reads, one local proxy HTTP call,
- *   one DB query, and tmux probes that short-circuit on healthy status
- *   streams.
+ *   spawn requests and in-pod tmux death (the stale reaper). These are
+ *   fork-free: cache reads, one local proxy HTTP call, and tmux probes
+ *   that short-circuit on healthy status streams.
  * - resync: a 60s mark that runs EVERY step — the safety net for a missed
  *   event, and the driver for the internally-throttled hygiene steps
  *   (image prewarm/GC, salvage, builder-pod GC).
@@ -46,14 +44,11 @@ export interface ReconcileStep {
 
 export function defaultReconcileSteps(): ReconcileStep[] {
   return [
-    // Poll keeps dead-tmux detection at today's cadence (not a k8s event),
-    // and keeps the stale sweep ordered before a schedule fire.
+    // Poll keeps dead-tmux detection at today's cadence (not a k8s event).
     { name: 'stale-sessions', triggers: ['session-pods', 'session-jobs', 'poll'],
       run: (s) => reconcileStaleSessions(s) },
-    // Fire due cron schedules (detached headless session creates).
-    { name: 'schedules', triggers: ['poll'], run: () => reconcileSchedules() },
     // Service in-session `yaac-spawn` requests queued at the egress proxy.
-    { name: 'spawn-requests', triggers: ['poll'], run: () => reconcileSpawnRequests() },
+    { name: 'spawn-requests', triggers: ['poll'], run: (s) => reconcileSpawnRequests({}, s) },
     // Leaked trust-split builder pods (server restarted mid-build) — the
     // label sweep backstop. Throttled internally. Ahead of image-prewarm on
     // purpose: a leaked builder's memory reservation is what stops the next
