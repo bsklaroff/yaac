@@ -59,10 +59,48 @@ const execFileAsync = promisify(execFile)
  * `registry:2` and the vcluster image set — the node then pulls it with no
  * upstream egress, which also keeps `cluster setup` working on a flaky or
  * offline network.
+ *
+ * The pin is the multi-arch INDEX digest, never one platform's child
+ * manifest: a child digest mirrors that platform's bytes onto every host,
+ * and a mismatched node then crashloops the sidecar on `exec format error`
+ * — a failure that surfaces only as netd never going ready, since netd's
+ * readiness is Envoy's config ack. `ensureEnvoyImage` re-checks the
+ * mirrored architecture so a bad re-pin fails at mirror time instead.
  */
-export const ENVOY_UPSTREAM_IMAGE =
-  'docker.io/envoyproxy/envoy@sha256:095c405f9883942e6b0bed4c1e03e49200399820f1cb9446ed95810b91ae2ef8'
-export const ENVOY_MIRROR_TAG = 'envoyproxy/envoy:v1.34.0'
+const ENVOY_VERSION = 'v1.34.0'
+const ENVOY_PIN = 'sha256:45d37d848802f98a5647cb7522b4c1c42e0e0e775913d8e253ef3a5856bef986'
+export const ENVOY_UPSTREAM_IMAGE = `docker.io/envoyproxy/envoy@${ENVOY_PIN}`
+/**
+ * The mirror tag carries the pin, so re-pinning re-mirrors: `ensureEnvoyImage`
+ * short-circuits on a tag the registry already holds, and a version-only tag
+ * would pin an existing install to the old bytes forever.
+ */
+export const ENVOY_MIRROR_TAG =
+  `envoyproxy/envoy:${ENVOY_VERSION}-${ENVOY_PIN.slice('sha256:'.length, 'sha256:'.length + 12)}`
+
+/** podman's GOARCH name for this host — the node shares it (kind's node is a
+ *  container here), so it is also the arch every mirrored image must be. */
+export function hostImageArch(arch: string = process.arch): string {
+  return arch === 'x64' ? 'amd64' : arch
+}
+
+/**
+ * Throw when a mirrored upstream image is built for the wrong architecture,
+ * naming the likely cause (a pin that points at a child manifest rather than
+ * the index). An empty/unknown `actual` is accepted — the check must never be
+ * the reason a mirror fails.
+ */
+export function assertMirrorArch(
+  image: string,
+  actual: string,
+  expected: string = hostImageArch(),
+): void {
+  if (!actual.trim() || actual.trim() === expected) return
+  throw new Error(
+    `${image} is a ${actual.trim()} image but this host is ${expected}. `
+    + 'Pin the multi-arch index digest, not one platform\'s child manifest.',
+  )
+}
 
 /** Content-hash tag of the netd image (the k8s/netd build context). */
 export async function resolveNetdImageTag(image = 'yaac-netd'): Promise<string> {
@@ -113,6 +151,10 @@ export async function ensureEnvoyImage(
       )
     }
     await execFileAsync('podman', ['pull', ENVOY_UPSTREAM_IMAGE], { timeout: 600_000 })
+    const { stdout: arch } = await execFileAsync('podman', [
+      'image', 'inspect', '--format', '{{.Architecture}}', ENVOY_UPSTREAM_IMAGE,
+    ]).catch(() => ({ stdout: '' }))
+    assertMirrorArch(ENVOY_UPSTREAM_IMAGE, arch)
     await execFileAsync('podman', ['tag', ENVOY_UPSTREAM_IMAGE, ENVOY_MIRROR_TAG])
   }
   return pushImageToRegistry(ENVOY_MIRROR_TAG)

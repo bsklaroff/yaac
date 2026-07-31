@@ -108,6 +108,7 @@ import {
   ensureBuilderRoleGuard,
   builderBuildArgs,
   builderParentPullScript,
+  builderPodBlockReason,
   builderPodName,
   builderStorageConfScript,
   planBuildContext,
@@ -479,6 +480,33 @@ describe('buildLayerInPod', () => {
     expect(mockKubectlWithRetry.mock.calls.some((c) => (c[0] as string[])[0] === 'delete')).toBe(true)
   })
 
+  it('explains a Ready timeout the pod status can account for', async () => {
+    // A bare `kubectl wait` timeout reads as a broken build; the node
+    // refusing to schedule the pod is the far likelier cause.
+    mockKubectlWithRetry.mockImplementation((args: string[]) => {
+      if (args[0] === 'wait') return Promise.reject(new Error('timed out'))
+      return Promise.resolve({ stdout: '', stderr: '' })
+    })
+    mockKubectlGetJson.mockImplementation((args: string[]) => Promise.resolve(
+      args[1] === 'pod'
+        ? {
+          status: {
+            conditions: [{
+              type: 'PodScheduled',
+              status: 'False',
+              reason: 'Unschedulable',
+              message: '0/1 nodes are available: 1 Insufficient memory.',
+            }],
+          },
+        }
+        : null,
+    ))
+    const dir = await makeContext({ 'Dockerfile.yaac': 'FROM x\n' })
+    const layer = projectLayer({ dockerfile: path.join(dir, 'Dockerfile.yaac'), context: dir })
+    await expect(buildLayerInPod(layer, { projectSlug: 'proj' }))
+      .rejects.toThrow(/Insufficient memory/)
+  })
+
   it('fails closed when the ValidatingAdmissionPolicy API is unavailable', async () => {
     mockVapAvailable.mockResolvedValue(false)
     const dir = await makeContext({ 'Dockerfile.yaac': 'FROM x\n' })
@@ -523,8 +551,39 @@ describe('ensureBuilderRoleGuard', () => {
   })
 })
 
+describe('builderPodBlockReason', () => {
+  it('names an unschedulable pod and quotes the scheduler', () => {
+    expect(builderPodBlockReason({
+      status: {
+        conditions: [{
+          type: 'PodScheduled',
+          status: 'False',
+          reason: 'Unschedulable',
+          message: '0/1 nodes are available: 1 Insufficient memory.',
+        }],
+      },
+    })).toBe('not scheduled (Unschedulable): 0/1 nodes are available: 1 Insufficient memory.')
+  })
+
+  it('names a container stuck waiting', () => {
+    expect(builderPodBlockReason({
+      status: {
+        conditions: [{ type: 'PodScheduled', status: 'True' }],
+        containerStatuses: [{ state: { waiting: { reason: 'ImagePullBackOff' } } }],
+      },
+    })).toBe('container waiting (ImagePullBackOff)')
+  })
+
+  it('says nothing when the status explains nothing', () => {
+    expect(builderPodBlockReason(null)).toBeNull()
+    expect(builderPodBlockReason({ status: {} })).toBeNull()
+  })
+})
+
 describe('reconcileBuilderPodGc', () => {
   const NOW = 1_800_000_000_000
+  /** This server process started 10 minutes ago. */
+  const STARTED = NOW - 600_000
 
   function podItem(name: string, phase: string, ageMs: number): unknown {
     return {
@@ -542,7 +601,7 @@ describe('reconcileBuilderPodGc', () => {
         podItem('yaac-builder-live-0004', 'Running', 60_000),
       ],
     })
-    await reconcileBuilderPodGc(NOW)
+    await reconcileBuilderPodGc(NOW, STARTED)
     const deleted = mockKubectlWithRetry.mock.calls
       .filter((c) => (c[0] as string[])[0] === 'delete')
       .map((c) => (c[0] as string[])[2])
@@ -553,9 +612,26 @@ describe('reconcileBuilderPodGc', () => {
     ])
   })
 
+  it('reaps a young pod that predates this server process', async () => {
+    // A restart orphans the in-flight build's pod. Waiting for the age gate
+    // parks its 8 GiB reservation on the node, and the next build cannot
+    // schedule until the dead pod's active deadline fires.
+    mockKubectlGetJson.mockResolvedValue({
+      items: [
+        podItem('yaac-builder-orph-0001', 'Running', 700_000),
+        podItem('yaac-builder-live-0002', 'Running', 60_000),
+      ],
+    })
+    await reconcileBuilderPodGc(NOW, STARTED)
+    const deleted = mockKubectlWithRetry.mock.calls
+      .filter((c) => (c[0] as string[])[0] === 'delete')
+      .map((c) => (c[0] as string[])[2])
+    expect(deleted).toEqual(['yaac-builder-orph-0001'])
+  })
+
   it('scopes the sweep to this install\'s builder pods', async () => {
     mockKubectlGetJson.mockResolvedValue({ items: [] })
-    await reconcileBuilderPodGc(NOW)
+    await reconcileBuilderPodGc(NOW, STARTED)
     const args = mockKubectlGetJson.mock.calls[0][0] as string[]
     expect(args).toContain('-l')
     expect(args[args.indexOf('-l') + 1])
@@ -564,13 +640,13 @@ describe('reconcileBuilderPodGc', () => {
 
   it('is throttled between sweeps', async () => {
     mockKubectlGetJson.mockResolvedValue({ items: [] })
-    await reconcileBuilderPodGc(NOW)
-    await reconcileBuilderPodGc(NOW + 1000)
+    await reconcileBuilderPodGc(NOW, STARTED)
+    await reconcileBuilderPodGc(NOW + 1000, STARTED)
     expect(mockKubectlGetJson).toHaveBeenCalledTimes(1)
   })
 
   it('survives an unreachable cluster', async () => {
     mockKubectlGetJson.mockRejectedValue(new Error('down'))
-    await expect(reconcileBuilderPodGc(NOW)).resolves.toBeUndefined()
+    await expect(reconcileBuilderPodGc(NOW, STARTED)).resolves.toBeUndefined()
   })
 })

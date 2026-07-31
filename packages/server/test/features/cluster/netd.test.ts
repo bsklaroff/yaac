@@ -28,6 +28,8 @@ import { buildImage } from '#features/images/image-builder'
 import {
   ENVOY_MIRROR_TAG,
   ENVOY_UPSTREAM_IMAGE,
+  assertMirrorArch,
+  hostImageArch,
   buildNetdClaimDaemonSetManifest,
   buildNetdClaimRoleManifest,
   buildNetdClusterRoleBindingManifest,
@@ -339,7 +341,36 @@ describe('ensureNetdImage', () => {
 describe('ENVOY image pin', () => {
   it('is digest-pinned upstream and mirrored under a readable tag', () => {
     expect(ENVOY_UPSTREAM_IMAGE).toMatch(/@sha256:[0-9a-f]{64}$/)
-    expect(ENVOY_MIRROR_TAG).toBe('envoyproxy/envoy:v1.34.0')
+    expect(ENVOY_MIRROR_TAG).toMatch(/^envoyproxy\/envoy:v\d+\.\d+\.\d+-[0-9a-f]{12}$/)
+  })
+
+  it('carries the pin in the mirror tag, so a re-pin re-mirrors', () => {
+    // ensureEnvoyImage short-circuits on a tag the registry already holds;
+    // a version-only tag would freeze an existing install on the old bytes.
+    const digest = ENVOY_UPSTREAM_IMAGE.split('@sha256:')[1]
+    expect(ENVOY_MIRROR_TAG.endsWith(`-${digest.slice(0, 12)}`)).toBe(true)
+  })
+})
+
+describe('hostImageArch', () => {
+  it('maps node arch names onto podman GOARCH names', () => {
+    expect(hostImageArch('x64')).toBe('amd64')
+    expect(hostImageArch('arm64')).toBe('arm64')
+  })
+})
+
+describe('assertMirrorArch', () => {
+  it('accepts a matching arch and an unknown one', () => {
+    expect(() => assertMirrorArch('img', 'amd64', 'amd64')).not.toThrow()
+    expect(() => assertMirrorArch('img', '', 'amd64')).not.toThrow()
+  })
+
+  it('rejects a mismatch, naming the child-manifest pin as the cause', () => {
+    // The failure this catches: pinning one platform's child manifest
+    // mirrors arm64 bytes onto an x86 node, where the sidecar dies on
+    // `exec format error` and netd simply never goes ready.
+    expect(() => assertMirrorArch('envoy', 'arm64', 'amd64'))
+      .toThrow(/arm64 image but this host is amd64.*index digest/s)
   })
 })
 
@@ -400,12 +431,12 @@ describe('ensureEnvoyImage', () => {
 
   it('is a registry lookup when the mirror tag is already pushed', async () => {
     vi.mocked(registryHasTag).mockResolvedValueOnce(true)
-    expect(await ensureEnvoyImage()).toBe('localhost:5001/envoyproxy/envoy:v1.34.0')
+    expect(await ensureEnvoyImage()).toBe(`localhost:5001/${ENVOY_MIRROR_TAG}`)
     expect(imageExists).not.toHaveBeenCalled()
   })
 
   it('pushes an already-pulled image without touching the network', async () => {
-    expect(await ensureEnvoyImage(false)).toBe('localhost:5001/envoyproxy/envoy:v1.34.0')
+    expect(await ensureEnvoyImage(false)).toBe(`localhost:5001/${ENVOY_MIRROR_TAG}`)
   })
 
   it('fails fast under requirePrebuilt rather than pulling inside a worker', async () => {

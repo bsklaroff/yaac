@@ -529,8 +529,10 @@ export class BuilderPodLease {
         timeoutMs: 30_000,
       })
     } catch (err) {
+      const blocked = await builderPodBlockDetail(name)
       await deleteBuilderPod(name)
-      throw err
+      if (!blocked) throw err
+      throw new Error(`${err instanceof Error ? err.message : String(err)}\n${blocked}`)
     }
     this.podName = name
     return name
@@ -544,6 +546,46 @@ export class BuilderPodLease {
     this.podName = null
     if (name) await deleteBuilderPod(name)
   }
+}
+
+interface BuilderPodStatus {
+  status?: {
+    conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string }>
+    containerStatuses?: Array<{ state?: { waiting?: { reason?: string; message?: string } } }>
+  }
+}
+
+/**
+ * Why a builder pod never reached Ready, in one line, from its status.
+ * `kubectl wait` reports only that it timed out, which reads as "the build
+ * is broken" for the two failures that are really about the node: the pod
+ * never scheduled (another builder's 8 GiB reservation is the usual reason)
+ * or its image never pulled. Returns null when the status says nothing
+ * useful — the caller then keeps the bare timeout.
+ */
+export function builderPodBlockReason(pod: BuilderPodStatus | null): string | null {
+  const unscheduled = pod?.status?.conditions
+    ?.find((c) => c.type === 'PodScheduled' && c.status !== 'True')
+  if (unscheduled) {
+    return `not scheduled (${unscheduled.reason ?? 'unknown'})`
+      + (unscheduled.message ? `: ${unscheduled.message}` : '')
+  }
+  const waiting = pod?.status?.containerStatuses
+    ?.find((c) => c.state?.waiting?.reason)?.state?.waiting
+  if (waiting) {
+    return `container waiting (${waiting.reason})`
+      + (waiting.message ? `: ${waiting.message}` : '')
+  }
+  return null
+}
+
+/** Live-status wrapper around `builderPodBlockReason` (best effort). */
+async function builderPodBlockDetail(name: string): Promise<string | null> {
+  const pod = await kubectlGetJson<BuilderPodStatus>([
+    'get', 'pod', name, '-n', k8sNamespace(),
+  ]).catch(() => null)
+  const reason = builderPodBlockReason(pod)
+  return reason ? `builder pod ${name}: ${reason}` : null
 }
 
 async function deleteBuilderPod(name: string): Promise<void> {
@@ -617,6 +659,17 @@ export const BUILDER_REAP_AGE_MS = 45 * 60_000
 const BUILDER_REAP_INTERVAL_MS = 10 * 60_000
 let lastReapMs = 0
 
+/**
+ * When this server process started. A builder pod older than this belongs to
+ * a previous one — the data-dir lock admits a single server per install, and
+ * the selector is already scoped to this install — so it is a leak no matter
+ * how young it is. Reaping it on age alone would leave its 8 GiB memory
+ * reservation parked on the node, and since two builders do not fit on a
+ * typical node, EVERY build after a restart fails to schedule until the
+ * dead pod's active deadline fires half an hour later.
+ */
+const SERVER_START_MS = Date.now()
+
 /** Test hook: reset the reap throttle. */
 export function _resetBuilderReapForTests(): void {
   lastReapMs = 0
@@ -625,10 +678,14 @@ export function _resetBuilderReapForTests(): void {
 /**
  * Background sweep for leaked builder pods (server crashed mid-build):
  * deletes this install's role=builder pods that are terminal (the active
- * deadline already stopped them) or older than any live build can be.
- * Internally throttled; the normal path deletes pods inline in `release`.
+ * deadline already stopped them), predate this server process, or are older
+ * than any live build can be. Internally throttled; the normal path deletes
+ * pods inline in `release`.
  */
-export async function reconcileBuilderPodGc(now = Date.now()): Promise<void> {
+export async function reconcileBuilderPodGc(
+  now = Date.now(),
+  serverStartMs = SERVER_START_MS,
+): Promise<void> {
   if (now - lastReapMs < BUILDER_REAP_INTERVAL_MS) return
   lastReapMs = now
   const selector = `${LABEL_ROLE}=${ROLE_BUILDER},${LABEL_DATA_DIR_HASH}=${dataDirHash()}`
@@ -644,7 +701,8 @@ export async function reconcileBuilderPodGc(now = Date.now()): Promise<void> {
     const phase = pod.status?.phase ?? 'Unknown'
     const created = Date.parse(pod.metadata?.creationTimestamp ?? '')
     const expired = Number.isFinite(created) && now - created > BUILDER_REAP_AGE_MS
-    if (phase !== 'Succeeded' && phase !== 'Failed' && !expired) continue
+    const orphaned = Number.isFinite(created) && created < serverStartMs
+    if (phase !== 'Succeeded' && phase !== 'Failed' && !expired && !orphaned) continue
     serverLog(`[builder] reaping stale builder pod ${name} (phase ${phase})`)
     await deleteBuilderPod(name)
   }

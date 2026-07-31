@@ -18,6 +18,7 @@ vi.mock('#platform/k8s/kubectl', () => ({
 
 import {
   formatCheckResult,
+  netdNotReadyContainers,
   runClusterCheck,
   type ClusterCheckDeps,
 } from '#features/cluster/check'
@@ -584,6 +585,40 @@ describe('runClusterCheck', () => {
     expect(datapath?.detail).toContain('NetworkPolicy is not being enforced')
   })
 
+  it('names the unhealthy netd container when the DaemonSet is not ready', async () => {
+    // netd's readiness IS Envoy's config ack, so a broken sidecar and a
+    // broken netd are indistinguishable from the DaemonSet counters alone.
+    const run = happyRun()
+    run.mockImplementation(async (file: string, args: string[]) => {
+      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'daemonset'
+        && args[2] === 'yaac-netd') {
+        return { stdout: '0/1', stderr: '' }
+      }
+      if (file === 'kubectl' && args[0] === 'get' && args[1] === 'pods'
+        && args.includes('app=yaac-netd')) {
+        return {
+          stdout: JSON.stringify({
+            items: [{
+              status: {
+                containerStatuses: [
+                  { name: 'netd', ready: false },
+                  { name: 'envoy', ready: false, state: { waiting: { reason: 'CrashLoopBackOff' } } },
+                ],
+              },
+            }],
+          }),
+          stderr: '',
+        }
+      }
+      return happyResponses(file, args)
+    })
+    const { results } = await runClusterCheck(makeDeps({ run }))
+    const datapath = byName(results, 'datapath')
+    expect(datapath).toMatchObject({ status: 'fail' })
+    expect(datapath?.detail).toContain('envoy: CrashLoopBackOff')
+    expect(datapath?.fix).toContain('-c envoy')
+  })
+
   it('fails datapath when netd is absent (session egress has no redirect)', async () => {
     // Fail-CLOSED, unlike a missing Calico: sessions lose egress rather
     // than gaining unrestricted egress. The two are reported distinctly
@@ -728,6 +763,32 @@ describe('runClusterCheck', () => {
       status: 'fail',
       detail: expect.stringContaining('stale data') as string,
     })
+  })
+})
+
+describe('netdNotReadyContainers', () => {
+  it('reports each not-ready container with its state reason', () => {
+    expect(netdNotReadyContainers(JSON.stringify({
+      items: [{
+        status: {
+          containerStatuses: [
+            { name: 'netd', ready: true, state: { running: {} } },
+            { name: 'envoy', ready: false, state: { waiting: { reason: 'CrashLoopBackOff' } } },
+          ],
+        },
+      }],
+    }))).toEqual(['envoy: CrashLoopBackOff'])
+  })
+
+  it('falls back to a bare label and dedupes across pods', () => {
+    const pod = { status: { containerStatuses: [{ name: 'netd', ready: false }] } }
+    expect(netdNotReadyContainers(JSON.stringify({ items: [pod, pod] })))
+      .toEqual(['netd: not ready'])
+  })
+
+  it('yields nothing for unparseable or empty input', () => {
+    expect(netdNotReadyContainers('')).toEqual([])
+    expect(netdNotReadyContainers('not json')).toEqual([])
   })
 })
 

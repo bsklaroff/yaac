@@ -54,6 +54,11 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     { name: 'schedules', triggers: ['poll'], run: () => reconcileSchedules() },
     // Service in-session `yaac-spawn` requests queued at the egress proxy.
     { name: 'spawn-requests', triggers: ['poll'], run: () => reconcileSpawnRequests() },
+    // Leaked trust-split builder pods (server restarted mid-build) — the
+    // label sweep backstop. Throttled internally. Ahead of image-prewarm on
+    // purpose: a leaked builder's memory reservation is what stops the next
+    // build from scheduling, so it has to go before builds are launched.
+    { name: 'builder-pod-gc', triggers: [], run: () => reconcileBuilderPodGc() },
     // Keep every project's image chain built and pushed (detached tasks).
     // Before the prewarm pool: a spare's createSession then joins the
     // already-running builds. Throttled internally.
@@ -91,9 +96,6 @@ export function defaultReconcileSteps(): ReconcileStep[] {
       run: (s) => reconcileRedirectClaims(s) },
     // Host podman image GC. Throttled internally to every few hours.
     { name: 'host-image-gc', triggers: [], run: () => reconcileHostImageGc() },
-    // Leaked trust-split builder pods (server crashed mid-build) — the label
-    // sweep backstop. Throttled internally.
-    { name: 'builder-pod-gc', triggers: [], run: () => reconcileBuilderPodGc() },
   ]
 }
 

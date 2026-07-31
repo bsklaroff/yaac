@@ -889,6 +889,39 @@ async function runClaimDatapathCheck(deps: ClusterCheckDeps): Promise<CheckResul
 }
 
 /**
+ * `container: reason` for every not-ready netd container, from
+ * `kubectl get pods -o json`. Unparseable input yields nothing — this only
+ * ever enriches a failure that has already been decided.
+ */
+export function netdNotReadyContainers(podsJson: string): string[] {
+  let parsed: {
+    items?: Array<{
+      status?: {
+        containerStatuses?: Array<{
+          name?: string
+          ready?: boolean
+          state?: Record<string, { reason?: string } | undefined>
+        }>
+      }
+    }>
+  }
+  try {
+    parsed = JSON.parse(podsJson || '{}') as typeof parsed
+  } catch {
+    return []
+  }
+  const out: string[] = []
+  for (const pod of parsed.items ?? []) {
+    for (const c of pod.status?.containerStatuses ?? []) {
+      if (c.ready !== false || !c.name) continue
+      const reason = Object.values(c.state ?? {})[0]?.reason ?? 'not ready'
+      if (!out.includes(`${c.name}: ${reason}`)) out.push(`${c.name}: ${reason}`)
+    }
+  }
+  return out
+}
+
+/**
  * The datapath gate: Calico must be enforcing, and netd must be up with
  * its redirect chain programmed.
  *
@@ -922,15 +955,24 @@ async function runDatapathCheck(deps: ClusterCheckDeps): Promise<CheckResult> {
     ]).catch(() => ({ stdout: '' }))
     const [netdReady, netdWanted] = netd.trim().split('/').map(Number)
     if (!netd.trim() || !(netdReady > 0) || netdReady !== netdWanted) {
+      const { stdout: pods } = await deps.run('kubectl', [
+        'get', 'pods', '-n', k8sNamespace(), '-l', `app=${NETD_APP_NAME}`, '-o', 'json',
+      ]).catch(() => ({ stdout: '' }))
+      // Which container is unhealthy is the whole diagnosis here: netd's
+      // readiness is Envoy's config ack, so a broken Envoy sidecar reads
+      // exactly like a broken netd from the DaemonSet's counters alone.
+      const blocked = netdNotReadyContainers(pods)
       return {
         name: 'datapath', status: 'fail',
         detail: netd.trim()
           ? `${NETD_APP_NAME} is ${netd.trim()} ready — session egress has no redirect`
+            + (blocked.length ? ` (${blocked.join(', ')})` : '')
           : `${NETD_APP_NAME} is not deployed — session egress has no redirect`,
-        fix: 'netd steers session egress into the proxy. It deploys with the '
-          + 'proxy on first session create; restart the yaac server so '
-          + 'ensureProxyResources applies it, then inspect with '
-          + `\`kubectl -n ${k8sNamespace()} logs ds/${NETD_APP_NAME} -c netd\`.`,
+        fix: 'netd steers session egress into the proxy. `yaac cluster setup '
+          + '--repair` re-applies it (the server also re-ensures it whenever it '
+          + 'brings the proxy up). Inspect both containers with '
+          + `\`kubectl -n ${k8sNamespace()} logs ds/${NETD_APP_NAME} -c netd\` and `
+          + '`-c envoy`.',
       }
     }
     return {
