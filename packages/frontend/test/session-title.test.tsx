@@ -6,7 +6,7 @@ vi.mock('#lib/createSession', () => ({
   renameSession: vi.fn(),
 }))
 
-import { SessionTitle } from '#components/SessionTitle'
+import { SessionTitle, oneLine } from '#components/SessionTitle'
 import { renameSession } from '#lib/createSession'
 
 beforeEach(() => {
@@ -21,6 +21,24 @@ function openEditor(): HTMLInputElement {
   fireEvent.click(screen.getByRole('button', { name: 'Rename session' }))
   return screen.getByRole<HTMLInputElement>('textbox', { name: 'Session title' })
 }
+
+describe('oneLine', () => {
+  it('collapses internal whitespace runs, including newlines, to a single space', () => {
+    expect(oneLine('do a\n   thing')).toBe('do a thing')
+  })
+
+  it('trims leading and trailing whitespace', () => {
+    expect(oneLine('  padded  ')).toBe('padded')
+  })
+
+  it('leaves an already-single-line string unchanged', () => {
+    expect(oneLine('My title')).toBe('My title')
+  })
+
+  it('collapses an all-whitespace string to empty', () => {
+    expect(oneLine('   \n\t  ')).toBe('')
+  })
+})
 
 describe('SessionTitle', () => {
   it('shows the title as selectable text with a rename affordance', () => {

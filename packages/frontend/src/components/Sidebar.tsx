@@ -370,7 +370,7 @@ function MarqueeTitle({ text, hovered }: { text: string; hovered: boolean }): JS
   )
 }
 
-function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
+export function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
   const selectedSessionId = useUiStore((s) => s.selectedSessionId)
   const selectSession = useUiStore((s) => s.selectSession)
   const readWaiting = useUiStore((s) => s.readWaiting)
@@ -559,7 +559,9 @@ function SessionRow({ session }: { session: SessionListEntry }): JSX.Element {
             aria-label="Rename session"
             className="absolute right-14 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
               opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
-              group-hover:pointer-events-auto group-hover:opacity-100"
+              group-hover:pointer-events-auto group-hover:opacity-100
+              focus-visible:pointer-events-auto focus-visible:opacity-100
+              focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           >
             <RenameIcon size={13} />
           </button>
