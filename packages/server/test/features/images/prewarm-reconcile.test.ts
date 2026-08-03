@@ -19,7 +19,9 @@ vi.mock('#platform/k8s/pods', async (importOriginal) => ({
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
 import { reconcilePrewarmPool } from '#features/images/prewarm-reconcile'
-import { inFlight, clearPrewarmStateForTests } from '#features/images/prewarm'
+// `claiming` and `inFlight` are the module's shared state, read here to set
+// up a mid-claim / mid-spawn cluster and asserted on afterwards.
+import { claiming, inFlight, clearPrewarmStateForTests } from '#features/images/prewarm'
 import { LABEL_PREWARMED, listSessionPods, type SessionPod } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import { createSession } from '#features/sessions/create'
@@ -112,5 +114,128 @@ describe('reconcilePrewarmPool', () => {
     expect(mockListPods).not.toHaveBeenCalled()
     expect(snapshot.pods).toHaveBeenCalledTimes(1)
     expect(mockCreate).toHaveBeenCalledWith('p', { tool: 'claude', prewarm: true })
+  })
+
+  it('does nothing for an empty cluster', async () => {
+    mockListPods.mockResolvedValue([])
+    await reconcilePrewarmPool()
+    expect(mockCreate).not.toHaveBeenCalled()
+    expect(mockCleanup).not.toHaveBeenCalled()
+  })
+
+  it('skips the tick when listing pods throws', async () => {
+    mockListPods.mockRejectedValue(new Error('cluster down'))
+    await reconcilePrewarmPool()
+    expect(mockCreate).not.toHaveBeenCalled()
+    expect(mockCleanup).not.toHaveBeenCalled()
+  })
+
+  it('is a no-op once the project already has its spare', async () => {
+    mockListPods.mockResolvedValue([
+      pod({ jobName: 'yaac-p-real', sessionId: 'r1' }),
+      pod({ jobName: 'yaac-p-spare', sessionId: 's2', prewarmed: true }),
+    ])
+    await reconcilePrewarmPool()
+    expect(mockCreate).not.toHaveBeenCalled()
+    expect(mockCleanup).not.toHaveBeenCalled()
+  })
+
+  it('refills behind a spare that is mid-claim, and never reaps it', async () => {
+    mockListPods.mockResolvedValue([
+      pod({ jobName: 'yaac-p-real', sessionId: 'r1' }),
+      pod({ jobName: 'yaac-p-spare', sessionId: 's2', prewarmed: true }),
+    ])
+    claiming.add('yaac-p-spare')
+    await reconcilePrewarmPool()
+    expect(mockCreate).toHaveBeenCalledWith('p', { tool: 'claude', prewarm: true })
+    expect(mockCleanup).not.toHaveBeenCalled()
+  })
+
+  it('counts a still-pending spare toward the pool (no over-spawn)', async () => {
+    mockListPods.mockResolvedValue([
+      pod({ jobName: 'yaac-p-real', sessionId: 'r1' }),
+      pod({ jobName: 'yaac-p-spare', sessionId: 's2', prewarmed: true, running: false, phase: 'Pending' }),
+    ])
+    await reconcilePrewarmPool()
+    expect(mockCreate).not.toHaveBeenCalled()
+    expect(mockCleanup).not.toHaveBeenCalled()
+  })
+
+  it('keeps a wrong-tool spare in the pool (tool-agnostic; retooled at claim time)', async () => {
+    mockListPods.mockResolvedValue([
+      pod({ jobName: 'yaac-p-real', sessionId: 'r1' }),
+      pod({ jobName: 'yaac-p-codex', sessionId: 's2', tool: 'codex', prewarmed: true }),
+    ])
+    await reconcilePrewarmPool()
+    expect(mockCreate).not.toHaveBeenCalled()
+    expect(mockCleanup).not.toHaveBeenCalled()
+  })
+
+  it('fills the pool to the configured size', async () => {
+    vi.stubEnv('YAAC_PREWARM_POOL_SIZE', '2')
+    mockListPods.mockResolvedValue([pod({ jobName: 'yaac-p-real', sessionId: 'r1' })])
+    await reconcilePrewarmPool()
+    expect(mockCreate.mock.calls).toEqual([
+      ['p', { tool: 'claude', prewarm: true }],
+      ['p', { tool: 'claude', prewarm: true }],
+    ])
+  })
+
+  it('reaps the oldest excess spare after the pool size is lowered', async () => {
+    mockListPods.mockResolvedValue([
+      pod({ jobName: 'yaac-p-real', sessionId: 'r1' }),
+      pod({ jobName: 'yaac-p-old', sessionId: 'old', prewarmed: true, createdAtMs: 1_000 }),
+      pod({ jobName: 'yaac-p-new', sessionId: 'new', prewarmed: true, createdAtMs: 9_000 }),
+    ])
+    await reconcilePrewarmPool()
+    expect(mockCleanup).toHaveBeenCalledTimes(1)
+    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-old', projectSlug: 'p', sessionId: 'old' })
+    expect(mockCreate).not.toHaveBeenCalled()
+  })
+
+  it('handles multiple projects independently, ignoring pods with no project', async () => {
+    mockListPods.mockResolvedValue([
+      pod({ jobName: 'yaac-a-real', sessionId: 'a1', projectSlug: 'a' }),
+      pod({ jobName: 'yaac-a-spare', sessionId: 'a2', projectSlug: 'a', prewarmed: true }),
+      pod({ jobName: 'yaac-b-real', sessionId: 'b1', projectSlug: 'b' }),
+      pod({ jobName: 'orphan', sessionId: 'o1', projectSlug: '' }),
+    ])
+    await reconcilePrewarmPool()
+    expect(mockCreate.mock.calls).toEqual([['b', { tool: 'claude', prewarm: true }]])
+    expect(mockCleanup).not.toHaveBeenCalled()
+  })
+
+  it('falls back to claude when no default tool is configured', async () => {
+    mockDefaultTool.mockResolvedValue(undefined)
+    mockListPods.mockResolvedValue([pod({ jobName: 'yaac-p-real', sessionId: 'r1' })])
+    await reconcilePrewarmPool()
+    expect(mockCreate).toHaveBeenCalledWith('p', { tool: 'claude', prewarm: true })
+  })
+
+  it('decrements the in-flight count per settled spawn, clearing it at zero', async () => {
+    vi.stubEnv('YAAC_PREWARM_POOL_SIZE', '2')
+    mockListPods.mockResolvedValue([pod({ jobName: 'yaac-p-real', sessionId: 'r1' })])
+    let settleFirst = (): void => { /* replaced below */ }
+    mockCreate
+      .mockReturnValueOnce(new Promise((resolve) => {
+        settleFirst = () => resolve({ sessionId: 's', jobName: 'yaac-p-s', forwardedPorts: [], tool: 'claude' })
+      }))
+      .mockReturnValue(new Promise<never>(() => { /* never resolves */ }))
+
+    await reconcilePrewarmPool()
+    expect(inFlight.get('p')).toBe(2)
+
+    settleFirst()
+    await flush()
+    // One of two settled: the counter drops rather than clearing, so the
+    // next tick still sees the outstanding spawn and doesn't stampede.
+    expect(inFlight.get('p')).toBe(1)
+  })
+
+  it('swallows a failed reap — the stale-session reaper retries', async () => {
+    mockListPods.mockResolvedValue([pod({ jobName: 'yaac-p-spare', sessionId: 's2', prewarmed: true })])
+    mockCleanup.mockRejectedValue(new Error('pod gone'))
+    await expect(reconcilePrewarmPool()).resolves.toBeUndefined()
+    await flush()
   })
 })

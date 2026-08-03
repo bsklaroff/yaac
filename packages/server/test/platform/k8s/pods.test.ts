@@ -11,12 +11,14 @@ vi.mock('#platform/k8s/kubectl', () => ({
 import {
   JOB_NAME_LABEL,
   LABEL_DATA_DIR_HASH,
+  LABEL_PREWARMED,
   LABEL_PROJECT,
   LABEL_SESSION_ID,
   LABEL_TOOL,
   LABEL_VCLUSTER_MANAGED_BY,
   VCLUSTER_API_PORT,
   findSessionPod,
+  isPrewarmed,
   listSessionJobs,
   listSessionPods,
   mapSessionJobObject,
@@ -469,6 +471,29 @@ describe('sessionJobSelector', () => {
     expect(sessionJobSelector()).toBe('yaac.data-dir-hash=ddh0123456789abc,yaac.session-id')
     expect(sessionJobSelector()).toContain(LABEL_DATA_DIR_HASH)
     expect(sessionJobSelector()).toContain(LABEL_SESSION_ID)
+  })
+})
+
+describe('isPrewarmed', () => {
+  function pod(labels: Record<string, string>): SessionPod {
+    return {
+      jobName: 'yaac-p-s1',
+      podName: 'yaac-p-s1-x',
+      sessionId: 's1',
+      projectSlug: 'p',
+      tool: 'claude',
+      phase: 'Running',
+      running: true,
+      terminating: false,
+      createdAtMs: 1_000,
+      labels,
+    }
+  }
+
+  it('is true only when the label is exactly "true"', () => {
+    expect(isPrewarmed(pod({ [LABEL_PREWARMED]: 'true' }))).toBe(true)
+    expect(isPrewarmed(pod({}))).toBe(false)
+    expect(isPrewarmed(pod({ [LABEL_PREWARMED]: 'false' }))).toBe(false)
   })
 })
 

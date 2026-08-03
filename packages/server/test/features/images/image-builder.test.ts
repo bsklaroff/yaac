@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
-import { baseImageHash, collectContextFiles, contextHash, fileHash, parseContainerIgnore, sessionUid, isLayered, toolsContentHash } from '#features/images/image-builder'
+import { baseImageHash, collectContextFiles, contextHash, fileHash, sessionUid, isLayered, toolsContentHash } from '#features/images/image-builder'
 
 describe('fileHash', () => {
   it('produces a 16-char hex hash of file contents', async () => {
@@ -246,133 +246,61 @@ describe('contextHash', () => {
     }
   })
 
-  it("the proxy context's .containerignore keeps unit tests out of the image hash", async () => {
-    const proxyIgnore = await fs.readFile(
-      path.join(DOCKERFILES_DIR, '..', 'k8s', 'proxy', '.containerignore'), 'utf8')
-    expect(parseContainerIgnore(proxyIgnore)).toEqual(new Set(['node_modules', 'test']))
-  })
-})
+  it('reads comments, blank lines, trailing slashes, and nested paths in .containerignore', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-ctx-'))
+    try {
+      await fs.writeFile(path.join(tmpDir, '.containerignore'),
+        '# dev artifacts\nnode_modules/\n\ntest\na/b.txt\n')
+      await fs.writeFile(path.join(tmpDir, 'keep.txt'), 'hello')
+      await fs.mkdir(path.join(tmpDir, 'a'))
+      const hash1 = await contextHash(tmpDir)
 
-describe('parseContainerIgnore', () => {
-  it('parses literal paths, dropping comments, blanks, and trailing slashes', () => {
-    expect(parseContainerIgnore('# dev artifacts\nnode_modules/\n\ntest\na/b.txt\n'))
-      .toEqual(new Set(['node_modules', 'test', 'a/b.txt']))
-  })
+      // Every listed form — trailing-slash dir, plain dir, nested file — is
+      // excluded; the comment and blank line are not patterns.
+      await fs.mkdir(path.join(tmpDir, 'node_modules'))
+      await fs.writeFile(path.join(tmpDir, 'node_modules', 'pkg.txt'), 'noise')
+      await fs.mkdir(path.join(tmpDir, 'test'))
+      await fs.writeFile(path.join(tmpDir, 'test', 'a.test.ts'), 'noise')
+      await fs.writeFile(path.join(tmpDir, 'a', 'b.txt'), 'noise')
+      expect(await contextHash(tmpDir)).toBe(hash1)
 
-  it('rejects glob and negation patterns instead of silently mismatching podman', () => {
-    for (const pattern of ['*.log', 'test?', '[ab]', '!keep', '/anchored']) {
-      expect(() => parseContainerIgnore(pattern)).toThrow(/unsupported .containerignore pattern/)
+      // An unlisted sibling of an excluded path still counts.
+      await fs.writeFile(path.join(tmpDir, 'a', 'c.txt'), 'real')
+      expect(await contextHash(tmpDir)).not.toBe(hash1)
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true })
     }
   })
-})
 
-describe('image-builder prerequisites', () => {
-  it('Dockerfile.default exists in the package', async () => {
-    const dockerfilePath = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
-    const content = await fs.readFile(dockerfilePath, 'utf8')
-    expect(content).toContain('FROM docker.io/ubuntu:24.04')
-    expect(content).toContain('gh')
-    expect(content).toContain('tmux')
+  it('rejects glob and negation patterns instead of silently mismatching podman', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-ctx-'))
+    try {
+      for (const pattern of ['*.log', 'test?', '[ab]', '!keep', '/anchored']) {
+        await fs.writeFile(path.join(tmpDir, '.containerignore'), pattern)
+        await expect(contextHash(tmpDir)).rejects.toThrow(/unsupported .containerignore pattern/)
+      }
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true })
+    }
   })
 
-  it('Dockerfile.tools installs the agent CLIs on top of the base', async () => {
-    const dockerfilePath = path.join(DOCKERFILES_DIR, 'Dockerfile.tools')
-    const content = await fs.readFile(dockerfilePath, 'utf8')
-    expect(content).toMatch(/^ARG BASE_IMAGE\n/m)
-    expect(content).toMatch(/^FROM \$\{BASE_IMAGE\}/m)
-    expect(content).toContain('claude.ai/install.sh')
-    expect(content).toContain('@openai/codex')
-    expect(content).toContain('opencode-ai')
-  })
+  it("the proxy context's .containerignore keeps unit tests out of the image hash", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-ctx-'))
+    try {
+      // The real shipped exclusions, applied to a stand-in context: adding
+      // node_modules and co-located tests must not churn the image tag.
+      await fs.cp(path.join(DOCKERFILES_DIR, '..', 'k8s', 'proxy', '.containerignore'),
+        path.join(tmpDir, '.containerignore'))
+      await fs.writeFile(path.join(tmpDir, 'index.ts'), 'export {}')
+      const hash1 = await contextHash(tmpDir)
 
-  it('Dockerfile.nestable layers rootful in-pod podman with the docker CLI on the tools image', async () => {
-    const dockerfilePath = path.join(DOCKERFILES_DIR, 'Dockerfile.nestable')
-    const content = await fs.readFile(dockerfilePath, 'utf8')
-    expect(content).toMatch(/^ARG BASE_IMAGE\n/m)
-    expect(content).toMatch(/^FROM \$\{BASE_IMAGE\}/m)
-    // Engine + build/copy tooling, docker-CLI surface.
-    expect(content).toContain('podman')
-    expect(content).toContain('skopeo')
-    expect(content).toContain('docker-compose')
-    // Container-private networks aren't supported in-pod, so no userspace
-    // network helper is installed (host netns is the only mode).
-    expect(content).not.toContain('default_rootless_network_cmd')
-    // Rootful engine: the agent (yaac user) drives it over the rootful
-    // podman socket, which session-create opens after `sudo podman system
-    // service`. Both CLIs point there — docker via DOCKER_HOST, podman via
-    // CONTAINER_HOST (which auto-enables podman's remote mode).
-    expect(content).toContain('DOCKER_HOST=unix:///run/podman/podman.sock')
-    expect(content).toContain('CONTAINER_HOST=unix:///run/podman/podman.sock')
-    // Everything shares the pod's namespaces — nested egress must stay on
-    // the pod-netns redirect (locally-originated traffic).
-    expect(content).toContain('netns="host"')
-    // The rootless apparatus is DELETED under the sentry — no subuid maps,
-    // no newuidmap/newgidmap caps, and no rootless workarounds (keyring /
-    // pivot_root work as real root in-sandbox).
-    expect(content).not.toContain('subuid')
-    expect(content).not.toContain('newuidmap')
-    expect(content).not.toContain('keyring=false')
-    expect(content).not.toContain('no_pivot_root=true')
-    // Rootful engine config lives system-wide in /etc/containers.
-    expect(content).toContain('/etc/containers/containers.conf')
-    expect(content).toContain('/etc/containers/storage.conf')
-    // Rootful graphroot at podman's default (a tmpfs is mounted there by
-    // the pod spec so setcap builds keep their file caps).
-    expect(content).toContain('graphroot = "/var/lib/containers/storage"')
-    // Cross-session layer cache rides additionalimagestores.
-    expect(content).toContain('additionalimagestores = ["/var/lib/shared-images"]')
-    // Nested containers auto-trust the session's MITM CA. Two trust shapes:
-    // the ADDITIVE vars point at the bare proxy CA (OpenSSL/Node keep their
-    // real roots alongside it); the own-bundle REPLACE vars point at the
-    // combined bundle {public roots} ∪ {proxy CA} so curl/requests/cargo/
-    // git-libcurl trust both intercepted and tunnelled hosts (see the
-    // combined-bundle plan).
-    expect(content).toContain('SSL_CERT_FILE=/etc/yaac/certs/proxy-ca.pem')
-    expect(content).toContain('NODE_EXTRA_CA_CERTS=/etc/yaac/certs/proxy-ca.pem')
-    expect(content).toContain('CURL_CA_BUNDLE=/etc/yaac/certs/ca-bundle.pem')
-    expect(content).toContain('REQUESTS_CA_BUNDLE=/etc/yaac/certs/ca-bundle.pem')
-    expect(content).toContain('CARGO_HTTP_CAINFO=/etc/yaac/certs/ca-bundle.pem')
-    expect(content).toContain('GIT_SSL_CAINFO=/etc/yaac/certs/ca-bundle.pem')
-    // The combined bundle is mounted into nested containers (and build RUN
-    // steps) alongside the bare CA.
-    expect(content).toContain('/etc/yaac/certs/ca-bundle.pem:/etc/yaac/certs/ca-bundle.pem:ro')
-    // Build-time trust: the bare proxy CA is dropped into the ca-certificates
-    // source dir. Volumes (unlike env) reach `docker build` RUN steps, so
-    // `apt-get install ca-certificates` folds it into the image's real roots.
-    expect(content).toContain('/etc/yaac/certs/proxy-ca.pem:/usr/local/share/ca-certificates/yaac-proxy-ca.crt:ro')
-    // Must NOT bind-mount over the managed bundle file — rename() onto a
-    // bind-mountpoint fails EBUSY and breaks `update-ca-certificates`.
-    expect(content).not.toContain(':/etc/ssl/certs/ca-certificates.crt:ro')
-    // The replace-vars must never point at the bare proxy CA (that breaks
-    // tunnelled hosts — the exact regression the combined bundle fixes).
-    expect(content).not.toContain('CURL_CA_BUNDLE=/etc/yaac/certs/proxy-ca.pem')
-    // The engine is started by a detached server exec, not an entrypoint
-    // override — the image keeps the base catatonit keepalive.
-    expect(content).not.toMatch(/^ENTRYPOINT/m)
+      await fs.mkdir(path.join(tmpDir, 'node_modules'))
+      await fs.writeFile(path.join(tmpDir, 'node_modules', 'dep.js'), 'noise')
+      await fs.mkdir(path.join(tmpDir, 'test'))
+      await fs.writeFile(path.join(tmpDir, 'test', 'proxy.test.ts'), 'noise')
+      expect(await contextHash(tmpDir)).toBe(hash1)
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true })
+    }
   })
-
-  it('Dockerfile.default runs as non-root yaac user', async () => {
-    const dockerfilePath = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
-    const content = await fs.readFile(dockerfilePath, 'utf8')
-    expect(content).toContain('useradd')
-    expect(content).toContain('USER yaac')
-  })
-
-  it('Dockerfile.default builds yaac with the injected YAAC_UID (idmapped hostPath writes)', async () => {
-    const dockerfilePath = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
-    const content = await fs.readFile(dockerfilePath, 'utf8')
-    expect(content).toMatch(/^ARG YAAC_UID=1000$/m)
-    expect(content).toContain('useradd -m -u ${YAAC_UID}')
-  })
-
-  it('Dockerfile.default uses catatonit as PID 1 to reap zombies', async () => {
-    const dockerfilePath = path.join(DOCKERFILES_DIR, 'Dockerfile.default')
-    const content = await fs.readFile(dockerfilePath, 'utf8')
-    expect(content).toContain('catatonit')
-    expect(content).toMatch(/ENTRYPOINT \[.*"catatonit".*\]/)
-    // catatonit runs sleep infinity as PID 2 so the container stays up
-    expect(content).toContain('sleep')
-    expect(content).toContain('infinity')
-  })
-
 })

@@ -34,7 +34,7 @@ vi.mock('simple-git', () => ({
 
 import {
   tryClaimPrewarmed,
-  resolveRebranchTarget,
+  // Shared claim state, read to assert what a claim reserved and released.
   claiming,
   inFlight,
   clearPrewarmStateForTests,
@@ -305,60 +305,34 @@ describe('tryClaimPrewarmed', () => {
     expect(await tryClaimPrewarmed('p', 'claude', GIT_USER, emit, 'dev')).toBeUndefined()
     expect(mockCleanupDetached).toHaveBeenCalledTimes(1)
   })
-})
 
-describe('resolveRebranchTarget', () => {
-  it('no request, no config, spare on default → no prep', () => {
-    expect(resolveRebranchTarget({
-      requestedBranch: undefined,
-      configReferenceBranch: undefined,
-      spareUpstreamBranch: 'main',
-      defaultBranch: 'main',
-    })).toBeNull()
+  it('lets an explicit branch request win over the project default', async () => {
+    // Spare warmed from the project default; the caller asked for another
+    // branch, so the request — not the config — is the re-branch target.
+    mockListPods.mockResolvedValue([spare()])
+    mockResolveConfig.mockResolvedValue({ referenceBranch: 'develop' })
+    mockWorktreeUpstream.mockResolvedValue('develop')
+    const result = await tryClaimPrewarmed('p', 'claude', GIT_USER, emit, 'dev')
+    expect(result?.sessionId).toBe('spare1')
+    expect(mockRebranch).toHaveBeenCalledWith(expect.anything(), 'dev', 'cafebabe1234', true)
   })
 
-  it('request matches the spare → no prep', () => {
-    expect(resolveRebranchTarget({
-      requestedBranch: 'dev',
-      configReferenceBranch: undefined,
-      spareUpstreamBranch: 'dev',
-      defaultBranch: 'main',
-    })).toBeNull()
+  it('re-branches back to the default branch when the config default is cleared', async () => {
+    // Spare warmed from develop; the project no longer pins a reference
+    // branch, so a bare create wants the repo default again.
+    mockListPods.mockResolvedValue([spare()])
+    mockWorktreeUpstream.mockResolvedValue('develop')
+    const result = await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)
+    expect(result?.sessionId).toBe('spare1')
+    expect(mockRebranch).toHaveBeenCalledWith(expect.anything(), 'main', 'cafebabe1234', true)
   })
 
-  it('request differs from the spare → prep to the request', () => {
-    expect(resolveRebranchTarget({
-      requestedBranch: 'dev',
-      configReferenceBranch: 'develop',
-      spareUpstreamBranch: 'develop',
-      defaultBranch: 'main',
-    })).toBe('dev')
-  })
-
-  it('config default differs from the spare (warm-time default changed) → prep', () => {
-    expect(resolveRebranchTarget({
-      requestedBranch: undefined,
-      configReferenceBranch: 'develop',
-      spareUpstreamBranch: 'main',
-      defaultBranch: 'main',
-    })).toBe('develop')
-  })
-
-  it('config default cleared after warming → prep back to the default branch', () => {
-    expect(resolveRebranchTarget({
-      requestedBranch: undefined,
-      configReferenceBranch: undefined,
-      spareUpstreamBranch: 'develop',
-      defaultBranch: 'main',
-    })).toBe('main')
-  })
-
-  it('missing upstream record counts as warmed from the default branch', () => {
-    expect(resolveRebranchTarget({
-      requestedBranch: undefined,
-      configReferenceBranch: undefined,
-      spareUpstreamBranch: null,
-      defaultBranch: 'main',
-    })).toBeNull()
+  it('treats a spare with no recorded upstream as warmed from the default branch', async () => {
+    mockListPods.mockResolvedValue([spare()])
+    mockWorktreeUpstream.mockResolvedValue(null)
+    const result = await tryClaimPrewarmed('p', 'claude', GIT_USER, emit)
+    expect(result?.sessionId).toBe('spare1')
+    expect(mockRebranch).not.toHaveBeenCalled()
+    expect(mockFetchOrigin).not.toHaveBeenCalled()
   })
 })
