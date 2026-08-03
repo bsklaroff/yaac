@@ -37,7 +37,7 @@ import { ensureLocalRegistry } from '#features/cluster/registry'
 import { proxyClient } from '#features/sessions/egress/proxy-client'
 import { hasSessionForwarders, provisionSessionForwarders, stopAllSessionForwarders } from '#features/sessions/forwarders/port-forwarders'
 import { listSessionPods } from '#platform/k8s/pods'
-import { resolveProjectConfig } from '#features/projects/config'
+import { resolveProjectConfig } from '#features/projects'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
 

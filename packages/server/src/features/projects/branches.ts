@@ -1,8 +1,8 @@
 import simpleGit from 'simple-git'
 import { fetchOrigin, getDefaultBranch, isGitAuthError, listRemoteBranches } from '#platform/git'
-import { resolveProjectConfig } from '#features/projects/config'
-import { assertProjectExists } from '#features/projects/detail'
-import { resolveCredentialForUrl } from '#features/projects/credentials'
+import { resolveProjectConfig } from './config'
+import { assertProjectExists } from './detail'
+import { resolveCredentialForUrl } from './credentials'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 
@@ -28,7 +28,9 @@ export async function getProjectBranches(slug: string, opts: { refresh?: boolean
   const repo = repoDir(slug)
 
   if (opts.refresh) {
-    const remoteUrl = (await simpleGit(repo).remote(['get-url', 'origin']))?.trim() ?? ''
+    // Non-null as in fetchOrigin's identical call: `get-url` either prints the
+    // URL or exits non-zero, in which case simple-git rejects instead.
+    const remoteUrl = (await simpleGit(repo).remote(['get-url', 'origin']))!.trim()
     // A local-path remote (test fixtures) isn't parseable as https/scp —
     // fetch it unauthenticated instead of failing the refresh.
     const credential = await resolveCredentialForUrl(remoteUrl).catch(() => null)

@@ -15,7 +15,7 @@ import { PROXY_APP_NAME, PROXY_PORT } from '#features/cluster/proxy-constants'
 import { k8sNamespace, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#features/cluster/registry'
 import { ExecTunnel } from '#platform/k8s/exec-tunnel'
-import { listSshEntries } from '#features/projects/credentials'
+import { listSshEntries } from '#features/projects'
 import { serverLog } from '#log'
 import { env, testEnv } from '@yaac/shared/env'
 

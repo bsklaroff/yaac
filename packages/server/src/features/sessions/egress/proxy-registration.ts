@@ -1,7 +1,7 @@
 import { buildRulesFromConfig, collectProxySecrets } from '#features/sessions/egress/proxy-client'
 import type { InjectionRule, UpstreamRedirect } from '#features/sessions/egress/proxy-client'
 import { NESTED_PULL_HOSTS, resolveAllowedHosts } from '#features/sessions/egress/default-allowed-hosts'
-import { writeProxySecrets } from '#features/projects/credentials'
+import { writeProxySecrets } from '#features/projects'
 import type { AgentTool, YaacConfig } from '@yaac/shared/types'
 
 /**

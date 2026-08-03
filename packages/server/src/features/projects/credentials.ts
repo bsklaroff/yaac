@@ -221,12 +221,9 @@ export async function loadKnownHostsEntryForHost(host: string): Promise<string |
   const creds = await loadCredentials()
   for (const entry of creds.tokens) {
     if (entry.kind !== 'ssh') continue
-    try {
-      const parsed = parsePattern(entry.pattern)
-      if (parsed.host === host) return entry.knownHostsEntry
-    } catch {
-      // skip
-    }
+    // `parsePattern` cannot throw here: loadCredentials drops every entry
+    // whose pattern doesn't validate, so anything in `tokens` parses.
+    if (parsePattern(entry.pattern).host === host) return entry.knownHostsEntry
   }
   return null
 }
@@ -375,15 +372,11 @@ export async function listSshEntries(): Promise<Array<{
   const out: Array<{ pattern: string; host: string; privateKeyPath: string; knownHostsEntry: string }> = []
   for (const entry of creds.tokens) {
     if (entry.kind !== 'ssh') continue
-    let parsed
-    try {
-      parsed = parsePattern(entry.pattern)
-    } catch {
-      continue
-    }
     out.push({
       pattern: entry.pattern,
-      host: parsed.host,
+      // Safe for the same reason as loadKnownHostsEntryForHost: every stored
+      // pattern was validated on the way in.
+      host: parsePattern(entry.pattern).host,
       privateKeyPath: expandTilde(entry.privateKeyPath),
       knownHostsEntry: entry.knownHostsEntry,
     })

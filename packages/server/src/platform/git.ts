@@ -4,7 +4,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
 import { createKeyedMutex } from '#platform/keyed-mutex'
-import type { ResolvedGitCredential } from '#features/projects/credentials'
+import type { ResolvedGitCredential } from '#features/projects'
 import { env } from '@yaac/shared/env'
 import { formatSshCommand, torSshOpts } from '@yaac/shared/git'
 

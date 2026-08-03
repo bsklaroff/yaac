@@ -4,7 +4,7 @@ import { ServerError } from '@yaac/shared/errors'
 import { getSessionFirstMessage, normalizeTool } from '#features/sessions/state'
 import { getSessionRow } from '#features/sessions/store'
 import { readBlockedHosts } from '#features/sessions/egress/blocked-hosts'
-import { readGitAuthFailures } from '#features/projects/git-auth-failures'
+import { readGitAuthFailures } from '#features/projects'
 import type { AgentTool, GitAuthFailure } from '@yaac/shared/types'
 
 export interface SessionDetail {

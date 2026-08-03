@@ -1,13 +1,13 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { assertProjectExists } from '#features/projects/detail'
+import { assertProjectExists } from './detail'
 import { isLayered } from '#features/images'
 import {
   PROJECT_DOCKERFILE,
   USER_DOCKERFILE,
   resolveProjectBuildDir,
   resolveUserBuildDir,
-} from '#features/projects/build-dirs'
+} from './build-dirs'
 import { ServerError } from '@yaac/shared/errors'
 
 /** Per-project layered/standalone Dockerfile (config/build/Dockerfile.yaac). */

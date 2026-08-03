@@ -11,7 +11,14 @@ vi.mock('#features/sessions/cleanup', () => ({
   isTmuxSessionAlive: vi.fn(),
   cleanupSessionDetached: vi.fn(),
 }))
-vi.mock('#platform/k8s/kubectl', () => ({ kubectlWithRetry: vi.fn(), k8sNamespace: () => 'ns' }))
+// execFileAsync/kubectlApply are read at module-eval time by the cluster
+// registry service, which `#features/projects` now reaches transitively.
+vi.mock('#platform/k8s/kubectl', () => ({
+  kubectlWithRetry: vi.fn(),
+  k8sNamespace: () => 'ns',
+  execFileAsync: vi.fn(),
+  kubectlApply: vi.fn(),
+}))
 vi.mock('#platform/k8s/exec', () => ({ containerExec: vi.fn() }))
 vi.mock('#platform/k8s/pods', async (importOriginal) => ({
   ...await importOriginal<typeof podsModule>(),

@@ -1,7 +1,7 @@
 import { isPrewarmed, listSessionPods } from '#platform/k8s/pods'
 import { addSessionForwarder } from '#features/sessions/forwarders/port-forwarders'
 import { getUnforwardedPorts } from '#features/sessions/forwarders/port-detector'
-import { addPortForwardToProjectConfig } from '#features/projects/local-config'
+import { addPortForwardToProjectConfig } from '#features/projects'
 import { ServerError } from '@yaac/shared/errors'
 import { serverLog } from '#log'
 import type { PortMapping } from '@yaac/shared/types'

@@ -1,4 +1,4 @@
-import { listEntries } from '#features/projects/credentials'
+import { listEntries } from '#features/projects'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import type {
   AgentTool,

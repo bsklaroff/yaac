@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { projectDir, projectConfigDir } from '@yaac/shared/project-paths'
 import { listSessionPods } from '#platform/k8s/pods'
-import { loadProjectConfig } from '#features/projects/config'
+import { loadProjectConfig } from './config'
 import { ServerError } from '@yaac/shared/errors'
 import type { ProjectMeta, YaacConfig } from '@yaac/shared/types'
 

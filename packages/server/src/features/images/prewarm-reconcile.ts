@@ -8,7 +8,7 @@
  */
 import { listSessionPods } from '#platform/k8s/pods'
 import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
-import { getDefaultTool } from '#features/projects/preferences'
+import { getDefaultTool } from '#features/projects'
 import { cleanupSessionDetached } from '#features/sessions/cleanup'
 import { createSession } from '#features/sessions/create'
 import {

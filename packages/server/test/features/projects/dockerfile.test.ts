@@ -2,19 +2,31 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { getProjectsDir } from '@yaac/shared/project-paths'
-import { projectBuildDir, userBuildDir } from '#features/projects/build-dirs'
+import { getDataDir, getProjectsDir, projectConfigDir } from '@yaac/shared/project-paths'
 import {
+  PROJECT_DOCKERFILE,
+  USER_DOCKERFILE,
   readProjectDockerfile,
-  writeProjectDockerfile,
   readUserDockerfile,
+  writeProjectDockerfile,
   writeUserDockerfile,
-} from '#features/projects/dockerfile'
+} from '#features/projects'
 import type { ProjectMeta } from '@yaac/shared/types'
 
 const LAYERED = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo hi\n'
+const slug = 'demo'
 
-async function writeProject(slug: string): Promise<void> {
+/** On-disk home of each Dockerfile, spelled out rather than derived: the
+ *  image builder reads these exact paths as its build context. */
+const projectDockerfilePath = (): string =>
+  path.join(projectConfigDir(slug), 'build', PROJECT_DOCKERFILE)
+const userDockerfilePath = (): string =>
+  path.join(getDataDir(), 'build', USER_DOCKERFILE)
+
+let tmpDir: string
+
+beforeEach(async () => {
+  tmpDir = await createTempDataDir()
   const dir = path.join(getProjectsDir(), slug)
   await fs.mkdir(dir, { recursive: true })
   const meta: ProjectMeta = {
@@ -23,84 +35,74 @@ async function writeProject(slug: string): Promise<void> {
     addedAt: '2026-01-01T00:00:00.000Z',
   }
   await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(meta))
-}
+})
+
+afterEach(async () => { await cleanupTempDir(tmpDir) })
 
 describe('readProjectDockerfile', () => {
-  let tmpDir: string
-  beforeEach(async () => { tmpDir = await createTempDataDir() })
-  afterEach(async () => { await cleanupTempDir(tmpDir) })
-
   it('throws NOT_FOUND when the project does not exist', async () => {
     await expect(readProjectDockerfile('missing')).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 
   it('returns empty string when the project has no Dockerfile', async () => {
-    await writeProject('demo')
-    expect(await readProjectDockerfile('demo')).toBe('')
+    expect(await readProjectDockerfile(slug)).toBe('')
   })
 
   it('returns the stored Dockerfile content', async () => {
-    await writeProject('demo')
-    await writeProjectDockerfile('demo', LAYERED)
-    expect(await readProjectDockerfile('demo')).toBe(LAYERED)
+    await writeProjectDockerfile(slug, LAYERED)
+    expect(await readProjectDockerfile(slug)).toBe(LAYERED)
   })
 })
 
 describe('writeProjectDockerfile', () => {
-  let tmpDir: string
-  beforeEach(async () => { tmpDir = await createTempDataDir() })
-  afterEach(async () => { await cleanupTempDir(tmpDir) })
-
   it('throws NOT_FOUND when the project does not exist', async () => {
     await expect(writeProjectDockerfile('missing', LAYERED)).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 
   it('writes the content to config/build/Dockerfile.yaac', async () => {
-    await writeProject('demo')
-    await writeProjectDockerfile('demo', LAYERED)
-    const raw = await fs.readFile(path.join(projectBuildDir('demo'), 'Dockerfile.yaac'), 'utf8')
-    expect(raw).toBe(LAYERED)
+    await writeProjectDockerfile(slug, LAYERED)
+    expect(await fs.readFile(projectDockerfilePath(), 'utf8')).toBe(LAYERED)
   })
 
   it('accepts a standalone (non-layered) Dockerfile', async () => {
-    await writeProject('demo')
-    await writeProjectDockerfile('demo', 'FROM ubuntu:24.04\n')
-    expect(await readProjectDockerfile('demo')).toBe('FROM ubuntu:24.04\n')
+    await writeProjectDockerfile(slug, 'FROM ubuntu:24.04\n')
+    expect(await readProjectDockerfile(slug)).toBe('FROM ubuntu:24.04\n')
   })
 
   it('removes the file when given whitespace-only content', async () => {
-    await writeProject('demo')
-    await writeProjectDockerfile('demo', LAYERED)
-    await writeProjectDockerfile('demo', '   \n')
-    expect(await readProjectDockerfile('demo')).toBe('')
-    await expect(fs.access(path.join(projectBuildDir('demo'), 'Dockerfile.yaac'))).rejects.toThrow()
+    await writeProjectDockerfile(slug, LAYERED)
+    await writeProjectDockerfile(slug, '   \n')
+    expect(await readProjectDockerfile(slug)).toBe('')
+    await expect(fs.access(projectDockerfilePath())).rejects.toThrow()
   })
 })
 
-describe('readUserDockerfile / writeUserDockerfile', () => {
-  let tmpDir: string
-  beforeEach(async () => { tmpDir = await createTempDataDir() })
-  afterEach(async () => { await cleanupTempDir(tmpDir) })
-
+describe('readUserDockerfile', () => {
   it('returns empty string when unset', async () => {
     expect(await readUserDockerfile()).toBe('')
   })
 
-  it('round-trips a layered Dockerfile', async () => {
+  it('returns the stored content', async () => {
     await writeUserDockerfile(LAYERED)
     expect(await readUserDockerfile()).toBe(LAYERED)
-    const raw = await fs.readFile(path.join(userBuildDir(), 'Dockerfile.user'), 'utf8')
-    expect(raw).toBe(LAYERED)
+  })
+})
+
+describe('writeUserDockerfile', () => {
+  it('writes the content to ~/.yaac/build/Dockerfile.user', async () => {
+    await writeUserDockerfile(LAYERED)
+    expect(await fs.readFile(userDockerfilePath(), 'utf8')).toBe(LAYERED)
   })
 
-  it('rejects a non-layered user Dockerfile', async () => {
+  it('rejects a standalone user Dockerfile — it must layer on the project image', async () => {
     await expect(writeUserDockerfile('FROM ubuntu:24.04\n')).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(fs.access(userDockerfilePath())).rejects.toThrow()
   })
 
   it('removes the file when given whitespace-only content', async () => {
     await writeUserDockerfile(LAYERED)
     await writeUserDockerfile('')
     expect(await readUserDockerfile()).toBe('')
-    await expect(fs.access(path.join(userBuildDir(), 'Dockerfile.user'))).rejects.toThrow()
+    await expect(fs.access(userDockerfilePath())).rejects.toThrow()
   })
 })

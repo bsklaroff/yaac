@@ -10,7 +10,7 @@ import { readSessionStatus, readSessionWaitingSince } from '#features/sessions/s
 import { getSessionPorts } from '#features/sessions/forwarders/port-forwarders'
 import { getUnforwardedPorts } from '#features/sessions/forwarders/port-detector'
 import { readBlockedHosts } from '#features/sessions/egress/blocked-hosts'
-import { readAllGitAuthFailures } from '#features/projects/git-auth-failures'
+import { readAllGitAuthFailures } from '#features/projects'
 import { classifySessionPods, watcherDisplayLiveness } from '#features/sessions/classify'
 import { ServerError } from '@yaac/shared/errors'
 import { testEnv } from '@yaac/shared/env'

@@ -12,9 +12,9 @@ vi.mock('#platform/k8s/pods', async (importOriginal) => {
   }
 })
 
-import { listSessionPods } from '#platform/k8s/pods'
+import { LABEL_PREWARMED, listSessionPods, type SessionPod } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
-import { listProjects } from '#features/projects/list'
+import { listProjects } from '#features/projects'
 import {
   _resetDeferredClusterBootForTests,
   armDeferredClusterBoot,
@@ -23,6 +23,21 @@ import {
 import type { ProjectMeta } from '@yaac/shared/types'
 
 const mockListPods = vi.mocked(listSessionPods)
+
+function pod(projectSlug: string, opts: { prewarmed?: boolean } = {}): SessionPod {
+  return {
+    jobName: `yaac-${projectSlug}-1`,
+    podName: `yaac-${projectSlug}-1-abcde`,
+    sessionId: '1',
+    projectSlug,
+    tool: 'claude',
+    phase: 'Running',
+    running: true,
+    terminating: false,
+    createdAtMs: 0,
+    labels: opts.prewarmed ? { [LABEL_PREWARMED]: 'true' } : {},
+  }
+}
 
 async function writeProject(slug: string, meta: ProjectMeta): Promise<void> {
   const dir = path.join(getProjectsDir(), slug)
@@ -66,6 +81,27 @@ describe('listProjects', () => {
     })
     // Without podman the count is 0, not undefined.
     expect(typeof foo?.sessionCount).toBe('number')
+  })
+
+  it('counts live session pods per project, ignoring spares and unlabelled pods', async () => {
+    await writeProject('foo', { slug: 'foo', remoteUrl: 'https://example/foo', addedAt: '2026-01-01T00:00:00.000Z' })
+    await writeProject('bar', { slug: 'bar', remoteUrl: 'https://example/bar', addedAt: '2026-01-02T00:00:00.000Z' })
+    mockListPods.mockResolvedValue([
+      pod('foo'),
+      pod('foo'),
+      pod('bar'),
+      pod('bar', { prewarmed: true }), // a spare is not a user session
+      pod(''), // no project label at all
+    ])
+
+    const counts = Object.fromEntries((await listProjects()).map((p) => [p.slug, p.sessionCount]))
+    expect(counts).toEqual({ foo: 2, bar: 1 })
+  })
+
+  it('reports zero counts when the cluster is unavailable', async () => {
+    await writeProject('foo', { slug: 'foo', remoteUrl: 'https://example/foo', addedAt: '2026-01-01T00:00:00.000Z' })
+    mockListPods.mockRejectedValue(new Error('connection refused'))
+    expect((await listProjects())[0]?.sessionCount).toBe(0)
   })
 
   it('answers with zero counts and no cluster call while the deferred boot is pending', async () => {

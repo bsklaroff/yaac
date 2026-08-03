@@ -1,8 +1,7 @@
 import { Hono } from 'hono'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
-import { readUserDockerfile, writeUserDockerfile } from '#features/projects/dockerfile'
-import { resolveUserBuildDir } from '#features/projects/build-dirs'
+import { readUserDockerfile, resolveUserBuildDir, writeUserDockerfile } from '#features/projects'
 import { buildFilesApp } from '#routes/build-files'
 
 /**

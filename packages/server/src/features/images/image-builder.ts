@@ -8,7 +8,7 @@ import {
   USER_DOCKERFILE,
   resolveProjectBuildDir,
   resolveUserBuildDir,
-} from '#features/projects/build-dirs'
+} from '#features/projects'
 import { imageExists } from '#platform/container/runtime'
 import { serverLog, pipeToServerLog } from '#log'
 import type { ImageLayerName } from '@yaac/shared/types'

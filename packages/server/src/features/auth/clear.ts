@@ -1,4 +1,4 @@
-import { saveCredentials } from '#features/projects/credentials'
+import { saveCredentials } from '#features/projects'
 import {
   cleanupProjectClaudePlaceholders,
   cleanupProjectCodexPlaceholders,

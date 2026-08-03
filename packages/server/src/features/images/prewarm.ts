@@ -32,8 +32,7 @@ import { k8sNamespace, kubectlWithRetry } from '#platform/k8s/kubectl'
 import { LABEL_PREWARMED, LABEL_TOOL, isPrewarmed, listSessionPods, type SessionPod } from '#platform/k8s/pods'
 import { cleanupSessionDetached, isTmuxSessionAlive } from '#features/sessions/cleanup'
 import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBranch } from '#platform/git'
-import { resolveProjectConfig } from '#features/projects/config'
-import { resolveCredentialForUrl } from '#features/projects/credentials'
+import { resolveCredentialForUrl, resolveProjectConfig } from '#features/projects'
 import { type SessionCreateResult } from '#features/sessions/create'
 import {
   deleteSessionRow,

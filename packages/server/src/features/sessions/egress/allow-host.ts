@@ -1,6 +1,6 @@
 import { isPrewarmed, listSessionPods } from '#platform/k8s/pods'
 import { proxyClient } from '#features/sessions/egress/proxy-client'
-import { addAllowedHostToProjectConfig } from '#features/projects/local-config'
+import { addAllowedHostToProjectConfig } from '#features/projects'
 import { ServerError } from '@yaac/shared/errors'
 
 /**

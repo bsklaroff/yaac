@@ -19,7 +19,7 @@ import {
 } from '#features/sessions/egress/proxy-client'
 import { listSessionPods, type SessionPod } from '#platform/k8s/pods'
 import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
-import { getDefaultTool } from '#features/projects/preferences'
+import { getDefaultTool } from '#features/projects'
 import { registerProvisioning, runProvisioned } from '#features/sessions/provisioning'
 import { createSession, type SessionCreateOptions, type SessionCreateResult } from '#features/sessions/create'
 import { MODEL_RE } from '#features/sessions/agent-command'

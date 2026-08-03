@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { ephemeralModulesSlotKey } from '#features/projects/config'
+import { ephemeralModulesSlotKey } from '#features/projects'
 
 // Keep in lockstep with the @anthropic-ai/claude-code dependency: if it
 // ships a newer onboarding flow, a stale value lets the first-run wizard

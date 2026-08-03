@@ -16,8 +16,7 @@
  * Skipped in e2e (images are prebuilt by the global setup; workers must
  * never race a build).
  */
-import { listProjects } from '#features/projects/list'
-import { resolveProjectConfig } from '#features/projects/config'
+import { listProjects, resolveProjectConfig } from '#features/projects'
 import { resolveImageChain } from './image-builder'
 import { ensureImage, pushImageShared } from './build-coordinator'
 import { forgetImageBuild, getImageBuild, hasBlockingFailure } from './image-builds'

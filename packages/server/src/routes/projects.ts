@@ -2,18 +2,26 @@ import { Hono } from 'hono'
 import { stream } from 'hono/streaming'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
-import { listProjects } from '#features/projects/list'
-import { getProjectDetail, resolveProjectConfigWithSource, assertProjectExists } from '#features/projects/detail'
-import { addProject } from '#features/projects/add'
-import { removeProject } from '#features/projects/remove'
-import { writeProjectConfig, removeProjectConfig, readProjectConfigRaw, setProjectReferenceBranch } from '#features/projects/local-config'
-import { getProjectBranches } from '#features/projects/branches'
+import {
+  addProject,
+  assertProjectExists,
+  getProjectBranches,
+  getProjectDetail,
+  listProjects,
+  readProjectConfigRaw,
+  readProjectDockerfile,
+  removeProject,
+  removeProjectConfig,
+  resolveProjectBuildDir,
+  resolveProjectConfigWithSource,
+  setProjectReferenceBranch,
+  writeProjectConfig,
+  writeProjectDockerfile,
+} from '#features/projects'
 import { getProjectSkills, getSkillDetail } from '#features/skills'
 import { remoteBranchExists } from '#platform/git'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
-import { readProjectDockerfile, writeProjectDockerfile } from '#features/projects/dockerfile'
-import { resolveProjectBuildDir } from '#features/projects/build-dirs'
 import { buildFilesApp } from '#routes/build-files'
 import { pushImageShared, rebuildProjectImage } from '#features/images'
 import { toErrorBody } from '#http/errors'

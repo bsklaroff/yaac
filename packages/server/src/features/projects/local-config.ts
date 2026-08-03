@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { projectConfigDir, projectDir } from '@yaac/shared/project-paths'
-import { parseProjectConfig, resolveProjectConfig } from '#features/projects/config'
+import { parseProjectConfig, resolveProjectConfig } from './config'
 import { ServerError } from '@yaac/shared/errors'
 import type { YaacConfig } from '@yaac/shared/types'
 

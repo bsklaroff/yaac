@@ -8,7 +8,7 @@ import {
   PLACEHOLDER_API_KEY,
   PLACEHOLDER_GH_TOKEN,
 } from '@yaac/shared/tool-auth'
-import { addEntry } from '#features/projects/credentials'
+import { addEntry } from './credentials'
 import type { ClaudeOAuthBundle, FakeAuthKind } from '@yaac/shared/types'
 
 /** Credential pattern seeded by `auth fake github`. */

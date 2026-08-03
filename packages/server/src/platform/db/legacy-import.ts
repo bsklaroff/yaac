@@ -14,7 +14,7 @@ import {
   isSerializedChord,
   isValidTool,
   setFlag,
-} from '#features/projects/preferences'
+} from '#features/projects'
 import { MAX_PROMPT_LENGTH } from '#features/sessions/store'
 import { normalizeTitle } from '@yaac/shared/titles'
 import { worktreeUpstreamBranch } from '#platform/git'

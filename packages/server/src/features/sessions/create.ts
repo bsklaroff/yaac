@@ -75,14 +75,12 @@ import {
   CONTAINER_TMUX_DIR,
 } from '@yaac/shared/paths'
 import {
-  resolveProjectConfig,
-  resolveEphemeralModulesPaths,
-} from '#features/projects/config'
-import {
-  resolveCredentialForUrl,
-  parseGitRemote,
   loadKnownHostsEntryForHost,
-} from '#features/projects/credentials'
+  parseGitRemote,
+  resolveCredentialForUrl,
+  resolveEphemeralModulesPaths,
+  resolveProjectConfig,
+} from '#features/projects'
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
 import { writeKnownHostsFile } from '#platform/git'
 import { formatSshCommand, getGitUserConfig } from '@yaac/shared/git'

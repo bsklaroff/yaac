@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { BUILDER_CONTEXT_MAX_BYTES, collectContextFiles } from '#features/images'
-import { PROJECT_DOCKERFILE, USER_DOCKERFILE } from '#features/projects/build-dirs'
+import { PROJECT_DOCKERFILE, USER_DOCKERFILE } from './build-dirs'
 import { ServerError } from '@yaac/shared/errors'
 
 /**

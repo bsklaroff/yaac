@@ -3,10 +3,13 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import simpleGit from 'simple-git'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { setDataDir, projectDir, repoDir } from '@yaac/shared/project-paths'
-import { getProjectBranches } from '#features/projects/branches'
-import { setProjectReferenceBranch } from '#features/projects/local-config'
+import { getProjectBranches, setProjectReferenceBranch } from '#features/projects'
 import { cloneRepo } from '#platform/git'
+
+const execFileAsync = promisify(execFile)
 
 describe('getProjectBranches', () => {
   let tmp: string
@@ -61,6 +64,33 @@ describe('getProjectBranches', () => {
     expect((await getProjectBranches(slug)).branches).not.toContain('feature/new')
     const refreshed = await getProjectBranches(slug, { refresh: true })
     expect(refreshed.branches).toContain('feature/new')
+  })
+
+  it('surfaces a failed refresh as INTERNAL, keeping the message', async () => {
+    await fs.rm(sourceRepo, { recursive: true, force: true })
+
+    const attempt = getProjectBranches(slug, { refresh: true })
+    await expect(attempt).rejects.toMatchObject({ code: 'INTERNAL' })
+    await expect(attempt).rejects.toThrow(/could not fetch from remote/)
+
+    // The instant (non-refresh) read still works off the local refs.
+    expect((await getProjectBranches(slug)).branches).toContain('main')
+  })
+
+  it('surfaces a rejected credential as AUTH_REQUIRED, pointing at auth update', async () => {
+    // git's `ext::` transport runs an arbitrary command as the wire protocol,
+    // so a stub can produce the exact stderr a real rejected credential does
+    // — the string isGitAuthError classifies on — with no network.
+    const stub = path.join(tmp, 'reject-auth.sh')
+    await fs.writeFile(stub, '#!/bin/sh\necho "fatal: Authentication failed for xyz" >&2\nexit 128\n')
+    await fs.chmod(stub, 0o755)
+    // Written with plain git: simple-git refuses to touch protocol.allow.
+    await execFileAsync('git', ['-C', repoDir(slug), 'config', 'protocol.ext.allow', 'always'])
+    await execFileAsync('git', ['-C', repoDir(slug), 'remote', 'set-url', 'origin', `ext::${stub}`])
+
+    await expect(getProjectBranches(slug, { refresh: true })).rejects.toMatchObject({
+      code: 'AUTH_REQUIRED',
+    })
   })
 
   it('throws NOT_FOUND for an unknown project', async () => {

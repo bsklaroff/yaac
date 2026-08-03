@@ -6,7 +6,7 @@ import { repoDir } from '@yaac/shared/project-paths'
 import {
   resolveProjectConfig,
   resolveEphemeralModulesPaths,
-} from '#features/projects/config'
+} from '#features/projects'
 import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import {
   shellEscape,

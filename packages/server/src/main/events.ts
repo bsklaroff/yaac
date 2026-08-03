@@ -1,5 +1,5 @@
 import { listActiveSessions } from '#features/sessions/list'
-import { listProjects } from '#features/projects/list'
+import { listProjects } from '#features/projects'
 import { listProvisioning } from '#features/sessions/provisioning'
 import { listImageBuilds } from '#features/images'
 import { planUsageForSnapshot, codexPlanUsageForSnapshot } from '#features/auth'

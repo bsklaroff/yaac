@@ -3,132 +3,170 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getDb, closeDb } from '#platform/db/client'
 import { preferences, shortcutOverrides } from '#platform/db/schema'
 import {
-  getDefaultTool,
-  setDefaultTool,
-  setDefaultToolChecked,
-  isValidTool,
-  isSerializedChord,
-  getShortcutOverrides,
-  setShortcutOverride,
+  DEFAULT_TOOL_KEY,
+  SESSIONS_BACKFILLED_KEY,
   clearShortcutOverrides,
-  type SerializedChord,
-} from '#features/projects/preferences'
+  getDefaultTool,
+  getShortcutOverrides,
+  isFlagSet,
+  isSerializedChord,
+  isValidTool,
+  setDefaultToolChecked,
+  setFlag,
+  setShortcutOverride,
+} from '#features/projects'
+// Shape of a stored chord, for building fixtures. Not under test here.
+import type { SerializedChord } from '#features/projects/preferences'
 import { ServerError } from '@yaac/shared/errors'
 
 const chord = (code: string, over: Partial<SerializedChord> = {}): SerializedChord => ({
   code, alt: true, ctrl: false, meta: false, shift: false, ...over,
 })
 
-describe('preferences', () => {
-  let tmpDir: string
+let tmpDir: string
 
-  // One PGlite per file: cold-init is the expensive part, so the tests
-  // share a data dir and wipe the tables instead of recreating it.
-  beforeAll(async () => {
-    tmpDir = await createTempDataDir()
+// One PGlite per file: cold-init is the expensive part, so the tests
+// share a data dir and wipe the tables instead of recreating it.
+beforeAll(async () => {
+  tmpDir = await createTempDataDir()
+})
+
+afterAll(async () => {
+  await closeDb()
+  await cleanupTempDir(tmpDir)
+})
+
+beforeEach(async () => {
+  const db = await getDb()
+  await db.delete(shortcutOverrides)
+  await db.delete(preferences)
+})
+
+describe('getDefaultTool', () => {
+  it('returns undefined when no preference set', async () => {
+    expect(await getDefaultTool()).toBeUndefined()
   })
 
-  afterAll(async () => {
-    await closeDb()
-    await cleanupTempDir(tmpDir)
+  it('returns the stored tool', async () => {
+    await setDefaultToolChecked('codex')
+    expect(await getDefaultTool()).toBe('codex')
   })
 
-  beforeEach(async () => {
+  it('ignores a row written by a build that knew a tool this one does not', async () => {
     const db = await getDb()
-    await db.delete(shortcutOverrides)
-    await db.delete(preferences)
+    await db.insert(preferences).values({ key: DEFAULT_TOOL_KEY, value: 'gemini' })
+    expect(await getDefaultTool()).toBeUndefined()
+  })
+})
+
+describe('setDefaultToolChecked', () => {
+  it('persists a valid tool, returns it, and overwrites the previous one', async () => {
+    expect(await setDefaultToolChecked('claude')).toBe('claude')
+    expect(await setDefaultToolChecked('codex')).toBe('codex')
+    expect(await getDefaultTool()).toBe('codex')
   })
 
-  describe('getDefaultTool / setDefaultTool', () => {
-    it('returns undefined when no preference set', async () => {
-      expect(await getDefaultTool()).toBeUndefined()
-    })
+  it('throws VALIDATION for an unknown tool, leaving the stored value alone', async () => {
+    await setDefaultToolChecked('claude')
+    await expect(setDefaultToolChecked('gemini')).rejects.toBeInstanceOf(ServerError)
+    await expect(setDefaultToolChecked('gemini')).rejects.toMatchObject({ code: 'VALIDATION' })
+    expect(await getDefaultTool()).toBe('claude')
+  })
+})
 
-    it('round-trips the configured tool', async () => {
-      await setDefaultTool('codex')
-      expect(await getDefaultTool()).toBe('codex')
-    })
-
-    it('overwrites an existing default tool', async () => {
-      await setDefaultTool('claude')
-      await setDefaultTool('codex')
-      expect(await getDefaultTool()).toBe('codex')
-    })
+describe('isValidTool', () => {
+  it('accepts every shipped tool name', () => {
+    for (const tool of ['claude', 'codex', 'opencode', 'pi']) {
+      expect(isValidTool(tool)).toBe(true)
+    }
   })
 
-  describe('isValidTool', () => {
-    it('accepts claude', () => {
-      expect(isValidTool('claude')).toBe(true)
-    })
+  it('rejects unknown names and is case-sensitive', () => {
+    expect(isValidTool('invalid')).toBe(false)
+    expect(isValidTool('')).toBe(false)
+    expect(isValidTool('Claude')).toBe(false)
+  })
+})
 
-    it('accepts codex', () => {
-      expect(isValidTool('codex')).toBe(true)
-    })
-
-    it('rejects invalid values', () => {
-      expect(isValidTool('invalid')).toBe(false)
-      expect(isValidTool('')).toBe(false)
-      expect(isValidTool('Claude')).toBe(false)
-    })
+describe('isSerializedChord', () => {
+  it('accepts a full chord', () => {
+    expect(isSerializedChord(chord('KeyG'))).toBe(true)
   })
 
-  describe('isSerializedChord', () => {
-    it('accepts a full chord', () => {
-      expect(isSerializedChord(chord('KeyG'))).toBe(true)
-    })
+  it('rejects partial or non-object values', () => {
+    expect(isSerializedChord({ code: 'KeyW' })).toBe(false) // missing modifiers
+    expect(isSerializedChord({ ...chord('KeyG'), alt: 'yes' })).toBe(false)
+    expect(isSerializedChord({ ...chord('KeyG'), code: 7 })).toBe(false)
+    expect(isSerializedChord(null)).toBe(false)
+    expect(isSerializedChord('KeyG')).toBe(false)
+  })
+})
 
-    it('rejects partial or non-object values', () => {
-      expect(isSerializedChord({ code: 'KeyW' })).toBe(false) // missing modifiers
-      expect(isSerializedChord({ ...chord('KeyG'), alt: 'yes' })).toBe(false)
-      expect(isSerializedChord(null)).toBe(false)
-      expect(isSerializedChord('KeyG')).toBe(false)
-    })
+describe('getShortcutOverrides', () => {
+  it('returns {} when none are set', async () => {
+    expect(await getShortcutOverrides()).toEqual({})
   })
 
-  describe('setDefaultToolChecked', () => {
-    it('persists a valid tool and returns it', async () => {
-      const saved = await setDefaultToolChecked('codex')
-      expect(saved).toBe('codex')
-      expect(await getDefaultTool()).toBe('codex')
-    })
-
-    it('throws VALIDATION for an unknown tool', async () => {
-      await expect(setDefaultToolChecked('gemini')).rejects.toBeInstanceOf(ServerError)
-      await expect(setDefaultToolChecked('gemini')).rejects.toMatchObject({
-        code: 'VALIDATION',
-      })
+  it('returns every stored rebind keyed by command id', async () => {
+    await setShortcutOverride('new-session', chord('KeyG'))
+    await setShortcutOverride('kill-terminal', chord('KeyX', { ctrl: true, shift: true }))
+    expect(await getShortcutOverrides()).toEqual({
+      'new-session': chord('KeyG'),
+      'kill-terminal': chord('KeyX', { ctrl: true, shift: true }),
     })
   })
+})
 
-  describe('shortcut overrides', () => {
-    it('getShortcutOverrides returns {} when none are set', async () => {
-      expect(await getShortcutOverrides()).toEqual({})
+describe('setShortcutOverride', () => {
+  it('accumulates overrides, overwrites one in place, and leaves other prefs alone', async () => {
+    await setDefaultToolChecked('codex')
+    await setShortcutOverride('new-session', chord('KeyG'))
+    await setShortcutOverride('kill-terminal', chord('KeyX'))
+    await setShortcutOverride('new-session', chord('KeyH'))
+    expect(await getShortcutOverrides()).toEqual({
+      'new-session': chord('KeyH'),
+      'kill-terminal': chord('KeyX'),
     })
+    expect(await getDefaultTool()).toBe('codex')
+  })
+})
 
-    it('setShortcutOverride persists a rebind and coexists with defaultTool', async () => {
-      await setDefaultTool('codex')
-      await setShortcutOverride('new-session', chord('KeyG'))
-      expect(await getShortcutOverrides()).toEqual({ 'new-session': chord('KeyG') })
-      // The unrelated preference is untouched.
-      expect(await getDefaultTool()).toBe('codex')
-    })
+describe('clearShortcutOverrides', () => {
+  it('drops the shortcuts but keeps other prefs', async () => {
+    await setDefaultToolChecked('claude')
+    await setShortcutOverride('new-session', chord('KeyG'))
+    await clearShortcutOverrides()
+    expect(await getShortcutOverrides()).toEqual({})
+    expect(await getDefaultTool()).toBe('claude')
+  })
 
-    it('accumulates overrides and overwrites one in place', async () => {
-      await setShortcutOverride('new-session', chord('KeyG'))
-      await setShortcutOverride('kill-terminal', chord('KeyX'))
-      await setShortcutOverride('new-session', chord('KeyH'))
-      expect(await getShortcutOverrides()).toEqual({
-        'new-session': chord('KeyH'),
-        'kill-terminal': chord('KeyX'),
-      })
-    })
+  it('is a no-op when none are set', async () => {
+    await clearShortcutOverrides()
+    expect(await getShortcutOverrides()).toEqual({})
+  })
+})
 
-    it('clearShortcutOverrides drops the shortcuts but keeps other prefs', async () => {
-      await setDefaultTool('claude')
-      await setShortcutOverride('new-session', chord('KeyG'))
-      await clearShortcutOverrides()
-      expect(await getShortcutOverrides()).toEqual({})
-      expect(await getDefaultTool()).toBe('claude')
-    })
+/**
+ * One-shot migration markers. These gate work that must happen exactly once
+ * per data dir (adopting pre-existing sessions), so "has it run?" has to
+ * survive a restart and be independent of whatever the migration itself
+ * wrote — the reason the session backfill can't just ask whether its table
+ * is empty.
+ */
+describe('isFlagSet', () => {
+  it('is false until the flag is set, and keys are independent', async () => {
+    expect(await isFlagSet(SESSIONS_BACKFILLED_KEY)).toBe(false)
+    await setFlag('some_other_migration')
+    expect(await isFlagSet(SESSIONS_BACKFILLED_KEY)).toBe(false)
+    expect(await isFlagSet('some_other_migration')).toBe(true)
+  })
+})
+
+describe('setFlag', () => {
+  it('marks the flag done, is idempotent, and leaves unrelated prefs alone', async () => {
+    await setFlag(SESSIONS_BACKFILLED_KEY)
+    await setFlag(SESSIONS_BACKFILLED_KEY)
+    expect(await isFlagSet(SESSIONS_BACKFILLED_KEY)).toBe(true)
+    expect(await getDefaultTool()).toBeUndefined()
   })
 })
