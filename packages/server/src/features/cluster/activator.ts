@@ -23,7 +23,7 @@ import {
   LABEL_VCLUSTER_MANAGED_BY,
   VCLUSTER_API_PORT,
 } from '#platform/k8s/pods'
-import { registryRef } from '#platform/container/registry'
+import { registryRef } from '#platform/container'
 import { apiserverIpBlocks, nodeIpBlocks } from './cluster-cidrs'
 import { LABEL_VCLUSTER_NAMESPACE } from '#platform/k8s/proxy-constants'
 

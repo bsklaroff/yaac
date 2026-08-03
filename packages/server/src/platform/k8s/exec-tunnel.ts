@@ -1,6 +1,6 @@
 import net from 'node:net'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { startPortForwarders, type RelayFactory } from '#platform/container/port'
+import { startPortForwarders, type RelayFactory } from '#platform/container'
 import { k8sNamespace } from '#platform/k8s/kubectl'
 import { serverLog } from '#log'
 

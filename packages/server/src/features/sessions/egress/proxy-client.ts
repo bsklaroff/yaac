@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { AgentTool, SecretProxyRule } from '@yaac/shared/types'
-import { imageExists } from '#platform/container/runtime'
+import { imageExists } from '#platform/container'
 import { PROXY_DIR } from '@yaac/shared/project-paths'
 import { buildImage, contextHash, failImageBuild, finishImageBuild, ingestImageBuildLine, registerImageBuild } from '#features/images'
 import {
@@ -13,7 +13,7 @@ import {
 } from '#features/cluster'
 import { PROXY_APP_NAME, PROXY_PORT } from '#platform/k8s/proxy-constants'
 import { k8sNamespace, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
-import { pushImageToRegistry, registryHasTag, registryRef } from '#platform/container/registry'
+import { pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
 import { ExecTunnel } from '#platform/k8s/exec-tunnel'
 import { listSshEntries } from '#features/projects'
 import { serverLog } from '#log'

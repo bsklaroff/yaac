@@ -2,7 +2,6 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
-import { ensureContainerRuntime } from '#platform/container/runtime'
 import { ensureImage, pushImageShared, sharedImageStoreHostPath } from '#features/images'
 import {
   proxyClient,
@@ -12,14 +11,14 @@ import {
 } from '#features/sessions/egress/proxy-client'
 import { buildSessionRegistration, syncProxySecrets } from '#features/sessions/egress/proxy-registration'
 import { resolveAllowedHosts } from '#features/sessions/egress/default-allowed-hosts'
-import { reserveAvailablePort, startPortForwarders } from '#platform/container/port'
+import { ensureContainerRuntime, reserveAvailablePort, startPortForwarders } from '#platform/container'
 import {
   relayTcpFactory,
   sessionExec,
   sessionStreamToken,
   waitForStreamd,
 } from '#platform/k8s/stream-relay'
-import type { ReservedPort } from '#platform/container/port'
+import type { ReservedPort } from '#platform/container'
 import { waitForJobPodReady } from '#platform/k8s/pod-wait'
 import { createKeyedMutex } from '#platform/keyed-mutex'
 import { dataDirHash, k8sNamespace, kubectlApply, kubectlWithRetry } from '#platform/k8s/kubectl'

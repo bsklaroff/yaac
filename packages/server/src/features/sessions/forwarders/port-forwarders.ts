@@ -12,8 +12,8 @@
  */
 
 import { relayTcpFactory, sessionExec } from '#platform/k8s/stream-relay'
-import { reserveAvailablePort, startPortForwarders } from '#platform/container/port'
-import type { ReservedPort } from '#platform/container/port'
+import { reserveAvailablePort, startPortForwarders } from '#platform/container'
+import type { ReservedPort } from '#platform/container'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import { ServerError } from '@yaac/shared/errors'
 import type { PortForwardConfig, PortMapping } from '@yaac/shared/types'

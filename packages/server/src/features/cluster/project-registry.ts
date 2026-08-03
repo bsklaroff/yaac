@@ -10,9 +10,9 @@ import {
 } from '#platform/k8s/kubectl'
 import { LABEL_PROJECT, LABEL_SESSION_ID, runPodToCompletion } from '#platform/k8s/pods'
 import { createKeyedMutex } from '#platform/keyed-mutex'
-import { pushImageToRegistry, registryHasTag, registryRef } from '#platform/container/registry'
+import { pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
 import { nodeIpBlocks } from './cluster-cidrs'
-import { imageExists } from '#platform/container/runtime'
+import { imageExists } from '#platform/container'
 import { projectDir } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 

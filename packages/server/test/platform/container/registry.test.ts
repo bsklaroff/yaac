@@ -13,6 +13,9 @@ const spawnedChildren: Array<{ file: string; args: string[]; child: FakeChild }>
 let spawnCloseCode = 0
 
 vi.mock('node:child_process', () => ({
+  // The barrel pulls in runtime.ts, which reaches kubectl.ts; both promisify
+  // a child_process binding at module eval. Only the two below are called.
+  exec: vi.fn(),
   execFile: (
     file: string,
     args: readonly string[],
@@ -45,7 +48,6 @@ vi.mock('#log', () => ({
 import { pipeToServerLog } from '#log'
 
 import {
-  REGISTRY_CONTAINER_NAME,
   ensureLocalRegistry,
   pushImageToRegistry,
   registryHasTag,
@@ -53,7 +55,7 @@ import {
   registryReachable,
   registryRef,
   removeLocalRegistry,
-} from '#platform/container/registry'
+} from '#platform/container'
 
 const fetchMock = vi.fn<typeof fetch>()
 
@@ -74,20 +76,25 @@ function fetchResponse(init: { ok: boolean; status?: number }): Response {
   return { ok: init.ok, status: init.status ?? (init.ok ? 200 : 500) } as Response
 }
 
-describe('registryHost / registryRef', () => {
+describe('registryHost', () => {
   it('defaults to localhost:5001', () => {
     expect(registryHost()).toBe('localhost:5001')
-    expect(registryRef('yaac-tools:abc')).toBe('localhost:5001/yaac-tools:abc')
   })
 
   it('honors the YAAC_K8S_REGISTRY override', () => {
     vi.stubEnv('YAAC_K8S_REGISTRY', 'localhost:5999')
     expect(registryHost()).toBe('localhost:5999')
-    expect(registryRef('a:b')).toBe('localhost:5999/a:b')
+  })
+})
+
+describe('registryRef', () => {
+  it('qualifies a tag with the registry host', () => {
+    expect(registryRef('yaac-tools:abc')).toBe('localhost:5001/yaac-tools:abc')
   })
 
-  it('exports the managed registry container name', () => {
-    expect(REGISTRY_CONTAINER_NAME).toBe('yaac-registry')
+  it('follows the YAAC_K8S_REGISTRY override', () => {
+    vi.stubEnv('YAAC_K8S_REGISTRY', 'localhost:5999')
+    expect(registryRef('a:b')).toBe('localhost:5999/a:b')
   })
 })
 
@@ -154,10 +161,10 @@ describe('ensureLocalRegistry', () => {
     await ensureLocalRegistry()
 
     expect(execFileMock).toHaveBeenCalledWith(
-      'podman', ['rm', '-f', '--ignore', REGISTRY_CONTAINER_NAME],
+      'podman', ['rm', '-f', '--ignore', 'yaac-registry'],
     )
     expect(execFileMock).toHaveBeenCalledWith('podman', [
-      'run', '-d', '--name', REGISTRY_CONTAINER_NAME,
+      'run', '-d', '--name', 'yaac-registry',
       '-p', '127.0.0.1:5001:5000',
       'docker.io/library/registry:2',
     ])
@@ -175,7 +182,7 @@ describe('removeLocalRegistry', () => {
     execFileMock.mockResolvedValue({ stdout: '', stderr: '' })
     await removeLocalRegistry()
     expect(execFileMock).toHaveBeenCalledWith(
-      'podman', ['rm', '-f', '--ignore', REGISTRY_CONTAINER_NAME],
+      'podman', ['rm', '-f', '--ignore', 'yaac-registry'],
     )
   })
 })

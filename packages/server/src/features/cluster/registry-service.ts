@@ -22,7 +22,7 @@ import {
   k8sNamespace,
   kubectlApply,
 } from '#platform/k8s/kubectl'
-import { REGISTRY_CONTAINER_NAME } from '#platform/container/registry'
+import { REGISTRY_CONTAINER_NAME } from '#platform/container'
 import { ensureNamespace } from './proxy-apply'
 
 /** Service (and EndpointSlice) name — matches the container name. */

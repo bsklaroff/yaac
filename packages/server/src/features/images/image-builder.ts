@@ -9,7 +9,7 @@ import {
   resolveProjectBuildDir,
   resolveUserBuildDir,
 } from '#features/projects'
-import { imageExists } from '#platform/container/runtime'
+import { imageExists } from '#platform/container'
 import { serverLog, pipeToServerLog } from '#log'
 import type { ImageLayerName } from '@yaac/shared/types'
 

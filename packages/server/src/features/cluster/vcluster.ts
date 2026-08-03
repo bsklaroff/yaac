@@ -36,8 +36,7 @@ import {
   LABEL_VCLUSTER_SESSION_ID,
 } from '#platform/k8s/vcluster-objects'
 import { ensurePinnedBinary } from '#platform/k8s/pinned-binary'
-import { pushImageToRegistry, registryHasTag, registryHost } from '#platform/container/registry'
-import { imageExists } from '#platform/container/runtime'
+import { imageExists, pushImageToRegistry, registryHasTag, registryHost } from '#platform/container'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 

@@ -28,8 +28,7 @@
  * the registry.
  */
 import { buildImage, type ImageLayer } from './image-builder'
-import { imageExists, removeImage } from '#platform/container/runtime'
-import { registryHasTag } from '#platform/container/registry'
+import { imageExists, registryHasTag, removeImage } from '#platform/container'
 import { buildLayerInPod, type BuilderPodLease } from './builder-pod'
 import { env } from '@yaac/shared/env'
 import type { ImageLayerName } from '@yaac/shared/types'

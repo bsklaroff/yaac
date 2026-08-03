@@ -1,4 +1,4 @@
-import { execFileAsync } from '#platform/container/runtime'
+import { execFileAsync } from '#platform/container'
 import { testEnv } from '@yaac/shared/env'
 import { serverLog } from '#log'
 

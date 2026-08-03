@@ -28,7 +28,7 @@
 //  - The *local OCI registry* is a podman container and an HTTP endpoint
 //    with no Kubernetes object in it, which the image builders, the proxy
 //    client, and server start all push to, so it lives in
-//    `#platform/container/registry` beside the container runtime.
+//    `#platform/container` beside the container runtime.
 //  - The vcluster *object layer* — the shapes a vcluster namespace
 //    publishes, their mappers, and the one-shot lists — is what the informer
 //    registry and the reconcile snapshot read, and it is the same job

@@ -17,7 +17,7 @@ const RELATIVE_PARENT = { group: ['..*'], message: 'Relative parent imports are 
 // and the pattern is silently discarded — it looks installed but matches
 // nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(features/(auth|cluster|images|projects|skills|terminals|titles)|http|platform/db)/.',
+  regex: '^#(features/(auth|cluster|images|projects|skills|terminals|titles)|http|platform/(container|db))/.',
   message: 'This folder is sealed; import its barrel (e.g. #features/images).',
 }
 

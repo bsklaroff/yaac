@@ -13,7 +13,7 @@ import {
   PROXY_AUTH_SECRET_NAME,
   RELAY_PORT,
 } from '#platform/k8s/proxy-constants'
-import type { RelayFactory } from '#platform/container/port'
+import type { RelayFactory } from '#platform/container'
 import { serverLog } from '#log'
 
 /**

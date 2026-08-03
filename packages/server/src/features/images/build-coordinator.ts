@@ -18,13 +18,13 @@ import {
   resolveImageChain,
   type ImageLayer,
 } from './image-builder'
-import { imageExists } from '#platform/container/runtime'
+import { imageExists } from '#platform/container'
 import {
   engineForLayer,
   TRUSTED_PARENT_COMPRESSION,
 } from './build-engine'
 import { BuilderPodLease } from './builder-pod'
-import { pushImageToRegistry, registryHasTag, registryRef } from '#platform/container/registry'
+import { pushImageToRegistry, registryHasTag, registryRef } from '#platform/container'
 import { serverLog } from '#log'
 import {
   attachImageBuildProject,

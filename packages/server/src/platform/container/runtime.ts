@@ -110,11 +110,6 @@ export function usesRootfulPodman(): boolean {
   return process.platform !== 'darwin'
 }
 
-export function getSocketPath(): string | undefined {
-  if (process.platform === 'darwin') return undefined // podman-mac-helper symlinks to /var/run/docker.sock
-  return ROOTFUL_PODMAN_SOCKET
-}
-
 /**
  * Point the podman CLI — and kind's podman provider, which inherits our env —
  * at the rootful system socket via `CONTAINER_HOST`, so both the image build

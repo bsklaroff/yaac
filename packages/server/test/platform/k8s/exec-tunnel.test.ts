@@ -13,6 +13,9 @@ interface FakeChild extends EventEmitter {
 const spawned: Array<{ file: string; args: string[]; child: FakeChild }> = []
 
 vi.mock('node:child_process', () => ({
+  // The tunnel reaches the container barrel for startPortForwarders, and the
+  // barrel promisifies execFile at module eval; nothing here calls it.
+  execFile: vi.fn(),
   spawn: (file: string, args: string[]) => {
     const child = new EventEmitter() as FakeChild
     child.stdin = new PassThrough()

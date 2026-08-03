@@ -24,7 +24,7 @@ import {
 import { LABEL_SESSION_ID, LABEL_VCLUSTER_MANAGED_BY, runPodToCompletion } from '#platform/k8s/pods'
 import { NESTED_ENGINE_CAPS } from '#platform/k8s/pod-spec'
 import { vapAvailable } from './vcluster'
-import { registryHost, registryReachable, pushImageToRegistry } from '#platform/container/registry'
+import { registryHost, registryReachable, pushImageToRegistry } from '#platform/container'
 import { sessionUid } from '#features/images'
 import { getDataDir } from '@yaac/shared/paths'
 import { env } from '@yaac/shared/env'
