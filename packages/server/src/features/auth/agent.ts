@@ -21,14 +21,14 @@ import type { ToolInstallView, ToolLoginView } from '@yaac/shared/types'
  * bundle to /auth/:tool itself.
  */
 
-export interface AgentViewMsg {
+interface AgentViewMsg {
   op: 'view'
   kind: AgentKind
   view: ToolLoginView | ToolInstallView
 }
 
 /** Parse an upstream agent frame; null for anything unrecognized. */
-export function parseAgentViewMsg(raw: string): AgentViewMsg | null {
+function parseAgentViewMsg(raw: string): AgentViewMsg | null {
   let obj: unknown
   try {
     obj = JSON.parse(raw)
@@ -51,7 +51,7 @@ const LOGIN_INPUT_RE = /^[A-Za-z0-9_#-]{1,512}$/
 /** How long a finished flow stays pollable (mirrors the agent's linger). */
 const LINGER_MS = 5 * 60 * 1000
 
-export interface AgentSocketLike {
+interface AgentSocketLike {
   send(data: string): void
   close(code?: number, reason?: string): void
 }
@@ -66,7 +66,7 @@ const DISCONNECTED_MESSAGE =
   'No auth server is connected — sign-in flows run on your machine. '
   + 'Run `yaac auth update` (or `yaac auth server start`) there.'
 
-export function createAuthAgentHub(): {
+function createAuthAgentHub(): {
   setSocket(sock: AgentSocketLike): void
   handleDisconnect(sock: AgentSocketLike): void
   ingest(raw: string): void

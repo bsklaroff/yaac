@@ -4,7 +4,6 @@ import {
   cleanupProjectCodexPlaceholders,
   removeToolAuth,
 } from '@yaac/shared/tool-auth'
-import { ServerError } from '@yaac/shared/errors'
 
 export type ClearAuthTarget = 'all' | 'claude' | 'codex' | 'opencode' | 'pi'
 
@@ -42,13 +41,7 @@ export async function clearAuth(target: ClearAuthTarget): Promise<void> {
     await cleanupProjectCodexPlaceholders()
     return
   }
-  if (target === 'opencode') {
-    await removeToolAuth('opencode')
-    return
-  }
-  if (target === 'pi') {
-    await removeToolAuth('pi')
-    return
-  }
-  throw new ServerError('VALIDATION', `Unknown clear target "${String(target)}".`)
+  // Whatever is left is opencode or pi — the union has no other member, and
+  // neither leaves a placeholder behind, so the bundle is the whole clear.
+  await removeToolAuth(target)
 }

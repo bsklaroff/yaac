@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { addEntry } from '#features/projects/credentials'
 import { saveClaudeCredentialsFile, saveToolAuth } from '@yaac/shared/tool-auth'
-import { listAuth } from '#features/auth/list'
+import { listAuth } from '#features/auth'
 
 describe('listAuth', () => {
   let tmpDir: string
@@ -30,12 +30,17 @@ describe('listAuth', () => {
     ])
   })
 
-  it('includes Claude tool auth when configured, masking the API key', async () => {
+  it('summarizes every signed-in tool in a fixed order, carrying its provider', async () => {
     await saveClaudeCredentialsFile({
       kind: 'api-key',
       savedAt: '2026-04-20T00:00:00.000Z',
       apiKey: 'sk-ant-api03-longkey-ABCDEFGH',
     })
+    // A key too short to keep a tail is masked whole rather than half-shown.
+    await saveToolAuth('codex', 'shrt', 'api-key')
+    await saveToolAuth('opencode', 'nw-secret-key', 'api-key', 'neuralwatt')
+    await saveToolAuth('pi', 'pi-secret-key', 'api-key', 'openrouter')
+
     const result = await listAuth()
     expect(result.toolAuth).toEqual([
       {
@@ -43,20 +48,16 @@ describe('listAuth', () => {
         kind: 'api-key',
         keyPreview: '***EFGH',
         savedAt: '2026-04-20T00:00:00.000Z',
+        opencodeProvider: undefined,
+        piProvider: undefined,
       },
+      expect.objectContaining({ tool: 'codex', kind: 'api-key', keyPreview: '****' }),
+      expect.objectContaining({ tool: 'opencode', kind: 'api-key', opencodeProvider: 'neuralwatt' }),
+      expect.objectContaining({ tool: 'pi', kind: 'api-key', piProvider: 'openrouter' }),
     ])
-  })
-
-  it('surfaces the opencode provider in the summary', async () => {
-    await saveToolAuth('opencode', 'nw-secret-key', 'api-key', 'neuralwatt')
-    const result = await listAuth()
-    expect(result.toolAuth).toEqual([
-      expect.objectContaining({
-        tool: 'opencode',
-        kind: 'api-key',
-        opencodeProvider: 'neuralwatt',
-      }),
-    ])
+    // A provider belongs to the tool that has one; it never bleeds across.
+    expect(result.toolAuth[2]).toMatchObject({ piProvider: undefined })
+    expect(result.toolAuth[3]).toMatchObject({ opencodeProvider: undefined })
   })
 
   it('never leaks the raw access token', async () => {

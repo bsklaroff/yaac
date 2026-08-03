@@ -42,7 +42,11 @@ function decodeJwtExpMs(jwt: string): number | null {
  * One refresh_token grant against Codex's OAuth token endpoint. Returns the
  * refreshed bundle, merged the way the proxy's session-refresh capture
  * merges (fields the response omits keep their stored values). Never throws
- * — null covers every failure, including a bundle with no refresh token.
+ * — null covers every failure.
+ *
+ * Unlike Claude's bundle, a stored Codex bundle always carries a refresh
+ * token (codexOAuthBundleSchema requires a non-empty one), so there is no
+ * bare-access-token case to guard against here.
  *
  * Codex refresh tokens rotate (single-use); the caller only invokes this
  * reactively on a 401, so it never races a running session's own refresh
@@ -51,7 +55,6 @@ function decodeJwtExpMs(jwt: string): number | null {
 export async function refreshCodexOAuthBundle(
   bundle: CodexOAuthBundle,
 ): Promise<CodexOAuthBundle | null> {
-  if (!bundle.refreshToken) return null
   try {
     const res = await fetch(CODEX_TOKEN_URL, {
       method: 'POST',

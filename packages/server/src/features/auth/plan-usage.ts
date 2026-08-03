@@ -1,6 +1,6 @@
-import { queryClaudePlanUsage, queryClaudeRateLimitTier, queryCodexPlanUsage } from '#features/auth/usage'
-import { refreshClaudeOAuthBundle } from '#features/auth/claude-oauth'
-import { refreshCodexOAuthBundle } from '#features/auth/codex-oauth'
+import { queryClaudePlanUsage, queryClaudeRateLimitTier, queryCodexPlanUsage } from './usage'
+import { refreshClaudeOAuthBundle } from './claude-oauth'
+import { refreshCodexOAuthBundle } from './codex-oauth'
 import {
   loadClaudeCredentialsFile,
   saveClaudeOAuthBundle,
@@ -137,7 +137,10 @@ async function refreshAndPersistClaudeBundle(
       await saveClaudeOAuthBundle(fresh)
     }
   } catch (err) {
-    serverLog(`[server] failed to persist refreshed Claude OAuth bundle: ${err instanceof Error ? err.message : String(err)}`)
+    // Only the write can throw here (the loads swallow their own failures),
+    // and losing it costs nothing this cycle: `fresh` still serves the query
+    // and the next refresh tries the persist again.
+    serverLog(`[server] failed to persist refreshed Claude OAuth bundle: ${String(err)}`)
   }
   return fresh
 }
@@ -186,7 +189,7 @@ async function refreshAndPersistCodexBundle(
       await saveCodexOAuthBundle(fresh)
     }
   } catch (err) {
-    serverLog(`[server] failed to persist refreshed Codex OAuth bundle: ${err instanceof Error ? err.message : String(err)}`)
+    serverLog(`[server] failed to persist refreshed Codex OAuth bundle: ${String(err)}`)
   }
   return fresh
 }
