@@ -44,6 +44,11 @@ const text = (body: string, init: ResponseInit = {}): Reply =>
   () => Promise.resolve(new Response(body, { status: 200, ...init }))
 const httpStatus = (status: number): Reply =>
   () => Promise.resolve(new Response('', { status }))
+/** A fetch that rejects. `err` is deliberately `unknown` and reaches
+ *  Promise.reject unwrapped: fetch can reject with a non-Error (an
+ *  AbortSignal reason, say) and the engine has to surface that too, which is
+ *  exactly what the lint rule below exists to prevent expressing. */
+// eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
 const throws = (err: unknown): Reply => () => Promise.reject(err)
 
 function fakeUpstream(): {
@@ -62,7 +67,9 @@ function fakeUpstream(): {
   return {
     install() {
       vi.stubGlobal('fetch', vi.fn<typeof fetch>((input, init) => {
-        const url = String(input)
+        // `Request` stringifies to '[object Object]'; the rest (string, URL)
+        // carry their own href.
+        const url = input instanceof Request ? input.url : String(input)
         seen.push({ url, init: init ?? {} })
         const next = queued.get(url)?.shift() ?? standing.get(url)
         if (!next) throw new Error(`no upstream reply queued for ${url}`)
@@ -431,7 +438,7 @@ describe('planUsageForSnapshot', () => {
     expect(stored).toEqual({
       accessToken: 'tok-fresh',
       refreshToken: 'ref-fresh',
-      expiresAt: expect.any(Number),
+      expiresAt: expect.any(Number) as number,
       scopes: ['user:inference', 'user:profile'],
       subscriptionType: 'max',
     })
