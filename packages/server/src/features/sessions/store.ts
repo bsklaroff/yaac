@@ -1,7 +1,7 @@
 import { and, eq, isNotNull, isNull, or } from 'drizzle-orm'
 import { getDb } from '#platform/db/client'
 import { agentSessions } from '#platform/db/schema'
-import { normalizeTitle } from '#features/titles/titles'
+import { normalizeTitle } from '@yaac/shared/titles'
 import type { AgentTool, SessionDeathCause, SessionDeathReason } from '@yaac/shared/types'
 
 /** Cap on a stored first message. Generous next to a title — the sidebar

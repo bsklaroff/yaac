@@ -7,7 +7,7 @@ import { reconcileVclusters } from '#features/sessions/reconcile/vcluster-reconc
 import { reconcileBuilderPodGc, reconcileHostImageGc, reconcileImagePrewarm, reconcilePrewarmPool } from '#features/images'
 import { reconcileVclusterAttribution } from '#features/sessions/reconcile/vcluster-attribution-reconcile'
 import { reconcileRedirectClaims } from '#features/sessions/reconcile/redirect-claim-reconcile'
-import { reconcileGeneratedTitles } from '#features/titles/title-generation'
+import { reconcileGeneratedTitles } from '#features/titles'
 import { createTickSnapshot, type TickSnapshot } from '#platform/k8s/tick-snapshot'
 import { getActiveClusterCache, type DeltaSource } from '#platform/k8s/cluster-cache'
 import { serverLog } from '#log'

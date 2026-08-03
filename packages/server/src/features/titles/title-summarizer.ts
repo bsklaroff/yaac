@@ -11,8 +11,8 @@
  * server whose egress allowlist blocks huggingface.co) logs and backs
  * off instead of retrying every caller.
  */
-import { ensureLlamaCpp, ensureGgufModel, runChatCompletion } from '#features/titles/llama-cpp'
-import { normalizeTitle } from '#features/titles/titles'
+import { ensureLlamaCpp, ensureGgufModel, runChatCompletion } from './llama-cpp'
+import { normalizeTitle } from '@yaac/shared/titles'
 import { serverLog } from '#log'
 
 /** Qwen2.5-0.5B-Instruct at IQ4_XS, chosen empirically. flan-t5-small looped
@@ -51,21 +51,20 @@ const SETUP_RETRY_MS = 10 * 60_000
 
 type TitleRunner = (input: string) => Promise<string>
 
-async function defaultRunnerFactory(): Promise<TitleRunner> {
+async function createRunner(): Promise<TitleRunner> {
   const bin = await ensureLlamaCpp()
   const model = await ensureGgufModel(TITLE_MODEL_URL, TITLE_MODEL_FILENAME)
   return (input) => runChatCompletion(bin, model, TITLE_SYSTEM_PROMPT, input, MAX_NEW_TOKENS)
 }
 
-let runnerFactory: () => Promise<TitleRunner> = defaultRunnerFactory
 let runner: TitleRunner | undefined
 let setupFailedAtMs: number | undefined
 /** Tail of the serialization chain — each summarize call queues behind it. */
 let chain: Promise<unknown> = Promise.resolve()
 
-/** Whether a first message is worth summarizing at all. */
-export function shouldGenerateTitle(prompt: string | undefined): boolean {
-  if (prompt === undefined) return false
+/** Whether a first message is worth summarizing at all. A session with no
+ *  captured message has nothing to summarize and never gets here. */
+export function shouldGenerateTitle(prompt: string): boolean {
   return normalizeTitle(prompt).length > SHORT_PROMPT_MAX
 }
 
@@ -75,8 +74,10 @@ export function shouldGenerateTitle(prompt: string | undefined): boolean {
  * output is unusable, so callers just keep their prompt fallback.
  */
 export function summarizeTitle(prompt: string): Promise<string | undefined> {
+  // `runOne` owns every failure below and resolves to undefined instead of
+  // rejecting, so the tail stays settleable and the queue can't wedge on it.
   const run = chain.then(() => runOne(prompt))
-  chain = run.catch(() => undefined)
+  chain = run
   return run
 }
 
@@ -114,7 +115,7 @@ async function ensureRunner(): Promise<TitleRunner | undefined> {
     return undefined
   }
   try {
-    runner = await runnerFactory()
+    runner = await createRunner()
     setupFailedAtMs = undefined
     return runner
   } catch (err) {
@@ -154,14 +155,8 @@ function postProcess(raw: string): string | undefined {
   return normalized === '' ? undefined : normalized
 }
 
-/** Test helper: replace the runner factory (avoids downloads and spawns). */
-export function _setTitleRunnerFactoryForTests(f: () => Promise<TitleRunner>): void {
-  runnerFactory = f
-}
-
 /** Test helper: drop the cached runner, backoff mark, and queue. */
 export function _resetTitleSummarizerForTests(): void {
-  runnerFactory = defaultRunnerFactory
   runner = undefined
   setupFailedAtMs = undefined
   chain = Promise.resolve()

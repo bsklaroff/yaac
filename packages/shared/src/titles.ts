@@ -1,6 +1,7 @@
 /**
- * Title normalization, shared by the rename route, the model-generated
- * title path, and the session store that persists the result. Titles are
+ * Session-title normalization, shared by the rename route, the session store
+ * that persists the result, and the titles feature that generates one from a
+ * session's first message. Titles are
  * display-only: the captured first message stays the fallback label
  * everywhere, and both live on the session row.
  */

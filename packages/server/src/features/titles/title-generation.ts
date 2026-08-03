@@ -12,7 +12,7 @@
  */
 import { listActiveSessions } from '#features/sessions/list'
 import { setSessionTitle } from '#features/sessions/store'
-import { shouldGenerateTitle, summarizeTitle } from '#features/titles/title-summarizer'
+import { shouldGenerateTitle, summarizeTitle } from './title-summarizer'
 import { notifySessionListChanged } from '#features/sessions/notify'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'

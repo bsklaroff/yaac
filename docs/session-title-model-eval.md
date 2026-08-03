@@ -1,13 +1,13 @@
 # Session-title model evaluation
 
 > **Status: shipped.** Current-state reference for how the local session-title
-> model was chosen. Cross-referenced from `src/server/title-summarizer.ts`
-> (the model pin) and `src/server/llama-cpp.ts` (the llama.cpp runner).
+> model was chosen. Cross-referenced from the titles feature's `title-summarizer`
+> (the model pin) and `llama-cpp` (the llama.cpp runner).
 
 ## TL;DR
 
 Untitled sessions get a model-generated title summarizing their first message
-(see `src/server/title-generation.ts`). The original model, **`flan-t5-small`
+(see the titles feature's `reconcileGeneratedTitles`). The original model, **`flan-t5-small`
 (Q8_0)**, produced uninformative or degenerate titles on longer or jargon-heavy
 first messages — e.g. a detailed request about sidebar title width + a marquee
 effect became just **`x row`**.

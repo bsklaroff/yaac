@@ -19,33 +19,18 @@ import { getDataDir } from '@yaac/shared/paths'
 /** Pinned llama.cpp release tag; CPU archives exist for linux/macOS × x64/arm64. */
 export const LLAMA_CPP_TAG = 'b9940'
 
-export interface LlamaCppDeps {
-  /** execFile-style runner, injectable for tests. */
-  run: typeof execFileAsync
-  fileExists: (p: string) => Promise<boolean>
-  homedir: () => string
-  platform: NodeJS.Platform
-  arch: string
-}
-
-const defaultDeps: LlamaCppDeps = {
-  run: execFileAsync,
-  fileExists: async (p: string) => {
-    try {
-      await fs.access(p)
-      return true
-    } catch {
-      return false
-    }
-  },
-  homedir: os.homedir,
-  platform: process.platform,
-  arch: process.arch,
+async function fileExists(p: string): Promise<boolean> {
+  try {
+    await fs.access(p)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** Directory the pinned release archive extracts to (binaries + shared libs). */
-export function llamaCppDir(deps: LlamaCppDeps = defaultDeps): string {
-  return path.join(deps.homedir(), '.cache', 'yaac', 'llama-cpp', `llama-${LLAMA_CPP_TAG}`)
+export function llamaCppDir(): string {
+  return path.join(os.homedir(), '.cache', 'yaac', 'llama-cpp', `llama-${LLAMA_CPP_TAG}`)
 }
 
 /**
@@ -55,17 +40,17 @@ export function llamaCppDir(deps: LlamaCppDeps = defaultDeps): string {
  * extracted directory is kept. Extraction goes through a tmp dir with a
  * final rename, so a torn download never half-populates the target.
  */
-export async function ensureLlamaCpp(deps: LlamaCppDeps = defaultDeps): Promise<string> {
-  const dir = llamaCppDir(deps)
+export async function ensureLlamaCpp(): Promise<string> {
+  const dir = llamaCppDir()
   const bin = path.join(dir, 'llama-completion')
-  if (await deps.fileExists(bin)) return bin
+  if (await fileExists(bin)) return bin
 
-  const osName = deps.platform === 'darwin' ? 'macos' : 'ubuntu'
-  const archName = deps.arch === 'arm64' ? 'arm64' : 'x64'
+  const osName = process.platform === 'darwin' ? 'macos' : 'ubuntu'
+  const archName = process.arch === 'arm64' ? 'arm64' : 'x64'
   const url = 'https://github.com/ggml-org/llama.cpp/releases/download/'
     + `${LLAMA_CPP_TAG}/llama-${LLAMA_CPP_TAG}-bin-${osName}-${archName}.tar.gz`
   const tmp = `${dir}.tmp`
-  await deps.run('sh', ['-c',
+  await execFileAsync('sh', ['-c',
     `rm -rf '${tmp}' && mkdir -p '${tmp}' && curl -fsSL '${url}' | tar -xz -C '${tmp}' `
     + `&& rm -rf '${dir}' && mv '${tmp}/llama-${LLAMA_CPP_TAG}' '${dir}' && rm -rf '${tmp}'`,
   ], { timeout: 300_000 })
@@ -76,16 +61,12 @@ export async function ensureLlamaCpp(deps: LlamaCppDeps = defaultDeps): Promise<
  * Ensure a GGUF model is present under `<dataDir>/models`, downloading it
  * once (tmp + rename, so a torn download is never mistaken for a model).
  */
-export async function ensureGgufModel(
-  url: string,
-  filename: string,
-  deps: LlamaCppDeps = defaultDeps,
-): Promise<string> {
+export async function ensureGgufModel(url: string, filename: string): Promise<string> {
   const modelsDir = path.join(getDataDir(), 'models')
   const target = path.join(modelsDir, filename)
-  if (await deps.fileExists(target)) return target
+  if (await fileExists(target)) return target
 
-  await deps.run('sh', ['-c',
+  await execFileAsync('sh', ['-c',
     `mkdir -p '${modelsDir}' && curl -fsSL -o '${target}.tmp' '${url}' `
     + `&& mv '${target}.tmp' '${target}'`,
   ], { timeout: 600_000 })
@@ -105,10 +86,9 @@ export async function runChatCompletion(
   system: string,
   user: string,
   maxTokens: number,
-  deps: LlamaCppDeps = defaultDeps,
 ): Promise<string> {
   const dir = path.dirname(bin)
-  const { stdout } = await deps.run(bin, [
+  const { stdout } = await execFileAsync(bin, [
     '-m', model,
     '--jinja', '-st',
     '-sys', system,

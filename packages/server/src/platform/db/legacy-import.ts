@@ -16,7 +16,7 @@ import {
   setFlag,
 } from '#features/projects/preferences'
 import { MAX_PROMPT_LENGTH } from '#features/sessions/store'
-import { normalizeTitle } from '#features/titles/titles'
+import { normalizeTitle } from '@yaac/shared/titles'
 import { worktreeUpstreamBranch } from '#platform/git'
 import { repoDir } from '@yaac/shared/project-paths'
 import { scanProjectTranscripts } from '#features/sessions/transcripts'
