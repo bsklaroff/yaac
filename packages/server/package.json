@@ -7,6 +7,7 @@
     "#features/auth": "./src/features/auth/index.js",
     "#features/images": "./src/features/images/index.js",
     "#features/skills": "./src/features/skills/index.js",
+    "#features/terminals": "./src/features/terminals/index.js",
     "#features/titles": "./src/features/titles/index.js",
     "#*": "./src/*.js"
   },

@@ -22,14 +22,14 @@ const DEFAULT_ROWS = 24
  *  - 'shell'          — a raw `zsh` exec with no tmux at all (the CLI's
  *    `session shell`): exiting the shell ends the connection.
  */
-export type PtyTarget = string
+type PtyTarget = string
 
 const WINDOW_ID = /^@[0-9]{1,6}$/
 
-/** Coerce a client-supplied target (e.g. a WS query param) to a PtyTarget.
+/** Coerce a client-supplied target (a WS query param) to a PtyTarget.
  *  Anything unrecognized falls back to the agent. */
-export function parsePtyTarget(raw: unknown): PtyTarget {
-  if (typeof raw !== 'string') return 'agent'
+function parsePtyTarget(raw: string | undefined): PtyTarget {
+  if (raw === undefined) return 'agent'
   if (raw === 'agent' || raw === 'native' || raw === 'shell') return raw
   if (raw.startsWith('window:') && WINDOW_ID.test(raw.slice('window:'.length))) return raw
   return 'agent'
@@ -38,7 +38,7 @@ export function parsePtyTarget(raw: unknown): PtyTarget {
 /** Name for a per-client tmux view session. Host-generated (rather than the
  *  container's $$) so the server can address the session later — the detach
  *  on socket close is an explicit `kill-session -t <view>`. */
-export function newViewName(): string {
+function newViewName(): string {
   return `view-${randomBytes(4).toString('hex')}`
 }
 
@@ -74,17 +74,17 @@ export function newViewName(): string {
  * `set-option -t <view> window-size manual` takes the view out of the
  * negotiation, and `resize-window` sizes it to the client's grid — a
  * per-view-manual window holds its size even while a `latest` ghost of another
- * size views it. bridge()'s resizeWindow hook keeps it in step as the pane
- * resizes later. Manual is set PER VIEW (after create), never globally:
- * container tmux (3.4) segfaults if `new-session` runs while global
- * `window-size` is `manual`, so the group option must stay `latest`.
+ * size views it. The window resizer keeps it in step as the pane resizes
+ * later. Manual is set PER VIEW (after create), never globally: container tmux
+ * (3.4) segfaults if `new-session` runs while global `window-size` is
+ * `manual`, so the group option must stay `latest`.
  * The native (CLI) attach keeps default `latest` sizing (its status bar and
  * live window-switching want the standard behaviour).
  */
-export function attachArgs(
+function attachArgs(
   target: PtyTarget,
   viewName: string,
-  size: { cols?: number; rows?: number } = {},
+  size: { cols?: number; rows?: number },
 ): string[] {
   const tmux = `tmux -S ${CONTAINER_TMUX_SOCK}`
   const cols = size.cols ?? DEFAULT_COLS
@@ -137,11 +137,11 @@ export function attachArgs(
 /** The tmux command to resize a webapp view's window to a client grid. The
  *  view is `window-size manual` (see attachArgs), so this is what tracks live
  *  browser-pane resizes — the client SIGWINCH alone no longer moves it. */
-export function resizeWindowCmd(viewName: string, cols: number, rows: number): string {
+function resizeWindowCmd(viewName: string, cols: number, rows: number): string {
   return `tmux -S ${CONTAINER_TMUX_SOCK} resize-window -t ${viewName} -x ${cols} -y ${rows}`
 }
 
-export interface WindowResizer {
+interface WindowResizer {
   /** Record a new client size. Fires immediately when idle; while an exec is
    *  in flight only the newest size is kept, fired on completion. Property
    *  (not method) form so a detached `resizer.resize` reference is safe to
@@ -159,13 +159,10 @@ export interface WindowResizer {
  * frame per column step) coalesces to at most one queued follow-up, and the
  * last size always wins — the property a debounce can't give, since two
  * concurrent execs can land out of order and pin the window at a stale size.
- * `exec` is injected so the logic is unit-testable without kubectl; it must
- * never reject (the caller swallows exec failures).
+ * A failed exec (view gone, pod race) just pumps the next one: the following
+ * resize, or none at all, is the right answer either way.
  */
-export function makeWindowResizer(
-  viewName: string,
-  exec: (cmd: string) => Promise<unknown>,
-): WindowResizer {
+function makeWindowResizer(jobName: string, viewName: string): WindowResizer {
   let inFlight = false
   let pending: { cols: number; rows: number } | null = null
   const pump = (): void => {
@@ -177,7 +174,8 @@ export function makeWindowResizer(
       inFlight = false
       pump()
     }
-    exec(resizeWindowCmd(viewName, p.cols, p.rows)).then(done, done)
+    sessionExec(jobName, resizeWindowCmd(viewName, p.cols, p.rows), { maxAttempts: 1 })
+      .then(done, done)
   }
   return {
     resize(cols, rows): void {
@@ -191,20 +189,20 @@ export function makeWindowResizer(
 }
 
 /** Command listing every tmux session name in the pod, one per line. */
-export function listSessionsCmd(): string {
+function listSessionsCmd(): string {
   return `tmux -S ${CONTAINER_TMUX_SOCK} list-sessions -F '#{session_name}'`
 }
 
 /** Ghost views among `names`: view sessions no live connection owns. The
  *  name-shape check keeps arbitrary session names (yaac, user-created) out
  *  of the kill list even if they happen to start with "view-". */
-export function ghostViews(names: string[], live: ReadonlySet<string>): string[] {
+function ghostViews(names: string[], live: ReadonlySet<string>): string[] {
   return names.filter((n) => /^view-[0-9a-f]{8}$/.test(n) && !live.has(n))
 }
 
 /** One tmux invocation killing all the given view sessions; the command
  *  sequence keeps going past a view that already died on its own. */
-export function killViewsCmd(views: string[]): string {
+function killViewsCmd(views: string[]): string {
   return `tmux -S ${CONTAINER_TMUX_SOCK} ${views.map((v) => `kill-session -t ${v}`).join(' \\; ')}`
 }
 
@@ -219,14 +217,10 @@ export function killViewsCmd(views: string[]): string {
  * swept here on every fresh attach. `live` is read after the listing
  * returns, so views attached mid-sweep are never treated as ghosts.
  */
-export async function sweepGhostViews(
-  jobName: string,
-  live: ReadonlySet<string>,
-  exec: (jobName: string, cmd: string) => Promise<{ stdout: string }>,
-): Promise<void> {
+async function sweepGhostViews(jobName: string, live: ReadonlySet<string>): Promise<void> {
   let listed: { stdout: string }
   try {
-    listed = await exec(jobName, listSessionsCmd())
+    listed = await sessionExec(jobName, listSessionsCmd(), { maxAttempts: 1 })
   } catch {
     return // pod gone or tmux not up yet — nothing to sweep
   }
@@ -234,7 +228,7 @@ export async function sweepGhostViews(
   const ghosts = ghostViews(names, live)
   if (ghosts.length === 0) return
   try {
-    await exec(jobName, killViewsCmd(ghosts))
+    await sessionExec(jobName, killViewsCmd(ghosts), { maxAttempts: 1 })
   } catch {
     // raced away (view self-destroyed, pod terminating) — fine
   }
@@ -249,7 +243,7 @@ export async function sweepGhostViews(
  * Best-effort: "no such session" (closed before the attach landed, or
  * already reaped) and a gone pod are both fine.
  */
-export async function killViewSession(jobName: string, viewName: string): Promise<void> {
+async function killViewSession(jobName: string, viewName: string): Promise<void> {
   try {
     await sessionExec(
       jobName,
@@ -261,7 +255,7 @@ export async function killViewSession(jobName: string, viewName: string): Promis
   }
 }
 
-export interface ControlMessage {
+interface ControlMessage {
   type: 'resize' | 'signal' | 'ping'
   cols?: number
   rows?: number
@@ -269,7 +263,7 @@ export interface ControlMessage {
 }
 
 /** Parse a text control frame. Returns null for anything unrecognized. */
-export function parseControl(text: string): ControlMessage | null {
+function parseControl(text: string): ControlMessage | null {
   let obj: unknown
   try {
     obj = JSON.parse(text)
@@ -282,8 +276,8 @@ export function parseControl(text: string): ControlMessage | null {
   return obj as ControlMessage
 }
 
-/** Minimal PTY surface the bridge needs (real impl: node-pty's IPty). */
-export interface PtyLike {
+/** Minimal PTY surface the bridge needs (real impl: a relay `pty` stream). */
+interface PtyLike {
   onData(cb: (data: string) => void): void
   onExit(cb: (e: { exitCode: number }) => void): void
   write(data: string): void
@@ -305,7 +299,7 @@ function toText(data: string | Buffer | ArrayBuffer): string {
 }
 
 /** How long after the graceful tmux detach to force-kill the PTY. */
-const DETACH_GRACE_MS = 400
+export const DETACH_GRACE_MS = 400
 
 /**
  * Wire a PTY to a socket per the wire protocol:
@@ -324,20 +318,18 @@ const DETACH_GRACE_MS = 400
  * connecting, so the first kill found no session to kill), right before the
  * host-side PTY is force-killed as the final fallback.
  */
-export function bridge(
+function bridge(
   ptyProc: PtyLike,
   sock: SocketLike,
   opts: {
     detach?: () => void
-    detachGraceMs?: number
     /** Called on every resize control frame (in addition to resizing the PTY's
      *  own tty) so the caller can resize the tmux window to match — the webapp
      *  view is `window-size manual`, where the tty SIGWINCH alone no longer
      *  moves the window. */
     resizeWindow?: (cols: number, rows: number) => void
-  } = {},
+  },
 ): void {
-  const detachGraceMs = opts.detachGraceMs ?? DETACH_GRACE_MS
   ptyProc.onData((d) => {
     try {
       sock.send(Buffer.from(d, 'utf8'))
@@ -380,39 +372,86 @@ export function bridge(
       } catch {
         // already gone
       }
-    }, detachGraceMs)
+    }, DETACH_GRACE_MS)
   })
 }
 
 /**
- * Coerce client-supplied terminal dimensions (e.g. WS query params) into a
- * size object for `spawnAttachPty`. Non-numeric, non-positive, or absurd
- * values become `undefined` so the caller falls back to the 80x24 default.
- * Spawning the attach PTY at the browser's real size — rather than the
- * default and resizing after — avoids the cold-start reflow that garbles
- * full-screen TUIs (the client grid and tmux window agree from frame one).
+ * Coerce client-supplied terminal dimensions (WS query params) into a size
+ * object. Non-numeric, non-positive, or absurd values become `undefined` so
+ * the attach falls back to the 80x24 default. Spawning the attach PTY at the
+ * browser's real size — rather than the default and resizing after — avoids
+ * the cold-start reflow that garbles full-screen TUIs (the client grid and
+ * tmux window agree from frame one).
  */
-export function parsePtySize(
-  colsRaw: unknown,
-  rowsRaw: unknown,
+function parsePtySize(
+  colsRaw: string | undefined,
+  rowsRaw: string | undefined,
 ): { cols?: number; rows?: number } {
-  const clamp = (v: unknown): number | undefined => {
+  const clamp = (v: string | undefined): number | undefined => {
     const n = Math.trunc(Number(v))
     return Number.isFinite(n) && n >= 1 && n <= 1000 ? n : undefined
   }
   return { cols: clamp(colsRaw), rows: clamp(rowsRaw) }
 }
 
-/** Open the attach PTY for a resolved session Job — a relay `pty` stream
- *  whose in-pod side spawns the argv under a real PTY. The 'shell' target
- *  is a raw zsh (no tmux, no view session to clean up); everything else
- *  attaches through a per-client grouped tmux session. */
-export function spawnAttachPty(
+/**
+ * Live tmux view sessions per Job, for the ghost sweep every attach runs:
+ * every `view-*` session in a pod that isn't in here belongs to a dead
+ * connection (crashed server, killed kubectl, sleep-dropped exec) and gets
+ * reaped. Server-wide rather than per-connection precisely because a sweep
+ * must be able to tell another live tab's view from a corpse.
+ */
+const liveViews = new Map<string, Set<string>>()
+
+/**
+ * Attach one webapp/CLI terminal connection to a session pod: open the PTY
+ * stream for the requested target and wire it to `socket` for the life of the
+ * connection. `query` is the raw /pty/attach query string — the target and
+ * the client's grid — validated here rather than by the route.
+ *
+ * Everything the connection owns in the pod is created and reclaimed here:
+ * its per-client tmux view session, the window-resize driver that keeps that
+ * view's window pinned to the client's grid, and the kill-session on close.
+ */
+export function attachPty(
   jobName: string,
-  size: { cols?: number; rows?: number },
-  target: PtyTarget,
-  viewName: string,
-): PtyLike {
-  const argv = target === 'shell' ? ['zsh'] : attachArgs(target, viewName, size)
-  return dialPtyStream(sessionIdFromJobName(jobName), argv, size)
+  socket: SocketLike,
+  query: { target?: string; cols?: string; rows?: string },
+): void {
+  const target = parsePtyTarget(query.target)
+  const size = parsePtySize(query.cols, query.rows)
+  const sessionId = sessionIdFromJobName(jobName)
+
+  // 'shell' is a raw zsh exec — no tmux, so there is no view session to
+  // register, sweep, resize or kill; exiting the shell ends the connection.
+  if (target === 'shell') {
+    bridge(dialPtyStream(sessionId, ['zsh'], size), socket, {})
+    return
+  }
+
+  const viewName = newViewName()
+  // Register this view as live BEFORE the sweep's listing goes out, so a
+  // concurrent attach can never reap it (see sweepGhostViews).
+  const views = liveViews.get(jobName) ?? new Set<string>()
+  views.add(viewName)
+  liveViews.set(jobName, views)
+  void sweepGhostViews(jobName, views)
+
+  const ptyProc = dialPtyStream(sessionId, attachArgs(target, viewName, size), size)
+  // Webapp views (agent / window:@) pin their tmux window to this client via
+  // `window-size manual` + resize-window (see attachArgs), so their resizes
+  // must drive resize-window; the resizer serializes those execs. 'native'
+  // keeps tmux's default `latest` sizing, which the client's own SIGWINCH
+  // already drives.
+  const resizer = target === 'native' ? null : makeWindowResizer(jobName, viewName)
+  bridge(ptyProc, socket, {
+    detach: () => {
+      resizer?.dispose()
+      views.delete(viewName)
+      if (views.size === 0) liveViews.delete(jobName)
+      void killViewSession(jobName, viewName)
+    },
+    resizeWindow: resizer?.resize,
+  })
 }

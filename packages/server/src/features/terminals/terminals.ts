@@ -35,7 +35,7 @@ function parseWindows(stdout: string): WindowRow[] {
 
 /** Parse the window listing into webapp terminal entries — every window
  *  except the agent's (lowest index). */
-export function parseWindowList(stdout: string): SessionTerminalEntry[] {
+function parseWindowList(stdout: string): SessionTerminalEntry[] {
   const rows = parseWindows(stdout)
   if (rows.length === 0) return []
   const agentIndex = Math.min(...rows.map((r) => r.index))
@@ -45,7 +45,7 @@ export function parseWindowList(stdout: string): SessionTerminalEntry[] {
 }
 
 /** Next free scratch-shell window name: shell, shell-2, shell-3, … */
-export function nextShellName(existing: SessionTerminalEntry[]): string {
+function nextShellName(existing: SessionTerminalEntry[]): string {
   const names = new Set(existing.filter((e) => SHELL_NAME.test(e.name)).map((e) => e.name))
   if (!names.has('shell')) return 'shell'
   for (let i = 2; ; i++) {

@@ -9,8 +9,8 @@ import { isCredentialOptional } from '#http/web-auth'
 import { closeDb, getDb } from '#platform/db/client'
 import { importLegacyJsonStores } from '#platform/db/legacy-import'
 import { EventHub } from '#main/events'
-import { bridge, killViewSession, makeWindowResizer, newViewName, parsePtySize, parsePtyTarget, spawnAttachPty, sweepGhostViews, type SocketLike } from '#features/terminals/pty-bridge'
-import { invalidateRelayAddr, sessionExec } from '#platform/k8s/stream-relay'
+import { attachPty, type SocketLike } from '#features/terminals'
+import { invalidateRelayAddr } from '#platform/k8s/stream-relay'
 import { coalesceCalls, notifySessionListChanged, onSessionListChanged } from '#features/sessions/notify'
 import { resolveSessionContainer } from '#features/sessions/resolve'
 import { StatusWatcherManager } from '#features/sessions/status-watcher'
@@ -236,22 +236,19 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     },
   })))
 
-  // Live tmux view sessions per job, for the ghost sweep on attach: every
-  // view-* session in a pod that isn't in here belongs to a dead connection
-  // (crashed server, killed kubectl, sleep-dropped exec) and gets reaped.
-  const liveViews = new Map<string, Set<string>>()
-
   // PTY bridge: one embedded terminal per connection, attached to the
   // session's tmux. Path is /pty/attach (not /session/...) to avoid
   // colliding with the GET /session/:id route. Auth rides the upgrade.
   app.get('/pty/attach', nodeWs.upgradeWebSocket((c) => {
     const id = c.req.query('id') ?? ''
-    // Spawn the PTY at the browser's reported size so the tmux window and the
-    // client grid match from the first frame — no cold-start resize, no
-    // reflow garble. Falls back to 80x24 when the params are missing/invalid.
-    const size = parsePtySize(c.req.query('cols'), c.req.query('rows'))
-    // Which tmux session to attach: the agent (default) or the scratch shell.
-    const target = parsePtyTarget(c.req.query('target'))
+    // Which window to attach and the browser's reported grid — validated by
+    // attachPty, which spawns the PTY at that size so the tmux window and the
+    // client grid match from the first frame (no cold-start reflow garble).
+    const query = {
+      target: c.req.query('target'),
+      cols: c.req.query('cols'),
+      rows: c.req.query('rows'),
+    }
     return {
       onOpen: (_evt, ws) => {
         void (async () => {
@@ -273,19 +270,6 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
             ws.close(1011, 'no raw socket')
             return
           }
-          const viewName = newViewName()
-          // Register this view as live, then reap any ghosts in the pod —
-          // view-* sessions no connection owns (see sweepGhostViews). The
-          // registry add precedes the sweep's listing, so a concurrent
-          // attach can never reap this view.
-          if (target !== 'shell') {
-            const views = liveViews.get(jobName) ?? new Set<string>()
-            views.add(viewName)
-            liveViews.set(jobName, views)
-            void sweepGhostViews(jobName, views, (j, cmd) =>
-              sessionExec(j, cmd, { maxAttempts: 1 }))
-          }
-          const ptyProc = spawnAttachPty(jobName, size, target, viewName)
           const sock: SocketLike = {
             send: (data) => raw.send(data),
             close: (code, reason) => raw.close(code, reason),
@@ -293,28 +277,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
               cb(Array.isArray(data) ? Buffer.concat(data) : data, isBinary)),
             onClose: (cb) => raw.on('close', () => cb()),
           }
-          // Webapp views (agent / window:@) pin their tmux window to the
-          // client via `window-size manual` + resize-window (see attachArgs),
-          // so their resizes must drive resize-window; the resizer serializes
-          // those execs. 'native' keeps default `latest` sizing and 'shell'
-          // has no tmux view, so neither needs one.
-          const resizer = target === 'shell' || target === 'native'
-            ? null
-            : makeWindowResizer(viewName, (cmd) =>
-                sessionExec(jobName, cmd, { maxAttempts: 1 }).catch(() => {
-                  // view gone / pod race — the next resize (or none) is fine
-                }))
-          // 'shell' is a raw zsh exec — no view session exists to clean up.
-          const detach = target === 'shell'
-            ? undefined
-            : (): void => {
-                resizer?.dispose()
-                const views = liveViews.get(jobName)
-                views?.delete(viewName)
-                if (views?.size === 0) liveViews.delete(jobName)
-                void killViewSession(jobName, viewName)
-              }
-          bridge(ptyProc, sock, { detach, resizeWindow: resizer?.resize })
+          attachPty(jobName, sock, query)
           serverLog(`[server] pty attach: session=${id} job=${jobName}`)
         })()
       },
