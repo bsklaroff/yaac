@@ -6,7 +6,13 @@ import {
   type AgentTool,
   type ToolCredsView,
 } from 'yaac-proxy-sidecar/tools-report'
-import { MODELS_BY_PROVIDER, PI_MODELS_BY_PROVIDER } from 'yaac-proxy-sidecar/tool-providers.generated'
+import {
+  MODELS_BY_PROVIDER,
+  OPENCODE_PROVIDER_HOSTS,
+  PI_MODELS_BY_PROVIDER,
+  PI_PROVIDER_DEFAULT_MODELS,
+  PI_PROVIDER_HOSTS,
+} from 'yaac-proxy-sidecar/tool-providers.generated'
 
 /** All-unauthed baseline; individual tests flip in the tools they exercise. */
 function creds(over: Partial<Record<AgentTool, ToolCredsView>> = {}): Record<AgentTool, ToolCredsView> {
@@ -30,12 +36,34 @@ describe('baked model catalogs', () => {
     // agent can't run must not appear (the review flagged text-embedding-3-large).
     expect(MODELS_BY_PROVIDER['openai']).not.toContain('text-embedding-3-large')
     expect(MODELS_BY_PROVIDER['openai']?.some((m) => m.startsWith('text-embedding'))).toBe(false)
-    // codex-family agent models are still present.
-    expect(MODELS_BY_PROVIDER['openai']).toContain('gpt-5-codex')
+    // codex-family agent models are still present. Asserted by family rather
+    // than by a specific id: which codex generations models.dev lists turns
+    // over with each regen, but the filter must never drop them all.
+    expect(MODELS_BY_PROVIDER['openai']?.some((m) => m.includes('-codex'))).toBe(true)
   })
 
   it('has a pi-registry catalog distinct from models.dev', () => {
     expect(PI_MODELS_BY_PROVIDER['anthropic']?.length).toBeGreaterThan(0)
+  })
+
+  // Invariants over whatever the generator currently emits, so a regen that
+  // reintroduces an unusable provider fails here rather than in a session.
+  it('offers no provider on a loopback host', () => {
+    // A loopback host names a server on the user's own machine, which a
+    // session pod's localhost is not — and the proxy only intercepts egress,
+    // so it could never swap the placeholder key there.
+    const loopback = (h: string): boolean =>
+      h === 'localhost' || h === '0.0.0.0' || h.endsWith('.localhost') || /^127\./.test(h)
+    const hosts = [...Object.entries(OPENCODE_PROVIDER_HOSTS), ...Object.entries(PI_PROVIDER_HOSTS)]
+    expect(hosts.filter(([, host]) => loopback(host))).toEqual([])
+  })
+
+  it('offers no opencode provider without tool-calling models', () => {
+    // Selecting one would be a dead end: it takes the credential and the pod
+    // env var, then reports no usable --model ids.
+    const empty = Object.keys(OPENCODE_PROVIDER_HOSTS)
+      .filter((id) => !modelsForTool('opencode', id).length)
+    expect(empty).toEqual([])
   })
 })
 
@@ -99,7 +127,12 @@ describe('buildToolsReport', () => {
 
   it('attaches a pi default model for the configured provider', () => {
     const report = buildToolsReport({ currentTool: 'pi', includeModels: false, creds: creds({ pi: { authed: true, kind: 'api-key', provider: 'anthropic' } }) })
-    expect(report.tools.find((t) => t.tool === 'pi')?.defaultModel).toBe('anthropic/claude-opus-4-8')
+    // Derived from the catalog, not a pinned id: which model pi defaults to
+    // turns over with each pi bump, but it must always be that provider's
+    // entry, in `provider/model` form.
+    const dflt = PI_PROVIDER_DEFAULT_MODELS['anthropic']
+    expect(dflt).toMatch(/^anthropic\//)
+    expect(report.tools.find((t) => t.tool === 'pi')?.defaultModel).toBe(dflt)
   })
 })
 
@@ -112,7 +145,9 @@ describe('formatToolsReport', () => {
     }))
     expect(text).toContain('current session tool: claude')
     expect(text).toContain('claude')
-    expect(text).toContain('claude-opus-4-8')
+    // A catalog-derived id, so a models.dev refresh that retires any single
+    // model can't redden this — what matters is that the ids get rendered.
+    expect(text).toContain(MODELS_BY_PROVIDER['anthropic'][0])
     expect(text).toContain('codex')
     expect(text).toContain('not configured')
     expect(text).toContain('yaac-spawn --tool')
