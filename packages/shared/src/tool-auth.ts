@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
 import {
   claudeCredentialsPath,
   codexCredentialsPath,
@@ -77,12 +78,34 @@ export async function loadClaudeCredentialsFile(): Promise<ClaudeCredentialsFile
   }
 }
 
+/**
+ * Write a credentials file atomically: same-directory temp file, then
+ * rename. These files are read concurrently and continuously — the
+ * plan-usage poller, every session registration, the proxy's injection
+ * path — and a plain `writeFile` truncates in place, so a reader that
+ * lands mid-write sees an empty or half-written file and concludes there
+ * are no credentials. `rename(2)` within a directory is atomic, so a
+ * reader sees either the old file or the new one.
+ *
+ * 0600 on the temp file, not just the final one: the bytes are
+ * bearer-equivalent from the moment they hit disk.
+ */
+async function writeCredentialsFileAtomic(filePath: string, contents: string): Promise<void> {
+  const tmp = `${filePath}.tmp-${randomBytes(6).toString('hex')}`
+  try {
+    await fs.writeFile(tmp, contents, { mode: 0o600 })
+    await fs.rename(tmp, filePath)
+  } catch (err) {
+    await fs.rm(tmp, { force: true })
+    throw err
+  }
+}
+
 export async function saveClaudeCredentialsFile(creds: ClaudeCredentialsFile): Promise<void> {
   await ensureCredentialsDir()
-  await fs.writeFile(
+  await writeCredentialsFileAtomic(
     claudeCredentialsPath(),
     JSON.stringify(creds, null, 2) + '\n',
-    { mode: 0o600 },
   )
 }
 
@@ -110,10 +133,9 @@ export async function loadCodexCredentialsFile(): Promise<CodexCredentialsFile |
 
 export async function saveCodexCredentialsFile(creds: CodexCredentialsFile): Promise<void> {
   await ensureCredentialsDir()
-  await fs.writeFile(
+  await writeCredentialsFileAtomic(
     codexCredentialsPath(),
     JSON.stringify(creds, null, 2) + '\n',
-    { mode: 0o600 },
   )
 }
 
@@ -150,10 +172,9 @@ export async function loadOpencodeCredentialsFile(): Promise<OpencodeCredentials
 
 export async function saveOpencodeCredentialsFile(creds: OpencodeCredentialsFile): Promise<void> {
   await ensureCredentialsDir()
-  await fs.writeFile(
+  await writeCredentialsFileAtomic(
     opencodeCredentialsPath(),
     JSON.stringify(creds, null, 2) + '\n',
-    { mode: 0o600 },
   )
 }
 
@@ -175,10 +196,9 @@ export async function loadPiCredentialsFile(): Promise<PiCredentialsFile | null>
 
 export async function savePiCredentialsFile(creds: PiCredentialsFile): Promise<void> {
   await ensureCredentialsDir()
-  await fs.writeFile(
+  await writeCredentialsFileAtomic(
     piCredentialsPath(),
     JSON.stringify(creds, null, 2) + '\n',
-    { mode: 0o600 },
   )
 }
 
@@ -411,10 +431,9 @@ export async function writeProjectClaudePlaceholder(
 ): Promise<void> {
   await fs.mkdir(claudeDir(slug), { recursive: true })
   const payload = { claudeAiOauth: buildPlaceholderBundle(bundle) }
-  await fs.writeFile(
+  await writeCredentialsFileAtomic(
     projectClaudeCredentialsFile(slug),
     JSON.stringify(payload, null, 2) + '\n',
-    { mode: 0o600 },
   )
 }
 
@@ -493,10 +512,9 @@ export async function writeProjectCodexPlaceholder(
     },
     last_refresh: placeholder.lastRefresh,
   }
-  await fs.writeFile(
+  await writeCredentialsFileAtomic(
     projectCodexAuthFile(slug),
     JSON.stringify(payload, null, 2) + '\n',
-    { mode: 0o600 },
   )
 }
 

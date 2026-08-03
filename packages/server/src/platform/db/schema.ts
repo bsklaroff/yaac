@@ -34,52 +34,43 @@ export const shortcutOverrides = snakeCase.table('shortcut_overrides', {
   shift: boolean().notNull(),
 })
 
-/** Session display titles (user-assigned or model-generated). */
-export const sessionTitles = snakeCase.table('session_titles', {
+/**
+ * Every session yaac has ever created, one row per (project, session id).
+ * This is the spine: the cluster stays authoritative for "is it running",
+ * and this table for "did it exist, and what is it". A row is inserted by
+ * session create (and by a prewarmed spare's claim — spares themselves get
+ * no row, which is why teardown only ever UPDATEs), never deleted: a
+ * `deletedAt` row IS the deleted-session listing, and a restart clears the
+ * column again because session ids are reused verbatim.
+ *
+ * `prompt` is the first user message, captured once by the reconciler
+ * instead of re-parsed from the transcript on every list tick.
+ * `transcriptPath` (null for opencode, which leaves no host transcript) is
+ * what the deleted listing stats for last-activity. `deathReason` /
+ * `deathDetail` are set only when the stale reaper — not the user — removed
+ * the session, so a reused id can't inherit a stale cause; `deathSeen`
+ * tracks whether the user has viewed that detail (the "Deleted sessions"
+ * notification dot), durable across devices and daemon restarts.
+ */
+export const agentSessions = snakeCase.table('agent_sessions', {
   projectSlug: text().notNull(),
   sessionId: text().notNull(),
-  title: text().notNull(),
-}, (t) => [primaryKey({ columns: [t.projectSlug, t.sessionId] })])
-
-/** When each session was deleted — the deleted-session view's primary sort
- *  key ("newest-deleted first"). Written on every delete path; the listing
- *  falls back to transcript mtime for sessions with no row here (removed
- *  out-of-band). Keyed by (projectSlug, sessionId); the tool isn't stored
- *  because the derive-from-disk scan already knows it. `deathReason` /
- *  `deathDetail` (a SessionDeathReason + free-form evidence) are set only
- *  when the stale reaper — not the user — removed the session; a plain
- *  delete writes them null so a reused id can't inherit a stale cause.
- *  `seen` tracks whether the user has viewed an abnormal death's detail (the
- *  "Deleted sessions" notification dot / row highlight); it rides the row so
- *  the acknowledgement is durable across devices and daemon restarts. It
- *  resets to false on every (re-)record so a re-died reused id re-flags. */
-export const deletedSessions = snakeCase.table('deleted_sessions', {
-  projectSlug: text().notNull(),
-  sessionId: text().notNull(),
-  deletedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  tool: text().notNull(),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  /** First user message; null until the capture step sees one. */
+  prompt: text(),
+  /** Display title — user-assigned or model-generated. */
+  title: text(),
+  /** Branch the worktree forked from (no `origin/` prefix). */
+  baseBranch: text(),
+  /** Host path of the agent's transcript, when the tool leaves one. */
+  transcriptPath: text(),
+  /** Pinned to the sidebar's "Background" section. */
+  background: boolean().notNull().default(false),
+  deletedAt: timestamp({ withTimezone: true }),
   deathReason: text(),
   deathDetail: text(),
-  seen: boolean().notNull().default(false),
-}, (t) => [primaryKey({ columns: [t.projectSlug, t.sessionId] })])
-
-/** Sessions pinned to the sidebar's "Background" section. Row present =
- *  pinned; unpin deletes the row. Keyed by (projectSlug, sessionId) like the
- *  other per-session side tables so the pin survives delete + restart
- *  (session ids are stable across restarts) — a deleted background session
- *  keeps its sidebar row with a restart action. */
-export const backgroundSessions = snakeCase.table('background_sessions', {
-  projectSlug: text().notNull(),
-  sessionId: text().notNull(),
-}, (t) => [primaryKey({ columns: [t.projectSlug, t.sessionId] })])
-
-/** Cached opencode first-message snapshots. `createdAt` replaces the meta
- *  file's birthtime that deleted-session listing sorts by. */
-export const opencodeSessionMeta = snakeCase.table('opencode_session_meta', {
-  projectSlug: text().notNull(),
-  sessionId: text().notNull(),
-  firstMessage: text(),
-  capturedAt: text(),
-  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  deathSeen: boolean().notNull().default(false),
 }, (t) => [primaryKey({ columns: [t.projectSlug, t.sessionId] })])
 
 /** All client credentials (durable bearers, one-time exchange tokens, web

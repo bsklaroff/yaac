@@ -13,12 +13,17 @@ vi.mock('#platform/k8s/pods', async (importOriginal) => {
 
 import { listSessionPods } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
-import * as opencodeStatus from '#features/sessions/agents/opencode'
-import { recordSessionDeleted } from '#features/sessions/deleted-store'
+import {
+  recordSessionCreated,
+  recordSessionDeleted,
+  setSessionBackground,
+  setSessionCapture,
+  setSessionTitle,
+} from '#features/sessions/store'
 import { closeDb } from '#platform/db/client'
 import { claudeDir, getProjectsDir } from '@yaac/shared/project-paths'
 import { listDeletedSessions } from '#features/sessions/deleted-list'
-import type { ProjectMeta } from '@yaac/shared/types'
+import type { AgentTool, ProjectMeta } from '@yaac/shared/types'
 
 const mockListPods = vi.mocked(listSessionPods)
 
@@ -33,6 +38,32 @@ async function writeProject(slug: string, meta: Partial<ProjectMeta> = {}): Prom
   await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(full))
 }
 
+/** Record a session, then (optionally) its deletion — the two writes every
+ *  row in the deleted listing has been through. */
+async function seedSession(
+  slug: string,
+  sessionId: string,
+  opts: { tool?: AgentTool; deleted?: boolean } = {},
+): Promise<void> {
+  await recordSessionCreated({ projectSlug: slug, sessionId, tool: opts.tool ?? 'claude' })
+  if (opts.deleted) await recordSessionDeleted(slug, sessionId)
+}
+
+function activePod(slug: string, sessionId: string): podsModule.SessionPod {
+  return {
+    jobName: `yaac-${slug}-${sessionId}`,
+    podName: `yaac-${slug}-${sessionId}-x1`,
+    sessionId,
+    projectSlug: slug,
+    tool: 'claude',
+    phase: 'Running',
+    running: true,
+    terminating: false,
+    createdAtMs: 0,
+    labels: {},
+  }
+}
+
 describe('listDeletedSessions', () => {
   let tmpDir: string
 
@@ -40,6 +71,7 @@ describe('listDeletedSessions', () => {
     tmpDir = await createTempDataDir()
     mockListPods.mockReset()
     mockListPods.mockResolvedValue([])
+    await writeProject('demo')
   })
 
   afterEach(async () => {
@@ -51,18 +83,12 @@ describe('listDeletedSessions', () => {
     await expect(listDeletedSessions('nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 
-  it('returns [] when no projects exist', async () => {
-    await fs.rm(getProjectsDir(), { recursive: true, force: true })
-    const result = await listDeletedSessions()
-    expect(result).toEqual([])
+  it('returns [] when nothing has been recorded', async () => {
+    expect(await listDeletedSessions()).toEqual([])
   })
 
-  it('enumerates Claude JSONL sessions that have no active pod', async () => {
-    await writeProject('demo')
-    const sessionsDir = path.join(claudeDir('demo'), 'projects', '-workspace')
-    await fs.mkdir(sessionsDir, { recursive: true })
-    await fs.writeFile(path.join(sessionsDir, 'aaaaaa.jsonl'), '{}\n')
-    await fs.writeFile(path.join(sessionsDir, 'ignoreme.txt'), 'not jsonl')
+  it('lists recorded sessions that have no active pod', async () => {
+    await seedSession('demo', 'aaaaaa', { deleted: true })
     const result = await listDeletedSessions('demo')
     expect(result).toHaveLength(1)
     expect(result[0]).toMatchObject({
@@ -70,130 +96,133 @@ describe('listDeletedSessions', () => {
       projectSlug: 'demo',
       tool: 'claude',
     })
+    expect(result[0]?.deletedAt).toBeDefined()
   })
 
   it('skips sessions that still have an active pod', async () => {
-    await writeProject('demo')
-    const sessionsDir = path.join(claudeDir('demo'), 'projects', '-workspace')
-    await fs.mkdir(sessionsDir, { recursive: true })
-    await fs.writeFile(path.join(sessionsDir, 'active1.jsonl'), '{}\n')
-    mockListPods.mockResolvedValue([{
-      jobName: 'yaac-demo-active1',
-      podName: 'yaac-demo-active1-x1',
-      sessionId: 'active1',
-      projectSlug: 'demo',
-      tool: 'claude',
-      phase: 'Running',
-      running: true,
-      terminating: false,
-      createdAtMs: 0,
-      labels: {},
-    }])
-    const result = await listDeletedSessions('demo')
-    expect(result).toEqual([])
+    await seedSession('demo', 'active1')
+    mockListPods.mockResolvedValue([activePod('demo', 'active1')])
+    expect(await listDeletedSessions('demo')).toEqual([])
   })
 
-  it('sorts by last activity (mtime) newest-first when nothing was recorded', async () => {
-    await writeProject('demo')
-    const sessionsDir = path.join(claudeDir('demo'), 'projects', '-workspace')
-    await fs.mkdir(sessionsDir, { recursive: true })
-    const oldPath = path.join(sessionsDir, 'old.jsonl')
-    const newPath = path.join(sessionsDir, 'new.jsonl')
-    await fs.writeFile(oldPath, '{}\n')
-    await fs.writeFile(newPath, '{}\n')
-    // Backdate the first file's mtime so it reads as less-recently-active.
-    await fs.utimes(oldPath, new Date('2026-01-01'), new Date('2026-01-01'))
-    const result = await listDeletedSessions('demo')
-    expect(result.map((r) => r.sessionId)).toEqual(['new', 'old'])
-    // Every entry carries its last-activity time (the mtime it sorted by).
-    expect(result.every((r) => typeof r.lastActiveAt === 'string')).toBe(true)
+  it('treats every recorded session as deleted when the cluster is unreachable', async () => {
+    await seedSession('demo', 'active1')
+    mockListPods.mockRejectedValue(new Error('cluster down'))
+    expect((await listDeletedSessions('demo')).map((r) => r.sessionId)).toEqual(['active1'])
   })
 
-  it('orders by recorded deletion time ahead of raw last activity', async () => {
-    await writeProject('demo')
-    const sessionsDir = path.join(claudeDir('demo'), 'projects', '-workspace')
-    await fs.mkdir(sessionsDir, { recursive: true })
-    await fs.writeFile(path.join(sessionsDir, 'a.jsonl'), '{}\n')
-    await fs.writeFile(path.join(sessionsDir, 'b.jsonl'), '{}\n')
-    // `a` was last active long ago but deleted just now; `b` was active more
-    // recently but has no recorded deletion. Newest-deleted-first ⇒ a before b.
-    await fs.utimes(path.join(sessionsDir, 'a.jsonl'), new Date('2026-01-01'), new Date('2026-01-01'))
-    await fs.utimes(path.join(sessionsDir, 'b.jsonl'), new Date('2026-06-01'), new Date('2026-06-01'))
-    await recordSessionDeleted('demo', 'a')
-    const result = await listDeletedSessions('demo')
-    expect(result.map((r) => r.sessionId)).toEqual(['a', 'b'])
-    expect(result.find((r) => r.sessionId === 'a')?.deletedAt).toBeDefined()
-    expect(result.find((r) => r.sessionId === 'b')?.deletedAt).toBeUndefined()
+  it('filters by project', async () => {
+    await writeProject('other')
+    await seedSession('demo', 'here', { deleted: true })
+    await seedSession('other', 'elsewhere', { deleted: true })
+    expect((await listDeletedSessions('demo')).map((r) => r.sessionId)).toEqual(['here'])
+    expect((await listDeletedSessions()).map((r) => r.sessionId).sort()).toEqual(['elsewhere', 'here'])
   })
 
-  it('carries the recorded death cause on the entry', async () => {
-    await writeProject('demo')
-    const sessionsDir = path.join(claudeDir('demo'), 'projects', '-workspace')
-    await fs.mkdir(sessionsDir, { recursive: true })
-    await fs.writeFile(path.join(sessionsDir, 'died.jsonl'), '{}\n')
-    await fs.writeFile(path.join(sessionsDir, 'removed.jsonl'), '{}\n')
+  it('orders by recorded deletion time, newest first', async () => {
+    await seedSession('demo', 'first', { deleted: true })
+    await new Promise((r) => setTimeout(r, 5))
+    await seedSession('demo', 'second', { deleted: true })
+    expect((await listDeletedSessions('demo')).map((r) => r.sessionId)).toEqual(['second', 'first'])
+  })
+
+  it('falls back to creation time for a session removed out of band', async () => {
+    // `old` was created first but never recorded as deleted; `recent` was
+    // deleted just now. Newest-deleted-first ⇒ recent before old.
+    await seedSession('demo', 'old')
+    await new Promise((r) => setTimeout(r, 5))
+    await seedSession('demo', 'recent', { deleted: true })
+    const result = await listDeletedSessions('demo')
+    expect(result.map((r) => r.sessionId)).toEqual(['recent', 'old'])
+    expect(result.find((r) => r.sessionId === 'old')?.deletedAt).toBeUndefined()
+  })
+
+  it('carries the recorded death cause and its seen flag on the entry', async () => {
+    await seedSession('demo', 'died')
+    await seedSession('demo', 'removed')
     await recordSessionDeleted('demo', 'died', { reason: 'oom', detail: 'exit code 137' })
     await recordSessionDeleted('demo', 'removed')
     const result = await listDeletedSessions('demo')
     const died = result.find((r) => r.sessionId === 'died')
-    expect(died?.deathReason).toBe('oom')
-    expect(died?.deathDetail).toBe('exit code 137')
+    expect(died).toMatchObject({ deathReason: 'oom', deathDetail: 'exit code 137', seen: false })
     const removed = result.find((r) => r.sessionId === 'removed')
     expect(removed?.deathReason).toBeUndefined()
     expect(removed?.deathDetail).toBeUndefined()
   })
 
+  it('carries the title and background pin', async () => {
+    await seedSession('demo', 'sid', { deleted: true })
+    await setSessionTitle('demo', 'sid', 'fix the parser')
+    await setSessionBackground('demo', 'sid', true)
+    expect((await listDeletedSessions('demo'))[0]).toMatchObject({
+      title: 'fix the parser',
+      background: true,
+    })
+  })
+
   it('caps results to the requested limit after sorting newest-first', async () => {
-    await writeProject('demo')
-    const sessionsDir = path.join(claudeDir('demo'), 'projects', '-workspace')
-    await fs.mkdir(sessionsDir, { recursive: true })
     for (let i = 0; i < 5; i++) {
-      const p = path.join(sessionsDir, `s${i}.jsonl`)
-      await fs.writeFile(p, '{}\n')
-      // On Linux fs.utimes does not affect birthtime, so rely on actual
-      // creation order with a small gap to keep ms-level sort deterministic.
+      await seedSession('demo', `s${i}`, { deleted: true })
       await new Promise((r) => setTimeout(r, 5))
     }
     const result = await listDeletedSessions('demo', 2)
     expect(result.map((r) => r.sessionId)).toEqual(['s4', 's3'])
   })
 
+  it('keeps a pinned session past the cap so its sidebar row survives', async () => {
+    await seedSession('demo', 'pinned', { deleted: true })
+    await setSessionBackground('demo', 'pinned', true)
+    await new Promise((r) => setTimeout(r, 5))
+    for (const id of ['a', 'b', 'c']) {
+      await seedSession('demo', id, { deleted: true })
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    const result = await listDeletedSessions('demo', 2)
+    expect(result.map((r) => r.sessionId).sort()).toEqual(['b', 'c', 'pinned'])
+  })
+
   it('returns all entries when limit is 0 or undefined', async () => {
-    await writeProject('demo')
+    for (const id of ['a', 'b', 'c']) await seedSession('demo', id, { deleted: true })
+    expect(await listDeletedSessions('demo')).toHaveLength(3)
+    expect(await listDeletedSessions('demo', 0)).toHaveLength(3)
+  })
+
+  it('reports last activity from the transcript, and creation time without one', async () => {
     const sessionsDir = path.join(claudeDir('demo'), 'projects', '-workspace')
     await fs.mkdir(sessionsDir, { recursive: true })
-    for (const id of ['a', 'b', 'c']) {
-      await fs.writeFile(path.join(sessionsDir, `${id}.jsonl`), '{}\n')
-    }
-    const noLimit = await listDeletedSessions('demo')
-    const zeroLimit = await listDeletedSessions('demo', 0)
-    expect(noLimit).toHaveLength(3)
-    expect(zeroLimit).toHaveLength(3)
-  })
+    const transcript = path.join(sessionsDir, 'withlog.jsonl')
+    await fs.writeFile(transcript, '{}\n')
+    await fs.utimes(transcript, new Date('2026-01-02'), new Date('2026-01-02'))
+    await seedSession('demo', 'withlog', { deleted: true })
+    await setSessionCapture('demo', 'withlog', { prompt: 'hi', transcriptPath: transcript })
+    await seedSession('demo', 'nolog', { tool: 'opencode', deleted: true })
 
-  it('enumerates opencode sessions from the meta cache with no active pod', async () => {
-    await writeProject('demo')
-    await opencodeStatus.saveOpencodeMeta('demo', 'ocsess', {
-      firstMessage: 'build a thing',
-      capturedAt: '2026-05-01T00:00:00.000Z',
-    })
     const result = await listDeletedSessions('demo')
-    expect(result).toHaveLength(1)
-    expect(result[0]).toMatchObject({
-      sessionId: 'ocsess',
-      projectSlug: 'demo',
-      tool: 'opencode',
-      prompt: 'build a thing',
-    })
+    expect(result.find((r) => r.sessionId === 'withlog')?.lastActiveAt).toBe('2026-01-02 00:00:00')
+    const nolog = result.find((r) => r.sessionId === 'nolog')
+    expect(nolog?.lastActiveAt).toBe(nolog?.createdAt)
   })
 
-  it('populates prompt from the first user message in the Claude transcript', async () => {
-    await writeProject('demo')
+  it('parses the prompt on demand for a session that died before capture, then keeps it', async () => {
     const sessionsDir = path.join(claudeDir('demo'), 'projects', '-workspace')
     await fs.mkdir(sessionsDir, { recursive: true })
     const first = JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello there' } })
     await fs.writeFile(path.join(sessionsDir, 'a.jsonl'), `${first}\n`)
-    const result = await listDeletedSessions('demo')
-    expect(result[0]?.prompt).toBe('hello there')
+    await seedSession('demo', 'a', { deleted: true })
+
+    expect((await listDeletedSessions('demo'))[0]?.prompt).toBe('hello there')
+    // Persisted, so the second listing answers from the row: removing the
+    // transcript can't take the prompt away.
+    await fs.rm(path.join(sessionsDir, 'a.jsonl'))
+    expect((await listDeletedSessions('demo'))[0]?.prompt).toBe('hello there')
+  })
+
+  it('leaves the prompt unset for an opencode session that was never captured', async () => {
+    await seedSession('demo', 'ocsess', { tool: 'opencode', deleted: true })
+    expect((await listDeletedSessions('demo'))[0]).toMatchObject({
+      sessionId: 'ocsess',
+      tool: 'opencode',
+    })
+    expect((await listDeletedSessions('demo'))[0]?.prompt).toBeUndefined()
   })
 })

@@ -1,8 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { execFile } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { promisify } from 'node:util'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
 vi.mock('#platform/k8s/pods', async (importOriginal) => {
@@ -18,6 +16,7 @@ import { listSessionPods, LABEL_PREWARMED } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import { markSessionTerminating, isSessionTerminating, _clearTerminatingForTests } from '#features/sessions/state'
 import { closeDb } from '#platform/db/client'
+import { recordSessionCreated } from '#features/sessions/store'
 import {
   getProjectsDir,
   projectDir,
@@ -147,16 +146,12 @@ describe('listActiveSessions', () => {
     await expect(listActiveSessions()).rejects.toMatchObject({ code: 'RUNTIME_UNAVAILABLE' })
   })
 
-  it('surfaces the tracked reference branch from the repo upstream record', async () => {
+  it('surfaces the base branch recorded at create time', async () => {
     await writeProject('demo')
-    // The upstream record is plain git config in the project repo — no
-    // worktree needed for the read.
-    const repo = path.join(getProjectsDir(), 'demo', 'repo')
-    await fs.mkdir(repo, { recursive: true })
-    const run = promisify(execFile)
-    await run('git', ['init', '-q'], { cwd: repo })
-    await run('git', ['config', 'branch.agent/tracked.remote', 'origin'], { cwd: repo })
-    await run('git', ['config', 'branch.agent/tracked.merge', 'refs/heads/release/2.x'], { cwd: repo })
+    await recordSessionCreated({
+      projectSlug: 'demo', sessionId: 'tracked', tool: 'claude', baseBranch: 'release/2.x',
+    })
+    await recordSessionCreated({ projectSlug: 'demo', sessionId: 'norecord', tool: 'claude' })
 
     mockListPods.mockResolvedValue([
       {

@@ -5,6 +5,7 @@ import { loadCredentials, saveCredentials } from '@yaac/server/features/projects
 import {
   claudeCredentialsPath,
   codexCredentialsPath,
+  credentialsDir,
   opencodeCredentialsPath,
   piCredentialsPath,
   projectClaudeCredentialsFile,
@@ -15,6 +16,7 @@ import {
   loadToolAuthEntry,
   saveToolAuth,
   saveClaudeOAuthBundle,
+  saveClaudeCredentialsFile,
   loadClaudeCredentialsFile,
   loadCodexCredentialsFile,
   loadOpencodeCredentialsFile,
@@ -468,6 +470,47 @@ describe('tool-auth', () => {
       expect(parseOpencodeProvider('openrouter')).toBe('openrouter')
       expect(parseOpencodeProvider(undefined)).toBe('openrouter')
       expect(parseOpencodeProvider('something-else')).toBe('openrouter')
+    })
+  })
+
+  describe('credential file writes', () => {
+    it('never exposes a torn file to a concurrent reader', async () => {
+      // These files are read continuously while they are rewritten — the
+      // plan-usage poller, session registration, `yaac auth update`. A
+      // non-atomic write truncates in place, so an interleaved reader sees
+      // an empty file and concludes there are no credentials (which reset
+      // the plan-usage poller mid-refresh and made its test flaky).
+      const bundle = (token: string): ClaudeOAuthBundle => ({
+        accessToken: token,
+        refreshToken: `ref-${token}`,
+        expiresAt: 4_102_444_800_000,
+        scopes: ['user:inference'],
+        subscriptionType: 'max',
+      })
+      await saveClaudeCredentialsFile({
+        kind: 'oauth', savedAt: '2026-07-09T00:00:00.000Z', claudeAiOauth: bundle('tok-0'),
+      })
+
+      const writes = Array.from({ length: 40 }, (_, i) =>
+        saveClaudeCredentialsFile({
+          kind: 'oauth',
+          savedAt: '2026-07-09T00:00:00.000Z',
+          claudeAiOauth: bundle(`tok-${i + 1}`),
+        }))
+      const reads = Array.from({ length: 200 }, () => loadClaudeCredentialsFile())
+      const [, ...results] = await Promise.all([Promise.all(writes), ...reads])
+
+      // Every read landed on a complete file — some old value, some new,
+      // never null.
+      expect(results.every((r) => r?.kind === 'oauth')).toBe(true)
+    })
+
+    it('leaves no temp file behind', async () => {
+      await saveClaudeCredentialsFile({
+        kind: 'api-key', savedAt: '2026-07-09T00:00:00.000Z', apiKey: 'sk-test',
+      })
+      const entries = await fs.readdir(credentialsDir())
+      expect(entries.filter((e) => e.includes('.tmp-'))).toEqual([])
     })
   })
 })

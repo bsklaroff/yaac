@@ -31,6 +31,24 @@ export function isSerializedChord(value: unknown): value is SerializedChord {
 /** `preferences` row key for the default session tool. */
 export const DEFAULT_TOOL_KEY = 'default_tool'
 
+/** `preferences` row key marking that pre-existing sessions have been
+ *  adopted into `agent_sessions` (see backfillSessions). */
+export const SESSIONS_BACKFILLED_KEY = 'sessions_backfilled'
+
+/** Whether a one-shot migration step has already run. */
+export async function isFlagSet(key: string): Promise<boolean> {
+  const db = await getDb()
+  const rows = await db.select().from(preferences).where(eq(preferences.key, key))
+  return rows[0]?.value === '1'
+}
+
+/** Mark a one-shot migration step as done. Idempotent. */
+export async function setFlag(key: string): Promise<void> {
+  const db = await getDb()
+  await db.insert(preferences).values({ key, value: '1' })
+    .onConflictDoUpdate({ target: preferences.key, set: { value: '1' } })
+}
+
 export async function getDefaultTool(): Promise<AgentTool | undefined> {
   const db = await getDb()
   const rows = await db.select().from(preferences).where(eq(preferences.key, DEFAULT_TOOL_KEY))

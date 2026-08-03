@@ -359,92 +359,84 @@ describe('with seeded projects', () => {
       expect(stdout).toContain('No deleted sessions for project "proj-nodel"')
     })
 
-    it('session list --deleted renders seeded Claude Code JSONL entries with prompts', async () => {
-      const slug = 'proj-del'
-      const repo = path.join(testEnv.scratchDir, slug)
-      await createTestRepo(repo)
-      await addTestProject(repo)
+    /**
+     * Deleted-session fixtures. The listing reads recorded session rows, so
+     * these are adopted the way any session predating the `agent_sessions` table
+     * is: the server's startup sweep takes the transcripts they left behind.
+     * That sweep is one-shot (gated on the table being empty), so every
+     * fixture in this file has to be on disk before the single restart
+     * below — hence one beforeAll rather than per-test seeding.
+     */
+    const DEL_SLUG = 'proj-del'
+    const CAP_SLUG = 'proj-del-many'
+    const ALL_SLUG = 'proj-del-all'
+    const promptSessionId = crypto.randomUUID()
+    const capIds = Array.from(
+      { length: 5 },
+      (_, i) => `${String(i).padStart(8, '0')}-aaaa-bbbb-cccc-dddddddddddd`,
+    )
+    const allIds = Array.from({ length: 3 }, () => crypto.randomUUID())
 
-      // Seed a Claude Code transcript file so listDeletedSessions() picks it up.
-      const sessionsDir = path.join(
+    async function seedTranscript(slug: string, sessionId: string, body: string): Promise<void> {
+      const dir = path.join(
         testEnv.dataDir, 'projects', slug, 'claude', 'projects', '-workspace',
       )
-      await fs.mkdir(sessionsDir, { recursive: true })
-      const sessionId = crypto.randomUUID()
+      await fs.mkdir(dir, { recursive: true })
+      await fs.writeFile(path.join(dir, `${sessionId}.jsonl`), body)
+    }
+
+    beforeAll(async () => {
+      for (const slug of [DEL_SLUG, CAP_SLUG, ALL_SLUG]) {
+        const repo = path.join(testEnv.scratchDir, slug)
+        await createTestRepo(repo)
+        await addTestProject(repo)
+      }
       const firstMsg = JSON.stringify({
         type: 'user',
         message: { role: 'user', content: 'port the lexer to rust' },
       })
-      await fs.writeFile(
-        path.join(sessionsDir, `${sessionId}.jsonl`),
-        [
-          `{"type":"permission-mode","sessionId":"${sessionId}"}`,
-          firstMsg,
-          '',
-        ].join('\n'),
-      )
+      await seedTranscript(DEL_SLUG, promptSessionId, [
+        `{"type":"permission-mode","sessionId":"${promptSessionId}"}`,
+        firstMsg,
+        '',
+      ].join('\n'))
+      for (const id of capIds) await seedTranscript(CAP_SLUG, id, '{"type":"permission-mode"}\n')
+      for (const id of allIds) await seedTranscript(ALL_SLUG, id, '{"type":"permission-mode"}\n')
 
+      // Restart so the sweep runs against the seeded data dir. The CLI finds
+      // the new server through the lock file, like any other client.
+      await server.stop()
+      server = await spawnYaacServer(testEnv.env)
+    })
+
+    it('session list --deleted renders adopted sessions with their prompts', async () => {
       const { stdout, exitCode } = await runYaac(
-        testEnv.env, 'session', 'list', slug, '--deleted',
+        testEnv.env, 'session', 'list', DEL_SLUG, '--deleted',
       )
       expect(exitCode).toBe(0)
-      expect(stdout).toContain(sessionId.slice(0, 8))
-      expect(stdout).toContain(slug)
+      expect(stdout).toContain(promptSessionId.slice(0, 8))
+      expect(stdout).toContain(DEL_SLUG)
       expect(stdout).toContain('claude')
       expect(stdout).toContain('PROMPT')
       expect(stdout).toContain('port the lexer to rust')
     })
 
     it('session list --deleted -n caps the rendered rows and hints at the cap', async () => {
-      const slug = 'proj-del-many'
-      const repo = path.join(testEnv.scratchDir, slug)
-      await createTestRepo(repo)
-      await addTestProject(repo)
-
-      const sessionsDir = path.join(
-        testEnv.dataDir, 'projects', slug, 'claude', 'projects', '-workspace',
-      )
-      await fs.mkdir(sessionsDir, { recursive: true })
-      const ids = Array.from({ length: 5 }, (_, i) => `${String(i).padStart(8, '0')}-aaaa-bbbb-cccc-dddddddddddd`)
-      for (const id of ids) {
-        await fs.writeFile(
-          path.join(sessionsDir, `${id}.jsonl`),
-          '{"type":"permission-mode"}\n',
-        )
-      }
-
       const { stdout, exitCode } = await runYaac(
-        testEnv.env, 'session', 'list', slug, '--deleted', '-n', '2',
+        testEnv.env, 'session', 'list', CAP_SLUG, '--deleted', '-n', '2',
       )
       expect(exitCode).toBe(0)
-      const matches = ids.filter((id) => stdout.includes(id.slice(0, 8)))
+      const matches = capIds.filter((id) => stdout.includes(id.slice(0, 8)))
       expect(matches).toHaveLength(2)
       expect(stdout).toMatch(/showing most recent 2/)
     })
 
     it('session list --deleted --all omits the cap hint', async () => {
-      const slug = 'proj-del-all'
-      const repo = path.join(testEnv.scratchDir, slug)
-      await createTestRepo(repo)
-      await addTestProject(repo)
-
-      const sessionsDir = path.join(
-        testEnv.dataDir, 'projects', slug, 'claude', 'projects', '-workspace',
-      )
-      await fs.mkdir(sessionsDir, { recursive: true })
-      const ids = Array.from({ length: 3 }, () => crypto.randomUUID())
-      for (const id of ids) {
-        await fs.writeFile(
-          path.join(sessionsDir, `${id}.jsonl`),
-          '{"type":"permission-mode"}\n',
-        )
-      }
-
       const { stdout, exitCode } = await runYaac(
-        testEnv.env, 'session', 'list', slug, '--deleted', '--all',
+        testEnv.env, 'session', 'list', ALL_SLUG, '--deleted', '--all',
       )
       expect(exitCode).toBe(0)
-      for (const id of ids) expect(stdout).toContain(id.slice(0, 8))
+      for (const id of allIds) expect(stdout).toContain(id.slice(0, 8))
       expect(stdout).not.toMatch(/showing most recent/)
     })
   })

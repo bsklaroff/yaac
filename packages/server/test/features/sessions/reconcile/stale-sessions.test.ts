@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type * as podsModule from '#platform/k8s/pods'
 import type { TmuxLiveness } from '#features/sessions/cleanup'
 
@@ -18,24 +18,40 @@ vi.mock('#features/sessions/cleanup', () => ({
 
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
-// The reaper reads the deleted-store to tell a yaac-issued delete (whose
+// The reaper reads session rows to tell a yaac-issued delete (whose
 // in-memory terminating mark was lost) from a real out-of-band delete —
 // stub it so these tests never open a DB.
-vi.mock('#features/sessions/deleted-store', () => ({ listDeletedInfo: vi.fn() }))
+vi.mock('#features/sessions/store', () => ({
+  listDeletedSessionIds: vi.fn(),
+  listLiveSessionRows: vi.fn(),
+  recordSessionDeleted: vi.fn(),
+}))
+vi.mock('#features/sessions/provisioning', () => ({ listProvisioning: vi.fn(() => []) }))
 
 import { listSessionPods, listSessionJobs } from '#platform/k8s/pods'
 import { probeTmuxLiveness, probeAgentPaneState, cleanupSessionDetached } from '#features/sessions/cleanup'
 import { markSessionTerminating, _clearTerminatingForTests } from '#features/sessions/state'
-import { listDeletedInfo } from '#features/sessions/deleted-store'
+import {
+  listDeletedSessionIds,
+  listLiveSessionRows,
+  recordSessionDeleted,
+} from '#features/sessions/store'
+import { listProvisioning } from '#features/sessions/provisioning'
 import { serverLog } from '#log'
-import { reconcileStaleSessions } from '#features/sessions/reconcile/stale-sessions'
+import {
+  reconcileStaleSessions,
+  _clearMissingPodTimersForTests,
+} from '#features/sessions/reconcile/stale-sessions'
 
 const mockListPods = vi.mocked(listSessionPods)
 const mockListJobs = vi.mocked(listSessionJobs)
 const mockProbe = vi.mocked(probeTmuxLiveness)
 const mockPaneProbe = vi.mocked(probeAgentPaneState)
 const mockCleanup = vi.mocked(cleanupSessionDetached)
-const mockListDeletedInfo = vi.mocked(listDeletedInfo)
+const mockListDeletedIds = vi.mocked(listDeletedSessionIds)
+const mockListLiveRows = vi.mocked(listLiveSessionRows)
+const mockRecordDeleted = vi.mocked(recordSessionDeleted)
+const mockListProvisioning = vi.mocked(listProvisioning)
 const mockLog = vi.mocked(serverLog)
 
 // createdAtMs=1 (epoch) is always older than any grace window.
@@ -65,7 +81,10 @@ describe('reconcileStaleSessions', () => {
     mockProbe.mockReset()
     mockPaneProbe.mockReset().mockResolvedValue('started')
     mockCleanup.mockClear()
-    mockListDeletedInfo.mockReset().mockResolvedValue(new Map())
+    mockListDeletedIds.mockReset().mockResolvedValue(new Set())
+    mockListLiveRows.mockReset().mockResolvedValue([])
+    mockRecordDeleted.mockReset().mockResolvedValue(undefined)
+    mockListProvisioning.mockReset().mockReturnValue([])
     mockLog.mockClear()
     _clearTerminatingForTests()
   })
@@ -148,14 +167,12 @@ describe('reconcileStaleSessions', () => {
 
   it('does NOT mislabel a yaac-deleted terminating pod whose mark was lost', async () => {
     // Same pod state as the out-of-band case (terminating, no in-memory mark:
-    // dropped by a restart or the TTL), but the durable deleted-store row
+    // dropped by a restart or the TTL), but the row's recorded deletedAt
     // proves yaac issued this delete. Resume teardown WITHOUT restamping so
     // the real cause (a plain user delete) survives — no "removed outside
     // yaac".
     mockListPods.mockResolvedValue([{ ...pod('term-ours'), terminating: true }])
-    mockListDeletedInfo.mockResolvedValue(new Map([
-      ['term-ours', { deletedAt: new Date(0), seen: false }],
-    ]))
+    mockListDeletedIds.mockResolvedValue(new Set(['proj/term-ours']))
 
     await reconcileStaleSessions()
 
@@ -265,5 +282,106 @@ describe('reconcileStaleSessions', () => {
     expect(mockCleanup).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: 'zombie-1' }),
     )
+  })
+
+  describe('rows whose pod is missing', () => {
+    const row = (sessionId: string, ran = false) => ({
+      projectSlug: 'proj',
+      sessionId,
+      ran,
+    })
+
+    beforeEach(() => {
+      _clearMissingPodTimersForTests()
+      vi.useFakeTimers({ toFake: ['Date'] })
+    })
+    afterEach(() => vi.useRealTimers())
+
+    /** Advance the clock past the grace and tick again. */
+    async function tickPastGrace(): Promise<void> {
+      vi.setSystemTime(Date.now() + 31 * 60_000)
+      await reconcileStaleSessions()
+    }
+
+    it('records nothing on the first tick a pod is missing', async () => {
+      mockListPods.mockResolvedValue([])
+      mockListLiveRows.mockResolvedValue([row('abandoned')])
+
+      await reconcileStaleSessions()
+
+      expect(mockRecordDeleted).not.toHaveBeenCalled()
+    })
+
+    it('records an abandoned create once it has stayed podless for the window', async () => {
+      mockListPods.mockResolvedValue([])
+      mockListLiveRows.mockResolvedValue([row('abandoned')])
+
+      await reconcileStaleSessions()
+      await tickPastGrace()
+
+      expect(mockRecordDeleted).toHaveBeenCalledWith('proj', 'abandoned', {
+        reason: 'never-started',
+        detail: 'session create did not complete',
+      })
+    })
+
+    it('calls a session that ran orphaned, not never-started', async () => {
+      // A captured prompt or transcript path proves the agent got going, so
+      // its Job went away out-of-band rather than never arriving.
+      mockListPods.mockResolvedValue([])
+      mockListLiveRows.mockResolvedValue([row('had-history', true)])
+
+      await reconcileStaleSessions()
+      await tickPastGrace()
+
+      expect(mockRecordDeleted).toHaveBeenCalledWith('proj', 'had-history', {
+        reason: 'orphaned',
+        detail: 'Job and pod deleted out-of-band',
+      })
+    })
+
+    it('a single empty-but-successful pod listing condemns nothing', async () => {
+      // The dangerous case: an informer cache before its initial sync
+      // returns [] without throwing. Every long-lived session looks podless
+      // for one tick, and nothing un-marks a death but a restart.
+      mockListLiveRows.mockResolvedValue([row('old-1', true), row('old-2', true)])
+      mockListPods.mockResolvedValue([pod('old-1'), pod('old-2')])
+      mockProbe.mockResolvedValue('alive' as TmuxLiveness)
+      await reconcileStaleSessions()
+
+      mockListPods.mockResolvedValue([]) // the bad listing
+      await reconcileStaleSessions()
+
+      // …and the pods are back on the next tick, well before the window.
+      mockListPods.mockResolvedValue([pod('old-1'), pod('old-2')])
+      vi.setSystemTime(Date.now() + 31 * 60_000)
+      await reconcileStaleSessions()
+
+      expect(mockRecordDeleted).not.toHaveBeenCalled()
+    })
+
+    it('exempts a session this process is still provisioning', async () => {
+      mockListPods.mockResolvedValue([])
+      mockListLiveRows.mockResolvedValue([row('slow-build')])
+      mockListProvisioning.mockReturnValue([
+        { sessionId: 'slow-build', projectSlug: 'proj', tool: 'claude', kind: 'create', message: 'Building…', createdAt: '2026-08-01 00:00:00' },
+      ])
+
+      await reconcileStaleSessions()
+      await tickPastGrace()
+
+      expect(mockRecordDeleted).not.toHaveBeenCalled()
+    })
+
+    it('leaves a row alone while its pod is running', async () => {
+      mockListPods.mockResolvedValue([pod('healthy')])
+      mockProbe.mockResolvedValue('alive' as TmuxLiveness)
+      mockListLiveRows.mockResolvedValue([row('healthy', true)])
+
+      await reconcileStaleSessions()
+      await tickPastGrace()
+
+      expect(mockRecordDeleted).not.toHaveBeenCalled()
+    })
   })
 })

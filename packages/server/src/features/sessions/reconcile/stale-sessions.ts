@@ -3,10 +3,34 @@ import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
 import { classifySessionPods } from '#features/sessions/classify'
 import { probeAgentPaneState, probeTmuxLiveness, cleanupSessionDetached } from '#features/sessions/cleanup'
 import { isSessionTerminating } from '#features/sessions/state'
-import { listDeletedInfo } from '#features/sessions/deleted-store'
+import {
+  listDeletedSessionIds,
+  listLiveSessionRows,
+  recordSessionDeleted,
+} from '#features/sessions/store'
+import { listProvisioning } from '#features/sessions/provisioning'
 import { serverLog } from '#log'
 import { testEnv } from '@yaac/shared/env'
 import type { StaleSessionInfo } from '@yaac/shared/types'
+
+/**
+ * How long a recorded session must be CONTINUOUSLY observed with no pod
+ * before the reaper records it as dead. Must clear the slowest legitimate
+ * create — a cold image build plus a vcluster boot — since the row is
+ * written before any of that starts. In-process creates are exempt via the
+ * provisioning registry, so this only bounds the crash case.
+ */
+const PODLESS_ROW_GRACE_MS = 30 * 60_000
+
+/** `<projectSlug>/<sessionId>` → epoch ms the row was first seen with no
+ *  pod. Cleared the moment a pod shows up, so only a sustained absence ever
+ *  reaches the grace. */
+const missingSince = new Map<string, number>()
+
+/** Test helper: forget which rows are being watched for a missing pod. */
+export function _clearMissingPodTimersForTests(): void {
+  missingSince.clear()
+}
 
 /**
  * Tear down stale session Jobs (pod stopped, or running with a dead
@@ -76,8 +100,8 @@ export async function reconcileStaleSessions(snapshot?: TickSnapshot): Promise<v
   // `kubectl delete pod`, or a yaac delete whose in-memory mark was lost
   // (server restart, TTL). Re-issuing the idempotent Job delete resumes the
   // teardown either way; the cause split below (ours vs out-of-band) is
-  // decided from the durable deleted-store, not the mark. Deletes we're still
-  // marking stay skipped here.
+  // decided from the session row's recorded deletion, not the mark. Deletes
+  // we're still marking stay skipped here.
   const stuckTerminating: Array<{ jobName: string; projectSlug: string; sessionId: string }> = []
   for (const p of terminating) {
     if (!p.terminating || !p.projectSlug || !p.sessionId) continue
@@ -90,22 +114,73 @@ export async function reconcileStaleSessions(snapshot?: TickSnapshot): Promise<v
   // A stuck-terminating pod that yaac itself deleted (its in-memory mark was
   // lost to a server restart or the TTL while teardown dragged) looks, by pod
   // state alone, exactly like a real out-of-band `kubectl delete`. The durable
-  // tell is the deleted-store row yaac writes when it issues a delete: a
-  // session with a record was ours, so resume its (idempotent) teardown but
+  // tell is the `deletedAt` yaac stamps when it issues a delete: a session
+  // carrying one was ours, so resume its (idempotent) teardown but
   // preserve the recorded cause — restamping it "removed outside yaac" would
   // clobber a plain user delete (or an earlier reaped death). Only a
   // record-less terminating pod is genuinely out-of-band.
   const ourStuck: typeof stuckTerminating = []
   const externalStuck: typeof stuckTerminating = []
   if (stuckTerminating.length > 0) {
-    const deletedBySlug = new Map(await Promise.all(
-      [...new Set(stuckTerminating.map((t) => t.projectSlug))].map(async (slug) =>
-        [slug, await listDeletedInfo(slug).catch((): Map<string, unknown> => new Map())] as const),
-    ))
+    const recorded = await listDeletedSessionIds().catch(() => new Set<string>())
     for (const t of stuckTerminating) {
-      if (deletedBySlug.get(t.projectSlug)?.has(t.sessionId)) ourStuck.push(t)
+      if (recorded.has(`${t.projectSlug}/${t.sessionId}`)) ourStuck.push(t)
       else externalStuck.push(t)
     }
+  }
+
+  // Rows with no pod: the row is written before the Job, so a create killed
+  // in between (server crash, kill -9) leaves a session recorded as live
+  // with nothing backing it — invisible to the pod-driven list and absent
+  // from the deleted listing, but permanently on the capture step's work
+  // list.
+  //
+  // The window is measured from when the pod was first OBSERVED missing,
+  // never from the row's age. A pod listing that succeeds while empty or
+  // partial (an informer cache before its initial sync, say) would
+  // otherwise condemn every session older than the grace in a single tick,
+  // while their pods are running — and nothing un-marks a death but a
+  // restart. Requiring the same row to look podless across the whole window
+  // makes one bad listing cost nothing. The map is in-memory, so a server
+  // restart re-arms every timer, which errs toward not recording.
+  const provisioningIds = new Set(listProvisioning().map((p) => p.sessionId))
+  const livePodIds = new Set(pods.map((p) => p.sessionId))
+  try {
+    const liveRows = await listLiveSessionRows()
+    const seen = new Set<string>()
+    for (const row of liveRows) {
+      const rowKey = `${row.projectSlug}/${row.sessionId}`
+      seen.add(rowKey)
+      if (livePodIds.has(row.sessionId) || provisioningIds.has(row.sessionId)) {
+        missingSince.delete(rowKey)
+        continue
+      }
+      const since = missingSince.get(rowKey)
+      if (since === undefined) {
+        missingSince.set(rowKey, nowMs)
+        continue
+      }
+      if (nowMs - since < PODLESS_ROW_GRACE_MS) continue
+      missingSince.delete(rowKey)
+      // A row that captured a prompt or a transcript path had an agent
+      // running, so its Job went away out-of-band; one that captured
+      // neither never got that far.
+      const cause = row.ran
+        ? { reason: 'orphaned' as const, detail: 'Job and pod deleted out-of-band' }
+        : { reason: 'never-started' as const, detail: 'session create did not complete' }
+      serverLog(
+        `[server] stale-reaper: recording session=${row.sessionId} as ${cause.reason}`
+        + ` (no pod for ${Math.round((nowMs - since) / 60_000)} min)`,
+      )
+      await recordSessionDeleted(row.projectSlug, row.sessionId, cause)
+    }
+    // Forget timers for rows that are no longer live (deleted, restarted,
+    // or their project removed), so the map tracks only what it watches.
+    for (const rowKey of missingSince.keys()) {
+      if (!seen.has(rowKey)) missingSince.delete(rowKey)
+    }
+  } catch {
+    // DB unavailable — the next tick retries.
   }
 
   const targets = [

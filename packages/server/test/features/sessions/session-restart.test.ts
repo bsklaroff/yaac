@@ -12,8 +12,9 @@ vi.mock('#features/sessions/cleanup', () => ({
   cleanupSession: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('#features/sessions/deleted-store', () => ({
+vi.mock('#features/sessions/store', () => ({
   clearSessionDeleted: vi.fn().mockResolvedValue(undefined),
+  findSessionRow: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('#features/sessions/create', () => ({
@@ -24,7 +25,7 @@ import { restartSession } from '#features/sessions/restart'
 import { listSessionPods, type SessionPod } from '#platform/k8s/pods'
 import type * as podsModule from '#platform/k8s/pods'
 import { cleanupSession } from '#features/sessions/cleanup'
-import { clearSessionDeleted } from '#features/sessions/deleted-store'
+import { clearSessionDeleted } from '#features/sessions/store'
 import { createSession, type SessionCreateResult } from '#features/sessions/create'
 
 const mockListPods = vi.mocked(listSessionPods)
@@ -82,9 +83,9 @@ describe('restartSession', () => {
     expect(mockClearDeleted).not.toHaveBeenCalled()
   })
 
-  it('clears the record in the deleted-session (no live pod) path too', async () => {
-    // resolveRestartTarget falls back to the worktree scan; with no pods and
-    // no worktrees this throws NOT_FOUND — covered here only to pin that the
+  it('leaves the record alone when the session cannot be resolved', async () => {
+    // resolveRestartTarget falls back to the recorded row; with no pods and
+    // no row this throws NOT_FOUND — covered here only to pin that the
     // record is untouched when resolution fails.
     mockListPods.mockResolvedValue([])
     await expect(restartSession('nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })

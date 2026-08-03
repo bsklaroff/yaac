@@ -3,7 +3,11 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { buildApp } from '@yaac/server/main/server'
 import { makeTestApiClient } from '@yaac/test-utils/api'
 import { closeDb } from '@yaac/server/platform/db/client'
-import { recordSessionDeleted, listDeletedInfo } from '@yaac/server/features/sessions/deleted-store'
+import {
+  recordSessionCreated,
+  recordSessionDeleted,
+  listSessionRows,
+} from '@yaac/server/features/sessions/store'
 
 describe('POST /session/mark-death-seen', () => {
   let tmpDir: string
@@ -17,10 +21,14 @@ describe('POST /session/mark-death-seen', () => {
     await cleanupTempDir(tmpDir)
   })
 
-  it('marks a recorded death seen on its deleted_sessions row', async () => {
+  const seen = async (sessionId: string): Promise<boolean | undefined> =>
+    (await listSessionRows('proj')).find((r) => r.sessionId === sessionId)?.deathSeen
+
+  it('marks a recorded death seen on its session row', async () => {
     // Seed an abnormal death (unseen by default).
+    await recordSessionCreated({ projectSlug: 'proj', sessionId: 'sid-1', tool: 'claude' })
     await recordSessionDeleted('proj', 'sid-1', { reason: 'oom' })
-    expect((await listDeletedInfo('proj')).get('sid-1')?.seen).toBe(false)
+    expect(await seen('sid-1')).toBe(false)
 
     const client = makeTestApiClient(buildApp({ secret: 'shh', buildId: 'test' }))
     const res = await client.session['mark-death-seen'].$post({
@@ -28,7 +36,7 @@ describe('POST /session/mark-death-seen', () => {
     })
     expect(res.status).toBe(204)
 
-    expect((await listDeletedInfo('proj')).get('sid-1')?.seen).toBe(true)
+    expect(await seen('sid-1')).toBe(true)
   })
 
   it('is a 204 no-op for a session with no row (best-effort)', async () => {
@@ -37,7 +45,7 @@ describe('POST /session/mark-death-seen', () => {
       json: { projectSlug: 'proj', sessionId: 'ghost' },
     })
     expect(res.status).toBe(204)
-    expect((await listDeletedInfo('proj')).size).toBe(0)
+    expect(await listSessionRows('proj')).toEqual([])
   })
 
   it('rejects a malformed body', async () => {

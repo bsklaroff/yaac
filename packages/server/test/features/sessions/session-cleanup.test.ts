@@ -65,9 +65,9 @@ vi.mock('node:child_process', async () => {
 // real server.log on disk.
 vi.mock('#log', () => ({ serverLog: vi.fn() }))
 
-// The deleted-store writes through PGlite — stub it so cleanup tests never
+// The session store writes through PGlite — stub it so cleanup tests never
 // open a DB, and so cause forwarding can be asserted.
-vi.mock('#features/sessions/deleted-store', () => ({
+vi.mock('#features/sessions/store', () => ({
   recordSessionDeleted: vi.fn().mockResolvedValue(undefined),
 }))
 
@@ -90,7 +90,7 @@ import {
 } from '#features/sessions/cleanup'
 import { isSessionTerminating, _clearTerminatingForTests } from '#features/sessions/state'
 import { setSessionStreamHealth, _resetSessionStatusStoreForTests } from '#features/sessions/status-store'
-import { recordSessionDeleted } from '#features/sessions/deleted-store'
+import { recordSessionDeleted } from '#features/sessions/store'
 import { serverLog } from '#log'
 import { setDataDir } from '@yaac/shared/project-paths'
 
@@ -315,7 +315,7 @@ describe('cleanupSession', () => {
     expect(salvageOrder).toBeLessThan(deleteOrder)
   })
 
-  it('forwards the death cause to the deleted-store', async () => {
+  it('forwards the death cause to the session store', async () => {
     mockRecordDeleted.mockClear()
     execFileMock.mockReset()
     execFileMock.mockResolvedValue(undefined)
@@ -429,7 +429,7 @@ describe('cleanupSessionDetached', () => {
     expect(logged).not.toContain('cause=')
   })
 
-  it('preserveDeletedRecord skips the deleted-store write, leaving the cause intact', async () => {
+  it('preserveDeletedRecord skips the deletion write, leaving the cause intact', async () => {
     // Resuming a teardown yaac already recorded (its terminating mark was lost)
     // must not re-record — that would clobber the real cause with a stray one.
     mockRecordDeleted.mockClear()

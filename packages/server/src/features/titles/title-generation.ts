@@ -1,9 +1,8 @@
 /**
- * Reconcile step that gives otherwise-untitled sessions a
- * model-generated title summarizing their first user message, written into
- * the same per-project store as user renames (`session-titles.json`) — a
- * rename simply overwrites the entry, and only sessions with no title at
- * all are eligible, so a user's title is never clobbered.
+ * Reconcile step that gives otherwise-untitled sessions a model-generated
+ * title summarizing their first user message, written to the same session
+ * row as a user rename — a rename simply overwrites it, and only sessions
+ * with no title at all are eligible, so a user's title is never clobbered.
  *
  * Each tick fires one detached task per eligible session — the tick body
  * never blocks on a model download or inference (those serialize inside
@@ -12,7 +11,7 @@
  * don't-regenerate after a user deliberately clears a generated title.
  */
 import { listActiveSessions } from '#features/sessions/list'
-import { setSessionTitle } from '#features/titles/titles'
+import { setSessionTitle } from '#features/sessions/store'
 import { shouldGenerateTitle, summarizeTitle } from '#features/titles/title-summarizer'
 import { notifySessionListChanged } from '#features/sessions/notify'
 import { serverLog } from '#log'

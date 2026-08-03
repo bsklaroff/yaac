@@ -195,11 +195,38 @@ vi.mock('@yaac/server/features/sessions/agents/opencode', () => ({
 vi.mock('@yaac/server/features/sessions/forwarders/port-forwarders', () => ({
   buildStatusRight: vi.fn().mockReturnValue(' stub-status '),
   registerSessionForwarders: vi.fn(),
+  stopSessionForwarders: vi.fn(),
 } satisfies Partial<typeof portForwardersModule>))
+
+// The session row is a real DB write; this file mocks everything around
+// createSession, so it mocks the store too. `recordSessionCreated` throwing
+// is a failed create (see the teardown case below), not a swallowed hiccup.
+vi.mock('@yaac/server/features/sessions/store', () => ({
+  recordSessionCreated: vi.fn(),
+  recordSessionDeleted: vi.fn(),
+  deleteSessionRow: vi.fn(),
+  setSessionBaseBranch: vi.fn(),
+  getSessionRow: vi.fn(),
+  priorDeletionOf: vi.fn(),
+  restoreSessionDeletion: vi.fn(),
+} satisfies Partial<typeof storeModule>))
+
+vi.mock('@yaac/server/features/sessions/cleanup', () => ({
+  cleanupSessionDetached: vi.fn(),
+} satisfies Partial<typeof cleanupModule>))
 
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import { createSession } from '@yaac/server/features/sessions/create'
+import {
+  deleteSessionRow,
+  getSessionRow,
+  priorDeletionOf,
+  recordSessionCreated,
+  recordSessionDeleted,
+  restoreSessionDeletion,
+  setSessionBaseBranch,
+} from '@yaac/server/features/sessions/store'
 import { buildAgentCmd, resolveInitWindows } from '@yaac/server/features/sessions/agent-command'
 import { retoolSpare } from '@yaac/server/features/sessions/spare-pool'
 import { sessionCreate } from '#commands/session-create'
@@ -288,6 +315,9 @@ describe('createSession', () => {
   beforeEach(() => {
     vi.resetAllMocks()
 
+    // Async store reads must resolve, not return undefined: createSession
+    // awaits and `.catch()`es them.
+    vi.mocked(getSessionRow).mockResolvedValue(undefined)
     mockAccess.mockResolvedValue(undefined)
     mockMkdir.mockResolvedValue(undefined)
     mockWriteFile.mockResolvedValue(undefined)
@@ -349,6 +379,75 @@ describe('createSession', () => {
     )
     const upstreamCall = mockSessionExec.mock.calls.find(([, cmd]) => cmd.includes('--set-upstream-to'))
     expect(upstreamCall?.[1]).toContain("'origin/dev'")
+  })
+
+  it('records the session with its tool and initial prompt, before the Job', async () => {
+    const result = await createSession('demo', { tool: 'codex', branch: 'dev', initialPrompt: 'ship it' })
+    expect(vi.mocked(recordSessionCreated)).toHaveBeenCalledWith({
+      projectSlug: 'demo',
+      sessionId: result?.sessionId,
+      tool: 'codex',
+      prompt: 'ship it',
+    })
+    // Ordering is the point: no pod can exist without a row.
+    const recordOrder = vi.mocked(recordSessionCreated).mock.invocationCallOrder[0] ?? Infinity
+    const applyOrder = mockApply.mock.invocationCallOrder[0] ?? 0
+    expect(recordOrder).toBeLessThan(applyOrder)
+  })
+
+  it('fails the create before provisioning anything when the row cannot be written', async () => {
+    // The row goes in before the Job, so a write failure costs nothing —
+    // no image, no worktree checkout, no pod.
+    vi.mocked(recordSessionCreated).mockRejectedValueOnce(new Error('disk full'))
+    await expect(createSession('demo', { tool: 'claude' })).rejects.toThrow('disk full')
+    expect(mockApply).not.toHaveBeenCalled()
+  })
+
+  it('rolls the row back when a fresh create gives up', async () => {
+    mockWaitForPodReady.mockRejectedValue(new Error('pod never became ready'))
+    await expect(createSession('demo', { tool: 'claude' })).rejects.toThrow()
+    expect(vi.mocked(deleteSessionRow)).toHaveBeenCalledWith('demo', expect.any(String))
+  })
+
+  it('re-marks a failed restart as deleted instead of erasing its history', async () => {
+    // A resume re-stamped a row that already carries the session's title,
+    // pin and captured prompt; a failed restart must not take those with it.
+    mockWaitForPodReady.mockRejectedValue(new Error('pod never became ready'))
+    await expect(
+      createSession('demo', { tool: 'claude', resume: true, sessionId: 'prior-session' }),
+    ).rejects.toThrow()
+    expect(vi.mocked(deleteSessionRow)).not.toHaveBeenCalled()
+    expect(vi.mocked(recordSessionDeleted)).toHaveBeenCalledWith('demo', 'prior-session')
+  })
+
+  it('restores the exact prior deletion when a restart of a died session fails', async () => {
+    // Restarting an OOM-killed session and failing must not lose how it
+    // died, nor re-raise a notification the user already dismissed.
+    const prior = {
+      deletedAt: new Date('2026-07-30T00:00:00Z'),
+      deathReason: 'oom' as const,
+      deathDetail: 'exit code 137',
+      deathSeen: true,
+    }
+    vi.mocked(priorDeletionOf).mockReturnValueOnce(prior)
+    mockWaitForPodReady.mockRejectedValue(new Error('pod never became ready'))
+
+    await expect(
+      createSession('demo', { tool: 'claude', resume: true, sessionId: 'died-session' }),
+    ).rejects.toThrow()
+
+    expect(vi.mocked(restoreSessionDeletion)).toHaveBeenCalledWith('demo', 'died-session', prior)
+    expect(vi.mocked(recordSessionDeleted)).not.toHaveBeenCalled()
+  })
+
+  it('stamps the resolved base branch after provisioning', async () => {
+    const result = await createSession('demo', { tool: 'claude', branch: 'dev' })
+    expect(vi.mocked(setSessionBaseBranch)).toHaveBeenCalledWith('demo', result?.sessionId, 'dev')
+  })
+
+  it('does not record a prewarmed spare — a spare is not a session until claimed', async () => {
+    await createSession('demo', { tool: 'claude', prewarm: true })
+    expect(vi.mocked(recordSessionCreated)).not.toHaveBeenCalled()
   })
 
   it('falls back to the configured referenceBranch, with an explicit branch winning', async () => {
@@ -1055,6 +1154,8 @@ import type * as projectConfigModule from '@yaac/server/features/projects/config
 import type * as credentialsModule from '@yaac/server/features/projects/credentials'
 import type * as gitModule from '@yaac/server/platform/git'
 import type * as portForwardersModule from '@yaac/server/features/sessions/forwarders/port-forwarders'
+import type * as storeModule from '@yaac/server/features/sessions/store'
+import type * as cleanupModule from '@yaac/server/features/sessions/cleanup'
 
 // sessionCreate posts to the streaming /session/create route via the `api`
 // singleton; the leaf resolves to a raw streaming Response (the client only

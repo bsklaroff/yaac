@@ -1,0 +1,134 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import os from 'node:os'
+import { setDataDir, claudeDir, codexTranscriptDir, piSessionsDir } from '@yaac/shared/project-paths'
+import {
+  listPiJsonlFiles,
+  piSessionLogs,
+  scanProjectTranscripts,
+  sessionIdFromPiLog,
+  sessionTranscriptPath,
+  transcriptLastActiveMs,
+} from '#features/sessions/transcripts'
+
+const slug = 'demo'
+
+/** Host path of a claude transcript — the layout the module owns, spelled
+ *  out here so the test would catch a change to it. */
+function claudeLog(sessionId: string): string {
+  return path.join(claudeDir(slug), 'projects', '-workspace', `${sessionId}.jsonl`)
+}
+
+async function write(file: string, body = '{}\n'): Promise<string> {
+  await fs.mkdir(path.dirname(file), { recursive: true })
+  await fs.writeFile(file, body)
+  return file
+}
+
+describe('transcripts', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-transcripts-'))
+    setDataDir(tmpDir)
+  })
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true })
+  })
+
+  describe('sessionIdFromPiLog', () => {
+    it('takes everything after the timestamp prefix', () => {
+      expect(sessionIdFromPiLog('/logs/20260101-120000_sess-1.jsonl')).toBe('sess-1')
+    })
+
+    it('returns undefined without a separator, or with an empty id', () => {
+      expect(sessionIdFromPiLog('/logs/stray.jsonl')).toBeUndefined()
+      expect(sessionIdFromPiLog('/logs/100_.jsonl')).toBeUndefined()
+    })
+  })
+
+  describe('listPiJsonlFiles', () => {
+    it('walks one level of subdirs and sorts by basename', async () => {
+      const dir = piSessionsDir(slug)
+      await write(path.join(dir, '200_b.jsonl'))
+      await write(path.join(dir, '100_a.jsonl'))
+      await write(path.join(dir, 'workspace', '150_c.jsonl'))
+      await write(path.join(dir, 'notes.txt'), 'x')
+      expect((await listPiJsonlFiles(dir)).map((f) => path.basename(f)))
+        .toEqual(['100_a.jsonl', '150_c.jsonl', '200_b.jsonl'])
+    })
+
+    it('returns [] for a missing dir', async () => {
+      expect(await listPiJsonlFiles(path.join(tmpDir, 'nope'))).toEqual([])
+    })
+  })
+
+  describe('piSessionLogs', () => {
+    it('returns only the logs whose filename carries the session id', async () => {
+      await write(path.join(piSessionsDir(slug), '100_sess-1.jsonl'))
+      await write(path.join(piSessionsDir(slug), '200_sess-1.jsonl'))
+      await write(path.join(piSessionsDir(slug), '300_sess-2.jsonl'))
+      expect((await piSessionLogs(slug, 'sess-1')).map((f) => path.basename(f)))
+        .toEqual(['100_sess-1.jsonl', '200_sess-1.jsonl'])
+      expect(await piSessionLogs(slug, 'unknown')).toEqual([])
+    })
+  })
+
+  describe('sessionTranscriptPath', () => {
+    it('resolves claude and codex by session id, once the file exists', async () => {
+      expect(await sessionTranscriptPath(slug, 'sid', 'claude')).toBeUndefined()
+      const claude = await write(claudeLog('sid'))
+      expect(await sessionTranscriptPath(slug, 'sid', 'claude')).toBe(claude)
+
+      const codex = await write(path.join(codexTranscriptDir(slug), 'sid.jsonl'))
+      expect(await sessionTranscriptPath(slug, 'sid', 'codex')).toBe(codex)
+    })
+
+    it('picks pi\'s newest log, since pi names the file itself', async () => {
+      await write(path.join(piSessionsDir(slug), '100_sid.jsonl'))
+      const newest = await write(path.join(piSessionsDir(slug), '200_sid.jsonl'))
+      expect(await sessionTranscriptPath(slug, 'sid', 'pi')).toBe(newest)
+    })
+
+    it('has none for opencode, which leaves no host transcript', async () => {
+      expect(await sessionTranscriptPath(slug, 'sid', 'opencode')).toBeUndefined()
+    })
+  })
+
+  describe('scanProjectTranscripts', () => {
+    it('finds every tool\'s sessions with their creation times', async () => {
+      await write(claudeLog('cl-1'))
+      await write(path.join(claudeDir(slug), 'projects', '-workspace', 'notes.txt'), 'x')
+      await write(path.join(codexTranscriptDir(slug), 'cx-1.jsonl'))
+      await write(path.join(piSessionsDir(slug), '100_pi-1.jsonl'))
+      // Subagent transcripts live a directory deeper, so the scan never sees
+      // them as sessions.
+      await write(path.join(claudeDir(slug), 'projects', '-workspace', 'cl-1', 'subagents', 'agent-a.jsonl'))
+
+      const records = await scanProjectTranscripts(slug)
+      expect(records.map((r) => [r.sessionId, r.tool]).sort())
+        .toEqual([['cl-1', 'claude'], ['cx-1', 'codex'], ['pi-1', 'pi']])
+      for (const r of records) {
+        expect(r.createdAtMs).toBeGreaterThan(0)
+        expect(path.isAbsolute(r.transcriptPath)).toBe(true)
+      }
+    })
+
+    it('returns [] for a project with no transcripts', async () => {
+      expect(await scanProjectTranscripts('empty')).toEqual([])
+    })
+  })
+
+  describe('transcriptLastActiveMs', () => {
+    it('reports the mtime, and undefined once the file is gone', async () => {
+      const file = await write(claudeLog('sid'))
+      await fs.utimes(file, new Date('2026-01-02'), new Date('2026-01-02'))
+      expect(await transcriptLastActiveMs(file)).toBe(Date.parse('2026-01-02'))
+
+      await fs.rm(file)
+      expect(await transcriptLastActiveMs(file)).toBeUndefined()
+    })
+  })
+})

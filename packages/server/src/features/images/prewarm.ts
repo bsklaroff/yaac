@@ -35,6 +35,11 @@ import { fetchOrigin, getDefaultBranch, remoteBranchExists, worktreeUpstreamBran
 import { resolveProjectConfig } from '#features/projects/config'
 import { resolveCredentialForUrl } from '#features/projects/credentials'
 import { type SessionCreateResult } from '#features/sessions/create'
+import {
+  deleteSessionRow,
+  recordSessionCreated,
+  setSessionBaseBranch,
+} from '#features/sessions/store'
 import { rebranchSpare, retoolSpare } from '#features/sessions/spare-pool'
 import { shellEscape } from '#features/sessions/agent-command'
 import { repoDir } from '@yaac/shared/project-paths'
@@ -200,6 +205,10 @@ export async function tryClaimPrewarmed(
   let reserved: string | undefined
   let chosen: SessionPod | undefined
   let mutated = false
+  // Whether this claim inserted a session row that a failure must undo. A
+  // spare's id is freshly minted and never reused, so the row can only be
+  // this claim's.
+  let recordedRow = false
   try {
     const pods = await listSessionPods(projectSlug)
     const candidates = pods
@@ -233,11 +242,25 @@ export async function tryClaimPrewarmed(
     // the record current.
     const repo = repoDir(projectSlug)
     const config = await resolveProjectConfig(projectSlug) ?? {}
+    const spareUpstreamBranch = await worktreeUpstreamBranch(repo, `agent/${chosen.sessionId}`)
     const rebranchTo = resolveRebranchTarget({
       requestedBranch: branch,
       configReferenceBranch: config.referenceBranch,
-      spareUpstreamBranch: await worktreeUpstreamBranch(repo, `agent/${chosen.sessionId}`),
+      spareUpstreamBranch,
       defaultBranch: await getDefaultBranch(repo),
+    })
+
+    // Record the session before the spare is touched: from the moment the
+    // claim mutates it, the pod is a session, and a session with no row is
+    // invisible to every path that reads recorded state. A write failure
+    // here aborts the claim before any mutation, so the spare stays a spare
+    // and the caller falls back to a cold create.
+    recordedRow = true
+    await recordSessionCreated({
+      projectSlug,
+      sessionId: chosen.sessionId,
+      tool,
+      ...(spareUpstreamBranch !== null ? { baseBranch: spareUpstreamBranch } : {}),
     })
 
     if (rebranchTo !== null) {
@@ -272,11 +295,14 @@ export async function tryClaimPrewarmed(
     }
 
     // Commit: drop the prewarmed label (stamping the new tool in the same
-    // call when retooled), flipping the pod to a normal session.
+    // call when retooled), flipping the pod to a normal session. From here
+    // on the spare is spent either way — a failure past this point must reap
+    // it, not release it back to a pool it no longer belongs to.
     await kubectlWithRetry([
       'label', 'pod', chosen.podName, '-n', k8sNamespace(), `${LABEL_PREWARMED}-`,
       ...(chosen.tool !== tool ? [`${LABEL_TOOL}=${tool}`, '--overwrite'] : []),
     ])
+    mutated = true
 
     // Re-apply git identity so the claiming user's identity wins over the
     // server-global one the spare was warmed with. Skipped when the caller
@@ -284,6 +310,12 @@ export async function tryClaimPrewarmed(
     if (gitUser) {
       await containerExec(chosen.jobName, `git config --global user.name '${shellEscape(gitUser.name)}'`)
       await containerExec(chosen.jobName, `git config --global user.email '${shellEscape(gitUser.email)}'`)
+    }
+
+    // A claim that moved the spare to another branch records the branch it
+    // ended on, not the one it was warmed from.
+    if (rebranchTo !== null) {
+      await setSessionBaseBranch(projectSlug, chosen.sessionId, rebranchTo)
     }
 
     emit('Using prewarmed session...')
@@ -303,6 +335,12 @@ export async function tryClaimPrewarmed(
       cleanupSessionDetached({ jobName, projectSlug: slug, sessionId })
         .catch(() => { /* best-effort; the stale-session reaper retries */ })
       reserved = undefined
+    }
+    // The claim never completed, so its row describes a session that never
+    // existed — the caller is about to cold-create a different one.
+    if (chosen && recordedRow) {
+      await deleteSessionRow(projectSlug, chosen.sessionId)
+        .catch(() => { /* best-effort; the row has no pod to back it */ })
     }
     return undefined
   } finally {
