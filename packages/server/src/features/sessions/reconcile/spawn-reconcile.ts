@@ -32,7 +32,7 @@ export const SPAWN_MAX_PROMPT_CHARS = 10_000
  * The proxy already bounds queue depth; this bounds fan-out across ticks
  * while creates (which take tens of seconds) are still in flight.
  */
-export const SPAWN_MAX_IN_FLIGHT_PER_SESSION = 3
+export const SPAWN_MAX_IN_FLIGHT_PER_SESSION = 8
 
 /** callerSessionId → number of spawn-initiated creates still provisioning. */
 const inFlightByCaller = new Map<string, number>()

@@ -66,8 +66,8 @@ it prints an error to stderr and exits non-zero.
 ## Limits and errors
 
 - Prompt: non-empty, ≤ 10,000 characters.
-- Rate caps: at most 4 requests queued per session (and 32 total) at the
-  proxy, and at most 3 spawn-initiated sessions provisioning at once per
+- Rate caps: at most 8 requests queued per session (and 32 total) at the
+  proxy, and at most 8 spawn-initiated sessions provisioning at once per
   caller — exceeding these is an HTTP 429; wait and retry.
 - **HTTP 504** after ~60s means the yaac server never picked the request up
   (likely not running on the host). Nothing was started; safe to retry.

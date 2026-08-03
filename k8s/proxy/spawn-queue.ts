@@ -29,7 +29,7 @@ export const SPAWN_TTL_MS = 60_000
 export const SPAWN_MAX_BODY_BYTES = 64 * 1024
 /** Prompt character limit — mirrors the server's spawn reconciler. */
 export const SPAWN_MAX_PROMPT_CHARS = 10_000
-export const SPAWN_MAX_PENDING_PER_SESSION = 4
+export const SPAWN_MAX_PENDING_PER_SESSION = 8
 export const SPAWN_MAX_PENDING_TOTAL = 32
 
 export interface SpawnRequest {
