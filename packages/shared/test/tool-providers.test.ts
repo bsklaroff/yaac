@@ -64,15 +64,20 @@ describe('parse*Provider', () => {
     expect(parseOpencodeProvider('openrouter')).toBe('openrouter')
   })
 
-  it('falls back to the tool default for unknown or missing values', () => {
-    expect(parsePiProvider(undefined)).toBe(PI_DEFAULT_PROVIDER)
-    expect(parsePiProvider('')).toBe(PI_DEFAULT_PROVIDER)
-    expect(parseOpencodeProvider('bogus')).toBe(OPENCODE_DEFAULT_PROVIDER)
+  it('drops anything unrecognized, absent, or empty — never coerces', () => {
+    // The provider picks the env var the key is seeded under and the host the
+    // proxy swaps it on, so a guess sends the credential to a vendor the user
+    // never chose. Absent is as invalid as wrong; callers must decide.
+    expect(parsePiProvider(undefined)).toBeUndefined()
+    expect(parsePiProvider('')).toBeUndefined()
+    expect(parseOpencodeProvider(undefined)).toBeUndefined()
+    expect(parseOpencodeProvider('bogus')).toBeUndefined()
+    expect(parsePiProvider('bogus')).toBeUndefined()
   })
 
   it('does not cross tools — neuralwatt is an opencode provider, not a pi one', () => {
     expect(parseOpencodeProvider('neuralwatt')).toBe('neuralwatt')
-    expect(parsePiProvider('neuralwatt')).toBe(PI_DEFAULT_PROVIDER)
+    expect(parsePiProvider('neuralwatt')).toBeUndefined()
   })
 })
 

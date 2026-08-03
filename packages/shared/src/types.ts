@@ -100,9 +100,9 @@ export type CodexCredentialsFile =
  * Shape of `~/.yaac/.credentials/opencode.json`. Only api-key — opencode
  * integration in yaac authenticates via an api-key for one of the providers in
  * the generated registry (`tool-providers.ts`). `provider` picks which env var
- * carries the key and which host the proxy swaps the placeholder on, and
- * defaults to 'openrouter' on load for credentials written before the field
- * existed.
+ * carries the key and which host the proxy swaps the placeholder on, so it
+ * is required: a file whose provider is missing or absent from the registry
+ * loads as null rather than being coerced to a default.
  */
 export type OpencodeCredentialsFile = {
   kind: 'api-key'
@@ -130,17 +130,38 @@ export type PiCredentialsFile = {
  * savedAt / opencodeProvider — full OAuth bundles stay in the per-tool
  * credentials files.
  */
-export interface ToolAuthEntry {
-  tool: AgentTool
+interface ToolAuthEntryBase {
   kind: ToolAuthKind
   /** Access token (OAuth) or raw API key. */
   apiKey: string
   savedAt: string
-  /** opencode only — which backend the stored api-key authenticates against. */
-  opencodeProvider?: OpencodeProvider
-  /** pi only — which provider the stored api-key authenticates against. */
-  piProvider?: PiProvider
 }
+
+/**
+ * A stored credential, discriminated on `tool` so the provider is required
+ * exactly where it applies. The loaders already refuse to return an
+ * opencode/pi credential without a usable provider — expressing that here
+ * makes it the compiler's invariant instead of each consumer's: a `??
+ * DEFAULT` at the point that picks the pod's env var would silently scope the
+ * key to a vendor the user never chose, and now cannot be written at all.
+ */
+export type ToolAuthEntry =
+  // claude and codex are listed separately, not as `'claude' | 'codex'`, so
+  // that `Extract<ToolAuthEntry, { tool: 'claude' }>` resolves to a member
+  // rather than never — that is what lets loadToolAuthEntry narrow on a
+  // literal tool argument.
+  | (ToolAuthEntryBase & { tool: 'claude' })
+  | (ToolAuthEntryBase & { tool: 'codex' })
+  | (ToolAuthEntryBase & {
+    tool: 'opencode'
+    /** Which backend the stored api-key authenticates against. */
+    opencodeProvider: OpencodeProvider
+  })
+  | (ToolAuthEntryBase & {
+    tool: 'pi'
+    /** Which provider the stored api-key authenticates against. */
+    piProvider: PiProvider
+  })
 
 export interface ProjectMeta {
   slug: string

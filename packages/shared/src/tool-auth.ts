@@ -27,8 +27,68 @@ import {
   type OpencodeCredentialsFile,
   type PiCredentialsFile,
 } from '#types'
-import { parseOpencodeProvider, parsePiProvider } from '#tool-providers'
+import {
+  parseOpencodeProvider,
+  parsePiProvider,
+  type OpencodeProvider,
+  type PiProvider,
+} from '#tool-providers'
 import { type ToolLoginResult } from '#tool-auth-interactive'
+
+/**
+ * Parse a provider for a write path, where neither a missing nor an
+ * unrecognized id may be coerced: the provider determines which env var the
+ * key is seeded under and which host the proxy swaps it on, so storing a
+ * guess scopes the credential to a vendor the key does not belong to. Both
+ * cases throw, with the message saying which happened.
+ */
+/**
+ * Rejected values are echoed back to help the caller spot a typo, but the
+ * field is a free-form string on the wire — a mis-pasted api key can land in
+ * it, and from there into the response body and any logs. Echo enough to
+ * identify a typo'd provider id and no more.
+ */
+function truncateForMessage(value: string): string {
+  return value.length > 16 ? `${value.slice(0, 16)}…` : value
+}
+
+function providerError(tool: 'opencode' | 'pi', value: string | undefined): ServerError {
+  const repair = `Run \`yaac auth update ${tool}\` or pass a provider id from \`yaac-spawn --models\`.`
+  return new ServerError(
+    'VALIDATION',
+    value === undefined || value === ''
+      ? `${tool} credentials require a provider. ${repair}`
+      : `Unknown ${tool} provider "${truncateForMessage(value)}". ${repair}`,
+  )
+}
+
+/**
+ * A dropped credential is otherwise indistinguishable from never having
+ * configured the tool — `yaac auth list` just shows it signed out, and the
+ * session fails later as an opaque in-container login prompt. Say so at the
+ * point of the drop, naming the repair, so the cause is visible.
+ */
+function warnDroppedCredential(tool: 'opencode' | 'pi', raw: unknown): void {
+  const detail = typeof raw === 'string' && raw
+    ? `names provider "${truncateForMessage(raw)}", which is not in this build's registry`
+    : 'records no provider'
+  console.warn(
+    `[yaac] Ignoring the stored ${tool} credential: it ${detail}. ` +
+    `Run \`yaac auth update ${tool}\` to re-record it against a current provider.`,
+  )
+}
+
+function requireOpencodeProvider(value: string | undefined): OpencodeProvider {
+  const provider = parseOpencodeProvider(value)
+  if (!provider) throw providerError('opencode', value)
+  return provider
+}
+
+function requirePiProvider(value: string | undefined): PiProvider {
+  const provider = parsePiProvider(value)
+  if (!provider) throw providerError('pi', value)
+  return provider
+}
 
 /** Placeholder tokens written into project-local Claude credentials. */
 export const PLACEHOLDER_ACCESS_TOKEN = 'yaac-ph-access'
@@ -157,11 +217,18 @@ export async function loadOpencodeCredentialsFile(): Promise<OpencodeCredentials
     if (!parsed || typeof parsed !== 'object') return null
     const o = parsed as Record<string, unknown>
     if (o.kind === 'api-key' && typeof o.savedAt === 'string' && typeof o.apiKey === 'string' && o.apiKey !== '') {
-      // `provider` was added later — default to openrouter for files written
-      // before it existed.
+      // The provider must be recorded and still exist in the registry. A file
+      // missing one (written before the field existed) or naming an id a regen
+      // retired reads as unconfigured rather than being coerced to a default —
+      // that would inject this key on a vendor the user never chose. Re-running
+      // `yaac auth` repairs it.
       const provider = parseOpencodeProvider(
         typeof o.provider === 'string' ? o.provider : undefined,
       )
+      if (!provider) {
+        warnDroppedCredential('opencode', o.provider)
+        return null
+      }
       return { kind: 'api-key', provider, savedAt: o.savedAt, apiKey: o.apiKey }
     }
     return null
@@ -185,7 +252,12 @@ export async function loadPiCredentialsFile(): Promise<PiCredentialsFile | null>
     if (!parsed || typeof parsed !== 'object') return null
     const o = parsed as Record<string, unknown>
     if (o.kind === 'api-key' && typeof o.savedAt === 'string' && typeof o.apiKey === 'string' && o.apiKey !== '') {
+      // Missing or unknown stored provider → unusable, as for opencode above.
       const provider = parsePiProvider(typeof o.provider === 'string' ? o.provider : undefined)
+      if (!provider) {
+        warnDroppedCredential('pi', o.provider)
+        return null
+      }
       return { kind: 'api-key', provider, savedAt: o.savedAt, apiKey: o.apiKey }
     }
     return null
@@ -206,7 +278,23 @@ export async function savePiCredentialsFile(creds: PiCredentialsFile): Promise<v
  * Load the stored auth entry for a specific tool.
  * Returns null if no credentials are configured.
  */
-export async function loadToolAuthEntry(tool: AgentTool): Promise<ToolAuthEntry | null> {
+/**
+ * Generic in the tool so a literal argument narrows the result:
+ * `loadToolAuthEntry('pi')` yields the pi variant, whose `piProvider` is
+ * required, and callers need no fallback for a field this function guarantees.
+ * Passing a non-literal `AgentTool` yields the whole union, which callers then
+ * narrow on `entry.tool` as usual.
+ */
+export async function loadToolAuthEntry<T extends AgentTool>(
+  tool: T,
+): Promise<Extract<ToolAuthEntry, { tool: T }> | null> {
+  // Each branch below builds the variant matching its own literal `tool`, but
+  // that correspondence is beyond what TS infers across the branches, so the
+  // result is asserted once here rather than at every return.
+  return loadToolAuthEntryInner(tool) as Promise<Extract<ToolAuthEntry, { tool: T }> | null>
+}
+
+async function loadToolAuthEntryInner(tool: AgentTool): Promise<ToolAuthEntry | null> {
   if (tool === 'claude') {
     const f = await loadClaudeCredentialsFile()
     if (!f) return null
@@ -250,8 +338,10 @@ export async function saveToolAuth(
   tool: AgentTool,
   apiKey: string,
   kind: ToolAuthKind,
-  /** Raw provider string for provider-scoped tools (opencode/pi); each tool
-   *  coerces it with its own parser + default. Ignored for claude/codex. */
+  /** Provider id for provider-scoped tools (opencode/pi) — required for them,
+   *  and validated against that tool's registry: a missing or unrecognized id
+   *  throws rather than storing a credential scoped to the wrong vendor.
+   *  Ignored for claude/codex. */
   provider?: string,
 ): Promise<void> {
   const savedAt = new Date().toISOString()
@@ -282,7 +372,7 @@ export async function saveToolAuth(
     // inject.
     await saveOpencodeCredentialsFile({
       kind: 'api-key',
-      provider: parseOpencodeProvider(provider),
+      provider: requireOpencodeProvider(provider),
       savedAt,
       apiKey,
     })
@@ -293,7 +383,7 @@ export async function saveToolAuth(
     // store defensively as api-key so the proxy still has a key to inject.
     await savePiCredentialsFile({
       kind: 'api-key',
-      provider: parsePiProvider(provider),
+      provider: requirePiProvider(provider),
       savedAt,
       apiKey,
     })
@@ -349,7 +439,14 @@ export async function persistToolLogin(tool: AgentTool, result: ToolLoginResult)
     await fanOutCodexPlaceholders(result.codexBundle)
     return
   }
-  await saveToolAuth(tool, result.apiKey, result.kind, result.piProvider ?? result.opencodeProvider)
+  // Selected per tool rather than `piProvider ?? opencodeProvider`: collapsing
+  // the two typed fields widens them back to a bare string, and ids like
+  // `openrouter` exist in both registries — so a producer that filled the
+  // wrong tool's field would pass validation against the wrong registry.
+  const provider = tool === 'opencode' ? result.opencodeProvider
+    : tool === 'pi' ? result.piProvider
+    : undefined
+  await saveToolAuth(tool, result.apiKey, result.kind, provider)
 }
 
 /**
@@ -373,8 +470,11 @@ export async function persistToolAuthPayload(tool: AgentTool, payload: unknown):
     await persistToolLogin(tool, {
       apiKey: p.apiKey,
       kind: 'api-key',
-      opencodeProvider: tool === 'opencode' ? parseOpencodeProvider(providerRaw) : undefined,
-      piProvider: tool === 'pi' ? parsePiProvider(providerRaw) : undefined,
+      // An unrecognized provider is rejected here rather than coerced: this is
+      // the wire boundary, so a typo'd or retired id should surface to the
+      // caller instead of silently scoping the key to the default vendor.
+      opencodeProvider: tool === 'opencode' ? requireOpencodeProvider(providerRaw) : undefined,
+      piProvider: tool === 'pi' ? requirePiProvider(providerRaw) : undefined,
     })
     return
   }

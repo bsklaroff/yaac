@@ -153,6 +153,56 @@ describe('opencode credential injection gating', () => {
   })
 })
 
+/**
+ * Mirror of readOpencodeCreds' provider validation in proxy.ts. The proxy
+ * re-reads the credential file itself at request time, so this guard is what
+ * stops it from disagreeing with the server about whether a credential is
+ * usable — and, before it existed, a file with no provider was read as
+ * openrouter and the key was injected on openrouter.ai.
+ */
+function readCreds(file: Record<string, unknown>): OpencodeCreds | null {
+  if (file.kind === 'api-key' && typeof file.apiKey === 'string' && file.apiKey) {
+    const provider = typeof file.provider === 'string' ? file.provider : ''
+    if (!Object.hasOwn(OPENCODE_PROVIDER_HOSTS, provider)) return null
+    return { kind: 'api-key', apiKey: file.apiKey, provider }
+  }
+  return null
+}
+
+describe('opencode credential-file reading', () => {
+  it('accepts a credential naming a provider in the registry', () => {
+    expect(readCreds({ kind: 'api-key', apiKey: 'sk-or-real', provider: 'openrouter' }))
+      .toEqual({ kind: 'api-key', apiKey: 'sk-or-real', provider: 'openrouter' })
+  })
+
+  it('rejects a credential with no provider instead of assuming openrouter', () => {
+    // The pre-provider file shape. Defaulting it would swap this key on
+    // openrouter.ai — a vendor the user never named.
+    expect(readCreds({ kind: 'api-key', apiKey: 'sk-legacy' })).toBeNull()
+    expect(readCreds({ kind: 'api-key', apiKey: 'sk-legacy', provider: '' })).toBeNull()
+  })
+
+  it('rejects a provider the registry no longer carries', () => {
+    expect(readCreds({ kind: 'api-key', apiKey: 'sk-x', provider: 'perplexity' })).toBeNull()
+  })
+
+  it('rejects a prototype-chain key rather than reading it as a provider', () => {
+    // The map is a plain object, so `MAP['constructor']` indexes to a truthy
+    // inherited member — a truthiness check would accept it and report the
+    // credential usable on /tools. Injection was never reachable (the swap
+    // sites compare hostname === MAP[provider], and no Function equals a
+    // hostname), so this is the residue that hasOwn closes.
+    for (const key of ['constructor', 'toString', 'hasOwnProperty', '__proto__']) {
+      expect(readCreds({ kind: 'api-key', apiKey: 'sk-x', provider: key })).toBeNull()
+    }
+  })
+
+  it('never treats the empty provider as a routable host', () => {
+    // The property the guard leans on, asserted against the real table.
+    expect(OPENCODE_PROVIDER_HOSTS['']).toBeUndefined()
+  })
+})
+
 describe('OPENCODE_PROVIDER_HOSTS (generated)', () => {
   it('maps the well-known providers to their hosts', () => {
     expect(OPENCODE_PROVIDER_HOSTS['openrouter']).toBe('openrouter.ai')

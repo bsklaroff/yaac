@@ -487,10 +487,21 @@ function readOpencodeCreds(): OpencodeCreds | null {
     if (!parsed || typeof parsed !== 'object') return null
     const o = parsed as Record<string, unknown>
     if (o.kind === 'api-key' && typeof o.apiKey === 'string' && o.apiKey) {
-      // `provider` was added later — default to openrouter for files written
-      // before it existed. Unknown providers resolve to no host below, so the
-      // key is simply never swapped (fail-closed) rather than validated here.
-      const provider = typeof o.provider === 'string' && o.provider ? o.provider : 'openrouter'
+      // The provider must be recorded and known to this registry: it selects
+      // the host this key is swapped on, so defaulting a missing one would
+      // inject the key on a vendor the user never chose. Validated against the
+      // host map rather than assumed — matching the server, which reads the
+      // same file and treats a credential without a usable provider as
+      // unconfigured. Disagreeing here would report the tool as authed on
+      // /tools while the server thinks it is not.
+      const provider = typeof o.provider === 'string' ? o.provider : ''
+      // hasOwn, not a truthiness index: the map is a plain object, so keys
+      // from its prototype chain ("constructor", "toString", …) would index to
+      // a truthy inherited member and pass. Nothing downstream would inject on
+      // one — the swap sites compare `hostname === MAP[provider]`, which no
+      // Function equals — but this reader would still report the credential as
+      // usable on /tools.
+      if (!Object.hasOwn(OPENCODE_PROVIDER_HOSTS, provider)) return null
       return { kind: 'api-key', apiKey: o.apiKey, provider }
     }
     return null
@@ -506,7 +517,9 @@ function readPiCreds(): PiCreds | null {
     if (!parsed || typeof parsed !== 'object') return null
     const o = parsed as Record<string, unknown>
     if (o.kind === 'api-key' && typeof o.apiKey === 'string' && o.apiKey) {
-      const provider = typeof o.provider === 'string' && o.provider ? o.provider : 'openrouter'
+      // Missing or unknown provider → unusable, as for opencode above.
+      const provider = typeof o.provider === 'string' ? o.provider : ''
+      if (!Object.hasOwn(PI_PROVIDER_HOSTS, provider)) return null
       return { kind: 'api-key', apiKey: o.apiKey, provider }
     }
     return null

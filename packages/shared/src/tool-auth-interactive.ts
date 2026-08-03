@@ -216,6 +216,27 @@ export interface ToolLoginResult {
  * auth-daemon flow (src/commands/relayed-login.ts), which persists the
  * bundle itself.
  */
+/**
+ * Resolve an e2e provider hook: unset takes the tool's default (so a test that
+ * only wants the default branch need not set it), but a value that is set and
+ * unrecognized is a broken test rather than a request for the default —
+ * silently substituting it would green a run that never exercised the branch
+ * it named.
+ */
+function hookProvider<T extends string>(
+  tool: 'opencode' | 'pi',
+  raw: string | undefined,
+  parse: (value: string | undefined) => T | undefined,
+  defaultId: T,
+): T {
+  if (raw === undefined || raw === '') return defaultId
+  const provider = parse(raw)
+  if (!provider) {
+    throw new Error(`${tool} provider hook names unknown provider "${raw}".`)
+  }
+  return provider
+}
+
 export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult | null> {
   // Test-only hook: e2e-cli can't drive the native `claude login` /
   // `codex login` OAuth flow end-to-end, so these env vars short-circuit
@@ -239,7 +260,7 @@ export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult | n
       return {
         apiKey: hookRaw,
         kind: 'api-key',
-        piProvider: parsePiProvider(testEnv.piProviderHook),
+        piProvider: hookProvider('pi', testEnv.piProviderHook, parsePiProvider, PI_DEFAULT_PROVIDER),
       }
     }
     // opencode: the env var holds a raw api-key; an optional sibling var
@@ -248,7 +269,7 @@ export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult | n
     return {
       apiKey: hookRaw,
       kind: 'api-key',
-      opencodeProvider: parseOpencodeProvider(testEnv.opencodeProviderHook),
+      opencodeProvider: hookProvider('opencode', testEnv.opencodeProviderHook, parseOpencodeProvider, OPENCODE_DEFAULT_PROVIDER),
     }
   }
 
@@ -267,8 +288,9 @@ export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult | n
  * credentials to the server.
  */
 export type ToolAuthPayload =
-  // `provider` is a raw wire string (opencode/pi); the server coerces it with
-  // the tool's own parser.
+  // `provider` is a raw wire string (opencode/pi), validated server-side
+  // against that tool's registry — a missing or unknown id is rejected, never
+  // coerced to a default.
   | { kind: 'api-key'; apiKey: string; provider?: string }
   | { kind: 'oauth'; bundle: ClaudeOAuthBundle | CodexOAuthBundle }
 
@@ -287,14 +309,17 @@ export function buildAuthPayload(tool: AgentTool, result: ToolLoginResult): Tool
     return {
       kind: 'api-key',
       apiKey: result.apiKey,
-      provider: result.opencodeProvider ?? 'openrouter',
+      // No fallback: an omitted provider must reach the server's validation
+      // rather than being stamped with a default here, which would hide the
+      // exact producer bug that validation exists to catch.
+      provider: result.opencodeProvider,
     }
   }
   if (tool === 'pi') {
     return {
       kind: 'api-key',
       apiKey: result.apiKey,
-      provider: result.piProvider ?? PI_DEFAULT_PROVIDER,
+      provider: result.piProvider,
     }
   }
   return { kind: 'api-key', apiKey: result.apiKey }
@@ -307,12 +332,12 @@ export function buildAuthPayload(tool: AgentTool, result: ToolLoginResult): Tool
  * default. Re-prompts on an unrecognized id. Returns a raw string — the caller
  * coerces it with the tool's `parse*Provider`.
  */
-async function promptForProvider(
+async function promptForProvider<T extends string>(
   rl: readline.Interface,
   tool: 'opencode' | 'pi',
   list: readonly ToolProviderInfo[],
-  defaultId: string,
-): Promise<string> {
+  defaultId: T,
+): Promise<T> {
   console.log(`Which ${tool} provider? Type its id, "?" to list all ${list.length}, or Enter for "${defaultId}".`)
   for (;;) {
     const answer = (await rl.question(`Provider [${defaultId}]: `)).trim()
@@ -321,8 +346,10 @@ async function promptForProvider(
       for (const p of list) console.log(`  ${p.id}  —  ${p.label}`)
       continue
     }
+    // The loop only exits on a registry entry, so the id is a T by
+    // construction — callers need no second parse.
     const match = list.find((p) => p.id === answer)
-    if (match) return match.id
+    if (match) return match.id as T
     console.log(`Unknown provider "${answer}". Type "?" to see the full list.`)
   }
 }
@@ -337,14 +364,10 @@ export async function promptForApiKey(tool: AgentTool): Promise<ToolLoginResult>
   let opencodeProvider: OpencodeProvider | undefined
   let piProvider: PiProvider | undefined
   if (tool === 'opencode') {
-    opencodeProvider = parseOpencodeProvider(
-      await promptForProvider(rl, 'opencode', OPENCODE_PROVIDERS, OPENCODE_DEFAULT_PROVIDER),
-    )
+    opencodeProvider = await promptForProvider(rl, 'opencode', OPENCODE_PROVIDERS, OPENCODE_DEFAULT_PROVIDER)
   }
   if (tool === 'pi') {
-    piProvider = parsePiProvider(
-      await promptForProvider(rl, 'pi', PI_PROVIDERS, PI_DEFAULT_PROVIDER),
-    )
+    piProvider = await promptForProvider(rl, 'pi', PI_PROVIDERS, PI_DEFAULT_PROVIDER)
   }
   const label =
     tool === 'claude' ? 'Anthropic API key or OAuth token' :

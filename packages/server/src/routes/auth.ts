@@ -153,8 +153,9 @@ export const authApp = new Hono()
         kind: z.literal('api-key'),
         apiKey: z.string().min(1),
         // opencode/pi only — which backend the key authenticates against.
-        // Ignored for claude/codex; the server coerces it with the tool's own
-        // parser (unknown → the tool's default provider).
+        // Ignored for claude/codex. Required for opencode/pi and validated
+        // against that tool's registry: a missing or unknown id is rejected
+        // with VALIDATION rather than coerced to a default provider.
         provider: z.string().optional(),
       }),
       z.object({

@@ -135,8 +135,6 @@ import {
 } from '#features/sessions/forwarders/port-forwarders'
 import type { AgentTool, PortMapping, YaacConfig } from '@yaac/shared/types'
 import {
-  OPENCODE_DEFAULT_PROVIDER,
-  PI_DEFAULT_PROVIDER,
   opencodeProviderInfo,
   piProviderInfo,
   type PiProvider,
@@ -1046,7 +1044,7 @@ export async function createSession(
     // is needed) and sends the key to that provider's host, which the proxy
     // swaps for the real key. The env var + host come from the generated
     // provider table.
-    const info = opencodeProviderInfo(toolAuthByTool.opencode.opencodeProvider ?? OPENCODE_DEFAULT_PROVIDER)
+    const info = opencodeProviderInfo(toolAuthByTool.opencode.opencodeProvider)
     env.push(`${info.envVar}=${PLACEHOLDER_API_KEY}`)
   }
   if (toolAuthByTool.codex?.kind === 'api-key') {
@@ -1057,7 +1055,7 @@ export async function createSession(
     // key to that provider's host, which the proxy swaps for the real key
     // (whichever of Authorization: Bearer / x-api-key carries the sentinel).
     // The env var + host come from the generated provider table.
-    const info = piProviderInfo(toolAuthByTool.pi.piProvider ?? PI_DEFAULT_PROVIDER)
+    const info = piProviderInfo(toolAuthByTool.pi.piProvider)
     env.push(`${info.envVar}=${PLACEHOLDER_API_KEY}`)
   }
   // Codex OAuth: Codex reads the placeholder bundle from the mounted
