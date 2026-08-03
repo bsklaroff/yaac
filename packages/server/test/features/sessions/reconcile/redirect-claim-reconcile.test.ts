@@ -19,7 +19,7 @@ import type {
   VclusterConfigMap,
   VclusterNamespaceInfo,
   VclusterPod,
-} from '#features/cluster/vcluster'
+} from '#platform/k8s/vcluster-objects'
 
 const VC_NS = 'test-ns-vc-1'
 const VC_NAME = 'yvc-s1'

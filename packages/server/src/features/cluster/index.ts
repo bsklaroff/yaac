@@ -17,16 +17,24 @@
 // internal — netd's manifest set and the cluster CIDR probes are covered
 // through the entry points below, not directly.
 //
-// Two things this feature uses heavily are deliberately NOT part of its
+// Three things this feature uses heavily are deliberately NOT part of its
 // interface, because their consumers want them without any cluster
-// machinery. The datapath's *names and ports* are a zero-import constant
-// vocabulary that the stream relay, the pod spec, and the image builders
-// read, so they live in `#platform/k8s/proxy-constants`. The *local OCI
-// registry* is a podman container and an HTTP endpoint with no Kubernetes
-// object in it, which the image builders, the proxy client, and server start
-// all push to, so it lives in `#platform/container/registry` beside the
-// container runtime. Routing either through this barrel would drag cluster
+// machinery — routing any of them through this barrel would drag cluster
 // check and setup into the image builder and the informer cache.
+//
+//  - The datapath's *names and ports* are a zero-import constant vocabulary
+//    the stream relay, the pod spec, and the image builders read, so they
+//    live in `#platform/k8s/proxy-constants`.
+//  - The *local OCI registry* is a podman container and an HTTP endpoint
+//    with no Kubernetes object in it, which the image builders, the proxy
+//    client, and server start all push to, so it lives in
+//    `#platform/container/registry` beside the container runtime.
+//  - The vcluster *object layer* — the shapes a vcluster namespace
+//    publishes, their mappers, and the one-shot lists — is what the informer
+//    registry and the reconcile snapshot read, and it is the same job
+//    `pods.ts` does for session pods, so it lives in
+//    `#platform/k8s/vcluster-objects`. What stays here is the vcluster
+//    *lifecycle*: provisioning, sleep/wake, status and teardown.
 
 export {
   buildVclusterSleepEndpointSliceManifest,
@@ -73,26 +81,11 @@ export {
   ensureSessionVcluster,
   ensureVclusterImages,
   getVclusterStatus,
-  listVclusterConfigMaps,
-  listVclusterNamespaces,
-  listVclusterPods,
-  listVclusterServices,
-  mapVclusterConfigMapObject,
-  mapVclusterNamespaceObject,
-  mapVclusterPodObject,
-  mapVclusterServiceObject,
   removeSessionVcluster,
   sleepVcluster,
   vapAvailable,
   vclusterLabels,
   vclusterName,
-  vclusterNamespaceSelector,
   waitForVclusterKubeconfig,
 } from './vcluster'
-export type {
-  VclusterConfigMap,
-  VclusterNamespaceInfo,
-  VclusterPod,
-  VclusterService,
-  VclusterStatus,
-} from './vcluster'
+export type { VclusterStatus } from './vcluster'

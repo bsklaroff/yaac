@@ -1,17 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type * as podsModule from '#platform/k8s/pods'
-import type * as clusterModule from '#features/cluster'
 
-// The snapshot's four listers are what this covers; everything else in
-// these modules stays real, because the cluster barrel it reads the vcluster
-// half from pulls the rest of the feature in with it.
-vi.mock('#platform/k8s/pods', async (importOriginal) => ({
-  ...(await importOriginal<typeof podsModule>()),
+vi.mock('#platform/k8s/pods', () => ({
   listSessionPods: vi.fn(),
   listSessionJobs: vi.fn(),
 }))
-vi.mock('#features/cluster', async (importOriginal) => ({
-  ...(await importOriginal<typeof clusterModule>()),
+vi.mock('#platform/k8s/vcluster-objects', () => ({
   listVclusterNamespaces: vi.fn(),
   listVclusterPods: vi.fn(),
   listVclusterServices: vi.fn(),
@@ -27,7 +20,7 @@ import {
   listVclusterPods,
   listVclusterServices,
   type VclusterPod,
-} from '#features/cluster'
+} from '#platform/k8s/vcluster-objects'
 import { getActiveClusterCache, type ClusterCache } from '#platform/k8s/cluster-cache'
 
 const mockPods = vi.mocked(listSessionPods)

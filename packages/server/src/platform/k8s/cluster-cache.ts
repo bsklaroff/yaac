@@ -24,7 +24,7 @@ import {
   type VclusterNamespaceInfo,
   type VclusterPod,
   type VclusterService,
-} from '#features/cluster'
+} from '#platform/k8s/vcluster-objects'
 import { serverLog } from '#log'
 
 /**

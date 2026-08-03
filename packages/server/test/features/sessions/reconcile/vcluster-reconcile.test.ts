@@ -7,9 +7,12 @@ vi.mock('#platform/k8s/pods', () => ({
   listSessionJobs: vi.fn().mockResolvedValue([]),
 }))
 
+vi.mock('#platform/k8s/vcluster-objects', () => ({
+  listVclusterNamespaces: vi.fn().mockResolvedValue([]),
+}))
+
 vi.mock('#features/cluster', () => ({
   VCLUSTER_ORPHAN_GRACE_MS: 15 * 60 * 1000,
-  listVclusterNamespaces: vi.fn().mockResolvedValue([]),
   removeSessionVcluster: vi.fn().mockResolvedValue(undefined),
   vclusterLabels: vi.fn((name: string, sessionId: string) => ({
     'yaac.vcluster': name,
@@ -40,10 +43,10 @@ import {
 import { listSessionJobs, listSessionPods } from '#platform/k8s/pods'
 import {
   getActivatorPodIp,
-  listVclusterNamespaces,
   removeSessionVcluster,
   waitForVclusterKubeconfig,
 } from '#features/cluster'
+import { listVclusterNamespaces } from '#platform/k8s/vcluster-objects'
 import { kubectlApply, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/kubectl'
 import { sessionVclusterDir } from '@yaac/shared/project-paths'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'

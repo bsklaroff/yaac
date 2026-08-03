@@ -10,7 +10,7 @@ import {
   renderNamespaceClaims,
   validateVclusterClaims,
 } from '#features/cluster'
-import type { VclusterPod } from '#features/cluster'
+import type { VclusterPod } from '#platform/k8s/vcluster-objects'
 // Bounds and object names the claim bridge enforces — setup values for the
 // assertions below, not units under test.
 import {

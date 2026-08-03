@@ -14,7 +14,7 @@ import {
   _resetVclusterAttributionForTests,
 } from '#features/sessions/reconcile/vcluster-attribution-reconcile'
 import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
-import type { VclusterNamespaceInfo, VclusterPod } from '#features/cluster/vcluster'
+import type { VclusterNamespaceInfo, VclusterPod } from '#platform/k8s/vcluster-objects'
 import { serverLog } from '#log'
 
 const mockLog = vi.mocked(serverLog)

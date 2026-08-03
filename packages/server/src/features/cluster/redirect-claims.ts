@@ -1,6 +1,6 @@
 import { k8sNamespace } from '#platform/k8s/kubectl'
 import { NETD_APP_NAME } from '#platform/k8s/proxy-constants'
-import type { VclusterPod } from './vcluster'
+import type { VclusterPod } from '#platform/k8s/vcluster-objects'
 
 /**
  * Redirect claims — the bridge that lets a nested yaac decide its own

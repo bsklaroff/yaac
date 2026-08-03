@@ -6,13 +6,13 @@ import type { TickSnapshot } from '#platform/k8s/tick-snapshot'
 import {
   buildVclusterSleepEndpointSliceManifest,
   getActivatorPodIp,
-  listVclusterNamespaces,
   removeSessionVcluster,
   VCLUSTER_ORPHAN_GRACE_MS,
   vclusterLabels,
   vclusterSleepSliceName,
   waitForVclusterKubeconfig,
 } from '#features/cluster'
+import { listVclusterNamespaces } from '#platform/k8s/vcluster-objects'
 import { sessionVclusterDir } from '@yaac/shared/project-paths'
 
 /**
