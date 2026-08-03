@@ -7,7 +7,7 @@ import { Hono } from 'hono'
 vi.mock('#features/images/image-prewarm', () => ({ retryImageBuild: vi.fn() }))
 
 import { imageApp } from '#routes/images'
-import { toErrorBody } from '#http/errors'
+import { toErrorBody } from '#http'
 import { retryImageBuild } from '#features/images/image-prewarm'
 import {
   clearAllImageBuildsForTests,

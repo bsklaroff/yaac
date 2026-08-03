@@ -7,7 +7,7 @@ import { closeDb } from '#platform/db/client'
 import { importLegacyJsonStores } from '#platform/db/legacy-import'
 import { getDefaultTool, getShortcutOverrides, setDefaultTool } from '#features/projects/preferences'
 import { MAX_PROMPT_LENGTH, getProjectSessionRows, listSessionRows } from '#features/sessions/store'
-import { loadTokens } from '#http/token-store'
+import { loadTokens } from '#http'
 
 // The legacy on-disk layout, rebuilt by hand: the production path builders
 // for these files are gone (that is the point of the import).

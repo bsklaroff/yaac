@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { zv } from '#routes/validator'
 import { ServerError } from '@yaac/shared/errors'
-import type { TokenStore } from '#http/token-store'
+import type { TokenStore } from '#http'
 
 /**
  * Token CRUD, mounted at /tokens — its own base, distinct from /auth

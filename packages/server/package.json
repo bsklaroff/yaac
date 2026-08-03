@@ -11,6 +11,7 @@
     "#features/skills": "./src/features/skills/index.js",
     "#features/terminals": "./src/features/terminals/index.js",
     "#features/titles": "./src/features/titles/index.js",
+    "#http": "./src/http/index.js",
     "#*": "./src/*.js"
   },
   "scripts": {

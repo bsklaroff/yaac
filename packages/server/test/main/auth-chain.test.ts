@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { buildApp } from '#main/server'
-import { createTokenStore } from '#http/token-store'
+import { createTokenStore } from '#http'
 
 // Drives the full middleware chain wired in buildApp (hostHeaderCheck →
 // denyBrowserCors → originHeaderCheck → fetchSiteCheck → cookieOrBearerAuth)

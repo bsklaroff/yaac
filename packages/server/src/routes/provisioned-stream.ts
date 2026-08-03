@@ -1,7 +1,7 @@
 import type { Context } from 'hono'
 import { stream } from 'hono/streaming'
 import { runProvisioned } from '#features/sessions/provisioning'
-import { toErrorBody } from '#http/errors'
+import { toErrorBody } from '#http'
 
 /**
  * Writer side of the NDJSON provisioning streams shared by the session

@@ -1,12 +1,14 @@
 import type { Context, MiddlewareHandler } from 'hono'
 import { serverLog } from '#log'
 
-// Bearer/cookie auth now lives in `#web-auth` (one gate accepts
-// either credential). This module keeps the CORS guard and request log.
+// Bearer/cookie auth lives in `./web-auth` (one gate accepts either
+// credential), and the Host/Origin/Sec-Fetch-Site guards with it. This
+// module keeps the CORS preflight refusal and the request log.
 
 /**
- * Browser `fetch` is not allowed to talk to the server. Refuse preflight
- * and deny the `Origin` header on actual requests.
+ * Browser `fetch` is not allowed to talk to the server cross-origin: refuse
+ * the preflight outright, so a non-simple cross-origin request never reaches
+ * a route. The `Origin` on an actual request is judged by `originHeaderCheck`.
  */
 export function denyBrowserCors(): MiddlewareHandler {
   return async (c, next) => {

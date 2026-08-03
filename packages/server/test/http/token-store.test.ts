@@ -1,17 +1,17 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { createTokenStore, loadTokens, saveTokens } from '#http'
+// Setup values, not units under test: the store's TTL and per-kind caps are
+// policy constants, so a test that drives it to a bound has to speak in the
+// same numbers the module does.
 import {
-  createTokenStore,
   EXCHANGE_TTL_MS,
-  loadTokens,
   MAX_EXCHANGE_TOKENS,
   MAX_WEB_SESSIONS,
-  saveTokens,
   type TokenEntry,
 } from '#http/token-store'
 import { getDb, closeDb } from '#platform/db/client'
 import { tokens as tokensTable } from '#platform/db/schema'
-import { maskToken } from '@yaac/shared/mask'
 import { ServerError } from '@yaac/shared/errors'
 
 describe('createTokenStore', () => {
@@ -54,7 +54,8 @@ describe('createTokenStore', () => {
     const [summary] = store.list()
     expect(summary.name).toBe('laptop')
     expect(summary.kind).toBe('durable')
-    expect(summary.masked).toBe(maskToken(entry.token))
+    // Masked to an 8-char prefix: enough to correlate, useless to authenticate.
+    expect(summary.masked).toBe(`${entry.token.slice(0, 8)}…`)
     expect(JSON.stringify(store.list())).not.toContain(entry.token)
   })
 
@@ -114,9 +115,7 @@ describe('createTokenStore', () => {
     expect(store.isValidSession(restored.token)).toBe(false) // evicted first
     expect(store.isValidSession(last)).toBe(true)
   })
-})
 
-describe('mintExchangeToken / consumeExchange', () => {
   it('mints an auto-named one-time token that expires after the TTL', () => {
     const store = createTokenStore({ now: () => 1000 })
     const entry = store.mintExchangeToken()
@@ -201,34 +200,32 @@ describe('mintExchangeToken / consumeExchange', () => {
   })
 })
 
-describe('maskToken', () => {
-  it('keeps only an 8-char prefix', () => {
-    expect(maskToken('abcdef0123456789')).toBe('abcdef01…')
-  })
+// One PGlite per file: cold-init is the expensive part, so the DB-backed
+// tests share a data dir and wipe the table instead of recreating it.
+// (Pre-kind and malformed legacy tokens.json files are exercised in
+// db-legacy-import.test.ts — the DB rows always carry a kind.)
+let tmpDir: string
+
+beforeAll(async () => {
+  tmpDir = await createTempDataDir()
 })
 
-describe('loadTokens / saveTokens (DB-backed)', () => {
-  let tmpDir: string
+afterAll(async () => {
+  await closeDb()
+  await cleanupTempDir(tmpDir)
+})
 
-  // One PGlite per file: cold-init is the expensive part, so the tests
-  // share a data dir and wipe the table instead of recreating it.
-  // (Pre-kind and malformed legacy tokens.json files are exercised in
-  // db-legacy-import.test.ts — the DB rows always carry a kind.)
-  beforeAll(async () => {
-    tmpDir = await createTempDataDir()
+beforeEach(async () => {
+  const db = await getDb()
+  await db.delete(tokensTable)
+})
+
+describe('loadTokens', () => {
+  it('returns [] when nothing has been persisted', async () => {
+    expect(await loadTokens()).toEqual([])
   })
 
-  afterAll(async () => {
-    await closeDb()
-    await cleanupTempDir(tmpDir)
-  })
-
-  beforeEach(async () => {
-    const db = await getDb()
-    await db.delete(tokensTable)
-  })
-
-  it('round-trips entries of every kind, including expiresAt', async () => {
+  it('reads back entries of every kind, including expiresAt', async () => {
     const now = new Date().toISOString()
     const entries: TokenEntry[] = [
       { name: 'laptop', token: 'b'.repeat(64), kind: 'durable', createdAt: now },
@@ -239,10 +236,6 @@ describe('loadTokens / saveTokens (DB-backed)', () => {
     expect(await loadTokens()).toEqual(entries)
   })
 
-  it('returns [] when nothing has been persisted', async () => {
-    expect(await loadTokens()).toEqual([])
-  })
-
   it('orders by (createdAt, name)', async () => {
     await saveTokens([
       { name: 'z-late', token: 't1', kind: 'durable', createdAt: '2026-02-01T00:00:00.000Z' },
@@ -251,11 +244,20 @@ describe('loadTokens / saveTokens (DB-backed)', () => {
     ])
     expect((await loadTokens()).map((e) => e.name)).toEqual(['a-tie', 'b-tie', 'z-late'])
   })
+})
 
+describe('saveTokens', () => {
   it('replaces the previous set wholesale', async () => {
     const now = new Date().toISOString()
     await saveTokens([{ name: 'first', token: 't1', kind: 'durable', createdAt: now }])
     await saveTokens([{ name: 'second', token: 't2', kind: 'durable', createdAt: now }])
     expect((await loadTokens()).map((e) => e.name)).toEqual(['second'])
+  })
+
+  it('clears the table when the live store is empty', async () => {
+    const now = new Date().toISOString()
+    await saveTokens([{ name: 'only', token: 't1', kind: 'durable', createdAt: now }])
+    await saveTokens([])
+    expect(await loadTokens()).toEqual([])
   })
 })

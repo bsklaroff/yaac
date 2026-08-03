@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { zv } from '#routes/validator'
-import { toErrorBody } from '#http/errors'
+import { toErrorBody } from '#http'
 
 describe('zv', () => {
   // zv throws on bad input; the server's `app.onError` serializes the throw

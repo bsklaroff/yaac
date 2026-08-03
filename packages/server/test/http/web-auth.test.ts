@@ -1,191 +1,33 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 import {
-  timingSafeStrEqual,
   cookieOrBearerAuth,
-  hostHeaderCheck,
-  isAllowedFetchSite,
-  isAllowedHost,
-  isAllowedOrigin,
-  isCredentialOptional,
-  isLoopbackOnlyDeployment,
-  isPublicPath,
+  createTokenStore,
   fetchSiteCheck,
+  hostHeaderCheck,
+  isCredentialOptional,
   originHeaderCheck,
-  SESSION_COOKIE_BASE,
   sessionCookieName,
-} from '#http/web-auth'
-import { createTokenStore } from '#http/token-store'
+} from '#http'
+// Setup value, not a unit under test: the cookie name is `<base>_<hash>`, so
+// asserting the shape means naming the same base the module does.
+import { SESSION_COOKIE_BASE } from '#http/web-auth'
 import { getDataDir, setDataDir } from '@yaac/shared/paths'
 
-describe('isPublicPath', () => {
-  it('allows the SPA shell, assets, health, and the POST exchange', () => {
-    expect(isPublicPath('GET', '/')).toBe(true)
-    expect(isPublicPath('GET', '/assets/index-abc.js')).toBe(true)
-    expect(isPublicPath('GET', '/health')).toBe(true)
-    expect(isPublicPath('POST', '/auth/web-session')).toBe(true)
-  })
-
-  it('keeps the GET web-session probe authenticated', () => {
-    expect(isPublicPath('GET', '/auth/web-session')).toBe(false)
-  })
-
-  it('does not allow API paths', () => {
-    expect(isPublicPath('GET', '/session/list')).toBe(false)
-    expect(isPublicPath('GET', '/auth/list')).toBe(false)
-    expect(isPublicPath('GET', '/events')).toBe(false)
-  })
-})
-
-describe('isAllowedHost', () => {
-  it('allows loopback hostnames with a port', () => {
-    expect(isAllowedHost('127.0.0.1:5000')).toBe(true)
-    expect(isAllowedHost('localhost:5000')).toBe(true)
-  })
-
-  it('allows a loopback hostname without a port', () => {
-    expect(isAllowedHost('localhost')).toBe(true)
-    expect(isAllowedHost('127.0.0.1')).toBe(true)
-  })
-
-  it('rejects non-loopback hostnames (DNS rebinding)', () => {
-    expect(isAllowedHost('evil.com:5000')).toBe(false)
-    expect(isAllowedHost('evil.com')).toBe(false)
-    expect(isAllowedHost('')).toBe(false)
-  })
-
-  it('allows any port on a loopback host (port-forward remaps it)', () => {
-    expect(isAllowedHost('127.0.0.1:9999')).toBe(true)
-    expect(isAllowedHost('localhost:9788')).toBe(true)
-  })
-
-  it('admits extra allowed hostnames case-insensitively, any port', () => {
-    const allowed = ['srv.tailnet.ts.net']
-    expect(isAllowedHost('srv.tailnet.ts.net', allowed)).toBe(true)
-    expect(isAllowedHost('SRV.Tailnet.TS.NET:443', allowed)).toBe(true)
-    expect(isAllowedHost('other.ts.net', allowed)).toBe(false)
-  })
-
-  it('keeps loopback allowed regardless of the extra list', () => {
-    expect(isAllowedHost('127.0.0.1', ['srv.ts.net'])).toBe(true)
-    expect(isAllowedHost('localhost:9788', [])).toBe(true)
-  })
-})
-
-describe('isAllowedOrigin', () => {
-  it('allows an absent or empty Origin (non-browser clients, same-origin GETs)', () => {
-    expect(isAllowedOrigin(undefined)).toBe(true)
-    expect(isAllowedOrigin('')).toBe(true)
-  })
-
-  it('allows a loopback Origin on any port', () => {
-    expect(isAllowedOrigin('http://localhost:5173')).toBe(true)
-    expect(isAllowedOrigin('http://127.0.0.1:8787')).toBe(true)
-  })
-
-  it('rejects a website Origin', () => {
-    expect(isAllowedOrigin('https://evil.com')).toBe(false)
-    expect(isAllowedOrigin('https://evil.com:8787')).toBe(false)
-  })
-
-  it('fails closed on an opaque or unparseable Origin', () => {
-    expect(isAllowedOrigin('null')).toBe(false)
-    expect(isAllowedOrigin('not a url')).toBe(false)
-  })
-
-  it('admits an allow-listed host, loopback regardless of the list', () => {
-    const allowed = ['srv.tailnet.ts.net']
-    expect(isAllowedOrigin('https://srv.tailnet.ts.net', allowed)).toBe(true)
-    expect(isAllowedOrigin('https://other.ts.net', allowed)).toBe(false)
-    expect(isAllowedOrigin('http://localhost', allowed)).toBe(true)
-  })
-})
-
-describe('isLoopbackOnlyDeployment', () => {
-  afterEach(() => vi.unstubAllEnvs())
-
-  it('is true with no remote-host env (the default local posture)', () => {
-    expect(isLoopbackOnlyDeployment()).toBe(true)
-  })
-
-  it('is false once YAAC_ALLOWED_HOSTS or YAAC_TRUST_PROXY is set', () => {
-    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
-    expect(isLoopbackOnlyDeployment()).toBe(false)
-    vi.unstubAllEnvs()
-    vi.stubEnv('YAAC_TRUST_PROXY', '1')
-    expect(isLoopbackOnlyDeployment()).toBe(false)
-  })
-})
-
-describe('isCredentialOptional', () => {
-  // The suite defaults to YAAC_REQUIRE_AUTH=1; clear it to see the underlying
-  // posture. YAAC_NESTED is stripped by unit-setup, so it's off by default.
-  afterEach(() => vi.unstubAllEnvs())
-
-  it('is true for a pure loopback deployment', () => {
-    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
-    expect(isCredentialOptional()).toBe(true)
-  })
-
-  it('is false once remote hosting is configured (and not nested)', () => {
-    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
-    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
-    expect(isCredentialOptional()).toBe(false)
-  })
-
-  it('is true for a nested yaac even with inherited remote-host env', () => {
-    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
-    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
-    vi.stubEnv('YAAC_TRUST_PROXY', '1')
-    vi.stubEnv('YAAC_NESTED', '1')
-    expect(isCredentialOptional()).toBe(true)
-  })
-
-  it('is false whenever YAAC_REQUIRE_AUTH forces the gate on', () => {
-    vi.stubEnv('YAAC_REQUIRE_AUTH', '1')
-    vi.stubEnv('YAAC_NESTED', '1')
-    expect(isCredentialOptional()).toBe(false)
-    vi.unstubAllEnvs()
-    vi.stubEnv('YAAC_REQUIRE_AUTH', '1')
-    expect(isCredentialOptional()).toBe(false)
-  })
-})
-
-describe('isAllowedFetchSite', () => {
-  it('allows an absent header (non-browser / older browsers)', () => {
-    expect(isAllowedFetchSite(undefined, undefined, undefined, 'POST')).toBe(true)
-    expect(isAllowedFetchSite('', undefined, undefined, 'POST')).toBe(true)
-  })
-
-  it('allows same-origin and user-initiated (none) requests', () => {
-    expect(isAllowedFetchSite('same-origin', 'cors', 'empty', 'POST')).toBe(true)
-    expect(isAllowedFetchSite('none', 'navigate', 'document', 'GET')).toBe(true)
-  })
-
-  it('rejects cross-site and same-site sub-resource loads', () => {
-    expect(isAllowedFetchSite('cross-site', 'cors', 'empty', 'POST')).toBe(false)
-    expect(isAllowedFetchSite('cross-site', 'websocket', 'empty', 'GET')).toBe(false)
-    expect(isAllowedFetchSite('same-site', 'cors', 'empty', 'GET')).toBe(false)
-  })
-
-  it('allows a cross-site top-level document navigation (linkable webapp)', () => {
-    expect(isAllowedFetchSite('cross-site', 'navigate', 'document', 'GET')).toBe(true)
-  })
-
-  it('rejects a cross-site navigation that is not a top-level document', () => {
-    // Embedded (iframe/embed) navigation — a site trying to frame the app.
-    expect(isAllowedFetchSite('cross-site', 'navigate', 'iframe', 'GET')).toBe(false)
-    // Non-GET or missing dest.
-    expect(isAllowedFetchSite('cross-site', 'navigate', 'document', 'POST')).toBe(false)
-    expect(isAllowedFetchSite('cross-site', 'navigate', undefined, 'GET')).toBe(false)
-  })
-})
-
+/**
+ * A gate over the paths that decide the public/gated split: the SPA shell and
+ * its assets, the health probe, both methods of the token→cookie exchange,
+ * and an ordinary API route.
+ */
 function appWithAuth(): { app: Hono; tokens: ReturnType<typeof createTokenStore> } {
   const tokens = createTokenStore()
   const app = new Hono()
   app.use('*', cookieOrBearerAuth('shh', tokens))
   app.get('/health', (c) => c.text('ok'))
+  app.get('/', (c) => c.text('shell'))
+  app.get('/assets/*', (c) => c.text('asset'))
+  app.post('/auth/web-session', (c) => c.text('exchanged'))
+  app.get('/auth/web-session', (c) => c.text('probe ok'))
   app.get('/session/list', (c) => c.text('protected ok'))
   return { app, tokens }
 }
@@ -196,21 +38,28 @@ function mintSession(tokens: ReturnType<typeof createTokenStore>): string {
 }
 
 describe('cookieOrBearerAuth', () => {
-  // These assert the credential gate itself, so force it on (a loopback test
-  // server is credential-optional by default).
+  // Most of these assert the credential gate itself, so force it on (a
+  // loopback test server is credential-optional by default); the bypass cases
+  // clear it again.
   beforeEach(() => vi.stubEnv('YAAC_REQUIRE_AUTH', '1'))
   afterEach(() => vi.unstubAllEnvs())
 
-  it('allows public paths with no credentials', async () => {
-    const res = await appWithAuth().app.request('/health')
-    expect(res.status).toBe(200)
+  it('lets the shell, its assets, health and the POST exchange through with no credential', async () => {
+    const { app } = appWithAuth()
+    expect((await app.request('/health')).status).toBe(200)
+    expect((await app.request('/')).status).toBe(200)
+    expect((await app.request('/assets/index-abc.js')).status).toBe(200)
+    expect((await app.request('/auth/web-session', { method: 'POST' })).status).toBe(200)
   })
 
-  it('rejects a protected path with no credentials', async () => {
-    const res = await appWithAuth().app.request('/session/list')
-    expect(res.status).toBe(401)
-    const body = await res.json() as { error: { code: string } }
-    expect(body.error.code).toBe('UNAUTHENTICATED')
+  it('gates API paths and the GET web-session probe', async () => {
+    const { app } = appWithAuth()
+    for (const path of ['/session/list', '/auth/web-session']) {
+      const res = await app.request(path)
+      expect(res.status).toBe(401)
+      const body = await res.json() as { error: { code: string } }
+      expect(body.error.code).toBe('UNAUTHENTICATED')
+    }
   })
 
   it('accepts a correct bearer, case-insensitively', async () => {
@@ -226,12 +75,17 @@ describe('cookieOrBearerAuth', () => {
   })
 
   it('rejects a wrong bearer with BAD_BEARER (drives the CLI re-resolve retry)', async () => {
-    const res = await appWithAuth().app.request('/session/list', {
-      headers: { authorization: 'Bearer nope' },
-    })
-    expect(res.status).toBe(401)
-    const body = await res.json() as { error: { code: string } }
-    expect(body.error.code).toBe('BAD_BEARER')
+    const { app } = appWithAuth()
+    // Both shapes the constant-time compare has to handle: a same-length
+    // near-miss and a length mismatch (which it must reject, not throw on).
+    for (const bearer of ['shX', 'a-much-longer-guess']) {
+      const res = await app.request('/session/list', {
+        headers: { authorization: `Bearer ${bearer}` },
+      })
+      expect(res.status).toBe(401)
+      const body = await res.json() as { error: { code: string } }
+      expect(body.error.code).toBe('BAD_BEARER')
+    }
   })
 
   it('accepts a durable token bearer', async () => {
@@ -292,38 +146,22 @@ describe('cookieOrBearerAuth', () => {
     })
     expect(res.status).toBe(401)
   })
-})
 
-describe('cookieOrBearerAuth — loopback-only bypass', () => {
-  // The suite defaults to YAAC_REQUIRE_AUTH=1 (vitest-setup); clear it to
-  // exercise the default local posture where the gate is skipped.
-  afterEach(() => vi.unstubAllEnvs())
-
-  it('passes a protected path with no credential when loopback-only', async () => {
+  it('skips the gate entirely on a loopback-only deployment', async () => {
     vi.stubEnv('YAAC_REQUIRE_AUTH', '')
-    const res = await appWithAuth().app.request('/session/list')
-    expect(res.status).toBe(200)
-  })
-
-  it('does not even reject a wrong bearer when bypassed', async () => {
-    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
-    const res = await appWithAuth().app.request('/session/list', {
+    const { app } = appWithAuth()
+    expect((await app.request('/session/list')).status).toBe(200)
+    // Not even a wrong bearer is rejected — the gate is not consulted at all.
+    const wrong = await app.request('/session/list', {
       headers: { authorization: 'Bearer nope' },
     })
-    expect(res.status).toBe(200)
-  })
-
-  it('re-enforces the gate when YAAC_REQUIRE_AUTH=1', async () => {
-    vi.stubEnv('YAAC_REQUIRE_AUTH', '1')
-    const res = await appWithAuth().app.request('/session/list')
-    expect(res.status).toBe(401)
+    expect(wrong.status).toBe(200)
   })
 
   it('re-enforces the gate once remote hosting is configured', async () => {
     vi.stubEnv('YAAC_REQUIRE_AUTH', '')
     vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
-    const res = await appWithAuth().app.request('/session/list')
-    expect(res.status).toBe(401)
+    expect((await appWithAuth().app.request('/session/list')).status).toBe(401)
   })
 
   it('bypasses a nested yaac despite inherited remote-host env', async () => {
@@ -333,8 +171,46 @@ describe('cookieOrBearerAuth — loopback-only bypass', () => {
     vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
     vi.stubEnv('YAAC_TRUST_PROXY', '1')
     vi.stubEnv('YAAC_NESTED', '1')
-    const res = await appWithAuth().app.request('/session/list')
-    expect(res.status).toBe(200)
+    expect((await appWithAuth().app.request('/session/list')).status).toBe(200)
+  })
+})
+
+describe('isCredentialOptional', () => {
+  // The suite defaults to YAAC_REQUIRE_AUTH=1; clear it to see the underlying
+  // posture. YAAC_NESTED is stripped by unit-setup, so it's off by default.
+  afterEach(() => vi.unstubAllEnvs())
+
+  it('is true for a pure loopback deployment', () => {
+    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
+    expect(isCredentialOptional()).toBe(true)
+  })
+
+  it('is false once remote hosting is configured (and not nested)', () => {
+    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
+    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
+    expect(isCredentialOptional()).toBe(false)
+    // Either half of the remote-hosting posture is enough on its own.
+    vi.unstubAllEnvs()
+    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
+    vi.stubEnv('YAAC_TRUST_PROXY', '1')
+    expect(isCredentialOptional()).toBe(false)
+  })
+
+  it('is true for a nested yaac even with inherited remote-host env', () => {
+    vi.stubEnv('YAAC_REQUIRE_AUTH', '')
+    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
+    vi.stubEnv('YAAC_TRUST_PROXY', '1')
+    vi.stubEnv('YAAC_NESTED', '1')
+    expect(isCredentialOptional()).toBe(true)
+  })
+
+  it('is false whenever YAAC_REQUIRE_AUTH forces the gate on', () => {
+    vi.stubEnv('YAAC_REQUIRE_AUTH', '1')
+    vi.stubEnv('YAAC_NESTED', '1')
+    expect(isCredentialOptional()).toBe(false)
+    vi.unstubAllEnvs()
+    vi.stubEnv('YAAC_REQUIRE_AUTH', '1')
+    expect(isCredentialOptional()).toBe(false)
   })
 })
 
@@ -360,19 +236,6 @@ describe('sessionCookieName', () => {
   })
 })
 
-describe('timingSafeStrEqual', () => {
-  it('matches equal strings and rejects unequal ones', () => {
-    expect(timingSafeStrEqual('secret', 'secret')).toBe(true)
-    expect(timingSafeStrEqual('secret', 'secreT')).toBe(false)
-  })
-
-  it('rejects length mismatches without throwing', () => {
-    expect(timingSafeStrEqual('short', 'longer-value')).toBe(false)
-    expect(timingSafeStrEqual('', 'x')).toBe(false)
-    expect(timingSafeStrEqual('', '')).toBe(true)
-  })
-})
-
 describe('hostHeaderCheck', () => {
   function appWithHostCheck(): Hono {
     const app = new Hono()
@@ -381,14 +244,18 @@ describe('hostHeaderCheck', () => {
     return app
   }
 
-  it('allows loopback hosts', async () => {
-    const res = await appWithHostCheck().request('/x', { headers: { host: '127.0.0.1' } })
-    expect(res.status).toBe(200)
+  it('allows loopback hosts, with or without a port', async () => {
+    for (const host of ['127.0.0.1', 'localhost:9788', 'LocalHost']) {
+      const res = await appWithHostCheck().request('/x', { headers: { host } })
+      expect(res.status).toBe(200)
+    }
   })
 
-  it('allows a loopback host on a forwarded (non-bound) port', async () => {
-    const res = await appWithHostCheck().request('/x', { headers: { host: 'localhost:9788' } })
-    expect(res.status).toBe(200)
+  it('falls back to the URL host when no Host header is sent (in-memory dispatch)', async () => {
+    const ok = await appWithHostCheck().request('/x')
+    expect(ok.status).toBe(200)
+    const rebind = await appWithHostCheck().request('http://evil.com/x')
+    expect(rebind.status).toBe(403)
   })
 
   it('rejects a non-loopback host', async () => {
@@ -400,17 +267,19 @@ describe('hostHeaderCheck', () => {
     expect(body.error.code).toBe('BAD_HOST')
   })
 
-  it('admits a host from YAAC_ALLOWED_HOSTS (read per request)', async () => {
+  it('admits a host from YAAC_ALLOWED_HOSTS, any case or port, read per request', async () => {
     const app = appWithHostCheck()
     vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
     try {
-      const ok = await app.request('/x', { headers: { host: 'srv.tailnet.ts.net' } })
+      const ok = await app.request('/x', { headers: { host: 'SRV.Tailnet.TS.NET:443' } })
       expect(ok.status).toBe(200)
-      const other = await app.request('/x', { headers: { host: 'evil.com' } })
+      const other = await app.request('/x', { headers: { host: 'other.ts.net' } })
       expect(other.status).toBe(403)
     } finally {
       vi.unstubAllEnvs()
     }
+    // Back to the default allowlist without rebuilding the app.
+    expect((await app.request('/x', { headers: { host: 'srv.tailnet.ts.net' } })).status).toBe(403)
   })
 })
 
@@ -422,12 +291,13 @@ describe('originHeaderCheck', () => {
     return app
   }
 
-  it('allows a request with no Origin (CLI, same-origin GET)', async () => {
-    const res = await appWithOriginCheck().request('/x')
-    expect(res.status).toBe(200)
+  it('allows an absent or empty Origin (CLI, same-origin GET)', async () => {
+    expect((await appWithOriginCheck().request('/x')).status).toBe(200)
+    const empty = await appWithOriginCheck().request('/x', { headers: { origin: '' } })
+    expect(empty.status).toBe(200)
   })
 
-  it('allows a loopback Origin (the SPA and the Vite dev proxy)', async () => {
+  it('allows a loopback Origin on any port (the SPA and the Vite dev proxy)', async () => {
     const res = await appWithOriginCheck().request('/x', {
       headers: { origin: 'http://localhost:5173' },
     })
@@ -443,6 +313,15 @@ describe('originHeaderCheck', () => {
     expect(body.error.code).toBe('BAD_ORIGIN')
   })
 
+  it('fails closed on an opaque, host-less or unparseable Origin', async () => {
+    // 'null' (opaque origin) and garbage don't parse; a non-http scheme parses
+    // but carries no host, which is not a host the allowlist can ever admit.
+    for (const origin of ['null', 'not a url', 'foo:bar']) {
+      const res = await appWithOriginCheck().request('/x', { headers: { origin } })
+      expect(res.status).toBe(403)
+    }
+  })
+
   it('admits an Origin from YAAC_ALLOWED_HOSTS (read per request)', async () => {
     const app = appWithOriginCheck()
     vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
@@ -451,6 +330,9 @@ describe('originHeaderCheck', () => {
       expect(ok.status).toBe(200)
       const other = await app.request('/x', { headers: { origin: 'https://evil.com' } })
       expect(other.status).toBe(403)
+      // Loopback stays allowed regardless of the list.
+      const local = await app.request('/x', { headers: { origin: 'http://localhost' } })
+      expect(local.status).toBe(200)
     } finally {
       vi.unstubAllEnvs()
     }
@@ -466,20 +348,27 @@ describe('fetchSiteCheck', () => {
     return app
   }
 
-  it('allows a request with no Sec-Fetch-Site (CLI, older browser)', async () => {
-    const res = await appWithFetchSiteCheck().request('/x')
-    expect(res.status).toBe(200)
+  it('allows an absent or empty Sec-Fetch-Site (CLI, older browser)', async () => {
+    expect((await appWithFetchSiteCheck().request('/x')).status).toBe(200)
+    const empty = await appWithFetchSiteCheck().request('/x', {
+      headers: { 'sec-fetch-site': '' },
+    })
+    expect(empty.status).toBe(200)
   })
 
-  it('allows same-origin requests (the SPA)', async () => {
-    const res = await appWithFetchSiteCheck().request('/x', {
+  it('allows same-origin fetches and user-initiated (none) loads', async () => {
+    const spa = await appWithFetchSiteCheck().request('/x', {
       method: 'POST',
       headers: { 'sec-fetch-site': 'same-origin' },
     })
-    expect(res.status).toBe(200)
+    expect(spa.status).toBe(200)
+    const typed = await appWithFetchSiteCheck().request('/x', {
+      headers: { 'sec-fetch-site': 'none', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' },
+    })
+    expect(typed.status).toBe(200)
   })
 
-  it('rejects a cross-site request with BAD_FETCH_SITE', async () => {
+  it('rejects cross-site and same-site sub-resource loads with BAD_FETCH_SITE', async () => {
     const res = await appWithFetchSiteCheck().request('/x', {
       method: 'POST',
       headers: { 'sec-fetch-site': 'cross-site' },
@@ -487,9 +376,14 @@ describe('fetchSiteCheck', () => {
     expect(res.status).toBe(403)
     const body = await res.json() as { error: { code: string } }
     expect(body.error.code).toBe('BAD_FETCH_SITE')
+
+    const sameSite = await appWithFetchSiteCheck().request('/x', {
+      headers: { 'sec-fetch-site': 'same-site', 'sec-fetch-mode': 'cors', 'sec-fetch-dest': 'empty' },
+    })
+    expect(sameSite.status).toBe(403)
   })
 
-  it('allows a cross-site top-level document navigation', async () => {
+  it('allows a cross-site top-level document navigation (linkable webapp)', async () => {
     const res = await appWithFetchSiteCheck().request('/x', {
       headers: {
         'sec-fetch-site': 'cross-site',
@@ -500,14 +394,24 @@ describe('fetchSiteCheck', () => {
     expect(res.status).toBe(200)
   })
 
-  it('rejects a cross-site embedded (iframe) navigation', async () => {
-    const res = await appWithFetchSiteCheck().request('/x', {
+  it('rejects a cross-site navigation that is not a top-level document GET', async () => {
+    // Embedded (iframe/embed) navigation — a site trying to frame the app —
+    // plus a non-GET and a dest-less navigation.
+    const cases: Record<string, string>[] = [
+      { 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'iframe' },
+      { 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'navigate' },
+    ]
+    for (const headers of cases) {
+      expect((await appWithFetchSiteCheck().request('/x', { headers })).status).toBe(403)
+    }
+    const post = await appWithFetchSiteCheck().request('/x', {
+      method: 'POST',
       headers: {
         'sec-fetch-site': 'cross-site',
         'sec-fetch-mode': 'navigate',
-        'sec-fetch-dest': 'iframe',
+        'sec-fetch-dest': 'document',
       },
     })
-    expect(res.status).toBe(403)
+    expect(post.status).toBe(403)
   })
 })

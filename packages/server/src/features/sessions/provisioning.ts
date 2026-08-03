@@ -13,7 +13,7 @@
  * are set up, and clients must keep rendering the row, not attach to a
  * half-built session.
  */
-import { toErrorBody } from '#http/errors'
+import { toErrorBody } from '#http'
 import { notifySessionListChanged } from '#features/sessions/notify'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { AgentTool, ProvisioningSessionEntry } from '@yaac/shared/types'

@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
 import { ServerError } from '@yaac/shared/errors'
-import { timingSafeStrEqual } from '#http/web-auth'
+import { timingSafeStrEqual } from './web-auth'
 import { maskToken } from '@yaac/shared/mask'
 import { getDb } from '#platform/db/client'
 import { tokens as tokensTable } from '#platform/db/schema'

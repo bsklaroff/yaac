@@ -24,7 +24,7 @@ import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 import { buildFilesApp } from '#routes/build-files'
 import { pushImageShared, rebuildProjectImage } from '#features/images'
-import { toErrorBody } from '#http/errors'
+import { toErrorBody } from '#http'
 import { testEnv } from '@yaac/shared/env'
 
 export const projectApp = new Hono()

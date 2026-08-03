@@ -3,10 +3,20 @@ import { existsSync } from 'node:fs'
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { setCookie } from 'hono/cookie'
-import { denyBrowserCors, requestLogger } from '#http/auth'
-import { cookieOrBearerAuth, fetchSiteCheck, hostHeaderCheck, isCredentialOptional, originHeaderCheck, sessionCookieName } from '#http/web-auth'
-import { registerStaticRoutes } from '#http/static'
-import { toErrorBody } from '#http/errors'
+import {
+  cookieOrBearerAuth,
+  createTokenStore,
+  denyBrowserCors,
+  fetchSiteCheck,
+  hostHeaderCheck,
+  isCredentialOptional,
+  originHeaderCheck,
+  registerStaticRoutes,
+  requestLogger,
+  sessionCookieName,
+  toErrorBody,
+  type TokenStore,
+} from '#http'
 import { projectApp } from '#routes/projects'
 import { sessionApp } from '#routes/sessions'
 import { toolApp } from '#routes/skills'
@@ -17,7 +27,6 @@ import { shortcutsApp } from '#routes/shortcuts'
 import { configApp } from '#routes/config'
 import { imageApp } from '#routes/images'
 import { serverLog } from '#log'
-import { createTokenStore, type TokenStore } from '#http/token-store'
 import { env } from '@yaac/shared/env'
 import { PACKAGE_ROOT } from '@yaac/shared/paths'
 
