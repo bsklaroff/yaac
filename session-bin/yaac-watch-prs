@@ -23,6 +23,10 @@
 #
 # On first run every current PR/comment/commit is recorded as seen WITHOUT
 # emitting, so only updates that land after the watcher starts are surfaced.
+# A poll whose GitHub queries fail is skipped rather than reported as an
+# absence of events (the failure is noted on stderr), and the first pass is
+# retried until it completes, so an outage at startup can't turn into a flood
+# of stale events once GitHub comes back.
 # Seen state persists in $HOME/.yaac-watch-prs-seen (override via
 # YAAC_WATCH_PRS_STATE) for this session's lifetime.
 #
@@ -53,7 +57,8 @@ done
 for cmd in gh jq; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "yaac-watch-prs: $cmd not found" >&2; exit 1; }
 done
-cd /workspace || exit 1
+# gh infers the repo from this dir's git remote (overridable for tests).
+cd "${YAAC_WATCH_PRS_WORKDIR:-/workspace}" || exit 1
 
 # Default event set depends on scope: a single PR can't be "opened", so watch
 # its comments and commits; across all PRs the useful default is new PRs.
@@ -80,10 +85,20 @@ state="${YAAC_WATCH_PRS_STATE:-$HOME/.yaac-watch-prs-seen}"
 # collapses runs of whitespace IFS like tab and would otherwise drop them.
 US=$(printf '\037')
 
-# First run (no state file yet) → baseline pass: mark everything seen without
-# emitting, so only updates after startup surface.
-baseline=0
-if [ ! -f "$state" ]; then baseline=1; : > "$state"; fi
+# First run (no baseline marker in the state file) → baseline pass: mark
+# everything seen without emitting, so only updates after startup surface.
+# The baseline is over only once a poll completes with every query successful,
+# and the marker records that on disk: declaring it done after a poll that
+# failed would leave the pre-existing PRs/comments/commits unmarked, and the
+# first poll once GitHub recovers would emit the lot as "new". Marking on disk
+# (rather than just in memory) means a watcher killed mid-outage re-baselines
+# on its next start instead of inheriting a half-filled state file. Keys are
+# "kind:…" strings, so the leading '#' can't collide with one.
+BASELINE_MARK='#baselined'
+baseline=1
+[ -f "$state" ] || : > "$state"
+grep -qxF "$BASELINE_MARK" "$state" && baseline=0
+poll_failed=0
 
 # seen/mark/emit share the on-disk state file, so appends made inside the
 # `while read` subshells below persist and dedup across the whole run.
@@ -94,21 +109,46 @@ emit() { # <dedup-key> <event-line>
   printf '%s\n' "$2"
 }
 
+# Run a gh query, capturing its stdout in $gh_out. Returns non-zero (after a
+# stderr note) when gh fails, so the caller SKIPS that poll instead of parsing
+# the response as data: GitHub answers an outage with a JSON *object*
+# ({"message": ...}), which a `.[]` filter happily iterates into junk records
+# that would surface as empty-author, empty-body events. gh's own stderr is
+# left alone so the real failure stays visible to the user.
+# A failure also marks the whole poll incomplete, which holds the baseline
+# open (see above).
+gh_query() { # <what> <gh args...>
+  what="$1"; shift
+  gh_out=$(gh "$@") && return 0
+  echo "yaac-watch-prs: $what failed; retrying next poll" >&2
+  poll_failed=1
+  return 1
+}
+
 poll() {
+  poll_failed=0
   if [ -n "$pr" ]; then
     prs="$pr"
+  elif [ "$want_comment" = 1 ] || [ "$want_commit" = 1 ]; then
+    # Only the per-PR polls below consume $prs; with just 'opened' wanted the
+    # query would be a second copy of the one in the block below.
+    gh_query "gh pr list (open PRs)" pr list --state open --limit 100 \
+      --json number --jq '.[].number' || return 0
+    prs="$gh_out"
   else
-    prs=$(gh pr list --state open --limit 100 --json number --jq '.[].number' 2>/dev/null) \
-      || { echo "yaac-watch-prs: gh pr list failed; retrying next poll" >&2; return 0; }
+    prs=""
   fi
 
   if [ "$want_opened" = 1 ]; then
-    gh pr list --state open --limit 100 --json number,headRefName,author,title \
-      --jq '.[] | [(.number|tostring), (.author.login // ""), .headRefName, .title] | join("\u001f")' 2>/dev/null \
-    | while IFS="$US" read -r n author branch title; do
+    if gh_query "gh pr list (opened events)" pr list --state open --limit 100 \
+      --json number,headRefName,author,title \
+      --jq '.[] | [(.number|tostring), (.author.login // ""), .headRefName, .title] | join("\u001f")'
+    then
+      printf '%s\n' "$gh_out" | while IFS="$US" read -r n author branch title; do
         [ -n "$n" ] || continue
         emit "opened:$n" "[opened] PR #$n by $author ($branch): $title"
-      done || true
+      done
+    fi
   fi
 
   for n in $prs; do
@@ -116,22 +156,29 @@ poll() {
     if [ "$want_comment" = 1 ]; then
       # Top-level PR comments, inline review comments, and review summaries.
       for src in "issues/$n/comments" "pulls/$n/comments" "pulls/$n/reviews"; do
-        gh api "repos/{owner}/{repo}/$src?per_page=100" \
-          --jq ".[] | select((.body // \"\") != \"\") | [(.id|tostring), .user.login, (.path // .state // \"\"), (.body | gsub(\"[\\r\\n]+\"; \" \"))] | join(\"\u001f\")" 2>/dev/null \
-        | while IFS="$US" read -r id author loc body; do
-            [ -n "$id" ] || continue
+        gh_query "gh api $src" api "repos/{owner}/{repo}/$src?per_page=100" \
+          --jq ".[] | select((.body // \"\") != \"\") | [(.id|tostring), (.user.login // \"ghost\"), (.path // .state // \"\"), (.body | gsub(\"[\\r\\n]+\"; \" \"))] | join(\"\u001f\")" \
+          || continue
+        printf '%s\n' "$gh_out" | while IFS="$US" read -r id author loc body; do
+            # An id alone isn't enough to call a record an event: a response
+            # that parses but isn't a comment list yields records with empty
+            # fields. A real comment always has an author and a body (the jq
+            # filter already drops empty bodies), so anything missing either
+            # is junk, not a comment.
+            [ -n "$id" ] && [ -n "$author" ] && [ -n "$body" ] || continue
             emit "comment:$src:$id" "[comment] PR #$n by $author${loc:+ [$loc]}: $body"
-          done || true
+          done
       done
     fi
     if [ "$want_commit" = 1 ]; then
-      gh pr view "$n" --json commits \
-        --jq '.commits[] | [.oid, (.authors[0].login // .authors[0].name // ""), (.messageHeadline // "")] | join("\u001f")' 2>/dev/null \
-      | while IFS="$US" read -r oid author subj; do
+      gh_query "gh pr view #$n" pr view "$n" --json commits \
+        --jq '.commits[] | [.oid, (.authors[0].login // .authors[0].name // ""), (.messageHeadline // "")] | join("\u001f")' \
+        || continue
+      printf '%s\n' "$gh_out" | while IFS="$US" read -r oid author subj; do
           [ -n "$oid" ] || continue
           short=$(printf '%s' "$oid" | cut -c1-7)
           emit "commit:$n:$oid" "[commit] PR #$n $short by $author: $subj"
-        done || true
+        done
     fi
   done
 }
@@ -142,7 +189,14 @@ echo "watching $scope_desc every ${interval}s for: $events (state: $state)" >&2
 
 while :; do
   poll
-  baseline=0
+  if [ "$baseline" = 1 ]; then
+    if [ "$poll_failed" = 0 ]; then
+      printf '%s\n' "$BASELINE_MARK" >> "$state"
+      baseline=0
+    else
+      echo "yaac-watch-prs: baseline incomplete; retrying it next poll" >&2
+    fi
+  fi
   [ "$once" = 1 ] && break
   sleep "$interval"
 done

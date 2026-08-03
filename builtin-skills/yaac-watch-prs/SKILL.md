@@ -76,6 +76,13 @@ own work.
   watcher runs are surfaced. Delete a key from the file to re-emit it.
 - `$HOME` is per-session, so the seen state lives only as long as this
   session — a fresh watcher re-baselines.
+- **A poll whose `gh` calls fail is skipped, not reported as "no events".**
+  If GitHub is unreachable the watcher notes each failure on stderr and
+  retries on the next poll rather than emitting anything. So silence on
+  stdout means "nothing new *or* currently blind" — if a watch matters and
+  has gone quiet for a long time, check the monitor's output for those
+  stderr notes. The first pass is likewise retried until it completes, so an
+  outage at startup can't turn into a flood of stale events on recovery.
 
 ## Auto-reviewing new PRs
 
