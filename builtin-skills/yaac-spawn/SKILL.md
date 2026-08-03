@@ -36,9 +36,9 @@ host credentials, so this is the only way to know what's usable.
 - **`--model`** (optional): model the new session's agent launches with
   (`--model <model>`). Any model id the chosen tool accepts — there is no fixed
   list yaac enforces (only a shape check, so a typo'd id spawns and fails at
-  the vendor). A model id or alias for claude/codex (e.g. `claude-opus-4-8` or
+  the vendor). A model id or alias for claude/codex (e.g. `claude-opus-5` or
   `opus`); `provider/model` for opencode and pi (e.g.
-  `anthropic/claude-opus-4-8`), where the provider must be the one that tool is
+  `anthropic/claude-opus-5`), where the provider must be the one that tool is
   authed for — naming a different provider surfaces as an auth error.
 - **`--models`**: prints which tools have host credentials (with their provider
   and host) and each tool's accepted model ids, then exits without spawning.

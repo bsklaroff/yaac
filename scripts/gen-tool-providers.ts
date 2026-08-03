@@ -136,27 +136,78 @@ async function fetchModelsDev(): Promise<{ db: Record<string, ModelsDevProvider>
   }
 }
 
-/** Pick the api-key env var for an opencode provider (skip OAuth-token vars). */
+/**
+ * Pick the api-key env var for a provider, preferring an `*_API_KEY`-shaped
+ * candidate over a bearer-token one.
+ *
+ * The chosen var is seeded with the api-key *placeholder* into a session pod
+ * that carries every credentialed tool's placeholders at once (the pod spec is
+ * immutable, so a prewarmed spare can be retooled). Bearer-token vars are read
+ * by other tools with a different precedence: Claude Code ranks
+ * ANTHROPIC_AUTH_TOKEN above its OAuth credential, so seeding it for a pi
+ * anthropic credential would shadow the login of a claude session sharing the
+ * pod. Providers list both shapes (pi's anthropic registry offers
+ * ANTHROPIC_AUTH_TOKEN, ANTHROPIC_OAUTH_TOKEN, ANTHROPIC_API_KEY) and the tool
+ * reads whichever is set, so preferring the api-key var costs nothing.
+ * Falls back to the first non-OAuth candidate when no `_API_KEY` var exists.
+ */
 function pickEnvVar(env: string[]): string | undefined {
-  return env.find((v) => !/OAUTH/i.test(v)) ?? env[0]
+  const apiKeyOnly = env.filter((v) => !/OAUTH/i.test(v))
+  return apiKeyOnly.find((v) => /_API_KEY$/i.test(v)) ?? apiKeyOnly[0] ?? env[0]
 }
 
 /**
  * Bare hostname from a base-URL string, or null if unparseable or not a fixed
- * host. Rejects templated/placeholder hosts like models.dev's databricks
- * `https://${databricks_host}/...` — a per-workspace host the proxy can't
+ * base URL. Rejects templated/placeholder URLs like models.dev's databricks
+ * `https://${databricks_host}/...` — a per-workspace value the proxy can't
  * match on, so the provider is skipped rather than emitted with a bogus host.
+ *
+ * The check covers the whole URL, not just the host: cloudflare-workers-ai
+ * templates the account id into the *path* behind a fixed host
+ * (`api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1`).
+ * Matching on the host alone would emit it with a usable-looking host and a
+ * path segment the session can never fill in, so every request would fail —
+ * it needs per-account config beyond a bare key, like the multi-config
+ * providers excluded above.
+ *
+ * Loopback hosts are rejected for a related reason: they name a server on the
+ * *user's own machine* (models.dev lists several local-inference providers
+ * this way), which a session pod's localhost is not. The transparent proxy
+ * only intercepts egress, so it never sees loopback traffic and could not swap
+ * the placeholder key there anyway — the provider is unusable from a session
+ * either way, so it is skipped rather than offered in the credential picker.
  */
+function isLoopbackHost(host: string): boolean {
+  return host === 'localhost'
+    || host === '0.0.0.0'
+    || host.endsWith('.localhost')
+    || /^127\.\d+\.\d+\.\d+$/.test(host)
+}
+
 function hostFromUrl(url: string): string | null {
+  if (url.includes('${')) return null
   try {
     const host = new URL(url).hostname
-    return /^[a-z0-9.-]+$/i.test(host) ? host : null
+    if (!/^[a-z0-9.-]+$/i.test(host)) return null
+    return isLoopbackHost(host) ? null : host
   } catch {
     return null
   }
 }
 
-function buildOpencodeRows(db: Record<string, ModelsDevProvider>): ProviderRow[] {
+/**
+ * @param catalog tool-calling model ids per provider (from buildModelsCatalog).
+ *   A provider absent from it has no model an agent can drive, so selecting it
+ *   is a dead end: the credential picker would offer it, the pod would get its
+ *   env var, and `yaac-spawn --models` would then report no ids for it. Some
+ *   have a usable sibling carrying the tool-calling ids under the same key and
+ *   host (models.dev splits perplexity into perplexity / perplexity-agent), so
+ *   dropping the empty one steers the picker at the entry that works.
+ */
+function buildOpencodeRows(
+  db: Record<string, ModelsDevProvider>,
+  catalog: Record<string, string[]>,
+): ProviderRow[] {
   const rows: ProviderRow[] = []
   const skipped: string[] = []
   for (const [id, p] of Object.entries(db)) {
@@ -166,6 +217,7 @@ function buildOpencodeRows(db: Record<string, ModelsDevProvider>): ProviderRow[]
     if (!envVar) { skipped.push(`${id} (no env var)`); continue }
     const host = (p.api && hostFromUrl(p.api)) || (p.npm ? OPENCODE_HOST_BY_NPM[p.npm] : undefined)
     if (!host) { skipped.push(`${id} (no stable host)`); continue }
+    if (!catalog[id]?.length) { skipped.push(`${id} (no tool-calling models)`); continue }
     rows.push({ id, label: p.name ?? id, envVar, apiHost: host })
   }
   console.log(`  opencode: ${rows.length} providers, ${skipped.length} skipped`)
@@ -425,8 +477,8 @@ async function main(): Promise<void> {
   console.log('Generating tool provider tables…')
   const { db, raw } = await fetchModelsDev()
   const [pi, piModels] = await Promise.all([buildPiRows(), buildPiModelsCatalog()])
-  const opencode = buildOpencodeRows(db)
   const catalog = buildModelsCatalog(db)
+  const opencode = buildOpencodeRows(db, catalog)
 
   const piRoot = piPackageRoot()
   const opencodeVer = (() => {
