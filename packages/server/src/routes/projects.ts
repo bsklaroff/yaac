@@ -15,7 +15,7 @@ import { ServerError } from '@yaac/shared/errors'
 import { readProjectDockerfile, writeProjectDockerfile } from '#features/projects/dockerfile'
 import { resolveProjectBuildDir } from '#features/projects/build-dirs'
 import { buildFilesApp } from '#routes/build-files'
-import { rebuildProjectImage, pushImageShared } from '#features/images/build-coordinator'
+import { pushImageShared, rebuildProjectImage } from '#features/images'
 import { toErrorBody } from '#http/errors'
 import { testEnv } from '@yaac/shared/env'
 

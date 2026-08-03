@@ -1,7 +1,7 @@
 import { isPrewarmed, listSessionPods } from '#platform/k8s/pods'
 import { getActiveClusterCache } from '#platform/k8s/cluster-cache'
 import { isSessionTerminating } from '#features/sessions/state'
-import { salvageSessionImages } from '#features/images/image-promoter'
+import { salvageSessionImages } from '#features/images'
 
 /**
  * Mid-session image salvage: run the (idempotent, self-gating) salvage

@@ -6,7 +6,7 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
 const HASH_RE = '[0-9a-f]{16}'
 
-describe('ensureImage layer stacking', () => {
+describe('ensureImage', () => {
   let dataDir: string
   const operations: string[] = []
 

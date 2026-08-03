@@ -5,3 +5,4 @@ dist/
 packages/desktop/dist-app/
 packages/desktop/staging/
 .vitest-last-run.json
+coverage/

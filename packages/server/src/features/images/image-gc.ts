@@ -108,11 +108,6 @@ export async function gcHostImages(): Promise<{ retired: string[]; pruned: numbe
 
 let lastSweepMs = 0
 
-/** Reset the throttle (tests only). */
-export function resetHostImageGcState(): void {
-  lastSweepMs = 0
-}
-
 /**
  * Reconcile step. Gated to the default install: e2e servers
  * (per-run `YAAC_K8S_NAMESPACE`) share the host engine, and a GC firing

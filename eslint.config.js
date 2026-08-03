@@ -4,6 +4,22 @@ import tseslint from 'typescript-eslint'
 
 const RELATIVE_PARENT = { group: ['..*'], message: 'Relative parent imports are not allowed.' }
 
+// Sealed folders expose an index.ts barrel (mapped to `#features/<name>` in
+// the package's imports field); everything else in the directory is internal.
+// src must enter through the barrel — add a folder to the alternation below
+// once it has one. Tests are deliberately unrestricted: they still reach
+// internals directly, which is what keeps a folder sealable without rewriting
+// its whole test file in the same commit.
+//
+// A `regex` pattern, not a `group` glob: groups are matched with gitignore
+// semantics, where the leading `#` of a subpath specifier reads as a comment
+// and the pattern is silently discarded — it looks installed but matches
+// nothing.
+const SEALED_FOLDERS = {
+  regex: '^#features/(images)/.',
+  message: 'This folder is sealed; import its barrel (e.g. #features/images).',
+}
+
 export default tseslint.config(
   // dockerfiles/streamd is plain JS baked into the base image (its test
   // imports untyped .js modules), deliberately outside the tsconfig
@@ -72,6 +88,7 @@ export default tseslint.config(
         {
           patterns: [
             RELATIVE_PARENT,
+            SEALED_FOLDERS,
             {
               group: ['@yaac/*', '!@yaac/shared', '!@yaac/shared/*'],
               message: 'This package may only import @yaac/shared (use "#…" for its own modules).',

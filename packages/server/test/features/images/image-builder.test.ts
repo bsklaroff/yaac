@@ -30,6 +30,19 @@ describe('fileHash', () => {
       await fs.rm(tmpDir, { recursive: true, force: true })
     }
   })
+
+  it('returns different hashes for different content', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-fh-'))
+    try {
+      const a = path.join(tmpDir, 'a.txt')
+      const b = path.join(tmpDir, 'b.txt')
+      await fs.writeFile(a, 'content A')
+      await fs.writeFile(b, 'content B')
+      expect(await fileHash(a)).not.toBe(await fileHash(b))
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('toolsContentHash', () => {

@@ -58,14 +58,14 @@ import {
   graphrootMountAnnotations,
 } from '#platform/k8s/pod-spec'
 import { ensureRegistryClusterService, registryClusterHost } from '#features/cluster/registry-service'
-import { ensureSalvageWriterImage } from '#features/images/image-promoter'
+import { ensureSalvageWriterImage } from './image-promoter'
 import {
   parseContainerIgnore,
   collectContextFiles,
   stringHash,
   type ImageLayer,
-} from '#features/images/image-builder'
-import type { EngineBuildContext } from '#features/images/build-engine'
+} from './image-builder'
+import type { EngineBuildContext } from './build-engine'
 import { serverLog, pipeToServerLog } from '#log'
 
 /**
@@ -231,16 +231,27 @@ export function builderParentPullScript(parentTag: string, clusterHost: string):
   ].join('\n')
 }
 
-/** `podman build` argv for the in-pod build (everything after `podman`). */
+/**
+ * `podman build` argv for the in-pod build (everything after `podman`).
+ *
+ * There is no --no-cache variant: the only forced rebuild is `yaac project
+ * rebuild`, which forces exactly the tools layer, and tools is always
+ * host-built. An in-pod layer therefore always keeps its step cache. If a
+ * forced in-pod rebuild is ever wanted, add the flag here and thread it
+ * from rebuildProjectImage — the absence is deliberate, not an oversight.
+ */
 export function builderBuildArgs(
   layer: ImageLayer,
   opts: {
     dockerfileRel: string
     clusterHost: string
     cacheRepo: string
-    noCache: boolean
   },
 ): string[] {
+  // Registry step cache: an edited Dockerfile re-runs only its changed
+  // steps in any fresh pod (validated: all-hit rebuild ~1.3s in a wiped
+  // store). Reads bounded by BUILD_CACHE_TTL.
+  const cacheRef = `${opts.clusterHost}/${opts.cacheRepo}`
   const args = [
     'build',
     // chroot isolation: RUN steps execute in a chroot inside the sandbox
@@ -249,20 +260,10 @@ export function builderBuildArgs(
     '--tls-verify=false',
     '-t', layer.tag,
     '-f', `${BUILDER_CONTEXT_DIR}/${opts.dockerfileRel}`,
+    '--cache-from', cacheRef,
+    '--cache-to', cacheRef,
+    '--cache-ttl', BUILD_CACHE_TTL,
   ]
-  if (opts.noCache) {
-    args.push('--no-cache')
-  } else {
-    // Registry step cache: an edited Dockerfile re-runs only its changed
-    // steps in any fresh pod (validated: all-hit rebuild ~1.3s in a wiped
-    // store). Reads bounded by BUILD_CACHE_TTL.
-    const cacheRef = `${opts.clusterHost}/${opts.cacheRepo}`
-    args.push(
-      '--cache-from', cacheRef,
-      '--cache-to', cacheRef,
-      '--cache-ttl', BUILD_CACHE_TTL,
-    )
-  }
   for (const [key, value] of Object.entries(layer.buildArgs ?? {})) {
     args.push('--build-arg', `${key}=${value}`)
   }
@@ -323,7 +324,8 @@ export async function planBuildContext(
 }
 
 interface PodExecOptions {
-  input?: string | NodeJS.ReadableStream
+  /** Stream only — the one input this takes is the context tar. */
+  input?: NodeJS.ReadableStream
   onLog?: (line: string) => void
   logPrefix: string
   timeoutMs: number
@@ -358,8 +360,7 @@ async function execInBuilderPod(
       // The remote side can exit before consuming all input (a failed
       // extract) — swallow the EPIPE; the exit code carries the verdict.
       child.stdin.on('error', () => {})
-      if (typeof opts.input === 'string') child.stdin.end(opts.input)
-      else opts.input.pipe(child.stdin)
+      opts.input.pipe(child.stdin)
     }
     child.on('close', (code) => {
       if (code === 0) resolve()
@@ -600,56 +601,51 @@ async function deleteBuilderPod(name: string): Promise<void> {
 /**
  * The cluster-pod engine's build: acquire the lease's pod (creating it on
  * first use), materialize the parent, stream the context, build with the
- * registry step cache, and push the product. When the caller supplied no
- * lease (direct engine use), a private one is created and released.
+ * registry step cache, and push the product.
  */
 export async function buildLayerInPod(
   layer: ImageLayer,
   ctx: EngineBuildContext,
 ): Promise<void> {
-  const lease = ctx.lease ?? new BuilderPodLease()
-  const owned = !ctx.lease
-  try {
-    const pod = await lease.acquire(layer.tag)
-    const clusterHost = registryClusterHost()
-    const logPrefix = `[build ${layer.tag}] `
-    const execOpts = { onLog: ctx.onLog, logPrefix }
+  // The lease belongs to the ensureImage/rebuildProjectImage call that
+  // created it — adjacent untrusted layers share one pod, and that caller's
+  // `finally` releases it. Nothing here owns the pod's lifetime.
+  const pod = await ctx.lease.acquire(layer.tag)
+  const clusterHost = registryClusterHost()
+  const logPrefix = `[build ${layer.tag}] `
+  const execOpts = { onLog: ctx.onLog, logPrefix }
 
-    const parentTag = layer.buildArgs?.BASE_IMAGE
-    if (parentTag) {
-      await execInBuilderPod(
-        pod,
-        ['sh', '-c', builderParentPullScript(parentTag, clusterHost)],
-        { ...execOpts, timeoutMs: BUILDER_PULL_TIMEOUT_MS },
-      )
-    }
-
-    const plan = await planBuildContext(layer.context, layer.dockerfile)
-    await streamContextToPod(pod, layer.context, plan.files, execOpts)
-
+  const parentTag = layer.buildArgs?.BASE_IMAGE
+  if (parentTag) {
     await execInBuilderPod(
       pod,
-      ['podman', ...builderBuildArgs(layer, {
-        dockerfileRel: plan.dockerfileRel,
-        clusterHost,
-        cacheRepo: buildCacheRepo(ctx.projectSlug),
-        noCache: ctx.noCache ?? false,
-      })],
-      { ...execOpts, timeoutMs: BUILDER_BUILD_TIMEOUT_MS },
+      ['sh', '-c', builderParentPullScript(parentTag, clusterHost)],
+      { ...execOpts, timeoutMs: BUILDER_PULL_TIMEOUT_MS },
     )
-
-    // Delta push: parent blobs were just pulled from this registry, so
-    // podman's blob-info cache cross-repo-mounts them (~1.2s measured).
-    // Always pushes (no HEAD skip) — a --no-cache rebuild must overwrite
-    // the unchanged content-hash tag with fresh bytes.
-    await execInBuilderPod(
-      pod,
-      ['podman', 'push', '--tls-verify=false', layer.tag, `${clusterHost}/${layer.tag}`],
-      { ...execOpts, timeoutMs: BUILDER_PUSH_TIMEOUT_MS },
-    )
-  } finally {
-    if (owned) await lease.release()
   }
+
+  const plan = await planBuildContext(layer.context, layer.dockerfile)
+  await streamContextToPod(pod, layer.context, plan.files, execOpts)
+
+  await execInBuilderPod(
+    pod,
+    ['podman', ...builderBuildArgs(layer, {
+      dockerfileRel: plan.dockerfileRel,
+      clusterHost,
+      cacheRepo: buildCacheRepo(ctx.projectSlug),
+    })],
+    { ...execOpts, timeoutMs: BUILDER_BUILD_TIMEOUT_MS },
+  )
+
+  // Delta push: parent blobs were just pulled from this registry, so
+  // podman's blob-info cache cross-repo-mounts them (~1.2s measured).
+  // Always pushes (no HEAD skip) — a --no-cache rebuild must overwrite
+  // the unchanged content-hash tag with fresh bytes.
+  await execInBuilderPod(
+    pod,
+    ['podman', 'push', '--tls-verify=false', layer.tag, `${clusterHost}/${layer.tag}`],
+    { ...execOpts, timeoutMs: BUILDER_PUSH_TIMEOUT_MS },
+  )
 }
 
 /** Age past which a builder pod is unconditionally a leak: comfortably

@@ -1,7 +1,6 @@
 import { Hono } from 'hono'
 import { ServerError } from '@yaac/shared/errors'
-import { dismissImageBuild, getImageBuildLog, listImageBuilds } from '#features/images/image-builds'
-import { retryImageBuild } from '#features/images/image-prewarm'
+import { dismissImageBuild, getImageBuildLog, listImageBuilds, retryImageBuild } from '#features/images'
 
 /**
  * Image-build registry reads and mutations. The snapshot pushed over `/events`

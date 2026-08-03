@@ -3,8 +3,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import simpleGit from 'simple-git'
 import { ensureContainerRuntime } from '#platform/container/runtime'
-import { ensureImage, pushImageShared } from '#features/images/build-coordinator'
-import { sharedImageStoreHostPath } from '#features/images/image-promoter'
+import { ensureImage, pushImageShared, sharedImageStoreHostPath } from '#features/images'
 import {
   proxyClient,
   SSH_AGENT_MOUNT,

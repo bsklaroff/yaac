@@ -9,7 +9,7 @@ import { execFileAsync } from '#platform/k8s/kubectl'
 import { ensureGvisorRuntime } from '#platform/k8s/gvisor'
 import { ensureLocalRegistry, registryHost, REGISTRY_CONTAINER_NAME } from '#features/cluster/registry'
 import { ensureRegistryClusterService } from '#features/cluster/registry-service'
-import { ensureBuilderRoleGuard } from '#features/images/builder-pod'
+import { ensureBuilderRoleGuard } from '#features/images'
 import { ensureNetd } from '#features/cluster/netd'
 import { resetClusterCidrCache } from '#features/cluster/cluster-cidrs'
 import {

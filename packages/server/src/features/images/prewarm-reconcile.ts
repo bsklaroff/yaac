@@ -15,7 +15,7 @@ import {
   claiming,
   computePrewarmPlan,
   inFlight,
-} from '#features/images/prewarm'
+} from './prewarm'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
 import type { AgentTool } from '@yaac/shared/types'

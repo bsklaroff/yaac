@@ -27,10 +27,10 @@
  * inseparable step of the build itself — the product only ever exists in
  * the registry.
  */
-import { buildImage, type ImageLayer } from '#features/images/image-builder'
+import { buildImage, type ImageLayer } from './image-builder'
 import { imageExists, removeImage } from '#platform/container/runtime'
 import { registryHasTag } from '#features/cluster/registry'
-import { buildLayerInPod, type BuilderPodLease } from '#features/images/builder-pod'
+import { buildLayerInPod, type BuilderPodLease } from './builder-pod'
 import { env } from '@yaac/shared/env'
 import type { ImageLayerName } from '@yaac/shared/types'
 
@@ -56,10 +56,15 @@ export function engineKindForLayer(name: ImageLayerName): BuildEngineKind {
 export interface EngineBuildContext {
   /** Project whose chain is being built (keys the step-cache repo). */
   projectSlug: string
-  noCache?: boolean
+  /** Required, not defaulted: every build path decides this explicitly. */
+  noCache: boolean
   onLog?: (line: string) => void
-  /** Shared builder pod for adjacent untrusted layers of one request. */
-  lease?: BuilderPodLease
+  /**
+   * Shared builder pod for adjacent untrusted layers of one request.
+   * Required: the coordinator always owns and releases one, so no engine
+   * ever has to create or dispose of a pod itself.
+   */
+  lease: BuilderPodLease
 }
 
 export interface BuildEngine {

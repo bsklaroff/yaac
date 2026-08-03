@@ -3,7 +3,7 @@ import path from 'node:path'
 import type { AgentTool, SecretProxyRule } from '@yaac/shared/types'
 import { imageExists } from '#platform/container/runtime'
 import { PROXY_DIR } from '@yaac/shared/project-paths'
-import { buildImage, contextHash } from '#features/images/image-builder'
+import { buildImage, contextHash, failImageBuild, finishImageBuild, ingestImageBuildLine, registerImageBuild } from '#features/images'
 import {
   ensureCaConfigMap,
   ensureNamespace,
@@ -16,12 +16,6 @@ import { k8sNamespace, kubectlGetJson, kubectlWithRetry } from '#platform/k8s/ku
 import { pushImageToRegistry, registryHasTag, registryRef } from '#features/cluster/registry'
 import { ExecTunnel } from '#platform/k8s/exec-tunnel'
 import { listSshEntries } from '#features/projects/credentials'
-import {
-  failImageBuild,
-  finishImageBuild,
-  ingestImageBuildLine,
-  registerImageBuild,
-} from '#features/images/image-builds'
 import { serverLog } from '#log'
 import { env, testEnv } from '@yaac/shared/env'
 

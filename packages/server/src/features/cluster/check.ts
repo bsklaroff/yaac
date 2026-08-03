@@ -25,7 +25,7 @@ import { LABEL_SESSION_ID, LABEL_VCLUSTER_MANAGED_BY, runPodToCompletion } from 
 import { NESTED_ENGINE_CAPS } from '#platform/k8s/pod-spec'
 import { vapAvailable } from '#features/cluster/vcluster'
 import { registryHost, registryReachable, pushImageToRegistry } from '#features/cluster/registry'
-import { sessionUid } from '#features/images/image-builder'
+import { sessionUid } from '#features/images'
 import { getDataDir } from '@yaac/shared/paths'
 import { env } from '@yaac/shared/env'
 // CheckResult lives in @yaac/shared/types (a wire type: GET /cluster/check

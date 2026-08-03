@@ -37,6 +37,18 @@ function unitProject(pkgDir: string, extra: object = {}) {
 
 export default defineConfig({
   test: {
+    // Coverage is measurement-only for now: no thresholds, so nothing fails
+    // on it. It exists to answer "is this module still exercised?" once a
+    // folder is sealed behind a barrel and its internals lose direct unit
+    // tests — the internals stay covered transitively through the barrel,
+    // and this is what proves it. Thresholds get pinned from a measured
+    // baseline rather than guessed.
+    coverage: {
+      provider: 'v8',
+      include: ['packages/server/src/**'],
+      reporter: ['text-summary', 'json-summary'],
+      reportsDirectory: './coverage',
+    },
     testTimeout: 120_000,
     // E2e beforeAll/beforeEach hooks start containers on cold caches AND
     // wait their turn on the cross-worker server mutex — with many

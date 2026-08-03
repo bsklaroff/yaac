@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { assertProjectExists } from '#features/projects/detail'
-import { isLayered } from '#features/images/image-builder'
+import { isLayered } from '#features/images'
 import {
   PROJECT_DOCKERFILE,
   USER_DOCKERFILE,

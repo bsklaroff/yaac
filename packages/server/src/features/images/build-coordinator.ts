@@ -17,13 +17,13 @@
 import {
   resolveImageChain,
   type ImageLayer,
-} from '#features/images/image-builder'
+} from './image-builder'
 import { imageExists } from '#platform/container/runtime'
 import {
   engineForLayer,
   TRUSTED_PARENT_COMPRESSION,
-} from '#features/images/build-engine'
-import { BuilderPodLease } from '#features/images/builder-pod'
+} from './build-engine'
+import { BuilderPodLease } from './builder-pod'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#features/cluster/registry'
 import { serverLog } from '#log'
 import {
@@ -33,7 +33,7 @@ import {
   ingestImageBuildLine,
   registerImageBuild,
   type ImageBuildReason,
-} from '#features/images/image-builds'
+} from './image-builds'
 import type { ImageLayerName } from '@yaac/shared/types'
 
 interface BuildContext {
@@ -44,8 +44,9 @@ interface BuildContext {
    * Builder-pod lease for trust-split untrusted layers, owned by the
    * ensureImage/rebuild call that created it — adjacent untrusted layers
    * of one chain build in the same pod. Ignored by the host engine.
+   * Required so no build path can reach the cluster engine without one.
    */
-  lease?: BuilderPodLease
+  lease: BuilderPodLease
 }
 
 const inflightBuilds = new Map<string, { id: string; promise: Promise<void> }>()

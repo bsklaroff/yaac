@@ -8,7 +8,7 @@ import { recordSessionDeleted } from '#features/sessions/store'
 import { markSessionTerminating } from '#features/sessions/state'
 import { evictSessionStatus, isSessionStreamHealthy } from '#features/sessions/status-store'
 import { proxyClient } from '#features/sessions/egress/proxy-client'
-import { salvageSessionImages } from '#features/images/image-promoter'
+import { salvageSessionImages } from '#features/images'
 import {
   buildVclusterCleanupShellCommand,
   getVclusterStatus,

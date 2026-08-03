@@ -18,9 +18,9 @@
  */
 import { listProjects } from '#features/projects/list'
 import { resolveProjectConfig } from '#features/projects/config'
-import { resolveImageChain } from '#features/images/image-builder'
-import { ensureImage, pushImageShared } from '#features/images/build-coordinator'
-import { forgetImageBuild, getImageBuild, hasBlockingFailure } from '#features/images/image-builds'
+import { resolveImageChain } from './image-builder'
+import { ensureImage, pushImageShared } from './build-coordinator'
+import { forgetImageBuild, getImageBuild, hasBlockingFailure } from './image-builds'
 import { proxyClient } from '#features/sessions/egress/proxy-client'
 import { serverLog } from '#log'
 import { env, testEnv } from '@yaac/shared/env'
