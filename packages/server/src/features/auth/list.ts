@@ -18,8 +18,11 @@ async function toolAuthSummary(tool: AgentTool): Promise<ToolAuthSummary | null>
     kind: entry.kind,
     keyPreview: maskKey(entry.apiKey),
     savedAt: entry.savedAt,
-    opencodeProvider: entry.opencodeProvider,
-    piProvider: entry.piProvider,
+    // `tool` is a runtime value here, so the entry is the full union —
+    // narrowed per tool rather than read off a shape that carries every
+    // tool's optional fields at once.
+    opencodeProvider: entry.tool === 'opencode' ? entry.opencodeProvider : undefined,
+    piProvider: entry.tool === 'pi' ? entry.piProvider : undefined,
   }
 }
 

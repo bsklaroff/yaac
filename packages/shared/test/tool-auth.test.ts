@@ -34,7 +34,6 @@ import {
   detectAuthKind,
   extractClaudeOAuthBundle,
 } from '#tool-auth-interactive'
-import { parseOpencodeProvider } from '#tool-providers'
 import { ServerError } from '#errors'
 import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '#types'
 
@@ -44,6 +43,20 @@ const SAMPLE_BUNDLE: ClaudeOAuthBundle = {
   expiresAt: 9999999999999,
   scopes: ['user:inference', 'user:profile'],
   subscriptionType: 'pro',
+}
+
+/**
+ * Capture a rejected ServerError so assertions can read `code` and `message`
+ * directly — asymmetric matchers inside `toMatchObject` type as `any` and trip
+ * no-unsafe-assignment.
+ */
+async function rejection(p: Promise<unknown>): Promise<ServerError> {
+  try {
+    await p
+  } catch (err) {
+    return err as ServerError
+  }
+  throw new Error('expected a rejection, got success')
 }
 
 describe('tool-auth', () => {
@@ -320,13 +333,14 @@ describe('tool-auth', () => {
       await persistToolAuthPayload('opencode', {
         kind: 'api-key',
         apiKey: 'sk-or-v1-roundtrip',
+        provider: 'openrouter',
       })
       const entry = await loadToolAuthEntry('opencode')
       expect(entry).toMatchObject({
         tool: 'opencode',
         kind: 'api-key',
         apiKey: 'sk-or-v1-roundtrip',
-        // No provider in the payload defaults to openrouter.
+        // The provider is recorded as given — never inferred.
         opencodeProvider: 'openrouter',
       })
       expect(typeof entry?.savedAt).toBe('string')
@@ -354,17 +368,18 @@ describe('tool-auth', () => {
       expect((await loadToolAuthEntry('opencode'))?.opencodeProvider).toBe('neuralwatt')
     })
 
-    it('defaults provider to openrouter for legacy creds without the field', async () => {
+    it('treats creds without the provider field as unconfigured', async () => {
       // A credential file written before `provider` existed. Save once to
       // create the credentials dir, then overwrite with the legacy shape.
-      await saveToolAuth('opencode', 'sk-or-legacy', 'api-key')
+      // Inferring openrouter would scope the key to a vendor it may not
+      // belong to, so the file is unusable until `yaac auth` rewrites it.
+      await saveToolAuth('opencode', 'sk-or-legacy', 'api-key', 'openrouter')
       await fs.writeFile(
         opencodeCredentialsPath(),
         JSON.stringify({ kind: 'api-key', savedAt: '2025-01-01T00:00:00.000Z', apiKey: 'sk-or-legacy' }),
       )
-      const file = await loadOpencodeCredentialsFile()
-      expect(file?.provider).toBe('openrouter')
-      expect((await loadToolAuthEntry('opencode'))?.opencodeProvider).toBe('openrouter')
+      expect(await loadOpencodeCredentialsFile()).toBeNull()
+      expect(await loadToolAuthEntry('opencode')).toBeNull()
     })
 
     it('loadToolAuthEntry returns null when no opencode creds are saved', async () => {
@@ -372,13 +387,23 @@ describe('tool-auth', () => {
     })
 
     it('removeToolAuth deletes opencode credentials and returns true', async () => {
-      await persistToolAuthPayload('opencode', { kind: 'api-key', apiKey: 'sk-or-rm' })
+      await persistToolAuthPayload('opencode', { kind: 'api-key', apiKey: 'sk-or-rm', provider: 'openrouter' })
       expect(await removeToolAuth('opencode')).toBe(true)
       expect(await loadToolAuthEntry('opencode')).toBeNull()
     })
 
     it('removeToolAuth returns false when no opencode creds exist', async () => {
       expect(await removeToolAuth('opencode')).toBe(false)
+    })
+
+    it('rejects an opencode write with a missing or unknown provider', async () => {
+      const missing = await rejection(saveToolAuth('opencode', 'sk-x', 'api-key'))
+      expect(missing.code).toBe('VALIDATION')
+      expect(missing.message).toContain('require a provider')
+      const unknown = await rejection(saveToolAuth('opencode', 'sk-x', 'api-key', 'not-a-provider'))
+      expect(unknown.code).toBe('VALIDATION')
+      await expect(persistToolAuthPayload('opencode', { kind: 'api-key', apiKey: 'sk-x', provider: 'nope' }))
+        .rejects.toMatchObject({ code: 'VALIDATION' })
     })
 
     it('rejects an oauth payload for opencode (api-key only)', async () => {
@@ -398,13 +423,13 @@ describe('tool-auth', () => {
     })
 
     it('persists a pi api-key and round-trips through loadToolAuthEntry', async () => {
-      await persistToolAuthPayload('pi', { kind: 'api-key', apiKey: 'sk-or-pi-roundtrip' })
+      await persistToolAuthPayload('pi', { kind: 'api-key', apiKey: 'sk-or-pi-roundtrip', provider: 'openrouter' })
       const entry = await loadToolAuthEntry('pi')
       expect(entry).toMatchObject({
         tool: 'pi',
         kind: 'api-key',
         apiKey: 'sk-or-pi-roundtrip',
-        // No provider in the payload defaults to openrouter.
+        // The provider is recorded as given — never inferred.
         piProvider: 'openrouter',
       })
       expect(typeof entry?.savedAt).toBe('string')
@@ -427,14 +452,50 @@ describe('tool-auth', () => {
       expect((await loadToolAuthEntry('pi'))?.piProvider).toBe('anthropic')
     })
 
-    it('defaults provider to openrouter for an unknown provider value', async () => {
-      await saveToolAuth('pi', 'sk-or-legacy', 'api-key')
+    it('treats a stored provider the registry no longer carries as unconfigured', async () => {
+      // Coercing it to the default would seed this key under openrouter's env
+      // var and inject it on openrouter's host — a key the user scoped to
+      // another vendor. Reading it as "not configured" is the safe repair
+      // path: `yaac auth` re-records a provider that still exists.
+      await saveToolAuth('pi', 'sk-or-legacy', 'api-key', 'openrouter')
       await fs.writeFile(
         piCredentialsPath(),
         JSON.stringify({ kind: 'api-key', savedAt: '2025-01-01T00:00:00.000Z', apiKey: 'sk-or-legacy', provider: 'neuralwatt' }),
       )
-      expect((await loadPiCredentialsFile())?.provider).toBe('openrouter')
-      expect((await loadToolAuthEntry('pi'))?.piProvider).toBe('openrouter')
+      expect(await loadPiCredentialsFile()).toBeNull()
+      expect(await loadToolAuthEntry('pi')).toBeNull()
+    })
+
+    it('treats a credential file written before the provider field as unconfigured', async () => {
+      await saveToolAuth('pi', 'sk-or-legacy', 'api-key', 'openrouter') // creates the credentials dir
+      await fs.writeFile(
+        piCredentialsPath(),
+        JSON.stringify({ kind: 'api-key', savedAt: '2025-01-01T00:00:00.000Z', apiKey: 'sk-or-legacy' }),
+      )
+      expect(await loadPiCredentialsFile()).toBeNull()
+    })
+
+    it('rejects a write naming an unknown provider', async () => {
+      // neuralwatt is an opencode provider — known, but not to pi.
+      await expect(saveToolAuth('pi', 'sk-x', 'api-key', 'neuralwatt'))
+        .rejects.toMatchObject({ code: 'VALIDATION' })
+      await expect(persistToolAuthPayload('pi', { kind: 'api-key', apiKey: 'sk-x', provider: 'nope' }))
+        .rejects.toMatchObject({ code: 'VALIDATION' })
+    })
+
+    it('rejects a write with no provider, naming the repair', async () => {
+      const missing = await rejection(saveToolAuth('pi', 'sk-x', 'api-key'))
+      expect(missing.code).toBe('VALIDATION')
+      expect(missing.message).toContain('require a provider')
+      const viaWire = await rejection(persistToolAuthPayload('pi', { kind: 'api-key', apiKey: 'sk-x' }))
+      expect(viaWire.message).toContain('yaac auth update pi')
+    })
+
+    it('truncates the rejected provider value so a mis-pasted key cannot land in the message', async () => {
+      const misPasted = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789'
+      const err = await rejection(saveToolAuth('pi', 'sk-x', 'api-key', misPasted))
+      expect(err.message).not.toContain(misPasted)
+      expect(err.message).toContain('…')
     })
 
     it('loadToolAuthEntry returns null when no pi creds are saved', async () => {
@@ -442,7 +503,7 @@ describe('tool-auth', () => {
     })
 
     it('removeToolAuth deletes pi credentials and returns true', async () => {
-      await persistToolAuthPayload('pi', { kind: 'api-key', apiKey: 'sk-or-rm' })
+      await persistToolAuthPayload('pi', { kind: 'api-key', apiKey: 'sk-or-rm', provider: 'openrouter' })
       expect(await removeToolAuth('pi')).toBe(true)
       expect(await loadToolAuthEntry('pi')).toBeNull()
     })
@@ -458,18 +519,6 @@ describe('tool-auth', () => {
           bundle: { accessToken: 'x', refreshToken: 'y', expiresAt: 1, scopes: [] },
         }),
       ).rejects.toMatchObject({ code: 'VALIDATION' })
-    })
-  })
-
-  describe('parseOpencodeProvider', () => {
-    it('returns neuralwatt only for the exact string', () => {
-      expect(parseOpencodeProvider('neuralwatt')).toBe('neuralwatt')
-    })
-
-    it('defaults to openrouter for openrouter, undefined, and junk', () => {
-      expect(parseOpencodeProvider('openrouter')).toBe('openrouter')
-      expect(parseOpencodeProvider(undefined)).toBe('openrouter')
-      expect(parseOpencodeProvider('something-else')).toBe('openrouter')
     })
   })
 

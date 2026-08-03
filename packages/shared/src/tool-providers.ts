@@ -49,12 +49,19 @@ function infoOrDefault(
     ?? list[0]
 }
 
+/**
+ * Recognized ids pass through; everything else — unknown, empty, or absent —
+ * yields undefined for the caller to handle. Nothing is coerced to a default:
+ * the provider decides which env var carries the key and which host the proxy
+ * swaps it on, so guessing one sends a credential to a vendor the user never
+ * chose. A provider must be recorded explicitly, and an id the registry no
+ * longer carries (a regen can retire one) is a repair prompt, not a remap.
+ */
 function parseProvider<T extends string>(
   list: readonly ToolProviderInfo[],
   value: string | undefined,
-  defaultId: T,
-): T {
-  return list.some((p) => p.id === value) ? (value as T) : defaultId
+): T | undefined {
+  return list.some((p) => p.id === value) ? (value as T) : undefined
 }
 
 /** Look up an opencode provider's metadata; falls back to the default. */
@@ -77,18 +84,12 @@ export function piProviderHost(id: PiProvider): string {
   return piProviderInfo(id).apiHost
 }
 
-/**
- * Coerce a raw provider string to an OpencodeProvider, defaulting to
- * OPENCODE_DEFAULT_PROVIDER for anything unrecognized (including undefined).
- */
-export function parseOpencodeProvider(value: string | undefined): OpencodeProvider {
-  return parseProvider(OPENCODE_PROVIDERS, value, OPENCODE_DEFAULT_PROVIDER)
+/** A raw string as an OpencodeProvider, or undefined if it isn't one. */
+export function parseOpencodeProvider(value: string | undefined): OpencodeProvider | undefined {
+  return parseProvider(OPENCODE_PROVIDERS, value)
 }
 
-/**
- * Coerce a raw provider string to a PiProvider, defaulting to
- * PI_DEFAULT_PROVIDER for anything unrecognized (including undefined).
- */
-export function parsePiProvider(value: string | undefined): PiProvider {
-  return parseProvider(PI_PROVIDERS, value, PI_DEFAULT_PROVIDER)
+/** A raw string as a PiProvider, or undefined if it isn't one. */
+export function parsePiProvider(value: string | undefined): PiProvider | undefined {
+  return parseProvider(PI_PROVIDERS, value)
 }
