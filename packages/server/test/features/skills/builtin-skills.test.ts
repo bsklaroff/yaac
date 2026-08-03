@@ -1,114 +1,91 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+/**
+ * Contract tests for the skills feature's shipped content — the `<name>/SKILL.md`
+ * dirs under `builtin-skills/` that yaac stages into every session and surfaces
+ * as the `system`/`yaac` tier. They cover files, not a module, so the
+ * one-describe-per-barrel-function rule that governs the sealed folder's module
+ * tests does not apply here.
+ *
+ * A typo in the frontmatter (or a misplaced dir) would silently drop a skill
+ * from staging and discovery, since both paths only require a parseable
+ * SKILL.md. Driving the real packaged dir through the feature's entry points
+ * keeps each skill wired in without an integration run.
+ */
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import {
-  builtinSkillsDir,
-  setBuiltinSkillsDir,
-  listBuiltinSkills,
-  stageBuiltinSkills,
-  builtinSkillMounts,
-  TOOL_SKILL_ROOTS,
-} from '#features/skills/builtin'
+import { setDataDir } from '@yaac/shared/project-paths'
+import type { SkillSummary } from '@yaac/shared/types'
+import { builtinSkillsDir, getProjectSkills, getSkillDetail, stageBuiltinSkills } from '#features/skills'
+
+// A project with nothing on disk, so the only tier discovery finds is the
+// packaged one. `builtinSkillsDir()` is left at its packaged default.
+const slug = 'shipped-skills'
 
 let tmp: string
+let staged: string[]
+let shipped: SkillSummary[]
 
-async function writeSkill(dir: string, name: string, body = 'body'): Promise<void> {
-  await fs.mkdir(path.join(dir, name), { recursive: true })
-  await fs.writeFile(path.join(dir, name, 'SKILL.md'), `---\nname: ${name}\n---\n${body}\n`)
-}
-
-beforeEach(async () => {
-  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-builtin-test-'))
+beforeAll(async () => {
+  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-shipped-skills-'))
+  setDataDir(tmp)
+  staged = await stageBuiltinSkills(builtinSkillsDir(), path.join(tmp, 'stage'))
+  shipped = (await getProjectSkills('claude', slug)).skills
 })
 
-afterEach(async () => {
-  setBuiltinSkillsDir(null)
+afterAll(async () => {
   await fs.rm(tmp, { recursive: true, force: true })
 })
 
-describe('builtinSkillsDir / setBuiltinSkillsDir', () => {
-  it('defaults under the package root and honors an override', () => {
-    expect(builtinSkillsDir().endsWith(`${path.sep}builtin-skills`)).toBe(true)
-    setBuiltinSkillsDir('/tmp/elsewhere')
-    expect(builtinSkillsDir()).toBe('/tmp/elsewhere')
-    setBuiltinSkillsDir(null)
-    expect(builtinSkillsDir().endsWith(`${path.sep}builtin-skills`)).toBe(true)
+/** The shipped skill `name` as the viewer sees it, asserting it is staged into
+ *  sessions and discovered with a usable description. */
+function expectShipped(name: string): SkillSummary {
+  expect(staged).toContain(name)
+  const skill = shipped.find((s) => s.name === name)
+  expect(skill).toMatchObject({ id: `system:yaac:${name}`, source: 'system', sourceLabel: 'yaac' })
+  expect(skill?.description.length ?? 0).toBeGreaterThan(0)
+  return skill as SkillSummary
+}
+
+const bodyOf = async (name: string): Promise<string> =>
+  (await getSkillDetail('claude', slug, `system:yaac:${name}`)).body
+
+describe('builtin-skills/', () => {
+  it('ships only skills — every staged dir is discovered as system/yaac', () => {
+    expect(staged.length).toBeGreaterThan(0)
+    expect(shipped.map((s) => s.name).sort()).toEqual([...staged].sort())
+    // The dir's README.md is a loose file, not a skill dir.
+    expect(staged).not.toContain('README.md')
   })
 })
 
-describe('listBuiltinSkills', () => {
-  it('returns sorted names of subdirs that hold a SKILL.md', async () => {
-    const src = path.join(tmp, 'src')
-    await writeSkill(src, 'beta')
-    await writeSkill(src, 'alpha')
-    // A subdir without a SKILL.md is not a skill.
-    await fs.mkdir(path.join(src, 'not-a-skill'), { recursive: true })
-    await fs.writeFile(path.join(src, 'not-a-skill', 'README.md'), 'x')
-    // A dot-dir is ignored.
-    await writeSkill(src, '.hidden')
-    expect(await listBuiltinSkills(src)).toEqual(['alpha', 'beta'])
-  })
-
-  it('returns [] for a missing dir (no bundled skills shipped)', async () => {
-    expect(await listBuiltinSkills(path.join(tmp, 'nope'))).toEqual([])
+describe('push-pr skill', () => {
+  it('is discoverable and drives the watch phase through yaac-watch-prs', async () => {
+    expectShipped('push-pr')
+    // The watch step must invoke the generalized watcher scoped to comments,
+    // matching the usage shape yaac-watch-prs documents.
+    expect(await bodyOf('push-pr')).toContain('yaac-watch-prs --pr <pr-number> --events comment')
   })
 })
 
-describe('stageBuiltinSkills', () => {
-  it('copies each skill dir (incl. nested files) and returns the names', async () => {
-    const src = path.join(tmp, 'src')
-    await writeSkill(src, 'welcome')
-    // A multi-file skill — nested assets must come along.
-    await fs.mkdir(path.join(src, 'welcome', 'refs'), { recursive: true })
-    await fs.writeFile(path.join(src, 'welcome', 'driver.mjs'), 'export default 1\n')
-    await fs.writeFile(path.join(src, 'welcome', 'refs', 'note.md'), 'note\n')
-
-    const dest = path.join(tmp, 'stage')
-    const names = await stageBuiltinSkills(src, dest)
-    expect(names).toEqual(['welcome'])
-    expect(await fs.readFile(path.join(dest, 'welcome', 'SKILL.md'), 'utf8')).toContain('name: welcome')
-    expect(await fs.readFile(path.join(dest, 'welcome', 'driver.mjs'), 'utf8')).toBe('export default 1\n')
-    expect(await fs.readFile(path.join(dest, 'welcome', 'refs', 'note.md'), 'utf8')).toBe('note\n')
-  })
-
-  it('replaces prior staging so a removed skill does not linger (freshness)', async () => {
-    const src = path.join(tmp, 'src')
-    const dest = path.join(tmp, 'stage')
-    await writeSkill(src, 'keep')
-    // Pre-populate the dest with a stale skill that is no longer in src.
-    await writeSkill(dest, 'stale')
-
-    const names = await stageBuiltinSkills(src, dest)
-    expect(names).toEqual(['keep'])
-    await expect(fs.access(path.join(dest, 'stale'))).rejects.toThrow()
-  })
-
-  it('returns [] and leaves no staging when the source is missing', async () => {
-    const dest = path.join(tmp, 'stage')
-    expect(await stageBuiltinSkills(path.join(tmp, 'nope'), dest)).toEqual([])
-    await expect(fs.access(dest)).rejects.toThrow()
+describe('yaac-spawn skill', () => {
+  it('is discoverable and documents the session-bin usage shape', async () => {
+    expectShipped('yaac-spawn')
+    expect(await bodyOf('yaac-spawn'))
+      .toContain('yaac-spawn [--tool claude|codex|opencode|pi] [--model <model>] "<prompt>"')
   })
 })
 
-describe('builtinSkillMounts', () => {
-  it('mounts each skill read-only into every tool skills root', () => {
-    const mounts = builtinSkillMounts('/stage', ['welcome', 'lint'])
-    expect(mounts).toHaveLength(2 * TOOL_SKILL_ROOTS.length)
-    expect(mounts.every((m) => m.readOnly === true)).toBe(true)
-    expect(mounts).toContainEqual({
-      hostPath: '/stage/welcome',
-      mountPath: '/home/yaac/.claude/skills/welcome',
-      readOnly: true,
-    })
-    expect(mounts).toContainEqual({
-      hostPath: '/stage/lint',
-      mountPath: '/home/yaac/.pi/agent/skills/lint',
-      readOnly: true,
-    })
+describe('yaac-watch-prs skill', () => {
+  it('is discoverable and documents the session-bin usage shape', async () => {
+    expectShipped('yaac-watch-prs')
+    expect(await bodyOf('yaac-watch-prs'))
+      .toContain('yaac-watch-prs [--interval <seconds>] [--pr <number>] [--events <list>] [--once]')
   })
+})
 
-  it('returns no mounts when no skills are staged', () => {
-    expect(builtinSkillMounts('/stage', [])).toEqual([])
+describe('yaac-autoconfig skill', () => {
+  it('is discoverable with a non-empty description', () => {
+    expectShipped('yaac-autoconfig')
   })
 })

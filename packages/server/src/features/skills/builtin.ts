@@ -12,9 +12,9 @@
  * never lands in the persisted per-project config dirs — so nothing ever goes
  * stale there. The staging dir is removed with the session dir on cleanup.
  *
- * Discovery (lib/skills/discover.ts) reads the install dir directly — it runs
- * pod-less, so it can't see the in-pod mounts — and surfaces these as
- * `system`/`yaac` skills with full SKILL.md detail.
+ * Discovery (discover.ts) reads the install dir directly — it runs pod-less, so
+ * it can't see the in-pod mounts — and surfaces these as `system`/`yaac` skills
+ * with full SKILL.md detail.
  */
 
 import fs from 'node:fs/promises'

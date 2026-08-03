@@ -17,7 +17,7 @@ import { StatusWatcherManager } from '#features/sessions/status-watcher'
 import { PortDetectorManager } from '#features/sessions/forwarders/port-detector'
 import { ClusterCache, setActiveClusterCache } from '#platform/k8s/cluster-cache'
 import { anySessionDirsExist, armDeferredClusterBoot } from '#platform/k8s/deferred-boot'
-import { refreshClaudeBundledSkills } from '#features/skills/claude-bundled'
+import { refreshClaudeBundledSkills } from '#features/skills'
 import { onSessionStatusChanged } from '#features/sessions/status-store'
 import { readBuildId } from '@yaac/shared/build-id'
 import {

@@ -4,7 +4,9 @@ import os from 'node:os'
 import path from 'node:path'
 import simpleGit from 'simple-git'
 import { setDataDir, claudeDir, codexDir, opencodeConfigDir, piDir, repoDir } from '@yaac/shared/project-paths'
-import { getProjectSkills, getSkillDetail } from '#features/skills/discover'
+import { getProjectSkills, getSkillDetail } from '#features/skills'
+// State hooks for the two caches/overrides discovery reads — reset so a case
+// sees only what it opts into. Neither is under test here.
 import { setClaudeBundledSkills } from '#features/skills/claude-bundled'
 import { setBuiltinSkillsDir } from '#features/skills/builtin'
 
@@ -65,6 +67,29 @@ async function seedCodexPlugins(s: string, entries: Record<string, { enabled?: b
   await writeFile(path.join(codexDir(s), 'config.toml'), body)
 }
 
+/**
+ * Every `SKILL.md` shape discovery has to survive, keyed by skill dir name.
+ * These drive the frontmatter reader across its whole surface — fence variants,
+ * unparseable and non-mapping YAML, and each value type a scalar/boolean/list
+ * field has to coerce — and are asserted as the summaries a caller gets back.
+ */
+const SHAPES: Record<string, string> = {
+  'no-frontmatter': '# Just markdown\nno fence here\n',
+  malformed: '---\nname: [unterminated\ndescription: x\n---\nbody\n',
+  'bom-crlf': '﻿---\r\nname: win\r\ndescription: windows-authored\r\n---\r\nbody\r\n',
+  'no-body': '---\nname: headless\ndescription: frontmatter only\n---',
+  'list-frontmatter': '---\n- one\n- two\n---\nbody\n',
+  'list-description': '---\ndescription:\n  - First line\n  - Second line\n---\nb\n',
+  'null-first-description': '---\ndescription:\n  -\n  - Second\n---\nb\n',
+  'mapping-description': '---\ndescription:\n  nested: value\n---\nb\n',
+  'string-bools': '---\nuser-invocable: "false"\ndisable-model-invocation: "true"\n---\nb\n',
+  'yaml-1-1-bools': '---\nuser-invocable: yes\ndisable-model-invocation: no\n---\nb\n',
+  'string-tools': '---\nallowed-tools: Read, Bash Grep\n---\nb\n',
+  'numeric-tools': '---\nallowed-tools: 42\n---\nb\n',
+  'blank-tools': '---\nallowed-tools: "  "\n---\nb\n',
+  'null-in-tools': '---\nallowed-tools:\n  - Read\n  -\n---\nb\n',
+}
+
 let tmp: string
 
 beforeEach(async () => {
@@ -83,6 +108,9 @@ beforeEach(async () => {
     path.join(claude, 'skills', 'push-branch'),
     '---\nname: push-branch\ndescription: Push to main\ndisable-model-invocation: true\n---\nbody-personal\n',
   )
+  // A subdir with no SKILL.md, and a loose file, are not skills.
+  await writeFile(path.join(claude, 'skills', 'not-a-skill', 'README.md'), 'x')
+  await writeFile(path.join(claude, 'skills', 'README.md'), 'x')
   // Plugin (nested marketplace tree), enabled in settings so it passes the gate
   await writeSkill(
     path.join(claude, 'plugins', 'marketplaces', 'off', 'plugins', 'code-review', 'skills', 'review'),
@@ -105,6 +133,16 @@ afterEach(async () => {
   setBuiltinSkillsDir(null)
   await fs.rm(tmp, { recursive: true, force: true })
 })
+
+/** Seed yaac's own shipped tier in a tmp dir and point discovery at it. */
+async function seedBuiltin(): Promise<void> {
+  const dir = path.join(tmp, 'builtin-skills')
+  await writeSkill(
+    path.join(dir, 'yaac-welcome'),
+    '---\nname: yaac-welcome\ndescription: Orient yourself in a yaac session.\n---\nwelcome-body\n',
+  )
+  setBuiltinSkillsDir(dir)
+}
 
 describe('getProjectSkills', () => {
   it('discovers personal, plugin, and project skills sorted by source then name', async () => {
@@ -135,6 +173,53 @@ describe('getProjectSkills', () => {
     })
     const deploy = skills.find((s) => s.name === 'deploy')
     expect(deploy?.userInvocable).toBe(false)
+  })
+
+  it('reads a symlinked skill dir like a real one', async () => {
+    await writeSkill(path.join(tmp, 'external', 'linked'),
+      '---\nname: linked\ndescription: symlinked in\n---\nb')
+    await fs.symlink(
+      path.join(tmp, 'external', 'linked'),
+      path.join(claudeDir(slug), 'skills', 'linked'),
+      'dir',
+    )
+    const found = (await getProjectSkills('claude', slug)).skills.find((s) => s.name === 'linked')
+    expect(found).toMatchObject({ source: 'personal', description: 'symlinked in' })
+  })
+
+  it('tolerates every SKILL.md frontmatter shape, coercing each field type', async () => {
+    const personal = path.join(claudeDir('shapes'), 'skills')
+    for (const [name, contents] of Object.entries(SHAPES)) {
+      await writeSkill(path.join(personal, name), contents)
+    }
+    const { skills } = await getProjectSkills('claude', 'shapes')
+    const by = (name: string) => skills.find((s) => s.id === `personal:${name}`)
+
+    // No fence, unparseable YAML, and a non-mapping block all degrade to no
+    // metadata: the skill still lists, named after its directory.
+    for (const name of ['no-frontmatter', 'malformed', 'list-frontmatter']) {
+      expect(by(name)).toMatchObject({ name, description: '', userInvocable: true, modelInvocable: true })
+      expect(by(name)?.allowedTools).toBeUndefined()
+    }
+    // A BOM and CRLF line endings do not hide the frontmatter, and a block with
+    // no trailing body still parses.
+    expect(by('bom-crlf')).toMatchObject({ name: 'win', description: 'windows-authored' })
+    expect(by('no-body')).toMatchObject({ name: 'headless', description: 'frontmatter only' })
+    // A list-valued description reads as its first entry; a leading empty entry
+    // or a nested mapping is not a scalar at all.
+    expect(by('list-description')?.description).toBe('First line')
+    expect(by('null-first-description')?.description).toBe('')
+    expect(by('mapping-description')?.description).toBe('')
+    // Quoted booleans still count as booleans; YAML 1.1's yes/no do not (the
+    // parser reads them as plain strings), so both flags keep their defaults.
+    expect(by('string-bools')).toMatchObject({ userInvocable: false, modelInvocable: false })
+    expect(by('yaml-1-1-bools')).toMatchObject({ userInvocable: true, modelInvocable: true })
+    // allowed-tools: a scalar splits on spaces/commas; a non-list non-string or
+    // content-free value is no list at all; empty entries drop out.
+    expect(by('string-tools')?.allowedTools).toEqual(['Read', 'Bash', 'Grep'])
+    expect(by('numeric-tools')?.allowedTools).toBeUndefined()
+    expect(by('blank-tools')?.allowedTools).toBeUndefined()
+    expect(by('null-in-tools')?.allowedTools).toEqual(['Read'])
   })
 
   it('discovers plugin skills under external_plugins too, not just plugins', async () => {
@@ -189,6 +274,19 @@ describe('getProjectSkills', () => {
     expect(skills.find((s) => s.name === 'search')).toBeDefined()
   })
 
+  it('treats unreadable and enabledPlugins-less settings tiers as enabling nothing', async () => {
+    // Unparseable JSON, valid JSON without the map, and a non-object map: each
+    // tier degrades to "nothing enabled" rather than throwing.
+    await writeFile(path.join(claudeDir(slug), 'settings.json'), '{not json')
+    await writeFile(path.join(repoDir(slug), '.claude', 'settings.json'), '{"other": 1}')
+    await writeFile(path.join(repoDir(slug), '.claude', 'settings.local.json'), '{"enabledPlugins": 5}')
+
+    const { skills } = await getProjectSkills('claude', slug)
+    expect(skills.find((s) => s.source === 'plugin')).toBeUndefined()
+    // The non-plugin tiers are unaffected.
+    expect(skills.map((s) => s.name)).toContain('push-branch')
+  })
+
   it('returns nothing for non-claude tools when nothing is set up', async () => {
     expect((await getProjectSkills('codex', slug)).skills).toEqual([])
   })
@@ -196,29 +294,8 @@ describe('getProjectSkills', () => {
   it('is empty-safe when a project has no skill dirs', async () => {
     expect((await getProjectSkills('claude', 'nonexistent')).skills).toEqual([])
   })
-})
 
-describe('getSkillDetail', () => {
-  it('returns the full body and frontmatter for a discovered id', async () => {
-    const detail = await getSkillDetail('claude', slug, 'personal:push-branch')
-    expect(detail).toMatchObject({
-      id: 'personal:push-branch',
-      name: 'push-branch',
-      source: 'personal',
-    })
-    expect(detail.frontmatter).toMatchObject({ description: 'Push to main' })
-    expect(detail.body.trim()).toBe('body-personal')
-  })
-
-  it('throws NOT_FOUND for an unknown id (no path is taken from the client)', async () => {
-    await expect(getSkillDetail('claude', slug, 'personal:../../etc/passwd')).rejects.toMatchObject({
-      code: 'NOT_FOUND',
-    })
-  })
-})
-
-describe('getProjectSkills (claude bundled tier)', () => {
-  it('appends cached bundled skills as list-only system skills, sorted last', async () => {
+  it('appends cached claude bundled skills as list-only system skills, sorted last', async () => {
     setClaudeBundledSkills([
       { name: 'code-review', description: 'Review the current diff.' },
       { name: 'deep-research', description: 'Fan out web searches.' },
@@ -236,29 +313,11 @@ describe('getProjectSkills (claude bundled tier)', () => {
     })
   })
 
-  it('serves a placeholder body for a list-only bundled skill', async () => {
-    setClaudeBundledSkills([{ name: 'verify', description: 'Confirm a change works.' }])
-    const detail = await getSkillDetail('claude', slug, 'system:bundled:verify')
-    expect(detail).toMatchObject({ name: 'verify', source: 'system' })
-    expect(detail.body).toContain('Built-in Claude Code skill')
-  })
-
   it('does not append the claude bundled tier to other tools', async () => {
     setClaudeBundledSkills([{ name: 'code-review', description: 'x' }])
     const { skills } = await getProjectSkills('codex', slug)
     expect(skills.find((s) => s.sourceLabel === 'bundled')).toBeUndefined()
   })
-})
-
-describe('getProjectSkills (yaac builtin tier)', () => {
-  async function seedBuiltin(): Promise<void> {
-    const dir = path.join(tmp, 'builtin-skills')
-    await writeSkill(
-      path.join(dir, 'yaac-welcome'),
-      '---\nname: yaac-welcome\ndescription: Orient yourself in a yaac session.\n---\nwelcome-body\n',
-    )
-    setBuiltinSkillsDir(dir)
-  }
 
   it.each(['claude', 'codex', 'opencode', 'pi'] as const)(
     'injects the yaac builtin tier into every tool as system/yaac (%s)',
@@ -276,13 +335,6 @@ describe('getProjectSkills (yaac builtin tier)', () => {
     },
   )
 
-  it('serves the full SKILL.md body for a builtin skill (not a placeholder)', async () => {
-    await seedBuiltin()
-    const detail = await getSkillDetail('claude', slug, 'system:yaac:yaac-welcome')
-    expect(detail).toMatchObject({ name: 'yaac-welcome', source: 'system' })
-    expect(detail.body.trim()).toBe('welcome-body')
-  })
-
   it('sorts the yaac builtin tier above the agent bundled tier within system', async () => {
     await seedBuiltin()
     // A bundled skill whose name sorts before the yaac one: rank, not name,
@@ -295,9 +347,7 @@ describe('getProjectSkills (yaac builtin tier)', () => {
       'bundled:aardvark-review',
     ])
   })
-})
 
-describe('getProjectSkills (codex)', () => {
   it('reads codex personal + plugin + project dirs plus the built-in .system tier', async () => {
     await writeSkill(path.join(codexDir(slug), 'skills', 'push-branch'),
       '---\nname: push-branch\ndescription: cx personal\n---\nb')
@@ -338,18 +388,18 @@ describe('getProjectSkills (codex)', () => {
     expect(skills.map((s) => `${s.source}:${s.name}`)).toEqual(['system:skill-creator'])
   })
 
-  it('excludes a codex plugin whose config.toml entry is disabled', async () => {
+  it('excludes codex plugins disabled in config.toml or absent from its [plugins] table', async () => {
     await writeSkill(path.join(codexDir(slug), '.tmp', 'plugins', 'plugins', 'sentry', 'skills', 'sentry'),
       '---\nname: sentry\ndescription: cx plugin\n---\nb')
     await seedCodexPlugins(slug, { 'sentry@openai-curated': { enabled: false } })
+    expect((await getProjectSkills('codex', slug)).skills.find((s) => s.name === 'sentry')).toBeUndefined()
 
-    const { skills } = await getProjectSkills('codex', slug)
-    expect(skills.find((s) => s.name === 'sentry')).toBeUndefined()
+    // A config.toml that parses but declares no plugins installs nothing.
+    await writeFile(path.join(codexDir(slug), 'config.toml'), 'model = "gpt-5-codex"\n')
+    expect((await getProjectSkills('codex', slug)).skills.find((s) => s.name === 'sentry')).toBeUndefined()
   })
-})
 
-describe('getProjectSkills (opencode)', () => {
-  it('reads singular + plural native dirs and the claude-compat dir, deduping by id', async () => {
+  it('reads opencode singular + plural native dirs and the claude-compat dir, deduping by id', async () => {
     // Global native, singular `skill/` — the tier the old grandparent rule missed.
     await writeSkill(path.join(opencodeConfigDir(slug), 'skill', 'greet'),
       '---\nname: greet\ndescription: oc global singular\n---\nb')
@@ -364,9 +414,7 @@ describe('getProjectSkills (opencode)', () => {
     expect(names).toContain('personal:push-branch') // reads claudeDir/skills (claude-compat)
     expect(names.filter((n) => n === 'project:deploy')).toHaveLength(1) // deduped
   })
-})
 
-describe('getProjectSkills (pi)', () => {
   it('reads pi personal skills from piDir/agent/skills plus project skills from the repo', async () => {
     // pi's whole ~/.pi home is mounted per-project, so its global skills tier
     // (~/.pi/agent/skills) is host-visible.
@@ -384,38 +432,35 @@ describe('getProjectSkills (pi)', () => {
       'project:ship',
     ])
   })
-})
 
-describe('getProjectSkills (origin branch)', () => {
-  // A fresh slug so beforeEach's working-tree writes for `proj` don't interfere.
-  const gslug = 'gitproj'
-
+  // A fresh slug for the git cases so beforeEach's working-tree writes for
+  // `proj` don't interfere.
   it('reads project skills from origin/<default>, ignoring uncommitted working-tree files', async () => {
-    await commitRepoBranch(gslug, 'main', {
+    await commitRepoBranch('gitproj', 'main', {
       '.claude/skills/committed/SKILL.md': '---\nname: committed\ndescription: on main\n---\nb',
     })
     // A working-tree-only skill must NOT appear — the ref read ignores it.
-    await writeSkill(path.join(repoDir(gslug), '.claude', 'skills', 'uncommitted'),
+    await writeSkill(path.join(repoDir('gitproj'), '.claude', 'skills', 'uncommitted'),
       '---\nname: uncommitted\ndescription: working tree only\n---\nb')
 
-    const names = (await getProjectSkills('claude', gslug)).skills.map((s) => s.name)
+    const names = (await getProjectSkills('claude', 'gitproj')).skills.map((s) => s.name)
     expect(names).toContain('committed')
     expect(names).not.toContain('uncommitted')
   })
 
   it('reads project skills from an explicitly selected branch', async () => {
-    await commitRepoBranch(gslug, 'main', {
+    await commitRepoBranch('gitproj', 'main', {
       '.claude/skills/on-main/SKILL.md': '---\nname: on-main\ndescription: main\n---\nb',
     })
-    await commitRepoBranch(gslug, 'feature', {
+    await commitRepoBranch('gitproj', 'feature', {
       '.claude/skills/on-feature/SKILL.md': '---\nname: on-feature\ndescription: feature\n---\nb',
     })
 
-    const main = (await getProjectSkills('claude', gslug)).skills.map((s) => s.name)
+    const main = (await getProjectSkills('claude', 'gitproj')).skills.map((s) => s.name)
     expect(main).toContain('on-main')
     expect(main).not.toContain('on-feature')
 
-    const feat = (await getProjectSkills('claude', gslug, 'feature')).skills.map((s) => s.name)
+    const feat = (await getProjectSkills('claude', 'gitproj', 'feature')).skills.map((s) => s.name)
     expect(feat).toContain('on-feature')
     expect(feat).toContain('on-main') // feature was branched off main
   })
@@ -423,30 +468,80 @@ describe('getProjectSkills (origin branch)', () => {
   it('gates plugins on enabledPlugins committed to the branch, not the working tree', async () => {
     // The plugin is cloned to the host claude dir (a host tier)...
     await writeSkill(
-      path.join(claudeDir(gslug), 'plugins', 'marketplaces', 'off', 'plugins', 'code-review', 'skills', 'review'),
+      path.join(claudeDir('gitproj'), 'plugins', 'marketplaces', 'off', 'plugins', 'code-review', 'skills', 'review'),
       '---\nname: review\ndescription: plugin\n---\nb',
     )
     // ...but enabled only via .claude/settings.json committed on the branch.
-    await commitRepoBranch(gslug, 'main', {
+    await commitRepoBranch('gitproj', 'main', {
       '.claude/settings.json': JSON.stringify({ enabledPlugins: { 'code-review@off': true } }),
     })
 
-    const { skills } = await getProjectSkills('claude', gslug)
+    const { skills } = await getProjectSkills('claude', 'gitproj')
     expect(skills.find((s) => s.source === 'plugin' && s.name === 'review')).toBeDefined()
   })
 
-  it('serves the detail body from the selected branch', async () => {
-    await commitRepoBranch(gslug, 'main', {
-      '.claude/skills/doc/SKILL.md': '---\nname: doc\ndescription: d\n---\nfull-body-on-main\n',
+  it('falls back to the working tree when no origin ref exists (local-only repo)', async () => {
+    await writeSkill(path.join(repoDir('gitproj'), '.claude', 'skills', 'wt'),
+      '---\nname: wt\ndescription: working tree\n---\nb')
+    const names = (await getProjectSkills('claude', 'gitproj')).skills.map((s) => s.name)
+    expect(names).toContain('wt')
+  })
+})
+
+describe('getSkillDetail', () => {
+  it('returns the full body and frontmatter for a discovered id', async () => {
+    const detail = await getSkillDetail('claude', slug, 'personal:push-branch')
+    expect(detail).toMatchObject({
+      id: 'personal:push-branch',
+      name: 'push-branch',
+      source: 'personal',
     })
-    const detail = await getSkillDetail('claude', gslug, 'project:doc')
-    expect(detail.body.trim()).toBe('full-body-on-main')
+    expect(detail.frontmatter).toMatchObject({ description: 'Push to main' })
+    expect(detail.body.trim()).toBe('body-personal')
   })
 
-  it('falls back to the working tree when no origin ref exists (local-only repo)', async () => {
-    await writeSkill(path.join(repoDir(gslug), '.claude', 'skills', 'wt'),
-      '---\nname: wt\ndescription: working tree\n---\nb')
-    const names = (await getProjectSkills('claude', gslug)).skills.map((s) => s.name)
-    expect(names).toContain('wt')
+  it('flattens every frontmatter value type for display', async () => {
+    await writeSkill(
+      path.join(claudeDir(slug), 'skills', 'flat'),
+      '---\nname: flat\ndescription:\nallowed-tools: [Read, Grep]\nuser-invocable: true\n'
+      + 'metadata:\n  version: "1"\n  author: me\n---\nflat-body\n',
+    )
+    const detail = await getSkillDetail('claude', slug, 'personal:flat')
+    expect(detail.frontmatter).toEqual({
+      name: 'flat',
+      // an empty `description:` is null and drops out entirely
+      'allowed-tools': 'Read, Grep', // lists join
+      'user-invocable': 'true', // non-string scalars stringify
+      metadata: '{"version":"1","author":"me"}', // nested maps JSON-encode
+    })
+    expect(detail.body.trim()).toBe('flat-body')
+  })
+
+  it('throws NOT_FOUND for an unknown id (no path is taken from the client)', async () => {
+    await expect(getSkillDetail('claude', slug, 'personal:../../etc/passwd')).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    })
+  })
+
+  it('serves a placeholder body for a list-only claude bundled skill', async () => {
+    setClaudeBundledSkills([{ name: 'verify', description: 'Confirm a change works.' }])
+    const detail = await getSkillDetail('claude', slug, 'system:bundled:verify')
+    expect(detail).toMatchObject({ name: 'verify', source: 'system' })
+    expect(detail.body).toContain('Built-in Claude Code skill')
+  })
+
+  it('serves the full SKILL.md body for a yaac builtin skill (not a placeholder)', async () => {
+    await seedBuiltin()
+    const detail = await getSkillDetail('claude', slug, 'system:yaac:yaac-welcome')
+    expect(detail).toMatchObject({ name: 'yaac-welcome', source: 'system' })
+    expect(detail.body.trim()).toBe('welcome-body')
+  })
+
+  it('serves the detail body from the selected branch', async () => {
+    await commitRepoBranch('gitproj', 'main', {
+      '.claude/skills/doc/SKILL.md': '---\nname: doc\ndescription: d\n---\nfull-body-on-main\n',
+    })
+    const detail = await getSkillDetail('claude', 'gitproj', 'project:doc')
+    expect(detail.body.trim()).toBe('full-body-on-main')
   })
 })

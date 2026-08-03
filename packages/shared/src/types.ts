@@ -507,7 +507,7 @@ export interface SessionDeathCause {
  * bundled skills (Codex's `.system/` under the host-mounted `~/.codex/skills/`,
  * or Claude's binary-bundled skills read list-only from its docs, `sourceLabel`
  * `bundled`), plus the skills yaac itself ships and injects into every session
- * (`sourceLabel` `yaac`; see server lib/skills/builtin.ts).
+ * (`sourceLabel` `yaac`; see the server's features/skills).
  */
 export type SkillSource = 'personal' | 'plugin' | 'project' | 'system'
 

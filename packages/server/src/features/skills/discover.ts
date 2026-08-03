@@ -33,8 +33,8 @@
  * `.system/` tier to the host-mounted `~/.codex/skills/.system/`, read on-disk
  * like any other. Claude's bundled skills live only in its binary, so we take
  * their name + description from Anthropic's official commands reference —
- * fetched on server start and cached in memory (see lib/skills/claude-bundled.ts)
- * — and append them as list-only `system` skills.
+ * fetched on server start and cached in memory (see claude-bundled.ts) — and
+ * append them as list-only `system` skills.
  */
 
 import fs from 'node:fs/promises'
@@ -45,9 +45,9 @@ import { claudeDir, codexDir, opencodeConfigDir, piDir, repoDir } from '@yaac/sh
 import { ServerError } from '@yaac/shared/errors'
 import type { AgentTool, ProjectSkills, SkillDetail, SkillSummary, SkillSource } from '@yaac/shared/types'
 import { getDefaultBranch, remoteBranchExists } from '#platform/git'
-import { getClaudeBundledSkills } from '#features/skills/claude-bundled'
-import { builtinSkillsDir } from '#features/skills/builtin'
-import { parseSkillMd, fmString, fmBool, fmList, flattenFrontmatter } from '#features/skills/parse'
+import { getClaudeBundledSkills } from './claude-bundled'
+import { builtinSkillsDir } from './builtin'
+import { parseSkillMd, fmString, fmBool, fmList, flattenFrontmatter } from './parse'
 
 /**
  * A source of `<name>/SKILL.md` skill dirs. Abstracted over the backing store
@@ -63,10 +63,11 @@ interface SkillReader {
   read: (name: string) => Promise<string | null>
 }
 
-/** A discovered skill plus a thunk that re-reads its SKILL.md for the detail
- *  view (the store — host file or git blob — is captured by the closure). */
+/** A discovered skill plus the `SKILL.md` text the detail view renders. A
+ *  skill exists only because its `SKILL.md` was read, so the raw text is
+ *  always in hand and the detail view never re-reads the store. */
 interface DiscoveredSkill extends SkillSummary {
-  read: () => Promise<string | null>
+  raw: string
 }
 
 /** Immediate subdirectory names of `dir` (symlinked dirs included), or [] when
@@ -364,7 +365,7 @@ async function readSkills(reader: SkillReader): Promise<DiscoveredSkill[]> {
       source: reader.source,
       sourceLabel: reader.sourceLabel,
     })
-    out.push({ ...summary, read: () => reader.read(name) })
+    out.push({ ...summary, raw })
   }
   return out
 }
@@ -418,7 +419,7 @@ function claudeBundledDiscovered(): DiscoveredSkill[] {
     sourceLabel: 'bundled',
     userInvocable: true,
     modelInvocable: true,
-    read: () => Promise.resolve(BUNDLED_BODY),
+    raw: BUNDLED_BODY,
   }))
 }
 
@@ -426,9 +427,9 @@ async function discover(tool: AgentTool, slug: string, branch?: string): Promise
   const ref = await resolveRepoRef(repoDir(slug), branch)
   const readers = await readersFor(tool, slug, ref)
   // yaac's own bundled skills — shipped in the package and injected into every
-  // tool's personal root at session create (see lib/skills/builtin.ts). Read
-  // the install dir directly here, since pod-less discovery can't see the
-  // in-pod mounts; surfaced as `system`/`yaac` for every tool.
+  // tool's personal root at session create (see builtin.ts). Read the install
+  // dir directly here, since pod-less discovery can't see the in-pod mounts;
+  // surfaced as `system`/`yaac` for every tool.
   readers.push(fsReader(builtinSkillsDir(), 'system', 'yaac'))
   const perReader = await Promise.all(readers.map(readSkills))
   const flat = perReader.flat()
@@ -446,19 +447,18 @@ async function discover(tool: AgentTool, slug: string, branch?: string): Promise
  *  (default: the remote's default branch). */
 export async function getProjectSkills(tool: AgentTool, slug: string, branch?: string): Promise<ProjectSkills> {
   const discovered = await discover(tool, slug, branch)
-  const skills: SkillSummary[] = discovered.map(({ read: _read, ...summary }) => summary)
+  const skills: SkillSummary[] = discovered.map(({ raw: _raw, ...summary }) => summary)
   return { skills }
 }
 
-/** The full `SKILL.md` for one skill, resolved by re-reading the readers and
+/** The full `SKILL.md` for one skill, resolved by re-running discovery and
  *  matching the id — the client never supplies a filesystem path, so there is
  *  no traversal. `branch` must match the one the summary was listed under so the
  *  id resolves against the same tree. */
 export async function getSkillDetail(tool: AgentTool, slug: string, id: string, branch?: string): Promise<SkillDetail> {
   const match = (await discover(tool, slug, branch)).find((s) => s.id === id)
   if (!match) throw new ServerError('NOT_FOUND', `skill "${id}" not found`)
-  const raw = (await match.read()) ?? ''
-  const { frontmatter, body } = parseSkillMd(raw)
+  const { frontmatter, body } = parseSkillMd(match.raw)
   return {
     id: match.id,
     name: match.name,

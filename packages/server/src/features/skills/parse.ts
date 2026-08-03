@@ -51,7 +51,7 @@ function stringify(v: unknown): string {
   if (v == null) return ''
   if (typeof v === 'string') return v
   if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') return String(v)
-  return JSON.stringify(v) ?? '' // objects/arrays; symbols/functions never occur in YAML
+  return JSON.stringify(v) // objects/arrays; symbols/functions never occur in YAML
 }
 
 /** Read a frontmatter field as a scalar string (first item if it's a list). */

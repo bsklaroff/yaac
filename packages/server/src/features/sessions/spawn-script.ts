@@ -3,7 +3,7 @@
  * yaac package (currently just `yaac-spawn`) that yaac installs into every
  * session container on PATH.
  *
- * Delivery mirrors the builtin-skills tier (lib/skills/builtin.ts): at
+ * Delivery mirrors the builtin-skills tier (features/skills): at
  * session create the packaged scripts are copied into a staging dir under
  * the session dir (`stageSessionBin`, chmod 0755) and each is File-mounted
  * read-only at `/usr/local/bin/<name>` — on PATH in effectively every

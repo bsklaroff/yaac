@@ -5,6 +5,7 @@
   "type": "module",
   "imports": {
     "#features/images": "./src/features/images/index.js",
+    "#features/skills": "./src/features/skills/index.js",
     "#features/titles": "./src/features/titles/index.js",
     "#*": "./src/*.js"
   },

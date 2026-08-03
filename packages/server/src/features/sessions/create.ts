@@ -121,7 +121,7 @@ import {
   validateInitWindows,
 } from '#features/sessions/setup-commands'
 import { seedClaudeJson, seedClaudeSettings, prepareEphemeralMounts } from '#features/sessions/seed'
-import { builtinSkillsDir, stageBuiltinSkills, builtinSkillMounts } from '#features/skills/builtin'
+import { builtinSkillsDir, stageBuiltinSkills, builtinSkillMounts } from '#features/skills'
 import {
   SESSION_INIT_SCRIPT,
   sessionBinDir,
