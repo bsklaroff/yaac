@@ -1,6 +1,5 @@
 import { and, eq, isNotNull, isNull, or } from 'drizzle-orm'
-import { getDb } from '#platform/db/client'
-import { agentSessions } from '#platform/db/schema'
+import { agentSessions, getDb } from '#platform/db'
 import { normalizeTitle } from '@yaac/shared/titles'
 import type { AgentTool, SessionDeathCause, SessionDeathReason } from '@yaac/shared/types'
 

@@ -1,10 +1,19 @@
+/**
+ * The startup sweep of the legacy JSON stores — `importLegacyJsonStores`.
+ *
+ * Nothing under platform/db is mocked here: a real database is opened in a
+ * temp data dir and the legacy files are written to disk by hand, so the
+ * private path builders, the tolerant parsers and the one-shot session
+ * backfill are covered by the data-dir states these tests lay down rather
+ * than by tests of their own. What the import produced is read back through
+ * the stores that own each table.
+ */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
 import { claudeDir, codexTranscriptDir, projectDir } from '@yaac/shared/project-paths'
-import { closeDb } from '#platform/db/client'
-import { importLegacyJsonStores } from '#platform/db/legacy-import'
+import { closeDb, importLegacyJsonStores } from '#platform/db'
 import { getDefaultTool, getShortcutOverrides, setDefaultTool } from '#features/projects/preferences'
 import { MAX_PROMPT_LENGTH, getProjectSessionRows, listSessionRows } from '#features/sessions/store'
 import { loadTokens } from '#http'

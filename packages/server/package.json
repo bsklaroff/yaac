@@ -12,6 +12,7 @@
     "#features/terminals": "./src/features/terminals/index.js",
     "#features/titles": "./src/features/titles/index.js",
     "#http": "./src/http/index.js",
+    "#platform/db": "./src/platform/db/index.js",
     "#*": "./src/*.js"
   },
   "scripts": {

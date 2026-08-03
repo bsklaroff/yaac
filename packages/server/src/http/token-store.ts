@@ -2,8 +2,7 @@ import crypto from 'node:crypto'
 import { ServerError } from '@yaac/shared/errors'
 import { timingSafeStrEqual } from './web-auth'
 import { maskToken } from '@yaac/shared/mask'
-import { getDb } from '#platform/db/client'
-import { tokens as tokensTable } from '#platform/db/schema'
+import { getDb, tokens as tokensTable } from '#platform/db'
 
 /**
  * All client credentials the server hands out, in one store. Three kinds:

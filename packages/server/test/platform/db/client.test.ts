@@ -1,24 +1,32 @@
+/**
+ * The database handle's lifecycle — `getDb`, `closeDb`.
+ *
+ * Nothing under platform/db is mocked here: a real PGlite instance is opened
+ * in a temp data dir and the checked-in migrations run against it, so the
+ * private data-dir path builder, the single-flighted open and the dangling
+ * -handle close are covered by the dir switches these tests drive rather
+ * than by tests of their own. `preferences` is the sample table.
+ */
 import { describe, it, expect, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
-import { getDb, closeDb } from '#platform/db/client'
-import { preferences } from '#platform/db/schema'
+import { getDb, closeDb, preferences } from '#platform/db'
 
-describe('db client', () => {
-  const dirs: string[] = []
+const dirs: string[] = []
 
-  async function freshDataDir(): Promise<string> {
-    const dir = await createTempDataDir()
-    dirs.push(dir)
-    return dir
-  }
+async function freshDataDir(): Promise<string> {
+  const dir = await createTempDataDir()
+  dirs.push(dir)
+  return dir
+}
 
-  afterEach(async () => {
-    await closeDb()
-    while (dirs.length > 0) await cleanupTempDir(dirs.pop() as string)
-  })
+afterEach(async () => {
+  await closeDb()
+  while (dirs.length > 0) await cleanupTempDir(dirs.pop() as string)
+})
 
+describe('getDb', () => {
   it('creates <dataDir>/db at 0700, migrates, and answers queries', async () => {
     await freshDataDir()
     const db = await getDb()
@@ -43,8 +51,10 @@ describe('db client', () => {
     expect(second).not.toBe(first)
     expect(await second.select().from(preferences)).toEqual([])
   })
+})
 
-  it('persists across close + reopen (re-migrate is a no-op)', async () => {
+describe('closeDb', () => {
+  it('checkpoints so the data survives a reopen (re-migrate is a no-op)', async () => {
     await freshDataDir()
     const db = await getDb()
     await db.insert(preferences).values({ key: 'k', value: 'v' })
@@ -54,7 +64,7 @@ describe('db client', () => {
     expect(await reopened.select().from(preferences)).toEqual([{ key: 'k', value: 'v' }])
   })
 
-  it('closeDb is idempotent and safe with nothing open', async () => {
+  it('is idempotent and safe with nothing open', async () => {
     await closeDb()
     await freshDataDir()
     await getDb()

@@ -5,8 +5,8 @@ import tseslint from 'typescript-eslint'
 const RELATIVE_PARENT = { group: ['..*'], message: 'Relative parent imports are not allowed.' }
 
 // Sealed folders expose an index.ts barrel (mapped to the folder's own
-// specifier — `#features/<name>`, `#http` — in the package's imports field);
-// everything else in the directory is internal.
+// specifier — `#features/<name>`, `#http`, `#platform/db` — in the package's
+// imports field); everything else in the directory is internal.
 // src must enter through the barrel — add a folder to the alternation below
 // once it has one. Tests are deliberately unrestricted: they still reach
 // internals directly, which is what keeps a folder sealable without rewriting
@@ -17,7 +17,7 @@ const RELATIVE_PARENT = { group: ['..*'], message: 'Relative parent imports are 
 // and the pattern is silently discarded — it looks installed but matches
 // nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(features/(auth|cluster|images|projects|skills|terminals|titles)|http)/.',
+  regex: '^#(features/(auth|cluster|images|projects|skills|terminals|titles)|http|platform/db)/.',
   message: 'This folder is sealed; import its barrel (e.g. #features/images).',
 }
 

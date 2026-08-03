@@ -1,12 +1,12 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { getDb, type Db } from '#platform/db/client'
+import { getDb, type Db } from './client'
 import {
   agentSessions,
   preferences,
   shortcutOverrides,
   tokens,
-} from '#platform/db/schema'
+} from './schema'
 import {
   DEFAULT_TOOL_KEY,
   SESSIONS_BACKFILLED_KEY,
@@ -207,7 +207,7 @@ async function importOpencodeMeta(db: Db, slug: string): Promise<void> {
  * lazily, so a data dir with thousands of transcripts doesn't pay a parse
  * per file at startup.
  */
-export async function backfillSessions(db: Db, slug: string): Promise<void> {
+async function backfillSessions(db: Db, slug: string): Promise<void> {
   const records = await scanProjectTranscripts(slug)
   for (const r of records) {
     // The base branch the pre-upgrade session forked from still lives in
